@@ -646,7 +646,8 @@ fn world_amendments_of_fix_round_one() {
     let mut worst = 0.0f32;
     let mut previous: Option<f32> = None;
     for k in 0..2000 {
-        let on_plane = rot * v(-1.0 + 0.001 * k as f32, 0.7 - 0.0007 * k as f32, 0.0);
+        // (All over the same triangle of the pair.)
+        let on_plane = rot * v(-1.0 + 0.001 * k as f32, -0.5 - 0.0007 * k as f32, 0.0);
         let depth = 3.0e-7 + 1.0e-9 * k as f32;
         world.sphere_contacts(on_plane + n * (0.01 - depth), 0.01, layers::ALL, &mut out);
         assert_eq!(out.len(), 1, "k {k}");
@@ -656,5 +657,5 @@ fn world_amendments_of_fix_round_one() {
         }
         previous = Some(error);
     }
-    assert!(worst < 2.0e-7, "face depth noise {worst}");
+    assert!(worst < 5.0e-8, "face depth noise {worst}");
 }
