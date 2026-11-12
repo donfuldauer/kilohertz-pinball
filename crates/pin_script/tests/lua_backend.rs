@@ -842,3 +842,142 @@ fn expensive_operations_are_charged() {
         assert!(!ok.is_faulted(), "{body}: {:?}", ok.last_error());
     }
 }
+
+/// Runs `setup` (spread over ticks, each under the engine budget) and then a
+/// bounded `attack` that is cheap in VM instructions; returns the fault, if
+/// any, of the attack tick. Used for the round-3 charging tests.
+fn engine_attack(setup: &str, setup_ticks: usize, attack: &str) -> Option<ScriptError> {
+    let src = format!(
+        "phase = 0 ticks = 0 \
+         function on_tick() if phase == 0 then {setup} ticks = ticks + 1 \
+           if ticks >= {setup_ticks} then phase = 1 end \
+         else {attack} end end"
+    );
+    let mut b = LuaScriptBackend::new(src.as_bytes(), &names(), LuaConfig::engine()).unwrap();
+    let mut h = Host::new(0);
+    for _ in 0..setup_ticks {
+        h.tick(&mut b);
+        assert!(!b.is_faulted(), "set-up faulted: {:?}", b.last_error());
+    }
+    h.tick(&mut b);
+    b.last_error().cloned()
+}
+
+#[test]
+fn engine_config_values() {
+    let c = LuaConfig::engine();
+    assert_eq!(c.instruction_budget, 100_000);
+    assert_eq!(c.memory_limit_bytes, 2 << 20);
+    assert_ne!(c, LuaConfig::default());
+}
+
+// Review B10: `next` over an emptied array part charges the slots it skips.
+#[test]
+fn next_charges_skipped_slots() {
+    let setup = "t = t or {} n = n or 0 m = m or 0 \
+                 if n < 40000 then for i = 1, 8000 do n = n + 1 t[n] = true end \
+                 else for i = 1, 8000 do m = m + 1 t[m] = nil end end";
+    let attack = "local nx = next for i = 1, 40 do nx(t) end";
+    assert_eq!(
+        engine_attack(setup, 10, attack),
+        Some(ScriptError::BudgetExceeded)
+    );
+    assert_eq!(engine_attack(setup, 10, "local nx = next nx(t)"), None);
+}
+
+// Review B11: emergency full collections near the memory cap are charged.
+#[test]
+fn emergency_gc_is_charged() {
+    let setup = "keep = keep or {} for i = 1, 3000 do keep[#keep + 1] = {i} end";
+    // Live data near the 2 MiB cap; each 60 KB string then forces collections.
+    let mut b = LuaScriptBackend::new(
+        format!(
+            "phase = 0 function on_tick() if phase == 0 then {setup} \
+             if collectgarbage('count') > 1700 then phase = 1 end \
+             else for i = 1, 30 do local s = string.rep('x', 60000) end end end"
+        )
+        .as_bytes(),
+        &names(),
+        LuaConfig::engine(),
+    )
+    .unwrap();
+    let mut h = Host::new(0);
+    for _ in 0..200 {
+        h.tick(&mut b);
+        if b.is_faulted() {
+            break;
+        }
+    }
+    assert_eq!(b.last_error(), Some(&ScriptError::BudgetExceeded));
+}
+
+// Review B12: `string.rep` is charged for the bytes it copies.
+#[test]
+fn string_rep_is_charged_by_size() {
+    let mut b = small(
+        "function on_tick() for i = 1, 6 do local s = string.rep('x', 65000) end end",
+        10_000,
+        4 << 20,
+    );
+    Host::new(0).tick(&mut b);
+    assert_eq!(b.last_error(), Some(&ScriptError::BudgetExceeded));
+    // The doubling copy is exact, with and without separators.
+    let mut b = new("function on_tick() \
+           assert(string.rep('ab', 5, ',') == 'ab,ab,ab,ab,ab') \
+           assert(string.rep('abc', 7) == 'abcabcabcabcabcabcabc') \
+           assert(string.rep('x', 1) == 'x' and string.rep('', 3, '-') == '--') \
+           assert(#string.rep('xyz', 21845) == 65535) \
+           assert(string.rep('a', 3, '') == 'aaa') \
+           pinball.set_score(1, 1) end");
+    assert_eq!(
+        Host::new(0).tick(&mut b).scores.len(),
+        1,
+        "{:?}",
+        b.last_error()
+    );
+}
+
+// Review B13: buffers cannot grow past the string cap.
+#[test]
+fn buffers_stop_at_the_string_cap() {
+    let mut b = new(
+        "local s = string.rep('x', 1000) local t = {} for i = 1, 80 do t[i] = s end \
+         function on_tick() \
+           local ok, e = pcall(table.concat, t) assert(not ok and e:find('64 KiB'), e) \
+           ok, e = pcall(string.gsub, string.rep('a', 80), 'a', s) assert(not ok and e:find('64 KiB'), e) \
+           ok, e = pcall(string.gsub, string.rep('a', 80), 'a', {a = s}) assert(not ok and e:find('64 KiB'), e) \
+           ok, e = pcall(string.format, string.rep('%s', 80), table.unpack(t)) assert(not ok and e:find('64 KiB'), e) \
+           assert(#table.concat(t, '', 1, 65) == 65000) \
+           pinball.set_score(1, 1) end",
+    );
+    assert_eq!(
+        Host::new(0).tick(&mut b).scores.len(),
+        1,
+        "{:?}",
+        b.last_error()
+    );
+}
+
+// Review B14: table resizes are charged by size. A hash part of exactly
+// 32 768 keys is built under a 4 000-instruction budget; one more key then
+// rehashes everything, costing (32 768 + 65 536) / 16 = 6 144 > 4 000.
+#[test]
+fn table_resize_is_charged() {
+    let run = |attack: &str| {
+        let src = format!(
+            "t = {{}} n = 0 function on_tick() \
+             if n < 32768 then for i = 1, 64 do n = n + 1 t[-n] = true end \
+             else {attack} end end"
+        );
+        let mut b = small(&src, 4_000, 16 << 20);
+        let mut h = Host::new(0);
+        for _ in 0..512 {
+            h.tick(&mut b);
+            assert!(!b.is_faulted(), "set-up: {:?}", b.last_error());
+        }
+        h.tick(&mut b);
+        b.last_error().cloned()
+    };
+    assert_eq!(run("t[0.5] = true"), Some(ScriptError::BudgetExceeded));
+    assert_eq!(run("t[-1] = false"), None);
+}

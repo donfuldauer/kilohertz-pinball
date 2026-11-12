@@ -295,3 +295,179 @@ Implements "Orchestrator — 4.2 re-review round 2". Patch list (now 17 entries)
 - **Stall target, binding for 4.2:** under the engine config, in a release build, **every** attack script (faulting or not) keeps every tick at or under 8 ms. Measure with multi-tick set-ups sized to the engine budget (the reviewer's `r_*` scripts), not the 1M-budget set-ups.
 - **Charging belongs in central places:** buffer growth in `lauxlib`, which raises the string-cap error as soon as a buffer passes 64 KiB and charges by size; table traversal and resize in `ltable`; emergency full GC in `lgc`; and the `string.rep` loop. That way one fix covers every library function that uses them.
 - **Failure policy reminder (D29):** this is the Implementer's third and last fix attempt. If it fails, the other model gets one attempt from a fresh brief, then 4.2 is marked blocked.
+
+## 4.2 — fix round 3 (review B10–B14, N9, N10)
+
+Implements "Orchestrator — 4.2 re-review round 3". All charging is central (KHZ_PATCHES.md rows 17–21):
+- **B10** `luaH_next` charges the slots it skips (/8). **B14** `luaH_resize` charges (old + new sizes)/16. **B11** every full GC (also emergency GCs inside allocations) charges heap bytes/64. These three cannot raise where they run (allocation retries, `lua_next` from the host), so they use a *deferred* charge: the budget is debited and, if it went negative, the count hook is armed to abort at the next instruction.
+- **B13** `luaL_Buffer` growth stops at the string cap (+1 KiB slack for one formatted item) with "string length exceeds the 64 KiB limit", raised as soon as a buffer would pass it, and charges new size/64 — one place for `table.concat`, `gsub`, `format`, `rep`, `string.char`, `utf8.char`.
+- **B12** `string.rep` copies by doubling and charges length/64 + 1 (no per-repetition loop left).
+- **Engine config**: `LuaConfig::engine()` = 100 000 instructions, 2 MiB — the one source of truth for Subphase 2.5. `LuaConfig::default()` stays 1 M / 16 MiB.
+- **N10** regression tests (tests/lua_backend.rs): `next_charges_skipped_slots`, `emergency_gc_is_charged`, `string_rep_is_charged_by_size` (also checks the doubling copy's output), `buffers_stop_at_the_string_cap`, `table_resize_is_charged`, `engine_config_values`.
+- **N9 — measurement.** Release build, `LuaConfig::engine()`, Reviewer's harness (on_tick + one switch edge per tick), 300 ticks per script. Every script in `atk/lua` (round 1, `m_*`, `n_*`, `r_*`) as given; scripts whose set-up only fits the old 1 M budget were also re-run with set-ups split into ≤ 8 000-iteration ticks sized to fit 2 MiB, following the `r_*` pattern (rows marked "split set-up"; e.g. `s_sortcmp`, `s_tostr`, `s_sortbig`, `s_lenscan`, the round-1 string rows). The 800 k / 400 k-entry set-ups of `n_nextscan*`/`sortbig` cannot exist under 2 MiB and end in `MemoryLimit` during set-up; `r_nextscan`/`r_pairsscan` cover the attack at sizes that fit. "fault" = the script faulted (any cause) at some tick; "runs" = never faulted. **Worst tick of all 163 rows: 4.68 ms (`m_errdeep`); none above 8 ms.**
+
+| Script | Worst tick (ms) | Outcome |
+|---|---|---|
+| `ccost` | 0.268 | new() fails: Load (64 KiB cap) |
+| `ccost2` | 0.274 | new() fails: Load (64 KiB cap) |
+| `close` | 0.210 | new() fails: Load (no <close>) |
+| `close2` | 0.434 | new() fails: Load (no <close>) |
+| `close3` | 0.199 | new() fails: Load (no <close>) |
+| `close4` | 0.251 | new() fails: Load (no <close>) |
+| `close5` | 0.222 | new() fails: Load (no <close>) |
+| `close6` | 0.201 | new() fails: Load (no <close>) |
+| `concatop` | 0.299 | new() fails: Load (64 KiB cap) |
+| `coro` | 0.029 | runs |
+| `deepconcat` | 0.124 | fault |
+| `deepgsub` | 0.358 | fault |
+| `deepmeta` | 0.117 | fault |
+| `deeppcall` | 0.159 | runs |
+| `deeprec` | 2.804 | fault |
+| `det` | 0.044 | runs |
+| `eph` | 0.264 | new() fails: Load (__mode) |
+| `eqop` | 0.258 | new() fails: Load (64 KiB cap) |
+| `errobj` | 0.311 | fault |
+| `fmt` | 0.050 | fault |
+| `fmtp` | 0.021 | fault |
+| `gc1` | 0.164 | runs |
+| `gc2` | 0.028 | fault |
+| `lo` | 0.024 | runs |
+| `m_api` | 0.085 | fault |
+| `m_apierr` | 0.750 | fault |
+| `m_arith` | 0.116 | fault |
+| `m_base` | 0.270 | fault |
+| `m_bigtab` | 0.775 | fault |
+| `m_cg` | 0.237 | fault |
+| `m_cgerr` | 0.767 | fault |
+| `m_closure` | 1.975 | fault |
+| `m_err` | 0.044 | fault |
+| `m_errdeep` | 4.684 | fault |
+| `m_fmodop` | 0.341 | fault |
+| `m_fmta` | 0.061 | fault |
+| `m_fmtf` | 2.367 | fault |
+| `m_fmtf2` | 0.597 | fault |
+| `m_fmtg` | 0.477 | fault |
+| `m_fmtlit` | 0.335 | fault |
+| `m_fmtlit2` | 0.224 | new() fails: Load (64 KiB cap) |
+| `m_fmtq` | 0.048 | fault |
+| `m_gsubf` | 0.581 | fault |
+| `m_gsubn` | 0.254 | fault |
+| `m_mathf` | 0.337 | fault |
+| `m_newtab` | 1.170 | fault |
+| `m_packc` | 0.052 | fault |
+| `m_packz` | 0.032 | fault |
+| `m_pow` | 0.818 | fault |
+| `m_rnd` | 0.336 | fault |
+| `m_rnderr` | 0.632 | fault |
+| `m_setlist` | 0.176 | fault |
+| `m_sub` | 0.381 | fault |
+| `m_tonum` | 0.104 | fault |
+| `m_tonum2` | 0.166 | fault |
+| `m_tonum3` | 0.060 | fault |
+| `m_tostrn` | 0.169 | fault |
+| `m_unpk` | 0.048 | fault |
+| `membig` | 0.021 | fault |
+| `mempcall` | 0.066 | fault |
+| `memxp` | 0.312 | fault |
+| `n_after` | 0.287 | fault |
+| `n_byte` | 0.665 | fault |
+| `n_cmp` | 0.139 | fault |
+| `n_concatbuf` | 0.098 | fault |
+| `n_fmtbuf` | 0.090 | fault |
+| `n_gmatch` | 0.200 | fault |
+| `n_gmatch2` | 0.062 | fault |
+| `n_gsubbuf` | 0.194 | fault |
+| `n_gsubbuf2` | 0.147 | fault |
+| `n_holdroll` | 0.029 | fault |
+| `n_lenscan` | 1.014 | fault |
+| `n_lit` | 0.379 | new() fails: Load (64 KiB cap) |
+| `n_litcat` | 0.581 | new() fails: Load (64 KiB cap) |
+| `n_nextscan` | 1.984 | fault |
+| `n_nextscan2` | 0.642 | fault |
+| `n_pack` | 0.057 | fault |
+| `n_pack2` | 0.030 | fault |
+| `n_sortcmp` | 1.569 | new() fails: BudgetExceeded |
+| `n_tblkey` | 0.299 | fault |
+| `n_tostr` | 1.149 | new() fails: BudgetExceeded |
+| `n_utf8char` | 1.556 | fault |
+| `next2` | 0.163 | runs |
+| `ok` | 0.010 | runs |
+| `pairsleak` | 0.024 | fault |
+| `pattern` | 0.235 | fault |
+| `r_bigctor` | 1.305 | fault |
+| `r_closure` | 2.888 | fault |
+| `r_concat80` | 0.115 | fault |
+| `r_errmsg` | 0.030 | fault |
+| `r_errmsg2` | 0.766 | fault |
+| `r_forvars` | 0.490 | fault |
+| `r_gcfull` | 1.004 | fault |
+| `r_gcfull2` | 1.054 | fault |
+| `r_gcfull2b` | 0.971 | fault |
+| `r_gcfull3` | 0.975 | fault |
+| `r_gcfull4` | 1.091 | fault |
+| `r_gcfull4b` | 1.015 | fault |
+| `r_gcfull5` | 1.012 | fault |
+| `r_gcfull6` | 0.915 | fault |
+| `r_gcsmall` | 0.301 | fault |
+| `r_gcsmall2` | 0.304 | fault |
+| `r_gcsmallb` | 0.395 | fault |
+| `r_grow` | 1.075 | fault |
+| `r_growarr` | 1.076 | fault |
+| `r_gsub80` | 0.260 | fault |
+| `r_gsub80t` | 0.120 | fault |
+| `r_holdfull` | 0.031 | fault |
+| `r_holdvar` | 0.030 | fault |
+| `r_len` | 1.366 | fault |
+| `r_ltmeta` | 0.208 | fault |
+| `r_nextscan` | 0.464 | fault |
+| `r_pairsscan` | 0.479 | fault |
+| `r_rehash` | 1.296 | fault |
+| `r_rehash2` | 1.709 | fault |
+| `r_rehash3` | 1.267 | fault |
+| `r_rep1` | 0.350 | fault |
+| `r_rep1b` | 0.287 | fault |
+| `r_rep80` | 0.037 | fault |
+| `r_schar` | 1.113 | fault |
+| `r_selneg` | 0.373 | fault |
+| `r_selunpack` | 0.123 | fault |
+| `r_stackgrow` | 0.393 | fault |
+| `r_strkey` | 1.347 | fault |
+| `r_tailargs` | 0.424 | fault |
+| `r_tostr_tab` | 3.515 | fault |
+| `r_utf8` | 1.084 | fault |
+| `rep_empty` | 0.018 | fault |
+| `savebomb` | 0.225 | new() fails: Load (64 KiB cap) |
+| `sortbig` | 0.595 | fault |
+| `strmeta` | 0.026 | fault |
+| `tconcat` | 0.022 | fault |
+| `tinsert` | 0.021 | fault |
+| `tmove` | 0.030 | fault |
+| `tremove` | 0.023 | fault |
+| `tunpack` | 0.019 | fault |
+| `s_bitstr` (split set-up) | 0.023 | fault |
+| `s_byte` (split set-up) | 0.475 | fault |
+| `s_cat` (split set-up) | 0.313 | fault |
+| `s_concat` (split set-up) | 0.492 | fault |
+| `s_eq` (split set-up) | 0.249 | fault |
+| `s_err` (split set-up) | 0.031 | fault |
+| `s_findp` (split set-up) | 0.178 | fault |
+| `s_fmt` (split set-up) | 0.193 | fault |
+| `s_fmtlit` (split set-up) | 0.229 | fault |
+| `s_fmtq` (split set-up) | 0.019 | fault |
+| `s_gsub` (split set-up) | 0.317 | fault |
+| `s_gsubbig` (split set-up) | 0.147 | fault |
+| `s_key` (split set-up) | 0.308 | fault |
+| `s_lenscan` (split set-up) | 0.588 | fault |
+| `s_lt` (split set-up) | 0.147 | fault |
+| `s_rehash` (split set-up) | 0.668 | fault |
+| `s_rep` (split set-up) | 0.246 | fault |
+| `s_repsep` (split set-up) | 0.202 | fault |
+| `s_sortbig` (split set-up) | 0.586 | fault |
+| `s_sortcmp` (split set-up) | 0.555 | fault |
+| `s_sortloop` (split set-up) | 0.675 | fault |
+| `s_sub` (split set-up) | 0.274 | fault |
+| `s_tonum2` (split set-up) | 0.013 | fault |
+| `s_tostr` (split set-up) | 0.667 | fault |
+| `s_unpackv` (split set-up) | 0.822 | fault |
+| `s_upper` (split set-up) | 0.201 | fault |
+| `s_utf` (split set-up) | 0.226 | fault |

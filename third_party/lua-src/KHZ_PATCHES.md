@@ -24,7 +24,12 @@ review: patched vendored Lua" and "4.2 — fix round 1".
 | 14 | `ldo.c` | Every C-function call (library or host function) charges 32 (`precallC`). |
 | 15 | `lobject.c` | Number→string conversion charges 256 for floats, 16 for integers (`luaO_tostring`, `%f` in `luaO_pushvfstring`). |
 | 16 | `lmathlib.c` | Float `math.fmod` charges 256. |
-| 17 | `src/lib.rs` | `KHZ_PATCHED_SOURCES` `include_str!`s every patched file so cargo rebuilds Lua when they change (cargo tracks a path dependency through rustc's dep-info only). |
+| 17 | `lstate.c`, `lstate.h` | `luaE_khzdefer`: charge without raising (arms the count hook if the budget went negative), for code that must not throw anything but memory errors. |
+| 18 | `ltable.c` | `luaH_next` charges skipped slots / 8; `luaH_resize` charges (old + new array and hash sizes) / 16 — both deferred. |
+| 19 | `lgc.c` | A full collection (`luaC_fullgc`, including emergency collections inside an allocation) charges total heap bytes / 64, deferred. |
+| 20 | `lauxlib.c` | A `luaL_Buffer` may not grow past 64 KiB + 1 KiB slack ("string length exceeds the 64 KiB limit", raised as soon as it would) and each growth charges new size / 64 — covers `table.concat`, `gsub`, `format`, `rep`, `string.char`, `utf8.char` and every other buffer user. |
+| 21 | `lstrlib.c` | `string.rep` builds its result by doubling `memcpy` (O(log n) calls) and charges total length / 64 + 1. |
+| 22 | `src/lib.rs` | `KHZ_PATCHED_SOURCES` `include_str!`s every patched file so cargo rebuilds Lua when they change (cargo tracks a path dependency through rustc's dep-info only). |
 | — | `Cargo.toml` | Test target and dev-dependencies removed; only `lua-5.4.9/` kept. |
 
 Budget units are roughly "one VM instruction" (a few ns). All edits compile warning-free with `gcc -std=gnu99 -Wall -Wextra`.
