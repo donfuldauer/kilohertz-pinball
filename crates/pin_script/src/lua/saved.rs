@@ -28,11 +28,7 @@ pub(crate) fn save(v: &Value) -> mlua::Result<Option<Saved>> {
     save_inner(v, 0, &mut seen)
 }
 
-fn save_inner(
-    v: &Value,
-    depth: usize,
-    seen: &mut HashSet<usize>,
-) -> mlua::Result<Option<Saved>> {
+fn save_inner(v: &Value, depth: usize, seen: &mut HashSet<usize>) -> mlua::Result<Option<Saved>> {
     Ok(Some(match v {
         Value::Nil => Saved::Nil,
         Value::Boolean(b) => Saved::Bool(*b),
@@ -93,8 +89,10 @@ mod tests {
     fn round_trip_between_states() {
         let a = Lua::new();
         let v: Value = a
-            .load(r#"return { n = 3, f = 1.5, s = "hi", b = true, list = {1, 2, {x = 7}},
-                      skip = print, [print] = 1 }"#)
+            .load(
+                r#"return { n = 3, f = 1.5, s = "hi", b = true, list = {1, 2, {x = 7}},
+                      skip = print, [print] = 1 }"#,
+            )
             .eval()
             .unwrap();
         let saved = save(&v).unwrap().unwrap();

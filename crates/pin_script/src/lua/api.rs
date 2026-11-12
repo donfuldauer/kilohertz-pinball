@@ -65,7 +65,10 @@ fn persist_key(v: &Value, f: &str) -> mlua::Result<PersistKey> {
     if usize::from(k) < MAX_PERSIST {
         Ok(PersistKey(k))
     } else {
-        Err(arg_err(f, &format!("persist key {k} out of range 0..{MAX_PERSIST}")))
+        Err(arg_err(
+            f,
+            &format!("persist key {k} out of range 0..{MAX_PERSIST}"),
+        ))
     }
 }
 
@@ -133,7 +136,11 @@ fn math_random(
             (1, m)
         }
         2 => (int(&m, f, "lower bound")?, int(&n, f, "upper bound")?),
-        _ => return Err(arg_err(f, "wrong number of arguments")),
+        _ => {
+            return Err(mlua::Error::runtime(format!(
+                "bad argument to '{f}' (wrong number of arguments)"
+            )));
+        }
     };
     if lo > hi {
         return Err(arg_err(f, &format!("interval is empty ([{lo}, {hi}])")));
@@ -154,8 +161,12 @@ pub(crate) fn build(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Table> {
     reg!("pulse_coil", |b, (c, ms): (Value, Value)| {
         let c = CoilId(id(&c, "pulse_coil", "coil")?);
         let ms = int(&ms, "pulse_coil", "duration")?;
-        let ms = u16::try_from(ms)
-            .map_err(|_| arg_err("pulse_coil", &format!("duration {ms} out of range 0..=65535")))?;
+        let ms = u16::try_from(ms).map_err(|_| {
+            arg_err(
+                "pulse_coil",
+                &format!("duration {ms} out of range 0..=65535"),
+            )
+        })?;
         b.with_ctx(|_, _, q| b.note(q.pulse_coil(c, ms))).map(drop)
     });
     reg!("hold_coil", |b, (c, on): (Value, Value)| {
@@ -175,12 +186,14 @@ pub(crate) fn build(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Table> {
     reg!("set_zipper", |b, (fl, closed): (Value, Value)| {
         let fl = FlipperId(id(&fl, "set_zipper", "flipper")?);
         let closed = boolean(&closed, "set_zipper", "closed")?;
-        b.with_ctx(|_, _, q| b.note(q.set_zipper(fl, closed))).map(drop)
+        b.with_ctx(|_, _, q| b.note(q.set_zipper(fl, closed)))
+            .map(drop)
     });
     reg!("set_diverter", |b, (d, on): (Value, Value)| {
         let d = DiverterId(id(&d, "set_diverter", "diverter")?);
         let on = boolean(&on, "set_diverter", "on")?;
-        b.with_ctx(|_, _, q| b.note(q.set_diverter(d, on))).map(drop)
+        b.with_ctx(|_, _, q| b.note(q.set_diverter(d, on)))
+            .map(drop)
     });
     reg!("spawn_ball", |b, (d, p): (Value, Value)| {
         let d = DispenserId(id(&d, "spawn_ball", "dispenser")?);
@@ -192,7 +205,13 @@ pub(crate) fn build(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Table> {
         let i = unit(&i, "set_lamp", "intensity")?;
         b.with_ctx(|_, _, q| b.note(q.set_lamp(l, i))).map(drop)
     });
-    reg!("set_gi_tint", |b, (r, g, bl, a): (Value, Value, Value, Value)| {
+    reg!("set_gi_tint", |b,
+                         (r, g, bl, a): (
+        Value,
+        Value,
+        Value,
+        Value
+    )| {
         let tint = [
             unit(&r, "set_gi_tint", "r")?,
             unit(&g, "set_gi_tint", "g")?,
@@ -204,11 +223,15 @@ pub(crate) fn build(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Table> {
     reg!("set_score", |b, (p, s): (Value, Value)| {
         let p = int(&p, "set_score", "player")?;
         if !(1..=4).contains(&p) {
-            return Err(arg_err("set_score", &format!("player {p} out of range 1..=4")));
+            return Err(arg_err(
+                "set_score",
+                &format!("player {p} out of range 1..=4"),
+            ));
         }
         let s = int(&s, "set_score", "score")?;
         // `p` is 1..=4, so `p - 1` fits a u8.
-        b.with_ctx(|_, _, q| b.note(q.set_score((p - 1) as u8, s))).map(drop)
+        b.with_ctx(|_, _, q| b.note(q.set_score((p - 1) as u8, s)))
+            .map(drop)
     });
     reg!("show_scene", |b, s: Value| {
         let s = SceneId(id(&s, "show_scene", "scene")?);
@@ -220,12 +243,14 @@ pub(crate) fn build(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Table> {
         if g < 0.0 {
             return Err(arg_err("play_sound", &format!("gain {g} is negative")));
         }
-        b.with_ctx(|_, _, q| b.note(q.play_sound(s, g as f32))).map(drop)
+        b.with_ctx(|_, _, q| b.note(q.play_sound(s, g as f32)))
+            .map(drop)
     });
     reg!("persist_set", |b, (k, v): (Value, Value)| {
         let k = persist_key(&k, "persist_set")?;
         let v = int(&v, "persist_set", "value")?;
-        b.with_ctx(|_, _, q| b.note(q.write_persist(k, v))).map(drop)
+        b.with_ctx(|_, _, q| b.note(q.write_persist(k, v)))
+            .map(drop)
     });
     reg!("persist_get", |b, k: Value| {
         let k = persist_key(&k, "persist_get")?;
@@ -250,15 +275,22 @@ pub(crate) fn build(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Table> {
     Ok(api)
 }
 
-/// The host side of `math.random`, called by the prelude's wrapper as
-/// `hostrandom(nargs, m, n)` after it rejected more than two arguments.
+/// `math.random`, routed to the host PCG. Arity follows Lua 5.4 except that a
+/// trailing explicit `nil` counts as absent (a Rust function cannot see the
+/// difference without allocating): `math.random(1, 2, 3)` raises "wrong
+/// number of arguments", `math.random(1, 2, nil)` is `math.random(1, 2)`.
 pub(crate) fn math_random_fn(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Function> {
     let b = Rc::clone(bridge);
-    lua.create_function(
-        move |_, (count, m, n): (usize, Option<Value>, Option<Value>)| {
-            math_random(&b, count, m, n, "math.random", true)
-        },
-    )
+    lua.create_function(move |_, (m, n, extra): (Value, Value, Value)| {
+        let count = if !extra.is_nil() {
+            3
+        } else if !n.is_nil() {
+            2
+        } else {
+            usize::from(!m.is_nil())
+        };
+        math_random(&b, count, Some(m), Some(n), "math.random", true)
+    })
 }
 
 #[cfg(test)]
@@ -334,6 +366,9 @@ mod tests {
         assert_eq!(unit(&Value::Integer(1), "t", "x").unwrap(), 1.0);
         assert!(boolean(&Value::Integer(1), "t", "x").is_err());
         assert!(persist_key(&Value::Integer(64), "t").is_err());
-        assert_eq!(persist_key(&Value::Integer(63), "t").unwrap(), PersistKey(63));
+        assert_eq!(
+            persist_key(&Value::Integer(63), "t").unwrap(),
+            PersistKey(63)
+        );
     }
 }

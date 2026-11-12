@@ -85,11 +85,7 @@ G.xpcall = function(f, h, ...)
   if type(h) ~= "function" then error("bad argument #2 to 'xpcall' (function expected)", 2) end
   return xret(h, _pcall(f, ...))
 end
-G.math.random = function(...)
-  local n = select("#", ...)
-  if n > 2 then error("wrong number of arguments", 2) end
-  return hostrandom(n, ...)
-end
+G.math.random = hostrandom
 getmetatable("").__metatable = "locked"
 "##;
 
@@ -221,37 +217,53 @@ impl Vm {
             .map_err(|e| load_err(&e))?;
 
         bridge.reset_budget(cfg.instruction_budget);
-        chunk.call::<()>(()).map_err(|e| match classify(bridge, &e) {
-            ScriptError::Runtime(m) => ScriptError::Load(m),
-            other => other,
-        })?;
+        chunk
+            .call::<()>(())
+            .map_err(|e| match classify(bridge, &e) {
+                ScriptError::Runtime(m) => ScriptError::Load(m),
+                other => other,
+            })?;
         Ok(vm)
     }
 
     fn install(lua: Lua, names: &NameTables, bridge: &Rc<Bridge>) -> mlua::Result<Vm> {
         let g = lua.globals();
-        for k in ["dofile", "loadfile", "load", "loadstring", "require", "warn", "module"] {
+        for k in [
+            "dofile",
+            "loadfile",
+            "load",
+            "loadstring",
+            "require",
+            "warn",
+            "module",
+        ] {
             g.raw_set(k, Value::Nil)?;
         }
         for k in ["io", "os", "debug", "package", "coroutine", "jit", "ffi"] {
             g.raw_set(k, Value::Nil)?;
         }
-        g.raw_set("print", lua.create_function(|_, _: mlua::MultiValue| Ok(()))?)?;
+        g.raw_set(
+            "print",
+            lua.create_function(|_, _: mlua::MultiValue| Ok(()))?,
+        )?;
         g.raw_set(
             "collectgarbage",
-            lua.create_function(|lua, (opt, _): (Option<String>, Value)| {
-                match opt.as_deref() {
+            lua.create_function(
+                |lua, (opt, _): (Option<String>, Value)| match opt.as_deref() {
                     Some("count") => Ok(lua.used_memory() as f64 / 1024.0),
                     _ => Err(mlua::Error::runtime(
                         "collectgarbage: only collectgarbage(\"count\") is available",
                     )),
-                }
-            })?,
+                },
+            )?,
         )?;
         let string: Table = g.raw_get("string")?;
         string.raw_set("dump", Value::Nil)?;
         let math: Table = g.raw_get("math")?;
-        math.raw_set("randomseed", lua.create_function(|_, _: mlua::MultiValue| Ok(()))?)?;
+        math.raw_set(
+            "randomseed",
+            lua.create_function(|_, _: mlua::MultiValue| Ok(()))?,
+        )?;
 
         let api_table = api::build(&lua, bridge)?;
         let name_tables = lua.create_table()?;

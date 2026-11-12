@@ -234,9 +234,7 @@ impl LuaScriptBackend {
                     (i64::from(switch.0), closed),
                     ctx,
                 ),
-                Entry::Init | Entry::Tick => {
-                    Self::call_with_ctx(&self.bridge, budget, &f, (), ctx)
-                }
+                Entry::Init | Entry::Tick => Self::call_with_ctx(&self.bridge, budget, &f, (), ctx),
             },
         };
         if let Err(e) = result {
@@ -290,9 +288,7 @@ impl TableScriptBackend for LuaScriptBackend {
     fn apply_reload(&mut self, source: &[u8]) -> Result<(), ScriptError> {
         let new_vm = Vm::build(source, &self.names, &self.cfg, &self.bridge)?;
         let state = self.save_state();
-        if let (Some(state), Some(restore)) =
-            (state, new_vm.entry(&new_vm.keys.on_restore_state))
-        {
+        if let (Some(state), Some(restore)) = (state, new_vm.entry(&new_vm.keys.on_restore_state)) {
             self.bridge.reset_budget(self.cfg.instruction_budget);
             let arg = saved::restore(&new_vm.lua, &state)
                 .map_err(|e| sandbox::classify(&self.bridge, &e))?;
@@ -315,8 +311,7 @@ mod tests {
     use pin_core::{HostCommandQueue, HostView, Pcg32, SeedableRng};
 
     fn backend(src: &str) -> LuaScriptBackend {
-        LuaScriptBackend::new(src.as_bytes(), &NameTables::default(), LuaConfig::default())
-            .unwrap()
+        LuaScriptBackend::new(src.as_bytes(), &NameTables::default(), LuaConfig::default()).unwrap()
     }
 
     fn tick(b: &mut LuaScriptBackend) -> HostCommandQueue {
@@ -351,11 +346,15 @@ mod tests {
         assert_eq!(tick(&mut b).coil_holds.as_slice(), &[(CoilId(3), true)]);
         let q = tick(&mut b);
         assert!(b.is_faulted());
-        assert_eq!(q.coil_holds.as_slice(), &[(CoilId(3), true), (CoilId(3), false)]);
+        assert_eq!(
+            q.coil_holds.as_slice(),
+            &[(CoilId(3), true), (CoilId(3), false)]
+        );
         assert!(matches!(b.last_error(), Some(ScriptError::Runtime(m)) if m.contains("boom")));
         assert!(tick(&mut b).is_empty());
         assert_eq!(b.fault_count(), 1);
-        b.apply_reload(b"function on_tick() pinball.pulse_coil(1, 2) end").unwrap();
+        b.apply_reload(b"function on_tick() pinball.pulse_coil(1, 2) end")
+            .unwrap();
         assert!(!b.is_faulted());
         assert_eq!(tick(&mut b).coil_pulses.len(), 1);
     }
