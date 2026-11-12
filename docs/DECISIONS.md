@@ -651,3 +651,7 @@ Verification criterion 3 ("one release within 5 % of the true peak") is binding 
 ## Orchestrator — 3.2 "true peak" for release speed
 
 The fixed API reports a release on the tick the plunger re-enters the deadzone, so motion inside the deadzone after that tick is unobservable. For criterion 3 and the noise ruling above, "true peak" is the largest 1 ms position difference **up to and including the release tick**. Against the whole stroke, shallow accelerating strokes read low (constant acceleration −10.8 % at depth 0.1, −5.2 % at 0.2); that is an accepted, documented bound. With heavy noise on curved strokes (±depth/400 and coarser), the noise rule's max(5 %, 12 × amplitude / depth) applies.
+
+## Orchestrator — 2.2 review round 3: guides with self-overlapping plan views
+
+Guides whose plan view overlaps itself (helices, loops of more than one turn in plan), and any sloped guide for which no positive reach can be given, are rejected by `GuideCurve::new`; helical ramps are modelled as wireforms. Accepted sloped guides must stay exact and fast (targets in the fix-3 brief: ≤ 3 µs per query on 60 segments, ≥ 95 % of v·dt on ≥ 99 % of ticks).

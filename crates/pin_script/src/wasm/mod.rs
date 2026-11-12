@@ -137,7 +137,9 @@ use pin_core::{HostCommandQueue, HostCtx, ScriptError, SwitchEdge, TableScriptBa
 use std::borrow::Cow;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
-use wasmtime::wasmparser::{ExternalKind, Parser, Payload, TypeRef};
+use wasmtime::wasmparser::{
+    ElementItems, ExternalKind, FunctionBody, Operator, OperatorsReader, Parser, Payload, TypeRef,
+};
 use wasmtime::{
     Config, Engine, ExternType, Linker, Memory, Module, Store, StoreLimitsBuilder, Trap, TypedFunc,
     ValType,
@@ -175,6 +177,45 @@ pub const MAX_TOTAL_TABLE_ELEMENTS: u64 = 100_000;
 
 /// Most data segments, and separately most element segments, of a module.
 pub const MAX_SEGMENTS: u32 = 1_000;
+
+/// Most declared locals of one function (parameters not counted).
+pub const MAX_LOCALS_PER_FUNCTION: u64 = 1_024;
+
+/// Most declared locals of all functions together.
+pub const MAX_TOTAL_LOCALS: u64 = 65_536;
+
+/// Deepest nesting of `block` / `loop` / `if` in a function.
+pub const MAX_NESTING: u64 = 128;
+
+/// Most targets (default included) of one `br_table`.
+pub const MAX_BR_TABLE_TARGETS: u64 = 1_024;
+
+/// Most `br_table` targets (defaults included) in one function.
+pub const MAX_BR_TABLE_TARGETS_PER_FUNCTION: u64 = 16_384;
+
+/// Most operators (instructions, `end` included) in one function body.
+pub const MAX_OPERATORS_PER_FUNCTION: u64 = 65_536;
+
+/// Most operators in all function bodies together.
+pub const MAX_OPERATORS: u64 = 1_048_576;
+
+/// Most entries of the type section.
+pub const MAX_TYPES: u32 = 1_024;
+
+/// Most parameters of one function type.
+pub const MAX_PARAMS: u32 = 32;
+
+/// Most results of one function type.
+pub const MAX_RESULTS: u32 = 8;
+
+/// Most items (function indices or expressions) of all element segments.
+pub const MAX_ELEMENT_ITEMS: u64 = 65_536;
+
+/// Most exports.
+pub const MAX_EXPORTS: u32 = 1_024;
+
+/// Most imports (the ABI has 18 functions).
+pub const MAX_IMPORTS: u32 = 64;
 
 /// Stack Wasm code may use before it traps, bytes.
 pub const MAX_WASM_STACK_BYTES: usize = 256 * 1024;
@@ -322,6 +363,23 @@ fn check_resources(module: &Module, cfg: &WasmConfig) -> Result<(), ScriptError>
     Ok(())
 }
 
+/// Longest WAT parse error kept in a [`ScriptError::Load`] message, bytes
+/// (the parser quotes the offending line, which may be megabytes long).
+pub const MAX_ERROR_BYTES: usize = 256;
+
+/// `s` cut to at most `max` bytes on a character boundary, with `…` (3
+/// bytes, counted) marking a cut.
+fn truncated(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    let mut end = max - '…'.len_utf8();
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
 /// Converts WAT text to binary and checks the size limits (see the module
 /// docs) without compiling anything. Returns the binary.
 fn precheck(bytes: &[u8]) -> Result<Cow<'_, [u8]>, ScriptError> {
@@ -343,7 +401,7 @@ fn precheck(bytes: &[u8]) -> Result<Cow<'_, [u8]>, ScriptError> {
     } else {
         Cow::Owned(
             wat::parse_bytes(bytes)
-                .map_err(|e| load(format_args!("{e}")))?
+                .map_err(|e| load(truncated(&e.to_string(), MAX_ERROR_BYTES)))?
                 .into_owned(),
         )
     };
@@ -360,61 +418,128 @@ fn precheck(bytes: &[u8]) -> Result<Cow<'_, [u8]>, ScriptError> {
 /// Counts what compiling `bin` would cost and rejects modules above the
 /// limits, and modules exporting an imported function as an entry point.
 fn scan(bin: &[u8]) -> Result<(), ScriptError> {
-    let parse = |e: wasmtime::wasmparser::BinaryReaderError| load(format_args!("{e}"));
-    let over = |what: &str, n: u64, max: u64| {
-        Err(load(format_args!("module has {n} {what} (at most {max})")))
-    };
-    let mut imported_funcs = 0u32;
+    let mut sc = Scan::default();
     for payload in Parser::new(0).parse_all(bin) {
-        match payload.map_err(parse)? {
+        sc.payload(payload.map_err(parse_err)?)?;
+    }
+    Ok(())
+}
+
+fn parse_err(e: wasmtime::wasmparser::BinaryReaderError) -> ScriptError {
+    load(format_args!("{e}"))
+}
+
+/// `Err(Load("<who> has <n> <what> (at most <max>)"))` when `n > max`.
+fn cap(who: fmt::Arguments<'_>, what: &str, n: u64, max: u64) -> Result<(), ScriptError> {
+    if n > max {
+        return Err(load(format_args!("{who} has {n} {what} (at most {max})")));
+    }
+    Ok(())
+}
+
+/// Running totals of [`scan`].
+#[derive(Default)]
+struct Scan {
+    imported_funcs: u32,
+    /// Index (among defined functions) of the next code section entry.
+    func: u32,
+    locals: u64,
+    operators: u64,
+    element_items: u64,
+    /// Reused frame stack of the operator reader.
+    allocs: wasmtime::wasmparser::OperatorsReaderAllocations,
+}
+
+impl Scan {
+    fn payload(&mut self, payload: Payload<'_>) -> Result<(), ScriptError> {
+        let module = format_args!("module");
+        match payload {
+            Payload::TypeSection(r) => {
+                cap(module, "types", r.count().into(), MAX_TYPES.into())?;
+                for (i, ty) in r.into_iter_err_on_gc_types().enumerate() {
+                    let ty = ty.map_err(parse_err)?;
+                    let who = format_args!("type {i}");
+                    cap(who, "params", ty.params().len() as u64, MAX_PARAMS.into())?;
+                    let who = format_args!("type {i}");
+                    cap(
+                        who,
+                        "results",
+                        ty.results().len() as u64,
+                        MAX_RESULTS.into(),
+                    )?;
+                }
+            }
             Payload::ImportSection(r) => {
+                let mut n = 0u64;
                 for imp in r.into_imports() {
+                    n += 1;
+                    cap(module, "imports", n, MAX_IMPORTS.into())?;
                     if matches!(
-                        imp.map_err(parse)?.ty,
+                        imp.map_err(parse_err)?.ty,
                         TypeRef::Func(_) | TypeRef::FuncExact(_)
                     ) {
-                        imported_funcs = imported_funcs.saturating_add(1);
+                        self.imported_funcs += 1;
                     }
                 }
             }
-            Payload::FunctionSection(r) if r.count() > MAX_FUNCTIONS => {
-                return over("functions", r.count().into(), MAX_FUNCTIONS.into());
+            Payload::FunctionSection(r) => {
+                cap(module, "functions", r.count().into(), MAX_FUNCTIONS.into())?;
             }
-            Payload::CodeSectionStart { count, .. } if count > MAX_FUNCTIONS => {
-                return over("function bodies", count.into(), MAX_FUNCTIONS.into());
+            Payload::CodeSectionStart { count, .. } => {
+                cap(
+                    module,
+                    "function bodies",
+                    count.into(),
+                    MAX_FUNCTIONS.into(),
+                )?;
             }
-            Payload::CodeSectionEntry(body) => {
-                let r = body.range();
-                let len = r.end - r.start;
-                if len > MAX_FUNCTION_BODY_BYTES {
-                    return Err(load(format_args!(
-                        "a function body is {len} bytes (at most {MAX_FUNCTION_BODY_BYTES})"
-                    )));
-                }
-            }
-            Payload::GlobalSection(r) if r.count() > MAX_GLOBALS => {
-                return over("globals", r.count().into(), MAX_GLOBALS.into());
+            Payload::CodeSectionEntry(body) => self.body(&body)?,
+            Payload::GlobalSection(r) => {
+                cap(module, "globals", r.count().into(), MAX_GLOBALS.into())?;
             }
             Payload::TableSection(r) => {
                 let mut total = 0u64;
                 for t in r {
-                    total = total.saturating_add(t.map_err(parse)?.ty.initial);
+                    total = total.saturating_add(t.map_err(parse_err)?.ty.initial);
                 }
-                if total > MAX_TOTAL_TABLE_ELEMENTS {
-                    return over("initial table elements", total, MAX_TOTAL_TABLE_ELEMENTS);
+                cap(
+                    module,
+                    "initial table elements",
+                    total,
+                    MAX_TOTAL_TABLE_ELEMENTS,
+                )?;
+            }
+            Payload::DataSection(r) => {
+                cap(
+                    module,
+                    "data segments",
+                    r.count().into(),
+                    MAX_SEGMENTS.into(),
+                )?;
+            }
+            Payload::ElementSection(r) => {
+                cap(
+                    module,
+                    "element segments",
+                    r.count().into(),
+                    MAX_SEGMENTS.into(),
+                )?;
+                for e in r {
+                    let n = match e.map_err(parse_err)?.items {
+                        ElementItems::Functions(f) => f.count(),
+                        ElementItems::Expressions(_, x) => x.count(),
+                    };
+                    self.element_items += u64::from(n);
+                    let total = self.element_items;
+                    cap(module, "element segment items", total, MAX_ELEMENT_ITEMS)?;
                 }
-            }
-            Payload::DataSection(r) if r.count() > MAX_SEGMENTS => {
-                return over("data segments", r.count().into(), MAX_SEGMENTS.into());
-            }
-            Payload::ElementSection(r) if r.count() > MAX_SEGMENTS => {
-                return over("element segments", r.count().into(), MAX_SEGMENTS.into());
             }
             Payload::ExportSection(r) => {
+                cap(module, "exports", r.count().into(), MAX_EXPORTS.into())?;
                 for e in r {
-                    let e = e.map_err(parse)?;
+                    let e = e.map_err(parse_err)?;
                     if e.kind == ExternalKind::Func
-                        && e.index < imported_funcs
+                        && e.index < self.imported_funcs
                         && EXPORTS.iter().any(|(n, ..)| *n == e.name)
                     {
                         return Err(load(format_args!(
@@ -426,8 +551,97 @@ fn scan(bin: &[u8]) -> Result<(), ScriptError> {
             }
             _ => {}
         }
+        Ok(())
     }
-    Ok(())
+
+    /// Checks one function body: size, declared locals and its operator
+    /// stream (count, control nesting, `br_table` targets).
+    fn body(&mut self, body: &FunctionBody<'_>) -> Result<(), ScriptError> {
+        let f = self.func;
+        self.func += 1;
+        let r = body.range();
+        let len = r.end - r.start;
+        if len > MAX_FUNCTION_BODY_BYTES {
+            return Err(load(format_args!(
+                "a function body is {len} bytes (at most {MAX_FUNCTION_BODY_BYTES})"
+            )));
+        }
+        let mut locals_reader = body.get_locals_reader().map_err(parse_err)?;
+        let mut locals = 0u64;
+        for _ in 0..locals_reader.get_count() {
+            locals += u64::from(locals_reader.read().map_err(parse_err)?.0);
+            cap(
+                format_args!("function {f}"),
+                "locals",
+                locals,
+                MAX_LOCALS_PER_FUNCTION,
+            )?;
+        }
+        self.locals += locals;
+        cap(
+            format_args!("module"),
+            "locals",
+            self.locals,
+            MAX_TOTAL_LOCALS,
+        )?;
+
+        let reader = body.get_binary_reader_for_operators().map_err(parse_err)?;
+        let mut ops = OperatorsReader::new_with_allocs(reader, std::mem::take(&mut self.allocs));
+        let (mut n, mut depth, mut targets) = (0u64, 0u64, 0u64);
+        while !ops.eof() {
+            let op = ops.read().map_err(parse_err)?;
+            n += 1;
+            match op {
+                Operator::Block { .. }
+                | Operator::Loop { .. }
+                | Operator::If { .. }
+                | Operator::TryTable { .. }
+                | Operator::Try { .. } => {
+                    depth += 1;
+                    cap(
+                        format_args!("function {f}"),
+                        "nested blocks",
+                        depth,
+                        MAX_NESTING,
+                    )?;
+                }
+                Operator::End => depth = depth.saturating_sub(1),
+                Operator::BrTable { targets: t } => {
+                    let k = u64::from(t.len()) + 1;
+                    cap(
+                        format_args!("a br_table in function {f}"),
+                        "targets",
+                        k,
+                        MAX_BR_TABLE_TARGETS,
+                    )?;
+                    targets += k;
+                    cap(
+                        format_args!("function {f}"),
+                        "br_table targets",
+                        targets,
+                        MAX_BR_TABLE_TARGETS_PER_FUNCTION,
+                    )?;
+                }
+                _ => {}
+            }
+            if n > MAX_OPERATORS_PER_FUNCTION {
+                return cap(
+                    format_args!("function {f}"),
+                    "operators",
+                    n,
+                    MAX_OPERATORS_PER_FUNCTION,
+                );
+            }
+        }
+        self.allocs = ops.into_allocations();
+        self.operators += n;
+        cap(
+            format_args!("module"),
+            "operators",
+            self.operators,
+            MAX_OPERATORS,
+        )
+    }
 }
 
 /// A module compiled and validated by [`WasmScriptBackend::prepare`], ready

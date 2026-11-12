@@ -1281,3 +1281,18 @@ fn bulk_op_tick_cost_report() {
         println!("worst faulting bulk tick with WasmConfig::engine(): {worst:?}  {body}");
     }
 }
+
+/// A WAT syntax error on a multi-megabyte line keeps the error short.
+#[test]
+fn wat_parse_errors_are_truncated() {
+    use pin_script::wasm::{MAX_ERROR_BYTES, MAX_WAT_BYTES};
+    let mut text = format!("(module {EXPORTS} (func ").into_bytes();
+    text.resize(MAX_WAT_BYTES - 16, b'x');
+    text.extend_from_slice("é))))".as_bytes());
+    let m = load_msg(&text);
+    assert!(m.len() <= MAX_ERROR_BYTES, "{} bytes", m.len());
+    assert!(m.ends_with('…'), "{m}");
+    // Short errors are kept whole.
+    let m = load_msg(b"(module (func $x))) junk");
+    assert!(m.len() < MAX_ERROR_BYTES && !m.ends_with('…'), "{m}");
+}

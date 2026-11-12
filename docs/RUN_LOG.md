@@ -86,3 +86,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3 | 2.2 | Implementer | Fable 5.2 | fix 2 | done | 251 tests; coverage 97.78 % | global closest point for sloped guides; tunnelling regression tests |
 | 3 | 4.5 | Implementer | Opus 5.5 | fix 1 | done | 436 tests | module size/count pre-scan, max_wasm_stack, N2–N5 |
 | 3 | 4.5 | Reviewer | Fable 5.2 | 2 | **fail** | gates 1–7 pass; faulting tick ≤ 0.62 ms | B1 partly fixed: modules within all caps still compile up to 172 s / 2.4 GB (locals × nesting, br_table, types, element items) → fix 2 with per-construct caps, target < 1 s / 256 MB |
+| 3 | 2.2 | Reviewer | Opus 5.5 | 3 | **fail** | gates 1–7 pass; B4 tunnelling verified fixed (all shapes, 0 penetrations) | B5 sloped-guide cost (4 balls up to 4.3 ms/step) and helix stall (4–9 % of v·dt) → fix 3 (last) |
