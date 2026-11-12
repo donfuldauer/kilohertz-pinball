@@ -77,3 +77,6 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3 | 4.1 | Reviewer | Fable 5.2 | 2 | **pass** | gates 1–8 pass; coverage 96.85 % | B1–B3 verified by probe; N-a Zip64 count pre-check bypass, N-b aggregate ratio under floor, N-c decoder peak, N-d buffer read size → HUMAN_QUEUE |
 | 3 | 1.4 | Implementer | Opus 5.5 | fix 1 | done | pin_render standalone 95.65 % | gpu_window + blit readback; configure race found and fixed (gpu_lock + try_configure); N1–N7 |
 | 3 | 1.4 | Reviewer | Fable 5.2 | 2 | **pass** | gates 1–8 pass; gpu_window 12/12, orchestrator_window 12/12; pin_render 95.50 %, pin_app 92.49 % | N-a silent unconfigurable surface, N-b detached presenter vs window drop, N-c tiny-circle gaps → HUMAN_QUEUE |
+| 3 | 3.2 | Implementer | Opus 5.5 | fix 3 (last) | done | 0 lost / 0 doubled over 28 800 noisy launches | arming persists; noise-aware speed estimator |
+| 3 | 3.2 | Reviewer | Fable 5.2 | 4 | **fail** | gates 1–7 pass; invariant fuzz 0 violations at rest 0 (with/without noise) | B4 estimator biased low on noise-free curved strokes (−6 % to −44 %); N-k, N-l |
+| 3 | 3.2 | Implementer (other model) | Fable 5.2 | 1 | running | — | fresh brief + failure history (PLAN §2.6 step 2); review by Opus |
