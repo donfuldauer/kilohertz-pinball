@@ -75,3 +75,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3 | 4.5 | Reviewer | Fable 5.2 | 1 | **fail** | gates 1–7 pass; release faulting tick 0.40–0.67 ms (limit 8) | B1 no module-size/function-count cap (8 MB → 62 s, 5.7 GB); N1–N5 folded into fix 1 |
 | 3 | 4.1 | Implementer | Opus 5.5 | fix 1 | done | 211 tests; coverage 96.89 % | live-ratio inflate (flate2), data-range checks, GltfLimits budgets, finite checks |
 | 3 | 4.1 | Reviewer | Fable 5.2 | 2 | **pass** | gates 1–8 pass; coverage 96.85 % | B1–B3 verified by probe; N-a Zip64 count pre-check bypass, N-b aggregate ratio under floor, N-c decoder peak, N-d buffer read size → HUMAN_QUEUE |
+| 3 | 1.4 | Implementer | Opus 5.5 | fix 1 | done | pin_render standalone 95.65 % | gpu_window + blit readback; configure race found and fixed (gpu_lock + try_configure); N1–N7 |
+| 3 | 1.4 | Reviewer | Fable 5.2 | 2 | **pass** | gates 1–8 pass; gpu_window 12/12, orchestrator_window 12/12; pin_render 95.50 %, pin_app 92.49 % | N-a silent unconfigurable surface, N-b detached presenter vs window drop, N-c tiny-circle gaps → HUMAN_QUEUE |

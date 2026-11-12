@@ -85,7 +85,7 @@ unchanged):
 
 ### CR-002: `pin_core::sim` — the `SimStep` contract
 - **Requested by:** Subphase 1.4 (Implementer)
-- **Status:** open
+- **Status:** merged (landed in Wave 3 WIP snapshots; approved with Subphase 1.4, see `[sp 1.4]` commit). Could not be a separate pin_core-only commit because the shared-tree WIP snapshots already carried it (as CR-001 in Wave 2).
 - **Kind:** additive
 - **Items:** new file `crates/pin_core/src/sim.rs` (with unit tests); in `crates/pin_core/src/lib.rs` one line `pub mod sim;`, one re-export line `pub use sim::{MAX_CATCH_UP_TICKS, SimStep, TICK_NS};` and one module-list doc line.
 - **Change:** new module, nothing existing changes:
