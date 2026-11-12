@@ -1,0 +1,1 @@
+function on_tick() assert(coroutine == nil, "coroutine present") assert(io == nil and os == nil and debug == nil and package == nil and load == nil and string.dump == nil and require == nil and dofile == nil and loadfile == nil) pinball.pulse_coil(1, 1) end

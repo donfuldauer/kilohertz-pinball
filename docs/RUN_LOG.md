@@ -45,3 +45,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 2 | 4.2 | Reviewer | Fable 5.2 | 3 | **fail** | gates 1–7 pass; CI green; B7–B9 confirmed fixed | B10 next() over emptied array 1 s; B11 GC thrash 30–45 ms/tick, no fault; B12 string.rep loop; B13 buffers under cap 20–40 ms; B14 large rehash 16 ms |
 | 2 | 4.2 | Independent Tester | Fable 5.2 | 4 | done | 242 spec tests pass | B10–B13 cases; engine-config fixture run |
 | 2 | 4.2 | Implementer | Opus 5.5 | fix 3 (last) | done | 301 tests; coverage 98.1 %; worst tick 4.68 ms under engine config (163 scripts) | central charging in lauxlib/ltable/lgc; `LuaConfig::engine()` |
+| 2 | 4.2 | Reviewer | Fable 5.2 | 4 | **pass** | gates 1–8 pass; 174 attack scripts under engine config, worst 5.7 ms (target 8 ms); CI green | N11 heavy-GC scripts fault under 2 MiB/100k (documented), N12 margin machine-dependent, N13 corpus kept in tests/attack_corpus |
