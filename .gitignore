@@ -1,0 +1,22 @@
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# Coverage and profiling
+*.profraw
+*.profdata
+/coverage/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local configuration and build outputs
+config.toml.local
+*.pinbundle
+/dist/
