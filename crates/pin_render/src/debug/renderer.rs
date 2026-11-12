@@ -175,7 +175,11 @@ impl DebugRenderer {
             self.line_capacity = slice.len().next_power_of_two();
             self.line_buffer = line_buffer(&self.device, self.line_capacity);
         }
-        queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&camera.view_proj));
+        queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&camera.view_proj),
+        );
         if !slice.is_empty() {
             queue.write_buffer(&self.line_buffer, 0, bytemuck::cast_slice(slice));
         }
@@ -212,7 +216,7 @@ impl DebugRenderer {
         }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        let bytes = (slice.len() * core::mem::size_of::<DebugLine>()) as u64;
+        let bytes = core::mem::size_of_val(slice) as u64;
         pass.set_vertex_buffer(0, self.line_buffer.slice(..bytes));
         pass.draw(0..2, 0..slice.len() as u32);
     }

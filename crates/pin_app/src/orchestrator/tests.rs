@@ -30,10 +30,7 @@ fn clock_basic_and_cap() {
 fn clock_handles_huge_jumps() {
     let mut c = SimClock::new(0);
     assert_eq!(c.advance(u64::MAX), MAX_CATCH_UP_TICKS);
-    assert_eq!(
-        c.ticks_due_total() + c.dropped_ticks(),
-        u64::MAX / TICK_NS
-    );
+    assert_eq!(c.ticks_due_total() + c.dropped_ticks(), u64::MAX / TICK_NS);
     assert_eq!(c.next_due_ns(), u64::MAX);
 }
 
@@ -116,9 +113,18 @@ fn setup<S: SimStep>(
 #[test]
 fn inputs_land_on_their_tick() {
     let (mut l, mut tx, mut r) = setup(Recorder::default(), 64);
-    let ts = [0, 1, TICK_NS, TICK_NS + 1, 3 * TICK_NS - 1, 3 * TICK_NS, 10 * TICK_NS];
+    let ts = [
+        0,
+        1,
+        TICK_NS,
+        TICK_NS + 1,
+        3 * TICK_NS - 1,
+        3 * TICK_NS,
+        10 * TICK_NS,
+    ];
     for t in ts {
-        tx.push(InputEvent::button(t, CabinetInput::Start, true)).unwrap();
+        tx.push(InputEvent::button(t, CabinetInput::Start, true))
+            .unwrap();
     }
     assert_eq!(l.tick(), 0);
     l.run_ticks(4);
@@ -153,8 +159,10 @@ fn epoch_and_skip_shift_tick_ends() {
     let (mut l, mut tx, _r) = setup(Recorder::default(), 8);
     l.set_epoch_ns(5 * TICK_NS);
     assert_eq!(l.epoch_ns(), 5 * TICK_NS);
-    tx.push(InputEvent::button(6 * TICK_NS, CabinetInput::Start, true)).unwrap();
-    tx.push(InputEvent::button(9 * TICK_NS, CabinetInput::Start, false)).unwrap();
+    tx.push(InputEvent::button(6 * TICK_NS, CabinetInput::Start, true))
+        .unwrap();
+    tx.push(InputEvent::button(9 * TICK_NS, CabinetInput::Start, false))
+        .unwrap();
     l.run_ticks(1); // ends at 6 ms
     assert_eq!(l.sim().seen[0].1.len(), 1);
     l.skip_ticks(2); // tick 2 now ends at 9 ms
@@ -169,14 +177,18 @@ fn input_overflow_defers_to_next_tick() {
     let n = INPUT_BUFFER_CAPACITY + 10;
     let (mut l, mut tx, _r) = setup(Recorder::default(), n);
     for i in 0..n {
-        tx.push(InputEvent::button(i as u64, CabinetInput::Tilt, true)).unwrap();
+        tx.push(InputEvent::button(i as u64, CabinetInput::Tilt, true))
+            .unwrap();
     }
     l.run_ticks(2);
     assert_eq!(l.sim().seen[0].1.len(), INPUT_BUFFER_CAPACITY);
     assert_eq!(l.sim().seen[1].1.len(), 10);
     assert_eq!(l.input_overflow_ticks(), 1);
     // Arrival order preserved.
-    assert_eq!(l.sim().seen[1].1[0].timestamp_ns, INPUT_BUFFER_CAPACITY as u64);
+    assert_eq!(
+        l.sim().seen[1].1[0].timestamp_ns,
+        INPUT_BUFFER_CAPACITY as u64
+    );
 }
 
 #[test]
@@ -186,8 +198,12 @@ fn replay_is_identical() {
         let mut snaps = Vec::new();
         for k in 0..100u64 {
             if k % 7 == 0 {
-                tx.push(InputEvent::button(k * TICK_NS + 500, CabinetInput::LeftFlipper, k % 2 == 0))
-                    .unwrap();
+                tx.push(InputEvent::button(
+                    k * TICK_NS + 500,
+                    CabinetInput::LeftFlipper,
+                    k % 2 == 0,
+                ))
+                .unwrap();
             }
             l.run_ticks(1);
             snaps.push(*r.read());

@@ -4,8 +4,7 @@
 //! benchmark (`#[ignore]`).
 
 use pin_app::orchestrator::{
-    ClosePolicy, HybridTimer, RenderConfig, Threads, ThreadsConfig, monotonic_now_ns,
-    spawn_threads,
+    ClosePolicy, HybridTimer, RenderConfig, Threads, ThreadsConfig, monotonic_now_ns, spawn_threads,
 };
 use pin_core::spsc::channel;
 use pin_core::{FrameStateSnapshot, InputEvent, SimStep, TICK_NS};
@@ -87,7 +86,11 @@ fn close_request_reaches_main_per_policy() {
         assert!(wait_for(&threads, Duration::from_secs(10), |t| {
             t.close_requested() || t.stats().render_iterations >= base + 3
         }));
-        assert_eq!(threads.close_requested(), quits, "{policy:?} window {window}");
+        assert_eq!(
+            threads.close_requested(),
+            quits,
+            "{policy:?} window {window}"
+        );
         assert_eq!(threads.shutdown().unwrap().close_requested, quits);
     }
 }
@@ -108,7 +111,9 @@ fn panicking_sim_is_reported() {
     let mut cfg = ThreadsConfig::idle(rx);
     cfg.sim = Box::new(Panics);
     let threads = spawn_threads(cfg).unwrap();
-    assert!(wait_for(&threads, Duration::from_secs(10), |t| t.finished() == ["sim"]));
+    assert!(wait_for(&threads, Duration::from_secs(10), |t| t
+        .finished()
+        == ["sim"]));
     let e = threads.shutdown().unwrap_err();
     assert!(e.contains("sim"), "{e}");
 }

@@ -240,16 +240,16 @@ fn physics_overrides_are_resolved() {
     let table = sub(
         TABLE_TOML,
         "[physics]\n",
-        "[physics]\nflipper_rubber_damping = 0.35\n",
+        "[physics]\nflipper_rubber_damping = 0.41\n",
     );
     let t = load(&table, BACKGLASS_TOML);
-    assert_eq!(t.physics.flipper_rubber_damping, 0.35);
+    assert_eq!(t.physics.flipper_rubber_damping, 0.41);
     assert_eq!(
         t.physics,
         PhysicsDefaults::builtin().resolve(t.manifest.physics.as_ref())
     );
     assert_ne!(t.physics, PhysicsDefaults::builtin().resolve(None));
-    assert_eq!(t.flippers[0].rubber_damping, 0.35);
+    assert_eq!(t.flippers[0].rubber_damping, 0.41);
 }
 
 #[test]

@@ -31,7 +31,8 @@ const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 fn ctx() -> Option<&'static GpuContext> {
     static CTX: OnceLock<Option<GpuContext>> = OnceLock::new();
-    CTX.get_or_init(|| context_for_tests("gpu_debug_render")).as_ref()
+    CTX.get_or_init(|| context_for_tests("gpu_debug_render"))
+        .as_ref()
 }
 
 fn unit_camera() -> Camera {
@@ -82,7 +83,9 @@ fn one(line: DebugLine) -> DebugLines {
 
 #[test]
 fn clear_only_is_uniform_and_opaque() {
-    let Some(img) = render(&DebugLines::new(1)) else { return };
+    let Some(img) = render(&DebugLines::new(1)) else {
+        return;
+    };
     assert!(img.lit().is_empty());
     assert!(img.px.chunks(4).all(|p| p == [0, 0, 0, 255]));
 }
@@ -93,7 +96,11 @@ fn red_horizontal_line_at_half_height() {
         return;
     };
     let lit = img.lit();
-    assert!(lit.len() >= 250, "line spans the width: {} pixels", lit.len());
+    assert!(
+        lit.len() >= 250,
+        "line spans the width: {} pixels",
+        lit.len()
+    );
     let rows: HashSet<u32> = lit.iter().map(|p| p.1).collect();
     assert!(rows.iter().all(|r| *r == 127 || *r == 128), "rows {rows:?}");
     assert_eq!(rows.len(), 1, "1 px wide: rows {rows:?}");
@@ -105,7 +112,11 @@ fn red_horizontal_line_at_half_height() {
 
 #[test]
 fn green_vertical_line_at_quarter_width() {
-    let Some(img) = render(&one(DebugLine::new([0.25, 0.0, 0.0], [0.25, 1.0, 0.0], GREEN))) else {
+    let Some(img) = render(&one(DebugLine::new(
+        [0.25, 0.0, 0.0],
+        [0.25, 1.0, 0.0],
+        GREEN,
+    ))) else {
         return;
     };
     let lit = img.lit();
@@ -120,7 +131,11 @@ fn green_vertical_line_at_quarter_width() {
 fn y_is_up_and_x_is_right() {
     // A short line near the top-right of world space lands in the top-right
     // of the image (row 0 = top).
-    let Some(img) = render(&one(DebugLine::new([0.80, 0.90, 0.0], [0.90, 0.90, 0.0], BLUE))) else {
+    let Some(img) = render(&one(DebugLine::new(
+        [0.80, 0.90, 0.0],
+        [0.90, 0.90, 0.0],
+        BLUE,
+    ))) else {
         return;
     };
     let lit = img.lit();
@@ -226,7 +241,11 @@ fn scene() -> DebugLines {
     l.push(DebugLine::new([0.0, 0.5, 0.0], [1.0, 0.5, 0.0], RED));
     l.push(DebugLine::new([0.25, 0.0, 0.0], [0.25, 1.0, 0.0], GREEN));
     box_lines([0.6, 0.6, 0.0], [0.9, 0.9, 0.0], BLUE, &mut l);
-    l.push(DebugLine::new([0.05, 0.05, 0.0], [0.45, 0.35, 0.0], [1.0, 1.0, 0.0, 1.0]));
+    l.push(DebugLine::new(
+        [0.05, 0.05, 0.0],
+        [0.45, 0.35, 0.0],
+        [1.0, 1.0, 0.0, 1.0],
+    ));
     let mut s = FrameStateSnapshot::default();
     s.push_ball(BallState {
         position_m: [0.7, 0.25, 0.0],
@@ -239,7 +258,10 @@ fn scene() -> DebugLines {
 #[test]
 fn regression_snapshot() {
     let Some(img) = render(&scene()) else { return };
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/debug_scene_256.txt");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/debug_scene_256.txt"
+    );
     let lit = img.lit();
     if std::env::var("PIN_UPDATE_SNAPSHOTS").is_ok_and(|v| v == "1") {
         let mut s = String::from("# lit pixels of gpu_debug_render::scene(), 256x256: x y r g b\n");
@@ -259,8 +281,10 @@ fn regression_snapshot() {
             ((v[0], v[1]), [v[2] as u8, v[3] as u8, v[4] as u8])
         })
         .collect();
-    let got: HashMap<(u32, u32), [u8; 3]> =
-        lit.iter().map(|(x, y, p)| ((*x, *y), [p[0], p[1], p[2]])).collect();
+    let got: HashMap<(u32, u32), [u8; 3]> = lit
+        .iter()
+        .map(|(x, y, p)| ((*x, *y), [p[0], p[1], p[2]]))
+        .collect();
     let near = |map: &HashMap<(u32, u32), [u8; 3]>, (x, y): (u32, u32), c: [u8; 3]| {
         (-1i32..=1).any(|dy| {
             (-1i32..=1).any(|dx| {
@@ -269,8 +293,14 @@ fn regression_snapshot() {
             })
         })
     };
-    let mismatched = got.iter().filter(|(k, c)| !near(&reference, **k, **c)).count()
-        + reference.iter().filter(|(k, c)| !near(&got, **k, **c)).count();
+    let mismatched = got
+        .iter()
+        .filter(|(k, c)| !near(&reference, **k, **c))
+        .count()
+        + reference
+            .iter()
+            .filter(|(k, c)| !near(&got, **k, **c))
+            .count();
     let union = got.len().max(reference.len());
     println!(
         "[regression_snapshot] {} lit (reference {}), {mismatched} mismatched",

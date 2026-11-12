@@ -217,11 +217,10 @@ fn walk(root: &Path, dir: &Path, prefix: &str, depth: usize, out: &mut Vec<Strin
         };
         if kind.is_dir() {
             walk(root, &entry.path(), &rel, depth + 1, out);
-        } else if kind.is_file() {
-            out.push(rel);
-        } else if kind.is_symlink()
-            && std::fs::canonicalize(entry.path())
-                .is_ok_and(|target| target.starts_with(root) && target.is_file())
+        } else if kind.is_file()
+            || (kind.is_symlink()
+                && std::fs::canonicalize(entry.path())
+                    .is_ok_and(|target| target.starts_with(root) && target.is_file()))
         {
             out.push(rel);
         }

@@ -59,7 +59,12 @@ fn polyline_segments() {
     polyline_lines(&[], RED, &mut l);
     polyline_lines(&[[0.0; 3]], RED, &mut l);
     assert!(l.is_empty());
-    let pts = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]];
+    let pts = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ];
     polyline_lines(&pts, RED, &mut l);
     assert_eq!(l.len(), 3);
     for (i, s) in l.as_slice().iter().enumerate() {
@@ -91,15 +96,24 @@ fn snapshot_draws_one_circle_per_ball_and_skips_flippers() {
     };
     let mut l = DebugLines::new(256);
     snapshot_lines(&s, &radius, &mut l);
-    assert_eq!(l.len(), 2 * CIRCLE_SEGMENTS, "NaN-radius ball skipped, flipper skipped");
+    assert_eq!(
+        l.len(),
+        2 * CIRCLE_SEGMENTS,
+        "NaN-radius ball skipped, flipper skipped"
+    );
     for (b, r) in [(0usize, 0.0135f32), (1, 0.02)] {
         let ball = s.balls()[b];
         let seg = &l.as_slice()[b * CIRCLE_SEGMENTS..(b + 1) * CIRCLE_SEGMENTS];
         for (k, line) in seg.iter().enumerate() {
             assert_eq!(line.color, BALL_COLOR);
-            assert_eq!(line.b, seg[(k + 1) % CIRCLE_SEGMENTS].a, "joints shared exactly");
+            assert_eq!(
+                line.b,
+                seg[(k + 1) % CIRCLE_SEGMENTS].a,
+                "joints shared exactly"
+            );
             for p in [line.a, line.b] {
-                let d = ((p[0] - ball.position_m[0]).powi(2) + (p[1] - ball.position_m[1]).powi(2)).sqrt();
+                let d = ((p[0] - ball.position_m[0]).powi(2) + (p[1] - ball.position_m[1]).powi(2))
+                    .sqrt();
                 assert!((d - r).abs() < 1e-6);
                 assert_eq!(p[2], ball.position_m[2], "circle lies in the XY plane");
             }
@@ -156,7 +170,10 @@ fn ortho_camera_maps_corners() {
     assert_eq!(c.project([0.5, 0.25, 0.0]), [0.0, -0.5, 0.5, 1.0]);
     let d = Camera::ortho_top_down([2.0, 3.0], [2.0, 3.0]);
     assert!(d.view_proj.iter().flatten().all(|v| v.is_finite()));
-    assert_eq!(Camera::default().project([0.1, 0.2, 0.3]), [0.1, 0.2, 0.3, 1.0]);
+    assert_eq!(
+        Camera::default().project([0.1, 0.2, 0.3]),
+        [0.1, 0.2, 0.3, 1.0]
+    );
 }
 
 proptest! {

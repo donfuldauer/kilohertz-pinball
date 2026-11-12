@@ -63,7 +63,9 @@ fn main() {
     };
     let driver = video.current_video_driver();
     if !NATIVE.contains(&driver) {
-        return skip(&format!("SDL video driver {driver:?} has no native windows"));
+        return skip(&format!(
+            "SDL video driver {driver:?} has no native windows"
+        ));
     }
     let mk = |title: &str, w: u32, h: u32| video.window(title, w, h).build().expect("window");
     let playfield = mk("pin_app test playfield", 160, 240);
@@ -71,7 +73,12 @@ fn main() {
 
     let opts = GpuOptions::from_env();
     let mut lines = DebugLines::new(64);
-    box_lines([0.1, 0.1, 0.0], [0.9, 0.9, 0.0], [0.0, 1.0, 0.0, 1.0], &mut lines);
+    box_lines(
+        [0.1, 0.1, 0.0],
+        [0.9, 0.9, 0.0],
+        [0.0, 1.0, 0.0, 1.0],
+        &mut lines,
+    );
     let camera = Camera::ortho_top_down([0.0, 0.0], [1.0, 1.0]);
 
     // Part 1: SurfaceSet directly, secondary forced onto a presenter thread.
@@ -85,8 +92,14 @@ fn main() {
             Ok(c) => c,
             Err(e) => return skip(&e.to_string()),
         };
-        println!("[orchestrator_window] adapter {:?} on {driver}", ctx.adapter_info().name);
-        let offered = sources[1].surface.get_capabilities(ctx.adapter()).present_modes;
+        println!(
+            "[orchestrator_window] adapter {:?} on {driver}",
+            ctx.adapter_info().name
+        );
+        let offered = sources[1]
+            .surface
+            .get_capabilities(ctx.adapter())
+            .present_modes;
         println!("[orchestrator_window] offered present modes {offered:?}");
         let mut set = SurfaceSet::new(
             &ctx,
@@ -100,7 +113,10 @@ fn main() {
         let choices: Vec<_> = set.choices().collect();
         println!("[orchestrator_window] choices {choices:?}");
         assert_eq!(choices[0].2, PresentChoice::Direct(wgpu::PresentMode::Fifo));
-        assert_eq!(choices[1].2, PresentChoice::PresenterThread(wgpu::PresentMode::Fifo));
+        assert_eq!(
+            choices[1].2,
+            PresentChoice::PresenterThread(wgpu::PresentMode::Fifo)
+        );
         assert!(set.paces_frame());
         let mut presented = [0u32; 2];
         let mut statuses = Vec::new();
@@ -127,10 +143,18 @@ fn main() {
             presented[1],
             set.presenter_thread_frames()
         );
-        assert!(presented[0] >= 20, "playfield presented {} of 30", presented[0]);
+        assert!(
+            presented[0] >= 20,
+            "playfield presented {} of 30",
+            presented[0]
+        );
         // The secondary surface redraws only on change: first frame + the
         // request at frame 10 (+ retries while busy).
-        assert!((1..=4).contains(&presented[1]), "score presented {}", presented[1]);
+        assert!(
+            (1..=4).contains(&presented[1]),
+            "score presented {}",
+            presented[1]
+        );
         assert!(statuses.iter().any(|s| s[1] == SurfaceStatus::Unchanged));
         drop(set); // joins the presenter thread
     }
@@ -168,7 +192,11 @@ fn main() {
     assert!(s.render_frames >= 10, "{s:?}");
     let t1 = Instant::now();
     threads.shutdown().expect("shutdown");
-    assert!(t1.elapsed() < Duration::from_secs(1), "shutdown took {:?}", t1.elapsed());
+    assert!(
+        t1.elapsed() < Duration::from_secs(1),
+        "shutdown took {:?}",
+        t1.elapsed()
+    );
     drop(score);
     drop(playfield);
     println!("[orchestrator_window] ok");

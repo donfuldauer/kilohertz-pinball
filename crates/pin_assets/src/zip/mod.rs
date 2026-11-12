@@ -136,11 +136,8 @@ impl ZipIndex {
                 });
             }
             let compressed = file.compressed_size();
-            let ratio = if compressed == 0 {
-                size
-            } else {
-                size / compressed
-            };
+            // An empty compressed stream counts as one byte.
+            let ratio = size.checked_div(compressed).unwrap_or(size);
             if ratio > limits.max_ratio {
                 return Err(AssetError::CompressionRatio {
                     path: name.to_owned(),

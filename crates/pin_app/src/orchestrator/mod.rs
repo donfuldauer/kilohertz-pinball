@@ -14,8 +14,8 @@
 mod threads;
 
 pub use threads::{
-    ClosePolicy, DropMonitor, OrchestratorStats, RenderConfig, RenderGpu, StatsSnapshot,
-    Threads, ThreadsConfig, default_ball_radius, monotonic_now_ns, spawn_threads,
+    ClosePolicy, DropMonitor, OrchestratorStats, RenderConfig, RenderGpu, StatsSnapshot, Threads,
+    ThreadsConfig, default_ball_radius, monotonic_now_ns, spawn_threads,
 };
 
 use arrayvec::ArrayVec;
@@ -157,9 +157,7 @@ impl<S: SimStep> SimLoop<S> {
     /// Shifts simulated time forward by `ticks` dropped ticks (the catch-up
     /// cap was hit) so input timestamps keep mapping onto the wall clock.
     pub fn skip_ticks(&mut self, ticks: u64) {
-        self.epoch_ns = self
-            .epoch_ns
-            .saturating_add(ticks.saturating_mul(TICK_NS));
+        self.epoch_ns = self.epoch_ns.saturating_add(ticks.saturating_mul(TICK_NS));
     }
 
     /// Runs `n` ticks back-to-back on simulated time: tick `k`'s inputs are
@@ -180,9 +178,7 @@ impl<S: SimStep> SimLoop<S> {
                     _ => break,
                 }
             }
-            if self.inputs.is_full()
-                && self.input.peek().is_some_and(|ev| ev.timestamp_ns <= end)
-            {
+            if self.inputs.is_full() && self.input.peek().is_some_and(|ev| ev.timestamp_ns <= end) {
                 self.input_overflow_ticks += 1;
             }
             self.inputs_delivered += self.inputs.len() as u64;

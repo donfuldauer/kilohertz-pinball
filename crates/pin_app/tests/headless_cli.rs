@@ -22,14 +22,24 @@ fn headless_ticks_10000() {
 fn headless_ticks_zero_and_one() {
     let out = pin_app(&["--headless-ticks", "0"]);
     assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "headless: 0 ticks, last tick 0\n");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "headless: 0 ticks, last tick 0\n"
+    );
     let out = pin_app(&["--headless-ticks", "1"]);
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "headless: 1 ticks, last tick 1\n");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "headless: 1 ticks, last tick 1\n"
+    );
 }
 
 #[test]
 fn headless_ticks_bad_argument_fails() {
-    for args in [&["--headless-ticks"][..], &["--headless-ticks", "abc"], &["--headless-ticks", "-1"]] {
+    for args in [
+        &["--headless-ticks"][..],
+        &["--headless-ticks", "abc"],
+        &["--headless-ticks", "-1"],
+    ] {
         let out = pin_app(args);
         assert!(!out.status.success(), "{args:?}");
         assert!(out.stdout.is_empty());

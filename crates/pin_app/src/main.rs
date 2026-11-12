@@ -34,10 +34,7 @@ fn value_of(args: &[String], flag: &str) -> Option<Result<u64, String>> {
     Some(
         args.get(i + 1)
             .ok_or_else(|| format!("{flag} needs a number"))
-            .and_then(|v| {
-                v.parse::<u64>()
-                    .map_err(|e| format!("{flag} {v:?}: {e}"))
-            }),
+            .and_then(|v| v.parse::<u64>().map_err(|e| format!("{flag} {v:?}: {e}"))),
     )
 }
 
@@ -136,7 +133,8 @@ fn run_app(args: &[String]) -> Result<(), String> {
             // SAFETY: `windows` outlives the surfaces: the render thread (which
             // drops them) is joined by `threads.shutdown()` below, before
             // `windows` is dropped.
-            let surface = unsafe { create_surface(&instance, &w.window) }.map_err(|e| e.to_string())?;
+            let surface =
+                unsafe { create_surface(&instance, &w.window) }.map_err(|e| e.to_string())?;
             let (pw, ph) = w.window.size_in_pixels();
             surfaces.push(SurfaceSource {
                 window: w.plan_index,

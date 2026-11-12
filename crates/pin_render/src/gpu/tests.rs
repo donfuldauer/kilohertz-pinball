@@ -49,7 +49,11 @@ fn present_mode_table_every_subset() {
         for role in roles {
             for vrr in [false, true] {
                 let want = expected(role, &offered, vrr);
-                assert_eq!(choose_present_mode(role, &offered, vrr), want, "{role:?} {offered:?} vrr={vrr}");
+                assert_eq!(
+                    choose_present_mode(role, &offered, vrr),
+                    want,
+                    "{role:?} {offered:?} vrr={vrr}"
+                );
                 assert_eq!(choose_present_mode(role, &reversed, vrr), want);
                 checked += 1;
             }
@@ -61,7 +65,10 @@ fn present_mode_table_every_subset() {
 #[test]
 fn present_mode_spot_checks() {
     use SurfaceRole::*;
-    assert_eq!(choose_present_mode(Playfield, &[], true), PresentChoice::Direct(P::Fifo));
+    assert_eq!(
+        choose_present_mode(Playfield, &[], true),
+        PresentChoice::Direct(P::Fifo)
+    );
     assert_eq!(
         choose_present_mode(Playfield, &[P::Fifo, P::FifoRelaxed], true),
         PresentChoice::Direct(P::FifoRelaxed)
@@ -97,15 +104,26 @@ fn parse_backend_names() {
     assert_eq!(parse_backends("DX12"), Some(Backends::DX12));
     assert_eq!(parse_backends(" metal "), Some(Backends::METAL));
     assert_eq!(parse_backends("gl"), Some(Backends::GL));
-    assert_eq!(parse_backends("vk,gles"), Some(Backends::VULKAN | Backends::GL));
-    assert_eq!(parse_backends("d3d12,mtl,opengl"), Some(Backends::DX12 | Backends::METAL | Backends::GL));
+    assert_eq!(
+        parse_backends("vk,gles"),
+        Some(Backends::VULKAN | Backends::GL)
+    );
+    assert_eq!(
+        parse_backends("d3d12,mtl,opengl"),
+        Some(Backends::DX12 | Backends::METAL | Backends::GL)
+    );
     assert_eq!(parse_backends("bogus"), None);
     assert_eq!(parse_backends(""), None);
     assert_eq!(parse_backends("bogus,vulkan"), Some(Backends::VULKAN));
 }
 
 fn vars<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-    move |k| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+    move |k| {
+        pairs
+            .iter()
+            .find(|(n, _)| *n == k)
+            .map(|(_, v)| v.to_string())
+    }
 }
 
 #[test]
@@ -124,9 +142,16 @@ fn options_from_vars() {
 
     let ci_metal = GpuOptions::from_vars(vars(&[("WGPU_BACKEND", "metal"), ("CI", "1")]));
     assert_eq!(ci_metal.backends, Backends::METAL);
-    assert!(!ci_metal.force_fallback_adapter, "Metal has no fallback adapter");
+    assert!(
+        !ci_metal.force_fallback_adapter,
+        "Metal has no fallback adapter"
+    );
 
-    let forced_off = GpuOptions::from_vars(vars(&[("CI", "true"), (FORCE_FALLBACK_ENV, "0"), ("WGPU_BACKEND", "vulkan")]));
+    let forced_off = GpuOptions::from_vars(vars(&[
+        ("CI", "true"),
+        (FORCE_FALLBACK_ENV, "0"),
+        ("WGPU_BACKEND", "vulkan"),
+    ]));
     assert!(!forced_off.force_fallback_adapter);
     let forced_on = GpuOptions::from_vars(vars(&[(FORCE_FALLBACK_ENV, "1")]));
     assert!(forced_on.force_fallback_adapter);
@@ -143,7 +168,10 @@ fn options_from_vars() {
 fn error_display() {
     let cases = [
         (GpuError::NoAdapter("x".into()), "no GPU adapter: x"),
-        (GpuError::RequestDevice("x".into()), "GPU device request failed: x"),
+        (
+            GpuError::RequestDevice("x".into()),
+            "GPU device request failed: x",
+        ),
         (GpuError::Surface("x".into()), "GPU surface error: x"),
         (GpuError::Readback("x".into()), "GPU readback failed: x"),
         (GpuError::InvalidArgument("x".into()), "invalid argument: x"),

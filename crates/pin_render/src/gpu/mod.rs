@@ -74,11 +74,7 @@ impl PresentChoice {
 /// An empty `offered` list is treated as `[Fifo]` (the only guaranteed mode).
 /// `AutoVsync` / `AutoNoVsync` in `offered` are ignored: they are wgpu
 /// fallback aliases, not modes a surface reports.
-pub fn choose_present_mode(
-    role: SurfaceRole,
-    offered: &[PresentMode],
-    vrr: bool,
-) -> PresentChoice {
+pub fn choose_present_mode(role: SurfaceRole, offered: &[PresentMode], vrr: bool) -> PresentChoice {
     let has = |m: PresentMode| offered.contains(&m);
     match role {
         SurfaceRole::Playfield => {
@@ -146,7 +142,9 @@ impl GpuOptions {
             })
         };
         let in_ci = truthy("CI") || get(REQUIRE_GPU_ENV).is_some_and(|v| v.trim() == "1");
-        let metal_only = backends == Backends::METAL || (cfg!(target_os = "macos") && !backends.intersects(Backends::VULKAN | Backends::GL | Backends::DX12));
+        let metal_only = backends == Backends::METAL
+            || (cfg!(target_os = "macos")
+                && !backends.intersects(Backends::VULKAN | Backends::GL | Backends::DX12));
         let mut force_fallback_adapter = in_ci && !metal_only;
         match get(FORCE_FALLBACK_ENV).as_deref().map(str::trim) {
             Some("1") => force_fallback_adapter = true,
