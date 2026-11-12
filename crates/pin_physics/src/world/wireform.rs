@@ -10,8 +10,8 @@ use super::spline::{
 /// Gap at which a guide cast reports contact (metres).
 const GUIDE_SKIN: f32 = 1.0e-5;
 
-/// Maximum conservative-advancement steps of a guide cast.
-const GUIDE_CAST_STEPS: usize = 64;
+/// Maximum steps (closest-point evaluations) of a guide cast.
+const GUIDE_CAST_STEPS: u32 = 32;
 
 /// An orthonormal, right-handed moving frame: `binormal = tangent × normal`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -359,7 +359,7 @@ impl Wireform {
     }
 }
 
-/// Result of [`GuideCurve::cast_sphere`].
+/// A contact found by [`GuideCurve::cast_sphere`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GuideHit {
     /// Time at which the sphere reaches the guide (seconds).
@@ -372,13 +372,102 @@ pub struct GuideHit {
     pub normal: Vec3,
 }
 
+/// Result of [`GuideCurve::cast_sphere`] when the sphere cannot simply move
+/// for the whole time window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GuideCast {
+    /// The sphere touches the wall (gap at most 10 µm) at `GuideHit::time`
+    /// and is moving into it.
+    Contact(GuideHit),
+    /// No contact was found up to `time`, but the cast ran out of steps
+    /// before the end of the window. The sphere may move to `time` freely
+    /// (no impulse); cast again from there.
+    Advance {
+        /// Time up to which the motion is known to be free (seconds).
+        time: f32,
+    },
+}
+
 /// A single-curve guide (orbit wall): a spline extruded along +Z (the
 /// playfield normal) by a wall height. The wall is the zero-thickness ribbon
 /// `C(t) + u·Z`, `u ∈ [0, height]`, and collides from both sides.
+///
+/// Guides are meant for level curves (constant Z, the usual orbit wall). A
+/// curve that rises or falls is supported, but its sphere cast falls back to
+/// plain conservative advancement, which needs many more steps when the ball
+/// runs alongside the wall.
 #[derive(Debug, Clone)]
 pub struct GuideCurve {
     spline: CubicSpline,
     height: f32,
+    /// Z of the curve if every control point has the same Z.
+    level_z: Option<f32>,
+    /// Conservative estimate of the wall's reach: within this distance of the
+    /// wall the nearest wall point is unique, so the distance function is
+    /// smooth with second derivatives bounded below by `-1 / (reach - d)`.
+    /// Zero when unknown (non-level or self-touching curves).
+    reach: f32,
+}
+
+/// Reach of a sampled curve (Federer): the infimum over point pairs of
+/// `|y - x|² / (2 · dist(y - x, tangent line at x))`, which accounts for both
+/// curvature and distinct stretches of the curve approaching each other.
+fn curve_reach(spline: &CubicSpline) -> f32 {
+    const MAX_REACH: f64 = 1.0e3;
+    let samples = spline.samples();
+    // Curvature at every sample.
+    let k = SAMPLES_PER_SEGMENT;
+    let n = spline.segment_count();
+    let mut reach = MAX_REACH;
+    for index in 0..samples.len() {
+        let i = (index / k).min(n - 1);
+        let s = (index - i * k) as f32 / k as f32;
+        let (_, d1, d2) = spline.eval(i, s);
+        let (d1, d2) = (d1.as_dvec3(), d2.as_dvec3());
+        let speed = d1.length();
+        if speed <= 1.0e-12 {
+            return 0.0; // cusp
+        }
+        let curvature = d1.cross(d2).length() / (speed * speed * speed);
+        if curvature * reach > 1.0 {
+            reach = 1.0 / curvature;
+        }
+    }
+    // Pairs, on every fourth sample (plus the last).
+    let stride = 4;
+    let count = (samples.len() - 1) / stride + 1;
+    let at = |j: usize| {
+        let sample = &samples[(j * stride).min(samples.len() - 1)];
+        (
+            sample.point.as_dvec3(),
+            sample.tangent.as_dvec3().normalize(),
+        )
+    };
+    for a in 0..count {
+        let (x, tangent) = at(a);
+        for b in 0..count {
+            if a == b {
+                continue;
+            }
+            let (y, other_tangent) = at(b);
+            let w = y - x;
+            let w2 = w.length_squared();
+            if w2 < 1.0e-16 {
+                // Coincident samples: a smoothly closed loop is fine, a
+                // crossing has no reach.
+                if tangent.cross(other_tangent).length() > 1.0e-3 {
+                    return 0.0;
+                }
+                continue;
+            }
+            let off = (w - tangent * w.dot(tangent)).length();
+            if 2.0 * off * reach > w2 {
+                reach = w2 / (2.0 * off);
+            }
+        }
+    }
+    // Margin for what the sampling cannot see.
+    (0.9 * reach) as f32
 }
 
 impl GuideCurve {
@@ -393,9 +482,17 @@ impl GuideCurve {
         if height_m < 0.0 {
             return Err(SplineError::InvalidHeight);
         }
+        let z0 = spline.segments()[0].p[0].z;
+        let level = spline
+            .segments()
+            .iter()
+            .all(|seg| seg.p.iter().all(|p| (p.z - z0).abs() <= 1.0e-6));
+        let reach = if level { curve_reach(&spline) } else { 0.0 };
         Ok(Self {
             spline,
             height: height_m,
+            level_z: level.then_some(z0),
+            reach,
         })
     }
 
@@ -411,18 +508,41 @@ impl GuideCurve {
         self.height
     }
 
+    /// Whether the curve is level (constant Z).
+    #[must_use]
+    pub fn is_level(&self) -> bool {
+        self.level_z.is_some()
+    }
+
     /// Closest point of the wall to `p`; `t` is the curve parameter below the
     /// returned point. Never allocates.
+    ///
+    /// Exact (global) for level curves. For a rising or falling curve the
+    /// height along the wall and the parameter along the curve are optimised
+    /// alternately until they stop moving, which finds the closest point
+    /// near the curve's own closest point.
     #[must_use]
     pub fn closest_point(&self, p: Vec3, seed_t: Option<f32>) -> ClosestPoint {
-        // Alternate between the height along the wall and the parameter along
-        // the curve; exact after one round for a level curve.
-        let mut cp = self.spline.closest_point(p, seed_t);
         if !p.is_finite() {
-            return cp;
+            return self.spline.closest_point(p, seed_t);
         }
+        if let Some(z0) = self.level_z {
+            // The height on the wall does not depend on the parameter.
+            let u = (p.z - z0).clamp(0.0, self.height);
+            let cp = self
+                .spline
+                .closest_point(Vec3::new(p.x, p.y, p.z - u), seed_t);
+            let point = Vec3::new(cp.point.x, cp.point.y, cp.point.z + u);
+            return ClosestPoint {
+                t: cp.t,
+                point,
+                distance: point.distance(p),
+            };
+        }
+        let mut cp = self.spline.closest_point(p, seed_t);
         let mut u = (p.z - cp.point.z).clamp(0.0, self.height);
-        for _ in 0..3 {
+        // The alternation contracts by about slope² per round.
+        for _ in 0..24 {
             let q = Vec3::new(p.x, p.y, p.z - u);
             let next = self.spline.closest_point(q, Some(cp.t));
             let moved = (next.t - cp.t).abs();
@@ -454,17 +574,30 @@ impl GuideCurve {
         if len > 0.0 { n / len } else { Vec3::X }
     }
 
-    /// Continuous collision detection against the wall by conservative
-    /// advancement: every step moves the sphere by at most its current gap,
-    /// so it can never pass through the wall, whatever its speed.
+    /// Continuous collision detection against the wall.
     ///
-    /// Returns the first time in `[0, max_time]` at which the gap closes to
-    /// 10 µm. A sphere that starts that close hits at time 0 only if it moves
-    /// toward the wall; resting and sliding contact is handled with
-    /// [`closest_point`](Self::closest_point). If the sphere grazes the wall
-    /// so shallowly that the advancement does not converge, the time reached
-    /// so far is returned: it is a safe (non-penetrating) lower bound of the
-    /// impact time. Never allocates.
+    /// * `None`: the sphere does not come into contact within `max_time`.
+    /// * `Some(GuideCast::Contact(hit))`: at `hit.time` the gap has closed to
+    ///   at most 10 µm **and** the sphere is moving into the wall (closing
+    ///   speed above 1e-5 of its speed). A sphere moving along or away from
+    ///   the wall is never reported as a contact.
+    /// * `Some(GuideCast::Advance { time })`: no contact up to `time`, but the
+    ///   step budget ran out; move there without an impulse and cast again.
+    ///
+    /// Every step is a proven lower bound of the time to contact, so the
+    /// sphere can never pass through the wall, whatever its speed. Two bounds
+    /// are used and the larger step taken: the gap cannot shrink faster than
+    /// the speed (conservative advancement), and, for level curves within the
+    /// wall's reach `ρ`, the gap's second time derivative is at least
+    /// `-|v|² / (ρ - d)`, which lets a sphere running alongside the wall
+    /// advance millimetres instead of micrometres per step.
+    ///
+    /// A sphere that is within 10 µm of the wall (or overlapping it) and not
+    /// moving into it is sliding: it is allowed to sink at most a further
+    /// 10 µm (never below -10 µm from a non-overlapping start) while it
+    /// slides; if the wall curves into its path the resulting contact is
+    /// reported as soon as it closes in. Resolve the remaining overlap with
+    /// [`closest_point`](Self::closest_point). Never allocates.
     #[must_use]
     pub fn cast_sphere(
         &self,
@@ -473,47 +606,93 @@ impl GuideCurve {
         velocity: Vec3,
         max_time: f32,
         seed_t: Option<f32>,
-    ) -> Option<GuideHit> {
+    ) -> Option<GuideCast> {
+        self.cast_sphere_counted(center, radius, velocity, max_time, seed_t)
+            .0
+    }
+
+    /// [`cast_sphere`](Self::cast_sphere) plus the number of closest-point
+    /// evaluations it used (at most 32), for cost tests.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn cast_sphere_counted(
+        &self,
+        center: Vec3,
+        radius: f32,
+        velocity: Vec3,
+        max_time: f32,
+        seed_t: Option<f32>,
+    ) -> (Option<GuideCast>, u32) {
         let speed = velocity.length();
         if !(center.is_finite() && speed.is_finite() && speed > 0.0 && max_time >= 0.0) {
-            return None;
+            return (None, 0);
         }
+        let approach = -APPROACH_EPS * speed;
         let mut time = 0.0f32;
         let mut seed = seed_t;
+        // Lowest gap a run of sliding steps may reach.
+        let mut slide_floor: Option<f32> = None;
         for step in 0..GUIDE_CAST_STEPS {
             let p = center + velocity * time;
             let cp = self.closest_point(p, seed);
             seed = Some(cp.t);
             let gap = cp.distance - radius;
-            let last = step + 1 == GUIDE_CAST_STEPS;
-            if gap <= GUIDE_SKIN || last {
-                let normal = self.normal_toward(&cp, p);
-                if step == 0 && normal.dot(velocity) >= -APPROACH_EPS * speed {
-                    return None;
+            let normal = self.normal_toward(&cp, p);
+            let rate = normal.dot(velocity);
+            // The lowest gap the next step may reach.
+            let floor = if gap <= GUIDE_SKIN {
+                if rate < approach {
+                    let hit = GuideHit {
+                        time,
+                        t: cp.t,
+                        point: cp.point,
+                        normal,
+                    };
+                    return (Some(GuideCast::Contact(hit)), step + 1);
                 }
-                return Some(GuideHit {
-                    time,
-                    t: cp.t,
-                    point: cp.point,
-                    normal,
-                });
+                // Sliding or leaving: bounded sink, fixed when sliding starts.
+                *slide_floor.get_or_insert(gap.min(0.0) - GUIDE_SKIN)
+            } else {
+                slide_floor = None;
+                0.5 * GUIDE_SKIN
+            };
+            let drop = gap - floor;
+            if drop <= 0.0 {
+                // Sunk to the sliding limit without ever closing in faster
+                // than the approach threshold: hand back to the caller.
+                return (Some(GuideCast::Advance { time }), step + 1);
             }
-            let next = time + gap / speed;
-            if next > max_time || next.is_nan() {
-                return None;
+            // Bound 1: |d(gap)/dt| <= speed.
+            let mut dt = drop / speed;
+            // Bound 2: gap(τ) >= gap + rate τ - ½ K τ², valid while the
+            // distance stays below `cap` < reach.
+            if cp.distance < 0.9 * self.reach {
+                let cap = 0.5 * (cp.distance + self.reach);
+                let k = speed * speed / (self.reach - cap);
+                // Positive root of drop + rate τ - ½ K τ² = 0.
+                // (Written so that neither sign of `rate` cancels.)
+                let disc = (rate * rate + 2.0 * k * drop).sqrt();
+                let root = if rate < 0.0 {
+                    2.0 * drop / (disc - rate)
+                } else {
+                    (rate + disc) / k
+                };
+                let within = (cap - cp.distance) / speed;
+                let quadratic = root.min(within);
+                if quadratic > dt {
+                    dt = quadratic;
+                }
+            }
+            let next = time + dt;
+            if next >= max_time || next.is_nan() {
+                return (None, step + 1);
             }
             if next == time {
-                // Below floating-point resolution: touching.
-                let normal = self.normal_toward(&cp, p);
-                return (normal.dot(velocity) < -APPROACH_EPS * speed).then_some(GuideHit {
-                    time,
-                    t: cp.t,
-                    point: cp.point,
-                    normal,
-                });
+                // Below floating-point resolution.
+                return (Some(GuideCast::Advance { time }), step + 1);
             }
             time = next;
         }
-        None
+        (Some(GuideCast::Advance { time }), GUIDE_CAST_STEPS)
     }
 }

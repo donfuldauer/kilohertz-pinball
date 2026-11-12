@@ -5,8 +5,8 @@
 use arrayvec::ArrayVec;
 use glam::{Quat, Vec3};
 use pin_physics::world::{
-    CubicSpline, GuideCurve, LayerTransition, SphereContact, StaticShape, StaticWorldBuilder,
-    TransitionSet, Wireform, layers,
+    CubicSpline, GuideCast, GuideCurve, LayerTransition, SphereContact, StaticShape,
+    StaticWorldBuilder, TransitionSet, Wireform, layers,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -74,6 +74,9 @@ fn per_tick_queries_do_not_allocate() {
     let rolls: Vec<f32> = (0..40).map(|i| i as f32).collect();
     let wireform = Wireform::new(spline.clone(), &rolls, 0.02, Vec3::Z).unwrap();
     let guide = GuideCurve::new(spline.clone(), 0.03).unwrap();
+    let level: Vec<Vec3> = pts.iter().take(30).map(|p| v(p.x, p.y, 0.0)).collect();
+    let level_guide = GuideCurve::new(CubicSpline::interpolate(&level).unwrap(), 0.03).unwrap();
+    assert!(level_guide.is_level() && !guide.is_level());
 
     let mut builder = StaticWorldBuilder::new();
     builder.add_collider(
@@ -170,9 +173,17 @@ fn per_tick_queries_do_not_allocate() {
         checksum += rails[0].distance + rails[1].distance;
 
         checksum += guide.closest_point(pos, seed).distance;
-        if let Some(hit) = guide.cast_sphere(pos, 0.0135, vel, 0.001, seed) {
-            checksum += hit.time;
+        match guide.cast_sphere(pos, 0.0135, vel, 0.001, seed) {
+            Some(GuideCast::Contact(hit)) => checksum += hit.time,
+            Some(GuideCast::Advance { time }) => checksum += time,
+            None => {}
         }
+        match level_guide.cast_sphere(pos, 0.0135, vel, 0.001, None) {
+            Some(GuideCast::Contact(hit)) => checksum += hit.time,
+            Some(GuideCast::Advance { time }) => checksum += time,
+            None => {}
+        }
+        checksum += level_guide.closest_point(pos, None).distance;
 
         let mask = layers::layer_bit(layer) | layers::MAIN_DECK;
         if let Some(hit) = world.cast_sphere(pos, 0.0135, vel, 0.001, mask) {

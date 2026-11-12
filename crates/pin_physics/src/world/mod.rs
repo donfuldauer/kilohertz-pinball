@@ -25,7 +25,7 @@ pub use static_world::{
     ColliderHandle, SphereContact, SphereHit, StaticShape, StaticWorld, StaticWorldBuilder,
 };
 pub use transition::{LayerTransition, TransitionSet};
-pub use wireform::{Frame, GuideCurve, GuideHit, Wireform};
+pub use wireform::{Frame, GuideCast, GuideCurve, GuideHit, Wireform};
 
 /// Collision layer bits (8-bit mask).
 pub mod layers {

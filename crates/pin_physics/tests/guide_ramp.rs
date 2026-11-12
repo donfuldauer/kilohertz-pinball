@@ -15,7 +15,7 @@
 use arrayvec::ArrayVec;
 use glam::{Quat, Vec3};
 use pin_physics::world::{
-    CubicSpline, GuideCurve, LayerTransition, SphereContact, StaticShape, StaticWorld,
+    CubicSpline, GuideCast, GuideCurve, LayerTransition, SphereContact, StaticShape, StaticWorld,
     StaticWorldBuilder, TransitionSet, Wireform, layers,
 };
 
@@ -221,13 +221,15 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
         let prev_pos = ball.pos;
         ball.vel += v(0.0, 0.0, -G) * h;
 
-        // CCD: advance to the earliest impact, stop the normal velocity, repeat.
+        // CCD: advance to the earliest event (impact, or the end of a guide
+        // cast's proven-free interval), stop the normal velocity on impact,
+        // repeat.
         let mut remaining = h;
-        for _ in 0..4 {
+        for _ in 0..8 {
             let world_hit = table
                 .world
                 .cast_sphere(ball.pos, BALL_R, ball.vel, remaining, mask);
-            let guide_hit = if on_main {
+            let guide_cast = if on_main {
                 table
                     .guide
                     .cast_sphere(ball.pos, BALL_R, ball.vel, remaining, ball.guide_seed)
@@ -235,7 +237,11 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
                 None
             };
             let world_time = world_hit.map_or(f32::INFINITY, |hit| hit.time);
-            let guide_time = guide_hit.map_or(f32::INFINITY, |hit| hit.time);
+            let guide_time = match guide_cast {
+                Some(GuideCast::Contact(hit)) => hit.time,
+                Some(GuideCast::Advance { time }) => time,
+                None => f32::INFINITY,
+            };
             if world_time.is_infinite() && guide_time.is_infinite() {
                 ball.pos += ball.vel * remaining;
                 remaining = 0.0;
@@ -247,13 +253,14 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
                 remaining -= hit.time;
                 floor_impulse += stop_normal(&mut ball.vel, hit.normal);
             } else {
-                let hit = guide_hit.unwrap();
-                ball.pos += ball.vel * hit.time;
-                remaining -= hit.time;
-                guide_impulse += stop_normal(&mut ball.vel, hit.normal);
+                ball.pos += ball.vel * guide_time;
+                remaining -= guide_time;
+                if let Some(GuideCast::Contact(hit)) = guide_cast {
+                    guide_impulse += stop_normal(&mut ball.vel, hit.normal);
+                }
             }
         }
-        // Whatever time is left after four impacts is spent without moving.
+        // Whatever time is left after eight events is spent without moving.
         let _ = remaining;
 
         // Sliding contacts: project out of penetration, stop normal velocity.
@@ -377,14 +384,18 @@ fn ball_completes_the_course() {
 fn energy_never_increases() {
     let (_, logs) = run();
     let e0 = energy(v(GUIDE_R - BALL_R, -0.25, BALL_R), v(0.0, 8.0, 0.0));
+    // Against the lowest energy seen so far, so that slow drift cannot hide
+    // behind a per-tick allowance. The allowance covers f32 rounding of the
+    // state (positions carry about 1e-7 m, energies about 1e-6 relative).
+    let mut lowest = e0;
     let mut prev = e0;
     for (i, log) in logs.iter().enumerate() {
         let e = energy(log.pos, log.vel);
-        // f32 state: allow rounding noise of 1e-6 relative per tick.
         assert!(
-            e <= prev + 1e-6 * e0,
-            "tick {i}: energy rose from {prev} to {e}"
+            e <= lowest + 1e-5 * e0,
+            "tick {i}: energy {e} above the earlier minimum {lowest}"
         );
+        lowest = lowest.min(e);
         prev = e;
     }
     assert!(prev < e0);
@@ -456,17 +467,32 @@ fn normal_force_is_smooth_away_from_entry_and_exit() {
         }
     }
     assert!(rail_samples > 100, "{rail_samples} rail samples");
-    // On the straight incline at the top, the two rails carry the weight:
-    // m g cos(slope) / cos(rail contact angle).
+    // Over the whole checked window the two rails carry the weight plus the
+    // centripetal force of the ramp's curvature:
+    // m (g cos(slope) + v² κ) / cos(rail contact angle).
     let table = build_table();
-    let expected = BALL_M * G / (1.0 + SLOPE * SLOPE).sqrt() / (table.seat / BALL_R);
     for log in logs
         .iter()
-        .filter(|l| (1.1..=RAMP_TOP_D).contains(&(RAMP_START_Y - l.pos.y)))
+        .filter(|l| (0.2..=RAMP_TOP_D).contains(&(RAMP_START_Y - l.pos.y)))
     {
+        // Mid-tick position: the logged force is the tick's average.
+        let d = RAMP_START_Y - log.pos.y - 0.5 * DT * log.vel.length();
+        let k = std::f32::consts::PI / EASE;
+        let (slope, bend) = if d <= EASE {
+            (
+                0.5 * SLOPE * (1.0 - libm::cosf(k * d)),
+                0.5 * SLOPE * k * libm::sinf(k * d),
+            )
+        } else {
+            (SLOPE, 0.0)
+        };
+        let stretch = 1.0 + slope * slope;
+        let curvature = bend / (stretch * stretch.sqrt());
+        let speed2 = log.vel.length_squared();
+        let expected = BALL_M * (G / stretch.sqrt() + speed2 * curvature) / (table.seat / BALL_R);
         assert!(
             (log.rail_force / expected - 1.0).abs() < 0.03,
-            "rail force {} vs {expected}",
+            "rail force {} vs {expected} at d = {d}",
             log.rail_force
         );
     }
