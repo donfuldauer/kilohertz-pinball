@@ -392,13 +392,22 @@ pub enum GuideCast {
 /// playfield normal) by a wall height. The wall is the zero-thickness ribbon
 /// `C(t) + u·Z`, `u ∈ [0, height]`, and collides from both sides.
 ///
-/// Guides are meant for level curves (constant Z, the usual orbit wall). A
-/// curve that rises or falls is supported too: its wall is a strip of the
-/// vertical cylinder over the curve's plan view, and the sphere cast uses the
-/// reach of that plan-view curve, so a ball running alongside a rising wall
-/// advances as fast as alongside a level one. Only a curve whose plan view
-/// has no reach (it touches or crosses itself, or runs vertically) falls
-/// back to plain conservative advancement.
+/// Level curves (constant Z, the usual orbit wall) are the cheap case: one
+/// spline query per closest point.
+///
+/// A curve that rises or falls is supported as well, including curves whose
+/// plan view comes back over itself (helices): the closest point is found
+/// by a global scan of the curve (cost proportional to the number of
+/// segments per query), and the sphere cast additionally uses the reach of
+/// the plan-view curve, so a ball running alongside the wall advances as
+/// fast as alongside a level one. A curve whose plan view has no reach (it
+/// crosses itself at an angle, or runs vertically) is still collided with
+/// correctly, by plain conservative advancement, which is slow for a ball
+/// sliding along it.
+///
+/// For every guide the through-points must be closer together than the
+/// smallest radius of curvature (and roughly evenly spaced, see
+/// [`CubicSpline`]); the closest-point search relies on it.
 #[derive(Debug, Clone)]
 pub struct GuideCurve {
     spline: CubicSpline,
@@ -563,10 +572,13 @@ impl GuideCurve {
     /// Closest point of the wall to `p`; `t` is the curve parameter below the
     /// returned point. Never allocates.
     ///
-    /// Exact (global) for level curves. For a rising or falling curve the
-    /// height along the wall and the parameter along the curve are optimised
-    /// alternately until they stop moving, which finds the closest point
-    /// near the curve's own closest point.
+    /// Global for level curves (one spline query) and for rising or falling
+    /// curves (a scan of the curve's sample table with a search of every
+    /// sample interval that could hold the minimum, so its cost grows with
+    /// the number of segments). In both cases a minimum can only be missed
+    /// where the curve bends on the scale of a sample interval (1/16 of a
+    /// segment; 1/64 for rising curves): keep the through-point spacing
+    /// below the smallest radius of curvature.
     #[must_use]
     pub fn closest_point(&self, p: Vec3, seed_t: Option<f32>) -> ClosestPoint {
         if !p.is_finite() {
@@ -585,26 +597,122 @@ impl GuideCurve {
                 distance: point.distance(p),
             };
         }
-        let mut cp = self.spline.closest_point(p, seed_t);
-        let mut u = (p.z - cp.point.z).clamp(0.0, self.height);
-        // The alternation contracts by about slope² per round.
-        for _ in 0..24 {
-            let q = Vec3::new(p.x, p.y, p.z - u);
-            let next = self.spline.closest_point(q, Some(cp.t));
-            let moved = (next.t - cp.t).abs();
-            cp = next;
-            let next_u = (p.z - cp.point.z).clamp(0.0, self.height);
-            let u_moved = (next_u - u).abs();
-            u = next_u;
-            if moved < 1.0e-6 && u_moved < 1.0e-7 {
-                break;
+        self.closest_point_sloped(p, seed_t)
+    }
+
+    /// The wall point above curve point `c` that is closest to `p` (the
+    /// height on the wall is clamped to `[0, height]`), and its squared
+    /// distance to `p`.
+    fn wall_point(&self, c: Vec3, p: Vec3) -> (Vec3, f32) {
+        let u = (p.z - c.z).clamp(0.0, self.height);
+        let q = Vec3::new(c.x, c.y, c.z + u);
+        (q, q.distance_squared(p))
+    }
+
+    /// Global closest point of a rising or falling wall.
+    ///
+    /// The distance from `p` to the wall's vertical line over `C(t)` is a
+    /// C¹ function of `t` with derivative `(q(t) − p) · C'(t) / d`, where
+    /// `q(t)` is the closest point of that line. All samples of the curve
+    /// are scanned; every sample interval that could hold a point closer
+    /// than the best found so far (the distance cannot change faster than
+    /// the arc length) is searched: a sign change of the derivative is
+    /// bracketed and bisected, and an interval without one is quartered
+    /// first, so that a minimum is only missed if the derivative changes
+    /// sign twice within 1/64 of a segment.
+    fn closest_point_sloped(&self, p: Vec3, seed_t: Option<f32>) -> ClosestPoint {
+        let spline = &self.spline;
+        let samples = spline.samples();
+        let k = SAMPLES_PER_SEGMENT;
+        let step = 1.0 / k as f32;
+        // Wall point, squared distance and sign of the derivative at `t`.
+        let at = |t: f32| {
+            let (i, s) = spline.locate(t);
+            let (c, d1, _) = spline.eval(i, s);
+            let (q, d2) = self.wall_point(c, p);
+            (q, d2, (q - p).dot(d1))
+        };
+        // (squared distance, parameter, wall point)
+        type Best = (f32, f32, Vec3);
+        let consider = |best: &mut Best, t: f32, q: Vec3, d2: f32| {
+            if d2 < best.0 {
+                *best = (d2, t, q);
+            }
+        };
+        // Root of the derivative in a bracket (`g(lo) < 0 < g(hi)`).
+        let polish = |best: &mut Best, mut lo: f32, mut hi: f32| {
+            for _ in 0..30 {
+                let mid = 0.5 * (lo + hi);
+                if mid <= lo || mid >= hi {
+                    break;
+                }
+                let (q, d2, g) = at(mid);
+                consider(best, mid, q, d2);
+                if g < 0.0 {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+        };
+        let mut best: Best = (f32::INFINITY, 0.0, samples[0].point);
+        if let Some(seed) = seed_t.filter(|t| t.is_finite()) {
+            let t = seed.clamp(0.0, spline.max_t());
+            let (q, d2, _) = at(t);
+            consider(&mut best, t, q, d2);
+        }
+        for i in 0..spline.segment_count() {
+            // Arc length of one sample interval of this segment, at most:
+            // the speed is within h² / 8 times the third derivative of its
+            // linear interpolant, and the third derivative is constant on a
+            // segment.
+            let third = (spline.eval(i, 1.0).2 - spline.eval(i, 0.0).2).length();
+            let slack = step * step * 0.125 * third;
+            let first = &samples[i * k];
+            let (q, mut d2_0) = self.wall_point(first.point, p);
+            let mut g0 = (q - p).dot(first.tangent);
+            let mut speed0 = first.tangent.length();
+            consider(&mut best, i as f32, q, d2_0);
+            for j in 1..=k {
+                let sample = &samples[i * k + j];
+                let t1 = i as f32 + j as f32 * step;
+                let (q1, d2_1) = self.wall_point(sample.point, p);
+                let g1 = (q1 - p).dot(sample.tangent);
+                let speed1 = sample.tangent.length();
+                consider(&mut best, t1, q1, d2_1);
+                let arc = step * (speed0.max(speed1) + slack);
+                // Smallest distance the interval can hold.
+                let floor = 0.5 * (d2_0.sqrt() + d2_1.sqrt() - arc);
+                if floor < best.0.sqrt() - 1.0e-7 {
+                    let t0 = t1 - step;
+                    if g0 < 0.0 && g1 > 0.0 {
+                        polish(&mut best, t0, t1);
+                    } else {
+                        // Quarter the interval and bracket what shows up.
+                        let mut left = (t0, g0);
+                        for quarter in 1..=4 {
+                            let (t, g) = if quarter == 4 {
+                                (t1, g1)
+                            } else {
+                                let t = t0 + 0.25 * step * quarter as f32;
+                                let (q, d2, g) = at(t);
+                                consider(&mut best, t, q, d2);
+                                (t, g)
+                            };
+                            if left.1 < 0.0 && g > 0.0 {
+                                polish(&mut best, left.0, t);
+                            }
+                            left = (t, g);
+                        }
+                    }
+                }
+                (d2_0, g0, speed0) = (d2_1, g1, speed1);
             }
         }
-        let point = Vec3::new(cp.point.x, cp.point.y, cp.point.z + u);
         ClosestPoint {
-            t: cp.t,
-            point,
-            distance: point.distance(p),
+            t: best.1,
+            point: best.2,
+            distance: best.0.sqrt(),
         }
     }
 

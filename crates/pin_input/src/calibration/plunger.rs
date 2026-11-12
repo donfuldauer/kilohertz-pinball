@@ -6,13 +6,19 @@
 //!   (1 − rest − dz)` clamped to `0..=1`, 0 within the deadzone or below rest.
 //! * **Pull.** A pull starts when `raw − rest > deadzone`. It can end in a
 //!   release only if it *qualifies*: the filter was *armed*, the pull reached
-//!   `max(PULL_QUALIFY_DEADZONES · deadzone, MIN_PULL_DEPTH)`, and it lasted
-//!   at least [`MIN_PULL_TICKS`] updates. The release is reported on the tick
-//!   the plunger is back within the deadzone (overshoot past rest counts),
-//!   with the peak forward speed of the return stroke within the last
-//!   `release_window_ms` (see [`MAX_SPEED_BASELINE`]), if that peak is at
-//!   least `release_min_speed`. After a release no pull starts for
+//!   `max(PULL_QUALIFY_DEADZONES · deadzone, MIN_PULL_DEPTH)`, and it spent
+//!   at least [`MIN_PULL_TICKS`] updates at that depth. The release is
+//!   reported on the tick the plunger is back within the deadzone (overshoot
+//!   past rest counts), with the peak forward speed of the return stroke
+//!   within the last `release_window_ms`, if that peak is at least
+//!   `release_min_speed`. After a release no pull starts for
 //!   [`RELEASE_HOLDOFF_MS`].
+//! * **Release speed.** With noise-free readings it is exactly the largest
+//!   1 ms forward difference in the window up to the release tick (what
+//!   happens inside the deadzone after that tick is not seen). The baseline
+//!   of the differences grows only as far as the measured sensor noise
+//!   requires, and a stroke that is straight within that noise reports its
+//!   least-squares slope; see [`MAX_SPEED_BASELINE`].
 //! * **Arming.** The filter arms once the plunger has been at rest (within
 //!   ±deadzone) for [`ARM_REST_MS`] continuously, and stays armed through
 //!   pulls that end without a release, so deadzone-edge chatter and hesitant
@@ -31,10 +37,11 @@
 //!     depth), or a *known-good* rest, or at most [`MAX_REST_OFFSET`] during
 //!     the power-on window ([`ACQUIRE_WINDOW_MS`] after the first update,
 //!     before the first release); or when it lies more than a deadzone
-//!     *below* rest and is known-good. Known-good rests: nominal 0, the last
-//!     rest a release returned to or that was acquired upward, and the rest
-//!     the last downward re-acquisition moved away from (tolerance
-//!     `max(2·deadzone, 0.01)`). Any other level below rest is the knob held
+//!     *below* rest and is known-good. Known-good rests: nominal 0, the
+//!     first rest acquired in the power-on window (kept for good: the rest
+//!     of an offset device), the last rest a release returned to or that was
+//!     acquired upward, and the rest the last downward re-acquisition moved
+//!     away from (tolerance `max(2·deadzone, 0.01)`). Any other level below rest is the knob held
 //!     pushed in: it reads 0 and becomes the rest only after
 //!     [`PUSH_IN_REACQUIRE_MS`]; the previous rest is remembered and restored
 //!     after [`STABLE_MS`] back there. Levels beyond
@@ -66,9 +73,9 @@ pub const PULL_QUALIFY_DEADZONES: f32 = 2.5;
 /// Minimum qualifying depth (full-scale); see the module docs.
 pub const MIN_PULL_DEPTH: f32 = 0.05;
 
-/// A qualified pull must have lasted this many updates (outside the
-/// deadzone) before its return is a release: one- and two-sample spikes are
-/// noise, a 3 ms tap is the fastest real pull.
+/// A qualified pull must have spent this many updates at qualifying depth
+/// before its return is a release: one- and two-sample spikes are noise (also
+/// on top of a shallow pull), a 2 ms / 2 ms tap is the fastest real pull.
 pub const MIN_PULL_TICKS: u32 = 3;
 
 /// The filter arms after this long (ms) continuously at rest; see the module
@@ -80,6 +87,10 @@ pub const RELEASE_HOLDOFF_MS: u64 = 200;
 
 /// The rest position stays within `±MAX_REST_OFFSET` of nominal 0.
 pub const MAX_REST_OFFSET: f32 = 0.25;
+
+/// A stable level this far beyond `±MAX_REST_OFFSET` still counts as at the
+/// limit.
+const REST_LIMIT_SLACK: f32 = 1.0e-3;
 
 /// A reading held within ±deadzone of one level this long (ms) is stable.
 pub const STABLE_MS: u64 = 1000;
@@ -406,9 +417,11 @@ impl PlungerFilter {
         qualify_depth: f32,
         power_on: bool,
     ) {
-        if held_ms < STABLE_MS || level.abs() > MAX_REST_OFFSET {
+        // The level average only approaches a level held at the limit.
+        if held_ms < STABLE_MS || level.abs() > MAX_REST_OFFSET + REST_LIMIT_SLACK {
             return;
         }
+        let level = level.clamp(-MAX_REST_OFFSET, MAX_REST_OFFSET);
         let above = level > self.rest + deadzone;
         let below = level < self.rest - deadzone;
         if !above && !below {
@@ -639,6 +652,32 @@ mod tests {
         assert!((rel[0] - 50.0).abs() < 0.5, "{}", rel[0]);
         assert!(out.iter().any(|o| o.position == 1.0));
         assert_eq!(out.last().unwrap().position, 0.0);
+    }
+
+    #[test]
+    fn common_step_of_changes() {
+        assert_eq!(common_step(0.0, 0.0), 0.0);
+        assert_eq!(common_step(0.0, 0.25), 0.25);
+        assert!((common_step(8.0 / 255.0, 9.0 / 255.0) - 1.0 / 255.0).abs() < 1e-6);
+        assert!((common_step(0.75, 0.5) - 0.25).abs() < 1e-6);
+        // No common step above the limit.
+        assert!(common_step(0.123_456, 0.077_777) < MIN_QUANTUM * 10.0);
+    }
+
+    #[test]
+    fn noise_estimate_follows_rest_noise_only() {
+        let mut f = PlungerFilter::new(PlungerConfig::default());
+        for t in 0..1000u64 {
+            f.update(if t % 2 == 0 { 0.003 } else { -0.003 }, t);
+        }
+        // Second differences are ±0.012: σ estimate 0.012/√6.
+        let sigma = f.noise_var.sqrt();
+        assert!((sigma - 0.012 / 6.0f32.sqrt()).abs() < 1e-4, "{sigma}");
+        // A pull does not feed it.
+        for t in 1000..1200u64 {
+            f.update(if t % 2 == 0 { 0.5 } else { 0.7 }, t);
+        }
+        assert_eq!(f.noise_var.sqrt(), sigma);
     }
 
     #[test]

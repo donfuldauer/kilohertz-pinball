@@ -82,3 +82,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3 | 3.2 | Implementer (other model) | Fable 5.2 | 1 | running | — | fresh brief + failure history (PLAN §2.6 step 2); review by Opus |
 | 3 | 2.2 | Implementer | Fable 5.2 | fix 1 | done | 249 tests; coverage 97.59 % | rising-guide reach bound; per-ball clocks; f64 face distance; resting seating |
 | 3 | 2.2 | Reviewer | Opus 5.5 | 2 | **fail** | gates 1–7 pass; round-1 B1, B2, mesh glitches, drift verified fixed | B4 tunnelling through tight/steep rising guides (non-global closest point, pre-existing since 2.1) → fix 2 |
+| 3 | 3.2 | Implementer (other model) | Fable 5.2 | 1 | done | 293 pin_input tests; coverage 98.78 % | B4 exact noise-free (all shapes 0.000 %); N-k, N-l fixed; offset never_stuck 80 000 histories clean |
