@@ -158,3 +158,8 @@ Spikes CI run 43140608468 (commit a417638), all three jobs green, rustc 1.99.1 o
 - **Due cutoff is inclusive and saturating:** an event with `timestamp_ns == epoch_ns + tick·1_000_000` is applied at `tick` (brief wording, "≤"); `epoch + tick·1e6` saturates at `u64::MAX`.
 - `FlipperStagingRouter::update` uses `try_push` and drops changes that do not fit in a non-empty `out` (an empty `out` always fits one change per entry); `is_active` returns `false` for unknown flippers. `StagingError` = `TooManyEntries(n) | DuplicateFlipper(id) | InvalidThresholds { flipper, lower, upper }`.
 - `arrayvec` (workspace pin) added as a direct pin_input dependency, `proptest` as a dev-dependency.
+
+## Orchestrator — 3.1 sub-tick debounce
+
+**Decision:** With `debounce_ms > 0`, debounce acts on each input's state at the end of the tick, the same rule the brief gives for `debounce_ms = 0`. A press and release inside one tick therefore produce no edge and open no window.
+**Rationale:** One rule for both cases; the sim only ever sees per-tick state (§2.2 step 1). The Implementer's final code follows this; the Tester left the case unpinned.
