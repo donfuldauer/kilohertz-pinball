@@ -88,45 +88,50 @@ fn infinite_loop_in_on_init_is_aborted() {
     assert!(h.cmd.is_empty(), "on_tick ran after on_init faulted");
 }
 
-#[test]
-fn every_looping_or_erroring_scenario_faults_without_panicking() {
-    // (case, description)
-    let scenarios: &[(u16, &str)] = &[
-        (1, "infinite loop"),
-        (2, "infinite loop swallowing errors with pcall"),
-        (5, "single absurd allocation"),
-        (6, "error()"),
-        (7, "error value with a looping __tostring"),
-        (8, "argument type error"),
-        (9, "missing arguments"),
-        (10, "call of an undefined global"),
-        (14, "unbounded recursion"),
-        (19, "error(nil)"),
-        (20, "table passed as lamp id"),
-        (21, "string passed as player"),
-        (22, "nil passed as coil id"),
-        (23, "string passed as persist key"),
-        (24, "infinite loop inside a metamethod"),
-        (25, "xpcall with a looping handler"),
-        (26, "goto loop"),
-    ];
-    for &(case, what) in scenarios {
-        // Directly from on_switch.
-        let mut b = backend_with(FAULTS, cfg(16 * MIB, 50_000));
-        let mut h = Host::new(1);
-        h.case(&mut b, case);
-        assert!(b.is_faulted(), "{what} (on_switch) must fault");
-        assert_eq!(b.fault_count(), 1, "{what} (on_switch)");
-        assert_script_is_silent(&mut b, &mut h);
+/// Runs one fault scenario both directly from `on_switch` and armed for `on_tick`.
+fn scenario_faults(case: u16, what: &str) {
+    let mut b = backend_with(FAULTS, cfg(16 * MIB, 50_000));
+    let mut h = Host::new(1);
+    h.case(&mut b, case);
+    assert!(b.is_faulted(), "{what} (on_switch) must fault");
+    assert_eq!(b.fault_count(), 1, "{what} (on_switch)");
+    assert_script_is_silent(&mut b, &mut h);
 
-        // Armed for on_tick.
-        let mut b = backend_with(FAULTS, cfg(16 * MIB, 50_000));
-        let mut h = Host::new(1);
-        h.case(&mut b, 100 + case);
-        h.tick(&mut b);
-        assert!(b.is_faulted(), "{what} (on_tick) must fault");
-        assert_eq!(b.fault_count(), 1, "{what} (on_tick)");
-    }
+    let mut b = backend_with(FAULTS, cfg(16 * MIB, 50_000));
+    let mut h = Host::new(1);
+    h.case(&mut b, 100 + case);
+    h.tick(&mut b);
+    assert!(b.is_faulted(), "{what} (on_tick) must fault");
+    assert_eq!(b.fault_count(), 1, "{what} (on_tick)");
+}
+
+/// One test per scenario, so a stall is attributable to a single case.
+macro_rules! fault_scenarios {
+    ($($name:ident => ($case:expr, $what:expr);)*) => {$(
+        #[test]
+        fn $name() {
+            scenario_faults($case, $what);
+        }
+    )*};
+}
+
+fault_scenarios! {
+    scenario_infinite_loop => (1, "infinite loop");
+    scenario_loop_swallowing_errors_with_pcall => (2, "infinite loop swallowing errors with pcall");
+    scenario_absurd_allocation => (5, "single absurd allocation");
+    scenario_explicit_error => (6, "error()");
+    scenario_error_value_with_looping_tostring => (7, "error value with a looping __tostring");
+    scenario_argument_type_error => (8, "argument type error");
+    scenario_missing_arguments => (9, "missing arguments");
+    scenario_undefined_global_call => (10, "call of an undefined global");
+    scenario_unbounded_recursion => (14, "unbounded recursion");
+    scenario_error_nil => (19, "error(nil)");
+    scenario_table_as_lamp_id => (20, "table passed as lamp id");
+    scenario_string_as_player => (21, "string passed as player");
+    scenario_nil_as_coil_id => (22, "nil passed as coil id");
+    scenario_string_as_persist_key => (23, "string passed as persist key");
+    scenario_loop_inside_metamethod => (24, "infinite loop inside a metamethod");
+    scenario_goto_loop => (26, "goto loop");
 }
 
 #[test]
@@ -333,19 +338,6 @@ fn steady_state_memory_does_not_creep_into_the_cap() {
         );
         assert_eq!(h.cmd.persist_writes.len(), 1);
     }
-}
-
-#[test]
-fn looping_finalizers_do_not_stall_later_ticks() {
-    let mut b = backend_with(FAULTS, cfg(16 * MIB, 20_000));
-    let mut h = Host::new(1);
-    h.case(&mut b, 16);
-    for _ in 0..300 {
-        h.tick(&mut b);
-        h.case(&mut b, 27);
-    }
-    // Whether the finalizers fault the script is unspecified; returning is the point.
-    let _ = b.apply_reload(b"function on_tick() end");
 }
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,8 @@
 //! * The string metatable and every `pinball` table are protected
 //!   (`__metatable`), `pinball` tables are read-only proxies (also against
 //!   `rawset`).
+//! * `setmetatable` refuses metatables with `__gc`: Lua runs finalizers with
+//!   hooks disabled, so a finalizer could otherwise loop outside the budget.
 //! * `pcall`/`xpcall` re-raise memory errors, and once the instruction budget
 //!   is exhausted the hook fires on every instruction, so neither limit can be
 //!   swallowed by a protected call.
@@ -53,6 +55,15 @@ pinball = readonly(api, "pinball")
 rawset = function(t, k, v)
   if protected[t] then error("cannot rawset a read-only pinball table", 2) end
   return rawset(t, k, v)
+end
+-- Finalizers run with hooks disabled (no instruction budget), so scripts may
+-- not register any. A __gc added to a metatable later is ignored by Lua 5.4.
+local rawget, type = rawget, type
+setmetatable = function(t, mt)
+  if type(mt) == "table" and rawget(mt, "__gc") ~= nil then
+    error("__gc metamethods are not allowed in table scripts", 2)
+  end
+  return setmetatable(t, mt)
 end
 local MEM = "not enough memory"
 local function chk(ok, ...)

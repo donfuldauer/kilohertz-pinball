@@ -15,6 +15,12 @@ pub(crate) const TOUCH_EPS: f32 = 1.0e-6;
 /// (about 1.4 mrad).
 const PARALLEL_EPS: f32 = 1.0e-6;
 
+/// A touching sphere counts as approaching only if its closing speed exceeds
+/// this fraction of its speed. Velocities that a solver has just made
+/// tangential keep a rounding residue of a few 1e-8 of the speed; without the
+/// threshold that residue would be reported as an impact at time 0 forever.
+pub(crate) const APPROACH_EPS: f32 = 1.0e-5;
+
 /// Maximum Newton iterations of a cast.
 const CAST_ITERATIONS: usize = 32;
 
@@ -147,13 +153,14 @@ impl Primitive {
         velocity: Vec3,
         max_time: f32,
     ) -> Option<(f32, Closest)> {
+        let approach = -APPROACH_EPS * velocity.length();
         let mut t = 0.0f32;
         for _ in 0..CAST_ITERATIONS {
             let cl = self.closest(center + velocity * t);
             let gap = cl.distance - radius;
             let rate = cl.normal.dot(velocity);
             if gap <= TOUCH_EPS {
-                return (rate < 0.0 && cl.valid).then_some((t, cl));
+                return (rate < approach && cl.valid).then_some((t, cl));
             }
             if rate >= 0.0 {
                 // Convex gap that is not decreasing never reaches zero.
@@ -166,14 +173,14 @@ impl Primitive {
             }
             if next == t {
                 // Out of floating-point resolution: touching.
-                return cl.valid.then_some((t, cl));
+                return (rate < approach && cl.valid).then_some((t, cl));
             }
             t = next;
         }
         // Not converged (grazing a curved feature). `t` is still a lower bound
         // of the true impact time, so reporting it is conservative.
         let cl = self.closest(center + velocity * t);
-        (cl.valid && cl.normal.dot(velocity) < 0.0).then_some((t, cl))
+        (cl.valid && cl.normal.dot(velocity) < approach).then_some((t, cl))
     }
 }
 

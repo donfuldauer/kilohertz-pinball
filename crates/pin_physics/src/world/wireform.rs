@@ -2,7 +2,7 @@
 
 use glam::{DVec3, Vec3};
 
-use super::shapes::any_perpendicular;
+use super::shapes::{APPROACH_EPS, any_perpendicular};
 use super::spline::{
     ClosestPoint, CubicSpline, SAMPLES_PER_SEGMENT, SplineError, natural_second_derivatives,
 };
@@ -486,7 +486,7 @@ impl GuideCurve {
             let last = step + 1 == GUIDE_CAST_STEPS;
             if gap <= GUIDE_SKIN || last {
                 let normal = self.normal_toward(&cp, p);
-                if step == 0 && normal.dot(velocity) >= 0.0 {
+                if step == 0 && normal.dot(velocity) >= -APPROACH_EPS * speed {
                     return None;
                 }
                 return Some(GuideHit {
@@ -502,11 +502,12 @@ impl GuideCurve {
             }
             if next == time {
                 // Below floating-point resolution: touching.
-                return Some(GuideHit {
+                let normal = self.normal_toward(&cp, p);
+                return (normal.dot(velocity) < -APPROACH_EPS * speed).then_some(GuideHit {
                     time,
                     t: cp.t,
                     point: cp.point,
-                    normal: self.normal_toward(&cp, p),
+                    normal,
                 });
             }
             time = next;

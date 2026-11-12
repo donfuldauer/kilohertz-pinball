@@ -13,3 +13,5 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - [Orchestrator] Wave 2 interpretive choices (dual-stage flipper semantics, PiP aspect ratios, Lua ID tables): see DECISIONS.md "Orchestrator — Wave 2 brief decisions".
 - [3.1] Debounce semantics chosen by the agent (tick-sampled raw state; window-end settling opens a new window); see DECISIONS.md "3.1 — Input ingestion & flipper staging".
 - [3.1 review, non-blocking] pin_input: add `const _: () = assert!(CabinetInput::COUNT <= 8)` (events/mod.rs:45) and document "call advance once per tick with non-decreasing ticks" (events/mod.rs:141). Subphase 2.5 must clear the router `out` buffer before every `update` (staging/mod.rs:170).
+- [1.3] `pin_app` gained `src/lib.rs` (module declarations moved there from `main.rs`) so SDL integration tests can use `pin_app::platform`; confirm this layout for later pin_app subphases. See DECISIONS.md "1.3 — SDL3 windows, display topology and SPSC rings".
+- [1.3] Default gamepad mapping and the drop-and-count policy for full input/window rings were chosen by the agent; confirm or adjust in 3.2.

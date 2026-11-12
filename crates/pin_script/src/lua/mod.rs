@@ -361,24 +361,21 @@ mod tests {
     }
 
     #[test]
-    fn finalizer_loop_in_gc_step_is_bounded() {
-        let mut b = LuaScriptBackend::new(
-            b"function on_tick() for i = 1, 50 do setmetatable({}, {__gc = function() while true do end end}) end collectgarbage('count') end",
-            &NameTables::default(),
-            LuaConfig {
-                memory_limit_bytes: 1 << 20,
-                instruction_budget: 10_000,
-            },
-        )
-        .unwrap();
-        for _ in 0..200 {
+    fn finalizers_are_refused() {
+        let mut b = backend(
+            "function on_tick() setmetatable({}, {__gc = function() while true do end end}) end",
+        );
+        tick(&mut b);
+        assert!(b.is_faulted());
+        assert!(matches!(b.last_error(), Some(ScriptError::Runtime(m)) if m.contains("__gc")));
+        // Adding __gc after the fact is ignored by Lua; the GC step stays bounded.
+        let mut b = backend(
+            "function on_tick() local mt = {} setmetatable({}, mt) \
+             mt.__gc = function() while true do end end end",
+        );
+        for _ in 0..50 {
             tick(&mut b);
-            if b.is_faulted() {
-                break;
-            }
         }
-        // Either the GC step ran a finalizer (budget fault) or it has not yet;
-        // in both cases the tick returned.
-        assert!(b.fault_count() <= 1);
+        assert!(!b.is_faulted());
     }
 }
