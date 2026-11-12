@@ -271,3 +271,138 @@ fn probe_stack() {
         stall(&format!("recursion on {kib} KiB thread"), src, WasmConfig { memory_limit_bytes: 1 << 20, fuel_per_callback: u64::MAX }, 3, 2);
     }).unwrap().join().unwrap();
 }
+
+// ---------------------------------------------------------------- binary builder
+fn uleb(mut v: u64, out: &mut Vec<u8>) { loop { let b = (v & 0x7f) as u8; v >>= 7; if v == 0 { out.push(b); break; } out.push(b | 0x80); } }
+fn sleb(mut v: i64, out: &mut Vec<u8>) { loop { let b = (v & 0x7f) as u8; v >>= 7; let done = (v == 0 && b & 0x40 == 0) || (v == -1 && b & 0x40 != 0); if done { out.push(b); break; } out.push(b | 0x80); } }
+fn section(id: u8, body: &[u8], out: &mut Vec<u8>) { out.push(id); uleb(body.len() as u64, out); out.extend_from_slice(body); }
+const I32: u8 = 0x7f; const I64: u8 = 0x7e;
+struct F { ty: u32, locals: Vec<(u32, u8)>, code: Vec<u8>, export: bool }
+/// types: (params, results). Entry functions are appended automatically.
+fn build(mut types: Vec<(Vec<u8>, Vec<u8>)>, mut funcs: Vec<F>, elem_items: Option<(usize, u32)>, table: Option<u32>) -> Vec<u8> {
+    let t_void = types.len() as u32; types.push((vec![], vec![]));
+    let t_sw = types.len() as u32; types.push((vec![I32, I32], vec![]));
+    let first_entry = funcs.len() as u32;
+    for ty in [t_void, t_void, t_sw] { funcs.push(F { ty, locals: vec![], code: vec![], export: false }); }
+    let mut out = b"\0asm\x01\0\0\0".to_vec();
+    let mut b = Vec::new(); uleb(types.len() as u64, &mut b);
+    for (p, r) in &types { b.push(0x60); uleb(p.len() as u64, &mut b); b.extend_from_slice(p); uleb(r.len() as u64, &mut b); b.extend_from_slice(r); }
+    section(1, &b, &mut out);
+    let mut b = Vec::new(); uleb(funcs.len() as u64, &mut b); for f in &funcs { uleb(f.ty as u64, &mut b); }
+    section(3, &b, &mut out);
+    if let Some(n) = table { let mut b = vec![1, 0x70, 0]; uleb(n as u64, &mut b); section(4, &b, &mut out); }
+    section(5, &[1, 0, 1], &mut out);
+    let mut b = Vec::new();
+    let nexp = 4 + funcs.iter().filter(|f| f.export).count();
+    uleb(nexp as u64, &mut b);
+    for (name, idx) in [("on_init", first_entry), ("on_tick", first_entry + 1), ("on_switch_edge", first_entry + 2)] { uleb(name.len() as u64, &mut b); b.extend_from_slice(name.as_bytes()); b.push(0); uleb(idx as u64, &mut b); }
+    b.push(6); b.extend_from_slice(b"memory"); b.push(2); b.push(0);
+    for (i, f) in funcs.iter().enumerate() { if f.export { let n = format!("{i:x}"); uleb(n.len() as u64, &mut b); b.extend_from_slice(n.as_bytes()); b.push(0); uleb(i as u64, &mut b); } }
+    section(7, &b, &mut out);
+    if let Some((n, modulo)) = elem_items {
+        // one passive segment (flag 1, elemkind 0) of n function indices
+        let mut b = vec![1, 1, 0]; uleb(n as u64, &mut b);
+        for i in 0..n { uleb((i as u32 % modulo) as u64, &mut b); }
+        section(9, &b, &mut out);
+    }
+    let mut b = Vec::new(); uleb(funcs.len() as u64, &mut b);
+    for f in &funcs {
+        let mut body = Vec::new(); uleb(f.locals.len() as u64, &mut body);
+        for (n, t) in &f.locals { uleb(*n as u64, &mut body); body.push(*t); }
+        body.extend_from_slice(&f.code); body.push(0x0b);
+        uleb(body.len() as u64, &mut b); b.extend_from_slice(&body);
+    }
+    section(10, &b, &mut out);
+    out
+}
+fn envn(k: &str, d: usize) -> usize { std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d) }
+
+#[test]
+fn probe_bin() {
+    let case = std::env::var("PROBE_CASE").unwrap_or_default();
+    let bin = match case.as_str() {
+        "cap_10k_funcs" => {
+            let pairs = envn("PN", 11);
+            let mut fs = Vec::new();
+            for _ in 0..9_990 {
+                let mut c = vec![0x20, 0];
+                for k in 0..pairs { c.push(0x42); sleb(1000 + k as i64, &mut c); c.push(0x7e); c.push(0x42); sleb(77, &mut c); c.push(0x7c); }
+                fs.push(F { ty: 0, locals: vec![], code: c, export: envn("PX", 0) == 1 });
+            }
+            build(vec![(vec![I64], vec![I64])], fs, None, None)
+        }
+        "cap_big_funcs" => {
+            let stmts = envn("PN", 28_000); let nf = envn("PF", 4);
+            let mut fs = Vec::new();
+            for _ in 0..nf {
+                let mut c = Vec::new();
+                for i in 0..stmts { c.extend_from_slice(&[0x20, 0, 0x42]); sleb(i as i64, &mut c); c.extend_from_slice(&[0x7c, 0x42, 31, 0x7e, 0x21, 0]); }
+                c.extend_from_slice(&[0x20, 0]);
+                fs.push(F { ty: 0, locals: vec![], code: c, export: false });
+            }
+            build(vec![(vec![I64], vec![I64])], fs, None, None)
+        }
+        "locals_loops" => {
+            let l = envn("PL", 2000); let d = envn("PD", 2000); let nf = envn("PF", 1);
+            let mut fs = Vec::new();
+            for _ in 0..nf {
+                let mut c = Vec::new();
+                for _ in 0..d { c.extend_from_slice(&[0x03, 0x40]); }
+                for i in 0..l { c.push(0x20); uleb(i as u64, &mut c); c.extend_from_slice(&[0x42, 1, 0x7c, 0x21]); uleb(i as u64, &mut c); }
+                c.extend_from_slice(&[0x41, 0, 0x0d, 0]);
+                for _ in 0..d { c.push(0x0b); }
+                c.extend_from_slice(&[0x42, 0]);
+                for i in 0..l { c.push(0x20); uleb(i as u64, &mut c); c.push(0x7c); }
+                fs.push(F { ty: 0, locals: vec![(l as u32, I64)], code: c, export: false });
+            }
+            build(vec![(vec![], vec![I64])], fs, None, None)
+        }
+        "brtable" => {
+            let n = envn("PN", 480); let k = envn("PK", 480); let nf = envn("PF", 1);
+            let mut fs = Vec::new();
+            for _ in 0..nf {
+                let mut c = Vec::new();
+                for _ in 0..n { c.extend_from_slice(&[0x02, 0x40]); }
+                for _ in 0..k { c.extend_from_slice(&[0x02, 0x40, 0x20, 0, 0x0e]); uleb(n as u64, &mut c); for i in 0..n { uleb(i as u64, &mut c); } c.push(0); c.push(0x0b); }
+                for _ in 0..n { c.push(0x0b); }
+                fs.push(F { ty: 0, locals: vec![], code: c, export: false });
+            }
+            build(vec![(vec![I32], vec![])], fs, None, None)
+        }
+        "many_params" => {
+            let np = envn("PN", 1000); let calls = envn("PK", 120); let nf = envn("PF", 4);
+            let mut fs = vec![F { ty: 0, locals: vec![], code: vec![], export: false }];
+            for _ in 0..nf {
+                let mut c = Vec::new();
+                for _ in 0..calls { for _ in 0..np { c.extend_from_slice(&[0x42, 1]); } c.extend_from_slice(&[0x10, 0]); }
+                fs.push(F { ty: 1, locals: vec![], code: c, export: false });
+            }
+            build(vec![(vec![I64; np], vec![]), (vec![], vec![])], fs, None, None)
+        }
+        "types" => {
+            let nt = envn("PN", 50_000); let np = envn("PK", 16);
+            let mut ts = Vec::new();
+            for i in 0..nt { ts.push(((0..np).map(|b| if (i >> (b % 20)) & 1 == 1 { I32 } else { I64 }).collect(), vec![])); }
+            build(ts, vec![], None, None)
+        }
+        "sigs_escaping" => {
+            // PN functions, each with a distinct signature, all exported (escape => trampolines)
+            let nf = envn("PN", 9_990); let np = envn("PK", 14);
+            let mut ts = Vec::new(); let mut fs = Vec::new();
+            for i in 0..nf { ts.push(((0..np).map(|b| if (i >> b) & 1 == 1 { I32 } else { I64 }).collect(), vec![])); fs.push(F { ty: i as u32, locals: vec![], code: vec![], export: true }); }
+            build(ts, fs, None, None)
+        }
+        "elem" => {
+            let n = envn("PN", 1_000_000);
+            build(vec![], vec![], Some((n, 3)), Some(0))
+        }
+        "locals_only" => {
+            // many functions each declaring 50 000 locals
+            let nf = envn("PN", 9_990); let l = envn("PL", 50_000);
+            let fs = (0..nf).map(|_| F { ty: 0, locals: vec![(l as u32, I64)], code: vec![], export: false }).collect();
+            build(vec![(vec![], vec![])], fs, None, None)
+        }
+        other => { println!("PROBE unknown {other}"); return; }
+    };
+    time(&format!("{case} {:?}", std::env::vars().filter(|(k, _)| k.len() == 2 && k.starts_with('P')).collect::<Vec<_>>()), &bin);
+}

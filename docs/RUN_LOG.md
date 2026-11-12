@@ -80,3 +80,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3 | 3.2 | Implementer | Opus 5.5 | fix 3 (last) | done | 0 lost / 0 doubled over 28 800 noisy launches | arming persists; noise-aware speed estimator |
 | 3 | 3.2 | Reviewer | Fable 5.2 | 4 | **fail** | gates 1–7 pass; invariant fuzz 0 violations at rest 0 (with/without noise) | B4 estimator biased low on noise-free curved strokes (−6 % to −44 %); N-k, N-l |
 | 3 | 3.2 | Implementer (other model) | Fable 5.2 | 1 | running | — | fresh brief + failure history (PLAN §2.6 step 2); review by Opus |
+| 3 | 2.2 | Implementer | Fable 5.2 | fix 1 | done | 249 tests; coverage 97.59 % | rising-guide reach bound; per-ball clocks; f64 face distance; resting seating |
+| 3 | 2.2 | Reviewer | Opus 5.5 | 2 | **fail** | gates 1–7 pass; round-1 B1, B2, mesh glitches, drift verified fixed | B4 tunnelling through tight/steep rising guides (non-global closest point, pre-existing since 2.1) → fix 2 |

@@ -92,15 +92,47 @@ pub const PUSH_IN_REACQUIRE_MS: u64 = 5000;
 /// release).
 pub const ACQUIRE_WINDOW_MS: u64 = 3000;
 
-/// The release speed is the peak of finite differences taken over a baseline
-/// of a quarter of the return stroke, clamped to `1..=MAX_SPEED_BASELINE`
-/// updates: long enough to divide sensor noise, short enough to keep the
-/// peak of a smooth spring snap within ~2.5 %. The return stroke is the last
-/// 90 % of travel from the furthest pull position (within the window) to the
-/// release tick. When the stroke is straight within the sensor noise
-/// (estimated from second differences), the stroke's least-squares slope is
-/// reported instead: the same speed with far less noise.
+/// Longest baseline (updates) of the finite differences whose peak is the
+/// release speed. The baseline is 1 update — the exact largest 1 ms
+/// difference within the window — unless the sensor noise would then be a
+/// visible part of the result: it grows, up to a quarter of the return
+/// stroke and this many updates, until the noise of one difference is at
+/// most [`NOISE_SHARE`] of the peak (random noise, measured at rest) and
+/// [`QUANTUM_SHARE`] of it (quantisation step, detected in the stroke). When
+/// the return stroke (the last 90 % of travel from the furthest position in
+/// the window) is straight within that noise, its least-squares slope is
+/// reported instead: the same speed with far less noise. Measured bias of a
+/// longer baseline on curved strokes: see `tests/calibration_shapes.rs`.
 pub const MAX_SPEED_BASELINE: usize = 8;
+
+/// Random noise counts as this many standard deviations of a difference of
+/// two readings (4·√2).
+const NOISE_SIGMAS: f32 = 4.0 * core::f32::consts::SQRT_2;
+
+/// Largest accepted share of random noise in the peak; see
+/// [`MAX_SPEED_BASELINE`].
+pub const NOISE_SHARE: f32 = 0.03;
+
+/// Largest accepted share of one quantisation step per baseline in the peak;
+/// see [`MAX_SPEED_BASELINE`].
+pub const QUANTUM_SHARE: f32 = 0.1;
+
+/// Readings count as quantised when every 1-update change in the window is a
+/// whole multiple of their common step, within this tolerance (in steps) ...
+const QUANTUM_TOLERANCE: f32 = 0.02;
+
+/// ... that common step is at least this large (full-scale) ...
+const MIN_QUANTUM: f32 = 1.0e-5;
+
+/// ... and the window holds at least this many changes (fewer prove nothing).
+const MIN_QUANTUM_CHANGES: usize = 8;
+
+/// The noise estimate skips this many updates after the plunger comes to
+/// rest (spring bounce) ...
+const NOISE_SETTLE_TICKS: u32 = 20;
+
+/// ... and averages over this many updates at rest.
+const NOISE_AVERAGE_TICKS: u32 = 256;
 
 /// Time constant (s) of the level average used by re-acquisition.
 const LEVEL_TAU_S: f32 = 0.05;
@@ -167,6 +199,8 @@ pub struct PlungerFilter {
     // Known-good rests.
     anchor: f32,
     before_push_in: Option<f32>,
+    /// The first rest acquired in the power-on window: known-good for good.
+    home: Option<f32>,
     // Stable-signal detector.
     band_ready: bool,
     band_min: f32,
@@ -182,6 +216,13 @@ pub struct PlungerFilter {
     rest_hist: [f32; REST_LOOKBACK_TICKS],
     rest_head: usize,
     rest_len: usize,
+    // Sensor-noise estimate (see `feed_noise`).
+    /// The two readings before the current one, newest first.
+    prev: [f32; 2],
+    /// Consecutive updates at rest.
+    rest_run: u32,
+    noise_var: f32,
+    noise_n: u32,
 }
 
 impl PlungerFilter {
@@ -203,6 +244,7 @@ impl PlungerFilter {
             rest_since: None,
             anchor: 0.0,
             before_push_in: None,
+            home: None,
             band_ready: false,
             band_min: 0.0,
             band_max: 0.0,
@@ -214,6 +256,10 @@ impl PlungerFilter {
             rest_hist: [0.0; REST_LOOKBACK_TICKS],
             rest_head: 0,
             rest_len: 0,
+            prev: [0.0; 2],
+            rest_run: 0,
+            noise_var: 0.0,
+            noise_n: 0,
         }
     }
 
@@ -310,7 +356,7 @@ impl PlungerFilter {
                     self.holdoff_until = tick_ms.saturating_add(RELEASE_HOLDOFF_MS);
                 }
                 self.qualified = false;
-            } else {
+            } else if rel >= qualify_depth {
                 self.pull_ticks = self.pull_ticks.saturating_add(1);
             }
         }
@@ -320,11 +366,13 @@ impl PlungerFilter {
                 if tick_ms.saturating_sub(since) >= ARM_REST_MS {
                     self.armed = true;
                 }
+                self.feed_noise(raw);
                 let k = (rate * dt_s).clamp(0.0, 1.0);
                 self.rest =
                     (self.rest + (raw - self.rest) * k).clamp(-MAX_REST_OFFSET, MAX_REST_OFFSET);
             } else {
                 self.rest_since = None;
+                self.rest_run = 0;
                 if rel < -deadzone {
                     // Pushed in (or overshooting past rest): the spring-back
                     // that follows must settle before a pull can launch.
@@ -332,6 +380,11 @@ impl PlungerFilter {
                 }
             }
         }
+
+        if self.pulled {
+            self.rest_run = 0;
+        }
+        self.prev = [raw, self.prev[0]];
 
         let position = if rel > deadzone {
             let span = (1.0 - self.rest - deadzone).max(1.0e-3);
@@ -366,6 +419,7 @@ impl PlungerFilter {
             x.abs() <= tol
                 || (x - self.anchor).abs() <= tol
                 || self.before_push_in.is_some_and(|r| (x - r).abs() <= tol)
+                || self.home.is_some_and(|r| (x - r).abs() <= tol)
         };
         let level_good = known_good(level);
         let down = below && (level_good || held_ms >= PUSH_IN_REACQUIRE_MS);
@@ -382,6 +436,9 @@ impl PlungerFilter {
             self.before_push_in = None;
         } else {
             return;
+        }
+        if power_on && self.home.is_none() {
+            self.home = Some(level);
         }
         self.rest = level;
         self.rest_len = 0;
@@ -423,9 +480,24 @@ impl PlungerFilter {
         self.len = (self.len + 1).min(RING);
     }
 
+    /// Feeds the sensor-noise estimate with a reading taken at rest: the
+    /// running mean of squared second differences (white noise of std σ gives
+    /// second differences of variance 6·σ²). Only readings after
+    /// [`NOISE_SETTLE_TICKS`] consecutive updates at rest count, so the
+    /// spring bounce after a release is left out.
+    fn feed_noise(&mut self, raw: f32) {
+        self.rest_run = self.rest_run.saturating_add(1);
+        if self.rest_run >= NOISE_SETTLE_TICKS {
+            let d2 = raw - 2.0 * self.prev[0] + self.prev[1];
+            self.noise_n = (self.noise_n + 1).min(NOISE_AVERAGE_TICKS);
+            self.noise_var += (d2 * d2 / 6.0 - self.noise_var) / self.noise_n as f32;
+        }
+    }
+
     /// Peak forward speed (full-scale/s) of the return stroke ending at the
     /// newest reading, considering readings at or after `since`; see
-    /// [`MAX_SPEED_BASELINE`]. Runs once per release, at most `RING` steps.
+    /// [`MAX_SPEED_BASELINE`]. Runs once per release, at most
+    /// `(MAX_SPEED_BASELINE + 3) · RING` steps.
     fn stroke_peak(&self, since: u64) -> f32 {
         let n = self.len;
         let at = |i: usize| self.pos[(self.head + RING - n + i) % RING];
@@ -443,25 +515,58 @@ impl PlungerFilter {
         if travel <= 0.0 {
             return 0.0;
         }
+        // Peak of the finite differences over a baseline of `k` updates.
+        let peak_over = |k: usize| {
+            let k = k.min(last - first);
+            let mut peak = 0.0f32;
+            for i in (first + k)..=last {
+                let j = i - k;
+                let (ti, xi) = at(i);
+                let (tj, xj) = at(j);
+                let ms = ti.saturating_sub(tj).max((i - j) as u64);
+                peak = peak.max((xj - xi) / (ms as f32 / 1000.0));
+            }
+            peak
+        };
+        // The noise of one reading: random (measured at rest) and quantisation.
+        let sigma = self.noise_var.max(0.0).sqrt();
+        let quantum = {
+            let step = |i: usize| (at(i).1 - at(i - 1).1).abs();
+            let q = ((first + 1)..=last).map(step).fold(0.0, common_step);
+            let on_grid = |d: f32| ((d / q) - (d / q).round()).abs() <= QUANTUM_TOLERANCE;
+            let changes = ((first + 1)..=last).filter(|&i| step(i) > 0.0).count();
+            if q >= MIN_QUANTUM
+                && changes >= MIN_QUANTUM_CHANGES
+                && ((first + 1)..=last).all(|i| on_grid(step(i)))
+            {
+                q
+            } else {
+                0.0
+            }
+        };
+        // Worst error (full-scale/s) of a 1-update difference, and the peak a
+        // 1-update difference must reach for that error to be negligible.
+        let margin = (NOISE_SIGMAS * sigma).max(quantum) * 1000.0;
+        let needed = (NOISE_SIGMAS * sigma / NOISE_SHARE).max(quantum / QUANTUM_SHARE) * 1000.0;
+        // The return stroke proper: the last 90 % of travel.
         let threshold = x_now + 0.9 * travel;
         let start = (first..=last)
             .rev()
             .find(|&i| at(i).1 >= threshold)
             .unwrap_or(first);
         let stroke_ms = t_now.saturating_sub(at(start).0);
-        let k = ((stroke_ms as f32 / 4.0).round() as usize).clamp(1, MAX_SPEED_BASELINE);
-        let mut peak = 0.0f32;
-        for i in (start + 1)..=last {
-            let j = i.saturating_sub(k);
-            let (ti, xi) = at(i);
-            let (tj, xj) = at(j);
-            let ms = ti.saturating_sub(tj).max((i - j) as u64);
-            peak = peak.max((xj - xi) / (ms as f32 / 1000.0));
+        let k_max = ((stroke_ms as f32 / 4.0).round() as usize).clamp(1, MAX_SPEED_BASELINE);
+        // The shortest baseline whose noise is negligible against its peak.
+        let mut k = 1;
+        let mut peak = peak_over(1);
+        while k < k_max && peak * (k as f32) < needed {
+            k += 1;
+            peak = peak_over(k);
         }
-        // When the stroke is straight within the measured noise, its
-        // least-squares slope is a far less noisy estimate of the same speed.
+        // When the stroke is straight within the noise, its least-squares
+        // slope is a far less noisy estimate of the same speed.
         let m = last - start + 1;
-        if m < 4 {
+        if m < 4 || margin <= 0.0 {
             return peak;
         }
         let t0 = at(start).0;
@@ -472,31 +577,34 @@ impl PlungerFilter {
             sx += f64::from(x);
         }
         let (t_mean, x_mean) = (st / m as f64, sx / m as f64);
-        let (mut stt, mut stx, mut s2) = (0.0f64, 0.0f64, 0.0f64);
+        let (mut stt, mut stx) = (0.0f64, 0.0f64);
         for i in start..=last {
             let (t, x) = at(i);
             let dt = t.saturating_sub(t0) as f64 - t_mean;
             stt += dt * dt;
             stx += dt * (f64::from(x) - x_mean);
-            if i > start && i < last {
-                let d2 = f64::from(at(i - 1).1) - 2.0 * f64::from(x) + f64::from(at(i + 1).1);
-                s2 += d2 * d2;
-            }
         }
         if stt <= 0.0 {
             return peak;
         }
         let v_fit = (-stx / stt * 1000.0) as f32;
-        // White noise of std σ gives second differences of std √6·σ; a
-        // k-step difference then carries √2·σ/k of noise per ms.
-        let sigma = (s2 / ((m - 2) as f64 * 6.0)).sqrt() as f32;
-        let margin = 4.0 * core::f32::consts::SQRT_2 * sigma / k as f32 * 1000.0;
-        if v_fit > 0.0 && v_fit.is_finite() && peak <= v_fit + margin {
+        if v_fit > 0.0 && v_fit.is_finite() && peak <= v_fit + margin / k as f32 {
             v_fit
         } else {
             peak
         }
     }
+}
+
+/// Largest step both `a` and `b` (≥ 0) are whole multiples of, by Euclid's
+/// algorithm; remainders below half of [`MIN_QUANTUM`] count as 0.
+fn common_step(mut a: f32, mut b: f32) -> f32 {
+    while b > 0.5 * MIN_QUANTUM {
+        let r = (a - b * (a / b).round()).abs();
+        a = b;
+        b = r;
+    }
+    a
 }
 
 fn finite_or(v: f32, d: f32) -> f32 {
