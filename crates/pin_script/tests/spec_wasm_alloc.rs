@@ -6,8 +6,8 @@
 #[path = "spec_fixtures/wasm/support.rs"]
 mod support;
 
-use pin_core::{HostCommandQueue, HostCtx, HostView, Pcg32, SeedableRng, SwitchEdge, SwitchId};
 use pin_core::TableScriptBackend;
+use pin_core::{HostCommandQueue, HostCtx, HostView, Pcg32, SeedableRng, SwitchEdge, SwitchId};
 use pin_script::wasm::{WasmConfig, WasmScriptBackend};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -146,12 +146,19 @@ fn steady_state_callbacks_calling_every_import_do_not_allocate() {
         assert_eq!(w.cmd.scores.len(), 2);
         assert_eq!(w.cmd.sounds.len(), 2);
         assert_eq!(w.cmd.persist_writes.len(), 2);
-        assert_eq!(w.cmd.coil_pulses[0].0, pin_core::CoilId(1), "id_of resolved trough_eject");
+        assert_eq!(
+            w.cmd.coil_pulses[0].0,
+            pin_core::CoilId(1),
+            "id_of resolved trough_eject"
+        );
 
         let before = allocs();
         run(&mut b, &mut w, 5_000);
         let n = allocs() - before;
-        assert_eq!(n, 0, "{n} heap allocations in 5000 steady-state ticks ({cfg:?})");
+        assert_eq!(
+            n, 0,
+            "{n} heap allocations in 5000 steady-state ticks ({cfg:?})"
+        );
         assert!(!b.is_faulted());
         assert_eq!(b.overflow_count(), 0);
     }
@@ -177,7 +184,12 @@ fn queue_overflow_and_accessors_do_not_allocate() {
     let before = allocs();
     run(&mut b, &mut w, 2_000);
     let faulted = b.is_faulted();
-    let stats = (b.fault_count(), b.overflow_count(), b.memory_size(), b.config());
+    let stats = (
+        b.fault_count(),
+        b.overflow_count(),
+        b.memory_size(),
+        b.config(),
+    );
     let none = b.last_error().is_none();
     let n = allocs() - before;
     assert_eq!(n, 0, "{n} heap allocations with a full queue");

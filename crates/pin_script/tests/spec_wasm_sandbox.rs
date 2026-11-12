@@ -63,7 +63,11 @@ fn spin(cfg: WasmConfig, opcode: u16) -> (Driver, pin_core::HostCommandQueue) {
 
 #[test]
 fn an_infinite_loop_is_contained_by_fuel() {
-    for c in [WasmConfig::engine(), WasmConfig::default(), cfg(16 * MIB, 5000)] {
+    for c in [
+        WasmConfig::engine(),
+        WasmConfig::default(),
+        cfg(16 * MIB, 5000),
+    ] {
         for opcode in [op::SPIN, op::SPIN_CALLING_HOST] {
             let (mut d, q) = spin(c, opcode);
             assert!(d.b.is_faulted(), "{c:?} op {opcode}");
@@ -86,7 +90,11 @@ fn an_infinite_loop_is_contained_by_fuel() {
                 vec![(CoilId(8), false), (CoilId(21), false), (CoilId(23), false)]
             );
             assert_eq!(q.len(), 4);
-            assert_eq!(d.b.overflow_count(), 0, "rolled-back overflows are not counted");
+            assert_eq!(
+                d.b.overflow_count(),
+                0,
+                "rolled-back overflows are not counted"
+            );
             // Later ticks and edges are no-ops.
             for _ in 0..20 {
                 assert!(d.tick().is_empty());
@@ -128,7 +136,11 @@ fn an_infinite_loop_in_on_tick_and_on_init_is_contained() {
     assert!(b.is_faulted());
     assert_eq!(b.last_error(), Some(&ScriptError::BudgetExceeded));
     assert_eq!(q1.coil_holds.as_slice(), &[(CoilId(3), false)]);
-    assert_eq!(q1.len(), 1, "the faulting tick's pulse is rolled back: {q1:?}");
+    assert_eq!(
+        q1.len(),
+        1,
+        "the faulting tick's pulse is rolled back: {q1:?}"
+    );
     assert!(q2.is_empty() && q3.is_empty());
     assert_eq!(b.fault_count(), 1);
 
@@ -284,12 +296,20 @@ fn assert_grow_refused(g: &mut Grower, delta: i32, pages_before: i64) {
     match r {
         Some(-1) => {
             assert!(!g.b.is_faulted());
-            assert_eq!(g.pages(), Some(pages_before), "a refused grow must not change the size");
+            assert_eq!(
+                g.pages(),
+                Some(pages_before),
+                "a refused grow must not change the size"
+            );
         }
         None => assert!(g.b.is_faulted(), "no result but not faulted"),
         Some(v) => panic!("memory.grow({delta}) past the {cap}-byte cap returned {v}"),
     }
-    assert!(g.b.memory_size() <= cap, "memory_size {} > cap {cap}", g.b.memory_size());
+    assert!(
+        g.b.memory_size() <= cap,
+        "memory_size {} > cap {cap}",
+        g.b.memory_size()
+    );
 }
 
 #[test]
@@ -299,16 +319,32 @@ fn an_initial_memory_above_the_cap_is_rejected_at_load() {
     assert!(load(&grow_guest(r#"(memory (export "memory") 33 64)"#), e).is_err());
     assert!(load(&grow_guest(r#"(memory (export "memory") 1000)"#), e).is_err());
     assert!(load(&grow_guest(r#"(memory (export "memory") 65536)"#), e).is_err());
-    assert!(load(&grow_guest(r#"(memory (export "memory") 257)"#), WasmConfig::default()).is_err());
+    assert!(
+        load(
+            &grow_guest(r#"(memory (export "memory") 257)"#),
+            WasmConfig::default()
+        )
+        .is_err()
+    );
     // A cap that is not a whole number of pages.
-    assert!(load(&grow_guest(r#"(memory (export "memory") 2)"#), cfg(100_000, 1_000_000)).is_err());
+    assert!(
+        load(
+            &grow_guest(r#"(memory (export "memory") 2)"#),
+            cfg(100_000, 1_000_000)
+        )
+        .is_err()
+    );
     assert!(load(&grow_guest(MEM1), cfg(PAGE - 1, 1_000_000)).is_err());
     assert!(load(&grow_guest(MEM1), cfg(0, 1_000_000)).is_err());
 
     // At or below the cap loads.
     let b = load(&grow_guest(r#"(memory (export "memory") 32)"#), e).unwrap();
     assert_eq!(b.memory_size(), 2 * MIB);
-    let b = load(&grow_guest(r#"(memory (export "memory") 256)"#), WasmConfig::default()).unwrap();
+    let b = load(
+        &grow_guest(r#"(memory (export "memory") 256)"#),
+        WasmConfig::default(),
+    )
+    .unwrap();
     assert_eq!(b.memory_size(), 16 * MIB);
     let b = load(&grow_guest(MEM1), cfg(100_000, 1_000_000)).unwrap();
     assert_eq!(b.memory_size(), PAGE);
@@ -374,7 +410,11 @@ fn a_guest_that_grows_forever_never_exceeds_the_cap() {
          (call $set_score (i32.const 1) (i64.extend_i32_s (memory.size)))",
         "",
     );
-    for c in [WasmConfig::engine(), cfg(5 * PAGE + 1, 1_000_000), WasmConfig::default()] {
+    for c in [
+        WasmConfig::engine(),
+        cfg(5 * PAGE + 1, 1_000_000),
+        WasmConfig::default(),
+    ] {
         let cap = c.memory_limit_bytes;
         let s = src.clone();
         let (b, scores) = watchdog("grow forever", move || {
@@ -464,32 +504,95 @@ fn tables_cannot_be_grown_without_bound() {
 fn wasi_and_unknown_imports_are_rejected() {
     let mem = r#"(memory (export "memory") 1)"#;
     for (what, import) in [
-        ("WASI fd_write", r#"(import "wasi_snapshot_preview1" "fd_write" (func (param i32 i32 i32 i32) (result i32)))"#),
-        ("WASI proc_exit", r#"(import "wasi_snapshot_preview1" "proc_exit" (func (param i32)))"#),
-        ("WASI clock", r#"(import "wasi_snapshot_preview1" "clock_time_get" (func (param i32 i64 i32) (result i32)))"#),
-        ("WASI unstable", r#"(import "wasi_unstable" "random_get" (func (param i32 i32) (result i32)))"#),
+        (
+            "WASI fd_write",
+            r#"(import "wasi_snapshot_preview1" "fd_write" (func (param i32 i32 i32 i32) (result i32)))"#,
+        ),
+        (
+            "WASI proc_exit",
+            r#"(import "wasi_snapshot_preview1" "proc_exit" (func (param i32)))"#,
+        ),
+        (
+            "WASI clock",
+            r#"(import "wasi_snapshot_preview1" "clock_time_get" (func (param i32 i64 i32) (result i32)))"#,
+        ),
+        (
+            "WASI unstable",
+            r#"(import "wasi_unstable" "random_get" (func (param i32 i32) (result i32)))"#,
+        ),
         ("env import", r#"(import "env" "abort" (func))"#),
-        ("unknown pinball function", r#"(import "pinball" "format_disk" (func))"#),
-        ("case-changed name", r#"(import "pinball" "Pulse_Coil" (func (param i32 i32)))"#),
-        ("empty module name", r#"(import "" "pulse_coil" (func (param i32 i32)))"#),
-        ("wrong arity", r#"(import "pinball" "pulse_coil" (func (param i32)))"#),
-        ("wrong param type", r#"(import "pinball" "pulse_coil" (func (param i64 i32)))"#),
-        ("wrong f32/f64", r#"(import "pinball" "set_lamp" (func (param i32 f64)))"#),
-        ("wrong result", r#"(import "pinball" "tick" (func (result i32)))"#),
-        ("extra result", r#"(import "pinball" "show_scene" (func (param i32) (result i32)))"#),
-        ("missing result", r#"(import "pinball" "persist_get" (func (param i32)))"#),
-        ("imported memory", r#"(import "pinball" "memory" (memory 1))"#),
-        ("imported global", r#"(import "pinball" "tick" (global i64))"#),
-        ("imported table", r#"(import "pinball" "table" (table 1 funcref))"#),
-        ("imported env memory", r#"(import "env" "memory" (memory 1))"#),
+        (
+            "unknown pinball function",
+            r#"(import "pinball" "format_disk" (func))"#,
+        ),
+        (
+            "case-changed name",
+            r#"(import "pinball" "Pulse_Coil" (func (param i32 i32)))"#,
+        ),
+        (
+            "empty module name",
+            r#"(import "" "pulse_coil" (func (param i32 i32)))"#,
+        ),
+        (
+            "wrong arity",
+            r#"(import "pinball" "pulse_coil" (func (param i32)))"#,
+        ),
+        (
+            "wrong param type",
+            r#"(import "pinball" "pulse_coil" (func (param i64 i32)))"#,
+        ),
+        (
+            "wrong f32/f64",
+            r#"(import "pinball" "set_lamp" (func (param i32 f64)))"#,
+        ),
+        (
+            "wrong result",
+            r#"(import "pinball" "tick" (func (result i32)))"#,
+        ),
+        (
+            "extra result",
+            r#"(import "pinball" "show_scene" (func (param i32) (result i32)))"#,
+        ),
+        (
+            "missing result",
+            r#"(import "pinball" "persist_get" (func (param i32)))"#,
+        ),
+        (
+            "imported memory",
+            r#"(import "pinball" "memory" (memory 1))"#,
+        ),
+        (
+            "imported global",
+            r#"(import "pinball" "tick" (global i64))"#,
+        ),
+        (
+            "imported table",
+            r#"(import "pinball" "table" (table 1 funcref))"#,
+        ),
+        (
+            "imported env memory",
+            r#"(import "env" "memory" (memory 1))"#,
+        ),
     ] {
-        let mem = if import.contains("(memory 1))") { "" } else { mem };
+        let mem = if import.contains("(memory 1))") {
+            ""
+        } else {
+            mem
+        };
         let src = format!("(module {import} {mem} {CALLBACKS})");
         assert_rejected(what, &src);
     }
     // Control: the same skeleton without the bad import loads.
-    load(&format!("(module {mem} {CALLBACKS})"), WasmConfig::default()).unwrap();
-    load(&format!("(module {IMPORTS} {mem} {CALLBACKS})"), WasmConfig::engine()).unwrap();
+    load(
+        &format!("(module {mem} {CALLBACKS})"),
+        WasmConfig::default(),
+    )
+    .unwrap();
+    load(
+        &format!("(module {IMPORTS} {mem} {CALLBACKS})"),
+        WasmConfig::engine(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -498,24 +601,63 @@ fn missing_or_mistyped_exports_are_rejected() {
     let init = r#"(func (export "on_init"))"#;
     let tick = r#"(func (export "on_tick"))"#;
     let edge = r#"(func (export "on_switch_edge") (param i32 i32))"#;
-    load(&format!("(module {mem} {init} {tick} {edge})"), WasmConfig::default()).unwrap();
+    load(
+        &format!("(module {mem} {init} {tick} {edge})"),
+        WasmConfig::default(),
+    )
+    .unwrap();
     for (what, body) in [
         ("empty module", String::new()),
         ("no on_init", format!("{mem} {tick} {edge}")),
         ("no on_tick", format!("{mem} {init} {edge}")),
         ("no on_switch_edge", format!("{mem} {init} {tick}")),
-        ("no memory export", format!("(memory 1) {init} {tick} {edge}")),
+        (
+            "no memory export",
+            format!("(memory 1) {init} {tick} {edge}"),
+        ),
         ("no memory at all", format!("{init} {tick} {edge}")),
-        ("lua-style on_switch name", format!(r#"{mem} {init} {tick} (func (export "on_switch") (param i32 i32))"#)),
-        ("on_tick takes a param", format!(r#"{mem} {init} {edge} (func (export "on_tick") (param i32))"#)),
-        ("on_tick returns a value", format!(r#"{mem} {init} {edge} (func (export "on_tick") (result i32) (i32.const 0))"#)),
-        ("on_init takes a param", format!(r#"{mem} {tick} {edge} (func (export "on_init") (param i64))"#)),
-        ("on_switch_edge with one param", format!(r#"{mem} {init} {tick} (func (export "on_switch_edge") (param i32))"#)),
-        ("on_switch_edge with i64 id", format!(r#"{mem} {init} {tick} (func (export "on_switch_edge") (param i64 i32))"#)),
-        ("on_switch_edge with a result", format!(r#"{mem} {init} {tick} (func (export "on_switch_edge") (param i32 i32) (result i32) (i32.const 0))"#)),
-        ("on_tick is a global", format!(r#"{mem} {init} {edge} (global (export "on_tick") i32 (i32.const 0))"#)),
-        ("memory is a function", format!(r#"(memory 1) {init} {tick} {edge} (func (export "memory"))"#)),
-        ("memory is a global", format!(r#"{init} {tick} {edge} (global (export "memory") i32 (i32.const 0))"#)),
+        (
+            "lua-style on_switch name",
+            format!(r#"{mem} {init} {tick} (func (export "on_switch") (param i32 i32))"#),
+        ),
+        (
+            "on_tick takes a param",
+            format!(r#"{mem} {init} {edge} (func (export "on_tick") (param i32))"#),
+        ),
+        (
+            "on_tick returns a value",
+            format!(r#"{mem} {init} {edge} (func (export "on_tick") (result i32) (i32.const 0))"#),
+        ),
+        (
+            "on_init takes a param",
+            format!(r#"{mem} {tick} {edge} (func (export "on_init") (param i64))"#),
+        ),
+        (
+            "on_switch_edge with one param",
+            format!(r#"{mem} {init} {tick} (func (export "on_switch_edge") (param i32))"#),
+        ),
+        (
+            "on_switch_edge with i64 id",
+            format!(r#"{mem} {init} {tick} (func (export "on_switch_edge") (param i64 i32))"#),
+        ),
+        (
+            "on_switch_edge with a result",
+            format!(
+                r#"{mem} {init} {tick} (func (export "on_switch_edge") (param i32 i32) (result i32) (i32.const 0))"#
+            ),
+        ),
+        (
+            "on_tick is a global",
+            format!(r#"{mem} {init} {edge} (global (export "on_tick") i32 (i32.const 0))"#),
+        ),
+        (
+            "memory is a function",
+            format!(r#"(memory 1) {init} {tick} {edge} (func (export "memory"))"#),
+        ),
+        (
+            "memory is a global",
+            format!(r#"{init} {tick} {edge} (global (export "memory") i32 (i32.const 0))"#),
+        ),
     ] {
         assert_rejected(what, &format!("(module {body})"));
     }
@@ -525,8 +667,14 @@ fn missing_or_mistyped_exports_are_rejected() {
 fn start_functions_cannot_run_away() {
     let mem = r#"(memory (export "memory") 1)"#;
     for (what, start) in [
-        ("start loops forever", "(func $s (loop $l (br $l))) (start $s)".to_owned()),
-        ("start traps", "(func $s (unreachable)) (start $s)".to_owned()),
+        (
+            "start loops forever",
+            "(func $s (loop $l (br $l))) (start $s)".to_owned(),
+        ),
+        (
+            "start traps",
+            "(func $s (unreachable)) (start $s)".to_owned(),
+        ),
         (
             "start grows memory forever",
             "(func $s (loop $l (drop (memory.grow (i32.const 1))) (br $l))) (start $s)".to_owned(),
@@ -578,11 +726,15 @@ fn oversized_or_exotic_resources_are_rejected() {
         ),
         (
             "data segment out of bounds",
-            format!(r#"(module (memory (export "memory") 1) (data (i32.const 65530) "0123456789") {cb})"#),
+            format!(
+                r#"(module (memory (export "memory") 1) (data (i32.const 65530) "0123456789") {cb})"#
+            ),
         ),
         (
             "element segment out of bounds",
-            format!(r#"(module (memory (export "memory") 1) (table 1 funcref) (func $f) (elem (i32.const 5) $f) {cb})"#),
+            format!(
+                r#"(module (memory (export "memory") 1) (table 1 funcref) (func $f) (elem (i32.const 5) $f) {cb})"#
+            ),
         ),
     ] {
         assert_rejected(what, &src);
@@ -680,19 +832,28 @@ fn invalid_bytes_are_rejected() {
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("empty", vec![]),
         ("magic only", b"\0asm".to_vec()),
-        ("header only (valid empty module)", b"\0asm\x01\0\0\0".to_vec()),
+        (
+            "header only (valid empty module)",
+            b"\0asm\x01\0\0\0".to_vec(),
+        ),
         ("wrong version", b"\0asm\x02\0\0\0".to_vec()),
         ("component header", b"\0asm\x0d\0\x01\0".to_vec()),
         ("garbage text", b"this is not wasm".to_vec()),
         ("lua source", b"function on_tick() end".to_vec()),
         ("unbalanced wat", b"(module (func".to_vec()),
-        ("wat with unknown instruction", b"(module (func (export \"on_tick\") frobnicate))".to_vec()),
+        (
+            "wat with unknown instruction",
+            b"(module (func (export \"on_tick\") frobnicate))".to_vec(),
+        ),
         ("empty wat module", b"(module)".to_vec()),
         ("wat component", b"(component)".to_vec()),
         ("nul bytes", vec![0; 4096]),
         ("0xff bytes", vec![0xff; 4096]),
         ("invalid utf-8 text", b"(module \xff\xfe)".to_vec()),
-        ("elf header", b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0".to_vec()),
+        (
+            "elf header",
+            b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0".to_vec(),
+        ),
     ];
     for (what, bytes) in cases {
         for c in [WasmConfig::default(), WasmConfig::engine()] {
@@ -707,14 +868,54 @@ fn invalid_bytes_are_rejected() {
     }
 }
 
+/// Offsets at which a top-level section of `bin` ends, with the section id.
+fn section_ends(bin: &[u8]) -> Vec<(u8, usize)> {
+    let mut out = Vec::new();
+    let mut i = 8;
+    while i < bin.len() {
+        let id = bin[i];
+        i += 1;
+        let (mut size, mut shift) = (0usize, 0);
+        loop {
+            let b = bin[i];
+            i += 1;
+            size |= usize::from(b & 0x7f) << shift;
+            shift += 7;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+        i += size;
+        out.push((id, i));
+    }
+    assert_eq!(i, bin.len());
+    out
+}
+
 #[test]
-fn every_truncation_of_a_valid_binary_is_rejected() {
+fn truncations_of_a_valid_binary_are_rejected() {
     let names = names();
     let full = support::DRIVER_WASM;
     WasmScriptBackend::new(full, &names, WasmConfig::engine()).unwrap();
+    // A truncation at a section boundary after the code section is itself a
+    // complete, valid module (it only drops the data and/or custom name
+    // sections; the driver has no data-count section). Every other prefix is
+    // malformed.
+    let ends = section_ends(full);
+    let code_end = ends
+        .iter()
+        .find(|&&(id, _)| id == 10)
+        .map(|&(_, e)| e)
+        .unwrap();
+    assert!(code_end < full.len());
+    let valid_cut = |len: usize| len >= code_end && ends.iter().any(|&(_, e)| e == len);
     for len in 0..full.len() {
+        let r = WasmScriptBackend::new(&full[..len], &names, WasmConfig::engine());
+        if valid_cut(len) {
+            continue; // a valid module: accepted or not, but no panic
+        }
         assert!(
-            WasmScriptBackend::new(&full[..len], &names, WasmConfig::engine()).is_err(),
+            r.is_err(),
             "the first {len} of {} bytes were accepted",
             full.len()
         );
@@ -728,13 +929,11 @@ fn every_truncation_of_a_valid_binary_is_rejected() {
 #[test]
 fn a_host_import_re_exported_as_a_callback_is_harmless() {
     // on_switch_edge is the pulse_coil import itself: (i32, i32) -> ().
-    let src = format!(
-        r#"(module (import "pinball" "pulse_coil" (func $p (param i32 i32)))
+    let src = r#"(module (import "pinball" "pulse_coil" (func $p (param i32 i32)))
              (memory (export "memory") 1)
              (func (export "on_init")) (func (export "on_tick"))
-             (export "on_switch_edge" (func $p)))"#
-    );
-    if let Ok(mut b) = load(&src, WasmConfig::engine()) {
+             (export "on_switch_edge" (func $p)))"#;
+    if let Ok(mut b) = load(src, WasmConfig::engine()) {
         let mut h = Host::new(0);
         h.edge(&mut b, 3, true);
         if !b.is_faulted() {

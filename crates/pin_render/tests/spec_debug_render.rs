@@ -159,7 +159,10 @@ fn render_list(
 fn headless_context_reports_an_adapter() {
     let Some(ctx) = gpu() else { return };
     let info = ctx.adapter_info();
-    println!("adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+    println!(
+        "adapter: {} ({:?}, {:?})",
+        info.name, info.backend, info.device_type
+    );
     assert!(!info.name.is_empty());
     // Device and queue are usable handles.
     let _device: &wgpu::Device = ctx.device();
@@ -185,7 +188,14 @@ fn empty_frame_is_the_clear_colour_everywhere() {
     let Some(ctx) = gpu() else { return };
     // Sizes whose row byte length is not a multiple of wgpu's 256-byte copy alignment are
     // included on purpose: the result must still be tightly packed.
-    for (w, h) in [(256u32, 256u32), (200, 100), (64, 64), (1, 1), (300, 7), (3, 130)] {
+    for (w, h) in [
+        (256u32, 256u32),
+        (200, 100),
+        (64, 64),
+        (1, 1),
+        (300, 7),
+        (3, 130),
+    ] {
         for clear in [BLACK, [0.25, 0.5, 0.75, 1.0], WHITE, [1.0, 0.0, 0.0, 0.0]] {
             let img = render(&ctx, w, h, clear, &unit_camera(), &[]);
             let want = to_u8(clear);
@@ -212,9 +222,17 @@ fn target_is_linear_unorm_not_srgb() {
         64,
         [0.5, 0.5, 0.5, 1.0],
         &unit_camera(),
-        &[seg([0.0, 0.5078125], [1.0, 0.5078125], [0.2, 0.6, 1.0, 1.0])],
+        &[seg(
+            [0.0, 0.5078125],
+            [1.0, 0.5078125],
+            [0.2, 0.6, 1.0, 1.0],
+        )],
     );
-    assert!(close(img.at(5, 5), [128, 128, 128, 255]), "clear: {:?}", img.at(5, 5));
+    assert!(
+        close(img.at(5, 5), [128, 128, 128, 255]),
+        "clear: {:?}",
+        img.at(5, 5)
+    );
     // y = 0.5078125 → image y = 31.5 → the centre of row 31.
     assert!(
         close(img.at(32, 31), [51, 153, 255, 255]),
@@ -248,7 +266,11 @@ fn red_horizontal_line_at_half_height() {
             row == 127 || row == 128,
             "lit pixel ({col},{row}) outside rows 127–128"
         );
-        assert!(close(img.at(col, row), [255, 0, 0, 255]), "not red: {:?}", img.at(col, row));
+        assert!(
+            close(img.at(col, row), [255, 0, 0, 255]),
+            "not red: {:?}",
+            img.at(col, row)
+        );
     }
     // The line spans the viewport: every interior column is covered, 1 px wide (the line
     // sits exactly on the 127/128 boundary, so either row may be chosen per column).
@@ -256,8 +278,13 @@ fn red_horizontal_line_at_half_height() {
         let rows = img.lit_rows_in_col(col);
         assert!(!rows.is_empty(), "gap in the line at column {col}");
     }
-    let double = (1..255).filter(|&c| img.lit_rows_in_col(c).len() > 1).count();
-    assert_eq!(double, 0, "{double} columns are 2 px thick: lines must be 1 px wide");
+    let double = (1..255)
+        .filter(|&c| img.lit_rows_in_col(c).len() > 1)
+        .count();
+    assert_eq!(
+        double, 0,
+        "{double} columns are 2 px thick: lines must be 1 px wide"
+    );
 }
 
 /// "a green vertical line at x=0.25 lights column ~64".
@@ -276,12 +303,19 @@ fn green_vertical_line_at_quarter_width() {
     let lit = img.lit_pixels();
     assert!(!lit.is_empty(), "the line is not visible at all");
     for &(col, row) in &lit {
-        assert!(col == 63 || col == 64, "lit pixel ({col},{row}) outside columns 63–64");
+        assert!(
+            col == 63 || col == 64,
+            "lit pixel ({col},{row}) outside columns 63–64"
+        );
         assert!(close(img.at(col, row), [0, 255, 0, 255]));
     }
     for row in 1..255 {
         let cols = img.lit_cols_in_row(row);
-        assert_eq!(cols.len(), 1, "row {row}: lit columns {cols:?}, want exactly one");
+        assert_eq!(
+            cols.len(),
+            1,
+            "row {row}: lit columns {cols:?}, want exactly one"
+        );
     }
 }
 
@@ -310,23 +344,37 @@ fn box_outline_leaves_interior_and_exterior_black() {
     // Interior untouched.
     for row in 66..=189 {
         for col in 66..=189 {
-            assert_eq!(img.at(col, row), [0, 0, 0, 255], "interior pixel ({col},{row})");
+            assert_eq!(
+                img.at(col, row),
+                [0, 0, 0, 255],
+                "interior pixel ({col},{row})"
+            );
         }
     }
     // All four sides are present along their whole length.
     for t in 66..=189 {
         let cols = img.lit_cols_in_row(t);
         assert!(
-            cols.iter().any(|c| (63..=64).contains(c)) && cols.iter().any(|c| (191..=192).contains(c)),
+            cols.iter().any(|c| (63..=64).contains(c))
+                && cols.iter().any(|c| (191..=192).contains(c)),
             "row {t}: left/right sides missing, lit columns {cols:?}"
         );
-        assert_eq!(cols.len(), 2, "row {t}: sides must be 1 px wide, lit columns {cols:?}");
+        assert_eq!(
+            cols.len(),
+            2,
+            "row {t}: sides must be 1 px wide, lit columns {cols:?}"
+        );
         let rows = img.lit_rows_in_col(t);
         assert!(
-            rows.iter().any(|r| (63..=64).contains(r)) && rows.iter().any(|r| (191..=192).contains(r)),
+            rows.iter().any(|r| (63..=64).contains(r))
+                && rows.iter().any(|r| (191..=192).contains(r)),
             "column {t}: top/bottom sides missing, lit rows {rows:?}"
         );
-        assert_eq!(rows.len(), 2, "column {t}: sides must be 1 px wide, lit rows {rows:?}");
+        assert_eq!(
+            rows.len(),
+            2,
+            "column {t}: sides must be 1 px wide, lit rows {rows:?}"
+        );
     }
 }
 
@@ -370,7 +418,13 @@ fn line_colours_are_exact_within_two_levels() {
             assert_eq!(img.at(col, row + 1), [0, 0, 0, 255]);
         }
     }
-    assert_eq!(img.lit_pixels().iter().filter(|(_, r)| !rows.contains(r)).count(), 0);
+    assert_eq!(
+        img.lit_pixels()
+            .iter()
+            .filter(|(_, r)| !rows.contains(r))
+            .count(),
+        0
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -383,20 +437,40 @@ fn lines_through_pixel_centres_light_exactly_one_row_or_column() {
     let Some(ctx) = gpu() else { return };
     for row in [0u32, 1, 37, 100, 128, 200, 254, 255] {
         let y = 1.0 - (row as f32 + 0.5) / 256.0;
-        let img = render(&ctx, 256, 256, BLACK, &unit_camera(), &[seg([0.0, y], [1.0, y], RED)]);
+        let img = render(
+            &ctx,
+            256,
+            256,
+            BLACK,
+            &unit_camera(),
+            &[seg([0.0, y], [1.0, y], RED)],
+        );
         img.assert_only(RED);
         let lit = img.lit_pixels();
-        assert!(lit.iter().all(|&(_, r)| r == row), "world y {y}: expected row {row} only");
+        assert!(
+            lit.iter().all(|&(_, r)| r == row),
+            "world y {y}: expected row {row} only"
+        );
         for col in 1..255 {
             assert!(img.lit(col, row), "row {row}: gap at column {col}");
         }
     }
     for col in [0u32, 1, 40, 127, 128, 201, 254, 255] {
         let x = (col as f32 + 0.5) / 256.0;
-        let img = render(&ctx, 256, 256, BLACK, &unit_camera(), &[seg([x, 0.0], [x, 1.0], GREEN)]);
+        let img = render(
+            &ctx,
+            256,
+            256,
+            BLACK,
+            &unit_camera(),
+            &[seg([x, 0.0], [x, 1.0], GREEN)],
+        );
         img.assert_only(GREEN);
         let lit = img.lit_pixels();
-        assert!(lit.iter().all(|&(c, _)| c == col), "world x {x}: expected column {col} only");
+        assert!(
+            lit.iter().all(|&(c, _)| c == col),
+            "world x {x}: expected column {col} only"
+        );
         for row in 1..255 {
             assert!(img.lit(col, row), "column {col}: gap at row {row}");
         }
@@ -426,7 +500,11 @@ fn y_is_up_and_x_is_right() {
             .into_iter()
             .filter(|&(c, r)| close(img.at(c, r), want))
             .collect();
-        assert!(pts.len() >= 15, "mark {want:?} not drawn ({} pixels)", pts.len());
+        assert!(
+            pts.len() >= 15,
+            "mark {want:?} not drawn ({} pixels)",
+            pts.len()
+        );
         let n = pts.len() as f32;
         (
             pts.iter().map(|p| p.0 as f32 + 0.5).sum::<f32>() / n,
@@ -439,16 +517,35 @@ fn y_is_up_and_x_is_right() {
             "{what}: centroid {got:?}, expected about {want:?}"
         );
     };
-    near(centroid([255, 0, 0, 255]), (25.6, 25.6), "world (0.1,0.9) → top-left");
-    near(centroid([0, 255, 0, 255]), (230.4, 230.4), "world (0.9,0.1) → bottom-right");
-    near(centroid([0, 0, 255, 255]), (230.4, 51.2), "world (0.9,0.8) → upper right");
+    near(
+        centroid([255, 0, 0, 255]),
+        (25.6, 25.6),
+        "world (0.1,0.9) → top-left",
+    );
+    near(
+        centroid([0, 255, 0, 255]),
+        (230.4, 230.4),
+        "world (0.9,0.1) → bottom-right",
+    );
+    near(
+        centroid([0, 0, 255, 255]),
+        (230.4, 51.2),
+        "world (0.9,0.8) → upper right",
+    );
 }
 
 /// The diagonal from world (0,0) to (1,1) runs from the bottom-left to the top-right pixel.
 #[test]
 fn diagonal_runs_bottom_left_to_top_right_and_is_thin() {
     let Some(ctx) = gpu() else { return };
-    let img = render(&ctx, 256, 256, BLACK, &unit_camera(), &[seg([0.0, 0.0], [1.0, 1.0], WHITE)]);
+    let img = render(
+        &ctx,
+        256,
+        256,
+        BLACK,
+        &unit_camera(),
+        &[seg([0.0, 0.0], [1.0, 1.0], WHITE)],
+    );
     img.assert_only(WHITE);
     let lit = img.lit_pixels();
     assert!(lit.len() >= 250, "diagonal has only {} pixels", lit.len());
@@ -461,7 +558,10 @@ fn diagonal_runs_bottom_left_to_top_right_and_is_thin() {
     }
     for col in 1..255 {
         let n = img.lit_rows_in_col(col).len();
-        assert!((1..=2).contains(&n), "column {col}: {n} lit pixels on a 45° 1 px line");
+        assert!(
+            (1..=2).contains(&n),
+            "column {col}: {n} lit pixels on a 45° 1 px line"
+        );
     }
     assert!(lit.len() <= 2 * 256);
 }
@@ -541,7 +641,14 @@ fn background_is_untouched_and_lines_are_opaque() {
     let Some(ctx) = gpu() else { return };
     let clear = [0.1, 0.2, 0.3, 1.0];
     let y = 1.0 - 50.5 / 128.0;
-    let img = render(&ctx, 128, 128, clear, &unit_camera(), &[seg([0.0, y], [1.0, y], [1.0, 1.0, 0.0, 1.0])]);
+    let img = render(
+        &ctx,
+        128,
+        128,
+        clear,
+        &unit_camera(),
+        &[seg([0.0, y], [1.0, y], [1.0, 1.0, 0.0, 1.0])],
+    );
     let bg = img.at(0, 0);
     assert!(close(bg, to_u8(clear)));
     for row in 0..128 {
@@ -551,7 +658,11 @@ fn background_is_untouched_and_lines_are_opaque() {
                     assert!(close(img.at(col, row), [255, 255, 0, 255]), "({col},{row})");
                 }
             } else {
-                assert_eq!(img.at(col, row), bg, "background pixel ({col},{row}) changed");
+                assert_eq!(
+                    img.at(col, row),
+                    bg,
+                    "background pixel ({col},{row}) changed"
+                );
             }
         }
     }
@@ -577,12 +688,23 @@ fn camera_region_maps_onto_the_full_viewport() {
         BLACK,
         &cam,
         &[
-            DebugLine { a: [x, 1.0, 0.0], b: [x, 2.0, 0.0], color: GREEN },
-            DebugLine { a: [0.2, y, 0.0], b: [0.7, y, 0.0], color: RED },
+            DebugLine {
+                a: [x, 1.0, 0.0],
+                b: [x, 2.0, 0.0],
+                color: GREEN,
+            },
+            DebugLine {
+                a: [0.2, y, 0.0],
+                b: [0.7, y, 0.0],
+                color: RED,
+            },
         ],
     );
     for &(col, row) in &img.lit_pixels() {
-        assert!(col == 150 || row == 20, "lit pixel ({col},{row}) is on neither line");
+        assert!(
+            col == 150 || row == 20,
+            "lit pixel ({col},{row}) is on neither line"
+        );
     }
     for row in 1..99 {
         if row != 20 {
@@ -615,7 +737,11 @@ fn ball_circle_is_a_closed_ring() {
         ..BallState::default()
     });
     let mut list = DebugLines::new(64);
-    snapshot_lines(&s, &|p| if p == ProfileId(2) { 0.25 } else { 0.01 }, &mut list);
+    snapshot_lines(
+        &s,
+        &|p| if p == ProfileId(2) { 0.25 } else { 0.01 },
+        &mut list,
+    );
     assert_eq!(list.as_slice().len(), 16);
     let img = render_list(&ctx, 256, 256, BLACK, &unit_camera(), &list);
 
@@ -636,7 +762,10 @@ fn ball_circle_is_a_closed_ring() {
         buckets[((a / std::f32::consts::TAU * 120.0) as usize).min(119)] = true;
     }
     let missing: Vec<usize> = (0..120).filter(|&i| !buckets[i]).collect();
-    assert!(missing.is_empty(), "gaps in the ring at 3° buckets {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "gaps in the ring at 3° buckets {missing:?}"
+    );
     // Thin: about one pixel per unit of circumference (allow staircase overhead).
     let circumference = std::f32::consts::TAU * r_out;
     assert!(
@@ -691,7 +820,10 @@ fn polyline_square_is_closed() {
         }
     }
     // Each of the four corners may lose at most its end pixel to the line end rule.
-    assert!(missing <= 4, "{missing} outline pixels missing: gaps at the joints");
+    assert!(
+        missing <= 4,
+        "{missing} outline pixels missing: gaps at the joints"
+    );
     for &(col, row) in &img.lit_pixels() {
         assert!(
             ((col == 40 || col == 200) && (r_lo..=r_hi).contains(&row))
@@ -711,14 +843,26 @@ fn rendering_is_repeatable_on_one_context() {
     let mut list = DebugLines::new(128);
     box_lines([0.1, 0.1, 0.0], [0.9, 0.6, 0.01], WHITE, &mut list);
     polyline_lines(
-        &[[0.1, 0.9, 0.0], [0.3, 0.7, 0.0], [0.6, 0.95, 0.0], [0.9, 0.7, 0.0]],
+        &[
+            [0.1, 0.9, 0.0],
+            [0.3, 0.7, 0.0],
+            [0.6, 0.95, 0.0],
+            [0.9, 0.7, 0.0],
+        ],
         [1.0, 0.5, 0.0, 1.0],
         &mut list,
     );
     let a = render_list(&ctx, 256, 256, BLACK, &unit_camera(), &list);
     let b = render_list(&ctx, 256, 256, BLACK, &unit_camera(), &list);
     // A different frame in between must not leak into the next one.
-    let other = render(&ctx, 256, 256, RED, &unit_camera(), &[seg([0.0, 0.0], [1.0, 1.0], GREEN)]);
+    let other = render(
+        &ctx,
+        256,
+        256,
+        RED,
+        &unit_camera(),
+        &[seg([0.0, 0.0], [1.0, 1.0], GREEN)],
+    );
     let c = render_list(&ctx, 256, 256, BLACK, &unit_camera(), &list);
     assert!(a.px == b.px, "two renders of the same frame differ");
     assert!(a.px == c.px, "state leaked from an unrelated frame");
@@ -735,12 +879,23 @@ fn many_lines_render_in_one_frame() {
         let color = if row % 2 == 0 { RED } else { BLUE };
         assert!(list.push(seg([0.0, y], [1.0, y], color)));
     }
-    assert!(!list.push(seg([0.0, 0.0], [1.0, 1.0], GREEN)), "over capacity: dropped");
+    assert!(
+        !list.push(seg([0.0, 0.0], [1.0, 1.0], GREEN)),
+        "over capacity: dropped"
+    );
     let img = render_list(&ctx, 256, 256, BLACK, &unit_camera(), &list);
     for row in 0..256u32 {
-        let want = if row % 2 == 0 { [255, 0, 0, 255] } else { [0, 0, 255, 255] };
+        let want = if row % 2 == 0 {
+            [255, 0, 0, 255]
+        } else {
+            [0, 0, 255, 255]
+        };
         for col in 2..254 {
-            assert!(close(img.at(col, row), want), "({col},{row}) = {:?}", img.at(col, row));
+            assert!(
+                close(img.at(col, row), want),
+                "({col},{row}) = {:?}",
+                img.at(col, row)
+            );
         }
     }
 }

@@ -49,7 +49,10 @@ fn env_driven_options() {
     // Without the variable the result is still usable (some backend is selected).
     set("WGPU_BACKEND", None);
     let opts = GpuOptions::from_env();
-    assert!(!opts.backends.is_empty(), "no WGPU_BACKEND: default backends");
+    assert!(
+        !opts.backends.is_empty(),
+        "no WGPU_BACKEND: default backends"
+    );
 
     set("WGPU_BACKEND", saved_backend.as_deref());
     set("PIN_REQUIRE_GPU", saved_require.as_deref());

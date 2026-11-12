@@ -297,7 +297,12 @@ fn id_of(mut c: Caller<'_, HostState>, kind: i32, ptr: i32, len: i32) -> wasmtim
     let k = usize::try_from(kind)
         .ok()
         .filter(|k| *k < KINDS)
-        .ok_or_else(|| err("id_of", format_args!("kind {kind} out of range 0..={}", KINDS - 1)))?;
+        .ok_or_else(|| {
+            err(
+                "id_of",
+                format_args!("kind {kind} out of range 0..={}", KINDS - 1),
+            )
+        })?;
     let mem = match c.data().memory {
         Some(m) => m,
         None => match c.get_export("memory") {
@@ -355,13 +360,17 @@ pub(crate) fn define(l: &mut Linker<HostState>) -> wasmtime::Result<()> {
             .with_ctx(|_, _, q, b| b.note(q.set_magnet(m, p)))
             .map(drop)
     })?;
-    l.func_wrap(MODULE, "set_zipper", |mut c: C, fl: i32, closed: i32| -> R {
-        let fl = FlipperId(id(fl, "set_zipper", "flipper")?);
-        let closed = flag(closed, "set_zipper", "closed")?;
-        c.data_mut()
-            .with_ctx(|_, _, q, b| b.note(q.set_zipper(fl, closed)))
-            .map(drop)
-    })?;
+    l.func_wrap(
+        MODULE,
+        "set_zipper",
+        |mut c: C, fl: i32, closed: i32| -> R {
+            let fl = FlipperId(id(fl, "set_zipper", "flipper")?);
+            let closed = flag(closed, "set_zipper", "closed")?;
+            c.data_mut()
+                .with_ctx(|_, _, q, b| b.note(q.set_zipper(fl, closed)))
+                .map(drop)
+        },
+    )?;
     l.func_wrap(MODULE, "set_diverter", |mut c: C, d: i32, on: i32| -> R {
         let d = DiverterId(id(d, "set_diverter", "diverter")?);
         let on = flag(on, "set_diverter", "on")?;
@@ -398,7 +407,10 @@ pub(crate) fn define(l: &mut Linker<HostState>) -> wasmtime::Result<()> {
     )?;
     l.func_wrap(MODULE, "set_score", |mut c: C, p: i32, s: i64| -> R {
         if !(1..=4).contains(&p) {
-            return Err(err("set_score", format_args!("player {p} out of range 1..=4")));
+            return Err(err(
+                "set_score",
+                format_args!("player {p} out of range 1..=4"),
+            ));
         }
         // `p` is 1..=4, so `p - 1` fits a u8.
         c.data_mut()
@@ -445,7 +457,10 @@ pub(crate) fn define(l: &mut Linker<HostState>) -> wasmtime::Result<()> {
     })?;
     l.func_wrap(MODULE, "random", |mut c: C, m: i64, n: i64| -> R<i64> {
         if m > n {
-            return Err(err("random", format_args!("interval is empty ([{m}, {n}])")));
+            return Err(err(
+                "random",
+                format_args!("interval is empty ([{m}, {n}])"),
+            ));
         }
         c.data_mut().with_ctx(|_, rng, _, _| range(m, n, rng))
     })?;

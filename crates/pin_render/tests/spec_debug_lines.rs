@@ -4,9 +4,7 @@
 
 use pin_core::snapshot::{BallState, FlipperState};
 use pin_core::{FlipperId, FrameStateSnapshot, ProfileId};
-use pin_render::debug::{
-    Camera, DebugLine, DebugLines, box_lines, polyline_lines, snapshot_lines,
-};
+use pin_render::debug::{Camera, DebugLine, DebugLines, box_lines, polyline_lines, snapshot_lines};
 use proptest::prelude::*;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
@@ -80,7 +78,11 @@ fn push_keeps_order_until_capacity_then_drops_and_counts() {
         assert_eq!(lines.as_slice().len(), 5);
     }
     let want: Vec<DebugLine> = (0..5).map(line).collect();
-    assert_eq!(lines.as_slice(), &want[..], "stored lines are untouched by drops");
+    assert_eq!(
+        lines.as_slice(),
+        &want[..],
+        "stored lines are untouched by drops"
+    );
 }
 
 #[test]
@@ -93,7 +95,10 @@ fn clear_empties_the_list_and_capacity_is_reusable() {
     lines.clear();
     assert!(lines.as_slice().is_empty());
     for i in 10..13 {
-        assert!(lines.push(line(i)), "capacity is available again after clear");
+        assert!(
+            lines.push(line(i)),
+            "capacity is available again after clear"
+        );
     }
     assert!(!lines.push(line(13)));
     assert_eq!(lines.as_slice()[0], line(10));
@@ -155,7 +160,11 @@ fn check_box(min: [f32; 3], max: [f32; 3], lines: &[DebugLine], color: [f32; 4])
             *corner_use.entry(key(p)).or_insert(0usize) += 1;
         }
         let differing: Vec<usize> = (0..3).filter(|&i| l.a[i] != l.b[i]).collect();
-        assert_eq!(differing.len(), 1, "edge {l:?} must run along exactly one axis");
+        assert_eq!(
+            differing.len(),
+            1,
+            "edge {l:?} must run along exactly one axis"
+        );
         per_axis[differing[0]] += 1;
         let (ka, kb) = (key(l.a), key(l.b));
         assert!(
@@ -165,7 +174,10 @@ fn check_box(min: [f32; 3], max: [f32; 3], lines: &[DebugLine], color: [f32; 4])
     }
     assert_eq!(per_axis, [4, 4, 4], "four edges along each axis");
     assert_eq!(corner_use.len(), 8, "all eight corners are used");
-    assert!(corner_use.values().all(|&n| n == 3), "three edges meet at each corner");
+    assert!(
+        corner_use.values().all(|&n| n == 3),
+        "three edges meet at each corner"
+    );
 }
 
 #[test]
@@ -266,7 +278,10 @@ fn check_circle(segs: &[DebugLine], c: [f32; 3], r: f32) {
     let mut angles = Vec::new();
     for s in segs {
         for p in [s.a, s.b] {
-            assert!((p[2] - c[2]).abs() <= tol, "circle must lie in the XY plane at ball z");
+            assert!(
+                (p[2] - c[2]).abs() <= tol,
+                "circle must lie in the XY plane at ball z"
+            );
             let d = ((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2)).sqrt();
             assert!(
                 (d - r).abs() <= tol,
@@ -287,7 +302,11 @@ fn check_circle(segs: &[DebugLine], c: [f32; 3], r: f32) {
             .iter()
             .filter(|o| (0..3).all(|i| (o.a[i] - s.b[i]).abs() <= 2.0 * tol))
             .count();
-        assert_eq!(hits, 1, "segment end {:?} must meet exactly one segment start", s.b);
+        assert_eq!(
+            hits, 1,
+            "segment end {:?} must meet exactly one segment start",
+            s.b
+        );
     }
     // The 16 start points are evenly spread over the full turn.
     angles.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -434,7 +453,10 @@ fn camera_maps_region(min: [f32; 2], max: [f32; 2], column_major: bool) -> Resul
         for (world, ndc) in cases {
             let clip = project(m, [world[0], world[1], z], column_major);
             if (clip[3] - 1.0).abs() > 1e-5 {
-                return Err(format!("w = {} for {world:?} (orthographic needs w = 1)", clip[3]));
+                return Err(format!(
+                    "w = {} for {world:?} (orthographic needs w = 1)",
+                    clip[3]
+                ));
             }
             for i in 0..2 {
                 if (clip[i] - ndc[i]).abs() > 1e-4 {

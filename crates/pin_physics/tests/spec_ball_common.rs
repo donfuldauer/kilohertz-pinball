@@ -309,5 +309,9 @@ pub fn scenario(external: Option<Box<dyn pin_physics::ball::ExternalForce>>) -> 
 
 /// Power command of the scenario magnet at `tick` (pulsed).
 pub fn scenario_power(tick: u32) -> f32 {
-    if (tick / 250) % 2 == 0 { 1.0 } else { 0.3 }
+    if (tick / 250).is_multiple_of(2) {
+        1.0
+    } else {
+        0.3
+    }
 }

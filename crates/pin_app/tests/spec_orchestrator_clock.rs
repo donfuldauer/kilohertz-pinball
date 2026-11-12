@@ -96,7 +96,11 @@ fn catch_up_is_capped_at_eight_and_the_rest_is_dropped() {
     assert_eq!(c.advance(1_000 + 20 * TICK_NS + 700_000), 8);
     assert_eq!(c.dropped_ticks(), 12);
     assert_eq!(c.advance(1_000 + 20 * TICK_NS + 999_999), 0);
-    assert_eq!(c.advance(1_000 + 21 * TICK_NS), 1, "0.7 ms remainder + 0.3 ms");
+    assert_eq!(
+        c.advance(1_000 + 21 * TICK_NS),
+        1,
+        "0.7 ms remainder + 0.3 ms"
+    );
     assert_eq!(c.ticks_due_total(), 9);
     assert_eq!(c.dropped_ticks(), 12);
 }
@@ -162,14 +166,14 @@ fn property_accounting_invariant_holds_for_random_timelines() {
         let mut prev_dropped = 0u64;
         for _ in 0..300 {
             let now = match rng.below(10) {
-                0 => latest,                                   // repeat
+                0 => latest,                                        // repeat
                 1 => latest.saturating_sub(rng.below(5 * TICK_NS)), // backwards
-                2 => rng.below(latest.max(1)),                 // far backwards
-                3 => latest + rng.below(100),                  // nanoseconds
-                4 | 5 => latest + rng.below(2 * TICK_NS),      // around one tick
-                6 | 7 => latest + rng.below(12 * TICK_NS),     // around the cap
-                8 => latest + rng.below(8) * TICK_NS,          // whole ticks
-                _ => latest + rng.below(5_000 * TICK_NS),      // long stall
+                2 => rng.below(latest.max(1)),                      // far backwards
+                3 => latest + rng.below(100),                       // nanoseconds
+                4 | 5 => latest + rng.below(2 * TICK_NS),           // around one tick
+                6 | 7 => latest + rng.below(12 * TICK_NS),          // around the cap
+                8 => latest + rng.below(8) * TICK_NS,               // whole ticks
+                _ => latest + rng.below(5_000 * TICK_NS),           // long stall
             };
             let before = (c.ticks_due_total(), c.dropped_ticks());
             let r = c.advance(now);

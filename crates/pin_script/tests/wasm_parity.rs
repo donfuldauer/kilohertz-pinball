@@ -62,12 +62,20 @@ fn run_parity(seed: u64, ticks: u64) -> Totals {
         (|$b:ident, $ctx:ident| $call:expr) => {{
             {
                 let $b = &mut lua;
-                let $ctx = &mut HostCtx { view: &view, rng: &mut rng_l, cmd: &mut ql };
+                let $ctx = &mut HostCtx {
+                    view: &view,
+                    rng: &mut rng_l,
+                    cmd: &mut ql,
+                };
                 $call;
             }
             {
                 let $b = &mut wasm;
-                let $ctx = &mut HostCtx { view: &view, rng: &mut rng_w, cmd: &mut qw };
+                let $ctx = &mut HostCtx {
+                    view: &view,
+                    rng: &mut rng_w,
+                    cmd: &mut qw,
+                };
                 $call;
             }
         }};
@@ -77,7 +85,7 @@ fn run_parity(seed: u64, ticks: u64) -> Totals {
     for t in 0..ticks {
         view.tick = t;
         // About one edge every 8 ticks, on switches 0..12.
-        while input.next() % 8 == 0 {
+        while input.next().is_multiple_of(8) {
             let sw = SwitchId((input.next() % 12) as u16);
             let closed = !view.switch_closed(sw);
             view.set_switch(sw, closed);
@@ -109,7 +117,10 @@ fn run_parity(seed: u64, ticks: u64) -> Totals {
     }
     assert!(!lua.is_faulted(), "{:?}", lua.last_error());
     assert!(!wasm.is_faulted(), "{:?}", wasm.last_error());
-    assert_eq!(rng_l, rng_w, "the two backends drew differently from the PCG");
+    assert_eq!(
+        rng_l, rng_w,
+        "the two backends drew differently from the PCG"
+    );
     tot
 }
 
@@ -179,7 +190,13 @@ fn committed_rules_wasm_matches_its_source() {
     );
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let status = Command::new(cargo)
-        .args(["build", "--release", "--offline", "--target", "wasm32-unknown-unknown"])
+        .args([
+            "build",
+            "--release",
+            "--offline",
+            "--target",
+            "wasm32-unknown-unknown",
+        ])
         .arg("--manifest-path")
         .arg(guest.join("Cargo.toml"))
         .arg("--target-dir")

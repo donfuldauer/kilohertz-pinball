@@ -100,7 +100,12 @@ fn run_ticks_does_not_allocate_with_idle_sim() {
     sim_loop.run_ticks(999);
     sim_loop.run_ticks(1_000);
     let after = allocs();
-    assert_eq!(after - before, 0, "run_ticks allocated {} times", after - before);
+    assert_eq!(
+        after - before,
+        0,
+        "run_ticks allocated {} times",
+        after - before
+    );
     assert_eq!(sim_loop.tick(), 2_000);
     assert_eq!(reader.read().tick, 2_000);
 }
@@ -117,7 +122,12 @@ fn run_ticks_does_not_allocate_with_inputs_flowing() {
         sim_loop.run_ticks(10);
     }
     let after = allocs();
-    assert_eq!(after - before, 0, "run_ticks allocated {} times", after - before);
+    assert_eq!(
+        after - before,
+        0,
+        "run_ticks allocated {} times",
+        after - before
+    );
 
     let s = *reader.read();
     assert_eq!(s.tick, 2_000);

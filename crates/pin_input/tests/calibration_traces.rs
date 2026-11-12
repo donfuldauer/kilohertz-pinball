@@ -385,3 +385,36 @@ fn filters_do_not_allocate() {
     assert_eq!(allocs(), before, "filters allocated");
     assert!(acc.is_finite());
 }
+
+/// Gate step 6 analogue: the filters are pure functions of their inputs, so a
+/// hash over every output bit is identical over 10 runs.
+#[test]
+fn filter_output_hash_is_stable_over_10_runs() {
+    let (snap, _) = pull_and_snap(0.8, 20.0);
+    let hash_once = || {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |v: f32| {
+            h ^= u64::from(v.to_bits());
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        };
+        let mut p = PlungerFilter::new(PlungerConfig::default());
+        let mut n = NudgeFilter::new(NudgeConfig {
+            curve_exponent: 1.3,
+            ..NudgeConfig::default()
+        });
+        for (i, &x) in snap.iter().enumerate() {
+            let o = p.update(x, i as u64);
+            mix(o.position);
+            mix(o.release.unwrap_or(-1.0));
+            let s = (i as f32 * 0.07).sin() * 0.5;
+            let v = n.update([s, x], 0.001);
+            mix(v[0]);
+            mix(v[1]);
+        }
+        h
+    };
+    let first = hash_once();
+    for _ in 0..9 {
+        assert_eq!(hash_once(), first);
+    }
+}

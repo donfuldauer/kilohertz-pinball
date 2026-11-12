@@ -90,7 +90,13 @@ fn on_switch_edge_receives_id_and_closed_flag() {
     );
     let mut b = backend(&src);
     let mut h = Host::new(1);
-    for (sw, closed) in [(0u16, true), (7, false), (255, true), (256, false), (65535, true)] {
+    for (sw, closed) in [
+        (0u16, true),
+        (7, false),
+        (255, true),
+        (256, false),
+        (65535, true),
+    ] {
         h.edge(&mut b, sw, closed);
         assert_eq!(
             h.cmd.scores.as_slice(),
@@ -197,7 +203,10 @@ fn ids_cover_the_whole_u16_range_and_nothing_else() {
     let q = accept(op::PULSE_COIL, &[65535, 65535]);
     assert_eq!(q.coil_pulses.as_slice(), &[(CoilId(65535), 65535)]);
     let q = accept(op::SPAWN_BALL, &[65535, 65535]);
-    assert_eq!(q.ball_spawns.as_slice(), &[(DispenserId(65535), ProfileId(65535))]);
+    assert_eq!(
+        q.ball_spawns.as_slice(),
+        &[(DispenserId(65535), ProfileId(65535))]
+    );
 }
 
 #[test]
@@ -255,9 +264,17 @@ fn persist_keys_are_below_64() {
 fn switch_reads_the_view_bitset() {
     let mut d = Driver::new();
     for sw in [0u16, 3, 63, 64, 200, 255] {
-        assert_eq!(d.value(op::SWITCH, &[i64::from(sw)]), Some(0), "switch {sw}");
+        assert_eq!(
+            d.value(op::SWITCH, &[i64::from(sw)]),
+            Some(0),
+            "switch {sw}"
+        );
         d.h.view.set_switch(SwitchId(sw), true);
-        assert_eq!(d.value(op::SWITCH, &[i64::from(sw)]), Some(1), "switch {sw}");
+        assert_eq!(
+            d.value(op::SWITCH, &[i64::from(sw)]),
+            Some(1),
+            "switch {sw}"
+        );
     }
     d.h.view.set_switch(SwitchId(64), false);
     assert_eq!(d.value(op::SWITCH, &[64]), Some(0));
@@ -324,7 +341,10 @@ fn random_with_empty_interval_traps_without_drawing() {
         let q = d.call(op::RANDOM, &[m, n]).clone();
         assert!(d.b.is_faulted(), "random({m}, {n}) must trap");
         assert!(q.is_empty());
-        assert_eq!(d.h.rng, before, "an invalid random() must not consume the PCG");
+        assert_eq!(
+            d.h.rng, before,
+            "an invalid random() must not consume the PCG"
+        );
     }
 }
 
@@ -333,25 +353,25 @@ fn id_of_resolves_every_kind() {
     let mut d = Driver::new();
     // (kind, ptr, len, expected id)
     let cases: [(i64, i64, i64, i64); 18] = [
-        (0, 1024, 10, 7),   // sw.left_sling
-        (1, 1024, 10, 3),   // coil.left_sling: same name, other kind
-        (1, 1040, 12, 1),   // coil.trough_eject
-        (2, 1056, 7, 200),  // lamp.jackpot
-        (3, 1072, 6, 4),    // magnet.center
-        (4, 1088, 9, 5),    // diverter.ramp_gate
-        (5, 1104, 5, 6),    // flipper.upper
-        (6, 1120, 6, 9),    // dispenser.trough
-        (7, 1136, 7, 11),   // profile.ceramic
-        (8, 1152, 5, 13),   // sound.drain
-        (9, 1168, 9, 15),   // scene.multiball
-        (10, 1184, 7, 16),  // persist_key.credits
-        (0, 1216, 3, 255),  // sw.far
-        (0, 65531, 5, 0),   // sw.start, the last bytes of memory
+        (0, 1024, 10, 7),  // sw.left_sling
+        (1, 1024, 10, 3),  // coil.left_sling: same name, other kind
+        (1, 1040, 12, 1),  // coil.trough_eject
+        (2, 1056, 7, 200), // lamp.jackpot
+        (3, 1072, 6, 4),   // magnet.center
+        (4, 1088, 9, 5),   // diverter.ramp_gate
+        (5, 1104, 5, 6),   // flipper.upper
+        (6, 1120, 6, 9),   // dispenser.trough
+        (7, 1136, 7, 11),  // profile.ceramic
+        (8, 1152, 5, 13),  // sound.drain
+        (9, 1168, 9, 15),  // scene.multiball
+        (10, 1184, 7, 16), // persist_key.credits
+        (0, 1216, 3, 255), // sw.far
+        (0, 65531, 5, 0),  // sw.start, the last bytes of memory
         // Unknown names are -1, not a fault.
-        (0, 1200, 4, -1),   // "nope"
-        (2, 1024, 10, -1),  // left_sling is not a lamp
-        (6, 1120, 5, -1),   // "troug": a prefix is not a match
-        (1, 1040, 6, -1),   // "trough" is a dispenser, not a coil
+        (0, 1200, 4, -1),  // "nope"
+        (2, 1024, 10, -1), // left_sling is not a lamp
+        (6, 1120, 5, -1),  // "troug": a prefix is not a match
+        (1, 1040, 6, -1),  // "trough" is a dispenser, not a coil
     ];
     for (kind, ptr, len, want) in cases {
         assert_eq!(
@@ -567,7 +587,10 @@ fn a_faulting_callback_is_rolled_back_and_tilts() {
     assert!(d.b.last_error().is_some());
     assert_eq!(q.coil_pulses, before.coil_pulses);
     assert_eq!(q.lamps, before.lamps);
-    assert_eq!(q.gi_tint, before.gi_tint, "GI tint restored to its pre-callback value");
+    assert_eq!(
+        q.gi_tint, before.gi_tint,
+        "GI tint restored to its pre-callback value"
+    );
     assert!(q.scores.is_empty() && q.persist_writes.is_empty() && q.display_scenes.is_empty());
     // Coil 8 was held by the first (healthy) marked call: it is released.
     assert_eq!(q.coil_holds.as_slice(), &[(CoilId(8), false)]);
@@ -621,7 +644,11 @@ fn held_coils_are_released_once_and_released_coils_are_not() {
     released.sort_by_key(|&(c, _)| c.0);
     assert_eq!(
         released,
-        vec![(CoilId(0), false), (CoilId(5), false), (CoilId(65535), false)]
+        vec![
+            (CoilId(0), false),
+            (CoilId(5), false),
+            (CoilId(65535), false)
+        ]
     );
     assert_eq!(q.len(), 3);
     assert!(d.tick().is_empty());
@@ -649,7 +676,11 @@ fn more_held_coils_than_the_queue_holds_are_released_over_later_callbacks() {
     ids.sort_unstable();
     let want: Vec<u16> = (1000..1032).chain(2000..2030).collect();
     assert_eq!(ids, want);
-    assert_eq!(d.b.overflow_count(), 0, "tilt releases are not script overflows");
+    assert_eq!(
+        d.b.overflow_count(),
+        0,
+        "tilt releases are not script overflows"
+    );
 }
 
 #[test]
@@ -659,7 +690,11 @@ fn queue_overflow_drops_and_counts_but_does_not_fault() {
     assert!(!d.b.is_faulted());
     assert_eq!(q.coil_pulses.len(), 32);
     for (i, &(c, ms)) in q.coil_pulses.iter().enumerate() {
-        assert_eq!((c, usize::from(ms)), (CoilId(2), i), "the first 32 are kept in order");
+        assert_eq!(
+            (c, usize::from(ms)),
+            (CoilId(2), i),
+            "the first 32 are kept in order"
+        );
     }
     assert_eq!(d.b.overflow_count(), 8);
     d.call(op::PULSE_40, &[]);
@@ -703,11 +738,18 @@ fn guest_traps_fault_the_script() {
         let err = d.b.last_error().expect("a fault records its error").clone();
         assert!(!err.to_string().is_empty());
         assert!(
-            !matches!(err, ScriptError::UnsupportedBackend(_) | ScriptError::Load(_)),
+            !matches!(
+                err,
+                ScriptError::UnsupportedBackend(_) | ScriptError::Load(_)
+            ),
             "op {opcode}: {err:?} is not a runtime failure"
         );
         // Rolled back; only the marker's hold is released.
-        assert_eq!(q.coil_holds.as_slice(), &[(CoilId(8), false)], "op {opcode}");
+        assert_eq!(
+            q.coil_holds.as_slice(),
+            &[(CoilId(8), false)],
+            "op {opcode}"
+        );
         assert_eq!(q.len(), 1, "op {opcode}: {q:?}");
         assert!(d.tick().is_empty());
     }
@@ -747,7 +789,13 @@ fn nan_results_are_canonical() {
     // Config::cranelift_nan_canonicalization(true): arithmetic on a NaN with a
     // payload yields the canonical quiet NaN on every platform.
     let mut d = Driver::new();
-    for bits in [0x7fa0_0001u32, 0x7fc1_2345, 0xffc0_0001, 0xff80_0001, 0x7fff_ffff] {
+    for bits in [
+        0x7fa0_0001u32,
+        0x7fc1_2345,
+        0xffc0_0001,
+        0xff80_0001,
+        0x7fff_ffff,
+    ] {
         let got = d.value(op::NAN_ADD, &[i64::from(bits), fa(1.0)]).unwrap();
         assert_eq!(got, 0x7fc0_0000, "NaN {bits:#x} + 1.0 gave {got:#x}");
     }
@@ -769,7 +817,11 @@ fn binary_and_text_modules_behave_identically() {
         (op::RANDOM, [1, 6, 0, 0], false),
         (op::RANDOM, [-100, 100, 0, 0], true),
         (op::ID_OF, [1, 1040, 12, 0], false),
-        (op::SET_GI_TINT, [fa(0.25), fa(0.5), fa(0.75), fa(1.0)], false),
+        (
+            op::SET_GI_TINT,
+            [fa(0.25), fa(0.5), fa(0.75), fa(1.0)],
+            false,
+        ),
         (op::PULSE_40, [0; 4], false),
         (op::PLAY_SOUND, [12, fa(0.5), 0, 0], true),
         (op::SET_SCORE, [4, -9, 0, 0], false),
@@ -779,7 +831,10 @@ fn binary_and_text_modules_behave_identically() {
     ];
     for (opcode, args, marked) in script {
         let (qt, qb) = if marked {
-            (t.call_marked(opcode, &args).clone(), b.call_marked(opcode, &args).clone())
+            (
+                t.call_marked(opcode, &args).clone(),
+                b.call_marked(opcode, &args).clone(),
+            )
         } else {
             (t.call(opcode, &args).clone(), b.call(opcode, &args).clone())
         };

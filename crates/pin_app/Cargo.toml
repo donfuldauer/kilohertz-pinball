@@ -21,3 +21,10 @@ proptest.workspace = true
 [[test]]
 name = "platform_headless"
 harness = false
+
+# Real windows + wgpu surfaces (Subphase 1.4 smoke test): SDL video on the
+# main thread, so a plain `main`. Skips without a native video driver unless
+# PIN_REQUIRE_GPU=1.
+[[test]]
+name = "orchestrator_window"
+harness = false

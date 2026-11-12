@@ -148,7 +148,11 @@ fn ticks_are_one_based_consecutive_and_span_run_ticks_calls() {
         r.sim_loop.run_ticks(n);
         expected_last += u64::from(n);
         assert_eq!(r.sim_loop.tick(), expected_last);
-        assert_eq!(r.reader.read().tick, expected_last, "latest snapshot is published");
+        assert_eq!(
+            r.reader.read().tick,
+            expected_last,
+            "latest snapshot is published"
+        );
     }
     let log = log.lock().unwrap();
     assert_eq!(log.len() as u64, expected_last);
@@ -242,7 +246,11 @@ fn future_events_stay_queued_across_run_ticks_calls() {
     r.input.push(button(40 * TICK_NS + 1)).unwrap(); // tick 41
     r.sim_loop.run_ticks(10);
     assert!(log.lock().unwrap().iter().all(|(_, i)| i.is_empty()));
-    assert_eq!(r.input.len(), 1, "an event in the future stays in the queue");
+    assert_eq!(
+        r.input.len(),
+        1,
+        "an event in the future stays in the queue"
+    );
     r.sim_loop.run_ticks(30);
     assert!(log.lock().unwrap().iter().all(|(_, i)| i.is_empty()));
     r.sim_loop.run_ticks(1);
@@ -348,7 +356,10 @@ fn property_every_event_is_delivered_once_on_its_tick() {
                 delivered.push(*e);
             }
         }
-        assert_eq!(delivered, events, "case {case}: each event once, in arrival order");
+        assert_eq!(
+            delivered, events,
+            "case {case}: each event once, in arrival order"
+        );
     }
 }
 

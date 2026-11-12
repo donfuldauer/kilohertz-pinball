@@ -115,8 +115,8 @@ use pin_core::{HostCommandQueue, HostCtx, ScriptError, SwitchEdge, TableScriptBa
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 use wasmtime::{
-    Config, Engine, ExternType, Linker, Memory, Module, Store, StoreLimitsBuilder, Trap,
-    TypedFunc, ValType,
+    Config, Engine, ExternType, Linker, Memory, Module, Store, StoreLimitsBuilder, Trap, TypedFunc,
+    ValType,
 };
 
 use crate::NameTables;
@@ -200,7 +200,9 @@ fn linker() -> Result<&'static Linker<HostState>, ScriptError> {
     LINKER
         .get_or_init(|| {
             let mut l = Linker::new(engine);
-            host::define(&mut l).map(|()| l).map_err(|e| format!("{e:#}"))
+            host::define(&mut l)
+                .map(|()| l)
+                .map_err(|e| format!("{e:#}"))
         })
         .as_ref()
         .map_err(|e| ScriptError::Load(format!("wasm linker: {e}")))
@@ -224,8 +226,12 @@ fn func_is(ty: &ExternType, params: &[V], results: &[V]) -> bool {
     let ExternType::Func(f) = ty else {
         return false;
     };
-    f.params().map(|p| val(&p)).eq(params.iter().copied().map(Some))
-        && f.results().map(|r| val(&r)).eq(results.iter().copied().map(Some))
+    f.params()
+        .map(|p| val(&p))
+        .eq(params.iter().copied().map(Some))
+        && f.results()
+            .map(|r| val(&r))
+            .eq(results.iter().copied().map(Some))
 }
 
 /// Exported functions: `(name, required, params, results)`.
@@ -298,7 +304,11 @@ fn classify(e: &wasmtime::Error) -> ScriptError {
 
 impl Live {
     /// Instantiates `m` (running its start function under a fresh budget).
-    fn new(m: &PreparedModule, names: &Arc<IdTables>, cfg: &WasmConfig) -> Result<Self, ScriptError> {
+    fn new(
+        m: &PreparedModule,
+        names: &Arc<IdTables>,
+        cfg: &WasmConfig,
+    ) -> Result<Self, ScriptError> {
         check_resources(&m.module, cfg)?;
         let limits = StoreLimitsBuilder::new()
             .memory_size(cfg.memory_limit_bytes)
@@ -311,12 +321,13 @@ impl Live {
         let mut store = Store::new(engine()?, HostState::new(Arc::clone(names), limits));
         store.limiter(|s| &mut s.limits);
         store.set_fuel(cfg.fuel_per_callback).map_err(load)?;
-        let instance = linker()?
-            .instantiate(&mut store, &m.module)
-            .map_err(|e| match classify(&e) {
-                ScriptError::Runtime(msg) => ScriptError::Load(msg),
-                other => other,
-            })?;
+        let instance =
+            linker()?
+                .instantiate(&mut store, &m.module)
+                .map_err(|e| match classify(&e) {
+                    ScriptError::Runtime(msg) => ScriptError::Load(msg),
+                    other => other,
+                })?;
         let memory = instance
             .get_memory(&mut store, "memory")
             .ok_or_else(|| load("module exports no memory named \"memory\""))?;
@@ -596,16 +607,19 @@ impl WasmScriptBackend {
             return;
         }
         let mark = QueueMark::new(ctx.cmd, live.store.data().book.overflow);
-        let r = live.store.set_fuel(self.cfg.fuel_per_callback).and_then(|()| {
-            live.store.data_mut().enter(ctx);
-            let r = match entry {
-                Entry::Init => live.on_init.call(&mut live.store, ()),
-                Entry::Tick => live.on_tick.call(&mut live.store, ()),
-                Entry::Switch(id, closed) => live.on_switch.call(&mut live.store, (id, closed)),
-            };
-            live.store.data_mut().leave();
-            r
-        });
+        let r = live
+            .store
+            .set_fuel(self.cfg.fuel_per_callback)
+            .and_then(|()| {
+                live.store.data_mut().enter(ctx);
+                let r = match entry {
+                    Entry::Init => live.on_init.call(&mut live.store, ()),
+                    Entry::Tick => live.on_tick.call(&mut live.store, ()),
+                    Entry::Switch(id, closed) => live.on_switch.call(&mut live.store, (id, closed)),
+                };
+                live.store.data_mut().leave();
+                r
+            });
         if let Err(e) = r {
             let book = &mut live.store.data_mut().book;
             mark.rollback(ctx.cmd, book);
@@ -681,23 +695,36 @@ mod tests {
 
     #[test]
     fn fault_releases_holds_and_stops_calls() {
-        let mut b =
-            WasmScriptBackend::new(BASE.as_bytes(), &NameTables::default(), WasmConfig::default())
-                .unwrap();
+        let mut b = WasmScriptBackend::new(
+            BASE.as_bytes(),
+            &NameTables::default(),
+            WasmConfig::default(),
+        )
+        .unwrap();
         assert_eq!(b.memory_size(), 65_536);
         assert!(format!("{b:?}").contains("WasmScriptBackend"));
-        assert_eq!(tick(&mut b).coil_holds.as_slice(), &[(pin_core::CoilId(3), true)]);
+        assert_eq!(
+            tick(&mut b).coil_holds.as_slice(),
+            &[(pin_core::CoilId(3), true)]
+        );
         let q = tick(&mut b);
         assert!(b.is_faulted());
         assert_eq!(q.coil_holds.as_slice(), &[(pin_core::CoilId(3), false)]);
-        assert!(matches!(b.last_error(), Some(ScriptError::Runtime(m)) if m.contains("unreachable")));
+        assert!(
+            matches!(b.last_error(), Some(ScriptError::Runtime(m)) if m.contains("unreachable"))
+        );
         assert!(tick(&mut b).is_empty());
         assert_eq!(b.fault_count(), 1);
         b.apply_reload(BASE.as_bytes()).unwrap();
         assert!(!b.is_faulted());
         assert_eq!(tick(&mut b).coil_holds.len(), 1);
-        assert!(format!("{:?}", WasmScriptBackend::prepare(BASE.as_bytes(), b.config()).unwrap())
-            .contains("PreparedModule"));
+        assert!(
+            format!(
+                "{:?}",
+                WasmScriptBackend::prepare(BASE.as_bytes(), b.config()).unwrap()
+            )
+            .contains("PreparedModule")
+        );
     }
 
     #[test]
@@ -706,6 +733,8 @@ mod tests {
             classify(&Trap::OutOfFuel.into()),
             ScriptError::BudgetExceeded
         );
-        assert!(matches!(classify(&wasmtime::Error::msg("x")), ScriptError::Runtime(m) if m == "x"));
+        assert!(
+            matches!(classify(&wasmtime::Error::msg("x")), ScriptError::Runtime(m) if m == "x")
+        );
     }
 }

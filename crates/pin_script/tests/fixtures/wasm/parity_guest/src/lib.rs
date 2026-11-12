@@ -109,15 +109,17 @@ impl Rules for Parity {
     }
 }
 
-pin_guest_sdk::export_rules!(Parity = Parity {
-    score: [0; 4],
-    player: 1,
-    combo: 0,
-    held: false,
-    lamp_phase: 0,
-    hits: 0,
-    jackpot: 0,
-});
+pin_guest_sdk::export_rules!(
+    Parity = Parity {
+        score: [0; 4],
+        player: 1,
+        combo: 0,
+        held: false,
+        lamp_phase: 0,
+        hits: 0,
+        jackpot: 0,
+    }
+);
 
 #[cfg(target_arch = "wasm32")]
 #[panic_handler]

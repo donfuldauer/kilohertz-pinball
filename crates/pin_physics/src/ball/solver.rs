@@ -49,9 +49,13 @@ const PERSIST_COS: f32 = 0.94;
 /// Friction coefficient when the material pair is not in the table.
 const FALLBACK_FRICTION: f32 = 0.2;
 /// Impacts a ball may have per sub-step before it waits for its next one.
-const MAX_EVENTS_PER_SUBSTEP: u8 = 8;
-/// Velocity-solver sweeps over the touching contacts of a ball.
-const PRESOLVE_PASSES: usize = 4;
+const MAX_EVENTS_PER_SUBSTEP: u8 = 12;
+/// Velocity-solver sweeps over the touching contacts at a sub-step boundary.
+const PRESOLVE_PASSES: usize = 8;
+/// Closing speed (m/s) below which two touching balls are left to the next
+/// sub-step boundary instead of raising an impact (they sink by at most a
+/// micrometre per millisecond, which the position correction removes).
+const REST_SLOP_SPEED: f32 = 1.0e-3;
 /// Travel per sub-step as a fraction of the ball radius.
 const TRAVEL_FRACTION: f32 = 0.25;
 /// Same, while the ball is near a wireform (rails have no sphere cast).
@@ -59,7 +63,8 @@ const RAIL_TRAVEL_FRACTION: f32 = 1.0 / 16.0;
 /// Capacity of `StaticWorld::sphere_contacts` (not re-exported by `world`).
 const MAX_SPHERE_CONTACTS: usize = 16;
 const MAX_TOUCH: usize = 8;
-const MAX_CONTACTS: usize = 32;
+const MAX_CONTACTS: usize = 24;
+type ContactList = ArrayVec<Contact, MAX_CONTACTS>;
 /// Guides / wireforms with a per-step bounding box (the rest are always
 /// tested).
 const MAX_BOUNDS: usize = 64;
@@ -246,6 +251,12 @@ pub struct BallSolver {
     slots: [Option<Ball>; MAX_BALLS],
     /// Directions in which each ball is currently supported.
     touch: [TouchSet; MAX_BALLS],
+    /// Compensation term of the position sums (Kahan), so that the many
+    /// small advances of a tick do not accumulate rounding.
+    carry: [Vec3; MAX_BALLS],
+    /// Position at the end of the last step; a ball moved from outside
+    /// (teleport) drops its compensation term.
+    last_position: [Vec3; MAX_BALLS],
     collider_materials: Vec<Material>,
     guide_materials: Vec<Material>,
     guide_layers: Vec<u8>,
@@ -304,6 +315,8 @@ impl BallSolver {
             pair_table,
             slots: [None; MAX_BALLS],
             touch: std::array::from_fn(|_| ArrayVec::new()),
+            carry: [Vec3::ZERO; MAX_BALLS],
+            last_position: [Vec3::ZERO; MAX_BALLS],
             collider_materials: Vec::new(),
             guide_materials: Vec::new(),
             guide_layers: Vec::new(),
@@ -345,6 +358,8 @@ impl BallSolver {
         let i = self.slots.iter().position(Option::is_none)?;
         self.slots[i] = Some(ball);
         self.touch[i].clear();
+        self.carry[i] = Vec3::ZERO;
+        self.last_position[i] = ball.position;
         Some(BallHandle(i as u8))
     }
 
@@ -687,8 +702,8 @@ impl BallSolver {
         bounds: &Bounds,
         i: usize,
         sc: &[Scratch; MAX_BALLS],
-    ) -> ArrayVec<Contact, MAX_CONTACTS> {
-        let mut out: ArrayVec<Contact, MAX_CONTACTS> = ArrayVec::new();
+    ) -> ContactList {
+        let mut out = ContactList::new();
         let Some(ball) = self.slots[i] else {
             return out;
         };
@@ -778,7 +793,7 @@ impl BallSolver {
                     normal,
                     point: other.position + normal * sc[j].body.radius,
                     depth: -gap,
-                    active_eps: ACTIVE_EPS,
+                    active_eps: TOUCH_TOL,
                     kind: ContactKind::Ball(j),
                     persistent: touches(own, normal) || touches(&self.touch[j], -normal),
                     reported: false,
@@ -801,7 +816,7 @@ impl BallSolver {
                         normal,
                         point: center + normal * rc,
                         depth: -gap,
-                        active_eps: ACTIVE_EPS,
+                        active_eps: TOUCH_TOL,
                         kind: ContactKind::Chain(ci, bi),
                         persistent: touches(own, normal),
                         reported: false,

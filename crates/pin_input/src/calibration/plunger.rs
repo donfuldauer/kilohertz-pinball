@@ -295,4 +295,29 @@ mod tests {
         assert_eq!(rel.len(), 1);
         assert!((rel[0] - 10.0).abs() < 0.1, "{}", rel[0]);
     }
+
+    #[test]
+    fn pull_start_undoes_recent_tracking_and_huge_raw_is_clamped() {
+        let mut f = PlungerFilter::new(PlungerConfig {
+            rest_tracking_per_s: 50.0,
+            ..PlungerConfig::default()
+        });
+        for t in 0..1000 {
+            f.update(0.0, t);
+        }
+        // Creep through the deadzone over 40 ms: fast tracking follows it ...
+        for k in 0..40u64 {
+            f.update(0.0005 * k as f32, 1000 + k);
+        }
+        assert!(f.rest() > 0.005);
+        // ... and is undone when the pull starts.
+        let o = f.update(0.5, 1040);
+        assert_eq!(f.rest(), 0.0);
+        assert!((o.position - 0.48 / 0.98).abs() < 1e-6);
+        let o = f.update(f32::MAX, 1041);
+        assert_eq!(o.position, 1.0);
+        let o = f.update(0.0, 1042);
+        let r = o.release.unwrap();
+        assert!((r - RAW_LIMIT * 1000.0).abs() < 0.01, "{r}");
+    }
 }

@@ -139,8 +139,18 @@ fn run_parity(seed: u64, input_seed: u64, ticks: u64) -> Stats {
                 "overflow counts differ after {}",
                 $what
             );
-            assert!(!l.b.is_faulted(), "lua rules faulted at {}: {:?}", $what, l.b.last_error());
-            assert!(!w.b.is_faulted(), "wasm rules faulted at {}: {:?}", $what, w.b.last_error());
+            assert!(
+                !l.b.is_faulted(),
+                "lua rules faulted at {}: {:?}",
+                $what,
+                l.b.last_error()
+            );
+            assert!(
+                !w.b.is_faulted(),
+                "wasm rules faulted at {}: {:?}",
+                $what,
+                w.b.last_error()
+            );
         }};
     }
 
@@ -215,7 +225,11 @@ fn lua_and_wasm_rules_emit_identical_queues_on_every_tick() {
     assert!(st.persist >= 20, "persist {}", st.persist);
     assert!(st.magnets >= 10, "magnets {}", st.magnets);
     assert!(st.scenes >= 9 && st.zippers >= 9 && st.diverters >= 9);
-    assert_eq!(st.overflow, 6 * 8, "six 40-pulse bursts drop 8 commands each");
+    assert_eq!(
+        st.overflow,
+        6 * 8,
+        "six 40-pulse bursts drop 8 commands each"
+    );
 }
 
 #[test]
@@ -240,7 +254,11 @@ fn wasm_command_stream_is_stable_over_ten_runs() {
     for _ in 0..9 {
         assert_eq!(run_parity(42, 4242, 2000).hash, first);
     }
-    assert_ne!(run_parity(43, 4242, 2000).hash, first, "the seed must matter");
+    assert_ne!(
+        run_parity(43, 4242, 2000).hash,
+        first,
+        "the seed must matter"
+    );
 }
 
 /// Fault parity: 39 coils held, then an argument violation after queueing
@@ -280,9 +298,18 @@ fn a_faulting_ruleset_tilts_identically_in_lua_and_wasm() {
                 assert!(w.b.is_faulted());
                 // The edge before the faulting tick ran normally and stays queued.
                 assert_eq!(q.scores.as_slice(), &[(0, 9)]);
-                assert!(q.coil_pulses.is_empty(), "faulting tick's pulse was not rolled back");
-                assert!(q.lamps.is_empty(), "faulting tick's lamp was not rolled back");
-                assert_eq!(q.gi_tint, None, "faulting tick's GI tint was not rolled back");
+                assert!(
+                    q.coil_pulses.is_empty(),
+                    "faulting tick's pulse was not rolled back"
+                );
+                assert!(
+                    q.lamps.is_empty(),
+                    "faulting tick's lamp was not rolled back"
+                );
+                assert_eq!(
+                    q.gi_tint, None,
+                    "faulting tick's GI tint was not rolled back"
+                );
                 assert_eq!(q.coil_holds.len(), 32, "the hold queue fills with releases");
             }
             _ => {
@@ -297,7 +324,10 @@ fn a_faulting_ruleset_tilts_identically_in_lua_and_wasm() {
             }
         }
         if t >= 5 {
-            assert!(q.is_empty(), "tick {t} after the tilt release must be a no-op");
+            assert!(
+                q.is_empty(),
+                "tick {t} after the tilt release must be a no-op"
+            );
         }
     }
     released.sort_unstable();

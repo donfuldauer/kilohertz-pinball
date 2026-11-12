@@ -48,7 +48,10 @@ fn shoot_at_thin_wall(name: &str, speed: f32, dir: Vec3, w: Vec3, gravity: bool)
     b.angular_velocity = w;
     let h = s.add_ball(b).unwrap();
     let mut ev = events();
-    for tick in 0..30 {
+    // Long enough to reach the wall (0.05 m along x) and bounce off it.
+    let vx = (dir * speed).x;
+    let ticks = (0.05 / vx / DT) as usize + 30;
+    for tick in 0..ticks {
         ev.clear();
         s.step(&g, DT, &mut ev);
         let p = s.ball(h).unwrap().position;
@@ -58,8 +61,49 @@ fn shoot_at_thin_wall(name: &str, speed: f32, dir: Vec3, w: Vec3, gravity: bool)
             p.x
         );
     }
-    // It bounced: now moving away from the wall.
-    assert!(s.ball(h).unwrap().velocity.x < 0.0);
+    // It bounced (steel–wood pair restitution 0.25): now moving away from the wall.
+    let v = s.ball(h).unwrap().velocity;
+    assert!(
+        v.x < 0.0,
+        "{name} at {speed} m/s dir {dir:?}: no rebound off the wall, v = {v:?}"
+    );
+}
+
+/// A ball whose previous tick ended a few micrometres short of a surface and
+/// that is still closing fast must bounce with the pair restitution and
+/// report an Impact (brief: only impacts below 0.05 m/s go unreported).
+#[test]
+fn impact_starting_within_micrometres_of_surface_still_bounces() {
+    let world = floor_world();
+    let g = geo(&world);
+    let e = defaults()
+        .material_pair(Material::Steel, Material::Wood)
+        .unwrap()
+        .restitution;
+    for gap in [1e-5f32, 2e-5, 1e-4] {
+        for speed in [0.2f32, 0.7, 3.0] {
+            let mut s = solver_with_gravity(Vec3::ZERO);
+            let mut b = ball("standard_steel", Vec3::new(0.0, 0.0, 0.0135 + gap));
+            b.velocity = Vec3::new(0.0, 0.0, -speed);
+            let h = s.add_ball(b).unwrap();
+            let mut ev = events();
+            for _ in 0..3 {
+                s.step(&g, DT, &mut ev);
+            }
+            let vz = s.ball(h).unwrap().velocity.z;
+            assert!(
+                (vz - e * speed).abs() <= 0.02 * speed,
+                "gap {gap} m, {speed} m/s: rebound vz = {vz}, expected {}",
+                e * speed
+            );
+            assert!(
+                ev.as_slice()
+                    .iter()
+                    .any(|x| matches!(x, BallEvent::Impact { .. })),
+                "gap {gap} m, {speed} m/s: no Impact event"
+            );
+        }
+    }
 }
 
 #[test]
@@ -90,7 +134,7 @@ proptest! {
 #[test]
 fn no_tunnelling_through_thin_wall_tilted() {
     // Wall rotated 30° about z; ball aimed along its normal at 30 m/s.
-    let rot = Quat::from_rotation_z(0.5236);
+    let rot = Quat::from_rotation_z(std::f32::consts::FRAC_PI_6);
     let n = rot * Vec3::X;
     let mut b = StaticWorldBuilder::new();
     b.add_collider(
@@ -943,7 +987,9 @@ fn ball_cannot_pass_through_guide_wall() {
             let h = s.add_ball(b).unwrap();
             let mut ev = events();
             let mut guide_hit = false;
-            for tick in 0..100 {
+            // Reach the wall (≈ 0.19 m) and bounce back.
+            let ticks = (0.19 / v / DT) as usize + 100;
+            for tick in 0..ticks {
                 ev.clear();
                 s.step(&g, DT, &mut ev);
                 guide_hit |= ev.as_slice().iter().any(|e| {

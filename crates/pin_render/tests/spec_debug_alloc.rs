@@ -77,7 +77,16 @@ fn filling_overflowing_and_clearing_never_allocates() {
     let dropped = lines.dropped() as u64;
     let after = allocs();
 
-    assert_eq!(after - before, 0, "debug line building allocated {} times", after - before);
-    assert_eq!(total_seen, 50 * 300, "the list never grows past its capacity");
+    assert_eq!(
+        after - before,
+        0,
+        "debug line building allocated {} times",
+        after - before
+    );
+    assert_eq!(
+        total_seen,
+        50 * 300,
+        "the list never grows past its capacity"
+    );
     assert!(dropped > 0);
 }

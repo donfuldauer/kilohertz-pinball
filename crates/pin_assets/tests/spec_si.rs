@@ -54,8 +54,8 @@ fn positional_declarations_are_converted_to_si() {
 
     // layer transitions: zone corners in metres.
     let z = &t.transitions[0];
-    close3(z.min_m, [0.24, 0.64, 0.0], "zone min");
-    close3(z.max_m, [0.29, 0.68, 0.03], "zone max");
+    close3(z.zone_min_m, [0.24, 0.64, 0.0], "zone min");
+    close3(z.zone_max_m, [0.29, 0.68, 0.03], "zone max");
 
     // dispensers: exit position in metres; exit velocity is already m/s.
     let d = &t.dispensers[0];

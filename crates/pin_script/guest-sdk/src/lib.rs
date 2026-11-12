@@ -296,7 +296,11 @@ pub fn random_to(n: i64) -> i64 {
 /// The id of `name` in table `kind`, or `None` if the table has no such name.
 pub fn id_of(kind: Kind, name: &str) -> Option<u16> {
     // Guest pointers and lengths are 32-bit on wasm32.
-    let id = raw::id_of(kind as i32, name.as_ptr() as usize as i32, name.len() as i32);
+    let id = raw::id_of(
+        kind as i32,
+        name.as_ptr() as usize as i32,
+        name.len() as i32,
+    );
     u16::try_from(id).ok()
 }
 
@@ -483,7 +487,10 @@ mod tests {
     #[test]
     fn pack_round_trip() {
         assert_eq!(pack_state(0x10, 5), 0x10_0000_0005);
-        assert_eq!(unpack_state(pack_state(u32::MAX, u32::MAX)), (u32::MAX, u32::MAX));
+        assert_eq!(
+            unpack_state(pack_state(u32::MAX, u32::MAX)),
+            (u32::MAX, u32::MAX)
+        );
         assert_eq!(unpack_state(pack_state(1024, 0)), (1024, 0));
     }
 

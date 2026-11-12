@@ -68,7 +68,10 @@ fn prepared_module_is_send_and_can_be_built_on_another_thread() {
     fn assert_send<T: Send>() {}
     assert_send::<PreparedModule>();
     let v2 = full(100, 2, 5);
-    let prepared = std::thread::spawn(move || prepare(&v2)).join().unwrap().unwrap();
+    let prepared = std::thread::spawn(move || prepare(&v2))
+        .join()
+        .unwrap()
+        .unwrap();
     let mut b = backend(&full(1, 1, 4));
     let mut h = Host::new(1);
     assert_eq!(tick(&mut h, &mut b), (0, 1));
@@ -85,7 +88,8 @@ fn hot_swap_preserves_state_through_save_and_restore() {
     for i in 1..=5 {
         assert_eq!(tick(&mut h, &mut b), (0, i));
     }
-    b.apply_prepared(prepare(&full(100, 2, 5)).unwrap()).unwrap();
+    b.apply_prepared(prepare(&full(100, 2, 5)).unwrap())
+        .unwrap();
     // The new rules run with the old counter; on_init is not called again
     // (same as a Lua reload), so no scene 5 appears.
     assert_eq!(tick(&mut h, &mut b), (1, 105));
@@ -106,7 +110,8 @@ fn state_is_only_carried_when_both_sides_have_the_hooks() {
     for _ in 0..3 {
         tick(&mut h, &mut b);
     }
-    b.apply_prepared(prepare(&full(100, 2, 5)).unwrap()).unwrap();
+    b.apply_prepared(prepare(&full(100, 2, 5)).unwrap())
+        .unwrap();
     assert_eq!(tick(&mut h, &mut b), (1, 100));
 
     // New module has no restore_state: it starts fresh.
@@ -114,7 +119,8 @@ fn state_is_only_carried_when_both_sides_have_the_hooks() {
     for _ in 0..3 {
         tick(&mut h, &mut b);
     }
-    b.apply_prepared(prepare(&counter(100, 2, 5, "")).unwrap()).unwrap();
+    b.apply_prepared(prepare(&counter(100, 2, 5, "")).unwrap())
+        .unwrap();
     assert_eq!(tick(&mut h, &mut b), (1, 100));
     assert!(!b.is_faulted());
 }
@@ -132,7 +138,10 @@ fn a_module_that_fails_to_prepare_leaves_the_backend_untouched() {
         ("empty", vec![]),
         ("truncated binary", support::DRIVER_WASM[..700].to_vec()),
         ("syntax error", b"(module (func".to_vec()),
-        ("missing exports", b"(module (memory (export \"memory\") 1))".to_vec()),
+        (
+            "missing exports",
+            b"(module (memory (export \"memory\") 1))".to_vec(),
+        ),
         (
             "wasi import",
             br#"(module (import "wasi_snapshot_preview1" "proc_exit" (func (param i32)))
@@ -156,10 +165,17 @@ fn a_module_that_fails_to_prepare_leaves_the_backend_untouched() {
             .unwrap_or_else(|| panic!("{what}: prepared"));
         assert!(!e.to_string().is_empty());
         // The trait path reports the same failure and changes nothing.
-        assert!(b.apply_reload(bytes).is_err(), "{what}: apply_reload accepted");
+        assert!(
+            b.apply_reload(bytes).is_err(),
+            "{what}: apply_reload accepted"
+        );
         assert!(!b.is_faulted());
     }
-    assert_eq!(tick(&mut h, &mut b), (0, 5), "the old rules keep running with their state");
+    assert_eq!(
+        tick(&mut h, &mut b),
+        (0, 5),
+        "the old rules keep running with their state"
+    );
     assert_eq!(b.fault_count(), 0);
     // The held coil is still tracked by the untouched backend.
     h.edge(&mut b, 99, true);
@@ -176,7 +192,10 @@ fn a_module_that_cannot_be_instantiated_leaves_the_backend_untouched() {
     }
     let cases = [
         // Initial memory above the backend's cap (2 MiB = 32 pages).
-        full(100, 2, 5).replace("(memory (export \"memory\") 1)", "(memory (export \"memory\") 40)"),
+        full(100, 2, 5).replace(
+            "(memory (export \"memory\") 1)",
+            "(memory (export \"memory\") 40)",
+        ),
         // Start function traps / spins.
         format!("{} ", full(100, 2, 5)).replacen(
             "(memory (export",
@@ -193,9 +212,7 @@ fn a_module_that_cannot_be_instantiated_leaves_the_backend_untouched() {
             100,
             2,
             5,
-            &format!(
-                r#"{ALLOC} (func (export "restore_state") (param i32 i32) (unreachable))"#
-            ),
+            &format!(r#"{ALLOC} (func (export "restore_state") (param i32 i32) (unreachable))"#),
         ),
     ];
     let (b, mut h) = watchdog("failing swap", move || {
@@ -204,8 +221,14 @@ fn a_module_that_cannot_be_instantiated_leaves_the_backend_untouched() {
             let r = WasmScriptBackend::prepare(src.as_bytes(), WasmConfig::engine())
                 .and_then(|m| b.apply_prepared(m));
             assert!(r.is_err(), "case {i}: swap succeeded");
-            assert!(b.apply_reload(src.as_bytes()).is_err(), "case {i}: apply_reload succeeded");
-            assert!(!b.is_faulted(), "case {i}: a failed swap must not fault the old rules");
+            assert!(
+                b.apply_reload(src.as_bytes()).is_err(),
+                "case {i}: apply_reload succeeded"
+            );
+            assert!(
+                !b.is_faulted(),
+                "case {i}: a failed swap must not fault the old rules"
+            );
         }
         (b, h)
     });
@@ -253,9 +276,14 @@ fn a_successful_swap_clears_the_fault_and_keeps_the_counters() {
     h.tick(&mut b);
     assert!(h.cmd.is_empty());
 
-    b.apply_prepared(prepare(&full(100, 2, 5)).unwrap()).unwrap();
+    b.apply_prepared(prepare(&full(100, 2, 5)).unwrap())
+        .unwrap();
     assert!(!b.is_faulted(), "a successful reload ends the tilt");
-    assert_eq!(b.fault_count(), 1, "fault_count counts faults since construction");
+    assert_eq!(
+        b.fault_count(),
+        1,
+        "fault_count counts faults since construction"
+    );
     // As in Lua, a faulted script's state is not saved: the new rules start fresh.
     assert_eq!(tick(&mut h, &mut b), (1, 100));
     // The new rules can fault again.
@@ -293,7 +321,7 @@ fn blob_guest(len: u32) -> String {
                  (i64.mul (i64.extend_i32_u (i32.load8_u (i32.add (local.get $ptr) (local.get $i))))
                           (i64.extend_i32_u (i32.add (local.get $i) (i32.const 1))))))
                (local.set $i (i32.add (local.get $i) (i32.const 1)))
-               (br $l)))))"#
+               (br $l))))"#
     ))
 }
 
@@ -311,7 +339,8 @@ fn state_blobs_up_to_64_kib_are_copied_intact() {
         let c = cfg(16 << 20, 50_000_000);
         let mut b = support::backend_with(&src, c);
         let m = WasmScriptBackend::prepare(src.as_bytes(), c).unwrap();
-        b.apply_prepared(m).unwrap_or_else(|e| panic!("len {len}: {e}"));
+        b.apply_prepared(m)
+            .unwrap_or_else(|e| panic!("len {len}: {e}"));
         let mut h = Host::new(0);
         h.tick(&mut b);
         assert!(!b.is_faulted());
@@ -456,7 +485,12 @@ fn load_backend_selects_wasm_by_extension() {
     let e = load_backend("rules.wasm", b"junk", &names()).err().unwrap();
     assert!(!matches!(e, ScriptError::UnsupportedBackend(_)), "{e:?}");
     // Lua is still selected by .lua, and unknown extensions are refused.
-    let mut l = load_backend("rules.lua", b"function on_tick() pinball.show_scene(3) end", &names()).unwrap();
+    let mut l = load_backend(
+        "rules.lua",
+        b"function on_tick() pinball.show_scene(3) end",
+        &names(),
+    )
+    .unwrap();
     h.tick(l.as_mut());
     assert_eq!(h.cmd.display_scenes.as_slice(), &[SceneId(3)]);
     assert!(matches!(
@@ -487,23 +521,67 @@ fn load_backend_with_passes_the_configs_through() {
             h.cmd.scores.first().copied()
         })
     };
-    let lua_small = LuaConfig { memory_limit_bytes: 2 << 20, instruction_budget: 5_000 };
+    let lua_small = LuaConfig {
+        memory_limit_bytes: 2 << 20,
+        instruction_budget: 5_000,
+    };
     let wasm_small = cfg(2 << 20, 5_000);
     // Roomy configs: both run to completion.
     assert_eq!(
-        run("r.wasm", wat.clone().into_bytes(), lua_small, WasmConfig::default()),
+        run(
+            "r.wasm",
+            wat.clone().into_bytes(),
+            lua_small,
+            WasmConfig::default()
+        ),
         Some((0, 7))
     );
-    assert_eq!(run("r.lua", lua.to_vec(), LuaConfig::default(), wasm_small), Some((0, 7)));
+    assert_eq!(
+        run("r.lua", lua.to_vec(), LuaConfig::default(), wasm_small),
+        Some((0, 7))
+    );
     // Tight configs: the matching backend's budget applies.
-    assert_eq!(run("r.wasm", wat.into_bytes(), LuaConfig::default(), wasm_small), None);
-    assert_eq!(run("r.lua", lua.to_vec(), lua_small, WasmConfig::default()), None);
+    assert_eq!(
+        run("r.wasm", wat.into_bytes(), LuaConfig::default(), wasm_small),
+        None
+    );
+    assert_eq!(
+        run("r.lua", lua.to_vec(), lua_small, WasmConfig::default()),
+        None
+    );
     // The memory cap is passed through as well.
-    let big = guest("", "", "").replace("(memory (export \"memory\") 1)", "(memory (export \"memory\") 40)");
-    assert!(load_backend_with("r.wasm", big.as_bytes(), &names(), LuaConfig::default(), WasmConfig::engine()).is_err());
-    assert!(load_backend_with("r.wasm", big.as_bytes(), &names(), LuaConfig::default(), WasmConfig::default()).is_ok());
+    let big = guest("", "", "").replace(
+        "(memory (export \"memory\") 1)",
+        "(memory (export \"memory\") 40)",
+    );
+    assert!(
+        load_backend_with(
+            "r.wasm",
+            big.as_bytes(),
+            &names(),
+            LuaConfig::default(),
+            WasmConfig::engine()
+        )
+        .is_err()
+    );
+    assert!(
+        load_backend_with(
+            "r.wasm",
+            big.as_bytes(),
+            &names(),
+            LuaConfig::default(),
+            WasmConfig::default()
+        )
+        .is_ok()
+    );
     assert!(matches!(
-        load_backend_with("r.txt", big.as_bytes(), &names(), LuaConfig::default(), WasmConfig::default()),
+        load_backend_with(
+            "r.txt",
+            big.as_bytes(),
+            &names(),
+            LuaConfig::default(),
+            WasmConfig::default()
+        ),
         Err(ScriptError::UnsupportedBackend(_))
     ));
 }
