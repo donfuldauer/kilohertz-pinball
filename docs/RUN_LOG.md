@@ -42,3 +42,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 2 | 4.2 | Reviewer | Fable 5.2 | 2 | **fail** | gates 1–7 pass; CI green on 3 OS with patched Lua; B1–B6 confirmed fixed | B7 uncharged pack/unpack/%q loops (26 s), B8 rolled-back hold release strands coil, B9 cheap-call/expensive-run ops (up to 557 ms at 1M) |
 | 2 | 4.2 | Independent Tester | Fable 5.2 | 3 | done | 225 pass / 3 fail (round-2 items) / 0 hang | |
 | 2 | 4.2 | Implementer | Opus 5.5 | fix 2 | done | 282 tests; coverage 98.1 %; worst tick 4.8 ms at 100k budget | pack removed; per-C-call charge; rollback keeps hold releases |
+| 2 | 4.2 | Reviewer | Fable 5.2 | 3 | **fail** | gates 1–7 pass; CI green; B7–B9 confirmed fixed | B10 next() over emptied array 1 s; B11 GC thrash 30–45 ms/tick, no fault; B12 string.rep loop; B13 buffers under cap 20–40 ms; B14 large rehash 16 ms |
