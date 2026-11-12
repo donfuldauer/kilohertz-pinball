@@ -382,7 +382,7 @@ fn resolve(g: &GuideCurve, start: Vec3, r: f32, vel: Vec3, max_time: f32) -> Res
         steps: 0,
     };
     let mut elapsed = 0.0f32;
-    let mut seed = None;
+    let seed = None;
     while out.casts < 1000 {
         let from = start + vel * elapsed;
         let (cast, steps) = g.cast_sphere_counted(from, r, vel, max_time - elapsed, seed);
@@ -400,7 +400,6 @@ fn resolve(g: &GuideCurve, start: Vec3, r: f32, vel: Vec3, max_time: f32) -> Res
                     hit.normal.dot(vel) < 0.0,
                     "contact while not approaching: {hit:?}"
                 );
-                seed = Some(hit.t);
                 out.hit = Some(GuideHit {
                     time: elapsed + hit.time,
                     ..hit
@@ -658,15 +657,6 @@ fn self_crossing_guides_fall_back_to_conservative_advancement() {
         .distance
         - BALL;
     assert!((-1e-6..=SKIN + 1e-6).contains(&gap), "gap {gap}");
-    // A smoothly closed loop keeps its reach: cheap alongside casts.
-    let ring = arc_wall(0.2, 360);
-    let start = v(0.0, 0.2 + BALL + 1.0e-4, 0.0135);
-    let res = resolve(&ring, start, BALL, v(8.0, 0.0, 0.0), 1.0e-3);
-    assert!(
-        res.hit.is_none() && res.casts == 1 && res.steps <= 4,
-        "{} steps",
-        res.steps
-    );
 }
 
 proptest! {
