@@ -634,10 +634,12 @@ impl GuideCurve {
     /// Every step is a proven lower bound of the time to contact, so the
     /// sphere can never pass through the wall, whatever its speed. Two bounds
     /// are used and the larger step taken: the gap cannot shrink faster than
-    /// the speed (conservative advancement), and, for level curves within the
-    /// wall's reach `ρ`, the gap's second time derivative is at least
-    /// `-|v|² / (ρ - d)`, which lets a sphere running alongside the wall
-    /// advance millimetres instead of micrometres per step.
+    /// the speed (conservative advancement), and, within the wall's reach
+    /// `ρ`, the gap's second time derivative is at least `-|v|² / (ρ - d)`,
+    /// which lets a sphere running alongside the wall advance millimetres
+    /// instead of micrometres per step. For a rising or falling curve the
+    /// second bound is taken on the horizontal gap to the vertical cylinder
+    /// over the curve's plan view, which the wall gap can never undercut.
     ///
     /// A sphere that is within 10 µm of the wall and not moving into it is
     /// sliding: it may sink to a gap of -10 µm, a fixed limit that does not
@@ -652,10 +654,11 @@ impl GuideCurve {
     /// and less progress along a concave wall. A sphere that is clearly
     /// leaving (separating faster than 1e-5 of its speed) is always free.
     ///
-    /// Guides without reach (rising curves, curves that touch or cross
-    /// themselves) only have the first bound: next to such a wall a sliding
-    /// sphere gets a contact about every 10 µm of travel, so keep them out of
-    /// rolling paths or split them into simple level pieces. Never allocates.
+    /// Guides without reach (curves whose plan view touches or crosses
+    /// itself or has a vertical stretch) only have the first bound: next to
+    /// such a wall a sliding sphere gets a contact about every 10 µm of
+    /// travel, so keep them out of rolling paths or split them into simple
+    /// pieces. Never allocates.
     #[must_use]
     pub fn cast_sphere(
         &self,

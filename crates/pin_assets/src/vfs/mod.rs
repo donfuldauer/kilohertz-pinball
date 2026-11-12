@@ -110,12 +110,11 @@ impl Vfs {
         let mut root = std::fs::canonicalize(path)?;
         if !root.join(ROOT_MARKER).is_file() {
             // A single top-level folder wrapping everything (OS junk ignored).
-            let mut children = std::fs::read_dir(&root)?
-                .filter(|c| {
-                    c.as_ref().map_or(true, |c| {
-                        c.file_name().to_str().is_none_or(|n| !is_os_junk(n))
-                    })
-                });
+            let mut children = std::fs::read_dir(&root)?.filter(|c| {
+                c.as_ref().map_or(true, |c| {
+                    c.file_name().to_str().is_none_or(|n| !is_os_junk(n))
+                })
+            });
             if let (Some(Ok(only)), None) = (children.next(), children.next()) {
                 let candidate = only.path();
                 // file_type() does not follow symlinks: a symlinked wrapper is refused.
@@ -142,15 +141,7 @@ impl Vfs {
             return Err(AssetError::NotFound(original.to_owned()));
         }
         let mut full = root.to_path_buf();
-        let mut parts = path.split('/').peekable();
-        while let Some(part) = parts.next() {
-            full.push(part);
-            if parts.peek().is_some()
-                && std::fs::symlink_metadata(&full).is_ok_and(|m| m.file_type().is_symlink())
-            {
-                return Err(AssetError::Symlink(original.to_owned()));
-            }
-        }
+        full.extend(path.split('/'));
         let canonical = match std::fs::canonicalize(&full) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -160,6 +151,15 @@ impl Vfs {
         };
         if !canonical.starts_with(root) {
             return Err(AssetError::PathTraversal(original.to_owned()));
+        }
+        // Inside the root, but through a symlinked folder: not listed, so refused.
+        let mut prefix = root.to_path_buf();
+        let parts: Vec<&str> = path.split('/').collect();
+        for part in &parts[..parts.len() - 1] {
+            prefix.push(part);
+            if std::fs::symlink_metadata(&prefix).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(AssetError::Symlink(original.to_owned()));
+            }
         }
         Ok(canonical)
     }
@@ -278,7 +278,12 @@ mod tests {
         assert_eq!(wrapper_folder(names.into_iter()), None);
         assert_eq!(wrapper_folder(core::iter::empty()), None);
         assert_eq!(wrapper_folder(["a.lua"].into_iter()), None);
-        let names = [".DS_Store", "__MACOSX/pkg/._table.toml", "pkg/table.toml", "Thumbs.db"];
+        let names = [
+            ".DS_Store",
+            "__MACOSX/pkg/._table.toml",
+            "pkg/table.toml",
+            "Thumbs.db",
+        ];
         assert_eq!(wrapper_folder(names.into_iter()), Some("pkg".to_owned()));
         assert!(is_os_junk("a/desktop.ini") && is_os_junk("__MACOSX"));
         assert!(!is_os_junk("a/b.png") && !is_os_junk("__MACOSXY/a"));

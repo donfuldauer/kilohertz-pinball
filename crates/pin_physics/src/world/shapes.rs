@@ -323,7 +323,10 @@ fn closest_triangle(a: Vec3, b: Vec3, c: Vec3, face_normal: Vec3, active: u8, p:
     if feature == FEATURE_FACE {
         // Over the face the plane gives distance and normal exactly, without
         // the rounding of the barycentric reconstruction of `point`.
-        let height = (p - a).dot(face_normal);
+        // The difference is taken in f64: for a large triangle `p - a` would
+        // otherwise round by a micrometre or more (the vertex can be tens of
+        // metres away), which is the scale of the contact skin.
+        let height = (p.as_dvec3() - a.as_dvec3()).dot(face_normal.as_dvec3()) as f32;
         let normal = if height < 0.0 {
             -face_normal
         } else {

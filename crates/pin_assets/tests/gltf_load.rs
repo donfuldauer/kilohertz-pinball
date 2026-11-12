@@ -4,8 +4,8 @@
 mod support;
 
 use pin_assets::{
-    AssetError, IdKind, NodeExtras, Vfs, ZipLimits, load_gltf, load_table, validate_gltf_bindings,
-    validate_gltf_bindings_in,
+    AssetError, GltfLimits, IdKind, NodeExtras, Vfs, ZipLimits, load_gltf, load_gltf_with_limits,
+    load_table, validate_gltf_bindings, validate_gltf_bindings_in,
 };
 use serde_json::json;
 use support::*;
@@ -283,9 +283,21 @@ fn hostile_documents_are_errors() {
         json!({"scenes": [{"nodes": [4]}]}),
         json!({"scenes": [{"nodes": [0]}], "scene": 2}),
         // Undecodable image.
-        json!({"images": [{"uri": "b.bin"}]}),
+        json!({"images": [{"uri": "b.bin"}], "textures": [{"source": 0}], "materials": [{"emissiveTexture": {"index": 0}}]}),
         // Non-finite matrix.
         json!({"nodes": [{"mesh": 0, "matrix": [1,0,0,0, 0,1,0,0, 0,0,1,0, 1e39,0,0,1]}]}),
+        // B3: finite local transforms whose product overflows (inf), then x0 (NaN).
+        json!({"nodes": [{"scale": [1e30, 1e30, 1e30], "children": [1]},
+                         {"mesh": 0, "scale": [1e30, 1e30, 1e30]}],
+               "scenes": [{"nodes": [0]}], "scene": 0}),
+        json!({"nodes": [{"scale": [1e30, 1e30, 1e30], "children": [1]},
+                         {"scale": [1e30, 1e30, 1e30], "children": [2]},
+                         {"mesh": 0, "scale": [0.0, 0.0, 0.0]}],
+               "scenes": [{"nodes": [0]}], "scene": 0}),
+        // B3: material factors that overflow f32.
+        json!({"materials": [{"emissiveFactor": [1e39, 0.0, 0.0]}]}),
+        json!({"materials": [{"pbrMetallicRoughness": {"baseColorFactor": [1e39, 0.0, 0.0, 1.0]}}]}),
+        json!({"materials": [{"pbrMetallicRoughness": {"roughnessFactor": 1e39}}]}),
     ];
     for (i, extra) in bad.into_iter().enumerate() {
         let r = run(extra.clone());
@@ -333,5 +345,183 @@ fn glb_container_errors() {
     assert_eq!(
         load_gltf(&vfs, "nope.glb").err(),
         Some(AssetError::NotFound("nope.glb".into()))
+    );
+}
+
+/// A PNG whose IHDR claims `w` x `h` (no pixel data): enough for the header
+/// read that budgets are checked against.
+fn png_header(w: u32, h: u32) -> Vec<u8> {
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut c = b"IHDR".to_vec();
+    c.extend(w.to_be_bytes());
+    c.extend(h.to_be_bytes());
+    c.extend([8, 6, 0, 0, 0]);
+    out.extend(13u32.to_be_bytes());
+    out.extend(&c);
+    out.extend(crc32(&c).to_be_bytes());
+    for ty in [&b"IDAT"[..], b"IEND"] {
+        out.extend(0u32.to_be_bytes());
+        out.extend(ty);
+        out.extend(crc32(ty).to_be_bytes());
+    }
+    out
+}
+
+fn is_budget(r: &Result<pin_assets::GltfScene, AssetError>) -> bool {
+    matches!(r, Err(AssetError::Gltf(m)) if m.contains("budget"))
+}
+
+#[test]
+fn image_budgets_and_caching() {
+    let bin = tri_bin();
+    let png = tiny_png();
+    let textured = |images: serde_json::Value, textures: serde_json::Value| {
+        json!({"images": images, "textures": textures,
+               "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}},
+                              "emissiveTexture": {"index": 1},
+                              "normalTexture": {"index": 2}}]})
+    };
+    let run = |extra: serde_json::Value, limits: &GltfLimits, files: &[(&str, &[u8])]| {
+        let gltf = serde_json::to_vec(&tri_gltf("b.bin", extra)).unwrap();
+        let mut all: Vec<(&str, &[u8])> = vec![("t.gltf", &gltf), ("b.bin", &bin)];
+        all.extend_from_slice(files);
+        load_gltf_with_limits(&vfs_of(&all), "t.gltf", limits)
+    };
+    // One PNG referenced by three images (spelled differently) and textures:
+    // decoded once, the materials point at the first image, and an image no
+    // texture uses is never decoded (its bytes are garbage).
+    let extra = textured(
+        json!([{"uri": "p.png"}, {"uri": "./p.png"}, {"uri": "x/../p.png"}, {"uri": "junk.bin"}]),
+        json!([{"source": 0}, {"source": 1}, {"source": 2}, {"source": 3}]),
+    );
+    let tight = GltfLimits {
+        max_image_bytes: 8, // exactly one 2x1 RGBA8 image
+        ..GltfLimits::default()
+    };
+    let scene = run(extra, &tight, &[("p.png", &png), ("junk.bin", b"nope")]).unwrap();
+    let m = &scene.materials[0];
+    assert_eq!(
+        (m.base_color_image, m.emissive_image, m.normal_image),
+        (Some(0), Some(0), Some(0))
+    );
+    assert_eq!(scene.images[0].rgba8.len(), 8);
+    for i in 1..4 {
+        assert_eq!(
+            scene.images[i],
+            pin_assets::ImageData::default(),
+            "image {i}"
+        );
+    }
+    // Two distinct sources exceed an 8-byte budget.
+    let extra = textured(
+        json!([{"uri": "p.png"}, {"uri": "q.png"}]),
+        json!([{"source": 0}, {"source": 1}, {"source": 0}]),
+    );
+    let r = run(extra, &tight, &[("p.png", &png), ("q.png", &png)]);
+    assert!(is_budget(&r), "{r:?}");
+    // Side limit and RGBA8 total are checked from the header, before decoding.
+    for (w, h, limits) in [
+        (8193, 1, GltfLimits::default()),
+        (16384, 16384, GltfLimits::default()),
+        (
+            8192,
+            8192,
+            GltfLimits {
+                max_image_bytes: (8192 * 8192 * 4) - 1,
+                ..GltfLimits::default()
+            },
+        ),
+    ] {
+        let big = png_header(w, h);
+        let extra = textured(
+            json!([{"uri": "big.png"}]),
+            json!([{"source": 0}, {"source": 0}, {"source": 0}]),
+        );
+        let r = run(extra, &limits, &[("big.png", &big)]);
+        assert!(is_budget(&r), "{w}x{h}: {r:?}");
+    }
+    // Image count.
+    let extra = json!({"images": [{"uri": "p.png"}, {"uri": "p.png"}]});
+    let r = run(
+        extra,
+        &GltfLimits {
+            max_images: 1,
+            ..GltfLimits::default()
+        },
+        &[("p.png", &png)],
+    );
+    assert!(is_budget(&r), "{r:?}");
+}
+
+#[test]
+fn geometry_and_buffer_budgets() {
+    let bin = tri_bin();
+    let run = |extra: serde_json::Value, limits: &GltfLimits| {
+        let gltf = serde_json::to_vec(&tri_gltf("b.bin", extra)).unwrap();
+        let vfs = vfs_of(&[("t.gltf", &gltf), ("b.bin", &bin), ("c.bin", &bin)]);
+        load_gltf_with_limits(&vfs, "t.gltf", limits)
+    };
+    // 100 nodes instancing the 3-vertex mesh: 300 vertices, 300 indices.
+    let nodes: Vec<_> = (0..100).map(|_| json!({"mesh": 0})).collect();
+    let extra = json!({"nodes": nodes});
+    let ok = GltfLimits {
+        max_vertices: 300,
+        max_indices: 300,
+        ..GltfLimits::default()
+    };
+    assert_eq!(run(extra.clone(), &ok).unwrap().meshes.len(), 100);
+    for limits in [
+        GltfLimits {
+            max_vertices: 299,
+            ..ok
+        },
+        GltfLimits {
+            max_indices: 299,
+            ..ok
+        },
+        GltfLimits {
+            max_nodes: 99,
+            ..ok
+        },
+    ] {
+        let r = run(extra.clone(), &limits);
+        assert!(is_budget(&r), "{limits:?}: {r:?}");
+    }
+    let meshes: Vec<_> = (0..3)
+        .map(|_| json!({"primitives": [{"attributes": {"POSITION": 0}}]}))
+        .collect();
+    let r = run(
+        json!({"meshes": meshes}),
+        &GltfLimits {
+            max_meshes: 2,
+            ..GltfLimits::default()
+        },
+    );
+    assert!(is_budget(&r), "{r:?}");
+    // 20 buffers naming the same file (in different spellings) cost one copy.
+    let bufs: Vec<_> = (0..20)
+        .map(|i| json!({"byteLength": 78, "uri": if i % 2 == 0 { "b.bin" } else { "./b.bin" }}))
+        .collect();
+    let one = GltfLimits {
+        max_buffer_bytes: 78,
+        ..GltfLimits::default()
+    };
+    assert!(run(json!({"buffers": bufs}), &one).is_ok());
+    // Two distinct files do not fit in one buffer's budget.
+    let bufs = json!([{"byteLength": 78, "uri": "b.bin"}, {"byteLength": 78, "uri": "c.bin"}]);
+    let r = run(json!({"buffers": bufs}), &one);
+    assert!(is_budget(&r), "{r:?}");
+    assert_eq!(
+        GltfLimits::default(),
+        GltfLimits {
+            max_image_bytes: 256 << 20,
+            max_image_side: 8192,
+            max_vertices: 8_000_000,
+            max_indices: 24_000_000,
+            max_nodes: 65_536,
+            max_meshes: 16_384,
+            max_images: 1024,
+            max_buffer_bytes: 256 << 20,
+        }
     );
 }

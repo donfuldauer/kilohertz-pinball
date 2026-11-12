@@ -443,7 +443,10 @@ impl<'v> Checker<'v> {
             self.err(
                 TABLE_FILE,
                 section,
-                format!("too many {label} entries: {} (max {MAX_PER_KIND})", names.len()),
+                format!(
+                    "too many {label} entries: {} (max {MAX_PER_KIND})",
+                    names.len()
+                ),
             );
             return;
         }
@@ -504,7 +507,7 @@ impl<'v> Checker<'v> {
         // Physical parameters that must be positive (N9).
         for (i, s) in t.switches.iter().enumerate() {
             if let Some(r) = s.radius
-                && !(r > 0.0)
+                && (r.is_nan() || r <= 0.0)
             {
                 self.err(
                     TABLE_FILE,
@@ -515,7 +518,7 @@ impl<'v> Checker<'v> {
         }
         for (i, m) in t.magnets.iter().enumerate() {
             for (field, v) in [("d_min", m.d_min), ("range", m.range)] {
-                if !(v > 0.0) {
+                if v.is_nan() || v <= 0.0 {
                     self.err(
                         TABLE_FILE,
                         format!("magnets[{i}].{field}"),
@@ -523,7 +526,7 @@ impl<'v> Checker<'v> {
                     );
                 }
             }
-            if !(m.k_coil >= 0.0) {
+            if m.k_coil.is_nan() || m.k_coil < 0.0 {
                 self.err(
                     TABLE_FILE,
                     format!("magnets[{i}].k_coil"),

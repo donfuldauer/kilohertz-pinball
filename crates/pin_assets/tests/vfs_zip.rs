@@ -135,7 +135,8 @@ fn total_oversize_is_rejected() {
 
 #[test]
 fn zip_bomb_ratio_is_rejected() {
-    let zeros = vec![0u8; 1 << 20];
+    // Above the 1 MiB ratio floor.
+    let zeros = vec![0u8; 2 << 20];
     let r = open(deflated_zip(&[("bomb.bin", &zeros)]));
     match r {
         Err(AssetError::CompressionRatio { path, ratio }) => {
@@ -173,9 +174,8 @@ fn understated_size_is_caught_on_read() {
     let mut e = RawEntry::file("short", b"hello world");
     e.declared_size = Some(5);
     e.declared_compressed = Some(11);
-    // Stored entries are read by compressed size; the mismatch is an error.
-    let vfs = open(raw_zip(&[e])).unwrap();
-    assert!(matches!(vfs.read("short"), Err(AssetError::Zip(_))));
+    // A stored entry must declare equal sizes; the mismatch is an error at open.
+    assert!(matches!(open(raw_zip(&[e])), Err(AssetError::Zip(_))));
 }
 
 #[test]

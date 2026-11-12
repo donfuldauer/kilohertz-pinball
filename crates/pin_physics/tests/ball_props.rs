@@ -218,6 +218,60 @@ proptest! {
         prop_assert_eq!(run(false), run(true));
     }
 
+    /// Adding balls that never come within contact range of a ball does not
+    /// change one bit of that ball's trajectory, whatever they do (bounce,
+    /// get pulled by a magnet, take many sub-steps, collide with each other).
+    #[test]
+    fn non_interacting_balls_do_not_perturb_each_other(
+        profile in 0u16..6,
+        vel in (-2.0f32..2.0, -0.4f32..0.4, -0.5f32..1.0),
+        spin in vec3(150.0),
+        drop in 0.0f32..0.05,
+        others in prop::collection::vec((0u16..6, vec3(8.0), vec3(200.0), 0.0f32..0.1), 1..4),
+        magnet_power in 0.0f32..1.0,
+    ) {
+        // The observed ball lives in the lane y < -0.2, the others in
+        // y > 0.2, with a wall along y = 0 between them.
+        let mut b = StaticWorldBuilder::new();
+        b.add_collider(cuboid(v(0.0, 0.0, -0.05), v(10.0, 10.0, 0.05)), layers::ALL, true);
+        b.add_collider(cuboid(v(0.0, 0.0, 0.5), v(10.0, 0.01, 0.5)), layers::ALL, true);
+        b.add_collider(cuboid(v(0.0, 0.9, 0.5), v(10.0, 0.01, 0.5)), layers::ALL, true);
+        b.add_collider(cuboid(v(0.0, -0.9, 0.5), v(10.0, 0.01, 0.5)), layers::ALL, true);
+        let world = b.build();
+        let geo = Geometry::new(&world);
+        let run = |with_others: bool| {
+            let mut s = solver();
+            let p = ProfileId(profile);
+            let mut ball = ball_at(p, v(0.0, -0.5, radius(p) + drop), v(vel.0, vel.1, vel.2));
+            ball.angular_velocity = spin;
+            let h = s.add_ball(ball).unwrap();
+            if with_others {
+                for (i, (op, ov, ow, od)) in others.iter().enumerate() {
+                    let op = ProfileId(*op);
+                    let mut o = ball_at(op, v(0.2 * i as f32 - 0.2, 0.5, radius(op) + od), *ov);
+                    o.angular_velocity = *ow;
+                    s.add_ball(o).unwrap();
+                }
+                let id = s.add_magnet(Magnet {
+                    position: v(0.0, 0.5, -0.005), k_coil: 2.0e-5, d_min: 0.01, range: 0.2,
+                    layer_mask: layers::ALL,
+                });
+                s.set_magnet_power(id, magnet_power);
+            }
+            let mut ev = BallEvents::new();
+            let mut out = Vec::new();
+            for _ in 0..300 {
+                s.step(&geo, DT, &mut ev);
+                out.push(*s.ball(h).unwrap());
+            }
+            out
+        };
+        let alone = run(false);
+        let crowded = run(true);
+        let first = alone.iter().zip(&crowded).position(|(a, b)| a != b);
+        prop_assert_eq!(first, None);
+    }
+
     /// A Newton chain in zero gravity conserves momentum along a straight
     /// path, keeps its order, and never lets neighbours overlap.
     #[test]

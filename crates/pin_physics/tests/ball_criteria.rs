@@ -1090,3 +1090,251 @@ fn rolling_over_floor_seams_is_smooth() {
         }
     }
 }
+
+/// Criterion 2 with other balls in play: a steel ball that rolls through the
+/// magnet's field (and is deflected by it) near a non-magnetic ball, without
+/// ever touching it, must not change one bit of the non-magnetic ball's
+/// trajectory, orientation included.
+#[test]
+fn c2_bit_identity_holds_with_moving_steel_balls_in_the_field() {
+    let world = floor_world();
+    let geo = Geometry::new(&world);
+    // (start, velocity) of the steel balls, per geometry.
+    let geometries: [&[(Vec3, Vec3)]; 4] = [
+        // The reviewer's case: one crossing the field, one dropping in fast.
+        &[
+            (v(0.0, -0.3, 0.0135), v(0.0, 2.95, 0.0)),
+            (v(0.05, 0.5, 0.05), v(0.0, -6.0, 0.0)),
+        ],
+        // Rolling alongside, 45 mm away.
+        &[(v(-0.2, 0.045, 0.0135), v(1.45, 0.05, 0.0))],
+        // Slow, captured by the magnet.
+        &[(v(0.02, -0.09, 0.0135), v(0.0, 0.2, 0.0))],
+        // Fast (many sub-steps) and bouncing.
+        &[
+            (v(0.3, -0.25, 0.03), v(-9.0, 7.5, 1.0)),
+            (v(-0.1, 0.2, 0.0135), v(0.4, -0.1, 0.0)),
+        ],
+    ];
+    for profile in [POWERBALL, GLOBALL] {
+        for (g, steel) in geometries.iter().enumerate() {
+            let run = |power: f32| {
+                let mut s = solver();
+                let id = s.add_magnet(Magnet {
+                    position: v(0.0, 0.0, -0.005),
+                    k_coil: 2.0e-5,
+                    d_min: 0.01,
+                    range: 0.1,
+                    layer_mask: layers::ALL,
+                });
+                s.set_magnet_power(id, power);
+                let r = radius(profile);
+                let mut b = ball_at(profile, v(-0.2, 0.0, r), v(1.5, 0.05, 0.0));
+                b.angular_velocity = v(5.0, 40.0, -3.0);
+                let h = s.add_ball(b).unwrap();
+                let others: Vec<BallHandle> = steel
+                    .iter()
+                    .map(|(pos, vel)| s.add_ball(ball_at(STEEL, *pos, *vel)).unwrap())
+                    .collect();
+                let mut ev = BallEvents::new();
+                let mut out = Vec::new();
+                let mut steel_out = Vec::new();
+                for _ in 0..400 {
+                    s.step(&geo, DT, &mut ev);
+                    let ball = *s.ball(h).unwrap();
+                    for o in &others {
+                        let other = s.ball(*o).unwrap();
+                        // The comparison is only meaningful without contact.
+                        assert!(
+                            ball.position.distance(other.position) > r + radius(STEEL) + 1.0e-3,
+                            "geometry {g}: the balls met"
+                        );
+                        steel_out.push(other.position);
+                    }
+                    out.push(ball);
+                }
+                (out, steel_out)
+            };
+            let (off, steel_off) = run(0.0);
+            let (on, steel_on) = run(1.0);
+            let first = off.iter().zip(&on).position(|(a, b)| a != b);
+            assert_eq!(
+                first, None,
+                "{profile:?}, geometry {g}: differs from this tick"
+            );
+            // The steel balls did feel the magnet.
+            assert_ne!(steel_off, steel_on, "geometry {g}");
+        }
+    }
+}
+
+/// A ball sliding along a rising or falling guide arc moves the distance its
+/// velocity says: at least 95 % of the frictionless distance every tick,
+/// without sinking into the wall (fix round 1: such guides used to have no
+/// reach bound and the ball lost most of its time).
+#[test]
+fn ball_slides_along_rising_and_falling_guide_arcs_at_full_speed() {
+    let world = empty_world();
+    let arc_radius = 0.4f32;
+    let r = radius(STEEL);
+    for rise in [0.001f32, 0.01, 0.15, -0.01, -0.15] {
+        let pts: Vec<Vec3> = (0..=40)
+            .map(|i| {
+                let u = i as f32 / 40.0;
+                let a = 2.0 * u;
+                v(
+                    arc_radius * libm::sinf(a),
+                    arc_radius - arc_radius * libm::cosf(a),
+                    0.2 + rise * u,
+                )
+            })
+            .collect();
+        let guides = [GuideCurve::new(CubicSpline::interpolate(&pts).unwrap(), 0.05).unwrap()];
+        assert!(!guides[0].is_level());
+        let geo = Geometry {
+            world: &world,
+            guides: &guides,
+            wireforms: &[],
+        };
+        for speed in [1.0f32, 5.0, 8.0] {
+            // Frictionless wall, no gravity: the speed is conserved.
+            let mut cfg = config();
+            cfg.gravity = Vec3::ZERO;
+            for p in &mut cfg.pairs {
+                if p.matches(Material::Steel, Material::Steel) {
+                    p.friction = 0.0;
+                }
+            }
+            let mut s = BallSolver::new(cfg, &profiles());
+            // Inside the arc at its start, heading along it and slightly into
+            // the wall, climbing with the wall.
+            let slope = rise / (2.0 * arc_radius);
+            let start = v(0.0, r + 2.0e-4, 0.2 + 0.025);
+            let vel = v(1.0, -0.01, slope).normalize() * speed;
+            let h = s.add_ball(ball_at(STEEL, start, vel)).unwrap();
+            let mut ev = BallEvents::new();
+            let ticks = (0.6 * arc_radius / speed / DT) as usize;
+            let mut prev = start;
+            let mut path = 0.0f32;
+            for tick in 0..ticks {
+                s.step(&geo, DT, &mut ev);
+                let b = s.ball(h).unwrap();
+                let step = b.position.distance(prev);
+                // The chord of one tick on the arc is within 1e-4 of the arc.
+                assert!(
+                    step >= 0.95 * speed * DT,
+                    "rise {rise} speed {speed} tick {tick}: moved {step} of {}",
+                    speed * DT
+                );
+                path += step;
+                prev = b.position;
+                let gap = guides[0].closest_point(b.position, None).distance - r;
+                assert!(gap > -3.0e-5, "rise {rise} speed {speed}: sank {gap}");
+                assert!(
+                    gap < 3.0e-4,
+                    "rise {rise} speed {speed}: left the wall by {gap}"
+                );
+            }
+            let b = s.ball(h).unwrap();
+            assert!(path >= 0.99 * speed * DT * ticks as f32, "path {path}");
+            assert!(b.velocity.length() > 0.98 * speed, "{:?}", b.velocity);
+            assert_eq!(ev.dropped(), 0);
+        }
+    }
+}
+
+/// A pitched playfield as one cuboid, as a mesh of two huge triangles and
+/// as a fine mesh, built about the origin; returns the world and its normal.
+fn pitched_floor(kind: usize) -> (pin_physics::world::StaticWorld, Vec3) {
+    use pin_physics::world::StaticShape;
+    let rot = glam::Quat::from_rotation_x(6.5f32.to_radians());
+    let n = rot * Vec3::Z;
+    let mut b = StaticWorldBuilder::new();
+    if kind == 0 {
+        b.add_collider(
+            StaticShape::Cuboid {
+                center: n * -0.05,
+                half_extents: v(60.0, 60.0, 0.05),
+                rotation: rot,
+            },
+            layers::ALL,
+            true,
+        );
+    } else {
+        let cells: u32 = if kind == 1 { 1 } else { 240 };
+        let half = 60.0f32;
+        let k = cells + 1;
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        for iy in 0..k {
+            for ix in 0..k {
+                let x = -half + 2.0 * half * ix as f32 / cells as f32;
+                let y = -half + 2.0 * half * iy as f32 / cells as f32;
+                vertices.push(rot * v(x, y, 0.0));
+            }
+        }
+        for iy in 0..cells {
+            for ix in 0..cells {
+                let a = iy * k + ix;
+                indices.push([a, a + 1, a + k + 1]);
+                indices.push([a, a + k + 1, a + k]);
+            }
+        }
+        b.add_collider(
+            StaticShape::TriMesh { vertices, indices },
+            layers::ALL,
+            true,
+        );
+    }
+    (b.build(), n)
+}
+
+/// Criterion 5 on a pitched playfield, cuboid and triangle mesh alike: a
+/// spinning, sliding ball converges to rolling without slipping and stays
+/// there while it accelerates down the slope, and its velocity normal to the
+/// floor stays at rounding level (generated playfields are meshes).
+#[test]
+fn c5_rolling_on_pitched_cuboid_and_mesh_floors() {
+    for kind in 0..3 {
+        let (world, n) = pitched_floor(kind);
+        let geo = Geometry::new(&world);
+        for profile in [STEEL, MINI, POWERBALL, JUMBO] {
+            for (vel, spin) in [
+                (v(-3.0, 0.0, -1.0), v(300.0, 0.0, 0.0)),
+                (v(0.5, 2.0, 0.0), v(0.0, -150.0, 80.0)),
+                (Vec3::ZERO, v(-200.0, 100.0, 0.0)),
+            ] {
+                let r = radius(profile);
+                let mut s = solver();
+                let mut b = ball_at(profile, n * (r + 1.0e-6), vel);
+                b.angular_velocity = spin;
+                let h = s.add_ball(b).unwrap();
+                let mut ev = BallEvents::new();
+                let mut rolling_since = None;
+                for tick in 0..4000 {
+                    s.step(&geo, DT, &mut ev);
+                    let b = s.ball(h).unwrap();
+                    let slip = (b.velocity + b.angular_velocity.cross(n * -r)).length();
+                    let height = b.position.dot(n) - r;
+                    if rolling_since.is_none() && tick > 200 && slip < 1.0e-3 && height < 1.0e-5 {
+                        rolling_since = Some(tick);
+                    }
+                    if rolling_since.is_some() {
+                        let what = format!("floor {kind} {profile:?} tick {tick}");
+                        assert!(slip < 1.0e-3, "{what}: slip {slip}");
+                        assert!(height.abs() < 5.0e-6, "{what}: height {height}");
+                        let vn = b.velocity.dot(n);
+                        assert!(vn.abs() <= 1.0e-5, "{what}: normal velocity {vn}");
+                    }
+                }
+                let since = rolling_since.expect("never rolled");
+                assert!(
+                    since < 2500,
+                    "floor {kind} {profile:?}: rolling only from {since}"
+                );
+                // It is rolling fast by the end (about 5/7 g sin 6.5° for > 1.5 s).
+                assert!(s.ball(h).unwrap().velocity.length() > 1.0);
+            }
+        }
+    }
+}

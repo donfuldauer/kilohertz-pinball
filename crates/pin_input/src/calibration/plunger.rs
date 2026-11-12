@@ -80,6 +80,16 @@ pub const PUSH_IN_REACQUIRE_MS: u64 = 5000;
 /// release).
 pub const ACQUIRE_WINDOW_MS: u64 = 3000;
 
+/// The release speed is the peak of finite differences taken over a baseline
+/// of a quarter of the return stroke, clamped to `1..=MAX_SPEED_BASELINE`
+/// updates: long enough to divide sensor noise, short enough to keep the
+/// peak of a smooth spring snap within ~2.5 %. The return stroke is the last
+/// 90 % of travel from the furthest pull position (within the window) to the
+/// release tick. When the stroke is straight within the sensor noise
+/// (estimated from second differences), the stroke's least-squares slope is
+/// reported instead: the same speed with far less noise.
+pub const MAX_SPEED_BASELINE: usize = 8;
+
 /// Time constant (s) of the level average used by re-acquisition.
 const LEVEL_TAU_S: f32 = 0.05;
 
@@ -152,8 +162,8 @@ pub struct PlungerFilter {
     band_start: u64,
     /// Short exponential average of the reading (the stable level).
     level: f32,
-    // Forward speeds of the current pull: `(tick, speed)` ring.
-    speeds: [(u64, f32); RING],
+    // Readings of the current pull: `(tick, raw)` ring.
+    pos: [(u64, f32); RING],
     head: usize,
     len: usize,
     // Rest before each of the last updates.
@@ -186,7 +196,7 @@ impl PlungerFilter {
             band_max: 0.0,
             band_start: 0,
             level: 0.0,
-            speeds: [(0, 0.0); RING],
+            pos: [(0, 0.0); RING],
             head: 0,
             len: 0,
             rest_hist: [0.0; REST_LOOKBACK_TICKS],
@@ -221,18 +231,13 @@ impl PlungerFilter {
         let deadzone = finite_or(self.cfg.deadzone, 0.0).max(0.0);
         let rate = finite_or(self.cfg.rest_tracking_per_s, 0.0).max(0.0);
         let qualify_depth = (PULL_QUALIFY_DEADZONES * deadzone).max(MIN_PULL_DEPTH);
-        let window = u64::from(self.cfg.release_window_ms.min(MAX_RELEASE_WINDOW_MS));
+        // At least the last step (1 ms) is always part of the stroke.
+        let window = u64::from(self.cfg.release_window_ms.clamp(1, MAX_RELEASE_WINDOW_MS));
         let dt_ms = match self.last_tick {
             Some(t) if tick_ms > t => tick_ms - t,
             _ => 1,
         };
         let dt_s = dt_ms as f32 / 1000.0;
-        // Forward (toward rest) speed; finite because both readings are.
-        let speed = if self.last_tick.is_some() {
-            (self.last_raw - raw) / dt_s
-        } else {
-            0.0
-        };
         self.last_raw = raw;
         self.last_tick = Some(tick_ms);
         let first_tick = *self.first_tick.get_or_insert(tick_ms);
@@ -255,16 +260,19 @@ impl PlungerFilter {
             self.qualified = false;
             self.pull_ticks = 0;
             self.len = 0;
-            self.armed = self
+            if self
                 .rest_since
-                .is_some_and(|s| tick_ms.saturating_sub(s) >= ARM_REST_MS);
+                .is_some_and(|since| tick_ms.saturating_sub(since) >= ARM_REST_MS)
+            {
+                self.armed = true;
+            }
             self.rest_since = None;
             let oldest =
                 (self.rest_head + REST_LOOKBACK_TICKS - self.rest_len) % REST_LOOKBACK_TICKS;
             self.undo_rest = self.rest_hist[oldest];
         }
         if self.pulled {
-            self.push_speed(tick_ms, speed);
+            self.push_pos(tick_ms, raw);
             if !self.qualified && self.armed && rel >= qualify_depth {
                 // A real pull: undo the tracking that followed its start.
                 self.qualified = true;
@@ -274,7 +282,7 @@ impl PlungerFilter {
             }
             if rel <= deadzone {
                 self.pulled = false;
-                let peak = self.peak_since(tick_ms.saturating_sub(window));
+                let peak = self.stroke_peak(tick_ms.saturating_sub(window));
                 self.len = 0;
                 if self.qualified
                     && self.pull_ticks >= MIN_PULL_TICKS
@@ -282,8 +290,11 @@ impl PlungerFilter {
                 {
                     release = Some(peak);
                     self.released_once = true;
-                    self.anchor = self.rest;
-                    self.before_push_in = None;
+                    self.armed = false;
+                    if self.before_push_in.is_none() {
+                        // Launched from a rest that is not a held push-in.
+                        self.anchor = self.rest;
+                    }
                     self.holdoff_until = tick_ms.saturating_add(RELEASE_HOLDOFF_MS);
                 }
                 self.qualified = false;
@@ -293,12 +304,20 @@ impl PlungerFilter {
         }
         if !self.pulled {
             if rel.abs() <= deadzone {
-                self.rest_since.get_or_insert(tick_ms);
+                let since = *self.rest_since.get_or_insert(tick_ms);
+                if tick_ms.saturating_sub(since) >= ARM_REST_MS {
+                    self.armed = true;
+                }
                 let k = (rate * dt_s).clamp(0.0, 1.0);
                 self.rest =
                     (self.rest + (raw - self.rest) * k).clamp(-MAX_REST_OFFSET, MAX_REST_OFFSET);
             } else {
                 self.rest_since = None;
+                if rel < -deadzone {
+                    // Pushed in (or overshooting past rest): the spring-back
+                    // that follows must settle before a pull can launch.
+                    self.armed = false;
+                }
             }
         }
 
@@ -339,7 +358,11 @@ impl PlungerFilter {
         let level_good = known_good(level);
         let down = below && (level_good || held_ms >= PUSH_IN_REACQUIRE_MS);
         let up = above && (level_good || level - self.rest < qualify_depth || power_on);
-        if down {
+        if below && power_on && !level_good {
+            // Power-on acquisition below nominal (a device resting low).
+            self.anchor = level;
+            self.before_push_in = None;
+        } else if down {
             // Remember the rest it moved down from, so it can be restored.
             self.before_push_in = Some(self.rest);
         } else if up {
@@ -353,6 +376,7 @@ impl PlungerFilter {
         self.pulled = false;
         self.qualified = false;
         self.len = 0;
+        self.armed = false;
         self.rest_since = Some(tick);
     }
 
@@ -381,23 +405,85 @@ impl PlungerFilter {
         (self.level, tick.saturating_sub(self.band_start))
     }
 
-    fn push_speed(&mut self, tick: u64, speed: f32) {
-        self.speeds[self.head] = (tick, speed);
+    fn push_pos(&mut self, tick: u64, raw: f32) {
+        self.pos[self.head] = (tick, raw);
         self.head = (self.head + 1) % RING;
         self.len = (self.len + 1).min(RING);
     }
 
-    /// Peak forward speed among the stored samples at or after `since`.
-    fn peak_since(&self, since: u64) -> f32 {
-        let mut peak = 0.0f32;
-        for i in 0..self.len {
-            let (t, s) = self.speeds[(self.head + RING - 1 - i) % RING];
-            if t < since {
-                break;
-            }
-            peak = peak.max(s);
+    /// Peak forward speed (full-scale/s) of the return stroke ending at the
+    /// newest reading, considering readings at or after `since`; see
+    /// [`MAX_SPEED_BASELINE`]. Runs once per release, at most `RING` steps.
+    fn stroke_peak(&self, since: u64) -> f32 {
+        let n = self.len;
+        let at = |i: usize| self.pos[(self.head + RING - n + i) % RING];
+        if n < 2 {
+            return 0.0;
         }
-        peak
+        let last = n - 1;
+        let mut first = last;
+        while first > 0 && at(first - 1).0 >= since {
+            first -= 1;
+        }
+        let (t_now, x_now) = at(last);
+        let p_max = (first..=last).map(|i| at(i).1).fold(x_now, f32::max);
+        let travel = p_max - x_now;
+        if travel <= 0.0 {
+            return 0.0;
+        }
+        let threshold = x_now + 0.9 * travel;
+        let start = (first..=last)
+            .rev()
+            .find(|&i| at(i).1 >= threshold)
+            .unwrap_or(first);
+        let stroke_ms = t_now.saturating_sub(at(start).0);
+        let k = ((stroke_ms as f32 / 4.0).round() as usize).clamp(1, MAX_SPEED_BASELINE);
+        let mut peak = 0.0f32;
+        for i in (start + 1)..=last {
+            let j = i.saturating_sub(k);
+            let (ti, xi) = at(i);
+            let (tj, xj) = at(j);
+            let ms = ti.saturating_sub(tj).max((i - j) as u64);
+            peak = peak.max((xj - xi) / (ms as f32 / 1000.0));
+        }
+        // When the stroke is straight within the measured noise, its
+        // least-squares slope is a far less noisy estimate of the same speed.
+        let m = last - start + 1;
+        if m < 4 {
+            return peak;
+        }
+        let t0 = at(start).0;
+        let (mut st, mut sx) = (0.0f64, 0.0f64);
+        for i in start..=last {
+            let (t, x) = at(i);
+            st += t.saturating_sub(t0) as f64;
+            sx += f64::from(x);
+        }
+        let (t_mean, x_mean) = (st / m as f64, sx / m as f64);
+        let (mut stt, mut stx, mut s2) = (0.0f64, 0.0f64, 0.0f64);
+        for i in start..=last {
+            let (t, x) = at(i);
+            let dt = t.saturating_sub(t0) as f64 - t_mean;
+            stt += dt * dt;
+            stx += dt * (f64::from(x) - x_mean);
+            if i > start && i < last {
+                let d2 = f64::from(at(i - 1).1) - 2.0 * f64::from(x) + f64::from(at(i + 1).1);
+                s2 += d2 * d2;
+            }
+        }
+        if stt <= 0.0 {
+            return peak;
+        }
+        let v_fit = (-stx / stt * 1000.0) as f32;
+        // White noise of std σ gives second differences of std √6·σ; a
+        // k-step difference then carries √2·σ/k of noise per ms.
+        let sigma = (s2 / ((m - 2) as f64 * 6.0)).sqrt() as f32;
+        let margin = 3.0 * core::f32::consts::SQRT_2 * sigma / k as f32 * 1000.0;
+        if v_fit > 0.0 && v_fit.is_finite() && peak <= v_fit + margin {
+            v_fit
+        } else {
+            peak
+        }
     }
 }
 

@@ -373,12 +373,6 @@ pub(super) fn load_source(key: &str, vfs: &Vfs) -> Result<Vec<u8>, AssetError> {
     vfs.read(key)
 }
 
-/// Loads a buffer or image URI relative to the glTF file.
-#[cfg(test)]
-pub(super) fn resolve_uri(uri: &str, vfs: &Vfs, base: &str) -> Result<Vec<u8>, AssetError> {
-    load_source(&source_key(uri, base)?, vfs)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

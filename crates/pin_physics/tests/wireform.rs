@@ -613,8 +613,10 @@ fn ball_leaving_the_outside_of_an_orbit_arc_is_free_and_cheap() {
 
 #[test]
 fn guide_cast_on_a_rising_curve_stays_safe() {
-    // Not level: plain conservative advancement, with `Advance` hand-backs
-    // when the ball runs alongside.
+    // Not level: the cast bounds the horizontal gap to the vertical
+    // cylinder over the curve's plan view (Subphase 2.2 fix round 1; before
+    // that it was plain conservative advancement with `Advance` hand-backs),
+    // so a ball running alongside needs a few steps only.
     let g = GuideCurve::new(helix(0.5, 13), 0.03).unwrap();
     assert!(!g.is_level());
     let s = g.spline().clone();
@@ -629,14 +631,18 @@ fn guide_cast_on_a_rising_curve_stays_safe() {
         .distance
         - BALL;
     assert!((-1e-6..=SKIN + 1e-6).contains(&gap), "gap {gap}");
-    // Running alongside at 100 µm: no contact, but the casts hand back.
+    // Running alongside at 100 µm: no contact, in a few steps.
     let start = c - side * (BALL + 1.0e-4) + Vec3::Z * 0.015;
     let (first, steps) = g.cast_sphere_counted(start, BALL, tan * 8.0, 1.0e-3, None);
-    assert_eq!(steps, 32);
-    assert!(matches!(first, Some(GuideCast::Advance { time }) if time > 0.0 && time < 1.0e-3));
+    assert!(steps <= 8, "{steps} steps");
+    if let Some(GuideCast::Contact(hit)) = first {
+        // Only where the wall really curves into the path.
+        let gap = g.closest_point(start + tan * 8.0 * hit.time, None).distance - BALL;
+        assert!((-SKIN - 1e-6..=SKIN + 1e-6).contains(&gap), "gap {gap}");
+    }
     let res = resolve(&g, start, BALL, tan * 8.0 - side * 0.05, 1.0e-3);
     assert!(res.hit.is_none());
-    assert!(res.casts > 1);
+    assert!(res.casts == 1 && res.steps <= 8, "{} steps", res.steps);
 }
 
 #[test]

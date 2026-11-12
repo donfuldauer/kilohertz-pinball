@@ -19,8 +19,7 @@ use core::fmt;
 
 pub use gltf::{
     GltfLimits, GltfScene, ImageData, MeshData, NodeExtras, PbrMaterial, load_gltf,
-    load_gltf_with_limits, validate_gltf_bindings,
-    validate_gltf_bindings_in,
+    load_gltf_with_limits, validate_gltf_bindings, validate_gltf_bindings_in,
 };
 pub use validate::{
     BackboxSi, DispenserSi, FlipperStageHint, IdKind, LoadedTable, MagnetSi, MechSi, ModeSi,

@@ -10,7 +10,11 @@
 //!   external hooks) and the touching contacts are solved at velocity level;
 //! * between boundaries balls move in straight lines up to the earliest
 //!   time of impact (static world, guides, captive balls, other balls), found
-//!   by swept-sphere casts, where the impact impulse is applied.
+//!   by swept-sphere casts, where the impact impulse is applied;
+//! * every ball has its own clock: its position is only advanced at its own
+//!   boundaries and impacts and when another ball comes within contact
+//!   range, so a ball that interacts with nothing takes exactly the same
+//!   floating-point path whatever the other balls do.
 //!
 //! Nothing here allocates; iteration order is fixed (ascending handles,
 //! collider and guide order), so a step is deterministic.
@@ -38,9 +42,15 @@ use crate::world::{
 /// a surface the ball already touches in that direction is a continuing
 /// contact (no restitution, no impact event).
 const TOUCH_TOL: f32 = 2.0e-5;
-/// Contacts are solved at a sub-step boundary only when they overlap (to
-/// within position rounding); anything further away is left to the casts.
-const ACTIVE_EPS: f32 = 2.0e-7;
+/// World contacts are solved at a sub-step boundary when they are within
+/// the touch skin of `StaticWorld::cast_sphere` (1 µm): the cast stops a ball
+/// anywhere inside that skin, and a ball resting there must be held where it
+/// is instead of creeping through the skin. Anything further away is left to
+/// the casts.
+const ACTIVE_EPS: f32 = 1.0e-6;
+/// A ball separating from a surface slower than this (m/s) while inside its
+/// contact skin is resting on it.
+const SEAT_SPEED: f32 = 1.0e-6;
 /// Guide walls report cast contacts within this skin (see `GuideCurve`).
 const GUIDE_SKIN: f32 = 1.0e-5;
 /// Two contact normals closer than this (cosine, about 20°) support the
@@ -51,7 +61,7 @@ const FALLBACK_FRICTION: f32 = 0.2;
 /// Impacts a ball may have per sub-step before it waits for its next one.
 const MAX_EVENTS_PER_SUBSTEP: u8 = 12;
 /// Velocity-solver sweeps over the touching contacts at a sub-step boundary.
-const PRESOLVE_PASSES: usize = 10;
+const PRESOLVE_PASSES: usize = 64;
 /// The sweeps stop when one changes no velocity by more than this (m/s).
 const PRESOLVE_TOLERANCE: f32 = 1.0e-7;
 /// Closing speed (m/s) below which two touching balls are left to the next
@@ -201,6 +211,9 @@ struct Scratch {
     events: u8,
     frozen: bool,
     cache: Cache,
+    /// The ball's own clock: the time within the tick at which its stored
+    /// position is valid.
+    t: f32,
 }
 
 impl Scratch {
@@ -217,6 +230,7 @@ impl Scratch {
         events: 0,
         frozen: false,
         cache: Cache::Free,
+        t: 0.0,
     };
 
     /// Time of the next sub-step boundary, or `dt` when none is left.
@@ -255,6 +269,10 @@ struct Contact {
     active_eps: f32,
     kind: ContactKind,
     persistent: bool,
+    /// Normal velocity the boundary solve asks for: 0 for a contact that
+    /// touches, minus gap over sub-step for one a little apart, so that a
+    /// ball stopped inside a contact skin may close the gap but not pass it.
+    target: f32,
     /// Impulses applied by the boundary solve.
     acc: ContactImpulse,
 }
@@ -763,6 +781,34 @@ impl BallSolver {
         true
     }
 
+    /// Moves ball `i` along its velocity up to the time `to` of the tick.
+    fn advance_ball(&mut self, i: usize, to: f32, sc: &mut [Scratch; MAX_BALLS]) {
+        let s = &mut sc[i];
+        let tau = to - s.t;
+        if tau.is_nan() || tau <= 0.0 {
+            return;
+        }
+        s.t = to;
+        if let (Some(ball), false) = (self.slots[i].as_mut(), s.frozen) {
+            // Compensated sum: the rounding error of this addition is
+            // carried into the next one.
+            let step = ball.velocity * tau - self.carry[i];
+            let moved = ball.position + step;
+            self.carry[i] = (moved - ball.position) - step;
+            ball.position = moved;
+            ball.orientation = integrate_orientation(ball.orientation, ball.angular_velocity, tau);
+        }
+    }
+
+    /// Where ball `j` is at `time` (its stored position is at its own clock).
+    fn position_at(&self, ball: &Ball, s: &Scratch, time: f32) -> Vec3 {
+        if s.frozen || time <= s.t {
+            ball.position
+        } else {
+            ball.position + ball.velocity * (time - s.t)
+        }
+    }
+
     /// Collects everything ball `i` touches (within [`TOUCH_TOL`]).
     #[allow(clippy::needless_range_loop)] // the index addresses several per-ball arrays
     fn gather(
@@ -798,6 +844,7 @@ impl BallSolver {
                     self.collider_material(c.collider),
                 ),
                 persistent: touches(own, c.normal),
+                target: 0.0,
                 acc: ContactImpulse::default(),
             });
         }
@@ -818,6 +865,7 @@ impl BallSolver {
                     active_eps: GUIDE_SKIN,
                     kind: ContactKind::Surface(ImpactTarget::Guide(gi), self.guide_material(gi)),
                     persistent: touches(own, normal),
+                    target: 0.0,
                     acc: ContactImpulse::default(),
                 });
             }
@@ -841,6 +889,7 @@ impl BallSolver {
                             self.wireform_material(wi),
                         ),
                         persistent: touches(own, normal),
+                        target: 0.0,
                         acc: ContactImpulse::default(),
                     });
                 }
@@ -854,17 +903,19 @@ impl BallSolver {
             if j == i || !sc[j].active || other.layer != ball.layer {
                 continue;
             }
-            let d = pos.distance(other.position);
+            let other_pos = self.position_at(&other, &sc[j], sc[i].t);
+            let d = pos.distance(other_pos);
             let gap = d - r - sc[j].body.radius;
             if gap <= TOUCH_TOL && d > 1.0e-9 {
-                let normal = (pos - other.position) / d;
+                let normal = (pos - other_pos) / d;
                 add(Contact {
                     normal,
-                    point: other.position + normal * sc[j].body.radius,
+                    point: other_pos + normal * sc[j].body.radius,
                     depth: -gap,
                     active_eps: TOUCH_TOL,
                     kind: ContactKind::Ball(j),
                     persistent: touches(own, normal) || touches(&self.touch[j], -normal),
+                    target: 0.0,
                     acc: ContactImpulse::default(),
                 });
             }
@@ -888,6 +939,7 @@ impl BallSolver {
                         active_eps: TOUCH_TOL,
                         kind: ContactKind::Chain(ci, bi),
                         persistent: touches(own, normal),
+                        target: 0.0,
                         acc: ContactImpulse::default(),
                     });
                 }
@@ -905,7 +957,21 @@ impl BallSolver {
         i: usize,
         sc: &mut [Scratch; MAX_BALLS],
     ) -> ContactList {
-        let contacts = self.gather(geo, bounds, i, sc);
+        let mut contacts = self.gather(geo, bounds, i, sc);
+        for c in &mut contacts {
+            // Balls may close the gap between them during the sub-step.
+            // Surfaces may not: their casts stop a ball anywhere inside the
+            // contact skin, so an approach velocity could never be used.
+            if !matches!(c.kind, ContactKind::Surface(..)) {
+                c.target = c.depth.min(0.0) / sc[i].h;
+            }
+        }
+        // Balls within contact range interact: bring them to this instant.
+        for c in &contacts {
+            if let ContactKind::Ball(j) = c.kind {
+                self.advance_ball(j, sc[i].t, sc);
+            }
+        }
         let Some(mut ball) = self.slots[i] else {
             return contacts;
         };
@@ -918,15 +984,19 @@ impl BallSolver {
         }
 
         // Position correction. `delta` is the displacement so far, so that
-        // two contacts with the same normal are not corrected twice.
+        // two contacts with the same normal are not corrected twice. A ball
+        // that rests on a surface a little inside its contact skin (where a
+        // cast stopped it) and is not leaving it is seated on the surface:
+        // otherwise the rounding residue of its velocity would slowly float
+        // it through the skin, to drop back a micrometre every few seconds.
         let mut delta = Vec3::ZERO;
         for c in &contacts {
             let rem = c.depth - delta.dot(c.normal);
-            if rem.is_nan() || rem <= 0.0 {
+            if rem.is_nan() {
                 continue;
             }
             match c.kind {
-                ContactKind::Ball(j) => {
+                ContactKind::Ball(j) if rem > 0.0 => {
                     let share = sc[j].body.mass / (me.body.mass + sc[j].body.mass);
                     delta += c.normal * (rem * share);
                     if let Some(other) = self.slots[j].as_mut() {
@@ -934,7 +1004,19 @@ impl BallSolver {
                     }
                     sc[j].cache = Cache::Dirty;
                 }
-                _ => delta += c.normal * rem,
+                ContactKind::Chain(..) if rem > 0.0 => delta += c.normal * rem,
+                ContactKind::Surface(target, _) => {
+                    let seat = rem < 0.0
+                        && rem >= -c.active_eps
+                        && c.persistent
+                        && (ball.velocity - self.surface_velocity_at(target, c.point))
+                            .dot(c.normal)
+                            <= SEAT_SPEED;
+                    if rem > 0.0 || seat {
+                        delta += c.normal * rem;
+                    }
+                }
+                _ => {}
             }
         }
         ball.position += delta;
@@ -1021,6 +1103,7 @@ impl BallSolver {
         contacts: &mut ContactList,
         surfaces: bool,
         members: &[bool; MAX_BALLS],
+        settled: &mut [bool; MAX_BALLS],
         sc: &mut [Scratch; MAX_BALLS],
     ) -> f32 {
         let me = sc[i];
@@ -1034,9 +1117,9 @@ impl BallSolver {
                     let k = self.surface_coefficients(me.pidx, material);
                     let vs = self.surface_velocity_at(target, c.point);
                     match self.slots[i].as_mut() {
-                        Some(ball) => {
-                            solve_surface_contact(ball, me.body, c.normal, vs, k, 0.0, &mut c.acc)
-                        }
+                        Some(ball) => solve_surface_contact(
+                            ball, me.body, c.normal, vs, k, c.target, &mut c.acc,
+                        ),
                         None => 0.0,
                     }
                 }
@@ -1052,17 +1135,21 @@ impl BallSolver {
                         continue;
                     };
                     let moved = solve_ball_contact(
-                        &mut a, me.body, &mut b, sc[j].body, normal, k, 0.0, &mut c.acc,
+                        &mut a, me.body, &mut b, sc[j].body, normal, k, c.target, &mut c.acc,
                     );
                     if moved > 0.0 {
                         self.slots[i] = Some(a);
                         self.slots[j] = Some(b);
                         sc[j].cache = Cache::Dirty;
                     }
+                    if moved > PRESOLVE_TOLERANCE {
+                        // The partner has to be swept again.
+                        settled[j] = false;
+                    }
                     moved
                 }
                 ContactKind::Chain(ci, bi) => {
-                    self.chain_solve(i, &me, ci, bi, c.normal, 0.0, &mut c.acc.normal)
+                    self.chain_solve(i, &me, ci, bi, c.normal, c.target, &mut c.acc.normal)
                 }
             };
             change = change.max(moved);
@@ -1091,6 +1178,11 @@ impl BallSolver {
         }
         for i in 0..MAX_BALLS {
             if members[i] {
+                self.advance_ball(i, time, sc);
+            }
+        }
+        for i in 0..MAX_BALLS {
+            if members[i] {
                 lists[i] = self.boundary_prepare(geo, bounds, i, sc);
             }
         }
@@ -1099,22 +1191,36 @@ impl BallSolver {
                 self.boundary_impacts(i, &lists[i], &members, sc, events);
             }
         }
+        // Each ball is swept until its own contacts have converged: how
+        // long one ball iterates must not depend on balls it does not touch.
+        let mut settled = [false; MAX_BALLS];
         for _ in 0..PRESOLVE_PASSES {
-            let mut change = 0.0f32;
+            let mut change = [0.0f32; MAX_BALLS];
+            let sweeping = settled;
             for surfaces in [false, true] {
                 for i in 0..MAX_BALLS {
-                    if members[i] {
-                        change = change.max(self.boundary_sweep(
+                    if members[i] && !sweeping[i] {
+                        let moved = self.boundary_sweep(
                             i,
                             &mut lists[i],
                             surfaces,
                             &members,
+                            &mut settled,
                             sc,
-                        ));
+                        );
+                        change[i] = change[i].max(moved);
                     }
                 }
             }
-            if change <= PRESOLVE_TOLERANCE {
+            let mut all = true;
+            for i in 0..MAX_BALLS {
+                if members[i] && !sweeping[i] {
+                    // A partner's sweep may have reopened this ball.
+                    settled[i] = change[i] <= PRESOLVE_TOLERANCE;
+                }
+                all &= !members[i] || settled[i];
+            }
+            if all {
                 break;
             }
         }
@@ -1245,15 +1351,25 @@ impl BallSolver {
                 active_eps: 0.0,
                 kind: ContactKind::Surface(target, material),
                 persistent: true,
+                target: 0.0,
                 acc: ContactImpulse::default(),
             }),
         }
+        // Balls in the list take part: bring them to this instant.
+        for k in 0..list.len() {
+            if let ContactKind::Ball(j) = list[k].kind
+                && list[k].depth >= -list[k].active_eps
+            {
+                self.advance_ball(j, me.t, sc);
+            }
+        }
         let alone = [false; MAX_BALLS];
+        let mut unused = [false; MAX_BALLS];
         let mut total = 0.0f32;
         for _ in 0..PRESOLVE_PASSES {
             let change = self
-                .boundary_sweep(i, list, false, &alone, sc)
-                .max(self.boundary_sweep(i, list, true, &alone, sc));
+                .boundary_sweep(i, list, false, &alone, &mut unused, sc)
+                .max(self.boundary_sweep(i, list, true, &alone, &mut unused, sc));
             total = total.max(change);
             if change <= PRESOLVE_TOLERANCE {
                 break;
@@ -1453,6 +1569,7 @@ impl BallSolver {
         events: &mut BallEvents,
     ) {
         let mut now = 0.0f32;
+        let mut complete = false;
         let mut lists: [ContactList; MAX_BALLS] = std::array::from_fn(|_| ContactList::new());
         let lists = &mut lists;
         // Every loop pass consumes a boundary or an impact; impacts are
@@ -1478,8 +1595,10 @@ impl BallSolver {
                     continue;
                 }
                 if matches!(sc[i].cache, Cache::Dirty) {
-                    let window = sc[i].horizon(dt) - now;
-                    sc[i].cache = self.cast_static(geo, bounds, i, &sc[i], now, window);
+                    // A ball is only marked dirty at its own clock.
+                    let from = sc[i].t;
+                    let window = sc[i].horizon(dt) - from;
+                    sc[i].cache = self.cast_static(geo, bounds, i, &sc[i], from, window);
                 }
                 if let Cache::Event(t, _) = sc[i].cache
                     && t < best_time
@@ -1493,6 +1612,7 @@ impl BallSolver {
                     continue;
                 };
                 let va = if sc[i].frozen { Vec3::ZERO } else { a.velocity };
+                let pa = self.position_at(&a, &sc[i], now);
                 for j in i + 1..MAX_BALLS {
                     let (Some(b), true) = (self.slots[j], sc[j].active) else {
                         continue;
@@ -1501,9 +1621,9 @@ impl BallSolver {
                         continue;
                     }
                     let vb = if sc[j].frozen { Vec3::ZERO } else { b.velocity };
+                    let pb = self.position_at(&b, &sc[j], now);
                     let rsum = sc[i].body.radius + sc[j].body.radius;
-                    if let Some(t) =
-                        sphere_toi_resting(a.position - b.position, va - vb, rsum, best_time - now)
+                    if let Some(t) = sphere_toi_resting(pa - pb, va - vb, rsum, best_time - now)
                         && now + t < best_time
                     {
                         best_time = now + t;
@@ -1512,37 +1632,36 @@ impl BallSolver {
                 }
             }
 
-            // Move everything to the event.
-            let tau = best_time - now;
-            if tau > 0.0 {
-                for (i, (slot, s)) in self.slots.iter_mut().zip(sc.iter()).enumerate() {
-                    if let (Some(ball), true, false) = (slot.as_mut(), s.active, s.frozen) {
-                        // Compensated sum: the rounding error of this
-                        // addition is carried into the next one.
-                        let step = ball.velocity * tau - self.carry[i];
-                        let moved = ball.position + step;
-                        self.carry[i] = (moved - ball.position) - step;
-                        ball.position = moved;
-                        ball.orientation =
-                            integrate_orientation(ball.orientation, ball.angular_velocity, tau);
-                    }
-                }
-                now = best_time;
-            }
-
+            // Only the balls that take part in the event move to it.
+            now = now.max(best_time);
             match best {
-                Next::End => break,
+                Next::End => {
+                    complete = true;
+                    break;
+                }
                 Next::Boundary => self.boundaries(geo, bounds, now, sc, lists, events),
                 Next::Static(i) => {
+                    self.advance_ball(i, now, sc);
                     if let Cache::Event(_, ev) = sc[i].cache {
                         self.static_event(i, ev, sc, lists, events);
                     }
                 }
-                Next::Pair(i, j) => self.pair_event(i, j, sc, events),
+                Next::Pair(i, j) => {
+                    self.advance_ball(i, now, sc);
+                    self.advance_ball(j, now, sc);
+                    self.pair_event(i, j, sc, events);
+                }
             }
             budget = budget.saturating_sub(1);
             if budget == 0 {
                 break;
+            }
+        }
+        // Nothing lies between a ball's clock and the end of the tick (unless
+        // the safety budget ran out: then the remaining time is dropped).
+        for i in 0..MAX_BALLS {
+            if complete && sc[i].active {
+                self.advance_ball(i, dt, sc);
             }
         }
     }

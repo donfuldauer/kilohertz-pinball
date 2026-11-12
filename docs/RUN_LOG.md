@@ -71,3 +71,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3 | 2.2 | Reviewer | Opus 5.5 | 1 | **fail** | gates pass; coverage 97.87 %; 4–5 µs/step | B1 rising curved guides stall (~10× slow); B2 C2 bit-identity breaks with a moving steel ball nearby; mesh-floor normal glitches raised to required; B3 flush-cuboid seam hop downgraded (tables use meshes); world/ ownership amendment for fix 1 |
 | 3 | 3.2 | Implementer | Opus 5.5 | fix 2 | done | coverage 99.28 % | B2 fixed; never_stuck proptest |
 | 3 | 3.2 | Reviewer | Fable 5.2 | 3 | **fail** | gates 1–7 pass; 16 000 noise-free histories: 0 violations | B3 ARM_REST_MS loses launches under sensor noise (up to 85 % at ±0.004); N-f, N-g folded into fix 3 (last) |
+| 3 | 4.5 | Implementer | Opus 5.5 | 1 | done | coverage wasm 95.7–98.1 %, SDK 97.4 %; spec 79/79 | two 4.2 tests amended (ownership amendment) |
+| 3 | 4.5 | Reviewer | Fable 5.2 | 1 | **fail** | gates 1–7 pass; release faulting tick 0.40–0.67 ms (limit 8) | B1 no module-size/function-count cap (8 MB → 62 s, 5.7 GB); N1–N5 folded into fix 1 |

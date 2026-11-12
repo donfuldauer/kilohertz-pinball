@@ -418,7 +418,8 @@ fn load_bytes(
     let material_textures = |m: &::gltf::Material<'_>| {
         let pbr = m.pbr_metallic_roughness();
         [
-            pbr.base_color_texture().map(|i| i.texture().source().index()),
+            pbr.base_color_texture()
+                .map(|i| i.texture().source().index()),
             pbr.metallic_roughness_texture()
                 .map(|i| i.texture().source().index()),
             m.normal_texture().map(|i| i.texture().source().index()),
@@ -485,7 +486,9 @@ fn load_bytes(
             &material.emissive,
         ]
         .concat();
-        finite(&factors, || format!("material {} factors", m.index().unwrap_or(0)))?;
+        finite(&factors, || {
+            format!("material {} factors", m.index().unwrap_or(0))
+        })?;
         materials.push(material);
     }
 

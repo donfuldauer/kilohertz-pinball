@@ -206,20 +206,24 @@ impl ZipIndex {
                 return Err(AssetError::Encrypted(name.to_owned()));
             }
             // The data must really be in the archive, once.
-            let compressed = file.compressed_size();
-            let data_start = local_data_start(&bytes, file.header_start(), name)?;
-            let data_end = data_start
-                .checked_add(compressed)
-                .filter(|&e| e <= len)
-                .ok_or_else(|| {
-                    AssetError::Zip(format!(
-                        "{name:?}: compressed data runs past the end of the archive"
-                    ))
-                })?;
-            central_start = central_start.min(file.central_header_start());
-            total_compressed = total_compressed.saturating_add(compressed);
-            ranges.push((file.header_start(), data_end, name.to_owned()));
+            let mut record_range = || -> Result<(), AssetError> {
+                let compressed = file.compressed_size();
+                let data_start = local_data_start(&bytes, file.header_start(), name)?;
+                let data_end = data_start
+                    .checked_add(compressed)
+                    .filter(|&e| e <= len)
+                    .ok_or_else(|| {
+                        AssetError::Zip(format!(
+                            "{name:?}: compressed data runs past the end of the archive"
+                        ))
+                    })?;
+                central_start = central_start.min(file.central_header_start());
+                total_compressed = total_compressed.saturating_add(compressed);
+                ranges.push((file.header_start(), data_end, name.to_owned()));
+                Ok(())
+            };
             if is_dir {
+                record_range()?;
                 continue;
             }
             if path.is_empty() {
@@ -241,6 +245,7 @@ impl ZipIndex {
                     size,
                 });
             }
+            let compressed = file.compressed_size();
             if !deflated && size != compressed {
                 return Err(AssetError::Zip(format!(
                     "{name:?}: stored entry with different sizes"
@@ -260,6 +265,8 @@ impl ZipIndex {
             if total > limits.max_total_uncompressed {
                 return Err(AssetError::TotalTooLarge(total));
             }
+            record_range()?;
+            let data_start = local_data_start(&bytes, file.header_start(), name)?;
             let entry = Entry {
                 // Both fit: data_end <= len.
                 data_start: data_start as usize,
