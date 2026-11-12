@@ -21,9 +21,9 @@ use super::{GpuContext, GpuError, PresentChoice, choose_present_mode};
 use crate::debug::{Camera, DebugLine, DebugLines, DebugRenderer};
 use crate::topology::{Rect, SurfaceRole, WindowEvent, WindowEventKind};
 use arrayvec::ArrayVec;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 
@@ -205,6 +205,17 @@ pub struct SurfaceSet {
     queue: wgpu::Queue,
     slots: Vec<Slot>,
     overlay_lines: DebugLines,
+    /// Serialises queue submissions and surface (re)configuration across the
+    /// render thread and presenter threads: wgpu's `Surface::configure` waits
+    /// for the device to go idle and fails if another thread submits
+    /// meanwhile.
+    gpu_lock: Arc<Mutex<()>>,
+}
+
+/// Locks the submit/configure lock (a poisoned lock is still usable: it
+/// guards no data).
+fn lock(m: &Mutex<()>) -> MutexGuard<'_, ()> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn pick_format(caps: &wgpu::SurfaceCapabilities) -> Option<wgpu::TextureFormat> {
@@ -264,6 +275,7 @@ impl SurfaceSet {
     ) -> Result<SurfaceSet, GpuError> {
         let device = ctx.device().clone();
         let queue = ctx.queue().clone();
+        let gpu_lock = Arc::new(Mutex::new(()));
         let mut slots = Vec::with_capacity(sources.len());
         for src in sources {
             let role = src.role();
@@ -279,7 +291,10 @@ impl SurfaceSet {
                 choice = PresentChoice::PresenterThread(wgpu::PresentMode::Fifo);
             }
             let config = surface_config(format, &caps, src.pixel_size, choice.mode());
-            src.surface.configure(&device, &config);
+            {
+                let _g = lock(&gpu_lock);
+                src.surface.configure(&device, &config);
+            }
             let (present, draw_format) = match choice {
                 PresentChoice::Direct(_) => (
                     Present::Direct {
@@ -295,6 +310,7 @@ impl SurfaceSet {
                         src.surface,
                         config,
                         src.window,
+                        Arc::clone(&gpu_lock),
                     )?),
                     wgpu::TextureFormat::Rgba8Unorm,
                 ),
@@ -319,6 +335,7 @@ impl SurfaceSet {
             queue,
             slots,
             overlay_lines: DebugLines::new(64),
+            gpu_lock,
         })
     }
 
@@ -381,6 +398,7 @@ impl SurfaceSet {
                 {
                     config.width = w;
                     config.height = h;
+                    let _g = lock(&self.gpu_lock);
                     surface.configure(&self.device, config);
                 }
                 s.dirty = true;
@@ -463,6 +481,7 @@ impl SurfaceSet {
         self.pip_overlay(i);
         let device = self.device.clone();
         let queue = self.queue.clone();
+        let gpu_lock = Arc::clone(&self.gpu_lock);
         let overlay_lines = &self.overlay_lines;
         let s = &mut self.slots[i];
         let (pw, ph) = s.pixel_size;
@@ -506,6 +525,7 @@ impl SurfaceSet {
                 wgpu::CurrentSurfaceTexture::Success(t) => (t, false),
                 wgpu::CurrentSurfaceTexture::Suboptimal(t) => (t, true),
                 wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                    let _g = lock(&gpu_lock);
                     surface.configure(&device, config);
                     return SurfaceStatus::Skipped;
                 }
@@ -515,9 +535,13 @@ impl SurfaceSet {
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
             draw(s, &mut encoder, &view);
-            queue.submit([encoder.finish()]);
+            {
+                let _g = lock(&gpu_lock);
+                queue.submit([encoder.finish()]);
+            }
             queue.present(frame);
             if suboptimal && let Present::Direct { surface, config } = &s.present {
+                let _g = lock(&gpu_lock);
                 surface.configure(&device, config);
             }
         } else {
@@ -550,7 +574,10 @@ impl SurfaceSet {
             };
             let view = source.create_view(&wgpu::TextureViewDescriptor::default());
             draw(s, &mut encoder, &view);
-            queue.submit([encoder.finish()]);
+            {
+                let _g = lock(&gpu_lock);
+                queue.submit([encoder.finish()]);
+            }
             let Present::Thread(p) = &mut s.present else {
                 unreachable!()
             };
@@ -586,6 +613,7 @@ fn spawn_presenter(
     surface: wgpu::Surface<'static>,
     mut config: wgpu::SurfaceConfiguration,
     window: usize,
+    gpu_lock: Arc<Mutex<()>>,
 ) -> Result<Presenter, GpuError> {
     let (tx, rx) = sync_channel::<PresentJob>(1);
     let busy = Arc::new(AtomicBool::new(false));
@@ -604,12 +632,14 @@ fn spawn_presenter(
                 if (config.width, config.height) != (job.width, job.height) {
                     config.width = job.width.max(1);
                     config.height = job.height.max(1);
+                    let _g = lock(&gpu_lock);
                     surface.configure(&device, &config);
                 }
                 let frame = match surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(t)
                     | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
                     wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                        let _g = lock(&gpu_lock);
                         surface.configure(&device, &config);
                         None
                     }
@@ -627,7 +657,10 @@ fn spawn_presenter(
                             label: Some("presenter blit"),
                         });
                     blit.encode(&device, &mut encoder, &src, &dst);
-                    queue.submit([encoder.finish()]);
+                    {
+                        let _g = lock(&gpu_lock);
+                        queue.submit([encoder.finish()]);
+                    }
                     queue.present(frame);
                     presented2.fetch_add(1, Ordering::AcqRel);
                 } else {

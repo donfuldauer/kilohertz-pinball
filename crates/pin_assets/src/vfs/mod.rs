@@ -36,9 +36,21 @@ fn has_archive_extension(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("zip") || e.eq_ignore_ascii_case("pinbundle"))
 }
 
+/// OS metadata that never belongs to a bundle: ignored when deciding the
+/// wrapper folder and never listed.
+fn is_os_junk(path: &str) -> bool {
+    path == "__MACOSX"
+        || path.starts_with("__MACOSX/")
+        || matches!(
+            path.rsplit('/').next(),
+            Some(".DS_Store" | "Thumbs.db" | "desktop.ini")
+        )
+}
+
 /// The wrapping folder to strip: `table.toml` is not at the root, every file
 /// lives under one top-level folder `d`, and `d/table.toml` exists.
-fn wrapper_folder<'a>(mut names: impl Iterator<Item = &'a str>) -> Option<String> {
+fn wrapper_folder<'a>(names: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut names = names.filter(|n| !is_os_junk(n));
     let first = names.next()?;
     let (dir, _) = first.split_once('/')?;
     let mut has_marker = first == format!("{dir}/{ROOT_MARKER}");
@@ -71,12 +83,8 @@ impl Vfs {
                 path.display()
             )));
         }
-        // A stored archive is slightly larger than its contents; anything far
-        // beyond the uncompressed cap cannot be valid.
-        let cap = limits
-            .max_total_uncompressed
-            .saturating_mul(2)
-            .saturating_add(1 << 20);
+        // An archive larger than its uncompressed cap (plus headers) is pointless.
+        let cap = limits.max_total_uncompressed.saturating_add(1 << 20);
         if meta.len() > cap {
             return Err(AssetError::TotalTooLarge(meta.len()));
         }
@@ -87,6 +95,7 @@ impl Vfs {
     /// Validates an in-memory archive. Nothing is decompressed until [`read`](Self::read).
     pub fn from_zip_bytes(bytes: Vec<u8>, limits: ZipLimits) -> Result<Vfs, AssetError> {
         let mut index = ZipIndex::new(bytes, limits)?;
+        index.retain(|name| !is_os_junk(name));
         if !index.contains(ROOT_MARKER)
             && let Some(dir) = wrapper_folder(index.names())
         {
@@ -100,10 +109,16 @@ impl Vfs {
     fn open_dir(path: &Path, limits: ZipLimits) -> Result<Vfs, AssetError> {
         let mut root = std::fs::canonicalize(path)?;
         if !root.join(ROOT_MARKER).is_file() {
-            // A single top-level folder wrapping everything.
-            let mut children = std::fs::read_dir(&root)?;
+            // A single top-level folder wrapping everything (OS junk ignored).
+            let mut children = std::fs::read_dir(&root)?
+                .filter(|c| {
+                    c.as_ref().map_or(true, |c| {
+                        c.file_name().to_str().is_none_or(|n| !is_os_junk(n))
+                    })
+                });
             if let (Some(Ok(only)), None) = (children.next(), children.next()) {
                 let candidate = only.path();
+                // file_type() does not follow symlinks: a symlinked wrapper is refused.
                 if only.file_type().is_ok_and(|t| t.is_dir())
                     && candidate.join(ROOT_MARKER).is_file()
                 {
@@ -119,10 +134,23 @@ impl Vfs {
         })
     }
 
-    /// Resolves a folder path, refusing anything outside the root.
+    /// Resolves a folder path, refusing anything outside the root, OS junk,
+    /// and any path that goes through a symlinked directory (such paths are
+    /// not listed either, so `read` and `list` agree).
     fn resolve_dir(root: &Path, path: &str, original: &str) -> Result<PathBuf, AssetError> {
+        if is_os_junk(path) {
+            return Err(AssetError::NotFound(original.to_owned()));
+        }
         let mut full = root.to_path_buf();
-        full.extend(path.split('/'));
+        let mut parts = path.split('/').peekable();
+        while let Some(part) = parts.next() {
+            full.push(part);
+            if parts.peek().is_some()
+                && std::fs::symlink_metadata(&full).is_ok_and(|m| m.file_type().is_symlink())
+            {
+                return Err(AssetError::Symlink(original.to_owned()));
+            }
+        }
         let canonical = match std::fs::canonicalize(&full) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -181,8 +209,10 @@ impl Vfs {
     }
 
     /// Every file in the bundle, sorted, `/`-separated, without directories.
-    /// In a folder bundle, symlinks are listed only when they resolve to a file
-    /// inside the root, and symlinked folders are not descended into.
+    /// OS metadata (`.DS_Store`, `Thumbs.db`, `desktop.ini`, `__MACOSX/`) is
+    /// never listed. In a folder bundle, symlinks are listed only when they
+    /// resolve to a file inside the root; symlinked folders are not descended
+    /// into, and [`read`](Self::read) refuses paths through them.
     pub fn list(&self) -> Vec<String> {
         match &self.backend {
             Backend::Zip(index) => index.names().map(str::to_owned).collect(),
@@ -212,6 +242,9 @@ fn walk(root: &Path, dir: &Path, prefix: &str, depth: usize, out: &mut Vec<Strin
         } else {
             format!("{prefix}/{name}")
         };
+        if is_os_junk(&rel) {
+            continue;
+        }
         let Ok(kind) = entry.file_type() else {
             continue;
         };
@@ -245,6 +278,10 @@ mod tests {
         assert_eq!(wrapper_folder(names.into_iter()), None);
         assert_eq!(wrapper_folder(core::iter::empty()), None);
         assert_eq!(wrapper_folder(["a.lua"].into_iter()), None);
+        let names = [".DS_Store", "__MACOSX/pkg/._table.toml", "pkg/table.toml", "Thumbs.db"];
+        assert_eq!(wrapper_folder(names.into_iter()), Some("pkg".to_owned()));
+        assert!(is_os_junk("a/desktop.ini") && is_os_junk("__MACOSX"));
+        assert!(!is_os_junk("a/b.png") && !is_os_junk("__MACOSXY/a"));
     }
 
     #[test]

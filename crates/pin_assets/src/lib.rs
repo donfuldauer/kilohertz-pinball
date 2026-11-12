@@ -18,7 +18,8 @@ pub mod zip;
 use core::fmt;
 
 pub use gltf::{
-    GltfScene, ImageData, MeshData, NodeExtras, PbrMaterial, load_gltf, validate_gltf_bindings,
+    GltfLimits, GltfScene, ImageData, MeshData, NodeExtras, PbrMaterial, load_gltf,
+    load_gltf_with_limits, validate_gltf_bindings,
     validate_gltf_bindings_in,
 };
 pub use validate::{

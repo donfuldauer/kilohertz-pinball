@@ -7,47 +7,97 @@ use ::gltf::Document;
 use ::gltf::accessor::{Accessor, DataType, Dimensions};
 use ::gltf::buffer::{Source, View};
 
-/// Every buffer's bytes, at least as long as the declared `byteLength`.
+/// Every buffer's bytes (truncated to the declared `byteLength`). Buffers
+/// naming the same resolved source share one copy.
 pub(super) struct Buffers {
-    data: Vec<Vec<u8>>,
+    /// Index into `store` for each glTF buffer.
+    slot: Vec<usize>,
+    store: Vec<Vec<u8>>,
 }
 
 impl Buffers {
+    /// Loads every buffer. The sum of the declared lengths of the distinct
+    /// sources is checked against `budget` before anything is read.
     pub(super) fn load(
         document: &Document,
         mut bin: Option<Vec<u8>>,
         vfs: &Vfs,
         base: &str,
+        budget: u64,
     ) -> Result<Buffers, AssetError> {
-        let mut data = Vec::with_capacity(document.buffers().len());
+        let mut keys: Vec<Option<String>> = Vec::with_capacity(document.buffers().len());
+        let mut seen = std::collections::HashMap::new();
+        let mut planned: u64 = 0;
         for buffer in document.buffers() {
-            let bytes = match buffer.source() {
-                Source::Bin => bin.take().ok_or_else(|| {
-                    gerr(format!(
-                        "buffer {} refers to a missing GLB BIN chunk",
-                        buffer.index()
-                    ))
-                })?,
-                Source::Uri(uri) => resolve_uri(uri, vfs, base)?,
+            let key = match buffer.source() {
+                Source::Bin => {
+                    planned = planned.saturating_add(buffer.length() as u64);
+                    None
+                }
+                Source::Uri(uri) => Some(source_key(uri, base)?),
             };
-            if bytes.len() < buffer.length() {
+            if let Some(k) = &key {
+                let len = seen.entry(k.clone()).or_insert(0usize);
+                *len = (*len).max(buffer.length());
+            }
+            keys.push(key);
+        }
+        planned = seen
+            .values()
+            .fold(planned, |acc, &l| acc.saturating_add(l as u64));
+        if planned > budget {
+            return Err(gerr(format!(
+                "buffers declare {planned} bytes, over the {budget}-byte budget"
+            )));
+        }
+        let mut slot = Vec::with_capacity(keys.len());
+        let mut store: Vec<Vec<u8>> = Vec::new();
+        let mut by_key: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (buffer, key) in document.buffers().zip(keys) {
+            let index = match &key {
+                Some(k) if by_key.contains_key(k) => by_key[k],
+                _ => {
+                    let mut bytes = match &key {
+                        None => bin.take().ok_or_else(|| {
+                            gerr(format!(
+                                "buffer {} refers to a missing GLB BIN chunk",
+                                buffer.index()
+                            ))
+                        })?,
+                        Some(k) => load_source(k, vfs)?,
+                    };
+                    let keep = match &key {
+                        Some(k) => seen[k],
+                        None => buffer.length(),
+                    };
+                    bytes.truncate(keep);
+                    bytes.shrink_to_fit();
+                    store.push(bytes);
+                    if let Some(k) = key {
+                        by_key.insert(k, store.len() - 1);
+                    }
+                    store.len() - 1
+                }
+            };
+            if store[index].len() < buffer.length() {
                 return Err(gerr(format!(
                     "buffer {} has {} bytes but declares {}",
                     buffer.index(),
-                    bytes.len(),
+                    store[index].len(),
                     buffer.length()
                 )));
             }
-            data.push(bytes);
+            slot.push(index);
         }
-        Ok(Buffers { data })
+        Ok(Buffers { slot, store })
     }
 
     /// The bytes of a buffer view.
     pub(super) fn view(&self, view: &View<'_>) -> Result<&[u8], AssetError> {
         let buffer = self
-            .data
+            .slot
             .get(view.buffer().index())
+            .map(|&i| &self.store[i])
             .ok_or_else(|| gerr("buffer view refers to a missing buffer"))?;
         view.offset()
             .checked_add(view.length())
@@ -283,20 +333,13 @@ fn join_relative(base: &str, rel: &str, uri: &str) -> Result<String, AssetError>
     normalize_path(&parts.join("/"))
 }
 
-/// Loads a buffer or image URI: `data:` inline, else a bundle file relative to
-/// the glTF file. Any other scheme (`http:`, `file:`, ...) is refused.
-pub(super) fn resolve_uri(uri: &str, vfs: &Vfs, base: &str) -> Result<Vec<u8>, AssetError> {
-    if let Some(rest) = uri.strip_prefix("data:") {
-        let (meta, payload) = rest
-            .split_once(',')
-            .ok_or_else(|| gerr("malformed data: URI"))?;
-        return if meta.ends_with(";base64") {
-            decode_base64(payload).ok_or_else(|| gerr("invalid base64 in data: URI"))
-        } else {
-            percent_decode(payload)
-                .map(String::into_bytes)
-                .ok_or_else(|| gerr("invalid escape in data: URI"))
-        };
+/// The resolved source of a buffer or image URI: the `data:` URI itself, or
+/// the normalised bundle path relative to the glTF file. Two URIs with the
+/// same key name the same bytes. Any other scheme (`http:`, `file:`, ...) is
+/// refused.
+pub(super) fn source_key(uri: &str, base: &str) -> Result<String, AssetError> {
+    if uri.starts_with("data:") {
+        return Ok(uri.to_owned());
     }
     let path = percent_decode(uri).ok_or_else(|| gerr(format!("invalid URI {uri:?}")))?;
     // A scheme is letters/digits/+-. followed by ':' before any '/'; a
@@ -309,8 +352,31 @@ pub(super) fn resolve_uri(uri: &str, vfs: &Vfs, base: &str) -> Result<Vec<u8>, A
         }
         return Err(gerr(format!("URI scheme of {uri:?} is not allowed")));
     }
-    let full = join_relative(base, &path, uri)?;
-    vfs.read(&full)
+    join_relative(base, &path, uri)
+}
+
+/// Loads the bytes of a [`source_key`]: `data:` decoded inline, else the
+/// bundle file.
+pub(super) fn load_source(key: &str, vfs: &Vfs) -> Result<Vec<u8>, AssetError> {
+    if let Some(rest) = key.strip_prefix("data:") {
+        let (meta, payload) = rest
+            .split_once(',')
+            .ok_or_else(|| gerr("malformed data: URI"))?;
+        return if meta.ends_with(";base64") {
+            decode_base64(payload).ok_or_else(|| gerr("invalid base64 in data: URI"))
+        } else {
+            percent_decode(payload)
+                .map(String::into_bytes)
+                .ok_or_else(|| gerr("invalid escape in data: URI"))
+        };
+    }
+    vfs.read(key)
+}
+
+/// Loads a buffer or image URI relative to the glTF file.
+#[cfg(test)]
+pub(super) fn resolve_uri(uri: &str, vfs: &Vfs, base: &str) -> Result<Vec<u8>, AssetError> {
+    load_source(&source_key(uri, base)?, vfs)
 }
 
 #[cfg(test)]

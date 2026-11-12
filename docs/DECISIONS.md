@@ -570,3 +570,9 @@ Implements "Orchestrator — 4.2 re-review round 3". All charging is central (KH
 ## Orchestrator — 4.5 may update two 4.2 tests
 
 Subphase 4.5 deliberately turns `.wasm` from "unsupported" into a working backend, so the two 4.2 tests that pinned the old behaviour (`tests/lua_backend.rs::load_backend_by_extension`, `tests/spec_reload.rs::wasm_extension_is_unsupported_for_now`) are updated by the 4.5 Implementer to the new contract. That is an ownership amendment limited to those two tests; nothing else in 4.2's files changes.
+
+## Orchestrator — 2.2 review round 1 rulings
+
+- **B1 needs a world/ change, so 2.2 gets a limited ownership amendment** to `pin_physics/src/world/{wireform,static_world,shapes}.rs` (Subphase 2.1, merged) for fix round 1: additive only, all 2.1 tests stay green.
+- **B3 (hop at the seam of two flush cuboids) is non-blocking.** Rolling surfaces in generated tables are triangle meshes (4.3), where the welded-edge rule applies; authors must not build rolling floors from abutting cuboids. Recorded in HUMAN_QUEUE for 4.3.
+- **Mesh-floor normal glitches are raised to required**, because generated playfields are meshes.

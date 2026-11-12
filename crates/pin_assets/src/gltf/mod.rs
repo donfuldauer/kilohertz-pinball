@@ -20,10 +20,59 @@ use ::gltf::json;
 use ::gltf::{Document, Semantic};
 use data::{Buffers, read_f32s, read_indices};
 
-/// Largest decoded image side, pixels.
-const MAX_IMAGE_SIDE: u32 = 16_384;
-/// Largest decoder allocation per image, bytes.
-const MAX_IMAGE_ALLOC: u64 = 512 * 1024 * 1024;
+/// Resource budgets for one [`load_gltf_with_limits`] call. Every budget is
+/// checked before the memory it bounds is allocated; exceeding one is an
+/// [`AssetError::Gltf`] whose message contains "budget".
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GltfLimits {
+    /// Sum of the decoded RGBA8 bytes of all images (default 256 MiB).
+    pub max_image_bytes: u64,
+    /// Largest image width or height, pixels (default 8192).
+    pub max_image_side: u32,
+    /// Sum of the vertex counts of every [`MeshData`] (default 8 M).
+    pub max_vertices: u64,
+    /// Sum of the index counts of every [`MeshData`] (default 24 M).
+    pub max_indices: u64,
+    /// `nodes` entries (default 65 536).
+    pub max_nodes: usize,
+    /// `meshes` entries (default 16 384).
+    pub max_meshes: usize,
+    /// `images` entries (default 1024).
+    pub max_images: usize,
+    /// Sum of the bytes of the distinct buffers (default 256 MiB).
+    pub max_buffer_bytes: u64,
+}
+
+impl Default for GltfLimits {
+    fn default() -> Self {
+        GltfLimits {
+            max_image_bytes: 256 << 20,
+            max_image_side: 8192,
+            max_vertices: 8_000_000,
+            max_indices: 24_000_000,
+            max_nodes: 65_536,
+            max_meshes: 16_384,
+            max_images: 1024,
+            max_buffer_bytes: 256 << 20,
+        }
+    }
+}
+
+fn budget(what: &str, value: u64, max: u64) -> Result<(), AssetError> {
+    if value > max {
+        Err(gerr(format!("{what} {value} exceeds the budget of {max}")))
+    } else {
+        Ok(())
+    }
+}
+
+fn finite(values: &[f32], what: impl FnOnce() -> String) -> Result<(), AssetError> {
+    if values.iter().all(|v| v.is_finite()) {
+        Ok(())
+    } else {
+        Err(gerr(format!("{}: non-finite value", what())))
+    }
+}
 /// Node hierarchy depth limit.
 const MAX_NODE_DEPTH: usize = 256;
 /// Highest collision layer an extras tag may name.
@@ -98,8 +147,9 @@ pub struct PbrMaterial {
     pub emissive_image: Option<usize>,
 }
 
-/// A decoded image.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A decoded image (0 x 0 and empty when no material uses it, or when it
+/// repeats the source of an earlier image).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ImageData {
     /// Pixels.
     pub width: u32,
@@ -175,7 +225,10 @@ fn split_glb(bytes: &[u8]) -> Result<(&[u8], Option<&[u8]>), AssetError> {
     Ok((json_chunk, bin))
 }
 
-fn parse_document(bytes: &[u8]) -> Result<(Document, Option<Vec<u8>>), AssetError> {
+fn parse_document(
+    bytes: &[u8],
+    limits: &GltfLimits,
+) -> Result<(Document, Option<Vec<u8>>), AssetError> {
     let (json_bytes, bin) = if bytes.starts_with(b"glTF") {
         split_glb(bytes)?
     } else {
@@ -183,6 +236,13 @@ fn parse_document(bytes: &[u8]) -> Result<(Document, Option<Vec<u8>>), AssetErro
     };
     let root: json::Root =
         json::deserialize::from_slice(json_bytes).map_err(|e| gerr(e.to_string()))?;
+    for (what, n, max) in [
+        ("node count", root.nodes.len(), limits.max_nodes),
+        ("mesh count", root.meshes.len(), limits.max_meshes),
+        ("image count", root.images.len(), limits.max_images),
+    ] {
+        budget(what, n as u64, max as u64)?;
+    }
     check::prevalidate(&root)?;
     let document = Document::from_json(root).map_err(|e| gerr(e.to_string()))?;
     Ok((document, bin.map(<[u8]>::to_vec)))
@@ -273,16 +333,39 @@ fn compute_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
     normals
 }
 
-fn decode_image(bytes: &[u8], what: &str) -> Result<ImageData, AssetError> {
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
+/// Decodes to RGBA8. The header is read first: the side limit and the RGBA8
+/// size (charged to `spent`) are checked before any pixel is allocated.
+fn decode_image(
+    bytes: &[u8],
+    what: &str,
+    limits: &GltfLimits,
+    spent: &mut u64,
+) -> Result<ImageData, AssetError> {
+    let reader = || {
+        image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|e| gerr(format!("{what}: {e}")))
+    };
+    let (w, h) = reader()?
+        .into_dimensions()
         .map_err(|e| gerr(format!("{what}: {e}")))?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_IMAGE_SIDE);
-    limits.max_image_height = Some(MAX_IMAGE_SIDE);
-    limits.max_alloc = Some(MAX_IMAGE_ALLOC);
-    reader.limits(limits);
-    let decoded = reader
+    if w.max(h) > limits.max_image_side {
+        return Err(gerr(format!(
+            "{what}: {w}x{h} exceeds the image side budget of {}",
+            limits.max_image_side
+        )));
+    }
+    let rgba = u64::from(w) * u64::from(h) * 4;
+    *spent = spent.saturating_add(rgba);
+    budget("decoded image bytes", *spent, limits.max_image_bytes)?;
+    let mut decoder_limits = image::Limits::default();
+    decoder_limits.max_image_width = Some(limits.max_image_side);
+    decoder_limits.max_image_height = Some(limits.max_image_side);
+    // Decoder buffer (at most 16-bit RGBA) plus the RGBA8 copy.
+    decoder_limits.max_alloc = Some(rgba.saturating_mul(3).saturating_add(1 << 20));
+    let mut r = reader()?;
+    r.limits(decoder_limits);
+    let decoded = r
         .decode()
         .map_err(|e| gerr(format!("{what}: {e}")))?
         .to_rgba8();
@@ -301,49 +384,110 @@ fn decode_image(bytes: &[u8], what: &str) -> Result<ImageData, AssetError> {
 /// inside the pinned `gltf` crate is also caught and reported as
 /// [`AssetError::Gltf`] (DECISIONS.md, 4.1).
 pub fn load_gltf(vfs: &Vfs, path: &str) -> Result<GltfScene, AssetError> {
+    load_gltf_with_limits(vfs, path, &GltfLimits::default())
+}
+
+/// [`load_gltf`] with explicit resource budgets. The returned scene holds
+/// only finite floats.
+pub fn load_gltf_with_limits(
+    vfs: &Vfs,
+    path: &str,
+    limits: &GltfLimits,
+) -> Result<GltfScene, AssetError> {
     let bytes = vfs.read(path)?;
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        load_bytes(vfs, path, &bytes)
+        load_bytes(vfs, path, &bytes, limits)
     }))
     .unwrap_or_else(|_| Err(gerr(format!("{path}: malformed glTF (loader panicked)"))))
 }
 
-fn load_bytes(vfs: &Vfs, path: &str, bytes: &[u8]) -> Result<GltfScene, AssetError> {
-    let (document, bin) = parse_document(bytes)?;
+fn load_bytes(
+    vfs: &Vfs,
+    path: &str,
+    bytes: &[u8],
+    limits: &GltfLimits,
+) -> Result<GltfScene, AssetError> {
+    let (document, bin) = parse_document(bytes, limits)?;
     let base = path.rsplit_once(['/', '\\']).map_or("", |(dir, _)| dir);
-    let buffers = Buffers::load(&document, bin, vfs, base)?;
+    let buffers = Buffers::load(&document, bin, vfs, base, limits.max_buffer_bytes)?;
 
-    // Images (only those a texture uses are decoded; the rest stay empty).
+    // Images: only those a material's texture uses are decoded; images with
+    // the same source (URI or bufferView) are decoded once and materials point
+    // at the first. The others stay empty (0 x 0).
+    let mut used = vec![false; document.images().len()];
+    let material_textures = |m: &::gltf::Material<'_>| {
+        let pbr = m.pbr_metallic_roughness();
+        [
+            pbr.base_color_texture().map(|i| i.texture().source().index()),
+            pbr.metallic_roughness_texture()
+                .map(|i| i.texture().source().index()),
+            m.normal_texture().map(|i| i.texture().source().index()),
+            m.emissive_texture().map(|i| i.texture().source().index()),
+        ]
+    };
+    for m in document.materials() {
+        for i in material_textures(&m).into_iter().flatten() {
+            used[i] = true;
+        }
+    }
+    let mut remap: Vec<usize> = (0..document.images().len()).collect();
+    let mut first_by_source = std::collections::HashMap::new();
     let mut images = Vec::with_capacity(document.images().len());
+    let mut spent: u64 = 0;
     for image in document.images() {
-        let what = format!("image {}", image.index());
-        let encoded = match image.source() {
-            ::gltf::image::Source::View { view, .. } => buffers.view(&view)?.to_vec(),
-            ::gltf::image::Source::Uri { uri, .. } => data::resolve_uri(uri, vfs, base)?,
+        let i = image.index();
+        if !used[i] {
+            images.push(ImageData::default());
+            continue;
+        }
+        let source = match image.source() {
+            ::gltf::image::Source::View { view, .. } => format!("view:{}", view.index()),
+            ::gltf::image::Source::Uri { uri, .. } => data::source_key(uri, base)?,
         };
-        images.push(decode_image(&encoded, &what)?);
+        if let Some(&first) = first_by_source.get(&source) {
+            remap[i] = first;
+            images.push(ImageData::default());
+            continue;
+        }
+        first_by_source.insert(source.clone(), i);
+        let what = format!("image {i}");
+        let decoded = match image.source() {
+            ::gltf::image::Source::View { view, .. } => {
+                decode_image(buffers.view(&view)?, &what, limits, &mut spent)?
+            }
+            ::gltf::image::Source::Uri { .. } => {
+                let encoded = data::load_source(&source, vfs)?;
+                decode_image(&encoded, &what, limits, &mut spent)?
+            }
+        };
+        images.push(decoded);
     }
 
-    let materials = document
-        .materials()
-        .map(|m| {
-            let pbr = m.pbr_metallic_roughness();
-            let tex = |t: Option<::gltf::Texture<'_>>| t.map(|t| t.source().index());
-            PbrMaterial {
-                name: m.name().unwrap_or_default().to_owned(),
-                base_color: pbr.base_color_factor(),
-                metallic: pbr.metallic_factor(),
-                roughness: pbr.roughness_factor(),
-                emissive: m.emissive_factor(),
-                base_color_image: tex(pbr.base_color_texture().map(|i| i.texture())),
-                metallic_roughness_image: tex(pbr
-                    .metallic_roughness_texture()
-                    .map(|i| i.texture())),
-                normal_image: tex(m.normal_texture().map(|i| i.texture())),
-                emissive_image: tex(m.emissive_texture().map(|i| i.texture())),
-            }
-        })
-        .collect();
+    let mut materials = Vec::with_capacity(document.materials().len());
+    for m in document.materials() {
+        let pbr = m.pbr_metallic_roughness();
+        let [base_tex, mr_tex, normal_tex, emissive_tex] =
+            material_textures(&m).map(|t| t.map(|i| remap[i]));
+        let material = PbrMaterial {
+            name: m.name().unwrap_or_default().to_owned(),
+            base_color: pbr.base_color_factor(),
+            metallic: pbr.metallic_factor(),
+            roughness: pbr.roughness_factor(),
+            emissive: m.emissive_factor(),
+            base_color_image: base_tex,
+            metallic_roughness_image: mr_tex,
+            normal_image: normal_tex,
+            emissive_image: emissive_tex,
+        };
+        let factors = [
+            material.base_color.as_slice(),
+            &[material.metallic, material.roughness],
+            &material.emissive,
+        ]
+        .concat();
+        finite(&factors, || format!("material {} factors", m.index().unwrap_or(0)))?;
+        materials.push(material);
+    }
 
     // Nodes of the default scene (else the first scene, else every root node).
     let roots: Vec<::gltf::Node<'_>> = match document
@@ -362,6 +506,7 @@ fn load_bytes(vfs: &Vfs, path: &str, bytes: &[u8]) -> Result<GltfScene, AssetErr
         }
     };
     let mut meshes = Vec::new();
+    let (mut vertices, mut index_total) = (0u64, 0u64);
     let mut visited = vec![false; document.nodes().len()];
     let mut stack: Vec<(::gltf::Node<'_>, [[f32; 4]; 4], usize)> =
         roots.into_iter().rev().map(|n| (n, IDENTITY, 0)).collect();
@@ -380,6 +525,9 @@ fn load_bytes(vfs: &Vfs, path: &str, bytes: &[u8]) -> Result<GltfScene, AssetErr
             return Err(gerr(format!("node {}: non-finite transform", node.index())));
         }
         let world = mat_mul(&parent, &local);
+        finite(world.as_flattened(), || {
+            format!("node {}: world transform", node.index())
+        })?;
         if let Some(mesh) = node.mesh() {
             let name = node
                 .name()
@@ -396,8 +544,26 @@ fn load_bytes(vfs: &Vfs, path: &str, bytes: &[u8]) -> Result<GltfScene, AssetErr
                 let Some(pos) = prim.get(&Semantic::Positions) else {
                     return Err(gerr(format!("{what}: no POSITION attribute")));
                 };
+                // Budgets are charged from accessor counts before reading.
+                let count = pos.count();
+                vertices = vertices.saturating_add(count as u64);
+                budget("vertex count", vertices, limits.max_vertices)?;
+                let index_count = prim.indices().map_or(count, |a| a.count());
+                index_total = index_total.saturating_add(index_count as u64);
+                budget("index count", index_total, limits.max_indices)?;
+                for (semantic, label) in [
+                    (Semantic::Normals, "NORMAL"),
+                    (Semantic::TexCoords(0), "TEXCOORD_0"),
+                ] {
+                    if let Some(acc) = prim.get(&semantic)
+                        && acc.count() != count
+                    {
+                        return Err(gerr(format!(
+                            "{what}: {label} count differs from POSITION ({count})"
+                        )));
+                    }
+                }
                 let positions: Vec<[f32; 3]> = read_f32s::<3>(&buffers, &pos, &what)?;
-                let count = positions.len();
                 let indices = match prim.indices() {
                     Some(acc) => read_indices(&buffers, &acc, &what)?,
                     None => (0..count as u32).collect(),
@@ -591,6 +757,7 @@ mod tests {
 
     #[test]
     fn bad_images_are_errors() {
-        assert!(decode_image(b"nope", "i").is_err());
+        let mut spent = 0;
+        assert!(decode_image(b"nope", "i", &GltfLimits::default(), &mut spent).is_err());
     }
 }

@@ -290,3 +290,14 @@ fn probe_many_backends() {
     }
     println!("PROBE many: {} live backends in {:?}", v.len(), t.elapsed());
 }
+
+#[test]
+fn probe_big_module() {
+    let cfg = WasmConfig::engine();
+    let mut s = String::from("(module (memory (export \"memory\") 1)\n");
+    for _ in 0..999_990 { s.push_str("(func (param i32) (result i32) (i32.add (local.get 0) (i32.const 1)))\n"); }
+    s.push_str("(func (export \"on_init\")) (func (export \"on_tick\")) (func (export \"on_switch_edge\") (param i32 i32)))");
+    let t = Instant::now();
+    let r = WasmScriptBackend::prepare(s.as_bytes(), cfg);
+    println!("PROBE big 1M funcs: wat {} bytes ok={} err={:?} in {:?}", s.len(), r.is_ok(), r.err().map(|e| format!("{e:?}").chars().take(150).collect::<String>()), t.elapsed());
+}
