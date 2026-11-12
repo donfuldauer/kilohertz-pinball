@@ -1,0 +1,68 @@
+name: spikes
+
+# Subphase 0.1 dependency spikes (spikes/ is a standalone Cargo workspace).
+on:
+  push:
+    paths:
+      - "spikes/**"
+      - "versions.toml"
+      - ".github/workflows/spikes.yml"
+  pull_request:
+    paths:
+      - "spikes/**"
+      - "versions.toml"
+      - ".github/workflows/spikes.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  # Q5: a missing lavapipe/WARP/Metal adapter is a failure in CI.
+  SPIKE_REQUIRE_GPU: "1"
+
+jobs:
+  spikes:
+    name: spikes (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "spikes -> target"
+
+      - name: Install Linux packages (lavapipe, Xvfb, SDL3 build headers)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 xvfb xauth cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
+      - name: Toolchain
+        run: rustc --version && cargo --version
+
+      - name: cargo fmt --check
+        if: runner.os == 'Linux'
+        run: cargo fmt --manifest-path spikes/Cargo.toml --all -- --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --manifest-path spikes/Cargo.toml --workspace --all-targets -- -D warnings
+
+      - name: cargo test (Linux, under Xvfb for the present-mode probe)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo test --manifest-path spikes/Cargo.toml --workspace -- --nocapture
+
+      - name: cargo test
+        if: runner.os != 'Linux'
+        run: cargo test --manifest-path spikes/Cargo.toml --workspace -- --nocapture
