@@ -12,6 +12,8 @@
 
 mod renderer;
 
+#[cfg(all(test, feature = "gpu-tests"))]
+pub(crate) use renderer::read_texture;
 pub use renderer::{DebugRenderer, render_offscreen};
 
 use pin_core::ProfileId;
@@ -290,8 +292,15 @@ impl Camera {
     /// `margin` on every side (same units as the bounds), so lines exactly on
     /// the bounds stay inside the viewport.
     pub fn ortho_top_down_with_margin(min_xy: [f32; 2], max_xy: [f32; 2], margin: f32) -> Camera {
-        let m = if margin.is_finite() { margin.abs() } else { 0.0 };
-        Camera::ortho_top_down([min_xy[0] - m, min_xy[1] - m], [max_xy[0] + m, max_xy[1] + m])
+        let m = if margin.is_finite() {
+            margin.abs()
+        } else {
+            0.0
+        };
+        Camera::ortho_top_down(
+            [min_xy[0] - m, min_xy[1] - m],
+            [max_xy[0] + m, max_xy[1] + m],
+        )
     }
 
     /// `view_proj · [p, 1]` (clip coordinates).

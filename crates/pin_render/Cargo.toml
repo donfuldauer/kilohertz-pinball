@@ -21,3 +21,13 @@ bytemuck.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Real windows for the surface smoke test (tests/gpu_window.rs).
+sdl3.workspace = true
+
+# Real SDL windows + surfaces (gpu-tests only). SDL video must run on the main
+# thread (Cocoa), so a plain `main`. Skips without a native video driver unless
+# PIN_REQUIRE_GPU=1.
+[[test]]
+name = "gpu_window"
+harness = false
+required-features = ["gpu-tests"]

@@ -132,11 +132,15 @@ fn options_from_vars() {
     assert_eq!(none, GpuOptions::default());
     assert!(!none.force_fallback_adapter);
 
-    let ci_vk = GpuOptions::from_vars_on(false, vars(&[("WGPU_BACKEND", "vulkan"), ("CI", "true")]));
+    let ci_vk =
+        GpuOptions::from_vars_on(false, vars(&[("WGPU_BACKEND", "vulkan"), ("CI", "true")]));
     assert_eq!(ci_vk.backends, Backends::VULKAN);
     assert!(ci_vk.force_fallback_adapter);
 
-    let req_dx = GpuOptions::from_vars_on(false, vars(&[("WGPU_BACKEND", "dx12"), ("PIN_REQUIRE_GPU", "1")]));
+    let req_dx = GpuOptions::from_vars_on(
+        false,
+        vars(&[("WGPU_BACKEND", "dx12"), ("PIN_REQUIRE_GPU", "1")]),
+    );
     assert_eq!(req_dx.backends, Backends::DX12);
     assert!(req_dx.force_fallback_adapter);
 
@@ -147,11 +151,14 @@ fn options_from_vars() {
         "Metal has no fallback adapter"
     );
 
-    let forced_off = GpuOptions::from_vars_on(false, vars(&[
-        ("CI", "true"),
-        (FORCE_FALLBACK_ENV, "0"),
-        ("WGPU_BACKEND", "vulkan"),
-    ]));
+    let forced_off = GpuOptions::from_vars_on(
+        false,
+        vars(&[
+            ("CI", "true"),
+            (FORCE_FALLBACK_ENV, "0"),
+            ("WGPU_BACKEND", "vulkan"),
+        ]),
+    );
     assert!(!forced_off.force_fallback_adapter);
     let forced_on = GpuOptions::from_vars_on(false, vars(&[(FORCE_FALLBACK_ENV, "1")]));
     assert!(forced_on.force_fallback_adapter);
@@ -173,8 +180,18 @@ fn options_from_vars() {
     );
 
     // The application ignores CI variables.
-    let app = GpuOptions::app_from_vars(vars(&[("CI", "true"), ("PIN_REQUIRE_GPU", "1"), ("WGPU_BACKEND", "dx12")]));
-    assert_eq!(app, GpuOptions { force_fallback_adapter: false, backends: Backends::DX12 });
+    let app = GpuOptions::app_from_vars(vars(&[
+        ("CI", "true"),
+        ("PIN_REQUIRE_GPU", "1"),
+        ("WGPU_BACKEND", "dx12"),
+    ]));
+    assert_eq!(
+        app,
+        GpuOptions {
+            force_fallback_adapter: false,
+            backends: Backends::DX12
+        }
+    );
     let app_forced = GpuOptions::app_from_vars(vars(&[(FORCE_FALLBACK_ENV, "1")]));
     assert!(app_forced.force_fallback_adapter);
     let _ = GpuOptions::for_app();
@@ -243,4 +260,89 @@ fn pacing_requires_a_presented_playfield() {
     assert!(!paced_by([Backglass, Score], &[S::Presented, S::Presented]));
     assert!(!paced_by([], &[]));
     assert!(!paced_by([Playfield], &[]));
+}
+
+/// N5 / D30: the presenter-thread blit copies its source exactly (analytic
+/// readback, no surface needed).
+#[cfg(feature = "gpu-tests")]
+#[test]
+fn blit_copies_source_pixels_exactly() {
+    let Some(ctx) = context_for_tests("blit") else {
+        return;
+    };
+    let device = ctx.device();
+    let (w, h) = (7u32, 5u32);
+    // A pattern with distinct values per pixel and channel.
+    let mut src_px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            src_px.extend_from_slice(&[
+                (x * 30) as u8,
+                (y * 50) as u8,
+                (x * 7 + y * 11) as u8,
+                255,
+            ]);
+        }
+    }
+    let size = wgpu::Extent3d {
+        width: w,
+        height: h,
+        depth_or_array_layers: 1,
+    };
+    let src = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("blit src"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    ctx.queue().write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &src,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &src_px,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(w * 4),
+            rows_per_image: Some(h),
+        },
+        size,
+    );
+    let src_view = src.create_view(&wgpu::TextureViewDescriptor::default());
+    for format in [
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureFormat::Bgra8Unorm,
+    ] {
+        let dst = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("blit dst"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let dst_view = dst.create_view(&wgpu::TextureViewDescriptor::default());
+        let b = blit::Blit::new(device, format);
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        b.encode(device, &mut enc, &src_view, &dst_view);
+        let got = crate::debug::read_texture(&ctx, enc, &dst).expect("readback");
+        let want: Vec<u8> = if format == wgpu::TextureFormat::Bgra8Unorm {
+            src_px
+                .chunks(4)
+                .flat_map(|p| [p[2], p[1], p[0], p[3]])
+                .collect()
+        } else {
+            src_px.clone()
+        };
+        assert_eq!(got, want, "{format:?}");
+    }
 }

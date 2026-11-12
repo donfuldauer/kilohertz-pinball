@@ -312,3 +312,27 @@ fn regression_snapshot() {
         "{mismatched} of {union} pixels differ from the reference (tolerance 2 %)"
     );
 }
+
+/// N6: with a margin camera, a box exactly on the table bounds is visible on
+/// all four sides.
+#[test]
+fn margin_camera_shows_lines_on_the_bounds() {
+    let Some(ctx) = ctx() else { return };
+    let mut l = DebugLines::new(16);
+    box_lines([0.0, 0.0, 0.0], [1.0, 1.0, 0.0], RED, &mut l);
+    let cam = Camera::ortho_top_down_with_margin([0.0, 0.0], [1.0, 1.0], 0.01);
+    let px = render_offscreen(ctx, N, N, BLACK, &cam, &l).expect("render");
+    let img = Image { px, w: N, h: N };
+    let lit = img.lit();
+    let (mut left, mut right, mut top, mut bottom) = (0, 0, 0, 0);
+    for (x, y, _) in &lit {
+        left += usize::from(*x < 5);
+        right += usize::from(*x > N - 6);
+        top += usize::from(*y < 5);
+        bottom += usize::from(*y > N - 6);
+    }
+    assert!(
+        left > 200 && right > 200 && top > 200 && bottom > 200,
+        "{left} {right} {top} {bottom}"
+    );
+}

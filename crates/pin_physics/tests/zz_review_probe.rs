@@ -1466,3 +1466,95 @@ fn v_curved_guide_control() {
         }
     }
 }
+
+#[test]
+fn w_mesh_slip_breakdown() {
+    for &mesh in &[true, false] {
+        let (w, n) = big_slope_world(6.5, mesh);
+        let geo = Geometry::new(&w);
+        for p in [STEEL, MINI, JUMBO] {
+            for v0 in [0.5f32, 2.0, 4.0, 8.0] {
+                let r = rad(p);
+                let mut s = solver(g0());
+                let mut b = Ball::new(p, n * r);
+                let d = Vec3::new(-0.6, -0.8, 0.0);
+                let d = (d - n * d.dot(n)).normalize();
+                b.velocity = d * v0;
+                b.angular_velocity = n.cross(d) * (v0 / r);
+                let h = s.add_ball(b).unwrap();
+                let mut ev = BallEvents::new();
+                let (mut worst_t, mut worst_n, mut spikes) = (0.0f32, 0.0f32, 0);
+                for _ in 0..1500 {
+                    s.step(&geo, DT, &mut ev);
+                    let bb = s.ball(h).unwrap();
+                    let slip = bb.velocity + bb.angular_velocity.cross(-n * r);
+                    let sn = slip.dot(n).abs();
+                    let st = (slip - n * slip.dot(n)).length();
+                    worst_t = worst_t.max(st);
+                    worst_n = worst_n.max(sn);
+                    if slip.length() > 1e-3 { spikes += 1; }
+                }
+                println!("rolling mesh={mesh} p={p:?} v0={v0}: ticks with |slip|>1e-3: {spikes}/1500, worst tangential slip={worst_t:.2e}, worst normal velocity={worst_n:.2e}");
+            }
+        }
+    }
+}
+
+#[test]
+fn x_mesh_slip_table_scale() {
+    for &mesh in &[true, false] {
+        let (w, n) = big_slope_world(6.5, mesh);
+        let geo = Geometry::new(&w);
+        let mut tot = (0, 0);
+        let mut worst = 0.0f32;
+        let mut worst_far = 0.0f32;
+        for p in [STEEL, MINI, JUMBO] {
+            for v0 in [2.0f32, 4.0, 8.0, 12.0] {
+                for k in 0..12 {
+                    let a = k as f32 * 0.5236;
+                    let r = rad(p);
+                    let start = Vec3::new(0.6 * libm::cosf(a), 0.6 * libm::sinf(a), 0.0);
+                    let start = start - n * start.dot(n) + n * r;
+                    let mut s = solver(g0());
+                    let mut b = Ball::new(p, start);
+                    let d = -start;
+                    let d = (d - n * d.dot(n)).normalize();
+                    b.velocity = d * v0;
+                    b.angular_velocity = n.cross(d) * (v0 / r);
+                    let h = s.add_ball(b).unwrap();
+                    let mut ev = BallEvents::new();
+                    for _ in 0..3000 {
+                        s.step(&geo, DT, &mut ev);
+                        let bb = s.ball(h).unwrap();
+                        let slip = (bb.velocity + bb.angular_velocity.cross(-n * r)).length();
+                        if bb.position.length() < 1.2 {
+                            tot.1 += 1;
+                            if slip > 1e-3 { tot.0 += 1; }
+                            worst = worst.max(slip);
+                        } else {
+                            worst_far = worst_far.max(slip);
+                        }
+                    }
+                }
+            }
+        }
+        println!("table-scale mesh={mesh}: ticks within 1.2 m with |slip|>1e-3: {}/{} worst={worst:.2e}; beyond 1.2 m worst={worst_far:.2e}", tot.0, tot.1);
+    }
+}
+
+#[test]
+fn y_sphere_contacts_on_diagonal() {
+    let (w, n) = big_slope_world(6.5, true);
+    let rot = Quat::from_rotation_x(6.5f32.to_radians());
+    let r = rad(STEEL);
+    let mut buf = arrayvec::ArrayVec::new();
+    for off in [-1e-3f32, -1e-5, -1e-6, 0.0, 1e-6, 1e-5, 1e-3] {
+        for h in [0.0f32, 3e-7, 1e-6] {
+            // point on the diagonal (local u = w), offset across it
+            let c = rot * Vec3::new(0.3 + off, 0.3 - off, 0.0) + n * (r + h);
+            w.sphere_contacts(c, r + 2e-5, layers::ALL, &mut buf);
+            let s: Vec<String> = buf.iter().map(|k| format!("depth={:.3e} n.dot={:.6}", k.depth, k.normal.dot(n))).collect();
+            println!("diag off={off:e} h={h:e}: {} contacts {:?}", buf.len(), s);
+        }
+    }
+}

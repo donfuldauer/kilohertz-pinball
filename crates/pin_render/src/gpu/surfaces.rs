@@ -138,13 +138,39 @@ struct PresentJob {
     height: u32,
 }
 
+/// How long dropping a presenter waits for its thread (which may be inside a
+/// blocking `Fifo` acquire or present) before detaching it.
+pub const PRESENTER_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
 impl Drop for Presenter {
     fn drop(&mut self) {
-        self.tx = None; // ends the presenter loop
+        self.tx = None; // ends the presenter loop after the current job
         if let Some(h) = self.handle.take() {
-            let _ = h.join();
+            if join_with_timeout(&h, PRESENTER_JOIN_TIMEOUT) {
+                let _ = h.join();
+            } else {
+                // A stalled swap chain: detach rather than hang shutdown. The
+                // thread still owns the surface (see DECISIONS "1.4 — fix
+                // round 1": the window may then be destroyed under it).
+                eprintln!(
+                    "pin_render: presenter thread did not stop within {PRESENTER_JOIN_TIMEOUT:?}; detaching it"
+                );
+            }
         }
     }
+}
+
+/// Waits (polling every millisecond, render side only) until `h` finished or
+/// `timeout` passed; `true` when it finished.
+fn join_with_timeout<T>(h: &JoinHandle<T>, timeout: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    while !h.is_finished() {
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    true
 }
 
 enum Present {
@@ -619,4 +645,24 @@ fn spawn_presenter(
         handle: Some(handle),
         source: None,
     })
+}
+
+#[cfg(test)]
+mod join_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn bounded_join_finishes_or_times_out() {
+        let quick = std::thread::spawn(|| ());
+        assert!(join_with_timeout(&quick, Duration::from_secs(10)));
+        quick.join().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let stuck = std::thread::spawn(move || {
+            let _ = rx.recv();
+        });
+        assert!(!join_with_timeout(&stuck, Duration::from_millis(5)));
+        drop(tx);
+        stuck.join().unwrap();
+    }
 }

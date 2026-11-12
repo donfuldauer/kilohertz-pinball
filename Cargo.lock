@@ -1786,6 +1786,7 @@ dependencies = [
  "pin_core",
  "pollster",
  "proptest",
+ "sdl3",
  "wgpu",
 ]
 
