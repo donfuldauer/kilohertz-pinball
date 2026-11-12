@@ -122,7 +122,10 @@ impl fmt::Display for TelemetryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TelemetryError::TooManyEntries(n) => {
-                write!(f, "{n} entries exceed {MAX_ENTRIES_PER_DATAGRAM} per datagram")
+                write!(
+                    f,
+                    "{n} entries exceed {MAX_ENTRIES_PER_DATAGRAM} per datagram"
+                )
             }
             TelemetryError::BufferTooSmall { needed, available } => {
                 write!(f, "buffer too small: need {needed} bytes, have {available}")
@@ -281,14 +284,14 @@ mod tests {
             value: 1.0,
         }];
         let mut buf = [0u8; 64];
-        let n = encode_datagram(0x1122_3344_5566_7788, FLAG_FULL_STATE, &entries, &mut buf)
-            .unwrap();
+        let n =
+            encode_datagram(0x1122_3344_5566_7788, FLAG_FULL_STATE, &entries, &mut buf).unwrap();
         assert_eq!(n, 24);
         assert_eq!(
             &buf[..24],
             &[
-                b'P', b'N', b'T', b'L', 1, 1, 1, 0, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
-                0x11, 2, 0, 0x02, 0x01, 0x00, 0x00, 0x80, 0x3f
+                b'P', b'N', b'T', b'L', 1, 1, 1, 0, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+                2, 0, 0x02, 0x01, 0x00, 0x00, 0x80, 0x3f
             ]
         );
         let (h, e) = decode_datagram(&buf[..n]).unwrap();
@@ -329,7 +332,10 @@ mod tests {
             value: 0.0,
         };
         let n = encode_datagram(5, 0, &[e, e], &mut buf).unwrap();
-        assert_eq!(decode_datagram(&buf[..15]), Err(TelemetryError::Truncated(15)));
+        assert_eq!(
+            decode_datagram(&buf[..15]),
+            Err(TelemetryError::Truncated(15))
+        );
         assert_eq!(
             decode_datagram(&buf[..n - 1]),
             Err(TelemetryError::BadLength {
@@ -350,7 +356,10 @@ mod tests {
         bad[..4].copy_from_slice(&MAGIC);
         bad[4] = VERSION;
         bad[6..8].copy_from_slice(&181u16.to_le_bytes());
-        assert_eq!(decode_datagram(&bad), Err(TelemetryError::TooManyEntries(181)));
+        assert_eq!(
+            decode_datagram(&bad),
+            Err(TelemetryError::TooManyEntries(181))
+        );
         // Reserved byte is ignored.
         let mut ok = buf;
         ok[17] = 0xff;

@@ -153,9 +153,7 @@ impl PhysicsDefaults {
                 self.material_pair(Material::Steel, Material::Rubber)
                     .map_or(FALLBACK_RUBBER_RESTITUTION, |p| p.restitution)
             }),
-            rolling_resistance: o
-                .rolling_resistance
-                .unwrap_or(t.rolling_resistance.default),
+            rolling_resistance: o.rolling_resistance.unwrap_or(t.rolling_resistance.default),
             globall_magnus_coeff: o
                 .globall_magnus_coeff
                 .unwrap_or(t.globall_magnus_coeff.default),
@@ -242,10 +240,17 @@ mod tests {
         assert_eq!((p.restitution, p.friction), (0.65, 0.80));
         let p = d.material_pair(Material::Resin, Material::Wood).unwrap();
         assert_eq!((p.restitution, p.friction), (0.30, 0.22));
-        assert!(d.material_pair(Material::Acrylic, Material::Resin).is_none());
+        assert!(
+            d.material_pair(Material::Acrylic, Material::Resin)
+                .is_none()
+        );
         let t = d.tunables;
         assert_eq!(
-            (t.flipper_inertia.default, t.flipper_inertia.min, t.flipper_inertia.max),
+            (
+                t.flipper_inertia.default,
+                t.flipper_inertia.min,
+                t.flipper_inertia.max
+            ),
             (1.0e-4, 0.5e-4, 3.0e-4)
         );
         assert_eq!(t.flipper_power_torque.default, 1.2);
@@ -271,7 +276,10 @@ mod tests {
         }
         assert!(d.feel_windows.flipper_stroke_time_ms.contains(25.0));
         assert!(!d.feel_windows.flipper_stroke_time_ms.contains(36.0));
-        assert_eq!(d.feel_windows.bumper_exit_speed_m_s, FeelWindow { min: 1.5, max: 4.0 });
+        assert_eq!(
+            d.feel_windows.bumper_exit_speed_m_s,
+            FeelWindow { min: 1.5, max: 4.0 }
+        );
         // The builtin profile constant agrees with the defaults file.
         assert_eq!(
             t.globall_magnus_coeff.default,

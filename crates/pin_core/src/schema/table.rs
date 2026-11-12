@@ -542,10 +542,12 @@ impl FlipperDef {
         names: &impl NameResolver,
         params: &PhysicsParams,
     ) -> Result<FlipperConfig, SchemaError> {
-        let coil = names.coil(&self.coil).ok_or_else(|| SchemaError::UnknownName {
-            kind: "coil",
-            name: self.coil.clone(),
-        })?;
+        let coil = names
+            .coil(&self.coil)
+            .ok_or_else(|| SchemaError::UnknownName {
+                kind: "coil",
+                name: self.coil.clone(),
+            })?;
         let switch = |name: &str| {
             names.switch(name).ok_or_else(|| SchemaError::UnknownName {
                 kind: "switch",

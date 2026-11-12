@@ -89,3 +89,37 @@ Spikes CI run 43140608468 (commit a417638), all three jobs green, rustc 1.99.1 o
 | Q6 mlua / wasmtime / parry | pass, identical counts on all OSes | pass | pass |
 
 **Consequences.** Only Linux lavapipe can exercise the ray-query path in hosted CI; Windows and macOS validate the probe fallback (D18, D33). macOS reports no `Mailbox`, so secondary surfaces there use `Immediate` or a presenter thread (D19). The local Mesa in Q3 above (25.2.8) differs from CI (26.0.8); answers agree.
+
+## 1.1 — Workspace layout and dependencies
+
+**Decision:** All 11 crates listed in §2.1 are created (the plan's "10 crates" is a miscount). The root workspace uses resolver 3, `members = ["crates/*"]`, `exclude = ["spikes"]`, edition 2024, rust-version 1.97, and copies every `versions.toml` pin unchanged into `[workspace.dependencies]` with the recorded features. Stub crates depend only on `pin_core`; `pin_core` uses serde, toml, arrayvec, rand_pcg and rand_core (proptest as dev-dependency). No new pins were added: `thiserror` and `glam` are not needed (errors implement `Display` by hand; snapshot math is plain `[f32; N]` arrays). `profile.dev`/`profile.test` use `opt-level = 1` so later solver tests stay fast. `pin_script`'s `guest-sdk/` is stubbed as module `guest_sdk` (hyphens are not valid module names); Subphase 4.5 may move it to its own crate.
+**Rationale:** Brief: keep `cargo test --workspace` fast and light; versions.toml is 0.1's file.
+**Alternatives:** glam types in the snapshot (rejected for 1.1: adds a dependency to every consumer of `pin_core` with no need yet; an additive CR can add conversion helpers).
+
+## 1.1 — On-disk schema interpretation (Appendix A)
+
+**Decision:** On-disk types (`pin_core::schema::{table, backglass, layout, physics}`) are separate from runtime types. Specifics:
+- `[[flippers]]` → `FlipperDef`: lengths in mm *without* `_mm` suffix as in A.1 (`base_position`, `shape.length`, `zipper_slide_axis`, `zipper_slide_speed`); non-length physics keys keep §3.3's SI names (`inertia_kg_m2`, `power_torque_nm`, `hold_torque_nm`, `return_spring_torque_nm`, `stop_restitution`, `rubber_restitution`, `rubber_damping`) and are optional, defaulting from `physics_defaults.toml` (+ table `[physics]` overrides). `rubber_restitution` defaults to the steel–rubber pair. `shape` and `staging` are internally tagged by `type`; staging uses `input`/`axis` names (`left_flipper`, ...) and switch names. `FlipperDef::to_config(id, &impl NameResolver, &PhysicsParams)` converts to §3.3 `FlipperConfig`.
+- Optional: `[physics]`, `[persist]`, `[dof]`, `[backbox]`, `balls.restrict`, every `[[array]]` section, `meta.palette`, `meta.pitch_deg` (default 6.5), switch `position`/`radius`/`layer`, lamp `color`/`response` (default `led`), magnet `tau_ms`, mech `coil`/`switch`/`position`, spline `gauge`/`roll_deg`, wall `closed`, post `rubber`. `[meta]`, `[balls]`, `[cabinet_switches]` (all 8 keys), `[translite]`, `[score_display]`, `[playfield]` are required.
+- `[dof].map` entries carry exactly one of `coil`/`switch`/`lamp` plus `type` (`S`, `W`, `L`, `G`, `E`) and `number`; anything else is `SchemaError::Invalid`.
+- Parsing checks syntax, types, unknown keys and `schema_version == 1` only. Name cross-references are *not* checked (the A.1 example itself references undeclared switches such as `lower_left_eos`); that is `pin_assets` (4.1). Mech kind-specific parameters are not yet in the schema; adding them is an additive CR.
+- `NumberResolver` (switch/coil name → number as id) is a provisional helper; 4.1 owns final interning.
+**Rationale:** Brief implementer notes; Appendix A is normative and its example must parse.
+
+## 1.1 — physics_defaults.toml format
+
+**Decision:** `schema_version = 1`; `[[material_pairs]]` with `materials = [a, b]` (unordered, duplicates rejected), `restitution`, `friction`; `[tunables]` with `{ default, min, max }` per Appendix C parameter (`flipper_inertia`, `flipper_power_torque`, `flipper_hold_torque`, `flipper_return_spring_torque`, `flipper_stop_restitution`, `flipper_rubber_damping`, `rolling_resistance`, `globall_magnus_coeff`, `magnet_remanence_tau_ms`); `[feel_windows]` with `{ min, max }`. A table's `[physics]` overrides any tunable by the same key (A.1's `flipper_rubber_damping` example), plus `flipper_rubber_restitution`. Units SI except `_ms`. Materials are an enum: steel, ceramic, plastic, resin, rubber, wood, acrylic; `BallProfile` gained a `material` field (steel/ceramic/plastic for Glo-Ball/resin) for pair lookup.
+**Rationale:** Appendix C lists values but no file format; key names follow the A.1 override example.
+
+## 1.1 — Runtime contract details not fixed by §3
+
+**Decision:**
+- IDs are `u16` newtypes with `get()`, `index()`, `From` both ways, serde-transparent.
+- Units: `mm_to_m(x) = x / 1000`, `g_to_kg(x) = x / 1000` (division keeps exact results such as `mm_to_m(27.0) == 0.027`), `deg_to_rad(x) = x · π/180`.
+- `FrameStateSnapshot`: `tick`, `ball_count` + `[BallState; 16]` (position m, quaternion `[x,y,z,w]`, velocity m/s, angular velocity rad/s, `ProfileId`, layer), `flipper_count` + `[FlipperState; 16]` (id, angle rad relative to rest, angular velocity, zipper offset m), `dynamic_mesh_count` + `[MeshTransform; 64]`, `lamps: [f32; 256]` indexed by `LampId`, `gi: [r, g, b, intensity]`. Default GI is full white.
+- `TripleBuffer`: one `AtomicU8` back-slot index + fresh bit, AcqRel swaps; `new` is the only allocation; also `TripleReader::has_update()`.
+- `HostCommandQueue` keeps exactly the §3.4 fields; push helpers return `Err(QueueOverflow)` and drop the command. The overflow *counter* shown in the debug HUD is kept by the caller (pin_sim, 2.5), not in the queue, so the struct stays exactly §3.4.
+- `ScriptError` variants: `Load`, `Runtime`, `BudgetExceeded`, `MemoryLimit`, `UnsupportedBackend`.
+- `InputEvent { timestamp_ns, kind: InputEventKind::{Button{input, pressed}, Axis{axis, value}} }`; `CabinetAxis` = plunger, nudge_x, nudge_y, left_flipper, right_flipper; `HapticsTelemetryEvent { tick, source: u16, strength }` maps to telemetry kind 5.
+- Telemetry decode requires exact length `16 + 8·count`, `count ≤ 180`, known kinds; the reserved byte is ignored. `for_each_datagram` splits > 180 entries into same-tick datagrams and sends an empty full-state datagram when asked.
+- Extra derives beyond §3.3/§3.4 (`PartialEq`, `Copy` where possible) were added; they are additive.

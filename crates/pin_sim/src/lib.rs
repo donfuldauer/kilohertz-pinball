@@ -3,7 +3,7 @@
 //! Module directories are pre-stubbed by Subphase 1.1 (PLAN.md §2.1, D3); each
 //! module names the subphase that owns it.
 
-pub mod tick;
+pub mod autoplay;
 pub mod commands;
 pub mod replay;
-pub mod autoplay;
+pub mod tick;

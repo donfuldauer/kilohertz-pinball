@@ -68,3 +68,22 @@ id_newtype!(
     /// A persistent value slot (high scores, audits, settings).
     PersistKey,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conversions_and_ordering() {
+        let s = SwitchId::from(24u16);
+        assert_eq!(s, SwitchId(24));
+        assert_eq!(s.get(), 24);
+        assert_eq!(s.index(), 24usize);
+        assert_eq!(u16::from(s), 24);
+        assert!(CoilId(1) < CoilId(2));
+        assert_eq!(PersistKey::default(), PersistKey(0));
+        let json_like =
+            toml::to_string(&std::collections::BTreeMap::from([("id", LampId(7))])).unwrap();
+        assert_eq!(json_like.trim(), "id = 7");
+    }
+}

@@ -183,7 +183,11 @@ mod tests {
         assert!(s.flippers().is_empty());
         assert!(s.dynamic_meshes().is_empty());
         assert!(s.balls.iter().all(|b| b.orientation == IDENTITY_QUAT));
-        assert!(s.dynamic_meshes.iter().all(|m| m.orientation == IDENTITY_QUAT));
+        assert!(
+            s.dynamic_meshes
+                .iter()
+                .all(|m| m.orientation == IDENTITY_QUAT)
+        );
         assert_eq!(s.lamps.len(), MAX_LAMPS);
     }
 

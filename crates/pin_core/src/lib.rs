@@ -41,9 +41,9 @@ pub use script::{
 pub use snapshot::FrameStateSnapshot;
 pub use triple_buffer::{TripleBuffer, TripleReader, TripleWriter};
 
-/// The sim-owned, seeded random generator handed to scripts (§3.4).
-pub use rand_pcg::Pcg32;
-/// Seeding and drawing traits for [`Pcg32`] (re-exported so dependants need no extra pin).
-pub use rand_core::{Rng, SeedableRng};
 /// Fixed-capacity vector used by the scripting contract (re-exported for dependants).
 pub use arrayvec::ArrayVec;
+/// Seeding and drawing traits for [`Pcg32`] (re-exported so dependants need no extra pin).
+pub use rand_core::{Rng, SeedableRng};
+/// The sim-owned, seeded random generator handed to scripts (§3.4).
+pub use rand_pcg::Pcg32;

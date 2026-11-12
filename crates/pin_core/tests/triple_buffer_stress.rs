@@ -2,8 +2,7 @@
 //! 100,000 publishes see zero torn reads and monotonic tick numbers.
 
 use pin_core::snapshot::{
-    BallState, FlipperState, MAX_BALLS, MAX_DYNAMIC_MESHES, MAX_FLIPPERS, MAX_LAMPS,
-    MeshTransform,
+    BallState, FlipperState, MAX_BALLS, MAX_DYNAMIC_MESHES, MAX_FLIPPERS, MAX_LAMPS, MeshTransform,
 };
 use pin_core::{FlipperId, FrameStateSnapshot, ProfileId, TripleBuffer};
 use std::sync::Arc;
@@ -76,7 +75,12 @@ fn hundred_thousand_publishes_no_torn_reads_monotonic_ticks() {
             let s = *reader.read();
             reads += 1;
             assert_eq!(s, derived(s.tick), "torn read at tick {}", s.tick);
-            assert!(s.tick >= last, "tick went backwards: {} -> {}", last, s.tick);
+            assert!(
+                s.tick >= last,
+                "tick went backwards: {} -> {}",
+                last,
+                s.tick
+            );
             if s.tick > last {
                 distinct += 1;
             }

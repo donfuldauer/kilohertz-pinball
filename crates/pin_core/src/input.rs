@@ -217,7 +217,10 @@ mod tests {
             strength: 2.0,
         };
         let e = h.to_telemetry_entry();
-        assert_eq!((e.kind, e.id, e.value), (TelemetryKind::HapticImpulse, 3, 1.0));
+        assert_eq!(
+            (e.kind, e.id, e.value),
+            (TelemetryKind::HapticImpulse, 3, 1.0)
+        );
         h.strength = f32::NAN;
         assert_eq!(h.to_telemetry_entry().value, 0.0);
         h.strength = 0.25;
