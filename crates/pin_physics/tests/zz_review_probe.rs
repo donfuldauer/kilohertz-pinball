@@ -1436,7 +1436,7 @@ fn u_rising_guide() {
 #[test]
 fn v_curved_guide_control() {
     let w = StaticWorldBuilder::new().build();
-    for rise in [0.0f32, 0.15] {
+    for rise in [0.0f32, 0.001, 0.01, 0.15] {
         let pts: Vec<Vec3> = (0..=40)
             .map(|i| {
                 let s = i as f32 / 40.0;
@@ -1459,7 +1459,7 @@ fn v_curved_guide_control() {
             ev.clear();
             s.step(&geo, DT, &mut ev);
             let bb = s.ball(h).unwrap();
-            if t % 6 == 0 {
+            if t % 30 == 29 {
                 println!("rise={rise} t={t} step={:.5} m pos={:?} |v|={:.3} vz={:.3}", bb.position.distance(last), bb.position, bb.velocity.length(), bb.velocity.z);
             }
             last = bb.position;
