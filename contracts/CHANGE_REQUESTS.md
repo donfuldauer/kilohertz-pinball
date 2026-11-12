@@ -68,11 +68,10 @@ unchanged):
 
 ## Requests
 
-_None yet._
 
 ### CR-001: `pin_core::spsc` bounded lock-free SPSC ring
 - **Requested by:** Subphase 1.3 (Implementer)
-- **Status:** open
+- **Status:** merged (landed across wave-2 WIP snapshots cf246e2…e999444; approved in 1.3 review)
 - **Kind:** additive
 - **Items:** new file `crates/pin_core/src/spsc.rs`, new line `pub mod spsc;` in `crates/pin_core/src/lib.rs`; new tests `crates/pin_core/tests/spsc_stress.rs`, `crates/pin_core/tests/spsc_alloc.rs`.
 - **Change:** new module, nothing existing changes:

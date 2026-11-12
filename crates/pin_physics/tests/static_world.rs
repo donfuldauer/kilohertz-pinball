@@ -479,21 +479,39 @@ fn cylinder_interior_contacts() {
 fn no_ghost_collisions_on_tessellated_flats() {
     for welded in [true, false] {
         let (world, _) = single(grid_mesh(8, 0.4, welded));
-        // Rolling across the flat at exactly the resting height, in many
-        // directions, crossing dozens of interior edges and vertices.
-        for k in 0..64 {
-            let a = k as f32 * 0.0981;
-            let dir = v(libm::cosf(a), libm::sinf(a), 0.0);
-            let start = v(
-                0.013 * libm::sinf(3.0 * a),
-                0.011 * libm::cosf(5.0 * a),
-                R + 2e-6,
-            );
-            let hit = world.cast_sphere(start - dir * 0.15, R, dir, 0.3, 0xFF);
-            assert!(
-                hit.is_none(),
-                "ghost hit {hit:?} (welded = {welded}, k = {k})"
-            );
+        // Rolling across the flat at (or a hair below) the resting height,
+        // in many directions, crossing dozens of interior edges and vertices.
+        // The only legitimate hit is the face itself when the ball presses in.
+        for (height, vz) in [
+            (R + 2e-6, 0.0),
+            (R, 0.0),
+            (R - 5e-6, 0.0),
+            (R - 5e-5, 0.0),
+            (R, 1e-4),
+            (R - 5e-6, -0.02),
+        ] {
+            for k in 0..64 {
+                let a = k as f32 * 0.0981;
+                let dir = v(libm::cosf(a), libm::sinf(a), vz);
+                let offset = v(
+                    0.013 * libm::sinf(3.0 * a),
+                    0.011 * libm::cosf(5.0 * a),
+                    height,
+                );
+                let mut pos = offset - v(dir.x, dir.y, 0.0) * 0.15;
+                // March in 1 ms steps like a solver would.
+                for _ in 0..300 {
+                    let hit = world.cast_sphere(pos, R, dir, 1.0e-3, 0xFF);
+                    if let Some(hit) = hit {
+                        assert!(vz < 0.0, "ghost hit {hit:?} (welded = {welded}, k = {k})");
+                        assert!(
+                            (hit.normal - Vec3::Z).length() < 1e-6,
+                            "tilted hit {hit:?} (welded = {welded}, k = {k})"
+                        );
+                    }
+                    pos += v(dir.x, dir.y, 0.0) * 1.0e-3;
+                }
+            }
         }
         // Dropping onto interior edges and vertices still collides, with the
         // face normal, exactly once.

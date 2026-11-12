@@ -320,6 +320,22 @@ fn closest_on_triangle(a: Vec3, b: Vec3, c: Vec3, p: Vec3) -> (Vec3, u8) {
 
 fn closest_triangle(a: Vec3, b: Vec3, c: Vec3, face_normal: Vec3, active: u8, p: Vec3) -> Closest {
     let (point, feature) = closest_on_triangle(a, b, c, p);
+    if feature == FEATURE_FACE {
+        // Over the face the plane gives distance and normal exactly, without
+        // the rounding of the barycentric reconstruction of `point`.
+        let height = (p - a).dot(face_normal);
+        let normal = if height < 0.0 {
+            -face_normal
+        } else {
+            face_normal
+        };
+        return Closest {
+            distance: height.abs(),
+            normal,
+            point: p - face_normal * height,
+            valid: true,
+        };
+    }
     let diff = p - point;
     let d = diff.length();
     let normal = if d > 1.0e-12 {
@@ -330,11 +346,26 @@ fn closest_triangle(a: Vec3, b: Vec3, c: Vec3, face_normal: Vec3, active: u8, p:
         face_normal
     };
     // An interior edge/vertex of a flat mesh region only counts when the
-    // query point is straight above it; at an angle the neighbouring face
-    // owns the contact (prevents ghost collisions on tessellated flats).
-    let valid = feature == FEATURE_FACE
-        || active & feature != 0
-        || normal.dot(face_normal).abs() > 1.0 - PARALLEL_EPS;
+    // query point is straight above it, and then with the face normal; at an
+    // angle the neighbouring face owns the contact. This prevents ghost
+    // collisions on tessellated flats.
+    let (normal, valid) = if active & feature != 0 {
+        (normal, true)
+    } else {
+        let along = normal.dot(face_normal);
+        if along.abs() > 1.0 - PARALLEL_EPS {
+            (
+                if along < 0.0 {
+                    -face_normal
+                } else {
+                    face_normal
+                },
+                true,
+            )
+        } else {
+            (normal, false)
+        }
+    };
     Closest {
         distance: d,
         normal,

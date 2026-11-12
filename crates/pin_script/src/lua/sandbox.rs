@@ -33,10 +33,12 @@ const CHUNK_NAME: &str = "=rules.lua";
 
 /// Trusted prelude, run once per state before the table script. Arguments:
 /// the private API table, the private name tables, the memory-abort function.
-const PRELUDE: &str = r#"
-local api, names, memabort = ...
-local error, rawset, setmetatable, next, getmetatable = error, rawset, setmetatable, next, getmetatable
-local _pcall, _xpcall = pcall, xpcall
+const PRELUDE: &str = r##"
+local api, names, memabort, hostrandom = ...
+local G = _G
+local error, rawset, rawget, setmetatable, next, getmetatable, type, select =
+  error, rawset, rawget, setmetatable, next, getmetatable, type, select
+local _pcall = pcall
 local protected = setmetatable({}, { __mode = "k" })
 local function readonly(t, what)
   local proxy = {}
@@ -51,15 +53,14 @@ local function readonly(t, what)
   return proxy
 end
 for k, v in next, names do api[k] = readonly(v, "pinball." .. k) end
-pinball = readonly(api, "pinball")
-rawset = function(t, k, v)
+G.pinball = readonly(api, "pinball")
+G.rawset = function(t, k, v)
   if protected[t] then error("cannot rawset a read-only pinball table", 2) end
   return rawset(t, k, v)
 end
 -- Finalizers run with hooks disabled (no instruction budget), so scripts may
 -- not register any. A __gc added to a metatable later is ignored by Lua 5.4.
-local rawget, type = rawget, type
-setmetatable = function(t, mt)
+G.setmetatable = function(t, mt)
   if type(mt) == "table" and rawget(mt, "__gc") ~= nil then
     error("__gc metamethods are not allowed in table scripts", 2)
   end
@@ -70,10 +71,27 @@ local function chk(ok, ...)
   if not ok and (...) == MEM then memabort() end
   return ok, ...
 end
-pcall = function(...) return chk(_pcall(...)) end
-xpcall = function(...) return chk(_xpcall(...)) end
+G.pcall = function(...) return chk(_pcall(...)) end
+-- A real xpcall runs the message handler at the error point, where an error
+-- raised by the budget hook leaves hooks disabled: a looping handler would
+-- escape the budget. Run the handler after unwinding instead, as plain code.
+local function xret(h, ok, ...)
+  if ok then return true, ... end
+  local e = ...
+  if e == MEM then memabort() end
+  return false, select(2, chk(_pcall(h, e)))
+end
+G.xpcall = function(f, h, ...)
+  if type(h) ~= "function" then error("bad argument #2 to 'xpcall' (function expected)", 2) end
+  return xret(h, _pcall(f, ...))
+end
+G.math.random = function(...)
+  local n = select("#", ...)
+  if n > 2 then error("wrong number of arguments", 2) end
+  return hostrandom(n, ...)
+end
 getmetatable("").__metatable = "locked"
-"#;
+"##;
 
 /// Entry-point names, interned once per state.
 pub(crate) struct Keys {
@@ -233,7 +251,6 @@ impl Vm {
         let string: Table = g.raw_get("string")?;
         string.raw_set("dump", Value::Nil)?;
         let math: Table = g.raw_get("math")?;
-        math.raw_set("random", api::math_random_fn(&lua, bridge)?)?;
         math.raw_set("randomseed", lua.create_function(|_, _: mlua::MultiValue| Ok(()))?)?;
 
         let api_table = api::build(&lua, bridge)?;
@@ -253,7 +270,12 @@ impl Vm {
         lua.load(PRELUDE)
             .set_name("=prelude")
             .set_mode(ChunkMode::Text)
-            .call::<()>((api_table, name_tables, memabort))?;
+            .call::<()>((
+                api_table,
+                name_tables,
+                memabort,
+                api::math_random_fn(&lua, bridge)?,
+            ))?;
 
         let key = |s: &str| lua.create_string(s);
         let keys = Keys {

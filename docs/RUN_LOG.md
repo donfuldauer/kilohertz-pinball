@@ -22,3 +22,8 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 2 | 3.1 | Implementer | Opus 5.5 | 1 | done | 26 own tests; coverage 100 % | |
 | 2 | 3.1 | Independent Tester | Fable 5.2 | 1 | done | 71 spec tests | |
 | 2 | 3.1 | Reviewer | Fable 5.2 | 1 | **pass** | gate 1–8 pass; 100 % lines; alloc guard real | 4 non-blocking: N1 → 2.5 brief (callers clear `out` before `update`), N2 doc, N4 compile-time assert, N3 none |
+| 2 | 1.3 | Implementer | Opus 5.5 | 1 | done | all own tests pass; coverage pin_core 99 %, pin_render 100 %, pin_app 92 % | CR-001 `pin_core::spsc` (additive) |
+| 2 | 1.3 | Independent Tester | Fable 5.2 | 1 | done | 60 spec tests | |
+| 2 | 1.3 | Reviewer | Fable 5.2 | 1 | **pass** | gate 1–8 pass; SPSC ordering verified | 7 non-blocking; `pin_app/src/lib.rs` accepted |
+| 2 | 2.1 | Independent Tester | Opus 5.5 | 1 | done | 66 spec tests pass | |
+| 2 | 4.2 | Independent Tester | Fable 5.2 | 1 | done | 135 pass, 2 fail, 6 hang | 4 defects sent to Implementer |

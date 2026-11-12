@@ -107,30 +107,33 @@ pub(crate) fn unit_float(rng: &mut Pcg32) -> f64 {
     (next_u64(rng) >> 11) as f64 * (0.5 / (1u64 << 52) as f64)
 }
 
-/// `math.random` with Lua 5.4 semantics, drawing from the host PCG.
+/// `random` with Lua 5.4 semantics over `count` arguments, drawing from the
+/// host PCG. `allow_float` enables `random()` (float) and `random(0)` (raw
+/// integer), as `math.random` does.
 fn math_random(
     b: &Bridge,
+    count: usize,
     m: Option<Value>,
     n: Option<Value>,
     f: &str,
     allow_float: bool,
 ) -> mlua::Result<Value> {
-    let m = m.filter(|v| !v.is_nil());
-    let n = n.filter(|v| !v.is_nil());
-    let (lo, hi) = match (&m, &n) {
-        (None, None) if allow_float => {
+    let m = m.unwrap_or(Value::Nil);
+    let n = n.unwrap_or(Value::Nil);
+    let (lo, hi) = match count {
+        0 if allow_float => {
             return b.with_ctx(|_, rng, _| Value::Number(unit_float(rng)));
         }
-        (None, None) => return Err(arg_err(f, "expected random(n) or random(m, n)")),
-        (Some(m), None) => {
-            let m = int(m, f, "upper bound")?;
+        0 => return Err(arg_err(f, "expected random(n) or random(m, n)")),
+        1 => {
+            let m = int(&m, f, "upper bound")?;
             if m == 0 && allow_float {
                 return b.with_ctx(|_, rng, _| Value::Integer(next_u64(rng) as i64));
             }
             (1, m)
         }
-        (Some(m), Some(n)) => (int(m, f, "lower bound")?, int(n, f, "upper bound")?),
-        (None, Some(_)) => return Err(arg_err(f, "lower bound must be an integer")),
+        2 => (int(&m, f, "lower bound")?, int(&n, f, "upper bound")?),
+        _ => return Err(arg_err(f, "wrong number of arguments")),
     };
     if lo > hi {
         return Err(arg_err(f, &format!("interval is empty ([{lo}, {hi}])")));
@@ -237,17 +240,25 @@ pub(crate) fn build(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Table> {
         b.with_ctx(|v, _, _| i64::from(v.balls_in_play))
     });
     reg!("random", |b, (m, n): (Option<Value>, Option<Value>)| {
-        math_random(&b, m, n, "random", false)
+        let count = match (&m, &n) {
+            (_, Some(v)) if !v.is_nil() => 2,
+            (Some(v), _) if !v.is_nil() => 1,
+            _ => 0,
+        };
+        math_random(&b, count, m, n, "random", false)
     });
     Ok(api)
 }
 
-/// The replacement for `math.random`, routed to the host PCG.
+/// The host side of `math.random`, called by the prelude's wrapper as
+/// `hostrandom(nargs, m, n)` after it rejected more than two arguments.
 pub(crate) fn math_random_fn(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Function> {
     let b = Rc::clone(bridge);
-    lua.create_function(move |_, (m, n): (Option<Value>, Option<Value>)| {
-        math_random(&b, m, n, "math.random", true)
-    })
+    lua.create_function(
+        move |_, (count, m, n): (usize, Option<Value>, Option<Value>)| {
+            math_random(&b, count, m, n, "math.random", true)
+        },
+    )
 }
 
 #[cfg(test)]
