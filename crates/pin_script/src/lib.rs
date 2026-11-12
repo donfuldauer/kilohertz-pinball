@@ -2,8 +2,12 @@
 //!
 //! * [`lua`]: the Lua 5.4 backend (Subphase 4.2): sandbox, memory cap,
 //!   instruction budget and hot reload (PLAN.md §3.4, D10, D11, D25).
-//! * [`wasm`]: the WebAssembly backend (Subphase 4.5; stub).
-//! * [`load_backend`]: picks a backend from the extension of `script_entry`.
+//! * [`wasm`]: the WebAssembly backend (Subphase 4.5): wasmtime with fuel
+//!   metering, a memory cap and the same host API and fault semantics as Lua.
+//!   Rules written in Rust use the `pin_guest_sdk` crate
+//!   (`crates/pin_script/guest-sdk`), which documents the ABI.
+//! * [`load_backend`] / [`load_backend_with`]: pick a backend from the
+//!   extension of `script_entry`.
 //! * [`NameTables`]: the name → id tables scripts see as `pinball.sw`, `pinball.coil`, …
 
 pub mod guest_sdk;
@@ -71,29 +75,41 @@ impl NameTables {
     }
 }
 
-/// Builds the rules backend named by the extension of `script_entry` (§3.4):
-/// `.lua` → [`lua::LuaScriptBackend`] with [`lua::LuaConfig::default`];
-/// `.wasm` → `Err(UnsupportedBackend)` until Subphase 4.5 lands the Wasm
-/// backend; anything else → `Err(UnsupportedBackend)`. Extensions are matched
-/// case-insensitively.
+/// Builds the rules backend named by the extension of `script_entry` (§3.4)
+/// with the default limits: `.lua` → [`lua::LuaScriptBackend`] with
+/// [`lua::LuaConfig::default`]; `.wasm` → [`wasm::WasmScriptBackend`] with
+/// [`wasm::WasmConfig::default`]; anything else → `Err(UnsupportedBackend)`.
+/// Extensions are matched case-insensitively.
 pub fn load_backend(
     script_entry: &str,
     source: &[u8],
     names: &NameTables,
+) -> Result<Box<dyn TableScriptBackend>, ScriptError> {
+    load_backend_with(
+        script_entry,
+        source,
+        names,
+        lua::LuaConfig::default(),
+        wasm::WasmConfig::default(),
+    )
+}
+
+/// Like [`load_backend`], with explicit limits for each backend (the engine
+/// passes [`lua::LuaConfig::engine`] and [`wasm::WasmConfig::engine`]).
+pub fn load_backend_with(
+    script_entry: &str,
+    source: &[u8],
+    names: &NameTables,
+    lua: lua::LuaConfig,
+    wasm: wasm::WasmConfig,
 ) -> Result<Box<dyn TableScriptBackend>, ScriptError> {
     let ext = Path::new(script_entry)
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
     match ext.as_deref() {
-        Some("lua") => Ok(Box::new(lua::LuaScriptBackend::new(
-            source,
-            names,
-            lua::LuaConfig::default(),
-        )?)),
-        Some("wasm") => Err(ScriptError::UnsupportedBackend(format!(
-            "{script_entry}: the .wasm backend is unsupported until Subphase 4.5"
-        ))),
+        Some("lua") => Ok(Box::new(lua::LuaScriptBackend::new(source, names, lua)?)),
+        Some("wasm") => Ok(Box::new(wasm::WasmScriptBackend::new(source, names, wasm)?)),
         Some(other) => Err(ScriptError::UnsupportedBackend(format!(
             "{script_entry}: unknown script extension .{other} (expected .lua or .wasm)"
         ))),

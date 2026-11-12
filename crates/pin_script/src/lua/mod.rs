@@ -42,7 +42,7 @@
 //! queues, as long as rules do not depend on `pairs` order over string keys or
 //! on `tostring` of tables (Lua seeds its string hash per state).
 
-mod api;
+pub(crate) mod api;
 mod bridge;
 pub mod reload;
 mod sandbox;

@@ -1,3 +1,4 @@
-//! Guest SDK for Wasm table rules (PLAN.md `guest-sdk/`; may become its own crate).
-//!
-//! Owner: Subphase 4.5. Stub created by Subphase 1.1.
+//! The guest SDK for Wasm table rules lives in its own `no_std` crate,
+//! `pin_guest_sdk` (`crates/pin_script/guest-sdk`), so it can be compiled to
+//! `wasm32-unknown-unknown`. Its crate docs describe the guest ABI; the host
+//! side is [`crate::wasm`].

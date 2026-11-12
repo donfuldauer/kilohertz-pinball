@@ -82,3 +82,17 @@ unchanged):
 - **Why:** PLAN §2.2: the main thread forwards timestamped `InputEvent`s to the sim thread (pin_app → pin_sim) and window events to the render thread (pin_app → pin_render) through SPSC rings; the ring type crosses crates, so it belongs in pin_core (Orchestrator Wave 2 decision "1.3 SPSC ring in pin_core").
 - **Affected crates:** none (additive).
 - **Workaround meanwhile:** none needed; the additive change is made in the new file as the brief allows.
+
+### CR-002: `pin_core::sim` — the `SimStep` contract
+- **Requested by:** Subphase 1.4 (Implementer)
+- **Status:** open
+- **Kind:** additive
+- **Items:** new file `crates/pin_core/src/sim.rs` (with unit tests); in `crates/pin_core/src/lib.rs` one line `pub mod sim;`, one re-export line `pub use sim::{MAX_CATCH_UP_TICKS, SimStep, TICK_NS};` and one module-list doc line.
+- **Change:** new module, nothing existing changes:
+  `pub trait SimStep: Send { fn step_1ms(&mut self, tick: u64, inputs: &[InputEvent], out: &mut FrameStateSnapshot); }`
+  (tick is 1-based; `inputs` = events with timestamp ≤ end of the tick, in arrival order; the impl writes the whole snapshot and sets `out.tick = tick`);
+  `pub const TICK_NS: u64 = 1_000_000;` `pub const MAX_CATCH_UP_TICKS: u32 = 8;`
+  plus `impl<S: SimStep + ?Sized> SimStep for Box<S>` (so `Box<dyn SimStep>` is a `SimStep`) and the helper `pub const fn tick_end_ns(epoch_ns: u64, tick: u64) -> u64` (saturating `epoch_ns + tick·TICK_NS`).
+- **Why:** the thread orchestrator (`pin_app`, 1.4) drives the sim through a trait object that `pin_sim` (2.5/6.0) implements, so the trait crosses crates (D4; Orchestrator "Wave 3 brief decisions").
+- **Affected crates:** none (additive).
+- **Workaround meanwhile:** none needed; the additive change is made in the new file as the brief allows.

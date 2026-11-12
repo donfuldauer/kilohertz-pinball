@@ -13,6 +13,9 @@ pin_render = { path = "../pin_render" }
 sdl3.workspace = true
 arrayvec.workspace = true
 
+[dev-dependencies]
+proptest.workspace = true
+
 # SDL must run on the main thread (Cocoa on macOS) and may only be initialised
 # once per process, so SDL tests are plain `main` binaries instead of libtest.
 [[test]]

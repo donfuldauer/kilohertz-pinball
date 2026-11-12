@@ -1,0 +1,27 @@
+# X-Arcade in gamepad (DirectInput) mode, matched by SDL GUID vendor/product.
+# Vendor/product ids and SDL's standard-button mapping are the agent's best
+# knowledge of the published X-Arcade defaults, UNVERIFIED ON HARDWARE
+# (docs/DECISIONS.md "3.2 — X-Arcade presets"). In XInput mode the X-Arcade
+# reports as an Xbox 360 pad (045e:028e) and gets the generic gamepad preset.
+id = "xarcade_gamepad"
+name = "X-Arcade (gamepad mode)"
+match = [
+  { gamepad = { vendor = 0xAA55, product = 0x0101 } },
+  { gamepad = { vendor = 0xAA55, product = 0x0102 } },
+]
+
+[buttons]
+left_flipper = [ "button:left_shoulder", "axis:left_trigger" ]    # left side button
+right_flipper = [ "button:right_shoulder", "axis:right_trigger" ] # right side button
+left_upper = [ "button:west" ]
+right_upper = [ "button:north" ]
+launch = [ "button:south" ]
+action = [ "button:east" ]
+start = [ "button:start" ]
+tilt = [ "button:back" ]
+
+# The digital stick (d-pad) nudges.
+[nudge]
+left = [ "button:dpad_left" ]
+right = [ "button:dpad_right" ]
+forward = [ "button:dpad_up" ]

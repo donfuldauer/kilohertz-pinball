@@ -9,3 +9,20 @@ license.workspace = true
 
 [dependencies]
 pin_core.workspace = true
+hound.workspace = true
+lewton.workspace = true
+sdl3.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+# SDL must run on the main thread (Cocoa on macOS) and may only be initialised
+# once per process, so SDL tests are plain `main` binaries instead of libtest.
+[[test]]
+name = "mixer_sdl_smoke"
+harness = false
+
+# Independent Tester's SDL smoke test (same reason: plain `main` binary).
+#TMP[[test]]
+#TMPname = "spec_mixer_sdl"
+#TMPharness = false

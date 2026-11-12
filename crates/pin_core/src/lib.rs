@@ -10,6 +10,7 @@
 //! * [`input`]: input events, cabinet inputs and haptics events.
 //! * [`materials`]: material pairs (restitution and friction).
 //! * [`schema`]: on-disk TOML schemas (Appendix A, Appendix C).
+//! * [`sim`]: the 1 kHz [`SimStep`] contract the orchestrator drives (CR-002).
 //! * [`telemetry`]: UDP telemetry protocol v1 (Appendix B).
 //!
 //! Changes after Subphase 1.1 go through `contracts/CHANGE_REQUESTS.md`.
@@ -21,6 +22,7 @@ pub mod materials;
 pub mod profiles;
 pub mod schema;
 pub mod script;
+pub mod sim;
 pub mod snapshot;
 pub mod spsc;
 pub mod telemetry;
@@ -39,6 +41,7 @@ pub use schema::{BackglassManifest, LayoutManifest, PhysicsDefaults, SchemaError
 pub use script::{
     HostCommandQueue, HostCtx, HostView, ScriptError, SwitchEdge, TableScriptBackend,
 };
+pub use sim::{MAX_CATCH_UP_TICKS, SimStep, TICK_NS};
 pub use snapshot::FrameStateSnapshot;
 pub use triple_buffer::{TripleBuffer, TripleReader, TripleWriter};
 

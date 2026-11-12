@@ -1,0 +1,27 @@
+# X-Arcade (Tankstick / Dual Joystick) in keyboard-encoder mode ("Mode 1",
+# the MAME layout). A PC sees a plain keyboard, so this preset is never
+# auto-detected; users pick it. Scancodes follow the published X-Arcade
+# defaults, UNVERIFIED ON HARDWARE (docs/DECISIONS.md "3.2 — X-Arcade presets").
+#
+# Player 1: stick = arrows / keypad 8 4 6 2, buttons LCtrl LAlt Space LShift Z X,
+#           start 1, coin 3.  Player 2: buttons A S Q W, start 2, coin 4.
+# Pinball side buttons: left C, right 5.
+id = "xarcade_keyboard"
+name = "X-Arcade (keyboard mode)"
+match = [ { keyboard = true } ]
+
+[buttons]
+left_flipper = [ "key:6", "key:225" ]            # left side button (C), P1 button 4 (LShift)
+right_flipper = [ "key:34", "key:229" ]          # right side button (5), Right Shift
+left_upper = [ "key:224" ]                       # P1 button 1 (LCtrl)
+right_upper = [ "key:4" ]                        # P2 button 1 (A)
+action = [ "key:226" ]                           # P1 button 2 (LAlt)
+launch = [ "key:44", "key:40" ]                  # P1 button 3 (Space), Return
+start = [ "key:30" ]                             # P1 start (1)
+tilt = [ "key:22" ]                              # P2 button 2 (S)
+
+# The P1 stick nudges (arrow keys and keypad 4 / 6 / 8).
+[nudge]
+left = [ "key:80", "key:92" ]
+right = [ "key:79", "key:94" ]
+forward = [ "key:82", "key:96" ]
