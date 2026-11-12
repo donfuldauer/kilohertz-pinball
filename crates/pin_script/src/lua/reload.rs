@@ -11,7 +11,7 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use pin_core::ScriptError;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
 
 /// Compiles `src` (text mode only; bytecode is rejected) without running it.
@@ -106,11 +106,8 @@ impl ReloadWatcher {
     /// unreadable file (retried on the next poll) and syntax errors (kept in
     /// [`Self::last_error`]) return `None`.
     pub fn poll(&mut self) -> Option<Vec<u8>> {
-        loop {
-            match self.rx.try_recv() {
-                Ok(ev) => self.absorb(ev),
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
+        while let Ok(ev) = self.rx.try_recv() {
+            self.absorb(ev);
         }
         self.take_change()
     }
