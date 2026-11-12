@@ -1,0 +1,20 @@
+# Black-box conformance tests for Subphase 0.1 (dependency spikes & version pinning).
+# Standalone on purpose: the empty [workspace] table keeps this package out of
+# spikes/Cargo.toml so it never shares a lockfile or build with the code under test.
+[package]
+name = "spec_0_1"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Conformance checks for versions.toml, docs/DECISIONS.md and the spikes CI workflow"
+
+[workspace]
+
+[dependencies]
+regex = "1.13.1"
+
+[dev-dependencies]
+proptest = "1.12.0"
+toml = "1.2.1"
+yaml-rust2 = "0.13.0"
