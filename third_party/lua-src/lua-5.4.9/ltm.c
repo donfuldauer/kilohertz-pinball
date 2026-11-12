@@ -258,6 +258,7 @@ void luaT_adjustvarargs (lua_State *L, int nfixparams, CallInfo *ci,
 void luaT_getvarargs (lua_State *L, CallInfo *ci, StkId where, int wanted) {
   int i;
   int nextra = ci->u.l.nextraargs;
+  lua_khzcharge(L, ((wanted < 0) ? nextra : wanted) >> 2);  /* KHZ: copying varargs */
   if (wanted < 0) {
     wanted = nextra;  /* get all extra arguments available */
     checkstackGCp(L, nextra, where);  /* ensure stack space */

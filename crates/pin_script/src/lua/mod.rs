@@ -230,17 +230,10 @@ impl LuaScriptBackend {
             Err(e) => Err(ScriptError::Runtime(e.to_string())),
             Ok(None) => Ok(()),
             Ok(Some(f)) => match entry {
-                Entry::Switch => Self::call_with_ctx(
-                    vm,
-                    bridge,
-                    budget,
-                    &f,
-                    (i64::from(switch.0), closed),
-                    ctx,
-                ),
-                Entry::Init | Entry::Tick => {
-                    Self::call_with_ctx(vm, bridge, budget, &f, (), ctx)
+                Entry::Switch => {
+                    Self::call_with_ctx(vm, bridge, budget, &f, (i64::from(switch.0), closed), ctx)
                 }
+                Entry::Init | Entry::Tick => Self::call_with_ctx(vm, bridge, budget, &f, (), ctx),
             },
         };
         if let Err(e) = result {
@@ -265,7 +258,8 @@ impl LuaScriptBackend {
             return None;
         }
         let f = self.vm.entry(&self.vm.keys.on_save_state).ok()??;
-        self.vm.reset_budget(&self.bridge, self.cfg.instruction_budget);
+        self.vm
+            .reset_budget(&self.bridge, self.cfg.instruction_budget);
         let r = f.call::<Value>(());
         let exhausted = self.vm.exhausted(&self.bridge);
         let v = r.ok().filter(|_| !exhausted)?;

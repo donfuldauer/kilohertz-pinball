@@ -37,9 +37,9 @@ pub(crate) fn save(v: &Value, max_bytes: usize) -> mlua::Result<Option<Saved>> {
 }
 
 fn spend(left: &mut usize, n: usize) -> mlua::Result<()> {
-    *left = left.checked_sub(n).ok_or_else(|| {
-        mlua::Error::runtime("on_save_state: saved state exceeds the memory cap")
-    })?;
+    *left = left
+        .checked_sub(n)
+        .ok_or_else(|| mlua::Error::runtime("on_save_state: saved state exceeds the memory cap"))?;
     Ok(())
 }
 

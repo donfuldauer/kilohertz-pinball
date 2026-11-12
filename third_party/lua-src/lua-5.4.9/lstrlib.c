@@ -114,6 +114,7 @@ static int str_reverse (lua_State *L) {
   luaL_Buffer b;
   const char *s = luaL_checklstring(L, 1, &l);
   char *p = luaL_buffinitsize(L, &b, l);
+  lua_khzcharge(L, (lua_Integer)(l >> 2));  /* KHZ: per-byte loop */
   for (i = 0; i < l; i++)
     p[i] = s[l - i - 1];
   luaL_pushresultsize(&b, l);
@@ -127,6 +128,7 @@ static int str_lower (lua_State *L) {
   luaL_Buffer b;
   const char *s = luaL_checklstring(L, 1, &l);
   char *p = luaL_buffinitsize(L, &b, l);
+  lua_khzcharge(L, (lua_Integer)(l >> 2));  /* KHZ: per-byte loop */
   for (i=0; i<l; i++)
     p[i] = tolower(uchar(s[i]));
   luaL_pushresultsize(&b, l);
@@ -140,6 +142,7 @@ static int str_upper (lua_State *L) {
   luaL_Buffer b;
   const char *s = luaL_checklstring(L, 1, &l);
   char *p = luaL_buffinitsize(L, &b, l);
+  lua_khzcharge(L, (lua_Integer)(l >> 2));  /* KHZ: per-byte loop */
   for (i=0; i<l; i++)
     p[i] = toupper(uchar(s[i]));
   luaL_pushresultsize(&b, l);
@@ -152,8 +155,12 @@ static int str_rep (lua_State *L) {
   const char *s = luaL_checklstring(L, 1, &l);
   lua_Integer n = luaL_checkinteger(L, 2);
   const char *sep = luaL_optlstring(L, 3, "", &lsep);
-  if (n <= 0 || l + lsep == 0)  /* KHZ: no empty loop for empty pieces */
+  if (n <= 0)
     lua_pushliteral(L, "");
+  else if (l + lsep == 0) {  /* KHZ: empty pieces: no loop, but each repetition costs */
+    lua_khzcharge(L, n >> 4);
+    lua_pushliteral(L, "");
+  }
   else if (l_unlikely(l + lsep < l || l + lsep > MAXSIZE / n))
     return luaL_error(L, "resulting string too large");
   else if (l_unlikely(l + lsep > (KHZ_MAX_STRLEN + lsep) / (size_t)n))  /* KHZ */
@@ -272,7 +279,7 @@ static int tonum (lua_State *L, int arg) {
   else {  /* check whether it is a numerical string */
     size_t len;
     const char *s = lua_tolstring(L, arg, &len);
-    return (s != NULL && lua_stringtonumber(L, s) == len + 1);
+    return (s != NULL && len <= 200 && lua_stringtonumber(L, s) == len + 1);  /* KHZ: bounded scan */
   }
 }
 
@@ -382,7 +389,7 @@ static void khz_step (MatchState *ms) {
   if (l_unlikely(--ms->steps <= 0))
     luaL_error(ms->L, "pattern too complex");
   if ((ms->steps & 1023) == 0)
-    lua_khzcharge(ms->L, 1024);
+    lua_khzcharge(ms->L, 2048);  /* KHZ: 2 per step */
 }
 
 

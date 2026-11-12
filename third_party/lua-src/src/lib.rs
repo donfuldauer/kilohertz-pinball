@@ -337,6 +337,7 @@ pub const KHZ_PATCHED_SOURCES: &[&str] = &[
     include_str!("../lua-5.4.9/ltablib.c"),
     include_str!("../lua-5.4.9/lutf8lib.c"),
     include_str!("../lua-5.4.9/lvm.c"),
+    include_str!("../lua-5.4.9/ltm.c"),
     include_str!("../lua-5.4.9/lparser.c"),
     include_str!("../lua-5.4.9/lauxlib.c"),
     include_str!("../lua-5.4.9/lbaselib.c"),

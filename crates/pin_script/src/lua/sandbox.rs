@@ -10,8 +10,13 @@
 //! * The string metatable and every `pinball` table are protected
 //!   (`__metatable`), `pinball` tables are read-only proxies (also against
 //!   `rawset`).
-//! * `setmetatable` refuses metatables with `__gc`: Lua runs finalizers with
-//!   hooks disabled, so a finalizer could otherwise loop outside the budget.
+//! * `setmetatable` refuses metatables with `__gc` (Lua runs finalizers with
+//!   hooks disabled) or `__mode` (ephemeron convergence is quadratic inside the
+//!   GC's atomic step); neither could be bounded by the budget.
+//! * Lua itself is patched (third_party/lua-src/KHZ_PATCHES.md): fixed hash
+//!   seed and sort pivot, 64 KiB string cap, pattern step limit, no `<close>`,
+//!   no addresses in `tostring`/`%p`, and library loops charged against the same
+//!   budget as the instruction hook (`lua_khzspend`/`lua_khzcharge`).
 //! * `pcall`/`xpcall` re-raise memory errors, and once the instruction budget
 //!   is exhausted the hook fires on every instruction, so neither limit can be
 //!   swallowed by a protected call.

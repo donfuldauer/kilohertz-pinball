@@ -1605,7 +1605,6 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         vmbreak;
       }
       vmcase(OP_TBC) {
-        StkId ra = RA(i);
         /* KHZ: unreachable (the parser rejects '<close>'), kept as a guard */
         halfProtect(luaG_runerror(L, "to-be-closed variables are not allowed"));
         vmbreak;

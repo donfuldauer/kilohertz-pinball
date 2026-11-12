@@ -289,9 +289,8 @@ fn finite_work_within_budget_passes() {
 fn memory_bombs_are_aborted() {
     for src in [
         "function on_tick() local t = {} for i = 1, 1e8 do t[i] = string.rep('x', 64) .. i end end",
-        "function on_tick() local s = string.rep('x', 1 << 28) end",
-        "function on_tick() while true do pcall(string.rep, 'x', 1 << 28) end end",
-        "function on_tick() local s = 'x' while true do s = s .. s end end",
+        "function on_tick() local t = {} for i = 1, 1e8 do t[i] = string.rep('x', 60000) .. i end end",
+        "function on_tick() local t = {} while true do pcall(function() for i = 1, 1e9 do t[#t + 1] = string.rep('x', 60000) .. i end end) end end",
     ] {
         let mut b = small(src, 100_000_000, 2 << 20);
         let mut h = Host::new(0);
@@ -299,6 +298,244 @@ fn memory_bombs_are_aborted() {
         assert_eq!(b.last_error(), Some(&ScriptError::MemoryLimit), "{src}");
         assert!(b.used_memory() <= 4 << 20);
     }
+}
+
+/// Faults with a runtime error whose message contains `needle`.
+fn assert_runtime_fault(src: &str, needle: &str) {
+    let mut b = new(src);
+    Host::new(0).tick(&mut b);
+    assert!(b.is_faulted(), "{src}");
+    match b.last_error() {
+        Some(ScriptError::Runtime(m)) => assert!(m.contains(needle), "{src}: {m}"),
+        other => panic!("{src}: {other:?}"),
+    }
+}
+
+/// Faults with `BudgetExceeded`.
+fn assert_budget_fault(src: &str) {
+    let mut b = new(src);
+    Host::new(0).tick(&mut b);
+    assert_eq!(b.last_error(), Some(&ScriptError::BudgetExceeded), "{src}");
+}
+
+#[test]
+fn string_length_is_capped_at_64_kib() {
+    for src in [
+        "function on_tick() local s = string.rep('x', 65537) end",
+        "function on_tick() local s = 'x' while true do s = s .. s end end",
+        "function on_tick() local s = string.rep('x', 40000) local t = s .. s end",
+    ] {
+        assert_runtime_fault(src, "64 KiB");
+    }
+    let mut b =
+        new("function on_tick() local s = string.rep('x', 65536) pinball.set_score(1, #s) end");
+    let q = Host::new(0).tick(&mut b);
+    assert_eq!(q.scores.as_slice(), &[(0, 65536)]);
+}
+
+// Review B1: C loops the instruction hook never sees are charged by size.
+#[test]
+fn library_loops_are_charged() {
+    for src in [
+        "function on_tick() local s = string.rep('', math.maxinteger) end",
+        "function on_tick() table.move({}, 1, 1e15, 2) end",
+        "function on_tick() table.insert(setmetatable({}, {__len = function() return math.maxinteger - 1 end}), 1, 1) end",
+        "function on_tick() table.remove(setmetatable({}, {__len = function() return math.maxinteger end}), 1) end",
+        "function on_tick() table.concat({}, '', 1, math.maxinteger) end",
+        "function on_tick() return table.unpack({}, 1, 1e7) end",
+        "function on_tick() while true do pcall(table.move, {}, 1, 1e15, 2) end end",
+        "local t = {} for i = 1, 200000 do t[i] = (i * 7919) % 1000003 end \
+         function on_tick() while true do table.sort(t) end end",
+        "local t = {} for i = 1, 100000 do t[i] = i end \
+         local function g(...) while true do local n = select('#', ...) end end \
+         function on_tick() g(table.unpack(t, 1, 100000)) end",
+    ] {
+        assert_budget_fault(src);
+    }
+    assert_runtime_fault(
+        "function on_tick() local s = string.rep('x', 1 << 28) end",
+        "64 KiB",
+    );
+    // Backtracking patterns: the budget stops them first; with a huge budget
+    // the per-call step limit does.
+    let pat = "function on_tick() string.find(string.rep('a', 30000), '.-.-.-.-b') end";
+    assert_budget_fault(pat);
+    let mut b = small(pat, u32::MAX, 16 << 20);
+    Host::new(0).tick(&mut b);
+    assert!(
+        matches!(b.last_error(), Some(ScriptError::Runtime(m)) if m.contains("pattern too complex")),
+        "{:?}",
+        b.last_error()
+    );
+}
+
+// Review B4: per-byte work on long strings is charged.
+#[test]
+fn long_string_work_is_charged() {
+    let p = "local s = string.rep('a', 65536) local s2 = string.rep('a', 65535) .. 'a' \
+             local s3 = string.rep('a', 65535)";
+    for body in [
+        "while true do if s == s2 then end end",
+        "local t = {[s] = 1} while true do local x = t[s2] end",
+        "while true do if s3 < s2 then end end",
+        "while true do s:find('b', 1, true) end",
+        "while true do local x = s:upper() end",
+        "while true do local x = s3 .. 'b' end",
+        "while true do utf8.len(s) end",
+        "while true do local x = s:byte(1, 60000) end",
+        "while true do pcall(error, 'x') end",
+        "while true do pcall(function() return s3 + 0 end) end",
+    ] {
+        assert_budget_fault(&format!("{p} function on_tick() {body} end"));
+    }
+    // Long numerals are not converted (bounded scan).
+    let mut b = new(&format!(
+        "{p} function on_tick() pinball.set_score(1, tonumber(string.rep(' ', 300) .. '5') or -1) end"
+    ));
+    assert_eq!(Host::new(0).tick(&mut b).scores.as_slice(), &[(0, -1)]);
+}
+
+// Review B2: to-be-closed variables are rejected.
+#[test]
+fn to_be_closed_is_rejected() {
+    let src = b"function on_tick() local x <close> = nil end";
+    assert!(matches!(syntax_check(src), Err(ScriptError::Load(m)) if m.contains("to-be-closed")));
+    assert!(matches!(
+        LuaScriptBackend::new(src, &names(), LuaConfig::default()),
+        Err(ScriptError::Load(_))
+    ));
+    let mut b = new("");
+    assert!(b.apply_reload(src).is_err());
+    // The generic-for closing value is refused at run time.
+    assert_runtime_fault(
+        "function on_tick() for k in next, {}, nil, setmetatable({}, {}) do end end",
+        "to-be-closed",
+    );
+    let mut ok = new("function on_tick() local x <const> = 1 for k, v in pairs({1}) do end end");
+    Host::new(0).tick(&mut ok);
+    assert!(!ok.is_faulted());
+}
+
+// Review B3: iterating a read-only table never hands out the hidden table.
+#[test]
+fn pairs_does_not_leak_hidden_tables() {
+    let mut b = new("function on_tick() \
+           local f, t = pairs(pinball.sw) assert(t == pinball.sw) \
+           assert(not pcall(rawset, t, 'a', 999)) \
+           local _, api = pairs(pinball) assert(api == pinball) \
+           local n = 0 for k, v in pairs(pinball.sw) do n = n + 1 assert(pinball.sw[k] == v) end \
+           pinball.set_score(1, n) end");
+    let q = Host::new(0).tick(&mut b);
+    assert!(!b.is_faulted(), "{:?}", b.last_error());
+    assert_eq!(q.scores.as_slice(), &[(0, 2)]);
+}
+
+// Review B5: the saved state is bounded by the memory cap.
+#[test]
+fn save_state_bomb_is_dropped_not_allocated() {
+    let mut b = new("local s = string.rep('x', 65536) \
+         function on_save_state() local t = {} for i = 1, 20000 do t[i] = s end return t end \
+         function on_restore_state(t) error('must not be called') end");
+    b.apply_reload(b"function on_restore_state(t) error('must not be called') end")
+        .unwrap();
+}
+
+// Review B6 helpers: no addresses leak.
+#[test]
+fn addresses_do_not_leak() {
+    assert_runtime_fault(
+        "function on_tick() string.format('%p', {}) end",
+        "'%p' is not allowed",
+    );
+    let mut b = new(
+        "function on_tick() assert(tostring({}) == 'table' and tostring(print) == 'function') \
+         pinball.set_score(1, 1) end",
+    );
+    assert_eq!(
+        Host::new(0).tick(&mut b).scores.len(),
+        1,
+        "{:?}",
+        b.last_error()
+    );
+}
+
+#[test]
+fn weak_tables_are_refused() {
+    assert_runtime_fault(
+        "function on_tick() setmetatable({}, {__mode = 'k'}) end",
+        "weak tables",
+    );
+}
+
+const PAIRS_SCRIPT: &str = r#"
+function on_tick()
+  for name, id in pairs(pinball.coil) do pinball.pulse_coil(id, pinball.random(1, 50)) end
+  local lamps = {gi = 1, shoot_again = 2, jackpot = 3, left_lane = 4, right_lane = 5, bonus2x = 6}
+  for k, v in pairs(lamps) do pinball.set_lamp(v, 1) end
+  local t = {} for i = 1, 50 do t["k" .. i] = i end
+  local order = 0 for k, v in pairs(t) do order = order * 31 + v order = order % 1000000007 end
+  pinball.set_score(1, order)
+  local arr = {} for i = 1, 300 do arr[i] = (i * 7919) % 101 end
+  table.sort(arr, function(a, b) return a % 7 < b % 7 end)
+  pinball.set_score(2, arr[1] * 1000 + arr[150])
+end
+"#;
+
+fn pairs_trace() -> String {
+    let mut b = new(PAIRS_SCRIPT);
+    let mut h = Host::new(5);
+    let mut out = String::new();
+    for _ in 0..20 {
+        out.push_str(&format!("{:?}\n", h.tick(&mut b)));
+    }
+    assert!(!b.is_faulted(), "{:?}", b.last_error());
+    out
+}
+
+/// Child half of `pairs_order_is_identical_across_processes`.
+#[test]
+fn pairs_order_child() {
+    if std::env::var_os("KHZ_PAIRS_CHILD").is_some() {
+        println!("BEGIN\n{}END", pairs_trace());
+    }
+}
+
+// Review B6: string hashing is seeded with a constant, so `pairs` order (and
+// with it the command queues) is the same in every process.
+#[test]
+fn pairs_order_is_identical_across_processes() {
+    let run = || {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "pairs_order_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("KHZ_PAIRS_CHILD", "1")
+            .output()
+            .unwrap();
+        let s = String::from_utf8(out.stdout).unwrap();
+        let a = s.find("BEGIN").expect("child output");
+        let e = s.find("END").unwrap();
+        s[a..e].to_string()
+    };
+    let first = run();
+    assert!(first.len() > 100);
+    assert_eq!(first, run());
+    assert_eq!(first, format!("BEGIN\n{}", pairs_trace()));
+}
+
+#[test]
+fn math_random_rejects_surplus_arguments() {
+    assert_runtime_fault(
+        "function on_tick() math.random(1, 2, nil, 4) end",
+        "wrong number",
+    );
+    assert_runtime_fault(
+        "function on_tick() math.random(1, 2, nil) end",
+        "wrong number",
+    );
 }
 
 #[test]
