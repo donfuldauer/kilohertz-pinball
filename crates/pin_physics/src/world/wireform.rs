@@ -392,18 +392,22 @@ pub enum GuideCast {
 /// playfield normal) by a wall height. The wall is the zero-thickness ribbon
 /// `C(t) + u·Z`, `u ∈ [0, height]`, and collides from both sides.
 ///
-/// Level curves (constant Z, the usual orbit wall) are the cheap case: one
-/// spline query per closest point.
+/// Level curves (constant Z, the usual orbit wall) are the normal case. Any
+/// level curve is accepted; one that touches or crosses itself has no reach
+/// and is collided with by plain conservative advancement, which is slow for
+/// a ball sliding along it.
 ///
-/// A curve that rises or falls is supported as well, including curves whose
-/// plan view comes back over itself (helices): the closest point is found
-/// by a global scan of the curve (cost proportional to the number of
-/// segments per query), and the sphere cast additionally uses the reach of
-/// the plan-view curve, so a ball running alongside the wall advances as
-/// fast as alongside a level one. A curve whose plan view has no reach (it
-/// crosses itself at an angle, or runs vertically) is still collided with
-/// correctly, by plain conservative advancement, which is slow for a ball
-/// sliding along it.
+/// A curve that rises or falls is accepted only if its plan view (the curve
+/// seen from above) is simple enough for a ball to slide along the wall at
+/// full speed: a plan-view reach of at least 20 mm, i.e. no bend tighter
+/// than about 22 mm radius and no stretch that comes back onto or within
+/// about 44 mm of another one. Helices, loops of more than one turn,
+/// hairpins, crossings and vertical runs are rejected by
+/// [`GuideCurve::new`] with [`SplineError::SlopedGuidePlanView`]; helical
+/// ramps are wireforms. The wall of an accepted sloped guide is a strip of
+/// the vertical cylinder over its plan view: beside the wall one plan-view
+/// query gives the exact closest point, and the sphere cast uses the plan
+/// view's reach, so such a guide costs about the same as a level one.
 ///
 /// For every guide the through-points must be closer together than the
 /// smallest radius of curvature (and roughly evenly spaced, see
@@ -417,13 +421,113 @@ pub struct GuideCurve {
     /// Conservative estimate of the wall's reach: within this distance of the
     /// wall the nearest wall point is unique, so the distance function is
     /// smooth with second derivatives bounded below by `-1 / (reach - d)`.
-    /// For a non-level curve this is the reach of the plan view (`flat`).
-    /// Zero when unknown (self-touching curves, vertical stretches).
+    /// For a non-level curve this is the reach of the plan view, at least
+    /// [`MIN_SLOPED_GUIDE_REACH`]. Zero for a level curve without reach
+    /// (one that touches or crosses itself).
     reach: f32,
-    /// Plan view (Z = 0) of a non-level curve: the spline through the
-    /// projected through-points, which is the projection of `spline`
-    /// because the interpolation is linear in the points.
-    flat: Option<CubicSpline>,
+    /// Extra data of a non-level curve.
+    sloped: Option<Sloped>,
+}
+
+/// What a rising or falling guide needs besides its curve.
+#[derive(Debug, Clone)]
+struct Sloped {
+    /// Plan view (Z = 0): the spline through the projected through-points,
+    /// which is the projection of the curve because the interpolation is
+    /// linear in the points.
+    flat: CubicSpline,
+    /// Bounding sphere (centre, radius) of every segment of the curve.
+    bounds: Vec<(Vec3, f32)>,
+}
+
+/// (squared distance, curve parameter, wall point) of a closest-point search.
+type Best = (f32, f32, Vec3);
+
+/// Smallest plan-view reach of a guide that rises or falls (metres, after
+/// the 0.9 sampling margin of the estimate): its plan view may not bend
+/// tighter than about 22 mm radius, and two stretches of it may not come
+/// closer than about 44 mm unless the curve between them is that short.
+/// Below this a pinball (radius up to 16 mm) could not use the reach bound
+/// of the sphere cast and would crawl along the wall.
+const MIN_SLOPED_GUIDE_REACH: f32 = 0.02;
+
+/// Whether a plan-view curve comes back onto itself: two points whose
+/// distance is smaller than the chord a curve of reach
+/// [`MIN_SLOPED_GUIDE_REACH`] keeps between points that far apart along it
+/// (Schur's comparison: `2ρ · sin(arc / 2ρ)` up to half a turn, `2ρ`
+/// beyond). This is what catches a helix, whose laps lie on top of each
+/// other in plan: as a point set its plan view is a plain circle, with a
+/// perfectly good reach.
+fn plan_view_folds(flat: &CubicSpline, closed: bool) -> bool {
+    let samples = flat.samples();
+    let rho = f64::from(MIN_SLOPED_GUIDE_REACH);
+    // Arc length up to every second sample (chord sums).
+    let stride = 2;
+    let count = (samples.len() - 1) / stride + 1;
+    let at = |j: usize| {
+        samples[(j * stride).min(samples.len() - 1)]
+            .point
+            .as_dvec3()
+    };
+    let mut total = 0.0f64;
+    let mut prev = samples[0].point.as_dvec3();
+    for sample in &samples[1..] {
+        let point = sample.point.as_dvec3();
+        total += point.distance(prev);
+        prev = point;
+    }
+    for a in 0..count {
+        let x = at(a);
+        let mut arc = 0.0f64;
+        for b in a + 1..count {
+            for index in (b - 1) * stride..(b * stride).min(samples.len() - 1) {
+                arc += samples[index + 1]
+                    .point
+                    .as_dvec3()
+                    .distance(samples[index].point.as_dvec3());
+            }
+            // Around a closed curve the shorter way counts.
+            let along = if closed { arc.min(total - arc) } else { arc };
+            let keep = 2.0
+                * rho
+                * (along / (2.0 * rho))
+                    .min(core::f64::consts::FRAC_PI_2)
+                    .sin();
+            if at(b).distance(x) < 0.98 * keep {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Bounding sphere of every segment of `spline`: the centre of its samples'
+/// box, and the largest distance to a sample plus half a sample interval's
+/// arc length (what the curve can do between two samples).
+fn segment_bounds(spline: &CubicSpline) -> Vec<(Vec3, f32)> {
+    let samples = spline.samples();
+    let k = SAMPLES_PER_SEGMENT;
+    (0..spline.segment_count())
+        .map(|i| {
+            let part = &samples[i * k..=(i + 1) * k];
+            let (mut min, mut max) = (part[0].point, part[0].point);
+            let mut speed = 0.0f32;
+            for sample in part {
+                min = min.min(sample.point);
+                max = max.max(sample.point);
+                speed = speed.max(sample.tangent.length());
+            }
+            let center = 0.5 * (min + max);
+            let third = (spline.eval(i, 1.0).2 - spline.eval(i, 0.0).2).length();
+            let step = 1.0 / k as f32;
+            let between = 0.5 * step * (speed + step * step * 0.125 * third);
+            let radius = part
+                .iter()
+                .map(|sample| sample.point.distance(center))
+                .fold(0.0f32, f32::max);
+            (center, radius + between)
+        })
+        .collect()
 }
 
 /// The plan view of `spline`, if its projected through-points are distinct.
@@ -516,7 +620,9 @@ impl GuideCurve {
     /// Wraps `spline` (the bottom edge of the wall) with a wall `height_m`.
     ///
     /// # Errors
-    /// Non-finite or negative height.
+    /// Non-finite or negative height; a closed curve that is not periodic;
+    /// a rising or falling curve whose plan view a ball cannot follow
+    /// ([`SplineError::SlopedGuidePlanView`], see the type documentation).
     pub fn new(spline: CubicSpline, height_m: f32) -> Result<Self, SplineError> {
         if !height_m.is_finite() {
             return Err(SplineError::NonFinite);
@@ -536,18 +642,25 @@ impl GuideCurve {
             .segments()
             .iter()
             .all(|seg| seg.p.iter().all(|p| (p.z - z0).abs() <= 1.0e-6));
-        let flat = if level { None } else { plan_view(&spline) };
-        let reach = match &flat {
-            _ if level => curve_reach(&spline),
-            Some(flat) => curve_reach(flat),
-            None => 0.0,
+        let (sloped, reach) = if level {
+            (None, curve_reach(&spline))
+        } else {
+            // A rising or falling guide needs a plan view that a ball can
+            // slide along at full speed: see `MIN_SLOPED_GUIDE_REACH`.
+            let flat = plan_view(&spline).ok_or(SplineError::SlopedGuidePlanView)?;
+            let reach = curve_reach(&flat);
+            if reach < MIN_SLOPED_GUIDE_REACH || plan_view_folds(&flat, spline.is_closed()) {
+                return Err(SplineError::SlopedGuidePlanView);
+            }
+            let bounds = segment_bounds(&spline);
+            (Some(Sloped { flat, bounds }), reach)
         };
         Ok(Self {
             spline,
             height: height_m,
             level_z: level.then_some(z0),
             reach,
-            flat,
+            sloped,
         })
     }
 
@@ -573,12 +686,12 @@ impl GuideCurve {
     /// returned point. Never allocates.
     ///
     /// Global for level curves (one spline query) and for rising or falling
-    /// curves (a scan of the curve's sample table with a search of every
-    /// sample interval that could hold the minimum, so its cost grows with
-    /// the number of segments). In both cases a minimum can only be missed
-    /// where the curve bends on the scale of a sample interval (1/16 of a
-    /// segment; 1/64 for rising curves): keep the through-point spacing
-    /// below the smallest radius of curvature.
+    /// curves: one query of the plan view when `p` is beside the wall, and
+    /// otherwise (above or below the wall's edge) a search of the curve's
+    /// segments, pruned by their bounding spheres. In both cases a minimum
+    /// can only be missed where the curve bends on the scale of a sample
+    /// interval (1/16 of a segment; 1/64 in the edge search): keep the
+    /// through-point spacing below the smallest radius of curvature.
     #[must_use]
     pub fn closest_point(&self, p: Vec3, seed_t: Option<f32>) -> ClosestPoint {
         if !p.is_finite() {
@@ -597,7 +710,11 @@ impl GuideCurve {
                 distance: point.distance(p),
             };
         }
-        self.closest_point_sloped(p, seed_t)
+        match &self.sloped {
+            Some(sloped) => self.closest_point_sloped(sloped, p, seed_t).0,
+            // Unreachable: every non-level guide has its plan view.
+            None => self.spline.closest_point(p, seed_t),
+        }
     }
 
     /// The wall point above curve point `c` that is closest to `p` (the
@@ -609,18 +726,57 @@ impl GuideCurve {
         (q, q.distance_squared(p))
     }
 
-    /// Global closest point of a rising or falling wall.
+    /// Global closest point of a rising or falling wall, and the closest
+    /// point of its plan view to the plan position of `p`.
     ///
-    /// The distance from `p` to the wall's vertical line over `C(t)` is a
-    /// C¹ function of `t` with derivative `(q(t) − p) · C'(t) / d`, where
-    /// `q(t)` is the closest point of that line. All samples of the curve
-    /// are scanned; every sample interval that could hold a point closer
-    /// than the best found so far (the distance cannot change faster than
-    /// the arc length) is searched: a sign change of the derivative is
-    /// bracketed and bisected, and an interval without one is quartered
-    /// first, so that a minimum is only missed if the derivative changes
-    /// sign twice within 1/64 of a segment.
-    fn closest_point_sloped(&self, p: Vec3, seed_t: Option<f32>) -> ClosestPoint {
+    /// The wall is a strip of the vertical cylinder over the plan view, so
+    /// the horizontal distance to the plan view is a lower bound of the
+    /// distance to the wall. If `p` is level with the wall above the plan
+    /// view's closest point (beside the wall, the usual case) that bound is
+    /// attained there, and one plan-view query answers the question.
+    ///
+    /// Otherwise (`p` above or below the wall's edge) the curve is searched:
+    /// the distance from `p` to the wall's vertical line over `C(t)` is a C¹
+    /// function of `t` whose derivative has the sign of `(q(t) − p) · C'(t)`,
+    /// `q(t)` being the closest point of that line. Segments whose bounding
+    /// sphere cannot hold a closer point than the best so far are skipped;
+    /// in the others every sample interval that could hold one (the distance
+    /// cannot change faster than the arc length) is searched: a sign change
+    /// of the derivative is bracketed and bisected, and an interval without
+    /// one is quartered first, so that a minimum is only missed if the
+    /// derivative changes sign twice within 1/64 of a segment.
+    fn closest_point_sloped(
+        &self,
+        sloped: &Sloped,
+        p: Vec3,
+        seed_t: Option<f32>,
+    ) -> (ClosestPoint, ClosestPoint) {
+        let spline = &self.spline;
+        let plan = sloped.flat.closest_point(Vec3::new(p.x, p.y, 0.0), seed_t);
+        let c = spline.point(plan.t);
+        let (q, d2) = self.wall_point(c, p);
+        // (squared distance, parameter, wall point)
+        let mut best: Best = (d2, plan.t, q);
+        let beside = p.z >= c.z && p.z <= c.z + self.height;
+        if !beside {
+            for (i, (center, radius)) in sloped.bounds.iter().enumerate() {
+                let floor = self.wall_point(*center, p).1.sqrt() - radius;
+                if floor < best.0.sqrt() - 1.0e-7 {
+                    self.search_segment(i, p, &mut best);
+                }
+            }
+        }
+        let cp = ClosestPoint {
+            t: best.1,
+            point: best.2,
+            distance: best.0.sqrt(),
+        };
+        (cp, plan)
+    }
+
+    /// Searches segment `i` of the curve for a wall point closer to `p`
+    /// than `best` (see [`closest_point_sloped`](Self::closest_point_sloped)).
+    fn search_segment(&self, i: usize, p: Vec3, best: &mut Best) {
         let spline = &self.spline;
         let samples = spline.samples();
         let k = SAMPLES_PER_SEGMENT;
@@ -632,8 +788,6 @@ impl GuideCurve {
             let (q, d2) = self.wall_point(c, p);
             (q, d2, (q - p).dot(d1))
         };
-        // (squared distance, parameter, wall point)
-        type Best = (f32, f32, Vec3);
         let consider = |best: &mut Best, t: f32, q: Vec3, d2: f32| {
             if d2 < best.0 {
                 *best = (d2, t, q);
@@ -655,64 +809,50 @@ impl GuideCurve {
                 }
             }
         };
-        let mut best: Best = (f32::INFINITY, 0.0, samples[0].point);
-        if let Some(seed) = seed_t.filter(|t| t.is_finite()) {
-            let t = seed.clamp(0.0, spline.max_t());
-            let (q, d2, _) = at(t);
-            consider(&mut best, t, q, d2);
-        }
-        for i in 0..spline.segment_count() {
-            // Arc length of one sample interval of this segment, at most:
-            // the speed is within h² / 8 times the third derivative of its
-            // linear interpolant, and the third derivative is constant on a
-            // segment.
-            let third = (spline.eval(i, 1.0).2 - spline.eval(i, 0.0).2).length();
-            let slack = step * step * 0.125 * third;
-            let first = &samples[i * k];
-            let (q, mut d2_0) = self.wall_point(first.point, p);
-            let mut g0 = (q - p).dot(first.tangent);
-            let mut speed0 = first.tangent.length();
-            consider(&mut best, i as f32, q, d2_0);
-            for j in 1..=k {
-                let sample = &samples[i * k + j];
-                let t1 = i as f32 + j as f32 * step;
-                let (q1, d2_1) = self.wall_point(sample.point, p);
-                let g1 = (q1 - p).dot(sample.tangent);
-                let speed1 = sample.tangent.length();
-                consider(&mut best, t1, q1, d2_1);
-                let arc = step * (speed0.max(speed1) + slack);
-                // Smallest distance the interval can hold.
-                let floor = 0.5 * (d2_0.sqrt() + d2_1.sqrt() - arc);
-                if floor < best.0.sqrt() - 1.0e-7 {
-                    let t0 = t1 - step;
-                    if g0 < 0.0 && g1 > 0.0 {
-                        polish(&mut best, t0, t1);
-                    } else {
-                        // Quarter the interval and bracket what shows up.
-                        let mut left = (t0, g0);
-                        for quarter in 1..=4 {
-                            let (t, g) = if quarter == 4 {
-                                (t1, g1)
-                            } else {
-                                let t = t0 + 0.25 * step * quarter as f32;
-                                let (q, d2, g) = at(t);
-                                consider(&mut best, t, q, d2);
-                                (t, g)
-                            };
-                            if left.1 < 0.0 && g > 0.0 {
-                                polish(&mut best, left.0, t);
-                            }
-                            left = (t, g);
+        // Arc length of one sample interval of this segment, at most: the
+        // speed is within h² / 8 times the third derivative of its linear
+        // interpolant, and the third derivative is constant on a segment.
+        let third = (spline.eval(i, 1.0).2 - spline.eval(i, 0.0).2).length();
+        let slack = step * step * 0.125 * third;
+        let first = &samples[i * k];
+        let (q, mut d2_0) = self.wall_point(first.point, p);
+        let mut g0 = (q - p).dot(first.tangent);
+        let mut speed0 = first.tangent.length();
+        consider(best, i as f32, q, d2_0);
+        for j in 1..=k {
+            let sample = &samples[i * k + j];
+            let t1 = i as f32 + j as f32 * step;
+            let (q1, d2_1) = self.wall_point(sample.point, p);
+            let g1 = (q1 - p).dot(sample.tangent);
+            let speed1 = sample.tangent.length();
+            consider(best, t1, q1, d2_1);
+            let arc = step * (speed0.max(speed1) + slack);
+            // Smallest distance the interval can hold.
+            let floor = 0.5 * (d2_0.sqrt() + d2_1.sqrt() - arc);
+            if floor < best.0.sqrt() - 1.0e-7 {
+                let t0 = t1 - step;
+                if g0 < 0.0 && g1 > 0.0 {
+                    polish(best, t0, t1);
+                } else {
+                    // Quarter the interval and bracket what shows up.
+                    let mut left = (t0, g0);
+                    for quarter in 1..=4 {
+                        let (t, g) = if quarter == 4 {
+                            (t1, g1)
+                        } else {
+                            let t = t0 + 0.25 * step * quarter as f32;
+                            let (q, d2, g) = at(t);
+                            consider(best, t, q, d2);
+                            (t, g)
+                        };
+                        if left.1 < 0.0 && g > 0.0 {
+                            polish(best, left.0, t);
                         }
+                        left = (t, g);
                     }
                 }
-                (d2_0, g0, speed0) = (d2_1, g1, speed1);
             }
-        }
-        ClosestPoint {
-            t: best.1,
-            point: best.2,
-            distance: best.0.sqrt(),
+            (d2_0, g0, speed0) = (d2_1, g1, speed1);
         }
     }
 
@@ -762,11 +902,12 @@ impl GuideCurve {
     /// and less progress along a concave wall. A sphere that is clearly
     /// leaving (separating faster than 1e-5 of its speed) is always free.
     ///
-    /// Guides without reach (curves whose plan view touches or crosses
-    /// itself or has a vertical stretch) only have the first bound: next to
-    /// such a wall a sliding sphere gets a contact about every 10 µm of
-    /// travel, so keep them out of rolling paths or split them into simple
-    /// pieces. Never allocates.
+    /// Level guides without reach (curves that touch or cross themselves)
+    /// only have the first bound: next to such a wall a sliding sphere gets
+    /// a contact about every 10 µm of travel, so keep them out of rolling
+    /// paths or split them into simple pieces. (Rising or falling guides
+    /// always have reach: [`GuideCurve::new`] rejects the others.) Never
+    /// allocates.
     #[must_use]
     pub fn cast_sphere(
         &self,
@@ -800,9 +941,17 @@ impl GuideCurve {
         let mut time = 0.0f32;
         let mut seed = seed_t;
         let mut flat_seed = seed_t;
+        let plan_speed = Vec3::new(velocity.x, velocity.y, 0.0).length();
         for step in 0..GUIDE_CAST_STEPS {
             let p = center + velocity * time;
-            let cp = self.closest_point(p, seed);
+            let (cp, plan) = match &self.sloped {
+                None => (self.closest_point(p, seed), None),
+                Some(sloped) => {
+                    let (cp, plan) = self.closest_point_sloped(sloped, p, flat_seed);
+                    flat_seed = Some(plan.t);
+                    (cp, Some(plan))
+                }
+            };
             seed = Some(cp.t);
             let gap = cp.distance - radius;
             let normal = self.normal_toward(&cp, p);
@@ -840,22 +989,26 @@ impl GuideCurve {
             // least the horizontal gap to that cylinder, whose reach is the
             // plan view's: the bound is applied to the horizontal gap (which
             // equals the wall gap whenever the ball is beside the wall).
-            let beside = match &self.flat {
-                None => Some((cp.distance, rate, drop)),
-                Some(flat) => {
+            let beside = match plan {
+                None => Some((cp.distance, rate, drop, speed)),
+                Some(fc) => {
                     let q = Vec3::new(p.x, p.y, 0.0);
-                    let fc = flat.closest_point(q, flat_seed);
-                    flat_seed = Some(fc.t);
                     let flat_drop = fc.distance - radius - floor;
                     (fc.distance > 1.0e-9 && flat_drop > 0.0).then(|| {
                         let flat_rate = (q - fc.point).dot(velocity) / fc.distance;
-                        (fc.distance, flat_rate, flat_drop)
+                        // Only the horizontal motion changes this gap.
+                        (fc.distance, flat_rate, flat_drop, plan_speed)
                     })
                 }
             };
-            if let Some((distance, rate, drop)) = beside
+            if let Some((distance, rate, drop, speed)) = beside
                 && distance < 0.9 * self.reach
             {
+                if speed <= 0.0 {
+                    // Moving straight up or down beside a sloped wall: the
+                    // horizontal gap does not change at all.
+                    return (None, step + 1);
+                }
                 let cap = 0.5 * (distance + self.reach);
                 let k = speed * speed / (self.reach - cap);
                 // Positive root of drop + rate τ - ½ K τ² = 0.

@@ -66,7 +66,9 @@ fn per_tick_queries_do_not_allocate() {
     // --- Setup (allocates). ---
     let pts: Vec<Vec3> = (0..40)
         .map(|i| {
-            let a = i as f32 * 0.2;
+            // Less than one turn: a rising guide may not come back over
+            // itself in plan (Subphase 2.2 fix round 3).
+            let a = i as f32 * 0.15;
             v(0.15 * libm::cosf(a), 0.15 * libm::sinf(a), 0.004 * i as f32)
         })
         .collect();

@@ -96,21 +96,24 @@ fn heavy_fn(locals: u64, depth: u64, br_tables: u64, targets: u64, ops: u64) -> 
     s
 }
 
-/// The largest `p` in `1..=hi` for which `build(p)` fits the binary cap.
+/// The largest `p` in `hi / 4..=hi` for which `build(p)` fits the binary
+/// cap (`build` must accept that whole range).
 fn fit(hi: u64, build: impl Fn(u64) -> Vec<u8>) -> (u64, Vec<u8>) {
     let full = build(hi);
     if full.len() <= MAX_MODULE_BYTES {
         return (hi, full);
     }
     // Sizes are close to linear in `p`: extrapolate, then step down.
-    let small = build(1).len() as f64;
-    let per = (full.len() as f64 - small) / (hi - 1) as f64;
-    let mut p = (((MAX_MODULE_BYTES as f64 - small) / per) as u64 + 1).min(hi);
+    let lo = hi / 4;
+    let small = build(lo).len() as f64;
+    let per = (full.len() as f64 - small) / (hi - lo) as f64;
+    let mut p = ((lo as f64 + (MAX_MODULE_BYTES as f64 - small) / per) as u64 + 1).min(hi);
     loop {
         let b = build(p);
         if b.len() <= MAX_MODULE_BYTES {
             return (p, b);
         }
+        assert!(p > hi / 4, "no size in range fits");
         p -= (p / 200).max(1);
     }
 }
@@ -167,12 +170,23 @@ fn worst_cases() -> Vec<(String, Vec<u8>)> {
     ));
     // As many functions at max locals as the module-wide locals cap allows,
     // each at max nesting and br_table targets, operators filling the rest.
+    // The byte cap allows fewer of these than the locals cap would.
     let heavy = MAX_TOTAL_LOCALS / l;
-    let (ops, bin) = fit(opf.min(MAX_OPERATORS / heavy), |ops| {
-        module(&many(1, &heavy_fn(l, d, tables, MAX_BR_TABLE_TARGETS, ops)).repeat(heavy as usize))
+    let ops = opf.min(MAX_OPERATORS / heavy);
+    let (n, bin) = fit(heavy, |n| {
+        module(&heavy_fn(l, d, tables, MAX_BR_TABLE_TARGETS, ops).repeat(n as usize))
     });
     out.push((
-        format!("{heavy} fns: locals x nesting x br_table, {ops} ops each"),
+        format!("{n} fns: locals x nesting x br_table, {ops} ops each"),
+        bin,
+    ));
+    // As many functions at max locals as the locals cap allows (no
+    // br_tables, so they fit), operators filling the rest.
+    let (ops, bin) = fit(opf.min(MAX_OPERATORS / heavy), |ops| {
+        module(&heavy_fn(l, d, 0, 0, ops).repeat(heavy as usize))
+    });
+    out.push((
+        format!("{heavy} fns: locals x nesting, {ops} ops each"),
         bin,
     ));
     // Max functions, all at max nesting, operators shared out to the

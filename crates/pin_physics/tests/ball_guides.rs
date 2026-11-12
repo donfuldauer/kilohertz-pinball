@@ -1,6 +1,7 @@
-//! Rising and falling guide walls (Subphase 2.2 fix round 2): the wall's
-//! closest point is global, and balls never pass through such walls.
-//! Ground truth is a brute-force distance to the wall.
+//! Rising and falling guide walls (Subphase 2.2 fix rounds 2 and 3): which
+//! shapes are accepted, the wall's closest point is global, balls never pass
+//! through such walls and slide along them at full speed. Ground truth is a
+//! brute-force distance to the wall.
 
 #[path = "ball_util.rs"]
 mod util;
@@ -34,20 +35,12 @@ impl Lcg {
 
 type Shape = (&'static str, fn(f32) -> Vec3);
 
-/// Curves parametrised over s in [0, 1].
+/// Accepted curves, parametrised over s in [0, 1].
 fn shapes() -> Vec<Shape> {
     vec![
-        ("arc r=15mm rise 1:1", |s| {
-            let a = s * 5.0;
-            v(
-                0.015 * libm::sinf(a),
-                0.015 - 0.015 * libm::cosf(a),
-                0.075 * s,
-            )
-        }),
         ("arc r=30mm rise 1:1", |s| {
-            let a = s * 5.0;
-            v(0.03 * libm::sinf(a), 0.03 - 0.03 * libm::cosf(a), 0.15 * s)
+            let a = s * 4.0;
+            v(0.03 * libm::sinf(a), 0.03 - 0.03 * libm::cosf(a), 0.12 * s)
         }),
         ("arc r=30mm rise 3:1", |s| {
             let a = s * 4.0;
@@ -57,20 +50,35 @@ fn shapes() -> Vec<Shape> {
             let a = s * 3.0;
             v(0.05 * libm::sinf(a), 0.05 - 0.05 * libm::cosf(a), 0.15 * s)
         }),
-        ("arc r=50mm rise 3:1", |s| {
-            let a = s * 3.0;
-            v(0.05 * libm::sinf(a), 0.05 - 0.05 * libm::cosf(a), 0.45 * s)
-        }),
+        ("arc r=50mm rise 3:1", arc_50mm_3_to_1),
         ("S-curve rising", |s| {
             v(0.6 * s, 0.06 * libm::sinf(s * 12.0), 0.2 * s)
         }),
-        ("S-curve falling tight", |s| {
-            v(
-                0.3 * s,
-                0.03 * libm::sinf(s * 20.0),
-                -0.15 * s + 0.02 * libm::sinf(s * 30.0),
-            )
+        ("S-curve falling", falling_s),
+        ("arc r=400mm rise 150mm", |s| {
+            let a = s * 2.0;
+            v(0.4 * libm::sinf(a), 0.4 - 0.4 * libm::cosf(a), 0.15 * s)
         }),
+    ]
+}
+
+fn arc_50mm_3_to_1(s: f32) -> Vec3 {
+    let a = s * 3.0;
+    v(0.05 * libm::sinf(a), 0.05 - 0.05 * libm::cosf(a), 0.45 * s)
+}
+
+/// Bends of 42 mm radius, falling 150 mm with a ripple in the fall.
+fn falling_s(s: f32) -> Vec3 {
+    v(
+        0.5 * s,
+        0.03 * libm::sinf(s * 14.0),
+        -0.15 * s + 0.02 * libm::sinf(s * 30.0),
+    )
+}
+
+/// Curves a rising or falling guide may not follow.
+fn rejected_shapes() -> Vec<Shape> {
+    vec![
         ("helix 1.5 turns", |s| {
             let a = s * 9.4;
             v(0.08 * libm::sinf(a), 0.08 - 0.08 * libm::cosf(a), 0.12 * s)
@@ -79,16 +87,125 @@ fn shapes() -> Vec<Shape> {
             let a = s * 15.7;
             v(0.06 * libm::sinf(a), 0.06 - 0.06 * libm::cosf(a), -0.5 * s)
         }),
-        ("arc r=400mm rise 150mm", |s| {
-            let a = s * 2.0;
-            v(0.4 * libm::sinf(a), 0.4 - 0.4 * libm::cosf(a), 0.15 * s)
+        ("spiral of 1.1 turns (ends overlap in plan)", |s| {
+            let a = s * 6.9;
+            v(0.1 * libm::sinf(a), 0.1 - 0.1 * libm::cosf(a), 0.1 * s)
+        }),
+        ("hairpin 30 mm wide", |s| {
+            // Out along +x, round a 15 mm bend, back 30 mm beside itself.
+            let a = (s * 3.0 - 1.0).clamp(0.0, 1.0) * std::f32::consts::PI;
+            let x = if s < 1.0 / 3.0 {
+                0.3 * s
+            } else if s < 2.0 / 3.0 {
+                0.1 + 0.015 * libm::sinf(a)
+            } else {
+                0.1 - 0.3 * (s - 2.0 / 3.0)
+            };
+            let y = if s < 1.0 / 3.0 {
+                0.0
+            } else if s < 2.0 / 3.0 {
+                0.015 - 0.015 * libm::cosf(a)
+            } else {
+                0.03
+            };
+            v(x, y, 0.1 * s)
+        }),
+        ("figure of eight", |s| {
+            let a = s * 5.5;
+            v(0.2 * libm::sinf(a), 0.1 * libm::sinf(2.0 * a), 0.05 * s)
+        }),
+        ("arc r=30mm of 286 degrees (ends 36 mm apart)", |s| {
+            let a = s * 5.0;
+            v(0.03 * libm::sinf(a), 0.03 - 0.03 * libm::cosf(a), 0.15 * s)
+        }),
+        ("arc r=15mm rise 1:1", |s| {
+            let a = s * 5.0;
+            v(
+                0.015 * libm::sinf(a),
+                0.015 - 0.015 * libm::cosf(a),
+                0.075 * s,
+            )
+        }),
+        ("S-curve falling tight (7.5 mm bends)", |s| {
+            v(
+                0.3 * s,
+                0.03 * libm::sinf(s * 20.0),
+                -0.15 * s + 0.02 * libm::sinf(s * 30.0),
+            )
+        }),
+        ("vertical run", |s| {
+            if s < 0.5 {
+                v(0.4 * s, 0.0, 0.0)
+            } else {
+                v(0.2, 0.0, 0.2 * (s - 0.5))
+            }
         }),
     ]
 }
 
+fn points(f: fn(f32) -> Vec3) -> Vec<Vec3> {
+    (0..=60).map(|i| f(i as f32 / 60.0)).collect()
+}
+
+/// The acceptance rule of rising and falling guides: the plan view must
+/// have a reach of at least 20 mm (no bend tighter than about 22 mm, no
+/// stretch coming back onto or close to another). Level guides are not
+/// affected, and the same shapes are fine as wireforms.
+#[test]
+fn sloped_guides_with_unusable_plan_views_are_rejected() {
+    use pin_physics::world::{SplineError, Wireform};
+    for (label, f) in rejected_shapes() {
+        let pts = points(f);
+        let mut distinct = pts.clone();
+        distinct.dedup();
+        let spline = CubicSpline::interpolate(&distinct).unwrap();
+        assert_eq!(
+            GuideCurve::new(spline.clone(), WALL_HEIGHT).map(drop),
+            Err(SplineError::SlopedGuidePlanView),
+            "{label}"
+        );
+        // The message tells the author what to do.
+        let message = SplineError::SlopedGuidePlanView.to_string();
+        assert!(message.contains("wireform") && message.contains("plan view"));
+        // As a wireform the curve is welcome.
+        let rolls = vec![0.0; distinct.len()];
+        if label != "vertical run" {
+            Wireform::new(spline, &rolls, 0.02, Vec3::Z).unwrap();
+        }
+        // And flattened it is an ordinary level guide (the tight ones and
+        // the self-touching ones included, as before).
+        let level: Vec<Vec3> = distinct.iter().map(|p| v(p.x, p.y, 0.0)).collect();
+        let mut level_distinct = level.clone();
+        level_distinct.dedup();
+        if let Ok(spline) = CubicSpline::interpolate(&level_distinct) {
+            assert!(
+                GuideCurve::new(spline, WALL_HEIGHT).unwrap().is_level(),
+                "{label}"
+            );
+        }
+    }
+    for (label, f) in shapes() {
+        let g = GuideCurve::new(CubicSpline::interpolate(&points(f)).unwrap(), WALL_HEIGHT);
+        assert!(g.is_ok(), "{label}");
+    }
+    // A closed loop that rises and comes back down is a simple plan view.
+    let ring: Vec<Vec3> = (0..=48)
+        .map(|i| {
+            let a = std::f32::consts::TAU * (i % 48) as f32 / 48.0;
+            v(
+                0.1 * libm::cosf(a),
+                0.1 * libm::sinf(a),
+                0.02 * libm::sinf(a),
+            )
+        })
+        .collect();
+    let closed = CubicSpline::interpolate_closed(&ring).unwrap();
+    let g = GuideCurve::new(closed, WALL_HEIGHT).unwrap();
+    assert!(!g.is_level());
+}
+
 fn guide(f: fn(f32) -> Vec3) -> GuideCurve {
-    let pts: Vec<Vec3> = (0..=60).map(|i| f(i as f32 / 60.0)).collect();
-    let g = GuideCurve::new(CubicSpline::interpolate(&pts).unwrap(), WALL_HEIGHT).unwrap();
+    let g = GuideCurve::new(CubicSpline::interpolate(&points(f)).unwrap(), WALL_HEIGHT).unwrap();
     assert!(!g.is_level());
     g
 }
@@ -280,5 +397,77 @@ fn balls_never_pass_through_sloped_guide_walls() {
             }
         }
         assert!(worst_sink <= 1.0e-4, "{label}: {worst_sink}");
+    }
+}
+
+/// A ball sliding along an accepted rising or falling wall moves the
+/// distance its velocity says: at least 95 % of it on at least 99 % of the
+/// ticks (frictionless wall, no gravity), on the steep 50 mm arc and on the
+/// falling S, from either side, for three ball sizes.
+#[test]
+fn balls_slide_along_sloped_guides_at_full_speed() {
+    let world = empty_world();
+    for (label, f) in [
+        ("arc r=50mm rise 3:1", arc_50mm_3_to_1 as fn(f32) -> Vec3),
+        ("S-curve falling", falling_s),
+    ] {
+        let g = guide(f);
+        let dense = dense(&g);
+        let guides = [g];
+        let geo = Geometry {
+            world: &world,
+            guides: &guides,
+            wireforms: &[],
+        };
+        let (mut ticks, mut slow) = (0u32, 0u32);
+        for profile in [STEEL, MINI, JUMBO] {
+            let r = radius(profile);
+            for side in [-1.0f32, 1.0] {
+                for speed in [1.0f32, 4.0, 8.0] {
+                    let mut cfg = config();
+                    cfg.gravity = Vec3::ZERO;
+                    for p in &mut cfg.pairs {
+                        p.friction = 0.0;
+                    }
+                    let mut s = pin_physics::ball::BallSolver::new(cfg, &profiles());
+                    // Beside the wall near its start, heading along it and a
+                    // little into it, following its slope.
+                    let (c, c2) = (f(0.1), f(0.11));
+                    let along = (c2 - c).normalize();
+                    let nrm = Vec3::Z.cross(v(along.x, along.y, 0.0).normalize());
+                    let start = c + nrm * side * (r + 2.0e-4) + Vec3::Z * 0.2;
+                    let vel = (along - nrm * side * 0.02).normalize() * speed;
+                    let h = s.add_ball(ball_at(profile, start, vel)).unwrap();
+                    let mut ev = BallEvents::new();
+                    let mut prev = start;
+                    for tick in 0..2000 {
+                        s.step(&geo, DT, &mut ev);
+                        let b = *s.ball(h).unwrap();
+                        let (d, i) = brute_distance(&guides[0], &dense, b.position);
+                        let what =
+                            format!("{label} {profile:?} side {side} speed {speed} tick {tick}");
+                        assert!(r - d <= 1.0e-4, "{what}: inside the wall");
+                        // Stop at the far end of the wall, or once the ball
+                        // has left it for good.
+                        if i + 600 > dense.len() || d > 0.05 {
+                            break;
+                        }
+                        ticks += 1;
+                        let moved = b.position.distance(prev);
+                        // (A chord of one tick is within 1 % of its arc.)
+                        if moved < 0.95 * b.velocity.length() * DT {
+                            slow += 1;
+                        }
+                        assert!(b.velocity.length() > 0.9 * speed, "{what}: lost speed");
+                        prev = b.position;
+                    }
+                }
+            }
+        }
+        assert!(ticks > 1000, "{label}: only {ticks} ticks");
+        assert!(
+            slow * 100 <= ticks,
+            "{label}: {slow} of {ticks} ticks below 95 % of v·dt"
+        );
     }
 }
