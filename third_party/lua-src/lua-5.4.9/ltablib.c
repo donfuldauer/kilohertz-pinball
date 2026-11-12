@@ -82,7 +82,7 @@ static int tinsert (lua_State *L) {
       /* check whether 'pos' is in [1, e] */
       luaL_argcheck(L, (lua_Unsigned)pos - 1u < (lua_Unsigned)e, 2,
                        "position out of bounds");
-      lua_khzcharge(L, (e - pos) * KHZ_ELEM_COST);  /* KHZ */
+      lua_khzcharge(L, khz_elems(e - pos));  /* KHZ */
       for (i = e; i > pos; i--) {  /* move up elements */
         lua_geti(L, 1, i - 1);
         lua_seti(L, 1, i);  /* t[i] = t[i - 1] */
@@ -105,7 +105,7 @@ static int tremove (lua_State *L) {
     /* check whether 'pos' is in [1, size + 1] */
     luaL_argcheck(L, (lua_Unsigned)pos - 1u <= (lua_Unsigned)size, 2,
                      "position out of bounds");
-  if (pos < size) lua_khzcharge(L, (size - pos) * KHZ_ELEM_COST);  /* KHZ */
+  if (pos < size) lua_khzcharge(L, khz_elems((lua_Integer)((lua_Unsigned)size - (lua_Unsigned)pos)));  /* KHZ */
   lua_geti(L, 1, pos);  /* result = t[pos] */
   for ( ; pos < size; pos++) {
     lua_geti(L, 1, pos + 1);
@@ -368,7 +368,7 @@ static void auxsort (lua_State *L, IdxT lo, IdxT up,
   while (lo < up) {  /* loop for tail recursion */
     IdxT p;  /* Pivot index */
     IdxT n;  /* to be used later */
-    lua_khzcharge(L, ((lua_Integer)(up - lo) + 1) * KHZ_ELEM_COST);  /* KHZ: one partition pass */
+    lua_khzcharge(L, khz_elems((lua_Integer)(up - lo) + 1));  /* KHZ: one partition pass */
     /* sort elements 'lo', 'p', and 'up' */
     lua_geti(L, 1, lo);
     lua_geti(L, 1, up);

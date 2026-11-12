@@ -472,7 +472,10 @@ LUA_API lua_Integer lua_khzspend (lua_State *L, lua_Integer n) {
 
 
 LUA_API void lua_khzcharge (lua_State *L, lua_Integer n) {
-  if (n > 0 && lua_khzspend(L, n) < 0) {
+  /* Raise only when the budget runs out: once it is negative the count hook
+     fails every instruction, and raising again from C (e.g. while a message
+     handler builds a traceback) would only nest errors. */
+  if (n > 0 && G(L)->khzbudget >= 0 && lua_khzspend(L, n) < 0) {
     if (L->hook != NULL && (L->hookmask & LUA_MASKCOUNT))
       lua_sethook(L, L->hook, L->hookmask, 1);  /* fail fast from now on */
     luaG_runerror(L, "instruction budget exceeded");
