@@ -562,3 +562,7 @@ Implements "Orchestrator — 4.2 re-review round 3". All charging is central (KH
 - **Known limitation (from 2.1's cast skin).** `StaticWorld::cast_sphere` reports a hit within a 1 µm touch skin, so where two cuboids meet flush the next cuboid's edge is hit with a normal tilted by up to √(2 µm / r) (0.7° for a 27 mm ball): a seam deflects a rolling ball upward by up to 1.2 % of its speed (above ~4 m/s the landing is reported as a ~0.05 m/s impact). A `TriMesh` floor has no such edges (2.1 flags coplanar interior edges). Authoring guidance: one collider or a mesh for each rolling surface.
 - **Observed physics worth knowing.** With wall friction, a fast rolling ball (8 m/s, 150 mm arc) climbs the guide wall: its spin cannot follow the turn, the slip at the wall has a vertical component. This is emergent, not special-cased; guide friction (steel–steel 0.15) is the tunable.
 **Performance:** 4 balls in a 300-collider world, release: about 5 µs per `step` (target ≤ 100 µs).
+
+## Orchestrator — Wave 3 pins moved to the root (4.1)
+
+`gltf =1.4.1` in the root `[workspace.dependencies]` now has default features off (`names`, `extras`, `utils` only): the default `import` feature reads the real filesystem, which a bundle loader must never do (D25). `image =0.25.6` (`png`, `jpeg`, default features off) and `serde_json =1.0.151` are new root pins for 4.1. As with the other Wave 3 pins, `versions.toml` is unchanged (spikes lockfile check).
