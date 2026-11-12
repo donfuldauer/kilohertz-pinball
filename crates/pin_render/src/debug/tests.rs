@@ -163,6 +163,19 @@ fn axes_cross_identity_and_rotated() {
 }
 
 #[test]
+fn margin_camera_keeps_bounds_inside() {
+    let c = Camera::ortho_top_down_with_margin([0.0, 0.0], [1.0, 2.0], 0.1);
+    assert_eq!(c, Camera::ortho_top_down([-0.1, -0.1], [1.1, 2.1]));
+    let lo = c.project([0.0, 0.0, 0.0]);
+    let hi = c.project([1.0, 2.0, 0.0]);
+    assert!(lo[0] > -1.0 && lo[1] > -1.0 && hi[0] < 1.0 && hi[1] < 1.0);
+    assert_eq!(
+        Camera::ortho_top_down_with_margin([0.0, 0.0], [1.0, 1.0], f32::NAN),
+        Camera::ortho_top_down([0.0, 0.0], [1.0, 1.0])
+    );
+}
+
+#[test]
 fn ortho_camera_maps_corners() {
     let c = Camera::ortho_top_down([0.0, 0.0], [1.0, 1.0]);
     assert_eq!(c.project([0.0, 0.0, 5.0]), [-1.0, -1.0, 0.5, 1.0]);

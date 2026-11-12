@@ -99,6 +99,15 @@ pub enum SurfaceStatus {
     Skipped,
 }
 
+/// `true` when some surface with role `Playfield` (roles in source order,
+/// paired with `statuses`) was [`SurfaceStatus::Presented`].
+pub fn paced_by(roles: impl IntoIterator<Item = SurfaceRole>, statuses: &[SurfaceStatus]) -> bool {
+    roles
+        .into_iter()
+        .zip(statuses)
+        .any(|(r, s)| r == SurfaceRole::Playfield && *s == SurfaceStatus::Presented)
+}
+
 /// Placeholder background of each role until real content exists (linear
 /// RGBA): the playfield is black, backglass dark blue, score dark amber.
 pub const fn role_clear_color(role: SurfaceRole) -> [f32; 4] {
@@ -303,12 +312,13 @@ impl SurfaceSet {
         self.slots.iter().map(|s| (s.window, s.role, s.choice))
     }
 
-    /// `true` when a playfield surface paces the frame (its `Fifo` acquire
-    /// blocks until the next refresh), so the render loop needs no own sleep.
-    pub fn paces_frame(&self) -> bool {
-        self.slots
-            .iter()
-            .any(|s| s.role == SurfaceRole::Playfield && !s.minimized)
+    /// `true` when `statuses` (the result of the last [`render`](Self::render))
+    /// shows a presented playfield surface: its blocking `Fifo` acquire paced
+    /// the frame, so the render loop needs no own sleep. When the playfield
+    /// could not present (occluded, timeout, outdated, hidden, zero-sized)
+    /// the caller must sleep instead of spinning.
+    pub fn frame_paced(&self, statuses: &[SurfaceStatus]) -> bool {
+        paced_by(self.slots.iter().map(|s| s.role), statuses)
     }
 
     /// Frames handed to presenter threads and presented by them, in total.

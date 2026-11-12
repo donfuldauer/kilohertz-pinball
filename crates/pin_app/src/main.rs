@@ -126,7 +126,7 @@ fn run_app(args: &[String]) -> Result<(), String> {
     // thread, which owns the device (PLAN §2.2).
     let driver = platform.video().current_video_driver();
     let gpu = if NATIVE_DRIVERS.contains(&driver) {
-        let options = GpuOptions::from_env();
+        let options = GpuOptions::for_app();
         let instance = create_instance(options.backends);
         let mut surfaces = Vec::with_capacity(windows.len());
         for w in &windows {

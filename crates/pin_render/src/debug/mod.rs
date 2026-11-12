@@ -260,6 +260,11 @@ impl Camera {
     ///
     /// A degenerate range (equal bounds) is widened to 1 m to keep the matrix
     /// finite.
+    ///
+    /// Lines lying exactly on the left/top bound can fall outside the image
+    /// (rasterisation tie-break on the pixel edge); use
+    /// [`ortho_top_down_with_margin`](Self::ortho_top_down_with_margin) to keep
+    /// geometry on the bounds visible.
     pub fn ortho_top_down(min_xy: [f32; 2], max_xy: [f32; 2]) -> Camera {
         let span = |lo: f32, hi: f32| {
             let d = hi - lo;
@@ -279,6 +284,14 @@ impl Camera {
                 [tx, ty, 0.5, 1.0],
             ],
         }
+    }
+
+    /// [`ortho_top_down`](Self::ortho_top_down) over the rectangle grown by
+    /// `margin` on every side (same units as the bounds), so lines exactly on
+    /// the bounds stay inside the viewport.
+    pub fn ortho_top_down_with_margin(min_xy: [f32; 2], max_xy: [f32; 2], margin: f32) -> Camera {
+        let m = if margin.is_finite() { margin.abs() } else { 0.0 };
+        Camera::ortho_top_down([min_xy[0] - m, min_xy[1] - m], [max_xy[0] + m, max_xy[1] + m])
     }
 
     /// `view_proj · [p, 1]` (clip coordinates).

@@ -305,3 +305,21 @@ fn default_radius_uses_builtin_profiles() {
     assert_eq!(default_ball_radius(pin_core::ProfileId(999)), 0.0135);
     assert!(default_ball_radius(pin_core::ProfileId(1)) > 0.0);
 }
+
+#[test]
+fn hybrid_timer_honours_stop_during_a_far_deadline() {
+    // The stop flag turns true after the first check; with a deadline 1 h
+    // away the wait must return after at most one 50 ms slice (counted in
+    // stop() calls, no wall-clock assertion).
+    let calls = core::cell::Cell::new(0u32);
+    let stop = || {
+        calls.set(calls.get() + 1);
+        calls.get() > 1
+    };
+    let now = threads::monotonic_now_ns;
+    let t = HybridTimer::default();
+    let end = t.wait_until(now() + 3_600_000_000_000, now, stop);
+    assert_eq!(calls.get(), 2);
+    assert!(end < u64::MAX);
+    assert_eq!(MAX_SLEEP_SLICE_NS, 50_000_000);
+}

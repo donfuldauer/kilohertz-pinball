@@ -67,3 +67,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3 | 3.3 | Reviewer | Fable 5.2 | 2 | **pass** | gates 1–8 pass; coverage 97.22 %; render 4.6 µs; 54 valid decodes bit-identical to round 1 | B1, B2, N1, N4 verified; lewton patch audited (no unbounded allocation left); N10 lying-granule reservation (address space only), N11–N13 → HUMAN_QUEUE |
 | 3 | 3.2 | Reviewer | Fable 5.2 | — | — | — | (see fix 2 above; re-review pending) |
 | 3 | 1.4 | Reviewer | Fable 5.2 | 1 | **fail** | gates 1–3, 5–7 pass; drift 0.0025 %; visual checklist pass | B1 pin_render standalone coverage 58.25 % (surfaces/blit only exercised from pin_app) — no waiver; N1–N7 folded into fix 1 |
+| 3 | 4.1 | Reviewer | Fable 5.2 | 1 | **fail** | gates 1–7 pass; 196 tests; coverage 96.99 % | B1 lying compressed_size bypasses ratio cap; B2 no glTF aggregate budget (91 KB → 415 MB); B3 non-finite world transforms accepted; N1, N3–N6, N9 folded into fix 1 |

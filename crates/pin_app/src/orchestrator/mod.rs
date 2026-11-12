@@ -243,6 +243,10 @@ pub fn run_headless_with<S: SimStep>(sim: S, ticks: u64) -> Result<u64, String> 
     Ok(last)
 }
 
+/// Longest single sleep of [`HybridTimer::wait_until`] (50 ms), so a stop
+/// request is seen promptly even before a far deadline.
+pub const MAX_SLEEP_SLICE_NS: u64 = 50_000_000;
+
 /// Hybrid sleep + spin wait for the real-time sim path: sleeps while more
 /// than `spin_ns` remain (OS sleeps overshoot), then spins.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -259,7 +263,7 @@ impl Default for HybridTimer {
 
 impl HybridTimer {
     /// Waits until `now() ≥ deadline_ns` or `stop()` is true (checked at
-    /// least every sleep slice). Returns the clock reading at exit.
+    /// least every sleep slice of at most [`MAX_SLEEP_SLICE_NS`]). Returns the clock reading at exit.
     pub fn wait_until(
         &self,
         deadline_ns: u64,
@@ -273,7 +277,8 @@ impl HybridTimer {
             }
             let remaining = deadline_ns - t;
             if remaining > self.spin_ns {
-                std::thread::sleep(core::time::Duration::from_nanos(remaining - self.spin_ns));
+                let slice = (remaining - self.spin_ns).min(MAX_SLEEP_SLICE_NS);
+                std::thread::sleep(core::time::Duration::from_nanos(slice));
             } else {
                 std::hint::spin_loop();
             }

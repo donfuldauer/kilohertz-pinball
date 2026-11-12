@@ -18,7 +18,8 @@ mod blit;
 mod surfaces;
 
 pub use surfaces::{
-    SurfaceOptions, SurfaceSet, SurfaceSource, SurfaceStatus, create_surface, role_clear_color,
+    SurfaceOptions, SurfaceSet, SurfaceSource, SurfaceStatus, create_surface, paced_by,
+    role_clear_color,
 };
 
 /// The wgpu crate as used by `pin_render` (so dependants need no own pin).
@@ -117,24 +118,47 @@ impl Default for GpuOptions {
 }
 
 impl GpuOptions {
-    /// Options from the process environment, see [`GpuOptions::from_vars`].
+    /// Options for tests and CI from the process environment, see
+    /// [`GpuOptions::from_vars`]. The application uses
+    /// [`GpuOptions::for_app`] instead, so a `CI=1` in a user's shell never
+    /// selects the software adapter.
     pub fn from_env() -> Self {
         Self::from_vars(|k| std::env::var(k).ok())
     }
 
-    /// Options from an environment lookup:
+    /// Options for the application from the process environment, see
+    /// [`GpuOptions::app_from_vars`].
+    pub fn for_app() -> Self {
+        Self::app_from_vars(|k| std::env::var(k).ok())
+    }
+
+    /// Application options: `WGPU_BACKEND` as in [`from_vars`](Self::from_vars);
+    /// the fallback adapter only with an explicit
+    /// `PIN_FORCE_FALLBACK_ADAPTER=1` (CI variables are ignored).
+    pub fn app_from_vars(get: impl Fn(&str) -> Option<String>) -> Self {
+        Self {
+            force_fallback_adapter: get(FORCE_FALLBACK_ENV).is_some_and(|v| v.trim() == "1"),
+            backends: backends_from(&get),
+        }
+    }
+
+    /// Test/CI options from an environment lookup (on this OS):
     ///
     /// * `WGPU_BACKEND` — comma-separated `vulkan|dx12|metal|gl` (case
     ///   insensitive; `vk`, `d3d12`, `mtl`, `gles`, `opengl` accepted).
     ///   Unknown names are ignored; nothing valid → the default backends.
     /// * The fallback adapter is forced in CI (`CI` = `true`/`1`, or
-    ///   `PIN_REQUIRE_GPU=1`), as the 0.1 spike did, except when only Metal is
-    ///   enabled (Metal has no fallback adapter). `PIN_FORCE_FALLBACK_ADAPTER`
-    ///   = `0`/`1` overrides that choice.
+    ///   `PIN_REQUIRE_GPU=1`), as the 0.1 spike did, except on macOS or when
+    ///   only Metal is enabled (Metal has no fallback adapter).
+    ///   `PIN_FORCE_FALLBACK_ADAPTER` = `0`/`1` overrides that choice.
     pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> Self {
-        let backends = get("WGPU_BACKEND")
-            .and_then(|v| parse_backends(&v))
-            .unwrap_or(GpuOptions::default().backends);
+        Self::from_vars_on(cfg!(target_os = "macos"), get)
+    }
+
+    /// [`from_vars`](Self::from_vars) as it behaves on macOS (`macos`) or
+    /// elsewhere.
+    pub fn from_vars_on(macos: bool, get: impl Fn(&str) -> Option<String>) -> Self {
+        let backends = backends_from(&get);
         let truthy = |k: &str| {
             get(k).is_some_and(|v| {
                 let v = v.trim();
@@ -142,10 +166,8 @@ impl GpuOptions {
             })
         };
         let in_ci = truthy("CI") || get(REQUIRE_GPU_ENV).is_some_and(|v| v.trim() == "1");
-        let metal_only = backends == Backends::METAL
-            || (cfg!(target_os = "macos")
-                && !backends.intersects(Backends::VULKAN | Backends::GL | Backends::DX12));
-        let mut force_fallback_adapter = in_ci && !metal_only;
+        let no_fallback = macos || backends == Backends::METAL;
+        let mut force_fallback_adapter = in_ci && !no_fallback;
         match get(FORCE_FALLBACK_ENV).as_deref().map(str::trim) {
             Some("1") => force_fallback_adapter = true,
             Some("0") => force_fallback_adapter = false,
@@ -156,6 +178,12 @@ impl GpuOptions {
             backends,
         }
     }
+}
+
+fn backends_from(get: &impl Fn(&str) -> Option<String>) -> Backends {
+    get("WGPU_BACKEND")
+        .and_then(|v| parse_backends(&v))
+        .unwrap_or(GpuOptions::default().backends)
 }
 
 /// Parses a `WGPU_BACKEND` value; `None` when no name is valid.
@@ -285,8 +313,9 @@ impl GpuContext {
     }
 }
 
-/// A headless context for GPU tests, or `None` (with a printed note) when no
+/// Test helper (not part of the engine API): a headless context for GPU tests, or `None` (with a printed note) when no
 /// adapter is available. Panics instead when [`require_gpu`] is set.
+#[doc(hidden)]
 pub fn context_for_tests(test: &str) -> Option<GpuContext> {
     match GpuContext::new_headless(&GpuOptions::from_env()) {
         Ok(ctx) => {

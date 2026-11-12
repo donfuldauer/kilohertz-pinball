@@ -89,8 +89,9 @@ impl Default for RenderConfig {
         Self {
             gpu: None,
             window_events: None,
-            // A standard-body playfield, 0.52 m × 1.07 m, origin bottom-left.
-            camera: Camera::ortho_top_down([0.0, 0.0], [0.52, 1.07]),
+            // A standard-body playfield, 0.52 m × 1.07 m, origin bottom-left,
+            // with a 1 cm margin so geometry on the table bounds stays visible.
+            camera: Camera::ortho_top_down_with_margin([0.0, 0.0], [0.52, 1.07], 0.01),
             close_policy: ClosePolicy::default(),
             idle_period: Duration::from_millis(4),
         }
@@ -442,7 +443,7 @@ fn render_thread(
             if st.contains(&pin_render::gpu::SurfaceStatus::Presented) {
                 stats.render_frames.fetch_add(1, Ordering::Relaxed);
             }
-            paced = set.paces_frame();
+            paced = set.frame_paced(&st);
         }
         stats.render_iterations.fetch_add(1, Ordering::Relaxed);
         if !paced {

@@ -117,7 +117,6 @@ fn main() {
             choices[1].2,
             PresentChoice::PresenterThread(wgpu::PresentMode::Fifo)
         );
-        assert!(set.paces_frame());
         let mut presented = [0u32; 2];
         let mut statuses = Vec::new();
         for frame in 0..30 {
@@ -130,6 +129,9 @@ fn main() {
                 });
             }
             let st = set.render(&lines, &camera);
+            if st[0] == SurfaceStatus::Presented {
+                assert!(set.frame_paced(&st));
+            }
             for (i, s) in st.iter().enumerate() {
                 if *s == SurfaceStatus::Presented {
                     presented[i] += 1;

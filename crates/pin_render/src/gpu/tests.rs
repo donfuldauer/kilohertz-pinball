@@ -128,37 +128,57 @@ fn vars<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> 
 
 #[test]
 fn options_from_vars() {
-    let none = GpuOptions::from_vars(vars(&[]));
+    let none = GpuOptions::from_vars_on(false, vars(&[]));
     assert_eq!(none, GpuOptions::default());
     assert!(!none.force_fallback_adapter);
 
-    let ci_vk = GpuOptions::from_vars(vars(&[("WGPU_BACKEND", "vulkan"), ("CI", "true")]));
+    let ci_vk = GpuOptions::from_vars_on(false, vars(&[("WGPU_BACKEND", "vulkan"), ("CI", "true")]));
     assert_eq!(ci_vk.backends, Backends::VULKAN);
     assert!(ci_vk.force_fallback_adapter);
 
-    let req_dx = GpuOptions::from_vars(vars(&[("WGPU_BACKEND", "dx12"), ("PIN_REQUIRE_GPU", "1")]));
+    let req_dx = GpuOptions::from_vars_on(false, vars(&[("WGPU_BACKEND", "dx12"), ("PIN_REQUIRE_GPU", "1")]));
     assert_eq!(req_dx.backends, Backends::DX12);
     assert!(req_dx.force_fallback_adapter);
 
-    let ci_metal = GpuOptions::from_vars(vars(&[("WGPU_BACKEND", "metal"), ("CI", "1")]));
+    let ci_metal = GpuOptions::from_vars_on(false, vars(&[("WGPU_BACKEND", "metal"), ("CI", "1")]));
     assert_eq!(ci_metal.backends, Backends::METAL);
     assert!(
         !ci_metal.force_fallback_adapter,
         "Metal has no fallback adapter"
     );
 
-    let forced_off = GpuOptions::from_vars(vars(&[
+    let forced_off = GpuOptions::from_vars_on(false, vars(&[
         ("CI", "true"),
         (FORCE_FALLBACK_ENV, "0"),
         ("WGPU_BACKEND", "vulkan"),
     ]));
     assert!(!forced_off.force_fallback_adapter);
-    let forced_on = GpuOptions::from_vars(vars(&[(FORCE_FALLBACK_ENV, "1")]));
+    let forced_on = GpuOptions::from_vars_on(false, vars(&[(FORCE_FALLBACK_ENV, "1")]));
     assert!(forced_on.force_fallback_adapter);
 
-    let bad = GpuOptions::from_vars(vars(&[("WGPU_BACKEND", "nope"), ("CI", "false")]));
+    let bad = GpuOptions::from_vars_on(false, vars(&[("WGPU_BACKEND", "nope"), ("CI", "false")]));
     assert_eq!(bad.backends, GpuOptions::default().backends);
     assert!(!bad.force_fallback_adapter);
+    // macOS never forces the fallback adapter from CI variables alone.
+    let mac = GpuOptions::from_vars_on(true, vars(&[("CI", "true")]));
+    assert!(!mac.force_fallback_adapter);
+    assert_eq!(mac.backends, GpuOptions::default().backends);
+    let mac_vk = GpuOptions::from_vars_on(true, vars(&[("CI", "1"), ("WGPU_BACKEND", "vulkan")]));
+    assert!(!mac_vk.force_fallback_adapter);
+    let mac_forced = GpuOptions::from_vars_on(true, vars(&[(FORCE_FALLBACK_ENV, "1")]));
+    assert!(mac_forced.force_fallback_adapter);
+    assert_eq!(
+        GpuOptions::from_vars(vars(&[("CI", "true")])).force_fallback_adapter,
+        !cfg!(target_os = "macos")
+    );
+
+    // The application ignores CI variables.
+    let app = GpuOptions::app_from_vars(vars(&[("CI", "true"), ("PIN_REQUIRE_GPU", "1"), ("WGPU_BACKEND", "dx12")]));
+    assert_eq!(app, GpuOptions { force_fallback_adapter: false, backends: Backends::DX12 });
+    let app_forced = GpuOptions::app_from_vars(vars(&[(FORCE_FALLBACK_ENV, "1")]));
+    assert!(app_forced.force_fallback_adapter);
+    let _ = GpuOptions::for_app();
+
     // from_env reads the real environment without panicking.
     let _ = GpuOptions::from_env();
     let _ = require_gpu();
@@ -208,4 +228,19 @@ proptest::proptest! {
         let _ = parse_backends(&s);
         let _ = GpuOptions::from_vars(|k| (k == "WGPU_BACKEND").then(|| s.clone()));
     }
+}
+
+#[test]
+fn pacing_requires_a_presented_playfield() {
+    use SurfaceRole::*;
+    use SurfaceStatus as S;
+    let roles = [Playfield, Score];
+    assert!(paced_by(roles, &[S::Presented, S::Unchanged]));
+    // A playfield that could not present does not pace: the loop must sleep.
+    for st in [S::Skipped, S::Hidden, S::Busy, S::Unchanged] {
+        assert!(!paced_by(roles, &[st, S::Presented]), "{st:?}");
+    }
+    assert!(!paced_by([Backglass, Score], &[S::Presented, S::Presented]));
+    assert!(!paced_by([], &[]));
+    assert!(!paced_by([Playfield], &[]));
 }
