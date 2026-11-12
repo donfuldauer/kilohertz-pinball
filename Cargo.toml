@@ -50,6 +50,13 @@ egui = "=0.37.0"
 egui-wgpu = "=0.37.0"
 libm = "=0.2.16"
 
+# Wave 3 additions (Orchestrator; DECISIONS.md "Orchestrator — Wave 3 brief decisions").
+# Not in versions.toml: its [crates] must match the spikes lockfile (0.1 spike test).
+zip = { version = "=9.5.1", default-features = false, features = ["deflate"] }
+hound = "=3.5.1"
+lewton = "=0.10.2"
+bytemuck = { version = "=1.25.2", features = ["derive"] }
+
 [profile.dev]
 # Keep the 1 kHz solver usable in debug test runs.
 opt-level = 1
