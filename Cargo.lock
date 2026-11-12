@@ -1752,6 +1752,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pin_guest_sdk"
+version = "0.1.0"
+
+[[package]]
 name = "pin_input"
 version = "0.1.0"
 dependencies = [

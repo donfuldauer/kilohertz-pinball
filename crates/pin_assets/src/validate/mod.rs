@@ -307,6 +307,11 @@ pub fn load_table(vfs: &Vfs) -> Result<LoadedTable, AssetError> {
     }
 }
 
+/// Nearest name of `kind` within edit distance 2.
+pub(crate) fn suggest_name(ids: &TableIds, kind: IdKind, name: &str) -> Option<String> {
+    ids::suggest(name, ids.entries(kind).iter().map(|(n, _)| n.as_str())).map(str::to_owned)
+}
+
 fn sort(v: &mut [ValidationError]) {
     v.sort_by(|a, b| (&a.file, &a.path).cmp(&(&b.file, &b.path)));
 }

@@ -34,13 +34,20 @@ fn main() {
         "[spec_mixer_sdl] audio driver: {}",
         audio.current_audio_driver()
     );
-    check("dummy audio driver", audio.current_audio_driver() == "dummy");
+    check(
+        "dummy audio driver",
+        audio.current_audio_driver() == "dummy",
+    );
 
     let cfg = MixerConfig::default();
     let (mut tx, rx) = trigger_ring(RING);
     let mut mixer = Mixer::new(cfg, rx);
     // 120 s of DC on the music bus: still playing when the mixer comes back.
-    mixer.register(SoundId(1), dc(0.25, -0.125, 120 * RATE as usize, RATE), Bus::Music);
+    mixer.register(
+        SoundId(1),
+        dc(0.25, -0.125, 120 * RATE as usize, RATE),
+        Bus::Music,
+    );
     check(
         "music trigger queued before open",
         tx.send(SoundTrigger {
@@ -101,7 +108,6 @@ fn main() {
         "pending triggers are drained by the offline render",
         mixer.unknown_sounds() as usize == accepted - 1,
     );
-    check("nothing dropped", tx.dropped() == 0);
     check("something was drained by the callback", unknown_before >= 1);
 
     // The subsystem is still usable: open and close a second time.

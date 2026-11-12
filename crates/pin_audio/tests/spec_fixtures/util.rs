@@ -31,7 +31,7 @@ pub fn wav_bytes(tag: u16, bits: u16, channels: u16, rate: u32, data: &[u8]) -> 
     v.extend_from_slice(&tag.to_le_bytes());
     v.extend_from_slice(&channels.to_le_bytes());
     v.extend_from_slice(&rate.to_le_bytes());
-    v.extend_from_slice(&(rate * u32::from(block)).to_le_bytes());
+    v.extend_from_slice(&rate.wrapping_mul(u32::from(block)).to_le_bytes());
     v.extend_from_slice(&block.to_le_bytes());
     v.extend_from_slice(&bits.to_le_bytes());
     v.extend_from_slice(b"data");
@@ -83,7 +83,11 @@ pub fn wav_i32(channels: u16, rate: u32, samples: &[i32]) -> Vec<u8> {
 pub fn sample_from(stereo: &[f32], rate: u32) -> Arc<Sample> {
     assert!(stereo.len().is_multiple_of(2));
     let s = decoded(decode(&wav_f32(2, rate, stereo), rate));
-    assert_eq!(s.frames(), stereo.len() / 2, "same-rate decode keeps length");
+    assert_eq!(
+        s.frames(),
+        stereo.len() / 2,
+        "same-rate decode keeps length"
+    );
     assert_eq!(s.data(), stereo, "same-rate float decode is exact");
     Arc::new(s)
 }

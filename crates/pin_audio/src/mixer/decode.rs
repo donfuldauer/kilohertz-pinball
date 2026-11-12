@@ -225,7 +225,8 @@ fn decode_wav(bytes: &[u8]) -> Result<Decoded, DecodeError> {
 }
 
 fn decode_vorbis(bytes: &[u8]) -> Result<Decoded, DecodeError> {
-    let mut reader = lewton::inside_ogg::OggStreamReader::new(Cursor::new(bytes)).map_err(malformed)?;
+    let mut reader =
+        lewton::inside_ogg::OggStreamReader::new(Cursor::new(bytes)).map_err(malformed)?;
     let channels = usize::from(reader.ident_hdr.audio_channels);
     let rate = reader.ident_hdr.audio_sample_rate;
     check_rate_and_channels(rate, channels)?;
@@ -320,7 +321,10 @@ fn lerp(a: f32, b: f32, f: f64) -> f32 {
 mod tests {
     use super::*;
 
-    fn wav(spec: hound::WavSpec, write: impl FnOnce(&mut hound::WavWriter<Cursor<&mut Vec<u8>>>)) -> Vec<u8> {
+    fn wav(
+        spec: hound::WavSpec,
+        write: impl FnOnce(&mut hound::WavWriter<Cursor<&mut Vec<u8>>>),
+    ) -> Vec<u8> {
         let mut buf = Vec::new();
         {
             let mut w = hound::WavWriter::new(Cursor::new(&mut buf), spec).unwrap();
@@ -428,12 +432,26 @@ mod tests {
     #[test]
     fn unsupported_inputs() {
         assert_eq!(decode(b"", 48_000), Err(DecodeError::Unsupported));
-        assert_eq!(decode(b"ID3\x04rest", 48_000), Err(DecodeError::Unsupported));
-        let ok = wav(spec(1, 48_000, 16, false), |w| w.write_sample(0i16).unwrap());
+        assert_eq!(
+            decode(b"ID3\x04rest", 48_000),
+            Err(DecodeError::Unsupported)
+        );
+        let ok = wav(spec(1, 48_000, 16, false), |w| {
+            w.write_sample(0i16).unwrap()
+        });
         assert_eq!(decode(&ok, 0), Err(DecodeError::Unsupported));
-        assert_eq!(decode(&ok, MAX_MIXER_RATE + 1), Err(DecodeError::Unsupported));
-        assert!(matches!(decode(b"RIFF\0\0\0\0WAVE", 48_000), Err(DecodeError::Malformed(_))));
-        assert!(matches!(decode(b"OggS\0\0\0", 48_000), Err(DecodeError::Malformed(_))));
+        assert_eq!(
+            decode(&ok, MAX_MIXER_RATE + 1),
+            Err(DecodeError::Unsupported)
+        );
+        assert!(matches!(
+            decode(b"RIFF\0\0\0\0WAVE", 48_000),
+            Err(DecodeError::Malformed(_))
+        ));
+        assert!(matches!(
+            decode(b"OggS\0\0\0", 48_000),
+            Err(DecodeError::Malformed(_))
+        ));
     }
 
     #[test]

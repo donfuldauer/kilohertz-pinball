@@ -19,7 +19,11 @@ fn int_tol(bits: u32) -> f32 {
 
 #[track_caller]
 fn assert_samples(s: &Sample, expected: &[f32], tol: f32, what: &str) {
-    assert_eq!(s.data().len(), 2 * s.frames(), "{what}: data len = 2·frames");
+    assert_eq!(
+        s.data().len(),
+        2 * s.frames(),
+        "{what}: data len = 2·frames"
+    );
     assert_eq!(s.data().len(), expected.len(), "{what}: length");
     for (i, (a, b)) in s.data().iter().zip(expected).enumerate() {
         assert!(
@@ -64,7 +68,10 @@ fn wav_float_mono_goes_to_both_channels() {
 #[test]
 fn wav_u8_mono_and_stereo() {
     let raw = [128u8, 255, 0, 192, 64, 129, 127, 1];
-    let exp: Vec<f32> = raw.iter().map(|&b| (f32::from(b) - 128.0) / 128.0).collect();
+    let exp: Vec<f32> = raw
+        .iter()
+        .map(|&b| (f32::from(b) - 128.0) / 128.0)
+        .collect();
     let s = decoded(decode(&wav_u8(2, RATE, &raw), RATE));
     assert_eq!(s.frames(), 4);
     assert_samples(&s, &exp, int_tol(8), "u8 stereo");
@@ -89,7 +96,16 @@ fn wav_i16_mono_and_stereo() {
 
 #[test]
 fn wav_i24_mono_and_stereo() {
-    let raw = [0i32, 4_194_304, -4_194_304, 8_388_607, -8_388_608, 1, -1, 0x0012_3456];
+    let raw = [
+        0i32,
+        4_194_304,
+        -4_194_304,
+        8_388_607,
+        -8_388_608,
+        1,
+        -1,
+        0x0012_3456,
+    ];
     let exp: Vec<f32> = raw.iter().map(|&v| v as f32 / 8_388_608.0).collect();
     let s = decoded(decode(&wav_i24(2, RATE, &raw), RATE));
     assert_eq!(s.frames(), 4);
@@ -185,7 +201,9 @@ fn resample_2x_up_is_linear_interpolation() {
 fn resample_2x_down_picks_every_other_frame() {
     // 48 kHz file into a 24 kHz mixer: output frame i sits exactly on source
     // frame 2i.
-    let src: Vec<f32> = (0..64).map(|i| ((i * 37) % 41) as f32 / 41.0 - 0.5).collect();
+    let src: Vec<f32> = (0..64)
+        .map(|i| ((i * 37) % 41) as f32 / 41.0 - 0.5)
+        .collect();
     let s = decoded(decode(&wav_f32(1, 48_000, &src), 24_000));
     assert_len_about(s.frames(), 32, "2x down");
     let d = s.data();
@@ -258,7 +276,12 @@ fn stats(s: &Sample, n: usize, freq: f64, rate: f64) -> (f64, f64, f64, usize) {
             crossings += 1;
         }
     }
-    (sxy / (sxx * syy).sqrt(), (sxx / n as f64).sqrt(), peak, crossings)
+    (
+        sxy / (sxx * syy).sqrt(),
+        (sxx / n as f64).sqrt(),
+        peak,
+        crossings,
+    )
 }
 
 #[test]
@@ -302,7 +325,10 @@ fn ogg_stereo_fixture_keeps_channels_apart() {
         .chunks_exact(2)
         .map(|f| f[1].abs())
         .fold(0.0f32, f32::max);
-    assert!(right_peak < 0.01, "right channel is silent, peak {right_peak}");
+    assert!(
+        right_peak < 0.01,
+        "right channel is silent, peak {right_peak}"
+    );
 }
 
 #[test]
@@ -423,7 +449,11 @@ fn errors_have_a_display_message() {
     for e in &errs {
         assert!(!e.to_string().is_empty());
     }
-    assert!(DecodeError::Malformed("zzyzx".to_string()).to_string().contains("zzyzx"));
+    assert!(
+        DecodeError::Malformed("zzyzx".to_string())
+            .to_string()
+            .contains("zzyzx")
+    );
 }
 
 #[test]

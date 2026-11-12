@@ -144,13 +144,31 @@ fn trigger_lands_on_frame_zero_of_the_next_render() {
     }
     rig.play(1, 1.0);
     let out = rig.render_chunked(4 * 256, 256);
-    assert_eq!(out[0], data[0], "first sample frame is frame 0 of the call (L)");
-    assert_eq!(out[1], data[1], "first sample frame is frame 0 of the call (R)");
+    assert_eq!(
+        out[0], data[0],
+        "first sample frame is frame 0 of the call (L)"
+    );
+    assert_eq!(
+        out[1], data[1],
+        "first sample frame is frame 0 of the call (R)"
+    );
     for (i, (a, b)) in out[..1200].iter().zip(&data).enumerate() {
-        assert_close(*a, *b, EPS, &format!("sample value {i} across buffer boundaries"));
+        assert_close(
+            *a,
+            *b,
+            EPS,
+            &format!("sample value {i} across buffer boundaries"),
+        );
     }
-    assert!(out[1200..].iter().all(|&x| x == 0.0), "silence after the sample ends");
-    assert_eq!(rig.mixer.active_voices(Bus::Sfx), 0, "voice freed at the end");
+    assert!(
+        out[1200..].iter().all(|&x| x == 0.0),
+        "silence after the sample ends"
+    );
+    assert_eq!(
+        rig.mixer.active_voices(Bus::Sfx),
+        0,
+        "voice freed at the end"
+    );
 }
 
 #[test]
@@ -182,7 +200,11 @@ fn all_pending_triggers_are_drained_at_the_start_of_a_render() {
         rig.play(1000 + i, 1.0); // all unknown
     }
     let _ = rig.render(1);
-    assert_eq!(rig.mixer.unknown_sounds(), 64, "one render drains the whole ring");
+    assert_eq!(
+        rig.mixer.unknown_sounds(),
+        64,
+        "one render drains the whole ring"
+    );
     // And the ring has room again.
     for i in 0..64u16 {
         rig.play(2000 + i, 1.0);
@@ -211,7 +233,12 @@ fn render_split_does_not_change_the_output() {
         for (i, (a, b)) in out.iter().zip(&reference).enumerate() {
             assert_close(*a, *b, 2e-5, &format!("chunk {chunk}, value {i}"));
         }
-        assert_close(rig.mixer.duck_level(), whole.mixer.duck_level(), 2e-5, "duck level");
+        assert_close(
+            rig.mixer.duck_level(),
+            whole.mixer.duck_level(),
+            2e-5,
+            "duck level",
+        );
     }
 }
 
@@ -425,8 +452,9 @@ fn oldest_voice_is_stolen_when_the_bus_is_full() {
 }
 
 #[test]
-fn triggers_in_one_render_call_are_ordered_by_arrival() {
-    // 1 and 2 arrive in the same call; 3 (same call) steals 1, the first.
+fn triggers_in_one_render_call_steal_consistently() {
+    // 1, 2 and 3 arrive in the same call on a two-voice bus: 3 steals 1
+    // (older by arrival, and in the lowest slot if the two count as a tie).
     let mut rig = Rig::new(limit_cfg([2, 2, 2]));
     reg_bits(&mut rig, 2);
     rig.play(1, 1.0);
@@ -435,11 +463,21 @@ fn triggers_in_one_render_call_are_ordered_by_arrival() {
     let out = rig.render(10);
     assert_all_frames(&out, bit(2) + bit(3), bit(2) + bit(3), EPS, "1 stolen");
     assert_eq!(rig.mixer.stolen_voices(), 1);
-    // Next call: 4 steals 2.
+    // Next call: 4 steals exactly one of them. The brief allows either: 2 is
+    // older by arrival, but 2 and 3 started on the same frame, which the
+    // brief's tie rule resolves by slot.
     rig.play(4, 1.0);
     let out = rig.render(10);
-    assert_all_frames(&out, bit(3) + bit(4), bit(3) + bit(4), EPS, "2 stolen");
+    let by_arrival = bit(3) + bit(4);
+    let by_slot_tie = bit(2) + bit(4);
+    assert!(
+        out.iter().all(|&x| (x - by_arrival).abs() <= EPS)
+            || out.iter().all(|&x| (x - by_slot_tie).abs() <= EPS),
+        "exactly one of the two tied voices is stolen, got {}",
+        out[0]
+    );
     assert_eq!(rig.mixer.stolen_voices(), 2);
+    assert_eq!(rig.mixer.active_voices(Bus::Sfx), 2);
 }
 
 #[test]
@@ -453,7 +491,12 @@ fn a_stealing_voice_starts_from_its_first_frame() {
     rig.play(2, 1.0);
     let out = rig.render(256);
     for (i, (a, b)) in out.iter().zip(&data).enumerate() {
-        assert_close(*a, *b, EPS, &format!("value {i}: stolen voice fully replaced"));
+        assert_close(
+            *a,
+            *b,
+            EPS,
+            &format!("value {i}: stolen voice fully replaced"),
+        );
     }
     assert_eq!(rig.mixer.stolen_voices(), 1);
     assert_eq!(rig.mixer.active_voices(Bus::Sfx), 1);
@@ -472,7 +515,11 @@ fn voice_limits_are_per_bus() {
     }
     let _ = rig.render(64);
     assert_eq!(rig.mixer.active_voices(Bus::Music), 1, "music untouched");
-    assert_eq!(rig.mixer.active_voices(Bus::Callout), 1, "callout untouched");
+    assert_eq!(
+        rig.mixer.active_voices(Bus::Callout),
+        1,
+        "callout untouched"
+    );
     assert_eq!(rig.mixer.active_voices(Bus::Sfx), 2);
     assert_eq!(rig.mixer.stolen_voices(), 3, "only sfx voices were stolen");
 }
@@ -540,7 +587,10 @@ fn duck_attack_checkpoints() {
         assert_close(rig.mixer.duck_level(), DUCK, DUCK_TOL, "attack end");
         let _ = rig.render_chunked(3_000, chunk.min(ATTACK));
         assert_close(rig.mixer.duck_level(), DUCK, 1e-6, "holds at duck_gain");
-        assert!(rig.mixer.duck_level() >= DUCK - 1e-6, "never below duck_gain");
+        assert!(
+            rig.mixer.duck_level() >= DUCK - 1e-6,
+            "never below duck_gain"
+        );
     }
 }
 
@@ -552,7 +602,12 @@ fn duck_release_checkpoints() {
         hold_callout(&mut rig, 1, CALLOUT);
         rig.play(1, 1.0);
         let _ = rig.render_chunked(CALLOUT, chunk.min(CALLOUT));
-        assert_close(rig.mixer.duck_level(), DUCK, DUCK_TOL, "fully ducked at callout end");
+        assert_close(
+            rig.mixer.duck_level(),
+            DUCK,
+            DUCK_TOL,
+            "fully ducked at callout end",
+        );
         let _ = rig.render_chunked(RELEASE / 2, chunk.min(CALLOUT));
         assert_close(rig.mixer.duck_level(), 0.675, DUCK_TOL, "release midpoint");
         assert_eq!(rig.mixer.active_voices(Bus::Callout), 0);
@@ -638,7 +693,12 @@ fn duck_release_is_a_linear_per_frame_ramp_in_the_output() {
         assert_eq!(f[0], f[1]);
     }
     // Midpoint and end, sample-exact within the brief's tolerance.
-    assert_close(out[2 * (RELEASE / 2)], 0.5 * 0.675, DUCK_TOL, "release midpoint");
+    assert_close(
+        out[2 * (RELEASE / 2)],
+        0.5 * 0.675,
+        DUCK_TOL,
+        "release midpoint",
+    );
     assert_close(out[2 * (RELEASE + 2)], 0.5, 1e-6, "release end");
 }
 
@@ -654,7 +714,12 @@ fn a_short_callout_ducks_partially_then_releases_at_the_release_slope() {
     let _ = rig.render(3_000);
     let expect = 0.675 + (1.0 - DUCK) * 3_000.0 / RELEASE as f32;
     // One attack step of slack: whether the callout's last frame counts.
-    assert_close(rig.mixer.duck_level(), expect, ATTACK_STEP + DUCK_TOL, "partial release");
+    assert_close(
+        rig.mixer.duck_level(),
+        expect,
+        ATTACK_STEP + DUCK_TOL,
+        "partial release",
+    );
     let _ = rig.render(3_100);
     assert_close(rig.mixer.duck_level(), 1.0, 1e-6, "back at 1.0 early");
 }
@@ -677,7 +742,12 @@ fn a_callout_during_release_resumes_the_attack_from_the_current_level() {
         "attack resumes from the current level",
     );
     let _ = rig.render(ATTACK / 4);
-    assert_close(rig.mixer.duck_level(), DUCK, 2.0 * DUCK_TOL, "and reaches duck_gain");
+    assert_close(
+        rig.mixer.duck_level(),
+        DUCK,
+        2.0 * DUCK_TOL,
+        "and reaches duck_gain",
+    );
     let _ = rig.render(100);
     assert_close(rig.mixer.duck_level(), DUCK, 1e-6, "and stays there");
 }
@@ -691,9 +761,19 @@ fn overlapping_callouts_hold_the_duck_until_the_last_one_ends() {
     rig.play(1, 1.0); // second callout ends at frame 3 500
     let _ = rig.render(1_900);
     assert_eq!(rig.mixer.active_voices(Bus::Callout), 1);
-    assert_close(rig.mixer.duck_level(), DUCK, 1e-6, "still ducked at frame 3 400");
+    assert_close(
+        rig.mixer.duck_level(),
+        DUCK,
+        1e-6,
+        "still ducked at frame 3 400",
+    );
     let _ = rig.render(100 + RELEASE / 2);
-    assert_close(rig.mixer.duck_level(), 0.675, DUCK_TOL, "release counted from 3 500");
+    assert_close(
+        rig.mixer.duck_level(),
+        0.675,
+        DUCK_TOL,
+        "release counted from 3 500",
+    );
 }
 
 #[test]
@@ -724,14 +804,24 @@ fn duck_curve_follows_a_custom_config_and_sample_rate() {
     rig.play(1, 1.0);
     rig.play(2, 1.0);
     let _ = rig.render(147);
-    assert_close(rig.mixer.duck_level(), 1.0 - 0.5 / 3.0, DUCK_TOL, "attack third");
+    assert_close(
+        rig.mixer.duck_level(),
+        1.0 - 0.5 / 3.0,
+        DUCK_TOL,
+        "attack third",
+    );
     let _ = rig.render(294);
     assert_close(rig.mixer.duck_level(), 0.5, DUCK_TOL, "attack end");
     let out = rig.render(559); // callout ends at frame 1 000
     assert_all_frames(&out, 0.25, 0.25, 2e-6, "plateau at duck_gain 0.5");
     let _ = rig.render(441);
     // Release step is 5.7e-4 here: allow one frame of slack at the callout end.
-    assert_close(rig.mixer.duck_level(), 0.75, 0.5 / 882.0 + DUCK_TOL, "release midpoint");
+    assert_close(
+        rig.mixer.duck_level(),
+        0.75,
+        0.5 / 882.0 + DUCK_TOL,
+        "release midpoint",
+    );
     let _ = rig.render(443);
     assert_close(rig.mixer.duck_level(), 1.0, 1e-6, "release end");
     let out = rig.render(64);
@@ -778,9 +868,19 @@ fn send_queue_forwards_every_sound_in_order() {
     assert_eq!(q.sounds.len(), 3, "the queue itself is not modified");
     let out = rig.render(16);
     // One sfx voice: the last trigger in queue order survives, with its gain.
-    assert_all_frames(&out, bit(3) * 0.25, bit(3) * 0.25, EPS, "last in order wins");
+    assert_all_frames(
+        &out,
+        bit(3) * 0.25,
+        bit(3) * 0.25,
+        EPS,
+        "last in order wins",
+    );
     assert_eq!(rig.mixer.stolen_voices(), 2);
-    assert_eq!(rig.tx.send_queue(&HostCommandQueue::default()), 0, "empty queue");
+    assert_eq!(
+        rig.tx.send_queue(&HostCommandQueue::default()),
+        0,
+        "empty queue"
+    );
 }
 
 #[test]

@@ -62,7 +62,9 @@ static GLOBAL: Counting = Counting;
 fn allocator_calls(f: impl FnOnce()) -> usize {
     // Tests in this binary run on separate threads; serialise the shared counter.
     static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = GATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = GATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     EVENTS.store(0, Ordering::Relaxed);
     ARMED.with(|a| a.set(true));
     f();
@@ -105,20 +107,35 @@ fn render_does_not_allocate() {
         mixer.render(&mut out);
         // 30 voices at once: music 2, callout 4, sfx 24.
         for _ in 0..2 {
-            assert!(tx.send(SoundTrigger { sound: SoundId(1), gain: 1.0 }));
+            assert!(tx.send(SoundTrigger {
+                sound: SoundId(1),
+                gain: 1.0
+            }));
         }
         for _ in 0..4 {
-            assert!(tx.send(SoundTrigger { sound: SoundId(2), gain: 1.0 }));
+            assert!(tx.send(SoundTrigger {
+                sound: SoundId(2),
+                gain: 1.0
+            }));
         }
         for _ in 0..24 {
-            assert!(tx.send(SoundTrigger { sound: SoundId(3), gain: 0.5 }));
+            assert!(tx.send(SoundTrigger {
+                sound: SoundId(3),
+                gain: 0.5
+            }));
         }
         mixer.render(&mut out);
         // Steals on every bus, unknown sounds, a full command queue, short
         // voices ending, ducking attack and release, odd buffer sizes.
         for round in 0..200u16 {
-            assert!(tx.send(SoundTrigger { sound: SoundId(1 + round % 4), gain: 0.25 }));
-            assert!(tx.send(SoundTrigger { sound: SoundId(1_000 + round), gain: 1.0 }));
+            assert!(tx.send(SoundTrigger {
+                sound: SoundId(1 + round % 4),
+                gain: 0.25
+            }));
+            assert!(tx.send(SoundTrigger {
+                sound: SoundId(1_000 + round),
+                gain: 1.0
+            }));
             if round % 50 == 0 {
                 assert_eq!(tx.send_queue(&q), 16);
             }
@@ -153,7 +170,10 @@ fn send_does_not_allocate_even_when_the_ring_is_full() {
     let mut sent_from_queue = 0;
     let n = allocator_calls(|| {
         for i in 0..20u16 {
-            if tx.send(SoundTrigger { sound: SoundId(i), gain: 1.0 }) {
+            if tx.send(SoundTrigger {
+                sound: SoundId(i),
+                gain: 1.0,
+            }) {
                 sent += 1;
             }
         }

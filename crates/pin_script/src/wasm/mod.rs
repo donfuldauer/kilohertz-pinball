@@ -348,7 +348,7 @@ impl Live {
 
     /// Calls the `save_state` hook and copies its blob out (see module docs).
     fn save(&mut self, fuel: u64) -> Option<Vec<u8>> {
-        let f = self.save_state?;
+        let f = self.save_state.clone()?;
         self.store.data_mut().leave();
         self.store.set_fuel(fuel).ok()?;
         let packed = f.call(&mut self.store, ()).ok()? as u64;
@@ -362,7 +362,7 @@ impl Live {
 
     /// Hands `blob` to the `restore_state` hook (see module docs).
     fn restore(&mut self, blob: &[u8], fuel: u64) -> Result<(), ScriptError> {
-        let Some(restore) = self.restore_state else {
+        let Some(restore) = self.restore_state.clone() else {
             return Ok(());
         };
         let fail = |e: wasmtime::Error| classify(&e);
@@ -372,7 +372,7 @@ impl Live {
         let ptr = if blob.is_empty() {
             0
         } else {
-            let Some(alloc) = self.alloc_state else {
+            let Some(alloc) = self.alloc_state.clone() else {
                 return Ok(());
             };
             self.store.set_fuel(fuel).map_err(load)?;

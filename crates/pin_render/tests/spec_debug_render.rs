@@ -475,22 +475,40 @@ fn shallow_line_is_straight_and_one_pixel_wide() {
     let img = render(&ctx, 256, 256, BLACK, &unit_camera(), &[seg(a, b, RED)]);
     img.assert_only(RED);
     let (x0, x1) = (a[0] * 256.0, b[0] * 256.0);
+    let (mut interior, mut doubled) = (0u32, 0u32);
     for col in 0..256u32 {
         let rows = img.lit_rows_in_col(col);
         let xc = col as f32 + 0.5;
         if xc > x0 + 1.5 && xc < x1 - 1.5 {
-            assert_eq!(rows.len(), 1, "column {col}: lit rows {rows:?}, want exactly one");
+            // Exactly one pixel per column, except that a hardware line rasteriser may
+            // light both rows in the column where the line steps (observed on lavapipe for
+            // about 1 step in 8). Never more than two, always adjacent, always on the line.
+            assert!(
+                rows.len() == 1 || (rows.len() == 2 && rows[1] == rows[0] + 1),
+                "column {col}: lit rows {rows:?}, want one (or two adjacent at a step)"
+            );
+            interior += 1;
+            if rows.len() == 2 {
+                doubled += 1;
+            }
             let t = (xc / 256.0 - a[0]) / (b[0] - a[0]);
             let ideal = (1.0 - (a[1] + t * (b[1] - a[1]))) * 256.0;
-            assert!(
-                (rows[0] as f32 + 0.5 - ideal).abs() <= 1.0,
-                "column {col}: row {} but the ideal line is at {ideal}",
-                rows[0]
-            );
+            for &row in &rows {
+                assert!(
+                    (row as f32 + 0.5 - ideal).abs() <= 1.0,
+                    "column {col}: row {row} but the ideal line is at {ideal}"
+                );
+            }
         } else if xc < x0 - 1.5 || xc > x1 + 1.5 {
             assert!(rows.is_empty(), "column {col} is beyond the segment ends");
         }
     }
+    // A line drawn 2 px thick would double every column; steps alone are far fewer.
+    assert!(interior > 200);
+    assert!(
+        doubled * 5 <= interior,
+        "{doubled} of {interior} columns are 2 px thick: the line is not 1 px wide"
+    );
 }
 
 /// A segment that extends beyond the viewport is clipped, not dropped or wrapped.

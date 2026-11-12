@@ -198,7 +198,7 @@ fn guid_parse_rejects_anything_but_32_hex_chars() {
         "03000000+e0400008e02000014010000",
         "-30000005e0400008e02000014010000",
         "030000005e0400008e020000140100é", // 32 bytes, multi-byte char
-        "ééééééééééééééééé",                // non-ASCII, odd boundaries
+        "ééééééééééééééééé",               // non-ASCII, odd boundaries
         "０３００００００５ｅ０４００００８ｅ０２００００１４０１００００", // full-width digits
     ];
     for s in bad {
@@ -414,7 +414,10 @@ fn builtin_mappers_translate_every_binding() {
                         });
                         assert_eq!(ev.timestamp_ns, 77);
                         match ev.kind {
-                            InputEventKind::Button { input, pressed: got } => {
+                            InputEventKind::Button {
+                                input,
+                                pressed: got,
+                            } => {
                                 assert_eq!(got, pressed);
                                 assert!(ok.contains(&input), "`{}`: key {k} -> {input:?}", p.id);
                             }
@@ -424,16 +427,19 @@ fn builtin_mappers_translate_every_binding() {
                 }
                 RawInput::Button(b) => {
                     let bi = button_index(b);
-                    let ok = allowed(&|r| {
-                        matches!(r, RawInput::Button(x) if discriminant(x) == discriminant(b))
-                    });
+                    let ok = allowed(
+                        &|r| matches!(r, RawInput::Button(x) if discriminant(x) == discriminant(b)),
+                    );
                     for pressed in [true, false] {
                         let ev = m.button(78, button(bi), pressed).unwrap_or_else(|| {
                             panic!("`{}`: button {bi} is bound but unmapped", p.id)
                         });
                         assert_eq!(ev.timestamp_ns, 78);
                         match ev.kind {
-                            InputEventKind::Button { input, pressed: got } => {
+                            InputEventKind::Button {
+                                input,
+                                pressed: got,
+                            } => {
                                 assert_eq!(got, pressed);
                                 assert!(ok.contains(&input), "`{}`: button {bi}", p.id);
                             }
@@ -502,8 +508,13 @@ fn generic_keyboard_equals_the_1_3_default_keymap() {
     assert_eq!(pressed_input(m.key(0, SC_ESCAPE, true)), None);
     for sc in 0..=600u32 {
         for pressed in [true, false] {
-            let want = keymap_1_3_key(sc).map(|c| InputEvent::button(1_000 + u64::from(sc), c, pressed));
-            assert_eq!(m.key(1_000 + u64::from(sc), sc, pressed), want, "scancode {sc}");
+            let want =
+                keymap_1_3_key(sc).map(|c| InputEvent::button(1_000 + u64::from(sc), c, pressed));
+            assert_eq!(
+                m.key(1_000 + u64::from(sc), sc, pressed),
+                want,
+                "scancode {sc}"
+            );
         }
     }
     assert_eq!(m.key(0, u32::MAX, true), None);
@@ -526,7 +537,11 @@ fn generic_gamepad_equals_the_1_3_default_buttons() {
         }
     }
     for sc in 0..=600u32 {
-        assert_eq!(m.key(0, sc, true), None, "gamepad preset maps scancode {sc}");
+        assert_eq!(
+            m.key(0, sc, true),
+            None,
+            "gamepad preset maps scancode {sc}"
+        );
     }
 }
 
@@ -546,7 +561,11 @@ fn generic_gamepad_equals_the_1_3_default_axes_at_landmarks() {
     exact(2, 32767, CabinetAxis::NudgeX, 1.0);
     exact(2, 0, CabinetAxis::NudgeX, 0.0);
     exact(3, 16384, CabinetAxis::NudgeY, 16384.0 / 32767.0);
-    assert_eq!(m.axis(3, axis(0), 100), None, "left stick X is unbound in 1.3");
+    assert_eq!(
+        m.axis(3, axis(0), 100),
+        None,
+        "left stick X is unbound in 1.3"
+    );
     assert_eq!(m.axis(3, axis(4), 1234).map(|e| e.timestamp_ns), Some(3));
 }
 
@@ -578,7 +597,10 @@ proptest! {
 fn detect_keyboard_is_generic_never_xarcade() {
     assert_eq!(detect(None, true).id, "generic_keyboard");
     // Whatever GUID accompanies a keyboard, the X-Arcade encoder is never auto-picked.
-    assert_ne!(detect(Some(guid(0xAA55, 0x0101)), true).id, "xarcade_keyboard");
+    assert_ne!(
+        detect(Some(guid(0xAA55, 0x0101)), true).id,
+        "xarcade_keyboard"
+    );
 }
 
 #[test]
@@ -623,7 +645,10 @@ fn detect_xarcade_gamepad_by_vendor_product() {
             assert_eq!(detect(Some(other), false).id, got.id);
         }
     }
-    assert!(seen >= 1, "at least one X-Arcade gamepad vendor/product is known");
+    assert!(
+        seen >= 1,
+        "at least one X-Arcade gamepad vendor/product is known"
+    );
 }
 
 #[test]
@@ -685,11 +710,23 @@ fn detect_in_prefers_exact_match_over_earlier_any_gamepad() {
         mini("kb", KB),
         mini("exact", &pad_match(0x1234, 0x5678)),
     ];
-    assert_eq!(id_of(detect_in(&ps, Some(guid(0x1234, 0x5678)), false)), Some("exact"));
-    assert_eq!(id_of(detect_in(&ps, Some(guid(0x1234, 0x5679)), false)), Some("any"));
-    assert_eq!(id_of(detect_in(&ps, Some(guid(0x1235, 0x5678)), false)), Some("any"));
+    assert_eq!(
+        id_of(detect_in(&ps, Some(guid(0x1234, 0x5678)), false)),
+        Some("exact")
+    );
+    assert_eq!(
+        id_of(detect_in(&ps, Some(guid(0x1234, 0x5679)), false)),
+        Some("any")
+    );
+    assert_eq!(
+        id_of(detect_in(&ps, Some(guid(0x1235, 0x5678)), false)),
+        Some("any")
+    );
     // Vendor and product are not interchangeable.
-    assert_eq!(id_of(detect_in(&ps, Some(guid(0x5678, 0x1234)), false)), Some("any"));
+    assert_eq!(
+        id_of(detect_in(&ps, Some(guid(0x5678, 0x1234)), false)),
+        Some("any")
+    );
     assert_eq!(id_of(detect_in(&ps, None, false)), Some("any"));
     assert_eq!(id_of(detect_in(&ps, None, true)), Some("kb"));
 }
@@ -708,8 +745,14 @@ fn detect_in_uses_slice_order_among_equals() {
     assert_eq!(id_of(detect_in(&ps, Some(guid(7, 9)), false)), Some("pad1"));
     assert_eq!(id_of(detect_in(&ps, Some(guid(9, 7)), false)), Some("any1"));
     assert_eq!(id_of(detect_in(&ps[2..], None, true)), Some("kb2"));
-    assert_eq!(id_of(detect_in(&ps[2..], Some(guid(7, 9)), false)), Some("pad2"));
-    assert_eq!(id_of(detect_in(&ps[5..], Some(guid(7, 9)), false)), Some("any2"));
+    assert_eq!(
+        id_of(detect_in(&ps[2..], Some(guid(7, 9)), false)),
+        Some("pad2")
+    );
+    assert_eq!(
+        id_of(detect_in(&ps[5..], Some(guid(7, 9)), false)),
+        Some("any2")
+    );
 }
 
 #[test]
@@ -724,16 +767,27 @@ fn detect_in_returns_none_when_nothing_matches() {
     let exact_only = [mini("exact", &pad_match(1, 2))];
     assert!(detect_in(&exact_only, Some(guid(1, 3)), false).is_none());
     assert!(detect_in(&exact_only, None, false).is_none());
-    assert_eq!(id_of(detect_in(&exact_only, Some(guid(1, 2)), false)), Some("exact"));
+    assert_eq!(
+        id_of(detect_in(&exact_only, Some(guid(1, 2)), false)),
+        Some("exact")
+    );
 }
 
 #[test]
 fn detect_in_checks_every_match_entry_of_a_profile() {
-    let multi = format!("{}, {}, {}", pad_match(1, 2), pad_match(3, 4), pad_match(0xFFFF, 0xFFFF));
+    let multi = format!(
+        "{}, {}, {}",
+        pad_match(1, 2),
+        pad_match(3, 4),
+        pad_match(0xFFFF, 0xFFFF)
+    );
     let ps = [mini("any", ANY), mini("multi", &multi)];
     assert_eq!(gamepad_ids(&ps[1]), vec![(1, 2), (3, 4), (0xFFFF, 0xFFFF)]);
     for (v, p) in [(1, 2), (3, 4), (0xFFFF, 0xFFFF)] {
-        assert_eq!(id_of(detect_in(&ps, Some(guid(v, p)), false)), Some("multi"));
+        assert_eq!(
+            id_of(detect_in(&ps, Some(guid(v, p)), false)),
+            Some("multi")
+        );
     }
     assert_eq!(id_of(detect_in(&ps, Some(guid(1, 4)), false)), Some("any"));
 }
@@ -829,9 +883,15 @@ fn example_profile_parses_field_by_field() {
     };
     assert_eq!(p.buttons.len(), 7);
     assert!(has_key(225, CabinetInput::LeftFlipper));
-    assert!(has_button(GamepadButton::LeftShoulder, CabinetInput::LeftFlipper));
+    assert!(has_button(
+        GamepadButton::LeftShoulder,
+        CabinetInput::LeftFlipper
+    ));
     assert!(has_key(229, CabinetInput::RightFlipper));
-    assert!(has_button(GamepadButton::RightShoulder, CabinetInput::RightFlipper));
+    assert!(has_button(
+        GamepadButton::RightShoulder,
+        CabinetInput::RightFlipper
+    ));
     assert!(has_button(GamepadButton::Start, CabinetInput::Start));
     assert!(has_button(GamepadButton::South, CabinetInput::Launch));
     assert!(has_key(40, CabinetInput::Launch));
@@ -867,7 +927,10 @@ fn example_profile_parses_field_by_field() {
     assert!(matches!(nudge(44), Some(NudgeDirection::Forward)));
     assert!(p.nudge_buttons.iter().any(|(r, d)| matches!(
         (r, d),
-        (RawInput::Button(GamepadButton::DpadRight), NudgeDirection::Right)
+        (
+            RawInput::Button(GamepadButton::DpadRight),
+            NudgeDirection::Right
+        )
     )));
 }
 
@@ -885,9 +948,16 @@ fn example_profile_maps_buttons_keys_and_nudges() {
     );
     assert_eq!(
         m.key(u64::MAX, 229, true),
-        Some(InputEvent::button(u64::MAX, CabinetInput::RightFlipper, true))
+        Some(InputEvent::button(
+            u64::MAX,
+            CabinetInput::RightFlipper,
+            true
+        ))
     );
-    assert_eq!(m.key(0, 40, true), Some(InputEvent::button(0, CabinetInput::Launch, true)));
+    assert_eq!(
+        m.key(0, 40, true),
+        Some(InputEvent::button(0, CabinetInput::Launch, true))
+    );
     assert_eq!(m.key(0, 226, true), None);
     assert_eq!(m.key(0, 0, true), None);
     assert_eq!(
@@ -905,16 +975,28 @@ fn example_profile_maps_buttons_keys_and_nudges() {
     assert_eq!(m.button(5, GamepadButton::North, true), None);
     assert_eq!(m.button(5, GamepadButton::Touchpad, true), None);
 
-    assert!(matches!(m.nudge_button(RawInput::Key(224)), Some(NudgeDirection::Left)));
-    assert!(matches!(m.nudge_button(RawInput::Key(228)), Some(NudgeDirection::Right)));
-    assert!(matches!(m.nudge_button(RawInput::Key(44)), Some(NudgeDirection::Forward)));
+    assert!(matches!(
+        m.nudge_button(RawInput::Key(224)),
+        Some(NudgeDirection::Left)
+    ));
+    assert!(matches!(
+        m.nudge_button(RawInput::Key(228)),
+        Some(NudgeDirection::Right)
+    ));
+    assert!(matches!(
+        m.nudge_button(RawInput::Key(44)),
+        Some(NudgeDirection::Forward)
+    ));
     assert!(matches!(
         m.nudge_button(RawInput::Button(GamepadButton::DpadRight)),
         Some(NudgeDirection::Right)
     ));
     assert!(m.nudge_button(RawInput::Key(225)).is_none());
     assert!(m.nudge_button(RawInput::Key(45)).is_none());
-    assert!(m.nudge_button(RawInput::Button(GamepadButton::DpadLeft)).is_none());
+    assert!(
+        m.nudge_button(RawInput::Button(GamepadButton::DpadLeft))
+            .is_none()
+    );
     assert!(m.nudge_button(RawInput::Axis(GamepadAxis::LeftX)).is_none());
     // Nudge keys are not cabinet switches unless also listed under [buttons].
     assert_eq!(m.key(0, 224, true), None);
@@ -930,30 +1012,65 @@ fn example_profile_maps_axes_linearly_and_clamped() {
         assert!((got.1 - want).abs() < 1e-4, "{} vs {want}", got.1);
     };
     // Trigger 0..1 -> flipper travel 0..1; negative raw clamps to 0.
-    near(val(GamepadAxis::LeftTrigger, 0), CabinetAxis::LeftFlipper, 0.0);
-    near(val(GamepadAxis::LeftTrigger, 32767), CabinetAxis::LeftFlipper, 1.0);
-    near(val(GamepadAxis::LeftTrigger, 16384), CabinetAxis::LeftFlipper, 16384.0 / 32767.0);
-    near(val(GamepadAxis::LeftTrigger, -32768), CabinetAxis::LeftFlipper, 0.0);
-    near(val(GamepadAxis::LeftTrigger, -5), CabinetAxis::LeftFlipper, 0.0);
+    near(
+        val(GamepadAxis::LeftTrigger, 0),
+        CabinetAxis::LeftFlipper,
+        0.0,
+    );
+    near(
+        val(GamepadAxis::LeftTrigger, 32767),
+        CabinetAxis::LeftFlipper,
+        1.0,
+    );
+    near(
+        val(GamepadAxis::LeftTrigger, 16384),
+        CabinetAxis::LeftFlipper,
+        16384.0 / 32767.0,
+    );
+    near(
+        val(GamepadAxis::LeftTrigger, -32768),
+        CabinetAxis::LeftFlipper,
+        0.0,
+    );
+    near(
+        val(GamepadAxis::LeftTrigger, -5),
+        CabinetAxis::LeftFlipper,
+        0.0,
+    );
     // Stick -1..1 -> nudge -1..1; -32768 clamps to -1.
     near(val(GamepadAxis::RightX, 32767), CabinetAxis::NudgeX, 1.0);
     near(val(GamepadAxis::RightX, -32767), CabinetAxis::NudgeX, -1.0);
     near(val(GamepadAxis::RightX, -32768), CabinetAxis::NudgeX, -1.0);
     near(val(GamepadAxis::RightX, 0), CabinetAxis::NudgeX, 0.0);
-    near(val(GamepadAxis::RightX, 8192), CabinetAxis::NudgeX, 8192.0 / 32767.0);
+    near(
+        val(GamepadAxis::RightX, 8192),
+        CabinetAxis::NudgeX,
+        8192.0 / 32767.0,
+    );
     // Inverted symmetric stick: the sign flips.
     near(val(GamepadAxis::RightY, 32767), CabinetAxis::NudgeY, -1.0);
     near(val(GamepadAxis::RightY, -32768), CabinetAxis::NudgeY, 1.0);
-    near(val(GamepadAxis::RightY, 8192), CabinetAxis::NudgeY, -8192.0 / 32767.0);
+    near(
+        val(GamepadAxis::RightY, 8192),
+        CabinetAxis::NudgeY,
+        -8192.0 / 32767.0,
+    );
     // Stick with from = 0, to = 1 -> the positive half drives the plunger.
     near(val(GamepadAxis::LeftY, 32767), CabinetAxis::Plunger, 1.0);
-    near(val(GamepadAxis::LeftY, 16384), CabinetAxis::Plunger, 16384.0 / 32767.0);
+    near(
+        val(GamepadAxis::LeftY, 16384),
+        CabinetAxis::Plunger,
+        16384.0 / 32767.0,
+    );
     near(val(GamepadAxis::LeftY, 0), CabinetAxis::Plunger, 0.0);
     near(val(GamepadAxis::LeftY, -20000), CabinetAxis::Plunger, 0.0);
     // Unbound axes say nothing.
     assert_eq!(m.axis(1, GamepadAxis::LeftX, 12345), None);
     assert_eq!(m.axis(1, GamepadAxis::RightTrigger, 12345), None);
-    assert_eq!(m.axis(42, GamepadAxis::RightX, 5).map(|e| e.timestamp_ns), Some(42));
+    assert_eq!(
+        m.axis(42, GamepadAxis::RightX, 5).map(|e| e.timestamp_ns),
+        Some(42)
+    );
 }
 
 #[test]
@@ -975,7 +1092,13 @@ fn match_kinds_parse_to_their_variants() {
     let p = mini("g", &format!("{}, {ANY}", pad_match(5, 6)));
     assert!(matches!(
         p.matches.as_slice(),
-        [DeviceMatch::Gamepad { vendor: 5, product: 6 }, DeviceMatch::AnyGamepad]
+        [
+            DeviceMatch::Gamepad {
+                vendor: 5,
+                product: 6
+            },
+            DeviceMatch::AnyGamepad
+        ]
     ));
 }
 
@@ -1030,7 +1153,14 @@ fn every_cabinet_input_name_and_plain_button_name_parses() {
 
 #[test]
 fn every_axis_name_parses() {
-    let raws = ["left_x", "left_y", "right_x", "right_y", "left_trigger", "right_trigger"];
+    let raws = [
+        "left_x",
+        "left_y",
+        "right_x",
+        "right_y",
+        "left_trigger",
+        "right_trigger",
+    ];
     let cabs = [
         ("plunger", CabinetAxis::Plunger),
         ("nudge_x", CabinetAxis::NudgeX),
@@ -1067,15 +1197,18 @@ fn every_axis_name_parses() {
 /// `Display` is `<line>:<col>: <message>` or `<key>: <message>`. Returns the
 /// location when the first form is used.
 fn check_error_format(msg: &str) -> Option<(u32, u32)> {
-    let (head, rest) = msg
-        .split_once(": ")
-        .unwrap_or_else(|| panic!("error `{msg}` is not `<line>:<col>: <message>` or `<key>: <message>`"));
+    let (head, rest) = msg.split_once(": ").unwrap_or_else(|| {
+        panic!("error `{msg}` is not `<line>:<col>: <message>` or `<key>: <message>`")
+    });
     assert!(!rest.trim().is_empty(), "error `{msg}` has no message");
     assert!(!head.is_empty(), "error `{msg}` has an empty location");
     if let Some((l, c)) = head.split_once(':')
         && let (Ok(l), Ok(c)) = (l.parse::<u32>(), c.parse::<u32>())
     {
-        assert!(l >= 1 && c >= 1, "error `{msg}`: line and column are 1-based");
+        assert!(
+            l >= 1 && c >= 1,
+            "error `{msg}`: line and column are 1-based"
+        );
         return Some((l, c));
     }
     assert!(
@@ -1091,10 +1224,19 @@ const VALID_HEAD: &str = "id = \"t\"\nname = \"T\"\nmatch = [ { any_gamepad = tr
 #[test]
 fn syntax_errors_report_line_and_column() {
     let cases: [(&str, u32); 4] = [
-        ("id = \"t\"\nname = = \"T\"\nmatch = [ { keyboard = true } ]\n", 2),
-        ("id = \"t\"\nname = \"T\"\nmatch = [ { keyboard = true }\n[buttons\n", 4),
+        (
+            "id = \"t\"\nname = = \"T\"\nmatch = [ { keyboard = true } ]\n",
+            2,
+        ),
+        (
+            "id = \"t\"\nname = \"T\"\nmatch = [ { keyboard = true }\n[buttons\n",
+            4,
+        ),
         ("id \"t\"\n", 1),
-        ("id = \"t\"\nname = \"T\"\n\n\n[buttons]\nleft_flipper = [ \"key:225\", ]]\n", 6),
+        (
+            "id = \"t\"\nname = \"T\"\n\n\n[buttons]\nleft_flipper = [ \"key:225\", ]]\n",
+            6,
+        ),
     ];
     for (text, line) in cases {
         let msg = parse_err(text);
@@ -1110,7 +1252,10 @@ fn syntax_error_column_points_at_the_fault() {
     let msg = parse_err("id = \"t\"\nname = = \"T\"\n");
     let (l, c) = check_error_format(&msg).expect("line:col");
     assert_eq!(l, 2);
-    assert!((7..=9).contains(&c), "column {c} should point at the second `=` (col 8): `{msg}`");
+    assert!(
+        (7..=9).contains(&c),
+        "column {c} should point at the second `=` (col 8): `{msg}`"
+    );
 }
 
 #[test]
@@ -1138,14 +1283,24 @@ fn unknown_keys_are_errors_naming_the_key() {
     for (text, key) in cases {
         let msg = parse_err(&text);
         check_error_format(&msg);
-        assert!(msg.contains(key), "error `{msg}` should name the unknown key `{key}`");
+        assert!(
+            msg.contains(key),
+            "error `{msg}` should name the unknown key `{key}`"
+        );
     }
 }
 
 #[test]
 fn unknown_cabinet_names_are_errors_naming_the_name() {
-    for bad in ["coin", "LeftFlipper", "left-flipper", "flipper_left", "plunger"] {
-        let text = format!("{VALID_HEAD}[buttons]\nstart = [ \"key:30\" ]\n{bad} = [ \"key:31\" ]\n");
+    for bad in [
+        "coin",
+        "LeftFlipper",
+        "left-flipper",
+        "flipper_left",
+        "plunger",
+    ] {
+        let text =
+            format!("{VALID_HEAD}[buttons]\nstart = [ \"key:30\" ]\n{bad} = [ \"key:31\" ]\n");
         let msg = parse_err(&text);
         check_error_format(&msg);
         assert!(msg.contains(bad), "error `{msg}` should name `{bad}`");
@@ -1191,7 +1346,9 @@ fn malformed_raw_specs_are_errors() {
         let text = format!("{VALID_HEAD}[buttons]\nstart = [ \"key:30\", \"{spec}\" ]\n");
         let msg = parse_err(&text);
         check_error_format(&msg);
-        let text = format!("{VALID_HEAD}[buttons]\nstart = [ \"key:30\" ]\n[nudge]\nleft = [ \"{spec}\" ]\n");
+        let text = format!(
+            "{VALID_HEAD}[buttons]\nstart = [ \"key:30\" ]\n[nudge]\nleft = [ \"{spec}\" ]\n"
+        );
         let msg = parse_err(&text);
         check_error_format(&msg);
     }
@@ -1268,8 +1425,14 @@ fn cabinet_axis_range(a: CabinetAxis) -> (f32, f32) {
     }
 }
 
-const RAW_AXIS_NAMES: [&str; AXIS_COUNT] =
-    ["left_x", "left_y", "right_x", "right_y", "left_trigger", "right_trigger"];
+const RAW_AXIS_NAMES: [&str; AXIS_COUNT] = [
+    "left_x",
+    "left_y",
+    "right_x",
+    "right_y",
+    "left_trigger",
+    "right_trigger",
+];
 
 fn axis_profile(raw: usize, cab: CabinetAxis, from: &str, to: &str, invert: bool) -> String {
     format!(
@@ -1281,7 +1444,11 @@ fn axis_profile(raw: usize, cab: CabinetAxis, from: &str, to: &str, invert: bool
 
 fn normalised(raw_axis: usize, raw: i16) -> f32 {
     let n = f32::from(raw) / 32767.0;
-    if raw_axis >= 4 { n.clamp(0.0, 1.0) } else { n.clamp(-1.0, 1.0) }
+    if raw_axis >= 4 {
+        n.clamp(0.0, 1.0)
+    } else {
+        n.clamp(-1.0, 1.0)
+    }
 }
 
 proptest! {

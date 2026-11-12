@@ -258,10 +258,8 @@ impl Mixer {
             Some(free) => free,
             None => {
                 // Oldest = earliest start; ties go to the lowest slot.
-                let Some((oldest, _)) = voices
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(i, v)| (v.start, *i))
+                let Some((oldest, _)) =
+                    voices.iter().enumerate().min_by_key(|(i, v)| (v.start, *i))
                 else {
                     return; // max_voices == 0: the bus is muted.
                 };
@@ -287,7 +285,11 @@ impl Mixer {
         let callout_left = self.voices[Bus::Callout.index()]
             .iter()
             .filter(|v| v.active)
-            .filter_map(|v| self.sounds[usize::from(v.sound)].as_ref().map(|r| r.sample.frames() - v.pos))
+            .filter_map(|v| {
+                self.sounds[usize::from(v.sound)]
+                    .as_ref()
+                    .map(|r| r.sample.frames() - v.pos)
+            })
             .max()
             .unwrap_or(0);
         // Frame k is mixed with the multiplier as it stands, then the
@@ -319,7 +321,11 @@ impl Mixer {
                 let src = &data[2 * v.pos..2 * (v.pos + avail)];
                 let g = v.gain;
                 if ducked {
-                    for ((o, s), d) in out.chunks_exact_mut(2).zip(src.chunks_exact(2)).zip(&self.duck_curve) {
+                    for ((o, s), d) in out
+                        .chunks_exact_mut(2)
+                        .zip(src.chunks_exact(2))
+                        .zip(&self.duck_curve)
+                    {
                         o[0] += s[0] * g * d;
                         o[1] += s[1] * g * d;
                     }

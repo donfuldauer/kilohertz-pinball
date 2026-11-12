@@ -1,9 +1,9 @@
 //! Lock-free trigger ring from the sim thread to the audio thread, built on
 //! [`pin_core::spsc`].
 
+use pin_core::SoundId;
 use pin_core::script::HostCommandQueue;
 use pin_core::spsc::{SpscConsumer, SpscProducer, channel};
-use pin_core::SoundId;
 
 /// One "play this sound" request.
 #[derive(Copy, Clone, Debug, PartialEq)]

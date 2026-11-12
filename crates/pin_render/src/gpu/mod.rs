@@ -17,7 +17,9 @@
 mod blit;
 mod surfaces;
 
-pub use surfaces::{SurfaceOptions, SurfaceSet, SurfaceSource, SurfaceStatus};
+pub use surfaces::{
+    SurfaceOptions, SurfaceSet, SurfaceSource, SurfaceStatus, create_surface, role_clear_color,
+};
 
 /// The wgpu crate as used by `pin_render` (so dependants need no own pin).
 pub use wgpu;

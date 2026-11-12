@@ -106,11 +106,11 @@ impl DebugRenderer {
                 module: &module,
                 entry_point: Some("vs"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: core::mem::size_of::<DebugLine>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &ATTRIBUTES,
-                }],
+                })],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::LineList,

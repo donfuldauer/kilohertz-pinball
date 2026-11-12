@@ -16,7 +16,10 @@ fn exercise(p: &DeviceProfile) {
     let m = ProfileMapper::new(p);
     for sc in [0u32, 4, 30, 40, 44, 224, 225, 229, 511, 512, u32::MAX] {
         if let Some(ev) = m.key(1, sc, true) {
-            assert!(matches!(ev.kind, InputEventKind::Button { pressed: true, .. }));
+            assert!(matches!(
+                ev.kind,
+                InputEventKind::Button { pressed: true, .. }
+            ));
         }
     }
     for b in [
@@ -206,17 +209,23 @@ fn parser_survives_pathological_inputs() {
     let long_key = format!("{} = 1\n", "k".repeat(100_000));
     let many_specs = format!(
         "id = \"t\"\nname = \"T\"\nmatch = [ {{ keyboard = true }} ]\n[buttons]\nstart = [ {} ]\n",
-        (0..5_000).map(|i| format!("\"key:{i}\"")).collect::<Vec<_>>().join(", ")
+        (0..5_000)
+            .map(|i| format!("\"key:{i}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     let many_matches = format!(
         "id = \"t\"\nname = \"T\"\nmatch = [ {} ]\n[buttons]\nstart = [ \"key:30\" ]\n",
         (0..3_000)
-            .map(|i| format!("{{ gamepad = {{ vendor = {}, product = {} }} }}", i % 65536, i % 7))
+            .map(|i| format!(
+                "{{ gamepad = {{ vendor = {}, product = {} }} }}",
+                i % 65536,
+                i % 7
+            ))
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let huge_scancode =
-        "id = \"t\"\nname = \"T\"\nmatch = [ { keyboard = true } ]\n[buttons]\nstart = [ \"key:4294967295\" ]\n";
+    let huge_scancode = "id = \"t\"\nname = \"T\"\nmatch = [ { keyboard = true } ]\n[buttons]\nstart = [ \"key:4294967295\" ]\n";
     for text in [
         deep_array.as_str(),
         deep_table.as_str(),
