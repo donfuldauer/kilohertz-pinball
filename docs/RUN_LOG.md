@@ -58,3 +58,9 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3 | 2.2 | Independent Tester | Opus 5.5 | 1 | done | 41/44 pass | defect: impacts starting inside contact skin swallowed → implementer |
 | 3 | 4.1 | Independent Tester | Fable 5.2 | 1 | done | 121/126 pass | D1 load_gltf panics inside gltf crate on bad refs → implementer |
 | 3 | 4.5 | Independent Tester | Fable 5.2 | 1 | done | 79 spec tests pass | release ≤ 8 ms timing not measured (disk full) → reviewer |
+| 3 | 3.2 | Implementer | Opus 5.5 | fix 1 | done | coverage 99.31 % | B1, N1–N4, N6, N8 |
+| 3 | 3.2 | Reviewer | Fable 5.2 | 2 | **fail** | gates 1–7 pass; B1, N1–N6 confirmed fixed | B2 pushing plunger in > 1 s disables launches permanently (downward re-acquire without recovery) → fix 2 |
+| 3 | 3.3 | Implementer | Opus 5.5 | fix 1 | done | coverage 97.82 % | vendored lewton with KHZ bounds; source-rate bounds; streaming resample; chained → Unsupported |
+| 3 | 2.2 | Implementer | Fable 5.2 | 1 | done | coverage 97.94 %; 0 allocs; 10-run determinism | tester defect (skin impacts) fixed; spec 54/54 |
+| 3 | 4.1 | Implementer | Opus 5.5 | 1 | done | coverage 96.99 %; spec 124/124 | tester D1 (gltf panics) fixed with check.rs + catch_unwind |
+| 3 | 1.4 | Implementer | Opus 5.5 | 1 | done | coverage render 94.5 %, app 84.9 %; drift 0.052 % | CR-002 SimStep |

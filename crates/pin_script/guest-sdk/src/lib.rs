@@ -522,8 +522,147 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "only available on wasm32")]
     fn imports_panic_on_host() {
-        pulse_coil(1, 2);
+        let calls: [fn(); 25] = [
+            || pulse_coil(1, 2),
+            || hold_coil(1, true),
+            || set_magnet(1, 0.5),
+            || set_zipper(1, true),
+            || set_diverter(1, false),
+            || spawn_ball(0, 1),
+            || set_lamp(3, 1.0),
+            || set_gi_tint(1.0, 1.0, 1.0, 1.0),
+            || set_score(1, 5),
+            || show_scene(2),
+            || play_sound(1, 1.0),
+            || persist_set(1, 2),
+            || {
+                let _ = persist_get(1);
+            },
+            || {
+                let _ = switch(1);
+            },
+            || {
+                let _ = tick();
+            },
+            || {
+                let _ = balls_in_play();
+            },
+            || {
+                let _ = random(1, 6);
+            },
+            || {
+                let _ = random_to(6);
+            },
+            || {
+                let _ = id_of(Kind::Scene, "x");
+            },
+            || {
+                let _ = sw("x");
+            },
+            || {
+                let _ = coil("x");
+            },
+            || {
+                let _ = lamp("x");
+            },
+            || {
+                let _ = sound("x");
+            },
+            || {
+                let _ = persist_key("x");
+            },
+            || {
+                let _ = raw::id_of(0, 0, 0);
+            },
+        ];
+        for (i, f) in calls.into_iter().enumerate() {
+            let r = std::panic::catch_unwind(f);
+            let msg = r.expect_err("host stubs panic");
+            let msg = msg.downcast_ref::<&str>().copied().unwrap_or_default();
+            assert!(msg.contains("only available on wasm32"), "call {i}: {msg}");
+        }
+    }
+
+    /// Rules that record what the exports deliver (no imports, so they run
+    /// on the host).
+    struct Probe {
+        inits: u32,
+        ticks: u32,
+        last_edge: Option<(u16, bool)>,
+        state: [u8; 3],
+        restored: [u8; 3],
+        restored_len: usize,
+    }
+
+    impl Rules for Probe {
+        fn on_init(&mut self) {
+            self.inits += 1;
+        }
+        fn on_tick(&mut self) {
+            self.ticks += 1;
+        }
+        fn on_switch_edge(&mut self, sw: u16, closed: bool) {
+            self.last_edge = Some((sw, closed));
+        }
+        fn save_state(&mut self) -> &[u8] {
+            &self.state
+        }
+        fn restore_state(&mut self, blob: &[u8]) {
+            self.restored_len = blob.len();
+            for (d, s) in self.restored.iter_mut().zip(blob) {
+                *d = *s;
+            }
+        }
+    }
+
+    mod exported {
+        use super::Probe;
+        crate::export_rules!(
+            Probe = Probe {
+                inits: 0,
+                ticks: 0,
+                last_edge: None,
+                state: [7, 8, 9],
+                restored: [0; 3],
+                restored_len: 0,
+            }
+        );
+
+        pub(super) fn probe() -> &'static mut Probe {
+            // SAFETY: only this test touches the cell.
+            unsafe { __PIN_RULES.get() }
+        }
+
+        pub(super) fn write_in(len: usize, byte: u8) {
+            // SAFETY: as above; the buffer has MAX_STATE_BYTES bytes.
+            unsafe {
+                let p = __PIN_STATE_IN.0.get().cast::<u8>();
+                core::ptr::write_bytes(p, byte, len);
+            }
+        }
+    }
+
+    #[test]
+    fn export_rules_wires_the_trait() {
+        exported::on_init();
+        exported::on_tick();
+        exported::on_tick();
+        exported::on_switch_edge(65535, 1);
+        let (_, len) = unpack_state(exported::save_state());
+        assert_eq!(len, 3);
+        assert_ne!(exported::alloc_state(3), -1);
+        assert_eq!(exported::alloc_state(-4), -1);
+        exported::write_in(3, 5);
+        exported::restore_state(0, 3);
+        let p = exported::probe();
+        assert_eq!((p.inits, p.ticks), (1, 2));
+        assert_eq!(p.last_edge, Some((65535, true)));
+        assert_eq!((p.restored, p.restored_len), ([5, 5, 5], 3));
+        exported::on_switch_edge(4, 0);
+        exported::restore_state(0, 0);
+        let p = exported::probe();
+        assert_eq!(p.last_edge, Some((4, false)));
+        assert_eq!(p.restored_len, 0);
     }
 }
