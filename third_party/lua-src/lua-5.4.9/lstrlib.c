@@ -167,12 +167,12 @@ static int str_rep (lua_State *L) {
     return luaL_error(L, "string length exceeds the 64 KiB limit");
   else {
     size_t totallen = (size_t)n * l + (size_t)(n - 1) * lsep;
-    luaL_Buffer b;
-    char *p = luaL_buffinitsize(L, &b, totallen);
     /* KHZ: build by doubling (O(log n) memcpy calls instead of n), so the
        cost is the bytes copied, charged at 'totallen/64' */
     size_t unit = l + lsep;  /* one piece followed by its separator */
     size_t body = (size_t)(n - 1) * unit;  /* all pieces but the last */
+    luaL_Buffer b;
+    char *p = luaL_buffinitsize(L, &b, totallen);
     lua_khzcharge(L, (lua_Integer)(totallen >> 6) + 1);
     if (body > 0) {
       size_t done;
