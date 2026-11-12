@@ -143,3 +143,11 @@ Spikes CI run 43140608468 (commit a417638), all three jobs green, rustc 1.99.1 o
 - **1.3 PiP geometry.** Backglass PiP aspect 4:3, score PiP 4:1, sized by a width fraction of the window and anchored to a corner. In cabinet mode a role without its own display falls back to a PiP on the playfield window.
 - **4.2 script IDs.** Scripts address hardware by integer IDs looked up from read-only name tables (`pinball.sw.<name>` etc.) built at load, so no strings cross into the sim thread (§3.1). Script callbacks are global functions `on_init`, `on_tick`, `on_switch(id, closed)`, `on_save_state`, `on_restore_state`.
 - **Wave 2 working tree.** Five subphases share one working tree; each role uses its own `CARGO_TARGET_DIR` and builds only its own crate.
+
+## 1.2 — CI matrix skeleton
+
+**Decision:** `.github/workflows/ci.yml` has jobs `core-tests`, `gpu-tests`, `clippy` (each on windows-latest / ubuntu-latest / macos-latest = x86_64-pc-windows-msvc / x86_64-unknown-linux-gnu / aarch64-apple-darwin; a step fails the job if `rustc` is older than 1.97 or the host triple differs from the matrix target), `fmt` (Linux), `replay-hash` (no-op placeholder for 2.5) and `coverage` (Linux, `cargo llvm-cov --summary-only` over the GPU-free crates, `continue-on-error`, non-gating). Toolchain is `dtolnay/rust-toolchain@stable` (consistent with spikes.yml; see HUMAN_QUEUE 0.1).
+- `core-tests` runs `cargo test --workspace --exclude pin_render --exclude pin_audio --exclude pin_app` with `SDL_VIDEO_DRIVER=dummy`; on Linux it also runs `tests/spec_ci` when that package exists.
+- `gpu-tests` runs `cargo test -p pin_render -p pin_audio -p pin_app` (under `xvfb-run -a` with lavapipe on Linux) and sets `WGPU_BACKEND` = vulkan / dx12 / metal plus `PIN_REQUIRE_GPU=1` (the root-workspace counterpart of `SPIKE_REQUIRE_GPU`; pin_render may read it so a missing adapter fails in CI). TODO(1.4): switch to `--features gpu-tests`.
+- Both workflows: `timeout-minutes: 45` on every job, `concurrency` group `${{ github.workflow }}-${{ github.ref }}` with cancel-in-progress, `permissions: contents: read`, `workflow_dispatch`. Push runs on every branch; a PR therefore also runs on its merge ref (accepted; different refs, so no cancellation between the two).
+- spikes.yml now also runs fmt / clippy -D warnings / test for `spikes/spec_0_1` (Linux).
