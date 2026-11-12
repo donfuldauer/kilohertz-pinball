@@ -37,6 +37,14 @@ function on_tick()
     k = k + 1
     if k <= 8 then pinball.persist_set(v, pinball.random(1000000)) end
   end
+  -- A sparse integer-keyed table (hash part, not array part).
+  local s = {}
+  for i = 1, 40 do s[i * 7919 % 1009 + 5000] = i end
+  k = 0
+  for key, v in pairs(s) do
+    k = k + 1
+    if k <= 16 then pinball.play_sound(key, 0.5) end
+  end
 end";
 
 /// Sorts 150 records with heavy ties; the resulting permutation is reported
@@ -55,26 +63,36 @@ function on_tick()
   pinball.persist_set(0, acc)
 end";
 
-/// Tables used as keys: iteration order must not follow heap addresses.
+/// Tables and functions used as keys hash by address, so their `pairs` order
+/// is not required to be reproducible across processes (DECISIONS
+/// "Orchestrator — 4.2 pointer-keyed pairs order"). Iteration must still work:
+/// every key is visited exactly once and nothing faults.
 const TABLE_KEY_SCRIPT: &str = "
 local keys = {}
 for i = 1, 24 do keys[i] = {} end
+for i = 25, 48 do keys[i] = function() return i end end
 function on_tick()
   local set = {}
-  for i = 1, 24 do set[keys[i]] = i end
-  for i = 1, 24 do set[function() end] = 100 + i end
-  local n = 0
+  for i = 1, 48 do set[keys[i]] = i end
+  local seen, n, dup, wrong = {}, 0, 0, 0
   for k, v in pairs(set) do
     n = n + 1
-    if n <= 30 then pinball.pulse_coil(v, pinball.random(1000)) end
+    if seen[v] then dup = dup + 1 end
+    seen[v] = true
+    if keys[v] ~= k then wrong = wrong + 1 end
   end
+  local missing = 0
+  for i = 1, 48 do if not seen[i] then missing = missing + 1 end end
+  pinball.persist_set(0, n)
+  pinball.persist_set(1, dup)
+  pinball.persist_set(2, wrong)
+  pinball.persist_set(3, missing)
 end";
 
 fn script(mode: &str) -> &'static str {
     match mode {
         "pairs" => PAIRS_SCRIPT,
         "sort" => SORT_SCRIPT,
-        "table_keys" => TABLE_KEY_SCRIPT,
         other => panic!("unknown mode {other}"),
     }
 }
@@ -162,13 +180,39 @@ fn table_sort_with_ties_is_identical_across_processes() {
 }
 
 #[test]
-fn tables_used_as_keys_iterate_identically_across_processes() {
-    assert_reproducible("table_keys");
+fn pairs_over_table_and_function_keys_visits_every_key_exactly_once() {
+    let mut b = LuaScriptBackend::new(
+        TABLE_KEY_SCRIPT.as_bytes(),
+        &many_names(),
+        LuaConfig::default(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let mut h = Host::new(99);
+    for _ in 0..20 {
+        h.tick(&mut b);
+        assert!(!b.is_faulted());
+        assert_eq!(spec_support::persisted(&h.cmd, 0), Some(48), "keys visited");
+        assert_eq!(
+            spec_support::persisted(&h.cmd, 1),
+            Some(0),
+            "keys visited twice"
+        );
+        assert_eq!(
+            spec_support::persisted(&h.cmd, 2),
+            Some(0),
+            "key/value mismatches"
+        );
+        assert_eq!(
+            spec_support::persisted(&h.cmd, 3),
+            Some(0),
+            "keys never visited"
+        );
+    }
 }
 
 #[test]
 fn pairs_order_is_identical_within_one_process_and_across_backends() {
-    for mode in ["pairs", "sort", "table_keys"] {
+    for mode in ["pairs", "sort"] {
         assert_eq!(transcript(mode), transcript(mode), "{mode}");
     }
 }
@@ -191,4 +235,9 @@ fn the_pairs_transcript_actually_depends_on_iteration() {
         "pairs(pinball.sw) must yield all 60 switches"
     );
     assert_eq!(h.cmd.persist_writes.len(), 8);
+    assert_eq!(
+        h.cmd.sounds.len(),
+        16,
+        "integer-keyed pairs must yield entries"
+    );
 }
