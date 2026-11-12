@@ -163,3 +163,9 @@ Spikes CI run 43140608468 (commit a417638), all three jobs green, rustc 1.99.1 o
 
 **Decision:** With `debounce_ms > 0`, debounce acts on each input's state at the end of the tick, the same rule the brief gives for `debounce_ms = 0`. A press and release inside one tick therefore produce no edge and open no window.
 **Rationale:** One rule for both cases; the sim only ever sees per-tick state (§2.2 step 1). The Implementer's final code follows this; the Tester left the case unpinned.
+
+## Orchestrator — 1.2 review B1: CI toolchain pinned to versions.toml
+
+**Decision:** CI (ci.yml and spikes.yml) uses `dtolnay/rust-toolchain@1.97.0`, the toolchain recorded in `versions.toml`, instead of `@stable`. The rustc ≥ 1.97 check becomes an exact-version check. A toolchain bump is a deliberate change to `versions.toml` plus the workflows.
+**Rationale:** The 1.2 review found `@stable` (1.99.1 on runners) introduces new clippy lints (`chunks_exact_to_as_chunks` in pin_core/src/telemetry.rs) that turn already-reviewed code red with every Rust release. Same-build determinism (D9) also favours one pinned compiler. Resolves the HUMAN_QUEUE [0.1] toolchain item.
+**Also:** the concurrency group includes `github.event_name`, so a `workflow_dispatch` gate run is not cancelled by later push runs (review N2).

@@ -130,7 +130,8 @@ pub(crate) fn natural_second_derivatives(points: &[DVec3]) -> Vec<DVec3> {
         m[i] = (rhs - m[i - 1]) / denom;
     }
     for i in (1..n - 1).rev() {
-        m[i] -= m[i + 1] * c[i];
+        let next = m[i + 1];
+        m[i] -= next * c[i];
     }
     m
 }

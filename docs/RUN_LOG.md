@@ -15,3 +15,7 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 1 | 1.1 | Implementer | Opus 5.5 | fix 1 | done | 184 tests; coverage 99.33 %; Orchestrator re-ran fmt/clippy/tests | N1, N2, N3, N6 fixed; N4, N5 → 4.1, N7 → 2.4 |
 
 **Wave 1 gate: green on Linux.** Cross-OS workspace tests start with the CI matrix in Subphase 1.2 (Wave 2); Wave 1 is re-validated there.
+| 2 | 1.2 | Independent Tester | Fable 5.2 | 1 | done | 34 spec tests | commit c0c4500 |
+| 2 | 1.2 | Implementer | Opus 5.5 | 1 | done | actionlint clean; Linux commands pass | workflows in cf246e2 |
+| 2 | 1.2 | Reviewer | Fable 5.2 | 1 | **fail** | B1: `@stable` (1.99.1) clippy lint breaks pin_core | spikes CI green on 3 OS; ci machinery works; other red jobs are wave-2 WIP |
+| 2 | 1.2 | Implementer + Tester | Opus 5.5 / Fable 5.2 | fix 1 | running | — | pin CI to 1.97.0; N2, N4, N5, N7, N3 |
