@@ -1801,6 +1801,7 @@ dependencies = [
  "pin_core",
  "proptest",
  "wasmtime",
+ "wat",
 ]
 
 [[package]]

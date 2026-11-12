@@ -478,7 +478,7 @@ impl PlungerFilter {
         // White noise of std σ gives second differences of std √6·σ; a
         // k-step difference then carries √2·σ/k of noise per ms.
         let sigma = (s2 / ((m - 2) as f64 * 6.0)).sqrt() as f32;
-        let margin = 3.0 * core::f32::consts::SQRT_2 * sigma / k as f32 * 1000.0;
+        let margin = 4.0 * core::f32::consts::SQRT_2 * sigma / k as f32 * 1000.0;
         if v_fit > 0.0 && v_fit.is_finite() && peak <= v_fit + margin {
             v_fit
         } else {

@@ -411,3 +411,250 @@ fn ball_rests_in_groove_and_corner() {
         end.position
     );
 }
+
+/// Largest distance any ball moves from where it was after `settle` ticks,
+/// over the following 10 s.
+fn resting_drift(
+    s: &mut pin_physics::ball::BallSolver,
+    geo: &Geometry<'_>,
+    settle: usize,
+) -> (f32, f32) {
+    let mut ev = BallEvents::new();
+    for _ in 0..settle {
+        s.step(geo, DT, &mut ev);
+    }
+    let start: Vec<Vec3> = s.balls().map(|(_, b)| b.position).collect();
+    let (mut drift, mut speed) = (0.0f32, 0.0f32);
+    for _ in 0..10_000 {
+        ev.clear();
+        s.step(geo, DT, &mut ev);
+        for ((_, b), p0) in s.balls().zip(&start) {
+            drift = drift.max(b.position.distance(*p0));
+            speed = speed.max(b.velocity.length());
+        }
+        assert!(ev.as_slice().is_empty(), "{:?}", ev.as_slice());
+    }
+    (drift, speed)
+}
+
+/// Balls at rest in contact with several things stay put with headroom
+/// below the 1 µm criterion: a ball on a pitched floor (cuboid or mesh)
+/// against a post, rows of balls against the post, and a mini ball pinned
+/// between two jumbo balls against a wall (review round 1).
+#[test]
+fn resting_against_posts_and_other_balls_has_headroom() {
+    let rot = glam::Quat::from_rotation_x(6.5f32.to_radians());
+    let n = rot * Vec3::Z;
+    let down = (v(0.0, 0.0, -1.0) - n * -n.z).normalize();
+    for mesh in [false, true] {
+        let mut b = StaticWorldBuilder::new();
+        if mesh {
+            let (u, w) = (rot * Vec3::X * 2.0, rot * Vec3::Y * 2.0);
+            b.add_collider(
+                StaticShape::TriMesh {
+                    vertices: vec![-u - w, u - w, u + w, w - u],
+                    indices: vec![[0, 1, 2], [0, 2, 3]],
+                },
+                layers::ALL,
+                true,
+            );
+        } else {
+            b.add_collider(
+                StaticShape::Cuboid {
+                    center: n * -0.05,
+                    half_extents: v(2.0, 2.0, 0.05),
+                    rotation: rot,
+                },
+                layers::ALL,
+                true,
+            );
+        }
+        b.add_collider(
+            StaticShape::Cylinder {
+                base: n * -0.005,
+                axis: n * 0.04,
+                radius: 0.005,
+            },
+            layers::ALL,
+            true,
+        );
+        let world = b.build();
+        let geo = Geometry::new(&world);
+        for (profile, count) in [
+            (STEEL, 1usize),
+            (MINI, 1),
+            (POWERBALL, 1),
+            (STEEL, 2),
+            (STEEL, 3),
+            (STEEL, 5),
+        ] {
+            let r = radius(profile);
+            let mut s = solver();
+            for k in 0..count {
+                // Uphill of the post, started a micrometre off the floor and
+                // the post and 10 µm apart.
+                let along = 0.005 + r + 1.0e-6 + (2.0 * r + 1.0e-5) * k as f32;
+                s.add_ball(Ball::new(profile, n * (r + 1.0e-6) - down * along))
+                    .unwrap();
+            }
+            let (drift, speed) = resting_drift(&mut s, &geo, 2000);
+            assert!(
+                drift < 0.5e-6 && speed < 1.0e-4,
+                "mesh {mesh} {profile:?} x{count}: drift {drift}, speed {speed}"
+            );
+        }
+    }
+
+    // Jumbo, mini, jumbo in a row, gravity pitched toward a wall at x = 0.
+    let mut b = StaticWorldBuilder::new();
+    b.add_collider(
+        cuboid(v(0.0, 0.0, -0.05), v(2.0, 2.0, 0.05)),
+        layers::ALL,
+        true,
+    );
+    b.add_collider(
+        cuboid(v(-0.05, 0.0, 0.05), v(0.05, 2.0, 0.05)),
+        layers::ALL,
+        true,
+    );
+    let world = b.build();
+    let geo = Geometry::new(&world);
+    let pitch = 6.5f32.to_radians();
+    let mut cfg = config();
+    cfg.gravity = v(-9.81 * libm::sinf(pitch), 0.0, -9.81 * libm::cosf(pitch));
+    let mut s = pin_physics::ball::BallSolver::new(cfg, &profiles());
+    let (rj, rm) = (radius(JUMBO), radius(MINI));
+    s.add_ball(Ball::new(JUMBO, v(rj, 0.0, rj))).unwrap();
+    s.add_ball(Ball::new(MINI, v(rj + rm + 0.0005, 0.0, rm)))
+        .unwrap();
+    s.add_ball(Ball::new(JUMBO, v(2.0 * rj + 2.0 * rm + 0.002, 0.0, rj)))
+        .unwrap();
+    let (drift, speed) = resting_drift(&mut s, &geo, 3000);
+    assert!(
+        drift < 0.5e-6 && speed < 1.0e-4,
+        "pinned: drift {drift}, speed {speed}"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// The guide cast on rising and falling arcs (plan-view reach bound,
+    /// fix round 1) is still safe: a reported contact is at the wall, and a
+    /// free path never comes closer to the wall than the sliding allowance.
+    #[test]
+    fn rising_guide_cast_never_tunnels(
+        rise in -0.15f32..0.15,
+        start in (-0.1f32..0.5, -0.1f32..0.5, 0.1f32..0.45),
+        dir in vec3(1.0),
+        speed in 0.2f32..30.0,
+        ball_radius in 0.005f32..0.02,
+    ) {
+        use pin_physics::world::GuideCast;
+        prop_assume!(dir.length() > 0.1);
+        let pts: Vec<Vec3> = (0..=40)
+            .map(|i| {
+                let u = i as f32 / 40.0;
+                v(0.4 * libm::sinf(2.0 * u), 0.4 - 0.4 * libm::cosf(2.0 * u), 0.2 + rise * u)
+            })
+            .collect();
+        let g = GuideCurve::new(CubicSpline::interpolate(&pts).unwrap(), 0.05).unwrap();
+        let p0 = v(start.0, start.1, start.2);
+        let vel = dir.normalize() * speed;
+        let gap_at = |t: f32| g.closest_point(p0 + vel * t, None).distance - ball_radius;
+        // Start clear of the wall.
+        prop_assume!(gap_at(0.0) > 1.0e-4);
+        let window = 2.0e-3f32;
+        let mut t = 0.0f32;
+        let mut end = window;
+        let mut casts = 0;
+        loop {
+            casts += 1;
+            prop_assert!(casts <= 40, "too many casts");
+            match g.cast_sphere(p0 + vel * t, ball_radius, vel, window - t, None) {
+                None => break,
+                Some(GuideCast::Advance { time }) => {
+                    prop_assert!(time > 0.0);
+                    t += time;
+                }
+                Some(GuideCast::Contact(hit)) => {
+                    end = t + hit.time;
+                    let gap = gap_at(end);
+                    prop_assert!((-2.0e-5..=2.0e-5).contains(&gap), "contact gap {}", gap);
+                    break;
+                }
+            }
+        }
+        // Up to the contact (or the end of the window) the path is free.
+        for k in 0..=400 {
+            let gap = gap_at(end * k as f32 / 400.0);
+            prop_assert!(gap > -2.0e-5, "tunnelled: gap {} at {}/400 of {}", gap, k, end);
+        }
+    }
+}
+
+/// World-level regressions of fix round 1.
+#[test]
+fn world_amendments_of_fix_round_one() {
+    use pin_physics::world::GuideCast;
+    // A ball running alongside a rising arc is cleared in a few cast steps
+    // (it used to exhaust the 32-step budget every 0.3 mm).
+    let pts: Vec<Vec3> = (0..=40)
+        .map(|i| {
+            let u = i as f32 / 40.0;
+            v(
+                0.4 * libm::sinf(2.0 * u),
+                0.4 - 0.4 * libm::cosf(2.0 * u),
+                0.15 * u,
+            )
+        })
+        .collect();
+    let g = GuideCurve::new(CubicSpline::interpolate(&pts).unwrap(), 0.05).unwrap();
+    assert!(!g.is_level());
+    let r = 0.0135;
+    let centre = v(0.0, 0.4, 0.0);
+    for k in 2..18 {
+        let a = 0.1 * k as f32;
+        let radial = v(libm::sinf(a), -libm::cosf(a), 0.0);
+        let tangent = v(libm::cosf(a), libm::sinf(a), 0.0);
+        let on_wall = centre + radial * 0.4 + Vec3::Z * (0.15 * a / 2.0 + 0.025);
+        // Leaving the wall tangentially from 100 µm inside it.
+        let start = on_wall - radial * (r + 1.0e-4);
+        let (cast, steps) = g.cast_sphere_counted(start, r, tangent * 8.0, 1.0e-3, None);
+        assert!(steps <= 8, "k {k}: {steps} steps");
+        assert!(!matches!(cast, Some(GuideCast::Advance { .. })), "k {k}");
+    }
+
+    // The face distance of a huge triangle has no rounding noise at the
+    // scale of the 1 µm contact skin (it used to jump by up to a micrometre
+    // from one query to the next). The plane itself is only known to f32
+    // accuracy, so the error is compared between neighbouring queries.
+    let rot = glam::Quat::from_rotation_x(6.5f32.to_radians());
+    let n = rot * Vec3::Z;
+    let (u, w) = (rot * Vec3::X * 60.0, rot * Vec3::Y * 60.0);
+    let mut b = StaticWorldBuilder::new();
+    b.add_collider(
+        StaticShape::TriMesh {
+            vertices: vec![-u - w, u - w, u + w, w - u],
+            indices: vec![[0, 1, 2], [0, 2, 3]],
+        },
+        layers::ALL,
+        true,
+    );
+    let world = b.build();
+    let mut out = arrayvec::ArrayVec::new();
+    let mut worst = 0.0f32;
+    let mut previous: Option<f32> = None;
+    for k in 0..2000 {
+        let on_plane = rot * v(-1.0 + 0.001 * k as f32, 0.7 - 0.0007 * k as f32, 0.0);
+        let depth = 3.0e-7 + 1.0e-9 * k as f32;
+        world.sphere_contacts(on_plane + n * (0.01 - depth), 0.01, layers::ALL, &mut out);
+        assert_eq!(out.len(), 1, "k {k}");
+        let error = out[0].depth - depth;
+        if let Some(before) = previous {
+            worst = worst.max((error - before).abs());
+        }
+        previous = Some(error);
+    }
+    assert!(worst < 2.0e-7, "face depth noise {worst}");
+}

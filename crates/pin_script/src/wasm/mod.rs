@@ -39,7 +39,9 @@
 //! allocates, and is the only import usable outside the three callbacks.
 //!
 //! Required exports: `on_init: () -> ()`, `on_tick: () -> ()`,
-//! `on_switch_edge: (id: i32, closed: i32) -> ()` and `memory`. Optional
+//! `on_switch_edge: (id: i32, closed: i32) -> ()` and `memory`. The entry
+//! points must be functions the module defines: re-exporting an imported
+//! host function under one of these names is rejected. Optional
 //! exports (hot-swap state, see below): `save_state: () -> i64`,
 //! `restore_state: (ptr: i32, len: i32) -> ()`, `alloc_state: (len: i32) -> i32`.
 //! A missing required export, an export of the wrong type, or any other
@@ -56,9 +58,29 @@
 //!   the cap. Tables are limited to [`MAX_TABLES`] tables of at most
 //!   [`MAX_TABLE_ELEMENTS`] elements; one memory, one instance per store.
 //! * Fuel metering is the per-callback budget
-//!   ([`WasmConfig::fuel_per_callback`], about one unit per Wasm operator):
-//!   every callback, the start function and every state hook start with a
-//!   fresh budget; exhausting it traps ([`ScriptError::BudgetExceeded`]).
+//!   ([`WasmConfig::fuel_per_callback`]): about one unit per Wasm operator,
+//!   and bulk operations are charged by size on top of that, one unit per
+//!   byte (`memory.fill`, `memory.copy`, `memory.init`), per element
+//!   (`table.fill`, `table.copy`, `table.init`, `table.grow`) or per page
+//!   (`memory.grow`). A bulk operation's size-proportional fuel is charged
+//!   when it completes, so one operation can overshoot the budget by at most
+//!   its own size (bounded by the memory cap and the table limits) before
+//!   the callback traps. Every callback, the start function and every state
+//!   hook start with a fresh budget; exhausting it traps
+//!   ([`ScriptError::BudgetExceeded`]).
+//! * Module size (checked before anything is compiled, so a hostile module
+//!   cannot make compilation take seconds or gigabytes): at most
+//!   [`MAX_MODULE_BYTES`] of binary (WAT text: at most [`MAX_WAT_BYTES`] of
+//!   text, and the binary it produces at most [`MAX_MODULE_BYTES`]), at most
+//!   [`MAX_FUNCTIONS`] defined functions, no function body larger than
+//!   [`MAX_FUNCTION_BODY_BYTES`], at most [`MAX_GLOBALS`] globals,
+//!   [`MAX_TOTAL_TABLE_ELEMENTS`] initial table elements in total and
+//!   [`MAX_SEGMENTS`] data and [`MAX_SEGMENTS`] element segments. Anything
+//!   above is [`ScriptError::Load`].
+//! * Stack: Wasm code may use at most [`MAX_WASM_STACK_BYTES`] of the
+//!   calling thread's stack; deeper recursion traps (a fault, like any other
+//!   trap). The thread that calls the backend (the sim thread) must have at
+//!   least [`MIN_HOST_STACK_BYTES`] of stack.
 //! * Determinism: NaN canonicalisation on, threads/shared memory off, relaxed
 //!   SIMD off (and deterministic if it were on), memory64, multi-memory, GC,
 //!   exceptions, stack switching and the component model off. All Wasm
@@ -112,8 +134,10 @@ mod host;
 use host::{HostState, IdTables, V};
 use pin_core::ids::SwitchId;
 use pin_core::{HostCommandQueue, HostCtx, ScriptError, SwitchEdge, TableScriptBackend};
+use std::borrow::Cow;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
+use wasmtime::wasmparser::{ExternalKind, Parser, Payload, TypeRef};
 use wasmtime::{
     Config, Engine, ExternType, Linker, Memory, Module, Store, StoreLimitsBuilder, Trap, TypedFunc,
     ValType,
@@ -129,6 +153,36 @@ pub const MAX_TABLES: usize = 4;
 
 /// Most elements of one table (initial size and growth).
 pub const MAX_TABLE_ELEMENTS: usize = 65_536;
+
+/// Largest binary module accepted, bytes (D25, checked before compiling).
+pub const MAX_MODULE_BYTES: usize = 1024 * 1024;
+
+/// Largest WAT text module accepted, bytes. The binary it compiles to must
+/// still fit [`MAX_MODULE_BYTES`].
+pub const MAX_WAT_BYTES: usize = 4 * 1024 * 1024;
+
+/// Most functions a module may define (imports not counted).
+pub const MAX_FUNCTIONS: u32 = 10_000;
+
+/// Largest single function body, bytes of its binary encoding.
+pub const MAX_FUNCTION_BODY_BYTES: u64 = 256 * 1024;
+
+/// Most globals a module may define.
+pub const MAX_GLOBALS: u32 = 1_000;
+
+/// Most table elements all of a module's tables may start with together.
+pub const MAX_TOTAL_TABLE_ELEMENTS: u64 = 100_000;
+
+/// Most data segments, and separately most element segments, of a module.
+pub const MAX_SEGMENTS: u32 = 1_000;
+
+/// Stack Wasm code may use before it traps, bytes.
+pub const MAX_WASM_STACK_BYTES: usize = 256 * 1024;
+
+/// Smallest stack the thread calling a [`WasmScriptBackend`] must have,
+/// bytes (Wasm frames up to [`MAX_WASM_STACK_BYTES`] plus the host frames of
+/// the sim loop, the backend and wasmtime's trap handling).
+pub const MIN_HOST_STACK_BYTES: usize = 2 * 1024 * 1024;
 
 /// Bytes per Wasm page.
 const PAGE: u64 = 65_536;
@@ -186,7 +240,8 @@ fn engine() -> Result<&'static Engine, ScriptError> {
                 .wasm_component_model(false)
                 .wasm_custom_page_sizes(false)
                 .wasm_wide_arithmetic(false)
-                .parallel_compilation(false);
+                .parallel_compilation(false)
+                .max_wasm_stack(MAX_WASM_STACK_BYTES);
             Engine::new(&c).map_err(|e| format!("{e:#}"))
         })
         .as_ref()
@@ -263,6 +318,109 @@ fn check_resources(module: &Module, cfg: &WasmConfig) -> Result<(), ScriptError>
         return Err(load(format_args!(
             "a table starts with more than {MAX_TABLE_ELEMENTS} elements"
         )));
+    }
+    Ok(())
+}
+
+/// Converts WAT text to binary and checks the size limits (see the module
+/// docs) without compiling anything. Returns the binary.
+fn precheck(bytes: &[u8]) -> Result<Cow<'_, [u8]>, ScriptError> {
+    let binary = bytes.starts_with(b"\0asm");
+    let cap = if binary { MAX_MODULE_BYTES } else { MAX_WAT_BYTES };
+    if bytes.len() > cap {
+        return Err(load(format_args!(
+            "module is {} bytes (at most {cap} bytes of {})",
+            bytes.len(),
+            if binary { "binary" } else { "WAT text" }
+        )));
+    }
+    let bin = if binary {
+        Cow::Borrowed(bytes)
+    } else {
+        Cow::Owned(
+            wat::parse_bytes(bytes)
+                .map_err(|e| load(format_args!("{e}")))?
+                .into_owned(),
+        )
+    };
+    if bin.len() > MAX_MODULE_BYTES {
+        return Err(load(format_args!(
+            "module compiles to {} bytes of binary (at most {MAX_MODULE_BYTES})",
+            bin.len()
+        )));
+    }
+    scan(&bin)?;
+    Ok(bin)
+}
+
+/// Counts what compiling `bin` would cost and rejects modules above the
+/// limits, and modules exporting an imported function as an entry point.
+fn scan(bin: &[u8]) -> Result<(), ScriptError> {
+    let parse = |e: wasmtime::wasmparser::BinaryReaderError| load(format_args!("{e}"));
+    let over = |what: &str, n: u64, max: u64| {
+        Err(load(format_args!(
+            "module has {n} {what} (at most {max})"
+        )))
+    };
+    let mut imported_funcs = 0u32;
+    for payload in Parser::new(0).parse_all(bin) {
+        match payload.map_err(parse)? {
+            Payload::ImportSection(r) => {
+                for imp in r.into_imports() {
+                    if matches!(imp.map_err(parse)?.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
+                        imported_funcs = imported_funcs.saturating_add(1);
+                    }
+                }
+            }
+            Payload::FunctionSection(r) if r.count() > MAX_FUNCTIONS => {
+                return over("functions", r.count().into(), MAX_FUNCTIONS.into());
+            }
+            Payload::CodeSectionStart { count, .. } if count > MAX_FUNCTIONS => {
+                return over("function bodies", count.into(), MAX_FUNCTIONS.into());
+            }
+            Payload::CodeSectionEntry(body) => {
+                let r = body.range();
+                let len = r.end - r.start;
+                if len > MAX_FUNCTION_BODY_BYTES {
+                    return Err(load(format_args!(
+                        "a function body is {len} bytes (at most {MAX_FUNCTION_BODY_BYTES})"
+                    )));
+                }
+            }
+            Payload::GlobalSection(r) if r.count() > MAX_GLOBALS => {
+                return over("globals", r.count().into(), MAX_GLOBALS.into());
+            }
+            Payload::TableSection(r) => {
+                let mut total = 0u64;
+                for t in r {
+                    total = total.saturating_add(t.map_err(parse)?.ty.initial);
+                }
+                if total > MAX_TOTAL_TABLE_ELEMENTS {
+                    return over("initial table elements", total, MAX_TOTAL_TABLE_ELEMENTS);
+                }
+            }
+            Payload::DataSection(r) if r.count() > MAX_SEGMENTS => {
+                return over("data segments", r.count().into(), MAX_SEGMENTS.into());
+            }
+            Payload::ElementSection(r) if r.count() > MAX_SEGMENTS => {
+                return over("element segments", r.count().into(), MAX_SEGMENTS.into());
+            }
+            Payload::ExportSection(r) => {
+                for e in r {
+                    let e = e.map_err(parse)?;
+                    if e.kind == ExternalKind::Func
+                        && e.index < imported_funcs
+                        && EXPORTS.iter().any(|(n, ..)| *n == e.name)
+                    {
+                        return Err(load(format_args!(
+                            "export {} re-exports an imported host function",
+                            e.name
+                        )));
+                    }
+                }
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -389,10 +547,10 @@ impl Live {
             self.store.set_fuel(fuel).map_err(load)?;
             let p = alloc.call(&mut self.store, len).map_err(fail)?;
             let start = p as u32 as usize;
-            let dst = self
-                .memory
-                .data_mut(&mut self.store)
-                .get_mut(start..start + blob.len())
+            let data = self.memory.data_mut(&mut self.store);
+            let dst = start
+                .checked_add(blob.len())
+                .and_then(|end| data.get_mut(start..end))
                 .ok_or_else(|| {
                     ScriptError::Runtime(format!(
                         "alloc_state({len}) returned {start}, outside guest memory"
@@ -494,7 +652,8 @@ impl WasmScriptBackend {
     /// text). The start function, if any, runs under a fresh fuel budget; no
     /// callback is called yet.
     ///
-    /// Errors: `Load` for invalid bytes, unknown or mistyped imports,
+    /// Errors: `Load` for invalid bytes, a module above the size limits,
+    /// unknown or mistyped imports,
     /// missing or mistyped exports, too many/too large tables and a trapping
     /// start function; `MemoryLimit` for a declared initial memory above the
     /// cap; `BudgetExceeded` when the start function runs out of fuel.
@@ -512,11 +671,14 @@ impl WasmScriptBackend {
         })
     }
 
-    /// Compiles and validates `bytes` (imports, exports, declared sizes
-    /// against `cfg`) without instantiating it. May run on any thread.
+    /// Checks the size limits, then compiles and validates `bytes`
+    /// (imports, exports, declared sizes against `cfg`) without
+    /// instantiating it. May run on any thread.
     pub fn prepare(bytes: &[u8], cfg: WasmConfig) -> Result<PreparedModule, ScriptError> {
         let engine = engine()?;
-        let module = Module::new(engine, bytes).map_err(|e| load(format_args!("{e:#}")))?;
+        let bin = precheck(bytes)?;
+        let module =
+            Module::from_binary(engine, &bin).map_err(|e| load(format_args!("{e:#}")))?;
         for imp in module.imports() {
             let ok = imp.module() == host::MODULE
                 && host::IMPORTS

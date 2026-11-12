@@ -12,6 +12,10 @@ pin_core.workspace = true
 mlua.workspace = true
 notify.workspace = true
 wasmtime.workspace = true
+# 4.5 fix B1: WAT text -> binary before the size pre-scan. The exact version
+# wasmtime 50 already pulls in (Cargo.lock); Orchestrator may move the pin to
+# the root.
+wat = "=1.263.0"
 
 [dev-dependencies]
 proptest.workspace = true
