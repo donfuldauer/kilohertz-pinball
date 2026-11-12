@@ -529,6 +529,8 @@ Implements "Orchestrator — 4.2 re-review round 3". All charging is central (KH
 **Rationale:** brief + §2.2/D5/D6/D19; choices keep the fixed API exact and the sim path allocation-free.
 
 ## 4.1 — Bundle loading choices
+
+> Superseded in part by "4.1 — fix round 1" (archive-size cap, ratio floor and live ratio check).
 - **Zip:** the whole central directory is validated at open (names must be strict UTF-8; `\` is a separator; leading `/`/`\`, UNC and `X:` prefixes are `AbsolutePath`; any `..` component is `PathTraversal`, even one that would stay inside; symlinks by Unix mode; encrypted flag; only stored/deflate). Ratio = uncompressed / compressed (empty compressed stream = 1 byte), checked for every entry. Entries decompress into memory on read, capped at the declared size. An archive file larger than 2 × `max_total_uncompressed` + 1 MiB is refused before reading.
 - **Wrapper folder:** stripped (zip and folder) when `table.toml` is not at the root and every file lives under one top-level folder that contains `table.toml`.
 - **Cabinet switches:** implicitly declared under their input names (`left_flipper` … `tilt`) with their numbers. A declared switch may share a cabinet number (it is that switch); a declared switch may not use a cabinet input name with another number; two cabinet inputs may not share a number.
