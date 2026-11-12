@@ -273,3 +273,9 @@ Implements "Orchestrator — 4.2 review: patched vendored Lua". Patch list: `thi
 
 **Decision:** `LuaConfig::default()` keeps the brief's 1,000,000 instructions per callback (tests and tools). The engine (Subphase 2.5, `pin_sim`) constructs the Lua backend with `instruction_budget = 100_000`. That is about 0.3 ms of plain Lua, which keeps a runaway callback's one-off overrun within the 8-tick catch-up window (§2.2). The budget is a table-overridable setting, in case a table needs more.
 **Rationale:** 4.2 measured a 1M-instruction runaway at about 3 ms (worst 7.8 ms for table growth), longer than one tick. Real rules need a few thousand instructions per tick, and the Gate A2 soak checks the tick-time budget per table.
+
+## Orchestrator — 4.2 re-review round 2
+
+- **`string.pack`, `string.unpack` and `string.packsize` are removed from the sandbox** (B7). Rules scripts have no use for binary packing, and removing them is smaller and safer than charging every format option.
+- **Stall tolerance (B9):** the worst single tick a script can cause before it faults must be at most **8 ms at the engine budget of 100,000 instructions**, which is the §2.2 catch-up window, measured in release. The fix is a flat charge per C-function call plus extra charges for expensive conversions, float `fmod`, `tonumber`/`tostring` and error raising, as the reviewer proposed.
+- **Rollback must never strand a held coil** (B8): if a faulting callback's dropped commands include hold releases, those coils still count as held, so the tilt release emits them.

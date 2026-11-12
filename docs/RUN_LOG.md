@@ -39,3 +39,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 2 | 2.1 | Reviewer | Opus 5.5 | 3 | **pass** | gate green; probes: no ratchet (−10 µm max), closed loops glide, 0 deep penetrations in 30 754 adversarial casts | near-closed loops (ends within ~1e-8 m) bypass exact-equality check → 4.1 |
 | 2 | 4.2 | Implementer | Opus 5.5 | fix 1 | done | 252 tests incl. 42 stall cases; coverage 98.1 %; zero allocs | patched vendored Lua (10 KHZ patches); B1–B6 fixed; faulting callback drops its own commands |
 | 2 | 4.2 | Independent Tester | Fable 5.2 | 2 | done | hardening + cross-process specs | pointer-keyed pairs ruling applied |
+| 2 | 4.2 | Reviewer | Fable 5.2 | 2 | **fail** | gates 1–7 pass; CI green on 3 OS with patched Lua; B1–B6 confirmed fixed | B7 uncharged pack/unpack/%q loops (26 s), B8 rolled-back hold release strands coil, B9 cheap-call/expensive-run ops (up to 557 ms at 1M) |
