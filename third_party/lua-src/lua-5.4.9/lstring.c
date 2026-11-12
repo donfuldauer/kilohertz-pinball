@@ -31,9 +31,19 @@
 /*
 ** equality for long strings
 */
+/*
+** KHZ: cost of long-string compares made where no lua_State is at hand
+** (table lookups). Drained into the state's budget by 'lua_khzspend'.
+** Per thread: a Lua state runs on one thread at a time.
+*/
+KHZ_TLS lua_Integer luaS_khzpending = 0;
+
+
 int luaS_eqlngstr (TString *a, TString *b) {
   size_t len = a->u.lnglen;
   lua_assert(a->tt == LUA_VLNGSTR && b->tt == LUA_VLNGSTR);
+  if (a != b && len == b->u.lnglen)  /* KHZ: charge the memcmp */
+    luaS_khzpending += (lua_Integer)(len >> 6);
   return (a == b) ||  /* same instance or... */
     ((len == b->u.lnglen) &&  /* equal length and ... */
      (memcmp(getlngstr(a), getlngstr(b), len) == 0));  /* equal contents */

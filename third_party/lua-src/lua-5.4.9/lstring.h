@@ -44,6 +44,14 @@
 LUAI_FUNC unsigned int luaS_hash (const char *str, size_t l, unsigned int seed);
 LUAI_FUNC unsigned int luaS_hashlongstr (TString *ts);
 LUAI_FUNC int luaS_eqlngstr (TString *a, TString *b);
+
+/* KHZ: thread-local storage class (C11, or MSVC's extension) */
+#if defined(_MSC_VER)
+#define KHZ_TLS	__declspec(thread)
+#else
+#define KHZ_TLS	_Thread_local
+#endif
+extern KHZ_TLS lua_Integer luaS_khzpending;  /* KHZ: see lstring.c */
 LUAI_FUNC void luaS_resize (lua_State *L, int newsize);
 LUAI_FUNC void luaS_clearcache (global_State *g);
 LUAI_FUNC void luaS_init (lua_State *L);

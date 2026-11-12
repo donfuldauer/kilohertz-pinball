@@ -603,11 +603,7 @@ int luaV_equalobj (lua_State *L, const TValue *t1, const TValue *t2) {
     case LUA_VLIGHTUSERDATA: return pvalue(t1) == pvalue(t2);
     case LUA_VLCF: return fvalue(t1) == fvalue(t2);
     case LUA_VSHRSTR: return eqshrstr(tsvalue(t1), tsvalue(t2));
-    case LUA_VLNGSTR: {
-      if (L != NULL && tsvalue(t1)->u.lnglen == tsvalue(t2)->u.lnglen)
-        lua_khzcharge(L, (lua_Integer)(tsvalue(t1)->u.lnglen >> 6));  /* KHZ */
-      return luaS_eqlngstr(tsvalue(t1), tsvalue(t2));
-    }
+    case LUA_VLNGSTR: return luaS_eqlngstr(tsvalue(t1), tsvalue(t2));  /* KHZ: charged inside */
     case LUA_VUSERDATA: {
       if (uvalue(t1) == uvalue(t2)) return 1;
       else if (L == NULL) return 0;

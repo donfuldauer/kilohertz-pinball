@@ -808,6 +808,8 @@ fn sliding_without_push_out_stays_within_the_sliding_limit() {
             "the ball should stay on the wall: {deepest}"
         );
         assert!(vel.length() > 7.0 && vel.is_finite());
+        // (Without push-out the ball is held at the limit and creeps: this
+        // test is about not sinking, not about making progress.)
     }
 }
 

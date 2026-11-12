@@ -460,11 +460,16 @@ void luaE_warnerror (lua_State *L, const char *where) {
 /* KHZ: cost budget shared with the host's count hook (see lua.h) */
 LUA_API void lua_khzsetbudget (lua_State *L, lua_Integer n) {
   G(L)->khzbudget = n;
+  luaS_khzpending = 0;
 }
 
 
 LUA_API lua_Integer lua_khzspend (lua_State *L, lua_Integer n) {
   global_State *g = G(L);
+  if (luaS_khzpending > 0) {  /* take the compares charged without a state */
+    n = (n > LUA_MAXINTEGER / 4) ? n : n + luaS_khzpending;
+    luaS_khzpending = 0;
+  }
   if (g->khzbudget > LUA_MININTEGER / 2)
     g->khzbudget -= (n > LUA_MAXINTEGER / 4) ? LUA_MAXINTEGER / 4 : n;
   return g->khzbudget;

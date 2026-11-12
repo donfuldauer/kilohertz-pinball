@@ -322,3 +322,22 @@ impl AddFilesByExt for cc::Build {
         Ok(self)
     }
 }
+
+/// KHZ: the patched Lua sources (see KHZ_PATCHES.md). Including them makes
+/// rustc's dep-info list these files, so cargo rebuilds Lua when they change.
+#[doc(hidden)]
+pub const KHZ_PATCHED_SOURCES: &[&str] = &[
+    include_str!("../lua-5.4.9/lua.h"),
+    include_str!("../lua-5.4.9/lstate.h"),
+    include_str!("../lua-5.4.9/lstate.c"),
+    include_str!("../lua-5.4.9/lstring.h"),
+    include_str!("../lua-5.4.9/lstring.c"),
+    include_str!("../lua-5.4.9/ldebug.c"),
+    include_str!("../lua-5.4.9/lstrlib.c"),
+    include_str!("../lua-5.4.9/ltablib.c"),
+    include_str!("../lua-5.4.9/lutf8lib.c"),
+    include_str!("../lua-5.4.9/lvm.c"),
+    include_str!("../lua-5.4.9/lparser.c"),
+    include_str!("../lua-5.4.9/lauxlib.c"),
+    include_str!("../lua-5.4.9/lbaselib.c"),
+];
