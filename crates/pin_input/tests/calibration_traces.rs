@@ -142,7 +142,9 @@ fn plunger_rest_drift_is_tracked_away() {
     // A real pull from the drifted rest still reads, with 1.0 at full pull.
     let o = f.update(1.0, 50_000);
     assert_eq!(o.position, 1.0);
-    let o = f.update(0.15, 50_001);
+    f.update(1.0, 50_001);
+    f.update(0.6, 50_002);
+    let o = f.update(0.15, 50_003);
     assert!(o.release.is_some());
 }
 
@@ -254,7 +256,7 @@ fn plunger_power_on_rest_is_acquired() {
         assert!((f.rest() - rest).abs() < 0.005, "{} vs {rest}", f.rest());
         assert_eq!(out.last().unwrap().position, 0.0);
         // A real pull and snap from the acquired rest: one release.
-        let mut t = 1500u64;
+        let mut t = 2500u64; // `run` used ticks 1000..2500
         let mut releases = Vec::new();
         for k in 0..=400 {
             f.update(rest + (1.0 - rest) * k as f32 / 400.0, t);
@@ -331,6 +333,212 @@ fn plunger_late_bounce_is_held_off() {
             );
         }
     }
+}
+
+// ---- round 2: the filter never gets stuck (review B2, N-a, N-c) ----
+
+/// Holds `level` for `ms` ticks; returns the releases seen.
+fn hold(f: &mut PlungerFilter, t: &mut u64, level: f32, ms: u64) -> Vec<f32> {
+    let mut r = Vec::new();
+    for _ in 0..ms {
+        r.extend(f.update(level, *t).release);
+        *t += 1;
+    }
+    r
+}
+
+/// Linear ramp from `a` to `b` over `ms` ticks (excluding `a`).
+fn ramp(f: &mut PlungerFilter, t: &mut u64, a: f32, b: f32, ms: u64) -> Vec<f32> {
+    let mut r = Vec::new();
+    for k in 1..=ms {
+        r.extend(f.update(a + (b - a) * k as f32 / ms as f32, *t).release);
+        *t += 1;
+    }
+    r
+}
+
+/// A normal launch from `rest`: 300 ms pull to `rest + depth`, 100 ms hold,
+/// `snap_ms` linear snap, 300 ms at rest. Asserts exactly one release within
+/// 5 % of the true speed `depth / snap_ms`.
+fn assert_launch(
+    f: &mut PlungerFilter,
+    t: &mut u64,
+    rest: f32,
+    depth: f32,
+    snap_ms: u64,
+    what: &str,
+) {
+    let mut r = ramp(f, t, rest, rest + depth, 300);
+    r.extend(hold(f, t, rest + depth, 100));
+    r.extend(ramp(f, t, rest + depth, rest, snap_ms));
+    r.extend(hold(f, t, rest, 300));
+    assert_eq!(r.len(), 1, "{what}: releases {r:?}");
+    let want = depth / snap_ms as f32 * 1000.0;
+    assert!(
+        (r[0] - want).abs() <= 0.05 * want,
+        "{what}: {} vs {want}",
+        r[0]
+    );
+}
+
+/// B2: holding the knob pushed in, for 1.5 s or 6 s, never disables launches:
+/// after ≤ 2 s back at rest the next launch (shallow or full) reports.
+#[test]
+fn plunger_push_in_never_disables_launches() {
+    for push in [-0.03f32, -0.1, -0.3] {
+        for hold_ms in [1500u64, 6000] {
+            let what = format!("push {push} for {hold_ms} ms");
+            let mut f = PlungerFilter::new(PlungerConfig::default());
+            let mut t = 0;
+            assert!(hold(&mut f, &mut t, 0.0, 5000).is_empty());
+            let mut r = ramp(&mut f, &mut t, 0.0, push, 20);
+            for _ in 0..hold_ms {
+                let o = f.update(push, t);
+                t += 1;
+                assert_eq!(o.position, 0.0, "{what}: pushed in reads 0");
+                r.extend(o.release);
+            }
+            // Let go: spring back with a small overshoot.
+            r.extend(ramp(&mut f, &mut t, push, 0.01, 15));
+            r.extend(ramp(&mut f, &mut t, 0.01, 0.0, 10));
+            r.extend(hold(&mut f, &mut t, 0.0, 2000));
+            assert!(r.is_empty(), "{what}: {r:?}");
+            assert!(!f.is_pulled(), "{what}: stuck pulled, rest {}", f.rest());
+            assert_launch(&mut f, &mut t, 0.0, 0.1, 10, &what);
+            assert_launch(&mut f, &mut t, 0.0, 0.9, 20, &what);
+        }
+    }
+}
+
+/// B2: a power-on rest of 0.06, then a dropout to 0.0 (reconnect), then back.
+#[test]
+fn plunger_dropout_from_power_on_rest_recovers() {
+    for drop_ms in [1500u64, 6000] {
+        let what = format!("dropout {drop_ms} ms");
+        let mut f = PlungerFilter::new(PlungerConfig::default());
+        let mut t = 0;
+        assert!(hold(&mut f, &mut t, 0.06, 1500).is_empty());
+        assert!((f.rest() - 0.06).abs() < 1e-3);
+        assert!(hold(&mut f, &mut t, 0.0, drop_ms).is_empty());
+        assert!(hold(&mut f, &mut t, 0.06, 2000).is_empty(), "{what}");
+        assert!(!f.is_pulled(), "{what}: rest {}", f.rest());
+        assert_launch(&mut f, &mut t, 0.06, 0.1, 10, &what);
+        assert_launch(&mut f, &mut t, 0.06, 0.8, 20, &what);
+    }
+}
+
+/// N-c: the true rest steps up after the power-on window. Steps below the
+/// qualifying depth are re-acquired within 1 s; a larger step is
+/// indistinguishable from a held pull and stays one (documented bound).
+#[test]
+fn plunger_rest_step_after_power_on_window() {
+    for step in [0.03f32, 0.04, 0.049] {
+        let what = format!("step {step}");
+        let mut f = PlungerFilter::new(PlungerConfig::default());
+        let mut t = 0;
+        hold(&mut f, &mut t, 0.0, 5000);
+        assert_launch(&mut f, &mut t, 0.0, 0.5, 20, &what);
+        assert!(hold(&mut f, &mut t, step, 2000).is_empty());
+        assert!((f.rest() - step).abs() < 0.005, "{what}: rest {}", f.rest());
+        assert_launch(&mut f, &mut t, step, 0.1, 10, &what);
+    }
+    let mut f = PlungerFilter::new(PlungerConfig::default());
+    let mut t = 0;
+    hold(&mut f, &mut t, 0.0, 5000);
+    hold(&mut f, &mut t, 0.08, 3000);
+    assert!(
+        f.is_pulled() && f.rest().abs() < 0.01,
+        "held pull, not a rest"
+    );
+    // Back at the old rest it launches again at once.
+    hold(&mut f, &mut t, 0.0, 100);
+    assert_launch(&mut f, &mut t, 0.0, 0.5, 20, "after held 0.08");
+}
+
+/// Invariant: from arbitrary prior motion, after ≤ 2 s still at the true rest
+/// (0) the next normal launch reports exactly one release.
+mod never_stuck {
+    use super::*;
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+        #[test]
+        fn any_history_then_rest_then_launch(
+            segs in prop::collection::vec((-0.35f32..1.0, 1u64..4000, any::<bool>()), 0..8),
+            depth in 0.1f32..0.9,
+            snap_ms in 5u64..40,
+        ) {
+            let mut f = PlungerFilter::new(PlungerConfig::default());
+            let mut t = 0u64;
+            let mut last = 0.0f32;
+            for (level, ms, ramped) in segs {
+                if ramped {
+                    ramp(&mut f, &mut t, last, level, ms.min(500));
+                }
+                hold(&mut f, &mut t, level, ms);
+                last = level;
+            }
+            ramp(&mut f, &mut t, last, 0.0, 300);
+            hold(&mut f, &mut t, 0.0, 2000);
+            let mut r = ramp(&mut f, &mut t, 0.0, depth, 300);
+            r.extend(hold(&mut f, &mut t, depth, 100));
+            r.extend(ramp(&mut f, &mut t, depth, 0.0, snap_ms));
+            r.extend(hold(&mut f, &mut t, 0.0, 300));
+            prop_assert_eq!(r.len(), 1, "rest {} releases {:?}", f.rest(), r);
+            let want = depth / snap_ms as f32 * 1000.0;
+            prop_assert!((r[0] - want).abs() <= 0.05 * want, "{} vs {}", r[0], want);
+        }
+    }
+}
+
+/// N-a: one- and two-sample spikes are not launches; a 3 ms / 3 ms tap is.
+#[test]
+fn plunger_spikes_versus_fast_taps() {
+    for spike in [vec![0.2f32], vec![0.9], vec![0.3, 0.3], vec![0.5, 0.9]] {
+        let mut f = PlungerFilter::new(PlungerConfig::default());
+        let mut t = 0;
+        hold(&mut f, &mut t, 0.0, 500);
+        let mut r = Vec::new();
+        for &x in &spike {
+            r.extend(f.update(x, t).release);
+            t += 1;
+        }
+        r.extend(hold(&mut f, &mut t, 0.0, 300));
+        assert!(r.is_empty(), "spike {spike:?}: {r:?}");
+        // The filter still launches right after.
+        assert_launch(&mut f, &mut t, 0.0, 0.5, 20, "after spike");
+    }
+    for depth in [0.3f32, 1.0] {
+        let mut f = PlungerFilter::new(PlungerConfig::default());
+        let mut t = 0;
+        hold(&mut f, &mut t, 0.0, 500);
+        let mut r = ramp(&mut f, &mut t, 0.0, depth, 3);
+        r.extend(ramp(&mut f, &mut t, depth, 0.0, 3));
+        r.extend(hold(&mut f, &mut t, 0.0, 300));
+        assert_eq!(r.len(), 1, "tap {depth}");
+        let want = depth / 3.0 * 1000.0;
+        assert!((r[0] - want).abs() <= 0.05 * want, "{} vs {want}", r[0]);
+    }
+}
+
+/// N-b (partial): a bounce that never settles at rest cannot qualify.
+#[test]
+fn plunger_unsettled_bounce_is_not_a_release() {
+    let mut f = PlungerFilter::new(PlungerConfig::default());
+    let mut t = 0;
+    hold(&mut f, &mut t, 0.0, 500);
+    assert_launch(&mut f, &mut t, 0.0, 0.8, 15, "first");
+    // 300 ms of ringing around rest with excursions past the deadzone, then a
+    // 6 % bounce and fast return: never 50 ms at rest, so no second launch.
+    let mut r = Vec::new();
+    for k in 0..300u64 {
+        let x = if (k / 20) % 2 == 0 { 0.03 } else { -0.03 };
+        r.extend(f.update(x, t).release);
+        t += 1;
+    }
+    r.extend(ramp(&mut f, &mut t, -0.03, 0.06, 5));
+    r.extend(ramp(&mut f, &mut t, 0.06, 0.0, 3));
+    r.extend(hold(&mut f, &mut t, 0.0, 300));
+    assert!(r.is_empty(), "{r:?}");
 }
 
 // ---- nudge ----

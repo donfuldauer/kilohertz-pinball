@@ -19,15 +19,20 @@
 //!     reading at `rest_tracking_per_s`; when a pull qualifies, the tracking
 //!     of the [`REST_LOOKBACK_TICKS`] updates before it started is undone;
 //!   - re-acquisition: a reading that stays within ±deadzone of one level
-//!     becomes the rest after [`STABLE_MS`] if that level is a small offset
-//!     above rest (less than the qualifying depth), or lies near a known-good
-//!     rest (the last rest a release returned to or that was acquired, the
-//!     rest before the last downward re-acquisition, nominal 0 at start;
-//!     tolerance `max(2·deadzone, 0.01)`), or is at most [`MAX_REST_OFFSET`]
-//!     during the power-on window ([`ACQUIRE_WINDOW_MS`], before the first
-//!     release); any other level *below* rest (the knob pushed in) becomes
-//!     rest only after [`PUSH_IN_REACQUIRE_MS`]. Re-acquisition cancels a pull
-//!     in progress without a release;
+//!     for [`STABLE_MS`] becomes the rest when it lies more than a deadzone
+//!     *above* rest and is either a small offset (less than the qualifying
+//!     depth), or a *known-good* rest, or at most [`MAX_REST_OFFSET`] during
+//!     the power-on window ([`ACQUIRE_WINDOW_MS`] after the first update,
+//!     before the first release); or when it lies more than a deadzone
+//!     *below* rest and is known-good. Known-good rests: nominal 0, the last
+//!     rest a release returned to or that was acquired upward, and the rest
+//!     the last downward re-acquisition moved away from (tolerance
+//!     `max(2·deadzone, 0.01)`). Any other level below rest is the knob held
+//!     pushed in: it reads 0 and becomes the rest only after
+//!     [`PUSH_IN_REACQUIRE_MS`]; the previous rest is remembered and restored
+//!     after [`STABLE_MS`] back there. Levels beyond
+//!     `±MAX_REST_OFFSET` never become the rest. Re-acquisition cancels a
+//!     pull in progress without a release;
 //!   - rest always stays within `±MAX_REST_OFFSET`.
 //!
 //! A rest that is too *high* never blocks a launch (the return still comes
@@ -56,7 +61,7 @@ pub const MIN_PULL_DEPTH: f32 = 0.05;
 pub const MIN_PULL_TICKS: u32 = 3;
 
 /// A pull can qualify only if the plunger was at rest this long (ms) before.
-pub const ARM_REST_MS: u64 = 30;
+pub const ARM_REST_MS: u64 = 50;
 
 /// After a release no new pull starts for this long (ms): the spring bounce.
 pub const RELEASE_HOLDOFF_MS: u64 = 200;
@@ -320,22 +325,22 @@ impl PlungerFilter {
             return;
         }
         let tol = (2.0 * deadzone).max(0.01);
-        let known_good = (level - self.anchor).abs() <= tol
-            || self
-                .before_push_in
-                .is_some_and(|r| (level - r).abs() <= tol);
-        let take = known_good
-            || (above && (level - self.rest < qualify_depth || power_on))
-            || (below && held_ms >= PUSH_IN_REACQUIRE_MS);
-        if !take {
-            return;
-        }
-        if below && !known_good {
-            // Remember where the rest was before the knob was held in.
-            self.before_push_in.get_or_insert(self.rest);
-        } else {
+        let known_good = |x: f32| {
+            x.abs() <= tol
+                || (x - self.anchor).abs() <= tol
+                || self.before_push_in.is_some_and(|r| (x - r).abs() <= tol)
+        };
+        let level_good = known_good(level);
+        let down = below && (level_good || held_ms >= PUSH_IN_REACQUIRE_MS);
+        let up = above && (level_good || level - self.rest < qualify_depth || power_on);
+        if down {
+            // Remember the rest it moved down from, so it can be restored.
+            self.before_push_in = Some(self.rest);
+        } else if up {
             self.anchor = level;
             self.before_push_in = None;
+        } else {
+            return;
         }
         self.rest = level;
         self.rest_len = 0;
@@ -401,7 +406,7 @@ mod tests {
     #[test]
     fn linear_snap_reports_exact_speed() {
         let mut f = PlungerFilter::new(PlungerConfig::default());
-        let mut trace = vec![0.0; 10];
+        let mut trace = vec![0.0; 50];
         trace.extend((0..=500).map(|i| i as f32 / 500.0)); // slow pull, 0.5 s
         trace.extend(vec![1.0; 50]);
         trace.extend((0..=20).rev().map(|i| i as f32 / 20.0)); // 20 ms snap: 50/s
@@ -433,8 +438,8 @@ mod tests {
         assert!(o.position > 0.4 && o.position.is_finite());
         let o = f.update(f32::INFINITY, 5);
         assert!(o.position.is_finite());
-        let o = f.update(0.0, 3); // backwards tick
-        assert!(o.release.is_some());
+        let o = f.update(0.0, 3); // backwards tick: dt counts as 1 ms
+        assert!(o.position == 0.0 && o.release.is_none_or(f32::is_finite));
         let mut bad = PlungerFilter::new(PlungerConfig {
             deadzone: f32::NAN,
             rest_tracking_per_s: f32::NAN,
@@ -452,7 +457,8 @@ mod tests {
     #[test]
     fn bounce_after_release_is_held_off() {
         let mut f = PlungerFilter::new(PlungerConfig::default());
-        let mut trace = vec![1.0; 20];
+        let mut trace = vec![0.0; 50];
+        trace.extend(vec![1.0; 20]);
         trace.extend([0.6, 0.2, -0.05, 0.05, 0.1, 0.0, -0.02, 0.0]);
         let (out, _) = run(&mut f, &trace, 0);
         assert_eq!(out.iter().filter(|o| o.release.is_some()).count(), 1);
@@ -467,7 +473,8 @@ mod tests {
         let mut f = PlungerFilter::new(cfg);
         // Fast pull-out early (backward), long hold, then a 100 ms return
         // whose speed (10/s) is all that the 10 ms window sees.
-        let mut trace = vec![0.0, 0.5, 1.0];
+        let mut trace = vec![0.0; 50];
+        trace.extend([0.5, 1.0]);
         trace.extend(vec![1.0; 2000]);
         trace.extend((0..=100).rev().map(|i| i as f32 / 100.0));
         let (out, _) = run(&mut f, &trace, 0);
@@ -496,7 +503,8 @@ mod tests {
         assert!((o.position - 0.48 / 0.98).abs() < 1e-6);
         let o = f.update(f32::MAX, 1041);
         assert_eq!(o.position, 1.0);
-        let o = f.update(0.0, 1042);
+        f.update(f32::MAX, 1042);
+        let o = f.update(0.0, 1043);
         let r = o.release.unwrap();
         assert!((r - RAW_LIMIT * 1000.0).abs() < 0.01, "{r}");
     }
