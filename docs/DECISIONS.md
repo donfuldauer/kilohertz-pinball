@@ -623,3 +623,7 @@ Subphase 4.5 deliberately turns `.wasm` from "unsupported" into a working backen
 ## Orchestrator — 3.2 plunger speed accuracy under noise
 
 Verification criterion 3 ("one release within 5 % of the true peak") is binding for noise-free traces and for noisy traces with depth ≥ 200 × noise amplitude. Below that, the release fires after only 8–16 samples of a shallow stroke and no estimator can reach 5 %; the accepted bound there is max(5 %, 12 × amplitude / depth). The binding requirement under noise is that no launch is lost and none is doubled.
+
+## Orchestrator — 2.2 fix round 1: 2.1 test adjusted
+
+`crates/pin_physics/tests/wireform.rs::guide_cast_on_a_rising_curve_stays_safe` (a 2.1 implementer test, not a spec test) asserted the stalled behaviour that 2.2 review B1 removed (32 cast steps and an `Advance` beside a rising curve). The 2.2 Implementer changed only that part to the new behaviour (≤ 8 steps, contact at the wall); the head-on safety assertions are unchanged. Accepted as within the world/ ownership amendment.
