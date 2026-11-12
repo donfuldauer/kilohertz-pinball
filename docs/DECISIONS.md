@@ -566,3 +566,7 @@ Implements "Orchestrator — 4.2 re-review round 3". All charging is central (KH
 ## Orchestrator — Wave 3 pins moved to the root (4.1)
 
 `gltf =1.4.1` in the root `[workspace.dependencies]` now has default features off (`names`, `extras`, `utils` only): the default `import` feature reads the real filesystem, which a bundle loader must never do (D25). `image =0.25.6` (`png`, `jpeg`, default features off) and `serde_json =1.0.151` are new root pins for 4.1. As with the other Wave 3 pins, `versions.toml` is unchanged (spikes lockfile check).
+
+## Orchestrator — 4.5 may update two 4.2 tests
+
+Subphase 4.5 deliberately turns `.wasm` from "unsupported" into a working backend, so the two 4.2 tests that pinned the old behaviour (`tests/lua_backend.rs::load_backend_by_extension`, `tests/spec_reload.rs::wasm_extension_is_unsupported_for_now`) are updated by the 4.5 Implementer to the new contract. That is an ownership amendment limited to those two tests; nothing else in 4.2's files changes.
