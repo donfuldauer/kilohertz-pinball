@@ -193,6 +193,8 @@ struct Slot {
     pixel_size: (u32, u32),
     minimized: bool,
     dirty: bool,
+    /// The last (re)configuration failed; retried before the next draw.
+    needs_configure: bool,
     present: Present,
     /// Renderers for this slot's format (lines, PiP outlines).
     lines: DebugRenderer,
@@ -211,6 +213,35 @@ pub struct SurfaceSet {
     /// meanwhile.
     gpu_lock: Arc<Mutex<()>>,
 }
+
+/// Configures `surface`, serialised with submissions by `gpu_lock`.
+///
+/// `Surface::configure` first waits for the device to go idle and reports a
+/// validation error when the queue is not empty afterwards (it can be, e.g.
+/// with a presenter thread presenting on the same device). That error is
+/// captured with an error scope instead of reaching the default handler
+/// (which panics); the call is retried a few times after waiting for the
+/// device. Returns `false` if it still failed — the caller retries later.
+pub(crate) fn try_configure(
+    device: &wgpu::Device,
+    surface: &wgpu::Surface<'_>,
+    config: &wgpu::SurfaceConfiguration,
+    gpu_lock: &Mutex<()>,
+) -> bool {
+    let _g = lock(gpu_lock);
+    for _ in 0..CONFIGURE_ATTEMPTS {
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        surface.configure(device, config);
+        if pollster::block_on(scope.pop()).is_none() {
+            return true;
+        }
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    }
+    false
+}
+
+/// Attempts per [`try_configure`] call.
+const CONFIGURE_ATTEMPTS: u32 = 4;
 
 /// Locks the submit/configure lock (a poisoned lock is still usable: it
 /// guards no data).
@@ -291,9 +322,11 @@ impl SurfaceSet {
                 choice = PresentChoice::PresenterThread(wgpu::PresentMode::Fifo);
             }
             let config = surface_config(format, &caps, src.pixel_size, choice.mode());
-            {
-                let _g = lock(&gpu_lock);
-                src.surface.configure(&device, &config);
+            if !try_configure(&device, &src.surface, &config, &gpu_lock) {
+                return Err(GpuError::Surface(format!(
+                    "window {} ({role:?}): surface configuration failed",
+                    src.window
+                )));
             }
             let (present, draw_format) = match choice {
                 PresentChoice::Direct(_) => (
@@ -325,6 +358,7 @@ impl SurfaceSet {
                 pixel_size: src.pixel_size,
                 minimized: false,
                 dirty: true,
+                needs_configure: false,
                 present,
                 lines: DebugRenderer::new(&device, draw_format),
                 overlay: DebugRenderer::new(&device, draw_format),
@@ -398,8 +432,8 @@ impl SurfaceSet {
                 {
                     config.width = w;
                     config.height = h;
-                    let _g = lock(&self.gpu_lock);
-                    surface.configure(&self.device, config);
+                    let ok = try_configure(&self.device, surface, config, &self.gpu_lock);
+                    s.needs_configure = !ok;
                 }
                 s.dirty = true;
             }
@@ -518,6 +552,15 @@ impl SurfaceSet {
             }
         };
         if matches!(s.present, Present::Direct { .. }) {
+            if s.needs_configure {
+                let Present::Direct { surface, config } = &s.present else {
+                    unreachable!()
+                };
+                if !try_configure(&device, surface, config, &gpu_lock) {
+                    return SurfaceStatus::Skipped;
+                }
+                s.needs_configure = false;
+            }
             let Present::Direct { surface, config } = &s.present else {
                 unreachable!()
             };
@@ -525,8 +568,8 @@ impl SurfaceSet {
                 wgpu::CurrentSurfaceTexture::Success(t) => (t, false),
                 wgpu::CurrentSurfaceTexture::Suboptimal(t) => (t, true),
                 wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                    let _g = lock(&gpu_lock);
-                    surface.configure(&device, config);
+                    let ok = try_configure(&device, surface, config, &gpu_lock);
+                    s.needs_configure = !ok;
                     return SurfaceStatus::Skipped;
                 }
                 _ => return SurfaceStatus::Skipped,
@@ -541,8 +584,8 @@ impl SurfaceSet {
             }
             queue.present(frame);
             if suboptimal && let Present::Direct { surface, config } = &s.present {
-                let _g = lock(&gpu_lock);
-                surface.configure(&device, config);
+                let ok = try_configure(&device, surface, config, &gpu_lock);
+                s.needs_configure = !ok;
             }
         } else {
             let source = {
@@ -628,22 +671,26 @@ fn spawn_presenter(
         .name(format!("presenter-{window}"))
         .spawn(move || {
             let blit = Blit::new(&device, config.format);
+            let mut configured = true;
             for job in rx {
-                if (config.width, config.height) != (job.width, job.height) {
+                if !configured || (config.width, config.height) != (job.width, job.height) {
                     config.width = job.width.max(1);
                     config.height = job.height.max(1);
-                    let _g = lock(&gpu_lock);
-                    surface.configure(&device, &config);
+                    configured = try_configure(&device, &surface, &config, &gpu_lock);
                 }
-                let frame = match surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(t)
-                    | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
-                    wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                        let _g = lock(&gpu_lock);
-                        surface.configure(&device, &config);
-                        None
+                let frame = if configured {
+                    match surface.get_current_texture() {
+                        wgpu::CurrentSurfaceTexture::Success(t)
+                        | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
+                        wgpu::CurrentSurfaceTexture::Outdated
+                        | wgpu::CurrentSurfaceTexture::Lost => {
+                            configured = try_configure(&device, &surface, &config, &gpu_lock);
+                            None
+                        }
+                        _ => None,
                     }
-                    _ => None,
+                } else {
+                    None
                 };
                 if let Some(frame) = frame {
                     let dst = frame

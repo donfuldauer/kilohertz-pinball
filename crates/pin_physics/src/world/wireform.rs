@@ -393,9 +393,12 @@ pub enum GuideCast {
 /// `C(t) + u·Z`, `u ∈ [0, height]`, and collides from both sides.
 ///
 /// Guides are meant for level curves (constant Z, the usual orbit wall). A
-/// curve that rises or falls is supported, but its sphere cast falls back to
-/// plain conservative advancement, which needs many more steps when the ball
-/// runs alongside the wall.
+/// curve that rises or falls is supported too: its wall is a strip of the
+/// vertical cylinder over the curve's plan view, and the sphere cast uses the
+/// reach of that plan-view curve, so a ball running alongside a rising wall
+/// advances as fast as alongside a level one. Only a curve whose plan view
+/// has no reach (it touches or crosses itself, or runs vertically) falls
+/// back to plain conservative advancement.
 #[derive(Debug, Clone)]
 pub struct GuideCurve {
     spline: CubicSpline,
@@ -405,8 +408,28 @@ pub struct GuideCurve {
     /// Conservative estimate of the wall's reach: within this distance of the
     /// wall the nearest wall point is unique, so the distance function is
     /// smooth with second derivatives bounded below by `-1 / (reach - d)`.
-    /// Zero when unknown (non-level or self-touching curves).
+    /// For a non-level curve this is the reach of the plan view (`flat`).
+    /// Zero when unknown (self-touching curves, vertical stretches).
     reach: f32,
+    /// Plan view (Z = 0) of a non-level curve: the spline through the
+    /// projected through-points, which is the projection of `spline`
+    /// because the interpolation is linear in the points.
+    flat: Option<CubicSpline>,
+}
+
+/// The plan view of `spline`, if its projected through-points are distinct.
+fn plan_view(spline: &CubicSpline) -> Option<CubicSpline> {
+    let segments = spline.segments();
+    let mut points: Vec<Vec3> = segments.iter().map(|seg| seg.p[0]).collect();
+    points.push(segments[segments.len() - 1].p[3]);
+    for p in &mut points {
+        p.z = 0.0;
+    }
+    if spline.is_closed() {
+        CubicSpline::interpolate_closed(&points).ok()
+    } else {
+        CubicSpline::interpolate(&points).ok()
+    }
 }
 
 /// Reach of a sampled curve (Federer): the infimum over point pairs of
@@ -504,12 +527,18 @@ impl GuideCurve {
             .segments()
             .iter()
             .all(|seg| seg.p.iter().all(|p| (p.z - z0).abs() <= 1.0e-6));
-        let reach = if level { curve_reach(&spline) } else { 0.0 };
+        let flat = if level { None } else { plan_view(&spline) };
+        let reach = match &flat {
+            _ if level => curve_reach(&spline),
+            Some(flat) => curve_reach(flat),
+            None => 0.0,
+        };
         Ok(Self {
             spline,
             height: height_m,
             level_z: level.then_some(z0),
             reach,
+            flat,
         })
     }
 
@@ -659,6 +688,7 @@ impl GuideCurve {
         let approach = -APPROACH_EPS * speed;
         let mut time = 0.0f32;
         let mut seed = seed_t;
+        let mut flat_seed = seed_t;
         for step in 0..GUIDE_CAST_STEPS {
             let p = center + velocity * time;
             let cp = self.closest_point(p, seed);
@@ -693,9 +723,29 @@ impl GuideCurve {
             // Bound 1: |d(gap)/dt| <= speed.
             let mut dt = drop / speed;
             // Bound 2: gap(τ) >= gap + rate τ - ½ K τ², valid while the
-            // distance stays below `cap` < reach.
-            if cp.distance < 0.9 * self.reach {
-                let cap = 0.5 * (cp.distance + self.reach);
+            // distance stays below `cap` < reach. For a level curve this is
+            // the wall distance itself. A rising or falling wall is a strip
+            // of the vertical cylinder over its plan view, so its gap is at
+            // least the horizontal gap to that cylinder, whose reach is the
+            // plan view's: the bound is applied to the horizontal gap (which
+            // equals the wall gap whenever the ball is beside the wall).
+            let beside = match &self.flat {
+                None => Some((cp.distance, rate, drop)),
+                Some(flat) => {
+                    let q = Vec3::new(p.x, p.y, 0.0);
+                    let fc = flat.closest_point(q, flat_seed);
+                    flat_seed = Some(fc.t);
+                    let flat_drop = fc.distance - radius - floor;
+                    (fc.distance > 1.0e-9 && flat_drop > 0.0).then(|| {
+                        let flat_rate = (q - fc.point).dot(velocity) / fc.distance;
+                        (fc.distance, flat_rate, flat_drop)
+                    })
+                }
+            };
+            if let Some((distance, rate, drop)) = beside
+                && distance < 0.9 * self.reach
+            {
+                let cap = 0.5 * (distance + self.reach);
                 let k = speed * speed / (self.reach - cap);
                 // Positive root of drop + rate τ - ½ K τ² = 0.
                 // (Written so that neither sign of `rate` cancels.)
@@ -705,7 +755,7 @@ impl GuideCurve {
                 } else {
                     (rate + disc) / k
                 };
-                let within = (cap - cp.distance) / speed;
+                let within = (cap - distance) / speed;
                 let quadratic = root.min(within);
                 if quadratic > dt {
                     dt = quadratic;
