@@ -2,6 +2,7 @@
 //! 2-D points are playfield-plane `[x, y]`.
 
 use super::{Manifest, manifest_io};
+use crate::materials::Material;
 use serde::{Deserialize, Serialize};
 
 /// `layout.toml`.
@@ -61,8 +62,8 @@ pub struct Wall {
     /// Closed loop.
     #[serde(default)]
     pub closed: bool,
-    /// Surface material name (e.g. `wood`).
-    pub material: String,
+    /// Surface material (e.g. `wood`).
+    pub material: Material,
 }
 
 /// `[[posts]]`.
@@ -124,8 +125,8 @@ pub struct Deck {
     pub z: f32,
     /// Outline polygon, mm.
     pub outline: Vec<[f32; 2]>,
-    /// Surface material name (e.g. `acrylic`).
-    pub material: String,
+    /// Surface material (e.g. `acrylic`).
+    pub material: Material,
 }
 
 /// Insert shapes.

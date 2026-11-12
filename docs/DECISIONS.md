@@ -123,3 +123,15 @@ Spikes CI run 43140608468 (commit a417638), all three jobs green, rustc 1.99.1 o
 - `InputEvent { timestamp_ns, kind: InputEventKind::{Button{input, pressed}, Axis{axis, value}} }`; `CabinetAxis` = plunger, nudge_x, nudge_y, left_flipper, right_flipper; `HapticsTelemetryEvent { tick, source: u16, strength }` maps to telemetry kind 5.
 - Telemetry decode requires exact length `16 + 8·count`, `count ≤ 180`, known kinds; the reserved byte is ignored. `for_each_datagram` splits > 180 entries into same-tick datagrams and sends an empty full-state datagram when asked.
 - Extra derives beyond §3.3/§3.4 (`PartialEq`, `Copy` where possible) were added; they are additive.
+
+## 1.1 — Review fix round
+
+**Decision:** Non-blocking review items applied while `pin_core` can still change freely:
+- N1: proptests added for `FlipperConfig::eos_angle_deg`/`end_angle_deg`, `FeelWindow::contains`, and `HostView::switch_closed`/`set_switch` (set-then-get, other bits untouched, ids ≥ 256 are no-ops).
+- N2: every manifest parser rejects NaN/±inf in any float field. The check runs for all four manifests in the shared parse path, before each manifest's own `validate`. It walks the typed value as TOML and returns `SchemaError::Invalid` naming the key path (e.g. `flippers[0].shape.length`).
+- N3: `layout.toml` `walls[].material` and `decks[].material` are now `pin_core::Material` (snake_case: steel, ceramic, plastic, resin, rubber, wood, acrylic), which covers Appendix A and C.
+- N6: the redundant `unsafe impl Send` for `TripleWriter`/`TripleReader` is gone. `Send` follows from `Arc<TripleBuffer<T>>`, and the compile-time asserts stay.
+**Follow-ups for later subphases (not done in 1.1):**
+- N4 (Subphase 4.1): manifest validation must reject switch and lamp numbers > 255. `HostView::switches` is a 256-bit set and the snapshot has 256 lamps; switch and lamp numbers are used as ids, while the on-disk type is `u16`.
+- N5 (Subphase 4.1): `score_display.mode = "dmd"` requires a `dmd` table and `"lcd"` requires an `lcd` table.
+- N7 (Subphase 2.4): kind-specific `[[mechs]]` parameters (kick strength, spinner damping, ...) are not in the schema yet. File an additive CR early in 2.4 (new `Option` fields or a per-kind table, with defaults in `physics_defaults.toml`).

@@ -65,9 +65,6 @@ pub struct TripleWriter<T: Copy> {
     index: u8,
 }
 
-// SAFETY: the writer only touches the slot it owns (`index`) and the atomic.
-unsafe impl<T: Copy + Send> Send for TripleWriter<T> {}
-
 impl<T: Copy> TripleWriter<T> {
     /// Publishes `value`, making it the latest value the reader will see.
     ///
@@ -91,9 +88,6 @@ pub struct TripleReader<T: Copy> {
     shared: Arc<TripleBuffer<T>>,
     index: u8,
 }
-
-// SAFETY: the reader only touches the slot it owns (`index`) and the atomic.
-unsafe impl<T: Copy + Send> Send for TripleReader<T> {}
 
 impl<T: Copy> TripleReader<T> {
     /// Returns the latest published value, or the initial value if nothing has
@@ -163,9 +157,12 @@ mod tests {
 
     #[test]
     fn ends_are_send() {
+        // Send comes from the auto impl via `Arc<TripleBuffer<T>>: Send`.
         fn assert_send<S: Send>() {}
         assert_send::<TripleWriter<[u64; 4]>>();
         assert_send::<TripleReader<[u64; 4]>>();
+        assert_send::<TripleWriter<crate::FrameStateSnapshot>>();
+        assert_send::<TripleReader<crate::FrameStateSnapshot>>();
     }
 
     #[test]

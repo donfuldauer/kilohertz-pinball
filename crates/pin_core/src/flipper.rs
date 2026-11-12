@@ -127,3 +127,60 @@ impl FlipperConfig {
         self.rest_angle_deg + self.sweep_angle_deg
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn config(rest: f32, sweep: f32, fraction: f32) -> FlipperConfig {
+        FlipperConfig {
+            id: FlipperId(0),
+            coil: CoilId(1),
+            eos_switch: SwitchId(2),
+            collision_layer: 0,
+            base_position_mm: [0.0; 3],
+            surface_normal: [0.0, 0.0, 1.0],
+            rest_angle_deg: rest,
+            sweep_angle_deg: sweep,
+            eos_angle_fraction: fraction,
+            shape: FlipperShape::CurvedBanana {
+                length_mm: 80.0,
+                arc_radius_mm: 100.0,
+                arc_sweep_deg: 30.0,
+                tube_radius_mm: 8.0,
+            },
+            inertia_kg_m2: 1.0e-4,
+            power_torque_nm: 1.2,
+            hold_torque_nm: 0.15,
+            return_spring_torque_nm: 0.03,
+            stop_restitution: 0.15,
+            rubber_restitution: 0.65,
+            rubber_damping: 0.35,
+            staging: FlipperStagingMode::DedicatedButton(CabinetInput::LeftFlipper),
+            zipper_slide_axis_mm: None,
+            zipper_slide_speed_mm_s: 0.0,
+        }
+    }
+
+    #[test]
+    fn banana_length() {
+        assert_eq!(config(0.0, 50.0, 0.9).shape.length_mm(), 80.0);
+    }
+
+    proptest! {
+        #[test]
+        fn eos_lies_between_rest_and_end(rest in -360.0f32..360.0, sweep in -180.0f32..180.0,
+                                          fraction in 0.0f32..=1.0) {
+            let c = config(rest, sweep, fraction);
+            let end = c.end_angle_deg();
+            prop_assert_eq!(end, rest + sweep);
+            let eos = c.eos_angle_deg();
+            let tol = 1e-4 * (rest.abs() + sweep.abs()).max(1.0);
+            prop_assert!(eos >= rest.min(end) - tol && eos <= rest.max(end) + tol,
+                         "eos {} outside [{}, {}]", eos, rest, end);
+            prop_assert_eq!(config(rest, sweep, 0.0).eos_angle_deg(), rest);
+            prop_assert_eq!(config(rest, sweep, 1.0).eos_angle_deg(), end);
+        }
+    }
+}

@@ -285,6 +285,34 @@ impl std::error::Error for ScriptError {}
 mod tests {
     use super::*;
     use crate::SeedableRng;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn set_then_get_leaves_other_bits(bits in any::<[u64; 4]>(), id in any::<u16>(),
+                                          closed in any::<bool>()) {
+            let mut v = HostView { switches: bits, ..HostView::default() };
+            v.set_switch(SwitchId(id), closed);
+            if usize::from(id) < MAX_SWITCHES {
+                prop_assert_eq!(v.switch_closed(SwitchId(id)), closed);
+                let i = usize::from(id);
+                for (w, (&got, &orig)) in v.switches.iter().zip(bits.iter()).enumerate() {
+                    let mask = if w == i / 64 { !(1u64 << (i % 64)) } else { !0 };
+                    prop_assert_eq!(got & mask, orig & mask);
+                }
+            } else {
+                prop_assert_eq!(v.switches, bits);
+                prop_assert!(!v.switch_closed(SwitchId(id)));
+            }
+        }
+
+        #[test]
+        fn switch_closed_reads_the_bitset(bits in any::<[u64; 4]>(), id in 0u16..256) {
+            let v = HostView { switches: bits, ..HostView::default() };
+            let i = usize::from(id);
+            prop_assert_eq!(v.switch_closed(SwitchId(id)), bits[i / 64] >> (i % 64) & 1 == 1);
+        }
+    }
 
     #[test]
     fn switch_bitset() {

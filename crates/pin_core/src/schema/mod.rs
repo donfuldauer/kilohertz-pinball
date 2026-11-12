@@ -79,8 +79,45 @@ pub(crate) fn parse<T: Manifest>(s: &str) -> Result<T, SchemaError> {
     if value.schema_version() != SCHEMA_VERSION {
         return Err(SchemaError::UnsupportedVersion(value.schema_version()));
     }
+    check_finite(&value)?;
     value.validate()?;
     Ok(value)
+}
+
+/// Rejects NaN and ±infinity in every float field of a manifest, naming the
+/// offending key path (e.g. `meta.pitch_deg`, `flippers[0].shape.length`).
+pub(crate) fn check_finite<T: Serialize>(value: &T) -> Result<(), SchemaError> {
+    fn walk(v: &toml::Value, path: &mut String) -> Result<(), SchemaError> {
+        match v {
+            toml::Value::Float(f) if !f.is_finite() => Err(SchemaError::Invalid(format!(
+                "`{path}` must be a finite number, got {f}"
+            ))),
+            toml::Value::Table(t) => {
+                for (k, child) in t {
+                    let len = path.len();
+                    if !path.is_empty() {
+                        path.push('.');
+                    }
+                    path.push_str(k);
+                    walk(child, path)?;
+                    path.truncate(len);
+                }
+                Ok(())
+            }
+            toml::Value::Array(a) => {
+                for (i, child) in a.iter().enumerate() {
+                    let len = path.len();
+                    path.push_str(&format!("[{i}]"));
+                    walk(child, path)?;
+                    path.truncate(len);
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+    let v = toml::Value::try_from(value).map_err(|e| SchemaError::Serialize(e.to_string()))?;
+    walk(&v, &mut String::new())
 }
 
 pub(crate) fn serialize<T: Manifest>(value: &T) -> Result<String, SchemaError> {

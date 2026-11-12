@@ -231,6 +231,19 @@ pub struct PhysicsParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn feel_window_contains_matches_bounds(min in -1.0e3f32..1.0e3, max in -1.0e3f32..1.0e3,
+                                               v in -2.0e3f32..2.0e3) {
+            let w = FeelWindow { min, max };
+            prop_assert_eq!(w.contains(v), min <= v && v <= max);
+            prop_assert_eq!(w.contains(min), min <= max);
+            prop_assert_eq!(w.contains(max), min <= max);
+            prop_assert!(!w.contains(f32::NAN));
+        }
+    }
 
     #[test]
     fn builtin_matches_appendix_c() {

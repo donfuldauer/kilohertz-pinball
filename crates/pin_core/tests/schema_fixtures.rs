@@ -87,7 +87,8 @@ fn other_fixtures_parse() {
     assert_eq!(b.backbox.as_ref().unwrap().collision_layer, 4);
     let l = LayoutManifest::from_toml_str(LAYOUT).unwrap();
     assert_eq!(l.playfield.length, 1070.0);
-    assert_eq!(l.decks[0].material, "acrylic");
+    assert_eq!(l.decks[0].material, pin_core::Material::Acrylic);
+    assert_eq!(l.walls[0].material, pin_core::Material::Wood);
     assert_eq!(l.inserts[0].size, 18.0);
     let p = PhysicsDefaults::from_toml_str(PHYSICS).unwrap();
     assert_eq!(p, PhysicsDefaults::builtin());
@@ -490,5 +491,99 @@ proptest! {
         t.switches[0].layer = layer;
         let back = TableManifest::from_toml_str(&t.to_toml_string().unwrap()).unwrap();
         prop_assert_eq!(back, t);
+    }
+}
+
+/// Every float literal in a fixture, as (byte offset, length) of the literal.
+fn float_literals(src: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let b = src.as_bytes();
+    let mut i = 0;
+    let mut in_comment = false;
+    let mut in_string = false;
+    while i < b.len() {
+        let c = b[i];
+        if in_comment {
+            in_comment = c != b'\n';
+            i += 1;
+            continue;
+        }
+        if c == b'"' {
+            in_string = !in_string;
+        }
+        if !in_string && c == b'#' {
+            in_comment = true;
+            i += 1;
+            continue;
+        }
+        let prev_ok = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+        if !in_string && prev_ok && (c.is_ascii_digit() || c == b'-') {
+            let start = i;
+            let mut j = i + 1;
+            while j < b.len() && (b[j].is_ascii_alphanumeric() || b"+-.".contains(&b[j])) {
+                j += 1;
+            }
+            let lit = &src[start..j];
+            if lit.contains('.') && lit.parse::<f64>().is_ok() {
+                out.push((start, j - start));
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+#[test]
+fn non_finite_floats_are_rejected_with_key_name() {
+    let s = TABLE.replacen("pitch_deg = 6.5", "pitch_deg = nan", 1);
+    match TableManifest::from_toml_str(&s) {
+        Err(SchemaError::Invalid(m)) => assert!(m.contains("meta.pitch_deg"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    let s = TABLE.replacen("length = 76.0", "length = inf", 1);
+    match TableManifest::from_toml_str(&s) {
+        Err(SchemaError::Invalid(m)) => assert!(m.contains("flippers[0].shape.length"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    let s = LAYOUT.replacen("radius = 5.0", "radius = -inf", 1);
+    assert!(
+        matches!(LayoutManifest::from_toml_str(&s), Err(SchemaError::Invalid(m)) if m.contains("posts[0].radius"))
+    );
+    let s = BACKGLASS.replacen("fov_deg = 35.0", "fov_deg = +nan", 1);
+    assert!(
+        matches!(BackglassManifest::from_toml_str(&s), Err(SchemaError::Invalid(m)) if m.contains("backbox.camera.fov_deg"))
+    );
+    let s = PHYSICS.replacen("restitution = 0.65", "restitution = nan", 1);
+    assert!(
+        matches!(PhysicsDefaults::from_toml_str(&s), Err(SchemaError::Invalid(m)) if m.contains("material_pairs[0].restitution"))
+    );
+    // Every float literal of every fixture is checked.
+    for src in [TABLE, BACKGLASS, LAYOUT, PHYSICS] {
+        let lits = float_literals(src);
+        assert!(!lits.is_empty());
+        for (at, len) in lits {
+            let mut s = src.to_owned();
+            s.replace_range(at..at + len, "nan");
+            assert!(
+                parse_all(&s) == [false; 4],
+                "nan accepted at offset {at}: {}",
+                &src[at..at + len]
+            );
+        }
+    }
+}
+
+proptest! {
+    #[test]
+    fn any_non_finite_float_is_rejected(which in 0usize..4, pick in any::<prop::sample::Index>(),
+                                        bad in prop::sample::select(vec!["nan", "+nan", "-nan", "inf", "+inf", "-inf"])) {
+        let src = [TABLE, BACKGLASS, LAYOUT, PHYSICS][which];
+        let lits = float_literals(src);
+        let (at, len) = lits[pick.index(lits.len())];
+        let mut s = src.to_owned();
+        s.replace_range(at..at + len, bad);
+        prop_assert_eq!(parse_all(&s), [false; 4]);
     }
 }
