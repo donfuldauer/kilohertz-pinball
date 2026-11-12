@@ -217,8 +217,10 @@ fn replay_is_identical() {
 
 #[test]
 fn idle_sim_writes_default_with_tick() {
-    let mut out = FrameStateSnapshot::default();
-    out.ball_count = 3;
+    let mut out = FrameStateSnapshot {
+        ball_count: 3,
+        ..FrameStateSnapshot::default()
+    };
     IdleSim.step_1ms(42, &[], &mut out);
     assert_eq!(
         out,

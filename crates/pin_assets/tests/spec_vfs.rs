@@ -24,7 +24,7 @@ fn with_hostile(entry: RawEntry) -> Vec<Vec<u8>> {
     let a = RawEntry::file("table.toml", b"x = 1\n");
     let b = RawEntry::file("audio/a.ogg", b"OggS");
     vec![
-        raw_zip(&[entry.clone()]),
+        raw_zip(std::slice::from_ref(&entry)),
         raw_zip(&[entry.clone(), a.clone(), b.clone()]),
         raw_zip(&[a.clone(), entry.clone(), b.clone()]),
         raw_zip(&[a, b, entry]),
@@ -715,15 +715,13 @@ fn open_with_limits_applies_to_zip_files() {
     let outer = TempDir::new("limits");
     let p = outer.path().join("b.pinbundle");
     std::fs::write(&p, stored_zip(&[("a", b"1"), ("b", b"2"), ("c", b"3")])).unwrap();
-    let e = Vfs::open_with_limits(
-        &p,
-        ZipLimits {
-            max_entries: 2,
-            ..roomy()
-        },
-    )
-    .err()
-    .expect("limit must apply");
+    let limits = ZipLimits {
+        max_entries: 2,
+        ..roomy()
+    };
+    let Err(e) = Vfs::open_with_limits(&p, limits) else {
+        panic!("limit must apply");
+    };
     assert_eq!(e, AssetError::TooManyEntries(3));
     assert!(Vfs::open_with_limits(&p, roomy()).is_ok());
     assert!(Vfs::open(&p).is_ok());

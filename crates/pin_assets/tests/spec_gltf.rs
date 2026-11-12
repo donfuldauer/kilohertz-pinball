@@ -236,9 +236,9 @@ fn missing_gltf_and_missing_external_buffer_are_errors() {
 
     let json = scene_json(BufferRef::Uri("gone.bin"), DECK_EXTRAS, INSERT_EXTRAS);
     let v = vfs(&[("pf.gltf", json.into_bytes())]);
-    let e = load_gltf(&v, "pf.gltf")
-        .err()
-        .expect("missing buffer must fail");
+    let Err(e) = load_gltf(&v, "pf.gltf") else {
+        panic!("missing buffer must fail");
+    };
     assert!(
         matches!(e, AssetError::NotFound(_) | AssetError::Gltf(_)),
         "{e:?}"
