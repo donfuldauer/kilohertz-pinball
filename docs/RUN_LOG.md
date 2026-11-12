@@ -84,3 +84,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3 | 2.2 | Reviewer | Opus 5.5 | 2 | **fail** | gates 1–7 pass; round-1 B1, B2, mesh glitches, drift verified fixed | B4 tunnelling through tight/steep rising guides (non-global closest point, pre-existing since 2.1) → fix 2 |
 | 3 | 3.2 | Implementer (other model) | Fable 5.2 | 1 | done | 293 pin_input tests; coverage 98.78 % | B4 exact noise-free (all shapes 0.000 %); N-k, N-l fixed; offset never_stuck 80 000 histories clean |
 | 3 | 2.2 | Implementer | Fable 5.2 | fix 2 | done | 251 tests; coverage 97.78 % | global closest point for sloped guides; tunnelling regression tests |
+| 3 | 4.5 | Implementer | Opus 5.5 | fix 1 | done | 436 tests | module size/count pre-scan, max_wasm_stack, N2–N5 |
+| 3 | 4.5 | Reviewer | Fable 5.2 | 2 | **fail** | gates 1–7 pass; faulting tick ≤ 0.62 ms | B1 partly fixed: modules within all caps still compile up to 172 s / 2.4 GB (locals × nesting, br_table, types, element items) → fix 2 with per-construct caps, target < 1 s / 256 MB |
