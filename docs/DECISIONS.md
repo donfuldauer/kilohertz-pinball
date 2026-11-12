@@ -135,3 +135,11 @@ Spikes CI run 43140608468 (commit a417638), all three jobs green, rustc 1.99.1 o
 - N4 (Subphase 4.1): manifest validation must reject switch and lamp numbers > 255. `HostView::switches` is a 256-bit set and the snapshot has 256 lamps; switch and lamp numbers are used as ids, while the on-disk type is `u16`.
 - N5 (Subphase 4.1): `score_display.mode = "dmd"` requires a `dmd` table and `"lcd"` requires an `lcd` table.
 - N7 (Subphase 2.4): kind-specific `[[mechs]]` parameters (kick strength, spinner damping, ...) are not in the schema yet. File an additive CR early in 2.4 (new `Option` fields or a per-kind table, with defaults in `physics_defaults.toml`).
+
+## Orchestrator — Wave 2 brief decisions
+
+- **3.1 dual-stage semantics.** `FlipperStagingMode` is per flipper and does not say which stage a flipper belongs to, so the staging router takes a `FlipperStage { Lower, Upper }` per flipper (a pin_input type, not a contract change). A `DualStageThreshold` flipper is active when the axis is at or above `lower_threshold` (Lower stage) or `upper_threshold` (Upper stage). `DedicatedButton` and `ParallelLinked` both mean "active while that cabinet input is pressed"; they differ only in which input a table binds. `AutoSensorThingFlip` is scheduled by physics (2.3), not the router. Where a flipper's stage comes from in `table.toml` is left to 4.1 (default: flippers bound to `left_upper`/`right_upper` or with an upper-deck layer are Upper).
+- **1.3 SPSC ring in pin_core.** The input and window-event rings cross crates (pin_app → pin_sim / pin_render), so the generic SPSC ring is an additive contract change (`pin_core::spsc`) made by 1.3.
+- **1.3 PiP geometry.** Backglass PiP aspect 4:3, score PiP 4:1, sized by a width fraction of the window and anchored to a corner. In cabinet mode a role without its own display falls back to a PiP on the playfield window.
+- **4.2 script IDs.** Scripts address hardware by integer IDs looked up from read-only name tables (`pinball.sw.<name>` etc.) built at load, so no strings cross into the sim thread (§3.1). Script callbacks are global functions `on_init`, `on_tick`, `on_switch(id, closed)`, `on_save_state`, `on_restore_state`.
+- **Wave 2 working tree.** Five subphases share one working tree; each role uses its own `CARGO_TARGET_DIR` and builds only its own crate.
