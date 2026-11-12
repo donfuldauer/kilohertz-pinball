@@ -80,16 +80,21 @@ fn build_table() -> Table {
 
     // Guide wall: straight lead-in up the right side, a 180° arc of radius
     // 150 mm (5° spacing), straight lead-out down the left side.
+    // Through-points are evenly spaced (the arc's 5° chord, about 13 mm):
+    // the spline parameter is uniform per point, so uneven spacing would
+    // make the curve wiggle where the spacing changes.
+    let step = 2.0 * GUIDE_R * libm::sinf(2.5f32.to_radians());
+    let lead = 24;
     let mut pts = Vec::new();
-    for k in 0..6 {
-        pts.push(v(GUIDE_R, -0.30 + 0.05 * k as f32, 0.0));
+    for k in (1..=lead).rev() {
+        pts.push(v(GUIDE_R, -step * k as f32, 0.0));
     }
     for k in 0..=36 {
         let a = (5.0 * k as f32).to_radians();
         pts.push(v(GUIDE_R * libm::cosf(a), GUIDE_R * libm::sinf(a), 0.0));
     }
-    for k in 1..=6 {
-        pts.push(v(-GUIDE_R, -0.05 * k as f32, 0.0));
+    for k in 1..=lead {
+        pts.push(v(-GUIDE_R, -step * k as f32, 0.0));
     }
     let guide = GuideCurve::new(CubicSpline::interpolate(&pts).unwrap(), 0.03).unwrap();
 
