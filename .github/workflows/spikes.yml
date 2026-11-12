@@ -12,6 +12,15 @@ on:
       - "spikes/**"
       - "versions.toml"
       - ".github/workflows/spikes.yml"
+  workflow_dispatch:
+
+# One run per workflow and ref; a newer push cancels the older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,6 +32,7 @@ jobs:
   spikes:
     name: spikes (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -36,7 +46,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "spikes -> target"
+          workspaces: |
+            spikes -> target
+            spikes/spec_0_1 -> target
 
       - name: Install Linux packages (lavapipe, Xvfb, SDL3 build headers)
         if: runner.os == 'Linux'
@@ -66,3 +78,16 @@ jobs:
       - name: cargo test
         if: runner.os != 'Linux'
         run: cargo test --manifest-path spikes/Cargo.toml --workspace -- --nocapture
+
+      # spec_0_1: the Independent Tester's standalone conformance package (Linux only).
+      - name: cargo fmt --check (spec_0_1)
+        if: runner.os == 'Linux'
+        run: cargo fmt --manifest-path spikes/spec_0_1/Cargo.toml --all -- --check
+
+      - name: cargo clippy -D warnings (spec_0_1)
+        if: runner.os == 'Linux'
+        run: cargo clippy --manifest-path spikes/spec_0_1/Cargo.toml --all-targets -- -D warnings
+
+      - name: cargo test (spec_0_1)
+        if: runner.os == 'Linux'
+        run: cargo test --manifest-path spikes/spec_0_1/Cargo.toml

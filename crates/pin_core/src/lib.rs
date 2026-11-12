@@ -22,6 +22,7 @@ pub mod profiles;
 pub mod schema;
 pub mod script;
 pub mod snapshot;
+pub mod spsc;
 pub mod telemetry;
 pub mod triple_buffer;
 pub mod units;

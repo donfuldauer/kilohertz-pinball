@@ -1,0 +1,266 @@
+name: ci
+
+# Subphase 1.2: CI matrix skeleton for the root workspace (PLAN.md §4, 1.2).
+# Targets: x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu, aarch64-apple-darwin.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# One run per workflow and ref; a newer push cancels the older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  # Headless SDL hints (DECISIONS.md 0.1). SDL_VIDEO_DRIVER=dummy is set per job:
+  # gpu-tests runs under a real (Xvfb) display on Linux instead.
+  SDL_AUDIO_DRIVER: dummy
+  SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS: "1"
+  # Minimum toolchain (wasmtime 50 needs Rust 1.97, versions.toml [toolchain]).
+  MIN_RUST_MINOR: "97"
+
+jobs:
+  # GPU-free crates (PLAN.md §2.3 rule 3): pin_core, pin_physics, pin_input,
+  # pin_script, pin_assets, pin_tablegen, pin_sim (+ pin_assetgen, a GPU-free tool).
+  core-tests:
+    name: core-tests (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    env:
+      SDL_VIDEO_DRIVER: dummy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux packages (SDL3 build headers)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
+      - name: Toolchain (rustc >= 1.${{ env.MIN_RUST_MINOR }}, host ${{ matrix.target }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          minor=$(rustc --version | awk '{print $2}' | cut -d. -f2)
+          if [ "$minor" -lt "$MIN_RUST_MINOR" ]; then
+            echo "::error::rustc $(rustc --version) is older than 1.$MIN_RUST_MINOR"; exit 1
+          fi
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "::error::host $host, expected ${{ matrix.target }}"; exit 1
+          fi
+
+      - name: cargo test (GPU-free crates)
+        run: cargo test --workspace --exclude pin_render --exclude pin_audio --exclude pin_app
+
+      - name: cargo test (tests/spec_ci workflow conformance)
+        if: runner.os == 'Linux' && hashFiles('tests/spec_ci/Cargo.toml') != ''
+        run: cargo test --manifest-path tests/spec_ci/Cargo.toml
+
+  # GPU/audio/app crates on each OS's software or OS adapter:
+  # lavapipe (Vulkan) on Linux, WARP (DX12) on Windows, Metal on macOS.
+  gpu-tests:
+    name: gpu-tests (${{ matrix.target }}, ${{ matrix.adapter }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            adapter: WARP
+            wgpu_backend: dx12
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            adapter: lavapipe
+            wgpu_backend: vulkan
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            adapter: Metal
+            wgpu_backend: metal
+    env:
+      # wgpu reads these via InstanceDescriptor::with_env(); pin the CI adapter's backend.
+      WGPU_BACKEND: ${{ matrix.wgpu_backend }}
+      # A missing lavapipe/WARP/Metal adapter is a failure in CI (as SPIKE_REQUIRE_GPU in spikes.yml).
+      PIN_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux packages (lavapipe, Xvfb, SDL3 build headers)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 xvfb xauth cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
+      - name: Toolchain (rustc >= 1.${{ env.MIN_RUST_MINOR }}, host ${{ matrix.target }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          minor=$(rustc --version | awk '{print $2}' | cut -d. -f2)
+          if [ "$minor" -lt "$MIN_RUST_MINOR" ]; then
+            echo "::error::rustc $(rustc --version) is older than 1.$MIN_RUST_MINOR"; exit 1
+          fi
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "::error::host $host, expected ${{ matrix.target }}"; exit 1
+          fi
+
+      # TODO(1.4): switch to `cargo test -p pin_render --features gpu-tests` (plus
+      # pin_audio/pin_app) once Subphase 1.4 adds the `gpu-tests` feature to pin_render.
+      - name: cargo test (GPU crates, Linux under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo test -p pin_render -p pin_audio -p pin_app
+
+      - name: cargo test (GPU crates)
+        if: runner.os != 'Linux'
+        run: cargo test -p pin_render -p pin_audio -p pin_app
+
+  clippy:
+    name: clippy (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux packages (SDL3 build headers)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
+      - name: Toolchain (rustc >= 1.${{ env.MIN_RUST_MINOR }}, host ${{ matrix.target }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          minor=$(rustc --version | awk '{print $2}' | cut -d. -f2)
+          if [ "$minor" -lt "$MIN_RUST_MINOR" ]; then
+            echo "::error::rustc $(rustc --version) is older than 1.$MIN_RUST_MINOR"; exit 1
+          fi
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "::error::host $host, expected ${{ matrix.target }}"; exit 1
+          fi
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo fmt --check (tests/spec_ci)
+        if: hashFiles('tests/spec_ci/Cargo.toml') != ''
+        run: cargo fmt --manifest-path tests/spec_ci/Cargo.toml --all --check
+
+  # PLACEHOLDER — Subphase 2.5 replaces this with the golden replay-hash check
+  # (record/replay determinism across the three targets). Intentionally a no-op.
+  replay-hash:
+    name: replay-hash (placeholder for 2.5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Placeholder (Subphase 2.5 fills this in)
+        run: |
+          echo "replay-hash: placeholder job; Subphase 2.5 implements the replay-hash check."
+          exit 0
+
+  # Line coverage for the GPU-free crates (gate step 4). Non-gating for now: prints the table.
+  coverage:
+    name: coverage (core crates, non-gating)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    env:
+      SDL_VIDEO_DRIVER: dummy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install Linux packages (SDL3 build headers)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
+      - name: cargo llvm-cov (summary)
+        run: |
+          cargo llvm-cov --summary-only \
+            -p pin_core -p pin_physics -p pin_input -p pin_script \
+            -p pin_assets -p pin_tablegen -p pin_sim

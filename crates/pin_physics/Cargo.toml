@@ -9,3 +9,8 @@ license.workspace = true
 
 [dependencies]
 pin_core.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+glam.workspace = true
+arrayvec.workspace = true
