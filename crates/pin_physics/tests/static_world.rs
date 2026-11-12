@@ -705,6 +705,105 @@ fn box_sdf(p: glam::DVec3, c: glam::DVec3, h: glam::DVec3) -> f64 {
     q.max(glam::DVec3::ZERO).length() + q.max_element().min(0.0)
 }
 
+/// Compares a sphere cast with a brute-force march over the reference
+/// distance `dist` (distance from a point to the union of all colliders):
+/// the cast may neither tunnel nor report a contact that is not there.
+fn check_cast(
+    world: &StaticWorld,
+    dist: &dyn Fn(glam::DVec3) -> f64,
+    start: Vec3,
+    vel: Vec3,
+    max_time: f32,
+) -> Result<(), TestCaseError> {
+    let speed = vel.length();
+    let sdf = |t: f64| dist(start.as_dvec3() + vel.as_dvec3() * t) - f64::from(R);
+    if sdf(0.0) <= 1e-4 {
+        return Ok(()); // starts in contact: covered by the overlap tests
+    }
+    // Brute force: 20 µm steps, then bisection.
+    let steps = 50_000;
+    let mut expected = None;
+    for k in 1..=steps {
+        let t = f64::from(max_time) * k as f64 / steps as f64;
+        if sdf(t) <= 0.0 {
+            let (mut lo, mut hi) = (f64::from(max_time) * (k - 1) as f64 / steps as f64, t);
+            for _ in 0..40 {
+                let mid = 0.5 * (lo + hi);
+                if sdf(mid) <= 0.0 { hi = mid } else { lo = mid }
+            }
+            expected = Some(hi);
+            break;
+        }
+    }
+    let hit = world.cast_sphere(start, R, vel, max_time, 1);
+    match (hit, expected) {
+        (Some(hit), Some(t)) => {
+            prop_assert!(
+                (f64::from(hit.time) - t).abs() * f64::from(speed) < 2e-5,
+                "time {} vs {}",
+                hit.time,
+                t
+            );
+            prop_assert!((hit.normal.length() - 1.0).abs() < 1e-5);
+            prop_assert!(hit.normal.dot(vel) < 0.0);
+            // The contact point is on the sphere at the time of impact.
+            let c = start + vel * hit.time;
+            prop_assert!((c.distance(hit.point) - R).abs() < 2e-5);
+            prop_assert!(((c - hit.point).normalize() - hit.normal).length() < 1e-2);
+        }
+        (None, None) => {}
+        (Some(hit), None) => {
+            // Brute force can miss a graze shallower than its step.
+            prop_assert!(
+                sdf(f64::from(hit.time)).abs() < 2e-5,
+                "false positive {hit:?}"
+            );
+        }
+        (None, Some(t)) => {
+            // Only acceptable if the true path merely grazes (within
+            // rounding) or the hit is at the very end of the window.
+            let deepest = (0..=2000)
+                .map(|k| sdf(t + 2e-4 / f64::from(speed) * k as f64 / 2000.0))
+                .fold(f64::INFINITY, f64::min);
+            prop_assert!(
+                deepest > -2e-6 || t > f64::from(max_time) * 0.9999,
+                "tunnelled: expected hit at {t}, penetration {deepest}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Distance to a solid cylinder (f64 reference).
+fn cylinder_sdf(p: glam::DVec3, base: glam::DVec3, axis: glam::DVec3, radius: f64) -> f64 {
+    let height = axis.length();
+    let dir = axis / height;
+    let w = p - base;
+    let h = w.dot(dir);
+    let dx = (w - dir * h).length() - radius;
+    let dy = (-h).max(h - height);
+    dx.max(dy).min(0.0) + (dx.max(0.0) * dx.max(0.0) + dy.max(0.0) * dy.max(0.0)).sqrt()
+}
+
+/// Distance to a triangle (f64 reference).
+fn triangle_distance(p: glam::DVec3, a: glam::DVec3, b: glam::DVec3, c: glam::DVec3) -> f64 {
+    let (ba, cb, ac) = (b - a, c - b, a - c);
+    let (pa, pb, pc) = (p - a, p - b, p - c);
+    let nor = ba.cross(ac);
+    let outside = ba.cross(nor).dot(pa).signum()
+        + cb.cross(nor).dot(pb).signum()
+        + ac.cross(nor).dot(pc).signum()
+        < 2.0;
+    if outside {
+        let edge = |e: glam::DVec3, q: glam::DVec3| {
+            (e * (e.dot(q) / e.length_squared()).clamp(0.0, 1.0) - q).length_squared()
+        };
+        edge(ba, pa).min(edge(cb, pb)).min(edge(ac, pc)).sqrt()
+    } else {
+        (nor.dot(pa) * nor.dot(pa) / nor.length_squared()).sqrt()
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 200, failure_persistence: None, ..ProptestConfig::default() })]
 
@@ -729,53 +828,75 @@ proptest! {
         if d.length() < 0.05 { d = Vec3::X; }
         let vel = d.normalize() * speed;
         let max_time = 1.0 / speed; // travel 1 m
-        let sdf = |t: f64| {
-            let p = start.as_dvec3() + vel.as_dvec3() * t;
+        let dist = |p: glam::DVec3| {
             boxes.iter().map(|(c, h)| box_sdf(p, v(c.0, c.1, c.2).as_dvec3(), v(h.0, h.1, h.2).as_dvec3()))
-                .fold(f64::INFINITY, f64::min) - f64::from(R)
+                .fold(f64::INFINITY, f64::min)
         };
-        prop_assume!(sdf(0.0) > 1e-4);
-        // Brute force: 20 µm steps, then bisection.
-        let steps = 50_000;
-        let mut expected = None;
-        for k in 1..=steps {
-            let t = f64::from(max_time) * k as f64 / steps as f64;
-            if sdf(t) <= 0.0 {
-                let (mut lo, mut hi) = (f64::from(max_time) * (k - 1) as f64 / steps as f64, t);
-                for _ in 0..40 {
-                    let mid = 0.5 * (lo + hi);
-                    if sdf(mid) <= 0.0 { hi = mid } else { lo = mid }
+        check_cast(&world, &dist, start, vel, max_time)?;
+    }
+
+    /// The same for rotated cuboids, cylinders and triangles together.
+    #[test]
+    fn prop_cast_matches_brute_force_on_mixed_shapes(
+        shapes in prop::collection::vec(
+            (0u8..3,
+             (-0.3f32..0.3, -0.3f32..0.3, -0.1f32..0.1),
+             (0.005f32..0.08, 0.005f32..0.08, 0.005f32..0.08),
+             (-1.0f32..1.0, -1.0f32..1.0, -1.0f32..1.0),
+             -3.2f32..3.2,
+             ((-0.1f32..0.1, -0.1f32..0.1, -0.1f32..0.1), (-0.1f32..0.1, -0.1f32..0.1, -0.1f32..0.1))),
+            1..6),
+        start in (-0.5f32..0.5, -0.5f32..0.5, -0.2f32..0.2),
+        dir in (-1.0f32..1.0, -1.0f32..1.0, -0.4f32..0.4),
+        speed in 0.1f32..20.0,
+    ) {
+        type Reference = Box<dyn Fn(glam::DVec3) -> f64>;
+        let mut b = StaticWorldBuilder::new();
+        let mut refs: Vec<Reference> = Vec::new();
+        for (kind, c, size, axis, angle, (e1, e2)) in &shapes {
+            let c = v(c.0, c.1, c.2);
+            let mut axis = v(axis.0, axis.1, axis.2);
+            if axis.length() < 0.1 { axis = Vec3::Z; }
+            let axis = axis.normalize();
+            match kind {
+                0 => {
+                    let rotation = Quat::from_axis_angle(axis, *angle);
+                    let half = v(size.0, size.1, size.2);
+                    b.add_collider(StaticShape::Cuboid { center: c, half_extents: half, rotation }, 1, true);
+                    let inverse = rotation.as_dquat().inverse();
+                    let (cd, hd) = (c.as_dvec3(), half.as_dvec3());
+                    refs.push(Box::new(move |p| box_sdf(inverse * (p - cd), glam::DVec3::ZERO, hd)));
                 }
-                expected = Some(hi);
-                break;
+                1 => {
+                    let span = axis * (size.0 * 2.0);
+                    let radius = size.1 * 0.5;
+                    b.add_collider(StaticShape::Cylinder { base: c, axis: span, radius }, 1, true);
+                    let (cd, sd) = (c.as_dvec3(), span.as_dvec3());
+                    refs.push(Box::new(move |p| cylinder_sdf(p, cd, sd, f64::from(radius))));
+                }
+                _ => {
+                    let (pa, pb, pc) = (c, c + v(e1.0, e1.1, e1.2), c + v(e2.0, e2.1, e2.2));
+                    let area2 = (pb - pa).cross(pc - pa).length();
+                    // Skip slivers the builder rejects as degenerate.
+                    prop_assume!(area2 > 1e-4);
+                    b.add_collider(
+                        StaticShape::TriMesh { vertices: vec![pa, pb, pc], indices: vec![[0, 1, 2]] },
+                        1,
+                        true,
+                    );
+                    let (ad, bd, cd) = (pa.as_dvec3(), pb.as_dvec3(), pc.as_dvec3());
+                    refs.push(Box::new(move |p| triangle_distance(p, ad, bd, cd)));
+                }
             }
         }
-        let hit = world.cast_sphere(start, R, vel, max_time, 1);
-        match (hit, expected) {
-            (Some(hit), Some(t)) => {
-                prop_assert!((f64::from(hit.time) - t).abs() * f64::from(speed) < 2e-5,
-                    "time {} vs {}", hit.time, t);
-                prop_assert!((hit.normal.length() - 1.0).abs() < 1e-5);
-                prop_assert!(hit.normal.dot(vel) < 0.0);
-                // The contact point is on the sphere at the time of impact.
-                let c = start + vel * hit.time;
-                prop_assert!((c.distance(hit.point) - R).abs() < 2e-5);
-                prop_assert!(((c - hit.point).normalize() - hit.normal).length() < 1e-2);
-            }
-            (None, None) => {}
-            (Some(hit), None) => {
-                // Brute force can miss a graze shallower than its step.
-                prop_assert!(sdf(f64::from(hit.time)).abs() < 2e-5, "false positive {hit:?}");
-            }
-            (None, Some(t)) => {
-                // Only acceptable if the true path merely grazes (within
-                // rounding) or the hit is at the very end of the window.
-                let deepest = (0..=2000).map(|k| sdf(t + 2e-4 / f64::from(speed) * k as f64 / 2000.0))
-                    .fold(f64::INFINITY, f64::min);
-                prop_assert!(deepest > -2e-6 || t > f64::from(max_time) * 0.9999,
-                    "tunnelled: expected hit at {t}, penetration {deepest}");
-            }
-        }
+        let world = b.build();
+        let start = v(start.0, start.1, start.2);
+        let mut d = v(dir.0, dir.1, dir.2);
+        if d.length() < 0.05 { d = Vec3::X; }
+        let vel = d.normalize() * speed;
+        let max_time = 1.0 / speed; // travel 1 m
+        let dist = |p: glam::DVec3| refs.iter().map(|f| f(p)).fold(f64::INFINITY, f64::min);
+        check_cast(&world, &dist, start, vel, max_time)?;
     }
 
     /// Contacts agree with the analytic signed distance of every box.
