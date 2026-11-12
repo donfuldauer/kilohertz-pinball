@@ -75,6 +75,21 @@ pub struct LuaConfig {
     pub instruction_budget: u32,
 }
 
+impl LuaConfig {
+    /// The configuration the engine runs table rules with (DECISIONS.md
+    /// "Orchestrator — 4.2 re-review round 3"): 100 000 instructions per
+    /// callback and a 2 MiB heap. Under it no script can make a single tick
+    /// take more than 8 ms (release build; measured in DECISIONS.md "4.2 — fix
+    /// round 3"). [`LuaConfig::default`] keeps the brief's larger limits for
+    /// tools and tests.
+    pub const fn engine() -> Self {
+        Self {
+            memory_limit_bytes: 2 * 1024 * 1024,
+            instruction_budget: 100_000,
+        }
+    }
+}
+
 impl Default for LuaConfig {
     fn default() -> Self {
         Self {

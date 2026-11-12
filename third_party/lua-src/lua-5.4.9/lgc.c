@@ -1741,6 +1741,7 @@ void luaC_fullgc (lua_State *L, int isemergency) {
   else
     fullgen(L, g);
   g->gcemergency = 0;
+  luaE_khzdefer(L, (lua_Integer)(gettotalbytes(g) >> 6));  /* KHZ: deferred (may run inside an allocation) */
 }
 
 /* }====================================================== */

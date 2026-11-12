@@ -486,3 +486,15 @@ LUA_API void lua_khzcharge (lua_State *L, lua_Integer n) {
     luaG_runerror(L, "instruction budget exceeded");
   }
 }
+
+
+/*
+** KHZ: charge 'n' without raising (for code that must not throw, such as
+** allocation retries, table resizes and 'lua_next'); once the budget is
+** negative the count hook fires on the next instruction and aborts there.
+*/
+void luaE_khzdefer (lua_State *L, lua_Integer n) {
+  if (n > 0 && lua_khzspend(L, n) < 0 &&
+      L->hook != NULL && (L->hookmask & LUA_MASKCOUNT))
+    lua_sethook(L, L->hook, L->hookmask, 1);
+}

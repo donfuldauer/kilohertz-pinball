@@ -169,14 +169,23 @@ static int str_rep (lua_State *L) {
     size_t totallen = (size_t)n * l + (size_t)(n - 1) * lsep;
     luaL_Buffer b;
     char *p = luaL_buffinitsize(L, &b, totallen);
-    while (n-- > 1) {  /* first n-1 copies (followed by separator) */
-      memcpy(p, s, l * sizeof(char)); p += l;
-      if (lsep > 0) {  /* empty 'memcpy' is not that cheap */
-        memcpy(p, sep, lsep * sizeof(char));
-        p += lsep;
+    /* KHZ: build by doubling (O(log n) memcpy calls instead of n), so the
+       cost is the bytes copied, charged at 'totallen/64' */
+    size_t unit = l + lsep;  /* one piece followed by its separator */
+    size_t body = (size_t)(n - 1) * unit;  /* all pieces but the last */
+    lua_khzcharge(L, (lua_Integer)(totallen >> 6) + 1);
+    if (body > 0) {
+      size_t done;
+      memcpy(p, s, l * sizeof(char));
+      if (lsep > 0) memcpy(p + l, sep, lsep * sizeof(char));
+      done = unit;
+      while (done < body) {
+        size_t m = (body - done < done) ? body - done : done;
+        memcpy(p + done, p, m * sizeof(char));
+        done += m;
       }
     }
-    memcpy(p, s, l * sizeof(char));  /* last copy (not followed by separator) */
+    memcpy(p + body, s, l * sizeof(char));  /* last copy (not followed by separator) */
     luaL_pushresultsize(&b, totallen);
   }
   return 1;

@@ -551,6 +551,13 @@ static size_t newbuffsize (luaL_Buffer *B, size_t sz) {
     return luaL_error(B->L, "buffer too large");
   if (newsize < B->n + sz)  /* not big enough? */
     newsize = B->n + sz;
+  /* KHZ: no buffer grows past the string cap (plus slack for one formatted
+     item), and growing costs by size */
+  if (l_unlikely(B->n + sz > KHZ_MAX_STRLEN + 1024))
+    return luaL_error(B->L, "string length exceeds the 64 KiB limit");
+  if (newsize > KHZ_MAX_STRLEN + 1024)
+    newsize = KHZ_MAX_STRLEN + 1024;
+  lua_khzcharge(B->L, (lua_Integer)(newsize >> 6));
   return newsize;
 }
 

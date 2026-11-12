@@ -496,3 +496,220 @@ fn c_loops_wrapped_in_pcall_fault() {
         assert_c_loop_faults(body);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Round 3 (review B10–B13). Default configuration; every case must return,
+// faulted or completed. No wall-clock assertions.
+
+/// B10: a 400 000-slot table is filled over several callbacks, every slot is
+/// cleared, then `loop_body` runs in a `while true` on the emptied table.
+/// `next` on such a table scans dead slots in C on every call.
+fn emptied_table_loop(loop_body: &str) {
+    let src = format!(
+        "local t, n = {{}}, 0
+         function on_tick()
+           n = n + 1
+           if n <= 20 then
+             local base = (n - 1) * 20000
+             for i = base + 1, base + 20000 do t[i] = i end
+           elseif n <= 40 then
+             local base = (n - 21) * 20000
+             for i = base + 1, base + 20000 do t[i] = nil end
+           else
+             while true do {loop_body} end
+           end
+           pinball.persist_set(0, n)
+         end"
+    );
+    let mut b = spec_support::backend(src.as_bytes());
+    let mut h = Host::new(1);
+    for i in 0..40 {
+        h.tick(&mut b);
+        assert!(!b.is_faulted(), "building the table faulted at tick {i}");
+    }
+    h.tick(&mut b);
+    assert!(b.is_faulted(), "`while true do {loop_body} end` must fault");
+    assert!(h.cmd.is_empty());
+    b.apply_reload(b"function on_tick() pinball.show_scene(2) end")
+        .expect("recovery reload");
+    h.tick(&mut b);
+    assert_eq!(h.cmd.display_scenes.len(), 1);
+}
+
+#[test]
+fn next_on_a_huge_emptied_table_in_a_loop_faults() {
+    emptied_table_loop("local k = next(t)");
+}
+
+#[test]
+fn pairs_on_a_huge_emptied_table_in_a_loop_faults() {
+    emptied_table_loop("for k, v in pairs(t) do end");
+}
+
+#[test]
+fn pcall_next_on_a_huge_emptied_table_in_a_loop_faults() {
+    emptied_table_loop("pcall(next, t)");
+}
+
+#[test]
+fn length_and_sort_on_a_huge_emptied_table_in_a_loop_fault() {
+    emptied_table_loop("local n = #t");
+    emptied_table_loop("pcall(table.sort, t)");
+}
+
+/// The same table with string keys (pure hash part).
+#[test]
+fn next_on_a_huge_emptied_hash_table_in_a_loop_faults() {
+    let src = b"local t, n = {}, 0
+                function on_tick()
+                  n = n + 1
+                  if n <= 20 then
+                    for i = 1, 5000 do t[n * 100000 + i + 0.5] = true end
+                  elseif n <= 40 then
+                    for i = 1, 5000 do t[(n - 20) * 100000 + i + 0.5] = nil end
+                  else
+                    while true do local k = next(t) end
+                  end
+                end";
+    let mut b = spec_support::backend(src);
+    let mut h = Host::new(1);
+    for i in 0..40 {
+        h.tick(&mut b);
+        assert!(!b.is_faulted(), "building the table faulted at tick {i}");
+    }
+    h.tick(&mut b);
+    assert!(b.is_faulted());
+}
+
+/// B12: large allocations in a loop.
+#[test]
+fn rep_of_65000_bytes_in_a_loop_faults() {
+    for body in [
+        "string.rep('x', 65000)",
+        "local s = string.rep('x', 65000)",
+        "pcall(string.rep, 'x', 65000)",
+        "local s = ('x'):rep(65535):upper()",
+    ] {
+        let src = format!("function on_tick() while true do {body} end end");
+        let mut b = spec_support::backend(src.as_bytes());
+        let mut h = Host::new(1);
+        h.tick(&mut b);
+        assert!(b.is_faulted(), "`while true do {body} end` must fault");
+        h.tick(&mut b);
+        assert!(h.cmd.is_empty());
+    }
+}
+
+/// B13: results that would exceed the string cap are refused with a Lua error
+/// and the callback still returns. Lamp 0 reports that the call raised.
+fn over_cap_call_raises(setup: &str, call: &str) {
+    let src = format!(
+        "local big = string.rep('b', 65535)
+         {setup}
+         function on_tick()
+           local ok = pcall({call})
+           pinball.set_lamp(0, ok and 0 or 1)
+         end"
+    );
+    let mut b = spec_support::backend(src.as_bytes());
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    // Completing is the expected outcome; a fault is tolerated, a hang is not.
+    if !b.is_faulted() {
+        assert_eq!(
+            spec_support::lamp(&h.cmd, 0),
+            Some(1.0),
+            "`{call}` must raise: its result exceeds the 64 KiB cap"
+        );
+        for _ in 0..20 {
+            h.tick(&mut b);
+        }
+    }
+
+    // And retried forever it ends in a fault.
+    let src = format!(
+        "local big = string.rep('b', 65535)
+         {setup}
+         function on_tick() while true do pcall({call}) end end"
+    );
+    let mut b = spec_support::backend(src.as_bytes());
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    assert!(
+        b.is_faulted(),
+        "`while true do pcall({call}) end` must fault"
+    );
+}
+
+#[test]
+fn concat_of_80_near_cap_strings_raises_and_returns() {
+    let setup = "local t = {} for i = 1, 80 do t[i] = big end";
+    over_cap_call_raises(setup, "table.concat, t");
+    over_cap_call_raises(setup, "table.concat, t, ', '");
+    over_cap_call_raises(setup, "table.concat, t, '', 1, 80");
+}
+
+/// 80 different strings (about 5 MiB) rather than 80 references to one. They
+/// are built two per callback, because building is itself charged to the budget.
+#[test]
+fn concat_of_80_distinct_near_cap_strings_raises_and_returns() {
+    let src = b"local t, n = {}, 0
+                function on_tick()
+                  n = n + 1
+                  if n <= 40 then
+                    for i = 1, 2 do
+                      t[#t + 1] = string.rep(string.char(64 + #t % 26), 65535)
+                    end
+                    pinball.set_lamp(1, #t / 80)
+                  else
+                    local ok = pcall(table.concat, t)
+                    pinball.set_lamp(0, ok and 0 or 1)
+                  end
+                end";
+    let mut b = spec_support::backend(src);
+    let mut h = Host::new(1);
+    for i in 0..40 {
+        h.tick(&mut b);
+        assert!(!b.is_faulted(), "building the strings faulted at tick {i}");
+    }
+    assert_eq!(spec_support::lamp(&h.cmd, 1), Some(1.0), "80 strings built");
+    for _ in 0..5 {
+        h.tick(&mut b);
+        if b.is_faulted() {
+            return; // tolerated; hanging is not
+        }
+        assert_eq!(
+            spec_support::lamp(&h.cmd, 0),
+            Some(1.0),
+            "table.concat must raise"
+        );
+    }
+}
+
+#[test]
+fn gsub_with_a_near_cap_replacement_raises_and_returns() {
+    over_cap_call_raises(
+        "local subject = ('a'):rep(80)",
+        "string.gsub, subject, 'a', big",
+    );
+    over_cap_call_raises(
+        "local subject = ('a'):rep(80) local map = { a = big }",
+        "string.gsub, subject, 'a', map",
+    );
+    over_cap_call_raises(
+        "local subject = ('a'):rep(80) local function f() return big end",
+        "string.gsub, subject, 'a', f",
+    );
+    over_cap_call_raises(
+        "local subject = ('a'):rep(80)",
+        "string.gsub, subject, '', big",
+    );
+}
+
+#[test]
+fn other_over_cap_builders_raise_and_return() {
+    over_cap_call_raises("", "string.rep, big, 80");
+    over_cap_call_raises("", "string.rep, 'x', 80, big");
+    over_cap_call_raises("", "string.format, '%s%s%s', big, big, big");
+    over_cap_call_raises("", "function() return big .. big end");
+}

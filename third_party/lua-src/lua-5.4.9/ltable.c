@@ -349,10 +349,12 @@ static unsigned int findindex (lua_State *L, Table *t, TValue *key,
 int luaH_next (lua_State *L, Table *t, StkId key) {
   unsigned int asize = luaH_realasize(t);
   unsigned int i = findindex(L, t, s2v(key), asize);  /* find original key */
+  unsigned int start = i;  /* KHZ: slots scanned are charged */
   for (; i < asize; i++) {  /* try first array part */
     if (!isempty(&t->array[i])) {  /* a non-empty entry? */
       setivalue(s2v(key), i + 1);
       setobj2s(L, key + 1, &t->array[i]);
+      luaE_khzdefer(L, (lua_Integer)((i - start) >> 3));  /* KHZ */
       return 1;
     }
   }
@@ -361,9 +363,11 @@ int luaH_next (lua_State *L, Table *t, StkId key) {
       Node *n = gnode(t, i);
       getnodekey(L, s2v(key), n);
       setobj2s(L, key + 1, gval(n));
+      luaE_khzdefer(L, (lua_Integer)((i + asize - start) >> 3));  /* KHZ */
       return 1;
     }
   }
+  luaE_khzdefer(L, (lua_Integer)((i + asize - start) >> 3));  /* KHZ */
   return 0;  /* no more elements */
 }
 
@@ -556,6 +560,9 @@ void luaH_resize (lua_State *L, Table *t, unsigned int newasize,
   Table newt;  /* to keep the new hash part */
   unsigned int oldasize = setlimittosize(t);
   TValue *newarray;
+  /* KHZ: rehashing/copying costs by size (deferred: resizes must not throw
+     anything but memory errors) */
+  luaE_khzdefer(L, ((lua_Integer)oldasize + newasize + allocsizenode(t) + nhsize) >> 4);
   /* create new hash part with appropriate size into 'newt' */
   setnodevector(L, &newt, nhsize);
   if (newasize < oldasize) {  /* will array shrink? */

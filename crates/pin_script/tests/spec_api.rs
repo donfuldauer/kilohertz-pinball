@@ -549,3 +549,93 @@ fn gi_tint_never_overflows_and_last_write_wins() {
     assert_eq!(b.overflow_count(), 0);
     assert!(!b.is_faulted());
 }
+
+// ---------------------------------------------------------------------------
+// The engine configuration: 100 000 instructions per callback, 2 MiB.
+
+#[test]
+fn engine_config_loads_and_runs_the_rules_fixture_normally() {
+    let engine = LuaConfig {
+        memory_limit_bytes: 2 * 1024 * 1024,
+        instruction_budget: 100_000,
+    };
+    let mut small = LuaScriptBackend::new(RULES, &names(), engine).expect("rules load at 2 MiB");
+    let mut reference = backend(RULES);
+    let mut hs = Host::new(7);
+    let mut hr = Host::new(7);
+
+    hs.init(&mut small);
+    hr.init(&mut reference);
+    assert_eq!(hs.cmd, hr.cmd, "on_init");
+    assert_eq!(hs.cmd.display_scenes.as_slice(), &[SceneId(14)]);
+
+    let mut expected_score = 0i64;
+    hs.edge(&mut small, 0, true);
+    hr.edge(&mut reference, 0, true);
+    assert_eq!(hs.cmd, hr.cmd, "start");
+    assert_eq!(
+        hs.cmd.ball_spawns.as_slice(),
+        &[(DispenserId(9), ProfileId(0))]
+    );
+
+    for i in 0..3000u32 {
+        hs.tick(&mut small);
+        hr.tick(&mut reference);
+        assert_eq!(hs.cmd, hr.cmd, "tick {i}");
+        if i % 3 == 0 {
+            let closed = i % 2 == 0;
+            hs.edge(&mut small, 7, closed);
+            hr.edge(&mut reference, 7, closed);
+            assert_eq!(hs.cmd, hr.cmd, "sling edge at {i}");
+            if closed {
+                expected_score += 10;
+                assert_eq!(hs.cmd.scores.as_slice(), &[(0u8, expected_score)]);
+            }
+        }
+        if i % 7 == 0 {
+            hs.edge(&mut small, 63, i % 2 == 1);
+            hr.edge(&mut reference, 63, i % 2 == 1);
+            expected_score += 1;
+            assert_eq!(hs.cmd, hr.cmd, "spinner edge at {i}");
+            assert_eq!(hs.cmd.scores.as_slice(), &[(0u8, expected_score)]);
+        }
+        assert!(
+            !small.is_faulted(),
+            "faulted at tick {i} under the engine config"
+        );
+    }
+    hs.edge(&mut small, 20, true);
+    assert_eq!(
+        hs.cmd.persist_writes.as_slice(),
+        &[(PersistKey(0), expected_score)]
+    );
+    assert_eq!(small.fault_count(), 0);
+    assert_eq!(small.overflow_count(), 0);
+
+    // Reload works under the engine config too.
+    small.apply_reload(RULES).expect("reload at 2 MiB");
+    hs.tick(&mut small);
+    assert!(!small.is_faulted());
+}
+
+#[test]
+fn engine_config_runs_every_api_case() {
+    let engine = LuaConfig {
+        memory_limit_bytes: 2 * 1024 * 1024,
+        instruction_budget: 100_000,
+    };
+    let mut b = LuaScriptBackend::new(API, &names(), engine).expect("api fixture loads at 2 MiB");
+    let mut h = Host::new(1);
+    for case in 1..=16 {
+        h.case(&mut b, case);
+        assert!(
+            !b.is_faulted(),
+            "case {case} faulted under the engine config"
+        );
+        assert_eq!(
+            h.cmd,
+            run_case(case),
+            "case {case} differs from the default config"
+        );
+    }
+}

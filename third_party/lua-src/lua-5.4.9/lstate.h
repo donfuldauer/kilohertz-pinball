@@ -394,6 +394,7 @@ union GCUnion {
 /* actual number of total bytes allocated */
 #define gettotalbytes(g)	cast(lu_mem, (g)->totalbytes + (g)->GCdebt)
 
+LUAI_FUNC void luaE_khzdefer (lua_State *L, lua_Integer n);  /* KHZ */
 LUAI_FUNC void luaE_setdebt (global_State *g, l_mem debt);
 LUAI_FUNC void luaE_freethread (lua_State *L, lua_State *L1);
 LUAI_FUNC CallInfo *luaE_extendCI (lua_State *L, int err);
