@@ -395,10 +395,11 @@ fn resolve(g: &GuideCurve, start: Vec3, r: f32, vel: Vec3, max_time: f32) -> Res
             Some(GuideCast::Contact(hit)) => {
                 assert!(hit.time >= 0.0 && hit.time <= max_time - elapsed);
                 assert!((hit.normal.length() - 1.0).abs() < 1e-5);
-                // A contact always closes in.
+                // A contact never separates (a resting contact at the
+                // sliding limit may have a closing speed of about zero).
                 assert!(
-                    hit.normal.dot(vel) < 0.0,
-                    "contact while not approaching: {hit:?}"
+                    hit.normal.dot(vel) <= 1e-5 * vel.length(),
+                    "contact while separating: {hit:?}"
                 );
                 out.hit = Some(GuideHit {
                     time: elapsed + hit.time,
@@ -641,13 +642,14 @@ fn guide_cast_on_a_rising_curve_stays_safe() {
 #[test]
 fn self_crossing_guides_fall_back_to_conservative_advancement() {
     // A figure-of-eight crosses itself: no reach, but still a correct cast.
-    let pts: Vec<Vec3> = (0..=40)
+    let mut pts: Vec<Vec3> = (0..40)
         .map(|i| {
             let a = i as f32 * std::f32::consts::TAU / 40.0;
             v(0.2 * libm::sinf(a), 0.1 * libm::sinf(2.0 * a), 0.0)
         })
         .collect();
-    let g = GuideCurve::new(CubicSpline::interpolate(&pts).unwrap(), 0.03).unwrap();
+    pts.push(pts[0]);
+    let g = GuideCurve::new(CubicSpline::interpolate_closed(&pts).unwrap(), 0.03).unwrap();
     let start = v(0.1, 0.3, 0.0135);
     let hit = resolve(&g, start, BALL, v(0.0, -5.0, 0.0), 1.0)
         .hit
@@ -700,6 +702,112 @@ proptest! {
         for (i, deg) in rolls[..pts.len()].iter().enumerate() {
             prop_assert!((w.roll_rad(i as f32) - deg.to_radians()).abs() < 1e-5);
         }
+    }
+}
+
+fn ring(radius: f32) -> Vec<Vec3> {
+    let mut pts: Vec<Vec3> = (0..72)
+        .map(|i| {
+            let a = (i as f32 * 5.0).to_radians();
+            v(radius * libm::cosf(a), radius * libm::sinf(a), 0.0)
+        })
+        .collect();
+    pts.push(pts[0]);
+    pts
+}
+
+#[test]
+fn closed_guides_need_a_periodic_spline() {
+    let pts = ring(0.2);
+    // A natural spline closes with a kink: rejected as a guide.
+    let natural = CubicSpline::interpolate(&pts).unwrap();
+    assert!(!natural.is_closed());
+    assert_eq!(
+        GuideCurve::new(natural, 0.03).unwrap_err(),
+        SplineError::ClosedGuideNotPeriodic
+    );
+    // The periodic spline is accepted and keeps its reach everywhere,
+    // including across the seam at angle 0.
+    let closed = CubicSpline::interpolate_closed(&pts).unwrap();
+    assert!(closed.is_closed());
+    let g = GuideCurve::new(closed, 0.03).unwrap();
+    for k in 0..72 {
+        let a = (k as f32 * 5.0 + 1.0).to_radians() - 0.2;
+        let radial = v(libm::cosf(a), libm::sinf(a), 0.0);
+        let tangent = v(-radial.y, radial.x, 0.0);
+        // Outside, running along the wall: free in a few steps.
+        let start = radial * (0.2 + BALL + 1.0e-4) + Vec3::Z * 0.0135;
+        let res = resolve(&g, start, BALL, tangent * 8.0, 1.0e-3);
+        assert!(res.hit.is_none(), "false contact at {a}: {:?}", res.hit);
+        assert!(
+            res.casts == 1 && res.steps <= 4,
+            "{} steps at {a}",
+            res.steps
+        );
+        // Inside, heading for the wall: contact at the analytic distance.
+        let start = radial * 0.1 + Vec3::Z * 0.0135;
+        let hit = resolve(&g, start, BALL, radial * 5.0, 0.1).hit.unwrap();
+        assert!(
+            (hit.time * 5.0 - (0.1 - BALL)).abs() < 2.0e-5,
+            "{}",
+            hit.time * 5.0
+        );
+    }
+}
+
+/// A caller that only casts and zeroes the normal velocity (no push-out)
+/// must not sink through a concave wall: the sliding limit is fixed.
+#[test]
+fn sliding_without_push_out_stays_within_the_sliding_limit() {
+    let wall = 0.15f32;
+    let g = arc_wall(wall, 180);
+    for gap0 in [0.0f32, 8.0e-6, -8.0e-6, 3.0e-5] {
+        let a0 = 10.0f32.to_radians();
+        let radial = v(libm::cosf(a0), libm::sinf(a0), 0.0);
+        let mut pos = radial * (wall - BALL - gap0) + Vec3::Z * 0.0135;
+        let mut vel = v(-radial.y, radial.x, 0.0) * 8.0;
+        let h = 1.25e-4f32;
+        let mut deepest = f32::INFINITY;
+        let mut seed = None;
+        for _ in 0..640 {
+            let mut remaining = h;
+            for _ in 0..8 {
+                match g.cast_sphere(pos, BALL, vel, remaining, seed) {
+                    None => {
+                        pos += vel * remaining;
+                        break;
+                    }
+                    Some(GuideCast::Advance { time }) => {
+                        pos += vel * time;
+                        remaining -= time;
+                    }
+                    Some(GuideCast::Contact(hit)) => {
+                        pos += vel * hit.time;
+                        remaining -= hit.time;
+                        seed = Some(hit.t);
+                        let vn = vel.dot(hit.normal);
+                        if vn < 0.0 {
+                            vel -= hit.normal * vn;
+                        }
+                    }
+                }
+            }
+            let angle = libm::atan2f(pos.y, pos.x).to_degrees();
+            if angle > 170.0 {
+                break;
+            }
+            let gap = g.closest_point(pos, seed).distance - BALL;
+            deepest = deepest.min(gap);
+            assert!(
+                gap >= -2.0 * SKIN,
+                "sank to {gap} at {angle}° (start gap {gap0})"
+            );
+        }
+        assert!(
+            deepest <= SKIN,
+            "the ball should stay on the wall: {deepest}"
+        );
+        assert!(vel.length() > 7.0 && vel.is_finite());
     }
 }
 

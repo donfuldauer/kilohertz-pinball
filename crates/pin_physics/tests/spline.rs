@@ -100,6 +100,83 @@ fn errors() {
 }
 
 #[test]
+fn closed_spline_is_periodic() {
+    let mut pts: Vec<Vec3> = (0..9)
+        .map(|i| {
+            let a = i as f32 * std::f32::consts::TAU / 9.0;
+            v(
+                0.2 * libm::cosf(a),
+                0.1 * libm::sinf(a) + 0.03 * libm::sinf(3.0 * a),
+                0.02 * libm::cosf(2.0 * a),
+            )
+        })
+        .collect();
+    assert_eq!(
+        CubicSpline::interpolate_closed(&pts).unwrap_err(),
+        SplineError::NotClosed
+    );
+    pts.push(pts[0]);
+    assert_eq!(
+        CubicSpline::interpolate_closed(&pts[..1]).unwrap_err(),
+        SplineError::TooFewPoints
+    );
+    assert_eq!(
+        CubicSpline::interpolate_closed(&[pts[0], pts[1], pts[0]]).unwrap_err(),
+        SplineError::TooFewPoints
+    );
+    let mut bad = pts.clone();
+    bad[3].x = f32::NAN;
+    assert_eq!(
+        CubicSpline::interpolate_closed(&bad).unwrap_err(),
+        SplineError::NonFinite
+    );
+    let mut dup = pts.clone();
+    dup[4] = dup[5];
+    assert_eq!(
+        CubicSpline::interpolate_closed(&dup).unwrap_err(),
+        SplineError::DuplicatePoints
+    );
+    assert!(!SplineError::NotClosed.to_string().is_empty());
+    assert!(!SplineError::ClosedGuideNotPeriodic.to_string().is_empty());
+
+    let s = CubicSpline::interpolate_closed(&pts).unwrap();
+    assert!(s.is_closed());
+    assert!(!CubicSpline::interpolate(&pts).unwrap().is_closed());
+    assert_eq!(s.segment_count(), 9);
+    for (i, p) in pts.iter().enumerate() {
+        assert_eq!(s.point(i as f32), *p);
+    }
+    // C² at every knot, and across the seam (t = 0 and t = n).
+    let segs = s.segments();
+    for i in 0..9 {
+        let (l, r) = (segs[(i + 8) % 9], segs[i]);
+        assert_eq!(l.p[3], r.p[0]);
+        let dl = (l.p[3] - l.p[2]) * 3.0;
+        let dr = (r.p[1] - r.p[0]) * 3.0;
+        assert!(rel_close(dl, dr, 1e-4, 1e-6), "C1 at knot {i}");
+        let ddl = (l.p[3] - l.p[2] * 2.0 + l.p[1]) * 6.0;
+        let ddr = (r.p[2] - r.p[1] * 2.0 + r.p[0]) * 6.0;
+        assert!(rel_close(ddl, ddr, 1e-3, 5e-6), "C2 at knot {i}");
+    }
+    assert!(rel_close(s.tangent(0.0), s.tangent(9.0), 1e-4, 1e-6));
+    assert_eq!(s.second_derivative(0.0), s.second_derivative(9.0));
+    assert!(s.second_derivative(0.0).length() > 1e-3);
+    // The cyclic system is solved: M[i-1] + 4 M[i] + M[i+1] = 6 Δ²P[i].
+    for i in 0..9 {
+        let m = |j: usize| s.second_derivative((j % 9) as f32);
+        let lhs = m(i + 8) + m(i) * 4.0 + m(i + 1);
+        let rhs = (pts[(i + 8) % 9] - pts[i] * 2.0 + pts[(i + 1) % 9]) * 6.0;
+        assert!((lhs - rhs).length() < 1e-5, "row {i}: {lhs} vs {rhs}");
+    }
+    // Closest point is global across the seam.
+    let p = s.point(0.0) + v(0.01, 0.002, 0.003);
+    for seed in [None, Some(0.2), Some(8.8), Some(4.0)] {
+        let cp = s.closest_point(p, seed);
+        assert!((f64::from(cp.distance) - brute(&s, p)).abs() < 1e-5);
+    }
+}
+
+#[test]
 fn two_points_is_a_straight_line() {
     let s = CubicSpline::interpolate(&[v(0.0, 0.0, 0.0), v(0.3, 0.6, -0.3)]).unwrap();
     assert_eq!(s.segment_count(), 1);
