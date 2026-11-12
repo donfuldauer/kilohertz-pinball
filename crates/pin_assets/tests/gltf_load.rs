@@ -264,6 +264,24 @@ fn hostile_documents_are_errors() {
             {"buffer": 0, "byteOffset": 72, "byteLength": 6}]}),
         // Dangling index (gltf validation).
         json!({"nodes": [{"mesh": 7}]}),
+        // Unchecked indices / image sources inside the gltf crate (would panic).
+        json!({"meshes": [{"primitives": [{"attributes": {"POSITION": 99}}]}]}),
+        json!({"meshes": [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 42}}]}]}),
+        json!({"meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 9, "material": 3}]}]}),
+        json!({"images": [{"bufferView": 0}]}),
+        json!({"images": [{"bufferView": 9, "mimeType": "image/png"}]}),
+        json!({"images": [{}]}),
+        json!({"images": [{"uri": "b.bin", "bufferView": 0, "mimeType": "image/png"}]}),
+        json!({"textures": [{"source": 5}]}),
+        json!({"textures": [{"source": 0, "sampler": 2}], "images": [{"uri": "b.bin"}]}),
+        json!({"materials": [{"emissiveTexture": {"index": 4}}]}),
+        json!({"bufferViews": [{"buffer": 3, "byteLength": 4}]}),
+        json!({"accessors": [{"bufferView": 9, "componentType": 5126, "count": 3, "type": "VEC3"}]}),
+        json!({"nodes": [{"mesh": 0, "children": [7]}]}),
+        json!({"nodes": [{"mesh": 0, "camera": 0}]}),
+        json!({"nodes": [{"mesh": 0, "skin": 0}]}),
+        json!({"scenes": [{"nodes": [4]}]}),
+        json!({"scenes": [{"nodes": [0]}], "scene": 2}),
         // Undecodable image.
         json!({"images": [{"uri": "b.bin"}]}),
         // Non-finite matrix.

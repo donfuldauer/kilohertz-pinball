@@ -11,6 +11,7 @@
 //! out-of-bundle read. Images are decoded to RGBA8 with the `image` crate
 //! under explicit size and allocation limits.
 
+mod check;
 mod data;
 
 use crate::validate::{IdKind, TableIds, ValidationError};
@@ -182,6 +183,7 @@ fn parse_document(bytes: &[u8]) -> Result<(Document, Option<Vec<u8>>), AssetErro
     };
     let root: json::Root =
         json::deserialize::from_slice(json_bytes).map_err(|e| gerr(e.to_string()))?;
+    check::prevalidate(&root)?;
     let document = Document::from_json(root).map_err(|e| gerr(e.to_string()))?;
     Ok((document, bin.map(<[u8]>::to_vec)))
 }
@@ -294,9 +296,18 @@ fn decode_image(bytes: &[u8], what: &str) -> Result<ImageData, AssetError> {
 /// Loads meshes, PBR materials, images and Blender extras from a `.glb` or
 /// `.gltf` in the bundle. External buffers and images are resolved relative to
 /// `path` through `vfs` only; `data:` URIs are decoded inline.
+///
+/// Hostile input is rejected by explicit checks; as defence in depth, a panic
+/// inside the pinned `gltf` crate is also caught and reported as
+/// [`AssetError::Gltf`] (DECISIONS.md, 4.1).
 pub fn load_gltf(vfs: &Vfs, path: &str) -> Result<GltfScene, AssetError> {
     let bytes = vfs.read(path)?;
-    let (document, bin) = parse_document(&bytes)?;
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load_bytes(vfs, path, &bytes)))
+        .unwrap_or_else(|_| Err(gerr(format!("{path}: malformed glTF (loader panicked)"))))
+}
+
+fn load_bytes(vfs: &Vfs, path: &str, bytes: &[u8]) -> Result<GltfScene, AssetError> {
+    let (document, bin) = parse_document(bytes)?;
     let base = path.rsplit_once(['/', '\\']).map_or("", |(dir, _)| dir);
     let buffers = Buffers::load(&document, bin, vfs, base)?;
 

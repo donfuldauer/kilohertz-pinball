@@ -1047,3 +1047,25 @@ fn wat_f32(f: f32) -> String {
         format!("{f:e}")
     }
 }
+
+/// Reports (never asserts: rule 5) the cost of a faulting tick that spends
+/// its whole engine budget on host calls, the most expensive per fuel unit.
+#[test]
+fn host_call_loop_tick_cost_report() {
+    let src = tick_module(
+        r#"(loop $l
+             (call $pulse_coil (i32.const 1) (i32.const 1))
+             (drop (call $random (i64.const 1) (i64.const 1000)))
+             (drop (call $id_of (i32.const 1) (i32.const 0) (i32.const 0)))
+             (br $l))"#,
+    );
+    let mut b = new(&src, WasmConfig::engine());
+    let mut h = Host::new();
+    let start = std::time::Instant::now();
+    h.tick(&mut b);
+    println!(
+        "host-call-loop faulting tick with WasmConfig::engine(): {:?}",
+        start.elapsed()
+    );
+    assert_eq!(b.last_error(), Some(&ScriptError::BudgetExceeded));
+}

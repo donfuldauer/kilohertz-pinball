@@ -73,28 +73,117 @@ fn tangential(v: Vec3, n: Vec3) -> Vec3 {
     v - n * v.dot(n)
 }
 
-/// Shortens `v` by `amount` (to zero at most).
-fn shorten(v: Vec3, amount: f32) -> Vec3 {
+/// Impulses a contact has applied so far while the contacts of a sub-step
+/// boundary are solved together. Accumulating them lets a later sweep take
+/// back part of an earlier impulse, which is what makes a ball held by
+/// several contacts (a groove, a corner, a stack of balls) come to rest.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct ContactImpulse {
+    /// Normal impulse, N·s (never negative).
+    pub normal: f32,
+    /// Friction impulse, N·s (tangential, at most `μ · normal` long).
+    pub tangent: Vec3,
+    /// Angular impulse of the rolling and pivoting resistance, N·m·s.
+    pub rolling: Vec3,
+}
+
+/// Clamps the length of `v` to `max`.
+fn clamp_length(v: Vec3, max: f32) -> Vec3 {
     let len = v.length();
-    if len <= amount || len == 0.0 {
-        Vec3::ZERO
+    if len > max {
+        if max > 0.0 { v * (max / len) } else { Vec3::ZERO }
     } else {
-        v * ((len - amount) / len)
+        v
     }
 }
 
-/// Resolves the contact of a ball with a surface.
+/// One solver step for the contact of a ball with a surface.
 ///
 /// `normal` is the unit normal from the surface toward the ball centre and
 /// `surface_velocity` the velocity of the surface at the contact point. The
 /// contact slip velocity is `v + ω × r_c − v_surface` with `r_c = −r · n`.
-/// Nothing happens unless the ball approaches the surface.
+/// `target_normal_speed` is the separation speed the contact asks for (the
+/// rebound speed of an impact, 0 for a resting contact) and `acc` the
+/// impulses this contact has applied so far in the current solve.
 ///
-/// The response is, in order: the normal impulse; then, if friction and
-/// rolling resistance together can hold the ball still on the surface, it
-/// stops (static rest); otherwise the rolling-resistance torque
-/// `c · N · r` opposes the angular velocity and Coulomb friction acts on the
-/// slip, limited to the impulse that ends it (sliding → rolling).
+/// In order: the normal impulse (total clamped to ≥ 0); then, if friction
+/// and rolling resistance together can hold the ball still on the surface,
+/// it stops (static rest); otherwise the rolling-resistance torque (total at
+/// most `c · J_n · r`, for rolling and for pivoting) opposes the angular
+/// velocity and Coulomb friction (total at most `μ · J_n`) acts on the slip,
+/// up to the impulse that ends it (sliding → rolling).
+///
+/// Returns the size of the change in m/s (for convergence tests).
+pub fn solve_surface_contact(
+    ball: &mut Ball,
+    body: SphereBody,
+    normal: Vec3,
+    surface_velocity: Vec3,
+    k: ContactCoefficients,
+    target_normal_speed: f32,
+    acc: &mut ContactImpulse,
+) -> f32 {
+    let n = normal;
+    let r = body.radius;
+    let m = body.mass;
+    let inertia = body.inertia();
+    let rc = n * -r;
+    let before = (ball.velocity, ball.angular_velocity);
+
+    let un = (ball.velocity - surface_velocity).dot(n);
+    if un.is_nan() {
+        return 0.0;
+    }
+    let total = (acc.normal + m * (target_normal_speed - un)).max(0.0);
+    ball.velocity += n * ((total - acc.normal) / m);
+    acc.normal = total;
+
+    let f_max = k.friction.max(0.0) * total;
+    let l_max = k.rolling_resistance.max(0.0) * total * r;
+
+    // Static rest: friction stops the centre, the resistance torque takes
+    // what is left of the spin.
+    let vt = tangential(ball.velocity - surface_velocity, n);
+    let w = ball.angular_velocity;
+    let stop_t = acc.tangent - vt * m;
+    let stop_l = acc.rolling - w * inertia - n.cross(vt) * (r * m);
+    let stop_ln = n * stop_l.dot(n);
+    let rest = total > 0.0
+        && stop_t.length() <= f_max
+        && (stop_l - stop_ln).length() <= l_max
+        && stop_ln.length() <= l_max;
+    if rest {
+        ball.velocity -= vt;
+        ball.angular_velocity = Vec3::ZERO;
+        acc.tangent = stop_t;
+        acc.rolling = stop_l;
+    } else {
+        // Rolling and pivoting resistance, each limited on its own.
+        let want = acc.rolling - w * inertia;
+        let want_n = n * want.dot(n);
+        let new_l = clamp_length(want - want_n, l_max) + clamp_length(want_n, l_max);
+        ball.angular_velocity += (new_l - acc.rolling) / inertia;
+        acc.rolling = new_l;
+
+        // Coulomb friction on the slip velocity. 1/m + r²/I = 7/(2m).
+        let ut = tangential(
+            ball.velocity + ball.angular_velocity.cross(rc) - surface_velocity,
+            n,
+        );
+        let new_t = clamp_length(tangential(acc.tangent, n) - ut * (m * (2.0 / 7.0)), f_max);
+        let j = new_t - acc.tangent;
+        ball.velocity += j / m;
+        ball.angular_velocity += rc.cross(j) / inertia;
+        acc.tangent = new_t;
+    }
+    (ball.velocity - before.0).length() + (ball.angular_velocity - before.1).length() * r
+}
+
+/// Resolves an impact of a ball on a surface in one shot (see
+/// [`solve_surface_contact`]): restitution from [`effective_restitution`],
+/// then friction and rolling resistance for the impulse of this impact.
+/// Nothing happens unless the ball approaches the surface faster than
+/// `min_approach`.
 pub fn resolve_surface_contact(
     ball: &mut Ball,
     body: SphereBody,
@@ -102,79 +191,93 @@ pub fn resolve_surface_contact(
     surface_velocity: Vec3,
     k: ContactCoefficients,
     persistent: bool,
+    min_approach: f32,
 ) -> ContactOutcome {
-    let n = normal;
-    let r = body.radius;
-    let m = body.mass;
-    let rc = n * -r;
-    let u = ball.velocity + ball.angular_velocity.cross(rc) - surface_velocity;
-    let un = u.dot(n);
-    if un.is_nan() || un >= 0.0 {
+    let approach = -(ball.velocity - surface_velocity).dot(normal);
+    if approach.is_nan() || approach <= min_approach {
         return ContactOutcome::NONE;
     }
-    let approach = -un;
     let e = effective_restitution(k.restitution, approach, persistent);
-    let dvn = (1.0 + e) * approach;
-    let jn = m * dvn;
-    ball.velocity += n * dvn;
-
-    let inertia = body.inertia();
-    let mu = k.friction.max(0.0);
-    let c = k.rolling_resistance.max(0.0);
-    // Largest angular impulse of the rolling (and pivoting) resistance.
-    let l_max = c * jn * r;
-
-    // Static rest: friction −m·v_t stops the centre, the resistance torque
-    // takes what is left of the spin.
-    let vt = tangential(ball.velocity - surface_velocity, n);
-    let w = ball.angular_velocity;
-    let wn = n * w.dot(n);
-    let wt = w - wn;
-    if m * vt.length() <= mu * jn {
-        let lt = wt * inertia + n.cross(vt) * (r * m);
-        if lt.length() <= l_max && (wn * inertia).length() <= l_max {
-            ball.velocity -= vt;
-            ball.angular_velocity = Vec3::ZERO;
-            return ContactOutcome {
-                normal_impulse: jn,
-                approach_speed: approach,
-            };
-        }
-    }
-
-    // Rolling and pivoting resistance.
-    if l_max > 0.0 {
-        let dw = l_max / inertia;
-        ball.angular_velocity = shorten(wt, dw) + shorten(wn, dw);
-    }
-
-    // Coulomb friction on the slip velocity.
-    let ut = tangential(
-        ball.velocity + ball.angular_velocity.cross(rc) - surface_velocity,
-        n,
+    let mut acc = ContactImpulse::default();
+    solve_surface_contact(
+        ball,
+        body,
+        normal,
+        surface_velocity,
+        k,
+        e * approach,
+        &mut acc,
     );
-    let slip = ut.length();
-    if slip > 0.0 && mu > 0.0 {
-        // 1/m + r²/I = 7/(2m): the impulse that ends the slip.
-        let stick = slip * m * (2.0 / 7.0);
-        let jt = stick.min(mu * jn);
-        let j = ut * (-jt / slip);
-        ball.velocity += j / m;
-        ball.angular_velocity += rc.cross(j) / inertia;
-    }
     ContactOutcome {
-        normal_impulse: jn,
+        normal_impulse: acc.normal,
         approach_speed: approach,
     }
 }
 
-/// Resolves the contact of two free balls. `normal` is the unit vector from
-/// `b` toward `a`.
+/// One solver step for the contact of two free balls. `normal` is the unit
+/// vector from `b` toward `a`; `target_normal_speed` and `acc` are as in
+/// [`solve_surface_contact`].
 ///
 /// The contact point divides the line of centres in the ratio of the radii,
 /// whatever the current distance, so the impulse pair conserves linear and
 /// angular momentum exactly even when the balls overlap or are a rounding
 /// error apart.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_ball_contact(
+    a: &mut Ball,
+    body_a: SphereBody,
+    b: &mut Ball,
+    body_b: SphereBody,
+    normal: Vec3,
+    k: ContactCoefficients,
+    target_normal_speed: f32,
+    acc: &mut ContactImpulse,
+) -> f32 {
+    let n = normal;
+    let d = (a.position - b.position).dot(n);
+    let rsum = body_a.radius + body_b.radius;
+    let arm_a = n * (-d * body_a.radius / rsum);
+    let arm_b = n * (d * body_b.radius / rsum);
+    let (ima, imb) = (1.0 / body_a.mass, 1.0 / body_b.mass);
+    let kn = ima + imb;
+    let before = (a.velocity, b.velocity);
+
+    let un = (a.velocity - b.velocity).dot(n);
+    if un.is_nan() {
+        return 0.0;
+    }
+    let total = (acc.normal + (target_normal_speed - un) / kn).max(0.0);
+    let dj = total - acc.normal;
+    a.velocity += n * (dj * ima);
+    b.velocity -= n * (dj * imb);
+    acc.normal = total;
+
+    let f_max = k.friction.max(0.0) * total;
+    if f_max > 0.0 || acc.tangent != Vec3::ZERO {
+        let ut = tangential(
+            a.velocity + a.angular_velocity.cross(arm_a)
+                - b.velocity
+                - b.angular_velocity.cross(arm_b),
+            n,
+        );
+        let (iia, iib) = (1.0 / body_a.inertia(), 1.0 / body_b.inertia());
+        let kt = kn + arm_a.length_squared() * iia + arm_b.length_squared() * iib;
+        let new_t = clamp_length(tangential(acc.tangent, n) - ut / kt, f_max);
+        let j = new_t - acc.tangent;
+        a.velocity += j * ima;
+        b.velocity -= j * imb;
+        a.angular_velocity += arm_a.cross(j) * iia;
+        b.angular_velocity -= arm_b.cross(j) * iib;
+        acc.tangent = new_t;
+    }
+    (a.velocity - before.0).length() + (b.velocity - before.1).length()
+}
+
+/// Resolves an impact of two free balls in one shot (see
+/// [`solve_ball_contact`]). `normal` is the unit vector from `b` toward
+/// `a`. Nothing happens unless the balls approach each other faster than
+/// `min_approach`.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_ball_contact(
     a: &mut Ball,
     body_a: SphereBody,
@@ -183,42 +286,17 @@ pub fn resolve_ball_contact(
     normal: Vec3,
     k: ContactCoefficients,
     persistent: bool,
+    min_approach: f32,
 ) -> ContactOutcome {
-    let n = normal;
-    let d = (a.position - b.position).dot(n);
-    let rsum = body_a.radius + body_b.radius;
-    let arm_a = n * (-d * body_a.radius / rsum);
-    let arm_b = n * (d * body_b.radius / rsum);
-    let u = a.velocity + a.angular_velocity.cross(arm_a)
-        - b.velocity
-        - b.angular_velocity.cross(arm_b);
-    let un = u.dot(n);
-    if un.is_nan() || un >= 0.0 {
+    let approach = -(a.velocity - b.velocity).dot(normal);
+    if approach.is_nan() || approach <= min_approach {
         return ContactOutcome::NONE;
     }
-    let approach = -un;
     let e = effective_restitution(k.restitution, approach, persistent);
-    let (ima, imb) = (1.0 / body_a.mass, 1.0 / body_b.mass);
-    let kn = ima + imb;
-    let jn = (1.0 + e) * approach / kn;
-    a.velocity += n * (jn * ima);
-    b.velocity -= n * (jn * imb);
-
-    let ut = u - n * un;
-    let slip = ut.length();
-    let mu = k.friction.max(0.0);
-    if slip > 0.0 && mu > 0.0 {
-        let (iia, iib) = (1.0 / body_a.inertia(), 1.0 / body_b.inertia());
-        let kt = kn + arm_a.length_squared() * iia + arm_b.length_squared() * iib;
-        let jt = (slip / kt).min(mu * jn);
-        let j = ut * (-jt / slip);
-        a.velocity += j * ima;
-        b.velocity -= j * imb;
-        a.angular_velocity += arm_a.cross(j) * iia;
-        b.angular_velocity -= arm_b.cross(j) * iib;
-    }
+    let mut acc = ContactImpulse::default();
+    solve_ball_contact(a, body_a, b, body_b, normal, k, e * approach, &mut acc);
     ContactOutcome {
-        normal_impulse: jn,
+        normal_impulse: acc.normal,
         approach_speed: approach,
     }
 }
@@ -306,13 +384,13 @@ mod tests {
             friction: 0.2,
             rolling_resistance: 0.0,
         };
-        let out = resolve_surface_contact(&mut b, BODY, Vec3::Z, Vec3::ZERO, k, false);
+        let out = resolve_surface_contact(&mut b, BODY, Vec3::Z, Vec3::ZERO, k, false, 0.0);
         assert!((b.velocity.z - 1.0).abs() < 1e-6);
         assert!((out.approach_speed - 2.0).abs() < 1e-6);
         assert!((out.normal_impulse - 0.08 * 3.0).abs() < 1e-6);
         // Separating now: nothing more happens.
         let before = b;
-        let out = resolve_surface_contact(&mut b, BODY, Vec3::Z, Vec3::ZERO, k, false);
+        let out = resolve_surface_contact(&mut b, BODY, Vec3::Z, Vec3::ZERO, k, false, 0.0);
         assert_eq!(out.normal_impulse, 0.0);
         assert_eq!(b, before);
     }
@@ -328,7 +406,7 @@ mod tests {
             friction: 5.0,
             rolling_resistance: 0.0,
         };
-        resolve_surface_contact(&mut b, BODY, Vec3::Z, Vec3::ZERO, k, true);
+        resolve_surface_contact(&mut b, BODY, Vec3::Z, Vec3::ZERO, k, true, 0.0);
         assert!((b.velocity.x - 0.5).abs() < 1e-6);
         let slip = b.velocity + b.angular_velocity.cross(Vec3::Z * -BODY.radius);
         assert!(slip.length() < 1e-6);
@@ -344,7 +422,7 @@ mod tests {
             friction: 0.2,
             rolling_resistance: 0.002,
         };
-        resolve_surface_contact(&mut b, BODY, Vec3::Z, Vec3::ZERO, k, true);
+        resolve_surface_contact(&mut b, BODY, Vec3::Z, Vec3::ZERO, k, true, 0.0);
         assert_eq!(b.velocity, Vec3::ZERO);
         assert_eq!(b.angular_velocity, Vec3::ZERO);
     }
@@ -358,8 +436,62 @@ mod tests {
             friction: 0.5,
             rolling_resistance: 0.0,
         };
-        resolve_surface_contact(&mut b, BODY, Vec3::Z, Vec3::new(2.0, 0.0, 0.0), k, true);
+        resolve_surface_contact(&mut b, BODY, Vec3::Z, Vec3::new(2.0, 0.0, 0.0), k, true, 0.0);
         assert!(b.velocity.x > 0.1);
+    }
+
+    #[test]
+    fn accumulated_solve_brings_a_ball_to_rest_in_a_groove() {
+        // Two planes 0.6 rad either side of level; gravity for one tick.
+        let normals = [
+            Vec3::new(libm::sinf(0.6), 0.0, libm::cosf(0.6)),
+            Vec3::new(-libm::sinf(0.6), 0.0, libm::cosf(0.6)),
+        ];
+        let k = ContactCoefficients {
+            restitution: 0.25,
+            friction: 0.2,
+            rolling_resistance: 0.002,
+        };
+        let mut b = Ball::new(ProfileId(0), Vec3::ZERO);
+        b.velocity = Vec3::new(0.0, 0.0, -0.00981);
+        let mut acc = [ContactImpulse::default(); 2];
+        for _ in 0..10 {
+            for (n, acc) in normals.iter().zip(&mut acc) {
+                solve_surface_contact(&mut b, BODY, *n, Vec3::ZERO, k, 0.0, acc);
+            }
+        }
+        assert!(b.velocity.length() < 1e-7, "{:?}", b.velocity);
+        assert!(b.angular_velocity.length() < 1e-5);
+        // The two normal impulses carry the weight.
+        let up: f32 = acc.iter().zip(normals).map(|(a, n)| a.normal * n.z).sum();
+        assert!((up - BODY.mass * 0.00981).abs() < 1e-3 * BODY.mass * 0.00981);
+        // A contact the ball leaves gives its impulses back.
+        b.velocity = Vec3::new(0.0, 0.0, 1.0);
+        solve_surface_contact(&mut b, BODY, normals[0], Vec3::ZERO, k, 0.0, &mut acc[0]);
+        assert_eq!(acc[0].normal, 0.0);
+        assert_eq!(acc[0].tangent, Vec3::ZERO);
+    }
+
+    #[test]
+    fn min_approach_gates_one_shot_impacts() {
+        let k = ContactCoefficients {
+            restitution: 0.5,
+            friction: 0.2,
+            rolling_resistance: 0.0,
+        };
+        let mut b = Ball::new(ProfileId(0), Vec3::ZERO);
+        b.velocity = Vec3::new(0.0, 0.0, -0.04);
+        let before = b;
+        let out = resolve_surface_contact(&mut b, BODY, Vec3::Z, Vec3::ZERO, k, false, 0.05);
+        assert_eq!((out.normal_impulse, b), (0.0, before));
+        let mut a = Ball::new(ProfileId(0), Vec3::Z * 0.027);
+        a.velocity = Vec3::new(0.0, 0.0, -0.04);
+        let mut c = Ball::new(ProfileId(0), Vec3::ZERO);
+        let out = resolve_ball_contact(&mut a, BODY, &mut c, BODY, Vec3::Z, k, false, 0.05);
+        assert_eq!(out.normal_impulse, 0.0);
+        let out = resolve_ball_contact(&mut a, BODY, &mut c, BODY, Vec3::Z, k, false, 0.0);
+        assert!(out.normal_impulse > 0.0);
+        assert!((a.velocity.z - c.velocity.z).abs() < 1e-7);
     }
 
     #[test]
@@ -410,7 +542,7 @@ mod tests {
             b.angular_velocity = w;
             let before = ke(&b, BODY);
             let k = ContactCoefficients { restitution: e, friction: mu, rolling_resistance: c };
-            let out = resolve_surface_contact(&mut b, BODY, n, Vec3::ZERO, k, persistent);
+            let out = resolve_surface_contact(&mut b, BODY, n, Vec3::ZERO, k, persistent, 0.0);
             prop_assert!(ke(&b, BODY) <= before * (1.0 + 1e-5) + 1e-12);
             prop_assert!(b.velocity.is_finite() && b.angular_velocity.is_finite());
             if out.normal_impulse > 0.0 {
@@ -440,7 +572,7 @@ mod tests {
             let l0 = l(&a, &b);
             let e0 = ke(&a, ba) + ke(&b, bb);
             let k = ContactCoefficients { restitution: e, friction: mu, rolling_resistance: 0.0 };
-            resolve_ball_contact(&mut a, ba, &mut b, bb, n, k, false);
+            resolve_ball_contact(&mut a, ba, &mut b, bb, n, k, false, 0.0);
             let p1 = a.velocity.as_dvec3() * f64::from(ba.mass)
                 + b.velocity.as_dvec3() * f64::from(bb.mass);
             prop_assert!((p1 - p0).length() <= 1e-6 * (1.0 + p0.length()));

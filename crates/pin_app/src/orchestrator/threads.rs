@@ -439,8 +439,7 @@ fn render_thread(
             lines.clear();
             snapshot_lines(snap, &default_ball_radius, &mut lines);
             let st = set.render(&lines, &camera);
-            if st.contains(&pin_render::gpu::SurfaceStatus::Presented)
-            {
+            if st.contains(&pin_render::gpu::SurfaceStatus::Presented) {
                 stats.render_frames.fetch_add(1, Ordering::Relaxed);
             }
             paced = set.paces_frame();

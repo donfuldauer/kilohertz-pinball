@@ -21,8 +21,9 @@ use pin_core::ids::{MagnetId, ProfileId};
 use pin_core::{BallProfile, Material};
 
 use super::contact::{
-    ContactCoefficients, SphereBody, effective_restitution, integrate_orientation,
-    resolve_ball_contact, resolve_surface_contact, sphere_toi,
+    ContactCoefficients, ContactImpulse, SphereBody, effective_restitution,
+    integrate_orientation, resolve_ball_contact, resolve_surface_contact, solve_ball_contact,
+    solve_surface_contact, sphere_toi,
 };
 use super::newton::NewtonChain;
 use super::types::{
@@ -51,7 +52,9 @@ const FALLBACK_FRICTION: f32 = 0.2;
 /// Impacts a ball may have per sub-step before it waits for its next one.
 const MAX_EVENTS_PER_SUBSTEP: u8 = 12;
 /// Velocity-solver sweeps over the touching contacts at a sub-step boundary.
-const PRESOLVE_PASSES: usize = 8;
+const PRESOLVE_PASSES: usize = 10;
+/// The sweeps stop when one changes no velocity by more than this (m/s).
+const PRESOLVE_TOLERANCE: f32 = 1.0e-7;
 /// Closing speed (m/s) below which two touching balls are left to the next
 /// sub-step boundary instead of raising an impact (they sink by at most a
 /// micrometre per millisecond, which the position correction removes).
@@ -72,20 +75,31 @@ const MAX_BOUNDS: usize = 64;
 const MATERIALS: usize = Material::ALL.len();
 
 type Aabb = (Vec3, Vec3);
-type TouchSet = ArrayVec<Vec3, MAX_TOUCH>;
+/// Directions (unit normals toward the ball) in which a ball is supported.
+/// An entry is *established* once it has been seen at two consecutive
+/// sub-step boundaries or was hit during the current sub-step: only then is
+/// a new impact in that direction a continuing contact.
+type TouchSet = ArrayVec<(Vec3, bool), MAX_TOUCH>;
 
+/// Whether the set has any entry along `n`.
 fn touches(set: &TouchSet, n: Vec3) -> bool {
-    set.iter().any(|t| t.dot(n) > PERSIST_COS)
+    set.iter().any(|(t, _)| t.dot(n) > PERSIST_COS)
 }
 
-fn add_touch(set: &mut TouchSet, n: Vec3) {
-    if touches(set, n) {
+/// Whether the set has an established entry along `n`.
+fn rests_on(set: &TouchSet, n: Vec3) -> bool {
+    set.iter().any(|(t, est)| *est && t.dot(n) > PERSIST_COS)
+}
+
+fn add_touch(set: &mut TouchSet, n: Vec3, established: bool) {
+    if let Some(entry) = set.iter_mut().find(|(t, _)| t.dot(n) > PERSIST_COS) {
+        entry.1 |= established;
         return;
     }
     if set.is_full() {
         set.remove(0);
     }
-    set.push(n);
+    set.push((n, established));
 }
 
 /// [`sphere_toi`] for spheres that may rest on each other: a pair within
@@ -242,7 +256,8 @@ struct Contact {
     active_eps: f32,
     kind: ContactKind,
     persistent: bool,
-    reported: bool,
+    /// Impulses applied by the boundary solve.
+    acc: ContactImpulse,
 }
 
 enum Next {
@@ -588,7 +603,14 @@ impl BallSolver {
         self.wireform_layers.get(i).copied().unwrap_or(layers::ALL)
     }
 
-    /// Ball `i` against a surface. Returns whether an impulse was applied.
+    fn surface_velocity_at(&self, target: ImpactTarget, point: Vec3) -> Vec3 {
+        self.surface_velocity
+            .as_ref()
+            .map_or(Vec3::ZERO, |s| s.velocity_at(target, point))
+    }
+
+    /// Impact of ball `i` on a surface (one shot, with restitution).
+    /// Returns whether an impulse was applied.
     #[allow(clippy::too_many_arguments)]
     fn surface_hit(
         &mut self,
@@ -599,23 +621,21 @@ impl BallSolver {
         target: ImpactTarget,
         material: Material,
         persistent: bool,
-        report: bool,
+        min_approach: f32,
         events: &mut BallEvents,
     ) -> bool {
         let Some(mut ball) = self.slots[i] else {
             return false;
         };
         let k = self.surface_coefficients(sc.pidx, material);
-        let vs = self
-            .surface_velocity
-            .as_ref()
-            .map_or(Vec3::ZERO, |s| s.velocity_at(target, point));
-        let out = resolve_surface_contact(&mut ball, sc.body, normal, vs, k, persistent);
+        let vs = self.surface_velocity_at(target, point);
+        let out =
+            resolve_surface_contact(&mut ball, sc.body, normal, vs, k, persistent, min_approach);
         if out.normal_impulse <= 0.0 {
             return false;
         }
         self.slots[i] = Some(ball);
-        if report && !persistent && out.approach_speed >= IMPACT_REPORT_SPEED {
+        if !persistent && out.approach_speed >= IMPACT_REPORT_SPEED {
             events.push(BallEvent::Impact {
                 ball: BallHandle(i as u8),
                 other: target,
@@ -632,7 +652,7 @@ impl BallSolver {
         j: usize,
         sc: &[Scratch; MAX_BALLS],
         persistent: bool,
-        report: bool,
+        min_approach: f32,
         events: &mut BallEvents,
     ) -> bool {
         let (Some(mut a), Some(mut b)) = (self.slots[i], self.slots[j]) else {
@@ -643,14 +663,21 @@ impl BallSolver {
         };
         let k = self.ball_coefficients(sc[i].pidx, sc[j].pidx);
         let out = resolve_ball_contact(
-            &mut a, sc[i].body, &mut b, sc[j].body, normal, k, persistent,
+            &mut a,
+            sc[i].body,
+            &mut b,
+            sc[j].body,
+            normal,
+            k,
+            persistent,
+            min_approach,
         );
         if out.normal_impulse <= 0.0 {
             return false;
         }
         self.slots[i] = Some(a);
         self.slots[j] = Some(b);
-        if report && !persistent && out.approach_speed >= IMPACT_REPORT_SPEED {
+        if !persistent && out.approach_speed >= IMPACT_REPORT_SPEED {
             let (lo, hi) = (i.min(j), i.max(j));
             events.push(BallEvent::Impact {
                 ball: BallHandle(lo as u8),
@@ -661,10 +688,48 @@ impl BallSolver {
         true
     }
 
-    /// Ball `i` against captive ball `bi` of chain `ci`; `normal` points
-    /// from the captive ball toward the free ball. The captive ball can only
-    /// move along its path, so the impulse acts on it through the path
-    /// tangent; the contact is frictionless.
+    /// One solver step for ball `i` against captive ball `bi` of chain `ci`;
+    /// `normal` points from the captive ball toward the free ball. The
+    /// captive ball can only move along its path, so the impulse acts on it
+    /// through the path tangent; the contact is frictionless. `acc` is the
+    /// normal impulse applied so far. Returns the size of the change (m/s).
+    #[allow(clippy::too_many_arguments)]
+    fn chain_solve(
+        &mut self,
+        i: usize,
+        sc: &Scratch,
+        ci: usize,
+        bi: usize,
+        normal: Vec3,
+        target_normal_speed: f32,
+        acc: &mut f32,
+    ) -> f32 {
+        let Some(ball) = self.slots[i].as_mut() else {
+            return 0.0;
+        };
+        let chain = &mut self.chains[ci];
+        let tangent = chain.tangent(bi);
+        let un = (ball.velocity - tangent * chain.ball_speed(bi)).dot(normal);
+        if un.is_nan() {
+            return 0.0;
+        }
+        let nt = normal.dot(tangent);
+        let (im, imc) = (1.0 / sc.body.mass, 1.0 / chain.mass());
+        let total = (*acc + (target_normal_speed - un) / (im + nt * nt * imc)).max(0.0);
+        let dj = total - *acc;
+        *acc = total;
+        if dj == 0.0 {
+            return 0.0;
+        }
+        ball.velocity += normal * (dj * im);
+        chain.add_speed(bi, -dj * nt * imc);
+        chain.resolve_touching();
+        (dj * im).abs()
+    }
+
+    /// Impact of ball `i` on captive ball `bi` of chain `ci` (one shot, with
+    /// restitution); `normal` points from the captive ball toward the free
+    /// ball.
     #[allow(clippy::too_many_arguments)]
     fn chain_hit(
         &mut self,
@@ -674,30 +739,22 @@ impl BallSolver {
         bi: usize,
         normal: Vec3,
         persistent: bool,
-        report: bool,
+        min_approach: f32,
         events: &mut BallEvents,
     ) -> bool {
-        let Some(mut ball) = self.slots[i] else {
+        let Some(ball) = self.slots[i] else {
             return false;
         };
-        let chain_pidx = self.chains[ci].profile().index();
-        let k = self.ball_coefficients(sc.pidx, chain_pidx);
-        let chain = &mut self.chains[ci];
-        let tangent = chain.tangent(bi);
-        let un = (ball.velocity - tangent * chain.ball_speed(bi)).dot(normal);
-        if un.is_nan() || un >= 0.0 {
+        let chain = &self.chains[ci];
+        let approach = -(ball.velocity - chain.tangent(bi) * chain.ball_speed(bi)).dot(normal);
+        if approach.is_nan() || approach <= min_approach {
             return false;
         }
-        let approach = -un;
-        let nt = normal.dot(tangent);
-        let (im, imc) = (1.0 / sc.body.mass, 1.0 / chain.mass());
+        let k = self.ball_coefficients(sc.pidx, chain.profile().index());
         let e = effective_restitution(k.restitution, approach, persistent);
-        let jn = (1.0 + e) * approach / (im + nt * nt * imc);
-        ball.velocity += normal * (jn * im);
-        chain.add_speed(bi, -jn * nt * imc);
-        chain.resolve_touching();
-        self.slots[i] = Some(ball);
-        if report && !persistent && approach >= IMPACT_REPORT_SPEED {
+        let mut acc = 0.0;
+        self.chain_solve(i, sc, ci, bi, normal, e * approach, &mut acc);
+        if !persistent && approach >= IMPACT_REPORT_SPEED {
             events.push(BallEvent::Impact {
                 ball: BallHandle(i as u8),
                 other: ImpactTarget::Newton(ci),
@@ -741,7 +798,7 @@ impl BallSolver {
                     self.collider_material(c.collider),
                 ),
                 persistent: touches(own, c.normal),
-                reported: false,
+                acc: ContactImpulse::default(),
             });
         }
 
@@ -761,7 +818,7 @@ impl BallSolver {
                     active_eps: GUIDE_SKIN,
                     kind: ContactKind::Surface(ImpactTarget::Guide(gi), self.guide_material(gi)),
                     persistent: touches(own, normal),
-                    reported: false,
+                    acc: ContactImpulse::default(),
                 });
             }
         }
@@ -784,7 +841,7 @@ impl BallSolver {
                             self.wireform_material(wi),
                         ),
                         persistent: touches(own, normal),
-                        reported: false,
+                        acc: ContactImpulse::default(),
                     });
                 }
             }
@@ -808,7 +865,7 @@ impl BallSolver {
                     active_eps: TOUCH_TOL,
                     kind: ContactKind::Ball(j),
                     persistent: touches(own, normal) || touches(&self.touch[j], -normal),
-                    reported: false,
+                    acc: ContactImpulse::default(),
                 });
             }
         }
@@ -831,7 +888,7 @@ impl BallSolver {
                         active_eps: TOUCH_TOL,
                         kind: ContactKind::Chain(ci, bi),
                         persistent: touches(own, normal),
-                        reported: false,
+                        acc: ContactImpulse::default(),
                     });
                 }
             }
@@ -857,7 +914,7 @@ impl BallSolver {
         // The directions that support the ball from now on.
         self.touch[i].clear();
         for c in &contacts {
-            add_touch(&mut self.touch[i], c.normal);
+            add_touch(&mut self.touch[i], c.normal, c.persistent);
         }
 
         // Position correction. `delta` is the displacement so far, so that
@@ -916,60 +973,108 @@ impl BallSolver {
         contacts
     }
 
-    /// One velocity-solver sweep over the touching contacts of ball `i`:
-    /// first the contacts with balls (`surfaces == false`), then, in a
-    /// second call, those with surfaces, so that a sweep ends with the
-    /// surfaces exactly non-penetrating. Returns whether anything changed.
+    /// Impacts among the touching contacts of ball `i`: a contact the ball
+    /// was not already resting on, approached at impact speed, bounces with
+    /// restitution (one shot) and is reported, exactly as if a cast had
+    /// found it.
+    fn boundary_impacts(
+        &mut self,
+        i: usize,
+        contacts: &ContactList,
+        members: &[bool; MAX_BALLS],
+        sc: &mut [Scratch; MAX_BALLS],
+        events: &mut BallEvents,
+    ) {
+        let me = sc[i];
+        let min = IMPACT_REPORT_SPEED;
+        for c in contacts {
+            if c.depth < -c.active_eps || c.persistent {
+                continue;
+            }
+            match c.kind {
+                ContactKind::Surface(target, material) => {
+                    self.surface_hit(
+                        i, &me, c.normal, c.point, target, material, false, min, events,
+                    );
+                }
+                ContactKind::Ball(j) => {
+                    // A pair of two members is handled once, by the lower.
+                    if !(members[j] && j < i) && self.pair_hit(i, j, sc, false, min, events) {
+                        sc[j].cache = Cache::Dirty;
+                    }
+                }
+                ContactKind::Chain(ci, bi) => {
+                    self.chain_hit(i, &me, ci, bi, c.normal, false, min, events);
+                }
+            }
+        }
+    }
+
+    /// One velocity-solver sweep over the touching contacts of ball `i`
+    /// (resting contacts: no restitution, accumulated impulses): first the
+    /// contacts with balls (`surfaces == false`), then, in a second call,
+    /// those with surfaces, so that a sweep ends with the surfaces exactly
+    /// non-penetrating. Returns the largest velocity change (m/s).
     fn boundary_sweep(
         &mut self,
         i: usize,
         contacts: &mut ContactList,
         surfaces: bool,
+        members: &[bool; MAX_BALLS],
         sc: &mut [Scratch; MAX_BALLS],
-        events: &mut BallEvents,
-    ) -> bool {
+    ) -> f32 {
         let me = sc[i];
-        let mut any = false;
+        let mut change = 0.0f32;
         for c in contacts.iter_mut() {
             if c.depth < -c.active_eps || matches!(c.kind, ContactKind::Surface(..)) != surfaces {
                 continue;
             }
-            let report = !c.reported;
-            let hit = match c.kind {
-                ContactKind::Surface(target, material) => self.surface_hit(
-                    i,
-                    &me,
-                    c.normal,
-                    c.point,
-                    target,
-                    material,
-                    c.persistent,
-                    report,
-                    events,
-                ),
+            let moved = match c.kind {
+                ContactKind::Surface(target, material) => {
+                    let k = self.surface_coefficients(me.pidx, material);
+                    let vs = self.surface_velocity_at(target, c.point);
+                    match self.slots[i].as_mut() {
+                        Some(ball) => solve_surface_contact(
+                            ball, me.body, c.normal, vs, k, 0.0, &mut c.acc,
+                        ),
+                        None => 0.0,
+                    }
+                }
                 ContactKind::Ball(j) => {
-                    let hit = self.pair_hit(i, j, sc, c.persistent, report, events);
-                    if hit {
+                    if members[j] && j < i {
+                        continue;
+                    }
+                    let k = self.ball_coefficients(me.pidx, sc[j].pidx);
+                    let (Some(mut a), Some(mut b)) = (self.slots[i], self.slots[j]) else {
+                        continue;
+                    };
+                    let Some(normal) = (a.position - b.position).try_normalize() else {
+                        continue;
+                    };
+                    let moved = solve_ball_contact(
+                        &mut a, me.body, &mut b, sc[j].body, normal, k, 0.0, &mut c.acc,
+                    );
+                    if moved > 0.0 {
+                        self.slots[i] = Some(a);
+                        self.slots[j] = Some(b);
                         sc[j].cache = Cache::Dirty;
                     }
-                    hit
+                    moved
                 }
                 ContactKind::Chain(ci, bi) => {
-                    self.chain_hit(i, &me, ci, bi, c.normal, c.persistent, report, events)
+                    self.chain_solve(i, &me, ci, bi, c.normal, 0.0, &mut c.acc.normal)
                 }
             };
-            if hit {
-                c.reported = true;
-                any = true;
-            }
+            change = change.max(moved);
         }
-        any
+        change
     }
 
     /// The sub-step boundary at time `time` of every ball that has one
     /// then: contacts are gathered and forces integrated ball by ball, then
     /// the touching contacts of all these balls are solved together
-    /// (Gauss–Seidel sweeps), so that stacks and rows of balls settle.
+    /// (projected Gauss–Seidel with accumulated impulses), so that balls in
+    /// grooves, corners, rows and stacks come to rest.
     fn boundaries(
         &mut self,
         geo: &Geometry<'_>,
@@ -980,31 +1085,40 @@ impl BallSolver {
         events: &mut BallEvents,
     ) {
         let mut members = [false; MAX_BALLS];
-        for i in 0..MAX_BALLS {
-            let s = &sc[i];
-            members[i] = s.active && s.k < s.n_sub && s.k as f32 * s.h == time;
+        for (member, s) in members.iter_mut().zip(sc.iter()) {
+            *member = s.active && s.k < s.n_sub && s.k as f32 * s.h == time;
         }
         for i in 0..MAX_BALLS {
             if members[i] {
                 lists[i] = self.boundary_prepare(geo, bounds, i, sc);
             }
         }
+        for i in 0..MAX_BALLS {
+            if members[i] {
+                self.boundary_impacts(i, &lists[i], &members, sc, events);
+            }
+        }
         for _ in 0..PRESOLVE_PASSES {
-            let mut any = false;
+            let mut change = 0.0f32;
             for surfaces in [false, true] {
                 for i in 0..MAX_BALLS {
                     if members[i] {
-                        any |= self.boundary_sweep(i, &mut lists[i], surfaces, sc, events);
+                        change = change.max(self.boundary_sweep(
+                            i,
+                            &mut lists[i],
+                            surfaces,
+                            &members,
+                            sc,
+                        ));
                     }
                 }
             }
-            if !any {
+            if change <= PRESOLVE_TOLERANCE {
                 break;
             }
         }
-        for i in 0..MAX_BALLS {
-            if members[i] {
-                let s = &mut sc[i];
+        for (member, s) in members.iter().zip(sc.iter_mut()) {
+            if *member {
                 s.events = 0;
                 s.frozen = false;
                 s.cache = Cache::Dirty;
@@ -1095,7 +1209,7 @@ impl BallSolver {
         let mut applied = true;
         match ev {
             StaticEvent::World(hit) => {
-                let persistent = touches(&self.touch[i], hit.normal);
+                let persistent = rests_on(&self.touch[i], hit.normal);
                 let material = self.collider_material(hit.collider);
                 applied = self.surface_hit(
                     i,
@@ -1105,13 +1219,13 @@ impl BallSolver {
                     ImpactTarget::Collider(hit.collider),
                     material,
                     persistent,
-                    true,
+                    0.0,
                     events,
                 );
-                add_touch(&mut self.touch[i], hit.normal);
+                add_touch(&mut self.touch[i], hit.normal, true);
             }
             StaticEvent::Guide(gi, Some(hit)) => {
-                let persistent = touches(&self.touch[i], hit.normal);
+                let persistent = rests_on(&self.touch[i], hit.normal);
                 let material = self.guide_material(gi);
                 let gap = self.slots[i].map_or(0.0, |b| {
                     (b.position - hit.point).dot(hit.normal) - me.body.radius
@@ -1125,10 +1239,10 @@ impl BallSolver {
                     ImpactTarget::Guide(gi),
                     material,
                     persistent,
-                    true,
+                    0.0,
                     events,
                 );
-                add_touch(&mut self.touch[i], hit.normal);
+                add_touch(&mut self.touch[i], hit.normal, true);
                 // A guide cast lets a sliding ball sink into its skin; put
                 // the ball back on the wall so that the next cast makes
                 // progress.
@@ -1146,10 +1260,10 @@ impl BallSolver {
                     let d = offset.length();
                     if d > 1.0e-9 {
                         let normal = offset / d;
-                        let persistent = touches(&self.touch[i], normal);
+                        let persistent = rests_on(&self.touch[i], normal);
                         applied =
-                            self.chain_hit(i, &me, ci, bi, normal, persistent, true, events);
-                        add_touch(&mut self.touch[i], normal);
+                            self.chain_hit(i, &me, ci, bi, normal, persistent, 0.0, events);
+                        add_touch(&mut self.touch[i], normal, true);
                     }
                 }
             }
@@ -1174,10 +1288,10 @@ impl BallSolver {
             if d > 1.0e-9 {
                 let normal = offset / d;
                 let persistent =
-                    touches(&self.touch[i], normal) || touches(&self.touch[j], -normal);
-                applied = self.pair_hit(i, j, sc, persistent, true, events);
-                add_touch(&mut self.touch[i], normal);
-                add_touch(&mut self.touch[j], -normal);
+                    rests_on(&self.touch[i], normal) || rests_on(&self.touch[j], -normal);
+                applied = self.pair_hit(i, j, sc, persistent, 0.0, events);
+                add_touch(&mut self.touch[i], normal, true);
+                add_touch(&mut self.touch[j], -normal, true);
             }
         }
         sc[i].count_event();
