@@ -23,6 +23,6 @@ name = "mixer_sdl_smoke"
 harness = false
 
 # Independent Tester's SDL smoke test (same reason: plain `main` binary).
-#TMP[[test]]
-#TMPname = "spec_mixer_sdl"
-#TMPharness = false
+[[test]]
+name = "spec_mixer_sdl"
+harness = false

@@ -200,6 +200,7 @@ impl<'v> Checker<'v> {
             self.backglass(b, table.is_some());
         }
         let mut parts = parts?;
+        parts.ids = core::mem::take(&mut self.ids);
         parts.backbox = backglass.and_then(|b| {
             b.backbox.as_ref().map(|bb| BackboxSi {
                 scene: bb.scene.clone(),
@@ -696,7 +697,7 @@ impl<'v> Checker<'v> {
         };
 
         Parts {
-            ids: core::mem::take(&mut self.ids),
+            ids: TableIds::default(),
             physics,
             flippers,
             stages,
