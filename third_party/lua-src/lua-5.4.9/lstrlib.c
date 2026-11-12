@@ -377,6 +377,15 @@ typedef struct MatchState {
 static const char *match (MatchState *ms, const char *s, const char *p);
 
 
+/* KHZ: count one matching step; charge the budget every 1024 steps */
+static void khz_step (MatchState *ms) {
+  if (l_unlikely(--ms->steps <= 0))
+    luaL_error(ms->L, "pattern too complex");
+  if ((ms->steps & 1023) == 0)
+    lua_khzcharge(ms->L, 1024);
+}
+
+
 /* maximum recursion depth for 'match' */
 #if !defined(MAXCCALLS)
 #define MAXCCALLS	200
@@ -570,15 +579,6 @@ static const char *match_capture (MatchState *ms, const char *s, int l) {
       memcmp(ms->capture[l].init, s, len) == 0)
     return s+len;
   else return NULL;
-}
-
-
-/* KHZ: count one matching step; charge the budget every 1024 steps */
-static void khz_step (MatchState *ms) {
-  if (l_unlikely(--ms->steps <= 0))
-    luaL_error(ms->L, "pattern too complex");
-  if ((ms->steps & 1023) == 0)
-    lua_khzcharge(ms->L, 1024);
 }
 
 
