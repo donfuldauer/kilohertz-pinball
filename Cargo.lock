@@ -1756,8 +1756,10 @@ name = "pin_input"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "libm",
  "pin_core",
  "proptest",
+ "toml",
 ]
 
 [[package]]

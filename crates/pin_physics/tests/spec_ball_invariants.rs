@@ -156,7 +156,13 @@ fn rest_drift(name: &str, xy: Vec3, floor_top: f32) -> f32 {
 
 #[test]
 fn resting_ball_drift_below_1um_over_10s() {
-    for name in ["standard_steel", "ceramic_powerball", "uv_globall", "mini_steel", "jumbo_xl_resin"] {
+    for name in [
+        "standard_steel",
+        "ceramic_powerball",
+        "uv_globall",
+        "mini_steel",
+        "jumbo_xl_resin",
+    ] {
         let d = rest_drift(name, Vec3::new(0.1, -0.2, 0.0), 0.0);
         assert!(d < 1e-6, "{name}: drift {d:e} m over 10 s");
     }
@@ -372,12 +378,37 @@ fn restitution_comes_from_material_pair_table() {
     let d = defaults();
     let cases = [
         ("standard_steel", None, Material::Steel, Material::Wood),
-        ("standard_steel", Some(Material::Rubber), Material::Steel, Material::Rubber),
-        ("standard_steel", Some(Material::Steel), Material::Steel, Material::Steel),
+        (
+            "standard_steel",
+            Some(Material::Rubber),
+            Material::Steel,
+            Material::Rubber,
+        ),
+        (
+            "standard_steel",
+            Some(Material::Steel),
+            Material::Steel,
+            Material::Steel,
+        ),
         ("ceramic_powerball", None, Material::Ceramic, Material::Wood),
-        ("ceramic_powerball", Some(Material::Rubber), Material::Ceramic, Material::Rubber),
-        ("uv_globall", Some(Material::Wood), Material::Plastic, Material::Wood),
-        ("uv_globall", Some(Material::Rubber), Material::Plastic, Material::Rubber),
+        (
+            "ceramic_powerball",
+            Some(Material::Rubber),
+            Material::Ceramic,
+            Material::Rubber,
+        ),
+        (
+            "uv_globall",
+            Some(Material::Wood),
+            Material::Plastic,
+            Material::Wood,
+        ),
+        (
+            "uv_globall",
+            Some(Material::Rubber),
+            Material::Plastic,
+            Material::Rubber,
+        ),
         ("jumbo_xl_resin", None, Material::Resin, Material::Wood),
     ];
     for (name, mat, a, b) in cases {
@@ -472,7 +503,13 @@ fn magnet_force_follows_inverse_cube_law() {
 #[test]
 fn magnet_force_is_capped_inside_d_min() {
     let p = profile("standard_steel");
-    let v = magnet_kick("standard_steel", Vec3::new(0.005, 0.0, 0.0), 1.0, layers::ALL, 0);
+    let v = magnet_kick(
+        "standard_steel",
+        Vec3::new(0.005, 0.0, 0.0),
+        1.0,
+        layers::ALL,
+        0,
+    );
     let f = 1.0e-5 / (0.01f32 * 0.01 * 0.01);
     let expected = -f / p.mass_kg * DT;
     assert!(
@@ -485,21 +522,45 @@ fn magnet_force_is_capped_inside_d_min() {
 fn magnet_has_no_effect_beyond_range_off_layer_or_unpowered() {
     // Beyond range: exactly zero.
     assert_eq!(
-        magnet_kick("standard_steel", Vec3::new(0.06, 0.0, 0.0), 1.0, layers::ALL, 0),
+        magnet_kick(
+            "standard_steel",
+            Vec3::new(0.06, 0.0, 0.0),
+            1.0,
+            layers::ALL,
+            0
+        ),
         Vec3::ZERO
     );
     // Power 0 and negative power clamp to 0: exactly zero.
     assert_eq!(
-        magnet_kick("standard_steel", Vec3::new(0.03, 0.0, 0.0), 0.0, layers::ALL, 0),
+        magnet_kick(
+            "standard_steel",
+            Vec3::new(0.03, 0.0, 0.0),
+            0.0,
+            layers::ALL,
+            0
+        ),
         Vec3::ZERO
     );
     assert_eq!(
-        magnet_kick("standard_steel", Vec3::new(0.03, 0.0, 0.0), -1.0, layers::ALL, 0),
+        magnet_kick(
+            "standard_steel",
+            Vec3::new(0.03, 0.0, 0.0),
+            -1.0,
+            layers::ALL,
+            0
+        ),
         Vec3::ZERO
     );
     // Ball on layer 1 (upper deck), magnet only on the main deck.
     assert_eq!(
-        magnet_kick("standard_steel", Vec3::new(0.03, 0.0, 0.0), 1.0, layers::MAIN_DECK, 1),
+        magnet_kick(
+            "standard_steel",
+            Vec3::new(0.03, 0.0, 0.0),
+            1.0,
+            layers::MAIN_DECK,
+            1
+        ),
         Vec3::ZERO
     );
     // c = 0 profiles: exactly zero at any distance.
@@ -513,8 +574,20 @@ fn magnet_has_no_effect_beyond_range_off_layer_or_unpowered() {
 
 #[test]
 fn magnet_power_clamps_above_one() {
-    let a = magnet_kick("standard_steel", Vec3::new(0.03, 0.0, 0.0), 1.0, layers::ALL, 0);
-    let b = magnet_kick("standard_steel", Vec3::new(0.03, 0.0, 0.0), 5.0, layers::ALL, 0);
+    let a = magnet_kick(
+        "standard_steel",
+        Vec3::new(0.03, 0.0, 0.0),
+        1.0,
+        layers::ALL,
+        0,
+    );
+    let b = magnet_kick(
+        "standard_steel",
+        Vec3::new(0.03, 0.0, 0.0),
+        5.0,
+        layers::ALL,
+        0,
+    );
     assert_eq!(a, b);
 }
 
@@ -562,7 +635,10 @@ fn eddy_sensors_close_only_for_conductive_balls_opto_for_all() {
         // Out of range: open.
         let (far, evs) = sensor_state(&name, false, Vec3::new(0.5, 0.0, 0.0));
         assert!(!far, "{name} far away closed the opto");
-        assert!(!evs.iter().any(|e| matches!(e, BallEvent::SensorEdge { .. })));
+        assert!(
+            !evs.iter()
+                .any(|e| matches!(e, BallEvent::SensorEdge { .. }))
+        );
     }
 }
 
@@ -608,7 +684,11 @@ fn sensor_switches_touches_only_own_bits_and_edges_on_exit() {
     }
     let mut out = [u64::MAX; 4];
     s.sensor_switches(&mut out);
-    assert_eq!(out[0] & (1 << 3), 0, "opto still closed after the ball left");
+    assert_eq!(
+        out[0] & (1 << 3),
+        0,
+        "opto still closed after the ball left"
+    );
     let sw: Vec<_> = edges
         .iter()
         .filter_map(|e| match *e {
@@ -650,7 +730,10 @@ fn free_flight_is_ballistic_and_spin_is_preserved() {
     // 10 rad about z in 1 s.
     let q_exp = Quat::from_rotation_z(10.0);
     let q = b.orientation;
-    assert!((q.length() - 1.0).abs() < 1e-4, "orientation not unit: {q:?}");
+    assert!(
+        (q.length() - 1.0).abs() < 1e-4,
+        "orientation not unit: {q:?}"
+    );
     assert!(
         q.dot(q_exp).abs() > 1.0 - 1e-4,
         "orientation {q:?}, expected {q_exp:?}"
@@ -688,7 +771,11 @@ fn apply_impulse_changes_velocity_by_j_over_m() {
             p.name,
             b.velocity
         );
-        assert_eq!(b.angular_velocity, Vec3::ZERO, "impulse through centre spun the ball");
+        assert_eq!(
+            b.angular_velocity,
+            Vec3::ZERO,
+            "impulse through centre spun the ball"
+        );
     }
 }
 
@@ -720,7 +807,11 @@ fn balls_collide_only_with_colliders_on_their_layer() {
         if should_bounce {
             assert!(b.velocity.x < 0.0 && b.position.x < 0.09);
         } else {
-            assert!(b.position.x > 0.3, "layer {layer} ball blocked: {:?}", b.position);
+            assert!(
+                b.position.x > 0.3,
+                "layer {layer} ball blocked: {:?}",
+                b.position
+            );
         }
     }
 }
@@ -752,10 +843,7 @@ fn external_force_acts_like_extra_acceleration() {
     let hs: Vec<_> = ["standard_steel", "jumbo_xl_resin", "mini_steel"]
         .iter()
         .enumerate()
-        .map(|(i, n)| {
-            s.add_ball(ball(n, Vec3::new(i as f32, 0.0, 0.0)))
-                .unwrap()
-        })
+        .map(|(i, n)| s.add_ball(ball(n, Vec3::new(i as f32, 0.0, 0.0))).unwrap())
         .collect();
     let mut ev = events();
     for _ in 0..500 {
@@ -764,7 +852,10 @@ fn external_force_acts_like_extra_acceleration() {
     }
     for h in hs {
         let v = s.ball(h).unwrap().velocity;
-        assert!((v - a * 0.5).length() <= 1e-4 * (a * 0.5).length(), "v {v:?}");
+        assert!(
+            (v - a * 0.5).length() <= 1e-4 * (a * 0.5).length(),
+            "v {v:?}"
+        );
     }
 }
 
@@ -909,7 +1000,10 @@ fn ball_slides_along_curved_guide_without_freezing() {
         assert!(d <= 0.25 - r + 2e-4, "escaped: d={d}");
     }
     // 0.3 s at up to 2 m/s on a 0.236 m radius: ≤ 2.5 rad. Require real progress.
-    assert!(angle > 1.0, "ball froze against the guide: swept {angle} rad");
+    assert!(
+        angle > 1.0,
+        "ball froze against the guide: swept {angle} rad"
+    );
 }
 
 // ------------------------------------------------------------ wireforms
@@ -921,8 +1015,13 @@ fn ball_rolls_down_wireform_without_falling_through() {
         .map(|i| Vec3::new(i as f32 * 0.1, 0.0, 0.3 - i as f32 * 0.03))
         .collect();
     let gauge = 0.020;
-    let wf = Wireform::new(CubicSpline::interpolate(&pts).unwrap(), &[0.0; 11], gauge, Vec3::Z)
-        .unwrap();
+    let wf = Wireform::new(
+        CubicSpline::interpolate(&pts).unwrap(),
+        &[0.0; 11],
+        gauge,
+        Vec3::Z,
+    )
+    .unwrap();
     let world = empty_world();
     let wfs = [wf];
     let g = geo_full(&world, &[], &wfs);

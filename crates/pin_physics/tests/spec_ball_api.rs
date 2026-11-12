@@ -39,7 +39,10 @@ fn add_remove_and_iterate_in_handle_order() {
             .expect("room for 16 balls");
         hs.push(h);
     }
-    assert!(s.add_ball(ball("standard_steel", Vec3::ZERO)).is_none(), "17th ball accepted");
+    assert!(
+        s.add_ball(ball("standard_steel", Vec3::ZERO)).is_none(),
+        "17th ball accepted"
+    );
     // Distinct handles.
     let mut sorted = hs.clone();
     sorted.sort();
@@ -171,7 +174,12 @@ fn slow_impacts_are_not_reported() {
             .iter()
             .filter(|e| matches!(e, BallEvent::Impact { .. }))
             .count();
-        assert_eq!(n > 0, reported, "impact at {speed} m/s: {:?}", ev.as_slice());
+        assert_eq!(
+            n > 0,
+            reported,
+            "impact at {speed} m/s: {:?}",
+            ev.as_slice()
+        );
     }
 }
 
@@ -183,7 +191,9 @@ fn ball_ball_impact_event_and_no_overlap() {
     let mut a = ball("standard_steel", Vec3::new(-0.0140, 0.0, 0.0));
     a.velocity = Vec3::new(1.0, 0.0, 0.0);
     let ha = s.add_ball(a).unwrap();
-    let hb = s.add_ball(ball("standard_steel", Vec3::new(0.0140, 0.0, 0.0))).unwrap();
+    let hb = s
+        .add_ball(ball("standard_steel", Vec3::new(0.0140, 0.0, 0.0)))
+        .unwrap();
     let mut ev = events();
     let mut seen = false;
     for _ in 0..5 {
@@ -200,7 +210,10 @@ fn ball_ball_impact_event_and_no_overlap() {
                     (ball == ha && o == hb) || (ball == hb && o == ha),
                     "bad pair {e:?}"
                 );
-                assert!((normal_speed - 1.0).abs() < 0.02, "normal speed {normal_speed}");
+                assert!(
+                    (normal_speed - 1.0).abs() < 0.02,
+                    "normal speed {normal_speed}"
+                );
                 seen = true;
             }
         }
@@ -209,7 +222,10 @@ fn ball_ball_impact_event_and_no_overlap() {
     // Equal masses, steel–steel restitution 0.6: v_a = 0.2, v_b = 0.8.
     let va = s.ball(ha).unwrap().velocity.x;
     let vb = s.ball(hb).unwrap().velocity.x;
-    assert!((va - 0.2).abs() < 0.02 && (vb - 0.8).abs() < 0.02, "va {va} vb {vb}");
+    assert!(
+        (va - 0.2).abs() < 0.02 && (vb - 0.8).abs() < 0.02,
+        "va {va} vb {vb}"
+    );
     let d = s.ball(hb).unwrap().position - s.ball(ha).unwrap().position;
     assert!(d.length() >= 0.027 - 1e-5);
 }

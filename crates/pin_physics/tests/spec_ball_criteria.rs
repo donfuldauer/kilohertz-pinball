@@ -155,7 +155,11 @@ fn assert_bit_identical(a: &[[Vec3; 3]], b: &[[Vec3; 3]], what: &str) {
 fn c2_nonmagnetic_balls_ignore_active_magnet_bit_exact() {
     let r = 0.0135;
     let cases = [
-        (Vec3::new(-0.05, 0.0, r), Vec3::new(1.5, 0.0, 0.0), Vec3::ZERO),
+        (
+            Vec3::new(-0.05, 0.0, r),
+            Vec3::new(1.5, 0.0, 0.0),
+            Vec3::ZERO,
+        ),
         (
             Vec3::new(-0.05, 0.01, r + 0.004),
             Vec3::new(2.0, 0.3, 0.0),
@@ -265,7 +269,10 @@ fn c3_strike_reaches_far_ball_within_two_ticks() {
         // Positions are on the path at the reported parameters.
         for i in 0..n {
             let p = c.ball_position(i);
-            assert!((p.x - c.ball_t(i) * d).abs() < 1e-5, "ball {i} off path: {p:?}");
+            assert!(
+                (p.x - c.ball_t(i) * d).abs() < 1e-5,
+                "ball {i} off path: {p:?}"
+            );
             assert!(p.y.abs() < 1e-5 && p.z.abs() < 1e-5);
         }
     }
@@ -314,7 +321,10 @@ fn c3_free_ball_impact_reaches_far_ball_within_two_ticks() {
             "chain of {n}: far ball speed {} two ticks after impact",
             c.ball_speed(n - 1)
         );
-        assert!(saw_newton_impact, "no Impact{{other: Newton}} event reported");
+        assert!(
+            saw_newton_impact,
+            "no Impact{{other: Newton}} event reported"
+        );
         // The free ball must not have passed through the chain ball.
         let fbp = s.ball(h).unwrap().position;
         assert!(
@@ -329,7 +339,9 @@ fn c3_free_ball_impact_reaches_far_ball_within_two_ticks() {
 #[test]
 fn c3_newton_chain_rejects_descending_parameters() {
     let d = 0.027;
-    assert!(NewtonChain::new(straight_path(d, 8), pid("standard_steel"), &[3.0, 2.0, 1.0]).is_err());
+    assert!(
+        NewtonChain::new(straight_path(d, 8), pid("standard_steel"), &[3.0, 2.0, 1.0]).is_err()
+    );
 }
 
 // ------------------------------------------------------------ criterion 4
@@ -388,10 +400,7 @@ fn mini_jumbo(b: f32, vrel: f32, w_mini: Vec3, w_jumbo: Vec3, v_jumbo: Vec3) {
     // Characteristic scales so near-zero totals do not make "relative" meaningless.
     let mu = f64::from(mini.mass_kg * jumbo.mass_kg / (mini.mass_kg + jumbo.mass_kg));
     let p_scale = t0.p.length().max(mu * f64::from(vrel));
-    let l_scale = t0
-        .l
-        .length()
-        .max(mu * f64::from(vrel) * f64::from(reach));
+    let l_scale = t0.l.length().max(mu * f64::from(vrel) * f64::from(reach));
     let mut prev_ke = t0.ke;
     let mut collided = false;
     for tick in 0..250 {
@@ -407,8 +416,14 @@ fn mini_jumbo(b: f32, vrel: f32, w_mini: Vec3, w_jumbo: Vec3, v_jumbo: Vec3) {
         let t = two_body(&s, &profs);
         let dp = (t.p - t0.p).length() / p_scale;
         let dl = (t.l - t0.l).length() / l_scale;
-        assert!(dp <= 1e-4, "tick {tick}: momentum drift {dp:e} (b={b}, v={vrel})");
-        assert!(dl <= 1e-3, "tick {tick}: angular momentum drift {dl:e} (b={b}, v={vrel})");
+        assert!(
+            dp <= 1e-4,
+            "tick {tick}: momentum drift {dp:e} (b={b}, v={vrel})"
+        );
+        assert!(
+            dl <= 1e-3,
+            "tick {tick}: angular momentum drift {dl:e} (b={b}, v={vrel})"
+        );
         assert!(
             t.ke <= prev_ke * (1.0 + 1e-6) + 1e-12,
             "tick {tick}: KE rose {prev_ke:e} -> {:e} (b={b}, v={vrel})",
@@ -510,7 +525,12 @@ fn c5_spinning_drop_converges_to_rolling() {
         (Vec3::new(0.5, 0.5, 0.0), Vec3::new(30.0, 30.0, 20.0)),
         (Vec3::new(-0.3, 0.8, -0.2), Vec3::new(0.0, 0.0, 150.0)),
     ];
-    for name in ["standard_steel", "ceramic_powerball", "uv_globall", "mini_steel"] {
+    for name in [
+        "standard_steel",
+        "ceramic_powerball",
+        "uv_globall",
+        "mini_steel",
+    ] {
         for &(v, w) in &cases {
             spin_drop(name, 0.002, v, w);
         }

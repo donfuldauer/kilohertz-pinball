@@ -189,9 +189,15 @@ pub fn scenario(external: Option<Box<dyn pin_physics::ball::ExternalForce>>) -> 
         true,
     );
     let n = rot * Vec3::Z;
-    for (i, (x, y)) in [(-0.1f32, 0.2f32), (0.1, 0.2), (0.0, 0.0), (-0.15, -0.2), (0.15, -0.25)]
-        .into_iter()
-        .enumerate()
+    for (i, (x, y)) in [
+        (-0.1f32, 0.2f32),
+        (0.1, 0.2),
+        (0.0, 0.0),
+        (-0.15, -0.2),
+        (0.15, -0.25),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let post = b.add_collider(
             StaticShape::Cylinder {
@@ -211,13 +217,19 @@ pub fn scenario(external: Option<Box<dyn pin_physics::ball::ExternalForce>>) -> 
             Vec3::new(0.25 * libm::cosf(a), 0.4 + 0.15 * libm::sinf(a), 0.08)
         })
         .collect();
-    let guides = vec![GuideCurve::new(CubicSpline::interpolate(&guide_pts).unwrap(), 0.05).unwrap()];
+    let guides =
+        vec![GuideCurve::new(CubicSpline::interpolate(&guide_pts).unwrap(), 0.05).unwrap()];
     let wf_pts: Vec<Vec3> = (0..6)
         .map(|i| Vec3::new(-0.25 + 0.1 * i as f32, 0.55, 0.3 - 0.03 * i as f32))
         .collect();
     let wireforms = vec![
-        Wireform::new(CubicSpline::interpolate(&wf_pts).unwrap(), &[0.0; 6], 0.02, Vec3::Z)
-            .unwrap(),
+        Wireform::new(
+            CubicSpline::interpolate(&wf_pts).unwrap(),
+            &[0.0; 6],
+            0.02,
+            Vec3::Z,
+        )
+        .unwrap(),
     ];
     let mut s = solver();
     if let Some(f) = external {
@@ -258,10 +270,26 @@ pub fn scenario(external: Option<Box<dyn pin_physics::ball::ExternalForce>>) -> 
     chain.strike(0, 0.7);
     s.add_newton_chain(chain);
     let starts = [
-        ("standard_steel", Vec3::new(-0.2, 0.45, 0.0), Vec3::new(1.2, -0.5, 0.0)),
-        ("ceramic_powerball", Vec3::new(0.05, 0.5, 0.0), Vec3::new(-0.8, -1.5, 0.0)),
-        ("mini_steel", Vec3::new(0.2, 0.3, 0.0), Vec3::new(-1.5, 0.3, 0.0)),
-        ("uv_globall", Vec3::new(-0.05, 0.1, 0.0), Vec3::new(0.4, 2.0, 0.0)),
+        (
+            "standard_steel",
+            Vec3::new(-0.2, 0.45, 0.0),
+            Vec3::new(1.2, -0.5, 0.0),
+        ),
+        (
+            "ceramic_powerball",
+            Vec3::new(0.05, 0.5, 0.0),
+            Vec3::new(-0.8, -1.5, 0.0),
+        ),
+        (
+            "mini_steel",
+            Vec3::new(0.2, 0.3, 0.0),
+            Vec3::new(-1.5, 0.3, 0.0),
+        ),
+        (
+            "uv_globall",
+            Vec3::new(-0.05, 0.1, 0.0),
+            Vec3::new(0.4, 2.0, 0.0),
+        ),
     ];
     for (name, p, v) in starts {
         let r = profile(name).radius_m();

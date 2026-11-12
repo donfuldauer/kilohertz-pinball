@@ -37,6 +37,15 @@ fn run(cfg: PlungerConfig, t0: u64, raw: &[f32]) -> Vec<PlungerOutput> {
         .collect()
 }
 
+/// Position read on a jump to `raw` by a filter that first saw the plunger at rest.
+fn position_after_rest(cfg: PlungerConfig, raw: f32) -> f32 {
+    let mut f = PlungerFilter::new(cfg);
+    for t in 0..10 {
+        f.update(0.0, t);
+    }
+    f.update(raw, 10).position
+}
+
 fn releases(out: &[PlungerOutput]) -> Vec<(usize, f32)> {
     out.iter()
         .enumerate()
@@ -141,15 +150,16 @@ fn rest_reads_zero_and_full_pull_reads_one() {
         last = o.position;
     }
     assert!(last >= 0.97, "full pull reads {last}, expected ~1");
-    let half = PlungerFilter::new(cfg(0.0)).update(0.5, 0).position;
+    let half = position_after_rest(cfg(0.0), 0.5);
     assert!((0.45..=0.52).contains(&half), "half pull reads {half}");
 }
 
 #[test]
 fn out_of_range_raw_is_clamped() {
     let mut f = PlungerFilter::new(cfg(0.0));
+    f.update(0.0, 0);
     for (t, raw) in [1.5f32, 10.0, 1e30, -0.5, -10.0, -1e30, 2.0, 0.0].into_iter().enumerate() {
-        let o = f.update(raw, t as u64);
+        let o = f.update(raw, 1 + t as u64);
         assert!(
             o.position.is_finite() && (0.0..=1.0).contains(&o.position),
             "raw {raw} -> position {}",
@@ -310,8 +320,8 @@ fn a_pull_is_measured_from_the_tracked_rest() {
         tracked = f.update(end + 0.5 * k as f32 / 1000.0, t).position;
         t += 1;
     }
-    let fresh = PlungerFilter::new(cfg(1.0)).update(0.5, 0).position;
-    let undrifted = PlungerFilter::new(cfg(1.0)).update(end + 0.5, 0).position;
+    let fresh = position_after_rest(cfg(1.0), 0.5);
+    let undrifted = position_after_rest(cfg(1.0), end + 0.5);
     assert!(
         (tracked - fresh).abs() < (tracked - undrifted).abs(),
         "a 0.5 pull from the tracked rest reads {tracked}; expected near {fresh}, not {undrifted}"

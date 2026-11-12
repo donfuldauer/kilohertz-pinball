@@ -87,7 +87,12 @@ fn step_does_not_allocate() {
         black_box(ev.dropped());
     }
     let after = allocs();
-    assert_eq!(after - before, 0, "BallSolver::step allocated {} times", after - before);
+    assert_eq!(
+        after - before,
+        0,
+        "BallSolver::step allocated {} times",
+        after - before
+    );
     // The loop must have exercised contacts.
     assert!(sc.solver.balls().count() == 5);
 }
@@ -99,8 +104,16 @@ fn step_does_not_allocate_with_full_ball_set() {
     let mut s = solver();
     for i in 0..pin_physics::ball::MAX_BALLS {
         let mut b = ball(
-            if i % 2 == 0 { "standard_steel" } else { "mini_steel" },
-            Vec3::new(0.03 * i as f32, 0.002 * i as f32, 0.02 + 0.01 * (i % 3) as f32),
+            if i % 2 == 0 {
+                "standard_steel"
+            } else {
+                "mini_steel"
+            },
+            Vec3::new(
+                0.03 * i as f32,
+                0.002 * i as f32,
+                0.02 + 0.01 * (i % 3) as f32,
+            ),
         );
         b.velocity = Vec3::new(if i % 2 == 0 { 0.5 } else { -0.5 }, 0.0, -1.0);
         s.add_ball(b).unwrap();

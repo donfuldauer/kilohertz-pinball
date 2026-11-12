@@ -244,7 +244,14 @@ fn decode_vorbis(bytes: &[u8]) -> Result<Decoded, DecodeError> {
         }
         samples.extend(packet.iter().map(|&v| (f64::from(v) / 32768.0) as f32));
     }
-    let whole = samples.len() - samples.len() % channels;
+    let mut whole = samples.len() - samples.len() % channels;
+    // The last page's granule position is the stream's length in frames
+    // (Vorbis I §A.2). lewton only trims the final packet when it has seen an
+    // earlier page's granule, so trim here too (single-page files).
+    if let Some(total) = reader.get_last_absgp() {
+        let total = usize::try_from(total).unwrap_or(usize::MAX);
+        whole = whole.min(total.saturating_mul(channels));
+    }
     samples.truncate(whole);
     Ok(Decoded {
         samples,
