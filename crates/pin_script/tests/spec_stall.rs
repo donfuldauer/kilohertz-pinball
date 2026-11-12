@@ -417,3 +417,82 @@ fn save_state_built_inside_the_hook_past_the_memory_cap() {
         2,
     );
 }
+
+// ---------------------------------------------------------------------------
+// DECISIONS "4.2 re-review round 2" (B9): C-function calls are charged against
+// the budget, so a loop that only calls into C still faults. No wall-clock
+// assertions (rule 5): each case must simply return, faulted, at the default
+// configuration.
+
+fn assert_c_loop_faults(body: &str) {
+    let src = format!(
+        "local big0 = string.rep('\\0', 65536)
+         local bigfmt = string.rep('x', 65536)
+         local bigpct = string.rep('%%', 32768)
+         local nines = string.rep('9', 200)
+         local zs = string.rep('z', 200)
+         function on_tick()
+           while true do {body} end
+         end"
+    );
+    let mut b = spec_support::backend(src.as_bytes());
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    assert!(b.is_faulted(), "`while true do {body} end` must fault");
+    assert_eq!(b.fault_count(), 1);
+    assert!(
+        h.cmd.is_empty(),
+        "a faulting callback's commands are dropped"
+    );
+    h.tick(&mut b);
+    assert!(h.cmd.is_empty());
+}
+
+macro_rules! c_loop_must_fault {
+    ($($name:ident => $body:expr;)*) => {$(
+        #[test]
+        fn $name() {
+            assert_c_loop_faults($body);
+        }
+    )*};
+}
+
+c_loop_must_fault! {
+    c_loop_format_q_of_64k_nuls =>
+        "pcall(string.format, '%q', string.rep('\\0', 65536))";
+    c_loop_format_q_of_prebuilt_64k_nuls => "pcall(string.format, '%q', big0)";
+    c_loop_format_with_64k_format_string => "pcall(string.format, bigfmt)";
+    c_loop_format_with_64k_percent_format_string => "pcall(string.format, bigpct)";
+    c_loop_format_wide_float => "local s = string.format('%99.99f', 1e300)";
+    c_loop_format_precise_g => "local s = string.format('%.99g', 1e-300)";
+    c_loop_float_modulo => "local r = 1e308 % 3e-308";
+    c_loop_float_modulo_of_variables => "local a, b = 1e308, 3e-308 local r = a % b";
+    c_loop_math_fmod => "local r = math.fmod(1e308, 1e-308)";
+    c_loop_tostring_large_float => "local s = tostring(1e300)";
+    c_loop_tonumber_200_digits => "local n = tonumber(nines)";
+    c_loop_tonumber_200_digits_built_in_loop => "local n = tonumber(string.rep('9', 200))";
+    c_loop_tonumber_base_36 => "local n = tonumber(zs, 36)";
+    c_loop_tonumber_base_36_built_in_loop => "local n = tonumber(string.rep('z', 200), 36)";
+    c_loop_pcall_of_failing_api_call => "pcall(pinball.pulse_coil)";
+    c_loop_pcall_collectgarbage_collect => "pcall(collectgarbage, 'collect')";
+    c_loop_pcall_math_random_bad_arity => "pcall(math.random, 1, 2, 3)";
+    c_loop_math_random => "local r = math.random(1, 3)";
+    c_loop_pinball_random => "local r = pinball.random(3)";
+    c_loop_pinball_tick => "local t = pinball.tick()";
+    c_loop_pinball_switch => "local s = pinball.switch(1)";
+    c_loop_queue_overflow => "pinball.set_score(1, 1)";
+}
+
+/// The same loops with every error swallowed must fault too.
+#[test]
+fn c_loops_wrapped_in_pcall_fault() {
+    for body in [
+        "pcall(function() local s = string.format('%99.99f', 1e300) end)",
+        "pcall(function() local r = math.fmod(1e308, 1e-308) end)",
+        "pcall(function() error('x') end)",
+        "pcall(error)",
+        "pcall(tonumber, nines)",
+    ] {
+        assert_c_loop_faults(body);
+    }
+}

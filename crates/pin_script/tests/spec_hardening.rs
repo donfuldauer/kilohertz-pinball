@@ -290,3 +290,42 @@ fn math_random_with_valid_arity_still_works() {
     assert!(!b.is_faulted());
     assert_eq!(h.cmd.persist_writes.len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// DECISIONS "4.2 re-review round 2": binary packing is removed.
+
+#[test]
+fn string_pack_unpack_and_packsize_are_absent() {
+    let src = b"function on_tick()
+                  local s = ''
+                  pinball.set_lamp(0, string.pack == nil and 1 or 0)
+                  pinball.set_lamp(1, string.unpack == nil and 1 or 0)
+                  pinball.set_lamp(2, string.packsize == nil and 1 or 0)
+                  pinball.set_lamp(3, (s.pack == nil and s.unpack == nil and s.packsize == nil) and 1 or 0)
+                  local mt = getmetatable('')
+                  local idx = type(mt) == 'table' and mt.__index or nil
+                  pinball.set_lamp(4, (type(idx) ~= 'table'
+                    or (idx.pack == nil and idx.unpack == nil and idx.packsize == nil)) and 1 or 0)
+                end";
+    let mut b = backend(src);
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    assert!(!b.is_faulted());
+    assert_probe(&h.cmd, 0, "string.pack must be nil");
+    assert_probe(&h.cmd, 1, "string.unpack must be nil");
+    assert_probe(&h.cmd, 2, "string.packsize must be nil");
+    assert_probe(&h.cmd, 3, "pack functions reachable as string methods");
+    assert_probe(
+        &h.cmd,
+        4,
+        "pack functions reachable through the string metatable",
+    );
+}
+
+#[test]
+fn unprotected_use_of_string_pack_faults() {
+    assert_faults("local s = string.pack('i4', 1)");
+    assert_faults("local n = string.packsize('i4')");
+    assert_faults("local v = string.unpack('i4', 'abcd')");
+    assert_faults("local s = ('i4'):pack(1)");
+}

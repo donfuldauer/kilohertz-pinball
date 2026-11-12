@@ -166,16 +166,156 @@ fn memory_bomb_that_swallows_errors_still_ends_in_a_fault() {
     assert_script_is_silent(&mut b, &mut h);
 }
 
+/// DECISIONS "4.2 re-review round 2": a faulting callback's own commands are
+/// dropped.
 #[test]
-fn error_after_commands_aborts_the_rest_of_the_callback() {
+fn commands_of_the_faulting_callback_are_dropped() {
     let mut b = backend(FAULTS);
     let mut h = Host::new(1);
-    h.case(&mut b, 17);
+    h.case(&mut b, 17); // pulse_coil(1, 10) then error
     assert!(b.is_faulted());
-    // The pulse issued before the error may or may not survive, but nothing else appears.
-    assert!(h.cmd.coil_pulses.len() <= 1);
-    assert!(h.cmd.coil_holds.is_empty());
-    assert_eq!(h.cmd.len(), h.cmd.coil_pulses.len());
+    assert!(
+        h.cmd.is_empty(),
+        "the faulting callback's commands leaked: {:?}",
+        h.cmd
+    );
+}
+
+#[test]
+fn every_kind_of_command_from_the_faulting_callback_is_dropped() {
+    for tail in ["error('x')", "while true do end", "pinball.set_lamp({}, 1)"] {
+        let src = format!(
+            "function on_tick()
+               local p = pinball
+               p.pulse_coil(1, 10) p.set_magnet(1, 1) p.set_zipper(1, true)
+               p.set_diverter(1, true) p.spawn_ball(1, 1) p.set_lamp(1, 1)
+               p.set_gi_tint(1, 1, 1, 1) p.set_score(1, 5) p.show_scene(1)
+               p.play_sound(1, 1) p.persist_set(1, 1)
+               {tail}
+             end"
+        );
+        let mut b = backend_with(src.as_bytes(), cfg(16 * MIB, 20_000));
+        let mut h = Host::new(1);
+        h.tick(&mut b);
+        assert!(b.is_faulted(), "{tail}");
+        assert!(h.cmd.is_empty(), "{tail}: commands leaked: {:?}", h.cmd);
+        assert_eq!(b.overflow_count(), 0, "{tail}");
+    }
+}
+
+/// Commands queued by earlier callbacks (not yet cleared by the host) survive
+/// a later callback's fault untouched.
+#[test]
+fn commands_of_earlier_callbacks_survive_a_later_fault() {
+    let mut b = backend_with(FAULTS, cfg(16 * MIB, 20_000));
+    let mut h = Host::new(1);
+    h.cmd.clear();
+    let closed = pin_core::SwitchEdge::Closed;
+    b.on_switch_edge(pin_core::SwitchId(27), closed, &mut h.ctx()); // pulse_coil(2, 20)
+    b.on_switch_edge(pin_core::SwitchId(11), closed, &mut h.ctx()); // hold 3 and 5
+    h.cmd.show_scene(pin_core::SceneId(9)).unwrap(); // something the host itself queued
+    let before = h.cmd.clone();
+    b.on_switch_edge(pin_core::SwitchId(17), closed, &mut h.ctx()); // pulse, then error
+    assert!(b.is_faulted());
+
+    assert_eq!(
+        h.cmd.coil_pulses, before.coil_pulses,
+        "earlier pulses must be kept"
+    );
+    assert_eq!(h.cmd.display_scenes, before.display_scenes);
+    // Earlier holds are kept, followed by the tilt releases.
+    assert_eq!(&h.cmd.coil_holds[..2], &before.coil_holds[..]);
+    let mut released: Vec<_> = h.cmd.coil_holds[2..]
+        .iter()
+        .map(|&(c, on)| (c.0, on))
+        .collect();
+    released.sort_unstable();
+    assert_eq!(released, vec![(3, false), (5, false)]);
+    assert_eq!(h.cmd.len(), before.len() + 2);
+}
+
+/// Rollback must never strand a held coil (review B8): tick 1 holds the coil,
+/// tick 2 releases it and then faults. Whether the release reaches the host
+/// from tick 2's queue or from the tilt release, it arrives exactly once.
+#[test]
+fn release_in_the_faulting_callback_is_not_lost() {
+    for tail in ["error('x')", "while true do end", "pinball.pulse_coil()"] {
+        let src = format!(
+            "local n = 0
+             function on_tick()
+               n = n + 1
+               if n == 1 then
+                 pinball.hold_coil(9, true)
+                 pinball.hold_coil(4, true)
+               else
+                 pinball.hold_coil(9, false)
+                 {tail}
+               end
+             end"
+        );
+        let mut b = backend_with(src.as_bytes(), cfg(16 * MIB, 20_000));
+        let mut h = Host::new(1);
+        h.tick(&mut b);
+        assert_eq!(holds(&h), vec![(4, true), (9, true)]);
+        h.tick(&mut b);
+        assert!(b.is_faulted(), "{tail}");
+        assert_eq!(
+            holds(&h),
+            vec![(4, false), (9, false)],
+            "{tail}: each held coil must be released exactly once"
+        );
+        h.tick(&mut b);
+        assert!(h.cmd.is_empty(), "{tail}: releases are not repeated");
+    }
+}
+
+/// A coil held and released inside the faulting callback ends released: the
+/// host never sees a hold that is not followed by a release.
+#[test]
+fn coil_held_and_released_within_the_faulting_callback_ends_released() {
+    for tail in ["error('x')", "while true do end"] {
+        let src = format!(
+            "function on_tick()
+               pinball.hold_coil(6, true)
+               pinball.hold_coil(6, false)
+               {tail}
+             end"
+        );
+        let mut b = backend_with(src.as_bytes(), cfg(16 * MIB, 20_000));
+        let mut h = Host::new(1);
+        h.tick(&mut b);
+        assert!(b.is_faulted(), "{tail}");
+        let last = h.cmd.coil_holds.iter().rev().find(|(c, _)| *c == CoilId(6));
+        assert!(
+            last.is_none_or(|&(_, on)| !on),
+            "{tail}: coil 6 left held: {:?}",
+            h.cmd.coil_holds
+        );
+        assert!(h.cmd.coil_holds.iter().filter(|&&(_, on)| !on).count() <= 1);
+    }
+}
+
+/// Released in the faulting callback, then held again before the error: the
+/// rolled-back callback leaves the coil held from tick 1, so tilt releases it.
+#[test]
+fn coil_toggled_within_the_faulting_callback_is_released_once() {
+    let src = b"local n = 0
+                function on_tick()
+                  n = n + 1
+                  pinball.hold_coil(9, true)
+                  if n == 2 then
+                    pinball.hold_coil(9, false)
+                    pinball.hold_coil(9, true)
+                    error('x')
+                  end
+                end";
+    let mut b = backend(src);
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    h.tick(&mut b);
+    assert!(b.is_faulted());
+    assert_eq!(h.cmd.coil_holds.last(), Some(&(CoilId(9), false)));
+    assert_eq!(h.cmd.coil_holds.iter().filter(|&&(_, on)| !on).count(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -229,11 +369,12 @@ fn coil_held_in_the_faulting_callback_ends_up_released() {
     let mut h = Host::new(1);
     h.case(&mut b, 13); // hold 7, then hang
     assert!(b.is_faulted());
+    // The callback's own hold may be dropped with the rest of its commands;
+    // if any hold command for coil 7 reaches the host, the last one is "off".
     let last = h.cmd.coil_holds.iter().rev().find(|(c, _)| *c == CoilId(7));
-    assert_eq!(
-        last,
-        Some(&(CoilId(7), false)),
-        "the last hold command for coil 7 must switch it off: {:?}",
+    assert!(
+        last.is_none_or(|&(_, on)| !on),
+        "coil 7 left held: {:?}",
         h.cmd.coil_holds
     );
 }
