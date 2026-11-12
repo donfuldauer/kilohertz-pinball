@@ -449,11 +449,11 @@ fn watcher_output_feeds_apply_reload() {
     'outer: for _ in 0..400 {
         std::fs::write(&path, B).unwrap();
         for _ in 0..50_000 {
-            if let Some(src) = w.poll() {
-                if src == B {
-                    delivered = Some(src);
-                    break 'outer;
-                }
+            if let Some(src) = w.poll()
+                && src == B
+            {
+                delivered = Some(src);
+                break 'outer;
             }
             std::thread::yield_now();
         }

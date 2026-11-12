@@ -390,7 +390,7 @@ fn on_tick_runs_every_tick_and_reads_the_tick_counter() {
     let mut h = Host::new(7);
     for _ in 0..40 {
         h.tick(&mut b);
-        if h.view.tick % 4 == 0 {
+        if h.view.tick.is_multiple_of(4) {
             assert_eq!(
                 h.cmd.lamps.as_slice(),
                 &[(LampId(2), 1.0)],

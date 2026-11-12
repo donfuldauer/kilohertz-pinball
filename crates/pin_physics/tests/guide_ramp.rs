@@ -37,6 +37,23 @@ const SLOPE: f32 = 0.1;
 const EASE: f32 = 1.0;
 const RAMP_START_Y: f32 = -0.40;
 const RAMP_TOP_D: f32 = 1.15; // where the rise reaches 65 mm
+/// The rails start this far before the ramp, `RAIL_DROP` below their seat
+/// height, and rise to it smoothly: they emerge through the playfield and
+/// pick up a ball that arrives a little off-centre without a step.
+const RAIL_LEAD: f32 = 0.20;
+const RAIL_DROP: f32 = 0.003;
+/// The rails exist physically on the main deck and on the wireform layer.
+const RAIL_LAYERS: u8 = layers::MAIN_DECK | layers::WIREFORM;
+
+/// How far the rails sit below seat height at distance `d` along the ramp.
+fn rail_drop(d: f32) -> f32 {
+    if d >= 0.0 {
+        0.0
+    } else {
+        let u = (-d / RAIL_LEAD).min(1.0);
+        RAIL_DROP * u * u * (3.0 - 2.0 * u)
+    }
+}
 
 fn ramp_rise(d: f32) -> f32 {
     if d <= 0.0 {
@@ -98,26 +115,26 @@ fn build_table() -> Table {
     }
     let guide = GuideCurve::new(CubicSpline::interpolate(&pts).unwrap(), 0.03).unwrap();
 
-    // Ramp: a wireform straight down the left side (heading -Y), flat for the
-    // first 100 mm, then rising along `ramp_rise`.
+    // Ramp: a wireform straight down the left side (heading -Y). The rails
+    // come up through the floor over `RAIL_LEAD`, then rise along `ramp_rise`.
     let seat = (BALL_R * BALL_R - 0.25 * GAUGE * GAUGE).sqrt();
     let x = -(GUIDE_R - BALL_R);
     let mut pts = Vec::new();
-    let mut d = -0.10f32;
-    while d <= 1.3001 {
-        pts.push(v(x, RAMP_START_Y - d, BALL_R - seat + ramp_rise(d)));
-        d += 0.05;
+    for k in -4..=26 {
+        let d = 0.05 * k as f32;
+        pts.push(v(x, RAMP_START_Y - d, BALL_R - seat + ramp_rise(d) - rail_drop(d)));
     }
     let rolls = vec![0.0; pts.len()];
     let ramp = Wireform::new(CubicSpline::interpolate(&pts).unwrap(), &rolls, GAUGE, Vec3::Z).unwrap();
 
-    // Ramp entrance (on the flat lead-in) and ramp top.
+    // Ramp entrance (the ball is on the rails and just clear of the floor)
+    // and ramp top.
     let transitions = TransitionSet::new(vec![
         LayerTransition {
             from_layer: LAYER_MAIN,
             to_layer: LAYER_WIRE,
-            min: v(x - 0.03, RAMP_START_Y + 0.02, 0.0),
-            max: v(x + 0.03, RAMP_START_Y + 0.08, 0.05),
+            min: v(x - 0.03, RAMP_START_Y - 0.16, 0.0),
+            max: v(x + 0.03, RAMP_START_Y - 0.10, 0.05),
         },
         LayerTransition {
             from_layer: LAYER_WIRE,
@@ -190,7 +207,7 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
     for _ in 0..SUBSTEPS {
         let mask = layers::layer_bit(ball.layer);
         let on_main = ball.layer == LAYER_MAIN;
-        let on_wire = ball.layer == LAYER_WIRE;
+        let on_rails = mask & RAIL_LAYERS != 0;
         let prev_pos = ball.pos;
         ball.vel += v(0.0, 0.0, -G) * h;
 
@@ -246,8 +263,8 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
                 log.max_arc_radius = log.max_arc_radius.max(v(ball.pos.x, ball.pos.y, 0.0).length());
             }
         }
-        if on_wire {
-            for _pass in 0..2 {
+        if on_rails {
+            for _pass in 0..4 {
                 let rails = table.ramp.closest_on_rails(ball.pos, ball.rail_seed);
                 ball.rail_seed = Some(0.5 * (rails[0].t + rails[1].t));
                 for cp in rails {
@@ -260,10 +277,12 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
                     }
                 }
             }
-            let t = ball.rail_seed.unwrap();
-            let frame = table.ramp.frame_at(t);
-            let height = (ball.pos - table.ramp.centerline().point(t)).dot(frame.normal);
-            log.min_rail_height = log.min_rail_height.min(height);
+            if ball.layer == LAYER_WIRE {
+                let t = ball.rail_seed.unwrap();
+                let frame = table.ramp.frame_at(t);
+                let height = (ball.pos - table.ramp.centerline().point(t)).dot(frame.normal);
+                log.min_rail_height = log.min_rail_height.min(height);
+            }
         }
 
         let layer = table.transitions.update(ball.layer, prev_pos, ball.pos);
@@ -364,12 +383,12 @@ fn normal_force_is_smooth_away_from_entry_and_exit() {
         assert!((force / expected - 1.0).abs() < 0.02, "guide force {force} vs {expected}");
     }
 
-    // Ramp: from 50 mm after the rails take over to the top of the ramp.
+    // Ramp: from where the rails are at seat height to the top of the ramp.
     let mut rail_samples = 0;
     for w in logs.windows(2) {
         let on_ramp = |l: &TickLog| {
             let d = RAMP_START_Y - l.pos.y;
-            l.layer == LAYER_WIRE && (-0.03..=RAMP_TOP_D).contains(&d)
+            (0.0..=RAMP_TOP_D).contains(&d)
         };
         if on_ramp(&w[0]) && on_ramp(&w[1]) {
             assert!(w[0].rail_force > 0.5, "ball left the rails: {}", w[0].rail_force);
@@ -380,8 +399,8 @@ fn normal_force_is_smooth_away_from_entry_and_exit() {
     }
     assert!(rail_samples > 100, "{rail_samples} rail samples");
 
-    // Floor: the ball's weight while it rolls on the main deck.
-    for log in logs.iter().filter(|l| l.layer == LAYER_MAIN).skip(2) {
+    // Floor: the ball's weight while it rolls on the main deck before the rails.
+    for log in logs.iter().filter(|l| l.pos.y > RAMP_START_Y + RAIL_LEAD).skip(2) {
         assert!((log.floor_force / (BALL_M * G) - 1.0).abs() < 0.01, "floor force {}", log.floor_force);
     }
 }
@@ -397,8 +416,10 @@ fn no_tunnelling() {
                 assert!(log.pos.z > BALL_R - tol, "tick {i}: z = {}", log.pos.z);
                 assert!(log.min_floor_gap > -tol || log.min_floor_gap.is_infinite());
                 assert!(log.min_guide_gap > -tol, "tick {i}: guide gap {}", log.min_guide_gap);
-                assert!(log.max_arc_radius < GUIDE_R - BALL_R + tol, "tick {i}: radius {}", log.max_arc_radius);
-                assert!(log.pos.x.abs() < GUIDE_R - BALL_R + tol);
+                // (The interpolated arc is round to about 0.1 mm near its ends.)
+                assert!(log.max_arc_radius < GUIDE_R - BALL_R + 3.0 * tol, "tick {i}: radius {}", log.max_arc_radius);
+                assert!(log.pos.x.abs() < GUIDE_R - BALL_R + 3.0 * tol);
+                assert!(log.min_rail_gap > -tol, "tick {i}: rail gap {}", log.min_rail_gap);
             }
             LAYER_WIRE => {
                 assert!(log.min_rail_gap > -tol, "tick {i}: rail gap {}", log.min_rail_gap);
@@ -408,7 +429,7 @@ fn no_tunnelling() {
                     "tick {i}: height above rails {}",
                     log.min_rail_height
                 );
-                assert!((log.pos.x + (GUIDE_R - BALL_R)).abs() < tol);
+                assert!((log.pos.x + (GUIDE_R - BALL_R)).abs() < tol, "tick {i}: x = {}", log.pos.x);
             }
             _ => {}
         }
@@ -431,7 +452,10 @@ fn layer_switches_exactly_once_per_transition() {
     // The floor (main deck only) stops colliding once the ball is on the wireform.
     let first_wire = logs.iter().position(|l| l.layer == LAYER_WIRE).unwrap();
     assert!(logs[first_wire + 1..].iter().all(|l| l.floor_force == 0.0));
-    assert!(logs[..first_wire].iter().all(|l| l.rail_force == 0.0));
+    // Each switch happens inside its zone.
+    let d_at = |layer: u8| RAMP_START_Y - logs.iter().find(|l| l.layer == layer).unwrap().pos.y;
+    assert!((0.09..0.17).contains(&d_at(LAYER_WIRE)), "{}", d_at(LAYER_WIRE));
+    assert!((1.16..1.23).contains(&d_at(LAYER_UPPER)), "{}", d_at(LAYER_UPPER));
 }
 
 #[test]
