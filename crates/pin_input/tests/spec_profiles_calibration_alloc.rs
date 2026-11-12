@@ -155,7 +155,6 @@ fn plunger_filter_update_does_not_allocate() {
         rest_tracking_per_s: 0.5,
         release_min_speed: 2.0,
         release_window_ms: 100,
-        ..PlungerConfig::default()
     });
     let mut d = PlungerFilter::new(PlungerConfig::default());
     let before = allocs();
@@ -198,7 +197,6 @@ fn nudge_filters_do_not_allocate() {
         curve_exponent: 1.5,
         deadzone: 0.02,
         max: 1.0,
-        ..NudgeConfig::default()
     });
     let mut d = NudgeFilter::new(NudgeConfig::default());
     let mut digital = DigitalNudge::new(0.7, 30);

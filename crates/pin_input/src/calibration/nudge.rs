@@ -85,12 +85,8 @@ impl NudgeFilter {
         } else {
             (1.0, 1.0)
         };
-        for i in 0..2 {
-            let x = if accel[i].is_finite() {
-                accel[i]
-            } else {
-                self.x_prev[i]
-            };
+        for (i, &raw) in accel.iter().enumerate() {
+            let x = if raw.is_finite() { raw } else { self.x_prev[i] };
             let mut y = a * self.y[i] + b * (x - self.x_prev[i]);
             if !y.is_finite() {
                 y = 0.0;
@@ -224,10 +220,7 @@ pub fn thumbstick_nudge(x: f32, y: f32, deadzone: f32) -> [f32; 2] {
     }
     let scaled = (r.min(1.0) - dz) / (1.0 - dz);
     let k = scaled / r;
-    [
-        (x * k).clamp(-1.0, 1.0),
-        (y * k).clamp(-1.0, 1.0),
-    ]
+    [(x * k).clamp(-1.0, 1.0), (y * k).clamp(-1.0, 1.0)]
 }
 
 #[cfg(test)]
@@ -271,7 +264,10 @@ mod tests {
         });
         assert_eq!(f.update([0.05, -0.05], 0.001), [0.0, 0.0]);
         let o = f.update([0.3, -0.3], 0.001);
-        assert!((o[0] - 0.18).abs() < 1e-5 && (o[1] + 0.18).abs() < 1e-5, "{o:?}");
+        assert!(
+            (o[0] - 0.18).abs() < 1e-5 && (o[1] + 0.18).abs() < 1e-5,
+            "{o:?}"
+        );
         assert_eq!(f.update([0.9, -0.9], 0.001), [0.6, -0.6]);
         assert_eq!(f.high_passed(), [0.9, -0.9]);
         // Invalid dt keeps the previous output; NaN input repeats the last.

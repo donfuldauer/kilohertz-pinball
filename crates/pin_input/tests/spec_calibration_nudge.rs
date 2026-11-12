@@ -20,7 +20,6 @@ fn linear(high_pass_hz: f32) -> NudgeConfig {
         curve_exponent: 1.0,
         deadzone: 0.0,
         max: 1.0,
-        ..NudgeConfig::default()
     }
 }
 
@@ -141,7 +140,6 @@ fn response_is_odd() {
         curve_exponent: 1.6,
         deadzone: 0.03,
         max: 1.0,
-        ..NudgeConfig::default()
     };
     let mut a = primed(cfg, DT);
     let cfg = NudgeConfig {
@@ -150,7 +148,6 @@ fn response_is_odd() {
         curve_exponent: 1.6,
         deadzone: 0.03,
         max: 1.0,
-        ..NudgeConfig::default()
     };
     let mut b = primed(cfg, DT);
     for k in 0..400 {
@@ -259,7 +256,6 @@ fn gain_curve_matches_the_formula_at_landmarks() {
                 curve_exponent: exp,
                 deadzone: 0.0,
                 max,
-                ..NudgeConfig::default()
             },
             DT,
         );
@@ -431,7 +427,6 @@ proptest! {
                 curve_exponent: exp,
                 deadzone: 0.0,
                 max,
-                ..NudgeConfig::default()
             },
             DT,
         );
@@ -468,7 +463,6 @@ proptest! {
             curve_exponent: exp,
             deadzone,
             max,
-            ..NudgeConfig::default()
         });
         for (i, (x, y)) in samples.iter().enumerate() {
             // Finite or NaN input only: the brief's guarantee.

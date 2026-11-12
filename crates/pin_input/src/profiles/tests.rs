@@ -54,8 +54,19 @@ fn names_round_trip() {
     assert_eq!(RawInput::parse("key:225"), Some(RawInput::Key(225)));
     assert_eq!(RawInput::parse("key:0xE1"), Some(RawInput::Key(225)));
     for bad in [
-        "key:", "key:-1", "key:+1", "key:0x", "key:0x+1", "key:1a", "key:99999999999",
-        "button:", "button:South", "axis:z", "pedal:1", "key225", "",
+        "key:",
+        "key:-1",
+        "key:+1",
+        "key:0x",
+        "key:0x+1",
+        "key:1a",
+        "key:99999999999",
+        "button:",
+        "button:South",
+        "axis:z",
+        "pedal:1",
+        "key225",
+        "",
     ] {
         assert_eq!(RawInput::parse(bad), None, "{bad}");
     }
@@ -185,7 +196,10 @@ fn generic_gamepad_equals_1_3_map() {
         (GamepadButton::Back, CabinetInput::Tilt),
     ];
     for b in GamepadButton::ALL {
-        let want = cases.iter().find(|(x, _)| *x == b).map(|(_, c)| (*c, false));
+        let want = cases
+            .iter()
+            .find(|(x, _)| *x == b)
+            .map(|(_, c)| (*c, false));
         assert_eq!(button_of(m.button(1, b, false)), want, "{b:?}");
     }
     // 1.3's axis_normalisation cases.
@@ -233,9 +247,18 @@ fn xarcade_mappers() {
         button_of(k.key(0, 34, true)),
         Some((CabinetInput::RightFlipper, true))
     );
-    assert_eq!(k.nudge_button(RawInput::Key(80)), Some(NudgeDirection::Left));
-    assert_eq!(k.nudge_button(RawInput::Key(79)), Some(NudgeDirection::Right));
-    assert_eq!(k.nudge_button(RawInput::Key(96)), Some(NudgeDirection::Forward));
+    assert_eq!(
+        k.nudge_button(RawInput::Key(80)),
+        Some(NudgeDirection::Left)
+    );
+    assert_eq!(
+        k.nudge_button(RawInput::Key(79)),
+        Some(NudgeDirection::Right)
+    );
+    assert_eq!(
+        k.nudge_button(RawInput::Key(96)),
+        Some(NudgeDirection::Forward)
+    );
     assert_eq!(k.key(0, 80, true), None);
     let g = ProfileMapper::new(builtin_profile("xarcade_gamepad").unwrap());
     assert_eq!(
@@ -259,7 +282,10 @@ fn xarcade_mappers() {
         g.input_for(RawInput::Axis(GamepadAxis::LeftTrigger)),
         Some(CabinetInput::LeftFlipper)
     );
-    assert_eq!(k.input_for(RawInput::Key(6)), Some(CabinetInput::LeftFlipper));
+    assert_eq!(
+        k.input_for(RawInput::Key(6)),
+        Some(CabinetInput::LeftFlipper)
+    );
 }
 
 #[test]
@@ -350,7 +376,10 @@ forward = "button:dpad_up"
         button_of(m.axis(0, GamepadAxis::RightTrigger, 16384)),
         Some((CabinetInput::Launch, true))
     );
-    assert_eq!(m.nudge_button(RawInput::Key(224)), Some(NudgeDirection::Left));
+    assert_eq!(
+        m.nudge_button(RawInput::Key(224)),
+        Some(NudgeDirection::Left)
+    );
     // Minimal profile.
     let p = ok(HEAD);
     assert!(p.matches.is_empty() && p.buttons.is_empty() && p.axes.is_empty());
@@ -404,31 +433,76 @@ fn semantic_errors_name_the_key() {
         ("name = \"n\"", "id: missing"),
         ("id = \"x\"", "name: missing"),
         ("id = \"\"\nname = \"n\"", "id: must not be empty"),
-        ("id = 3\nname = \"n\"", "id: expected a string, found an integer"),
+        (
+            "id = 3\nname = \"n\"",
+            "id: expected a string, found an integer",
+        ),
         ("bogus = 1", "bogus: unknown key"),
-        ("[buttons]\nleft_flpper = \"key:1\"", "buttons.left_flpper: unknown cabinet input"),
-        ("[buttons]\nstart = \"key:x\"", "buttons.start: malformed raw input"),
-        ("[buttons]\nstart = [\"key:1\", \"btn:a\"]", "buttons.start[1]: malformed"),
-        ("[buttons]\nstart = 5", "buttons.start: expected a raw input string"),
-        ("[buttons]\nstart = [5]", "buttons.start[0]: expected a string"),
+        (
+            "[buttons]\nleft_flpper = \"key:1\"",
+            "buttons.left_flpper: unknown cabinet input",
+        ),
+        (
+            "[buttons]\nstart = \"key:x\"",
+            "buttons.start: malformed raw input",
+        ),
+        (
+            "[buttons]\nstart = [\"key:1\", \"btn:a\"]",
+            "buttons.start[1]: malformed",
+        ),
+        (
+            "[buttons]\nstart = 5",
+            "buttons.start: expected a raw input string",
+        ),
+        (
+            "[buttons]\nstart = [5]",
+            "buttons.start[0]: expected a string",
+        ),
         (
             "[buttons]\nstart = \"key:1\"\ntilt = \"key:1\"",
             "already bound",
         ),
         ("buttons = 1", "buttons: expected a table"),
-        ("[nudge]\nup = \"key:1\"", "nudge.up: unknown nudge direction"),
-        ("[nudge]\nleft = \"key:1\"\nright = \"key:1\"", "already bound to nudge"),
+        (
+            "[nudge]\nup = \"key:1\"",
+            "nudge.up: unknown nudge direction",
+        ),
+        (
+            "[nudge]\nleft = \"key:1\"\nright = \"key:1\"",
+            "already bound to nudge",
+        ),
         ("nudge = []", "nudge: expected a table"),
         ("match = 1", "match: expected an array"),
         ("match = [1]", "match[0]: expected a table"),
         ("match = [{}]", "match[0]: expected exactly one"),
-        ("match = [{ keyboard = true, any_gamepad = true }]", "expected exactly one"),
-        ("match = [{ keyboard = false }]", "match[0].keyboard: must be true"),
-        ("match = [{ keyboard = 1 }]", "match[0].keyboard: expected a boolean"),
-        ("match = [{ mouse = true }]", "match[0].mouse: unknown match kind"),
-        ("match = [{ gamepad = 1 }]", "match[0].gamepad: expected a table"),
-        ("match = [{ gamepad = { vendor = 1 } }]", "match[0].gamepad.product: missing"),
-        ("match = [{ gamepad = { product = 1 } }]", "match[0].gamepad.vendor: missing"),
+        (
+            "match = [{ keyboard = true, any_gamepad = true }]",
+            "expected exactly one",
+        ),
+        (
+            "match = [{ keyboard = false }]",
+            "match[0].keyboard: must be true",
+        ),
+        (
+            "match = [{ keyboard = 1 }]",
+            "match[0].keyboard: expected a boolean",
+        ),
+        (
+            "match = [{ mouse = true }]",
+            "match[0].mouse: unknown match kind",
+        ),
+        (
+            "match = [{ gamepad = 1 }]",
+            "match[0].gamepad: expected a table",
+        ),
+        (
+            "match = [{ gamepad = { vendor = 1 } }]",
+            "match[0].gamepad.product: missing",
+        ),
+        (
+            "match = [{ gamepad = { product = 1 } }]",
+            "match[0].gamepad.vendor: missing",
+        ),
         (
             "match = [{ gamepad = { vendor = 1, product = 70000 } }]",
             "match[0].gamepad.product: expected an integer in 0..=0xFFFF",
@@ -449,9 +523,18 @@ fn semantic_errors_name_the_key() {
         ("axes = [1]", "axes[0]: expected a table"),
         ("[[axes]]\naxis = \"plunger\"", "axes[0].raw: missing"),
         ("[[axes]]\nraw = \"left_y\"", "axes[0].axis: missing"),
-        ("[[axes]]\nraw = \"left_z\"\naxis = \"plunger\"", "axes[0].raw: unknown gamepad axis"),
-        ("[[axes]]\nraw = 1\naxis = \"plunger\"", "axes[0].raw: expected a string"),
-        ("[[axes]]\nraw = \"left_y\"\naxis = \"flippy\"", "axes[0].axis: unknown cabinet axis"),
+        (
+            "[[axes]]\nraw = \"left_z\"\naxis = \"plunger\"",
+            "axes[0].raw: unknown gamepad axis",
+        ),
+        (
+            "[[axes]]\nraw = 1\naxis = \"plunger\"",
+            "axes[0].raw: expected a string",
+        ),
+        (
+            "[[axes]]\nraw = \"left_y\"\naxis = \"flippy\"",
+            "axes[0].axis: unknown cabinet axis",
+        ),
         (
             "[[axes]]\nraw = \"left_y\"\naxis = \"plunger\"\nfrom = 1.0",
             "axes[0].to: `from` and `to` must differ",
@@ -518,8 +601,14 @@ fn hand_built_profile_duplicates_first_wins() {
             (RawInput::Key(9), CabinetInput::Start),
             (RawInput::Key(9), CabinetInput::Tilt),
             (RawInput::Key(u32::MAX), CabinetInput::Tilt),
-            (RawInput::Button(GamepadButton::Touchpad), CabinetInput::Action),
-            (RawInput::Button(GamepadButton::Touchpad), CabinetInput::Tilt),
+            (
+                RawInput::Button(GamepadButton::Touchpad),
+                CabinetInput::Action,
+            ),
+            (
+                RawInput::Button(GamepadButton::Touchpad),
+                CabinetInput::Tilt,
+            ),
         ],
         axes: vec![],
         nudge_buttons: vec![
@@ -529,7 +618,10 @@ fn hand_built_profile_duplicates_first_wins() {
         ],
     };
     let m = ProfileMapper::new(&p);
-    assert_eq!(button_of(m.key(0, 9, true)), Some((CabinetInput::Start, true)));
+    assert_eq!(
+        button_of(m.key(0, 9, true)),
+        Some((CabinetInput::Start, true))
+    );
     assert_eq!(
         button_of(m.key(0, u32::MAX, true)),
         Some((CabinetInput::Tilt, true))

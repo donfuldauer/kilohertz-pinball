@@ -5,6 +5,15 @@ pub const MAX_RELEASE_WINDOW_MS: u32 = 1024;
 
 const RING: usize = MAX_RELEASE_WINDOW_MS as usize;
 
+/// When a pull starts, rest tracking of the last this-many updates is undone:
+/// those samples were the start of the pull moving through the deadzone, not
+/// the plunger at rest.
+pub const REST_LOOKBACK_TICKS: usize = 128;
+
+/// Raw readings are clamped to `±RAW_LIMIT` full-scale (a mis-scaled device
+/// must not produce an infinite speed).
+pub const RAW_LIMIT: f32 = 16.0;
+
 /// Plunger calibration settings. Positions are in full-scale units (the
 /// normalised `CabinetAxis::Plunger` value, 0 = nominal rest, 1 = full pull).
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -61,6 +70,11 @@ pub struct PlungerFilter {
     speeds: [(u64, f32); RING],
     head: usize,
     len: usize,
+    /// Rest position before each of the last updates (ring, oldest first at
+    /// `rest_head` once full).
+    rest_hist: [f32; REST_LOOKBACK_TICKS],
+    rest_head: usize,
+    rest_len: usize,
 }
 
 impl PlungerFilter {
@@ -76,6 +90,9 @@ impl PlungerFilter {
             speeds: [(0, 0.0); RING],
             head: 0,
             len: 0,
+            rest_hist: [0.0; REST_LOOKBACK_TICKS],
+            rest_head: 0,
+            rest_len: 0,
         }
     }
 
@@ -85,6 +102,10 @@ impl PlungerFilter {
     }
 
     /// The tracked rest position (raw units).
+    ///
+    /// Tracking happens while the reading is within the deadzone of the rest
+    /// position; when a pull starts, the last [`REST_LOOKBACK_TICKS`] updates
+    /// of tracking are undone.
     pub fn rest(&self) -> f32 {
         self.rest
     }
@@ -97,7 +118,11 @@ impl PlungerFilter {
     /// Feeds one raw reading (normalised plunger axis) at sim tick `tick_ms`.
     /// A non-finite reading repeats the previous one.
     pub fn update(&mut self, raw: f32, tick_ms: u64) -> PlungerOutput {
-        let raw = if raw.is_finite() { raw } else { self.last_raw };
+        let raw = if raw.is_finite() {
+            raw.clamp(-RAW_LIMIT, RAW_LIMIT)
+        } else {
+            self.last_raw
+        };
         let deadzone = finite_or(self.cfg.deadzone, 0.0).max(0.0);
         let window = u64::from(self.cfg.release_window_ms.min(MAX_RELEASE_WINDOW_MS));
         let dt_ms = match self.last_tick {
@@ -114,7 +139,11 @@ impl PlungerFilter {
         self.last_raw = raw;
         self.last_tick = Some(tick_ms);
 
-        let rel = raw - self.rest;
+        self.rest_hist[self.rest_head] = self.rest;
+        self.rest_head = (self.rest_head + 1) % REST_LOOKBACK_TICKS;
+        self.rest_len = (self.rest_len + 1).min(REST_LOOKBACK_TICKS);
+
+        let mut rel = raw - self.rest;
         let mut release = None;
         if self.pulled {
             self.push_speed(tick_ms, speed);
@@ -131,6 +160,12 @@ impl PlungerFilter {
             self.pulled = true;
             self.len = 0;
             self.push_speed(tick_ms, speed);
+            // Undo the tracking that followed the start of this pull.
+            let oldest =
+                (self.rest_head + REST_LOOKBACK_TICKS - self.rest_len) % REST_LOOKBACK_TICKS;
+            self.rest = self.rest_hist[oldest];
+            self.rest_len = 0;
+            rel = raw - self.rest;
         } else if rel.abs() <= deadzone {
             let k = (finite_or(self.cfg.rest_tracking_per_s, 0.0) * dt_s).clamp(0.0, 1.0);
             self.rest += (raw - self.rest) * k;

@@ -43,7 +43,12 @@ struct Parser<'t> {
 }
 
 impl Parser<'_> {
-    fn err(&self, key: &str, span: Option<Range<usize>>, message: impl Into<String>) -> ProfileError {
+    fn err(
+        &self,
+        key: &str,
+        span: Option<Range<usize>>,
+        message: impl Into<String>,
+    ) -> ProfileError {
         ProfileError::Invalid {
             key: key.to_string(),
             position: span.map(|s| line_col(self.text, s.start)),
@@ -370,10 +375,18 @@ impl Parser<'_> {
                 }
             }
             let raw = raw.ok_or_else(|| {
-                self.err(&format!("{key}.raw"), Some(item.span()), "missing required key")
+                self.err(
+                    &format!("{key}.raw"),
+                    Some(item.span()),
+                    "missing required key",
+                )
             })?;
             let axis = axis.ok_or_else(|| {
-                self.err(&format!("{key}.axis"), Some(item.span()), "missing required key")
+                self.err(
+                    &format!("{key}.axis"),
+                    Some(item.span()),
+                    "missing required key",
+                )
             })?;
             let from_v = from.as_ref().map_or(raw.raw_min(), |f| f.0);
             let to_v = to.as_ref().map_or(1.0, |t| t.0);

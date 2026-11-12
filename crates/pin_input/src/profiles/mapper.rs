@@ -87,11 +87,7 @@ impl ProfileMapper {
             return Some(InputEvent::axis(ts_ns, b.axis, b.map(v)));
         }
         let input = self.axis_buttons[a as usize]?;
-        Some(InputEvent::button(
-            ts_ns,
-            input,
-            v >= AXIS_BUTTON_THRESHOLD,
-        ))
+        Some(InputEvent::button(ts_ns, input, v >= AXIS_BUTTON_THRESHOLD))
     }
 
     /// The digital nudge direction bound to `raw`, if any.

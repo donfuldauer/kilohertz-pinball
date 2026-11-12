@@ -52,7 +52,8 @@ fn every_mode_reaches_its_cabinet_switches() {
     let gp = detect(Some(SdlGuid::from_ids(3, 0x28de, 0x1102)), false);
     assert_eq!(xg.id, "xarcade_gamepad");
     assert_eq!(gp.id, "generic_gamepad");
-    for (p, need_all) in [(keyboard, true), (xk, true), (xg, true), (gp, true)] {
+    // Every built-in preset (generic ones too, as 1.3's maps did) reaches all 8.
+    for p in [keyboard, xk, xg, gp] {
         let m = ProfileMapper::new(p);
         let mut seen = Vec::new();
         for sc in 0..512 {
@@ -64,17 +65,7 @@ fn every_mode_reaches_its_cabinet_switches() {
         for a in GamepadAxis::ALL {
             seen.extend(pressed_input(m.axis(0, a, i16::MAX)));
         }
-        let required: &[CabinetInput] = if need_all {
-            &CabinetInput::ALL
-        } else {
-            &[
-                CabinetInput::LeftFlipper,
-                CabinetInput::RightFlipper,
-                CabinetInput::Start,
-                CabinetInput::Launch,
-            ]
-        };
-        for c in required {
+        for c in &CabinetInput::ALL {
             assert!(seen.contains(c), "{} cannot reach {c:?}", p.id);
         }
     }
@@ -184,7 +175,10 @@ fn mapper_per_event_paths_do_not_allocate() {
             n += u64::from(m.axis(ts, a, (k as i32 * 37 - 32768) as i16).is_some());
             n += u64::from(m.nudge_button(RawInput::Key(k % 600)).is_some());
             n += u64::from(m.nudge_button(RawInput::Button(b)).is_some());
-            let _ = detect(Some(SdlGuid::from_ids(3, 0xAA55, (k % 4) as u16)), k % 5 == 0);
+            let _ = detect(
+                Some(SdlGuid::from_ids(3, 0xAA55, (k % 4) as u16)),
+                k % 5 == 0,
+            );
         }
     }
     assert_eq!(allocs(), before, "mapper/detect allocated");

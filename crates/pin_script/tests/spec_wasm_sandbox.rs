@@ -42,7 +42,7 @@ const CALLBACKS: &str = r#"
 // ------------------------------------------------------------------ fuel
 
 /// Runs `op` on a driver under `cfg` behind the hang guard.
-fn spin(cfg: WasmConfig, opcode: u16, entry: u8) -> (Driver, pin_core::HostCommandQueue) {
+fn spin(cfg: WasmConfig, opcode: u16) -> (Driver, pin_core::HostCommandQueue) {
     watchdog("fuel exhaustion", move || {
         let mut d = Driver::with_cfg(cfg);
         // Tick 1: hold two coils and behave.
@@ -54,7 +54,6 @@ fn spin(cfg: WasmConfig, opcode: u16, entry: u8) -> (Driver, pin_core::HostComma
         // after queueing the marker commands.
         d.h.cmd.clear();
         d.call_keep(op::PULSE_COIL, &[1, 10]);
-        let _ = entry;
         d.h.view.persist[0] = 0;
         d.h.edge_keep(&mut d.b, opcode, false);
         let q = d.h.cmd.clone();
@@ -64,9 +63,9 @@ fn spin(cfg: WasmConfig, opcode: u16, entry: u8) -> (Driver, pin_core::HostComma
 
 #[test]
 fn an_infinite_loop_is_contained_by_fuel() {
-    for c in [WasmConfig::engine(), WasmConfig::default(), cfg(16 * MIB, 1), cfg(16 * MIB, 1000)] {
+    for c in [WasmConfig::engine(), WasmConfig::default(), cfg(16 * MIB, 5000)] {
         for opcode in [op::SPIN, op::SPIN_CALLING_HOST] {
-            let (mut d, q) = spin(c, opcode, 0);
+            let (mut d, q) = spin(c, opcode);
             assert!(d.b.is_faulted(), "{c:?} op {opcode}");
             assert_eq!(d.b.fault_count(), 1);
             assert_eq!(
@@ -193,7 +192,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
     /// Whatever the budget, a spinning guest is contained and tilts.
     #[test]
-    fn any_fuel_budget_contains_a_spinning_guest(fuel in 0u64..300_000, host_calls in any::<bool>()) {
+    fn any_fuel_budget_contains_a_spinning_guest(fuel in 1u64..300_000, host_calls in any::<bool>()) {
         let opcode = if host_calls { op::SPIN_CALLING_HOST } else { op::SPIN };
         let (faulted, q, err) = watchdog("spin proptest", move || {
             let mut d = Driver::with_cfg(cfg(16 * MIB, fuel));

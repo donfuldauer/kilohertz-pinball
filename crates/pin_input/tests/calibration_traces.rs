@@ -48,7 +48,11 @@ fn slow_pull_slow_return(depth: f32, pull_ms: u32, return_ms: u32) -> Vec<f32> {
     let mut t = vec![0.0; 50];
     t.extend((0..=pull_ms).map(|i| depth * i as f32 / pull_ms as f32));
     t.extend(vec![depth; 300]);
-    t.extend((0..=return_ms).rev().map(|i| depth * i as f32 / return_ms as f32));
+    t.extend(
+        (0..=return_ms)
+            .rev()
+            .map(|i| depth * i as f32 / return_ms as f32),
+    );
     t.extend(vec![0.0; 300]);
     t
 }
@@ -109,7 +113,11 @@ fn plunger_pull_and_snap_one_release_within_5_percent() {
             let rel: Vec<f32> = out.iter().filter_map(|o| o.release).collect();
             assert_eq!(rel.len(), 1, "depth {depth} snap {snap_ms}: {rel:?}");
             let err = (rel[0] - peak).abs() / peak;
-            assert!(err < 0.05, "depth {depth} snap {snap_ms}: {} vs {peak}", rel[0]);
+            assert!(
+                err < 0.05,
+                "depth {depth} snap {snap_ms}: {} vs {peak}",
+                rel[0]
+            );
             // Reported on the tick the plunger is back within the deadzone.
             let i = out.iter().position(|o| o.release.is_some()).unwrap();
             assert!(trace[i] <= 0.02 && trace[i - 1] > 0.02);

@@ -423,7 +423,10 @@ impl<'v> Checker<'v> {
         let mut seen = Seen::new();
         for (i, name) in names.iter().enumerate() {
             if let Some(first) = seen.check(*name, &paths[i]) {
-                let label = kind.map_or(section.trim_end_matches('s'), IdKind::label);
+                let label = match kind {
+                    Some(k) => k.label(),
+                    None => section.trim_end_matches('s'),
+                };
                 self.err(
                     TABLE_FILE,
                     format!("{}.id", paths[i]),

@@ -24,7 +24,6 @@ fn cfg(rest_tracking_per_s: f32) -> PlungerConfig {
         rest_tracking_per_s,
         release_min_speed: MIN_SPEED,
         release_window_ms: 100,
-        ..PlungerConfig::default()
     }
 }
 
@@ -501,7 +500,6 @@ fn absurd_finite_samples_never_yield_a_non_finite_release() {
                 rest_tracking_per_s: 0.0,
                 release_min_speed: min_speed,
                 release_window_ms: 1,
-                ..PlungerConfig::default()
             });
             let mut g = PlungerFilter::new(cfg(0.5));
             for (t, raw) in [0.0, huge, 0.0, 0.0, -huge, 0.0, huge, huge, 0.0]
@@ -623,7 +621,6 @@ proptest! {
             rest_tracking_per_s: tracking,
             release_min_speed: min_speed,
             release_window_ms: window,
-            ..PlungerConfig::default()
         };
         let mut f = PlungerFilter::new(c);
         for (i, s) in samples.iter().enumerate() {
