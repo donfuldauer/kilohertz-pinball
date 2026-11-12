@@ -19,3 +19,6 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 2 | 1.2 | Implementer | Opus 5.5 | 1 | done | actionlint clean; Linux commands pass | workflows in cf246e2 |
 | 2 | 1.2 | Reviewer | Fable 5.2 | 1 | **fail** | B1: `@stable` (1.99.1) clippy lint breaks pin_core | spikes CI green on 3 OS; ci machinery works; other red jobs are wave-2 WIP |
 | 2 | 1.2 | Implementer + Tester | Opus 5.5 / Fable 5.2 | fix 1 | running | — | pin CI to 1.97.0; N2, N4, N5, N7, N3 |
+| 2 | 3.1 | Implementer | Opus 5.5 | 1 | done | 26 own tests; coverage 100 % | |
+| 2 | 3.1 | Independent Tester | Fable 5.2 | 1 | done | 71 spec tests | |
+| 2 | 3.1 | Reviewer | Fable 5.2 | 1 | **pass** | gate 1–8 pass; 100 % lines; alloc guard real | 4 non-blocking: N1 → 2.5 brief (callers clear `out` before `update`), N2 doc, N4 compile-time assert, N3 none |
