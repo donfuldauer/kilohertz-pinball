@@ -11,3 +11,4 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - [1.1] `BallProfile` has an extra `material` field and materials are a closed enum (steel, ceramic, plastic, resin, rubber, wood, acrylic); confirm this set, and that `uv_globall` is "plastic" for pair lookup.
 - [1.1 review] Follow-ups handed to later subphases: 4.1 must reject switch/lamp numbers > 255 (N4) and check that `score_display.mode` has its matching `dmd`/`lcd` table (N5); 2.4 needs an early additive CR for kind-specific mech parameters (N7). See DECISIONS.md "1.1 — Review fix round".
 - [Orchestrator] Wave 2 interpretive choices (dual-stage flipper semantics, PiP aspect ratios, Lua ID tables): see DECISIONS.md "Orchestrator — Wave 2 brief decisions".
+- [3.1] Debounce semantics chosen by the agent (tick-sampled raw state; window-end settling opens a new window); see DECISIONS.md "3.1 — Input ingestion & flipper staging".
