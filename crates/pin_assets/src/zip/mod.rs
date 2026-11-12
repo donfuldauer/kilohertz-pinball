@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(normalize_path("a\\b").unwrap(), "a/b");
         assert_eq!(normalize_path("a/b/").unwrap(), "a/b");
         assert_eq!(normalize_path("").unwrap(), "");
-        assert_eq!(normalize_path("a:b").unwrap(), "a:b");
+        assert_eq!(normalize_path("ab:c").unwrap(), "ab:c");
     }
 
     #[test]

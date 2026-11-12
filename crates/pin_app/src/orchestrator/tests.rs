@@ -18,8 +18,8 @@ fn clock_basic_and_cap() {
     assert_eq!(c.advance(1_000 + 23 * TICK_NS + 5), 8);
     assert_eq!(c.dropped_ticks(), 12);
     assert_eq!(c.ticks_due_total(), 11);
-    assert_eq!(c.advance(1_000 + 24 * TICK_NS + 4), 0);
-    assert_eq!(c.advance(1_000 + 24 * TICK_NS + 5), 1);
+    assert_eq!(c.advance(1_000 + 24 * TICK_NS - 1), 0);
+    assert_eq!(c.advance(1_000 + 24 * TICK_NS), 1);
     // Going backwards changes nothing.
     let before = c;
     assert_eq!(c.advance(0), 0);

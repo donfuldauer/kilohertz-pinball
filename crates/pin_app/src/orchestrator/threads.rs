@@ -287,6 +287,15 @@ impl Threads {
         self.handles.iter().map(|(n, _)| *n).collect()
     }
 
+    /// Names of threads that have already exited (e.g. after a panic).
+    pub fn finished(&self) -> Vec<&'static str> {
+        self.handles
+            .iter()
+            .filter(|(_, h)| h.is_finished())
+            .map(|(n, _)| *n)
+            .collect()
+    }
+
     /// Requests shutdown, wakes every thread and joins them all. Returns the
     /// final counters, or the names of threads that panicked.
     pub fn shutdown(mut self) -> Result<StatsSnapshot, String> {

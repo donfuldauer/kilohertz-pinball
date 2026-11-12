@@ -1,5 +1,8 @@
 //! Independent spec test: `DebugLines` and the line builders do not allocate after
 //! construction (Subphase 1.4 FIXED API: "no allocation after construction").
+// `DebugLines::dropped()`'s integer type is not fixed by the brief; the casts keep these
+// tests independent of it.
+#![allow(clippy::unnecessary_cast)]
 
 use pin_core::snapshot::BallState;
 use pin_core::{FrameStateSnapshot, ProfileId};

@@ -1,6 +1,9 @@
 //! Independent spec tests for the CPU side of `pin_render::debug` (Subphase 1.4 FIXED API):
 //! `DebugLine`, `DebugLines`, `snapshot_lines`, `box_lines`, `polyline_lines`, `Camera`.
 //! No GPU is needed here.
+// `DebugLines::dropped()`'s integer type is not fixed by the brief; the casts keep these
+// tests independent of it.
+#![allow(clippy::unnecessary_cast)]
 
 use pin_core::snapshot::{BallState, FlipperState};
 use pin_core::{FlipperId, FrameStateSnapshot, ProfileId};
