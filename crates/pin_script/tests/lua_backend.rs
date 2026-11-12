@@ -641,16 +641,22 @@ fn load_backend_by_extension() {
     b.on_init(&mut h.ctx());
     assert!(!h.cmd.is_empty());
     assert!(load_backend("RULES.LUA", b"", &names()).is_ok());
-    for entry in ["rules.wasm", "rules.py", "rules"] {
+    for entry in ["rules.py", "rules"] {
         match load_backend(entry, b"", &names()) {
             Err(ScriptError::UnsupportedBackend(m)) => assert!(m.contains(entry)),
             _ => panic!("{entry} should be unsupported"),
         }
     }
-    match load_backend("x.wasm", b"", &names()) {
-        Err(ScriptError::UnsupportedBackend(m)) => assert!(m.contains("4.5")),
-        _ => panic!(),
-    }
+    assert!(matches!(
+        load_backend("x.wasm", b"", &names()),
+        Err(ScriptError::Load(_))
+    ));
+    let minimal = br#"(module
+  (memory (export "memory") 1)
+  (func (export "on_init"))
+  (func (export "on_tick"))
+  (func (export "on_switch_edge") (param i32 i32)))"#;
+    assert!(load_backend("x.wasm", minimal, &names()).is_ok());
     assert!(matches!(
         load_backend("x.lua", b"(", &names()),
         Err(ScriptError::Load(_))

@@ -1,4 +1,39 @@
 //! Analog plunger filter.
+//!
+//! # Model
+//!
+//! * **Position** is measured from the tracked rest: `(raw − rest − dz) /
+//!   (1 − rest − dz)` clamped to `0..=1`, 0 within the deadzone or below rest.
+//! * **Pull.** A pull starts when `raw − rest > deadzone`. It can end in a
+//!   release only if it *qualifies*: it started after the plunger had been at
+//!   rest (within ±deadzone) for [`ARM_REST_MS`], it reached
+//!   `max(PULL_QUALIFY_DEADZONES · deadzone, MIN_PULL_DEPTH)`, and it lasted
+//!   at least [`MIN_PULL_TICKS`] updates. The release is reported on the tick
+//!   the plunger is back within the deadzone (overshoot past rest counts),
+//!   with the peak forward speed of the last `release_window_ms`, if that peak
+//!   is at least `release_min_speed`. After a release no pull starts for
+//!   [`RELEASE_HOLDOFF_MS`].
+//! * **Rest** (only while `rest_tracking_per_s > 0`; with 0 the rest is fixed
+//!   at 0):
+//!   - tracking: while not pulled and within ±deadzone, rest follows the
+//!     reading at `rest_tracking_per_s`; when a pull qualifies, the tracking
+//!     of the [`REST_LOOKBACK_TICKS`] updates before it started is undone;
+//!   - re-acquisition: a reading that stays within ±deadzone of one level
+//!     becomes the rest after [`STABLE_MS`] if that level is a small offset
+//!     above rest (less than the qualifying depth), or lies near a known-good
+//!     rest (the last rest a release returned to or that was acquired, the
+//!     rest before the last downward re-acquisition, nominal 0 at start;
+//!     tolerance `max(2·deadzone, 0.01)`), or is at most [`MAX_REST_OFFSET`]
+//!     during the power-on window ([`ACQUIRE_WINDOW_MS`], before the first
+//!     release); any other level *below* rest (the knob pushed in) becomes
+//!     rest only after [`PUSH_IN_REACQUIRE_MS`]. Re-acquisition cancels a pull
+//!     in progress without a release;
+//!   - rest always stays within `±MAX_REST_OFFSET`.
+//!
+//! A rest that is too *high* never blocks a launch (the return still comes
+//! back within the deadzone); a rest that is too low would, which is why
+//! lowering it needs a long push-in and raising it back to a known-good rest
+//! needs only [`STABLE_MS`].
 
 /// Longest supported release window; larger configured windows are clamped.
 pub const MAX_RELEASE_WINDOW_MS: u32 = 1024;
@@ -6,35 +41,41 @@ pub const MAX_RELEASE_WINDOW_MS: u32 = 1024;
 const RING: usize = MAX_RELEASE_WINDOW_MS as usize;
 
 /// When a pull qualifies, rest tracking of the last this-many updates before
-/// it started is undone: those samples were the start of the pull moving
-/// through the deadzone, not the plunger at rest.
+/// it started is undone.
 pub const REST_LOOKBACK_TICKS: usize = 128;
 
-/// A pull must reach at least `max(PULL_QUALIFY_DEADZONES · deadzone,
-/// MIN_PULL_DEPTH)` beyond the rest position before its return can be a
-/// release. Shallower excursions (ADC noise at the deadzone edge, a resting
-/// plunger touched) only report a position.
+/// Qualifying depth factor; see the module docs.
 pub const PULL_QUALIFY_DEADZONES: f32 = 2.5;
 
-/// See [`PULL_QUALIFY_DEADZONES`] (full-scale).
+/// Minimum qualifying depth (full-scale); see the module docs.
 pub const MIN_PULL_DEPTH: f32 = 0.05;
 
-/// After a release no new pull arms for this long (ms): the spring bounce.
+/// A qualified pull must have lasted this many updates (outside the
+/// deadzone) before its return is a release: one- and two-sample spikes are
+/// noise, a 3 ms tap is the fastest real pull.
+pub const MIN_PULL_TICKS: u32 = 3;
+
+/// A pull can qualify only if the plunger was at rest this long (ms) before.
+pub const ARM_REST_MS: u64 = 30;
+
+/// After a release no new pull starts for this long (ms): the spring bounce.
 pub const RELEASE_HOLDOFF_MS: u64 = 200;
 
-/// The tracked rest position stays within `±MAX_REST_OFFSET` of nominal 0.
+/// The rest position stays within `±MAX_REST_OFFSET` of nominal 0.
 pub const MAX_REST_OFFSET: f32 = 0.25;
 
-/// A reading that stays within ±deadzone of one level this long (ms) is
-/// "stable"; see [`PlungerFilter::rest`] for when that re-acquires the rest.
+/// A reading held within ±deadzone of one level this long (ms) is stable.
 pub const STABLE_MS: u64 = 1000;
 
-/// Power-on rest acquisition is possible only this long (ms) after the first
-/// update, and only before the first release.
+/// A stable reading below rest that is not a known-good rest (the knob held
+/// pushed in) becomes the rest only after this long (ms).
+pub const PUSH_IN_REACQUIRE_MS: u64 = 5000;
+
+/// Power-on acquisition window (ms after the first update, before the first
+/// release).
 pub const ACQUIRE_WINDOW_MS: u64 = 3000;
 
-/// Raw readings are clamped to `±RAW_LIMIT` full-scale (a mis-scaled device
-/// must not produce an infinite speed).
+/// Raw readings are clamped to `±RAW_LIMIT` full-scale.
 pub const RAW_LIMIT: f32 = 16.0;
 
 /// Plunger calibration settings. Positions are in full-scale units (the
@@ -43,15 +84,13 @@ pub const RAW_LIMIT: f32 = 16.0;
 pub struct PlungerConfig {
     /// Displacement from the tracked rest position treated as "at rest".
     pub deadzone: f32,
-    /// Rest tracking rate (1/s): while within the deadzone the rest position
-    /// moves toward the reading by `rate · dt` of the difference per update.
+    /// Rest tracking rate (1/s). 0 disables all rest adaptation.
     pub rest_tracking_per_s: f32,
     /// Minimum peak forward speed (full-scale/s) of the return stroke that
     /// counts as a release; slower returns report nothing.
     pub release_min_speed: f32,
     /// How far back (ms) from the tick the plunger re-enters the deadzone the
     /// peak forward speed is taken. Clamped to [`MAX_RELEASE_WINDOW_MS`].
-    /// (The post-release hold-off is the separate [`RELEASE_HOLDOFF_MS`].)
     pub release_window_ms: u32,
 }
 
@@ -69,44 +108,45 @@ impl Default for PlungerConfig {
 /// One filtered plunger sample.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PlungerOutput {
-    /// Pull, 0 at rest .. 1 full pull, with the deadzone removed (0 whenever
-    /// the plunger is within the deadzone of its tracked rest position).
+    /// Pull, 0 at rest .. 1 full pull, with the deadzone removed.
     pub position: f32,
-    /// On the single tick a pull ends with a fast return: the peak forward
-    /// speed of the return stroke (full-scale/s).
+    /// On the single tick a qualified pull ends with a fast return: the peak
+    /// forward speed of the return stroke (full-scale/s).
     pub release: Option<f32>,
 }
 
-/// Analog plunger conditioning: deadzone, rest tracking and release
-/// detection. Call [`PlungerFilter::update`] once per 1 ms sim tick.
+/// Analog plunger conditioning (see the module docs). Call
+/// [`PlungerFilter::update`] once per 1 ms sim tick.
 #[derive(Clone, Debug)]
 pub struct PlungerFilter {
     cfg: PlungerConfig,
     rest: f32,
     last_raw: f32,
     last_tick: Option<u64>,
-    pulled: bool,
-    /// The current pull reached the qualifying depth.
-    qualified: bool,
-    /// Rest to restore when the current pull qualifies.
-    undo_rest: f32,
-    /// First update's tick (power-on acquisition window).
     first_tick: Option<u64>,
-    /// A release has been reported (ends power-on acquisition).
     released_once: bool,
-    /// Stable-signal detector: anchor level, start tick, running sum/count.
+    // Pull state.
+    pulled: bool,
+    armed: bool,
+    qualified: bool,
+    pull_ticks: u32,
+    undo_rest: f32,
+    holdoff_until: u64,
+    /// Tick since which the plunger has been continuously at rest.
+    rest_since: Option<u64>,
+    // Known-good rests.
+    anchor: f32,
+    before_push_in: Option<f32>,
+    // Stable-signal detector.
     band_anchor: f32,
     band_start: u64,
     band_sum: f64,
     band_count: u32,
-    /// No new pull is armed before this tick (bounce after a release).
-    holdoff_until: u64,
-    /// Forward speeds of the current pull: `(tick, speed)` ring.
+    // Forward speeds of the current pull: `(tick, speed)` ring.
     speeds: [(u64, f32); RING],
     head: usize,
     len: usize,
-    /// Rest position before each of the last updates (ring, oldest first at
-    /// `rest_head` once full).
+    // Rest before each of the last updates.
     rest_hist: [f32; REST_LOOKBACK_TICKS],
     rest_head: usize,
     rest_len: usize,
@@ -120,16 +160,21 @@ impl PlungerFilter {
             rest: 0.0,
             last_raw: 0.0,
             last_tick: None,
-            pulled: false,
-            qualified: false,
-            undo_rest: 0.0,
             first_tick: None,
             released_once: false,
+            pulled: false,
+            armed: false,
+            qualified: false,
+            pull_ticks: 0,
+            undo_rest: 0.0,
+            holdoff_until: 0,
+            rest_since: None,
+            anchor: 0.0,
+            before_push_in: None,
             band_anchor: 0.0,
             band_start: 0,
             band_sum: 0.0,
             band_count: 0,
-            holdoff_until: 0,
             speeds: [(0, 0.0); RING],
             head: 0,
             len: 0,
@@ -144,19 +189,7 @@ impl PlungerFilter {
         &self.cfg
     }
 
-    /// The tracked rest position (raw units).
-    ///
-    /// * Tracking: while the reading is within the deadzone of the rest
-    ///   position, rest follows it at `rest_tracking_per_s`.
-    /// * When a pull qualifies (see [`PULL_QUALIFY_DEADZONES`]), the tracking
-    ///   of the [`REST_LOOKBACK_TICKS`] updates before it started is undone.
-    /// * Power-on acquisition: within [`ACQUIRE_WINDOW_MS`] of the first
-    ///   update and before the first release, a reading stable for
-    ///   [`STABLE_MS`] more than a deadzone above rest becomes the rest (the
-    ///   pull it looked like is cancelled without a release).
-    /// * Downward re-acquisition: at any time, a reading stable for
-    ///   [`STABLE_MS`] more than a deadzone below rest becomes the rest.
-    /// * Rest always stays within `±`[`MAX_REST_OFFSET`].
+    /// The rest position (raw units); see the module docs for how it moves.
     pub fn rest(&self) -> f32 {
         self.rest
     }
@@ -175,6 +208,8 @@ impl PlungerFilter {
             self.last_raw
         };
         let deadzone = finite_or(self.cfg.deadzone, 0.0).max(0.0);
+        let rate = finite_or(self.cfg.rest_tracking_per_s, 0.0).max(0.0);
+        let qualify_depth = (PULL_QUALIFY_DEADZONES * deadzone).max(MIN_PULL_DEPTH);
         let window = u64::from(self.cfg.release_window_ms.min(MAX_RELEASE_WINDOW_MS));
         let dt_ms = match self.last_tick {
             Some(t) if tick_ms > t => tick_ms - t,
@@ -190,38 +225,36 @@ impl PlungerFilter {
         self.last_raw = raw;
         self.last_tick = Some(tick_ms);
         let first_tick = *self.first_tick.get_or_insert(tick_ms);
-        let stable_level = self.stable_level(raw, tick_ms, deadzone);
-        if let Some(level) = stable_level {
-            let acquiring = !self.released_once
-                && tick_ms.saturating_sub(first_tick) <= ACQUIRE_WINDOW_MS
-                && level <= MAX_REST_OFFSET;
-            if level < self.rest - deadzone || (acquiring && level > self.rest + deadzone) {
-                self.rest = level.clamp(-MAX_REST_OFFSET, MAX_REST_OFFSET);
-                self.rest_len = 0;
-                self.pulled = false;
-                self.qualified = false;
-                self.len = 0;
-            }
-        }
 
         self.rest_hist[self.rest_head] = self.rest;
         self.rest_head = (self.rest_head + 1) % REST_LOOKBACK_TICKS;
         self.rest_len = (self.rest_len + 1).min(REST_LOOKBACK_TICKS);
 
-        let qualify_depth = (PULL_QUALIFY_DEADZONES * deadzone).max(MIN_PULL_DEPTH);
+        if rate > 0.0 {
+            let (level, held_ms) = self.stable_level(raw, tick_ms, deadzone);
+            let power_on =
+                !self.released_once && tick_ms.saturating_sub(first_tick) <= ACQUIRE_WINDOW_MS;
+            self.reacquire(level, held_ms, tick_ms, deadzone, qualify_depth, power_on);
+        }
+
         let mut rel = raw - self.rest;
         let mut release = None;
         if !self.pulled && rel > deadzone && tick_ms >= self.holdoff_until {
             self.pulled = true;
             self.qualified = false;
+            self.pull_ticks = 0;
             self.len = 0;
+            self.armed = self
+                .rest_since
+                .is_some_and(|s| tick_ms.saturating_sub(s) >= ARM_REST_MS);
+            self.rest_since = None;
             let oldest =
                 (self.rest_head + REST_LOOKBACK_TICKS - self.rest_len) % REST_LOOKBACK_TICKS;
             self.undo_rest = self.rest_hist[oldest];
         }
         if self.pulled {
             self.push_speed(tick_ms, speed);
-            if !self.qualified && rel >= qualify_depth {
+            if !self.qualified && self.armed && rel >= qualify_depth {
                 // A real pull: undo the tracking that followed its start.
                 self.qualified = true;
                 self.rest = self.undo_rest;
@@ -232,18 +265,30 @@ impl PlungerFilter {
                 self.pulled = false;
                 let peak = self.peak_since(tick_ms.saturating_sub(window));
                 self.len = 0;
-                if self.qualified && peak >= self.cfg.release_min_speed {
+                if self.qualified
+                    && self.pull_ticks >= MIN_PULL_TICKS
+                    && peak >= self.cfg.release_min_speed
+                {
                     release = Some(peak);
                     self.released_once = true;
+                    self.anchor = self.rest;
+                    self.before_push_in = None;
                     self.holdoff_until = tick_ms.saturating_add(RELEASE_HOLDOFF_MS);
                 }
                 self.qualified = false;
+            } else {
+                self.pull_ticks = self.pull_ticks.saturating_add(1);
             }
         }
-        if !self.pulled && rel.abs() <= deadzone {
-            let k = (finite_or(self.cfg.rest_tracking_per_s, 0.0) * dt_s).clamp(0.0, 1.0);
-            self.rest =
-                (self.rest + (raw - self.rest) * k).clamp(-MAX_REST_OFFSET, MAX_REST_OFFSET);
+        if !self.pulled {
+            if rel.abs() <= deadzone {
+                self.rest_since.get_or_insert(tick_ms);
+                let k = (rate * dt_s).clamp(0.0, 1.0);
+                self.rest =
+                    (self.rest + (raw - self.rest) * k).clamp(-MAX_REST_OFFSET, MAX_REST_OFFSET);
+            } else {
+                self.rest_since = None;
+            }
         }
 
         let position = if rel > deadzone {
@@ -255,9 +300,54 @@ impl PlungerFilter {
         PlungerOutput { position, release }
     }
 
-    /// Feeds the stable-signal detector; the band's mean once it has held
-    /// within ±deadzone of its first reading for [`STABLE_MS`].
-    fn stable_level(&mut self, raw: f32, tick: u64, deadzone: f32) -> Option<f32> {
+    /// Moves the rest to a stable `level` when the rules in the module docs
+    /// allow it.
+    fn reacquire(
+        &mut self,
+        level: f32,
+        held_ms: u64,
+        tick: u64,
+        deadzone: f32,
+        qualify_depth: f32,
+        power_on: bool,
+    ) {
+        if held_ms < STABLE_MS || level.abs() > MAX_REST_OFFSET {
+            return;
+        }
+        let above = level > self.rest + deadzone;
+        let below = level < self.rest - deadzone;
+        if !above && !below {
+            return;
+        }
+        let tol = (2.0 * deadzone).max(0.01);
+        let known_good = (level - self.anchor).abs() <= tol
+            || self
+                .before_push_in
+                .is_some_and(|r| (level - r).abs() <= tol);
+        let take = known_good
+            || (above && (level - self.rest < qualify_depth || power_on))
+            || (below && held_ms >= PUSH_IN_REACQUIRE_MS);
+        if !take {
+            return;
+        }
+        if below && !known_good {
+            // Remember where the rest was before the knob was held in.
+            self.before_push_in.get_or_insert(self.rest);
+        } else {
+            self.anchor = level;
+            self.before_push_in = None;
+        }
+        self.rest = level;
+        self.rest_len = 0;
+        self.pulled = false;
+        self.qualified = false;
+        self.len = 0;
+        self.rest_since = Some(tick);
+    }
+
+    /// Feeds the stable-signal detector: the band's mean and how long (ms)
+    /// the reading has stayed within ±deadzone of the band's first reading.
+    fn stable_level(&mut self, raw: f32, tick: u64, deadzone: f32) -> (f32, u64) {
         if self.band_count == 0 || (raw - self.band_anchor).abs() > deadzone {
             self.band_anchor = raw;
             self.band_start = tick;
@@ -266,8 +356,8 @@ impl PlungerFilter {
         }
         self.band_sum += f64::from(raw);
         self.band_count = self.band_count.saturating_add(1);
-        (tick.saturating_sub(self.band_start) >= STABLE_MS)
-            .then(|| (self.band_sum / f64::from(self.band_count)) as f32)
+        let mean = (self.band_sum / f64::from(self.band_count)) as f32;
+        (mean, tick.saturating_sub(self.band_start))
     }
 
     fn push_speed(&mut self, tick: u64, speed: f32) {

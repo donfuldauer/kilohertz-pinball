@@ -535,19 +535,17 @@ fn lua_source_errors_are_reported() {
 }
 
 #[test]
-fn wasm_extension_is_unsupported_for_now() {
+fn wasm_extension_selects_the_wasm_backend() {
     for source in [&b"\0asm\x01\0\0\0"[..], b"", V1] {
         let e = expect_err("rules.wasm", source);
-        let msg = e.to_string().to_lowercase();
-        assert!(
-            msg.contains("unsupported") || msg.contains("not supported"),
-            "the message must say Wasm is unsupported: {msg}"
-        );
-        assert!(
-            msg.contains("wasm"),
-            "the message must name the backend: {msg}"
-        );
+        assert!(matches!(e, ScriptError::Load(_)), "got {e:?}");
     }
+    let minimal = br#"(module
+  (memory (export "memory") 1)
+  (func (export "on_init"))
+  (func (export "on_tick"))
+  (func (export "on_switch_edge") (param i32 i32)))"#;
+    assert!(load("rules.wasm", minimal).is_ok());
 }
 
 #[test]
