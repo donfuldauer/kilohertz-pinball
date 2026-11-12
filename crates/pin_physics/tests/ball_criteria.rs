@@ -11,9 +11,7 @@ use pin_physics::ball::{
     Ball, BallEvent, BallEvents, BallHandle, BallSolver, Dispenser, ExternalForce, Geometry,
     ImpactTarget, MAX_BALLS, Magnet, NewtonChain, Sensor, SensorKind, SurfaceVelocity,
 };
-use pin_physics::world::{
-    CubicSpline, GuideCurve, StaticWorldBuilder, Wireform, layers,
-};
+use pin_physics::world::{CubicSpline, GuideCurve, StaticWorldBuilder, Wireform, layers};
 use util::*;
 
 fn run(s: &mut BallSolver, geo: &Geometry<'_>, ticks: usize) -> BallEvents {
@@ -103,8 +101,14 @@ fn c2_non_magnetic_balls_ignore_an_active_magnet_bit_for_bit() {
         assert_eq!(off, on, "{profile:?}");
         assert_eq!(off, zero, "{profile:?}");
         for (a, b) in off.iter().zip(&on) {
-            assert_eq!(a.position.to_array().map(f32::to_bits), b.position.to_array().map(f32::to_bits));
-            assert_eq!(a.velocity.to_array().map(f32::to_bits), b.velocity.to_array().map(f32::to_bits));
+            assert_eq!(
+                a.position.to_array().map(f32::to_bits),
+                b.position.to_array().map(f32::to_bits)
+            );
+            assert_eq!(
+                a.velocity.to_array().map(f32::to_bits),
+                b.velocity.to_array().map(f32::to_bits)
+            );
         }
         // Also with a magnetic ball on the table (which does get pulled).
         let off = magnet_run(profile, None, true);
@@ -114,7 +118,13 @@ fn c2_non_magnetic_balls_ignore_an_active_magnet_bit_for_bit() {
     // The magnet is really on: a steel ball is deflected by it.
     let off = magnet_run(STEEL, None, false);
     let on = magnet_run(STEEL, Some(1.0), false);
-    assert!(off.last().unwrap().position.distance(on.last().unwrap().position) > 1.0e-3);
+    assert!(
+        off.last()
+            .unwrap()
+            .position
+            .distance(on.last().unwrap().position)
+            > 1.0e-3
+    );
 }
 
 #[test]
@@ -144,7 +154,10 @@ fn magnet_force_follows_the_inverse_cube_law_and_range() {
     };
     // Toward the magnet, K / d³ / m.
     let a = accel(0.05, 1.0, 0.01, 0.2, 0);
-    assert!((a.x + k / 0.05f32.powi(3) / m).abs() < 1e-3 * a.x.abs(), "{a:?}");
+    assert!(
+        (a.x + k / 0.05f32.powi(3) / m).abs() < 1e-3 * a.x.abs(),
+        "{a:?}"
+    );
     assert_eq!((a.y, a.z), (0.0, 0.0));
     // Power scales linearly and is clamped.
     let half = accel(0.05, 0.5, 0.01, 0.2, 0);
@@ -178,9 +191,8 @@ fn c3_strike_reaches_the_far_newton_ball_within_two_ticks() {
     for n in 3..=6usize {
         let params: Vec<f32> = (0..n).map(|i| 3.0 + i as f32).collect();
         let mut s = solver();
-        let c = s.add_newton_chain(
-            NewtonChain::new(straight_path(0.0135), STEEL, &params).unwrap(),
-        );
+        let c =
+            s.add_newton_chain(NewtonChain::new(straight_path(0.0135), STEEL, &params).unwrap());
         assert_eq!(s.newton_chain_count(), 1);
         run(&mut s, &geo, 5);
         assert_eq!(s.newton_chain(c).ball_speed(n - 1), 0.0);
@@ -196,12 +208,15 @@ fn c3_free_ball_impact_reaches_the_far_newton_ball_within_two_ticks() {
     let geo = Geometry::new(&world);
     let r = radius(STEEL);
     let mut s = solver_no_gravity();
-    let c = s.add_newton_chain(
-        NewtonChain::new(straight_path(0.0), STEEL, &[4.0, 5.0, 6.0]).unwrap(),
-    );
+    let c =
+        s.add_newton_chain(NewtonChain::new(straight_path(0.0), STEEL, &[4.0, 5.0, 6.0]).unwrap());
     // First captive ball at x = 8r; the free ball comes in along the path.
     let h = s
-        .add_ball(ball_at(STEEL, v(8.0 * r - 2.0 * r - 0.004, 0.0, 0.0), v(2.0, 0.0, 0.0)))
+        .add_ball(ball_at(
+            STEEL,
+            v(8.0 * r - 2.0 * r - 0.004, 0.0, 0.0),
+            v(2.0, 0.0, 0.0),
+        ))
         .unwrap();
     let mut ev = BallEvents::new();
     let mut hit_tick = None;
@@ -216,13 +231,16 @@ fn c3_free_ball_impact_reaches_the_far_newton_ball_within_two_ticks() {
     assert_eq!(hit_tick, Some(2));
     assert!(ev.as_slice().iter().any(|e| matches!(
         e,
-        BallEvent::Impact { other: ImpactTarget::Newton(0), .. }
+        BallEvent::Impact {
+            other: ImpactTarget::Newton(0),
+            ..
+        }
     )));
     // Momentum along the path is conserved between the free and captive balls.
     let m = 0.08f32;
     let chain = s.newton_chain(c);
-    let p: f32 = (0..3).map(|i| chain.ball_speed(i)).sum::<f32>() * m
-        + s.ball(h).unwrap().velocity.x * m;
+    let p: f32 =
+        (0..3).map(|i| chain.ball_speed(i)).sum::<f32>() * m + s.ball(h).unwrap().velocity.x * m;
     assert!((p - 2.0 * m).abs() < 1e-5);
     // The free ball never passes through the captive ball.
     assert!(s.ball(h).unwrap().position.x < chain.ball_position(0).x - 2.0 * r + 1e-4);
@@ -326,7 +344,10 @@ fn c5_spinning_ball_converges_to_rolling_and_stays() {
                     _ => {}
                 }
             }
-            assert!(converged.is_some(), "{profile:?} {vel:?} {spin:?} never rolled");
+            assert!(
+                converged.is_some(),
+                "{profile:?} {vel:?} {spin:?} never rolled"
+            );
         }
     }
 }
@@ -378,7 +399,12 @@ fn drop_bounce_follows_the_pair_table() {
         }
     }
     // First impact at sqrt(2 g h) = 1.98 m/s.
-    let BallEvent::Impact { normal_speed, other, .. } = ev.as_slice()[0] else {
+    let BallEvent::Impact {
+        normal_speed,
+        other,
+        ..
+    } = ev.as_slice()[0]
+    else {
         panic!("no impact");
     };
     assert!((normal_speed - 1.981).abs() < 0.02);
@@ -391,7 +417,11 @@ fn drop_bounce_follows_the_pair_table() {
     // A rubber floor bounces higher (0.65).
     let mut s = solver();
     let mut b = StaticWorldBuilder::new();
-    let c = b.add_collider(cuboid(v(0.0, 0.0, -0.05), v(1.0, 1.0, 0.05)), layers::ALL, true);
+    let c = b.add_collider(
+        cuboid(v(0.0, 0.0, -0.05), v(1.0, 1.0, 0.05)),
+        layers::ALL,
+        true,
+    );
     let rubber = b.build();
     s.set_collider_material(c, Material::Rubber);
     let h = s.add_ball(Ball::new(STEEL, v(0.0, 0.0, r + 0.2))).unwrap();
@@ -411,7 +441,11 @@ fn drop_bounce_follows_the_pair_table() {
 fn missing_pair_falls_back_to_profile_restitution() {
     // Resin on acrylic is not in the table: profile restitution 0.80.
     let mut b = StaticWorldBuilder::new();
-    let c = b.add_collider(cuboid(v(0.0, 0.0, -0.05), v(1.0, 1.0, 0.05)), layers::ALL, true);
+    let c = b.add_collider(
+        cuboid(v(0.0, 0.0, -0.05), v(1.0, 1.0, 0.05)),
+        layers::ALL,
+        true,
+    );
     let world = b.build();
     let geo = Geometry::new(&world);
     let xl = ProfileId(6);
@@ -474,7 +508,10 @@ fn ball_rolls_down_an_incline_at_five_sevenths_g_sin() {
     let down = rot * v(0.0, -1.0, 0.0);
     let speed = ball.velocity.dot(down);
     let expected = (5.0 / 7.0) * 9.81 * (libm::sinf(pitch) - 0.002 * libm::cosf(pitch));
-    assert!((speed - expected).abs() < 0.01 * expected, "{speed} vs {expected}");
+    assert!(
+        (speed - expected).abs() < 0.01 * expected,
+        "{speed} vs {expected}"
+    );
     // Rolling without slipping, and still on the surface.
     let n = rot * Vec3::Z;
     let slip = ball.velocity + ball.angular_velocity.cross(n * -r);
@@ -534,7 +571,11 @@ fn ball_hugs_a_concave_guide_without_bouncing() {
             if b.position.y > 0.01 {
                 // Beside the arc: hugging the wall.
                 max_gap = max_gap.max(gap);
-                assert!(b.position.z < r + 2.0e-3, "left the floor: {:?}", b.position);
+                assert!(
+                    b.position.z < r + 2.0e-3,
+                    "left the floor: {:?}",
+                    b.position
+                );
             }
             if b.position.x < 0.0 && b.position.y < -0.1 {
                 exited = true;
@@ -550,12 +591,23 @@ fn ball_hugs_a_concave_guide_without_bouncing() {
             }
         }
         assert!(exited, "speed {speed}: never left the arc");
-        assert!(max_gap < 2.0e-4, "speed {speed}: bounced {max_gap} off the wall");
+        assert!(
+            max_gap < 2.0e-4,
+            "speed {speed}: bounced {max_gap} off the wall"
+        );
         // Sliding along the wall is not an impact (the entry may be one).
         let wall_hits = ev
             .as_slice()
             .iter()
-            .filter(|e| matches!(e, BallEvent::Impact { other: ImpactTarget::Guide(_), .. }))
+            .filter(|e| {
+                matches!(
+                    e,
+                    BallEvent::Impact {
+                        other: ImpactTarget::Guide(_),
+                        ..
+                    }
+                )
+            })
             .count();
         assert!(wall_hits <= 3, "speed {speed}: {wall_hits} guide impacts");
         assert_eq!(ev.dropped(), 0);
@@ -572,7 +624,10 @@ fn ball_hugs_a_concave_guide_without_bouncing() {
     assert!(b.position.y < radius_g - r);
     assert!(matches!(
         ev.as_slice()[0],
-        BallEvent::Impact { other: ImpactTarget::Guide(0), .. }
+        BallEvent::Impact {
+            other: ImpactTarget::Guide(0),
+            ..
+        }
     ));
     // A guide on another layer is ignored.
     let mut s = solver_no_gravity();
@@ -598,7 +653,13 @@ fn ball_rides_a_wireform_without_falling_through() {
         })
         .collect();
     let rolls = vec![0.0; pts.len()];
-    let wires = [Wireform::new(CubicSpline::interpolate(&pts).unwrap(), &rolls, gauge, Vec3::Z).unwrap()];
+    let wires = [Wireform::new(
+        CubicSpline::interpolate(&pts).unwrap(),
+        &rolls,
+        gauge,
+        Vec3::Z,
+    )
+    .unwrap()];
     let world = empty_world();
     let geo = Geometry {
         world: &world,
@@ -609,7 +670,9 @@ fn ball_rides_a_wireform_without_falling_through() {
         let mut s = solver();
         s.set_wireform_material(0, Material::Steel);
         let start = wires[0].centerline().point(2.0) + v(0.0, 0.0, seat + 1e-4);
-        let h = s.add_ball(ball_at(STEEL, start, v(0.0, speed, 0.04 * speed))).unwrap();
+        let h = s
+            .add_ball(ball_at(STEEL, start, v(0.0, speed, 0.04 * speed)))
+            .unwrap();
         let mut ev = BallEvents::new();
         for tick in 0..400 {
             s.step(&geo, DT, &mut ev);
@@ -650,10 +713,15 @@ fn stacked_and_touching_balls_settle() {
     let geo = Geometry::new(&world);
     let mut s = solver();
     for i in 0..3 {
-        s.add_ball(Ball::new(STEEL, v((i as f32 - 1.0) * 2.0 * r, 0.0, -0.2 + r)))
-            .unwrap();
+        s.add_ball(Ball::new(
+            STEEL,
+            v((i as f32 - 1.0) * 2.0 * r, 0.0, -0.2 + r),
+        ))
+        .unwrap();
     }
-    let top = s.add_ball(Ball::new(STEEL, v(r, 0.0, -0.2 + 3.0 * r + 0.01))).unwrap();
+    let top = s
+        .add_ball(Ball::new(STEEL, v(r, 0.0, -0.2 + 3.0 * r + 0.01)))
+        .unwrap();
     run(&mut s, &geo, 3000);
     for (_, b) in s.balls() {
         assert!(b.velocity.length() < 5e-3, "{:?}", b.velocity);
@@ -678,7 +746,9 @@ fn balls_on_different_layers_do_not_collide() {
     let world = empty_world();
     let geo = Geometry::new(&world);
     let mut s = solver_no_gravity();
-    let a = s.add_ball(ball_at(STEEL, v(-0.05, 0.0, 0.0), v(1.0, 0.0, 0.0))).unwrap();
+    let a = s
+        .add_ball(ball_at(STEEL, v(-0.05, 0.0, 0.0), v(1.0, 0.0, 0.0)))
+        .unwrap();
     let mut other = ball_at(STEEL, v(0.05, 0.0, 0.0), v(-1.0, 0.0, 0.0));
     other.layer = 1;
     let b = s.add_ball(other).unwrap();
@@ -707,7 +777,12 @@ fn sensors_follow_conductivity_and_report_edges() {
     };
     s.add_sensor(sensor(3, SensorKind::Eddy, Vec3::ZERO, layers::ALL));
     s.add_sensor(sensor(70, SensorKind::Opto, Vec3::ZERO, layers::ALL));
-    s.add_sensor(sensor(200, SensorKind::Opto, Vec3::ZERO, layers::UPPER_DECK));
+    s.add_sensor(sensor(
+        200,
+        SensorKind::Opto,
+        Vec3::ZERO,
+        layers::UPPER_DECK,
+    ));
     s.add_sensor(sensor(300, SensorKind::Opto, Vec3::ZERO, layers::ALL));
     // Two sensors on one switch: either closes it.
     s.add_sensor(sensor(5, SensorKind::Opto, v(1.0, 0.0, 0.0), layers::ALL));
@@ -723,7 +798,9 @@ fn sensors_follow_conductivity_and_report_edges() {
     assert_eq!(bits(&s), [!own, !(1 << 6), u64::MAX, !(1 << 8)]);
 
     // A Powerball passes: the opto closes, the eddy sensor does not.
-    let h = s.add_ball(ball_at(POWERBALL, v(-0.05, 0.0, 0.0), v(1.0, 0.0, 0.0))).unwrap();
+    let h = s
+        .add_ball(ball_at(POWERBALL, v(-0.05, 0.0, 0.0), v(1.0, 0.0, 0.0)))
+        .unwrap();
     let mut ev = BallEvents::new();
     let mut seen = Vec::new();
     for _ in 0..100 {
@@ -737,10 +814,20 @@ fn sensors_follow_conductivity_and_report_edges() {
             assert_eq!(b[3] & (1 << 8), 0);
         }
     }
-    let edge = |switch: u16, closed| BallEvent::SensorEdge { switch: SwitchId(switch), closed };
+    let edge = |switch: u16, closed| BallEvent::SensorEdge {
+        switch: SwitchId(switch),
+        closed,
+    };
     assert_eq!(
         seen,
-        vec![edge(70, true), edge(300, true), edge(5, true), edge(70, false), edge(300, false), edge(5, false)]
+        vec![
+            edge(70, true),
+            edge(300, true),
+            edge(5, true),
+            edge(70, false),
+            edge(300, false),
+            edge(5, false)
+        ]
     );
     assert_eq!(bits(&s)[0] & own, 0);
 
@@ -771,12 +858,18 @@ fn slots_handles_and_dispenser() {
     let h = d.dispense(&mut s).unwrap();
     assert_eq!(h, BallHandle(0));
     let b = *s.ball(h).unwrap();
-    assert_eq!((b.profile, b.position, b.velocity, b.layer), (ProfileId(1), v(0.1, 0.2, 0.3), v(0.0, 1.0, 0.0), 2));
+    assert_eq!(
+        (b.profile, b.position, b.velocity, b.layer),
+        (ProfileId(1), v(0.1, 0.2, 0.3), v(0.0, 1.0, 0.0), 2)
+    );
     while d.dispense(&mut s).is_some() {}
     assert_eq!(d.len(), 0);
     assert_eq!(s.ball_count(), 15);
     // Fill the last slot; a full solver refuses and the dispenser keeps its ball.
-    assert_eq!(s.add_ball(Ball::new(STEEL, Vec3::ZERO)), Some(BallHandle(15)));
+    assert_eq!(
+        s.add_ball(Ball::new(STEEL, Vec3::ZERO)),
+        Some(BallHandle(15))
+    );
     assert!(s.add_ball(Ball::new(STEEL, Vec3::ZERO)).is_none());
     assert_eq!(s.ball_count(), MAX_BALLS);
     d.push(MINI);
@@ -849,18 +942,25 @@ fn moving_surface_carries_the_ball() {
     let geo = Geometry::new(&world);
     let mut s = solver();
     s.set_surface_velocity(Some(Box::new(Belt)));
-    let h = s.add_ball(Ball::new(STEEL, v(0.0, 0.0, radius(STEEL)))).unwrap();
+    let h = s
+        .add_ball(Ball::new(STEEL, v(0.0, 0.0, radius(STEEL))))
+        .unwrap();
     // Friction first brings the contact point to belt speed (the ball
     // rolls backwards on the belt at 2/7 of its speed); rolling resistance
     // then slowly drags the ball along.
     run(&mut s, &geo, 500);
     let b = *s.ball(h).unwrap();
-    let slip = b.velocity + b.angular_velocity.cross(v(0.0, 0.0, -radius(STEEL))) - v(0.3, 0.0, 0.0);
+    let slip =
+        b.velocity + b.angular_velocity.cross(v(0.0, 0.0, -radius(STEEL))) - v(0.3, 0.0, 0.0);
     assert!(slip.length() < 1e-3, "{slip:?}");
     assert!(b.velocity.x > 0.3 * 2.0 / 7.0 - 1e-3 && b.velocity.x < 0.3);
     run(&mut s, &geo, 20_000);
     let later = *s.ball(h).unwrap();
-    assert!((later.velocity.x - 0.3).abs() < 1e-3, "{:?}", later.velocity);
+    assert!(
+        (later.velocity.x - 0.3).abs() < 1e-3,
+        "{:?}",
+        later.velocity
+    );
     assert!(later.angular_velocity.length() < 1e-2);
     s.set_surface_velocity(None);
     s.set_gravity(Vec3::ZERO);

@@ -240,7 +240,7 @@ impl NewtonChain {
             }
             let t0 = self.t[i];
             let len0 = self.path.tangent(t0).length();
-            if !(len0 > 0.0) {
+            if len0.is_nan() || len0 <= 0.0 {
                 continue;
             }
             let mid = (t0 + 0.5 * u * tau / len0).clamp(0.0, max_t);
@@ -266,7 +266,7 @@ impl NewtonChain {
                 }
                 let la = self.path.tangent(self.t[k]).length();
                 let lb = self.path.tangent(self.t[k + 1]).length();
-                if !(la > 0.0 && lb > 0.0) {
+                if la.is_nan() || lb.is_nan() || la <= 0.0 || lb <= 0.0 {
                     continue;
                 }
                 let half = -0.5 * gap;
@@ -317,7 +317,7 @@ impl NewtonChain {
             self.drift(tau);
             self.resolve_touching();
             remaining -= tau;
-            if !(remaining > 0.0) {
+            if remaining.is_nan() || remaining <= 0.0 {
                 break;
             }
         }

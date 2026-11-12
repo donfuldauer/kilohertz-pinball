@@ -91,7 +91,11 @@ pub struct ContactImpulse {
 fn clamp_length(v: Vec3, max: f32) -> Vec3 {
     let len = v.length();
     if len > max {
-        if max > 0.0 { v * (max / len) } else { Vec3::ZERO }
+        if max > 0.0 {
+            v * (max / len)
+        } else {
+            Vec3::ZERO
+        }
     } else {
         v
     }
@@ -436,7 +440,15 @@ mod tests {
             friction: 0.5,
             rolling_resistance: 0.0,
         };
-        resolve_surface_contact(&mut b, BODY, Vec3::Z, Vec3::new(2.0, 0.0, 0.0), k, true, 0.0);
+        resolve_surface_contact(
+            &mut b,
+            BODY,
+            Vec3::Z,
+            Vec3::new(2.0, 0.0, 0.0),
+            k,
+            true,
+            0.0,
+        );
         assert!(b.velocity.x > 0.1);
     }
 
@@ -462,9 +474,14 @@ mod tests {
         }
         assert!(b.velocity.length() < 1e-7, "{:?}", b.velocity);
         assert!(b.angular_velocity.length() < 1e-5);
-        // The two normal impulses carry the weight.
-        let up: f32 = acc.iter().zip(normals).map(|(a, n)| a.normal * n.z).sum();
+        // Normal and friction impulses together carry the weight.
+        let up: f32 = acc
+            .iter()
+            .zip(normals)
+            .map(|(a, n)| a.normal * n.z + a.tangent.z)
+            .sum();
         assert!((up - BODY.mass * 0.00981).abs() < 1e-3 * BODY.mass * 0.00981);
+        assert!(acc.iter().all(|a| a.normal > 0.0));
         // A contact the ball leaves gives its impulses back.
         b.velocity = Vec3::new(0.0, 0.0, 1.0);
         solve_surface_contact(&mut b, BODY, normals[0], Vec3::ZERO, k, 0.0, &mut acc[0]);
@@ -512,11 +529,7 @@ mod tests {
 
     #[test]
     fn orientation_quarter_turn() {
-        let q = integrate_orientation(
-            Quat::IDENTITY,
-            Vec3::Z * std::f32::consts::FRAC_PI_2,
-            1.0,
-        );
+        let q = integrate_orientation(Quat::IDENTITY, Vec3::Z * std::f32::consts::FRAC_PI_2, 1.0);
         let x = q * Vec3::X;
         assert!((x - Vec3::Y).length() < 1e-6);
         assert_eq!(

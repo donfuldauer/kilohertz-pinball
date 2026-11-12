@@ -48,3 +48,13 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 2 | 4.2 | Reviewer | Fable 5.2 | 4 | **pass** | gates 1–8 pass; 174 attack scripts under engine config, worst 5.7 ms (target 8 ms); CI green | N11 heavy-GC scripts fault under 2 MiB/100k (documented), N12 margin machine-dependent, N13 corpus kept in tests/attack_corpus |
 
 **Wave 2 gate: green.** CI run 44 (https://github.com/donfuldauer/kilohertz-pinball/actions/runs/43230217782, commit 8d7f663) passed every job on Windows MSVC, Linux and macOS aarch64, which also re-validates Wave 1 cross-OS. Replay-hash and tick-benchmark parts of the wave gate start once 2.5 exists. Subphases: 1.2, 1.3, 2.1, 3.1, 4.2 all passed review.
+| 3 | 3.2 | Implementer | Opus 5.5 | 1 | done | fmt/clippy clean; 63 own tests; coverage 90.5 % (own) | 2 tester-found defects fixed in-run |
+| 3 | 3.2 | Independent Tester | Fable 5.2 | 1 | done | 110 spec tests pass; coverage 99.27 % | |
+| 3 | 3.2 | Reviewer | Fable 5.2 | 1 | **fail** | gates 1–7 pass | B1 phantom plunger releases from deadzone-edge noise (30 in 3 s); N1–N4, N6, N8 folded into fix 1; N5 → 4.4/6.0 |
+| 3 | 3.3 | Implementer | Opus 5.5 | 1 | done | fmt/clippy clean; coverage 97.1 %; render 4.7 µs | |
+| 3 | 3.3 | Independent Tester | Fable 5.2 | 1 | done | 82 spec tests pass | Ogg tail-trim defect found and fixed in-run |
+| 3 | 3.3 | Reviewer | Fable 5.2 | 1 | **fail** | gates 1–7 pass | B1 crafted .ogg aborts process (lewton unbounded with_capacity); B2 lying sample rate defeats 10-min cap (567 MB from 185 KB); N1, N4, N7 folded into fix 1; N3 → loader |
+| 3 | 1.4 | Independent Tester | Fable 5.2 | 1 | done | 88 spec tests pass (GPU on lavapipe) | read free-form thread API names from impl for one file |
+| 3 | 2.2 | Independent Tester | Opus 5.5 | 1 | done | 41/44 pass | defect: impacts starting inside contact skin swallowed → implementer |
+| 3 | 4.1 | Independent Tester | Fable 5.2 | 1 | done | 121/126 pass | D1 load_gltf panics inside gltf crate on bad refs → implementer |
+| 3 | 4.5 | Independent Tester | Fable 5.2 | 1 | done | 79 spec tests pass | release ≤ 8 ms timing not measured (disk full) → reviewer |

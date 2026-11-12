@@ -302,8 +302,10 @@ fn decode_image(bytes: &[u8], what: &str) -> Result<ImageData, AssetError> {
 /// [`AssetError::Gltf`] (DECISIONS.md, 4.1).
 pub fn load_gltf(vfs: &Vfs, path: &str) -> Result<GltfScene, AssetError> {
     let bytes = vfs.read(path)?;
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load_bytes(vfs, path, &bytes)))
-        .unwrap_or_else(|_| Err(gerr(format!("{path}: malformed glTF (loader panicked)"))))
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        load_bytes(vfs, path, &bytes)
+    }))
+    .unwrap_or_else(|_| Err(gerr(format!("{path}: malformed glTF (loader panicked)"))))
 }
 
 fn load_bytes(vfs: &Vfs, path: &str, bytes: &[u8]) -> Result<GltfScene, AssetError> {

@@ -5,9 +5,7 @@ mod util;
 
 use glam::Vec3;
 use pin_core::ids::ProfileId;
-use pin_physics::ball::{
-    Ball, BallEvents, BallHandle, BallSolver, Dispenser, Geometry, Magnet, NewtonChain,
-};
+use pin_physics::ball::{Ball, BallEvents, BallHandle, Dispenser, Geometry, Magnet, NewtonChain};
 use pin_physics::world::{CubicSpline, GuideCurve, StaticShape, StaticWorldBuilder, layers};
 use proptest::prelude::*;
 use util::*;
@@ -240,8 +238,8 @@ proptest! {
         let c = s.add_newton_chain(
             NewtonChain::new(CubicSpline::interpolate(&pts).unwrap(), STEEL, &params).unwrap(),
         );
-        for i in 0..n {
-            s.newton_chain_mut(c).strike(i, strikes[i]);
+        for (i, u) in strikes.iter().enumerate().take(n) {
+            s.newton_chain_mut(c).strike(i, *u);
         }
         let p0: f32 = strikes[..n].iter().sum();
         let e0: f32 = strikes[..n].iter().map(|u| u * u).sum();
@@ -324,7 +322,11 @@ fn ball_rests_in_groove_and_corner() {
         );
     }
     // End wall of the groove.
-    b.add_collider(cuboid(v(0.0, -0.3, 0.0), v(0.5, 0.01, 0.5)), layers::ALL, true);
+    b.add_collider(
+        cuboid(v(0.0, -0.3, 0.0), v(0.5, 0.01, 0.5)),
+        layers::ALL,
+        true,
+    );
     let world = b.build();
     let geo = Geometry::new(&world);
     let mut s = solver();
@@ -349,5 +351,9 @@ fn ball_rests_in_groove_and_corner() {
     }
     let end = *s.ball(h).unwrap();
     assert!((end.position.y - (-0.29 + radius(STEEL))).abs() < 0.2);
-    assert!(end.position.y > -0.29 + radius(STEEL) - 1e-4, "{:?}", end.position);
+    assert!(
+        end.position.y > -0.29 + radius(STEEL) - 1e-4,
+        "{:?}",
+        end.position
+    );
 }
