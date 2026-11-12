@@ -450,8 +450,9 @@ fn plunger_rest_step_after_power_on_window() {
         f.is_pulled() && f.rest().abs() < 0.01,
         "held pull, not a rest"
     );
-    // Back at the old rest it launches again at once.
-    hold(&mut f, &mut t, 0.0, 100);
+    // Letting go of that "pull" is itself a (weak) launch; after the 200 ms
+    // hold-off the next launch reports normally.
+    assert_eq!(hold(&mut f, &mut t, 0.0, 300).len(), 1);
     assert_launch(&mut f, &mut t, 0.0, 0.5, 20, "after held 0.08");
 }
 
@@ -460,12 +461,12 @@ fn plunger_rest_step_after_power_on_window() {
 mod never_stuck {
     use super::*;
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(48))]
+        #![proptest_config(ProptestConfig::with_cases(3000))]
         #[test]
         fn any_history_then_rest_then_launch(
             segs in prop::collection::vec((-0.35f32..1.0, 1u64..4000, any::<bool>()), 0..8),
             depth in 0.1f32..0.9,
-            snap_ms in 5u64..40,
+            snap_ms in 5u64..20, // ≥ 5 full-scale/s even at depth 0.1
         ) {
             let mut f = PlungerFilter::new(PlungerConfig::default());
             let mut t = 0u64;

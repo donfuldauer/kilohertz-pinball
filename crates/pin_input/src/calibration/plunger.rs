@@ -18,7 +18,7 @@
 //!   - tracking: while not pulled and within ±deadzone, rest follows the
 //!     reading at `rest_tracking_per_s`; when a pull qualifies, the tracking
 //!     of the [`REST_LOOKBACK_TICKS`] updates before it started is undone;
-//!   - re-acquisition: a reading that stays within ±deadzone of one level
+//!   - re-acquisition: a reading that stays within a band one deadzone wide
 //!     for [`STABLE_MS`] becomes the rest when it lies more than a deadzone
 //!     *above* rest and is either a small offset (less than the qualifying
 //!     depth), or a *known-good* rest, or at most [`MAX_REST_OFFSET`] during
@@ -79,6 +79,9 @@ pub const PUSH_IN_REACQUIRE_MS: u64 = 5000;
 /// Power-on acquisition window (ms after the first update, before the first
 /// release).
 pub const ACQUIRE_WINDOW_MS: u64 = 3000;
+
+/// Time constant (s) of the level average used by re-acquisition.
+const LEVEL_TAU_S: f32 = 0.05;
 
 /// Raw readings are clamped to `±RAW_LIMIT` full-scale.
 pub const RAW_LIMIT: f32 = 16.0;
@@ -143,10 +146,12 @@ pub struct PlungerFilter {
     anchor: f32,
     before_push_in: Option<f32>,
     // Stable-signal detector.
-    band_anchor: f32,
+    band_ready: bool,
+    band_min: f32,
+    band_max: f32,
     band_start: u64,
-    band_sum: f64,
-    band_count: u32,
+    /// Short exponential average of the reading (the stable level).
+    level: f32,
     // Forward speeds of the current pull: `(tick, speed)` ring.
     speeds: [(u64, f32); RING],
     head: usize,
@@ -176,10 +181,11 @@ impl PlungerFilter {
             rest_since: None,
             anchor: 0.0,
             before_push_in: None,
-            band_anchor: 0.0,
+            band_ready: false,
+            band_min: 0.0,
+            band_max: 0.0,
             band_start: 0,
-            band_sum: 0.0,
-            band_count: 0,
+            level: 0.0,
             speeds: [(0, 0.0); RING],
             head: 0,
             len: 0,
@@ -236,7 +242,7 @@ impl PlungerFilter {
         self.rest_len = (self.rest_len + 1).min(REST_LOOKBACK_TICKS);
 
         if rate > 0.0 {
-            let (level, held_ms) = self.stable_level(raw, tick_ms, deadzone);
+            let (level, held_ms) = self.stable_level(raw, tick_ms, dt_s, deadzone);
             let power_on =
                 !self.released_once && tick_ms.saturating_sub(first_tick) <= ACQUIRE_WINDOW_MS;
             self.reacquire(level, held_ms, tick_ms, deadzone, qualify_depth, power_on);
@@ -350,19 +356,29 @@ impl PlungerFilter {
         self.rest_since = Some(tick);
     }
 
-    /// Feeds the stable-signal detector: the band's mean and how long (ms)
-    /// the reading has stayed within ±deadzone of the band's first reading.
-    fn stable_level(&mut self, raw: f32, tick: u64, deadzone: f32) -> (f32, u64) {
-        if self.band_count == 0 || (raw - self.band_anchor).abs() > deadzone {
-            self.band_anchor = raw;
+    /// Feeds the stable-signal detector: the current level (a 50 ms
+    /// exponential average) and how long (ms) every reading has stayed within
+    /// a band one deadzone wide.
+    fn stable_level(&mut self, raw: f32, tick: u64, dt_s: f32, deadzone: f32) -> (f32, u64) {
+        if !self.band_ready {
+            self.band_ready = true;
+            self.level = raw;
+            self.band_min = raw;
+            self.band_max = raw;
             self.band_start = tick;
-            self.band_sum = 0.0;
-            self.band_count = 0;
         }
-        self.band_sum += f64::from(raw);
-        self.band_count = self.band_count.saturating_add(1);
-        let mean = (self.band_sum / f64::from(self.band_count)) as f32;
-        (mean, tick.saturating_sub(self.band_start))
+        self.level += (raw - self.level) * (dt_s / LEVEL_TAU_S).min(1.0);
+        let lo = self.band_min.min(raw);
+        let hi = self.band_max.max(raw);
+        if hi - lo > deadzone {
+            self.band_min = raw;
+            self.band_max = raw;
+            self.band_start = tick;
+        } else {
+            self.band_min = lo;
+            self.band_max = hi;
+        }
+        (self.level, tick.saturating_sub(self.band_start))
     }
 
     fn push_speed(&mut self, tick: u64, speed: f32) {

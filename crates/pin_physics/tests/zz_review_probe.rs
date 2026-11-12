@@ -1054,3 +1054,286 @@ fn p_pinned_between_balls() {
     );
     let _ = ImpactTarget::Guide(0);
 }
+
+fn big_slope_world(deg: f32, mesh: bool) -> (StaticWorld, Vec3) {
+    let th = deg.to_radians();
+    let rot = Quat::from_rotation_x(th);
+    let n = rot * Vec3::Z;
+    let mut b = StaticWorldBuilder::new();
+    if mesh {
+        let u = rot * Vec3::X;
+        let w = rot * Vec3::Y;
+        let s = 60.0;
+        b.add_collider(
+            StaticShape::TriMesh {
+                vertices: vec![-u * s - w * s, u * s - w * s, u * s + w * s, -u * s + w * s],
+                indices: vec![[0, 1, 2], [0, 2, 3]],
+            },
+            layers::ALL,
+            true,
+        );
+    } else {
+        b.add_collider(cub(-n * 0.05, Vec3::new(60.0, 60.0, 0.05), rot), layers::ALL, true);
+    }
+    (b.build(), n)
+}
+
+#[test]
+fn q_criterion5_big_floor() {
+    for &(slope, mesh) in &[(0.0f32, false), (6.5, false), (6.5, true)] {
+        let (w, n) = big_slope_world(slope, mesh);
+        let geo = Geometry::new(&w);
+        let mut worst_tail = 0.0f32;
+        let mut cases = 0;
+        let mut fails = 0;
+        for p in [STEEL, POWER, MINI, JUMBO] {
+            for spin in [
+                Vec3::new(300.0, 0.0, 0.0),
+                Vec3::new(0.0, -500.0, 0.0),
+                Vec3::new(0.0, 0.0, 400.0),
+                Vec3::new(200.0, 200.0, 200.0),
+                Vec3::new(-1000.0, 50.0, 10.0),
+            ] {
+                for vel in [Vec3::ZERO, Vec3::new(1.0, 0.5, 0.0), Vec3::new(-3.0, 0.0, -1.0)] {
+                    for hgt in [0.0f32, 0.05] {
+                        let r = rad(p);
+                        let mut s = solver(g0());
+                        let mut b = Ball::new(p, n * (r + hgt + 1e-6));
+                        b.angular_velocity = spin;
+                        b.velocity = vel;
+                        let h = s.add_ball(b).unwrap();
+                        let mut ev = BallEvents::new();
+                        let mut tail = 0.0f32;
+                        let ticks = 4000;
+                        for k in 0..ticks {
+                            s.step(&geo, DT, &mut ev);
+                            let bb = s.ball(h).unwrap();
+                            let slip = bb.velocity + bb.angular_velocity.cross(-n * r);
+                            if k >= ticks - 1000 {
+                                tail = tail.max(slip.length());
+                            }
+                        }
+                        if tail > 1e-3 {
+                            fails += 1;
+                            let bb = s.ball(h).unwrap();
+                            println!("c5 FAIL slope={slope} mesh={mesh} p={p:?} spin={spin} vel={vel} h={hgt}: tail={tail:.3e} pos={:?} v={:?}", bb.position, bb.velocity);
+                        }
+                        worst_tail = worst_tail.max(tail);
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        println!("c5 slope={slope} mesh={mesh}: {cases} cases, {fails} fail, worst slip over last 1 s of 4 s = {worst_tail:.3e}");
+    }
+}
+
+#[test]
+fn q_thin_wall_big() {
+    let mut fails = 0;
+    let mut n = 0;
+    for &mesh in &[false, true] {
+        for &tilt_deg in &[0.0f32, 30.0, 60.0, 80.0] {
+            let rot = Quat::from_rotation_z(tilt_deg.to_radians());
+            let nrm = rot * Vec3::X;
+            let mut b = StaticWorldBuilder::new();
+            if mesh {
+                let u = rot * Vec3::Y * 20.0;
+                let v = Vec3::Z * 20.0;
+                b.add_collider(
+                    StaticShape::TriMesh {
+                        vertices: vec![-u - v, u - v, u + v, -u + v],
+                        indices: vec![[0, 1, 2], [0, 2, 3]],
+                    },
+                    layers::ALL,
+                    true,
+                );
+            } else {
+                b.add_collider(cub(Vec3::ZERO, Vec3::new(0.001, 20.0, 20.0), rot), layers::ALL, true);
+            }
+            let w = b.build();
+            let geo = Geometry::new(&w);
+            for p in [STEEL, MINI, JUMBO] {
+                for speed in [10.0f32, 20.0, 30.0, 45.0] {
+                    for ang in [0.0f32, 30.0, 60.0, 85.0, 89.0] {
+                        for off in [0.0f32, 0.0003, 0.0007] {
+                            let a = ang.to_radians();
+                            let side = (rot * Vec3::Y) * a.sin();
+                            let dir = (nrm * a.cos() + side).normalize();
+                            let mut s = solver(Vec3::ZERO);
+                            let mut ball = Ball::new(p, -nrm * (0.03 + off));
+                            ball.velocity = dir * speed;
+                            ball.angular_velocity = Vec3::new(300.0, -500.0, 800.0);
+                            let h = s.add_ball(ball).unwrap();
+                            let mut ev = BallEvents::new();
+                            for _ in 0..30 {
+                                s.step(&geo, DT, &mut ev);
+                            }
+                            n += 1;
+                            let x = s.ball(h).unwrap().position.dot(nrm);
+                            if x > 0.0 {
+                                fails += 1;
+                                println!("TUNNEL mesh={mesh} tilt={tilt_deg} p={p:?} v={speed} ang={ang} x={x}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("thin wall big sweep: {fails}/{n} tunnelled");
+}
+
+#[test]
+fn q_pinned_and_row_series() {
+    // row of 3 on slope against a post
+    let (w, n, d) = slope_world(6.5, false, 0.005);
+    let geo = Geometry::new(&w);
+    let r = rad(STEEL);
+    let mut s = solver(g0());
+    let mut hs = vec![];
+    for k in 0..3 {
+        let pos = n * (r + 1e-6) - d * (0.005 + r + 2.0 * r * k as f32 + 1e-5 * k as f32);
+        hs.push(s.add_ball(Ball::new(STEEL, pos)).unwrap());
+    }
+    let mut ev = BallEvents::new();
+    for _ in 0..2000 {
+        s.step(&geo, DT, &mut ev);
+    }
+    let p0: Vec<Vec3> = hs.iter().map(|h| s.ball(*h).unwrap().position).collect();
+    let mut last = p0.clone();
+    for t in 0..10000 {
+        s.step(&geo, DT, &mut ev);
+        for k in 0..3 {
+            let p = s.ball(hs[k]).unwrap().position;
+            let jump = p.distance(last[k]);
+            if jump > 5e-8 {
+                println!("row t={t} ball{k} jump={jump:.3e} dir={:?} total={:.3e}", (p - last[k]) / jump, p.distance(p0[k]));
+            }
+            last[k] = p;
+        }
+    }
+    // pinned
+    let mut b = StaticWorldBuilder::new();
+    b.add_collider(cub(Vec3::new(0.0, 0.0, -0.05), Vec3::new(2.0, 2.0, 0.05), Quat::IDENTITY), layers::ALL, true);
+    b.add_collider(cub(Vec3::new(-0.05, 0.0, 0.05), Vec3::new(0.05, 2.0, 0.05), Quat::IDENTITY), layers::ALL, true);
+    let w = b.build();
+    let geo = Geometry::new(&w);
+    let pitch = 6.5f32.to_radians();
+    let g = Vec3::new(-9.81 * pitch.sin(), 0.0, -9.81 * pitch.cos());
+    let rj = rad(JUMBO);
+    let rm = rad(MINI);
+    let mut s = solver(g);
+    let h1 = s.add_ball(Ball::new(JUMBO, Vec3::new(rj, 0.0, rj))).unwrap();
+    let x2 = rj + 2.0 * rm + rj;
+    let hm = s.add_ball(Ball::new(MINI, Vec3::new(rj + rm + 0.0005, 0.0, rm))).unwrap();
+    let h2 = s.add_ball(Ball::new(JUMBO, Vec3::new(x2 + 0.002, 0.0, rj))).unwrap();
+    let hs = [h1, hm, h2];
+    let mut ev = BallEvents::new();
+    for _ in 0..3000 {
+        s.step(&geo, DT, &mut ev);
+    }
+    let p0: Vec<Vec3> = hs.iter().map(|h| s.ball(*h).unwrap().position).collect();
+    let e0 = mech(&s, g);
+    for t in 0..10000 {
+        s.step(&geo, DT, &mut ev);
+        if t % 1000 == 999 {
+            let d: Vec<f32> = (0..3).map(|k| s.ball(hs[k]).unwrap().position.distance(p0[k])).collect();
+            let v: Vec<f32> = (0..3).map(|k| s.ball(hs[k]).unwrap().velocity.length()).collect();
+            println!("pinned t={} drift={d:?} |v|={v:?} dE={:.3e}", t + 1, mech(&s, g) - e0);
+        }
+    }
+    for k in 0..3 {
+        let b = s.ball(hs[k]).unwrap();
+        println!("pinned ball{k} pos={:?} w={:?}", b.position, b.angular_velocity);
+    }
+}
+
+#[test]
+fn r_post_series() {
+    for &(p, deg, mesh) in &[(POWER, 6.5f32, false), (STEEL, 3.0, false), (MINI, 6.5, false), (STEEL, 6.5, false), (STEEL, 6.5, true)] {
+        let (w, n, d) = slope_world(deg, mesh, 0.005);
+        let geo = Geometry::new(&w);
+        let r = rad(p);
+        let mut s = solver(g0());
+        let pos = n * r - d * (0.005 + r) + n * 1e-6 - d * 1e-6;
+        let h = s.add_ball(Ball::new(p, pos)).unwrap();
+        let mut ev = BallEvents::new();
+        let mut last = pos;
+        let mut jumps = 0;
+        let mut maxtot = 0.0f32;
+        for t in 0..11000 {
+            s.step(&geo, DT, &mut ev);
+            let q = s.ball(h).unwrap().position;
+            let j = q.distance(last);
+            if j > 1e-7 {
+                jumps += 1;
+                if jumps < 6 {
+                    println!("post p={p:?} deg={deg} mesh={mesh} t={t} jump={j:.4e} dir={:?} gap_post={:.4e}", (q - last) / j, (q - n * q.dot(n)).length() - 0.005 - r);
+                }
+            }
+            if t >= 1000 {
+                maxtot = maxtot.max(q.distance(Vec3::ZERO));
+            }
+            last = q;
+        }
+        let q = s.ball(h).unwrap().position;
+        println!("post p={p:?} deg={deg} mesh={mesh}: jumps>0.1um={jumps} final gap_post={:.4e} height={:.4e}", (q - n * q.dot(n)).length() - 0.005 - r, q.dot(n) - r);
+    }
+}
+
+#[test]
+fn r_mesh_slip_spike() {
+    let (w, n) = big_slope_world(6.5, true);
+    let geo = Geometry::new(&w);
+    let r = rad(MINI);
+    let mut s = solver(g0());
+    let mut b = Ball::new(MINI, n * (r + 1e-6));
+    b.angular_velocity = Vec3::new(300.0, 0.0, 0.0);
+    b.velocity = Vec3::new(-3.0, 0.0, -1.0);
+    let h = s.add_ball(b).unwrap();
+    let mut ev = BallEvents::new();
+    for k in 0..4000 {
+        ev.clear();
+        s.step(&geo, DT, &mut ev);
+        let bb = s.ball(h).unwrap();
+        let slip = (bb.velocity + bb.angular_velocity.cross(-n * r)).length();
+        if k > 2000 && slip > 1e-4 {
+            let u = Quat::from_rotation_x(6.5f32.to_radians()).inverse() * bb.position;
+            println!("mesh slip spike t={k} slip={slip:.3e} local pos={u:?} vn={:.3e} height={:.3e} ev={}", bb.velocity.dot(n), bb.position.dot(n) - r, ev.as_slice().len());
+        }
+    }
+}
+
+#[test]
+fn s_flat_hover() {
+    let mut b = StaticWorldBuilder::new();
+    b.add_collider(cub(Vec3::new(0.0, 0.0, -0.05), Vec3::new(2.0, 2.0, 0.05), Quat::IDENTITY), layers::ALL, true);
+    let w = b.build();
+    let geo = Geometry::new(&w);
+    for p in [STEEL, POWER, MINI, JUMBO] {
+        for gap in [0.0f32, 3e-7, 6e-7, 9e-7, 1e-6, 3e-6, 1.5e-5, 1e-3, 3e-3] {
+            for xy in [Vec3::ZERO, Vec3::new(0.3, -0.7, 0.0)] {
+                let r = rad(p);
+                let mut s = solver(g0());
+                let h = s.add_ball(Ball::new(p, xy + Vec3::new(0.0, 0.0, r + gap))).unwrap();
+                let mut ev = BallEvents::new();
+                for _ in 0..1000 {
+                    s.step(&geo, DT, &mut ev);
+                }
+                let p0 = s.ball(h).unwrap().position;
+                let mut md = 0.0f32;
+                let mut when = 0;
+                for t in 0..10000 {
+                    s.step(&geo, DT, &mut ev);
+                    let d = s.ball(h).unwrap().position.distance(p0);
+                    if d > md { md = d; when = t; }
+                }
+                if md > 1e-7 {
+                    println!("flat-hover p={p:?} gap={gap:e} xy={xy}: height after settle={:.3e} drift10s={md:.4e} at t={when}", p0.z - r);
+                }
+            }
+        }
+    }
+    println!("flat-hover done");
+}
