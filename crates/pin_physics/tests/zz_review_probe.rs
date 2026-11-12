@@ -555,11 +555,14 @@ fn p_criterion2_with_other_balls() {
         }
         let mut ev = BallEvents::new();
         let mut out = vec![];
+        let mut mind = f32::INFINITY;
         for _ in 0..400 {
             s.step(&geo, DT, &mut ev);
-            let bb = s.ball(h).unwrap();
+            let bb = *s.ball(h).unwrap();
+            for (hh, o) in s.balls() { if hh != h { mind = mind.min(o.position.distance(bb.position) - rad(o.profile) - rad(p)); } }
             out.push((bb.position, bb.velocity, bb.angular_velocity, bb.orientation));
         }
+        if other { println!("c2 p={p:?} on={on}: min surface gap to other balls = {mind:e}"); }
         out
     };
     for p in [POWER, GLO] {
@@ -1336,4 +1339,130 @@ fn s_flat_hover() {
         }
     }
     println!("flat-hover done");
+}
+
+const SPEED: f32 = 6.7;
+#[test]
+fn t_c2_far_steel() {
+    let mut b = StaticWorldBuilder::new();
+    b.add_collider(cub(Vec3::new(0.0, 0.0, -0.05), Vec3::new(3.0, 3.0, 0.05), Quat::IDENTITY), layers::ALL, true);
+    let w = b.build();
+    let geo = Geometry::new(&w);
+    let run = |p: ProfileId, on: bool| -> (Vec<(Vec3, Vec3, Vec3)>, f32) {
+        let mut s = solver(g0());
+        for pos in [Vec3::new(0.0, 0.0, -0.005), Vec3::new(1.0, 1.0, -0.005)] {
+            let m = s.add_magnet(Magnet { position: pos, k_coil: 2.0e-5, d_min: 0.01, range: 0.1, layer_mask: layers::ALL });
+            if on { s.set_magnet_power(m, 1.0); }
+        }
+        let r = rad(p);
+        let mut bl = Ball::new(p, Vec3::new(-0.2, 0.0, r));
+        bl.velocity = Vec3::new(1.5, 0.05, 0.0);
+        let h = s.add_ball(bl).unwrap();
+        // steel ball rolling past the far magnet (1 m away from the powerball's path)
+        let mut o = Ball::new(STEEL, Vec3::new(1.0, 0.75, rad(STEEL)));
+        o.velocity = Vec3::new(0.02, SPEED, 0.0);
+        let ho = s.add_ball(o).unwrap();
+        let mut ev = BallEvents::new();
+        let mut out = vec![];
+        let mut mind = f32::INFINITY;
+        for _ in 0..400 {
+            s.step(&geo, DT, &mut ev);
+            let bb = s.ball(h).unwrap();
+            mind = mind.min(bb.position.distance(s.ball(ho).unwrap().position));
+            out.push((bb.position, bb.velocity, bb.angular_velocity));
+        }
+        (out, mind)
+    };
+    for p in [POWER, GLO] {
+        let (a, m1) = run(p, false);
+        println!("(steel speed {SPEED})");
+        let (b2, m2) = run(p, true);
+        let first = a.iter().zip(&b2).position(|(x, y)| x != y);
+        let maxd = a.iter().zip(&b2).map(|(x, y)| x.0.distance(y.0)).fold(0.0f32, f32::max);
+        println!("c2-far p={p:?}: first differing tick={first:?} max pos diff={maxd:e} min distance to steel ball={m1:.3}/{m2:.3} m");
+    }
+}
+
+#[test]
+fn u_rising_guide() {
+    let w = StaticWorldBuilder::new().build();
+    for (label, curved) in [("straight rising", false), ("curved rising", true)] {
+        let pts: Vec<Vec3> = (0..=40)
+            .map(|i| {
+                let s = i as f32 / 40.0;
+                if curved {
+                    let a = s * 2.0;
+                    Vec3::new(0.4 * libm::sinf(a), 0.4 - 0.4 * libm::cosf(a), 0.15 * s)
+                } else {
+                    Vec3::new(s, 0.0, 0.1 * s)
+                }
+            })
+            .collect();
+        let g = GuideCurve::new(CubicSpline::interpolate(&pts).unwrap(), 0.05).unwrap();
+        println!("{label}: is_level={}", g.is_level());
+        let guides = [g];
+        let geo = Geometry { world: &w, guides: &guides, wireforms: &[] };
+        for v0 in [0.5f32, 2.0, 5.0, 10.0] {
+            let r = rad(STEEL);
+            let mut s = solver(Vec3::ZERO);
+            let (pos, vel) = if curved {
+                (Vec3::new(0.0, r, 0.02 + 0.0), Vec3::new(v0, -0.02, 0.0375 * v0 / 0.4 * 0.4 / 1.0 * 0.0 + 0.15 / 0.8 * v0))
+            } else {
+                (Vec3::new(0.05, r, 0.005 + 0.02), Vec3::new(v0, -0.02, 0.1 * v0))
+            };
+            let mut b = Ball::new(STEEL, pos);
+            b.velocity = vel;
+            let h = s.add_ball(b).unwrap();
+            let mut ev = BallEvents::new();
+            let ticks = (0.3 / v0 / DT) as usize;
+            let mut nimp = 0;
+            for _ in 0..ticks {
+                ev.clear();
+                s.step(&geo, DT, &mut ev);
+                nimp += impacts(&ev);
+            }
+            let bb = s.ball(h).unwrap();
+            let travelled = bb.position.distance(pos);
+            println!(
+                "{label} v0={v0}: expected travel ~{:.3} m, got {travelled:.4} m, |v| {:.3} -> {:.3}, impacts={nimp}",
+                vel.length() * ticks as f32 * DT,
+                vel.length(),
+                bb.velocity.length()
+            );
+        }
+    }
+}
+
+#[test]
+fn v_curved_guide_control() {
+    let w = StaticWorldBuilder::new().build();
+    for rise in [0.0f32, 0.15] {
+        let pts: Vec<Vec3> = (0..=40)
+            .map(|i| {
+                let s = i as f32 / 40.0;
+                let a = s * 2.0;
+                Vec3::new(0.4 * libm::sinf(a), 0.4 - 0.4 * libm::cosf(a), rise * s)
+            })
+            .collect();
+        let g = GuideCurve::new(CubicSpline::interpolate(&pts).unwrap(), 0.05).unwrap();
+        let guides = [g];
+        let geo = Geometry { world: &w, guides: &guides, wireforms: &[] };
+        let r = rad(STEEL);
+        let mut s = solver(Vec3::ZERO);
+        let v0 = 5.0;
+        let mut b = Ball::new(STEEL, Vec3::new(0.0, r, 0.02));
+        b.velocity = Vec3::new(v0, 0.0, rise / 0.8 * v0);
+        let h = s.add_ball(b).unwrap();
+        let mut ev = BallEvents::new();
+        let mut last = b.position;
+        for t in 0..60 {
+            ev.clear();
+            s.step(&geo, DT, &mut ev);
+            let bb = s.ball(h).unwrap();
+            if t % 6 == 0 {
+                println!("rise={rise} t={t} step={:.5} m pos={:?} |v|={:.3} vz={:.3}", bb.position.distance(last), bb.position, bb.velocity.length(), bb.velocity.z);
+            }
+            last = bb.position;
+        }
+    }
 }

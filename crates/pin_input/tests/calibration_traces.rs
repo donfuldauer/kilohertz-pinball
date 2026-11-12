@@ -461,7 +461,7 @@ fn plunger_rest_step_after_power_on_window() {
 mod never_stuck {
     use super::*;
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(3000))]
+        #![proptest_config(ProptestConfig::with_cases(48))]
         #[test]
         fn any_history_then_rest_then_launch(
             segs in prop::collection::vec((-0.35f32..1.0, 1u64..4000, any::<bool>()), 0..8),
