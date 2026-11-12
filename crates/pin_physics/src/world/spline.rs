@@ -31,6 +31,11 @@ pub enum SplineError {
     InvalidUpHint,
     /// The guide wall height is negative.
     InvalidHeight,
+    /// A closed spline was requested but the last point differs from the first.
+    NotClosed,
+    /// A guide's first and last through-points coincide but the spline is not
+    /// periodic (build it with [`CubicSpline::interpolate_closed`]).
+    ClosedGuideNotPeriodic,
 }
 
 impl core::fmt::Display for SplineError {
@@ -43,6 +48,10 @@ impl core::fmt::Display for SplineError {
             Self::InvalidGauge => "rail gauge must be positive",
             Self::InvalidUpHint => "up hint must be a non-zero vector",
             Self::InvalidHeight => "guide height must not be negative",
+            Self::NotClosed => "a closed spline must end on its first point",
+            Self::ClosedGuideNotPeriodic => {
+                "a closed guide needs a periodic spline (interpolate_closed)"
+            }
         })
     }
 }
@@ -115,6 +124,27 @@ pub struct CubicSpline {
     bounds: Vec<SegmentBound>,
     /// `segments.len() * SAMPLES_PER_SEGMENT + 1` uniformly spaced samples.
     samples: Vec<Sample>,
+    /// Built with periodic end conditions.
+    closed: bool,
+}
+
+/// Second derivatives at the knots of the periodic cubic spline through the
+/// closed polygon `points` (`points[0] == points[n]`), unit knot spacing.
+/// The cyclic system `M[i-1] + 4 M[i] + M[i+1] = rhs[i]` is solved by
+/// Gauss–Seidel sweeps, which contract by a factor of four per sweep here.
+fn periodic_second_derivatives(points: &[DVec3]) -> Vec<DVec3> {
+    let n = points.len() - 1; // distinct knots
+    let mut m = vec![DVec3::ZERO; n + 1];
+    let rhs: Vec<DVec3> = (0..n)
+        .map(|i| (points[(i + n - 1) % n] - points[i] * 2.0 + points[(i + 1) % n]) * 6.0)
+        .collect();
+    for _ in 0..64 {
+        for i in 0..n {
+            m[i] = (rhs[i] - m[(i + n - 1) % n] - m[(i + 1) % n]) / 4.0;
+        }
+    }
+    m[n] = m[0];
+    m
 }
 
 /// Second derivatives at the knots of the natural cubic spline through
@@ -157,9 +187,40 @@ impl CubicSpline {
         if points.windows(2).any(|w| w[0] == w[1]) {
             return Err(SplineError::DuplicatePoints);
         }
+        Self::build(points, false)
+    }
+
+    /// Builds the periodic C² cubic spline through a closed polygon: the last
+    /// point must equal the first, and the curve is C² there too (no natural
+    /// end conditions). Use it for closed guides and loops.
+    ///
+    /// # Errors
+    /// Fewer than four points (three distinct), last point different from the
+    /// first, a non-finite coordinate, or two consecutive identical points.
+    pub fn interpolate_closed(points: &[Vec3]) -> Result<Self, SplineError> {
+        if points.len() < 4 {
+            return Err(SplineError::TooFewPoints);
+        }
+        if points.iter().any(|p| !p.is_finite()) {
+            return Err(SplineError::NonFinite);
+        }
+        if points[0] != points[points.len() - 1] {
+            return Err(SplineError::NotClosed);
+        }
+        if points.windows(2).any(|w| w[0] == w[1]) {
+            return Err(SplineError::DuplicatePoints);
+        }
+        Self::build(points, true)
+    }
+
+    fn build(points: &[Vec3], closed: bool) -> Result<Self, SplineError> {
         // Solve in f64, store in f32.
         let pd: Vec<DVec3> = points.iter().map(|p| p.as_dvec3()).collect();
-        let md = natural_second_derivatives(&pd);
+        let md = if closed {
+            periodic_second_derivatives(&pd)
+        } else {
+            natural_second_derivatives(&pd)
+        };
         if md.iter().any(|m| !m.as_vec3().is_finite()) {
             // Coordinates so large that differences overflow f32.
             return Err(SplineError::NonFinite);
@@ -225,6 +286,7 @@ impl CubicSpline {
             knot_dd,
             bounds,
             samples,
+            closed,
         })
     }
 
@@ -238,6 +300,15 @@ impl CubicSpline {
     #[must_use]
     pub fn segments(&self) -> &[BezierSegment] {
         &self.segments
+    }
+
+    /// Whether the spline was built with
+    /// [`interpolate_closed`](Self::interpolate_closed) (periodic, smooth
+    /// where its end meets its start). The parameter is still clamped to
+    /// `[0, segment_count()]`, not wrapped.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.closed
     }
 
     /// Largest valid parameter (`segment_count()` as `f32`).

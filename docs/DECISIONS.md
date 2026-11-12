@@ -241,3 +241,8 @@ Spikes CI run 43140608468 (commit a417638), all three jobs green, rustc 1.99.1 o
 Library loops the instruction hook cannot see (`table.move`, `table.insert`/`remove` driven by `__len`, `table.concat`, `table.unpack`, `table.sort`) are charged against the instruction budget by input size, or reimplemented in Lua, in the sandbox prelude.
 **Rationale:** CFLAGS in `.cargo/config.toml` would also reach SDL and every other C build, and function-like defines don't work on MSVC. Patching the source is portable, reviewable and testable on all three CI systems. Every abort stays an ordinary Lua error, which the sandbox already turns into a fault.
 **Residual:** single opcodes on strings up to 64 KiB, such as `==` and `..`, are bounded by the cap times the instruction budget. The Implementer measures the worst case and records it here; if it exceeds a few ms, lower the default budget.
+
+## Orchestrator — 4.2 pointer-keyed `pairs` order
+
+**Decision:** Iteration order over tables whose keys are tables, functions or other reference values is not guaranteed to match across processes, because those keys hash by address. Rules scripts must use integer or string keys for anything whose iteration order affects commands. String and integer keys are deterministic, thanks to the fixed hash seed. The `pinball` table itself is read-only, like the name tables.
+**Rationale:** Making address hashing stable would need a deterministic allocator or object IDs inside Lua, which is out of proportion for rules code. The parity rule (§3.4) already keeps rules to integers.

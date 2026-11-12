@@ -178,7 +178,6 @@ must_fault! {
     table_remove_with_len_maxinteger_minus_one => "table.remove(huge(math.maxinteger - 1), 1)";
     table_remove_bottomless_maxinteger_minus_one =>
         "table.remove(bottomless(math.maxinteger - 1), 1)";
-    table_insert_with_len_maxinteger => "table.insert(huge(math.maxinteger), 1, 'v')";
     table_insert_with_len_maxinteger_minus_one =>
         "table.insert(huge(math.maxinteger - 1), 1, 'v')";
     table_insert_bottomless_maxinteger_minus_one =>
@@ -199,6 +198,18 @@ must_fault! {
     gmatch_backtracking_60000 =>
         "for m in string.gmatch(string.rep('a', 60000), '.-.-.-.-b') do end";
     find_method_backtracking_60000 => "local r = (('a'):rep(60000)):find('a*a*a*a*a*b')";
+}
+
+/// `#t + 1` wraps for a length of maxinteger, so stock Lua shifts nothing and
+/// returns at once: completing is as acceptable as faulting, hanging is not.
+#[test]
+fn table_insert_with_len_maxinteger_returns() {
+    let src =
+        format!("{HUGE_LEN}\nfunction on_tick() table.insert(huge(math.maxinteger), 1, 'v') end");
+    let mut b = backend_with(src.as_bytes(), cfg(16 * MIB, 50_000));
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    h.tick(&mut b);
 }
 
 #[test]

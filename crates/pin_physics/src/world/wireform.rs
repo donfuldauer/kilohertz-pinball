@@ -415,23 +415,33 @@ pub struct GuideCurve {
 fn curve_reach(spline: &CubicSpline) -> f32 {
     const MAX_REACH: f64 = 1.0e3;
     let samples = spline.samples();
-    // Curvature at every sample.
+    // Curvature, bounded over every sample interval (not just at the
+    // samples): κ <= |C''| / |C'|². C'' is linear per segment, so its largest
+    // norm on an interval is at an end; |C'| cannot fall below the smaller
+    // end value by more than half the interval times that norm.
     let k = SAMPLES_PER_SEGMENT;
     let n = spline.segment_count();
+    let h = 1.0 / k as f64;
     let mut reach = MAX_REACH;
-    for index in 0..samples.len() {
+    let derivatives = |index: usize| {
         let i = (index / k).min(n - 1);
         let s = (index - i * k) as f32 / k as f32;
         let (_, d1, d2) = spline.eval(i, s);
-        let (d1, d2) = (d1.as_dvec3(), d2.as_dvec3());
-        let speed = d1.length();
-        if speed <= 1.0e-12 {
+        (d1.as_dvec3().length(), d2.as_dvec3().length())
+    };
+    let mut left = derivatives(0);
+    for index in 1..samples.len() {
+        let right = derivatives(index);
+        let bend = left.1.max(right.1);
+        let slowest = left.0.min(right.0) - 0.5 * h * bend;
+        if slowest <= 1.0e-12 {
             return 0.0; // cusp
         }
-        let curvature = d1.cross(d2).length() / (speed * speed * speed);
+        let curvature = bend / (slowest * slowest);
         if curvature * reach > 1.0 {
             reach = 1.0 / curvature;
         }
+        left = right;
     }
     // Pairs, on every fourth sample (plus the last).
     let stride = 4;
@@ -482,7 +492,14 @@ impl GuideCurve {
         if height_m < 0.0 {
             return Err(SplineError::InvalidHeight);
         }
-        let z0 = spline.segments()[0].p[0].z;
+        let first = spline.segments()[0].p[0];
+        let last = spline.segments()[spline.segment_count() - 1].p[3];
+        if first == last && !spline.is_closed() {
+            // A natural spline has a kink where it closes: no reach, and
+            // therefore a contact every few micrometres of sliding.
+            return Err(SplineError::ClosedGuideNotPeriodic);
+        }
+        let z0 = first.z;
         let level = spline
             .segments()
             .iter()
@@ -579,8 +596,9 @@ impl GuideCurve {
     /// * `None`: the sphere does not come into contact within `max_time`.
     /// * `Some(GuideCast::Contact(hit))`: at `hit.time` the gap has closed to
     ///   at most 10 µm **and** the sphere is moving into the wall (closing
-    ///   speed above 1e-5 of its speed). A sphere moving along or away from
-    ///   the wall is never reported as a contact.
+    ///   speed above 1e-5 of its speed), or it rests at the sliding limit
+    ///   described below. A sphere that is not overlapping the wall and is
+    ///   moving along or away from it is never reported as a contact.
     /// * `Some(GuideCast::Advance { time })`: no contact up to `time`, but the
     ///   step budget ran out; move there without an impulse and cast again.
     ///
@@ -592,12 +610,23 @@ impl GuideCurve {
     /// `-|v|² / (ρ - d)`, which lets a sphere running alongside the wall
     /// advance millimetres instead of micrometres per step.
     ///
-    /// A sphere that is within 10 µm of the wall (or overlapping it) and not
-    /// moving into it is sliding: it is allowed to sink at most a further
-    /// 10 µm (never below -10 µm from a non-overlapping start) while it
-    /// slides; if the wall curves into its path the resulting contact is
-    /// reported as soon as it closes in. Resolve the remaining overlap with
-    /// [`closest_point`](Self::closest_point). Never allocates.
+    /// A sphere that is within 10 µm of the wall and not moving into it is
+    /// sliding: it may sink to a gap of -10 µm, a fixed limit that does not
+    /// depend on where it started, so repeated casts cannot ratchet deeper.
+    /// If the wall curves into its path the contact is reported as soon as
+    /// it closes in. At the limit (or below it and still sinking at any
+    /// speed) the cast reports a `Contact`, possibly at time 0 and with a
+    /// closing speed near zero: that is a resting contact, and the caller is
+    /// expected to push the sphere out with
+    /// [`closest_point`](Self::closest_point) every sub-step. A caller that
+    /// only zeroes the normal velocity stays within the limit but makes less
+    /// and less progress along a concave wall. A sphere that is clearly
+    /// leaving (separating faster than 1e-5 of its speed) is always free.
+    ///
+    /// Guides without reach (rising curves, curves that touch or cross
+    /// themselves) only have the first bound: next to such a wall a sliding
+    /// sphere gets a contact about every 10 µm of travel, so keep them out of
+    /// rolling paths or split them into simple level pieces. Never allocates.
     #[must_use]
     pub fn cast_sphere(
         &self,
@@ -630,8 +659,6 @@ impl GuideCurve {
         let approach = -APPROACH_EPS * speed;
         let mut time = 0.0f32;
         let mut seed = seed_t;
-        // Lowest gap a run of sliding steps may reach.
-        let mut slide_floor: Option<f32> = None;
         for step in 0..GUIDE_CAST_STEPS {
             let p = center + velocity * time;
             let cp = self.closest_point(p, seed);
@@ -639,29 +666,30 @@ impl GuideCurve {
             let gap = cp.distance - radius;
             let normal = self.normal_toward(&cp, p);
             let rate = normal.dot(velocity);
-            // The lowest gap the next step may reach.
-            let floor = if gap <= GUIDE_SKIN {
-                if rate < approach {
-                    let hit = GuideHit {
-                        time,
-                        t: cp.t,
-                        point: cp.point,
-                        normal,
-                    };
-                    return (Some(GuideCast::Contact(hit)), step + 1);
-                }
-                // Sliding or leaving: bounded sink, fixed when sliding starts.
-                *slide_floor.get_or_insert(gap.min(0.0) - GUIDE_SKIN)
-            } else {
-                slide_floor = None;
-                0.5 * GUIDE_SKIN
+            let contact = || {
+                let hit = GuideHit {
+                    time,
+                    t: cp.t,
+                    point: cp.point,
+                    normal,
+                };
+                (Some(GuideCast::Contact(hit)), step + 1)
             };
-            let drop = gap - floor;
-            if drop <= 0.0 {
-                // Sunk to the sliding limit without ever closing in faster
-                // than the approach threshold: hand back to the caller.
-                return (Some(GuideCast::Advance { time }), step + 1);
-            }
+            // The lowest gap the next step may reach.
+            let floor = if gap > GUIDE_SKIN {
+                0.5 * GUIDE_SKIN
+            } else if rate < approach || (gap < -GUIDE_SKIN && rate < 0.0) {
+                // Touching and closing in, or sunk past the sliding limit and
+                // still sinking.
+                return contact();
+            } else if rate > -approach {
+                // Clearly leaving: free to go, wherever it starts from.
+                gap - GUIDE_SKIN
+            } else {
+                // Sliding: may sink to the fixed limit of -skin, no further.
+                gap.min(-GUIDE_SKIN)
+            };
+            let drop = gap - floor; // >= 0
             // Bound 1: |d(gap)/dt| <= speed.
             let mut dt = drop / speed;
             // Bound 2: gap(τ) >= gap + rate τ - ½ K τ², valid while the
@@ -688,7 +716,12 @@ impl GuideCurve {
                 return (None, step + 1);
             }
             if next == time {
-                // Below floating-point resolution.
+                // No progress possible. In contact that is a resting contact
+                // at the sliding limit; otherwise the time resolution is
+                // exhausted and the caller continues from here.
+                if gap <= GUIDE_SKIN {
+                    return contact();
+                }
                 return (Some(GuideCast::Advance { time }), step + 1);
             }
             time = next;
