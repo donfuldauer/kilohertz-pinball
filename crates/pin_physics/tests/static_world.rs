@@ -94,7 +94,11 @@ fn layer_constants() {
 fn empty_world() {
     let world = StaticWorldBuilder::new().build();
     assert_eq!(world.collider_count(), 0);
-    assert!(world.cast_sphere(Vec3::ZERO, R, Vec3::X, 1.0, 0xFF).is_none());
+    assert!(
+        world
+            .cast_sphere(Vec3::ZERO, R, Vec3::X, 1.0, 0xFF)
+            .is_none()
+    );
     assert!(contacts(&world, Vec3::ZERO, R, 0xFF).is_empty());
 }
 
@@ -106,17 +110,41 @@ fn head_on_cuboid_time_of_impact_is_analytic() {
         .cast_sphere(Vec3::ZERO, R, v(2.0, 0.0, 0.0), 1.0, layers::MAIN_DECK)
         .unwrap();
     let expected = (0.4 - R) / 2.0;
-    assert!((hit.time - expected).abs() < 1e-6, "{} vs {expected}", hit.time);
+    assert!(
+        (hit.time - expected).abs() < 1e-6,
+        "{} vs {expected}",
+        hit.time
+    );
     assert!((hit.normal - v(-1.0, 0.0, 0.0)).length() < 1e-6);
     assert!((hit.point - v(0.4, 0.0, 0.0)).length() < 1e-6);
     assert_eq!(hit.collider, h);
     // Too short a time window: no hit; exactly long enough: hit.
-    assert!(world.cast_sphere(Vec3::ZERO, R, v(2.0, 0.0, 0.0), 0.19, 0xFF).is_none());
-    assert!(world.cast_sphere(Vec3::ZERO, R, v(2.0, 0.0, 0.0), 0.2, 0xFF).is_some());
+    assert!(
+        world
+            .cast_sphere(Vec3::ZERO, R, v(2.0, 0.0, 0.0), 0.19, 0xFF)
+            .is_none()
+    );
+    assert!(
+        world
+            .cast_sphere(Vec3::ZERO, R, v(2.0, 0.0, 0.0), 0.2, 0xFF)
+            .is_some()
+    );
     // Moving away or parallel: no hit.
-    assert!(world.cast_sphere(Vec3::ZERO, R, v(-2.0, 0.0, 0.0), 1.0, 0xFF).is_none());
-    assert!(world.cast_sphere(Vec3::ZERO, R, v(0.0, 2.0, 0.0), 1.0, 0xFF).is_none());
-    assert!(world.cast_sphere(Vec3::ZERO, R, Vec3::ZERO, 1.0, 0xFF).is_none());
+    assert!(
+        world
+            .cast_sphere(Vec3::ZERO, R, v(-2.0, 0.0, 0.0), 1.0, 0xFF)
+            .is_none()
+    );
+    assert!(
+        world
+            .cast_sphere(Vec3::ZERO, R, v(0.0, 2.0, 0.0), 1.0, 0xFF)
+            .is_none()
+    );
+    assert!(
+        world
+            .cast_sphere(Vec3::ZERO, R, Vec3::ZERO, 1.0, 0xFF)
+            .is_none()
+    );
 }
 
 #[test]
@@ -128,7 +156,9 @@ fn rotated_cuboid_edge_and_corner() {
         half_extents: v(0.1, 0.1, 0.1),
         rotation: rot,
     });
-    let hit = world.cast_sphere(Vec3::ZERO, R, v(1.0, 0.0, 0.0), 1.0, 0xFF).unwrap();
+    let hit = world
+        .cast_sphere(Vec3::ZERO, R, v(1.0, 0.0, 0.0), 1.0, 0xFF)
+        .unwrap();
     let edge_x = 0.5 - 0.1 * std::f32::consts::SQRT_2;
     assert!((hit.time - (edge_x - R)).abs() < 2e-6);
     assert!((hit.normal - v(-1.0, 0.0, 0.0)).length() < 1e-4);
@@ -165,9 +195,11 @@ fn cylinder_side_cap_and_rim() {
     let dx = (reach * reach - 0.012f32 * 0.012).sqrt();
     assert!((hit.time - (0.2 - dx) / 4.0).abs() < 2e-6);
     // Passing beside it: no hit.
-    assert!(world
-        .cast_sphere(v(-0.2, 0.0186, 0.0135), R, v(4.0, 0.0, 0.0), 1.0, 0xFF)
-        .is_none());
+    assert!(
+        world
+            .cast_sphere(v(-0.2, 0.0186, 0.0135), R, v(4.0, 0.0, 0.0), 1.0, 0xFF)
+            .is_none()
+    );
     // Top cap from above.
     let hit = world
         .cast_sphere(v(0.001, 0.0, 0.2), R, v(0.0, 0.0, -1.0), 1.0, 0xFF)
@@ -190,7 +222,11 @@ fn cylinder_side_cap_and_rim() {
     while (start.as_dvec3() + vel.as_dvec3() * t - rim.as_dvec3()).length() > f64::from(R) {
         t += 1e-7;
     }
-    assert!((f64::from(hit.time) - t).abs() < 2e-6, "{} vs {t}", hit.time);
+    assert!(
+        (f64::from(hit.time) - t).abs() < 2e-6,
+        "{} vs {t}",
+        hit.time
+    );
     assert!((hit.point - rim).length() < 1e-5);
 }
 
@@ -201,23 +237,33 @@ fn triangle_face_edge_vertex() {
         indices: vec![[0, 1, 2]],
     });
     // Face from above and from below (two-sided).
-    let hit = world.cast_sphere(v(0.02, 0.02, 0.1), R, v(0.0, 0.0, -1.0), 1.0, 0xFF).unwrap();
+    let hit = world
+        .cast_sphere(v(0.02, 0.02, 0.1), R, v(0.0, 0.0, -1.0), 1.0, 0xFF)
+        .unwrap();
     assert!((hit.time - (0.1 - R)).abs() < 1e-6);
     assert!((hit.normal - Vec3::Z).length() < 1e-6);
-    let hit = world.cast_sphere(v(0.02, 0.02, -0.1), R, v(0.0, 0.0, 1.0), 1.0, 0xFF).unwrap();
+    let hit = world
+        .cast_sphere(v(0.02, 0.02, -0.1), R, v(0.0, 0.0, 1.0), 1.0, 0xFF)
+        .unwrap();
     assert!((hit.time - (0.1 - R)).abs() < 1e-6);
     assert!((hit.normal + Vec3::Z).length() < 1e-6);
     // Edge ab (y = 0), in the plane.
-    let hit = world.cast_sphere(v(0.05, -0.1, 0.0), R, v(0.0, 1.0, 0.0), 1.0, 0xFF).unwrap();
+    let hit = world
+        .cast_sphere(v(0.05, -0.1, 0.0), R, v(0.0, 1.0, 0.0), 1.0, 0xFF)
+        .unwrap();
     assert!((hit.time - (0.1 - R)).abs() < 1e-6);
     assert!((hit.normal + Vec3::Y).length() < 1e-5);
     // Hypotenuse bc.
     let n = v(1.0, 1.0, 0.0).normalize();
-    let hit = world.cast_sphere(v(0.05, 0.05, 0.0) + n * 0.1, R, -n, 1.0, 0xFF).unwrap();
+    let hit = world
+        .cast_sphere(v(0.05, 0.05, 0.0) + n * 0.1, R, -n, 1.0, 0xFF)
+        .unwrap();
     assert!((hit.time - (0.1 - R)).abs() < 1e-6);
     assert!((hit.normal - n).length() < 1e-5);
     // Edge ca (x = 0).
-    let hit = world.cast_sphere(v(-0.1, 0.05, 0.0), R, v(1.0, 0.0, 0.0), 1.0, 0xFF).unwrap();
+    let hit = world
+        .cast_sphere(v(-0.1, 0.05, 0.0), R, v(1.0, 0.0, 0.0), 1.0, 0xFF)
+        .unwrap();
     assert!((hit.time - (0.1 - R)).abs() < 1e-6);
     // Vertices.
     for (vertex, dir) in [
@@ -226,7 +272,9 @@ fn triangle_face_edge_vertex() {
         (v(0.0, 0.1, 0.0), v(-0.2, 1.0, 0.0)),
     ] {
         let d = dir.normalize();
-        let hit = world.cast_sphere(vertex + d * 0.1, R, -d * 2.0, 1.0, 0xFF).unwrap();
+        let hit = world
+            .cast_sphere(vertex + d * 0.1, R, -d * 2.0, 1.0, 0xFF)
+            .unwrap();
         assert!((hit.time - (0.1 - R) / 2.0).abs() < 1e-6);
         assert!((hit.point - vertex).length() < 1e-5);
         assert!((hit.normal - d).length() < 1e-4);
@@ -259,7 +307,10 @@ fn layer_mask_and_enable_flags() {
     };
     assert_eq!(cast(&world, layers::MAIN_DECK), Some(main));
     assert_eq!(cast(&world, layers::UPPER_DECK), Some(upper));
-    assert_eq!(cast(&world, layers::MAIN_DECK | layers::UPPER_DECK), Some(main));
+    assert_eq!(
+        cast(&world, layers::MAIN_DECK | layers::UPPER_DECK),
+        Some(main)
+    );
     assert_eq!(cast(&world, layers::WIREFORM), None); // gate is disabled
     assert_eq!(cast(&world, layers::SUBWAY), None);
     assert_eq!(cast(&world, 0), None);
@@ -311,19 +362,41 @@ fn initial_overlap_semantics() {
     // Resting on the floor (top at z = 0).
     let rest = v(0.0, 0.0, R);
     // Pressing in: immediate hit.
-    let hit = world.cast_sphere(rest, R, v(1.0, 0.0, -0.01), 1.0, 0xFF).unwrap();
+    let hit = world
+        .cast_sphere(rest, R, v(1.0, 0.0, -0.01), 1.0, 0xFF)
+        .unwrap();
     assert_eq!(hit.time, 0.0);
     assert!((hit.normal - Vec3::Z).length() < 1e-6);
     // Sliding or lifting off: none.
-    assert!(world.cast_sphere(rest, R, v(1.0, 0.0, 0.0), 1.0, 0xFF).is_none());
-    assert!(world.cast_sphere(rest, R, v(1.0, 0.0, 0.5), 1.0, 0xFF).is_none());
+    assert!(
+        world
+            .cast_sphere(rest, R, v(1.0, 0.0, 0.0), 1.0, 0xFF)
+            .is_none()
+    );
+    assert!(
+        world
+            .cast_sphere(rest, R, v(1.0, 0.0, 0.5), 1.0, 0xFF)
+            .is_none()
+    );
     // Penetrating by 1 mm, moving out: none; moving in: hit at 0.
     let deep = v(0.0, 0.0, R - 0.001);
-    assert!(world.cast_sphere(deep, R, v(0.0, 0.0, 1.0), 1.0, 0xFF).is_none());
-    assert_eq!(world.cast_sphere(deep, R, v(0.0, 0.0, -1.0), 1.0, 0xFF).unwrap().time, 0.0);
+    assert!(
+        world
+            .cast_sphere(deep, R, v(0.0, 0.0, 1.0), 1.0, 0xFF)
+            .is_none()
+    );
+    assert_eq!(
+        world
+            .cast_sphere(deep, R, v(0.0, 0.0, -1.0), 1.0, 0xFF)
+            .unwrap()
+            .time,
+        0.0
+    );
     // Centre inside the solid.
     let inside = v(0.0, 0.0, -0.01);
-    let hit = world.cast_sphere(inside, R, v(0.0, 0.0, -1.0), 1.0, 0xFF).unwrap();
+    let hit = world
+        .cast_sphere(inside, R, v(0.0, 0.0, -1.0), 1.0, 0xFF)
+        .unwrap();
     assert_eq!(hit.time, 0.0);
     assert!((hit.normal - Vec3::Z).length() < 1e-6);
     let c = contacts(&world, inside, R, 0xFF);
@@ -411,13 +484,25 @@ fn no_ghost_collisions_on_tessellated_flats() {
         for k in 0..64 {
             let a = k as f32 * 0.0981;
             let dir = v(libm::cosf(a), libm::sinf(a), 0.0);
-            let start = v(0.013 * libm::sinf(3.0 * a), 0.011 * libm::cosf(5.0 * a), R + 2e-6);
+            let start = v(
+                0.013 * libm::sinf(3.0 * a),
+                0.011 * libm::cosf(5.0 * a),
+                R + 2e-6,
+            );
             let hit = world.cast_sphere(start - dir * 0.15, R, dir, 0.3, 0xFF);
-            assert!(hit.is_none(), "ghost hit {hit:?} (welded = {welded}, k = {k})");
+            assert!(
+                hit.is_none(),
+                "ghost hit {hit:?} (welded = {welded}, k = {k})"
+            );
         }
         // Dropping onto interior edges and vertices still collides, with the
         // face normal, exactly once.
-        for p in [v(0.0, 0.0, 0.0), v(0.025, 0.025, 0.0), v(0.05, 0.02, 0.0), v(0.031, 0.0, 0.0)] {
+        for p in [
+            v(0.0, 0.0, 0.0),
+            v(0.025, 0.025, 0.0),
+            v(0.05, 0.02, 0.0),
+            v(0.031, 0.0, 0.0),
+        ] {
             let hit = world
                 .cast_sphere(p + Vec3::Z * 0.1, R, v(0.0, 0.0, -1.0), 1.0, 0xFF)
                 .unwrap();
@@ -495,21 +580,49 @@ fn invalid_geometry_is_skipped() {
     let world = b.build();
     assert_eq!(world.collider_count(), 4);
     assert!(handles.iter().all(|h| world.is_enabled(*h)));
-    assert!(world.cast_sphere(v(0.5, 0.0, 5.0), R, v(0.0, 0.0, -10.0), 1.0, 0xFF).is_none());
+    assert!(
+        world
+            .cast_sphere(v(0.5, 0.0, 5.0), R, v(0.0, 0.0, -10.0), 1.0, 0xFF)
+            .is_none()
+    );
     assert!(contacts(&world, Vec3::ZERO, 0.5, 0xFF).is_empty());
     // Invalid queries.
     let (world, _) = single(cuboid(Vec3::ZERO, Vec3::splat(0.1)));
     let start = v(-1.0, 0.0, 0.0);
-    assert!(world.cast_sphere(start, R, Vec3::X, f32::NAN, 0xFF).is_none());
+    assert!(
+        world
+            .cast_sphere(start, R, Vec3::X, f32::NAN, 0xFF)
+            .is_none()
+    );
     assert!(world.cast_sphere(start, R, Vec3::X, -1.0, 0xFF).is_none());
-    assert!(world.cast_sphere(start, f32::NAN, Vec3::X, 2.0, 0xFF).is_none());
+    assert!(
+        world
+            .cast_sphere(start, f32::NAN, Vec3::X, 2.0, 0xFF)
+            .is_none()
+    );
     assert!(world.cast_sphere(start, -1.0, Vec3::X, 2.0, 0xFF).is_none());
-    assert!(world.cast_sphere(start, R, v(f32::INFINITY, 0.0, 0.0), 2.0, 0xFF).is_none());
-    assert!(world.cast_sphere(start, R, v(1e30, 0.0, 0.0), 1e30, 0xFF).is_none());
-    assert!(world.cast_sphere(v(f32::NAN, 0.0, 0.0), R, Vec3::X, 2.0, 0xFF).is_none());
+    assert!(
+        world
+            .cast_sphere(start, R, v(f32::INFINITY, 0.0, 0.0), 2.0, 0xFF)
+            .is_none()
+    );
+    assert!(
+        world
+            .cast_sphere(start, R, v(1e30, 0.0, 0.0), 1e30, 0xFF)
+            .is_none()
+    );
+    assert!(
+        world
+            .cast_sphere(v(f32::NAN, 0.0, 0.0), R, Vec3::X, 2.0, 0xFF)
+            .is_none()
+    );
     // Negative half extents and radius are taken as magnitudes.
     let (world, _) = single(cuboid(v(0.5, 0.0, 0.0), v(-0.1, -0.1, -0.1)));
-    assert!(world.cast_sphere(Vec3::ZERO, R, Vec3::X, 1.0, 0xFF).is_some());
+    assert!(
+        world
+            .cast_sphere(Vec3::ZERO, R, Vec3::X, 1.0, 0xFF)
+            .is_some()
+    );
 }
 
 #[test]
@@ -549,9 +662,18 @@ fn fast_ball_does_not_tunnel_a_thin_wall() {
     for speed in [1.0f32, 8.0, 50.0, 500.0, 1.0e4] {
         // One 1 ms tick moves the ball up to 10 m.
         let hit = world
-            .cast_sphere(v(0.25, 0.0, 0.1), R, v(speed, 0.0, 0.0), 0.05 / speed * 1.5, 1)
+            .cast_sphere(
+                v(0.25, 0.0, 0.1),
+                R,
+                v(speed, 0.0, 0.0),
+                0.05 / speed * 1.5,
+                1,
+            )
             .unwrap();
-        assert!((hit.time * speed - (0.05 - 0.00025 - R)).abs() < 1e-5, "speed {speed}");
+        assert!(
+            (hit.time * speed - (0.05 - 0.00025 - R)).abs() < 1e-5,
+            "speed {speed}"
+        );
         let hit = world
             .cast_sphere(v(0.1, 0.07, 0.3), R, v(0.0, 0.0, -speed), 1.0, 1)
             .unwrap();

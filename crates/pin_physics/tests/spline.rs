@@ -174,7 +174,12 @@ fn c2_at_knots() {
     for i in 1..s.segment_count() {
         let t = i as f32;
         assert!((s.point(t - eps) - s.point(t + eps)).length() < 1e-4);
-        assert!(rel_close(s.tangent(t - eps), s.tangent(t + eps), 1e-3, 1e-6));
+        assert!(rel_close(
+            s.tangent(t - eps),
+            s.tangent(t + eps),
+            1e-3,
+            1e-6
+        ));
         assert!(rel_close(
             s.second_derivative(t - eps),
             s.second_derivative(t + eps),
@@ -276,9 +281,21 @@ fn closest_point_is_global_whatever_the_seed() {
     let s = CubicSpline::interpolate(&pts).unwrap();
     let p = v(0.1, 0.03, 0.0); // closest to the upper leg (t = 5)
     let expected = brute(&s, p);
-    for seed in [None, Some(0.0), Some(1.0), Some(3.0), Some(5.0), Some(6.0), Some(-4.0), Some(1e9)] {
+    for seed in [
+        None,
+        Some(0.0),
+        Some(1.0),
+        Some(3.0),
+        Some(5.0),
+        Some(6.0),
+        Some(-4.0),
+        Some(1e9),
+    ] {
         let cp = s.closest_point(p, seed);
-        assert!((f64::from(cp.distance) - expected).abs() < 1e-5, "seed {seed:?}");
+        assert!(
+            (f64::from(cp.distance) - expected).abs() < 1e-5,
+            "seed {seed:?}"
+        );
         assert!(cp.t > 4.0 && cp.t < 6.0, "seed {seed:?} gave t = {}", cp.t);
         assert!((s.point(cp.t) - cp.point).length() < 1e-6);
     }
@@ -304,7 +321,10 @@ fn closest_point_from_the_centre_of_curvature() {
 fn spline_points() -> impl Strategy<Value = Vec<Vec3>> {
     // Random walk with 20..80 mm steps: no duplicates, table-sized curves.
     (
-        prop::collection::vec((0.02f32..0.08, -1.0f32..1.0, -1.0f32..1.0, -0.3f32..0.3), 1..10),
+        prop::collection::vec(
+            (0.02f32..0.08, -1.0f32..1.0, -1.0f32..1.0, -0.3f32..0.3),
+            1..10,
+        ),
         (-0.5f32..0.5, -0.5f32..0.5, -0.1f32..0.1),
     )
         .prop_map(|(steps, start)| {

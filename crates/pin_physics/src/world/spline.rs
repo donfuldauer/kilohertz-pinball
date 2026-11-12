@@ -102,6 +102,11 @@ pub(crate) struct Sample {
 }
 
 /// A C² interpolating cubic spline.
+///
+/// The parameter is uniform per through-point (`P_i` at `t = i`), so
+/// through-points should be roughly evenly spaced: where the spacing changes
+/// abruptly (say 50 mm on a straight, 13 mm on the following arc) the curve
+/// overshoots and wiggles, as any uniformly parametrized spline does.
 #[derive(Debug, Clone)]
 pub struct CubicSpline {
     segments: Vec<BezierSegment>,

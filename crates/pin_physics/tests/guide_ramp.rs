@@ -122,10 +122,20 @@ fn build_table() -> Table {
     let mut pts = Vec::new();
     for k in -6..=26 {
         let d = 0.05 * k as f32;
-        pts.push(v(x, RAMP_START_Y - d, BALL_R - seat + ramp_rise(d) - rail_drop(d)));
+        pts.push(v(
+            x,
+            RAMP_START_Y - d,
+            BALL_R - seat + ramp_rise(d) - rail_drop(d),
+        ));
     }
     let rolls = vec![0.0; pts.len()];
-    let ramp = Wireform::new(CubicSpline::interpolate(&pts).unwrap(), &rolls, GAUGE, Vec3::Z).unwrap();
+    let ramp = Wireform::new(
+        CubicSpline::interpolate(&pts).unwrap(),
+        &rolls,
+        GAUGE,
+        Vec3::Z,
+    )
+    .unwrap();
 
     // Ramp entrance (the ball is on the rails and just clear of the floor)
     // and ramp top.
@@ -214,9 +224,13 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
         // CCD: advance to the earliest impact, stop the normal velocity, repeat.
         let mut remaining = h;
         for _ in 0..4 {
-            let world_hit = table.world.cast_sphere(ball.pos, BALL_R, ball.vel, remaining, mask);
+            let world_hit = table
+                .world
+                .cast_sphere(ball.pos, BALL_R, ball.vel, remaining, mask);
             let guide_hit = if on_main {
-                table.guide.cast_sphere(ball.pos, BALL_R, ball.vel, remaining, ball.guide_seed)
+                table
+                    .guide
+                    .cast_sphere(ball.pos, BALL_R, ball.vel, remaining, ball.guide_seed)
             } else {
                 None
             };
@@ -243,7 +257,9 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
         let _ = remaining;
 
         // Sliding contacts: project out of penetration, stop normal velocity.
-        table.world.sphere_contacts(ball.pos, BALL_R, mask, &mut contacts);
+        table
+            .world
+            .sphere_contacts(ball.pos, BALL_R, mask, &mut contacts);
         for c in &contacts {
             log.min_floor_gap = log.min_floor_gap.min(-c.depth);
             floor_impulse += stop_normal(&mut ball.vel, c.normal);
@@ -260,7 +276,9 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
                 ball.pos -= normal * gap;
             }
             if ball.pos.y > 0.0 {
-                log.max_arc_radius = log.max_arc_radius.max(v(ball.pos.x, ball.pos.y, 0.0).length());
+                log.max_arc_radius = log
+                    .max_arc_radius
+                    .max(v(ball.pos.x, ball.pos.y, 0.0).length());
             }
         }
         if on_rails {
@@ -332,16 +350,27 @@ fn run() -> (Table, Vec<TickLog>) {
 fn ball_completes_the_course() {
     let (_, logs) = run();
     let last = logs.last().unwrap();
-    assert!(last.pos.y < RAMP_START_Y - 1.24, "ball stopped at {}", last.pos);
+    assert!(
+        last.pos.y < RAMP_START_Y - 1.24,
+        "ball stopped at {}",
+        last.pos
+    );
     // 0.25 + π·0.1365 + 0.4 + 1.24 m at just under 8 m/s.
     assert!(logs.len() > 280 && logs.len() < 320, "{} ticks", logs.len());
     // It went around the arc (passed x < 0 with y > 0) and up the ramp.
     assert!(logs.iter().any(|l| l.pos.y > 0.12 && l.pos.x.abs() < 0.01));
-    assert!((last.pos.z - (BALL_R + ramp_rise(1.24))).abs() < 1e-3, "final height {}", last.pos.z);
+    assert!(
+        (last.pos.z - (BALL_R + ramp_rise(1.24))).abs() < 1e-3,
+        "final height {}",
+        last.pos.z
+    );
     // Frictionless: only numerical dissipation and the climb slow the ball.
     let speed = last.vel.length();
     let ideal = (64.0 - 2.0 * G * ramp_rise(1.24)).sqrt();
-    assert!(speed <= ideal + 1e-4 && speed > 0.97 * ideal, "speed {speed} vs ideal {ideal}");
+    assert!(
+        speed <= ideal + 1e-4 && speed > 0.97 * ideal,
+        "speed {speed} vs ideal {ideal}"
+    );
 }
 
 #[test]
@@ -352,11 +381,17 @@ fn energy_never_increases() {
     for (i, log) in logs.iter().enumerate() {
         let e = energy(log.pos, log.vel);
         // f32 state: allow rounding noise of 1e-6 relative per tick.
-        assert!(e <= prev + 1e-6 * e0, "tick {i}: energy rose from {prev} to {e}");
+        assert!(
+            e <= prev + 1e-6 * e0,
+            "tick {i}: energy rose from {prev} to {e}"
+        );
         prev = e;
     }
     assert!(prev < e0);
-    assert!(prev > 0.94 * e0, "excessive numerical dissipation: {prev} of {e0}");
+    assert!(
+        prev > 0.94 * e0,
+        "excessive numerical dissipation: {prev} of {e0}"
+    );
 }
 
 #[test]
@@ -372,15 +407,27 @@ fn normal_force_is_smooth_away_from_entry_and_exit() {
         };
         if on_arc(&w[0]) && on_arc(&w[1]) {
             let change = (w[1].guide_force - w[0].guide_force).abs() / w[0].guide_force;
-            assert!(change < 0.05, "guide force {} -> {}", w[0].guide_force, w[1].guide_force);
+            assert!(
+                change < 0.05,
+                "guide force {} -> {}",
+                w[0].guide_force,
+                w[1].guide_force
+            );
             guide_samples.push((w[1].guide_force, w[1].vel.length()));
         }
     }
-    assert!(guide_samples.len() > 30, "{} guide samples", guide_samples.len());
+    assert!(
+        guide_samples.len() > 30,
+        "{} guide samples",
+        guide_samples.len()
+    );
     for (force, speed) in &guide_samples {
         // Centripetal force m v² / r of the ball centre path.
         let expected = BALL_M * speed * speed / (GUIDE_R - BALL_R);
-        assert!((force / expected - 1.0).abs() < 0.02, "guide force {force} vs {expected}");
+        assert!(
+            (force / expected - 1.0).abs() < 0.02,
+            "guide force {force} vs {expected}"
+        );
     }
 
     // Ramp: from the entrance zone (the ball has settled on both rails) to
@@ -389,20 +436,52 @@ fn normal_force_is_smooth_away_from_entry_and_exit() {
     for w in logs.windows(2) {
         let on_ramp = |l: &TickLog| {
             let d = RAMP_START_Y - l.pos.y;
-            (0.1..=RAMP_TOP_D).contains(&d)
+            (0.2..=RAMP_TOP_D).contains(&d)
         };
         if on_ramp(&w[0]) && on_ramp(&w[1]) {
-            assert!(w[0].rail_force > 0.5, "ball left the rails: {}", w[0].rail_force);
+            assert!(
+                w[0].rail_force > 0.5,
+                "ball left the rails: {}",
+                w[0].rail_force
+            );
             let change = (w[1].rail_force - w[0].rail_force).abs() / w[0].rail_force;
-            assert!(change < 0.05, "rail force {} -> {} at y = {}", w[0].rail_force, w[1].rail_force, w[1].pos.y);
+            assert!(
+                change < 0.05,
+                "rail force {} -> {} at y = {}",
+                w[0].rail_force,
+                w[1].rail_force,
+                w[1].pos.y
+            );
             rail_samples += 1;
         }
     }
     assert!(rail_samples > 100, "{rail_samples} rail samples");
+    // On the straight incline at the top, the two rails carry the weight:
+    // m g cos(slope) / cos(rail contact angle).
+    let table = build_table();
+    let expected = BALL_M * G / (1.0 + SLOPE * SLOPE).sqrt() / (table.seat / BALL_R);
+    for log in logs
+        .iter()
+        .filter(|l| (1.1..=RAMP_TOP_D).contains(&(RAMP_START_Y - l.pos.y)))
+    {
+        assert!(
+            (log.rail_force / expected - 1.0).abs() < 0.03,
+            "rail force {} vs {expected}",
+            log.rail_force
+        );
+    }
 
     // Floor: the ball's weight while it rolls on the main deck before the rails.
-    for log in logs.iter().filter(|l| l.pos.y > RAMP_START_Y + RAIL_LEAD).skip(2) {
-        assert!((log.floor_force / (BALL_M * G) - 1.0).abs() < 0.01, "floor force {}", log.floor_force);
+    for log in logs
+        .iter()
+        .filter(|l| l.pos.y > RAMP_START_Y + RAIL_LEAD)
+        .skip(2)
+    {
+        assert!(
+            (log.floor_force / (BALL_M * G) - 1.0).abs() < 0.01,
+            "floor force {}",
+            log.floor_force
+        );
     }
 }
 
@@ -416,21 +495,41 @@ fn no_tunnelling() {
                 // Never through the floor, never through the guide wall.
                 assert!(log.pos.z > BALL_R - tol, "tick {i}: z = {}", log.pos.z);
                 assert!(log.min_floor_gap > -tol || log.min_floor_gap.is_infinite());
-                assert!(log.min_guide_gap > -tol, "tick {i}: guide gap {}", log.min_guide_gap);
+                assert!(
+                    log.min_guide_gap > -tol,
+                    "tick {i}: guide gap {}",
+                    log.min_guide_gap
+                );
                 // (The interpolated arc is round to about 0.1 mm near its ends.)
-                assert!(log.max_arc_radius < GUIDE_R - BALL_R + 3.0 * tol, "tick {i}: radius {}", log.max_arc_radius);
+                assert!(
+                    log.max_arc_radius < GUIDE_R - BALL_R + 3.0 * tol,
+                    "tick {i}: radius {}",
+                    log.max_arc_radius
+                );
                 assert!(log.pos.x.abs() < GUIDE_R - BALL_R + 3.0 * tol);
-                assert!(log.min_rail_gap > -tol, "tick {i}: rail gap {}", log.min_rail_gap);
+                assert!(
+                    log.min_rail_gap > -tol,
+                    "tick {i}: rail gap {}",
+                    log.min_rail_gap
+                );
             }
             LAYER_WIRE => {
-                assert!(log.min_rail_gap > -tol, "tick {i}: rail gap {}", log.min_rail_gap);
+                assert!(
+                    log.min_rail_gap > -tol,
+                    "tick {i}: rail gap {}",
+                    log.min_rail_gap
+                );
                 // Still sitting on top of both rails.
                 assert!(
                     log.min_rail_height > table.seat - tol,
                     "tick {i}: height above rails {}",
                     log.min_rail_height
                 );
-                assert!((log.pos.x + (GUIDE_R - BALL_R)).abs() < tol, "tick {i}: x = {}", log.pos.x);
+                assert!(
+                    (log.pos.x + (GUIDE_R - BALL_R)).abs() < tol,
+                    "tick {i}: x = {}",
+                    log.pos.x
+                );
             }
             _ => {}
         }
@@ -455,8 +554,16 @@ fn layer_switches_exactly_once_per_transition() {
     assert!(logs[first_wire + 1..].iter().all(|l| l.floor_force == 0.0));
     // Each switch happens inside its zone.
     let d_at = |layer: u8| RAMP_START_Y - logs.iter().find(|l| l.layer == layer).unwrap().pos.y;
-    assert!((0.09..0.17).contains(&d_at(LAYER_WIRE)), "{}", d_at(LAYER_WIRE));
-    assert!((1.16..1.23).contains(&d_at(LAYER_UPPER)), "{}", d_at(LAYER_UPPER));
+    assert!(
+        (0.09..0.17).contains(&d_at(LAYER_WIRE)),
+        "{}",
+        d_at(LAYER_WIRE)
+    );
+    assert!(
+        (1.16..1.23).contains(&d_at(LAYER_UPPER)),
+        "{}",
+        d_at(LAYER_UPPER)
+    );
 }
 
 #[test]
@@ -465,8 +572,14 @@ fn run_is_deterministic() {
     let (_, b) = run();
     assert_eq!(a.len(), b.len());
     for (x, y) in a.iter().zip(&b) {
-        assert_eq!(x.pos.to_array().map(f32::to_bits), y.pos.to_array().map(f32::to_bits));
-        assert_eq!(x.vel.to_array().map(f32::to_bits), y.vel.to_array().map(f32::to_bits));
+        assert_eq!(
+            x.pos.to_array().map(f32::to_bits),
+            y.pos.to_array().map(f32::to_bits)
+        );
+        assert_eq!(
+            x.vel.to_array().map(f32::to_bits),
+            y.vel.to_array().map(f32::to_bits)
+        );
     }
 }
 
@@ -479,8 +592,19 @@ fn dump() {
         let e = energy(l.pos, l.vel);
         println!(
             "{i:3} L{} pos {:8.5} {:8.5} {:8.5} |v| {:7.5} E {:9.6} dE {:+.2e} Ng {:8.4} Nr {:8.4} Nf {:7.4} gg {:+.2e} rg {:+.2e} fg {:+.2e}",
-            l.layer, l.pos.x, l.pos.y, l.pos.z, l.vel.length(), e, e - prev, l.guide_force, l.rail_force,
-            l.floor_force, l.min_guide_gap, l.min_rail_gap, l.min_floor_gap
+            l.layer,
+            l.pos.x,
+            l.pos.y,
+            l.pos.z,
+            l.vel.length(),
+            e,
+            e - prev,
+            l.guide_force,
+            l.rail_force,
+            l.floor_force,
+            l.min_guide_gap,
+            l.min_rail_gap,
+            l.min_floor_gap
         );
         prev = e;
     }

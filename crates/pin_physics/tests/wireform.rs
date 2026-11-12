@@ -13,7 +13,11 @@ fn helix(turns: f32, points: usize) -> CubicSpline {
     let pts: Vec<Vec3> = (0..points)
         .map(|i| {
             let a = turns * std::f32::consts::TAU * i as f32 / (points - 1) as f32;
-            v(0.1 * libm::cosf(a), 0.1 * libm::sinf(a), 0.06 * a / std::f32::consts::TAU)
+            v(
+                0.1 * libm::cosf(a),
+                0.1 * libm::sinf(a),
+                0.06 * a / std::f32::consts::TAU,
+            )
         })
         .collect();
     CubicSpline::interpolate(&pts).unwrap()
@@ -36,7 +40,10 @@ fn assert_orthonormal(f: &Frame) {
     assert!(f.tangent.dot(f.normal).abs() < 1e-5, "{f:?}");
     assert!(f.tangent.dot(f.binormal).abs() < 1e-5, "{f:?}");
     assert!(f.normal.dot(f.binormal).abs() < 1e-5, "{f:?}");
-    assert!((f.tangent.cross(f.normal) - f.binormal).length() < 1e-5, "{f:?}");
+    assert!(
+        (f.tangent.cross(f.normal) - f.binormal).length() < 1e-5,
+        "{f:?}"
+    );
 }
 
 #[test]
@@ -92,12 +99,16 @@ fn construction_errors() {
 #[test]
 fn planar_curve_zero_roll_keeps_rails_in_plane() {
     let s = planar_s_curve();
-    let w = Wireform::new(s.clone(), &vec![0.0; 17], 0.024, Vec3::Z).unwrap();
+    let w = Wireform::new(s.clone(), &[0.0; 17], 0.024, Vec3::Z).unwrap();
     for k in 0..=320 {
         let t = k as f32 * 0.05;
         let f = w.frame_at(t);
         assert_orthonormal(&f);
-        assert!((f.normal - Vec3::Z).length() < 1e-5, "normal at {t}: {:?}", f.normal);
+        assert!(
+            (f.normal - Vec3::Z).length() < 1e-5,
+            "normal at {t}: {:?}",
+            f.normal
+        );
         assert!((f.tangent - s.tangent(t).normalize()).length() < 1e-5);
         let (a, b) = w.rail_points(t);
         assert!(a.z.abs() < 1e-6 && b.z.abs() < 1e-6);
@@ -113,7 +124,8 @@ fn planar_curve_zero_roll_keeps_rails_in_plane() {
 
 #[test]
 fn up_hint_is_projected_and_has_a_fallback() {
-    let s = CubicSpline::interpolate(&[v(0.0, 0.0, 0.0), v(0.1, 0.0, 0.0), v(0.2, 0.0, 0.02)]).unwrap();
+    let s =
+        CubicSpline::interpolate(&[v(0.0, 0.0, 0.0), v(0.1, 0.0, 0.0), v(0.2, 0.0, 0.02)]).unwrap();
     // Tilted hint: projected perpendicular to the tangent.
     let w = Wireform::new(s.clone(), &[0.0; 3], 0.02, v(5.0, 0.0, 5.0)).unwrap();
     let f = w.frame_at(0.0);
@@ -133,7 +145,7 @@ fn up_hint_is_projected_and_has_a_fallback() {
 #[test]
 fn rotation_minimizing_frame_has_low_twist() {
     let s = helix(2.0, 49);
-    let w = Wireform::new(s.clone(), &vec![0.0; 49], 0.02, Vec3::Z).unwrap();
+    let w = Wireform::new(s.clone(), &[0.0; 49], 0.02, Vec3::Z).unwrap();
     // Twist rate = (dn/dt · b): zero for a rotation-minimizing frame. Compare
     // it with the Frenet frame's twist (the torsion), which is large here.
     let h = 1.0e-2f32;
@@ -148,7 +160,10 @@ fn rotation_minimizing_frame_has_low_twist() {
         max_turn = max_turn.max(dn.length());
     }
     assert!(max_turn > 0.05, "the frame does turn: {max_turn}");
-    assert!(max_twist < 2e-3 * max_turn.max(1.0), "twist {max_twist} vs turn {max_turn}");
+    assert!(
+        max_twist < 2e-3 * max_turn.max(1.0),
+        "twist {max_twist} vs turn {max_turn}"
+    );
 
     // Total rotation relative to the Frenet frame equals the integrated
     // torsion: for this helix, -2π·turns·sin(pitch angle).
@@ -196,7 +211,10 @@ fn frame_is_smooth_across_samples_and_knots() {
         let (a1, _) = w.rail_points(t + h);
         let vel = (a1 - a0) / h;
         if let Some(p) = prev {
-            assert!((vel - p).length() < 0.02 * speed.max(0.01), "kink at t = {t}");
+            assert!(
+                (vel - p).length() < 0.02 * speed.max(0.01),
+                "kink at t = {t}"
+            );
         }
         speed = vel.length();
         prev = Some(vel);
@@ -222,7 +240,11 @@ fn roll_rotates_about_the_tangent() {
         // Unrolled frame: normal +Z, binormal X × Z = -Y. Right-handed roll
         // about +X turns +Z toward -Y.
         let (sin, cos) = (libm::sinf(deg.to_radians()), libm::cosf(deg.to_radians()));
-        assert!((f.normal - v(0.0, -sin, cos)).length() < 1e-5, "{:?}", f.normal);
+        assert!(
+            (f.normal - v(0.0, -sin, cos)).length() < 1e-5,
+            "{:?}",
+            f.normal
+        );
         assert!((f.binormal - v(0.0, -cos, -sin)).length() < 1e-5);
     }
     // Linear data stays linear under the natural spline.
@@ -259,7 +281,11 @@ fn closest_on_rails_matches_brute_force() {
                     let u = t - 1.0 + j as f32 / per as f32;
                     best = best.min(rail(u).distance(p));
                 }
-                assert!((cp.distance - best).abs() < 2e-6, "{} vs {best}", cp.distance);
+                assert!(
+                    (cp.distance - best).abs() < 2e-6,
+                    "{} vs {best}",
+                    cp.distance
+                );
                 assert!((rail(cp.t) - cp.point).length() < 1e-6);
                 assert!((cp.point.distance(p) - cp.distance).abs() < 1e-6);
             }
@@ -327,7 +353,11 @@ fn guide_closest_point_on_a_rising_curve_matches_brute_force() {
                 let u = (p.z - q.z).clamp(0.0, 0.03);
                 best = best.min((q + Vec3::Z * u).distance(p));
             }
-            assert!((cp.distance - best).abs() < 5e-6, "{} vs {best}", cp.distance);
+            assert!(
+                (cp.distance - best).abs() < 5e-6,
+                "{} vs {best}",
+                cp.distance
+            );
         }
     }
 }
@@ -335,7 +365,8 @@ fn guide_closest_point_on_a_rising_curve_matches_brute_force() {
 #[test]
 fn guide_cast_hits_without_tunnelling() {
     // Straight wall along +X at y = 0, 30 mm high.
-    let s = CubicSpline::interpolate(&[v(0.0, 0.0, 0.0), v(0.5, 0.0, 0.0), v(1.0, 0.0, 0.0)]).unwrap();
+    let s =
+        CubicSpline::interpolate(&[v(0.0, 0.0, 0.0), v(0.5, 0.0, 0.0), v(1.0, 0.0, 0.0)]).unwrap();
     let g = GuideCurve::new(s, 0.03).unwrap();
     let r = 0.0135;
     let start = v(0.5, 0.2, 0.0135);
@@ -344,35 +375,74 @@ fn guide_cast_hits_without_tunnelling() {
         let hit = g.cast_sphere(start, r, vel, 1.0, None).unwrap();
         let travelled = hit.time * speed;
         // Stops within the 10 µm skin before the wall, never beyond.
-        assert!(travelled <= 0.2 - r + 1e-6 && travelled > 0.2 - r - 2e-5, "speed {speed}: {travelled}");
+        assert!(
+            travelled <= 0.2 - r + 1e-6 && travelled > 0.2 - r - 2e-5,
+            "speed {speed}: {travelled}"
+        );
         assert!((hit.normal - Vec3::Y).length() < 1e-4);
         assert!((hit.point - v(0.5, 0.0, 0.0135)).length() < 1e-4);
         assert!((hit.t - 1.0).abs() < 1e-3);
         // Oblique approach from the other side.
         let vel = v(0.6, 0.8, 0.0) * speed;
-        let hit = g.cast_sphere(v(0.2, -0.2, 0.0135), r, vel, 1.0, Some(0.3)).unwrap();
+        let hit = g
+            .cast_sphere(v(0.2, -0.2, 0.0135), r, vel, 1.0, Some(0.3))
+            .unwrap();
         let expected = (0.2 - r) / (0.8 * speed);
         assert!(hit.time <= expected * (1.0 + 1e-5) && hit.time > expected - 3e-5 / speed);
         assert!((hit.normal + Vec3::Y).length() < 1e-3);
         // Out of time.
-        assert!(g.cast_sphere(start, r, v(0.0, -speed, 0.0), 0.1 / speed, None).is_none());
+        assert!(
+            g.cast_sphere(start, r, v(0.0, -speed, 0.0), 0.1 / speed, None)
+                .is_none()
+        );
     }
     // Moving away, parallel, or not moving: no hit.
-    assert!(g.cast_sphere(start, r, v(0.0, 1.0, 0.0), 1.0, None).is_none());
-    assert!(g.cast_sphere(start, r, v(1.0, 0.0, 0.0), 0.3, None).is_none());
+    assert!(
+        g.cast_sphere(start, r, v(0.0, 1.0, 0.0), 1.0, None)
+            .is_none()
+    );
+    assert!(
+        g.cast_sphere(start, r, v(1.0, 0.0, 0.0), 0.3, None)
+            .is_none()
+    );
     assert!(g.cast_sphere(start, r, Vec3::ZERO, 1.0, None).is_none());
-    assert!(g.cast_sphere(start, r, v(0.0, -1.0, 0.0), f32::NAN, None).is_none());
-    assert!(g.cast_sphere(v(f32::NAN, 0.0, 0.0), r, v(0.0, -1.0, 0.0), 1.0, None).is_none());
+    assert!(
+        g.cast_sphere(start, r, v(0.0, -1.0, 0.0), f32::NAN, None)
+            .is_none()
+    );
+    assert!(
+        g.cast_sphere(v(f32::NAN, 0.0, 0.0), r, v(0.0, -1.0, 0.0), 1.0, None)
+            .is_none()
+    );
     // Passing over the top of the wall.
-    assert!(g.cast_sphere(v(0.5, 0.2, 0.03 + r + 0.001), r, v(0.0, -1.0, 0.0), 0.4, None).is_none());
+    assert!(
+        g.cast_sphere(
+            v(0.5, 0.2, 0.03 + r + 0.001),
+            r,
+            v(0.0, -1.0, 0.0),
+            0.4,
+            None
+        )
+        .is_none()
+    );
     // Touching: hit at time 0 only when pressing in.
     let touching = v(0.5, r, 0.0135);
-    let hit = g.cast_sphere(touching, r, v(1.0, -0.1, 0.0), 1.0, None).unwrap();
+    let hit = g
+        .cast_sphere(touching, r, v(1.0, -0.1, 0.0), 1.0, None)
+        .unwrap();
     assert_eq!(hit.time, 0.0);
-    assert!(g.cast_sphere(touching, r, v(1.0, 0.0, 0.0), 0.1, None).is_none());
-    assert!(g.cast_sphere(touching, r, v(1.0, 0.1, 0.0), 1.0, None).is_none());
+    assert!(
+        g.cast_sphere(touching, r, v(1.0, 0.0, 0.0), 0.1, None)
+            .is_none()
+    );
+    assert!(
+        g.cast_sphere(touching, r, v(1.0, 0.1, 0.0), 1.0, None)
+            .is_none()
+    );
     // Centre exactly on the wall: the fallback normal is the curve normal.
-    let hit = g.cast_sphere(v(0.5, 0.0, 0.01), r, v(0.0, -1.0, 0.0), 1.0, None).unwrap();
+    let hit = g
+        .cast_sphere(v(0.5, 0.0, 0.01), r, v(0.0, -1.0, 0.0), 1.0, None)
+        .unwrap();
     assert_eq!(hit.time, 0.0);
     assert!((hit.normal.length() - 1.0).abs() < 1e-6 && hit.normal.z.abs() < 1e-6);
 }
@@ -397,7 +467,7 @@ fn guide_cast_grazing_is_conservative() {
     let hit = g.cast_sphere(start, r, vel, 1.0e-3, None).unwrap();
     let at = start + vel * hit.time;
     let gap = g.closest_point(at, Some(hit.t)).distance - r;
-    assert!(gap >= -1e-6 && gap <= 2e-5, "gap {gap}");
+    assert!((-1e-6..=2e-5).contains(&gap), "gap {gap}");
     assert!(hit.time > 0.0 && hit.time < 1.0e-3);
     assert!(hit.normal.dot(radial) < -0.99);
 }

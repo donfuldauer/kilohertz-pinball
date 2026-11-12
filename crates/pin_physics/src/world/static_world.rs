@@ -112,7 +112,12 @@ impl StaticWorldBuilder {
     /// Geometry that cannot collide (non-finite coordinates, zero-height
     /// cylinders, zero-area triangles, out-of-range indices) is skipped when
     /// the world is built; the handle stays valid.
-    pub fn add_collider(&mut self, shape: StaticShape, layers: u8, enabled: bool) -> ColliderHandle {
+    pub fn add_collider(
+        &mut self,
+        shape: StaticShape,
+        layers: u8,
+        enabled: bool,
+    ) -> ColliderHandle {
         let handle = ColliderHandle(self.shapes.len() as u32);
         self.shapes.push((shape, layers, enabled));
         handle
@@ -172,7 +177,10 @@ impl StaticWorldBuilder {
             .iter()
             .map(|(prim, _)| {
                 let (min, max) = prim.aabb();
-                Aabb::new(min - Vec3::splat(LEAF_MARGIN), max + Vec3::splat(LEAF_MARGIN))
+                Aabb::new(
+                    min - Vec3::splat(LEAF_MARGIN),
+                    max + Vec3::splat(LEAF_MARGIN),
+                )
             })
             .collect();
         let bvh = if aabbs.is_empty() {
@@ -282,8 +290,10 @@ fn mesh_primitives(
         let side = |p: Vec3| edge.cross(p - e0).dot(first.normal);
         side(first.pos[(e1 + 2) % 3]) * side(second.pos[(e2 + 2) % 3]) < 0.0
     };
-    let flat_edges: BTreeMap<(u32, u32), bool> =
-        edges.iter().map(|(key, usage)| (*key, is_flat(usage))).collect();
+    let flat_edges: BTreeMap<(u32, u32), bool> = edges
+        .iter()
+        .map(|(key, usage)| (*key, is_flat(usage)))
+        .collect();
     let edge_is_flat = |a: u32, b: u32| flat_edges.get(&edge_key(a, b)).copied().unwrap_or(false);
     // A welded vertex is active when any edge that touches it is active.
     let mut vertex_active = vec![false; welded.len()];
@@ -380,8 +390,9 @@ impl StaticWorld {
     ) -> Option<SphereHit> {
         if self.prims.is_empty()
             || !(center.is_finite() && velocity.is_finite() && radius.is_finite())
-            || !(max_time >= 0.0)
-            || !(radius >= 0.0)
+            || max_time.is_nan()
+            || max_time < 0.0
+            || radius < 0.0
         {
             return None;
         }
@@ -445,7 +456,7 @@ impl StaticWorld {
             }
             let cl = prim.closest(center);
             let depth = radius - cl.distance;
-            if !(depth >= 0.0) || !cl.valid {
+            if depth.is_nan() || depth < 0.0 || !cl.valid {
                 continue;
             }
             let contact = SphereContact {

@@ -78,8 +78,7 @@ impl Wireform {
         if roll_deg.len() != centerline.segment_count() + 1 {
             return Err(SplineError::RollCountMismatch);
         }
-        if roll_deg.iter().any(|r| !r.is_finite()) || !gauge_m.is_finite() || !up_hint.is_finite()
-        {
+        if roll_deg.iter().any(|r| !r.is_finite()) || !gauge_m.is_finite() || !up_hint.is_finite() {
             return Err(SplineError::NonFinite);
         }
         if gauge_m <= 0.0 {
@@ -310,7 +309,10 @@ impl Wireform {
     #[must_use]
     pub fn closest_on_rails(&self, p: Vec3, seed_t: Option<f32>) -> [ClosestPoint; 2] {
         let t0 = self.centerline.closest_point(p, seed_t).t;
-        [self.closest_on_rail(p, t0, 1.0), self.closest_on_rail(p, t0, -1.0)]
+        [
+            self.closest_on_rail(p, t0, 1.0),
+            self.closest_on_rail(p, t0, -1.0),
+        ]
     }
 
     fn closest_on_rail(&self, p: Vec3, t0: f32, side: f32) -> ClosestPoint {

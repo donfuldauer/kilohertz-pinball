@@ -107,7 +107,11 @@ fn per_tick_queries_do_not_allocate() {
     for j in 0..=n {
         for i in 0..=n {
             let (x, y) = (i as f32 / n as f32 - 0.5, j as f32 / n as f32 - 0.5);
-            vertices.push(v(x * 0.3, y * 0.3 + 0.5, 0.05 + 0.02 * libm::sinf(9.0 * x) * libm::cosf(7.0 * y)));
+            vertices.push(v(
+                x * 0.3,
+                y * 0.3 + 0.5,
+                0.05 + 0.02 * libm::sinf(9.0 * x) * libm::cosf(7.0 * y),
+            ));
         }
     }
     for j in 0..n {
@@ -117,7 +121,11 @@ fn per_tick_queries_do_not_allocate() {
             indices.push([id(i, j), id(i + 1, j + 1), id(i, j + 1)]);
         }
     }
-    builder.add_collider(StaticShape::TriMesh { vertices, indices }, layers::MAIN_DECK, true);
+    builder.add_collider(
+        StaticShape::TriMesh { vertices, indices },
+        layers::MAIN_DECK,
+        true,
+    );
     let mut world = builder.build();
     let gate = gate.unwrap();
 
@@ -152,7 +160,8 @@ fn per_tick_queries_do_not_allocate() {
         seed = Some(cp.t);
         checksum += cp.distance;
         checksum += spline.closest_point(pos, None).distance;
-        checksum += spline.point(cp.t).x + spline.tangent(cp.t).y + spline.second_derivative(cp.t).z;
+        checksum +=
+            spline.point(cp.t).x + spline.tangent(cp.t).y + spline.second_derivative(cp.t).z;
 
         let frame = wireform.frame_at(cp.t);
         let (left, right) = wireform.rail_points(cp.t);
@@ -170,7 +179,9 @@ fn per_tick_queries_do_not_allocate() {
             checksum += hit.time + hit.normal.z;
         }
         // A long cast that crosses the whole table and the mesh.
-        if let Some(hit) = world.cast_sphere(pos + Vec3::Z * 0.2, 0.0135, v(1.0, 2.0, -0.5), 1.0, 0xFF) {
+        if let Some(hit) =
+            world.cast_sphere(pos + Vec3::Z * 0.2, 0.0135, v(1.0, 2.0, -0.5), 1.0, 0xFF)
+        {
             checksum += hit.time;
         }
         world.sphere_contacts(pos, 0.0135, mask, &mut contacts);
