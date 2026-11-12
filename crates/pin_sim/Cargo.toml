@@ -1,0 +1,11 @@
+[package]
+name = "pin_sim"
+description = "Headless simulation: tick order, command application, record/replay and autoplay."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+pin_core.workspace = true

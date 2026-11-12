@@ -1,0 +1,74 @@
+# Global physics tunables (PLAN.md Appendix C: provisional physics defaults).
+#
+# Engineering starting points, not measurements. Gate A1 holds the analytic
+# checks fixed and may search within [min, max]; final acceptance may retune.
+# Units are SI except magnet_remanence_tau_ms (milliseconds).
+# Tables override individual defaults in their optional [physics] section,
+# using the [tunables] key names (e.g. flipper_rubber_damping = 0.35).
+# Parsed by pin_core::PhysicsDefaults; unknown keys are errors.
+
+schema_version = 1
+
+# Material pairs: restitution and sliding friction μ (unordered pairs).
+[[material_pairs]]
+materials = ["steel", "rubber"]
+restitution = 0.65
+friction = 0.80
+
+[[material_pairs]]
+materials = ["ceramic", "rubber"]
+restitution = 0.78
+friction = 0.70
+
+[[material_pairs]]
+materials = ["plastic", "rubber"]
+restitution = 0.84
+friction = 0.80
+
+[[material_pairs]]
+materials = ["steel", "wood"]          # playfield
+restitution = 0.25
+friction = 0.20
+
+[[material_pairs]]
+materials = ["ceramic", "wood"]
+restitution = 0.30
+friction = 0.18
+
+[[material_pairs]]
+materials = ["plastic", "wood"]
+restitution = 0.35
+friction = 0.25
+
+[[material_pairs]]
+materials = ["steel", "steel"]
+restitution = 0.60
+friction = 0.15
+
+[[material_pairs]]
+materials = ["steel", "plastic"]
+restitution = 0.50
+friction = 0.20
+
+[[material_pairs]]
+materials = ["resin", "wood"]
+restitution = 0.30
+friction = 0.22
+
+[tunables]
+flipper_inertia              = { default = 1.0e-4, min = 0.5e-4, max = 3.0e-4 }  # kg·m², 76 mm bat
+flipper_power_torque         = { default = 1.2,    min = 0.6,    max = 3.0 }     # N·m
+flipper_hold_torque          = { default = 0.15,   min = 0.05,   max = 0.4 }     # N·m
+flipper_return_spring_torque = { default = 0.03,   min = 0.01,   max = 0.08 }    # N·m
+flipper_stop_restitution     = { default = 0.15,   min = 0.0,    max = 0.4 }     # end stop
+flipper_rubber_damping       = { default = 0.35,   min = 0.1,    max = 0.7 }
+rolling_resistance           = { default = 0.002,  min = 0.0005, max = 0.01 }
+globall_magnus_coeff         = { default = 1.0e-5, min = 0.0,    max = 5.0e-5 }  # kg (uv_globall)
+magnet_remanence_tau_ms      = { default = 60.0,   min = 20.0,   max = 200.0 }   # ms
+
+# Feel windows checked by Gate A1.
+[feel_windows]
+flipper_stroke_time_ms = { min = 20.0, max = 35.0 }   # unloaded, rest to EOS
+flipper_exit_speed_m_s = { min = 3.0,  max = 7.0 }    # full shot, cradled standard ball
+bumper_exit_speed_m_s  = { min = 1.5,  max = 4.0 }
+sling_exit_speed_m_s   = { min = 1.5,  max = 4.0 }

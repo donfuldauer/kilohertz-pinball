@@ -1,0 +1,11 @@
+[package]
+name = "pin_assetgen"
+description = "Code-generated, licence-clean placeholder sounds, fonts and art."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+pin_core.workspace = true

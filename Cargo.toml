@@ -1,0 +1,58 @@
+# Kilohertz Pinball workspace (PLAN.md §2.1). Created by Subphase 1.1.
+# spikes/ is a separate workspace (Subphase 0.1) and is excluded here.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# Pins copied unchanged from versions.toml (Subphase 0.1), with the feature sets
+# recorded there. Crates enable these with `<name>.workspace = true`.
+[workspace.dependencies]
+# Internal crates.
+pin_core = { path = "crates/pin_core" }
+
+# Platform.
+sdl3 = { version = "=0.22.1", features = ["build-from-source-static", "raw-window-handle"] }
+sdl3-sys = "=0.7.3"
+raw-window-handle = "=0.6.2"
+
+# Graphics.
+wgpu = "=30.0.1"
+pollster = "=1.0.1"
+
+# Physics.
+parry3d = "=0.31.1"
+glamx = "=0.3.1"
+glam = "=0.33.12"
+simba = "=0.10.2"
+
+# Scripting.
+mlua = { version = "=0.12.2", features = ["lua54", "vendored"] }
+wasmtime = "=50.0.1"
+
+# Utility.
+serde = { version = "=1.0.229", features = ["derive"] }
+toml = "=1.2.1"
+arrayvec = "=0.7.8"
+rand_pcg = "=0.10.2"
+rand_core = "=0.10.1"
+proptest = "=1.12.0"
+notify = "=8.2.2"
+gltf = "=1.4.1"
+egui = "=0.37.0"
+egui-wgpu = "=0.37.0"
+libm = "=0.2.16"
+
+[profile.dev]
+# Keep the 1 kHz solver usable in debug test runs.
+opt-level = 1
+
+[profile.test]
+opt-level = 1
