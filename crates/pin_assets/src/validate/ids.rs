@@ -77,6 +77,10 @@ impl IdKind {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TableIds {
     tables: [Vec<(String, u16)>; 11],
+    /// First id of each name, per kind.
+    by_name: [std::collections::HashMap<String, u16>; 11],
+    /// Position in `tables` of the first name with each id, per kind.
+    by_id: [std::collections::HashMap<u16, usize>; 11],
 }
 
 macro_rules! lookup {
@@ -96,22 +100,21 @@ impl TableIds {
 
     /// Raw id of `name` in `kind`.
     pub fn get(&self, kind: IdKind, name: &str) -> Option<u16> {
-        self.entries(kind)
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|&(_, id)| id)
+        self.by_name[kind.slot()].get(name).copied()
     }
 
     /// The first name interned with `id` in `kind`.
     pub fn name(&self, kind: IdKind, id: u16) -> Option<&str> {
-        self.entries(kind)
-            .iter()
-            .find(|&&(_, i)| i == id)
-            .map(|(n, _)| n.as_str())
+        let at = *self.by_id[kind.slot()].get(&id)?;
+        Some(self.tables[kind.slot()][at].0.as_str())
     }
 
     pub(crate) fn push(&mut self, kind: IdKind, name: &str, id: u16) {
-        self.tables[kind.slot()].push((name.to_owned(), id));
+        let slot = kind.slot();
+        let at = self.tables[slot].len();
+        self.tables[slot].push((name.to_owned(), id));
+        self.by_name[slot].entry(name.to_owned()).or_insert(id);
+        self.by_id[slot].entry(id).or_insert(at);
     }
 
     lookup! {

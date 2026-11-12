@@ -85,23 +85,30 @@ pub(super) struct Checker<'v> {
 
 /// Tracks first declarations of names and numbers within one kind.
 struct Seen<'a, T> {
-    items: Vec<(T, &'a str)>,
+    items: std::collections::HashMap<T, &'a str>,
 }
 
-impl<'a, T: PartialEq> Seen<'a, T> {
+impl<'a, T: Eq + core::hash::Hash> Seen<'a, T> {
     fn new() -> Self {
-        Seen { items: Vec::new() }
+        Seen {
+            items: std::collections::HashMap::new(),
+        }
     }
 
     /// The path of an earlier declaration of `key`, or records this one.
     fn check(&mut self, key: T, path: &'a str) -> Option<&'a str> {
-        if let Some((_, first)) = self.items.iter().find(|(k, _)| *k == key) {
-            return Some(first);
+        match self.items.entry(key) {
+            std::collections::hash_map::Entry::Occupied(e) => Some(e.get()),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(path);
+                None
+            }
         }
-        self.items.push((key, path));
-        None
     }
 }
+
+/// Most entries of one kind: ids are `u16` in declaration order.
+pub(super) const MAX_PER_KIND: usize = 1 << 16;
 
 fn fmt3(v: [f32; 3]) -> String {
     format!("[{}, {}, {}]", v[0], v[1], v[2])
@@ -363,7 +370,7 @@ impl<'v> Checker<'v> {
         );
         self.ordered(t.mechs.iter().map(|m| m.id.as_str()), "mechs", None);
         let mut diverter = 0u16;
-        for m in &t.mechs {
+        for m in t.mechs.iter().take(MAX_PER_KIND) {
             if m.kind == MechKind::Diverter && self.ids.get(IdKind::Diverter, &m.id).is_none() {
                 self.ids.push(IdKind::Diverter, &m.id, diverter);
                 diverter = diverter.wrapping_add(1);
@@ -377,7 +384,18 @@ impl<'v> Checker<'v> {
         );
         self.ordered(t.shots.iter().map(|s| s.id.as_str()), "shots", None);
         self.ordered(t.modes.iter().map(|s| s.id.as_str()), "modes", None);
-        if let Some(persist) = &t.persist {
+        if let Some(persist) = &t.persist
+            && persist.keys.len() > MAX_PER_KIND
+        {
+            self.err(
+                TABLE_FILE,
+                "persist.keys",
+                format!(
+                    "too many persist key entries: {} (max {MAX_PER_KIND})",
+                    persist.keys.len()
+                ),
+            );
+        } else if let Some(persist) = &t.persist {
             let mut seen = Seen::new();
             let paths: Vec<String> = (0..persist.keys.len())
                 .map(|i| format!("persist.keys[{i}]"))
@@ -417,6 +435,18 @@ impl<'v> Checker<'v> {
         kind: Option<IdKind>,
     ) {
         let names: Vec<&str> = names.collect();
+        if names.len() > MAX_PER_KIND {
+            let label: &str = match kind {
+                Some(k) => k.label(),
+                None => section.trim_end_matches('s'),
+            };
+            self.err(
+                TABLE_FILE,
+                section,
+                format!("too many {label} entries: {} (max {MAX_PER_KIND})", names.len()),
+            );
+            return;
+        }
         let paths: Vec<String> = (0..names.len())
             .map(|i| format!("{section}[{i}]"))
             .collect();
@@ -468,6 +498,37 @@ impl<'v> Checker<'v> {
             );
             for (j, &l) in r.layers.iter().enumerate() {
                 self.layer(TABLE_FILE, format!("balls.restrict[{i}].layers[{j}]"), l);
+            }
+        }
+
+        // Physical parameters that must be positive (N9).
+        for (i, s) in t.switches.iter().enumerate() {
+            if let Some(r) = s.radius
+                && !(r > 0.0)
+            {
+                self.err(
+                    TABLE_FILE,
+                    format!("switches[{i}].radius"),
+                    format!("switch radius must be positive, got {r}"),
+                );
+            }
+        }
+        for (i, m) in t.magnets.iter().enumerate() {
+            for (field, v) in [("d_min", m.d_min), ("range", m.range)] {
+                if !(v > 0.0) {
+                    self.err(
+                        TABLE_FILE,
+                        format!("magnets[{i}].{field}"),
+                        format!("magnet {field} must be positive, got {v}"),
+                    );
+                }
+            }
+            if !(m.k_coil >= 0.0) {
+                self.err(
+                    TABLE_FILE,
+                    format!("magnets[{i}].k_coil"),
+                    format!("magnet k_coil must not be negative, got {}", m.k_coil),
+                );
             }
         }
 

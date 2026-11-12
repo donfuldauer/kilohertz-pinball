@@ -268,8 +268,21 @@ fn schema_error(file: &str, e: SchemaError) -> ValidationError {
     }
 }
 
+/// Largest manifest (`table.toml`, `backglass.toml`) accepted, bytes.
+pub const MAX_MANIFEST_BYTES: usize = 4 << 20;
+
 fn read_text(vfs: &Vfs, file: &str) -> Result<Result<String, ValidationError>, AssetError> {
     let bytes = vfs.read(file)?;
+    if bytes.len() > MAX_MANIFEST_BYTES {
+        return Ok(Err(ValidationError::new(
+            file,
+            "",
+            format!(
+                "manifest is {} bytes (max {MAX_MANIFEST_BYTES})",
+                bytes.len()
+            ),
+        )));
+    }
     Ok(String::from_utf8(bytes)
         .map_err(|e| ValidationError::new(file, "", format!("not valid UTF-8 text: {e}"))))
 }
