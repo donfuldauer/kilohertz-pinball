@@ -101,7 +101,10 @@ pub fn names() -> NameTables {
         profiles: named(&[("steel", 0), ("ceramic", 11)], ProfileId),
         sounds: named(&[("bell", 12), ("drain", 13)], SoundId),
         scenes: named(&[("attract", 14), ("multiball", 15)], SceneId),
-        persist: named(&[("high_score_1", 0), ("credits", 16), ("last", 63)], PersistKey),
+        persist: named(
+            &[("high_score_1", 0), ("credits", 16), ("last", 63)],
+            PersistKey,
+        ),
     }
 }
 

@@ -344,7 +344,7 @@ impl CubicSpline {
                 continue;
             }
             let base = i * k;
-            let mut e0 = self.samples[base].point - p;
+            let e0 = self.samples[base].point - p;
             let mut d0 = e0.length_squared();
             let mut g0 = e0.dot(self.samples[base].tangent);
             for j in 0..k {
@@ -371,11 +371,9 @@ impl CubicSpline {
                         best_t = i as f32 + s;
                     }
                 }
-                e0 = e1;
                 d0 = d1;
                 g0 = g1;
             }
-            let _ = e0;
         }
 
         ClosestPoint {
@@ -425,10 +423,8 @@ impl CubicSpline {
         if !(s > lo && s < hi) {
             s = 0.5 * (lo + hi);
         }
-        let mut point = self.segments[i].point(s);
         for _ in 0..24 {
             let (c, d1, d2) = self.eval(i, s);
-            point = c;
             let e = c - p;
             let g = e.dot(d1);
             if g > 0.0 {
@@ -446,10 +442,9 @@ impl CubicSpline {
             let moved = (next - s).abs();
             s = next;
             if moved < NEWTON_EPS * 0.25 || hi - lo < NEWTON_EPS * 0.25 {
-                point = self.segments[i].point(s);
                 break;
             }
         }
-        (s, point)
+        (s, self.segments[i].point(s))
     }
 }

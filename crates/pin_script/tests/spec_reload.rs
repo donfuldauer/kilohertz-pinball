@@ -38,11 +38,27 @@ fn reload_carries_state_through_the_hooks() {
 
     h.tick(&mut b);
     assert!(!b.is_faulted());
-    assert_eq!(persisted(&h.cmd, 0), Some(1), "on_restore_state called exactly once");
+    assert_eq!(
+        persisted(&h.cmd, 0),
+        Some(1),
+        "on_restore_state called exactly once"
+    );
     assert_eq!(persisted(&h.cmd, 1), Some(1), "saved table arrived intact");
-    assert_eq!(persisted(&h.cmd, 2), Some(2), "array part of the saved state");
-    assert_eq!(persisted(&h.cmd, 3), Some(1), "string field of the saved state");
-    assert_eq!(h.cmd.scores.as_slice(), &[(1u8, 6i64)], "the tick counter continued from 5");
+    assert_eq!(
+        persisted(&h.cmd, 2),
+        Some(2),
+        "array part of the saved state"
+    );
+    assert_eq!(
+        persisted(&h.cmd, 3),
+        Some(1),
+        "string field of the saved state"
+    );
+    assert_eq!(
+        h.cmd.scores.as_slice(),
+        &[(1u8, 6i64)],
+        "the tick counter continued from 5"
+    );
     assert_eq!(
         h.cmd.coil_pulses.as_slice(),
         &[(CoilId(7), 1), (CoilId(20), 2)],
@@ -56,7 +72,11 @@ fn the_new_script_replaces_every_entry_point() {
     b.apply_reload(V2).unwrap();
     // v1's on_switch pulsed the knocker; v2's does not.
     h.edge(&mut b, 8, true);
-    assert!(h.cmd.is_empty(), "old on_switch still installed: {:?}", h.cmd);
+    assert!(
+        h.cmd.is_empty(),
+        "old on_switch still installed: {:?}",
+        h.cmd
+    );
     h.tick(&mut b);
     assert!(score(&h.cmd, 0).is_none(), "old on_tick still installed");
     assert_eq!(persisted(&h.cmd, 2), Some(3));
@@ -71,9 +91,17 @@ fn state_survives_a_chain_of_reloads() {
     b.apply_reload(V2).unwrap();
     h.tick(&mut b); // n = 7
     assert_eq!(h.cmd.scores.as_slice(), &[(1u8, 7i64)]);
-    assert_eq!(persisted(&h.cmd, 0), Some(1), "each new instance is restored once");
+    assert_eq!(
+        persisted(&h.cmd, 0),
+        Some(1),
+        "each new instance is restored once"
+    );
     assert_eq!(persisted(&h.cmd, 1), Some(1));
-    assert_eq!(persisted(&h.cmd, 3), Some(2), "state came from v2 this time");
+    assert_eq!(
+        persisted(&h.cmd, 3),
+        Some(2),
+        "state came from v2 this time"
+    );
     assert_eq!(
         h.cmd.coil_pulses.as_slice(),
         &[(CoilId(7), 1), (CoilId(20), 2), (CoilId(63), 3)]
@@ -118,7 +146,11 @@ fn restore_hook_is_not_called_when_the_old_script_saved_nothing() {
     b.apply_reload(V2).unwrap();
     h.tick(&mut b);
     assert!(!b.is_faulted());
-    assert_eq!(persisted(&h.cmd, 0), Some(0), "on_restore_state needs both hooks");
+    assert_eq!(
+        persisted(&h.cmd, 0),
+        Some(0),
+        "on_restore_state needs both hooks"
+    );
     assert_eq!(h.cmd.scores.as_slice(), &[(1u8, 1i64)]);
 }
 
@@ -141,7 +173,11 @@ fn failed_reload_returns_err_and_keeps_the_old_script_and_its_state() {
         assert!(!b.is_faulted(), "a rejected reload is not a script fault");
     }
     h.tick(&mut b);
-    assert_eq!(h.cmd.scores.as_slice(), &[(0u8, 6i64)], "old script and its counter keep running");
+    assert_eq!(
+        h.cmd.scores.as_slice(),
+        &[(0u8, 6i64)],
+        "old script and its counter keep running"
+    );
     h.edge(&mut b, 8, true);
     assert_eq!(h.cmd.coil_pulses.as_slice(), &[(CoilId(31), 3)]);
 
@@ -179,7 +215,11 @@ fn save_hook_that_never_returns_cannot_stall_the_reload() {
         Ok(()) => {
             assert!(!b.is_faulted());
             h.tick(&mut b);
-            assert_eq!(score(&h.cmd, 1), Some(1), "new script runs from fresh state");
+            assert_eq!(
+                score(&h.cmd, 1),
+                Some(1),
+                "new script runs from fresh state"
+            );
             assert_eq!(persisted(&h.cmd, 1), Some(0), "no bogus state was restored");
         }
         Err(_) => {
@@ -216,7 +256,8 @@ fn odd_save_and_restore_hooks_never_panic() {
             h.tick(&mut b);
             h.edge(&mut b, 1, true);
             // Still recoverable afterwards.
-            b.apply_reload(NO_HOOKS).expect("plain script always reloads");
+            b.apply_reload(NO_HOOKS)
+                .expect("plain script always reloads");
             assert!(!b.is_faulted());
             h.tick(&mut b);
             assert_eq!(score(&h.cmd, 2), Some(1));
@@ -281,7 +322,11 @@ fn syntax_check_rejects_invalid_sources() {
         b"\x00\x01\x02 binary junk",
     ] {
         let r = syntax_check(src);
-        assert!(r.is_err(), "{:?} must be rejected", String::from_utf8_lossy(src));
+        assert!(
+            r.is_err(),
+            "{:?} must be rejected",
+            String::from_utf8_lossy(src)
+        );
     }
 }
 
@@ -336,7 +381,11 @@ fn poll_until(w: &mut ReloadWatcher, path: &std::path::Path, want: &[u8]) -> boo
         std::fs::write(path, want).unwrap();
         for _ in 0..POLLS_PER_ROUND {
             if let Some(src) = w.poll() {
-                assert_ne!(src.as_slice(), BROKEN, "a broken file was handed to the sim");
+                assert_ne!(
+                    src.as_slice(),
+                    BROKEN,
+                    "a broken file was handed to the sim"
+                );
                 assert!(syntax_check(&src).is_ok(), "poll returned unchecked source");
                 if src == want {
                     return true;
@@ -355,7 +404,10 @@ fn watcher_delivers_changed_valid_source() {
     std::fs::write(&path, A).unwrap();
     let mut w = ReloadWatcher::new(&path).expect("watch an existing file");
     assert!(poll_until(&mut w, &path, B), "the edit was never delivered");
-    assert!(poll_until(&mut w, &path, C), "the second edit was never delivered");
+    assert!(
+        poll_until(&mut w, &path, C),
+        "the second edit was never delivered"
+    );
 }
 
 #[test]
@@ -369,7 +421,11 @@ fn watcher_never_delivers_a_file_that_fails_the_syntax_check() {
     std::fs::write(&path, BROKEN).unwrap();
     for _ in 0..200_000 {
         if let Some(src) = w.poll() {
-            assert_ne!(src.as_slice(), BROKEN, "a broken file was handed to the sim");
+            assert_ne!(
+                src.as_slice(),
+                BROKEN,
+                "a broken file was handed to the sim"
+            );
             assert!(syntax_check(&src).is_ok());
         }
         std::thread::yield_now();
@@ -438,7 +494,12 @@ fn expect_err(entry: &str, source: &[u8]) -> ScriptError {
 
 #[test]
 fn lua_extension_selects_the_lua_backend() {
-    for entry in ["rules.lua", "scripts/rules.lua", "./a/b/c.lua", "my.table.rules.lua"] {
+    for entry in [
+        "rules.lua",
+        "scripts/rules.lua",
+        "./a/b/c.lua",
+        "my.table.rules.lua",
+    ] {
         let mut b = match load(entry, V2) {
             Ok(b) => b,
             Err(e) => panic!("{entry}: {e}"),
@@ -482,7 +543,10 @@ fn wasm_extension_is_unsupported_for_now() {
             msg.contains("unsupported") || msg.contains("not supported"),
             "the message must say Wasm is unsupported: {msg}"
         );
-        assert!(msg.contains("wasm"), "the message must name the backend: {msg}");
+        assert!(
+            msg.contains("wasm"),
+            "the message must name the backend: {msg}"
+        );
     }
 }
 

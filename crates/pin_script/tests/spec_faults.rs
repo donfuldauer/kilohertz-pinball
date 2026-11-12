@@ -34,7 +34,11 @@ fn assert_script_is_silent(b: &mut LuaScriptBackend, h: &mut Host) {
     h.init(b);
     assert!(h.cmd.is_empty(), "on_init ran after a fault");
     assert!(b.is_faulted());
-    assert_eq!(b.fault_count(), faults, "a silent script cannot fault again");
+    assert_eq!(
+        b.fault_count(),
+        faults,
+        "a silent script cannot fault again"
+    );
 }
 
 #[test]
@@ -206,7 +210,11 @@ fn fault_without_held_coils_queues_nothing() {
         let mut h = Host::new(1);
         h.case(&mut b, case);
         assert!(b.is_faulted());
-        assert!(h.cmd.coil_holds.is_empty(), "case {case}: {:?}", h.cmd.coil_holds);
+        assert!(
+            h.cmd.coil_holds.is_empty(),
+            "case {case}: {:?}",
+            h.cmd.coil_holds
+        );
     }
 }
 
@@ -276,7 +284,11 @@ fn fault_with_a_full_hold_queue_does_not_panic() {
     for i in 0..32 {
         h.cmd.hold_coil(CoilId(100 + i), true).unwrap();
     }
-    b.on_switch_edge(pin_core::SwitchId(1), pin_core::SwitchEdge::Closed, &mut h.ctx());
+    b.on_switch_edge(
+        pin_core::SwitchId(1),
+        pin_core::SwitchEdge::Closed,
+        &mut h.ctx(),
+    );
     assert!(b.is_faulted());
     assert_eq!(h.cmd.coil_holds.len(), 32);
 }
@@ -315,7 +327,10 @@ fn steady_state_memory_does_not_creep_into_the_cap() {
     let mut h = Host::new(1);
     for t in 0..2000 {
         h.tick(&mut b);
-        assert!(!b.is_faulted(), "garbage accumulated into the memory cap at tick {t}");
+        assert!(
+            !b.is_faulted(),
+            "garbage accumulated into the memory cap at tick {t}"
+        );
         assert_eq!(h.cmd.persist_writes.len(), 1);
     }
 }
@@ -341,7 +356,10 @@ fn top_level_infinite_loop_does_not_hang_construction() {
     match LuaScriptBackend::new(b"while true do end", &names(), cfg(16 * MIB, 20_000)) {
         Err(_) => {}
         Ok(mut b) => {
-            assert!(b.is_faulted(), "a chunk that never finished cannot be healthy");
+            assert!(
+                b.is_faulted(),
+                "a chunk that never finished cannot be healthy"
+            );
             let mut h = Host::new(1);
             h.tick(&mut b);
             assert!(h.cmd.is_empty());
@@ -382,7 +400,11 @@ fn successful_reload_clears_the_fault_and_counts_new_faults() {
     let after_reload = b.fault_count();
 
     h.case(&mut b, 27);
-    assert_eq!(h.cmd.coil_pulses.as_slice(), &[(CoilId(2), 20)], "script runs again");
+    assert_eq!(
+        h.cmd.coil_pulses.as_slice(),
+        &[(CoilId(2), 20)],
+        "script runs again"
+    );
 
     // Coils held by the new script are tracked for the next tilt.
     h.case(&mut b, 11);
@@ -399,7 +421,10 @@ fn failed_reload_leaves_a_faulted_backend_faulted() {
     h.case(&mut b, 6);
     assert!(b.is_faulted());
     assert!(b.apply_reload(b"this is not lua (").is_err());
-    assert!(b.is_faulted(), "a rejected reload must not resurrect the old script");
+    assert!(
+        b.is_faulted(),
+        "a rejected reload must not resurrect the old script"
+    );
     h.case(&mut b, 27);
     assert!(h.cmd.is_empty());
 }

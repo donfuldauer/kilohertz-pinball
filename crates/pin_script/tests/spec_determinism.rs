@@ -66,7 +66,10 @@ fn different_seeds_give_different_queues() {
     let inputs = script();
     let (a, _) = run(RANDOM, 1, &inputs);
     let (b, _) = run(RANDOM, 2, &inputs);
-    assert_ne!(a, b, "the script's randomness does not depend on the host seed");
+    assert_ne!(
+        a, b,
+        "the script's randomness does not depend on the host seed"
+    );
 }
 
 #[test]
@@ -107,7 +110,10 @@ fn math_randomseed_cannot_detach_the_script_from_the_host_generator() {
     // Reseeding every tick must not make every tick draw the same number.
     let firsts: std::collections::BTreeSet<_> =
         a.iter().skip(1).map(|q| persisted(q, 0).unwrap()).collect();
-    assert!(firsts.len() > 40, "math.random repeats after math.randomseed: {firsts:?}");
+    assert!(
+        firsts.len() > 40,
+        "math.random repeats after math.randomseed: {firsts:?}"
+    );
 }
 
 #[test]
@@ -115,13 +121,21 @@ fn drawing_advances_the_host_generator() {
     let mut b = backend(RANDOM);
     let mut h = Host::new(5);
     h.tick(&mut b);
-    assert_ne!(h.rng, Pcg32::seed_from_u64(5), "random() did not touch HostCtx.rng");
+    assert_ne!(
+        h.rng,
+        Pcg32::seed_from_u64(5),
+        "random() did not touch HostCtx.rng"
+    );
 
     let src = b"function on_tick() pinball.persist_set(0, math.random(100)) end";
     let mut b = backend(src);
     let mut h = Host::new(5);
     h.tick(&mut b);
-    assert_ne!(h.rng, Pcg32::seed_from_u64(5), "math.random did not touch HostCtx.rng");
+    assert_ne!(
+        h.rng,
+        Pcg32::seed_from_u64(5),
+        "math.random did not touch HostCtx.rng"
+    );
 }
 
 /// The backend keeps no generator of its own: what a callback draws depends
@@ -169,14 +183,18 @@ fn random_ranges_are_inclusive_and_fully_covered() {
         assert!((1..=6).contains(&d6), "random(6) gave {d6}");
         assert!((10..=20).contains(&r), "random(10, 20) gave {r}");
         assert!((1..=8).contains(&m8), "math.random(8) gave {m8}");
-        assert!((100..=105).contains(&m100), "math.random(100, 105) gave {m100}");
+        assert!(
+            (100..=105).contains(&m100),
+            "math.random(100, 105) gave {m100}"
+        );
         seen_d6[d6 as usize] = true;
         seen_range[r as usize] = true;
         seen_m8[m8 as usize] = true;
         seen_m100[m100 as usize] = true;
 
         let f = lamp(q, 0).unwrap();
-        assert!((0.0..1.0).contains(&f), "math.random() gave {f}");
+        // The f64 draw is in [0, 1); narrowing to f32 may round up to 1.0.
+        assert!((0.0..=1.0).contains(&f), "math.random() gave {f}");
         lo = lo.min(f);
         hi = hi.max(f);
 
@@ -194,13 +212,31 @@ fn random_ranges_are_inclusive_and_fully_covered() {
         seen_sym[(sym + 2) as usize] = true;
         assert_eq!(persisted(q, 6), Some(1), "integer/float result types");
     }
-    assert!(seen_d6[1..].iter().all(|&s| s), "random(6) never produced some face");
-    assert!(seen_range[10..].iter().all(|&s| s), "random(10, 20) missed a value");
-    assert!(seen_m8[1..].iter().all(|&s| s), "math.random(8) missed a value");
-    assert!(seen_m100[100..].iter().all(|&s| s), "math.random(100, 105) missed a value");
+    assert!(
+        seen_d6[1..].iter().all(|&s| s),
+        "random(6) never produced some face"
+    );
+    assert!(
+        seen_range[10..].iter().all(|&s| s),
+        "random(10, 20) missed a value"
+    );
+    assert!(
+        seen_m8[1..].iter().all(|&s| s),
+        "math.random(8) missed a value"
+    );
+    assert!(
+        seen_m100[100..].iter().all(|&s| s),
+        "math.random(100, 105) missed a value"
+    );
     assert!(seen_neg.iter().all(|&s| s), "random(-5, -1) missed a value");
-    assert!(seen_sym.iter().all(|&s| s), "math.random(-2, 2) missed a value");
-    assert!(lo < 0.05 && hi > 0.95, "math.random() is not spread over [0, 1): {lo}..{hi}");
+    assert!(
+        seen_sym.iter().all(|&s| s),
+        "math.random(-2, 2) missed a value"
+    );
+    assert!(
+        lo < 0.05 && hi > 0.95,
+        "math.random() is not spread over [0, 1): {lo}..{hi}"
+    );
 }
 
 #[test]
@@ -218,13 +254,20 @@ fn random_is_roughly_uniform() {
     // 12 000 draws, 2 000 expected per face; a fixed seed makes this exact, the
     // band only rejects a broken mapping (e.g. modulo of a tiny range).
     for (face, &n) in counts.iter().enumerate().skip(1) {
-        assert!((1700..=2300).contains(&n), "face {face} drawn {n} times of 12000");
+        assert!(
+            (1700..=2300).contains(&n),
+            "face {face} drawn {n} times of 12000"
+        );
     }
 }
 
 #[test]
 fn invalid_random_ranges_fault_like_any_argument_error() {
-    for call in ["math.random(0, -1)", "math.random(5, 1)", "math.random(1, 2, 3)"] {
+    for call in [
+        "math.random(0, -1)",
+        "math.random(5, 1)",
+        "math.random(1, 2, 3)",
+    ] {
         let src = format!("function on_tick() pinball.persist_set(0, {call}) end");
         let mut b = backend(src.as_bytes());
         let mut h = Host::new(1);
@@ -265,16 +308,59 @@ fn input_strategy() -> impl Strategy<Value = Input> {
 
 /// Lua expressions used as arbitrary arguments.
 const ARGS: &[&str] = &[
-    "nil", "true", "false", "0", "1", "-1", "2", "4", "5", "0.5", "1.5", "-0.5", "3.0",
-    "255", "256", "65535", "65536", "70000", "-70000", "1e308", "-1e308", "0/0",
-    "math.huge", "-math.huge", "math.maxinteger", "math.mininteger", "2^53", "'x'", "'3'",
-    "{}", "print", "pinball", "pinball.sw",
+    "nil",
+    "true",
+    "false",
+    "0",
+    "1",
+    "-1",
+    "2",
+    "4",
+    "5",
+    "0.5",
+    "1.5",
+    "-0.5",
+    "3.0",
+    "255",
+    "256",
+    "65535",
+    "65536",
+    "70000",
+    "-70000",
+    "1e308",
+    "-1e308",
+    "0/0",
+    "math.huge",
+    "-math.huge",
+    "math.maxinteger",
+    "math.mininteger",
+    "2^53",
+    "'x'",
+    "'3'",
+    "{}",
+    "print",
+    "pinball",
+    "pinball.sw",
 ];
 
 const FUNCS: &[&str] = &[
-    "pulse_coil", "hold_coil", "set_magnet", "set_lamp", "set_gi_tint", "set_score",
-    "spawn_ball", "set_diverter", "set_zipper", "show_scene", "play_sound", "switch",
-    "tick", "balls_in_play", "random", "persist_get", "persist_set",
+    "pulse_coil",
+    "hold_coil",
+    "set_magnet",
+    "set_lamp",
+    "set_gi_tint",
+    "set_score",
+    "spawn_ball",
+    "set_diverter",
+    "set_zipper",
+    "show_scene",
+    "play_sound",
+    "switch",
+    "tick",
+    "balls_in_play",
+    "random",
+    "persist_get",
+    "persist_set",
 ];
 
 proptest! {

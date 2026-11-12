@@ -110,6 +110,7 @@ impl Bridge {
     }
 
     /// True if the script currently holds `coil`.
+    #[cfg(test)]
     pub(crate) fn is_held(&self, coil: CoilId) -> bool {
         let i = coil.index();
         self.holds[i / 64].get() & (1u64 << (i % 64)) != 0

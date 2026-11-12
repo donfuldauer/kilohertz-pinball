@@ -29,7 +29,11 @@ fn run_case(case: u16) -> HostCommandQueue {
 
 /// Asserts that only the named list holds commands.
 fn assert_only(cmd: &HostCommandQueue, expected_len: usize) {
-    assert_eq!(cmd.len(), expected_len, "unexpected extra commands: {cmd:?}");
+    assert_eq!(
+        cmd.len(),
+        expected_len,
+        "unexpected extra commands: {cmd:?}"
+    );
 }
 
 #[test]
@@ -92,7 +96,11 @@ fn syntax_error_fails_construction() {
 fn every_documented_function_exists() {
     let cmd = run_case(16);
     assert_eq!(persisted(&cmd, 1), Some(17));
-    assert_eq!(persisted(&cmd, 0), Some(0), "some pinball.* functions are missing");
+    assert_eq!(
+        persisted(&cmd, 0),
+        Some(0),
+        "some pinball.* functions are missing"
+    );
 }
 
 #[test]
@@ -108,7 +116,10 @@ fn pulse_coil_maps_to_coil_pulses() {
 #[test]
 fn hold_coil_maps_to_coil_holds() {
     let cmd = run_case(2);
-    assert_eq!(cmd.coil_holds.as_slice(), &[(CoilId(3), true), (CoilId(1), false)]);
+    assert_eq!(
+        cmd.coil_holds.as_slice(),
+        &[(CoilId(3), true), (CoilId(1), false)]
+    );
     assert_only(&cmd, 2);
 }
 
@@ -125,7 +136,10 @@ fn set_magnet_maps_to_magnets() {
 #[test]
 fn set_zipper_maps_to_zippers() {
     let cmd = run_case(4);
-    assert_eq!(cmd.zippers.as_slice(), &[(FlipperId(6), true), (FlipperId(0), false)]);
+    assert_eq!(
+        cmd.zippers.as_slice(),
+        &[(FlipperId(6), true), (FlipperId(0), false)]
+    );
     assert_only(&cmd, 2);
 }
 
@@ -144,7 +158,10 @@ fn spawn_ball_maps_to_ball_spawns() {
     let cmd = run_case(6);
     assert_eq!(
         cmd.ball_spawns.as_slice(),
-        &[(DispenserId(9), ProfileId(11)), (DispenserId(9), ProfileId(0))]
+        &[
+            (DispenserId(9), ProfileId(11)),
+            (DispenserId(9), ProfileId(0))
+        ]
     );
     assert_only(&cmd, 2);
 }
@@ -186,7 +203,10 @@ fn show_scene_maps_to_display_scenes() {
 #[test]
 fn play_sound_maps_to_sounds() {
     let cmd = run_case(11);
-    assert_eq!(cmd.sounds.as_slice(), &[(SoundId(12), 0.5), (SoundId(13), 1.0)]);
+    assert_eq!(
+        cmd.sounds.as_slice(),
+        &[(SoundId(12), 0.5), (SoundId(13), 1.0)]
+    );
     assert_only(&cmd, 2);
 }
 
@@ -284,7 +304,11 @@ fn name_tables_expose_every_name_as_integer_id() {
         "persist_key",
     ];
     for (i, t) in tables.iter().enumerate() {
-        assert_eq!(lamp(&cmd, i as u16), Some(1.0), "pinball.{t} has wrong contents");
+        assert_eq!(
+            lamp(&cmd, i as u16),
+            Some(1.0),
+            "pinball.{t} has wrong contents"
+        );
     }
 }
 
@@ -367,7 +391,12 @@ fn on_tick_runs_every_tick_and_reads_the_tick_counter() {
     for _ in 0..40 {
         h.tick(&mut b);
         if h.view.tick % 4 == 0 {
-            assert_eq!(h.cmd.lamps.as_slice(), &[(LampId(2), 1.0)], "tick {}", h.view.tick);
+            assert_eq!(
+                h.cmd.lamps.as_slice(),
+                &[(LampId(2), 1.0)],
+                "tick {}",
+                h.view.tick
+            );
             assert_eq!(h.cmd.len(), 1);
         } else {
             assert!(h.cmd.is_empty(), "tick {}", h.view.tick);
@@ -445,8 +474,16 @@ fn overflowing_commands_are_dropped_and_counted_without_faulting() {
             let mut h = Host::new(1);
             h.view.persist[0] = (cap + extra) as i64;
             h.case(&mut b, case);
-            assert_eq!(list_len(&h.cmd, case), cap, "case {case}: list must stay at capacity");
-            assert_eq!(h.cmd.len(), cap, "case {case}: nothing leaks to other lists");
+            assert_eq!(
+                list_len(&h.cmd, case),
+                cap,
+                "case {case}: list must stay at capacity"
+            );
+            assert_eq!(
+                h.cmd.len(),
+                cap,
+                "case {case}: nothing leaks to other lists"
+            );
             assert_eq!(b.overflow_count(), extra as u32, "case {case}");
             assert!(!b.is_faulted(), "case {case}: overflow is not an error");
             assert_eq!(b.fault_count(), 0, "case {case}");
@@ -460,7 +497,10 @@ fn overflow_keeps_the_first_commands_in_order() {
     let mut h = Host::new(1);
     h.view.persist[0] = 10;
     h.case(&mut b, 8); // set_score((i % 4) + 1, i), capacity 4
-    assert_eq!(h.cmd.scores.as_slice(), &[(1u8, 1i64), (2, 2), (3, 3), (0, 4)]);
+    assert_eq!(
+        h.cmd.scores.as_slice(),
+        &[(1u8, 1i64), (2, 2), (3, 3), (0, 4)]
+    );
     assert_eq!(b.overflow_count(), 6);
 }
 
@@ -491,7 +531,11 @@ fn a_queue_already_full_on_entry_counts_every_push() {
     }
     b.on_switch_edge(SwitchId(9), pin_core::SwitchEdge::Closed, &mut h.ctx());
     assert_eq!(h.cmd.display_scenes.len(), 8);
-    assert_eq!(h.cmd.display_scenes[0], SceneId(100), "existing commands are untouched");
+    assert_eq!(
+        h.cmd.display_scenes[0],
+        SceneId(100),
+        "existing commands are untouched"
+    );
     assert_eq!(b.overflow_count(), 3);
 }
 

@@ -14,12 +14,19 @@ fn probes() -> pin_core::HostCommandQueue {
     let mut b = backend(SANDBOX);
     let mut h = Host::new(1);
     h.case(&mut b, 1);
-    assert!(!b.is_faulted(), "probes are pcall-protected and must not fault");
+    assert!(
+        !b.is_faulted(),
+        "probes are pcall-protected and must not fault"
+    );
     h.cmd
 }
 
 fn assert_probe(cmd: &pin_core::HostCommandQueue, id: u16, what: &str) {
-    assert_eq!(lamp(cmd, id), Some(1.0), "sandbox probe {id} failed: {what}");
+    assert_eq!(
+        lamp(cmd, id),
+        Some(1.0),
+        "sandbox probe {id} failed: {what}"
+    );
 }
 
 const TABLES: [&str; 11] = [
@@ -67,14 +74,22 @@ fn allowed_libraries_are_present() {
 
 #[test]
 fn collectgarbage_is_absent_or_count_only() {
-    assert_probe(&probes(), 12, "collectgarbage(\"count\") must work if present");
+    assert_probe(
+        &probes(),
+        12,
+        "collectgarbage(\"count\") must work if present",
+    );
 }
 
 #[test]
 fn writing_a_new_name_into_a_name_table_raises() {
     let cmd = probes();
     for (i, t) in TABLES.iter().enumerate() {
-        assert_probe(&cmd, 20 + i as u16, &format!("pinball.{t}.new = 1 must raise"));
+        assert_probe(
+            &cmd,
+            20 + i as u16,
+            &format!("pinball.{t}.new = 1 must raise"),
+        );
     }
 }
 
@@ -82,7 +97,11 @@ fn writing_a_new_name_into_a_name_table_raises() {
 fn overwriting_an_existing_name_raises_and_keeps_the_id() {
     let cmd = probes();
     for (i, t) in TABLES.iter().enumerate() {
-        assert_probe(&cmd, 40 + i as u16, &format!("pinball.{t}.<name> = x must raise"));
+        assert_probe(
+            &cmd,
+            40 + i as u16,
+            &format!("pinball.{t}.<name> = x must raise"),
+        );
     }
 }
 
@@ -90,7 +109,11 @@ fn overwriting_an_existing_name_raises_and_keeps_the_id() {
 fn setmetatable_on_name_tables_fails() {
     let cmd = probes();
     for (i, t) in TABLES.iter().enumerate() {
-        assert_probe(&cmd, 60 + i as u16, &format!("setmetatable(pinball.{t}, ..) must fail"));
+        assert_probe(
+            &cmd,
+            60 + i as u16,
+            &format!("setmetatable(pinball.{t}, ..) must fail"),
+        );
     }
 }
 
@@ -98,7 +121,11 @@ fn setmetatable_on_name_tables_fails() {
 fn getmetatable_tampering_does_not_unlock_name_tables() {
     let cmd = probes();
     for (i, t) in TABLES.iter().enumerate() {
-        assert_probe(&cmd, 80 + i as u16, &format!("pinball.{t} unlocked via getmetatable"));
+        assert_probe(
+            &cmd,
+            80 + i as u16,
+            &format!("pinball.{t} unlocked via getmetatable"),
+        );
     }
 }
 
@@ -106,7 +133,11 @@ fn getmetatable_tampering_does_not_unlock_name_tables() {
 fn rawset_cannot_change_name_resolution() {
     let cmd = probes();
     for (i, t) in TABLES.iter().enumerate() {
-        assert_probe(&cmd, 100 + i as u16, &format!("pinball.{t} changed via rawset"));
+        assert_probe(
+            &cmd,
+            100 + i as u16,
+            &format!("pinball.{t} changed via rawset"),
+        );
     }
 }
 
@@ -122,9 +153,19 @@ fn nothing_reachable_from_globals_belongs_to_a_forbidden_library() {
     let mut b = backend(SANDBOX);
     let mut h = Host::new(1);
     h.case(&mut b, 2);
-    assert!(!b.is_faulted(), "the reachability walk must fit in the default budget");
-    assert_eq!(persisted(&h.cmd, 0), Some(0), "forbidden keys reachable from _G");
-    assert!(persisted(&h.cmd, 1).unwrap() >= 1, "the walk visited nothing");
+    assert!(
+        !b.is_faulted(),
+        "the reachability walk must fit in the default budget"
+    );
+    assert_eq!(
+        persisted(&h.cmd, 0),
+        Some(0),
+        "forbidden keys reachable from _G"
+    );
+    assert!(
+        persisted(&h.cmd, 1).unwrap() >= 1,
+        "the walk visited nothing"
+    );
 }
 
 #[test]
@@ -133,7 +174,11 @@ fn global_namespace_only_holds_sandbox_safe_names() {
     let mut h = Host::new(1);
     h.case(&mut b, 3);
     assert!(!b.is_faulted());
-    assert_eq!(persisted(&h.cmd, 0), Some(0), "unexpected globals in the sandbox");
+    assert_eq!(
+        persisted(&h.cmd, 0),
+        Some(0),
+        "unexpected globals in the sandbox"
+    );
 }
 
 /// An unprotected use of a forbidden library is a runtime error: the script
@@ -156,7 +201,10 @@ fn unprotected_use_of_forbidden_library_faults_the_script() {
         let mut h = Host::new(1);
         h.tick(&mut b);
         assert!(b.is_faulted(), "`{body}` must fault the script");
-        assert!(h.cmd.coil_pulses.is_empty(), "`{body}` must abort the callback");
+        assert!(
+            h.cmd.coil_pulses.is_empty(),
+            "`{body}` must abort the callback"
+        );
     }
 }
 
@@ -192,7 +240,10 @@ fn a_script_cannot_touch_the_file_system_or_run_processes() {
     h.tick(&mut b);
     assert!(!b.is_faulted());
     assert_eq!(h.cmd.coil_pulses.as_slice(), &[(CoilId(1), 10)]);
-    assert!(!target.exists(), "the script created a file outside the sandbox");
+    assert!(
+        !target.exists(),
+        "the script created a file outside the sandbox"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -237,7 +288,11 @@ fn binary_chunks_fail_the_syntax_check() {
 
 #[test]
 fn garbage_with_a_bytecode_signature_never_panics() {
-    for tail in [&b""[..], b"\x54\x00", b"\x54\x00\x19\x93\r\n\x1a\n\x04\x08\x08xV\0\0\0\0\0\0"] {
+    for tail in [
+        &b""[..],
+        b"\x54\x00",
+        b"\x54\x00\x19\x93\r\n\x1a\n\x04\x08\x08xV\0\0\0\0\0\0",
+    ] {
         let mut src = b"\x1bLua".to_vec();
         src.extend_from_slice(tail);
         assert!(LuaScriptBackend::new(&src, &names(), LuaConfig::default()).is_err());
@@ -255,6 +310,10 @@ fn sandbox_also_applies_to_reloaded_scripts() {
         assert_probe(&h.cmd, id, "forbidden global visible after reload");
     }
     for (i, t) in TABLES.iter().enumerate() {
-        assert_probe(&h.cmd, 20 + i as u16, &format!("pinball.{t} writable after reload"));
+        assert_probe(
+            &h.cmd,
+            20 + i as u16,
+            &format!("pinball.{t} writable after reload"),
+        );
     }
 }

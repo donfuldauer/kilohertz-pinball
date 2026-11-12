@@ -18,7 +18,8 @@ use super::LuaConfig;
 use super::api;
 use super::bridge::Bridge;
 use crate::NameTables;
-use mlua::{ChunkMode, Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
+use mlua::chunk::ChunkMode;
+use mlua::{Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
 use pin_core::ScriptError;
 use std::rc::Rc;
 
@@ -65,11 +66,11 @@ getmetatable("").__metatable = "locked"
 
 /// Entry-point names, interned once per state.
 pub(crate) struct Keys {
-    pub(crate) on_init: mlua::String,
-    pub(crate) on_tick: mlua::String,
-    pub(crate) on_switch: mlua::String,
-    pub(crate) on_save_state: mlua::String,
-    pub(crate) on_restore_state: mlua::String,
+    pub(crate) on_init: mlua::LuaString,
+    pub(crate) on_tick: mlua::LuaString,
+    pub(crate) on_switch: mlua::LuaString,
+    pub(crate) on_save_state: mlua::LuaString,
+    pub(crate) on_restore_state: mlua::LuaString,
 }
 
 /// One sandboxed Lua state with the table script loaded.
@@ -259,7 +260,7 @@ impl Vm {
     }
 
     /// The global function named by `key`, if the script defines one.
-    pub(crate) fn entry(&self, key: &mlua::String) -> Option<Function> {
+    pub(crate) fn entry(&self, key: &mlua::LuaString) -> Option<Function> {
         match self.globals.raw_get::<Value>(key) {
             Ok(Value::Function(f)) => Some(f),
             _ => None,

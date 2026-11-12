@@ -143,9 +143,9 @@ fn math_random(
 pub(crate) fn build(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Table> {
     let api = lua.create_table()?;
     macro_rules! reg {
-        ($name:literal, |$b:ident, $args:pat_param| $body:expr) => {{
+        ($name:literal, |$b:ident, $args:tt : $ty:ty| $body:expr) => {{
             let $b = Rc::clone(bridge);
-            api.raw_set($name, lua.create_function(move |_, $args| $body)?)?;
+            api.raw_set($name, lua.create_function(move |_, $args: $ty| $body)?)?;
         }};
     }
     reg!("pulse_coil", |b, (c, ms): (Value, Value)| {

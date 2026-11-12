@@ -250,58 +250,45 @@ fn mesh_primitives(
         });
     }
 
-    // Edge -> (count, first triangle, index of its opposite vertex).
-    let mut edges: BTreeMap<(u32, u32), (u32, usize, usize)> = BTreeMap::new();
+    // Edge -> (number of triangles, the first two as (triangle, local edge)).
+    // Local edge e joins corners e and (e + 1) % 3; (e + 2) % 3 is opposite.
+    type EdgeUse = (u32, [(usize, usize); 2]);
     let edge_key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
-    // Local edge e joins corners e and (e + 1) % 3; its opposite corner is (e + 2) % 3.
+    let mut edges: BTreeMap<(u32, u32), EdgeUse> = BTreeMap::new();
     for (ti, tri) in tris.iter().enumerate() {
         for e in 0..3 {
             let key = edge_key(tri.ids[e], tri.ids[(e + 1) % 3]);
-            edges
-                .entry(key)
-                .and_modify(|entry| entry.0 += 1)
-                .or_insert((1, ti, (e + 2) % 3));
+            let entry = edges.entry(key).or_insert((0, [(0, 0); 2]));
+            if entry.0 < 2 {
+                entry.1[entry.0 as usize] = (ti, e);
+            }
+            entry.0 += 1;
         }
     }
     // An edge is flat (inactive) when exactly two coplanar triangles share it
     // and lie on opposite sides of it.
-    let is_flat = |ti: usize, e: usize| -> bool {
-        let tri = &tris[ti];
-        let key = edge_key(tri.ids[e], tri.ids[(e + 1) % 3]);
-        let Some(&(count, first, first_opp)) = edges.get(&key) else {
-            return false;
-        };
-        if count != 2 {
+    let is_flat = |usage: &EdgeUse| -> bool {
+        if usage.0 != 2 {
             return false;
         }
-        if first == ti {
-            // The partner is found from its own side; flatness is symmetric,
-            // so look it up by scanning the partner's entry instead.
+        let (t1, e1) = usage.1[0];
+        let (t2, e2) = usage.1[1];
+        let (first, second) = (&tris[t1], &tris[t2]);
+        if !normals_parallel(first.normal, second.normal) {
             return false;
         }
-        let other = &tris[first];
-        if !normals_parallel(tri.normal, other.normal) {
-            return false;
-        }
-        let e0 = tri.pos[e];
-        let edge = tri.pos[(e + 1) % 3] - e0;
-        let side = |p: Vec3| edge.cross(p - e0).dot(tri.normal);
-        side(tri.pos[(e + 2) % 3]) * side(other.pos[first_opp]) < 0.0
+        let e0 = first.pos[e1];
+        let edge = first.pos[(e1 + 1) % 3] - e0;
+        let side = |p: Vec3| edge.cross(p - e0).dot(first.normal);
+        side(first.pos[(e1 + 2) % 3]) * side(second.pos[(e2 + 2) % 3]) < 0.0
     };
-    // `edges` only remembers the first triangle of each edge, so evaluate
-    // flatness from the second triangle and share the result with the first.
-    let mut flat_edges: BTreeMap<(u32, u32), bool> = BTreeMap::new();
-    for (ti, tri) in tris.iter().enumerate() {
-        for e in 0..3 {
-            if is_flat(ti, e) {
-                flat_edges.insert(edge_key(tri.ids[e], tri.ids[(e + 1) % 3]), true);
-            }
-        }
-    }
+    let flat_edges: BTreeMap<(u32, u32), bool> =
+        edges.iter().map(|(key, usage)| (*key, is_flat(usage))).collect();
+    let edge_is_flat = |a: u32, b: u32| flat_edges.get(&edge_key(a, b)).copied().unwrap_or(false);
     // A welded vertex is active when any edge that touches it is active.
     let mut vertex_active = vec![false; welded.len()];
-    for key in edges.keys() {
-        if !flat_edges.contains_key(key) {
+    for (key, flat) in &flat_edges {
+        if !flat {
             vertex_active[key.0 as usize] = true;
             vertex_active[key.1 as usize] = true;
         }
@@ -309,7 +296,7 @@ fn mesh_primitives(
     for tri in &tris {
         let mut active = 0u8;
         for e in 0..3 {
-            if !flat_edges.contains_key(&edge_key(tri.ids[e], tri.ids[(e + 1) % 3])) {
+            if !edge_is_flat(tri.ids[e], tri.ids[(e + 1) % 3]) {
                 active |= FEATURE_EDGE[e];
             }
             if vertex_active[tri.ids[e] as usize] {
