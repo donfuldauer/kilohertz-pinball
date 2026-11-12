@@ -30,3 +30,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 2 | 2.1 | Implementer | Fable 5.2 | 1 | done | 55 own tests; coverage 97.5 %; PLAN scenario passes | |
 | 2 | 2.1 | Reviewer | Opus 5.5 | 1 | **fail** | gate 1–7 pass | B1: `GuideCurve::cast_sphere` false hits on separating/parallel balls (~150 µs each); fix 1 sent with N1, N4–N7 |
 | 2 | 4.2 | Implementer | Opus 5.5 | 1 | done | 158 spec + own tests; coverage 98 %; zero allocs incl. Lua VM | 4 tester defects fixed; reviewer running |
+| 2 | 4.2 | Reviewer | Fable 5.2 | 1 | **fail** | gate 1–7 pass | B1 C-level loops hang, B2 `<close>` unhooked, B3 `__pairs` leaks backing table, B4 budget × size stalls, B5 save-state escapes memory cap, B6 `pairs` order non-deterministic |

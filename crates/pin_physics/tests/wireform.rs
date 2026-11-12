@@ -795,7 +795,7 @@ proptest! {
             }
         }
         // A ball outside the arc that is not closing in never gets a contact.
-        if !inside && angle >= 0.0 && angle <= std::f32::consts::PI {
+        if !inside && (0.0..=std::f32::consts::PI).contains(&angle) {
             prop_assert!(res.hit.is_none());
         }
     }
