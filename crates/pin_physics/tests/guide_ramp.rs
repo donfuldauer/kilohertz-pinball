@@ -35,13 +35,13 @@ const LAYER_WIRE: u8 = 2;
 /// The slope eases in (cosine) over `EASE` metres, then stays constant.
 const SLOPE: f32 = 0.1;
 const EASE: f32 = 1.0;
-const RAMP_START_Y: f32 = -0.40;
+const RAMP_START_Y: f32 = -0.35;
 const RAMP_TOP_D: f32 = 1.15; // where the rise reaches 65 mm
 /// The rails start this far before the ramp, `RAIL_DROP` below their seat
 /// height, and rise to it smoothly: they emerge through the playfield and
 /// pick up a ball that arrives a little off-centre without a step.
-const RAIL_LEAD: f32 = 0.20;
-const RAIL_DROP: f32 = 0.003;
+const RAIL_LEAD: f32 = 0.30;
+const RAIL_DROP: f32 = 0.002;
 /// The rails exist physically on the main deck and on the wireform layer.
 const RAIL_LAYERS: u8 = layers::MAIN_DECK | layers::WIREFORM;
 
@@ -120,7 +120,7 @@ fn build_table() -> Table {
     let seat = (BALL_R * BALL_R - 0.25 * GAUGE * GAUGE).sqrt();
     let x = -(GUIDE_R - BALL_R);
     let mut pts = Vec::new();
-    for k in -4..=26 {
+    for k in -6..=26 {
         let d = 0.05 * k as f32;
         pts.push(v(x, RAMP_START_Y - d, BALL_R - seat + ramp_rise(d) - rail_drop(d)));
     }
@@ -383,12 +383,13 @@ fn normal_force_is_smooth_away_from_entry_and_exit() {
         assert!((force / expected - 1.0).abs() < 0.02, "guide force {force} vs {expected}");
     }
 
-    // Ramp: from where the rails are at seat height to the top of the ramp.
+    // Ramp: from the entrance zone (the ball has settled on both rails) to
+    // the top of the ramp.
     let mut rail_samples = 0;
     for w in logs.windows(2) {
         let on_ramp = |l: &TickLog| {
             let d = RAMP_START_Y - l.pos.y;
-            (0.0..=RAMP_TOP_D).contains(&d)
+            (0.1..=RAMP_TOP_D).contains(&d)
         };
         if on_ramp(&w[0]) && on_ramp(&w[1]) {
             assert!(w[0].rail_force > 0.5, "ball left the rails: {}", w[0].rail_force);
