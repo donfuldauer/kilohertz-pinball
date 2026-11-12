@@ -27,3 +27,6 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 2 | 1.3 | Reviewer | Fable 5.2 | 1 | **pass** | gate 1–8 pass; SPSC ordering verified | 7 non-blocking; `pin_app/src/lib.rs` accepted |
 | 2 | 2.1 | Independent Tester | Opus 5.5 | 1 | done | 66 spec tests pass | |
 | 2 | 4.2 | Independent Tester | Fable 5.2 | 1 | done | 135 pass, 2 fail, 6 hang | 4 defects sent to Implementer |
+| 2 | 2.1 | Implementer | Fable 5.2 | 1 | done | 55 own tests; coverage 97.5 %; PLAN scenario passes | |
+| 2 | 2.1 | Reviewer | Opus 5.5 | 1 | **fail** | gate 1–7 pass | B1: `GuideCurve::cast_sphere` false hits on separating/parallel balls (~150 µs each); fix 1 sent with N1, N4–N7 |
+| 2 | 4.2 | Implementer | Opus 5.5 | 1 | done | 158 spec + own tests; coverage 98 %; zero allocs incl. Lua VM | 4 tester defects fixed; reviewer running |
