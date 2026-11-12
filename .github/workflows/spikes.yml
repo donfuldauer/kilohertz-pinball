@@ -14,9 +14,10 @@ on:
       - ".github/workflows/spikes.yml"
   workflow_dispatch:
 
-# One run per workflow and ref; a newer push cancels the older run.
+# One run per workflow, ref and event; a newer push cancels the older push run
+# (event_name keeps a workflow_dispatch run from being cancelled by pushes).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
@@ -38,9 +39,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: rustfmt, clippy
 

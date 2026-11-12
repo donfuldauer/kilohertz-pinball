@@ -21,7 +21,7 @@ use pin_render::topology::{
 use sdl3::event::{Event, WindowEvent as SdlWindowEvent};
 use sdl3::gamepad::{Axis, Button};
 use sdl3::joystick::{JoystickType, VirtualJoystickDescription};
-use sdl3::keyboard::{Mod, Scancode};
+use sdl3::keyboard::{Keycode, Mod, Scancode};
 
 const DRAIN: Duration = Duration::ZERO;
 
@@ -36,7 +36,7 @@ fn drain<T: Copy + Send>(rx: &mut SpscConsumer<T>) -> Vec<T> {
 
 fn key(down: bool, sc: Scancode) -> Event {
     let (timestamp, window_id, keycode, scancode, keymod, repeat, which, raw) =
-        (0, 0, None, Some(sc), Mod::NOMOD, false, 0, 0);
+        (0, 0, Keycode::from_scancode(sc, sdl3::sys::keycode::SDL_Keymod(0), true), Some(sc), Mod::NOMOD, false, 0, 0);
     if down {
         Event::KeyDown {
             timestamp,

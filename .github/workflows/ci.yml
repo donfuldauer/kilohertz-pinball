@@ -7,9 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
-# One run per workflow and ref; a newer push cancels the older run.
+# One run per workflow, ref and event; a newer push cancels the older push run
+# (event_name keeps a workflow_dispatch run from being cancelled by pushes).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
@@ -22,8 +23,9 @@ env:
   # gpu-tests runs under a real (Xvfb) display on Linux instead.
   SDL_AUDIO_DRIVER: dummy
   SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS: "1"
-  # Minimum toolchain (wasmtime 50 needs Rust 1.97, versions.toml [toolchain]).
-  MIN_RUST_MINOR: "97"
+  # Exact toolchain from versions.toml [toolchain]; bump it there and in the
+  # dtolnay/rust-toolchain@<version> lines together (DECISIONS.md "Orchestrator — 1.2 review B1").
+  RUST_VERSION: "1.97.0"
 
 jobs:
   # GPU-free crates (PLAN.md §2.3 rule 3): pin_core, pin_physics, pin_input,
@@ -45,30 +47,22 @@ jobs:
     env:
       SDL_VIDEO_DRIVER: dummy
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Linux packages (SDL3 build headers)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake \
-            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
-            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
-            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
-            libasound2-dev libpulse-dev
+      # No SDL/X11/audio packages here on purpose: the GPU-free crates must build
+      # and test without display or GPU (PLAN.md §2.3 rule 3); only pin_app uses sdl3.
 
-      - name: Toolchain (rustc >= 1.${{ env.MIN_RUST_MINOR }}, host ${{ matrix.target }})
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
         shell: bash
         run: |
           rustc -vV && cargo --version
-          minor=$(rustc --version | awk '{print $2}' | cut -d. -f2)
-          if [ "$minor" -lt "$MIN_RUST_MINOR" ]; then
-            echo "::error::rustc $(rustc --version) is older than 1.$MIN_RUST_MINOR"; exit 1
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
           fi
           host=$(rustc -vV | sed -n 's/^host: //p')
           if [ "$host" != "${{ matrix.target }}" ]; then
@@ -78,8 +72,12 @@ jobs:
       - name: cargo test (GPU-free crates)
         run: cargo test --workspace --exclude pin_render --exclude pin_audio --exclude pin_app
 
+      - name: cargo clippy -D warnings (tests/spec_ci)
+        if: runner.os == 'Linux'
+        run: cargo clippy --manifest-path tests/spec_ci/Cargo.toml --all-targets -- -D warnings
+
       - name: cargo test (tests/spec_ci workflow conformance)
-        if: runner.os == 'Linux' && hashFiles('tests/spec_ci/Cargo.toml') != ''
+        if: runner.os == 'Linux'
         run: cargo test --manifest-path tests/spec_ci/Cargo.toml
 
   # GPU/audio/app crates on each OS's software or OS adapter:
@@ -105,14 +103,16 @@ jobs:
             adapter: Metal
             wgpu_backend: metal
     env:
-      # wgpu reads these via InstanceDescriptor::with_env(); pin the CI adapter's backend.
+      # Not read by anything yet: from Subphase 1.4, pin_render's gpu-tests are expected to
+      # build their wgpu Instance with InstanceDescriptor::with_env() (honouring WGPU_BACKEND)
+      # and to treat a missing lavapipe/WARP/Metal adapter as a failure when PIN_REQUIRE_GPU=1
+      # (the counterpart of SPIKE_REQUIRE_GPU in spikes.yml).
       WGPU_BACKEND: ${{ matrix.wgpu_backend }}
-      # A missing lavapipe/WARP/Metal adapter is a failure in CI (as SPIKE_REQUIRE_GPU in spikes.yml).
       PIN_REQUIRE_GPU: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
 
       - uses: Swatinem/rust-cache@v2
 
@@ -127,13 +127,13 @@ jobs:
             libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
             libasound2-dev libpulse-dev
 
-      - name: Toolchain (rustc >= 1.${{ env.MIN_RUST_MINOR }}, host ${{ matrix.target }})
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
         shell: bash
         run: |
           rustc -vV && cargo --version
-          minor=$(rustc --version | awk '{print $2}' | cut -d. -f2)
-          if [ "$minor" -lt "$MIN_RUST_MINOR" ]; then
-            echo "::error::rustc $(rustc --version) is older than 1.$MIN_RUST_MINOR"; exit 1
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
           fi
           host=$(rustc -vV | sed -n 's/^host: //p')
           if [ "$host" != "${{ matrix.target }}" ]; then
@@ -165,9 +165,9 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy
 
@@ -184,13 +184,13 @@ jobs:
             libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
             libasound2-dev libpulse-dev
 
-      - name: Toolchain (rustc >= 1.${{ env.MIN_RUST_MINOR }}, host ${{ matrix.target }})
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
         shell: bash
         run: |
           rustc -vV && cargo --version
-          minor=$(rustc --version | awk '{print $2}' | cut -d. -f2)
-          if [ "$minor" -lt "$MIN_RUST_MINOR" ]; then
-            echo "::error::rustc $(rustc --version) is older than 1.$MIN_RUST_MINOR"; exit 1
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
           fi
           host=$(rustc -vV | sed -n 's/^host: //p')
           if [ "$host" != "${{ matrix.target }}" ]; then
@@ -205,9 +205,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: rustfmt
 
@@ -215,7 +215,6 @@ jobs:
         run: cargo fmt --all --check
 
       - name: cargo fmt --check (tests/spec_ci)
-        if: hashFiles('tests/spec_ci/Cargo.toml') != ''
         run: cargo fmt --manifest-path tests/spec_ci/Cargo.toml --all --check
 
   # PLACEHOLDER — Subphase 2.5 replaces this with the golden replay-hash check
@@ -231,6 +230,7 @@ jobs:
           exit 0
 
   # Line coverage for the GPU-free crates (gate step 4). Non-gating for now: prints the table.
+  # Like core-tests, no SDL/X11 packages are installed.
   coverage:
     name: coverage (core crates, non-gating)
     runs-on: ubuntu-latest
@@ -239,25 +239,15 @@ jobs:
     env:
       SDL_VIDEO_DRIVER: dummy
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
 
       - uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Install Linux packages (SDL3 build headers)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake \
-            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
-            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
-            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
-            libasound2-dev libpulse-dev
 
       - name: cargo llvm-cov (summary)
         run: |
