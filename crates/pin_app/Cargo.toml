@@ -9,3 +9,12 @@ license.workspace = true
 
 [dependencies]
 pin_core.workspace = true
+pin_render = { path = "../pin_render" }
+sdl3.workspace = true
+arrayvec.workspace = true
+
+# SDL must run on the main thread (Cocoa on macOS) and may only be initialised
+# once per process, so SDL tests are plain `main` binaries instead of libtest.
+[[test]]
+name = "platform_headless"
+harness = false
