@@ -5,14 +5,21 @@
 //! * **Position** is measured from the tracked rest: `(raw − rest − dz) /
 //!   (1 − rest − dz)` clamped to `0..=1`, 0 within the deadzone or below rest.
 //! * **Pull.** A pull starts when `raw − rest > deadzone`. It can end in a
-//!   release only if it *qualifies*: it started after the plunger had been at
-//!   rest (within ±deadzone) for [`ARM_REST_MS`], it reached
+//!   release only if it *qualifies*: the filter was *armed*, the pull reached
 //!   `max(PULL_QUALIFY_DEADZONES · deadzone, MIN_PULL_DEPTH)`, and it lasted
 //!   at least [`MIN_PULL_TICKS`] updates. The release is reported on the tick
 //!   the plunger is back within the deadzone (overshoot past rest counts),
-//!   with the peak forward speed of the last `release_window_ms`, if that peak
-//!   is at least `release_min_speed`. After a release no pull starts for
+//!   with the peak forward speed of the return stroke within the last
+//!   `release_window_ms` (see [`MAX_SPEED_BASELINE`]), if that peak is at
+//!   least `release_min_speed`. After a release no pull starts for
 //!   [`RELEASE_HOLDOFF_MS`].
+//! * **Arming.** The filter arms once the plunger has been at rest (within
+//!   ±deadzone) for [`ARM_REST_MS`] continuously, and stays armed through
+//!   pulls that end without a release, so deadzone-edge chatter and hesitant
+//!   starts do not cost a launch. It disarms only on the events arming exists
+//!   for: a release (spring bounce), a reading more than a deadzone below
+//!   rest (pushed in, or overshoot — the spring-back must settle), and a rest
+//!   re-acquisition. It starts disarmed.
 //! * **Rest** (only while `rest_tracking_per_s > 0`; with 0 the rest is fixed
 //!   at 0):
 //!   - tracking: while not pulled and within ±deadzone, rest follows the
@@ -31,8 +38,12 @@
 //!     pushed in: it reads 0 and becomes the rest only after
 //!     [`PUSH_IN_REACQUIRE_MS`]; the previous rest is remembered and restored
 //!     after [`STABLE_MS`] back there. Levels beyond
-//!     `±MAX_REST_OFFSET` never become the rest. Re-acquisition cancels a
-//!     pull in progress without a release;
+//!     `±MAX_REST_OFFSET` never become the rest. Within the power-on window a
+//!     level below rest is acquired after [`STABLE_MS`] too (a device resting
+//!     below nominal). Re-acquisition cancels a pull in progress without a
+//!     release. A release while a pushed-in rest is in force does not make
+//!     that rest known-good. Re-acquisition needs the reading's noise to stay
+//!     below one deadzone peak-to-peak; noisier sensors keep tracking only;
 //!   - rest always stays within `±MAX_REST_OFFSET`.
 //!
 //! A rest that is too *high* never blocks a launch (the return still comes
@@ -60,7 +71,8 @@ pub const MIN_PULL_DEPTH: f32 = 0.05;
 /// noise, a 3 ms tap is the fastest real pull.
 pub const MIN_PULL_TICKS: u32 = 3;
 
-/// A pull can qualify only if the plunger was at rest this long (ms) before.
+/// The filter arms after this long (ms) continuously at rest; see the module
+/// docs.
 pub const ARM_REST_MS: u64 = 50;
 
 /// After a release no new pull starts for this long (ms): the spring bounce.

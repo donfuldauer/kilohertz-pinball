@@ -183,6 +183,40 @@ pub fn solve_surface_contact(
     (ball.velocity - before.0).length() + (ball.angular_velocity - before.1).length() * r
 }
 
+/// Applies stored contact impulses to a ball on a surface (warm start of
+/// [`solve_surface_contact`]); `acc.tangent` is used as given.
+pub fn apply_surface_impulse(
+    ball: &mut Ball,
+    body: SphereBody,
+    normal: Vec3,
+    acc: &ContactImpulse,
+) {
+    let inertia = body.inertia();
+    ball.velocity += (normal * acc.normal + acc.tangent) / body.mass;
+    ball.angular_velocity += ((normal * -body.radius).cross(acc.tangent) + acc.rolling) / inertia;
+}
+
+/// Applies stored contact impulses to two balls (warm start of
+/// [`solve_ball_contact`]); `normal` points from `b` toward `a`.
+pub fn apply_ball_impulse(
+    a: &mut Ball,
+    body_a: SphereBody,
+    b: &mut Ball,
+    body_b: SphereBody,
+    normal: Vec3,
+    acc: &ContactImpulse,
+) {
+    let d = (a.position - b.position).dot(normal);
+    let rsum = body_a.radius + body_b.radius;
+    let arm_a = normal * (-d * body_a.radius / rsum);
+    let arm_b = normal * (d * body_b.radius / rsum);
+    let j = normal * acc.normal + acc.tangent;
+    a.velocity += j / body_a.mass;
+    b.velocity -= j / body_b.mass;
+    a.angular_velocity += arm_a.cross(acc.tangent) / body_a.inertia();
+    b.angular_velocity -= arm_b.cross(acc.tangent) / body_b.inertia();
+}
+
 /// Resolves an impact of a ball on a surface in one shot (see
 /// [`solve_surface_contact`]): restitution from [`effective_restitution`],
 /// then friction and rolling resistance for the impulse of this impact.
@@ -487,6 +521,50 @@ mod tests {
         solve_surface_contact(&mut b, BODY, normals[0], Vec3::ZERO, k, 0.0, &mut acc[0]);
         assert_eq!(acc[0].normal, 0.0);
         assert_eq!(acc[0].tangent, Vec3::ZERO);
+    }
+
+    #[test]
+    fn warm_start_reproduces_a_converged_solve() {
+        // Solve a resting contact, then apply the stored impulses to a
+        // fresh copy of the same state: same result, nothing left to do.
+        let k = ContactCoefficients {
+            restitution: 0.0,
+            friction: 0.3,
+            rolling_resistance: 0.002,
+        };
+        let mut start = Ball::new(ProfileId(0), Vec3::ZERO);
+        start.velocity = Vec3::new(0.4, 0.0, -0.3);
+        start.angular_velocity = Vec3::new(0.0, 5.0, 2.0);
+        let mut solved = start;
+        let mut acc = ContactImpulse::default();
+        solve_surface_contact(&mut solved, BODY, Vec3::Z, Vec3::ZERO, k, 0.0, &mut acc);
+        let mut warm = start;
+        apply_surface_impulse(&mut warm, BODY, Vec3::Z, &acc);
+        assert!((warm.velocity - solved.velocity).length() < 1e-6);
+        assert!((warm.angular_velocity - solved.angular_velocity).length() < 1e-4);
+        let change = solve_surface_contact(&mut warm, BODY, Vec3::Z, Vec3::ZERO, k, 0.0, &mut acc);
+        assert!(change < 1e-6, "{change}");
+
+        // Two balls: momentum-neutral, and again reproduces the solve.
+        let k = ContactCoefficients {
+            restitution: 0.0,
+            friction: 0.3,
+            rolling_resistance: 0.0,
+        };
+        let mut a0 = Ball::new(ProfileId(0), Vec3::Z * 0.027);
+        a0.velocity = Vec3::new(0.2, 0.0, -0.5);
+        let mut b0 = Ball::new(ProfileId(0), Vec3::ZERO);
+        b0.angular_velocity = Vec3::new(30.0, 0.0, 0.0);
+        let (mut a1, mut b1) = (a0, b0);
+        let mut acc = ContactImpulse::default();
+        solve_ball_contact(&mut a1, BODY, &mut b1, BODY, Vec3::Z, k, 0.0, &mut acc);
+        let (mut a2, mut b2) = (a0, b0);
+        apply_ball_impulse(&mut a2, BODY, &mut b2, BODY, Vec3::Z, &acc);
+        assert!((a2.velocity - a1.velocity).length() < 1e-6);
+        assert!((b2.velocity - b1.velocity).length() < 1e-6);
+        assert!((a2.angular_velocity - a1.angular_velocity).length() < 1e-4);
+        assert!((b2.angular_velocity - b1.angular_velocity).length() < 1e-4);
+        assert!((a2.velocity + b2.velocity - a0.velocity - b0.velocity).length() < 1e-7);
     }
 
     #[test]

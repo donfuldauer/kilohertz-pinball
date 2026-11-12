@@ -326,7 +326,11 @@ fn check_resources(module: &Module, cfg: &WasmConfig) -> Result<(), ScriptError>
 /// docs) without compiling anything. Returns the binary.
 fn precheck(bytes: &[u8]) -> Result<Cow<'_, [u8]>, ScriptError> {
     let binary = bytes.starts_with(b"\0asm");
-    let cap = if binary { MAX_MODULE_BYTES } else { MAX_WAT_BYTES };
+    let cap = if binary {
+        MAX_MODULE_BYTES
+    } else {
+        MAX_WAT_BYTES
+    };
     if bytes.len() > cap {
         return Err(load(format_args!(
             "module is {} bytes (at most {cap} bytes of {})",
@@ -358,16 +362,17 @@ fn precheck(bytes: &[u8]) -> Result<Cow<'_, [u8]>, ScriptError> {
 fn scan(bin: &[u8]) -> Result<(), ScriptError> {
     let parse = |e: wasmtime::wasmparser::BinaryReaderError| load(format_args!("{e}"));
     let over = |what: &str, n: u64, max: u64| {
-        Err(load(format_args!(
-            "module has {n} {what} (at most {max})"
-        )))
+        Err(load(format_args!("module has {n} {what} (at most {max})")))
     };
     let mut imported_funcs = 0u32;
     for payload in Parser::new(0).parse_all(bin) {
         match payload.map_err(parse)? {
             Payload::ImportSection(r) => {
                 for imp in r.into_imports() {
-                    if matches!(imp.map_err(parse)?.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
+                    if matches!(
+                        imp.map_err(parse)?.ty,
+                        TypeRef::Func(_) | TypeRef::FuncExact(_)
+                    ) {
                         imported_funcs = imported_funcs.saturating_add(1);
                     }
                 }
@@ -677,8 +682,7 @@ impl WasmScriptBackend {
     pub fn prepare(bytes: &[u8], cfg: WasmConfig) -> Result<PreparedModule, ScriptError> {
         let engine = engine()?;
         let bin = precheck(bytes)?;
-        let module =
-            Module::from_binary(engine, &bin).map_err(|e| load(format_args!("{e:#}")))?;
+        let module = Module::from_binary(engine, &bin).map_err(|e| load(format_args!("{e:#}")))?;
         for imp in module.imports() {
             let ok = imp.module() == host::MODULE
                 && host::IMPORTS

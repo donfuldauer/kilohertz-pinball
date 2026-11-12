@@ -1069,3 +1069,215 @@ fn host_call_loop_tick_cost_report() {
     );
     assert_eq!(b.last_error(), Some(&ScriptError::BudgetExceeded));
 }
+
+// ------------------------------------------- pre-compile size limits ----
+
+fn load_msg(src: &[u8]) -> String {
+    match WasmScriptBackend::new(src, &NameTables::default(), WasmConfig::engine()) {
+        Err(ScriptError::Load(m)) => m,
+        Err(e) => panic!("expected a Load error, got {e:?}"),
+        Ok(_) => panic!("module must be rejected"),
+    }
+}
+
+/// Each limit is enforced by the pre-scan: the messages name the limit,
+/// which wasmtime's compiler would never produce.
+#[test]
+fn oversize_modules_are_rejected_before_compiling() {
+    use pin_script::wasm::{
+        MAX_FUNCTION_BODY_BYTES, MAX_FUNCTIONS, MAX_GLOBALS, MAX_MODULE_BYTES, MAX_SEGMENTS,
+        MAX_TOTAL_TABLE_ELEMENTS, MAX_WAT_BYTES,
+    };
+    // Binary bigger than the cap (rejected on length alone).
+    let mut bin = b"\0asm\x01\0\0\0".to_vec();
+    bin.resize(MAX_MODULE_BYTES + 1, 0);
+    let m = load_msg(&bin);
+    assert!(
+        m.contains(&format!("at most {MAX_MODULE_BYTES} bytes of binary")),
+        "{m}"
+    );
+    // WAT text bigger than the text cap.
+    let mut text = b"(module ".to_vec();
+    text.resize(MAX_WAT_BYTES + 1, b' ');
+    let m = load_msg(&text);
+    assert!(
+        m.contains(&format!("at most {MAX_WAT_BYTES} bytes of WAT text")),
+        "{m}"
+    );
+    // WAT text under its cap that compiles to an oversize binary.
+    let data = "a".repeat(MAX_MODULE_BYTES + 1);
+    let m = load_msg(format!(r#"(module {EXPORTS} (data (i32.const 0) "{data}"))"#).as_bytes());
+    assert!(
+        m.contains("compiles to") && m.contains(&MAX_MODULE_BYTES.to_string()),
+        "{m}"
+    );
+
+    let cases: [(String, &str, String); 6] = [
+        (
+            "(func)".repeat(MAX_FUNCTIONS as usize - 2),
+            "functions",
+            MAX_FUNCTIONS.to_string(),
+        ),
+        (
+            format!(
+                "(func {})",
+                "(drop (i32.const 1))".repeat(MAX_FUNCTION_BODY_BYTES as usize / 3 + 1)
+            ),
+            "function body",
+            MAX_FUNCTION_BODY_BYTES.to_string(),
+        ),
+        (
+            "(global i32 (i32.const 0))".repeat(MAX_GLOBALS as usize + 1),
+            "globals",
+            MAX_GLOBALS.to_string(),
+        ),
+        (
+            "(table 60000 funcref) (table 40001 funcref)".into(),
+            "table elements",
+            MAX_TOTAL_TABLE_ELEMENTS.to_string(),
+        ),
+        (
+            r#"(data (i32.const 0) "")"#.repeat(MAX_SEGMENTS as usize + 1),
+            "data segments",
+            MAX_SEGMENTS.to_string(),
+        ),
+        (
+            format!(
+                "(table 1 funcref) {}",
+                "(elem (i32.const 0) func)".repeat(MAX_SEGMENTS as usize + 1)
+            ),
+            "element segments",
+            MAX_SEGMENTS.to_string(),
+        ),
+    ];
+    for (extra, what, max) in cases {
+        let m = load_msg(format!("(module {EXPORTS} {extra})").as_bytes());
+        assert!(
+            m.contains(what) && m.contains(&format!("at most {max}")),
+            "{what}: {m}"
+        );
+    }
+}
+
+#[test]
+fn modules_at_the_limits_still_load() {
+    use pin_script::wasm::{MAX_FUNCTIONS, MAX_GLOBALS, MAX_SEGMENTS};
+    // EXPORTS defines three functions.
+    let funcs = "(func)".repeat(MAX_FUNCTIONS as usize - 3);
+    let globals = "(global i32 (i32.const 0))".repeat(MAX_GLOBALS as usize);
+    let data = r#"(data (i32.const 0) "")"#.repeat(MAX_SEGMENTS as usize);
+    let src = format!(
+        "(module {EXPORTS} {funcs} {globals} {data} (table 60000 funcref) (table 40000 funcref))"
+    );
+    let cfg = WasmConfig::default();
+    assert!(WasmScriptBackend::new(src.as_bytes(), &NameTables::default(), cfg).is_ok());
+    let bin = include_bytes!("fixtures/wasm/rules.wasm");
+    assert!(WasmScriptBackend::prepare(bin, WasmConfig::engine()).is_ok());
+}
+
+#[test]
+fn reexported_host_functions_are_not_entry_points() {
+    let imports = r#"(import "pinball" "pulse_coil" (func $p (param i32 i32)))
+      (import "pinball" "tick" (func $t (result i64)))
+      (import "pinball" "switch" (func $s (param i32) (result i32)))"#;
+    let base =
+        r#"(memory (export "memory") 1) (func (export "on_init")) (func (export "on_tick"))"#;
+    let cases = [
+        format!(r#"(module {imports} {base} (export "on_switch_edge" (func $p)))"#),
+        format!(
+            r#"(module {imports} {base} (func (export "on_switch_edge") (param i32 i32)) (export "save_state" (func $t)))"#
+        ),
+        format!(
+            r#"(module {imports} {base} (func (export "on_switch_edge") (param i32 i32)) (export "restore_state" (func $p)))"#
+        ),
+        format!(
+            r#"(module {imports} {base} (func (export "on_switch_edge") (param i32 i32)) (export "alloc_state" (func $s)))"#
+        ),
+    ];
+    for src in cases {
+        let m = load_msg(src.as_bytes());
+        assert!(m.contains("re-exports an imported host function"), "{m}");
+    }
+    // Re-exporting an import under any other name is harmless.
+    let ok = format!(
+        r#"(module {imports} {base} (func (export "on_switch_edge") (param i32 i32)) (export "pulse" (func $p)))"#
+    );
+    assert!(
+        WasmScriptBackend::new(ok.as_bytes(), &NameTables::default(), WasmConfig::engine()).is_ok()
+    );
+}
+
+// ------------------------------------------------------ stack and bulk ----
+
+/// Deep recursion traps at the Wasm stack limit instead of overflowing a
+/// host thread that has only 1 MiB of stack.
+#[test]
+fn deep_recursion_traps_cleanly_on_a_small_host_stack() {
+    let src = wat(
+        "(func $r (param i64) (result i64) (i64.add (local.get 0) (call $r (local.get 0))))",
+        "",
+        "(drop (call $r (i64.const 1)))",
+        "",
+    );
+    let err = std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(move || {
+            let mut b = new(&src, WasmConfig::default());
+            let mut h = Host::new();
+            h.tick(&mut b);
+            assert!(b.is_faulted());
+            assert!(h.tick(&mut b).is_empty());
+            b.last_error().cloned()
+        })
+        .unwrap()
+        .join()
+        .expect("the host thread must not overflow");
+    match err {
+        Some(ScriptError::Runtime(m)) => assert!(m.contains("stack"), "{m}"),
+        e => panic!("expected a stack-exhaustion trap, got {e:?}"),
+    }
+}
+
+/// Bulk operations are charged by size: loops of whole-memory or
+/// whole-table fills/copies exhaust the engine budget within a few
+/// iterations and fault like any other budget overrun.
+#[test]
+fn bulk_memory_and_table_loops_exhaust_the_budget() {
+    let bodies = [
+        "(loop $l (memory.fill (i32.const 0) (i32.const 7) (i32.const 65536)) (br $l))",
+        "(loop $l (memory.copy (i32.const 0) (i32.const 32768) (i32.const 32768)) (br $l))",
+        "(loop $l (table.fill $t (i32.const 0) (ref.null func) (i32.const 65536)) (br $l))",
+        // A single fill bigger than the budget also faults.
+        "(memory.fill (i32.const 0) (i32.const 1) (i32.const 65536)) (memory.fill (i32.const 0) (i32.const 1) (i32.const 65536))",
+    ];
+    for body in bodies {
+        let src = wat("(table $t 65536 funcref)", "", body, "");
+        let mut b = new(&src, WasmConfig::engine());
+        let mut h = Host::new();
+        h.tick(&mut b);
+        assert_eq!(b.last_error(), Some(&ScriptError::BudgetExceeded), "{body}");
+    }
+}
+
+/// Reports (never asserts: rule 5) the wall time of faulting bulk-op ticks.
+/// `cargo test -p pin_script --release --test wasm_backend bulk_op_tick_cost_report -- --ignored --nocapture`.
+#[test]
+#[ignore = "prints wall-clock numbers for the report; run in release"]
+fn bulk_op_tick_cost_report() {
+    for body in [
+        "(loop $l (memory.fill (i32.const 0) (i32.const 7) (i32.const 65536)) (br $l))",
+        "(loop $l (memory.copy (i32.const 0) (i32.const 32768) (i32.const 32768)) (br $l))",
+        "(loop $l (table.fill $t (i32.const 0) (ref.null func) (i32.const 65536)) (br $l))",
+    ] {
+        let src = wat("(table $t 65536 funcref)", "", body, "");
+        let mut worst = std::time::Duration::ZERO;
+        for _ in 0..20 {
+            let mut b = new(&src, WasmConfig::engine());
+            let mut h = Host::new();
+            let start = std::time::Instant::now();
+            h.tick(&mut b);
+            worst = worst.max(start.elapsed());
+        }
+        println!("worst faulting bulk tick with WasmConfig::engine(): {worst:?}  {body}");
+    }
+}

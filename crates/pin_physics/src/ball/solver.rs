@@ -25,9 +25,9 @@ use pin_core::ids::{MagnetId, ProfileId};
 use pin_core::{BallProfile, Material};
 
 use super::contact::{
-    ContactCoefficients, ContactImpulse, SphereBody, effective_restitution, integrate_orientation,
-    resolve_ball_contact, resolve_surface_contact, solve_ball_contact, solve_surface_contact,
-    sphere_toi,
+    ContactCoefficients, ContactImpulse, SphereBody, apply_ball_impulse, apply_surface_impulse,
+    effective_restitution, integrate_orientation, resolve_ball_contact, resolve_surface_contact,
+    solve_ball_contact, solve_surface_contact, sphere_toi,
 };
 use super::newton::NewtonChain;
 use super::types::{
@@ -64,6 +64,9 @@ const MAX_EVENTS_PER_SUBSTEP: u8 = 12;
 const PRESOLVE_PASSES: usize = 64;
 /// The sweeps stop when one changes no velocity by more than this (m/s).
 const PRESOLVE_TOLERANCE: f32 = 1.0e-7;
+/// Normals closer than this (cosine) are the same contact from one
+/// sub-step to the next (warm start).
+const WARM_COS: f32 = 0.99;
 /// Closing speed (m/s) below which two touching balls are left to the next
 /// sub-step boundary instead of raising an impact (they sink by at most a
 /// micrometre per millisecond, which the position correction removes).
@@ -277,6 +280,32 @@ struct Contact {
     acc: ContactImpulse,
 }
 
+impl ContactKind {
+    /// Whether two contacts are with the same thing.
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Surface(a, _), Self::Surface(b, _)) => a == b,
+            (Self::Ball(a), Self::Ball(b)) => a == b,
+            (Self::Chain(a, b), Self::Chain(c, d)) => a == c && b == d,
+            _ => false,
+        }
+    }
+}
+
+/// Impulses of a resting contact, kept from one boundary solve to the next:
+/// started from them, the solve of a resting cluster converges in a sweep or
+/// two instead of dozens.
+#[derive(Copy, Clone)]
+struct WarmContact {
+    kind: ContactKind,
+    normal: Vec3,
+    acc: ContactImpulse,
+    /// Sub-step the impulses were solved for (they scale with it).
+    h: f32,
+}
+
+type WarmList = ArrayVec<WarmContact, MAX_CONTACTS>;
+
 enum Next {
     End,
     Boundary,
@@ -294,6 +323,8 @@ pub struct BallSolver {
     slots: [Option<Ball>; MAX_BALLS],
     /// Directions in which each ball is currently supported.
     touch: [TouchSet; MAX_BALLS],
+    /// Contact impulses of each ball's last boundary solve.
+    warm: [WarmList; MAX_BALLS],
     /// Compensation term of the position sums (Kahan), so that the many
     /// small advances of a tick do not accumulate rounding.
     carry: [Vec3; MAX_BALLS],
@@ -358,6 +389,7 @@ impl BallSolver {
             pair_table,
             slots: [None; MAX_BALLS],
             touch: std::array::from_fn(|_| ArrayVec::new()),
+            warm: std::array::from_fn(|_| ArrayVec::new()),
             carry: [Vec3::ZERO; MAX_BALLS],
             last_position: [Vec3::ZERO; MAX_BALLS],
             collider_materials: Vec::new(),
@@ -401,6 +433,7 @@ impl BallSolver {
         let i = self.slots.iter().position(Option::is_none)?;
         self.slots[i] = Some(ball);
         self.touch[i].clear();
+        self.warm[i].clear();
         self.carry[i] = Vec3::ZERO;
         self.last_position[i] = ball.position;
         Some(BallHandle(i as u8))
@@ -1092,6 +1125,72 @@ impl BallSolver {
         }
     }
 
+    /// Starts the resting contacts of ball `i` from the impulses they ended
+    /// the previous boundary solve with (scaled to this sub-step). The
+    /// impulses stay under the solver's clamps, so one that is no longer
+    /// needed is taken back in the first sweep.
+    fn warm_start(
+        &mut self,
+        i: usize,
+        contacts: &mut ContactList,
+        members: &[bool; MAX_BALLS],
+        sc: &mut [Scratch; MAX_BALLS],
+    ) {
+        let me = sc[i];
+        for c in contacts.iter_mut() {
+            if c.depth < -c.active_eps || !c.persistent {
+                continue;
+            }
+            let Some(w) = self.warm[i]
+                .iter()
+                .find(|w| w.kind.same(&c.kind) && w.normal.dot(c.normal) > WARM_COS)
+            else {
+                continue;
+            };
+            let scale = me.h / w.h;
+            if !scale.is_finite() {
+                continue;
+            }
+            let acc = ContactImpulse {
+                normal: w.acc.normal * scale,
+                // Friction acts in the tangent plane of the current normal.
+                tangent: (w.acc.tangent - c.normal * w.acc.tangent.dot(c.normal)) * scale,
+                rolling: w.acc.rolling * scale,
+            };
+            match c.kind {
+                ContactKind::Surface(..) => {
+                    if let Some(ball) = self.slots[i].as_mut() {
+                        apply_surface_impulse(ball, me.body, c.normal, &acc);
+                        c.acc = acc;
+                    }
+                }
+                ContactKind::Ball(j) => {
+                    if members[j] && j < i {
+                        continue;
+                    }
+                    let (Some(mut a), Some(mut b)) = (self.slots[i], self.slots[j]) else {
+                        continue;
+                    };
+                    let Some(normal) = (a.position - b.position).try_normalize() else {
+                        continue;
+                    };
+                    let acc = ContactImpulse {
+                        tangent: acc.tangent - normal * acc.tangent.dot(normal),
+                        rolling: Vec3::ZERO,
+                        ..acc
+                    };
+                    apply_ball_impulse(&mut a, me.body, &mut b, sc[j].body, normal, &acc);
+                    self.slots[i] = Some(a);
+                    self.slots[j] = Some(b);
+                    sc[j].cache = Cache::Dirty;
+                    c.acc = acc;
+                }
+                // A captive ball's reaction depends on the whole chain.
+                ContactKind::Chain(..) => {}
+            }
+        }
+    }
+
     /// One velocity-solver sweep over the touching contacts of ball `i`
     /// (resting contacts: no restitution, accumulated impulses): first the
     /// contacts with balls (`surfaces == false`), then, in a second call,
@@ -1191,6 +1290,11 @@ impl BallSolver {
                 self.boundary_impacts(i, &lists[i], &members, sc, events);
             }
         }
+        for i in 0..MAX_BALLS {
+            if members[i] {
+                self.warm_start(i, &mut lists[i], &members, sc);
+            }
+        }
         // Each ball is swept until its own contacts have converged: how
         // long one ball iterates must not depend on balls it does not touch.
         let mut settled = [false; MAX_BALLS];
@@ -1222,6 +1326,20 @@ impl BallSolver {
             }
             if all {
                 break;
+            }
+        }
+        for i in 0..MAX_BALLS {
+            if members[i] {
+                let h = sc[i].h;
+                self.warm[i].clear();
+                for c in lists[i].iter().filter(|c| c.acc.normal > 0.0) {
+                    self.warm[i].push(WarmContact {
+                        kind: c.kind,
+                        normal: c.normal,
+                        acc: c.acc,
+                        h,
+                    });
+                }
             }
         }
         for (member, s) in members.iter().zip(sc.iter_mut()) {

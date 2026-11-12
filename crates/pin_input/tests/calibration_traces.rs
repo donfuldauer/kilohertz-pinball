@@ -788,3 +788,69 @@ fn filter_output_hash_is_stable_over_10_runs() {
         assert_eq!(hash_once(), first);
     }
 }
+
+/// Round 3: the never-stuck invariant also holds with ±0.004 noise on every
+/// sample (B3).
+mod never_stuck_noisy {
+    use super::*;
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+        #[test]
+        fn any_noisy_history_then_rest_then_launch(
+            segs in prop::collection::vec((-0.35f32..1.0, 1u64..4000, any::<bool>()), 0..8),
+            depth in 0.1f32..0.9,
+            snap_ms in 5u64..20,
+            seed in any::<u64>(),
+        ) {
+            let mut f = PlungerFilter::new(PlungerConfig::default());
+            let mut t = 0u64;
+            let mut s = seed | 1;
+            let mut out = Vec::new();
+            let mut feed = |f: &mut PlungerFilter, t: &mut u64, x: f32, out: &mut Vec<f32>| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                let n = ((s >> 40) as f32 / (1u64 << 23) as f32 - 1.0) * 0.004;
+                out.extend(f.update(x + n, *t).release);
+                *t += 1;
+            };
+            let mut last = 0.0f32;
+            for (level, ms, ramped) in segs {
+                if ramped {
+                    let n = ms.min(500);
+                    for k in 1..=n {
+                        feed(&mut f, &mut t, last + (level - last) * k as f32 / n as f32, &mut out);
+                    }
+                }
+                for _ in 0..ms {
+                    feed(&mut f, &mut t, level, &mut out);
+                }
+                last = level;
+            }
+            for k in 1..=300u64 {
+                feed(&mut f, &mut t, last - last * k as f32 / 300.0, &mut out);
+            }
+            for _ in 0..2000 {
+                feed(&mut f, &mut t, 0.0, &mut out);
+            }
+            out.clear();
+            for k in 1..=300u64 {
+                feed(&mut f, &mut t, depth * k as f32 / 300.0, &mut out);
+            }
+            for _ in 0..100 {
+                feed(&mut f, &mut t, depth, &mut out);
+            }
+            for k in 1..=snap_ms {
+                feed(&mut f, &mut t, depth - depth * k as f32 / snap_ms as f32, &mut out);
+            }
+            for _ in 0..300 {
+                feed(&mut f, &mut t, 0.0, &mut out);
+            }
+            prop_assert_eq!(out.len(), 1, "rest {} releases {:?}", f.rest(), out);
+            let want = depth / snap_ms as f32 * 1000.0;
+            // ±0.004 noise over a 5–20 ms stroke: within max(5 %, 12·a/depth).
+            let allowed = (12.0 * 0.004 / depth).max(0.05);
+            prop_assert!((out[0] - want).abs() <= allowed * want, "{} vs {}", out[0], want);
+        }
+    }
+}
