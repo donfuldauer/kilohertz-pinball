@@ -35,8 +35,16 @@ fn positional_declarations_are_converted_to_si() {
 
     // switches: position mm -> m, radius mm -> m; absent stays absent.
     let sw = &t.switches[0];
-    close3(sw.position_m.expect("declared position"), mm3_to_m([410.0, 720.0, 0.0]), "switch position");
-    close(sw.radius_m.expect("declared radius"), mm_to_m(12.0), "switch radius");
+    close3(
+        sw.position_m.expect("declared position"),
+        mm3_to_m([410.0, 720.0, 0.0]),
+        "switch position",
+    );
+    close(
+        sw.radius_m.expect("declared radius"),
+        mm_to_m(12.0),
+        "switch radius",
+    );
     assert!(t.switches[1].position_m.is_none());
     assert!(t.switches[1].radius_m.is_none());
 

@@ -7,9 +7,6 @@ use ::gltf::Document;
 use ::gltf::accessor::{Accessor, DataType, Dimensions};
 use ::gltf::buffer::{Source, View};
 
-/// Largest element count of an accessor without a buffer view (zero-filled).
-const MAX_IMPLICIT_COUNT: usize = 1 << 24;
-
 /// Every buffer's bytes, at least as long as the declared `byteLength`.
 pub(super) struct Buffers {
     data: Vec<Vec<u8>>,
@@ -25,9 +22,12 @@ impl Buffers {
         let mut data = Vec::with_capacity(document.buffers().len());
         for buffer in document.buffers() {
             let bytes = match buffer.source() {
-                Source::Bin => bin
-                    .take()
-                    .ok_or_else(|| gerr(format!("buffer {} refers to a missing GLB BIN chunk", buffer.index())))?,
+                Source::Bin => bin.take().ok_or_else(|| {
+                    gerr(format!(
+                        "buffer {} refers to a missing GLB BIN chunk",
+                        buffer.index()
+                    ))
+                })?,
                 Source::Uri(uri) => resolve_uri(uri, vfs, base)?,
             };
             if bytes.len() < buffer.length() {
@@ -75,12 +75,12 @@ fn dimension_count(d: Dimensions) -> usize {
     }
 }
 
-/// Element byte slices of `accessor` (`None` = zero-filled accessor).
+/// The bytes of `accessor` from its first element, with stride and count.
 fn elements<'b>(
     buffers: &'b Buffers,
     accessor: &Accessor<'_>,
     what: &str,
-) -> Result<Option<(&'b [u8], usize, usize)>, AssetError> {
+) -> Result<(&'b [u8], usize, usize), AssetError> {
     if accessor.sparse().is_some() {
         return Err(gerr(format!(
             "{what}: sparse accessor {} is not supported",
@@ -89,12 +89,13 @@ fn elements<'b>(
     }
     let elem = component_size(accessor.data_type()) * dimension_count(accessor.dimensions());
     let count = accessor.count();
-    let Some(view) = accessor.view() else {
-        if count > MAX_IMPLICIT_COUNT {
-            return Err(gerr(format!("{what}: accessor {} is too large", accessor.index())));
-        }
-        return Ok(None);
-    };
+    // Validation only admits a view-less accessor when it is sparse.
+    let view = accessor.view().ok_or_else(|| {
+        gerr(format!(
+            "{what}: accessor {} has no buffer view",
+            accessor.index()
+        ))
+    })?;
     let bytes = buffers.view(&view)?;
     let stride = view.stride().unwrap_or(elem);
     if stride < elem {
@@ -111,7 +112,9 @@ fn elements<'b>(
             .and_then(|v| v.checked_add(accessor.offset())),
     };
     match needed {
-        Some(n) if n <= bytes.len() => Ok(Some((&bytes[accessor.offset().min(bytes.len())..], stride, count))),
+        Some(n) if n <= bytes.len() => {
+            Ok((&bytes[accessor.offset().min(bytes.len())..], stride, count))
+        }
         _ => Err(gerr(format!(
             "{what}: accessor {} runs past its buffer view",
             accessor.index()
@@ -158,9 +161,7 @@ pub(super) fn read_f32s<const N: usize>(
         )));
     }
     let size = component_size(t);
-    let Some((bytes, stride, count)) = elements(buffers, accessor, what)? else {
-        return Ok(vec![[0.0; N]; accessor.count()]);
-    };
+    let (bytes, stride, count) = elements(buffers, accessor, what)?;
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let e = &bytes[i * stride..];
@@ -194,9 +195,7 @@ pub(super) fn read_indices(
             accessor.index()
         )));
     }
-    let Some((bytes, stride, count)) = elements(buffers, accessor, what)? else {
-        return Ok(vec![0; accessor.count()]);
-    };
+    let (bytes, stride, count) = elements(buffers, accessor, what)?;
     Ok((0..count)
         .map(|i| {
             let e = &bytes[i * stride..];
@@ -364,10 +363,25 @@ mod tests {
         assert_eq!(component(&[0xfe], DataType::I8, false), -2.0);
         assert_eq!(component(&[0xfe, 0xff], DataType::I16, false), -2.0);
         assert_eq!(component(&[1, 0, 0, 0], DataType::U32, false), 1.0);
-        for t in [DataType::I8, DataType::U8, DataType::I16, DataType::U16, DataType::U32, DataType::F32] {
+        for t in [
+            DataType::I8,
+            DataType::U8,
+            DataType::I16,
+            DataType::U16,
+            DataType::U32,
+            DataType::F32,
+        ] {
             assert!(component_size(t) >= 1);
         }
-        for d in [Dimensions::Scalar, Dimensions::Vec2, Dimensions::Vec3, Dimensions::Vec4, Dimensions::Mat2, Dimensions::Mat3, Dimensions::Mat4] {
+        for d in [
+            Dimensions::Scalar,
+            Dimensions::Vec2,
+            Dimensions::Vec3,
+            Dimensions::Vec4,
+            Dimensions::Mat2,
+            Dimensions::Mat3,
+            Dimensions::Mat4,
+        ] {
             assert!(dimension_count(d) >= 1);
         }
     }

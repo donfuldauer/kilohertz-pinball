@@ -187,7 +187,11 @@ fn parse_document(bytes: &[u8]) -> Result<(Document, Option<Vec<u8>>), AssetErro
 }
 
 /// Reads one extras object into `out`, overriding keys that are present.
-fn apply_extras(extras: &json::Extras, owner: &str, out: &mut NodeExtras) -> Result<(), AssetError> {
+fn apply_extras(
+    extras: &json::Extras,
+    owner: &str,
+    out: &mut NodeExtras,
+) -> Result<(), AssetError> {
     let Some(raw) = extras else {
         return Ok(());
     };
@@ -199,7 +203,11 @@ fn apply_extras(extras: &json::Extras, owner: &str, out: &mut NodeExtras) -> Res
     if let Some(v) = map.get("collision_layer") {
         let layer = v
             .as_u64()
-            .or_else(|| v.as_f64().filter(|f| f.fract() == 0.0 && *f >= 0.0).map(|f| f as u64))
+            .or_else(|| {
+                v.as_f64()
+                    .filter(|f| f.fract() == 0.0 && *f >= 0.0)
+                    .map(|f| f as u64)
+            })
             .filter(|&l| l <= u64::from(MAX_LAYER))
             .ok_or_else(|| {
                 gerr(format!(
@@ -315,9 +323,9 @@ pub fn load_gltf(vfs: &Vfs, path: &str) -> Result<GltfScene, AssetError> {
                 roughness: pbr.roughness_factor(),
                 emissive: m.emissive_factor(),
                 base_color_image: tex(pbr.base_color_texture().map(|i| i.texture())),
-                metallic_roughness_image: tex(
-                    pbr.metallic_roughness_texture().map(|i| i.texture()),
-                ),
+                metallic_roughness_image: tex(pbr
+                    .metallic_roughness_texture()
+                    .map(|i| i.texture())),
                 normal_image: tex(m.normal_texture().map(|i| i.texture())),
                 emissive_image: tex(m.emissive_texture().map(|i| i.texture())),
             }
@@ -526,7 +534,12 @@ mod tests {
                 collider: true
             }
         );
-        apply_extras(&raw(r#"{"collider":false,"collision_layer":3.0}"#), "n", &mut e).unwrap();
+        apply_extras(
+            &raw(r#"{"collider":false,"collision_layer":3.0}"#),
+            "n",
+            &mut e,
+        )
+        .unwrap();
         assert!(!e.collider);
         assert_eq!(e.collision_layer, Some(3));
         apply_extras(&raw("[1,2]"), "n", &mut e).unwrap();
@@ -540,13 +553,24 @@ mod tests {
             r#"{"collider":"yes"}"#,
             r#"{"collider":2}"#,
         ] {
-            assert!(matches!(apply_extras(&raw(bad), "n", &mut e), Err(AssetError::Gltf(_))), "{bad}");
+            assert!(
+                matches!(
+                    apply_extras(&raw(bad), "n", &mut e),
+                    Err(AssetError::Gltf(_))
+                ),
+                "{bad}"
+            );
         }
     }
 
     #[test]
     fn normals_from_faces() {
-        let p = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [5.0, 5.0, 5.0]];
+        let p = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [5.0, 5.0, 5.0],
+        ];
         let n = compute_normals(&p, &[0, 1, 2]);
         assert_eq!(n[0], [0.0, 0.0, 1.0]);
         assert_eq!(n[3], [0.0, 0.0, 1.0]);

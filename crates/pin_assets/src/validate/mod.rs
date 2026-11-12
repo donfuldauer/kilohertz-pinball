@@ -41,7 +41,11 @@ pub struct ValidationError {
 
 impl ValidationError {
     /// Creates an error.
-    pub fn new(file: impl Into<String>, path: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn new(
+        file: impl Into<String>,
+        path: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         ValidationError {
             file: file.into(),
             path: path.into(),

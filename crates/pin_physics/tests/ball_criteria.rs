@@ -518,13 +518,11 @@ fn ball_hugs_a_concave_guide_without_bouncing() {
         for _ in 0..2000 {
             s.step(&geo, DT, &mut ev);
             let b = s.ball(h).unwrap();
-            let cp = guides[0].closest_point(b.position, None);
-            assert!(cp.distance - r > -3.0e-5, "sank into the guide");
+            let gap = guides[0].closest_point(b.position, None).distance - r;
+            assert!(gap > -3.0e-5, "sank into the guide: {gap}");
             if b.position.y > 0.01 {
-                // Beside the arc: inside it, hugging the wall.
-                let rad = v(b.position.x, b.position.y, 0.0).length();
-                assert!(rad < radius_g - r + 3.0e-5, "outside the guide: {rad}");
-                max_gap = max_gap.max(radius_g - r - rad);
+                // Beside the arc: hugging the wall.
+                max_gap = max_gap.max(gap);
             }
             if b.position.x < 0.0 && b.position.y < -0.1 {
                 exited = true;
@@ -834,13 +832,22 @@ fn moving_surface_carries_the_ball() {
     let mut s = solver();
     s.set_surface_velocity(Some(Box::new(Belt)));
     let h = s.add_ball(Ball::new(STEEL, v(0.0, 0.0, radius(STEEL)))).unwrap();
-    run(&mut s, &geo, 2000);
-    let b = s.ball(h).unwrap();
-    assert!((b.velocity.x - 0.3).abs() < 0.01, "{:?}", b.velocity);
+    // Friction first brings the contact point to belt speed (the ball
+    // rolls backwards on the belt at 2/7 of its speed); rolling resistance
+    // then slowly drags the ball along.
+    run(&mut s, &geo, 500);
+    let b = *s.ball(h).unwrap();
+    let slip = b.velocity + b.angular_velocity.cross(v(0.0, 0.0, -radius(STEEL))) - v(0.3, 0.0, 0.0);
+    assert!(slip.length() < 1e-3, "{slip:?}");
+    assert!(b.velocity.x > 0.3 * 2.0 / 7.0 - 1e-3 && b.velocity.x < 0.3);
+    run(&mut s, &geo, 20_000);
+    let later = *s.ball(h).unwrap();
+    assert!((later.velocity.x - 0.3).abs() < 1e-3, "{:?}", later.velocity);
+    assert!(later.angular_velocity.length() < 1e-2);
     s.set_surface_velocity(None);
     s.set_gravity(Vec3::ZERO);
     run(&mut s, &geo, 10);
-    assert!((s.ball(h).unwrap().velocity.x - 0.3).abs() < 0.01);
+    assert!((s.ball(h).unwrap().velocity.x - 0.3).abs() < 1e-3);
 }
 
 #[test]

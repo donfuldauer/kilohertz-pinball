@@ -13,7 +13,10 @@ use pin_assets::{
 };
 
 fn vfs(files: &[(&str, Vec<u8>)]) -> Vfs {
-    let m: BTreeMap<String, Vec<u8>> = files.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect();
+    let m: BTreeMap<String, Vec<u8>> = files
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), v.clone()))
+        .collect();
     Vfs::from_zip_bytes(fx::zip_of(&m), ZipLimits::default()).unwrap()
 }
 
@@ -104,7 +107,11 @@ fn check_standard_scene(s: &GltfScene) {
         ],
         "post",
     );
-    assert_eq!(post.extras.collision_layer, Some(7), "mesh extras apply when the node has none");
+    assert_eq!(
+        post.extras.collision_layer,
+        Some(7),
+        "mesh extras apply when the node has none"
+    );
     assert!(post.extras.collider);
     assert_eq!(post.extras.switch, None);
     assert_eq!(post.extras.lamp, None);
@@ -197,7 +204,10 @@ fn external_image_json(uri: &str) -> String {
 fn gltf_external_image_resolves_through_the_vfs() {
     let tri = scene_bin().0[..36].to_vec();
     let v = vfs(&[
-        ("m/scene.gltf", external_image_json("tex/wood.png").into_bytes()),
+        (
+            "m/scene.gltf",
+            external_image_json("tex/wood.png").into_bytes(),
+        ),
         ("m/tri.bin", tri.clone()),
         ("m/tex/wood.png", fx::png_1x1([1, 2, 3, 255])),
     ]);
@@ -208,7 +218,10 @@ fn gltf_external_image_resolves_through_the_vfs() {
 
     // Missing image: an error, never a silent fallback or a panic.
     let v = vfs(&[
-        ("m/scene.gltf", external_image_json("tex/wood.png").into_bytes()),
+        (
+            "m/scene.gltf",
+            external_image_json("tex/wood.png").into_bytes(),
+        ),
         ("m/tri.bin", tri),
     ]);
     assert!(load_gltf(&v, "m/scene.gltf").is_err());
@@ -217,16 +230,23 @@ fn gltf_external_image_resolves_through_the_vfs() {
 #[test]
 fn missing_gltf_and_missing_external_buffer_are_errors() {
     let v = vfs(&[("other.txt", b"x".to_vec())]);
-    assert!(matches!(load_gltf(&v, "playfield.glb"), Err(AssetError::NotFound(p)) if p.contains("playfield.glb")));
+    assert!(
+        matches!(load_gltf(&v, "playfield.glb"), Err(AssetError::NotFound(p)) if p.contains("playfield.glb"))
+    );
 
     let json = scene_json(BufferRef::Uri("gone.bin"), DECK_EXTRAS, INSERT_EXTRAS);
     let v = vfs(&[("pf.gltf", json.into_bytes())]);
-    let e = load_gltf(&v, "pf.gltf").err().expect("missing buffer must fail");
+    let e = load_gltf(&v, "pf.gltf")
+        .err()
+        .expect("missing buffer must fail");
     assert!(
         matches!(e, AssetError::NotFound(_) | AssetError::Gltf(_)),
         "{e:?}"
     );
-    assert!(e.to_string().contains("gone.bin"), "error must name the missing buffer: {e}");
+    assert!(
+        e.to_string().contains("gone.bin"),
+        "error must name the missing buffer: {e}"
+    );
 }
 
 /// External URIs are resolved through the VFS only - never the real filesystem.
@@ -244,16 +264,30 @@ fn external_uris_never_reach_the_real_filesystem() {
     };
 
     // 1. In-memory zip bundle: absolute path, file: URL, traversal.
-    for uri in [abs.as_str(), file_url.as_str(), "../outside.bin", "../../outside.bin", "a/../../outside.bin"] {
+    for uri in [
+        abs.as_str(),
+        file_url.as_str(),
+        "../outside.bin",
+        "../../outside.bin",
+        "a/../../outside.bin",
+    ] {
         let json = scene_json(BufferRef::Uri(uri), DECK_EXTRAS, INSERT_EXTRAS);
         let v = vfs(&[("models/pf.gltf", json.into_bytes())]);
         let r = load_gltf(&v, "models/pf.gltf");
-        assert!(r.is_err(), "buffer uri {uri:?} was resolved outside the VFS");
+        assert!(
+            r.is_err(),
+            "buffer uri {uri:?} was resolved outside the VFS"
+        );
     }
 
     // 2. Directory bundle sitting next to the real file: `..` must not reach it.
     let root = outer.path().join("bundle");
-    for uri in [abs.as_str(), file_url.as_str(), "../outside.bin", "../../outside.bin"] {
+    for uri in [
+        abs.as_str(),
+        file_url.as_str(),
+        "../outside.bin",
+        "../../outside.bin",
+    ] {
         let mut files = BTreeMap::new();
         files.insert(
             "pf.gltf".to_owned(),
@@ -266,11 +300,17 @@ fn external_uris_never_reach_the_real_filesystem() {
         fx::write_tree(&root, &files);
         let v = Vfs::open(&root).unwrap();
         assert!(load_gltf(&v, "pf.gltf").is_err(), "root gltf, uri {uri:?}");
-        assert!(load_gltf(&v, "models/pf.gltf").is_err(), "nested gltf, uri {uri:?}");
+        assert!(
+            load_gltf(&v, "models/pf.gltf").is_err(),
+            "nested gltf, uri {uri:?}"
+        );
     }
 
     // 3. Remote schemes are not fetched.
-    for uri in ["http://example.invalid/pf.bin", "https://example.invalid/pf.bin"] {
+    for uri in [
+        "http://example.invalid/pf.bin",
+        "https://example.invalid/pf.bin",
+    ] {
         let json = scene_json(BufferRef::Uri(uri), DECK_EXTRAS, INSERT_EXTRAS);
         let v = vfs(&[("pf.gltf", json.into_bytes())]);
         assert!(load_gltf(&v, "pf.gltf").is_err(), "{uri}");
@@ -287,7 +327,8 @@ fn malformed_gltf_is_a_gltf_error() {
         &scene_bin().0[..100],
     );
     let out_of_range = fx::glb(
-        &scene_json(BufferRef::Embedded, DECK_EXTRAS, INSERT_EXTRAS).replace(r#""indices":3"#, r#""indices":99"#),
+        &scene_json(BufferRef::Embedded, DECK_EXTRAS, INSERT_EXTRAS)
+            .replace(r#""indices":3"#, r#""indices":99"#),
         &scene_bin().0,
     );
     let cases: Vec<(&str, Vec<u8>)> = vec![
@@ -305,7 +346,10 @@ fn malformed_gltf_is_a_gltf_error() {
         let v = vfs(&[("x.glb", bytes)]);
         match load_gltf(&v, "x.glb") {
             Err(AssetError::Gltf(m)) => assert!(!m.is_empty()),
-            other => panic!("{what}: expected AssetError::Gltf, got {:?}", other.map(|s| s.meshes.len())),
+            other => panic!(
+                "{what}: expected AssetError::Gltf, got {:?}",
+                other.map(|s| s.meshes.len())
+            ),
         }
     }
 }
@@ -326,7 +370,9 @@ fn every_collision_layer_0_to_7_is_read() {
 fn out_of_range_or_mistyped_extras_never_become_a_layer() {
     // Layers are 0..=7; anything else must be an error or be left unset, never
     // silently wrapped or clamped into a valid layer.
-    for bad in ["8", "255", "256", "-1", "3.5", "\"2\"", "true", "[1]", "{}", "1e30", "null"] {
+    for bad in [
+        "8", "255", "256", "-1", "3.5", "\"2\"", "true", "[1]", "{}", "1e30", "null",
+    ] {
         let glb = fx::glb_with_extras(&format!(r#"{{"collision_layer":{bad}}}"#), "{}");
         let v = vfs(&[("x.glb", glb)]);
         if let Ok(s) = load_gltf(&v, "x.glb") {
@@ -374,7 +420,9 @@ fn unknown_extras_keys_are_ignored() {
 // ============================ bindings ======================================
 
 fn table_ids() -> pin_assets::TableIds {
-    load_table(&fx::vfs_from(&fx::bundle())).unwrap_or_else(|e| panic!("{e}")).ids
+    load_table(&fx::vfs_from(&fx::bundle()))
+        .unwrap_or_else(|e| panic!("{e}"))
+        .ids
 }
 
 #[test]
@@ -385,7 +433,10 @@ fn bindings_to_declared_names_are_clean() {
     assert_eq!(validate_gltf_bindings(&s, &ids), vec![]);
     // A scene with no extras at all is clean too.
     let v = vfs(&[("b.glb", fx::backbox_glb())]);
-    assert_eq!(validate_gltf_bindings(&load_gltf(&v, "b.glb").unwrap(), &ids), vec![]);
+    assert_eq!(
+        validate_gltf_bindings(&load_gltf(&v, "b.glb").unwrap(), &ids),
+        vec![]
+    );
 }
 
 #[test]
@@ -415,8 +466,14 @@ fn bindings_to_unknown_names_are_reported_with_suggestions() {
         .unwrap_or_else(|| panic!("no error names the lamp: {errs:?}"));
     assert!(!lamp.message.contains("did you mean"), "{lamp}");
     for e in &errs {
-        assert_eq!(e.to_string(), format!("{}: {}: {}", e.file, e.path, e.message));
-        assert!(!e.path.is_empty(), "the error must say where the binding is: {e}");
+        assert_eq!(
+            e.to_string(),
+            format!("{}: {}: {}", e.file, e.path, e.message)
+        );
+        assert!(
+            !e.path.is_empty(),
+            "the error must say where the binding is: {e}"
+        );
     }
 }
 
@@ -426,7 +483,10 @@ fn bindings_do_not_resolve_across_kinds() {
     // A lamp name used as a switch and a switch name used as a lamp.
     let v = vfs(&[(
         "playfield.glb",
-        fx::glb_with_extras(r#"{"switch":"overdrive_ready"}"#, r#"{"lamp":"right_orbit_opto"}"#),
+        fx::glb_with_extras(
+            r#"{"switch":"overdrive_ready"}"#,
+            r#"{"lamp":"right_orbit_opto"}"#,
+        ),
     )]);
     let s = load_gltf(&v, "playfield.glb").unwrap();
     assert_eq!(validate_gltf_bindings(&s, &ids).len(), 2);

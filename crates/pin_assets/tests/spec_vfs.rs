@@ -122,8 +122,13 @@ fn zip_reads_lists_and_exists() {
     assert_eq!(v.read("sub/dir/z.bin").unwrap(), vec![0u8, 1, 2, 255]);
     assert!(v.exists("audio/a.ogg"));
     assert!(!v.exists("audio/b.ogg"));
-    assert!(!v.exists("audio"), "exists() is about files, list() has no dirs");
-    assert!(matches!(v.read("missing.txt"), Err(AssetError::NotFound(p)) if p.contains("missing.txt")));
+    assert!(
+        !v.exists("audio"),
+        "exists() is about files, list() has no dirs"
+    );
+    assert!(
+        matches!(v.read("missing.txt"), Err(AssetError::NotFound(p)) if p.contains("missing.txt"))
+    );
 }
 
 #[test]
@@ -150,7 +155,10 @@ fn zip_directory_entries_are_not_listed_as_files() {
         RawEntry::file("table.toml", b"a=1"),
     ]))
     .unwrap();
-    assert_eq!(v.list(), vec!["audio/a.ogg".to_owned(), "table.toml".to_owned()]);
+    assert_eq!(
+        v.list(),
+        vec!["audio/a.ogg".to_owned(), "table.toml".to_owned()]
+    );
 }
 
 #[test]
@@ -278,7 +286,10 @@ fn rejects_symlink_written_by_zip_crate() {
     w.add_symlink("passwd", "/etc/passwd", opts).unwrap();
     let bytes = w.finish().unwrap().into_inner();
     let e = open_err(bytes, ZipLimits::default());
-    assert!(matches!(e, AssetError::Symlink(ref p) if p.contains("passwd")), "{e:?}");
+    assert!(
+        matches!(e, AssetError::Symlink(ref p) if p.contains("passwd")),
+        "{e:?}"
+    );
 }
 
 #[test]
@@ -303,7 +314,11 @@ fn non_utf8_names(flags: u16) {
         e.flags = flags;
         for bytes in with_hostile(e.clone()) {
             let err = open_err(bytes, ZipLimits::default());
-            assert_eq!(err, AssetError::BadName, "name bytes {raw:?} flags {flags:#x}");
+            assert_eq!(
+                err,
+                AssetError::BadName,
+                "name bytes {raw:?} flags {flags:#x}"
+            );
         }
     }
 }
@@ -352,7 +367,11 @@ fn normalised_names_are_served_when_unique() {
     .unwrap();
     assert_eq!(
         v.list(),
-        vec!["a/b.txt".to_owned(), "c/d.txt".to_owned(), "table.toml".to_owned()]
+        vec![
+            "a/b.txt".to_owned(),
+            "c/d.txt".to_owned(),
+            "table.toml".to_owned()
+        ]
     );
     assert_eq!(v.read("a/b.txt").unwrap(), b"b");
     assert_eq!(v.read("c/d.txt").unwrap(), b"d");
@@ -411,7 +430,10 @@ fn rejects_total_oversize() {
             ..roomy()
         },
     );
-    assert!(ok.is_ok(), "a total of exactly max_total_uncompressed is allowed");
+    assert!(
+        ok.is_ok(),
+        "a total of exactly max_total_uncompressed is allowed"
+    );
 }
 
 #[test]
@@ -529,7 +551,13 @@ fn zip_read_refuses_escaping_requests() {
         );
         assert!(!v.exists(p));
     }
-    for p in ["/table.toml", "/etc/passwd", "C:\\x", "C:/x", "\\\\server\\x"] {
+    for p in [
+        "/table.toml",
+        "/etc/passwd",
+        "C:\\x",
+        "C:/x",
+        "\\\\server\\x",
+    ] {
         assert!(
             matches!(v.read(p), Err(AssetError::AbsolutePath(_))),
             "read({p:?}) = {:?}",
@@ -598,7 +626,12 @@ fn directory_refuses_paths_escaping_the_root() {
         "read({abs:?}) = {r:?}"
     );
     assert!(!v.exists(abs));
-    for p in ["/etc/passwd", "C:\\Windows\\win.ini", "C:/Windows/win.ini", "\\\\server\\share\\x"] {
+    for p in [
+        "/etc/passwd",
+        "C:\\Windows\\win.ini",
+        "C:/Windows/win.ini",
+        "\\\\server\\share\\x",
+    ] {
         let r = v.read(p);
         assert!(
             matches!(r, Err(AssetError::AbsolutePath(_))),
@@ -703,7 +736,8 @@ fn open_reports_hostile_zip_files_and_missing_paths() {
     std::fs::write(&p, raw_zip(&[RawEntry::file("../evil.txt", b"x")])).unwrap();
     assert!(matches!(Vfs::open(&p), Err(AssetError::PathTraversal(_))));
     assert!(
-        !outer.path().join("evil.txt").exists() && !outer.path().parent().unwrap().join("evil.txt").exists(),
+        !outer.path().join("evil.txt").exists()
+            && !outer.path().parent().unwrap().join("evil.txt").exists(),
         "nothing may be extracted to disk"
     );
     let missing = outer.path().join("does_not_exist.zip");

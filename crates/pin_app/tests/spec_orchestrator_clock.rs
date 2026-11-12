@@ -151,7 +151,7 @@ fn extreme_timestamps_do_not_overflow() {
 /// for the latest time seen; both counters are monotone.
 #[test]
 fn property_accounting_invariant_holds_for_random_timelines() {
-    let mut rng = SplitMix(0x1_4_C10C);
+    let mut rng = SplitMix(0x0014_C10C);
     for case in 0..400u64 {
         let start = match case % 4 {
             0 => 0,

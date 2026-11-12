@@ -62,7 +62,10 @@ fn interning_and_si() {
     assert_eq!(ids.scene("scene_powerball_mania"), Some(SceneId(0)));
     assert_eq!(ids.persist_key("games_played"), Some(PersistKey(2)));
     assert_eq!(ids.diverter("bumper_1"), None);
-    assert_eq!(ids.entries(IdKind::Profile).len(), BUILTIN_PROFILE_NAMES.len());
+    assert_eq!(
+        ids.entries(IdKind::Profile).len(),
+        BUILTIN_PROFILE_NAMES.len()
+    );
     assert_eq!(ids.entries(IdKind::Switch).len(), 5 + 8);
     assert_eq!(ids.name(IdKind::Coil, 1), Some("left_flipper_coil"));
 
@@ -88,7 +91,13 @@ fn interning_and_si() {
     assert_eq!(t.transitions[0].zone_max_m, [0.29, 0.68, 0.03]);
     assert_eq!(
         t.dispensers[0].contents,
-        vec![ProfileId(0), ProfileId(0), ProfileId(0), ProfileId(0), ProfileId(2)]
+        vec![
+            ProfileId(0),
+            ProfileId(0),
+            ProfileId(0),
+            ProfileId(0),
+            ProfileId(2)
+        ]
     );
     assert_eq!(t.dispensers[0].exit_velocity_m_s, [0.0, -0.6, 0.0]);
     assert_eq!(t.mechs[0].coil, Some(CoilId(2)));

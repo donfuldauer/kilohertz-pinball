@@ -142,15 +142,14 @@ jobs:
             echo "::error::host $host, expected ${{ matrix.target }}"; exit 1
           fi
 
-      # TODO(1.4): switch to `cargo test -p pin_render --features gpu-tests` (plus
-      # pin_audio/pin_app) once Subphase 1.4 adds the `gpu-tests` feature to pin_render.
+      # pin_render's adapter-dependent tests are behind its `gpu-tests` feature (Subphase 1.4).
       - name: cargo test (GPU crates, Linux under Xvfb)
         if: runner.os == 'Linux'
-        run: xvfb-run -a cargo test -p pin_render -p pin_audio -p pin_app
+        run: xvfb-run -a cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app
 
       - name: cargo test (GPU crates)
         if: runner.os != 'Linux'
-        run: cargo test -p pin_render -p pin_audio -p pin_app
+        run: cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app
 
   clippy:
     name: clippy (${{ matrix.target }})

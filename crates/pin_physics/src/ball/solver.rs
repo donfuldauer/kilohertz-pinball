@@ -88,6 +88,17 @@ fn add_touch(set: &mut TouchSet, n: Vec3) {
     set.push(n);
 }
 
+/// [`sphere_toi`] for spheres that may rest on each other: a pair within
+/// [`TOUCH_TOL`] that closes in slower than [`REST_SLOP_SPEED`] is not an
+/// impact.
+fn sphere_toi_resting(p: Vec3, w: Vec3, radius_sum: f32, window: f32) -> Option<f32> {
+    let d = p.length();
+    if d - radius_sum <= TOUCH_TOL && -p.dot(w) < REST_SLOP_SPEED * d {
+        return None;
+    }
+    sphere_toi(p, w, radius_sum, window)
+}
+
 fn spline_aabb(s: &CubicSpline) -> Aabb {
     let mut min = Vec3::splat(f32::INFINITY);
     let mut max = Vec3::splat(f32::NEG_INFINITY);
@@ -236,7 +247,7 @@ struct Contact {
 
 enum Next {
     End,
-    Boundary(usize),
+    Boundary,
     Static(usize),
     Pair(usize, usize),
 }
@@ -614,19 +625,20 @@ impl BallSolver {
         true
     }
 
-    /// Balls `i` and `j`; `normal` points from `j` toward `i`.
-    #[allow(clippy::too_many_arguments)]
+    /// Balls `i` and `j`, along their current line of centres.
     fn pair_hit(
         &mut self,
         i: usize,
         j: usize,
         sc: &[Scratch; MAX_BALLS],
-        normal: Vec3,
         persistent: bool,
         report: bool,
         events: &mut BallEvents,
     ) -> bool {
         let (Some(mut a), Some(mut b)) = (self.slots[i], self.slots[j]) else {
+            return false;
+        };
+        let Some(normal) = (a.position - b.position).try_normalize() else {
             return false;
         };
         let k = self.ball_coefficients(sc[i].pidx, sc[j].pidx);
@@ -827,19 +839,18 @@ impl BallSolver {
         out
     }
 
-    /// A sub-step boundary of ball `i`: gather contacts, project out of
-    /// penetration, integrate forces, solve the touching contacts.
-    fn boundary(
+    /// First half of a sub-step boundary of ball `i`: gather its contacts,
+    /// project it out of penetration and integrate the forces.
+    fn boundary_prepare(
         &mut self,
         geo: &Geometry<'_>,
         bounds: &Bounds,
         i: usize,
         sc: &mut [Scratch; MAX_BALLS],
-        events: &mut BallEvents,
-    ) {
-        let mut contacts = self.gather(geo, bounds, i, sc);
+    ) -> ContactList {
+        let contacts = self.gather(geo, bounds, i, sc);
         let Some(mut ball) = self.slots[i] else {
-            return;
+            return contacts;
         };
         let me = sc[i];
 
@@ -902,53 +913,104 @@ impl BallSolver {
             ball.velocity += force * (h / me.body.mass);
         }
         self.slots[i] = Some(ball);
+        contacts
+    }
 
-        // Velocity solve of the touching contacts (Gauss–Seidel sweeps).
+    /// One velocity-solver sweep over the touching contacts of ball `i`:
+    /// first the contacts with balls (`surfaces == false`), then, in a
+    /// second call, those with surfaces, so that a sweep ends with the
+    /// surfaces exactly non-penetrating. Returns whether anything changed.
+    fn boundary_sweep(
+        &mut self,
+        i: usize,
+        contacts: &mut ContactList,
+        surfaces: bool,
+        sc: &mut [Scratch; MAX_BALLS],
+        events: &mut BallEvents,
+    ) -> bool {
+        let me = sc[i];
+        let mut any = false;
+        for c in contacts.iter_mut() {
+            if c.depth < -c.active_eps || matches!(c.kind, ContactKind::Surface(..)) != surfaces {
+                continue;
+            }
+            let report = !c.reported;
+            let hit = match c.kind {
+                ContactKind::Surface(target, material) => self.surface_hit(
+                    i,
+                    &me,
+                    c.normal,
+                    c.point,
+                    target,
+                    material,
+                    c.persistent,
+                    report,
+                    events,
+                ),
+                ContactKind::Ball(j) => {
+                    let hit = self.pair_hit(i, j, sc, c.persistent, report, events);
+                    if hit {
+                        sc[j].cache = Cache::Dirty;
+                    }
+                    hit
+                }
+                ContactKind::Chain(ci, bi) => {
+                    self.chain_hit(i, &me, ci, bi, c.normal, c.persistent, report, events)
+                }
+            };
+            if hit {
+                c.reported = true;
+                any = true;
+            }
+        }
+        any
+    }
+
+    /// The sub-step boundary at time `time` of every ball that has one
+    /// then: contacts are gathered and forces integrated ball by ball, then
+    /// the touching contacts of all these balls are solved together
+    /// (Gauss–Seidel sweeps), so that stacks and rows of balls settle.
+    fn boundaries(
+        &mut self,
+        geo: &Geometry<'_>,
+        bounds: &Bounds,
+        time: f32,
+        sc: &mut [Scratch; MAX_BALLS],
+        lists: &mut [ContactList; MAX_BALLS],
+        events: &mut BallEvents,
+    ) {
+        let mut members = [false; MAX_BALLS];
+        for i in 0..MAX_BALLS {
+            let s = &sc[i];
+            members[i] = s.active && s.k < s.n_sub && s.k as f32 * s.h == time;
+        }
+        for i in 0..MAX_BALLS {
+            if members[i] {
+                lists[i] = self.boundary_prepare(geo, bounds, i, sc);
+            }
+        }
         for _ in 0..PRESOLVE_PASSES {
             let mut any = false;
-            for c in &mut contacts {
-                if c.depth < -c.active_eps {
-                    continue;
-                }
-                let report = !c.reported;
-                let hit = match c.kind {
-                    ContactKind::Surface(target, material) => self.surface_hit(
-                        i,
-                        &me,
-                        c.normal,
-                        c.point,
-                        target,
-                        material,
-                        c.persistent,
-                        report,
-                        events,
-                    ),
-                    ContactKind::Ball(j) => {
-                        let hit = self.pair_hit(i, j, sc, c.normal, c.persistent, report, events);
-                        if hit {
-                            sc[j].cache = Cache::Dirty;
-                        }
-                        hit
+            for surfaces in [false, true] {
+                for i in 0..MAX_BALLS {
+                    if members[i] {
+                        any |= self.boundary_sweep(i, &mut lists[i], surfaces, sc, events);
                     }
-                    ContactKind::Chain(ci, bi) => {
-                        self.chain_hit(i, &me, ci, bi, c.normal, c.persistent, report, events)
-                    }
-                };
-                if hit {
-                    c.reported = true;
-                    any = true;
                 }
             }
             if !any {
                 break;
             }
         }
-
-        let s = &mut sc[i];
-        s.events = 0;
-        s.frozen = false;
-        s.cache = Cache::Dirty;
-        s.k += 1;
+        for i in 0..MAX_BALLS {
+            if members[i] {
+                let s = &mut sc[i];
+                s.events = 0;
+                s.frozen = false;
+                s.cache = Cache::Dirty;
+                s.k += 1;
+            }
+        }
     }
 
     /// The next impact of ball `i` with anything but another free ball,
@@ -1005,7 +1067,7 @@ impl BallSolver {
             }
             for bi in 0..chain.len() {
                 let p = pos - chain.ball_position(bi);
-                if let Some(t) = sphere_toi(p, v, r + rc, limit)
+                if let Some(t) = sphere_toi_resting(p, v, r + rc, limit)
                     && (t < limit || best.is_none())
                 {
                     limit = t;
@@ -1028,11 +1090,14 @@ impl BallSolver {
         events: &mut BallEvents,
     ) {
         let me = sc[i];
+        // An impact that changes nothing (a surface receding faster than the
+        // ball follows) would repeat forever: the ball waits instead.
+        let mut applied = true;
         match ev {
             StaticEvent::World(hit) => {
                 let persistent = touches(&self.touch[i], hit.normal);
                 let material = self.collider_material(hit.collider);
-                self.surface_hit(
+                applied = self.surface_hit(
                     i,
                     &me,
                     hit.normal,
@@ -1048,7 +1113,11 @@ impl BallSolver {
             StaticEvent::Guide(gi, Some(hit)) => {
                 let persistent = touches(&self.touch[i], hit.normal);
                 let material = self.guide_material(gi);
-                self.surface_hit(
+                let gap = self.slots[i].map_or(0.0, |b| {
+                    (b.position - hit.point).dot(hit.normal) - me.body.radius
+                });
+                applied = gap < 0.0;
+                applied |= self.surface_hit(
                     i,
                     &me,
                     hit.normal,
@@ -1078,13 +1147,17 @@ impl BallSolver {
                     if d > 1.0e-9 {
                         let normal = offset / d;
                         let persistent = touches(&self.touch[i], normal);
-                        self.chain_hit(i, &me, ci, bi, normal, persistent, true, events);
+                        applied =
+                            self.chain_hit(i, &me, ci, bi, normal, persistent, true, events);
                         add_touch(&mut self.touch[i], normal);
                     }
                 }
             }
         }
         sc[i].count_event();
+        if !applied {
+            sc[i].frozen = true;
+        }
     }
 
     fn pair_event(
@@ -1094,6 +1167,7 @@ impl BallSolver {
         sc: &mut [Scratch; MAX_BALLS],
         events: &mut BallEvents,
     ) {
+        let mut applied = false;
         if let (Some(a), Some(b)) = (self.slots[i], self.slots[j]) {
             let offset = a.position - b.position;
             let d = offset.length();
@@ -1101,13 +1175,19 @@ impl BallSolver {
                 let normal = offset / d;
                 let persistent =
                     touches(&self.touch[i], normal) || touches(&self.touch[j], -normal);
-                self.pair_hit(i, j, sc, normal, persistent, true, events);
+                applied = self.pair_hit(i, j, sc, persistent, true, events);
                 add_touch(&mut self.touch[i], normal);
                 add_touch(&mut self.touch[j], -normal);
             }
         }
         sc[i].count_event();
         sc[j].count_event();
+        if !applied {
+            // One of them is waiting (frozen) and really moving away, or
+            // rounding: neither can make progress against the other now.
+            sc[i].frozen = true;
+            sc[j].frozen = true;
+        }
     }
 
     /// Advances all balls and Newton chains by `dt` seconds (the engine
@@ -1130,10 +1210,13 @@ impl BallSolver {
 
         let mut sc = [Scratch::IDLE; MAX_BALLS];
         let mut any_ball = false;
-        for (slot, s) in self.slots.iter().zip(sc.iter_mut()) {
+        for (i, (slot, s)) in self.slots.iter().zip(sc.iter_mut()).enumerate() {
             let Some(ball) = slot else {
                 continue;
             };
+            if ball.position != self.last_position[i] {
+                self.carry[i] = Vec3::ZERO;
+            }
             let Some(pd) = self.pdata.get(ball.profile.index()).filter(|p| p.valid) else {
                 continue;
             };
@@ -1182,6 +1265,11 @@ impl BallSolver {
             }
             self.run_timeline(geo, &bounds, dt, &mut sc, events);
         }
+        for (slot, last) in self.slots.iter().zip(self.last_position.iter_mut()) {
+            if let Some(ball) = slot {
+                *last = ball.position;
+            }
+        }
         self.update_sensors(events);
     }
 
@@ -1195,6 +1283,7 @@ impl BallSolver {
         events: &mut BallEvents,
     ) {
         let mut now = 0.0f32;
+        let mut lists: [ContactList; MAX_BALLS] = std::array::from_fn(|_| ContactList::new());
         // Every loop pass consumes a boundary or an impact; impacts are
         // limited per ball and sub-step, so this bound is never reached. It
         // only protects the tick's time budget against a logic error.
@@ -1204,12 +1293,12 @@ impl BallSolver {
             let mut best_time = dt;
             let mut best = Next::End;
             // Sub-step boundaries first: at equal times they precede impacts.
-            for (i, s) in sc.iter().enumerate() {
+            for s in sc.iter() {
                 if s.active && s.k < s.n_sub {
                     let tb = s.k as f32 * s.h;
                     if tb < best_time {
                         best_time = tb;
-                        best = Next::Boundary(i);
+                        best = Next::Boundary;
                     }
                 }
             }
@@ -1242,8 +1331,12 @@ impl BallSolver {
                     }
                     let vb = if sc[j].frozen { Vec3::ZERO } else { b.velocity };
                     let rsum = sc[i].body.radius + sc[j].body.radius;
-                    if let Some(t) =
-                        sphere_toi(a.position - b.position, va - vb, rsum, best_time - now)
+                    if let Some(t) = sphere_toi_resting(
+                        a.position - b.position,
+                        va - vb,
+                        rsum,
+                        best_time - now,
+                    )
                         && now + t < best_time
                     {
                         best_time = now + t;
@@ -1255,9 +1348,14 @@ impl BallSolver {
             // Move everything to the event.
             let tau = best_time - now;
             if tau > 0.0 {
-                for (slot, s) in self.slots.iter_mut().zip(sc.iter()) {
+                for (i, (slot, s)) in self.slots.iter_mut().zip(sc.iter()).enumerate() {
                     if let (Some(ball), true, false) = (slot.as_mut(), s.active, s.frozen) {
-                        ball.position += ball.velocity * tau;
+                        // Compensated sum: the rounding error of this
+                        // addition is carried into the next one.
+                        let step = ball.velocity * tau - self.carry[i];
+                        let moved = ball.position + step;
+                        self.carry[i] = (moved - ball.position) - step;
+                        ball.position = moved;
                         ball.orientation =
                             integrate_orientation(ball.orientation, ball.angular_velocity, tau);
                     }
@@ -1267,7 +1365,7 @@ impl BallSolver {
 
             match best {
                 Next::End => break,
-                Next::Boundary(i) => self.boundary(geo, bounds, i, sc, events),
+                Next::Boundary => self.boundaries(geo, bounds, now, sc, &mut lists, events),
                 Next::Static(i) => {
                     if let Cache::Event(_, ev) = sc[i].cache {
                         self.static_event(i, ev, sc, events);

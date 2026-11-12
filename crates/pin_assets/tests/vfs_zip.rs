@@ -14,15 +14,30 @@ fn open(bytes: Vec<u8>) -> Result<Vfs, AssetError> {
 fn traversal_entries_are_rejected() {
     for name in ["../x", "a/../../x", "..\\x", "a/..", "ok/../x"] {
         let r = open(stored_zip(&[(name, b"x")]));
-        assert_eq!(r.err(), Some(AssetError::PathTraversal(name.into())), "{name}");
+        assert_eq!(
+            r.err(),
+            Some(AssetError::PathTraversal(name.into())),
+            "{name}"
+        );
     }
 }
 
 #[test]
 fn absolute_entries_are_rejected() {
-    for name in ["/etc/x", "C:\\x", "C:/x", "\\\\server\\x", "\\x", "//server/x"] {
+    for name in [
+        "/etc/x",
+        "C:\\x",
+        "C:/x",
+        "\\\\server\\x",
+        "\\x",
+        "//server/x",
+    ] {
         let r = open(stored_zip(&[(name, b"x")]));
-        assert_eq!(r.err(), Some(AssetError::AbsolutePath(name.into())), "{name}");
+        assert_eq!(
+            r.err(),
+            Some(AssetError::AbsolutePath(name.into())),
+            "{name}"
+        );
     }
 }
 
@@ -58,9 +73,18 @@ fn bad_names_are_rejected() {
 
 #[test]
 fn duplicates_after_normalisation_are_rejected() {
-    for pair in [["a/b", "a//b"], ["a/b", "./a/b"], ["a//b", "./a/b"], ["a/b", "a\\b"]] {
+    for pair in [
+        ["a/b", "a//b"],
+        ["a/b", "./a/b"],
+        ["a//b", "./a/b"],
+        ["a/b", "a\\b"],
+    ] {
         let r = open(stored_zip(&[(pair[0], b"1"), (pair[1], b"2")]));
-        assert_eq!(r.err(), Some(AssetError::DuplicateEntry("a/b".into())), "{pair:?}");
+        assert_eq!(
+            r.err(),
+            Some(AssetError::DuplicateEntry("a/b".into())),
+            "{pair:?}"
+        );
     }
     let r = open(stored_zip(&[("a", b"1"), ("a", b"2")]));
     assert!(matches!(r, Err(AssetError::DuplicateEntry(_))), "{r:?}");
@@ -85,7 +109,16 @@ fn oversize_file_is_rejected() {
     e.declared_size = Some(u32::MAX);
     e.declared_compressed = Some(u32::MAX / 50);
     let r = open(raw_zip(&[e]));
-    assert!(matches!(r, Err(AssetError::TooLarge { size: 4_294_967_295, .. })), "{r:?}");
+    assert!(
+        matches!(
+            r,
+            Err(AssetError::TooLarge {
+                size: 4_294_967_295,
+                ..
+            })
+        ),
+        "{r:?}"
+    );
 }
 
 #[test]
@@ -147,7 +180,10 @@ fn understated_size_is_caught_on_read() {
 
 #[test]
 fn garbage_and_unsupported_methods() {
-    assert!(matches!(open(b"PK\x03\x04garbage".to_vec()), Err(AssetError::Zip(_))));
+    assert!(matches!(
+        open(b"PK\x03\x04garbage".to_vec()),
+        Err(AssetError::Zip(_))
+    ));
     assert!(matches!(open(Vec::new()), Err(AssetError::Zip(_))));
 }
 
@@ -168,7 +204,10 @@ fn zip_read_list_exists() {
     assert!(!vfs.exists("dir"));
     assert!(!vfs.exists("../b.txt"));
     assert!(!vfs.exists(""));
-    assert_eq!(vfs.read("nope").err(), Some(AssetError::NotFound("nope".into())));
+    assert_eq!(
+        vfs.read("nope").err(),
+        Some(AssetError::NotFound("nope".into()))
+    );
     assert_eq!(vfs.read("").err(), Some(AssetError::NotFound("".into())));
     assert_eq!(
         vfs.read("../table.toml").err(),
@@ -185,7 +224,11 @@ fn single_wrapping_folder_is_stripped() {
     let vfs = open(stored_zip(&[("pkg/table.toml", b"t"), ("pkg/x/y", b"y")])).unwrap();
     assert_eq!(vfs.list(), vec!["table.toml", "x/y"]);
     // Not stripped when table.toml is at the root or content sits outside.
-    let vfs = open(stored_zip(&[("table.toml", b"t"), ("pkg/table.toml", b"y")])).unwrap();
+    let vfs = open(stored_zip(&[
+        ("table.toml", b"t"),
+        ("pkg/table.toml", b"y"),
+    ]))
+    .unwrap();
     assert_eq!(vfs.list(), vec!["pkg/table.toml", "table.toml"]);
     let vfs = open(stored_zip(&[("pkg/table.toml", b"t"), ("other", b"y")])).unwrap();
     assert_eq!(vfs.list(), vec!["other", "pkg/table.toml"]);
@@ -200,7 +243,10 @@ fn open_paths() {
     let other = dir.join("t.rar");
     std::fs::write(&other, b"x").unwrap();
     assert!(matches!(Vfs::open(&other), Err(AssetError::Io(_))));
-    assert!(matches!(Vfs::open(&dir.join("missing.zip")), Err(AssetError::Io(_))));
+    assert!(matches!(
+        Vfs::open(&dir.join("missing.zip")),
+        Err(AssetError::Io(_))
+    ));
     let big = dir.join("big.zip");
     std::fs::write(&big, vec![0u8; 4 << 20]).unwrap();
     let tiny = ZipLimits {
@@ -232,8 +278,14 @@ fn directory_vfs() {
     assert!(vfs.exists("table.toml"));
     assert!(!vfs.exists("audio"));
     assert!(!vfs.exists("missing"));
-    assert_eq!(vfs.read("missing").err(), Some(AssetError::NotFound("missing".into())));
-    assert_eq!(vfs.read("audio").err(), Some(AssetError::NotFound("audio".into())));
+    assert_eq!(
+        vfs.read("missing").err(),
+        Some(AssetError::NotFound("missing".into()))
+    );
+    assert_eq!(
+        vfs.read("audio").err(),
+        Some(AssetError::NotFound("audio".into()))
+    );
     assert_eq!(
         vfs.read("../outside").err(),
         Some(AssetError::PathTraversal("../outside".into()))
@@ -278,7 +330,10 @@ fn directory_symlinks_cannot_escape() {
     symlink(&outside, dir.join("escape_dir")).unwrap();
     symlink(dir.join("table.toml"), dir.join("inside")).unwrap();
     let vfs = Vfs::open(&dir).unwrap();
-    assert_eq!(vfs.read("escape").err(), Some(AssetError::PathTraversal("escape".into())));
+    assert_eq!(
+        vfs.read("escape").err(),
+        Some(AssetError::PathTraversal("escape".into()))
+    );
     assert_eq!(
         vfs.read("escape_dir/secret").err(),
         Some(AssetError::PathTraversal("escape_dir/secret".into()))

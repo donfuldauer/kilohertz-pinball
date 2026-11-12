@@ -48,7 +48,10 @@ impl NameResolver for Names<'_> {
 #[test]
 fn mock_bundle_loads() {
     let t = load(TABLE_TOML, BACKGLASS_TOML);
-    assert_eq!(t.manifest, TableManifest::from_toml_str(TABLE_TOML).unwrap());
+    assert_eq!(
+        t.manifest,
+        TableManifest::from_toml_str(TABLE_TOML).unwrap()
+    );
     assert_eq!(
         t.backglass,
         BackglassManifest::from_toml_str(BACKGLASS_TOML).unwrap()
@@ -157,7 +160,11 @@ staging = { type = "DedicatedButton", input = "right_flipper" }
     assert_eq!(ids.flipper("lower_right"), Some(FlipperId(1)));
     assert_eq!(ids.diverter("ramp_diverter"), Some(DiverterId(0)));
     assert_eq!(ids.diverter("second_diverter"), Some(DiverterId(1)));
-    assert_eq!(ids.diverter("bumper_1"), None, "only mechs of kind diverter");
+    assert_eq!(
+        ids.diverter("bumper_1"),
+        None,
+        "only mechs of kind diverter"
+    );
     assert_eq!(ids.sound("sfx_bumper"), Some(SoundId(0)));
     assert_eq!(ids.sound("sfx_two"), Some(SoundId(1)));
     assert_eq!(ids.scene("scene_powerball_mania"), Some(SceneId(0)));
@@ -230,7 +237,11 @@ fn entries_give_reverse_lookup_per_kind() {
 
 #[test]
 fn physics_overrides_are_resolved() {
-    let table = sub(TABLE_TOML, "[physics]\n", "[physics]\nflipper_rubber_damping = 0.35\n");
+    let table = sub(
+        TABLE_TOML,
+        "[physics]\n",
+        "[physics]\nflipper_rubber_damping = 0.35\n",
+    );
     let t = load(&table, BACKGLASS_TOML);
     assert_eq!(t.physics.flipper_rubber_damping, 0.35);
     assert_eq!(
@@ -251,7 +262,10 @@ fn flippers_are_built_via_to_config() {
     assert_eq!(t.flippers[0].id, FlipperId(0));
     assert_eq!(t.flippers[0].coil, CoilId(1));
     assert_eq!(t.flippers[0].eos_switch, SwitchId(25));
-    assert_eq!(t.flippers[0].power_torque_nm, t.physics.flipper_power_torque);
+    assert_eq!(
+        t.flippers[0].power_torque_nm,
+        t.physics.flipper_power_torque
+    );
 }
 
 #[test]
@@ -294,14 +308,54 @@ staging = {staging}
 fn flipper_stage_hints() {
     use FlipperStageHint::{Lower, Upper};
     let cases: &[(&str, u8, &str, FlipperStageHint)] = &[
-        ("f1", 0, r#"{ type = "DedicatedButton", input = "right_flipper" }"#, Lower),
-        ("f2", 0, r#"{ type = "DedicatedButton", input = "left_upper" }"#, Upper),
-        ("f3", 0, r#"{ type = "DedicatedButton", input = "right_upper" }"#, Upper),
-        ("f4", 0, r#"{ type = "ParallelLinked", input = "right_upper" }"#, Upper),
-        ("f5", 0, r#"{ type = "ParallelLinked", input = "left_flipper" }"#, Lower),
-        ("f6", 2, r#"{ type = "DedicatedButton", input = "left_flipper" }"#, Upper),
-        ("f7", 1, r#"{ type = "ParallelLinked", input = "right_flipper" }"#, Upper),
-        ("f8", 0, r#"{ type = "DedicatedButton", input = "action" }"#, Lower),
+        (
+            "f1",
+            0,
+            r#"{ type = "DedicatedButton", input = "right_flipper" }"#,
+            Lower,
+        ),
+        (
+            "f2",
+            0,
+            r#"{ type = "DedicatedButton", input = "left_upper" }"#,
+            Upper,
+        ),
+        (
+            "f3",
+            0,
+            r#"{ type = "DedicatedButton", input = "right_upper" }"#,
+            Upper,
+        ),
+        (
+            "f4",
+            0,
+            r#"{ type = "ParallelLinked", input = "right_upper" }"#,
+            Upper,
+        ),
+        (
+            "f5",
+            0,
+            r#"{ type = "ParallelLinked", input = "left_flipper" }"#,
+            Lower,
+        ),
+        (
+            "f6",
+            2,
+            r#"{ type = "DedicatedButton", input = "left_flipper" }"#,
+            Upper,
+        ),
+        (
+            "f7",
+            1,
+            r#"{ type = "ParallelLinked", input = "right_flipper" }"#,
+            Upper,
+        ),
+        (
+            "f8",
+            0,
+            r#"{ type = "DedicatedButton", input = "action" }"#,
+            Lower,
+        ),
         (
             "f9",
             0,
@@ -368,14 +422,58 @@ fn toml_syntax_and_schema_errors_name_the_file() {
     let cases: Vec<(String, String, &str)> = vec![
         ("this is = = not toml".into(), BACKGLASS_TOML.into(), T),
         (TABLE_TOML.into(), "[translite\nlayers = 3".into(), B),
-        (sub(TABLE_TOML, "schema_version = 1", "schema_version = 2"), BACKGLASS_TOML.into(), T),
-        (TABLE_TOML.into(), sub(BACKGLASS_TOML, "schema_version = 1", "schema_version = 7"), B),
-        (sub(TABLE_TOML, "players_max = 4", "players_max = 4\nbogus_key = 1"), BACKGLASS_TOML.into(), T),
+        (
+            sub(TABLE_TOML, "schema_version = 1", "schema_version = 2"),
+            BACKGLASS_TOML.into(),
+            T,
+        ),
+        (
+            TABLE_TOML.into(),
+            sub(BACKGLASS_TOML, "schema_version = 1", "schema_version = 7"),
+            B,
+        ),
+        (
+            sub(
+                TABLE_TOML,
+                "players_max = 4",
+                "players_max = 4\nbogus_key = 1",
+            ),
+            BACKGLASS_TOML.into(),
+            T,
+        ),
         // coil numbers must fit u16
-        (sub(TABLE_TOML, "id = \"bumper_1_coil\"\nnumber = 2", "id = \"bumper_1_coil\"\nnumber = 70000"), BACKGLASS_TOML.into(), T),
-        (sub(TABLE_TOML, "id = \"orbit_magnet\"\nnumber = 1", "id = \"orbit_magnet\"\nnumber = 65536"), BACKGLASS_TOML.into(), T),
-        (sub(TABLE_TOML, "id = \"power_chamber\"\nnumber = 1", "id = \"power_chamber\"\nnumber = -1"), BACKGLASS_TOML.into(), T),
-        (String::from_utf8_lossy(&[0xFF, 0xFE, 0x00]).into_owned(), BACKGLASS_TOML.into(), T),
+        (
+            sub(
+                TABLE_TOML,
+                "id = \"bumper_1_coil\"\nnumber = 2",
+                "id = \"bumper_1_coil\"\nnumber = 70000",
+            ),
+            BACKGLASS_TOML.into(),
+            T,
+        ),
+        (
+            sub(
+                TABLE_TOML,
+                "id = \"orbit_magnet\"\nnumber = 1",
+                "id = \"orbit_magnet\"\nnumber = 65536",
+            ),
+            BACKGLASS_TOML.into(),
+            T,
+        ),
+        (
+            sub(
+                TABLE_TOML,
+                "id = \"power_chamber\"\nnumber = 1",
+                "id = \"power_chamber\"\nnumber = -1",
+            ),
+            BACKGLASS_TOML.into(),
+            T,
+        ),
+        (
+            String::from_utf8_lossy(&[0xFF, 0xFE, 0x00]).into_owned(),
+            BACKGLASS_TOML.into(),
+            T,
+        ),
     ];
     for (table, backglass, file) in cases {
         let errs = invalid(&bundle_with(&table, &backglass));
@@ -396,12 +494,36 @@ fn non_utf8_manifest_is_an_error_not_a_panic() {
 
 #[test]
 fn all_errors_are_collected_and_sorted_by_file_then_path() {
-    let mut table = sub(TABLE_TOML, "coil = \"left_flipper_coil\"\n", "coil = \"no_such_coil\"\n");
-    table = sub(&table, r#"eos_switch = "lower_left_eos""#, r#"eos_switch = "no_such_switch""#);
-    table = sub(&table, r#"start_scene = "scene_powerball_mania""#, r#"start_scene = "no_such_scene""#);
-    table = sub(&table, r#"switch = "bumper_1_ring""#, r#"switch = "no_such_ring""#);
-    table = sub(&table, r#"sequence = ["ramp_entry_opto", "ramp_made_opto"]"#, r#"sequence = ["zzz_a", "ramp_made_opto", "zzz_b"]"#);
-    let backglass = sub(BACKGLASS_TOML, r#"lamp = "backglass_logo""#, r#"lamp = "no_such_lamp""#);
+    let mut table = sub(
+        TABLE_TOML,
+        "coil = \"left_flipper_coil\"\n",
+        "coil = \"no_such_coil\"\n",
+    );
+    table = sub(
+        &table,
+        r#"eos_switch = "lower_left_eos""#,
+        r#"eos_switch = "no_such_switch""#,
+    );
+    table = sub(
+        &table,
+        r#"start_scene = "scene_powerball_mania""#,
+        r#"start_scene = "no_such_scene""#,
+    );
+    table = sub(
+        &table,
+        r#"switch = "bumper_1_ring""#,
+        r#"switch = "no_such_ring""#,
+    );
+    table = sub(
+        &table,
+        r#"sequence = ["ramp_entry_opto", "ramp_made_opto"]"#,
+        r#"sequence = ["zzz_a", "ramp_made_opto", "zzz_b"]"#,
+    );
+    let backglass = sub(
+        BACKGLASS_TOML,
+        r#"lamp = "backglass_logo""#,
+        r#"lamp = "no_such_lamp""#,
+    );
     let mut files = bundle_with(&table, &backglass);
     files.remove("audio/bumper.ogg");
     files.remove("backglass/base.png");
@@ -418,12 +540,18 @@ fn all_errors_are_collected_and_sorted_by_file_then_path() {
     expect_at(&errs, B, &["translite.layers[0].file"]);
     assert!(errs.len() >= 9, "{errs:?}");
 
-    let keys: Vec<(&str, &str)> = errs.iter().map(|e| (e.file.as_str(), e.path.as_str())).collect();
+    let keys: Vec<(&str, &str)> = errs
+        .iter()
+        .map(|e| (e.file.as_str(), e.path.as_str()))
+        .collect();
     let mut sorted = keys.clone();
     sorted.sort();
     assert_eq!(keys, sorted, "errors must be sorted by (file, path)");
     // No spurious error for the valid reference.
-    assert!(!errs.iter().any(|e| e.path == "shots[0].sequence[1]"), "{errs:?}");
+    assert!(
+        !errs.iter().any(|e| e.path == "shots[0].sequence[1]"),
+        "{errs:?}"
+    );
 }
 
 // ============================ rule: name references =========================
@@ -446,23 +574,128 @@ eos_switch"#,
 }
 
 /// (mutation from, mutation to, file, path, offending value, expected suggestion)
-type RefCase = (&'static str, &'static str, &'static str, &'static str, &'static str, Option<&'static str>);
+type RefCase = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+);
 
 const TABLE_REF_CASES: &[RefCase] = &[
-    (r#"eos_switch = "lower_left_eos""#, r#"eos_switch = "lower_left_eoz""#, T, "flippers[0].eos_switch", "lower_left_eoz", Some("lower_left_eos")),
-    (r#"coil = "bumper_1_coil""#, r#"coil = "bumper_coil""#, T, "mechs[0].coil", "bumper_coil", Some("bumper_1_coil")),
-    (r#"switch = "bumper_1_ring""#, r#"switch = "bumper_1_rign""#, T, "mechs[0].switch", "bumper_1_rign", Some("bumper_1_ring")),
-    (r#"coil = "ramp_diverter_coil""#, r#"coil = "completely_different""#, T, "mechs[1].coil", "completely_different", None),
-    (r#"sequence = ["ramp_entry_opto", "ramp_made_opto"]"#, r#"sequence = ["ramp_entry_opto", "ramp_mad_opto"]"#, T, "shots[0].sequence[1]", "ramp_mad_opto", Some("ramp_made_opto")),
-    (r#""standard_steel", "standard_steel", "ceramic_powerball"]"#, r#""standard_steel", "standard_steel", "ceramic_powerbal"]"#, T, "dispensers[0].contents[4]", "ceramic_powerbal", Some("ceramic_powerball")),
-    (r#"profiles = ["standard_steel", "ceramic_powerball"]"#, r#"profiles = ["standard_steel", "ceramik_powerball"]"#, T, "balls.profiles[1]", "ceramik_powerball", Some("ceramic_powerball")),
-    (r#"profiles = ["standard_steel", "ceramic_powerball"]"#, r#"profiles = ["unobtainium", "ceramic_powerball"]"#, T, "balls.profiles[0]", "unobtainium", None),
-    (r#"profile = "jumbo_xl_resin""#, r#"profile = "jumbo_xl_rosin""#, T, "balls.restrict[0].profile", "jumbo_xl_rosin", Some("jumbo_xl_resin")),
-    (r#"start_scene = "scene_powerball_mania""#, r#"start_scene = "scene_powerball_manic""#, T, "modes[0].start_scene", "scene_powerball_manic", Some("scene_powerball_mania")),
-    (r#"map = [ { coil = "left_flipper_coil", type = "S", number = 1 } ]"#, r#"map = [ { coil = "left_flipper_coyl", type = "S", number = 1 } ]"#, T, "dof.map[0].coil", "left_flipper_coyl", Some("left_flipper_coil")),
-    (r#"map = [ { coil = "left_flipper_coil", type = "S", number = 1 } ]"#, r#"map = [ { coil = "left_flipper_coil", type = "S", number = 1 }, { switch = "right_orbit_optoo", type = "W", number = 2 } ]"#, T, "dof.map[1].switch", "right_orbit_optoo", Some("right_orbit_opto")),
-    (r#"map = [ { coil = "left_flipper_coil", type = "S", number = 1 } ]"#, r#"map = [ { lamp = "overdrive_redy", type = "L", number = 1 } ]"#, T, "dof.map[0].lamp", "overdrive_redy", Some("overdrive_ready")),
-    (r#"staging = { type = "DedicatedButton", input = "left_flipper" }"#, r#"staging = { type = "AutoSensorThingFlip", trigger_switch = "right_orbit_opt", delay_ms = 20.0, hold_duration_ms = 150.0 }"#, T, "flippers[0].staging.trigger_switch", "right_orbit_opt", Some("right_orbit_opto")),
+    (
+        r#"eos_switch = "lower_left_eos""#,
+        r#"eos_switch = "lower_left_eoz""#,
+        T,
+        "flippers[0].eos_switch",
+        "lower_left_eoz",
+        Some("lower_left_eos"),
+    ),
+    (
+        r#"coil = "bumper_1_coil""#,
+        r#"coil = "bumper_coil""#,
+        T,
+        "mechs[0].coil",
+        "bumper_coil",
+        Some("bumper_1_coil"),
+    ),
+    (
+        r#"switch = "bumper_1_ring""#,
+        r#"switch = "bumper_1_rign""#,
+        T,
+        "mechs[0].switch",
+        "bumper_1_rign",
+        Some("bumper_1_ring"),
+    ),
+    (
+        r#"coil = "ramp_diverter_coil""#,
+        r#"coil = "completely_different""#,
+        T,
+        "mechs[1].coil",
+        "completely_different",
+        None,
+    ),
+    (
+        r#"sequence = ["ramp_entry_opto", "ramp_made_opto"]"#,
+        r#"sequence = ["ramp_entry_opto", "ramp_mad_opto"]"#,
+        T,
+        "shots[0].sequence[1]",
+        "ramp_mad_opto",
+        Some("ramp_made_opto"),
+    ),
+    (
+        r#""standard_steel", "standard_steel", "ceramic_powerball"]"#,
+        r#""standard_steel", "standard_steel", "ceramic_powerbal"]"#,
+        T,
+        "dispensers[0].contents[4]",
+        "ceramic_powerbal",
+        Some("ceramic_powerball"),
+    ),
+    (
+        r#"profiles = ["standard_steel", "ceramic_powerball"]"#,
+        r#"profiles = ["standard_steel", "ceramik_powerball"]"#,
+        T,
+        "balls.profiles[1]",
+        "ceramik_powerball",
+        Some("ceramic_powerball"),
+    ),
+    (
+        r#"profiles = ["standard_steel", "ceramic_powerball"]"#,
+        r#"profiles = ["unobtainium", "ceramic_powerball"]"#,
+        T,
+        "balls.profiles[0]",
+        "unobtainium",
+        None,
+    ),
+    (
+        r#"profile = "jumbo_xl_resin""#,
+        r#"profile = "jumbo_xl_rosin""#,
+        T,
+        "balls.restrict[0].profile",
+        "jumbo_xl_rosin",
+        Some("jumbo_xl_resin"),
+    ),
+    (
+        r#"start_scene = "scene_powerball_mania""#,
+        r#"start_scene = "scene_powerball_manic""#,
+        T,
+        "modes[0].start_scene",
+        "scene_powerball_manic",
+        Some("scene_powerball_mania"),
+    ),
+    (
+        r#"map = [ { coil = "left_flipper_coil", type = "S", number = 1 } ]"#,
+        r#"map = [ { coil = "left_flipper_coyl", type = "S", number = 1 } ]"#,
+        T,
+        "dof.map[0].coil",
+        "left_flipper_coyl",
+        Some("left_flipper_coil"),
+    ),
+    (
+        r#"map = [ { coil = "left_flipper_coil", type = "S", number = 1 } ]"#,
+        r#"map = [ { coil = "left_flipper_coil", type = "S", number = 1 }, { switch = "right_orbit_optoo", type = "W", number = 2 } ]"#,
+        T,
+        "dof.map[1].switch",
+        "right_orbit_optoo",
+        Some("right_orbit_opto"),
+    ),
+    (
+        r#"map = [ { coil = "left_flipper_coil", type = "S", number = 1 } ]"#,
+        r#"map = [ { lamp = "overdrive_redy", type = "L", number = 1 } ]"#,
+        T,
+        "dof.map[0].lamp",
+        "overdrive_redy",
+        Some("overdrive_ready"),
+    ),
+    (
+        r#"staging = { type = "DedicatedButton", input = "left_flipper" }"#,
+        r#"staging = { type = "AutoSensorThingFlip", trigger_switch = "right_orbit_opt", delay_ms = 20.0, hold_duration_ms = 150.0 }"#,
+        T,
+        "flippers[0].staging.trigger_switch",
+        "right_orbit_opt",
+        Some("right_orbit_opto"),
+    ),
 ];
 
 fn check_ref_case(errs: &[pin_assets::ValidationError], c: &RefCase) {
@@ -483,7 +716,9 @@ fn check_ref_case(errs: &[pin_assets::ValidationError], c: &RefCase) {
         ),
     }
     assert_eq!(
-        errs.iter().filter(|x| x.file == c.2 && x.path == c.3).count(),
+        errs.iter()
+            .filter(|x| x.file == c.2 && x.path == c.3)
+            .count(),
         1,
         "one violation = one ValidationError: {errs:?}"
     );
@@ -500,8 +735,22 @@ fn unresolved_names_in_table_toml() {
 #[test]
 fn unresolved_names_in_backglass_toml() {
     let cases: &[RefCase] = &[
-        (r#"lamp = "backglass_logo""#, r#"lamp = "backglass_logos""#, B, "lamp_masks[0].lamp", "backglass_logos", Some("backglass_logo")),
-        (r#"lamp = "backglass_logo""#, r#"lamp = "right_orbit_opto""#, B, "lamp_masks[0].lamp", "right_orbit_opto", None),
+        (
+            r#"lamp = "backglass_logo""#,
+            r#"lamp = "backglass_logos""#,
+            B,
+            "lamp_masks[0].lamp",
+            "backglass_logos",
+            Some("backglass_logo"),
+        ),
+        (
+            r#"lamp = "backglass_logo""#,
+            r#"lamp = "right_orbit_opto""#,
+            B,
+            "lamp_masks[0].lamp",
+            "right_orbit_opto",
+            None,
+        ),
     ];
     for c in cases {
         let errs = backglass_errors(&sub(BACKGLASS_TOML, c.0, c.1));
@@ -528,20 +777,47 @@ eos_switch = "left_flipper_coil""#,
 #[test]
 fn duplicate_ids_per_kind() {
     let cases: &[(&str, &[&str])] = &[
-        ("[[switches]]\nid = \"right_orbit_opto\"\nnumber = 99\nkind = \"opto\"", &["switches[5].id", "switches[0].id", "switches[5]"]),
-        ("[[coils]]\nid = \"left_flipper_coil\"\nnumber = 99\nkind = \"knocker\"", &["coils[3].id", "coils[0].id", "coils[3]"]),
-        ("[[lamps]]\nid = \"overdrive_ready\"\nnumber = 99\nkind = \"gi\"", &["lamps[2].id", "lamps[0].id", "lamps[2]"]),
-        ("[[magnets]]\nid = \"orbit_magnet\"\nnumber = 9\nposition = [1.0, 2.0, 0.0]\nk_coil = 2.0e-6\nd_min = 8.0\nrange = 60.0", &["magnets[1].id", "magnets[0].id", "magnets[1]"]),
-        ("[[dispensers]]\nid = \"power_chamber\"\nnumber = 9\nexit_position = [1.0, 2.0, 3.0]\nexit_velocity = [0.0, 0.0, 0.0]", &["dispensers[1].id", "dispensers[0].id", "dispensers[1]"]),
-        ("[[mechs]]\nid = \"ramp_diverter\"\nkind = \"diverter\"", &["mechs[2].id", "mechs[1].id", "mechs[2]"]),
-        ("[[sounds]]\nid = \"sfx_bumper\"\nfile = \"audio/bumper.ogg\"\nbus = \"sfx\"", &["sounds[1].id", "sounds[0].id", "sounds[1]"]),
-        ("[[scenes]]\nid = \"scene_powerball_mania\"\nfile = \"display/powerball_mania.toml\"", &["scenes[1].id", "scenes[0].id", "scenes[1]"]),
+        (
+            "[[switches]]\nid = \"right_orbit_opto\"\nnumber = 99\nkind = \"opto\"",
+            &["switches[5].id", "switches[0].id", "switches[5]"],
+        ),
+        (
+            "[[coils]]\nid = \"left_flipper_coil\"\nnumber = 99\nkind = \"knocker\"",
+            &["coils[3].id", "coils[0].id", "coils[3]"],
+        ),
+        (
+            "[[lamps]]\nid = \"overdrive_ready\"\nnumber = 99\nkind = \"gi\"",
+            &["lamps[2].id", "lamps[0].id", "lamps[2]"],
+        ),
+        (
+            "[[magnets]]\nid = \"orbit_magnet\"\nnumber = 9\nposition = [1.0, 2.0, 0.0]\nk_coil = 2.0e-6\nd_min = 8.0\nrange = 60.0",
+            &["magnets[1].id", "magnets[0].id", "magnets[1]"],
+        ),
+        (
+            "[[dispensers]]\nid = \"power_chamber\"\nnumber = 9\nexit_position = [1.0, 2.0, 3.0]\nexit_velocity = [0.0, 0.0, 0.0]",
+            &["dispensers[1].id", "dispensers[0].id", "dispensers[1]"],
+        ),
+        (
+            "[[mechs]]\nid = \"ramp_diverter\"\nkind = \"diverter\"",
+            &["mechs[2].id", "mechs[1].id", "mechs[2]"],
+        ),
+        (
+            "[[sounds]]\nid = \"sfx_bumper\"\nfile = \"audio/bumper.ogg\"\nbus = \"sfx\"",
+            &["sounds[1].id", "sounds[0].id", "sounds[1]"],
+        ),
+        (
+            "[[scenes]]\nid = \"scene_powerball_mania\"\nfile = \"display/powerball_mania.toml\"",
+            &["scenes[1].id", "scenes[0].id", "scenes[1]"],
+        ),
     ];
     for (extra, paths) in cases {
         let errs = table_errors(&plus(extra));
         let e = expect_at(&errs, T, paths);
         let id = extra.split('"').nth(1).unwrap();
-        assert!(e.message.contains(id), "message must name the duplicate id {id:?}: {e}");
+        assert!(
+            e.message.contains(id),
+            "message must name the duplicate id {id:?}: {e}"
+        );
     }
     // flippers
     let errs = table_errors(&plus(&flipper(
@@ -549,7 +825,11 @@ fn duplicate_ids_per_kind() {
         0,
         r#"{ type = "DedicatedButton", input = "right_flipper" }"#,
     )));
-    let e = expect_at(&errs, T, &["flippers[1].id", "flippers[0].id", "flippers[1]"]);
+    let e = expect_at(
+        &errs,
+        T,
+        &["flippers[1].id", "flippers[0].id", "flippers[1]"],
+    );
     assert!(e.message.contains("lower_left"), "{e}");
     // persist keys
     let errs = table_errors(&sub(
@@ -564,16 +844,43 @@ fn duplicate_ids_per_kind() {
 #[test]
 fn duplicate_numbers_per_kind() {
     let cases: &[(&str, &[&str], &str)] = &[
-        ("[[switches]]\nid = \"extra\"\nnumber = 24\nkind = \"opto\"", &["switches[5].number", "switches[0].number", "switches[5]"], "24"),
-        ("[[coils]]\nid = \"extra\"\nnumber = 2\nkind = \"knocker\"", &["coils[3].number", "coils[1].number", "coils[3]"], "2"),
-        ("[[lamps]]\nid = \"extra\"\nnumber = 40\nkind = \"gi\"", &["lamps[2].number", "lamps[0].number", "lamps[2]"], "40"),
-        ("[[magnets]]\nid = \"extra\"\nnumber = 1\nposition = [1.0, 2.0, 0.0]\nk_coil = 2.0e-6\nd_min = 8.0\nrange = 60.0", &["magnets[1].number", "magnets[0].number", "magnets[1]"], "1"),
-        ("[[dispensers]]\nid = \"extra\"\nnumber = 1\nexit_position = [1.0, 2.0, 3.0]\nexit_velocity = [0.0, 0.0, 0.0]", &["dispensers[1].number", "dispensers[0].number", "dispensers[1]"], "1"),
+        (
+            "[[switches]]\nid = \"extra\"\nnumber = 24\nkind = \"opto\"",
+            &["switches[5].number", "switches[0].number", "switches[5]"],
+            "24",
+        ),
+        (
+            "[[coils]]\nid = \"extra\"\nnumber = 2\nkind = \"knocker\"",
+            &["coils[3].number", "coils[1].number", "coils[3]"],
+            "2",
+        ),
+        (
+            "[[lamps]]\nid = \"extra\"\nnumber = 40\nkind = \"gi\"",
+            &["lamps[2].number", "lamps[0].number", "lamps[2]"],
+            "40",
+        ),
+        (
+            "[[magnets]]\nid = \"extra\"\nnumber = 1\nposition = [1.0, 2.0, 0.0]\nk_coil = 2.0e-6\nd_min = 8.0\nrange = 60.0",
+            &["magnets[1].number", "magnets[0].number", "magnets[1]"],
+            "1",
+        ),
+        (
+            "[[dispensers]]\nid = \"extra\"\nnumber = 1\nexit_position = [1.0, 2.0, 3.0]\nexit_velocity = [0.0, 0.0, 0.0]",
+            &[
+                "dispensers[1].number",
+                "dispensers[0].number",
+                "dispensers[1]",
+            ],
+            "1",
+        ),
     ];
     for (extra, paths, number) in cases {
         let errs = table_errors(&plus(extra));
         let e = expect_at(&errs, T, paths);
-        assert!(e.message.contains(number), "message must name the number {number}: {e}");
+        assert!(
+            e.message.contains(number),
+            "message must name the number {number}: {e}"
+        );
     }
 }
 
@@ -581,7 +888,9 @@ fn duplicate_numbers_per_kind() {
 fn same_number_in_different_kinds_is_fine() {
     // coil 1, magnet 1, dispenser 1 and cabinet switch 1 coexist in Appendix A.
     let t = load(
-        &plus("[[lamps]]\nid = \"lamp_24\"\nnumber = 24\nkind = \"gi\"\n\n[[coils]]\nid = \"coil_24\"\nnumber = 24\nkind = \"knocker\""),
+        &plus(
+            "[[lamps]]\nid = \"lamp_24\"\nnumber = 24\nkind = \"gi\"\n\n[[coils]]\nid = \"coil_24\"\nnumber = 24\nkind = \"knocker\"",
+        ),
         BACKGLASS_TOML,
     );
     assert_eq!(t.ids.lamp("lamp_24"), Some(LampId(24)));
@@ -613,7 +922,11 @@ fn switch_and_lamp_numbers_above_255_are_rejected() {
         "id = \"right_orbit_opto\"\nnumber = 24",
         "id = \"right_orbit_opto\"\nnumber = 255",
     );
-    ok = sub(&ok, "id = \"backglass_logo\"\nnumber = 41", "id = \"backglass_logo\"\nnumber = 255");
+    ok = sub(
+        &ok,
+        "id = \"backglass_logo\"\nnumber = 41",
+        "id = \"backglass_logo\"\nnumber = 255",
+    );
     let t = load(&ok, BACKGLASS_TOML);
     assert_eq!(t.ids.switch("right_orbit_opto"), Some(SwitchId(255)));
     assert_eq!(t.ids.lamp("backglass_logo"), Some(LampId(255)));
@@ -621,9 +934,21 @@ fn switch_and_lamp_numbers_above_255_are_rejected() {
 
 #[test]
 fn coil_magnet_dispenser_numbers_may_use_the_full_u16_range() {
-    let mut ok = sub(TABLE_TOML, "id = \"bumper_1_coil\"\nnumber = 2", "id = \"bumper_1_coil\"\nnumber = 65535");
-    ok = sub(&ok, "id = \"orbit_magnet\"\nnumber = 1", "id = \"orbit_magnet\"\nnumber = 300");
-    ok = sub(&ok, "id = \"power_chamber\"\nnumber = 1", "id = \"power_chamber\"\nnumber = 4000");
+    let mut ok = sub(
+        TABLE_TOML,
+        "id = \"bumper_1_coil\"\nnumber = 2",
+        "id = \"bumper_1_coil\"\nnumber = 65535",
+    );
+    ok = sub(
+        &ok,
+        "id = \"orbit_magnet\"\nnumber = 1",
+        "id = \"orbit_magnet\"\nnumber = 300",
+    );
+    ok = sub(
+        &ok,
+        "id = \"power_chamber\"\nnumber = 1",
+        "id = \"power_chamber\"\nnumber = 4000",
+    );
     let t = load(&ok, BACKGLASS_TOML);
     assert_eq!(t.ids.coil("bumper_1_coil"), Some(CoilId(65535)));
     assert_eq!(t.ids.magnet("orbit_magnet"), Some(MagnetId(300)));
@@ -647,18 +972,40 @@ fn score_display_mode_needs_its_table() {
         "",
     );
     let errs = backglass_errors(&no_dmd);
-    let e = expect_at(&errs, B, &["score_display.dmd", "score_display.mode", "score_display"]);
+    let e = expect_at(
+        &errs,
+        B,
+        &["score_display.dmd", "score_display.mode", "score_display"],
+    );
     assert!(e.message.contains("dmd"), "{e}");
 
     let lcd_mode = sub(BACKGLASS_TOML, "mode = \"dmd\"", "mode = \"lcd\"");
     let no_lcd = sub(&lcd_mode, "lcd = { width = 1920, height = 1080 }\n", "");
     let errs = backglass_errors(&no_lcd);
-    let e = expect_at(&errs, B, &["score_display.lcd", "score_display.mode", "score_display"]);
+    let e = expect_at(
+        &errs,
+        B,
+        &["score_display.lcd", "score_display.mode", "score_display"],
+    );
     assert!(e.message.contains("lcd"), "{e}");
 
     // The table of the *other* mode is optional.
-    load(TABLE_TOML, &sub(BACKGLASS_TOML, "lcd = { width = 1920, height = 1080 }\n", ""));
-    load(TABLE_TOML, &sub(&lcd_mode, "dmd = { width = 128, height = 32, color = \"orange\" }\n", ""));
+    load(
+        TABLE_TOML,
+        &sub(
+            BACKGLASS_TOML,
+            "lcd = { width = 1920, height = 1080 }\n",
+            "",
+        ),
+    );
+    load(
+        TABLE_TOML,
+        &sub(
+            &lcd_mode,
+            "dmd = { width = 128, height = 32, color = \"orange\" }\n",
+            "",
+        ),
+    );
 }
 
 // ============================ rule: referenced files ========================
@@ -680,8 +1027,15 @@ fn every_referenced_file_must_exist() {
         files.remove(*gone).expect("fixture has the file");
         let errs = invalid(&files);
         let e = expect_at(&errs, file, &[path]);
-        assert!(e.message.contains(gone), "message must name the missing file {gone:?}: {e}");
-        assert_eq!(errs.len(), 1, "removing {gone} is exactly one violation: {errs:?}");
+        assert!(
+            e.message.contains(gone),
+            "message must name the missing file {gone:?}: {e}"
+        );
+        assert_eq!(
+            errs.len(),
+            1,
+            "removing {gone} is exactly one violation: {errs:?}"
+        );
     }
 }
 
@@ -703,7 +1057,12 @@ fn referenced_file_paths_may_not_escape_the_bundle() {
 fn with_spline(replacement: &str) -> String {
     let start = TABLE_TOML.find("[[splines]]").unwrap();
     let end = TABLE_TOML.find("[[layer_transitions]]").unwrap();
-    format!("{}{}\n\n{}", &TABLE_TOML[..start], replacement, &TABLE_TOML[end..])
+    format!(
+        "{}{}\n\n{}",
+        &TABLE_TOML[..start],
+        replacement,
+        &TABLE_TOML[end..]
+    )
 }
 
 fn guide(points: &str) -> String {
@@ -729,18 +1088,38 @@ fn spline_consecutive_points_must_be_distinct() {
     let errs = table_errors(&guide(
         "[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 0.0, 0.0], [200.0, 50.0, 0.0]]",
     ));
-    expect_at(&errs, T, &["splines[0].points[2]", "splines[0].points[1]", "splines[0].points"]);
+    expect_at(
+        &errs,
+        T,
+        &[
+            "splines[0].points[2]",
+            "splines[0].points[1]",
+            "splines[0].points",
+        ],
+    );
 
     let errs = table_errors(&with_spline(
         "[[splines]]\nid = \"w\"\nkind = \"wireform\"\nlayer = 2\ngauge = 19.0\npoints = [[60.0, 900.0, 40.0], [60.0, 900.0, 40.0], [150.0, 260.0, 20.0]]\nroll_deg = [0.0, 8.0, 0.0]",
     ));
-    expect_at(&errs, T, &["splines[0].points[1]", "splines[0].points[0]", "splines[0].points"]);
+    expect_at(
+        &errs,
+        T,
+        &[
+            "splines[0].points[1]",
+            "splines[0].points[0]",
+            "splines[0].points",
+        ],
+    );
 }
 
 #[test]
 fn wireform_roll_count_must_match_points() {
     for roll in ["[0.0, 8.0]", "[0.0, 8.0, 0.0, 1.0]", "[]"] {
-        let table = sub(TABLE_TOML, "roll_deg = [0.0, 8.0, 0.0]", &format!("roll_deg = {roll}"));
+        let table = sub(
+            TABLE_TOML,
+            "roll_deg = [0.0, 8.0, 0.0]",
+            &format!("roll_deg = {roll}"),
+        );
         let errs = table_errors(&table);
         expect_at(&errs, T, &["splines[0].roll_deg"]);
     }
@@ -758,12 +1137,18 @@ fn wireform_gauge_must_build() {
 #[test]
 fn valid_spline_shapes_load() {
     // Two-point guide, open guide, wireform without roll.
-    load(&guide("[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]]"), BACKGLASS_TOML);
+    load(
+        &guide("[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]]"),
+        BACKGLASS_TOML,
+    );
     load(
         &guide("[[0.0, 0.0, 0.0], [100.0, 10.0, 0.0], [200.0, 0.0, 0.0], [300.0, 40.0, 0.0]]"),
         BACKGLASS_TOML,
     );
-    let t = load(&sub(TABLE_TOML, "roll_deg = [0.0, 8.0, 0.0]\n", ""), BACKGLASS_TOML);
+    let t = load(
+        &sub(TABLE_TOML, "roll_deg = [0.0, 8.0, 0.0]\n", ""),
+        BACKGLASS_TOML,
+    );
     assert_eq!(t.splines.len(), 1);
 }
 
@@ -771,25 +1156,36 @@ fn valid_spline_shapes_load() {
 fn closed_and_near_closed_guides_load() {
     // Exactly closed loop: must be built periodic, not rejected as ClosedGuideNotPeriodic.
     let t = load(
-        &guide("[[100.0, 100.0, 0.0], [200.0, 100.0, 0.0], [200.0, 200.0, 0.0], [100.0, 200.0, 0.0], [100.0, 100.0, 0.0]]"),
+        &guide(
+            "[[100.0, 100.0, 0.0], [200.0, 100.0, 0.0], [200.0, 200.0, 0.0], [100.0, 200.0, 0.0], [100.0, 100.0, 0.0]]",
+        ),
         BACKGLASS_TOML,
     );
     assert_eq!(t.splines.len(), 1);
     // End 0.0005 mm (5e-7 m) from the start: snapped closed, not an error.
     let t = load(
-        &guide("[[100.0, 100.0, 0.0], [200.0, 100.0, 0.0], [200.0, 200.0, 0.0], [100.0, 200.0, 0.0], [100.0005, 100.0, 0.0]]"),
+        &guide(
+            "[[100.0, 100.0, 0.0], [200.0, 100.0, 0.0], [200.0, 200.0, 0.0], [100.0, 200.0, 0.0], [100.0005, 100.0, 0.0]]",
+        ),
         BACKGLASS_TOML,
     );
     assert_eq!(t.splines.len(), 1);
     // The same shape snapped and exact must describe the same spline.
     let exact = load(
-        &guide("[[100.0, 100.0, 0.0], [200.0, 100.0, 0.0], [200.0, 200.0, 0.0], [100.0, 200.0, 0.0], [100.0, 100.0, 0.0]]"),
+        &guide(
+            "[[100.0, 100.0, 0.0], [200.0, 100.0, 0.0], [200.0, 200.0, 0.0], [100.0, 200.0, 0.0], [100.0, 100.0, 0.0]]",
+        ),
         BACKGLASS_TOML,
     );
-    assert_eq!(t.splines, exact.splines, "near-closed guide is snapped onto its start point");
+    assert_eq!(
+        t.splines, exact.splines,
+        "near-closed guide is snapped onto its start point"
+    );
     // An end point 1 mm away is simply an open guide.
     load(
-        &guide("[[100.0, 100.0, 0.0], [200.0, 100.0, 0.0], [200.0, 200.0, 0.0], [100.0, 200.0, 0.0], [101.0, 100.0, 0.0]]"),
+        &guide(
+            "[[100.0, 100.0, 0.0], [200.0, 100.0, 0.0], [200.0, 200.0, 0.0], [100.0, 200.0, 0.0], [101.0, 100.0, 0.0]]",
+        ),
         BACKGLASS_TOML,
     );
 }
@@ -801,10 +1197,17 @@ fn uneven_spline_spacing_is_a_warning_not_an_error() {
         &guide("[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [100.0, 0.0, 0.0], [110.0, 50.0, 0.0]]"),
         BACKGLASS_TOML,
     );
-    let w: Vec<_> = t.warnings.iter().filter(|w| w.path.starts_with("splines[0]")).collect();
+    let w: Vec<_> = t
+        .warnings
+        .iter()
+        .filter(|w| w.path.starts_with("splines[0]"))
+        .collect();
     assert_eq!(w.len(), 1, "one spacing warning expected: {:?}", t.warnings);
     assert_eq!(w[0].file, T);
-    assert_eq!(w[0].to_string(), format!("{}: {}: {}", w[0].file, w[0].path, w[0].message));
+    assert_eq!(
+        w[0].to_string(),
+        format!("{}: {}: {}", w[0].file, w[0].path, w[0].message)
+    );
 
     // Ratio 2.5: no warning.
     let t = load(
@@ -823,22 +1226,60 @@ fn uneven_spline_spacing_is_a_warning_not_an_error() {
 #[test]
 fn layer_numbers_must_be_0_to_7() {
     let cases: &[(&str, &str, &[&str])] = &[
-        ("kind = \"opto\"\nlayer = 0", "kind = \"opto\"\nlayer = 8", &["switches[0].layer"]),
-        ("collision_layer = 0", "collision_layer = 9", &["flippers[0].collision_layer"]),
-        ("kind = \"wireform\"\nlayer = 2", "kind = \"wireform\"\nlayer = 200", &["splines[0].layer"]),
-        ("from_layer = 0", "from_layer = 8", &["layer_transitions[0].from_layer"]),
-        ("to_layer = 2", "to_layer = 255", &["layer_transitions[0].to_layer"]),
-        ("layers = [0] }", "layers = [0, 8] }", &["balls.restrict[0].layers[1]", "balls.restrict[0].layers"]),
+        (
+            "kind = \"opto\"\nlayer = 0",
+            "kind = \"opto\"\nlayer = 8",
+            &["switches[0].layer"],
+        ),
+        (
+            "collision_layer = 0",
+            "collision_layer = 9",
+            &["flippers[0].collision_layer"],
+        ),
+        (
+            "kind = \"wireform\"\nlayer = 2",
+            "kind = \"wireform\"\nlayer = 200",
+            &["splines[0].layer"],
+        ),
+        (
+            "from_layer = 0",
+            "from_layer = 8",
+            &["layer_transitions[0].from_layer"],
+        ),
+        (
+            "to_layer = 2",
+            "to_layer = 255",
+            &["layer_transitions[0].to_layer"],
+        ),
+        (
+            "layers = [0] }",
+            "layers = [0, 8] }",
+            &["balls.restrict[0].layers[1]", "balls.restrict[0].layers"],
+        ),
     ];
     for (from, to, paths) in cases {
         let errs = table_errors(&sub(TABLE_TOML, from, to));
         let e = expect_at(&errs, T, paths);
-        let bad = to.rsplit(|c: char| !c.is_ascii_digit()).find(|s| !s.is_empty()).unwrap();
-        assert!(e.message.contains(bad), "message must name the layer {bad}: {e}");
+        let bad = to
+            .rsplit(|c: char| !c.is_ascii_digit())
+            .find(|s| !s.is_empty())
+            .unwrap();
+        assert!(
+            e.message.contains(bad),
+            "message must name the layer {bad}: {e}"
+        );
     }
     // 7 is valid everywhere.
-    let mut ok = sub(TABLE_TOML, "kind = \"opto\"\nlayer = 0", "kind = \"opto\"\nlayer = 7");
-    ok = sub(&ok, "kind = \"wireform\"\nlayer = 2", "kind = \"wireform\"\nlayer = 7");
+    let mut ok = sub(
+        TABLE_TOML,
+        "kind = \"opto\"\nlayer = 0",
+        "kind = \"opto\"\nlayer = 7",
+    );
+    ok = sub(
+        &ok,
+        "kind = \"wireform\"\nlayer = 2",
+        "kind = \"wireform\"\nlayer = 7",
+    );
     ok = sub(&ok, "to_layer = 2", "to_layer = 7");
     ok = sub(&ok, "layers = [0] }", "layers = [0, 7] }");
     load(&ok, BACKGLASS_TOML);

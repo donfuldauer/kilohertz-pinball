@@ -122,7 +122,8 @@ impl<'v> Checker<'v> {
     }
 
     fn warn(&mut self, file: &str, path: impl Into<String>, message: impl Into<String>) {
-        self.warnings.push(ValidationError::new(file, path, message));
+        self.warnings
+            .push(ValidationError::new(file, path, message));
     }
 
     fn layer(&mut self, file: &str, path: impl Into<String>, layer: u8) {
@@ -262,7 +263,9 @@ impl<'v> Checker<'v> {
                 self.err(
                     TABLE_FILE,
                     &path,
-                    format!("cabinet switch number {n} is already used by cabinet_switches.{first}"),
+                    format!(
+                        "cabinet switch number {n} is already used by cabinet_switches.{first}"
+                    ),
                 );
                 continue;
             }
@@ -315,10 +318,7 @@ impl<'v> Checker<'v> {
                         self.err(
                             TABLE_FILE,
                             format!("{p}.number"),
-                            format!(
-                                concat!($label, " number {} exceeds {}"),
-                                item.number, $max
-                            ),
+                            format!(concat!($label, " number {} exceeds {}"), item.number, $max),
                         );
                     } else if let Some(first) = numbers.check(item.number, p) {
                         self.err(
@@ -513,7 +513,11 @@ impl<'v> Checker<'v> {
                     format!("{p}.staging.trigger_switch"),
                 );
             }
-            self.layer(TABLE_FILE, format!("{p}.collision_layer"), f.collision_layer);
+            self.layer(
+                TABLE_FILE,
+                format!("{p}.collision_layer"),
+                f.collision_layer,
+            );
             let upper_input = matches!(
                 f.staging,
                 FlipperStagingDef::DedicatedButton { input }
@@ -717,11 +721,7 @@ impl<'v> Checker<'v> {
     }
 
     fn spline_error(&mut self, path: &str, e: SplineError) {
-        self.err(
-            TABLE_FILE,
-            path,
-            format!("spline does not construct: {e}"),
-        );
+        self.err(TABLE_FILE, path, format!("spline does not construct: {e}"));
     }
 
     fn spline(&mut self, i: usize, s: &SplineDef) -> Option<SplineSi> {
@@ -731,10 +731,7 @@ impl<'v> Checker<'v> {
             self.err(
                 TABLE_FILE,
                 format!("{p}.points"),
-                format!(
-                    "a spline needs at least 2 points, got {}",
-                    s.points.len()
-                ),
+                format!("a spline needs at least 2 points, got {}", s.points.len()),
             );
             return None;
         }
@@ -849,7 +846,9 @@ impl<'v> Checker<'v> {
         let spacing: Vec<f32> = through.windows(2).map(|w| w[0].distance(w[1])).collect();
         let (lo, hi) = spacing
             .iter()
-            .fold((f32::INFINITY, 0.0f32), |(lo, hi), &d| (lo.min(d), hi.max(d)));
+            .fold((f32::INFINITY, 0.0f32), |(lo, hi), &d| {
+                (lo.min(d), hi.max(d))
+            });
         if lo > 0.0 && hi / lo > SPACING_RATIO_WARN {
             self.warn(
                 TABLE_FILE,
@@ -900,7 +899,10 @@ impl<'v> Checker<'v> {
                 self.err(
                     f,
                     format!("{p}.id"),
-                    format!("duplicate lamp mask id {:?} (first declared at {first})", m.id),
+                    format!(
+                        "duplicate lamp mask id {:?} (first declared at {first})",
+                        m.id
+                    ),
                 );
             }
             self.file_exists(f, format!("{p}.file"), &m.file);

@@ -88,7 +88,10 @@ impl fmt::Display for AssetError {
                 write!(f, "bundle is too large ({size} bytes uncompressed)")
             }
             AssetError::CompressionRatio { path, ratio } => {
-                write!(f, "file {path:?} has a suspicious compression ratio ({ratio}:1)")
+                write!(
+                    f,
+                    "file {path:?} has a suspicious compression ratio ({ratio}:1)"
+                )
             }
             AssetError::TooManyEntries(n) => write!(f, "archive has too many entries ({n})"),
             AssetError::DuplicateEntry(p) => write!(f, "duplicate archive entry {p:?}"),

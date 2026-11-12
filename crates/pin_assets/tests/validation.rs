@@ -10,7 +10,10 @@ use pin_assets::{
 use support::*;
 
 fn load_files(files: &[(String, Vec<u8>)]) -> Result<LoadedTable, AssetError> {
-    let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, d)| (n.as_str(), d.as_slice())).collect();
+    let refs: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(n, d)| (n.as_str(), d.as_slice()))
+        .collect();
     let vfs = Vfs::from_zip_bytes(stored_zip(&refs), ZipLimits::default()).unwrap();
     load_table(&vfs)
 }
@@ -50,8 +53,16 @@ fn bg_with(edits: &[(&str, &str)]) -> String {
 /// Asserts exactly one error, at `file`/`path`, whose message contains `needle`.
 fn expect_one(errs: &[ValidationError], file: &str, path: &str, needle: &str) {
     assert_eq!(errs.len(), 1, "{errs:#?}");
-    assert_eq!((errs[0].file.as_str(), errs[0].path.as_str()), (file, path), "{errs:#?}");
-    assert!(errs[0].message.contains(needle), "{:?} lacks {needle:?}", errs[0].message);
+    assert_eq!(
+        (errs[0].file.as_str(), errs[0].path.as_str()),
+        (file, path),
+        "{errs:#?}"
+    );
+    assert!(
+        errs[0].message.contains(needle),
+        "{:?} lacks {needle:?}",
+        errs[0].message
+    );
 }
 
 fn table_err(edits: &[(&str, &str)], path: &str, needle: &str) {
@@ -72,7 +83,10 @@ fn baseline_fixture_is_valid() {
 #[test]
 fn unknown_coil_with_suggestion() {
     let errs = errors(
-        &table_with(&[("coil = \"left_flipper_coil\"\neos", "coil = \"left_flipper_coi\"\neos")]),
+        &table_with(&[(
+            "coil = \"left_flipper_coil\"\neos",
+            "coil = \"left_flipper_coi\"\neos",
+        )]),
         &backglass_text(),
     );
     assert_eq!(errs.len(), 1);
@@ -96,7 +110,10 @@ fn unknown_coil_with_suggestion() {
 #[test]
 fn flipper_references() {
     table_err(
-        &[("eos_switch = \"lower_left_eos\"", "eos_switch = \"lower_left_eo\"")],
+        &[(
+            "eos_switch = \"lower_left_eos\"",
+            "eos_switch = \"lower_left_eo\"",
+        )],
         "flippers[0].eos_switch",
         "unknown switch \"lower_left_eo\" (did you mean \"lower_left_eos\"?)",
     );
@@ -109,7 +126,10 @@ fn flipper_references() {
         "unknown switch \"nope\"",
     );
     table_err(
-        &[("collision_layer = 0\nbase_position", "collision_layer = 8\nbase_position")],
+        &[(
+            "collision_layer = 0\nbase_position",
+            "collision_layer = 8\nbase_position",
+        )],
         "flippers[0].collision_layer",
         "layer 8",
     );
@@ -118,7 +138,10 @@ fn flipper_references() {
 #[test]
 fn mech_shot_mode_dof_references() {
     table_err(
-        &[("coil = \"bumper_1_coil\"\nswitch", "coil = \"bumper_2_coil\"\nswitch")],
+        &[(
+            "coil = \"bumper_1_coil\"\nswitch",
+            "coil = \"bumper_2_coil\"\nswitch",
+        )],
         "mechs[0].coil",
         "unknown coil \"bumper_2_coil\" (did you mean \"bumper_1_coil\"?)",
     );
@@ -133,27 +156,42 @@ fn mech_shot_mode_dof_references() {
         "unknown switch \"ramp_mad_opto\" (did you mean \"ramp_made_opto\"?)",
     );
     table_err(
-        &[("sequence = [\"ramp_entry_opto\", \"ramp_made_opto\"]", "sequence = []")],
+        &[(
+            "sequence = [\"ramp_entry_opto\", \"ramp_made_opto\"]",
+            "sequence = []",
+        )],
         "shots[0].sequence",
         "empty",
     );
     table_err(
-        &[("start_scene = \"scene_powerball_mania\"", "start_scene = \"scene_x\"")],
+        &[(
+            "start_scene = \"scene_powerball_mania\"",
+            "start_scene = \"scene_x\"",
+        )],
         "modes[0].start_scene",
         "unknown scene \"scene_x\"",
     );
     table_err(
-        &[("{ coil = \"left_flipper_coil\", type", "{ coil = \"right_flipper_coil\", type")],
+        &[(
+            "{ coil = \"left_flipper_coil\", type",
+            "{ coil = \"right_flipper_coil\", type",
+        )],
         "dof.map[0].coil",
         "unknown coil \"right_flipper_coil\"",
     );
     table_err(
-        &[("{ coil = \"left_flipper_coil\", type", "{ switch = \"nope\", type")],
+        &[(
+            "{ coil = \"left_flipper_coil\", type",
+            "{ switch = \"nope\", type",
+        )],
         "dof.map[0].switch",
         "unknown switch \"nope\"",
     );
     table_err(
-        &[("{ coil = \"left_flipper_coil\", type", "{ lamp = \"overdrive_read\", type")],
+        &[(
+            "{ coil = \"left_flipper_coil\", type",
+            "{ lamp = \"overdrive_read\", type",
+        )],
         "dof.map[0].lamp",
         "unknown lamp \"overdrive_read\" (did you mean \"overdrive_ready\"?)",
     );
@@ -220,7 +258,10 @@ fn backglass_references() {
         "layer 12",
     );
     bg_err(
-        &[("[[lamp_masks]]\nid = \"bg_logo\"", "[[lamp_masks]]\nid = \"bg_logo\"\nlamp = \"overdrive_ready\"\nfile = \"backglass/logo_mask.png\"\n\n[[lamp_masks]]\nid = \"bg_logo\"")],
+        &[(
+            "[[lamp_masks]]\nid = \"bg_logo\"",
+            "[[lamp_masks]]\nid = \"bg_logo\"\nlamp = \"overdrive_ready\"\nfile = \"backglass/logo_mask.png\"\n\n[[lamp_masks]]\nid = \"bg_logo\"",
+        )],
         "lamp_masks[1].id",
         "duplicate lamp mask id \"bg_logo\"",
     );
@@ -233,17 +274,32 @@ fn duplicate_ids_and_numbers() {
         &extra("[[coils]]\nid = \"left_flipper_coil\"\nnumber = 9\nkind = \"sling\""),
         &backglass_text(),
     );
-    expect_one(&errs, "table.toml", "coils[2].id", "duplicate coil id \"left_flipper_coil\" (first declared at coils[0])");
+    expect_one(
+        &errs,
+        "table.toml",
+        "coils[2].id",
+        "duplicate coil id \"left_flipper_coil\" (first declared at coils[0])",
+    );
     let errs = errors(
         &extra("[[coils]]\nid = \"x\"\nnumber = 1\nkind = \"sling\""),
         &backglass_text(),
     );
-    expect_one(&errs, "table.toml", "coils[2].number", "coil number 1 is already used by coils[0]");
+    expect_one(
+        &errs,
+        "table.toml",
+        "coils[2].number",
+        "coil number 1 is already used by coils[0]",
+    );
     let errs = errors(
         &extra("[[switches]]\nid = \"x\"\nnumber = 24\nkind = \"opto\""),
         &backglass_text(),
     );
-    expect_one(&errs, "table.toml", "switches[5].number", "switch number 24");
+    expect_one(
+        &errs,
+        "table.toml",
+        "switches[5].number",
+        "switch number 24",
+    );
     let errs = errors(
         &extra("[[switches]]\nid = \"right_orbit_opto\"\nnumber = 99\nkind = \"opto\""),
         &backglass_text(),
@@ -255,15 +311,24 @@ fn duplicate_ids_and_numbers() {
     );
     expect_one(&errs, "table.toml", "lamps[2].number", "lamp number 40");
     let errs = errors(
-        &extra("[[magnets]]\nid = \"orbit_magnet\"\nnumber = 2\nposition = [0.0, 0.0, 0.0]\nk_coil = 1.0\nd_min = 1.0\nrange = 2.0"),
+        &extra(
+            "[[magnets]]\nid = \"orbit_magnet\"\nnumber = 2\nposition = [0.0, 0.0, 0.0]\nk_coil = 1.0\nd_min = 1.0\nrange = 2.0",
+        ),
         &backglass_text(),
     );
     expect_one(&errs, "table.toml", "magnets[1].id", "duplicate magnet id");
     let errs = errors(
-        &extra("[[dispensers]]\nid = \"trough\"\nnumber = 1\nexit_position = [0.0, 0.0, 0.0]\nexit_velocity = [0.0, 0.0, 0.0]"),
+        &extra(
+            "[[dispensers]]\nid = \"trough\"\nnumber = 1\nexit_position = [0.0, 0.0, 0.0]\nexit_velocity = [0.0, 0.0, 0.0]",
+        ),
         &backglass_text(),
     );
-    expect_one(&errs, "table.toml", "dispensers[1].number", "dispenser number 1");
+    expect_one(
+        &errs,
+        "table.toml",
+        "dispensers[1].number",
+        "dispenser number 1",
+    );
     let errs = errors(
         &extra("[[sounds]]\nid = \"sfx_bumper\"\nfile = \"audio/bumper.ogg\"\nbus = \"sfx\""),
         &backglass_text(),
@@ -278,31 +343,82 @@ fn duplicate_ids_and_numbers() {
         &table_with(&[("\"games_played\"]", "\"games_played\", \"high_score_1\"]")]),
         &backglass_text(),
     );
-    expect_one(&errs, "table.toml", "persist.keys[3]", "duplicate persist key");
+    expect_one(
+        &errs,
+        "table.toml",
+        "persist.keys[3]",
+        "duplicate persist key",
+    );
 }
 
 #[test]
 fn number_ranges() {
-    table_err(&[("number = 24", "number = 256")], "switches[0].number", "switch number 256 exceeds 255");
-    table_err(&[("number = 40", "number = 300")], "lamps[0].number", "lamp number 300 exceeds 255");
-    table_err(&[("tilt = 8", "tilt = 1")], "cabinet_switches.tilt", "already used by cabinet_switches.left_flipper");
-    table_err(&[("tilt = 8", "tilt = 999")], "cabinet_switches.tilt", "999 exceeds 255");
+    table_err(
+        &[("number = 24", "number = 256")],
+        "switches[0].number",
+        "switch number 256 exceeds 255",
+    );
+    table_err(
+        &[("number = 40", "number = 300")],
+        "lamps[0].number",
+        "lamp number 300 exceeds 255",
+    );
+    table_err(
+        &[("tilt = 8", "tilt = 1")],
+        "cabinet_switches.tilt",
+        "already used by cabinet_switches.left_flipper",
+    );
+    table_err(
+        &[("tilt = 8", "tilt = 999")],
+        "cabinet_switches.tilt",
+        "999 exceeds 255",
+    );
     // A declared switch may share a cabinet number (it *is* that switch).
-    let t = format!("{}\n[[switches]]\nid = \"start_button\"\nnumber = 6\nkind = \"leaf\"\n", table_text());
+    let t = format!(
+        "{}\n[[switches]]\nid = \"start_button\"\nnumber = 6\nkind = \"leaf\"\n",
+        table_text()
+    );
     let loaded = load(&t, &backglass_text()).unwrap();
     assert_eq!(loaded.ids.switch("start"), Some(pin_core::SwitchId(6)));
-    assert_eq!(loaded.ids.switch("start_button"), Some(pin_core::SwitchId(6)));
+    assert_eq!(
+        loaded.ids.switch("start_button"),
+        Some(pin_core::SwitchId(6))
+    );
     // ...but cabinet names are reserved for cabinet numbers.
-    let t = format!("{}\n[[switches]]\nid = \"start\"\nnumber = 60\nkind = \"leaf\"\n", table_text());
-    expect_one(&errors(&t, &backglass_text()), "table.toml", "switches[5].id", "reserved for cabinet switch");
+    let t = format!(
+        "{}\n[[switches]]\nid = \"start\"\nnumber = 60\nkind = \"leaf\"\n",
+        table_text()
+    );
+    expect_one(
+        &errors(&t, &backglass_text()),
+        "table.toml",
+        "switches[5].id",
+        "reserved for cabinet switch",
+    );
 }
 
 #[test]
 fn layers() {
-    table_err(&[("layer = 0\nposition", "layer = 8\nposition")], "switches[0].layer", "layer 8 is out of range");
-    table_err(&[("layer = 2\ngauge", "layer = 10\ngauge")], "splines[0].layer", "layer 10");
-    table_err(&[("from_layer = 0", "from_layer = 9")], "layer_transitions[0].from_layer", "layer 9");
-    table_err(&[("to_layer = 2", "to_layer = 200")], "layer_transitions[0].to_layer", "layer 200");
+    table_err(
+        &[("layer = 0\nposition", "layer = 8\nposition")],
+        "switches[0].layer",
+        "layer 8 is out of range",
+    );
+    table_err(
+        &[("layer = 2\ngauge", "layer = 10\ngauge")],
+        "splines[0].layer",
+        "layer 10",
+    );
+    table_err(
+        &[("from_layer = 0", "from_layer = 9")],
+        "layer_transitions[0].from_layer",
+        "layer 9",
+    );
+    table_err(
+        &[("to_layer = 2", "to_layer = 200")],
+        "layer_transitions[0].to_layer",
+        "layer 200",
+    );
     table_err(
         &[("max = [290.0, 680.0, 30.0]", "max = [290.0, 640.0, 0.0]")],
         "layer_transitions[0].zone",
@@ -324,9 +440,21 @@ fn referenced_files_exist() {
         ("playfield.glb", "table.toml", "meta.playfield_mesh"),
         ("rules.lua", "table.toml", "meta.script_entry"),
         ("audio/bumper.ogg", "table.toml", "sounds[0].file"),
-        ("display/powerball_mania.toml", "table.toml", "scenes[0].file"),
-        ("backglass/base.png", "backglass.toml", "translite.layers[0].file"),
-        ("backglass/logo_mask.png", "backglass.toml", "lamp_masks[0].file"),
+        (
+            "display/powerball_mania.toml",
+            "table.toml",
+            "scenes[0].file",
+        ),
+        (
+            "backglass/base.png",
+            "backglass.toml",
+            "translite.layers[0].file",
+        ),
+        (
+            "backglass/logo_mask.png",
+            "backglass.toml",
+            "lamp_masks[0].file",
+        ),
         ("backbox.glb", "backglass.toml", "backbox.scene"),
     ] {
         let errs = drop(file);
@@ -337,9 +465,16 @@ fn referenced_files_exist() {
         "sounds[0].file",
         "invalid file path \"../outside.ogg\"",
     );
-    table_err(&[("file = \"audio/bumper.ogg\"", "file = \"\"")], "sounds[0].file", "empty");
+    table_err(
+        &[("file = \"audio/bumper.ogg\"", "file = \"\"")],
+        "sounds[0].file",
+        "empty",
+    );
     let errs = errors(
-        &table_with(&[("script_entry = \"rules.lua\"", "script_entry = \"rules.py\"")]),
+        &table_with(&[(
+            "script_entry = \"rules.lua\"",
+            "script_entry = \"rules.py\"",
+        )]),
         &backglass_text(),
     );
     assert_eq!(errs.len(), 2);
@@ -351,15 +486,33 @@ const WIREFORM: &str = "points = [[60.0, 900.0, 40.0], [40.0, 600.0, 55.0], [150
 
 #[test]
 fn splines() {
-    table_err(&[(WIREFORM, "points = [[60.0, 900.0, 40.0]]"), ("roll_deg = [0.0, 8.0, 0.0]", "")], "splines[0].points", "at least 2 points, got 1");
     table_err(
-        &[(WIREFORM, "points = [[60.0, 900.0, 40.0], [60.0, 900.0, 40.0], [150.0, 260.0, 20.0]]")],
+        &[
+            (WIREFORM, "points = [[60.0, 900.0, 40.0]]"),
+            ("roll_deg = [0.0, 8.0, 0.0]", ""),
+        ],
+        "splines[0].points",
+        "at least 2 points, got 1",
+    );
+    table_err(
+        &[(
+            WIREFORM,
+            "points = [[60.0, 900.0, 40.0], [60.0, 900.0, 40.0], [150.0, 260.0, 20.0]]",
+        )],
         "splines[0].points[1]",
         "repeats the previous point",
     );
-    table_err(&[("roll_deg = [0.0, 8.0, 0.0]", "roll_deg = [0.0, 8.0]")], "splines[0].roll_deg", "2 roll angles given for 3 points");
+    table_err(
+        &[("roll_deg = [0.0, 8.0, 0.0]", "roll_deg = [0.0, 8.0]")],
+        "splines[0].roll_deg",
+        "2 roll angles given for 3 points",
+    );
     table_err(&[("gauge = 19.0", "")], "splines[0].gauge", "needs a gauge");
-    table_err(&[("gauge = 19.0", "gauge = -1.0")], "splines[0].gauge", "positive");
+    table_err(
+        &[("gauge = 19.0", "gauge = -1.0")],
+        "splines[0].gauge",
+        "positive",
+    );
 }
 
 fn guide(points: &str) -> String {
@@ -374,7 +527,9 @@ fn guide(points: &str) -> String {
 #[test]
 fn near_closed_guide_is_snapped_closed() {
     // End point 0.0005 mm (5e-7 m) from the start.
-    let t = guide("points = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 100.0, 0.0], [0.0, 100.0, 0.0], [0.0005, 0.0, 0.0]]");
+    let t = guide(
+        "points = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 100.0, 0.0], [0.0, 100.0, 0.0], [0.0005, 0.0, 0.0]]",
+    );
     let loaded = load(&t, &backglass_text()).unwrap();
     let s = &loaded.splines[0];
     assert!(s.closed);
@@ -382,13 +537,27 @@ fn near_closed_guide_is_snapped_closed() {
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     // Exactly closed with too few points.
     let t = guide("points = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 0.0, 0.0]]");
-    expect_one(&errors(&t, &backglass_text()), "table.toml", "splines[0].points", "at least 4 points");
+    expect_one(
+        &errors(&t, &backglass_text()),
+        "table.toml",
+        "splines[0].points",
+        "at least 4 points",
+    );
     // Further than 1e-6 m: open.
-    let t = guide("points = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 100.0, 0.0], [0.0, 100.0, 0.0], [0.01, 0.0, 0.0]]");
+    let t = guide(
+        "points = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 100.0, 0.0], [0.0, 100.0, 0.0], [0.01, 0.0, 0.0]]",
+    );
     assert!(!load(&t, &backglass_text()).unwrap().splines[0].closed);
     // Snapping that creates a repeated point.
-    let t = guide("points = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 100.0, 0.0], [0.0, 0.0, 0.0], [0.0004, 0.0, 0.0]]");
-    expect_one(&errors(&t, &backglass_text()), "table.toml", "splines[0].points[4]", "repeats");
+    let t = guide(
+        "points = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 100.0, 0.0], [0.0, 0.0, 0.0], [0.0004, 0.0, 0.0]]",
+    );
+    expect_one(
+        &errors(&t, &backglass_text()),
+        "table.toml",
+        "splines[0].points[4]",
+        "repeats",
+    );
 }
 
 #[test]
@@ -397,17 +566,35 @@ fn uneven_spacing_is_a_warning() {
     let loaded = load(&t, &backglass_text()).unwrap();
     assert_eq!(loaded.warnings.len(), 1);
     assert_eq!(loaded.warnings[0].path, "splines[0].points");
-    assert!(loaded.warnings[0].message.contains("ratio 19.0"), "{}", loaded.warnings[0].message);
+    assert!(
+        loaded.warnings[0].message.contains("ratio 19.0"),
+        "{}",
+        loaded.warnings[0].message
+    );
 }
 
 #[test]
 fn parse_errors_are_reported_per_file() {
-    let errs = errors(&table_text().replacen("schema_version = 1", "schema_version = 2", 1), &backglass_text());
-    expect_one(&errs, "table.toml", "schema_version", "unsupported schema_version 2");
+    let errs = errors(
+        &table_text().replacen("schema_version = 1", "schema_version = 2", 1),
+        &backglass_text(),
+    );
+    expect_one(
+        &errs,
+        "table.toml",
+        "schema_version",
+        "unsupported schema_version 2",
+    );
     let errs = errors(&table_text(), "schema_version = 1\n[translite\n");
     assert_eq!(errs.len(), 1);
-    assert_eq!((errs[0].file.as_str(), errs[0].path.as_str()), ("backglass.toml", ""));
-    let errs = errors(&table_with(&[("pitch_deg = 6.5", "pitch_deg = nan")]), &backglass_text());
+    assert_eq!(
+        (errs[0].file.as_str(), errs[0].path.as_str()),
+        ("backglass.toml", "")
+    );
+    let errs = errors(
+        &table_with(&[("pitch_deg = 6.5", "pitch_deg = nan")]),
+        &backglass_text(),
+    );
     expect_one(&errs, "table.toml", "", "meta.pitch_deg");
     // Both files broken: both reported, sorted by file.
     let errs = errors("x = ", "y = ");
@@ -416,7 +603,10 @@ fn parse_errors_are_reported_per_file() {
     assert_eq!(errs[1].file, "table.toml");
     // A broken table still lets backglass files be checked.
     let files = with_file(&bundle_files(), "table.toml", b"x = ");
-    let files: Vec<_> = files.into_iter().filter(|(n, _)| n != "backbox.glb").collect();
+    let files: Vec<_> = files
+        .into_iter()
+        .filter(|(n, _)| n != "backbox.glb")
+        .collect();
     match load_files(&files) {
         Err(AssetError::Invalid(e)) => {
             assert_eq!(e.len(), 2);
@@ -434,23 +624,41 @@ fn parse_errors_are_reported_per_file() {
 
 #[test]
 fn missing_manifest_is_not_found() {
-    let files: Vec<_> = bundle_files().into_iter().filter(|(n, _)| n != "table.toml").collect();
-    assert_eq!(load_files(&files).err(), Some(AssetError::NotFound("table.toml".into())));
-    let files: Vec<_> = bundle_files().into_iter().filter(|(n, _)| n != "backglass.toml").collect();
-    assert_eq!(load_files(&files).err(), Some(AssetError::NotFound("backglass.toml".into())));
+    let files: Vec<_> = bundle_files()
+        .into_iter()
+        .filter(|(n, _)| n != "table.toml")
+        .collect();
+    assert_eq!(
+        load_files(&files).err(),
+        Some(AssetError::NotFound("table.toml".into()))
+    );
+    let files: Vec<_> = bundle_files()
+        .into_iter()
+        .filter(|(n, _)| n != "backglass.toml")
+        .collect();
+    assert_eq!(
+        load_files(&files).err(),
+        Some(AssetError::NotFound("backglass.toml".into()))
+    );
 }
 
 #[test]
 fn all_errors_collected_and_sorted() {
     let errs = errors(
         &table_with(&[
-            ("start_scene = \"scene_powerball_mania\"", "start_scene = \"nope\""),
+            (
+                "start_scene = \"scene_powerball_mania\"",
+                "start_scene = \"nope\"",
+            ),
             ("coil = \"left_flipper_coil\"\neos", "coil = \"nope\"\neos"),
             ("number = 24", "number = 999"),
         ]),
         &bg_with(&[("lamp = \"backglass_logo\"", "lamp = \"nope\"")]),
     );
-    let got: Vec<(&str, &str)> = errs.iter().map(|e| (e.file.as_str(), e.path.as_str())).collect();
+    let got: Vec<(&str, &str)> = errs
+        .iter()
+        .map(|e| (e.file.as_str(), e.path.as_str()))
+        .collect();
     assert_eq!(
         got,
         vec![
@@ -465,11 +673,28 @@ fn all_errors_collected_and_sorted() {
 #[test]
 fn flipper_stage_hints() {
     let upper_input = table_with(&[("input = \"left_flipper\"", "input = \"right_upper\"")]);
-    assert_eq!(load(&upper_input, &backglass_text()).unwrap().flipper_stages, vec![FlipperStageHint::Upper]);
-    let parallel = table_with(&[("type = \"DedicatedButton\", input = \"left_flipper\"", "type = \"ParallelLinked\", input = \"left_upper\"")]);
-    assert_eq!(load(&parallel, &backglass_text()).unwrap().flipper_stages, vec![FlipperStageHint::Upper]);
-    let layer = table_with(&[("collision_layer = 0\nbase_position", "collision_layer = 3\nbase_position")]);
-    assert_eq!(load(&layer, &backglass_text()).unwrap().flipper_stages, vec![FlipperStageHint::Upper]);
+    assert_eq!(
+        load(&upper_input, &backglass_text())
+            .unwrap()
+            .flipper_stages,
+        vec![FlipperStageHint::Upper]
+    );
+    let parallel = table_with(&[(
+        "type = \"DedicatedButton\", input = \"left_flipper\"",
+        "type = \"ParallelLinked\", input = \"left_upper\"",
+    )]);
+    assert_eq!(
+        load(&parallel, &backglass_text()).unwrap().flipper_stages,
+        vec![FlipperStageHint::Upper]
+    );
+    let layer = table_with(&[(
+        "collision_layer = 0\nbase_position",
+        "collision_layer = 3\nbase_position",
+    )]);
+    assert_eq!(
+        load(&layer, &backglass_text()).unwrap().flipper_stages,
+        vec![FlipperStageHint::Upper]
+    );
 }
 
 #[test]

@@ -151,7 +151,10 @@ impl ZipIndex {
             if total > limits.max_total_uncompressed {
                 return Err(AssetError::TotalTooLarge(total));
             }
-            if entries.insert(path.clone(), Entry { index, size }).is_some() {
+            if entries
+                .insert(path.clone(), Entry { index, size })
+                .is_some()
+            {
                 return Err(AssetError::DuplicateEntry(path));
             }
         }

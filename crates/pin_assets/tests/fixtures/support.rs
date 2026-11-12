@@ -241,10 +241,7 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// A fresh empty directory under the system temp dir.
 pub fn temp_dir(tag: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "pin_assets_{tag}_{}_{n}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("pin_assets_{tag}_{}_{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -264,7 +261,11 @@ pub fn bundle_files() -> Vec<(String, Vec<u8>)> {
             if p.is_dir() {
                 walk(root, &p, out);
             } else {
-                let rel = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                let rel = p
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 out.push((rel, std::fs::read(&p).unwrap()));
             }
         }
@@ -296,7 +297,10 @@ pub fn write_dir(dir: &Path, files: &[(String, Vec<u8>)]) {
 }
 
 pub fn zip_of(files: &[(String, Vec<u8>)]) -> Vec<u8> {
-    let refs: Vec<(&str, &[u8])> = files.iter().map(|(n, d)| (n.as_str(), d.as_slice())).collect();
+    let refs: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(n, d)| (n.as_str(), d.as_slice()))
+        .collect();
     deflated_zip(&refs)
 }
 

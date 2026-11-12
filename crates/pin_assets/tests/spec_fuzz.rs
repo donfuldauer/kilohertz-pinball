@@ -29,8 +29,14 @@ fn poke(v: &Vfs) {
     sorted.sort();
     assert_eq!(names, sorted, "list() must be sorted");
     for n in &names {
-        assert!(!n.starts_with('/') && !n.contains('\\') && !n.ends_with('/'), "{n:?}");
-        assert!(n.split('/').all(|c| !c.is_empty() && c != "." && c != ".."), "{n:?}");
+        assert!(
+            !n.starts_with('/') && !n.contains('\\') && !n.ends_with('/'),
+            "{n:?}"
+        );
+        assert!(
+            n.split('/').all(|c| !c.is_empty() && c != "." && c != ".."),
+            "{n:?}"
+        );
         assert!(v.exists(n));
         let _ = v.read(n);
     }

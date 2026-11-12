@@ -118,8 +118,16 @@ pub fn base64(data: &[u8]) -> String {
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         s.push(T[(n >> 18) as usize & 63] as char);
         s.push(T[(n >> 12) as usize & 63] as char);
-        s.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        s.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        s.push(if c.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        s.push(if c.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     s
 }
@@ -648,7 +656,10 @@ pub fn bundle_with(table: &str, backglass: &str) -> BTreeMap<String, Vec<u8>> {
         "rules.lua",
         b"-- mock rules\nfunction on_switch(id, closed) end\n".to_vec(),
     );
-    put("audio/bumper.ogg", b"OggS\0\x02mock-vorbis-payload".to_vec());
+    put(
+        "audio/bumper.ogg",
+        b"OggS\0\x02mock-vorbis-payload".to_vec(),
+    );
     put(
         "display/powerball_mania.toml",
         b"schema_version = 1\n".to_vec(),

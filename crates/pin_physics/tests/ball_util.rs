@@ -59,10 +59,14 @@ pub fn cuboid(center: Vec3, half_extents: Vec3) -> StaticShape {
     }
 }
 
-/// A 4 m × 4 m floor whose top face is the plane z = 0.
+/// A 20 m × 20 m floor whose top face is the plane z = 0.
 pub fn floor_world() -> StaticWorld {
     let mut b = StaticWorldBuilder::new();
-    b.add_collider(cuboid(v(0.0, 0.0, -0.05), v(2.0, 2.0, 0.05)), layers::ALL, true);
+    b.add_collider(
+        cuboid(v(0.0, 0.0, -0.05), v(10.0, 10.0, 0.05)),
+        layers::ALL,
+        true,
+    );
     b.build()
 }
 

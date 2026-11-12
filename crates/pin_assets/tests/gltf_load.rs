@@ -24,7 +24,10 @@ fn generated_glb_with_two_nodes() {
     assert_eq!(ramp.name, "ramp");
     assert_eq!(opto.name, "orbit_opto");
     for m in [ramp, opto] {
-        assert_eq!(m.positions, vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]);
+        assert_eq!(
+            m.positions,
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        );
         assert_eq!(m.indices, vec![0, 1, 2]);
         assert_eq!(m.normals, vec![[0.0, 0.0, 1.0]; 3]);
         assert!(m.uvs.is_empty());
@@ -86,7 +89,11 @@ fn bindings_validate_against_the_table() {
     let errs = validate_gltf_bindings_in(&scene, &table.ids, "playfield.glb");
     assert_eq!(errs.len(), 2);
     assert_eq!(errs[0].file, "playfield.glb");
-    assert!(errs[0].message.contains("did you mean \"right_orbit_opto\""));
+    assert!(
+        errs[0]
+            .message
+            .contains("did you mean \"right_orbit_opto\"")
+    );
     assert_eq!(errs[1].path, "meshes[1].extras.lamp");
     assert!(table.ids.entries(IdKind::Lamp).len() >= 2);
 }
@@ -97,7 +104,7 @@ fn tri_gltf(buffer_uri: &str, extra: serde_json::Value) -> serde_json::Value {
         "nodes": [{"mesh": 0, "matrix": [1,0,0,0, 0,1,0,0, 0,0,1,0, 5,6,7,1]}],
         "meshes": [{"name": "m", "primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}}]}],
         "accessors": [
-            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0]},
             {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
             {"bufferView": 2, "componentType": 5121, "normalized": true, "count": 3, "type": "VEC2"}
         ],
@@ -158,7 +165,12 @@ fn gltf_with_external_and_data_buffers() {
     let uri = format!("data:application/octet-stream;base64,{}", b64(&bin));
     let gltf = serde_json::to_vec(&tri_gltf(&uri, json!({}))).unwrap();
     let vfs = vfs_of(&[("tri.gltf", &gltf)]);
-    assert_eq!(load_gltf(&vfs, "tri.gltf").unwrap().meshes[0].positions.len(), 3);
+    assert_eq!(
+        load_gltf(&vfs, "tri.gltf").unwrap().meshes[0]
+            .positions
+            .len(),
+        3
+    );
 }
 
 #[test]
@@ -175,10 +187,18 @@ fn uris_cannot_leave_the_bundle() {
         let vfs = vfs_of(&[("tri.gltf", &gltf), ("x.bin", &bin)]);
         assert_eq!(load_gltf(&vfs, "tri.gltf").err(), Some(want), "{uri}");
     }
-    for uri in ["file:///etc/passwd", "http://example.com/x.bin", "data:nocomma", "data:;base64,***"] {
+    for uri in [
+        "file:///etc/passwd",
+        "http://example.com/x.bin",
+        "data:nocomma",
+        "data:;base64,***",
+    ] {
         let gltf = serde_json::to_vec(&tri_gltf(uri, json!({}))).unwrap();
         let vfs = vfs_of(&[("tri.gltf", &gltf)]);
-        assert!(matches!(load_gltf(&vfs, "tri.gltf"), Err(AssetError::Gltf(_))), "{uri}");
+        assert!(
+            matches!(load_gltf(&vfs, "tri.gltf"), Err(AssetError::Gltf(_))),
+            "{uri}"
+        );
     }
 }
 
@@ -199,7 +219,7 @@ fn hostile_documents_are_errors() {
             {"buffer": 0, "byteOffset": 72, "byteLength": 6}]}),
         // Accessor count past its view.
         json!({"accessors": [
-            {"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3"},
+            {"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0]},
             {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
             {"bufferView": 2, "componentType": 5121, "normalized": true, "count": 3, "type": "VEC2"}]}),
         // Wrong component count.
@@ -209,24 +229,24 @@ fn hostile_documents_are_errors() {
             {"bufferView": 2, "componentType": 5121, "normalized": true, "count": 3, "type": "VEC2"}]}),
         // Non-normalized integer UVs.
         json!({"accessors": [
-            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0]},
             {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
             {"bufferView": 2, "componentType": 5121, "count": 3, "type": "VEC2"}]}),
         // Attribute counts differ.
         json!({"accessors": [
-            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0]},
             {"bufferView": 1, "componentType": 5126, "count": 2, "type": "VEC3"},
             {"bufferView": 2, "componentType": 5121, "normalized": true, "count": 3, "type": "VEC2"}]}),
         // Index out of range / not a multiple of 3 / float indices.
         json!({"meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 3}]}],
                "accessors": [
-            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0]},
             {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
             {"bufferView": 2, "componentType": 5121, "normalized": true, "count": 3, "type": "VEC2"},
             {"bufferView": 2, "componentType": 5121, "count": 3, "type": "SCALAR"}]}),
         json!({"meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 3}]}],
                "accessors": [
-            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0]},
             {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
             {"bufferView": 2, "componentType": 5121, "normalized": true, "count": 3, "type": "VEC2"},
             {"bufferView": 2, "componentType": 5121, "count": 4, "type": "SCALAR"}]}),
@@ -257,19 +277,19 @@ fn hostile_documents_are_errors() {
         );
     }
     // Non-triangle primitives are skipped; unindexed geometry gets generated indices.
-    let r = run(json!({"meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "mode": 1}]}]})).unwrap();
+    let r = run(json!({"meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "mode": 1}]}]}))
+        .unwrap();
     assert!(r.meshes.is_empty());
     // Without scenes, every root node is loaded.
     let r = run(json!({"nodes": [{"mesh": 0, "children": [1]}, {"mesh": 0}]})).unwrap();
     assert_eq!(r.meshes.len(), 2);
     assert_eq!(r.meshes[1].name, "m");
-    // Sparse accessors are refused; view-less accessors read as zeros.
+    // View-less, non-sparse accessors are rejected by validation.
     let r = run(json!({"accessors": [
-        {"componentType": 5126, "count": 3, "type": "VEC3"},
+        {"componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0]},
         {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
-        {"bufferView": 2, "componentType": 5121, "normalized": true, "count": 3, "type": "VEC2"}]}))
-    .unwrap();
-    assert_eq!(r.meshes[0].positions, vec![[0.0; 3]; 3]);
+        {"bufferView": 2, "componentType": 5121, "normalized": true, "count": 3, "type": "VEC2"}]}));
+    assert!(matches!(r, Err(AssetError::Gltf(_))), "{r:?}");
 }
 
 #[test]
@@ -292,5 +312,8 @@ fn glb_container_errors() {
     let json = json!({"asset": {"version": "2.0"}, "buffers": [{"byteLength": 4}]});
     check(glb(&json, &[]));
     let vfs = vfs_of(&[("x.glb", &good)]);
-    assert_eq!(load_gltf(&vfs, "nope.glb").err(), Some(AssetError::NotFound("nope.glb".into())));
+    assert_eq!(
+        load_gltf(&vfs, "nope.glb").err(),
+        Some(AssetError::NotFound("nope.glb".into()))
+    );
 }

@@ -168,7 +168,10 @@ pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
 
 /// The candidate closest to `name` within edit distance 2, if any (ties go to
 /// the earliest candidate).
-pub(crate) fn suggest<'a>(name: &str, candidates: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+pub(crate) fn suggest<'a>(
+    name: &str,
+    candidates: impl Iterator<Item = &'a str>,
+) -> Option<&'a str> {
     // Skip pathological inputs: the distance is quadratic in length.
     if name.len() > 256 {
         return None;
