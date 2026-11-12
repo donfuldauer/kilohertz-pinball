@@ -279,6 +279,7 @@ static int tonum (lua_State *L, int arg) {
   else {  /* check whether it is a numerical string */
     size_t len;
     const char *s = lua_tolstring(L, arg, &len);
+    lua_khzcharge(L, (lua_Integer)len + 16);  /* KHZ: parsing cost */
     return (s != NULL && len <= 200 && lua_stringtonumber(L, s) == len + 1);  /* KHZ: bounded scan */
   }
 }
@@ -1305,6 +1306,7 @@ static int str_format (lua_State *L) {
   const char *strfrmt_end = strfrmt+sfl;
   const char *flags;
   luaL_Buffer b;
+  lua_khzcharge(L, (lua_Integer)(sfl >> 2));  /* KHZ: per-byte format scan */
   luaL_buffinit(L, &b);
   while (strfrmt < strfrmt_end) {
     if (*strfrmt != L_ESC)
@@ -1341,6 +1343,7 @@ static int str_format (lua_State *L) {
           break;
         }
         case 'a': case 'A':
+          lua_khzcharge(L, KHZ_FLOAT_COST);  /* KHZ */
           checkformat(L, form, L_FMTFLAGSF, 1);
           addlenmod(form, LUA_NUMBER_FRMLEN);
           nb = lua_number2strx(L, buff, maxitem, form,
@@ -1352,6 +1355,7 @@ static int str_format (lua_State *L) {
           /* FALLTHROUGH */
         case 'e': case 'E': case 'g': case 'G': {
           lua_Number n = luaL_checknumber(L, arg);
+          lua_khzcharge(L, KHZ_FLOAT_COST);  /* KHZ: float conversion */
           checkformat(L, form, L_FMTFLAGSF, 1);
           addlenmod(form, LUA_NUMBER_FRMLEN);
           nb = l_sprintf(buff, maxitem, form, (LUAI_UACNUMBER)n);
@@ -1363,12 +1367,17 @@ static int str_format (lua_State *L) {
         case 'q': {
           if (form[2] != '\0')  /* modifiers? */
             return luaL_error(L, "specifier '%%q' cannot have modifiers");
+          if (lua_type(L, arg) == LUA_TSTRING)  /* KHZ: per-byte quoting */
+            lua_khzcharge(L, (lua_Integer)luaL_len(L, arg) * 2);
+          else
+            lua_khzcharge(L, KHZ_FLOAT_COST);  /* KHZ: number literal */
           addliteral(L, &b, arg);
           break;
         }
         case 's': {
           size_t l;
           const char *s = luaL_tolstring(L, arg, &l);
+          lua_khzcharge(L, (lua_Integer)(l >> 4));  /* KHZ: copy */
           if (form[2] == '\0')  /* no modifiers? */
             luaL_addvalue(&b);  /* keep entire string */
           else {

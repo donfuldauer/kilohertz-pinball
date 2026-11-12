@@ -373,6 +373,7 @@ static int tostringbuff (TValue *obj, char *buff) {
 */
 void luaO_tostring (lua_State *L, TValue *obj) {
   char buff[MAXNUMBER2STR];
+  lua_khzcharge(L, ttisfloat(obj) ? KHZ_FLOAT_COST : 16);  /* KHZ */
   int len = tostringbuff(obj, buff);
   setsvalue(L, obj, luaS_newlstr(L, buff, len));
 }
@@ -511,6 +512,7 @@ const char *luaO_pushvfstring (lua_State *L, const char *fmt, va_list argp) {
       case 'f': {  /* a 'lua_Number' */
         TValue num;
         setfltvalue(&num, cast_num(va_arg(argp, l_uacNumber)));
+        lua_khzcharge(L, KHZ_FLOAT_COST);  /* KHZ: float conversion */
         addnum2buff(&buff, &num);
         break;
       }

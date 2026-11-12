@@ -833,7 +833,7 @@ const char *luaG_addinfo (lua_State *L, const char *msg, TString *src,
 
 
 l_noret luaG_errormsg (lua_State *L) {
-  lua_khzcharge(L, 64);  /* KHZ: raising an error costs more than an instruction */
+  lua_khzcharge(L, KHZ_ERROR_COST);  /* KHZ: raising an error is expensive */
   if (L->errfunc != 0) {  /* is there an error handling function? */
     StkId errfunc = restorestack(L, L->errfunc);
     lua_assert(ttisfunction(s2v(errfunc)));

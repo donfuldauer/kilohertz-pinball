@@ -309,8 +309,10 @@ impl Vm {
         g.raw_set(
             "collectgarbage",
             lua.create_function(
-                |lua, (opt, _): (Option<String>, Value)| match opt.as_deref() {
-                    Some("count") => Ok(lua.used_memory() as f64 / 1024.0),
+                |lua, (opt, _): (Option<mlua::LuaString>, Value)| match opt {
+                    Some(s) if s.as_bytes().as_ref() == b"count" => {
+                        Ok(lua.used_memory() as f64 / 1024.0)
+                    }
                     _ => Err(mlua::Error::runtime(
                         "collectgarbage: only collectgarbage(\"count\") is available",
                     )),
@@ -318,7 +320,11 @@ impl Vm {
             )?,
         )?;
         let string: Table = g.raw_get("string")?;
-        string.raw_set("dump", Value::Nil)?;
+        // No bytecode; no binary packing (its per-option loops are not
+        // charged, and rules have no use for it).
+        for k in ["dump", "pack", "unpack", "packsize"] {
+            string.raw_set(k, Value::Nil)?;
+        }
         let math: Table = g.raw_get("math")?;
         math.raw_set(
             "randomseed",

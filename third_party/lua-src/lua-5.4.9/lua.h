@@ -437,6 +437,9 @@ LUA_API void (lua_closeslot) (lua_State *L, int idx);
 */
 #define KHZ_MAX_STRLEN	((size_t)65536)  /* KHZ: longest string a script may create */
 #define KHZ_MATCH_STEPS	1000000  /* KHZ: pattern-matching steps per call */
+#define KHZ_CCALL_COST	32	/* KHZ: flat cost of a C-function call */
+#define KHZ_ERROR_COST	1024	/* KHZ: cost of raising an error */
+#define KHZ_FLOAT_COST	256	/* KHZ: float formatting, parsing or fmod */
 LUA_API void (lua_khzsetbudget) (lua_State *L, lua_Integer n);
 LUA_API lua_Integer (lua_khzspend) (lua_State *L, lua_Integer n);
 LUA_API void (lua_khzcharge) (lua_State *L, lua_Integer n);

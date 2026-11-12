@@ -87,6 +87,7 @@ static int luaB_tonumber (lua_State *L) {
     else {
       size_t l;
       const char *s = lua_tolstring(L, 1, &l);
+      lua_khzcharge(L, (lua_Integer)l + 16);  /* KHZ: parsing cost */
       if (s != NULL && l <= 200 && lua_stringtonumber(L, s) == l + 1)  /* KHZ: bounded scan */
         return 1;  /* successful conversion to number */
       /* else not a number */
@@ -101,6 +102,7 @@ static int luaB_tonumber (lua_State *L) {
     luaL_checktype(L, 1, LUA_TSTRING);  /* no numbers as strings */
     s = lua_tolstring(L, 1, &l);
     luaL_argcheck(L, 2 <= base && base <= 36, 2, "base out of range");
+    lua_khzcharge(L, (lua_Integer)l * 4 + 16);  /* KHZ: parsing cost */
     if (l <= 200 && b_str2int(s, (int)base, &n) == s + l) {  /* KHZ: bounded scan */
       lua_pushinteger(L, n);
       return 1;

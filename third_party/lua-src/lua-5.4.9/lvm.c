@@ -95,6 +95,7 @@ static int l_strton (const TValue *obj, TValue *result) {
     TString *st = tsvalue(obj);
     if (tsslen(st) > 200)  /* KHZ: no numeral is that long; bounds the scan */
       return 0;
+    luaS_khzpending += (lua_Integer)tsslen(st) + 16;  /* KHZ: no lua_State here */
     return (luaO_str2num(getstr(st), result) == tsslen(st) + 1);
   }
 }
@@ -776,6 +777,7 @@ lua_Integer luaV_mod (lua_State *L, lua_Integer m, lua_Integer n) {
 */
 lua_Number luaV_modf (lua_State *L, lua_Number m, lua_Number n) {
   lua_Number r;
+  lua_khzcharge(L, KHZ_FLOAT_COST);  /* KHZ: fmod can take microseconds */
   luai_nummod(L, m, n, r);
   return r;
 }

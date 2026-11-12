@@ -543,6 +543,7 @@ l_sinline int precallC (lua_State *L, StkId func, int nresults,
                                             lua_CFunction f) {
   int n;  /* number of returns */
   CallInfo *ci;
+  lua_khzcharge(L, KHZ_CCALL_COST);  /* KHZ: flat cost of any C-function call */
   checkstackGCp(L, LUA_MINSTACK, func);  /* ensure minimum stack size */
   L->ci = ci = prepCallInfo(L, func, nresults, CIST_C,
                                L->top.p + LUA_MINSTACK);

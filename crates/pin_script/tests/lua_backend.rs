@@ -739,3 +739,106 @@ proptest! {
         for &(_, s) in &h.cmd.scores { prop_assert!(lo <= s && s <= lo + span); }
     }
 }
+
+// Review B8: a release dropped by the rollback of a faulting callback is
+// still emitted by the tilt release.
+#[test]
+fn rollback_never_strands_a_held_coil() {
+    let mut b = new("n = 0 function on_tick() n = n + 1 \
+         if n == 1 then pinball.hold_coil(3, true) \
+         else pinball.hold_coil(3, false) pinball.hold_coil(4, true) error('x') end end");
+    let mut h = Host::new(0);
+    assert_eq!(h.tick(&mut b).coil_holds.as_slice(), &[(CoilId(3), true)]);
+    let q = h.tick(&mut b);
+    assert!(b.is_faulted());
+    assert!(
+        q.coil_holds.contains(&(CoilId(3), false)),
+        "{:?}",
+        q.coil_holds
+    );
+    assert!(
+        q.coil_holds.iter().all(|&(_, on)| !on),
+        "{:?}",
+        q.coil_holds
+    );
+    assert!(h.tick(&mut b).is_empty());
+}
+
+// Review N6: overflow counts of a rolled-back callback are rolled back too.
+#[test]
+fn rollback_restores_overflow_count() {
+    let mut b = new(
+        "n = 0 function on_tick() n = n + 1 for i = 1, 40 do pinball.pulse_coil(i, 1) end \
+         if n == 2 then error('x') end end",
+    );
+    let mut h = Host::new(0);
+    h.tick(&mut b);
+    assert_eq!(b.overflow_count(), 8);
+    let q = h.tick(&mut b);
+    assert!(b.is_faulted());
+    assert!(q.coil_pulses.is_empty());
+    assert_eq!(b.overflow_count(), 8);
+}
+
+// Review B7: binary packing is not available.
+#[test]
+fn string_pack_is_removed() {
+    let mut b = new(
+        "function on_tick() assert(string.pack == nil and string.unpack == nil \
+         and string.packsize == nil and ('').pack == nil) pinball.set_score(1, 1) end",
+    );
+    assert_eq!(
+        Host::new(0).tick(&mut b).scores.len(),
+        1,
+        "{:?}",
+        b.last_error()
+    );
+}
+
+// Review N7: reload end to end with many references to a string just under
+// 64 KiB: over the cap the state is dropped, under it the state is restored.
+#[test]
+fn reload_with_large_saved_state() {
+    let src = |n: usize| {
+        format!(
+            "local s = string.rep('x', 65535) \
+             function on_save_state() local t = {{}} for i = 1, {n} do t[i] = s end return t end \
+             function on_restore_state(t) got = #t end \
+             function on_tick() pinball.set_score(1, got or -1) end"
+        )
+    };
+    // 20 000 × 64 KiB ≫ 16 MiB cap: no state, restore not called.
+    let mut b = new(&src(20_000));
+    b.apply_reload(src(20_000).as_bytes()).unwrap();
+    assert_eq!(Host::new(0).tick(&mut b).scores.as_slice(), &[(0, -1)]);
+    // 100 × 64 KiB = 6.4 MiB < 16 MiB: restored (each copy is its own string).
+    let mut b = new(&src(100));
+    b.apply_reload(src(100).as_bytes()).unwrap();
+    assert_eq!(Host::new(0).tick(&mut b).scores.as_slice(), &[(0, 100)]);
+}
+
+// Review B9: expensive single operations carry extra cost, so a small budget
+// stops a loop of them after few iterations.
+#[test]
+fn expensive_operations_are_charged() {
+    for body in [
+        "local x = string.format('%99.99f', 1e300)",
+        "local a, b = 1e308, 3e-308 local x = a % b",
+        "local x = math.fmod(1e308, 1e-308)",
+        "local x = tostring(1e300)",
+        "local x = tonumber(string.rep('9', 200))",
+        "pcall(pinball.pulse_coil)",
+        "pcall(collectgarbage, 'collect')",
+        "local x = string.format('%q', string.rep('\\0', 1000))",
+    ] {
+        // Each iteration costs ≥ 256 units, so 40 of them exceed 10 000,
+        // although the loop itself is only a few hundred instructions.
+        let src = format!("function on_tick() for i = 1, 40 do {body} end end");
+        let mut b = small(&src, 10_000, 4 << 20);
+        Host::new(0).tick(&mut b);
+        assert_eq!(b.last_error(), Some(&ScriptError::BudgetExceeded), "{body}");
+        let mut ok = small(&src, 100_000, 4 << 20);
+        Host::new(0).tick(&mut ok);
+        assert!(!ok.is_faulted(), "{body}: {:?}", ok.last_error());
+    }
+}

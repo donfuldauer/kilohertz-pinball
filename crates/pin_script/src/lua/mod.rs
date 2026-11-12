@@ -133,10 +133,11 @@ impl fmt::Debug for LuaScriptBackend {
 struct QueueMark {
     lens: [usize; 11],
     gi_tint: Option<[f32; 4]>,
+    overflow: u32,
 }
 
 impl QueueMark {
-    fn new(q: &HostCommandQueue) -> Self {
+    fn new(q: &HostCommandQueue, bridge: &Bridge) -> Self {
         Self {
             lens: [
                 q.coil_pulses.len(),
@@ -152,11 +153,20 @@ impl QueueMark {
                 q.persist_writes.len(),
             ],
             gi_tint: q.gi_tint,
+            overflow: bridge.overflow_count(),
         }
     }
 
-    fn rollback(&self, q: &mut HostCommandQueue) {
+    /// Drops what the callback queued. Every coil named by a dropped hold
+    /// command is marked held, so the tilt release that follows emits
+    /// `(coil, false)` for it: a dropped release must never strand a coil
+    /// (an extra release of a coil that was off is harmless).
+    fn rollback(&self, q: &mut HostCommandQueue, bridge: &Bridge) {
         let l = &self.lens;
+        for &(coil, _) in &q.coil_holds[l[1].min(q.coil_holds.len())..] {
+            bridge.set_held(coil, true);
+        }
+        bridge.set_overflow_count(self.overflow);
         q.coil_pulses.truncate(l[0]);
         q.coil_holds.truncate(l[1]);
         q.magnets.truncate(l[2]);
@@ -270,7 +280,7 @@ impl LuaScriptBackend {
             Entry::Switch => &keys.on_switch,
         };
         let budget = self.cfg.instruction_budget;
-        let mark = QueueMark::new(ctx.cmd);
+        let mark = QueueMark::new(ctx.cmd, &self.bridge);
         let (vm, bridge) = (&self.vm, &*self.bridge);
         let result = match vm.entry(key) {
             Err(e) => Err(ScriptError::Runtime(e.to_string())),
@@ -284,7 +294,7 @@ impl LuaScriptBackend {
         };
         if let Err(e) = result {
             // An aborted callback is all-or-nothing: drop what it queued.
-            mark.rollback(ctx.cmd);
+            mark.rollback(ctx.cmd, &self.bridge);
             self.fault(e, ctx);
             return;
         }

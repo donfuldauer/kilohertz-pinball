@@ -99,6 +99,11 @@ impl Bridge {
         self.overflow.get()
     }
 
+    /// Restores the overflow counter (rollback of a faulted callback).
+    pub(crate) fn set_overflow_count(&self, n: u32) {
+        self.overflow.set(n);
+    }
+
     /// Records the hold state of `coil` after a successfully queued hold.
     pub(crate) fn set_held(&self, coil: CoilId, on: bool) {
         let i = coil.index();

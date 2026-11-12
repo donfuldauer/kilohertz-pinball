@@ -124,9 +124,11 @@ static int math_fmod (lua_State *L) {
     else
       lua_pushinteger(L, lua_tointeger(L, 1) % d);
   }
-  else
+  else {
+    lua_khzcharge(L, KHZ_FLOAT_COST);  /* KHZ: fmod can take microseconds */
     lua_pushnumber(L, l_mathop(fmod)(luaL_checknumber(L, 1),
                                      luaL_checknumber(L, 2)));
+  }
   return 1;
 }
 
