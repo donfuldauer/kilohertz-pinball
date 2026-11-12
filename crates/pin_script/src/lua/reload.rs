@@ -160,8 +160,7 @@ impl ReloadWatcher {
                 Some(src)
             }
             Err(e) => {
-                // Remember the rejected text so the same bad save is not
-                // re-checked, but a later fix back to the old text still loads.
+                // Forget the last good text so reverting to it is delivered.
                 self.last = None;
                 self.last_error = Some(e);
                 None
