@@ -46,3 +46,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 2 | 4.2 | Independent Tester | Fable 5.2 | 4 | done | 242 spec tests pass | B10–B13 cases; engine-config fixture run |
 | 2 | 4.2 | Implementer | Opus 5.5 | fix 3 (last) | done | 301 tests; coverage 98.1 %; worst tick 4.68 ms under engine config (163 scripts) | central charging in lauxlib/ltable/lgc; `LuaConfig::engine()` |
 | 2 | 4.2 | Reviewer | Fable 5.2 | 4 | **pass** | gates 1–8 pass; 174 attack scripts under engine config, worst 5.7 ms (target 8 ms); CI green | N11 heavy-GC scripts fault under 2 MiB/100k (documented), N12 margin machine-dependent, N13 corpus kept in tests/attack_corpus |
+
+**Wave 2 gate: green.** CI run 44 (https://github.com/donfuldauer/kilohertz-pinball/actions/runs/43230217782, commit 8d7f663) passed every job on Windows MSVC, Linux and macOS aarch64, which also re-validates Wave 1 cross-OS. Replay-hash and tick-benchmark parts of the wave gate start once 2.5 exists. Subphases: 1.2, 1.3, 2.1, 3.1, 4.2 all passed review.
