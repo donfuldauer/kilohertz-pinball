@@ -37,3 +37,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 2 | 2.1 | Reviewer | Opus 5.5 | 2 | **pass** | gate 1–7 pass; 20k fuzz: 0 false/missed contacts; outside-arc cast 150 µs → 1.65 µs | N1 sink ratchet, N2 closed loops: hardening round requested; N3, N4 → 2.2 |
 | 2 | 2.1 | Implementer | Fable 5.2 | hardening | done | 130 tests; coverage 97.9 % | fixed sliding floor; periodic closed guides; proven curvature bound |
 | 2 | 2.1 | Reviewer | Opus 5.5 | 3 | **pass** | gate green; probes: no ratchet (−10 µm max), closed loops glide, 0 deep penetrations in 30 754 adversarial casts | near-closed loops (ends within ~1e-8 m) bypass exact-equality check → 4.1 |
+| 2 | 4.2 | Implementer | Opus 5.5 | fix 1 | done | 252 tests incl. 42 stall cases; coverage 98.1 %; zero allocs | patched vendored Lua (10 KHZ patches); B1–B6 fixed; faulting callback drops its own commands |
+| 2 | 4.2 | Independent Tester | Fable 5.2 | 2 | done | hardening + cross-process specs | pointer-keyed pairs ruling applied |

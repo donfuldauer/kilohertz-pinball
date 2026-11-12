@@ -13,7 +13,8 @@
 //! # Faults ("tilt")
 //!
 //! A runtime error, an exhausted instruction budget or the memory cap aborts
-//! the callback. The backend then queues `(coil, false)` for every coil the
+//! the callback, and the commands it had queued are dropped (all-or-nothing).
+//! The backend then queues `(coil, false)` for every coil the
 //! script holds (continuing on later callbacks if the queue is full), stops
 //! calling the script and stays faulted until a successful
 //! [`TableScriptBackend::apply_reload`].
@@ -50,7 +51,7 @@ mod saved;
 use bridge::Bridge;
 use mlua::{Function, IntoLuaMulti, Value};
 use pin_core::ids::SwitchId;
-use pin_core::{HostCtx, ScriptError, SwitchEdge, TableScriptBackend};
+use pin_core::{HostCommandQueue, HostCtx, ScriptError, SwitchEdge, TableScriptBackend};
 use sandbox::Vm;
 use std::fmt;
 use std::rc::Rc;
@@ -124,6 +125,50 @@ impl fmt::Debug for LuaScriptBackend {
             .field("overflow_count", &self.overflow_count())
             .field("last_error", &self.last_error)
             .finish_non_exhaustive()
+    }
+}
+
+/// Lengths of every command list at the start of a callback, so a faulting
+/// callback's commands can be dropped (allocation-free).
+struct QueueMark {
+    lens: [usize; 11],
+    gi_tint: Option<[f32; 4]>,
+}
+
+impl QueueMark {
+    fn new(q: &HostCommandQueue) -> Self {
+        Self {
+            lens: [
+                q.coil_pulses.len(),
+                q.coil_holds.len(),
+                q.magnets.len(),
+                q.zippers.len(),
+                q.diverters.len(),
+                q.ball_spawns.len(),
+                q.lamps.len(),
+                q.scores.len(),
+                q.display_scenes.len(),
+                q.sounds.len(),
+                q.persist_writes.len(),
+            ],
+            gi_tint: q.gi_tint,
+        }
+    }
+
+    fn rollback(&self, q: &mut HostCommandQueue) {
+        let l = &self.lens;
+        q.coil_pulses.truncate(l[0]);
+        q.coil_holds.truncate(l[1]);
+        q.magnets.truncate(l[2]);
+        q.zippers.truncate(l[3]);
+        q.diverters.truncate(l[4]);
+        q.ball_spawns.truncate(l[5]);
+        q.lamps.truncate(l[6]);
+        q.scores.truncate(l[7]);
+        q.display_scenes.truncate(l[8]);
+        q.sounds.truncate(l[9]);
+        q.persist_writes.truncate(l[10]);
+        q.gi_tint = self.gi_tint;
     }
 }
 
@@ -225,6 +270,7 @@ impl LuaScriptBackend {
             Entry::Switch => &keys.on_switch,
         };
         let budget = self.cfg.instruction_budget;
+        let mark = QueueMark::new(ctx.cmd);
         let (vm, bridge) = (&self.vm, &*self.bridge);
         let result = match vm.entry(key) {
             Err(e) => Err(ScriptError::Runtime(e.to_string())),
@@ -237,6 +283,8 @@ impl LuaScriptBackend {
             },
         };
         if let Err(e) = result {
+            // An aborted callback is all-or-nothing: drop what it queued.
+            mark.rollback(ctx.cmd);
             self.fault(e, ctx);
             return;
         }
@@ -347,7 +395,8 @@ mod tests {
         assert!(b.is_faulted());
         assert_eq!(
             q.coil_holds.as_slice(),
-            &[(CoilId(3), true), (CoilId(3), false)]
+            &[(CoilId(3), false)],
+            "the faulting tick's own commands are dropped; the earlier hold is released"
         );
         assert!(matches!(b.last_error(), Some(ScriptError::Runtime(m)) if m.contains("boom")));
         assert!(tick(&mut b).is_empty());
