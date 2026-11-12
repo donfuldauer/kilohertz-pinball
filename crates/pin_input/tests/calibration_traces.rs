@@ -172,6 +172,167 @@ fn plunger_not_tracked_while_pulled() {
     assert!((o.position - 0.48 / 0.98).abs() < 1e-6);
 }
 
+fn count_releases(f: &mut PlungerFilter, trace: &[f32], t0: u64) -> usize {
+    trace
+        .iter()
+        .enumerate()
+        .filter(|(i, x)| f.update(**x, t0 + *i as u64).release.is_some())
+        .count()
+}
+
+/// Review B1(a): one noisy sample just outside the deadzone is no launch.
+#[test]
+fn plunger_single_edge_spike_is_not_a_release() {
+    let mut f = PlungerFilter::new(PlungerConfig::default());
+    let mut trace = vec![0.0f32; 100];
+    trace.push(0.025);
+    trace.extend(vec![0.0; 100]);
+    // A spike up to just below the qualifying depth, too.
+    trace.push(0.049);
+    trace.extend(vec![0.0; 100]);
+    assert_eq!(count_releases(&mut f, &trace, 0), 0);
+}
+
+/// Review B1(b): a device resting at the deadzone edge with ADC jitter
+/// neither launches nor stops rest tracking from converging.
+#[test]
+fn plunger_jitter_at_the_deadzone_edge_converges() {
+    let mut f = PlungerFilter::new(PlungerConfig::default());
+    let trace: Vec<f32> = (0..3000)
+        .map(|i| if i % 2 == 0 { 0.015 } else { 0.021 })
+        .collect();
+    assert_eq!(count_releases(&mut f, &trace, 0), 0);
+    assert!((f.rest() - 0.018).abs() < 0.004, "{}", f.rest());
+    // Once converged, the jitter reads as rest.
+    let o = f.update(0.021, 3000);
+    assert_eq!(o.position, 0.0);
+}
+
+/// Review B1(c): an 8-bit device toggling between two codes at the edge.
+#[test]
+fn plunger_8bit_code_toggle_is_not_a_release() {
+    let cfg = PlungerConfig {
+        rest_tracking_per_s: 0.0,
+        ..PlungerConfig::default()
+    };
+    let mut f = PlungerFilter::new(cfg);
+    let trace: Vec<f32> = (0..2000)
+        .map(|i| {
+            if (i / 3) % 2 == 0 {
+                5.0 / 255.0
+            } else {
+                6.0 / 255.0
+            }
+        })
+        .collect();
+    assert_eq!(count_releases(&mut f, &trace, 0), 0);
+}
+
+/// Review B1(d): rest held below 0, then small jitter, is no launch.
+#[test]
+fn plunger_low_rest_then_jitter_is_not_a_release() {
+    let mut f = PlungerFilter::new(PlungerConfig::default());
+    let mut trace = vec![-0.015f32; 3000];
+    trace.extend((0..2000).map(|i| if i % 2 == 0 { 0.008 } else { 0.004 }));
+    let n = trace.len();
+    let out = run(&mut f, &trace);
+    assert!(out.iter().all(|o| o.release.is_none()));
+    assert!(out[n - 1000..].iter().all(|o| o.position < 0.01));
+}
+
+/// Review N1: a plunger resting above the deadzone at power-on is acquired as
+/// rest and then launches normally.
+#[test]
+fn plunger_power_on_rest_is_acquired() {
+    for rest in [0.05f32, 0.12, 0.2] {
+        let mut f = PlungerFilter::new(PlungerConfig::default());
+        let mut seed = 3;
+        let idle: Vec<f32> = (0..1500).map(|_| rest + jitter(&mut seed, 0.004)).collect();
+        let out = run(&mut f, &idle);
+        assert!(out.iter().all(|o| o.release.is_none()));
+        assert!(!f.is_pulled(), "rest {rest}");
+        assert!((f.rest() - rest).abs() < 0.005, "{} vs {rest}", f.rest());
+        assert_eq!(out.last().unwrap().position, 0.0);
+        // A real pull and snap from the acquired rest: one release.
+        let mut t = 1500u64;
+        let mut releases = Vec::new();
+        for k in 0..=400 {
+            f.update(rest + (1.0 - rest) * k as f32 / 400.0, t);
+            t += 1;
+        }
+        for k in (0..=20).rev() {
+            releases.extend(f.update(rest + (1.0 - rest) * k as f32 / 20.0, t).release);
+            t += 1;
+        }
+        for _ in 0..300 {
+            releases.extend(f.update(rest, t).release);
+            t += 1;
+        }
+        assert_eq!(releases.len(), 1, "rest {rest}");
+        assert!((releases[0] - (1.0 - rest) * 50.0).abs() < 1.0);
+    }
+    // Resting above MAX_REST_OFFSET is a held pull, not a rest.
+    let mut f = PlungerFilter::new(PlungerConfig::default());
+    run(&mut f, &[0.4; 2000]);
+    assert!(f.is_pulled() && f.rest() == 0.0);
+    // Only at power-on: after a release a held pull is never re-zeroed.
+    let mut f = PlungerFilter::new(PlungerConfig::default());
+    let (snap, _) = pull_and_snap(0.8, 15.0);
+    run(&mut f, &snap);
+    run(&mut f, &[0.1; 2000]);
+    assert!(f.is_pulled() && f.rest().abs() < 0.01);
+}
+
+/// Review N2: a very slow pull may drag rest along, but only to
+/// MAX_REST_OFFSET, and rest is re-acquired downward once the plunger sits
+/// below it.
+#[test]
+fn plunger_slow_drag_is_bounded_and_reacquired() {
+    let mut f = PlungerFilter::new(PlungerConfig::default());
+    // 0.01 full-scale/s (below deadzone × tracking rate) up to 0.5.
+    let mut trace: Vec<f32> = (0..50_000).map(|i| 0.5 * i as f32 / 50_000.0).collect();
+    trace.extend((0..=1000).rev().map(|i| 0.5 * i as f32 / 1000.0)); // slow return
+    trace.extend(vec![0.0; 1500]);
+    let out = run(&mut f, &trace);
+    assert!(out.iter().all(|o| o.release.is_none()));
+    assert!(f.rest().abs() < 0.01, "rest {} not re-acquired", f.rest());
+    // Rest never exceeded the bound on the way.
+    let mut g = PlungerFilter::new(PlungerConfig::default());
+    for (i, &x) in trace[..50_000].iter().enumerate() {
+        g.update(x, i as u64);
+        assert!(g.rest() <= pin_input::calibration::MAX_REST_OFFSET);
+    }
+    // A small pull reads again.
+    let o = f.update(0.1, 60_000_000);
+    assert!(o.position > 0.05, "{}", o.position);
+}
+
+/// Review N3: a spring bounce 95–150 ms after the release, and a zero peak
+/// window, give no second release.
+#[test]
+fn plunger_late_bounce_is_held_off() {
+    for window in [0u32, 30, 100] {
+        for gap in [95usize, 120, 150, 190] {
+            let cfg = PlungerConfig {
+                release_window_ms: window,
+                ..PlungerConfig::default()
+            };
+            let mut f = PlungerFilter::new(cfg);
+            let mut trace = vec![0.0f32; 50];
+            trace.extend((0..=300).map(|i| i as f32 / 300.0));
+            trace.extend((0..=20).rev().map(|i| i as f32 / 20.0));
+            trace.extend(vec![0.0; gap]);
+            trace.extend([0.06, 0.12, 0.08, 0.0]); // bounce, fast return
+            trace.extend(vec![0.0; 300]);
+            assert_eq!(
+                count_releases(&mut f, &trace, 0),
+                1,
+                "window {window} gap {gap}"
+            );
+        }
+    }
+}
+
 // ---- nudge ----
 
 fn linear_cfg() -> NudgeConfig {

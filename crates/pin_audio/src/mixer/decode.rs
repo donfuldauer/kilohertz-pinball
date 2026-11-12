@@ -24,14 +24,28 @@
 //!   last source frame (`x[n_in-1]`) past the end. The arithmetic is done in
 //!   `f64` and rounded once to `f32`, per channel.
 //!
-//! # Limits
-//! Decoded audio longer than [`MAX_SECONDS`] (10 minutes, measured both at
-//! the source rate and at the mixer rate) is [`DecodeError::TooLong`]. A mixer
-//! rate outside `1..=`[`MAX_MIXER_RATE`] is [`DecodeError::Unsupported`].
-//! `decode` never panics: in addition to explicit validation, both third-party
-//! decoders run under `catch_unwind`, and a panic inside them is reported as
-//! [`DecodeError::Malformed`]. Buffers are never pre-sized from header claims
-//! beyond what the input bytes can hold.
+//! # Limits (tables are untrusted downloads, D25)
+//! * Mixer rate outside `1..=`[`MAX_MIXER_RATE`], or a file rate outside
+//!   [`MIN_SOURCE_RATE`]`..=`[`MAX_SOURCE_RATE`]: [`DecodeError::Unsupported`].
+//! * Longer than [`MAX_SECONDS`] (10 minutes) at the file rate or, after
+//!   resampling, at the mixer rate: [`DecodeError::TooLong`]. The length is
+//!   checked up front from the WAV data-chunk size or the last Ogg page's
+//!   granule position, and again while decoding: resampling is streamed
+//!   (source frames are never buffered), so no more than 10 minutes of
+//!   output is ever allocated, and an up-front reservation never exceeds what
+//!   the input bytes (WAV) or the granule (Vorbis) can account for.
+//! * Ogg buffers with more than one logical stream (chained or multiplexed,
+//!   seen as a serial-number change): [`DecodeError::Unsupported`].
+//! * The Vorbis comment header is skipped unparsed; the identification and
+//!   setup headers go through lewton's low-level parsers, vendored with
+//!   allocation bounds (`third_party/lewton/KHZ_PATCHES.md`), because an
+//!   allocation failure aborts the process and cannot be caught.
+//! * Vorbis output is cut at the last page's granule position (encoder
+//!   padding; Vorbis I §A.2).
+//!
+//! `decode` never panics: in addition to explicit validation, both decoders
+//! run under `catch_unwind`, and a panic inside them is reported as
+//! [`DecodeError::Malformed`].
 //!
 //! # Test fixture provenance
 //! `fixtures/tone440_mono_22k.ogg` (3800 bytes, 5513 frames) was produced
@@ -49,6 +63,14 @@ pub const MAX_SECONDS: u64 = 600;
 
 /// Highest mixer rate [`decode`] accepts.
 pub const MAX_MIXER_RATE: u32 = 384_000;
+
+/// Lowest source (file) sample rate accepted; lower rates are
+/// [`DecodeError::Unsupported`]. Bounds the output/input size ratio.
+pub const MIN_SOURCE_RATE: u32 = 8_000;
+
+/// Highest source (file) sample rate accepted; higher rates are
+/// [`DecodeError::Unsupported`]. Bounds the work and memory per input byte.
+pub const MAX_SOURCE_RATE: u32 = 384_000;
 
 /// An immutable decoded sound: interleaved stereo `f32` at the mixer rate.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -136,24 +158,16 @@ pub fn decode(bytes: &[u8], mixer_rate: u32) -> Result<Sample, DecodeError> {
     }
     let is_wav = bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE";
     let is_ogg = bytes.len() >= 4 && &bytes[0..4] == b"OggS";
-    let decoded = if is_wav {
-        guarded(|| decode_wav(bytes))?
+    if is_wav {
+        guarded(|| decode_wav(bytes, mixer_rate))
     } else if is_ogg {
-        guarded(|| decode_vorbis(bytes))?
+        guarded(|| decode_vorbis(bytes, mixer_rate))
     } else {
-        return Err(DecodeError::Unsupported);
-    };
-    finish(decoded, mixer_rate)
+        Err(DecodeError::Unsupported)
+    }
 }
 
-/// Source audio before resampling: interleaved `channels` (1 or 2).
-struct Decoded {
-    samples: Vec<f32>,
-    channels: usize,
-    rate: u32,
-}
-
-fn guarded(f: impl FnOnce() -> Result<Decoded, DecodeError>) -> Result<Decoded, DecodeError> {
+fn guarded(f: impl FnOnce() -> Result<Sample, DecodeError>) -> Result<Sample, DecodeError> {
     catch_unwind(AssertUnwindSafe(f))
         .unwrap_or_else(|_| Err(DecodeError::Malformed("decoder panicked".into())))
 }
@@ -162,6 +176,8 @@ fn malformed(e: impl fmt::Display) -> DecodeError {
     DecodeError::Malformed(e.to_string())
 }
 
+/// Validates the source layout: 1 or 2 channels at a rate in
+/// `MIN_SOURCE_RATE..=MAX_SOURCE_RATE`.
 fn check_rate_and_channels(rate: u32, channels: usize) -> Result<(), DecodeError> {
     if channels == 0 {
         return Err(DecodeError::Malformed("zero channels".into()));
@@ -172,11 +188,113 @@ fn check_rate_and_channels(rate: u32, channels: usize) -> Result<(), DecodeError
     if rate == 0 {
         return Err(DecodeError::Malformed("sample rate 0".into()));
     }
+    if !(MIN_SOURCE_RATE..=MAX_SOURCE_RATE).contains(&rate) {
+        return Err(DecodeError::Unsupported);
+    }
     Ok(())
 }
 
 fn max_frames(rate: u32) -> u64 {
     MAX_SECONDS * u64::from(rate)
+}
+
+/// Rejects a source of `n_in` frames whose decoded form would exceed the cap
+/// at either rate.
+fn check_length(n_in: u64, src: u32, dst: u32) -> Result<(), DecodeError> {
+    if n_in > max_frames(src) || resampled_len(n_in, src, dst) > max_frames(dst) {
+        Err(DecodeError::TooLong)
+    } else {
+        Ok(())
+    }
+}
+
+/// Streaming stereo expansion + linear resampler (module docs). Source frames
+/// are pushed one at a time; output frame `j` is emitted as soon as both of
+/// its source frames are known, so only the output is buffered and the
+/// length caps are enforced while decoding.
+struct Resampler {
+    src: u64,
+    dst: u64,
+    /// Source frames pushed.
+    n_in: u64,
+    /// Next output frame.
+    j: u64,
+    prev: (f32, f32),
+    last: (f32, f32),
+    out: Vec<f32>,
+    max_in: u64,
+    max_out: u64,
+}
+
+impl Resampler {
+    fn new(src: u32, dst: u32, expected_in: u64) -> Self {
+        let expected_out = resampled_len(expected_in, src, dst).min(max_frames(dst));
+        Self {
+            src: u64::from(src),
+            dst: u64::from(dst),
+            n_in: 0,
+            j: 0,
+            prev: (0.0, 0.0),
+            last: (0.0, 0.0),
+            out: Vec::with_capacity(2 * expected_out as usize),
+            max_in: max_frames(src),
+            max_out: max_frames(dst),
+        }
+    }
+
+    fn emit(&mut self, a: (f32, f32), b: (f32, f32), f: f64) -> Result<(), DecodeError> {
+        if self.j >= self.max_out {
+            return Err(DecodeError::TooLong);
+        }
+        self.out.push(lerp(a.0, b.0, f));
+        self.out.push(lerp(a.1, b.1, f));
+        self.j += 1;
+        Ok(())
+    }
+
+    fn push(&mut self, l: f32, r: f32) -> Result<(), DecodeError> {
+        if self.n_in >= self.max_in {
+            return Err(DecodeError::TooLong);
+        }
+        self.n_in += 1;
+        if self.src == self.dst {
+            if self.j >= self.max_out {
+                return Err(DecodeError::TooLong);
+            }
+            self.out.push(l);
+            self.out.push(r);
+            self.j += 1;
+            return Ok(());
+        }
+        self.prev = self.last;
+        self.last = (l, r);
+        // Source frame k = n_in - 1 just arrived: every pending output frame
+        // with i = floor(j·src/dst) = k - 1 can now be interpolated.
+        let k = self.n_in - 1;
+        while k >= 1 {
+            let pos = self.j * self.src;
+            let i = pos / self.dst;
+            if i + 1 > k {
+                break;
+            }
+            let f = (pos % self.dst) as f64 / self.dst as f64;
+            self.emit(self.prev, self.last, f)?;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Sample, DecodeError> {
+        if self.src != self.dst && self.n_in > 0 {
+            // Remaining frames have i ≥ n_in − 1: both neighbours clamp to the
+            // last source frame.
+            let n_out = resampled_len(self.n_in, self.src as u32, self.dst as u32);
+            while self.j < n_out {
+                let f = ((self.j * self.src) % self.dst) as f64 / self.dst as f64;
+                self.emit(self.last, self.last, f)?;
+            }
+        }
+        Ok(Sample::from_interleaved(self.out))
+    }
 }
 
 fn map_hound(e: hound::Error) -> DecodeError {
@@ -186,24 +304,35 @@ fn map_hound(e: hound::Error) -> DecodeError {
     }
 }
 
-fn decode_wav(bytes: &[u8]) -> Result<Decoded, DecodeError> {
+fn decode_wav(bytes: &[u8], dst: u32) -> Result<Sample, DecodeError> {
     let reader = hound::WavReader::new(Cursor::new(bytes)).map_err(map_hound)?;
     let spec = reader.spec();
     let channels = usize::from(spec.channels);
     check_rate_and_channels(spec.sample_rate, channels)?;
-    if u64::from(reader.duration()) > max_frames(spec.sample_rate) {
-        return Err(DecodeError::TooLong);
-    }
-    let bytes_per_sample = usize::from(spec.bits_per_sample.div_ceil(8)).max(1);
-    let claimed = reader.len() as usize;
-    let mut samples = Vec::with_capacity(claimed.min(bytes.len() / bytes_per_sample));
+    let frames = u64::from(reader.duration());
+    check_length(frames, spec.sample_rate, dst)?;
+    // Never trust the header beyond what the bytes can hold.
+    let bytes_per_frame = (usize::from(spec.bits_per_sample.div_ceil(8)).max(1) * channels) as u64;
+    let expected = frames.min(bytes.len() as u64 / bytes_per_frame);
+    let mut rs = Resampler::new(spec.sample_rate, dst, expected);
+    let mut pending: Option<f32> = None;
+    let mut feed = |v: f32| -> Result<(), DecodeError> {
+        if channels == 1 {
+            rs.push(v, v)
+        } else if let Some(l) = pending.take() {
+            rs.push(l, v)
+        } else {
+            pending = Some(v);
+            Ok(())
+        }
+    };
     match spec.sample_format {
         hound::SampleFormat::Float => {
             if spec.bits_per_sample != 32 {
                 return Err(DecodeError::Unsupported);
             }
             for s in reader.into_samples::<f32>() {
-                samples.push(s.map_err(map_hound)?);
+                feed(s.map_err(map_hound)?)?;
             }
         }
         hound::SampleFormat::Int => {
@@ -213,94 +342,122 @@ fn decode_wav(bytes: &[u8]) -> Result<Decoded, DecodeError> {
             let scale = f64::from(1u32 << (spec.bits_per_sample - 1));
             for s in reader.into_samples::<i32>() {
                 let v = s.map_err(map_hound)?;
-                samples.push((f64::from(v) / scale) as f32);
+                feed((f64::from(v) / scale) as f32)?;
             }
         }
     }
-    Ok(Decoded {
-        samples,
-        channels,
-        rate: spec.sample_rate,
-    })
+    rs.finish()
 }
 
-fn decode_vorbis(bytes: &[u8]) -> Result<Decoded, DecodeError> {
-    let mut reader =
-        lewton::inside_ogg::OggStreamReader::new(Cursor::new(bytes)).map_err(malformed)?;
-    let channels = usize::from(reader.ident_hdr.audio_channels);
-    let rate = reader.ident_hdr.audio_sample_rate;
-    check_rate_and_channels(rate, channels)?;
-    let limit = max_frames(rate).saturating_mul(channels as u64);
-    let mut samples: Vec<f32> = Vec::new();
-    while let Some(packet) = reader.read_dec_packet_itl().map_err(malformed)? {
-        // A chained stream may switch parameters; only a constant layout is
-        // supported.
-        if usize::from(reader.ident_hdr.audio_channels) != channels
-            || reader.ident_hdr.audio_sample_rate != rate
-        {
+/// Page-level scan of an Ogg buffer: the serial of the first page, whether
+/// any page has another serial (chained or multiplexed streams), and the
+/// granule position of the last page that has one (the stream length in
+/// frames for a stream starting at granule 0). Stops at the first byte
+/// sequence that is not a complete page; the packet reader reports those.
+struct OggScan {
+    serial: u32,
+    other_serial: bool,
+    last_granule: Option<u64>,
+}
+
+fn scan_ogg_pages(b: &[u8]) -> OggScan {
+    let mut scan = OggScan {
+        serial: 0,
+        other_serial: false,
+        last_granule: None,
+    };
+    let mut p = 0usize;
+    let mut first = true;
+    while b.len() >= p + 27 && &b[p..p + 4] == b"OggS" {
+        let segs = usize::from(b[p + 26]);
+        if b.len() < p + 27 + segs {
+            break;
+        }
+        let body: usize = b[p + 27..p + 27 + segs].iter().map(|&x| usize::from(x)).sum();
+        let mut word = [0u8; 8];
+        word.copy_from_slice(&b[p + 6..p + 14]);
+        let granule = u64::from_le_bytes(word);
+        let mut s4 = [0u8; 4];
+        s4.copy_from_slice(&b[p + 14..p + 18]);
+        let serial = u32::from_le_bytes(s4);
+        if first {
+            scan.serial = serial;
+            first = false;
+        } else if serial != scan.serial {
+            scan.other_serial = true;
+        }
+        if granule != u64::MAX {
+            scan.last_granule = Some(granule);
+        }
+        p += 27 + segs + body;
+    }
+    scan
+}
+
+fn decode_vorbis(bytes: &[u8], dst: u32) -> Result<Sample, DecodeError> {
+    use lewton::audio::{PreviousWindowRight, read_audio_packet_generic};
+    use lewton::header::{read_header_ident, read_header_setup};
+    use lewton::samples::InterleavedSamples;
+
+    let scan = scan_ogg_pages(bytes);
+    if scan.other_serial {
+        // Chained or multiplexed: each link restarts its granule positions,
+        // so the length cannot be bounded up front.
+        return Err(DecodeError::Unsupported);
+    }
+    let mut rdr = ogg::PacketReader::new(Cursor::new(bytes));
+    let mut next = |what: &str| -> Result<ogg::Packet, DecodeError> {
+        let p = rdr
+            .read_packet()
+            .map_err(malformed)?
+            .ok_or_else(|| DecodeError::Malformed(format!("missing {what}")))?;
+        if p.stream_serial() != scan.serial {
             return Err(DecodeError::Unsupported);
         }
-        if (samples.len() + packet.len()) as u64 > limit {
-            return Err(DecodeError::TooLong);
-        }
-        samples.extend(packet.iter().map(|&v| (f64::from(v) / 32768.0) as f32));
-    }
-    let mut whole = samples.len() - samples.len() % channels;
-    // The last page's granule position is the stream's length in frames
-    // (Vorbis I §A.2). lewton only trims the final packet when it has seen an
-    // earlier page's granule, so trim here too (single-page files).
-    if let Some(total) = reader.get_last_absgp() {
-        let total = usize::try_from(total).unwrap_or(usize::MAX);
-        whole = whole.min(total.saturating_mul(channels));
-    }
-    samples.truncate(whole);
-    Ok(Decoded {
-        samples,
-        channels,
-        rate,
-    })
-}
-
-/// Expands to stereo and resamples to `dst` (see the module docs).
-fn finish(d: Decoded, dst: u32) -> Result<Sample, DecodeError> {
-    let n_in = d.samples.len() / d.channels;
-    let src = d.rate;
-    let frame = |i: usize| -> (f32, f32) {
-        if d.channels == 1 {
-            let v = d.samples[i];
-            (v, v)
-        } else {
-            (d.samples[2 * i], d.samples[2 * i + 1])
-        }
+        Ok(p)
     };
-    if src == dst {
-        if d.channels == 2 {
-            return Ok(Sample::from_interleaved(d.samples));
+    let ident = read_header_ident(&next("identification header")?.data).map_err(malformed)?;
+    let channels = usize::from(ident.audio_channels);
+    let src = ident.audio_sample_rate;
+    check_rate_and_channels(src, channels)?;
+    if let Some(total) = scan.last_granule {
+        check_length(total, src, dst)?;
+    }
+    // The comment header is skipped unparsed: nothing in it is needed, and
+    // its counts are attacker-controlled.
+    let _comment = next("comment header")?;
+    let setup = read_header_setup(
+        &next("setup header")?.data,
+        ident.audio_channels,
+        (ident.blocksize_0, ident.blocksize_1),
+    )
+    .map_err(malformed)?;
+
+    // Frames past the last granule position are encoder padding (Vorbis I
+    // §A.2); without a granule the decoded length stands.
+    let limit = scan.last_granule.unwrap_or(u64::MAX);
+    let mut rs = Resampler::new(src, dst, scan.last_granule.unwrap_or(0));
+    let mut pwr = PreviousWindowRight::new();
+    'packets: loop {
+        let packet = match rdr.read_packet().map_err(malformed)? {
+            Some(p) => p,
+            None => break,
+        };
+        if packet.stream_serial() != scan.serial {
+            return Err(DecodeError::Unsupported);
         }
-        return Ok(Sample::from_mono(&d.samples));
+        let decoded: InterleavedSamples<i16> =
+            read_audio_packet_generic(&ident, &setup, &packet.data, &mut pwr).map_err(malformed)?;
+        for frame in decoded.samples.chunks_exact(channels) {
+            if rs.n_in >= limit {
+                break 'packets;
+            }
+            let l = (f64::from(frame[0]) / 32768.0) as f32;
+            let r = (f64::from(frame[channels - 1]) / 32768.0) as f32;
+            rs.push(l, r)?;
+        }
     }
-    let n_out = resampled_len(n_in as u64, src, dst);
-    if n_out > max_frames(dst) {
-        return Err(DecodeError::TooLong);
-    }
-    let n_out = n_out as usize;
-    let mut out = Vec::with_capacity(n_out * 2);
-    if n_in == 0 {
-        return Ok(Sample::from_interleaved(out));
-    }
-    let (src64, dst64) = (u64::from(src), u64::from(dst));
-    for j in 0..n_out as u64 {
-        let pos = j * src64;
-        let i = (pos / dst64) as usize;
-        let f = (pos % dst64) as f64 / dst64 as f64;
-        let i0 = i.min(n_in - 1);
-        let i1 = (i + 1).min(n_in - 1);
-        let (l0, r0) = frame(i0);
-        let (l1, r1) = frame(i1);
-        out.push(lerp(l0, l1, f));
-        out.push(lerp(r0, r1, f));
-    }
-    Ok(Sample::from_interleaved(out))
+    rs.finish()
 }
 
 /// `ceil(n_in · dst / src)`, the resampled length in frames.
@@ -454,20 +611,116 @@ mod tests {
         ));
     }
 
+    /// Sets a WAV's data-chunk size field (the header claims, not the bytes).
+    fn claim_data_len(bytes: &mut [u8], len: u32) {
+        let at = (0..bytes.len() - 4)
+            .rev()
+            .find(|&i| &bytes[i..i + 4] == b"data")
+            .unwrap();
+        bytes[at + 4..at + 8].copy_from_slice(&len.to_le_bytes());
+    }
+
     #[test]
     fn too_long_by_header() {
-        // 8-bit mono at 1 kHz: 601 s = 601_000 bytes of data.
-        let bytes = wav(spec(1, 1_000, 8, false), |w| {
-            for _ in 0..601_000 {
-                w.write_sample(0i8).unwrap();
+        // 8-bit mono at 8 kHz claiming 601 s: rejected before reading data.
+        let mut bytes = wav(spec(1, 8_000, 8, false), |w| w.write_sample(0i8).unwrap());
+        claim_data_len(&mut bytes, 601 * 8_000);
+        assert_eq!(decode(&bytes, 8_000), Err(DecodeError::TooLong));
+        // Exactly 600 s claimed is within the cap (then fails as truncated).
+        claim_data_len(&mut bytes, 600 * 8_000);
+        assert!(matches!(decode(&bytes, 8_000), Err(DecodeError::Malformed(_))));
+        // 600 s at 8 kHz upsampled to 48 kHz is still 600 s: fine; a claim
+        // of u32::MAX bytes is too long.
+        claim_data_len(&mut bytes, u32::MAX);
+        assert_eq!(decode(&bytes, 48_000), Err(DecodeError::TooLong));
+    }
+
+    #[test]
+    fn source_rate_bounds() {
+        for (rate, ok) in [
+            (1u32, false),
+            (7_999, false),
+            (8_000, true),
+            (384_000, true),
+            (384_001, false),
+            (1_000_000_000, false),
+        ] {
+            let bytes = wav(spec(1, rate, 16, false), |w| {
+                for _ in 0..600 {
+                    w.write_sample(0i16).unwrap();
+                }
+            });
+            let r = decode(&bytes, 48_000);
+            if ok {
+                assert!(r.is_ok(), "rate {rate}");
+            } else {
+                assert_eq!(r, Err(DecodeError::Unsupported), "rate {rate}");
             }
-        });
-        assert_eq!(decode(&bytes, 1_000), Err(DecodeError::TooLong));
-        // Header claims a huge data chunk while the bytes are short.
-        let mut lie = wav(spec(1, 1_000, 8, false), |w| w.write_sample(0i8).unwrap());
-        let n = lie.len();
-        lie[n - 5..n - 1].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(decode(&lie, 1_000).is_err());
+        }
+    }
+
+    /// The batch formula from the module docs, as a reference.
+    fn reference(x: &[(f32, f32)], src: u32, dst: u32) -> Vec<f32> {
+        if src == dst {
+            return x.iter().flat_map(|&(l, r)| [l, r]).collect();
+        }
+        let n_out = resampled_len(x.len() as u64, src, dst);
+        let mut out = Vec::new();
+        if x.is_empty() {
+            return out;
+        }
+        for j in 0..n_out {
+            let pos = j * u64::from(src);
+            let i = (pos / u64::from(dst)) as usize;
+            let f = (pos % u64::from(dst)) as f64 / f64::from(dst);
+            let a = x[i.min(x.len() - 1)];
+            let b = x[(i + 1).min(x.len() - 1)];
+            out.push(lerp(a.0, b.0, f));
+            out.push(lerp(a.1, b.1, f));
+        }
+        out
+    }
+
+    fn stream(x: &[(f32, f32)], src: u32, dst: u32) -> Vec<f32> {
+        let mut rs = Resampler::new(src, dst, x.len() as u64);
+        for &(l, r) in x {
+            rs.push(l, r).unwrap();
+        }
+        rs.finish().unwrap().data().to_vec()
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig { cases: 200, ..Default::default() })]
+        #[test]
+        fn streaming_resampler_matches_formula(
+            x in proptest::collection::vec((-1.0f32..1.0, -1.0f32..1.0), 0..300),
+            src in proptest::sample::select(vec![8_000u32, 11_025, 22_050, 44_100, 48_000, 96_000, 384_000]),
+            dst in proptest::sample::select(vec![8_000u32, 22_050, 44_100, 48_000, 192_000]),
+        ) {
+            proptest::prop_assert_eq!(stream(&x, src, dst), reference(&x, src, dst));
+        }
+    }
+
+    #[test]
+    fn resampler_caps_while_streaming() {
+        let mut rs = Resampler::new(8_000, 48_000, 10);
+        rs.max_out = 11;
+        assert_eq!(rs.push(0.0, 0.0), Ok(()));
+        assert_eq!(rs.push(0.0, 0.0), Ok(())); // 6 out
+        assert_eq!(rs.push(0.0, 0.0), Err(DecodeError::TooLong)); // 12th
+        let mut rs = Resampler::new(8_000, 8_000, 0);
+        rs.max_in = 2;
+        rs.push(0.0, 0.0).unwrap();
+        rs.push(0.0, 0.0).unwrap();
+        assert_eq!(rs.push(0.0, 0.0), Err(DecodeError::TooLong));
+        let mut rs = Resampler::new(8_000, 8_000, 0);
+        rs.max_out = 1;
+        rs.push(0.0, 0.0).unwrap();
+        assert_eq!(rs.push(0.0, 0.0), Err(DecodeError::TooLong));
+        let mut rs = Resampler::new(8_000, 16_000, 0);
+        rs.max_out = 1;
+        rs.push(0.5, 0.5).unwrap();
+        assert_eq!(rs.finish(), Err(DecodeError::TooLong));
     }
 
     #[test]

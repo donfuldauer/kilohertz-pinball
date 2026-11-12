@@ -1230,8 +1230,14 @@ impl BallSolver {
             );
         }
         match known {
-            // Make sure the boundary solve's contact takes part.
-            Some(k) => list[k].depth = list[k].depth.max(0.0),
+            // The boundary solve's contact takes part from now on, with the
+            // geometry of this hit.
+            Some(k) => {
+                let c = &mut list[k];
+                c.normal = normal;
+                c.point = point;
+                c.depth = c.depth.max(0.0);
+            }
             None => list.push(Contact {
                 normal,
                 point,

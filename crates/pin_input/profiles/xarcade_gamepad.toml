@@ -11,8 +11,8 @@ match = [
 ]
 
 [buttons]
-left_flipper = [ "button:left_shoulder", "axis:left_trigger" ]    # left side button
-right_flipper = [ "button:right_shoulder", "axis:right_trigger" ] # right side button
+left_flipper = [ "button:left_shoulder" ]       # left side button
+right_flipper = [ "button:right_shoulder" ]     # right side button
 left_upper = [ "button:west" ]
 right_upper = [ "button:north" ]
 launch = [ "button:south" ]

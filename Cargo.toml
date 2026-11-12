@@ -68,3 +68,4 @@ opt-level = 1
 # Lua 5.4 is built from a patched copy of lua-src (third_party/lua-src/KHZ_PATCHES.md).
 [patch.crates-io]
 lua-src = { path = "third_party/lua-src" }
+lewton = { path = "third_party/lewton" }

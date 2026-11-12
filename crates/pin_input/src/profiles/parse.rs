@@ -5,14 +5,29 @@ use super::{
     cabinet_axis_from_name,
 };
 use pin_core::input::CabinetInput;
+use std::collections::HashMap;
 use std::ops::Range;
 use toml::Spanned;
 use toml::de::{DeTable, DeValue};
 
 type SValue<'i> = Spanned<DeValue<'i>>;
 
-/// Parses a profile file.
+/// Largest accepted profile file (bytes). Real profiles are a few hundred
+/// bytes; the cap bounds parse time on untrusted input (D25).
+pub const MAX_PROFILE_BYTES: usize = 64 * 1024;
+
+/// Parses a profile file (at most [`MAX_PROFILE_BYTES`]).
 pub fn parse_profile(toml_text: &str) -> Result<DeviceProfile, ProfileError> {
+    if toml_text.len() > MAX_PROFILE_BYTES {
+        return Err(ProfileError::Invalid {
+            key: "profile".to_string(),
+            position: None,
+            message: format!(
+                "file is {} bytes, more than the {MAX_PROFILE_BYTES}-byte limit",
+                toml_text.len()
+            ),
+        });
+    }
     let doc = DeTable::parse(toml_text).map_err(|e| {
         let at = e.span().map_or(0, |s| s.start);
         let (line, col) = line_col(toml_text, at);
@@ -264,6 +279,7 @@ impl Parser<'_> {
     fn buttons(&self, v: &SValue<'_>) -> Result<Vec<(RawInput, CabinetInput)>, ProfileError> {
         let t = self.table("buttons", v)?;
         let mut out: Vec<(RawInput, CabinetInput)> = Vec::new();
+        let mut seen: HashMap<RawInput, CabinetInput> = HashMap::new();
         for (k, list) in t.iter() {
             let key = format!("buttons.{}", k.get_ref());
             let input = CabinetInput::from_name(k.get_ref()).ok_or_else(|| {
@@ -278,7 +294,7 @@ impl Parser<'_> {
                 )
             })?;
             for (raw, rkey) in self.raw_list(&key, list)? {
-                if let Some((_, other)) = out.iter().find(|(r, _)| *r == raw) {
+                if let Some(other) = seen.insert(raw, input) {
                     return Err(self.err(
                         &rkey,
                         Some(list.span()),
@@ -295,6 +311,7 @@ impl Parser<'_> {
     fn nudge(&self, v: &SValue<'_>) -> Result<Vec<(RawInput, NudgeDirection)>, ProfileError> {
         let t = self.table("nudge", v)?;
         let mut out: Vec<(RawInput, NudgeDirection)> = Vec::new();
+        let mut seen: HashMap<RawInput, NudgeDirection> = HashMap::new();
         for (k, list) in t.iter() {
             let key = format!("nudge.{}", k.get_ref());
             let dir = NudgeDirection::from_name(k.get_ref()).ok_or_else(|| {
@@ -305,7 +322,7 @@ impl Parser<'_> {
                 )
             })?;
             for (raw, rkey) in self.raw_list(&key, list)? {
-                if let Some((_, other)) = out.iter().find(|(r, _)| *r == raw) {
+                if let Some(other) = seen.insert(raw, dir) {
                     return Err(self.err(
                         &rkey,
                         Some(list.span()),

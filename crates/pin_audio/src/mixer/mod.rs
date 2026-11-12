@@ -45,7 +45,10 @@ mod engine;
 mod ring;
 mod sdl;
 
-pub use decode::{DecodeError, MAX_MIXER_RATE, MAX_SECONDS, Sample, decode, resampled_len};
+pub use decode::{
+    DecodeError, MAX_MIXER_RATE, MAX_SECONDS, MAX_SOURCE_RATE, MIN_SOURCE_RATE, Sample, decode,
+    resampled_len,
+};
 pub use engine::{Bus, Mixer, MixerConfig};
 pub use ring::{SoundReceiver, SoundSender, SoundTrigger, trigger_ring};
 pub use sdl::SdlOutput;

@@ -63,6 +63,7 @@
 //! `[from, to]` onto the cabinet axis range (`0..=1` for plunger and flipper
 //! travel, `-1..=1` for nudge) and clamped to it.
 //!
+//! Files larger than [`MAX_PROFILE_BYTES`] (64 KiB) are rejected.
 //! Unknown keys, unknown names, malformed raw specs, wrong value types, a raw
 //! input bound twice in one section, and a raw axis used both as an axis and as
 //! a button are errors. Syntax errors display as `<line>:<col>: <message>`;
@@ -77,7 +78,7 @@ use std::fmt;
 use std::sync::OnceLock;
 
 pub use mapper::ProfileMapper;
-pub use parse::parse_profile;
+pub use parse::{MAX_PROFILE_BYTES, parse_profile};
 
 /// An SDL joystick GUID (16 bytes, SDL3 layout).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]

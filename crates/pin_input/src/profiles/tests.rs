@@ -261,13 +261,11 @@ fn xarcade_mappers() {
     );
     assert_eq!(k.key(0, 80, true), None);
     let g = ProfileMapper::new(builtin_profile("xarcade_gamepad").unwrap());
+    // Side buttons are shoulders only; the triggers are unbound.
+    assert_eq!(g.axis(0, GamepadAxis::LeftTrigger, 30000), None);
     assert_eq!(
-        button_of(g.axis(0, GamepadAxis::LeftTrigger, 30000)),
-        Some((CabinetInput::LeftFlipper, true))
-    );
-    assert_eq!(
-        button_of(g.axis(0, GamepadAxis::RightTrigger, 100)),
-        Some((CabinetInput::RightFlipper, false))
+        button_of(g.button(0, GamepadButton::RightShoulder, true)),
+        Some((CabinetInput::RightFlipper, true))
     );
     assert_eq!(
         g.nudge_button(RawInput::Button(GamepadButton::DpadUp)),
@@ -278,10 +276,7 @@ fn xarcade_mappers() {
         g.input_for(RawInput::Button(GamepadButton::West)),
         Some(CabinetInput::LeftUpper)
     );
-    assert_eq!(
-        g.input_for(RawInput::Axis(GamepadAxis::LeftTrigger)),
-        Some(CabinetInput::LeftFlipper)
-    );
+    assert_eq!(g.input_for(RawInput::Axis(GamepadAxis::LeftTrigger)), None);
     assert_eq!(
         k.input_for(RawInput::Key(6)),
         Some(CabinetInput::LeftFlipper)

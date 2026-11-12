@@ -11,6 +11,8 @@ license.workspace = true
 pin_core.workspace = true
 hound.workspace = true
 lewton.workspace = true
+# Same version lewton 0.10.2 depends on (already in Cargo.lock).
+ogg = "=0.8.0"
 sdl3.workspace = true
 
 [dev-dependencies]

@@ -46,3 +46,20 @@ fn headless_ticks_bad_argument_fails() {
         assert!(!out.stderr.is_empty());
     }
 }
+
+/// The full app path on SDL's dummy drivers: window, threads, pump loop,
+/// shutdown (no surfaces: the dummy driver has no native window handles).
+/// `--run-ms` bounds the run; nothing here asserts on timing.
+#[test]
+fn app_runs_on_dummy_drivers_and_exits() {
+    let out = pin_app(&["--headless", "--run-ms", "50"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("not rendering"), "{stderr}");
+    assert!(stderr.contains("sim ticks"), "{stderr}");
+    let out = pin_app(&["--list-displays", "--headless"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("display 0:"));
+    let out = pin_app(&["--headless", "--run-ms", "x"]);
+    assert!(!out.status.success());
+}

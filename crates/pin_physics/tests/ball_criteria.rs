@@ -992,3 +992,92 @@ fn degenerate_input_is_ignored() {
     run(&mut s, &geo, 300);
     assert!((s.ball(h).unwrap().position.z - radius(STEEL)).abs() < 1e-3);
 }
+
+#[test]
+fn rolling_over_floor_seams_is_smooth() {
+    // A floor made of abutting cuboids and of a tessellated mesh: a ball
+    // rolling across the seams reports no impacts and stays on the floor.
+    // Between two cuboids the world's sphere cast reports the next cuboid's
+    // edge within its 1 µm touch skin, i.e. with a normal tilted by up to
+    // sqrt(2 · 1 µm / r) (0.7° for a 27 mm ball), so a seam can deflect the
+    // ball by that angle; a mesh floor has no such edges.
+    let mut b = StaticWorldBuilder::new();
+    for k in -5..5 {
+        b.add_collider(
+            cuboid(v(0.1 * k as f32 + 0.05, 0.0, -0.01), v(0.05, 0.2, 0.01)),
+            layers::ALL,
+            true,
+        );
+    }
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    for iy in 0..2u32 {
+        for ix in 0..11u32 {
+            vertices.push(v(-0.5 + 0.1 * ix as f32, 1.0 + 0.4 * iy as f32 - 0.2, 0.0));
+        }
+    }
+    for ix in 0..10u32 {
+        indices.push([ix, ix + 1, ix + 12]);
+        indices.push([ix, ix + 12, ix + 11]);
+    }
+    b.add_collider(
+        pin_physics::world::StaticShape::TriMesh { vertices, indices },
+        layers::ALL,
+        true,
+    );
+    let world = b.build();
+    let geo = Geometry::new(&world);
+    let r = radius(STEEL);
+    for y in [0.0f32, 0.013, 1.0] {
+        for speed in [0.3f32, 1.7, 5.0] {
+            let mut s = solver();
+            let mut ball = ball_at(STEEL, v(-0.45, y, r), v(speed, 0.0, 0.0));
+            ball.angular_velocity = v(0.0, speed / r, 0.0);
+            let h = s.add_ball(ball).unwrap();
+            let mut ev = BallEvents::new();
+            let mut max_z = 0.0f32;
+            for _ in 0..4000 {
+                s.step(&geo, DT, &mut ev);
+                let b = s.ball(h).unwrap();
+                if b.position.x > 0.45 {
+                    break;
+                }
+                max_z = max_z.max((b.position.z - r).abs());
+                let tilt = if y < 0.5 {
+                    libm::sqrtf(2.0e-6 / r)
+                } else {
+                    0.0
+                };
+                assert!(
+                    b.velocity.z.abs() < 1.5 * tilt * speed + 1.0e-4,
+                    "hop: {:?}",
+                    b.velocity
+                );
+            }
+            let b = s.ball(h).unwrap();
+            assert!(
+                b.position.x > 0.45,
+                "y {y} speed {speed}: stuck at {:?}",
+                b.position
+            );
+            // Hop height of the largest seam deflection (see above).
+            let kick = if y < 0.5 {
+                1.5 * libm::sqrtf(2.0e-6 / r) * speed
+            } else {
+                0.0
+            };
+            assert!(
+                max_z < kick * kick / (2.0 * 9.81) + 5.0e-6,
+                "y {y} speed {speed}: left the floor by {max_z}"
+            );
+            // Only rolling resistance (5/7 · c · g over 0.9 m) slowed it.
+            let expected = libm::sqrtf(speed * speed - 2.0 * (5.0 / 7.0) * 0.002 * 9.81 * 0.9);
+            assert!(
+                (b.velocity.x - expected).abs() < 0.02 * speed + 0.005,
+                "y {y} speed {speed}: {} vs {expected}",
+                b.velocity.x
+            );
+            assert!(ev.as_slice().is_empty(), "{:?}", ev.as_slice());
+        }
+    }
+}

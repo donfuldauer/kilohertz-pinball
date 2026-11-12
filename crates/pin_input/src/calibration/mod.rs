@@ -20,6 +20,7 @@ mod plunger;
 
 pub use nudge::{DigitalNudge, MAX_DIGITAL_PRESSES, NudgeConfig, NudgeFilter, thumbstick_nudge};
 pub use plunger::{
-    MAX_RELEASE_WINDOW_MS, PlungerConfig, PlungerFilter, PlungerOutput, RAW_LIMIT,
-    REST_LOOKBACK_TICKS,
+    ACQUIRE_WINDOW_MS, MAX_RELEASE_WINDOW_MS, MAX_REST_OFFSET, MIN_PULL_DEPTH,
+    PULL_QUALIFY_DEADZONES, PlungerConfig, PlungerFilter, PlungerOutput, RAW_LIMIT,
+    RELEASE_HOLDOFF_MS, REST_LOOKBACK_TICKS, STABLE_MS,
 };

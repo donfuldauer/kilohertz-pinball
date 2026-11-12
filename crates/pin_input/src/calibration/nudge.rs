@@ -81,7 +81,12 @@ impl NudgeFilter {
         let hz = self.cfg.high_pass_hz;
         let (a, b) = if hz.is_finite() && hz > 0.0 {
             let rc2 = 2.0 / (2.0 * core::f32::consts::PI * hz);
-            ((rc2 - dt_s) / (rc2 + dt_s), rc2 / (rc2 + dt_s))
+            (
+                // Clamped at 0: for dt > 2RC (a stall) the bilinear pole goes
+                // negative and would ring; 0 just forgets the history.
+                ((rc2 - dt_s) / (rc2 + dt_s)).max(0.0),
+                rc2 / (rc2 + dt_s),
+            )
         } else {
             (1.0, 1.0)
         };
@@ -251,6 +256,19 @@ mod tests {
             }
             assert!(last[0].abs() < 0.005 && last[1].abs() < 0.005, "{last:?}");
         }
+    }
+
+    #[test]
+    fn long_gap_does_not_ring() {
+        let mut f = NudgeFilter::new(linear());
+        f.update([0.5, 0.0], 0.001);
+        let mut prev = f32::INFINITY;
+        for _ in 0..10 {
+            let o = f.update([0.5, 0.0], 1.0); // stalled for 1 s each time
+            assert!(o[0] >= 0.0 && o[0] <= prev, "{o:?}");
+            prev = o[0];
+        }
+        assert_eq!(prev, 0.0);
     }
 
     #[test]

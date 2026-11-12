@@ -159,6 +159,31 @@ proptest! {
     }
 }
 
+/// Review N4: oversized files are rejected; a large in-limit file with
+/// thousands of bindings parses (dedupe is hash-based, not quadratic).
+#[test]
+fn size_cap_and_many_bindings() {
+    use pin_input::profiles::MAX_PROFILE_BYTES;
+    let mut big = String::from("id = \"b\"\nname = \"B\"\n[buttons]\nleft_flipper = [\n");
+    let mut k = 0u32;
+    while big.len() < MAX_PROFILE_BYTES - 64 {
+        big.push_str(&format!("\"key:{k}\",\n"));
+        k += 1;
+    }
+    big.push_str("]\n");
+    let p = parse_profile(&big).unwrap();
+    assert_eq!(p.buttons.len(), k as usize);
+    assert!(k > 4000);
+    // A duplicate at the very end is still found.
+    let dup = format!("{}\"key:0\"]\n", &big[..big.len() - 2]);
+    let e = parse_profile(&dup).unwrap_err().to_string();
+    assert!(e.contains("already bound"), "{e}");
+    let mut over = big.clone();
+    over.push_str(&"#".repeat(MAX_PROFILE_BYTES));
+    let e = parse_profile(&over).unwrap_err().to_string();
+    assert!(e.starts_with("profile: file is"), "{e}");
+}
+
 #[test]
 fn mapper_per_event_paths_do_not_allocate() {
     let mappers: Vec<ProfileMapper> = builtin_profiles().iter().map(ProfileMapper::new).collect();
