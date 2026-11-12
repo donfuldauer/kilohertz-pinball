@@ -15,8 +15,7 @@ use pin_app::platform::{
 use pin_core::spsc::{SpscConsumer, channel};
 use pin_core::{CabinetAxis, CabinetInput, InputEvent, InputEventKind};
 use pin_render::topology::{
-    DEFAULT_BACKGLASS_PIP, DEFAULT_SCORE_PIP, SurfaceRole, TopologyError, TopologyMode,
-    WindowEvent,
+    DEFAULT_BACKGLASS_PIP, DEFAULT_SCORE_PIP, SurfaceRole, TopologyError, TopologyMode, WindowEvent,
 };
 use sdl3::event::{Event, WindowEvent as SdlWindowEvent};
 use sdl3::gamepad::{Axis, Button};
@@ -35,8 +34,16 @@ fn drain<T: Copy + Send>(rx: &mut SpscConsumer<T>) -> Vec<T> {
 }
 
 fn key(down: bool, sc: Scancode) -> Event {
-    let (timestamp, window_id, keycode, scancode, keymod, repeat, which, raw) =
-        (0, 0, Keycode::from_scancode(sc, sdl3::sys::keycode::SDL_Keymod(0), true), Some(sc), Mod::NOMOD, false, 0, 0);
+    let (timestamp, window_id, keycode, scancode, keymod, repeat, which, raw) = (
+        0,
+        0,
+        Keycode::from_scancode(sc, sdl3::sys::keycode::SDL_Keymod(0), true),
+        Some(sc),
+        Mod::NOMOD,
+        false,
+        0,
+        0,
+    );
     if down {
         Event::KeyDown {
             timestamp,
@@ -113,8 +120,8 @@ fn main() {
             score: None,
         }) == Err(TopologyError::DisplayOutOfRange(99)),
     );
-    let windows = DisplayTopologyManager::create_windows(platform.video(), &plan)
-        .expect("create windows");
+    let windows =
+        DisplayTopologyManager::create_windows(platform.video(), &plan).expect("create windows");
     check("one window created", windows.len() == 1);
     let w = &windows[0];
     check("window plan index", w.plan_index == 0);
@@ -127,7 +134,10 @@ fn main() {
         w.window.title() == window_title(Some(SurfaceRole::Playfield)),
     );
     let (ww, wh) = w.window.size();
-    println!("[platform_headless] window size {ww}x{wh}, plan {:?}", w.plan.bounds);
+    println!(
+        "[platform_headless] window size {ww}x{wh}, plan {:?}",
+        w.plan.bounds
+    );
     check("window has a size", ww > 0 && wh > 0);
     let ids: Vec<u32> = windows.iter().map(|w| w.id()).collect();
     fwd.register_windows(&ids);
@@ -160,6 +170,39 @@ fn main() {
         wevents.len() == 1 && (t0..=t1).contains(&wevents[0].timestamp_ns),
     );
 
+    // Cabinet mode on a mock second display: two borderless fullscreen
+    // windows, backglass on its own window, score as a PiP on the playfield.
+    let mut d1 = d0;
+    d1.index = 1;
+    d1.bounds.x = d0.bounds.x + d0.bounds.w as i32;
+    let mock = DisplayTopologyManager::from_displays(vec![d0, d1]);
+    let cab_plan = mock
+        .plan(&TopologyMode::Cabinet {
+            playfield: 0,
+            backglass: Some(1),
+            score: None,
+        })
+        .expect("cabinet plan");
+    let cab = DisplayTopologyManager::create_windows(platform.video(), &cab_plan)
+        .expect("cabinet windows");
+    check(
+        "cabinet: two windows with role titles",
+        cab.len() == 2
+            && cab[0].window.title() == window_title(Some(SurfaceRole::Playfield))
+            && cab[1].window.title() == window_title(Some(SurfaceRole::Backglass))
+            && cab[1].plan_index == 1
+            && cab[0].plan.viewport(SurfaceRole::Score).is_some(),
+    );
+    drop(cab);
+    // Events of windows not registered with the forwarder are counted, not
+    // forwarded.
+    platform.pump(&mut fwd, DRAIN);
+    drain(&mut wrx);
+    check(
+        "unregistered window events counted",
+        fwd.stats().window_unknown > 0,
+    );
+
     // --- Keyboard: order and timestamps -----------------------------------
     let keys = [
         (true, Scancode::LShift, CabinetInput::LeftFlipper),
@@ -176,11 +219,17 @@ fn main() {
     ];
     let t0 = ticks_ns();
     for (down, sc, _) in keys {
-        platform.events().push_event(key(down, sc)).expect("push key");
+        platform
+            .events()
+            .push_event(key(down, sc))
+            .expect("push key");
     }
     let t1 = ticks_ns();
     let out = platform.pump(&mut fwd, DRAIN);
-    check("pump counted the key events", out.events >= keys.len() as u32);
+    check(
+        "pump counted the key events",
+        out.events >= keys.len() as u32,
+    );
     let got = drain(&mut irx);
     println!("[platform_headless] keyboard input events: {got:?}");
     let expected: Vec<_> = keys[..keys.len() - 1]
@@ -197,7 +246,9 @@ fn main() {
     check(
         "keyboard timestamps on SDL ns clock and non-decreasing",
         got.iter().all(|e| (t0..=t1).contains(&e.timestamp_ns))
-            && got.windows(2).all(|p| p[0].timestamp_ns <= p[1].timestamp_ns),
+            && got
+                .windows(2)
+                .all(|p| p[0].timestamp_ns <= p[1].timestamp_ns),
     );
 
     // --- Virtual gamepad --------------------------------------------------
@@ -221,7 +272,10 @@ fn main() {
         .attach_virtual_joystick(desc)
         .expect("virtual joystick");
     let id = conn.id();
-    check("virtual device is a gamepad", platform.gamepad().is_gamepad(id));
+    check(
+        "virtual device is a gamepad",
+        platform.gamepad().is_gamepad(id),
+    );
     platform.pump(&mut fwd, DRAIN);
     check(
         "gamepad opened on GamepadAdded",
@@ -307,7 +361,10 @@ fn main() {
 
     let stats = fwd.stats();
     println!("[platform_headless] stats: {stats:?}");
-    check("nothing dropped", stats.input_dropped == 0 && stats.window_dropped == 0);
+    check(
+        "nothing dropped",
+        stats.input_dropped == 0 && stats.window_dropped == 0,
+    );
     check(
         "error type displays",
         !PlatformError::from(TopologyError::NoDisplays)

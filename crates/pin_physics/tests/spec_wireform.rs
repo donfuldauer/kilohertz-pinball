@@ -224,7 +224,6 @@ fn up_hint_not_unit_or_not_perpendicular_is_projected() {
 #[test]
 fn constant_roll_tilts_rails_out_of_plane() {
     let pts = planar_s_curve();
-    let s = CubicSpline::interpolate(&pts).unwrap();
     for &deg in &[30.0f32, -30.0, 90.0, -90.0] {
         let w = Wireform::new(mk(&pts), &vec![deg; pts.len()], GAUGE, Vec3::Z).unwrap();
         let expect = 0.5 * GAUGE * deg.to_radians().sin().abs();

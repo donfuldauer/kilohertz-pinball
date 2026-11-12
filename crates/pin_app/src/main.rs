@@ -19,8 +19,13 @@ fn main() {
                 for d in manager.displays() {
                     println!(
                         "display {}: {}x{} at ({}, {}), {:.2} Hz, scale {:.2}",
-                        d.index, d.bounds.w, d.bounds.h, d.bounds.x, d.bounds.y,
-                        d.refresh_hz, d.content_scale
+                        d.index,
+                        d.bounds.w,
+                        d.bounds.h,
+                        d.bounds.x,
+                        d.bounds.y,
+                        d.refresh_hz,
+                        d.content_scale
                     );
                 }
             }

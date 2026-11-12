@@ -84,18 +84,16 @@ pub fn translate(event: &Event) -> Translated {
             scancode: Some(sc),
             repeat: false,
             ..
-        } => keymap::key_input(sc)
-            .map_or(Translated::Ignored, |i| {
-                Translated::Input(InputEvent::button(ts, i, true))
-            }),
+        } => keymap::key_input(sc).map_or(Translated::Ignored, |i| {
+            Translated::Input(InputEvent::button(ts, i, true))
+        }),
         Event::KeyUp {
             scancode: Some(sc),
             repeat: false,
             ..
-        } => keymap::key_input(sc)
-            .map_or(Translated::Ignored, |i| {
-                Translated::Input(InputEvent::button(ts, i, false))
-            }),
+        } => keymap::key_input(sc).map_or(Translated::Ignored, |i| {
+            Translated::Input(InputEvent::button(ts, i, false))
+        }),
         Event::GamepadButtonDown { button, .. } => keymap::gamepad_button_input(button)
             .map_or(Translated::Ignored, |i| {
                 Translated::Input(InputEvent::button(ts, i, true))
@@ -384,9 +382,18 @@ mod tests {
             (SdlWindowEvent::Occluded, WindowEventKind::Occluded),
             (SdlWindowEvent::FocusGained, WindowEventKind::FocusGained),
             (SdlWindowEvent::FocusLost, WindowEventKind::FocusLost),
-            (SdlWindowEvent::CloseRequested, WindowEventKind::CloseRequested),
-            (SdlWindowEvent::EnterFullscreen, WindowEventKind::EnterFullscreen),
-            (SdlWindowEvent::LeaveFullscreen, WindowEventKind::LeaveFullscreen),
+            (
+                SdlWindowEvent::CloseRequested,
+                WindowEventKind::CloseRequested,
+            ),
+            (
+                SdlWindowEvent::EnterFullscreen,
+                WindowEventKind::EnterFullscreen,
+            ),
+            (
+                SdlWindowEvent::LeaveFullscreen,
+                WindowEventKind::LeaveFullscreen,
+            ),
         ];
         for (sdl, kind) in cases {
             assert_eq!(
@@ -445,10 +452,7 @@ mod tests {
             })
         );
         assert_eq!(wrx.pop(), None);
-        assert_eq!(
-            f.forward(&Event::Quit { timestamp: 1 }),
-            Translated::Quit
-        );
+        assert_eq!(f.forward(&Event::Quit { timestamp: 1 }), Translated::Quit);
         assert_eq!(
             f.stats(),
             ForwardStats {

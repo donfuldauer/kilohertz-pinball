@@ -8,7 +8,7 @@
 
 [toolchain]
 # Minimum toolchain: wasmtime 50 declares rust-version 1.97. CI uses
-# dtolnay/rust-toolchain@stable, which must be >= this.
+# dtolnay/rust-toolchain@<this exact version> (pinned; see DECISIONS.md "Orchestrator — 1.2 review B1").
 rust = "1.97.0"
 edition = "2024"
 

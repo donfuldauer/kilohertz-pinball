@@ -18,6 +18,43 @@ pub fn workflow_text(name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
+/// Parse the `rust = "x.y.z"` entry of the `[toolchain]` table from
+/// `versions.toml` text. `None` when the table or a full x.y.z value is absent.
+pub fn toolchain_from_versions_toml(text: &str) -> Option<String> {
+    let mut in_table = false;
+    for raw in text.lines() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.starts_with('[') {
+            in_table = line == "[toolchain]";
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "rust" {
+            continue;
+        }
+        let v = value.trim().strip_prefix('"')?.strip_suffix('"')?;
+        let parts: Vec<&str> = v.split('.').collect();
+        let numeric = parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+        return (parts.len() == 3 && numeric).then(|| v.to_owned());
+    }
+    None
+}
+
+/// The exact Rust toolchain recorded in `<root>/versions.toml`.
+pub fn pinned_toolchain() -> String {
+    let path = repo_root().join("versions.toml");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    toolchain_from_versions_toml(&text).expect("versions.toml has no [toolchain] rust = \"x.y.z\"")
+}
+
 /// One parsed workflow document.
 #[derive(Debug, Clone)]
 pub struct Workflow {
@@ -194,6 +231,12 @@ impl Concurrency {
             }
             _ => None,
         }
+    }
+
+    /// The group distinguishes triggering events, so e.g. a manual
+    /// `workflow_dispatch` run is not cancelled by a later push to the same ref.
+    pub fn is_per_event(&self) -> bool {
+        self.group.contains("github.event_name")
     }
 
     /// The group distinguishes refs, so runs for different branches coexist.

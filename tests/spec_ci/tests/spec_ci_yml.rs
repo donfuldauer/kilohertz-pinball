@@ -141,6 +141,11 @@ fn concurrency_cancels_superseded_runs_per_ref() {
             c.group
         );
         assert!(
+            c.is_per_event(),
+            "concurrency group `{}` does not include github.event_name",
+            c.group
+        );
+        assert!(
             c.cancel_in_progress,
             "cancel-in-progress not enabled for `{}`",
             c.group
@@ -300,29 +305,92 @@ fn replay_hash_is_a_marked_placeholder_that_cannot_fail_on_cargo() {
 }
 
 #[test]
-fn toolchain_is_stable_with_a_minimum_version_assertion_and_cache() {
+fn toolchain_is_the_exact_pin_from_versions_toml_with_cache() {
     let wf = ci();
-    let text = workflow_text("ci.yml");
-    assert!(text.contains("1.97"), "no step asserts rustc >= 1.97");
+    let pin = pinned_toolchain();
+    let want = format!("dtolnay/rust-toolchain@{pin}");
+    assert!(
+        workflow_text("ci.yml").contains(&pin),
+        "ci.yml never mentions toolchain {pin}"
+    );
     for id in ["core-tests", "gpu-tests", "clippy"] {
         let uses = wf.job(id).unwrap().uses();
         assert!(
             uses.iter().any(|u| u.starts_with("actions/checkout@")),
             "{id}: no checkout"
         );
-        assert!(
-            uses.iter().any(|u| u == "dtolnay/rust-toolchain@stable"),
-            "{id}: {uses:?}"
-        );
+        assert!(uses.contains(&want), "{id}: want {want}, have {uses:?}");
         assert!(
             uses.iter().any(|u| u == "Swatinem/rust-cache@v2"),
             "{id}: {uses:?}"
         );
     }
     let fmt = wf.job("fmt").unwrap().uses();
+    assert!(fmt.contains(&want), "fmt: want {want}, have {fmt:?}");
+    // No job anywhere may float on another toolchain (stable, beta, other pins).
+    for j in wf.jobs() {
+        for u in j
+            .uses()
+            .iter()
+            .filter(|u| u.starts_with("dtolnay/rust-toolchain@"))
+        {
+            assert_eq!(*u, want, "job `{}` uses a different toolchain", j.id);
+        }
+    }
+}
+
+#[test]
+fn core_tests_installs_no_sdl_or_windowing_packages() {
+    // GPU-free crates must build without SDL / display / audio system headers.
+    let script = job("core-tests").script().to_ascii_lowercase();
+    for pkg in [
+        "libsdl",
+        "libx11",
+        "libxext",
+        "libxrandr",
+        "libxcursor",
+        "libxi-",
+        "libxkbcommon",
+        "libwayland",
+        "libasound",
+        "libpulse",
+        "libudev",
+        "libdrm",
+        "libgbm",
+        "libegl",
+        "libgl1",
+        "mesa-vulkan-drivers",
+        "xvfb",
+    ] {
+        assert!(
+            !script.contains(pkg),
+            "core-tests must stay display-free but installs {pkg}"
+        );
+    }
+}
+
+#[test]
+fn clippy_also_lints_this_spec_package_with_warnings_denied() {
+    let mut found = Vec::new();
+    for j in ci().jobs() {
+        for (dir, script) in j.run_steps_with_dir() {
+            let in_dir = dir.trim_end_matches('/').ends_with("tests/spec_ci");
+            let mut cd = false;
+            for l in script.lines() {
+                cd |= l.contains("cd ") && l.contains("tests/spec_ci");
+                if !cargo_lines(l, "clippy").is_empty()
+                    && (in_dir || cd || l.contains("tests/spec_ci/Cargo.toml"))
+                {
+                    found.push(l.to_owned());
+                }
+            }
+        }
+    }
     assert!(
-        fmt.iter().any(|u| u == "dtolnay/rust-toolchain@stable"),
-        "fmt: {fmt:?}"
+        found.iter().any(|l| l
+            .split_once(" -- ")
+            .is_some_and(|(_, lint)| lint.contains("-D warnings"))),
+        "ci.yml has no `cargo clippy ... -- -D warnings` for tests/spec_ci: {found:?}"
     );
 }
 

@@ -97,6 +97,11 @@ fn concurrency_cancels_superseded_runs_per_ref() {
             c.group
         );
         assert!(
+            c.is_per_event(),
+            "concurrency group `{}` does not include github.event_name",
+            c.group
+        );
+        assert!(
             c.cancel_in_progress,
             "cancel-in-progress not enabled for `{}`",
             c.group
@@ -118,4 +123,21 @@ fn concurrency_groups_of_the_two_workflows_cannot_collide() {
             a.group
         );
     }
+}
+
+#[test]
+fn toolchain_is_the_exact_pin_from_versions_toml() {
+    let want = format!("dtolnay/rust-toolchain@{}", pinned_toolchain());
+    let mut seen = 0;
+    for j in spikes().jobs() {
+        for u in j
+            .uses()
+            .iter()
+            .filter(|u| u.starts_with("dtolnay/rust-toolchain@"))
+        {
+            assert_eq!(*u, want, "job `{}` uses a different toolchain", j.id);
+            seen += 1;
+        }
+    }
+    assert!(seen > 0, "spikes.yml never installs {want}");
 }

@@ -108,6 +108,24 @@ fn concurrency_forms() {
 }
 
 #[test]
+fn toolchain_pin_parsing() {
+    let ok = "[other]\nrust = \"9.9.9\"\n[toolchain]\n# rust = \"0.0.0\"\nedition = \"2024\"\nrust = \"1.97.0\" # pin\n[crates]\nrust = \"2.0.0\"\n";
+    assert_eq!(toolchain_from_versions_toml(ok).as_deref(), Some("1.97.0"));
+    for bad in [
+        "",
+        "rust = \"1.97.0\"",
+        "[toolchain]\nrust = \"stable\"",
+        "[toolchain]\nrust = \"1.97\"",
+        "[toolchain]\nrust = 1\n",
+        "[crates]\nrust = \"1.2.3\"",
+    ] {
+        assert_eq!(toolchain_from_versions_toml(bad), None, "{bad:?}");
+    }
+    // The real file carries a full x.y.z pin.
+    assert_eq!(pinned_toolchain().split('.').count(), 3);
+}
+
+#[test]
 fn arm64_macos_labels() {
     for ok in [
         "macos-latest",
@@ -156,6 +174,7 @@ proptest! {
         let _ = selected_packages(&s);
         let _ = excluded_packages(&s);
         let _ = cargo_lines(&s, "test");
+        let _ = toolchain_from_versions_toml(&s);
     }
 
     #[test]
