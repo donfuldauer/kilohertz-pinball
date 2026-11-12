@@ -73,3 +73,19 @@ Spikes live in `spikes/` (standalone Cargo workspace; run with `cargo test --man
 **Decision:** `spikes/` is its own workspace listing seven crates explicitly (`sdl_timestamp`, `sdl_virtual_joystick`, `wgpu_probe`, `mlua_sandbox`, `wasmtime_fuel`, `parry_nonlinear`, `dep_smoke`) and `exclude`s `spec_0_1` (the Independent Tester's crate). SDL and wgpu-probe tests are `harness = false`. Linux CI installs `mesa-vulkan-drivers`, Xvfb and the SDL build headers and runs tests under `xvfb-run -a`; `cargo fmt --check` runs on Linux only, clippy on all three OSes. `spikes/Cargo.lock` is committed so transitive versions are reproducible.
 **Rationale:** Brief layout; main-thread SDL on macOS; one SDL init per process; Xvfb makes Q4 meaningful on Linux.
 **Alternatives:** A libtest harness with `#[test]` SDL tests (rejected: off-main-thread SDL video is unsafe on macOS and SDL cannot be re-initialised concurrently).
+
+## 0.1 — CI results (resolves the "CI pending" entries above)
+
+Spikes CI run 43140608468 (commit a417638), all three jobs green, rustc 1.99.1 on the runners.
+
+| Question | Linux (ubuntu-latest) | Windows (windows-latest) | macOS (macos-latest, aarch64) |
+|---|---|---|---|
+| Adapter | llvmpipe/Vulkan, Mesa 26.0.8, LLVM 21.1.8 (+ GL llvmpipe) | DX12 WARP "Microsoft Basic Render Driver" | Metal "Apple Paravirtual device" |
+| Q1 ns timestamp | pass | pass (100 ns clock granularity) | pass |
+| Q2 headless virtual joystick | pass | pass | pass |
+| Q3 `EXPERIMENTAL_RAY_QUERY` | Vulkan yes, GL no | no | no |
+| Q4 present modes | [Immediate, Mailbox, Fifo, FifoRelaxed] (Xvfb) | [Mailbox, Fifo, Immediate] | [Fifo, Immediate] |
+| Q5 offscreen render + readback | pass | pass on WARP | pass on Metal |
+| Q6 mlua / wasmtime / parry | pass, identical counts on all OSes | pass | pass |
+
+**Consequences.** Only Linux lavapipe can exercise the ray-query path in hosted CI; Windows and macOS validate the probe fallback (D18, D33). macOS reports no `Mailbox`, so secondary surfaces there use `Immediate` or a presenter thread (D19). The local Mesa in Q3 above (25.2.8) differs from CI (26.0.8); answers agree.
