@@ -211,7 +211,23 @@ fn replay_is_identical() {
         snaps
     };
     let a = run();
-    assert_eq!(a, run());
+    // Gate step 6: the replay hash is stable over 10 runs.
+    let hash = |v: &[FrameStateSnapshot]| {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for s in v {
+            s.tick.hash(&mut h);
+            s.lamps[0].to_bits().hash(&mut h);
+            s.gi[0].to_bits().hash(&mut h);
+        }
+        h.finish()
+    };
+    let h0 = hash(&a);
+    for _ in 0..10 {
+        let b = run();
+        assert_eq!(a, b);
+        assert_eq!(hash(&b), h0);
+    }
     assert_eq!(a.last().unwrap().tick, 100);
 }
 

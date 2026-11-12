@@ -13,9 +13,11 @@
 //!   is frame 0 of that call. Unregistered ids count in
 //!   [`Mixer::unknown_sounds`]; zero-length samples start nothing.
 //! * **Voices.** Bus `b` has `max_voices[b]` slots. A new voice takes the
-//!   lowest free slot; on a full bus it steals the *oldest* voice (earliest
-//!   start frame; voices started in the same `render` call are equally old,
-//!   and the tie goes to the lowest slot) and counts in
+//!   lowest free slot; on a full bus it steals the *oldest* voice — the one
+//!   whose trigger arrived first (voices are numbered in trigger arrival
+//!   order, so triggers drained in the same `render` call steal in arrival
+//!   order too; slot order would only break a tie, which cannot occur) — and
+//!   counts in
 //!   [`Mixer::stolen_voices`]. A bus with 0 slots ignores its triggers.
 //!   A voice's gain is the trigger gain clamped to `≥ 0` (NaN → 0); it stops
 //!   after its sample's last frame (no looping).

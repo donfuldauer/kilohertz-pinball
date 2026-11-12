@@ -30,6 +30,10 @@ impl AudioCallback<f32> for Callback {
             let buf = &mut self.scratch[..n];
             mixer.render(buf);
             // A failed put only drops this buffer; nothing to recover here.
+            // Note: SDL_PutAudioStreamData copies into SDL's own queue and may
+            // allocate (and builds an error string on failure) on this audio
+            // thread. That is inherent to SDL3 audio streams; `Mixer::render`
+            // itself never allocates.
             let _ = stream.put_data_f32(buf);
             left -= n;
         }

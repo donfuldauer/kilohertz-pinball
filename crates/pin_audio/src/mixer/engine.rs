@@ -110,8 +110,8 @@ struct Voice {
     /// Next frame of the sample to play.
     pos: usize,
     gain: f32,
-    /// Mixer frame clock when the voice started (its age).
-    start: u64,
+    /// Arrival number of the trigger that started the voice (its age).
+    seq: u64,
 }
 
 /// The audio-thread mixer (see the module docs for the exact semantics).
@@ -127,6 +127,8 @@ pub struct Mixer {
     release_step: f64,
     duck_curve: Vec<f32>,
     clock: u64,
+    /// Triggers started so far; numbers voices in arrival order.
+    next_seq: u64,
     stolen: u64,
     unknown: u64,
 }
@@ -160,6 +162,7 @@ impl Mixer {
             release_step: ramp_step(span, cfg.duck_release_ms, cfg.sample_rate),
             duck_curve: vec![1.0; BLOCK_FRAMES],
             clock: 0,
+            next_seq: 0,
             stolen: 0,
             unknown: 0,
             cfg,
@@ -257,9 +260,9 @@ impl Mixer {
         let slot = match voices.iter().position(|v| !v.active) {
             Some(free) => free,
             None => {
-                // Oldest = earliest start; ties go to the lowest slot.
-                let Some((oldest, _)) =
-                    voices.iter().enumerate().min_by_key(|(i, v)| (v.start, *i))
+                // Oldest = earliest trigger (sequence numbers are unique, so
+                // the slot tie-break below never decides in practice).
+                let Some((oldest, _)) = voices.iter().enumerate().min_by_key(|(i, v)| (v.seq, *i))
                 else {
                     return; // max_voices == 0: the bus is muted.
                 };
@@ -272,8 +275,9 @@ impl Mixer {
             sound: t.sound.0,
             pos: 0,
             gain: if t.gain > 0.0 { t.gain } else { 0.0 },
-            start: self.clock,
+            seq: self.next_seq,
         };
+        self.next_seq += 1;
     }
 
     fn render_block(&mut self, out: &mut [f32]) {

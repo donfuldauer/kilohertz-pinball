@@ -161,7 +161,11 @@ fn page_tools_round_trip_the_fixture() {
     recrc(&mut copy);
     assert_eq!(copy, OGG);
     // A file rebuilt from the same packets decodes (granules: last = length).
-    let last = i64::from_le_bytes(OGG[pages(OGG).last().unwrap().0 + 6..][..8].try_into().unwrap());
+    let last = i64::from_le_bytes(
+        OGG[pages(OGG).last().unwrap().0 + 6..][..8]
+            .try_into()
+            .unwrap(),
+    );
     let mut rebuilt: Vec<(Vec<u8>, u64)> = p.iter().map(|d| (d.clone(), 0)).collect();
     rebuilt.last_mut().unwrap().1 = last as u64;
     let s = decode(&write_ogg(&rebuilt, 7), 22_050).unwrap();
@@ -199,7 +203,12 @@ fn vendored_comment_parser_checks_lengths() {
 
 #[test]
 fn identification_rate_is_bounded() {
-    for (rate, expect_ok) in [(u32::MAX, false), (384_001, false), (100, false), (44_100, true)] {
+    for (rate, expect_ok) in [
+        (u32::MAX, false),
+        (384_001, false),
+        (100, false),
+        (44_100, true),
+    ] {
         let mut b = OGG.to_vec();
         b[40..44].copy_from_slice(&rate.to_le_bytes());
         recrc(&mut b);
@@ -215,7 +224,11 @@ fn identification_rate_is_bounded() {
 #[test]
 fn granule_length_is_checked_up_front() {
     let (last, _, _) = *pages(OGG).last().unwrap();
-    for (frames, too_long) in [(600 * 22_050u64, false), (600 * 22_050 + 1, true), (25 * 60 * 22_050, true)] {
+    for (frames, too_long) in [
+        (600 * 22_050u64, false),
+        (600 * 22_050 + 1, true),
+        (25 * 60 * 22_050, true),
+    ] {
         let mut b = OGG.to_vec();
         b[last + 6..last + 14].copy_from_slice(&frames.to_le_bytes());
         recrc(&mut b);
@@ -250,7 +263,10 @@ fn chained_or_multiplexed_streams_are_unsupported() {
 fn setup_codebook_bombs_are_rejected_without_aborting() {
     // Sanity: the packer produces a setup lewton parses up to the bombs.
     let small = with_setup(setup_packet(1, 2, 1, 0));
-    assert!(matches!(decode(&small, 48_000), Err(DecodeError::Malformed(_))));
+    assert!(matches!(
+        decode(&small, 48_000),
+        Err(DecodeError::Malformed(_))
+    ));
     for (dims, entries, len, lookup) in [
         // 2^24 − 1 ordered entries from 24 bits of input.
         (1u16, (1u32 << 24) - 1, 1u8, 0u8),

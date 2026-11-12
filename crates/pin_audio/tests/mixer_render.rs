@@ -155,13 +155,38 @@ fn oldest_voice_is_stolen() {
     trig(&mut tx, SoundId(14), 1.0);
     let out = render(&mut m, 8);
     assert_eq!(out[0], 1.0 / 32.0 + 1.0 / 64.0 + 1.0 / 128.0);
-    // Now 12 and 13 started together (tie) at slots 2 and 0: lowest slot (0,
-    // sound 13) is stolen... but 14 (slot 1) is younger, so 13 goes.
+    // 12 (third trigger) is now the oldest, though 13 was drained in the
+    // same call and sits in a lower slot: age is trigger arrival order.
     trig(&mut tx, SoundId(10), 1.0);
     let out = render(&mut m, 8);
-    assert_eq!(out[0], 1.0 / 8.0 + 1.0 / 32.0 + 1.0 / 128.0);
+    assert_eq!(out[0], 1.0 / 8.0 + 1.0 / 64.0 + 1.0 / 128.0);
     assert_eq!(m.stolen_voices(), 3);
     assert_eq!(m.active_voices(Bus::Sfx), 3);
+}
+
+#[test]
+fn same_call_triggers_steal_in_arrival_order() {
+    let (mut tx, mut m) = setup(MixerConfig {
+        max_voices: [2, 4, 24],
+        ..MixerConfig::default()
+    });
+    // A, B, C, D on the 2-voice music bus in one buffer: C and D survive.
+    for (i, level) in [
+        (20u16, 1.0 / 2.0),
+        (21, 1.0 / 4.0),
+        (22, 1.0 / 8.0),
+        (23, 1.0 / 16.0),
+    ] {
+        m.register(
+            SoundId(i),
+            Arc::new(Sample::constant(100, level, level)),
+            Bus::Music,
+        );
+        trig(&mut tx, SoundId(i), 1.0);
+    }
+    let out = render(&mut m, 4);
+    assert_eq!(out[0], 1.0 / 8.0 + 1.0 / 16.0);
+    assert_eq!(m.stolen_voices(), 2);
 }
 
 #[test]

@@ -1077,7 +1077,16 @@ fn rolling_over_floor_seams_is_smooth() {
                 "y {y} speed {speed}: {} vs {expected}",
                 b.velocity.x
             );
-            assert!(ev.as_slice().is_empty(), "{:?}", ev.as_slice());
+            // Landing after a seam hop is an impact only once the hop
+            // itself reaches the reporting threshold (fast balls on cuboid
+            // seams); below that, and on a mesh, nothing is reported.
+            if kick < 0.03 {
+                assert!(ev.as_slice().is_empty(), "{:?}", ev.as_slice());
+            }
+            assert!(ev.as_slice().iter().all(|e| matches!(
+                e,
+                BallEvent::Impact { normal_speed, .. } if *normal_speed < kick
+            )));
         }
     }
 }

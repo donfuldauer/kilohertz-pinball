@@ -72,23 +72,22 @@ proptest! {
         let (mut tx, rx) = trigger_ring(64);
         let mut m = Mixer::new(MixerConfig { duck_gain: 1.0, ..MixerConfig::default() }, rx);
         let cfg = *m.config();
-        // Model of the voice slots: lowest free slot, else steal the oldest
-        // (all start in this call, so equally old: the lowest slot).
-        let mut slots: [Vec<Option<f32>>; 3] = cfg.max_voices.map(|n| vec![None; n]);
+        // Model: each bus keeps the newest max_voices triggers (oldest by
+        // arrival order is stolen).
+        let mut per_bus = [Vec::new(), Vec::new(), Vec::new()];
         for (i, &(lv, b, g)) in levels.iter().enumerate() {
             let bus = Bus::ALL[usize::from(b)];
             m.register(SoundId(i as u16), Arc::new(Sample::constant(10_000, lv, -lv)), bus);
             tx.send(SoundTrigger { sound: SoundId(i as u16), gain: g });
-            let s = &mut slots[bus.index()];
-            if let Some(free) = s.iter().position(Option::is_none) {
-                s[free] = Some(lv * g);
-            } else if !s.is_empty() {
-                s[0] = Some(lv * g);
-            }
+            per_bus[bus.index()].push(lv * g);
         }
         let mut out = vec![0.0; 2 * frames];
         m.render(&mut out);
-        let expect: f64 = slots.iter().flatten().flatten().map(|&x| f64::from(x)).sum();
+        let mut expect = 0.0f64;
+        for (b, v) in per_bus.iter().enumerate() {
+            let keep = v.len().min(cfg.max_voices[b]);
+            expect += v[v.len() - keep..].iter().map(|&x| f64::from(x)).sum::<f64>();
+        }
         for f in out.chunks(2) {
             prop_assert!(f[0].abs() <= 1.0 && f[1].abs() <= 1.0);
             prop_assert!((f64::from(f[0]) - expect).abs() < 1e-4);

@@ -269,9 +269,10 @@ impl Resampler {
         self.prev = self.last;
         self.last = (l, r);
         // Source frame k = n_in - 1 just arrived: every pending output frame
-        // with i = floor(j·src/dst) = k - 1 can now be interpolated.
+        // with i = floor(j·src/dst) = k - 1 can now be interpolated (none
+        // when k = 0).
         let k = self.n_in - 1;
-        while k >= 1 {
+        loop {
             let pos = self.j * self.src;
             let i = pos / self.dst;
             if i + 1 > k {
@@ -373,7 +374,10 @@ fn scan_ogg_pages(b: &[u8]) -> OggScan {
         if b.len() < p + 27 + segs {
             break;
         }
-        let body: usize = b[p + 27..p + 27 + segs].iter().map(|&x| usize::from(x)).sum();
+        let body: usize = b[p + 27..p + 27 + segs]
+            .iter()
+            .map(|&x| usize::from(x))
+            .sum();
         let mut word = [0u8; 8];
         word.copy_from_slice(&b[p + 6..p + 14]);
         let granule = u64::from_le_bytes(word);
@@ -438,11 +442,7 @@ fn decode_vorbis(bytes: &[u8], dst: u32) -> Result<Sample, DecodeError> {
     let limit = scan.last_granule.unwrap_or(u64::MAX);
     let mut rs = Resampler::new(src, dst, scan.last_granule.unwrap_or(0));
     let mut pwr = PreviousWindowRight::new();
-    'packets: loop {
-        let packet = match rdr.read_packet().map_err(malformed)? {
-            Some(p) => p,
-            None => break,
-        };
+    'packets: while let Some(packet) = rdr.read_packet().map_err(malformed)? {
         if packet.stream_serial() != scan.serial {
             return Err(DecodeError::Unsupported);
         }
@@ -628,7 +628,10 @@ mod tests {
         assert_eq!(decode(&bytes, 8_000), Err(DecodeError::TooLong));
         // Exactly 600 s claimed is within the cap (then fails as truncated).
         claim_data_len(&mut bytes, 600 * 8_000);
-        assert!(matches!(decode(&bytes, 8_000), Err(DecodeError::Malformed(_))));
+        assert!(matches!(
+            decode(&bytes, 8_000),
+            Err(DecodeError::Malformed(_))
+        ));
         // 600 s at 8 kHz upsampled to 48 kHz is still 600 s: fine; a claim
         // of u32::MAX bytes is too long.
         claim_data_len(&mut bytes, u32::MAX);
