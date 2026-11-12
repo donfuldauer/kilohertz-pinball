@@ -147,15 +147,18 @@ impl InputIngest {
             .unwrap_or(self.pending.len());
         for i in 0..n {
             let ev = self.pending[i];
-            self.apply(ev.kind, tick);
+            self.apply(ev.kind);
         }
         self.pending.drain(..n);
 
-        // End of a debounce window: settle to the raw state if it differs.
-        if self.cfg.debounce_ms > 0 {
+        // Debounce on the tick-sampled raw state: a change since the last
+        // applied state is an edge; it is accepted unless the input is inside
+        // a window opened by an earlier accepted edge. A window that has ended
+        // settles to the current raw state the same way.
+        let changed = self.raw ^ self.applied;
+        if changed != 0 {
             for i in 0..CabinetInput::COUNT {
-                let bit = 1u8 << i;
-                if tick >= self.lock_until[i] && (self.raw ^ self.applied) & bit != 0 {
+                if changed & (1u8 << i) != 0 && tick >= self.lock_until[i] {
                     self.accept_edge(i, tick);
                 }
             }
@@ -168,20 +171,14 @@ impl InputIngest {
         }
     }
 
-    fn apply(&mut self, kind: InputEventKind, tick: u64) {
+    fn apply(&mut self, kind: InputEventKind) {
         match kind {
             InputEventKind::Button { input, pressed } => {
-                let i = input.index();
-                let bit = 1u8 << i;
+                let bit = 1u8 << input.index();
                 if pressed {
                     self.raw |= bit;
                 } else {
                     self.raw &= !bit;
-                }
-                if self.cfg.debounce_ms == 0 {
-                    self.applied = (self.applied & !bit) | (self.raw & bit);
-                } else if tick >= self.lock_until[i] && (self.raw ^ self.applied) & bit != 0 {
-                    self.accept_edge(i, tick);
                 }
             }
             InputEventKind::Axis { axis, value } => {

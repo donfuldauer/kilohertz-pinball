@@ -69,3 +69,17 @@ unchanged):
 ## Requests
 
 _None yet._
+
+### CR-001: `pin_core::spsc` bounded lock-free SPSC ring
+- **Requested by:** Subphase 1.3 (Implementer)
+- **Status:** open
+- **Kind:** additive
+- **Items:** new file `crates/pin_core/src/spsc.rs`, new line `pub mod spsc;` in `crates/pin_core/src/lib.rs`; new tests `crates/pin_core/tests/spsc_stress.rs`, `crates/pin_core/tests/spsc_alloc.rs`.
+- **Change:** new module, nothing existing changes:
+  `pub fn channel<T: Copy + Send>(capacity: usize) -> (SpscProducer<T>, SpscConsumer<T>)` (panics if `capacity == 0`);
+  `SpscProducer::{push(&mut self, T) -> Result<(), T>, len, is_empty, is_full, capacity}`;
+  `SpscConsumer::{pop(&mut self) -> Option<T>, peek(&mut self) -> Option<T>, len, is_empty, capacity}`.
+  Exact capacity (not rounded), FIFO, both ends `Send`; push/pop are wait-free, lock-free and allocation-free (only `channel` allocates).
+- **Why:** PLAN §2.2: the main thread forwards timestamped `InputEvent`s to the sim thread (pin_app → pin_sim) and window events to the render thread (pin_app → pin_render) through SPSC rings; the ring type crosses crates, so it belongs in pin_core (Orchestrator Wave 2 decision "1.3 SPSC ring in pin_core").
+- **Affected crates:** none (additive).
+- **Workaround meanwhile:** none needed; the additive change is made in the new file as the brief allows.

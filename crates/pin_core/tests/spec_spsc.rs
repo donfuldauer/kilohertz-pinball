@@ -23,7 +23,9 @@ fn assert_send<T: Send>() {}
 /// An event whose every field is derived from its sequence number, so both
 /// reordering and corruption of the timestamp are detectable.
 fn event_for(seq: u64) -> InputEvent {
-    let timestamp_ns = seq.wrapping_mul(1_000_003).wrapping_add(0xDEAD_BEEF_0000_0000);
+    let timestamp_ns = seq
+        .wrapping_mul(1_000_003)
+        .wrapping_add(0xDEAD_BEEF_0000_0000);
     if seq.is_multiple_of(3) {
         let axis = CabinetAxis::ALL[(seq as usize / 3) % CabinetAxis::ALL.len()];
         InputEvent::axis(timestamp_ns, axis, (seq % 2001) as f32 / 1000.0 - 1.0)
@@ -108,10 +110,16 @@ fn len_tracks_pushes_and_pops() {
 /// that round up internally or keep one slot empty get exactly these wrong.
 #[test]
 fn capacity_is_exact() {
-    for capacity in [1usize, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 100, 1000, 1024, 1025] {
+    for capacity in [
+        1usize, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 100, 1000, 1024, 1025,
+    ] {
         let (mut tx, mut rx) = channel::<usize>(capacity);
         for i in 0..capacity {
-            assert_eq!(tx.push(i), Ok(()), "capacity {capacity}: push #{i} must fit");
+            assert_eq!(
+                tx.push(i),
+                Ok(()),
+                "capacity {capacity}: push #{i} must fit"
+            );
             assert_eq!(rx.len(), i + 1, "capacity {capacity}");
         }
         assert_eq!(
@@ -123,7 +131,11 @@ fn capacity_is_exact() {
         for i in 0..capacity {
             assert_eq!(rx.pop(), Some(i), "capacity {capacity}");
         }
-        assert_eq!(rx.pop(), None, "capacity {capacity}: refused value must not appear");
+        assert_eq!(
+            rx.pop(),
+            None,
+            "capacity {capacity}: refused value must not appear"
+        );
     }
 }
 
@@ -359,7 +371,11 @@ fn cross_thread_transfer(capacity: usize) {
     producer.join().expect("producer thread panicked");
     let mut rx = consumer.join().expect("consumer thread panicked");
     assert_eq!(rx.len(), 0);
-    assert_eq!(rx.pop(), None, "no duplicate or phantom item after the transfer");
+    assert_eq!(
+        rx.pop(),
+        None,
+        "no duplicate or phantom item after the transfer"
+    );
 }
 
 #[test]

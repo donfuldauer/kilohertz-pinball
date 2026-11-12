@@ -89,8 +89,17 @@ fn brute_closest(s: &CubicSpline, p: Vec3) -> (f32, f32) {
 
 fn check_closest(s: &CubicSpline, p: Vec3, cp: &ClosestPoint) {
     let n = s.segment_count() as f32;
-    assert!(cp.t.is_finite() && cp.t >= 0.0 && cp.t <= n, "t out of range: {}", cp.t);
-    assert_close(cp.point, s.point(cp.t), 1e-4, "closest.point == point(closest.t)");
+    assert!(
+        cp.t.is_finite() && cp.t >= 0.0 && cp.t <= n,
+        "t out of range: {}",
+        cp.t
+    );
+    assert_close(
+        cp.point,
+        s.point(cp.t),
+        1e-4,
+        "closest.point == point(closest.t)",
+    );
     assert!(
         (cp.distance - (p - cp.point).length()).abs() <= 1e-5,
         "closest.distance {} inconsistent with |p - point| {}",
@@ -124,7 +133,11 @@ fn path_strategy() -> impl Strategy<Value = Vec<Vec3>> {
 /// Arbitrary points in a 1 m box, consecutive points at least 2 cm apart.
 fn wild_points_strategy() -> impl Strategy<Value = Vec<Vec3>> {
     prop::collection::vec((-1.0f32..1.0, -1.0f32..1.0, -0.2f32..0.2), 2..8)
-        .prop_map(|v| v.into_iter().map(|(x, y, z)| Vec3::new(x, y, z)).collect::<Vec<_>>())
+        .prop_map(|v| {
+            v.into_iter()
+                .map(|(x, y, z)| Vec3::new(x, y, z))
+                .collect::<Vec<_>>()
+        })
         .prop_filter("consecutive points too close", |pts| {
             pts.windows(2).all(|w| (w[0] - w[1]).length() > 0.02)
         })
@@ -145,21 +158,46 @@ fn check_interpolation(s: &CubicSpline, pts: &[Vec3]) {
     assert_eq!(s.segment_count(), pts.len() - 1);
     assert_eq!(s.segments().len(), pts.len() - 1);
     for (i, &q) in pts.iter().enumerate() {
-        assert_close(s.point(i as f32), q, 1e-5 * (1.0 + q.length()), "point(i) == through-point");
+        assert_close(
+            s.point(i as f32),
+            q,
+            1e-5 * (1.0 + q.length()),
+            "point(i) == through-point",
+        );
     }
 }
 
 fn check_bezier_storage(s: &CubicSpline, pts: &[Vec3]) {
     for (i, seg) in s.segments().iter().enumerate() {
-        assert_close(seg.p[0], pts[i], 1e-5 * (1.0 + pts[i].length()), "segment start");
-        assert_close(seg.p[3], pts[i + 1], 1e-5 * (1.0 + pts[i + 1].length()), "segment end");
+        assert_close(
+            seg.p[0],
+            pts[i],
+            1e-5 * (1.0 + pts[i].length()),
+            "segment start",
+        );
+        assert_close(
+            seg.p[3],
+            pts[i + 1],
+            1e-5 * (1.0 + pts[i + 1].length()),
+            "segment end",
+        );
         for k in 0..=10 {
             let u = k as f32 / 10.0;
             let t = i as f32 + u;
             let tol = 1e-5 * (1.0 + seg.p.iter().map(|v| v.length()).fold(0.0, f32::max));
-            assert_close(s.point(t), bezier_eval(seg, u), tol, "point(t) == Bézier eval");
+            assert_close(
+                s.point(t),
+                bezier_eval(seg, u),
+                tol,
+                "point(t) == Bézier eval",
+            );
             let sc = d1_scale(s);
-            assert_close(s.tangent(t), bezier_d1(seg, u), 1e-4 * sc, "tangent(t) == Bézier d1");
+            assert_close(
+                s.tangent(t),
+                bezier_d1(seg, u),
+                1e-4 * sc,
+                "tangent(t) == Bézier d1",
+            );
             assert_close(
                 s.second_derivative(t),
                 bezier_d2(seg, u),
@@ -189,11 +227,26 @@ fn check_continuity(s: &CubicSpline) {
     // Natural end conditions: zero second derivative at both ends.
     let first = &segs[0];
     let last = &segs[segs.len() - 1];
-    assert_close(bezier_d2(first, 0.0), Vec3::ZERO, 1e-3 * sc, "natural start");
+    assert_close(
+        bezier_d2(first, 0.0),
+        Vec3::ZERO,
+        1e-3 * sc,
+        "natural start",
+    );
     assert_close(bezier_d2(last, 1.0), Vec3::ZERO, 1e-3 * sc, "natural end");
     let n = segs.len() as f32;
-    assert_close(s.second_derivative(0.0), Vec3::ZERO, 1e-3 * sc, "second_derivative(0)");
-    assert_close(s.second_derivative(n), Vec3::ZERO, 1e-3 * sc, "second_derivative(n-1)");
+    assert_close(
+        s.second_derivative(0.0),
+        Vec3::ZERO,
+        1e-3 * sc,
+        "second_derivative(0)",
+    );
+    assert_close(
+        s.second_derivative(n),
+        Vec3::ZERO,
+        1e-3 * sc,
+        "second_derivative(n-1)",
+    );
 }
 
 // ---------------------------------------------------------------- deterministic tests
@@ -214,12 +267,24 @@ fn two_points_is_a_straight_line() {
 
 #[test]
 fn collinear_evenly_spaced_points_give_constant_speed() {
-    let pts: Vec<Vec3> = (0..6).map(|i| Vec3::new(0.1 * i as f32, 0.0, 0.0)).collect();
+    let pts: Vec<Vec3> = (0..6)
+        .map(|i| Vec3::new(0.1 * i as f32, 0.0, 0.0))
+        .collect();
     let s = CubicSpline::interpolate(&pts).unwrap();
     for k in 0..=50 {
         let t = 5.0 * k as f32 / 50.0;
-        assert_close(s.point(t), Vec3::new(0.1 * t, 0.0, 0.0), 1e-5, "uniform line");
-        assert_close(s.tangent(t), Vec3::new(0.1, 0.0, 0.0), 1e-4, "uniform speed");
+        assert_close(
+            s.point(t),
+            Vec3::new(0.1 * t, 0.0, 0.0),
+            1e-5,
+            "uniform line",
+        );
+        assert_close(
+            s.tangent(t),
+            Vec3::new(0.1, 0.0, 0.0),
+            1e-4,
+            "uniform speed",
+        );
     }
 }
 
@@ -241,7 +306,11 @@ fn semicircle_guide_invariants() {
 
 #[test]
 fn parameter_is_clamped() {
-    let pts = [Vec3::ZERO, Vec3::new(0.2, 0.1, 0.0), Vec3::new(0.4, 0.0, 0.05)];
+    let pts = [
+        Vec3::ZERO,
+        Vec3::new(0.2, 0.1, 0.0),
+        Vec3::new(0.4, 0.0, 0.05),
+    ];
     let s = CubicSpline::interpolate(&pts).unwrap();
     assert_close(s.point(-3.0), pts[0], 1e-6, "clamp below");
     assert_close(s.point(7.5), pts[2], 1e-6, "clamp above");
@@ -372,9 +441,17 @@ fn seeded_tracking_follows_a_moving_ball() {
             seeded.distance,
             fresh.distance
         );
-        assert!((seeded.distance - 0.010).abs() < 2e-3, "distance {}", seeded.distance);
+        assert!(
+            (seeded.distance - 0.010).abs() < 2e-3,
+            "distance {}",
+            seeded.distance
+        );
         if let Some(prev) = seed {
-            assert!(seeded.t >= prev - 1e-4, "parameter went backwards: {prev} -> {}", seeded.t);
+            assert!(
+                seeded.t >= prev - 1e-4,
+                "parameter went backwards: {prev} -> {}",
+                seeded.t
+            );
         }
         seed = Some(seeded.t);
     }

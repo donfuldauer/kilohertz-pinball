@@ -10,9 +10,10 @@
 //!   `Err(value)` and leaves the ring unchanged.
 //! * Items come out in the order they went in (FIFO).
 //!
-//! Implementation: `head` (next slot to read) and `tail` (next slot to write)
-//! are free-running `usize` counters; the occupied count is `tail - head`
-//! (wrapping) and a counter maps to slot `counter % capacity`. The producer is
+//! Implementation: `head` (next position to read) and `tail` (next position to
+//! write) run over `0..2 * capacity`, so a full ring (`tail - head ==
+//! capacity`) and an empty one (`tail == head`) are distinct for any capacity;
+//! position `p` maps to slot `p` or `p - capacity`. The producer is
 //! the only writer of `tail`, the consumer the only writer of `head`; each
 //! publishes with `Release` and reads the other's counter with `Acquire`, which
 //! orders the slot contents. Each side caches the other's counter to avoid
@@ -42,9 +43,32 @@ impl<T> Shared<T> {
         self.slots.len()
     }
 
+    /// Slot of position `pos` (`pos < 2 * capacity`).
     #[inline]
-    fn slot(&self, counter: usize) -> *mut MaybeUninit<T> {
-        self.slots[counter % self.slots.len()].get()
+    fn slot(&self, pos: usize) -> *mut MaybeUninit<T> {
+        let cap = self.slots.len();
+        let i = if pos >= cap { pos - cap } else { pos };
+        self.slots[i].get()
+    }
+
+    /// Number of items between positions `head` and `tail`.
+    #[inline]
+    fn distance(&self, head: usize, tail: usize) -> usize {
+        if tail >= head {
+            tail - head
+        } else {
+            tail + 2 * self.slots.len() - head
+        }
+    }
+
+    /// The position after `pos`.
+    #[inline]
+    fn next(&self, pos: usize) -> usize {
+        if pos + 1 == 2 * self.slots.len() {
+            0
+        } else {
+            pos + 1
+        }
     }
 }
 
@@ -60,9 +84,13 @@ unsafe impl<T: Send> Send for Shared<T> {}
 /// This is the ring's only allocation.
 ///
 /// # Panics
-/// If `capacity` is 0.
+/// If `capacity` is 0 or larger than `usize::MAX / 4`.
 pub fn channel<T: Copy + Send>(capacity: usize) -> (SpscProducer<T>, SpscConsumer<T>) {
     assert!(capacity >= 1, "spsc::channel capacity must be at least 1");
+    assert!(
+        capacity <= usize::MAX / 4,
+        "spsc::channel capacity too large"
+    );
     let slots = (0..capacity)
         .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
         .collect::<Vec<_>>()
@@ -101,18 +129,19 @@ impl<T: Copy + Send> SpscProducer<T> {
     /// Wait-free, lock-free and allocation-free.
     #[inline]
     pub fn push(&mut self, value: T) -> Result<(), T> {
-        let cap = self.shared.capacity();
-        if self.tail.wrapping_sub(self.head_cache) >= cap {
-            self.head_cache = self.shared.head.0.load(Ordering::Acquire);
-            if self.tail.wrapping_sub(self.head_cache) >= cap {
+        let shared = &*self.shared;
+        let cap = shared.capacity();
+        if shared.distance(self.head_cache, self.tail) >= cap {
+            self.head_cache = shared.head.0.load(Ordering::Acquire);
+            if shared.distance(self.head_cache, self.tail) >= cap {
                 return Err(value);
             }
         }
         // SAFETY: the slot for `tail` is outside `head..tail`, so the consumer
         // does not read it until the Release store below publishes it.
-        unsafe { (*self.shared.slot(self.tail)).write(value) };
-        self.tail = self.tail.wrapping_add(1);
-        self.shared.tail.0.store(self.tail, Ordering::Release);
+        unsafe { (*shared.slot(self.tail)).write(value) };
+        self.tail = shared.next(self.tail);
+        shared.tail.0.store(self.tail, Ordering::Release);
         Ok(())
     }
 
@@ -126,8 +155,8 @@ impl<T: Copy + Send> SpscProducer<T> {
     /// popping concurrently, so the true value can only be lower).
     #[inline]
     pub fn len(&self) -> usize {
-        self.tail
-            .wrapping_sub(self.shared.head.0.load(Ordering::Acquire))
+        self.shared
+            .distance(self.shared.head.0.load(Ordering::Acquire), self.tail)
     }
 
     /// `true` if no items are queued (snapshot, see [`len`](Self::len)).
@@ -169,7 +198,7 @@ impl<T: Copy + Send> SpscConsumer<T> {
         // this read, and the producer will not overwrite it until `head`
         // moves past it.
         let value = unsafe { (*self.shared.slot(self.head)).assume_init_read() };
-        self.head = self.head.wrapping_add(1);
+        self.head = self.shared.next(self.head);
         self.shared.head.0.store(self.head, Ordering::Release);
         Some(value)
     }
@@ -192,10 +221,7 @@ impl<T: Copy + Send> SpscConsumer<T> {
     #[inline]
     pub fn len(&self) -> usize {
         self.shared
-            .tail
-            .0
-            .load(Ordering::Acquire)
-            .wrapping_sub(self.head)
+            .distance(self.head, self.shared.tail.0.load(Ordering::Acquire))
     }
 
     /// `true` if no items are queued (snapshot, see [`len`](Self::len)).
@@ -287,21 +313,21 @@ mod tests {
     }
 
     #[test]
-    fn counters_wrap_at_usize_max() {
+    fn positions_wrap_for_odd_capacity() {
         let (mut p, mut c) = channel::<u32>(3);
-        let start = usize::MAX - 4;
-        p.tail = start;
-        p.head_cache = start;
-        c.head = start;
-        c.tail_cache = start;
-        p.shared.head.0.store(start, Ordering::Relaxed);
-        p.shared.tail.0.store(start, Ordering::Relaxed);
-        for i in 0..20u32 {
+        for i in 0..1000u32 {
             p.push(i).unwrap();
-            p.push(i + 100).unwrap();
+            p.push(i + 10_000).unwrap();
             assert_eq!(c.len(), 2);
             assert_eq!(c.pop(), Some(i));
-            assert_eq!(c.pop(), Some(i + 100));
+            assert_eq!(c.pop(), Some(i + 10_000));
+            assert!(p.tail < 6 && c.head < 6);
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "too large")]
+    fn huge_capacity_panics() {
+        let _ = channel::<u8>(usize::MAX);
     }
 }

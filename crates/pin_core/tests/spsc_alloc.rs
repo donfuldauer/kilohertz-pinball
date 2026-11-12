@@ -55,8 +55,12 @@ fn push_and_pop_do_not_allocate() {
 
     let before = allocs();
     for i in 0..10_000u64 {
-        let _ = tx.push(InputEvent::button(i, CabinetInput::LeftFlipper, i % 2 == 0));
-        if i % 3 == 0 {
+        let _ = tx.push(InputEvent::button(
+            i,
+            CabinetInput::LeftFlipper,
+            i.is_multiple_of(2),
+        ));
+        if i.is_multiple_of(3) {
             while rx.pop().is_some() {}
         }
         let _ = (rx.len(), tx.len(), rx.peek());

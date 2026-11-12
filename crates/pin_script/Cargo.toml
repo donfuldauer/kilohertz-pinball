@@ -9,3 +9,8 @@ license.workspace = true
 
 [dependencies]
 pin_core.workspace = true
+mlua.workspace = true
+notify.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

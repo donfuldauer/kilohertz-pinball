@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 557dcd944a5af05d3af9c1937fc955c74116868df534d8a74edb5c3b8b16ce83 # shrinks to debounce_ms = 1, mut edges = [(12000001, false), (12000001, true), (0, true)]
+cc e25823d15bbcd88be6070916e4976812cda8ac24fe6f9c67a29da58ce04a1e08 # shrinks to debounce_ms = 1, mut edges = [(1704891, false), (1000001, true)]

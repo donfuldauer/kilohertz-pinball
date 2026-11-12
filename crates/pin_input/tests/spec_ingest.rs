@@ -206,10 +206,22 @@ fn future_events_stay_pending() {
 #[test]
 fn skipped_ticks_apply_everything_due() {
     let mut ing = ingest(0);
-    push(&mut ing, InputEvent::button(2 * MS, CabinetInput::Start, true));
-    push(&mut ing, InputEvent::axis(7 * MS, CabinetAxis::NudgeX, -0.5));
-    push(&mut ing, InputEvent::button(9 * MS, CabinetInput::Start, false));
-    push(&mut ing, InputEvent::button(11 * MS, CabinetInput::Tilt, true));
+    push(
+        &mut ing,
+        InputEvent::button(2 * MS, CabinetInput::Start, true),
+    );
+    push(
+        &mut ing,
+        InputEvent::axis(7 * MS, CabinetAxis::NudgeX, -0.5),
+    );
+    push(
+        &mut ing,
+        InputEvent::button(9 * MS, CabinetInput::Start, false),
+    );
+    push(
+        &mut ing,
+        InputEvent::button(11 * MS, CabinetInput::Tilt, true),
+    );
     let f = ing.advance(10);
     assert_eq!(f.tick, 10);
     assert!(!f.pressed(CabinetInput::Start));
@@ -262,11 +274,17 @@ fn out_of_order_axis_values_end_on_latest_timestamp() {
 fn equal_timestamps_keep_push_order() {
     let mut ing = ingest(0);
     push(&mut ing, InputEvent::button(MS, CabinetInput::Action, true));
-    push(&mut ing, InputEvent::button(MS, CabinetInput::Action, false));
+    push(
+        &mut ing,
+        InputEvent::button(MS, CabinetInput::Action, false),
+    );
     assert!(!ing.advance(1).pressed(CabinetInput::Action));
 
     let mut ing = ingest(0);
-    push(&mut ing, InputEvent::button(MS, CabinetInput::Action, false));
+    push(
+        &mut ing,
+        InputEvent::button(MS, CabinetInput::Action, false),
+    );
     push(&mut ing, InputEvent::button(MS, CabinetInput::Action, true));
     assert!(ing.advance(1).pressed(CabinetInput::Action));
 
@@ -317,15 +335,27 @@ fn late_events_are_applied_at_the_next_advance_never_dropped() {
     let mut ing = ingest(0);
     assert_eq!(ing.advance(10).buttons, 0);
     // Stamped well before the tick we already advanced to.
-    push(&mut ing, InputEvent::button(2 * MS, CabinetInput::Start, true));
-    push(&mut ing, InputEvent::axis(3 * MS, CabinetAxis::Plunger, 0.4));
+    push(
+        &mut ing,
+        InputEvent::button(2 * MS, CabinetInput::Start, true),
+    );
+    push(
+        &mut ing,
+        InputEvent::axis(3 * MS, CabinetAxis::Plunger, 0.4),
+    );
     let f = ing.advance(11);
     assert!(f.pressed(CabinetInput::Start));
     assert_eq!(f.axis(CabinetAxis::Plunger), 0.4);
 
     // Late events delivered out of order still apply in timestamp order.
-    push(&mut ing, InputEvent::button(5 * MS, CabinetInput::Start, true));
-    push(&mut ing, InputEvent::button(4 * MS, CabinetInput::Start, false));
+    push(
+        &mut ing,
+        InputEvent::button(5 * MS, CabinetInput::Start, true),
+    );
+    push(
+        &mut ing,
+        InputEvent::button(4 * MS, CabinetInput::Start, false),
+    );
     assert!(ing.advance(12).pressed(CabinetInput::Start));
 }
 
@@ -447,7 +477,7 @@ fn events_not_yet_due_keep_occupying_capacity() {
     for k in 0..CAPACITY as u64 {
         push(
             &mut ing,
-            InputEvent::button(1000 * MS + k, CabinetInput::Start, true),
+            InputEvent::button(1000 * MS + k + 1, CabinetInput::Start, true),
         );
     }
     assert_eq!(ing.advance(5).buttons, 0);
@@ -474,7 +504,10 @@ fn partially_drained_queue_frees_exactly_the_drained_slots() {
     }
     ing.advance(1);
     for k in 0..100u64 {
-        push(&mut ing, InputEvent::axis(60 * MS + k, CabinetAxis::Plunger, 1.0));
+        push(
+            &mut ing,
+            InputEvent::axis(60 * MS + k, CabinetAxis::Plunger, 1.0),
+        );
     }
     let ev = InputEvent::axis(0, CabinetAxis::Plunger, 0.0);
     assert_eq!(ing.push(ev), Err(ev));
@@ -494,15 +527,15 @@ fn full_queue_delivered_in_reverse_is_applied_in_order() {
 
 // -------------------------------------------------------------- debounce
 
-fn trace(ing: &mut InputIngest, input: CabinetInput, ticks: std::ops::RangeInclusive<u64>) -> Vec<bool> {
+fn trace(
+    ing: &mut InputIngest,
+    input: CabinetInput,
+    ticks: std::ops::RangeInclusive<u64>,
+) -> Vec<bool> {
     ticks.map(|t| ing.advance(t).pressed(input)).collect()
 }
 
-fn expect_pressed_iff(
-    got: &[bool],
-    first_tick: u64,
-    pred: impl Fn(u64) -> bool,
-) {
+fn expect_pressed_iff(got: &[bool], first_tick: u64, pred: impl Fn(u64) -> bool) {
     for (k, g) in got.iter().enumerate() {
         let t = first_tick + k as u64;
         assert_eq!(*g, pred(t), "tick {t}: trace {got:?}");
@@ -571,7 +604,10 @@ fn debounce_is_per_input() {
     let mut ing = ingest(8);
     push(&mut ing, InputEvent::button(500_000, L, true));
     push(&mut ing, InputEvent::button(MS + 500_000, R, true));
-    push(&mut ing, InputEvent::button(2 * MS + 500_000, CabinetInput::Start, true));
+    push(
+        &mut ing,
+        InputEvent::button(2 * MS + 500_000, CabinetInput::Start, true),
+    );
     let mut frames = Vec::new();
     for t in 0..=4 {
         frames.push(ing.advance(t));
@@ -637,15 +673,23 @@ fn extreme_timestamps_and_ticks_do_not_panic() {
             });
             push(&mut ing, InputEvent::button(u64::MAX, L, true));
             push(&mut ing, InputEvent::button(0, R, true));
-            push(&mut ing, InputEvent::axis(u64::MAX - 1, CabinetAxis::NudgeX, -9.0));
-            let mut last = 0;
-            for t in [0u64, 1, 1 << 40, u64::MAX / MS, u64::MAX / MS + 1, u64::MAX - 1, u64::MAX] {
+            push(
+                &mut ing,
+                InputEvent::axis(u64::MAX - 1, CabinetAxis::NudgeX, -9.0),
+            );
+            for t in [
+                0u64,
+                1,
+                1 << 40,
+                u64::MAX / MS,
+                u64::MAX / MS + 1,
+                u64::MAX - 1,
+                u64::MAX,
+            ] {
                 let f = ing.advance(t);
                 assert_eq!(f.tick, t);
                 assert!(f.pressed(R));
-                last = f.buttons;
             }
-            let _ = last;
         }
     }
 }
@@ -736,6 +780,19 @@ impl Model {
             }
         }
     }
+}
+
+/// At most one button report per tick (tick -> (pressed, ns before the tick
+/// boundary)), so the raw per-tick state is unambiguous under debounce.
+fn arb_per_tick_edges() -> impl Strategy<Value = std::collections::BTreeMap<u64, (bool, u64)>> {
+    prop::collection::btree_map(1u64..60, (any::<bool>(), 0u64..MS), 0..40)
+}
+
+/// Timestamp-sorted `(timestamp_ns, pressed)` list.
+fn edges_from(m: &std::collections::BTreeMap<u64, (bool, u64)>) -> Vec<(u64, bool)> {
+    m.iter()
+        .map(|(tick, (pressed, back))| (tick * MS - back, *pressed))
+        .collect()
 }
 
 proptest! {
@@ -834,10 +891,15 @@ proptest! {
         small in any::<bool>(),
     ) {
         let mut ing = InputIngest::new(IngestConfig { epoch_ns: epoch, debounce_ms });
+        if small {
+            for t in &mut ticks {
+                *t %= 5000;
+            }
+        }
         ticks.sort_unstable();
+        ticks.dedup();
         let mut it = events.into_iter();
         for t in ticks {
-            let t = if small { t % 5000 } else { t };
             for (ts, kind) in it.by_ref().take(40) {
                 let ts = if small { ts % (5000 * MS) } else { ts };
                 let _ = ing.push(InputEvent { timestamp_ns: ts, kind });
@@ -887,14 +949,14 @@ proptest! {
     #[test]
     fn prop_debounce_spacing_and_settling(
         debounce_ms in 1u16..12,
-        mut edges in prop::collection::vec((0u64..60 * MS, any::<bool>()), 0..40),
+        per_tick in arb_per_tick_edges(),
     ) {
         let mut ing = ingest(debounce_ms);
-        for (ts, pressed) in &edges {
+        let edges = edges_from(&per_tick);
+        // Deliver newest first: delivery order must not matter.
+        for (ts, pressed) in edges.iter().rev() {
             prop_assert!(ing.push(InputEvent::button(*ts, L, *pressed)).is_ok());
         }
-        // Raw state per tick (stable in timestamp order).
-        edges.sort_by_key(|e| e.0);
         let raw_at = |t: u64| edges.iter().rev().find(|e| e.0 <= t * MS).map(|e| e.1).unwrap_or(false);
         let last_tick = 60 + 3 * debounce_ms as u64 + 5;
         let out: Vec<bool> = (0..=last_tick).map(|t| ing.advance(t).pressed(L)).collect();
@@ -925,13 +987,13 @@ proptest! {
     #[test]
     fn prop_debounced_output_lags_raw_by_at_most_the_window(
         debounce_ms in 1u16..12,
-        mut edges in prop::collection::vec((0u64..60 * MS, any::<bool>()), 0..40),
+        per_tick in arb_per_tick_edges(),
     ) {
         let mut ing = ingest(debounce_ms);
+        let edges = edges_from(&per_tick);
         for (ts, pressed) in &edges {
             prop_assert!(ing.push(InputEvent::button(*ts, R, *pressed)).is_ok());
         }
-        edges.sort_by_key(|e| e.0);
         let raw_at = |t: u64| edges.iter().rev().find(|e| e.0 <= t * MS).map(|e| e.1).unwrap_or(false);
         for t in 0..=90u64 {
             let got = ing.advance(t).pressed(R);

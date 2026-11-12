@@ -10,10 +10,10 @@ const N: u64 = 100_000;
 
 fn event_for(i: u64) -> InputEvent {
     let ts = 1_000_000_000 + i * 997;
-    if i % 3 == 0 {
+    if i.is_multiple_of(3) {
         InputEvent::axis(ts, CabinetAxis::Plunger, (i % 1000) as f32 / 1000.0)
     } else {
-        InputEvent::button(ts, CabinetInput::ALL[(i % 8) as usize], i % 2 == 0)
+        InputEvent::button(ts, CabinetInput::ALL[(i % 8) as usize], i.is_multiple_of(2))
     }
 }
 

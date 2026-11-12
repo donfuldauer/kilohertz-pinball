@@ -9,8 +9,10 @@ license.workspace = true
 
 [dependencies]
 pin_core.workspace = true
+parry3d.workspace = true
+glam.workspace = true
+arrayvec.workspace = true
+libm.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-glam.workspace = true
-arrayvec.workspace = true
