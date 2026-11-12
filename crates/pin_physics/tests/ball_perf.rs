@@ -81,3 +81,48 @@ fn report_step_time_four_balls_300_colliders() {
     let mean = start.elapsed() / ticks;
     println!("ball step, 4 balls / 300 colliders: mean {mean:?}, worst {worst:?}");
 }
+
+/// Resting clusters are the expensive case of the joint contact solve (up
+/// to 64 sweeps): rows of touching balls on a pitched floor against a wall.
+#[test]
+#[ignore = "timing report, run in release"]
+fn report_step_time_resting_rows() {
+    for count in [4usize, 6, 16] {
+        let mut b = StaticWorldBuilder::new();
+        b.add_collider(
+            cuboid(v(0.0, 0.0, -0.05), v(2.0, 2.0, 0.05)),
+            layers::ALL,
+            true,
+        );
+        b.add_collider(
+            cuboid(v(-0.05, 0.0, 0.05), v(0.05, 2.0, 0.05)),
+            layers::ALL,
+            true,
+        );
+        let world = b.build();
+        let geo = Geometry::new(&world);
+        let mut cfg = config();
+        cfg.gravity = v(-1.11, 0.0, -9.75);
+        let mut s = pin_physics::ball::BallSolver::new(cfg, &profiles());
+        let r = radius(STEEL);
+        for k in 0..count {
+            s.add_ball(ball_at(
+                STEEL,
+                v(r + 2.0 * r * k as f32, 0.0, r),
+                glam::Vec3::ZERO,
+            ))
+            .unwrap();
+        }
+        let mut ev = BallEvents::new();
+        let ticks = 5_000u32;
+        let start = std::time::Instant::now();
+        for _ in 0..ticks {
+            ev.clear();
+            s.step(&geo, DT, &mut ev);
+        }
+        println!(
+            "ball step, row of {count} resting balls: mean {:?}",
+            start.elapsed() / ticks
+        );
+    }
+}
