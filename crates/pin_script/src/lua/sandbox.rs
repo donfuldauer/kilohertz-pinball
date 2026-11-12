@@ -42,10 +42,12 @@ local _pcall = pcall
 local protected = setmetatable({}, { __mode = "k" })
 local function readonly(t, what)
   local proxy = {}
+  -- Iterate the hidden table without handing it out (next(t) would).
+  local function iter(_, k) return next(t, k) end
   setmetatable(proxy, {
     __index = t,
     __newindex = function() error(what .. " is read-only", 2) end,
-    __pairs = function() return next, t, nil end,
+    __pairs = function() return iter, proxy, nil end,
     __len = function() return #t end,
     __metatable = "locked",
   })
@@ -61,8 +63,15 @@ end
 -- Finalizers run with hooks disabled (no instruction budget), so scripts may
 -- not register any. A __gc added to a metatable later is ignored by Lua 5.4.
 G.setmetatable = function(t, mt)
-  if type(mt) == "table" and rawget(mt, "__gc") ~= nil then
-    error("__gc metamethods are not allowed in table scripts", 2)
+  if type(mt) == "table" then
+    if rawget(mt, "__gc") ~= nil then
+      error("__gc metamethods are not allowed in table scripts", 2)
+    end
+    -- Weak tables: ephemeron convergence is quadratic in the GC's atomic
+    -- step, outside the budget.
+    if rawget(mt, "__mode") ~= nil then
+      error("weak tables (__mode) are not allowed in table scripts", 2)
+    end
   end
   return setmetatable(t, mt)
 end
@@ -103,6 +112,8 @@ pub(crate) struct Vm {
     // Field order matters for drop: handles before the state.
     pub(crate) globals: Table,
     pub(crate) keys: Keys,
+    /// The main `lua_State` (valid while `lua` lives), for the KHZ budget.
+    raw: *mut mlua::ffi::lua_State,
     pub(crate) lua: Lua,
 }
 
@@ -120,9 +131,15 @@ pub(crate) fn is_memory_error(e: &mlua::Error) -> bool {
     }
 }
 
+// KHZ cost budget of the patched Lua (third_party/lua-src/KHZ_PATCHES.md).
+unsafe extern "C-unwind" {
+    fn lua_khzsetbudget(state: *mut mlua::ffi::lua_State, n: i64);
+    fn lua_khzspend(state: *mut mlua::ffi::lua_State, n: i64) -> i64;
+}
+
 /// Maps an mlua error raised while the budget/memory flags were live.
-pub(crate) fn classify(bridge: &Bridge, e: &mlua::Error) -> ScriptError {
-    if bridge.budget_hit() {
+fn classify(bridge: &Bridge, exhausted: bool, e: &mlua::Error) -> ScriptError {
+    if bridge.budget_hit() || exhausted {
         ScriptError::BudgetExceeded
     } else if bridge.memory_hit() || is_memory_error(e) {
         ScriptError::MemoryLimit
@@ -200,11 +217,17 @@ impl Vm {
             .map_err(|e| load_err(&e))?;
 
         let hook_bridge = Rc::clone(bridge);
+        let raw = vm.raw as usize;
+        let interval = i64::from(bridge.hook_interval);
         vm.lua
             .set_hook(
                 HookTriggers::new().every_nth_instruction(bridge.hook_interval),
                 move |lua, _| {
-                    if hook_bridge.charge() {
+                    // SAFETY: `raw` is this state's main thread; the hook only
+                    // runs while the state is alive.
+                    let left = unsafe { lua_khzspend(raw as *mut mlua::ffi::lua_State, interval) };
+                    if left < 0 || hook_bridge.budget_hit() {
+                        hook_bridge.mark_budget_hit();
                         // From now on fail on every instruction so no `pcall`
                         // can keep the script running.
                         let _ = set_hook_count(lua, 1);
@@ -216,17 +239,49 @@ impl Vm {
             )
             .map_err(|e| load_err(&e))?;
 
-        bridge.reset_budget(cfg.instruction_budget);
-        chunk
-            .call::<()>(())
-            .map_err(|e| match classify(bridge, &e) {
+        vm.reset_budget(bridge, cfg.instruction_budget);
+        let r = chunk.call::<()>(());
+        if let Some(e) = vm.check(bridge, r) {
+            return Err(match e {
                 ScriptError::Runtime(m) => ScriptError::Load(m),
                 other => other,
-            })?;
+            });
+        }
         Ok(vm)
     }
 
+    /// Starts a fresh budget of `instructions` for the next call into Lua.
+    pub(crate) fn reset_budget(&self, bridge: &Bridge, instructions: u32) {
+        bridge.reset_flags();
+        // SAFETY: `raw` is the live main state of `self.lua`.
+        unsafe { lua_khzsetbudget(self.raw, i64::from(instructions)) };
+    }
+
+    /// True once the budget of the current call is used up.
+    pub(crate) fn exhausted(&self, bridge: &Bridge) -> bool {
+        // SAFETY: as above; spending 0 only reads the counter.
+        bridge.budget_hit() || unsafe { lua_khzspend(self.raw, 0) } < 0
+    }
+
+    /// The fault behind `r`, if any: an error, or a budget that ran out even
+    /// though the call returned (an abort swallowed at the very end).
+    pub(crate) fn check<T>(&self, bridge: &Bridge, r: mlua::Result<T>) -> Option<ScriptError> {
+        let exhausted = self.exhausted(bridge);
+        match r {
+            Err(e) => Some(classify(bridge, exhausted, &e)),
+            Ok(_) if exhausted => Some(ScriptError::BudgetExceeded),
+            Ok(_) => None,
+        }
+    }
+
     fn install(lua: Lua, names: &NameTables, bridge: &Rc<Bridge>) -> mlua::Result<Vm> {
+        // SAFETY: only reads the state pointer mlua runs on (the main thread
+        // outside callbacks); it stays valid for the life of `lua`.
+        let raw = unsafe {
+            let mut p: *mut mlua::ffi::lua_State = std::ptr::null_mut();
+            lua.exec_raw::<()>((), |state| p = state)?;
+            p
+        };
         let g = lua.globals();
         for k in [
             "dofile",
@@ -300,15 +355,17 @@ impl Vm {
         Ok(Vm {
             globals: g,
             keys,
+            raw,
             lua,
         })
     }
 
-    /// The global function named by `key`, if the script defines one.
-    pub(crate) fn entry(&self, key: &mlua::LuaString) -> Option<Function> {
-        match self.globals.raw_get::<Value>(key) {
-            Ok(Value::Function(f)) => Some(f),
-            _ => None,
+    /// The global function named by `key`, if the script defines one
+    /// (`Ok(None)` for nil or a non-function value).
+    pub(crate) fn entry(&self, key: &mlua::LuaString) -> mlua::Result<Option<Function>> {
+        match self.globals.raw_get::<Value>(key)? {
+            Value::Function(f) => Ok(Some(f)),
+            _ => Ok(None),
         }
     }
 }

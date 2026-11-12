@@ -56,3 +56,8 @@ opt-level = 1
 
 [profile.test]
 opt-level = 1
+
+# Subphase 4.2 review (DECISIONS.md "Orchestrator — 4.2 review: patched vendored Lua"):
+# Lua 5.4 is built from a patched copy of lua-src (third_party/lua-src/KHZ_PATCHES.md).
+[patch.crates-io]
+lua-src = { path = "third_party/lua-src" }

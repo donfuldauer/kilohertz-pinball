@@ -275,22 +275,24 @@ pub(crate) fn build(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Table> {
     Ok(api)
 }
 
-/// `math.random`, routed to the host PCG. Arity follows Lua 5.4 except that a
-/// trailing explicit `nil` counts as absent (a Rust function cannot see the
-/// difference without allocating): `math.random(1, 2, 3)` raises "wrong
-/// number of arguments", `math.random(1, 2, nil)` is `math.random(1, 2)`.
+/// `math.random`, routed to the host PCG. Any third or later argument (even
+/// `nil`) raises "wrong number of arguments", as in Lua 5.4; an explicit `nil`
+/// as the first or second argument counts as absent.
 pub(crate) fn math_random_fn(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Function> {
     let b = Rc::clone(bridge);
-    lua.create_function(move |_, (m, n, extra): (Value, Value, Value)| {
-        let count = if !extra.is_nil() {
-            3
-        } else if !n.is_nil() {
-            2
-        } else {
-            usize::from(!m.is_nil())
-        };
-        math_random(&b, count, Some(m), Some(n), "math.random", true)
-    })
+    // `Variadic` only allocates when there are surplus arguments (an error).
+    lua.create_function(
+        move |_, (m, n, rest): (Value, Value, mlua::Variadic<Value>)| {
+            let count = if !rest.is_empty() {
+                3
+            } else if !n.is_nil() {
+                2
+            } else {
+                usize::from(!m.is_nil())
+            };
+            math_random(&b, count, Some(m), Some(n), "math.random", true)
+        },
+    )
 }
 
 #[cfg(test)]

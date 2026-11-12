@@ -33,3 +33,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 2 | 4.2 | Reviewer | Fable 5.2 | 1 | **fail** | gate 1–7 pass | B1 C-level loops hang, B2 `<close>` unhooked, B3 `__pairs` leaks backing table, B4 budget × size stalls, B5 save-state escapes memory cap, B6 `pairs` order non-deterministic |
 | 2 | 1.2 | Implementer + Tester | Opus 5.5 / Fable 5.2 | fix 1 | done | 38 spec tests; actionlint clean | CI pinned to 1.97.0 |
 | 2 | 1.2 | Reviewer | Fable 5.2 | 2 | **pass** | run 43149748681 fully green (12 jobs, 3 OS, 4m14s); core-tests display-free; SDL from source builds in gpu-tests | N6 `--locked` deferred to end of wave 2 |
+| 2 | 2.1 | Implementer | Fable 5.2 | fix 1 | done | 127 tests; coverage 97.5 % | B1 fixed: GuideCast { Contact, Advance } |
+| 2 | 2.1 | Reviewer | Opus 5.5 | 2 | **pass** | gate 1–7 pass; 20k fuzz: 0 false/missed contacts; outside-arc cast 150 µs → 1.65 µs | N1 sink ratchet, N2 closed loops: hardening round requested; N3, N4 → 2.2 |

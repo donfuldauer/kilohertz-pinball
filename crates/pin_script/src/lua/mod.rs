@@ -196,18 +196,19 @@ impl LuaScriptBackend {
 
     /// Calls `f(args)` with `ctx` visible to the API, under a fresh budget.
     fn call_with_ctx(
+        vm: &Vm,
         bridge: &Bridge,
         budget: u32,
         f: &Function,
         args: impl IntoLuaMulti,
         ctx: &mut HostCtx,
     ) -> Result<(), ScriptError> {
-        bridge.reset_budget(budget);
+        vm.reset_budget(bridge, budget);
         let r = {
             let _guard = bridge.enter(ctx);
             f.call::<()>(args)
         };
-        r.map_err(|e| sandbox::classify(bridge, &e))
+        vm.check(bridge, r).map_or(Ok(()), Err)
     }
 
     fn run(&mut self, entry: Entry, switch: SwitchId, closed: bool, ctx: &mut HostCtx) {
@@ -224,17 +225,22 @@ impl LuaScriptBackend {
             Entry::Switch => &keys.on_switch,
         };
         let budget = self.cfg.instruction_budget;
-        let result = match self.vm.entry(key) {
-            None => Ok(()),
-            Some(f) => match entry {
+        let (vm, bridge) = (&self.vm, &*self.bridge);
+        let result = match vm.entry(key) {
+            Err(e) => Err(ScriptError::Runtime(e.to_string())),
+            Ok(None) => Ok(()),
+            Ok(Some(f)) => match entry {
                 Entry::Switch => Self::call_with_ctx(
-                    &self.bridge,
+                    vm,
+                    bridge,
                     budget,
                     &f,
                     (i64::from(switch.0), closed),
                     ctx,
                 ),
-                Entry::Init | Entry::Tick => Self::call_with_ctx(&self.bridge, budget, &f, (), ctx),
+                Entry::Init | Entry::Tick => {
+                    Self::call_with_ctx(vm, bridge, budget, &f, (), ctx)
+                }
             },
         };
         if let Err(e) = result {
@@ -242,14 +248,11 @@ impl LuaScriptBackend {
             return;
         }
         if let Entry::Tick = entry {
-            // Fixed GC step; finalizers it runs see no host context and are
-            // bounded by a fresh budget. Exhausting it there is a fault too.
-            self.bridge.reset_budget(budget);
+            // Fixed GC step under a fresh budget (scripts cannot register
+            // finalizers, so no script code runs here).
+            self.vm.reset_budget(&self.bridge, budget);
             let r = sandbox::gc_step(&self.vm.lua, GC_STEP_KBYTES);
-            if self.bridge.budget_hit() {
-                self.fault(ScriptError::BudgetExceeded, ctx);
-            } else if let Err(e) = r {
-                let err = sandbox::classify(&self.bridge, &e);
+            if let Some(err) = self.vm.check(&self.bridge, r) {
                 self.fault(err, ctx);
             }
         }
@@ -261,10 +264,12 @@ impl LuaScriptBackend {
         if self.faulted {
             return None;
         }
-        let f = self.vm.entry(&self.vm.keys.on_save_state)?;
-        self.bridge.reset_budget(self.cfg.instruction_budget);
-        let v = f.call::<Value>(()).ok()?;
-        saved::save(&v).ok().flatten()
+        let f = self.vm.entry(&self.vm.keys.on_save_state).ok()??;
+        self.vm.reset_budget(&self.bridge, self.cfg.instruction_budget);
+        let r = f.call::<Value>(());
+        let exhausted = self.vm.exhausted(&self.bridge);
+        let v = r.ok().filter(|_| !exhausted)?;
+        saved::save(&v, self.cfg.memory_limit_bytes).ok().flatten()
     }
 }
 
@@ -288,16 +293,16 @@ impl TableScriptBackend for LuaScriptBackend {
     fn apply_reload(&mut self, source: &[u8]) -> Result<(), ScriptError> {
         let new_vm = Vm::build(source, &self.names, &self.cfg, &self.bridge)?;
         let state = self.save_state();
-        if let (Some(state), Some(restore)) = (state, new_vm.entry(&new_vm.keys.on_restore_state)) {
-            self.bridge.reset_budget(self.cfg.instruction_budget);
-            let arg = saved::restore(&new_vm.lua, &state)
-                .map_err(|e| sandbox::classify(&self.bridge, &e))?;
-            restore
-                .call::<()>(arg)
-                .map_err(|e| sandbox::classify(&self.bridge, &e))?;
+        let restore = new_vm
+            .entry(&new_vm.keys.on_restore_state)
+            .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+        if let (Some(state), Some(restore)) = (state, restore) {
+            new_vm.reset_budget(&self.bridge, self.cfg.instruction_budget);
+            let r = saved::restore(&new_vm.lua, &state).and_then(|arg| restore.call::<()>(arg));
+            if let Some(e) = new_vm.check(&self.bridge, r) {
+                return Err(e);
+            }
         }
-        // Finalizers of the old state run on drop: bound them by a budget.
-        self.bridge.reset_budget(self.cfg.instruction_budget);
         drop(std::mem::replace(&mut self.vm, new_vm));
         self.faulted = false;
         Ok(())

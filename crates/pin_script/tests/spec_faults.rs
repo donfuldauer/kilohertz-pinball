@@ -361,7 +361,7 @@ fn top_level_infinite_loop_does_not_hang_construction() {
 
 #[test]
 fn top_level_memory_bomb_does_not_crash_construction() {
-    let src = b"local t = {} while true do t[#t + 1] = string.rep('x', 65536) .. #t end";
+    let src = b"local t = {} while true do t[#t + 1] = string.rep('x', 60000) .. #t end";
     match LuaScriptBackend::new(src, &names(), cfg(4 * MIB, 1_000_000)) {
         Err(_) => {}
         Ok(b) => assert!(b.is_faulted()),

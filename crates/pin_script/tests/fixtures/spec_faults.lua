@@ -20,7 +20,7 @@ end
 cases[3] = function()
   local t = {}
   while true do
-    t[#t + 1] = string.rep("x", 65536) .. #t
+    t[#t + 1] = string.rep("x", 60000) .. #t -- stays under the 64 KiB string cap
   end
 end
 
@@ -29,7 +29,7 @@ cases[4] = function()
   while true do
     pcall(function()
       local t = {}
-      while true do t[#t + 1] = string.rep("y", 1 << 20) .. #t end
+      while true do t[#t + 1] = string.rep("y", 60000) .. #t end
     end)
   end
 end

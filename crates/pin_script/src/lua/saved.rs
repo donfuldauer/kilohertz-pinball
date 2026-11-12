@@ -3,13 +3,19 @@
 //! out as plain data: nil, booleans, integers, floats, strings and tables of
 //! those (nested up to [`MAX_DEPTH`]). Table entries whose key or value is of
 //! any other type (functions, userdata, threads) are skipped; a table reached
-//! twice (shared or cyclic) is an error.
+//! twice (shared or cyclic) is an error. The copy may not exceed a byte
+//! budget (the script's memory cap, counting every value at least
+//! [`VALUE_COST`] bytes plus string bytes), so a save hook cannot make the host
+//! allocate more than the Lua state itself was allowed to hold.
 
 use mlua::{Lua, Table, Value};
 use std::collections::HashSet;
 
 /// Maximum table nesting carried across a reload.
 pub(crate) const MAX_DEPTH: usize = 64;
+
+/// Bytes charged per copied value (in addition to string contents).
+pub(crate) const VALUE_COST: usize = 32;
 
 /// A Lua value detached from any state.
 #[derive(Clone, Debug, PartialEq)]
@@ -22,19 +28,38 @@ pub(crate) enum Saved {
     Table(Vec<(Saved, Saved)>),
 }
 
-/// Copies `v` out of its state. `Ok(None)` means "unsupported type, skip".
-pub(crate) fn save(v: &Value) -> mlua::Result<Option<Saved>> {
+/// Copies `v` out of its state, using at most `max_bytes` (see the module
+/// docs). `Ok(None)` means "unsupported type, skip".
+pub(crate) fn save(v: &Value, max_bytes: usize) -> mlua::Result<Option<Saved>> {
     let mut seen = HashSet::new();
-    save_inner(v, 0, &mut seen)
+    let mut left = max_bytes;
+    save_inner(v, 0, &mut seen, &mut left)
 }
 
-fn save_inner(v: &Value, depth: usize, seen: &mut HashSet<usize>) -> mlua::Result<Option<Saved>> {
+fn spend(left: &mut usize, n: usize) -> mlua::Result<()> {
+    *left = left.checked_sub(n).ok_or_else(|| {
+        mlua::Error::runtime("on_save_state: saved state exceeds the memory cap")
+    })?;
+    Ok(())
+}
+
+fn save_inner(
+    v: &Value,
+    depth: usize,
+    seen: &mut HashSet<usize>,
+    left: &mut usize,
+) -> mlua::Result<Option<Saved>> {
+    spend(left, VALUE_COST)?;
     Ok(Some(match v {
         Value::Nil => Saved::Nil,
         Value::Boolean(b) => Saved::Bool(*b),
         Value::Integer(i) => Saved::Int(*i),
         Value::Number(n) => Saved::Num(*n),
-        Value::String(s) => Saved::Str(s.as_bytes().to_vec()),
+        Value::String(s) => {
+            let b = s.as_bytes();
+            spend(left, b.len())?;
+            Saved::Str(b.to_vec())
+        }
         Value::Table(t) => {
             if depth >= MAX_DEPTH {
                 return Err(mlua::Error::runtime(format!(
@@ -50,8 +75,8 @@ fn save_inner(v: &Value, depth: usize, seen: &mut HashSet<usize>) -> mlua::Resul
             for pair in t.pairs::<Value, Value>() {
                 let (k, val) = pair?;
                 let (Some(k), Some(val)) = (
-                    save_inner(&k, depth + 1, seen)?,
-                    save_inner(&val, depth + 1, seen)?,
+                    save_inner(&k, depth + 1, seen, left)?,
+                    save_inner(&val, depth + 1, seen, left)?,
                 ) else {
                     continue;
                 };
@@ -95,7 +120,7 @@ mod tests {
             )
             .eval()
             .unwrap();
-        let saved = save(&v).unwrap().unwrap();
+        let saved = save(&v, 1 << 20).unwrap().unwrap();
         let b = Lua::new();
         let r = restore(&b, &saved).unwrap();
         b.globals().set("t", r).unwrap();
@@ -107,20 +132,27 @@ mod tests {
             .eval()
             .unwrap();
         assert!(ok);
-        assert_eq!(save(&Value::Nil).unwrap(), Some(Saved::Nil));
+        assert_eq!(save(&Value::Nil, 64).unwrap(), Some(Saved::Nil));
     }
 
     #[test]
     fn cycles_and_depth_are_rejected() {
         let a = Lua::new();
         let cyc: Value = a.load("local t = {} t.self = t return t").eval().unwrap();
-        assert!(save(&cyc).is_err());
+        assert!(save(&cyc, 1 << 20).is_err());
         let deep: Value = a
             .load("local t = {} for i = 1, 100 do t = {t} end return t")
             .eval()
             .unwrap();
-        assert!(save(&deep).is_err());
+        assert!(save(&deep, 1 << 20).is_err());
         let f: Value = a.load("return print").eval().unwrap();
-        assert_eq!(save(&f).unwrap(), None);
+        assert_eq!(save(&f, 64).unwrap(), None);
+        // Many references to one big string exceed the byte budget.
+        let bomb: Value = a
+            .load("local s = string.rep('x', 60000) local t = {} for i = 1, 100 do t[i] = s end return t")
+            .eval()
+            .unwrap();
+        assert!(save(&bomb, 1 << 20).is_err());
+        assert!(save(&bomb, 8 << 20).is_ok());
     }
 }

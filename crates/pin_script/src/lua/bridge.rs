@@ -26,7 +26,6 @@ pub(crate) struct Bridge {
     ctx: Cell<Option<RawCtx>>,
     overflow: Cell<u32>,
     holds: [Cell<u64>; HOLD_WORDS],
-    budget_left: Cell<i64>,
     budget_hit: Cell<bool>,
     memory_hit: Cell<bool>,
     /// Instructions between two hook calls.
@@ -48,7 +47,6 @@ impl Bridge {
             ctx: Cell::new(None),
             overflow: Cell::new(0),
             holds: [const { Cell::new(0) }; HOLD_WORDS],
-            budget_left: Cell::new(0),
             budget_hit: Cell::new(false),
             memory_hit: Cell::new(false),
             hook_interval,
@@ -139,22 +137,16 @@ impl Bridge {
         self.holds.iter().any(|w| w.get() != 0)
     }
 
-    /// Starts a fresh budget of `instructions` for the next callback.
-    pub(crate) fn reset_budget(&self, instructions: u32) {
-        self.budget_left.set(i64::from(instructions));
+    /// Clears the abort flags before a callback (the budget itself lives in
+    /// the patched Lua state, see `Vm::reset_budget`).
+    pub(crate) fn reset_flags(&self) {
         self.budget_hit.set(false);
         self.memory_hit.set(false);
     }
 
-    /// Charges one hook interval. Returns `true` the first time the budget is
-    /// exceeded and on every later call until the next reset.
-    pub(crate) fn charge(&self) -> bool {
-        let left = self.budget_left.get() - i64::from(self.hook_interval);
-        self.budget_left.set(left);
-        if left < 0 {
-            self.budget_hit.set(true);
-        }
-        self.budget_hit.get()
+    /// Records that the instruction budget ran out.
+    pub(crate) fn mark_budget_hit(&self) {
+        self.budget_hit.set(true);
     }
 
     pub(crate) fn budget_hit(&self) -> bool {
@@ -197,18 +189,13 @@ mod tests {
     }
 
     #[test]
-    fn budget_charges_per_interval() {
+    fn flags_reset() {
         let b = Bridge::new(1000);
-        b.reset_budget(2500);
-        assert!(!b.charge());
-        assert!(!b.charge());
-        assert!(b.charge());
-        assert!(b.charge());
-        assert!(b.budget_hit());
-        b.reset_budget(10);
-        assert!(!b.budget_hit());
+        b.mark_budget_hit();
         b.mark_memory_hit();
-        assert!(b.memory_hit());
+        assert!(b.budget_hit() && b.memory_hit());
+        b.reset_flags();
+        assert!(!b.budget_hit() && !b.memory_hit());
     }
 
     #[test]
