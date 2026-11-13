@@ -313,7 +313,7 @@ enum Next {
     Pair(usize, usize),
 }
 
-/// The ball dynamics core. See the [module documentation](self).
+/// The ball dynamics core. See the [module documentation](crate::ball).
 pub struct BallSolver {
     cfg: BallSolverConfig,
     profiles: Vec<BallProfile>,
