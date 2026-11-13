@@ -124,7 +124,11 @@ fn ring_cases() -> Vec<(f32, f32)> {
 /// C rings whose opening is narrower than a quarter of the through-point
 /// spacing (radius, opening, spacing): the reach is shorter than the
 /// coarsest tangent-ball table interval (2.1 fix task, review round 1).
-const NARROW: [(f32, f32, f32); 6] = [
+const NARROW: [(f32, f32, f32); 9] = [
+    // Gaps of a few percent of the spacing and less (review round 2).
+    (0.5, 0.002, 0.05),
+    (0.5, 0.0006, 0.05),
+    (0.1, 0.0002, 0.01),
     (0.3, 0.02, 0.05),
     (0.5, 0.015, 0.05),
     (0.5, 0.02, 0.05),
@@ -848,6 +852,68 @@ fn ball_solver_slides_along_narrow_c_rings_at_full_speed() {
     }
 }
 
+#[test]
+fn hairline_gaps_are_accepted_safe_and_no_obstacle() {
+    // However close the two open ends of a level guide come, the guide is
+    // built, a ball sliding along it passes the gap at speed (the gap is far
+    // too narrow to enter), and never sinks into the wall.
+    let world = util::empty_world();
+    let ball = util::radius(util::STEEL);
+    for (r, opening, spacing) in [
+        (0.5f32, 0.002f32, 0.05f32),
+        (0.5, 0.0006, 0.05),
+        (0.5, 0.00005, 0.05),
+        (0.1, 0.0002, 0.01),
+        (0.1, 0.00002, 0.01),
+    ] {
+        let guides = [c_ring(r, opening, spacing)];
+        assert!(guides[0].reach() <= 0.5 * opening && guides[0].reach() > 0.0);
+        let geo = Geometry {
+            world: &world,
+            guides: &guides,
+            wireforms: &[],
+        };
+        for speed in [1.0f32, 5.0] {
+            // Start 60 mm of arc before the gap, inside the ring.
+            let a = -0.06 / r;
+            let radial = v(libm::cosf(a), libm::sinf(a), 0.0);
+            let near = radial * (r - ball - 1.0e-4) + Vec3::Z * 0.5 * HEIGHT;
+            let cp = guides[0].closest_point(near, None);
+            let start = cp.point + (near - cp.point) / cp.distance * (ball + 1.0e-4);
+            let mut solver = util::solver_no_gravity();
+            let handle = solver
+                .add_ball(util::ball_at(
+                    util::STEEL,
+                    start,
+                    v(-radial.y, radial.x, 0.0) * speed,
+                ))
+                .unwrap();
+            let mut events = BallEvents::new();
+            let ticks = (0.12 / speed / util::DT) as usize;
+            let (mut path, mut expected) = (0.0f32, 0.0f32);
+            for tick in 0..ticks {
+                let before = *solver.ball(handle).unwrap();
+                solver.step(&geo, util::DT, &mut events);
+                let after = solver.ball(handle).unwrap();
+                path += after.position.distance(before.position);
+                expected += before.velocity.length().min(after.velocity.length()) * util::DT;
+                let gap = guides[0].closest_point(after.position, None).distance - ball;
+                assert!(
+                    gap >= -1.0e-4,
+                    "ring r {r} gap {opening}, {speed} m/s, tick {tick}: {} mm deep",
+                    -gap * 1.0e3
+                );
+            }
+            let end = solver.ball(handle).unwrap().position;
+            assert!(
+                end.y > 0.03 && path >= 0.9 * expected,
+                "ring r {r} gap {opening}, {speed} m/s: ended at {end:?} after {path} m of \
+                 {expected} m"
+            );
+        }
+    }
+}
+
 /// Cost report (not a pass/fail test; run with `--release --ignored
 /// --nocapture`): closest-point evaluations and time per level-guide cast.
 #[test]
@@ -875,6 +941,7 @@ fn level_guide_cast_cost_report() {
         ("C ring r500/24mm s50", c_ring(0.5, 0.024, 0.05), 0.5),
         ("C ring r100/9mm s20", c_ring(0.1, 0.009, 0.02), 0.1),
         ("C ring r500/5mm s50", c_ring(0.5, 0.005, 0.05), 0.5),
+        ("C ring r500/0.6mm s50", c_ring(0.5, 0.0006, 0.05), 0.5),
     ];
     let mut shapes: Vec<(&str, &GuideCurve, f32)> = vec![("level arc r150 180°", &arc, 0.15)];
     for (name, g, r) in &rings {
