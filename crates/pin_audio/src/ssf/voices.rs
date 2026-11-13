@@ -249,7 +249,11 @@ impl SsfMixer {
         let rate = cfg.sample_rate.max(1);
         let [x0, x1, y0, y1] = cfg.playfield_mm;
         let sine = sine_table();
-        let sine_inc = f64::from(non_neg(cfg.impulse_hz, 0.0)) * TABLE_LEN as f64 / f64::from(rate);
+        // Clamped to Nyquist (half a table per frame) so the phase wrap is a
+        // single subtraction whatever `impulse_hz` is.
+        let sine_inc = (f64::from(non_neg(cfg.impulse_hz, 0.0)) * TABLE_LEN as f64
+            / f64::from(rate))
+        .min(TABLE_LEN as f64 / 2.0);
         let base_inc =
             f64::from(non_neg(cfg.roll_base_hz, 0.0)) * TABLE_LEN as f64 / f64::from(rate);
         let tau = f64::from(ms_frames(cfg.impulse_decay_ms, rate));
@@ -448,8 +452,10 @@ impl SsfMixer {
                     f[*ch] += (s * p.tick()) as f32;
                 }
                 v.phase += v.inc.tick();
-                while v.phase >= len {
-                    v.phase -= len;
+                // O(1) wrap even if a voice's increment predates a shorter
+                // loop loaded with `set_roll_loop`.
+                if v.phase >= len {
+                    v.phase %= len;
                 }
                 if v.fading && v.gain.settled_at(0.0) {
                     v.active = false;
@@ -465,7 +471,8 @@ impl SsfMixer {
                     f[*ch] += s * p;
                 }
                 v.phase += self.sine_inc;
-                while v.phase >= slen {
+                // sine_inc ≤ slen / 2: one wrap suffices.
+                if v.phase >= slen {
                     v.phase -= slen;
                 }
                 v.amp *= self.decay;
@@ -649,6 +656,25 @@ mod tests {
             1.0,
         ));
         m.feed(HapticEvent::new(0, HapticKind::Impulse { source: 1 }, 1.0));
+    }
+
+    #[test]
+    fn absurd_impulse_frequency_renders_quickly_and_bounded() {
+        for hz in [1e9f32, 1e12, 1e20, f32::MAX, f32::INFINITY] {
+            let mut m = SsfMixer::new(SsfConfig {
+                impulse_hz: hz,
+                roll_base_hz: hz,
+                ..SsfConfig::default()
+            });
+            m.feed(HapticEvent::new(0, HapticKind::Bumper { mech: 0 }, 1.0));
+            m.feed(roll(0, 0.0, 0.0, 3.0));
+            let mut out = vec![0.0f32; 8 * 480];
+            m.render(&mut out);
+            assert!(
+                out.iter()
+                    .all(|v| v.is_finite() && (-1.0..=1.0).contains(v))
+            );
+        }
     }
 
     #[test]

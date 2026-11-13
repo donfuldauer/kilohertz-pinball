@@ -69,7 +69,7 @@ pub const FULL_STATE_ENTRIES: usize =
     SWITCH_COUNT + COIL_COUNT + LAMP_COUNT + GI_COUNT + MAGNET_COUNT;
 /// Most entries one tick can produce.
 pub const MAX_ENTRIES_PER_TICK: usize = FULL_STATE_ENTRIES + MAX_IMPULSES_PER_TICK;
-/// Most datagrams one tick can produce (6).
+/// Most datagrams one tick can produce (5: 832 + 64 = 896 entries).
 pub const MAX_DATAGRAMS_PER_TICK: usize = MAX_ENTRIES_PER_TICK.div_ceil(MAX_ENTRIES_PER_DATAGRAM);
 
 /// The cabinet state telemetry reports, one value per element.

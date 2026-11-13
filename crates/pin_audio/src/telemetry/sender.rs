@@ -45,9 +45,17 @@ impl TelemetryTx {
     }
 
     /// Queues every datagram of `batch` in order; returns `true` when all
-    /// fit. On `false` a listener may have missed a change: call
+    /// fit. On `false` a listener may have missed a change, and the caller
+    /// **must** call
     /// [`TelemetryEncoder::force_full_state`](super::TelemetryEncoder::force_full_state)
-    /// so the next tick resynchronises it.
+    /// so the next tick resynchronises it (the ring cannot do this itself):
+    ///
+    /// ```ignore
+    /// encoder.encode_tick(tick, &state, &impulses, &mut batch);
+    /// if !tx.push_batch(&batch) {
+    ///     encoder.force_full_state();
+    /// }
+    /// ```
     pub fn push_batch(&mut self, batch: &DatagramBatch) -> bool {
         let mut all = true;
         for d in batch.datagrams() {
@@ -158,7 +166,9 @@ impl TelemetrySender {
     }
 
     /// Moves the sender to its own thread ("pin-telemetry"), which pumps the
-    /// ring and parks for up to `poll` whenever it is empty.
+    /// ring and parks for up to `poll` whenever it is empty. A datagram can
+    /// therefore leave up to `poll` after the sim pushed it: use
+    /// `poll ≤ 1 ms` (one tick) in the app.
     pub fn spawn(mut self, poll: Duration) -> io::Result<TelemetrySenderHandle> {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);

@@ -164,6 +164,9 @@ pub struct RotorBody {
     pub limits: (f32, f32),
     pub layer_mask: u8,
     pub material: Material,
+    /// Obligation 3 (speculative stops) on; tests switch it off to model an
+    /// owner that breaks it.
+    pub speculative_stops: bool,
     /// Current segment: start time, angle and angular velocity.
     seg_t: f32,
     seg_angle: f32,
@@ -185,6 +188,7 @@ impl RotorBody {
             limits: (f32::NEG_INFINITY, f32::INFINITY),
             layer_mask: layers::ALL,
             material: Material::Rubber,
+            speculative_stops: true,
             seg_t: 0.0,
             seg_angle: angle,
             seg_omega: 0.0,
@@ -214,6 +218,27 @@ impl RotorBody {
 
     pub fn direction(angle: f32) -> Vec3 {
         Vec3::new(libm::cosf(angle), libm::sinf(angle), 0.0)
+    }
+
+    /// `omega` limited so that `remaining` seconds of travel from `angle`
+    /// end at a stop at the latest (the stop absorbs the rest).
+    pub fn stop_clamped(&self, angle: f32, omega: f32, remaining: f32) -> f32 {
+        if !self.speculative_stops {
+            // Only an already engaged stop holds.
+            let into_hi = angle >= self.limits.1 && omega > 0.0;
+            let into_lo = angle <= self.limits.0 && omega < 0.0;
+            return if into_hi || into_lo { 0.0 } else { omega };
+        }
+        if remaining.is_nan() || remaining <= 0.0 {
+            return omega;
+        }
+        if omega > 0.0 && self.limits.1.is_finite() {
+            omega.min((self.limits.1 - angle).max(0.0) / remaining)
+        } else if omega < 0.0 && self.limits.0.is_finite() {
+            omega.max((self.limits.0 - angle).min(0.0) / remaining)
+        } else {
+            omega
+        }
     }
 
     pub fn reach(&self) -> f32 {
@@ -270,11 +295,9 @@ impl MovingBodies for Rotors {
             if b.inertia.is_finite() {
                 b.omega += b.torque / b.inertia * dt;
             }
-            // At a stop and pushed into it: held.
-            if (b.angle >= b.limits.1 && b.omega > 0.0) || (b.angle <= b.limits.0 && b.omega < 0.0)
-            {
-                b.omega = 0.0;
-            }
+            // Owner obligation 3: never predict more travel toward a stop
+            // than the stop allows this tick (held on a stop: ω = 0).
+            b.omega = b.stop_clamped(b.angle, b.omega, dt);
             b.seg_t = 0.0;
             b.seg_angle = b.angle;
             b.seg_omega = b.omega;
@@ -326,6 +349,7 @@ impl MovingBodies for Rotors {
         arm * arm / b.inertia
     }
     fn apply_impulse(&mut self, body: usize, time: f32, point: Vec3, impulse: Vec3) {
+        let dt = self.dt;
         let b = &mut self.bodies[body];
         let l = (point - b.pivot).cross(impulse).z;
         b.angular_impulse += l;
@@ -333,7 +357,7 @@ impl MovingBodies for Rotors {
             return;
         }
         let angle = b.angle_at(time);
-        let omega = b.omega_at(time) + l / b.inertia;
+        let omega = b.stop_clamped(angle, b.omega_at(time) + l / b.inertia, dt - time);
         b.seg_t = time;
         b.seg_angle = angle;
         b.seg_omega = omega;

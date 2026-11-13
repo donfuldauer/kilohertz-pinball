@@ -20,11 +20,17 @@
 //! * [`RumbleMapper::output_at`] returns, per motor, the **maximum** over all
 //!   active envelopes (overlapping events merge by max, never by sum), so
 //!   the output is always in `0..=1`.
-//! * At most [`MAX_ACTIVE_RUMBLES`] envelopes are kept. A new event takes a
-//!   free or expired slot (expired: `t₀ + d ≤` the latest tick seen); with
-//!   none, it replaces the slot whose `low + high` at the latest tick seen is
-//!   smallest (lowest index on a tie) if its own peak sum is larger, and is
-//!   dropped otherwise.
+//! * At most [`MAX_ACTIVE_RUMBLES`] envelopes are kept. A new event at tick
+//!   `t` takes a free slot or one that has ended by `t` (`t₀ + d ≤ t`, judged
+//!   by the event's own tick); with none, it replaces the slot whose
+//!   `low + high` at `t` is smallest (lowest index on a tie) if its own peak
+//!   sum is larger, and is dropped otherwise.
+//! * **Restart.** A tick (fed or queried) more than
+//!   [`RESTART_THRESHOLD_TICKS`] before the latest tick seen starts a new
+//!   timeline (a new sim session, or recovery from a bogus far-future tick):
+//!   every envelope is dropped and the latest tick becomes that tick. Smaller
+//!   steps back (events arriving slightly late) are kept as they are.
+//!   [`RumbleMapper::reset`] clears the envelopes and the latest tick.
 //!
 //! The result depends only on the settings and the sequence of `feed` and
 //! `output_at` calls, never on wall-clock time, so it is deterministic.
@@ -36,6 +42,10 @@ use pin_core::input::HapticsTelemetryEvent;
 
 /// Most envelopes a [`RumbleMapper`] tracks at once.
 pub const MAX_ACTIVE_RUMBLES: usize = 32;
+
+/// A tick this far (or further) behind the latest tick seen restarts the
+/// mapper's timeline (one second at 1 kHz; module docs, "Restart").
+pub const RESTART_THRESHOLD_TICKS: u64 = 1000;
 
 /// Most per-source overrides in [`RumbleSettings`].
 pub const MAX_RUMBLE_OVERRIDES: usize = 32;
@@ -249,7 +259,12 @@ impl Envelope {
 
     #[inline]
     fn expired(&self, now: u64) -> bool {
-        self.duration == 0 || self.start.saturating_add(u64::from(self.duration)) <= now
+        // An end beyond u64::MAX never comes: not expired.
+        self.duration == 0
+            || self
+                .start
+                .checked_add(u64::from(self.duration))
+                .is_some_and(|end| end <= now)
     }
 
     #[inline]
@@ -294,15 +309,27 @@ impl RumbleMapper {
         self.settings = settings;
     }
 
-    /// Stops all rumble.
+    /// Stops all rumble and forgets the latest tick seen.
     pub fn reset(&mut self) {
         self.slots = [Envelope::default(); MAX_ACTIVE_RUMBLES];
+        self.now = 0;
+    }
+
+    /// Advances the latest tick seen, or restarts the timeline when `tick`
+    /// is more than [`RESTART_THRESHOLD_TICKS`] behind it.
+    fn observe(&mut self, tick: u64) {
+        if tick.saturating_add(RESTART_THRESHOLD_TICKS) < self.now {
+            self.slots = [Envelope::default(); MAX_ACTIVE_RUMBLES];
+            self.now = tick;
+        } else {
+            self.now = self.now.max(tick);
+        }
     }
 
     /// Adds one event. Never allocates.
     pub fn feed(&mut self, event: impl IntoHapticEvent) {
         let e = event.into_haptic_event();
-        self.now = self.now.max(e.tick);
+        self.observe(e.tick);
         if !self.settings.enabled {
             return;
         }
@@ -317,7 +344,7 @@ impl RumbleMapper {
         if env.duration == 0 || (env.low <= 0.0 && env.high <= 0.0) {
             return;
         }
-        let now = self.now;
+        let now = e.tick;
         if let Some(s) = self.slots.iter_mut().find(|s| s.expired(now)) {
             *s = env;
             return;
@@ -340,7 +367,7 @@ impl RumbleMapper {
 
     /// Motor intensities at `tick` (max over active envelopes, `0..=1`).
     pub fn output_at(&mut self, tick: u64) -> Rumble {
-        self.now = self.now.max(tick);
+        self.observe(tick);
         let mut r = Rumble::OFF;
         for s in &self.slots {
             let f = s.factor(tick);
@@ -461,6 +488,76 @@ mod tests {
             assert!(full.set_override(i, RumbleEffect::NONE));
         }
         assert!(!full.set_override(999, RumbleEffect::NONE));
+    }
+
+    fn bumper(t: u64) -> HapticEvent {
+        HapticEvent::new(t, HapticKind::Bumper { mech: 0 }, 1.0)
+    }
+
+    fn eos(t: u64) -> HapticEvent {
+        HapticEvent::new(
+            t,
+            HapticKind::EosHit {
+                flipper: FlipperId(0),
+            },
+            1.0,
+        )
+    }
+
+    /// Bumper@10 + EOS@11 merge (review B1 repro).
+    fn assert_merges(m: &mut RumbleMapper) {
+        m.feed(bumper(10));
+        m.feed(eos(11));
+        let r = m.output_at(11);
+        assert!((r.low - 0.79).abs() < 1e-6, "{r:?}");
+        assert!((r.high - 0.6).abs() < 1e-6, "{r:?}");
+        assert_eq!(m.active(), 2);
+    }
+
+    #[test]
+    fn merges_after_a_new_session_and_after_reset() {
+        let mut fresh = RumbleMapper::new(RumbleSettings::default());
+        assert_merges(&mut fresh);
+
+        // Earlier session far ahead, then the tick goes backwards.
+        let mut m = RumbleMapper::new(RumbleSettings::default());
+        m.feed(coil(500_000, 1.0));
+        m.output_at(500_100);
+        assert_merges(&mut m);
+
+        // reset() repairs it too, even after a bogus far-future tick.
+        let mut m = RumbleMapper::new(RumbleSettings::default());
+        m.feed(coil(u64::MAX, 1.0));
+        m.reset();
+        assert_merges(&mut m);
+
+        // ... and so does the restart rule alone.
+        let mut m = RumbleMapper::new(RumbleSettings::default());
+        m.feed(coil(u64::MAX - 5, 1.0));
+        m.output_at(u64::MAX);
+        assert_merges(&mut m);
+        assert!(m.output_at(1_000_000).is_off());
+    }
+
+    #[test]
+    fn small_steps_back_keep_envelopes() {
+        let mut m = RumbleMapper::new(RumbleSettings::default());
+        m.feed(bumper(1000));
+        // The main thread queried ahead of a late event.
+        m.output_at(1005);
+        m.feed(eos(1002));
+        assert_eq!(m.active(), 2);
+        let r = m.output_at(1002);
+        assert!(r.low > 0.7 && r.high > 0.5);
+    }
+
+    #[test]
+    fn envelope_near_u64_max_counts_as_active() {
+        let mut m = RumbleMapper::new(RumbleSettings::default());
+        m.feed(coil(u64::MAX - 10, 1.0));
+        let r = m.output_at(u64::MAX - 5);
+        assert!(r.low > 0.0);
+        assert_eq!(m.active(), 1);
     }
 
     #[test]

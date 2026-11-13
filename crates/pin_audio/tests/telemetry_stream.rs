@@ -330,3 +330,71 @@ proptest! {
         }
     }
 }
+
+// ------------------------------------------------------- review fix round 1
+
+/// N2: a full state with the maximum 64 impulses (896 entries) fits in
+/// `MAX_DATAGRAMS_PER_TICK` = 5 datagrams, nothing is cut off.
+#[test]
+fn worst_case_tick_fits_in_five_datagrams() {
+    use pin_audio::telemetry::{MAX_DATAGRAMS_PER_TICK, MAX_IMPULSES_PER_TICK};
+    assert_eq!(MAX_DATAGRAMS_PER_TICK, 5);
+    let mut enc = TelemetryEncoder::new();
+    let mut out = DatagramBatch::new();
+    let imp: Vec<_> = (0..MAX_IMPULSES_PER_TICK as u16)
+        .map(|source| HapticsTelemetryEvent {
+            tick: 0,
+            source,
+            strength: 0.5,
+        })
+        .collect();
+    enc.encode_tick(0, &TelemetryState::default(), &imp, &mut out);
+    let ds = decode_all(&out);
+    assert_eq!(ds.len(), 5);
+    let n: usize = ds.iter().map(|d| d.2.len()).sum();
+    assert_eq!(n, FULL_STATE_ENTRIES + MAX_IMPULSES_PER_TICK);
+    assert_eq!(enc.dropped_impulses(), 0);
+}
+
+/// N3: a new session (lower tick) arrives as a full state, which listeners
+/// must accept although its tick is below the last full-state tick.
+#[test]
+fn new_session_with_lower_tick_is_a_full_state() {
+    let mut enc = TelemetryEncoder::new();
+    let st = TelemetryState::default();
+    let mut out = DatagramBatch::new();
+    enc.encode_tick(5000, &st, &[], &mut out);
+    enc.encode_tick(5001, &st, &[], &mut out);
+    assert!(out.is_empty());
+    enc.encode_tick(3, &st, &[], &mut out);
+    let ds = decode_all(&out);
+    assert!(!ds.is_empty());
+    assert!(ds.iter().all(|d| d.0 == 3 && d.1 & FLAG_FULL_STATE != 0));
+}
+
+/// N5: the back-pressure loop: a dropped batch makes the sim loop force a
+/// full state, which reaches the listener once the ring drains.
+#[test]
+fn ring_overflow_then_forced_full_state_resynchronises() {
+    let (mut tx, mut rx) = telemetry_channel(2);
+    let mut enc = TelemetryEncoder::new();
+    let mut st = TelemetryState::default();
+    let mut out = DatagramBatch::new();
+    enc.encode_tick(0, &st, &[], &mut out);
+    // 5 datagrams into a 2-slot ring: overflow.
+    assert!(!tx.push_batch(&out));
+    enc.force_full_state();
+    while rx.pop().is_some() {}
+    st.lamps[9] = 0.5;
+    enc.encode_tick(1, &st, &[], &mut out);
+    assert!(decode_all(&out).iter().all(|d| d.1 & FLAG_FULL_STATE != 0));
+    let mut sent = 0;
+    for d in out.datagrams() {
+        assert!(tx.push(d));
+        let got = rx.pop().unwrap();
+        assert_eq!(got.as_bytes(), d.as_bytes());
+        sent += 1;
+    }
+    assert_eq!(sent, 5);
+    assert_eq!(tx.dropped(), 3);
+}

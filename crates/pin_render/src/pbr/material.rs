@@ -100,7 +100,7 @@ impl MaterialKind {
             MaterialKind::ClearAcrylic => MaterialParams {
                 base_color: [0.97, 0.98, 1.0, 1.0],
                 roughness: 0.05,
-                transmission: 0.92,
+                transmission: 0.98,
                 ..p
             },
         }

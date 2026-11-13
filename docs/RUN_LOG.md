@@ -160,3 +160,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 2.7 | Independent Tester | Fable 5.2 | 1 | running | — | |
 | 4 | 3.4 | Reviewer | Fable 5.2 | 1 | **fail** | gates 1–7 pass; 84 spec tests; coverage core 99.34 / input 99.26 / audio 98.63 / app 93.57 %; wire format byte-checked; 10× runs clean | B1 RumbleMapper never merges after a tick regression and reset() does not repair it; N1 SSF impulse phase loop unbounded on absurd impulse_hz; N2–N6 docs/edge → fix 1. CR-003 verified additive |
 | 4 | 3.4 | Implementer | Opus 5.5 | fix 1 | running | — | |
+| 4 | 3.4 | Implementer | Opus 5.5 | fix 1 | done | fmt/clippy clean; all tests incl. 84 spec pass | B1 restart threshold 1000 ticks + reset zeroes latest tick; N1 Nyquist clamp; N2–N6 docs/edge fixes |
+| 4 | 3.4 | Reviewer | Fable 5.2 | 2 | running | — | |

@@ -32,8 +32,8 @@
 mod rumble;
 
 pub use rumble::{
-    IntoHapticEvent, MAX_ACTIVE_RUMBLES, MAX_RUMBLE_OVERRIDES, Rumble, RumbleEffect, RumbleMapper,
-    RumbleSettings,
+    IntoHapticEvent, MAX_ACTIVE_RUMBLES, MAX_RUMBLE_OVERRIDES, RESTART_THRESHOLD_TICKS, Rumble,
+    RumbleEffect, RumbleMapper, RumbleSettings,
 };
 
 pub use pin_core::haptics::{HapticEvent, HapticKind};

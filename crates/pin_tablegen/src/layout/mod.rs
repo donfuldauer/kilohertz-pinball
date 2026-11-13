@@ -29,8 +29,18 @@
 //! physics material name, also the glTF material's name). Guide and ramp
 //! nodes are visual only (`collider: false`); their collision shape is the
 //! spline the loader builds from `table.toml`, and their extras name it
-//! (`guide` / `spline`). Visual surfaces stay within 0.02 mm of the
-//! collision shape (sampled splines, faceted posts).
+//! (`guide` / `spline`). Collider meshes (faceted posts) and guide ribbons
+//! (sampled from the loader-built spline) stay within 0.02 mm of the
+//! collision shape. Wireform ramp rails are an exception: the physics rails
+//! are zero-thickness curves, and the visual tubes (1.5 mm radius) are
+//! centred on them, so their surface is 1.5 mm from the rail (the tube axes
+//! follow the rails within the tolerance).
+//!
+//! Generated lane rails are checked with the loader's own spline check
+//! (`pin_assets::validate::check_spline`): a rail that would draw any loader
+//! error or authoring warning (too long, crossing itself, hairline gap, ...)
+//! refuses its lane. The tool does not validate the rest of the base table
+//! beyond the splines ramps reference; run `load_table` on the output.
 //!
 //! Generated `table.toml` entries have ids starting with
 //! [`GENERATED_PREFIX`]; a re-run (with the generated `table.toml` as the
@@ -51,6 +61,8 @@ pub use cli::{CliError, run_cli};
 
 use core::fmt;
 use glam::Vec3;
+use pin_assets::GltfLimits;
+use pin_assets::validate::MAX_MANIFEST_BYTES;
 use pin_core::Material;
 use pin_core::schema::LayoutManifest;
 use pin_core::schema::layout::{InsertShape, LaneKind};
@@ -253,6 +265,26 @@ struct Builder<'a> {
     materials: Materials,
     splines: Vec<SplineDef>,
     transitions: Vec<LayerTransitionDef>,
+    /// The loader's default glTF budgets, and the totals so far.
+    limits: GltfLimits,
+    vertices: u64,
+    indices: u64,
+    bin_bytes: u64,
+}
+
+/// The layout element a node was generated from (`posts[3]`, `lanes[0]`).
+fn element_of(node: &str) -> &str {
+    let name = node.strip_prefix(GENERATED_PREFIX).unwrap_or(node);
+    match name.find(']') {
+        Some(end) => &name[..=end],
+        None => name,
+    }
+}
+
+/// The element kind (`posts`) of a node name.
+fn kind_of(node: &str) -> &str {
+    let e = element_of(node);
+    e.split('[').next().unwrap_or(e)
 }
 
 /// Generates `playfield.glb` and the merged `table.toml` from `layout` and
@@ -272,6 +304,10 @@ pub fn generate(layout: &LayoutManifest, base: &TableManifest) -> Result<Generat
         materials: Materials::default(),
         splines: Vec::new(),
         transitions: Vec::new(),
+        limits: GltfLimits::default(),
+        vertices: 0,
+        indices: 0,
+        bin_bytes: 0,
     };
     b.playfield()?;
     for i in 0..layout.decks.len() {
@@ -300,13 +336,58 @@ impl Builder<'_> {
         mm_to_m(self.layout.playfield.wall_height)
     }
 
-    fn push(&mut self, name: String, mesh: Mesh, material: usize, extras: Extras) {
+    /// Adds a node, refusing (naming its element) once the glb would exceed
+    /// a default [`GltfLimits`] budget of the loader.
+    fn push(
+        &mut self,
+        name: String,
+        mesh: Mesh,
+        material: usize,
+        extras: Extras,
+    ) -> Result<(), GenError> {
+        let (v, i) = (mesh.positions.len() as u64, mesh.indices.len() as u64);
+        self.vertices += v;
+        self.indices += i;
+        // Positions and normals (12 bytes each per vertex), u32 indices.
+        self.bin_bytes += 24 * v + 4 * i;
+        let n = self.nodes.len() + 1;
+        let l = &self.limits;
+        let over = if n > l.max_meshes || n > l.max_nodes {
+            Some(format!(
+                "{n} nodes, more than the {} meshes a playfield.glb may have",
+                l.max_meshes.min(l.max_nodes)
+            ))
+        } else if self.vertices > l.max_vertices {
+            Some(format!(
+                "{} vertices, more than the {} a playfield.glb may have",
+                self.vertices, l.max_vertices
+            ))
+        } else if self.indices > l.max_indices {
+            Some(format!(
+                "{} indices, more than the {} a playfield.glb may have",
+                self.indices, l.max_indices
+            ))
+        } else if self.bin_bytes > l.max_buffer_bytes {
+            Some(format!(
+                "{} bytes of geometry, more than the {} a playfield.glb may have",
+                self.bin_bytes, l.max_buffer_bytes
+            ))
+        } else {
+            None
+        };
+        if let Some(m) = over {
+            return Err(GenError::new(
+                element_of(&name),
+                format!("the layout needs {m}; use fewer or smaller elements"),
+            ));
+        }
         self.nodes.push(Node {
             name,
             mesh,
             material,
             extras,
         });
+        Ok(())
     }
 
     fn playfield(&mut self) -> Result<(), GenError> {
@@ -326,7 +407,7 @@ impl Builder<'_> {
         let mut mesh = Mesh::default();
         mesh.flat(&outline, &[[0, 1, 2], [0, 2, 3]], 0.0);
         let mat = self.materials.physical(Material::Wood);
-        self.push("floor".into(), mesh, mat, collider(0, Material::Wood));
+        self.push("floor".into(), mesh, mat, collider(0, Material::Wood))?;
         Ok(())
     }
 
@@ -367,7 +448,7 @@ impl Builder<'_> {
         let mut mesh = Mesh::default();
         mesh.flat(&poly, &tris, mm_to_m(d.z));
         let mat = self.materials.physical(d.material);
-        self.push(e, mesh, mat, collider(d.layer, d.material));
+        self.push(e, mesh, mat, collider(d.layer, d.material))?;
         Ok(())
     }
 
@@ -394,7 +475,7 @@ impl Builder<'_> {
         let pts: Vec<[f32; 3]> = points.iter().map(|&p| m3(p, 0.0)).collect();
         let mesh = mesh::ribbon(&pts, w.closed, self.wall_height_m());
         let mat = self.materials.physical(w.material);
-        self.push(e, mesh, mat, collider(0, w.material));
+        self.push(e, mesh, mat, collider(0, w.material))?;
         Ok(())
     }
 
@@ -415,7 +496,7 @@ impl Builder<'_> {
             self.wall_height_m(),
         );
         let mat = self.materials.physical(material);
-        self.push(e, mesh, mat, collider(0, material));
+        self.push(e, mesh, mat, collider(0, material))?;
         Ok(())
     }
 
@@ -426,10 +507,7 @@ impl Builder<'_> {
         let mut points = lane.points.clone();
         check_points(&e, &points, 2)?;
         let (first, last) = (points[0], points[points.len() - 1]);
-        let gap = libm::hypot(
-            f64::from(first[0] - last[0]),
-            f64::from(first[1] - last[1]),
-        );
+        let gap = libm::hypot(f64::from(first[0] - last[0]), f64::from(first[1] - last[1]));
         let closed = gap <= guides::CLOSE_SNAP_MM;
         if closed {
             if points.len() < 4 {
@@ -476,7 +554,7 @@ impl Builder<'_> {
                     ("material", material.name().to_owned()),
                 ],
             };
-            self.push(id.clone(), mesh, mat, extras);
+            self.push(id.clone(), mesh, mat, extras)?;
             self.splines.push(SplineDef {
                 id,
                 kind: SplineKind::Guide,
@@ -546,7 +624,7 @@ impl Builder<'_> {
                 ("material", Material::Steel.name().to_owned()),
             ],
         };
-        self.push(e.clone(), mesh, mat, extras);
+        self.push(e.clone(), mesh, mat, extras)?;
         if spline.layer != 0 {
             let p0 = spline.points[0];
             let half = 0.5 * r.entry_width;
@@ -612,7 +690,7 @@ impl Builder<'_> {
             lamp: Some(ins.lamp.clone()),
             strings: Vec::new(),
         };
-        self.push(e, mesh, mat, extras);
+        self.push(e, mesh, mat, extras)?;
         Ok(())
     }
 
@@ -636,7 +714,43 @@ impl Builder<'_> {
         );
         let table = TableManifest::from_toml_str(&table_toml)
             .map_err(|e| GenError::new("table.toml", format!("does not parse back: {e}")))?;
+        if table_toml.len() > MAX_MANIFEST_BYTES {
+            return Err(GenError::new(
+                "lanes",
+                format!(
+                    "the generated table.toml would be {} bytes, more than the {MAX_MANIFEST_BYTES} \
+                     the loader reads; use fewer or shorter lanes",
+                    table_toml.len()
+                ),
+            ));
+        }
         let glb = glb::write(&self.nodes, &self.materials.list);
+        let json = glb
+            .get(12..16)
+            .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        if u64::from(json) > self.limits.max_json_bytes {
+            // Name the kind with the most nodes: it carries most of the JSON.
+            let mut kinds: Vec<(&str, usize)> = Vec::new();
+            for node in &self.nodes {
+                let k = kind_of(&node.name);
+                match kinds.iter_mut().find(|(n, _)| *n == k) {
+                    Some(entry) => entry.1 += 1,
+                    None => kinds.push((k, 1)),
+                }
+            }
+            let (kind, count) = kinds
+                .iter()
+                .copied()
+                .fold(("layout.toml", 0), |a, b| if b.1 > a.1 { b } else { a });
+            return Err(GenError::new(
+                kind,
+                format!(
+                    "the playfield.glb JSON would be {json} bytes, more than the {} the loader \
+                     reads ({count} {kind} nodes); use fewer elements",
+                    self.limits.max_json_bytes
+                ),
+            ));
+        }
         Ok(GeneratedTable {
             glb,
             table,
@@ -760,4 +874,4 @@ fn insert_outline(shape: InsertShape, c: [f64; 2], size: f64) -> Vec<[f64; 2]> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

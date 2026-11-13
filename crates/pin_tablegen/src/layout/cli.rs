@@ -113,6 +113,18 @@ fn read(path: &Path) -> Result<Vec<u8>, CliError> {
 /// returns a one-line summary.
 pub fn run_cli(args: &[String]) -> Result<String, CliError> {
     let args = parse_args(args)?;
+    // Writing the bundle must never overwrite the hand-written base.
+    if let (Ok(base), Ok(out)) = (
+        std::fs::canonicalize(&args.table),
+        std::fs::canonicalize(&args.out),
+    ) && base == out.join(super::TABLE_FILE)
+    {
+        return Err(CliError::Failed(format!(
+            "{}: the base table.toml is the bundle's own table.toml, which the tool \
+             overwrites; keep the hand-written base outside the bundle folder",
+            args.table.display()
+        )));
+    }
     let layout = parse_layout_bytes(&read(&args.layout)?)
         .map_err(|e| CliError::Failed(format!("{}: {}", args.layout.display(), e.message)))?;
     let table_bytes = read(&args.table)?;
@@ -165,6 +177,49 @@ mod tests {
             assert_eq!(e.exit_code(), 2, "{bad:?}");
             assert!(e.to_string().contains("usage:"));
         }
+    }
+
+    /// 4.3 fix round 1, N4: the base is never overwritten.
+    #[test]
+    fn base_inside_the_output_is_refused() {
+        let dir = std::env::temp_dir().join(format!("pin_tablegen_n4_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("table.toml");
+        std::fs::write(&base, crate::layout::tests::BASE).unwrap();
+        let layout = dir.join("layout.toml");
+        std::fs::write(
+            &layout,
+            "schema_version = 1\n[playfield]\nwidth = 100.0\nlength = 100.0\nwall_height = 10.0\n",
+        )
+        .unwrap();
+        let d = dir.to_str().unwrap();
+        let args = s(&[
+            layout.to_str().unwrap(),
+            "--table",
+            base.to_str().unwrap(),
+            "--out",
+            &format!("{d}/./"),
+        ]);
+        let e = run_cli(&args).unwrap_err();
+        assert_eq!(e.exit_code(), 1);
+        assert!(e.to_string().contains("outside the bundle folder"), "{e}");
+        assert_eq!(
+            std::fs::read_to_string(&base).unwrap(),
+            crate::layout::tests::BASE
+        );
+        // Elsewhere it works.
+        let out = dir.join("out");
+        let args = s(&[
+            layout.to_str().unwrap(),
+            "--table",
+            base.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+        ]);
+        run_cli(&args).unwrap();
+        assert!(out.join("playfield.glb").is_file());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

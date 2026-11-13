@@ -93,13 +93,28 @@ never panics on arbitrary bytes.
    every datagram of that tick. A full state is sent even if nothing changed.
 5. **Split.** A tick with more than 180 entries is sent as several datagrams
    with the same tick and flags, each with at most 180 entries, in order. A
-   full state therefore takes 5 datagrams (6 with many impulses).
+   full state (832 entries) takes 5 datagrams, and so does a full state
+   with the maximum 64 impulses (896 entries); no tick ever needs more than
+   5 datagrams.
 6. **Back-pressure.** The sim thread never blocks on the network: encoded
    datagrams go through a bounded lock-free ring to a telemetry thread that
-   owns the socket. If the ring is full, datagrams are dropped (counted) and
-   sim loop forces a full state on the next tick (`TelemetryTx::push_batch`
-   returns `false` → `TelemetryEncoder::force_full_state`), so listeners
-   resynchronise.
+   owns the socket. If the ring is full, datagrams are dropped (counted).
+   The back-pressure loop is closed by the sim loop, not by the ring itself:
+   when `TelemetryTx::push_batch` returns `false` the sim loop must call
+   `TelemetryEncoder::force_full_state()`, so the next tick sends a full
+   state and listeners resynchronise. Integration (6.0) must wire this:
+
+   ```rust
+   encoder.encode_tick(tick, &state, &impulses, &mut batch);
+   if !telemetry_tx.push_batch(&batch) {
+       encoder.force_full_state();
+   }
+   ```
+7. **Latency.** The telemetry thread (`TelemetrySender::spawn(poll)`) parks
+   for up to `poll` when the ring is empty, so a datagram can leave up to
+   `poll` after its tick was encoded (plus OS scheduling). Integration (6.0)
+   should use `poll ≤ 1 ms` (one tick); the network layer adds nothing
+   else.
 
 ## 5. Haptic source ids (kind 5)
 
@@ -125,7 +140,9 @@ roll is not an impulse and is not part of the telemetry stream.
 - On a full-state datagram, treat its entries as authoritative; until the
   first full state arrives, the mirror is unknown.
 - Datagrams of one tick may arrive out of order relative to other ticks;
-  ignore datagrams whose tick is below the last full-state tick seen.
+  ignore datagrams whose tick is below the last full-state tick seen,
+  **unless the datagram is itself a full state**: a full state with a lower
+  tick means a new session (section 4, rule 4) and replaces the mirror.
 - Example (lamp 1 at full, tick `0x1122334455667788`, full-state flag; a
   real full state would carry all 832 entries over 5 datagrams):
 

@@ -148,11 +148,7 @@ pub fn loader_problem(points_mm: &[[f32; 3]]) -> Option<String> {
         roll_deg: None,
     };
     let (errors, warnings) = pin_assets::validate::check_spline(0, &def);
-    errors
-        .into_iter()
-        .chain(warnings)
-        .next()
-        .map(|e| e.message)
+    errors.into_iter().chain(warnings).next().map(|e| e.message)
 }
 
 /// Smallest plan-view radius of curvature of `spline`, m (infinite on a

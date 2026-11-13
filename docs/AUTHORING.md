@@ -10,6 +10,12 @@ layout cannot be generated validly the tool exits with code 1 and a message
 naming the element (`walls[2]: ...`) and writes nothing; bad arguments exit
 with code 2.
 
+Keep the hand-written base `table.toml` outside the bundle folder: the tool
+writes `<bundle_dir>/table.toml` and refuses to run when `--table` is that
+file. The tool checks only what it generates and the base splines that
+ramps reference; validate the result with `load_table` (the game's bundle
+loader) before shipping.
+
 ### Units and ranges
 - Layout lengths are mm in the playfield plane (`x` across, `y` up the table).
 - Every coordinate lies within ±5000 mm. Playfield width/length are 0.1–5000 mm.
@@ -29,7 +35,9 @@ with code 2.
   (within 0.001 mm, at least 4 points) is closed; ends closer than 1 mm
   otherwise are refused. The centre line may not bend tighter than about
   0.63 × the width (1.25 × the half-width) and may not turn back or touch
-  itself. Points should be roughly evenly spaced (the curve is uniformly
+  itself (each rail must load without any loader error or warning: at most
+  65 m and 4096 points, no crossing or near-touching stretches, no hairline
+  gap). Points should be roughly evenly spaced (the curve is uniformly
   parametrised).
 - **Ramps**: name a `[[splines]]` entry of the base table. A ramp on a layer
   other than 0 gets a layer transition (0 → its layer) `entry_width` wide
@@ -45,9 +53,13 @@ with code 2.
   `floor`, `decks[i]`, `walls[i]`, `posts[i]` (colliders: extras
   `collider: true`, `collision_layer`, `material`), `tablegen:lanes[i].left`
   / `.right` (visual; extras `guide` = the spline id), `ramps[i]` (visual;
-  extras `spline`), `inserts[i]` (extras `lamp`, 0.1 mm above the floor).
+  extras `spline`; wireform rails are drawn as 1.5 mm-radius tubes centred
+  on the zero-thickness physics rails), `inserts[i]` (extras `lamp`, 0.1 mm above the floor).
   Materials are flat-colour PBR named after the physics material
   (`wood`, `rubber`, `steel`, `plastic`, `acrylic`, ...) or `insert #rrggbb`.
+- The output must fit the loader's glTF budgets (16 384 meshes, 8 M
+  vertices, 24 M indices, 256 MiB of geometry, 16 MiB of JSON) and its 4 MiB
+  manifest limit; a layout over them is refused, naming the element.
 - `table.toml`: generated ids start with `tablegen:` and are replaced on
   every run (running on the generated `table.toml` again gives the same
   output); `meta.playfield_mesh` is set to `playfield.glb`.
