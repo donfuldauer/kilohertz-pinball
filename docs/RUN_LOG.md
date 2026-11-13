@@ -203,3 +203,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 2.3 | Implementer | Fable 5.2 | fix 1 | running | — | |
 | 4 | 2.3 | Implementer | Fable 5.2 | fix 1 | done | clippy clean; 67 lib + 23 flipper tests pass on the round-2 seam; proptests at 1500 cases | B1 fixed: restitution e(u) = e₀/(1 + d·u/4 m/s) via seam hook, true inverse mass; B2: 28-variant robustness table — holds at 70 % contact in all variants, never at 50 % → Orchestrator ruling: gate at outer-bat contact |
 | 4 | 2.3 | Reviewer | Opus 5.5 | 2 | running | — | Tester amends v1 per ruling |
+| 4 | 2.3 | Independent Tester | Opus 5.5 | 2 | done | 41/42 spec tests pass; 70 % gated sweep 26.3 % (> 25 %) in the Tester's rig; mid-bat 24.3 % | depth rig- and aim-dependent (65 %: 16.8, 75 %: 30.1) → Orchestrator ruling: the 25 % depth moves to Gate A1; 2.3 gates a ≤ 50 % dead spot plus explained continuity |

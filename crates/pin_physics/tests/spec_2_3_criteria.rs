@@ -64,93 +64,161 @@ fn rebound(c: &FlipperConfig, f: &BatFrame, flip: Option<u64>, release: Option<u
     })
 }
 
+/// A ball 200 mm up the table travelling straight down at 3.5 m/s, aimed
+/// at `frac` of the length of the *held* (raised) bat.
+fn incoming_held(s: &mut Scene, c: &FlipperConfig, f: &BatFrame, frac: f32) -> BallHandle {
+    let p = f.pivot + f.dir(c.end_angle_deg()) * (frac * L);
+    s.solver
+        .add_ball(ball(v(p.x, p.y + 0.20, R), v(0.0, -3.5, 0.0)))
+        .unwrap()
+}
+
+fn rebound_held_aim(c: &FlipperConfig, f: &BatFrame, frac: f32, flip: Option<u64>) -> Shot {
+    let mut s = table(c);
+    let h = incoming_held(&mut s, c, f, frac);
+    run_shot(&mut s, h, f, 0, WINDOW, |t, set| {
+        if Some(t) == flip {
+            set.set_energised(LEFT, true);
+        }
+    })
+}
+
+/// Bat state at the start of the first-contact tick.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum Phase {
+    /// On the rest stop, not moving (the ball meets the resting bat first).
+    Rest,
+    /// Moving up, short of the end stop.
+    Stroke,
+    /// On the end stop, not moving.
+    AtEnd,
+    /// Moving back (bounced off the end stop or returning).
+    Back,
+}
+
+fn phase(c: &FlipperConfig, s: &Shot) -> Phase {
+    let (a, w) = s.bat_at_impact.expect("no contact");
+    let sign = c.sweep_angle_deg.signum();
+    if w * sign < -1.0e-3 {
+        Phase::Back
+    } else if (a - c.end_angle_deg()).abs() < 0.05 && w.abs() <= 1.0e-3 {
+        Phase::AtEnd
+    } else if (a - c.rest_angle_deg).abs() < 0.05 && w.abs() <= 1.0e-3 {
+        Phase::Rest
+    } else {
+        Phase::Stroke
+    }
+}
+
+/// Largest rebound step between neighbouring 1 ms flips that needs no
+/// explanation (Orchestrator ruling on criterion 1).
+const STEP: f32 = 0.75;
+
 /// The ±20 ms timing sweep around `origin` (the flip pressed at
-/// `origin + k`, held): (k, rebound, caught) per offset, with the continuity
-/// check.
-fn sweep(c: &FlipperConfig, f: &BatFrame, origin: u64, label: &str) -> Vec<(i64, f32, bool)> {
+/// `origin + k`, held) for a ball aimed at `frac` of the held bat. Every step
+/// larger than [`STEP`] must be explained by a rigid-stop event (the bat's
+/// phase at contact differs: still in stroke / on the stop / bounced back /
+/// resting) or by a hit or miss of a ball already rebounding (a different
+/// number of contact episodes); the cause is printed. Returns the curve.
+fn sweep(
+    c: &FlipperConfig,
+    f: &BatFrame,
+    frac: f32,
+    origin: u64,
+    label: &str,
+    gate_steps: bool,
+) -> Vec<(i64, Shot)> {
     let mut curve = Vec::new();
     for k in -20i64..=20 {
         let flip = (origin as i64 + k) as u64;
-        let s = rebound(c, f, Some(flip), None);
+        let s = rebound_held_aim(c, f, frac, Some(flip));
         assert!(s.impact_tick.is_some(), "{label}: offset {k}: no impact");
-        curve.push((k, s.speed, s.caught));
+        curve.push((k, s));
     }
-    println!("{label}: offset_ms rebound_m_s caught");
-    for (k, sp, caught) in &curve {
-        println!("{k:>4} {sp:.3} {caught}");
+    println!("{label}: offset_ms rebound_m_s bat_phase_at_contact contact_episodes");
+    for (k, s) in &curve {
+        println!("{k:>4} {:.3} {:?} {}", s.speed, phase(c, s), s.episodes);
     }
-    // Continuity: shifting the flip by 1 ms changes the bat point velocity at
-    // the contact (≤ 0.6·L from the pivot) by at most α·dt·r with
-    // α = power/I; an impulsive hit passes at most (1 + e) ≤ 2 of that to
-    // the ball. 0.2 m/s margin for the contact-point shift.
-    let p = pin_core::PhysicsDefaults::builtin().resolve(None);
-    let jump = 2.0 * (p.flipper_power_torque / p.flipper_inertia) * DT * (0.6 * L) + 0.2;
     for w in curve.windows(2) {
-        let d = (w[1].1 - w[0].1).abs();
-        assert!(
-            d <= jump,
-            "{label}: rebound jumps {d:.3} m/s between {} ms and {} ms (bound {jump:.3})",
-            w[0].0,
-            w[1].0
-        );
+        let (k0, s0) = (&w[0].0, &w[0].1);
+        let (k1, s1) = (&w[1].0, &w[1].1);
+        let d = (s1.speed - s0.speed).abs();
+        if d <= STEP {
+            continue;
+        }
+        let (p0, p1) = (phase(c, s0), phase(c, s1));
+        let cause = if p0 != p1 {
+            Some(format!("rigid-stop event: bat {p0:?} → {p1:?} at contact"))
+        } else if s0.episodes != s1.episodes {
+            Some(format!(
+                "hit/miss of an already-rebounding ball ({} → {} contact episodes)",
+                s0.episodes, s1.episodes
+            ))
+        } else {
+            None
+        };
+        match cause {
+            Some(cause) => println!("{label}: step {d:.3} m/s between {k0} and {k1} ms: {cause}"),
+            None if gate_steps => panic!(
+                "{label}: unexplained rebound step {d:.3} m/s between {k0} ms and {k1} ms \
+                 (bat {p0:?} both, {} contact episodes both)",
+                s0.episodes
+            ),
+            None => println!("{label}: UNEXPLAINED step {d:.3} m/s between {k0} and {k1} ms"),
+        }
     }
     curve
 }
 
-fn min_of(curve: &[(i64, f32, bool)]) -> (i64, f32) {
-    curve.iter().fold(
-        (0, f32::INFINITY),
-        |m, x| if x.1 < m.1 { (x.0, x.1) } else { m },
-    )
+fn min_of(curve: &[(i64, Shot)]) -> (i64, f32) {
+    curve.iter().fold((0, f32::INFINITY), |m, x| {
+        if x.1.speed < m.1 { (x.0, x.1.speed) } else { m }
+    })
 }
 
-// Verification 1 leaves "time 0" of the sweep open. Reading B (gating):
-// time 0 = the ball's contact with the held (raised) bat, the reference the
-// criterion compares with. Reading A (resting-bat contact) is reported, its
-// minimum not gated; the difference is an Orchestrator item (see the 2.3
-// Tester report).
-
-#[test]
-fn v1_timing_sweep_time0_contact_with_raised_bat() {
+/// Criterion 1 for a ball aimed at `frac` of the held bat; time 0 = the
+/// ball's contact with the held bat (Orchestrator ruling "2.3 criterion 1
+/// after fix round 1"). Returns (minimum, held rebound).
+fn criterion_1(frac: f32, gate_steps: bool) -> (f32, f32) {
     let (c, f) = left_flipper();
-    let held = rebound(&c, &f, Some(0), None);
+    let held = rebound_held_aim(&c, &f, frac, Some(0));
     let th = held.impact_tick.expect("ball missed the held bat");
     assert!(th >= 25, "impact too early for a −20 ms flip: {th}");
-    println!("held-bat rebound {:.3} m/s (impact tick {th})", held.speed);
-    let curve = sweep(&c, &f, th, "time 0 = raised-bat contact");
+    let label = format!("contact {:.0} % of the held bat", frac * 100.0);
+    println!(
+        "{label}: held-bat rebound {:.3} m/s (impact tick {th})",
+        held.speed
+    );
+    let curve = sweep(&c, &f, frac, th, &label, gate_steps);
     let (k, min) = min_of(&curve);
     println!(
-        "minimum {min:.3} m/s at {k} ms = {:.1} % of held",
+        "{label}: minimum {min:.3} m/s at {k} ms = {:.1} % of held (criterion 25 %)",
         100.0 * min / held.speed
     );
+    (min, held.speed)
+}
+
+#[test]
+fn v1_timing_sweep_outer_bat_70_percent() {
+    // Gated (Orchestrator ruling): continuity as above and a dead spot of at
+    // most 25 % of the held-flipper rebound.
+    let (min, held) = criterion_1(0.70, true);
     assert!(
-        min <= 0.25 * held.speed,
-        "sweep minimum {min:.3} m/s > 25 % of the held-flipper rebound {:.3}",
-        held.speed
+        min <= 0.25 * held,
+        "sweep minimum {min:.3} m/s > 25 % of the held-flipper rebound {held:.3}"
     );
 }
 
 #[test]
-fn v1_timing_sweep_time0_contact_with_resting_bat_report() {
-    let (c, f) = left_flipper();
-    let rest_shot = rebound(&c, &f, None, None);
-    let t0 = rest_shot
-        .impact_tick
-        .expect("ball never reached the resting bat");
-    let held = rebound(&c, &f, Some(0), None);
+fn v1_timing_sweep_mid_bat_50_percent_report() {
+    // Report only (Orchestrator ruling): mid-bat contact.
+    let (min, held) = criterion_1(0.50, false);
     println!(
-        "rest-bat rebound {:.3} m/s (impact tick {t0}); held-bat rebound {:.3} m/s",
-        rest_shot.speed, held.speed
-    );
-    let curve = sweep(&c, &f, t0, "time 0 = resting-bat contact");
-    let (k, min) = min_of(&curve);
-    println!(
-        "minimum {min:.3} m/s at {k} ms = {:.1} % of held (criterion 25 %: {})",
-        100.0 * min / held.speed,
-        if min <= 0.25 * held.speed {
+        "mid-bat: 25 % criterion {}",
+        if min <= 0.25 * held {
             "met"
         } else {
-            "NOT met under this reading"
+            "not met (report only)"
         }
     );
 }

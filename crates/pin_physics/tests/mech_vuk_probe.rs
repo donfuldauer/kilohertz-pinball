@@ -54,7 +54,8 @@ fn absurd_parameters_are_rejected() {
     use pin_core::PhysicsDefaults;
     use pin_physics::mech::{MechError, MechSet};
     let d = PhysicsDefaults::builtin();
-    let cases: [(MechKind, fn(&mut MechSpec), &str); 8] = [
+    type Case = (MechKind, fn(&mut MechSpec), &'static str);
+    let cases: [Case; 8] = [
         (
             MechKind::Vuk,
             |s| s.params.eject_speed_m_s = Some(1.0e9),

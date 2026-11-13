@@ -337,6 +337,11 @@ pub struct Shot {
     pub caught: bool,
     /// Tick at which the ball cleared the bat.
     pub clear_tick: Option<u64>,
+    /// Bat (angle °, ω rad/s) at the start of the first-impact tick.
+    pub bat_at_impact: Option<(f32, f32)>,
+    /// Separate contact episodes with the bat before the ball cleared (a
+    /// new impact after the ball had moved ≥ 3 mm off the bat counts again).
+    pub episodes: u32,
 }
 
 /// Clearance (beyond ball radius + base radius from the bat axis) at which
@@ -358,18 +363,31 @@ pub fn run_shot(
     let id = FlipperId(body as u16);
     let mut impact = None;
     let mut contact_seen = false;
+    let mut bat_at_impact = None;
+    let mut episodes = 0u32;
+    let mut separated = true;
     for _ in 0..ticks {
         drive(scene.tick, &mut scene.set);
         let t = scene.tick;
+        let pre = (scene.set.angle_deg(id), scene.set.angular_velocity(id));
         scene.advance();
-        if impact.is_none() && scene.hit(h, body) {
+        let hit = scene.hit(h, body);
+        if impact.is_none() && hit {
             impact = Some(t);
+            bat_at_impact = Some(pre);
+        }
+        if hit && separated {
+            episodes += 1;
+            separated = false;
         }
         let b = scene.ball(h);
         let d = frame.axis_distance(scene.set.angle_deg(id), Vec3::ZERO, b.position);
         if impact.is_some() {
             if d < R + BASE_R + 0.002 {
                 contact_seen = true;
+            }
+            if d > R + BASE_R + 0.003 {
+                separated = true;
             }
             if contact_seen && d >= R + BASE_R + CLEAR {
                 return Shot {
@@ -378,6 +396,8 @@ pub fn run_shot(
                     velocity: b.velocity,
                     caught: false,
                     clear_tick: Some(t),
+                    bat_at_impact,
+                    episodes,
                 };
             }
         }
@@ -389,6 +409,8 @@ pub fn run_shot(
         velocity: b.velocity,
         caught: impact.is_some(),
         clear_tick: None,
+        bat_at_impact,
+        episodes,
     }
 }
 
