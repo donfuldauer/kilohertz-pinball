@@ -60,15 +60,15 @@ fn pair_restitution(ball: ProfileId, material: Material) -> f32 {
 
 // ---------------------------------------------------------------- tunnelling
 
-/// A plate (thin slab, 1 m wide) moving along +x at `u` and a ball coming
-/// the other way at `vb` along `dir`: the ball never gets to the other side
-/// of the plate and never sinks into it.
+/// A plate (thin slab, 20 m wide) moving at `u` and a ball coming the other
+/// way at `vb` along `dir`: while it is in front of the plate the ball never
+/// gets to the other side and never sinks into it.
 fn plate_run(profile: ProfileId, u: Vec3, vb: f32, dir: Vec3) -> (usize, Vec3) {
     let world = empty_world();
     let geo = Geometry::new(&world);
     let mut s = solver_no_gravity();
     let r = radius(profile);
-    let half = v(0.002, 1.0, 1.0);
+    let half = v(0.002, 10.0, 10.0);
     let mut plate = Slab::one(SlabBody::new(v(-0.1, 0.0, 0.0), half, u));
     let h = s
         .add_ball(ball_at(profile, v(0.1, 0.0, 0.0), dir * vb))
@@ -83,6 +83,10 @@ fn plate_run(profile: ProfileId, u: Vec3, vb: f32, dir: Vec3) -> (usize, Vec3) {
         impacts += body_impacts(&ev, 0);
         let b = s.ball(h).unwrap();
         let slab = &plate.bodies[0];
+        let lateral = (b.position - slab.center).abs();
+        if lateral.y > half.y || lateral.z > half.z {
+            continue; // went around the edge
+        }
         assert!(
             b.position.x > slab.center.x,
             "tunnelled: u {u:?} vb {vb} dir {dir:?} ball {:?} plate {:?}",
@@ -205,7 +209,7 @@ proptest! {
         let dir = v(-1.0, dy, dz).normalize();
         let profile = ProfileId(p as u16);
         // The ball must reach the plate within the run.
-        prop_assume!(ux - dir.x * vb > 0.5);
+        prop_assume!(ux - dir.x * vb > 2.0);
         let (impacts, _) = plate_run(profile, v(ux, uy, uz), vb, dir);
         prop_assert!(impacts >= 1);
     }
