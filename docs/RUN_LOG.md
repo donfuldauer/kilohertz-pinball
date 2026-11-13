@@ -92,3 +92,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3 | 2.2 | Reviewer | Opus 5.5 | 4 | **fail** | gates 1–7 pass; sliding beside sloped walls 7–9 µs/step, 0 slow ticks; spikes = machine noise | B6 top/bottom edge region of sloped guides takes the slow path (0.1–1 ms/step, worst 15 ms, up to 90 % distance lost); NB1 bend limit docs |
 | 3 | 2.2 | Implementer (other model) | Opus 5.5 | 1 | running | — | fresh brief + failure history (PLAN §2.6 step 2); review by Fable |
 | 3 | 4.5 | Implementer | Opus 5.5 | fix 2 | done | all pin_script targets pass; worst compile at caps 725 ms / 60 MB | operator scan with nesting/merge/branch/pressure budgets; caps lowered; N7 |
+| 3 | 2.2 | Implementer (other model) | Opus 5.5 | 1 | done | coverage 97.77 %; edge regions 2–7 µs/step mean, ≤ 172 µs worst (4 balls) | wall reach (Federer), edge Newton closest point, rolling-ball cast bound; vertical-bend acceptance rule; NB1 docs |
