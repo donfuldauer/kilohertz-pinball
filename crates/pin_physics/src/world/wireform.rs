@@ -2,7 +2,7 @@
 
 use glam::{DVec3, Vec3};
 
-use super::curve_bounds::{CurveTree, EndTerms, TangentBalls};
+use super::curve_bounds::{CurveTree, EndTerms, TARGET_ROOM, TangentBalls};
 use super::shapes::{APPROACH_EPS, any_perpendicular};
 use super::sloped_bounds::{plan_view_folds, wall_reach};
 use super::spline::{
@@ -1129,8 +1129,13 @@ impl GuideCurve {
                 let half = |ends: &[EndTerms; 2]| ends.iter().fold(f64::INFINITY, |m, e| m.min(e.half));
                 let mut ends = tree.end_terms(0.0);
                 let end_limited = reach.min((0.9 * half(&ends)) as f32) < line;
-                if ((0.9 * half(&ends)) as f32) < reach {
-                    ends = tree.end_terms(f64::from(reach) / 0.9);
+                let target = f64::from(reach) / 0.9;
+                // (Searching again is futile where a curve point behind the
+                // end already lies within the target: the end binds.)
+                if ((0.9 * half(&ends)) as f32) < reach
+                    && ends.iter().all(|e| e.found >= target * (1.0 + TARGET_ROOM))
+                {
+                    ends = tree.end_terms(target);
                 }
                 reach = reach.min((0.9 * half(&ends)) as f32);
                 if end_limited {
