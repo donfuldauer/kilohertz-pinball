@@ -176,9 +176,22 @@ pub const BODY_SKIN: f32 = 1.0e-5;
 /// resting contact (left to the sub-step boundaries) rather than an impact.
 pub const BODY_REST_SPEED: f32 = 1.0e-3;
 
-/// Residual normal speed (m/s) above which the two-body contact solve
-/// checks a body's real response against its reported inverse mass.
-const GUARD_SPEED: f32 = 1.0e-6;
+/// Speed (m/s) a ball may gain above its normal-impulse need in one
+/// body-contact solve (room for the pushes of its other contacts, e.g. a
+/// stack of balls resting on a body). See [`BodyContactState`].
+pub(super) const CAP_HEADROOM: f32 = 1.0;
+
+/// A body contact never leaves a ball faster than this (m/s), or than the
+/// ball was before the contact if that is more; spin likewise, scaled by
+/// the radius. Never reached with an owner that keeps the contract (a flip
+/// at a 20 m/s bat tip launches at ≤ 40 m/s); it bounds what a body that
+/// answers wrongly can do.
+pub const BODY_SPEED_LIMIT: f32 = 100.0;
+
+/// Body-contact solve steps per tick; once spent, body contacts apply no
+/// further impulse until the next tick (penetration is then projected out at
+/// the next sub-step boundary). Bounds the work a misbehaving body can cause.
+pub(super) const MAX_BODY_SOLVES_PER_TICK: u32 = 16_384;
 
 /// Iterations of [`conservative_cast`] before it reports
 /// [`BodyCast::Advance`].
@@ -370,50 +383,34 @@ pub fn conservative_cast<B: MovingBodies + ?Sized>(
     Some(BodyCast::Advance { time: s })
 }
 
-/// Divergence guard of the two-body normal solve. `dj` was just applied
-/// (ball and body) starting from relative normal speed `un`. If the body moved
-/// more than its reported inverse mass says (an owner under-reporting it, e.g.
-/// at a stop), the relative velocity overshoots the target and the iterated
-/// solve would grow by a factor `−w·m` per sweep. The real response is then
-/// measured and the impulse corrected with it (a secant step); if the
-/// response is unusable the impulse is taken back. Bounded: at most one
-/// extra query and impulse per call.
-#[allow(clippy::too_many_arguments)]
-fn normal_guard(
-    ball: &mut super::Ball,
-    m: f32,
-    set: &mut dyn MovingBodies,
-    (body, time, point, n): (usize, f32, Vec3, Vec3),
-    un: f32,
-    dj: f32,
-    target: f32,
-    acc: &mut super::contact::ContactImpulse,
-) {
-    if dj == 0.0 {
-        return;
-    }
-    let un1 = (ball.velocity - set.velocity_at(body, time, point)).dot(n);
-    let (r0, r1) = (target - un, target - un1);
-    if !(r1.abs() > r0.abs() && r1.abs() > GUARD_SPEED) {
-        return;
-    }
-    let k_obs = (un1 - un) / dj;
-    let fixed = if k_obs.is_finite() && k_obs > 0.0 {
-        (acc.normal + r1 / k_obs).max(0.0)
-    } else {
-        acc.normal - dj
-    };
-    let dj2 = fixed - acc.normal;
-    if dj2.is_finite() && dj2 != 0.0 {
-        ball.velocity += n * (dj2 / m);
-        set.apply_impulse(body, time, point, n * -dj2);
-        acc.normal = fixed;
-    }
-}
-
 /// A usable inverse mass: finite and positive, else 0 (kinematic).
 fn usable(w: f32) -> f32 {
     if w.is_finite() && w > 0.0 { w } else { 0.0 }
+}
+
+/// What the solver learns about one body contact during one solve (a
+/// sub-step boundary solve, a mid-sub-step re-solve or a one-shot impact).
+#[derive(Copy, Clone, Debug)]
+pub(super) struct BodyContactState {
+    /// Largest relative normal response per unit impulse (1/kg) observed so
+    /// far, `1/m + w_observed`; 0 before the first observation. The solve
+    /// uses `max(1/m + w_reported, k)`, so a body that moves more than it
+    /// reports is never pushed past the target again (no overshoot, no
+    /// growth from sweep to sweep).
+    pub k: f32,
+    /// Upper bound of the accumulated normal impulse (N·s), set at the first
+    /// solve step of the contact: `m · (max(0, u_target − u_n) +
+    /// CAP_HEADROOM)`. A body that keeps the contract never needs more (its
+    /// two-body impulse is at most the impulse against an immovable body);
+    /// whatever a body answers, the impulse cannot grow beyond it.
+    pub cap: f32,
+}
+
+impl BodyContactState {
+    pub(super) const NEW: Self = Self {
+        k: 0.0,
+        cap: f32::NAN,
+    };
 }
 
 /// One solver step for the contact of a ball with moving body `body` of
@@ -421,10 +418,18 @@ fn usable(w: f32) -> f32 {
 /// [`solve_surface_contact`](super::contact::solve_surface_contact); see the
 /// module documentation). `normal` points from the body toward the ball
 /// centre, `point` is the contact point on the body, `acc` the impulses this
-/// contact has applied so far. Every impulse change is passed on to the body
-/// (opposite sign). Returns the size of the ball's velocity change (m/s) and
-/// whether the body may have changed its trajectory (it has a finite mass
-/// in a direction it was pushed).
+/// contact has applied so far and `st` what the solve has learnt about the
+/// body. Every impulse change is passed on to the body (opposite sign).
+/// Returns the size of the ball's velocity change (m/s) and whether the body
+/// may have changed its trajectory.
+///
+/// Robustness against a body that answers wrongly (module docs, "Owner
+/// obligations"): the response is measured after every normal impulse;
+/// if the body moved more than reported, the effective mass is raised to the
+/// observed one and the impulse is *reduced* to what the observed response
+/// needs (a correction never increases it); the accumulated normal impulse
+/// is capped (`st.cap`); and the ball's speed and spin are limited
+/// ([`BODY_SPEED_LIMIT`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn solve_body_contact(
     ball: &mut super::Ball,
@@ -437,118 +442,191 @@ pub(super) fn solve_body_contact(
     k: super::contact::ContactCoefficients,
     target_normal_speed: f32,
     acc: &mut super::contact::ContactImpulse,
+    st: &mut BodyContactState,
 ) -> (f32, bool) {
     use super::contact::{clamp_length, solve_surface_contact, tangential};
     let n = normal;
     let r = sphere.radius;
     let m = sphere.mass;
     let rc = n * -r;
+    let before = (ball.velocity, ball.angular_velocity);
     let vs = set.velocity_at(body, time, point);
+    let un = (ball.velocity - vs).dot(n);
+    if !un.is_finite() || !vs.is_finite() {
+        return (0.0, false);
+    }
+    if st.cap.is_nan() {
+        st.cap = m * ((target_normal_speed - un).max(0.0) + CAP_HEADROOM);
+    }
     // The inverse masses are asked along the impulse change the body
     // actually receives: −n when the ball needs more normal impulse, +n when
     // the accumulated solve takes some back (one-sided stops differ), and
     // the slip direction for friction.
-    let un0 = (ball.velocity - vs).dot(n);
-    let push = if target_normal_speed - un0 >= 0.0 {
-        -n
-    } else {
-        n
-    };
+    let push = if target_normal_speed - un >= 0.0 { -n } else { n };
     let wn = usable(set.inverse_mass_at(body, time, point, push));
     let slip = tangential(ball.velocity + ball.angular_velocity.cross(rc) - vs, n);
     let wt = slip
         .try_normalize()
         .map_or(0.0, |d| usable(set.inverse_mass_at(body, time, point, d)));
+    let k_ball = 1.0 / m;
+    let mut moved = false;
 
-    if wn == 0.0 && wt == 0.0 {
+    if wn == 0.0 && wt == 0.0 && st.k <= k_ball {
         // Kinematic here: exactly a static surface moving with the body.
-        let before = *acc;
-        let change = solve_surface_contact(ball, sphere, n, vs, k, target_normal_speed, acc);
-        let j = n * (acc.normal - before.normal) + (acc.tangent - before.tangent);
-        let mut moved = false;
+        let start = *acc;
+        solve_surface_contact(ball, sphere, n, vs, k, target_normal_speed, acc);
+        if acc.normal > st.cap {
+            ball.velocity -= n * ((acc.normal - st.cap) / m);
+            acc.normal = st.cap;
+            acc.tangent = clamp_length(acc.tangent, k.friction.max(0.0) * st.cap);
+        }
+        let j = n * (acc.normal - start.normal) + (acc.tangent - start.tangent);
         if j != Vec3::ZERO {
             set.apply_impulse(body, time, point, -j);
             moved = (-j)
                 .try_normalize()
                 .is_some_and(|d| usable(set.inverse_mass_at(body, time, point, d)) > 0.0);
-            // A body that said it cannot move but did breaks the contract;
-            // the guard keeps the solve bounded anyway.
-            if set.velocity_at(body, time, point) != vs {
-                moved = true;
-                normal_guard(
-                    ball,
-                    m,
-                    set,
-                    (body, time, point, n),
-                    un0,
-                    acc.normal - before.normal,
-                    target_normal_speed,
-                    acc,
-                );
-            }
+            // A body that said it cannot move but did: learn its response
+            // and take back what overshot.
+            observe(
+                ball,
+                m,
+                set,
+                (body, time, point, n),
+                (un, start.normal),
+                target_normal_speed,
+                acc,
+                st,
+            );
+            moved |= st.k > k_ball;
         }
-        return (change, moved);
+    } else {
+        let inertia = sphere.inertia();
+        // Normal impulse on the relative velocity, with both inverse masses
+        // (or the larger response seen).
+        let k_n = (k_ball + wn).max(st.k);
+        let start = acc.normal;
+        let total = (start + (target_normal_speed - un) / k_n).clamp(0.0, st.cap);
+        let dj = total - start;
+        acc.normal = total;
+        if dj != 0.0 {
+            ball.velocity += n * (dj / m);
+            set.apply_impulse(body, time, point, n * -dj);
+            observe(
+                ball,
+                m,
+                set,
+                (body, time, point, n),
+                (un, start),
+                target_normal_speed,
+                acc,
+                st,
+            );
+        }
+        let total = acc.normal;
+
+        // Rolling and pivoting resistance act on the ball's spin only.
+        let f_max = k.friction.max(0.0) * total;
+        let l_max = k.rolling_resistance.max(0.0) * total * r;
+        let want = acc.rolling - ball.angular_velocity * inertia;
+        let want_n = n * want.dot(n);
+        let new_l = clamp_length(want - want_n, l_max) + clamp_length(want_n, l_max);
+        ball.angular_velocity += (new_l - acc.rolling) / inertia;
+        acc.rolling = new_l;
+
+        // Coulomb friction on the slip against the body's (new) surface
+        // velocity; effective mass 1 / (7/(2m) + w_t).
+        let vs = set.velocity_at(body, time, point);
+        let ut = tangential(ball.velocity + ball.angular_velocity.cross(rc) - vs, n);
+        let wt = ut
+            .try_normalize()
+            .map_or(0.0, |d| usable(set.inverse_mass_at(body, time, point, d)));
+        let mut new_t = clamp_length(tangential(acc.tangent, n) - ut / (3.5 / m + wt), f_max);
+        // The clamp may turn the change around (friction taken back): ask
+        // the body along the change it really receives.
+        if let Some(d) = (acc.tangent - new_t).try_normalize()
+            && d.dot(ut) < 0.0
+        {
+            let wt = usable(set.inverse_mass_at(body, time, point, d));
+            new_t = clamp_length(tangential(acc.tangent, n) - ut / (3.5 / m + wt), f_max);
+        }
+        let j = new_t - acc.tangent;
+        if j != Vec3::ZERO && j.is_finite() {
+            ball.velocity += j / m;
+            ball.angular_velocity += rc.cross(j) / inertia;
+            set.apply_impulse(body, time, point, -j);
+            acc.tangent = new_t;
+        }
+        moved = true;
     }
 
-    let inertia = sphere.inertia();
-    let before = (ball.velocity, ball.angular_velocity);
-    let un = (ball.velocity - vs).dot(n);
-    if un.is_nan() {
-        return (0.0, false);
+    // Backstop: a body contact never makes a ball faster (or spin faster)
+    // than the limit, unless it already was.
+    let limit = BODY_SPEED_LIMIT.max(before.0.length());
+    let speed = ball.velocity.length();
+    if !(speed <= limit) {
+        ball.velocity = if speed.is_finite() {
+            ball.velocity * (limit / speed)
+        } else {
+            before.0
+        };
     }
-    // Normal impulse on the relative velocity, with both inverse masses.
-    let total = (acc.normal + (target_normal_speed - un) / (1.0 / m + wn)).max(0.0);
-    let dj = total - acc.normal;
-    acc.normal = total;
-    if dj != 0.0 {
-        ball.velocity += n * (dj / m);
-        set.apply_impulse(body, time, point, n * -dj);
-        normal_guard(
-            ball,
-            m,
-            set,
-            (body, time, point, n),
-            un,
-            dj,
-            target_normal_speed,
-            acc,
-        );
-    }
-    let total = acc.normal;
-
-    // Rolling and pivoting resistance act on the ball's spin only.
-    let f_max = k.friction.max(0.0) * total;
-    let l_max = k.rolling_resistance.max(0.0) * total * r;
-    let want = acc.rolling - ball.angular_velocity * inertia;
-    let want_n = n * want.dot(n);
-    let new_l = clamp_length(want - want_n, l_max) + clamp_length(want_n, l_max);
-    ball.angular_velocity += (new_l - acc.rolling) / inertia;
-    acc.rolling = new_l;
-
-    // Coulomb friction on the slip against the body's (new) surface
-    // velocity; effective mass 1 / (7/(2m) + w_t).
-    let vs = set.velocity_at(body, time, point);
-    let ut = tangential(ball.velocity + ball.angular_velocity.cross(rc) - vs, n);
-    let wt = ut
-        .try_normalize()
-        .map_or(0.0, |d| usable(set.inverse_mass_at(body, time, point, d)));
-    let mut new_t = clamp_length(tangential(acc.tangent, n) - ut / (3.5 / m + wt), f_max);
-    // The clamp may turn the change around (friction taken back): ask the
-    // body along the change it really receives.
-    if let Some(d) = (acc.tangent - new_t).try_normalize()
-        && d.dot(ut) < 0.0
-    {
-        let wt = usable(set.inverse_mass_at(body, time, point, d));
-        new_t = clamp_length(tangential(acc.tangent, n) - ut / (3.5 / m + wt), f_max);
-    }
-    let j = new_t - acc.tangent;
-    if j != Vec3::ZERO && j.is_finite() {
-        ball.velocity += j / m;
-        ball.angular_velocity += rc.cross(j) / inertia;
-        set.apply_impulse(body, time, point, -j);
-        acc.tangent = new_t;
+    let spin_limit = (BODY_SPEED_LIMIT / r).max(before.1.length());
+    let spin = ball.angular_velocity.length();
+    if !(spin <= spin_limit) {
+        ball.angular_velocity = if spin.is_finite() {
+            ball.angular_velocity * (spin_limit / spin)
+        } else {
+            before.1
+        };
     }
     let change =
         (ball.velocity - before.0).length() + (ball.angular_velocity - before.1).length() * r;
-    (change, true)
+    (change, moved)
+}
+
+/// After a normal impulse change (`acc.normal` now, `start` before, relative
+/// normal speed `un` before): measure the body's real response. If the
+/// relative normal velocity moved more per unit impulse than the solve
+/// assumed (the body moved more than it reported), record the observed
+/// response in `st.k` and reduce the impulse to what that response needs.
+/// The correction only ever brings the impulse closer to `start`, so it
+/// cannot amplify anything.
+#[allow(clippy::too_many_arguments)]
+fn observe(
+    ball: &mut super::Ball,
+    m: f32,
+    set: &mut dyn MovingBodies,
+    (body, time, point, n): (usize, f32, Vec3, Vec3),
+    (un, start): (f32, f32),
+    target: f32,
+    acc: &mut super::contact::ContactImpulse,
+    st: &mut BodyContactState,
+) {
+    let dj = acc.normal - start;
+    if dj == 0.0 {
+        return;
+    }
+    let vs1 = set.velocity_at(body, time, point);
+    let un1 = (ball.velocity - vs1).dot(n);
+    let k_obs = (un1 - un) / dj;
+    // 0.1 % tolerance: rounding of an honest response must not count.
+    if !(k_obs.is_finite() && k_obs > st.k.max(1.0 / m) * 1.001) {
+        return;
+    }
+    let assumed = (un1 - un) / dj; // == k_obs; kept for clarity of the bound
+    st.k = assumed;
+    let wanted = (start + (target - un) / k_obs).clamp(0.0, st.cap);
+    // Only move back toward `start` (never past the impulse already given).
+    let fixed = if dj > 0.0 {
+        wanted.clamp(start, acc.normal)
+    } else {
+        wanted.clamp(acc.normal, start)
+    };
+    let dj2 = fixed - acc.normal;
+    if dj2 != 0.0 && dj2.is_finite() {
+        ball.velocity += n * (dj2 / m);
+        set.apply_impulse(body, time, point, n * -dj2);
+        acc.normal = fixed;
+    }
 }
