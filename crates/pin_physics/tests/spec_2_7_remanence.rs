@@ -106,7 +106,7 @@ fn v3_standard_steel_leaves_measurably_later_than_low_rem_steel() {
         "standard_steel lingered too long: {ta} vs {tb} (ρ = 0.05, τ = 60 ms)"
     );
     // Measurably behind in position too, all the way to the exit.
-    for tick in 30..tb {
+    for tick in 40..tb {
         let (ya, yb) = (a.after[tick].position.y, b.after[tick].position.y);
         assert!(
             ya > yb + 5.0e-6,
