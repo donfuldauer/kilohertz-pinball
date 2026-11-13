@@ -130,3 +130,10 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3→4 | 2.1-B1 | Reviewer | Fable 5.2 | 1 | **pass** | 284 tests; coverage 94.25 %; 5.49 M lane checks 0 violations; B1 0/191 slow; band 0/19 755 slow; bit-identical on 239/239 unchanged shapes | residual N1 (budget-exhausted coils) / N2 (coarse sampling unclassified) → HUMAN_QUEUE |
 | 3→4 | fix tasks | Orchestrator | — | — | **CI green** | run 132 attempt 2 (5a318c4), Linux/macOS/Windows: fmt, clippy, core-tests, gpu-tests (lavapipe/Metal/WARP), coverage | 2.1-B1, 3.3-H, 4.1-H confirmed cross-OS; runs 130–132 attempt 1 failed only by macOS jobs cancelled without a runner (no test failures); https://github.com/donfuldauer/kilohertz-pinball/actions/runs/43479638307 |
 | 4 | — | Orchestrator | — | — | started | — | Wave 4 plan: seam task 2.2-S first for 2.3/2.4/2.7; batch A 2.2-S, 3.4, 4.3; batch B 4.6, 5.1, then 2.3, 2.4, 2.7 (DECISIONS "Orchestrator — Wave 4 brief decisions") |
+| 4 | 2.2-S | Implementer | Opus 5.5 | 1 | running | — | moving-body + force-context seams; review by Fable |
+| 4 | 3.4 | Implementer | Opus 5.5 | 1 | running | — | |
+| 4 | 3.4 | Independent Tester | Fable 5.2 | 1 | running | — | |
+| 4 | 4.3 | Implementer | Opus 5.5 | 1 | running | — | |
+| 4 | 4.3 | Independent Tester | Fable 5.2 | 1 | running | — | |
+| 4 | 4.6 | Implementer | Opus 5.5 | 1 | running | — | |
+| 4 | 4.6 | Independent Tester | Fable 5.2 | 1 | running | — | |
