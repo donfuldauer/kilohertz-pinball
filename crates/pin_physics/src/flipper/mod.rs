@@ -245,6 +245,10 @@ struct Flipper {
     axis: Vec3,
     zero: Vec3,
     quarter: Vec3,
+    /// `rest_angle_deg` and `sweep_angle_deg` as configured, so the angle
+    /// reported at the stops is exactly the configured one.
+    rest_angle_deg: f32,
+    sweep_deg: f32,
     rest_angle: f32,
     end_angle: f32,
     sign: f32,
@@ -291,7 +295,6 @@ struct Flipper {
     /// momentum `true_w`; it leaves it with the stop's restitution.
     arriving: bool,
     slide_v: f32,
-    tick_q0: f32,
 }
 
 impl Flipper {
@@ -365,9 +368,14 @@ impl Flipper {
         self.true_w = true_w;
     }
 
-    /// Whether the stop in travel direction `toward` (±1) is engaged at
-    /// `time`: the bat is at it and not moving away.
+    /// Whether the stop in travel direction `toward` (±1) takes a push in
+    /// that direction at `time`: the bat is at the stop and not moving away,
+    /// or it is on its way into the stop within this tick (the stop already
+    /// takes up part of its momentum, so it takes any more as well).
     fn engaged(&self, time: f32, toward: f32) -> bool {
+        if self.arriving && (self.true_w > 0.0) == (toward > 0.0) {
+            return true;
+        }
         let q = self.q_at(time);
         if toward > 0.0 {
             self.travel - q <= STOP_ANGLE_TOLERANCE && self.seg_w >= 0.0
@@ -400,8 +408,11 @@ impl Flipper {
         self.coil_current += (target - self.coil_current) * blend;
         self.coil_torque = self.coil_current * self.coil_current;
         self.drive = self.coil_torque - self.spring_torque;
-        self.tick_q0 = self.q;
         let true_w = self.omega + self.drive / self.inertia * dt;
+        self.drive_work += 0.5
+            * f64::from(self.inertia)
+            * (f64::from(true_w) * f64::from(true_w)
+                - f64::from(self.omega) * f64::from(self.omega));
         self.arriving = false;
         self.start_segment(0.0, self.q, true_w, dt);
 
@@ -436,7 +447,6 @@ impl Flipper {
             self.q = q;
             self.omega = self.w_at(dt);
         }
-        self.drive_work += f64::from(self.drive) * f64::from(self.q - self.tick_q0);
         self.slide = (self.slide + self.slide_v * dt).clamp(0.0, self.slide_extent);
         self.slide_v = 0.0;
         // Queries between ticks see the committed state, at rest.
@@ -527,12 +537,10 @@ impl Flipper {
             }
         };
         let normal = finite3(id, "surface_normal", c.surface_normal)?;
-        let axis = normal
-            .try_normalize()
-            .ok_or(FlipperError::OutOfRange {
-                id,
-                field: "surface_normal",
-            })?;
+        let axis = normal.try_normalize().ok_or(FlipperError::OutOfRange {
+            id,
+            field: "surface_normal",
+        })?;
         let (zero, quarter) = plane_axes(axis);
         let base = finite3(id, "base_position_mm", c.base_position_mm)? * 1.0e-3;
         let rest = finite(id, "rest_angle_deg", c.rest_angle_deg)?.to_radians();
@@ -614,6 +622,8 @@ impl Flipper {
             axis,
             zero,
             quarter,
+            rest_angle_deg: c.rest_angle_deg,
+            sweep_deg: c.sweep_angle_deg,
             rest_angle: rest,
             end_angle: rest + sign * travel,
             sign,
@@ -646,7 +656,6 @@ impl Flipper {
             true_w: 0.0,
             arriving: false,
             slide_v: 0.0,
-            tick_q0: 0.0,
         })
     }
 }
@@ -688,8 +697,18 @@ impl FlipperSet {
         let first = configs.first().map_or(FlipperId(0), |c| c.id);
         let positive = |v: f32| v > 0.0;
         let non_negative = |v: f32| v >= 0.0;
-        in_range(first, "tuning.coil_rise_s", tuning.coil_rise_s, non_negative)?;
-        in_range(first, "tuning.coil_fall_s", tuning.coil_fall_s, non_negative)?;
+        in_range(
+            first,
+            "tuning.coil_rise_s",
+            tuning.coil_rise_s,
+            non_negative,
+        )?;
+        in_range(
+            first,
+            "tuning.coil_fall_s",
+            tuning.coil_fall_s,
+            non_negative,
+        )?;
         in_range(
             first,
             "tuning.rubber_loss_speed_m_s",
@@ -824,12 +843,18 @@ impl FlipperSet {
         &self.edges
     }
 
-    /// Absolute bat angle about the surface normal, degrees
-    /// (`rest_angle_deg` at rest). NaN for an unknown id.
+    /// Absolute bat angle about the surface normal, degrees: exactly
+    /// `rest_angle_deg` at rest and `rest_angle_deg + sweep_angle_deg` on
+    /// the end stop. NaN for an unknown id.
     #[must_use]
     pub fn angle_deg(&self, id: FlipperId) -> f32 {
-        self.get(id)
-            .map_or(f32::NAN, |f| f.angle_of(f.q).to_degrees())
+        self.get(id).map_or(f32::NAN, |f| {
+            if f.q >= f.travel {
+                f.rest_angle_deg + f.sweep_deg
+            } else {
+                f.rest_angle_deg + f.sign * f.q.to_degrees()
+            }
+        })
     }
 
     /// Bat angle relative to rest, radians, signed like the sweep
@@ -875,8 +900,12 @@ impl FlipperSet {
         self.get(id).map_or(0.0, |f| f.coil_torque)
     }
 
-    /// Work done on the bat by coil and spring since construction, joules
-    /// (negative when the bat was pushed against them). 0 for an unknown id.
+    /// Energy coil and spring have put into the bat since construction,
+    /// joules, as the solver integrates it: the sum over all ticks of the
+    /// change of the bat's kinetic energy by the tick's drive (negative while
+    /// the drive brakes the bat). The kinetic energy of the bat and the
+    /// balls it touched never exceeds what they started with plus this.
+    /// 0 for an unknown id.
     #[must_use]
     pub fn drive_work_j(&self, id: FlipperId) -> f64 {
         self.get(id).map_or(0.0, |f| f.drive_work)
@@ -967,12 +996,7 @@ impl MovingBodies for FlipperSet {
 
     fn closest_point(&self, body: usize, time: f32, point: Vec3) -> Option<BodyPoint> {
         let f = &self.flippers[body];
-        Some(world_closest_point(
-            f.bat.shape(),
-            &f.motion(),
-            time,
-            point,
-        ))
+        Some(world_closest_point(f.bat.shape(), &f.motion(), time, point))
     }
 
     fn velocity_at(&self, body: usize, time: f32, point: Vec3) -> Vec3 {
@@ -1012,12 +1036,10 @@ impl MovingBodies for FlipperSet {
             return;
         }
         let q = f.q_at(time);
-        // A push into a stop the bat is held on is taken by the stop.
+        // A push into a stop that holds the bat, or that the bat is running
+        // into, is taken by the stop: the bat keeps its motion and the
+        // momentum that decides its bounce.
         if f.engaged(time, delta.signum()) {
-            // Keep the momentum the bat brought to the stop (it decides the
-            // bounce); the bat stays where it is.
-            let keep = f.true_w;
-            f.start_segment(time, q, keep, dt);
             return;
         }
         // The impulse changes the bat's momentum velocity (what it carries,
@@ -1040,5 +1062,566 @@ impl MovingBodies for FlipperSet {
         f.bat
             .shape()
             .cast_sphere(&f.motion(), time, center, radius, velocity, window)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pin_core::CabinetInput;
+    use pin_core::ids::CoilId;
+
+    const DT: f32 = 1.0e-3;
+    const ID: FlipperId = FlipperId(3);
+
+    fn config() -> FlipperConfig {
+        FlipperConfig {
+            id: ID,
+            coil: CoilId(1),
+            eos_switch: SwitchId(40),
+            collision_layer: 0,
+            base_position_mm: [100.0, 50.0, 0.0],
+            surface_normal: [0.0, 0.0, 1.0],
+            rest_angle_deg: -30.0,
+            sweep_angle_deg: 50.0,
+            eos_angle_fraction: 0.92,
+            shape: FlipperShape::StraightCapsule {
+                length_mm: 76.0,
+                base_radius_mm: 11.0,
+                tip_radius_mm: 6.5,
+            },
+            inertia_kg_m2: 1.0e-4,
+            power_torque_nm: 1.2,
+            hold_torque_nm: 0.15,
+            return_spring_torque_nm: 0.03,
+            stop_restitution: 0.15,
+            rubber_restitution: 0.65,
+            rubber_damping: 0.35,
+            staging: FlipperStagingMode::DedicatedButton(CabinetInput::LeftFlipper),
+            zipper_slide_axis_mm: None,
+            zipper_slide_speed_mm_s: 0.0,
+        }
+    }
+
+    fn set() -> FlipperSet {
+        FlipperSet::new(&[config()]).unwrap()
+    }
+
+    fn rejected(edit: impl Fn(&mut FlipperConfig)) -> FlipperError {
+        let mut c = config();
+        edit(&mut c);
+        FlipperSet::new(&[c]).unwrap_err()
+    }
+
+    #[test]
+    fn banana_is_a_typed_error_until_2_6() {
+        let e = rejected(|c| {
+            c.shape = FlipperShape::CurvedBanana {
+                length_mm: 80.0,
+                arc_radius_mm: 100.0,
+                arc_sweep_deg: 30.0,
+                tube_radius_mm: 8.0,
+            }
+        });
+        assert_eq!(e, FlipperError::ShapeNotSupported { id: ID });
+        assert!(e.to_string().contains("2.6"));
+    }
+
+    #[test]
+    fn bad_configurations_are_rejected_with_the_field() {
+        let field = |e: FlipperError| match e {
+            FlipperError::NonFinite { id, field } | FlipperError::OutOfRange { id, field } => {
+                assert_eq!(id, ID);
+                field
+            }
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_eq!(field(rejected(|c| c.inertia_kg_m2 = 0.0)), "inertia_kg_m2");
+        assert_eq!(field(rejected(|c| c.inertia_kg_m2 = -1.0)), "inertia_kg_m2");
+        assert_eq!(
+            rejected(|c| c.inertia_kg_m2 = f32::NAN),
+            FlipperError::NonFinite {
+                id: ID,
+                field: "inertia_kg_m2"
+            }
+        );
+        assert_eq!(
+            field(rejected(|c| c.power_torque_nm = -0.1)),
+            "power_torque_nm"
+        );
+        assert_eq!(
+            field(rejected(|c| c.hold_torque_nm = f32::INFINITY)),
+            "hold_torque_nm"
+        );
+        assert_eq!(
+            field(rejected(|c| c.return_spring_torque_nm = -1.0)),
+            "return_spring_torque_nm"
+        );
+        assert_eq!(
+            field(rejected(|c| c.stop_restitution = 1.5)),
+            "stop_restitution"
+        );
+        assert_eq!(
+            field(rejected(|c| c.rubber_restitution = -0.1)),
+            "rubber_restitution"
+        );
+        assert_eq!(
+            field(rejected(|c| c.rubber_damping = -0.1)),
+            "rubber_damping"
+        );
+        assert_eq!(
+            field(rejected(|c| c.eos_angle_fraction = 1.2)),
+            "eos_angle_fraction"
+        );
+        assert_eq!(
+            field(rejected(|c| c.rest_angle_deg = f32::NAN)),
+            "rest_angle_deg"
+        );
+        assert_eq!(
+            field(rejected(|c| c.sweep_angle_deg = 400.0)),
+            "sweep_angle_deg"
+        );
+        assert_eq!(
+            field(rejected(|c| c.surface_normal = [0.0; 3])),
+            "surface_normal"
+        );
+        assert_eq!(
+            field(rejected(|c| c.surface_normal = [0.0, f32::NAN, 1.0])),
+            "surface_normal"
+        );
+        assert_eq!(
+            field(rejected(|c| c.base_position_mm = [f32::INFINITY, 0.0, 0.0])),
+            "base_position_mm"
+        );
+        assert_eq!(
+            field(rejected(|c| c.collision_layer = 8)),
+            "collision_layer"
+        );
+        let shape = |length_mm, base_radius_mm, tip_radius_mm| {
+            move |c: &mut FlipperConfig| {
+                c.shape = FlipperShape::StraightCapsule {
+                    length_mm,
+                    base_radius_mm,
+                    tip_radius_mm,
+                }
+            }
+        };
+        assert_eq!(field(rejected(shape(0.0, 11.0, 6.5))), "shape");
+        assert_eq!(field(rejected(shape(76.0, -1.0, 6.5))), "shape");
+        assert_eq!(
+            field(rejected(shape(f32::NAN, 11.0, 6.5))),
+            "shape.length_mm"
+        );
+        assert_eq!(
+            field(rejected(shape(76.0, f32::NAN, 6.5))),
+            "shape.base_radius_mm"
+        );
+        assert_eq!(
+            field(rejected(shape(76.0, 11.0, f32::INFINITY))),
+            "shape.tip_radius_mm"
+        );
+        assert_eq!(
+            field(rejected(|c| {
+                c.zipper_slide_axis_mm = Some([f32::NAN, 0.0, 0.0]);
+            })),
+            "zipper_slide_axis_mm"
+        );
+        assert_eq!(
+            field(rejected(|c| {
+                c.zipper_slide_axis_mm = Some([12.0, 0.0, 0.0]);
+                c.zipper_slide_speed_mm_s = -5.0;
+            })),
+            "zipper_slide_speed_mm_s"
+        );
+        let thing = |delay_ms, hold_duration_ms| {
+            move |c: &mut FlipperConfig| {
+                c.staging = FlipperStagingMode::AutoSensorThingFlip {
+                    trigger_switch: SwitchId(1),
+                    delay_ms,
+                    hold_duration_ms,
+                }
+            }
+        };
+        assert_eq!(field(rejected(thing(-1.0, 10.0))), "staging.delay_ms");
+        assert_eq!(
+            field(rejected(thing(1.0, f32::NAN))),
+            "staging.hold_duration_ms"
+        );
+        for e in [
+            FlipperError::NonFinite { id: ID, field: "x" },
+            FlipperError::OutOfRange { id: ID, field: "x" },
+            FlipperError::DuplicateId { id: ID },
+            FlipperError::TooManyFlippers { count: 17 },
+        ] {
+            assert!(!e.to_string().is_empty());
+        }
+    }
+
+    #[test]
+    fn set_level_errors_and_tuning() {
+        assert_eq!(
+            FlipperSet::new(&[config(), config()]).unwrap_err(),
+            FlipperError::DuplicateId { id: ID }
+        );
+        let many: Vec<FlipperConfig> = (0..17)
+            .map(|i| FlipperConfig {
+                id: FlipperId(i),
+                ..config()
+            })
+            .collect();
+        assert_eq!(
+            FlipperSet::new(&many).unwrap_err(),
+            FlipperError::TooManyFlippers { count: 17 }
+        );
+        assert_eq!(FlipperSet::new(&many[..16]).unwrap().len(), 16);
+        let empty = FlipperSet::new(&[]).unwrap();
+        assert!(empty.is_empty() && empty.body_count() == 0);
+        let bad = |edit: fn(&mut FlipperTuning)| {
+            let mut t = FlipperTuning::default();
+            edit(&mut t);
+            FlipperSet::with_tuning(&[config()], t).unwrap_err()
+        };
+        assert!(matches!(
+            bad(|t| t.coil_rise_s = -1.0),
+            FlipperError::OutOfRange {
+                field: "tuning.coil_rise_s",
+                ..
+            }
+        ));
+        assert!(matches!(
+            bad(|t| t.coil_fall_s = f32::NAN),
+            FlipperError::NonFinite { .. }
+        ));
+        assert!(matches!(
+            bad(|t| t.rubber_loss_speed_m_s = 0.0),
+            FlipperError::OutOfRange { .. }
+        ));
+        assert!(matches!(
+            bad(|t| t.reference_ball_mass_kg = 0.0),
+            FlipperError::OutOfRange { .. }
+        ));
+        assert!(matches!(
+            bad(|t| t.bat_height_m = 0.0),
+            FlipperError::OutOfRange { .. }
+        ));
+        assert!(matches!(
+            bad(|t| t.ticks_per_ms = 0.0),
+            FlipperError::OutOfRange { .. }
+        ));
+        assert!(matches!(
+            FlipperSet::with_tuning(
+                &[],
+                FlipperTuning {
+                    bat_height_m: -1.0,
+                    ..FlipperTuning::default()
+                }
+            ),
+            Err(FlipperError::OutOfRange {
+                id: FlipperId(0),
+                ..
+            })
+        ));
+        // Instant coil: the first tick already has the full power torque.
+        let mut s = FlipperSet::with_tuning(
+            &[config()],
+            FlipperTuning {
+                coil_rise_s: 0.0,
+                coil_fall_s: 0.0,
+                ..FlipperTuning::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(s.tuning().coil_rise_s, 0.0);
+        s.set_energised(ID, true);
+        s.advance(DT);
+        assert!((s.coil_torque_nm(ID) - 1.2).abs() < 1e-6);
+        assert!((s.angular_velocity(ID) - 11.7).abs() < 1e-3);
+        s.set_energised(ID, false);
+        s.advance(DT);
+        assert_eq!(s.coil_torque_nm(ID), 0.0);
+    }
+
+    #[test]
+    fn unknown_ids_are_harmless() {
+        let mut s = set();
+        let nobody = FlipperId(99);
+        s.set_energised(nobody, true);
+        s.set_zipper(nobody, true);
+        s.advance(DT);
+        assert!(s.angle_deg(nobody).is_nan());
+        assert!(s.angular_velocity(nobody).is_nan());
+        assert!(s.base_offset_mm(nobody).is_nan());
+        assert!(s.relative_angle_rad(nobody).is_nan());
+        assert!(!s.eos_closed(nobody) && !s.is_energised(nobody));
+        assert_eq!(s.coil_torque_nm(nobody), 0.0);
+        assert_eq!(s.drive_work_j(nobody), 0.0);
+        assert_eq!(s.kinetic_energy_j(nobody), 0.0);
+        assert!(s.pivot_m(nobody).is_none() && s.bat_direction(nobody).is_none());
+        assert_eq!(s.body_index(nobody), None);
+        assert_eq!(s.body_index(ID), Some(0));
+        assert_eq!(s.id_of(0), Some(ID));
+        assert_eq!(s.id_of(1), None);
+        assert_eq!(s.angle_deg(ID), -30.0);
+        assert_eq!(s.material(0), Material::Rubber);
+        assert_eq!(s.layer_mask(0), 1);
+    }
+
+    #[test]
+    fn bad_time_steps_change_nothing() {
+        let mut s = set();
+        s.set_energised(ID, true);
+        for dt in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            s.advance(dt);
+        }
+        assert_eq!(s.angle_deg(ID), -30.0);
+        assert_eq!(s.coil_torque_nm(ID), 0.0);
+    }
+
+    /// World point on top of the bat (the side the end stop is on) at
+    /// `along` metres from the pivot, at tick time `time`.
+    fn on_top(s: &FlipperSet, time: f32, along: f32) -> (Vec3, Vec3) {
+        let f = &s.flippers[0];
+        let m = f.motion();
+        let probe = m.to_world(time, Vec3::new(along, 0.05, 0.01));
+        let cp = s.closest_point(0, time, probe).unwrap();
+        (cp.point, cp.normal)
+    }
+
+    #[test]
+    fn stops_are_one_sided_and_report_their_real_velocity() {
+        let mut s = set();
+        // At rest the spring presses the bat on the rest stop.
+        s.begin_tick(DT);
+        let (p, n) = on_top(&s, 0.0, 0.04);
+        assert_eq!(s.velocity_at(0, 0.0, p), Vec3::ZERO);
+        assert_eq!(s.max_surface_speed(0), 0.0);
+        // A push from above goes into the rest stop: immovable. A push from
+        // below lifts the bat: the free value r²/I.
+        assert_eq!(s.inverse_mass_at(0, 0.0, p, -n), 0.0);
+        let w = s.inverse_mass_at(0, 0.0, p, n);
+        let arm = (p - Vec3::new(0.1, 0.05, 0.0)).cross(n).z;
+        assert!((w - arm * arm / 1.0e-4).abs() < 1e-3 * w, "{w}");
+        assert_eq!(s.inverse_mass_at(0, 0.0, p, Vec3::Z), 0.0);
+        // An impulse into the stop moves nothing, also at that very instant.
+        s.apply_impulse(0, 0.3e-3, p, -n * 0.5);
+        assert_eq!(s.velocity_at(0, 0.3e-3, p), Vec3::ZERO);
+        assert_eq!(s.max_surface_speed(0), 0.0);
+        // An impulse away from the stop does: Δω = r·J/I.
+        s.apply_impulse(0, 0.5e-3, p, n * 0.01);
+        let v = s.velocity_at(0, 0.5e-3, p);
+        let expected = arm * 0.01 / 1.0e-4 - 0.03 / 1.0e-4 * DT;
+        assert!((v.dot(n) - expected * arm).abs() < 1e-3, "{v}");
+        // Now it is moving away from the stop: free both ways.
+        assert!(s.inverse_mass_at(0, 0.6e-3, p, -n) > 0.0);
+        // Taking the impulse back at the same instant puts it back on the
+        // stop, at rest.
+        s.apply_impulse(0, 0.5e-3, p, -n * 0.01);
+        assert_eq!(s.velocity_at(0, 0.5e-3, p), Vec3::ZERO);
+        // Null and non-finite impulses are ignored.
+        s.apply_impulse(0, 0.6e-3, p, Vec3::ZERO);
+        s.apply_impulse(0, 0.6e-3, p, Vec3::splat(f32::NAN));
+        s.end_tick(DT);
+        assert_eq!(s.angle_deg(ID), -30.0);
+        assert_eq!(s.angular_velocity(ID), 0.0);
+    }
+
+    #[test]
+    fn the_bat_never_predicts_travel_beyond_a_stop() {
+        let mut s = set();
+        s.set_energised(ID, true);
+        let mut arrived = false;
+        for _ in 0..40 {
+            s.begin_tick(DT);
+            let f = &s.flippers[0];
+            // The kinematic velocity never carries the bat past the stop.
+            assert!(f.seg_q + f.seg_w * DT <= f.travel + 1e-6);
+            if f.arriving {
+                arrived = true;
+                assert!(f.seg_w < f.true_w, "the stop takes up part of the motion");
+                // On its way into the stop the bat takes no push toward it,
+                // and gives way to one away from it.
+                let (p, n) = on_top(&s, 0.5e-3, 0.04);
+                assert_eq!(s.inverse_mass_at(0, 0.5e-3, p, n), 0.0);
+                assert!(s.inverse_mass_at(0, 0.5e-3, p, -n) > 0.0);
+                let before = s.flippers[0].true_w;
+                s.apply_impulse(0, 0.5e-3, p, n * 0.01);
+                assert_eq!(s.flippers[0].true_w, before);
+                // It reaches the stop exactly at the end of the tick.
+                assert!((s.flippers[0].q_at(DT) - s.flippers[0].travel).abs() < 1e-5);
+                s.end_tick(DT);
+                // And bounces off with the stop's restitution.
+                assert!((s.angular_velocity(ID) + 0.15 * before).abs() < 1e-3);
+                assert_eq!(s.angle_deg(ID), 20.0);
+                break;
+            }
+            s.end_tick(DT);
+        }
+        assert!(arrived);
+        // Held on the end stop: at rest, immovable from below, free from
+        // above (the ball pushes it off the stop against the hold torque).
+        for _ in 0..100 {
+            s.advance(DT);
+        }
+        s.begin_tick(DT);
+        let (p, n) = on_top(&s, 0.0, 0.04);
+        assert_eq!(s.velocity_at(0, 0.0, p), Vec3::ZERO);
+        assert_eq!(s.inverse_mass_at(0, 0.0, p, n), 0.0);
+        assert!(s.inverse_mass_at(0, 0.0, p, -n) > 0.0);
+        s.end_tick(DT);
+        assert_eq!(s.angular_velocity(ID), 0.0);
+    }
+
+    #[test]
+    fn rubber_loss_loads_a_moving_bat_only() {
+        let mut s = set();
+        s.set_energised(ID, true);
+        for _ in 0..12 {
+            s.advance(DT);
+        }
+        s.begin_tick(DT);
+        let (p, n) = on_top(&s, 0.0, 0.04);
+        let f = &s.flippers[0];
+        let pivot = Vec3::new(0.1, 0.05, 0.0);
+        let arm = (p - pivot).cross(n).z;
+        let free = arm * arm / f.inertia;
+        let v_n = s.velocity_at(0, 0.0, p).dot(n);
+        assert!(v_n > 0.5, "the bat is moving: {v_n}");
+        let g = (0.35 * v_n / 2.0).min(0.65);
+        let loaded = s.inverse_mass_at(0, 0.0, p, -n);
+        assert!((loaded - (free + g * (free + 12.5))).abs() < 1e-3 * loaded);
+        // The same both ways along the normal, none across it.
+        assert_eq!(loaded, s.inverse_mass_at(0, 0.0, p, n));
+        // The real response is the unloaded one.
+        let before = s.velocity_at(0, 0.0, p).dot(n);
+        s.apply_impulse(0, 0.0, p, -n * 0.001);
+        let after = s.velocity_at(0, 0.0, p).dot(n);
+        assert!(((before - after) - free * 0.001).abs() < 1e-4);
+        // Without damping there is no loading.
+        let mut c = config();
+        c.rubber_damping = 0.0;
+        let mut s = FlipperSet::new(&[c]).unwrap();
+        s.set_energised(ID, true);
+        for _ in 0..12 {
+            s.advance(DT);
+        }
+        s.begin_tick(DT);
+        let (p, n) = on_top(&s, 0.0, 0.04);
+        let arm = (p - pivot).cross(n).z;
+        let w = s.inverse_mass_at(0, 0.0, p, -n);
+        assert!((w - arm * arm / 1.0e-4).abs() < 1e-3 * w);
+    }
+
+    #[test]
+    fn zipper_slides_at_its_speed_and_carries_the_surface() {
+        let mut c = config();
+        c.zipper_slide_axis_mm = Some([0.0, 12.0, 0.0]);
+        c.zipper_slide_speed_mm_s = 100.0;
+        let mut s = FlipperSet::new(&[c]).unwrap();
+        s.set_zipper(ID, true);
+        s.begin_tick(DT);
+        let (p, n) = on_top(&s, 0.0, 0.04);
+        assert!((s.velocity_at(0, 0.0, p) - Vec3::new(0.0, 0.1, 0.0)).length() < 1e-6);
+        assert!((s.max_surface_speed(0) - 0.1).abs() < 1e-6);
+        // The slide is motor-driven: with the bat on its rest stop a push
+        // from above meets no give at all.
+        assert_eq!(s.inverse_mass_at(0, 0.0, p, -n), 0.0);
+        let (lo, hi) = s.swept_bounds(0);
+        assert!(lo.y < 0.05 - 0.08 && hi.y > 0.05 + 0.08 + 0.0001);
+        assert!(lo.x < 0.1 - 0.08 && hi.x > 0.1 + 0.08 && hi.z >= 0.03);
+        s.end_tick(DT);
+        assert!((s.base_offset_mm(ID) - 0.1).abs() < 1e-5);
+        for _ in 0..200 {
+            s.advance(DT);
+        }
+        assert!((s.base_offset_mm(ID) - 12.0).abs() < 1e-4);
+        assert!((s.pivot_m(ID).unwrap() - Vec3::new(0.1, 0.062, 0.0)).length() < 1e-6);
+        s.set_zipper(ID, false);
+        for _ in 0..60 {
+            s.advance(DT);
+        }
+        assert!((s.base_offset_mm(ID) - 6.0).abs() < 1e-3);
+        for _ in 0..100 {
+            s.advance(DT);
+        }
+        assert_eq!(s.base_offset_mm(ID), 0.0);
+        // A zero-length axis or no axis: nothing slides.
+        let mut c = config();
+        c.zipper_slide_axis_mm = Some([0.0; 3]);
+        c.zipper_slide_speed_mm_s = 100.0;
+        let mut s = FlipperSet::new(&[c]).unwrap();
+        s.set_zipper(ID, true);
+        s.advance(DT);
+        assert_eq!(s.base_offset_mm(ID), 0.0);
+    }
+
+    #[test]
+    fn thing_flip_schedule_rounds_to_ticks() {
+        assert_eq!(ticks(12.4, 1.0), 12);
+        assert_eq!(ticks(12.5, 1.0), 13);
+        assert_eq!(ticks(-3.0, 1.0), 0);
+        assert_eq!(ticks(f32::NAN, 1.0), 0);
+        assert_eq!(ticks(2.0, 2.0), 4);
+        let mut c = config();
+        c.staging = FlipperStagingMode::AutoSensorThingFlip {
+            trigger_switch: SwitchId(5),
+            delay_ms: 3.0,
+            hold_duration_ms: 0.0,
+        };
+        // A zero hold never energises.
+        let mut s = FlipperSet::new(&[c]).unwrap();
+        s.on_switch_edge(SwitchId(5), true, 10);
+        for t in 10..20 {
+            s.step_tick(t);
+            assert!(!s.is_energised(ID));
+        }
+        // The manual command and the schedule add up.
+        s.set_energised(ID, true);
+        assert!(s.is_energised(ID));
+    }
+
+    #[test]
+    fn mirrored_and_tilted_flippers_report_consistent_angles() {
+        let mut c = config();
+        c.rest_angle_deg = 210.0;
+        c.sweep_angle_deg = -50.0;
+        c.surface_normal = [0.0, 0.6, 0.8];
+        let mut s = FlipperSet::new(&[c]).unwrap();
+        s.set_energised(ID, true);
+        let mut fastest = 0.0f32;
+        for _ in 0..100 {
+            s.advance(DT);
+            fastest = fastest.min(s.angular_velocity(ID));
+        }
+        assert_eq!(s.angle_deg(ID), 160.0);
+        assert!(
+            fastest < -50.0,
+            "a negative sweep turns clockwise: {fastest}"
+        );
+        assert!((s.relative_angle_rad(ID) + 50.0f32.to_radians()).abs() < 1e-6);
+        // The bat lies in the mounting plane.
+        let dir = s.bat_direction(ID).unwrap();
+        assert!(dir.dot(Vec3::new(0.0, 0.6, 0.8)).abs() < 1e-6);
+        assert!(s.drive_work_j(ID) > 0.0);
+    }
+
+    #[test]
+    fn cast_through_the_set_finds_the_moving_bat() {
+        let mut s = set();
+        s.set_energised(ID, true);
+        for _ in 0..10 {
+            s.advance(DT);
+        }
+        s.begin_tick(DT);
+        let (p, n) = on_top(&s, 0.0, 0.04);
+        // A sphere at rest just above the rising bat is hit within the tick.
+        let center = p + n * (0.0135 + 2.0e-4);
+        let hit = s.cast_sphere(0, 0.0, center, 0.0135, Vec3::ZERO, DT);
+        assert!(
+            matches!(hit, Some(BodyCast::Hit { time, .. }) if time > 0.0 && time < DT),
+            "{hit:?}"
+        );
+        // One far away is not.
+        let far = p + n * 0.2;
+        assert_eq!(s.cast_sphere(0, 0.0, far, 0.0135, Vec3::ZERO, DT), None);
     }
 }

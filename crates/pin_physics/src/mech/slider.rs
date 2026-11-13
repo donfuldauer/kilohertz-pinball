@@ -6,8 +6,15 @@
 //! hand constraint `x ≤ hand` (the hand can hold the rod back, never push it).
 //!
 //! Prediction per tick (the 2.2-S contract): semi-implicit Euler
-//! `v₁ = v₀ + a·dt`, then owner obligation 3 (`v₁` toward a stop limited to
-//! what the stop allows by `dt`), then `x(t) = x₀ + v₁·t`. When the hand
+//! `v₁ = v₀ + a·dt`, then owner obligation 3 on the drive: toward a stop,
+//! `v₁ ← min(v₁, max((stop − x₀)/dt, v₀))` (the drive increment never
+//! carries the slider further than the stop allows this tick; momentum it
+//! already had is kept, so a rod arriving at full speed hits a ball just
+//! before its stop at that speed), then `x(t) = clamp(x₀ + v₁·t)` with the
+//! velocity 0 from the instant the stop is reached (obligation 2). A slider
+//! resting on (or pushed slightly off) a stop has `v₀ ≈ 0`, so it reports
+//! no phantom surface speed. After an impulse the plain limit
+//! `(stop − x)/(dt − t)` applies. When the hand
 //! holds the rod back the tick is kinematic (`x` follows the hand linearly,
 //! inverse mass 0). A slider on its rest stop with nothing driving it away
 //! is *locked* (held by its preloaded spring: kinematic in every direction),
@@ -104,7 +111,21 @@ impl Slider {
             v1 = (self.hand.clamp(self.lo, self.hi) - self.x) / dt;
             self.kinematic = true;
         } else {
-            v1 = self.stop_clamped(self.x, v1, dt);
+            // Obligation 3 on the drive: the increment `a·dt` toward a stop
+            // is limited to what the stop allows this tick, but the momentum
+            // the slider already had is real and kept (it reaches the stop
+            // within the tick and stops there: `x_at` clamps, `v_at` is 0).
+            let toward = if v1 > 0.0 {
+                self.v.max(0.0)
+            } else {
+                self.v.min(0.0)
+            };
+            let limited = self.stop_clamped(self.x, v1, dt);
+            v1 = if v1 > 0.0 {
+                limited.max(toward.min(v1))
+            } else {
+                limited.min(toward.max(v1))
+            };
         }
         if !v1.is_finite() {
             v1 = 0.0;
@@ -225,9 +246,12 @@ mod tests {
         s.coil_on = true;
         let mut t = 0;
         while s.x < s.hi && t < 100 {
+            let v0 = s.v;
             s.begin_tick(1e-3);
-            // Obligation 3: never predicts travel beyond the stop.
-            assert!(s.x + s.seg_v * 1e-3 <= s.hi + 1e-7);
+            // Obligation 3 on the drive: beyond the momentum it had, the
+            // slider is never predicted further than the stop.
+            assert!(s.seg_v <= v0.max((s.hi - s.x) / 1e-3) + 1e-6);
+            assert!(s.x_at(1e-3) <= s.hi);
             s.end_tick(1e-3);
             t += 1;
         }
@@ -298,7 +322,10 @@ mod tests {
         }
         assert_eq!(s.x, 0.0);
         let analytic = 0.03 * libm::sqrtf(1000.0 / 0.05);
-        assert!((peak - analytic).abs() / analytic < 0.1, "{peak} vs {analytic}");
+        assert!(
+            (peak - analytic).abs() / analytic < 0.1,
+            "{peak} vs {analytic}"
+        );
         let (lo, hi) = s.swept_bounds();
         assert!(lo.y < -0.05 && hi.y > 0.0);
     }

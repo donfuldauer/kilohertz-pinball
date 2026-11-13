@@ -17,7 +17,11 @@ impl OBox {
     /// The closest surface point to `p` (signed distance, outward normal).
     pub fn closest(&self, p: Vec3) -> BodyPoint {
         let d = p - self.center;
-        let local = Vec3::new(d.dot(self.axes[0]), d.dot(self.axes[1]), d.dot(self.axes[2]));
+        let local = Vec3::new(
+            d.dot(self.axes[0]),
+            d.dot(self.axes[1]),
+            d.dot(self.axes[2]),
+        );
         let h = self.half;
         let clamped = local.clamp(-h, h);
         let to_world = |v: Vec3| self.axes[0] * v.x + self.axes[1] * v.y + self.axes[2] * v.z;
@@ -118,10 +122,7 @@ impl Cylinder {
     /// Axis-aligned bounds.
     pub fn aabb(&self) -> (Vec3, Vec3) {
         let r = Vec3::new(self.radius, self.radius, 0.0);
-        (
-            self.base - r,
-            self.base + r + Vec3::Z * self.height,
-        )
+        (self.base - r, self.base + r + Vec3::Z * self.height)
     }
 }
 
@@ -181,6 +182,9 @@ mod tests {
         assert_eq!(p.normal, -Vec3::Z);
         assert_eq!(c.radial(Vec3::ZERO), (Vec3::X, 0.0));
         let (lo, hi) = c.aabb();
-        assert_eq!((lo, hi), (Vec3::new(-1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 2.0)));
+        assert_eq!(
+            (lo, hi),
+            (Vec3::new(-1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 2.0))
+        );
     }
 }

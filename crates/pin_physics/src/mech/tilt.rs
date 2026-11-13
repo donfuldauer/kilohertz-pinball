@@ -205,9 +205,11 @@ mod tests {
 
     #[test]
     fn small_swing_period_matches_the_pendulum_formula() {
-        let mut p = TiltBobParams::default();
-        p.damping = 0.0;
-        p.gap = 0.05;
+        let p = TiltBobParams {
+            damping: 0.0,
+            gap: 0.05,
+            ..TiltBobParams::default()
+        };
         let mut bob = TiltBob::new(p);
         bob.nudge(Vec3::new(0.01, 0.0, 0.0));
         // Time between successive upward zero crossings of x.
@@ -223,7 +225,10 @@ mod tests {
         }
         let measured = (crossings[3] - crossings[0]) / 3.0;
         let analytic = bob.small_swing_period();
-        assert!((measured - analytic).abs() / analytic < 0.02, "{measured} vs {analytic}");
+        assert!(
+            (measured - analytic).abs() / analytic < 0.02,
+            "{measured} vs {analytic}"
+        );
         assert!(!bob.closed());
     }
 
@@ -245,9 +250,11 @@ mod tests {
 
     #[test]
     fn invalid_params_fall_back() {
-        let mut p = TiltBobParams::default();
-        p.length = -1.0;
-        p.gravity = Vec3::new(0.0, -1.0, -9.0);
+        let p = TiltBobParams {
+            length: -1.0,
+            gravity: Vec3::new(0.0, -1.0, -9.0),
+            ..TiltBobParams::default()
+        };
         let bob = TiltBob::new(p);
         assert!(bob.params().is_valid());
         assert_eq!(bob.params().gravity, Vec3::new(0.0, -1.0, -9.0));

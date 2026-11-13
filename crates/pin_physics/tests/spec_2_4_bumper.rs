@@ -15,7 +15,9 @@ const COIL: CoilId = CoilId(5);
 const CENTER: Vec3 = Vec3::new(0.1, 0.3, 0.0);
 
 fn bumper_rig() -> Rig {
-    Rig::on_floor(&[spec(MechKind::Bumper, CENTER).with_coil(COIL).with_switch(SW)])
+    Rig::on_floor(&[spec(MechKind::Bumper, CENTER)
+        .with_coil(COIL)
+        .with_switch(SW)])
 }
 
 fn ring_radius() -> f32 {
@@ -193,13 +195,19 @@ fn resting_ball_on_the_ring_is_kicked_radially_in_the_window() {
         rig.mechs.fire_coil(COIL, 25);
         rig.run(6);
         let v = horiz(rig.ball(h).velocity);
-        eprintln!("bumper: resting ball at {angle}° -> exit {:.3} m/s", v.length());
+        eprintln!(
+            "bumper: resting ball at {angle}° -> exit {:.3} m/s",
+            v.length()
+        );
         assert!(
             (EXIT_MIN..=EXIT_MAX).contains(&v.length()),
             "angle {angle}: exit speed {} outside the window",
             v.length()
         );
-        assert!(v.normalize().dot(radial) > 0.999, "angle {angle}: not radial");
+        assert!(
+            v.normalize().dot(radial) > 0.999,
+            "angle {angle}: not radial"
+        );
     }
 }
 
@@ -318,7 +326,10 @@ fn kick_speed_comes_from_the_parameter() {
         rig.run(6);
         let v = horiz(rig.ball(h).velocity).length();
         assert!(v > last + 0.2, "kick_speed {ks}: exit {v} not above {last}");
-        assert!(v >= ks * 0.9, "kick_speed {ks}: exit {v} below the ring speed");
+        assert!(
+            v >= ks * 0.9,
+            "kick_speed {ks}: exit {v} below the ring speed"
+        );
         last = v;
     }
 }
@@ -358,5 +369,50 @@ fn exit_speed_window_holds_across_an_approach_speed_sweep() {
     assert!(
         bad.is_empty(),
         "(approach, exit) pairs outside {EXIT_MIN}..{EXIT_MAX} m/s: {bad:?}"
+    );
+}
+
+/// Verification 1 over the contact phase: the same approach speed must give
+/// an in-window exit speed wherever within the tick the ball reaches the
+/// ring (20 start gaps 0.17 mm apart, approach 0.2..3.0 m/s, coil fired on
+/// the tick after the ring switch closes).
+#[test]
+fn exit_speed_window_holds_for_every_contact_phase() {
+    let mut bad = Vec::new();
+    let mut range = (f32::INFINITY, f32::NEG_INFINITY);
+    for si in 2..=30 {
+        let speed = 0.1 * si as f32;
+        for gi in 0..20 {
+            let gap = 0.003 + 0.00017 * gi as f32;
+            let mut rig = bumper_rig();
+            let start = CENTER + Vec3::new(ring_radius() + R + gap, 0.0, R);
+            let h = rig.add(steel_ball(start, Vec3::new(-speed, 0.0, 0.0)));
+            let mut contact = None;
+            let mut exit = None;
+            for _ in 0..300 {
+                if contact == Some(rig.tick) {
+                    rig.mechs.fire_coil(COIL, 25);
+                }
+                rig.step();
+                if contact.is_none() && rig.closed_edge(SW) {
+                    contact = Some(rig.tick);
+                }
+                if contact.is_some_and(|t| rig.tick == t + 12) {
+                    exit = Some(horiz(rig.ball(h).velocity).length());
+                    break;
+                }
+            }
+            let v = exit.expect("ball never reached the ring");
+            range = (range.0.min(v), range.1.max(v));
+            if !(EXIT_MIN..=EXIT_MAX).contains(&v) {
+                bad.push((speed, gap, v));
+            }
+        }
+    }
+    eprintln!("bumper exit speed over speeds × phases: {range:?} m/s");
+    assert!(
+        bad.is_empty(),
+        "{} of 580 (approach m/s, start gap m, exit m/s) outside {EXIT_MIN}..{EXIT_MAX}: {bad:?}",
+        bad.len()
     );
 }

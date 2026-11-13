@@ -31,7 +31,9 @@ fn bumper_shot(angle: f32, speed: f32) -> (u64, f32, f32) {
         t.tick();
         if t.closed(RING) {
             assert!(
-                t.mechs.edges().contains(&(SwitchId(RING), SwitchEdge::Closed)),
+                t.mechs
+                    .edges()
+                    .contains(&(SwitchId(RING), SwitchEdge::Closed)),
                 "closing edge on the contact tick"
             );
             contact = Some(i);
@@ -42,7 +44,10 @@ fn bumper_shot(angle: f32, speed: f32) -> (u64, f32, f32) {
     // The ball touches the ring on the closing tick.
     let b = t.get(h);
     let gap = (b.position.truncate().length()) - 0.030 - radius(STEEL);
-    assert!(gap < 0.004, "ball near the ring when the switch closes: {gap}");
+    assert!(
+        gap < 0.004,
+        "ball near the ring when the switch closes: {gap}"
+    );
     t.mechs.fire_coil(COIL, 20);
     for _ in 0..30 {
         t.tick();
@@ -138,7 +143,10 @@ fn sling_exit_speed_is_in_the_feel_window() {
         for inc in [0.0f32, 0.4, 0.8] {
             let out = sling_shot(inc, speed);
             println!("sling: approach {speed} m/s at {inc} rad -> exit {out:.3} m/s");
-            assert!((1.5..=4.0).contains(&out), "exit {out} (approach {speed}, {inc} rad)");
+            assert!(
+                (1.5..=4.0).contains(&out),
+                "exit {out} (approach {speed}, {inc} rad)"
+            );
         }
     }
 }

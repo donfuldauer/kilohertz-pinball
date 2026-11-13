@@ -210,7 +210,10 @@ mod tests {
             }
             let total = s.angle;
             let analytic = w0 / d;
-            assert!((total - analytic).abs() / analytic < 1e-3, "{total} vs {analytic}");
+            assert!(
+                (total - analytic).abs() / analytic < 1e-3,
+                "{total} vs {analytic}"
+            );
             let expected = (total / core::f32::consts::PI).floor() as i64;
             assert!((s.pulses as i64 - expected).abs() <= 1);
         }

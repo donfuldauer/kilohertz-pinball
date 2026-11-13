@@ -313,7 +313,8 @@ pub(crate) fn resolve(
             KindP::Bumper(BumperP {
                 radius: c.positive("radius", or(o.radius, MM, b.radius))?,
                 height: c.positive("height", or(o.height, MM, b.height))?,
-                kick_speed: c.non_negative("kick_speed_m_s", or(o.kick_speed_m_s, 1.0, b.kick_speed))?,
+                kick_speed: c
+                    .non_negative("kick_speed_m_s", or(o.kick_speed_m_s, 1.0, b.kick_speed))?,
                 kick_reach: c.non_negative("kick_reach", or(o.kick_reach, MM, b.kick_reach))?,
             })
         }
@@ -349,7 +350,8 @@ pub(crate) fn resolve(
                     "threshold_speed_m_s",
                     or(o.threshold_speed_m_s, 1.0, t.threshold_speed),
                 )?,
-                rise_speed: c.positive("kick_speed_m_s", or(o.kick_speed_m_s, 1.0, t.kick_speed))?,
+                rise_speed: c
+                    .positive("kick_speed_m_s", or(o.kick_speed_m_s, 1.0, t.kick_speed))?,
             })
         }
         MechKind::Spinner => {
@@ -377,11 +379,10 @@ pub(crate) fn resolve(
             }
             KindP::Vuk(VukP {
                 radius: c.positive("radius", or(o.radius, MM, v.radius))?,
-                eject_speed: c.non_negative(
-                    "eject_speed_m_s",
-                    or(o.eject_speed_m_s, 1.0, v.eject_speed),
-                )?,
-                kick_speed: c.non_negative("kick_speed_m_s", or(o.kick_speed_m_s, 1.0, v.kick_speed))?,
+                eject_speed: c
+                    .non_negative("eject_speed_m_s", or(o.eject_speed_m_s, 1.0, v.eject_speed))?,
+                kick_speed: c
+                    .non_negative("kick_speed_m_s", or(o.kick_speed_m_s, 1.0, v.kick_speed))?,
                 exit_layer: c.layer("exit_layer", o.exit_layer.unwrap_or(v.exit_layer))?,
                 exit_offset: off,
             })

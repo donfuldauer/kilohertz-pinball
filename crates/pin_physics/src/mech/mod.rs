@@ -103,8 +103,8 @@ use pin_core::schema::table::MechKind;
 use pin_core::{PhysicsDefaults, SwitchEdge};
 
 use crate::ball::{
-    BallEvent, BallEvents, BallHandle, BallSolver, BodyPoint, Geometry, ImpactTarget,
-    MAX_BALLS, MovingBodies,
+    BallEvent, BallEvents, BallHandle, BallSolver, BodyPoint, Geometry, ImpactTarget, MAX_BALLS,
+    MovingBodies,
 };
 use crate::world::layers::layer_bit;
 use crate::world::{LayerTransition, TransitionSet};
@@ -731,13 +731,17 @@ impl MechSet {
             set_bit(&mut states, s);
         }
         self.edges.clear();
-        for w in 0..4 {
-            let mut changed = (states[w] ^ self.states[w]) & self.own[w];
+        for (w, (&now, (&was, &own))) in states
+            .iter()
+            .zip(self.states.iter().zip(self.own.iter()))
+            .enumerate()
+        {
+            let mut changed = (now ^ was) & own;
             while changed != 0 {
                 let b = changed.trailing_zeros();
                 changed &= changed - 1;
                 let id = SwitchId((w * 64) as u16 + b as u16);
-                let edge = if states[w] & (1u64 << b) != 0 {
+                let edge = if now & (1u64 << b) != 0 {
                     SwitchEdge::Closed
                 } else {
                     SwitchEdge::Opened

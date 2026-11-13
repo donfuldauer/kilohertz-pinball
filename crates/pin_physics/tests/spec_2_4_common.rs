@@ -19,9 +19,7 @@ use pin_core::profiles::{BUILTIN_PROFILE_NAMES, builtin_profiles};
 use pin_core::schema::table::{MechKind, MechParams};
 use pin_core::script::SwitchEdge;
 use pin_core::{BallProfile, PhysicsDefaults, ProfileId};
-use pin_physics::ball::{
-    Ball, BallEvents, BallHandle, BallSolver, BallSolverConfig, Geometry,
-};
+use pin_physics::ball::{Ball, BallEvents, BallHandle, BallSolver, BallSolverConfig, Geometry};
 use pin_physics::mech::{MechSet, MechSpec};
 use pin_physics::world::{StaticShape, StaticWorld, StaticWorldBuilder, layers};
 
@@ -357,11 +355,31 @@ pub fn busy_rig() -> Rig {
     let mut rig = Rig::new(busy_world(), pitched_gravity(6.5), &busy_specs());
     rig.mechs.set_tilt_switch(Some(ids::TILT_SW));
     let starts = [
-        ("standard_steel", Vec3::new(0.0, 0.33, 0.0), Vec3::new(0.02, -1.0, 0.0)),
-        ("ceramic_powerball", Vec3::new(-0.1, -0.1, 0.0), Vec3::new(-0.4, -1.2, 0.0)),
-        ("standard_steel", Vec3::new(0.12, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0)),
-        ("mini_steel", Vec3::new(-0.2, 0.1, 0.0), Vec3::new(0.6, 0.0, 0.0)),
-        ("standard_steel", Vec3::new(0.05, 0.3, 0.0), Vec3::new(0.0, 1.5, 0.0)),
+        (
+            "standard_steel",
+            Vec3::new(0.0, 0.33, 0.0),
+            Vec3::new(0.02, -1.0, 0.0),
+        ),
+        (
+            "ceramic_powerball",
+            Vec3::new(-0.1, -0.1, 0.0),
+            Vec3::new(-0.4, -1.2, 0.0),
+        ),
+        (
+            "standard_steel",
+            Vec3::new(0.12, 0.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+        ),
+        (
+            "mini_steel",
+            Vec3::new(-0.2, 0.1, 0.0),
+            Vec3::new(0.6, 0.0, 0.0),
+        ),
+        (
+            "standard_steel",
+            Vec3::new(0.05, 0.3, 0.0),
+            Vec3::new(0.0, 1.5, 0.0),
+        ),
     ];
     let profs = profiles();
     for (name, p, v) in starts {

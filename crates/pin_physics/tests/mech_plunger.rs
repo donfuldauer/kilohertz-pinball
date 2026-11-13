@@ -79,9 +79,15 @@ fn released_plunger_at_rest_never_pushes_the_ball() {
         assert_eq!(t.mechs.slider_state(0), Some((0.0, 0.0)));
     }
     let p1 = t.get(h).position;
-    assert!(max_speed < 1.0e-3, "resting ball stays at rest: {max_speed}");
+    assert!(
+        max_speed < 1.0e-3,
+        "resting ball stays at rest: {max_speed}"
+    );
     assert!((p1 - p0).length() < 1.0e-4);
-    assert!(t.closed(LANE), "shooter-lane switch closed by the resting ball");
+    assert!(
+        t.closed(LANE),
+        "shooter-lane switch closed by the resting ball"
+    );
 }
 
 #[test]
@@ -90,7 +96,11 @@ fn spring_force_is_minus_k_x() {
     // √(k/m). Measured: time to reach the rest stop (quarter period) and the
     // speed there (x0·ω).
     let d = PhysicsDefaults::builtin();
-    let (k, m, stroke) = (d.mechs.plunger.spring_k, d.mechs.plunger.mass, d.mechs.plunger.stroke);
+    let (k, m, stroke) = (
+        d.mechs.plunger.spring_k,
+        d.mechs.plunger.mass,
+        d.mechs.plunger.stroke,
+    );
     let w = libm::sqrtf(k / m);
     let mut t = plunger_table();
     t.mechs.set_plunger(1.0);
@@ -118,7 +128,10 @@ fn spring_force_is_minus_k_x() {
     }
     let quarter = core::f32::consts::FRAC_PI_2 / w;
     let measured = (ticks + 1) as f32 * DT;
-    println!("plunger: quarter period {measured:.4} s (analytic {quarter:.4}), peak {peak:.3} m/s (analytic {:.3})", stroke * w);
+    println!(
+        "plunger: quarter period {measured:.4} s (analytic {quarter:.4}), peak {peak:.3} m/s (analytic {:.3})",
+        stroke * w
+    );
     assert!((measured - quarter).abs() <= 2.0 * DT);
     assert!((peak - stroke * w).abs() / (stroke * w) < 0.05);
     let _ = prev_x;
