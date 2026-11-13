@@ -580,52 +580,89 @@ fn rod_stays_within_its_travel() {
     }
 }
 
-/// Verification 6 over the contact phase and the script latency: sling exit
-/// in the window wherever within the tick the ball reaches the band, with
-/// the coil fired on the first or second tick after the switch closes.
+/// Largest ball speed along the kick direction (+y) within 60 ms of the
+/// contact, for a ball starting `gap` from the band at `speed`, with the
+/// coil fired `late` ticks after the tick that follows the switch edge.
+fn sling_phase_exit(speed: f32, gap: f32, late: u64) -> (f32, pin_physics::ball::Ball) {
+    let t = defaults().mechs.sling.thickness;
+    let mut rig = kicker_rig(MechKind::Sling, 90.0, params());
+    let h = rig.add(steel_ball(
+        at_face(90.0, t, gap, 0.0),
+        Vec3::new(0.0, -speed, 0.0),
+    ));
+    let mut contact = None;
+    let mut v = 0.0f32;
+    for _ in 0..300 {
+        if contact.is_some_and(|c| rig.tick == c + late) {
+            rig.mechs.fire_coil(COIL, 30);
+        }
+        rig.step();
+        if contact.is_none() && rig.closed_edge(SW) {
+            contact = Some(rig.tick);
+        }
+        if let Some(c) = contact {
+            v = v.max(rig.ball(h).velocity.y);
+            if rig.tick == c + 60 {
+                return (v, rig.ball(h));
+            }
+        }
+    }
+    panic!("ball at {speed} m/s, gap {gap} never closed the sling switch");
+}
+
+/// Verification 6 over the contact phase: sling exit in the window wherever
+/// within the tick the ball reaches the band.
+///
+/// Orchestrator ruling (D2): the window applies to a coil fired on the tick
+/// after the switch edge. That is the engine's latency (PLAN §2.2: edges
+/// collected in tick N are delivered to the script in tick N+1, whose coil
+/// commands are applied in that same tick). Later firing is outside the
+/// guarantee; see `late_sling_coil_never_traps_the_ball`.
 #[test]
 fn sling_exit_window_holds_for_every_contact_phase() {
-    let t = defaults().mechs.sling.thickness;
     let mut bad = Vec::new();
     let mut range = (f32::INFINITY, f32::NEG_INFINITY);
     for si in 1..=30 {
         let speed = 0.1 * si as f32;
         for gi in 0..10 {
-            for delay in [0u64, 1] {
-                let gap = 0.003 + 0.00031 * gi as f32;
-                let mut rig = kicker_rig(MechKind::Sling, 90.0, params());
-                let h = rig.add(steel_ball(
-                    at_face(90.0, t, gap, 0.0),
-                    Vec3::new(0.0, -speed, 0.0),
-                ));
-                let mut contact = None;
-                let mut v = 0.0f32;
-                for _ in 0..300 {
-                    if contact.is_some_and(|c| rig.tick == c + delay) {
-                        rig.mechs.fire_coil(COIL, 30);
-                    }
-                    rig.step();
-                    if contact.is_none() && rig.closed_edge(SW) {
-                        contact = Some(rig.tick);
-                    }
-                    if let Some(c) = contact {
-                        v = v.max(rig.ball(h).velocity.y);
-                        if rig.tick == c + 60 {
-                            break;
-                        }
-                    }
-                }
-                assert!(contact.is_some());
-                range = (range.0.min(v), range.1.max(v));
-                if !(EXIT_MIN..=EXIT_MAX).contains(&v) {
-                    bad.push((speed, gap, delay, v));
-                }
+            let gap = 0.003 + 0.00031 * gi as f32;
+            let (v, _) = sling_phase_exit(speed, gap, 0);
+            range = (range.0.min(v), range.1.max(v));
+            if !(EXIT_MIN..=EXIT_MAX).contains(&v) {
+                bad.push((speed, gap, v));
             }
         }
     }
-    eprintln!("sling exit speed over speeds × phases × latency: {range:?} m/s");
+    eprintln!("sling exit speed over speeds × phases: {range:?} m/s");
     assert!(
         bad.is_empty(),
-        "(approach, gap, delay ticks, exit) outside {EXIT_MIN}..{EXIT_MAX}: {bad:?}"
+        "(approach, gap, exit) outside {EXIT_MIN}..{EXIT_MAX}: {bad:?}"
     );
+}
+
+/// A coil fired one or two ticks later than the engine's latency is outside
+/// the exit-window guarantee (Orchestrator ruling on D2). It must still not
+/// trap or over-kick the ball: the ball leaves the band along the kick
+/// direction, finite and no faster than the window's upper bound.
+#[test]
+fn late_sling_coil_never_traps_the_ball() {
+    let t = defaults().mechs.sling.thickness;
+    for si in 1..=30 {
+        let speed = 0.1 * si as f32;
+        for gi in 0..10 {
+            for late in [1u64, 2] {
+                let gap = 0.003 + 0.00031 * gi as f32;
+                let (v, b) = sling_phase_exit(speed, gap, late);
+                assert!(is_finite_ball(&b));
+                assert!(
+                    v > 0.0 && v <= EXIT_MAX,
+                    "approach {speed}, gap {gap}, {late} ticks late: exit {v}"
+                );
+                assert!(
+                    b.velocity.y > 0.0 && b.position.y > POS.y + 0.5 * t + R + 1.0e-3,
+                    "approach {speed}, gap {gap}, {late} ticks late: ball not clear of the band"
+                );
+            }
+        }
+    }
 }
