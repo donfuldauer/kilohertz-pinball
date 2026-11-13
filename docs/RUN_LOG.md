@@ -150,3 +150,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 4.6 | Implementer | Opus 5.5 | polish | done | Orchestrator re-ran clippy (--no-deps) and all 98 pin_assetgen tests: green | N1 temp dirs, N2 wording, N3 chevron contrast, N5 --help, N6 0.5 ms attack. **4.6 complete**; target/sp_4_6 deleted |
 | 4 | 5.1 | Implementer | Opus 5.5 | 1 | running | — | |
 | 4 | 5.1 | Independent Tester | Fable 5.2 | 1 | running | — | |
+| 4 | 2.2-S | Implementer | Opus 5.5 | 1 | done | 309 pin_physics tests; coverage 94.6 %; 5 HEAD digests bit-identical; 0 allocs; 2 rotors+kicker+4 balls 6.2 µs mean (target 50) | MovingBodies trait + step_with_bodies; ExternalForce force_in/ForceContext/ball_added/removed; one mechanical line in spec_ball_determinism.rs |
+| 4 | 2.2-S | Reviewer | Fable 5.2 | 1 | running | — | |
