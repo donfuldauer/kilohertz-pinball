@@ -902,3 +902,113 @@ fn many_draws_grow_the_draw_buffer() {
         );
     }
 }
+
+/// 5.1 review N1: the wrapped (subsurface) diffuse is energy-normalised.
+/// Under near-uniform illumination (128 equal lights spread evenly around
+/// the sphere) a white wrapped surface reads the same as a white Lambert
+/// one; before the fix it read ~1.6×.
+#[test]
+fn wrapped_diffuse_reflects_no_more_than_lambert() {
+    let Some(ctx) = ctx() else { return };
+    let mut sc = scene(ctx);
+    let golden = (1.0 + 5f32.sqrt()) * 0.5;
+    let lights: Vec<_> = (0..MAX_LIGHTS)
+        .map(|k| {
+            // Fibonacci sphere of radius 3 around the ball.
+            let z = 1.0 - 2.0 * (k as f32 + 0.5) / MAX_LIGHTS as f32;
+            let r = (1.0 - z * z).sqrt();
+            let a = core::f32::consts::TAU * k as f32 / golden;
+            PointLight::new(
+                [3.0 * r * a.cos(), 3.0 * r * a.sin(), 3.0 * z],
+                [1.0; 3],
+                0.5,
+                100.0,
+            )
+        })
+        .collect();
+    let lambert = MaterialParams::lambert([1.0; 3]);
+    let mut wrapped = MaterialKind::LightInsert.params();
+    wrapped.base_color = [1.0, 1.0, 1.0, 1.0];
+    wrapped.specular = 0.0;
+    wrapped.lamp_emissive = 0.0;
+    assert!(wrapped.subsurface > 0.5);
+    let lam = render(
+        ctx,
+        &mut sc.renderer,
+        &[sphere_draw(sc.sphere, lambert)],
+        &lights,
+        Environment::BLACK,
+        [0.0; 4],
+    );
+    let wr = render(
+        ctx,
+        &mut sc.renderer,
+        &[sphere_draw(sc.sphere, wrapped)],
+        &lights,
+        Environment::BLACK,
+        [0.0; 4],
+    );
+    assert_clean(&wr, "wrapped");
+    let (cx, cy) = project(&camera(), [0.0; 3]);
+    let centre = |im: &HdrImage| {
+        lum(im.region_mean(cx as u32 - 2, cy as u32 - 2, cx as u32 + 2, cy as u32 + 2))
+    };
+    let ratio_centre = centre(&wr) / centre(&lam);
+    let ratio_mean = lum(sphere_mean(&wr)) / lum(sphere_mean(&lam));
+    println!("wrapped / Lambert: centre {ratio_centre:.3}, mean {ratio_mean:.3}");
+    assert!(
+        (0.9..=1.05).contains(&ratio_centre),
+        "centre ratio {ratio_centre}"
+    );
+    assert!(
+        (0.9..=1.05).contains(&ratio_mean),
+        "mean ratio {ratio_mean}"
+    );
+}
+
+/// 5.1 review N3: non-finite or negative frame inputs (GI tint, environment,
+/// clear colour) are treated as 0 instead of turning every pixel NaN/black.
+#[test]
+fn non_finite_frame_inputs_are_sanitized() {
+    let Some(ctx) = ctx() else { return };
+    let mut sc = scene(ctx);
+    let d = DrawItem::new(sc.sphere, IDENTITY, MaterialKind::UvEmissive);
+    let lights = [golden_light()];
+    let good = render(
+        ctx,
+        &mut sc.renderer,
+        &[d],
+        &lights,
+        Environment::STUDIO,
+        [1.0, 1.0, 1.0, 0.0],
+    );
+    let bad = render(
+        ctx,
+        &mut sc.renderer,
+        &[d],
+        &lights,
+        Environment::STUDIO,
+        [1.0, 1.0, 1.0, f32::INFINITY],
+    );
+    assert_clean(&bad, "gi intensity inf");
+    assert_eq!(good.pixels, bad.pixels, "inf GI intensity must act as 0");
+    let nan_gi = render(
+        ctx,
+        &mut sc.renderer,
+        &[d],
+        &lights,
+        Environment::STUDIO,
+        [f32::NAN, 1.0, -1.0, 1.0],
+    );
+    assert_clean(&nan_gi, "gi NaN");
+    let mut env = Environment::STUDIO;
+    env.sky = [f32::NAN, f32::INFINITY, -1.0];
+    let img = render(ctx, &mut sc.renderer, &[d], &lights, env, [1.0; 4]);
+    assert_clean(&img, "environment NaN");
+    // A non-finite clear colour becomes black.
+    let cam = camera();
+    let mut frame = FrameDesc::new(&cam, &lights, &[]);
+    frame.clear = [f32::NAN, f32::INFINITY, -1.0, 1.0];
+    let img = sc.renderer.render_to_image(ctx, &frame).unwrap();
+    assert_eq!(img.at(0, 0), [0.0, 0.0, 0.0, 1.0]);
+}

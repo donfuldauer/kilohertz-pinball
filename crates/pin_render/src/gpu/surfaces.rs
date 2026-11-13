@@ -919,7 +919,10 @@ mod configure_log_tests {
         log.succeeded();
         assert!(log.may_attempt(), "success clears the pending skips");
         log.record(&"busy");
-        assert!(!log.may_attempt() && log.may_attempt(), "back-off restarts at 1");
+        assert!(
+            !log.may_attempt() && log.may_attempt(),
+            "back-off restarts at 1"
+        );
     }
 }
 
