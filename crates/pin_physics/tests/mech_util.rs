@@ -123,7 +123,8 @@ pub fn spinner_reference(w0: f64, d: f64, c: f64, l: f64, g: f64, t_end: f64) ->
         let next = phi + h / 6.0 * (a1 + 2.0 * a2 + 2.0 * a3 + a4);
         let w_next = w + h / 6.0 * (b1 + 2.0 * b2 + 2.0 * b3 + b4);
         // Stiction: a stopping flap whose gravity torque friction balances.
-        w = if (w_next == 0.0 || w_next.signum() != w.signum()) && (k * next.sin()).abs() <= c
+        w = if (w_next == 0.0 || w_next.signum() != w.signum())
+            && (k * next.sin()).abs() <= c
             && next.cos() > 0.0
         {
             0.0

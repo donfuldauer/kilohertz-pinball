@@ -119,7 +119,14 @@ const SPIN_SW: u16 = 70;
 fn spinner_pulse_count_matches_the_documented_spin_down() {
     let l = 0.028f64;
     let w_c = 2.0 * (1.5 * 9.81 / l).sqrt();
-    for (w0, d) in [(20.0f32, 0.8f32), (60.0, 0.8), (150.0, 1.5), (40.0, 0.25), (300.0, 0.8), (8.0, 2.0)] {
+    for (w0, d) in [
+        (20.0f32, 0.8f32),
+        (60.0, 0.8),
+        (150.0, 1.5),
+        (40.0, 0.25),
+        (300.0, 0.8),
+        (8.0, 2.0),
+    ] {
         let mut spec = MechSpec::new(MechKind::Spinner, Vec3::ZERO).with_switch(SwitchId(SPIN_SW));
         spec.params.damping_per_s = Some(d);
         let mut t = Table::new(&[spec], world(&[]), 0.0);
@@ -128,12 +135,21 @@ fn spinner_pulse_count_matches_the_documented_spin_down() {
         let ticks = 30_000;
         for _ in 0..ticks {
             t.tick();
-            if t.mechs.edges().contains(&(SwitchId(SPIN_SW), SwitchEdge::Closed)) {
+            if t.mechs
+                .edges()
+                .contains(&(SwitchId(SPIN_SW), SwitchEdge::Closed))
+            {
                 closures += 1;
             }
         }
-        let (ref_pulses, ref_angle) =
-            spinner_reference(f64::from(w0), f64::from(d), 60.0, l, 9.81, ticks as f64 * 1e-3);
+        let (ref_pulses, ref_angle) = spinner_reference(
+            f64::from(w0),
+            f64::from(d),
+            60.0,
+            l,
+            9.81,
+            ticks as f64 * 1e-3,
+        );
         let pulses = t.mechs.spinner_pulses(0);
         let (angle, _) = t.mechs.spinner_state(0).unwrap();
         println!(
@@ -143,7 +159,10 @@ fn spinner_pulse_count_matches_the_documented_spin_down() {
         assert!((pulses as i64 - ref_pulses as i64).abs() <= 2);
         // Settles hanging.
         let turns = (angle / core::f32::consts::TAU).round();
-        assert!((angle - turns * core::f32::consts::TAU).abs() < 0.12, "hanging: {angle}");
+        assert!(
+            (angle - turns * core::f32::consts::TAU).abs() < 0.12,
+            "hanging: {angle}"
+        );
         // High-speed limit: without gravity, viscous + pivot friction turn
         // the flap ω0/d − (c/d²)·ln(1 + d·ω0/c) (→ ω0/d relatively as ω0
         // grows); gravity only ends the spin about ω_c early.
@@ -317,5 +336,8 @@ fn lost_events_fall_back_to_contact() {
         t.mechs.step(&mut t.solver, &geo, None, DT, &mut t.events);
     }
     assert!(t.events.dropped() > 0);
-    assert!(t.mechs.drop_target_down(0).unwrap(), "dropped from the contact flag");
+    assert!(
+        t.mechs.drop_target_down(0).unwrap(),
+        "dropped from the contact flag"
+    );
 }

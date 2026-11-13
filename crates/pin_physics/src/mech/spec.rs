@@ -391,5 +391,60 @@ pub(crate) fn resolve(
         }
         MechKind::Diverter | MechKind::NewtonBall | MechKind::Gate => KindP::Inert,
     };
+    plausible(mech, &kind)?;
     Ok((common, kind))
+}
+
+/// Largest size (m) of any mech dimension or stroke.
+pub(crate) const MAX_SIZE: f32 = 0.5;
+/// Largest speed (m/s) a parameter may give or ask of a mech part (ring,
+/// eject, rise, threshold, and the free speed of a slider over its stroke).
+pub(crate) const MAX_SPEED: f32 = 20.0;
+
+/// Plausibility limits: parameters that are valid numbers but would drive
+/// a part (and the ball) at absurd speeds are rejected rather than
+/// simulated.
+fn plausible(mech: usize, kind: &KindP) -> Result<(), MechError> {
+    let bad = |name: &'static str| Err(MechError::BadParameter { mech, name });
+    let size = |name: &'static str, v: f32| if v > MAX_SIZE { bad(name) } else { Ok(()) };
+    let speed = |name: &'static str, v: f32| if v > MAX_SPEED { bad(name) } else { Ok(()) };
+    match *kind {
+        KindP::Bumper(b) => {
+            size("radius", b.radius)?;
+            size("height", b.height)?;
+            size("kick_reach", b.kick_reach)?;
+            speed("kick_speed_m_s", b.kick_speed)
+        }
+        KindP::Sling(p) | KindP::Kickback(p) | KindP::Plunger(p) => {
+            size("length", p.length)?;
+            size("height", p.height)?;
+            size("thickness", p.thickness)?;
+            size("stroke", p.stroke)?;
+            // Free speeds over the stroke: coil work and spring energy.
+            speed("force_n", libm::sqrtf(2.0 * p.force * p.stroke / p.mass))?;
+            speed("spring_k_n_m", p.stroke * libm::sqrtf(p.spring_k / p.mass))
+        }
+        KindP::Drop(d) => {
+            size("length", d.length)?;
+            size("height", d.height)?;
+            size("thickness", d.thickness)?;
+            speed("threshold_speed_m_s", d.threshold)?;
+            speed("kick_speed_m_s", d.rise_speed)
+        }
+        KindP::Spinner(p) => {
+            size("length", p.width)?;
+            size("radius", p.flap)?;
+            size("height", p.pivot_height)?;
+            size("thickness", p.thickness)
+        }
+        KindP::Vuk(v) => {
+            size("radius", v.radius)?;
+            if v.exit_offset.length() > 2.0 * MAX_SIZE {
+                return bad("exit_offset");
+            }
+            speed("eject_speed_m_s", v.eject_speed)?;
+            speed("kick_speed_m_s", v.kick_speed)
+        }
+        KindP::Inert => Ok(()),
+    }
 }

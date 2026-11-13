@@ -72,7 +72,9 @@
 //!   because gravity acts along (or against) the kick during the contact
 //!   and the measurement window.
 //! * **Drop target.** Up: a static box. An [`BallEvent::Impact`] on it with
-//!   `normal_speed ≥ threshold_speed` drops it (no surface, switch closed).
+//!   `normal_speed ≥ threshold_speed` drops it (no surface, switch closed),
+//!   if the target is fully up and the push was on a face (within ~45° of
+//!   the face normal: a ball landing on its top does not drop it).
 //!   While its coil (the bank's reset coil: every target sharing it) is on,
 //!   a dropped target rises from below the playfield at `kick_speed` as a
 //!   kinematic box, so a ball over it is lifted out, never trapped inside;
@@ -81,8 +83,9 @@
 //!   (`dω/dt = −d·ω`, total rotation `ω₀/d`), one pulse per 180°
 //!   ([`MechSet::spinner_pulses`]); the switch is closed on a pulse tick.
 //! * **VUK.** A ball on the capture `layer` whose centre is within `radius`
-//!   (horizontally) of the scoop and at most 3 mm above the scoop floor
-//!   (`position.z + r`) is captured: held at rest there, switch closed.
+//!   (horizontally) of the scoop, not below its floor and at most 3 mm above
+//!   the rest height (`position.z + r`) is captured when no other ball
+//!   overlaps that hold point: held at rest there, switch closed.
 //!   While the coil is on, the held ball is moved to `position +
 //!   exit_offset` with velocity `eject_speed·z + kick_speed·u`, on
 //!   `exit_layer` (the move enters the scoop's [`LayerTransition`], listed in
@@ -95,7 +98,13 @@
 //!   (a step in the input is followed at that speed, so the tip's reported
 //!   velocity is its real motion and never exceeds 1.5 m/s while pulled). Pulling or a release slower than the spring is
 //!   kinematic; a fast release lets the spring drive the finite-mass rod,
-//!   which launches the ball through the seam. At rest the rod is locked, so
+//!   which launches the ball through the seam. The rod's velocity is
+//!   constant within a tick (semi-implicit Euler: at full pull the spring
+//!   changes it by `k·x/m·dt` ≈ 1 m/s per tick, `ω·dt` = 0.14), so when the
+//!   ball is not resting on the tip at release the launch depends on the
+//!   tick phase of the contact by a few per cent (near full pull on a 6.5°
+//!   lane: 4.24 m/s at pull 0.99, 4.16 at 0.995, 4.19 at 1.0); with the ball
+//!   resting on the tip the launch is monotone in pull depth. At rest the rod is locked, so
 //!   a resting ball is never pushed. While the plunger's coil is on, the rod
 //!   is held at `auto_pull` (auto-plunger); releasing the coil fires it.
 //! * **Nudge.** [`MechSet::nudge`]`(Δv)` is a cabinet velocity change; at
@@ -145,6 +154,10 @@ pub const CONTACT_GAP: f32 = 1.0e-4;
 /// coil (a step in [`MechSet::set_plunger`] is followed at this speed).
 pub const PULL_SPEED: f32 = 1.5;
 
+/// A drop-target impulse counts as a face hit when it is within ~45° of the
+/// face normal.
+const FACE_HIT_COS: f32 = 0.7;
+
 /// How far (m) below the playfield a dropped target starts its rise.
 const DROP_HIDE: f32 = 0.002;
 
@@ -170,6 +183,8 @@ struct Drop {
     /// Vertical offset (≤ 0) at the start of the tick and the segment speed.
     z: f32,
     vz: f32,
+    /// A ball pushed on a face (not the top or an edge) this step.
+    face_hit: bool,
 }
 
 impl Drop {
@@ -330,6 +345,7 @@ impl MechSet {
                     state: DropState::Up,
                     z: 0.0,
                     vz: 0.0,
+                    face_hit: false,
                 }),
                 KindP::Spinner(p) => {
                     let mut s = Spinner::new(pos + Vec3::Z * p.pivot_height, u);
@@ -639,6 +655,9 @@ impl MechSet {
         for mi in 0..self.mechs.len() {
             let m = self.mechs[mi];
             self.mechs[mi].touched = false;
+            if let Part::Drop(d) = &mut self.mechs[mi].part {
+                d.face_hit = false;
+            }
             match m.part {
                 Part::Bumper {
                     ring,
@@ -730,7 +749,7 @@ impl MechSet {
         if core::mem::take(&mut self.events_lost) {
             for m in &mut self.mechs {
                 if let Part::Drop(d) = &mut m.part
-                    && m.touched
+                    && d.face_hit
                     && d.state == DropState::Up
                 {
                     d.state = DropState::Down;
@@ -751,6 +770,7 @@ impl MechSet {
                     ..
                 }) = self.mechs.get_mut(body)
                 && d.state == DropState::Up
+                && d.face_hit
                 && normal_speed >= d.threshold
             {
                 d.state = DropState::Down;
@@ -850,11 +870,23 @@ impl MechSet {
             let r = solver.profiles().get(b.profile.index())?.radius_m();
             let d = b.position - v.position;
             let horizontal = libm::sqrtf(d.x * d.x + d.y * d.y);
+            let hold = v.position + Vec3::Z * r;
+            // The hold point must be free: no other ball overlaps it (the
+            // capture moves the ball there).
+            let free = solver.balls().all(|(o, ob)| {
+                o == h
+                    || solver
+                        .profiles()
+                        .get(ob.profile.index())
+                        .is_none_or(|p| (ob.position - hold).length() >= r + p.radius_m())
+            });
             (b.layer == layer
                 && horizontal <= v.radius
                 && d.z <= r + VUK_CAPTURE_HEIGHT
-                && !taken(h))
-            .then_some(h)
+                && d.z >= 0.0
+                && !taken(h)
+                && free)
+                .then_some(h)
         })
     }
 
@@ -1069,6 +1101,14 @@ impl MovingBodies for MechSet {
         match &mut m.part {
             Part::Slider { s, .. } => s.apply_impulse(time, impulse),
             Part::Spinner(s) => s.apply_impulse(time, point, impulse),
+            Part::Drop(d) => {
+                // Only a push on a face drops a target (not a ball landing
+                // on its top or lifted by it while it rises).
+                let along = impulse.dot(d.up.axes[0]).abs();
+                if along >= FACE_HIT_COS * impulse.length() {
+                    d.face_hit = true;
+                }
+            }
             _ => {}
         }
     }

@@ -48,10 +48,12 @@
 //! * **Stops.** Rest and end angle are rigid one-sided stops. A bat that
 //!   reaches a stop leaves it with `stop_restitution` times its arrival
 //!   speed; pushed against a stop it is immovable in that direction.
-//! * **Rubber.** Restitution and friction of the contact come from the
-//!   material-pair table (the bat is [`Material::Rubber`]). `rubber_damping`
-//!   is a loss that grows with the bat's own surface speed along the contact
-//!   normal, see [`FlipperTuning::rubber_loss_speed_m_s`].
+//! * **Rubber.** An impact approached at relative normal speed `u` has the
+//!   restitution `e(u) = rubber_restitution / (1 + rubber_damping · u / u₀)`
+//!   with `u₀` = [`FlipperTuning::rubber_loss_speed_m_s`] (the seam's
+//!   `MovingBodies::restitution` hook). Friction comes from the material-pair
+//!   table (the bat is [`Material::Rubber`]). The bat reports its true
+//!   one-sided inverse mass.
 //! * **Zipper.** The pivot slides along `zipper_slide_axis_mm` (direction
 //!   and extent) at `zipper_slide_speed_mm_s`; the slide is motor-driven
 //!   (the ball cannot push it back).
@@ -144,16 +146,10 @@ pub struct FlipperTuning {
     /// Time constant (seconds) with which the coil torque collapses toward
     /// a lower target (release, or power → hold at EOS). 0 = instant.
     pub coil_fall_s: f32,
-    /// Bat surface speed along the contact normal (m/s) at which
-    /// `rubber_damping = 1` would double the contact's loading. The rubber
-    /// loss factor is `g = min(rubber_damping · |v_n| / this, rubber_restitution)`
-    /// and the bat reports the inverse mass `(1 + g)·w + g/m_ref` along the
-    /// normal while it answers an impulse with its real `w`: for the
-    /// reference ball the impulse is `1/(1 + g)` of the lossless one. A bat
-    /// that does not move (held on a stop, at rest) has `g = 0`.
+    /// Approach speed (m/s) at which `rubber_damping = 1` halves the
+    /// rubber's restitution: an impact approached at `u` (relative normal
+    /// speed) has `e(u) = rubber_restitution / (1 + rubber_damping · u / this)`.
     pub rubber_loss_speed_m_s: f32,
-    /// Reference ball mass `m_ref` (kg) of the rubber loss.
-    pub reference_ball_mass_kg: f32,
     /// Height (metres) of the bat above its mounting plane.
     pub bat_height_m: f32,
     /// Sim ticks per millisecond for the Thing Flip schedule (1 at 1 kHz).
@@ -165,8 +161,7 @@ impl Default for FlipperTuning {
         Self {
             coil_rise_s: 0.016,
             coil_fall_s: 0.002,
-            rubber_loss_speed_m_s: 2.0,
-            reference_ball_mass_kg: 0.080,
+            rubber_loss_speed_m_s: 4.0,
             bat_height_m: 0.030,
             ticks_per_ms: 1.0,
         }
@@ -756,12 +751,6 @@ impl FlipperSet {
             tuning.rubber_loss_speed_m_s,
             positive,
         )?;
-        in_range(
-            first,
-            "tuning.reference_ball_mass_kg",
-            tuning.reference_ball_mass_kg,
-            positive,
-        )?;
         in_range(first, "tuning.bat_height_m", tuning.bat_height_m, positive)?;
         in_range(first, "tuning.ticks_per_ms", tuning.ticks_per_ms, positive)?;
         let mut flippers = ArrayVec::new();
@@ -945,8 +934,11 @@ impl FlipperSet {
     /// The drive acts as one angular impulse `τ·dt` per tick; its work is
     /// the kinetic energy that impulse adds, `τ·dt·(ω_before + ω_after)/2`
     /// (negative while the drive brakes the bat; at most `τ·Δθ` in a tick
-    /// without ball contact; nothing while it only presses the bat on a
-    /// stop). The kinetic energy of the bat and the balls
+    /// without ball contact). Nothing is counted while the drive only
+    /// presses the bat on a stop, including the tick in which a ball knocks
+    /// a held bat off it (that tick's hold impulse is left out, so the sum
+    /// is an under-count and the bound below is the stricter for it). The
+    /// kinetic energy of the bat and the balls
     /// it touched never exceeds what they started with plus this. 0 for an
     /// unknown id.
     #[must_use]
@@ -1054,21 +1046,29 @@ impl MovingBodies for FlipperSet {
         if arm == 0.0 || arm.is_nan() || f.engaged(arm.signum()) {
             return 0.0;
         }
-        let w = arm * arm / f.inertia;
-        // Rubber loss: extra loading along the surface normal that grows
-        // with the bat's own normal surface speed (FlipperTuning).
-        let w_bat = f.w_at(time);
-        if w_bat == 0.0 || f.rubber_damping == 0.0 {
-            return w;
-        }
-        let motion = f.motion();
-        let normal = world_closest_point(f.bat.shape(), &motion, time, point).normal;
-        let along = direction.dot(normal);
-        let pivot = f.base + f.slide_dir * (f.slide + f.slide_v * time);
-        let v_n = (f.axis.cross(point - pivot) * (f.sign * w_bat)).dot(normal);
-        let g = (f.rubber_damping * v_n.abs() / self.tuning.rubber_loss_speed_m_s)
-            .min(f.rubber_restitution);
-        w + g * (w + 1.0 / self.tuning.reference_ball_mass_kg) * along * along
+        arm * arm / f.inertia
+    }
+
+    /// The rubber's restitution: `rubber_restitution`, reduced with the
+    /// approach speed by `rubber_damping`
+    /// ([`FlipperTuning::rubber_loss_speed_m_s`]). Replaces the pair table's
+    /// value for ball–bat impacts; friction still comes from the pair table.
+    fn restitution(
+        &self,
+        body: usize,
+        _time: f32,
+        _point: Vec3,
+        approach_speed: f32,
+    ) -> Option<f32> {
+        let f = &self.flippers[body];
+        let u = if approach_speed > 0.0 {
+            approach_speed
+        } else {
+            0.0
+        };
+        Some(
+            f.rubber_restitution / (1.0 + f.rubber_damping * u / self.tuning.rubber_loss_speed_m_s),
+        )
     }
 
     fn apply_impulse(&mut self, body: usize, time: f32, point: Vec3, impulse: Vec3) {
@@ -1339,10 +1339,6 @@ mod tests {
             FlipperError::OutOfRange { .. }
         ));
         assert!(matches!(
-            bad(|t| t.reference_ball_mass_kg = 0.0),
-            FlipperError::OutOfRange { .. }
-        ));
-        assert!(matches!(
             bad(|t| t.bat_height_m = 0.0),
             FlipperError::OutOfRange { .. }
         ));
@@ -1516,7 +1512,22 @@ mod tests {
     }
 
     #[test]
-    fn rubber_loss_loads_a_moving_bat_only() {
+    fn rubber_restitution_falls_with_the_approach_speed() {
+        let s = set();
+        let e = |u: f32| s.restitution(0, 0.0, Vec3::ZERO, u).unwrap();
+        assert_eq!(e(0.0), 0.65);
+        assert_eq!(e(-1.0), 0.65);
+        assert!((e(4.0) - 0.65 / 1.35).abs() < 1e-6);
+        assert!(e(1.0) > e(2.0) && e(2.0) > e(8.0) && e(8.0) > 0.0);
+        let mut c = config();
+        c.rubber_damping = 0.0;
+        c.rubber_restitution = 0.3;
+        let s = FlipperSet::new(&[c]).unwrap();
+        assert_eq!(s.restitution(0, 0.0, Vec3::ZERO, 9.0), Some(0.3));
+    }
+
+    #[test]
+    fn a_moving_bat_reports_its_true_inverse_mass() {
         let mut s = set();
         s.set_energised(ID, true);
         for _ in 0..12 {
@@ -1524,35 +1535,17 @@ mod tests {
         }
         s.begin_tick(DT);
         let (p, n) = on_top(&s, 0.0, 0.04);
-        let f = &s.flippers[0];
-        let pivot = Vec3::new(0.1, 0.05, 0.0);
-        let arm = (p - pivot).cross(n).z;
-        let free = arm * arm / f.inertia;
-        let v_n = s.velocity_at(0, 0.0, p).dot(n);
-        assert!(v_n > 0.5, "the bat is moving: {v_n}");
-        let g = (0.35 * v_n / 2.0).min(0.65);
-        let loaded = s.inverse_mass_at(0, 0.0, p, -n);
-        assert!((loaded - (free + g * (free + 12.5))).abs() < 1e-3 * loaded);
-        // The same both ways along the normal, none across it.
-        assert_eq!(loaded, s.inverse_mass_at(0, 0.0, p, n));
-        // The real response is the unloaded one.
+        let arm = (p - Vec3::new(0.1, 0.05, 0.0)).cross(n).z;
+        let free = arm * arm / 1.0e-4;
+        assert!(s.velocity_at(0, 0.0, p).dot(n) > 0.5, "the bat is moving");
+        for d in [n, -n] {
+            let w = s.inverse_mass_at(0, 0.0, p, d);
+            assert!((w - free).abs() < 1e-4 * free, "{w} vs {free}");
+        }
         let before = s.velocity_at(0, 0.0, p).dot(n);
         s.apply_impulse(0, 0.0, p, -n * 0.001);
         let after = s.velocity_at(0, 0.0, p).dot(n);
         assert!(((before - after) - free * 0.001).abs() < 1e-4);
-        // Without damping there is no loading.
-        let mut c = config();
-        c.rubber_damping = 0.0;
-        let mut s = FlipperSet::new(&[c]).unwrap();
-        s.set_energised(ID, true);
-        for _ in 0..12 {
-            s.advance(DT);
-        }
-        s.begin_tick(DT);
-        let (p, n) = on_top(&s, 0.0, 0.04);
-        let arm = (p - pivot).cross(n).z;
-        let w = s.inverse_mass_at(0, 0.0, p, -n);
-        assert!((w - arm * arm / 1.0e-4).abs() < 1e-3 * w);
     }
 
     #[test]

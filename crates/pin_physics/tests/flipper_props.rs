@@ -315,8 +315,80 @@ fn upper_flipper_only_touches_its_own_layer() {
     assert!(rig.ball(bounced).velocity.dot(n) > 0.0);
 }
 
+/// Proptest cases: `PROPTEST_CASES` if set, else 48.
+fn cases() -> u32 {
+    std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(48)
+}
+
+/// Rebound speed of a ball fired at `speed` square onto the middle of the
+/// resting bat (pushed into its rest stop: an immovable rubber wall).
+fn wall_rebound(restitution: f32, damping: f32, speed: f32) -> f32 {
+    let mut c = left_config(0, [0.0; 3]);
+    c.rubber_restitution = restitution;
+    c.rubber_damping = damping;
+    let mut rig = space_rig(c);
+    let dir = bat_dir(-30.0);
+    let n = Vec3::Z.cross(dir);
+    let h = rig.add_ball(dir * 0.04 + n * 0.06 + v(0.0, 0.0, BALL_R), n * -speed);
+    rig.run(200);
+    rig.ball(h).velocity.dot(n)
+}
+
+#[test]
+fn rubber_restitution_and_damping_set_the_rebound() {
+    // e(u) = rubber_restitution / (1 + rubber_damping · u / 4 m/s).
+    for speed in [1.0f32, 2.0, 4.0] {
+        for restitution in [0.0f32, 0.3, 0.65, 1.0] {
+            for damping in [0.0f32, 0.35, 0.7] {
+                let expected = restitution / (1.0 + damping * speed / 4.0) * speed;
+                let got = wall_rebound(restitution, damping, speed);
+                println!(
+                    "e0 {restitution}, damping {damping}, {speed} m/s in: {got:.3} m/s out (law {expected:.3})"
+                );
+                assert!(
+                    (got - expected).abs() < 0.02 * speed + 1e-3,
+                    "e0 {restitution}, damping {damping}, {speed} m/s: {got} vs {expected}"
+                );
+            }
+        }
+    }
+    // The same on a bat that gives way (held up, hit from above): more
+    // restitution, more rebound; more damping, less.
+    let held = |restitution: f32, damping: f32| {
+        let mut c = left_config(0, [0.0; 3]);
+        c.rubber_restitution = restitution;
+        c.rubber_damping = damping;
+        let mut rig = space_rig(c);
+        rig.flippers.set_energised(LEFT, true);
+        for _ in 0..200 {
+            rig.flippers.advance(DT);
+        }
+        let dir = bat_dir(20.0);
+        let n = Vec3::Z.cross(dir);
+        // Near the pivot the bat is heavier than the ball: it rebounds.
+        let h = rig.add_ball(dir * 0.02 + n * 0.06 + v(0.0, 0.0, BALL_R), n * -3.0);
+        let mut first = None;
+        for _ in 0..60 {
+            rig.step();
+            if first.is_none() && !rig.hits.is_empty() {
+                first = Some(rig.ball(h).velocity.dot(n));
+            }
+        }
+        first.expect("hit")
+    };
+    let (low, mid, high) = (held(0.2, 0.0), held(0.65, 0.0), held(1.0, 0.0));
+    println!("held bat, first impact: e0 0.2 → {low:.3}, 0.65 → {mid:.3}, 1.0 → {high:.3} m/s");
+    assert!(low < mid - 0.1 && mid < high - 0.1);
+    let damped = held(0.65, 0.7);
+    println!("held bat, e0 0.65 with damping 0.7: {damped:.3} m/s");
+    assert!(damped < mid - 0.05);
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(ProptestConfig::with_cases(cases()))]
 
     /// No tunnelling and no energy out of nothing, for any ball speed,
     /// direction, flip timing, coil strength and mounting plane: the ball

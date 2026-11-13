@@ -185,7 +185,10 @@ fn sling_window_over_approach_speed_phase_and_latency() {
         for g in 0..6 {
             for delay in 0..2 {
                 let out = sling_phase(speed, 0.002 + g as f32 * 0.00037, delay);
-                assert!((1.5..=4.0).contains(&out), "exit {out} (approach {speed}, gap {g}, delay {delay})");
+                assert!(
+                    (1.5..=4.0).contains(&out),
+                    "exit {out} (approach {speed}, gap {g}, delay {delay})"
+                );
                 lo = lo.min(out);
                 hi = hi.max(out);
             }

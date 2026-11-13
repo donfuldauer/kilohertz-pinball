@@ -182,14 +182,20 @@ fn kick_off_momentum_and_energy_are_bounded_by_the_drive() {
         t.mechs.hold_coil(COIL, true);
         t.tick();
         let p1 = mb * t.get(h).velocity.y;
-        println!("{kind:?}: first-tick ball impulse {p1:.4} N·s, drive F·dt {:.4}", k.force * DT);
+        println!(
+            "{kind:?}: first-tick ball impulse {p1:.4} N·s, drive F·dt {:.4}",
+            k.force * DT
+        );
         assert!(p1 <= k.force * DT * 1.02 + 1e-5, "{p1}");
         let mut ke = 0.0f32;
         for _ in 0..60 {
             t.tick();
             ke = ke.max(0.5 * mb * t.get(h).velocity.length_squared());
         }
-        println!("{kind:?}: ball energy {ke:.4} J, drive work {:.4} J", k.force * k.stroke);
+        println!(
+            "{kind:?}: ball energy {ke:.4} J, drive work {:.4} J",
+            k.force * k.stroke
+        );
         assert!(ke <= k.force * k.stroke * 1.02, "{ke}");
     }
     // Plunger released from full pull with the ball on the tip.
@@ -200,7 +206,11 @@ fn kick_off_momentum_and_energy_are_bounded_by_the_drive() {
     for _ in 0..60 {
         t.tick();
     }
-    let h = t.ball(0.0, -0.3 - p.stroke + 0.006 + radius(STEEL) + 2e-5, Vec3::ZERO);
+    let h = t.ball(
+        0.0,
+        -0.3 - p.stroke + 0.006 + radius(STEEL) + 2e-5,
+        Vec3::ZERO,
+    );
     t.tick();
     t.mechs.set_plunger(0.0);
     t.tick();
