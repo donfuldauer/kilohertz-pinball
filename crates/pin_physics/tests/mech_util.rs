@@ -104,12 +104,12 @@ impl Table {
 }
 
 /// Reference for the documented spinner model (`dω/dt = −d·ω −
-/// (3g/(2L))·sin φ`, uniform flap of length `l` hinged at its top edge):
+/// (3g/(2L))·sin φ − c·sign ω`, stiction where `|(3g/(2L))·sin φ| ≤ c`, uniform flap of length `l` hinged at its top edge):
 /// RK4 in f64 at 10 µs for `t_end` seconds from `φ = 0`, `ω = w0`. Returns
 /// the horizontal crossings (pulses) and the final angle.
-pub fn spinner_reference(w0: f64, d: f64, l: f64, g: f64, t_end: f64) -> (u64, f64) {
+pub fn spinner_reference(w0: f64, d: f64, c: f64, l: f64, g: f64, t_end: f64) -> (u64, f64) {
     let k = 1.5 * g / l;
-    let f = |phi: f64, w: f64| (w, -d * w - k * phi.sin());
+    let f = |phi: f64, w: f64| (w, -d * w - k * phi.sin() - c * w.signum());
     let h = 1.0e-5;
     let (mut phi, mut w) = (0.0f64, w0);
     let cell = |a: f64| ((a - core::f64::consts::FRAC_PI_2) / core::f64::consts::PI).floor();
@@ -121,7 +121,15 @@ pub fn spinner_reference(w0: f64, d: f64, l: f64, g: f64, t_end: f64) -> (u64, f
         let (a3, b3) = f(phi + 0.5 * h * a2, w + 0.5 * h * b2);
         let (a4, b4) = f(phi + h * a3, w + h * b3);
         let next = phi + h / 6.0 * (a1 + 2.0 * a2 + 2.0 * a3 + a4);
-        w += h / 6.0 * (b1 + 2.0 * b2 + 2.0 * b3 + b4);
+        let w_next = w + h / 6.0 * (b1 + 2.0 * b2 + 2.0 * b3 + b4);
+        // Stiction: a stopping flap whose gravity torque friction balances.
+        w = if (w_next == 0.0 || w_next.signum() != w.signum()) && (k * next.sin()).abs() <= c
+            && next.cos() > 0.0
+        {
+            0.0
+        } else {
+            w_next
+        };
         pulses += (cell(next) - cell(phi)).abs() as u64;
         phi = next;
     }

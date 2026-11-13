@@ -133,7 +133,7 @@ fn spinner_pulse_count_matches_the_documented_spin_down() {
             }
         }
         let (ref_pulses, ref_angle) =
-            spinner_reference(f64::from(w0), f64::from(d), l, 9.81, ticks as f64 * 1e-3);
+            spinner_reference(f64::from(w0), f64::from(d), 60.0, l, 9.81, ticks as f64 * 1e-3);
         let pulses = t.mechs.spinner_pulses(0);
         let (angle, _) = t.mechs.spinner_state(0).unwrap();
         println!(
@@ -143,11 +143,20 @@ fn spinner_pulse_count_matches_the_documented_spin_down() {
         assert!((pulses as i64 - ref_pulses as i64).abs() <= 2);
         // Settles hanging.
         let turns = (angle / core::f32::consts::TAU).round();
-        assert!((angle - turns * core::f32::consts::TAU).abs() < 0.05, "hanging: {angle}");
-        // High-speed limit: between (ω0 − 2ω_c)/d and ω0/d.
+        assert!((angle - turns * core::f32::consts::TAU).abs() < 0.12, "hanging: {angle}");
+        // High-speed limit: without gravity, viscous + pivot friction turn
+        // the flap ω0/d − (c/d²)·ln(1 + d·ω0/c) (→ ω0/d relatively as ω0
+        // grows); gravity only ends the spin about ω_c early.
+        let (w, dd, c) = (f64::from(w0), f64::from(d), 60.0f64);
+        let no_gravity = w / dd - c / (dd * dd) * (1.0 + dd * w / c).ln();
         let total = f64::from(angle);
-        assert!(total <= f64::from(w0 / d) + 0.1);
-        assert!(total >= (f64::from(w0) - 2.0 * w_c) / f64::from(d) - 6.3);
+        assert!(total <= w / dd + 0.1);
+        if w > 2.0 * w_c {
+            assert!(
+                total <= no_gravity + 0.2 && total >= no_gravity - w_c / dd - 6.3,
+                "{total} vs {no_gravity}"
+            );
+        }
         assert!(closures >= pulses / 2 && closures <= pulses);
     }
 }

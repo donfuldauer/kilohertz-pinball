@@ -191,6 +191,7 @@ pub(crate) struct SpinnerP {
     pub thickness: f32,
     pub inertia: f32,
     pub damping: f32,
+    pub friction: f32,
 }
 
 /// Resolved VUK parameters (SI).
@@ -363,6 +364,7 @@ pub(crate) fn resolve(
                 thickness: c.positive("thickness", or(o.thickness, MM, s.thickness))?,
                 inertia: c.positive("inertia_kg_m2", or(o.inertia_kg_m2, 1.0, s.inertia))?,
                 damping: c.non_negative("damping_per_s", or(o.damping_per_s, 1.0, s.damping))?,
+                friction: c.non_negative("friction", s.friction)?,
             };
             KindP::Spinner(p)
         }

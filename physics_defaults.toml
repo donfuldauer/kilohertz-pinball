@@ -115,6 +115,7 @@ height          = 0.042     # m
 thickness       = 0.002     # m
 inertia         = 8.0e-7    # kg·m²
 damping         = 0.8       # 1/s
+friction        = 60.0      # rad/s² (pivot friction)
 
 [mechs.vuk]
 radius          = 0.012     # m

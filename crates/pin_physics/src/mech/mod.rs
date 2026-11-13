@@ -338,6 +338,7 @@ impl MechSet {
                     s.thickness = p.thickness;
                     s.inertia = p.inertia;
                     s.damping = p.damping;
+                    s.friction = p.friction;
                     Part::Spinner(s)
                 }
                 KindP::Vuk(v) => {

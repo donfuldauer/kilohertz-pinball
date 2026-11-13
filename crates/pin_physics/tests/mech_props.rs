@@ -159,9 +159,9 @@ proptest! {
         }
         let (angle, _) = set.spinner_state(0).unwrap();
         let turns = (angle / core::f32::consts::TAU).round();
-        prop_assert!((angle - turns * core::f32::consts::TAU).abs() < 0.05, "hanging: {}", angle);
+        prop_assert!((angle - turns * core::f32::consts::TAU).abs() < 0.12, "hanging: {}", angle);
         prop_assert!(angle.abs() <= (w0 / d).abs() + 0.1);
-        let (rp, _) = spinner_reference(f64::from(w0), f64::from(d), 0.028, 9.81, ticks as f64 * 1e-3);
+        let (rp, _) = spinner_reference(f64::from(w0), f64::from(d), 60.0, 0.028, 9.81, ticks as f64 * 1e-3);
         prop_assert!((set.spinner_pulses(0) as i64 - rp as i64).abs() <= 2, "{} vs {}", set.spinner_pulses(0), rp);
     }
 

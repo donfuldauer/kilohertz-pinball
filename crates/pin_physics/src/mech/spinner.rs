@@ -2,18 +2,21 @@
 //! top edge, a 1-DOF rotor with gravity restoring torque and viscous
 //! spin-down.
 //!
-//! Model: `dω/dt = −d·ω + γ(φ)`, with the gravity term of a uniform plate
+//! Model: `dω/dt = −d·ω + γ(φ) − c·sign(ω)` (`c`: pivot friction, which
+//! also holds the flap still in its lower half where `|γ| ≤ c`, i.e. within `asin(c·2L/(3g))`
+//! of hanging: 6.5° with the defaults), with the gravity term of a uniform plate
 //! of length `L` hinged at one edge, `γ(φ) = (3/(2L))·((along(φ) × g)·a)`
 //! (`= −(3g/(2L))·sin φ` for vertical gravity; independent of the plate's
 //! inertia, which only sets how hard a ball can spin it). Per tick the
 //! gravity term is applied to `ω` at the start (semi-implicit Euler), then
-//! the damping is integrated exactly over the segment: the per-tick advance
+//! the friction, then the damping is integrated exactly over the segment: the per-tick advance
 //! is `ω·(1 − e^{−d·dt})/d`. Without gravity the flap turns exactly `ω₀/d`
 //! in total (geometric series); with gravity, a fast spin turns `≈ ω₀/d`
 //! (the gravity torque averages out over a revolution: `ω₀/d` is the
 //! high-speed limit) until it can no longer go over the top
-//! (`ω² < 4·3g/(2L)` at the bottom, ≈ 46 rad/s for 28 mm), then it swings
-//! and settles hanging (`φ ≡ 0 mod 2π`), ready for the next ball. Within a
+//! (`ω² < 4·3g/(2L)` at the bottom, ≈ 46 rad/s for 28 mm; friction lowers
+//! the total by a term that grows only like `ln ω₀`), then it swings and
+//! settles hanging (`φ ≡ 0 mod 2π`), ready for the next ball. Within a
 //! tick the flap moves at the constant mean rate of the segment (the pose
 //! is linear in `t`, as the seam asks); an impulse at `t` changes the
 //! instantaneous `ω` by `((p − c) × J)·a / I` and re-predicts the rest of the
@@ -42,6 +45,8 @@ pub(crate) struct Spinner {
     pub thickness: f32,
     pub inertia: f32,
     pub damping: f32,
+    /// Pivot friction (rad/s², Coulomb, with stiction).
+    pub friction: f32,
     /// Gravity (m/s², solver frame) for the restoring torque.
     pub gravity: Vec3,
     /// Committed angle (unwrapped, rad) and angular velocity.
@@ -87,6 +92,7 @@ impl Spinner {
             thickness: 0.002,
             inertia: 1.0e-6,
             damping: 1.0,
+            friction: 0.0,
             gravity: Vec3::new(0.0, 0.0, -9.81),
             angle: 0.0,
             omega: 0.0,
@@ -122,7 +128,21 @@ impl Spinner {
 
     pub fn begin_tick(&mut self, dt: f32) {
         self.dt = dt;
-        let omega = self.omega + self.gravity_alpha(self.angle) * dt;
+        let mut omega = self.omega + self.gravity_alpha(self.angle) * dt;
+        // Pivot friction: decelerates by `friction·dt`, and holds a flap
+        // whose gravity torque it can balance (stiction).
+        let f = self.friction * dt;
+        omega = if omega > f {
+            omega - f
+        } else if omega < -f {
+            omega + f
+        } else if libm::cosf(self.angle) > 0.0 {
+            // Stiction holds a flap in its lower half only; near the
+            // (unstable) upright position gravity takes it over.
+            0.0
+        } else {
+            omega
+        };
         self.start_segment(0.0, self.angle, omega);
     }
 

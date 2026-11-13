@@ -234,6 +234,7 @@ impl Default for MechDefaults {
                 thickness: 0.002,
                 inertia: 8.0e-7,
                 damping: 0.8,
+                friction: 60.0,
             },
             vuk: VukDefaults {
                 radius: 0.012,
@@ -327,6 +328,15 @@ pub struct SpinnerDefaults {
     pub inertia: f32,
     /// Spin-down rate d (dω/dt = −d·ω), 1/s.
     pub damping: f32,
+    /// Pivot (Coulomb) friction as an angular deceleration, rad/s²; also
+    /// the static friction that holds a nearly hanging flap. Optional key
+    /// (default 60).
+    #[serde(default = "default_spinner_friction")]
+    pub friction: f32,
+}
+
+fn default_spinner_friction() -> f32 {
+    60.0
 }
 
 /// Vertical up-kicker scoop (`[mechs.vuk]`).
