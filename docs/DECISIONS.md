@@ -761,3 +761,8 @@ The earlier acceptance of mouth-centre cast cost above 2× covers every cast tha
 - **Construction cost** grows only for these narrow rings (table and comparison points up to 64 per segment, quadratic in their number); guides that are not end-limited build no table, as before.
 - `END_BAND` documented as a parameter distance; any width is safe (the end term only lowers the radius).
 **Rationale:** review round 1 blocker — dropping the table made a ball crawl along the whole wall of a C whose opening is narrower than half a segment.
+
+## Orchestrator — 2.1 B7 fix round 2 rulings
+
+- **Construction cost is bounded:** `GuideCurve::new` for any level guide must stay within 2× the pre-fix time + 2 ms, and any guide of ≤ 2 000 segments must build in ≤ 50 ms in release, whatever its gap (tables are untrusted, D25).
+- **No crawl at nearly-closed level guides:** a level guide whose two open ends are so close that no tangent-ball table can be built (opening below ~1/32 of the through-point spacing) is rejected by `GuideCurve::new`; authors close the guide or open the gap. pin_assets keeps snapping ends within 1e-6 m closed.
