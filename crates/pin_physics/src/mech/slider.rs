@@ -311,6 +311,11 @@ mod tests {
         s.apply_impulse(5e-4, Vec3::Y);
         s.end_tick(1e-3);
         assert!((s.x + 0.03).abs() < 1e-6);
+        // The committed velocity is the real (hand) motion.
+        assert!((s.v + 30.0).abs() < 1e-3);
+        // Held still for a tick: at rest.
+        s.begin_tick(1e-3);
+        s.end_tick(1e-3);
         assert_eq!(s.v, 0.0);
         // Released: the spring drives it forward to the rest stop.
         s.hand = s.hi;
