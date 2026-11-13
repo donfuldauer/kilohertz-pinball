@@ -397,17 +397,27 @@ pub enum GuideCast {
 /// and is collided with by plain conservative advancement, which is slow for
 /// a ball sliding along it.
 ///
-/// A curve that rises or falls is accepted only if its plan view (the curve
-/// seen from above) is simple enough for a ball to slide along the wall at
-/// full speed: a plan-view reach of at least 20 mm, i.e. no bend tighter
-/// than about 22 mm radius and no stretch that comes back onto or within
-/// about 44 mm of another one. Helices, loops of more than one turn,
-/// hairpins, crossings and vertical runs are rejected by
-/// [`GuideCurve::new`] with [`SplineError::SlopedGuidePlanView`]; helical
-/// ramps are wireforms. The wall of an accepted sloped guide is a strip of
-/// the vertical cylinder over its plan view: beside the wall one plan-view
-/// query gives the exact closest point, and the sphere cast uses the plan
-/// view's reach, so such a guide costs about the same as a level one.
+/// A curve that rises or falls is accepted only if a ball can slide along
+/// the wall, and ride or skim its top and bottom edges, at full speed: the
+/// wall (as a set in space) must have a reach of at least 20 mm. In
+/// practice its plan view (the curve seen from above) may not bend tighter
+/// than about 22 mm radius — about 30 mm for a plain arc, because a spline
+/// bends about a quarter tighter than the arc near its free ends — nor come
+/// back onto or within about 44 mm of another stretch, and the curve may not
+/// bend up or down tighter than about 22 mm (the edges are copies of it).
+/// Helices, loops of more than one turn, hairpins, crossings, vertical runs
+/// and sharply rippled walls are rejected by [`GuideCurve::new`] with
+/// [`SplineError::SlopedGuidePlanView`]; helical ramps are wireforms. The
+/// rule does not depend on the wall height.
+///
+/// The wall of an accepted sloped guide is a strip of the vertical cylinder
+/// over its plan view: beside the wall one plan-view query gives the exact
+/// closest point; above or below an edge a short local search from there
+/// does (a stationary point closer than the reach is the nearest point);
+/// and the sphere cast uses the reach of the wall and of the plan view. Such
+/// a guide costs about the same as a level one, beside the wall and at its
+/// edges. A ball wider than the reach (the 79 mm XL ball on tight guides)
+/// still collides exactly but slides slowly.
 ///
 /// For every guide the through-points must be closer together than the
 /// smallest radius of curvature (and roughly evenly spaced, see
@@ -418,10 +428,11 @@ pub struct GuideCurve {
     height: f32,
     /// Z of the curve if every control point has the same Z.
     level_z: Option<f32>,
-    /// Conservative estimate of the wall's reach: within this distance of the
-    /// wall the nearest wall point is unique, so the distance function is
-    /// smooth with second derivatives bounded below by `-1 / (reach - d)`.
-    /// For a non-level curve this is the reach of the plan view, at least
+    /// Conservative estimate of the wall's reach (as a set in space): within
+    /// this distance of the wall the nearest wall point is unique, and any
+    /// wall point closer than this at which the distance is stationary is
+    /// the nearest one. For a level curve the curve's own reach; for a
+    /// non-level one [`wall_reach`] (plan view and edges), at least
     /// [`MIN_SLOPED_GUIDE_REACH`]. Zero for a level curve without reach
     /// (one that touches or crosses itself).
     reach: f32,
@@ -436,6 +447,8 @@ struct Sloped {
     /// which is the projection of the curve because the interpolation is
     /// linear in the points.
     flat: CubicSpline,
+    /// Reach of the plan view (the vertical cylinder over it has the same).
+    plan_reach: f32,
     /// Bounding sphere (centre, radius) of every segment of the curve.
     bounds: Vec<(Vec3, f32)>,
 }
@@ -443,12 +456,13 @@ struct Sloped {
 /// (squared distance, curve parameter, wall point) of a closest-point search.
 type Best = (f32, f32, Vec3);
 
-/// Smallest plan-view reach of a guide that rises or falls (metres, after
-/// the 0.9 sampling margin of the estimate): its plan view may not bend
-/// tighter than about 22 mm radius, and two stretches of it may not come
-/// closer than about 44 mm unless the curve between them is that short.
-/// Below this a pinball (radius up to 16 mm) could not use the reach bound
-/// of the sphere cast and would crawl along the wall.
+/// Smallest reach of a guide wall that rises or falls (metres, after the
+/// 0.9 sampling margin of the estimate), for its plan view and for the wall
+/// with its edges ([`wall_reach`]): no bend tighter than about 22 mm radius,
+/// in plan or up and down, and no two stretches of the plan view closer
+/// than about 44 mm unless the curve between them is that short. Below this
+/// a pinball (radius up to 16 mm) could not use the reach bound of the
+/// sphere cast and would crawl along the wall or its edges.
 const MIN_SLOPED_GUIDE_REACH: f32 = 0.02;
 
 /// Whether a plan-view curve comes back onto itself: two points whose
@@ -545,52 +559,77 @@ fn plan_view(spline: &CubicSpline) -> Option<CubicSpline> {
     }
 }
 
-/// Reach of a sampled curve (Federer): the infimum over point pairs of
-/// `|y - x|² / (2 · dist(y - x, tangent line at x))`, which accounts for both
-/// curvature and distinct stretches of the curve approaching each other.
-fn curve_reach(spline: &CubicSpline) -> f32 {
-    const MAX_REACH: f64 = 1.0e3;
-    let samples = spline.samples();
-    // Curvature, bounded over every sample interval (not just at the
-    // samples): κ <= |C''| / |C'|². C'' is linear per segment, so its largest
-    // norm on an interval is at an end; |C'| cannot fall below the smaller
-    // end value by more than half the interval times that norm.
+/// Upper bound of the curvature of `spline` over every sample interval (not
+/// just at the samples): `κ ≤ |C''| / |C'|²`. `C''` is linear per segment,
+/// so its largest norm on an interval is at an end; `|C'|` cannot fall below
+/// the smaller end value by more than half the interval times that norm.
+/// `None` at a cusp (`|C'|` may vanish).
+fn curvature_bound(spline: &CubicSpline) -> Option<f64> {
     let k = SAMPLES_PER_SEGMENT;
     let n = spline.segment_count();
     let h = 1.0 / k as f64;
-    let mut reach = MAX_REACH;
     let derivatives = |index: usize| {
         let i = (index / k).min(n - 1);
         let s = (index - i * k) as f32 / k as f32;
         let (_, d1, d2) = spline.eval(i, s);
         (d1.as_dvec3().length(), d2.as_dvec3().length())
     };
+    let mut curvature = 0.0f64;
     let mut left = derivatives(0);
-    for index in 1..samples.len() {
+    for index in 1..spline.samples().len() {
         let right = derivatives(index);
         let bend = left.1.max(right.1);
         let slowest = left.0.min(right.0) - 0.5 * h * bend;
         if slowest <= 1.0e-12 {
-            return 0.0; // cusp
+            return None;
         }
-        let curvature = bend / (slowest * slowest);
-        if curvature * reach > 1.0 {
-            reach = 1.0 / curvature;
-        }
+        curvature = curvature.max(bend / (slowest * slowest));
         left = right;
+    }
+    Some(curvature)
+}
+
+/// Reach of a sampled curve (Federer): the infimum over point pairs of
+/// `|y - x|² / (2 · dist(y - x, tangent line at x))`, which accounts for both
+/// curvature and distinct stretches of the curve approaching each other.
+fn curve_reach(spline: &CubicSpline, half_line_ends: bool) -> f32 {
+    const MAX_REACH: f64 = 1.0e3;
+    let samples = spline.samples();
+    let Some(curvature) = curvature_bound(spline) else {
+        return 0.0; // cusp
+    };
+    let mut reach = MAX_REACH;
+    if curvature * reach > 1.0 {
+        reach = 1.0 / curvature;
     }
     // Pairs, on every fourth sample (plus the last).
     let stride = 4;
     let count = (samples.len() - 1) / stride + 1;
+    let last = samples.len() - 1;
     let at = |j: usize| {
-        let sample = &samples[(j * stride).min(samples.len() - 1)];
+        let sample = &samples[(j * stride).min(last)];
         (
             sample.point.as_dvec3(),
             sample.tangent.as_dvec3().normalize(),
         )
     };
+    let open = half_line_ends && !spline.is_closed();
     for a in 0..count {
         let (x, tangent) = at(a);
+        // At an end of an open curve the tangent cone is the half-line into
+        // the curve, not the whole tangent line: a point behind the end is
+        // at its full distance from it (Federer's formula with Tan(A, x)).
+        // Level guides keep 2.1's estimate with the whole line (bit for bit
+        // the behaviour 2.1's tests pin down); it is optimistic only behind
+        // an end, where another stretch of the curve comes back within
+        // twice the reach.
+        let end_direction = if open && a == 0 {
+            Some(tangent)
+        } else if open && (a * stride).min(last) == last {
+            Some(-tangent)
+        } else {
+            None
+        };
         for b in 0..count {
             if a == b {
                 continue;
@@ -606,7 +645,10 @@ fn curve_reach(spline: &CubicSpline) -> f32 {
                 }
                 continue;
             }
-            let off = (w - tangent * w.dot(tangent)).length();
+            let off = match end_direction {
+                Some(inward) if w.dot(inward) < 0.0 => w2.sqrt(),
+                _ => (w - tangent * w.dot(tangent)).length(),
+            };
             if 2.0 * off * reach > w2 {
                 reach = w2 / (2.0 * off);
             }
@@ -614,6 +656,144 @@ fn curve_reach(spline: &CubicSpline) -> f32 {
     }
     // Margin for what the sampling cannot see.
     (0.9 * reach) as f32
+}
+
+/// Reach of a rising or falling wall (as a set in space): at least
+/// `min(ρ_P, ρ_E)`, `ρ_P` the plan view's reach ([`curve_reach`]) and `ρ_E`
+/// the edge term below. The result does not depend on the wall height.
+///
+/// Federer 1959, Thm 4.18: for a closed set `W`, `reach(W) = inf |w|² /
+/// (2 dist(w, Tan(W, x)))` over pairs `x ≠ y` of `W`, `w = y − x`. The wall
+/// lies on the vertical cylinder over the plan view, so `Tan(W, x)` lies in
+/// the cylinder's tangent plane, whose normal `n` is horizontal:
+/// `dist(w, Tan)² = (w · n)² + dist(w', cone)²`, `w'` the in-plane part of
+/// `w` and `cone` the in-plane tangent cone.
+/// * `x` inside the wall or on its vertical end edges: the cone is the
+///   plane, or the half-plane on the curve's side of the end; with
+///   `w · n = w_h · n` and `|w| ≥ |w_h|` the pair is no worse than the plan
+///   view's pair `(x_h, y_h)` with the line (half-line at an end, which
+///   [`curve_reach`] uses) as tangent cone: at least `ρ_P`.
+/// * `x` on the top or bottom edge: the cone is the half-plane on the
+///   wall's side of the edge tangent, so `dist(w', cone) = max(0, w · m)`,
+///   `m` the in-plane unit vector perpendicular to the edge pointing away
+///   from the wall. At the four corners the cone is a convex wedge; a `w'`
+///   on the curve's side of the end is as far from it as from the edge
+///   half-plane, and any other `w` points behind the plan view's end, where
+///   `dist(w, Tan) ≤ |w|` and the ratio is at least `|w_h| / 2 ≥ ρ_P`.
+///
+/// The edge term `1/ρ_E = sup 2 √((w·n)² + max(0, w·m)²) / |w|²` over `x` on
+/// an edge has two parts, as in [`curve_reach`]:
+/// * Nearby pairs: along the edge the limit is the edge's curvature, whose
+///   components along `n` and `m` make up the whole curvature of `C` (the
+///   edges are translates of `C`), bounded on every sample interval by
+///   [`curvature_bound`]; from other directions into the wall `w · m < 0`
+///   and the limit is the plan view's (`ρ_P`).
+/// * Distant pairs on every fourth sample (`x`) and every second sample
+///   (`y`), 0.9 margin. With `y = C(t') + λZ` relative to the edge,
+///   `D = C(t') − C(t)`, the two terms are bounded separately over the
+///   height (`λ ≤ 0` below a top edge, `λ ≥ 0` above a bottom edge, without
+///   limit, which covers walls of every height):
+///   `2|D_h · n| / (|D_h|² + (D_z + λ)²)` is largest at `λ = −D_z` or `0`,
+///   and `F(λ) = (a + bλ) / (|D_h|² + (D_z + λ)²)`, `a = D · m`, `b = m · Z`,
+///   at `0` or a stationary point, a root of
+///   `b λ² + 2 a λ + (2 a D_z − b |D|²) = 0` (discriminant
+///   `(a − b D_z)² + b² |D_h|² ≥ 0`).
+///
+/// Returns 0 at a cusp.
+fn wall_reach(spline: &CubicSpline, plan_reach: f32) -> f32 {
+    let Some(curvature) = curvature_bound(spline) else {
+        return 0.0;
+    };
+    let samples = spline.samples();
+    let last = samples.len() - 1;
+    let mut far = 0.0f64;
+    for xa in (0..=last).step_by(4).chain(core::iter::once(last)) {
+        let x = samples[xa].point.as_dvec3();
+        let tangent = samples[xa].tangent.as_dvec3().normalize();
+        let flat = DVec3::new(tangent.x, tangent.y, 0.0).length();
+        if flat <= 1.0e-9 {
+            return 0.0;
+        }
+        let up = (DVec3::Z - tangent * tangent.z) / flat;
+        let normal = DVec3::new(-tangent.y, tangent.x, 0.0) / flat;
+        for yb in (0..=last).step_by(2) {
+            let d = samples[yb].point.as_dvec3() - x;
+            let horizontal = d.x * d.x + d.y * d.y;
+            // The same point (or the seam of a closed curve), or a pair that
+            // cannot matter: both terms are at most 2 / |w| ≤ 2 / |D_h|.
+            if horizontal <= 1.0e-16
+                || (far > 0.0 && 2.0 * core::f64::consts::SQRT_2 <= far * horizontal.sqrt())
+            {
+                continue;
+            }
+            let e = d.z;
+            let across = d.dot(normal).abs();
+            for sign in [1.0f64, -1.0] {
+                let allowed = |lambda: f64| lambda * sign <= 0.0;
+                let lowest = if allowed(-e) {
+                    horizontal
+                } else {
+                    horizontal + e * e
+                };
+                let side = 2.0 * across / lowest;
+                let m = up * sign;
+                let (a, b) = (d.dot(m), m.z);
+                let value = |lambda: f64| {
+                    let rise = e + lambda;
+                    (a + b * lambda) / (horizontal + rise * rise)
+                };
+                let mut out = value(0.0);
+                let disc = ((a - b * e) * (a - b * e) + b * b * horizontal).sqrt();
+                if b.abs() > 1.0e-12 {
+                    for root in [(-a + disc) / b, (-a - disc) / b] {
+                        if root.is_finite() && allowed(root) {
+                            out = out.max(value(root));
+                        }
+                    }
+                }
+                let off = 2.0 * out.max(0.0);
+                far = far.max((side * side + off * off).sqrt());
+            }
+        }
+    }
+    let inverse = curvature.max(far / 0.9);
+    let edge = if inverse > 0.0 {
+        (1.0 / inverse) as f32
+    } else {
+        f32::INFINITY
+    };
+    plan_reach.min(edge)
+}
+
+/// Earliest time at which a sphere moving with `velocity` could have its gap
+/// to a set of reach at least `reach` shrink by `drop`, given its distance
+/// `distance < reach` to the set and the rate `rate` (positive: away) at which
+/// that distance changes now.
+///
+/// Proof: let `a` be the nearest point of the set, `n` the unit vector from
+/// `a` to the centre `p`. For every `s < reach` the point `a + s n` has `a`
+/// as its nearest point (Federer 1959, Thm 4.8 (12)), so the open ball of
+/// radius `s` around it misses the set; their union is the open ball of
+/// radius `reach` around `c = a + reach · n`. Hence, everywhere,
+/// `distance(x) ≥ reach − |x − c|`, with equality at `p`. Along
+/// `x(τ) = p + vτ`, with `R = reach − distance`, `|x − c|² = R² − 2 R rate τ +
+/// |v|² τ²`; the distance stays above `distance − drop` while
+/// `|x − c| ≤ R + drop`, i.e. up to the positive root of
+/// `|v|² τ² − 2 R rate τ − drop (2R + drop) = 0`. No other condition: the
+/// bound holds for all `τ`.
+fn rolling_ball_time(distance: f32, reach: f32, rate: f32, drop: f32, speed: f32) -> f32 {
+    let r = reach - distance;
+    if !(r > 0.0 && speed > 0.0 && drop >= 0.0) {
+        return 0.0;
+    }
+    let x = drop * (2.0 * r + drop);
+    let disc = (r * r * rate * rate + speed * speed * x).sqrt();
+    // Written so that neither sign of `rate` cancels.
+    if rate < 0.0 {
+        x / (disc - r * rate)
+    } else {
+        (r * rate + disc) / (speed * speed)
+    }
 }
 
 impl GuideCurve {
@@ -643,17 +823,27 @@ impl GuideCurve {
             .iter()
             .all(|seg| seg.p.iter().all(|p| (p.z - z0).abs() <= 1.0e-6));
         let (sloped, reach) = if level {
-            (None, curve_reach(&spline))
+            (None, curve_reach(&spline, false))
         } else {
             // A rising or falling guide needs a plan view that a ball can
             // slide along at full speed: see `MIN_SLOPED_GUIDE_REACH`.
             let flat = plan_view(&spline).ok_or(SplineError::SlopedGuidePlanView)?;
-            let reach = curve_reach(&flat);
-            if reach < MIN_SLOPED_GUIDE_REACH || plan_view_folds(&flat, spline.is_closed()) {
+            let plan_reach = curve_reach(&flat, true);
+            if plan_reach < MIN_SLOPED_GUIDE_REACH || plan_view_folds(&flat, spline.is_closed()) {
+                return Err(SplineError::SlopedGuidePlanView);
+            }
+            // The edges, too, must leave a ball room to ride or skim them.
+            let reach = wall_reach(&spline, plan_reach);
+            if reach < MIN_SLOPED_GUIDE_REACH {
                 return Err(SplineError::SlopedGuidePlanView);
             }
             let bounds = segment_bounds(&spline);
-            (Some(Sloped { flat, bounds }), reach)
+            let sloped = Sloped {
+                flat,
+                plan_reach,
+                bounds,
+            };
+            (Some(sloped), reach)
         };
         Ok(Self {
             spline,
@@ -682,16 +872,28 @@ impl GuideCurve {
         self.level_z.is_some()
     }
 
+    /// The conservative reach estimate of the wall (metres) that the sphere
+    /// cast and the closest-point query rely on: within it the nearest wall
+    /// point is unique. Zero for a level curve that touches or crosses
+    /// itself. For tests and diagnostics.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn reach(&self) -> f32 {
+        self.reach
+    }
+
     /// Closest point of the wall to `p`; `t` is the curve parameter below the
     /// returned point. Never allocates.
     ///
     /// Global for level curves (one spline query) and for rising or falling
-    /// curves: one query of the plan view when `p` is beside the wall, and
-    /// otherwise (above or below the wall's edge) a search of the curve's
-    /// segments, pruned by their bounding spheres. In both cases a minimum
-    /// can only be missed where the curve bends on the scale of a sample
-    /// interval (1/16 of a segment; 1/64 in the edge search): keep the
-    /// through-point spacing below the smallest radius of curvature.
+    /// curves: one query of the plan view when `p` is beside the wall;
+    /// otherwise (above or below the wall's edge) a local search from there,
+    /// exact whenever `p` is within the wall's reach (at least 20 mm), and
+    /// beyond it a search of the curve's segments, pruned by their bounding
+    /// spheres. A minimum can only be missed where the curve bends on the
+    /// scale of a sample interval (1/16 of a segment; 1/64 in the segment
+    /// search): keep the through-point spacing below the smallest radius of
+    /// curvature.
     #[must_use]
     pub fn closest_point(&self, p: Vec3, seed_t: Option<f32>) -> ClosestPoint {
         if !p.is_finite() {
@@ -735,7 +937,11 @@ impl GuideCurve {
     /// view's closest point (beside the wall, the usual case) that bound is
     /// attained there, and one plan-view query answers the question.
     ///
-    /// Otherwise (`p` above or below the wall's edge) the curve is searched:
+    /// Otherwise (`p` above or below the wall's edge) the nearest point is
+    /// usually a few millimetres along the curve: a stationary point of the
+    /// distance found from the plan view's parameter is the global nearest
+    /// point if it is closer than the wall's reach ([`Self::stationary_point`]).
+    /// Only beyond the reach is the curve searched:
     /// the distance from `p` to the wall's vertical line over `C(t)` is a C¹
     /// function of `t` whose derivative has the sign of `(q(t) − p) · C'(t)`,
     /// `q(t)` being the closest point of that line. Segments whose bounding
@@ -759,10 +965,26 @@ impl GuideCurve {
         let mut best: Best = (d2, plan.t, q);
         let beside = p.z >= c.z && p.z <= c.z + self.height;
         if !beside {
-            for (i, (center, radius)) in sloped.bounds.iter().enumerate() {
-                let floor = self.wall_point(*center, p).1.sqrt() - radius;
-                if floor < best.0.sqrt() - 1.0e-7 {
-                    self.search_segment(i, p, &mut best);
+            // Above or below the edge: the nearest point is usually a few
+            // millimetres along the curve from the plan view's. A wall point
+            // closer than the reach at which the distance is stationary is
+            // the nearest one (see `stationary_point`), so one local search
+            // settles it; only farther points need the global search.
+            let global = match self.stationary_point(p, plan.t) {
+                Some((t, q, d2)) => {
+                    if d2 < best.0 {
+                        best = (d2, t, q);
+                    }
+                    d2.sqrt() < self.reach
+                }
+                None => false,
+            };
+            if !global {
+                for (i, (center, radius)) in sloped.bounds.iter().enumerate() {
+                    let floor = self.wall_point(*center, p).1.sqrt() - radius;
+                    if floor < best.0.sqrt() - 1.0e-7 {
+                        self.search_segment(i, p, &mut best);
+                    }
                 }
             }
         }
@@ -772,6 +994,98 @@ impl GuideCurve {
             distance: best.0.sqrt(),
         };
         (cp, plan)
+    }
+
+    /// A wall point at which the distance to `p` is stationary, found by a
+    /// safeguarded Newton iteration on the parameter from `t0`: (parameter,
+    /// wall point, squared distance), or `None` if it does not converge.
+    ///
+    /// The distance from `p` to the wall's vertical line over `C(t)` is a C¹
+    /// function `φ(t)` with `φ'(t) ∝ g(t) = (q(t) − p) · C'(t)`, `q(t)` the
+    /// line's (height-clamped) closest point. At a root of `g` (or at an end
+    /// of an open curve where `g` points into it) `p − q` is in the normal
+    /// cone of the wall at `q`: perpendicular to the cylinder's tangent
+    /// plane inside the wall, and additionally pointing away from the wall
+    /// across an edge or end (first-order optimality). By Federer 1959,
+    /// Thm 4.8 (12), a point `q + v` with `v` normal at `q` and `|v|` below
+    /// the reach has `q` as its unique nearest point, so if the distance
+    /// found is below `self.reach` it is the global minimum, whichever
+    /// stationary point (even a local maximum) the iteration lands on.
+    fn stationary_point(&self, p: Vec3, t0: f32) -> Option<(f32, Vec3, f32)> {
+        let spline = &self.spline;
+        let max_t = spline.max_t();
+        let closed = spline.is_closed();
+        // (parameter in range, wall point, squared distance, g, φ''/2).
+        let eval = |t: f32| {
+            let t = if closed {
+                t.rem_euclid(max_t)
+            } else {
+                t.clamp(0.0, max_t)
+            };
+            let (i, s) = spline.locate(t);
+            let (c, d1, d2) = spline.eval(i, s);
+            let rise = p.z - c.z;
+            let u = rise.clamp(0.0, self.height);
+            let q = Vec3::new(c.x, c.y, c.z + u);
+            let e = q - p;
+            // Off the edges the height follows `p` and only the horizontal
+            // part of the curve moves the line's closest point.
+            let speed2 = if rise > 0.0 && rise < self.height {
+                d1.x * d1.x + d1.y * d1.y
+            } else {
+                d1.length_squared()
+            };
+            (t, q, e.length_squared(), e.dot(d1), speed2 + e.dot(d2))
+        };
+        let mut t = t0;
+        let mut at = eval(t);
+        // Parameters seen with g < 0 and with g > 0: once both exist they
+        // bracket a root, and every later iterate stays between them.
+        let (mut below, mut above): (Option<f32>, Option<f32>) = (None, None);
+        for _ in 0..32 {
+            let (_, q, d2, g, curvature) = at;
+            let done = Some((at.0, q, d2));
+            if g == 0.0 {
+                return done;
+            }
+            if !closed && ((t <= 0.0 && g > 0.0) || (t >= max_t && g < 0.0)) {
+                return done; // minimum at an end of the wall
+            }
+            if g < 0.0 {
+                below = Some(t);
+            } else {
+                above = Some(t);
+            }
+            let mut next = if curvature > 0.0 {
+                t - (g / curvature).clamp(-0.5, 0.5)
+            } else if g > 0.0 {
+                t - 0.25
+            } else {
+                t + 0.25
+            };
+            if let (Some(a), Some(b)) = (below, above) {
+                let (lo, hi) = (a.min(b), a.max(b));
+                if !(next > lo && next < hi) {
+                    next = 0.5 * (lo + hi);
+                    if !(next > lo && next < hi) {
+                        return done; // bracket at the parameter's resolution
+                    }
+                }
+            }
+            if !closed {
+                next = next.clamp(0.0, max_t);
+            }
+            let small = (next - t).abs() <= 4.0 * f32::EPSILON * t.abs().max(1.0);
+            if next == t {
+                return done;
+            }
+            t = next;
+            at = eval(t);
+            if small {
+                return Some((at.0, at.1, at.2));
+            }
+        }
+        None
     }
 
     /// Searches segment `i` of the curve for a wall point closer to `p`
@@ -886,8 +1200,12 @@ impl GuideCurve {
     /// `ρ`, the gap's second time derivative is at least `-|v|² / (ρ - d)`,
     /// which lets a sphere running alongside the wall advance millimetres
     /// instead of micrometres per step. For a rising or falling curve the
-    /// second bound is taken on the horizontal gap to the vertical cylinder
-    /// over the curve's plan view, which the wall gap can never undercut.
+    /// second bound is the exact "rolling ball" form of it: the wall stays
+    /// outside the ball of radius `ρ` touching it at the nearest point, both
+    /// beside the wall and above or below its edges (riding or skimming
+    /// them); and a third bound is taken on the horizontal gap to the
+    /// vertical cylinder over the plan view, which the wall gap can never
+    /// undercut and whose reach is the plan view's.
     ///
     /// A sphere that is within 10 µm of the wall and not moving into it is
     /// sliding: it may sink to a gap of -10 µm, a fixed limit that does not
@@ -947,9 +1265,28 @@ impl GuideCurve {
             let (cp, plan) = match &self.sloped {
                 None => (self.closest_point(p, seed), None),
                 Some(sloped) => {
-                    let (cp, plan) = self.closest_point_sloped(sloped, p, flat_seed);
-                    flat_seed = Some(plan.t);
-                    (cp, Some(plan))
+                    // After the first step the nearest point is a short way
+                    // along the curve from the last one: a stationary point
+                    // found from there that is closer than the reach is the
+                    // global nearest point (see `stationary_point`), and the
+                    // plan-view query (needed only for bound 3, which then
+                    // adds little) is skipped.
+                    let quick = seed
+                        .filter(|_| step > 0)
+                        .and_then(|t0| self.stationary_point(p, t0))
+                        .filter(|&(_, _, d2)| d2.sqrt() < self.reach);
+                    if let Some((t, point, d2)) = quick {
+                        let cp = ClosestPoint {
+                            t,
+                            point,
+                            distance: d2.sqrt(),
+                        };
+                        (cp, None)
+                    } else {
+                        let (cp, plan) = self.closest_point_sloped(sloped, p, flat_seed);
+                        flat_seed = Some(plan.t);
+                        (cp, Some(plan))
+                    }
                 }
             };
             seed = Some(cp.t);
@@ -982,47 +1319,71 @@ impl GuideCurve {
             let drop = gap - floor; // >= 0
             // Bound 1: |d(gap)/dt| <= speed.
             let mut dt = drop / speed;
-            // Bound 2: gap(τ) >= gap + rate τ - ½ K τ², valid while the
-            // distance stays below `cap` < reach. For a level curve this is
-            // the wall distance itself. A rising or falling wall is a strip
-            // of the vertical cylinder over its plan view, so its gap is at
-            // least the horizontal gap to that cylinder, whose reach is the
-            // plan view's: the bound is applied to the horizontal gap (which
-            // equals the wall gap whenever the ball is beside the wall).
-            let beside = match plan {
-                None => Some((cp.distance, rate, drop, speed)),
-                Some(fc) => {
-                    let q = Vec3::new(p.x, p.y, 0.0);
-                    let flat_drop = fc.distance - radius - floor;
-                    (fc.distance > 1.0e-9 && flat_drop > 0.0).then(|| {
-                        let flat_rate = (q - fc.point).dot(velocity) / fc.distance;
-                        // Only the horizontal motion changes this gap.
-                        (fc.distance, flat_rate, flat_drop, plan_speed)
-                    })
+            match &self.sloped {
+                Some(sloped) => {
+                    // Bound 2: within the wall's reach the wall stays outside
+                    // the ball of radius `reach` that touches it at the
+                    // nearest point on the sphere's side (see
+                    // `rolling_ball_time`), which lets a sphere running
+                    // alongside the wall, or riding or skimming an edge,
+                    // advance millimetres instead of micrometres per step.
+                    if cp.distance < self.reach {
+                        dt = dt.max(rolling_ball_time(
+                            cp.distance,
+                            self.reach,
+                            rate,
+                            drop,
+                            speed,
+                        ));
+                    }
+                    // Bound 3: the wall is a strip of the vertical cylinder
+                    // over its plan view, so its gap is at least the
+                    // horizontal gap to that cylinder, whose reach is the
+                    // plan view's (usually larger than the wall's), and
+                    // which only the horizontal motion changes. Beside the
+                    // wall the two gaps are equal.
+                    if let Some(fc) = plan
+                        && fc.distance - radius - floor > 0.0
+                        && fc.distance > 1.0e-9
+                    {
+                        let flat_drop = fc.distance - radius - floor;
+                        if plan_speed <= 0.0 {
+                            // Moving straight up or down: the horizontal gap
+                            // does not change at all.
+                            return (None, step + 1);
+                        }
+                        if fc.distance < sloped.plan_reach {
+                            let q = Vec3::new(p.x, p.y, 0.0);
+                            let flat_rate = (q - fc.point).dot(velocity) / fc.distance;
+                            dt = dt.max(rolling_ball_time(
+                                fc.distance,
+                                sloped.plan_reach,
+                                flat_rate,
+                                flat_drop,
+                                plan_speed,
+                            ));
+                        }
+                    }
                 }
-            };
-            if let Some((distance, rate, drop, speed)) = beside
-                && distance < 0.9 * self.reach
-            {
-                if speed <= 0.0 {
-                    // Moving straight up or down beside a sloped wall: the
-                    // horizontal gap does not change at all.
-                    return (None, step + 1);
-                }
-                let cap = 0.5 * (distance + self.reach);
-                let k = speed * speed / (self.reach - cap);
-                // Positive root of drop + rate τ - ½ K τ² = 0.
-                // (Written so that neither sign of `rate` cancels.)
-                let disc = (rate * rate + 2.0 * k * drop).sqrt();
-                let root = if rate < 0.0 {
-                    2.0 * drop / (disc - rate)
-                } else {
-                    (rate + disc) / k
-                };
-                let within = (cap - distance) / speed;
-                let quadratic = root.min(within);
-                if quadratic > dt {
-                    dt = quadratic;
+                None => {
+                    // Level curve (unchanged since 2.1): gap(τ) >= gap +
+                    // rate τ - ½ K τ², valid while the distance stays below
+                    // `cap` < reach.
+                    let distance = cp.distance;
+                    if distance < 0.9 * self.reach {
+                        let cap = 0.5 * (distance + self.reach);
+                        let k = speed * speed / (self.reach - cap);
+                        // Positive root of drop + rate τ - ½ K τ² = 0.
+                        // (Written so that neither sign of `rate` cancels.)
+                        let disc = (rate * rate + 2.0 * k * drop).sqrt();
+                        let root = if rate < 0.0 {
+                            2.0 * drop / (disc - rate)
+                        } else {
+                            (rate + disc) / k
+                        };
+                        let within = (cap - distance) / speed;
+                        dt = dt.max(root.min(within));
+                    }
                 }
             }
             let next = time + dt;

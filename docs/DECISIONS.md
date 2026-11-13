@@ -675,3 +675,30 @@ The final (other-model) review of 3.2 found noisy accelerating strokes (constant
 ## Orchestrator — 2.2 fix round 3: tight falling S rejected
 
 The round-3 ruling listed "the tight falling S" among shapes that must slide at full speed. Its plan view bends at 7.5 mm radius, tighter than any ball, so no reach bound applies beside it; under the same ruling's general clause (never accept a shape that would make the ball crawl) it is rejected by `GuideCurve::new` with `SplineError::SlopedGuidePlanView`. Accepted. The additive `SplineError` variant in `world/spline.rs` and the shortened rising spiral in 2.1's `tests/alloc_guard.rs` (1.24 → 0.93 turns) are accepted under the world/ amendment. pin_assets' 211 tests still pass with the new rule.
+
+## 4.5 — fix round 2 (review B1 compile cost, N7)
+
+**Decision:** `prepare` reads every function body's operator stream (wasmparser, no compilation; allocation bounded by the caps) and rejects, with `ScriptError::Load("… has N <what> (at most M)")`, any module over a limit chosen so that **every module that passes compiles in < 1 s and < 256 MB peak RSS** (release, this machine; Cranelift kept, opt level and register allocator unchanged). Measured cause of the round-2 probes: Cranelift's cost is driven by products, not counts. Loop nesting with many live locals explodes (1 024 locals: 32 nested loops 0.29 s, 96 → 0.9 s, 128 → 54 s), blocks in one function cost quadratically (≈ 0.18 µs × loops²; br_table targets into loop headers become blocks of their own: 16 384 targets → 3.5 s), locals × operators drives register allocation, each loop costs ≈ 35 µs (fuel check), and element `ref.func` expressions cost ≈ 30 µs and 6 KB each. `OptLevel::None` did not help; the single-pass allocator is documented as not production-ready, so it was not used.
+
+Final limits (`pin_script::wasm` constants; Orchestrator's values lowered where measurements required, marked ↓):
+
+| limit | value |
+|---|---|
+| binary / WAT text | 1 MiB / 4 MiB (unchanged) |
+| functions | 2 048 ↓ (10 000 took 1.1 s empty) |
+| function body | 256 KiB (unchanged) |
+| locals per function / in all | 1 024 / 65 536 |
+| operators per function / in all | 65 536 / 262 144 ↓ (1 048 576 was unreachable under the 1 MiB cap) |
+| nested blocks | 128 |
+| nested loops (new) | 32 |
+| blocks, loops and ifs in all (new) | 4 096 |
+| br_table targets per instruction / per function | 1 024 / 1 024 ↓ |
+| types; params / results per type | 256 ↓; 32 / 8 |
+| imports / exports | 64 / 256 ↓ |
+| globals, data segments, element segments, table elements | 1 000, 1 000, 1 000, 100 000 (unchanged) |
+| element items in all | 1 024 ↓ |
+| merge work Σ (params + locals) × (blocks + branches + br_table targets) (new) | 65 536 |
+| branch work Σ (blocks + branches + br_table targets)² per function (new) | 2 097 152 |
+| pressure work Σ (params + locals) × (operators + params + locals) (new) | 8 388 608 |
+
+"Branches" are `br`, `br_if`, `else` and `return`; "blocks" are `block`, `loop`, `if` (and `try`/`try_table`, which are disabled anyway). Worst-case modules at every cap, and two modules at every module-wide budget at once, are accepted (`tests/wasm_compile_cost.rs`); one over each cap is rejected. Release compile times, worst of two runs, one process per case: every single-cap worst case ≤ 0.33 s and ≤ 46 MB; everything-at-once 0.64 s / 60 MB (nested-loop variant) and 0.72 s / 44 MB (br_table variant). WAT parse errors in `Load` are cut to 256 bytes (`MAX_ERROR_BYTES`) on a character boundary (N7).

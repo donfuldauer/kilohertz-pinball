@@ -67,12 +67,13 @@ fn arc_50mm_3_to_1(s: f32) -> Vec3 {
     v(0.05 * libm::sinf(a), 0.05 - 0.05 * libm::cosf(a), 0.45 * s)
 }
 
-/// Bends of 42 mm radius, falling 150 mm with a ripple in the fall.
+/// Bends of 42 mm radius, falling 150 mm with a 5 mm ripple in the fall
+/// (its edges bend up and down at about 60 mm radius).
 fn falling_s(s: f32) -> Vec3 {
     v(
         0.5 * s,
         0.03 * libm::sinf(s * 14.0),
-        -0.15 * s + 0.02 * libm::sinf(s * 30.0),
+        -0.15 * s + 0.005 * libm::sinf(s * 30.0),
     )
 }
 
@@ -133,6 +134,16 @@ fn rejected_shapes() -> Vec<Shape> {
                 -0.15 * s + 0.02 * libm::sinf(s * 30.0),
             )
         }),
+        (
+            "S-curve falling with a 20 mm ripple (edges bend at 14 mm)",
+            |s| {
+                v(
+                    0.5 * s,
+                    0.03 * libm::sinf(s * 14.0),
+                    -0.15 * s + 0.02 * libm::sinf(s * 30.0),
+                )
+            },
+        ),
         ("vertical run", |s| {
             if s < 0.5 {
                 v(0.4 * s, 0.0, 0.0)
@@ -147,10 +158,12 @@ fn points(f: fn(f32) -> Vec3) -> Vec<Vec3> {
     (0..=60).map(|i| f(i as f32 / 60.0)).collect()
 }
 
-/// The acceptance rule of rising and falling guides: the plan view must
-/// have a reach of at least 20 mm (no bend tighter than about 22 mm, no
-/// stretch coming back onto or close to another). Level guides are not
-/// affected, and the same shapes are fine as wireforms.
+/// The acceptance rule of rising and falling guides: the wall must have a
+/// reach of at least 20 mm (plan view: no bend tighter than about 22 mm, in
+/// practice about 30 mm for a plain arc; no stretch coming back onto or
+/// close to another; top and bottom edges: no bend up or down tighter than
+/// about 22 mm). Level guides are not affected, and the same shapes are fine
+/// as wireforms.
 #[test]
 fn sloped_guides_with_unusable_plan_views_are_rejected() {
     use pin_physics::world::{SplineError, Wireform};

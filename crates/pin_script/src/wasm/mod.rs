@@ -68,15 +68,30 @@
 //!   the callback traps. Every callback, the start function and every state
 //!   hook start with a fresh budget; exhausting it traps
 //!   ([`ScriptError::BudgetExceeded`]).
-//! * Module size (checked before anything is compiled, so a hostile module
-//!   cannot make compilation take seconds or gigabytes): at most
-//!   [`MAX_MODULE_BYTES`] of binary (WAT text: at most [`MAX_WAT_BYTES`] of
-//!   text, and the binary it produces at most [`MAX_MODULE_BYTES`]), at most
-//!   [`MAX_FUNCTIONS`] defined functions, no function body larger than
-//!   [`MAX_FUNCTION_BODY_BYTES`], at most [`MAX_GLOBALS`] globals,
-//!   [`MAX_TOTAL_TABLE_ELEMENTS`] initial table elements in total and
-//!   [`MAX_SEGMENTS`] data and [`MAX_SEGMENTS`] element segments. Anything
-//!   above is [`ScriptError::Load`].
+//! * Compile cost (D25). Before anything is compiled, the module is checked
+//!   against limits chosen so that **any module that passes compiles in
+//!   under 1 s and 256 MB** (release, measured by
+//!   `tests/wasm_compile_cost.rs`; the worst accepted module takes ≈ 0.7 s).
+//!   Size: at most [`MAX_MODULE_BYTES`] of binary (WAT text: at most
+//!   [`MAX_WAT_BYTES`] of text, and the binary it produces at most
+//!   [`MAX_MODULE_BYTES`]). Counts: [`MAX_FUNCTIONS`] defined functions,
+//!   [`MAX_FUNCTION_BODY_BYTES`] per body, [`MAX_TYPES`] types of at most
+//!   [`MAX_PARAMS`] params and [`MAX_RESULTS`] results, [`MAX_IMPORTS`]
+//!   imports, [`MAX_EXPORTS`] exports, [`MAX_GLOBALS`] globals,
+//!   [`MAX_TOTAL_TABLE_ELEMENTS`] initial table elements, [`MAX_SEGMENTS`]
+//!   data and [`MAX_SEGMENTS`] element segments with [`MAX_ELEMENT_ITEMS`]
+//!   items in total. Each function body's operator stream is read (not
+//!   compiled): at most [`MAX_LOCALS_PER_FUNCTION`] locals
+//!   ([`MAX_TOTAL_LOCALS`] in all), [`MAX_OPERATORS_PER_FUNCTION`] operators
+//!   ([`MAX_OPERATORS`] in all), [`MAX_NESTING`] nested blocks of which at
+//!   most [`MAX_LOOP_NESTING`] loops, [`MAX_BLOCKS`] blocks/loops/ifs in
+//!   all, [`MAX_BR_TABLE_TARGETS`] targets per `br_table` and
+//!   [`MAX_BR_TABLE_TARGETS_PER_FUNCTION`] per function. Cranelift's cost is
+//!   not linear in these, so three module-wide budgets bound the products
+//!   that drive it: [`MAX_MERGE_WORK`] (variables × branch edges),
+//!   [`MAX_BRANCH_WORK`] (branch edges² per function) and
+//!   [`MAX_PRESSURE_WORK`] (variables × operators). Anything above a limit
+//!   is [`ScriptError::Load`] naming the limit.
 //! * Stack: Wasm code may use at most [`MAX_WASM_STACK_BYTES`] of the
 //!   calling thread's stack; deeper recursion traps (a fault, like any other
 //!   trap). The thread that calls the backend (the sim thread) must have at
@@ -164,7 +179,7 @@ pub const MAX_MODULE_BYTES: usize = 1024 * 1024;
 pub const MAX_WAT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Most functions a module may define (imports not counted).
-pub const MAX_FUNCTIONS: u32 = 10_000;
+pub const MAX_FUNCTIONS: u32 = 2_048;
 
 /// Largest single function body, bytes of its binary encoding.
 pub const MAX_FUNCTION_BODY_BYTES: u64 = 256 * 1024;
@@ -191,16 +206,16 @@ pub const MAX_NESTING: u64 = 128;
 pub const MAX_BR_TABLE_TARGETS: u64 = 1_024;
 
 /// Most `br_table` targets (defaults included) in one function.
-pub const MAX_BR_TABLE_TARGETS_PER_FUNCTION: u64 = 16_384;
+pub const MAX_BR_TABLE_TARGETS_PER_FUNCTION: u64 = 1_024;
 
 /// Most operators (instructions, `end` included) in one function body.
 pub const MAX_OPERATORS_PER_FUNCTION: u64 = 65_536;
 
 /// Most operators in all function bodies together.
-pub const MAX_OPERATORS: u64 = 1_048_576;
+pub const MAX_OPERATORS: u64 = 262_144;
 
 /// Most entries of the type section.
-pub const MAX_TYPES: u32 = 1_024;
+pub const MAX_TYPES: u32 = 256;
 
 /// Most parameters of one function type.
 pub const MAX_PARAMS: u32 = 32;
@@ -209,13 +224,37 @@ pub const MAX_PARAMS: u32 = 32;
 pub const MAX_RESULTS: u32 = 8;
 
 /// Most items (function indices or expressions) of all element segments.
-pub const MAX_ELEMENT_ITEMS: u64 = 65_536;
+pub const MAX_ELEMENT_ITEMS: u64 = 1_024;
 
 /// Most exports.
-pub const MAX_EXPORTS: u32 = 1_024;
+pub const MAX_EXPORTS: u32 = 256;
 
 /// Most imports (the ABI has 18 functions).
 pub const MAX_IMPORTS: u32 = 64;
+
+/// Most control constructs (`block`, `loop`, `if`) in all functions
+/// together (each loop also gets a fuel check; ≈ 35 µs of compile time).
+pub const MAX_BLOCKS: u64 = 4_096;
+
+/// Deepest nesting of `loop`s in a function. Cranelift's compile time
+/// explodes with loop depth when many locals are live (Subphase 4.5 fix 2
+/// measurements: 1 024 locals, 96 nested loops ≈ 0.9 s; 128 ≈ 54 s).
+pub const MAX_LOOP_NESTING: u64 = 32;
+
+/// Module-wide budget for Σ over functions of (params + locals) × (control
+/// constructs + branches + `br_table` targets): an upper bound on the SSA
+/// block arguments Cranelift may have to create and allocate registers for.
+pub const MAX_MERGE_WORK: u64 = 65_536;
+
+/// Module-wide budget for Σ over functions of (control constructs +
+/// branches + `br_table` targets)²: Cranelift's cost grows quadratically
+/// with the number of blocks in one function.
+pub const MAX_BRANCH_WORK: u64 = 2 * 1024 * 1024;
+
+/// Module-wide budget for Σ over functions of (params + locals) ×
+/// (operators + params + locals): register-allocation cost when many locals
+/// are live (every declared local is also zero-initialised).
+pub const MAX_PRESSURE_WORK: u64 = 8 * 1024 * 1024;
 
 /// Stack Wasm code may use before it traps, bytes.
 pub const MAX_WASM_STACK_BYTES: usize = 256 * 1024;
@@ -441,10 +480,18 @@ fn cap(who: fmt::Arguments<'_>, what: &str, n: u64, max: u64) -> Result<(), Scri
 #[derive(Default)]
 struct Scan {
     imported_funcs: u32,
+    /// Parameter count of each type (at most [`MAX_TYPES`] entries).
+    type_params: Vec<u8>,
+    /// Type of each defined function (at most [`MAX_FUNCTIONS`] entries).
+    func_types: Vec<u32>,
     /// Index (among defined functions) of the next code section entry.
     func: u32,
     locals: u64,
+    blocks: u64,
     operators: u64,
+    merge_work: u64,
+    branch_work: u64,
+    pressure_work: u64,
     element_items: u64,
     /// Reused frame stack of the operator reader.
     allocs: wasmtime::wasmparser::OperatorsReaderAllocations,
@@ -458,15 +505,22 @@ impl Scan {
                 cap(module, "types", r.count().into(), MAX_TYPES.into())?;
                 for (i, ty) in r.into_iter_err_on_gc_types().enumerate() {
                     let ty = ty.map_err(parse_err)?;
-                    let who = format_args!("type {i}");
-                    cap(who, "params", ty.params().len() as u64, MAX_PARAMS.into())?;
-                    let who = format_args!("type {i}");
+                    let params = ty.params().len() as u64;
                     cap(
-                        who,
+                        format_args!("type {i}"),
+                        "params",
+                        params,
+                        MAX_PARAMS.into(),
+                    )?;
+                    let results = ty.results().len() as u64;
+                    cap(
+                        format_args!("type {i}"),
                         "results",
-                        ty.results().len() as u64,
+                        results,
                         MAX_RESULTS.into(),
                     )?;
+                    // Fits: at most MAX_PARAMS (32).
+                    self.type_params.push(params as u8);
                 }
             }
             Payload::ImportSection(r) => {
@@ -484,6 +538,9 @@ impl Scan {
             }
             Payload::FunctionSection(r) => {
                 cap(module, "functions", r.count().into(), MAX_FUNCTIONS.into())?;
+                for ty in r {
+                    self.func_types.push(ty.map_err(parse_err)?);
+                }
             }
             Payload::CodeSectionStart { count, .. } => {
                 cap(
@@ -555,7 +612,8 @@ impl Scan {
     }
 
     /// Checks one function body: size, declared locals and its operator
-    /// stream (count, control nesting, `br_table` targets).
+    /// stream (count, nesting, branches, `br_table` targets), and adds its
+    /// compile-cost estimates to the module totals.
     fn body(&mut self, body: &FunctionBody<'_>) -> Result<(), ScriptError> {
         let f = self.func;
         self.func += 1;
@@ -566,12 +624,13 @@ impl Scan {
                 "a function body is {len} bytes (at most {MAX_FUNCTION_BODY_BYTES})"
             )));
         }
+        let who = || format!("function {f}");
         let mut locals_reader = body.get_locals_reader().map_err(parse_err)?;
         let mut locals = 0u64;
         for _ in 0..locals_reader.get_count() {
             locals += u64::from(locals_reader.read().map_err(parse_err)?.0);
             cap(
-                format_args!("function {f}"),
+                format_args!("{}", who()),
                 "locals",
                 locals,
                 MAX_LOCALS_PER_FUNCTION,
@@ -584,10 +643,23 @@ impl Scan {
             self.locals,
             MAX_TOTAL_LOCALS,
         )?;
+        let params = self
+            .func_types
+            .get(f as usize)
+            .and_then(|&t| self.type_params.get(t as usize))
+            .map_or(0, |&p| u64::from(p));
+        // SSA variables: every parameter and declared local.
+        let vars = params + locals;
 
         let reader = body.get_binary_reader_for_operators().map_err(parse_err)?;
         let mut ops = OperatorsReader::new_with_allocs(reader, std::mem::take(&mut self.allocs));
-        let (mut n, mut depth, mut targets) = (0u64, 0u64, 0u64);
+        let mut n = 0u64;
+        // Open constructs, and which of them are loops (bit i of `loop_bits`
+        // for depth i; depth is capped at MAX_NESTING = 128 bits).
+        let (mut depth, mut loop_bits, mut loop_depth) = (0u64, 0u128, 0u64);
+        // Control constructs plus `br`/`br_if`/`return` (the quadratic
+        // term), and `br_table` targets.
+        let (mut branches, mut targets, mut blocks) = (0u64, 0u64, 0u64);
         while !ops.eof() {
             let op = ops.read().map_err(parse_err)?;
             n += 1;
@@ -597,26 +669,49 @@ impl Scan {
                 | Operator::If { .. }
                 | Operator::TryTable { .. }
                 | Operator::Try { .. } => {
-                    depth += 1;
+                    let is_loop = matches!(op, Operator::Loop { .. });
                     cap(
-                        format_args!("function {f}"),
+                        format_args!("{}", who()),
                         "nested blocks",
-                        depth,
+                        depth + 1,
                         MAX_NESTING,
                     )?;
+                    if is_loop {
+                        loop_bits |= 1 << depth;
+                        loop_depth += 1;
+                        let d = loop_depth;
+                        cap(
+                            format_args!("{}", who()),
+                            "nested loops",
+                            d,
+                            MAX_LOOP_NESTING,
+                        )?;
+                    }
+                    depth += 1;
+                    branches += 1;
+                    blocks += 1;
                 }
-                Operator::End => depth = depth.saturating_sub(1),
+                Operator::End if depth > 0 => {
+                    depth -= 1;
+                    if loop_bits & (1 << depth) != 0 {
+                        loop_bits &= !(1 << depth);
+                        loop_depth -= 1;
+                    }
+                }
+                Operator::Else | Operator::Br { .. } | Operator::BrIf { .. } | Operator::Return => {
+                    branches += 1;
+                }
                 Operator::BrTable { targets: t } => {
                     let k = u64::from(t.len()) + 1;
                     cap(
-                        format_args!("a br_table in function {f}"),
+                        format_args!("a br_table in {}", who()),
                         "targets",
                         k,
                         MAX_BR_TABLE_TARGETS,
                     )?;
                     targets += k;
                     cap(
-                        format_args!("function {f}"),
+                        format_args!("{}", who()),
                         "br_table targets",
                         targets,
                         MAX_BR_TABLE_TARGETS_PER_FUNCTION,
@@ -625,22 +720,34 @@ impl Scan {
                 _ => {}
             }
             if n > MAX_OPERATORS_PER_FUNCTION {
+                let what = "operators";
                 return cap(
-                    format_args!("function {f}"),
-                    "operators",
+                    format_args!("{}", who()),
+                    what,
                     n,
                     MAX_OPERATORS_PER_FUNCTION,
                 );
             }
         }
         self.allocs = ops.into_allocations();
+        let module = || format_args!("module");
+        self.blocks += blocks;
+        cap(module(), "blocks, loops and ifs", self.blocks, MAX_BLOCKS)?;
         self.operators += n;
-        cap(
-            format_args!("module"),
-            "operators",
-            self.operators,
-            MAX_OPERATORS,
-        )
+        cap(module(), "operators", self.operators, MAX_OPERATORS)?;
+        // Compile-cost estimates (see MAX_MERGE_WORK and friends).
+        self.merge_work += vars * (branches + targets);
+        let what = "compile-cost units of locals x branch edges";
+        cap(module(), what, self.merge_work, MAX_MERGE_WORK)?;
+        // Edges into loop headers carry block arguments, so Cranelift splits
+        // each `br_table` target into a block of its own: count them too.
+        let edges = branches + targets;
+        self.branch_work += edges * edges;
+        let what = "compile-cost units of branches squared";
+        cap(module(), what, self.branch_work, MAX_BRANCH_WORK)?;
+        self.pressure_work += vars * (n + vars);
+        let what = "compile-cost units of locals x operators";
+        cap(module(), what, self.pressure_work, MAX_PRESSURE_WORK)
     }
 }
 
@@ -1105,6 +1212,15 @@ mod tests {
             )
             .contains("PreparedModule")
         );
+    }
+
+    #[test]
+    fn truncation_keeps_char_boundaries() {
+        assert_eq!(truncated("short", 256), "short");
+        // 'é' is 2 bytes and '…' 3: 6 bytes leave room for one 'é'.
+        assert_eq!(truncated("éééé", 6), "é…");
+        assert_eq!(truncated("éééé", 7), "éé…");
+        assert!(truncated(&"x".repeat(10_000), MAX_ERROR_BYTES).len() <= MAX_ERROR_BYTES);
     }
 
     #[test]

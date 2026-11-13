@@ -36,11 +36,14 @@ pub enum SplineError {
     /// A guide's first and last through-points coincide but the spline is not
     /// periodic (build it with [`CubicSpline::interpolate_closed`]).
     ClosedGuideNotPeriodic,
-    /// A guide that rises or falls has a plan view (its curve seen from
-    /// above) that a ball cannot follow: it bends tighter than about 22 mm
-    /// radius, comes back onto or close to itself (a helix, a loop of more
-    /// than one turn, a crossing), or runs vertically. Model helical ramps
-    /// as wireforms, and split other shapes into simple pieces.
+    /// A guide that rises or falls has a shape a ball cannot follow: its
+    /// plan view (the curve seen from above) bends tighter than about 22 mm
+    /// radius (in practice about 30 mm for a plain arc: a spline bends about
+    /// a quarter tighter than the arc near its free ends), comes back onto
+    /// or within about 44 mm of itself (a helix, a loop of more than one
+    /// turn, a crossing), or runs vertically; or the curve bends up or down
+    /// tighter than about 22 mm (the wall's top and bottom edges follow it).
+    /// Model helical ramps as wireforms, and split or smooth other shapes.
     SlopedGuidePlanView,
 }
 
@@ -60,9 +63,11 @@ impl core::fmt::Display for SplineError {
             }
             Self::SlopedGuidePlanView => {
                 "a guide that rises or falls must have a simple plan view: no bend \
-                 tighter than 22 mm radius, no stretch coming back onto or within 44 mm \
-                 of another (helix, loop, crossing), no vertical run; use a wireform \
-                 for helical ramps"
+                 tighter than about 22 mm radius (about 30 mm for a plain arc, whose \
+                 spline bends tighter near its ends), no stretch coming back onto or \
+                 within about 44 mm of another (helix, loop, crossing), no vertical \
+                 run; and the curve may not bend up or down tighter than about 22 mm; \
+                 use a wireform for helical ramps"
             }
         })
     }

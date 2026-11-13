@@ -1286,9 +1286,11 @@ fn bulk_op_tick_cost_report() {
 #[test]
 fn wat_parse_errors_are_truncated() {
     use pin_script::wasm::{MAX_ERROR_BYTES, MAX_WAT_BYTES};
-    let mut text = format!("(module {EXPORTS} (func ").into_bytes();
-    text.resize(MAX_WAT_BYTES - 16, b'x');
-    text.extend_from_slice("é))))".as_bytes());
+    // An unknown multi-megabyte token: the parser's error quotes the line,
+    // and the 'é' near the cut checks the cut is on a character boundary.
+    let mut text = format!("(module {EXPORTS} (func é").into_bytes();
+    text.resize(MAX_WAT_BYTES - 4, b'x');
+    text.extend_from_slice(b"))");
     let m = load_msg(&text);
     assert!(m.len() <= MAX_ERROR_BYTES, "{} bytes", m.len());
     assert!(m.ends_with('…'), "{m}");

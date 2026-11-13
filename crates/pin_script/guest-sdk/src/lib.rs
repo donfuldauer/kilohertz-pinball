@@ -105,11 +105,15 @@
 //! `memory.fill` / `memory.copy` / `memory.init` (so `core::ptr::write_bytes`
 //! and `copy_from_slice`, which compile to them, cost their length), one per
 //! element of `table.*` bulk operations and one per page of `memory.grow`.
-//! Wasm recursion may use at most 256 KiB of stack before it traps. The
-//! module itself must stay under 1 MiB of binary, 10 000 functions, 256 KiB
-//! per function body, 1 000 globals, 100 000 initial table elements and
-//! 1 000 data / element segments (see `pin_script::wasm` for the full
-//! list); larger modules are rejected at load.
+//! Wasm recursion may use at most 256 KiB of stack before it traps.
+//!
+//! The module is checked before it is compiled, so that no module can make
+//! compilation slow: among others at most 1 MiB of binary, 2 048 functions,
+//! 1 024 locals per function, 32 nested loops, 4 096 blocks/loops/ifs and
+//! 262 144 operators in all, plus budgets on locals × branches and locals ×
+//! operators (see `pin_script::wasm` for the full list). Ordinary rules,
+//! built in release mode, are far below these; a module above any of them
+//! is rejected at load with a message naming the limit.
 
 #![cfg_attr(not(test), no_std)]
 
