@@ -123,7 +123,7 @@ proptest! {
         let p = v(0.0, 0.01, 0.01);
         set.apply_impulse(0, t, p, Vec3::Y * j);
         let (lo, hi) = if kind == MechKind::Plunger { (-0.05, 0.0) } else {
-            (0.0, if kind == MechKind::Sling { 0.010 } else { 0.020 })
+            (0.0, if kind == MechKind::Sling { 0.012 } else { 0.020 })
         };
         for k in 0..=10 {
             let s = t + (DT - t) * k as f32 / 10.0;

@@ -165,3 +165,30 @@ fn auto_plunger_coil_launches() {
     println!("slow release peak: {slow:.3} m/s");
     assert!(slow < 0.5 * launch(1.0));
 }
+
+/// Regression (2.4 Tester O1): a step in the plunger input moved the tip
+/// 45 mm in one tick while the rod reported velocity 0, and a ball behind
+/// the tip was thrown at 74 m/s. The pull is rate-limited and the reported
+/// velocity is the real motion.
+#[test]
+fn step_pull_is_rate_limited_and_reports_real_velocity() {
+    let spec = MechSpec::new(MechKind::Plunger, v(0.0, Y0, 0.0));
+    let mut t = Table::new(&[spec], world(&[]), 0.0);
+    let behind = Y0 - 0.006 - radius(STEEL) - 0.001;
+    let h = t.ball(0.0, behind, Vec3::ZERO);
+    t.tick();
+    t.mechs.set_plunger(0.9);
+    let mut last = t.mechs.slider_state(0).unwrap().0;
+    let mut peak = 0.0f32;
+    for _ in 0..100 {
+        t.tick();
+        let (x, vel) = t.mechs.slider_state(0).unwrap();
+        assert!(((x - last) / DT - vel).abs() < 1e-3, "velocity {vel} vs motion {}", (x - last) / DT);
+        assert!(vel.abs() <= pin_physics::mech::PULL_SPEED + 1e-4);
+        last = x;
+        peak = peak.max(t.get(h).velocity.length());
+    }
+    println!("ball behind a step-pulled tip: peak {peak:.3} m/s");
+    assert!(peak < 2.0 * pin_physics::mech::PULL_SPEED, "{peak}");
+    assert!((last + 0.9 * 0.05).abs() < 1e-5, "reaches the pull depth");
+}
