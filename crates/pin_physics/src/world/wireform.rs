@@ -1711,6 +1711,28 @@ impl GuideCurve {
                         if distance < rho {
                             dt = dt.max(rolling_ball_time(distance, rho, rate, drop, speed));
                         }
+                        // In a lane (the wall nearby bends gently, the rest
+                        // of it is some way off) the wall splits in two:
+                        // its own neighbourhood stays outside the ball of
+                        // radius `local` touching it at the nearest point,
+                        // which bounds its gap as above; the rest is at
+                        // least `far` from the nearest point, so at least
+                        // `far − distance − speed τ` from the centre after
+                        // `τ`, which stays above `radius + floor` up to
+                        // `τ = (far − distance − radius − floor) / speed`.
+                        // Until the earlier of the two times neither part
+                        // comes closer than the floor (see `TangentBalls::
+                        // lane`). Unlike the tangent ball, whose radius the
+                        // far side of a lane limits to half its width, this
+                        // lets a ball slide along a lane barely wider than
+                        // itself at the pace of the wall's own bend.
+                        if let Some((local, far)) = balls.lane(&self.spline, cp.t) {
+                            let room = far - distance - radius - floor;
+                            if distance < local && room > 0.0 {
+                                let near = rolling_ball_time(distance, local, rate, drop, speed);
+                                dt = dt.max(near.min(room / speed));
+                            }
+                        }
                     }
                     if distance < 0.9 * self.reach {
                         let cap = 0.5 * (distance + self.reach);

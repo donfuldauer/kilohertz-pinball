@@ -92,6 +92,17 @@ fn stored(rho: f64) -> f32 {
     (MARGIN * rho - MARGIN_ABS).max(0.0) as f32
 }
 
+/// Margin of a stored distance (metres): the `f32` rounding of the nearest
+/// wall point and of its parameter at run time, as [`MARGIN_ABS`], with a
+/// factor of ten to spare. (A relative margin would be no safer, and would
+/// take millimetres from the room a ball has in a lane.)
+const DISTANCE_MARGIN: f64 = 1.0e-5;
+
+/// A proven distance as stored.
+fn stored_distance(d: f64) -> f32 {
+    (d - DISTANCE_MARGIN).max(0.0) as f32
+}
+
 /// Table intervals per segment along the curve, and in its two end
 /// segments (where the ends make the radii change quickly).
 const TABLE_COARSE: usize = 4;
@@ -1359,10 +1370,11 @@ const END_BAND: f32 = 1.0e-3;
 /// curvature within a segment, and stored as zero below [`RHO_FLOOR`].
 #[derive(Debug, Clone)]
 pub(super) struct TangentBalls {
-    /// `[ρ_+, ρ_−]` per quarter segment (unused in the end segments).
-    coarse: Vec<[f32; 2]>,
-    /// `[ρ_+, ρ_−]` per 1/64 of the first and of the last segment.
-    fine: [Vec<[f32; 2]>; 2],
+    /// `[ρ_+, ρ_−, R, D]` per quarter segment (unused in the end segments),
+    /// see [`TangentBalls::lane`] for `R` and `D`.
+    coarse: Vec<[f32; 4]>,
+    /// The same per 1/64 of the first and of the last segment.
+    fine: [Vec<[f32; 4]>; 2],
     /// Unit tangent into the curve and `ρ_back` of the first and last end.
     ends: [(Vec3, f32); 2],
     /// See [`TangentBalls::smallest`].
@@ -1382,8 +1394,8 @@ impl TangentBalls {
             total: 0,
             smallest: f64::INFINITY,
         };
-        let margin = |e: [f64; 2]| e.map(stored);
-        let mut coarse = vec![[0.0f32; 2]; segments * TABLE_COARSE];
+        let margin = |e: Sides| [stored(e[0]), stored(e[1]), stored(e[3]), stored_distance(e[2])];
+        let mut coarse = vec![[0.0f32; 4]; segments * TABLE_COARSE];
         if segments > 2 {
             // Every segment but the two end ones (the fine tables cover
             // those).
@@ -1418,6 +1430,57 @@ impl TangentBalls {
         }
     }
 
+    /// The table entry `[ρ_+, ρ_−, R, D]` of the curve point of parameter
+    /// `t` (in `[0, max_t]`): the smaller of both fine tables in a curve of
+    /// two segments.
+    fn entry(&self, max_t: f32, t: f32) -> [f32; 4] {
+        let in_fine = |local: f32| ((local * TABLE_FINE as f32) as usize).min(TABLE_FINE - 1);
+        let fold = |a: [f32; 4], b: [f32; 4]| core::array::from_fn(|i| a[i].min(b[i]));
+        let mut e = [f32::INFINITY; 4];
+        let mut in_end_segment = false;
+        if t <= 1.0 {
+            e = fold(e, self.fine[0][in_fine(t)]);
+            in_end_segment = true;
+        }
+        if t >= max_t - 1.0 {
+            e = fold(e, self.fine[1][in_fine(t - (max_t - 1.0))]);
+            in_end_segment = true;
+        }
+        if !in_end_segment {
+            let index = (t * TABLE_COARSE as f32) as usize;
+            e = fold(e, self.coarse[index.min(self.coarse.len() - 1)]);
+        }
+        e
+    }
+
+    /// The lane around the curve point of parameter `t`, away from the
+    /// ends: `(R, D)`, such that the wall within the own neighbourhood of
+    /// that point stays outside the two balls of radius `R` that touch it
+    /// there, and the rest of the wall is at least `D` away from it. `None`
+    /// within [`END_BAND`] of an end (the nearest point may then be the end
+    /// itself, with a direction behind it).
+    ///
+    /// Proof. The entry of the table interval of `t` holds `R`, the
+    /// smallest own-neighbourhood bound `1/κ` of every piece of the curve
+    /// its search skipped (module documentation: such a curve point `y`
+    /// has `|w|² ≥ (2/κ) |w · N_a|` for every `a` of the interval), and
+    /// `D`, a lower bound of `|y − a|` over every other curve point `y` and
+    /// every `a` of the interval (the same branch and bound, see
+    /// [`TableProbe`]); both before a margin ([`stored`],
+    /// [`stored_distance`]). For the wall `C × [0, h]` (a level curve) the
+    /// plan distances only grow, and the vertical part of a direction
+    /// from the nearest wall point points away from the wall
+    /// ([`TangentBalls`]), so both hold for the wall and its nearest point
+    /// above `a`.
+    pub(super) fn lane(&self, spline: &CubicSpline, t: f32) -> Option<(f32, f32)> {
+        let max_t = spline.max_t();
+        if !(t > END_BAND && t < max_t - END_BAND) {
+            return None;
+        }
+        let e = self.entry(max_t, t);
+        Some((e[2], e[3]))
+    }
+
     /// The smallest radius of the table before the margin, a proven lower
     /// bound of the reach over the directions perpendicular to the curve. (Federer's reach is the
     /// infimum of the tangent-ball radii over every point and direction of
@@ -1434,22 +1497,7 @@ impl TangentBalls {
     pub(super) fn radius(&self, spline: &CubicSpline, t: f32, normal: Vec3) -> f32 {
         let max_t = spline.max_t();
         let t = t.clamp(0.0, max_t);
-        let in_fine = |local: f32| ((local * TABLE_FINE as f32) as usize).min(TABLE_FINE - 1);
-        let fold = |rho: [f32; 2], e: [f32; 2]| [rho[0].min(e[0]), rho[1].min(e[1])];
-        let mut rho = [f32::INFINITY; 2];
-        let mut in_end_segment = false;
-        if t <= 1.0 {
-            rho = fold(rho, self.fine[0][in_fine(t)]);
-            in_end_segment = true;
-        }
-        if t >= max_t - 1.0 {
-            rho = fold(rho, self.fine[1][in_fine(t - (max_t - 1.0))]);
-            in_end_segment = true;
-        }
-        if !in_end_segment {
-            let index = (t * TABLE_COARSE as f32) as usize;
-            rho = fold(rho, self.coarse[index.min(self.coarse.len() - 1)]);
-        }
+        let rho = self.entry(max_t, t);
         let tangent = spline.tangent(t);
         let side = Vec3::new(-tangent.y, tangent.x, 0.0).normalize_or_zero();
         if side == Vec3::ZERO {
@@ -1548,8 +1596,8 @@ impl Build<'_> {
     /// the infimum of its slot): every slot then keeps at least
     /// `(1 − tol)` of its infimum, as with a search of its own. Large
     /// groups settle against the cap only.
-    fn entries(&mut self, slots: &Slots, count: usize) -> Vec<[f64; 2]> {
-        let mut out = vec![[0.0; 2]; count];
+    fn entries(&mut self, slots: &Slots, count: usize) -> Vec<Sides> {
+        let mut out = vec![[0.0; SIDES]; count];
         self.total = TABLE_BUDGET_PER_SLOT * count + TABLE_BUDGET_BASE;
         // The cap of a slot: [`TANGENT_BALL_CAP`], and 0.9 of the smallest
         // radius of curvature within a segment of it (the true radius on the
@@ -1585,12 +1633,18 @@ impl Build<'_> {
         // The first slot on its own, from the whole curve: its best points
         // are the hints of the groups that follow (the last entry's are from
         // elsewhere on the curve).
-        self.state.best = [None; 2];
-        self.group(slots, 0, 1, &root, [TANGENT_BALL_CAP; 2], &mut out);
+        self.state.best = [None; SIDES];
+        self.group(slots, 0, 1, &root, [TANGENT_BALL_CAP; SIDES], &mut out);
         if count > 1 {
-            self.group(slots, 1, count, &root, [TANGENT_BALL_CAP; 2], &mut out);
+            self.group(slots, 1, count, &root, [TANGENT_BALL_CAP; SIDES], &mut out);
         }
         out
+    }
+
+    /// [`Rules::target`] of the table's searches: the reach to prove, for
+    /// the tangent balls only.
+    fn targets(&self) -> Sides {
+        [self.target, self.target, 0.0, 0.0]
     }
 
     fn probe<'t>(tree: &'t CurveTree, slots: &Slots, from: usize, to: usize) -> TableProbe<'t> {
@@ -1614,13 +1668,13 @@ impl Build<'_> {
         from: usize,
         to: usize,
         list: &[Piece],
-        lower: [f64; 2],
-        out: &mut [[f64; 2]],
+        lower: Sides,
+        out: &mut [Sides],
     ) {
         if to - from == 1 {
             let (seg, s0, s1) = slots.slot(from);
             let cap = self.caps[from];
-            let lower = [lower[0].min(cap), lower[1].min(cap)];
+            let lower = side_min(lower, [cap; SIDES]);
             let entry = self.entry(seg, s0, s1, slots.depth, cap, list, lower);
             self.smallest = self.smallest.min(entry[0]).min(entry[1]);
             out[from] = entry;
@@ -1631,24 +1685,26 @@ impl Build<'_> {
         // settles at the highest of them, so that each slot keeps what its
         // own search would have.
         let at_cap = |cap: f64| (1.0 - TOL_CAP) * cap;
-        let mut settle = [0.0f64; 2];
+        let mut settle = [0.0f64; SIDES];
         let local = to - from <= LOCAL_GROUP;
+        let targets = self.targets();
         for k in from..to {
             let cap = self.caps[k];
-            let mut level = [with_target(at_cap(cap), cap, self.target); 2];
+            let mut level: Sides =
+                core::array::from_fn(|side| with_target(at_cap(cap), cap, targets[side]));
             if local {
                 let (point, normal) = self.middles[k];
                 for y in self.state.best.into_iter().flatten() {
                     let v = pair_values(point, normal, y);
-                    for side in 0..2 {
+                    for side in 0..SIDES {
                         if v[side] < cap {
                             level[side] = level[side]
-                                .min(with_target(table_level(v[side]), v[side], self.target));
+                                .min(with_target(table_level(v[side]), v[side], targets[side]));
                         }
                     }
                 }
             }
-            settle = [settle[0].max(level[0]), settle[1].max(level[1])];
+            settle = side_max(settle, level);
         }
         let probe = Self::probe(self.tree, slots, from, to);
         let mut lower = lower;
@@ -1677,16 +1733,17 @@ impl Build<'_> {
         depth: u8,
         cap: f64,
         list: &[Piece],
-        lower: [f64; 2],
-    ) -> [f64; 2] {
+        lower: Sides,
+    ) -> Sides {
         let tree = self.tree;
         let allowed = self.total.min(SLOT_BUDGET);
+        let targets = self.targets();
         let state = &mut self.state;
         state.budget = allowed;
         let hints = state.best;
-        state.upper = [cap; 2];
-        state.best = [None; 2];
-        state.done = [false; 2];
+        state.upper = [cap; SIDES];
+        state.best = [None; SIDES];
+        state.done = [false; SIDES];
         let mut result = lower;
         let mut pieces: Vec<(f64, f64, u8)> = vec![(s0, s1, 0)];
         while let Some((s0, s1, level)) = pieces.pop() {
@@ -1698,15 +1755,15 @@ impl Build<'_> {
             }
             let rules = Rules {
                 level: table_level,
-                target: [self.target; 2],
+                target: targets,
                 floor: RHO_FLOOR,
                 depth: PART_DEPTH,
                 can_split: level < depth,
-                init: [cap; 2],
+                init: [cap; SIDES],
             };
             match tree.search(&probe, &rules, state, list) {
                 Search::Done(found) => {
-                    result = [result[0].min(found[0]), result[1].min(found[1])];
+                    result = side_min(result, found);
                 }
                 Search::Split => {
                     let mid = 0.5 * (s0 + s1);
