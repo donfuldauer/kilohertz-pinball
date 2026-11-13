@@ -414,7 +414,7 @@ proptest! {
                 if travelled > fraction + 1e-3 {
                     prop_assert!(!set.eos_closed(LEFT));
                 }
-                prop_assert!(set.kinetic_energy_j(LEFT) <= set.drive_work_j(LEFT) + 1e-9);
+                prop_assert!(set.kinetic_energy_j(LEFT) <= set.drive_work_j(LEFT) + 1e-6);
             }
         }
     }

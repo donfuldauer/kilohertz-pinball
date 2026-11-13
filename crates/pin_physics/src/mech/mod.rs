@@ -61,7 +61,16 @@
 //!   force `F` drives it; the ball is pushed by the two-body contact of the
 //!   seam, so the exit speed emerges from `F`, `m`, `stroke` and the
 //!   restitution. At rest the kicker is locked (static geometry). The
-//!   switch closes on contact.
+//!   switch closes on contact. Latency matters: with the defaults (60 N,
+//!   60 g, 12 mm) and the coil fired on the tick of the switch edge or the
+//!   next one (the engine's script latency), approaches of 0.1–3 m/s exit
+//!   at 1.80–3.35 m/s; a coil fired several ticks later can miss a fast
+//!   rebound (the ball has left the stroke) and the exit is the passive
+//!   rebound (e.g. 1.2–1.5 m/s at 4 ticks). On a flat table the kick of a
+//!   resting ball is the same in every orientation (bit-identical);
+//!   on a pitched table it varies by a few per cent with orientation
+//!   because gravity acts along (or against) the kick during the contact
+//!   and the measurement window.
 //! * **Drop target.** Up: a static box. An [`BallEvent::Impact`] on it with
 //!   `normal_speed ≥ threshold_speed` drops it (no surface, switch closed).
 //!   While its coil (the bank's reset coil: every target sharing it) is on,

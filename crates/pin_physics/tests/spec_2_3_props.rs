@@ -170,8 +170,13 @@ proptest! {
 
 // ------------------------------------------------------------------ energy
 
-/// Per-tick energy audit on the pitched table: ball + bat mechanical energy
-/// may rise by no more than the coil and spring work `(τ_power + τ_spring)·|Δθ|`.
+/// Energy audit on the pitched table: ball + bat mechanical energy never
+/// exceeds its start value plus the coil and spring work along the bat's
+/// path, `(τ_power + τ_spring)·Σ|Δθ|`, at any tick; with the coil off, no
+/// tick gains more than the spring's work. (A per-tick bound with the coil
+/// on is not used: the drive acts per tick, and in a tick where a ball
+/// reverses the bat the drive's discrete work exceeds `τ·|Δθ|` of that
+/// tick by a few mJ, see the 2.3 Tester report.)
 fn energy_case(
     speed: f32,
     frac: f32,
@@ -202,38 +207,52 @@ fn energy_case(
     let e0 = e_prev;
     let mut a_prev = s.set.angle_deg(ID);
     let mut work = 0.0f64;
+    let mut energised = false;
+    let mut off_ticks = u64::MAX / 2;
     while s.tick < arrive as u64 + 250 {
         if s.tick == flip {
             s.set.set_energised(ID, true);
+            energised = true;
         }
         if Some(s.tick) == rel {
             s.set.set_energised(ID, false);
+            energised = false;
+            off_ticks = 0;
         }
         s.advance();
+        off_ticks = off_ticks.saturating_add(1);
         let e = energy(&s, g, &inertia);
         let a1 = s.set.angle_deg(ID);
-        let w = f64::from(tau) * f64::from((a1 - a_prev).abs().to_radians());
-        work += w;
+        let dth = f64::from((a1 - a_prev).abs().to_radians());
+        work += f64::from(tau) * dth;
         let b = s.ball(h);
         let ke = 0.5 * 0.08 * f64::from(b.velocity.length_squared());
         let tol = 2.0e-4 + 3.0e-3 * ke;
-        if e - e_prev > w + tol {
+        // Per tick, with the coil off (and its torque decayed): only the
+        // return spring can add energy.
+        if !energised && off_ticks > 10 {
+            let w = f64::from(c.return_spring_torque_nm) * dth;
+            if e - e_prev > w + tol {
+                return Err(format!(
+                    "tick {}: coil off, energy rose by {:.6} J, spring work bound {:.6} J",
+                    s.tick,
+                    e - e_prev,
+                    w
+                ));
+            }
+        }
+        // Cumulative: never more than the coil and spring work along the
+        // bat's path so far (∫τ dθ ≤ (τ_power + τ_spring)·Σ|Δθ|).
+        if e - e0 > work + 1.0e-3 + 3.0e-3 * ke {
             return Err(format!(
-                "tick {}: energy rose by {:.6} J, coil+spring work bound {:.6} J",
+                "tick {}: energy {:.6} J above start, coil+spring work so far {:.6} J",
                 s.tick,
-                e - e_prev,
-                w
+                e - e0,
+                work
             ));
         }
         e_prev = e;
         a_prev = a1;
-    }
-    if e_prev - e0 > work + 1.0e-3 {
-        return Err(format!(
-            "run: energy rose by {:.6} J, work bound {:.6} J",
-            e_prev - e0,
-            work
-        ));
     }
     Ok(())
 }

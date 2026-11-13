@@ -2,8 +2,10 @@
 //! slingshots, kickbacks and the plunger.
 //!
 //! Coordinate `x` along the unit axis `u` (metres), `lo ≤ x ≤ hi`. Forces:
-//! spring `−k·x`, coil `+F` while the coil is on. Plunger only: a one-sided
-//! hand constraint `x ≤ hand` (the hand can hold the rod back, never push it).
+//! spring `−k·x`, coil `+F` while the coil is on. Plunger only: the
+//! hand: while it holds the knob the rod follows it (it neither lets the
+//! spring carry the rod forward nor lets it overshoot backward); a rod
+//! moving forward faster than the hand is released (the hand lets go).
 //!
 //! Prediction per tick (the 2.2-S contract): semi-implicit Euler
 //! `v₁ = v₀ + a·dt`, then owner obligation 3 on the drive: toward a stop,
@@ -106,8 +108,12 @@ impl Slider {
         let mut v1 = self.v + a / self.mass * dt;
         let free_end = self.x + v1 * dt;
         self.kinematic = false;
-        if self.hand < self.hi && self.hand < free_end {
-            // The hand holds the rod back: follow it.
+        let gripping = self.hand < self.hi;
+        if gripping && (self.hand < free_end || (v1 < 0.0 && free_end < self.hand)) {
+            // The hand holds the rod back (the spring would carry it further
+            // forward), or the rod would overshoot backward past a gripping
+            // hand: follow the hand. A rod moving forward faster than the
+            // hand lets go is free (release).
             v1 = (self.hand.clamp(self.lo, self.hi) - self.x) / dt;
             self.kinematic = true;
         } else {

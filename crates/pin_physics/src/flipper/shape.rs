@@ -73,7 +73,8 @@ impl BatMotion {
     /// linear in time, so it is at one of the ends).
     #[must_use]
     pub fn max_angular_speed(&self, from: f32, to: f32) -> f32 {
-        let at = |t: f32| self.angular_velocity + self.angular_acceleration * (t - self.start).max(0.0);
+        let at =
+            |t: f32| self.angular_velocity + self.angular_acceleration * (t - self.start).max(0.0);
         at(from).abs().max(at(to).abs())
     }
 

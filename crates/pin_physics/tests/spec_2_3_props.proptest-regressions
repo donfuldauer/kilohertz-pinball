@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc fa16e133f46d8f41743b43dee548428f12345561b17c7ac9273d6c9d5fd3747b # shrinks to theta = 2.8786488, phi = -1.1111195, bx = 85.27959, by = 167.76825, bz = 0.0, rest = 42.942444, pos_sweep = true, power = 2.4560523, speed = 0.5, frac = 0.15, beta = 0.0, from_front = true, off = 0
 cc b79b412557a1494e9629c8c3721bdf5425bfa6d42b082c02a337bdbb42d8b60e # shrinks to speed = 6.2962637, frac = 0.72239697, beta = -8.593147, flip_off = -16, release = None, damping = 0.38297376, restitution = 0.65690136
+cc 441410431e3f563dcce9af5216f45eb3a5d17356127240e0c49fb8f974ed39cc # shrinks to speed = 7.0877547, frac = 0.5949966, beta = -19.43059, flip_off = -21, release = None, damping = 0.18993811, restitution = 0.4441971

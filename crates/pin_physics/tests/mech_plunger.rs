@@ -185,7 +185,11 @@ fn step_pull_is_rate_limited_and_reports_real_velocity() {
     for _ in 0..100 {
         t.tick();
         let (x, vel) = t.mechs.slider_state(0).unwrap();
-        assert!(((x - last) / DT - vel).abs() < 1e-3, "velocity {vel} vs motion {}", (x - last) / DT);
+        assert!(
+            ((x - last) / DT - vel).abs() < 1e-3,
+            "velocity {vel} vs motion {}",
+            (x - last) / DT
+        );
         assert!(vel.abs() <= pin_physics::mech::PULL_SPEED + 1e-4);
         last = x;
         peak = peak.max(t.get(h).velocity.length());
