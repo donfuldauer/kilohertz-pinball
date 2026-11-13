@@ -76,7 +76,10 @@ fn metadata_changes_music_and_art_but_not_the_fixed_set() {
             }
         }
         let h = |m: &KitManifest, id: &str| m.get(id).unwrap().sha256_or_hash.clone();
-        assert_ne!(h(&base, "img_backglass_base"), h(other, "img_backglass_base"));
+        assert_ne!(
+            h(&base, "img_backglass_base"),
+            h(other, "img_backglass_base")
+        );
         assert_ne!(h(&base, "img_playfield"), h(other, "img_playfield"));
     }
 }
@@ -95,7 +98,10 @@ fn every_file_decodes_through_the_engine_loaders() {
                     .unwrap_or_else(|err| panic!("{}: {err}", e.id));
                 let data = s.data();
                 assert!(!data.is_empty(), "{}", e.id);
-                let rms = (data.iter().map(|&v| f64::from(v) * f64::from(v)).sum::<f64>()
+                let rms = (data
+                    .iter()
+                    .map(|&v| f64::from(v) * f64::from(v))
+                    .sum::<f64>()
                     / data.len() as f64)
                     .sqrt();
                 let peak = data.iter().fold(0.0f64, |m, &v| m.max(f64::from(v).abs()));
@@ -125,7 +131,10 @@ fn apex_bundle_with_kit(tag: &str, all_sounds: bool) -> (PathBuf, KitManifest) {
     let mut table = std::fs::read_to_string(fx.join("table.toml")).unwrap();
     let old = "file = \"audio/bumper.ogg\"";
     assert!(table.contains(old));
-    table = table.replace(old, &format!("file = {:?}", m.get("sfx_bumper").unwrap().path));
+    table = table.replace(
+        old,
+        &format!("file = {:?}", m.get("sfx_bumper").unwrap().path),
+    );
     if all_sounds {
         // Every other kit sound as an extra [[sounds]] entry.
         for d in m.sound_defs().into_iter().filter(|d| d.id != "sfx_bumper") {
@@ -163,7 +172,9 @@ fn apex_bundle_with_kit_assets_passes_load_table() {
         let loaded = pin_assets::load_table(&vfs).unwrap_or_else(|e| panic!("{e}"));
         // Every [[sounds]] id the kit provides resolves to an existing kit file.
         for s in &loaded.manifest.sounds {
-            let e = m.get(&s.id).unwrap_or_else(|| panic!("{} not in kit", s.id));
+            let e = m
+                .get(&s.id)
+                .unwrap_or_else(|| panic!("{} not in kit", s.id));
             assert_eq!(e.path, s.file);
             assert!(vfs.exists(&e.path));
             assert!(loaded.ids.get(pin_assets::IdKind::Sound, &s.id).is_some());
@@ -171,10 +182,18 @@ fn apex_bundle_with_kit_assets_passes_load_table() {
         // Every translite layer and lamp mask is a kit image.
         let bg = &loaded.backglass;
         for layer in &bg.translite.layers {
-            assert!(m.entries.iter().any(|e| e.path == layer.file), "{}", layer.file);
+            assert!(
+                m.entries.iter().any(|e| e.path == layer.file),
+                "{}",
+                layer.file
+            );
         }
         for mask in &bg.lamp_masks {
-            assert!(m.entries.iter().any(|e| e.path == mask.file), "{}", mask.file);
+            assert!(
+                m.entries.iter().any(|e| e.path == mask.file),
+                "{}",
+                mask.file
+            );
         }
         if all {
             assert_eq!(loaded.manifest.sounds.len(), m.sound_defs().len());
@@ -225,15 +244,27 @@ fn cli_writes_a_kit() {
     let m = pin_assetgen::cli::run(args.iter().map(|s| s.to_string())).unwrap();
     let lib = generate_kit(&apex_meta(7), &temp_dir("cli_lib")).unwrap();
     assert_eq!(m, lib);
-    assert!(pin_assetgen::cli::run(["--title".to_string(), "x".into(), "--out".into(), dir.join("assets.toml").to_string_lossy().into_owned()]).is_err());
+    assert!(
+        pin_assetgen::cli::run([
+            "--title".to_string(),
+            "x".into(),
+            "--out".into(),
+            dir.join("assets.toml").to_string_lossy().into_owned()
+        ])
+        .is_err()
+    );
 
     // The binary itself.
     let exe = env!("CARGO_BIN_EXE_pin_assetgen");
-    let out = std::process::Command::new(exe)
-        .args(args)
+    let out = std::process::Command::new(exe).args(args).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let bad = std::process::Command::new(exe)
+        .arg("--nope")
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let bad = std::process::Command::new(exe).arg("--nope").output().unwrap();
     assert_eq!(bad.status.code(), Some(2));
 }

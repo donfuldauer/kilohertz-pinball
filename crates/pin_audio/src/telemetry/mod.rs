@@ -148,7 +148,9 @@ impl Default for DatagramBatch {
 
 impl core::fmt::Debug for DatagramBatch {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_list().entries(self.iter().map(<[u8]>::len)).finish()
+        f.debug_list()
+            .entries(self.iter().map(<[u8]>::len))
+            .finish()
     }
 }
 
@@ -380,7 +382,10 @@ mod tests {
         let (h, e) = decode_datagram(out.get(0).unwrap()).unwrap();
         assert_eq!((h.tick, h.flags), (2, 0));
         assert_eq!(e.len(), 2);
-        assert_eq!((e[0].kind, e[0].id, e[0].value), (TelemetryKind::Lamp, 3, 1.0));
+        assert_eq!(
+            (e[0].kind, e[0].id, e[0].value),
+            (TelemetryKind::Lamp, 3, 1.0)
+        );
         assert_eq!(e[1].kind, TelemetryKind::Magnet);
         assert!(out.get(1).is_none());
         assert_eq!(format!("{out:?}"), "[32]");

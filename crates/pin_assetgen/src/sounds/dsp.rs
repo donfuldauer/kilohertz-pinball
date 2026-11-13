@@ -159,7 +159,11 @@ impl Synth {
             }
             let t = i as f64 / self.sr;
             let f = f1 + (f0 - f1) * libm::exp(-t / glide.max(1e-6));
-            let att = if attack > 0.0 { (t / attack).min(1.0) } else { 1.0 };
+            let att = if attack > 0.0 {
+                (t / attack).min(1.0)
+            } else {
+                1.0
+            };
             let tail = ((n - i) as f64 / fade as f64).min(1.0);
             let env = amp * att * tail * libm::exp(-t / tau.max(1e-6));
             let mut v = 0.0;
@@ -199,7 +203,11 @@ impl Synth {
                 break;
             }
             let t = i as f64 / self.sr;
-            let att = if attack > 0.0 { (t / attack).min(1.0) } else { 1.0 };
+            let att = if attack > 0.0 {
+                (t / attack).min(1.0)
+            } else {
+                1.0
+            };
             let tail = ((n - i) as f64 / fade as f64).min(1.0);
             let env = amp * att * tail * libm::exp(-t / tau.max(1e-6));
             self.out[idx] += env * f.run(x);

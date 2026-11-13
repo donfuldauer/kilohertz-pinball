@@ -394,7 +394,7 @@ mod tests {
     fn blit_clips_and_scales() {
         let mut buf = vec![0u8; 20 * 10];
         blit_text(FONT_5X7, "HI", &mut buf, 20, 10, -3, -2, 2, 9);
-        assert!(buf.iter().any(|&v| v == 9));
+        assert!(buf.contains(&9));
         assert!(buf.iter().all(|&v| v == 0 || v == 9));
         let mut buf2 = vec![0u8; 20 * 10];
         blit_text(FONT_5X7, "HI", &mut buf2, 20, 10, 0, 0, 0, 9);

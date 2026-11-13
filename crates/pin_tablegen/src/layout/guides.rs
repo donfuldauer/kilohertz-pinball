@@ -37,8 +37,6 @@ const NO_REACH_M: f32 = 1.0e-6;
 pub struct Rail {
     /// Through-points, mm (`z` = 0); a closed rail ends on its first point.
     pub points_mm: Vec<[f32; 3]>,
-    /// Built closed.
-    pub closed: bool,
     /// The spline exactly as the loader builds it (m).
     pub spline_m: CubicSpline,
 }
@@ -246,7 +244,6 @@ fn rail(
         if widest < 0.9 * radius_mm && widest <= 2.5 * narrowest {
             return Ok(Rail {
                 points_mm,
-                closed,
                 spline_m,
             });
         }
@@ -288,7 +285,7 @@ mod tests {
         assert_eq!(l.points_mm[0], [-15.0, 0.0, 0.0]);
         assert_eq!(r.points_mm[0], [15.0, 0.0, 0.0]);
         assert!(l.points_mm.len() >= 6);
-        assert!(!l.closed);
+        assert!(!l.spline_m.is_closed());
     }
 
     #[test]
@@ -303,7 +300,7 @@ mod tests {
         pts.push(pts[0]);
         let [l, r] = lane_rails(&pts, 40.0, true).unwrap();
         for rail in [&l, &r] {
-            assert!(rail.closed);
+            assert!(rail.spline_m.is_closed());
             assert_eq!(rail.points_mm[0], *rail.points_mm.last().unwrap());
         }
         let inner = min_radius(&l.spline_m) * 1000.0;

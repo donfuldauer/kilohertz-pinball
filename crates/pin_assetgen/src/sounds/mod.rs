@@ -151,7 +151,10 @@ mod tests {
         for id in MOTIF_IDS {
             all.push((id.to_string(), render_motif(id, KIT_SAMPLE_RATE).unwrap()));
         }
-        all.push((MUSIC_ID.into(), render_music(&meta, KIT_SAMPLE_RATE).unwrap()));
+        all.push((
+            MUSIC_ID.into(),
+            render_music(&meta, KIT_SAMPLE_RATE).unwrap(),
+        ));
         for (id, v) in &all {
             let (rms, peak) = rms_peak(v);
             assert!(db(rms) > -30.0, "{id}: rms {:.1} dBFS", db(rms));
@@ -186,7 +189,10 @@ mod tests {
     #[test]
     fn ball_roll_seam_within_bound() {
         let v = render_sfx("sfx_ball_roll", KIT_SAMPLE_RATE).unwrap();
-        assert_eq!(v.len(), (BALL_ROLL_SECONDS * f64::from(KIT_SAMPLE_RATE)) as usize);
+        assert_eq!(
+            v.len(),
+            (BALL_ROLL_SECONDS * f64::from(KIT_SAMPLE_RATE)) as usize
+        );
         let seam = (v[v.len() - 1] - v[0]).abs();
         assert!(seam <= BALL_ROLL_SEAM_BOUND, "seam {seam}");
     }

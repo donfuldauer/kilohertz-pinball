@@ -293,7 +293,12 @@ fn plan() -> Vec<Planned> {
         })
     };
     for &id in sounds::SFX_IDS {
-        push(id.into(), format!("audio/{id}.wav"), AssetKind::Sound, Source::Sfx(id));
+        push(
+            id.into(),
+            format!("audio/{id}.wav"),
+            AssetKind::Sound,
+            Source::Sfx(id),
+        );
     }
     push(
         sounds::MUSIC_ID.into(),
@@ -302,7 +307,12 @@ fn plan() -> Vec<Planned> {
         Source::Music,
     );
     for &id in sounds::MOTIF_IDS {
-        push(id.into(), format!("audio/{id}.wav"), AssetKind::Motif, Source::Motif(id));
+        push(
+            id.into(),
+            format!("audio/{id}.wav"),
+            AssetKind::Motif,
+            Source::Motif(id),
+        );
     }
     for font in [fonts::FONT_5X7, fonts::FONT_8X16] {
         let n = font.name();
@@ -314,15 +324,30 @@ fn plan() -> Vec<Planned> {
         );
     }
     let img = AssetKind::Image;
-    push("img_backglass_base".into(), "backglass/base.png".into(), img, Source::BackglassBase);
-    push("img_backglass_logo".into(), "backglass/logo.png".into(), img, Source::BackglassLogo);
+    push(
+        "img_backglass_base".into(),
+        "backglass/base.png".into(),
+        img,
+        Source::BackglassBase,
+    );
+    push(
+        "img_backglass_logo".into(),
+        "backglass/logo.png".into(),
+        img,
+        Source::BackglassLogo,
+    );
     push(
         "img_backglass_logo_mask".into(),
         "backglass/logo_mask.png".into(),
         img,
         Source::BackglassLogoMask,
     );
-    push("img_playfield".into(), "art/playfield.png".into(), img, Source::Playfield);
+    push(
+        "img_playfield".into(),
+        "art/playfield.png".into(),
+        img,
+        Source::Playfield,
+    );
     for &(name, text) in art::INSERT_LABELS {
         push(
             format!("img_insert_{name}"),
@@ -449,15 +474,24 @@ mod tests {
         assert_eq!(KitManifest::from_toml(&text).unwrap(), m);
         assert!(text.contains("seed = \"18446744073709551615\""));
         assert!(KitManifest::from_toml("").is_err());
-        assert!(KitManifest::from_toml(&text.replace("schema_version = 1", "schema_version = 2")).is_err());
+        assert!(
+            KitManifest::from_toml(&text.replace("schema_version = 1", "schema_version = 2"))
+                .is_err()
+        );
         assert!(KitManifest::from_toml(&text.replace("audio/x.wav", "../x.wav")).is_err());
         assert!(KitManifest::from_toml(&text.replace("audio/x.wav", "/x.wav")).is_err());
         assert!(KitManifest::from_toml(&text.replace("audio/x.wav", "a\\\\x.wav")).is_err());
         let dup = format!(
             "{text}\n[[entries]]\nid = \"sfx_x\"\npath = \"b.wav\"\nkind = \"sound\"\ngenerator_version = 1\nsha256_or_hash = \"\"\n"
         );
-        assert!(KitManifest::from_toml(&dup).unwrap_err().contains("duplicate"));
-        assert!(KitManifest::from_toml(&text.replace("kind = \"sound\"", "kind = \"scene\"")).is_err());
+        assert!(
+            KitManifest::from_toml(&dup)
+                .unwrap_err()
+                .contains("duplicate")
+        );
+        assert!(
+            KitManifest::from_toml(&text.replace("kind = \"sound\"", "kind = \"scene\"")).is_err()
+        );
     }
 
     #[test]
@@ -475,7 +509,10 @@ mod tests {
                 .collect(),
         };
         let defs = m.sound_defs();
-        assert_eq!(defs.len(), sounds::SFX_IDS.len() + 1 + sounds::MOTIF_IDS.len());
+        assert_eq!(
+            defs.len(),
+            sounds::SFX_IDS.len() + 1 + sounds::MOTIF_IDS.len()
+        );
         assert_eq!(defs.iter().filter(|d| d.bus == SoundBus::Music).count(), 1);
         assert_eq!(
             defs.iter().filter(|d| d.bus == SoundBus::Callout).count(),

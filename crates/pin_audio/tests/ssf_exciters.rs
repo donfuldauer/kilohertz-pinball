@@ -97,7 +97,10 @@ fn path_matches_the_law_and_is_continuous() {
             }
         }
         if i == 0 {
-            assert!(g.iter().all(|&v| v <= g[CH_SL]), "SL dominates at the start");
+            assert!(
+                g.iter().all(|&v| v <= g[CH_SL]),
+                "SL dominates at the start"
+            );
         }
         if i == N - 1 {
             assert!(g.iter().all(|&v| v <= g[CH_BR]), "BR dominates at the end");
@@ -210,11 +213,20 @@ fn render_and_feed_never_allocate_and_hash_is_stable() {
         let before = allocs();
         for t in 0..2000u64 {
             let x = (t as f32 * 0.3).sin() * 250.0;
-            m.feed(roll((t % 3) as u16, x, (t % 1000) as f32, (t % 300) as f32 / 100.0));
-            if t % 37 == 0 {
-                m.feed(HapticEvent::new(t, HapticKind::CoilFire { coil: CoilId(5) }, 0.8));
+            m.feed(roll(
+                (t % 3) as u16,
+                x,
+                (t % 1000) as f32,
+                (t % 300) as f32 / 100.0,
+            ));
+            if t.is_multiple_of(37) {
+                m.feed(HapticEvent::new(
+                    t,
+                    HapticKind::CoilFire { coil: CoilId(5) },
+                    0.8,
+                ));
             }
-            if t % 91 == 0 {
+            if t.is_multiple_of(91) {
                 m.feed(HapticEvent::new(t, HapticKind::Bumper { mech: 1 }, 1.0));
             }
             m.render(&mut out);

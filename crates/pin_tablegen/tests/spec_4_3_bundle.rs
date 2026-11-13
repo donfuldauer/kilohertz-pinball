@@ -93,7 +93,11 @@ fn table_toml_is_the_serialised_manifest() {
     let generated = gen_ok(&a3_layout(), &base);
     let parsed = TableManifest::from_toml_str(&generated.table_toml).unwrap();
     assert_eq!(parsed, generated.table);
-    assert_eq!(&generated.glb[..4], b"glTF", "playfield.glb is a binary glTF");
+    assert_eq!(
+        &generated.glb[..4],
+        b"glTF",
+        "playfield.glb is a binary glTF"
+    );
 }
 
 #[test]

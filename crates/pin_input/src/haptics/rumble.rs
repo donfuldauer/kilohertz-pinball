@@ -166,10 +166,7 @@ impl RumbleSettings {
 
     /// The override for `source`, if any.
     pub fn override_for(&self, source: u16) -> Option<RumbleEffect> {
-        self.overrides
-            .iter()
-            .find(|o| o.0 == source)
-            .map(|o| o.1)
+        self.overrides.iter().find(|o| o.0 == source).map(|o| o.1)
     }
 
     /// The effect used for `e` (override first, then its kind).
@@ -408,6 +405,8 @@ mod tests {
     }
 
     #[test]
+    // Exercises the by-reference `IntoHapticEvent` impls on purpose.
+    #[allow(clippy::needless_borrows_for_generic_args)]
     fn overrides_master_and_disable() {
         let s = RumbleSettings::default().with_override(3, RumbleEffect::new(1.0, 0.0, 10));
         assert_eq!(s.override_for(3), Some(RumbleEffect::new(1.0, 0.0, 10)));
@@ -416,8 +415,16 @@ mod tests {
         assert!(s2.clear_override(3));
         assert!(!s2.clear_override(3));
         let mut m = RumbleMapper::new(s);
-        m.feed(&coil(0, 2.0));
-        assert_eq!(m.output_at(0), Rumble { low: 1.0, high: 0.0 });
+        let strong = coil(0, 2.0);
+        m.feed(&strong);
+        assert_eq!(strong.tick, 0);
+        assert_eq!(
+            m.output_at(0),
+            Rumble {
+                low: 1.0,
+                high: 0.0
+            }
+        );
         assert_eq!(m.output_at(10), Rumble::OFF);
 
         let mut s = RumbleSettings {
@@ -430,16 +437,24 @@ mod tests {
             source: 9,
             strength: 1.0,
         });
-        assert_eq!(m.output_at(0), Rumble { low: 0.25, high: 0.25 });
+        assert_eq!(
+            m.output_at(0),
+            Rumble {
+                low: 0.25,
+                high: 0.25
+            }
+        );
         s.enabled = false;
         m.set_settings(s);
         assert!(!m.settings().enabled);
         m.reset();
-        m.feed(&HapticsTelemetryEvent {
+        let legacy = HapticsTelemetryEvent {
             tick: 1,
             source: 9,
             strength: 1.0,
-        });
+        };
+        m.feed(&legacy);
+        assert_eq!(legacy.source, 9);
         assert!(m.output_at(1).is_off());
         let mut full = RumbleSettings::default();
         for i in 0..MAX_RUMBLE_OVERRIDES as u16 {

@@ -12,7 +12,8 @@ use crate::rng::Pcg32;
 pub use png::{ColorType, encode_png};
 
 /// Palette used when the table gives none (the Appendix A example colours).
-pub const DEFAULT_PALETTE: [[u8; 3]; 3] = [[0x0b, 0x1d, 0x3a], [0xf2, 0xa9, 0x00], [0xe6, 0x39, 0x46]];
+pub const DEFAULT_PALETTE: [[u8; 3]; 3] =
+    [[0x0b, 0x1d, 0x3a], [0xf2, 0xa9, 0x00], [0xe6, 0x39, 0x46]];
 
 /// Translite (backglass) size in pixels.
 pub const TRANSLITE_SIZE: (u32, u32) = (512, 384);
@@ -89,8 +90,8 @@ impl Image {
                 self.data[o] = mix(self.data[o], luma(rgb));
             }
             ColorType::Rgb => {
-                for c in 0..3 {
-                    self.data[o + c] = mix(self.data[o + c], rgb[c]);
+                for (d, &v) in self.data[o..o + 3].iter_mut().zip(&rgb) {
+                    *d = mix(*d, v);
                 }
             }
             ColorType::Rgba => {
@@ -99,10 +100,9 @@ impl Image {
                 if out_a == 0 {
                     return;
                 }
-                for c in 0..3 {
-                    let num = u32::from(rgb[c]) * a * 255
-                        + u32::from(self.data[o + c]) * da * (255 - a);
-                    self.data[o + c] = ((num + out_a * 255 / 2) / (out_a * 255)) as u8;
+                for (d, &v) in self.data[o..o + 3].iter_mut().zip(&rgb) {
+                    let num = u32::from(v) * a * 255 + u32::from(*d) * da * (255 - a);
+                    *d = ((num + out_a * 255 / 2) / (out_a * 255)) as u8;
                 }
                 self.data[o + 3] = out_a as u8;
             }
@@ -146,7 +146,16 @@ impl Image {
 
     /// A line `thick` pixels wide (integer DDA, fixed step count).
     #[allow(clippy::too_many_arguments)]
-    pub fn line(&mut self, x0: i64, y0: i64, x1: i64, y1: i64, thick: i64, rgb: [u8; 3], alpha: u8) {
+    pub fn line(
+        &mut self,
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
+        thick: i64,
+        rgb: [u8; 3],
+        alpha: u8,
+    ) {
         let steps = (x1 - x0).abs().max((y1 - y0).abs()).max(1);
         let t0 = -(thick / 2);
         for i in 0..=steps {
@@ -255,14 +264,21 @@ fn readable(fg: [u8; 3], bg: [u8; 3]) -> [u8; 3] {
 /// (1 when even scale 1 does not fit; the text is then clipped).
 fn fit_scale(font: &BitmapFont, text: &str, avail: u32, max: u32) -> u32 {
     let w = u64::from(font.text_width(text));
-    (1..=max).rev().find(|&s| w * u64::from(s) <= u64::from(avail)).unwrap_or(1)
+    (1..=max)
+        .rev()
+        .find(|&s| w * u64::from(s) <= u64::from(avail))
+        .unwrap_or(1)
 }
 
 /// The title as drawn on the art: upper-cased ASCII letters, other
 /// characters kept (non-ASCII draws the font's fallback box), at most 48
 /// characters.
 fn display_title(meta: &TableMeta) -> String {
-    meta.title.chars().take(48).map(|c| c.to_ascii_uppercase()).collect()
+    meta.title
+        .chars()
+        .take(48)
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
 }
 
 /// Where the translite title goes: `(x, y, scale)`.
@@ -279,7 +295,11 @@ fn translite_title_place(meta: &TableMeta) -> (String, i64, i64, u32) {
 /// The backglass translite base layer (RGB).
 pub fn translite_base(meta: &TableMeta) -> Image {
     let (w, h) = TRANSLITE_SIZE;
-    let (c0, c1, c2) = (palette_color(meta, 0), palette_color(meta, 1), palette_color(meta, 2));
+    let (c0, c1, c2) = (
+        palette_color(meta, 0),
+        palette_color(meta, 1),
+        palette_color(meta, 2),
+    );
     let mut rng = Pcg32::new(crate::meta_seed(meta), STREAM_TRANSLITE);
     let mut img = Image::new(w, h, ColorType::Rgb);
     // Vertical gradient.
@@ -349,7 +369,10 @@ pub fn translite_logo_mask(meta: &TableMeta) -> Image {
         width: w,
         height: h,
         color: ColorType::Gray,
-        data: mask.into_iter().map(|m| if m == 0 { 0 } else { 255 }).collect(),
+        data: mask
+            .into_iter()
+            .map(|m| if m == 0 { 0 } else { 255 })
+            .collect(),
     }
 }
 
@@ -357,7 +380,11 @@ pub fn translite_logo_mask(meta: &TableMeta) -> Image {
 pub fn playfield(meta: &TableMeta) -> Image {
     let (w, h) = PLAYFIELD_SIZE;
     let (wi, hi) = (i64::from(w), i64::from(h));
-    let (c0, c1, c2) = (palette_color(meta, 0), palette_color(meta, 1), palette_color(meta, 2));
+    let (c0, c1, c2) = (
+        palette_color(meta, 0),
+        palette_color(meta, 1),
+        palette_color(meta, 2),
+    );
     let c3 = palette_color(meta, 3);
     let mut rng = Pcg32::new(crate::meta_seed(meta), STREAM_PLAYFIELD);
     let mut img = Image::new(w, h, ColorType::Rgb);
@@ -540,7 +567,7 @@ mod tests {
         for (i, &m) in mask.data.iter().enumerate() {
             assert_eq!(m != 0, logo.data[i * 4 + 3] != 0);
         }
-        assert!(mask.data.iter().any(|&m| m == 255));
+        assert!(mask.data.contains(&255));
     }
 
     #[test]

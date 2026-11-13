@@ -90,7 +90,15 @@ pub(crate) fn render(meta: &TableMeta, sr: u32) -> Vec<f32> {
             if b % 2 == 0 {
                 s.tone(t, 0.25, 130.0, 45.0, 0.03, 0.0005, 0.09, 1.0, &[1.0]);
             } else {
-                s.noise(&mut drums, t, 0.2, Filter::Band(1800.0, 0.8), 0.0, 0.05, 0.9);
+                s.noise(
+                    &mut drums,
+                    t,
+                    0.2,
+                    Filter::Band(1800.0, 0.8),
+                    0.0,
+                    0.05,
+                    0.9,
+                );
                 s.tone(t, 0.12, 190.0, 170.0, 0.05, 0.0005, 0.04, 0.35, &[1.0]);
             }
             for h in 0..2 {
@@ -175,7 +183,13 @@ static MOTIFS: [Motif; 10] = [
         id: "callout_ball_saved",
         voice: &BELL,
         tau: 0.15,
-        notes: &[(Some(72), 1), (Some(79), 1), (None, 1), (Some(72), 1), (Some(79), 4)],
+        notes: &[
+            (Some(72), 1),
+            (Some(79), 1),
+            (None, 1),
+            (Some(72), 1),
+            (Some(79), 4),
+        ],
     },
     Motif {
         id: "callout_replay",
@@ -206,7 +220,14 @@ static MOTIFS: [Motif; 10] = [
         id: "callout_mode_complete",
         voice: &BELL,
         tau: 0.3,
-        notes: &[(Some(69), 1), (Some(73), 1), (Some(76), 1), (Some(81), 2), (Some(76), 1), (Some(81), 6)],
+        notes: &[
+            (Some(69), 1),
+            (Some(73), 1),
+            (Some(76), 1),
+            (Some(81), 2),
+            (Some(76), 1),
+            (Some(81), 6),
+        ],
     },
 ];
 

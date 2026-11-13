@@ -8,8 +8,8 @@ use proptest::prelude::*;
 use std::collections::BTreeSet;
 
 fn fonts() -> [(&'static str, &'static BitmapFont, usize, usize); 2] {
-    let a: &'static BitmapFont = &FONT_5X7;
-    let b: &'static BitmapFont = &FONT_8X16;
+    let a: &'static BitmapFont = FONT_5X7;
+    let b: &'static BitmapFont = FONT_8X16;
     [("5x7", a, 5, 7), ("8x16", b, 8, 16)]
 }
 

@@ -97,7 +97,8 @@ never panics on arbitrary bytes.
 6. **Back-pressure.** The sim thread never blocks on the network: encoded
    datagrams go through a bounded lock-free ring to a telemetry thread that
    owns the socket. If the ring is full, datagrams are dropped (counted) and
-   the sender forces a full state on the next tick, so listeners
+   sim loop forces a full state on the next tick (`TelemetryTx::push_batch`
+   returns `false` → `TelemetryEncoder::force_full_state`), so listeners
    resynchronise.
 
 ## 5. Haptic source ids (kind 5)
@@ -125,8 +126,9 @@ roll is not an impulse and is not part of the telemetry stream.
   first full state arrives, the mirror is unknown.
 - Datagrams of one tick may arrive out of order relative to other ticks;
   ignore datagrams whose tick is below the last full-state tick seen.
-- Example (one lamp at full, tick `0x1122334455667788`, full-state flag):
+- Example (lamp 1 at full, tick `0x1122334455667788`, full-state flag; a
+  real full state would carry all 832 entries over 5 datagrams):
 
   ```text
-  50 4E 54 4C 01 01 01 00 88 77 66 55 44 33 22 11  02 00 02 01 00 00 80 3F
+  50 4E 54 4C 01 01 01 00 88 77 66 55 44 33 22 11  02 00 01 00 00 00 80 3F
   ```

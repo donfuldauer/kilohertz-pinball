@@ -13,7 +13,8 @@ use std::path::PathBuf;
 use crate::{KitManifest, TableMeta, generate_kit};
 
 /// Usage text.
-pub const USAGE: &str = "usage: pin_assetgen --title <t> [--palette <hex,...>] [--seed <n>] --out <dir>";
+pub const USAGE: &str =
+    "usage: pin_assetgen --title <t> [--palette <hex,...>] [--seed <n>] --out <dir>";
 
 /// Parsed command line.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,16 +123,31 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(a.meta.title, "Apex Circuit");
-        assert_eq!(a.meta.palette, vec![[0x0b, 0x1d, 0x3a], [0xf2, 0xa9, 0], [0xe6, 0x39, 0x46]]);
+        assert_eq!(
+            a.meta.palette,
+            vec![[0x0b, 0x1d, 0x3a], [0xf2, 0xa9, 0], [0xe6, 0x39, 0x46]]
+        );
         assert_eq!(a.meta.seed, 16);
         assert_eq!(a.out, PathBuf::from("/tmp/x"));
     }
 
     #[test]
     fn errors() {
-        assert!(parse_args(v(&["--out", "x"])).unwrap_err().contains("--title"));
-        assert!(parse_args(v(&["--title", "t"])).unwrap_err().contains("--out"));
-        assert!(parse_args(v(&["--title"])).unwrap_err().contains("needs a value"));
+        assert!(
+            parse_args(v(&["--out", "x"]))
+                .unwrap_err()
+                .contains("--title")
+        );
+        assert!(
+            parse_args(v(&["--title", "t"]))
+                .unwrap_err()
+                .contains("--out")
+        );
+        assert!(
+            parse_args(v(&["--title"]))
+                .unwrap_err()
+                .contains("needs a value")
+        );
         assert!(parse_args(v(&["--bogus"])).unwrap_err().contains("unknown"));
         assert_eq!(parse_args(v(&["--help"])).unwrap_err(), USAGE);
         assert!(parse_args(v(&["--title", "t", "--seed", "-1", "--out", "x"])).is_err());

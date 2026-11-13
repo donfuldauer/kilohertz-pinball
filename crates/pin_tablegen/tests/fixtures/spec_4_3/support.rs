@@ -64,10 +64,8 @@ pub const LAMPS: [&str; 8] = [
 pub fn temp_dir(tag: &str) -> PathBuf {
     static N: AtomicUsize = AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "spec_4_3-{tag}-{}-{n}",
-        std::process::id()
-    ));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("spec_4_3-{tag}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -201,8 +199,7 @@ pub fn check_valid_bundle(
                 }
             }
         }
-        if m.indices.len() % 3 != 0 || m.indices.iter().any(|&i| i as usize >= m.positions.len())
-        {
+        if m.indices.len() % 3 != 0 || m.indices.iter().any(|&i| i as usize >= m.positions.len()) {
             return Err(format!("mesh {:?} has a bad index buffer", m.name));
         }
     }
@@ -251,7 +248,13 @@ fn raw_world(scene: &GltfScene) -> Vec<Vec<Tri>> {
                 .collect();
             m.indices
                 .chunks_exact(3)
-                .map(|c| [world[c[0] as usize], world[c[1] as usize], world[c[2] as usize]])
+                .map(|c| {
+                    [
+                        world[c[0] as usize],
+                        world[c[1] as usize],
+                        world[c[2] as usize],
+                    ]
+                })
                 .collect()
         })
         .collect()
@@ -703,12 +706,14 @@ pub fn elem() -> impl Strategy<Value = Elem> {
             prop::collection::vec(-15.0f32..15.0, 3..=5),
             0usize..7
         )
-            .prop_map(|(radius, base_deg, jitter_deg, material)| Elem::WallClosed {
-                radius,
-                base_deg,
-                jitter_deg,
-                material
-            }),
+            .prop_map(
+                |(radius, base_deg, jitter_deg, material)| Elem::WallClosed {
+                    radius,
+                    base_deg,
+                    jitter_deg,
+                    material
+                }
+            ),
         (-40.0f32..40.0, -30.0f32..30.0, 3.0f32..12.0, any::<bool>()).prop_map(
             |(dx, dy, radius, rubber)| Elem::Post {
                 dx,

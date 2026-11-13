@@ -104,7 +104,7 @@ fn producer_and_consumer_never_allocate() {
         let e = HapticEvent::new(t, kind_of(t), 0.7);
         tx.push(e);
         bus.push(e);
-        if t % 3 == 0 {
+        if t.is_multiple_of(3) {
             while let Some(e) = rx.pop() {
                 mapper.feed(e);
             }

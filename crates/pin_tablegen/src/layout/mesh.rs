@@ -50,6 +50,7 @@ impl Mesh {
     }
 
     /// Number of triangles.
+    #[cfg(test)]
     pub fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }

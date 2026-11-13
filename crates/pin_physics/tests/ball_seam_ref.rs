@@ -281,6 +281,10 @@ impl MovingBodies for Rotors {
         for b in &mut self.bodies {
             b.angle = b.angle_at(dt);
             b.omega = b.omega_at(dt);
+            // Queries between ticks (tests) see the committed state.
+            b.seg_t = 0.0;
+            b.seg_angle = b.angle;
+            b.seg_omega = b.omega;
         }
     }
     fn layer_mask(&self, body: usize) -> u8 {
@@ -325,5 +329,157 @@ impl MovingBodies for Rotors {
         b.seg_t = time;
         b.seg_angle = angle;
         b.seg_omega = omega;
+    }
+}
+
+/// A small flipper table: pitched floor in a walled box, two torque-driven
+/// rotors at the bottom (flippers with stops), a kinematic kicker slab on
+/// the left wall, four balls of different profiles.
+pub struct FlipperTable {
+    pub world: pin_physics::world::StaticWorld,
+    pub solver: pin_physics::ball::BallSolver,
+    pub rotors: Rotors,
+    pub kicker: Slab,
+}
+
+pub const FLIP_TORQUE: f32 = 1.5;
+pub const REST_TORQUE: f32 = 0.05;
+
+impl FlipperTable {
+    pub fn new(balls: usize) -> Self {
+        use pin_core::PhysicsDefaults;
+        use pin_core::ids::ProfileId;
+        use pin_physics::ball::{Ball, BallSolver, BallSolverConfig};
+        use pin_physics::world::{StaticShape, StaticWorldBuilder};
+
+        let pitch = 6.5f32.to_radians();
+        let mut cfg = BallSolverConfig::from_defaults(&PhysicsDefaults::builtin());
+        cfg.gravity = Vec3::new(0.0, -9.81 * libm::sinf(pitch), -9.81 * libm::cosf(pitch));
+        let profiles: Vec<pin_core::BallProfile> =
+            pin_core::profiles::builtin_profiles().collect();
+        let mut solver = BallSolver::new(cfg, &profiles);
+
+        let cuboid = |c: Vec3, h: Vec3| StaticShape::Cuboid {
+            center: c,
+            half_extents: h,
+            rotation: glam::Quat::IDENTITY,
+        };
+        let mut b = StaticWorldBuilder::new();
+        b.add_collider(
+            cuboid(Vec3::new(0.0, 0.0, -0.05), Vec3::new(0.4, 0.6, 0.05)),
+            layers::ALL,
+            true,
+        );
+        for (c, h) in [
+            (Vec3::new(0.26, 0.05, 0.05), Vec3::new(0.01, 0.45, 0.05)),
+            (Vec3::new(-0.26, 0.05, 0.05), Vec3::new(0.01, 0.45, 0.05)),
+            (Vec3::new(0.0, 0.51, 0.05), Vec3::new(0.27, 0.01, 0.05)),
+            (Vec3::new(0.0, -0.41, 0.05), Vec3::new(0.27, 0.01, 0.05)),
+            // Inlane walls guiding balls onto the flippers.
+            (Vec3::new(-0.19, -0.15, 0.05), Vec3::new(0.07, 0.008, 0.05)),
+            (Vec3::new(0.19, -0.15, 0.05), Vec3::new(0.07, 0.008, 0.05)),
+        ] {
+            b.add_collider(cuboid(c, h), layers::ALL, true);
+        }
+        let world = b.build();
+
+        let z = 0.0135;
+        let mut left = RotorBody::new(Vec3::new(-0.115, -0.16, z), 0.075, 0.009, 2.5e-4, -0.5);
+        left.limits = (-0.5, 0.5);
+        left.torque = -REST_TORQUE;
+        let mut right = RotorBody::new(
+            Vec3::new(0.115, -0.16, z),
+            0.075,
+            0.009,
+            2.5e-4,
+            std::f32::consts::PI + 0.5,
+        );
+        right.limits = (std::f32::consts::PI - 0.5, std::f32::consts::PI + 0.5);
+        right.torque = REST_TORQUE;
+        let mut rotors = Rotors::default();
+        rotors.bodies.push(left);
+        rotors.bodies.push(right);
+
+        let mut kicker = SlabBody::new(
+            Vec3::new(-0.24, 0.1, 0.02),
+            Vec3::new(0.01, 0.05, 0.02),
+            Vec3::ZERO,
+        );
+        kicker.material = Material::Rubber;
+        let kicker = Slab::one(kicker);
+
+        let starts = [
+            (0usize, Vec3::new(-0.05, 0.3, 0.0), Vec3::new(-0.6, -0.4, 0.0)),
+            (2, Vec3::new(0.1, 0.4, 0.0), Vec3::new(0.3, -1.0, 0.0)),
+            (3, Vec3::new(-0.15, 0.0, 0.0), Vec3::new(0.2, 0.5, 0.0)),
+            (5, Vec3::new(0.15, 0.1, 0.0), Vec3::new(-0.8, 0.0, 0.0)),
+            (4, Vec3::new(0.0, 0.2, 0.0), Vec3::new(0.0, 0.0, 0.0)),
+            (0, Vec3::new(0.05, 0.45, 0.0), Vec3::new(0.5, 0.0, 0.0)),
+        ];
+        for &(p, pos, vel) in starts.iter().take(balls) {
+            let r = profiles[p].radius_m();
+            let mut ball = Ball::new(ProfileId(p as u16), pos + Vec3::new(0.0, 0.0, r + 0.001));
+            ball.velocity = vel;
+            solver.add_ball(ball).unwrap();
+        }
+        Self {
+            world,
+            solver,
+            rotors,
+            kicker,
+        }
+    }
+
+    /// Drive for `tick`: flipper buttons and kicker motion (the owner's
+    /// business, set between steps).
+    pub fn drive(&mut self, tick: u32) {
+        let left = (tick / 300) % 2 == 1;
+        let right = (tick / 250) % 3 == 1;
+        self.rotors.bodies[0].torque = if left { FLIP_TORQUE } else { -REST_TORQUE };
+        self.rotors.bodies[1].torque = if right { -FLIP_TORQUE } else { REST_TORQUE };
+        let k = &mut self.kicker.bodies[0];
+        k.velocity = match tick % 400 {
+            0..=9 => Vec3::new(1.5, 0.0, 0.0),
+            10..=59 => Vec3::new(-0.3, 0.0, 0.0),
+            _ => Vec3::ZERO,
+        };
+    }
+
+    pub fn step(&mut self, events: &mut pin_physics::ball::BallEvents) {
+        let geo = pin_physics::ball::Geometry::new(&self.world);
+        self.solver.step_with_bodies(
+            &geo,
+            &mut [&mut self.rotors, &mut self.kicker],
+            1.0e-3,
+            events,
+        );
+    }
+
+    /// Bit pattern of the balls and bodies.
+    pub fn state_bits(&self) -> Vec<u32> {
+        let mut out = Vec::new();
+        for (h, b) in self.solver.balls() {
+            out.push(u32::from(h.0));
+            for x in b
+                .position
+                .to_array()
+                .into_iter()
+                .chain(b.velocity.to_array())
+                .chain(b.angular_velocity.to_array())
+                .chain(b.orientation.to_array())
+            {
+                out.push(x.to_bits());
+            }
+        }
+        for r in &self.rotors.bodies {
+            out.push(r.angle.to_bits());
+            out.push(r.omega.to_bits());
+            out.push(r.angular_impulse.to_bits());
+        }
+        for s in &self.kicker.bodies {
+            out.extend(s.center.to_array().map(f32::to_bits));
+            out.extend(s.received.to_array().map(f32::to_bits));
+        }
+        out
     }
 }

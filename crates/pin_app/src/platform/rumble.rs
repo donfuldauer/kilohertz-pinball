@@ -101,8 +101,8 @@ impl RumbleDriver {
         self.rx.drain(|e| mapper.feed(e));
         let cmd = RumbleCommand::from_rumble(self.mapper.output_at(tick));
         let changed = (cmd.low, cmd.high) != (self.last.low, self.last.high);
-        let refresh = cmd != RumbleCommand::OFF
-            && tick.saturating_sub(self.last_sent) >= RUMBLE_RESEND_TICKS;
+        let refresh =
+            cmd != RumbleCommand::OFF && tick.saturating_sub(self.last_sent) >= RUMBLE_RESEND_TICKS;
         if changed || refresh {
             self.last = cmd;
             self.last_sent = tick;

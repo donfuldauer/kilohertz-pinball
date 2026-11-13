@@ -634,11 +634,7 @@ mod tests {
                 1.0,
             ));
         }
-        m.feed(HapticEvent::new(
-            0,
-            HapticKind::Bumper { mech: 0 },
-            0.0,
-        ));
+        m.feed(HapticEvent::new(0, HapticKind::Bumper { mech: 0 }, 0.0));
         assert_eq!(m.stolen_voices(), 4);
         assert_eq!(m.active_impulse_voices(), MAX_IMPULSE_VOICES);
         m.render(&mut out);
@@ -663,7 +659,10 @@ mod tests {
         let stereo = vec![0.25f32; 2 * 480];
         let mut out = vec![0.0f32; 8 * 480];
         m.render_with_stereo(&stereo, &mut out);
-        assert!(out.chunks_exact(8).all(|f| f[CH_FL] == 0.25 && f[CH_FR] == 0.25));
+        assert!(
+            out.chunks_exact(8)
+                .all(|f| f[CH_FL] == 0.25 && f[CH_FR] == 0.25)
+        );
         // Constant loop × ramping gain: positive on all four corners.
         let last = &out[8 * 479..];
         for ch in CORNERS {

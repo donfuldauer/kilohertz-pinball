@@ -70,7 +70,12 @@ fn self_intersecting_closed_wall_names_the_wall() {
         .push(wall(&[[100.0, 600.0], [200.0, 650.0]], false));
     // A bow-tie: edges 0-1 and 2-3 cross.
     layout.walls.push(wall(
-        &[[100.0, 100.0], [200.0, 200.0], [200.0, 100.0], [100.0, 200.0]],
+        &[
+            [100.0, 100.0],
+            [200.0, 200.0],
+            [200.0, 100.0],
+            [100.0, 200.0],
+        ],
         true,
     ));
     let err = gen_err(&layout, &base_table());
@@ -82,7 +87,12 @@ fn closed_wall_whose_closing_edge_crosses_names_the_wall() {
     let mut layout = plain();
     // Open, this polyline is simple; the closing edge 3-0 crosses edge 1-2.
     layout.walls.push(wall(
-        &[[100.0, 100.0], [200.0, 100.0], [150.0, 180.0], [150.0, 40.0]],
+        &[
+            [100.0, 100.0],
+            [200.0, 100.0],
+            [150.0, 180.0],
+            [150.0, 40.0],
+        ],
         true,
     ));
     let err = gen_err(&layout, &base_table());
@@ -116,7 +126,12 @@ fn deck_layer_above_seven_names_the_deck() {
     layout.decks.push(Deck {
         layer: 9,
         z: 60.0,
-        outline: vec![[100.0, 500.0], [300.0, 500.0], [300.0, 700.0], [100.0, 700.0]],
+        outline: vec![
+            [100.0, 500.0],
+            [300.0, 500.0],
+            [300.0, 700.0],
+            [100.0, 700.0],
+        ],
         material: Material::Acrylic,
     });
     let err = gen_err(&layout, &base_table());
@@ -300,14 +315,21 @@ fn apply(layout: &mut LayoutManifest, d: &Damage) {
     match d {
         Damage::UnknownLamp => layout.inserts.push(insert("ghost_lamp", cx, cy)),
         Damage::BowTie => layout.walls.push(wall(
-            &[[cx, cy], [cx + 60.0, cy + 60.0], [cx + 60.0, cy], [cx, cy + 60.0]],
+            &[
+                [cx, cy],
+                [cx + 60.0, cy + 60.0],
+                [cx + 60.0, cy],
+                [cx, cy + 60.0],
+            ],
             true,
         )),
         Damage::MissingSpline => layout.ramps.push(Ramp {
             spline: "ghost_spline".into(),
             entry_width: 50.0,
         }),
-        Damage::NanPoint => layout.walls.push(wall(&[[cx, cy], [f32::NAN, f32::NAN]], false)),
+        Damage::NanPoint => layout
+            .walls
+            .push(wall(&[[cx, cy], [f32::NAN, f32::NAN]], false)),
         Damage::HugePoint(v) => layout.walls.push(wall(&[[cx, cy], [*v, cy]], false)),
         Damage::ZeroRadius => layout.posts.push(Post {
             position: [cx, cy],
@@ -330,13 +352,19 @@ fn apply(layout: &mut LayoutManifest, d: &Damage) {
             width: 1.0e-4,
         }),
         Damage::OnePointWall => layout.walls.push(wall(&[[cx, cy]], true)),
-        Damage::DuplicatePoint => layout
-            .walls
-            .push(wall(&[[cx, cy], [cx, cy], [cx, cy], [cx + 50.0, cy]], false)),
+        Damage::DuplicatePoint => layout.walls.push(wall(
+            &[[cx, cy], [cx, cy], [cx, cy], [cx + 50.0, cy]],
+            false,
+        )),
         Damage::BadDeckLayer(layer) => layout.decks.push(Deck {
             layer: *layer,
             z: 60.0,
-            outline: vec![[cx, cy], [cx + 90.0, cy], [cx + 90.0, cy + 90.0], [cx, cy + 90.0]],
+            outline: vec![
+                [cx, cy],
+                [cx + 90.0, cy],
+                [cx + 90.0, cy + 90.0],
+                [cx, cy + 90.0],
+            ],
             material: Material::Acrylic,
         }),
         Damage::ThinDeck => layout.decks.push(Deck {
@@ -351,10 +379,9 @@ fn apply(layout: &mut LayoutManifest, d: &Damage) {
             ..insert("lamp_h", cx, cy)
         }),
         // A hairpin: the wall returns along itself 0.5 mm away.
-        Damage::DoubledBackWall => layout.walls.push(wall(
-            &[[cx, cy], [cx + 80.0, cy], [cx, cy + 0.5]],
-            false,
-        )),
+        Damage::DoubledBackWall => layout
+            .walls
+            .push(wall(&[[cx, cy], [cx + 80.0, cy], [cx, cy + 0.5]], false)),
         Damage::SharpLane => layout.lanes.push(Lane {
             kind: LaneKind::Orbit,
             points: vec![[cx, cy], [cx + 60.0, cy], [cx + 2.0, cy + 6.0]],
@@ -407,7 +434,12 @@ fn mutate(text: &str, kind: u8, pos: usize, pick: usize, byte: u8) -> String {
                 out
             };
             let (a, b) = spans[pos % spans.len()];
-            format!("{}{}{}", &text[..a], NUMBERS[pick % NUMBERS.len()], &text[b..])
+            format!(
+                "{}{}{}",
+                &text[..a],
+                NUMBERS[pick % NUMBERS.len()],
+                &text[b..]
+            )
         }
         // Delete a line.
         2 => {
@@ -571,4 +603,125 @@ proptest! {
         }
         parse_and_generate(&text, "noise").map_err(TestCaseError::fail)?;
     }
+}
+
+/// Deliverable 3 at the small end of every size: the result is a refusal
+/// naming the element or a bundle that passes the 4.1 validation.
+#[test]
+fn tiny_sizes_fail_or_validate() {
+    let base = base_table();
+    let mut failures = Vec::new();
+    for tiny in [1.0e-9f32, 1.0e-6, 1.0e-4, 1.0e-3, 0.05, 0.5] {
+        let mut cases: Vec<(&str, LayoutManifest)> = Vec::new();
+
+        let mut l = a3_layout();
+        l.ramps[0].entry_width = tiny;
+        cases.push(("ramps[0]", l));
+
+        let mut l = a3_layout();
+        l.posts[0].radius = tiny;
+        cases.push(("posts[0]", l));
+
+        let mut l = a3_layout();
+        l.lanes[0].width = tiny;
+        cases.push(("lanes[0]", l));
+
+        let mut l = a3_layout();
+        l.inserts[0].size = tiny;
+        cases.push(("inserts[0]", l));
+
+        let mut l = a3_layout();
+        l.decks[0].z = tiny;
+        cases.push(("decks[0]", l));
+
+        let mut l = a3_layout();
+        l.decks[0].outline = vec![[260.0, 700.0], [260.0 + tiny, 700.0], [260.0, 700.0 + tiny]];
+        cases.push(("decks[0]", l));
+
+        let mut l = a3_layout();
+        l.playfield.wall_height = tiny;
+        cases.push(("playfield", l));
+
+        let mut l = a3_layout();
+        l.walls
+            .push(wall(&[[200.0, 500.0], [200.0 + tiny, 500.0]], false));
+        cases.push(("walls[1]", l));
+
+        let mut l = a3_layout();
+        l.lanes[0].points = vec![[40.0, 320.0], [40.0, 320.0 + tiny]];
+        cases.push(("lanes[0]", l));
+
+        for (element, layout) in cases {
+            match generate(&layout, &base) {
+                Ok(g) => {
+                    if let Err(e) = check_valid_bundle(&g, &base, "tiny") {
+                        failures.push(format!("{element} with {tiny}: invalid bundle: {e}"));
+                    }
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if !msg.contains(element) {
+                        failures.push(format!("{element} with {tiny}: error names nothing: {msg}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The same at the large end.
+#[test]
+fn huge_sizes_fail_or_validate() {
+    let base = base_table();
+    let mut failures = Vec::new();
+    for huge in [999.0f32, 1.0e4, 1.0e7, 3.0e38] {
+        let mut cases: Vec<(&str, LayoutManifest)> = Vec::new();
+
+        let mut l = a3_layout();
+        l.ramps[0].entry_width = huge;
+        cases.push(("ramps[0]", l));
+
+        let mut l = a3_layout();
+        l.posts[0].radius = huge;
+        cases.push(("posts[0]", l));
+
+        let mut l = a3_layout();
+        l.lanes[0].width = huge;
+        cases.push(("lanes[0]", l));
+
+        let mut l = a3_layout();
+        l.inserts[0].size = huge;
+        cases.push(("inserts[0]", l));
+
+        let mut l = a3_layout();
+        l.decks[0].z = huge;
+        cases.push(("decks[0]", l));
+
+        let mut l = a3_layout();
+        l.playfield.wall_height = huge;
+        cases.push(("playfield", l));
+
+        let mut l = a3_layout();
+        l.playfield.width = huge;
+        l.playfield.length = huge;
+        cases.push(("playfield", l));
+
+        for (element, layout) in cases {
+            match generate(&layout, &base) {
+                Ok(g) => {
+                    if let Err(e) = check_valid_bundle(&g, &base, "huge") {
+                        failures.push(format!("{element} with {huge}: invalid bundle: {e}"));
+                    }
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if !msg.contains(element) {
+                        failures.push(format!("{element} with {huge}: error names nothing: {msg}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

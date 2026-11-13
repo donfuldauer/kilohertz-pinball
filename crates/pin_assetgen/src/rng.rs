@@ -80,7 +80,9 @@ mod tests {
         let got: Vec<u32> = (0..6).map(|_| r.next_u32()).collect();
         assert_eq!(
             got,
-            [0xa15c02b7, 0x7b47f409, 0xba1d3330, 0x83d2f293, 0xbfa4784b, 0xcbed606e]
+            [
+                0xa15c02b7, 0x7b47f409, 0xba1d3330, 0x83d2f293, 0xbfa4784b, 0xcbed606e
+            ]
         );
     }
 

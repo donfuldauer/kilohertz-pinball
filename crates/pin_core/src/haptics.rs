@@ -175,7 +175,13 @@ mod tests {
     fn sources_and_conversions() {
         let coil = HapticEvent::new(5, HapticKind::CoilFire { coil: CoilId(7) }, 0.5);
         assert_eq!(coil.source(), 7);
-        let eos = HapticEvent::new(5, HapticKind::EosHit { flipper: FlipperId(1) }, 0.5);
+        let eos = HapticEvent::new(
+            5,
+            HapticKind::EosHit {
+                flipper: FlipperId(1),
+            },
+            0.5,
+        );
         assert_eq!(eos.source(), 0x1001);
         let bump = HapticEvent::new(5, HapticKind::Bumper { mech: 0x1FFF }, 0.5);
         assert_eq!(bump.source(), 0x2FFF);

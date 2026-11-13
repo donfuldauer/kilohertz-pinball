@@ -71,8 +71,12 @@ fn check_posts(s: &Scene) -> Result<(), String> {
         let mut z_hi = f64::NEG_INFINITY;
         let mut z_lo = f64::INFINITY;
         for m in &s.meshes {
+            // A ramp or deck passing overhead on another layer is not the post.
+            if m.extras.collision_layer.is_some_and(|l| l != 0) {
+                continue;
+            }
             for t in m.tris.iter().filter(|t| is_vertical(t)) {
-                if !t.iter().all(|p| near(*p)) {
+                if !t.iter().all(|p| near(*p)) || t.iter().all(|p| p[2] > 13.5) {
                     continue;
                 }
                 for k in 0..3 {
@@ -113,8 +117,8 @@ fn check_posts(s: &Scene) -> Result<(), String> {
             ));
         }
         shell_angles.sort_by(f64::total_cmp);
-        let mut gap: f64 = shell_angles[0] + std::f64::consts::TAU
-            - shell_angles[shell_angles.len() - 1];
+        let mut gap: f64 =
+            shell_angles[0] + std::f64::consts::TAU - shell_angles[shell_angles.len() - 1];
         for w in shell_angles.windows(2) {
             gap = gap.max(w[1] - w[0]);
         }
@@ -151,7 +155,10 @@ fn check_walls(s: &Scene) -> Result<(), String> {
                     p[0], p[1]
                 ));
             }
-            let d = visual.iter().map(|t| d_pt_tri(p, t)).fold(f64::INFINITY, f64::min);
+            let d = visual
+                .iter()
+                .map(|t| d_pt_tri(p, t))
+                .fold(f64::INFINITY, f64::min);
             if d > NEAR {
                 return Err(format!(
                     "walls[{i}]: no visual wall face within {NEAR} mm of ({:.1}, {:.1})",
@@ -207,7 +214,10 @@ fn check_lanes(s: &Scene) -> Result<(), String> {
                 let t = trim + (len - 2.0 * trim) * j as f64 / steps as f64;
                 let c = [w[0][0] + dir[0] * t, w[0][1] + dir[1] * t];
                 for side in [-1.0, 1.0] {
-                    let p = [c[0] + side * half * normal[0], c[1] + side * half * normal[1]];
+                    let p = [
+                        c[0] + side * half * normal[0],
+                        c[1] + side * half * normal[1],
+                    ];
                     let d = collision.dist(p);
                     if d > NEAR {
                         return Err(format!(
@@ -216,7 +226,10 @@ fn check_lanes(s: &Scene) -> Result<(), String> {
                             p[0], p[1]
                         ));
                     }
-                    let d = visual.iter().map(|t| d_pt_tri(p, t)).fold(f64::INFINITY, f64::min);
+                    let d = visual
+                        .iter()
+                        .map(|t| d_pt_tri(p, t))
+                        .fold(f64::INFINITY, f64::min);
                     if d > NEAR {
                         return Err(format!(
                             "lanes[{i}]: no visual rail within {NEAR} mm of ({:.1}, {:.1})",
@@ -246,7 +259,10 @@ fn check_guides_match_visual(s: &Scene) -> Result<(), String> {
     let visual = vertical_faces(&s.meshes, |_| true);
     for (g, guide) in guides.iter().enumerate() {
         for (k, p) in guide.iter().enumerate().step_by(6) {
-            let d = visual.iter().map(|t| d_pt_tri(*p, t)).fold(f64::INFINITY, f64::min);
+            let d = visual
+                .iter()
+                .map(|t| d_pt_tri(*p, t))
+                .fold(f64::INFINITY, f64::min);
             if d > TOL {
                 return Err(format!(
                     "generated guide #{g}: curve point {k} at ({:.3}, {:.3}) is {d:.3} mm from \
@@ -330,7 +346,9 @@ fn check_inserts(s: &Scene) -> Result<(), String> {
             return Err(format!("inserts[{i}]: shape does not contain its position"));
         }
         if (hi[0] - lo[0]).max(hi[1] - lo[1]) < size / 4.0 {
-            return Err(format!("inserts[{i}]: shape is far smaller than size {size}"));
+            return Err(format!(
+                "inserts[{i}]: shape is far smaller than size {size}"
+            ));
         }
         if lo[2] < -1.0e-3 || hi[2] <= 1.0e-4 || hi[2] > 2.0 {
             return Err(format!(
@@ -376,7 +394,8 @@ fn deck_is_one_surface_on_its_layer_at_its_height() {
         for t in mesh.tris.iter().filter(|t| is_horizontal(t)) {
             for p in t {
                 assert!(
-                    pt_in_poly(plan(*p), &outline) || d_pt_polyline(plan(*p), &outline, true) <= TOL,
+                    pt_in_poly(plan(*p), &outline)
+                        || d_pt_polyline(plan(*p), &outline, true) <= TOL,
                     "decks[{i}]: surface vertex {p:?} outside the outline"
                 );
             }
@@ -428,7 +447,8 @@ fn no_stray_geometry() {
             .iter()
             .any(|w| d_pt_polyline(p, &to_f64(&w.points), w.closed) <= NEAR)
             || l.lanes.iter().any(|ln| {
-                d_pt_polyline(p, &to_f64(&ln.points), false) <= f64::from(ln.width) / 2.0 + NEAR + 10.0
+                d_pt_polyline(p, &to_f64(&ln.points), false)
+                    <= f64::from(ln.width) / 2.0 + NEAR + 10.0
             })
             || l.posts.iter().any(|po| {
                 dist2(p, [f64::from(po.position[0]), f64::from(po.position[1])])
@@ -464,8 +484,19 @@ fn no_stray_geometry() {
         .chain(l.decks.iter().map(|d| d.layer))
         .collect();
     for id in generated_spline_ids(&s.loaded.table.manifest, &s.base) {
-        let spline = s.loaded.table.manifest.splines.iter().find(|x| x.id == id).unwrap();
-        assert!(layers.contains(&spline.layer), "spline {id:?} on layer {}", spline.layer);
+        let spline = s
+            .loaded
+            .table
+            .manifest
+            .splines
+            .iter()
+            .find(|x| x.id == id)
+            .unwrap();
+        assert!(
+            layers.contains(&spline.layer),
+            "spline {id:?} on layer {}",
+            spline.layer
+        );
     }
 }
 
@@ -537,8 +568,14 @@ fn materials_are_flat_colours_per_material() {
     };
     let (rubber_a, plain, rubber_b) = (post_materials(0), post_materials(1), post_materials(2));
     assert!(!rubber_a.is_empty() && !plain.is_empty());
-    assert_eq!(rubber_a, rubber_b, "both rubber posts share the rubber material");
-    assert!(rubber_a.is_disjoint(&plain), "rubber and plain posts share a material");
+    assert_eq!(
+        rubber_a, rubber_b,
+        "both rubber posts share the rubber material"
+    );
+    assert!(
+        rubber_a.is_disjoint(&plain),
+        "rubber and plain posts share a material"
+    );
     // The acrylic deck is none of wood / steel.
     let deck = &s.layout.decks[0];
     let index = check_surface(

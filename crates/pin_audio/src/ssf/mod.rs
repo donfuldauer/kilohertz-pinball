@@ -130,10 +130,7 @@ impl SsfPanner {
 /// the interleaved 7.1 buffer `out71`, frame by frame, over the frames both
 /// buffers hold. Never allocates.
 pub fn mix_stereo_front(stereo: &[f32], out71: &mut [f32]) {
-    for (lr, f) in stereo
-        .chunks_exact(2)
-        .zip(out71.chunks_exact_mut(CHANNELS))
-    {
+    for (lr, f) in stereo.chunks_exact(2).zip(out71.chunks_exact_mut(CHANNELS)) {
         f[CH_FL] += lr[0];
         f[CH_FR] += lr[1];
     }

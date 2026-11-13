@@ -66,6 +66,7 @@ pub fn self_intersection(p: &[[f64; 2]]) -> Option<(usize, usize)> {
 }
 
 /// Whether `p` lies inside (or on) the closed polygon `poly`.
+#[cfg(test)]
 pub fn contains(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
     let n = poly.len();
     let mut inside = false;

@@ -70,9 +70,7 @@ fn cli_generates_a_bundle_that_validates() {
     let o = run(&a3_path(), &base_table_path(), &out);
     assert!(o.status.success(), "{}", stderr(&o));
     let loaded = load_dir(&out).unwrap_or_else(|e| panic!("{e}"));
-    assert!(
-        pin_assets::validate_gltf_bindings(&loaded.scene, &loaded.table.ids).is_empty()
-    );
+    assert!(pin_assets::validate_gltf_bindings(&loaded.scene, &loaded.table.ids).is_empty());
     // Same result as the library on the same inputs.
     let generated = gen_ok(&a3_layout(), &base_table());
     assert!(std::fs::read(out.join("playfield.glb")).unwrap() == generated.glb);
@@ -172,7 +170,10 @@ fn cli_names_the_offending_element_and_emits_nothing() {
         ),
         (
             "missing spline",
-            a3.replace("spline = \"return_wireform\"", "spline = \"no_such_spline\""),
+            a3.replace(
+                "spline = \"return_wireform\"",
+                "spline = \"no_such_spline\"",
+            ),
             "ramps[0]",
         ),
         (
@@ -262,7 +263,10 @@ fn cli_reports_unreadable_or_malformed_inputs() {
     assert_clean_failure(&o, "schema_version 2");
     assert_no_outputs(&out, "schema_version 2");
 
-    let unknown_key = format!("{}\nbogus = 1\n", std::fs::read_to_string(a3_path()).unwrap());
+    let unknown_key = format!(
+        "{}\nbogus = 1\n",
+        std::fs::read_to_string(a3_path()).unwrap()
+    );
     let layout = write(&work, "unknown.toml", unknown_key.as_bytes());
     let o = run(&layout, &base_table_path(), &out);
     assert_clean_failure(&o, "unknown key");

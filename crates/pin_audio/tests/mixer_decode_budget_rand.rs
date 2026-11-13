@@ -9,8 +9,8 @@
 
 use std::io::Cursor;
 
-use pin_audio::mixer::{BYTES_PER_FRAME, DecodeBudget, DecodeError, Sample, decode};
 use pin_audio::mixer::decode_with_budget;
+use pin_audio::mixer::{BYTES_PER_FRAME, DecodeBudget, DecodeError, Sample, decode};
 use proptest::prelude::*;
 
 fn wav(rate: u32, channels: u16, n: usize) -> Vec<u8> {
@@ -24,7 +24,8 @@ fn wav(rate: u32, channels: u16, n: usize) -> Vec<u8> {
     {
         let mut w = hound::WavWriter::new(Cursor::new(&mut buf), spec).unwrap();
         for k in 0..n * usize::from(channels) {
-            w.write_sample(((k * 7919) % 30_000) as i16 - 15_000).unwrap();
+            w.write_sample(((k * 7919) % 30_000) as i16 - 15_000)
+                .unwrap();
         }
         w.finalize().unwrap();
     }
@@ -33,7 +34,11 @@ fn wav(rate: u32, channels: u16, n: usize) -> Vec<u8> {
 
 #[derive(Clone, Debug)]
 enum Op {
-    Decode { rate: u32, channels: u16, frames: usize },
+    Decode {
+        rate: u32,
+        channels: u16,
+        frames: usize,
+    },
     Release(usize),
 }
 

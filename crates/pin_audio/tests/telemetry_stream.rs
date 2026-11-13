@@ -63,10 +63,10 @@ fn decode_all(b: &DatagramBatch) -> Vec<(u64, u8, Vec<TelemetryEntry>)> {
 fn script(tick: u64, st: &mut TelemetryState, imp: &mut Vec<HapticsTelemetryEvent>) {
     imp.clear();
     let t = tick as usize;
-    if t % 7 == 0 {
+    if t.is_multiple_of(7) {
         st.switches[t % 256] = !st.switches[t % 256];
     }
-    if t % 50 == 0 {
+    if t.is_multiple_of(50) {
         st.coils[(t / 50) % 8] = !st.coils[(t / 50) % 8];
         imp.push(HapticsTelemetryEvent {
             tick,
@@ -74,10 +74,10 @@ fn script(tick: u64, st: &mut TelemetryState, imp: &mut Vec<HapticsTelemetryEven
             strength: 0.75,
         });
     }
-    if t % 3 == 0 {
+    if t.is_multiple_of(3) {
         st.lamps[(t / 3) % 256] = ((t % 11) as f32) / 10.0;
     }
-    if t % 400 == 0 {
+    if t.is_multiple_of(400) {
         st.gi[(t / 400) % 32] = 0.5;
         st.magnets[(t / 400) % 32] = 1.0;
     }
@@ -240,7 +240,11 @@ fn stream_hash_is_stable_over_ten_runs() {
 }
 
 fn entry() -> impl Strategy<Value = (usize, u8, f32)> {
-    (0usize..256, 0u8..5, prop_oneof![0.0f32..=1.0, Just(f32::NAN), -2.0f32..3.0])
+    (
+        0usize..256,
+        0u8..5,
+        prop_oneof![0.0f32..=1.0, Just(f32::NAN), -2.0f32..3.0],
+    )
 }
 
 proptest! {
