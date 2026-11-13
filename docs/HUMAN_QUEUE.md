@@ -91,3 +91,14 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - The security hardening sweep (4.1 N-a to N-d; 3.3 N10 and the decoded-audio budget) is scheduled as fix tasks 4.1-H and 3.3-H.
 - [4.1-H] Spec test `uneven_spline_spacing_is_a_warning_not_an_error` predates the guide-lint ruling: its fixture curve has a cusp, so it now gets the (b) and (d) warnings too; the Tester should filter on `splines[0].points`. Also: (c) counts `balls.restrict` profiles, so the Appendix A table (XL restricted to layer 0) would warn on any sloped guide tighter than 39.7 mm.
 - [3.3-H → 2.5/6.0] pin_audio now provides `DecodeBudget` + `decode_with_budget` (default 512 MiB of decoded f32 per bundle, `DecodeError::BudgetExhausted`); the bundle loader must create one budget per bundle, decode all sounds through it and `release` dropped samples. Please carry this into the 2.5/6.0 briefs (and confirm the 512 MiB default).
+
+## 3.3-H follow-ups (non-blocking, from the Fable review) → the 2.5/6.0 loader briefs
+- **R1:** for bundle content, use `decode_with_budget` exclusively. One 1 MB Vorbis stream can legally decode to 1.78 GB at a 384 kHz mixer rate, and plain `decode()` is unbudgeted.
+- **R3:** a decode in flight holds up to 2× its output in the budget. Decode a bundle's sounds one after another, so load results stay deterministic near the limit.
+- **R7:** `release` saturates silently. Consider an RAII guard when wiring it in.
+- **Small cleanups:**
+  - R5: a stale doc sentence in `decode.rs`, lines 35–36.
+  - R6: `DecodeError` is not `#[non_exhaustive]`.
+  - R8: a pre-existing lewton overflow in `floor_one_curve`. It wraps silently in release builds.
+  - R9: add a randomised accounting test.
+- **Confirm:** the default per-bundle decoded-audio budget of 512 MiB.
