@@ -18,7 +18,9 @@ pin_core.workspace = true
 pin_physics = { path = "../pin_physics" }
 glam.workspace = true
 libm.workspace = true
+# The loader's own spline check (generated guides must load without errors
+# or warnings) and its glTF budgets (the glb must load).
+pin_assets = { path = "../pin_assets" }
 
 [dev-dependencies]
-pin_assets = { path = "../pin_assets" }
 proptest.workspace = true
