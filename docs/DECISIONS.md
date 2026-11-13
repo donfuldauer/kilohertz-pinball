@@ -816,3 +816,9 @@ The B1 crawl is safe, local and bounded. B2's worst case is about 0.3 s, no wors
 - B2: bound `level_reaches` on coils, and stop per-slot drain passes once the table budget is spent.
 
 The non-blocking notes N1–N4 are recorded in the review: zeroed tables on in-rule coils; the interior near-approach limitation (2.1 N3, unchanged); one marginal new sloped rejection at 45 mm facing ends; 270° arcs now end-limited.
+
+## Orchestrator — Wave 3 gate, first CI run (a4c977b): four cross-OS failures, routed as fix tasks
+- **Windows core-tests:** pin_assets `hardening::n4_too_many_entries_of_a_kind` edits table.toml by exact string match. The Windows checkout uses CRLF (core.autocrlf), so the match failed. Fixed at the root: `.gitattributes` with `* text=auto eol=lf`, an Orchestrator-owned file. Every text file is already stored with LF, so renormalising changed nothing. Loader behaviour on CRLF tables is unaffected: TOML accepts both.
+- **macOS core-tests:** pin_script `spec_wasm_sandbox` fails 3 tests, with "fixture failed to load: script instruction budget exceeded". This is a 4.5 fix task for the Opus implementer, reviewed by Fable.
+- **Linux gpu-tests (lavapipe):** pin_render `spec_debug_render` crashes with SIGSEGV after 8 tests pass. This is a 1.4 fix task for the Opus implementer, reviewed by Fable.
+- **macOS gpu-tests (Metal):** pin_app `orchestrator_window` fails with "playfield presented 0 of 30" (Direct Fifo on the paravirtual device). This is also a 1.4 fix task.
