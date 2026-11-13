@@ -90,7 +90,7 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - Wasm compile-cost limits are accepted; revisit at 6.3.
 - The security hardening sweep (4.1 N-a to N-d; 3.3 N10 and the decoded-audio budget) is scheduled as fix tasks 4.1-H and 3.3-H.
 - [4.1-H] Spec test `uneven_spline_spacing_is_a_warning_not_an_error` predates the guide-lint ruling: its fixture curve has a cusp, so it now gets the (b) and (d) warnings too; the Tester should filter on `splines[0].points`. Also: (c) counts `balls.restrict` profiles, so the Appendix A table (XL restricted to layer 0) would warn on any sloped guide tighter than 39.7 mm.
-- [3.3-H → 2.5/6.0] pin_audio now provides `DecodeBudget` + `decode_with_budget` (default 512 MiB of decoded f32 per bundle, `DecodeError::BudgetExhausted`); the bundle loader must create one budget per bundle, decode all sounds through it and `release` dropped samples. Please carry this into the 2.5/6.0 briefs (and confirm the 512 MiB default).
+- [3.3-H → 2.5/6.0] pin_audio now provides `DecodeBudget` + `decode_with_budget` (default 512 MiB of decoded f32 per bundle, `DecodeError::BudgetExhausted`); the bundle loader must create one budget per bundle, decode all sounds through it and `release` dropped samples. Please carry this into the 2.5/6.0 briefs (default 512 MiB confirmed as a user setting; see DECISIONS "Human ruling — decoded-audio budget").
 
 ## 3.3-H follow-ups (non-blocking, from the Fable review) → the 2.5/6.0 loader briefs
 - **R1:** for bundle content, use `decode_with_budget` exclusively. One 1 MB Vorbis stream can legally decode to 1.78 GB at a 384 kHz mixer rate, and plain `decode()` is unbudgeted.
@@ -101,7 +101,7 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
   - R6: `DecodeError` is not `#[non_exhaustive]`.
   - R8: a pre-existing lewton overflow in `floor_one_curve`. It wraps silently in release builds.
   - R9: add a randomised accounting test.
-- **Confirm:** the default per-bundle decoded-audio budget of 512 MiB.
+- ~~**Confirm:** the default per-bundle decoded-audio budget of 512 MiB.~~ **Confirmed by the user**, as a user setting (DECISIONS "Human ruling — decoded-audio budget").
 - [4.1-H round 1 → 2.1/2.2 owners] `GuideCurve::reach()` is 6.5 mm (not 0) for an open level Z through (0,0), (100,100), (100,0), (0,100) mm whose diagonals cross; the loader now flags it itself (lint d, "doubles back or touches itself"), but the physics reach estimate looks wrong for open self-crossing curves. Also: bundles with prepended data (self-extracting zips) are now refused by design.
 
 ## 4.1-H follow-ups (non-blocking, from the Fable review of fix 2)
@@ -114,3 +114,4 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - [2.1-B1 review N1] Level coils that exhaust the lane-table budget (e.g. 12 turns / 600 segments, 20 turns / 1 000–2 000 segments, all over 1 m across) still have `reach() == 0` on the outer turns; balls sliding there crawl as before the fix (0.7–3.5 ms CPU per 1 ms window). Safe. Option: raise the table budget for such coils.
 - [2.1-B1 review N2] The B1 fix only reaches guides classified end-limited; the same spiral sampled at fewer than ~25–30 points per turn gets no table and behaves exactly like 329c843 (jumbo ball crawls in 34–44 mm lanes). Option: give lane tables to every level guide — changes all level-guide trajectories, so needs your decision.
 - [2.1-B1 review N4 → 4.1 lint] On budget-exhausted coils `reach() == 0` makes the 4.1 "close the guide or open the gap" lint fire, which is misleading there; the lint text could distinguish this case.
+- [audio follow-up, before real content replaces placeholders] Stream music from the compressed file instead of decoding whole tracks, and keep mono sounds mono (the decoder currently duplicates mono to stereo). Together these keep authored tables well under the 512 MiB decoded-audio default.

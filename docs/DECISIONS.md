@@ -914,3 +914,10 @@ Every one stays inside 2 × 329c843 + 2 ms (worst 0.70 of that bound) and far be
 
 - Fable review APPROVED 7ec28b2 (no blockers): 5.49 M lane checks, 0 violations; bit-identical on all 239 shapes not end-limited; regression tests fail on 05dd386.
 - N1 (budget-exhausted outer turns of 12-turn/600-segment and 20-turn coils still crawl) and N2 (spirals sampled below ~25–30 points per turn are not classified end-limited and behave exactly like 329c843) are literal misses of the pitch-band target on subclasses outside the task's scope. Neither is worse than 329c843 except N1, which matches 05dd386. Ruling: accepted as known limits for now, queued in HUMAN_QUEUE; closing N2 needs lane tables for all level guides, which changes trajectories (bit identity) and is a human decision.
+
+## Human ruling — decoded-audio budget (512 MiB, user setting)
+
+- **Ruling (user):** the per-bundle decoded-audio budget defaults to **512 MiB** (`DecodeBudget::DEFAULT_BYTES`, ≈ 23 min of 48 kHz stereo f32) and is a **user setting**, not a fixed constant. It is a safety cap against untrusted bundles (D25), not a reservation: only audio actually decoded counts.
+- **4.4 (config.toml / menu):** add `audio.decoded_budget_mib` to `config.toml`, default 512, persisted like the other settings. Accept 64…8192 MiB; out-of-range or unparsable values fall back to 512 with a logged warning. Expose it in an advanced/audio section of the menu; a change applies to the next table load.
+- **2.5 / 6.0 (bundle loader):** create one `DecodeBudget::new(setting × 1 MiB)` per bundle, decode every sound through `decode_with_budget`, `release` dropped samples. On `BudgetExhausted` the load fails with a message naming the sound that exceeded the budget, the budget, and the setting to raise.
+- **Follow-up (queued):** stream music and store mono as mono before real content replaces placeholders, so authored tables stay well under the default.
