@@ -195,3 +195,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 2.4 | Independent Tester | Fable 5.2 | 2 | done | 81/81 spec tests pass; clippy/fmt clean | O1 restriction lifted; new step-pull test: ball ≤ (1+e)·1.5 m/s = 2.475 m/s |
 | 4 | 2.3 | Implementer | Fable 5.2 | 1 | done | 41 own + 41 spec tests pass; flipper/ coverage 98.6–98.9 %; 0 allocs; 10-run identical; stroke 21 ms; exit 3.2–3.7 m/s | timing-sweep dead spot only at −20 ms edge; seam gap: no body restitution → additive `MovingBodies::restitution` hook added to the 2.2-S fix round 2; held flipper not solid at defaults (Gate A1) |
 | 4 | 2.3 | Reviewer | Opus 5.5 | 1 | running | — | |
+| 4 | 2.4 | Reviewer | Fable 5.2 | 1 | **fail** | fmt/clippy clean (snapshot); 183 tests; mech/ 96.8–100 %, pin_core 99.5 %; CR-004 additive; feel numbers verified; D1/O1 fixes confirmed | B1 slider breaks obligation 1 at kick-off (sling ball gets 2.2× the coil's momentum); B2 spinner parks above the ball after 1–3 shots → fix 1 with N1–N3, N7, docs; obligation-3 slider reading accepted (2.2-S docs to bless it) |
+| 4 | 2.4 | Implementer | Opus 5.5 | fix 1 | running | — | |
