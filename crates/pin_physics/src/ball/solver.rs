@@ -30,7 +30,10 @@ use glam::Vec3;
 use pin_core::ids::{MagnetId, ProfileId};
 use pin_core::{BallProfile, Material};
 
-use super::body::{BODY_SKIN, BodyCast, MovingBodies, solve_body_contact};
+use super::body::{
+    BODY_REST_SPEED, BODY_SKIN, BodyCast, BodyContactState, MAX_BODY_SOLVES_PER_TICK, MovingBodies,
+    solve_body_contact,
+};
 use super::contact::{
     ContactCoefficients, ContactImpulse, SphereBody, apply_ball_impulse, apply_surface_impulse,
     effective_restitution, integrate_orientation, resolve_ball_contact, resolve_surface_contact,
@@ -77,6 +80,9 @@ const PRESOLVE_PASSES: usize = 64;
 /// the pass limit after every event could stall the tick. The next sub-step
 /// boundary projects the penetration out.
 const STALL_PASSES: usize = 8;
+/// Penetration (m) beyond which a stalled kinematic contact counts as a
+/// pinch (five times the body contact skin).
+const PINCH_DEPTH: f32 = 5.0e-5;
 /// The sweeps stop when one changes no velocity by more than this (m/s).
 const PRESOLVE_TOLERANCE: f32 = 1.0e-7;
 /// Normals closer than this (cosine) are the same contact from one
@@ -215,6 +221,8 @@ struct Bodies<'s, 'b> {
     /// A body with a finite mass was pushed since the last check: its
     /// trajectory changed, so every ball's cast is stale.
     moved: bool,
+    /// Body-contact solve steps this tick (see `MAX_BODY_SOLVES_PER_TICK`).
+    solves: u32,
 }
 
 #[derive(Copy, Clone)]
@@ -304,6 +312,8 @@ struct Contact {
     target: f32,
     /// Impulses applied by the boundary solve.
     acc: ContactImpulse,
+    /// What the solve learnt about a moving body (body contacts only).
+    body: BodyContactState,
 }
 
 impl ContactKind {
@@ -763,15 +773,31 @@ impl BallSolver {
         }
     }
 
-    /// Whether the touching contacts of a ball are all static surfaces,
-    /// other free balls or kinematic bodies (zero inverse mass both ways along
-    /// the normal), with at least one body: the case [`STALL_PASSES`] gives
-    /// up on. Lists
-    /// without a body never qualify, so the solver without bodies is
-    /// unchanged.
-    fn kinematic_pinch(&self, list: &ContactList, time: f32, bodies: &Bodies<'_, '_>) -> bool {
-        let mut any_body = false;
-        for c in list.iter().filter(|c| c.depth >= -c.active_eps) {
+    /// Whether ball `i` is in a real pinch, the case [`STALL_PASSES`] gives
+    /// up on: its touching contacts are static surfaces, other free balls and
+    /// kinematic bodies (zero inverse mass both ways along the normal), at
+    /// least one body, and a kinematic body contact is opposed (normals more
+    /// than 120° apart) by another contact while the body closes in on the
+    /// ball, or the ball runs into an opposing surface, faster than
+    /// [`BODY_REST_SPEED`], or the ball is already pushed more than
+    /// [`PINCH_DEPTH`] into a contact. A stack resting on a body
+    /// (or riding a lift) has opposed normals but nothing closing in, so it
+    /// keeps iterating. Lists without a body never qualify, so the solver
+    /// without bodies is unchanged.
+    fn kinematic_pinch(
+        &self,
+        i: usize,
+        list: &ContactList,
+        time: f32,
+        bodies: &Bodies<'_, '_>,
+    ) -> bool {
+        let Some(ball) = self.slots[i] else {
+            return false;
+        };
+        let active = || list.iter().filter(|c| c.depth >= -c.active_eps);
+        let mut deep = false;
+        for c in active() {
+            deep |= c.depth > PINCH_DEPTH;
             match c.kind {
                 ContactKind::Surface(ImpactTarget::Body { set, body }, _) => {
                     let Some(s) = bodies.sets.get(set) else {
@@ -784,13 +810,34 @@ impl BallSolver {
                     if free(c.normal) || free(-c.normal) {
                         return false;
                     }
-                    any_body = true;
                 }
                 ContactKind::Surface(..) | ContactKind::Ball(_) => {}
                 ContactKind::Chain(..) => return false,
             }
         }
-        any_body
+        for c in active() {
+            let ContactKind::Surface(ImpactTarget::Body { set, body }, _) = c.kind else {
+                continue;
+            };
+            let Some(s) = bodies.sets.get(set) else {
+                continue;
+            };
+            let closing = (s.velocity_at(body, time, c.point) - ball.velocity).dot(c.normal);
+            for o in active().filter(|o| o.normal.dot(c.normal) < -0.5) {
+                // How fast the ball runs into an opposing surface (a ball
+                // above it in a settling stack does not count).
+                let approach = match o.kind {
+                    ContactKind::Surface(t, _) => -(ball.velocity
+                        - self.target_velocity(bodies, t, time, o.point))
+                    .dot(o.normal),
+                    _ => 0.0,
+                };
+                if deep || closing > BODY_REST_SPEED || approach > BODY_REST_SPEED {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// One solver step (or, with `acc` fresh, a one-shot resolution) of the
@@ -807,7 +854,12 @@ impl BallSolver {
         point: Vec3,
         target_normal_speed: f32,
         acc: &mut ContactImpulse,
+        st: &mut BodyContactState,
     ) -> f32 {
+        if bodies.solves >= MAX_BODY_SOLVES_PER_TICK {
+            return 0.0;
+        }
+        bodies.solves += 1;
         let k = self.surface_coefficients(sc.pidx, material);
         let (Some(ball), Some(s)) = (self.slots[i].as_mut(), bodies.sets.get_mut(set)) else {
             return 0.0;
@@ -823,6 +875,7 @@ impl BallSolver {
             k,
             target_normal_speed,
             acc,
+            st,
         );
         bodies.moved |= moved;
         change
@@ -855,8 +908,16 @@ impl BallSolver {
             if approach.is_nan() || approach <= min_approach {
                 return false;
             }
-            let e = effective_restitution(k.restitution, approach, persistent);
+            // The owner may give its own restitution (None: pair table).
+            let own = bodies
+                .sets
+                .get(set)
+                .and_then(|s| s.restitution(body, sc.t, point, approach))
+                .filter(|e| !e.is_nan());
+            let restitution = own.map_or(k.restitution, |e| e.clamp(0.0, 1.0));
+            let e = effective_restitution(restitution, approach, persistent);
             let mut acc = ContactImpulse::default();
+            let mut st = BodyContactState::NEW;
             self.body_solve(
                 i,
                 sc,
@@ -867,6 +928,7 @@ impl BallSolver {
                 point,
                 e * approach,
                 &mut acc,
+                &mut st,
             );
             if acc.normal <= 0.0 {
                 return false;
@@ -1082,6 +1144,7 @@ impl BallSolver {
                 persistent: touches(own, c.normal),
                 target: 0.0,
                 acc: ContactImpulse::default(),
+                body: BodyContactState::NEW,
             });
         }
 
@@ -1103,6 +1166,7 @@ impl BallSolver {
                     persistent: touches(own, normal),
                     target: 0.0,
                     acc: ContactImpulse::default(),
+                    body: BodyContactState::NEW,
                 });
             }
         }
@@ -1127,6 +1191,7 @@ impl BallSolver {
                         persistent: touches(own, normal),
                         target: 0.0,
                         acc: ContactImpulse::default(),
+                        body: BodyContactState::NEW,
                     });
                 }
             }
@@ -1156,6 +1221,7 @@ impl BallSolver {
                         persistent: touches(own, cp.normal),
                         target: 0.0,
                         acc: ContactImpulse::default(),
+                        body: BodyContactState::NEW,
                     });
                 }
             }
@@ -1182,6 +1248,7 @@ impl BallSolver {
                     persistent: touches(own, normal) || touches(&self.touch[j], -normal),
                     target: 0.0,
                     acc: ContactImpulse::default(),
+                    body: BodyContactState::NEW,
                 });
             }
         }
@@ -1206,6 +1273,7 @@ impl BallSolver {
                         persistent: touches(own, normal),
                         target: 0.0,
                         acc: ContactImpulse::default(),
+                        body: BodyContactState::NEW,
                     });
                 }
             }
@@ -1476,6 +1544,7 @@ impl BallSolver {
                         c.point,
                         c.target,
                         &mut c.acc,
+                        &mut c.body,
                     ),
                 ContactKind::Surface(target, material) => {
                     let k = self.surface_coefficients(me.pidx, material);
@@ -1596,7 +1665,7 @@ impl BallSolver {
                     if pass == STALL_PASSES
                         && !settled[i]
                         && change[i] > 0.5 * mid[i]
-                        && self.kinematic_pinch(&lists[i], sc[i].t, bodies)
+                        && self.kinematic_pinch(i, &lists[i], sc[i].t, bodies)
                     {
                         settled[i] = true;
                     }
@@ -1700,7 +1769,14 @@ impl BallSolver {
                 }
             }
         }
-        for (si, set) in bodies.sets.iter().enumerate() {
+        // Once the tick's body-solve budget is spent, bodies are not cast
+        // either (nothing more would be solved against them this tick).
+        let body_sets = if bodies.solves >= MAX_BODY_SOLVES_PER_TICK {
+            &[][..]
+        } else {
+            &bodies.sets[..]
+        };
+        for (si, set) in body_sets.iter().enumerate() {
             for b in 0..set.body_count() {
                 if set.layer_mask(b) & mask == 0
                     || !near(Some(&set.swept_bounds(b)), pos, end, r + BODY_SKIN)
@@ -1782,6 +1858,7 @@ impl BallSolver {
                 persistent: true,
                 target: 0.0,
                 acc: ContactImpulse::default(),
+                body: BodyContactState::NEW,
             }),
         }
         // Balls in the list take part: bring them to this instant.
@@ -1809,7 +1886,7 @@ impl BallSolver {
             }
             if pass == STALL_PASSES
                 && change > 0.5 * mid
-                && self.kinematic_pinch(list, me.t, bodies)
+                && self.kinematic_pinch(i, list, me.t, bodies)
             {
                 break;
             }
@@ -2044,6 +2121,7 @@ impl BallSolver {
             let mut ctx = Bodies {
                 sets: &mut *bodies,
                 moved: false,
+                solves: 0,
             };
             self.run_timeline(geo, &bounds, dt, &mut sc, &mut ctx, events);
         }

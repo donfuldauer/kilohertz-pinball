@@ -1174,3 +1174,37 @@ API reference for 6.0 wiring and Subphase 2.6: rustdoc of `pin_physics::flipper`
 
 ## Orchestrator — body restitution hook added to the 2.2-S fix round 2
 **Decision:** The 2.2-S fix round 2 also adds an additive, defaulted `MovingBodies::restitution(body, time, point, approach_speed) -> Option<f32>` (`None` means the pair table, as today, and stays bit-identical). It is needed because §3.3's `FlipperConfig::rubber_restitution` currently has no effect: the pair table decides. 2.3 uses the hook in its fix round.
+
+## 2.2-S — fix round 2 (review B1, B2, N1, N4, N5; 2.3 seam gap: body restitution)
+
+Signatures are unchanged; one **additive, defaulted** trait method and two public constants are new.
+
+- **B1 — reference rotor fixed (the model 2.3/2.4 copy).** `Rotors::inverse_mass_at` returns 0 for a push into a stop only when the stop is *engaged*: at the stop and not moving away (`omega_at(time)` ≤ 0 at the lower stop, ≥ 0 at the upper). A bat leaving its stop is free both ways. The old version also returned 0 while the bat left the stop, so an undriven bat kicking off from its stop created ~12× energy. Tests: the Reviewer's R1 repro, a fixed kick-off test and a proptest (96 cases): energy never grows by more than 0.1 %, and angular momentum about the pivot is conserved to 0.1 % while the bat stays off its stop (frictionless, no rolling resistance).
+- **B2 — Decision (robust two-body solve).** It replaces round 1's secant guard, which could increase impulses and amplified with a stop-clamping owner (R2: 2.7e32 m/s). Per body contact and per solve, the solver keeps `BodyContactState`:
+  1. **Observed response.** After every normal impulse it measures the relative normal response per unit impulse. If the body moved more than it reported, the solve uses the observed response from then on and *reduces* the impulse to what that response needs. A correction only moves the impulse back toward its previous value, never beyond, so it cannot amplify.
+  2. **Impulse cap.** The accumulated normal impulse is at most `m·(u_target − u_free)`, maximised over the solve's steps, where `u_free = (v_ball − v₀)·n − J/m` is measured against the body velocity `v₀` at the contact's first step. An honest body never needs more (a two-body impulse is at most the impulse against an immovable body); pushes from other contacts raise the cap, the body's own motion does not.
+  3. **Speed backstop.** A body contact never leaves a ball faster than `BODY_SPEED_LIMIT` (pub const, 100 m/s), or than the ball was before the contact if that is more; spin likewise (`BODY_SPEED_LIMIT / r`). A non-finite result is replaced by the previous value.
+  4. **Work budget.** At most `MAX_BODY_SOLVES_PER_TICK` (pub const, 4096) body-contact solve steps per tick; after that, body contacts are neither solved nor cast until the next tick.
+
+  **Rationale:** a guarantee that holds for any owner answers without trusting them. **Alternatives:** a solve on a frozen body velocity (loses the coupling between balls through one body inside a sub-step); a global speed clamp only (would hide honest-owner errors).
+- **What is guaranteed for an owner that answers wrongly** (documented in `ball::body`, "What the solver guarantees…"):
+  - no overflow;
+  - ball speed ≤ max(100 m/s, its own speed before the contact);
+  - within one solve, no faster than `(1 + e) ×` its approach to the body surface (whose own speed is the owner's business);
+  - bounded work.
+
+  `tests/ball_seam_regress2.rs` sweeps 15 kinds of wrong answers: inverse mass ×0, ×0.01, ×0.3, ×0.6, ×3, ×100, NaN, ∞, negative, one-sided 0, a reversed response, a stale velocity, a NaN velocity after an impulse, random masses, and the honest owner. Each runs with and without speculative stops, I 3e-5/1e-4, landing points 20–80 mm, 0.5–12 m/s, spin −400…400 rad/s, friction from the table, 0 and 0.9. Every run is finite. The worst ball speed is 100 m/s (the limit), from the reversed-response owner whose bat reached 2.5e7 m/s. Under-reporting owners reach at most 73 m/s, with their own bat pumped to 593 m/s. Every case is within `2·max(incoming, body surface speed) + 2 m/s`. Measured worst step: 3.8 ms (reversed owner, inside the existing event budget). Honest owners stay under 1 ms in every pinch tested.
+- **N1 — Decision (early-out only for real pinches).** The stall early-out now also requires a kinematic body contact opposed by another contact (normals more than 120° apart), and one of the following:
+  - the body closes in on the ball faster than `BODY_REST_SPEED`;
+  - the ball runs into an opposing *surface* faster than that;
+  - the ball is deeper than 50 µm.
+
+  Ball–ball approach does not count, so a settling stack keeps iterating. Regression: a 5-ball steel column on a kinematic floor (with and without touching kinematic walls, still and on a 0.2 m/s lift). Rest speed was 3.0e-3 m/s with round 1's early-out; it is now 8.9e-6 at rest and 4.8–5.7e-5 on the lift (static floor: 2.0e-6), and sink is ≤ 1.2e-7 m. Kicker pinch worst step is still under 1 ms: 1 ball 0.28–0.62 ms, 3 balls 0.86–0.98 ms.
+- **2.3 seam gap — Decision (body-supplied restitution).**
+  ```rust
+  fn restitution(&self, body: usize, time: f32, point: Vec3, approach_speed: f32) -> Option<f32> { None }
+  ```
+  A new defaulted method of `MovingBodies`. `None` keeps the pair table. `Some(e)` is clamped to `[0, 1]` (NaN falls back to the pair table) and then follows the same rules as every impact: the fade-in between `IMPACT_REPORT_SPEED` and twice that, and 0 for a continuing contact. It applies to the normal impulse of an impact on that body, which is how `FlipperConfig::rubber_restitution` reaches the solver. Test: `Some(0.3)` on a kinematic slab at rest rebounds a 2 m/s ball at 0.6 m/s; `Some(1.7)` gives 2.0 m/s and `Some(−0.5)` gives 0; `None` and `Some(NaN)` are bit-identical to an owner without the method.
+- **N4 docs.** In the last tick before a stop the body is slowed so that it arrives at `dt`; a ball hit then sees the reduced speed. A body pushed toward a nearby stop reports its free inverse mass, but its velocity change is limited by obligation 3; the solve under-shoots and converges, which is harmless.
+- **N5 docs — over-reporting inverse mass is allowed.** It makes each sweep ask for a smaller impulse than the body's response needs. The accumulated solve converges from below to the same final impulse, and a one-shot impact delivers less than the two-body impulse (a softer, lossier hit). This is a valid way to model compliance or losses, such as 2.3's rubber term.
+- **Bit identity.** The five HEAD digests are unchanged, and so is every seam test.

@@ -88,12 +88,47 @@
 //!    that the stop cancels microseconds later; a ball cradled on a held
 //!    flipper is then hit by that phantom speed every tick and never rests.
 //!
-//! The solver guards against an owner that breaks 1 by under-reporting its
-//! inverse mass: after each two-body normal impulse it checks the body's real
-//! response, and if the relative velocity overshot (the body moved more
-//! than reported) it corrects the impulse with the measured response, or
-//! takes it back when the response is unusable. This keeps the solve bounded
-//! (no blow-up to infinity) but is not a substitute for honest masses.
+//! **Over-reporting is allowed.** An `inverse_mass_at` larger than the
+//! body's real mobility (e.g. a rubber-loss term, Subphase 2.3) makes the
+//! solver ask for a smaller impulse per sweep than the body's real response
+//! needs; the accumulated solve then converges from below to the same final
+//! impulse (more sweeps, never an overshoot), and a one-shot impact delivers
+//! less than the two-body impulse, i.e. a softer, lossier hit. It is a valid
+//! way to model compliance or losses.
+//!
+//! # What the solver guarantees for an owner that answers wrongly
+//!
+//! For *any* answers (under-reported, NaN, infinite or negative inverse
+//! masses, a response opposite to the impulse, stale or NaN velocities):
+//!
+//! * **No overflow.** Every ball stays finite.
+//! * **Speed bound.** A body contact never leaves a ball faster than
+//!   [`BODY_SPEED_LIMIT`] (100 m/s) or than it was before the contact, if
+//!   that is more; spin likewise (`BODY_SPEED_LIMIT / r`).
+//! * **Relative bound, per solve.** The accumulated normal impulse of a
+//!   body contact is capped at the impulse that brings the ball to the
+//!   target relative to the body's velocity at the contact's first solve
+//!   step, as against an immovable body (pushes from the ball's other
+//!   contacts raise it; the body's own motion does not). So within one solve
+//!   the ball cannot leave faster than `(1 + e) ×` its approach to the body's
+//!   surface velocity at that time; across solves, the body's own surface
+//!   speed (the owner's business) is the reference. Measured over a sweep of
+//!   wrong answers: the ball never exceeded `2 × max(incoming speed, body
+//!   surface speed) + 2 m/s`.
+//! * **No amplification.** After each normal impulse the body's real response
+//!   is measured; if it moved more than it reported, the solve uses the
+//!   observed response from then on and *reduces* the impulse to what that
+//!   response needs. A correction never increases an impulse.
+//! * **Bounded work.** At most [`MAX_BODY_SOLVES_PER_TICK`]-many body
+//!   contact solve steps per tick (then body contacts are neither solved nor
+//!   cast until the next tick; penetration is projected out at the next
+//!   sub-step boundary), within the solver's existing per-tick event budget.
+//!   Measured worst step: 3.8 ms, for an owner whose response is opposite to
+//!   every impulse and whose bat reached 2.5e7 m/s; owners that keep the
+//!   contract stay under 1 ms in every pinch tested.
+//!
+//! None of this makes a wrong owner physical: energy is still created when a
+//! body's real response differs from what it reports.
 //!
 //! # Notes for owners
 //!
@@ -101,6 +136,16 @@
 //!   Euler) means the drive acts on the whole tick from its start; a driven
 //!   body adds its drive work to the system, as it should, at most
 //!   `τ·Δθ` per tick.
+//! * **The last tick before a stop.** Obligation 3 slows the body in the
+//!   tick in which it would reach a stop so that it arrives exactly at `dt`;
+//!   a ball hit in that tick sees the reduced speed (the stop takes the rest,
+//!   as a real stop would within that millisecond).
+//! * **Pushed toward a nearby stop.** A body pushed toward a stop it will
+//!   reach within the tick reports its free inverse mass, but its velocity
+//!   change is then limited by obligation 3. The solve under-shoots and
+//!   converges over the following sweeps; this is harmless.
+//! * **Own restitution.** [`MovingBodies::restitution`] (default `None`)
+//!   replaces the pair table's restitution for impacts on the body.
 //! * **One-shot impacts are not exactly `e·approach`.** The friction
 //!   reaction of an impact is applied to the body after the normal impulse
 //!   and can change the body's normal velocity at the contact (a rotor hit
@@ -112,9 +157,13 @@
 //!   where all its contacts are solved together and penetration is projected
 //!   out. Owners therefore see several small impulses per tick, or none in
 //!   that window: never count on one impulse per contact per tick. A ball
-//!   held only by static surfaces, other balls and *kinematic* bodies whose
-//!   contact solve stops converging (an impossible pinch) stops iterating
-//!   after 8 passes instead of 64, so a kicker cannot stall the tick.
+//!   held only by static surfaces, other balls and *kinematic* bodies, in a
+//!   real pinch (a kinematic body contact opposed by another contact while
+//!   the body closes in, the ball runs into the opposing surface, or the ball
+//!   is already 50 µm deep), whose contact solve stops converging stops
+//!   iterating after 8 passes instead of 64, so a kicker cannot stall the
+//!   tick. Stacks resting on (or riding) kinematic bodies are not pinches and
+//!   iterate as usual.
 //!
 //! `begin_tick`/`end_tick` are called even when there is no ball. Nothing
 //! in a step allocates if the implementations do not; implementations must
@@ -176,11 +225,6 @@ pub const BODY_SKIN: f32 = 1.0e-5;
 /// resting contact (left to the sub-step boundaries) rather than an impact.
 pub const BODY_REST_SPEED: f32 = 1.0e-3;
 
-/// Speed (m/s) a ball may gain above its normal-impulse need in one
-/// body-contact solve (room for the pushes of its other contacts, e.g. a
-/// stack of balls resting on a body). See [`BodyContactState`].
-pub(super) const CAP_HEADROOM: f32 = 1.0;
-
 /// A body contact never leaves a ball faster than this (m/s), or than the
 /// ball was before the contact if that is more; spin likewise, scaled by
 /// the radius. Never reached with an owner that keeps the contract (a flip
@@ -191,7 +235,7 @@ pub const BODY_SPEED_LIMIT: f32 = 100.0;
 /// Body-contact solve steps per tick; once spent, body contacts apply no
 /// further impulse until the next tick (penetration is then projected out at
 /// the next sub-step boundary). Bounds the work a misbehaving body can cause.
-pub(super) const MAX_BODY_SOLVES_PER_TICK: u32 = 16_384;
+pub const MAX_BODY_SOLVES_PER_TICK: u32 = 4096;
 
 /// Iterations of [`conservative_cast`] before it reports
 /// [`BodyCast::Advance`].
@@ -298,6 +342,20 @@ pub trait MovingBodies {
     /// travel toward a stop to what it allows by `dt`.
     fn apply_impulse(&mut self, body: usize, time: f32, point: Vec3, impulse: Vec3);
 
+    /// Coefficient of restitution for an impact of a ball on `body` at
+    /// `point` at `time`, approached at `approach_speed` (m/s, relative
+    /// normal speed), or `None` to use the material-pair table (the
+    /// default). `Some(e)` is clamped to `[0, 1]` (NaN = pair table) and then
+    /// goes through the same rules as every impact (fade-in between
+    /// [`IMPACT_REPORT_SPEED`](super::IMPACT_REPORT_SPEED) and twice that,
+    /// zero for a continuing contact). Lets an owner model its own rubber
+    /// (e.g. `FlipperConfig::rubber_restitution`) or a speed-dependent
+    /// restitution.
+    fn restitution(&self, body: usize, time: f32, point: Vec3, approach_speed: f32) -> Option<f32> {
+        let _ = (body, time, point, approach_speed);
+        None
+    }
+
     /// The first time, within `window` seconds after `time`, at which a
     /// sphere of `radius` whose centre moves as `center + velocity·s` touches
     /// the body *while closing in* (relative normal speed above
@@ -398,18 +456,25 @@ pub(super) struct BodyContactState {
     /// reports is never pushed past the target again (no overshoot, no
     /// growth from sweep to sweep).
     pub k: f32,
-    /// Upper bound of the accumulated normal impulse (N·s), set at the first
-    /// solve step of the contact: `m · (max(0, u_target − u_n) +
-    /// CAP_HEADROOM)`. A body that keeps the contract never needs more (its
-    /// two-body impulse is at most the impulse against an immovable body);
-    /// whatever a body answers, the impulse cannot grow beyond it.
+    /// Upper bound of the accumulated normal impulse (N·s): the largest
+    /// `m · (u_target − u_free)` seen, where `u_free = (v_ball − v₀)·n −
+    /// J_acc/m` is the relative normal velocity the ball would have without
+    /// this contact's own impulse, measured against the body velocity `v₀`
+    /// of the contact's first solve step. A body that keeps the contract
+    /// never needs more (a two-body impulse is at most the impulse against an
+    /// immovable body); pushes from the ball's other contacts raise it,
+    /// whatever the body itself answers does not.
     pub cap: f32,
+    /// Body velocity at the contact point at the first solve step (NaN =
+    /// not yet seen).
+    pub v0: Vec3,
 }
 
 impl BodyContactState {
     pub(super) const NEW: Self = Self {
         k: 0.0,
-        cap: f32::NAN,
+        cap: 0.0,
+        v0: Vec3::NAN,
     };
 }
 
@@ -455,14 +520,23 @@ pub(super) fn solve_body_contact(
     if !un.is_finite() || !vs.is_finite() {
         return (0.0, false);
     }
-    if st.cap.is_nan() {
-        st.cap = m * ((target_normal_speed - un).max(0.0) + CAP_HEADROOM);
+    if st.v0.is_nan() {
+        st.v0 = vs;
+    }
+    let u_free = (ball.velocity - st.v0).dot(n) - acc.normal / m;
+    let need = m * (target_normal_speed - u_free);
+    if need > st.cap {
+        st.cap = need;
     }
     // The inverse masses are asked along the impulse change the body
     // actually receives: −n when the ball needs more normal impulse, +n when
     // the accumulated solve takes some back (one-sided stops differ), and
     // the slip direction for friction.
-    let push = if target_normal_speed - un >= 0.0 { -n } else { n };
+    let push = if target_normal_speed - un >= 0.0 {
+        -n
+    } else {
+        n
+    };
     let wn = usable(set.inverse_mass_at(body, time, point, push));
     let slip = tangential(ball.velocity + ball.angular_velocity.cross(rc) - vs, n);
     let wt = slip
@@ -564,7 +638,7 @@ pub(super) fn solve_body_contact(
     // than the limit, unless it already was.
     let limit = BODY_SPEED_LIMIT.max(before.0.length());
     let speed = ball.velocity.length();
-    if !(speed <= limit) {
+    if speed.is_nan() || speed > limit {
         ball.velocity = if speed.is_finite() {
             ball.velocity * (limit / speed)
         } else {
@@ -573,7 +647,7 @@ pub(super) fn solve_body_contact(
     }
     let spin_limit = (BODY_SPEED_LIMIT / r).max(before.1.length());
     let spin = ball.angular_velocity.length();
-    if !(spin <= spin_limit) {
+    if spin.is_nan() || spin > spin_limit {
         ball.angular_velocity = if spin.is_finite() {
             ball.angular_velocity * (spin_limit / spin)
         } else {
@@ -614,8 +688,7 @@ fn observe(
     if !(k_obs.is_finite() && k_obs > st.k.max(1.0 / m) * 1.001) {
         return;
     }
-    let assumed = (un1 - un) / dj; // == k_obs; kept for clarity of the bound
-    st.k = assumed;
+    st.k = k_obs;
     let wanted = (start + (target - un) / k_obs).clamp(0.0, st.cap);
     // Only move back toward `start` (never past the impulse already given).
     let fixed = if dj > 0.0 {

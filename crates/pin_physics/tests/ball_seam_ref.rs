@@ -341,9 +341,13 @@ impl MovingBodies for Rotors {
     fn inverse_mass_at(&self, body: usize, time: f32, point: Vec3, dir: Vec3) -> f32 {
         let b = &self.bodies[body];
         let arm = (point - b.pivot).cross(dir).z;
-        // An engaged stop takes a push into it.
+        // An engaged stop (at the stop and not moving away from it) takes a
+        // push into it; a bat leaving its stop is free both ways.
         let angle = b.angle_at(time);
-        if (angle <= b.limits.0 && arm < 0.0) || (angle >= b.limits.1 && arm > 0.0) {
+        let omega = b.omega_at(time);
+        if (angle <= b.limits.0 && omega <= 0.0 && arm < 0.0)
+            || (angle >= b.limits.1 && omega >= 0.0 && arm > 0.0)
+        {
             return 0.0;
         }
         arm * arm / b.inertia
