@@ -70,3 +70,10 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - **Decide:** schedule a follow-up fix task with the reviewer's suggested direction (see DECISIONS "Orchestrator — 2.1 B7 blocked"), or accept these as known limits.
 - **Also review:** one marginal new sloped rejection, a C ramp with 45 mm between its facing ends.
 - 1.4 CI fix: macOS Metal window tests now warm up until windows are unoccluded; if the CI Mac never reports the windows visible (no GUI session), the tests fail with the status history — decide then whether Metal window presentation needs a self-hosted/GUI runner (DECISIONS "1.4 — CI fix").
+
+## 1.4 Wave 3 gate fix — follow-ups (non-blocking, from the Fable review)
+- **N1:** the lavapipe SIGSEGV cause is a hypothesis (a race in concurrent device create/teardown). The crash may instead come from concurrent JIT on LLVM 21. If it recurs in CI, set `RUST_TEST_THREADS=1` for the Linux gpu-tests step, or share one context per test binary.
+- **N2:** `render_thread` drops `ctx` before `set`, so in the app the real device teardown happens outside the lifecycle lock. Fix the drop order or reword the doc comment.
+- **N3:** tighten the secondary-surface present bounds in `orchestrator_window` (score 1..=3, backglass 2..=7).
+- **N4:** an occluded presenter-thread surface on macOS re-renders every loop, up to 250 Hz. Back off until the next window event.
+- **N5:** use a bounded device wait under the process-wide lock.

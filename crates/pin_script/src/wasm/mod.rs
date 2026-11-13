@@ -67,7 +67,12 @@
 //!   its own size (bounded by the memory cap and the table limits) before
 //!   the callback traps. Every callback, the start function and every state
 //!   hook start with a fresh budget; exhausting it traps
-//!   ([`ScriptError::BudgetExceeded`]).
+//!   ([`ScriptError::BudgetExceeded`]). Instantiation is platform-independent
+//!   (D9): data and element segments are always copied by wasmtime's
+//!   metered start-up code (copy-on-write memory images, which only some
+//!   hosts support, are off), and exactly that cost
+//!   ([`Usage::init_fuel`]) is added on top of the start function's budget,
+//!   so segments never decide whether a module loads.
 //! * Compile cost (D25). Before anything is compiled, the module is
 //!   validated by wasmparser under exactly the enabled proposals and checked
 //!   against limits chosen so that **any module that passes compiles in
@@ -818,7 +823,7 @@ mod tests {
         let m = WasmScriptBackend::prepare(wat.as_bytes(), cfg)?;
         let names = Arc::new(IdTables::new(&NameTables::default()));
         let live = Live::new(&m, &names, &cfg)?;
-        Ok(live.store.get_fuel().map_err(load)?)
+        live.store.get_fuel().map_err(load)
     }
 
     /// D9 (macOS CI regression): segment initialisation is metered code on
