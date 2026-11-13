@@ -93,3 +93,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3 | 2.2 | Implementer (other model) | Opus 5.5 | 1 | running | — | fresh brief + failure history (PLAN §2.6 step 2); review by Fable |
 | 3 | 4.5 | Implementer | Opus 5.5 | fix 2 | done | all pin_script targets pass; worst compile at caps 725 ms / 60 MB | operator scan with nesting/merge/branch/pressure budgets; caps lowered; N7 |
 | 3 | 2.2 | Implementer (other model) | Opus 5.5 | 1 | done | coverage 97.77 %; edge regions 2–7 µs/step mean, ≤ 172 µs worst (4 balls) | wall reach (Federer), edge Newton closest point, rolling-ball cast bound; vertical-bend acceptance rule; NB1 docs |
+| 3 | 4.5 | Reviewer | Fable 5.2 | 3 | **fail** | gates 1–7 pass; 17 at-cap cases ≤ 0.68 s | B1 still open: call_indirect / table.* unbudgeted (640 KB → 76.5 s, 716 MB); N9 realistic headroom (dev builds 74 % merge) → fix 3 (last), systematic operator sweep required |
