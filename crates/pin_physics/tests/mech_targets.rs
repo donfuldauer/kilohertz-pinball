@@ -255,3 +255,67 @@ fn vuk_transfers_layer_0_to_layer_1() {
         assert_eq!((z.from_layer, z.to_layer), (0, 1));
     }
 }
+
+/// A target dropped by a 1.2 m/s hit, every ball removed.
+fn dropped_target(rise: f32) -> Table {
+    let mut a = MechSpec::new(MechKind::DropTarget, Vec3::ZERO)
+        .with_coil(RESET)
+        .with_switch(SwitchId(TARGET_SW));
+    a.params.angle_deg = Some(0.0);
+    a.params.kick_speed_m_s = Some(rise);
+    let mut t = Table::new(&[a], world(&[]), 0.0);
+    let h = t.ball(0.08, 0.0, v(-1.2, 0.0, 0.0));
+    for _ in 0..200 {
+        t.tick();
+    }
+    assert!(t.mechs.drop_target_down(0).unwrap());
+    t.solver.remove_ball(h);
+    t
+}
+
+/// Regression (2.4 review N1): a rising target pushing a ball must not be
+/// knocked down by that contact; it always ends up after a reset.
+#[test]
+fn reset_never_knocks_the_rising_target_down() {
+    for rise in [0.5f32, 0.6, 1.0] {
+        for i in -6..=6 {
+            for j in -3..=3 {
+                let mut t = dropped_target(rise);
+                let (x, y) = (i as f32 * 0.005, j as f32 * 0.01);
+                t.ball(x, y, Vec3::ZERO);
+                t.tick();
+                t.mechs.fire_coil(RESET, 100);
+                for _ in 0..400 {
+                    t.tick();
+                }
+                assert!(
+                    !t.mechs.drop_target_down(0).unwrap(),
+                    "rise {rise}: ball at ({x}, {y}) knocked the target down"
+                );
+            }
+        }
+    }
+}
+
+/// Regression (2.4 review N2): with a full event list the drop falls back
+/// to the contact flag.
+#[test]
+fn lost_events_fall_back_to_contact() {
+    let mut a = MechSpec::new(MechKind::DropTarget, Vec3::ZERO).with_switch(SwitchId(TARGET_SW));
+    a.params.angle_deg = Some(0.0);
+    let mut t = Table::new(&[a], world(&[]), 0.0);
+    t.ball(0.08, 0.0, v(-1.2, 0.0, 0.0));
+    // Fill the list and never clear it (a caller error).
+    for _ in 0..pin_physics::ball::MAX_BALL_EVENTS {
+        t.events.push(pin_physics::ball::BallEvent::SensorEdge {
+            switch: SwitchId(0),
+            closed: true,
+        });
+    }
+    let geo = pin_physics::ball::Geometry::new(&t.world);
+    for _ in 0..200 {
+        t.mechs.step(&mut t.solver, &geo, None, DT, &mut t.events);
+    }
+    assert!(t.events.dropped() > 0);
+    assert!(t.mechs.drop_target_down(0).unwrap(), "dropped from the contact flag");
+}
