@@ -154,3 +154,7 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 2.2-S | Reviewer | Fable 5.2 | 1 | running | — | |
 | 4 | 4.3 | Reviewer | Fable 5.2 | 1 | **fail** | fmt/clippy clean; pin_tablegen all pass; coverage 95.73 % / 96.18 %; deterministic; D1 verified fixed | B1 lanes 65–82 m emit splines the loader refuses (>65 m); B2 no output-size cap (16 400 posts → glb over GltfLimits); N1–N6 polish; O1 4.1 VFS name-normalisation defect (`.\a:` listed but not exists) found by fuzz → all sent as fix 1 |
 | 4 | 4.3 | Implementer | Opus 5.5 | fix 1 | running | — | B1, B2, N1–N6, plus O1 (ownership amendment: pin_assets vfs/zip) |
+| 4 | 2.2-S | Reviewer | Fable 5.2 | 1 | **fail** | gates 1–7 pass; 342 tests; coverage 94.62 %; bit identity verified independently (18 digests); perf 6.7 µs mean | B1 contact solve diverges (1e37 m/s) on a finite-mass body at a one-sided stop (take-back deltas use the wrong-side inverse mass); B2 recommended prediction scheme bounces a cradled ball at default flipper numbers (needs an owner-side clamp obligation); N1 kinematic pinch costs ms; N2–N7 docs → fix 1 |
+| 4 | 2.2-S | Implementer | Opus 5.5 | fix 1 | running | — | signatures unchanged |
+| 4 | 2.7 | Implementer | Opus 5.5 | 1 | running | — | started before 2.2-S passes: force context passed review (N5); shares target/sp_2_2S |
+| 4 | 2.7 | Independent Tester | Fable 5.2 | 1 | running | — | |

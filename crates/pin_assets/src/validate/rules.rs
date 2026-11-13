@@ -87,7 +87,8 @@ impl Parts {
 }
 
 pub(super) struct Checker<'v> {
-    vfs: &'v Vfs,
+    /// The bundle; `None` when checking a lone spline ([`super::check_spline`]).
+    vfs: Option<&'v Vfs>,
     pub(super) errors: Vec<ValidationError>,
     pub(super) warnings: Vec<ValidationError>,
     ids: TableIds,
@@ -135,7 +136,7 @@ fn fmt3(v: [f32; 3]) -> String {
 impl<'v> Checker<'v> {
     pub(super) fn new(vfs: &'v Vfs) -> Self {
         Checker {
-            vfs,
+            vfs: Some(vfs),
             errors: Vec::new(),
             warnings: Vec::new(),
             ids: TableIds::default(),
@@ -202,7 +203,7 @@ impl<'v> Checker<'v> {
     fn file_exists(&mut self, manifest: &str, path: impl Into<String>, file: &str) {
         match normalize_path(file) {
             Ok(norm) if !norm.is_empty() => {
-                if !self.vfs.exists(&norm) {
+                if !self.vfs.is_some_and(|v| v.exists(&norm)) {
                     self.err(
                         manifest,
                         path,
@@ -847,6 +848,22 @@ impl<'v> Checker<'v> {
                 guide_lint::MAX_SPLINE_LENGTH_M
             ),
         );
+    }
+
+    /// A checker without a bundle, for [`super::check_spline`].
+    pub(super) fn detached() -> Self {
+        Checker {
+            vfs: None,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+            ids: TableIds::default(),
+        }
+    }
+
+    /// Checks one spline as the table check does, with no ball profiles
+    /// (lint (c) is skipped).
+    pub(super) fn lone_spline(&mut self, i: usize, s: &SplineDef) {
+        let _ = self.spline(i, s, &[]);
     }
 
     fn spline(&mut self, i: usize, s: &SplineDef, balls: &[Ball<'_>]) -> Option<SplineSi> {

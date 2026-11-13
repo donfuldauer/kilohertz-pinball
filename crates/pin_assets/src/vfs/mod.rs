@@ -305,6 +305,11 @@ fn walk(root: &Path, dir: &Path, prefix: &str, depth: usize, out: &mut Vec<Strin
         if is_os_junk(&rel) {
             continue;
         }
+        // Only names `read`/`exists` accept unchanged are listed (4.3 fix
+        // round 1, O1): e.g. `a:` (a drive letter) or `x\\y` are not.
+        if normalize_path(&rel).ok().as_deref() != Some(rel.as_str()) {
+            continue;
+        }
         let Ok(kind) = entry.file_type() else {
             continue;
         };
@@ -323,6 +328,25 @@ fn walk(root: &Path, dir: &Path, prefix: &str, depth: usize, out: &mut Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 4.3 fix round 1, O1: `list` names only what `exists` and `read` find.
+    #[test]
+    fn listed_names_exist() {
+        let dir = std::env::temp_dir().join(format!("pin_assets_o1_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        for name in ["table.toml", "a:", "x\\y", "sub/b:c", "sub/ok"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let vfs = Vfs::open(&dir).unwrap();
+        let listed = vfs.list();
+        assert_eq!(listed, ["sub/b:c", "sub/ok", "table.toml"]);
+        for name in &listed {
+            assert!(vfs.exists(name), "{name}");
+            assert_eq!(vfs.read(name).unwrap(), b"x");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn wrapper_detection() {

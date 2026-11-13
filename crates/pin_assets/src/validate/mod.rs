@@ -325,6 +325,24 @@ pub fn load_table(vfs: &Vfs) -> Result<LoadedTable, AssetError> {
     }
 }
 
+/// Checks one `table.toml` `[[splines]]` entry exactly as [`load_table`]
+/// does (construction rules, coordinate and length bounds, spacing and guide
+/// lints), reported at `splines[index]…`: returns `(errors, warnings)`, each
+/// sorted by path. The ball-profile lint (c) needs the table's profiles and
+/// is skipped. Used by `pin_tablegen` to refuse generated guides the loader
+/// would reject or warn about (Subphase 4.3).
+pub fn check_spline(
+    index: usize,
+    spline: &pin_core::schema::table::SplineDef,
+) -> (Vec<ValidationError>, Vec<ValidationError>) {
+    let mut checker = rules::Checker::detached();
+    checker.lone_spline(index, spline);
+    let (mut errors, mut warnings) = (checker.errors, checker.warnings);
+    sort(&mut errors);
+    sort(&mut warnings);
+    (errors, warnings)
+}
+
 /// Nearest name of `kind` within edit distance 2.
 pub(crate) fn suggest_name(ids: &TableIds, kind: IdKind, name: &str) -> Option<String> {
     ids::suggest(name, ids.entries(kind).iter().map(|(n, _)| n.as_str())).map(str::to_owned)

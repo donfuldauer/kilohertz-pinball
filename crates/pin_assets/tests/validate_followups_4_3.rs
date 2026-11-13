@@ -183,3 +183,31 @@ fn b_geometric_doubling_back_keeps_its_location() {
             .any(|w| w.message.contains("no clearance could be proven"))
     );
 }
+
+/// `check_spline` (4.3 fix round 1) agrees with `load_table` on one spline.
+#[test]
+fn check_spline_matches_load_table() {
+    use pin_core::schema::table::{SplineDef, SplineKind};
+    let def = |points: Vec<[f32; 3]>| SplineDef {
+        id: "g".into(),
+        kind: SplineKind::Guide,
+        layer: 0,
+        gauge: None,
+        points,
+        roll_deg: None,
+    };
+    let (e, w) = pin_assets::validate::check_spline(3, &def(vec![[0.0; 3], [100.0, 0.0, 0.0]]));
+    assert!(e.is_empty() && w.is_empty(), "{e:?} {w:?}");
+    let (e, _) = pin_assets::validate::check_spline(3, &def(vec![[0.0; 3], [10_001.0, 0.0, 0.0]]));
+    assert_eq!(e[0].path, "splines[3].points[1]");
+    let z = vec![
+        [0.0, 0.0, 0.0],
+        [100.0, 100.0, 0.0],
+        [100.0, 0.0, 0.0],
+        [0.0, 100.0, 0.0],
+    ];
+    let (e, w) = pin_assets::validate::check_spline(0, &def(z.clone()));
+    assert!(e.is_empty());
+    let z64: Vec<[f64; 3]> = z.iter().map(|p| p.map(f64::from)).collect();
+    assert_eq!(w, warnings(&z64));
+}

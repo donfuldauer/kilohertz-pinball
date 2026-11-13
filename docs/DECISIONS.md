@@ -965,6 +965,7 @@ Every one stays inside 2 × 329c843 + 2 ms (worst 0.70 of that bound) and far be
 - **Decision (PNG).** Own encoder: 8-bit grey/RGB/RGBA, filter Sub on every row, zlib level 6 through `flate2` (zlib-rs), one IDAT, no ancillary chunks.
 - **Decision (scenes).** The kit provides no `[[scenes]]` files and has no Scene kind (the brief's `AssetKind` has none): the DMD scene format is 5.3's. Verification 5 therefore covers the sounds the kit claims; the A.1 example's `sfx_bumper` resolves to `audio/sfx_bumper.wav`.
 - **Alternatives.** Ogg output (no encoder without a new dependency); `image`'s PNG encoder (its output may change with `png` crate updates; ours is pinned by our code); seeding the SFX from the table (would make the "SFX set unchanged" property impossible); Ogg/compressed music (left to the audio follow-up in the human queue).
+- **Correction / review polish (4.6 N1–N6).** The "what varies" decision above overstates the seeding: the music loop, `img_backglass_base` and `img_playfield` derive from `meta_seed` (title, palette and seed); `img_backglass_logo` and `img_backglass_logo_mask` depend only on the title and palette (no seed); the insert labels depend only on the palette. Polish: playfield lane chevrons now pass through the same contrast check as the title (`readable` against the lane background); every tone and noise burst has at least a 0.5 ms linear attack (`MIN_ATTACK`), so no sound starts with a step; `pin_assetgen --help`/`-h` prints usage on stdout and exits 0 (errors stay on stderr, exit 2); implementer tests write under `CARGO_TARGET_TMPDIR` and remove their directories.
 
 ## 2.2-S — moving-body and force-context seams
 
@@ -1045,9 +1046,11 @@ API reference for Subphases 2.3 (flippers), 2.4 (mechs) and 2.7 (Magnus, remanen
 ### Edits outside the new files
 
 - `tests/spec_ball_determinism.rs`: one mechanical line, `ImpactTarget::Body { set, body } => (5u8, set, body).hash(h),` in its exhaustive match. No assertion changed.
-- **Correction / review polish (4.6 N1–N6).** The "what varies" decision above overstates the seeding: the music loop, `img_backglass_base` and `img_playfield` derive from `meta_seed` (title, palette and seed); `img_backglass_logo` and `img_backglass_logo_mask` depend only on the title and palette (no seed); the insert labels depend only on the palette. Polish: playfield lane chevrons now pass through the same contrast check as the title (`readable` against the lane background); every tone and noise burst has at least a 0.5 ms linear attack (`MIN_ATTACK`), so no sound starts with a step; `pin_assetgen --help`/`-h` prints usage on stdout and exits 0 (errors stay on stderr, exit 2); implementer tests write under `CARGO_TARGET_TMPDIR` and remove their directories.
 
 ## Orchestrator — 4.3 review round 1: VFS defect O1 assigned to the 4.3 fix round
 **Decision:** The 4.3 reviewer's pin_assets run found, by fuzz, a pre-existing 4.1 defect: a zip entry named `.\a:` is listed by `Vfs::list()` but `exists()` returns false. The proptest seed is kept in `spec_fuzz.proptest-regressions`. The fix is assigned to the 4.3 Implementer (Opus, the same model as the 4.1 owner), with an ownership amendment for `pin_assets/src/{vfs,zip}`, and is reviewed in the 4.3 re-review.
 **Rationale:** 4.3 is already amending pin_assets this wave, and opening a separate fix task would add another agent to a full machine.
 **Alternatives:** A separate 4.1 fix task; deleting the seed (rejected: it is a real defect).
+
+## Orchestrator — 2.7 starts during the 2.2-S fix round
+**Decision:** 2.7 (Magnus and remanence) starts now instead of waiting for 2.2-S to pass. The 2.2-S reviewer passed the force-context half (N5). Both blocking findings concern the moving-body half, which 2.7 does not use, and the fix round keeps every signature. 2.3 and 2.4 still wait for the 2.2-S pass. 2.7 shares `target/sp_2_2S` with the fix round to save disk.
