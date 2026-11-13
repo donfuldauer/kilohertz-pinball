@@ -103,3 +103,9 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
   - R9: add a randomised accounting test.
 - **Confirm:** the default per-bundle decoded-audio budget of 512 MiB.
 - [4.1-H round 1 → 2.1/2.2 owners] `GuideCurve::reach()` is 6.5 mm (not 0) for an open level Z through (0,0), (100,100), (100,0), (0,100) mm whose diagonals cross; the loader now flags it itself (lint d, "doubles back or touches itself"), but the physics reach estimate looks wrong for open self-crossing curves. Also: bundles with prepended data (self-extracting zips) are now refused by design.
+
+## 4.1-H follow-ups (non-blocking, from the Fable review of fix 2)
+- **Coordinate bound:** a spline whose tail spacing grows geometrically out to hundreds of metres stretches the lint's grid cells to 2.0–2.4 s per spline (about 2 min for a 4 MiB manifest). Nothing in the loader bounds spline coordinates. Fix: refuse coordinates beyond about 10 m, or total length beyond 65 m. Also correct the "linear whatever the orientation" doc comment on `closest_far_pair`.
+- **Warning location:** a "doubles back" warning triggered only by `reach() < 1 µm` reports "near points[0]". Omit the location in that case.
+- **Authoring docs:** a new error rule refuses more than 4096 through-points per spline. Add it to the authoring docs and tell the Tester.
+- **Prepended data:** bundles with prepended or trailing zip data (for example self-extractors) are refused. `zip -A` repairs them.
