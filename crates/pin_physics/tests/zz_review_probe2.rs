@@ -1302,3 +1302,109 @@ fn t6_newton_sweep() {
     println!("criterion 3 sweep: {fails} failures of {}", 6 * 3 * 2);
     assert_eq!(fails, 0);
 }
+
+#[test]
+fn t7_level_slit_detail() {
+    use pin_physics::ball::BallEvent;
+    let world = empty_world();
+    // (1) minimal cast repro: sphere next to end A, cast over one solver sub-step window.
+    for (rad, open) in [(0.04f32, 0.030f32), (0.04, 0.034), (0.06, 0.030), (0.1, 0.029)] {
+        let g = try_guide(&c_ring(rad, open, 0.01, 0.0), 0.05, false).unwrap();
+        let brute = Brute::new(&g, 64);
+        let sp = g.spline();
+        let a = sp.point(0.0);
+        let r = 0.0135f32;
+        let mut worst = 0.0f32;
+        let mut desc = String::new();
+        let mut rng = Lcg(1);
+        for _ in 0..60000 {
+            let ang = rng.unit() * std::f32::consts::TAU;
+            let p0 = a + v(ang.cos(), ang.sin(), 0.0) * (r + rng.range(1.0e-4, 3.0e-3)) + Vec3::Z * 0.025;
+            if brute.distance(p0).0 < r + 5.0e-5 {
+                continue;
+            }
+            let a1 = rng.unit() * std::f32::consts::TAU;
+            let speed = rng.range(0.5, 8.0);
+            let vel = v(a1.cos(), a1.sin(), 0.0) * speed;
+            let window = (0.25 * r / speed).min(1.0e-3);
+            let res = g.cast_sphere(p0, r, vel, window, None);
+            let end = match res {
+                None => window,
+                Some(GuideCast::Contact(h)) => h.time,
+                Some(GuideCast::Advance { time }) => time,
+            };
+            let mut mingap = f32::INFINITY;
+            for k in 0..=100 {
+                let p = p0 + vel * (end * k as f32 / 100.0);
+                mingap = mingap.min(brute.distance(p).0 - r);
+            }
+            if -mingap > worst {
+                worst = -mingap;
+                desc = format!("p0={p0:?} vel={vel:?} window={window:e} result={res:?} gap0={:e}", brute.distance(p0).0 - r);
+            }
+        }
+        println!("ring r{:.0} opening {:.0}: est reach {:.1} mm; worst penetration during a 'free' sub-step cast = {:.3} mm; {desc}", rad * 1e3, open * 1e3, g.reach() * 1e3, worst * 1e3);
+    }
+    // (2) solver: balls fired at a slit narrower than the ball. Do they get through? KE gain?
+    println!("| ring | opening mm | ball | runs | passed through slit | max sink mm | max rel KE gain | late (boundary) hits w/o Impact event |");
+    for (rad, open) in [(0.04f32, 0.012f32), (0.04, 0.020), (0.04, 0.024), (0.04, 0.026), (0.06, 0.026), (0.1, 0.026), (0.1, 0.031)] {
+        let g = try_guide(&c_ring(rad, open, 0.01, 0.0), 0.05, false).unwrap();
+        let guides = [g];
+        let g = &guides[0];
+        let brute = Brute::new(g, 48);
+        let geo = Geometry { world: &world, guides: &guides, wireforms: &[] };
+        for profile in [STEEL, MINI, JUMBO] {
+            let r = radius(profile);
+            if 2.0 * r <= open {
+                continue;
+            }
+            let mut rng = Lcg(99);
+            let (mut passed, mut runs, mut sink, mut gain, mut silent) = (0u32, 0u32, 0.0f32, 0.0f64, 0u32);
+            let mut example = String::new();
+            for case in 0..1500 {
+                // start outside the ring in front of the slit (slit is at +x), aim at the slit region
+                let start = v(rad + r + rng.range(0.002, 0.05), rng.range(-0.03, 0.03), 0.025);
+                if brute.distance(start).0 < r + 1.0e-4 {
+                    continue;
+                }
+                let aim = v(rad * (1.0 - (open / (2.0 * rad)).powi(2)).sqrt(), rng.range(-0.6, 0.6) * open, 0.025);
+                let speed = 0.2 + 29.8 * rng.unit() * rng.unit();
+                let vel = (aim - start).normalize() * speed;
+                let mut s = if case % 2 == 0 { frictionless() } else { solver_no_gravity() };
+                let h = s.add_ball(ball_at(profile, start, vel)).unwrap();
+                let mut ev = BallEvents::new();
+                runs += 1;
+                let mut ke_prev = kinetic_energy(&s);
+                let mut through = false;
+                for _ in 0..150 {
+                    ev.clear();
+                    s.step(&geo, DT, &mut ev);
+                    let b = *s.ball(h).unwrap();
+                    let (d, _) = brute.distance(b.position);
+                    let impacts = ev.as_slice().iter().filter(|e| matches!(e, BallEvent::Impact { .. })).count();
+                    if r - d > 1.0e-4 && impacts == 0 {
+                        silent += 1;
+                    }
+                    sink = sink.max(r - d);
+                    let ke = kinetic_energy(&s);
+                    gain = gain.max((ke - ke_prev) / ke_prev.max(1e-12));
+                    ke_prev = ke;
+                    let rho = (b.position.x * b.position.x + b.position.y * b.position.y).sqrt();
+                    if rho < rad - 0.5 * r {
+                        through = true;
+                    }
+                }
+                if through {
+                    passed += 1;
+                    if example.is_empty() {
+                        example = format!("start {start:?} vel {vel:?} friction {}", case % 2);
+                    }
+                }
+            }
+            println!(
+                "| r{:.0} | {:.0} | {profile:?} (d={:.1}mm) | {runs} | {passed} | {:.3} | {gain:.2e} | {silent} | {example}",
+                rad * 1e3, open * 1e3, 2e3 * r, sink * 1e3
+            );
+        }
+    }
+}
