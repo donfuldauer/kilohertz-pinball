@@ -1,7 +1,8 @@
 //! Seam task 2.2-S: with no moving bodies and no force hooks (and with an
 //! old-style `force`-only hook), the ball solver is bit-identical to the
 //! solver before the seams existed. The expected digests below were recorded
-//! by running this file against HEAD 63243da (before any edit to `ball/`).
+//! by running this file against HEAD 63243da (= 84c88eb for `pin_physics`),
+//! before any edit to `ball/`.
 //!
 //! Run with `PRINT_SEAM_HASHES=1` to print the digests instead of checking.
 
@@ -9,7 +10,6 @@
 mod util;
 
 #[path = "spec_ball_common.rs"]
-#[allow(dead_code, unused_imports)]
 mod spec;
 
 use glam::{Quat, Vec3};

@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc a5a3b956ffdc3c554fc0420c698ad62b759e40c7abd8bff2d3b6db652311f892 # shrinks to e = [(2858721471328711588, 35)]
 cc 6a77c10268a92692b85be33c6869d568960f20a6cab44b5dcb56e83bd207929d # shrinks to e = [(3399655296537881114, 32)], json_only = false
+cc 27cdc5ec36f3fec13b3d19f27e70c7b50cf8d91530987465f494b4386501b9a7 # shrinks to names = [".\\a:"]

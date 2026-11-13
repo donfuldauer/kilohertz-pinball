@@ -146,3 +146,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 4.3 | Reviewer | Fable 5.2 | 1 | running | — | |
 | 4 | 3.4 | Implementer | Opus 5.5 | 1 | done | fmt/clippy clean; 84 spec + own tests pass; coverage pin_input 99.26 %, pin_audio 98.69 %, pin_core 99.46 % | CR-003 pin_core::haptics (additive); SDL3 build headers installed in the container; run-time wiring → 6.0 |
 | 4 | 3.4 | Reviewer | Fable 5.2 | 1 | running | — | |
+| 4 | 4.6 | Reviewer | Fable 5.2 | 1 | **pass** | gates 1–8 pass; 46 spec + 52 own tests; coverage 96.75 %; byte-identical across processes; images and sound stats checked | N1 temp-dir leak in tests/kit.rs, N2 DECISIONS wording, N3 chevron contrast, N5 --help exit code, N6 SFX attack → small polish round by the Implementer; N4 8×16 glyph legibility, N7 → HUMAN_QUEUE; scenes left to 5.3 |
