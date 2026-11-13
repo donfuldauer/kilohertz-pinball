@@ -1317,3 +1317,188 @@ fn level_guide_cast_cost_report() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// 2.1 fix task B1: ball-wide lanes of end-limited level guides.
+
+/// Through-points of a level Archimedean spiral `r(θ) = r0 + pitch · θ/2π`
+/// over `turns` turns, `n` points evenly in angle.
+fn spiral_points(r0: f64, pitch: f64, turns: f64, n: usize) -> Vec<Vec3> {
+    (0..n)
+        .map(|i| {
+            let u = i as f64 / (n - 1) as f64;
+            let a = core::f64::consts::TAU * turns * u;
+            let r = r0 + pitch * turns * u;
+            v((r * a.cos()) as f32, (r * a.sin()) as f32, 0.0)
+        })
+        .collect()
+}
+
+/// A ball of `profile` started in the middle turn of the spiral, its
+/// surface 1 mm inside the outer wall of the lane, moving along the lane at
+/// 5 m/s without gravity for 200 ticks: (ticks at the wall, ticks among
+/// them below 95 % of speed · dt, worst fraction, deepest gap in metres).
+fn slide_in_spiral_lane(
+    pitch: f64,
+    turns: f64,
+    n: usize,
+    profile: pin_core::ids::ProfileId,
+) -> (u32, u32, f32, f32) {
+    let world = util::empty_world();
+    let guides = [GuideCurve::new(
+        CubicSpline::interpolate(&spiral_points(0.1, pitch, turns, n)).unwrap(),
+        HEIGHT,
+    )
+    .unwrap()];
+    let geo = Geometry {
+        world: &world,
+        guides: &guides,
+        wireforms: &[],
+    };
+    let ball = util::radius(profile);
+    let turn = 0.5 * turns;
+    let a = core::f64::consts::TAU * turn;
+    let wall = (0.1 + pitch * turn) as f32;
+    let radial = v(a.cos() as f32, a.sin() as f32, 0.0);
+    let start = radial * (wall - ball - 1.0e-3) + Vec3::Z * 0.0135;
+    let mut solver = util::solver_no_gravity();
+    let handle = solver
+        .add_ball(util::ball_at(
+            profile,
+            start,
+            v(-radial.y, radial.x, 0.0) * 5.0,
+        ))
+        .unwrap();
+    let mut events = BallEvents::new();
+    let (mut at_wall, mut slow, mut worst, mut deepest) = (0u32, 0u32, f32::INFINITY, 0.0f32);
+    for _ in 0..200 {
+        let before = *solver.ball(handle).unwrap();
+        solver.step(&geo, util::DT, &mut events);
+        let after = solver.ball(handle).unwrap();
+        let moved = after.position.distance(before.position);
+        let speed = 0.5 * (before.velocity.length() + after.velocity.length());
+        let fraction = moved / (speed * util::DT);
+        let gap = guides[0].closest_point(after.position, None).distance - ball;
+        deepest = deepest.min(gap);
+        if gap < 1.0e-4 {
+            at_wall += 1;
+            worst = worst.min(fraction);
+            if fraction < 0.95 {
+                slow += 1;
+            }
+        }
+    }
+    (at_wall, slow, worst, deepest)
+}
+
+#[test]
+fn a_steel_ball_slides_along_a_ball_wide_spiral_lane_at_full_speed() {
+    // Review B1 of the other-model attempt: in a lane 40 mm wide (about
+    // three steel-ball radii) between the turns of an end-limited level
+    // spiral the ball crawled at ~5 % of speed · dt on 185 of 191 ticks at
+    // the wall (reach and tangent balls both below the ball's radius).
+    let (at_wall, slow, worst, deepest) = slide_in_spiral_lane(0.04, 3.0, 101, util::STEEL);
+    assert!(at_wall >= 150, "only {at_wall} ticks at the wall");
+    assert!(
+        slow * 100 <= at_wall,
+        "{slow} of {at_wall} ticks at the wall below 95 % of speed · dt (worst {worst})"
+    );
+    assert!(deepest >= -1.0e-5, "{} µm into the wall", -deepest * 1.0e6);
+}
+
+#[test]
+fn balls_slide_along_spiral_lanes_of_34_to_44_mm_at_full_speed() {
+    // The band of lanes that hold a pinball snugly: steel (27 mm), mini
+    // (15.9 mm) and jumbo (31.75 mm) balls, spirals of three and four turns
+    // (100 and 200 segments). At least 95 % of speed · dt on at least 99 %
+    // of the ticks at the wall, never deeper than the 10 µm sliding limit.
+    let mut report = Vec::new();
+    for pitch in [0.034f64, 0.038, 0.044] {
+        for (turns, n) in [(3.0f64, 101usize), (4.0, 201)] {
+            for profile in [util::STEEL, util::MINI, util::JUMBO] {
+                let (at_wall, slow, worst, deepest) =
+                    slide_in_spiral_lane(pitch, turns, n, profile);
+                let label = format!(
+                    "pitch {} mm, {turns} turns, ball {} mm: {slow} of {at_wall} slow \
+                     (worst {worst:.3}), deepest {:.2} µm",
+                    pitch * 1.0e3,
+                    util::radius(profile) * 1.0e3,
+                    -deepest * 1.0e6
+                );
+                assert!(at_wall >= 150, "{label}");
+                assert!(slow * 100 <= at_wall, "{label}");
+                assert!(deepest >= -1.0e-5, "{label}");
+                report.push(label);
+            }
+        }
+    }
+    println!("{}", report.join("\n"));
+}
+
+#[test]
+fn casts_along_spiral_lanes_never_sweep_into_the_wall() {
+    // The lane bound of the cast (2.1 fix B1) takes steps of millimetres
+    // next to the wall: starts on or near either wall of the lanes of
+    // spirals 34 to 44 mm apart, along the lane, across it or anywhere,
+    // followed to the end of the window, never sweep deeper than the
+    // sliding limit.
+    let mut rng = Pcg(0x00b1_0001);
+    let shapes: Vec<GuideCurve> = [(0.034, 3.0, 101), (0.04, 3.0, 101), (0.044, 4.0, 201)]
+        .into_iter()
+        .map(|(pitch, turns, n)| {
+            GuideCurve::new(
+                CubicSpline::interpolate(&spiral_points(0.1, pitch, turns, n)).unwrap(),
+                HEIGHT,
+            )
+            .unwrap()
+        })
+        .collect();
+    let (mut casts, mut contacts) = (0u32, 0u32);
+    for g in &shapes {
+        for &ball in &BALL_RADII {
+            for &speed in &SPEEDS {
+                for k in 0..24 {
+                    let t = rng.range(1.0, g.spline().max_t() - 1.0);
+                    let on_wall = g.spline().point(t);
+                    let tangent = g.spline().tangent(t).normalize();
+                    let side = v(-tangent.y, tangent.x, 0.0) * if k % 2 == 0 { 1.0 } else { -1.0 };
+                    let off = if k % 3 == 0 {
+                        2.0e-6
+                    } else {
+                        rng.range(0.0, 3.0e-3)
+                    };
+                    let start = on_wall + side * (ball + off) + Vec3::Z * rng.range(0.0, HEIGHT);
+                    if g.closest_point(start, None).distance <= ball + 1.0e-6 {
+                        continue;
+                    }
+                    let along = tangent * if rng.unit() < 0.5 { 1.0 } else { -1.0 };
+                    let aim = match rng.next_u32() % 3 {
+                        0 => along,
+                        1 => along - side * rng.range(0.0, 0.3),
+                        _ => v(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), 0.0),
+                    };
+                    let dir = aim.normalize_or_zero();
+                    if dir == Vec3::ZERO {
+                        continue;
+                    }
+                    let vel = dir * speed;
+                    let window = [0.5e-3f32, 1.0e-3, 2.0e-3][(rng.next_u32() % 3) as usize];
+                    let (time, contact) = free_time(g, start, ball, vel, window);
+                    let sink = min_gap_along(g, start, ball, vel, time, 5.0e-5);
+                    casts += 1;
+                    contacts += u32::from(contact);
+                    assert!(
+                        sink >= -MAX_SINK,
+                        "ball {ball}, start {start:?}, vel {vel:?}, window {window}: free path \
+                         {} µm into the wall",
+                        -sink * 1.0e6
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        casts > 800 && contacts > casts / 10 && contacts < casts,
+        "{contacts}/{casts}"
+    );
+}

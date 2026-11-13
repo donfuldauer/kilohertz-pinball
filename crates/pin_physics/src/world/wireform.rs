@@ -1126,7 +1126,8 @@ impl GuideCurve {
             let (mut reach, line) = level_reaches(&spline);
             if reach > 0.0 && !spline.is_closed() {
                 let tree = CurveTree::new(&spline);
-                let half = |ends: &[EndTerms; 2]| ends.iter().fold(f64::INFINITY, |m, e| m.min(e.half));
+                let half =
+                    |ends: &[EndTerms; 2]| ends.iter().fold(f64::INFINITY, |m, e| m.min(e.half));
                 let mut ends = tree.end_terms(0.0);
                 let end_limited = reach.min((0.9 * half(&ends)) as f32) < line;
                 let target = f64::from(reach) / 0.9;
@@ -2084,6 +2085,143 @@ mod tests {
                 }
             }
             assert!(checked > 100, "{label}: {checked}");
+        }
+    }
+
+    fn spiral(r0: f64, pitch: f64, turns: f64, n: usize) -> Vec<Vec3> {
+        (0..n)
+            .map(|i| {
+                let u = i as f64 / (n - 1) as f64;
+                let a = core::f64::consts::TAU * turns * u;
+                let r = r0 + pitch * turns * u;
+                Vec3::new((r * a.cos()) as f32, (r * a.sin()) as f32, 0.0)
+            })
+            .collect()
+    }
+
+    /// The curve of `spline` as a dense polyline in `f64` (`per` pieces per
+    /// segment).
+    fn dense(spline: &CubicSpline, per: usize) -> Vec<DVec3> {
+        spline
+            .segments()
+            .iter()
+            .flat_map(|seg| {
+                let p = seg.p.map(Vec3::as_dvec3);
+                (0..per).map(move |j| {
+                    let s = j as f64 / per as f64;
+                    let a = 1.0 - s;
+                    p[0] * (a * a * a)
+                        + p[1] * (3.0 * a * a * s)
+                        + p[2] * (3.0 * a * s * s)
+                        + p[3] * (s * s * s)
+                })
+            })
+            .chain(core::iter::once(spline.point(spline.max_t()).as_dvec3()))
+            .collect()
+    }
+
+    /// Every lane `(R, D)` of the table ([`TangentBalls::lane`]) at `samples`
+    /// parameters: each curve point less than `D` from the curve point `a` is
+    /// outside both balls of radius `R` that touch the curve at `a`
+    /// (`|w|² ≥ 2R |w · N|`, up to 0.5 µm for the `f32` point `a`). Returns
+    /// the number of lanes checked with `D > 0`.
+    fn check_lanes(g: &GuideCurve, label: &str, samples: usize) -> usize {
+        let balls = g.tangent_balls.as_ref().expect(label);
+        let spline = &g.spline;
+        let polyline = dense(spline, 512);
+        let max_t = spline.max_t();
+        let mut checked = 0;
+        for i in 0..=samples {
+            let t = max_t * i as f32 / samples as f32;
+            let Some((r, d)) = balls.lane(spline, t) else {
+                continue;
+            };
+            if !(r > 0.0 && d > 0.0) {
+                continue;
+            }
+            checked += 1;
+            let (r, d) = (f64::from(r), f64::from(d));
+            let a = spline.point(t).as_dvec3();
+            let tangent = spline.tangent(t).as_dvec3().normalize();
+            let normal = DVec3::new(-tangent.y, tangent.x, 0.0);
+            for y in &polyline {
+                let w = *y - a;
+                let w2 = w.length_squared();
+                if w2 >= d * d {
+                    continue;
+                }
+                let depth = (2.0 * r * w.dot(normal).abs() - w2) / (2.0 * r);
+                assert!(
+                    depth <= 5.0e-7,
+                    "{label}: at t = {t} (R {r}, D {d}) the curve point {y:?}, {} from it, \
+                     is {depth} inside a ball of radius R",
+                    w2.sqrt()
+                );
+            }
+        }
+        checked
+    }
+
+    #[test]
+    fn lanes_of_spirals_rings_hooks_and_js_hold() {
+        // 2.1 fix task B1: the lane data of a table (the own neighbourhood
+        // outside the balls of radius `R`, everything else at least `D`
+        // away) checked against a dense polyline of the curve (512 pieces
+        // per segment, f64).
+        let mut cases: Vec<(String, Vec<Vec3>)> = Vec::new();
+        for (pitch, turns, n) in [
+            (0.04, 3.0, 101),
+            (0.034, 4.0, 201),
+            (0.044, 3.0, 61),
+            (0.02, 3.0, 101),
+        ] {
+            cases.push((
+                format!("spiral pitch {pitch} turns {turns} n {n}"),
+                spiral(0.1, pitch, turns, n),
+            ));
+        }
+        for (r, opening, spacing) in [(0.04, 0.03, 0.01), (0.1, 0.009, 0.02), (0.5, 0.03, 0.05)] {
+            cases.push((
+                format!("C r {r} opening {opening}"),
+                c_ring(r, opening, spacing),
+            ));
+        }
+        cases.push(("hook".into(), hook(0.1, 0.02, 0.01)));
+        for (gap, spacing, tilt) in [(2.0e-4, 0.04, 0.4), (0.01, 0.04, 0.0)] {
+            cases.push((format!("J gap {gap}"), j_shape(gap, spacing, tilt)));
+        }
+        let mut lanes = 0;
+        for (label, points) in cases {
+            let g = guide(&points);
+            if g.tangent_balls.is_none() {
+                continue;
+            }
+            lanes += check_lanes(&g, &label, g.spline.segment_count() * 6);
+        }
+        assert!(lanes > 1000, "{lanes}");
+    }
+
+    #[test]
+    fn the_b1_spiral_keeps_the_reach_its_sampled_pairs_justify() {
+        // 2.1 fix task B1: the spiral's ends are about as far from the next
+        // turn as the turns are from each other. Within the 2 % tolerance of
+        // the first end search they looked binding, the guide counted as
+        // end-limited, and the table's smallest entry (30 % tolerance) cut
+        // its reach from 17.86 to 13.98 mm. Now the ends are searched again
+        // against the sampled estimate and the table proves it: the reach
+        // is the sampled one bit for bit, the guide keeps its table, and its
+        // lanes are known to within a few per cent (true width 40 mm).
+        let spline = CubicSpline::interpolate(&spiral(0.1, 0.04, 3.0, 101)).unwrap();
+        let (sampled, _) = level_reaches(&spline);
+        let g = GuideCurve::new(spline, 0.05).unwrap();
+        assert_eq!(g.reach().to_bits(), sampled.to_bits());
+        let balls = g.tangent_balls.as_ref().unwrap();
+        let max_t = g.spline.max_t();
+        for i in 1..20 {
+            let t = max_t * i as f32 / 20.0;
+            let (local, far) = balls.lane(&g.spline, t).unwrap();
+            assert!(far > 0.037 && far < 0.0401, "D {far} at {t}");
+            assert!(local > 0.05, "R {local} at {t}");
         }
     }
 

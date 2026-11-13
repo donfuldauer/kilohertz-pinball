@@ -1,7 +1,8 @@
 //! Provable bounds on the geometry of a guide's curve, by branch and bound
 //! over a hierarchy of the curve itself (not over its samples): the
-//! tangent-ball radii of level guides whose open ends limit the reach, and
-//! the distance from an open end to whatever lies behind it (2.1 fix B7).
+//! tangent-ball radii of level guides whose open ends limit the reach, the
+//! distance from an open end to whatever lies behind it (2.1 fix B7), and
+//! the lanes between stretches of such a guide (2.1 fix B1).
 //!
 //! # The curve and its pieces
 //!
@@ -55,9 +56,11 @@
 //! construction time bounded for any curve.
 //!
 //! Each step that matters is proven in the comments where it is made:
-//! [`Bez::bounds`], [`CurveTree::own`], [`EndProbe`], [`TableProbe`]
-//! (bounds 1 and 2), [`TangentBalls`] (the use at run time), and
-//! [`Build::entries`] (tables of many intervals at once).
+//! [`Bez::bounds`], [`CurveTree::own`], [`CurveTree::rod`], [`EndProbe`],
+//! [`TableProbe`] (bounds 1 to 5, and the lane distance `D`),
+//! [`TangentBalls`] and [`TangentBalls::lane`] (the use at run time),
+//! [`with_target`] (searches that prove a value rather than approximate
+//! it), and [`Build::entries`] (tables of many intervals at once).
 
 use glam::{DVec3, Vec3};
 
@@ -65,9 +68,6 @@ use super::spline::{BezierSegment, CubicSpline, SAMPLES_PER_SEGMENT};
 use super::wireform::segment_distance;
 
 const K: usize = SAMPLES_PER_SEGMENT;
-
-thread_local! { pub(super) static DBG: core::cell::Cell<[u64; 6]> = const { core::cell::Cell::new([0; 6]) }; }
-pub(super) fn dbg(i: usize) { DBG.with(|c| { let mut v = c.get(); v[i] += 1; c.set(v); }); }
 
 /// Relative slack added to every bound for `f64` rounding (the quantities
 /// are short sums of products, accurate to ~1e-15 relative).
@@ -725,8 +725,6 @@ impl CurveTree {
             // Out of budget, the search only drains: every piece left keeps
             // its bound as it is (still a lower bound over a cover).
             let drain = state.budget == 0;
-            dbg(0);
-            if piece.level == 0 { dbg(1); }
             state.budget = state.budget.saturating_sub(1);
             if let Some((own, local)) = probe.skip(piece.first as usize, piece.end as usize) {
                 lower = side_min(lower, own);
@@ -766,7 +764,10 @@ impl CurveTree {
                 // costs about as much.)
                 state.budget = state.budget.saturating_sub(1);
                 let rod = self.rod::<P>(&piece);
-                bound = side_max(bound, probe.refine(piece.centre, piece.radius, rod.as_ref()));
+                bound = side_max(
+                    bound,
+                    probe.refine(piece.centre, piece.radius, rod.as_ref()),
+                );
             }
             let mut mid = None;
             if piece.level as usize == 0 && !all(&bound, &level) {
@@ -792,8 +793,6 @@ impl CurveTree {
             if !open.contains(&true) {
                 continue;
             }
-            if open[2] && !open[0] && !open[1] { dbg(4); }
-            if !open[2] { dbg(5); }
             if piece.level as usize > 0 {
                 // The nearer child last, so that it is looked at first.
                 let a = self.tree_piece(piece.level as usize - 1, 2 * piece.node as usize);
@@ -837,7 +836,6 @@ impl CurveTree {
                 continue;
             }
             if rules.can_split {
-                dbg(3);
                 return Search::Split;
             }
             // As fine as it gets: keep the lower bound as it is.
@@ -885,21 +883,24 @@ impl CurveTree {
                 continue;
             }
             state.budget -= 1;
-            dbg(2);
             if let Some((own, local)) = probe.skip(piece.first as usize, piece.end as usize) {
                 *lower = side_min(*lower, own);
                 state.local = state.local.min(local);
                 continue;
             }
             let mut bound = probe.bound(piece.centre, piece.radius, None);
-            let unsettled = |b: &Sides| (0..SIDES).any(|s| b[s] != f64::INFINITY && b[s] < settle[s]);
+            let unsettled =
+                |b: &Sides| (0..SIDES).any(|s| b[s] != f64::INFINITY && b[s] < settle[s]);
             // (A piece no larger than the group goes down as it is if
             // open: the smaller groups and the slots try again, with
             // sharper bounds of their own.)
             if P::RODS && piece.radius > probe.size() && unsettled(&bound) {
                 state.budget = state.budget.saturating_sub(1);
                 let rod = self.rod::<P>(&piece);
-                bound = side_max(bound, probe.refine(piece.centre, piece.radius, rod.as_ref()));
+                bound = side_max(
+                    bound,
+                    probe.refine(piece.centre, piece.radius, rod.as_ref()),
+                );
             }
             let mut open = false;
             for side in 0..SIDES {
@@ -1136,6 +1137,46 @@ fn pair_values(a: DVec3, normal: DVec3, y: DVec3) -> Sides {
 /// `g ≥ |w_c|² − 2 far (δ_A + δ_P) − ρ (2σ w_c · N_m + 2 far κ_A δ_A + 2τ δ_P)`,
 /// linear in `ρ`: every `ρ` up to `num / den` (all of them if `den ≤ 0`)
 /// keeps it non-negative.
+///
+/// The third quantity is `D² = |w|²` (2.1 fix B1), over the pieces the
+/// search does not skip: the distance from the interval to the rest of the
+/// curve ([`TangentBalls::lane`]; the skipped pieces, the own
+/// neighbourhood, are covered by `R`, [`State::local`]). Every bound below
+/// bounds `|w|²` from below on the way (bound 1 by `(|v| − R − λ)²`,
+/// bound 2 by `num`), [`finish`].
+///
+/// Bounds 3 to 5 are of second order in the size of `A` (and of the piece),
+/// which is what lets a search resolve a lane a few per cent wider than a
+/// ball without cutting the interval into slivers. Write every `a` of `A`
+/// as `a_m + e_a`, `e_a = α T_m + β N_m` with `|α| ≤ δ_A` and
+/// `|β| ≤ κ_A δ_A²/2 =: bow` (arc length at most `δ_A` from `a_m`;
+/// distance from the tangent line, module documentation, for
+/// `θ := κ_A δ_A ≤ 1`). The normal at `a` is `N_a = cos φ N_m − sin φ T_m`
+/// with `|φ| ≤ θ`, so for any upper bound `X` of `σ w · N_m`,
+/// `σ w · N_a ≤ c(X) + θ |w · T_m|`, `c(X) = X` where `X ≥ 0` and
+/// `(1 − θ²/2) X ≥ cos θ · X` where it is negative ([`tilted`]).
+///
+/// Bound 3, a ball `(c, R)` of curve points, `v = c − a_m`:
+/// `|v − e_a|² ≥ |v|² − 2 (|v · T_m| δ_A + |v · N_m| bow)`, so `|w|` is at
+/// least its square root less `R`; `X = σ v · N_m + R + bow`;
+/// `|w · T_m| ≤ |v · T_m| + δ_A + R`.
+///
+/// Bound 4, a part of a sample interval with its middle `y_m`, `T_y`,
+/// `N_y`, `δ_P`, `θ_P` ([`Mid`]): likewise `y = y_m + e_y`,
+/// `e_y = α' T_y + β' N_y`, `|α'| ≤ δ_P`, `|β'| ≤ θ_P δ_P / 2 =: bow_P`, and
+/// `w_c = y_m − a_m`: `|w|² ≥ |w_c|² + 2 w_c · (e_y − e_a) ≥ |w_c|² −
+/// 2 (|w_c · T_y| δ_P + |w_c · N_y| bow_P + |w_c · T_m| δ_A + |w_c · N_m| bow)`;
+/// `X = σ w_c · N_m + δ_P |T_y · N_m| + bow_P + bow`;
+/// `|w · T_m| ≤ |w_c · T_m| + δ_A + δ_P`.
+///
+/// Bound 5, a [`Rod`] `p q` of radius `r` (every `y` within `r` of a point
+/// `q'` of the segment): `|w| ≥ dist(a, pq) − r`, and `dist(a, pq)` is at
+/// least `dist(a_m, pq) − δ_A − bow` and at least the distance to the
+/// segment's line, `|(p − a_m) · n| − δ_A |T_m · n| − bow |N_m · n|` (`n` its
+/// unit normal in the plane); `σ (q' − a_m) · N_m` and `|(q' − a_m) · T_m|`
+/// are largest at an end of the segment (linear along it), so
+/// `X = max over the ends of σ (· − a_m) · N_m, + r + bow`, and
+/// `|w · T_m| ≤ max over the ends of |(· − a_m) · T_m|, + r + δ_A + bow`.
 struct TableProbe<'a> {
     middle: DVec3,
     lambda: f64,
@@ -1236,7 +1277,7 @@ impl TableProbe<'_> {
     fn rod_bound(&self, rod: &Rod) -> Sides {
         let (delta, kappa) = (self.reach, self.curvature);
         let turn = kappa * delta;
-        if !(turn <= 1.0) {
+        if turn.is_nan() || turn > 1.0 {
             return NO_BOUND;
         }
         let tangent = DVec3::new(self.normal.y, -self.normal.x, 0.0);
@@ -1264,7 +1305,7 @@ impl TableProbe<'_> {
     fn across_bound(&self, centre: DVec3, radius: f64) -> Sides {
         let (delta, kappa) = (self.reach, self.curvature);
         let turn = kappa * delta;
-        if !(turn <= 1.0) {
+        if turn.is_nan() || turn > 1.0 {
             return NO_BOUND;
         }
         let tangent = DVec3::new(self.normal.y, -self.normal.x, 0.0);
@@ -1288,7 +1329,11 @@ const NO_BOUND: Sides = [0.0; SIDES];
 /// `cos φ · x ≤ x` where `x ≥ 0`, and `≤ cos(turn) x ≤ (1 − turn²/2) x`
 /// where it is negative (`|φ| ≤ turn ≤ 1`).
 fn tilted(x: f64, turn: f64) -> f64 {
-    if x >= 0.0 { x } else { x * (1.0 - 0.5 * turn * turn) }
+    if x >= 0.0 {
+        x
+    } else {
+        x * (1.0 - 0.5 * turn * turn)
+    }
 }
 
 /// The quantities of a table entry from a lower bound `low2` of `|w|²` and
@@ -1427,7 +1472,9 @@ const END_BAND: f32 = 1.0e-3;
 ///   interval, not at sample points, so the table holds between its points
 ///   whatever the spacing: intervals a quarter of a segment long, and 1/64
 ///   of a segment in the first and the last segment;
-/// * `ρ_back` of each end.
+/// * `ρ_back` of each end;
+/// * the lane of each table interval, `R` (as `ρ_±`) and `D` (less 10 µm,
+///   [`stored_distance`]): see [`TangentBalls::lane`].
 ///
 /// One side of a wall does not limit the other: a ball sliding under a
 /// T-junction (the stem on the other side) keeps its full radius. Values
@@ -1767,16 +1814,20 @@ impl Build<'_> {
         let targets = self.targets();
         for k in from..to {
             let cap = table_caps(self.caps[k]);
-            let mut level: Sides =
-                core::array::from_fn(|side| with_target(at_cap(cap[side]), cap[side], targets[side]));
+            let mut level: Sides = core::array::from_fn(|side| {
+                with_target(at_cap(cap[side]), cap[side], targets[side])
+            });
             if local {
                 let (point, normal) = self.middles[k];
                 for y in self.state.best.into_iter().flatten() {
                     let v = pair_values(point, normal, y);
                     for side in 0..SIDES {
                         if v[side] < cap[side] {
-                            level[side] = level[side]
-                                .min(with_target(TABLE_LEVELS[side](v[side]), v[side], targets[side]));
+                            level[side] = level[side].min(with_target(
+                                TABLE_LEVELS[side](v[side]),
+                                v[side],
+                                targets[side],
+                            ));
                         }
                     }
                 }
@@ -1860,5 +1911,170 @@ impl Build<'_> {
         }
         self.total -= allowed - self.state.budget;
         (result, self.state.local)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spline(points: &[Vec3]) -> CubicSpline {
+        CubicSpline::interpolate(points).unwrap()
+    }
+
+    fn spiral(pitch: f64, turns: f64, n: usize) -> Vec<Vec3> {
+        (0..n)
+            .map(|i| {
+                let u = i as f64 / (n - 1) as f64;
+                let a = core::f64::consts::TAU * turns * u;
+                let r = 0.1 + pitch * turns * u;
+                Vec3::new((r * a.cos()) as f32, (r * a.sin()) as f32, 0.0)
+            })
+            .collect()
+    }
+
+    fn wiggle(n: usize) -> Vec<Vec3> {
+        (0..n)
+            .map(|i| {
+                let x = 0.02 * i as f32;
+                Vec3::new(x, 0.05 * libm::sinf(9.0 * x), 0.0)
+            })
+            .collect()
+    }
+
+    /// A tiny deterministic generator for the test.
+    struct Lcg(u64);
+    impl Lcg {
+        fn unit(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    /// The smallest of the quantities `[ρ_+, ρ_−, D²]` over sampled pairs:
+    /// `a` on the piece `[s0, s1]` of segment `seg` (with its own normal),
+    /// `y` on `[t0, t1]` of segment `yseg`.
+    fn sampled(
+        tree: &CurveTree,
+        seg: usize,
+        s0: f64,
+        s1: f64,
+        yseg: usize,
+        t0: f64,
+        t1: f64,
+    ) -> Sides {
+        let mut low = [f64::INFINITY; SIDES];
+        for i in 0..=8 {
+            let s = s0 + (s1 - s0) * i as f64 / 8.0;
+            let b = &tree.bez[seg];
+            let a = b.point(s);
+            let d1 = b.d1(s);
+            let normal = DVec3::new(-d1.y, d1.x, 0.0).normalize();
+            for j in 0..=48 {
+                let y = tree.bez[yseg].point(t0 + (t1 - t0) * j as f64 / 48.0);
+                low = side_min(low, pair_values(a, normal, y));
+            }
+        }
+        low
+    }
+
+    #[test]
+    fn table_bounds_are_lower_bounds_of_the_pairs_they_cover() {
+        // Bounds 1 to 5 of `TableProbe` (and the rods of the tree) against
+        // the quantities at sampled pairs of points: a bound may never exceed
+        // a value it covers. Random table intervals and random pieces (tree
+        // nodes and parts of sample intervals) of a spiral, a C-like arc and
+        // a wiggle.
+        let mut rng = Lcg(7);
+        let mut checked = 0;
+        let mut tight = [0.0f64; SIDES];
+        for points in [spiral(0.04, 3.0, 101), spiral(0.02, 2.0, 41), wiggle(60)] {
+            let sp = spline(&points);
+            let tree = CurveTree::new(&sp);
+            let segments = tree.bez.len();
+            let n = tree.intervals();
+            for _ in 0..300 {
+                let seg = (rng.unit() * segments as f64) as usize % segments;
+                let per = if rng.unit() < 0.5 {
+                    TABLE_COARSE
+                } else {
+                    TABLE_FINE
+                };
+                let k = (rng.unit() * per as f64) as usize % per;
+                let (s0, s1) = (k as f64 / per as f64, (k + 1) as f64 / per as f64);
+                let probe = TableProbe::new(&tree, seg, s0, s1);
+                // A tree node or a part of a sample interval.
+                let level = (rng.unit() * 6.0) as usize;
+                let piece = if level == 0 {
+                    let i = (rng.unit() * n as f64) as usize % n;
+                    let depth = (rng.unit() * 4.0) as u8;
+                    let parts = 1u32 << depth;
+                    let j = (rng.unit() * f64::from(parts)) as u32 % parts;
+                    let local = (i % K) as f64 / K as f64;
+                    let h = 1.0 / (K as f64 * f64::from(parts));
+                    let (p0, p1) = (local + h * f64::from(j), local + h * f64::from(j + 1));
+                    let b = &tree.bez[i / K];
+                    tree.part(i, p0, p1, b.point(p0), b.point(p1), depth)
+                } else {
+                    let level = level.min(tree.levels.len() - 1);
+                    let node = (rng.unit() * tree.levels[level].len() as f64) as usize
+                        % tree.levels[level].len();
+                    tree.tree_piece(level, node)
+                };
+                if probe
+                    .skip(piece.first as usize, piece.end as usize)
+                    .is_some()
+                {
+                    continue;
+                }
+                let mut bound = probe.bound(piece.centre, piece.radius, None);
+                let rod = tree.rod::<TableProbe<'_>>(&piece);
+                bound = side_max(
+                    bound,
+                    probe.refine(piece.centre, piece.radius, rod.as_ref()),
+                );
+                if piece.level == 0 {
+                    let m = tree.mid(&piece);
+                    bound = side_max(bound, probe.bound(piece.centre, piece.radius, Some(&m)));
+                }
+                // The piece's points, segment by segment.
+                let mut truth = [f64::INFINITY; SIDES];
+                for i in piece.first as usize..piece.end as usize {
+                    let (t0, t1) = if piece.level == 0 && piece.depth > 0 {
+                        (f64::from(piece.s0), f64::from(piece.s1))
+                    } else {
+                        let local = (i % K) as f64 / K as f64;
+                        (local, local + 1.0 / K as f64)
+                    };
+                    truth = side_min(truth, sampled(&tree, seg, s0, s1, i / K, t0, t1));
+                }
+                for side in 0..SIDES {
+                    assert!(
+                        bound[side] <= truth[side] * (1.0 + 1.0e-9) + 1.0e-15,
+                        "side {side}: bound {} above a sampled value {} (slot {seg}/{s0}, piece \
+                         level {} intervals {}..{} depth {})",
+                        bound[side],
+                        truth[side],
+                        piece.level,
+                        piece.first,
+                        piece.end,
+                        piece.depth
+                    );
+                }
+                for side in 0..SIDES {
+                    if truth[side].is_finite() && truth[side] > 0.0 {
+                        tight[side] = tight[side].max(bound[side] / truth[side]);
+                    }
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 300, "{checked}");
+        // (The bounds are not trivially low: some come close to the truth.)
+        assert!(tight.iter().all(|&t| t > 0.5), "{tight:?}");
+        println!("tightest bound / sampled value per side: {tight:?}");
     }
 }
