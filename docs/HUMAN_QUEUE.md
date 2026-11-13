@@ -109,3 +109,4 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - **Warning location:** a "doubles back" warning triggered only by `reach() < 1 µm` reports "near points[0]". Omit the location in that case.
 - **Authoring docs:** a new error rule refuses more than 4096 through-points per spline. Add it to the authoring docs and tell the Tester.
 - **Prepended data:** bundles with prepended or trailing zip data (for example self-extractors) are refused. `zip -A` repairs them.
+- [2.1-B1] Construction of four end-limited level guides is 11–14 % slower than before the fix (≤ +3.7 ms; all within 2 × 329c843 + 2 ms), against the brief's +10 % cap: the price of the lane data that lets balls slide in ball-wide lanes. Accept, or trade back lane precision (`TOL_BALL`)?
