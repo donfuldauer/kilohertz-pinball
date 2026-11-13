@@ -77,6 +77,18 @@ impl Default for GltfLimits {
     }
 }
 
+/// Advice appended to a glTF JSON size error.
+const JSON_ADVICE: &str = "export a binary .glb (geometry and textures go in its BIN chunk) \
+     or keep buffers and images as separate files in the bundle instead of data: URIs";
+
+/// [`budget`] for JSON sizes, with [`JSON_ADVICE`].
+fn json_budget(what: &str, value: u64, max: u64) -> Result<(), AssetError> {
+    budget(what, value, max).map_err(|e| match e {
+        AssetError::Gltf(m) => gerr(format!("{m}; {JSON_ADVICE}")),
+        other => other,
+    })
+}
+
 fn budget(what: &str, value: u64, max: u64) -> Result<(), AssetError> {
     if value > max {
         Err(gerr(format!("{what} {value} exceeds the budget of {max}")))
@@ -256,7 +268,7 @@ fn parse_document(
     } else {
         (bytes.as_slice(), None)
     };
-    budget(
+    json_budget(
         "glTF JSON bytes",
         json_bytes.len() as u64,
         limits.max_json_bytes,
@@ -531,7 +543,9 @@ fn read_image_file(
     let peak = read_header(&prefix, what, limits)
         .map_err(|e| match e {
             AssetError::Gltf(m) if !m.contains("budget") => gerr(format!(
-                "{m} (the image header must fit in the first {IMAGE_HEADER_PREFIX} bytes)"
+                "{m} (the image header must fit in the first {IMAGE_HEADER_PREFIX} bytes: \
+                 strip embedded metadata such as large text, EXIF or colour-profile chunks, \
+                 e.g. by re-exporting the image without metadata)"
             )),
             other => other,
         })?
@@ -569,14 +583,14 @@ pub fn load_gltf_with_limits(
         let json = head.get(12..16).map_or(0, |b| {
             u64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         });
-        budget("GLB JSON chunk bytes", json, limits.max_json_bytes)?;
+        json_budget("GLB JSON chunk bytes", json, limits.max_json_bytes)?;
         let cap = limits
             .max_json_bytes
             .saturating_add(limits.max_buffer_bytes)
             .saturating_add(64);
         budget("GLB file bytes", size, cap)?;
     } else {
-        budget("glTF JSON bytes", size, limits.max_json_bytes)?;
+        json_budget("glTF JSON bytes", size, limits.max_json_bytes)?;
     }
     let bytes = vfs.read(path)?;
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {

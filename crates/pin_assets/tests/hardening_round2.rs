@@ -460,7 +460,7 @@ fn nc_image_files_are_sized_from_their_header_before_being_read() {
         &GltfLimits::default(),
     );
     assert!(
-        matches!(&r, Err(AssetError::Gltf(m)) if m.contains("first 1048576 bytes")),
+        matches!(&r, Err(AssetError::Gltf(m)) if m.contains("first 1048576 bytes") && m.contains("strip embedded metadata")),
         "{r:?}"
     );
 }
@@ -504,7 +504,7 @@ fn b3_gltf_json_is_capped_before_reading() {
     let vfs = open(stored_zip(&[("t.gltf", &gltf)])).unwrap();
     let r = load_gltf_with_limits(&vfs, "t.gltf", &tight);
     assert!(
-        matches!(&r, Err(AssetError::Gltf(m)) if m.contains("glTF JSON bytes") && m.contains("budget")),
+        matches!(&r, Err(AssetError::Gltf(m)) if m.contains("glTF JSON bytes") && m.contains("budget") && m.contains("export a binary .glb")),
         "{r:?}"
     );
     // A GLB: the JSON chunk length from the header; the BIN chunk is not JSON.

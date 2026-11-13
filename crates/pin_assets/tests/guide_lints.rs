@@ -363,3 +363,25 @@ fn d_doubling_back_is_not_called_a_gap() {
         );
     }
 }
+
+#[test]
+fn splines_have_a_through_point_cap() {
+    // Review round 2 (B5): at most 4096 through-points per spline (4 m of
+    // rail at 1 mm spacing); more is an error with advice, not a slow load.
+    let line = |n: usize| -> Vec<[f64; 3]> { (0..n).map(|i| [100.0, i as f64, 0.0]).collect() };
+    let loaded = load_text(&guide_table(&line(4096), &[])).unwrap();
+    assert_eq!(loaded.splines[0].points_m.len(), 4096);
+    match load_text(&guide_table(&line(4097), &[])) {
+        Err(AssetError::Invalid(errs)) => {
+            assert_eq!(errs.len(), 1, "{errs:#?}");
+            assert_eq!(errs[0].path, "splines[0].points");
+            assert!(
+                errs[0]
+                    .message
+                    .contains("at most 4096 through-points, got 4097")
+            );
+            assert!(errs[0].message.contains("split it"));
+        }
+        other => panic!("{other:?}"),
+    }
+}

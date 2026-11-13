@@ -26,6 +26,11 @@ const MAX_LAYER: u8 = 7;
 const MAX_SWITCH_LAMP: u16 = 255;
 /// Guides whose ends are this close (m) are snapped closed.
 const CLOSE_SNAP_M: f32 = 1.0e-6;
+/// Most through-points per spline. Real guides and wireforms have tens of
+/// points; 4096 at the finest sensible spacing (1 mm) is 4 m of rail, more
+/// than any playfield holds. It bounds the spline build and the lints
+/// (DECISIONS.md, 4.1 fix task H round 2).
+pub(super) const MAX_SPLINE_POINTS: usize = 4096;
 /// Through-point spacing ratio above which a spline gets a warning.
 const SPACING_RATIO_WARN: f32 = 3.0;
 /// Addressable persistent keys (`HostView::persist`).
@@ -837,6 +842,18 @@ impl<'v> Checker<'v> {
                 TABLE_FILE,
                 format!("{p}.points"),
                 format!("a spline needs at least 2 points, got {}", s.points.len()),
+            );
+            return None;
+        }
+        if s.points.len() > MAX_SPLINE_POINTS {
+            self.err(
+                TABLE_FILE,
+                format!("{p}.points"),
+                format!(
+                    "a spline may have at most {MAX_SPLINE_POINTS} through-points, got {}; \
+                     split it into several splines or use fewer points",
+                    s.points.len()
+                ),
             );
             return None;
         }

@@ -29,9 +29,16 @@ pub(super) const HAIRLINE_GAP_M: f32 = 1.0e-3;
 /// come back within [`HAIRLINE_GAP_M`] of an end after this much length by
 /// turning back on itself.
 pub(super) const END_EXCLUSION_M: f32 = 4.0 * HAIRLINE_GAP_M;
-/// Polyline samples per segment for the end-near-wall and self-touching
-/// distance checks.
-const DISTANCE_SAMPLES: usize = 32;
+/// Target length (m) of one polyline piece for the end-near-wall and
+/// self-touching distance checks (the sagitta of a 0.5 mm chord on a 5 mm
+/// radius is 6 µm).
+const PIECE_M: f32 = 0.5e-3;
+/// Polyline pieces per spline segment at least (so short segments keep
+/// their shape) and in total at most (the piece length grows instead).
+const MIN_PIECES: usize = 4;
+const MAX_PIECES: usize = 1 << 17;
+/// Sub-chords per segment used to estimate its length.
+const LENGTH_PROBES: usize = 8;
 /// A reach below this (m) counts as none: `GuideCurve::reach()` is exactly 0
 /// for an end within ~0.1 mm of its own wall, but a curve crossing itself
 /// between samples can come out at a few nanometres.
@@ -209,18 +216,40 @@ pub(super) enum GapLint {
     DoublesBack { t: f32 },
 }
 
-/// Polyline samples of the curve with their along-curve distance.
+/// Polyline samples of the curve: (point, along-curve distance, parameter).
+///
+/// Pieces are about [`PIECE_M`] long (at least [`MIN_PIECES`] per segment;
+/// if the curve is so long that this would exceed [`MAX_PIECES`] pieces,
+/// longer pieces), so the number of samples is linear in the number of
+/// through-points plus the curve's length in half-millimetres, and pieces
+/// have comparable lengths, which the grid in [`closest_far_pair`] relies on.
 fn polyline(spline: &CubicSpline) -> Vec<(Vec3, f32, f32)> {
-    let n = spline.segment_count() * DISTANCE_SAMPLES;
-    let mut out = Vec::with_capacity(n + 1);
+    let n = spline.segment_count();
+    let lengths: Vec<f32> = (0..n)
+        .map(|i| {
+            (0..LENGTH_PROBES)
+                .map(|k| {
+                    let t = |k: usize| i as f32 + k as f32 / LENGTH_PROBES as f32;
+                    spline.point(t(k)).distance(spline.point(t(k + 1)))
+                })
+                .sum()
+        })
+        .collect();
+    let total: f32 = lengths.iter().sum();
+    let piece = PIECE_M.max(total / MAX_PIECES as f32);
+    let mut out = Vec::new();
     let mut along = 0.0f32;
     let mut previous = spline.point(0.0);
-    for k in 0..=n {
-        let t = k as f32 / DISTANCE_SAMPLES as f32;
-        let p = spline.point(t);
-        along += p.distance(previous);
-        previous = p;
-        out.push((p, along, t));
+    out.push((previous, 0.0, 0.0));
+    for (i, &len) in lengths.iter().enumerate() {
+        let k = ((len / piece).ceil() as usize).clamp(MIN_PIECES, MAX_PIECES);
+        for j in 1..=k {
+            let t = i as f32 + j as f32 / k as f32;
+            let p = spline.point(t);
+            along += p.distance(previous);
+            previous = p;
+            out.push((p, along, t));
+        }
     }
     out
 }
@@ -293,14 +322,14 @@ pub(super) fn gap_lint(guide: &GuideCurve, closed: bool, bends: &[Bend]) -> Opti
     // Any two stretches of the curve, far apart along it, that come within
     // HAIRLINE_GAP_M of each other (a crossing, a fold, a reversal); and any
     // guide whose wall has no proven reach.
-    let near = closest_far_pair(&line, closed);
+    let near = closest_far_pair(&line, closed).found;
     let tight = tightest_of(bends);
-    if near.0 < HAIRLINE_GAP_M || guide.reach() < NO_REACH_M {
-        // Where: a cusp or sub-millimetre bend, else the closest such pair.
+    if near.is_some() || guide.reach() < NO_REACH_M {
+        // Where: a cusp or sub-millimetre bend, else the pair found.
         let t = if tight.radius_m < f64::from(HAIRLINE_GAP_M) {
             tight.t as f32
         } else {
-            near.1
+            near.unwrap_or(0.0)
         };
         return Some(GapLint::DoublesBack { t });
     }
@@ -337,41 +366,89 @@ fn segment_distance(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> f32 {
         .min(point(s, p, q))
 }
 
-/// The closest pair of polyline segments at least [`END_EXCLUSION_M`] apart
-/// along the curve (around a closed one), in plan view: (distance, parameter
-/// of the earlier one). Sweep and prune on x, so about linear for real
-/// guides; only pairs closer than [`HAIRLINE_GAP_M`] in x are measured.
-fn closest_far_pair(line: &[(Vec3, f32, f32)], closed: bool) -> (f32, f32) {
+/// Result of [`closest_far_pair`].
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(super) struct FarPair {
+    /// Parameter of the earlier piece of a pair closer than
+    /// [`HAIRLINE_GAP_M`] in plan view and at least [`END_EXCLUSION_M`]
+    /// apart along the curve (around a closed one); `None` if there is none.
+    pub found: Option<f32>,
+    /// Piece pairs measured (a deterministic work count, for tests).
+    pub measured: usize,
+}
+
+/// Finds two polyline pieces at least [`END_EXCLUSION_M`] apart along the
+/// curve that come within [`HAIRLINE_GAP_M`] of each other in plan view,
+/// stopping at the first.
+///
+/// Uniform grid, cell side = the longest piece + [`HAIRLINE_GAP_M`]: each
+/// piece is entered in the cells its bounding box, grown by the gap,
+/// touches (at most 2 × 2), so two pieces within the gap share a cell.
+/// Within a cell the pieces are ordered by their along-curve position and
+/// each is measured only against pieces at least [`END_EXCLUSION_M`]
+/// further along (a binary search), so stretches of the same passage are
+/// never compared. Pieces of different passages measured without a hit are
+/// at least the gap apart, and only a bounded number of passages that far
+/// apart fit through one cell, so the work is linear in the number of pieces
+/// whatever the orientation or clustering (a crowded cell ends at its first
+/// hit).
+pub(super) fn closest_far_pair(line: &[(Vec3, f32, f32)], closed: bool) -> FarPair {
     let total = line[line.len() - 1].1;
-    let mut segments: Vec<(f32, f32, usize)> = line
+    let pieces = line.len() - 1;
+    let longest = line
         .windows(2)
-        .enumerate()
-        .map(|(i, w)| (w[0].0.x.min(w[1].0.x), w[0].0.x.max(w[1].0.x), i))
-        .collect();
-    segments.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut best = (f32::INFINITY, 0.0f32);
-    for (k, &(_, max_x, i)) in segments.iter().enumerate() {
-        for &(min_x, _, j) in &segments[k + 1..] {
-            if min_x > max_x + HAIRLINE_GAP_M {
-                break;
-            }
-            let (i, j) = (i.min(j), i.max(j));
-            let apart = line[j].1 - line[i + 1].1;
-            let apart = if closed {
-                apart.min(total - (line[j + 1].1 - line[i].1))
-            } else {
-                apart
-            };
-            if apart < END_EXCLUSION_M {
-                continue;
-            }
-            let d = segment_distance(line[i].0, line[i + 1].0, line[j].0, line[j + 1].0);
-            if d < best.0 {
-                best = (d, line[i].2);
+        .map(|w| (w[1].0.x - w[0].0.x).abs().max((w[1].0.y - w[0].0.y).abs()))
+        .fold(0.0f32, f32::max);
+    let cell = longest + HAIRLINE_GAP_M;
+    let (min_x, min_y) = line
+        .iter()
+        .fold((f32::INFINITY, f32::INFINITY), |(x, y), p| {
+            (x.min(p.0.x), y.min(p.0.y))
+        });
+    let index = |v: f32, lo: f32| (((v - lo) / cell).floor().max(0.0)) as i64;
+    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
+        std::collections::HashMap::with_capacity(pieces);
+    for (i, w) in line.windows(2).enumerate() {
+        let g = HAIRLINE_GAP_M;
+        let (x0, x1) = (w[0].0.x.min(w[1].0.x) - g, w[0].0.x.max(w[1].0.x) + g);
+        let (y0, y1) = (w[0].0.y.min(w[1].0.y) - g, w[0].0.y.max(w[1].0.y) + g);
+        for cx in index(x0, min_x)..=index(x1, min_x) {
+            for cy in index(y0, min_y)..=index(y1, min_y) {
+                grid.entry((cx, cy)).or_default().push(i);
             }
         }
     }
-    best
+    let mut measured = 0;
+    // Deterministic order: cells by key (HashMap order is not).
+    let mut cells: Vec<_> = grid.into_iter().collect();
+    cells.sort_unstable_by_key(|(k, _)| *k);
+    for (_, members) in cells {
+        // Entered in polyline order, so already sorted along the curve.
+        for a in 0..members.len() {
+            let i = members[a];
+            let start = line[i + 1].1;
+            // Pieces at least END_EXCLUSION_M further along (and, around a
+            // closed curve, not within it the other way round).
+            let first = members.partition_point(|&j| line[j].1 < start + END_EXCLUSION_M);
+            for &j in &members[first.max(a + 1)..] {
+                if closed && total - (line[j + 1].1 - line[i].1) < END_EXCLUSION_M {
+                    break; // the rest are closer the other way round
+                }
+                measured += 1;
+                let d = segment_distance(line[i].0, line[i + 1].0, line[j].0, line[j + 1].0);
+                if d < HAIRLINE_GAP_M {
+                    return FarPair {
+                        found: Some(line[i].2),
+                        measured,
+                    };
+                }
+            }
+        }
+    }
+    FarPair {
+        found: None,
+        measured,
+    }
 }
 
 #[cfg(test)]
@@ -552,6 +629,118 @@ mod tests {
             "{:?}",
             check(&back, false)
         );
+    }
+
+    fn spline_mm(pts: &[[f32; 2]]) -> CubicSpline {
+        let pts: Vec<Vec3> = pts
+            .iter()
+            .map(|p| Vec3::new(p[0] * 1e-3, p[1] * 1e-3, 0.0))
+            .collect();
+        CubicSpline::interpolate(&pts).unwrap()
+    }
+
+    /// The four shapes of review round 2 (B5), 4096 points each.
+    fn b5_shapes() -> Vec<(&'static str, CubicSpline)> {
+        let n = 4096;
+        let mut seed = 0x2545_F491u32;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        };
+        let blob: Vec<[f32; 2]> = (0..n).map(|_| [100.0 + rnd(), 100.0 + rnd()]).collect();
+        vec![
+            (
+                "vertical",
+                spline_mm(&(0..n).map(|i| [100.0, i as f32]).collect::<Vec<_>>()),
+            ),
+            (
+                "diagonal",
+                spline_mm(
+                    &(0..n)
+                        .map(|i| [i as f32 * 0.7, i as f32 * 0.7])
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "zigzag",
+                spline_mm(
+                    &(0..n)
+                        .map(|i| [100.0 + (i % 2) as f32 * 0.5, i as f32])
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "blob",
+                CubicSpline::interpolate(
+                    &blob
+                        .iter()
+                        .map(|p| Vec3::new(p[0] * 1e-3, p[1] * 1e-3, 0.0))
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_else(|_| spline_mm(&[[0.0, 0.0], [1.0, 0.0]])),
+            ),
+        ]
+    }
+
+    #[test]
+    fn far_pair_search_is_linear_whatever_the_orientation() {
+        // Deterministic work measure (review round 2, B5): piece pairs
+        // measured. Straight runs and a zig-zag along any axis measure
+        // at most one pair per piece; a blob stops at its first hit.
+        for (name, spline) in b5_shapes() {
+            let line = polyline(&spline);
+            let pieces = line.len() - 1;
+            assert!(pieces <= 4096 * 64, "{name}: {pieces}");
+            let r = closest_far_pair(&line, false);
+            match name {
+                "blob" => {
+                    assert!(r.found.is_some(), "{name}");
+                    assert!(r.measured <= 64, "{name}: {r:?}");
+                }
+                _ => {
+                    assert_eq!(r.found, None, "{name}");
+                    // A cell can hold up to ~5 mm of one straight run, so a
+                    // few far-along pieces of the same run meet: linear.
+                    assert!(r.measured <= pieces, "{name}: {r:?} for {pieces} pieces");
+                }
+            }
+        }
+        // Two long parallel legs 1.5 mm apart joined by a turn: each piece
+        // meets the other leg's few pieces in its cells, not all of them.
+        let mut u: Vec<[f32; 2]> = (0..2000).map(|i| [0.0, 2000.0 - i as f32]).collect();
+        u.extend((0..2000).map(|i| [1.5, i as f32]));
+        let line = polyline(&spline_mm(&u));
+        let r = closest_far_pair(&line, false);
+        assert!(
+            r.measured <= 32 * line.len(),
+            "{r:?} for {} pieces",
+            line.len()
+        );
+    }
+
+    /// Release-build timing report for the B5 shapes (all lints); run with
+    /// `cargo test --release -p pin_assets -- --ignored lint_timing`.
+    #[test]
+    #[ignore]
+    fn lint_timing_report() {
+        for (name, spline) in b5_shapes() {
+            let Ok(guide) = GuideCurve::new(spline, 0.0) else {
+                continue;
+            };
+            let start = std::time::Instant::now();
+            let bends = segment_bends(guide.spline());
+            let spacing = vec![1.0e-3f32; bends.len()];
+            let _ = spacing_lint(&bends, &spacing, false);
+            let _ = gap_lint(&guide, false, &bends);
+            let took = start.elapsed();
+            eprintln!("{name}: all lints {took:?}");
+            assert!(
+                took < std::time::Duration::from_millis(50),
+                "{name}: {took:?}"
+            );
+        }
     }
 
     proptest::proptest! {
