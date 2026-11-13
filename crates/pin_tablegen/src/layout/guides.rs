@@ -3,11 +3,14 @@
 //! error or an authoring warning.
 
 use glam::Vec3;
+use pin_core::schema::table::{SplineDef, SplineKind};
 use pin_core::units::mm3_to_m;
 use pin_physics::world::{CubicSpline, GuideCurve};
 
 /// Most through-points per spline (the loader's limit).
-pub const MAX_SPLINE_POINTS: usize = 4096;
+pub const MAX_SPLINE_POINTS: usize = pin_assets::validate::MAX_SPLINE_POINTS;
+/// Longest spline the loader accepts, mm.
+const MAX_SPLINE_LENGTH_MM: f64 = pin_assets::validate::MAX_SPLINE_LENGTH_M as f64 * 1000.0;
 /// Longest through-point spacing on a rail, mm.
 pub const MAX_RAIL_SPACING_MM: f64 = 20.0;
 /// Rail spacing as a fraction of the rail's tightest radius (the loader
@@ -133,6 +136,25 @@ pub fn loader_spline(points_mm: &[[f32; 3]], closed: bool) -> Result<CubicSpline
     built.map_err(|e| format!("the rail does not construct: {e}"))
 }
 
+/// The first error, else the first warning, `pin_assets` reports for a
+/// level guide through `points_mm`, without its `splines[0]` path.
+pub fn loader_problem(points_mm: &[[f32; 3]]) -> Option<String> {
+    let def = SplineDef {
+        id: "rail".into(),
+        kind: SplineKind::Guide,
+        layer: 0,
+        gauge: None,
+        points: points_mm.to_vec(),
+        roll_deg: None,
+    };
+    let (errors, warnings) = pin_assets::validate::check_spline(0, &def);
+    errors
+        .into_iter()
+        .chain(warnings)
+        .next()
+        .map(|e| e.message)
+}
+
 /// Smallest plan-view radius of curvature of `spline`, m (infinite on a
 /// straight; 0 where the curve turns back).
 pub fn min_radius(spline: &CubicSpline) -> f64 {
@@ -196,6 +218,14 @@ fn rail(
         line[last] = first;
     }
     let length: f64 = line.windows(2).map(|w| dist(w[0], w[1])).sum();
+    if length > MAX_SPLINE_LENGTH_MM {
+        return Err(format!(
+            "the {name} rail is {:.1} m long; a spline may be at most {} m long: split the \
+             lane into several lanes",
+            length / 1000.0,
+            MAX_SPLINE_LENGTH_MM / 1000.0
+        ));
+    }
     let mut spacing = max_spacing.min(SPACING_PER_RADIUS * r_min);
     if spacing < MIN_RAIL_SPACING_MM {
         return Err(format!(
@@ -244,6 +274,11 @@ fn rail(
         let narrowest = chords.iter().fold(f64::INFINITY, |a, &b| a.min(b));
         let radius_mm = min_radius(&spline_m) * 1000.0;
         if widest < 0.9 * radius_mm && widest <= 2.5 * narrowest {
+            // The loader's own check, errors and authoring warnings alike
+            // (4.3 fix round 1: length, self-crossing, hairline gaps).
+            if let Some(problem) = loader_problem(&points_mm) {
+                return Err(format!("the {name} rail would not load cleanly: {problem}"));
+            }
             return Ok(Rail {
                 points_mm,
                 spline_m,

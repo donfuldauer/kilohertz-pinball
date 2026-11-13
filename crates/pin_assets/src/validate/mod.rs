@@ -325,6 +325,11 @@ pub fn load_table(vfs: &Vfs) -> Result<LoadedTable, AssetError> {
     }
 }
 
+/// Longest spline the loader accepts, m.
+pub const MAX_SPLINE_LENGTH_M: f32 = guide_lint::MAX_SPLINE_LENGTH_M;
+/// Most through-points per spline the loader accepts.
+pub const MAX_SPLINE_POINTS: usize = rules::MAX_SPLINE_POINTS;
+
 /// Checks one `table.toml` `[[splines]]` entry exactly as [`load_table`]
 /// does (construction rules, coordinate and length bounds, spacing and guide
 /// lints), reported at `splines[index]…`: returns `(errors, warnings)`, each

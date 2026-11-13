@@ -426,7 +426,10 @@ impl Builder<'_> {
         let mut points = lane.points.clone();
         check_points(&e, &points, 2)?;
         let (first, last) = (points[0], points[points.len() - 1]);
-        let gap = f64::from(first[0] - last[0]).hypot(f64::from(first[1] - last[1]));
+        let gap = libm::hypot(
+            f64::from(first[0] - last[0]),
+            f64::from(first[1] - last[1]),
+        );
         let closed = gap <= guides::CLOSE_SNAP_MM;
         if closed {
             if points.len() < 4 {
