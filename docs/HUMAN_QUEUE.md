@@ -77,3 +77,9 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - **N3:** tighten the secondary-surface present bounds in `orchestrator_window` (score 1..=3, backglass 2..=7).
 - **N4:** an occluded presenter-thread surface on macOS re-renders every loop, up to 250 Hz. Back off until the next window event.
 - **N5:** use a bounded device wait under the process-wide lock.
+
+## 4.5 Wave 3 gate fix — follow-ups (non-blocking, from the Fable review)
+- **N1:** `element_init_fuel` treats an empty expression-form element segment as precomputable, but wasmtime does not. Fuel is under-counted by up to about 2 025. Fix: check `ElementItems::Functions` instead of `exprs == 0`.
+- **N2:** global initializers that are not plain numeric constants (`ref.func`, `ref.null`) run in the startup routine at 1 fuel each, and `init_fuel` ignores them. Fuel is under-counted by up to 1 001.
+- **N3:** the docs say "exactly"; reword them, or fix N1 and N2 and add both repros to the unit test's `exact` table. Also note beside the wasmtime pin that `init_fuel` mirrors wasmtime 50.0.1's internals.
+- Both under-counts are deterministic on every OS and can never grant extra fuel.
