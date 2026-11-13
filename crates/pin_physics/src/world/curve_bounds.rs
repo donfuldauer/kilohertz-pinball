@@ -171,7 +171,27 @@ fn rho_level(u: f64) -> f64 {
 }
 
 /// Settle levels of the quantities of a table entry `[ρ_+, ρ_−, D, R]`.
-const TABLE_LEVELS: [fn(f64) -> f64; SIDES] = [rho_level, rho_level, ball_level, ball_level];
+const TABLE_LEVELS: [fn(f64) -> f64; SIDES] = [rho_level, rho_level, lane_level, rho_level];
+
+/// [`ball_level`] of the squared distance `D²` (the search works with
+/// squares there, which spares a square root per piece), for `D` at least
+/// [`LANE_FLOOR`], where the slack is within [`TOL_BALL`].
+fn lane_level(u2: f64) -> f64 {
+    const LOW: f64 = (1.0 - TOL_BALL) * (1.0 - TOL_BALL);
+    const HIGH: f64 = (1.0 - TOL_TABLE) * (1.0 - TOL_TABLE);
+    const TOP: f64 = BALL_RANGE * BALL_RANGE * LOW;
+    if u2 <= BALL_RANGE * BALL_RANGE {
+        u2 * LOW
+    } else {
+        (u2 * HIGH).max(TOP)
+    }
+}
+
+/// The cap of each quantity of a table entry, from the cap of its radii
+/// (the distance is searched as its square).
+fn table_caps(cap: f64) -> Sides {
+    [cap, cap, cap * cap, cap]
+}
 
 /// The level at which an end search settles a piece against the best value
 /// `u` found.
@@ -183,6 +203,7 @@ fn end_level(u: f64) -> f64 {
 /// value `u` found: within [`TOL_BALL`] (or [`TABLE_SLACK`], up to half the
 /// value) in the range of pinball radii, beyond it within [`TOL_TABLE`] but
 /// never below the top of that range.
+#[cfg(test)]
 fn ball_level(u: f64) -> f64 {
     if u <= BALL_RANGE {
         u * (1.0 - TOL_BALL.max((TABLE_SLACK / u).min(0.5)))
@@ -324,6 +345,8 @@ struct Rod {
     p: DVec3,
     q: DVec3,
     r: f64,
+    /// Unit vector in the plane perpendicular to the segment.
+    side: DVec3,
 }
 
 /// Quantities a search finds at once (its "sides"): `[ρ_+, ρ_−, D, R]` of a
@@ -348,9 +371,16 @@ trait Probe {
     /// Lower bounds of the quantities over the curve points in the ball
     /// `(centre, radius)`; infinite: no point there counts. `mid`: the
     /// middle of the piece if it is a part of one sample interval, for a
-    /// sharper bound. `rod`: a [`Rod`] of the piece if it has one, for
-    /// another bound.
-    fn bound(&self, centre: DVec3, radius: f64, mid: Option<&Mid>, rod: Option<&Rod>) -> Sides;
+    /// sharper bound.
+    fn bound(&self, centre: DVec3, radius: f64, mid: Option<&Mid>) -> Sides;
+    /// Further lower bounds of the same, costlier, for a piece that
+    /// [`Probe::bound`] did not settle: from its ball, and from its [`Rod`]
+    /// if it has one.
+    fn refine(&self, _centre: DVec3, _radius: f64, _rod: Option<&Rod>) -> Sides {
+        [0.0; SIDES]
+    }
+    /// Whether [`Probe::refine`] uses rods.
+    const RODS: bool;
     /// The quantities at the curve point `y` (infinite: not counted).
     fn value(&self, y: DVec3) -> Sides;
     /// If the pieces in sample intervals `first..end` lie in the own
@@ -434,12 +464,13 @@ pub(super) struct CurveTree {
     arc: Vec<f64>,
     /// Enclosing balls: `levels[0]` per sample interval, then pairs.
     levels: Vec<Vec<(DVec3, f64)>>,
-    /// A [`Rod`] per node of the tree, as `levels` (made when first
-    /// needed: only the tables use them).
-    rods: core::cell::OnceCell<Vec<Vec<Rod>>>,
     /// Largest curvature bound per node of the tree (`bends[0]` is
     /// `curvature`), for the curvature between two points.
     bends: Vec<Vec<f64>>,
+    /// The [`Rod`] of each node of the tree (as `levels`), computed when
+    /// first needed (`Some(None)`: it has none).
+    #[allow(clippy::type_complexity)]
+    rods: core::cell::OnceCell<Vec<Vec<core::cell::Cell<Option<Option<Rod>>>>>>,
     /// The middles of whole sample intervals, computed when first needed.
     mids: Vec<core::cell::Cell<Option<Mid>>>,
 }
@@ -497,8 +528,8 @@ impl CurveTree {
             curvature,
             arc,
             levels,
-            rods: core::cell::OnceCell::new(),
             bends,
+            rods: core::cell::OnceCell::new(),
             mids: vec![core::cell::Cell::new(None); n],
         }
     }
@@ -602,77 +633,63 @@ impl CurveTree {
         mid
     }
 
-    /// The [`Rod`]s of the tree, per node as `levels`.
-    ///
-    /// A sample interval's: with `y_m`, `T` the point and unit tangent at
-    /// its mid-parameter and `δ` a bound of the arc length from there to
-    /// either end ([`Mid`]), every point `y` of the interval is at arc
-    /// length `ℓ ≤ δ` from `y_m`, so `|(y − y_m) · T| ≤ ℓ ≤ δ` and its
-    /// distance from the tangent line is at most `(1 − cos κℓ)/κ ≤ κδ²/2`
-    /// (module documentation, for `κδ ≤ 1`): it is within `κδ²/2` of the
-    /// segment `y_m ± δ T`. (Otherwise its ball as a rod of length zero.)
-    /// A node's: the segment between the curve points at its two ends, and
-    /// a radius that covers its children's rods (the distance to a segment
-    /// is convex along a segment, so a child's rod is within the larger of
-    /// its two ends' distances, plus its radius).
-    fn rods(&self) -> &[Vec<Rod>] {
-        self.rods.get_or_init(|| {
-            let n = self.intervals();
-            let leaves = (0..n)
-                .map(|i| {
-                    let m = self.mid(&self.tree_piece(0, i));
-                    if m.turn <= 1.0 && m.tangent != DVec3::ZERO {
-                        Rod {
-                            p: m.point - m.tangent * m.reach,
-                            q: m.point + m.tangent * m.reach,
-                            r: 0.5 * m.turn * m.reach * (1.0 + ROUND) + 1.0e-15,
-                        }
-                    } else {
-                        let (centre, radius) = self.levels[0][i];
-                        Rod {
-                            p: centre,
-                            q: centre,
-                            r: radius,
-                        }
-                    }
-                })
-                .collect();
-            let mut rods: Vec<Vec<Rod>> = vec![leaves];
-            while rods.len() < self.levels.len() {
-                let level = rods.len();
-                let below = &rods[level - 1];
-                let up = below
-                    .chunks(2)
-                    .enumerate()
-                    .map(|(node, pair)| match pair {
-                        [a, b] => {
-                            let p = self.points[node << level];
-                            let q = self.points[((node + 1) << level).min(n)];
-                            let r = [a, b].iter().fold(0.0f64, |r, c| {
-                                let ends =
-                                    segment_distance(c.p, p, q).max(segment_distance(c.q, p, q));
-                                r.max(ends + c.r)
-                            });
-                            Rod {
-                                p,
-                                q,
-                                r: r * (1.0 + ROUND) + 1.0e-15,
-                            }
-                        }
-                        [a] => *a,
-                        _ => unreachable!(),
-                    })
-                    .collect();
-                rods.push(up);
-            }
-            rods
-        })
-    }
-
     /// The [`Rod`] of a piece, if it is a node of the tree (or a whole
     /// sample interval).
-    fn rod(&self, piece: &Piece) -> Option<&Rod> {
-        (piece.depth == 0).then(|| &self.rods()[piece.level as usize][piece.node as usize])
+    ///
+    /// With `y_m`, `T` the curve point and unit tangent at a parameter of
+    /// the piece, `δ` a bound of the arc length from there to either end of
+    /// the piece and `κ` of its curvature, every point `y` of the piece is at
+    /// arc length `ℓ ≤ δ` from `y_m`, so `|(y − y_m) · T| ≤ ℓ ≤ δ`, and its
+    /// distance from the tangent line is at most `(1 − cos κℓ)/κ ≤ κδ²/2`
+    /// (module documentation, for `κδ ≤ 1`): it is within `κδ²/2` of the
+    /// segment `y_m ± δ T`. For a sample interval `y_m` is its middle
+    /// ([`Mid`]); for a node of the tree the sample boundary in its middle,
+    /// with `δ` from the arc-length prefix sums and `κ` the node's largest
+    /// curvature bound. None where `κδ > 1`.
+    fn rod<P: Probe>(&self, piece: &Piece) -> Option<Rod> {
+        if !P::RODS || piece.depth != 0 {
+            return None;
+        }
+        let rods = self.rods.get_or_init(|| {
+            self.levels
+                .iter()
+                .map(|l| vec![core::cell::Cell::new(None); l.len()])
+                .collect()
+        });
+        let cell = &rods[piece.level as usize][piece.node as usize];
+        if let Some(rod) = cell.get() {
+            return rod;
+        }
+        let rod = self.make_rod(piece);
+        cell.set(Some(rod));
+        rod
+    }
+
+    /// See [`CurveTree::rod`].
+    fn make_rod(&self, piece: &Piece) -> Option<Rod> {
+        let (point, tangent, delta, turn) = if piece.level == 0 {
+            let m = self.mid(piece);
+            (m.point, m.tangent, m.reach, m.turn)
+        } else {
+            let (first, end) = (piece.first as usize, piece.end as usize);
+            let at = first + (end - first) / 2;
+            let delta = (self.arc[at] - self.arc[first]).max(self.arc[end] - self.arc[at]);
+            let kappa = self.bends[piece.level as usize][piece.node as usize];
+            let (seg, s) = if at == self.intervals() {
+                (self.bez.len() - 1, 1.0)
+            } else {
+                (at / K, (at % K) as f64 / K as f64)
+            };
+            let tangent = self.bez[seg].d1(s).normalize_or_zero();
+            (self.points[at], tangent, delta, kappa * delta)
+        };
+        let side = DVec3::new(-tangent.y, tangent.x, 0.0).normalize_or_zero();
+        (turn <= 1.0 && side != DVec3::ZERO).then(|| Rod {
+            p: point - tangent * delta,
+            q: point + tangent * delta,
+            r: 0.5 * turn * delta * (1.0 + ROUND) + 1.0e-15,
+            side,
+        })
     }
 
     /// Node `node` of tree level `level`.
@@ -743,13 +760,20 @@ impl CurveTree {
                 };
                 state.done[side] || bound >= with_target(settle, u, rules.target[side])
             };
-            let mut bound = probe.bound(piece.centre, piece.radius, None, self.rod(&piece));
+            let mut bound = probe.bound(piece.centre, piece.radius, None);
+            if P::RODS && !(0..SIDES).all(|s| settled(state, s, bound[s])) {
+                // (Counted as a piece of its own against the budget: it
+                // costs about as much.)
+                state.budget = state.budget.saturating_sub(1);
+                let rod = self.rod::<P>(&piece);
+                bound = side_max(bound, probe.refine(piece.centre, piece.radius, rod.as_ref()));
+            }
             let mut mid = None;
             if piece.level as usize == 0 && !(0..SIDES).all(|s| settled(state, s, bound[s])) {
                 // The sharper bound of a part.
                 let m = self.mid(&piece);
                 state.see(m.point, probe.value(m.point));
-                let sharp = probe.bound(piece.centre, piece.radius, Some(&m), None);
+                let sharp = probe.bound(piece.centre, piece.radius, Some(&m));
                 bound = side_max(bound, sharp);
                 mid = Some(m);
             }
@@ -863,7 +887,13 @@ impl CurveTree {
                 *lower = side_min(*lower, own);
                 continue;
             }
-            let bound = probe.bound(piece.centre, piece.radius, None, self.rod(&piece));
+            let mut bound = probe.bound(piece.centre, piece.radius, None);
+            let unsettled = |b: &Sides| (0..SIDES).any(|s| b[s] != f64::INFINITY && b[s] < settle[s]);
+            if P::RODS && unsettled(&bound) {
+                state.budget = state.budget.saturating_sub(1);
+                let rod = self.rod::<P>(&piece);
+                bound = side_max(bound, probe.refine(piece.centre, piece.radius, rod.as_ref()));
+            }
             let mut open = false;
             for side in 0..SIDES {
                 if bound[side] == f64::INFINITY {
@@ -979,7 +1009,9 @@ struct EndProbe<'a> {
 }
 
 impl Probe for EndProbe<'_> {
-    fn bound(&self, centre: DVec3, radius: f64, _mid: Option<&Mid>, _rod: Option<&Rod>) -> Sides {
+    const RODS: bool = false;
+
+    fn bound(&self, centre: DVec3, radius: f64, _mid: Option<&Mid>) -> Sides {
         let none = f64::INFINITY;
         let v = centre - self.point;
         let behind = -v.dot(self.inward) + radius;
@@ -1053,7 +1085,7 @@ fn pair_values(a: DVec3, normal: DVec3, y: DVec3) -> Sides {
         } else {
             f64::INFINITY
         },
-        w2.sqrt(),
+        w2,
         f64::INFINITY,
     ]
 }
@@ -1201,13 +1233,11 @@ impl TableProbe<'_> {
         // distance from the middle less how far `a` is from it, and at
         // least the distance from the segment's line less how far `a`
         // moves across it.
-        let mut gap = segment_distance(self.point, rod.p, rod.q) - (delta + bow);
-        let dir = rod.q - rod.p;
-        let side = DVec3::new(-dir.y, dir.x, 0.0).normalize_or_zero();
-        if side != DVec3::ZERO {
-            let line = vp.dot(side).abs() - delta * tangent.dot(side).abs() - bow * self.normal.dot(side).abs();
-            gap = gap.max(line);
-        }
+        let side = rod.side;
+        let line = vp.dot(side).abs()
+            - delta * tangent.dot(side).abs()
+            - bow * self.normal.dot(side).abs();
+        let gap = (segment_distance(self.point, rod.p, rod.q) - (delta + bow)).max(line);
         let near = gap - rod.r;
         let along = vp.dot(tangent).abs().max(vq.dot(tangent).abs());
         let sideways = turn * (along + rod.r + delta + bow);
@@ -1262,12 +1292,14 @@ fn finish(low2: f64, ups: [f64; 2]) -> Sides {
             low2 / (2.0 * up) * shrink
         }
     });
-    let distance = if low2 > 0.0 { low2.sqrt() * shrink } else { 0.0 };
+    let distance = low2.max(0.0) * shrink;
     [plus, minus, distance, f64::INFINITY]
 }
 
 impl Probe for TableProbe<'_> {
-    fn bound(&self, centre: DVec3, radius: f64, mid: Option<&Mid>, rod: Option<&Rod>) -> Sides {
+    const RODS: bool = true;
+
+    fn bound(&self, centre: DVec3, radius: f64, mid: Option<&Mid>) -> Sides {
         let shrink = 1.0 - ROUND;
         if let Some(m) = mid {
             // Bound 2.
@@ -1288,13 +1320,9 @@ impl Probe for TableProbe<'_> {
                 }
             });
             // (`num` is a lower bound of `|w|²` along the way.)
-            let distance = if num > 0.0 { num.sqrt() * shrink } else { 0.0 };
+            let distance = num.max(0.0) * shrink;
             let second = [plus, minus, distance, f64::INFINITY];
             return side_max(second, self.pair_bound(m));
-        }
-        let mut third = self.across_bound(centre, radius);
-        if let Some(rod) = rod {
-            third = side_max(third, self.rod_bound(rod));
         }
         // Bound 1.
         let v = centre - self.middle;
@@ -1304,11 +1332,18 @@ impl Probe for TableProbe<'_> {
         let far = d + slack;
         let across = v.dot(self.normal);
         let room = slack + far * self.turn;
-        let first = finish(
+        finish(
             if near > 0.0 { near * near } else { 0.0 },
             [across + room, -across + room],
-        );
-        side_max(first, third)
+        )
+    }
+
+    fn refine(&self, centre: DVec3, radius: f64, rod: Option<&Rod>) -> Sides {
+        let third = self.across_bound(centre, radius);
+        match rod {
+            Some(rod) => side_max(third, self.rod_bound(rod)),
+            None => third,
+        }
     }
 
     fn value(&self, y: DVec3) -> Sides {
@@ -1429,7 +1464,14 @@ impl TangentBalls {
             total: 0,
             smallest: f64::INFINITY,
         };
-        let margin = |e: Sides| [stored(e[0]), stored(e[1]), stored(e[3]), stored_distance(e[2])];
+        let margin = |e: Sides| {
+            [
+                stored(e[0]),
+                stored(e[1]),
+                stored(e[3]),
+                stored_distance(e[2].sqrt()),
+            ]
+        };
         let mut coarse = vec![[0.0f32; 4]; segments * TABLE_COARSE];
         if segments > 2 {
             // Every segment but the two end ones (the fine tables cover
@@ -1669,9 +1711,10 @@ impl Build<'_> {
         // are the hints of the groups that follow (the last entry's are from
         // elsewhere on the curve).
         self.state.best = [None; SIDES];
-        self.group(slots, 0, 1, &root, [TANGENT_BALL_CAP; SIDES], &mut out);
+        let caps = table_caps(TANGENT_BALL_CAP);
+        self.group(slots, 0, 1, &root, caps, &mut out);
         if count > 1 {
-            self.group(slots, 1, count, &root, [TANGENT_BALL_CAP; SIDES], &mut out);
+            self.group(slots, 1, count, &root, caps, &mut out);
         }
         out
     }
@@ -1709,7 +1752,7 @@ impl Build<'_> {
         if to - from == 1 {
             let (seg, s0, s1) = slots.slot(from);
             let cap = self.caps[from];
-            let lower = side_min(lower, [cap; SIDES]);
+            let lower = side_min(lower, table_caps(cap));
             let entry = self.entry(seg, s0, s1, slots.depth, cap, list, lower);
             self.smallest = self.smallest.min(entry[0]).min(entry[1]);
             out[from] = entry;
@@ -1724,15 +1767,15 @@ impl Build<'_> {
         let local = to - from <= LOCAL_GROUP;
         let targets = self.targets();
         for k in from..to {
-            let cap = self.caps[k];
+            let cap = table_caps(self.caps[k]);
             let mut level: Sides =
-                core::array::from_fn(|side| with_target(at_cap(cap), cap, targets[side]));
+                core::array::from_fn(|side| with_target(at_cap(cap[side]), cap[side], targets[side]));
             if local {
                 let (point, normal) = self.middles[k];
                 for y in self.state.best.into_iter().flatten() {
                     let v = pair_values(point, normal, y);
                     for side in 0..SIDES {
-                        if v[side] < cap {
+                        if v[side] < cap[side] {
                             level[side] = level[side]
                                 .min(with_target(TABLE_LEVELS[side](v[side]), v[side], targets[side]));
                         }
@@ -1745,8 +1788,10 @@ impl Build<'_> {
         let mut lower = lower;
         let mut open = Vec::new();
         self.state.budget = self.total;
+        let b0 = self.state.budget;
         self.tree
             .filter(&probe, settle, list, &mut lower, &mut open, &mut self.state);
+        if !local { for _ in 0..(b0 - self.state.budget) { dbg(5); } }
         self.total = self.state.budget;
         let mid = from + (to - from) / 2;
         self.group(slots, from, mid, &open, lower, out);
@@ -1776,7 +1821,7 @@ impl Build<'_> {
         let state = &mut self.state;
         state.budget = allowed;
         let hints = state.best;
-        state.upper = [cap; SIDES];
+        state.upper = table_caps(cap);
         state.best = [None; SIDES];
         state.done = [false; SIDES];
         let mut result = lower;
@@ -1791,10 +1836,10 @@ impl Build<'_> {
             let rules = Rules {
                 level: TABLE_LEVELS,
                 target: targets,
-                floor: [RHO_FLOOR, RHO_FLOOR, LANE_FLOOR, 0.0],
+                floor: [RHO_FLOOR, RHO_FLOOR, LANE_FLOOR * LANE_FLOOR, 0.0],
                 depth: PART_DEPTH,
                 can_split: level < depth,
-                init: [cap; SIDES],
+                init: table_caps(cap),
             };
             match tree.search(&probe, &rules, state, list) {
                 Search::Done(found) => {
@@ -1812,6 +1857,7 @@ impl Build<'_> {
                 *low = 0.0;
             }
         }
+        if self.state.budget == 0 { dbg(4); }
         self.total -= allowed - self.state.budget;
         result
     }
