@@ -112,6 +112,11 @@ const TABLE_FINE: usize = 64;
 /// that small, and resolving them would take deep searches.
 const RHO_FLOOR: f64 = 1.0e-4;
 
+/// Distances `D` to the rest of the curve below this (metres) are stored as
+/// zero: such a lane holds no pinball (the smallest is 15.9 mm across),
+/// and resolving them would take deep searches.
+const LANE_FLOOR: f64 = 0.01;
+
 /// Relative tolerances of the searches: table entries in the range of
 /// pinball radii (a piece is settled once its bound is within 2 % of the
 /// best value found; the result is then at least 0.98 of the infimum),
@@ -137,14 +142,36 @@ const BALL_RANGE: f64 = 0.1;
 /// again.
 const TABLE_SLACK: f64 = 2.0e-4;
 
-/// A settle level raised to `target` where the best value found `u` is at
-/// least the target: a search then proves that its infimum reaches the
-/// target (or keeps a bound below it only where its depth or budget runs
-/// out), instead of stopping a tolerance below it. Where `u` is below the
-/// target the infimum is too, and the plain level stands.
+/// The same for the tangent balls (metres).
+const RHO_SLACK: f64 = 2.0e-3;
+
+/// A settle level raised to `target` where the best value found `u` is
+/// clearly above the target: a search then proves that its infimum reaches
+/// the target (or keeps a bound below it only where its depth or budget
+/// runs out), instead of stopping a tolerance below it. Where `u` is below
+/// the target (or within [`TARGET_ROOM`] of it) the infimum is too (or may
+/// be), and the plain level stands: no bound could settle a piece at
+/// exactly its own infimum.
 fn with_target(level: f64, u: f64, target: f64) -> f64 {
-    if u >= target { level.max(target) } else { level }
+    if u >= target * (1.0 + TARGET_ROOM) {
+        level.max(target)
+    } else {
+        level
+    }
 }
+
+/// See [`with_target`].
+const TARGET_ROOM: f64 = 1.0e-4;
+
+/// The level at which a table search settles a piece of the tangent balls
+/// against the best value `u` found: within [`TOL_TABLE`], or
+/// [`RHO_SLACK`] up to half the value.
+fn rho_level(u: f64) -> f64 {
+    u * (1.0 - TOL_TABLE.max((RHO_SLACK / u).min(0.5)))
+}
+
+/// Settle levels of the quantities of a table entry `[ρ_+, ρ_−, D, R]`.
+const TABLE_LEVELS: [fn(f64) -> f64; SIDES] = [rho_level, rho_level, ball_level, ball_level];
 
 /// The level at which an end search settles a piece against the best value
 /// `u` found.
@@ -156,7 +183,7 @@ fn end_level(u: f64) -> f64 {
 /// value `u` found: within [`TOL_BALL`] (or [`TABLE_SLACK`], up to half the
 /// value) in the range of pinball radii, beyond it within [`TOL_TABLE`] but
 /// never below the top of that range.
-fn table_level(u: f64) -> f64 {
+fn ball_level(u: f64) -> f64 {
     if u <= BALL_RANGE {
         u * (1.0 - TOL_BALL.max((TABLE_SLACK / u).min(0.5)))
     } else {
@@ -386,11 +413,11 @@ enum Search {
 /// Settings of one search.
 struct Rules {
     /// Settle level against the best value found.
-    level: fn(f64) -> f64,
+    level: [fn(f64) -> f64; SIDES],
     /// Per side, a value the result should reach if the infimum does (see
     /// [`with_target`]); zero for none.
     target: Sides,
-    floor: f64,
+    floor: Sides,
     depth: u8,
     can_split: bool,
     init: Sides,
@@ -407,44 +434,14 @@ pub(super) struct CurveTree {
     arc: Vec<f64>,
     /// Enclosing balls: `levels[0]` per sample interval, then pairs.
     levels: Vec<Vec<(DVec3, f64)>>,
-    /// A [`Rod`] per node of the tree, as `levels`.
-    rods: Vec<Vec<Rod>>,
+    /// A [`Rod`] per node of the tree, as `levels` (made when first
+    /// needed: only the tables use them).
+    rods: core::cell::OnceCell<Vec<Vec<Rod>>>,
     /// Largest curvature bound per node of the tree (`bends[0]` is
     /// `curvature`), for the curvature between two points.
     bends: Vec<Vec<f64>>,
     /// The middles of whole sample intervals, computed when first needed.
     mids: Vec<core::cell::Cell<Option<Mid>>>,
-}
-
-/// The [`Rod`] of the sample interval `[s0, s1]` of `b` (curvature bound
-/// `kappa`, enclosing ball `(centre, radius)`): with `y_m`, `T` the point
-/// and unit tangent at the mid-parameter and `δ` a bound of the arc length
-/// from there to either end, every point `y` of the interval is at arc
-/// length `ℓ ≤ δ` from `y_m`, so `|(y − y_m) · T| ≤ ℓ ≤ δ` and its distance
-/// from the tangent line is at most `(1 − cos κℓ)/κ ≤ κδ²/2` (module
-/// documentation, for `κδ ≤ 1`): it is within `κδ²/2` of the segment
-/// `y_m ± δ T`. Otherwise the ball as a rod of length zero.
-fn leaf_rod(b: &Bez, s0: f64, s1: f64, kappa: f64, centre: DVec3, radius: f64) -> Rod {
-    let m = 0.5 * (s0 + s1);
-    let (left, k0) = b.bounds(s0, m);
-    let (right, k1) = b.bounds(m, s1);
-    let delta = left.max(right);
-    let turn = k0.max(k1).min(kappa) * delta;
-    let tangent = b.d1(m).normalize_or_zero();
-    if turn <= 1.0 && tangent != DVec3::ZERO {
-        let y = b.point(m);
-        Rod {
-            p: y - tangent * delta,
-            q: y + tangent * delta,
-            r: 0.5 * turn * delta * (1.0 + ROUND) + 1.0e-15,
-        }
-    } else {
-        Rod {
-            p: centre,
-            q: centre,
-            r: radius * (1.0 + ROUND) + 1.0e-15,
-        }
-    }
 }
 
 impl CurveTree {
@@ -456,7 +453,6 @@ impl CurveTree {
         let mut curvature = Vec::with_capacity(n);
         let mut arc = Vec::with_capacity(n + 1);
         let mut leaves = Vec::with_capacity(n);
-        let mut rods = Vec::with_capacity(n);
         let mut total = 0.0f64;
         arc.push(0.0);
         for i in 0..n {
@@ -466,7 +462,6 @@ impl CurveTree {
             let p0 = b.point(s0);
             let p1 = b.point(s1);
             let (length, kappa) = b.bounds(s0, s1);
-            rods.push(leaf_rod(b, s0, s1, kappa, 0.5 * (p0 + p1), 0.5 * length));
             points.push(p0);
             curvature.push(kappa);
             total += length;
@@ -487,33 +482,6 @@ impl CurveTree {
                 .collect();
             levels.push(up);
         }
-        let mut rods = vec![rods];
-        while rods.len() < levels.len() {
-            let level = rods.len();
-            let below = &rods[level - 1];
-            let up = below
-                .chunks(2)
-                .enumerate()
-                .map(|(node, pair)| match pair {
-                    [a, b] => {
-                        let p = points[node << level];
-                        let q = points[((node + 1) << level).min(n)];
-                        let r = [a, b].iter().fold(0.0f64, |r, c| {
-                            let ends = segment_distance(c.p, p, q).max(segment_distance(c.q, p, q));
-                            r.max(ends + c.r)
-                        });
-                        Rod {
-                            p,
-                            q,
-                            r: r * (1.0 + ROUND) + 1.0e-15,
-                        }
-                    }
-                    [a] => *a,
-                    _ => unreachable!(),
-                })
-                .collect();
-            rods.push(up);
-        }
         let mut bends = vec![curvature.clone()];
         while bends[bends.len() - 1].len() > 1 {
             let below = &bends[bends.len() - 1];
@@ -529,7 +497,7 @@ impl CurveTree {
             curvature,
             arc,
             levels,
-            rods,
+            rods: core::cell::OnceCell::new(),
             bends,
             mids: vec![core::cell::Cell::new(None); n],
         }
@@ -634,10 +602,77 @@ impl CurveTree {
         mid
     }
 
+    /// The [`Rod`]s of the tree, per node as `levels`.
+    ///
+    /// A sample interval's: with `y_m`, `T` the point and unit tangent at
+    /// its mid-parameter and `δ` a bound of the arc length from there to
+    /// either end ([`Mid`]), every point `y` of the interval is at arc
+    /// length `ℓ ≤ δ` from `y_m`, so `|(y − y_m) · T| ≤ ℓ ≤ δ` and its
+    /// distance from the tangent line is at most `(1 − cos κℓ)/κ ≤ κδ²/2`
+    /// (module documentation, for `κδ ≤ 1`): it is within `κδ²/2` of the
+    /// segment `y_m ± δ T`. (Otherwise its ball as a rod of length zero.)
+    /// A node's: the segment between the curve points at its two ends, and
+    /// a radius that covers its children's rods (the distance to a segment
+    /// is convex along a segment, so a child's rod is within the larger of
+    /// its two ends' distances, plus its radius).
+    fn rods(&self) -> &[Vec<Rod>] {
+        self.rods.get_or_init(|| {
+            let n = self.intervals();
+            let leaves = (0..n)
+                .map(|i| {
+                    let m = self.mid(&self.tree_piece(0, i));
+                    if m.turn <= 1.0 && m.tangent != DVec3::ZERO {
+                        Rod {
+                            p: m.point - m.tangent * m.reach,
+                            q: m.point + m.tangent * m.reach,
+                            r: 0.5 * m.turn * m.reach * (1.0 + ROUND) + 1.0e-15,
+                        }
+                    } else {
+                        let (centre, radius) = self.levels[0][i];
+                        Rod {
+                            p: centre,
+                            q: centre,
+                            r: radius,
+                        }
+                    }
+                })
+                .collect();
+            let mut rods: Vec<Vec<Rod>> = vec![leaves];
+            while rods.len() < self.levels.len() {
+                let level = rods.len();
+                let below = &rods[level - 1];
+                let up = below
+                    .chunks(2)
+                    .enumerate()
+                    .map(|(node, pair)| match pair {
+                        [a, b] => {
+                            let p = self.points[node << level];
+                            let q = self.points[((node + 1) << level).min(n)];
+                            let r = [a, b].iter().fold(0.0f64, |r, c| {
+                                let ends =
+                                    segment_distance(c.p, p, q).max(segment_distance(c.q, p, q));
+                                r.max(ends + c.r)
+                            });
+                            Rod {
+                                p,
+                                q,
+                                r: r * (1.0 + ROUND) + 1.0e-15,
+                            }
+                        }
+                        [a] => *a,
+                        _ => unreachable!(),
+                    })
+                    .collect();
+                rods.push(up);
+            }
+            rods
+        })
+    }
+
     /// The [`Rod`] of a piece, if it is a node of the tree (or a whole
     /// sample interval).
     fn rod(&self, piece: &Piece) -> Option<&Rod> {
-        (piece.depth == 0).then(|| &self.rods[piece.level as usize][piece.node as usize])
+        (piece.depth == 0).then(|| &self.rods()[piece.level as usize][piece.node as usize])
     }
 
     /// Node `node` of tree level `level`.
@@ -693,7 +728,7 @@ impl CurveTree {
                 state.see(y, probe.value(y));
             }
             for side in 0..SIDES {
-                if state.upper[side] < rules.floor {
+                if state.upper[side] < rules.floor[side] {
                     state.done[side] = true;
                 }
             }
@@ -704,7 +739,7 @@ impl CurveTree {
                 let settle = if u >= rules.init[side] {
                     (1.0 - TOL_CAP) * rules.init[side]
                 } else {
-                    (rules.level)(u)
+                    (rules.level[side])(u)
                 };
                 state.done[side] || bound >= with_target(settle, u, rules.target[side])
             };
@@ -902,9 +937,9 @@ impl CurveTree {
             state.done = [false; SIDES];
             state.budget = usize::MAX;
             let rules = Rules {
-                level: end_level,
+                level: [end_level; SIDES],
                 target: [0.0, half_target, 0.0, 0.0],
-                floor: 0.0,
+                floor: [0.0; SIDES],
                 depth: END_DEPTH,
                 can_split: false,
                 init,
@@ -1699,7 +1734,7 @@ impl Build<'_> {
                     for side in 0..SIDES {
                         if v[side] < cap {
                             level[side] = level[side]
-                                .min(with_target(table_level(v[side]), v[side], targets[side]));
+                                .min(with_target(TABLE_LEVELS[side](v[side]), v[side], targets[side]));
                         }
                     }
                 }
@@ -1754,9 +1789,9 @@ impl Build<'_> {
                 state.see(y, probe.value(y));
             }
             let rules = Rules {
-                level: table_level,
+                level: TABLE_LEVELS,
                 target: targets,
-                floor: RHO_FLOOR,
+                floor: [RHO_FLOOR, RHO_FLOOR, LANE_FLOOR, 0.0],
                 depth: PART_DEPTH,
                 can_split: level < depth,
                 init: [cap; SIDES],

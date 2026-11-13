@@ -1725,11 +1725,20 @@ impl GuideCurve {
                         // lane`). Unlike the tangent ball, whose radius the
                         // far side of a lane limits to half its width, this
                         // lets a ball slide along a lane barely wider than
-                        // itself at the pace of the wall's own bend.
-                        if let Some((local, far)) = balls.lane(&self.spline, cp.t) {
-                            let room = far - distance - radius - floor;
+                        // itself at the pace of the wall's own bend. (Its
+                        // steps are long enough to reach the floor, so it
+                        // aims at no more than half the skin below the
+                        // wall: a sliding ball stays as close to the wall
+                        // as it did with the short steps of the others.)
+                        let lane_floor = floor.max(-0.5 * GUIDE_SKIN);
+                        let lane_drop = gap - lane_floor;
+                        if lane_drop > 0.0
+                            && let Some((local, far)) = balls.lane(&self.spline, cp.t)
+                        {
+                            let room = far - distance - radius - lane_floor;
                             if distance < local && room > 0.0 {
-                                let near = rolling_ball_time(distance, local, rate, drop, speed);
+                                let near =
+                                    rolling_ball_time(distance, local, rate, lane_drop, speed);
                                 dt = dt.max(near.min(room / speed));
                             }
                         }
