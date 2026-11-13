@@ -202,6 +202,9 @@ pub fn plane_axes(normal: Vec3) -> (Vec3, Vec3) {
     (zero, normal.cross(zero))
 }
 
+/// Coil torque difference (N·m) below which the lag has reached its target.
+const COIL_TORQUE_EPSILON: f32 = 1.0e-6;
+
 /// The bat shapes a flipper can carry.
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum Bat {
@@ -279,18 +282,35 @@ struct Flipper {
     // Prediction of the current tick.
     /// Net drive torque of this tick (coil − spring), in travel direction.
     drive: f32,
+    /// Its angular acceleration, `drive / inertia`.
+    accel: f32,
+    /// Start of the current segment: time, travel, and the velocity and
+    /// acceleration the bat's surface moves with from there on.
     seg_t: f32,
     seg_q: f32,
-    /// Kinematic velocity of the segment (limited so the bat reaches a stop
-    /// at the end of the tick at the earliest).
     seg_w: f32,
-    /// The velocity the bat's momentum corresponds to. Differs from `seg_w`
-    /// while a stop is taking up the difference.
-    true_w: f32,
-    /// The bat reaches (or has just reached) a stop in this tick with the
-    /// momentum `true_w`; it leaves it with the stop's restitution.
-    arriving: bool,
+    seg_a: f32,
+    /// The velocity the bat's momentum had at the segment start (differs
+    /// from `seg_w` while a stop is taking up the difference).
+    dyn_w: f32,
+    phase: Phase,
     slide_v: f32,
+    tick_q0: f32,
+}
+
+/// What the bat does in the current segment.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum Phase {
+    /// Moves under the drive torque (constant acceleration), clear of the
+    /// stops until the end of the tick.
+    Free,
+    /// Reaches a stop within this tick. The surface moves at the constant
+    /// speed that gets it there at the end of the tick (never predicting
+    /// more travel than the stop allows); `speed` is the velocity its
+    /// momentum has on arrival, which decides the bounce.
+    Arriving { speed: f32 },
+    /// Sits on a stop, pressed against it or at least not leaving.
+    Held,
 }
 
 impl Flipper {
@@ -314,6 +334,7 @@ impl Flipper {
             quarter: self.quarter,
             angle: self.angle_of(self.seg_q),
             angular_velocity: self.sign * self.seg_w,
+            angular_acceleration: self.sign * self.seg_a,
             angle_min: self.rest_angle.min(self.end_angle),
             angle_max: self.rest_angle.max(self.end_angle),
         }
@@ -321,13 +342,15 @@ impl Flipper {
 
     /// Travel at `time` of the current tick.
     fn q_at(&self, time: f32) -> f32 {
-        (self.seg_q + self.seg_w * (time - self.seg_t).max(0.0)).clamp(0.0, self.travel)
+        let s = (time - self.seg_t).max(0.0);
+        (self.seg_q + self.seg_w * s + 0.5 * self.seg_a * s * s).clamp(0.0, self.travel)
     }
 
-    /// Travel velocity at `time`: zero once a stop holds the bat.
+    /// Velocity of the bat's surface (travel direction) at `time`: zero once
+    /// a stop holds the bat.
     fn w_at(&self, time: f32) -> f32 {
+        let w = self.seg_w + self.seg_a * (time - self.seg_t).max(0.0);
         let q = self.q_at(time);
-        let w = self.seg_w;
         if (w > 0.0 && self.travel - q <= STOP_ANGLE_TOLERANCE)
             || (w < 0.0 && q <= STOP_ANGLE_TOLERANCE)
         {
@@ -337,46 +360,101 @@ impl Flipper {
         }
     }
 
+    /// The velocity the bat's momentum has at `time`. On its way into a
+    /// stop this is the speed the drive has given it by the position it has
+    /// reached (`v² = v₀² + 2·α·Δq`), not the limited speed of its surface.
+    fn momentum_w_at(&self, time: f32) -> f32 {
+        match self.phase {
+            Phase::Free => self.seg_w + self.seg_a * (time - self.seg_t).max(0.0),
+            Phase::Arriving { speed } => {
+                let moved = self.q_at(time) - self.seg_q;
+                let v2 = self.dyn_w * self.dyn_w + 2.0 * self.accel * moved;
+                libm::sqrtf(v2.max(0.0)).copysign(speed)
+            }
+            Phase::Held => 0.0,
+        }
+    }
+
     /// Starts a segment at `time` with the bat at `q` and momentum velocity
-    /// `true_w`: the kinematic velocity is `true_w`, limited so that the bat
-    /// reaches a stop at the end of the tick at the earliest (the stop takes
-    /// the rest), and zero against a stop it already touches.
-    fn start_segment(&mut self, time: f32, q: f32, true_w: f32, dt: f32) {
+    /// `w`, under this tick's drive.
+    ///
+    /// * On a stop and not leaving it: [`Phase::Held`].
+    /// * If the drive would carry it to a stop before the end of the tick:
+    ///   [`Phase::Arriving`], the surface moving at the constant speed that
+    ///   reaches the stop exactly at the end of the tick.
+    /// * Otherwise [`Phase::Free`]: constant acceleration.
+    fn start_segment(&mut self, time: f32, q: f32, w: f32, dt: f32) {
+        let a = self.accel;
         let remaining = dt - time;
-        let room = if true_w > 0.0 { self.travel - q } else { q };
-        let speed = true_w.abs();
-        let (limited, arriving) = if speed == 0.0 {
-            (0.0, false)
-        } else if room <= STOP_ANGLE_TOLERANCE {
-            // On the stop: still the arrival if this tick brought the bat
-            // here with momentum in the same direction.
-            let same = self.arriving && (self.true_w > 0.0) == (true_w > 0.0);
-            (0.0, same)
-        } else if remaining > 0.0 && speed * remaining >= room {
-            (room / remaining, true)
-        } else {
-            (speed, false)
-        };
-        self.arriving = arriving;
+        let up_room = self.travel - q;
+        let down_room = q;
         self.seg_t = time;
         self.seg_q = q;
-        self.seg_w = if true_w > 0.0 { limited } else { -limited };
-        self.true_w = true_w;
+        self.dyn_w = w;
+        let at_end = up_room <= STOP_ANGLE_TOLERANCE;
+        let at_rest = down_room <= STOP_ANGLE_TOLERANCE;
+        // Against a stop it touches.
+        let pressed_up = at_end && (w > 0.0 || (w == 0.0 && a >= 0.0));
+        let pressed_down = at_rest && (w < 0.0 || (w == 0.0 && a <= 0.0));
+        if pressed_up || pressed_down {
+            self.seg_w = 0.0;
+            self.seg_a = 0.0;
+            self.phase = if w == 0.0 {
+                Phase::Held
+            } else {
+                Phase::Arriving { speed: w }
+            };
+            return;
+        }
+        if remaining > 0.0 {
+            // Extremes of q(s) = q + w·s + a·s²/2 on (0, remaining].
+            let at = |s: f32| w * s + 0.5 * a * s * s;
+            let last = at(remaining);
+            let turn = if a != 0.0 { -w / a } else { -1.0 };
+            let vertex = if turn > 0.0 && turn < remaining {
+                at(turn)
+            } else {
+                last
+            };
+            let reaches_end = last.max(vertex) >= up_room;
+            let reaches_rest = last.min(vertex) <= -down_room;
+            let upward_first = w > 0.0 || (w == 0.0 && a > 0.0);
+            let toward_end = reaches_end && (upward_first || !reaches_rest);
+            if toward_end || reaches_rest {
+                let (room, sign) = if toward_end {
+                    (up_room, 1.0)
+                } else {
+                    (-down_room, -1.0f32)
+                };
+                let v2 = w * w + 2.0 * a * room;
+                self.seg_w = room / remaining;
+                self.seg_a = 0.0;
+                self.phase = Phase::Arriving {
+                    speed: libm::sqrtf(v2.max(0.0)).copysign(sign),
+                };
+                return;
+            }
+        }
+        self.seg_w = w;
+        self.seg_a = a;
+        self.phase = Phase::Free;
     }
 
     /// Whether the stop in travel direction `toward` (±1) takes a push in
-    /// that direction at `time`: the bat is at the stop and not moving away,
-    /// or it is on its way into the stop within this tick (the stop already
-    /// takes up part of its momentum, so it takes any more as well).
-    fn engaged(&self, time: f32, toward: f32) -> bool {
-        if self.arriving && (self.true_w > 0.0) == (toward > 0.0) {
-            return true;
-        }
-        let q = self.q_at(time);
-        if toward > 0.0 {
-            self.travel - q <= STOP_ANGLE_TOLERANCE && self.seg_w >= 0.0
-        } else {
-            q <= STOP_ANGLE_TOLERANCE && self.seg_w <= 0.0
+    /// that direction: the bat is held on it, or is on its way into it
+    /// within this tick (the stop already takes up part of its momentum, so
+    /// it takes any more as well).
+    fn engaged(&self, toward: f32) -> bool {
+        match self.phase {
+            Phase::Free => false,
+            Phase::Arriving { speed } => (speed > 0.0) == (toward > 0.0),
+            Phase::Held => {
+                if toward > 0.0 {
+                    self.travel - self.seg_q <= STOP_ANGLE_TOLERANCE
+                } else {
+                    self.seg_q <= STOP_ANGLE_TOLERANCE
+                }
+            }
         }
     }
 
@@ -400,14 +478,13 @@ impl Flipper {
             1.0
         };
         self.coil_torque += (target - self.coil_torque) * blend;
+        if (target - self.coil_torque).abs() < COIL_TORQUE_EPSILON {
+            self.coil_torque = target;
+        }
         self.drive = self.coil_torque - self.spring_torque;
-        let true_w = self.omega + self.drive / self.inertia * dt;
-        self.drive_work += 0.5
-            * f64::from(self.inertia)
-            * (f64::from(true_w) * f64::from(true_w)
-                - f64::from(self.omega) * f64::from(self.omega));
-        self.arriving = false;
-        self.start_segment(0.0, self.q, true_w, dt);
+        self.accel = self.drive / self.inertia;
+        self.tick_q0 = self.q;
+        self.start_segment(0.0, self.q, self.omega, dt);
 
         let goal = if self.zipper_closed {
             self.slide_extent
@@ -420,34 +497,44 @@ impl Flipper {
     }
 
     fn end(&mut self, dt: f32) {
-        let q = self.q_at(dt);
-        // A bat that arrives at a stop with momentum leaves it with the
-        // stop's restitution; one that is held there has none.
-        let at_end = self.travel - q <= STOP_ANGLE_TOLERANCE;
-        let at_rest = q <= STOP_ANGLE_TOLERANCE;
-        let bounce = if self.arriving {
-            -self.stop_restitution * self.true_w
-        } else {
-            0.0
-        };
-        if at_end && self.true_w > 0.0 {
-            self.q = self.travel;
-            self.omega = bounce;
-        } else if at_rest && self.true_w < 0.0 {
-            self.q = 0.0;
-            self.omega = bounce;
-        } else {
-            self.q = q;
-            self.omega = self.w_at(dt);
+        match self.phase {
+            Phase::Free => {
+                self.q = self.q_at(dt);
+                self.omega = self.w_at(dt);
+            }
+            Phase::Arriving { speed } => {
+                // The bat leaves the stop with the stop's restitution,
+                // unless the drive would press it back on within the tick.
+                self.q = if speed > 0.0 { self.travel } else { 0.0 };
+                let bounce = -self.stop_restitution * speed;
+                self.omega = if bounce.abs() > self.accel.abs() * dt {
+                    bounce
+                } else {
+                    0.0
+                };
+            }
+            Phase::Held => {
+                self.q = if self.travel - self.seg_q <= STOP_ANGLE_TOLERANCE {
+                    self.travel
+                } else {
+                    0.0
+                };
+                self.omega = 0.0;
+            }
         }
+        // The drive's work: exactly the kinetic energy it gave the bat
+        // (constant torque over the travel of the tick).
+        self.drive_work += f64::from(self.drive) * f64::from(self.q - self.tick_q0);
         self.slide = (self.slide + self.slide_v * dt).clamp(0.0, self.slide_extent);
         self.slide_v = 0.0;
         // Queries between ticks see the committed state, at rest.
+        self.accel = 0.0;
         self.seg_t = 0.0;
         self.seg_q = self.q;
         self.seg_w = 0.0;
-        self.true_w = 0.0;
-        self.arriving = false;
+        self.seg_a = 0.0;
+        self.dyn_w = 0.0;
+        self.phase = Phase::Held;
     }
 
     /// Torque arm, in travel direction, of a unit impulse along `direction`
@@ -642,12 +729,15 @@ impl Flipper {
             eos_closed: eos_is_closed(0.0, eos_travel),
             drive_work: 0.0,
             drive: 0.0,
+            accel: 0.0,
             seg_t: 0.0,
             seg_q: 0.0,
             seg_w: 0.0,
-            true_w: 0.0,
-            arriving: false,
+            seg_a: 0.0,
+            dyn_w: 0.0,
+            phase: Phase::Held,
             slide_v: 0.0,
+            tick_q0: 0.0,
         })
     }
 }
@@ -892,12 +982,11 @@ impl FlipperSet {
         self.get(id).map_or(0.0, |f| f.coil_torque)
     }
 
-    /// Energy coil and spring have put into the bat since construction,
-    /// joules, as the solver integrates it: the sum over all ticks of the
-    /// change of the bat's kinetic energy by the tick's drive (negative while
-    /// the drive brakes the bat). The kinetic energy of the bat and the
-    /// balls it touched never exceeds what they started with plus this.
-    /// 0 for an unknown id.
+    /// Work coil and spring have done on the bat since construction, joules:
+    /// the sum over all ticks of the tick's drive torque times the angle
+    /// travelled (negative while the drive brakes the bat). The kinetic
+    /// energy of the bat and the balls it touched never exceeds what they
+    /// started with plus this. 0 for an unknown id.
     #[must_use]
     pub fn drive_work_j(&self, id: FlipperId) -> f64 {
         self.get(id).map_or(0.0, |f| f.drive_work)
@@ -983,7 +1072,8 @@ impl MovingBodies for FlipperSet {
 
     fn max_surface_speed(&self, body: usize) -> f32 {
         let f = &self.flippers[body];
-        f.seg_w.abs() * f.bat.shape().reach() + f.slide_v.abs()
+        let last = f.seg_w + f.seg_a * (self.dt - f.seg_t).max(0.0);
+        f.seg_w.abs().max(last.abs()) * f.bat.shape().reach() + f.slide_v.abs()
     }
 
     fn closest_point(&self, body: usize, time: f32, point: Vec3) -> Option<BodyPoint> {
@@ -1000,7 +1090,7 @@ impl MovingBodies for FlipperSet {
     fn inverse_mass_at(&self, body: usize, time: f32, point: Vec3, direction: Vec3) -> f32 {
         let f = &self.flippers[body];
         let arm = f.arm(time, point, direction);
-        if arm == 0.0 || arm.is_nan() || f.engaged(time, arm.signum()) {
+        if arm == 0.0 || arm.is_nan() || f.engaged(arm.signum()) {
             return 0.0;
         }
         let w = arm * arm / f.inertia;
@@ -1027,18 +1117,17 @@ impl MovingBodies for FlipperSet {
         if delta == 0.0 || !delta.is_finite() {
             return;
         }
-        let q = f.q_at(time);
         // A push into a stop that holds the bat, or that the bat is running
         // into, is taken by the stop: the bat keeps its motion and the
         // momentum that decides its bounce.
-        if f.engaged(time, delta.signum()) {
+        if f.engaged(delta.signum()) {
             return;
         }
-        // The impulse changes the bat's momentum velocity (what it carries,
-        // which is more than the limited speed of a segment ending on a
-        // stop, and includes this tick's drive for a bat held on a stop).
-        let carried = f.true_w;
-        f.start_segment(time, q, carried + delta, dt);
+        // The impulse changes the bat's momentum; the rest of the tick is
+        // predicted again from here, under the same drive.
+        let q = f.q_at(time);
+        let w = f.momentum_w_at(time);
+        f.start_segment(time, q, w + delta, dt);
     }
 
     fn cast_sphere(

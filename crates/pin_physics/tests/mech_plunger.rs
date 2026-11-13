@@ -104,8 +104,10 @@ fn spring_force_is_minus_k_x() {
     let w = libm::sqrtf(k / m);
     let mut t = plunger_table();
     t.mechs.set_plunger(1.0);
-    t.tick();
-    assert!((t.mechs.slider_state(0).unwrap().0 + stroke).abs() < 1e-6);
+    for _ in 0..60 {
+        t.tick();
+    }
+    assert_eq!(t.mechs.slider_state(0).unwrap(), (-stroke, 0.0));
     t.mechs.set_plunger(0.0);
     let mut ticks = 0;
     let mut peak = 0.0f32;

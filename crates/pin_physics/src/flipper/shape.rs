@@ -26,8 +26,9 @@ pub struct BatPoint {
 }
 
 /// Pose and velocity of a bat during one piece of a tick: the pivot slides
-/// at constant velocity and the bat turns at constant angular velocity about
-/// `axis`, with the angle limited to `[angle_min, angle_max]` (end stops).
+/// at constant velocity and the bat turns with constant angular acceleration
+/// about `axis`, with the angle limited to `[angle_min, angle_max]` (end
+/// stops).
 ///
 /// `time` arguments are seconds since the start of the tick; the motion is
 /// valid from `start` on.
@@ -49,8 +50,10 @@ pub struct BatMotion {
     pub quarter: Vec3,
     /// Angle about `axis` at `start`, radians.
     pub angle: f32,
-    /// Angular velocity about `axis`, rad/s.
+    /// Angular velocity about `axis` at `start`, rad/s.
     pub angular_velocity: f32,
+    /// Angular acceleration about `axis`, rad/s².
+    pub angular_acceleration: f32,
     /// Lowest angle the stops allow, radians.
     pub angle_min: f32,
     /// Highest angle the stops allow, radians.
@@ -61,15 +64,25 @@ impl BatMotion {
     /// Bat angle at `time`.
     #[must_use]
     pub fn angle_at(&self, time: f32) -> f32 {
-        let a = self.angle + self.angular_velocity * (time - self.start).max(0.0);
+        let s = (time - self.start).max(0.0);
+        let a = self.angle + self.angular_velocity * s + 0.5 * self.angular_acceleration * s * s;
         a.clamp(self.angle_min, self.angle_max)
+    }
+
+    /// The largest angular speed between `from` and `to` (the speed is
+    /// linear in time, so it is at one of the ends).
+    #[must_use]
+    pub fn max_angular_speed(&self, from: f32, to: f32) -> f32 {
+        let at = |t: f32| self.angular_velocity + self.angular_acceleration * (t - self.start).max(0.0);
+        at(from).abs().max(at(to).abs())
     }
 
     /// Angular velocity at `time`: zero once a stop holds the bat.
     #[must_use]
     pub fn angular_velocity_at(&self, time: f32) -> f32 {
-        let a = self.angle + self.angular_velocity * (time - self.start).max(0.0);
-        let w = self.angular_velocity;
+        let s = (time - self.start).max(0.0);
+        let a = self.angle + self.angular_velocity * s + 0.5 * self.angular_acceleration * s * s;
+        let w = self.angular_velocity + self.angular_acceleration * s;
         if (w > 0.0 && self.angle_max - a <= STOP_ANGLE_TOLERANCE)
             || (w < 0.0 && a - self.angle_min <= STOP_ANGLE_TOLERANCE)
         {
@@ -165,7 +178,7 @@ pub trait BatShape {
     ///
     /// The default is conservative advancement evaluated in the bat frame:
     /// the gap cannot close faster than the sphere's speed plus the pivot's
-    /// speed plus `|ω|·reach`, so stepping by gap / that bound never steps
+    /// speed plus the largest `|ω|·reach` of the window, so stepping by gap / that bound never steps
     /// over a contact, whatever the speeds. Same reporting rules as
     /// [`conservative_cast`](crate::ball::conservative_cast): a sphere that
     /// touches at `s = 0` without closing faster than
@@ -184,7 +197,7 @@ pub trait BatShape {
         }
         let bound = velocity.length()
             + motion.pivot_velocity.length()
-            + motion.angular_velocity.abs() * self.reach();
+            + motion.max_angular_speed(time, time + window) * self.reach();
         if !bound.is_finite() {
             return None;
         }
@@ -496,6 +509,7 @@ mod tests {
             quarter: Vec3::Y,
             angle,
             angular_velocity: 0.0,
+            angular_acceleration: 0.0,
             angle_min: -10.0,
             angle_max: 10.0,
         }
