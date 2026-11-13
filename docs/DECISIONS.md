@@ -965,3 +965,84 @@ Every one stays inside 2 × 329c843 + 2 ms (worst 0.70 of that bound) and far be
 - **Decision (PNG).** Own encoder: 8-bit grey/RGB/RGBA, filter Sub on every row, zlib level 6 through `flate2` (zlib-rs), one IDAT, no ancillary chunks.
 - **Decision (scenes).** The kit provides no `[[scenes]]` files and has no Scene kind (the brief's `AssetKind` has none): the DMD scene format is 5.3's. Verification 5 therefore covers the sounds the kit claims; the A.1 example's `sfx_bumper` resolves to `audio/sfx_bumper.wav`.
 - **Alternatives.** Ogg output (no encoder without a new dependency); `image`'s PNG encoder (its output may change with `png` crate updates; ours is pinned by our code); seeding the SFX from the table (would make the "SFX set unchanged" property impossible); Ogg/compressed music (left to the audio follow-up in the human queue).
+
+## 2.2-S — moving-body and force-context seams
+
+API reference for Subphases 2.3 (flippers), 2.4 (mechs) and 2.7 (Magnus, remanence). The full rustdoc contract is in `pin_physics::ball::body` (module docs) and on `ExternalForce`/`ForceContext`; this entry is the summary those briefs may rely on. Everything here is in `pin_physics::ball` (re-exported from `ball::body` and `ball::types`).
+
+### (A) Moving bodies
+
+- **Decision (plumbing: bodies are lent to each step, not registered).** `BallSolver::step_with_bodies(&mut self, geo: &Geometry<'_>, bodies: &mut [&mut dyn MovingBodies], dt: f32, events: &mut BallEvents)`; `step(geo, dt, events)` is exactly `step_with_bodies(geo, &mut [], dt, events)`. A body *set* is identified by its index in that slice (keep the order fixed, e.g. `[&mut flippers, &mut mechs]`), a body by its index in the set. **Rationale:** the owner (2.3/2.4) keeps its state and its integration and can read/drive it between steps (coil torques, EOS switches, render poses) without downcasting from the solver; nothing is stored across the borrow. **Alternatives:** `Box<dyn …>` registered in `BallSolver` (owner loses direct access, needs `Any` downcasts); a field in `Geometry` (struct literals in the 2.2 tests and other crates would break, and `Geometry` is `Copy`/shared).
+- **The trait** (all `time` = seconds since the start of the current tick, in `[0, dt]`; `body` in `0..body_count()`):
+  ```rust
+  pub trait MovingBodies {
+      fn body_count(&self) -> usize;
+      fn begin_tick(&mut self, dt: f32);                 // predict [0, dt]
+      fn end_tick(&mut self, dt: f32);                   // commit pose/velocity at dt
+      fn layer_mask(&self, body: usize) -> u8;           // world::layers bits
+      fn material(&self, body: usize) -> Material;       // pair table key
+      fn swept_bounds(&self, body: usize) -> (Vec3, Vec3);   // AABB for the rest of the tick
+      fn max_surface_speed(&self, body: usize) -> f32;       // bound, rest of the tick
+      fn closest_point(&self, body: usize, time: f32, point: Vec3) -> Option<BodyPoint>;
+      fn velocity_at(&self, body: usize, time: f32, point: Vec3) -> Vec3;
+      fn inverse_mass_at(&self, body: usize, time: f32, point: Vec3, direction: Vec3) -> f32;
+      fn apply_impulse(&mut self, body: usize, time: f32, point: Vec3, impulse: Vec3);
+      fn cast_sphere(&self, body: usize, time: f32, center: Vec3, radius: f32,
+                     velocity: Vec3, window: f32) -> Option<BodyCast> { conservative_cast(..) }
+  }
+  pub struct BodyPoint { pub point: Vec3, pub normal: Vec3 /* out of the body */, pub distance: f32 /* signed, <0 inside */ }
+  pub enum BodyCast { Hit { time: f32 /* from cast start */, point: Vec3, normal: Vec3 }, Advance { time: f32 } }
+  pub fn conservative_cast<B: MovingBodies + ?Sized>(set: &B, body: usize, time: f32, center: Vec3,
+                                                     radius: f32, velocity: Vec3, window: f32) -> Option<BodyCast>;
+  pub const BODY_SKIN: f32 = 1.0e-5;          // m, contact gap of a cast hit
+  pub const BODY_REST_SPEED: f32 = 1.0e-3;    // m/s, slower = resting contact
+  pub const MAX_CAST_ITERATIONS: u32 = 64;
+  ImpactTarget::Body { set: usize, body: usize }   // new variant
+  ```
+- **Call order per step (the contract).** (1) `begin_tick(dt)` on every set, slice order, before anything else (even with no balls); the body predicts its trajectory over `[0, dt]` from its committed state and this tick's drive (recommended: semi-implicit Euler, `ω₁ = ω₀ + α·dt`, `θ(t) = θ₀ + ω₁·t`, clamped at stops); position must be continuous in `t`. (2) Newton chains, then the balls' event loop, which makes any number of `&self` queries and `apply_impulse` calls. (3) `end_tick(dt)` on every set, slice order, after the last ball event; then sensors. A non-finite or non-positive `dt` calls nothing.
+- **Impulses and re-prediction.** `apply_impulse(body, time, point, J)`: the body keeps `[0, time]` and re-predicts `[time, dt]` from its pose at `time` with velocity changed by `M⁻¹J` (1-DOF rotor about unit axis `a` through pivot `c`: `Δω = ((point − c) × J)·a / I`). Impulses arrive in non-decreasing `time`; after an impulse at `time` **no query is made for an earlier time** (the solver brings every ball to `time` and re-casts them). Several impulses may arrive at one `time` (accumulated-impulse solve), including negative ones; they add. A body reporting zero inverse mass for a push must not move because of it (it is still told).
+- **Stops and one-sided constraints (binding on owners).** `inverse_mass_at(..., direction)` takes the direction of the impulse the *body* would receive (the solver asks with `−n` for the normal, `n` from body to ball, and with the slip direction for friction). On an engaged end stop it is 0 for a push into the stop and the free value away from it. `velocity_at` must be the real velocity: 0 on an engaged stop, **also at the very instant an impulse drove it into the stop** (otherwise the contact solve keeps taking back impulses and the ball stalls until the event budget runs out; this was found and fixed in the reference rotor).
+- **How the solver uses a body.** Casts: between sub-step boundaries a ball's next impact with a body comes from `cast_sphere` together with the static/guide/chain/ball casts (earliest event first); bodies are cast even for a ball at rest; a frozen ball (impact budget exhausted in a sub-step) is not cast and is corrected at its next boundary. Sub-steps: a ball whose path (padded 2r) meets a body's `swept_bounds` adds `max_surface_speed·dt` to its travel per tick. Contacts: at each boundary every body within 20 µm (by `closest_point`) joins the ball's contact list as a surface contact and is solved by the same projected Gauss–Seidel accumulated-impulse solve as static, guide, rail, ball and captive-ball contacts; penetration is projected out by moving the ball only. Body contacts are not warm-started. Events: an impact (not a resting contact) at ≥ `IMPACT_REPORT_SPEED` is `BallEvent::Impact { ball, other: ImpactTarget::Body { set, body }, normal_speed }` with the *relative* normal speed. Switches are the owner's (it sees every impulse). `SurfaceVelocity` is not consulted for bodies.
+- **The two-body impulse.** `w_n = inverse_mass_at(−n)`, `w_t` along the slip. Normal: `J = (u_target − u_n)/(1/m + w_n)` on `u_n = (v_ball − v_body(point))·n`, restitution from the pair table (ball material, `material(body)`) with the 2.2 ramp; `−J·n` to the body. Rolling resistance acts on the ball's spin only. Friction: Coulomb on `v + ω×r_c − v_body(point)` (body velocity re-queried after the normal impulse) with effective mass `1/(7/(2m) + w_t)`, clamped to `μ·J`; its reaction goes to the body. When `w_n = w_t = 0` the contact is solved exactly as 2.2's static surface moving with `v_body` (including static rest), so a kinematic body behaves like geometry. Verified: free ball on a free-pivot rod matches `J = (1+e)v/(1/m + d²/I)` and angular momentum within 0.5 % (fixed cases and a proptest over d, v, I and all profiles).
+- **Default CCD (`conservative_cast`).** Steps by `gap / (|v_ball| + max_surface_speed)`. At `s = 0`, within `BODY_SKIN`, it is a hit only if closing faster than `BODY_REST_SPEED`, otherwise `None` (resting contact, left to the boundaries); later, the first in-skin closing point is a hit; grazing creeps by `BODY_SKIN/bound`; after 64 steps it returns `Advance` (the solver moves the ball and casts again; this counts toward the ball's 12 events per sub-step). No tunnelling as long as `closest_point` is exact and `max_surface_speed` is a true bound. Owners may override `cast_sphere` with an exact cast (e.g. the 2.3 brief's local-frame advancement); it must not report a touching, non-closing sphere at `s = 0`.
+- **Guarantees.** No allocation in the solver path (owners must not allocate either); deterministic order (sets, then bodies by index, balls by handle); with an empty slice, bit-identical to HEAD 84c88eb (recorded digests of five scenarios, `tests/ball_seam_bitident.rs`). With a finite-mass body pushed, every ball is brought to that instant, so a ball far from the body may take a slightly different floating-point path than without bodies.
+- **Reference bodies (tests only, `tests/ball_seam_ref.rs`):** `Slab` (kinematic translating boxes) and `Rotors` (1-DOF capsules with inertia, drive torque, inelastic stops). 2.3/2.4 may copy them. Proven in `tests/ball_seam_bodies.rs`: no tunnelling (plate and rotor sweeps, ball speeds up to 100 m/s, body speeds up to 25 m/s, plus proptests), two-body exchange, no energy gain at a kinematic body at rest (proptest, all materials), stable rest on a registered kinematic floor, a ball rolling down a held bat and staying cradled for 2 s, a flip launching a cradled ball while the ball slows the bat, call order, layer masks, set/body indices in events, conveyor drag, 10-run bit stability; allocation guard with bodies and hooks in `tests/ball_seam_alloc.rs`.
+- **Performance (release, this container, noisy):** 2 rotors + kicker + 4 balls: mean 6.2 µs, p99 31 µs per step (target ≤ 50 µs mean); the same table without bodies 2.9 µs. No-body `ball_perf` probes before/after within noise (4 balls / 300 colliders 3.05–4.8 µs HEAD vs 3.07–3.18 µs now over three alternating runs).
+
+### (B) Force context
+
+- **Decision (extend the trait with defaulted methods; keep `force`).**
+  ```rust
+  pub trait ExternalForce: Send {
+      fn force(&mut self, handle: BallHandle, ball: &Ball, profile: &BallProfile, dt: f32) -> Vec3 { ZERO }
+      fn force_in(&mut self, ctx: &ForceContext<'_>, handle: BallHandle, ball: &Ball,
+                  profile: &BallProfile, dt: f32) -> Vec3 { self.force(handle, ball, profile, dt) }
+      fn ball_added(&mut self, handle: BallHandle, ball: &Ball) {}
+      fn ball_removed(&mut self, handle: BallHandle) {}
+  }
+  pub struct ForceContext<'a> {
+      pub magnets: &'a [MagnetState], // index = MagnetId
+      pub step_index: u64,            // steps completed before this one
+      pub tick_dt: f32,               // dt of this step
+      pub tick_time: f32,             // substep · h, seconds into the tick
+      pub sim_time: f64,              // Σ dt of completed steps + tick_time
+      pub substep: u32, pub substeps: u32,   // h = tick_dt / substeps = the `dt` argument
+  }
+  pub struct MagnetState { pub magnet: Magnet, pub power: f32, pub remanence_tau_s: f32 }
+  impl MagnetState {
+      pub fn in_range(&self, position: Vec3, layer: u8) -> bool; // layer bit, 0 < d ≤ range (power ignored)
+      pub fn pull(&self, position: Vec3) -> Vec3;   // K·d̂/max(d³, d_min³) toward the pole, 0 outside range
+  }
+  BallSolverConfig::magnet_remanence_tau_s: f32       // from_defaults: magnet_remanence_tau_ms / 1000 (0.060)
+  BallSolver::set_magnet_remanence_tau(id: MagnetId, tau_s: f32)  // NaN/negative/unknown ignored
+  BallSolver::magnets(&self) -> &[MagnetState]
+  BallSolver::step_count(&self) -> u64;  BallSolver::sim_time(&self) -> f64
+  ```
+  The solver calls `force_in` once per ball sub-step, in handle order within a boundary time, after gravity and the magnets, and adds `F·h/m`. The solver's magnet force is `c·P·pull`; the §3.2 residual force is `c·ρ·M·pull`. **Rationale:** existing 2.2 hooks and tests compile unchanged; a new hook implements only `force_in`. The magnet τ is stored per magnet in the solver (not in `Magnet`, whose struct literals the 2.2 tests use). **Alternatives:** a new trait (two hook lists); passing the magnets as a fourth argument (breaks every implementation).
+- **Decision (ball lifetime).** `add_ball` calls `ball_added` on every hook; `remove_ball` calls `ball_removed` (only when a ball was there); `add_external_force` calls `ball_added` for every ball already present (ascending handles). A handle is reused by the next `add_ball` after a removal, so per-ball state keyed by handle must be reset in `ball_added` (`Dispenser::dispense` goes through `add_ball`). This meets 2.7 deliverable 2 ("per-ball magnetisation state") without a `pin_core` change: the ball arena is in `pin_physics`.
+- **Decision (an exactly-zero total force is not added).** `if any && force.is_finite() && force != Vec3::ZERO`. **Rationale:** adding `0·h/m` can turn a `−0.0` velocity component into `+0.0`, so a hook with zero coefficients would not be bit-identical to no hook (2.7 verification 1/3 need that). The five HEAD digests (including one with an old-style hook) are unchanged by this. Proven by a prototype remanence hook in `tests/ball_seam_force.rs`: ρ = 0 is bit-identical to no hook, ρ = 0.5 leaves the magnet measurably later.
+
+### Edits outside the new files
+
+- `tests/spec_ball_determinism.rs`: one mechanical line, `ImpactTarget::Body { set, body } => (5u8, set, body).hash(h),` in its exhaustive match. No assertion changed.
+- **Correction / review polish (4.6 N1–N6).** The "what varies" decision above overstates the seeding: the music loop, `img_backglass_base` and `img_playfield` derive from `meta_seed` (title, palette and seed); `img_backglass_logo` and `img_backglass_logo_mask` depend only on the title and palette (no seed); the insert labels depend only on the palette. Polish: playfield lane chevrons now pass through the same contrast check as the title (`readable` against the lane background); every tone and noise burst has at least a 0.5 ms linear attack (`MIN_ATTACK`), so no sound starts with a step; `pin_assetgen --help`/`-h` prints usage on stdout and exits 0 (errors stay on stderr, exit 2); implementer tests write under `CARGO_TARGET_TMPDIR` and remove their directories.

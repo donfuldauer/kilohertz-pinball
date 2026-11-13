@@ -136,7 +136,7 @@ impl Synth {
 
     /// A pitched tone starting at `start` s: frequency glides exponentially
     /// from `f0` to `f1` with time constant `glide` s, decays with time
-    /// constant `tau` s after a `attack` s linear attack, lasts `dur` s, and
+    /// constant `tau` s after an `attack` s linear attack (at least [`MIN_ATTACK`]), lasts `dur` s, and
     /// has harmonics `h` (1-based) with amplitudes `amps[h - 1]`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn tone(
@@ -163,11 +163,7 @@ impl Synth {
             }
             let t = i as f64 / self.sr;
             let f = f1 + (f0 - f1) * libm::exp(-t / glide.max(1e-6));
-            let att = if attack > 0.0 {
-                (t / attack.max(MIN_ATTACK)).min(1.0)
-            } else {
-                1.0
-            };
+            let att = (t / attack.max(MIN_ATTACK)).min(1.0);
             let tail = ((n - i) as f64 / fade as f64).min(1.0);
             let env = amp * att * tail * libm::exp(-t / tau.max(1e-6));
             let mut v = 0.0;
@@ -207,11 +203,7 @@ impl Synth {
                 break;
             }
             let t = i as f64 / self.sr;
-            let att = if attack > 0.0 {
-                (t / attack.max(MIN_ATTACK)).min(1.0)
-            } else {
-                1.0
-            };
+            let att = (t / attack.max(MIN_ATTACK)).min(1.0);
             let tail = ((n - i) as f64 / fade as f64).min(1.0);
             let env = amp * att * tail * libm::exp(-t / tau.max(1e-6));
             self.out[idx] += env * f.run(x);

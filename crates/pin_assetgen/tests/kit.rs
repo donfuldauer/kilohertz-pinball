@@ -7,16 +7,32 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use pin_assetgen::sounds::{MOTIF_IDS, MUSIC_ID, SFX_IDS};
 use pin_assetgen::{AssetKind, KitManifest, TableMeta, generate_kit, sha256_hex};
 
-fn temp_dir(tag: &str) -> PathBuf {
+/// A scratch directory under Cargo's per-target temp dir, removed on drop.
+struct TempDir(PathBuf);
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp_dir(tag: &str) -> TempDir {
     static N: AtomicUsize = AtomicUsize::new(0);
-    let dir = std::env::temp_dir().join(format!(
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
         "pin_assetgen_kit_{tag}_{}_{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TempDir(dir)
 }
 
 fn apex_meta(seed: u64) -> TableMeta {
@@ -124,7 +140,7 @@ fn every_file_decodes_through_the_engine_loaders() {
 
 /// Copies the Appendix A example bundle next to the kit, pointing its sounds
 /// at kit files.
-fn apex_bundle_with_kit(tag: &str, all_sounds: bool) -> (PathBuf, KitManifest) {
+fn apex_bundle_with_kit(tag: &str, all_sounds: bool) -> (TempDir, KitManifest) {
     let dir = temp_dir(tag);
     let m = generate_kit(&apex_meta(5), &dir).unwrap();
     let fx = apex_fixture();
@@ -267,4 +283,11 @@ fn cli_writes_a_kit() {
         .output()
         .unwrap();
     assert_eq!(bad.status.code(), Some(2));
+    assert!(bad.stdout.is_empty());
+    for flag in ["--help", "-h"] {
+        let help = std::process::Command::new(exe).arg(flag).output().unwrap();
+        assert!(help.status.success());
+        assert!(String::from_utf8_lossy(&help.stdout).contains("usage: pin_assetgen"));
+        assert!(help.stderr.is_empty());
+    }
 }

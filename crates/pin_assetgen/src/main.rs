@@ -10,6 +10,10 @@ fn main() {
                 pin_assetgen::MANIFEST_FILE
             );
         }
+        Err(msg) if msg == pin_assetgen::cli::USAGE => {
+            // --help / -h: usage on stdout, success.
+            println!("{msg}");
+        }
         Err(msg) => {
             eprintln!("{msg}");
             std::process::exit(2);
