@@ -177,9 +177,12 @@ fn min_of(curve: &[(i64, Shot)]) -> (i64, f32) {
 }
 
 /// Criterion 1 for a ball aimed at `frac` of the held bat; time 0 = the
-/// ball's contact with the held bat (Orchestrator ruling "2.3 criterion 1
-/// after fix round 1"). Returns (minimum, held rebound).
-fn criterion_1(frac: f32, gate_steps: bool) -> (f32, f32) {
+/// ball's contact with the held bat. Orchestrator ruling "2.3 criterion 1:
+/// the 25 % depth moves to Gate A1": the 2.3 gate needs a dead spot of at
+/// most 50 % of the held rebound at both 50 % and 70 % contact; steps over
+/// 0.75 m/s are named (unexplained ones reported, not failed); the 25 %
+/// depth is reported. Returns (minimum, held rebound).
+fn criterion_1(frac: f32) -> (f32, f32) {
     let (c, f) = left_flipper();
     let held = rebound_held_aim(&c, &f, frac, Some(0));
     let th = held.impact_tick.expect("ball missed the held bat");
@@ -189,38 +192,71 @@ fn criterion_1(frac: f32, gate_steps: bool) -> (f32, f32) {
         "{label}: held-bat rebound {:.3} m/s (impact tick {th})",
         held.speed
     );
-    let curve = sweep(&c, &f, frac, th, &label, gate_steps);
+    let curve = sweep(&c, &f, frac, th, &label, false);
     let (k, min) = min_of(&curve);
+    let ratio = min / held.speed;
     println!(
-        "{label}: minimum {min:.3} m/s at {k} ms = {:.1} % of held (criterion 25 %)",
-        100.0 * min / held.speed
+        "{label}: minimum {min:.3} m/s at {k} ms = {:.1} % of held (gate ≤ 50 %: {}; Gate A1 depth ≤ 25 %: {})",
+        100.0 * ratio,
+        if ratio <= 0.5 { "met" } else { "NOT met" },
+        if ratio <= 0.25 {
+            "met"
+        } else {
+            "not met (report)"
+        }
     );
     (min, held.speed)
 }
 
-#[test]
-fn v1_timing_sweep_outer_bat_70_percent() {
-    // Gated (Orchestrator ruling): continuity as above and a dead spot of at
-    // most 25 % of the held-flipper rebound.
-    let (min, held) = criterion_1(0.70, true);
+fn gate_dead_spot(frac: f32) {
+    let (min, held) = criterion_1(frac);
     assert!(
-        min <= 0.25 * held,
-        "sweep minimum {min:.3} m/s > 25 % of the held-flipper rebound {held:.3}"
+        min <= 0.5 * held,
+        "contact {frac}: sweep minimum {min:.3} m/s > 50 % of the held-flipper rebound {held:.3}"
     );
 }
 
 #[test]
-fn v1_timing_sweep_mid_bat_50_percent_report() {
-    // Report only (Orchestrator ruling): mid-bat contact.
-    let (min, held) = criterion_1(0.50, false);
+fn v1_timing_sweep_mid_bat_50_percent() {
+    gate_dead_spot(0.50);
+}
+
+#[test]
+fn v1_timing_sweep_outer_bat_70_percent() {
+    gate_dead_spot(0.70);
+}
+
+#[test]
+fn v1_dead_spot_aim_scan_report() {
+    // Report: sensitivity of the dead-spot depth to where the ball meets the
+    // held bat (the minimum sits near the −20 ms edge of the sweep).
+    let (c, f) = left_flipper();
     println!(
-        "mid-bat: 25 % criterion {}",
-        if min <= 0.25 * held {
-            "met"
-        } else {
-            "not met (report only)"
-        }
+        "aim_on_held_bat held_m_s min_m_s at_ms ratio_% (flips at −25…−21 ms shown for context)"
     );
+    for frac in [0.65f32, 0.70, 0.75, 0.80] {
+        let held = rebound_held_aim(&c, &f, frac, Some(0));
+        let th = held.impact_tick.expect("ball missed the held bat") as i64;
+        let mut m = (0i64, f32::INFINITY);
+        let mut outside = String::new();
+        for k in -25i64..=20 {
+            let s = rebound_held_aim(&c, &f, frac, Some((th + k) as u64));
+            if k < -20 {
+                outside.push_str(&format!(" {k}:{:.2}", s.speed));
+            } else if s.speed < m.1 {
+                m = (k, s.speed);
+            }
+        }
+        println!(
+            "{:>4.0} % {:.3} {:.3} {:>4} {:.1} [{}]",
+            frac * 100.0,
+            held.speed,
+            m.1,
+            m.0,
+            100.0 * m.1 / held.speed,
+            outside.trim()
+        );
+    }
 }
 
 #[test]
