@@ -9,9 +9,10 @@ mod common;
 
 use common::*;
 use glam::{Quat, Vec3};
-use pin_physics::ball::{BallEvent, ImpactTarget};
 use pin_core::FlipperStagingMode;
 use pin_core::ids::{FlipperId, SwitchId};
+use pin_physics::ball::{BallEvent, BallHandle, ImpactTarget};
+use pin_physics::world::{StaticShape, StaticWorldBuilder, layers};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
@@ -60,8 +61,20 @@ const THING_TRIGGER: SwitchId = SwitchId(500);
 fn busy() -> Scene {
     let lb = [-96.0, 0.0, PIVOT_Z_MM];
     let rb = [96.0, 0.0, PIVOT_Z_MM];
-    let mut l = config(0, lb, Vec3::Z, rest_for(lb, Vec3::Z, 50.0, flat_dir(-30.0)), 50.0);
-    let mut r = config(1, rb, Vec3::Z, rest_for(rb, Vec3::Z, -50.0, flat_dir(210.0)), -50.0);
+    let mut l = config(
+        0,
+        lb,
+        Vec3::Z,
+        rest_for(lb, Vec3::Z, 50.0, flat_dir(-30.0)),
+        50.0,
+    );
+    let mut r = config(
+        1,
+        rb,
+        Vec3::Z,
+        rest_for(rb, Vec3::Z, -50.0, flat_dir(210.0)),
+        -50.0,
+    );
     l.zipper_slide_axis_mm = Some([12.0, 0.0, 0.0]);
     r.zipper_slide_axis_mm = Some([-12.0, 0.0, 0.0]);
     l.zipper_slide_speed_mm_s = 200.0;
@@ -74,7 +87,25 @@ fn busy() -> Scene {
         delay_ms: 12.0,
         hold_duration_ms: 40.0,
     };
-    let mut s = Scene::new(table_world(Quat::IDENTITY), table_gravity(Quat::IDENTITY), &[l, r, u]);
+    let mut b = StaticWorldBuilder::new();
+    let cuboid = |c: Vec3, h: Vec3| StaticShape::Cuboid {
+        center: c,
+        half_extents: h,
+        rotation: Quat::IDENTITY,
+    };
+    b.add_collider(
+        cuboid(v(0.0, 0.0, -0.05), v(0.6, 0.8, 0.05)),
+        layers::ALL,
+        true,
+    );
+    for (c, h) in [
+        (v(0.31, 0.2, 0.05), v(0.01, 0.6, 0.05)),
+        (v(-0.31, 0.2, 0.05), v(0.01, 0.6, 0.05)),
+        (v(0.0, 0.71, 0.05), v(0.32, 0.01, 0.05)),
+    ] {
+        b.add_collider(cuboid(c, h), layers::ALL, true);
+    }
+    let mut s = Scene::new(b.build(), table_gravity(Quat::IDENTITY), &[l, r, u]);
     for (p, vel) in [
         (v(-0.03, 0.2, R), v(-0.4, -1.5, 0.0)),
         (v(0.05, 0.3, R), v(0.2, -2.5, 0.0)),
@@ -89,6 +120,16 @@ fn busy() -> Scene {
 /// Commands for `tick` (the staging router / script side).
 fn drive(s: &mut Scene) {
     let t = s.tick;
+    // Drained balls go back to the top (deterministic re-feed).
+    for k in 0..4u8 {
+        let h = BallHandle(k);
+        if let Some(b) = s.solver.ball_mut(h) {
+            if b.position.y < -0.12 {
+                let x = -0.12 + 0.08 * f32::from(k);
+                *b = ball(v(x, 0.5, R), v(0.3 - 0.2 * f32::from(k), -1.0, 0.0));
+            }
+        }
+    }
     s.set.set_energised(FlipperId(0), (t / 170) % 2 == 1);
     s.set.set_energised(FlipperId(1), (t / 230) % 3 == 1);
     if t % 500 == 100 {
@@ -163,18 +204,29 @@ fn busy_scenario_is_bit_identical_over_ten_runs() {
             drive(&mut s);
             s.advance();
             state_hash(&s).hash(&mut trail);
-            bat_hits += s
-                .ev
-                .as_slice()
-                .iter()
-                .filter(|e| matches!(e, BallEvent::Impact { other: ImpactTarget::Body { set: 0, .. }, .. }))
-                .count() as u32;
+            bat_hits +=
+                s.ev.as_slice()
+                    .iter()
+                    .filter(|e| {
+                        matches!(
+                            e,
+                            BallEvent::Impact {
+                                other: ImpactTarget::Body { set: 0, .. },
+                                ..
+                            }
+                        )
+                    })
+                    .count() as u32;
         }
         (trail.finish(), state_hash(&s), bat_hits)
     };
     let first = run();
     println!("bat impacts per run: {}", first.2);
-    assert!(first.2 >= 5, "the scenario barely touches the bats: {}", first.2);
+    assert!(
+        first.2 >= 5,
+        "the scenario barely touches the bats: {}",
+        first.2
+    );
     for k in 1..10 {
         assert_eq!(run(), first, "run {k} differs");
     }

@@ -268,6 +268,8 @@ struct Flipper {
     // Committed state (start of tick).
     q: f32,
     omega: f32,
+    /// Coil current in units of √(N·m): the coil torque is its square.
+    coil_current: f32,
     coil_torque: f32,
     slide: f32,
     eos_closed: bool,
@@ -381,7 +383,10 @@ impl Flipper {
         } else {
             self.hold_torque
         };
-        let tau = if target > self.coil_torque {
+        // The coil current follows its target with a first-order lag and
+        // the pull goes with the current squared.
+        let target = libm::sqrtf(target);
+        let tau = if target > self.coil_current {
             tuning.coil_rise_s
         } else {
             tuning.coil_fall_s
@@ -391,7 +396,8 @@ impl Flipper {
         } else {
             1.0
         };
-        self.coil_torque += (target - self.coil_torque) * blend;
+        self.coil_current += (target - self.coil_current) * blend;
+        self.coil_torque = self.coil_current * self.coil_current;
         self.drive = self.coil_torque - self.spring_torque;
         self.tick_q0 = self.q;
         let true_w = self.omega + self.drive / self.inertia * dt;
@@ -627,6 +633,7 @@ impl Flipper {
             zipper_closed: false,
             q: 0.0,
             omega: 0.0,
+            coil_current: 0.0,
             coil_torque: 0.0,
             slide: 0.0,
             eos_closed: eos_is_closed(0.0, eos_travel),

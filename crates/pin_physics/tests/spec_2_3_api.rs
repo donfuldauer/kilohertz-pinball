@@ -57,14 +57,18 @@ fn invalid_configs_are_rejected_not_panicking() {
         ("negative inertia", |c| c.inertia_kg_m2 = -1.0e-4),
         ("NaN inertia", |c| c.inertia_kg_m2 = f32::NAN),
         ("NaN base position", |c| c.base_position_mm[1] = f32::NAN),
-        ("infinite base position", |c| c.base_position_mm[0] = f32::INFINITY),
+        ("infinite base position", |c| {
+            c.base_position_mm[0] = f32::INFINITY
+        }),
         ("zero normal", |c| c.surface_normal = [0.0, 0.0, 0.0]),
         ("NaN normal", |c| c.surface_normal = [f32::NAN, 0.0, 1.0]),
         ("NaN rest angle", |c| c.rest_angle_deg = f32::NAN),
         ("infinite sweep", |c| c.sweep_angle_deg = f32::INFINITY),
         ("NaN power torque", |c| c.power_torque_nm = f32::NAN),
         ("NaN hold torque", |c| c.hold_torque_nm = f32::NAN),
-        ("NaN rubber restitution", |c| c.rubber_restitution = f32::NAN),
+        ("NaN rubber restitution", |c| {
+            c.rubber_restitution = f32::NAN
+        }),
     ];
     for (name, edit) in cases {
         let mut c = flat(0, -30.0, 50.0);
@@ -193,12 +197,22 @@ fn angular_velocity_is_signed_like_the_sweep() {
             assert!(a * sweep >= 0.0, "sweep {sweep}: tick {k} angle {a}");
         }
         // Return after release: the first ticks after 150 move back.
-        let moving_back = tr[151..160].iter().filter(|&&(_, w)| w * sweep < 0.0).count();
+        let moving_back = tr[151..160]
+            .iter()
+            .filter(|&&(_, w)| w * sweep < 0.0)
+            .count();
         assert!(moving_back >= 5, "sweep {sweep}: no return motion");
         // Angles stay within [rest, end].
         for &(a, _) in &tr {
-            let (lo, hi) = if sweep > 0.0 { (0.0, sweep) } else { (sweep, 0.0) };
-            assert!(a >= lo - 0.01 && a <= hi + 0.01, "angle {a} outside the sweep");
+            let (lo, hi) = if sweep > 0.0 {
+                (0.0, sweep)
+            } else {
+                (sweep, 0.0)
+            };
+            assert!(
+                a >= lo - 0.01 && a <= hi + 0.01,
+                "angle {a} outside the sweep"
+            );
         }
     }
 }
@@ -269,7 +283,10 @@ fn eos_switch_changes_exactly_at_the_eos_angle() {
                 );
             }
         }
-        assert!(changes >= 2, "EOS never changed and changed back ({changes})");
+        assert!(
+            changes >= 2,
+            "EOS never changed and changed back ({changes})"
+        );
         assert_eq!(last, at_rest, "EOS state not restored at rest");
     }
 }
@@ -286,7 +303,10 @@ fn eos_switch_is_closed_at_rest_and_opens_at_end_of_stroke() {
     for _ in 0..100 {
         s.advance();
     }
-    assert!(!s.set.eos_closed(c.id), "EOS switch still closed at end of stroke");
+    assert!(
+        !s.set.eos_closed(c.id),
+        "EOS switch still closed at end of stroke"
+    );
 }
 
 fn stop_bounce(e_stop: f32) -> (f32, f32, f32, f32, Vec<(f32, f32)>) {
@@ -295,11 +315,18 @@ fn stop_bounce(e_stop: f32) -> (f32, f32, f32, f32, Vec<(f32, f32)>) {
     let tr = stroke(&c, 900, Some(300));
     // Top stop: peak ω before first reaching the end, most negative ω after.
     let end = c.end_angle_deg();
-    let first_end = tr.iter().position(|&(a, _)| a >= end - 1.0e-3).expect("never reached end");
+    let first_end = tr
+        .iter()
+        .position(|&(a, _)| a >= end - 1.0e-3)
+        .expect("never reached end");
     let peak_up = tr[..=first_end].iter().map(|p| p.1).fold(0.0, f32::max);
     let bounce_top = tr[first_end..300].iter().map(|p| p.1).fold(0.0, f32::min);
     let rest = c.rest_angle_deg;
-    let first_rest = 300 + tr[300..].iter().position(|&(a, _)| a <= rest + 1.0e-3).expect("never returned");
+    let first_rest = 300
+        + tr[300..]
+            .iter()
+            .position(|&(a, _)| a <= rest + 1.0e-3)
+            .expect("never returned");
     let peak_dn = tr[300..=first_rest].iter().map(|p| p.1).fold(0.0, f32::min);
     let bounce_rest = tr[first_rest..].iter().map(|p| p.1).fold(0.0, f32::max);
     (peak_up, bounce_top, peak_dn, bounce_rest, tr)
@@ -348,7 +375,10 @@ fn inelastic_stops_do_not_bounce() {
     let end = -30.0 + 50.0;
     let first_end = tr.iter().position(|&(a, _)| a >= end - 1.0e-3).unwrap();
     for &(a, w) in &tr[first_end..300] {
-        assert!((a - end).abs() < 1.0e-3 && w == 0.0, "left the stop: {a} {w}");
+        assert!(
+            (a - end).abs() < 1.0e-3 && w == 0.0,
+            "left the stop: {a} {w}"
+        );
     }
 }
 
@@ -379,7 +409,10 @@ fn flipper_ids_address_their_own_bodies() {
     fresh.advance();
     let f1r = measure_frame(&fresh.set, 1, &b);
     let turned = signed_angle_deg(f1r.e_rest, f1.e_rest, Vec3::Z);
-    assert!((turned - b.sweep_angle_deg).abs() < 0.5, "body 1 turned {turned}");
+    assert!(
+        (turned - b.sweep_angle_deg).abs() < 0.5,
+        "body 1 turned {turned}"
+    );
 }
 
 #[test]
@@ -402,11 +435,17 @@ fn layer_filter_ball_passes_a_flipper_on_another_layer() {
             hit |= s.hit(h, 0);
         }
         let (_, across, _) = f.local(c.rest_angle_deg, Vec3::ZERO, s.ball(h).position);
-        assert_eq!(hit, expect_hit, "flipper layer {flip_layer}, ball layer {ball_layer}");
+        assert_eq!(
+            hit, expect_hit,
+            "flipper layer {flip_layer}, ball layer {ball_layer}"
+        );
         if expect_hit {
             assert!(across > 0.0, "ball went through the bat");
         } else {
-            assert!(across < -0.05, "ball on another layer was stopped ({across})");
+            assert!(
+                across < -0.05,
+                "ball on another layer was stopped ({across})"
+            );
         }
     }
 }

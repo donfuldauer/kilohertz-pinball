@@ -42,16 +42,25 @@ fn zipper_slides_at_its_speed_to_the_axis_extent_and_back() {
     let mut s = Scene::new(empty_world(), Vec3::ZERO, std::slice::from_ref(&c));
     s.advance();
     let pts = probe_points(&f);
-    let before: Vec<f32> = pts.iter().map(|&p| s.set.closest_point(0, 0.0, p).unwrap().distance).collect();
+    let before: Vec<f32> = pts
+        .iter()
+        .map(|&p| s.set.closest_point(0, 0.0, p).unwrap().distance)
+        .collect();
     s.set.set_zipper(ID, true);
     let mut prev = 0.0f32;
     for k in 1..=160u32 {
         s.advance();
         let o = s.set.base_offset_mm(ID);
         let ideal = (0.15 * k as f32).min(15.0);
-        assert!(o >= prev - 1.0e-5, "slide went back at tick {k}: {prev} → {o}");
+        assert!(
+            o >= prev - 1.0e-5,
+            "slide went back at tick {k}: {prev} → {o}"
+        );
         assert!(o <= 15.0 + 1.0e-4, "overshoot {o}");
-        assert!((o - ideal).abs() <= 0.15 + 1.0e-3, "tick {k}: offset {o}, expected ≈ {ideal}");
+        assert!(
+            (o - ideal).abs() <= 0.15 + 1.0e-3,
+            "tick {k}: offset {o}, expected ≈ {ideal}"
+        );
         prev = o;
     }
     assert!((prev - 15.0).abs() < 1.0e-3, "final offset {prev}");
@@ -59,7 +68,10 @@ fn zipper_slides_at_its_speed_to_the_axis_extent_and_back() {
     let shift = v(9.0, 12.0, 0.0) * 1.0e-3;
     for (p, d0) in pts.iter().zip(&before) {
         let d1 = s.set.closest_point(0, 0.0, *p + shift).unwrap().distance;
-        assert!((d1 - d0).abs() < 2.0e-5, "bat not translated by the axis: {d0} vs {d1} at {p:?}");
+        assert!(
+            (d1 - d0).abs() < 2.0e-5,
+            "bat not translated by the axis: {d0} vs {d1} at {p:?}"
+        );
     }
     // Back when the command is off.
     s.set.set_zipper(ID, false);
@@ -69,7 +81,10 @@ fn zipper_slides_at_its_speed_to_the_axis_extent_and_back() {
         let o = s.set.base_offset_mm(ID);
         let ideal = (15.0 - 0.15 * k as f32).max(0.0);
         assert!(o <= prev + 1.0e-5 && o >= -1.0e-4, "tick {k}: {prev} → {o}");
-        assert!((o - ideal).abs() <= 0.15 + 1.0e-3, "return tick {k}: offset {o}, expected ≈ {ideal}");
+        assert!(
+            (o - ideal).abs() <= 0.15 + 1.0e-3,
+            "return tick {k}: offset {o}, expected ≈ {ideal}"
+        );
         prev = o;
     }
     assert!(prev.abs() < 1.0e-3);
@@ -124,7 +139,10 @@ fn zipper_slide_does_not_change_the_unloaded_stroke() {
         }
         sa.advance();
         sb.advance();
-        assert!((sa.set.angle_deg(ID) - sb.set.angle_deg(ID)).abs() < 1.0e-4, "tick {k}");
+        assert!(
+            (sa.set.angle_deg(ID) - sb.set.angle_deg(ID)).abs() < 1.0e-4,
+            "tick {k}"
+        );
     }
 }
 
@@ -154,7 +172,10 @@ fn run_thing(c: &FlipperConfig, edges: &[(u64, SwitchId, bool)], ticks: u64) -> 
             }
         }
         s.advance();
-        out.push((s.set.angle_deg(ID).to_bits(), s.set.angular_velocity(ID).to_bits()));
+        out.push((
+            s.set.angle_deg(ID).to_bits(),
+            s.set.angular_velocity(ID).to_bits(),
+        ));
     }
     out
 }
@@ -170,7 +191,10 @@ fn run_manual(windows: &[(u64, u64)], ticks: u64) -> Trace {
         let on = windows.iter().any(|&(a, b)| s.tick >= a && s.tick < b);
         s.set.set_energised(ID, on);
         s.advance();
-        out.push((s.set.angle_deg(ID).to_bits(), s.set.angular_velocity(ID).to_bits()));
+        out.push((
+            s.set.angle_deg(ID).to_bits(),
+            s.set.angular_velocity(ID).to_bits(),
+        ));
     }
     out
 }
@@ -188,7 +212,11 @@ fn thing_flip_fires_delay_after_the_trigger_and_holds_tick_exact() {
         let c = thing(d as f32, h as f32);
         let a = run_thing(&c, &[(t, TRIGGER, true)], 400);
         let b = run_manual(&[(t + d, t + d + h)], 400);
-        assert_eq!(first_diff(&a, &b), None, "trigger {t}, delay {d}, hold {h}: first differing tick");
+        assert_eq!(
+            first_diff(&a, &b),
+            None,
+            "trigger {t}, delay {d}, hold {h}: first differing tick"
+        );
         // And it did move.
         assert!(a.iter().any(|x| f32::from_bits(x.0) != c.rest_angle_deg));
     }
@@ -210,14 +238,30 @@ fn thing_flip_hold_is_timed_not_switch_driven() {
 fn thing_flip_ignores_other_switches_and_open_edges() {
     let c = thing(10.0, 30.0);
     let rest = run_manual(&[], 200);
-    let a = run_thing(&c, &[(5, SwitchId(501), true), (20, TRIGGER, false), (30, c.eos_switch, true)], 200);
+    let a = run_thing(
+        &c,
+        &[
+            (5, SwitchId(501), true),
+            (20, TRIGGER, false),
+            (30, c.eos_switch, true),
+        ],
+        200,
+    );
     assert_eq!(first_diff(&a, &rest), None);
 }
 
 #[test]
 fn thing_flip_fires_again_on_a_later_trigger() {
     let c = thing(10.0, 30.0);
-    let a = run_thing(&c, &[(5, TRIGGER, true), (6, TRIGGER, false), (300, TRIGGER, true)], 600);
+    let a = run_thing(
+        &c,
+        &[
+            (5, TRIGGER, true),
+            (6, TRIGGER, false),
+            (300, TRIGGER, true),
+        ],
+        600,
+    );
     let b = run_manual(&[(15, 45), (310, 340)], 600);
     assert_eq!(first_diff(&a, &b), None);
 }
@@ -225,7 +269,11 @@ fn thing_flip_fires_again_on_a_later_trigger() {
 #[test]
 fn thing_flip_is_deterministic() {
     let c = thing(17.0, 33.0);
-    let edges = [(12u64, TRIGGER, true), (13, TRIGGER, false), (150, TRIGGER, true)];
+    let edges = [
+        (12u64, TRIGGER, true),
+        (13, TRIGGER, false),
+        (150, TRIGGER, true),
+    ];
     let a = run_thing(&c, &edges, 400);
     for _ in 0..9 {
         assert_eq!(run_thing(&c, &edges, 400), a);

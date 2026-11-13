@@ -50,7 +50,10 @@ fn tunnel_case(
     let dist = (speed * 0.04).max(0.12);
     let arrive = (dist / speed / DT) as i64;
     let flip = (arrive + flip_offset_ms).max(0) as u64;
-    let h = s.solver.add_ball(ball(a + out * dist, -out * speed)).unwrap();
+    let h = s
+        .solver
+        .add_ball(ball(a + out * dist, -out * speed))
+        .unwrap();
     let mut prev: Option<f32> = None;
     let mut max_tip = 0.0f32;
     let mut hit = false;
@@ -73,16 +76,22 @@ fn tunnel_case(
             if r < R + TIP_R - 1.0e-3 {
                 return Err(format!(
                     "tick {}: ball centre {r} m from the bat axis at {along} m (bat ≥ {} m)",
-                    s.tick,
-                    TIP_R
+                    s.tick, TIP_R
                 ));
             }
         }
         let in_range = (0.1 * L..=0.7 * L).contains(&along) && normal.abs() < 0.01;
-        let now = if in_range { Some(across.signum()) } else { None };
+        let now = if in_range {
+            Some(across.signum())
+        } else {
+            None
+        };
         if let (Some(a0), Some(a1)) = (prev, now) {
             if a0 != a1 {
-                return Err(format!("tick {}: ball crossed the bat (along {along})", s.tick));
+                return Err(format!(
+                    "tick {}: ball crossed the bat (along {along})",
+                    s.tick
+                ));
             }
         }
         prev = now;
@@ -100,22 +109,41 @@ fn no_tunnelling_at_15_m_s_tip_speed_head_on() {
         for speed in [5.0f32, 15.0, 30.0, 50.0] {
             for off in [-12i64, -8, -4, -2, 0, 2] {
                 for frac in [0.5f32, 0.75, 0.85] {
-                    let r = tunnel_case(Vec3::Z, [0.0, 0.0, 0.0], 10.0, 50.0, power, speed, frac, 0.0, true, off);
+                    let r = tunnel_case(
+                        Vec3::Z,
+                        [0.0, 0.0, 0.0],
+                        10.0,
+                        50.0,
+                        power,
+                        speed,
+                        frac,
+                        0.0,
+                        true,
+                        off,
+                    );
                     match r {
                         Ok((tip, hit)) => {
                             fastest = fastest.max(tip);
                             cases += 1;
                             hits += u32::from(hit);
                         }
-                        Err(e) => panic!("power {power} speed {speed} offset {off} frac {frac}: {e}"),
+                        Err(e) => {
+                            panic!("power {power} speed {speed} offset {off} frac {frac}: {e}")
+                        }
                     }
                 }
             }
         }
     }
     println!("max bat tip (axis end) speed {fastest:.2} m/s; {hits}/{cases} cases hit the bat");
-    assert!(hits * 10 >= cases * 9, "scenario mostly misses the bat: {hits}/{cases}");
-    assert!(fastest >= 15.0, "scenario never reached a 15 m/s tip: {fastest}");
+    assert!(
+        hits * 10 >= cases * 9,
+        "scenario mostly misses the bat: {hits}/{cases}"
+    );
+    assert!(
+        fastest >= 15.0,
+        "scenario never reached a 15 m/s tip: {fastest}"
+    );
 }
 
 proptest! {
@@ -144,7 +172,15 @@ proptest! {
 
 /// Per-tick energy audit on the pitched table: ball + bat mechanical energy
 /// may rise by no more than the coil and spring work `(τ_power + τ_spring)·|Δθ|`.
-fn energy_case(speed: f32, frac: f32, beta_deg: f32, flip_off: i64, release_after: Option<u64>, damping: f32, restitution: f32) -> Result<(), String> {
+fn energy_case(
+    speed: f32,
+    frac: f32,
+    beta_deg: f32,
+    flip_off: i64,
+    release_after: Option<u64>,
+    damping: f32,
+    restitution: f32,
+) -> Result<(), String> {
     let base = [0.0, 0.0, PIVOT_Z_MM];
     let rest = rest_for(base, Vec3::Z, 50.0, flat_dir(-30.0));
     let mut c = config(0, base, Vec3::Z, rest, 50.0);
@@ -193,7 +229,11 @@ fn energy_case(speed: f32, frac: f32, beta_deg: f32, flip_off: i64, release_afte
         a_prev = a1;
     }
     if e_prev - e0 > work + 1.0e-3 {
-        return Err(format!("run: energy rose by {:.6} J, work bound {:.6} J", e_prev - e0, work));
+        return Err(format!(
+            "run: energy rose by {:.6} J, work bound {:.6} J",
+            e_prev - e0,
+            work
+        ));
     }
     Ok(())
 }
@@ -206,7 +246,11 @@ fn energy_unpowered_bat_never_gains() {
         for frac in [0.2f32, 0.5, 0.85] {
             for beta in [-30.0f32, 0.0, 30.0] {
                 let r = energy_case(speed, frac, beta, 100_000, None, 0.35, 0.65);
-                assert!(r.is_ok(), "speed {speed} frac {frac} beta {beta}: {}", r.unwrap_err());
+                assert!(
+                    r.is_ok(),
+                    "speed {speed} frac {frac} beta {beta}: {}",
+                    r.unwrap_err()
+                );
             }
         }
     }
@@ -243,11 +287,18 @@ fn rotated_run(rot: Quat, flip: u64, ticks: u64) -> Vec<(f32, Vec3, Vec3)> {
     let rest = rest_for(base, n, 50.0, rot * flat_dir(-30.0));
     let c = config(0, base, n, rest, 50.0);
     let f = frames(std::slice::from_ref(&c))[0];
-    let mut s = Scene::new(table_world(rot), table_gravity(rot), std::slice::from_ref(&c));
+    let mut s = Scene::new(
+        table_world(rot),
+        table_gravity(rot),
+        std::slice::from_ref(&c),
+    );
     // Same flat-frame ball start for every rotation.
     let fp = rot.inverse() * (f.pivot + f.e_rest * (0.5 * L));
     let start = v(fp.x, fp.y + 0.12, R);
-    let h = s.solver.add_ball(ball(rot * start, rot * v(0.0, -3.5, 0.0))).unwrap();
+    let h = s
+        .solver
+        .add_ball(ball(rot * start, rot * v(0.0, -3.5, 0.0)))
+        .unwrap();
     let inv = rot.inverse();
     let mut out = Vec::new();
     while s.tick < ticks {
@@ -256,7 +307,11 @@ fn rotated_run(rot: Quat, flip: u64, ticks: u64) -> Vec<(f32, Vec3, Vec3)> {
         }
         s.advance();
         let b = s.ball(h);
-        out.push((s.set.angle_deg(ID) - rest, inv * b.position, inv * b.velocity));
+        out.push((
+            s.set.angle_deg(ID) - rest,
+            inv * b.position,
+            inv * b.velocity,
+        ));
     }
     out
 }
@@ -290,7 +345,11 @@ fn tilted_mount_behaves_like_flat_rotated_fixed_cases() {
     for rot in cases {
         for flip in [10u64, 30, 33] {
             let r = compare_rotated(rot, flip);
-            assert!(r.is_ok(), "rotation {rot:?}, flip {flip}: {}", r.unwrap_err());
+            assert!(
+                r.is_ok(),
+                "rotation {rot:?}, flip {flip}: {}",
+                r.unwrap_err()
+            );
         }
     }
 }

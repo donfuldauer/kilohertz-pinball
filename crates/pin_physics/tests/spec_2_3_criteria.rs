@@ -31,14 +31,20 @@ fn left_flipper() -> (FlipperConfig, BatFrame) {
 }
 
 fn table(c: &FlipperConfig) -> Scene {
-    Scene::new(table_world(Quat::IDENTITY), table_gravity(Quat::IDENTITY), std::slice::from_ref(c))
+    Scene::new(
+        table_world(Quat::IDENTITY),
+        table_gravity(Quat::IDENTITY),
+        std::slice::from_ref(c),
+    )
 }
 
 /// A ball 200 mm up the table above the middle of the resting bat,
 /// travelling straight down the table at 3.5 m/s.
 fn incoming(s: &mut Scene, f: &BatFrame) -> BallHandle {
     let c = f.pivot + f.e_rest * (0.5 * L);
-    s.solver.add_ball(ball(v(c.x, c.y + 0.20, R), v(0.0, -3.5, 0.0))).unwrap()
+    s.solver
+        .add_ball(ball(v(c.x, c.y + 0.20, R), v(0.0, -3.5, 0.0)))
+        .unwrap()
 }
 
 const WINDOW: u64 = 400;
@@ -62,7 +68,9 @@ fn rebound(c: &FlipperConfig, f: &BatFrame, flip: Option<u64>, release: Option<u
 fn v1_timing_sweep_is_continuous_with_a_deep_minimum() {
     let (c, f) = left_flipper();
     let rest_shot = rebound(&c, &f, None, None);
-    let t0 = rest_shot.impact_tick.expect("ball never reached the resting bat");
+    let t0 = rest_shot
+        .impact_tick
+        .expect("ball never reached the resting bat");
     assert!(t0 >= 30, "impact too early for a −20 ms flip: {t0}");
     let held = rebound(&c, &f, Some(0), None);
     assert!(held.impact_tick.is_some(), "ball missed the held bat");
@@ -73,7 +81,10 @@ fn v1_timing_sweep_is_continuous_with_a_deep_minimum() {
         assert!(s.impact_tick.is_some(), "offset {k}: no impact");
         curve.push((k, s.speed, s.caught));
     }
-    println!("rest-bat rebound {:.3} m/s (impact tick {t0}); held-bat rebound {:.3} m/s", rest_shot.speed, held.speed);
+    println!(
+        "rest-bat rebound {:.3} m/s (impact tick {t0}); held-bat rebound {:.3} m/s",
+        rest_shot.speed, held.speed
+    );
     println!("offset_ms rebound_m_s caught");
     for (k, sp, caught) in &curve {
         println!("{k:>4} {sp:.3} {caught}");
@@ -109,7 +120,10 @@ fn v2_drop_catch_rebounds_lower_than_a_held_flipper() {
     println!("held rebound {:.3} m/s, impact tick {th}", held.speed);
     for k in [2u64, 3, 5, 8, 10] {
         let s = rebound(&c, &f, Some(0), Some(th - k));
-        println!("release {k} ms before impact: rebound {:.3} m/s (caught {})", s.speed, s.caught);
+        println!(
+            "release {k} ms before impact: rebound {:.3} m/s (caught {})",
+            s.speed, s.caught
+        );
         assert!(s.impact_tick.is_some(), "release {k} ms before: no impact");
         if k >= 5 {
             assert!(
@@ -153,7 +167,11 @@ fn v3_shot_spread_release_angle_is_monotone_in_contact_point() {
         let s = shot_from(frac);
         assert!(!s.caught && s.impact_tick.is_some(), "frac {frac}: {s:?}");
         let ang = libm::atan2f(s.velocity.y, s.velocity.x).to_degrees();
-        println!("contact {:.0} %: release angle {ang:.2}°, speed {:.3} m/s", frac * 100.0, s.speed);
+        println!(
+            "contact {:.0} %: release angle {ang:.2}°, speed {:.3} m/s",
+            frac * 100.0,
+            s.speed
+        );
         angles.push(ang);
     }
     let inc = angles[0] < angles[1] && angles[1] < angles[2];
@@ -164,7 +182,9 @@ fn v3_shot_spread_release_angle_is_monotone_in_contact_point() {
 #[test]
 fn feel_unloaded_stroke_time_rest_to_eos_is_20_to_35_ms() {
     let (c, _) = left_flipper();
-    let w = pin_core::PhysicsDefaults::builtin().feel_windows.flipper_stroke_time_ms;
+    let w = pin_core::PhysicsDefaults::builtin()
+        .feel_windows
+        .flipper_stroke_time_ms;
     let mut s = Scene::new(empty_world(), Vec3::ZERO, std::slice::from_ref(&c));
     s.advance();
     let eos0 = s.set.eos_closed(LEFT);
@@ -180,18 +200,31 @@ fn feel_unloaded_stroke_time_rest_to_eos_is_20_to_35_ms() {
             by_switch = Some(k);
         }
     }
-    println!("stroke rest→EOS: angle {by_angle:?} ms, switch {by_switch:?} ms (window {}–{})", w.min, w.max);
+    println!(
+        "stroke rest→EOS: angle {by_angle:?} ms, switch {by_switch:?} ms (window {}–{})",
+        w.min, w.max
+    );
     let t = by_angle.expect("never reached EOS") as f32;
-    assert!(t >= w.min && t <= w.max, "stroke time {t} ms outside {}–{} ms", w.min, w.max);
+    assert!(
+        t >= w.min && t <= w.max,
+        "stroke time {t} ms outside {}–{} ms",
+        w.min,
+        w.max
+    );
     let ts = by_switch.expect("EOS switch never changed") as f32;
-    assert!((ts - t).abs() <= 1.0, "EOS switch at {ts} ms, angle at {t} ms");
+    assert!(
+        (ts - t).abs() <= 1.0,
+        "EOS switch at {ts} ms, angle at {t} ms"
+    );
 }
 
 #[test]
 fn feel_full_shot_exit_speed_report() {
     // Report (Gate A1 tunes later): ball at rest on the lowered bat (where a
     // cradled ball lands when the cradle is released), full stroke.
-    let w = pin_core::PhysicsDefaults::builtin().feel_windows.flipper_exit_speed_m_s;
+    let w = pin_core::PhysicsDefaults::builtin()
+        .feel_windows
+        .flipper_exit_speed_m_s;
     for frac in [0.25f32, 0.35, 0.5, 0.7, 0.85] {
         let s = shot_from(frac);
         let inside = s.speed >= w.min && s.speed <= w.max;
@@ -204,7 +237,11 @@ fn feel_full_shot_exit_speed_report() {
             if inside { "inside" } else { "OUTSIDE" }
         );
         assert!(!s.caught, "frac {frac}: ball not launched");
-        assert!(s.speed > 1.0 && s.speed < 20.0, "frac {frac}: implausible exit speed {}", s.speed);
+        assert!(
+            s.speed > 1.0 && s.speed < 20.0,
+            "frac {frac}: implausible exit speed {}",
+            s.speed
+        );
     }
 }
 
@@ -217,8 +254,12 @@ fn passage(set: &pin_physics::flipper::FlipperSet, z: f32) -> (f32, f32) {
     for k in 0..2000 {
         let y = -0.15 + k as f32 * 1.5e-4;
         let p = v(0.0, y, z);
-        let d0 = set.closest_point(0, 0.0, p).map_or(f32::INFINITY, |b| b.distance);
-        let d1 = set.closest_point(1, 0.0, p).map_or(f32::INFINITY, |b| b.distance);
+        let d0 = set
+            .closest_point(0, 0.0, p)
+            .map_or(f32::INFINITY, |b| b.distance);
+        let d1 = set
+            .closest_point(1, 0.0, p)
+            .map_or(f32::INFINITY, |b| b.distance);
         let w = d0 + d1;
         if w < best.0 {
             best = (w, y);
@@ -231,8 +272,20 @@ fn zipper_pair(half_gap_offset_mm: f32) -> [FlipperConfig; 2] {
     let x = 96.32 + half_gap_offset_mm;
     let lb = [-x, 0.0, PIVOT_Z_MM];
     let rb = [x, 0.0, PIVOT_Z_MM];
-    let mut l = config(0, lb, Vec3::Z, rest_for(lb, Vec3::Z, 50.0, flat_dir(-30.0)), 50.0);
-    let mut r = config(1, rb, Vec3::Z, rest_for(rb, Vec3::Z, -50.0, flat_dir(210.0)), -50.0);
+    let mut l = config(
+        0,
+        lb,
+        Vec3::Z,
+        rest_for(lb, Vec3::Z, 50.0, flat_dir(-30.0)),
+        50.0,
+    );
+    let mut r = config(
+        1,
+        rb,
+        Vec3::Z,
+        rest_for(rb, Vec3::Z, -50.0, flat_dir(210.0)),
+        -50.0,
+    );
     l.zipper_slide_axis_mm = Some([12.0, 0.0, 0.0]);
     r.zipper_slide_axis_mm = Some([-12.0, 0.0, 0.0]);
     l.zipper_slide_speed_mm_s = 200.0;
@@ -260,7 +313,11 @@ fn v4_zipper_closes_a_48_mm_tip_gap_to_a_27_mm_ball() {
     println!("tip gap {:.2} mm at y = {:.1} mm", gap * 1e3, gy * 1e3);
 
     for zip in [false, true] {
-        let mut s = Scene::new(table_world(Quat::IDENTITY), table_gravity(Quat::IDENTITY), &cfgs);
+        let mut s = Scene::new(
+            table_world(Quat::IDENTITY),
+            table_gravity(Quat::IDENTITY),
+            &cfgs,
+        );
         if zip {
             s.set.set_zipper(FlipperId(0), true);
             s.set.set_zipper(FlipperId(1), true);
@@ -270,24 +327,45 @@ fn v4_zipper_closes_a_48_mm_tip_gap_to_a_27_mm_ball() {
         }
         if zip {
             for id in [FlipperId(0), FlipperId(1)] {
-                assert!((s.set.base_offset_mm(id) - 12.0).abs() < 1.0e-3, "slide {}", s.set.base_offset_mm(id));
+                assert!(
+                    (s.set.base_offset_mm(id) - 12.0).abs() < 1.0e-3,
+                    "slide {}",
+                    s.set.base_offset_mm(id)
+                );
             }
             let (g, _) = passage(&s.set, fr[0].pivot.z);
             assert!((g - 0.024).abs() < 5.0e-4, "zipped gap {g}");
         }
-        let h = s.solver.add_ball(ball(v(0.0, gy + 0.12, R), v(0.0, -0.5, 0.0))).unwrap();
+        let h = s
+            .solver
+            .add_ball(ball(v(0.0, gy + 0.12, R), v(0.0, -0.5, 0.0)))
+            .unwrap();
         let mut lowest = f32::INFINITY;
         for _ in 0..1500 {
             s.advance();
             lowest = lowest.min(s.ball(h).position.y);
         }
         let b = s.ball(h);
-        println!("zip {zip}: lowest ball y {:.1} mm, final speed {:.4}", lowest * 1e3, b.velocity.length());
+        println!(
+            "zip {zip}: lowest ball y {:.1} mm, final speed {:.4}",
+            lowest * 1e3,
+            b.velocity.length()
+        );
         if zip {
-            assert!(lowest > gy, "27 mm ball passed a zipped gap (lowest y {lowest}, gap at {gy})");
-            assert!(b.velocity.length() < 0.05, "ball not held by the zipped flippers: {:?}", b.velocity);
+            assert!(
+                lowest > gy,
+                "27 mm ball passed a zipped gap (lowest y {lowest}, gap at {gy})"
+            );
+            assert!(
+                b.velocity.length() < 0.05,
+                "ball not held by the zipped flippers: {:?}",
+                b.velocity
+            );
         } else {
-            assert!(lowest < gy - 0.05, "27 mm ball did not pass the open 48 mm gap (lowest {lowest})");
+            assert!(
+                lowest < gy - 0.05,
+                "27 mm ball did not pass the open 48 mm gap (lowest {lowest})"
+            );
         }
     }
 }

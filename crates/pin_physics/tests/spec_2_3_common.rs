@@ -45,7 +45,13 @@ pub fn v(x: f32, y: f32, z: f32) -> Vec3 {
 
 /// A flipper config with the Appendix C defaults and a 76 mm capsule
 /// (base radius 11 mm, tip 6.5 mm), EOS at 0.92 of the sweep.
-pub fn config(id: u16, base_mm: [f32; 3], normal: Vec3, rest_deg: f32, sweep_deg: f32) -> FlipperConfig {
+pub fn config(
+    id: u16,
+    base_mm: [f32; 3],
+    normal: Vec3,
+    rest_deg: f32,
+    sweep_deg: f32,
+) -> FlipperConfig {
     // Appendix C defaults resolved from `physics_defaults.toml`.
     let p = PhysicsDefaults::builtin().resolve(None);
     FlipperConfig {

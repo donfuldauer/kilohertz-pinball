@@ -178,3 +178,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 5.1 | Reviewer | Fable 5.2 | 1 | running | — | |
 | 4 | 2.2-S | Implementer | Opus 5.5 | fix 1 | done | 334 tests (excl. 2.7 in-progress spec); digests unchanged; 0 allocs; ball/ coverage 96.9–99.5 % | B1 direction-of-delta inverse mass + divergence guard; B2 owner obligation 3 (speculative stops); N1 early-out (pinch 5.6 → 0.9 ms worst); docs N2–N7 |
 | 4 | 2.2-S | Reviewer | Fable 5.2 | 2 | running | — | |
+| 4 | 2.7 | Reviewer | Fable 5.2 | 1 | **pass** | gates pass (clippy clean on 2.7 targets; full-crate red only from 2.3 WIP); 19 own + 46 spec tests; pin_physics 88.17 % (ball_ext 100 %); 10-run probe bit-identical | rulings: exact-rotation Magnus, residual pull with coil on, magnetisation law, Arc<AtomicU32> read-back all accepted; N1 overlapping-magnet τ tie, N3 double registration, N4/N5 wording → polish round; N2 → HUMAN_QUEUE |
+| 4 | 2.7 | Implementer | Opus 5.5 | polish | running | — | |
