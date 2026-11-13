@@ -45,7 +45,11 @@ fn report_step_time_two_rotors_four_balls() {
         let (mean, median, p99) = stats(samples);
         println!(
             "{} bodies, 4 balls: mean {mean:.2} µs, median {median:.2} µs, p99 {p99:.2} µs per step",
-            if with_bodies { "2 rotors + kicker" } else { "no" }
+            if with_bodies {
+                "2 rotors + kicker"
+            } else {
+                "no"
+            }
         );
     }
 }

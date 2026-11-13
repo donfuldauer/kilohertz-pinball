@@ -1809,7 +1809,10 @@ impl BallSolver {
             }
             StaticEvent::Guide(_, None) | StaticEvent::Body(_, _, None) => {}
             StaticEvent::Body(si, b, Some((point, normal))) => {
-                let material = bodies.sets.get(si).map_or(Material::Steel, |s| s.material(b));
+                let material = bodies
+                    .sets
+                    .get(si)
+                    .map_or(Material::Steel, |s| s.material(b));
                 let target = ImpactTarget::Body { set: si, body: b };
                 applied = self.surface_event(
                     i, normal, point, target, material, sc, lists, bodies, events,

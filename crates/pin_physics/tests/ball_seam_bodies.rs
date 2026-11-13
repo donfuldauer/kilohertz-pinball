@@ -128,7 +128,9 @@ fn plate_hits_a_ball_at_rest_with_two_body_restitution() {
         v(0.002, 0.1, 0.1),
         v(5.0, 0.0, 0.0),
     ));
-    let h = s.add_ball(ball_at(STEEL, v(0.0, 0.0, 0.0), Vec3::ZERO)).unwrap();
+    let h = s
+        .add_ball(ball_at(STEEL, v(0.0, 0.0, 0.0), Vec3::ZERO))
+        .unwrap();
     let mut ev = BallEvents::new();
     for _ in 0..30 {
         s.step_with_bodies(&geo, &mut [&mut plate], DT, &mut ev);
@@ -164,9 +166,14 @@ fn rotor_sweep(profile: ProfileId, tip: f32, rho: f32, vb: f32) -> Option<usize>
         let b = &set.bodies[0];
         RotorBody::direction(b.angle).cross(p - b.pivot).z
     };
-    let inside = |set: &Rotors, p: Vec3| (p - set.bodies[0].pivot).length() < set.bodies[0].reach() + r;
+    let inside =
+        |set: &Rotors, p: Vec3| (p - set.bodies[0].pivot).length() < set.bodies[0].reach() + r;
     assert!(side(&set, s.ball(h).unwrap().position) > 0.0);
-    if set.bodies[0].closest(0.0, s.ball(h).unwrap().position).distance <= r {
+    if set.bodies[0]
+        .closest(0.0, s.ball(h).unwrap().position)
+        .distance
+        <= r
+    {
         return None;
     }
     for _ in 0..300 {
@@ -297,7 +304,10 @@ fn free_ball_on_free_pivot_rod_matches_analytic() {
             (vy - evy).abs() <= 0.005 * f64speed,
             "{profile:?}: vy {vy} expected {evy}"
         );
-        assert!((w - ew).abs() <= 0.005 * ew.abs(), "{profile:?}: ω {w} expected {ew}");
+        assert!(
+            (w - ew).abs() <= 0.005 * ew.abs(),
+            "{profile:?}: ω {w} expected {ew}"
+        );
         assert!((l1 - l0).abs() <= 0.005 * l0.abs(), "L {l0} → {l1}");
     }
 }
@@ -372,7 +382,11 @@ fn ball_rests_stably_on_a_static_registered_body() {
             s.step_with_bodies(&geo, &mut [&mut floor], DT, &mut ev);
             assert_eq!(body_impacts(&ev, 0), 0, "{p:?} bounced");
             let b = s.ball(h).unwrap();
-            assert!((b.position.z - r).abs() < 2.0e-5, "{p:?} z {}", b.position.z);
+            assert!(
+                (b.position.z - r).abs() < 2.0e-5,
+                "{p:?} z {}",
+                b.position.z
+            );
         }
         let end = *s.ball(h).unwrap();
         assert!(end.velocity.z.abs() < 1.0e-4, "{p:?} {:?}", end.velocity);
@@ -440,7 +454,10 @@ fn ball_rolls_down_a_held_bat_and_stays_cradled() {
     assert!(min_gap > -2.0e-4, "ball sank into the bat by {min_gap}");
     let first = along[0];
     for p in &along {
-        assert!((*p - first).length() < 1.0e-3, "not cradled: {first:?} → {p:?}");
+        assert!(
+            (*p - first).length() < 1.0e-3,
+            "not cradled: {first:?} → {p:?}"
+        );
     }
     assert!((b.position.z - r).abs() < 1.0e-4);
     // The bat is still held near its stop.
@@ -574,14 +591,20 @@ fn call_order_contract() {
         let log = rec.log.borrow();
         assert_eq!(log.first(), Some(&Call::Begin(DT)));
         assert_eq!(log.last(), Some(&Call::End(DT)));
-        assert_eq!(log.iter().filter(|c| matches!(c, Call::Begin(_))).count(), 1);
+        assert_eq!(
+            log.iter().filter(|c| matches!(c, Call::Begin(_))).count(),
+            1
+        );
         assert_eq!(log.iter().filter(|c| matches!(c, Call::End(_))).count(), 1);
         let mut last_impulse = 0.0f32;
         for c in &log[1..log.len() - 1] {
             match *c {
                 Call::Query(t) => {
                     assert!((0.0..=DT).contains(&t), "query at {t}");
-                    assert!(t >= last_impulse, "query at {t} after impulse at {last_impulse}");
+                    assert!(
+                        t >= last_impulse,
+                        "query at {t} after impulse at {last_impulse}"
+                    );
                 }
                 Call::Impulse(t) => {
                     assert!((0.0..=DT).contains(&t));
@@ -611,15 +634,21 @@ fn impact_target_names_set_and_body_and_layers_filter() {
     let geo = Geometry::new(&world);
     let mut s = solver_no_gravity();
     let mut a = Slab::default();
-    a.bodies
-        .push(SlabBody::new(v(0.0, 1.0, 0.0), v(0.01, 0.01, 0.01), Vec3::ZERO));
+    a.bodies.push(SlabBody::new(
+        v(0.0, 1.0, 0.0),
+        v(0.01, 0.01, 0.01),
+        Vec3::ZERO,
+    ));
     let mut b = Slab::default();
     // Body 0 of set 1 is on layer 1 only: the ball (layer 0) passes it.
     let mut ghost = SlabBody::new(v(-0.05, 0.0, 0.0), v(0.002, 0.2, 0.2), Vec3::ZERO);
     ghost.layer_mask = layers::layer_bit(1);
     b.bodies.push(ghost);
-    b.bodies
-        .push(SlabBody::new(v(-0.1, 0.0, 0.0), v(0.002, 0.2, 0.2), Vec3::ZERO));
+    b.bodies.push(SlabBody::new(
+        v(-0.1, 0.0, 0.0),
+        v(0.002, 0.2, 0.2),
+        Vec3::ZERO,
+    ));
     let h = s
         .add_ball(ball_at(STEEL, Vec3::ZERO, v(-2.0, 0.0, 0.0)))
         .unwrap();
@@ -630,7 +659,9 @@ fn impact_target_names_set_and_body_and_layers_filter() {
         s.step_with_bodies(&geo, &mut [&mut a, &mut b], DT, &mut ev);
         for e in ev.as_slice() {
             if let BallEvent::Impact {
-                other, normal_speed, ..
+                other,
+                normal_speed,
+                ..
             } = e
             {
                 seen.push((*other, *normal_speed));
@@ -658,7 +689,9 @@ fn moving_body_surface_velocity_drags_a_resting_ball() {
     ));
     let mut s = solver();
     let r = radius(STEEL);
-    let h = s.add_ball(ball_at(STEEL, v(0.0, 0.0, r), Vec3::ZERO)).unwrap();
+    let h = s
+        .add_ball(ball_at(STEEL, v(0.0, 0.0, r), Vec3::ZERO))
+        .unwrap();
     let mut ev = BallEvents::new();
     for _ in 0..500 {
         s.step_with_bodies(&geo, &mut [&mut belt], DT, &mut ev);
@@ -673,8 +706,14 @@ fn moving_body_surface_velocity_drags_a_resting_ball() {
 fn conservative_cast_edge_cases() {
     let set = Slab::one(SlabBody::new(Vec3::ZERO, v(0.01, 0.01, 0.01), Vec3::ZERO));
     // No window, nothing moving, touching at rest: no hit.
-    assert_eq!(conservative_cast(&set, 0, 0.0, v(0.1, 0.0, 0.0), 0.01, Vec3::ZERO, 0.0), None);
-    assert_eq!(conservative_cast(&set, 0, 0.0, v(0.1, 0.0, 0.0), 0.01, Vec3::ZERO, 1.0), None);
+    assert_eq!(
+        conservative_cast(&set, 0, 0.0, v(0.1, 0.0, 0.0), 0.01, Vec3::ZERO, 0.0),
+        None
+    );
+    assert_eq!(
+        conservative_cast(&set, 0, 0.0, v(0.1, 0.0, 0.0), 0.01, Vec3::ZERO, 1.0),
+        None
+    );
     assert_eq!(
         conservative_cast(&set, 0, 0.0, v(0.02, 0.0, 0.0), 0.01, Vec3::X, 1.0),
         None
@@ -694,13 +733,29 @@ fn conservative_cast_edge_cases() {
     );
     // Sliding along a face just outside the skin: no progress toward a
     // contact, so it gives up after the iteration budget with an Advance.
-    match conservative_cast(&set, 0, 0.0, v(-0.005, 0.02 + 2e-5, 0.0), 0.01, Vec3::X, 1.0) {
+    match conservative_cast(
+        &set,
+        0,
+        0.0,
+        v(-0.005, 0.02 + 2e-5, 0.0),
+        0.01,
+        Vec3::X,
+        1.0,
+    ) {
         Some(BodyCast::Advance { time }) => assert!(time > 1e-4 && time < 2e-3, "{time}"),
         other => panic!("{other:?}"),
     }
     // Inside the skin, sliding (not closing in): a resting contact.
     assert_eq!(
-        conservative_cast(&set, 0, 0.0, v(-0.005, 0.02 + 5e-6, 0.0), 0.01, Vec3::X, 1.0),
+        conservative_cast(
+            &set,
+            0,
+            0.0,
+            v(-0.005, 0.02 + 5e-6, 0.0),
+            0.01,
+            Vec3::X,
+            1.0
+        ),
         None
     );
     // Grazing past a corner: the sphere does reach the edge while closing
@@ -711,7 +766,15 @@ fn conservative_cast_edge_cases() {
     ));
     // Non-finite input.
     assert_eq!(
-        conservative_cast(&set, 0, 0.0, v(0.1, 0.0, 0.0), 0.01, v(f32::NAN, 0.0, 0.0), 1.0),
+        conservative_cast(
+            &set,
+            0,
+            0.0,
+            v(0.1, 0.0, 0.0),
+            0.01,
+            v(f32::NAN, 0.0, 0.0),
+            1.0
+        ),
         None
     );
 }
@@ -737,8 +800,8 @@ fn table_run() -> (u64, Vec<u32>, usize) {
             } = e
             {
                 hash = (hash ^ u64::from(ball.0)).wrapping_mul(0x0000_0100_0000_01b3);
-                hash = (hash ^ u64::from(normal_speed.to_bits()))
-                    .wrapping_mul(0x0000_0100_0000_01b3);
+                hash =
+                    (hash ^ u64::from(normal_speed.to_bits())).wrapping_mul(0x0000_0100_0000_01b3);
             }
         }
     }

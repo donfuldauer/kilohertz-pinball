@@ -144,3 +144,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 4.6 | Reviewer | Fable 5.2 | 1 | running | — | |
 | 4 | 4.3 | Implementer | Opus 5.5 | 1 | done | clippy clean (pin_tablegen + pin_assets); coverage pin_tablegen 95.7 %, pin_assets 96.2 % | D1 fixed (0.1 mm minimum size, zone check); 4.1-H follow-ups (a)–(c) done; generated guides have no wall height (SplineDef) → 6.0 |
 | 4 | 4.3 | Reviewer | Fable 5.2 | 1 | running | — | |
+| 4 | 3.4 | Implementer | Opus 5.5 | 1 | done | fmt/clippy clean; 84 spec + own tests pass; coverage pin_input 99.26 %, pin_audio 98.69 %, pin_core 99.46 % | CR-003 pin_core::haptics (additive); SDL3 build headers installed in the container; run-time wiring → 6.0 |
+| 4 | 3.4 | Reviewer | Fable 5.2 | 1 | running | — | |

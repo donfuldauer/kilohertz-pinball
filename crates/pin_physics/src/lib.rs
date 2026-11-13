@@ -5,6 +5,12 @@
 //! static collision world, spline colliders and layer transitions; [`ball`]
 //! (Subphase 2.2) is the ball solver: CCD, spin, friction, magnets, sensors,
 //! captive Newton balls and dispensers.
+//!
+//! Seams (Subphase 2.2-S): moving rigid bodies (flippers, kickers, plunger
+//! tip, spinner flaps) implement [`ball::MovingBodies`] and are lent to
+//! [`ball::BallSolver::step_with_bodies`] (contract in [`ball::body`]);
+//! force hooks (Magnus, remanence) implement [`ball::ExternalForce`] and see
+//! the magnets and sub-step time through [`ball::ForceContext`].
 
 pub mod ball;
 pub mod ball_ext;

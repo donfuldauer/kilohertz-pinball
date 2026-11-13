@@ -363,8 +363,7 @@ impl FlipperTable {
         let pitch = 6.5f32.to_radians();
         let mut cfg = BallSolverConfig::from_defaults(&PhysicsDefaults::builtin());
         cfg.gravity = Vec3::new(0.0, -9.81 * libm::sinf(pitch), -9.81 * libm::cosf(pitch));
-        let profiles: Vec<pin_core::BallProfile> =
-            pin_core::profiles::builtin_profiles().collect();
+        let profiles: Vec<pin_core::BallProfile> = pin_core::profiles::builtin_profiles().collect();
         let mut solver = BallSolver::new(cfg, &profiles);
 
         let cuboid = |c: Vec3, h: Vec3| StaticShape::Cuboid {
@@ -417,7 +416,11 @@ impl FlipperTable {
         let kicker = Slab::one(kicker);
 
         let starts = [
-            (0usize, Vec3::new(-0.05, 0.3, 0.0), Vec3::new(-0.6, -0.4, 0.0)),
+            (
+                0usize,
+                Vec3::new(-0.05, 0.3, 0.0),
+                Vec3::new(-0.6, -0.4, 0.0),
+            ),
             (2, Vec3::new(0.1, 0.4, 0.0), Vec3::new(0.3, -1.0, 0.0)),
             (3, Vec3::new(-0.15, 0.0, 0.0), Vec3::new(0.2, 0.5, 0.0)),
             (5, Vec3::new(0.15, 0.1, 0.0), Vec3::new(-0.8, 0.0, 0.0)),

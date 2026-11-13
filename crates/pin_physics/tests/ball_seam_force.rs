@@ -102,7 +102,10 @@ fn context_shows_magnets_and_sub_step_time() {
     s.set_magnet_remanence_tau(id, -1.0); // ignored
     s.set_magnet_remanence_tau(MagnetId(9), 1.0); // unknown: ignored
     assert_eq!(s.magnets()[0].remanence_tau_s, 0.025);
-    assert_eq!(s.magnets()[1].remanence_tau_s, s.config().magnet_remanence_tau_s);
+    assert_eq!(
+        s.magnets()[1].remanence_tau_s,
+        s.config().magnet_remanence_tau_s
+    );
     s.add_external_force(Box::new(Probe(log.clone())));
     let r = radius(STEEL);
     // One fast ball (several sub-steps), one in the magnet's range.
@@ -139,7 +142,11 @@ fn context_shows_magnets_and_sub_step_time() {
                 .iter()
                 .filter(|e| e.step_index == step && e.handle == h)
                 .collect();
-            assert_eq!(calls.len() as u32, calls[0].substeps, "step {step} ball {h}");
+            assert_eq!(
+                calls.len() as u32,
+                calls[0].substeps,
+                "step {step} ball {h}"
+            );
             for (k, c) in calls.iter().enumerate() {
                 assert_eq!(c.substep, k as u32);
             }
@@ -192,7 +199,9 @@ fn hooks_follow_ball_lifetimes() {
     let geo = Geometry::new(&world);
     let mut s = solver();
     let r = radius(STEEL);
-    let a = s.add_ball(ball_at(STEEL, v(0.0, 0.0, r), Vec3::ZERO)).unwrap();
+    let a = s
+        .add_ball(ball_at(STEEL, v(0.0, 0.0, r), Vec3::ZERO))
+        .unwrap();
     let b = s
         .add_ball(ball_at(STEEL, v(0.1, 0.0, r), Vec3::ZERO))
         .unwrap();
@@ -297,7 +306,10 @@ fn remanence_prototype_lingers_and_zero_remanence_is_bit_identical() {
         (zero_state.velocity, base.velocity),
         (zero_state.angular_velocity, base.angular_velocity),
     ] {
-        assert_eq!(x.to_array().map(f32::to_bits), y.to_array().map(f32::to_bits));
+        assert_eq!(
+            x.to_array().map(f32::to_bits),
+            y.to_array().map(f32::to_bits)
+        );
     }
     // With remanence the ball leaves measurably later.
     assert!(lingering < free - 1.0e-3, "{lingering} vs {free}");
