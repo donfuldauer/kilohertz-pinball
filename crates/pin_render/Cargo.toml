@@ -18,9 +18,15 @@ arrayvec.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 bytemuck.workspace = true
+# Lamp warm-up curves (5.1): platform-independent exp.
+libm.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# WGSL validation and SPIR-V / MSL / HLSL translation of the PBR shaders (5.1).
+naga.workspace = true
+# PNG regression snapshots of the PBR golden images (5.1).
+image.workspace = true
 # Real windows for the surface smoke test (tests/gpu_window.rs).
 sdl3.workspace = true
 

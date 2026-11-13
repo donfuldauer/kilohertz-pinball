@@ -64,6 +64,9 @@ crc32fast = "=1.5.5"
 wat = "=1.263.0"           # 4.5: WAT → binary before the module pre-scan (same version wasmtime resolves)
 ogg = "=0.8.0"            # 3.3: packet reader for the vendored lewton
 
+# Wave 4 additions (5.1)
+naga = { version = "=30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }  # 5.1: the version wgpu 30.0.1 uses; shader validation tests
+
 [profile.dev]
 # Keep the 1 kHz solver usable in debug test runs.
 opt-level = 1

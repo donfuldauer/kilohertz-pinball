@@ -200,6 +200,8 @@ struct Slot {
     dirty: bool,
     /// The last (re)configuration failed; retried before the next draw.
     needs_configure: bool,
+    /// Failed configurations of this surface (shared with its presenter).
+    configure_log: Arc<ConfigureLog>,
     present: Present,
     /// Renderers for this slot's format (lines, PiP outlines).
     lines: DebugRenderer,
@@ -219,28 +221,73 @@ pub struct SurfaceSet {
     gpu_lock: Arc<Mutex<()>>,
 }
 
+/// Failed (re)configurations of one surface (1.4 review N-a): every failed
+/// [`try_configure`] call is counted; the first error is logged once.
+pub(crate) struct ConfigureLog {
+    /// Label for the log line (window index and role).
+    label: String,
+    failures: AtomicU64,
+    logged: AtomicBool,
+}
+
+impl ConfigureLog {
+    pub(crate) fn new(window: usize, role: SurfaceRole) -> Arc<Self> {
+        Arc::new(Self {
+            label: format!("window {window} ({role:?})"),
+            failures: AtomicU64::new(0),
+            logged: AtomicBool::new(false),
+        })
+    }
+
+    /// Counts a failed configuration and logs `error` if it is the first.
+    pub(crate) fn record(&self, error: &dyn std::fmt::Display) {
+        self.failures.fetch_add(1, Ordering::AcqRel);
+        if !self.logged.swap(true, Ordering::AcqRel) {
+            eprintln!(
+                "pin_render: surface configuration failed for {} (retried before each draw; logged once): {error}",
+                self.label
+            );
+        }
+    }
+
+    /// Failed configurations so far.
+    pub(crate) fn failures(&self) -> u64 {
+        self.failures.load(Ordering::Acquire)
+    }
+}
+
+/// Longest wait for the device to go idle between configuration attempts.
+const CONFIGURE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Configures `surface`, serialised with submissions by `gpu_lock`.
 ///
 /// `Surface::configure` first waits for the device to go idle and reports a
 /// validation error when the queue is not empty afterwards (it can be, e.g.
 /// with a presenter thread presenting on the same device). That error is
 /// captured with an error scope instead of reaching the default handler
-/// (which panics); the call is retried a few times after waiting for the
-/// device. Returns `false` if it still failed — the caller retries later.
+/// (which panics); the call is retried a few times after a bounded wait for
+/// the device. Returns `false` if it still failed — the caller retries later;
+/// the failure is counted in `log` and its error logged once per surface.
 pub(crate) fn try_configure(
     device: &wgpu::Device,
     surface: &wgpu::Surface<'_>,
     config: &wgpu::SurfaceConfiguration,
     gpu_lock: &Mutex<()>,
+    log: &ConfigureLog,
 ) -> bool {
     let _g = lock(gpu_lock);
+    let mut last = None;
     for _ in 0..CONFIGURE_ATTEMPTS {
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         surface.configure(device, config);
-        if pollster::block_on(scope.pop()).is_none() {
-            return true;
+        match pollster::block_on(scope.pop()) {
+            None => return true,
+            Some(e) => last = Some(e),
         }
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = super::wait_for_device(device, CONFIGURE_WAIT_TIMEOUT);
+    }
+    if let Some(e) = last {
+        log.record(&e);
     }
     false
 }
@@ -327,7 +374,8 @@ impl SurfaceSet {
                 choice = PresentChoice::PresenterThread(wgpu::PresentMode::Fifo);
             }
             let config = surface_config(format, &caps, src.pixel_size, choice.mode());
-            if !try_configure(&device, &src.surface, &config, &gpu_lock) {
+            let configure_log = ConfigureLog::new(src.window, role);
+            if !try_configure(&device, &src.surface, &config, &gpu_lock, &configure_log) {
                 return Err(GpuError::Surface(format!(
                     "window {} ({role:?}): surface configuration failed",
                     src.window
@@ -349,6 +397,7 @@ impl SurfaceSet {
                         config,
                         src.window,
                         Arc::clone(&gpu_lock),
+                        Arc::clone(&configure_log),
                     )?),
                     wgpu::TextureFormat::Rgba8Unorm,
                 ),
@@ -364,6 +413,7 @@ impl SurfaceSet {
                 minimized: false,
                 dirty: true,
                 needs_configure: false,
+                configure_log,
                 present,
                 lines: DebugRenderer::new(&device, draw_format),
                 overlay: DebugRenderer::new(&device, draw_format),
@@ -414,6 +464,22 @@ impl SurfaceSet {
             .sum()
     }
 
+    /// Failed surface (re)configurations so far, over all surfaces
+    /// (including presenter threads). A surface that cannot be configured is
+    /// retried before each draw; each failed attempt is counted here and the
+    /// first error of each surface is logged once (to stderr).
+    pub fn configure_failures(&self) -> u64 {
+        self.slots.iter().map(|s| s.configure_log.failures()).sum()
+    }
+
+    /// [`configure_failures`](Self::configure_failures) per surface, in
+    /// source order, with its window index.
+    pub fn configure_failures_by_surface(&self) -> impl Iterator<Item = (usize, u64)> + '_ {
+        self.slots
+            .iter()
+            .map(|s| (s.window, s.configure_log.failures()))
+    }
+
     /// Marks every secondary surface showing `role` for redraw.
     pub fn request_redraw(&mut self, role: SurfaceRole) {
         for s in &mut self.slots {
@@ -437,7 +503,13 @@ impl SurfaceSet {
                 {
                     config.width = w;
                     config.height = h;
-                    let ok = try_configure(&self.device, surface, config, &self.gpu_lock);
+                    let ok = try_configure(
+                        &self.device,
+                        surface,
+                        config,
+                        &self.gpu_lock,
+                        &s.configure_log,
+                    );
                     s.needs_configure = !ok;
                 }
                 s.dirty = true;
@@ -561,7 +633,7 @@ impl SurfaceSet {
                 let Present::Direct { surface, config } = &s.present else {
                     unreachable!()
                 };
-                if !try_configure(&device, surface, config, &gpu_lock) {
+                if !try_configure(&device, surface, config, &gpu_lock, &s.configure_log) {
                     return SurfaceStatus::Skipped;
                 }
                 s.needs_configure = false;
@@ -573,7 +645,7 @@ impl SurfaceSet {
                 wgpu::CurrentSurfaceTexture::Success(t) => (t, false),
                 wgpu::CurrentSurfaceTexture::Suboptimal(t) => (t, true),
                 wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                    let ok = try_configure(&device, surface, config, &gpu_lock);
+                    let ok = try_configure(&device, surface, config, &gpu_lock, &s.configure_log);
                     s.needs_configure = !ok;
                     return SurfaceStatus::Skipped;
                 }
@@ -590,7 +662,7 @@ impl SurfaceSet {
             }
             queue.present(frame);
             if suboptimal && let Present::Direct { surface, config } = &s.present {
-                let ok = try_configure(&device, surface, config, &gpu_lock);
+                let ok = try_configure(&device, surface, config, &gpu_lock, &s.configure_log);
                 s.needs_configure = !ok;
             }
         } else {
@@ -663,6 +735,7 @@ fn spawn_presenter(
     mut config: wgpu::SurfaceConfiguration,
     window: usize,
     gpu_lock: Arc<Mutex<()>>,
+    configure_log: Arc<ConfigureLog>,
 ) -> Result<Presenter, GpuError> {
     let (tx, rx) = sync_channel::<PresentJob>(1);
     let busy = Arc::new(AtomicBool::new(false));
@@ -682,7 +755,7 @@ fn spawn_presenter(
                 if !configured || (config.width, config.height) != (job.width, job.height) {
                     config.width = job.width.max(1);
                     config.height = job.height.max(1);
-                    configured = try_configure(&device, &surface, &config, &gpu_lock);
+                    configured = try_configure(&device, &surface, &config, &gpu_lock, &configure_log);
                 }
                 let frame = if configured {
                     match surface.get_current_texture() {
@@ -690,7 +763,7 @@ fn spawn_presenter(
                         | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
                         wgpu::CurrentSurfaceTexture::Outdated
                         | wgpu::CurrentSurfaceTexture::Lost => {
-                            configured = try_configure(&device, &surface, &config, &gpu_lock);
+                            configured = try_configure(&device, &surface, &config, &gpu_lock, &configure_log);
                             None
                         }
                         _ => None,
@@ -731,6 +804,23 @@ fn spawn_presenter(
         handle: Some(handle),
         source: None,
     })
+}
+
+#[cfg(test)]
+mod configure_log_tests {
+    use super::*;
+
+    #[test]
+    fn failures_are_counted_and_logged_once() {
+        let log = ConfigureLog::new(2, SurfaceRole::Backglass);
+        assert_eq!(log.failures(), 0);
+        assert!(log.label.contains("window 2") && log.label.contains("Backglass"));
+        log.record(&"first");
+        log.record(&"second");
+        log.record(&"third");
+        assert_eq!(log.failures(), 3);
+        assert!(log.logged.load(Ordering::Acquire));
+    }
 }
 
 #[cfg(test)]

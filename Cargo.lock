@@ -1798,6 +1798,9 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "bytemuck",
+ "image",
+ "libm",
+ "naga",
  "pin_core",
  "pollster",
  "proptest",

@@ -1,5 +1,12 @@
 //! GPU side of the debug renderer: one line-list pipeline, lines uploaded as
 //! per-instance data (two vertices per instance pick `a` or `b`).
+//!
+//! Short lines also get their two end points drawn as 1-px points (a
+//! point-list pipeline over the same instance data): the line rasterisation
+//! rule leaves out the last pixel of a line, and a chain of segments shorter
+//! than a couple of pixels (a ball circle under ~4 px radius) can lose every
+//! pixel of some segments, which showed as gaps at the joints (1.4 review
+//! N-c). Lines of [`JOINT_POINT_MAX_PX`] pixels or more are unchanged.
 
 use super::{Camera, DebugLine, DebugLines};
 use crate::gpu::{GpuContext, GpuError};
@@ -7,6 +14,8 @@ use crate::gpu::{GpuContext, GpuError};
 const SHADER: &str = r#"
 struct Camera {
     view_proj: mat4x4<f32>,
+    // Target size in pixels (x, y); zw unused.
+    viewport: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -30,11 +39,43 @@ fn vs(
     return out;
 }
 
+// End points of lines shorter than JOINT_POINT_MAX_PX pixels on screen;
+// longer lines (and lines with an end behind the camera) emit a clipped
+// vertex instead.
+@vertex
+fn vs_points(
+    @builtin(vertex_index) vi: u32,
+    @location(0) a: vec3<f32>,
+    @location(1) b: vec3<f32>,
+    @location(2) color: vec4<f32>,
+) -> VsOut {
+    var out: VsOut;
+    let ca = camera.view_proj * vec4<f32>(a, 1.0);
+    let cb = camera.view_proj * vec4<f32>(b, 1.0);
+    out.color = color;
+    out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+    if (ca.w > 0.0 && cb.w > 0.0) {
+        let half_px = 0.5 * camera.viewport.xy;
+        let d = (cb.xy / cb.w - ca.xy / ca.w) * half_px;
+        if (dot(d, d) < JOINT_POINT_MAX_PX * JOINT_POINT_MAX_PX) {
+            out.pos = select(ca, cb, vi == 1u);
+        }
+    }
+    return out;
+}
+
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
     return in.color;
 }
 "#;
+
+/// Lines shorter than this many pixels on screen also get their end points
+/// drawn as points (see the module docs).
+pub const JOINT_POINT_MAX_PX: f32 = 3.0;
+
+/// Camera uniform: view-projection matrix plus target size.
+const CAMERA_UNIFORM_BYTES: u64 = 80;
 
 /// Initial line capacity of the GPU instance buffer (grows on demand).
 const INITIAL_GPU_LINES: usize = 1024;
@@ -43,6 +84,7 @@ const INITIAL_GPU_LINES: usize = 1024;
 pub struct DebugRenderer {
     device: wgpu::Device,
     pipeline: wgpu::RenderPipeline,
+    points: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     line_buffer: wgpu::Buffer,
@@ -61,9 +103,10 @@ fn line_buffer(device: &wgpu::Device, lines: usize) -> wgpu::Buffer {
 impl DebugRenderer {
     /// A renderer drawing into targets of `target_format`.
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+        let source = format!("const JOINT_POINT_MAX_PX: f32 = {JOINT_POINT_MAX_PX:?};\n{SHADER}");
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("debug lines"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("debug camera"),
@@ -73,14 +116,14 @@ impl DebugRenderer {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(64),
+                    min_binding_size: wgpu::BufferSize::new(CAMERA_UNIFORM_BYTES),
                 },
                 count: None,
             }],
         });
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("debug camera"),
-            size: 64,
+            size: CAMERA_UNIFORM_BYTES,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -99,41 +142,50 @@ impl DebugRenderer {
         });
         const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
             wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("debug lines"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: core::mem::size_of::<DebugLine>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &ATTRIBUTES,
-                })],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let make = |label: &str, entry: &str, topology: wgpu::PrimitiveTopology| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: core::mem::size_of::<DebugLine>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &ATTRIBUTES,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: target_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = make("debug lines", "vs", wgpu::PrimitiveTopology::LineList);
+        let points = make(
+            "debug joints",
+            "vs_points",
+            wgpu::PrimitiveTopology::PointList,
+        );
         Self {
             device: device.clone(),
             pipeline,
+            points,
             camera_buffer,
             bind_group,
             line_buffer: line_buffer(device, INITIAL_GPU_LINES),
@@ -175,11 +227,18 @@ impl DebugRenderer {
             self.line_capacity = slice.len().next_power_of_two();
             self.line_buffer = line_buffer(&self.device, self.line_capacity);
         }
-        queue.write_buffer(
-            &self.camera_buffer,
-            0,
-            bytemuck::cast_slice(&camera.view_proj),
-        );
+        let size = view.texture().size();
+        let (vw, vh) = match viewport {
+            Some([_, _, w, h]) => (w, h),
+            None => (size.width as f32, size.height as f32),
+        };
+        let mut uniform = [0.0f32; 20];
+        for (c, col) in camera.view_proj.iter().enumerate() {
+            uniform[c * 4..c * 4 + 4].copy_from_slice(col);
+        }
+        uniform[16] = vw;
+        uniform[17] = vh;
+        queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&uniform));
         if !slice.is_empty() {
             queue.write_buffer(&self.line_buffer, 0, bytemuck::cast_slice(slice));
         }
@@ -218,6 +277,8 @@ impl DebugRenderer {
         pass.set_bind_group(0, &self.bind_group, &[]);
         let bytes = core::mem::size_of_val(slice) as u64;
         pass.set_vertex_buffer(0, self.line_buffer.slice(..bytes));
+        pass.draw(0..2, 0..slice.len() as u32);
+        pass.set_pipeline(&self.points);
         pass.draw(0..2, 0..slice.len() as u32);
     }
 }
@@ -307,8 +368,7 @@ pub(crate) fn read_texture(
     readback.map_async(wgpu::MapMode::Read, .., move |r| {
         let _ = tx.send(r);
     });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
+    crate::gpu::wait_for_device(device, crate::gpu::READBACK_WAIT_TIMEOUT)
         .map_err(|e| GpuError::Readback(format!("poll: {e}")))?;
     rx.recv()
         .map_err(|e| GpuError::Readback(format!("map channel: {e}")))?

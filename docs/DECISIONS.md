@@ -1046,3 +1046,8 @@ API reference for Subphases 2.3 (flippers), 2.4 (mechs) and 2.7 (Magnus, remanen
 
 - `tests/spec_ball_determinism.rs`: one mechanical line, `ImpactTarget::Body { set, body } => (5u8, set, body).hash(h),` in its exhaustive match. No assertion changed.
 - **Correction / review polish (4.6 N1–N6).** The "what varies" decision above overstates the seeding: the music loop, `img_backglass_base` and `img_playfield` derive from `meta_seed` (title, palette and seed); `img_backglass_logo` and `img_backglass_logo_mask` depend only on the title and palette (no seed); the insert labels depend only on the palette. Polish: playfield lane chevrons now pass through the same contrast check as the title (`readable` against the lane background); every tone and noise burst has at least a 0.5 ms linear attack (`MIN_ATTACK`), so no sound starts with a step; `pin_assetgen --help`/`-h` prints usage on stdout and exits 0 (errors stay on stderr, exit 2); implementer tests write under `CARGO_TARGET_TMPDIR` and remove their directories.
+
+## Orchestrator — 4.3 review round 1: VFS defect O1 assigned to the 4.3 fix round
+**Decision:** The 4.3 reviewer's pin_assets run found, by fuzz, a pre-existing 4.1 defect: a zip entry named `.\a:` is listed by `Vfs::list()` but `exists()` returns false. The proptest seed is kept in `spec_fuzz.proptest-regressions`. The fix is assigned to the 4.3 Implementer (Opus, the same model as the 4.1 owner), with an ownership amendment for `pin_assets/src/{vfs,zip}`, and is reviewed in the 4.3 re-review.
+**Rationale:** 4.3 is already amending pin_assets this wave, and opening a separate fix task would add another agent to a full machine.
+**Alternatives:** A separate 4.1 fix task; deleting the seed (rejected: it is a real defect).

@@ -14,7 +14,7 @@ mod renderer;
 
 #[cfg(all(test, feature = "gpu-tests"))]
 pub(crate) use renderer::read_texture;
-pub use renderer::{DebugRenderer, render_offscreen};
+pub use renderer::{DebugRenderer, JOINT_POINT_MAX_PX, render_offscreen};
 
 use pin_core::ProfileId;
 use pin_core::snapshot::{BallState, FrameStateSnapshot};

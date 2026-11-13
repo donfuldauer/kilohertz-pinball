@@ -270,10 +270,37 @@ impl Drop for GpuContext {
         };
         let _g = lifecycle_lock();
         // Let submitted work finish before the device (if this was its last
-        // handle) and the instance are destroyed.
-        let _ = inner.device.poll(wgpu::PollType::wait_indefinitely());
+        // handle) and the instance are destroyed. The wait is bounded: a hung
+        // device must not hold the process-wide lock (and so every other
+        // context's setup and teardown) forever (1.4 gate-fix N5).
+        if let Err(e) = wait_for_device(&inner.device, TEARDOWN_WAIT_TIMEOUT) {
+            eprintln!("pin_render: device did not go idle before teardown: {e}");
+        }
         drop(inner);
     }
+}
+
+/// Longest wait for the device to go idle before a context is torn down
+/// (under the process-wide lifecycle lock).
+pub const TEARDOWN_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Longest wait for submitted work in a readback (offscreen renders on a
+/// software adapter under load can take seconds).
+pub const READBACK_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Waits until the device finished its submitted work, at most `timeout`
+/// (`wgpu::PollError::Timeout` after that). Every device wait in
+/// `pin_render` is bounded; none waits indefinitely.
+pub fn wait_for_device(
+    device: &wgpu::Device,
+    timeout: std::time::Duration,
+) -> Result<(), wgpu::PollError> {
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(timeout),
+        })
+        .map(|_| ())
 }
 
 /// Creates a wgpu instance over `backends` (instance flags honour the

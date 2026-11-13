@@ -152,3 +152,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 5.1 | Independent Tester | Fable 5.2 | 1 | running | — | |
 | 4 | 2.2-S | Implementer | Opus 5.5 | 1 | done | 309 pin_physics tests; coverage 94.6 %; 5 HEAD digests bit-identical; 0 allocs; 2 rotors+kicker+4 balls 6.2 µs mean (target 50) | MovingBodies trait + step_with_bodies; ExternalForce force_in/ForceContext/ball_added/removed; one mechanical line in spec_ball_determinism.rs |
 | 4 | 2.2-S | Reviewer | Fable 5.2 | 1 | running | — | |
+| 4 | 4.3 | Reviewer | Fable 5.2 | 1 | **fail** | fmt/clippy clean; pin_tablegen all pass; coverage 95.73 % / 96.18 %; deterministic; D1 verified fixed | B1 lanes 65–82 m emit splines the loader refuses (>65 m); B2 no output-size cap (16 400 posts → glb over GltfLimits); N1–N6 polish; O1 4.1 VFS name-normalisation defect (`.\a:` listed but not exists) found by fuzz → all sent as fix 1 |
+| 4 | 4.3 | Implementer | Opus 5.5 | fix 1 | running | — | B1, B2, N1–N6, plus O1 (ownership amendment: pin_assets vfs/zip) |
