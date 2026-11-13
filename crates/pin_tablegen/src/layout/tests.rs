@@ -240,6 +240,23 @@ fn lane_and_ramp_errors() {
     assert_eq!(g.table.layer_transitions[0].to_layer, 2);
     lay.ramps[0].entry_width = f32::INFINITY;
     assert_eq!(err(&lay).element, "ramps[0]");
+    // Tester D1: a width that would collapse the entry zone in f32.
+    for w in [1.0e-9, 1.0e-6, 0.05] {
+        lay.ramps[0].entry_width = w;
+        assert_eq!(err(&lay).element, "ramps[0]", "{w}");
+    }
+    lay.ramps[0].entry_width = MIN_SIZE_MM;
+    let g = generate(&lay, &base()).unwrap();
+    let z = &g.table.layer_transitions[0].zone;
+    assert!((0..3).all(|k| z.min[k] < z.max[k]));
+    // Every other size has the same floor.
+    lay.ramps.clear();
+    lay.posts = vec![Post {
+        position: [10.0, 10.0],
+        radius: 1.0e-6,
+        rubber: true,
+    }];
+    assert_eq!(err(&lay).element, "posts[0]");
 }
 
 #[test]

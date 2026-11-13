@@ -196,7 +196,11 @@ pub trait MovingBodies {
     fn closest_point(&self, body: usize, time: f32, point: Vec3) -> Option<BodyPoint>;
 
     /// Velocity (m/s) at `time` of the body's material point at `point`
-    /// (the surface velocity used in the slip and normal terms).
+    /// (the surface velocity used in the slip and normal terms). It must be
+    /// the velocity the body really has then: a body held on an engaged end
+    /// stop reports the stop's velocity (0), also at the very instant an
+    /// impulse pushed it into the stop, or the contact solve keeps taking
+    /// back impulses it thinks moved the body.
     fn velocity_at(&self, body: usize, time: f32, point: Vec3) -> Vec3;
 
     /// Inverse effective mass (1/kg) of the body at `point` at `time` for an

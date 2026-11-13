@@ -140,3 +140,7 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 3.4 | Independent Tester | Fable 5.2 | 1 | done | 84 spec tests pass; clippy clean on spec files | no implementation defects; tests beyond the brief pin documented choices (rumble envelope, SSF defaults, chunk invariance) — flagged for the Reviewer |
 | 4 | 4.6 | Independent Tester | Fable 5.2 | 1 | done | 46 spec tests pass | no defects; V5 scenes read as out of kit scope (AssetKind has no scene kind) — Reviewer to confirm; clippy blocked by in-progress edits in other crates at the time |
 | 4 | 4.3 | Independent Tester | Fable 5.2 | 1 | done | 50/52 spec tests pass | D1 tiny ramp entry_width emits a degenerate layer-transition zone (invalid bundle) → sent to the Implementer |
+| 4 | 4.6 | Implementer | Opus 5.5 | 1 | done | 52 own tests; coverage 96.75 %; all spec tests pass; clippy clean (--no-deps) | WAV-only sounds; no scene kind (5.3 owns scenes); tester spec_4_6_fonts clippy nit sent back |
+| 4 | 4.6 | Reviewer | Fable 5.2 | 1 | running | — | |
+| 4 | 4.3 | Implementer | Opus 5.5 | 1 | done | clippy clean (pin_tablegen + pin_assets); coverage pin_tablegen 95.7 %, pin_assets 96.2 % | D1 fixed (0.1 mm minimum size, zone check); 4.1-H follow-ups (a)–(c) done; generated guides have no wall height (SplineDef) → 6.0 |
+| 4 | 4.3 | Reviewer | Fable 5.2 | 1 | running | — | |

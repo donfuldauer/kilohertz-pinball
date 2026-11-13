@@ -43,7 +43,7 @@ fn closed_wall() -> impl Strategy<Value = Wall> {
         60.0f32..450.0,
         60.0f32..1000.0,
         5.0f32..50.0,
-        0.0f32..6.28,
+        0.0f32..core::f32::consts::TAU,
     )
         .prop_map(|(k, cx, cy, r, rot)| Wall {
             points: (0..k)
@@ -76,18 +76,23 @@ fn kind() -> impl Strategy<Value = LaneKind> {
 
 /// Straight lanes and circular-arc lanes whose radius exceeds the width.
 fn lane() -> impl Strategy<Value = Lane> {
-    let straight = (point(), 0.0f32..6.28, 30.0f32..500.0, 15.0f32..50.0, kind()).prop_map(
-        |(p, a, len, width, kind)| Lane {
+    let straight = (
+        point(),
+        0.0f32..core::f32::consts::TAU,
+        30.0f32..500.0,
+        15.0f32..50.0,
+        kind(),
+    )
+        .prop_map(|(p, a, len, width, kind)| Lane {
             kind,
             points: vec![p, [p[0] + len * a.cos(), p[1] + len * a.sin()]],
             width,
-        },
-    );
+        });
     let arc = (
         point(),
         15.0f32..50.0,
         1.0f32..6.0,
-        0.0f32..6.28,
+        0.0f32..core::f32::consts::TAU,
         0.3f32..4.7,
         any::<bool>(),
         kind(),

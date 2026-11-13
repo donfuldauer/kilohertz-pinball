@@ -200,12 +200,15 @@ impl RotorBody {
         self.unclamped(t).clamp(self.limits.0, self.limits.1)
     }
 
+    /// Angular velocity at `t`: 0 on an engaged stop (at or past it and
+    /// moving into it), including the very instant the segment starts.
     pub fn omega_at(&self, t: f32) -> f32 {
         let a = self.unclamped(t);
-        if a < self.limits.0 || a > self.limits.1 {
+        let w = self.seg_omega;
+        if (a <= self.limits.0 && w < 0.0) || (a >= self.limits.1 && w > 0.0) {
             0.0
         } else {
-            self.seg_omega
+            w
         }
     }
 

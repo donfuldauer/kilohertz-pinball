@@ -74,6 +74,10 @@ pub const MAX_COORD_MM: f32 = 5000.0;
 /// Largest wall height, deck height, post radius, lane width, insert size
 /// and ramp entry width, mm.
 pub const MAX_SIZE_MM: f32 = 1000.0;
+/// Smallest playfield size, wall height, deck height, post radius, lane
+/// width, insert size and ramp entry width, mm: below it generated extents
+/// (a ramp's entry zone) collapse in `f32` at playfield coordinates.
+pub const MIN_SIZE_MM: f32 = 0.1;
 /// Most points of one wall, lane or deck outline.
 pub const MAX_ELEMENT_POINTS: usize = 1024;
 /// Height of an insert above its floor, mm.
@@ -152,13 +156,13 @@ pub fn write_bundle(generated: &GeneratedTable, dir: &Path) -> std::io::Result<(
 /// Checks a finite value lies in `lo..=hi` (`lo` exclusive when
 /// `positive`).
 fn in_range(element: &str, what: &str, v: f32, positive: bool, hi: f32) -> Result<(), GenError> {
-    let ok = v.is_finite() && v <= hi && if positive { v > 0.0 } else { v >= -hi };
+    let ok = v.is_finite() && v <= hi && if positive { v >= MIN_SIZE_MM } else { v >= -hi };
     if ok {
         Ok(())
     } else if positive {
         Err(GenError::new(
             element,
-            format!("{what} must be a number above 0 and at most {hi} mm, got {v}"),
+            format!("{what} must be a number from {MIN_SIZE_MM} to {hi} mm, got {v}"),
         ))
     } else {
         Err(GenError::new(
@@ -544,14 +548,26 @@ impl Builder<'_> {
             let p0 = spline.points[0];
             let half = 0.5 * r.entry_width;
             let top = p0[2].max(0.0) + half;
+            let zone = AabbDef {
+                min: [p0[0] - half, p0[1] - half, p0[2].min(0.0)],
+                max: [p0[0] + half, p0[1] + half, top],
+            };
+            // The loader requires min < max on every axis (after f32).
+            if (0..3).any(|k| zone.min[k] >= zone.max[k]) {
+                return Err(GenError::new(
+                    &e,
+                    format!(
+                        "entry_width {} mm gives an empty entry zone at the spline's \
+                         start {p0:?}; widen the entry",
+                        r.entry_width
+                    ),
+                ));
+            }
             self.transitions.push(LayerTransitionDef {
                 id: format!("{GENERATED_PREFIX}{e}.entry"),
                 from_layer: 0,
                 to_layer: spline.layer,
-                zone: AabbDef {
-                    min: [p0[0] - half, p0[1] - half, p0[2].min(0.0)],
-                    max: [p0[0] + half, p0[1] + half, top],
-                },
+                zone,
             });
         }
         Ok(())

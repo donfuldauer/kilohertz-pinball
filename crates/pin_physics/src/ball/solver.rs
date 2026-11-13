@@ -1289,7 +1289,9 @@ impl BallSolver {
             force += hook.force_in(&ctx, BallHandle(i as u8), &ball, &self.profiles[me.pidx], h);
             any = true;
         }
-        if any && force.is_finite() {
+        // An exactly-zero total (e.g. hooks with zero coefficients) is not
+        // added, so it cannot even flip the sign of a zero component.
+        if any && force.is_finite() && force != Vec3::ZERO {
             ball.velocity += force * (h / me.body.mass);
         }
         self.slots[i] = Some(ball);
