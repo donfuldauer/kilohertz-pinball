@@ -67,7 +67,7 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
   - Repro: spiral r = 0.1 + 0.04·θ/2π, 3 turns, 101 points; steel ball at 5 m/s.
   - The reviewer's probes are in the session scratchpad: rev_b7f/pc/tests/rv_f.rs.
 - **Open item B2:** dense level coils (≤ 2 000 segments) take up to 279 ms to build, against a 50 ms target. The old code took about 270 ms.
-- **Decided (user, end of Wave 3):** fix task for B1 scheduled; B2 accepted as a known limit; the 45 mm C-ramp rejection accepted. See DECISIONS "Human rulings — end of Wave 3".
+- **Resolved:** B1 fixed in 7ec28b2, review passed (Fable). **Decided (user, end of Wave 3):** fix task for B1 scheduled; B2 accepted as a known limit; the 45 mm C-ramp rejection accepted. See DECISIONS "Human rulings — end of Wave 3".
 - **Also review:** one marginal new sloped rejection, a C ramp with 45 mm between its facing ends.
 - 1.4 CI fix: macOS Metal window tests now warm up until windows are unoccluded; if the CI Mac never reports the windows visible (no GUI session), the tests fail with the status history — decide then whether Metal window presentation needs a self-hosted/GUI runner (DECISIONS "1.4 — CI fix").
 
@@ -109,4 +109,8 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - **Warning location:** a "doubles back" warning triggered only by `reach() < 1 µm` reports "near points[0]". Omit the location in that case.
 - **Authoring docs:** a new error rule refuses more than 4096 through-points per spline. Add it to the authoring docs and tell the Tester.
 - **Prepended data:** bundles with prepended or trailing zip data (for example self-extractors) are refused. `zip -A` repairs them.
-- [2.1-B1] Construction of four end-limited level guides is 11–14 % slower than before the fix (≤ +3.7 ms; all within 2 × 329c843 + 2 ms), against the brief's +10 % cap: the price of the lane data that lets balls slide in ball-wide lanes. Accept, or trade back lane precision (`TOL_BALL`)?
+- ~~[2.1-B1] Construction of four end-limited level guides is 11–14 % slower than before the fix (≤ +3.7 ms; all within 2 × 329c843 + 2 ms), against the brief's +10 % cap: the price of the lane data that lets balls slide in ball-wide lanes. Accept, or trade back lane precision (`TOL_BALL`)?~~ Accepted by Orchestrator ruling (DECISIONS "2.1-B1 construction overrun accepted"); reviewer measured the same range.
+
+- [2.1-B1 review N1] Level coils that exhaust the lane-table budget (e.g. 12 turns / 600 segments, 20 turns / 1 000–2 000 segments, all over 1 m across) still have `reach() == 0` on the outer turns; balls sliding there crawl as before the fix (0.7–3.5 ms CPU per 1 ms window). Safe. Option: raise the table budget for such coils.
+- [2.1-B1 review N2] The B1 fix only reaches guides classified end-limited; the same spiral sampled at fewer than ~25–30 points per turn gets no table and behaves exactly like 329c843 (jumbo ball crawls in 34–44 mm lanes). Option: give lane tables to every level guide — changes all level-guide trajectories, so needs your decision.
+- [2.1-B1 review N4 → 4.1 lint] On budget-exhausted coils `reach() == 0` makes the 4.1 "close the guide or open the gap" lint fire, which is misleading there; the lint text could distinguish this case.
