@@ -167,3 +167,8 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 2.7 | Implementer | Opus 5.5 | 1 | done | 19 own + 46 spec tests pass; ball_ext 100 % lines (crate total not run: disk) | Magnus as exact rotation of v; residual pull also while coil on; Arc<[AtomicU32]> read-back; no pin_assets change needed |
 | 4 | 2.7 | Reviewer | Fable 5.2 | 1 | running | — | |
 | 4 | 3.4 | Reviewer | Fable 5.2 | 2 | **pass** | gates pass; 84 spec tests; pin_input 99.28 % (pin_audio 98.63 % carried from round 1, disk); B1 verified by a 593 658-output reference-model sweep, 0 mismatches; N1–N6 verified | N7 restart within 1000 ticks not detected (6.0 must reset on session start), N8 stale query tick truncates tails, N9 doc nit → HUMAN_QUEUE. **3.4 complete**; CR-003 merged; target/sp_3_4 deleted |
+| 4 | 2.7 | Independent Tester | Fable 5.2 | 1 | done (clippy fix) | spec_2_7_common clippy clean; 46 spec tests pass | |
+| 4 | 2.3 | Implementer | Fable 5.2 | 1 | running | — | started during the 2.2-S fix round (signatures fixed; B2 owner obligation in the brief) |
+| 4 | 2.3 | Independent Tester | Opus 5.5 | 1 | running | — | |
+| 4 | 2.4 | Implementer | Opus 5.5 | 1 | running | — | same |
+| 4 | 2.4 | Independent Tester | Fable 5.2 | 1 | running | — | |
