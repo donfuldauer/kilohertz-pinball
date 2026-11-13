@@ -52,8 +52,12 @@ fn f90_of(f0: vec3<f32>) -> f32 {
     return clamp(dot(f0, vec3<f32>(50.0 * 0.33)), 0.0, 1.0);
 }
 
-// Lambert diffuse with optional wrap (0 = Lambert); never brighter than
-// Lambert at normal incidence.
+// Wrapped diffuse cosine (0 = Lambert), energy-normalised: the integral of
+// max(cos + w, 0) / (1 + w)^2 over the sphere is pi, as for Lambert's
+// max(cos, 0), so under uniform illumination a wrapped surface reflects
+// exactly what a Lambert one does; the light only spreads past the
+// terminator (5.1 review N1).
 fn wrapped_n_o_l(n_o_l_signed: f32, wrap: f32) -> f32 {
-    return clamp((n_o_l_signed + wrap) / (1.0 + wrap), 0.0, 1.0);
+    let w1 = 1.0 + wrap;
+    return max(n_o_l_signed + wrap, 0.0) / (w1 * w1);
 }

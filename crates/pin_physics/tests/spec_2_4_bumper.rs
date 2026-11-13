@@ -65,11 +65,9 @@ fn approach(angle_deg: f32, offset: f32, speed: f32, pulse_ms: u16) -> Outcome {
     let mut contact_tick = None;
     let mut fired_at = None;
     for _ in 0..400 {
-        if let Some(t) = contact_tick {
-            if fired_at.is_none() && rig.tick == t && pulse_ms > 0 {
-                rig.mechs.fire_coil(COIL, pulse_ms);
-                fired_at = Some(rig.tick);
-            }
+        if fired_at.is_none() && contact_tick == Some(rig.tick) && pulse_ms > 0 {
+            rig.mechs.fire_coil(COIL, pulse_ms);
+            fired_at = Some(rig.tick);
         }
         rig.step();
         if contact_tick.is_none() {
@@ -82,15 +80,13 @@ fn approach(angle_deg: f32, offset: f32, speed: f32, pulse_ms: u16) -> Outcome {
                 );
             }
         }
-        if let Some(t) = contact_tick {
-            if rig.tick == t + 7 {
-                let b = rig.ball(h);
-                return Outcome {
-                    contact_tick: t,
-                    exit: horiz(b.velocity),
-                    position: b.position,
-                };
-            }
+        if let Some(t) = contact_tick.filter(|t| rig.tick == *t + 7) {
+            let b = rig.ball(h);
+            return Outcome {
+                contact_tick: t,
+                exit: horiz(b.velocity),
+                position: b.position,
+            };
         }
     }
     panic!("ball at {angle_deg}° offset {offset} speed {speed} never closed the ring switch");

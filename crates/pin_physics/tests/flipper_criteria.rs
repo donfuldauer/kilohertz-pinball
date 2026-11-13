@@ -116,7 +116,10 @@ fn timing_sweep_has_a_dead_spot_and_no_unexplained_jumps() {
 
 #[test]
 fn drop_catch_rebounds_less_than_a_held_flipper() {
-    for fraction in [0.3f32, 0.5, 0.7, 0.85] {
+    // (Close to the pivot the bat is heavier than the ball at the contact
+    // point, the ball leaves at the first impact and the coil never gets to
+    // act on it: held or released makes no difference there.)
+    for fraction in [0.5f32, 0.6, 0.7, 0.85] {
         let (held, _) = rebound(fraction, Button::Held);
         for k in [1, 2, 3, 5, 8] {
             let (r, _) = rebound(fraction, Button::ReleaseBefore(k));
@@ -375,8 +378,11 @@ fn thing_flip_fires_tick_exactly() {
     );
     assert_eq!(on_ticks.last(), Some(&81), "for 40 ticks");
     assert_eq!(on_ticks.len(), 40);
-    // The coil current needs a tick to overcome the return spring.
-    assert_eq!(first_moved, Some(43), "the bat moves right after");
+    assert_eq!(
+        first_moved,
+        Some(42),
+        "the bat moves in the first energised tick"
+    );
     // Released: back at rest, and a new edge starts a new flip.
     assert_eq!(rig.flippers.angle_deg(LEFT), -30.0);
     rig.flippers.on_switch_edge(SwitchId(7), true, rig.tick);

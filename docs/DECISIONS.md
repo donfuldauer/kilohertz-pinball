@@ -1126,3 +1126,7 @@ Signatures are unchanged; this round tightens the contract and the solver behind
 
 ## Orchestrator — stale builds in shared target dirs
 **Observation:** When two agents share one `CARGO_TARGET_DIR` and one of them edits a source file while the other is building, cargo can keep a fingerprint from before the edit. A later test run then uses a stale library. It happened once in the 2.7 polish check: two new tests failed until the file was touched and rebuilt. When a result contradicts an agent's report, the Orchestrator re-runs after `touch`-ing the changed sources before treating it as a defect.
+
+## Orchestrator — 2.4 sling and bumper exit windows: coil latency
+**Decision:** The Appendix C kick windows (bumper and sling exit 1.5–4 m/s) are guaranteed for a coil fired on the tick after the switch edge. That is the engine's latency under PLAN §2.2: edges collected in tick N reach the script in tick N+1, whose coil commands apply in that tick. Exit speed must vary continuously with contact phase. A coil fired later than that is outside the guarantee.
+**Rationale:** Real machines fire slings and bumpers from fast switch rules, and the engine's fixed tick order gives exactly one tick of latency.

@@ -346,3 +346,20 @@ fn blit_copies_source_pixels_exactly() {
         assert_eq!(got, want, "{format:?}");
     }
 }
+
+/// 5.1 review N6: waiting for a map result is bounded and reports a
+/// callback that never runs or is dropped.
+#[test]
+fn map_result_wait_is_bounded() {
+    use std::time::{Duration, Instant};
+    let (tx, rx) = std::sync::mpsc::channel();
+    let start = Instant::now();
+    let e = super::recv_map(&rx, Duration::from_millis(20)).unwrap_err();
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(matches!(e, GpuError::Readback(m) if m.contains("did not run")));
+    tx.send(Ok(())).unwrap();
+    assert_eq!(super::recv_map(&rx, Duration::from_millis(20)), Ok(()));
+    drop(tx);
+    let e = super::recv_map(&rx, Duration::from_millis(20)).unwrap_err();
+    assert!(matches!(e, GpuError::Readback(m) if m.contains("dropped")));
+}

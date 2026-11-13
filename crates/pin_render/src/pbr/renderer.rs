@@ -6,7 +6,7 @@ use super::material::{MaterialKind, MaterialParams};
 use super::math::{Mat4, PbrCamera, mul, normal_matrix, transform_point};
 use super::mesh::MeshGeometry;
 use super::{FORWARD_SOURCE, MAX_LIGHTS};
-use crate::gpu::{GpuContext, GpuError, READBACK_WAIT_TIMEOUT, wait_for_device};
+use crate::gpu::{GpuContext, GpuError};
 use wgpu::util::DeviceExt;
 
 /// Format of the HDR colour target (linear radiance; 5.2 post-processes it).
@@ -198,6 +198,14 @@ impl HdrImage {
         }
         out
     }
+}
+
+/// Frame inputs the shader multiplies with (GI tint, environment, clear
+/// colour): NaN, infinities and negatives become 0, so a bad value cannot
+/// turn into `inf · 0 = NaN` in every pixel (5.1 review N3). Large finite
+/// values are kept (the shader clamps its output).
+pub(crate) fn sanitize_non_negative(x: f32) -> f32 {
+    if x.is_finite() { x.max(0.0) } else { 0.0 }
 }
 
 /// IEEE half → single.
@@ -694,7 +702,10 @@ impl PbrRenderer {
         self.upload_clusters();
 
         let env = frame.environment;
-        let v4 = |c: [f32; 3]| [c[0], c[1], c[2], 0.0];
+        let v4 = |c: [f32; 3]| {
+            let c = c.map(sanitize_non_negative);
+            [c[0], c[1], c[2], 0.0]
+        };
         let (w, h) = self.size();
         let uniform = FrameUniform {
             view: camera.view,
@@ -704,7 +715,7 @@ impl PbrRenderer {
             env_sky: v4(env.sky),
             env_horizon: v4(env.horizon),
             env_ground: v4(env.ground),
-            gi: frame.gi,
+            gi: frame.gi.map(sanitize_non_negative),
             cluster_dims: [dims[0], dims[1], dims[2], self.light_list.len() as u32],
             cluster_params,
             screen: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
@@ -754,7 +765,7 @@ impl PbrRenderer {
         self.blend_order
             .sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
 
-        let [r, g, b, a] = frame.clear.map(f64::from);
+        let [r, g, b, a] = frame.clear.map(|c| f64::from(sanitize_non_negative(c)));
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("pbr forward"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -889,11 +900,7 @@ impl PbrRenderer {
         readback.map_async(wgpu::MapMode::Read, .., move |r| {
             let _ = tx.send(r);
         });
-        wait_for_device(device, READBACK_WAIT_TIMEOUT)
-            .map_err(|e| GpuError::Readback(format!("poll: {e}")))?;
-        rx.recv()
-            .map_err(|e| GpuError::Readback(format!("map channel: {e}")))?
-            .map_err(|e| GpuError::Readback(format!("map_async: {e}")))?;
+        crate::gpu::finish_map(device, &rx, crate::gpu::READBACK_WAIT_TIMEOUT)?;
         let mut pixels = Vec::with_capacity(width as usize * height as usize);
         {
             let mapped = readback
@@ -924,6 +931,15 @@ pub fn model_view_proj(camera: &PbrCamera, model: &Mat4) -> Mat4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_inputs_are_sanitized() {
+        assert_eq!(sanitize_non_negative(f32::INFINITY), 0.0);
+        assert_eq!(sanitize_non_negative(f32::NEG_INFINITY), 0.0);
+        assert_eq!(sanitize_non_negative(f32::NAN), 0.0);
+        assert_eq!(sanitize_non_negative(-2.0), 0.0);
+        assert_eq!(sanitize_non_negative(3.5), 3.5);
+    }
 
     #[test]
     fn half_floats_decode() {

@@ -42,10 +42,9 @@
 //!   plane is therefore the flat flipper rotated by that tilt.
 //! * **Coil.** Energised, the coil's target torque is `power_torque_nm`
 //!   while the EOS switch is closed and `hold_torque_nm` once it has opened
-//!   (at `eos_angle_fraction` of the sweep); released, zero. The coil
-//!   current follows its target with a first-order lag ([`FlipperTuning`]:
-//!   slower build-up, fast collapse) and the torque goes with the current
-//!   squared. The return spring always pushes toward rest.
+//!   (at `eos_angle_fraction` of the sweep); released, zero. The torque
+//!   follows its target with a first-order lag ([`FlipperTuning`]: slow
+//!   build-up, fast collapse). The return spring always pushes toward rest.
 //! * **Stops.** Rest and end angle are rigid one-sided stops. A bat that
 //!   reaches a stop leaves it with `stop_restitution` times its arrival
 //!   speed; pushed against a stop it is immovable in that direction.
@@ -138,12 +137,11 @@ impl std::error::Error for FlipperError {}
 /// flipper of a set).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FlipperTuning {
-    /// Time constant (seconds) with which the coil current builds up toward
-    /// a higher target (the coil's L/R). The torque goes with the current
-    /// squared, so it reaches the target torque `T` as `T·(1 − e^(−t/τ))²`.
-    /// 0 = instant.
+    /// Time constant (seconds) with which the coil torque builds up toward a
+    /// higher target (coil inductance and the plunger's stroke-dependent
+    /// pull lumped together): `T·(1 − e^(−t/τ))`. 0 = instant.
     pub coil_rise_s: f32,
-    /// Time constant (seconds) with which the coil current collapses toward
+    /// Time constant (seconds) with which the coil torque collapses toward
     /// a lower target (release, or power → hold at EOS). 0 = instant.
     pub coil_fall_s: f32,
     /// Bat surface speed along the contact normal (m/s) at which
@@ -165,7 +163,7 @@ pub struct FlipperTuning {
 impl Default for FlipperTuning {
     fn default() -> Self {
         Self {
-            coil_rise_s: 0.008,
+            coil_rise_s: 0.016,
             coil_fall_s: 0.002,
             rubber_loss_speed_m_s: 2.0,
             reference_ball_mass_kg: 0.080,
@@ -273,8 +271,6 @@ struct Flipper {
     // Committed state (start of tick).
     q: f32,
     omega: f32,
-    /// Coil current in units of √(N·m): the coil torque is its square.
-    coil_current: f32,
     coil_torque: f32,
     slide: f32,
     eos_closed: bool,
@@ -392,10 +388,8 @@ impl Flipper {
         } else {
             self.hold_torque
         };
-        // The coil current follows its target with a first-order lag and
-        // the pull goes with the current squared.
-        let target = libm::sqrtf(target);
-        let tau = if target > self.coil_current {
+        // The coil torque follows its target with a first-order lag.
+        let tau = if target > self.coil_torque {
             tuning.coil_rise_s
         } else {
             tuning.coil_fall_s
@@ -405,8 +399,7 @@ impl Flipper {
         } else {
             1.0
         };
-        self.coil_current += (target - self.coil_current) * blend;
-        self.coil_torque = self.coil_current * self.coil_current;
+        self.coil_torque += (target - self.coil_torque) * blend;
         self.drive = self.coil_torque - self.spring_torque;
         let true_w = self.omega + self.drive / self.inertia * dt;
         self.drive_work += 0.5
@@ -644,7 +637,6 @@ impl Flipper {
             zipper_closed: false,
             q: 0.0,
             omega: 0.0,
-            coil_current: 0.0,
             coil_torque: 0.0,
             slide: 0.0,
             eos_closed: eos_is_closed(0.0, eos_travel),

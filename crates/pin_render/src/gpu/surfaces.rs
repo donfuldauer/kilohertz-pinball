@@ -21,7 +21,7 @@ use super::{GpuContext, GpuError, PresentChoice, choose_present_mode};
 use crate::debug::{Camera, DebugLine, DebugLines, DebugRenderer};
 use crate::topology::{Rect, SurfaceRole, WindowEvent, WindowEventKind};
 use arrayvec::ArrayVec;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -223,12 +223,29 @@ pub struct SurfaceSet {
 
 /// Failed (re)configurations of one surface (1.4 review N-a): every failed
 /// [`try_configure`] call is counted; the first error is logged once.
+///
+/// It also holds the retry back-off (5.1 review N5): after a failure the next
+/// `skip` unforced attempts return `false` at once without touching the
+/// device or the submit lock, with `skip` doubling from 1 up to
+/// [`CONFIGURE_BACKOFF_MAX`] per consecutive failure and resetting on
+/// success. A failing call holds the submit lock for up to
+/// `CONFIGURE_ATTEMPTS ×` the bounded device wait, so retrying it before
+/// every draw on a persistently busy device would stall every frame. Forced
+/// attempts (a new size: initial setup, a pixel-size change, a presenter
+/// hand-off of another size) ignore the back-off.
 pub(crate) struct ConfigureLog {
     /// Label for the log line (window index and role).
     label: String,
     failures: AtomicU64,
     logged: AtomicBool,
+    /// Unforced attempts still to skip.
+    skip: AtomicU32,
+    /// Skips to apply after the next failure.
+    next_skip: AtomicU32,
 }
+
+/// Longest run of skipped configuration retries after repeated failures.
+pub(crate) const CONFIGURE_BACKOFF_MAX: u32 = 64;
 
 impl ConfigureLog {
     pub(crate) fn new(window: usize, role: SurfaceRole) -> Arc<Self> {
@@ -236,15 +253,43 @@ impl ConfigureLog {
             label: format!("window {window} ({role:?})"),
             failures: AtomicU64::new(0),
             logged: AtomicBool::new(false),
+            skip: AtomicU32::new(0),
+            next_skip: AtomicU32::new(1),
         })
+    }
+
+    /// `true` when an unforced attempt may run now; otherwise uses up one
+    /// skip of the back-off.
+    pub(crate) fn may_attempt(&self) -> bool {
+        let left = self.skip.load(Ordering::Acquire);
+        if left == 0 {
+            return true;
+        }
+        self.skip.store(left - 1, Ordering::Release);
+        false
+    }
+
+    /// Resets the back-off after a successful configuration.
+    pub(crate) fn succeeded(&self) {
+        self.skip.store(0, Ordering::Release);
+        self.next_skip.store(1, Ordering::Release);
+    }
+
+    /// Starts (or lengthens) the back-off after a failed configuration.
+    fn backoff(&self) {
+        let n = self.next_skip.load(Ordering::Acquire);
+        self.skip.store(n, Ordering::Release);
+        self.next_skip
+            .store((n * 2).min(CONFIGURE_BACKOFF_MAX), Ordering::Release);
     }
 
     /// Counts a failed configuration and logs `error` if it is the first.
     pub(crate) fn record(&self, error: &dyn std::fmt::Display) {
         self.failures.fetch_add(1, Ordering::AcqRel);
+        self.backoff();
         if !self.logged.swap(true, Ordering::AcqRel) {
             eprintln!(
-                "pin_render: surface configuration failed for {} (retried before each draw; logged once): {error}",
+                "pin_render: surface configuration failed for {} (retried with back-off; logged once): {error}",
                 self.label
             );
         }
@@ -268,7 +313,22 @@ const CONFIGURE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// (which panics); the call is retried a few times after a bounded wait for
 /// the device. Returns `false` if it still failed — the caller retries later;
 /// the failure is counted in `log` and its error logged once per surface.
+///
+/// While `log`'s back-off is running this returns `false` at once (see
+/// [`ConfigureLog`]); [`try_configure_now`] ignores the back-off.
 pub(crate) fn try_configure(
+    device: &wgpu::Device,
+    surface: &wgpu::Surface<'_>,
+    config: &wgpu::SurfaceConfiguration,
+    gpu_lock: &Mutex<()>,
+    log: &ConfigureLog,
+) -> bool {
+    log.may_attempt() && try_configure_now(device, surface, config, gpu_lock, log)
+}
+
+/// [`try_configure`] without the back-off (a new configuration, e.g. a new
+/// size, is always attempted).
+pub(crate) fn try_configure_now(
     device: &wgpu::Device,
     surface: &wgpu::Surface<'_>,
     config: &wgpu::SurfaceConfiguration,
@@ -281,7 +341,10 @@ pub(crate) fn try_configure(
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         surface.configure(device, config);
         match pollster::block_on(scope.pop()) {
-            None => return true,
+            None => {
+                log.succeeded();
+                return true;
+            }
             Some(e) => last = Some(e),
         }
         let _ = super::wait_for_device(device, CONFIGURE_WAIT_TIMEOUT);
@@ -375,7 +438,7 @@ impl SurfaceSet {
             }
             let config = surface_config(format, &caps, src.pixel_size, choice.mode());
             let configure_log = ConfigureLog::new(src.window, role);
-            if !try_configure(&device, &src.surface, &config, &gpu_lock, &configure_log) {
+            if !try_configure_now(&device, &src.surface, &config, &gpu_lock, &configure_log) {
                 return Err(GpuError::Surface(format!(
                     "window {} ({role:?}): surface configuration failed",
                     src.window
@@ -466,8 +529,10 @@ impl SurfaceSet {
 
     /// Failed surface (re)configurations so far, over all surfaces
     /// (including presenter threads). A surface that cannot be configured is
-    /// retried before each draw; each failed attempt is counted here and the
-    /// first error of each surface is logged once (to stderr).
+    /// retried before later draws with an exponential back-off (1, 2, 4, …
+    /// up to 64 skipped draws between attempts); each failed attempt is
+    /// counted here and the first error of each surface is logged once (to
+    /// stderr).
     pub fn configure_failures(&self) -> u64 {
         self.slots.iter().map(|s| s.configure_log.failures()).sum()
     }
@@ -503,7 +568,7 @@ impl SurfaceSet {
                 {
                     config.width = w;
                     config.height = h;
-                    let ok = try_configure(
+                    let ok = try_configure_now(
                         &self.device,
                         surface,
                         config,
@@ -752,9 +817,12 @@ fn spawn_presenter(
             let blit = Blit::new(&device, config.format);
             let mut configured = true;
             for job in rx {
-                if !configured || (config.width, config.height) != (job.width, job.height) {
+                if (config.width, config.height) != (job.width.max(1), job.height.max(1)) {
                     config.width = job.width.max(1);
                     config.height = job.height.max(1);
+                    configured =
+                        try_configure_now(&device, &surface, &config, &gpu_lock, &configure_log);
+                } else if !configured {
                     configured =
                         try_configure(&device, &surface, &config, &gpu_lock, &configure_log);
                 }
@@ -827,6 +895,31 @@ mod configure_log_tests {
         log.record(&"third");
         assert_eq!(log.failures(), 3);
         assert!(log.logged.load(Ordering::Acquire));
+    }
+
+    /// 5.1 review N5: after each failure the unforced retries back off
+    /// 1, 2, 4, … up to CONFIGURE_BACKOFF_MAX skipped attempts; a success
+    /// resets it.
+    #[test]
+    fn retries_back_off_exponentially_and_reset_on_success() {
+        let log = ConfigureLog::new(0, SurfaceRole::Playfield);
+        assert!(log.may_attempt(), "no back-off before a failure");
+        let mut skips = Vec::new();
+        for _ in 0..9 {
+            log.record(&"busy");
+            let mut n = 0;
+            while !log.may_attempt() {
+                n += 1;
+            }
+            skips.push(n);
+        }
+        assert_eq!(skips, [1, 2, 4, 8, 16, 32, 64, 64, 64]);
+        assert_eq!(log.failures(), 9, "skipped attempts are not failures");
+        log.record(&"busy");
+        log.succeeded();
+        assert!(log.may_attempt(), "success clears the pending skips");
+        log.record(&"busy");
+        assert!(!log.may_attempt() && log.may_attempt(), "back-off restarts at 1");
     }
 }
 

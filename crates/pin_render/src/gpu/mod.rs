@@ -303,6 +303,42 @@ pub fn wait_for_device(
         .map(|_| ())
 }
 
+/// Result channel of a `Buffer::map_async` callback.
+pub(crate) type MapReceiver = std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>;
+
+/// Waits (bounded by `timeout` in total) for the device to finish and for
+/// the `map_async` callback to report on `rx` (5.1 review N6: a poll that
+/// returns without the callback having run must not block forever).
+pub(crate) fn finish_map(
+    device: &wgpu::Device,
+    rx: &MapReceiver,
+    timeout: std::time::Duration,
+) -> Result<(), GpuError> {
+    let start = std::time::Instant::now();
+    wait_for_device(device, timeout).map_err(|e| GpuError::Readback(format!("poll: {e}")))?;
+    // The callback normally ran inside the poll; allow a short grace period
+    // even when the poll used up the whole budget.
+    let left = timeout
+        .saturating_sub(start.elapsed())
+        .max(std::time::Duration::from_millis(100));
+    recv_map(rx, left)
+}
+
+/// The `map_async` result from `rx`, waiting at most `timeout`.
+pub(crate) fn recv_map(rx: &MapReceiver, timeout: std::time::Duration) -> Result<(), GpuError> {
+    use std::sync::mpsc::RecvTimeoutError;
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(GpuError::Readback(format!("map_async: {e}"))),
+        Err(RecvTimeoutError::Timeout) => Err(GpuError::Readback(format!(
+            "map_async callback did not run within {timeout:?}"
+        ))),
+        Err(RecvTimeoutError::Disconnected) => Err(GpuError::Readback(
+            "map_async callback dropped without a result".into(),
+        )),
+    }
+}
+
 /// Creates a wgpu instance over `backends` (instance flags honour the
 /// `WGPU_*` debug environment variables).
 pub fn create_instance(backends: Backends) -> wgpu::Instance {

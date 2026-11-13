@@ -368,11 +368,7 @@ pub(crate) fn read_texture(
     readback.map_async(wgpu::MapMode::Read, .., move |r| {
         let _ = tx.send(r);
     });
-    crate::gpu::wait_for_device(device, crate::gpu::READBACK_WAIT_TIMEOUT)
-        .map_err(|e| GpuError::Readback(format!("poll: {e}")))?;
-    rx.recv()
-        .map_err(|e| GpuError::Readback(format!("map channel: {e}")))?
-        .map_err(|e| GpuError::Readback(format!("map_async: {e}")))?;
+    crate::gpu::finish_map(device, &rx, crate::gpu::READBACK_WAIT_TIMEOUT)?;
     let mut out = Vec::with_capacity(row * height as usize);
     {
         let mapped = readback

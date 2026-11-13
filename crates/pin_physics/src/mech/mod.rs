@@ -45,13 +45,17 @@
 //! * **Bumper.** The ring switch is closed on every tick in which a ball
 //!   touches the ring (an impulse on the cylinder, or a gap ≤ 0.1 mm after
 //!   the step). While the coil is on, every ball on the bumper's layer whose
-//!   gap to the ring is at most `kick_reach` and whose radial speed `v_r` is
-//!   below the ring speed `V = kick_speed` gets the radial velocity of a
-//!   collision with a ring moving outward at `V`:
-//!   `v_r' = V + e·(V − v_r)` (`e`: ball–steel restitution from the pair
-//!   table). The exit speed of a ball at rest is `(1 + e)·V` (2.72 m/s with
-//!   the defaults and a steel ball); the formula depends only on `v_r`, so
-//!   every approach angle behaves alike.
+//!   gap to the ring is at most `kick_reach` gets the radial velocity of a
+//!   collision with a ring moving outward at `V = kick_speed`:
+//!   `v_r' = V + e·(V − u)` (`e`: ball–steel restitution from the pair
+//!   table), where `u = v_r` for a ball leaving the ring and `u = −e·v_r`
+//!   for a ball still closing in (it rebounds off the ring first; the skirt
+//!   switch can close a tick before the ball touches). A ball with
+//!   `u ≥ V` only rebounds. The radial exit speed is therefore
+//!   `max(u, (1 + e)·V − e·u)`: between `V` and `(1 + e)·V` (1.7 and 2.72
+//!   m/s with the defaults and a steel ball), or the plain rebound `u` when
+//!   that is faster. It depends only on the radial
+//!   speed, so every approach angle behaves alike.
 //! * **Sling, kickback.** A slider of mass `m` on its rest stop (`x = 0`),
 //!   end stop at `stroke`, return spring `k`. While the coil is on the
 //!   force `F` drives it; the ball is pushed by the two-body contact of the
@@ -660,11 +664,19 @@ impl MechSet {
                 continue;
             }
             let vr = b.velocity.dot(n);
-            if vr >= speed {
+            let e = self.restitution(prof.material, m.material, prof.restitution);
+            // A ball still closing in on the ring rebounds first (the skirt
+            // is part of the ring's contact zone): u = −e·v_r.
+            let u = if vr < 0.0 { -e * vr } else { vr };
+            if u >= speed {
+                if vr < 0.0
+                    && let Some(bm) = solver.ball_mut(h)
+                {
+                    bm.velocity += n * (u - vr);
+                }
                 continue;
             }
-            let e = self.restitution(prof.material, m.material, prof.restitution);
-            let out = speed + e * (speed - vr);
+            let out = speed + e * (speed - u);
             if let Some(bm) = solver.ball_mut(h) {
                 bm.velocity += n * (out - vr);
             }
