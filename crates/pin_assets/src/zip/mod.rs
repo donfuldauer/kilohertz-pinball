@@ -65,6 +65,13 @@ pub fn normalize_path(name: &str) -> Result<String, AssetError> {
             }
         }
     }
+    // The result must normalise to itself (`list` and `exists` agree): a
+    // drive letter revealed by dropping `.` components (`.\a:`) is absolute
+    // too (4.3 fix round 1, O1).
+    let o = out.as_bytes();
+    if o.len() >= 2 && o[0].is_ascii_alphabetic() && o[1] == b':' {
+        return Err(AssetError::AbsolutePath(name.to_owned()));
+    }
     Ok(out)
 }
 
@@ -638,6 +645,26 @@ mod tests {
             );
         }
         assert_eq!(normalize_path("a\0b"), Err(AssetError::BadName));
+    }
+
+    /// 4.3 fix round 1, O1: every accepted name normalises to itself, so
+    /// `Vfs::list` and `Vfs::exists` agree (`.\\a:` hid the drive letter).
+    #[test]
+    fn normalisation_is_idempotent() {
+        for p in [".\\a:", "./a:", "./c:x", "././z:/y"] {
+            assert_eq!(
+                normalize_path(p),
+                Err(AssetError::AbsolutePath(p.to_owned())),
+                "{p}"
+            );
+        }
+        let names = [
+            "a", "./a", "ab:", ".\\ab:", "x/./y", "\u{e9}/:", "1:", "_:x",
+        ];
+        for p in names {
+            let once = normalize_path(p).unwrap();
+            assert_eq!(normalize_path(&once).unwrap(), once, "{p}");
+        }
     }
 
     #[test]
