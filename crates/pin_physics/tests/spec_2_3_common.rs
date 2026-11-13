@@ -35,8 +35,9 @@ pub const BASE_R: f32 = BASE_R_MM * 1.0e-3;
 pub const TIP_R: f32 = TIP_R_MM * 1.0e-3;
 
 /// Height of `base_position_mm` above the playfield used by the flat scenes:
-/// the pivot at the centre height of a resting standard ball.
-pub const PIVOT_Z_MM: f32 = 13.5;
+/// the base on the playfield, as in the table schema examples (the bat's
+/// extent along the normal is measured, see [`measure_frame`]).
+pub const PIVOT_Z_MM: f32 = 0.0;
 
 pub fn v(x: f32, y: f32, z: f32) -> Vec3 {
     Vec3::new(x, y, z)
@@ -240,9 +241,27 @@ impl BatFrame {
 pub fn measure_frame(set: &FlipperSet, body: usize, cfg: &FlipperConfig) -> BatFrame {
     let n = Vec3::from_array(cfg.surface_normal).normalize();
     let base = Vec3::from_array(cfg.base_position_mm) * 1.0e-3;
-    let (u, w) = basis(n);
     let rho = 0.5 * cfg.shape.length_mm() * 1.0e-3;
-    let at = |phi: f32| base + (u * libm::cosf(phi) + w * libm::sinf(phi)) * rho;
+    // Pass 1: direction just off the base plane, then the mid-plane offset;
+    // pass 2: direction again in the mid-plane.
+    let e1 = probe_direction(set, body, base + n * 0.002, n, rho);
+    let mid = base + e1 * rho;
+    let d_up = probe(set, body, mid + n * 0.1);
+    let d_dn = probe(set, body, mid - n * 0.1);
+    let lift = 0.5 * (d_dn - d_up);
+    let e_rest = probe_direction(set, body, base + n * lift, n, rho);
+    BatFrame {
+        pivot: base + n * lift,
+        n,
+        e_rest,
+        rest_deg: cfg.rest_angle_deg,
+        lift,
+    }
+}
+
+fn probe_direction(set: &FlipperSet, body: usize, centre: Vec3, n: Vec3, rho: f32) -> Vec3 {
+    let (u, w) = basis(n);
+    let at = |phi: f32| centre + (u * libm::cosf(phi) + w * libm::sinf(phi)) * rho;
     let mut best = (f32::INFINITY, 0.0f32);
     for k in 0..720 {
         let phi = k as f32 * (std::f32::consts::TAU / 720.0);
@@ -263,18 +282,7 @@ pub fn measure_frame(set: &FlipperSet, body: usize, cfg: &FlipperConfig) -> BatF
         }
     }
     let phi = 0.5 * (lo + hi);
-    let e_rest = (u * libm::cosf(phi) + w * libm::sinf(phi)).normalize();
-    let mid = base + e_rest * rho;
-    let d_up = probe(set, body, mid + n * 0.1);
-    let d_dn = probe(set, body, mid - n * 0.1);
-    let lift = 0.5 * (d_dn - d_up);
-    BatFrame {
-        pivot: base + n * lift,
-        n,
-        e_rest,
-        rest_deg: cfg.rest_angle_deg,
-        lift,
-    }
+    (u * libm::cosf(phi) + w * libm::sinf(phi)).normalize()
 }
 
 /// Frames of every flipper of `configs`, measured on a throw-away set

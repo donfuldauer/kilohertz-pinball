@@ -9,6 +9,7 @@ mod common;
 
 use common::*;
 use glam::{Quat, Vec3};
+use pin_physics::ball::{BallEvent, ImpactTarget};
 use pin_core::FlipperStagingMode;
 use pin_core::ids::{FlipperId, SwitchId};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -146,6 +147,10 @@ fn flipper_tick_never_allocates() {
     }
     let n = allocs() - before;
     assert_eq!(n, 0, "{n} heap allocations in 3000 flipper ticks");
+    // The counter works.
+    let probe = std::hint::black_box(Box::new(7u64));
+    assert!(allocs() > before, "allocation counter inactive");
+    drop(probe);
 }
 
 #[test]
@@ -153,14 +158,23 @@ fn busy_scenario_is_bit_identical_over_ten_runs() {
     let run = || {
         let mut s = busy();
         let mut trail = DefaultHasher::new();
+        let mut bat_hits = 0u32;
         for _ in 0..4000 {
             drive(&mut s);
             s.advance();
             state_hash(&s).hash(&mut trail);
+            bat_hits += s
+                .ev
+                .as_slice()
+                .iter()
+                .filter(|e| matches!(e, BallEvent::Impact { other: ImpactTarget::Body { set: 0, .. }, .. }))
+                .count() as u32;
         }
-        (trail.finish(), state_hash(&s))
+        (trail.finish(), state_hash(&s), bat_hits)
     };
     let first = run();
+    println!("bat impacts per run: {}", first.2);
+    assert!(first.2 >= 5, "the scenario barely touches the bats: {}", first.2);
     for k in 1..10 {
         assert_eq!(run(), first, "run {k} differs");
     }

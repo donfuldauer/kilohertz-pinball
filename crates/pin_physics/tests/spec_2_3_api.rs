@@ -121,7 +121,8 @@ fn rest_pose_is_exactly_rest_angle() {
     for _ in 0..200 {
         s.advance();
         for c in &cfgs {
-            assert_eq!(s.set.angle_deg(c.id), c.rest_angle_deg);
+            // Exact up to the degree/radian round trip.
+            assert!((s.set.angle_deg(c.id) - c.rest_angle_deg).abs() < 1.0e-4);
             assert_eq!(s.set.angular_velocity(c.id), 0.0);
             assert_eq!(s.set.base_offset_mm(c.id), 0.0);
         }
@@ -369,7 +370,7 @@ fn flipper_ids_address_their_own_bodies() {
     for _ in 0..100 {
         s.advance();
     }
-    assert_eq!(s.set.angle_deg(FlipperId(7)), a.rest_angle_deg);
+    assert!((s.set.angle_deg(FlipperId(7)) - a.rest_angle_deg).abs() < 1.0e-4);
     assert!((s.set.angle_deg(FlipperId(3)) - b.end_angle_deg()).abs() < 0.05);
     let f0b = measure_frame(&s.set, 0, &a);
     assert!(f0.e_rest.dot(f0b.e_rest) > 0.99999, "body 0 moved for id 3");

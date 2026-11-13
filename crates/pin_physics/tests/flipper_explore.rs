@@ -115,3 +115,27 @@ fn explore_trace() {
     let r = rebound(if held { None } else { Some(k) }, None, held, 0.5, true);
     println!("{r:?}");
 }
+
+#[test]
+#[ignore]
+fn explore_cradle() {
+    let (rig, h) = cradle_rig();
+    let b = rig.ball(h);
+    println!("cradled at {:?} v {:?} bat {}", b.position, b.velocity.length(), rig.flippers.angle_deg(LEFT));
+    for d in (300..1100).step_by(25) {
+        let (mut rig, h) = cradle_rig();
+        rig.flippers.set_energised(LEFT, false);
+        rig.run(d);
+        let b0 = rig.ball(h);
+        let frac = b0.position.dot(bat_dir(rig.flippers.angle_deg(LEFT))) / BAT_LEN;
+        rig.flippers.set_energised(LEFT, true);
+        let mut exit = 0.0f32;
+        let mut dir = glam::Vec3::ZERO;
+        for _ in 0..80 {
+            rig.step();
+            let b = rig.ball(h);
+            if b.velocity.length() > exit { exit = b.velocity.length(); dir = b.velocity; }
+        }
+        println!("release {d:3} ms: at {:.2} of bat, bat angle {:.1}; exit {exit:.2} m/s dir {:.1} deg", frac, 0.0, dir.y.atan2(dir.x).to_degrees());
+    }
+}

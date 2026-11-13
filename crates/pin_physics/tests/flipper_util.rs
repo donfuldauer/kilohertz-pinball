@@ -198,3 +198,47 @@ pub fn bat_dir(angle_deg: f32) -> Vec3 {
     let a = angle_deg.to_radians();
     v(libm::cosf(a), libm::sinf(a), 0.0)
 }
+
+/// Floor plus an inlane guide: a wall collinear with the resting left
+/// flipper (pivot at the origin, rest −30°), running up and to the left
+/// from the pivot, flush with the bat's base circle.
+pub fn inlane_world() -> StaticWorld {
+    let mut b = StaticWorldBuilder::new();
+    b.add_collider(
+        StaticShape::Cuboid {
+            center: v(0.0, 0.0, -0.05),
+            half_extents: v(2.0, 2.0, 0.05),
+            rotation: Quat::IDENTITY,
+        },
+        layers::ALL,
+        true,
+    );
+    let rotation = Quat::from_rotation_z(150.0f32.to_radians());
+    b.add_collider(
+        StaticShape::Cuboid {
+            center: bat_dir(150.0) * 0.075 + v(0.0, 0.0, 0.02),
+            half_extents: v(0.075, 0.011, 0.02),
+            rotation,
+        },
+        layers::ALL,
+        true,
+    );
+    b.build()
+}
+
+/// A left flipper held up with a standard ball settled in the cradle
+/// between the bat and the inlane guide.
+pub fn cradle_rig() -> (Rig, BallHandle) {
+    let mut rig = Rig::with_world(
+        &[left_config(0, [0.0, 0.0, 0.0])],
+        inlane_world(),
+        pitched_gravity(6.5),
+    );
+    rig.flippers.set_energised(LEFT, true);
+    for _ in 0..100 {
+        rig.flippers.advance(DT);
+    }
+    let h = rig.add_ball(v(0.02, 0.035, BALL_R), Vec3::ZERO);
+    rig.run(1500);
+    (rig, h)
+}

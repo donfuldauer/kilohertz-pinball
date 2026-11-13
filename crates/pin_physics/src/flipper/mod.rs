@@ -162,10 +162,11 @@ pub struct FlipperTuning {
 
 impl Default for FlipperTuning {
     fn default() -> Self {
+        let env = |k: &str, d: f32| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
         Self {
-            coil_rise_s: 0.016,
-            coil_fall_s: 0.002,
-            rubber_loss_speed_m_s: 4.0,
+            coil_rise_s: env("RISE", 0.016),
+            coil_fall_s: env("FALL", 0.002),
+            rubber_loss_speed_m_s: env("LOSS", 4.0),
             reference_ball_mass_kg: 0.080,
             bat_height_m: 0.030,
             ticks_per_ms: 1.0,

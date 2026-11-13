@@ -95,20 +95,26 @@ fn no_tunnelling_at_15_m_s_tip_speed_head_on() {
     // Strong coils (3 N·m, the Appendix C maximum, and 8 N·m so the tip
     // passes 15 m/s whatever the coil model), fast balls, hits near the tip, flat mount.
     let mut fastest = 0.0f32;
+    let (mut cases, mut hits) = (0u32, 0u32);
     for power in [3.0f32, 8.0] {
         for speed in [5.0f32, 15.0, 30.0, 50.0] {
             for off in [-12i64, -8, -4, -2, 0, 2] {
                 for frac in [0.5f32, 0.75, 0.85] {
                     let r = tunnel_case(Vec3::Z, [0.0, 0.0, 0.0], 10.0, 50.0, power, speed, frac, 0.0, true, off);
                     match r {
-                        Ok((tip, _)) => fastest = fastest.max(tip),
+                        Ok((tip, hit)) => {
+                            fastest = fastest.max(tip);
+                            cases += 1;
+                            hits += u32::from(hit);
+                        }
                         Err(e) => panic!("power {power} speed {speed} offset {off} frac {frac}: {e}"),
                     }
                 }
             }
         }
     }
-    println!("max bat tip (axis end) speed {fastest:.2} m/s");
+    println!("max bat tip (axis end) speed {fastest:.2} m/s; {hits}/{cases} cases hit the bat");
+    assert!(hits * 10 >= cases * 9, "scenario mostly misses the bat: {hits}/{cases}");
     assert!(fastest >= 15.0, "scenario never reached a 15 m/s tip: {fastest}");
 }
 
