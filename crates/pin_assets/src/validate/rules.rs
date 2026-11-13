@@ -873,10 +873,10 @@ impl<'v> Checker<'v> {
             return None;
         }
         let mut points: Vec<[f32; 3]> = s.points.iter().map(|&q| mm3_to_m(q)).collect();
-        if let Some(j) = points
-            .iter()
-            .position(|&q| !(Vec3::from_array(q).length() <= MAX_SPLINE_COORD_M))
-        {
+        if let Some(j) = points.iter().position(|&q| {
+            let d = Vec3::from_array(q).length();
+            d.is_nan() || d > MAX_SPLINE_COORD_M
+        }) {
             self.err(
                 TABLE_FILE,
                 format!("{p}.points[{j}]"),

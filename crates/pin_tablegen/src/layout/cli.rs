@@ -117,13 +117,15 @@ pub fn run_cli(args: &[String]) -> Result<String, CliError> {
         .map_err(|e| CliError::Failed(format!("{}: {}", args.layout.display(), e.message)))?;
     let table_bytes = read(&args.table)?;
     let table_text = String::from_utf8(table_bytes).map_err(|e| {
-        CliError::Failed(format!("{}: not valid UTF-8 text: {e}", args.table.display()))
+        CliError::Failed(format!(
+            "{}: not valid UTF-8 text: {e}",
+            args.table.display()
+        ))
     })?;
     let base = TableManifest::from_toml_str(&table_text)
         .map_err(|e| CliError::Failed(format!("{}: {e}", args.table.display())))?;
-    let generated = generate(&layout, &base).map_err(|e| {
-        CliError::Failed(format!("{}: {e}", args.layout.display()))
-    })?;
+    let generated = generate(&layout, &base)
+        .map_err(|e| CliError::Failed(format!("{}: {e}", args.layout.display())))?;
     write_bundle(&generated, &args.out)
         .map_err(|e| CliError::Failed(format!("{}: {e}", args.out.display())))?;
     Ok(format!(

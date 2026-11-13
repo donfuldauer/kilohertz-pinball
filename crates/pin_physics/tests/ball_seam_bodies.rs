@@ -760,23 +760,3 @@ fn flipper_table_balls_stay_on_the_table() {
         }
     }
 }
-#[test]
-fn dbg_rotor() {
-    let world = empty_world();
-    let geo = Geometry::new(&world);
-    let mut s = solver_no_gravity();
-    let r = radius(JUMBO);
-    let mut rotor = RotorBody::new(Vec3::ZERO, 0.07, 0.008, 2.5e-4, -0.6);
-    rotor.omega = 0.5 / rotor.reach();
-    rotor.limits = (-0.6, 1.2);
-    let mut set = Rotors::one(rotor);
-    let h = s.add_ball(ball_at(JUMBO, v(0.07, 0.0, 0.0), v(0.0, -2.0, 0.0))).unwrap();
-    let mut ev = BallEvents::new();
-    for t in 0..80 {
-        ev.clear();
-        s.step_with_bodies(&geo, &mut [&mut set], DT, &mut ev);
-        let b = s.ball(h).unwrap();
-        let cp = set.bodies[0].closest(0.0, b.position);
-        println!("{t} pos {:?} vel {:?} ang {} om {} gap {} n {:?} ev {:?}", b.position, b.velocity, set.bodies[0].angle, set.bodies[0].omega, cp.distance - r, cp.normal, ev.as_slice());
-    }
-}

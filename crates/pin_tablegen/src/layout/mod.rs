@@ -54,9 +54,7 @@ use glam::Vec3;
 use pin_core::Material;
 use pin_core::schema::LayoutManifest;
 use pin_core::schema::layout::{InsertShape, LaneKind};
-use pin_core::schema::table::{
-    AabbDef, LayerTransitionDef, SplineDef, SplineKind, TableManifest,
-};
+use pin_core::schema::table::{AabbDef, LayerTransitionDef, SplineDef, SplineKind, TableManifest};
 use pin_core::units::{mm_to_m, mm3_to_m};
 use pin_physics::world::{CubicSpline, GuideCurve, Wireform};
 use std::path::Path;
@@ -439,7 +437,10 @@ impl Builder<'_> {
             let n = points.len() - 1;
             points[n] = points[0];
             if points[n - 1] == points[n] {
-                return Err(GenError::new(&e, "the closing point repeats the previous point"));
+                return Err(GenError::new(
+                    &e,
+                    "the closing point repeats the previous point",
+                ));
             }
         } else if gap < guides::HAIRLINE_GAP_MM {
             return Err(GenError::new(
@@ -450,7 +451,8 @@ impl Builder<'_> {
                 ),
             ));
         }
-        let rails = guides::lane_rails(&points, lane.width, closed).map_err(|m| GenError::new(&e, m))?;
+        let rails =
+            guides::lane_rails(&points, lane.width, closed).map_err(|m| GenError::new(&e, m))?;
         let material = Material::Steel;
         let mat = self.materials.physical(material);
         for (side, rail) in ["left", "right"].into_iter().zip(rails) {
@@ -662,7 +664,11 @@ fn wire_mesh(wf: &Wireform) -> Mesh {
             let b = (p1 - p2 * 2.0 + p3).as_dvec3().length();
             // Rails bend somewhat more than the centre line: margin 4.
             let k = libm::sqrt(4.0 * 6.0 * a.max(b) / (8.0 * mesh::FACET_TOLERANCE_M)).ceil();
-            if k.is_finite() { (k as usize).clamp(2, 4096) } else { 4096 }
+            if k.is_finite() {
+                (k as usize).clamp(2, 4096)
+            } else {
+                4096
+            }
         })
         .collect();
     let mut ts = vec![0.0f32];
@@ -710,9 +716,18 @@ fn insert_outline(shape: InsertShape, c: [f64; 2], size: f64) -> Vec<[f64; 2]> {
         }
         InsertShape::Triangle => {
             let h = 0.75f64.sqrt();
-            vec![at(-0.5, -h / 3.0), at(0.5, -h / 3.0), at(0.0, 2.0 * h / 3.0)]
+            vec![
+                at(-0.5, -h / 3.0),
+                at(0.5, -h / 3.0),
+                at(0.0, 2.0 * h / 3.0),
+            ]
         }
-        InsertShape::Rect => vec![at(-0.5, -0.25), at(0.5, -0.25), at(0.5, 0.25), at(-0.5, 0.25)],
+        InsertShape::Rect => vec![
+            at(-0.5, -0.25),
+            at(0.5, -0.25),
+            at(0.5, 0.25),
+            at(-0.5, 0.25),
+        ],
         InsertShape::Arrow => vec![
             at(-0.12, -0.5),
             at(0.12, -0.5),

@@ -61,7 +61,7 @@ fn centre_samples(spline: &CubicSpline) -> Result<Vec<Sample>, String> {
         let d2 = spline.second_derivative(tf).as_dvec3();
         let speed = libm::sqrt(d1.x * d1.x + d1.y * d1.y);
         let at = || format!("near points[{}]", libm::round(t) as usize);
-        if !(speed > 1.0e-9) {
+        if speed.is_nan() || speed <= 1.0e-9 {
             return Err(format!("the centre line stops and turns back {}", at()));
         }
         let tan = [d1.x / speed, d1.y / speed];
@@ -215,8 +215,10 @@ fn rail(
             ));
         }
         let pts = resample(&line, segments);
-        let mut points_mm: Vec<[f32; 3]> =
-            pts.iter().map(|p| [p[0] as f32, p[1] as f32, 0.0]).collect();
+        let mut points_mm: Vec<[f32; 3]> = pts
+            .iter()
+            .map(|p| [p[0] as f32, p[1] as f32, 0.0])
+            .collect();
         if closed {
             let last = points_mm.len() - 1;
             points_mm[last] = points_mm[0];

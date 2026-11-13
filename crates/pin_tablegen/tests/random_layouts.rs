@@ -7,7 +7,9 @@ mod support;
 use pin_assets::{Vfs, load_gltf, load_table, validate_gltf_bindings};
 use pin_core::Material;
 use pin_core::schema::LayoutManifest;
-use pin_core::schema::layout::{Deck, Insert, InsertShape, Lane, LaneKind, Playfield, Post, Ramp, Wall};
+use pin_core::schema::layout::{
+    Deck, Insert, InsertShape, Lane, LaneKind, Playfield, Post, Ramp, Wall,
+};
 use pin_tablegen::layout::{GENERATED_PREFIX, generate, parse_layout_bytes, write_bundle};
 use proptest::prelude::*;
 use support::*;
@@ -36,8 +38,14 @@ fn open_wall() -> impl Strategy<Value = Wall> {
 
 /// A regular polygon (simple by construction).
 fn closed_wall() -> impl Strategy<Value = Wall> {
-    (3usize..9, 60.0f32..450.0, 60.0f32..1000.0, 5.0f32..50.0, 0.0f32..6.28).prop_map(
-        |(k, cx, cy, r, rot)| Wall {
+    (
+        3usize..9,
+        60.0f32..450.0,
+        60.0f32..1000.0,
+        5.0f32..50.0,
+        0.0f32..6.28,
+    )
+        .prop_map(|(k, cx, cy, r, rot)| Wall {
             points: (0..k)
                 .map(|i| {
                     let a = rot + i as f32 / k as f32 * core::f32::consts::TAU;
@@ -46,8 +54,7 @@ fn closed_wall() -> impl Strategy<Value = Wall> {
                 .collect(),
             closed: true,
             material: Material::Plastic,
-        },
-    )
+        })
 }
 
 fn post() -> impl Strategy<Value = Post> {
@@ -124,14 +131,19 @@ fn insert() -> impl Strategy<Value = Insert> {
 }
 
 fn deck() -> impl Strategy<Value = Deck> {
-    (1u8..8, 10.0f32..100.0, point(), 20.0f32..200.0, 20.0f32..200.0).prop_map(
-        |(layer, z, p, w, h)| Deck {
+    (
+        1u8..8,
+        10.0f32..100.0,
+        point(),
+        20.0f32..200.0,
+        20.0f32..200.0,
+    )
+        .prop_map(|(layer, z, p, w, h)| Deck {
             layer,
             z,
             outline: vec![p, [p[0] + w, p[1]], [p[0] + w, p[1] + h], [p[0], p[1] + h]],
             material: Material::Acrylic,
-        },
-    )
+        })
 }
 
 fn layout() -> impl Strategy<Value = LayoutManifest> {

@@ -312,9 +312,14 @@ impl MovingBodies for Rotors {
         let b = &self.bodies[body];
         Vec3::Z.cross(point - b.pivot) * b.omega_at(time)
     }
-    fn inverse_mass_at(&self, body: usize, _time: f32, point: Vec3, dir: Vec3) -> f32 {
+    fn inverse_mass_at(&self, body: usize, time: f32, point: Vec3, dir: Vec3) -> f32 {
         let b = &self.bodies[body];
         let arm = (point - b.pivot).cross(dir).z;
+        // An engaged stop takes a push into it.
+        let angle = b.angle_at(time);
+        if (angle <= b.limits.0 && arm < 0.0) || (angle >= b.limits.1 && arm > 0.0) {
+            return 0.0;
+        }
         arm * arm / b.inertia
     }
     fn apply_impulse(&mut self, body: usize, time: f32, point: Vec3, impulse: Vec3) {

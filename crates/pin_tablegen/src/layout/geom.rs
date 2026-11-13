@@ -157,7 +157,14 @@ mod tests {
         // Degenerate triangle.
         assert!(self_intersection(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]).is_some());
         // Touching at a vertex (figure of two triangles).
-        let touch = [[0.0, 0.0], [1.0, 1.0], [2.0, 0.0], [2.0, 2.0], [1.0, 1.0], [0.0, 2.0]];
+        let touch = [
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [2.0, 0.0],
+            [2.0, 2.0],
+            [1.0, 1.0],
+            [0.0, 2.0],
+        ];
         assert!(self_intersection(&touch).is_some());
     }
 
@@ -180,10 +187,7 @@ mod tests {
         ];
         let tris = triangulate(&l).unwrap();
         assert_eq!(tris.len(), 4);
-        let area: f64 = tris
-            .iter()
-            .map(|t| orient(l[t[0]], l[t[1]], l[t[2]]))
-            .sum();
+        let area: f64 = tris.iter().map(|t| orient(l[t[0]], l[t[1]], l[t[2]])).sum();
         assert!((area - signed_area2(&l)).abs() < 1e-12);
         let mut cw = SQUARE;
         cw.reverse();

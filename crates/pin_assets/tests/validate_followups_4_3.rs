@@ -39,7 +39,11 @@ fn table_with(kind: &str, points: &[[f64; 3]]) -> String {
         ("kind = \"wireform\"", format!("kind = \"{kind}\"")),
         (
             "gauge = 19.0",
-            if kind == "wireform" { "gauge = 19.0".into() } else { String::new() },
+            if kind == "wireform" {
+                "gauge = 19.0".into()
+            } else {
+                String::new()
+            },
         ),
         ("roll_deg = [0.0, 8.0, 0.0]", roll),
         (WIREFORM, replacement),
@@ -137,7 +141,11 @@ fn b_c_reach_only_warning_has_no_location_and_covers_both_causes() {
         0.0,
     )
     .unwrap();
-    assert_eq!(guide.reach(), 0.0, "the fixture must exhaust the lane table");
+    assert_eq!(
+        guide.reach(),
+        0.0,
+        "the fixture must exhaust the lane table"
+    );
     let w = warnings(&coil());
     let reach: Vec<_> = w
         .iter()
@@ -149,7 +157,10 @@ fn b_c_reach_only_warning_has_no_location_and_covers_both_causes() {
     assert!(!m.contains("points["), "no location: {m}");
     assert!(m.contains("close the guide or open the gap"), "{m}");
     assert!(m.contains("ran out of budget"), "{m}");
-    assert!(!w.iter().any(|w| w.message.contains("doubles back")), "{w:#?}");
+    assert!(
+        !w.iter().any(|w| w.message.contains("doubles back")),
+        "{w:#?}"
+    );
 }
 
 #[test]
@@ -162,9 +173,13 @@ fn b_geometric_doubling_back_keeps_its_location() {
         [0.0, 100.0, 0.0],
     ]);
     assert!(
-        w.iter()
-            .any(|w| w.message.contains("doubles back or touches itself near points[")),
+        w.iter().any(|w| w
+            .message
+            .contains("doubles back or touches itself near points[")),
         "{w:#?}"
     );
-    assert!(!w.iter().any(|w| w.message.contains("no clearance could be proven")));
+    assert!(
+        !w.iter()
+            .any(|w| w.message.contains("no clearance could be proven"))
+    );
 }

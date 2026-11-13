@@ -189,7 +189,10 @@ fn deck_errors() {
     assert!(err(&lay).message.contains("layer"));
     lay.decks = vec![deck(8, square.clone())];
     assert_eq!(err(&lay).element, "decks[0]");
-    lay.decks = vec![deck(1, vec![[0.0, 0.0], [100.0, 100.0], [100.0, 0.0], [0.0, 100.0]])];
+    lay.decks = vec![deck(
+        1,
+        vec![[0.0, 0.0], [100.0, 100.0], [100.0, 0.0], [0.0, 100.0]],
+    )];
     assert!(err(&lay).message.contains("crosses"));
     lay.decks = vec![deck(1, vec![[0.0, 0.0], [100.0, 0.0], [200.0, 0.0]])];
     assert_eq!(err(&lay).element, "decks[0]");
@@ -227,7 +230,10 @@ fn lane_and_ramp_errors() {
     assert!(e.message.contains("\"missing\""), "{e}");
     lay.ramps[0].spline = "rail".into();
     let g = generate(&lay, &base()).unwrap();
-    assert!(g.table.layer_transitions.is_empty(), "layer-0 ramp: no transition");
+    assert!(
+        g.table.layer_transitions.is_empty(),
+        "layer-0 ramp: no transition"
+    );
     lay.ramps[0].spline = "wire".into();
     let g = generate(&lay, &base()).unwrap();
     assert_eq!(g.table.layer_transitions.len(), 1);
@@ -267,5 +273,10 @@ fn parse_paths() {
     assert!(parse_layout_bytes(&[0xff, 0xfe]).is_err());
     let e = parse_layout("schema_version = 1").unwrap_err();
     assert_eq!(e.element, "layout.toml");
-    assert!(parse_layout_bytes(b"schema_version = 1\n[playfield]\nwidth = 1.0\nlength = 1.0\nwall_height = 1.0\n").is_ok());
+    assert!(
+        parse_layout_bytes(
+            b"schema_version = 1\n[playfield]\nwidth = 1.0\nlength = 1.0\nwall_height = 1.0\n"
+        )
+        .is_ok()
+    );
 }

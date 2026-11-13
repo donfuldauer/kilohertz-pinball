@@ -42,7 +42,11 @@ fn surface_samples(m: &MeshData) -> Vec<[f32; 3]> {
     let mut out = m.positions.clone();
     for [a, b, c] in triangles(m) {
         for (p, q) in [(a, b), (b, c), (c, a)] {
-            out.push([(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0, (p[2] + q[2]) / 2.0]);
+            out.push([
+                (p[0] + q[0]) / 2.0,
+                (p[1] + q[1]) / 2.0,
+                (p[2] + q[2]) / 2.0,
+            ]);
         }
         out.push([
             (a[0] + b[0] + c[0]) / 3.0,
@@ -96,7 +100,10 @@ fn check_agreement(layout: &LayoutManifest, table: &LoadedTable, scene: &GltfSce
             assert!(m.material.is_some(), "{name}");
         }
         if name == "floor" {
-            let (w, l) = (layout.playfield.width / 1000.0, layout.playfield.length / 1000.0);
+            let (w, l) = (
+                layout.playfield.width / 1000.0,
+                layout.playfield.length / 1000.0,
+            );
             for p in &m.positions {
                 assert!(p[2] == 0.0 && (0.0..=w).contains(&p[0]) && (0.0..=l).contains(&p[1]));
             }
@@ -146,7 +153,11 @@ fn check_agreement(layout: &LayoutManifest, table: &LoadedTable, scene: &GltfSce
             let outline: Vec<[f32; 2]> = deck.outline.iter().map(|&p| mm(p)).collect();
             for p in &m.positions {
                 assert!((p[2] - z).abs() < 1e-7, "{name}");
-                assert!(outline.iter().any(|q| (q[0] - p[0]).abs() < 1e-6 && (q[1] - p[1]).abs() < 1e-6));
+                assert!(
+                    outline
+                        .iter()
+                        .any(|q| (q[0] - p[0]).abs() < 1e-6 && (q[1] - p[1]).abs() < 1e-6)
+                );
             }
             let mut a2 = 0.0f64;
             for k in 0..outline.len() {
@@ -156,11 +167,18 @@ fn check_agreement(layout: &LayoutManifest, table: &LoadedTable, scene: &GltfSce
             assert!((area(m) - a2.abs() / 2.0).abs() < 1e-8, "{name}");
             seen += 1;
         } else if name.starts_with(GENERATED_PREFIX) {
-            assert!(!m.extras.collider, "{name}: guides collide through their spline");
+            assert!(
+                !m.extras.collider,
+                "{name}: guides collide through their spline"
+            );
             let spline = spline_of(table, name);
             for p in surface_samples(m) {
                 let c = spline.closest_point(Vec3::new(p[0], p[1], 0.0), None);
-                assert!(c.distance <= AGREE_M, "{name}: {p:?} is {} m off", c.distance);
+                assert!(
+                    c.distance <= AGREE_M,
+                    "{name}: {p:?} is {} m off",
+                    c.distance
+                );
                 assert!((-1e-7..=h + 1e-6).contains(&p[2]));
             }
             let bottom: Vec<[f32; 2]> = m
@@ -176,7 +194,10 @@ fn check_agreement(layout: &LayoutManifest, table: &LoadedTable, scene: &GltfSce
                     .windows(2)
                     .map(|w| plan_dist_to_segment([q.x, q.y], w[0], w[1]))
                     .fold(f32::INFINITY, f32::min);
-                assert!(d <= AGREE_M, "{name}: spline point {q} is {d} m from the mesh");
+                assert!(
+                    d <= AGREE_M,
+                    "{name}: spline point {q} is {d} m from the mesh"
+                );
             }
             seen += 1;
         }
@@ -257,13 +278,24 @@ fn materials_are_flat_and_named() {
     let generated = gen_apex("rich_layout.toml");
     let (dir, _, scene) = load(&generated, "materials");
     let names: Vec<&str> = scene.materials.iter().map(|m| m.name.as_str()).collect();
-    for want in ["wood", "rubber", "steel", "plastic", "acrylic", "insert #ff7a00"] {
+    for want in [
+        "wood",
+        "rubber",
+        "steel",
+        "plastic",
+        "acrylic",
+        "insert #ff7a00",
+    ] {
         assert!(names.contains(&want), "{names:?}");
     }
     assert!(scene.materials.iter().all(|m| m.base_color_image.is_none()));
     for m in scene.meshes.iter().filter(|m| m.extras.collider) {
         let mat = &scene.materials[m.material.unwrap()];
-        assert!(pin_core::Material::from_name(&mat.name).is_some(), "{}", m.name);
+        assert!(
+            pin_core::Material::from_name(&mat.name).is_some(),
+            "{}",
+            m.name
+        );
     }
     let post = scene.meshes.iter().find(|m| m.name == "posts[0]").unwrap();
     assert_eq!(scene.materials[post.material.unwrap()].name, "rubber");
@@ -323,9 +355,15 @@ fn with(edit: impl FnOnce(&mut String)) -> Result<(), String> {
 fn invalid_layouts_name_the_element() {
     let e = with(|t| *t = t.replace("lamp = \"overdrive_ready\"", "lamp = \"overdrive_redy\""))
         .unwrap_err();
-    assert!(e.starts_with("inserts[0]: ") && e.contains("overdrive_redy"), "{e}");
+    assert!(
+        e.starts_with("inserts[0]: ") && e.contains("overdrive_redy"),
+        "{e}"
+    );
     let e = with(|t| *t = t.replace("\"return_wireform\"", "\"no_such_spline\"")).unwrap_err();
-    assert!(e.starts_with("ramps[0]: ") && e.contains("no_such_spline"), "{e}");
+    assert!(
+        e.starts_with("ramps[0]: ") && e.contains("no_such_spline"),
+        "{e}"
+    );
     let e = with(|t| {
         t.push_str(
             "\n[[walls]]\npoints = [[100.0, 100.0], [200.0, 200.0], [200.0, 100.0], [100.0, 200.0]]\n\
@@ -352,12 +390,19 @@ fn cli_end_to_end() {
         .arg(&dir)
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let vfs = pin_assets::Vfs::open(&dir).unwrap();
     pin_assets::load_table(&vfs).unwrap();
     let expected = gen_apex("apex_layout.toml");
     assert!(std::fs::read(dir.join("playfield.glb")).unwrap() == expected.glb);
-    assert_eq!(std::fs::read_to_string(dir.join("table.toml")).unwrap(), expected.table_toml);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("table.toml")).unwrap(),
+        expected.table_toml
+    );
 
     // An invalid layout: exit code 1, the element named, nothing written.
     let bad = dir.join("bad_layout.toml");
@@ -377,7 +422,10 @@ fn cli_end_to_end() {
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("inserts[0]") && err.contains("\"nope\""), "{err}");
+    assert!(
+        err.contains("inserts[0]") && err.contains("\"nope\""),
+        "{err}"
+    );
     assert!(!empty.exists());
     // Usage errors: exit code 2.
     let out = std::process::Command::new(exe).output().unwrap();

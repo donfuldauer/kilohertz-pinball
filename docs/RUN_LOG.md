@@ -139,3 +139,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 4.6 | Independent Tester | Fable 5.2 | 1 | running | — | |
 | 4 | 3.4 | Independent Tester | Fable 5.2 | 1 | done | 84 spec tests pass; clippy clean on spec files | no implementation defects; tests beyond the brief pin documented choices (rumble envelope, SSF defaults, chunk invariance) — flagged for the Reviewer |
 | 4 | 4.6 | Independent Tester | Fable 5.2 | 1 | done | 46 spec tests pass | no defects; V5 scenes read as out of kit scope (AssetKind has no scene kind) — Reviewer to confirm; clippy blocked by in-progress edits in other crates at the time |
+| 4 | 4.3 | Independent Tester | Fable 5.2 | 1 | done | 50/52 spec tests pass | D1 tiny ramp entry_width emits a degenerate layer-transition zone (invalid bundle) → sent to the Implementer |

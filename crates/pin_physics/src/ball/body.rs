@@ -199,12 +199,19 @@ pub trait MovingBodies {
     /// (the surface velocity used in the slip and normal terms).
     fn velocity_at(&self, body: usize, time: f32, point: Vec3) -> Vec3;
 
-    /// Inverse effective mass (1/kg) of the body at `point` along the unit
-    /// vector `direction` at `time`: the change of `velocity_at(point)·direction`
-    /// per unit impulse along `direction`. `0` = kinematic (infinite mass)
-    /// in that direction; never negative. For a free rigid body,
-    /// `1/m + ((r × d)·I⁻¹(r × d))`; for a 1-DOF rotor about unit axis `a`,
-    /// `((r × d)·a)² / I`; for a 1-DOF slider along `a`, `(d·a)² / m`.
+    /// Inverse effective mass (1/kg) of the body at `point` at `time` for an
+    /// impulse the body would receive along the unit vector `direction`: the
+    /// change of `velocity_at(point)·direction` per unit of such an impulse.
+    /// `0` = kinematic (infinite mass) for that push; never negative. For a
+    /// free rigid body, `1/m + ((r × d)·I⁻¹(r × d))`; for a 1-DOF rotor about
+    /// unit axis `a`, `((r × d)·a)² / I`; for a 1-DOF slider along `a`,
+    /// `(d·a)² / m`.
+    ///
+    /// The sign of `direction` matters for one-sided constraints: a body
+    /// resting on an engaged end stop must return 0 for a push *into* the
+    /// stop (it cannot move that way) and its free value for a push away from
+    /// it. The solver asks with `−n` for the normal impulse (`n` points from
+    /// the body to the ball) and with the slip direction for friction.
     fn inverse_mass_at(&self, body: usize, time: f32, point: Vec3, direction: Vec3) -> f32;
 
     /// The body received `impulse` (N·s) at `point` at `time`: re-predict
@@ -329,7 +336,9 @@ pub(super) fn solve_body_contact(
     let m = sphere.mass;
     let rc = n * -r;
     let vs = set.velocity_at(body, time, point);
-    let wn = usable(set.inverse_mass_at(body, time, point, n));
+    // The body is pushed along −n by the normal impulse and along the slip
+    // by friction.
+    let wn = usable(set.inverse_mass_at(body, time, point, -n));
     let slip = tangential(ball.velocity + ball.angular_velocity.cross(rc) - vs, n);
     let wt = slip
         .try_normalize()
@@ -343,7 +352,7 @@ pub(super) fn solve_body_contact(
         let mut moved = false;
         if j != Vec3::ZERO {
             set.apply_impulse(body, time, point, -j);
-            moved = j
+            moved = (-j)
                 .try_normalize()
                 .is_some_and(|d| usable(set.inverse_mass_at(body, time, point, d)) > 0.0);
         }

@@ -44,8 +44,7 @@ impl Mesh {
             self.vertex([p[0] as f32, p[1] as f32, z], [0.0, 0.0, 1.0]);
         }
         for t in tris {
-            self.indices
-                .extend(t.iter().map(|&k| base + k as u32));
+            self.indices.extend(t.iter().map(|&k| base + k as u32));
         }
     }
 
@@ -75,7 +74,11 @@ fn cross(u: [f64; 3], v: [f64; 3]) -> [f64; 3] {
 fn unit(v: [f64; 3]) -> [f32; 3] {
     let len = libm::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     if len > 0.0 && len.is_finite() {
-        [(v[0] / len) as f32, (v[1] / len) as f32, (v[2] / len) as f32]
+        [
+            (v[0] / len) as f32,
+            (v[1] / len) as f32,
+            (v[2] / len) as f32,
+        ]
     } else {
         [0.0, 0.0, 1.0]
     }
@@ -96,7 +99,11 @@ pub fn circle_sides(r: f64) -> usize {
     } else {
         core::f64::consts::PI / libm::acos(c.clamp(-1.0, 1.0))
     };
-    let n = if n.is_finite() { n.ceil() as usize } else { 1024 };
+    let n = if n.is_finite() {
+        n.ceil() as usize
+    } else {
+        1024
+    };
     (n.clamp(16, 1024)).div_ceil(4) * 4
 }
 
@@ -131,7 +138,12 @@ pub fn post(center: [f64; 2], r: f64, z0: f32, z1: f32) -> Mesh {
     }
     for k in 0..n as u32 {
         let j = (k + 1) % n as u32;
-        let (b0, t0, b1, t1) = (base + 2 * k, base + 2 * k + 1, base + 2 * j, base + 2 * j + 1);
+        let (b0, t0, b1, t1) = (
+            base + 2 * k,
+            base + 2 * k + 1,
+            base + 2 * j,
+            base + 2 * j + 1,
+        );
         m.indices.extend_from_slice(&[b0, b1, t1, b0, t1, t0]);
     }
     let fan: Vec<[usize; 3]> = (1..n - 1).map(|k| [0, k, k + 1]).collect();
@@ -145,10 +157,7 @@ pub fn post(center: [f64; 2], r: f64, z0: f32, z1: f32) -> Mesh {
 /// bit (the physics welds trimesh vertices by position).
 pub fn ribbon(points: &[[f32; 3]], closed: bool, height: f32) -> Mesh {
     let mut m = Mesh::default();
-    let tops: Vec<[f32; 3]> = points
-        .iter()
-        .map(|p| [p[0], p[1], p[2] + height])
-        .collect();
+    let tops: Vec<[f32; 3]> = points.iter().map(|p| [p[0], p[1], p[2] + height]).collect();
     let n = points.len();
     let segments = if closed { n } else { n.saturating_sub(1) };
     for i in 0..segments {
@@ -171,7 +180,11 @@ pub fn spline_samples(spline: &CubicSpline) -> Vec<[f32; 3]> {
         let b = (p1 - p2 * 2.0 + p3).as_dvec3().length();
         let bound = 6.0 * a.max(b);
         let k = libm::sqrt(bound / (8.0 * FACET_TOLERANCE_M)).ceil();
-        let k = if k.is_finite() { (k as usize).clamp(1, 4096) } else { 4096 };
+        let k = if k.is_finite() {
+            (k as usize).clamp(1, 4096)
+        } else {
+            4096
+        };
         if i == 0 {
             out.push(p0.to_array());
         }
@@ -221,7 +234,10 @@ mod tests {
             let n = circle_sides(r);
             assert_eq!(n % 4, 0);
             let sag = r * (1.0 - (core::f64::consts::PI / n as f64).cos());
-            assert!(sag <= FACET_TOLERANCE_M * 1.0001 || n == 1024, "{r} {n} {sag}");
+            assert!(
+                sag <= FACET_TOLERANCE_M * 1.0001 || n == 1024,
+                "{r} {n} {sag}"
+            );
         }
         assert_eq!(circle_sides(1.0e-9), 16);
     }
