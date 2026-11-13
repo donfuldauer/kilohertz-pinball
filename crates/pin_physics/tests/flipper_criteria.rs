@@ -114,6 +114,44 @@ fn timing_sweep_has_a_dead_spot_and_no_unexplained_jumps() {
     }
 }
 
+/// The dead spot is not an artefact of where the ±20 ms sweep ends: in a
+/// sweep that starts 15 ms earlier it is an interior minimum, with held-like
+/// rebounds on its early side (the bat has arrived and settled) and rising
+/// shots on its late side.
+#[test]
+fn dead_spot_is_an_interior_minimum_of_a_wider_sweep() {
+    for fraction in [0.5f32, 0.7] {
+        let (held, _) = rebound(fraction, Button::Held);
+        let curve: Vec<(i64, f32)> = (-35..=20)
+            .map(|k| (k, rebound(fraction, Button::FlipAt(k)).0))
+            .collect();
+        println!("wide sweep, contact at {fraction} of the bat (held {held:.3} m/s):");
+        for (k, r) in &curve {
+            println!(
+                "  flip {k:+3} ms: rebound {r:.3} m/s ({:.0} % of held)",
+                100.0 * r / held
+            );
+        }
+        let (at, min) = curve
+            .iter()
+            .copied()
+            .fold((0, f32::INFINITY), |a, b| if b.1 < a.1 { b } else { a });
+        println!("  minimum {min:.3} m/s at {at:+} ms");
+        assert!(min <= 0.25 * held);
+        assert!((-22..=-18).contains(&at), "dead spot at {at} ms");
+        // Earlier flips (bat already up and settled) rebound like a held bat.
+        let early: Vec<f32> = curve
+            .iter()
+            .filter(|c| c.0 <= at - 3)
+            .map(|c| c.1)
+            .collect();
+        assert!(early.iter().all(|&r| r > 0.6 * held), "{early:?}");
+        // Later flips rise out of the dead spot.
+        let later = curve.iter().find(|c| c.0 == at + 5).unwrap().1;
+        assert!(later > 0.5 * held);
+    }
+}
+
 #[test]
 fn drop_catch_rebounds_less_than_a_held_flipper() {
     // (Close to the pivot the bat is heavier than the ball at the contact

@@ -1171,3 +1171,6 @@ API reference for 6.0 wiring and Subphase 2.6: rustdoc of `pin_physics::flipper`
 
 ## Orchestrator — 2.3 energy bound for a per-tick drive impulse
 **Decision:** The brief's rule that the impulse creates no energy beyond the coil's work is checked cumulatively. The energy gained since the start may never exceed (τ_power + τ_spring)·Σ|Δθ|. With the coil off, no tick may gain more than the spring's work, and an unpowered bat never gains energy. A per-tick bound fails in ticks where the ball reverses the bat, because the drive is applied as one angular impulse per tick.
+
+## Orchestrator — body restitution hook added to the 2.2-S fix round 2
+**Decision:** The 2.2-S fix round 2 also adds an additive, defaulted `MovingBodies::restitution(body, time, point, approach_speed) -> Option<f32>` (`None` means the pair table, as today, and stays bit-identical). It is needed because §3.3's `FlipperConfig::rubber_restitution` currently has no effect: the pair table decides. 2.3 uses the hook in its fix round.

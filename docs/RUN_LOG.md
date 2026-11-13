@@ -193,3 +193,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 2.4 | Reviewer | Fable 5.2 | 1 | running | — | checks owner obligations against the 2.2-S contract |
 | 4 | 2.3 | Independent Tester | Opus 5.5 | 1 | done | 41/41 spec tests pass; alloc 0; 10-run identical; no tunnelling 0.5–50 m/s | O1 timing-sweep time 0 ruled reading B (held-bat contact, min 22.8 %); O2 cumulative energy bound accepted; N1 angle round-trip 2e-6; N3 Implementer may have seen spec files → Reviewer |
 | 4 | 2.4 | Independent Tester | Fable 5.2 | 2 | done | 81/81 spec tests pass; clippy/fmt clean | O1 restriction lifted; new step-pull test: ball ≤ (1+e)·1.5 m/s = 2.475 m/s |
+| 4 | 2.3 | Implementer | Fable 5.2 | 1 | done | 41 own + 41 spec tests pass; flipper/ coverage 98.6–98.9 %; 0 allocs; 10-run identical; stroke 21 ms; exit 3.2–3.7 m/s | timing-sweep dead spot only at −20 ms edge; seam gap: no body restitution → additive `MovingBodies::restitution` hook added to the 2.2-S fix round 2; held flipper not solid at defaults (Gate A1) |
+| 4 | 2.3 | Reviewer | Opus 5.5 | 1 | running | — | |
