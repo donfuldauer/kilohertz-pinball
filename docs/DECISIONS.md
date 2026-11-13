@@ -792,3 +792,27 @@ The round-2 ruling (reject level guides whose ends are too close for a tangent-b
 - **Table precision.** Entries settle within 30 % (2 mm absolute below ~7 mm; 5 % at the cap, which is 0.3 m and 0.9 × the smallest radius of curvature within a segment). Radii below 0.1 mm are stored as zero; a J or T whose end is within ~0.1 mm of the wall therefore reports `reach() == 0` (no positive reach proven); casts there use the tangent balls and plain advancement.
 - **Re-baselined assertions:** none. New tests: `world_open_ends.rs` `j_tips_pointing_at_the_wall_never_let_a_cast_sweep_into_it` (the review's three zz_t5 repros + 240 seeded casts round J tips, independent polyline oracle) and `reach_of_an_end_pointing_at_the_wall_between_samples_is_bounded_by_its_gap` (54 J shapes, 50–200 mm spacing, 20 µm–1 mm gaps); `wireform.rs` `tangent_balls_of_j_tips_miss_the_base`, `end_terms_see_a_wall_between_two_samples`, `sloped_tests_match_the_pairwise_references`, and the ignored release report `sloped_guide_construction_cost_report`. All three new J tests fail on the round-3 code (114 µm sweep, 2.5 mm reach for a 20 µm gap, a 0.48 mm ball 5 µm into the wall).
 **Rationale:** the brief's binding targets: no promised ball or reach may contain a wall point at any spacing, every bound proven; construction ≤ 50 ms at 2 000 segments for level and sloped guides; round 3's speed wins kept.
+
+## Orchestrator — 2.1 B7 blocked (D29); which code stays on the branch
+
+The other-model attempt (Opus) closed all three correctness and safety blockers of the B7 handover. The Fable reviewer confirmed this independently:
+- 0 tangent-ball violations on 564 new shapes;
+- worst swept cast +4.49 µm over 62 134 casts;
+- solver tick-end depth −6.54 µm;
+- sloped construction 2.3–4.8 s → ≤ 53.6 ms.
+
+Two binding performance targets were missed, both regressions against round 3:
+- **B1:** sliding crawls at about 5 % of v·dt, with casts costing 3× 329c843, in ball-sized lanes (2.2–3.2 ball radii) of end-limited level spirals.
+- **B2:** level coils of ≤ 2 000 segments build in up to 279 ms (target 50 ms; 329c843 took about 270 ms).
+
+Under D29 the fix task is therefore **blocked**. Ruling on what stays on the branch: keep the other-model attempt. Correctness outranks speed, and every alternative is unsafe:
+- round 3 (7d8f3ad) lets a mini ball sink 114 µm on J tips, and up to 388 µm between samples;
+- 329c843 penetrates up to 2.5 mm.
+
+The B1 crawl is safe, local and bounded. B2's worst case is about 0.3 s, no worse than 329c843, and nowhere near the minutes-long stall that sloped guides used to cause.
+
+2.1 and 2.2 themselves passed, so their dependents (2.3–2.9, 4.x) are **not** halted. The open items go to HUMAN_QUEUE. The reviewer's suggested fix direction:
+- B1: settle table entries tighter in the ball-radius range, and never let the 2 % end tolerance or the table minimum lower a reach that the interior pairs already justify;
+- B2: bound `level_reaches` on coils, and stop per-slot drain passes once the table budget is spent.
+
+The non-blocking notes N1–N4 are recorded in the review: zeroed tables on in-rule coils; the interior near-approach limitation (2.1 N3, unchanged); one marginal new sloped rejection at 45 mm facing ends; 270° arcs now end-limited.

@@ -60,3 +60,12 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - [2.1 fix task B7, round 2 — corrects the previous B7 line] The spacing condition is now much weaker: a level C-shaped guide is slow for wide balls only if its opening is narrower than about 1/32 of the through-point spacing (≈ 1.6 mm at 50 mm spacing); the loader could warn there.
 - [2.1 fix task B7, round 3 → 4.1/4.3 loader; supersedes the two earlier B7 lines] Level guides with two facing open ends are accepted and fast at any gap width (tested down to 20 µm); `GuideCurve::new` got no new rejection, so the Orchestrator's "reject when no table can be built" ruling has no case left to apply to. If a hairline gap (say under 1 mm, above 4.1's 1e-6 m snapping) should be reported as an authoring mistake ("close the guide or open the gap"), that would be a loader lint — please decide whether you want it.
 - [2.1 fix task B7, other-model attempt → 4.1/4.3 loader] `GuideCurve::reach()` is now 0 for a level guide whose open end comes within ~0.1 mm of its own wall (a J or T tip touching the base): no positive reach is proven there and the guide is still accepted and safe (tangent balls, plain advancement near the tip). Such near-touching tips are probably authoring mistakes like hairline gaps; a loader lint could report both.
+
+## 2.1 fix task B7 — BLOCKED (D29), performance only
+- **State:** the branch carries the other-model attempt. It is correct: open-end reach and tangent balls are proven, with no penetration > 5 µm in any review. Sloped construction now takes ≤ 54 ms instead of 2–5 s.
+- **Open item B1:** a ball sliding along a lane only about 2–3 ball radii wide in a level spiral whose end lies beside its own wall crawls at about 5 % of its speed, and each cast costs about 3× the old code.
+  - Repro: spiral r = 0.1 + 0.04·θ/2π, 3 turns, 101 points; steel ball at 5 m/s.
+  - The reviewer's probes are in the session scratchpad: rev_b7f/pc/tests/rv_f.rs.
+- **Open item B2:** dense level coils (≤ 2 000 segments) take up to 279 ms to build, against a 50 ms target. The old code took about 270 ms.
+- **Decide:** schedule a follow-up fix task with the reviewer's suggested direction (see DECISIONS "Orchestrator — 2.1 B7 blocked"), or accept these as known limits.
+- **Also review:** one marginal new sloped rejection, a C ramp with 45 mm between its facing ends.
