@@ -117,3 +117,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3→4 | 2.1-B1 (lane sliding) | Implementer | Opus 5.5 | 1 | running | — | review by Fable; B2 accepted as known limit |
 | 3→4 | 4.1-H (hardening + guide lints) | Implementer | Opus 5.5 | 1 | running | — | review by Fable |
 | 3→4 | 3.3-H (decode hardening, audio budget) | Implementer | Opus 5.5 | 1 | running | — | review by Fable |
+| 3→4 | 3.3-H | Implementer | Opus 5.5 | 1 | done | pin_audio all green; coverage 97.28 %; decode outputs bit-identical | reservation ≤ 64 Ki frames then on-demand growth; DecodeBudget (512 MiB default, exact, atomic); wiring → 2.5/6.0 |

@@ -89,3 +89,5 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - Loader guide rules are warnings only. Fix task 4.1-H adds them.
 - Wasm compile-cost limits are accepted; revisit at 6.3.
 - The security hardening sweep (4.1 N-a to N-d; 3.3 N10 and the decoded-audio budget) is scheduled as fix tasks 4.1-H and 3.3-H.
+- [4.1-H] Spec test `uneven_spline_spacing_is_a_warning_not_an_error` predates the guide-lint ruling: its fixture curve has a cusp, so it now gets the (b) and (d) warnings too; the Tester should filter on `splines[0].points`. Also: (c) counts `balls.restrict` profiles, so the Appendix A table (XL restricted to layer 0) would warn on any sloped guide tighter than 39.7 mm.
+- [3.3-H → 2.5/6.0] pin_audio now provides `DecodeBudget` + `decode_with_budget` (default 512 MiB of decoded f32 per bundle, `DecodeError::BudgetExhausted`); the bundle loader must create one budget per bundle, decode all sounds through it and `release` dropped samples. Please carry this into the 2.5/6.0 briefs (and confirm the 512 MiB default).

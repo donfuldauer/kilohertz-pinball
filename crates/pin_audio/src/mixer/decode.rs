@@ -41,7 +41,33 @@
 //!   allocation bounds (`third_party/lewton/KHZ_PATCHES.md`), because an
 //!   allocation failure aborts the process and cannot be caught.
 //! * Vorbis output is cut at the last page's granule position (encoder
-//!   padding; Vorbis I §A.2).
+//!   padding; Vorbis I §A.2). Samples a stream asks to discard at its start
+//!   (a first audio page whose granule is lower than the samples it
+//!   completes) are not dropped there: the cut happens at the end instead, so
+//!   the length is right but the start is not skipped.
+//! * Edge results: an Ogg stream with valid headers and no audio packets
+//!   decodes to `Ok` with 0 frames, and so does a WAV whose data chunk is
+//!   empty; bytes after the last complete Ogg page or after the WAV data
+//!   chunk are ignored.
+//!
+//! # Memory (tables are untrusted downloads, D25)
+//! No size read from a header or a granule position is trusted for
+//! allocation. The output buffer starts at no more than
+//! [`INITIAL_RESERVE_FRAMES`] frames (less when the header announces fewer)
+//! and grows on demand, doubling, clamped to the 10-minute cap, so its
+//! capacity never exceeds `max(INITIAL_RESERVE_FRAMES, 2 × frames produced)`
+//! and is trimmed to the exact length when decoding ends.
+//!
+//! Decoded data of a whole bundle is bounded by a shared [`DecodeBudget`]
+//! ([`decode_with_budget`]): every frame of output capacity is charged to the
+//! budget before it is allocated, the unused part is refunded when the
+//! decode ends, and a failed decode refunds everything it charged. So after
+//! each call the budget's `used_bytes` is exactly the sum of
+//! `8 × frames()` of the samples it returned (minus what was
+//! [released](DecodeBudget::release)), and a decode succeeds if and only if
+//! its output fits into what is left (for decodes that do not overlap in
+//! time; while decodes run concurrently, each one's spare capacity is
+//! charged, so a decode can fail early because of another one in flight).
 //!
 //! `decode` never panics: in addition to explicit validation, both decoders
 //! run under `catch_unwind`, and a panic inside them is reported as
@@ -57,6 +83,7 @@
 use std::fmt;
 use std::io::Cursor;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Longest decoded sample accepted, in seconds.
 pub const MAX_SECONDS: u64 = 600;
@@ -71,6 +98,104 @@ pub const MIN_SOURCE_RATE: u32 = 8_000;
 /// Highest source (file) sample rate accepted; higher rates are
 /// [`DecodeError::Unsupported`]. Bounds the work and memory per input byte.
 pub const MAX_SOURCE_RATE: u32 = 384_000;
+
+/// Bytes of decoded data per stereo frame (two `f32`), the unit
+/// [`DecodeBudget`] charges.
+pub const BYTES_PER_FRAME: u64 = 8;
+
+/// Most frames an output buffer reserves before any audio is decoded,
+/// whatever the header or granule position announces (512 KiB).
+pub const INITIAL_RESERVE_FRAMES: u64 = 1 << 16;
+
+/// Smallest growth step of an output buffer, in frames.
+const MIN_GROW_FRAMES: u64 = 1 << 10;
+
+/// Aggregate budget of decoded audio for one bundle, in bytes of decoded
+/// `f32` data ([`BYTES_PER_FRAME`] per frame), shared by every
+/// [`decode_with_budget`] call for that bundle.
+///
+/// Charges are made as output is produced (in growth steps of the output
+/// buffer, never from header sizes), are atomic and never exceed the limit;
+/// the type is `Sync`, so decodes on several threads can share one budget
+/// (e.g. behind an `Arc`). See the module docs for the exact accounting.
+/// The per-file 10-minute cap still applies: a 48 kHz sample is at most
+/// ~230 MB, so the [default](DecodeBudget::DEFAULT_BYTES) of 512 MiB holds
+/// about 23 minutes of 48 kHz stereo per bundle.
+#[derive(Debug)]
+pub struct DecodeBudget {
+    limit: u64,
+    used: AtomicU64,
+}
+
+impl DecodeBudget {
+    /// Default budget per bundle: 512 MiB of decoded audio.
+    pub const DEFAULT_BYTES: u64 = 512 * 1024 * 1024;
+
+    /// A budget of `limit_bytes` bytes of decoded data, none used.
+    pub fn new(limit_bytes: u64) -> Self {
+        Self {
+            limit: limit_bytes,
+            used: AtomicU64::new(0),
+        }
+    }
+
+    /// A budget with no aggregate limit (the per-file cap still applies).
+    pub fn unlimited() -> Self {
+        Self::new(u64::MAX)
+    }
+
+    /// The limit in bytes.
+    pub fn limit_bytes(&self) -> u64 {
+        self.limit
+    }
+
+    /// Bytes currently charged.
+    pub fn used_bytes(&self) -> u64 {
+        self.used.load(Ordering::Acquire)
+    }
+
+    /// Bytes still available.
+    pub fn remaining_bytes(&self) -> u64 {
+        self.limit.saturating_sub(self.used_bytes())
+    }
+
+    /// Returns a sample's bytes to the budget (e.g. when the loader drops
+    /// it). Saturates at zero; releasing a sample that was not charged to
+    /// this budget makes the accounting meaningless.
+    pub fn release(&self, sample: &Sample) {
+        self.refund_frames(sample.frames() as u64);
+    }
+
+    /// Charges up to `want` frames; returns how many were granted (0 when
+    /// not even one frame fits).
+    fn try_charge_frames(&self, want: u64) -> u64 {
+        let mut granted = 0;
+        let _ = self
+            .used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                let frames = (self.limit.saturating_sub(used) / BYTES_PER_FRAME).min(want);
+                granted = frames;
+                (frames > 0).then(|| used + frames * BYTES_PER_FRAME)
+            });
+        granted
+    }
+
+    fn refund_frames(&self, frames: u64) {
+        let bytes = frames.saturating_mul(BYTES_PER_FRAME);
+        let _ = self
+            .used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                Some(used.saturating_sub(bytes))
+            });
+    }
+}
+
+impl Default for DecodeBudget {
+    /// [`DecodeBudget::DEFAULT_BYTES`].
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_BYTES)
+    }
+}
 
 /// An immutable decoded sound: interleaved stereo `f32` at the mixer rate.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -125,9 +250,11 @@ impl Sample {
 /// Why [`decode`] rejected a buffer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecodeError {
-    /// Not a WAV (`RIFF....WAVE`) or Ogg (`OggS`) buffer, an encoding inside
-    /// one that is not supported (e.g. 64-bit float WAV, compressed WAV), or a
-    /// mixer rate outside `1..=MAX_MIXER_RATE`.
+    /// Not a WAV (`RIFF....WAVE`) or Ogg (`OggS`) buffer; an encoding inside
+    /// one that is not supported (e.g. 64-bit float WAV, compressed WAV); a
+    /// file sample rate outside [`MIN_SOURCE_RATE`]`..=`[`MAX_SOURCE_RATE`];
+    /// an Ogg buffer with more than one logical stream (chained or
+    /// multiplexed); or a mixer rate outside `1..=`[`MAX_MIXER_RATE`].
     Unsupported,
     /// The container or bitstream is invalid or truncated.
     Malformed(String),
@@ -135,6 +262,9 @@ pub enum DecodeError {
     TooManyChannels,
     /// Longer than [`MAX_SECONDS`].
     TooLong,
+    /// The bundle's [`DecodeBudget`] cannot hold the decoded output
+    /// ([`decode_with_budget`]); nothing stays charged for this decode.
+    BudgetExhausted,
 }
 
 impl fmt::Display for DecodeError {
@@ -144,6 +274,7 @@ impl fmt::Display for DecodeError {
             Self::Malformed(why) => write!(f, "malformed audio data: {why}"),
             Self::TooManyChannels => f.write_str("more than two audio channels"),
             Self::TooLong => write!(f, "audio longer than {MAX_SECONDS} seconds"),
+            Self::BudgetExhausted => f.write_str("decoded-audio budget of the bundle exhausted"),
         }
     }
 }
@@ -152,16 +283,33 @@ impl std::error::Error for DecodeError {}
 
 /// Decodes a WAV or Ogg Vorbis buffer into a stereo [`Sample`] at
 /// `mixer_rate` (see the module docs for the exact rules). Never panics.
+///
+/// Only the per-file limits apply; a bundle loader decoding many files uses
+/// [`decode_with_budget`].
 pub fn decode(bytes: &[u8], mixer_rate: u32) -> Result<Sample, DecodeError> {
+    decode_with_budget(bytes, mixer_rate, &DecodeBudget::unlimited())
+}
+
+/// [`decode`], charging the output to a bundle's shared [`budget`]
+/// (module docs, "Memory"). Fails with [`DecodeError::BudgetExhausted`] when
+/// the output does not fit; on any error nothing stays charged. Results are
+/// identical to [`decode`] whenever the budget suffices.
+///
+/// [`budget`]: DecodeBudget
+pub fn decode_with_budget(
+    bytes: &[u8],
+    mixer_rate: u32,
+    budget: &DecodeBudget,
+) -> Result<Sample, DecodeError> {
     if mixer_rate == 0 || mixer_rate > MAX_MIXER_RATE {
         return Err(DecodeError::Unsupported);
     }
     let is_wav = bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE";
     let is_ogg = bytes.len() >= 4 && &bytes[0..4] == b"OggS";
     if is_wav {
-        guarded(|| decode_wav(bytes, mixer_rate))
+        guarded(|| decode_wav(bytes, mixer_rate, budget))
     } else if is_ogg {
-        guarded(|| decode_vorbis(bytes, mixer_rate))
+        guarded(|| decode_vorbis(bytes, mixer_rate, budget))
     } else {
         Err(DecodeError::Unsupported)
     }
@@ -211,8 +359,10 @@ fn check_length(n_in: u64, src: u32, dst: u32) -> Result<(), DecodeError> {
 /// Streaming stereo expansion + linear resampler (module docs). Source frames
 /// are pushed one at a time; output frame `j` is emitted as soon as both of
 /// its source frames are known, so only the output is buffered and the
-/// length caps are enforced while decoding.
-struct Resampler {
+/// length caps are enforced while decoding. The output buffer grows on
+/// demand and every frame of its capacity is charged to the budget first;
+/// dropping the resampler without [`Resampler::finish`] refunds the charge.
+struct Resampler<'b> {
     src: u64,
     dst: u64,
     /// Source frames pushed.
@@ -224,28 +374,70 @@ struct Resampler {
     out: Vec<f32>,
     max_in: u64,
     max_out: u64,
+    budget: &'b DecodeBudget,
+    /// Frames charged to `budget` (= output capacity in frames).
+    charged: u64,
 }
 
-impl Resampler {
-    fn new(src: u32, dst: u32, expected_in: u64) -> Self {
-        let expected_out = resampled_len(expected_in, src, dst).min(max_frames(dst));
-        Self {
+impl<'b> Resampler<'b> {
+    /// `expected_in` (a header claim) only sizes the first reservation,
+    /// which never exceeds [`INITIAL_RESERVE_FRAMES`].
+    fn new(src: u32, dst: u32, expected_in: u64, budget: &'b DecodeBudget) -> Self {
+        let mut rs = Self {
             src: u64::from(src),
             dst: u64::from(dst),
             n_in: 0,
             j: 0,
             prev: (0.0, 0.0),
             last: (0.0, 0.0),
-            out: Vec::with_capacity(2 * expected_out as usize),
+            out: Vec::new(),
             max_in: max_frames(src),
             max_out: max_frames(dst),
+            budget,
+            charged: 0,
+        };
+        let first = resampled_len(expected_in, src, dst)
+            .min(rs.max_out)
+            .min(INITIAL_RESERVE_FRAMES);
+        rs.reserve(first);
+        rs
+    }
+
+    /// Charges up to `frames` more frames and reserves exactly what was
+    /// granted; returns the number granted.
+    fn reserve(&mut self, frames: u64) -> u64 {
+        if frames == 0 {
+            return 0;
         }
+        let granted = self.budget.try_charge_frames(frames);
+        if granted > 0 {
+            self.charged += granted;
+            // `granted` ≤ the 10-minute cap (≤ 2^28 frames): fits in usize.
+            self.out.reserve_exact(2 * granted as usize);
+        }
+        granted
+    }
+
+    /// Makes room for one more output frame (called after the length caps).
+    fn room(&mut self) -> Result<(), DecodeError> {
+        if self.j < self.charged {
+            return Ok(());
+        }
+        let want = self
+            .j
+            .max(MIN_GROW_FRAMES)
+            .min(self.max_out.saturating_sub(self.j));
+        if self.reserve(want) == 0 {
+            return Err(DecodeError::BudgetExhausted);
+        }
+        Ok(())
     }
 
     fn emit(&mut self, a: (f32, f32), b: (f32, f32), f: f64) -> Result<(), DecodeError> {
         if self.j >= self.max_out {
             return Err(DecodeError::TooLong);
         }
+        self.room()?;
         self.out.push(lerp(a.0, b.0, f));
         self.out.push(lerp(a.1, b.1, f));
         self.j += 1;
@@ -261,6 +453,7 @@ impl Resampler {
             if self.j >= self.max_out {
                 return Err(DecodeError::TooLong);
             }
+            self.room()?;
             self.out.push(l);
             self.out.push(r);
             self.j += 1;
@@ -294,7 +487,17 @@ impl Resampler {
                 self.emit(self.last, self.last, f)?;
             }
         }
-        Ok(Sample::from_interleaved(self.out))
+        // Keep exactly the produced frames charged.
+        self.budget.refund_frames(self.charged - self.j);
+        self.charged = 0;
+        Ok(Sample::from_interleaved(std::mem::take(&mut self.out)))
+    }
+}
+
+impl Drop for Resampler<'_> {
+    /// An unfinished decode (error or panic) leaves nothing charged.
+    fn drop(&mut self) {
+        self.budget.refund_frames(self.charged);
     }
 }
 
@@ -305,17 +508,18 @@ fn map_hound(e: hound::Error) -> DecodeError {
     }
 }
 
-fn decode_wav(bytes: &[u8], dst: u32) -> Result<Sample, DecodeError> {
+fn decode_wav(bytes: &[u8], dst: u32, budget: &DecodeBudget) -> Result<Sample, DecodeError> {
     let reader = hound::WavReader::new(Cursor::new(bytes)).map_err(map_hound)?;
     let spec = reader.spec();
     let channels = usize::from(spec.channels);
     check_rate_and_channels(spec.sample_rate, channels)?;
     let frames = u64::from(reader.duration());
     check_length(frames, spec.sample_rate, dst)?;
-    // Never trust the header beyond what the bytes can hold.
+    // Never trust the header beyond what the bytes can hold (and the
+    // resampler caps the first reservation anyway).
     let bytes_per_frame = (usize::from(spec.bits_per_sample.div_ceil(8)).max(1) * channels) as u64;
     let expected = frames.min(bytes.len() as u64 / bytes_per_frame);
-    let mut rs = Resampler::new(spec.sample_rate, dst, expected);
+    let mut rs = Resampler::new(spec.sample_rate, dst, expected, budget);
     let mut pending: Option<f32> = None;
     let mut feed = |v: f32| -> Result<(), DecodeError> {
         if channels == 1 {
@@ -398,7 +602,7 @@ fn scan_ogg_pages(b: &[u8]) -> OggScan {
     scan
 }
 
-fn decode_vorbis(bytes: &[u8], dst: u32) -> Result<Sample, DecodeError> {
+fn decode_vorbis(bytes: &[u8], dst: u32, budget: &DecodeBudget) -> Result<Sample, DecodeError> {
     use lewton::audio::{PreviousWindowRight, read_audio_packet_generic};
     use lewton::header::{read_header_ident, read_header_setup};
     use lewton::samples::InterleavedSamples;
@@ -440,7 +644,9 @@ fn decode_vorbis(bytes: &[u8], dst: u32) -> Result<Sample, DecodeError> {
     // Frames past the last granule position are encoder padding (Vorbis I
     // §A.2); without a granule the decoded length stands.
     let limit = scan.last_granule.unwrap_or(u64::MAX);
-    let mut rs = Resampler::new(src, dst, scan.last_granule.unwrap_or(0));
+    // The granule position is a claim: it only sizes the first (capped)
+    // reservation.
+    let mut rs = Resampler::new(src, dst, scan.last_granule.unwrap_or(0), budget);
     let mut pwr = PreviousWindowRight::new();
     'packets: while let Some(packet) = rdr.read_packet().map_err(malformed)? {
         if packet.stream_serial() != scan.serial {
@@ -684,8 +890,13 @@ mod tests {
         out
     }
 
+    static UNLIMITED: DecodeBudget = DecodeBudget {
+        limit: u64::MAX,
+        used: AtomicU64::new(0),
+    };
+
     fn stream(x: &[(f32, f32)], src: u32, dst: u32) -> Vec<f32> {
-        let mut rs = Resampler::new(src, dst, x.len() as u64);
+        let mut rs = Resampler::new(src, dst, x.len() as u64, &UNLIMITED);
         for &(l, r) in x {
             rs.push(l, r).unwrap();
         }
@@ -706,21 +917,22 @@ mod tests {
 
     #[test]
     fn resampler_caps_while_streaming() {
-        let mut rs = Resampler::new(8_000, 48_000, 10);
+        let unlimited = DecodeBudget::unlimited();
+        let mut rs = Resampler::new(8_000, 48_000, 10, &unlimited);
         rs.max_out = 11;
         assert_eq!(rs.push(0.0, 0.0), Ok(()));
         assert_eq!(rs.push(0.0, 0.0), Ok(())); // 6 out
         assert_eq!(rs.push(0.0, 0.0), Err(DecodeError::TooLong)); // 12th
-        let mut rs = Resampler::new(8_000, 8_000, 0);
+        let mut rs = Resampler::new(8_000, 8_000, 0, &unlimited);
         rs.max_in = 2;
         rs.push(0.0, 0.0).unwrap();
         rs.push(0.0, 0.0).unwrap();
         assert_eq!(rs.push(0.0, 0.0), Err(DecodeError::TooLong));
-        let mut rs = Resampler::new(8_000, 8_000, 0);
+        let mut rs = Resampler::new(8_000, 8_000, 0, &unlimited);
         rs.max_out = 1;
         rs.push(0.0, 0.0).unwrap();
         assert_eq!(rs.push(0.0, 0.0), Err(DecodeError::TooLong));
-        let mut rs = Resampler::new(8_000, 16_000, 0);
+        let mut rs = Resampler::new(8_000, 16_000, 0, &unlimited);
         rs.max_out = 1;
         rs.push(0.5, 0.5).unwrap();
         assert_eq!(rs.finish(), Err(DecodeError::TooLong));

@@ -2,7 +2,8 @@
 //!
 //! A real-time mixer for the audio thread with three buses ([`Bus::Music`],
 //! [`Bus::Callout`], [`Bus::Sfx`]), per-bus voice limiting with oldest-voice
-//! stealing, callout ducking, WAV and Ogg Vorbis decoding ([`decode`]), and a
+//! stealing, callout ducking, WAV and Ogg Vorbis decoding ([`decode`], and
+//! [`decode_with_budget`] with a per-bundle [`DecodeBudget`]), and a
 //! lock-free trigger ring ([`trigger_ring`]) fed from the sim thread's
 //! `HostCommandQueue::sounds`. [`Mixer::render`] is pure Rust and renders into
 //! any buffer, so tests run offline; [`SdlOutput`] is a thin SDL3 shell.
@@ -48,7 +49,8 @@ mod ring;
 mod sdl;
 
 pub use decode::{
-    DecodeError, MAX_MIXER_RATE, MAX_SECONDS, MAX_SOURCE_RATE, MIN_SOURCE_RATE, Sample, decode,
+    BYTES_PER_FRAME, DecodeBudget, DecodeError, INITIAL_RESERVE_FRAMES, MAX_MIXER_RATE,
+    MAX_SECONDS, MAX_SOURCE_RATE, MIN_SOURCE_RATE, Sample, decode, decode_with_budget,
     resampled_len,
 };
 pub use engine::{Bus, Mixer, MixerConfig};
