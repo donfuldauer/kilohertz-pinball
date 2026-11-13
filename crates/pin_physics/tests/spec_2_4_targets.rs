@@ -261,16 +261,39 @@ proptest! {
 }
 
 // ----------------------------------------------------------------- spinner
+//
+// Documented model (rustdoc of `mech::spinner`, DECISIONS "2.4 — fix round
+// 1", B2): a uniform flap of length L hinged at its top edge,
+//   dω/dt = −d·ω − (3g/(2L))·sin φ − c·sign ω,
+// gravity from the solver, pivot friction c = `[mechs.spinner] friction`
+// (60 rad/s²), stiction holding only within asin(c·2L/(3g)) of hanging.
+// Without gravity and friction the total rotation is exactly ω0/d. A pulse
+// is counted at every horizontal crossing (φ = π/2 + kπ).
 
 const SP_SW: SwitchId = SwitchId(60);
 const SP_POS: Vec3 = Vec3::new(0.0, 0.2, 0.0);
+const G: f32 = 9.81;
 
-fn spinner_rig(damping: Option<f32>) -> Rig {
+fn spinner_spec(damping: Option<f32>) -> MechSpec {
     let mut p = params();
     p.damping_per_s = damping;
-    Rig::on_floor(&[spec(MechKind::Spinner, SP_POS)
+    spec(MechKind::Spinner, SP_POS)
         .with_switch(SP_SW)
-        .with_params(p)])
+        .with_params(p)
+}
+
+/// The default model on a level playfield (gravity straight down).
+fn spinner_rig(damping: Option<f32>) -> Rig {
+    Rig::on_floor(&[spinner_spec(damping)])
+}
+
+/// Pure viscous spin-down: no gravity, no pivot friction.
+fn free_spinner_rig(damping: Option<f32>) -> Rig {
+    let mut d = defaults();
+    d.mechs.spinner.friction = 0.0;
+    let mut rig = Rig::in_space(&[]);
+    rig.mechs = pin_physics::mech::MechSet::new(&[spinner_spec(damping)], &d).unwrap();
+    rig
 }
 
 struct SpinDown {
@@ -280,9 +303,9 @@ struct SpinDown {
     ticks: u32,
 }
 
-/// Spins the flap at `omega0` and runs until it has stopped.
-fn spin_down(damping: Option<f32>, omega0: f32) -> SpinDown {
-    let mut rig = spinner_rig(damping);
+/// Spins the flap of `rig` at `omega0` and runs until it has been at rest
+/// for 50 ms (or `limit_s`).
+fn spin_down(mut rig: Rig, omega0: f32, limit_s: f32) -> SpinDown {
     rig.run(3);
     let (a0, w0) = rig.mechs.spinner_state(0).unwrap();
     assert_eq!(w0, 0.0);
@@ -291,9 +314,9 @@ fn spin_down(damping: Option<f32>, omega0: f32) -> SpinDown {
     let mut closed_edges = 0;
     let mut ticks = 0;
     let mut prev_pulses = 0;
-    let d = damping.unwrap_or(defaults().mechs.spinner.damping);
-    let limit = (30.0 / d / DT) as u32;
-    while ticks < limit {
+    let mut still = 0;
+    let limit = (limit_s / DT) as u32;
+    while ticks < limit && still < 50 {
         rig.step();
         ticks += 1;
         let pulses = rig.mechs.spinner_pulses(0);
@@ -310,11 +333,9 @@ fn spin_down(damping: Option<f32>, omega0: f32) -> SpinDown {
             );
         }
         prev_pulses = pulses;
-        let (_, w) = rig.mechs.spinner_state(0).unwrap();
-        assert!(w.abs() <= omega0.abs() + 1.0e-3, "flap sped up on its own");
-        if w == 0.0 {
-            break;
-        }
+        let (a, w) = rig.mechs.spinner_state(0).unwrap();
+        assert!(a.is_finite() && w.is_finite());
+        still = if w == 0.0 { still + 1 } else { 0 };
     }
     let (a1, w1) = rig.mechs.spinner_state(0).unwrap();
     assert!(
@@ -329,17 +350,79 @@ fn spin_down(damping: Option<f32>, omega0: f32) -> SpinDown {
     }
 }
 
-fn pulses_match(total_angle: f32, pulses: u64) -> bool {
-    let expected = (total_angle.abs() / std::f32::consts::PI).floor() as i64;
-    (pulses as i64 - expected).abs() <= 1
+/// Independent f64 reference of the documented ODE (RK4, 10 µs steps, with
+/// Coulomb friction and stiction in the lower half). Returns the number of
+/// horizontal crossings and the final angle.
+fn reference(d: f64, omega0: f64, length: f64, friction: f64, g: f64) -> (u64, f64) {
+    let k = 1.5 * g / length;
+    let h = 1.0e-5;
+    let (mut phi, mut w) = (0.0f64, omega0);
+    let half_turns =
+        |phi: f64| ((phi - std::f64::consts::FRAC_PI_2) / std::f64::consts::PI).floor();
+    let mut cell = half_turns(phi);
+    let mut pulses = 0u64;
+    for _ in 0..(120.0 / h) as u64 {
+        let gamma = -k * phi.sin();
+        if w == 0.0 {
+            if gamma.abs() <= friction && phi.cos() > 0.0 {
+                break; // held by static friction
+            }
+            if gamma == 0.0 {
+                break; // exactly balanced (only reachable without gravity)
+            }
+        }
+        let s = if w != 0.0 { w.signum() } else { gamma.signum() };
+        let acc = |phi: f64, w: f64| -d * w - k * phi.sin() - friction * s;
+        let (k1p, k1w) = (w, acc(phi, w));
+        let (k2p, k2w) = (
+            w + 0.5 * h * k1w,
+            acc(phi + 0.5 * h * k1p, w + 0.5 * h * k1w),
+        );
+        let (k3p, k3w) = (
+            w + 0.5 * h * k2w,
+            acc(phi + 0.5 * h * k2p, w + 0.5 * h * k2w),
+        );
+        let (k4p, k4w) = (w + h * k3w, acc(phi + h * k3p, w + h * k3w));
+        phi += h / 6.0 * (k1p + 2.0 * k2p + 2.0 * k3p + k4p);
+        let w_new = w + h / 6.0 * (k1w + 2.0 * k2w + 2.0 * k3w + k4w);
+        // Friction cannot reverse the motion within a step: stop at zero.
+        w = if w != 0.0 && w_new * w <= 0.0 {
+            0.0
+        } else {
+            w_new
+        };
+        if w.abs() < 1.0e-9 && k == 0.0 && friction == 0.0 {
+            break;
+        }
+        let c = half_turns(phi);
+        if c != cell {
+            pulses += (c - cell).abs() as u64;
+            cell = c;
+        }
+    }
+    (pulses, phi)
+}
+
+/// Distance (rad) of `angle` from hanging (φ ≡ 0 mod 2π).
+fn from_hanging(angle: f32) -> f32 {
+    let two_pi = 2.0 * std::f32::consts::PI;
+    let a = angle.rem_euclid(two_pi);
+    a.min(two_pi - a)
+}
+
+/// Half-width of the stiction band, asin(c·2L/(3g)).
+fn hold_angle() -> f32 {
+    let sp = defaults().mechs.spinner;
+    (sp.friction * 2.0 * sp.radius / (3.0 * G)).asin()
 }
 
 #[test]
-fn spin_down_total_rotation_is_omega0_over_d() {
+fn free_spin_down_total_rotation_is_omega0_over_d() {
+    // No gravity, no friction: exactly the exponential model of the brief.
     let d0 = defaults().mechs.spinner.damping;
     for d in [d0, 0.4, 2.0, 5.0] {
         for omega0 in [3.0f32, 10.0, 25.0, 60.0, 150.0, -40.0] {
-            let s = spin_down(Some(d), omega0);
+            let s = spin_down(free_spinner_rig(Some(d)), omega0, 30.0 / d);
             let analytic = omega0 / d;
             assert!(
                 (s.total_angle - analytic).abs() <= 0.01 * analytic.abs() + 0.08 / d,
@@ -352,37 +435,18 @@ fn spin_down_total_rotation_is_omega0_over_d() {
                 "d {d}, ω0 {omega0}: {} pulses, floor((ω0/d)/180°) = {expected}",
                 s.pulses
             );
-            assert!(pulses_match(s.total_angle, s.pulses));
-            eprintln!(
-                "spinner d {d} ω0 {omega0}: {:.2} rad (analytic {analytic:.2}), {} pulses, {} ms",
-                s.total_angle, s.pulses, s.ticks
-            );
+            assert_eq!(s.closed_edges, s.pulses, "one switch closure per pulse");
         }
     }
-}
-
-#[test]
-fn default_damping_is_used_when_not_overridden() {
-    let d0 = defaults().mechs.spinner.damping;
-    let s = spin_down(None, 20.0);
+    // Default damping when not overridden.
+    let s = spin_down(free_spinner_rig(None), 20.0, 30.0 / d0);
     assert!((s.total_angle - 20.0 / d0).abs() < 0.01 * 20.0 / d0 + 0.08 / d0);
 }
 
 #[test]
-fn one_switch_pulse_per_half_turn() {
-    // At a few hundred rpm every half turn is a separate switch closure.
-    let s = spin_down(Some(1.0), 30.0);
-    assert!(s.pulses >= 8, "{} pulses", s.pulses);
-    assert_eq!(
-        s.closed_edges, s.pulses,
-        "switch closures and counted pulses differ"
-    );
-}
-
-#[test]
-fn spin_down_is_exponential() {
+fn free_spin_down_is_exponential() {
     let d = 1.5f32;
-    let mut rig = spinner_rig(Some(d));
+    let mut rig = free_spinner_rig(Some(d));
     rig.mechs.set_spinner_speed(0, 40.0);
     for k in 1..=4 {
         rig.run(500);
@@ -396,55 +460,209 @@ fn spin_down_is_exponential() {
     }
 }
 
+/// Tolerance against the f64 reference: the solver integrates the same ODE
+/// with 1 ms semi-implicit steps, whose slightly different energy decides
+/// whether the last decaying swings still reach horizontal. One swing more
+/// or less is two crossings (up and back), so ±2; above 20 pulses 10 %
+/// (the per-revolution energy error accumulates over a long spin).
+fn pulse_tolerance(reference: u64) -> u64 {
+    2.max(reference / 10)
+}
+
 #[test]
-fn a_passing_ball_spins_the_flap_and_gets_through() {
-    let mut last_pulses = 0;
+fn pulse_counts_match_the_documented_spin_down() {
+    let sp = defaults().mechs.spinner;
+    for d in [sp.damping, 0.4, 2.0, 5.0] {
+        for omega0 in [20.0f32, 46.0, 60.0, 100.0, 150.0, 250.0, -80.0] {
+            let s = spin_down(spinner_rig(Some(d)), omega0, 60.0);
+            let (expected, _) = reference(
+                f64::from(d),
+                f64::from(omega0),
+                f64::from(sp.radius),
+                f64::from(sp.friction),
+                f64::from(G),
+            );
+            eprintln!(
+                "spinner d {d} ω0 {omega0}: {} pulses (reference {expected}), {:.2} rad, {} ms",
+                s.pulses, s.total_angle, s.ticks
+            );
+            assert!(
+                s.pulses.abs_diff(expected) <= pulse_tolerance(expected),
+                "d {d}, ω0 {omega0}: {} pulses, documented model gives {expected}",
+                s.pulses
+            );
+            // It settles hanging, inside the stiction band.
+            assert!(
+                from_hanging(s.total_angle) <= hold_angle() + 0.02,
+                "d {d}, ω0 {omega0}: flap parked {} rad from hanging",
+                from_hanging(s.total_angle)
+            );
+            // Gravity and friction only ever shorten the spin.
+            assert!(s.total_angle.abs() <= (omega0 / d).abs() * 1.01 + 0.1);
+        }
+    }
+}
+
+#[test]
+fn fast_spin_approaches_omega0_over_d() {
+    // High-speed limit of the documented model: the total rotation is
+    // ω0/d − (c/d²)·ln(1 + d·ω0/c) minus at most about ω_c/d (ω_c: the
+    // over-the-top speed √(4·3g/(2L))).
+    let sp = defaults().mechs.spinner;
+    let (d, c) = (2.0f32, sp.friction);
+    let omega_c = (4.0 * 1.5 * G / sp.radius).sqrt();
+    for omega0 in [200.0f32, 300.0] {
+        let s = spin_down(spinner_rig(Some(d)), omega0, 60.0);
+        let upper = omega0 / d - c / (d * d) * (1.0 + d * omega0 / c).ln();
+        assert!(
+            s.total_angle <= upper * 1.02 + 0.5 && s.total_angle >= upper - 1.5 * omega_c / d,
+            "ω0 {omega0}: total {} rad, expected within [{}, {}]",
+            s.total_angle,
+            upper - 1.5 * omega_c / d,
+            upper
+        );
+    }
+}
+
+#[test]
+fn one_switch_pulse_per_half_turn() {
+    // A spin that goes over the top several times: every pulse is its own
+    // switch closure.
+    let s = spin_down(spinner_rig(None), 120.0, 60.0);
+    assert!(s.pulses >= 8, "{} pulses", s.pulses);
+    assert_eq!(
+        s.closed_edges, s.pulses,
+        "switch closures and counted pulses differ"
+    );
+}
+
+#[test]
+fn a_weak_push_swings_back_to_hanging_without_a_pulse() {
+    // Below the speed that reaches horizontal (ω² < 2·3g/(2L): 32 rad/s)
+    // the flap swings, gives no pulse, and settles hanging.
+    for omega0 in [1.0f32, 5.0, 15.0, 25.0, -20.0] {
+        let s = spin_down(spinner_rig(None), omega0, 30.0);
+        assert_eq!(s.pulses, 0, "ω0 {omega0}: {} pulses", s.pulses);
+        assert_eq!(s.closed_edges, 0);
+        assert!(
+            s.total_angle.abs() <= hold_angle() + 0.02,
+            "ω0 {omega0}: flap rests at {} rad",
+            s.total_angle
+        );
+    }
+    // An untouched flap hangs still.
+    let mut rig = spinner_rig(None);
+    rig.run(2000);
+    assert_eq!(rig.mechs.spinner_state(0), Some((0.0, 0.0)));
+    assert_eq!(rig.mechs.spinner_pulses(0), 0);
+}
+
+#[test]
+fn every_successive_shot_spins_the_flap() {
+    for speed in [1.0f32, 1.5, 3.0] {
+        let mut rig = spinner_rig(None);
+        let mut counts = Vec::new();
+        for shot in 0..8 {
+            let before = rig.mechs.spinner_pulses(0);
+            let h = rig.add(steel_ball(
+                SP_POS + Vec3::new(0.0, -0.05, R),
+                Vec3::new(0.0, speed, 0.0),
+            ));
+            rig.run(400);
+            let b = rig.ball(h);
+            assert!(
+                b.position.y > SP_POS.y + 0.03 && b.velocity.y > 0.0,
+                "shot {shot} at {speed} m/s did not pass: {:?} {:?}",
+                b.position,
+                b.velocity
+            );
+            assert!(b.velocity.y < speed, "the flap must take some energy");
+            rig.solver.remove_ball(h);
+            rig.run(2600);
+            let (angle, w) = rig.mechs.spinner_state(0).unwrap();
+            assert!(w.abs() < 0.05, "shot {shot}: flap still moving after 3 s");
+            assert!(
+                from_hanging(angle) <= hold_angle() + 0.02,
+                "shot {shot} at {speed} m/s: flap parked {} rad from hanging",
+                from_hanging(angle)
+            );
+            let n = rig.mechs.spinner_pulses(0) - before;
+            assert!(
+                n > 0,
+                "shot {shot} at {speed} m/s gave no pulse ({counts:?})"
+            );
+            counts.push(n);
+        }
+        eprintln!("spinner: 8 shots at {speed} m/s -> pulses {counts:?}");
+        // Repeated identical shots behave alike.
+        let (lo, hi) = (*counts.iter().min().unwrap(), *counts.iter().max().unwrap());
+        assert!(
+            hi - lo <= 2.max(hi / 5),
+            "shots at {speed} m/s differ: {counts:?}"
+        );
+    }
+}
+
+#[test]
+fn faster_shots_give_more_pulses() {
+    let mut last = 0;
     for speed in [1.0f32, 2.0, 3.5] {
         let mut rig = spinner_rig(None);
-        let h = rig.add(steel_ball(
+        rig.add(steel_ball(
             SP_POS + Vec3::new(0.0, -0.05, R),
             Vec3::new(0.0, speed, 0.0),
         ));
-        let mut max_w = 0.0f32;
-        for _ in 0..400 {
+        rig.run(8000);
+        let pulses = rig.mechs.spinner_pulses(0);
+        assert!(
+            pulses > last,
+            "{speed} m/s: {pulses} pulses, slower shot {last}"
+        );
+        last = pulses;
+    }
+}
+
+#[test]
+fn a_slow_ball_lifts_the_flap_and_gets_through() {
+    // Too slow to turn the flap over: no pulse count is asserted, only that
+    // the ball is not stopped or trapped.
+    for speed in [0.4f32, 0.6, 0.8] {
+        let mut rig = spinner_rig(None);
+        let h = rig.add(steel_ball(
+            SP_POS + Vec3::new(0.0, -0.04, R),
+            Vec3::new(0.0, speed, 0.0),
+        ));
+        let mut lifted = 0.0f32;
+        for _ in 0..1500 {
             rig.step();
-            max_w = max_w.max(rig.mechs.spinner_state(0).unwrap().1.abs());
+            lifted = lifted.max(rig.mechs.spinner_state(0).unwrap().0.abs());
+            assert!(is_finite_ball(&rig.ball(h)));
         }
         let b = rig.ball(h);
         assert!(
-            b.position.y > SP_POS.y + 0.03 && b.velocity.y > 0.0,
-            "ball at {speed} m/s did not pass the spinner: {:?} {:?}",
+            b.position.y > SP_POS.y + 0.03 && b.velocity.y >= 0.0,
+            "ball at {speed} m/s did not get through: {:?} {:?}",
             b.position,
             b.velocity
         );
-        assert!(b.velocity.y < speed, "the flap must take some energy");
-        assert!(max_w > 1.0, "flap not spun by a {speed} m/s ball");
-        // Run the spin-down out and compare pulses with the rotation.
-        rig.run(20_000);
-        let (angle, w) = rig.mechs.spinner_state(0).unwrap();
-        assert!(w.abs() < 0.05);
-        let pulses = rig.mechs.spinner_pulses(0);
         assert!(
-            pulses_match(angle, pulses),
-            "speed {speed}: {pulses} pulses for {angle} rad"
+            lifted > 0.3,
+            "ball at {speed} m/s did not lift the flap ({lifted} rad)"
         );
-        assert!(pulses >= last_pulses, "faster ball, fewer pulses");
-        eprintln!("spinner: ball at {speed} m/s -> ω max {max_w:.1} rad/s, {pulses} pulses");
-        last_pulses = pulses;
+        rig.run(2000);
+        let (angle, w) = rig.mechs.spinner_state(0).unwrap();
+        assert!(w.abs() < 0.05 && from_hanging(angle) <= hold_angle() + 0.02);
     }
-    assert!(
-        last_pulses >= 2,
-        "a 3.5 m/s shot gave only {last_pulses} pulses"
-    );
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
 
+    /// Pure viscous configuration: total rotation ω0/d, pulses floor(·/180°) ± 1.
     #[test]
-    fn prop_spinner_pulse_count(d in 0.5f32..6.0, omega0 in 2.0f32..120.0, sign in prop::bool::ANY) {
+    fn prop_free_spinner_pulse_count(d in 0.5f32..6.0, omega0 in 2.0f32..120.0, sign in prop::bool::ANY) {
         let w0 = if sign { omega0 } else { -omega0 };
-        let s = spin_down(Some(d), w0);
+        let s = spin_down(free_spinner_rig(Some(d)), w0, 30.0 / d);
         let analytic = w0 / d;
         prop_assert!((s.total_angle - analytic).abs() <= 0.01 * analytic.abs() + 0.08 / d,
             "total {} vs {}", s.total_angle, analytic);
@@ -452,12 +670,19 @@ proptest! {
         prop_assert!((s.pulses as i64 - expected).abs() <= 1, "{} vs {}", s.pulses, expected);
     }
 
-    /// More initial speed never gives fewer pulses.
+    /// Default model against the f64 reference of the documented ODE. The
+    /// random sweep meets initial speeds right at a go/no-go boundary of a
+    /// swing, so the tolerance is ±4 (two marginal swings) or 10 %.
     #[test]
-    fn prop_spinner_pulses_monotone(d in 0.5f32..4.0, a in 2.0f32..80.0, extra in 0.0f32..40.0) {
-        let lo = spin_down(Some(d), a);
-        let hi = spin_down(Some(d), a + extra);
-        prop_assert!(hi.pulses >= lo.pulses);
+    fn prop_spinner_pulses_match_the_documented_model(d in 0.3f32..6.0, omega0 in 2.0f32..250.0, sign in prop::bool::ANY) {
+        let sp = defaults().mechs.spinner;
+        let w0 = if sign { omega0 } else { -omega0 };
+        let s = spin_down(spinner_rig(Some(d)), w0, 60.0);
+        let (expected, _) = reference(f64::from(d), f64::from(w0), f64::from(sp.radius), f64::from(sp.friction), f64::from(G));
+        prop_assert!(s.pulses.abs_diff(expected) <= 4.max(expected / 10),
+            "d {} ω0 {}: {} pulses, reference {}", d, w0, s.pulses, expected);
+        prop_assert!(from_hanging(s.total_angle) <= hold_angle() + 0.02,
+            "parked {} rad from hanging", from_hanging(s.total_angle));
     }
 }
 

@@ -207,3 +207,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 2.3 | Independent Tester | Opus 5.5 | 3 | done | 42/42 spec tests pass under the Gate A1 ruling | 50 %: 24.3 %, 70 %: 26.3 % (≤ 50 % gate met; 25 % report); one unexplained 0.805 m/s step at mid-bat reported; aim scan 16.8–32.3 % |
 | 4 | 2.4 | Implementer | Opus 5.5 | fix 1 | done | clippy clean; 110 own + 492 pin_core/pin_assets tests pass; mech/ 97.2–100 %; 0 allocs | B1 engaged = at stop and not moving away (kick-off impulse ≤ drive); B2 spinner gravity + pivot friction model (CR-004 +friction); N1, N2 fixed; N3 documented; VUK: parameter limits + stricter capture; 6 Tester spinner tests target the old model → Tester update |
 | 4 | 2.4 | Independent Tester | Fable 5.2 | 3 | running | — | spinner tests to the documented model |
+| 4 | 2.4 | Independent Tester | Fable 5.2 | 3 | done | 86/86 spec tests pass | spinner tests re-based on an independent RK4 of the documented model + exact ω0/d viscous case; absurd_parameters_are_rejected |
+| 4 | 2.4 | Reviewer | Fable 5.2 | 2 | running | — | |

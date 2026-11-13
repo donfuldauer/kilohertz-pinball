@@ -123,6 +123,56 @@ fn new_rejects_bad_input() {
     assert_eq!(MechSet::new(&max, &d).unwrap().len(), MAX_MECHS);
 }
 
+/// Plausibility limits (DECISIONS "2.4 — fix round 1"): sizes ≤ 0.5 m, exit
+/// offset ≤ 1 m, speeds ≤ 20 m/s, slider free speeds √(2F·stroke/m) and
+/// stroke·√(k/m) ≤ 20 m/s.
+#[test]
+fn absurd_parameters_are_rejected() {
+    let d = defaults();
+    let with = |kind: MechKind, f: &dyn Fn(&mut MechParams)| {
+        let mut p = params();
+        f(&mut p);
+        MechSet::new(&[spec(kind, Vec3::ZERO).with_params(p)], &d)
+    };
+    let rejected = [
+        with(MechKind::Bumper, &|p| p.radius = Some(600.0)),
+        with(MechKind::Bumper, &|p| p.kick_speed_m_s = Some(25.0)),
+        with(MechKind::Bumper, &|p| p.kick_speed_m_s = Some(1.0e9)),
+        with(MechKind::Sling, &|p| p.length = Some(5000.0)),
+        with(MechKind::Sling, &|p| p.force_n = Some(1.0e4)),
+        with(MechKind::Kickback, &|p| p.mass_g = Some(0.01)),
+        with(MechKind::DropTarget, &|p| p.height = Some(900.0)),
+        with(MechKind::DropTarget, &|p| {
+            p.threshold_speed_m_s = Some(1.0e6)
+        }),
+        with(MechKind::Spinner, &|p| p.radius = Some(800.0)),
+        with(MechKind::Vuk, &|p| p.eject_speed_m_s = Some(1.0e9)),
+        with(MechKind::Vuk, &|p| p.kick_speed_m_s = Some(50.0)),
+        with(MechKind::Vuk, &|p| p.exit_offset = Some([0.0, 0.0, 5000.0])),
+        with(MechKind::Vuk, &|p| p.radius = Some(700.0)),
+        with(MechKind::Plunger, &|p| p.spring_k_n_m = Some(1.0e6)),
+        with(MechKind::Plunger, &|p| p.stroke = Some(2000.0)),
+    ];
+    for (i, r) in rejected.iter().enumerate() {
+        assert!(
+            matches!(r, Err(MechError::BadParameter { .. })),
+            "absurd case {i} accepted or wrong error: {:?}",
+            r.as_ref().err()
+        );
+    }
+    // Large but plausible values are still accepted.
+    assert!(with(MechKind::Bumper, &|p| p.radius = Some(60.0)).is_ok());
+    assert!(with(MechKind::Bumper, &|p| p.kick_speed_m_s = Some(6.0)).is_ok());
+    assert!(with(MechKind::Vuk, &|p| p.eject_speed_m_s = Some(5.0)).is_ok());
+    assert!(
+        with(MechKind::Vuk, &|p| p.exit_offset =
+            Some([0.0, 100.0, 300.0]))
+        .is_ok()
+    );
+    assert!(with(MechKind::Sling, &|p| p.force_n = Some(150.0)).is_ok());
+    assert!(with(MechKind::Plunger, &|p| p.spring_k_n_m = Some(3000.0)).is_ok());
+}
+
 #[test]
 fn spec_from_manifest_entry_converts_units() {
     let def: MechDef = toml_def();
@@ -457,10 +507,10 @@ prop_compose! {
         thickness in arb_opt(1.0, 20.0),
         kick_speed_m_s in arb_opt(0.0, 6.0),
         kick_reach in arb_opt(0.0, 20.0),
-        mass_g in arb_opt(5.0, 300.0),
-        force_n in arb_opt(0.0, 200.0),
-        stroke in arb_opt(1.0, 80.0),
-        spring_k_n_m in arb_opt(0.0, 4000.0),
+        mass_g in arb_opt(20.0, 300.0),
+        force_n in arb_opt(0.0, 120.0),
+        stroke in arb_opt(1.0, 40.0),
+        spring_k_n_m in arb_opt(0.0, 2500.0),
         threshold_speed_m_s in arb_opt(0.0, 3.0),
         inertia_kg_m2 in arb_opt(1.0e-7, 1.0e-5),
         damping_per_s in arb_opt(0.0, 10.0),
