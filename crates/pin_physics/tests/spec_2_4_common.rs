@@ -228,6 +228,12 @@ pub fn state_bits(b: &Ball) -> [u32; 14] {
 #[derive(Copy, Clone)]
 pub struct Hash(pub u64);
 
+impl Default for Hash {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Hash {
     pub fn new() -> Self {
         Hash(0xcbf2_9ce4_8422_2325)
