@@ -172,3 +172,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 2.3 | Independent Tester | Opus 5.5 | 1 | running | — | |
 | 4 | 2.4 | Implementer | Opus 5.5 | 1 | running | — | same |
 | 4 | 2.4 | Independent Tester | Fable 5.2 | 1 | running | — | |
+| 4 | 4.3 | Implementer | Opus 5.5 | fix 1 | done | fmt/clippy clean; all pin_tablegen + pin_assets tests pass; coverage combined 95.4 % | B1/N1 via new public pin_assets::validate::check_spline on every rail; B2 GltfLimits checks per node; N4 narrowed (refuse non-generated base in --out unless --force); O1 VFS normalisation fixed |
+| 4 | 4.3 | Reviewer | Fable 5.2 | 2 | running | — | |
