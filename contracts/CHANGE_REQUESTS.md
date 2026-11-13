@@ -99,7 +99,7 @@ unchanged):
 
 ### CR-003: `pin_core::haptics` — rich haptic event type
 - **Requested by:** Subphase 3.4 (Implementer)
-- **Status:** open
+- **Status:** merged (with Subphase 3.4, review round 2 pass; additive, verified by the Reviewer)
 - **Kind:** additive
 - **Items:** new file `crates/pin_core/src/haptics.rs`, new line `pub mod haptics;` in `crates/pin_core/src/lib.rs`.
 - **Change:** new module, nothing existing changes (`HapticsTelemetryEvent` and its `to_telemetry_entry` stay as they are):
