@@ -72,3 +72,68 @@ flipper_stroke_time_ms = { min = 20.0, max = 35.0 }   # unloaded, rest to EOS
 flipper_exit_speed_m_s = { min = 3.0,  max = 7.0 }    # full shot, cradled standard ball
 bumper_exit_speed_m_s  = { min = 1.5,  max = 4.0 }
 sling_exit_speed_m_s   = { min = 1.5,  max = 4.0 }
+
+# Kind-specific mech defaults (CR-004, Subphase 2.4), SI. A [[mechs]] entry of
+# a table overrides them with the same quantities in table units (lengths mm,
+# masses g, other keys carry their unit: kick_speed_m_s, force_n, ...).
+
+[mechs.bumper]
+radius          = 0.030     # m
+height          = 0.032     # m
+kick_speed      = 1.7       # m/s
+kick_reach      = 0.008     # m
+
+[mechs.sling]
+length          = 0.10      # m
+height          = 0.025     # m
+thickness       = 0.010     # m
+mass            = 0.06      # kg
+force           = 40.0      # N
+stroke          = 0.010     # m
+spring_k        = 200.0     # N/m
+
+[mechs.kickback]
+length          = 0.025     # m
+height          = 0.025     # m
+thickness       = 0.012     # m
+mass            = 0.06      # kg
+force           = 60.0      # N
+stroke          = 0.020     # m
+spring_k        = 200.0     # N/m
+
+[mechs.drop_target]
+length          = 0.025     # m
+height          = 0.032     # m
+thickness       = 0.005     # m
+threshold_speed = 0.5       # m/s
+kick_speed      = 0.5       # m/s
+
+[mechs.spinner]
+length          = 0.040     # m
+radius          = 0.028     # m
+height          = 0.042     # m
+thickness       = 0.002     # m
+inertia         = 8.0e-7    # kg·m²
+damping         = 0.8       # 1/s
+
+[mechs.vuk]
+radius          = 0.012     # m
+eject_speed     = 1.2       # m/s
+kick_speed      = 0.3       # m/s
+exit_layer      = 1
+exit_offset     = [0.0, 0.0, 0.06]   # m
+
+[mechs.plunger]
+length          = 0.024     # m
+height          = 0.024     # m
+thickness       = 0.012     # m
+mass            = 0.05      # kg
+spring_k        = 1000.0    # N/m
+stroke          = 0.05      # m
+auto_pull       = 0.8       # 0..1
+
+[mechs.tilt_bob]
+length          = 0.12      # m
+gap             = 0.012     # m
+damping         = 0.5       # 1/s
+restitution     = 0.3

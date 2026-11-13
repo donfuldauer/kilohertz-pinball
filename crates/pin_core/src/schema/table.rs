@@ -727,6 +727,139 @@ pub struct MechDef {
     /// Position, mm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<[f32; 3]>,
+    // Kind-specific parameters (CR-004). Omitted ones default from the
+    // `[mechs.<kind>]` tables of `physics_defaults.toml`; a kind ignores the
+    // fields it does not use.
+    /// Orientation in the playfield plane, degrees from +x (kick, face-normal or launch direction; spinner: flap normal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle_deg: Option<f32>,
+    /// Collision layer index (default 0; VUK: the capture layer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<u8>,
+    /// mm. Bumper ring radius; VUK capture radius; spinner flap length (pivot to free edge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f32>,
+    /// mm. Sling band, kickback face, drop-target face, spinner flap or plunger tip width.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<f32>,
+    /// mm. Body height above the playfield; spinner: pivot height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f32>,
+    /// mm. Kicker, drop-target, spinner-flap or plunger-tip thickness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thickness: Option<f32>,
+    /// m/s. Bumper ring speed; drop-target reset rise speed; VUK horizontal eject speed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kick_speed_m_s: Option<f32>,
+    /// mm. Bumper skirt: largest ball–ring gap the kick still catches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kick_reach: Option<f32>,
+    /// g. Moving mass of a sling/kickback kicker or the plunger rod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mass_g: Option<f32>,
+    /// N. Coil force on a sling/kickback kicker while the coil is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_n: Option<f32>,
+    /// mm. Kicker travel; plunger pull travel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<f32>,
+    /// N/m. Kicker return spring; plunger main spring (`F = −k·x`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spring_k_n_m: Option<f32>,
+    /// m/s. Drop target: smallest normal impact speed that drops it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_speed_m_s: Option<f32>,
+    /// kg·m². Spinner flap moment of inertia about its pivot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inertia_kg_m2: Option<f32>,
+    /// 1/s. Spinner spin-down rate `d` (`dω/dt = −d·ω`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damping_per_s: Option<f32>,
+    /// m/s. VUK vertical eject speed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eject_speed_m_s: Option<f32>,
+    /// VUK: layer the ejected ball ends on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_layer: Option<u8>,
+    /// mm. VUK: exit point relative to `position`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_offset: Option<[f32; 3]>,
+    /// Plunger: pull depth (0..1) the auto-plunger coil releases from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_pull: Option<f32>,
+}
+
+impl MechDef {
+    /// The kind-specific overrides of this entry (table units).
+    #[must_use]
+    pub fn params(&self) -> MechParams {
+        MechParams {
+            angle_deg: self.angle_deg,
+            layer: self.layer,
+            radius: self.radius,
+            length: self.length,
+            height: self.height,
+            thickness: self.thickness,
+            kick_speed_m_s: self.kick_speed_m_s,
+            kick_reach: self.kick_reach,
+            mass_g: self.mass_g,
+            force_n: self.force_n,
+            stroke: self.stroke,
+            spring_k_n_m: self.spring_k_n_m,
+            threshold_speed_m_s: self.threshold_speed_m_s,
+            inertia_kg_m2: self.inertia_kg_m2,
+            damping_per_s: self.damping_per_s,
+            eject_speed_m_s: self.eject_speed_m_s,
+            exit_layer: self.exit_layer,
+            exit_offset: self.exit_offset,
+            auto_pull: self.auto_pull,
+        }
+    }
+}
+
+/// The kind-specific `[[mechs]]` overrides of [`MechDef`] without the names
+/// (CR-004), in table units: lengths mm, angles degrees, masses g, the rest
+/// SI (unit suffix in the name).
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct MechParams {
+    /// See [`MechDef::angle_deg`].
+    pub angle_deg: Option<f32>,
+    /// See [`MechDef::layer`].
+    pub layer: Option<u8>,
+    /// See [`MechDef::radius`].
+    pub radius: Option<f32>,
+    /// See [`MechDef::length`].
+    pub length: Option<f32>,
+    /// See [`MechDef::height`].
+    pub height: Option<f32>,
+    /// See [`MechDef::thickness`].
+    pub thickness: Option<f32>,
+    /// See [`MechDef::kick_speed_m_s`].
+    pub kick_speed_m_s: Option<f32>,
+    /// See [`MechDef::kick_reach`].
+    pub kick_reach: Option<f32>,
+    /// See [`MechDef::mass_g`].
+    pub mass_g: Option<f32>,
+    /// See [`MechDef::force_n`].
+    pub force_n: Option<f32>,
+    /// See [`MechDef::stroke`].
+    pub stroke: Option<f32>,
+    /// See [`MechDef::spring_k_n_m`].
+    pub spring_k_n_m: Option<f32>,
+    /// See [`MechDef::threshold_speed_m_s`].
+    pub threshold_speed_m_s: Option<f32>,
+    /// See [`MechDef::inertia_kg_m2`].
+    pub inertia_kg_m2: Option<f32>,
+    /// See [`MechDef::damping_per_s`].
+    pub damping_per_s: Option<f32>,
+    /// See [`MechDef::eject_speed_m_s`].
+    pub eject_speed_m_s: Option<f32>,
+    /// See [`MechDef::exit_layer`].
+    pub exit_layer: Option<u8>,
+    /// See [`MechDef::exit_offset`].
+    pub exit_offset: Option<[f32; 3]>,
+    /// See [`MechDef::auto_pull`].
+    pub auto_pull: Option<f32>,
 }
 
 /// `[[shots]]`: a switch sequence completed within `window_ms`.
@@ -876,5 +1009,38 @@ impl NameResolver for NumberResolver<'_> {
             .iter()
             .find(|s| s.id == name)
             .map(|s| SwitchId(s.number))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mech_kind_parameters_parse_and_are_optional() {
+        let src = r#"
+id = "bumper_1"
+kind = "bumper"
+coil = "bumper_1_coil"
+position = [260.0, 820.0, 0.0]
+radius = 28.0
+kick_speed_m_s = 2.0
+mass_g = 40.0
+exit_offset = [1.0, 2.0, 3.0]
+layer = 2
+"#;
+        let m: MechDef = toml::from_str(src).unwrap();
+        let p = m.params();
+        assert_eq!(p.radius, Some(28.0));
+        assert_eq!(p.kick_speed_m_s, Some(2.0));
+        assert_eq!(p.mass_g, Some(40.0));
+        assert_eq!(p.exit_offset, Some([1.0, 2.0, 3.0]));
+        assert_eq!(p.layer, Some(2));
+        assert_eq!(p.spring_k_n_m, None);
+        let back: MechDef = toml::from_str(&toml::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back, m);
+        let bare: MechDef = toml::from_str("id = \"x\"\nkind = \"spinner\"\n").unwrap();
+        assert_eq!(bare.params(), MechParams::default());
+        assert!(toml::from_str::<MechDef>("id = \"x\"\nkind = \"spinner\"\nzz = 1\n").is_err());
     }
 }

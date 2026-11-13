@@ -176,3 +176,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 4.3 | Reviewer | Fable 5.2 | 2 | running | — | |
 | 4 | 5.1 | Implementer | Opus 5.5 | 1 | done | fmt/clippy clean (± gpu-tests); 84 own + 66 spec tests pass on lavapipe; coverage 96.14 %; naga =30.0.1 | one shading model with a material table; Rgba16Float HDR target for 5.2; 1.4 follow-ups N-a, N-c, N5 done |
 | 4 | 5.1 | Reviewer | Fable 5.2 | 1 | running | — | |
+| 4 | 2.2-S | Implementer | Opus 5.5 | fix 1 | done | 334 tests (excl. 2.7 in-progress spec); digests unchanged; 0 allocs; ball/ coverage 96.9–99.5 % | B1 direction-of-delta inverse mass + divergence guard; B2 owner obligation 3 (speculative stops); N1 early-out (pinch 5.6 → 0.9 ms worst); docs N2–N7 |
+| 4 | 2.2-S | Reviewer | Fable 5.2 | 2 | running | — | |

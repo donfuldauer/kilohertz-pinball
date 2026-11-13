@@ -17,7 +17,8 @@ pub mod table;
 
 pub use backglass::BackglassManifest;
 pub use layout::LayoutManifest;
-pub use physics::{PhysicsDefaults, PhysicsOverrides, PhysicsParams};
+pub use physics::{MechDefaults, PhysicsDefaults, PhysicsOverrides, PhysicsParams};
+pub use table::MechParams;
 pub use table::TableManifest;
 
 use core::fmt;

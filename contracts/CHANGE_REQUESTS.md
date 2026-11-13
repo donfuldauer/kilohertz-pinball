@@ -110,3 +110,17 @@ unchanged):
 - **Why:** deliverable 1 of 3.4 (haptics bus) needs coil fire, EOS hit, bumper, ball drop and ball roll (position, mass, speed) events; the existing event has only `(tick, source, strength)`. Lives in `pin_core` because the producer is the sim (`pin_sim`/`pin_physics`) and the consumers are `pin_input` (rumble), `pin_audio` (SSF, telemetry).
 - **Affected crates:** none (additive; `HapticKind` is `#[non_exhaustive]`, so later kinds stay additive too).
 - **Workaround meanwhile:** none needed; the brief allows the additive change in the new file.
+
+### CR-004: kind-specific `[[mechs]]` parameters and a `[mechs]` section of `physics_defaults.toml`
+- **Requested by:** Subphase 2.4 (Implementer); closes 1.1 review N7
+- **Status:** open (additive; landed in the working tree for review with Subphase 2.4)
+- **Kind:** additive
+- **Items:** `crates/pin_core/src/schema/table.rs` (`MechDef`, new `MechParams`), `crates/pin_core/src/schema/physics.rs` (new `MechDefaults` and per-kind default structs, new field `PhysicsDefaults::mechs`), `crates/pin_core/src/schema/mod.rs` and `crates/pin_core/src/lib.rs` (re-exports), `physics_defaults.toml` (new `[mechs.*]` tables).
+- **Change:**
+  - `MechDef` gains 19 optional fields, all `#[serde(default, skip_serializing_if = "Option::is_none")]`, in table units (lengths mm without a suffix, angles degrees, masses g, other quantities SI with the unit in the key, as `FlipperDef` does): `angle_deg`, `layer: u8`, `radius`, `length`, `height`, `thickness`, `kick_speed_m_s`, `kick_reach`, `mass_g`, `force_n`, `stroke`, `spring_k_n_m`, `threshold_speed_m_s`, `inertia_kg_m2`, `damping_per_s`, `eject_speed_m_s`, `exit_layer: u8`, `exit_offset: [f32; 3]`, `auto_pull`. Each kind reads the subset documented on the field; the others are ignored. New `MechDef::params(&self) -> MechParams`.
+  - New `pub struct MechParams` (`Copy`, `Default`, all the same `Option` fields, table units): the per-mech overrides detached from the names, so `pin_physics` can take them without the string fields.
+  - New `pub struct MechDefaults { bumper: BumperDefaults, sling: KickerDefaults, kickback: KickerDefaults, drop_target: DropTargetDefaults, spinner: SpinnerDefaults, vuk: VukDefaults, plunger: PlungerDefaults, tilt_bob: TiltBobDefaults }` (all SI, `deny_unknown_fields`), and `PhysicsDefaults::mechs: MechDefaults` with `#[serde(default)]`; `MechDefaults::default()` equals the shipped `[mechs]` section (unit-tested), so a `physics_defaults.toml` without `[mechs]` still parses.
+  - `physics_defaults.toml`: new `[mechs.bumper]`, `[mechs.sling]`, `[mechs.kickback]`, `[mechs.drop_target]`, `[mechs.spinner]`, `[mechs.vuk]`, `[mechs.plunger]`, `[mechs.tilt_bob]` tables.
+- **Why:** PLAN Appendix A.1 says "kind-specific parameters default from physics_defaults.toml", but neither `MechDef` nor `PhysicsDefaults` had any such parameter (1.1 review N7). Subphase 2.4 needs per-mech geometry, coil force, spring, threshold and damping values with table overrides, so exit speeds come from parameters.
+- **Affected crates:** none (additive: no `MechDef`/`PhysicsDefaults` struct literal exists outside `pin_core`; the new TOML keys are optional).
+- **Workaround meanwhile:** none needed; the brief allows the additive change.

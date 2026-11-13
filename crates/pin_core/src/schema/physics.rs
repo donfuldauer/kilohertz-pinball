@@ -86,6 +86,10 @@ pub struct PhysicsDefaults {
     pub tunables: Tunables,
     /// Feel windows.
     pub feel_windows: FeelWindows,
+    /// Kind-specific mech defaults (CR-004; optional section, defaults to
+    /// [`MechDefaults::default`]).
+    #[serde(default)]
+    pub mechs: MechDefaults,
 }
 
 impl Manifest for PhysicsDefaults {
@@ -162,6 +166,217 @@ impl PhysicsDefaults {
                 .unwrap_or(t.magnet_remanence_tau_ms.default),
         }
     }
+}
+
+/// Default kind-specific mech parameters (CR-004): the `[mechs]` tables of
+/// `physics_defaults.toml`, all SI. A table overrides them per mech through
+/// the optional [`MechDef`](super::table::MechDef) fields. A file without
+/// `[mechs]` gets [`MechDefaults::default`], which equals the shipped values.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MechDefaults {
+    /// Pop bumpers.
+    pub bumper: BumperDefaults,
+    /// Slingshots.
+    pub sling: KickerDefaults,
+    /// Kickbacks.
+    pub kickback: KickerDefaults,
+    /// Drop targets.
+    pub drop_target: DropTargetDefaults,
+    /// Spinners.
+    pub spinner: SpinnerDefaults,
+    /// VUK scoops.
+    pub vuk: VukDefaults,
+    /// Plungers.
+    pub plunger: PlungerDefaults,
+    /// The cabinet tilt bob.
+    pub tilt_bob: TiltBobDefaults,
+}
+
+impl Default for MechDefaults {
+    fn default() -> Self {
+        Self {
+            bumper: BumperDefaults {
+                radius: 0.030,
+                height: 0.032,
+                kick_speed: 1.7,
+                kick_reach: 0.008,
+            },
+            sling: KickerDefaults {
+                length: 0.10,
+                height: 0.025,
+                thickness: 0.010,
+                mass: 0.06,
+                force: 40.0,
+                stroke: 0.010,
+                spring_k: 200.0,
+            },
+            kickback: KickerDefaults {
+                length: 0.025,
+                height: 0.025,
+                thickness: 0.012,
+                mass: 0.06,
+                force: 60.0,
+                stroke: 0.020,
+                spring_k: 200.0,
+            },
+            drop_target: DropTargetDefaults {
+                length: 0.025,
+                height: 0.032,
+                thickness: 0.005,
+                threshold_speed: 0.5,
+                kick_speed: 0.5,
+            },
+            spinner: SpinnerDefaults {
+                length: 0.040,
+                radius: 0.028,
+                height: 0.042,
+                thickness: 0.002,
+                inertia: 8.0e-7,
+                damping: 0.8,
+            },
+            vuk: VukDefaults {
+                radius: 0.012,
+                eject_speed: 1.2,
+                kick_speed: 0.3,
+                exit_layer: 1,
+                exit_offset: [0.0, 0.0, 0.06],
+            },
+            plunger: PlungerDefaults {
+                length: 0.024,
+                height: 0.024,
+                thickness: 0.012,
+                mass: 0.05,
+                spring_k: 1000.0,
+                stroke: 0.05,
+                auto_pull: 0.8,
+            },
+            tilt_bob: TiltBobDefaults {
+                length: 0.12,
+                gap: 0.012,
+                damping: 0.5,
+                restitution: 0.3,
+            },
+        }
+    }
+}
+
+/// Pop bumper (`[mechs.bumper]`).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BumperDefaults {
+    /// Ring radius (kinematic cylinder), m.
+    pub radius: f32,
+    /// Ring height above the playfield, m.
+    pub height: f32,
+    /// Ring speed while the coil is on, m/s.
+    pub kick_speed: f32,
+    /// Skirt: largest ball–ring gap the kick still catches, m.
+    pub kick_reach: f32,
+}
+
+/// Coil-driven slider kicker (`[mechs.sling]`, `[mechs.kickback]`).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KickerDefaults {
+    /// Face width, m.
+    pub length: f32,
+    /// Height above the playfield, m.
+    pub height: f32,
+    /// Thickness along the kick axis, m.
+    pub thickness: f32,
+    /// Moving mass, kg.
+    pub mass: f32,
+    /// Coil force while the coil is on, N.
+    pub force: f32,
+    /// Travel from rest to the end stop, m.
+    pub stroke: f32,
+    /// Return spring, N/m.
+    pub spring_k: f32,
+}
+
+/// Drop target (`[mechs.drop_target]`).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DropTargetDefaults {
+    /// Face width, m.
+    pub length: f32,
+    /// Height above the playfield when up, m.
+    pub height: f32,
+    /// Thickness, m.
+    pub thickness: f32,
+    /// Smallest normal impact speed that drops the target, m/s.
+    pub threshold_speed: f32,
+    /// Rise speed while the reset coil raises it, m/s.
+    pub kick_speed: f32,
+}
+
+/// Spinner flap (`[mechs.spinner]`).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpinnerDefaults {
+    /// Flap width along the pivot axis, m.
+    pub length: f32,
+    /// Flap length from the pivot to its free edge, m.
+    pub radius: f32,
+    /// Pivot height above the playfield, m.
+    pub height: f32,
+    /// Flap thickness, m.
+    pub thickness: f32,
+    /// Moment of inertia about the pivot, kg·m².
+    pub inertia: f32,
+    /// Spin-down rate d (dω/dt = −d·ω), 1/s.
+    pub damping: f32,
+}
+
+/// Vertical up-kicker scoop (`[mechs.vuk]`).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VukDefaults {
+    /// Capture radius around the scoop position, m.
+    pub radius: f32,
+    /// Vertical eject speed, m/s.
+    pub eject_speed: f32,
+    /// Horizontal eject speed along the mech angle, m/s.
+    pub kick_speed: f32,
+    /// Layer the ejected ball ends on.
+    pub exit_layer: u8,
+    /// Exit point relative to the scoop position, m.
+    pub exit_offset: [f32; 3],
+}
+
+/// Spring plunger (`[mechs.plunger]`).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlungerDefaults {
+    /// Tip width, m.
+    pub length: f32,
+    /// Tip height above the playfield, m.
+    pub height: f32,
+    /// Tip thickness along the launch axis, m.
+    pub thickness: f32,
+    /// Rod and tip mass, kg.
+    pub mass: f32,
+    /// Main spring constant (F = −k·x), N/m.
+    pub spring_k: f32,
+    /// Pull travel, m.
+    pub stroke: f32,
+    /// Pull depth (0..1) the auto-plunger coil releases from.
+    pub auto_pull: f32,
+}
+
+/// Cabinet tilt bob (`[mechs.tilt_bob]`).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TiltBobDefaults {
+    /// Pendulum length (pivot to bob centre), m.
+    pub length: f32,
+    /// Horizontal bob travel before it touches the contact ring, m.
+    pub gap: f32,
+    /// Viscous damping rate of the swing, 1/s.
+    pub damping: f32,
+    /// Bob–ring restitution.
+    pub restitution: f32,
 }
 
 /// Steel–rubber restitution used when the pair table lacks that pair (Appendix C).
@@ -321,6 +536,22 @@ mod tests {
             no_pair.resolve(None).flipper_rubber_restitution,
             FALLBACK_RUBBER_RESTITUTION
         );
+    }
+
+    #[test]
+    fn mech_defaults_match_the_shipped_section() {
+        let d = PhysicsDefaults::builtin();
+        assert_eq!(d.mechs, MechDefaults::default());
+        assert_eq!(d.mechs.bumper.kick_speed, 1.7);
+        assert_eq!(d.mechs.vuk.exit_layer, 1);
+        // The section is optional: a file without it gets the same defaults.
+        let i = DEFAULT_PHYSICS_TOML.find("[mechs.").unwrap();
+        let without = PhysicsDefaults::from_toml_str(&DEFAULT_PHYSICS_TOML[..i]).unwrap();
+        assert_eq!(without.mechs, MechDefaults::default());
+        assert_eq!(without.material_pairs, d.material_pairs);
+        // Unknown keys inside a kind table are errors.
+        let bad = DEFAULT_PHYSICS_TOML.replacen("kick_reach ", "kick_reachy ", 1);
+        assert!(PhysicsDefaults::from_toml_str(&bad).is_err());
     }
 
     #[test]
