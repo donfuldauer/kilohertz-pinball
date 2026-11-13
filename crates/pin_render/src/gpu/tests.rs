@@ -254,7 +254,7 @@ fn pacing_requires_a_presented_playfield() {
     let roles = [Playfield, Score];
     assert!(paced_by(roles, &[S::Presented, S::Unchanged]));
     // A playfield that could not present does not pace: the loop must sleep.
-    for st in [S::Skipped, S::Hidden, S::Busy, S::Unchanged] {
+    for st in [S::Skipped, S::Occluded, S::Hidden, S::Busy, S::Unchanged] {
         assert!(!paced_by(roles, &[st, S::Presented]), "{st:?}");
     }
     assert!(!paced_by([Backglass, Score], &[S::Presented, S::Presented]));

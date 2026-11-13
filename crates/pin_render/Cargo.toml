@@ -31,3 +31,7 @@ sdl3.workspace = true
 name = "gpu_window"
 harness = false
 required-features = ["gpu-tests"]
+
+[[test]]
+name = "gpu_context_concurrency"
+required-features = ["gpu-tests"]

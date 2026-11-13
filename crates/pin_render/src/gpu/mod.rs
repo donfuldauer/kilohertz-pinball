@@ -232,16 +232,54 @@ impl fmt::Display for GpuError {
 impl std::error::Error for GpuError {}
 
 /// The engine's single wgpu instance, adapter, device and queue.
+///
+/// Creating and destroying contexts is serialised process-wide (see
+/// [`lifecycle_lock`]); using them is not.
 pub struct GpuContext {
-    instance: wgpu::Instance,
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
+    /// `None` only while dropping.
+    inner: Option<Inner>,
+}
+
+/// Fields in teardown order (queue first, instance last).
+struct Inner {
     queue: wgpu::Queue,
+    device: wgpu::Device,
+    adapter: wgpu::Adapter,
+    instance: wgpu::Instance,
+}
+
+/// Serialises driver-level setup and teardown (instance creation, adapter
+/// and device requests, device destruction) across threads.
+///
+/// The engine has one context, but test harnesses run many tests on
+/// parallel threads, each making and dropping its own context. Software
+/// drivers are not reliably safe under concurrent instance/device creation
+/// and destruction: lavapipe crashed with SIGSEGV in CI under exactly that
+/// load (DECISIONS "1.4 — CI fix: lavapipe SIGSEGV and macOS occlusion").
+/// Rendering on several live contexts at once stays concurrent.
+fn lifecycle_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Drop for GpuContext {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.take() else {
+            return;
+        };
+        let _g = lifecycle_lock();
+        // Let submitted work finish before the device (if this was its last
+        // handle) and the instance are destroyed.
+        let _ = inner.device.poll(wgpu::PollType::wait_indefinitely());
+        drop(inner);
+    }
 }
 
 /// Creates a wgpu instance over `backends` (instance flags honour the
 /// `WGPU_*` debug environment variables).
 pub fn create_instance(backends: Backends) -> wgpu::Instance {
+    let _g = lifecycle_lock();
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = backends;
     desc.flags = desc.flags.with_env();
@@ -261,55 +299,74 @@ impl GpuContext {
         opts: &GpuOptions,
         compatible_surface: Option<&wgpu::Surface<'_>>,
     ) -> Result<GpuContext, GpuError> {
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: opts.force_fallback_adapter,
-            compatible_surface,
-            apply_limit_buckets: false,
-        }))
-        .map_err(|e| {
-            GpuError::NoAdapter(format!(
-                "{e} (backends {:?}, force_fallback_adapter {})",
-                opts.backends, opts.force_fallback_adapter
-            ))
-        })?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("pin_render"),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
-            ..Default::default()
-        }))
-        .map_err(|e| GpuError::RequestDevice(e.to_string()))?;
+        let _g = lifecycle_lock();
+        let adapter =
+            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: opts.force_fallback_adapter,
+                compatible_surface,
+                apply_limit_buckets: false,
+            })) {
+                Ok(a) => a,
+                Err(e) => {
+                    drop(instance); // under the lock
+                    return Err(GpuError::NoAdapter(format!(
+                        "{e} (backends {:?}, force_fallback_adapter {})",
+                        opts.backends, opts.force_fallback_adapter
+                    )));
+                }
+            };
+        let (device, queue) =
+            match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("pin_render"),
+                required_limits:
+                    wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+                ..Default::default()
+            })) {
+                Ok(dq) => dq,
+                Err(e) => {
+                    drop(adapter); // under the lock
+                    drop(instance);
+                    return Err(GpuError::RequestDevice(e.to_string()));
+                }
+            };
         Ok(GpuContext {
-            instance,
-            adapter,
-            device,
-            queue,
+            inner: Some(Inner {
+                queue,
+                device,
+                adapter,
+                instance,
+            }),
         })
+    }
+
+    fn inner(&self) -> &Inner {
+        self.inner.as_ref().expect("GpuContext used while dropping")
     }
 
     /// The instance (create surfaces from it).
     pub fn instance(&self) -> &wgpu::Instance {
-        &self.instance
+        &self.inner().instance
     }
 
     /// The adapter.
     pub fn adapter(&self) -> &wgpu::Adapter {
-        &self.adapter
+        &self.inner().adapter
     }
 
     /// The device.
     pub fn device(&self) -> &wgpu::Device {
-        &self.device
+        &self.inner().device
     }
 
     /// The queue.
     pub fn queue(&self) -> &wgpu::Queue {
-        &self.queue
+        &self.inner().queue
     }
 
     /// Adapter name, backend, type and driver.
     pub fn adapter_info(&self) -> wgpu::AdapterInfo {
-        self.adapter.get_info()
+        self.inner().adapter.get_info()
     }
 }
 

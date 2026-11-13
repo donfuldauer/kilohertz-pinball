@@ -69,3 +69,4 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - **Open item B2:** dense level coils (≤ 2 000 segments) take up to 279 ms to build, against a 50 ms target. The old code took about 270 ms.
 - **Decide:** schedule a follow-up fix task with the reviewer's suggested direction (see DECISIONS "Orchestrator — 2.1 B7 blocked"), or accept these as known limits.
 - **Also review:** one marginal new sloped rejection, a C ramp with 45 mm between its facing ends.
+- 1.4 CI fix: macOS Metal window tests now warm up until windows are unoccluded; if the CI Mac never reports the windows visible (no GUI session), the tests fail with the status history — decide then whether Metal window presentation needs a self-hosted/GUI runner (DECISIONS "1.4 — CI fix").

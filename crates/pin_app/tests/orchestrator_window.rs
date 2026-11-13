@@ -8,6 +8,12 @@
 //! `xvfb-run` on Linux CI. Without one it prints SKIP, or fails when
 //! `PIN_REQUIRE_GPU=1`. sdl3's raw-window-handle impl panics on the dummy
 //! driver (DECISIONS 0.1 Q4), so the dummy driver is never used here.
+//!
+//! The main thread pumps SDL events between frames, as the app does. On
+//! macOS this is what makes a new window visible to the swap chain: wgpu
+//! reports a window as occluded until AppKit, on the main thread's event
+//! loop, has delivered its first occlusion-state change. So each part first
+//! renders (bounded) until every window has presented once, then counts.
 
 use arrayvec::ArrayVec;
 use pin_app::orchestrator::{RenderConfig, RenderGpu, ThreadsConfig, spawn_threads};
@@ -18,6 +24,48 @@ use pin_render::gpu::{
 };
 use pin_render::topology::{Rect, SurfaceRole, WindowEvent, WindowEventKind};
 use std::time::{Duration, Instant};
+
+/// How long a new window may take to become visible (presentable).
+const WARM_UP: Duration = Duration::from_secs(15);
+
+/// Renders until the playfield and the secondary surface have each
+/// presented once (a presenter-thread surface counts once its thread
+/// presented), pumping SDL events in between and sleeping briefly whenever
+/// the frame was not paced (as the render thread does). Panics with the
+/// statuses seen if that does not happen within [`WARM_UP`].
+fn warm_up(set: &mut SurfaceSet, pump: &mut sdl3::EventPump, lines: &DebugLines, camera: &Camera) {
+    let presenter = set.choices().any(|c| c.2.needs_presenter_thread());
+    let t0 = Instant::now();
+    let mut seen: Vec<[SurfaceStatus; 2]> = Vec::new();
+    let (mut playfield, mut secondary) = (false, false);
+    while t0.elapsed() < WARM_UP {
+        while pump.poll_event().is_some() {}
+        let st = set.render(lines, camera);
+        playfield |= st[0] == SurfaceStatus::Presented;
+        secondary |= if presenter {
+            set.presenter_thread_frames() >= 1
+        } else {
+            st[1] == SurfaceStatus::Presented
+        };
+        if seen.last() != Some(&[st[0], st[1]]) {
+            seen.push([st[0], st[1]]);
+        }
+        if playfield && secondary {
+            println!(
+                "[orchestrator_window] windows presentable after {:?} (status changes {seen:?})",
+                t0.elapsed()
+            );
+            return;
+        }
+        if !set.frame_paced(&st) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    panic!(
+        "windows not presentable within {WARM_UP:?}: playfield {playfield}, secondary \
+         {secondary}; status changes {seen:?}"
+    );
+}
 
 const NATIVE: [&str; 4] = ["windows", "cocoa", "x11", "wayland"];
 
@@ -67,9 +115,19 @@ fn main() {
             "SDL video driver {driver:?} has no native windows"
         ));
     }
-    let mk = |title: &str, w: u32, h: u32| video.window(title, w, h).build().expect("window");
-    let playfield = mk("pin_app test playfield", 160, 240);
-    let score = mk("pin_app test score", 128, 32);
+    // Side by side, so neither covers the other, and raised.
+    let mk = |title: &str, x: i32, w: u32, h: u32| {
+        let mut win = video
+            .window(title, w, h)
+            .position(x, 64)
+            .build()
+            .expect("window");
+        win.raise();
+        win
+    };
+    let playfield = mk("pin_app test playfield", 64, 160, 240);
+    let score = mk("pin_app test score", 288, 128, 32);
+    let mut pump = sdl.event_pump().expect("pump");
 
     let opts = GpuOptions::from_env();
     let mut lines = DebugLines::new(64);
@@ -117,9 +175,11 @@ fn main() {
             choices[1].2,
             PresentChoice::PresenterThread(wgpu::PresentMode::Fifo)
         );
+        warm_up(&mut set, &mut pump, &lines, &camera);
         let mut presented = [0u32; 2];
         let mut statuses = Vec::new();
         for frame in 0..30 {
+            while pump.poll_event().is_some() {}
             if frame == 10 {
                 set.request_redraw(SurfaceRole::Score);
                 set.handle_window_event(&WindowEvent {
@@ -131,6 +191,9 @@ fn main() {
             let st = set.render(&lines, &camera);
             if st[0] == SurfaceStatus::Presented {
                 assert!(set.frame_paced(&st));
+            } else {
+                assert!(!set.frame_paced(&st));
+                std::thread::sleep(Duration::from_millis(5));
             }
             for (i, s) in st.iter().enumerate() {
                 if *s == SurfaceStatus::Presented {
@@ -150,8 +213,8 @@ fn main() {
             "playfield presented {} of 30",
             presented[0]
         );
-        // The secondary surface redraws only on change: first frame + the
-        // request at frame 10 (+ retries while busy).
+        // The secondary surface redraws only on change (its first frame was
+        // in the warm-up): the request at frame 10 (+ retries while busy).
         assert!(
             (1..=4).contains(&presented[1]),
             "score presented {}",
@@ -183,10 +246,8 @@ fn main() {
             break;
         }
         // Keep the windows serviced (main thread = SDL pump).
-        let mut pump = sdl.event_pump().expect("pump");
         while pump.poll_event().is_some() {}
-        drop(pump);
-        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(1));
     }
     let s = threads.stats();
     println!("[orchestrator_window] render thread stats {s:?}");

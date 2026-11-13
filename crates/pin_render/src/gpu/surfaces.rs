@@ -93,6 +93,11 @@ pub enum SurfaceStatus {
     Busy,
     /// The window is minimised or zero-sized.
     Hidden,
+    /// The swap chain reported the window as fully covered (macOS checks
+    /// the window's occlusion state before every acquire, and a window that
+    /// was never shown on screen counts as covered). Nothing was drawn; the
+    /// redraw stays pending and the frame is not paced, so the caller sleeps.
+    Occluded,
     /// Acquiring the swap-chain image failed (timeout, occluded, outdated,
     /// lost); the surface was reconfigured where that helps and the redraw
     /// stays pending.
@@ -572,6 +577,7 @@ impl SurfaceSet {
                     s.needs_configure = !ok;
                     return SurfaceStatus::Skipped;
                 }
+                wgpu::CurrentSurfaceTexture::Occluded => return SurfaceStatus::Occluded,
                 _ => return SurfaceStatus::Skipped,
             };
             let view = frame
