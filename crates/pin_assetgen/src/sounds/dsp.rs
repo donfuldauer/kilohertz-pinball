@@ -9,6 +9,10 @@ pub(crate) const TAU: f64 = core::f64::consts::TAU;
 /// under the −0.1 dBFS ceiling even after 16-bit rounding.
 pub const TARGET_PEAK: f64 = 0.89;
 
+/// Shortest attack ramp of any tone or noise burst (0.5 ms), so no sound
+/// starts with a step.
+pub(crate) const MIN_ATTACK: f64 = 0.0005;
+
 /// A noise colouring filter.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Filter {
@@ -160,7 +164,7 @@ impl Synth {
             let t = i as f64 / self.sr;
             let f = f1 + (f0 - f1) * libm::exp(-t / glide.max(1e-6));
             let att = if attack > 0.0 {
-                (t / attack).min(1.0)
+                (t / attack.max(MIN_ATTACK)).min(1.0)
             } else {
                 1.0
             };
@@ -204,7 +208,7 @@ impl Synth {
             }
             let t = i as f64 / self.sr;
             let att = if attack > 0.0 {
-                (t / attack).min(1.0)
+                (t / attack.max(MIN_ATTACK)).min(1.0)
             } else {
                 1.0
             };
