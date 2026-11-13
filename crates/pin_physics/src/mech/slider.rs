@@ -200,7 +200,13 @@ impl Slider {
         }
         let s = direction.dot(self.axis);
         let x = self.x_at(t);
-        if (x >= self.hi && s > 0.0) || (x <= self.lo && s < 0.0) {
+        let v = self.v_at(t);
+        // Engaged = at the stop and not moving away from it (obligation 1):
+        // a slider leaving a stop is free in both directions.
+        // (`v_at` is 0 on a stop the slider moves into.)
+        let engaged_hi = x >= self.hi && v >= 0.0;
+        let engaged_lo = x <= self.lo && v <= 0.0;
+        if (engaged_hi && s > 0.0) || (engaged_lo && s < 0.0) {
             return 0.0;
         }
         s * s / self.mass
