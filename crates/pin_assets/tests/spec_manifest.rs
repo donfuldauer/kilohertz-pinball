@@ -1190,24 +1190,84 @@ fn closed_and_near_closed_guides_load() {
     );
 }
 
-#[test]
-fn uneven_spline_spacing_is_a_warning_not_an_error() {
-    // Spacings 10, 90, ~51 mm: longest/shortest = 9 > 3.
-    let t = load(
-        &guide("[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [100.0, 0.0, 0.0], [110.0, 50.0, 0.0]]"),
-        BACKGLASS_TOML,
-    );
+/// Warnings of spline 0, anywhere under `splines[0]`.
+fn spline_warnings(t: &LoadedTable) -> Vec<&pin_assets::ValidationError> {
     let w: Vec<_> = t
         .warnings
         .iter()
         .filter(|w| w.path.starts_with("splines[0]"))
         .collect();
+    for w in &w {
+        assert_eq!(w.file, T, "{w}");
+        assert_eq!(
+            w.to_string(),
+            format!("{}: {}: {}", w.file, w.path, w.message)
+        );
+    }
+    w
+}
+
+/// Through-points (mm) of a circular arc of `radius_mm` about the origin,
+/// `n` points over `sweep_deg`, rising `rise_mm` per point.
+fn arc_points(radius_mm: f64, sweep_deg: f64, n: usize, rise_mm: f64) -> String {
+    let pts: Vec<String> = (0..n)
+        .map(|i| {
+            let a = (sweep_deg * i as f64 / (n - 1) as f64).to_radians();
+            format!(
+                "[{:.3}, {:.3}, {:.3}]",
+                radius_mm * a.cos(),
+                radius_mm * a.sin(),
+                rise_mm * i as f64
+            )
+        })
+        .collect();
+    format!("[{}]", pts.join(", "))
+}
+
+/// A regular octagon of circumradius 100 mm about (200, 200): seven corners
+/// and then `last` as the ninth point, where the loop comes back to its
+/// start (300, 200).
+fn octagon(last: &str) -> String {
+    format!(
+        "[[300.0, 200.0, 0.0], [270.7, 270.7, 0.0], [200.0, 300.0, 0.0], [129.3, 270.7, 0.0], \
+         [100.0, 200.0, 0.0], [129.3, 129.3, 0.0], [200.0, 100.0, 0.0], [270.7, 129.3, 0.0], {last}]"
+    )
+}
+
+const GAP_ADVICE: &str = "close the guide or open the gap";
+
+#[test]
+fn uneven_spline_spacing_is_a_warning_not_an_error() {
+    // Collinear, spacings 20, 70, 20 mm: longest/shortest = 3.5 > 3. The
+    // line has no bend and no near-touching end, so the spacing warning is
+    // the only one this guide gets (human ruling 4a: warned, never an error,
+    // never resampled).
+    let pts = "[[0.0, 0.0, 0.0], [20.0, 0.0, 0.0], [90.0, 0.0, 0.0], [110.0, 0.0, 0.0]]";
+    let t = load(&guide(pts), BACKGLASS_TOML);
+    let w = spline_warnings(&t);
     assert_eq!(w.len(), 1, "one spacing warning expected: {:?}", t.warnings);
-    assert_eq!(w[0].file, T);
-    assert_eq!(
-        w[0].to_string(),
-        format!("{}: {}: {}", w[0].file, w[0].path, w[0].message)
+    assert_eq!(w[0].path, "splines[0].points");
+    assert!(w[0].message.contains("3.5"), "ratio not named: {}", w[0]);
+    // Not resampled: the spline keeps exactly the declared through-points.
+    let xs: Vec<f32> = t.splines[0].points_m.iter().map(|p| p[0]).collect();
+    assert_eq!(xs.len(), 4, "{xs:?}");
+    for (x, want) in xs.iter().zip([0.0f32, 0.020, 0.090, 0.110]) {
+        assert!((x - want).abs() < 1e-6, "{xs:?}");
+    }
+
+    // Spacings 10, 90, ~51 mm: ratio 9. This curve also doubles back at its
+    // start, which the later guide lints (ruling 4b, 4d) report at
+    // `splines[0]`; the spacing warning is the one at `splines[0].points`.
+    let t = load(
+        &guide("[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [100.0, 0.0, 0.0], [110.0, 50.0, 0.0]]"),
+        BACKGLASS_TOML,
     );
+    let w: Vec<_> = spline_warnings(&t)
+        .into_iter()
+        .filter(|w| w.path == "splines[0].points")
+        .collect();
+    assert_eq!(w.len(), 1, "one spacing warning expected: {:?}", t.warnings);
+    assert!(w[0].message.contains("9.0"), "ratio not named: {}", w[0]);
 
     // Ratio 2.5: no warning.
     let t = load(
@@ -1215,10 +1275,195 @@ fn uneven_spline_spacing_is_a_warning_not_an_error() {
         BACKGLASS_TOML,
     );
     assert!(
-        !t.warnings.iter().any(|w| w.path.starts_with("splines[0]")),
+        spline_warnings(&t).is_empty(),
         "ratio 2.5 must not warn: {:?}",
         t.warnings
     );
+}
+
+// Human ruling, end of Wave 3, item 4: guide authoring lints. All of them
+// are warnings (the table loads), reported at `splines[i]`.
+
+#[test]
+fn clean_guides_get_no_authoring_warnings() {
+    let cases = [
+        (
+            "two points",
+            "[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]]".to_string(),
+        ),
+        (
+            "gentle wave",
+            "[[0.0, 0.0, 0.0], [100.0, 10.0, 0.0], [200.0, 0.0, 0.0], [300.0, 40.0, 0.0]]"
+                .to_string(),
+        ),
+        ("level arc r100", arc_points(100.0, 90.0, 5, 0.0)),
+        ("level arc r38", arc_points(38.0, 90.0, 9, 0.0)),
+        ("sloped arc r100", arc_points(100.0, 90.0, 5, 3.0)),
+        ("closed octagon", octagon("[300.0, 200.0, 0.0]")),
+        // 0.0005 mm is under the 1e-6 m snap: a closed guide, not a gap.
+        ("snapped octagon", octagon("[300.0, 199.9995, 0.0]")),
+    ];
+    for (name, pts) in cases {
+        let t = load(&guide(&pts), BACKGLASS_TOML);
+        assert!(
+            spline_warnings(&t).is_empty(),
+            "{name}: clean guide must not warn: {:?}",
+            t.warnings
+        );
+    }
+}
+
+#[test]
+fn spacing_at_or_above_the_tightest_radius_is_a_warning() {
+    // Ruling 4b. Evenly spaced (so no 4a warning), 100 mm apart, through a
+    // right-angle corner and through a zigzag: the spline has to turn within
+    // far less than 100 mm of radius.
+    for pts in [
+        "[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 100.0, 0.0], [200.0, 100.0, 0.0]]",
+        "[[0.0, 0.0, 0.0], [100.0, 80.0, 0.0], [200.0, 0.0, 0.0], [300.0, 80.0, 0.0], [400.0, 0.0, 0.0]]",
+    ] {
+        let t = load(&guide(pts), BACKGLASS_TOML);
+        let w = spline_warnings(&t);
+        assert_eq!(w.len(), 1, "one warning expected: {:?}", t.warnings);
+        assert_eq!(w[0].path, "splines[0]");
+        assert!(
+            w[0].message.contains("curvature") && w[0].message.contains("spacing"),
+            "{}",
+            w[0]
+        );
+    }
+    // The same quarter turn of 100 mm radius with points 39 mm apart is fine
+    // (see clean_guides_get_no_authoring_warnings), and it is the guide that
+    // is reported, by its own index.
+    let two = with_spline(&format!(
+        "[[splines]]\nid = \"a\"\nkind = \"guide\"\nlayer = 0\npoints = {}\n\n\
+         [[splines]]\nid = \"b\"\nkind = \"guide\"\nlayer = 0\npoints = \
+         [[0.0, 500.0, 0.0], [100.0, 500.0, 0.0], [100.0, 600.0, 0.0], [200.0, 600.0, 0.0]]",
+        arc_points(100.0, 90.0, 5, 0.0)
+    ));
+    let t = load(&two, BACKGLASS_TOML);
+    let paths: Vec<_> = t
+        .warnings
+        .iter()
+        .filter(|w| w.path.starts_with("splines"))
+        .map(|w| w.path.as_str())
+        .collect();
+    assert_eq!(paths, ["splines[1]"], "{:?}", t.warnings);
+}
+
+#[test]
+fn xl_ball_with_a_tight_sloped_guide_is_a_warning() {
+    // Ruling 4c. jumbo_xl_resin is 79.4 mm across (radius 39.7 mm). A
+    // rising quarter turn of 36 mm radius is tighter than that; one of
+    // 100 mm radius is not, and a level guide is not a sloped guide.
+    let tight = arc_points(36.0, 90.0, 9, 1.0);
+    let no_xl = sub(
+        TABLE_TOML,
+        "restrict = [ { profile = \"jumbo_xl_resin\", layers = [0] } ]\n",
+        "",
+    );
+    let xl_listed = sub(
+        &no_xl,
+        "profiles = [\"standard_steel\", \"ceramic_powerball\"]",
+        "profiles = [\"standard_steel\", \"jumbo_xl_resin\"]",
+    );
+    let spline =
+        |pts: &str| format!("[[splines]]\nid = \"g\"\nkind = \"guide\"\nlayer = 0\npoints = {pts}");
+    let put = |table: &str, pts: &str| {
+        let start = table.find("[[splines]]").unwrap();
+        let end = table.find("[[layer_transitions]]").unwrap();
+        format!("{}{}\n\n{}", &table[..start], spline(pts), &table[end..])
+    };
+
+    // The Appendix A table has the XL ball (restricted to layer 0, the
+    // guide's layer); so does a table that lists it in balls.profiles.
+    for (name, table) in [("restrict", TABLE_TOML), ("profiles", xl_listed.as_str())] {
+        let t = load(&put(table, &tight), BACKGLASS_TOML);
+        let w = spline_warnings(&t);
+        assert_eq!(w.len(), 1, "{name}: one warning expected: {:?}", t.warnings);
+        assert_eq!(w[0].path, "splines[0]", "{name}");
+        assert!(w[0].message.contains("jumbo_xl_resin"), "{name}: {}", w[0]);
+
+        for (what, pts) in [
+            ("wide sloped", arc_points(100.0, 90.0, 5, 3.0)),
+            ("tight but level", arc_points(36.0, 90.0, 9, 0.0)),
+        ] {
+            let t = load(&put(table, &pts), BACKGLASS_TOML);
+            assert!(
+                spline_warnings(&t).is_empty(),
+                "{name}, {what}: {:?}",
+                t.warnings
+            );
+        }
+    }
+    // Without the XL ball the same tight ramp is fine.
+    let t = load(&put(&no_xl, &tight), BACKGLASS_TOML);
+    assert!(spline_warnings(&t).is_empty(), "{:?}", t.warnings);
+}
+
+#[test]
+fn hairline_gap_between_open_ends_is_a_warning() {
+    // Ruling 4d: facing open ends under 1 mm apart (and not snapped closed).
+    let advice = |last: &str| {
+        let t = load(&guide(&octagon(last)), BACKGLASS_TOML);
+        let w = spline_warnings(&t);
+        let n = w
+            .iter()
+            .filter(|w| w.message.contains(GAP_ADVICE))
+            .inspect(|w| assert_eq!(w.path, "splines[0]"))
+            .count();
+        assert!(n <= 1, "advice given once: {:?}", t.warnings);
+        n == 1
+    };
+    assert!(advice("[300.0, 199.5, 0.0]"), "0.5 mm gap");
+    assert!(advice("[300.0, 199.1, 0.0]"), "0.9 mm gap");
+    assert!(
+        advice("[300.0, 199.99, 0.0]"),
+        "0.01 mm gap, above the snap"
+    );
+    assert!(!advice("[300.0, 198.5, 0.0]"), "1.5 mm gap");
+    assert!(!advice("[300.0, 195.0, 0.0]"), "5 mm gap");
+    assert!(!advice("[300.0, 199.9995, 0.0]"), "snapped closed");
+    assert!(!advice("[300.0, 200.0, 0.0]"), "closed");
+}
+
+#[test]
+fn open_end_touching_its_own_wall_is_a_warning() {
+    // Ruling 4d: three quarters of a 100 mm circle, then a spur across the
+    // inside whose end comes back to the wall at the circle's second
+    // through-point (30 degrees), stopping `d` mm short of it.
+    let spur = |d: f64| {
+        let mut pts: Vec<String> = (0..10)
+            .map(|i| {
+                let a = (30.0 * i as f64).to_radians();
+                format!("[{:.3}, {:.3}, 0.0]", 100.0 * a.cos(), 100.0 * a.sin())
+            })
+            .collect();
+        pts.push("[35.0, -65.0, 0.0]".into());
+        pts.push("[50.0, -15.0, 0.0]".into());
+        let a = 30.0f64.to_radians();
+        pts.push(format!(
+            "[{:.3}, {:.3}, 0.0]",
+            (100.0 - d) * a.cos(),
+            (100.0 - d) * a.sin()
+        ));
+        format!("[{}]", pts.join(", "))
+    };
+    let advice = |d: f64| {
+        let t = load(&guide(&spur(d)), BACKGLASS_TOML);
+        let w = spline_warnings(&t);
+        let n = w
+            .iter()
+            .filter(|w| w.message.contains(GAP_ADVICE))
+            .inspect(|w| assert_eq!(w.path, "splines[0]"))
+            .count();
+        assert!(n <= 1, "advice given once: {:?}", t.warnings);
+        n == 1
+    };
+    assert!(advice(0.0), "end on the wall");
+    assert!(advice(0.03), "end 0.03 mm from the wall");
+    assert!(!advice(25.0), "end 25 mm from the wall");
+    assert!(!advice(40.0), "end 40 mm from the wall");
 }
 
 // ============================ rule: layers and zones ========================
