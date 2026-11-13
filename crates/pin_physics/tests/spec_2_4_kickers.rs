@@ -666,3 +666,65 @@ fn late_sling_coil_never_traps_the_ball() {
         }
     }
 }
+
+/// A step pull (0 → 0.9 in one tick, as a keyboard-mapped or noisy analog
+/// input gives) with a ball resting behind the tip must not throw the ball.
+///
+/// Bound: the hand pulls the rod at a finite speed, so the ball can at most
+/// be struck by a tip moving at the rod's own largest pull speed `v_rod` (as
+/// `slider_state` reports it) and leave at `(1 + e)·v_rod` (`e`: steel on
+/// rubber from the pair table), the speed of a ball at rest hit by a much
+/// heavier body. 5 % and 0.05 m/s are allowed for integration. The pull
+/// itself must stay below 3 m/s: a pull is the slow half of a plunge, well
+/// under the launch speeds of verification 5, in the spirit of "a released
+/// plunger at rest never pushes the ball" (the plunger adds energy only
+/// through its spring).
+#[test]
+fn step_pull_does_not_throw_a_ball_behind_the_tip() {
+    let e = defaults()
+        .material_pairs
+        .iter()
+        .find(|p| p.matches(pin_core::Material::Steel, pin_core::Material::Rubber))
+        .map(|p| p.restitution)
+        .expect("steel–rubber pair");
+    let d = defaults().mechs.plunger;
+    for (behind, use_coil) in [
+        (0.002f32, false),
+        (0.010, false),
+        (0.030, false),
+        (0.040, false),
+        (0.010, true),
+        (0.030, true),
+    ] {
+        let mut rig = Rig::on_floor(&[spec(MechKind::Plunger, POS).with_coil(PL_COIL)]);
+        // Ball `behind` metres behind the tip's back face (launch axis +y).
+        let start = POS + Vec3::new(0.0, -(0.5 * d.thickness + R + behind), R);
+        let h = rig.add(steel_ball(start, Vec3::ZERO));
+        rig.run(20);
+        if use_coil {
+            rig.mechs.hold_coil(PL_COIL, true);
+        } else {
+            rig.mechs.set_plunger(0.9);
+        }
+        let mut v_ball = 0.0f32;
+        let mut v_rod = 0.0f32;
+        for _ in 0..400 {
+            rig.step();
+            let b = rig.ball(h);
+            assert!(is_finite_ball(&b));
+            v_ball = v_ball.max(b.velocity.length());
+            v_rod = v_rod.max(rig.mechs.slider_state(0).unwrap().1.abs());
+        }
+        eprintln!(
+            "plunger pull, ball {behind} m behind the tip (coil {use_coil}): ball max {v_ball:.3} m/s, rod max {v_rod:.3} m/s"
+        );
+        assert!(v_rod <= 3.0, "pull speed {v_rod} m/s");
+        assert!(
+            v_ball <= (1.0 + e) * v_rod * 1.05 + 0.05,
+            "ball {behind} m behind the tip (coil {use_coil}) thrown at {v_ball} m/s by a rod pulled at {v_rod} m/s"
+        );
+        // The rod still reaches (or is blocked short of) its commanded depth.
+        let x = rig.mechs.slider_state(0).unwrap().0;
+        assert!((-d.stroke - 1.0e-5..=1.0e-6).contains(&x));
+    }
+}

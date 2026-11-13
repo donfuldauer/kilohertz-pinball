@@ -498,12 +498,6 @@ proptest! {
         let Ok(mechs) = MechSet::new(&[s], &defaults()) else { return Ok(()); };
         let mut rig = Rig::on_floor(&[]);
         rig.mechs = mechs;
-        // A plunger is only approached from its tip side (the rod and its
-        // housing are behind it): with the default direction +y, from y > 0.
-        // (Observation reported separately: a ball *behind* the tip is hit by
-        // the kinematic pull-back, which moves at depth·stroke per tick.)
-        let vy = if kind == MechKind::Plunger && p.angle_deg.is_none() { -vy.abs() } else { vy };
-        prop_assume!(kind != MechKind::Plunger || p.angle_deg.is_none());
         let v = Vec3::new(vx, vy, 0.0);
         let dir = if v.length() > 1.0e-3 { v.normalize() } else { Vec3::X };
         let side = Vec3::new(-dir.y, dir.x, 0.0);
