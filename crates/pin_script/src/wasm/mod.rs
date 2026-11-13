@@ -243,6 +243,12 @@ fn engine() -> Result<&'static Engine, ScriptError> {
                 .wasm_custom_page_sizes(false)
                 .wasm_wide_arithmetic(false)
                 .parallel_compilation(false)
+                // Copy-on-write memory images exist only on some hosts
+                // (Linux memfd); elsewhere wasmtime copies data segments in
+                // its start-up code, which charges fuel. Off everywhere, so
+                // instantiation does the same metered work on every
+                // platform (D9; see `Usage::init_fuel`).
+                .memory_init_cow(false)
                 .max_wasm_stack(MAX_WASM_STACK_BYTES)
                 // Proposals rules code does not need (see `limits::FEATURES`).
                 .wasm_simd(false)
@@ -334,6 +340,9 @@ fn check_resources(module: &Module, cfg: &WasmConfig) -> Result<(), ScriptError>
 #[derive(Clone)]
 pub struct PreparedModule {
     module: Module,
+    /// Fuel wasmtime's instance initialisation charges before the start
+    /// function (see [`limits::Usage::init_fuel`]).
+    init_fuel: u64,
 }
 
 impl fmt::Debug for PreparedModule {
@@ -381,7 +390,12 @@ impl Live {
             .build();
         let mut store = Store::new(engine()?, HostState::new(Arc::clone(names), limits));
         store.limiter(|s| &mut s.limits);
-        store.set_fuel(cfg.fuel_per_callback).map_err(load)?;
+        // Data and element segment initialisation runs as metered code
+        // before the start function; it is paid for on top of the start
+        // function's budget so loading never depends on it.
+        store
+            .set_fuel(cfg.fuel_per_callback.saturating_add(m.init_fuel))
+            .map_err(load)?;
         let instance =
             linker()?
                 .instantiate(&mut store, &m.module)
@@ -579,7 +593,7 @@ impl WasmScriptBackend {
     /// instantiating it. May run on any thread.
     pub fn prepare(bytes: &[u8], cfg: WasmConfig) -> Result<PreparedModule, ScriptError> {
         let engine = engine()?;
-        let bin = precheck(bytes)?;
+        let (bin, usage) = precheck(bytes)?;
         let module = Module::from_binary(engine, &bin).map_err(|e| load(format_args!("{e:#}")))?;
         for imp in module.imports() {
             let ok = imp.module() == host::MODULE
@@ -608,7 +622,10 @@ impl WasmScriptBackend {
             None => return Err(load("missing export memory")),
         }
         check_resources(&module, &cfg)?;
-        Ok(PreparedModule { module })
+        Ok(PreparedModule {
+            module,
+            init_fuel: usage.init_fuel,
+        })
     }
 
     /// Swaps in a prepared module at a tick boundary, carrying state through
@@ -789,6 +806,76 @@ mod tests {
             )
             .contains("PreparedModule")
         );
+    }
+
+    /// Fuel left after instantiating `wat` with `fuel`: what wasmtime's
+    /// start-up code left for the start function.
+    fn start_budget(wat: &str, fuel: u64) -> Result<u64, ScriptError> {
+        let cfg = WasmConfig {
+            memory_limit_bytes: 16 << 20,
+            fuel_per_callback: fuel,
+        };
+        let m = WasmScriptBackend::prepare(wat.as_bytes(), cfg)?;
+        let names = Arc::new(IdTables::new(&NameTables::default()));
+        let live = Live::new(&m, &names, &cfg)?;
+        Ok(live.store.get_fuel().map_err(load)?)
+    }
+
+    /// D9 (macOS CI regression): segment initialisation is metered code on
+    /// every host (no copy-on-write images) and is paid for on top of the
+    /// budget, exactly, so the start function always gets
+    /// `fuel_per_callback` and loading never depends on the platform. With
+    /// copy-on-write images on, Linux skips the metered copy (this test then
+    /// sees a surplus); macOS/Windows ran it out of the start budget and a
+    /// module with data at both ends of a page failed to load with a small
+    /// budget ("script instruction budget exceeded").
+    #[test]
+    fn segment_initialisation_does_not_spend_the_start_budget() {
+        let module = |segs: &str| {
+            format!(
+                r#"(module
+                  (memory (export "memory") 4)
+                  (table 65536 funcref)
+                  (func $f) (elem declare func $f)
+                  {segs}
+                  (func (export "on_init")) (func (export "on_tick"))
+                  (func (export "on_switch_edge") (param i32 i32)))"#
+            )
+        };
+        let big = "ab".repeat(70_000);
+        let ref_funcs = "(ref.func $f) ".repeat(300);
+        let exact = [
+            String::new(),
+            r#"(data (i32.const 1024) "x")"#.to_owned(),
+            r#"(data (i32.const 1024) "left_sling") (data (i32.const 65531) "start")"#.to_owned(),
+            format!(r#"(data (i32.const 7) "{big}") (data "passive")"#),
+            r#"(data (i32.const 0) "\01") (data (i32.const 200000) "\02")"#.to_owned(),
+            r#"(data (i32.const 9) "")"#.to_owned(),
+            format!("(elem (i32.const 5) funcref {ref_funcs})"),
+            "(elem (table 0) (i32.const 0) funcref (ref.null func))".to_owned(),
+            "(elem funcref (ref.func $f) (ref.null func))".to_owned(),
+            "(elem func $f $f)".to_owned(),
+            // Precomputed by wasmtime (no run-time cost) ...
+            "(elem (i32.const 0) func $f $f $f) (elem (i32.const 9) func $f)".to_owned(),
+            "(elem (i32.const 65535) func $f)".to_owned(),
+            // ... up to the first segment that is not.
+            "(elem (i32.const 0) func $f) (elem (i32.const 1) funcref (ref.func $f)) \
+             (elem (i32.const 2) func $f $f)"
+                .to_owned(),
+            "(table $e 8 externref) (elem (i32.const 0) func $f) \
+             (elem (table $e) (i32.const 0) externref (ref.null extern)) (elem (i32.const 4) func $f)"
+                .to_owned(),
+        ];
+        for segs in &exact {
+            for fuel in [1, 5000, 100_000] {
+                assert_eq!(start_budget(&module(segs), fuel), Ok(fuel), "{:.80}", segs);
+            }
+        }
+        // The start function itself is charged to the budget as before.
+        let start =
+            module(r#"(func $s (drop (i32.const 1))) (start $s) (data (i32.const 9) "zz")"#);
+        assert_eq!(start_budget(&start, 1000), Ok(997));
+        assert_eq!(start_budget(&start, 2), Err(ScriptError::BudgetExceeded));
     }
 
     #[test]

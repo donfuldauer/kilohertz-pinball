@@ -16,9 +16,9 @@ use pin_core::ScriptError;
 use std::borrow::Cow;
 use std::fmt;
 use wasmtime::wasmparser::{
-    ElementItems, ExternalKind, FuncToValidate, FuncValidatorAllocations, FunctionBody, Operator,
-    OperatorsReader, OperatorsReaderAllocations, Parser, Payload, TypeRef, ValidPayload, Validator,
-    ValidatorResources, WasmFeatures,
+    DataKind, ElementItems, ElementKind, ExternalKind, FuncToValidate, FuncValidatorAllocations,
+    FunctionBody, Operator, OperatorsReader, OperatorsReaderAllocations, Parser, Payload, TypeRef,
+    ValidPayload, Validator, ValidatorResources, WasmFeatures,
 };
 
 /// The proposals the engine enables (and the only ones a module may use):
@@ -304,6 +304,14 @@ pub struct Usage {
     pub imports: u64,
     pub exports: u64,
     pub element_items: u64,
+    /// Fuel wasmtime's synthesized start-up code charges to initialise the
+    /// instance before the module's own start function runs: one unit per
+    /// byte of every active data segment and per item of every active
+    /// element segment (wasmtime's `memory_init_per_byte` and
+    /// `table_init_per_element` costs). [`super::Live::new`] adds it to the
+    /// start budget, so instantiation costs the guest nothing on any
+    /// platform.
+    pub init_fuel: u64,
 }
 
 /// `s` cut to at most `max` bytes on a character boundary, with `…` (3
@@ -320,8 +328,8 @@ pub(super) fn truncated(s: &str, max: usize) -> String {
 }
 
 /// Converts WAT text to binary and checks every limit (see the module
-/// docs) without compiling anything. Returns the binary.
-pub(super) fn precheck(bytes: &[u8]) -> Result<Cow<'_, [u8]>, ScriptError> {
+/// docs) without compiling anything. Returns the binary and its usage.
+pub(super) fn precheck(bytes: &[u8]) -> Result<(Cow<'_, [u8]>, Usage), ScriptError> {
     let binary = bytes.starts_with(b"\0asm");
     let cap = if binary {
         MAX_MODULE_BYTES
@@ -350,8 +358,8 @@ pub(super) fn precheck(bytes: &[u8]) -> Result<Cow<'_, [u8]>, ScriptError> {
             bin.len()
         )));
     }
-    scan(&bin)?;
-    Ok(bin)
+    let usage = scan(&bin)?;
+    Ok((bin, usage))
 }
 
 /// Checks `bytes` (binary or WAT) against every pre-compile limit without
@@ -383,10 +391,15 @@ fn scan(bin: &[u8]) -> Result<Usage, ScriptError> {
         func_allocs: FuncValidatorAllocations::default(),
         op_allocs: OperatorsReaderAllocations::default(),
         u: Usage::default(),
+        startup: false,
+        tables: Vec::new(),
+        precomputed: true,
     };
     for payload in Parser::new(0).parse_all(bin) {
         sc.payload(payload.map_err(parse_err)?)?;
     }
+    // The start-up function's own exit charge.
+    sc.u.init_fuel += u64::from(sc.startup);
     Ok(sc.u)
 }
 
@@ -409,6 +422,12 @@ struct Scan {
     func_allocs: FuncValidatorAllocations,
     op_allocs: OperatorsReaderAllocations,
     u: Usage,
+    /// Whether wasmtime will run its start-up code (see [`Usage::init_fuel`]).
+    startup: bool,
+    /// Defined tables: initial size and whether they hold funcrefs.
+    tables: Vec<(u64, bool)>,
+    /// Whether every active element segment so far is precomputed.
+    precomputed: bool,
 }
 
 impl Scan {
@@ -477,7 +496,10 @@ impl Scan {
             Payload::TableSection(r) => {
                 let mut total = 0u64;
                 for t in r.clone() {
-                    total = total.saturating_add(t.map_err(parse_err)?.ty.initial);
+                    let ty = t.map_err(parse_err)?.ty;
+                    total = total.saturating_add(ty.initial);
+                    self.tables
+                        .push((ty.initial, ty.element_type.is_func_ref()));
                 }
                 cap(
                     module,
@@ -493,6 +515,14 @@ impl Scan {
                     r.count().into(),
                     MAX_SEGMENTS.into(),
                 )?;
+                for d in r.clone() {
+                    let d = d.map_err(parse_err)?;
+                    if matches!(d.kind, DataKind::Active { .. }) {
+                        // The offset expression plus one unit per byte.
+                        self.u.init_fuel += 1 + d.data.len() as u64;
+                        self.startup = true;
+                    }
+                }
             }
             Payload::ElementSection(r) => {
                 cap(
@@ -502,15 +532,20 @@ impl Scan {
                     MAX_SEGMENTS.into(),
                 )?;
                 for e in r.clone() {
-                    let n = match e.map_err(parse_err)?.items {
-                        ElementItems::Functions(f) => f.count(),
-                        ElementItems::Expressions(_, x) => x.count(),
+                    let e = e.map_err(parse_err)?;
+                    let (n, exprs) = match e.items {
+                        ElementItems::Functions(f) => (u64::from(f.count()), 0),
+                        ElementItems::Expressions(_, x) => {
+                            (u64::from(x.count()), u64::from(x.count()))
+                        }
                     };
-                    self.u.element_items += u64::from(n);
+                    self.u.element_items += n;
+                    self.element_init_fuel(&e.kind, n, exprs)?;
                     let total = self.u.element_items;
                     cap(module, "element segment items", total, MAX_ELEMENT_ITEMS)?;
                 }
             }
+            Payload::StartSection { .. } => self.startup = true,
             Payload::ExportSection(r) => {
                 cap(module, "exports", r.count().into(), MAX_EXPORTS.into())?;
                 self.u.exports = r.count().into();
@@ -529,6 +564,46 @@ impl Scan {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Adds what wasmtime's start-up code charges for one element segment
+    /// of `n` items (`exprs` of them expressions) to [`Usage::init_fuel`]:
+    /// one unit per item expression and, for an active segment, its offset
+    /// expression plus one unit per item written. Like wasmtime, a leading
+    /// run of active segments of plain function indices at constant
+    /// offsets inside a funcref table's initial size is precomputed at
+    /// compile time and costs nothing.
+    fn element_init_fuel(
+        &mut self,
+        kind: &ElementKind<'_>,
+        n: u64,
+        exprs: u64,
+    ) -> Result<(), ScriptError> {
+        match kind {
+            ElementKind::Declared => return Ok(()),
+            ElementKind::Passive => self.u.init_fuel += exprs,
+            ElementKind::Active {
+                table_index,
+                offset_expr,
+            } => {
+                let mut ops = offset_expr.get_operators_reader();
+                let offset = match (ops.read(), ops.read()) {
+                    (Ok(Operator::I32Const { value }), Ok(Operator::End)) => {
+                        Some(u64::from(value as u32))
+                    }
+                    _ => None,
+                };
+                let table = self.tables.get(table_index.unwrap_or(0) as usize);
+                self.precomputed &= exprs == 0
+                    && matches!((offset, table), (Some(o), Some(&(min, true))) if o + n <= min);
+                if self.precomputed {
+                    return Ok(());
+                }
+                self.u.init_fuel += exprs + 1 + n;
+            }
+        }
+        self.startup = true;
         Ok(())
     }
 

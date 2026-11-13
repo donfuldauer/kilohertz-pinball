@@ -1298,3 +1298,73 @@ fn wat_parse_errors_are_truncated() {
     let m = load_msg(b"(module (func $x))) junk");
     assert!(m.len() < MAX_ERROR_BYTES && !m.ends_with('…'), "{m}");
 }
+
+/// The smallest budget under which `src` loads.
+fn min_load_fuel(src: &str) -> u64 {
+    let loads = |fuel| {
+        let cfg = WasmConfig {
+            memory_limit_bytes: 16 << 20,
+            fuel_per_callback: fuel,
+        };
+        match WasmScriptBackend::new(src.as_bytes(), &NameTables::default(), cfg) {
+            Ok(_) => true,
+            Err(ScriptError::BudgetExceeded) => false,
+            Err(e) => panic!("unexpected load error {e}"),
+        }
+    };
+    if loads(1) {
+        return 1;
+    }
+    let (mut lo, mut hi) = (1u64, 1u64 << 20);
+    assert!(loads(hi));
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if loads(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
+}
+
+/// D9 (macOS CI regression): whether a module loads depends only on its
+/// start function's cost, never on its data or element segments. wasmtime
+/// fills linear memory from a copy-on-write image where the host supports
+/// one (Linux memfd) and with metered start-up code elsewhere (macOS,
+/// Windows); that copy used to come out of the start budget, so a guest
+/// with data at both ends of a page (a 64 KiB image) failed to load under
+/// a budget below about 65 536 on macOS only.
+#[test]
+fn segments_never_change_whether_a_module_loads() {
+    let module = |start: &str, segs: &str| {
+        format!(
+            r#"(module (memory (export "memory") 4) (table 64 funcref)
+              (func (export "on_init")) (func (export "on_tick"))
+              (func (export "on_switch_edge") (param i32 i32))
+              (func $s (local $i i32)
+                (loop $l (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                  (br_if $l (i32.lt_u (local.get $i) (i32.const 300)))))
+              {start} {segs})"#
+        )
+    };
+    let big = "xy".repeat(60_000);
+    let segments = [
+        String::new(),
+        r#"(data (i32.const 1024) "left_sling") (data (i32.const 65531) "start")"#.to_owned(),
+        format!(r#"(data (i32.const 3) "{big}") (data (i32.const 131000) "z")"#),
+        "(elem (i32.const 0) func $s $s $s) (elem (i32.const 9) funcref (ref.func $s) (ref.null func))"
+            .to_owned(),
+    ];
+    let base = min_load_fuel(&module("(start $s)", ""));
+    assert!(base > 300, "{base}");
+    for segs in &segments {
+        assert_eq!(
+            min_load_fuel(&module("(start $s)", segs)),
+            base,
+            "{segs:.70}"
+        );
+        // Without a start function, any budget loads them.
+        assert_eq!(min_load_fuel(&module("", segs)), 1, "{segs:.70}");
+    }
+}
