@@ -108,7 +108,10 @@ fn free_flight_and_holding_magnet_ticks_do_not_allocate() {
     let id = s.add_magnet(magnet_at(Vec3::new(0.0, 0.0, -0.005)));
     let probe = register(&mut s);
     let steel = s
-        .add_ball(Ball::new(pid("standard_steel"), Vec3::new(0.0, 0.0, 0.0135)))
+        .add_ball(Ball::new(
+            pid("standard_steel"),
+            Vec3::new(0.0, 0.0, 0.0135),
+        ))
         .unwrap();
     let mut glo = Ball::new(pid("uv_globall"), Vec3::new(1.0, 0.0, 0.5));
     glo.velocity = Vec3::new(2.0, 0.0, 3.0);

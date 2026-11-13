@@ -7,7 +7,8 @@ use pin_core::schema::TableManifest;
 use std::path::{Path, PathBuf};
 
 /// Usage text.
-pub const USAGE: &str = "usage: pin_tablegen <layout.toml> --table <table.toml> --out <bundle_dir>";
+pub const USAGE: &str =
+    "usage: pin_tablegen <layout.toml> --table <table.toml> --out <bundle_dir> [--force]";
 
 /// Largest input file read, bytes (the loader's manifest limit).
 pub const MAX_INPUT_BYTES: u64 = 4 << 20;
@@ -53,12 +54,14 @@ struct Args {
     layout: PathBuf,
     table: PathBuf,
     out: PathBuf,
+    force: bool,
 }
 
 fn parse_args(args: &[String]) -> Result<Args, CliError> {
     let mut layout = None;
     let mut table = None;
     let mut out = None;
+    let mut force = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let (key, inline) = match a.split_once('=') {
@@ -68,6 +71,10 @@ fn parse_args(args: &[String]) -> Result<Args, CliError> {
         let slot = match key {
             "--table" => &mut table,
             "--out" => &mut out,
+            "--force" if inline.is_none() => {
+                force = true;
+                continue;
+            }
             "-h" | "--help" => return Err(CliError::Usage("help requested".into())),
             k if k.starts_with('-') && k.len() > 1 => {
                 return Err(CliError::Usage(format!("unknown option {k:?}")));
@@ -94,6 +101,7 @@ fn parse_args(args: &[String]) -> Result<Args, CliError> {
         layout: layout.ok_or_else(|| CliError::Usage("missing <layout.toml>".into()))?,
         table: table.ok_or_else(|| CliError::Usage("missing --table <table.toml>".into()))?,
         out: out.ok_or_else(|| CliError::Usage("missing --out <bundle_dir>".into()))?,
+        force,
     })
 }
 
@@ -113,18 +121,6 @@ fn read(path: &Path) -> Result<Vec<u8>, CliError> {
 /// returns a one-line summary.
 pub fn run_cli(args: &[String]) -> Result<String, CliError> {
     let args = parse_args(args)?;
-    // Writing the bundle must never overwrite the hand-written base.
-    if let (Ok(base), Ok(out)) = (
-        std::fs::canonicalize(&args.table),
-        std::fs::canonicalize(&args.out),
-    ) && base == out.join(super::TABLE_FILE)
-    {
-        return Err(CliError::Failed(format!(
-            "{}: the base table.toml is the bundle's own table.toml, which the tool \
-             overwrites; keep the hand-written base outside the bundle folder",
-            args.table.display()
-        )));
-    }
     let layout = parse_layout_bytes(&read(&args.layout)?)
         .map_err(|e| CliError::Failed(format!("{}: {}", args.layout.display(), e.message)))?;
     let table_bytes = read(&args.table)?;
@@ -134,6 +130,23 @@ pub fn run_cli(args: &[String]) -> Result<String, CliError> {
             args.table.display()
         ))
     })?;
+    // Writing the bundle must never overwrite a hand-written base (4.3 fix
+    // round 1, N4). Re-running on the tool's own output in place is fine:
+    // its content is carried over and its generated entries replaced.
+    if let (Ok(base), Ok(out)) = (
+        std::fs::canonicalize(&args.table),
+        std::fs::canonicalize(&args.out),
+    ) && base == out.join(super::TABLE_FILE)
+        && !table_text.starts_with(super::GENERATED_HEADER)
+        && !args.force
+    {
+        return Err(CliError::Failed(format!(
+            "{}: the base table.toml is the bundle's own table.toml and was not written by \
+             pin_tablegen; the tool would overwrite it (dropping its comments). Keep the \
+             hand-written base outside the bundle folder, or pass --force",
+            args.table.display()
+        )));
+    }
     let base = TableManifest::from_toml_str(&table_text)
         .map_err(|e| CliError::Failed(format!("{}: {e}", args.table.display())))?;
     let generated = generate(&layout, &base)
@@ -208,6 +221,15 @@ mod tests {
             std::fs::read_to_string(&base).unwrap(),
             crate::layout::tests::BASE
         );
+        // --force overwrites it; the result is the tool's output, which a
+        // later in-place re-run accepts without --force.
+        let mut forced = args.clone();
+        forced.push("--force".into());
+        run_cli(&forced).unwrap();
+        let once = std::fs::read_to_string(&base).unwrap();
+        assert!(once.starts_with(crate::layout::GENERATED_HEADER));
+        run_cli(&args).unwrap();
+        assert_eq!(std::fs::read_to_string(&base).unwrap(), once);
         // Elsewhere it works.
         let out = dir.join("out");
         let args = s(&[

@@ -34,12 +34,12 @@ pub fn register(s: &mut BallSolver) -> MagProbe {
 
 /// Registers only the Magnus hook.
 pub fn register_magnus(s: &mut BallSolver) {
-    s.add_external_force(Box::new(pin_physics::ball_ext::Magnus::default()));
+    s.add_external_force(Box::new(pin_physics::ball_ext::Magnus));
 }
 
 /// A Magnus hook of its own, for direct `force_in` calls.
 pub fn magnus_hook() -> pin_physics::ball_ext::Magnus {
-    pin_physics::ball_ext::Magnus::default()
+    pin_physics::ball_ext::Magnus
 }
 
 /// Registers only the remanence hook.
@@ -292,12 +292,13 @@ pub fn busy(profiles: &[BallProfile], hooks: Hooks) -> Busy {
         probe = Some(register(&mut s));
     }
     s.set_collider_material(pf, pin_core::Material::Wood);
-    // Low on the table, where the balls collect.
+    // Low on the table, where the balls collect; wide and strong enough to
+    // gather the magnetic ones along the bottom wall.
     let magnet = s.add_magnet(Magnet {
-        position: rot * Vec3::new(0.0, -0.5, -0.005),
-        k_coil: 2.0e-5,
+        position: rot * Vec3::new(0.0, -0.56, -0.005),
+        k_coil: 2.0e-4,
         d_min: 0.01,
-        range: 0.12,
+        range: 0.3,
         layer_mask: layers::ALL,
     });
     s.add_sensor(Sensor {

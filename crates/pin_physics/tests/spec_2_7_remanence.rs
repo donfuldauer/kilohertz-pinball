@@ -447,8 +447,18 @@ fn first_tick_after_switch_off(rho: f32, c: f32, at: Vec3) -> (Vec3, f32, f32, V
 fn residual_force_matches_the_equation() {
     let mass = profile("standard_steel").mass_kg;
     // In the 1/d² region, at the d_min clamp, and off the axes.
-    for at in [NEAR, Vec3::new(0.0, 0.004, 0.003), Vec3::new(0.02, -0.03, 0.04)] {
-        for (rho, c) in [(0.05f32, 1.0f32), (0.2, 1.0), (0.5, 1.0), (1.0, 1.0), (0.5, 0.4)] {
+    for at in [
+        NEAR,
+        Vec3::new(0.0, 0.004, 0.003),
+        Vec3::new(0.02, -0.03, 0.04),
+    ] {
+        for (rho, c) in [
+            (0.05f32, 1.0f32),
+            (0.2, 1.0),
+            (0.5, 1.0),
+            (1.0, 1.0),
+            (0.5, 0.4),
+        ] {
             let (dv, m_before, m_after, pull) = first_tick_after_switch_off(rho, c, at);
             assert!(m_before > 0.9, "M = {m_before}");
             assert!(pull.length() > 0.0);
@@ -634,4 +644,16 @@ proptest! {
         );
         prop_assert!(dv.normalize().dot(pull.normalize()) > 0.999);
     }
+}
+
+#[test]
+fn magnetisation_of_an_empty_or_unknown_slot_is_zero() {
+    let (mut b, h, _) = magnetised(None);
+    // Slots that never held a ball, and a handle beyond the arena.
+    for slot in [1u8, 7, pin_physics::ball::MAX_BALLS as u8, 200, 255] {
+        assert_eq!(b.m(BallHandle(slot)), 0.0, "slot {slot}");
+    }
+    // A removed ball takes its magnetisation with it.
+    b.solver.remove_ball(h).unwrap();
+    assert_eq!(b.m(h), 0.0);
 }

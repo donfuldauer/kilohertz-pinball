@@ -265,7 +265,10 @@ fn magnus_turns_velocity_on_a_circle() {
     let centre = DVec3::new(0.0, radius, 1.0);
     for b in &run {
         let d = (b.position.as_dvec3() - centre).length();
-        assert!((d - radius).abs() <= 0.01 * radius, "radius {d} vs {radius}");
+        assert!(
+            (d - radius).abs() <= 0.01 * radius,
+            "radius {d} vs {radius}"
+        );
     }
 }
 
@@ -337,22 +340,40 @@ fn direct_force(p: &BallProfile, v: Vec3, w: Vec3) -> Vec3 {
     hook.force_in(&ctx(&[]), BallHandle(0), &b, p, DT)
 }
 
+/// `φ = S|ω|h/m`: the angle the velocity turns in one sub-step. A hook may
+/// return the explicit `S (ω × v)` or a force that integrates the same
+/// equation more exactly over the sub-step (e.g. the rotation of `v` by `φ`);
+/// the two differ by `O(φ)` relative, which is what the direct checks allow.
+fn turn_angle(p: &BallProfile, w: Vec3) -> f64 {
+    f64::from(p.magnus_coeff) * f64::from(w.length()) * f64::from(DT) / f64::from(p.mass_kg)
+}
+
 #[test]
 fn hook_force_is_s_omega_cross_v() {
     let p = profile("uv_globall");
-    let f = direct_force(&p, Vec3::new(2.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 200.0));
-    assert!((f - Vec3::new(0.0, 4.0e-3, 0.0)).length() < 4.0e-8, "{f:?}");
+    let w = Vec3::new(0.0, 0.0, 200.0);
+    let f = direct_force(&p, Vec3::new(2.0, 0.0, 0.0), w);
+    let tol = 4.0e-3 * (1.0e-5 + turn_angle(&p, w));
+    assert!(
+        (f.as_dvec3() - DVec3::new(0.0, 4.0e-3, 0.0)).length() < tol,
+        "{f:?}"
+    );
     let mut zero = p.clone();
     zero.magnus_coeff = 0.0;
-    let f = direct_force(&zero, Vec3::new(2.0, 1.0, -3.0), Vec3::new(50.0, 0.0, 200.0));
+    let f = direct_force(
+        &zero,
+        Vec3::new(2.0, 1.0, -3.0),
+        Vec3::new(50.0, 0.0, 200.0),
+    );
     assert_eq!(f, Vec3::ZERO);
 }
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, .. ProptestConfig::default() })]
 
-    /// The force helper: `F = S (ω × v)` to rounding, perpendicular to `v`
-    /// and to `ω`, finite, linear in `S`.
+    /// The force helper: `F = S (ω × v)` (to `O(φ)`, see [`turn_angle`]),
+    /// does no work over the sub-step, has no component along `ω`, is finite
+    /// and stateless.
     #[test]
     fn prop_hook_force(
         s in 0.0f32..5.0e-5,
@@ -365,13 +386,19 @@ proptest! {
         let (v, w) = (Vec3::from(v), Vec3::from(w));
         let f = direct_force(&p, v, w);
         prop_assert!(f.is_finite());
-        let expect = f64::from(s) * w.as_dvec3().cross(v.as_dvec3());
-        let scale = f64::from(s) * f64::from(w.length()) * f64::from(v.length());
-        let tol = 1.0e-5 * scale + 1.0e-12;
-        prop_assert!((f.as_dvec3() - expect).length() <= tol, "{:?} vs {:?}", f, expect);
-        // No work: F · v = 0 (to rounding); no component along ω either.
-        prop_assert!(f.as_dvec3().dot(v.as_dvec3()).abs() <= tol * f64::from(v.length()));
-        prop_assert!(f.as_dvec3().dot(w.as_dvec3()).abs() <= tol * f64::from(w.length()));
+        let phi = turn_angle(&p, w);
+        let (fd, vd, wd) = (f.as_dvec3(), v.as_dvec3(), w.as_dvec3());
+        let expect = f64::from(s) * wd.cross(vd);
+        let scale = f64::from(s) * wd.length() * vd.length();
+        let tol = (1.0e-5 + phi) * scale + 1.0e-12;
+        prop_assert!((fd - expect).length() <= tol, "{:?} vs {:?}", f, expect);
+        // No work: the speed after `v += F h/m` is the speed before, up to
+        // the explicit update's own second-order term φ² (and rounding).
+        let after = vd + fd * (f64::from(DT) / f64::from(p.mass_kg));
+        let gain = (after.length_squared() - vd.length_squared()) / vd.length_squared().max(1e-12);
+        prop_assert!(gain.abs() <= 1.01 * phi * phi + 1.0e-6, "relative |v|² change {}", gain);
+        // No component along the spin axis.
+        prop_assert!(fd.dot(wd).abs() <= (1.0e-5 * scale + 1.0e-12) * wd.length());
         // Stateless: the same call again gives the same bits.
         let again = direct_force(&p, v, w);
         prop_assert_eq!(f.to_array().map(f32::to_bits), again.to_array().map(f32::to_bits));

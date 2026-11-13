@@ -163,3 +163,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 3.4 | Implementer | Opus 5.5 | fix 1 | done | fmt/clippy clean; all tests incl. 84 spec pass | B1 restart threshold 1000 ticks + reset zeroes latest tick; N1 Nyquist clamp; N2–N6 docs/edge fixes |
 | 4 | 3.4 | Reviewer | Fable 5.2 | 2 | running | — | |
 | 4 | 5.1 | Independent Tester | Fable 5.2 | 1 | done | 66 spec tests pass (48 GPU-free, 18 GPU on lavapipe); 8 snapshots blessed after analytic checks | no defects; implementer test file had 3 clippy errors at the time → relayed |
+| 4 | 2.7 | Independent Tester | Fable 5.2 | 1 | done | 46 spec tests pass | no defects; Magnus hook applies an exact rotation of v (differs from literal S(ω×v) by O(S|ω|h/m)) — tests accept either, Reviewer to confirm |

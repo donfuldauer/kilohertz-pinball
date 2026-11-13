@@ -31,7 +31,11 @@ fn hash_events(h: &mut DefaultHasher, ev: &BallEvents) {
 }
 
 /// Per-tick digests of a busy-table run: (state bits, switches, events hash).
-fn busy_trace(profiles: &[BallProfile], hooks: Hooks, ticks: u32) -> Vec<(Vec<u32>, [u64; 4], u64)> {
+fn busy_trace(
+    profiles: &[BallProfile],
+    hooks: Hooks,
+    ticks: u32,
+) -> Vec<(Vec<u32>, [u64; 4], u64)> {
     let mut sc = busy(profiles, hooks);
     let mut ev = BallEvents::new();
     let mut out = Vec::with_capacity(ticks as usize);
@@ -70,9 +74,11 @@ fn assert_same_trace(a: &[(Vec<u32>, [u64; 4], u64)], b: &[(Vec<u32>, [u64; 4], 
 #[test]
 fn v1_busy_table_with_zero_coefficients_is_bit_identical() {
     let z = zeroed();
-    assert!(z.iter().all(|p| p.remanence == 0.0 && p.magnus_coeff == 0.0));
+    assert!(
+        z.iter()
+            .all(|p| p.remanence == 0.0 && p.magnus_coeff == 0.0)
+    );
     let baseline = busy_trace(&z, Hooks::None, 5000);
-    // The scenario exercises the magnet: with it off the run differs.
     let before = busy_trace(&z, Hooks::Before, 5000);
     assert_same_trace(&before, &baseline, "hooks registered before the balls");
     let after = busy_trace(&z, Hooks::After, 5000);
@@ -151,7 +157,10 @@ fn roll(
         let _ = register(&mut s);
     }
     let r = profiles[which].radius_m();
-    let mut b = Ball::new(ProfileId(which as u16), Vec3::new(start_xy.0, start_xy.1, r));
+    let mut b = Ball::new(
+        ProfileId(which as u16),
+        Vec3::new(start_xy.0, start_xy.1, r),
+    );
     b.velocity = v0;
     b.angular_velocity = w0;
     let h = s.add_ball(b).unwrap();
@@ -258,10 +267,16 @@ fn stock_run(hooks: Hooks) -> (u64, Vec<u32>, Vec<u32>) {
         sc.solver.set_magnet_power(sc.magnet, busy_power(tick));
         if tick == 1200 {
             // A ball leaves and a new one takes its slot.
-            let old = sc.solver.remove_ball(pin_physics::ball::BallHandle(0)).unwrap();
+            let old = sc
+                .solver
+                .remove_ball(pin_physics::ball::BallHandle(0))
+                .unwrap();
             let mut fresh = Ball::new(pid("jumbo_steel"), old.position + Vec3::new(0.0, 0.0, 0.01));
             fresh.velocity = Vec3::new(0.2, 0.3, 0.0);
-            assert_eq!(sc.solver.add_ball(fresh), Some(pin_physics::ball::BallHandle(0)));
+            assert_eq!(
+                sc.solver.add_ball(fresh),
+                Some(pin_physics::ball::BallHandle(0))
+            );
         }
         ev.clear();
         let geo = Geometry {
@@ -301,5 +316,8 @@ fn ten_runs_with_active_hooks_are_bit_identical() {
     }
     // The hooks were active in that scenario.
     let plain = stock_run(Hooks::None);
-    assert_ne!(plain.1, first.1, "the hooks changed nothing in the scenario");
+    assert_ne!(
+        plain.1, first.1,
+        "the hooks changed nothing in the scenario"
+    );
 }

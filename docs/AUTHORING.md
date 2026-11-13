@@ -12,7 +12,8 @@ with code 2.
 
 Keep the hand-written base `table.toml` outside the bundle folder: the tool
 writes `<bundle_dir>/table.toml` and refuses to run when `--table` is that
-file. The tool checks only what it generates and the base splines that
+file and it was not written by the tool (`--force` overrides; re-running on
+the tool's own output in place is allowed). The tool checks only what it generates and the base splines that
 ramps reference; validate the result with `load_table` (the game's bundle
 loader) before shipping.
 
