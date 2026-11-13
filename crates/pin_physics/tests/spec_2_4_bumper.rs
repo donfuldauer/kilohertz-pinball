@@ -341,3 +341,22 @@ fn bumper_only_acts_on_its_layer() {
     assert!((b.velocity - Vec3::new(1.0, 0.0, 0.0)).length() < 1.0e-4);
     assert!(b.position.x > CENTER.x + 0.05);
 }
+
+#[test]
+fn exit_speed_window_holds_across_an_approach_speed_sweep() {
+    // Typical playfield speeds at a bumper: 0.2..3.0 m/s in 0.1 steps. The
+    // exit speed must not depend on where in the tick the contact falls.
+    let mut bad = Vec::new();
+    for i in 2..=30 {
+        let speed = 0.1 * i as f32;
+        let o = approach(123.0, 0.0, speed, 25);
+        let v = o.exit.length();
+        if !(EXIT_MIN..=EXIT_MAX).contains(&v) {
+            bad.push((speed, v));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "(approach, exit) pairs outside {EXIT_MIN}..{EXIT_MAX} m/s: {bad:?}"
+    );
+}
