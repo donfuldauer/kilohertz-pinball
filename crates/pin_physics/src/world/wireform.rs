@@ -2,7 +2,9 @@
 
 use glam::{DVec3, Vec3};
 
+use super::curve_bounds::{CurveTree, TangentBalls};
 use super::shapes::{APPROACH_EPS, any_perpendicular};
+use super::sloped_bounds::{plan_view_folds, wall_reach};
 use super::spline::{
     ClosestPoint, CubicSpline, SAMPLES_PER_SEGMENT, SplineError, natural_second_derivatives,
 };
@@ -436,176 +438,160 @@ pub struct GuideCurve {
     /// wall point closer than this at which the distance is stationary is
     /// the nearest one. For a level curve the curve's own reach (Federer's
     /// formula with the half-line tangent cone at open ends, so that two
-    /// ends facing each other count); for a non-level one [`wall_reach`]
-    /// (plan view and edges), at least [`MIN_SLOPED_GUIDE_REACH`]. Zero for
-    /// a level curve without reach (one that touches or crosses itself).
+    /// ends facing each other count, and each end's term taken exactly,
+    /// between the samples: [`CurveTree::end_terms`]); where the open ends
+    /// limit it, also at most the smallest tangent-ball radius of the table,
+    /// so that it is a proven bound; for a non-level one [`wall_reach`]
+    /// (plan view, with its ends taken exactly as well, and edges), at least
+    /// [`MIN_SLOPED_GUIDE_REACH`]. Zero for a level curve without reach (one
+    /// that touches or crosses itself) or none that could be proven (an
+    /// end within about 0.1 mm of the wall).
     reach: f32,
-    /// Level curves whose reach is limited by their open ends only (a ring
-    /// with a narrow opening): the radius of the balls that touch the wall
-    /// at a point without containing any of it ([`TangentBalls`]). It is
-    /// what lets a sphere slide along such a wall as fast as along the same
-    /// wall without the opening.
+    /// Level curves whose reach is limited by their open ends (a ring with a
+    /// narrow opening, a J or T whose end points at its own wall): the
+    /// radius of the balls that touch the wall at a point, on either side,
+    /// without containing any of it ([`TangentBalls`]). It is what lets a
+    /// sphere slide along such a wall as fast as along the same wall without
+    /// the opening.
     tangent_balls: Option<TangentBalls>,
     /// Extra data of a non-level curve.
     sloped: Option<Sloped>,
 }
 
-/// Tangent-ball radii along a level curve `C`, the pointwise form of the
-/// reach.
-///
-/// For a point `a` of the curve and a unit vector `n`, the open ball of
-/// radius `ρ` around `a + ρ n` misses the curve exactly if `|w|² ≥ 2 ρ w · n`
-/// for every `w = y − a`, `y` on the curve. If `a` is the nearest point of
-/// the curve to some point in direction `n`, then `n` is perpendicular to
-/// the tangent at `a`, or, at an end of an open curve, `n · inward ≤ 0`
-/// (`inward` the unit tangent into the curve). Hence, with
-/// `perp(w)` the distance of `w` from the tangent line at `a` and
-/// `s = max(0, −n · inward)` (zero inside the curve),
-///
-/// `w · n ≤ perp(w) + s · max(0, −w · inward)`,
-///
-/// and the ball misses the curve if
-///
-/// `1/ρ ≥ 1/ρ_line(a) + s / ρ_back`,
-/// `ρ_line(a) = inf |w|² / (2 perp(w))`,
-/// `ρ_back = inf |w|² / (2 max(0, −w · inward))`.
-///
-/// `ρ_line` is the quantity whose infimum over the curve Federer's formula
-/// takes inside the curve; `ρ_back` (half the distance to whatever lies
-/// straight behind an end) is what the half-line tangent cone at an end
-/// adds. Unlike the reach, the bound is local: a ball sliding along the
-/// inside of a C-shaped wall keeps the radius of the C, and only a ball that
-/// wraps around an end is limited by the other end facing it.
-///
-/// What is stored, and how it stays safe between samples and cheap to
-/// build:
-/// * `ρ_line` at table points, a quarter of a segment apart (`coarse`), and
-///   1/64 of a segment apart in the first and the last segment (`fine`),
-///   where the two ends make it change quickly. A table entry is the
-///   smallest value of the two table points around it and their two
-///   neighbours, **less the length of the interval**, times 0.9: next to
-///   another stretch of the curve `ρ_line` falls no faster than the
-///   distance along the curve (it is about the distance to where that
-///   stretch ends or crosses), so the entry holds for every point of its
-///   interval whatever the table spacing. There is no resolution to choose
-///   and no gap too narrow for it.
-/// * The one thing that falls faster is the term of an end point `E` of the
-///   curve coming close to the wall, `|E − a|² / (2 perp(E − a))`. The two
-///   end points are therefore not left to the table: their terms are
-///   evaluated exactly, at the nearest point `a` itself, in
-///   [`TangentBalls::radius`].
-/// * `ρ_back` is found by a search of the curve behind each end
-///   ([`back_radius`]) that subdivides between the samples wherever the
-///   infimum could be, so that an end pointing at a wall a fraction of a
-///   sample interval away is seen at its true distance.
-/// * Values are capped at [`TANGENT_BALL_CAP`] and at 0.9 of the smallest
-///   radius of curvature. Larger balls gain nothing in a 1 ms step, and
-///   with the cap whole blocks of far points are ruled out by their
-///   bounding spheres ([`Cloud`]), which keeps the construction close to
-///   linear in the number of points.
-///
-/// The same balls miss the wall `C × [0, h]`: for a wall point above `a`
-/// nearest to `p`, the vertical part of `n` points away from the wall (or
-/// is zero), so `w · n ≤ w_h · n_h`, and `|w| ≥ |w_h|`.
-#[derive(Debug, Clone)]
-struct TangentBalls {
-    /// Entries per quarter segment along the whole curve.
-    coarse: Vec<f32>,
-    /// Entries per 1/64 of the first and of the last segment.
-    fine: [Vec<f32>; 2],
-    /// The first and the last point of the curve: (point, unit tangent into
-    /// the curve, `ρ_back` with the 0.9 margin).
-    ends: [(Vec3, Vec3, f32); 2],
-}
-
-/// Largest tangent-ball radius the table holds (metres).
-const TANGENT_BALL_CAP: f64 = 0.3;
-
-/// Table intervals per segment: along the curve, and in its end segments.
-const TANGENT_BALL_COARSE: usize = 4;
-const TANGENT_BALL_FINE: usize = 64;
-
-/// Points of a curve in blocks with bounding spheres, for the pair tests of
-/// the reach estimates: does any point `y` change the estimate `r` of
+/// Points of a curve in blocks with bounding capsules, for the pair tests
+/// of the reach estimates: does any point `y` change the estimate `r` of
 /// `inf |w|² / (2 off)` at `x` (`w = y − x`, `off` its distance from the
 /// tangent line at `x`), i.e. is `2 off r > |w|²`?
 struct Cloud {
     xs: Vec<f64>,
     ys: Vec<f64>,
     zs: Vec<f64>,
-    /// (centre, radius) per block of [`Cloud::BLOCK`] consecutive points.
-    blocks: Vec<(DVec3, f64)>,
-    /// (centre, radius) per group of [`Cloud::GROUP`] consecutive points.
-    groups: Vec<(DVec3, f64)>,
+    /// Capsule per block of [`Cloud::BLOCK`] consecutive points, then per
+    /// pair of nodes of the level below (a binary tree over the blocks).
+    levels: Vec<Vec<Capsule>>,
 }
 
-/// Bounding sphere (centre, radius) of `points`.
-fn bounding_sphere(points: &[DVec3]) -> (DVec3, f64) {
-    let (mut min, mut max) = (points[0], points[0]);
-    for p in points {
-        min = min.min(*p);
-        max = max.max(*p);
-    }
-    let centre = 0.5 * (min + max);
+/// The segment from the first to the last of a run of points, and the
+/// largest distance of any of them from it: every point is within `radius`
+/// of a point of the segment. (Along a gentle stretch of curve it is far
+/// thinner than a bounding sphere, and exactly flat along a straight one.)
+#[derive(Debug, Clone, Copy)]
+struct Capsule {
+    p: DVec3,
+    q: DVec3,
+    radius: f64,
+}
+
+/// Distance from `x` to the segment `p q`.
+pub(super) fn segment_distance(x: DVec3, p: DVec3, q: DVec3) -> f64 {
+    let pq = q - p;
+    let l2 = pq.length_squared();
+    let t = if l2 > 0.0 {
+        ((x - p).dot(pq) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    x.distance(p + pq * t)
+}
+
+/// Bounding capsule of `points`.
+fn bounding_capsule(points: &[DVec3]) -> Capsule {
+    let (p, q) = (points[0], points[points.len() - 1]);
     let radius = points
         .iter()
-        .map(|p| p.distance(centre))
+        .map(|&y| segment_distance(y, p, q))
         .fold(0.0f64, f64::max);
-    (centre, radius * (1.0 + 1.0e-9))
+    Capsule {
+        p,
+        q,
+        radius: radius * (1.0 + 1.0e-9) + 1.0e-15,
+    }
 }
 
-/// Whether no point of a sphere can change the estimate `r` at `x`, nor
-/// coincide with `x`: no point is nearer than `near`, none farther from the
-/// tangent line than `off` (which is 1-Lipschitz), and `off ≤ |w|`.
+/// Whether no point of a capsule can change the estimate `r` at `x`, nor
+/// coincide with `x`: no point is nearer than `near` (the distance to the
+/// segment less the radius), none farther from the tangent line than `off`
+/// (that distance is convex along the segment, so largest at an end, and
+/// 1-Lipschitz, so at most the radius more off the segment), and
+/// `off ≤ |w|`.
 #[inline(always)]
-fn sphere_is_quiet(sphere: (DVec3, f64), x: DVec3, tangent: DVec3, r: f64) -> bool {
-    let (centre, radius) = sphere;
-    let w = centre - x;
-    let near = w.length() - radius;
-    let off = (w - tangent * w.dot(tangent)).length() + radius;
+fn capsule_is_quiet(capsule: &Capsule, x: DVec3, tangent: DVec3, r: f64) -> bool {
+    let perp = |v: DVec3| (v - tangent * v.dot(tangent)).length();
+    let near = segment_distance(x, capsule.p, capsule.q) - capsule.radius;
+    let off = perp(capsule.p - x).max(perp(capsule.q - x)) + capsule.radius;
     near > 1.0e-6 && near * near >= 2.0 * off * r * (1.0 + 1.0e-9)
 }
 
 impl Cloud {
     const BLOCK: usize = 32;
 
-    /// Points per group (16 blocks).
-    const GROUP: usize = 16 * Self::BLOCK;
-
     fn new(points: &[DVec3]) -> Self {
+        let mut levels = vec![
+            points
+                .chunks(Self::BLOCK)
+                .map(bounding_capsule)
+                .collect::<Vec<_>>(),
+        ];
+        let mut width = Self::BLOCK;
+        while levels[levels.len() - 1].len() > 1 {
+            width *= 2;
+            levels.push(points.chunks(width).map(bounding_capsule).collect());
+        }
         Self {
             xs: points.iter().map(|p| p.x).collect(),
             ys: points.iter().map(|p| p.y).collect(),
             zs: points.iter().map(|p| p.z).collect(),
-            blocks: points.chunks(Self::BLOCK).map(bounding_sphere).collect(),
-            groups: points.chunks(Self::GROUP).map(bounding_sphere).collect(),
+            levels,
         }
     }
 
-    /// Whether no point of the group starting at `from` can change the
-    /// estimate `r` at `x`, nor coincide with `x`.
-    #[inline(always)]
-    fn group_is_quiet(&self, from: usize, x: DVec3, tangent: DVec3, r: f64) -> bool {
-        sphere_is_quiet(self.groups[from / Self::GROUP], x, tangent, r)
+    /// The blocks (by first point) that some point of could change the
+    /// estimate `r(x)` at `x` or coincide with it, in order: the tree is
+    /// walked left to right and a node whose capsule is quiet is skipped
+    /// with all its blocks. `r` is read again before every node: it only
+    /// decreases, so a node quiet now is quiet for every block in it later.
+    fn open_blocks(
+        &self,
+        x: DVec3,
+        tangent: DVec3,
+        r: impl Fn() -> f64,
+        stack: &mut Vec<(usize, usize)>,
+        mut block: impl FnMut(usize) -> bool,
+    ) -> bool {
+        stack.clear();
+        stack.push((self.levels.len() - 1, 0));
+        while let Some((level, node)) = stack.pop() {
+            if capsule_is_quiet(&self.levels[level][node], x, tangent, r()) {
+                continue;
+            }
+            if level == 0 {
+                if !block(node * Self::BLOCK) {
+                    return false;
+                }
+                continue;
+            }
+            // Right child first on the stack: the left one is visited first.
+            if 2 * node + 1 < self.levels[level - 1].len() {
+                stack.push((level - 1, 2 * node + 1));
+            }
+            stack.push((level - 1, 2 * node));
+        }
+        true
     }
 
     fn len(&self) -> usize {
         self.xs.len()
     }
 
-    fn point(&self, index: usize) -> DVec3 {
-        DVec3::new(self.xs[index], self.ys[index], self.zs[index])
-    }
-
     /// Whether no point of the block starting at `from` can change the
     /// estimate `r` at `x`, nor coincide with `x`. Two tests, both with a
-    /// 1e-9 margin (rounding is 1e-15): the bounding sphere, then pair by
+    /// 1e-9 margin (rounding is 1e-15): the bounding capsule, then pair by
     /// pair with `off² = |w|² − (w · t)²`, without a square root or a
     /// branch.
     #[inline(always)]
     fn quiet(&self, from: usize, x: DVec3, tangent: DVec3, r: f64) -> bool {
         let to = (from + Self::BLOCK).min(self.len());
-        if sphere_is_quiet(self.blocks[from / Self::BLOCK], x, tangent, r) {
+        if capsule_is_quiet(&self.levels[0][from / Self::BLOCK], x, tangent, r) {
             return true;
         }
         let scale = 4.0 * r * r;
@@ -627,267 +613,6 @@ impl Cloud {
         }
         hits == 0
     }
-
-    /// `min(cap, inf |w|² / (2 off))` at `x` over the points of the cloud.
-    fn row(&self, x: DVec3, tangent: DVec3, cap: f64) -> f64 {
-        let mut r = cap;
-        let update = |r: &mut f64, index: usize| {
-            let w = self.point(index) - x;
-            let w2 = w.length_squared();
-            if w2 >= 1.0e-16 {
-                let off = (w - tangent * w.dot(tangent)).length();
-                if 2.0 * off * *r > w2 {
-                    *r = w2 / (2.0 * off);
-                }
-            }
-        };
-        // A sparse pass first: next to another stretch of the curve it
-        // brings the estimate down at once, and most blocks are then ruled
-        // out by their spheres.
-        for index in (0..self.len()).step_by(4 * Self::BLOCK) {
-            update(&mut r, index);
-        }
-        let mut from = 0;
-        while from < self.len() {
-            if from % Self::GROUP == 0 && self.group_is_quiet(from, x, tangent, r) {
-                from += Self::GROUP;
-                continue;
-            }
-            let block = from;
-            from += Self::BLOCK;
-            if self.quiet(block, x, tangent, r) {
-                continue;
-            }
-            for index in block..(block + Self::BLOCK).min(self.len()) {
-                update(&mut r, index);
-            }
-        }
-        r
-    }
-}
-
-/// Distance from an end of an open curve, in units of the curve parameter
-/// (1 per segment, so a thousandth of the last segment, not a length),
-/// within which the nearest point counts as the end itself
-/// ([`TangentBalls`]). Any width is safe: the end term only ever lowers the
-/// radius, so applying it to an interior point is merely conservative, and
-/// a nearest point that is the end has the parameter of the end exactly
-/// (the closest-point search clamps to it). The band is there for rounding
-/// of the parameter, and kept narrow so that a sphere sliding past the end
-/// region is not slowed down.
-const END_BAND: f32 = 1.0e-3;
-
-/// `ρ_back` of the end `e` of `spline` (`inward` the unit tangent into the
-/// curve there): the infimum of `|w|² / (2 b)` over curve points `y` behind
-/// the end, `w = y − e`, `b = −w · inward > 0`. At most 1e3.
-///
-/// Branch and bound over the sample intervals: on a piece of the curve of
-/// length at most `L` between two points at distances `d0`, `d1` from `e`,
-/// `|w| ≥ min(d0, d1) − L/2` and `b ≤ max(b0, b1) + L/2`, so the value is
-/// at least `(min(d0, d1) − L/2)² / (2 (max(b0, b1) + L/2))`; a piece that
-/// cannot hold a value more than 2 % below the best one found is dropped,
-/// the others are halved (down to 1/65536 of a sample interval). One pass over the
-/// samples plus a few dozen evaluations near each candidate.
-fn back_radius(spline: &CubicSpline, e: DVec3, inward: DVec3) -> f64 {
-    const DEPTH: u32 = 16;
-    let samples = spline.samples();
-    let k = SAMPLES_PER_SEGMENT as f64;
-    let mut best = 1.0e3f64;
-    // (parameter, distance², behind) of a curve point, and its value.
-    let at = |t: f64| {
-        let w = spline.point(t as f32).as_dvec3() - e;
-        (t, w.length_squared(), -w.dot(inward))
-    };
-    let value = |p: (f64, f64, f64)| {
-        if p.2 > 0.0 && p.1 > 1.0e-16 {
-            p.1 / (2.0 * p.2)
-        } else {
-            f64::INFINITY
-        }
-    };
-    // The samples first: a good value to prune with from the start.
-    for sample in samples {
-        let w = sample.point.as_dvec3() - e;
-        best = best.min(value((0.0, w.length_squared(), -w.dot(inward))));
-    }
-    // (from, to, length, depth) of the pieces still to look at.
-    type Probe = (f64, f64, f64);
-    let mut stack: Vec<(Probe, Probe, f64, u32)> = Vec::new();
-    for (i, pair) in samples.windows(2).enumerate() {
-        let from = pair[0].point.as_dvec3();
-        let to = pair[1].point.as_dvec3();
-        let (w0, w1) = (from - e, to - e);
-        let p0 = (i as f64 / k, w0.length_squared(), -w0.dot(inward));
-        let p1 = ((i + 1) as f64 / k, w1.length_squared(), -w1.dot(inward));
-        // Arc length of the interval, generously (it is nearly straight).
-        stack.push((p0, p1, 1.25 * from.distance(to), 0));
-        while let Some((p0, p1, length, depth)) = stack.pop() {
-            best = best.min(value(p0)).min(value(p1));
-            let behind = p0.2.max(p1.2) + 0.5 * length;
-            if behind <= 0.0 {
-                continue; // wholly in front of the end
-            }
-            let nearest = (p0.1.min(p1.1).sqrt() - 0.5 * length).max(0.0);
-            // (A piece that could improve the value by less than 2 % is
-            // not worth it: the result carries a 10 % margin.)
-            if nearest * nearest >= 0.98 * 2.0 * behind * best || depth == DEPTH {
-                continue;
-            }
-            let mid = at(0.5 * (p0.0 + p1.0));
-            stack.push((p0, mid, 0.5 * length, depth + 1));
-            stack.push((mid, p1, 0.5 * length, depth + 1));
-        }
-    }
-    best
-}
-
-impl TangentBalls {
-    /// The table of an open curve without cusp or crossing.
-    fn new(spline: &CubicSpline) -> Option<Self> {
-        let curvature = curvature_bound(spline)?;
-        let cap = if 0.9 > curvature * TANGENT_BALL_CAP {
-            TANGENT_BALL_CAP
-        } else {
-            0.9 / curvature
-        };
-        let samples = spline.samples();
-        let last = samples.len() - 1;
-        let segments = spline.segment_count();
-        let fine = TANGENT_BALL_FINE;
-        // (point, unit tangent) at 1/64 steps of a segment.
-        let fine_points = |segment: usize| -> Vec<(DVec3, DVec3)> {
-            (0..=fine)
-                .map(|j| {
-                    let (c, d1, _) = spline.eval(segment, j as f32 / fine as f32);
-                    (c.as_dvec3(), d1.as_dvec3().normalize())
-                })
-                .collect()
-        };
-        let first = fine_points(0);
-        let final_ = fine_points(segments - 1);
-        // What every table point is compared with: every second sample,
-        // and the end segments as finely as their tables.
-        let mut cloud: Vec<DVec3> = samples
-            .iter()
-            .step_by(2)
-            .map(|sample| sample.point.as_dvec3())
-            .collect();
-        cloud.extend(first.iter().map(|p| p.0));
-        cloud.extend(final_.iter().map(|p| p.0));
-        let cloud = Cloud::new(&cloud);
-        // Along the curve.
-        let stride = SAMPLES_PER_SEGMENT / TANGENT_BALL_COARSE;
-        let count = last / stride + 1;
-        let rows: Vec<f64> = (0..count)
-            .map(|a| {
-                let sample = &samples[a * stride];
-                cloud.row(
-                    sample.point.as_dvec3(),
-                    sample.tangent.as_dvec3().normalize(),
-                    cap,
-                )
-            })
-            .collect();
-        let entry = |lowest: f64, length: f64| (0.9 * (lowest - length).max(0.0)) as f32;
-        let coarse = (0..count - 1)
-            .map(|i| {
-                let length: f32 = samples[i * stride..=(i + 1) * stride]
-                    .windows(2)
-                    .map(|pair| pair[0].point.distance(pair[1].point))
-                    .sum();
-                // Table points i − 1 ..= i + 2.
-                let lowest = rows[i.saturating_sub(1)..=(i + 2).min(count - 1)]
-                    .iter()
-                    .fold(f64::INFINITY, |m, &r| m.min(r));
-                entry(lowest, f64::from(length))
-            })
-            .collect();
-        // In an end segment; `inner` is the table point of the coarse table
-        // a quarter segment beyond its inner end, if there is one.
-        let fine_table = |points: &[(DVec3, DVec3)], inner_first: bool, inner: Option<f64>| {
-            let rows: Vec<f64> = points
-                .iter()
-                .map(|&(x, tangent)| cloud.row(x, tangent, cap))
-                .collect();
-            (0..fine)
-                .map(|j| {
-                    let mut lowest = rows[j.saturating_sub(1)..=(j + 2).min(fine)]
-                        .iter()
-                        .fold(f64::INFINITY, |m, &r| m.min(r));
-                    let at_inner = if inner_first { j == 0 } else { j + 2 > fine };
-                    if let (true, Some(beyond)) = (at_inner, inner) {
-                        lowest = lowest.min(beyond);
-                    }
-                    entry(lowest, 1.05 * points[j].0.distance(points[j + 1].0))
-                })
-                .collect::<Vec<f32>>()
-        };
-        let per = TANGENT_BALL_COARSE;
-        let fine_tables = [
-            fine_table(&first, false, rows.get(per + 1).copied()),
-            fine_table(
-                &final_,
-                true,
-                (count > per + 2).then(|| rows[count - 2 - per]),
-            ),
-        ];
-        let end = |point: DVec3, inward: DVec3| {
-            let back = 0.9 * back_radius(spline, point, inward);
-            (point.as_vec3(), inward.as_vec3(), back as f32)
-        };
-        Some(Self {
-            coarse,
-            fine: fine_tables,
-            ends: [
-                end(first[0].0, first[0].1),
-                end(final_[fine].0, -final_[fine].1),
-            ],
-        })
-    }
-
-    /// Radius of a ball that touches the wall at `point` (above the curve
-    /// point of parameter `t`) on the side of the unit vector `normal` (the
-    /// direction from that nearest point to the query point) and contains
-    /// none of the wall. Zero where there is none to promise.
-    fn radius(&self, spline: &CubicSpline, t: f32, point: Vec3, normal: Vec3) -> f32 {
-        let max_t = spline.max_t();
-        let t = t.clamp(0.0, max_t);
-        let fine = TANGENT_BALL_FINE;
-        let in_fine = |local: f32| ((local * fine as f32) as usize).min(fine - 1);
-        let mut rho = f32::INFINITY;
-        if t <= 1.0 {
-            rho = rho.min(self.fine[0][in_fine(t)]);
-        }
-        if t >= max_t - 1.0 {
-            rho = rho.min(self.fine[1][in_fine(t - (max_t - 1.0))]);
-        }
-        if rho == f32::INFINITY {
-            let index = (t * TANGENT_BALL_COARSE as f32) as usize;
-            rho = self.coarse[index.min(self.coarse.len() - 1)];
-        }
-        if rho <= 0.0 {
-            return 0.0;
-        }
-        let tangent = spline.tangent(t).normalize_or_zero();
-        // 1/ρ_line: the table, and the two end points exactly.
-        let mut inverse = 1.0 / rho;
-        for (end, _, _) in &self.ends {
-            // (The curve is level: only the plan position matters.)
-            let w = Vec3::new(end.x - point.x, end.y - point.y, 0.0);
-            let w2 = w.length_squared();
-            if w2 > 1.0e-12 {
-                let off = (w - tangent * w.dot(tangent)).length();
-                inverse = inverse.max(2.0 * off / (0.9 * w2));
-            }
-        }
-        for (end_t, (_, inward, back)) in [0.0, max_t].into_iter().zip(&self.ends) {
-            let s = -normal.dot(*inward);
-            if (t - end_t).abs() <= END_BAND && s > 0.0 {
-                inverse += s / back;
-            }
-        }
-        1.0 / inverse
-    }
 }
 
 /// The reach estimates of a level curve with the half-line tangent cone at
@@ -896,8 +621,8 @@ impl TangentBalls {
 /// and several times faster.
 ///
 /// A pair `(x, y)` changes an estimate `r` only if `2 off r > |w|²`. That
-/// is excluded for whole blocks of `y` at a time ([`Cloud::quiet`], against
-/// the larger of the two estimates); only blocks that fail the test, the
+/// is excluded for whole blocks of `y` at a time ([`Cloud::open_blocks`],
+/// [`Cloud::quiet`], against the larger of the two estimates); only blocks that fail the test, the
 /// points next to `x` and the few that set the estimate, go through the
 /// exact update of [`curve_reach`], in the same order. Rows of the two end
 /// points are always exact.
@@ -923,7 +648,8 @@ fn level_reaches(spline: &CubicSpline) -> (f32, f32) {
         .collect();
     let cloud = Cloud::new(&points);
     let open = !spline.is_closed();
-    let (mut half, mut line) = (initial, initial);
+    let estimates = core::cell::Cell::new((initial, initial));
+    let mut stack = Vec::new();
     for a in 0..count {
         let (x, tangent) = (points[a], tangents[a]);
         let end_direction = if open && a == 0 {
@@ -933,48 +659,56 @@ fn level_reaches(spline: &CubicSpline) -> (f32, f32) {
         } else {
             None
         };
-        let mut from = 0;
-        while from < count {
-            if end_direction.is_none()
-                && from % Cloud::GROUP == 0
-                && cloud.group_is_quiet(from, x, tangent, half.max(line))
-            {
-                from += Cloud::GROUP;
-                continue;
-            }
-            let to = (from + Cloud::BLOCK).min(count);
-            let exact = end_direction.is_some() || !cloud.quiet(from, x, tangent, half.max(line));
-            if exact {
-                for b in from..to {
-                    if a == b {
-                        continue;
+        // The exact update of the pairs of one block, in order; false for a
+        // crossing.
+        let exact = |from: usize| -> bool {
+            let (mut half, mut line) = estimates.get();
+            for b in from..(from + Cloud::BLOCK).min(count) {
+                if a == b {
+                    continue;
+                }
+                let w = points[b] - x;
+                let w2 = w.length_squared();
+                if w2 < 1.0e-16 {
+                    // Coincident samples: a smoothly closed loop is fine, a
+                    // crossing has no reach.
+                    if tangent.cross(tangents[b]).length() > 1.0e-3 {
+                        return false;
                     }
-                    let w = points[b] - x;
-                    let w2 = w.length_squared();
-                    if w2 < 1.0e-16 {
-                        // Coincident samples: a smoothly closed loop is
-                        // fine, a crossing has no reach.
-                        if tangent.cross(tangents[b]).length() > 1.0e-3 {
-                            return (0.0, 0.0);
-                        }
-                        continue;
-                    }
-                    let off = (w - tangent * w.dot(tangent)).length();
-                    if 2.0 * off * line > w2 {
-                        line = w2 / (2.0 * off);
-                    }
-                    let off = match end_direction {
-                        Some(inward) if w.dot(inward) < 0.0 => w2.sqrt(),
-                        _ => off,
-                    };
-                    if 2.0 * off * half > w2 {
-                        half = w2 / (2.0 * off);
-                    }
+                    continue;
+                }
+                let off = (w - tangent * w.dot(tangent)).length();
+                if 2.0 * off * line > w2 {
+                    line = w2 / (2.0 * off);
+                }
+                let off = match end_direction {
+                    Some(inward) if w.dot(inward) < 0.0 => w2.sqrt(),
+                    _ => off,
+                };
+                if 2.0 * off * half > w2 {
+                    half = w2 / (2.0 * off);
                 }
             }
-            from = to;
+            estimates.set((half, line));
+            true
+        };
+        let fine = if end_direction.is_some() {
+            // The rows of the two end points: every block, exactly.
+            (0..count).step_by(Cloud::BLOCK).all(exact)
+        } else {
+            let r = || {
+                let (half, line) = estimates.get();
+                half.max(line)
+            };
+            cloud.open_blocks(x, tangent, r, &mut stack, |from| {
+                cloud.quiet(from, x, tangent, r()) || exact(from)
+            })
+        };
+        if !fine {
+            return (0.0, 0.0);
         }
     }
+    let (half, line) = estimates.get();
     ((0.9 * half) as f32, (0.9 * line) as f32)
 }
 
@@ -1001,7 +735,7 @@ type Best = (f32, f32, Vec3);
 /// than about 44 mm unless the curve between them is that short. Below this
 /// a pinball (radius up to 16 mm) could not use the reach bound of the
 /// sphere cast and would crawl along the wall or its edges.
-const MIN_SLOPED_GUIDE_REACH: f32 = 0.02;
+pub(super) const MIN_SLOPED_GUIDE_REACH: f32 = 0.02;
 
 /// Whether a plan-view curve comes back onto itself: two points whose
 /// distance is smaller than the chord a curve of reach
@@ -1010,7 +744,8 @@ const MIN_SLOPED_GUIDE_REACH: f32 = 0.02;
 /// beyond). This is what catches a helix, whose laps lie on top of each
 /// other in plan: as a point set its plan view is a plain circle, with a
 /// perfectly good reach.
-fn plan_view_folds(flat: &CubicSpline, closed: bool) -> bool {
+#[cfg(test)]
+fn plan_view_folds_pairwise(flat: &CubicSpline, closed: bool) -> bool {
     let samples = flat.samples();
     let rho = f64::from(MIN_SLOPED_GUIDE_REACH);
     // Arc length up to every second sample (chord sums).
@@ -1102,7 +837,7 @@ fn plan_view(spline: &CubicSpline) -> Option<CubicSpline> {
 /// so its largest norm on an interval is at an end; `|C'|` cannot fall below
 /// the smaller end value by more than half the interval times that norm.
 /// `None` at a cusp (`|C'|` may vanish).
-fn curvature_bound(spline: &CubicSpline) -> Option<f64> {
+pub(super) fn curvature_bound(spline: &CubicSpline) -> Option<f64> {
     let k = SAMPLES_PER_SEGMENT;
     let n = spline.segment_count();
     let h = 1.0 / k as f64;
@@ -1130,6 +865,7 @@ fn curvature_bound(spline: &CubicSpline) -> Option<f64> {
 /// Reach of a sampled curve (Federer): the infimum over point pairs of
 /// `|y - x|² / (2 · dist(y - x, tangent line at x))`, which accounts for both
 /// curvature and distinct stretches of the curve approaching each other.
+#[cfg(test)]
 fn curve_reach(spline: &CubicSpline, half_line_ends: bool) -> f32 {
     const MAX_REACH: f64 = 1.0e3;
     let samples = spline.samples();
@@ -1237,7 +973,8 @@ fn curve_reach(spline: &CubicSpline, half_line_ends: bool) -> f32 {
 ///   `(a − b D_z)² + b² |D_h|² ≥ 0`).
 ///
 /// Returns 0 at a cusp.
-fn wall_reach(spline: &CubicSpline, plan_reach: f32) -> f32 {
+#[cfg(test)]
+fn wall_reach_pairwise(spline: &CubicSpline, plan_reach: f32) -> f32 {
     let Some(curvature) = curvature_bound(spline) else {
         return 0.0;
     };
@@ -1368,16 +1105,39 @@ impl GuideCurve {
             // little about the rest of the wall and the cast also uses the
             // tangent balls; everywhere else the reach is used alone, as
             // before.
-            let (reach, line) = level_reaches(&spline);
-            if reach > 0.0 && reach < line && !spline.is_closed() {
-                tangent_balls = TangentBalls::new(&spline);
+            //
+            // The sampled estimates can miss an end pointing at the wall
+            // between two samples (by up to half a sample interval), so the
+            // end terms are also taken exactly, between the samples
+            // (`CurveTree::end_terms`); and where the ends limit the reach,
+            // it is also capped by the table, whose every entry is a proven
+            // bound, so that the reach of such a guide never exceeds the
+            // true reach whatever the sampling.
+            let (mut reach, line) = level_reaches(&spline);
+            if reach > 0.0 && !spline.is_closed() {
+                let tree = CurveTree::new(&spline);
+                let ends = tree.end_terms();
+                let exact = ends.iter().fold(f64::INFINITY, |m, e| m.min(e.half));
+                reach = reach.min((0.9 * exact) as f32);
+                if reach < line {
+                    let balls = TangentBalls::new(&tree, &ends);
+                    reach = reach.min(balls.smallest());
+                    tangent_balls = Some(balls);
+                }
             }
             (None, reach)
         } else {
             // A rising or falling guide needs a plan view that a ball can
             // slide along at full speed: see `MIN_SLOPED_GUIDE_REACH`.
             let flat = plan_view(&spline).ok_or(SplineError::SlopedGuidePlanView)?;
-            let plan_reach = curve_reach(&flat, true);
+            // (The plan view is level: the same estimate as a level guide's,
+            // with its open ends taken exactly as well.)
+            let mut plan_reach = level_reaches(&flat).0;
+            if plan_reach > 0.0 && !flat.is_closed() {
+                let ends = CurveTree::new(&flat).end_terms();
+                let exact = ends.iter().fold(f64::INFINITY, |m, e| m.min(e.half));
+                plan_reach = plan_reach.min((0.9 * exact) as f32);
+            }
             if plan_reach < MIN_SLOPED_GUIDE_REACH || plan_view_folds(&flat, spline.is_closed()) {
                 return Err(SplineError::SlopedGuidePlanView);
             }
@@ -1425,7 +1185,8 @@ impl GuideCurve {
     /// The conservative reach estimate of the wall (metres) that the sphere
     /// cast and the closest-point query rely on: within it the nearest wall
     /// point is unique. Zero for a level curve that touches or crosses
-    /// itself. For tests and diagnostics.
+    /// itself, or whose end comes within about 0.1 mm of its own wall (no
+    /// positive reach is proven there). For tests and diagnostics.
     #[doc(hidden)]
     #[must_use]
     pub fn reach(&self) -> f32 {
@@ -1750,12 +1511,12 @@ impl GuideCurve {
     /// `ρ`, the gap's second time derivative is at least `-|v|² / (ρ - d)`,
     /// which lets a sphere running alongside the wall advance millimetres
     /// instead of micrometres per step. A level wall has a small reach when
-    /// its two open ends face each other across a narrow opening (a C);
-    /// there the "rolling ball" bound is used as well,
-    /// with the radius of the ball that touches the wall at the nearest
-    /// point without containing any of it: the radius of the C along the
-    /// wall, and down to half the opening only for a sphere that wraps
-    /// around an end. For a rising or falling curve the
+    /// its two open ends face each other across a narrow opening (a C), or
+    /// an end points at another stretch (a J or a T); there the "rolling
+    /// ball" bound is used as well, with the radius of the ball that touches
+    /// the wall at the nearest point, on the sphere's side, without
+    /// containing any of it: the radius of the C along the wall, and down to
+    /// half the opening only for a sphere that wraps around an end. For a rising or falling curve the
     /// second bound is the exact "rolling ball" form of it: the wall stays
     /// outside the ball of radius `ρ` touching it at the nearest point, both
     /// beside the wall and above or below its edges (riding or skimming
@@ -1932,7 +1693,7 @@ impl GuideCurve {
                     // on the sphere's side, with the radius that holds at
                     // that point (see `TangentBalls`, `rolling_ball_time`).
                     if let Some(balls) = &self.tangent_balls {
-                        let rho = balls.radius(&self.spline, cp.t, cp.point, normal);
+                        let rho = balls.radius(&self.spline, cp.t, normal);
                         if distance < rho {
                             dt = dt.max(rolling_ball_time(distance, rho, rate, drop, speed));
                         }
@@ -2028,7 +1789,7 @@ mod tests {
             .map(|i| spline.point(i as f32 / 40.0).as_dvec3())
             .collect();
         let check = |t: f32, n: Vec3| -> f32 {
-            let rho = balls.radius(spline, t, spline.point(t), n);
+            let rho = balls.radius(spline, t, n);
             assert!(rho > 0.0 && rho.is_finite(), "{label}: radius {rho} at {t}");
             let a = spline.point(t).as_dvec3();
             let centre = a + n.as_dvec3() * f64::from(rho);
@@ -2119,12 +1880,7 @@ mod tests {
             // Straight behind an end: half the opening at most (less the
             // margin, and less what the two terms of the bound give away).
             let balls = g.tangent_balls.as_ref().unwrap();
-            let behind = balls.radius(
-                &g.spline,
-                0.0,
-                g.spline.point(0.0),
-                -g.spline.tangent(0.0).normalize(),
-            );
+            let behind = balls.radius(&g.spline, 0.0, -g.spline.tangent(0.0).normalize());
             assert!(
                 f64::from(behind) <= 0.5 * opening && f64::from(behind) > 0.25 * opening,
                 "{label}: {behind}"
@@ -2149,6 +1905,136 @@ mod tests {
             }
         }
         assert!(checked >= 2, "{checked}");
+    }
+
+    /// The J of the 2.1 B7 re-review (round 3): a straight base along X, a
+    /// U-turn of radius 60 mm, a return leg and a turn of radius 36 mm down
+    /// (by a quarter turn plus `tilt`) to an end `gap` above the base;
+    /// through-points about `spacing` apart.
+    fn j_shape(gap: f64, spacing: f64, tilt: f64) -> Vec<Vec3> {
+        let mut pts = vec![(-0.2 + 0.3 * spacing, 0.0)];
+        let (mut x, mut y, mut heading) = (pts[0].0, 0.0f64, 0.0f64);
+        let line = |pts: &mut Vec<(f64, f64)>, x: &mut f64, y: &mut f64, h: f64, len: f64| {
+            let n = ((len / spacing).round() as usize).max(1);
+            for _ in 0..n {
+                *x += len / n as f64 * h.cos();
+                *y += len / n as f64 * h.sin();
+                pts.push((*x, *y));
+            }
+        };
+        let arc = |pts: &mut Vec<(f64, f64)>,
+                   x: &mut f64,
+                   y: &mut f64,
+                   h: &mut f64,
+                   r: f64,
+                   turn: f64| {
+            let n = ((r * turn.abs() / spacing).round() as usize).max(2);
+            let (cx, cy) = (*x - r * h.sin(), *y + r * h.cos());
+            let a0 = *h - core::f64::consts::FRAC_PI_2;
+            for i in 1..=n {
+                let a = a0 + turn * i as f64 / n as f64;
+                *x = cx + r * a.cos();
+                *y = cy + r * a.sin();
+                pts.push((*x, *y));
+            }
+            *h += turn;
+        };
+        line(&mut pts, &mut x, &mut y, heading, 0.3);
+        arc(
+            &mut pts,
+            &mut x,
+            &mut y,
+            &mut heading,
+            0.06,
+            core::f64::consts::PI,
+        );
+        line(&mut pts, &mut x, &mut y, heading, 0.12);
+        let turn = core::f64::consts::FRAC_PI_2 + tilt;
+        arc(&mut pts, &mut x, &mut y, &mut heading, 0.036, turn);
+        let down = (y - gap).max(spacing) / heading.sin().abs().max(0.2);
+        line(&mut pts, &mut x, &mut y, heading, down);
+        pts.iter()
+            .map(|&(x, y)| Vec3::new(x as f32, y as f32, 0.0))
+            .collect()
+    }
+
+    #[test]
+    fn tangent_balls_of_j_tips_miss_the_base() {
+        // 2.1 B7 re-review (round 3), blocker 1: the end of a J points at its
+        // own base, 20 µm or 0.2 mm away. With the base seen at 1/8 segment
+        // only, table entries near the tip promised balls of 0.48 mm that
+        // reached within 7 µm of the base's far side (18 such balls on J and T
+        // shapes). Every ball promised in the last segment (table interval
+        // 1/64 of it, and four points per interval), on both sides and round
+        // the end, must miss a dense polyline of the curve (256 pieces per
+        // segment, f64; chord error below 1e-9 m here).
+        for (gap, spacing, tilt) in [
+            (2.0e-5, 0.04, -0.4),
+            (2.0e-5, 0.04, 0.4),
+            (2.0e-4, 0.04, -0.4),
+            (2.0e-4, 0.01, 0.0),
+        ] {
+            let spline = CubicSpline::interpolate(&j_shape(gap, spacing, tilt)).unwrap();
+            let per = 256;
+            let polyline: Vec<DVec3> = spline
+                .segments()
+                .iter()
+                .flat_map(|seg| {
+                    let p = seg.p.map(Vec3::as_dvec3);
+                    (0..per).map(move |j| {
+                        let s = j as f64 / per as f64;
+                        let a = 1.0 - s;
+                        p[0] * (a * a * a)
+                            + p[1] * (3.0 * a * a * s)
+                            + p[2] * (3.0 * a * s * s)
+                            + p[3] * (s * s * s)
+                    })
+                })
+                .chain(core::iter::once(spline.point(spline.max_t()).as_dvec3()))
+                .collect();
+            let g = GuideCurve::new(spline, 0.05).unwrap();
+            let label = format!("J gap {gap} spacing {spacing} tilt {tilt}");
+            let balls = g.tangent_balls.as_ref().expect(&label);
+            let max_t = g.spline.max_t();
+            let mut checked = 0;
+            let mut check = |t: f32, n: Vec3| {
+                let rho = balls.radius(&g.spline, t, n).min(1.0);
+                if rho <= 0.0 {
+                    return;
+                }
+                checked += 1;
+                let centre = g.spline.point(t).as_dvec3() + n.as_dvec3() * f64::from(rho);
+                let nearest = polyline
+                    .windows(2)
+                    .map(|w| segment_distance(centre, w[0], w[1]))
+                    .fold(f64::INFINITY, f64::min);
+                // (Rounding of the f32 curve point: 1e-7 m.)
+                assert!(
+                    nearest >= f64::from(rho) - 1.0e-7,
+                    "{label}: the ball of radius {rho} at t = {t}, normal {n:?}, is {nearest} \
+                     from the wall"
+                );
+            };
+            for i in 0..=256 {
+                let t = max_t - 1.0 + i as f32 / 256.0;
+                let tangent = g.spline.tangent(t).normalize();
+                let side = Vec3::new(-tangent.y, tangent.x, 0.0);
+                check(t, side);
+                check(t, -side);
+            }
+            let inward = -g.spline.tangent(max_t).normalize();
+            let side = Vec3::new(-inward.y, inward.x, 0.0);
+            for k in 0..=16 {
+                let phi = core::f32::consts::FRAC_PI_2 * k as f32 / 16.0;
+                for sign in [1.0f32, -1.0] {
+                    check(
+                        max_t,
+                        side * sign * libm::cosf(phi) - inward * libm::sinf(phi),
+                    );
+                }
+            }
+            assert!(checked > 100, "{label}: {checked}");
+        }
     }
 
     #[test]
@@ -2274,7 +2160,7 @@ mod tests {
     }
 
     #[test]
-    fn back_radius_sees_a_wall_between_two_samples() {
+    fn end_terms_see_a_wall_between_two_samples() {
         // An end pointing at a straight stretch of the same curve, a
         // fraction of a sample interval away and between two samples: the
         // sampled value would be far too large.
@@ -2305,7 +2191,8 @@ mod tests {
             let t = spline.max_t();
             let e = spline.point(t).as_dvec3();
             let inward = -spline.tangent(t).as_dvec3().normalize();
-            let back = back_radius(&spline, e, inward);
+            let [_, end] = CurveTree::new(&spline).end_terms();
+            let back = end.back;
             // Brute force over a very dense sampling of the wall below.
             let mut truth = f64::INFINITY;
             for i in 0..=400_000 {
@@ -2319,6 +2206,249 @@ mod tests {
             assert!(
                 back <= truth * 1.001 && back >= truth * 0.9,
                 "gap {gap}: found {back}, true {truth}"
+            );
+        }
+    }
+
+    /// Rising and falling curves around the acceptance rule: accepted,
+    /// rejected for their plan view, for a fold, for their edges.
+    fn sloped_zoo() -> Vec<CubicSpline> {
+        let open = |pts: Vec<Vec3>| CubicSpline::interpolate(&pts).unwrap();
+        let helix = |radius: f32, angle: f32, rise: f32, count: usize| {
+            open(
+                (0..=count)
+                    .map(|i| {
+                        let s = i as f32 / count as f32;
+                        let a = angle * s;
+                        Vec3::new(
+                            radius * libm::sinf(a),
+                            radius - radius * libm::cosf(a),
+                            rise * s,
+                        )
+                    })
+                    .collect(),
+            )
+        };
+        let mut curves = Vec::new();
+        curves.push(open(
+            (0..=60)
+                .map(|i| Vec3::new(0.02 * i as f32, 0.0, -0.002 * i as f32))
+                .collect(),
+        ));
+        for (radius, angle, rise) in [
+            (0.05f32, 3.0f32, 0.0f32),
+            (0.05, 3.0, 0.45),
+            (0.03, 1.5, 0.1),
+            (0.025, 2.0, 0.05),
+            (0.022, 2.0, 0.05),
+            (0.3, 5.0, 0.2),
+            (0.1, 7.5, 0.3),
+            (0.1, 6.2, 0.05),
+            (0.5, 3.0, -0.3),
+        ] {
+            curves.push(helix(radius, angle, rise, 60));
+            curves.push(helix(radius, angle, rise, 25));
+        }
+        for ripple in [0.0f32, 0.002, 0.005, 0.01, 0.02] {
+            curves.push(open(
+                (0..=60)
+                    .map(|i| {
+                        let s = i as f32 / 60.0;
+                        Vec3::new(
+                            0.5 * s,
+                            0.03 * libm::sinf(s * 14.0),
+                            -0.15 * s + ripple * libm::sinf(s * 30.0),
+                        )
+                    })
+                    .collect(),
+            ));
+        }
+        // Hairpins: legs 60, 45 and 30 mm apart.
+        for gap in [0.06f32, 0.045, 0.03] {
+            let mut pts: Vec<Vec3> = (0..=10)
+                .map(|i| Vec3::new(0.02 * i as f32, 0.0, 0.001 * i as f32))
+                .collect();
+            for i in 1..=8 {
+                let a = core::f32::consts::PI * i as f32 / 8.0;
+                pts.push(Vec3::new(
+                    0.2 + 0.5 * gap * libm::sinf(a),
+                    0.5 * gap - 0.5 * gap * libm::cosf(a),
+                    0.01 + 0.001 * i as f32,
+                ));
+            }
+            for i in 1..=10 {
+                pts.push(Vec3::new(
+                    0.2 - 0.02 * i as f32,
+                    gap,
+                    0.018 + 0.001 * i as f32,
+                ));
+            }
+            curves.push(open(pts));
+        }
+        // A closed ring rising and falling.
+        let mut ring: Vec<Vec3> = (0..48)
+            .map(|i| {
+                let a = core::f32::consts::TAU * i as f32 / 48.0;
+                Vec3::new(
+                    0.3 * libm::cosf(a),
+                    0.2 * libm::sinf(a),
+                    0.02 * libm::sinf(2.0 * a),
+                )
+            })
+            .collect();
+        ring.push(ring[0]);
+        curves.push(CubicSpline::interpolate_closed(&ring).unwrap());
+        curves
+    }
+
+    #[test]
+    fn sloped_tests_match_the_pairwise_references() {
+        let mut accepted = 0;
+        let mut rejected = 0;
+        for (i, spline) in sloped_zoo().iter().enumerate() {
+            let flat = plan_view(spline).unwrap();
+            let closed = spline.is_closed();
+            let plan = curve_reach(&flat, true);
+            // (The fold test only runs on plan views with enough reach.)
+            if plan >= MIN_SLOPED_GUIDE_REACH {
+                assert_eq!(
+                    plan_view_folds(&flat, closed),
+                    plan_view_folds_pairwise(&flat, closed),
+                    "curve {i}"
+                );
+            }
+            let fast = wall_reach(spline, plan);
+            let reference = wall_reach_pairwise(spline, plan);
+            let min = MIN_SLOPED_GUIDE_REACH;
+            assert_eq!(
+                fast >= min,
+                reference >= min,
+                "curve {i}: {fast} vs {reference}"
+            );
+            if reference >= min {
+                assert!(
+                    fast <= reference && fast >= reference / 1.0101,
+                    "curve {i}: {fast} vs {reference}"
+                );
+                accepted += 1;
+            } else {
+                rejected += 1;
+            }
+        }
+        assert!(accepted >= 8 && rejected >= 4, "{accepted} {rejected}");
+    }
+
+    /// Construction cost of rising and falling guides (run with `--release
+    /// -- --ignored --nocapture`): `GuideCurve::new` against the pairwise
+    /// tests it used before (the 2.2 code: plan-view reach, fold test, wall
+    /// reach), which were quadratic in the number of segments.
+    #[test]
+    #[ignore = "cost report; prints, asserts nothing about time"]
+    fn sloped_guide_construction_cost_report() {
+        use std::time::Instant;
+        let n = 2001usize;
+        let line = |f: &dyn Fn(f64) -> (f64, f64, f64)| -> CubicSpline {
+            let pts: Vec<Vec3> = (0..n)
+                .map(|i| {
+                    let (x, y, z) = f(i as f64);
+                    Vec3::new(x as f32, y as f32, z as f32)
+                })
+                .collect();
+            CubicSpline::interpolate(&pts).unwrap()
+        };
+        let pi = core::f64::consts::PI;
+        let cases: Vec<(&str, CubicSpline)> = vec![
+            (
+                "straight 2000 x 10 mm, 1:10",
+                line(&|i| (0.01 * i, 0.0, 0.001 * i)),
+            ),
+            (
+                "arc r 5 m, 230°, 1:20",
+                line(&|i| {
+                    let a = 4.0 * i / 2000.0;
+                    (5.0 * a.cos(), 5.0 * a.sin(), 0.0005 * i)
+                }),
+            ),
+            (
+                "wavy 2000 x 10 mm",
+                line(&|i| {
+                    let x = 0.01 * i;
+                    (x, 0.05 * (x * 2.0).sin(), 0.03 * (x * 3.0).sin())
+                }),
+            ),
+            (
+                "arc r 50 m, half turn, 1:100",
+                line(&|i| {
+                    let a = pi * i / 2000.0;
+                    (50.0 * a.cos(), 50.0 * a.sin(), 0.0008 * i)
+                }),
+            ),
+            (
+                "S-curve 2000 x 5 mm, falling",
+                line(&|i| {
+                    let u = 0.005 * i;
+                    (u, 0.3 * (2.0 * u).sin(), -0.02 * u)
+                }),
+            ),
+            (
+                "spiral (plan) r 1 m to 0.4 m, rising",
+                line(&|i| {
+                    let a = 0.0125 * i;
+                    let r = 1.0 - 0.0954 * a / core::f64::consts::TAU;
+                    (r * a.cos(), r * a.sin(), 0.0002 * i)
+                }),
+            ),
+            (
+                "zigzag 2000 x 10 mm, 30 mm bends, rising",
+                line(&|i| {
+                    let u = 0.01 * i;
+                    (u, 0.004 * (u * 30.0).sin(), 0.0005 * i)
+                }),
+            ),
+            (
+                "helix r 0.3 m, 3 turns (rejected)",
+                line(&|i| {
+                    let a = 3.0 * core::f64::consts::TAU * i / 2000.0;
+                    (0.3 * a.cos(), 0.3 * a.sin(), 0.00005 * i)
+                }),
+            ),
+            (
+                "serpentine 2000 x 10 mm, legs 30 mm apart (rejected)",
+                line(&|i| {
+                    let leg = (i / 100.0).floor();
+                    let u = (i % 100.0) * 0.01;
+                    let x = if leg % 2.0 == 0.0 { u } else { 0.99 - u };
+                    (x, 0.03 * leg, 0.0001 * i)
+                }),
+            ),
+        ];
+        println!(
+            "| sloped guide | segments | accepted | reach mm | pairwise tests (2.2 code) ms | GuideCurve::new ms |"
+        );
+        for (name, spline) in cases {
+            let mut new = f64::INFINITY;
+            let mut built = None;
+            for _ in 0..3 {
+                let copy = spline.clone();
+                let begin = Instant::now();
+                let g = GuideCurve::new(std::hint::black_box(copy), 0.05);
+                new = new.min(begin.elapsed().as_secs_f64() * 1.0e3);
+                built = Some(g);
+            }
+            let begin = Instant::now();
+            let flat = plan_view(&spline).unwrap();
+            let plan = curve_reach(&flat, true);
+            let ok = plan >= MIN_SLOPED_GUIDE_REACH
+                && !plan_view_folds_pairwise(&flat, spline.is_closed())
+                && wall_reach_pairwise(&spline, plan) >= MIN_SLOPED_GUIDE_REACH;
+            let old = begin.elapsed().as_secs_f64() * 1.0e3;
+            let g = built.unwrap();
+            assert_eq!(g.is_ok(), ok, "{name}");
+            println!(
+                "| {name} | {} | {} | {:.1} | {old:.0} | {new:.2} |",
+                spline.segment_count(),
+                g.is_ok(),
+                g.as_ref().map_or(0.0, |g| g.reach * 1.0e3)
             );
         }
     }

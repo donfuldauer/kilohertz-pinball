@@ -914,6 +914,287 @@ fn hairline_gaps_are_accepted_safe_and_no_obstacle() {
     }
 }
 
+/// Through-points of the J of the 2.1 B7 re-review (round 3), `s` apart: a
+/// straight base along +X from x = −0.6 m (shifted by `shift · s`), a
+/// U-turn of radius 0.3 m, a 0.6 m return leg, a quarter turn of radius
+/// 0.25 m (plus `tilt` radians) heading down, and a straight stub ending
+/// `gap` above the base. The end points at the base, between two of its
+/// through-points.
+fn j_points(gap: f64, s: f64, tilt: f64, shift: f64) -> Vec<Vec3> {
+    struct Path {
+        pts: Vec<(f64, f64)>,
+        x: f64,
+        y: f64,
+        heading: f64,
+        s: f64,
+    }
+    impl Path {
+        fn line(&mut self, length: f64) {
+            let n = ((length / self.s).round() as usize).max(1);
+            for _ in 0..n {
+                self.x += length / n as f64 * self.heading.cos();
+                self.y += length / n as f64 * self.heading.sin();
+                self.pts.push((self.x, self.y));
+            }
+        }
+        fn arc(&mut self, radius: f64, turn: f64) {
+            let n = ((radius * turn.abs() / self.s).round() as usize).max(2);
+            let sign = turn.signum();
+            let cx = self.x - sign * radius * self.heading.sin();
+            let cy = self.y + sign * radius * self.heading.cos();
+            let a0 = self.heading - sign * core::f64::consts::FRAC_PI_2;
+            for i in 1..=n {
+                let a = a0 + turn * i as f64 / n as f64;
+                self.x = cx + radius * a.cos();
+                self.y = cy + radius * a.sin();
+                self.pts.push((self.x, self.y));
+            }
+            self.heading += turn;
+        }
+    }
+    let x0 = -0.6 + shift * s;
+    let mut p = Path {
+        pts: vec![(x0, 0.0)],
+        x: x0,
+        y: 0.0,
+        heading: 0.0,
+        s,
+    };
+    p.line(1.2);
+    p.arc(0.3, core::f64::consts::PI);
+    p.line(0.6);
+    p.arc(0.25, core::f64::consts::FRAC_PI_2 + tilt);
+    let length = (p.y - gap) / p.heading.sin().abs().max(0.2);
+    p.line(length);
+    p.pts
+        .iter()
+        .map(|&(x, y)| v(x as f32, y as f32, 0.0))
+        .collect()
+}
+
+/// The wall of a level guide as a dense polyline (1024 points per segment,
+/// evaluated in `f64`; chord error below 0.1 µm here), for distances that
+/// do not depend on the closest-point search under test.
+struct Oracle {
+    pts: Vec<DVec3>,
+}
+
+impl Oracle {
+    fn new(spline: &CubicSpline) -> Self {
+        let per = 1024;
+        let pts = spline
+            .segments()
+            .iter()
+            .flat_map(|seg| {
+                let p = seg.p.map(|q| q.as_dvec3());
+                (0..per).map(move |j| {
+                    let s = j as f64 / per as f64;
+                    let a = 1.0 - s;
+                    p[0] * (a * a * a)
+                        + p[1] * (3.0 * a * a * s)
+                        + p[2] * (3.0 * a * s * s)
+                        + p[3] * (s * s * s)
+                })
+            })
+            .chain(core::iter::once(
+                spline.segments()[spline.segment_count() - 1].p[3].as_dvec3(),
+            ))
+            .collect();
+        Self { pts }
+    }
+
+    /// The polyline pieces within `margin` (in plan) of the segment `a b`.
+    fn near(&self, a: DVec3, b: DVec3, margin: f64) -> Vec<(DVec3, DVec3)> {
+        let ab = DVec3::new(b.x - a.x, b.y - a.y, 0.0);
+        let l2 = ab.length_squared();
+        self.pts
+            .windows(2)
+            .filter(|w| {
+                let ap = DVec3::new(w[0].x - a.x, w[0].y - a.y, 0.0);
+                let t = if l2 > 0.0 {
+                    (ap.dot(ab) / l2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                (ap - ab * t).length() <= margin
+            })
+            .map(|w| (w[0], w[1]))
+            .collect()
+    }
+
+    /// Distance from `c` to the wall (the pieces × `[z, z + HEIGHT]`).
+    fn distance(pieces: &[(DVec3, DVec3)], c: DVec3) -> f64 {
+        pieces
+            .iter()
+            .map(|&(a, b)| {
+                let ab = DVec3::new(b.x - a.x, b.y - a.y, 0.0);
+                let ac = DVec3::new(c.x - a.x, c.y - a.y, 0.0);
+                let l2 = ab.length_squared();
+                let t = if l2 > 0.0 {
+                    (ac.dot(ab) / l2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let h = (ac - ab * t).length();
+                let top = a.z + f64::from(HEIGHT);
+                let z = if c.z > top {
+                    c.z - top
+                } else if c.z < a.z {
+                    a.z - c.z
+                } else {
+                    0.0
+                };
+                (h * h + z * z).sqrt()
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// Smallest gap of the sphere along `start + vel·τ`, `τ ∈ [0, time]`,
+    /// sampled every 4 µm of travel (the gap is 1-Lipschitz: at most 2 µm
+    /// missed between samples).
+    fn swept_gap(&self, start: Vec3, r: f32, vel: Vec3, time: f32) -> f64 {
+        let (s, v) = (start.as_dvec3(), vel.as_dvec3());
+        let end = s + v * f64::from(time);
+        let pieces = self.near(s, end, f64::from(r) + 0.01);
+        let n = (((end - s).length() / 4.0e-6).ceil() as usize).clamp(1, 20_000);
+        (0..=n)
+            .map(|i| {
+                let c = s + v * (f64::from(time) * i as f64 / n as f64);
+                Self::distance(&pieces, c) - f64::from(r)
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+}
+
+/// Follows the casts of a sphere over `window` and returns the swept gap
+/// up to the contact (or the end of the window), by the oracle.
+fn cast_and_sweep(
+    g: &GuideCurve,
+    oracle: &Oracle,
+    start: Vec3,
+    r: f32,
+    vel: Vec3,
+    window: f32,
+) -> f64 {
+    let (time, _) = free_time(g, start, r, vel, window);
+    oracle.swept_gap(start, r, vel, time)
+}
+
+#[test]
+fn j_tips_pointing_at_the_wall_never_let_a_cast_sweep_into_it() {
+    // 2.1 B7 re-review (round 3): the end of a J points at its own base,
+    // 1 mm to 20 µm away, between two through-points 200 mm apart. With
+    // the base seen only at sample points, the reach (9.4 mm for a 0.2 mm
+    // gap) and the tangent balls near the tip were far too large, and a
+    // 7.9 mm ball swept up to 0.39 mm into the base within one cast.
+    let ball = 0.0079f32;
+    for (gap, tilt, start, vel) in [
+        (
+            0.001,
+            0.0,
+            v(-0.235_695_42, 0.022_012_8, 0.025),
+            v(-7.988_186_4, -18.335_455, 0.0),
+        ),
+        (
+            0.0002,
+            -0.4,
+            v(-0.407_257_68, 0.008_014_502, 0.025),
+            v(14.608_336, -13.660_032, 0.0),
+        ),
+        (
+            0.0002,
+            0.4,
+            v(-0.138_100_34, 0.010_537_622_5, 0.025),
+            v(9.893_417, -17.381_609, 0.0),
+        ),
+    ] {
+        let spline = CubicSpline::interpolate(&j_points(gap, 0.2, tilt, 0.0)).unwrap();
+        let oracle = Oracle::new(&spline);
+        let g = GuideCurve::new(spline, HEIGHT).unwrap();
+        for window in [1.0e-3f32, 2.0e-3] {
+            let sink = cast_and_sweep(&g, &oracle, start, ball, vel, window);
+            assert!(
+                sink >= -f64::from(MAX_SINK),
+                "J gap {gap} tilt {tilt}, window {window}: swept {} µm into the wall",
+                -sink * 1.0e6
+            );
+        }
+    }
+    // Around the tip, every direction, real balls, a fixed pseudo-random
+    // sweep (the J with 0.1 m and 0.2 m spacing, tips 20 µm and 0.2 mm
+    // above the base, end leg tilted by ±0.4 rad).
+    let mut rng = Pcg(0x00b7_0007);
+    for (s, gap, tilt) in [
+        (0.2f64, 2.0e-5f64, -0.4f64),
+        (0.2, 2.0e-4, 0.4),
+        (0.1, 2.0e-5, 0.0),
+        (0.2, 2.0e-4, 0.0),
+    ] {
+        let spline = CubicSpline::interpolate(&j_points(gap, s, tilt, 0.0)).unwrap();
+        let tip = spline.point(spline.max_t());
+        let oracle = Oracle::new(&spline);
+        let g = GuideCurve::new(spline, HEIGHT).unwrap();
+        for k in 0..60 {
+            let r = [0.0079f32, 0.0135, 0.0254][k % 3];
+            let start = tip + v(rng.range(-3.0, 3.0) * r, rng.range(0.0, 3.0) * r, 0.025);
+            if g.closest_point(start, None).distance <= r + 2.0e-5 {
+                continue;
+            }
+            let a = rng.range(0.0, core::f32::consts::TAU);
+            let vel = v(libm::cosf(a), libm::sinf(a), 0.0) * [0.5f32, 3.0, 8.0, 20.0][k % 4];
+            let sink = cast_and_sweep(&g, &oracle, start, r, vel, 2.0e-3);
+            assert!(
+                sink >= -f64::from(MAX_SINK),
+                "J s {s} gap {gap} tilt {tilt}: ball {r} from {start:?} at {vel:?} swept {} µm \
+                 into the wall",
+                -sink * 1.0e6
+            );
+        }
+    }
+}
+
+#[test]
+fn reach_of_an_end_pointing_at_the_wall_between_samples_is_bounded_by_its_gap() {
+    // 2.1 B7 re-review (round 3), blocker 2: the half-line reach compared
+    // the end with every fourth sample only; with through-points 200 mm
+    // apart and the end 0.2 mm above the base between two of them, it came
+    // out at 9.4 mm (the true reach is at most half the gap). Federer's
+    // reach is at most half the distance from an end to any curve point
+    // behind it, whatever the sampling.
+    for s in [0.05f64, 0.1, 0.2] {
+        for gap in [2.0e-5f64, 2.0e-4, 1.0e-3] {
+            for tilt in [-0.4f64, 0.0, 0.4] {
+                for shift in [0.0f64, 0.37] {
+                    let spline = CubicSpline::interpolate(&j_points(gap, s, tilt, shift)).unwrap();
+                    let oracle = Oracle::new(&spline);
+                    let t = spline.max_t();
+                    let tip = spline.point(t).as_dvec3();
+                    let inward = -spline.tangent(t).as_dvec3().normalize();
+                    // Distance from the tip to the base behind it.
+                    let base: Vec<(DVec3, DVec3)> = oracle
+                        .near(tip, tip, 0.05)
+                        .into_iter()
+                        .filter(|&(a, b)| {
+                            (a - tip).dot(inward) < 0.0 && (b - tip).dot(inward) < 0.0
+                        })
+                        .collect();
+                    let distance = Oracle::distance(&base, tip + DVec3::Z * 0.01);
+                    // (The spline's end bends a little: not exactly `gap`.)
+                    assert!(distance < gap + 1.0e-3, "s {s} gap {gap}: {distance}");
+                    let g = GuideCurve::new(spline, HEIGHT).unwrap();
+                    assert!(
+                        f64::from(g.reach()) <= 0.5 * distance,
+                        "s {s} gap {gap} tilt {tilt} shift {shift}: reach {} mm, tip {} mm \
+                         from the wall",
+                        g.reach() * 1.0e3,
+                        distance * 1.0e3
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Cost report (not a pass/fail test; run with `--release --ignored
 /// --nocapture`): closest-point evaluations and time per level-guide cast.
 #[test]

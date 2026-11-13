@@ -14,7 +14,9 @@
 //!   and per-collider enable flags.
 //! * [`TransitionSet`]: layer-transition trigger zones.
 
+mod curve_bounds;
 mod shapes;
+mod sloped_bounds;
 mod spline;
 mod static_world;
 mod transition;
