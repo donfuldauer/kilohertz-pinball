@@ -86,13 +86,13 @@ fn tunnel_case(
         } else {
             None
         };
-        if let (Some(a0), Some(a1)) = (prev, now) {
-            if a0 != a1 {
-                return Err(format!(
-                    "tick {}: ball crossed the bat (along {along})",
-                    s.tick
-                ));
-            }
+        if let (Some(a0), Some(a1)) = (prev, now)
+            && a0 != a1
+        {
+            return Err(format!(
+                "tick {}: ball crossed the bat (along {along})",
+                s.tick
+            ));
         }
         prev = now;
     }
@@ -151,7 +151,7 @@ proptest! {
 
     #[test]
     fn no_tunnelling_any_mount_speed_and_timing(
-        theta in 0.0f32..3.14159, phi in -3.14159f32..3.14159,
+        theta in 0.0f32..std::f32::consts::PI, phi in -std::f32::consts::PI..std::f32::consts::PI,
         bx in -200.0f32..200.0, by in -200.0f32..200.0, bz in -100.0f32..100.0,
         rest in -180.0f32..180.0, pos_sweep in any::<bool>(),
         power in 1.2f32..3.0,
@@ -378,7 +378,7 @@ proptest! {
 
     #[test]
     fn tilted_mount_behaves_like_flat_rotated(
-        theta in 0.0f32..3.14159, phi in -3.14159f32..3.14159, angle in 0.0f32..3.14159,
+        theta in 0.0f32..std::f32::consts::PI, phi in -std::f32::consts::PI..std::f32::consts::PI, angle in 0.0f32..std::f32::consts::PI,
         flip in 0u64..60,
     ) {
         let rot = Quat::from_axis_angle(unit(theta, phi), angle);

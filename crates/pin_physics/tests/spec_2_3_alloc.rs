@@ -123,11 +123,11 @@ fn drive(s: &mut Scene) {
     // Drained balls go back to the top (deterministic re-feed).
     for k in 0..4u8 {
         let h = BallHandle(k);
-        if let Some(b) = s.solver.ball_mut(h) {
-            if b.position.y < -0.12 {
-                let x = -0.12 + 0.08 * f32::from(k);
-                *b = ball(v(x, 0.5, R), v(0.3 - 0.2 * f32::from(k), -1.0, 0.0));
-            }
+        if let Some(b) = s.solver.ball_mut(h)
+            && b.position.y < -0.12
+        {
+            let x = -0.12 + 0.08 * f32::from(k);
+            *b = ball(v(x, 0.5, R), v(0.3 - 0.2 * f32::from(k), -1.0, 0.0));
         }
     }
     s.set.set_energised(FlipperId(0), (t / 170) % 2 == 1);

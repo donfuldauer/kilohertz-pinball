@@ -442,11 +442,15 @@ impl Flipper {
         // whole tick's push in one contact solve. Its work is the kinetic
         // energy that impulse adds.
         let kicked = self.omega + self.accel * dt;
-        self.drive_work += 0.5
-            * f64::from(self.inertia)
-            * (f64::from(kicked) * f64::from(kicked)
-                - f64::from(self.omega) * f64::from(self.omega));
         self.start_segment(0.0, self.q, kicked, dt);
+        // A bat pressed on its stop takes the impulse without moving: the
+        // stop does no work and neither does the drive.
+        if self.seg_w != 0.0 || self.omega != 0.0 {
+            self.drive_work += 0.5
+                * f64::from(self.inertia)
+                * (f64::from(kicked) * f64::from(kicked)
+                    - f64::from(self.omega) * f64::from(self.omega));
+        }
 
         let goal = if self.zipper_closed {
             self.slide_extent
@@ -941,7 +945,8 @@ impl FlipperSet {
     /// The drive acts as one angular impulse `τ·dt` per tick; its work is
     /// the kinetic energy that impulse adds, `τ·dt·(ω_before + ω_after)/2`
     /// (negative while the drive brakes the bat; at most `τ·Δθ` in a tick
-    /// without ball contact). The kinetic energy of the bat and the balls
+    /// without ball contact; nothing while it only presses the bat on a
+    /// stop). The kinetic energy of the bat and the balls
     /// it touched never exceeds what they started with plus this. 0 for an
     /// unknown id.
     #[must_use]
