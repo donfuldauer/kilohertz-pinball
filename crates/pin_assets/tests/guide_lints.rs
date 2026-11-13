@@ -119,21 +119,85 @@ fn b_spacing_at_or_above_the_smallest_radius() {
         [100.0, 50.0, 0.0],
         [100.0, 100.0, 0.0],
     ];
-    let found = lints(&corner, &[]);
     expect_lint(
-        &found,
+        &lints(&corner, &[]),
         &[
             "through-point spacing 50.0 mm",
-            "smallest radius of curvature",
+            "radius of curvature is",
             "add through-points or soften the bend",
         ],
     );
 }
 
 #[test]
+fn b_is_judged_against_the_spacing_next_to_the_bend() {
+    // A long straight lead-in (150 mm spacing) and then a 40 mm-radius bend
+    // through points 10 mm apart: the bend is fine where it is; no warning.
+    let deg = core::f64::consts::PI / 180.0;
+    let mut pts: Vec<[f64; 3]> = vec![[-450.0, 0.0, 0.0], [-300.0, 0.0, 0.0], [-150.0, 0.0, 0.0]];
+    // 150 → 10 mm is uneven spacing (lint a) but no (b).
+    pts.extend((0..4).map(|i| [-40.0 + 10.0 * f64::from(i), 0.0, 0.0]));
+    pts.extend(arc(0.0, 40.0, 40.0, -90.0 * deg, 0.0, 6, 0.0));
+    let found: Vec<_> = lints(&pts, &[])
+        .into_iter()
+        .filter(|w| w.path == "splines[0]")
+        .collect();
+    assert!(
+        !found
+            .iter()
+            .any(|w| w.message.contains("radius of curvature")),
+        "{found:#?}"
+    );
+    // The hint names the spacing next to the bend: here points[2] to [3].
+    let tight = [
+        [0.0, 0.0, 0.0],
+        [10.0, 0.0, 0.0],
+        [20.0, 0.0, 0.0],
+        [60.0, 40.0, 0.0],
+        [100.0, 0.0, 0.0],
+        [110.0, 0.0, 0.0],
+    ];
+    let found = lints(&tight, &[]);
+    let b: Vec<_> = found
+        .iter()
+        .filter(|w| w.message.contains("add through-points"))
+        .collect();
+    assert_eq!(b.len(), 1, "{found:#?}");
+    assert_eq!(b[0].path, "splines[0]");
+    assert!(
+        b[0].message.contains("points[2] to points[3]")
+            || b[0].message.contains("points[3] to points[4]"),
+        "{}",
+        b[0].message
+    );
+}
+
+#[test]
+fn b_reports_collinear_reversals_as_cusps() {
+    // Runs to 100 mm, back to 50 mm, on to 150 mm: no curvature anywhere,
+    // but the tangent reverses.
+    let back = [
+        [0.0, 0.0, 0.0],
+        [100.0, 0.0, 0.0],
+        [50.0, 0.0, 0.0],
+        [150.0, 0.0, 0.0],
+    ];
+    let found = lints(&back, &[]);
+    assert!(
+        found
+            .iter()
+            .any(|w| w.path == "splines[0]" && w.message.contains("reverses (a cusp")),
+        "{found:#?}"
+    );
+}
+
+/// The Appendix A spline sits on layer 2; these move it to layer 0.
+const LAYER_0: (&str, &str) = ("layer = 2\n", "layer = 0\n");
+
+#[test]
 fn c_xl_ball_on_a_sloped_guide_tighter_than_its_radius() {
     // A rising quarter turn of radius 30 mm (spacing 7.8 mm), XL ball named
-    // in balls.restrict (Appendix A) and then in balls.profiles.
+    // in balls.restrict (Appendix A: layer 0 only) and then in balls.profiles.
     let ramp = arc(
         300.0,
         300.0,
@@ -143,15 +207,24 @@ fn c_xl_ball_on_a_sloped_guide_tighter_than_its_radius() {
         6,
         10.0,
     );
-    let found = lints(&ramp, &[]);
     expect_lint(
-        &found,
+        &lints(&ramp, &[LAYER_0]),
         &[
             "\"jumbo_xl_resin\" (radius 39.7 mm)",
             "sloped guide",
             "soften the bend or build the ramp as a wireform",
         ],
     );
+    // balls.restrict keeps the XL ball off layer 2: no warning there.
+    assert!(lints(&ramp, &[]).is_empty(), "{:#?}", lints(&ramp, &[]));
+    // Restricted to layers 1 and 2: warns on layer 2, not on 0.
+    let restrict_12 = (
+        RESTRICT,
+        "restrict = [ { profile = \"jumbo_xl_resin\", layers = [1, 2] } ]",
+    );
+    expect_lint(&lints(&ramp, &[restrict_12]), &["\"jumbo_xl_resin\""]);
+    assert!(lints(&ramp, &[restrict_12, LAYER_0]).is_empty());
+    // Listed in balls.profiles without a restriction: any layer.
     let profiles = (
         "profiles = [\"standard_steel\", \"ceramic_powerball\"]",
         "profiles = [\"standard_steel\", \"jumbo_xl_resin\"]",
@@ -161,7 +234,7 @@ fn c_xl_ball_on_a_sloped_guide_tighter_than_its_radius() {
         &["\"jumbo_xl_resin\""],
     );
     // Without an XL ball anywhere: no warning.
-    assert!(lints(&ramp, &[(RESTRICT, "")]).is_empty());
+    assert!(lints(&ramp, &[(RESTRICT, ""), LAYER_0]).is_empty());
     // The same bend level: the lint is for sloped guides only.
     let level = arc(
         300.0,
@@ -172,7 +245,11 @@ fn c_xl_ball_on_a_sloped_guide_tighter_than_its_radius() {
         6,
         0.0,
     );
-    assert!(lints(&level, &[]).is_empty(), "{:#?}", lints(&level, &[]));
+    assert!(
+        lints(&level, &[LAYER_0]).is_empty(),
+        "{:#?}",
+        lints(&level, &[LAYER_0])
+    );
 }
 
 #[test]
@@ -201,20 +278,88 @@ fn d_hairline_gap_between_open_ends() {
     );
 }
 
-#[test]
-fn d_open_end_touching_its_own_wall() {
-    // A J (25 mm spacing, 50 mm bends): the tip comes down to 0.05 mm above
-    // the base's through-point at x = 100 mm.
+/// A J (25 mm spacing, 50 mm bends) whose tip comes down to `gap` mm above
+/// the base's through-point at x = 100 mm.
+fn j_shape(gap: f64) -> Vec<[f64; 3]> {
     let mut j: Vec<[f64; 3]> = (0..8).map(|i| [25.0 * f64::from(i), 0.0, 0.0]).collect();
     let deg = core::f64::consts::PI / 180.0;
     j.extend(arc(200.0, 50.0, 50.0, -90.0 * deg, 90.0 * deg, 6, 0.0));
     j.push([175.0, 100.0, 0.0]);
     j.extend(arc(150.0, 50.0, 50.0, 90.0 * deg, 180.0 * deg, 3, 0.0));
     j.push([100.0, 25.0, 0.0]);
-    j.push([100.0, 0.05, 0.0]);
-    let found = lints(&j, &[]);
-    expect_lint(
-        &found,
-        &["no clearance proven", "close the guide or open the gap"],
-    );
+    j.push([100.0, gap, 0.0]);
+    j
+}
+
+#[test]
+fn d_open_end_near_its_own_wall() {
+    // Measured directly: warns up to (not at) 1 mm, like the end-to-end gap.
+    for (gap, text) in [
+        (0.0, "0.000 mm"),
+        (0.05, "0.050 mm"),
+        (0.3, "0.300 mm"),
+        (0.9, "0.900 mm"),
+    ] {
+        expect_lint(
+            &lints(&j_shape(gap), &[]),
+            &[
+                text,
+                "from the guide's own wall near points[4]",
+                "close the guide or open the gap",
+            ],
+        );
+    }
+    for gap in [1.1, 5.0, 10.0] {
+        let found = lints(&j_shape(gap), &[]);
+        assert!(found.is_empty(), "{gap}: {found:#?}");
+    }
+}
+
+#[test]
+fn d_doubling_back_is_not_called_a_gap() {
+    // The reviewer's shapes: no open end is near a wall, but the curve
+    // doubles back (no reach). A separate warning, without the gap advice.
+    let deg = core::f64::consts::PI / 180.0;
+    let mut span: Vec<[f64; 3]> = vec![[0.0, 0.0, 0.0], [300.0, 0.0, 0.0]];
+    span.extend((1..5).map(|i| [300.0 + 20.0 * f64::from(i), 0.0, 0.0]));
+    span.extend(arc(400.0, 100.0, 100.0, -90.0 * deg, 90.0 * deg, 12, 0.0));
+    let shapes: Vec<Vec<[f64; 3]>> = vec![
+        vec![
+            [0.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0],
+            [50.0, 0.0, 0.0],
+            [150.0, 0.0, 0.0],
+        ],
+        vec![[0.0, 0.0, 0.0], [100.0, 5.0, 0.0], [0.0, 10.0, 0.0]],
+        vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0],
+            [110.0, 50.0, 0.0],
+        ],
+        span,
+    ];
+    for pts in shapes {
+        let found = lints(&pts, &[]);
+        assert!(
+            !found
+                .iter()
+                .any(|w| w.message.contains("close the guide or open the gap")),
+            "{pts:?}: {found:#?}"
+        );
+        let back: Vec<_> = found
+            .iter()
+            .filter(|w| {
+                w.message
+                    .contains("doubles back or touches itself near points[")
+            })
+            .collect();
+        assert_eq!(back.len(), 1, "{pts:?}: {found:#?}");
+        assert_eq!(back[0].path, "splines[0]");
+        assert!(
+            back[0]
+                .message
+                .contains("even out the through-point spacing")
+        );
+    }
 }

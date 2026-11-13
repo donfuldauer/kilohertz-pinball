@@ -28,6 +28,18 @@ fn zip64(
     junk: usize,
     locator_offset: Option<u64>,
 ) -> Vec<u8> {
+    zip64_ext(plain, count16, count64, junk, locator_offset, 0)
+}
+
+/// [`zip64`] with an extensible data sector of `ext` bytes.
+fn zip64_ext(
+    plain: &[u8],
+    count16: u16,
+    count64: u64,
+    junk: usize,
+    locator_offset: Option<u64>,
+    ext: usize,
+) -> Vec<u8> {
     let eocd = plain.len() - 22;
     assert_eq!(plain[eocd..eocd + 4], 0x0605_4b50u32.to_le_bytes());
     let cd_size = u64::from(u32::from_le_bytes(
@@ -40,7 +52,7 @@ fn zip64(
     out.extend(&plain[..eocd]);
     let record = out.len() as u64;
     out.extend(0x0606_4b50u32.to_le_bytes());
-    out.extend(44u64.to_le_bytes());
+    out.extend((44 + ext as u64).to_le_bytes());
     out.extend(45u16.to_le_bytes());
     out.extend(45u16.to_le_bytes());
     out.extend(0u32.to_le_bytes());
@@ -49,6 +61,7 @@ fn zip64(
     out.extend(count64.to_le_bytes());
     out.extend(cd_size.to_le_bytes());
     out.extend(cd_off.to_le_bytes());
+    out.extend(vec![0u8; ext]);
     out.extend(0x0706_4b50u32.to_le_bytes());
     out.extend(0u32.to_le_bytes());
     out.extend(locator_offset.unwrap_or(record).to_le_bytes());
@@ -110,20 +123,103 @@ fn na_zip64_count_is_checked_before_parsing_whatever_the_16_bit_count() {
     assert_eq!(r.err(), Some(AssetError::TooManyEntries(3)));
 }
 
+/// `zip` with its archive comment replaced by `comment`.
+fn with_comment(zip: &[u8], comment: &[u8]) -> Vec<u8> {
+    let mut out = zip.to_vec();
+    let at = out.len() - 2;
+    out[at..].copy_from_slice(&(comment.len() as u16).to_le_bytes());
+    out.extend(comment);
+    out
+}
+
+fn is_zip_error(r: &Result<Vfs, AssetError>, needle: &str) -> bool {
+    matches!(r, Err(AssetError::Zip(m)) if m.contains(needle))
+}
+
 #[test]
-fn na_many_zip64_locators_are_refused() {
-    let mut bytes = three_files();
-    for _ in 0..17 {
-        bytes.extend(0x0706_4b50u32.to_le_bytes());
-        bytes.extend([0u8; 16]);
-        bytes.extend(0x0605_4b50u32.to_le_bytes());
-        bytes.extend([0u8; 18]);
+fn na_the_end_record_must_end_the_archive() {
+    // Review round 2, B1: a maximal comment plus one trailing byte put the
+    // end record one byte outside the old pre-check's window, where the
+    // reader still found it. Now the record's comment must end the archive.
+    let claim = zip64(&three_files(), 3, 2_000_000, 0, None);
+    let mut padded = with_comment(&claim, &vec![0u8; 0xFFFF]);
+    let r = open(padded.clone());
+    assert_eq!(r.err(), Some(AssetError::TooManyEntries(2_000_000)));
+    padded.push(0);
+    let r = open(padded);
+    assert!(is_zip_error(&r, "comment ends the archive"), "{r:?}");
+    // Trailing bytes after an honest archive are refused too.
+    let mut trailing = three_files();
+    trailing.extend(b"junk");
+    assert!(is_zip_error(&open(trailing), "comment ends the archive"));
+}
+
+#[test]
+fn na_signatures_inside_a_comment_do_not_confuse_the_reader() {
+    // A valid archive whose comment contains end-record and locator
+    // signatures (the reviewer's false TooManyEntries).
+    let mut comment = b"see PK".to_vec();
+    comment.extend(0x0605_4b50u32.to_le_bytes());
+    comment.extend([0x6F, 0x6D]);
+    comment.extend(0x0706_4b50u32.to_le_bytes());
+    comment.extend(b" for details");
+    for zip in [three_files(), zip64(&three_files(), 3, 3, 0, None)] {
+        let vfs = open(with_comment(&zip, &comment)).unwrap();
+        assert_eq!(vfs.list(), ["a.txt", "b.txt", "c.txt"]);
     }
-    let r = open(bytes);
-    assert!(
-        matches!(&r, Err(AssetError::Zip(m)) if m.contains("locators")),
-        "{r:?}"
-    );
+}
+
+#[test]
+fn na_the_reader_is_never_left_to_search() {
+    // Review round 2, B2(a): a flood of central-header signatures behind an
+    // end record whose directory does not end at it (the reader used to scan
+    // the flood for a directory start).
+    let mut flood: Vec<u8> = b"PK\x01\x02".repeat(1 << 18);
+    flood.extend(0x0605_4b50u32.to_le_bytes());
+    flood.extend([0, 0, 0, 0, 1, 0, 1, 0]);
+    flood.extend([0u8; 10]);
+    assert!(is_zip_error(&open(flood), "does not end at the end record"));
+    // B2(b): many end-record candidates, each with its own directory chain.
+    let mut many = three_files();
+    let eocd = many[many.len() - 22..].to_vec();
+    for _ in 0..40 {
+        many.extend(&eocd);
+    }
+    assert!(is_zip_error(&open(many), "does not end at the end record"));
+    // Prepended data (a self-extractor) is refused, zip32 or Zip64.
+    let mut prepended = vec![0u8; 100];
+    prepended.extend(three_files());
+    assert!(is_zip_error(
+        &open(prepended),
+        "does not end at the end record"
+    ));
+    let r = open(zip64(&three_files(), 3, 3, 100, Some(0)));
+    assert!(is_zip_error(&r, "not where its locator says"), "{r:?}");
+    // The directory must start where the end record says.
+    let mut moved = three_files();
+    let n = moved.len();
+    let cd = u32::from_le_bytes(moved[n - 6..n - 2].try_into().unwrap());
+    moved[cd as usize] = b'X';
+    assert!(is_zip_error(&open(moved), "no central directory header"));
+    // Multi-disk records.
+    let mut disks = three_files();
+    let n = disks.len();
+    disks[n - 18] = 1; // disk number
+    assert!(is_zip_error(&open(disks), "multi-disk"));
+    let mut z64 = zip64(&three_files(), 3, 3, 0, None);
+    let n = z64.len();
+    z64[n - 22 - 4] = 2; // locator: total disks
+    assert!(is_zip_error(&open(z64), "more than one disk"));
+}
+
+#[test]
+fn na_zip64_extensible_sector_is_capped() {
+    use pin_assets::zip::MAX_ZIP64_EXTENSIBLE;
+    let cap = MAX_ZIP64_EXTENSIBLE as usize;
+    let ok = open(zip64_ext(&three_files(), 3, 3, 0, None, cap)).unwrap();
+    assert_eq!(ok.list().len(), 3);
+    let r = open(zip64_ext(&three_files(), 3, 3, 0, None, cap + 1));
+    assert!(is_zip_error(&r, "extensible data sector"), "{r:?}");
 }
 
 #[test]
@@ -305,6 +401,139 @@ fn nc_decode_budget_counts_native_buffer_and_rgba8_copy() {
         matches!(&r, Err(AssetError::Gltf(m)) if m.contains("encoded file bytes")),
         "{r:?}"
     );
+}
+
+/// Inserts a chunk right after the IHDR of `png`.
+fn with_chunk(png: &[u8], ty: &[u8], data: &[u8]) -> Vec<u8> {
+    let at = 8 + 25;
+    let mut c = ty.to_vec();
+    c.extend(data);
+    let mut out = png[..at].to_vec();
+    out.extend((data.len() as u32).to_be_bytes());
+    out.extend(&c);
+    out.extend(crc32(&c).to_be_bytes());
+    out.extend(&png[at..]);
+    out
+}
+
+#[test]
+fn nc_icc_profile_bomb_is_bounded_in_the_header_phase() {
+    // A 2x1 PNG with an iCCP chunk inflating to 8 MiB (the reviewer's was a
+    // 250 MiB profile, inflated in full and uncharged). The decoder's own
+    // buffers now get IMAGE_HEADER_ALLOC (4 MiB) while the header is read, so
+    // the profile stops inflating at 4 MiB and is dropped (the PNG decoder
+    // treats an ancillary chunk over its limit as absent); the pixels load.
+    // (Peak memory is measured outside the test suite, see DECISIONS.md.)
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    std::io::Write::write_all(&mut z, &vec![0u8; 8 << 20]).unwrap();
+    let mut iccp = b"icc\0\0".to_vec();
+    iccp.extend(z.finish().unwrap());
+    let bomb = with_chunk(&tiny_png(), b"iCCP", &iccp);
+    let r = load_image(&bomb, &GltfLimits::default());
+    match &r {
+        Ok(scene) => assert_eq!(scene.images[0].rgba8.len(), 8),
+        Err(AssetError::Gltf(m)) => assert!(m.contains("header allocation budget"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(pin_assets::gltf::IMAGE_HEADER_ALLOC, 4 << 20);
+    // A small honest profile is fine.
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    std::io::Write::write_all(&mut z, &[1u8; 3000]).unwrap();
+    let mut iccp = b"icc\0\0".to_vec();
+    iccp.extend(z.finish().unwrap());
+    let scene = load_image(
+        &with_chunk(&tiny_png(), b"iCCP", &iccp),
+        &GltfLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(scene.images[0].rgba8.len(), 8);
+}
+
+#[test]
+fn nc_image_files_are_sized_from_their_header_before_being_read() {
+    // Ancillary data in front of the pixels must fit in the first 1 MiB.
+    let text = vec![b'a'; (1 << 20) + 10];
+    let mut chunk = b"Comment\0".to_vec();
+    chunk.extend(&text);
+    let r = load_image(
+        &with_chunk(&tiny_png(), b"tEXt", &chunk),
+        &GltfLimits::default(),
+    );
+    assert!(
+        matches!(&r, Err(AssetError::Gltf(m)) if m.contains("first 1048576 bytes")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn nc_truncated_images_do_not_allocate_their_pixels() {
+    // A 57-byte PNG claiming 2048² RGBA8 (16 MiB of pixels): deflate cannot
+    // reach that ratio, so it is refused before the pixel buffer exists.
+    let r = load_image(&png_header(2048, 2048, 8), &GltfLimits::default());
+    assert!(
+        matches!(&r, Err(AssetError::Gltf(m)) if m.contains("too few for a 2048x2048 image")),
+        "{r:?}"
+    );
+    // A JPEG start-of-image with a 2048² frame header and nothing else.
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xC0, 0, 11, 8];
+    jpeg.extend(2048u16.to_be_bytes());
+    jpeg.extend(2048u16.to_be_bytes());
+    jpeg.extend([1, 1, 0x11, 0]);
+    jpeg.extend([0xFF, 0xD9]);
+    let r = load_image(&jpeg, &GltfLimits::default());
+    assert!(matches!(&r, Err(AssetError::Gltf(_))), "{r:?}");
+    // A real, highly compressible image still loads (1024² of zeros).
+    let zeros = encode_png(image::DynamicImage::ImageLuma8(image::ImageBuffer::new(
+        1024, 1024,
+    )));
+    assert!(zeros.len() < 10_000, "{}", zeros.len());
+    let scene = load_image(&zeros, &GltfLimits::default()).unwrap();
+    assert_eq!(scene.images[0].rgba8.len(), 1024 * 1024 * 4);
+}
+
+#[test]
+fn b3_gltf_json_is_capped_before_reading() {
+    assert_eq!(GltfLimits::default().max_json_bytes, 16 << 20);
+    let tight = GltfLimits {
+        max_json_bytes: 100,
+        ..GltfLimits::default()
+    };
+    // A .gltf (all JSON, data: URIs included).
+    let payload = b64(&vec![0u8; 300]);
+    let gltf = buffer_gltf(json!({"byteLength": 36, "uri": format!("data:,{payload}")}));
+    let vfs = open(stored_zip(&[("t.gltf", &gltf)])).unwrap();
+    let r = load_gltf_with_limits(&vfs, "t.gltf", &tight);
+    assert!(
+        matches!(&r, Err(AssetError::Gltf(m)) if m.contains("glTF JSON bytes") && m.contains("budget")),
+        "{r:?}"
+    );
+    // A GLB: the JSON chunk length from the header; the BIN chunk is not JSON.
+    let json = json!({"asset": {"version": "2.0"}, "buffers": [{"byteLength": 4096}]});
+    let file = glb(&json, &vec![0u8; 4096]);
+    let vfs = open(stored_zip(&[("t.glb", &file)])).unwrap();
+    let small = GltfLimits {
+        max_json_bytes: 20,
+        ..GltfLimits::default()
+    };
+    let r = load_gltf_with_limits(&vfs, "t.glb", &small);
+    assert!(
+        matches!(&r, Err(AssetError::Gltf(m)) if m.contains("GLB JSON chunk bytes")),
+        "{r:?}"
+    );
+    let r = load_gltf_with_limits(
+        &vfs,
+        "t.glb",
+        &GltfLimits {
+            max_json_bytes: 1000,
+            max_buffer_bytes: 1000,
+            ..GltfLimits::default()
+        },
+    );
+    assert!(
+        matches!(&r, Err(AssetError::Gltf(m)) if m.contains("GLB file bytes")),
+        "{r:?}"
+    );
+    assert!(load_gltf(&vfs, "t.glb").is_ok());
 }
 
 // ------------------------------------------------------------------- N-d

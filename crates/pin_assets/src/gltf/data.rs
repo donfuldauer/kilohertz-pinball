@@ -6,6 +6,7 @@ use crate::{AssetError, Vfs};
 use ::gltf::Document;
 use ::gltf::accessor::{Accessor, DataType, Dimensions};
 use ::gltf::buffer::{Source, View};
+use std::borrow::Cow;
 
 /// Every buffer's bytes (truncated to the declared `byteLength`). Buffers
 /// naming the same resolved source share one copy.
@@ -21,7 +22,11 @@ impl Buffers {
     /// every source is charged the bytes actually held for it (a bundle file
     /// is sized first and only its first `byteLength` bytes are read; a
     /// `data:` URI or the GLB `BIN` chunk is charged its whole decoded
-    /// length), so the budget bounds the memory really used (N-d).
+    /// length), so the budget bounds the decoded buffers held (N-d). The
+    /// text a `data:` URI is decoded from is part of the JSON and bounded by
+    /// `GltfLimits::max_json_bytes` instead; it is borrowed from the parsed
+    /// document, never copied, and the GLB `BIN` chunk is cut out of the
+    /// file's bytes in place.
     pub(super) fn load(
         document: &Document,
         mut bin: Option<Vec<u8>>,
@@ -34,7 +39,7 @@ impl Buffers {
                 "{what} {n} bytes, over the {budget}-byte buffer budget"
             ))
         };
-        let mut keys: Vec<Option<String>> = Vec::with_capacity(document.buffers().len());
+        let mut keys: Vec<Option<Cow<'_, str>>> = Vec::with_capacity(document.buffers().len());
         let mut seen = std::collections::HashMap::new();
         let mut planned: u64 = 0;
         for buffer in document.buffers() {
@@ -60,7 +65,8 @@ impl Buffers {
         let mut spent: u64 = 0;
         let mut slot = Vec::with_capacity(keys.len());
         let mut store: Vec<Vec<u8>> = Vec::new();
-        let mut by_key: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut by_key: std::collections::HashMap<Cow<'_, str>, usize> =
+            std::collections::HashMap::new();
         for (buffer, key) in document.buffers().zip(keys) {
             let index = match &key {
                 Some(k) if by_key.contains_key(k) => by_key[k],
@@ -359,9 +365,10 @@ fn join_relative(base: &str, rel: &str, uri: &str) -> Result<String, AssetError>
 /// the normalised bundle path relative to the glTF file. Two URIs with the
 /// same key name the same bytes. Any other scheme (`http:`, `file:`, ...) is
 /// refused.
-pub(super) fn source_key(uri: &str, base: &str) -> Result<String, AssetError> {
+pub(super) fn source_key<'u>(uri: &'u str, base: &str) -> Result<Cow<'u, str>, AssetError> {
     if uri.starts_with("data:") {
-        return Ok(uri.to_owned());
+        // Borrowed: a data: URI can be most of the file; never copy it.
+        return Ok(Cow::Borrowed(uri));
     }
     let path = percent_decode(uri).ok_or_else(|| gerr(format!("invalid URI {uri:?}")))?;
     // A scheme is letters/digits/+-. followed by ':' before any '/'; a
@@ -374,7 +381,7 @@ pub(super) fn source_key(uri: &str, base: &str) -> Result<String, AssetError> {
         }
         return Err(gerr(format!("URI scheme of {uri:?} is not allowed")));
     }
-    join_relative(base, &path, uri)
+    join_relative(base, &path, uri).map(Cow::Owned)
 }
 
 /// Loads the bytes of a [`source_key`]: `data:` decoded inline, else the

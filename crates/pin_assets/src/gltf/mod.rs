@@ -32,8 +32,9 @@ pub struct GltfLimits {
     /// buffer at the file's native colour type and bit depth (a 16-bit RGBA
     /// PNG is 8 bytes per pixel), plus the RGBA8 copy when the native type is
     /// not RGBA8. Computed from the header before any pixel is allocated, so
-    /// an image over it is refused at header cost; plus 1 MiB, it also caps the
-    /// size of an encoded image file read from the bundle. 8192² RGBA8 fits exactly;
+    /// an image over it is refused at header cost. An image file of the
+    /// bundle is read whole only when it is at most this image's own decode
+    /// bytes plus 1 MiB (its header is read from the first 1 MiB). 8192² RGBA8 fits exactly;
     /// 8192² 16-bit (768 MiB) or 8192² RGB8 (448 MiB) does not.
     pub max_image_decode_bytes: u64,
     /// Largest image width or height, pixels (default 8192).
@@ -50,6 +51,13 @@ pub struct GltfLimits {
     pub max_images: usize,
     /// Sum of the bytes of the distinct buffers (default 256 MiB).
     pub max_buffer_bytes: u64,
+    /// Bytes of glTF JSON (a `.gltf` file, or a GLB's JSON chunk), `data:`
+    /// URIs included (default 16 MiB). Checked from the file size or the GLB
+    /// header before the file is read; while a document loads, its JSON, the
+    /// parsed strings and one decoded `data:` URI are held at once, so this
+    /// bounds that peak to about 2.75 × the cap. Large payloads belong in a
+    /// GLB `BIN` chunk or in separate bundle files.
+    pub max_json_bytes: u64,
 }
 
 impl Default for GltfLimits {
@@ -64,6 +72,7 @@ impl Default for GltfLimits {
             max_meshes: 16_384,
             max_images: 1024,
             max_buffer_bytes: 256 << 20,
+            max_json_bytes: 16 << 20,
         }
     }
 }
@@ -235,15 +244,27 @@ fn split_glb(bytes: &[u8]) -> Result<(&[u8], Option<&[u8]>), AssetError> {
     Ok((json_chunk, bin))
 }
 
+/// Parses the document and returns it with the GLB `BIN` chunk, cut out of
+/// `bytes` in place (no copy); the JSON text is dropped once parsed.
 fn parse_document(
-    bytes: &[u8],
+    bytes: Vec<u8>,
     limits: &GltfLimits,
 ) -> Result<(Document, Option<Vec<u8>>), AssetError> {
+    let base = bytes.as_ptr() as usize;
     let (json_bytes, bin) = if bytes.starts_with(b"glTF") {
-        split_glb(bytes)?
+        split_glb(&bytes)?
     } else {
-        (bytes, None)
+        (bytes.as_slice(), None)
     };
+    budget(
+        "glTF JSON bytes",
+        json_bytes.len() as u64,
+        limits.max_json_bytes,
+    )?;
+    let bin_range = bin.map(|b| {
+        let start = b.as_ptr() as usize - base;
+        start..start + b.len()
+    });
     let root: json::Root =
         json::deserialize::from_slice(json_bytes).map_err(|e| gerr(e.to_string()))?;
     for (what, n, max) in [
@@ -255,7 +276,13 @@ fn parse_document(
     }
     check::prevalidate(&root)?;
     let document = Document::from_json(root).map_err(|e| gerr(e.to_string()))?;
-    Ok((document, bin.map(<[u8]>::to_vec)))
+    let bin = bin_range.map(|range| {
+        let mut bytes = bytes;
+        bytes.truncate(range.end);
+        bytes.drain(..range.start);
+        bytes
+    });
+    Ok((document, bin))
 }
 
 /// Reads one extras object into `out`, overriding keys that are present.
@@ -343,33 +370,49 @@ fn compute_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
     normals
 }
 
-/// Decodes to RGBA8. The header is read first: the side limit, the
-/// per-image decode budget (native decoder buffer plus any RGBA8 copy, see
-/// [`GltfLimits::max_image_decode_bytes`]) and the per-scene RGBA8 budget
-/// (charged to `spent`) are checked before any pixel is allocated, and the
-/// decoder's own allocation limit is set to the computed peak plus 1 MiB.
-fn decode_image(
-    bytes: &[u8],
+/// Allocation allowance of an image decoder's own buffers while the header
+/// and ancillary chunks are read (a PNG `iCCP` or text chunk counts against
+/// it; the pixel buffer does not). Pixel buffers are bounded by
+/// [`GltfLimits::max_image_decode_bytes`] from the header.
+pub const IMAGE_HEADER_ALLOC: u64 = 4 << 20;
+
+/// Bytes of an image file read to find its header before the whole file is
+/// read (N-c): ancillary data in front of the pixels must fit in it.
+pub const IMAGE_HEADER_PREFIX: u64 = 1 << 20;
+
+/// An image decoder positioned after the header, with what it will cost.
+struct Header<D> {
+    decoder: D,
+    width: u32,
+    height: u32,
+    /// RGBA8 bytes of the result.
+    rgba: u64,
+    /// Decoder buffer plus any RGBA8 copy.
+    peak: u64,
+}
+
+/// Reads an image header with [`IMAGE_HEADER_ALLOC`] for the decoder's own
+/// buffers and checks the side limit and the per-image decode budget.
+fn read_header<'b>(
+    bytes: &'b [u8],
     what: &str,
     limits: &GltfLimits,
-    spent: &mut u64,
-) -> Result<ImageData, AssetError> {
+) -> Result<Header<impl image::ImageDecoder + 'b>, AssetError> {
     use image::ImageDecoder as _;
-    let fail = |e: image::ImageError| gerr(format!("{what}: {e}"));
     let mut header_limits = image::Limits::default();
     header_limits.max_image_width = Some(limits.max_image_side);
     header_limits.max_image_height = Some(limits.max_image_side);
-    header_limits.max_alloc = Some(limits.max_image_decode_bytes.saturating_add(1 << 20));
+    header_limits.max_alloc = Some(IMAGE_HEADER_ALLOC);
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| gerr(format!("{what}: {e}")))?;
     reader.limits(header_limits);
-    let mut decoder = reader.into_decoder().map_err(|e| match e {
+    let decoder = reader.into_decoder().map_err(|e| match e {
         image::ImageError::Limits(_) => gerr(format!(
-            "{what}: exceeds the image side budget of {} or the decode budget of {}",
-            limits.max_image_side, limits.max_image_decode_bytes
+            "{what}: exceeds the image side budget of {} or the header allocation budget of {}",
+            limits.max_image_side, IMAGE_HEADER_ALLOC
         )),
-        e => fail(e),
+        e => gerr(format!("{what}: {e}")),
     })?;
     let (w, h) = decoder.dimensions();
     if w.max(h) > limits.max_image_side {
@@ -390,21 +433,115 @@ fn decode_image(
         peak,
         limits.max_image_decode_bytes,
     )?;
-    *spent = spent.saturating_add(rgba);
+    Ok(Header {
+        decoder,
+        width: w,
+        height: h,
+        rgba,
+        peak,
+    })
+}
+
+/// Decodes to RGBA8. The header is read first ([`read_header`]): the side
+/// limit, the per-image decode budget (native decoder buffer plus any RGBA8
+/// copy, see [`GltfLimits::max_image_decode_bytes`]) and the per-scene RGBA8
+/// budget (charged to `spent`) are checked before any pixel is allocated;
+/// the decoder's own buffers stay within [`IMAGE_HEADER_ALLOC`].
+fn decode_image(
+    bytes: &[u8],
+    what: &str,
+    limits: &GltfLimits,
+    spent: &mut u64,
+) -> Result<ImageData, AssetError> {
+    use image::ImageDecoder as _;
+    let fail = |e: image::ImageError| gerr(format!("{what}: {e}"));
+    let header = read_header(bytes, what, limits)?;
+    *spent = spent.saturating_add(header.rgba);
     budget("decoded image bytes", *spent, limits.max_image_bytes)?;
+    let least = least_encoded_bytes(bytes, header.width, header.height);
+    if (bytes.len() as u64) < least {
+        return Err(gerr(format!(
+            "{what}: {} encoded bytes are too few for a {}x{} image (at least {least}): \
+             truncated or hostile",
+            bytes.len(),
+            header.width,
+            header.height
+        )));
+    }
+    let mut decoder = header.decoder;
     let mut decoder_limits = image::Limits::default();
     decoder_limits.max_image_width = Some(limits.max_image_side);
     decoder_limits.max_image_height = Some(limits.max_image_side);
-    decoder_limits.max_alloc = Some(peak.saturating_add(1 << 20));
+    decoder_limits.max_alloc = Some(header.peak.saturating_add(1 << 20));
     decoder.set_limits(decoder_limits).map_err(fail)?;
     let decoded = image::DynamicImage::from_decoder(decoder)
         .map_err(fail)?
         .into_rgba8();
+    debug_assert_eq!(
+        (decoded.width(), decoded.height()),
+        (header.width, header.height)
+    );
     Ok(ImageData {
         width: decoded.width(),
         height: decoded.height(),
         rgba8: decoded.into_raw(),
     })
+}
+
+/// A lower bound on the encoded size of a complete `w` x `h` image, so that a
+/// truncated file cannot make the decoder allocate its full pixel buffer
+/// (hundreds of times its own size) before failing. PNG: the filtered
+/// scanlines from the IHDR (bit depth and colour type) over 1200, deflate's
+/// best ratio being about 1032:1. JPEG: every 8x8 luma block costs at least
+/// one bit (its DC code), so `w·h / 512` bytes; halved for margin.
+fn least_encoded_bytes(bytes: &[u8], w: u32, h: u32) -> u64 {
+    let (w, h) = (u64::from(w), u64::from(h));
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 29 {
+        let depth = u64::from(bytes[24]);
+        let channels = match bytes[25] {
+            0 | 3 => 1,
+            4 => 2,
+            2 => 3,
+            _ => 4,
+        };
+        let row = 1 + (w * depth * channels).div_ceil(8);
+        h * row / 1200
+    } else if bytes.starts_with(&[0xFF, 0xD8]) {
+        w * h / 1024
+    } else {
+        0
+    }
+}
+
+/// Reads an image file of the bundle. Its header is read from at most the
+/// first [`IMAGE_HEADER_PREFIX`] bytes and checked first; the whole file is
+/// read only when it is no larger than the decode it announces needs plus
+/// 1 MiB (an encoded image is never much larger than its pixels).
+fn read_image_file(
+    vfs: &Vfs,
+    path: &str,
+    what: &str,
+    limits: &GltfLimits,
+) -> Result<Vec<u8>, AssetError> {
+    let size = vfs.file_size(path)?;
+    if size <= IMAGE_HEADER_PREFIX {
+        return vfs.read(path);
+    }
+    let prefix = vfs.read_prefix(path, IMAGE_HEADER_PREFIX)?;
+    let peak = read_header(&prefix, what, limits)
+        .map_err(|e| match e {
+            AssetError::Gltf(m) if !m.contains("budget") => gerr(format!(
+                "{m} (the image header must fit in the first {IMAGE_HEADER_PREFIX} bytes)"
+            )),
+            other => other,
+        })?
+        .peak;
+    budget(
+        &format!("{what}: encoded file bytes"),
+        size,
+        peak.saturating_add(1 << 20),
+    )?;
+    vfs.read(path)
 }
 
 /// Loads meshes, PBR materials, images and Blender extras from a `.glb` or
@@ -425,9 +562,25 @@ pub fn load_gltf_with_limits(
     path: &str,
     limits: &GltfLimits,
 ) -> Result<GltfScene, AssetError> {
+    let size = vfs.file_size(path)?;
+    let head = vfs.read_prefix(path, 20)?;
+    if head.starts_with(b"glTF") {
+        // GLB: the JSON chunk's length is in the header; the rest is BIN.
+        let json = head.get(12..16).map_or(0, |b| {
+            u64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        });
+        budget("GLB JSON chunk bytes", json, limits.max_json_bytes)?;
+        let cap = limits
+            .max_json_bytes
+            .saturating_add(limits.max_buffer_bytes)
+            .saturating_add(64);
+        budget("GLB file bytes", size, cap)?;
+    } else {
+        budget("glTF JSON bytes", size, limits.max_json_bytes)?;
+    }
     let bytes = vfs.read(path)?;
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        load_bytes(vfs, path, &bytes, limits)
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        load_bytes(vfs, path, bytes, limits)
     }))
     .unwrap_or_else(|_| Err(gerr(format!("{path}: malformed glTF (loader panicked)"))))
 }
@@ -435,7 +588,7 @@ pub fn load_gltf_with_limits(
 fn load_bytes(
     vfs: &Vfs,
     path: &str,
-    bytes: &[u8],
+    bytes: Vec<u8>,
     limits: &GltfLimits,
 ) -> Result<GltfScene, AssetError> {
     let (document, bin) = parse_document(bytes, limits)?;
@@ -473,7 +626,9 @@ fn load_bytes(
             continue;
         }
         let source = match image.source() {
-            ::gltf::image::Source::View { view, .. } => format!("view:{}", view.index()),
+            ::gltf::image::Source::View { view, .. } => {
+                std::borrow::Cow::Owned(format!("view:{}", view.index()))
+            }
             ::gltf::image::Source::Uri { uri, .. } => data::source_key(uri, base)?,
         };
         if let Some(&first) = first_by_source.get(&source) {
@@ -488,16 +643,11 @@ fn load_bytes(
                 decode_image(buffers.view(&view)?, &what, limits, &mut spent)?
             }
             ::gltf::image::Source::Uri { .. } => {
-                if !source.starts_with("data:") {
-                    let size = vfs.file_size(&source)?;
-                    // Headroom for headers and metadata chunks.
-                    budget(
-                        &format!("{what}: encoded file bytes"),
-                        size,
-                        limits.max_image_decode_bytes.saturating_add(1 << 20),
-                    )?;
-                }
-                let encoded = data::load_source(&source, vfs)?;
+                let encoded = if source.starts_with("data:") {
+                    data::load_source(&source, vfs)?
+                } else {
+                    read_image_file(vfs, &source, &what, limits)?
+                };
                 decode_image(&encoded, &what, limits, &mut spent)?
             }
         };

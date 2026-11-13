@@ -102,3 +102,4 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
   - R8: a pre-existing lewton overflow in `floor_one_curve`. It wraps silently in release builds.
   - R9: add a randomised accounting test.
 - **Confirm:** the default per-bundle decoded-audio budget of 512 MiB.
+- [4.1-H round 1 → 2.1/2.2 owners] `GuideCurve::reach()` is 6.5 mm (not 0) for an open level Z through (0,0), (100,100), (100,0), (0,100) mm whose diagonals cross; the loader now flags it itself (lint d, "doubles back or touches itself"), but the physics reach estimate looks wrong for open self-crossing curves. Also: bundles with prepended data (self-extracting zips) are now refused by design.

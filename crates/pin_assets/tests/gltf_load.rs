@@ -523,6 +523,7 @@ fn geometry_and_buffer_budgets() {
             max_meshes: 16_384,
             max_images: 1024,
             max_buffer_bytes: 256 << 20,
+            max_json_bytes: 16 << 20,
         }
     );
 }

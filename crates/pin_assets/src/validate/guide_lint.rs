@@ -1,35 +1,47 @@
 //! Guide authoring lints: warnings only, never errors (human ruling, end of
 //! Wave 3, item 4; DECISIONS.md "4.1 — fix task H").
 //!
-//! * (b) through-point spacing at or above the smallest radius of curvature
-//!   (the guide's closest-point sampling bounds rely on the opposite);
+//! * (b) a bend whose radius of curvature is not above the through-point
+//!   spacings next to it (the guide's closest-point sampling bounds rely on
+//!   spacing below the radius);
 //! * (c) a ball profile wider than the tightest bend of a sloped guide (it
 //!   slides slowly there, in single steps);
-//! * (d) a level guide whose open ends nearly meet (a hairline gap), or whose
-//!   wall has no proven reach (an open end touching its own wall).
+//! * (d) a level guide whose open ends nearly meet (a hairline gap), or one
+//!   of whose open ends comes within that distance of the rest of the curve;
+//!   and, separately, a level guide that doubles back or touches itself
+//!   (no proven reach) for another reason.
 //!
 //! (a), uneven spacing, stays in `rules.rs` next to the spline build.
 
+use glam::Vec3;
 use pin_physics::world::{CubicSpline, GuideCurve};
 
 /// Curvature samples per spline segment (one segment per through-point
 /// spacing; the parameter is uniform per segment).
 pub(super) const CURVATURE_SAMPLES: usize = 64;
-/// Golden-section steps that refine the largest sample.
+/// Golden-section steps that refine the largest sample of a segment.
 const REFINE_STEPS: usize = 40;
-/// Open ends of a level guide closer than this (m), but not snapped closed,
-/// are a hairline gap.
+/// Open ends of a level guide closer than this (m) to each other, or an
+/// open end closer than this to the rest of its own curve, are a gap.
 pub(super) const HAIRLINE_GAP_M: f32 = 1.0e-3;
-
+/// Along-curve distance (m) from an open end beyond which the curve counts
+/// as "the rest of the curve" for the end-near-wall check: a curve can only
+/// come back within [`HAIRLINE_GAP_M`] of an end after this much length by
+/// turning back on itself.
+pub(super) const END_EXCLUSION_M: f32 = 4.0 * HAIRLINE_GAP_M;
+/// Polyline samples per segment for the end-near-wall and self-touching
+/// distance checks.
+const DISTANCE_SAMPLES: usize = 32;
 /// A reach below this (m) counts as none: `GuideCurve::reach()` is exactly 0
-/// for an open end within ~0.1 mm of its own wall, but a curve crossing
-/// itself between samples can come out at a few nanometres.
+/// for an end within ~0.1 mm of its own wall, but a curve crossing itself
+/// between samples can come out at a few nanometres.
 pub(super) const NO_REACH_M: f32 = 1.0e-6;
 
-/// The tightest bend of a curve.
+/// The tightest bend of a curve or of one segment.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(super) struct Bend {
-    /// Smallest radius of curvature, metres (0 at a cusp).
+    /// Smallest radius of curvature, metres (0 at a cusp or reversal,
+    /// infinite on a straight).
     pub radius_m: f64,
     /// Curve parameter where it occurs (`P_i` at `t = i`).
     pub t: f64,
@@ -38,7 +50,7 @@ pub(super) struct Bend {
 /// Curvature at `t`: the larger of the space curve's and the plan view's
 /// (`x`, `y`), so that a sloped guide is judged by the bend its wall (a
 /// vertical cylinder over the plan view) really has. Infinite where the
-/// relevant speed vanishes.
+/// relevant speed vanishes (a cusp, or a vertical run).
 fn curvature(spline: &CubicSpline, t: f64) -> f64 {
     let d1 = spline.tangent(t as f32).as_dvec3();
     let d2 = spline.second_derivative(t as f32).as_dvec3();
@@ -52,111 +64,319 @@ fn curvature(spline: &CubicSpline, t: f64) -> f64 {
     let plan = if plan_speed > 1.0e-12 {
         (d1.x * d2.y - d1.y * d2.x).abs() / (plan_speed * plan_speed * plan_speed)
     } else {
-        // A cusp, or a vertical run: no plan-view bend a ball can follow.
         f64::INFINITY
     };
     space.max(plan)
 }
 
-/// Smallest radius of curvature of `spline`.
+/// The tightest bend of every segment (`segment_count()` entries).
 ///
-/// Sampling: [`CURVATURE_SAMPLES`] evenly spaced parameters per segment
-/// (so every through-point spacing is probed at 1/64 of its length, and both
-/// ends of every segment are included), then a golden-section refinement of
-/// the largest sample over the two neighbouring sample intervals. A bend
-/// tight enough to matter for (b) (radius ≤ spacing) turns the tangent by a
-/// sizeable angle over a parameter interval much wider than 1/64, so the
-/// samples see it; the refinement recovers the peak itself to within float
-/// precision when the peak is smooth.
-pub(super) fn tightest_bend(spline: &CubicSpline) -> Bend {
-    let n = spline.segment_count();
+/// Sampling: [`CURVATURE_SAMPLES`] + 1 evenly spaced parameters per segment
+/// (both ends included, so each through-point spacing is probed at 1/64 of
+/// its length), then a golden-section refinement of the segment's largest
+/// sample over its two neighbouring sample intervals. A tangent that turns
+/// by more than 90° between two neighbouring samples is a cusp or a
+/// reversal (a collinear spline that runs back over itself has zero
+/// curvature everywhere but turns by 180°): radius 0 there. A bend tight
+/// enough to matter (radius ≤ spacing) turns the tangent by a sizeable angle
+/// over a parameter interval much wider than 1/64, so the samples see it.
+pub(super) fn segment_bends(spline: &CubicSpline) -> Vec<Bend> {
     let h = 1.0 / CURVATURE_SAMPLES as f64;
-    let mut best = (0.0f64, 0.0f64);
-    for i in 0..n {
-        for j in 0..=CURVATURE_SAMPLES {
-            let t = i as f64 + j as f64 * h;
-            let k = curvature(spline, t);
-            if k > best.0 {
-                best = (k, t);
+    (0..spline.segment_count())
+        .map(|i| {
+            let mut best = (0.0f64, i as f64);
+            let mut previous: Option<Vec3> = None;
+            for j in 0..=CURVATURE_SAMPLES {
+                let t = i as f64 + j as f64 * h;
+                let tangent = spline.tangent(t as f32);
+                if let Some(p) = previous
+                    && p.dot(tangent) < 0.0
+                {
+                    best = (f64::INFINITY, t - 0.5 * h);
+                }
+                previous = Some(tangent);
+                let k = curvature(spline, t);
+                if k > best.0 {
+                    best = (k, t);
+                }
             }
-        }
-    }
-    if best.0.is_finite() && best.0 > 0.0 {
-        // Golden-section search for the maximum on [t - h, t + h].
-        let (mut a, mut b) = ((best.1 - h).max(0.0), (best.1 + h).min(n as f64));
-        let g = (5.0f64.sqrt() - 1.0) / 2.0;
-        let mut c = b - g * (b - a);
-        let mut d = a + g * (b - a);
-        let (mut kc, mut kd) = (curvature(spline, c), curvature(spline, d));
-        for _ in 0..REFINE_STEPS {
-            if kc > kd {
-                b = d;
-                d = c;
-                kd = kc;
-                c = b - g * (b - a);
-                kc = curvature(spline, c);
+            if best.0.is_finite() && best.0 > 0.0 {
+                best = refine(spline, best, h, i);
+            }
+            let radius_m = if best.0 > 0.0 {
+                1.0 / best.0
             } else {
-                a = c;
-                c = d;
-                kc = kd;
-                d = a + g * (b - a);
-                kd = curvature(spline, d);
+                f64::INFINITY
+            };
+            Bend {
+                radius_m,
+                t: best.1,
             }
-        }
-        for (k, t) in [(kc, c), (kd, d)] {
-            if k > best.0 {
-                best = (k, t);
-            }
-        }
-    }
-    let radius_m = if best.0 > 0.0 {
-        1.0 / best.0
-    } else {
-        f64::INFINITY
-    };
-    Bend {
-        radius_m,
-        t: best.1,
-    }
+        })
+        .collect()
 }
 
-/// What the level-guide lint (d) found.
+/// Golden-section search for the curvature maximum on `[t - h, t + h]`
+/// within segment `i`.
+fn refine(spline: &CubicSpline, best: (f64, f64), h: f64, i: usize) -> (f64, f64) {
+    let (lo, hi) = (i as f64, i as f64 + 1.0);
+    let (mut a, mut b) = ((best.1 - h).max(lo), (best.1 + h).min(hi));
+    let g = (5.0f64.sqrt() - 1.0) / 2.0;
+    let mut c = b - g * (b - a);
+    let mut d = a + g * (b - a);
+    let (mut kc, mut kd) = (curvature(spline, c), curvature(spline, d));
+    for _ in 0..REFINE_STEPS {
+        if kc > kd {
+            b = d;
+            d = c;
+            kd = kc;
+            c = b - g * (b - a);
+            kc = curvature(spline, c);
+        } else {
+            a = c;
+            c = d;
+            kc = kd;
+            d = a + g * (b - a);
+            kd = curvature(spline, d);
+        }
+    }
+    let mut out = best;
+    for (k, t) in [(kc, c), (kd, d)] {
+        if k > out.0 {
+            out = (k, t);
+        }
+    }
+    out
+}
+
+/// The tightest bend of the whole curve.
+#[cfg(test)]
+fn tightest_bend(spline: &CubicSpline) -> Bend {
+    tightest_of(&segment_bends(spline))
+}
+
+/// The tightest of `bends` (radius infinite when there are none).
+pub(super) fn tightest_of(bends: &[Bend]) -> Bend {
+    bends.iter().copied().fold(
+        Bend {
+            radius_m: f64::INFINITY,
+            t: 0.0,
+        },
+        |a, b| if b.radius_m < a.radius_m { b } else { a },
+    )
+}
+
+/// Lint (b): the segment whose bend is tightest relative to the spacings
+/// next to it (its own and its neighbours'), when that spacing is at or
+/// above the bend's radius. Returns (bend, segment of the offending
+/// spacing, that spacing in metres).
+pub(super) fn spacing_lint(
+    bends: &[Bend],
+    spacing: &[f32],
+    closed: bool,
+) -> Option<(Bend, usize, f32)> {
+    let n = bends.len();
+    let mut worst: Option<(f64, Bend, usize, f32)> = None;
+    for (i, bend) in bends.iter().enumerate() {
+        let neighbours = [i.checked_sub(1).or(closed.then(|| n - 1)), Some(i), {
+            let j = i + 1;
+            if j < n { Some(j) } else { closed.then_some(0) }
+        }];
+        for j in neighbours.into_iter().flatten() {
+            let s = spacing[j];
+            if f64::from(s) < bend.radius_m {
+                continue;
+            }
+            let ratio = f64::from(s) / bend.radius_m; // inf at a cusp
+            if worst.is_none_or(|w| ratio > w.0) {
+                worst = Some((ratio, *bend, j, s));
+            }
+        }
+    }
+    worst.map(|(_, b, j, s)| (b, j, s))
+}
+
+/// What lint (d) found on a level guide.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(super) enum GapLint {
     /// The open ends are this far apart (m), under [`HAIRLINE_GAP_M`].
     Hairline(f32),
-    /// No proven reach although the guide is open: an end touches or nearly
-    /// touches its own wall.
-    EndTouchesWall,
-    /// No proven reach on a closed guide: the curve touches or crosses itself.
-    SelfTouching,
+    /// An open end (`at_start`) is this far (m) from the rest of the curve,
+    /// under [`HAIRLINE_GAP_M`], near parameter `t`.
+    EndNearWall { distance: f32, t: f32 },
+    /// No proven reach otherwise: the curve doubles back or touches itself
+    /// near parameter `t`.
+    DoublesBack { t: f32 },
 }
 
-/// Lint (d) for a built guide (`closed` = snapped closed by the loader).
-pub(super) fn gap_lint(guide: &GuideCurve, closed: bool) -> Option<GapLint> {
+/// Polyline samples of the curve with their along-curve distance.
+fn polyline(spline: &CubicSpline) -> Vec<(Vec3, f32, f32)> {
+    let n = spline.segment_count() * DISTANCE_SAMPLES;
+    let mut out = Vec::with_capacity(n + 1);
+    let mut along = 0.0f32;
+    let mut previous = spline.point(0.0);
+    for k in 0..=n {
+        let t = k as f32 / DISTANCE_SAMPLES as f32;
+        let p = spline.point(t);
+        along += p.distance(previous);
+        previous = p;
+        out.push((p, along, t));
+    }
+    out
+}
+
+fn point_segment_distance(p: Vec3, a: Vec3, b: Vec3) -> f32 {
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    let s = if len2 > 0.0 {
+        ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.distance(a + ab * s)
+}
+
+/// Distance from the end at along-curve distance `end_along` (position `e`)
+/// to the part of the polyline at least [`END_EXCLUSION_M`] along the curve
+/// away from it, and the parameter of the nearest such sample.
+fn end_clearance(line: &[(Vec3, f32, f32)], e: Vec3, end_along: f32) -> (f32, f32) {
+    let mut best = (f32::INFINITY, 0.0);
+    for w in line.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if (a.1 - end_along).abs() < END_EXCLUSION_M || (b.1 - end_along).abs() < END_EXCLUSION_M {
+            continue;
+        }
+        let d = point_segment_distance(e, a.0, b.0);
+        if d < best.0 {
+            best = (d, a.2);
+        }
+    }
+    best
+}
+
+/// Lint (d) for a built guide (`closed` = snapped closed by the loader;
+/// `bends` from [`segment_bends`]). Level guides only.
+pub(super) fn gap_lint(guide: &GuideCurve, closed: bool, bends: &[Bend]) -> Option<GapLint> {
     if !guide.is_level() {
         return None;
     }
     let spline = guide.spline();
+    let line = polyline(spline);
     if !closed {
-        let first = spline.point(0.0);
-        let last = spline.point(spline.max_t());
-        let gap = first.distance(last);
+        let (first, last) = (line[0], line[line.len() - 1]);
+        let gap = first.0.distance(last.0);
         if gap < HAIRLINE_GAP_M {
             return Some(GapLint::Hairline(gap));
         }
+        // The nearest stretch of the curve to each open end; it only counts
+        // as the end nearing the wall when the curve gets there without a
+        // cusp or sub-millimetre bend (otherwise it simply doubles back).
+        let doubled = |from: f32, to: f32| {
+            let (lo, hi) = (f64::from(from.min(to)), f64::from(from.max(to)));
+            bends
+                .iter()
+                .any(|b| b.radius_m < f64::from(HAIRLINE_GAP_M) && b.t >= lo && b.t <= hi)
+        };
+        let near = [first, last]
+            .map(|end| (end.2, end_clearance(&line, end.0, end.1)))
+            .into_iter()
+            .filter(|&(t_end, (d, t))| d < HAIRLINE_GAP_M && !doubled(t_end, t))
+            .map(|(_, near)| near)
+            .fold((f32::INFINITY, 0.0), |a, b| if b.0 < a.0 { b } else { a });
+        if near.0 < HAIRLINE_GAP_M {
+            return Some(GapLint::EndNearWall {
+                distance: near.0,
+                t: near.1,
+            });
+        }
     }
-    (guide.reach() < NO_REACH_M).then_some(if closed {
-        GapLint::SelfTouching
-    } else {
-        GapLint::EndTouchesWall
-    })
+    // Any two stretches of the curve, far apart along it, that come within
+    // HAIRLINE_GAP_M of each other (a crossing, a fold, a reversal); and any
+    // guide whose wall has no proven reach.
+    let near = closest_far_pair(&line, closed);
+    let tight = tightest_of(bends);
+    if near.0 < HAIRLINE_GAP_M || guide.reach() < NO_REACH_M {
+        // Where: a cusp or sub-millimetre bend, else the closest such pair.
+        let t = if tight.radius_m < f64::from(HAIRLINE_GAP_M) {
+            tight.t as f32
+        } else {
+            near.1
+        };
+        return Some(GapLint::DoublesBack { t });
+    }
+    None
+}
+
+/// Plan-view distance between segments `a0 a1` and `b0 b1`.
+fn segment_distance(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> f32 {
+    let flat = |v: Vec3| glam::Vec2::new(v.x, v.y);
+    let (p, q, r, s) = (flat(a0), flat(a1), flat(b0), flat(b1));
+    let cross = |u: glam::Vec2, v: glam::Vec2| u.perp_dot(v);
+    let (d1, d2) = (q - p, s - r);
+    let denom = cross(d1, d2);
+    if denom != 0.0 {
+        let t = cross(r - p, d2) / denom;
+        let u = cross(r - p, d1) / denom;
+        if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
+            return 0.0; // they cross
+        }
+    }
+    let point = |x: glam::Vec2, a: glam::Vec2, b: glam::Vec2| {
+        let ab = b - a;
+        let len2 = ab.length_squared();
+        let h = if len2 > 0.0 {
+            ((x - a).dot(ab) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        x.distance(a + ab * h)
+    };
+    point(p, r, s)
+        .min(point(q, r, s))
+        .min(point(r, p, q))
+        .min(point(s, p, q))
+}
+
+/// The closest pair of polyline segments at least [`END_EXCLUSION_M`] apart
+/// along the curve (around a closed one), in plan view: (distance, parameter
+/// of the earlier one). Sweep and prune on x, so about linear for real
+/// guides; only pairs closer than [`HAIRLINE_GAP_M`] in x are measured.
+fn closest_far_pair(line: &[(Vec3, f32, f32)], closed: bool) -> (f32, f32) {
+    let total = line[line.len() - 1].1;
+    let mut segments: Vec<(f32, f32, usize)> = line
+        .windows(2)
+        .enumerate()
+        .map(|(i, w)| (w[0].0.x.min(w[1].0.x), w[0].0.x.max(w[1].0.x), i))
+        .collect();
+    segments.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut best = (f32::INFINITY, 0.0f32);
+    for (k, &(_, max_x, i)) in segments.iter().enumerate() {
+        for &(min_x, _, j) in &segments[k + 1..] {
+            if min_x > max_x + HAIRLINE_GAP_M {
+                break;
+            }
+            let (i, j) = (i.min(j), i.max(j));
+            let apart = line[j].1 - line[i + 1].1;
+            let apart = if closed {
+                apart.min(total - (line[j + 1].1 - line[i].1))
+            } else {
+                apart
+            };
+            if apart < END_EXCLUSION_M {
+                continue;
+            }
+            let d = segment_distance(line[i].0, line[i + 1].0, line[j].0, line[j + 1].0);
+            if d < best.0 {
+                best = (d, line[i].2);
+            }
+        }
+    }
+    best
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec3;
 
     fn circle(r: f32, n: usize) -> CubicSpline {
         let mut pts: Vec<Vec3> = (0..n)
@@ -169,6 +389,11 @@ mod tests {
         CubicSpline::interpolate_closed(&pts).unwrap()
     }
 
+    fn open(pts: &[[f32; 3]]) -> CubicSpline {
+        let pts: Vec<Vec3> = pts.iter().map(|&p| Vec3::from_array(p)).collect();
+        CubicSpline::interpolate(&pts).unwrap()
+    }
+
     #[test]
     fn circle_radius_is_recovered() {
         let bend = tightest_bend(&circle(0.1, 32));
@@ -177,13 +402,31 @@ mod tests {
 
     #[test]
     fn straight_line_has_no_bend() {
-        let s = CubicSpline::interpolate(&[Vec3::ZERO, Vec3::X, Vec3::X * 2.0]).unwrap();
+        let s = open(&[[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]);
         assert_eq!(tightest_bend(&s).radius_m, f64::INFINITY);
     }
 
     #[test]
+    fn collinear_reversal_is_a_cusp() {
+        // Runs to 100 mm, back to 50 mm, on to 150 mm: zero curvature, but
+        // the tangent flips twice.
+        let s = open(&[
+            [0.0; 3],
+            [0.1, 0.0, 0.0],
+            [0.05, 0.0, 0.0],
+            [0.15, 0.0, 0.0],
+        ]);
+        let bends = segment_bends(&s);
+        let bend = tightest_of(&bends);
+        assert_eq!(bend.radius_m, 0.0, "{bends:?}");
+        assert!((0.5..2.5).contains(&bend.t), "{bend:?}");
+        let spacing = [0.1, 0.05, 0.1];
+        let (b, _, _) = spacing_lint(&bends, &spacing, false).unwrap();
+        assert_eq!(b.radius_m, 0.0);
+    }
+
+    #[test]
     fn plan_view_counts_for_a_helix_like_curve() {
-        // A rising quarter turn: the plan view bends tighter than the space curve.
         let pts: Vec<Vec3> = (0..=8)
             .map(|i| {
                 let a = i as f32 / 8.0 * core::f32::consts::FRAC_PI_2;
@@ -193,42 +436,82 @@ mod tests {
         let s = CubicSpline::interpolate(&pts).unwrap();
         let bend = tightest_bend(&s);
         assert!(bend.radius_m < 0.1 + 1.0e-3, "{bend:?}");
-        // A vertical run has no plan-view bend a ball can follow.
         assert_eq!(
-            curvature(
-                &CubicSpline::interpolate(&[Vec3::ZERO, Vec3::Z]).unwrap(),
-                0.5
-            ),
+            curvature(&open(&[[0.0; 3], [0.0, 0.0, 1.0]]), 0.5),
             f64::INFINITY
         );
     }
 
     #[test]
-    fn gap_lints() {
-        let open = |end: Vec3| {
-            let pts = [
-                Vec3::ZERO,
-                Vec3::new(0.1, 0.0, 0.0),
-                Vec3::new(0.1, 0.1, 0.0),
-                Vec3::new(0.0, 0.1, 0.0),
-                end,
-            ];
-            GuideCurve::new(CubicSpline::interpolate(&pts).unwrap(), 0.0).unwrap()
-        };
-        let g = open(Vec3::new(0.0, 0.0005, 0.0));
-        assert!(
-            matches!(gap_lint(&g, false), Some(GapLint::Hairline(d)) if (d - 0.0005).abs() < 1e-6)
+    fn spacing_lint_is_local() {
+        // A tight bend between fine spacings, far from a coarse straight:
+        // compared with its own neighbours only.
+        let bends = [
+            Bend {
+                radius_m: f64::INFINITY,
+                t: 0.5,
+            },
+            Bend {
+                radius_m: f64::INFINITY,
+                t: 1.5,
+            },
+            Bend {
+                radius_m: 0.02,
+                t: 2.5,
+            },
+            Bend {
+                radius_m: f64::INFINITY,
+                t: 3.5,
+            },
+        ];
+        assert_eq!(spacing_lint(&bends, &[0.1, 0.01, 0.01, 0.01], false), None);
+        let (b, j, s) = spacing_lint(&bends, &[0.1, 0.03, 0.01, 0.01], false).unwrap();
+        assert_eq!((b.t, j, s), (2.5, 1, 0.03));
+        // Closed: the first segment's neighbour wraps around.
+        let bends = [
+            Bend {
+                radius_m: 0.02,
+                t: 0.5,
+            },
+            Bend {
+                radius_m: f64::INFINITY,
+                t: 1.5,
+            },
+            Bend {
+                radius_m: f64::INFINITY,
+                t: 2.5,
+            },
+        ];
+        assert_eq!(spacing_lint(&bends, &[0.01, 0.01, 0.05], false), None);
+        assert_eq!(
+            spacing_lint(&bends, &[0.01, 0.01, 0.05], true).map(|x| x.1),
+            Some(2)
         );
-        assert_eq!(gap_lint(&open(Vec3::new(0.0, 0.02, 0.0)), false), None);
+    }
+
+    #[test]
+    fn gap_lints() {
+        let guide = |pts: &[[f32; 3]]| GuideCurve::new(open(pts), 0.0).unwrap();
+        let square = |end: [f32; 3]| {
+            guide(&[
+                [0.0; 3],
+                [0.1, 0.0, 0.0],
+                [0.1, 0.1, 0.0],
+                [0.0, 0.1, 0.0],
+                end,
+            ])
+        };
+        let check = |g: &GuideCurve, closed: bool| gap_lint(g, closed, &segment_bends(g.spline()));
+        let g = square([0.0, 0.0005, 0.0]);
+        assert!(
+            matches!(check(&g, false), Some(GapLint::Hairline(d)) if (d - 0.0005).abs() < 1e-6)
+        );
+        assert_eq!(check(&square([0.0, 0.02, 0.0]), false), None);
         let closed = GuideCurve::new(circle(0.1, 16), 0.0).unwrap();
-        assert_eq!(gap_lint(&closed, true), None);
-        let sloped = GuideCurve::new(
-            CubicSpline::interpolate(&[Vec3::ZERO, Vec3::new(0.1, 0.0, 0.01)]).unwrap(),
-            0.0,
-        )
-        .unwrap();
-        assert_eq!(gap_lint(&sloped, false), None);
-        // A closed figure eight crosses itself: no reach.
+        assert_eq!(check(&closed, true), None);
+        let sloped = guide(&[[0.0; 3], [0.1, 0.0, 0.01]]);
+        assert_eq!(check(&sloped, false), None);
+        // A closed figure eight crosses itself: doubles back, near the crossing.
         let mut eight: Vec<Vec3> = (0..16)
             .map(|i| {
                 let a = i as f32 / 16.0 * core::f32::consts::TAU;
@@ -238,7 +521,37 @@ mod tests {
         eight.push(eight[0]);
         let crossing =
             GuideCurve::new(CubicSpline::interpolate_closed(&eight).unwrap(), 0.0).unwrap();
-        assert_eq!(gap_lint(&crossing, true), Some(GapLint::SelfTouching));
+        match check(&crossing, true) {
+            Some(GapLint::DoublesBack { t }) => {
+                let p = crossing.spline().point(t);
+                assert!(p.length() < 0.01, "{t} {p}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // An open Z whose diagonals cross (its reach is not 0): doubles back
+        // near the crossing at (50, 50) mm.
+        let z = guide(&[[0.0; 3], [0.1, 0.1, 0.0], [0.1, 0.0, 0.0], [0.0, 0.1, 0.0]]);
+        match check(&z, false) {
+            Some(GapLint::DoublesBack { t }) => {
+                let p = z.spline().point(t);
+                assert!(p.distance(Vec3::new(0.05, 0.05, 0.0)) < 0.02, "{t} {p}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Collinear reversal: doubles back at the cusp, no end near a wall
+        // (both ends are 150 mm apart and away from the overlap's ends).
+        let back = guide(&[
+            [0.0; 3],
+            [0.1, 0.0, 0.0],
+            [0.05, 0.0, 0.0],
+            [0.15, 0.0, 0.0],
+        ]);
+        assert!(back.reach() < NO_REACH_M);
+        assert!(
+            matches!(check(&back, false), Some(GapLint::DoublesBack { .. })),
+            "{:?}",
+            check(&back, false)
+        );
     }
 
     proptest::proptest! {
@@ -256,17 +569,27 @@ mod tests {
             proptest::prop_assert!((bend.radius_m / f64::from(r) - 1.0).abs() < 0.02, "{bend:?}");
         }
 
-        /// Any spline: the radius is non-negative (never NaN) and the
-        /// location is inside the parameter range.
+        /// Any spline: radii are non-negative (never NaN), the locations lie
+        /// in their segments, and the lints never panic.
         #[test]
         fn random_splines(pts in proptest::collection::vec(
-            (-1.0f32..1.0, -1.0f32..1.0, -0.1f32..0.1), 2..10)
+            (-1.0f32..1.0, -1.0f32..1.0, -0.1f32..0.1), 2..10), level in proptest::bool::ANY
         ) {
-            let pts: Vec<Vec3> = pts.into_iter().map(|(x, y, z)| Vec3::new(x, y, z)).collect();
+            let pts: Vec<Vec3> = pts
+                .into_iter()
+                .map(|(x, y, z)| Vec3::new(x, y, if level { 0.0 } else { z }))
+                .collect();
             if let Ok(s) = CubicSpline::interpolate(&pts) {
-                let bend = tightest_bend(&s);
-                proptest::prop_assert!(bend.radius_m >= 0.0);
-                proptest::prop_assert!(bend.t >= 0.0 && bend.t <= f64::from(s.max_t()));
+                let bends = segment_bends(&s);
+                for (i, b) in bends.iter().enumerate() {
+                    proptest::prop_assert!(b.radius_m >= 0.0);
+                    proptest::prop_assert!(b.t >= i as f64 && b.t <= i as f64 + 1.0, "{b:?}");
+                }
+                let spacing: Vec<f32> = pts.windows(2).map(|w| w[0].distance(w[1])).collect();
+                let _ = spacing_lint(&bends, &spacing, false);
+                if let Ok(g) = GuideCurve::new(s, 0.0) {
+                    let _ = gap_lint(&g, false, &bends);
+                }
             }
         }
     }

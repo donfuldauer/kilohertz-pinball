@@ -84,6 +84,14 @@ pub(super) struct Checker<'v> {
     ids: TableIds,
 }
 
+/// A ball profile the table names, for guide lint (c).
+pub(super) struct Ball<'a> {
+    name: &'a str,
+    radius_m: f32,
+    /// Layers `balls.restrict` allows it on; `None` when unrestricted.
+    layers: Option<Vec<u8>>,
+}
+
 /// Tracks first declarations of names and numbers within one kind.
 struct Seen<'a, T> {
     items: std::collections::HashMap<T, &'a str>,
@@ -596,24 +604,44 @@ impl<'v> Checker<'v> {
             });
         }
 
-        // Splines. The widest ball the table names (balls.profiles,
-        // balls.restrict and dispenser contents) feeds guide lint (c).
-        let widest = t
+        // Splines. Every ball the table names (balls.profiles,
+        // balls.restrict and dispenser contents), with the layers
+        // balls.restrict allows it on (None: any layer), feeds lint (c).
+        let mut balls: Vec<Ball<'_>> = Vec::new();
+        for name in t
             .balls
             .profiles
             .iter()
             .chain(t.balls.restrict.iter().map(|r| &r.profile))
             .chain(t.dispensers.iter().flat_map(|d| d.contents.iter()))
-            .filter_map(|name| builtin_profile(name).map(|p| (name.as_str(), p.radius_m())))
-            .fold(None, |w: Option<(&str, f32)>, (n, r)| match w {
-                Some((_, wr)) if wr >= r => w,
-                _ => Some((n, r)),
+        {
+            if balls.iter().any(|b| b.name == name.as_str()) {
+                continue;
+            }
+            let Some(profile) = builtin_profile(name) else {
+                continue;
+            };
+            let mut restricted = t
+                .balls
+                .restrict
+                .iter()
+                .filter(|r| &r.profile == name)
+                .peekable();
+            let layers = restricted
+                .peek()
+                .is_some()
+                .then(|| restricted.flat_map(|r| r.layers.iter().copied()).collect());
+            balls.push(Ball {
+                name,
+                radius_m: profile.radius_m(),
+                layers,
             });
+        }
         let splines = t
             .splines
             .iter()
             .enumerate()
-            .filter_map(|(i, s)| self.spline(i, s, widest))
+            .filter_map(|(i, s)| self.spline(i, s, &balls))
             .collect();
 
         // Layer transitions.
@@ -801,7 +829,7 @@ impl<'v> Checker<'v> {
         self.err(TABLE_FILE, path, format!("spline does not construct: {e}"));
     }
 
-    fn spline(&mut self, i: usize, s: &SplineDef, widest: Option<(&str, f32)>) -> Option<SplineSi> {
+    fn spline(&mut self, i: usize, s: &SplineDef, balls: &[Ball<'_>]) -> Option<SplineSi> {
         let p = format!("splines[{i}]");
         self.layer(TABLE_FILE, format!("{p}.layer"), s.layer);
         if s.points.len() < 2 {
@@ -943,7 +971,15 @@ impl<'v> Checker<'v> {
             );
         }
         if let Some(guide) = &guide {
-            self.guide_lints(&p, guide, closed, hi, widest);
+            // The widest ball allowed on this guide's layer.
+            let widest = balls
+                .iter()
+                .filter(|b| b.layers.as_ref().is_none_or(|l| l.contains(&s.layer)))
+                .fold(None, |w: Option<&Ball<'_>>, b| match w {
+                    Some(w) if w.radius_m >= b.radius_m => Some(w),
+                    _ => Some(b),
+                });
+            self.guide_lints(&p, guide, closed, &spacing, widest);
         }
         Some(SplineSi {
             name: s.id.clone(),
@@ -957,46 +993,58 @@ impl<'v> Checker<'v> {
     }
 
     /// Guide authoring lints (b)–(d), warnings at `splines[i]` (see
-    /// [`guide_lint`](super::guide_lint)). `spacing` is the longest
-    /// through-point spacing, metres.
+    /// [`guide_lint`](super::guide_lint)). `spacing[j]` is the distance from
+    /// through-point `j` to `j + 1`, metres.
     fn guide_lints(
         &mut self,
         p: &str,
         guide: &GuideCurve,
         closed: bool,
-        spacing: f32,
-        widest: Option<(&str, f32)>,
+        spacing: &[f32],
+        widest: Option<&Ball<'_>>,
     ) {
-        let bend = guide_lint::tightest_bend(guide.spline());
-        let radius_mm = bend.radius_m * 1000.0;
-        let near = bend.t.round() as usize;
-        if f64::from(spacing) >= bend.radius_m {
+        let bends = guide_lint::segment_bends(guide.spline());
+        let mm = |m: f64| m * 1000.0;
+        if let Some((bend, j, s)) = guide_lint::spacing_lint(&bends, spacing, closed) {
+            let seg = bend.t.floor() as usize;
+            let what = if bend.radius_m == 0.0 {
+                "the curve reverses (a cusp, radius 0.0 mm)".to_owned()
+            } else {
+                format!("the radius of curvature is {:.1} mm", mm(bend.radius_m))
+            };
             self.warn(
                 TABLE_FILE,
                 p,
                 format!(
-                    "through-point spacing {:.1} mm is not below the smallest radius of curvature \
-                     {radius_mm:.1} mm (near points[{near}]); add through-points or soften the bend",
-                    spacing * 1000.0
+                    "through-point spacing {:.1} mm (points[{j}] to points[{}]) is not below the \
+                     bend next to it: between points[{seg}] and points[{}] {what}; \
+                     add through-points or soften the bend",
+                    s * 1000.0,
+                    j + 1,
+                    seg + 1
                 ),
             );
         }
+        let bend = guide_lint::tightest_of(&bends);
         if !guide.is_level()
-            && let Some((profile, radius)) = widest
-            && f64::from(radius) > bend.radius_m
+            && let Some(ball) = widest
+            && f64::from(ball.radius_m) > bend.radius_m
         {
             self.warn(
                 TABLE_FILE,
                 p,
                 format!(
-                    "ball profile {profile:?} (radius {:.1} mm) is wider than this sloped guide's \
-                     tightest bend (radius {radius_mm:.1} mm, near points[{near}]); the ball slides \
+                    "ball profile {:?} (radius {:.1} mm) is wider than this sloped guide's \
+                     tightest bend (radius {:.1} mm, near points[{}]); the ball slides \
                      slowly there: soften the bend or build the ramp as a wireform",
-                    radius * 1000.0
+                    ball.name,
+                    ball.radius_m * 1000.0,
+                    mm(bend.radius_m),
+                    bend.t.round() as usize
                 ),
             );
         }
-        match guide_lint::gap_lint(guide, closed) {
+        match guide_lint::gap_lint(guide, closed, &bends) {
             Some(GapLint::Hairline(gap)) => self.warn(
                 TABLE_FILE,
                 p,
@@ -1005,17 +1053,24 @@ impl<'v> Checker<'v> {
                     gap * 1000.0
                 ),
             ),
-            Some(GapLint::EndTouchesWall) => self.warn(
+            Some(GapLint::EndNearWall { distance, t }) => self.warn(
                 TABLE_FILE,
                 p,
-                "no clearance proven: an open end touches or nearly touches the guide's own wall \
-                 (or the curve touches itself); close the guide or open the gap",
+                format!(
+                    "an open end is only {:.3} mm from the guide's own wall near points[{}]; \
+                     close the guide or open the gap",
+                    distance * 1000.0,
+                    t.round() as usize
+                ),
             ),
-            Some(GapLint::SelfTouching) => self.warn(
+            Some(GapLint::DoublesBack { t }) => self.warn(
                 TABLE_FILE,
                 p,
-                "the closed guide touches or crosses itself (no clearance proven); \
-                 move the through-points apart",
+                format!(
+                    "the curve doubles back or touches itself near points[{}] (no clearance \
+                     proven); even out the through-point spacing or move the points apart",
+                    t.round() as usize
+                ),
             ),
             None => {}
         }

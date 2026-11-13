@@ -10,7 +10,7 @@
 
 use crate::AssetError;
 use std::collections::BTreeMap;
-use std::io::{Cursor, Read};
+use std::io::{Read, Seek, SeekFrom};
 use zip::CompressionMethod;
 use zip::ZipArchive;
 use zip::result::ZipError;
@@ -95,6 +95,7 @@ const LOCAL_HEADER_SIG: u32 = 0x0403_4b50;
 const EOCD_SIG: u32 = 0x0605_4b50;
 const ZIP64_LOCATOR_SIG: u32 = 0x0706_4b50;
 const ZIP64_EOCD_SIG: u32 = 0x0606_4b50;
+const CENTRAL_HEADER_SIG: u32 = 0x0201_4b50;
 
 #[derive(Copy, Clone, Debug)]
 struct Entry {
@@ -142,22 +143,110 @@ fn le_u64(b: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(a))
 }
 
-/// Most end-of-central-directory candidates with a Zip64 locator in front of
-/// them that an archive may have (a real archive has one).
-const MAX_ZIP64_LOCATORS: usize = 16;
-
 /// Size of a central-directory file header without its variable parts.
 const CENTRAL_HEADER_MIN: u64 = 46;
+/// Fixed size of the end-of-central-directory record.
+const EOCD_LEN: usize = 22;
+/// Fixed size of the Zip64 end record (its length field counts from byte 12).
+const ZIP64_EOCD_LEN: u64 = 56;
+/// Largest Zip64 extensible data sector accepted (the reader allocates it).
+pub const MAX_ZIP64_EXTENSIBLE: u64 = 64 << 10;
 
-/// The entry count a Zip64 locator at `loc` leads to. The Zip64 end record
-/// must be exactly where the locator says, end exactly at the locator, and be
-/// one the zip reader accepts as it is (single disk, equal counts, room for
-/// its records before it). Otherwise the reader would go looking for another
-/// record anywhere before the locator (for archives with prepended data),
-/// which this pre-check cannot follow cheaply, so such an archive is
-/// refused instead: a bundle has no reason to carry prepended data.
-fn zip64_count(b: &[u8], loc: usize, max_entries: usize) -> Result<u64, AssetError> {
+/// The end of the central directory as the zip reader will see it.
+#[derive(Copy, Clone, Debug)]
+struct End {
+    /// Offset of the end-of-central-directory record.
+    eocd: usize,
+    /// Number of central-directory records.
+    count: u64,
+}
+
+/// Finds and fully checks the one end-of-central-directory record a bundle
+/// may have, before the zip reader runs (N-a, review round 2 B1/B2).
+///
+/// The record is the last `PK\x05\x06` signature whose comment ends exactly
+/// at the end of the archive (no trailing bytes); the reader is then shown the
+/// archive up to that record with an empty comment ([`EndView`]) and opened
+/// with `ArchiveOffset::Known(0)`, so it never searches for other candidates,
+/// for prepended data, or for a moved Zip64 record. That only holds if the
+/// reader accepts this record as it is, so every check it would make before
+/// falling back is made here, and failing one refuses the archive:
+///
+/// * single disk, equal per-disk and total counts;
+/// * Zip64 (when the reader would use it: a saturated field and a locator in
+///   front): the record is exactly where the locator says, ends at the
+///   locator, has an extensible sector of at most [`MAX_ZIP64_EXTENSIBLE`],
+///   and has room for its records before it;
+/// * the central directory ends exactly at the (Zip64) end record and starts
+///   with a central-header signature.
+///
+/// The count is checked against `max_entries` here, before any record is
+/// parsed. Archives with prepended data (self-extractors) are refused. All
+/// checks are O(1) apart from the backwards search of the last 64 KiB.
+fn find_end(b: &[u8], max_entries: usize) -> Result<End, AssetError> {
+    let bad = |why: &str| AssetError::Zip(format!("end of central directory: {why}"));
+    let len = b.len();
+    let lowest = len.saturating_sub(EOCD_LEN + 0xFFFF);
+    let mut at = len
+        .checked_sub(EOCD_LEN)
+        .ok_or_else(|| bad("archive too short"))?;
+    let eocd = loop {
+        if le_u32(b, at) == Some(u64::from(EOCD_SIG))
+            && le_u16(b, at + 20).map(|c| at as u64 + EOCD_LEN as u64 + c) == Some(len as u64)
+        {
+            break at;
+        }
+        if at == lowest {
+            return Err(bad("no end record whose comment ends the archive"));
+        }
+        at -= 1;
+    };
+    let field16 = |o: usize| le_u16(b, eocd + o).unwrap_or(0);
+    let field32 = |o: usize| le_u32(b, eocd + o).unwrap_or(0);
+    let (disk, cd_disk, on_disk, count) = (field16(4), field16(6), field16(8), field16(10));
+    let (cd_size, cd_offset) = (field32(12), field32(16));
+    let saturated = count == 0xFFFF || cd_size == 0xFFFF_FFFF || cd_offset == 0xFFFF_FFFF;
+    let locator = eocd
+        .checked_sub(20)
+        .filter(|&l| le_u32(b, l) == Some(u64::from(ZIP64_LOCATOR_SIG)));
+    let (count, cd_offset, cd_size, cd_end) = match locator {
+        Some(loc) if saturated => {
+            let (count, cd_offset, cd_size, record) = zip64_end(b, loc, max_entries)?;
+            (count, cd_offset, cd_size, record)
+        }
+        _ => {
+            if disk != 0 || cd_disk != 0 || on_disk != count {
+                return Err(bad("multi-disk archives are not supported"));
+            }
+            (count, cd_offset, cd_size, eocd as u64)
+        }
+    };
+    if count > max_entries as u64 {
+        return Err(AssetError::TooManyEntries(
+            usize::try_from(count).unwrap_or(usize::MAX),
+        ));
+    }
+    if cd_offset.checked_add(cd_size) != Some(cd_end) {
+        return Err(bad(
+            "the central directory does not end at the end record (prepended or trailing data)",
+        ));
+    }
+    if count > 0
+        && usize::try_from(cd_offset).ok().and_then(|o| le_u32(b, o))
+            != Some(u64::from(CENTRAL_HEADER_SIG))
+    {
+        return Err(bad("no central directory header where the end record says"));
+    }
+    Ok(End { eocd, count })
+}
+
+/// The Zip64 end record the locator at `loc` leads to: (count, directory
+/// offset, directory size, record offset). See [`find_end`].
+fn zip64_end(b: &[u8], loc: usize, max_entries: usize) -> Result<(u64, u64, u64, u64), AssetError> {
     let bad = |why: &str| AssetError::Zip(format!("Zip64 end record {why}"));
+    if le_u32(b, loc + 16).is_none_or(|disks| disks > 1) || le_u32(b, loc + 4) != Some(0) {
+        return Err(bad("describes more than one disk"));
+    }
     let off = le_u64(b, loc + 8)
         .and_then(|o| usize::try_from(o).ok())
         .filter(|&o| o < loc)
@@ -166,75 +255,83 @@ fn zip64_count(b: &[u8], loc: usize, max_entries: usize) -> Result<u64, AssetErr
         return Err(bad("is not where its locator says"));
     }
     let size = le_u64(b, off + 4).ok_or_else(|| bad("is truncated"))?;
-    if (off as u64)
-        .checked_add(12)
-        .and_then(|e| e.checked_add(size))
-        != Some(loc as u64)
-    {
+    if size.checked_add(12) != Some((loc - off) as u64) || size + 12 < ZIP64_EOCD_LEN {
         return Err(bad("does not end at its locator"));
     }
+    if size + 12 - ZIP64_EOCD_LEN > MAX_ZIP64_EXTENSIBLE {
+        return Err(bad("has an oversized extensible data sector"));
+    }
+    let field = |o: usize| le_u64(b, off + o).unwrap_or(u64::MAX);
     let (disk, cd_disk) = (le_u32(b, off + 16), le_u32(b, off + 20));
-    let (on_disk, total) = (le_u64(b, off + 24), le_u64(b, off + 32));
-    let cd_offset = le_u64(b, off + 48).ok_or_else(|| bad("is truncated"))?;
-    if disk != Some(0) || cd_disk != le_u32(b, loc + 4) || on_disk != total {
+    let (on_disk, total) = (field(24), field(32));
+    let (cd_size, cd_offset) = (field(40), field(48));
+    if disk != Some(0) || cd_disk != Some(0) || on_disk != total {
         return Err(bad("describes more than one disk"));
     }
-    let total = total.ok_or_else(|| bad("is truncated"))?;
+    if total > max_entries as u64 {
+        return Err(AssetError::TooManyEntries(
+            usize::try_from(total).unwrap_or(usize::MAX),
+        ));
+    }
     let room = total
         .checked_mul(CENTRAL_HEADER_MIN)
         .and_then(|n| n.checked_add(cd_offset));
     if room.is_none_or(|r| r > off as u64) {
-        // The reader would reject this record and search for another.
-        return Err(if total > max_entries as u64 {
-            AssetError::TooManyEntries(usize::try_from(total).unwrap_or(usize::MAX))
-        } else {
-            bad("declares more records than fit before it")
-        });
+        return Err(bad("declares more records than fit before it"));
     }
-    Ok(total)
+    Ok((total, cd_offset, cd_size, off as u64))
 }
 
-/// The largest entry count any end-of-central-directory candidate (or the
-/// Zip64 end record its locator leads to) declares. Read before the central
-/// directory is parsed, so a directory with millions of records is refused
-/// without walking it. O(1) per candidate: no scan of the archive.
-///
-/// The Zip64 record is consulted whenever a locator precedes a candidate,
-/// whatever its 16-bit count says (the zip reader switches to the Zip64
-/// record when the directory size or offset is saturated, too); see
-/// [`zip64_count`] for what it must look like.
-fn declared_entry_count(b: &[u8], max_entries: usize) -> Result<u64, AssetError> {
-    let tail_start = b.len().saturating_sub(22 + 0xFFFF);
-    let mut max = 0;
-    let mut locators = Vec::new();
-    let mut at = b.len().saturating_sub(22);
-    loop {
-        if at < tail_start {
-            break;
-        }
-        if le_u32(b, at) == Some(u64::from(EOCD_SIG)) {
-            max = max.max(le_u16(b, at + 10).unwrap_or(0));
-            max = max.max(le_u16(b, at + 8).unwrap_or(0));
-            if let Some(loc) = at.checked_sub(20)
-                && le_u32(b, loc) == Some(u64::from(ZIP64_LOCATOR_SIG))
+/// The archive as the zip reader sees it: everything up to the chosen end
+/// record, which is shown with an empty comment and nothing after it, so the
+/// record is the reader's first and only candidate at the end of the file.
+struct EndView<'a> {
+    /// The archive up to the comment-length field of the end record.
+    head: &'a [u8],
+    pos: u64,
+}
+
+impl EndView<'_> {
+    fn len(&self) -> u64 {
+        self.head.len() as u64 + 2
+    }
+}
+
+impl Read for EndView<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut n = 0;
+        while n < buf.len() && self.pos < self.len() {
+            let available = if let Some(rest) = usize::try_from(self.pos)
+                .ok()
+                .and_then(|p| self.head.get(p..))
+                .filter(|r| !r.is_empty())
             {
-                locators.push(loc);
-                if locators.len() > MAX_ZIP64_LOCATORS {
-                    return Err(AssetError::Zip(
-                        "too many Zip64 end-of-central-directory locators".to_owned(),
-                    ));
-                }
-            }
+                let k = rest.len().min(buf.len() - n);
+                buf[n..n + k].copy_from_slice(&rest[..k]);
+                k
+            } else {
+                buf[n] = 0; // the empty comment's length field
+                1
+            };
+            n += available;
+            self.pos += available as u64;
         }
-        if at == 0 {
-            break;
-        }
-        at -= 1;
+        Ok(n)
     }
-    for loc in locators {
-        max = max.max(zip64_count(b, loc, max_entries)?);
+}
+
+impl Seek for EndView<'_> {
+    fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+        let target = match to {
+            SeekFrom::Start(p) => Some(p),
+            SeekFrom::End(d) => self.len().checked_add_signed(d),
+            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
+        };
+        self.pos = target.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek before the start")
+        })?;
+        Ok(self.pos)
     }
-    Ok(max)
 }
 
 /// Offset of an entry's data, from its local header.
@@ -263,15 +360,22 @@ impl ZipIndex {
         if size > archive_cap(&limits) {
             return Err(AssetError::TotalTooLarge(size));
         }
-        let declared = declared_entry_count(&bytes, limits.max_entries)?;
-        if declared > limits.max_entries as u64 {
-            return Err(AssetError::TooManyEntries(
-                usize::try_from(declared).unwrap_or(usize::MAX),
-            ));
-        }
-        let archive = ZipArchive::new(Cursor::new(bytes.as_slice())).map_err(zip_error)?;
-        if archive.len() > limits.max_entries {
-            return Err(AssetError::TooManyEntries(archive.len()));
+        let end = find_end(&bytes, limits.max_entries)?;
+        let view = EndView {
+            head: &bytes[..end.eocd + EOCD_LEN - 2],
+            pos: 0,
+        };
+        let config = zip::read::Config {
+            archive_offset: zip::read::ArchiveOffset::Known(0),
+        };
+        let archive = ZipArchive::with_config(config, view).map_err(zip_error)?;
+        // Duplicate names make the reader keep fewer records (reported below).
+        if archive.len() as u64 > end.count {
+            return Err(AssetError::Zip(format!(
+                "the central directory holds {} records, the end record says {}",
+                archive.len(),
+                end.count
+            )));
         }
         let len = bytes.len() as u64;
         let mut entries = BTreeMap::new();
