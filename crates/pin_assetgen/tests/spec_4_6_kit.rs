@@ -1,6 +1,8 @@
 //! Spec tests, Subphase 4.6 — the generated kit (brief: deliverables 1, 2, 4,
 //! 5, 6; verification 1, 2, 3, 5).
 
+#![allow(clippy::needless_range_loop)]
+
 mod spec_4_6_support;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,16 +41,29 @@ fn manifest_ids_and_paths_are_unique_relative_and_exist() {
     for e in &man.entries {
         assert!(!e.id.is_empty(), "empty id");
         assert!(
-            e.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+            e.id.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
             "id {:?} is not a stable snake_case identifier",
             e.id
         );
         assert!(!e.path.is_empty(), "{}: empty path", e.id);
-        assert!(!e.path.contains('\\'), "{}: path {:?} has a backslash", e.id, e.path);
-        assert!(!e.path.starts_with('/'), "{}: path {:?} is absolute", e.id, e.path);
+        assert!(
+            !e.path.contains('\\'),
+            "{}: path {:?} has a backslash",
+            e.id,
+            e.path
+        );
+        assert!(
+            !e.path.starts_with('/'),
+            "{}: path {:?} is absolute",
+            e.id,
+            e.path
+        );
         assert!(!e.path.contains(':'), "{}: path {:?}", e.id, e.path);
         assert!(
-            e.path.split('/').all(|c| !c.is_empty() && c != "." && c != ".."),
+            e.path
+                .split('/')
+                .all(|c| !c.is_empty() && c != "." && c != ".."),
             "{}: path {:?} is not a clean bundle-relative path",
             e.id,
             e.path
@@ -56,7 +71,12 @@ fn manifest_ids_and_paths_are_unique_relative_and_exist() {
         assert!(paths.insert(e.path.clone()), "path {:?} used twice", e.path);
         let md = std::fs::metadata(dir.join(&e.path))
             .unwrap_or_else(|err| panic!("{}: {:?}: {err}", e.id, e.path));
-        assert!(md.is_file() && md.len() > 0, "{}: {:?} is empty", e.id, e.path);
+        assert!(
+            md.is_file() && md.len() > 0,
+            "{}: {:?} is empty",
+            e.id,
+            e.path
+        );
         assert!(!e.sha256_or_hash.is_empty(), "{}: empty hash", e.id);
     }
 }
@@ -84,10 +104,20 @@ fn manifest_has_every_deliverable_kind() {
         of_kind(man, "Image").len()
     );
     for e in of_kind(man, "Image") {
-        assert!(e.path.to_ascii_lowercase().ends_with(".png"), "{}: {}", e.id, e.path);
+        assert!(
+            e.path.to_ascii_lowercase().ends_with(".png"),
+            "{}: {}",
+            e.id,
+            e.path
+        );
     }
     for e in man.entries.iter().filter(|e| is_audio(&e.kind)) {
-        assert!(e.path.to_ascii_lowercase().ends_with(".wav"), "{}: {}", e.id, e.path);
+        assert!(
+            e.path.to_ascii_lowercase().ends_with(".wav"),
+            "{}: {}",
+            e.id,
+            e.path
+        );
     }
 }
 
@@ -132,7 +162,11 @@ fn assets_toml_is_written_and_lists_every_entry() {
 fn manifest_hashes_match_the_files() {
     let (dir, man) = apex();
     // Equal bytes <=> equal hash, over every pair of entries.
-    let files: Vec<Vec<u8>> = man.entries.iter().map(|e| file_bytes(dir, &e.path)).collect();
+    let files: Vec<Vec<u8>> = man
+        .entries
+        .iter()
+        .map(|e| file_bytes(dir, &e.path))
+        .collect();
     for i in 0..files.len() {
         for j in i + 1..files.len() {
             assert_eq!(
@@ -154,7 +188,13 @@ fn manifest_hashes_match_the_files() {
         let h = e.sha256_or_hash.to_ascii_lowercase();
         let h = h.strip_prefix("sha256:").unwrap_or(&h);
         if h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()) {
-            assert_eq!(h, sha256_hex(bytes), "{}: SHA-256 does not match {}", e.id, e.path);
+            assert_eq!(
+                h,
+                sha256_hex(bytes),
+                "{}: SHA-256 does not match {}",
+                e.id,
+                e.path
+            );
         }
     }
 }
@@ -188,7 +228,10 @@ fn same_meta_gives_byte_identical_kits() {
         "file sets differ"
     );
     for (name, bytes) in &ta {
-        assert!(bytes == &tb[name], "{name} differs between two identical runs");
+        assert!(
+            bytes == &tb[name],
+            "{name} differs between two identical runs"
+        );
     }
     assert!(ta.contains_key("assets.toml"));
     assert_eq!(man_a.entries.len(), man_b.entries.len());
@@ -203,7 +246,10 @@ fn same_meta_gives_byte_identical_kits() {
 
 /// (changed ids by kind name) between the apex kit and another meta, after
 /// asserting the stable id → path/kind mapping is unchanged.
-fn changed_vs_apex(other: &pin_assetgen::TableMeta, name: &str) -> BTreeMap<&'static str, Vec<String>> {
+fn changed_vs_apex(
+    other: &pin_assetgen::TableMeta,
+    name: &str,
+) -> BTreeMap<&'static str, Vec<String>> {
     let (dir_a, a) = apex();
     let (dir_b, b) = generate(other, name);
     let (ia, ib) = (index(a), index(&b));
@@ -222,11 +268,28 @@ fn changed_vs_apex(other: &pin_assetgen::TableMeta, name: &str) -> BTreeMap<&'st
     out
 }
 
-fn assert_music_and_art_change_but_not_sfx(changed: &BTreeMap<&'static str, Vec<String>>, what: &str) {
-    assert!(!changed.contains_key("Sound"), "{what} changed SFX: {:?}", changed["Sound"]);
-    assert!(changed.contains_key("Music"), "{what} did not change the music loop");
-    assert!(changed.contains_key("Image"), "{what} did not change any art");
-    assert!(!changed.contains_key("Font"), "{what} changed a font: {:?}", changed["Font"]);
+fn assert_music_and_art_change_but_not_sfx(
+    changed: &BTreeMap<&'static str, Vec<String>>,
+    what: &str,
+) {
+    assert!(
+        !changed.contains_key("Sound"),
+        "{what} changed SFX: {:?}",
+        changed["Sound"]
+    );
+    assert!(
+        changed.contains_key("Music"),
+        "{what} did not change the music loop"
+    );
+    assert!(
+        changed.contains_key("Image"),
+        "{what} did not change any art"
+    );
+    assert!(
+        !changed.contains_key("Font"),
+        "{what} changed a font: {:?}",
+        changed["Font"]
+    );
 }
 
 #[test]
@@ -249,12 +312,26 @@ fn a_different_title_changes_music_and_art_but_not_the_sfx() {
 #[test]
 fn a_different_palette_changes_the_art_but_not_the_sfx() {
     let c = changed_vs_apex(
-        &meta("Apex Circuit", &[[0x10, 0x80, 0x40], [0xff, 0xff, 0xff], [0x00, 0x00, 0x00]], 1),
+        &meta(
+            "Apex Circuit",
+            &[[0x10, 0x80, 0x40], [0xff, 0xff, 0xff], [0x00, 0x00, 0x00]],
+            1,
+        ),
         "palette",
     );
-    assert!(!c.contains_key("Sound"), "palette changed SFX: {:?}", c["Sound"]);
-    assert!(c.contains_key("Image"), "art is not derived from the palette");
-    assert!(c.contains_key("Music"), "music is seeded by title + palette + seed");
+    assert!(
+        !c.contains_key("Sound"),
+        "palette changed SFX: {:?}",
+        c["Sound"]
+    );
+    assert!(
+        c.contains_key("Image"),
+        "art is not derived from the palette"
+    );
+    assert!(
+        c.contains_key("Music"),
+        "music is seeded by title + palette + seed"
+    );
 }
 
 // -------------------------------------------------------------------- audio
@@ -293,8 +370,16 @@ fn every_sound_file_is_non_silent_and_below_clipping() {
         let (l, r) = decode48(&file_bytes(dir, &e.path));
         for (side, s) in [("left", &l), ("right", &r)] {
             let (rm, pk) = (rms(s), peak(s));
-            assert!(rm > RMS_FLOOR, "{} ({side}): RMS {rm} is not above -40 dBFS", e.id);
-            assert!(pk <= PEAK_CEIL, "{} ({side}): peak {pk} is above -0.1 dBFS", e.id);
+            assert!(
+                rm > RMS_FLOOR,
+                "{} ({side}): RMS {rm} is not above -40 dBFS",
+                e.id
+            );
+            assert!(
+                pk <= PEAK_CEIL,
+                "{} ({side}): peak {pk} is above -0.1 dBFS",
+                e.id
+            );
         }
     }
 }
@@ -311,7 +396,10 @@ fn sfx_files_hold_what_render_sfx_renders() {
             .iter()
             .zip(&want)
             .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
-        assert!(worst <= 1.0e-3, "{id}: file differs from render_sfx by {worst}");
+        assert!(
+            worst <= 1.0e-3,
+            "{id}: file differs from render_sfx by {worst}"
+        );
     }
 }
 
@@ -320,7 +408,10 @@ fn ball_roll_file_loops_seamlessly() {
     let (dir, man) = apex();
     let (l, _) = decode48(&file_bytes(dir, &index(man)["sfx_ball_roll"].0));
     let (j, m) = (seam(&l), max_step(&l));
-    assert!(j <= m + 1.0e-4, "wrap jump {j} exceeds largest interior step {m}");
+    assert!(
+        j <= m + 1.0e-4,
+        "wrap jump {j} exceeds largest interior step {m}"
+    );
     assert!(j < 0.1, "wrap jump {j}");
 }
 
@@ -330,7 +421,11 @@ fn music_is_a_short_loop() {
     for e in of_kind(man, "Music") {
         let (l, _) = decode48(&file_bytes(dir, &e.path));
         let secs = l.len() as f64 / 48_000.0;
-        assert!((1.0..=120.0).contains(&secs), "{}: {secs} s is not a short loop", e.id);
+        assert!(
+            (1.0..=120.0).contains(&secs),
+            "{}: {secs} s is not a short loop",
+            e.id
+        );
         // A loop must not click at the wrap point.
         assert!(seam(&l) < 0.1, "{}: wrap jump {}", e.id, seam(&l));
     }
@@ -362,7 +457,10 @@ fn every_png_loads_through_pin_assets_and_is_not_a_flat_fill() {
         assert!(bytes.starts_with(&PNG_SIG), "{}: not a PNG", e.id);
         let img = load_png_via_assets(&bytes, "png_probe");
         assert!(img.width > 0 && img.height > 0, "{}", e.id);
-        assert_eq!(img.rgba8.len(), img.width as usize * img.height as usize * 4);
+        assert_eq!(
+            img.rgba8.len(),
+            img.width as usize * img.height as usize * 4
+        );
         let first = &img.rgba8[0..4];
         assert!(
             img.rgba8.chunks_exact(4).any(|p| p != first),
@@ -402,7 +500,10 @@ fn art_uses_the_table_palette() {
             tinted += 1;
         }
     }
-    assert!(tinted > 0, "no image is redder under a red palette than under a blue one");
+    assert!(
+        tinted > 0,
+        "no image is redder under a red palette than under a blue one"
+    );
     let _ = std::fs::remove_dir_all(dir_r);
     let _ = std::fs::remove_dir_all(dir_b);
 }
@@ -439,7 +540,11 @@ fn a_bundle_referencing_the_kit_passes_load_table() {
     assert!(table.contains(old));
     table = table.replace(old, &format!("file = \"{}\"", idx["sfx_bumper"].0));
     let mut declared = vec!["sfx_bumper".to_owned()];
-    for e in man.entries.iter().filter(|e| is_audio(&e.kind) && e.id != "sfx_bumper") {
+    for e in man
+        .entries
+        .iter()
+        .filter(|e| is_audio(&e.kind) && e.id != "sfx_bumper")
+    {
         let bus = match e.kind {
             AssetKind::Music => "music",
             AssetKind::Motif => "callout",
@@ -475,7 +580,9 @@ fn a_bundle_referencing_the_kit_passes_load_table() {
     for s in &loaded.manifest.sounds {
         assert_eq!(s.file, idx[&s.id].0, "{}", s.id);
         // Resolves through the VFS to a file pin_audio decodes.
-        let bytes = vfs.read(&s.file).unwrap_or_else(|e| panic!("{}: {e}", s.file));
+        let bytes = vfs
+            .read(&s.file)
+            .unwrap_or_else(|e| panic!("{}: {e}", s.file));
         assert!(pin_audio::mixer::decode(&bytes, 48_000).is_ok(), "{}", s.id);
     }
     assert_eq!(loaded.backglass.translite.layers.len(), layers.len());
@@ -501,7 +608,10 @@ fn appendix_a_sound_ids_and_the_stable_list_resolve() {
         let (path, kind, _) = idx
             .get(&id)
             .unwrap_or_else(|| panic!("sound id {id} is not in the manifest"));
-        assert!(matches!(*kind, "Sound" | "Music" | "Motif"), "{id}: kind {kind}");
+        assert!(
+            matches!(*kind, "Sound" | "Music" | "Motif"),
+            "{id}: kind {kind}"
+        );
         assert!(dir.join(path).is_file(), "{id}: {path} missing");
     }
 }

@@ -15,7 +15,15 @@ fn cli() -> Command {
 fn cli_writes_the_same_kit_as_generate_kit() {
     let out = tmp("cli_out");
     let status = cli()
-        .args(["--title", "Apex Circuit", "--palette", "0b1d3a,f2a900,e63946", "--seed", "1", "--out"])
+        .args([
+            "--title",
+            "Apex Circuit",
+            "--palette",
+            "0b1d3a,f2a900,e63946",
+            "--seed",
+            "1",
+            "--out",
+        ])
         .arg(&out)
         .output()
         .expect("run pin_assetgen");
@@ -30,7 +38,10 @@ fn cli_writes_the_same_kit_as_generate_kit() {
     assert!(a.contains_key("assets.toml"), "CLI wrote no assets.toml");
     assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
     for (name, bytes) in &a {
-        assert!(bytes == &b[name], "{name}: CLI output differs from generate_kit");
+        assert!(
+            bytes == &b[name],
+            "{name}: CLI output differs from generate_kit"
+        );
     }
     for e in &man.entries {
         assert!(out.join(&e.path).is_file(), "{}", e.path);
@@ -44,11 +55,23 @@ fn cli_seed_changes_the_output_and_large_seeds_parse() {
     let run = |seed: &str, name: &str| {
         let out = tmp(name);
         let o = cli()
-            .args(["--title", "T", "--palette", "ff0000,00ff00", "--seed", seed, "--out"])
+            .args([
+                "--title",
+                "T",
+                "--palette",
+                "ff0000,00ff00",
+                "--seed",
+                seed,
+                "--out",
+            ])
             .arg(&out)
             .output()
             .unwrap();
-        assert!(o.status.success(), "seed {seed}: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(
+            o.status.success(),
+            "seed {seed}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
         let t = read_tree(&out);
         let _ = std::fs::remove_dir_all(out);
         t
@@ -58,8 +81,14 @@ fn cli_seed_changes_the_output_and_large_seeds_parse() {
     let max = run("18446744073709551615", "cli_smax");
     assert!(a != b, "--seed is ignored");
     assert!(a != max);
-    let (lib, _) = generate(&meta("T", &[[255, 0, 0], [0, 255, 0]], u64::MAX), "cli_smax_lib");
-    assert!(max == read_tree(&lib), "--seed 18446744073709551615 != u64::MAX kit");
+    let (lib, _) = generate(
+        &meta("T", &[[255, 0, 0], [0, 255, 0]], u64::MAX),
+        "cli_smax_lib",
+    );
+    assert!(
+        max == read_tree(&lib),
+        "--seed 18446744073709551615 != u64::MAX kit"
+    );
     let _ = std::fs::remove_dir_all(lib);
 }
 
@@ -69,11 +98,56 @@ fn cli_rejects_bad_arguments_without_panicking() {
     let cases: Vec<Vec<&str>> = vec![
         vec![],
         vec!["--title", "T", "--palette", "ff0000", "--seed", "1"], // no --out
-        vec!["--title", "T", "--palette", "ff0000", "--seed", "not_a_number", "--out", "x"],
-        vec!["--title", "T", "--palette", "zzzzzz", "--seed", "1", "--out", "x"],
-        vec!["--title", "T", "--palette", "ff00", "--seed", "1", "--out", "x"],
-        vec!["--title", "T", "--palette", "ff0000", "--seed", "-1", "--out", "x"],
-        vec!["--title", "T", "--palette", "ff0000", "--seed", "18446744073709551616", "--out", "x"],
+        vec![
+            "--title",
+            "T",
+            "--palette",
+            "ff0000",
+            "--seed",
+            "not_a_number",
+            "--out",
+            "x",
+        ],
+        vec![
+            "--title",
+            "T",
+            "--palette",
+            "zzzzzz",
+            "--seed",
+            "1",
+            "--out",
+            "x",
+        ],
+        vec![
+            "--title",
+            "T",
+            "--palette",
+            "ff00",
+            "--seed",
+            "1",
+            "--out",
+            "x",
+        ],
+        vec![
+            "--title",
+            "T",
+            "--palette",
+            "ff0000",
+            "--seed",
+            "-1",
+            "--out",
+            "x",
+        ],
+        vec![
+            "--title",
+            "T",
+            "--palette",
+            "ff0000",
+            "--seed",
+            "18446744073709551616",
+            "--out",
+            "x",
+        ],
         vec!["--bogus"],
         vec!["--title"],
     ];
@@ -83,7 +157,10 @@ fn cli_rejects_bad_arguments_without_panicking() {
         assert_ne!(o.status.code(), Some(101), "{args:?} panicked");
         assert!(o.status.code().is_some(), "{args:?} died on a signal");
         assert!(!o.stderr.is_empty(), "{args:?}: no error message on stderr");
-        assert!(!out.join("x").join("assets.toml").exists(), "{args:?} still wrote a kit");
+        assert!(
+            !out.join("x").join("assets.toml").exists(),
+            "{args:?} still wrote a kit"
+        );
     }
     let _ = std::fs::remove_dir_all(out);
 }

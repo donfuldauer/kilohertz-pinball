@@ -29,6 +29,7 @@ fn hash_event(h: &mut DefaultHasher, e: &BallEvent) {
                 ImpactTarget::Wireform(i) => (2u8, i).hash(h),
                 ImpactTarget::Ball(b) => (3u8, b.0 as usize).hash(h),
                 ImpactTarget::Newton(i) => (4u8, i).hash(h),
+                ImpactTarget::Body { set, body } => (5u8, set, body).hash(h),
             }
             normal_speed.to_bits().hash(h);
         }

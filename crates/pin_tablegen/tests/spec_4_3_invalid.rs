@@ -376,6 +376,9 @@ fn mutate(text: &str, kind: u8, pos: usize, pick: usize, byte: u8) -> String {
         "\"x\"",
     ];
     let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() || !text.bytes().any(|b| b.is_ascii_digit()) {
+        return text.to_owned();
+    }
     match kind % 5 {
         // Replace one byte.
         0 => {

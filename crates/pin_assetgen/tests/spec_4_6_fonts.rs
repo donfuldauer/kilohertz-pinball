@@ -78,7 +78,11 @@ fn space_is_blank_and_every_other_glyph_is_not() {
     for (name, font, _, _) in fonts() {
         assert_eq!(lit(font, ' '), 0, "{name}: space is not blank");
         for code in 33u8..=126 {
-            assert!(lit(font, code as char) > 0, "{name}: {:?} is blank", code as char);
+            assert!(
+                lit(font, code as char) > 0,
+                "{name}: {:?} is blank",
+                code as char
+            );
         }
     }
 }
@@ -91,8 +95,19 @@ fn glyphs_are_legible_as_different_characters() {
         let distinct: BTreeSet<Vec<bool>> = (32u8..=126)
             .map(|c| bitmap(font, c as char).unwrap())
             .collect();
-        assert!(distinct.len() >= 90, "{name}: only {} distinct glyphs", distinct.len());
-        for (a, b) in [('A', 'B'), ('0', '1'), ('a', 'A'), ('.', ','), ('+', '-'), ('8', '3')] {
+        assert!(
+            distinct.len() >= 90,
+            "{name}: only {} distinct glyphs",
+            distinct.len()
+        );
+        for (a, b) in [
+            ('A', 'B'),
+            ('0', '1'),
+            ('a', 'A'),
+            ('.', ','),
+            ('+', '-'),
+            ('8', '3'),
+        ] {
             assert_ne!(bitmap(font, a), bitmap(font, b), "{name}: {a:?} == {b:?}");
         }
     }
@@ -135,7 +150,11 @@ fn render_text_width_grows_with_the_text_and_is_deterministic() {
         for n in 1..=12 {
             let text = "W".repeat(n);
             let (w, _, out) = render(font, &text);
-            assert!(w > last, "{name}: width of {n} glyphs is {w}, of {} was {last}", n - 1);
+            assert!(
+                w > last,
+                "{name}: width of {n} glyphs is {w}, of {} was {last}",
+                n - 1
+            );
             last = w;
             assert_eq!(render(font, &text).2, out, "{name}: not deterministic");
         }
@@ -161,7 +180,14 @@ fn characters_outside_ascii_32_126_render_as_one_defined_fallback() {
         assert_eq!(first.len(), w0 * h0);
         assert!(first.iter().all(|&b| b == 0 || b == 255));
         // The same fallback whatever the character, every time.
-        for c in ['\u{e9}', '\u{20ac}', '\u{6f22}', '\u{1f3b1}', '\u{a0}', '\u{ff}'] {
+        for c in [
+            '\u{e9}',
+            '\u{20ac}',
+            '\u{6f22}',
+            '\u{1f3b1}',
+            '\u{a0}',
+            '\u{ff}',
+        ] {
             let _ = font.glyph(c); // must not panic; Some or None are both defined
             let (w, h, out) = render(font, &c.to_string());
             assert_eq!((w, h), (w0, h0), "{name} {c:?}");

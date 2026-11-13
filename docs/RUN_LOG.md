@@ -137,3 +137,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 4.3 | Independent Tester | Fable 5.2 | 1 | running | — | |
 | 4 | 4.6 | Implementer | Opus 5.5 | 1 | running | — | |
 | 4 | 4.6 | Independent Tester | Fable 5.2 | 1 | running | — | |
+| 4 | 3.4 | Independent Tester | Fable 5.2 | 1 | done | 84 spec tests pass; clippy clean on spec files | no implementation defects; tests beyond the brief pin documented choices (rumble envelope, SSF defaults, chunk invariance) — flagged for the Reviewer |

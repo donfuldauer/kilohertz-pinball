@@ -107,7 +107,17 @@ fn ball_roll_loop_is_seamless() {
 
 #[test]
 fn unknown_ids_render_none() {
-    for id in ["", "sfx", "sfx_", "SFX_FLIPPER", "sfx_flipper ", "flipper", "music", "\0", "sfx_bumper\n"] {
+    for id in [
+        "",
+        "sfx",
+        "sfx_",
+        "SFX_FLIPPER",
+        "sfx_flipper ",
+        "flipper",
+        "music",
+        "\0",
+        "sfx_bumper\n",
+    ] {
         assert!(render_sfx(id, 48_000).is_none(), "{id:?} rendered");
     }
 }

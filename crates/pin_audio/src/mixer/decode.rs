@@ -32,8 +32,8 @@
 //!   checked up front from the WAV data-chunk size or the last Ogg page's
 //!   granule position, and again while decoding: resampling is streamed
 //!   (source frames are never buffered), so no more than 10 minutes of
-//!   output is ever allocated, and an up-front reservation never exceeds what
-//!   the input bytes (WAV) or the granule (Vorbis) can account for.
+//!   output is ever allocated; the up-front reservation is capped at
+//!   [`INITIAL_RESERVE_FRAMES`] whatever the header claims (see "Memory").
 //! * Ogg buffers with more than one logical stream (chained or multiplexed,
 //!   seen as a serial-number change): [`DecodeError::Unsupported`].
 //! * The Vorbis comment header is skipped unparsed; the identification and
@@ -247,7 +247,9 @@ impl Sample {
     }
 }
 
-/// Why [`decode`] rejected a buffer.
+/// Why [`decode`] rejected a buffer. Non-exhaustive: match it with a
+/// wildcard arm, more reasons may be added.
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecodeError {
     /// Not a WAV (`RIFF....WAVE`) or Ogg (`OggS`) buffer; an encoding inside

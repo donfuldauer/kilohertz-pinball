@@ -2,6 +2,14 @@
 //! the four-corner equal-power SSF panner over the 7.1 exciter channels.
 //! Written from the brief alone (black box).
 
+// Style lints only; test code favours explicit index loops and step-by-step setup.
+#![allow(
+    clippy::field_reassign_with_default,
+    clippy::manual_is_multiple_of,
+    clippy::needless_range_loop,
+    clippy::type_complexity
+)]
+
 use pin_audio::ssf::{CH_BL, CH_BR, CH_FC, CH_FL, CH_FR, CH_LFE, CH_SL, CH_SR, SsfPanner};
 use proptest::prelude::*;
 
@@ -16,10 +24,10 @@ fn playfield() -> SsfPanner {
 
 /// The brief's law, evaluated in f64: returns (SL, SR, BL, BR).
 fn law(x: f32, y: f32, x_min: f32, x_max: f32, y_min: f32, y_max: f32) -> [f64; 4] {
-    let u = ((f64::from(x) - f64::from(x_min)) / (f64::from(x_max) - f64::from(x_min)))
-        .clamp(0.0, 1.0);
-    let w = ((f64::from(y) - f64::from(y_min)) / (f64::from(y_max) - f64::from(y_min)))
-        .clamp(0.0, 1.0);
+    let u =
+        ((f64::from(x) - f64::from(x_min)) / (f64::from(x_max) - f64::from(x_min))).clamp(0.0, 1.0);
+    let w =
+        ((f64::from(y) - f64::from(y_min)) / (f64::from(y_max) - f64::from(y_min))).clamp(0.0, 1.0);
     let h = std::f64::consts::FRAC_PI_2;
     [
         (u * h).cos() * (w * h).cos(),

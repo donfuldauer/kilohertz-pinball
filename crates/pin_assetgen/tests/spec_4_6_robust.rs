@@ -63,7 +63,11 @@ fn edge_case_metadata_generates_a_loadable_kit() {
         meta("", &[], u64::MAX),
         meta("Apex Circuit", &[], 1),
         meta("", &APEX_PALETTE, 1),
-        meta("\u{30d4}\u{30f3}\u{30dc}\u{30fc}\u{30eb} \u{1f3b1} caf\u{e9}", &APEX_PALETTE, u64::MAX),
+        meta(
+            "\u{30d4}\u{30f3}\u{30dc}\u{30fc}\u{30eb} \u{1f3b1} caf\u{e9}",
+            &APEX_PALETTE,
+            u64::MAX,
+        ),
         meta("../../etc/passwd", &[[0, 0, 0]], 7),
         meta("a/b\\c:d*e?\"<>|\0\n\r\t", &[[255, 255, 255]], 7),
         meta(&long, &[[1, 2, 3]; 64], 0x8000_0000_0000_0000),
@@ -89,16 +93,23 @@ fn hostile_titles_do_not_write_outside_out_dir() {
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
-        assert_eq!(names, vec![std::ffi::OsString::from("kit")], "{title:?} escaped out_dir");
+        assert_eq!(
+            names,
+            vec![std::ffi::OsString::from("kit")],
+            "{title:?} escaped out_dir"
+        );
     }
     let _ = std::fs::remove_dir_all(parent);
 }
 
 #[test]
 fn same_edge_meta_is_still_deterministic() {
-    for (i, m) in [meta("", &[], u64::MAX), meta("\u{e9}\u{1f3b1}", &[[9, 9, 9]], 0)]
-        .iter()
-        .enumerate()
+    for (i, m) in [
+        meta("", &[], u64::MAX),
+        meta("\u{e9}\u{1f3b1}", &[[9, 9, 9]], 0),
+    ]
+    .iter()
+    .enumerate()
     {
         let (a, _) = generate(m, &format!("edge_det_a{i}"));
         let (b, _) = generate(m, &format!("edge_det_b{i}"));

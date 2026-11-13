@@ -12,8 +12,6 @@ pub const TARGET_PEAK: f64 = 0.89;
 /// A noise colouring filter.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Filter {
-    /// No filtering.
-    White,
     /// One-pole low-pass at the given cut-off (Hz).
     Low(f64),
     /// One-pole high-pass at the given cut-off (Hz).
@@ -70,7 +68,6 @@ impl Biquad {
 /// Stateful filter applying a [`Filter`] sample by sample.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum FilterState {
-    White,
     Low { a: f64, y: f64 },
     High { a: f64, y: f64 },
     Band(Biquad),
@@ -79,7 +76,6 @@ pub(crate) enum FilterState {
 impl FilterState {
     pub(crate) fn new(f: Filter, sr: f64) -> FilterState {
         match f {
-            Filter::White => FilterState::White,
             Filter::Low(fc) => FilterState::Low {
                 a: one_pole(fc, sr),
                 y: 0.0,
@@ -94,7 +90,6 @@ impl FilterState {
 
     pub(crate) fn run(&mut self, x: f64) -> f64 {
         match self {
-            FilterState::White => x,
             FilterState::Low { a, y } => {
                 *y += *a * (x - *y);
                 *y
@@ -235,12 +230,10 @@ mod tests {
         // Low-pass passes DC, high-pass removes it.
         let mut lp = FilterState::new(Filter::Low(100.0), sr);
         let mut hp = FilterState::new(Filter::High(100.0), sr);
-        let mut w = FilterState::new(Filter::White, sr);
         let (mut l, mut h) = (0.0, 0.0);
         for _ in 0..48_000 {
             l = lp.run(1.0);
             h = hp.run(1.0);
-            assert_eq!(w.run(0.5), 0.5);
         }
         assert!((l - 1.0).abs() < 1e-6);
         assert!(h.abs() < 1e-6);

@@ -16,23 +16,33 @@
 //! * [`NewtonChain`]: captive balls on a 1D spline.
 //! * [`Dispenser`]: FIFO of ball profiles with an exit pose.
 //! * [`ExternalForce`]: the hook list Subphase 2.7 (Magnus, remanence)
-//!   plugs into; [`SurfaceVelocity`] and [`contact`] are the seams for moving
-//!   surfaces (flippers, Subphase 2.3).
+//!   plugs into, with a [`ForceContext`] (magnets, sub-step time) and ball
+//!   add/remove notifications.
+//! * [`MovingBodies`] ([`body`]): rigid bodies that move during the tick
+//!   (flippers, Subphase 2.3; kickers, plunger tip, spinner flaps, Subphase
+//!   2.4), lent to [`BallSolver::step_with_bodies`]: continuous collision,
+//!   resting contacts and the two-body impulse.
+//!   [`SurfaceVelocity`] gives moving surfaces of the static geometry.
 //!
 //! `step` never allocates and is deterministic: fixed iteration order, no
 //! fused multiply-add, transcendental functions from `libm`.
 
+pub mod body;
 pub mod contact;
 mod dispenser;
 mod newton;
 mod solver;
 mod types;
 
+pub use body::{
+    BODY_REST_SPEED, BODY_SKIN, BodyCast, BodyPoint, MAX_CAST_ITERATIONS, MovingBodies,
+    conservative_cast,
+};
 pub use dispenser::{DISPENSER_CAPACITY, Dispenser};
 pub use newton::{MAX_CHAIN_BALLS, NewtonChain, NewtonError};
 pub use solver::BallSolver;
 pub use types::{
-    Ball, BallEvent, BallEvents, BallHandle, BallSolverConfig, ExternalForce, Geometry,
-    IMPACT_REPORT_SPEED, ImpactTarget, MAX_BALL_EVENTS, MAX_BALLS, Magnet, Sensor, SensorKind,
-    SurfaceVelocity,
+    Ball, BallEvent, BallEvents, BallHandle, BallSolverConfig, ExternalForce, ForceContext,
+    Geometry, IMPACT_REPORT_SPEED, ImpactTarget, MAX_BALL_EVENTS, MAX_BALLS, Magnet, MagnetState,
+    Sensor, SensorKind, SurfaceVelocity,
 };

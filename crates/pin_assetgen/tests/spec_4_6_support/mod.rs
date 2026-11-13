@@ -1,6 +1,6 @@
 //! Shared helpers for the Subphase 4.6 Independent Tester spec tests
 //! (black box: written from the brief's FIXED PUBLIC API only).
-#![allow(dead_code, unreachable_patterns)]
+#![allow(dead_code, unreachable_patterns, clippy::needless_range_loop)]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -152,8 +152,9 @@ pub fn peak(s: &[f32]) -> f64 {
 
 /// Largest |s[i+1] - s[i]| inside the buffer.
 pub fn max_step(s: &[f32]) -> f64 {
-    s.windows(2)
-        .fold(0.0f64, |m, w| m.max((f64::from(w[1]) - f64::from(w[0])).abs()))
+    s.windows(2).fold(0.0f64, |m, w| {
+        m.max((f64::from(w[1]) - f64::from(w[0])).abs())
+    })
 }
 
 /// |first - last|: the jump a looping player makes at the wrap point.

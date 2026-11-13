@@ -3,6 +3,14 @@
 //! Written from the brief (Appendix B) alone; the only implementation-specific
 //! parts are the small adapters below.
 
+// Style lints only; test code favours explicit index loops and step-by-step setup.
+#![allow(
+    clippy::field_reassign_with_default,
+    clippy::manual_is_multiple_of,
+    clippy::needless_range_loop,
+    clippy::type_complexity
+)]
+
 use pin_audio::telemetry::{DatagramBatch, TelemetryEncoder, TelemetryState, decode_datagram};
 use pin_core::input::HapticsTelemetryEvent;
 use pin_core::telemetry::{
@@ -99,7 +107,11 @@ fn tick(
 }
 
 fn check_datagram(bytes: &[u8], t: u64) -> Decoded {
-    assert!(bytes.len() <= MAX_DATAGRAM_LEN, "datagram of {} bytes", bytes.len());
+    assert!(
+        bytes.len() <= MAX_DATAGRAM_LEN,
+        "datagram of {} bytes",
+        bytes.len()
+    );
     assert_eq!(&bytes[0..4], b"PNTL", "magic");
     assert_eq!(bytes[4], 1, "version");
     let (h, e) = decode_datagram(bytes).expect("encoder output must decode");
@@ -120,7 +132,11 @@ fn check_datagram(bytes: &[u8], t: u64) -> Decoded {
     // Bit-exact round trip through the normative pin_core codec.
     let mut again = [0u8; MAX_DATAGRAM_LEN];
     let n = proto::encode_datagram(h.tick, h.flags, &e, &mut again).unwrap();
-    assert_eq!(&again[..n], bytes, "decode -> encode must reproduce the bytes");
+    assert_eq!(
+        &again[..n],
+        bytes,
+        "decode -> encode must reproduce the bytes"
+    );
     // And the pin_core decoder agrees with the pin_audio one.
     let (h2, e2) = proto::decode_datagram(bytes).unwrap();
     assert_eq!(h2, h);
@@ -181,7 +197,10 @@ impl Model {
 }
 
 fn all_entries(decoded: &[Decoded]) -> Vec<TelemetryEntry> {
-    decoded.iter().flat_map(|(_, e)| e.iter().copied()).collect()
+    decoded
+        .iter()
+        .flat_map(|(_, e)| e.iter().copied())
+        .collect()
 }
 
 fn impulses_of(decoded: &[Decoded]) -> Vec<(u16, f32)> {
@@ -242,7 +261,10 @@ fn flipper_pulse_is_reported_on_its_own_tick() {
     assert_eq!(d.len(), 1, "one datagram for the tick with changes");
     let (h, entries) = &d[0];
     assert_eq!(h.tick, T);
-    assert!(!is_full(h), "an incremental datagram does not set the full-state flag");
+    assert!(
+        !is_full(h),
+        "an incremental datagram does not set the full-state flag"
+    );
     assert!(
         entries.contains(&TelemetryEntry {
             kind: TelemetryKind::Coil,
@@ -282,7 +304,10 @@ fn flipper_pulse_is_reported_on_its_own_tick() {
     assert_eq!(&buf[..n], bytes.as_slice());
     let (h, e) = decode_datagram(&buf[..n]).unwrap();
     assert_eq!(h.tick, T);
-    assert!(e.iter().any(|e| e.kind == TelemetryKind::Coil && e.value == 1.0));
+    assert!(
+        e.iter()
+            .any(|e| e.kind == TelemetryKind::Coil && e.value == 1.0)
+    );
     assert!(e.iter().any(|e| e.kind == TelemetryKind::HapticImpulse));
 
     // The coil dropping again is reported on that tick, with value 0.
@@ -304,15 +329,26 @@ fn impulse_alone_makes_a_datagram_and_is_not_repeated() {
     let s = new_state();
     let (mut enc, mut batch) = loaded(&s, 1);
     let ev = [
-        HapticsTelemetryEvent { tick: 2, source: 9, strength: 1.0 },
-        HapticsTelemetryEvent { tick: 2, source: 300, strength: 0.25 },
+        HapticsTelemetryEvent {
+            tick: 2,
+            source: 9,
+            strength: 1.0,
+        },
+        HapticsTelemetryEvent {
+            tick: 2,
+            source: 300,
+            strength: 0.25,
+        },
     ];
     let d = tick(&mut enc, &mut batch, 2, &s, &ev);
     assert_eq!(d.len(), 1);
     assert!(!is_full(&d[0].0));
     assert_eq!(impulses_of(&d), vec![(9, 1.0), (300, 0.25)]);
     assert_eq!(d[0].1.len(), 2);
-    assert!(tick(&mut enc, &mut batch, 3, &s, &[]).is_empty(), "impulses are one-shot");
+    assert!(
+        tick(&mut enc, &mut batch, 3, &s, &[]).is_empty(),
+        "impulses are one-shot"
+    );
 }
 
 #[test]
@@ -320,9 +356,21 @@ fn impulse_strength_is_clamped_like_pin_core() {
     let s = new_state();
     let (mut enc, mut batch) = loaded(&s, 1);
     let ev = [
-        HapticsTelemetryEvent { tick: 2, source: 1, strength: 7.5 },
-        HapticsTelemetryEvent { tick: 2, source: 2, strength: -3.0 },
-        HapticsTelemetryEvent { tick: 2, source: 3, strength: f32::NAN },
+        HapticsTelemetryEvent {
+            tick: 2,
+            source: 1,
+            strength: 7.5,
+        },
+        HapticsTelemetryEvent {
+            tick: 2,
+            source: 2,
+            strength: -3.0,
+        },
+        HapticsTelemetryEvent {
+            tick: 2,
+            source: 3,
+            strength: f32::NAN,
+        },
     ];
     let d = tick(&mut enc, &mut batch, 2, &s, &ev);
     assert_eq!(impulses_of(&d), vec![(1, 1.0), (2, 0.0), (3, 0.0)]);
@@ -366,7 +414,11 @@ fn only_the_changed_element_is_sent() {
         let d = tick(&mut enc, &mut batch, t, &s, &[]);
         assert_eq!(d.len(), 1, "{kind:?} {id}");
         assert!(!is_full(&d[0].0));
-        assert_eq!(d[0].1, vec![TelemetryEntry { kind, id, value }], "{kind:?} {id}");
+        assert_eq!(
+            d[0].1,
+            vec![TelemetryEntry { kind, id, value }],
+            "{kind:?} {id}"
+        );
         assert_eq!(d[0].1[0].value.to_bits(), value.to_bits());
         assert!(tick(&mut enc, &mut batch, t + 1, &s, &[]).is_empty());
     }
@@ -381,7 +433,10 @@ fn forced_full_state_carries_the_whole_table() {
     let d = tick(&mut enc, &mut batch, 77, &s, &[]);
     assert!(!d.is_empty());
     for (h, _) in &d {
-        assert!(is_full(h), "every datagram of a full state sets flags bit 0");
+        assert!(
+            is_full(h),
+            "every datagram of a full state sets flags bit 0"
+        );
         assert_eq!(h.tick, 77);
     }
     let mut m = Model::default();
@@ -395,12 +450,22 @@ fn forced_full_state_carries_the_whole_table() {
             TelemetryKind::Magnet => magnet_len(),
             TelemetryKind::HapticImpulse => panic!("no impulse was fed"),
         };
-        assert!(usize::from(e.id) < limit, "{e:?} is outside the state arrays");
+        assert!(
+            usize::from(e.id) < limit,
+            "{e:?} is outside the state arrays"
+        );
     }
     let keys: BTreeSet<(u8, u16)> = entries.iter().map(|e| (e.kind as u8, e.id)).collect();
-    assert_eq!(keys.len(), entries.len(), "an element appears twice in one full state");
+    assert_eq!(
+        keys.len(),
+        entries.len(),
+        "an element appears twice in one full state"
+    );
     // Minimal splitting: every datagram but the last is full.
-    assert_eq!(d.len(), entries.len().div_ceil(MAX_ENTRIES_PER_DATAGRAM).max(1));
+    assert_eq!(
+        d.len(),
+        entries.len().div_ceil(MAX_ENTRIES_PER_DATAGRAM).max(1)
+    );
 
     // force_full_state is one-shot.
     assert!(tick(&mut enc, &mut batch, 78, &s, &[]).is_empty());
@@ -420,7 +485,10 @@ fn full_state_of_an_all_off_table_is_still_sent() {
     let mut batch = new_batch();
     enc.force_full_state();
     let d = tick(&mut enc, &mut batch, 5, &s, &[]);
-    assert!(!d.is_empty(), "a listener must see the load even if everything is off");
+    assert!(
+        !d.is_empty(),
+        "a listener must see the load even if everything is off"
+    );
     assert!(d.iter().all(|(h, _)| is_full(h)));
 }
 
@@ -433,7 +501,10 @@ fn a_new_encoder_resynchronises_a_listener_on_its_first_tick() {
     let mut batch = new_batch();
     let d = tick(&mut enc, &mut batch, 0, &s, &[]);
     assert!(!d.is_empty());
-    assert!(d.iter().any(|(h, _)| is_full(h)), "first datagram(s) must be a full state");
+    assert!(
+        d.iter().any(|(h, _)| is_full(h)),
+        "first datagram(s) must be a full state"
+    );
     let mut m = Model::default();
     m.apply(&d);
     m.assert_matches(&s, "first tick");
@@ -495,7 +566,11 @@ fn more_than_180_changes_split_with_the_same_tick() {
         s.lamps[i] = v;
         expect.insert((TelemetryKind::Lamp as u8, i as u16), v.to_bits());
     }
-    let ev = [HapticsTelemetryEvent { tick: 501, source: 4, strength: 0.5 }];
+    let ev = [HapticsTelemetryEvent {
+        tick: 501,
+        source: 4,
+        strength: 0.5,
+    }];
     let d = tick(&mut enc, &mut batch, 501, &s, &ev);
     assert_eq!(d.len(), 3, "401 entries need exactly 3 datagrams");
     let mut got = BTreeMap::new();
@@ -508,7 +583,8 @@ fn more_than_180_changes_split_with_the_same_tick() {
         for e in entries {
             if e.kind != TelemetryKind::HapticImpulse {
                 assert!(
-                    got.insert((e.kind as u8, e.id), e.value.to_bits()).is_none(),
+                    got.insert((e.kind as u8, e.id), e.value.to_bits())
+                        .is_none(),
                     "{e:?} sent twice"
                 );
             }
@@ -573,8 +649,16 @@ fn encode_tick_does_not_allocate() {
     let mut enc = TelemetryEncoder::new();
     let mut batch = new_batch();
     let ev = [
-        HapticsTelemetryEvent { tick: 0, source: 1, strength: 0.5 },
-        HapticsTelemetryEvent { tick: 0, source: 2, strength: 0.9 },
+        HapticsTelemetryEvent {
+            tick: 0,
+            source: 1,
+            strength: 0.5,
+        },
+        HapticsTelemetryEvent {
+            tick: 0,
+            source: 2,
+            strength: 0.9,
+        },
     ];
     let mut produced = 0usize;
     let before = allocs();
@@ -601,7 +685,10 @@ fn encode_tick_does_not_allocate() {
     }
     let after = allocs();
     assert_eq!(after - before, 0, "encode_tick allocated");
-    assert!(produced > 300, "the scenario must actually produce datagrams");
+    assert!(
+        produced > 300,
+        "the scenario must actually produce datagrams"
+    );
 }
 
 // ------------------------------------------------------------- determinism
@@ -645,13 +732,24 @@ fn same_inputs_same_bytes_over_10_runs() {
 
 #[test]
 fn decoder_rejects_malformed_datagrams() {
-    let e = TelemetryEntry { kind: TelemetryKind::Coil, id: 9, value: 1.0 };
+    let e = TelemetryEntry {
+        kind: TelemetryKind::Coil,
+        id: 9,
+        value: 1.0,
+    };
     let mut buf = [0u8; 64];
     let n = proto::encode_datagram(5, 0, &[e, e], &mut buf).unwrap();
     assert_eq!(n, 32);
     let good = &buf[..n];
     let (h, entries) = decode_datagram(good).unwrap();
-    assert_eq!(h, TelemetryHeader { flags: 0, entry_count: 2, tick: 5 });
+    assert_eq!(
+        h,
+        TelemetryHeader {
+            flags: 0,
+            entry_count: 2,
+            tick: 5
+        }
+    );
     assert_eq!(entries, vec![e, e]);
 
     assert!(decode_datagram(&[]).is_err());

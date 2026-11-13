@@ -2,6 +2,14 @@
 //! the lock-free haptics ring (allocation-free push, drop-newest with a
 //! counter, in-order SPSC delivery across threads). Black box, from the brief.
 
+// Style lints only; test code favours explicit index loops and step-by-step setup.
+#![allow(
+    clippy::field_reassign_with_default,
+    clippy::manual_is_multiple_of,
+    clippy::needless_range_loop,
+    clippy::type_complexity
+)]
+
 use pin_core::haptics::{HapticEvent, HapticKind};
 use pin_core::ids::{CoilId, FlipperId};
 use pin_core::input::HapticsTelemetryEvent;
@@ -58,9 +66,14 @@ fn ev(i: u64) -> Ev {
     let p = [i as f32, -(i as f32) * 0.5, (i % 7) as f32];
     let kind = match i % 6 {
         0 => HapticKind::CoilFire { coil: CoilId(n) },
-        1 => HapticKind::EosHit { flipper: FlipperId(n) },
+        1 => HapticKind::EosHit {
+            flipper: FlipperId(n),
+        },
         2 => HapticKind::Bumper { mech: n },
-        3 => HapticKind::BallDrop { ball: n, position_mm: p },
+        3 => HapticKind::BallDrop {
+            ball: n,
+            position_mm: p,
+        },
         4 => HapticKind::BallRoll {
             ball: n,
             position_mm: p,
@@ -73,7 +86,11 @@ fn ev(i: u64) -> Ev {
 }
 
 fn dropped(tx: &HapticsProducer, rx: &HapticsConsumer) -> u64 {
-    assert_eq!(tx.dropped(), rx.dropped(), "both ends report the same drop count");
+    assert_eq!(
+        tx.dropped(),
+        rx.dropped(),
+        "both ends report the same drop count"
+    );
     tx.dropped()
 }
 
@@ -111,7 +128,10 @@ fn full_ring_drops_the_newest_and_counts() {
         );
         assert_eq!(dropped(&tx, &rx), 1, "the refused push that ended the fill");
         for k in 0..37u64 {
-            assert!(!tx.push(ev(5_000_000 + k)), "push on a full ring must return false");
+            assert!(
+                !tx.push(ev(5_000_000 + k)),
+                "push on a full ring must return false"
+            );
             assert_eq!(dropped(&tx, &rx), 2 + k);
         }
         // The oldest events survive, in order; the dropped ones never appear.
@@ -191,7 +211,11 @@ fn cross_thread_stress_delivers_in_order() {
         while next < N {
             match rx.pop() {
                 Some(e) => {
-                    assert_eq!(e, ev(next), "capacity {capacity}: out of order or corrupted");
+                    assert_eq!(
+                        e,
+                        ev(next),
+                        "capacity {capacity}: out of order or corrupted"
+                    );
                     next += 1;
                 }
                 None => std::thread::yield_now(),
@@ -199,7 +223,11 @@ fn cross_thread_stress_delivers_in_order() {
         }
         let (tx, refused, allocated) = producer.join().unwrap();
         assert_eq!(rx.pop(), None);
-        assert_eq!(dropped(&tx, &rx), refused, "every refused push is counted once");
+        assert_eq!(
+            dropped(&tx, &rx),
+            refused,
+            "every refused push is counted once"
+        );
         assert_eq!(allocated, 0, "producer thread allocated while pushing");
     }
 }
@@ -246,7 +274,11 @@ fn cross_thread_drop_newest_keeps_an_ordered_subsequence() {
 #[test]
 fn the_old_event_type_still_travels_through_a_ring() {
     let (mut tx, mut rx) = haptics_ring::<HapticsTelemetryEvent>(4);
-    let e = |i: u64| HapticsTelemetryEvent { tick: i, source: i as u16, strength: 0.5 };
+    let e = |i: u64| HapticsTelemetryEvent {
+        tick: i,
+        source: i as u16,
+        strength: 0.5,
+    };
     let mut held = 0;
     while held < 1000 && tx.push(e(held)) {
         held += 1;
@@ -291,7 +323,11 @@ fn bus_counts_drops_when_a_sink_is_full_without_starving_the_others() {
     }
     assert!(bus.dropped() > 0, "the small sink overflowed");
     for i in 0..1000 {
-        assert_eq!(large.pop(), Some(ev(i)), "the large sink must not lose event {i}");
+        assert_eq!(
+            large.pop(),
+            Some(ev(i)),
+            "the large sink must not lose event {i}"
+        );
     }
     let mut n = 0;
     while let Some(e) = small.pop() {

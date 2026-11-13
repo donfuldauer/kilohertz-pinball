@@ -1013,6 +1013,7 @@ impl BallSolver {
         &self,
         geo: &Geometry<'_>,
         bounds: &Bounds,
+        bodies: &Bodies<'_, '_>,
         i: usize,
         sc: &[Scratch; MAX_BALLS],
     ) -> ContactList {
@@ -1094,6 +1095,35 @@ impl BallSolver {
             }
         }
 
+        let time = sc[i].t;
+        for (si, set) in bodies.sets.iter().enumerate() {
+            for b in 0..set.body_count() {
+                if set.layer_mask(b) & mask == 0 || !near(Some(&set.swept_bounds(b)), pos, pos, pad)
+                {
+                    continue;
+                }
+                let Some(cp) = set.closest_point(b, time, pos) else {
+                    continue;
+                };
+                let gap = cp.distance - r;
+                if gap <= TOUCH_TOL && cp.normal.is_finite() {
+                    add(Contact {
+                        normal: cp.normal,
+                        point: cp.point,
+                        depth: -gap,
+                        active_eps: BODY_SKIN,
+                        kind: ContactKind::Surface(
+                            ImpactTarget::Body { set: si, body: b },
+                            set.material(b),
+                        ),
+                        persistent: touches(own, cp.normal),
+                        target: 0.0,
+                        acc: ContactImpulse::default(),
+                    });
+                }
+            }
+        }
+
         for j in 0..MAX_BALLS {
             let Some(other) = self.slots[j] else {
                 continue;
@@ -1152,10 +1182,11 @@ impl BallSolver {
         &mut self,
         geo: &Geometry<'_>,
         bounds: &Bounds,
+        bodies: &Bodies<'_, '_>,
         i: usize,
         sc: &mut [Scratch; MAX_BALLS],
     ) -> ContactList {
-        let mut contacts = self.gather(geo, bounds, i, sc);
+        let mut contacts = self.gather(geo, bounds, bodies, i, sc);
         for c in &mut contacts {
             // Balls may close the gap between them during the sub-step.
             // Surfaces may not: their casts stop a ball anywhere inside the
@@ -1207,7 +1238,7 @@ impl BallSolver {
                     let seat = rem < 0.0
                         && rem >= -c.active_eps
                         && c.persistent
-                        && (ball.velocity - self.surface_velocity_at(target, c.point))
+                        && (ball.velocity - self.target_velocity(bodies, target, me.t, c.point))
                             .dot(c.normal)
                             <= SEAT_SPEED;
                     if rem > 0.0 || seat {
@@ -1229,7 +1260,10 @@ impl BallSolver {
         let mut force = Vec3::ZERO;
         let mut any = false;
         if pd.coupling != 0.0 {
-            for (m, power) in &self.magnets {
+            for MagnetState {
+                magnet: m, power, ..
+            } in &self.magnets
+            {
                 if *power <= 0.0 || m.layer_mask & mask == 0 {
                     continue;
                 }
@@ -1242,8 +1276,17 @@ impl BallSolver {
                 }
             }
         }
+        let ctx = ForceContext {
+            magnets: &self.magnets,
+            step_index: self.steps,
+            tick_dt: self.tick_dt,
+            tick_time: me.t,
+            sim_time: self.elapsed + f64::from(me.t),
+            substep: me.k,
+            substeps: me.n_sub,
+        };
         for hook in &mut self.hooks {
-            force += hook.force(BallHandle(i as u8), &ball, &self.profiles[me.pidx], h);
+            force += hook.force_in(&ctx, BallHandle(i as u8), &ball, &self.profiles[me.pidx], h);
             any = true;
         }
         if any && force.is_finite() {
@@ -1263,6 +1306,7 @@ impl BallSolver {
         contacts: &ContactList,
         members: &[bool; MAX_BALLS],
         sc: &mut [Scratch; MAX_BALLS],
+        bodies: &mut Bodies<'_, '_>,
         events: &mut BallEvents,
     ) {
         let me = sc[i];
@@ -1274,7 +1318,7 @@ impl BallSolver {
             match c.kind {
                 ContactKind::Surface(target, material) => {
                     self.surface_hit(
-                        i, &me, c.normal, c.point, target, material, false, min, events,
+                        i, &me, c.normal, c.point, target, material, false, min, bodies, events,
                     );
                 }
                 ContactKind::Ball(j) => {
@@ -1323,6 +1367,9 @@ impl BallSolver {
                 rolling: w.acc.rolling * scale,
             };
             match c.kind {
+                // A body's reaction goes through its own solve (no warm
+                // start: the impulses would have to be replayed on it).
+                ContactKind::Surface(ImpactTarget::Body { .. }, _) => {}
                 ContactKind::Surface(..) => {
                     if let Some(ball) = self.slots[i].as_mut() {
                         apply_surface_impulse(ball, me.body, c.normal, &acc);
@@ -1361,6 +1408,7 @@ impl BallSolver {
     /// contacts with balls (`surfaces == false`), then, in a second call,
     /// those with surfaces, so that a sweep ends with the surfaces exactly
     /// non-penetrating. Returns the largest velocity change (m/s).
+    #[allow(clippy::too_many_arguments)]
     fn boundary_sweep(
         &mut self,
         i: usize,
@@ -1369,6 +1417,7 @@ impl BallSolver {
         members: &[bool; MAX_BALLS],
         settled: &mut [bool; MAX_BALLS],
         sc: &mut [Scratch; MAX_BALLS],
+        bodies: &mut Bodies<'_, '_>,
     ) -> f32 {
         let me = sc[i];
         let mut change = 0.0f32;
@@ -1377,6 +1426,18 @@ impl BallSolver {
                 continue;
             }
             let moved = match c.kind {
+                ContactKind::Surface(ImpactTarget::Body { set, body }, material) => self
+                    .body_solve(
+                        i,
+                        &me,
+                        bodies,
+                        (set, body),
+                        material,
+                        c.normal,
+                        c.point,
+                        c.target,
+                        &mut c.acc,
+                    ),
                 ContactKind::Surface(target, material) => {
                     let k = self.surface_coefficients(me.pidx, material);
                     let vs = self.surface_velocity_at(target, c.point);
@@ -1427,6 +1488,7 @@ impl BallSolver {
     /// (projected Gauss–Seidel with accumulated impulses), so that balls in
     /// grooves, corners, rows and stacks come to rest.
     #[allow(clippy::needless_range_loop)] // the index addresses several per-ball arrays
+    #[allow(clippy::too_many_arguments)]
     fn boundaries(
         &mut self,
         geo: &Geometry<'_>,
@@ -1434,6 +1496,7 @@ impl BallSolver {
         time: f32,
         sc: &mut [Scratch; MAX_BALLS],
         lists: &mut [ContactList; MAX_BALLS],
+        bodies: &mut Bodies<'_, '_>,
         events: &mut BallEvents,
     ) {
         let mut members = [false; MAX_BALLS];
@@ -1447,12 +1510,12 @@ impl BallSolver {
         }
         for i in 0..MAX_BALLS {
             if members[i] {
-                lists[i] = self.boundary_prepare(geo, bounds, i, sc);
+                lists[i] = self.boundary_prepare(geo, bounds, bodies, i, sc);
             }
         }
         for i in 0..MAX_BALLS {
             if members[i] {
-                self.boundary_impacts(i, &lists[i], &members, sc, events);
+                self.boundary_impacts(i, &lists[i], &members, sc, bodies, events);
             }
         }
         for i in 0..MAX_BALLS {
@@ -1476,6 +1539,7 @@ impl BallSolver {
                             &members,
                             &mut settled,
                             sc,
+                            bodies,
                         );
                         change[i] = change[i].max(moved);
                     }
@@ -1519,10 +1583,12 @@ impl BallSolver {
 
     /// The next impact of ball `i` with anything but another free ball,
     /// within `window` seconds from `now`.
+    #[allow(clippy::too_many_arguments)]
     fn cast_static(
         &self,
         geo: &Geometry<'_>,
         bounds: &Bounds,
+        bodies: &Bodies<'_, '_>,
         i: usize,
         sc: &Scratch,
         now: f32,
@@ -1532,7 +1598,9 @@ impl BallSolver {
             return Cache::Free;
         };
         let v = ball.velocity;
-        if sc.frozen || window.is_nan() || window <= 0.0 || v == Vec3::ZERO {
+        // A ball at rest can still be hit by a moving body.
+        let moving = v != Vec3::ZERO;
+        if sc.frozen || window.is_nan() || window <= 0.0 || (!moving && bodies.sets.is_empty()) {
             return Cache::Free;
         }
         let r = sc.body.radius;
@@ -1541,12 +1609,15 @@ impl BallSolver {
         let mut limit = window;
         let mut best: Option<StaticEvent> = None;
 
-        if let Some(hit) = geo.world.cast_sphere(pos, r, v, limit, mask) {
+        if moving && let Some(hit) = geo.world.cast_sphere(pos, r, v, limit, mask) {
             limit = hit.time;
             best = Some(StaticEvent::World(hit));
         }
         let end = pos + v * window;
         for (gi, guide) in geo.guides.iter().enumerate() {
+            if !moving {
+                break;
+            }
             if self.guide_mask(gi) & mask == 0
                 || !near(bounds.guides.get(gi), pos, end, r + GUIDE_SKIN)
             {
@@ -1566,7 +1637,7 @@ impl BallSolver {
         }
         for (ci, chain) in self.chains.iter().enumerate() {
             let rc = chain.ball_radius();
-            if chain.layer_mask() & mask == 0 || rc.is_nan() || rc <= 0.0 {
+            if !moving || chain.layer_mask() & mask == 0 || rc.is_nan() || rc <= 0.0 {
                 continue;
             }
             for bi in 0..chain.len() {
@@ -1576,6 +1647,30 @@ impl BallSolver {
                 {
                     limit = t;
                     best = Some(StaticEvent::Chain(ci, bi));
+                }
+            }
+        }
+        for (si, set) in bodies.sets.iter().enumerate() {
+            for b in 0..set.body_count() {
+                if set.layer_mask(b) & mask == 0
+                    || !near(Some(&set.swept_bounds(b)), pos, end, r + BODY_SKIN)
+                {
+                    continue;
+                }
+                match set.cast_sphere(b, now, pos, r, v, limit) {
+                    Some(BodyCast::Hit {
+                        time,
+                        point,
+                        normal,
+                    }) if time >= 0.0 && (time < limit || best.is_none()) => {
+                        limit = time;
+                        best = Some(StaticEvent::Body(si, b, Some((point, normal))));
+                    }
+                    Some(BodyCast::Advance { time }) if time > 0.0 && time < limit => {
+                        limit = time;
+                        best = Some(StaticEvent::Body(si, b, None));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1603,6 +1698,7 @@ impl BallSolver {
         material: Material,
         sc: &mut [Scratch; MAX_BALLS],
         lists: &mut [ContactList; MAX_BALLS],
+        bodies: &mut Bodies<'_, '_>,
         events: &mut BallEvents,
     ) -> bool {
         let me = sc[i];
@@ -1615,7 +1711,7 @@ impl BallSolver {
         });
         if !resting || (known.is_none() && list.is_full()) {
             return self.surface_hit(
-                i, &me, normal, point, target, material, resting, 0.0, events,
+                i, &me, normal, point, target, material, resting, 0.0, bodies, events,
             );
         }
         match known {
@@ -1651,8 +1747,8 @@ impl BallSolver {
         let mut total = 0.0f32;
         for _ in 0..PRESOLVE_PASSES {
             let change = self
-                .boundary_sweep(i, list, false, &alone, &mut unused, sc)
-                .max(self.boundary_sweep(i, list, true, &alone, &mut unused, sc));
+                .boundary_sweep(i, list, false, &alone, &mut unused, sc, bodies)
+                .max(self.boundary_sweep(i, list, true, &alone, &mut unused, sc, bodies));
             total = total.max(change);
             if change <= PRESOLVE_TOLERANCE {
                 break;
@@ -1668,6 +1764,7 @@ impl BallSolver {
         ev: StaticEvent,
         sc: &mut [Scratch; MAX_BALLS],
         lists: &mut [ContactList; MAX_BALLS],
+        bodies: &mut Bodies<'_, '_>,
         events: &mut BallEvents,
     ) {
         let me = sc[i];
@@ -1679,7 +1776,7 @@ impl BallSolver {
                 let target = ImpactTarget::Collider(hit.collider);
                 let material = self.collider_material(hit.collider);
                 applied = self.surface_event(
-                    i, hit.normal, hit.point, target, material, sc, lists, events,
+                    i, hit.normal, hit.point, target, material, sc, lists, bodies, events,
                 );
             }
             StaticEvent::Guide(gi, Some(hit)) => {
@@ -1696,6 +1793,7 @@ impl BallSolver {
                     material,
                     sc,
                     lists,
+                    bodies,
                     events,
                 );
                 // A guide cast lets a sliding ball sink into its skin; put
@@ -1707,7 +1805,14 @@ impl BallSolver {
                     ball.position -= hit.normal * gap;
                 }
             }
-            StaticEvent::Guide(_, None) => {}
+            StaticEvent::Guide(_, None) | StaticEvent::Body(_, _, None) => {}
+            StaticEvent::Body(si, b, Some((point, normal))) => {
+                let material = bodies.sets.get(si).map_or(Material::Steel, |s| s.material(b));
+                let target = ImpactTarget::Body { set: si, body: b };
+                applied = self.surface_event(
+                    i, normal, point, target, material, sc, lists, bodies, events,
+                );
+            }
             StaticEvent::Chain(ci, bi) => {
                 if let Some(ball) = self.slots[i] {
                     let offset = ball.position - self.chains[ci].ball_position(bi);
@@ -1764,10 +1869,34 @@ impl BallSolver {
     /// Layer transitions are not handled here: the caller runs
     /// [`crate::world::TransitionSet::update`] and writes
     /// [`Ball::layer`] through [`ball_mut`](Self::ball_mut).
-    #[allow(clippy::needless_range_loop)] // the index addresses several per-ball arrays
+    ///
+    /// Same as [`step_with_bodies`](Self::step_with_bodies) with no bodies.
     pub fn step(&mut self, geo: &Geometry<'_>, dt: f32, events: &mut BallEvents) {
+        self.step_with_bodies(geo, &mut [], dt, events);
+    }
+
+    /// [`step`](Self::step) with moving bodies taking part: `bodies` are
+    /// the body sets, in a fixed order (a set's index in this slice is the
+    /// `set` of [`ImpactTarget::Body`]). The call order is
+    /// [`MovingBodies::begin_tick`] for each set, Newton chains, the balls'
+    /// event loop (queries and impulses on the bodies),
+    /// [`MovingBodies::end_tick`] for each set, then the sensors; see
+    /// [`crate::ball::body`] for the full contract. A non-finite or
+    /// non-positive `dt` does nothing (no body is called).
+    #[allow(clippy::needless_range_loop)] // the index addresses several per-ball arrays
+    pub fn step_with_bodies(
+        &mut self,
+        geo: &Geometry<'_>,
+        bodies: &mut [&mut dyn MovingBodies],
+        dt: f32,
+        events: &mut BallEvents,
+    ) {
         if dt.is_nan() || dt <= 0.0 || !dt.is_finite() {
             return;
+        }
+        self.tick_dt = dt;
+        for set in bodies.iter_mut() {
+            set.begin_tick(dt);
         }
         let gravity = self.cfg.gravity;
         for chain in &mut self.chains {
@@ -1809,9 +1938,27 @@ impl BallSolver {
                 };
                 // Sub-steps from the ball's own speed and size only.
                 let r = sc[i].body.radius;
-                let travel = (ball.velocity.length() + gravity.length() * dt) * dt;
+                let mut travel = (ball.velocity.length() + gravity.length() * dt) * dt;
                 let mask = layers::layer_bit(ball.layer);
                 let end = ball.position + ball.velocity * dt;
+                // A body that can reach the ball's path this tick adds its
+                // surface speed: contacts with it are re-solved as often.
+                let mut body_speed = 0.0f32;
+                for set in bodies.iter() {
+                    for b in 0..set.body_count() {
+                        if set.layer_mask(b) & mask != 0
+                            && near(Some(&set.swept_bounds(b)), ball.position, end, 2.0 * r)
+                        {
+                            let u = set.max_surface_speed(b);
+                            if u.is_finite() {
+                                body_speed = body_speed.max(u);
+                            }
+                        }
+                    }
+                }
+                if body_speed > 0.0 {
+                    travel += body_speed * dt;
+                }
                 let on_rails = geo.wireforms.iter().enumerate().any(|(wi, _)| {
                     self.wireform_mask(wi) & mask != 0
                         && near(bounds.wires.get(wi), ball.position, end, 2.0 * r)
@@ -1831,13 +1978,22 @@ impl BallSolver {
                 sc[i].h = dt / n as f32;
                 sc[i].cache = Cache::Dirty;
             }
-            self.run_timeline(geo, &bounds, dt, &mut sc, events);
+            let mut ctx = Bodies {
+                sets: &mut *bodies,
+                moved: false,
+            };
+            self.run_timeline(geo, &bounds, dt, &mut sc, &mut ctx, events);
+        }
+        for set in bodies.iter_mut() {
+            set.end_tick(dt);
         }
         for (slot, last) in self.slots.iter().zip(self.last_position.iter_mut()) {
             if let Some(ball) = slot {
                 *last = ball.position;
             }
         }
+        self.steps += 1;
+        self.elapsed += f64::from(dt);
         self.update_sensors(events);
     }
 
@@ -1849,6 +2005,7 @@ impl BallSolver {
         bounds: &Bounds,
         dt: f32,
         sc: &mut [Scratch; MAX_BALLS],
+        bodies: &mut Bodies<'_, '_>,
         events: &mut BallEvents,
     ) {
         let mut now = 0.0f32;
@@ -1881,7 +2038,7 @@ impl BallSolver {
                     // A ball is only marked dirty at its own clock.
                     let from = sc[i].t;
                     let window = sc[i].horizon(dt) - from;
-                    sc[i].cache = self.cast_static(geo, bounds, i, &sc[i], from, window);
+                    sc[i].cache = self.cast_static(geo, bounds, bodies, i, &sc[i], from, window);
                 }
                 if let Cache::Event(t, _) = sc[i].cache
                     && t < best_time
@@ -1922,17 +2079,29 @@ impl BallSolver {
                     complete = true;
                     break;
                 }
-                Next::Boundary => self.boundaries(geo, bounds, now, sc, lists, events),
+                Next::Boundary => self.boundaries(geo, bounds, now, sc, lists, bodies, events),
                 Next::Static(i) => {
                     self.advance_ball(i, now, sc);
                     if let Cache::Event(_, ev) = sc[i].cache {
-                        self.static_event(i, ev, sc, lists, events);
+                        self.static_event(i, ev, sc, lists, bodies, events);
                     }
                 }
                 Next::Pair(i, j) => {
                     self.advance_ball(i, now, sc);
                     self.advance_ball(j, now, sc);
                     self.pair_event(i, j, sc, events);
+                }
+            }
+            if bodies.moved {
+                // A body changed its trajectory at `now`: bring every ball
+                // to this instant and cast it again (no body query is ever
+                // made for a time before its last impulse).
+                bodies.moved = false;
+                for j in 0..MAX_BALLS {
+                    if sc[j].active {
+                        self.advance_ball(j, now, sc);
+                        sc[j].cache = Cache::Dirty;
+                    }
                 }
             }
             budget = budget.saturating_sub(1);

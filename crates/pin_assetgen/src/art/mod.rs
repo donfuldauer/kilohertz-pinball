@@ -385,7 +385,7 @@ pub fn playfield(meta: &TableMeta) -> Image {
     // Lane chevrons.
     for (k, lx) in [56i64, 136, 378, 458].into_iter().enumerate() {
         let col = palette_color(meta, k + 1);
-        let start = 360 + i64::from(rng.below(160));
+        let start = 420 + i64::from(rng.below(100));
         for j in 0..3 {
             img.chevron(lx, start + j * 34, 16, 7, col, 230);
         }
@@ -410,7 +410,7 @@ pub fn playfield(meta: &TableMeta) -> Image {
         let scale = fit_scale(FONT_8X16, &t, w - 40, 3);
         let tw = i64::from(FONT_8X16.text_width(&t)) * i64::from(scale);
         let x = ((wi - tw) / 2).max(0);
-        img.text(FONT_8X16, &t, x, 440, scale, readable(c1, back), BLACK);
+        img.text(FONT_8X16, &t, x, 340, scale, readable(c1, back), BLACK);
     }
     img
 }

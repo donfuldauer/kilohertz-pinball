@@ -10,6 +10,7 @@ license.workspace = true
 [dependencies]
 pin_core.workspace = true
 pin_render = { path = "../pin_render" }
+pin_input = { path = "../pin_input" }
 sdl3.workspace = true
 arrayvec.workspace = true
 

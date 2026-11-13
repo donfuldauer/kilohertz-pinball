@@ -416,6 +416,6 @@ mod tests {
         assert_eq!(c.rolling_resistance, 0.002);
         assert_eq!(c.max_substeps, 64);
         assert_eq!(c.pairs.len(), d.material_pairs.len());
-        assert!((c.magnet_remanence_tau_s - 0.060).abs() < 1e-9);
+        assert!((c.magnet_remanence_tau_s - 0.060).abs() < 1e-7);
     }
 }

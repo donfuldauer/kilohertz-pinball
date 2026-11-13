@@ -16,6 +16,7 @@
 mod display;
 mod events;
 pub mod keymap;
+pub mod rumble;
 
 pub use display::{DisplayTopologyManager, PlatformWindow, window_title};
 pub use events::{EventForwarder, ForwardStats, Translated, translate};

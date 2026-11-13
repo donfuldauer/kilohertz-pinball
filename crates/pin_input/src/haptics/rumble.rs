@@ -111,7 +111,9 @@ pub struct RumbleSettings {
     pub ball_roll: RumbleEffect,
     /// [`HapticKind::Impulse`] and kinds added later.
     pub impulse: RumbleEffect,
-    overrides: ArrayVec<(u16, RumbleEffect), MAX_RUMBLE_OVERRIDES>,
+    /// Per-source overrides `(source id, effect)`, first match wins (see
+    /// [`set_override`](Self::set_override)).
+    pub overrides: ArrayVec<(u16, RumbleEffect), MAX_RUMBLE_OVERRIDES>,
 }
 
 impl Default for RumbleSettings {

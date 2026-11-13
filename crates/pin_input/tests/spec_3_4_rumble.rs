@@ -5,6 +5,14 @@
 //! Black box: written from the brief plus the public signatures and module
 //! documentation of `pin_input::haptics` (settings type, envelope law).
 
+// Style lints only; test code favours explicit index loops and step-by-step setup.
+#![allow(
+    clippy::field_reassign_with_default,
+    clippy::manual_is_multiple_of,
+    clippy::needless_range_loop,
+    clippy::type_complexity
+)]
+
 use pin_core::haptics::{HapticEvent, HapticKind};
 use pin_core::ids::{CoilId, FlipperId};
 use pin_core::input::HapticsTelemetryEvent;
@@ -76,7 +84,13 @@ fn coil(tick: u64, n: u16, strength: f32) -> HapticEvent {
 }
 
 fn eos(tick: u64, n: u16, strength: f32) -> HapticEvent {
-    HapticEvent::new(tick, HapticKind::EosHit { flipper: FlipperId(n) }, strength)
+    HapticEvent::new(
+        tick,
+        HapticKind::EosHit {
+            flipper: FlipperId(n),
+        },
+        strength,
+    )
 }
 
 fn bumper(tick: u64, n: u16, strength: f32) -> HapticEvent {
@@ -86,9 +100,14 @@ fn bumper(tick: u64, n: u16, strength: f32) -> HapticEvent {
 fn kind_event(k: u8, tick: u64, n: u16, strength: f32) -> HapticEvent {
     let kind = match k % 6 {
         0 => HapticKind::CoilFire { coil: CoilId(n) },
-        1 => HapticKind::EosHit { flipper: FlipperId(n) },
+        1 => HapticKind::EosHit {
+            flipper: FlipperId(n),
+        },
         2 => HapticKind::Bumper { mech: n },
-        3 => HapticKind::BallDrop { ball: n, position_mm: [10.0, 500.0, 0.0] },
+        3 => HapticKind::BallDrop {
+            ball: n,
+            position_mm: [10.0, 500.0, 0.0],
+        },
         4 => HapticKind::BallRoll {
             ball: n,
             position_mm: [10.0, 500.0, 0.0],
@@ -121,7 +140,9 @@ fn run(settings: RumbleSettings, events: &[HapticEvent], from: u64, to: u64) -> 
 }
 
 fn bits(v: &[Rumble]) -> Vec<(u32, u32)> {
-    v.iter().map(|r| (r.low.to_bits(), r.high.to_bits())).collect()
+    v.iter()
+        .map(|r| (r.low.to_bits(), r.high.to_bits()))
+        .collect()
 }
 
 fn in_range(r: &Rumble) -> bool {
@@ -163,8 +184,14 @@ fn flipper_sling_and_bumper_events_rumble() {
         // With explicit settings and with the defaults.
         for s in [settings(), RumbleSettings::default()] {
             let out = run(s, &[e], 0, 300);
-            assert!(out[..10].iter().all(|r| r.low == 0.0 && r.high == 0.0), "{name}: early");
-            assert!(out[10].low > 0.0 || out[10].high > 0.0, "{name}: no rumble on its tick");
+            assert!(
+                out[..10].iter().all(|r| r.low == 0.0 && r.high == 0.0),
+                "{name}: early"
+            );
+            assert!(
+                out[10].low > 0.0 || out[10].high > 0.0,
+                "{name}: no rumble on its tick"
+            );
             assert!(out.iter().all(in_range), "{name}");
             let last = out.last().unwrap();
             assert_eq!((last.low, last.high), (0.0, 0.0), "{name}: never stopped");
@@ -181,18 +208,27 @@ fn decays_to_zero_after_the_configured_duration() {
         let out = run(s, &[coil(t0, 2, 1.0)], 0, t0 + u64::from(duration) + 50);
         let d = duration as usize;
         let start = t0 as usize;
-        assert!(out[start].low > 0.0 && out[start].high > 0.0, "duration {duration}");
+        assert!(
+            out[start].low > 0.0 && out[start].high > 0.0,
+            "duration {duration}"
+        );
         assert!((out[start].low - 0.8).abs() < 1e-6 && (out[start].high - 0.4).abs() < 1e-6);
         for (i, r) in out.iter().enumerate() {
             if i < start || i >= start + d {
                 assert_eq!((r.low, r.high), (0.0, 0.0), "duration {duration}, tick {i}");
             } else {
-                assert!(r.low > 0.0 && r.high > 0.0, "duration {duration}, tick {i}: ended early");
+                assert!(
+                    r.low > 0.0 && r.high > 0.0,
+                    "duration {duration}, tick {i}: ended early"
+                );
             }
         }
         // Decay: never rises while a single event rings out.
         for w in out[start..].windows(2) {
-            assert!(w[1].low <= w[0].low && w[1].high <= w[0].high, "duration {duration}");
+            assert!(
+                w[1].low <= w[0].low && w[1].high <= w[0].high,
+                "duration {duration}"
+            );
         }
     }
 }
@@ -219,19 +255,31 @@ fn zero_duration_zero_strength_disabled_and_zero_master_are_silent() {
     }
     for strength in [0.0, -1.0, f32::NAN, f32::NEG_INFINITY] {
         let out = run(settings(), &[coil(5, 1, strength)], 0, 200);
-        assert!(out.iter().all(|r| r.low == 0.0 && r.high == 0.0), "strength {strength}");
+        assert!(
+            out.iter().all(|r| r.low == 0.0 && r.high == 0.0),
+            "strength {strength}"
+        );
     }
 }
 
 #[test]
 fn strength_scales_and_saturates() {
     let peak = |s: f32| run(settings(), &[coil(0, 1, s)], 0, 1)[0];
-    let (quarter, half, full, over, inf) =
-        (peak(0.25), peak(0.5), peak(1.0), peak(5.0), peak(f32::INFINITY));
+    let (quarter, half, full, over, inf) = (
+        peak(0.25),
+        peak(0.5),
+        peak(1.0),
+        peak(5.0),
+        peak(f32::INFINITY),
+    );
     assert!(quarter.low < half.low && half.low < full.low);
     assert!(quarter.high < half.high && half.high < full.high);
     assert!((half.low - 0.5 * full.low).abs() < 1e-6);
-    assert_eq!((over.low, over.high), (full.low, full.high), "strength above 1 saturates");
+    assert_eq!(
+        (over.low, over.high),
+        (full.low, full.high),
+        "strength above 1 saturates"
+    );
     assert_eq!((inf.low, inf.high), (full.low, full.high));
     assert!((full.low - COIL.low).abs() < 1e-6 && (full.high - COIL.high).abs() < 1e-6);
 }
@@ -249,7 +297,10 @@ fn overlapping_events_merge_by_max_not_sum() {
     let both = run(s.clone(), &[a, b], 0, 200);
     let mut overlap_seen = false;
     for t in 0..200 {
-        let want = (only_a[t].low.max(only_b[t].low), only_a[t].high.max(only_b[t].high));
+        let want = (
+            only_a[t].low.max(only_b[t].low),
+            only_a[t].high.max(only_b[t].high),
+        );
         assert!(
             (both[t].low - want.0).abs() < 1e-6 && (both[t].high - want.1).abs() < 1e-6,
             "tick {t}: got {:?}, max is {want:?}",
@@ -258,7 +309,10 @@ fn overlapping_events_merge_by_max_not_sum() {
         assert!(in_range(&both[t]));
         if only_a[t].low > 0.0 && only_b[t].low > 0.0 {
             overlap_seen = true;
-            assert!(both[t].low < only_a[t].low + only_b[t].low, "tick {t}: summed");
+            assert!(
+                both[t].low < only_a[t].low + only_b[t].low,
+                "tick {t}: summed"
+            );
         }
     }
     assert!(overlap_seen);
@@ -270,7 +324,11 @@ fn overlapping_events_merge_by_max_not_sum() {
 
     // The same source retriggered: the fresh event takes over, never above the peak.
     let retrig = run(s, &[coil(20, 1, 1.0), coil(50, 1, 1.0)], 0, 200);
-    assert!(retrig.iter().all(|r| r.low <= 0.9 + 1e-6 && r.high <= 0.8 + 1e-6));
+    assert!(
+        retrig
+            .iter()
+            .all(|r| r.low <= 0.9 + 1e-6 && r.high <= 0.8 + 1e-6)
+    );
     assert!((retrig[50].low - 0.9).abs() < 1e-6);
     assert_eq!((retrig[150].low, retrig[150].high), (0.0, 0.0));
 }
@@ -296,7 +354,11 @@ fn per_source_settings() {
 
     // Muting one source leaves the others alone.
     let muted = settings().with_override(left.source(), RumbleEffect::NONE);
-    assert!(run(muted.clone(), &[left], 0, 100).iter().all(|r| r.low == 0.0 && r.high == 0.0));
+    assert!(
+        run(muted.clone(), &[left], 0, 100)
+            .iter()
+            .all(|r| r.low == 0.0 && r.high == 0.0)
+    );
     assert!(run(muted, &[right], 0, 1)[0].low > 0.0);
 
     // Removing the override restores the kind's effect.
@@ -312,7 +374,11 @@ fn kinds_use_their_own_effect() {
         let e = kind_event(k, 3, 5, 1.0);
         let out = run(settings(), &[e], 0, 200);
         assert!((out[3].low - fx.low).abs() < 1e-6, "kind {k}: {:?}", out[3]);
-        assert!((out[3].high - fx.high).abs() < 1e-6, "kind {k}: {:?}", out[3]);
+        assert!(
+            (out[3].high - fx.high).abs() < 1e-6,
+            "kind {k}: {:?}",
+            out[3]
+        );
         let end = 3 + fx.duration_ticks as usize;
         assert!(out[end - 1].low > 0.0, "kind {k}");
         assert_eq!((out[end].low, out[end].high), (0.0, 0.0), "kind {k}");
@@ -321,14 +387,21 @@ fn kinds_use_their_own_effect() {
 
 #[test]
 fn the_old_telemetry_event_is_accepted() {
-    let old = HapticsTelemetryEvent { tick: 4, source: 77, strength: 1.0 };
+    let old = HapticsTelemetryEvent {
+        tick: 4,
+        source: 77,
+        strength: 1.0,
+    };
     let mut a = RumbleMapper::new(settings());
     a.feed(old);
     let mut b = RumbleMapper::new(settings());
     b.feed(HapticEvent::from(old));
     for t in 4..80 {
         let (x, y) = (a.output_at(t), b.output_at(t));
-        assert_eq!((x.low.to_bits(), x.high.to_bits()), (y.low.to_bits(), y.high.to_bits()));
+        assert_eq!(
+            (x.low.to_bits(), x.high.to_bits()),
+            (y.low.to_bits(), y.high.to_bits())
+        );
     }
     let mut c = RumbleMapper::new(settings());
     c.feed(old);
@@ -366,7 +439,12 @@ fn deterministic_over_10_runs_and_allocation_free() {
         x ^= x >> 17;
         x ^= x << 5;
         if x % 5 == 0 {
-            events.push(kind_event((x >> 8) as u8, t, (x >> 16) as u16 % 12, (x >> 4) as f32 % 1.3));
+            events.push(kind_event(
+                (x >> 8) as u8,
+                t,
+                (x >> 16) as u16 % 12,
+                (x >> 4) as f32 % 1.3,
+            ));
         }
         if x % 97 == 0 {
             for i in 0..50 {

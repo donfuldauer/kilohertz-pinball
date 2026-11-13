@@ -1699,6 +1699,7 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "pin_core",
+ "pin_input",
  "pin_render",
  "proptest",
  "sdl3",
@@ -1708,10 +1709,16 @@ dependencies = [
 name = "pin_assetgen"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
+ "flate2",
+ "hound",
+ "image",
+ "libm",
  "pin_assets",
  "pin_audio",
  "pin_core",
  "proptest",
+ "serde",
  "toml",
 ]
 
