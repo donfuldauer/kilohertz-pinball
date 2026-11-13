@@ -350,7 +350,10 @@ mod tests {
             let c = g.cluster_of(p).unwrap();
             let b = g.cluster_box(c).unwrap();
             for k in 0..3 {
-                assert!(p[k] >= b[k] - 1e-4 && p[k] <= b[k + 3] + 1e-4, "{p:?} {b:?}");
+                assert!(
+                    p[k] >= b[k] - 1e-4 && p[k] <= b[k + 3] + 1e-4,
+                    "{p:?} {b:?}"
+                );
             }
         }
     }
@@ -375,7 +378,10 @@ mod tests {
         assign_lights(&g, &cam.view, &lights, &mut out);
         assert_eq!(out.ignored(), 3);
         assert!(out.max_count() as usize <= MAX_LIGHTS);
-        let c = g.cluster_of_world(&look_at([0.0, 0.0, 2.0], [0.0; 3], [0.0, 1.0, 0.0]), [0.0; 3]);
+        let c = g.cluster_of_world(
+            &look_at([0.0, 0.0, 2.0], [0.0; 3], [0.0, 1.0, 0.0]),
+            [0.0; 3],
+        );
         let list = out.lights_of(c.unwrap());
         assert!(list.contains(&0) && !list.contains(&1) && !list.contains(&2));
         assert_eq!(out.ranges().len(), g.cluster_count());

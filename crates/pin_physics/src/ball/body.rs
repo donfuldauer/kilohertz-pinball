@@ -33,9 +33,11 @@
 //! 1. **Begin.** [`begin_tick(dt)`](MovingBodies::begin_tick) for every set,
 //!    in slice order, before anything else of the step. The body *predicts*
 //!    its trajectory over `[0, dt]` from its committed state and its drive for
-//!    this tick (e.g. `ω₁ = ω₀ + α·dt`, then `θ(t) = θ₀ + ω₁·t`, clamped at the
-//!    stops). The prediction must be a deterministic function of `t`,
-//!    continuous in position (velocities may jump, e.g. at an end stop).
+//!    this tick, keeping [owner obligation 3](#owner-obligations) (speculative
+//!    stops): e.g. `ω₁ = ω₀ + α·dt`, then `ω₁ ← min(ω₁, (θ_stop − θ₀)/dt)`
+//!    toward a stop, then `θ(t) = θ₀ + ω₁·t`. The prediction must be a
+//!    deterministic function of `t`, continuous in position (velocities may
+//!    jump, e.g. at an end stop or an impulse).
 //! 2. **Mid-tick queries**, any number, from the solver's discrete-event
 //!    loop: [`swept_bounds`](MovingBodies::swept_bounds),
 //!    [`max_surface_speed`](MovingBodies::max_surface_speed),
@@ -62,6 +64,58 @@
 //!    slice order, after the last ball event of the step and before the
 //!    sensors are updated: the body commits its pose and velocity at `dt`.
 //!
+//! # Owner obligations
+//!
+//! A stop is *engaged* at `time` when the body is at the stop and not moving
+//! away from it.
+//!
+//! 1. **One-sided inverse mass.** [`inverse_mass_at`](MovingBodies::inverse_mass_at)
+//!    answers for the direction of the impulse the *body* would receive; it
+//!    may be asked with `−n` (the ball needs more normal impulse) or `+n`
+//!    (the accumulated solve takes some back), and along the slip or the
+//!    friction change. On an engaged stop it is 0 for a push into the stop
+//!    and the free value for a push away from it.
+//! 2. **Real velocity.** [`velocity_at`](MovingBodies::velocity_at) is the
+//!    velocity the body really has: 0 on an engaged stop, also at the very
+//!    instant an impulse drove the body into it. At a time where the
+//!    velocity jumps (an impulse, reaching a stop) it returns the velocity
+//!    *after* the jump.
+//! 3. **Speculative stops.** Never predict more travel toward a stop than
+//!    the stop allows within the tick: at `begin_tick`, and on re-prediction
+//!    after an impulse at `time`, limit the velocity toward a stop to
+//!    `(stop − pose)/(dt − time)` (the stop absorbs the rest). Predicting the
+//!    full `α·dt` and clamping the position reports a surface speed at `t = 0`
+//!    that the stop cancels microseconds later; a ball cradled on a held
+//!    flipper is then hit by that phantom speed every tick and never rests.
+//!
+//! The solver guards against an owner that breaks 1 by under-reporting its
+//! inverse mass: after each two-body normal impulse it checks the body's real
+//! response, and if the relative velocity overshot (the body moved more
+//! than reported) it corrects the impulse with the measured response, or
+//! takes it back when the response is unusable. This keeps the solve bounded
+//! (no blow-up to infinity) but is not a substitute for honest masses.
+//!
+//! # Notes for owners
+//!
+//! * **Drive energy.** Front-loading `α·dt` at `begin_tick` (semi-implicit
+//!   Euler) means the drive acts on the whole tick from its start; a driven
+//!   body adds its drive work to the system, as it should, at most
+//!   `τ·Δθ` per tick.
+//! * **One-shot impacts are not exactly `e·approach`.** The friction
+//!   reaction of an impact is applied to the body after the normal impulse
+//!   and can change the body's normal velocity at the contact (a rotor hit
+//!   off its line of centres), so the post-impact relative normal speed
+//!   differs slightly from `e ×` the approach speed.
+//! * **Pinned and cradled balls.** A ball squeezed between a body and other
+//!   surfaces often uses up its 12 events per sub-step; it then waits (does
+//!   not move, is not cast against bodies) until its next sub-step boundary,
+//!   where all its contacts are solved together and penetration is projected
+//!   out. Owners therefore see several small impulses per tick, or none in
+//!   that window: never count on one impulse per contact per tick. A ball
+//!   held only by static surfaces, other balls and *kinematic* bodies whose
+//!   contact solve stops converging (an impossible pinch) stops iterating
+//!   after 8 passes instead of 64, so a kicker cannot stall the tick.
+//!
 //! `begin_tick`/`end_tick` are called even when there is no ball. Nothing
 //! in a step allocates if the implementations do not; implementations must
 //! not allocate, lock or do I/O either (they run on the 1 kHz sim thread).
@@ -85,8 +139,8 @@
 //!   projected out by moving the ball (bodies are never moved by position
 //!   correction).
 //! * **The two-body impulse** (PLAN.md §3.3). With `w_n` =
-//!   [`inverse_mass_at`](MovingBodies::inverse_mass_at) along the contact
-//!   normal, the normal impulse is `J = (u_target − u_n) / (1/m + w_n)` on the
+//!   [`inverse_mass_at`](MovingBodies::inverse_mass_at) along the normal
+//!   impulse change the body receives (`−n`, or `+n` when taken back), the normal impulse is `J = (u_target − u_n) / (1/m + w_n)` on the
 //!   relative normal velocity `u_n = (v_ball − v_body(point))·n`, and `−J·n`
 //!   goes to the body. Coulomb friction acts on the slip
 //!   `v + ω × r_c − v_body(point)` with the effective mass
@@ -174,7 +228,9 @@ pub trait MovingBodies {
     fn body_count(&self) -> usize;
 
     /// Start of a step of `dt` seconds: predict the trajectory over
-    /// `[0, dt]` from the committed state and this tick's drive.
+    /// `[0, dt]` from the committed state and this tick's drive, never
+    /// predicting more travel toward a stop than it allows this tick (owner
+    /// obligation 3).
     fn begin_tick(&mut self, dt: f32);
 
     /// End of a step: commit the pose and velocity at `dt`.
@@ -204,7 +260,8 @@ pub trait MovingBodies {
     /// the velocity the body really has then: a body held on an engaged end
     /// stop reports the stop's velocity (0), also at the very instant an
     /// impulse pushed it into the stop, or the contact solve keeps taking
-    /// back impulses it thinks moved the body.
+    /// back impulses it thinks moved the body. Where the velocity jumps it
+    /// returns the value after the jump.
     fn velocity_at(&self, body: usize, time: f32, point: Vec3) -> Vec3;
 
     /// Inverse effective mass (1/kg) of the body at `point` at `time` for an
@@ -215,15 +272,17 @@ pub trait MovingBodies {
     /// unit axis `a`, `((r × d)·a)² / I`; for a 1-DOF slider along `a`,
     /// `(d·a)² / m`.
     ///
-    /// The sign of `direction` matters for one-sided constraints: a body
-    /// resting on an engaged end stop must return 0 for a push *into* the
-    /// stop (it cannot move that way) and its free value for a push away from
-    /// it. The solver asks with `−n` for the normal impulse (`n` points from
-    /// the body to the ball) and with the slip direction for friction.
+    /// The sign of `direction` matters for one-sided constraints: a body on
+    /// an engaged end stop (at the stop, not moving away) must return 0 for a
+    /// push *into* the stop and its free value for a push away from it. The
+    /// solver asks along the impulse change the body actually receives: `−n`
+    /// when the normal impulse grows, `+n` when it is taken back (`n` points
+    /// from the body to the ball), the slip direction for friction.
     fn inverse_mass_at(&self, body: usize, time: f32, point: Vec3, direction: Vec3) -> f32;
 
     /// The body received `impulse` (N·s) at `point` at `time`: re-predict
-    /// `[time, dt]` (see the module documentation, step 3).
+    /// `[time, dt]` (see the module documentation, step 3), again limiting
+    /// travel toward a stop to what it allows by `dt`.
     fn apply_impulse(&mut self, body: usize, time: f32, point: Vec3, impulse: Vec3);
 
     /// The first time, within `window` seconds after `time`, at which a
@@ -390,7 +449,11 @@ pub(super) fn solve_body_contact(
     // the accumulated solve takes some back (one-sided stops differ), and
     // the slip direction for friction.
     let un0 = (ball.velocity - vs).dot(n);
-    let push = if target_normal_speed - un0 >= 0.0 { -n } else { n };
+    let push = if target_normal_speed - un0 >= 0.0 {
+        -n
+    } else {
+        n
+    };
     let wn = usable(set.inverse_mass_at(body, time, point, push));
     let slip = tangential(ball.velocity + ball.angular_velocity.cross(rc) - vs, n);
     let wt = slip

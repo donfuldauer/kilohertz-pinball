@@ -37,12 +37,15 @@ pub fn magnus_step_force(
     velocity: Vec3,
     h: f32,
 ) -> Vec3 {
-    // Written as negated comparisons so NaN also returns "no force".
-    if magnus_coeff == 0.0 || !(mass > 0.0) || !(h > 0.0) || angular_velocity == Vec3::ZERO {
+    let positive = |x: f32| x.is_finite() && x > 0.0;
+    if magnus_coeff == 0.0 || !magnus_coeff.is_finite() || !positive(mass) || !positive(h) {
+        return NO_FORCE;
+    }
+    if angular_velocity == Vec3::ZERO || !velocity.is_finite() {
         return NO_FORCE;
     }
     let w = angular_velocity.length();
-    if !(w > 0.0) || !w.is_finite() || !velocity.is_finite() {
+    if !positive(w) {
         return NO_FORCE;
     }
     let axis = angular_velocity / w;

@@ -234,3 +234,95 @@ proptest! {
         prop_assert_eq!(l.len() as u64 + l.dropped(), n as u64);
     }
 }
+
+/// 1.4 review N-c: ball circles of 1.5–4.5 px radius at many sub-pixel
+/// positions show no gaps at the joints (no isolated lit pixel, and from
+/// 2 px up the ring encloses its centre), and long lines are not changed by
+/// the joint points. Without the joint points this sweep fails on lavapipe
+/// (isolated pixels at r = 1.75).
+#[cfg(feature = "gpu-tests")]
+#[test]
+fn small_circles_have_no_joint_gaps() {
+    let Some(ctx) = crate::gpu::context_for_tests("small_circles_have_no_joint_gaps") else {
+        return;
+    };
+    const W: u32 = 64;
+    let camera = Camera::ortho_top_down([0.0, 0.0], [W as f32, W as f32]);
+    let mut cases = Vec::new();
+    for i in 0..13 {
+        for j in 0..7 {
+            let r = 1.5 + 0.25 * i as f32;
+            cases.push((
+                r,
+                [
+                    20.0 + 0.137 * j as f32 + 0.05 * i as f32,
+                    31.0 + 0.173 * j as f32,
+                    0.0,
+                ],
+            ));
+        }
+    }
+    for &(r, c) in &cases {
+        let mut lines = DebugLines::new(64);
+        circle_lines(c, r, BALL_COLOR, &mut lines);
+        let px = render_offscreen(&ctx, W, W, [0.0, 0.0, 0.0, 1.0], &camera, &lines).unwrap();
+        let lit = |x: i32, y: i32| {
+            (0..W as i32).contains(&x)
+                && (0..W as i32).contains(&y)
+                && px[((y as u32 * W + x as u32) * 4) as usize] > 128
+        };
+        // Flood the background from the image border; the circle's centre
+        // pixel must stay unreached (the ring is closed).
+        let (cx, cy) = (c[0] as i32, W as i32 - 1 - c[1] as i32);
+        let mut seen = vec![false; (W * W) as usize];
+        let mut stack = vec![(0i32, 0i32)];
+        while let Some((x, y)) = stack.pop() {
+            if !(0..W as i32).contains(&x) || !(0..W as i32).contains(&y) {
+                continue;
+            }
+            let i = (y as u32 * W + x as u32) as usize;
+            if seen[i] || lit(x, y) {
+                continue;
+            }
+            seen[i] = true;
+            stack.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]);
+        }
+        if r >= 2.0 {
+            assert!(!lit(cx, cy), "r {r}: centre lit");
+            assert!(
+                !seen[(cy as u32 * W + cx as u32) as usize],
+                "r {r}: ring around {cx},{cy} has a gap"
+            );
+        }
+        // Every lit pixel touches another lit pixel (no isolated dots).
+        for y in 0..W as i32 {
+            for x in 0..W as i32 {
+                if lit(x, y) {
+                    let n = (-1..=1)
+                        .flat_map(|dy| (-1..=1).map(move |dx| (dx, dy)))
+                        .filter(|&(dx, dy)| (dx, dy) != (0, 0) && lit(x + dx, y + dy))
+                        .count();
+                    assert!(n >= 1, "r {r}: isolated pixel {x},{y}");
+                }
+            }
+        }
+    }
+    // A long horizontal line through pixel centres keeps its exact extent.
+    let mut long = DebugLines::new(1);
+    long.push(DebugLine::new(
+        [10.5, 20.5, 0.0],
+        [50.5, 20.5, 0.0],
+        BALL_COLOR,
+    ));
+    let px = render_offscreen(&ctx, W, W, [0.0, 0.0, 0.0, 1.0], &camera, &long).unwrap();
+    let row = (W - 1 - 20) as usize;
+    let cols: Vec<usize> = (0..W as usize)
+        .filter(|&x| px[(row * W as usize + x) * 4] > 128)
+        .collect();
+    assert_eq!(cols.first(), Some(&10));
+    assert_eq!(
+        cols.last(),
+        Some(&49),
+        "the last pixel stays excluded for long lines"
+    );
+}

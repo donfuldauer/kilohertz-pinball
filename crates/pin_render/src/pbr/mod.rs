@@ -75,7 +75,8 @@ pub(crate) const FORWARD_SOURCE: &str = concat!(
 /// `(name, WGSL source)` of every shader module, each complete on its own
 /// (for naga validation and translation).
 pub fn shader_sources() -> &'static [(&'static str, &'static str)] {
-    static SOURCES: [(&str, &str); 2] = [("pbr_brdf", BRDF_SOURCE), ("pbr_forward", FORWARD_SOURCE)];
+    static SOURCES: [(&str, &str); 2] =
+        [("pbr_brdf", BRDF_SOURCE), ("pbr_forward", FORWARD_SOURCE)];
     &SOURCES
 }
 

@@ -755,7 +755,8 @@ fn spawn_presenter(
                 if !configured || (config.width, config.height) != (job.width, job.height) {
                     config.width = job.width.max(1);
                     config.height = job.height.max(1);
-                    configured = try_configure(&device, &surface, &config, &gpu_lock, &configure_log);
+                    configured =
+                        try_configure(&device, &surface, &config, &gpu_lock, &configure_log);
                 }
                 let frame = if configured {
                     match surface.get_current_texture() {
@@ -763,7 +764,13 @@ fn spawn_presenter(
                         | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
                         wgpu::CurrentSurfaceTexture::Outdated
                         | wgpu::CurrentSurfaceTexture::Lost => {
-                            configured = try_configure(&device, &surface, &config, &gpu_lock, &configure_log);
+                            configured = try_configure(
+                                &device,
+                                &surface,
+                                &config,
+                                &gpu_lock,
+                                &configure_log,
+                            );
                             None
                         }
                         _ => None,

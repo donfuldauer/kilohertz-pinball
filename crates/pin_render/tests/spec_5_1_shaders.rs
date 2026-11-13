@@ -12,12 +12,19 @@ use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
 use pin_render::pbr::shader_sources;
 
 fn parse_and_validate(name: &str, src: &str) -> (naga::Module, ModuleInfo) {
-    let module = naga::front::wgsl::parse_str(src)
-        .unwrap_or_else(|e| panic!("WGSL module `{name}` fails to parse:\n{}", e.emit_to_string(src)));
+    let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| {
+        panic!(
+            "WGSL module `{name}` fails to parse:\n{}",
+            e.emit_to_string(src)
+        )
+    });
     let info = Validator::new(ValidationFlags::all(), Capabilities::all())
         .validate(&module)
         .unwrap_or_else(|e| {
-            panic!("WGSL module `{name}` fails validation:\n{}", e.emit_to_string(src))
+            panic!(
+                "WGSL module `{name}` fails validation:\n{}",
+                e.emit_to_string(src)
+            )
         });
     // Back ends need overrides resolved; modules must be translatable with their defaults.
     let (module, info) = naga::back::pipeline_constants::process_overrides(
@@ -37,7 +44,10 @@ fn shader_sources_is_non_empty_with_unique_non_empty_names() {
     let mut names: Vec<&str> = sources.iter().map(|(n, _)| *n).collect();
     for (name, src) in sources {
         assert!(!name.trim().is_empty(), "a shader module has an empty name");
-        assert!(!src.trim().is_empty(), "shader module `{name}` has an empty source");
+        assert!(
+            !src.trim().is_empty(),
+            "shader module `{name}` has an empty source"
+        );
     }
     names.sort_unstable();
     let before = names.len();
@@ -102,9 +112,13 @@ fn every_module_translates_to_msl() {
             fake_missing_bindings: true,
             ..Default::default()
         };
-        let (text, tr) = msl::write_string(&module, &info, &options, &msl::PipelineOptions::default())
-            .unwrap_or_else(|e| panic!("module `{name}` does not translate to MSL: {e}"));
-        assert!(!text.trim().is_empty(), "module `{name}`: MSL output is empty");
+        let (text, tr) =
+            msl::write_string(&module, &info, &options, &msl::PipelineOptions::default())
+                .unwrap_or_else(|e| panic!("module `{name}` does not translate to MSL: {e}"));
+        assert!(
+            !text.trim().is_empty(),
+            "module `{name}`: MSL output is empty"
+        );
         assert_eq!(tr.entry_point_names.len(), module.entry_points.len());
         for (ep, res) in module.entry_points.iter().zip(&tr.entry_point_names) {
             assert!(
@@ -131,7 +145,10 @@ fn every_module_translates_to_hlsl() {
         let refl = hlsl::Writer::new(&mut text, &options, &pipeline)
             .write(&module, &info, None)
             .unwrap_or_else(|e| panic!("module `{name}` does not translate to HLSL: {e}"));
-        assert!(!text.trim().is_empty(), "module `{name}`: HLSL output is empty");
+        assert!(
+            !text.trim().is_empty(),
+            "module `{name}`: HLSL output is empty"
+        );
         assert_eq!(refl.entry_point_names.len(), module.entry_points.len());
         for (ep, res) in module.entry_points.iter().zip(&refl.entry_point_names) {
             assert!(
@@ -158,7 +175,11 @@ fn naga_is_pinned_to_the_wgpu_version() {
             versions.push(lines.next().unwrap_or_default().to_owned());
         }
     }
-    assert_eq!(versions, vec!["version = \"30.0.1\"".to_owned()], "naga versions in Cargo.lock");
+    assert_eq!(
+        versions,
+        vec!["version = \"30.0.1\"".to_owned()],
+        "naga versions in Cargo.lock"
+    );
     let root = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml"))
         .expect("workspace Cargo.toml");
     let pin = root
@@ -167,6 +188,9 @@ fn naga_is_pinned_to_the_wgpu_version() {
         .expect("root Cargo.toml has a `naga` workspace dependency");
     assert!(pin.contains("=30.0.1"), "naga is not pinned exactly: {pin}");
     for feat in ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] {
-        assert!(pin.contains(feat), "naga pin lacks the `{feat}` feature: {pin}");
+        assert!(
+            pin.contains(feat),
+            "naga pin lacks the `{feat}` feature: {pin}"
+        );
     }
 }

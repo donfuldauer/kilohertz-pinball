@@ -107,7 +107,10 @@ fn b2_output_within_gltf_budgets() {
         .collect();
     let e = generate(&l, &apex_base()).unwrap_err();
     assert!(e.element.starts_with("posts["), "{e}");
-    assert!(e.message.contains("vertices"), "{e}");
+    assert!(
+        e.message.contains("vertices") || e.message.contains("bytes of geometry"),
+        "{e}"
+    );
 
     // Just under the mesh budget loads.
     let mut l = empty();

@@ -97,7 +97,8 @@ fn b1_sweep_stays_bounded() {
                 for x in [0.02f32, 0.035, 0.05, 0.065, 0.08] {
                     for speed in [1.0f32, 4.0, 7.0, 12.0] {
                         for flip in [5u32, 8, 9, 10, 12] {
-                            let top = land_on_stopped_bat(x, speed, flip, torque, inertia, speculative);
+                            let top =
+                                land_on_stopped_bat(x, speed, flip, torque, inertia, speculative);
                             assert!(
                                 top < 60.0,
                                 "x {x} speed {speed} flip {flip} torque {torque} I {inertia} spec {speculative}: {top}"
@@ -123,7 +124,10 @@ fn squeeze(torque: f32, inertia: f32, wall: bool, speculative: bool) -> f32 {
     );
     if wall {
         wb.add_collider(
-            cuboid(v(0.04, BR + 2.0 * r + 0.004 + 0.01, 0.03), v(0.06, 0.01, 0.03)),
+            cuboid(
+                v(0.04, BR + 2.0 * r + 0.004 + 0.01, 0.03),
+                v(0.06, 0.01, 0.03),
+            ),
             layers::ALL,
             true,
         );
@@ -168,10 +172,18 @@ fn squeeze(torque: f32, inertia: f32, wall: bool, speculative: bool) -> f32 {
 #[test]
 fn b1_squeezes_stay_bounded() {
     for speculative in [true, false] {
-        for (torque, inertia) in [(0.15f32, I_DEFAULT), (1.2, I_DEFAULT), (1.2, 2.5e-4), (3.0, I_DEFAULT)] {
+        for (torque, inertia) in [
+            (0.15f32, I_DEFAULT),
+            (1.2, I_DEFAULT),
+            (1.2, 2.5e-4),
+            (3.0, I_DEFAULT),
+        ] {
             for wall in [false, true] {
                 let top = squeeze(torque, inertia, wall, speculative);
-                assert!(top < 60.0, "torque {torque} I {inertia} wall {wall} spec {speculative}: {top}");
+                assert!(
+                    top < 60.0,
+                    "torque {torque} I {inertia} wall {wall} spec {speculative}: {top}"
+                );
             }
         }
     }

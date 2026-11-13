@@ -11,6 +11,8 @@
 //! Conservative means: for a point P inside the frustum and a light i (among the first
 //! `MAX_LIGHTS`) with |P − light.position| ≤ light.range, i is in the list of P's cluster.
 
+#![allow(clippy::needless_range_loop)] // channel/axis indices read clearer as ranges
+
 use pin_core::FrameStateSnapshot;
 use pin_render::pbr::math::{IDENTITY, Mat4, PbrCamera};
 use pin_render::pbr::{
@@ -109,7 +111,11 @@ fn check_structure(grid: &ClusterGrid, out: &ClusterAssignment, n_lights: usize)
     let mut longest = 0;
     for c in 0..grid.cluster_count() {
         let list = out.lights_of(c);
-        assert!(list.len() <= MAX_LIGHTS, "cluster {c}: {} lights", list.len());
+        assert!(
+            list.len() <= MAX_LIGHTS,
+            "cluster {c}: {} lights",
+            list.len()
+        );
         longest = longest.max(list.len());
         let mut seen = [false; MAX_LIGHTS];
         for &i in list {
@@ -118,14 +124,22 @@ fn check_structure(grid: &ClusterGrid, out: &ClusterAssignment, n_lights: usize)
             seen[i as usize] = true;
         }
     }
-    assert_eq!(longest, out.max_count() as usize, "max_count disagrees with the lists");
+    assert_eq!(
+        longest,
+        out.max_count() as usize,
+        "max_count disagrees with the lists"
+    );
     // The GPU layout describes the same lists.
     let ranges = out.ranges();
     assert!(ranges.len() >= grid.cluster_count());
     for c in 0..grid.cluster_count() {
         let [off, count] = ranges[c];
         let slice = &out.indices()[off as usize..(off + count) as usize];
-        assert_eq!(slice, out.lights_of(c), "cluster {c}: ranges/indices != lights_of");
+        assert_eq!(
+            slice,
+            out.lights_of(c),
+            "cluster {c}: ranges/indices != lights_of"
+        );
     }
 }
 
@@ -300,7 +314,12 @@ fn light_129_is_ignored_with_a_counter() {
     let cam = table_camera();
     let grid = ClusterGrid::for_camera(&cam);
     let mut lights = vec![PointLight::new([0.0, 0.0, 0.5], [1.0; 3], 1.0, 1000.0); MAX_LIGHTS];
-    lights.push(PointLight::new([0.0, 0.0, 0.5], [0.0, 1.0, 0.0], 50.0, 1000.0));
+    lights.push(PointLight::new(
+        [0.0, 0.0, 0.5],
+        [0.0, 1.0, 0.0],
+        50.0,
+        1000.0,
+    ));
     let mut out = ClusterAssignment::new();
     assign_lights(&grid, &cam.view, &lights, &mut out);
     check_structure(&grid, &out, MAX_LIGHTS + 1);
@@ -325,14 +344,18 @@ fn a_small_light_is_listed_in_few_clusters() {
     let lights = [PointLight::new([0.0, 0.0, 0.02], [1.0; 3], 1.0, 0.03)];
     let mut out = ClusterAssignment::new();
     assign_lights(&grid, &cam.view, &lights, &mut out);
-    let listed = (0..grid.cluster_count()).filter(|&c| !out.lights_of(c).is_empty()).count();
+    let listed = (0..grid.cluster_count())
+        .filter(|&c| !out.lights_of(c).is_empty())
+        .count();
     assert!(listed >= 1, "a light in view is in no cluster");
     assert!(
         listed * 10 <= grid.cluster_count(),
         "a 3 cm light is listed in {listed} of {} clusters",
         grid.cluster_count()
     );
-    let own = grid.cluster_of_world(&cam.view, [0.0, 0.0, 0.02]).expect("light centre is in view");
+    let own = grid
+        .cluster_of_world(&cam.view, [0.0, 0.0, 0.02])
+        .expect("light centre is in view");
     assert_eq!(out.lights_of(own), &[0]);
 }
 
@@ -340,8 +363,14 @@ fn a_small_light_is_listed_in_few_clusters() {
 fn points_outside_the_frustum_have_no_cluster() {
     let grid = ClusterGrid::new([8, 8, 8], 1.0, 1.0, 0.1, 10.0);
     assert!(grid.cluster_of([0.0, 0.0, -1.0]).is_some());
-    assert!(grid.cluster_of([0.0, 0.0, 1.0]).is_none(), "behind the camera");
-    assert!(grid.cluster_of([0.0, 0.0, -0.05]).is_none(), "in front of near");
+    assert!(
+        grid.cluster_of([0.0, 0.0, 1.0]).is_none(),
+        "behind the camera"
+    );
+    assert!(
+        grid.cluster_of([0.0, 0.0, -0.05]).is_none(),
+        "in front of near"
+    );
     assert!(grid.cluster_of([0.0, 0.0, -11.0]).is_none(), "beyond far");
     assert!(grid.cluster_of([5.0, 0.0, -1.0]).is_none(), "off screen");
     assert!(grid.cluster_of([0.0, -5.0, -1.0]).is_none(), "off screen");
@@ -354,12 +383,18 @@ fn light_list_holds_128_and_counts_the_rest() {
     let mut list = LightList::new();
     assert!(list.is_empty());
     for i in 0..MAX_LIGHTS {
-        assert!(list.push(PointLight::new([i as f32, 0.0, 0.0], [1.0; 3], 1.0, 1.0)), "light {i}");
+        assert!(
+            list.push(PointLight::new([i as f32, 0.0, 0.0], [1.0; 3], 1.0, 1.0)),
+            "light {i}"
+        );
     }
     assert_eq!(list.len(), MAX_LIGHTS);
     assert!(list.is_full());
     assert_eq!(list.rejected(), 0);
-    assert!(!list.push(PointLight::new([999.0, 0.0, 0.0], [1.0; 3], 1.0, 1.0)), "129th accepted");
+    assert!(
+        !list.push(PointLight::new([999.0, 0.0, 0.0], [1.0; 3], 1.0, 1.0)),
+        "129th accepted"
+    );
     assert_eq!(list.len(), MAX_LIGHTS);
     assert_eq!(list.rejected(), 1);
     for _ in 0..1000 {
@@ -407,12 +442,20 @@ fn warmed(lamps: &[LampLight], snapshot: &FrameStateSnapshot, ticks: u64) -> Lam
 /// Radiant strength of a light: colour · intensity (the split between the two fields is
 /// the implementation's business).
 fn strength(l: &PointLight) -> [f32; 3] {
-    [l.color[0] * l.intensity, l.color[1] * l.intensity, l.color[2] * l.intensity]
+    [
+        l.color[0] * l.intensity,
+        l.color[1] * l.intensity,
+        l.color[2] * l.intensity,
+    ]
 }
 
 #[test]
 fn light_list_follows_snapshot_lamp_levels() {
-    let lamps = [lamp(3, LampKind::Led, false), lamp(7, LampKind::Led, false), lamp(9, LampKind::Led, false)];
+    let lamps = [
+        lamp(3, LampKind::Led, false),
+        lamp(7, LampKind::Led, false),
+        lamp(9, LampKind::Led, false),
+    ];
     let mut snap = FrameStateSnapshot::default();
     snap.lamps[3] = 1.0;
     snap.lamps[7] = 0.5;
@@ -428,32 +471,60 @@ fn light_list_follows_snapshot_lamp_levels() {
     build_light_list(&lamps, &bank, snap.gi, &mut list);
     assert_eq!(list.len(), 2, "an unlit lamp casts no light");
     assert_eq!(list.rejected(), 0);
-    let full = list.as_slice().iter().find(|l| l.position == lamps[0].position).expect("lamp 3");
-    let half = list.as_slice().iter().find(|l| l.position == lamps[1].position).expect("lamp 7");
+    let full = list
+        .as_slice()
+        .iter()
+        .find(|l| l.position == lamps[0].position)
+        .expect("lamp 3");
+    let half = list
+        .as_slice()
+        .iter()
+        .find(|l| l.position == lamps[1].position)
+        .expect("lamp 7");
     assert_eq!(full.range, 0.5);
     let (sf, sh) = (strength(full), strength(half));
     for c in 0..3 {
         let want = lamps[0].color[c] * lamps[0].intensity;
-        assert!((sf[c] - want).abs() <= 1e-3 * want, "full lamp channel {c}: {} vs {want}", sf[c]);
-        assert!((sh[c] - 0.5 * want).abs() <= 2e-3 * want, "half lamp channel {c}: {} vs {}", sh[c], 0.5 * want);
+        assert!(
+            (sf[c] - want).abs() <= 1e-3 * want,
+            "full lamp channel {c}: {} vs {want}",
+            sf[c]
+        );
+        assert!(
+            (sh[c] - 0.5 * want).abs() <= 2e-3 * want,
+            "half lamp channel {c}: {} vs {}",
+            sh[c],
+            0.5 * want
+        );
     }
 }
 
 #[test]
 fn light_list_is_dark_before_warm_up_and_incandescent_lags_led() {
-    let lamps = [lamp(0, LampKind::Incandescent, false), lamp(1, LampKind::Led, false)];
+    let lamps = [
+        lamp(0, LampKind::Incandescent, false),
+        lamp(1, LampKind::Led, false),
+    ];
     let mut snap = FrameStateSnapshot::default();
     snap.lamps[0] = 1.0;
     snap.lamps[1] = 1.0;
     // 2 ms after the command: the LED is at full level, the bulb is still warming.
     let bank = warmed(&lamps, &snap, 2);
     assert!(bank.level(1) >= 0.95, "LED after 2 ms: {}", bank.level(1));
-    assert!(bank.level(0) > 0.0 && bank.level(0) < 0.6, "bulb after 2 ms: {}", bank.level(0));
+    assert!(
+        bank.level(0) > 0.0 && bank.level(0) < 0.6,
+        "bulb after 2 ms: {}",
+        bank.level(0)
+    );
     let mut list = LightList::new();
     build_light_list(&lamps, &bank, [1.0; 4], &mut list);
     assert_eq!(list.len(), 2);
     let s: Vec<f32> = list.as_slice().iter().map(|l| strength(l)[0]).collect();
-    let (bulb, led) = if list.as_slice()[0].position == lamps[0].position { (s[0], s[1]) } else { (s[1], s[0]) };
+    let (bulb, led) = if list.as_slice()[0].position == lamps[0].position {
+        (s[0], s[1])
+    } else {
+        (s[1], s[0])
+    };
     assert!(bulb < 0.6 * led, "bulb {bulb} should lag the LED {led}");
     // 15 ms: the bulb has reached 95 %; 10 ms: not yet (the brief's timings, via the bank).
     let b15 = warmed(&lamps, &snap, 15);
@@ -473,14 +544,31 @@ fn gi_strings_take_the_gi_tint_and_other_lamps_do_not() {
     let bank = warmed(&lamps, &snap, 100);
     let mut list = LightList::new();
     build_light_list(&lamps, &bank, [1.0, 0.0, 0.5, 0.5], &mut list);
-    let gi = list.as_slice().iter().find(|l| l.position == lamps[0].position).expect("GI light");
-    let plain = list.as_slice().iter().find(|l| l.position == lamps[1].position).expect("plain light");
+    let gi = list
+        .as_slice()
+        .iter()
+        .find(|l| l.position == lamps[0].position)
+        .expect("GI light");
+    let plain = list
+        .as_slice()
+        .iter()
+        .find(|l| l.position == lamps[1].position)
+        .expect("plain light");
     let (sg, sp) = (strength(gi), strength(plain));
     let base = [2.0, 1.6, 1.2];
     let tint = [0.5, 0.0, 0.25];
     for c in 0..3 {
-        assert!((sp[c] - base[c]).abs() <= 2e-3 * base[c], "plain lamp channel {c}: {}", sp[c]);
-        assert!((sg[c] - base[c] * tint[c]).abs() <= 2e-3, "GI lamp channel {c}: {} vs {}", sg[c], base[c] * tint[c]);
+        assert!(
+            (sp[c] - base[c]).abs() <= 2e-3 * base[c],
+            "plain lamp channel {c}: {}",
+            sp[c]
+        );
+        assert!(
+            (sg[c] - base[c] * tint[c]).abs() <= 2e-3,
+            "GI lamp channel {c}: {} vs {}",
+            sg[c],
+            base[c] * tint[c]
+        );
     }
     // GI off: the string casts no light (dropped, or present with zero strength).
     build_light_list(&lamps, &bank, [1.0, 1.0, 1.0, 0.0], &mut list);
@@ -489,7 +577,11 @@ fn gi_strings_take_the_gi_tint_and_other_lamps_do_not() {
             assert_eq!(strength(l), [0.0; 3], "GI string lit with GI intensity 0");
         }
     }
-    assert!(list.as_slice().iter().any(|l| l.position == lamps[1].position));
+    assert!(
+        list.as_slice()
+            .iter()
+            .any(|l| l.position == lamps[1].position)
+    );
 }
 
 #[test]

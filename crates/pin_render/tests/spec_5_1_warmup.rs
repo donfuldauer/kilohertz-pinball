@@ -48,14 +48,20 @@ fn a_new_lamp_is_dark() {
 #[test]
 fn incandescent_step_reaches_95_percent_at_15_ms_in_sim_ticks() {
     let v = step_response(LampKind::Incandescent, 1.0, TICK_S, 15);
-    assert!(v >= 0.95, "incandescent at 15 ms (1 ms ticks) = {v}, want >= 0.95");
+    assert!(
+        v >= 0.95,
+        "incandescent at 15 ms (1 ms ticks) = {v}, want >= 0.95"
+    );
     assert!(v <= 1.0, "incandescent at 15 ms = {v} exceeds 1");
 }
 
 #[test]
 fn incandescent_step_is_below_95_percent_at_10_ms_in_sim_ticks() {
     let v = step_response(LampKind::Incandescent, 1.0, TICK_S, 10);
-    assert!(v < 0.95, "incandescent at 10 ms (1 ms ticks) = {v}, want < 0.95");
+    assert!(
+        v < 0.95,
+        "incandescent at 10 ms (1 ms ticks) = {v}, want < 0.95"
+    );
     assert!(v > 0.0, "incandescent has not started to warm at 10 ms");
 }
 
@@ -65,7 +71,10 @@ fn led_step_reaches_95_percent_at_1_ms() {
     assert!(v >= 0.95, "LED at 1 ms (one tick) = {v}, want >= 0.95");
     assert!(v <= 1.0);
     let v = step_response(LampKind::Led, 1.0, 0.25e-3, 4);
-    assert!(v >= 0.95, "LED at 1 ms (four 0.25 ms steps) = {v}, want >= 0.95");
+    assert!(
+        v >= 0.95,
+        "LED at 1 ms (four 0.25 ms steps) = {v}, want >= 0.95"
+    );
     assert!(v <= 1.0);
 }
 
@@ -82,7 +91,10 @@ fn incandescent_timings_hold_for_other_step_sizes() {
     ] {
         let at15 = step_response(LampKind::Incandescent, 1.0, dt, n15);
         let at10 = step_response(LampKind::Incandescent, 1.0, dt, n10);
-        assert!((0.95..=1.0).contains(&at15), "dt={dt}: at 15 ms = {at15}, want >= 0.95");
+        assert!(
+            (0.95..=1.0).contains(&at15),
+            "dt={dt}: at 15 ms = {at15}, want >= 0.95"
+        );
         assert!(at10 < 0.95, "dt={dt}: at 10 ms = {at10}, want < 0.95");
     }
 }
@@ -91,7 +103,10 @@ fn incandescent_timings_hold_for_other_step_sizes() {
 #[test]
 fn incandescent_timings_hold_for_a_single_update() {
     let at15 = step_response(LampKind::Incandescent, 1.0, 15.0e-3, 1);
-    assert!((0.95..=1.0).contains(&at15), "one 15 ms update = {at15}, want >= 0.95");
+    assert!(
+        (0.95..=1.0).contains(&at15),
+        "one 15 ms update = {at15}, want >= 0.95"
+    );
     let at10 = step_response(LampKind::Incandescent, 1.0, 10.0e-3, 1);
     assert!(at10 < 0.95, "one 10 ms update = {at10}, want < 0.95");
 }
@@ -117,7 +132,11 @@ fn response_is_step_size_independent() {
 fn zero_dt_does_not_advance_the_lamp() {
     for kind in [LampKind::Incandescent, LampKind::Led] {
         let mut lamp = LampWarmup::new(kind);
-        assert_eq!(lamp.update(1.0, 0.0), 0.0, "a zero-length step lit the lamp");
+        assert_eq!(
+            lamp.update(1.0, 0.0),
+            0.0,
+            "a zero-length step lit the lamp"
+        );
         let a = lamp.update(1.0, 0.5e-3);
         let b = lamp.update(1.0, 0.0);
         assert_eq!(a, b, "a zero-length step changed the output");
@@ -158,15 +177,24 @@ fn turn_off_mirrors_turn_on() {
     for _ in 0..10 {
         v = lamp.update(0.0, TICK_S);
     }
-    assert!(v > 0.05, "incandescent 10 ms after turn-off = {v}, want > 0.05");
+    assert!(
+        v > 0.05,
+        "incandescent 10 ms after turn-off = {v}, want > 0.05"
+    );
     for _ in 0..5 {
         v = lamp.update(0.0, TICK_S);
     }
-    assert!((0.0..=0.05).contains(&v), "incandescent 15 ms after turn-off = {v}, want <= 0.05");
+    assert!(
+        (0.0..=0.05).contains(&v),
+        "incandescent 15 ms after turn-off = {v}, want <= 0.05"
+    );
 
     let mut lamp = lit(LampKind::Led);
     let v = lamp.update(0.0, TICK_S);
-    assert!((0.0..=0.05).contains(&v), "LED 1 ms after turn-off = {v}, want <= 0.05");
+    assert!(
+        (0.0..=0.05).contains(&v),
+        "LED 1 ms after turn-off = {v}, want <= 0.05"
+    );
 }
 
 /// The step response rises strictly while far from the target, is concave (largest gain
@@ -180,7 +208,10 @@ fn incandescent_step_is_monotone_concave_and_bounded() {
         let v = lamp.update(1.0, TICK_S);
         let gain = v - prev;
         assert!(gain > 0.0, "tick {i}: output did not rise ({prev} -> {v})");
-        assert!(gain <= prev_gain + 1.0e-6, "tick {i}: gain {gain} grew from {prev_gain}");
+        assert!(
+            gain <= prev_gain + 1.0e-6,
+            "tick {i}: gain {gain} grew from {prev_gain}"
+        );
         assert!(v <= 1.0, "tick {i}: overshoot {v}");
         prev = v;
         prev_gain = gain;
@@ -281,7 +312,7 @@ proptest! {
     #[test]
     fn incandescent_timing_bounds_hold_for_any_uniform_slicing(n in 1u32..=120) {
         let at15 = step_response(LampKind::Incandescent, 1.0, 15.0e-3 / n as f32, n);
-        prop_assert!(at15 >= 0.95 - 1.0e-4 && at15 <= 1.0, "n={} at 15 ms = {}", n, at15);
+        prop_assert!((0.95 - 1.0e-4..=1.0).contains(&at15), "n={} at 15 ms = {}", n, at15);
         let at10 = step_response(LampKind::Incandescent, 1.0, 10.0e-3 / n as f32, n);
         prop_assert!(at10 < 0.95, "n={} at 10 ms = {}", n, at10);
     }

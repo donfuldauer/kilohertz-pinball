@@ -15,6 +15,8 @@
 //! differ between lavapipe, WARP and Metal). `PIN_UPDATE_SNAPSHOTS=1`
 //! (re)writes the fixtures; a missing fixture fails otherwise.
 #![cfg(feature = "gpu-tests")]
+// Per-channel loops (`for k in 0..3`) read clearer than zipped iterators here.
+#![allow(clippy::needless_range_loop)]
 
 use pin_render::gpu::{GpuContext, context_for_tests};
 use pin_render::pbr::math::{IDENTITY, scale_translation, translation};
@@ -89,7 +91,13 @@ fn pixel_ray(cam: &PbrCamera, x: u32, y: u32) -> [f32; 3] {
 /// Hit point and outward normal of the camera ray through pixel (`x`, `y`)
 /// on a sphere at the origin of radius `r`, if it hits at least `margin`
 /// inside the silhouette (to skip edge pixels).
-fn sphere_hit(cam: &PbrCamera, x: u32, y: u32, r: f32, margin: f32) -> Option<([f32; 3], [f32; 3])> {
+fn sphere_hit(
+    cam: &PbrCamera,
+    x: u32,
+    y: u32,
+    r: f32,
+    margin: f32,
+) -> Option<([f32; 3], [f32; 3])> {
     let d = pixel_ray(cam, x, y);
     let o = cam.eye;
     let b = dot(o, d);
@@ -108,7 +116,8 @@ fn sphere_hit(cam: &PbrCamera, x: u32, y: u32, r: f32, margin: f32) -> Option<([
 /// Pixel of a world point.
 fn project(cam: &PbrCamera, p: [f32; 3]) -> (f32, f32) {
     let m = cam.view_proj();
-    let c: [f32; 4] = core::array::from_fn(|r| m[0][r] * p[0] + m[1][r] * p[1] + m[2][r] * p[2] + m[3][r]);
+    let c: [f32; 4] =
+        core::array::from_fn(|r| m[0][r] * p[0] + m[1][r] * p[1] + m[2][r] * p[2] + m[3][r]);
     let (nx, ny) = (c[0] / c[3], c[1] / c[3]);
     ((nx + 1.0) * 0.5 * N as f32, (1.0 - ny) * 0.5 * N as f32)
 }
@@ -124,7 +133,9 @@ fn scene(ctx: &GpuContext) -> Scene {
     let sphere = renderer
         .upload_mesh(&MeshGeometry::uv_sphere(SPHERE_R, 96, 64))
         .expect("sphere");
-    let quad = renderer.upload_mesh(&MeshGeometry::quad(1.0)).expect("quad");
+    let quad = renderer
+        .upload_mesh(&MeshGeometry::quad(1.0))
+        .expect("quad");
     Scene {
         renderer,
         sphere,
@@ -168,7 +179,10 @@ fn assert_clean(img: &HdrImage, what: &str) {
     for (x, y) in [(0, 0), (N - 1, 0), (0, N - 1), (N - 1, N - 1)] {
         let p = img.at(x, y);
         for k in 0..3 {
-            assert!((p[k] - GREY[k]).abs() < 1e-3, "{what}: background at {x},{y} = {p:?}");
+            assert!(
+                (p[k] - GREY[k]).abs() < 1e-3,
+                "{what}: background at {x},{y} = {p:?}"
+            );
         }
     }
 }
@@ -252,7 +266,11 @@ fn check_snapshot(name: &str, img: &HdrImage) {
             )
         })
         .to_rgba8();
-    assert_eq!((want.width(), want.height()), (img.width, img.height), "[{name}] size");
+    assert_eq!(
+        (want.width(), want.height()),
+        (img.width, img.height),
+        "[{name}] size"
+    );
     let want = want.into_raw();
     let mut sum = 0u64;
     let mut far = 0usize;
@@ -267,7 +285,10 @@ fn check_snapshot(name: &str, img: &HdrImage) {
     let mean = sum as f64 / (px * 3) as f64;
     println!("[{name}] snapshot: mean |diff| {mean:.3}/255, {far} px off by > 16/255");
     assert!(mean <= 3.0, "[{name}] mean diff {mean:.3}/255 > 3/255");
-    assert!(far * 50 <= px, "[{name}] {far} of {px} px differ by > 16/255");
+    assert!(
+        far * 50 <= px,
+        "[{name}] {far} of {px} px differ by > 16/255"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -278,7 +299,14 @@ fn golden(ctx: &GpuContext, kind: MaterialKind, gi: [f32; 4], emission: f32) -> 
     let mut sc = scene(ctx);
     let mut d = DrawItem::new(sc.sphere, IDENTITY, kind);
     d.emission = emission;
-    render(ctx, &mut sc.renderer, &[d], &[golden_light()], Environment::STUDIO, gi)
+    render(
+        ctx,
+        &mut sc.renderer,
+        &[d],
+        &[golden_light()],
+        Environment::STUDIO,
+        gi,
+    )
 }
 
 #[test]
@@ -300,14 +328,23 @@ fn golden_chrome_steel() {
     assert!(off * 10.0 < peak, "highlight not sharp: {off} vs {peak}");
     // No colour cast (neutral steel under white light and grey environment).
     let p = img.at(px, py);
-    assert!((p[0] - p[2]).abs() < 0.1 * p[1], "cast at the highlight {p:?}");
-    assert!((mean[0] - mean[2]).abs() < 0.1 * mean[1], "cast on the body {mean:?}");
+    assert!(
+        (p[0] - p[2]).abs() < 0.1 * p[1],
+        "cast at the highlight {p:?}"
+    );
+    assert!(
+        (mean[0] - mean[2]).abs() < 0.1 * mean[1],
+        "cast on the body {mean:?}"
+    );
     // Mirror-like environment: the bright horizon band shows on the body
     // (the band reflects at the sphere's equator rim, the sky at the top).
     let (cx, cy) = project(&camera(), [0.0; 3]);
     let equator_rim = lum(img.at(cx as u32 + 32, cy as u32));
     let top = lum(img.at(cx as u32, cy as u32 - 32));
-    assert!(equator_rim > 2.0 * top, "horizon {equator_rim} vs sky {top}");
+    assert!(
+        equator_rim > 2.0 * top,
+        "horizon {equator_rim} vs sky {top}"
+    );
     check_snapshot("chrome_steel", &img);
 }
 
@@ -319,16 +356,25 @@ fn golden_ceramic_pearl() {
     let mean = sphere_mean(&img);
     // Bright white body.
     assert!(lum(mean) > 0.3, "ceramic mean {mean:?}");
-    assert!((mean[0] - mean[2]).abs() < 0.15 * mean[1], "ceramic tint {mean:?}");
+    assert!(
+        (mean[0] - mean[2]).abs() < 0.15 * mean[1],
+        "ceramic tint {mean:?}"
+    );
     // A soft highlight near the mirror direction: brighter than the body
     // and much broader than chrome's (still > half the peak 3 px away).
     let (peak, px, py) = sphere_peak(&img);
     let (mx, my) = mirror_pixel(LIGHT_POS);
-    assert!((px as f32 - mx).hypot(py as f32 - my) <= 6.0, "peak {px},{py} vs {mx},{my}");
+    assert!(
+        (px as f32 - mx).hypot(py as f32 - my) <= 6.0,
+        "peak {px},{py} vs {mx},{my}"
+    );
     assert!(peak > 1.5 * lum(mean), "peak {peak} vs mean {mean:?}");
     let chrome = golden(ctx, MaterialKind::ChromeSteel, [1.0; 4], 0.0);
     let (cpeak, _, _) = sphere_peak(&chrome);
-    assert!(peak < cpeak, "ceramic highlight should be softer than chrome");
+    assert!(
+        peak < cpeak,
+        "ceramic highlight should be softer than chrome"
+    );
     check_snapshot("ceramic_pearl", &img);
 }
 
@@ -359,7 +405,10 @@ fn golden_playfield_wood() {
     assert_clean(&img, "wood");
     // Warm diffuse body.
     let mean = sphere_mean(&img);
-    assert!(mean[0] > mean[1] && mean[1] > mean[2], "wood colour {mean:?}");
+    assert!(
+        mean[0] > mean[1] && mean[1] > mean[2],
+        "wood colour {mean:?}"
+    );
     // A separate glossy clear-coat highlight: at the mirror pixel the
     // coated wood is much brighter than the same wood without the coat,
     // and the coat's peak sits at the mirror direction.
@@ -376,7 +425,12 @@ fn golden_playfield_wood() {
         [1.0; 4],
     );
     let at = |im: &HdrImage| lum(im.at(mx as u32, my as u32));
-    assert!(at(&img) > 5.0 * at(&bare_img), "coat {} vs bare {}", at(&img), at(&bare_img));
+    assert!(
+        at(&img) > 5.0 * at(&bare_img),
+        "coat {} vs bare {}",
+        at(&img),
+        at(&bare_img)
+    );
     let (_, px, py) = sphere_peak(&img);
     assert!((px as f32 + 0.5 - mx).hypot(py as f32 + 0.5 - my) <= 3.0);
     // The coat highlight is white (the base colour does not tint it).
@@ -398,19 +452,40 @@ fn golden_light_insert() {
     for k in 0..3 {
         let added = m_on[k] - m_off[k];
         let want = p.base_color[k] * p.lamp_emissive;
-        assert!((added - want).abs() < 0.02 * want + 0.01, "ch {k}: +{added} want {want}");
+        assert!(
+            (added - want).abs() < 0.02 * want + 0.01,
+            "ch {k}: +{added} want {want}"
+        );
     }
     // Subsurface: the wrapped diffuse lights past the terminator, where a
     // Lambert plastic of the same colour is black.
     let mut lambert = p;
     lambert.subsurface = 0.0;
     let mut sc = scene(ctx);
-    let lam = render(ctx, &mut sc.renderer, &[sphere_draw(sc.sphere, lambert)], &[golden_light()], Environment::BLACK, [1.0; 4]);
-    let sss = render(ctx, &mut sc.renderer, &[sphere_draw(sc.sphere, p)], &[golden_light()], Environment::BLACK, [1.0; 4]);
+    let lam = render(
+        ctx,
+        &mut sc.renderer,
+        &[sphere_draw(sc.sphere, lambert)],
+        &[golden_light()],
+        Environment::BLACK,
+        [1.0; 4],
+    );
+    let sss = render(
+        ctx,
+        &mut sc.renderer,
+        &[sphere_draw(sc.sphere, p)],
+        &[golden_light()],
+        Environment::BLACK,
+        [1.0; 4],
+    );
     // Bottom-right of the sphere faces away from the light (light is up-left).
     let (cx, cy) = project(&camera(), [0.0; 3]);
     let (x, y) = ((cx + 22.0) as u32, (cy + 22.0) as u32);
-    assert!(lum(lam.at(x, y)) < 1e-3, "Lambert past the terminator {:?}", lam.at(x, y));
+    assert!(
+        lum(lam.at(x, y)) < 1e-3,
+        "Lambert past the terminator {:?}",
+        lam.at(x, y)
+    );
     assert!(lum(sss.at(x, y)) > 0.01, "wrap light {:?}", sss.at(x, y));
     // Snapshot at a low lamp level: at full level the glow saturates the
     // 8-bit image (the HDR value is ~4).
@@ -430,11 +505,21 @@ fn light_insert_warm_up_visible_across_frames() {
         let level = lamp.update(1.0, 0.004); // 4 ms of sim time per frame
         let mut d = DrawItem::new(sc.sphere, IDENTITY, MaterialKind::LightInsert);
         d.emission = level;
-        let img = render(ctx, &mut sc.renderer, &[d], &[golden_light()], Environment::BLACK, [1.0; 4]);
+        let img = render(
+            ctx,
+            &mut sc.renderer,
+            &[d],
+            &[golden_light()],
+            Environment::BLACK,
+            [1.0; 4],
+        );
         means.push(lum(sphere_mean(&img)));
     }
     for w in means.windows(2) {
-        assert!(w[1] > w[0] * 1.02, "insert must brighten frame to frame: {means:?}");
+        assert!(
+            w[1] > w[0] * 1.02,
+            "insert must brighten frame to frame: {means:?}"
+        );
     }
 }
 
@@ -459,8 +544,22 @@ fn golden_clear_acrylic() {
     let acrylic = DrawItem::new(sc.sphere, IDENTITY, MaterialKind::ClearAcrylic);
     assert!(acrylic.transparent);
     let lights = [golden_light()];
-    let behind = render(ctx, &mut sc.renderer, &[card], &lights, Environment::STUDIO, [1.0; 4]);
-    let img = render(ctx, &mut sc.renderer, &[acrylic, card], &lights, Environment::STUDIO, [1.0; 4]);
+    let behind = render(
+        ctx,
+        &mut sc.renderer,
+        &[card],
+        &lights,
+        Environment::STUDIO,
+        [1.0; 4],
+    );
+    let img = render(
+        ctx,
+        &mut sc.renderer,
+        &[acrylic, card],
+        &lights,
+        Environment::STUDIO,
+        [1.0; 4],
+    );
     assert_clean(&img, "acrylic");
     // See-through: at the sphere centre the red card dominates, close to
     // the card alone (two surfaces of ~8 % loss each).
@@ -469,13 +568,22 @@ fn golden_clear_acrylic() {
     let b = behind.region_mean(cx as u32 - 3, cy as u32 - 3, cx as u32 + 3, cy as u32 + 3);
     println!("acrylic centre {c:?}, card alone {b:?}");
     // (Green and blue there are the two surfaces' environment reflections.)
-    assert!(c[0] > 3.0 * c[1] && c[0] > 3.0 * c[2], "not see-through: {c:?}");
-    assert!(c[0] > 0.6 * b[0] && c[0] < 1.3 * b[0], "transmission {c:?} vs card {b:?}");
+    assert!(
+        c[0] > 3.0 * c[1] && c[0] > 3.0 * c[2],
+        "not see-through: {c:?}"
+    );
+    assert!(
+        c[0] > 0.6 * b[0] && c[0] < 1.3 * b[0],
+        "transmission {c:?} vs card {b:?}"
+    );
     // A faint highlight at the mirror direction, above what is behind it.
     let (mx, my) = mirror_pixel(LIGHT_POS);
     let h = img.at(mx as u32, my as u32);
     let hb = behind.at(mx as u32, my as u32);
-    assert!(lum(h) > lum(hb) + 0.2, "acrylic highlight {h:?} vs behind {hb:?}");
+    assert!(
+        lum(h) > lum(hb) + 0.2,
+        "acrylic highlight {h:?} vs behind {hb:?}"
+    );
     check_snapshot("clear_acrylic", &img);
 }
 
@@ -521,8 +629,8 @@ fn lambert_matches_analytic_radiance_and_never_exceeds_the_bound() {
             let to_l = sub(light.position, hit);
             let d = dot(to_l, to_l).sqrt();
             let cos = (dot(n, to_l) / d).max(0.0);
-            let want = light.intensity * cos * window(d, light.range)
-                / (core::f32::consts::PI * d * d);
+            let want =
+                light.intensity * cos * window(d, light.range) / (core::f32::consts::PI * d * d);
             for k in 0..3 {
                 assert!(
                     (p[k] - want).abs() <= 0.03 * want + 2e-3,
@@ -535,7 +643,10 @@ fn lambert_matches_analytic_radiance_and_never_exceeds_the_bound() {
     }
     assert!(checked > 1000);
     assert!(max <= bound * 1.005, "max {max} > analytic bound {bound}");
-    assert!(max >= 0.9 * bound, "max {max} far below the bound {bound} (light faces the sphere)");
+    assert!(
+        max >= 0.9 * bound,
+        "max {max} far below the bound {bound} (light faces the sphere)"
+    );
 }
 
 /// Many short-range lights over a Lambert floor seen at a grazing angle:
@@ -562,7 +673,12 @@ fn clustered_lights_match_the_analytic_sum_everywhere() {
             let x = -2.0 + 4.0 * i as f32 / 11.0;
             let y = 0.0 + 6.0 * j as f32 / 9.0;
             let c = [(i % 3) as f32 * 0.5, 1.0, (j % 2) as f32];
-            lights.push(PointLight::new([x, y, -0.45], c, 0.02, 0.35 + 0.05 * (i % 4) as f32));
+            lights.push(PointLight::new(
+                [x, y, -0.45],
+                c,
+                0.02,
+                0.35 + 0.05 * (i % 4) as f32,
+            ));
         }
     }
     let cam = camera();
@@ -617,25 +733,57 @@ fn max_lights_render_and_the_next_one_is_counted_not_drawn() {
     let mut sc = scene(ctx);
     let ring = |k: usize| {
         let a = core::f32::consts::TAU * k as f32 / MAX_LIGHTS as f32;
-        PointLight::new([1.2 * a.cos(), -1.0, 1.2 * a.sin()], [1.0, 0.8, 0.6], 0.05, 3.0)
+        PointLight::new(
+            [1.2 * a.cos(), -1.0, 1.2 * a.sin()],
+            [1.0, 0.8, 0.6],
+            0.05,
+            3.0,
+        )
     };
     let mut lights: Vec<_> = (0..MAX_LIGHTS).map(ring).collect();
     let draws = [sphere_draw(sc.sphere, MaterialParams::lambert([0.8; 3]))];
-    let full = render(ctx, &mut sc.renderer, &draws, &lights, Environment::BLACK, [0.0; 4]);
+    let full = render(
+        ctx,
+        &mut sc.renderer,
+        &draws,
+        &lights,
+        Environment::BLACK,
+        [0.0; 4],
+    );
     assert_clean(&full, "128 lights");
     let st = sc.renderer.stats();
-    assert_eq!((st.frame_lights, st.frame_lights_rejected), (MAX_LIGHTS as u32, 0));
+    assert_eq!(
+        (st.frame_lights, st.frame_lights_rejected),
+        (MAX_LIGHTS as u32, 0)
+    );
     // A very bright 129th light right in front: ignored and counted.
     lights.push(PointLight::new([0.0, -1.0, 0.0], [1.0; 3], 1000.0, 10.0));
-    let over = render(ctx, &mut sc.renderer, &draws, &lights, Environment::BLACK, [0.0; 4]);
+    let over = render(
+        ctx,
+        &mut sc.renderer,
+        &draws,
+        &lights,
+        Environment::BLACK,
+        [0.0; 4],
+    );
     let st = sc.renderer.stats();
     assert_eq!(st.frame_lights_rejected, 1);
     assert_eq!(st.lights_rejected, 1);
     assert_eq!(st.frame_lights, MAX_LIGHTS as u32);
-    assert_eq!(full.pixels, over.pixels, "the 129th light must not be drawn");
+    assert_eq!(
+        full.pixels, over.pixels,
+        "the 129th light must not be drawn"
+    );
     // Every light contributes: dropping one ring light darkens its side.
     let fewer: Vec<_> = lights[1..MAX_LIGHTS].to_vec();
-    let less = render(ctx, &mut sc.renderer, &draws, &fewer, Environment::BLACK, [0.0; 4]);
+    let less = render(
+        ctx,
+        &mut sc.renderer,
+        &draws,
+        &fewer,
+        Environment::BLACK,
+        [0.0; 4],
+    );
     assert!(lum(sphere_mean(&less)) < lum(sphere_mean(&full)));
 }
 
@@ -643,13 +791,38 @@ fn max_lights_render_and_the_next_one_is_counted_not_drawn() {
 fn transparent_draws_blend_back_to_front_and_resize_works() {
     let Some(ctx) = ctx() else { return };
     let mut sc = scene(ctx);
-    let near = DrawItem::new(sc.sphere, translation([0.0, -0.5, 0.0]), MaterialKind::ClearAcrylic);
-    let far = DrawItem::new(sc.sphere, translation([0.0, 0.5, 0.0]), MaterialKind::ClearAcrylic);
+    let near = DrawItem::new(
+        sc.sphere,
+        translation([0.0, -0.5, 0.0]),
+        MaterialKind::ClearAcrylic,
+    );
+    let far = DrawItem::new(
+        sc.sphere,
+        translation([0.0, 0.5, 0.0]),
+        MaterialKind::ClearAcrylic,
+    );
     let lights = [golden_light()];
-    let a = render(ctx, &mut sc.renderer, &[near, far], &lights, Environment::STUDIO, [1.0; 4]);
-    let b = render(ctx, &mut sc.renderer, &[far, near], &lights, Environment::STUDIO, [1.0; 4]);
+    let a = render(
+        ctx,
+        &mut sc.renderer,
+        &[near, far],
+        &lights,
+        Environment::STUDIO,
+        [1.0; 4],
+    );
+    let b = render(
+        ctx,
+        &mut sc.renderer,
+        &[far, near],
+        &lights,
+        Environment::STUDIO,
+        [1.0; 4],
+    );
     assert_clean(&a, "acrylic pair");
-    assert_eq!(a.pixels, b.pixels, "blend order must not depend on draw order");
+    assert_eq!(
+        a.pixels, b.pixels,
+        "blend order must not depend on draw order"
+    );
     // Unknown mesh ids are skipped and counted.
     let mut bogus = near;
     bogus.mesh = {
@@ -658,7 +831,14 @@ fn transparent_draws_blend_back_to_front_and_resize_works() {
         other.upload_mesh(&MeshGeometry::quad(1.0)).unwrap();
         other.upload_mesh(&MeshGeometry::quad(1.0)).unwrap()
     };
-    let _ = render(ctx, &mut sc.renderer, &[bogus], &lights, Environment::STUDIO, [1.0; 4]);
+    let _ = render(
+        ctx,
+        &mut sc.renderer,
+        &[bogus],
+        &lights,
+        Environment::STUDIO,
+        [1.0; 4],
+    );
     assert_eq!(sc.renderer.stats().draws_skipped, 1);
     sc.renderer.resize(64, 32).unwrap();
     assert_eq!(sc.renderer.size(), (64, 32));
@@ -668,11 +848,22 @@ fn transparent_draws_blend_back_to_front_and_resize_works() {
     let frame = FrameDesc::new(&cam, &lights, &[]);
     let img = sc.renderer.render_to_image(ctx, &frame).unwrap();
     assert_eq!((img.width, img.height, img.pixels.len()), (64, 32, 64 * 32));
-    assert!(sc.renderer.upload_mesh_data(&[[0.0; 3]], &[], &[0, 0, 0]).is_err());
-    assert!(sc.renderer.upload_mesh_data(&[[0.0; 3]], &[[0.0; 3]], &[0, 0, 1]).is_err());
-    assert_eq!(sc.renderer.hdr_texture().format(), pin_render::pbr::HDR_FORMAT);
+    assert!(
+        sc.renderer
+            .upload_mesh_data(&[[0.0; 3]], &[], &[0, 0, 0])
+            .is_err()
+    );
+    assert!(
+        sc.renderer
+            .upload_mesh_data(&[[0.0; 3]], &[[0.0; 3]], &[0, 0, 1])
+            .is_err()
+    );
+    assert_eq!(
+        sc.renderer.hdr_texture().format(),
+        pin_render::pbr::HDR_FORMAT
+    );
     let _ = sc.renderer.hdr_view();
-    assert!(sc.renderer.cluster_assignment().ranges().len() > 0);
+    assert!(!sc.renderer.cluster_assignment().ranges().is_empty());
 }
 
 #[test]
@@ -692,12 +883,22 @@ fn many_draws_grow_the_draw_buffer() {
             d
         })
         .collect();
-    let img = render(ctx, &mut sc.renderer, &draws, &[golden_light()], Environment::STUDIO, [0.5, 0.5, 1.0, 1.0]);
+    let img = render(
+        ctx,
+        &mut sc.renderer,
+        &draws,
+        &[golden_light()],
+        Environment::STUDIO,
+        [0.5, 0.5, 1.0, 1.0],
+    );
     assert_clean(&img, "40 spheres");
     // Every sphere is drawn: its centre pixel differs from the background.
     for d in &draws {
         let (x, y) = project(&camera(), [d.model[3][0], d.model[3][1], d.model[3][2]]);
         let p = img.at(x as u32, y as u32);
-        assert!((0..3).any(|k| (p[k] - GREY[k]).abs() > 1e-3), "sphere at {x},{y} missing");
+        assert!(
+            (0..3).any(|k| (p[k] - GREY[k]).abs() > 1e-3),
+            "sphere at {x},{y} missing"
+        );
     }
 }

@@ -225,7 +225,10 @@ mod tests {
     #[test]
     fn look_at_puts_target_on_negative_z() {
         let v = look_at([1.0, 2.0, 3.0], [1.0, 2.0, 0.0], [0.0, 1.0, 0.0]);
-        assert!(close(transform_point(&v, [1.0, 2.0, 0.0]), [0.0, 0.0, -3.0]));
+        assert!(close(
+            transform_point(&v, [1.0, 2.0, 0.0]),
+            [0.0, 0.0, -3.0]
+        ));
         assert!(close(transform_point(&v, [2.0, 2.0, 3.0]), [1.0, 0.0, 0.0]));
         assert!(close(transform_point(&v, [1.0, 3.0, 3.0]), [0.0, 1.0, 0.0]));
         // Degenerate up vector and eye == target stay finite.

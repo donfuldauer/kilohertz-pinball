@@ -82,7 +82,11 @@ fn forward_module_has_the_renderer_entry_points() {
         .find(|(n, _)| *n == "pbr_forward")
         .expect("pbr_forward");
     let (module, _) = validated("pbr_forward", src);
-    let names: Vec<_> = module.entry_points.iter().map(|e| e.name.as_str()).collect();
+    let names: Vec<_> = module
+        .entry_points
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
     for ep in ["vs_main", "fs_opaque", "fs_blended"] {
         assert!(names.contains(&ep), "missing entry point {ep}: {names:?}");
     }

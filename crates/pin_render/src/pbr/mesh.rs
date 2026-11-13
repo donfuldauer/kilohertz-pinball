@@ -27,7 +27,8 @@ impl MeshGeometry {
                 let (sp, cp) = phi.sin_cos();
                 let n = [st * cp, st * sp, ct];
                 m.normals.push(n);
-                m.positions.push([n[0] * radius, n[1] * radius, n[2] * radius]);
+                m.positions
+                    .push([n[0] * radius, n[1] * radius, n[2] * radius]);
             }
         }
         let row = segments + 1;

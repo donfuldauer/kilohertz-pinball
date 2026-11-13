@@ -79,8 +79,7 @@ fn report_kicker_pinch() {
         let pitch = 6.5f32.to_radians();
         let mut cfg = BallSolverConfig::from_defaults(&PhysicsDefaults::builtin());
         cfg.gravity = Vec3::new(0.0, -9.81 * libm::sinf(pitch), -9.81 * libm::cosf(pitch));
-        let profiles: Vec<pin_core::BallProfile> =
-            pin_core::profiles::builtin_profiles().collect();
+        let profiles: Vec<pin_core::BallProfile> = pin_core::profiles::builtin_profiles().collect();
         let r = profiles[0].radius_m();
         let mut s = BallSolver::new(cfg, &profiles);
         let mut wb = StaticWorldBuilder::new();
@@ -91,7 +90,10 @@ fn report_kicker_pinch() {
         );
         if let Some(g) = gap {
             wb.add_collider(
-                cuboid(Vec3::new(2.0 * r + g + 0.01, 0.0, 0.03), Vec3::new(0.01, 0.2, 0.03)),
+                cuboid(
+                    Vec3::new(2.0 * r + g + 0.01, 0.0, 0.03),
+                    Vec3::new(0.01, 0.2, 0.03),
+                ),
                 layers::ALL,
                 true,
             );

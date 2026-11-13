@@ -746,7 +746,8 @@ impl PbrRenderer {
         self.blend_order.clear();
         for (i, d) in frame.draws.iter().enumerate() {
             if d.transparent {
-                let p = transform_point(&camera.view, [d.model[3][0], d.model[3][1], d.model[3][2]]);
+                let p =
+                    transform_point(&camera.view, [d.model[3][0], d.model[3][1], d.model[3][2]]);
                 self.blend_order.push((-p[2], i as u32));
             }
         }

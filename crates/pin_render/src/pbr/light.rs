@@ -139,7 +139,11 @@ pub const LIGHT_OFF_LEVEL: f32 = 1e-3;
 pub fn build_light_list(lamps: &[LampLight], bank: &LampBank, gi: [f32; 4], out: &mut LightList) {
     out.clear();
     let g = |x: f32| if x.is_finite() { x.max(0.0) } else { 0.0 };
-    let tint = [g(gi[0]) * g(gi[3]), g(gi[1]) * g(gi[3]), g(gi[2]) * g(gi[3])];
+    let tint = [
+        g(gi[0]) * g(gi[3]),
+        g(gi[1]) * g(gi[3]),
+        g(gi[2]) * g(gi[3]),
+    ];
     for l in lamps {
         let level = bank.level(l.lamp);
         if level < LIGHT_OFF_LEVEL {

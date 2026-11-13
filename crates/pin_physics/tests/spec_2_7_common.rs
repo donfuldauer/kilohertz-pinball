@@ -37,6 +37,11 @@ pub fn register_magnus(s: &mut BallSolver) {
     s.add_external_force(Box::new(pin_physics::ball_ext::Magnus::default()));
 }
 
+/// A Magnus hook of its own, for direct `force_in` calls.
+pub fn magnus_hook() -> pin_physics::ball_ext::Magnus {
+    pin_physics::ball_ext::Magnus::default()
+}
+
 /// Registers only the remanence hook.
 pub fn register_remanence(s: &mut BallSolver) -> MagProbe {
     let r = pin_physics::ball_ext::Remanence::default();

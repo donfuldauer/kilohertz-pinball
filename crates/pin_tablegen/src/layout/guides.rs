@@ -28,8 +28,10 @@ const DENSE: usize = 256;
 /// Curvature samples per segment when checking a built rail (the loader's
 /// lint uses 64 plus a refinement; 128 here, with 10 % margin).
 const CHECK_SAMPLES: usize = 128;
-/// Open ends closer than this (mm) are a hairline gap (loader lint).
-pub const HAIRLINE_GAP_MM: f64 = 1.0;
+/// Open ends closer than this (mm) are refused as a hairline gap: the
+/// loader's lint threshold (1 mm, measured in f32 metres) plus 1 % so that
+/// rounding cannot put a lane just under it (4.3 fix round 1, N2).
+pub const HAIRLINE_GAP_MM: f64 = 1.01;
 /// Ends closer than this (mm) close the lane.
 pub const CLOSE_SNAP_MM: f64 = 1.0e-3;
 /// The loader's reach floor (m): below it a guide has no proven clearance.

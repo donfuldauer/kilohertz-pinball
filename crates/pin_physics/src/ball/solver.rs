@@ -70,6 +70,13 @@ const FALLBACK_FRICTION: f32 = 0.2;
 const MAX_EVENTS_PER_SUBSTEP: u8 = 12;
 /// Velocity-solver sweeps over the touching contacts at a sub-step boundary.
 const PRESOLVE_PASSES: usize = 64;
+/// Pass after which a ball held only by static surfaces, other balls and
+/// kinematic bodies (at least one), whose solve has not at least halved its change since pass
+/// `STALL_PASSES / 2`, stops iterating: such a pinch (a kicker driving a ball
+/// into a wall closer than its diameter) has no solution, and iterating it to
+/// the pass limit after every event could stall the tick. The next sub-step
+/// boundary projects the penetration out.
+const STALL_PASSES: usize = 8;
 /// The sweeps stop when one changes no velocity by more than this (m/s).
 const PRESOLVE_TOLERANCE: f32 = 1.0e-7;
 /// Normals closer than this (cosine) are the same contact from one
@@ -754,6 +761,36 @@ impl BallSolver {
                 .map_or(Vec3::ZERO, |s| s.velocity_at(body, time, point)),
             _ => self.surface_velocity_at(target, point),
         }
+    }
+
+    /// Whether the touching contacts of a ball are all static surfaces,
+    /// other free balls or kinematic bodies (zero inverse mass both ways along
+    /// the normal), with at least one body: the case [`STALL_PASSES`] gives
+    /// up on. Lists
+    /// without a body never qualify, so the solver without bodies is
+    /// unchanged.
+    fn kinematic_pinch(&self, list: &ContactList, time: f32, bodies: &Bodies<'_, '_>) -> bool {
+        let mut any_body = false;
+        for c in list.iter().filter(|c| c.depth >= -c.active_eps) {
+            match c.kind {
+                ContactKind::Surface(ImpactTarget::Body { set, body }, _) => {
+                    let Some(s) = bodies.sets.get(set) else {
+                        return false;
+                    };
+                    let free = |d: Vec3| {
+                        let w = s.inverse_mass_at(body, time, c.point, d);
+                        w.is_finite() && w > 0.0
+                    };
+                    if free(c.normal) || free(-c.normal) {
+                        return false;
+                    }
+                    any_body = true;
+                }
+                ContactKind::Surface(..) | ContactKind::Ball(_) => {}
+                ContactKind::Chain(..) => return false,
+            }
+        }
+        any_body
     }
 
     /// One solver step (or, with `acc` fresh, a one-shot resolution) of the
@@ -1528,7 +1565,8 @@ impl BallSolver {
         // Each ball is swept until its own contacts have converged: how
         // long one ball iterates must not depend on balls it does not touch.
         let mut settled = [false; MAX_BALLS];
-        for _ in 0..PRESOLVE_PASSES {
+        let mut mid = [0.0f32; MAX_BALLS];
+        for pass in 0..PRESOLVE_PASSES {
             let mut change = [0.0f32; MAX_BALLS];
             let sweeping = settled;
             for surfaces in [false, true] {
@@ -1552,6 +1590,16 @@ impl BallSolver {
                 if members[i] && !sweeping[i] {
                     // A partner's sweep may have reopened this ball.
                     settled[i] = change[i] <= PRESOLVE_TOLERANCE;
+                    if pass == STALL_PASSES / 2 {
+                        mid[i] = change[i];
+                    }
+                    if pass == STALL_PASSES
+                        && !settled[i]
+                        && change[i] > 0.5 * mid[i]
+                        && self.kinematic_pinch(&lists[i], sc[i].t, bodies)
+                    {
+                        settled[i] = true;
+                    }
                 }
                 all &= !members[i] || settled[i];
             }
@@ -1747,12 +1795,22 @@ impl BallSolver {
         let alone = [false; MAX_BALLS];
         let mut unused = [false; MAX_BALLS];
         let mut total = 0.0f32;
-        for _ in 0..PRESOLVE_PASSES {
+        let mut mid = 0.0f32;
+        for pass in 0..PRESOLVE_PASSES {
             let change = self
                 .boundary_sweep(i, list, false, &alone, &mut unused, sc, bodies)
                 .max(self.boundary_sweep(i, list, true, &alone, &mut unused, sc, bodies));
             total = total.max(change);
             if change <= PRESOLVE_TOLERANCE {
+                break;
+            }
+            if pass == STALL_PASSES / 2 {
+                mid = change;
+            }
+            if pass == STALL_PASSES
+                && change > 0.5 * mid
+                && self.kinematic_pinch(list, me.t, bodies)
+            {
                 break;
             }
         }
