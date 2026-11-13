@@ -69,7 +69,7 @@ pub fn effective_restitution(restitution: f32, approach_speed: f32, persistent: 
 }
 
 /// Component of `v` perpendicular to the unit vector `n`.
-fn tangential(v: Vec3, n: Vec3) -> Vec3 {
+pub(super) fn tangential(v: Vec3, n: Vec3) -> Vec3 {
     v - n * v.dot(n)
 }
 
@@ -88,7 +88,7 @@ pub struct ContactImpulse {
 }
 
 /// Clamps the length of `v` to `max`.
-fn clamp_length(v: Vec3, max: f32) -> Vec3 {
+pub(super) fn clamp_length(v: Vec3, max: f32) -> Vec3 {
     let len = v.length();
     if len > max {
         if max > 0.0 {

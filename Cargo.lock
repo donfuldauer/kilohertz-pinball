@@ -1708,7 +1708,11 @@ dependencies = [
 name = "pin_assetgen"
 version = "0.1.0"
 dependencies = [
+ "pin_assets",
+ "pin_audio",
  "pin_core",
+ "proptest",
+ "toml",
 ]
 
 [[package]]
@@ -1732,8 +1736,10 @@ dependencies = [
 name = "pin_audio"
 version = "0.1.0"
 dependencies = [
+ "arrayvec",
  "hound",
  "lewton",
+ "libm",
  "ogg",
  "pin_core",
  "proptest",
@@ -1815,7 +1821,12 @@ dependencies = [
 name = "pin_tablegen"
 version = "0.1.0"
 dependencies = [
+ "glam",
+ "libm",
+ "pin_assets",
  "pin_core",
+ "pin_physics",
+ "proptest",
 ]
 
 [[package]]

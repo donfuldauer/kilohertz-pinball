@@ -9,3 +9,10 @@ license.workspace = true
 
 [dependencies]
 pin_core.workspace = true
+
+# Independent Tester (4.6): oracles for tests/spec_4_6_*.rs.
+[dev-dependencies]
+pin_audio = { path = "../pin_audio" }
+pin_assets = { path = "../pin_assets" }
+proptest.workspace = true
+toml.workspace = true

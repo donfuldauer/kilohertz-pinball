@@ -13,6 +13,8 @@ hound.workspace = true
 lewton.workspace = true
 # Same version lewton 0.10.2 depends on (already in Cargo.lock).
 ogg.workspace = true
+libm.workspace = true
+arrayvec.workspace = true
 sdl3.workspace = true
 
 [dev-dependencies]

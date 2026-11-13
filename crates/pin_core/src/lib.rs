@@ -16,6 +16,7 @@
 //! Changes after Subphase 1.1 go through `contracts/CHANGE_REQUESTS.md`.
 
 pub mod flipper;
+pub mod haptics;
 pub mod ids;
 pub mod input;
 pub mod materials;

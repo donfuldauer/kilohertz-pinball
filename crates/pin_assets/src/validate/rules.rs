@@ -31,6 +31,10 @@ const CLOSE_SNAP_M: f32 = 1.0e-6;
 /// than any playfield holds. It bounds the spline build and the lints
 /// (DECISIONS.md, 4.1 fix task H round 2).
 pub(super) const MAX_SPLINE_POINTS: usize = 4096;
+/// Farthest a spline through-point may lie from the origin (m). With
+/// [`guide_lint::MAX_SPLINE_LENGTH_M`] it keeps the guide lints' work linear
+/// (4.1-H follow-up, Subphase 4.3); a playfield is about 1 m long.
+const MAX_SPLINE_COORD_M: f32 = 10.0;
 /// Through-point spacing ratio above which a spline gets a warning.
 const SPACING_RATIO_WARN: f32 = 3.0;
 /// Addressable persistent keys (`HostView::persist`).
@@ -834,6 +838,17 @@ impl<'v> Checker<'v> {
         self.err(TABLE_FILE, path, format!("spline does not construct: {e}"));
     }
 
+    fn length_error(&mut self, p: &str, length_m: f32) {
+        self.err(
+            TABLE_FILE,
+            format!("{p}.points"),
+            format!(
+                "the spline is {length_m:.1} m long; a spline may be at most {} m long",
+                guide_lint::MAX_SPLINE_LENGTH_M
+            ),
+        );
+    }
+
     fn spline(&mut self, i: usize, s: &SplineDef, balls: &[Ball<'_>]) -> Option<SplineSi> {
         let p = format!("splines[{i}]");
         self.layer(TABLE_FILE, format!("{p}.layer"), s.layer);
@@ -858,6 +873,30 @@ impl<'v> Checker<'v> {
             return None;
         }
         let mut points: Vec<[f32; 3]> = s.points.iter().map(|&q| mm3_to_m(q)).collect();
+        if let Some(j) = points
+            .iter()
+            .position(|&q| !(Vec3::from_array(q).length() <= MAX_SPLINE_COORD_M))
+        {
+            self.err(
+                TABLE_FILE,
+                format!("{p}.points[{j}]"),
+                format!(
+                    "point {} lies {:.1} m from the origin; spline points must lie within \
+                     {MAX_SPLINE_COORD_M} m of it",
+                    fmt3(s.points[j]),
+                    Vec3::from_array(points[j]).length()
+                ),
+            );
+            return None;
+        }
+        let chords: f32 = points
+            .windows(2)
+            .map(|w| Vec3::from_array(w[0]).distance(Vec3::from_array(w[1])))
+            .sum();
+        if chords > guide_lint::MAX_SPLINE_LENGTH_M {
+            self.length_error(&p, chords);
+            return None;
+        }
         let mut ok = true;
         for j in 1..points.len() {
             if points[j] == points[j - 1] {
@@ -953,6 +992,11 @@ impl<'v> Checker<'v> {
                 return None;
             }
         };
+        let length: f32 = guide_lint::segment_lengths(&spline).iter().sum();
+        if length > guide_lint::MAX_SPLINE_LENGTH_M {
+            self.length_error(&p, length);
+            return None;
+        }
         let constructed = match s.kind {
             SplineKind::Guide => GuideCurve::new(spline, 0.0).map(Some),
             SplineKind::Wireform => {
@@ -1080,7 +1124,7 @@ impl<'v> Checker<'v> {
                     t.round() as usize
                 ),
             ),
-            Some(GapLint::DoublesBack { t }) => self.warn(
+            Some(GapLint::DoublesBack { t: Some(t) }) => self.warn(
                 TABLE_FILE,
                 p,
                 format!(
@@ -1088,6 +1132,19 @@ impl<'v> Checker<'v> {
                      proven); even out the through-point spacing or move the points apart",
                     t.round() as usize
                 ),
+            ),
+            // Only `GuideCurve::reach()` is 0: either an open end comes within
+            // about 0.1 mm of the guide's own wall, or the guide is a long
+            // coil whose clearance (lane) table ran out of budget. The physics
+            // API cannot tell these apart, so the text covers both and names
+            // no location (4.1-H follow-ups (b), (c); DECISIONS.md 4.3).
+            Some(GapLint::DoublesBack { t: None }) => self.warn(
+                TABLE_FILE,
+                p,
+                "no clearance could be proven along this guide, so balls may slide slowly \
+                 along it: either an open end nearly touches the guide's own wall (close the \
+                 guide or open the gap), or the guide is a long coil whose clearance table ran \
+                 out of budget (split it into several guides or use fewer turns)",
             ),
             None => {}
         }

@@ -96,3 +96,17 @@ unchanged):
 - **Why:** the thread orchestrator (`pin_app`, 1.4) drives the sim through a trait object that `pin_sim` (2.5/6.0) implements, so the trait crosses crates (D4; Orchestrator "Wave 3 brief decisions").
 - **Affected crates:** none (additive).
 - **Workaround meanwhile:** none needed; the additive change is made in the new file as the brief allows.
+
+### CR-003: `pin_core::haptics` — rich haptic event type
+- **Requested by:** Subphase 3.4 (Implementer)
+- **Status:** open
+- **Kind:** additive
+- **Items:** new file `crates/pin_core/src/haptics.rs`, new line `pub mod haptics;` in `crates/pin_core/src/lib.rs`.
+- **Change:** new module, nothing existing changes (`HapticsTelemetryEvent` and its `to_telemetry_entry` stay as they are):
+  `#[non_exhaustive] pub enum HapticKind { CoilFire { coil: CoilId }, EosHit { flipper: FlipperId }, Bumper { mech: u16 }, BallDrop { ball: u16, position_mm: [f32; 3] }, BallRoll { ball: u16, position_mm: [f32; 3], mass_kg: f32, speed_m_s: f32 }, Impulse { source: u16 } }` (`Copy`, `PartialEq`, `Debug`);
+  `pub struct HapticEvent { pub tick: u64, pub kind: HapticKind, pub strength: f32 }` (`Copy`) with `new`, `source() -> u16`, `is_impulse() -> bool`, `position_mm() -> Option<[f32; 3]>`, `to_telemetry_event() -> Option<HapticsTelemetryEvent>`;
+  `impl From<HapticsTelemetryEvent> for HapticEvent` (→ `HapticKind::Impulse`);
+  source-id constants `SOURCE_CLASS_SHIFT`, `SOURCE_INDEX_MASK`, `SOURCE_CLASS_{COIL,EOS,BUMPER,BALL_DROP,BALL_ROLL}` and `pub const fn class_source(class: u16, index: u16) -> u16`.
+- **Why:** deliverable 1 of 3.4 (haptics bus) needs coil fire, EOS hit, bumper, ball drop and ball roll (position, mass, speed) events; the existing event has only `(tick, source, strength)`. Lives in `pin_core` because the producer is the sim (`pin_sim`/`pin_physics`) and the consumers are `pin_input` (rumble), `pin_audio` (SSF, telemetry).
+- **Affected crates:** none (additive; `HapticKind` is `#[non_exhaustive]`, so later kinds stay additive too).
+- **Workaround meanwhile:** none needed; the brief allows the additive change in the new file.

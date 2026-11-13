@@ -16,14 +16,21 @@
 //!   range, so a ball that interacts with nothing takes exactly the same
 //!   floating-point path whatever the other balls do.
 //!
+//! Moving bodies ([`MovingBodies`], lent to
+//! [`BallSolver::step_with_bodies`]) take part like the static geometry:
+//! their casts join the event loop, their contacts the boundary solve (see
+//! [`super::body`] for the contract).
+//!
 //! Nothing here allocates; iteration order is fixed (ascending handles,
-//! collider and guide order), so a step is deterministic.
+//! collider and guide order, body sets in slice order), so a step is
+//! deterministic.
 
 use arrayvec::ArrayVec;
 use glam::Vec3;
 use pin_core::ids::{MagnetId, ProfileId};
 use pin_core::{BallProfile, Material};
 
+use super::body::{BODY_SKIN, BodyCast, MovingBodies, solve_body_contact};
 use super::contact::{
     ContactCoefficients, ContactImpulse, SphereBody, apply_ball_impulse, apply_surface_impulse,
     effective_restitution, integrate_orientation, resolve_ball_contact, resolve_surface_contact,
@@ -31,8 +38,9 @@ use super::contact::{
 };
 use super::newton::NewtonChain;
 use super::types::{
-    Ball, BallEvent, BallEvents, BallHandle, BallSolverConfig, ExternalForce, Geometry,
-    IMPACT_REPORT_SPEED, ImpactTarget, MAX_BALLS, Magnet, Sensor, SensorKind, SurfaceVelocity,
+    Ball, BallEvent, BallEvents, BallHandle, BallSolverConfig, ExternalForce, ForceContext,
+    Geometry, IMPACT_REPORT_SPEED, ImpactTarget, MAX_BALLS, Magnet, MagnetState, Sensor,
+    SensorKind, SurfaceVelocity,
 };
 use crate::world::{
     ColliderHandle, CubicSpline, GuideCast, GuideHit, SphereContact, SphereHit, layers,
@@ -189,6 +197,17 @@ enum StaticEvent {
     Guide(usize, Option<GuideHit>),
     /// Chain index and captive-ball index.
     Chain(usize, usize),
+    /// Body set, body, and the contact (point, normal); `None` = the cast
+    /// only advanced.
+    Body(usize, usize, Option<(Vec3, Vec3)>),
+}
+
+/// The moving bodies lent to one step.
+struct Bodies<'s, 'b> {
+    sets: &'s mut [&'b mut dyn MovingBodies],
+    /// A body with a finite mass was pushed since the last check: its
+    /// trajectory changed, so every ball's cast is stale.
+    moved: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -336,8 +355,14 @@ pub struct BallSolver {
     guide_layers: Vec<u8>,
     wireform_materials: Vec<Material>,
     wireform_layers: Vec<u8>,
-    magnets: Vec<(Magnet, f32)>,
+    magnets: Vec<MagnetState>,
     sensors: Vec<(Sensor, bool)>,
+    /// Steps completed, and their total duration (seconds), for
+    /// [`ForceContext`].
+    steps: u64,
+    elapsed: f64,
+    /// `dt` of the step in progress.
+    tick_dt: f32,
     hooks: Vec<Box<dyn ExternalForce>>,
     surface_velocity: Option<Box<dyn SurfaceVelocity>>,
     chains: Vec<NewtonChain>,
@@ -399,6 +424,9 @@ impl BallSolver {
             wireform_layers: Vec::new(),
             magnets: Vec::new(),
             sensors: Vec::new(),
+            steps: 0,
+            elapsed: 0.0,
+            tick_dt: 0.0,
             hooks: Vec::new(),
             surface_velocity: None,
             chains: Vec::new(),
@@ -428,6 +456,7 @@ impl BallSolver {
 
     /// Adds a ball in the lowest free slot. `None` when all
     /// [`MAX_BALLS`] slots are taken or the ball's profile is unknown.
+    /// Every force hook is told ([`ExternalForce::ball_added`]).
     pub fn add_ball(&mut self, ball: Ball) -> Option<BallHandle> {
         self.profile_data(ball.profile)?;
         let i = self.slots.iter().position(Option::is_none)?;
@@ -436,12 +465,21 @@ impl BallSolver {
         self.warm[i].clear();
         self.carry[i] = Vec3::ZERO;
         self.last_position[i] = ball.position;
-        Some(BallHandle(i as u8))
+        let h = BallHandle(i as u8);
+        for hook in &mut self.hooks {
+            hook.ball_added(h, &ball);
+        }
+        Some(h)
     }
 
-    /// Removes a ball and returns its last state.
+    /// Removes a ball and returns its last state. Every force hook is told
+    /// ([`ExternalForce::ball_removed`]).
     pub fn remove_ball(&mut self, h: BallHandle) -> Option<Ball> {
-        self.slots.get_mut(usize::from(h.0))?.take()
+        let ball = self.slots.get_mut(usize::from(h.0))?.take()?;
+        for hook in &mut self.hooks {
+            hook.ball_removed(h);
+        }
+        Some(ball)
     }
 
     /// The ball in slot `h`.
@@ -515,9 +553,14 @@ impl BallSolver {
         set_at(&mut self.wireform_layers, index, mask, layers::ALL);
     }
 
-    /// Adds an electromagnet, initially off. Ids count up from 0.
+    /// Adds an electromagnet, initially off, with the remanence τ of the
+    /// configuration. Ids count up from 0.
     pub fn add_magnet(&mut self, m: Magnet) -> MagnetId {
-        self.magnets.push((m, 0.0));
+        self.magnets.push(MagnetState {
+            magnet: m,
+            power: 0.0,
+            remanence_tau_s: self.cfg.magnet_remanence_tau_s,
+        });
         MagnetId((self.magnets.len() - 1) as u16)
     }
 
@@ -525,14 +568,44 @@ impl BallSolver {
     /// Unknown ids are ignored.
     pub fn set_magnet_power(&mut self, id: MagnetId, p: f32) {
         if let Some(m) = self.magnets.get_mut(id.index()) {
-            m.1 = if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) };
+            m.power = if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) };
         }
     }
 
     /// Commanded power of a magnet (0 for an unknown id).
     #[must_use]
     pub fn magnet_power(&self, id: MagnetId) -> f32 {
-        self.magnets.get(id.index()).map_or(0.0, |m| m.1)
+        self.magnets.get(id.index()).map_or(0.0, |m| m.power)
+    }
+
+    /// Sets the remanence time constant τ (seconds) of a magnet; the solver
+    /// stores it for the force hooks ([`MagnetState::remanence_tau_s`]).
+    /// Unknown ids, NaN and negative values are ignored.
+    pub fn set_magnet_remanence_tau(&mut self, id: MagnetId, tau_s: f32) {
+        if let Some(m) = self.magnets.get_mut(id.index())
+            && tau_s >= 0.0
+        {
+            m.remanence_tau_s = tau_s;
+        }
+    }
+
+    /// Every magnet, indexed by [`MagnetId`].
+    #[must_use]
+    pub fn magnets(&self) -> &[MagnetState] {
+        &self.magnets
+    }
+
+    /// Number of completed steps (the [`ForceContext::step_index`] of the
+    /// next one).
+    #[must_use]
+    pub fn step_count(&self) -> u64 {
+        self.steps
+    }
+
+    /// Simulated time of all completed steps, seconds.
+    #[must_use]
+    pub fn sim_time(&self) -> f64 {
+        self.elapsed
     }
 
     /// Adds a sensor, initially open. Setup-time only.
@@ -542,13 +615,20 @@ impl BallSolver {
 
     /// Registers an external force (setup-time only). With no force
     /// registered the solver takes exactly the same floating-point path as
-    /// if the hook list did not exist.
-    pub fn add_external_force(&mut self, f: Box<dyn ExternalForce>) {
+    /// if the hook list did not exist. The hook is told about every ball
+    /// already present ([`ExternalForce::ball_added`], ascending handles).
+    pub fn add_external_force(&mut self, mut f: Box<dyn ExternalForce>) {
+        for (i, slot) in self.slots.iter().enumerate() {
+            if let Some(ball) = slot {
+                f.ball_added(BallHandle(i as u8), ball);
+            }
+        }
         self.hooks.push(f);
     }
 
     /// Installs (or removes) the source of surface velocities for moving
-    /// colliders. Setup-time only.
+    /// colliders (static colliders, guides, wireforms; moving bodies give
+    /// their own [`MovingBodies::velocity_at`]). Setup-time only.
     pub fn set_surface_velocity(&mut self, s: Option<Box<dyn SurfaceVelocity>>) {
         self.surface_velocity = s;
     }
@@ -659,6 +739,58 @@ impl BallSolver {
             .map_or(Vec3::ZERO, |s| s.velocity_at(target, point))
     }
 
+    /// Velocity of the surface of `target` at `point` at `time` of the tick.
+    fn target_velocity(
+        &self,
+        bodies: &Bodies<'_, '_>,
+        target: ImpactTarget,
+        time: f32,
+        point: Vec3,
+    ) -> Vec3 {
+        match target {
+            ImpactTarget::Body { set, body } => bodies
+                .sets
+                .get(set)
+                .map_or(Vec3::ZERO, |s| s.velocity_at(body, time, point)),
+            _ => self.surface_velocity_at(target, point),
+        }
+    }
+
+    /// One solver step (or, with `acc` fresh, a one-shot resolution) of the
+    /// contact of ball `i` with a moving body; see [`solve_body_contact`].
+    #[allow(clippy::too_many_arguments)]
+    fn body_solve(
+        &mut self,
+        i: usize,
+        sc: &Scratch,
+        bodies: &mut Bodies<'_, '_>,
+        (set, body): (usize, usize),
+        material: Material,
+        normal: Vec3,
+        point: Vec3,
+        target_normal_speed: f32,
+        acc: &mut ContactImpulse,
+    ) -> f32 {
+        let k = self.surface_coefficients(sc.pidx, material);
+        let (Some(ball), Some(s)) = (self.slots[i].as_mut(), bodies.sets.get_mut(set)) else {
+            return 0.0;
+        };
+        let (change, moved) = solve_body_contact(
+            ball,
+            sc.body,
+            &mut **s,
+            body,
+            sc.t,
+            point,
+            normal,
+            k,
+            target_normal_speed,
+            acc,
+        );
+        bodies.moved |= moved;
+        change
+    }
+
     /// Impact of ball `i` on a surface (one shot, with restitution).
     /// Returns whether an impulse was applied.
     #[allow(clippy::too_many_arguments)]
@@ -672,12 +804,45 @@ impl BallSolver {
         material: Material,
         persistent: bool,
         min_approach: f32,
+        bodies: &mut Bodies<'_, '_>,
         events: &mut BallEvents,
     ) -> bool {
         let Some(mut ball) = self.slots[i] else {
             return false;
         };
         let k = self.surface_coefficients(sc.pidx, material);
+        if let ImpactTarget::Body { set, body } = target {
+            // Two-body impact: restitution on the relative normal velocity.
+            let vs = self.target_velocity(bodies, target, sc.t, point);
+            let approach = -(ball.velocity - vs).dot(normal);
+            if approach.is_nan() || approach <= min_approach {
+                return false;
+            }
+            let e = effective_restitution(k.restitution, approach, persistent);
+            let mut acc = ContactImpulse::default();
+            self.body_solve(
+                i,
+                sc,
+                bodies,
+                (set, body),
+                material,
+                normal,
+                point,
+                e * approach,
+                &mut acc,
+            );
+            if acc.normal <= 0.0 {
+                return false;
+            }
+            if !persistent && approach >= IMPACT_REPORT_SPEED {
+                events.push(BallEvent::Impact {
+                    ball: BallHandle(i as u8),
+                    other: target,
+                    normal_speed: approach,
+                });
+            }
+            return true;
+        }
         let vs = self.surface_velocity_at(target, point);
         let out =
             resolve_surface_contact(&mut ball, sc.body, normal, vs, k, persistent, min_approach);

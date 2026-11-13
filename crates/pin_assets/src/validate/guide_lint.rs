@@ -37,6 +37,13 @@ const PIECE_M: f32 = 0.5e-3;
 /// their shape) and in total at most (the piece length grows instead).
 const MIN_PIECES: usize = 4;
 const MAX_PIECES: usize = 1 << 17;
+/// Longest spline the loader accepts (m), by the length estimate of
+/// [`segment_lengths`]. Up to this length the polyline of [`polyline`] keeps
+/// pieces of about [`PIECE_M`] (65 m < [`MAX_PIECES`] × [`PIECE_M`] =
+/// 65.5 m), which is what keeps [`closest_far_pair`] linear (4.1-H
+/// follow-up, Subphase 4.3).
+pub(super) const MAX_SPLINE_LENGTH_M: f32 = 65.0;
+const _: () = assert!(MAX_SPLINE_LENGTH_M <= MAX_PIECES as f32 * PIECE_M);
 /// Sub-chords per segment used to estimate its length.
 const LENGTH_PROBES: usize = 8;
 /// A reach below this (m) counts as none: `GuideCurve::reach()` is exactly 0
@@ -212,8 +219,28 @@ pub(super) enum GapLint {
     /// under [`HAIRLINE_GAP_M`], near parameter `t`.
     EndNearWall { distance: f32, t: f32 },
     /// No proven reach otherwise: the curve doubles back or touches itself
-    /// near parameter `t`.
-    DoublesBack { t: f32 },
+    /// near parameter `t`; `None` when only `GuideCurve::reach()` (below
+    /// [`NO_REACH_M`]) says so and no place of the curve was found, so no
+    /// location is known (a tip within ~0.1 mm of the wall, or a long coil
+    /// whose lane table ran out of budget: the physics API does not tell
+    /// these apart).
+    DoublesBack { t: Option<f32> },
+}
+
+/// Length estimate of every segment (m): the sum of [`LENGTH_PROBES`]
+/// chords. A lower bound of the true length; the loader refuses splines
+/// whose total exceeds [`MAX_SPLINE_LENGTH_M`].
+pub(super) fn segment_lengths(spline: &CubicSpline) -> Vec<f32> {
+    (0..spline.segment_count())
+        .map(|i| {
+            (0..LENGTH_PROBES)
+                .map(|k| {
+                    let t = |k: usize| i as f32 + k as f32 / LENGTH_PROBES as f32;
+                    spline.point(t(k)).distance(spline.point(t(k + 1)))
+                })
+                .sum()
+        })
+        .collect()
 }
 
 /// Polyline samples of the curve: (point, along-curve distance, parameter).
@@ -224,17 +251,7 @@ pub(super) enum GapLint {
 /// through-points plus the curve's length in half-millimetres, and pieces
 /// have comparable lengths, which the grid in [`closest_far_pair`] relies on.
 fn polyline(spline: &CubicSpline) -> Vec<(Vec3, f32, f32)> {
-    let n = spline.segment_count();
-    let lengths: Vec<f32> = (0..n)
-        .map(|i| {
-            (0..LENGTH_PROBES)
-                .map(|k| {
-                    let t = |k: usize| i as f32 + k as f32 / LENGTH_PROBES as f32;
-                    spline.point(t(k)).distance(spline.point(t(k + 1)))
-                })
-                .sum()
-        })
-        .collect();
+    let lengths = segment_lengths(spline);
     let total: f32 = lengths.iter().sum();
     let piece = PIECE_M.max(total / MAX_PIECES as f32);
     let mut out = Vec::new();
@@ -327,9 +344,9 @@ pub(super) fn gap_lint(guide: &GuideCurve, closed: bool, bends: &[Bend]) -> Opti
     if near.is_some() || guide.reach() < NO_REACH_M {
         // Where: a cusp or sub-millimetre bend, else the pair found.
         let t = if tight.radius_m < f64::from(HAIRLINE_GAP_M) {
-            tight.t as f32
+            Some(tight.t as f32)
         } else {
-            near.unwrap_or(0.0)
+            near
         };
         return Some(GapLint::DoublesBack { t });
     }
@@ -389,9 +406,17 @@ pub(super) struct FarPair {
 /// further along (a binary search), so stretches of the same passage are
 /// never compared. Pieces of different passages measured without a hit are
 /// at least the gap apart, and only a bounded number of passages that far
-/// apart fit through one cell, so the work is linear in the number of pieces
-/// whatever the orientation or clustering (a crowded cell ends at its first
-/// hit).
+/// apart fit through one cell (a crowded cell ends at its first hit).
+///
+/// The work is linear in the number of pieces only while the pieces have
+/// comparable lengths, because the longest piece sets the cell size for all
+/// of them: a curve with a few very long pieces (say spacing that grows
+/// geometrically out to hundreds of metres, where [`polyline`] lengthens
+/// every piece to fit [`MAX_PIECES`]) puts many short pieces in one cell,
+/// and the work grows towards quadratic in a cell. The orientation does not
+/// matter. The loader keeps the pieces near [`PIECE_M`] by refusing splines
+/// longer than [`MAX_SPLINE_LENGTH_M`] or with points beyond 10 m of the
+/// origin, which bounds this case.
 pub(super) fn closest_far_pair(line: &[(Vec3, f32, f32)], closed: bool) -> FarPair {
     let total = line[line.len() - 1].1;
     let pieces = line.len() - 1;
@@ -599,7 +624,7 @@ mod tests {
         let crossing =
             GuideCurve::new(CubicSpline::interpolate_closed(&eight).unwrap(), 0.0).unwrap();
         match check(&crossing, true) {
-            Some(GapLint::DoublesBack { t }) => {
+            Some(GapLint::DoublesBack { t: Some(t) }) => {
                 let p = crossing.spline().point(t);
                 assert!(p.length() < 0.01, "{t} {p}");
             }
@@ -609,7 +634,7 @@ mod tests {
         // near the crossing at (50, 50) mm.
         let z = guide(&[[0.0; 3], [0.1, 0.1, 0.0], [0.1, 0.0, 0.0], [0.0, 0.1, 0.0]]);
         match check(&z, false) {
-            Some(GapLint::DoublesBack { t }) => {
+            Some(GapLint::DoublesBack { t: Some(t) }) => {
                 let p = z.spline().point(t);
                 assert!(p.distance(Vec3::new(0.05, 0.05, 0.0)) < 0.02, "{t} {p}");
             }
