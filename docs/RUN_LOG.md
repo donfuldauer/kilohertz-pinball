@@ -118,3 +118,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 3→4 | 4.1-H (hardening + guide lints) | Implementer | Opus 5.5 | 1 | running | — | review by Fable |
 | 3→4 | 3.3-H (decode hardening, audio budget) | Implementer | Opus 5.5 | 1 | running | — | review by Fable |
 | 3→4 | 3.3-H | Implementer | Opus 5.5 | 1 | done | pin_audio all green; coverage 97.28 %; decode outputs bit-identical | reservation ≤ 64 Ki frames then on-demand growth; DecodeBudget (512 MiB default, exact, atomic); wiring → 2.5/6.0 |
+| 3→4 | 4.1-H | Implementer | Opus 5.5 | 1 | done | 235/236 pin_assets tests; coverage 96.44 %; hostile inputs rejected ≤ 10 ms, ~0 MiB extra | 1 spec test (uneven spacing, cusp guide) predates the guide-lint ruling → Tester amendment |

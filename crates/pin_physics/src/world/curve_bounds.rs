@@ -288,20 +288,37 @@ struct Rod {
     r: f64,
 }
 
-/// What a search looks for: two infima at once over the curve points `y`.
+/// Quantities a search finds at once (its "sides"): `[ρ_+, ρ_−, D, R]` of a
+/// table entry ([`TableProbe`]), `[ρ_back, ρ_half, −, −]` of an end
+/// ([`EndProbe`]); an unused one is infinite throughout.
+const SIDES: usize = 4;
+
+/// One value per side.
+type Sides = [f64; SIDES];
+
+fn side_min(a: Sides, b: Sides) -> Sides {
+    core::array::from_fn(|i| a[i].min(b[i]))
+}
+
+fn side_max(a: Sides, b: Sides) -> Sides {
+    core::array::from_fn(|i| a[i].max(b[i]))
+}
+
+/// What a search looks for: several infima at once over the curve points
+/// `y` ([`SIDES`]).
 trait Probe {
-    /// Lower bounds of the two quantities over the curve points in the ball
+    /// Lower bounds of the quantities over the curve points in the ball
     /// `(centre, radius)`; infinite: no point there counts. `mid`: the
     /// middle of the piece if it is a part of one sample interval, for a
-    /// sharper bound.
-    /// `rod`: a [`Rod`] of the piece if it has one, for another bound.
-    fn bound(&self, centre: DVec3, radius: f64, mid: Option<&Mid>, rod: Option<&Rod>) -> [f64; 2];
-    /// The two quantities at the curve point `y` (infinite: not counted).
-    fn value(&self, y: DVec3) -> [f64; 2];
+    /// sharper bound. `rod`: a [`Rod`] of the piece if it has one, for
+    /// another bound.
+    fn bound(&self, centre: DVec3, radius: f64, mid: Option<&Mid>, rod: Option<&Rod>) -> Sides;
+    /// The quantities at the curve point `y` (infinite: not counted).
+    fn value(&self, y: DVec3) -> Sides;
     /// If the pieces in sample intervals `first..end` lie in the own
-    /// neighbourhood of the query: a lower bound of both quantities there
+    /// neighbourhood of the query: a lower bound of each quantity there
     /// (infinite: nothing there counts), and they need not be looked at.
-    fn skip(&self, first: usize, end: usize) -> Option<f64>;
+    fn skip(&self, first: usize, end: usize) -> Option<Sides>;
     /// Where the query is (for the search order).
     fn at(&self) -> DVec3;
     /// Half the size of the query (zero for a point).
@@ -317,11 +334,11 @@ trait Probe {
 /// Mutable state of the searches of one query.
 struct State {
     /// Smallest values found at curve points (upper bounds of the infima).
-    upper: [f64; 2],
+    upper: Sides,
     /// The curve points where they were found (hints for the next query).
-    best: [Option<DVec3>; 2],
+    best: [Option<DVec3>; SIDES],
     /// Sides already known to be below the floor.
-    done: [bool; 2],
+    done: [bool; SIDES],
     budget: usize,
     stack: Vec<Piece>,
 }
@@ -329,15 +346,15 @@ struct State {
 impl State {
     fn new() -> Self {
         Self {
-            upper: [f64::INFINITY; 2],
-            best: [None; 2],
-            done: [false; 2],
+            upper: [f64::INFINITY; SIDES],
+            best: [None; SIDES],
+            done: [false; SIDES],
             budget: 0,
             stack: Vec::new(),
         }
     }
 
-    fn see(&mut self, y: DVec3, value: [f64; 2]) {
+    fn see(&mut self, y: DVec3, value: Sides) {
         for ((v, upper), best) in value.iter().zip(&mut self.upper).zip(&mut self.best) {
             if *v < *upper {
                 *upper = *v;
@@ -350,7 +367,7 @@ impl State {
 /// Outcome of one search.
 enum Search {
     /// Lower bounds of the two infima.
-    Done([f64; 2]),
+    Done(Sides),
     /// The query must be halved (its own size keeps a bound low).
     Split,
 }
@@ -361,11 +378,11 @@ struct Rules {
     level: fn(f64) -> f64,
     /// Per side, a value the result should reach if the infimum does (see
     /// [`with_target`]); zero for none.
-    target: [f64; 2],
+    target: Sides,
     floor: f64,
     depth: u8,
     can_split: bool,
-    init: [f64; 2],
+    init: Sides,
 }
 
 /// The hierarchy of an open or closed curve.
@@ -657,14 +674,14 @@ impl CurveTree {
             if piece.level == 0 { dbg(1); }
             state.budget = state.budget.saturating_sub(1);
             if let Some(own) = probe.skip(piece.first as usize, piece.end as usize) {
-                lower = [lower[0].min(own), lower[1].min(own)];
+                lower = side_min(lower, own);
                 continue;
             }
             if piece.depth == 0 {
                 let y = self.points[piece.first as usize];
                 state.see(y, probe.value(y));
             }
-            for side in 0..2 {
+            for side in 0..SIDES {
                 if state.upper[side] < rules.floor {
                     state.done[side] = true;
                 }
@@ -682,18 +699,16 @@ impl CurveTree {
             };
             let mut bound = probe.bound(piece.centre, piece.radius, None, self.rod(&piece));
             let mut mid = None;
-            if piece.level as usize == 0
-                && !(settled(state, 0, bound[0]) && settled(state, 1, bound[1]))
-            {
+            if piece.level as usize == 0 && !(0..SIDES).all(|s| settled(state, s, bound[s])) {
                 // The sharper bound of a part.
                 let m = self.mid(&piece);
                 state.see(m.point, probe.value(m.point));
                 let sharp = probe.bound(piece.centre, piece.radius, Some(&m), None);
-                bound = [bound[0].max(sharp[0]), bound[1].max(sharp[1])];
+                bound = side_max(bound, sharp);
                 mid = Some(m);
             }
-            let mut open = [false; 2];
-            for side in 0..2 {
+            let mut open = [false; SIDES];
+            for side in 0..SIDES {
                 if state.done[side] || bound[side] == f64::INFINITY {
                     continue;
                 }
@@ -703,7 +718,7 @@ impl CurveTree {
                     open[side] = true;
                 }
             }
-            if !open[0] && !open[1] {
+            if !open.contains(&true) {
                 continue;
             }
             if piece.level as usize > 0 {
@@ -753,7 +768,7 @@ impl CurveTree {
                 return Search::Split;
             }
             // As fine as it gets: keep the lower bound as it is.
-            for side in 0..2 {
+            for side in 0..SIDES {
                 if open[side] {
                     lower[side] = lower[side].min(bound[side]);
                 }
@@ -782,9 +797,9 @@ impl CurveTree {
     fn filter<P: Probe>(
         &self,
         probe: &P,
-        settle: [f64; 2],
+        settle: Sides,
         list: &[Piece],
-        lower: &mut [f64; 2],
+        lower: &mut Sides,
         out: &mut Vec<Piece>,
         state: &mut State,
     ) {
@@ -799,12 +814,12 @@ impl CurveTree {
             state.budget -= 1;
             dbg(2);
             if let Some(own) = probe.skip(piece.first as usize, piece.end as usize) {
-                *lower = [lower[0].min(own), lower[1].min(own)];
+                *lower = side_min(*lower, own);
                 continue;
             }
             let bound = probe.bound(piece.centre, piece.radius, None, self.rod(&piece));
             let mut open = false;
-            for side in 0..2 {
+            for side in 0..SIDES {
                 if bound[side] == f64::INFINITY {
                     continue;
                 }
@@ -871,22 +886,23 @@ impl CurveTree {
                 index,
                 tree: self,
             };
-            state.upper = [1.0e3; 2];
-            state.done = [false; 2];
+            let init = [1.0e3, 1.0e3, f64::INFINITY, f64::INFINITY];
+            state.upper = init;
+            state.done = [false; SIDES];
             state.budget = usize::MAX;
             let rules = Rules {
                 level: end_level,
-                target: [0.0, half_target],
+                target: [0.0, half_target, 0.0, 0.0],
                 floor: 0.0,
                 depth: END_DEPTH,
                 can_split: false,
-                init: [1.0e3; 2],
+                init,
             };
             let root = [self.root()];
-            let [back, half] = match self.search(&probe, &rules, &mut state, &root) {
+            let [back, half, _, _] = match self.search(&probe, &rules, &mut state, &root) {
                 Search::Done(lower) => lower,
                 // (Unreachable: no split.)
-                Search::Split => [0.0; 2],
+                Search::Split => [0.0; SIDES],
             };
             EndTerms { inward, back, half }
         })
@@ -917,32 +933,39 @@ struct EndProbe<'a> {
 }
 
 impl Probe for EndProbe<'_> {
-    fn bound(&self, centre: DVec3, radius: f64, _mid: Option<&Mid>, _rod: Option<&Rod>) -> [f64; 2] {
+    fn bound(&self, centre: DVec3, radius: f64, _mid: Option<&Mid>, _rod: Option<&Rod>) -> Sides {
+        let none = f64::INFINITY;
         let v = centre - self.point;
         let behind = -v.dot(self.inward) + radius;
         if behind <= 0.0 {
-            return [f64::INFINITY; 2];
+            return [none; SIDES];
         }
         let near = v.length() - radius;
         if near <= 0.0 {
-            return [0.0; 2];
+            return [0.0, 0.0, none, none];
         }
         let shrink = 1.0 - ROUND;
-        [near * near / (2.0 * behind) * shrink, 0.5 * near * shrink]
+        [
+            near * near / (2.0 * behind) * shrink,
+            0.5 * near * shrink,
+            none,
+            none,
+        ]
     }
 
-    fn value(&self, y: DVec3) -> [f64; 2] {
+    fn value(&self, y: DVec3) -> Sides {
+        let none = f64::INFINITY;
         let w = y - self.point;
         let b = -w.dot(self.inward);
         let w2 = w.length_squared();
         if b > 0.0 && w2 > 0.0 {
-            [w2 / (2.0 * b), 0.5 * w2.sqrt()]
+            [w2 / (2.0 * b), 0.5 * w2.sqrt(), none, none]
         } else {
-            [f64::INFINITY; 2]
+            [none; SIDES]
         }
     }
 
-    fn skip(&self, first: usize, end: usize) -> Option<f64> {
+    fn skip(&self, first: usize, end: usize) -> Option<Sides> {
         let near = self.index.min(self.tree.intervals() - 1);
         self.tree
             .own(
@@ -952,7 +975,7 @@ impl Probe for EndProbe<'_> {
                 self.index,
                 self.tree.curvature[near],
             )
-            .map(|_| f64::INFINITY)
+            .map(|_| [f64::INFINITY; SIDES])
     }
 
     fn at(&self) -> DVec3 {
@@ -964,14 +987,14 @@ impl Probe for EndProbe<'_> {
     }
 }
 
-/// `[ρ_+, ρ_−]` of the pair `(a, y)`: `|w|² / (2 σ w · N)`, `w = y − a`,
-/// where `σ w · N > 0` (infinite elsewhere).
-fn side_values(a: DVec3, normal: DVec3, y: DVec3) -> [f64; 2] {
+/// `[ρ_+, ρ_−, D, −]` of the pair `(a, y)`: `|w|² / (2 σ w · N)`,
+/// `w = y − a`, where `σ w · N > 0` (infinite elsewhere), and `|w|`.
+fn pair_values(a: DVec3, normal: DVec3, y: DVec3) -> Sides {
     let w = y - a;
     let w2 = w.length_squared();
     let across = w.dot(normal);
     if w2 <= 0.0 {
-        return [f64::INFINITY; 2];
+        return [f64::INFINITY, f64::INFINITY, 0.0, f64::INFINITY];
     }
     [
         if across > 0.0 {
@@ -984,6 +1007,8 @@ fn side_values(a: DVec3, normal: DVec3, y: DVec3) -> [f64; 2] {
         } else {
             f64::INFINITY
         },
+        w2.sqrt(),
+        f64::INFINITY,
     ]
 }
 
@@ -1091,11 +1116,11 @@ impl<'a> TableProbe<'a> {
 impl TableProbe<'_> {
     /// Bound 4 (see [`TableProbe`]): second order in the sizes of the query
     /// and of the part `m`.
-    fn pair_bound(&self, m: &Mid) -> [f64; 2] {
+    fn pair_bound(&self, m: &Mid) -> Sides {
         let (delta, kappa) = (self.reach, self.curvature);
         let turn = kappa * delta;
         if !(turn <= 1.0 && m.turn <= 1.0) {
-            return [0.0; 2];
+            return NO_BOUND;
         }
         let tangent = DVec3::new(self.normal.y, -self.normal.x, 0.0);
         let w = m.point - self.point;
@@ -1112,30 +1137,16 @@ impl TableProbe<'_> {
                     + across.abs() * bow_a);
         let lean = m.reach * m.tangent.dot(self.normal).abs() + bow_y + bow_a;
         let sideways = turn * (along + delta + m.reach);
-        let shrink = 1.0 - ROUND;
-        [across, -across].map(|a| {
-            let x = a + lean;
-            let up = if x >= 0.0 {
-                x
-            } else {
-                x * (1.0 - 0.5 * turn * turn)
-            } + sideways;
-            if up <= 0.0 {
-                f64::INFINITY
-            } else if low2 <= 0.0 || up == f64::INFINITY {
-                0.0
-            } else {
-                low2 / (2.0 * up) * shrink
-            }
-        })
+        let ups = [across, -across].map(|a| tilted(a + lean, turn) + sideways);
+        finish(low2, ups)
     }
 
     /// Bound 5 (see [`TableProbe`]): a [`Rod`] of curve points.
-    fn rod_bound(&self, rod: &Rod) -> [f64; 2] {
+    fn rod_bound(&self, rod: &Rod) -> Sides {
         let (delta, kappa) = (self.reach, self.curvature);
         let turn = kappa * delta;
         if !(turn <= 1.0) {
-            return [0.0; 2];
+            return NO_BOUND;
         }
         let tangent = DVec3::new(self.normal.y, -self.normal.x, 0.0);
         let bow = 0.5 * turn * delta;
@@ -1155,31 +1166,17 @@ impl TableProbe<'_> {
         let along = vp.dot(tangent).abs().max(vq.dot(tangent).abs());
         let sideways = turn * (along + rod.r + delta + bow);
         let (ap, aq) = (vp.dot(self.normal), vq.dot(self.normal));
-        let shrink = 1.0 - ROUND;
-        [ap.max(aq), (-ap).max(-aq)].map(|a| {
-            let x = a + rod.r + bow;
-            let up = if x >= 0.0 {
-                x
-            } else {
-                x * (1.0 - 0.5 * turn * turn)
-            } + sideways;
-            if up <= 0.0 {
-                f64::INFINITY
-            } else if near <= 0.0 || up == f64::INFINITY {
-                0.0
-            } else {
-                near * near / (2.0 * up) * shrink
-            }
-        })
+        let ups = [ap.max(aq), (-ap).max(-aq)].map(|a| tilted(a + rod.r + bow, turn) + sideways);
+        finish(if near > 0.0 { near * near } else { 0.0 }, ups)
     }
 
     /// Bound 3 (see [`TableProbe`]): second order in the size of the
     /// query, for any ball `(c, R)` of curve points.
-    fn across_bound(&self, centre: DVec3, radius: f64) -> [f64; 2] {
+    fn across_bound(&self, centre: DVec3, radius: f64) -> Sides {
         let (delta, kappa) = (self.reach, self.curvature);
         let turn = kappa * delta;
         if !(turn <= 1.0) {
-            return [0.0; 2];
+            return NO_BOUND;
         }
         let tangent = DVec3::new(self.normal.y, -self.normal.x, 0.0);
         let v = centre - self.point;
@@ -1189,27 +1186,42 @@ impl TableProbe<'_> {
         let z2 = v.length_squared() - 2.0 * (along * delta + across.abs() * bow);
         let near = if z2 > 0.0 { z2.sqrt() - radius } else { 0.0 };
         let sideways = turn * (along + delta + radius);
-        let shrink = 1.0 - ROUND;
-        [across, -across].map(|a| {
-            let x = a + radius + bow;
-            let up = if x >= 0.0 {
-                x
-            } else {
-                x * (1.0 - 0.5 * turn * turn)
-            } + sideways;
-            if up <= 0.0 {
-                f64::INFINITY
-            } else if near <= 0.0 || up == f64::INFINITY {
-                0.0
-            } else {
-                near * near / (2.0 * up) * shrink
-            }
-        })
+        let ups = [across, -across].map(|a| tilted(a + radius + bow, turn) + sideways);
+        finish(if near > 0.0 { near * near } else { 0.0 }, ups)
     }
 }
 
+/// No bound at all: zero for every quantity a table entry looks for.
+const NO_BOUND: Sides = [0.0, 0.0, 0.0, f64::INFINITY];
+
+/// An upper bound of `σ w · N_a = cos φ (σ w · N_m) − sin φ (σ w · T_m)`
+/// without its second term, from an upper bound `x` of `σ w · N_m`:
+/// `cos φ · x ≤ x` where `x ≥ 0`, and `≤ cos(turn) x ≤ (1 − turn²/2) x`
+/// where it is negative (`|φ| ≤ turn ≤ 1`).
+fn tilted(x: f64, turn: f64) -> f64 {
+    if x >= 0.0 { x } else { x * (1.0 - 0.5 * turn * turn) }
+}
+
+/// The quantities of a table entry from a lower bound `low2` of `|w|²` and
+/// upper bounds `ups` of `σ w · N_a` on the two sides: `ρ_σ ≥ low2 / (2
+/// up_σ)` (nothing counts where `up_σ ≤ 0`), `D ≥ √low2`.
+fn finish(low2: f64, ups: [f64; 2]) -> Sides {
+    let shrink = 1.0 - ROUND;
+    let [plus, minus] = ups.map(|up| {
+        if up <= 0.0 {
+            f64::INFINITY
+        } else if low2 <= 0.0 || up == f64::INFINITY {
+            0.0
+        } else {
+            low2 / (2.0 * up) * shrink
+        }
+    });
+    let distance = if low2 > 0.0 { low2.sqrt() * shrink } else { 0.0 };
+    [plus, minus, distance, f64::INFINITY]
+}
+
 impl Probe for TableProbe<'_> {
-    fn bound(&self, centre: DVec3, radius: f64, mid: Option<&Mid>, rod: Option<&Rod>) -> [f64; 2] {
+    fn bound(&self, centre: DVec3, radius: f64, mid: Option<&Mid>, rod: Option<&Rod>) -> Sides {
         let shrink = 1.0 - ROUND;
         if let Some(m) = mid {
             // Bound 2.
@@ -1220,7 +1232,7 @@ impl Probe for TableProbe<'_> {
             let tau = m.tangent.dot(self.normal).abs() + m.turn + self.turn;
             let room = 2.0 * far * self.curvature * self.reach + 2.0 * tau * m.reach;
             let across = 2.0 * w.dot(self.normal);
-            let second = [across + room, -across + room].map(|den| {
+            let [plus, minus] = [across + room, -across + room].map(|den| {
                 if den <= 0.0 {
                     f64::INFINITY
                 } else if num <= 0.0 || den == f64::INFINITY {
@@ -1229,13 +1241,14 @@ impl Probe for TableProbe<'_> {
                     num / den * shrink
                 }
             });
-            let fourth = self.pair_bound(m);
-            return [second[0].max(fourth[0]), second[1].max(fourth[1])];
+            // (`num` is a lower bound of `|w|²` along the way.)
+            let distance = if num > 0.0 { num.sqrt() * shrink } else { 0.0 };
+            let second = [plus, minus, distance, f64::INFINITY];
+            return side_max(second, self.pair_bound(m));
         }
         let mut third = self.across_bound(centre, radius);
         if let Some(rod) = rod {
-            let fifth = self.rod_bound(rod);
-            third = [third[0].max(fifth[0]), third[1].max(fifth[1])];
+            third = side_max(third, self.rod_bound(rod));
         }
         // Bound 1.
         let v = centre - self.middle;
@@ -1245,25 +1258,24 @@ impl Probe for TableProbe<'_> {
         let far = d + slack;
         let across = v.dot(self.normal);
         let room = slack + far * self.turn;
-        let first = [across + room, -across + room].map(|up| {
-            if up <= 0.0 {
-                f64::INFINITY
-            } else if near <= 0.0 || up == f64::INFINITY {
-                0.0
-            } else {
-                near * near / (2.0 * up) * shrink
-            }
-        });
-        [first[0].max(third[0]), first[1].max(third[1])]
+        let first = finish(
+            if near > 0.0 { near * near } else { 0.0 },
+            [across + room, -across + room],
+        );
+        side_max(first, third)
     }
 
-    fn value(&self, y: DVec3) -> [f64; 2] {
-        side_values(self.point, self.normal, y)
+    fn value(&self, y: DVec3) -> Sides {
+        pair_values(self.point, self.normal, y)
     }
 
-    fn skip(&self, first: usize, end: usize) -> Option<f64> {
+    fn skip(&self, first: usize, end: usize) -> Option<Sides> {
+        // The own neighbourhood: `1/κ` for both tangent balls and for `R`
+        // (it is what `R` collects), nothing for `D` (it is the distance
+        // to the rest of the curve).
         self.tree
             .own(first, end, self.first, self.end, self.curvature)
+            .map(|own| [own, own, f64::INFINITY, own])
     }
 
     fn at(&self) -> DVec3 {
@@ -1627,7 +1639,7 @@ impl Build<'_> {
             if local {
                 let (point, normal) = self.middles[k];
                 for y in self.state.best.into_iter().flatten() {
-                    let v = side_values(point, normal, y);
+                    let v = pair_values(point, normal, y);
                     for side in 0..2 {
                         if v[side] < cap {
                             level[side] = level[side]

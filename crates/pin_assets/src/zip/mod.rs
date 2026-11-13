@@ -166,7 +166,11 @@ fn zip64_count(b: &[u8], loc: usize, max_entries: usize) -> Result<u64, AssetErr
         return Err(bad("is not where its locator says"));
     }
     let size = le_u64(b, off + 4).ok_or_else(|| bad("is truncated"))?;
-    if (off as u64).checked_add(12).and_then(|e| e.checked_add(size)) != Some(loc as u64) {
+    if (off as u64)
+        .checked_add(12)
+        .and_then(|e| e.checked_add(size))
+        != Some(loc as u64)
+    {
         return Err(bad("does not end at its locator"));
     }
     let (disk, cd_disk) = (le_u32(b, off + 16), le_u32(b, off + 20));
@@ -202,7 +206,7 @@ fn zip64_count(b: &[u8], loc: usize, max_entries: usize) -> Result<u64, AssetErr
 fn declared_entry_count(b: &[u8], max_entries: usize) -> Result<u64, AssetError> {
     let tail_start = b.len().saturating_sub(22 + 0xFFFF);
     let mut max = 0;
-    let mut locators = 0;
+    let mut locators = Vec::new();
     let mut at = b.len().saturating_sub(22);
     loop {
         if at < tail_start {
@@ -214,19 +218,21 @@ fn declared_entry_count(b: &[u8], max_entries: usize) -> Result<u64, AssetError>
             if let Some(loc) = at.checked_sub(20)
                 && le_u32(b, loc) == Some(u64::from(ZIP64_LOCATOR_SIG))
             {
-                locators += 1;
-                if locators > MAX_ZIP64_LOCATORS {
+                locators.push(loc);
+                if locators.len() > MAX_ZIP64_LOCATORS {
                     return Err(AssetError::Zip(
                         "too many Zip64 end-of-central-directory locators".to_owned(),
                     ));
                 }
-                max = max.max(zip64_count(b, loc, max_entries)?);
             }
         }
         if at == 0 {
             break;
         }
         at -= 1;
+    }
+    for loc in locators {
+        max = max.max(zip64_count(b, loc, max_entries)?);
     }
     Ok(max)
 }
