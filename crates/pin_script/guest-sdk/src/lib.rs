@@ -107,13 +107,19 @@
 //! element of `table.*` bulk operations and one per page of `memory.grow`.
 //! Wasm recursion may use at most 256 KiB of stack before it traps.
 //!
+//! **Build rules in release mode** (`cargo build --release --target
+//! wasm32-unknown-unknown`, `opt-level` 3, `s` or `z`, `panic = "abort"`).
 //! The module is checked before it is compiled, so that no module can make
 //! compilation slow: among others at most 1 MiB of binary, 2 048 functions,
-//! 1 024 locals per function, 32 nested loops, 4 096 blocks/loops/ifs and
-//! 262 144 operators in all, plus budgets on locals × branches and locals ×
-//! operators (see `pin_script::wasm` for the full list). Ordinary rules,
-//! built in release mode, are far below these; a module above any of them
-//! is rejected at load with a message naming the limit.
+//! 1 024 locals per function, 512 nested blocks of which 32 loops, 4 096
+//! blocks/loops/ifs and 131 072 operators in all, plus budgets on live
+//! values × branches, live values × operators and operators inside loops
+//! (see `pin_script::wasm` for the full list). Release-built rules are far
+//! below these (a realistic table uses under 10 % of every budget); a
+//! debug build is much larger and may not load. A module above any limit is
+//! rejected at load with a message naming the limit. Only the proposals
+//! rustc's `wasm32` target emits by default are accepted (no SIMD, no tail
+//! calls).
 
 #![cfg_attr(not(test), no_std)]
 

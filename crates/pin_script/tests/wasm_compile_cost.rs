@@ -7,7 +7,7 @@
 //! peak RSS of each worst case, one process per case:
 //!
 //! ```sh
-//! for i in $(seq 0 16); do PIN_COST_CASE=$i cargo test -p pin_script --release \
+//! for i in $(seq 0 21); do PIN_COST_CASE=$i cargo test -p pin_script --release \
 //!   --test wasm_compile_cost -- --ignored --nocapture --test-threads=1 compile_cost_report; done
 //! ```
 
@@ -15,10 +15,10 @@ use pin_core::ScriptError;
 use pin_script::wasm::{
     MAX_BLOCKS, MAX_BR_TABLE_TARGETS, MAX_BR_TABLE_TARGETS_PER_FUNCTION, MAX_BRANCH_WORK,
     MAX_ELEMENT_ITEMS, MAX_EXPORTS, MAX_FUNCTIONS, MAX_GLOBALS, MAX_IMPORTS,
-    MAX_LOCALS_PER_FUNCTION, MAX_LOOP_NESTING, MAX_MERGE_WORK, MAX_MODULE_BYTES, MAX_NESTING,
-    MAX_OPERATORS, MAX_OPERATORS_PER_FUNCTION, MAX_PARAMS, MAX_PRESSURE_WORK, MAX_RESULTS,
-    MAX_SEGMENTS, MAX_TOTAL_LOCALS, MAX_TOTAL_TABLE_ELEMENTS, MAX_TYPES, WasmConfig,
-    WasmScriptBackend,
+    MAX_LOCALS_PER_FUNCTION, MAX_LOOP_NESTING, MAX_LOOP_WORK, MAX_MERGE_WORK, MAX_NESTING,
+    MAX_OPERATOR_COST, MAX_OPERATORS, MAX_OPERATORS_PER_FUNCTION, MAX_PARAMS, MAX_PRESSURE_WORK,
+    MAX_RESULTS, MAX_SEGMENTS, MAX_TOTAL_LOCALS, MAX_TOTAL_TABLE_ELEMENTS, MAX_TYPES, WasmConfig,
+    WasmScriptBackend, check_limits,
 };
 use std::fmt::Write as _;
 
@@ -30,8 +30,6 @@ const HEAD: &str = r#"(memory (export "memory") 1)
 const HEAD_FUNCS: u64 = 3;
 const HEAD_TYPES: u64 = 2;
 const HEAD_EXPORTS: u64 = 4;
-/// Pressure work of the head: `on_switch_edge`, 2 params × (1 op + 2).
-const HEAD_PRESSURE: u64 = 6;
 
 fn module(extra: &str) -> Vec<u8> {
     module_with_prefix("", extra)
@@ -196,229 +194,294 @@ fn globals_data_at_cap() -> String {
     s
 }
 
-type Build = Box<dyn Fn() -> Vec<u8>>;
+type Build = Box<dyn Fn(u64) -> Vec<u8>>;
 
-/// Every worst case at the caps, by name, built on demand.
-fn worst_cases() -> Vec<(&'static str, Build)> {
-    let l = MAX_LOCALS_PER_FUNCTION;
+/// A worst case: `build(p)` for the largest `p` in `lo..=hi` that the
+/// limits accept (each case's `p` is the knob that spends its budget).
+struct Case {
+    name: &'static str,
+    lo: u64,
+    hi: u64,
+    build: Build,
+}
+
+fn case(name: &'static str, lo: u64, hi: u64, build: impl Fn(u64) -> Vec<u8> + 'static) -> Case {
+    Case {
+        name,
+        lo,
+        hi,
+        build: Box::new(build),
+    }
+}
+
+/// The largest `p` in `lo..=hi` whose module the limits accept.
+fn max_param(lo: u64, hi: u64, build: &dyn Fn(u64) -> Vec<u8>) -> u64 {
+    if let Err(e) = check_limits(&build(lo)) {
+        panic!("the smallest module must be accepted: {e:?}");
+    }
+    if check_limits(&build(hi)).is_ok() {
+        return hi;
+    }
+    let (mut lo, mut hi) = (lo, hi);
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if check_limits(&build(mid)).is_ok() {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+/// Locals of the max-locals shapes, leaving room for the operand stack (2
+/// deep in an update), which counts as live too.
+const L: u64 = MAX_LOCALS_PER_FUNCTION - 3;
+
+/// Every worst case at the caps. Shapes are fixed; the knob is pushed to
+/// the limit by [`max_param`].
+fn worst_cases() -> Vec<Case> {
     let types = u64::from(MAX_TYPES) - HEAD_TYPES;
     let exported = u64::from(MAX_EXPORTS) - HEAD_EXPORTS;
     let fns = u64::from(MAX_FUNCTIONS) - HEAD_FUNCS;
-    // Max locals in max nested loops spend the whole merge budget
-    // (l × 2 × MAX_LOOP_NESTING); these operators the whole pressure budget.
-    let deep_ops = (MAX_PRESSURE_WORK - HEAD_PRESSURE) / l - l;
-    // b sequential loops: (2b)² = the whole branch budget.
-    let seq_loops = (MAX_BRANCH_WORK as f64).sqrt() as u64 / 2;
-    let seq_locals = MAX_MERGE_WORK / (2 * seq_loops);
+    let opf = MAX_OPERATORS_PER_FUNCTION;
+    let tgt = MAX_BR_TABLE_TARGETS;
     vec![
-        (
-            "max locals x max loop nesting (merge + pressure caps)",
-            Box::new(move || module(&nested_fn("loop", l, MAX_LOOP_NESTING, 0, 0, deep_ops))),
+        case(
+            "max locals x max loop nesting; ops to the pressure cap",
+            200,
+            opf,
+            |p| module(&nested_fn("loop", L, MAX_LOOP_NESTING, 0, 0, p)),
         ),
-        (
-            "max locals x max loop nesting, a call in every update",
-            Box::new(move || {
-                // 5 operators per update instead of 4: same operator count.
-                let f = nested_fn("loop", l, MAX_LOOP_NESTING, 0, 0, deep_ops * 4 / 5)
-                    .replace(" i32.add", " i32.add call 0");
-                module(&f)
-            }),
+        case("same, a call in every update", 200, opf, |p| {
+            module(
+                &nested_fn("loop", L, MAX_LOOP_NESTING, 0, 0, p)
+                    .replace(" i32.add", " i32.add call 0"),
+            )
+        }),
+        case(
+            "max block nesting; locals to the merge cap",
+            1,
+            MAX_LOCALS_PER_FUNCTION,
+            |p| module(&nested_fn("block", p, MAX_NESTING, 0, 0, 30_000)),
         ),
-        (
-            "256 locals x max block nesting (merge + pressure caps)",
-            Box::new(|| {
-                // merge = 256 × (128 blocks + 128 br_ifs) = the cap.
-                let ops = (MAX_PRESSURE_WORK - HEAD_PRESSURE) / 256 - 256;
-                module(&nested_fn("block", 256, MAX_NESTING, 0, 0, ops))
-            }),
+        case(
+            "max br_table targets into 15 nested loops; locals to the merge cap",
+            1,
+            1024,
+            move |p| module(&nested_fn("loop", p, 16, 1, tgt, 20_000)),
         ),
-        (
-            "max br_table targets into 15 nested loops (targets + merge caps)",
-            Box::new(move || {
-                // merge = 61 × (16 blocks + 15 br_ifs + 1024 targets) ≤ cap.
-                module(&nested_fn("loop", 61, 16, 1, MAX_BR_TABLE_TARGETS, 32_768))
-            }),
+        case(
+            "max br_table targets in 32 locals' nested blocks; depth to the branch cap",
+            2,
+            MAX_NESTING,
+            move |p| module(&nested_fn("block", 32, p, 1, tgt, opf)),
         ),
-        (
-            "max br_table targets into max nested blocks (targets + merge caps)",
-            Box::new(move || {
-                // merge = 51 × (128 blocks + 127 br_ifs + 1024 targets) ≤ cap.
-                module(&nested_fn(
-                    "block",
-                    51,
-                    MAX_NESTING,
-                    1,
-                    MAX_BR_TABLE_TARGETS,
-                    MAX_OPERATORS_PER_FUNCTION,
-                ))
-            }),
+        case(
+            "sequential loops in one function; loops to the branch cap",
+            10,
+            4000,
+            |p| module(&seq_fn(30, p, 20_000)),
         ),
-        (
-            "sequential loops in one function (branch + merge caps)",
-            Box::new(move || module(&seq_fn(seq_locals, seq_loops, 60_000))),
+        case(
+            "max locals, straight line; ops to the pressure cap",
+            10,
+            opf,
+            |p| module(&nested_fn("block", L, 1, 0, 0, p)),
         ),
-        (
-            "max locals, straight line (pressure cap)",
-            Box::new(move || module(&nested_fn("block", l, 1, 0, 0, deep_ops))),
+        case(
+            "14 locals updated in one loop; ops to the loop-work cap",
+            100,
+            opf,
+            |p| module(&nested_fn("loop", 14, 1, 0, 0, p)),
         ),
-        (
-            "128 locals x max operators in one function (pressure cap)",
-            Box::new(|| {
-                let ops = ((MAX_PRESSURE_WORK - HEAD_PRESSURE) / 128 - 128)
-                    .min(MAX_OPERATORS_PER_FUNCTION);
-                module(&nested_fn("loop", 128, 4, 0, 0, ops))
-            }),
+        case(
+            "4 fns x 14 locals updated in one loop; ops to the loop-work cap",
+            100,
+            opf,
+            |p| module(&nested_fn("loop", 14, 1, 0, 0, p).repeat(4)),
         ),
-        (
-            "max blocks as loops over max functions",
-            Box::new(move || {
-                let ops = MAX_OPERATORS / fns - 1;
-                let (base, rest) = (MAX_BLOCKS / fns, MAX_BLOCKS % fns);
+        case(
+            "63 locals updated in one loop; ops to the loop-work cap",
+            100,
+            opf,
+            |p| module(&nested_fn("loop", 63, 1, 0, 0, p)),
+        ),
+        case(
+            "126 locals in 4 loops; ops to the pressure cap",
+            100,
+            opf,
+            |p| module(&nested_fn("loop", 126, 4, 0, 0, p)),
+        ),
+        case(
+            "max functions; loops to the block cap",
+            0,
+            2 * MAX_BLOCKS,
+            move |p| {
+                let (base, rest) = (p / fns, p % fns);
                 let mut m = String::new();
                 for i in 0..fns {
-                    m.push_str(&seq_fn(0, base + u64::from(i < rest), ops));
+                    m.push_str(&seq_fn(0, base + u64::from(i < rest), 60));
                 }
                 module(&m)
-            }),
+            },
         ),
-        (
-            "max functions x max operators",
-            Box::new(move || {
-                let ops = (MAX_OPERATORS - HEAD_FUNCS) / fns;
-                module(&nested_fn("block", 8, 1, 0, 0, ops).repeat(fns as usize))
-            }),
+        case(
+            "max functions x 8 locals; ops to the operator cap",
+            10,
+            1000,
+            move |p| module(&nested_fn("block", 8, 1, 0, 0, p).repeat(fns as usize)),
         ),
-        (
-            "max operators in max-size functions",
-            Box::new(|| {
-                let n = MAX_OPERATORS / MAX_OPERATORS_PER_FUNCTION;
-                let last = MAX_OPERATORS - (n - 1) * MAX_OPERATORS_PER_FUNCTION - HEAD_FUNCS;
-                let mut m = nested_fn("loop", 4, 8, 0, 0, MAX_OPERATORS_PER_FUNCTION)
-                    .repeat(n as usize - 1);
-                m.push_str(&nested_fn("loop", 4, 8, 0, 0, last));
+        case(
+            "max-size functions; ops to the operator cap",
+            100,
+            opf,
+            move |p| {
+                let n = MAX_OPERATORS / opf - 1;
+                let mut m = nested_fn("block", 4, 8, 0, 0, opf).repeat(n as usize);
+                m.push_str(&nested_fn("block", 4, 8, 0, 0, p));
                 module(&m)
-            }),
+            },
         ),
-        (
+        case("calls; to the operator-cost cap", 1, opf - 1, |p| {
+            module(&format!("(func {})", "call 0 ".repeat(p as usize)))
+        }),
+        case(
+            "call_indirect; to the operator-cost and branch caps",
+            1,
+            opf - 1,
+            |p| {
+                module(&format!(
+                    "(table 1 funcref) (func {})",
+                    "i32.const 0 call_indirect ".repeat(p as usize)
+                ))
+            },
+        ),
+        case(
             "max types x params x results, max exports",
-            Box::new(move || module(&typed_fns(types, exported))),
+            1,
+            1,
+            move |_| module(&typed_fns(types, exported)),
         ),
-        (
-            "max element items (ref.func expressions) over max types",
-            Box::new(move || {
-                let m = typed_fns(types, exported) + &elem_exprs(MAX_ELEMENT_ITEMS, types);
-                module(&m)
-            }),
+        case(
+            "element items over max types; to the item cap",
+            1,
+            2 * MAX_ELEMENT_ITEMS,
+            move |p| module(&(typed_fns(types, exported) + &elem_exprs(p, types))),
         ),
-        (
-            "imports, globals, tables, data at caps",
-            Box::new(|| {
-                let half = MAX_TOTAL_TABLE_ELEMENTS / 2;
-                let t = format!("(table {half} funcref) (table {half} funcref)");
-                module_with_prefix(&imports_at_cap(), &(t + &globals_data_at_cap()))
-            }),
+        case("imports, globals, tables, data at caps", 1, 1, |_| {
+            let half = MAX_TOTAL_TABLE_ELEMENTS / 2;
+            let t = format!("(table {half} funcref) (table {half} funcref)");
+            module_with_prefix(&imports_at_cap(), &(t + &globals_data_at_cap()))
+        }),
+        case(
+            "max locals spread over max functions; ops to the pressure cap",
+            1,
+            200,
+            move |p| {
+                let per = (MAX_TOTAL_LOCALS / fns).min(MAX_LOCALS_PER_FUNCTION);
+                module(&nested_fn("block", per, 0, 0, 0, p).repeat(fns as usize))
+            },
         ),
-        (
-            "max locals spread over max functions",
-            Box::new(move || {
-                // No branches (merge 0); operators up to the pressure cap.
-                let per = (MAX_TOTAL_LOCALS / fns).min(l);
-                let ops = (MAX_PRESSURE_WORK - HEAD_PRESSURE) / fns / per - per;
-                module(&nested_fn("block", per, 0, 0, 0, ops).repeat(fns as usize))
-            }),
-        ),
-        (
-            "everything at once (nested loops)",
-            Box::new(|| combined(false)),
-        ),
-        (
-            "everything at once (br_table into loops)",
-            Box::new(|| combined(true)),
-        ),
+        case("everything at once (nested loops)", 1, 1, |_| {
+            combined(false)
+        }),
+        case("everything at once (br_table into loops)", 1, 1, |_| {
+            combined(true)
+        }),
     ]
 }
 
-/// One module at every module-wide budget at once. The merge, pressure and
-/// branch budgets are spent either on max locals in max nested loops plus
-/// sequential loops (`br_table == false`), or on a `br_table` into nested
-/// loops plus max locals in straight-line code plus sequential loops. Both
-/// also have max typed and exported functions, max element items, imports,
-/// globals, tables and data at their caps, and small looping functions
-/// taking the function, block and operator counts to their caps.
+/// One module at every budget at once, built greedily: module-level parts
+/// at their caps (imports, typed and exported functions, element items,
+/// tables, globals, data), then functions that each push one budget to
+/// what is left of it: the merge budget (max locals in max nested loops,
+/// or a `br_table` into nested loops plus max locals in straight-line
+/// code), the branch budget (sequential loops), the operator-cost budget
+/// (`call_indirect`, then calls), and the function and block counts (small
+/// looping functions).
 fn combined(br_table: bool) -> Vec<u8> {
-    let l = MAX_LOCALS_PER_FUNCTION;
     // The imports add one type (`() -> i64`).
     let types = u64::from(MAX_TYPES) - HEAD_TYPES - 1;
     let exported = u64::from(MAX_EXPORTS) - HEAD_EXPORTS;
-    let p = u64::from(MAX_PARAMS);
-    let typed_ops = types * (u64::from(MAX_RESULTS) + 1);
-    let mut pressure = HEAD_PRESSURE + types * p * (u64::from(MAX_RESULTS) + 1 + p);
-    let (mut ops, mut blocks, mut branch, mut fns) =
-        (HEAD_FUNCS + typed_ops, 0, 0, HEAD_FUNCS + types);
-    let mut m = String::new();
-    if br_table {
-        // merge = 61 × (16 blocks + 15 br_ifs + 1024 targets) ≤ cap.
-        let (v, f_ops) = (61, 32_768);
-        m.push_str(&nested_fn("loop", v, 16, 1, MAX_BR_TABLE_TARGETS, f_ops));
-        pressure += v * (f_ops + v);
-        ops += f_ops;
-        blocks += 16;
-        branch += (31 + MAX_BR_TABLE_TARGETS).pow(2);
-        // The rest of the pressure budget: max locals, no branches.
-        let s_ops = (MAX_PRESSURE_WORK - pressure) / l - l;
-        m.push_str(&nested_fn("block", l, 0, 0, 0, s_ops));
-        ops += s_ops;
-        fns += 2;
-    } else {
-        // merge = l × 2 × MAX_LOOP_NESTING = the cap.
-        let d_ops = (MAX_PRESSURE_WORK - pressure) / l - l;
-        m.push_str(&nested_fn("loop", l, MAX_LOOP_NESTING, 0, 0, d_ops));
-        ops += d_ops;
-        blocks += MAX_LOOP_NESTING;
-        branch += (2 * MAX_LOOP_NESTING).pow(2);
-        fns += 1;
-    }
-    // Small functions: the rest of the functions, with up to 2 loops each
-    // (≤ 16 branch work each), budgeted before the sequential function.
-    let small = u64::from(MAX_FUNCTIONS) - fns - 1;
-    branch += small * 16;
-    // Sequential loops (no locals) with the rest of the branch budget.
-    let seq_loops = ((MAX_BRANCH_WORK - branch) as f64).sqrt() as u64 / 2;
-    let seq_ops = seq_loops * 4 + 1;
-    m.push_str(&seq_fn(0, seq_loops, seq_ops));
-    ops += seq_ops;
-    blocks += seq_loops;
-    m.push_str(&typed_fns(types, exported));
-    m.push_str(&elem_exprs(MAX_ELEMENT_ITEMS, types));
+    let mut fixed = typed_fns(types, exported) + &elem_exprs(MAX_ELEMENT_ITEMS, types);
     let rest_tables = MAX_TOTAL_TABLE_ELEMENTS - MAX_ELEMENT_ITEMS;
     let big = rest_tables.min(65_536);
-    write!(
-        m,
+    fixed += &format!(
         "(table {big} funcref) (table {} funcref)",
         rest_tables - big
-    )
-    .unwrap();
-    m.push_str(&globals_data_at_cap());
-    let left = (MAX_BLOCKS - blocks).min(2 * small);
-    let (base, rest) = (left / small, left % small);
-    let ops_each = (MAX_OPERATORS - ops) / small;
-    for i in 0..small {
-        m.push_str(&seq_fn(0, base + u64::from(i < rest), ops_each));
+    );
+    fixed += &globals_data_at_cap();
+    let prefix = imports_at_cap();
+    // `on_init`, after the imports.
+    let on_init = MAX_IMPORTS;
+    type Part = Box<dyn Fn(u64) -> String>;
+    let mut parts: Vec<(u64, u64, Part)> = Vec::new();
+    let opf = MAX_OPERATORS_PER_FUNCTION;
+    if br_table {
+        parts.push((
+            1,
+            1024,
+            Box::new(|p| nested_fn("loop", p, 16, 1, MAX_BR_TABLE_TARGETS, 20_000)),
+        ));
+        parts.push((10, opf, Box::new(|p| nested_fn("block", L, 0, 0, 0, p))));
+    } else {
+        parts.push((
+            200,
+            opf,
+            Box::new(|p| nested_fn("loop", L, MAX_LOOP_NESTING, 0, 0, p)),
+        ));
     }
-    module_with_prefix(&imports_at_cap(), &m)
+    parts.push((1, 4000, Box::new(|p| seq_fn(0, p, 4 * p + 1))));
+    parts.push((
+        0,
+        opf - 1,
+        Box::new(|p| {
+            format!(
+                "(func {})",
+                "i32.const 0 call_indirect $tab ".repeat(p as usize)
+            )
+        }),
+    ));
+    parts.push((
+        0,
+        opf - 1,
+        Box::new(move |p| format!("(func {})", format!("call {on_init} ").repeat(p as usize))),
+    ));
+    parts.push((
+        0,
+        u64::from(MAX_FUNCTIONS),
+        Box::new(|p| seq_fn(0, 2, 40).repeat(p as usize)),
+    ));
+    let mut acc = fixed;
+    for (lo, hi, part) in parts {
+        let build = |p| module_with_prefix(&prefix, &(acc.clone() + &part(p)));
+        let p = max_param(lo, hi, &build);
+        acc += &part(p);
+    }
+    module_with_prefix(&prefix, &acc)
 }
 
 fn prepare(bin: &[u8]) -> Result<(), ScriptError> {
     WasmScriptBackend::prepare(bin, WasmConfig::engine()).map(drop)
 }
 
+/// Every worst case sits exactly at its limit (one step more is rejected)
+/// and compiles.
 #[test]
 fn worst_case_modules_at_the_caps_are_accepted() {
-    for (name, build) in worst_cases() {
-        let bin = build();
-        assert!(bin.len() <= MAX_MODULE_BYTES, "{name}: {} bytes", bin.len());
+    for c in worst_cases() {
+        let p = max_param(c.lo, c.hi, &c.build);
+        let bin = (c.build)(p);
+        if p < c.hi {
+            assert!(
+                matches!(check_limits(&(c.build)(p + 1)), Err(ScriptError::Load(_))),
+                "{}: one step more must be rejected",
+                c.name
+            );
+        }
         if let Err(e) = prepare(&bin) {
-            panic!("{name} must be accepted: {e:?}");
+            panic!("{} must be accepted: {e:?}", c.name);
         }
     }
 }
@@ -449,7 +512,7 @@ fn each_cap_rejects_one_over() {
         MAX_TOTAL_LOCALS,
     );
     rejected(
-        &module(&nested_fn("block", 0, MAX_NESTING + 1, 0, 0, 1024)),
+        &module(&nested_fn("block", 0, MAX_NESTING + 1, 0, 0, 4096)),
         "nested blocks",
         MAX_NESTING,
     );
@@ -465,7 +528,7 @@ fn each_cap_rejects_one_over() {
     );
     let n = MAX_BR_TABLE_TARGETS_PER_FUNCTION / MAX_BR_TABLE_TARGETS + 1;
     rejected(
-        &module(&nested_fn("block", 0, 4, n, MAX_BR_TABLE_TARGETS, 32_768)),
+        &module(&nested_fn("block", 0, 4, n, MAX_BR_TABLE_TARGETS, 20_000)),
         "br_table targets",
         MAX_BR_TABLE_TARGETS_PER_FUNCTION,
     );
@@ -497,18 +560,18 @@ fn each_cap_rejects_one_over() {
         "loop\nlocal.get 0 br_if 0\n",
         1,
     );
-    rejected(&module(&f), "locals x branch edges", MAX_MERGE_WORK);
+    rejected(&module(&f), "live values x branch edges", MAX_MERGE_WORK);
     // Branch work: b sequential loops are 2b branches.
     let b = (MAX_BRANCH_WORK as f64).sqrt() as u64 / 2 + 1;
     rejected(
         &module(&seq_fn(0, b, b * 4 + 1)),
-        "branches squared",
+        "branch edges squared",
         MAX_BRANCH_WORK,
     );
     let ops = MAX_PRESSURE_WORK / l - l + 1;
     rejected(
         &module(&nested_fn("block", l, 1, 0, 0, ops)),
-        "locals x operators",
+        "live values x operators",
         MAX_PRESSURE_WORK,
     );
     let n = u64::from(MAX_FUNCTIONS) - HEAD_FUNCS + 1;
@@ -556,6 +619,12 @@ fn each_cap_rejects_one_over() {
         "imports",
         MAX_IMPORTS.into(),
     );
+    let calls = MAX_OPERATOR_COST / 8 + 1;
+    rejected(
+        &module(&format!("(func {})", "call 0 ".repeat(calls as usize))),
+        "operator cost units",
+        MAX_OPERATOR_COST,
+    );
 }
 
 /// Peak resident set of this process since the last reset, bytes (Linux).
@@ -575,11 +644,13 @@ fn compile_cost_report() {
     let only: Option<usize> = std::env::var("PIN_COST_CASE")
         .ok()
         .and_then(|v| v.parse().ok());
-    for (i, (name, build)) in worst_cases().into_iter().enumerate() {
+    for (i, c) in worst_cases().into_iter().enumerate() {
+        let name = c.name;
         if only.is_some_and(|o| o != i) {
             continue;
         }
-        let bin = build();
+        let p = max_param(c.lo, c.hi, &c.build);
+        let bin = (c.build)(p);
         // Reset the peak-RSS counter to the current RSS.
         let _ = std::fs::write("/proc/self/clear_refs", "5");
         let start = std::time::Instant::now();
@@ -593,6 +664,96 @@ fn compile_cost_report() {
         println!(
             "| {i} | {name} | {} | {t:.3?} | {rss} |{verdict}",
             bin.len()
+        );
+    }
+}
+
+/// Prints how much of each limit `rules.wasm` and the modules in
+/// `PIN_GUEST_WASM` (`:`-separated paths) use (N9 headroom).
+#[test]
+#[ignore = "prints budget usage for the report"]
+fn guest_budget_usage() {
+    let mut paths = vec![
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/wasm/rules.wasm"
+        )
+        .to_string(),
+    ];
+    if let Ok(more) = std::env::var("PIN_GUEST_WASM") {
+        paths.extend(more.split(':').map(str::to_string));
+    }
+    for p in paths {
+        let bin = std::fs::read(&p).unwrap();
+        let u = check_limits(&bin).unwrap_or_else(|e| panic!("{p}: {e:?}"));
+        let pct = |n: u64, max: u64| 100.0 * n as f64 / max as f64;
+        let rows = [
+            ("operators", u.operators, MAX_OPERATORS),
+            ("operator cost", u.operator_cost, MAX_OPERATOR_COST),
+            ("functions", u.functions, u64::from(MAX_FUNCTIONS)),
+            ("blocks", u.blocks, MAX_BLOCKS),
+            ("merge work", u.merge_work, MAX_MERGE_WORK),
+            ("branch work", u.branch_work, MAX_BRANCH_WORK),
+            ("pressure work", u.pressure_work, MAX_PRESSURE_WORK),
+            ("loop work", u.loop_work, MAX_LOOP_WORK),
+            ("max locals", u.max_locals, MAX_LOCALS_PER_FUNCTION),
+            ("max nesting", u.max_nesting, MAX_NESTING),
+            ("max loop nesting", u.max_loop_nesting, MAX_LOOP_NESTING),
+            (
+                "max br_table targets",
+                u.max_br_table_targets,
+                MAX_BR_TABLE_TARGETS_PER_FUNCTION,
+            ),
+            ("types", u.types, u64::from(MAX_TYPES)),
+            ("imports", u.imports, u64::from(MAX_IMPORTS)),
+            ("exports", u.exports, u64::from(MAX_EXPORTS)),
+        ];
+        println!("USAGE {p} ({} bytes)", bin.len());
+        for (name, n, max) in rows {
+            println!("USAGE   {name}: {n} / {max} ({:.1} %)", pct(n, max));
+        }
+        println!("USAGE   max operand stack: {}", u.max_stack);
+    }
+}
+
+/// The round-3 review's accepted-but-slow modules (76 s, 22 s, 14 s, 5.6 s,
+/// 3.9 s, 1.6 s, 1.6 s in release) are rejected without compiling.
+#[test]
+fn review_round_3_attacks_are_rejected() {
+    let f = |n: usize, unit: &str| format!("(func {})", unit.repeat(n));
+    let ci = "i32.const 0 call_indirect ";
+    let deep = format!(
+        "(func {} {} {})",
+        "i32.const 0 ".repeat(20_000),
+        ci.repeat(12_500),
+        "drop ".repeat(20_000)
+    );
+    let attacks = [
+        ("4 x 32 000 call_indirect", f(32_000, ci).repeat(4)),
+        (
+            "4 x 21 000 table.get",
+            f(21_000, "i32.const 0 table.get 0 drop ").repeat(4),
+        ),
+        ("12 500 call_indirect on 20 000 stacked values", deep),
+        ("16 000 call_indirect", f(16_000, ci)),
+        (
+            "16 000 table.grow",
+            f(16_000, "ref.null func i32.const 1 table.grow 0 drop "),
+        ),
+        (
+            "16 000 table.copy",
+            f(
+                16_000,
+                "i32.const 0 i32.const 0 i32.const 0 table.copy 0 0 ",
+            ),
+        ),
+        ("60 x 500 call_indirect", f(500, ci).repeat(60)),
+    ];
+    for (name, m) in attacks {
+        let bin = module(&format!("(table 1 funcref) {m}"));
+        assert!(
+            matches!(check_limits(&bin), Err(ScriptError::Load(_))),
+            "{name} must be rejected"
         );
     }
 }

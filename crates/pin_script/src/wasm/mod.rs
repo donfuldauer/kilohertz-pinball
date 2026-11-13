@@ -68,37 +68,45 @@
 //!   the callback traps. Every callback, the start function and every state
 //!   hook start with a fresh budget; exhausting it traps
 //!   ([`ScriptError::BudgetExceeded`]).
-//! * Compile cost (D25). Before anything is compiled, the module is checked
+//! * Compile cost (D25). Before anything is compiled, the module is
+//!   validated by wasmparser under exactly the enabled proposals and checked
 //!   against limits chosen so that **any module that passes compiles in
-//!   under 1 s and 256 MB** (release, measured by
-//!   `tests/wasm_compile_cost.rs`; the worst accepted module takes ≈ 0.7 s).
-//!   Size: at most [`MAX_MODULE_BYTES`] of binary (WAT text: at most
-//!   [`MAX_WAT_BYTES`] of text, and the binary it produces at most
-//!   [`MAX_MODULE_BYTES`]). Counts: [`MAX_FUNCTIONS`] defined functions,
+//!   under 1 s and 256 MB** (release; the worst accepted modules take
+//!   ≈ 0.4 s, see `tests/wasm_compile_cost.rs` and the per-operator sweep
+//!   `tests/wasm_operator_sweep.rs`). Size: [`MAX_MODULE_BYTES`] of binary
+//!   ([`MAX_WAT_BYTES`] of WAT text). Counts: [`MAX_FUNCTIONS`] functions,
 //!   [`MAX_FUNCTION_BODY_BYTES`] per body, [`MAX_TYPES`] types of at most
 //!   [`MAX_PARAMS`] params and [`MAX_RESULTS`] results, [`MAX_IMPORTS`]
 //!   imports, [`MAX_EXPORTS`] exports, [`MAX_GLOBALS`] globals,
 //!   [`MAX_TOTAL_TABLE_ELEMENTS`] initial table elements, [`MAX_SEGMENTS`]
-//!   data and [`MAX_SEGMENTS`] element segments with [`MAX_ELEMENT_ITEMS`]
-//!   items in total. Each function body's operator stream is read (not
-//!   compiled): at most [`MAX_LOCALS_PER_FUNCTION`] locals
-//!   ([`MAX_TOTAL_LOCALS`] in all), [`MAX_OPERATORS_PER_FUNCTION`] operators
-//!   ([`MAX_OPERATORS`] in all), [`MAX_NESTING`] nested blocks of which at
-//!   most [`MAX_LOOP_NESTING`] loops, [`MAX_BLOCKS`] blocks/loops/ifs in
-//!   all, [`MAX_BR_TABLE_TARGETS`] targets per `br_table` and
-//!   [`MAX_BR_TABLE_TARGETS_PER_FUNCTION`] per function. Cranelift's cost is
-//!   not linear in these, so three module-wide budgets bound the products
-//!   that drive it: [`MAX_MERGE_WORK`] (variables × branch edges),
-//!   [`MAX_BRANCH_WORK`] (branch edges² per function) and
-//!   [`MAX_PRESSURE_WORK`] (variables × operators). Anything above a limit
-//!   is [`ScriptError::Load`] naming the limit.
+//!   data and element segments, [`MAX_ELEMENT_ITEMS`] element items. Per
+//!   function: [`MAX_LOCALS_PER_FUNCTION`] locals ([`MAX_TOTAL_LOCALS`] in
+//!   all), [`MAX_OPERATORS_PER_FUNCTION`] operators ([`MAX_OPERATORS`] in
+//!   all), [`MAX_NESTING`] nested blocks of which [`MAX_LOOP_NESTING`]
+//!   loops ([`MAX_BLOCKS`] blocks/loops/ifs in all),
+//!   [`MAX_BR_TABLE_TARGETS`] targets per `br_table` and
+//!   [`MAX_BR_TABLE_TARGETS_PER_FUNCTION`] per function. Every operator has
+//!   a cost class ([`op_cost`]: a weight and the blocks Cranelift expands it
+//!   into; an unlisted operator is [`MOST_EXPENSIVE`]); Cranelift's cost is
+//!   not linear, so five module-wide budgets bound what drives it:
+//!   [`MAX_OPERATOR_COST`] (Σ weights), [`MAX_MERGE_WORK`] (live values ×
+//!   edges), [`MAX_BRANCH_WORK`] (edges² per function),
+//!   [`MAX_PRESSURE_WORK`] (live values × weights) and [`MAX_LOOP_WORK`]
+//!   (weights inside loops² per function), where live values are params,
+//!   locals and the deepest operand stack. Anything above a limit is
+//!   [`ScriptError::Load`] naming the limit.
 //! * Stack: Wasm code may use at most [`MAX_WASM_STACK_BYTES`] of the
 //!   calling thread's stack; deeper recursion traps (a fault, like any other
 //!   trap). The thread that calls the backend (the sim thread) must have at
 //!   least [`MIN_HOST_STACK_BYTES`] of stack.
-//! * Determinism: NaN canonicalisation on, threads/shared memory off, relaxed
-//!   SIMD off (and deterministic if it were on), memory64, multi-memory, GC,
-//!   exceptions, stack switching and the component model off. All Wasm
+//! * Proposals: Wasm 1.0 plus mutable globals, sign extension, saturating
+//!   float-to-int, multi-value, bulk memory and reference types (what rustc's
+//!   `wasm32` target emits). SIMD, relaxed SIMD, tail calls, extended
+//!   constant expressions, threads/shared memory, memory64, multi-memory,
+//!   GC, exceptions, stack switching, wide arithmetic, custom page sizes and
+//!   the component model are off.
+//! * Determinism: NaN canonicalisation on (and relaxed SIMD deterministic if
+//!   it were on). All Wasm
 //!   execution is therefore a pure function of the module, the host inputs
 //!   and the host PCG.
 //!

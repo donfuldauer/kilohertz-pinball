@@ -66,8 +66,11 @@ pub const MAX_LOCALS_PER_FUNCTION: u64 = 1_024;
 /// Most declared locals of all functions together.
 pub const MAX_TOTAL_LOCALS: u64 = 65_536;
 
-/// Deepest nesting of `block` / `loop` / `if` in a function.
-pub const MAX_NESTING: u64 = 128;
+/// Deepest nesting of `block` / `loop` / `if` in a function. A Rust `match`
+/// over n values compiles to n nested blocks and one `br_table`, so this
+/// allows matches over a few hundred switch ids (nested blocks are cheap
+/// for Cranelift; nested loops are capped separately).
+pub const MAX_NESTING: u64 = 512;
 
 /// Deepest nesting of `loop`s in a function. Cranelift's compile time
 /// explodes with loop depth when many values are live (1 024 locals: 96
@@ -84,11 +87,11 @@ pub const MAX_BR_TABLE_TARGETS_PER_FUNCTION: u64 = 1_024;
 pub const MAX_OPERATORS_PER_FUNCTION: u64 = 65_536;
 
 /// Most operators in all function bodies together.
-pub const MAX_OPERATORS: u64 = 262_144;
+pub const MAX_OPERATORS: u64 = 131_072;
 
 /// Module-wide budget of operator cost units: Σ of every operator's
 /// [`OpCost::weight`] (1 for a plain arithmetic operator).
-pub const MAX_OPERATOR_COST: u64 = 262_144;
+pub const MAX_OPERATOR_COST: u64 = 131_072;
 
 /// Most control constructs (`block`, `loop`, `if`) in all functions
 /// together (each loop also gets a fuel check; ≈ 35 µs of compile time).
@@ -127,6 +130,13 @@ pub const MAX_BRANCH_WORK: u64 = 2 * 1024 * 1024;
 /// units + params + locals): register-allocation cost when many values are
 /// live (every declared local is also zero-initialised).
 pub const MAX_PRESSURE_WORK: u64 = 8 * 1024 * 1024;
+
+/// Module-wide budget for Σ over functions of (operator cost units inside
+/// loops)²: register allocation of a long loop body grows quadratically
+/// with its length for some local-update patterns (65 000 updates of 14
+/// locals in one loop ≈ 1.4 s; 23 000 ≈ 0.15 s), whatever the number of
+/// locals. 2²⁹ allows ≈ 23 000 units in the loops of one function.
+pub const MAX_LOOP_WORK: u64 = 1 << 29;
 
 /// Compile-cost class of one operator.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -282,6 +292,7 @@ pub struct Usage {
     pub merge_work: u64,
     pub branch_work: u64,
     pub pressure_work: u64,
+    pub loop_work: u64,
     pub locals: u64,
     pub max_locals: u64,
     pub max_operators: u64,
@@ -565,10 +576,10 @@ impl Scan {
         let vars = u64::from(fv.len_locals());
         let reader = body.get_binary_reader_for_operators().map_err(parse_err)?;
         let mut ops = OperatorsReader::new_with_allocs(reader, std::mem::take(&mut self.op_allocs));
-        let (mut n, mut weight, mut stack) = (0u64, 0u64, 0u64);
+        let (mut n, mut weight, mut stack, mut in_loops) = (0u64, 0u64, 0u64, 0u64);
         // Open constructs, and which of them are loops (bit i of `loop_bits`
-        // for depth i < MAX_NESTING = 128).
-        let (mut depth, mut loop_bits, mut loop_depth) = (0u64, 0u128, 0u64);
+        // for depth i < MAX_NESTING = 512).
+        let (mut depth, mut loop_bits, mut loop_depth) = (0u64, [0u64; 8], 0u64);
         let (mut blocks, mut branches, mut targets, mut op_edges) = (0u64, 0u64, 0u64, 0u64);
         while !ops.eof() {
             let offset = ops.original_position();
@@ -587,6 +598,9 @@ impl Scan {
             let c = op_cost(&op);
             weight += c.weight;
             op_edges += c.edges;
+            if loop_depth > 0 {
+                in_loops += c.weight;
+            }
             match op {
                 Operator::Block { .. } | Operator::Loop { .. } | Operator::If { .. } => {
                     cap(
@@ -596,7 +610,7 @@ impl Scan {
                         MAX_NESTING,
                     )?;
                     if matches!(op, Operator::Loop { .. }) {
-                        loop_bits |= 1 << depth;
+                        loop_bits[(depth / 64) as usize] |= 1 << (depth % 64);
                         loop_depth += 1;
                         cap(
                             format_args!("{fname}"),
@@ -612,8 +626,9 @@ impl Scan {
                 }
                 Operator::End if depth > 0 => {
                     depth -= 1;
-                    if loop_bits & (1 << depth) != 0 {
-                        loop_bits &= !(1 << depth);
+                    let (w, b) = ((depth / 64) as usize, 1u64 << (depth % 64));
+                    if loop_bits[w] & b != 0 {
+                        loop_bits[w] &= !b;
                         loop_depth -= 1;
                     }
                 }
@@ -668,7 +683,10 @@ impl Scan {
         cap(module(), what, u.branch_work, MAX_BRANCH_WORK)?;
         u.pressure_work += live * (weight + vars);
         let what = "compile-cost units of live values x operators";
-        cap(module(), what, u.pressure_work, MAX_PRESSURE_WORK)
+        cap(module(), what, u.pressure_work, MAX_PRESSURE_WORK)?;
+        u.loop_work += in_loops * in_loops;
+        let what = "compile-cost units of operators in loops squared";
+        cap(module(), what, u.loop_work, MAX_LOOP_WORK)
     }
 }
 

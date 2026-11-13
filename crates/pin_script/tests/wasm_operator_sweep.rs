@@ -68,7 +68,9 @@ const SWEEP_FUNC: usize = 4;
 /// Functions [`template`] defines besides the unit function.
 const OTHER_FUNCS: u64 = 4;
 /// Depth of the operand stack in the "deep" variant.
-const DEEP: u64 = 4_096;
+/// (Deeper stacks are rejected for every operator: the stacked constants
+/// alone exceed the pressure budget at ≈ 2 000.)
+const DEEP: u64 = 1_024;
 
 fn template(unit: &str) -> String {
     format!(
@@ -88,23 +90,40 @@ fn template(unit: &str) -> String {
     )
 }
 
-const TYPES: [(&str, &str); 6] = [
+const TYPES: [(&str, &str); 7] = [
     ("i32", "i32.const 0"),
     ("i64", "i64.const 0"),
     ("f32", "f32.const 0"),
     ("f64", "f64.const 0"),
     ("funcref", "ref.null func"),
     ("externref", "ref.null extern"),
+    ("v128", "v128.const i64x2 0 0"),
 ];
 
 /// WAT mnemonic of a `visit_*` name.
 fn mnemonic(visit: &str) -> String {
     let s = visit.strip_prefix("visit_").unwrap_or(visit);
+    if s == "typed_select" {
+        return "select".into();
+    }
+    if let Some(rest) = s.strip_prefix("atomic_") {
+        return format!("atomic.{rest}");
+    }
     for p in [
         "i32", "i64", "f32", "f64", "v128", "i8x16", "i16x8", "i32x4", "i64x2", "f32x4", "f64x2",
         "local", "global", "memory", "table", "ref", "data", "elem",
     ] {
         if let Some(rest) = s.strip_prefix(p).and_then(|r| r.strip_prefix('_')) {
+            let rest = match rest.strip_prefix("atomic_") {
+                Some(r) => format!(
+                    "atomic.{}",
+                    r.replacen("rmw8_", "rmw8.", 1)
+                        .replacen("rmw16_", "rmw16.", 1)
+                        .replacen("rmw32_", "rmw32.", 1)
+                        .replacen("rmw_", "rmw.", 1)
+                ),
+                None => rest.to_string(),
+            };
             return format!("{p}.{rest}");
         }
     }
@@ -120,7 +139,11 @@ fn immediates(op: &OpInfo, result_ty: &str) -> Option<String> {
             "memarg" | "mem" | "dst_mem" | "src_mem" => "",
             "local_index" => "0",
             "global_index" => "$g",
+            "value" if op.name == "V128Const" => "i64x2 0 0",
             "value" => "0",
+            "lane" => "0",
+            "lanes" => "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "ordering" => "",
             "data_index" => "$d",
             "elem_index" => "$e",
             "table" | "dst_table" | "src_table" | "table_index" => "$t",
@@ -141,6 +164,9 @@ fn immediates(op: &OpInfo, result_ty: &str) -> Option<String> {
     // `table.copy` takes two tables, `call_indirect` the table first.
     if op.visit == "visit_table_copy" {
         s = " $t $t".into();
+    }
+    if op.visit == "visit_table_init" {
+        s = " $t $e".into();
     }
     if op.visit == "visit_call_indirect" {
         s = " $t (type $ty)".into();
@@ -306,13 +332,22 @@ impl Template {
 
     /// The module with `funcs` copies of the unit function, each holding
     /// `k` units on top of `deep` stacked `i32.const 0`.
-    fn build(&self, k: u64, funcs: u64, deep: u64) -> Vec<u8> {
+    /// With `looped`, the units sit in a `loop` that branches back.
+    fn build(&self, k: u64, funcs: u64, deep: u64, looped: bool) -> Vec<u8> {
         let mut body = self.locals.clone();
         for _ in 0..deep {
             body.extend_from_slice(&[0x41, 0x00]);
         }
+        if looped {
+            // loop (empty block type)
+            body.extend_from_slice(&[0x03, 0x40]);
+        }
         for _ in 0..k {
             body.extend_from_slice(&self.unit);
+        }
+        if looped {
+            // i32.const 0, br_if 0, end
+            body.extend_from_slice(&[0x41, 0x00, 0x0d, 0x00, 0x0b]);
         }
         body.extend(std::iter::repeat_n(0x1a, deep as usize));
         body.push(0x0b);
@@ -375,10 +410,16 @@ impl Template {
         out
     }
 
+    fn build_v(&self, k: u64, v: &Variant) -> Vec<u8> {
+        self.build(k, v.funcs, v.deep, v.looped)
+    }
+
     /// The largest `k` whose module `check_limits` accepts.
-    fn max_units(&self, funcs: u64, deep: u64) -> u64 {
-        let ok = |k| check_limits(&self.build(k, funcs, deep)).is_ok();
-        assert!(ok(0), "the empty module must be accepted");
+    fn max_units(&self, v: &Variant) -> u64 {
+        let ok = |k| check_limits(&self.build_v(k, v)).is_ok();
+        if let Err(e) = check_limits(&self.build_v(0, v)) {
+            panic!("the empty module must be accepted: {e:?}");
+        }
         let mut hi = (MAX_OPERATORS_PER_FUNCTION / self.unit_ops.max(1)) + 1;
         if ok(hi) {
             return hi;
@@ -396,9 +437,17 @@ impl Template {
 struct Case {
     op: OpInfo,
     unit: String,
+    v: Variant,
+}
+
+/// Where the units go: how many copies of the unit function, how deep a
+/// stack they run on, and whether they sit in a loop.
+#[derive(Clone, Copy)]
+struct Variant {
+    name: &'static str,
     funcs: u64,
     deep: u64,
-    variant: &'static str,
+    looped: bool,
 }
 
 fn enabled_features() -> WasmFeatures {
@@ -430,17 +479,22 @@ fn cases() -> Vec<Case> {
     let max_funcs = u64::from(MAX_FUNCTIONS) - OTHER_FUNCS;
     let mut out = Vec::new();
     for (op, unit) in units().0 {
-        for (variant, funcs, deep) in [
-            ("1 fn", 1, 0),
-            ("max fns", max_funcs, 0),
-            ("1 fn, deep stack", 1, DEEP),
+        let v = |name, funcs, deep, looped| Variant {
+            name,
+            funcs,
+            deep,
+            looped,
+        };
+        for v in [
+            v("1 fn", 1, 0, false),
+            v("1 fn, in a loop", 1, 0, true),
+            v("max fns", max_funcs, 0, false),
+            v("1 fn, deep stack", 1, DEEP, false),
         ] {
             out.push(Case {
                 op: op.clone(),
                 unit: unit.clone(),
-                funcs,
-                deep,
-                variant,
+                v,
             });
         }
     }
@@ -493,7 +547,10 @@ fn disabled_proposals_are_rejected() {
     );
     assert!(check_limits(&wat::parse_str(multi).unwrap()).is_err());
     println!("disabled operators rejected: {checked}, not encodable by the generator: {skipped}");
-    assert!(checked > 300, "only {checked} disabled operators checked");
+    // Best effort: the generator cannot encode every disabled operator
+    // (GC, exceptions, stack switching need types it does not declare),
+    // but the bulk of them (SIMD, threads, tail calls, wide arithmetic).
+    assert!(checked > 250, "only {checked} disabled operators checked");
 }
 
 /// Every at-limit sweep module is accepted by `check_limits`, and one more
@@ -501,19 +558,27 @@ fn disabled_proposals_are_rejected() {
 /// first). Compiling them is `operator_sweep_report`'s job (release).
 #[test]
 fn every_operator_sits_exactly_at_the_limits() {
-    for c in cases() {
-        let t = Template::new(&c.unit);
-        let k = t.max_units(c.funcs, c.deep);
-        let at = t.build(k, c.funcs, c.deep);
-        assert!(check_limits(&at).is_ok(), "{} {}", c.op.name, c.variant);
-        let over = t.build(k + 1, c.funcs, c.deep);
-        assert!(
-            matches!(check_limits(&over), Err(ScriptError::Load(_))),
-            "{} {}: one more unit must be rejected",
-            c.op.name,
-            c.variant
-        );
-    }
+    let cases = cases();
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    std::thread::scope(|scope| {
+        for chunk in cases.chunks(cases.len().div_ceil(threads)) {
+            scope.spawn(move || {
+                for c in chunk {
+                    let t = Template::new(&c.unit);
+                    let k = t.max_units(&c.v);
+                    let at = t.build_v(k, &c.v);
+                    assert!(check_limits(&at).is_ok(), "{} {}", c.op.name, c.v.name);
+                    let over = t.build_v(k + 1, &c.v);
+                    assert!(
+                        matches!(check_limits(&over), Err(ScriptError::Load(_))),
+                        "{} {}: one more unit must be rejected",
+                        c.op.name,
+                        c.v.name
+                    );
+                }
+            });
+        }
+    });
 }
 
 /// Peak resident set of this process since the last reset, bytes (Linux).
@@ -543,18 +608,18 @@ fn operator_sweep_report() {
             continue;
         }
         let t = Template::new(&c.unit);
-        let k = t.max_units(c.funcs, c.deep);
-        let bin = t.build(k, c.funcs, c.deep);
+        let k = t.max_units(&c.v);
+        let bin = t.build_v(k, &c.v);
         let _ = std::fs::write("/proc/self/clear_refs", "5");
         let start = std::time::Instant::now();
         let r = WasmScriptBackend::prepare(&bin, WasmConfig::engine());
         let el = start.elapsed();
         let rss = peak_rss().map_or("n/a".into(), |b| format!("{} MB", b >> 20));
-        assert!(r.is_ok(), "{} {}: {:?}", c.op.name, c.variant, r.err());
+        assert!(r.is_ok(), "{} {}: {:?}", c.op.name, c.v.name, r.err());
         println!(
             "SWEEP | {i} | {} | {} | {k} x {} ops | {} | {:.3?} | {rss} |",
             c.op.name,
-            c.variant,
+            c.v.name,
             t.unit_ops,
             bin.len(),
             el

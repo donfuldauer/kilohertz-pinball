@@ -395,7 +395,10 @@ pub enum GuideCast {
 /// Level curves (constant Z, the usual orbit wall) are the normal case. Any
 /// level curve is accepted; one that touches or crosses itself has no reach
 /// and is collided with by plain conservative advancement, which is slow for
-/// a ball sliding along it.
+/// a ball sliding along it. A level curve whose two open ends face each
+/// other across an opening (a C) has a reach of half that opening; a ball
+/// still slides along the rest of the wall at full speed, provided the
+/// through-points are closer together than about twice the opening.
 ///
 /// A curve that rises or falls is accepted only if a ball can slide along
 /// the wall, and ride or skim its top and bottom edges, at full speed: the
@@ -431,13 +434,188 @@ pub struct GuideCurve {
     /// Conservative estimate of the wall's reach (as a set in space): within
     /// this distance of the wall the nearest wall point is unique, and any
     /// wall point closer than this at which the distance is stationary is
-    /// the nearest one. For a level curve the curve's own reach; for a
-    /// non-level one [`wall_reach`] (plan view and edges), at least
-    /// [`MIN_SLOPED_GUIDE_REACH`]. Zero for a level curve without reach
-    /// (one that touches or crosses itself).
+    /// the nearest one. For a level curve the curve's own reach (Federer's
+    /// formula with the half-line tangent cone at open ends, so that two
+    /// ends facing each other count); for a non-level one [`wall_reach`]
+    /// (plan view and edges), at least [`MIN_SLOPED_GUIDE_REACH`]. Zero for
+    /// a level curve without reach (one that touches or crosses itself).
     reach: f32,
+    /// Level curves whose reach is limited by their open ends only (a ring
+    /// with a narrow opening): the radius of the balls that touch the wall
+    /// at a point without containing any of it ([`TangentBalls`]). It is
+    /// what lets a sphere slide along such a wall as fast as along the same
+    /// wall without the opening.
+    tangent_balls: Option<TangentBalls>,
     /// Extra data of a non-level curve.
     sloped: Option<Sloped>,
+}
+
+/// Tangent-ball radii along a level curve `C`, the pointwise form of the
+/// reach.
+///
+/// For a point `a` of the curve and a unit vector `n`, the open ball of
+/// radius `ρ` around `a + ρ n` misses the curve exactly if `|w|² ≥ 2 ρ w · n`
+/// for every `w = y − a`, `y` on the curve. If `a` is the nearest point of
+/// the curve to some point in direction `n`, then `n` is perpendicular to
+/// the tangent at `a`, or, at an end of an open curve, `n · inward ≤ 0`
+/// (`inward` the unit tangent into the curve). Hence, with
+/// `perp(w)` the distance of `w` from the tangent line at `a` and
+/// `s = max(0, −n · inward)` (zero inside the curve),
+///
+/// `w · n ≤ perp(w) + s · max(0, −w · inward)`,
+///
+/// and the ball misses the curve if
+///
+/// `1/ρ ≥ 1/ρ_line(a) + s / ρ_back`,
+/// `ρ_line(a) = inf |w|² / (2 perp(w))`,
+/// `ρ_back = inf |w|² / (2 max(0, −w · inward))`.
+///
+/// `ρ_line` is the quantity whose infimum over the curve Federer's formula
+/// takes inside the curve; `ρ_back` (half the distance to whatever lies
+/// straight behind an end) is what the half-line tangent cone at an end
+/// adds. Unlike the reach, the bound is local: a ball sliding along the
+/// inside of a C-shaped wall keeps the radius of the C, and only a ball that
+/// wraps around an end is limited by the other end facing it.
+///
+/// The same balls miss the wall `C × [0, h]`: for a wall point above `a`
+/// nearest to `p`, the vertical part of `n` points away from the wall (or
+/// is zero), so `w · n ≤ w_h · n_h`, and `|w| ≥ |w_h|`.
+#[derive(Debug, Clone)]
+struct TangentBalls {
+    /// Per stride interval of the samples ([`TANGENT_BALL_STRIDE`]): the
+    /// smallest `ρ_line` of its two samples and their two neighbours, with
+    /// the 0.9 sampling margin.
+    line: Vec<f32>,
+    /// Open curves: (unit tangent into the curve, `ρ_back` with the 0.9
+    /// margin) at the first and at the last point.
+    ends: Option<[(Vec3, f32); 2]>,
+}
+
+/// Sample stride of the tangent-ball table (a quarter of a segment).
+const TANGENT_BALL_STRIDE: usize = 4;
+
+/// Parameter distance from an end of an open curve within which the nearest
+/// point counts as the end itself ([`TangentBalls`]; applying the end term
+/// to an interior point is merely conservative).
+const END_BAND: f32 = 1.0e-3;
+
+impl TangentBalls {
+    /// The table for a curve of reach `reach` (no cusp, no crossing).
+    ///
+    /// `None` if the reach is shorter than a stride interval of the curve:
+    /// the table is sampled, and its 0.9 margin covers what happens between
+    /// two samples only if nothing comes closer to the curve than about two
+    /// intervals (a gap `D` between a wall and an end pointing at it is seen
+    /// from the nearest sample as `D/2 · (1 + (l/2D)²)`, `l` the interval).
+    /// Such a curve keeps the plain reach bound.
+    fn new(spline: &CubicSpline, reach: f32) -> Option<Self> {
+        const MAX: f64 = 1.0e3;
+        let curvature = curvature_bound(spline)?;
+        let samples = spline.samples();
+        let last = samples.len() - 1;
+        let stride = TANGENT_BALL_STRIDE;
+        let count = last / stride + 1;
+        if count < 2 {
+            return None;
+        }
+        let longest = samples
+            .chunks(stride)
+            .zip(samples[1..].chunks(stride))
+            .map(|(from, to)| {
+                from.iter()
+                    .zip(to)
+                    .map(|(a, b)| a.point.distance(b.point))
+                    .sum::<f32>()
+            })
+            .fold(0.0f32, f32::max);
+        if reach < longest {
+            return None;
+        }
+        let cap = if curvature * MAX > 1.0 {
+            1.0 / curvature
+        } else {
+            MAX
+        };
+        let open = !spline.is_closed();
+        let mut at_samples = Vec::with_capacity(count);
+        let mut back = [MAX; 2];
+        for a in 0..count {
+            let index = (a * stride).min(last);
+            let x = samples[index].point.as_dvec3();
+            let tangent = samples[index].tangent.as_dvec3().normalize();
+            let end = if open && index == 0 {
+                Some((0, tangent))
+            } else if open && index == last {
+                Some((1, -tangent))
+            } else {
+                None
+            };
+            let mut rho = cap;
+            for other in samples.iter().step_by(2) {
+                let w = other.point.as_dvec3() - x;
+                let w2 = w.length_squared();
+                if w2 < 1.0e-16 {
+                    continue; // the point itself, or the seam of a closed curve
+                }
+                let along = w.dot(tangent);
+                let off = (w - tangent * along).length();
+                if 2.0 * off * rho > w2 {
+                    rho = w2 / (2.0 * off);
+                }
+                if let Some((which, inward)) = end {
+                    let behind = -w.dot(inward);
+                    if behind > 0.0 && 2.0 * behind * back[which] > w2 {
+                        back[which] = w2 / (2.0 * behind);
+                    }
+                }
+            }
+            at_samples.push(rho);
+        }
+        let intervals = count - 1;
+        let line = (0..intervals)
+            .map(|i| {
+                let mut lowest = f64::INFINITY;
+                for offset in 0..4usize {
+                    // Samples i − 1 ..= i + 2.
+                    let j = if open {
+                        (i + offset).saturating_sub(1).min(count - 1)
+                    } else {
+                        // Sample `intervals` is sample 0 again.
+                        (i + offset + intervals - 1) % intervals
+                    };
+                    lowest = lowest.min(at_samples[j]);
+                }
+                (0.9 * lowest) as f32
+            })
+            .collect();
+        let ends = open.then(|| {
+            let first = samples[0].tangent.normalize();
+            let end = -samples[last].tangent.normalize();
+            [
+                (first, (0.9 * back[0]) as f32),
+                (end, (0.9 * back[1]) as f32),
+            ]
+        });
+        Some(Self { line, ends })
+    }
+
+    /// Radius of a ball that touches the curve at parameter `t` on the side
+    /// of the unit vector `normal` (the direction from the nearest point to
+    /// the query point) and contains none of it.
+    fn radius(&self, t: f32, max_t: f32, normal: Vec3) -> f32 {
+        let per_unit = (SAMPLES_PER_SEGMENT / TANGENT_BALL_STRIDE) as f32;
+        let index = ((t.max(0.0) * per_unit) as usize).min(self.line.len() - 1);
+        let mut rho = self.line[index];
+        if let Some(ends) = &self.ends {
+            for (end_t, (inward, back)) in [0.0, max_t].into_iter().zip(ends) {
+                let s = -normal.dot(*inward);
+                if (t - end_t).abs() <= END_BAND && s > 0.0 && rho > 0.0 {
+                    rho = 1.0 / (1.0 / rho + s / back);
+                }
+            }
+        }
+        rho
+    }
 }
 
 /// What a rising or falling guide needs besides its curve.
@@ -619,10 +797,9 @@ fn curve_reach(spline: &CubicSpline, half_line_ends: bool) -> f32 {
         // At an end of an open curve the tangent cone is the half-line into
         // the curve, not the whole tangent line: a point behind the end is
         // at its full distance from it (Federer's formula with Tan(A, x)).
-        // Level guides keep 2.1's estimate with the whole line (bit for bit
-        // the behaviour 2.1's tests pin down); it is optimistic only behind
-        // an end, where another stretch of the curve comes back within
-        // twice the reach.
+        // (With the whole line the estimate is too large when something
+        // lies behind an end, e.g. the two ends of a C facing each other:
+        // every caller that needs a reach passes `true`.)
         let end_direction = if open && a == 0 {
             Some(tangent)
         } else if open && (a * stride).min(last) == last {
@@ -822,8 +999,20 @@ impl GuideCurve {
             .segments()
             .iter()
             .all(|seg| seg.p.iter().all(|p| (p.z - z0).abs() <= 1.0e-6));
+        let mut tangent_balls = None;
         let (sloped, reach) = if level {
-            (None, curve_reach(&spline, false))
+            // The true reach: at an open end the tangent cone is the
+            // half-line into the curve, so whatever lies behind an end (the
+            // other end of a C) limits it. Where it does, i.e. where the
+            // estimate with whole tangent lines is larger, the reach says
+            // little about the rest of the wall and the cast also uses the
+            // tangent balls; everywhere else the reach is used alone, as
+            // before.
+            let reach = curve_reach(&spline, true);
+            if reach > 0.0 && reach < curve_reach(&spline, false) {
+                tangent_balls = TangentBalls::new(&spline, reach);
+            }
+            (None, reach)
         } else {
             // A rising or falling guide needs a plan view that a ball can
             // slide along at full speed: see `MIN_SLOPED_GUIDE_REACH`.
@@ -850,6 +1039,7 @@ impl GuideCurve {
             height: height_m,
             level_z: level.then_some(z0),
             reach,
+            tangent_balls,
             sloped,
         })
     }
@@ -1199,7 +1389,13 @@ impl GuideCurve {
     /// the speed (conservative advancement), and, within the wall's reach
     /// `ρ`, the gap's second time derivative is at least `-|v|² / (ρ - d)`,
     /// which lets a sphere running alongside the wall advance millimetres
-    /// instead of micrometres per step. For a rising or falling curve the
+    /// instead of micrometres per step. A level wall has a small reach when
+    /// its two open ends face each other across a narrow opening (a C);
+    /// there the "rolling ball" bound is used as well,
+    /// with the radius of the ball that touches the wall at the nearest
+    /// point without containing any of it: the radius of the C along the
+    /// wall, and down to half the opening only for a sphere that wraps
+    /// around an end. For a rising or falling curve the
     /// second bound is the exact "rolling ball" form of it: the wall stays
     /// outside the ball of radius `ρ` touching it at the nearest point, both
     /// beside the wall and above or below its edges (riding or skimming
@@ -1366,10 +1562,21 @@ impl GuideCurve {
                     }
                 }
                 None => {
-                    // Level curve (unchanged since 2.1): gap(τ) >= gap +
-                    // rate τ - ½ K τ², valid while the distance stays below
-                    // `cap` < reach.
+                    // Level curve: gap(τ) >= gap + rate τ - ½ K τ², valid
+                    // while the distance stays below `cap` < reach.
                     let distance = cp.distance;
+                    // Where the open ends limit the reach (they face each
+                    // other across a narrow opening) it says little about
+                    // the rest of the wall: there the wall also stays
+                    // outside the ball that touches it at the nearest point,
+                    // on the sphere's side, with the radius that holds at
+                    // that point (see `TangentBalls`, `rolling_ball_time`).
+                    if let Some(balls) = &self.tangent_balls {
+                        let rho = balls.radius(cp.t, self.spline.max_t(), normal);
+                        if distance < rho {
+                            dt = dt.max(rolling_ball_time(distance, rho, rate, drop, speed));
+                        }
+                    }
                     if distance < 0.9 * self.reach {
                         let cap = 0.5 * (distance + self.reach);
                         let k = speed * speed / (self.reach - cap);
@@ -1402,5 +1609,198 @@ impl GuideCurve {
             time = next;
         }
         (Some(GuideCast::Advance { time }), GUIDE_CAST_STEPS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arc(radius: f64, from: f64, to: f64, spacing: f64) -> Vec<Vec3> {
+        let n = (((to - from).abs() * radius / spacing).round() as usize).max(2);
+        (0..=n)
+            .map(|i| {
+                let a = from + (to - from) * i as f64 / n as f64;
+                Vec3::new((radius * a.cos()) as f32, (radius * a.sin()) as f32, 0.0)
+            })
+            .collect()
+    }
+
+    /// A ring of radius `r` with an opening of chord `opening` on +X.
+    fn c_ring(r: f64, opening: f64, spacing: f64) -> Vec<Vec3> {
+        let half = (opening / (2.0 * r)).asin();
+        arc(r, half, core::f64::consts::TAU - half, spacing)
+    }
+
+    /// A ring whose second end turns inward on a small arc: that end points
+    /// across the ring, with the first end behind and beside it.
+    fn hook(r: f64, opening: f64, spacing: f64) -> Vec<Vec3> {
+        let mut pts = c_ring(r, opening, spacing);
+        let end = pts[pts.len() - 1].as_dvec3();
+        let before = pts[pts.len() - 2].as_dvec3();
+        let dir = (end - before).normalize();
+        let left = DVec3::new(-dir.y, dir.x, 0.0);
+        let bend = 3.0 * spacing;
+        let centre = end + left * bend;
+        let quarter = (core::f64::consts::FRAC_PI_2 * bend / spacing).round() as usize;
+        for i in 1..=quarter {
+            let a = core::f64::consts::FRAC_PI_2 * i as f64 / quarter as f64;
+            let p = centre - left * bend * a.cos() + dir * bend * a.sin();
+            pts.push(p.as_vec3());
+        }
+        let tip = pts[pts.len() - 1].as_dvec3();
+        for i in 1..=3 {
+            pts.push((tip + left * spacing * i as f64).as_vec3());
+        }
+        pts
+    }
+
+    fn guide(points: &[Vec3]) -> GuideCurve {
+        GuideCurve::new(CubicSpline::interpolate(points).unwrap(), 0.05).unwrap()
+    }
+
+    /// Every ball `TangentBalls::radius` promises must miss the curve.
+    fn check_tangent_balls(g: &GuideCurve, label: &str) -> f32 {
+        let balls = g.tangent_balls.as_ref().expect(label);
+        let spline = &g.spline;
+        let max_t = spline.max_t();
+        let dense: Vec<DVec3> = (0..=spline.segment_count() * 40)
+            .map(|i| spline.point(i as f32 / 40.0).as_dvec3())
+            .collect();
+        let check = |t: f32, n: Vec3| -> f32 {
+            let rho = balls.radius(t, max_t, n);
+            assert!(rho > 0.0 && rho.is_finite(), "{label}: radius {rho} at {t}");
+            let a = spline.point(t).as_dvec3();
+            let centre = a + n.as_dvec3() * f64::from(rho);
+            for y in &dense {
+                let d = y.distance(centre);
+                assert!(
+                    d >= f64::from(rho) * (1.0 - 1.0e-4),
+                    "{label}: the ball of radius {rho} at t = {t}, normal {n:?}, holds a curve \
+                     point ({d} from its centre)"
+                );
+            }
+            rho
+        };
+        let steps = spline.segment_count() * 8;
+        let mut smallest_inside = f32::INFINITY;
+        for i in 0..=steps {
+            let t = max_t * i as f32 / steps as f32;
+            let tangent = spline.tangent(t).normalize();
+            let side = Vec3::new(-tangent.y, tangent.x, 0.0);
+            for sign in [1.0f32, -1.0] {
+                let rho = check(t, side * sign);
+                // Leaning up or down (above or below the wall's edge).
+                check(t, (side * sign + Vec3::Z * 0.7).normalize());
+                if t > 1.0 && t < max_t - 1.0 {
+                    smallest_inside = smallest_inside.min(rho);
+                }
+            }
+        }
+        // Around the ends.
+        for (t, inward) in [
+            (0.0, spline.tangent(0.0).normalize()),
+            (max_t, -spline.tangent(max_t).normalize()),
+        ] {
+            let side = Vec3::new(-inward.y, inward.x, 0.0);
+            let mut last = f32::INFINITY;
+            for k in 0..=16 {
+                let phi = core::f32::consts::FRAC_PI_2 * k as f32 / 16.0;
+                for sign in [1.0f32, -1.0] {
+                    let n = side * sign * libm::cosf(phi) - inward * libm::sinf(phi);
+                    let rho = check(t, n);
+                    check(t, (n + Vec3::Z * 0.5).normalize());
+                    if sign > 0.0 {
+                        // The further behind the end, the smaller.
+                        assert!(rho <= last * (1.0 + 1.0e-5), "{label}");
+                        last = rho;
+                    }
+                }
+            }
+        }
+        smallest_inside
+    }
+
+    #[test]
+    fn tangent_balls_of_c_rings_miss_the_wall() {
+        for (r, opening, spacing) in [
+            (0.04, 0.015, 0.01),
+            (0.04, 0.03, 0.01),
+            (0.06, 0.022, 0.01),
+            (0.1, 0.029, 0.01),
+            (0.1, 0.06, 0.01),
+            (0.1, 0.12, 0.01),
+            (0.5, 0.03, 0.05),
+            (0.5, 0.16, 0.05),
+        ] {
+            let g = guide(&c_ring(r, opening, spacing));
+            let label = format!("C ring r {r} opening {opening}");
+            // The reach is half the opening at most; along the wall the
+            // balls keep (most of) the ring's radius.
+            assert!(f64::from(g.reach) <= 0.5 * opening, "{label}");
+            let inside = check_tangent_balls(&g, &label);
+            assert!(f64::from(inside) > 0.6 * r, "{label}: {inside}");
+            // Straight behind an end: half the opening at most (less the
+            // margin, and less what the two terms of the bound give away).
+            let balls = g.tangent_balls.as_ref().unwrap();
+            let behind = balls.radius(0.0, g.spline.max_t(), -g.spline.tangent(0.0).normalize());
+            assert!(
+                f64::from(behind) <= 0.5 * opening && f64::from(behind) > 0.25 * opening,
+                "{label}: {behind}"
+            );
+        }
+    }
+
+    #[test]
+    fn tangent_balls_of_hooks_miss_the_wall() {
+        let mut checked = 0;
+        for (r, opening, spacing) in [
+            (0.06, 0.03, 0.005),
+            (0.1, 0.05, 0.008),
+            (0.08, 0.06, 0.006),
+            (0.12, 0.04, 0.008),
+        ] {
+            let g = guide(&hook(r, opening, spacing));
+            // (A hook whose reach is set by its bend has no table.)
+            if g.tangent_balls.is_some() {
+                check_tangent_balls(&g, &format!("hook r {r} opening {opening}"));
+                checked += 1;
+            }
+        }
+        assert!(checked >= 2, "{checked}");
+    }
+
+    #[test]
+    fn guides_without_facing_ends_keep_the_plain_reach_bound() {
+        // Nothing lies behind the ends of a straight wall or of an arc of up
+        // to a half turn, and a closed ring has no ends: no table.
+        let straight: Vec<Vec3> = (0..=20).map(|i| Vec3::X * 0.05 * i as f32).collect();
+        assert!(guide(&straight).tangent_balls.is_none());
+        for (radius, turn) in [(0.15, 0.5), (0.5, 0.25), (0.03, 0.4)] {
+            let g = guide(&arc(
+                radius,
+                0.0,
+                core::f64::consts::TAU * turn,
+                radius / 12.0,
+            ));
+            assert!(g.tangent_balls.is_none(), "arc r {radius} turn {turn}");
+            assert!(f64::from(g.reach) > 0.6 * radius && f64::from(g.reach) <= radius);
+        }
+        let mut ring = arc(0.1, 0.0, core::f64::consts::TAU * 35.0 / 36.0, 0.1 * 0.1745);
+        ring.push(ring[0]);
+        let closed = GuideCurve::new(CubicSpline::interpolate_closed(&ring).unwrap(), 0.05);
+        assert!(closed.unwrap().tangent_balls.is_none());
+        // A crossing has no reach and no table either.
+        let eight: Vec<Vec3> = (0..=40)
+            .map(|i| {
+                let a = core::f32::consts::TAU * i as f32 / 40.0 + 0.3;
+                Vec3::new(0.1 * libm::sinf(a), 0.05 * libm::sinf(2.0 * a), 0.0)
+            })
+            .collect();
+        let g = guide(&eight);
+        assert!(g.reach < 1.0e-4 && g.tangent_balls.is_none(), "{}", g.reach);
+        // So does a C whose opening is narrow for its point spacing.
+        let g = guide(&c_ring(0.5, 0.02, 0.05));
+        assert!(g.reach <= 0.01 && g.tangent_balls.is_none(), "{}", g.reach);
     }
 }
