@@ -835,3 +835,22 @@ The non-blocking notes N1–N4 are recorded in the review: zeroed tables on in-r
 - **Root cause.** wasmtime 50 initialises linear memory either from a copy-on-write image (Linux only: `memfd`) or, where no image can be made (macOS, Windows), by a compiled, fuel-metered start-up function that copies the module's consolidated data image (page-padded, here 64 KiB for data at offsets 1024 and 65531) at one fuel unit per byte. That copy ran inside the start budget (`fuel_per_callback`), so on macOS the spec driver needed ≈ 65 600 fuel just to load and failed with `BudgetExceeded` under 1…10 000 fuel, while Linux loaded it with 1. (The Windows job of the same run stopped earlier at a `pin_assets` failure and never reached `pin_script`; it would fail the same way.)
 - **Decision.** `Config::memory_init_cow(false)` on every host, so instantiation always runs the same metered start-up code; `prepare` computes exactly what that code charges (`Usage::init_fuel`: per active data segment 1 + its length; per active element segment 1 + one per item + one per item expression, except a leading run of function-index segments at constant offsets inside a funcref table's initial size, which wasmtime precomputes for free; one per passive item expression; plus 1 when any start-up code runs) and instantiation gets `fuel_per_callback + init_fuel`. Result: segments never decide whether a module loads, the start function gets exactly `fuel_per_callback` on every platform, and load success is a pure function of the module and the config (D9). Cost: data is copied (≤ 1 MiB module) instead of mapped, only at load/reload.
 - **Tests.** `wasm::tests::segment_initialisation_does_not_spend_the_start_budget` (exact start budget for data, element, passive, precomputed and mixed segment layouts) and `tests/wasm_backend.rs::segments_never_change_whether_a_module_loads` (the minimum loading budget is identical with and without segments, and 1 without a start function).
+
+## Human rulings — end of Wave 3 (human queue, section 1)
+The user approved all six Orchestrator recommendations:
+1. **2.1 B7.** Schedule a narrow fix task for B1 only: slow sliding in ball-wide lanes of end-limited level guides. B2 is accepted as a known limit: dense level coils build in up to about 0.3 s, load time only, and no worse than 329c843. The marginal new sloped rejection (a C ramp with 45 mm between its facing ends) is accepted.
+2. **3.2.** The Orchestrator's pass ruling is confirmed. Plunger launch strength is to be checked on real analog hardware before any estimator change.
+3. **Rules-script engine budgets confirmed:** 100 000 instructions and 2 MiB per callback for Lua. Subphase 2.5 must build backends with `LuaConfig::engine()` and `WasmConfig::engine()` (via `load_backend_with`) and spawn the sim thread with at least `MIN_HOST_STACK_BYTES` of stack. These go into the 2.5 brief. Revisit the numbers once real tables exist.
+4. **Loader guide rules (4.1), all warnings, never errors:**
+   - (a) Uneven through-point spacing is warned about and never resampled.
+   - (b) Through-point spacing at or above the smallest radius of curvature is warned about.
+   - (c) A table that combines the XL ball profile with sloped guides tighter than that ball's radius is warned about.
+   - (d) Lints for a hairline gap between a guide's facing open ends (under 1 mm, above the 1e-6 m snap) and for an open end that nearly touches its own wall (`GuideCurve::reach() == 0`). The message says "close the guide or open the gap".
+5. **Wasm compile-cost limits** are accepted as they are. Revisit them when tables are ported to Wasm in 6.3.
+6. **Security hardening sweep** before Wave 4 builds on the loader:
+   - **4.1 review round 2:** N-a (Zip64 count), N-b (archive-level ratio), N-c (PNG decode peak), N-d (glTF buffer budget by bytes actually read).
+   - **3.3 review round 2:** N10, which caps the resampler reservation.
+   - **3.3 review N3:** an aggregate decoded-audio budget per bundle, which must charge decoded frames. pin_audio provides the budget API; whoever loads a bundle's sounds (2.5/6.0) must use it.
+   - Non-security review notes are folded into the briefs of the subphases that next touch those crates.
+
+**Fix-task assignment.** The B1 task goes to Opus, which wrote the code it changes (the other-model attempt), and Fable reviews it. The original 2.1 implementer, Fable, already used its attempts on B7. The 4.1 and 3.3 tasks go to their owners (Opus), and Fable reviews both.
