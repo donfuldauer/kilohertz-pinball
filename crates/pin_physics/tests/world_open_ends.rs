@@ -121,10 +121,31 @@ fn ring_cases() -> Vec<(f32, f32)> {
     cases
 }
 
+/// C rings whose opening is narrower than a quarter of the through-point
+/// spacing (radius, opening, spacing): the reach is shorter than the
+/// coarsest tangent-ball table interval (2.1 fix task, review round 1).
+const NARROW: [(f32, f32, f32); 6] = [
+    (0.3, 0.02, 0.05),
+    (0.5, 0.015, 0.05),
+    (0.5, 0.02, 0.05),
+    (0.5, 0.024, 0.05),
+    (0.1, 0.009, 0.02),
+    (0.5, 0.005, 0.05),
+];
+
+/// (radius, opening, spacing) of every ring of the sweeps.
+fn all_cases() -> Vec<(f32, f32, f32)> {
+    ring_cases()
+        .into_iter()
+        .map(|(r, opening)| (r, opening, spacing_for(r)))
+        .chain(NARROW)
+        .collect()
+}
+
 #[test]
 fn reach_estimate_never_exceeds_the_true_reach_of_a_c_ring() {
-    for (r, opening) in ring_cases() {
-        let g = c_ring(r, opening, spacing_for(r));
+    for (r, opening, spacing) in all_cases() {
+        let g = c_ring(r, opening, spacing);
         let estimate = f64::from(g.reach());
         let truth = brute_force_reach(g.spline(), 24);
         // The two ends face each other: the reach is at most half the
@@ -288,8 +309,8 @@ fn casts_through_c_ring_openings_never_sweep_into_the_wall() {
     let mut casts = 0u32;
     let mut contacts = 0u32;
     let mut deepest = 0.0f32;
-    for (r, opening) in ring_cases() {
-        let g = c_ring(r, opening, spacing_for(r));
+    for (r, opening, spacing) in all_cases() {
+        let g = c_ring(r, opening, spacing);
         let centre = mouth(r, opening);
         let ends = [g.spline().point(0.0), g.spline().point(g.spline().max_t())];
         for &ball in &BALL_RADII {
@@ -403,6 +424,12 @@ fn casts_anywhere_around_rings_and_hooks_never_sweep_into_the_wall() {
         (c_ring(0.1, 0.029, 0.01), 0.1),
         (c_ring(0.1, 0.06, 0.01), 0.1),
         (c_ring(0.5, 0.03, 0.05), 0.5),
+        (c_ring(0.3, 0.02, 0.05), 0.3),
+        (c_ring(0.5, 0.015, 0.05), 0.5),
+        (c_ring(0.5, 0.02, 0.05), 0.5),
+        (c_ring(0.5, 0.024, 0.05), 0.5),
+        (c_ring(0.1, 0.009, 0.02), 0.1),
+        (c_ring(0.5, 0.005, 0.05), 0.5),
         (hook(0.06, 0.03, 0.005), 0.06),
         (hook(0.1, 0.05, 0.008), 0.1),
         (hook(0.12, 0.04, 0.008), 0.12),
@@ -547,8 +574,8 @@ fn test_integrator_through_c_ring_openings_stays_out_of_the_wall() {
     let mut rng = Pcg(0x00b7_0001);
     let mut runs = 0u32;
     let mut contacts = 0u32;
-    for (r, opening) in ring_cases() {
-        let g = c_ring(r, opening, spacing_for(r));
+    for (r, opening, spacing) in all_cases() {
+        let g = c_ring(r, opening, spacing);
         let centre = mouth(r, opening);
         let ends = [g.spline().point(0.0), g.spline().point(g.spline().max_t())];
         for &ball in &BALL_RADII {
@@ -616,8 +643,14 @@ fn sliding_along_a_c_ring_costs_what_it_costs_without_the_opening() {
     // balls of the ring itself: a few closest-point evaluations per 1 ms
     // cast, not one per 10 µm of travel.
     let ball = 0.0135f32;
-    for (r, opening) in [(0.04f32, 0.03f32), (0.1, 0.029), (0.1, 0.06), (0.5, 0.03)] {
-        let g = c_ring(r, opening, spacing_for(r));
+    let wide = [
+        (0.04f32, 0.03f32, 0.01f32),
+        (0.1, 0.029, 0.01),
+        (0.1, 0.06, 0.01),
+        (0.5, 0.03, 0.05),
+    ];
+    for (r, opening, spacing) in wide.into_iter().chain(NARROW) {
+        let g = c_ring(r, opening, spacing);
         assert!(g.reach() <= 0.5 * opening);
         let mut steps = 0u32;
         let mut casts = 0u32;
@@ -754,6 +787,67 @@ fn ball_solver_at_c_ring_openings_resolves_contacts_on_time() {
     );
 }
 
+#[test]
+fn ball_solver_slides_along_narrow_c_rings_at_full_speed() {
+    // Far from the mouth a ball sliding along the inside of a C moves the
+    // distance its speed says, every tick, however narrow the opening
+    // (before the tables adapted to the reach it crawled at about 15 %).
+    let world = util::empty_world();
+    let ball = util::radius(util::STEEL);
+    let wide = [(0.04f32, 0.03f32, 0.01f32), (0.5, 0.03, 0.05)];
+    for (r, opening, spacing) in wide.into_iter().chain(NARROW) {
+        let guides = [c_ring(r, opening, spacing)];
+        let geo = Geometry {
+            world: &world,
+            guides: &guides,
+            wireforms: &[],
+        };
+        for speed in [1.0f32, 5.0, 8.0] {
+            let a = 0.9f32;
+            let radial = v(libm::cosf(a), libm::sinf(a), 0.0);
+            let near = radial * (r - ball - 1.0e-4) + Vec3::Z * 0.5 * HEIGHT;
+            let cp = guides[0].closest_point(near, None);
+            let start = cp.point + (near - cp.point) / cp.distance * (ball + 1.0e-4);
+            let mut solver = util::solver_no_gravity();
+            let handle = solver
+                .add_ball(util::ball_at(
+                    util::STEEL,
+                    start,
+                    v(-radial.y, radial.x, 0.0) * speed,
+                ))
+                .unwrap();
+            let mut events = BallEvents::new();
+            let (mut ticks, mut path, mut expected) = (0u32, 0.0f32, 0.0f32);
+            for tick in 0..300 {
+                let before = *solver.ball(handle).unwrap();
+                solver.step(&geo, util::DT, &mut events);
+                let after = solver.ball(handle).unwrap();
+                // Stop before the mouth (it is on +X).
+                let angle = libm::atan2f(after.position.y, after.position.x);
+                if angle.abs() < 0.6 {
+                    break;
+                }
+                let moved = after.position.distance(before.position);
+                let slower = before.velocity.length().min(after.velocity.length());
+                assert!(
+                    moved >= 0.95 * slower * util::DT,
+                    "ring r {r} opening {opening} spacing {spacing}, {speed} m/s, tick {tick}: \
+                     moved {moved} m at {slower} m/s"
+                );
+                let gap = guides[0].closest_point(after.position, None).distance - ball;
+                assert!(gap >= -1.0e-4, "{} mm deep", -gap * 1.0e3);
+                ticks += 1;
+                path += moved;
+                expected += slower * util::DT;
+            }
+            assert!(
+                ticks >= 20 && path >= 0.95 * expected,
+                "ring r {r} opening {opening}: {path} m of {expected} m in {ticks} ticks"
+            );
+        }
+    }
+}
+
 /// Cost report (not a pass/fail test; run with `--release --ignored
 /// --nocapture`): closest-point evaluations and time per level-guide cast.
 #[test]
@@ -774,6 +868,13 @@ fn level_guide_cast_cost_report() {
         ("C ring r100/29mm", c_ring(0.1, 0.029, 0.01), 0.1),
         ("C ring r100/60mm", c_ring(0.1, 0.06, 0.01), 0.1),
         ("C ring r500/160mm", c_ring(0.5, 0.16, 0.05), 0.5),
+        ("C ring r500/30mm s50", c_ring(0.5, 0.03, 0.05), 0.5),
+        ("C ring r300/20mm s50", c_ring(0.3, 0.02, 0.05), 0.3),
+        ("C ring r500/15mm s50", c_ring(0.5, 0.015, 0.05), 0.5),
+        ("C ring r500/20mm s50", c_ring(0.5, 0.02, 0.05), 0.5),
+        ("C ring r500/24mm s50", c_ring(0.5, 0.024, 0.05), 0.5),
+        ("C ring r100/9mm s20", c_ring(0.1, 0.009, 0.02), 0.1),
+        ("C ring r500/5mm s50", c_ring(0.5, 0.005, 0.05), 0.5),
     ];
     let mut shapes: Vec<(&str, &GuideCurve, f32)> = vec![("level arc r150 180°", &arc, 0.15)];
     for (name, g, r) in &rings {
@@ -834,6 +935,7 @@ fn level_guide_cast_cost_report() {
         ("C ring r40/30mm", &rings[0].1, 0.04f32, 0.03f32),
         ("C ring r100/29mm", &rings[1].1, 0.1, 0.029),
         ("C ring r100/60mm", &rings[2].1, 0.1, 0.06),
+        ("C ring r500/30mm s50", &rings[4].1, 0.5, 0.03),
     ] {
         let centre = mouth(r, opening) + Vec3::Z * 0.025;
         let mut casts = Vec::new();

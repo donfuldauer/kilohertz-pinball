@@ -397,8 +397,8 @@ pub enum GuideCast {
 /// and is collided with by plain conservative advancement, which is slow for
 /// a ball sliding along it. A level curve whose two open ends face each
 /// other across an opening (a C) has a reach of half that opening; a ball
-/// still slides along the rest of the wall at full speed, provided the
-/// through-points are closer together than about twice the opening.
+/// still slides along the rest of the wall at full speed, unless the opening
+/// is narrower than about 1/32 of the through-point spacing.
 ///
 /// A curve that rises or falls is accepted only if a ball can slide along
 /// the wall, and ride or skim its top and bottom edges, at full speed: the
@@ -482,53 +482,108 @@ pub struct GuideCurve {
 /// is zero), so `w · n ≤ w_h · n_h`, and `|w| ≥ |w_h|`.
 #[derive(Debug, Clone)]
 struct TangentBalls {
-    /// Per stride interval of the samples ([`TANGENT_BALL_STRIDE`]): the
-    /// smallest `ρ_line` of its two samples and their two neighbours, with
-    /// the 0.9 sampling margin.
+    /// Per table interval (`per_segment` of them in every segment): the
+    /// smallest `ρ_line` of its two table points and their two neighbours,
+    /// with the 0.9 sampling margin.
     line: Vec<f32>,
+    /// Table intervals per segment: 4, or more (up to
+    /// [`TANGENT_BALL_FINEST`]) where the reach is shorter than a quarter
+    /// of a segment.
+    per_segment: usize,
     /// Open curves: (unit tangent into the curve, `ρ_back` with the 0.9
     /// margin) at the first and at the last point.
     ends: Option<[(Vec3, f32); 2]>,
 }
 
-/// Sample stride of the tangent-ball table (a quarter of a segment).
-const TANGENT_BALL_STRIDE: usize = 4;
+/// Table intervals per segment of the tangent-ball table, coarsest and
+/// finest.
+const TANGENT_BALL_COARSEST: usize = 4;
+const TANGENT_BALL_FINEST: usize = 64;
 
-/// Parameter distance from an end of an open curve within which the nearest
-/// point counts as the end itself ([`TangentBalls`]; applying the end term
-/// to an interior point is merely conservative).
+/// Distance from an end of an open curve, in units of the curve parameter
+/// (1 per segment, so a thousandth of the last segment, not a length),
+/// within which the nearest point counts as the end itself
+/// ([`TangentBalls`]). Any width is safe: the end term only ever lowers the
+/// radius, so applying it to an interior point is merely conservative, and
+/// a nearest point that is the end has the parameter of the end exactly
+/// (the closest-point search clamps to it). The band is there for rounding
+/// of the parameter, and kept narrow so that a sphere sliding past the end
+/// region is not slowed down.
 const END_BAND: f32 = 1.0e-3;
 
 impl TangentBalls {
     /// The table for a curve of reach `reach` (no cusp, no crossing).
     ///
-    /// `None` if the reach is shorter than a stride interval of the curve:
-    /// the table is sampled, and its 0.9 margin covers what happens between
-    /// two samples only if nothing comes closer to the curve than about two
-    /// intervals (a gap `D` between a wall and an end pointing at it is seen
-    /// from the nearest sample as `D/2 · (1 + (l/2D)²)`, `l` the interval).
-    /// Such a curve keeps the plain reach bound.
+    /// The table is sampled, and its 0.9 margin covers what happens between
+    /// two table points only if nothing comes closer to the curve than
+    /// about two table intervals (a gap `D` between a wall and an end
+    /// pointing at it is seen from the nearest point as
+    /// `D/2 · (1 + (l/2D)²)`, `l` the interval). So the table gets as many
+    /// intervals per segment (4, 8, … 64) as it takes for the longest one
+    /// to be no longer than the reach, and the curve points it is compared
+    /// with are at least as dense.
+    ///
+    /// `None` only if even 1/64 of a segment is longer than the reach: the
+    /// two ends of the curve face each other across less than about 1/32 of
+    /// the through-point spacing (1.6 mm at 50 mm spacing). Such a curve
+    /// keeps the plain reach bound: safe, but a sphere wider than the reach
+    /// slides slowly along it.
     fn new(spline: &CubicSpline, reach: f32) -> Option<Self> {
         const MAX: f64 = 1.0e3;
         let curvature = curvature_bound(spline)?;
         let samples = spline.samples();
-        let last = samples.len() - 1;
-        let stride = TANGENT_BALL_STRIDE;
+        let segments = spline.segment_count();
+        // Curve points (point, unit tangent), `dense` per segment.
+        let points = |dense: usize| -> Vec<(DVec3, DVec3)> {
+            if dense <= SAMPLES_PER_SEGMENT {
+                samples
+                    .iter()
+                    .step_by(SAMPLES_PER_SEGMENT / dense)
+                    .map(|sample| {
+                        (
+                            sample.point.as_dvec3(),
+                            sample.tangent.as_dvec3().normalize(),
+                        )
+                    })
+                    .collect()
+            } else {
+                (0..=segments * dense)
+                    .map(|j| {
+                        let i = (j / dense).min(segments - 1);
+                        let (c, d1, _) = spline.eval(i, (j - i * dense) as f32 / dense as f32);
+                        (c.as_dvec3(), d1.as_dvec3().normalize())
+                    })
+                    .collect()
+            }
+        };
+        let mut per_segment = TANGENT_BALL_COARSEST;
+        let (pts, stride) = loop {
+            // The curve points are twice as dense as the coarsest table,
+            // and as dense as any finer one.
+            let dense = per_segment.max(2 * TANGENT_BALL_COARSEST);
+            let stride = dense / per_segment;
+            let pts = points(dense);
+            let longest = pts
+                .chunks(stride)
+                .zip(pts[1..].chunks(stride))
+                .map(|(from, to)| {
+                    from.iter()
+                        .zip(to)
+                        .map(|(a, b)| a.0.distance(b.0))
+                        .sum::<f64>()
+                })
+                .fold(0.0f64, f64::max);
+            if f64::from(reach) >= longest {
+                break (pts, stride);
+            }
+            if per_segment >= TANGENT_BALL_FINEST {
+                return None;
+            }
+            per_segment *= 2;
+        };
+        let last = pts.len() - 1;
         let count = last / stride + 1;
         if count < 2 {
-            return None;
-        }
-        let longest = samples
-            .chunks(stride)
-            .zip(samples[1..].chunks(stride))
-            .map(|(from, to)| {
-                from.iter()
-                    .zip(to)
-                    .map(|(a, b)| a.point.distance(b.point))
-                    .sum::<f32>()
-            })
-            .fold(0.0f32, f32::max);
-        if reach < longest {
             return None;
         }
         let cap = if curvature * MAX > 1.0 {
@@ -541,8 +596,7 @@ impl TangentBalls {
         let mut back = [MAX; 2];
         for a in 0..count {
             let index = (a * stride).min(last);
-            let x = samples[index].point.as_dvec3();
-            let tangent = samples[index].tangent.as_dvec3().normalize();
+            let (x, tangent) = pts[index];
             let end = if open && index == 0 {
                 Some((0, tangent))
             } else if open && index == last {
@@ -551,8 +605,8 @@ impl TangentBalls {
                 None
             };
             let mut rho = cap;
-            for other in samples.iter().step_by(2) {
-                let w = other.point.as_dvec3() - x;
+            for &(y, _) in &pts {
+                let w = y - x;
                 let w2 = w.length_squared();
                 if w2 < 1.0e-16 {
                     continue; // the point itself, or the seam of a closed curve
@@ -589,21 +643,23 @@ impl TangentBalls {
             })
             .collect();
         let ends = open.then(|| {
-            let first = samples[0].tangent.normalize();
-            let end = -samples[last].tangent.normalize();
             [
-                (first, (0.9 * back[0]) as f32),
-                (end, (0.9 * back[1]) as f32),
+                (pts[0].1.as_vec3(), (0.9 * back[0]) as f32),
+                ((-pts[last].1).as_vec3(), (0.9 * back[1]) as f32),
             ]
         });
-        Some(Self { line, ends })
+        Some(Self {
+            line,
+            per_segment,
+            ends,
+        })
     }
 
     /// Radius of a ball that touches the curve at parameter `t` on the side
     /// of the unit vector `normal` (the direction from the nearest point to
     /// the query point) and contains none of it.
     fn radius(&self, t: f32, max_t: f32, normal: Vec3) -> f32 {
-        let per_unit = (SAMPLES_PER_SEGMENT / TANGENT_BALL_STRIDE) as f32;
+        let per_unit = self.per_segment as f32;
         let index = ((t.max(0.0) * per_unit) as usize).min(self.line.len() - 1);
         let mut rho = self.line[index];
         if let Some(ends) = &self.ends {
@@ -1732,6 +1788,15 @@ mod tests {
             (0.1, 0.12, 0.01),
             (0.5, 0.03, 0.05),
             (0.5, 0.16, 0.05),
+            // Openings narrower than a quarter segment: finer tables.
+            (0.3, 0.02, 0.05),
+            (0.5, 0.015, 0.05),
+            (0.5, 0.02, 0.05),
+            (0.5, 0.024, 0.05),
+            (0.1, 0.009, 0.02),
+            (0.5, 0.005, 0.05),
+            (0.5, 0.003, 0.05),
+            (0.1, 0.005, 0.01),
         ] {
             let g = guide(&c_ring(r, opening, spacing));
             let label = format!("C ring r {r} opening {opening}");
@@ -1799,8 +1864,13 @@ mod tests {
             .collect();
         let g = guide(&eight);
         assert!(g.reach < 1.0e-4 && g.tangent_balls.is_none(), "{}", g.reach);
-        // So does a C whose opening is narrow for its point spacing.
-        let g = guide(&c_ring(0.5, 0.02, 0.05));
-        assert!(g.reach <= 0.01 && g.tangent_balls.is_none(), "{}", g.reach);
+        // So does a C whose opening is less than about 1/32 of its point
+        // spacing: not even the finest table resolves it.
+        let g = guide(&c_ring(0.5, 0.001, 0.05));
+        assert!(
+            g.reach <= 0.0005 && g.tangent_balls.is_none(),
+            "{}",
+            g.reach
+        );
     }
 }
