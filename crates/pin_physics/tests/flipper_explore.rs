@@ -74,7 +74,7 @@ fn rebound(flip_at: Option<i64>, release_at: Option<i64>, held: bool, fraction: 
 #[test]
 #[ignore]
 fn explore_sweep() {
-    for fraction in [0.5f32, 0.7] {
+    for fraction in [0.3f32, 0.5, 0.7, 0.85] {
         let (held, hs, ht) = rebound(None, None, true, fraction, false);
         println!("fraction {fraction}: held: max vy {held:.3} speed60 {hs:.3} hit at {ht}");
         let (dead, ds, dt_) = rebound(None, None, false, fraction, false);

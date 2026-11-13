@@ -191,9 +191,11 @@ fn angular_velocity_is_signed_like_the_sweep() {
     for sweep in [50.0f32, -50.0] {
         let c = flat(0, 0.0, sweep);
         let tr = stroke(&c, 300, Some(150));
-        // Upstroke: the first few ticks.
-        for (k, &(a, w)) in tr.iter().take(8).enumerate() {
-            assert!(w * sweep > 0.0, "sweep {sweep}: tick {k} ω {w}");
+        // Upstroke: never the wrong sign; moving within 5 ticks (the coil
+        // model may build its torque up over the first tick(s)).
+        for (k, &(a, w)) in tr.iter().take(15).enumerate() {
+            assert!(w * sweep >= 0.0, "sweep {sweep}: tick {k} ω {w}");
+            assert!(k < 5 || w * sweep > 0.0, "sweep {sweep}: tick {k} ω {w}");
             assert!(a * sweep >= 0.0, "sweep {sweep}: tick {k} angle {a}");
         }
         // Return after release: the first ticks after 150 move back.

@@ -596,3 +596,102 @@ fn ten_runs_are_bit_identical() {
         assert_eq!(run_scenario(0, &profiles(), true), first_box);
     }
 }
+
+// ------------------------------------------------- Review polish (N1, N3)
+
+/// Overlapping magnets: an idle one (τ 20 ms, never powered) and a holder
+/// (τ 200 ms, P = 1 for 2 s, then off). After switch-off M decays with the
+/// holder's τ whatever the magnets' index order.
+#[test]
+fn overlapping_idle_magnet_does_not_take_over_the_decay_tau() {
+    let run = |idle_first: bool| {
+        let world = floor_world();
+        let geo = Geometry::new(&world);
+        let mut s = solver();
+        let pole = v(0.0, 0.0, -0.005);
+        let idle_at = v(0.03, 0.0, -0.005);
+        let (idle, holder) = if idle_first {
+            let i = s.add_magnet(magnet_at(idle_at));
+            (i, s.add_magnet(magnet_at(pole)))
+        } else {
+            let hd = s.add_magnet(magnet_at(pole));
+            (s.add_magnet(magnet_at(idle_at)), hd)
+        };
+        s.set_magnet_remanence_tau(idle, 0.020);
+        s.set_magnet_remanence_tau(holder, 0.200);
+        s.set_magnet_power(holder, 1.0);
+        let rem = register_all(&mut s);
+        let h = s
+            .add_ball(ball_at(LOW_REM, v(0.0, 0.0, radius(LOW_REM)), Vec3::ZERO))
+            .unwrap();
+        let mut ev = BallEvents::new();
+        for _ in 0..2000 {
+            s.step(&geo, DT, &mut ev);
+        }
+        s.set_magnet_power(holder, 0.0);
+        for _ in 0..100 {
+            s.step(&geo, DT, &mut ev);
+        }
+        let b = *s.ball(h).unwrap();
+        assert!(s.magnets()[idle.index()].in_range(b.position, b.layer));
+        magnetisation(&rem, h)
+    };
+    let a = run(true);
+    let b = run(false);
+    assert_eq!(a.to_bits(), b.to_bits(), "{a} vs {b}");
+    assert!((a - (-0.5f32).exp()).abs() < 2e-3, "{a}");
+}
+
+/// Two clones of one `Remanence` registered: only the first to be called
+/// advances M; the second is inert (no double decay, no extra force).
+#[test]
+fn a_second_registered_clone_is_inert() {
+    let run = |twice: bool| {
+        let world = floor_world();
+        let geo = Geometry::new(&world);
+        let mut s = solver();
+        let id = s.add_magnet(magnet_at(v(0.0, 0.0, -0.005)));
+        s.set_magnet_power(id, 1.0);
+        let rem = Remanence::new();
+        s.add_external_force(Box::new(rem.clone()));
+        if twice {
+            s.add_external_force(Box::new(rem.clone()));
+        }
+        let h = s
+            .add_ball(ball_at(STEEL, v(0.0, 0.0, radius(STEEL)), Vec3::ZERO))
+            .unwrap();
+        let mut ev = BallEvents::new();
+        let mut trace = Vec::new();
+        for _ in 0..60 {
+            s.step(&geo, DT, &mut ev);
+            trace.push((magnetisation(&rem, h).to_bits(), bits(s.ball(h).unwrap())));
+        }
+        trace
+    };
+    let once = run(false);
+    let twice = run(true);
+    assert_eq!(once, twice);
+    let m60 = f32::from_bits(once.last().unwrap().0);
+    assert!((m60 - (1.0 - (-1.0f32).exp())).abs() < 2e-3, "{m60}");
+    // A clone registered with a second solver is inert too.
+    let rem = Remanence::new();
+    let mut s1 = solver();
+    let mut s2 = solver();
+    s1.add_external_force(Box::new(rem.clone()));
+    s2.add_external_force(Box::new(rem.clone()));
+    let world = floor_world();
+    let geo = Geometry::new(&world);
+    let id = s2.add_magnet(magnet_at(v(0.0, 0.0, -0.005)));
+    s2.set_magnet_power(id, 1.0);
+    s1.add_ball(ball_at(STEEL, v(1.0, 0.0, radius(STEEL)), Vec3::ZERO))
+        .unwrap();
+    let h2 = s2
+        .add_ball(ball_at(STEEL, v(0.0, 0.0, radius(STEEL)), Vec3::ZERO))
+        .unwrap();
+    let mut ev = BallEvents::new();
+    for _ in 0..50 {
+        s1.step(&geo, DT, &mut ev);
+        s2.step(&geo, DT, &mut ev);
+    }
+    assert_eq!(magnetisation(&rem, h2), 0.0);
+}
