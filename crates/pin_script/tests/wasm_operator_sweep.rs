@@ -461,7 +461,10 @@ fn enabled_features() -> WasmFeatures {
 
 /// Every operator of an enabled proposal with a unit that validates, and
 /// the operators that have none (with the reason).
-fn units() -> (Vec<(OpInfo, String)>, Vec<(OpInfo, &'static str)>) {
+/// Operators with their unit, and operators without one (with the reason).
+type Units = (Vec<(OpInfo, String)>, Vec<(OpInfo, &'static str)>);
+
+fn units() -> Units {
     let (mut ok, mut none) = (Vec::new(), Vec::new());
     for op in all_ops() {
         if !ENABLED.contains(&op.proposal) {
