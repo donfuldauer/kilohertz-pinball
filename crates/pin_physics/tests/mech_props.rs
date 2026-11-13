@@ -146,23 +146,23 @@ proptest! {
     }
 
     #[test]
-    fn spinner_total_rotation_and_pulses(w0 in 1.0f32..200.0, d in 0.5f32..3.0, sign in any::<bool>()) {
+    fn spinner_settles_hanging_and_matches_the_reference(w0 in 1.0f32..200.0, d in 0.5f32..3.0, sign in any::<bool>()) {
         let w0 = if sign { w0 } else { -w0 };
         let mut spec = MechSpec::new(MechKind::Spinner, Vec3::ZERO);
         spec.params.damping_per_s = Some(d);
         let mut set = MechSet::new(&[spec], &PhysicsDefaults::builtin()).unwrap();
         set.set_spinner_speed(0, w0);
-        for _ in 0..100_000 {
+        let ticks = 25_000;
+        for _ in 0..ticks {
             set.begin_tick(DT);
             set.end_tick(DT);
-            if set.spinner_state(0).unwrap().1 == 0.0 { break; }
         }
-        let (angle, w) = set.spinner_state(0).unwrap();
-        prop_assert_eq!(w, 0.0);
-        let total = w0 / d;
-        prop_assert!((angle - total).abs() <= 2e-3 * total.abs() + 1e-3, "{} vs {}", angle, total);
-        let floor = (total.abs() / core::f32::consts::PI).floor() as i64;
-        prop_assert!((set.spinner_pulses(0) as i64 - floor).abs() <= 1);
+        let (angle, _) = set.spinner_state(0).unwrap();
+        let turns = (angle / core::f32::consts::TAU).round();
+        prop_assert!((angle - turns * core::f32::consts::TAU).abs() < 0.05, "hanging: {}", angle);
+        prop_assert!(angle.abs() <= (w0 / d).abs() + 0.1);
+        let (rp, _) = spinner_reference(f64::from(w0), f64::from(d), 0.028, 9.81, ticks as f64 * 1e-3);
+        prop_assert!((set.spinner_pulses(0) as i64 - rp as i64).abs() <= 2, "{} vs {}", set.spinner_pulses(0), rp);
     }
 
     #[test]

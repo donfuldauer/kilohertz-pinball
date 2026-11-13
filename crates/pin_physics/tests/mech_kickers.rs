@@ -104,31 +104,42 @@ fn seam_obligations_on_the_stops() {
     }
     assert_eq!(t.mechs.velocity_at(0, 0.0, p), Vec3::ZERO);
     t.mechs.end_tick(DT);
-    // Driven: free along the axis, nothing across it.
+    // Driven: leaving the rest stop (moving away from it), so not engaged:
+    // free along the axis in both directions, nothing across it
+    // (obligation 1: engaged = at the stop and not moving away).
     t.mechs.hold_coil(COIL, true);
     t.mechs.begin_tick(DT);
-    // Still on the rest stop at t = 0: a push into it is taken by the stop.
-    assert_eq!(t.mechs.inverse_mass_at(0, 0.0, p, -Vec3::Y), 0.0);
-    let w = t.mechs.inverse_mass_at(0, 0.0, p, Vec3::Y);
-    assert!((w - 1.0 / 0.06).abs() < 1e-3);
-    let w = t.mechs.inverse_mass_at(0, 2e-4, p, -Vec3::Y);
-    assert!(
-        (w - 1.0 / 0.06).abs() < 1e-3,
-        "off the stop: free both ways"
-    );
-    assert_eq!(t.mechs.inverse_mass_at(0, 0.0, p, Vec3::X), 0.0);
     assert!(t.mechs.velocity_at(0, 0.0, p).y > 0.0);
-    // A big push back while still on the rest stop: velocity 0 at that
-    // instant (obligation 2).
+    for d in [Vec3::Y, -Vec3::Y] {
+        let w = t.mechs.inverse_mass_at(0, 0.0, p, d);
+        assert!((w - 1.0 / 0.06).abs() < 1e-3, "free at kick-off: {w}");
+    }
+    assert!(t.mechs.inverse_mass_at(0, 0.0, p, Vec3::X) < 1e-9);
+    // The reported inverse mass is the real response: a small push back
+    // changes the velocity by J/m.
+    let v0 = t.mechs.velocity_at(0, 0.0, p).y;
+    t.mechs.apply_impulse(0, 0.0, p, -Vec3::Y * 0.01);
+    let v1 = t.mechs.velocity_at(0, 0.0, p).y;
+    assert!((v0 - v1 - 0.01 / 0.06).abs() < 1e-4, "{v0} -> {v1}");
+    // A big push back while still on the rest stop: the stop takes it, the
+    // velocity is 0 at that instant (obligation 2) and the stop is engaged.
     t.mechs.apply_impulse(0, 0.0, p, -Vec3::Y * 10.0);
     assert_eq!(t.mechs.velocity_at(0, 0.0, p), Vec3::ZERO);
     assert_eq!(t.mechs.velocity_at(0, 5e-4, p), Vec3::ZERO);
     assert_eq!(t.mechs.inverse_mass_at(0, 5e-4, p, -Vec3::Y), 0.0);
     assert!(t.mechs.inverse_mass_at(0, 5e-4, p, Vec3::Y) > 0.0);
-    // Off the stop, a push back re-predicts to reach the stop by dt at most.
-    let (x0, _) = t.mechs.slider_state(0).unwrap();
-    assert_eq!(x0, 0.0);
     t.mechs.end_tick(DT);
+    assert_eq!(t.mechs.slider_state(0).unwrap(), (0.0, 0.0));
+    // Off the stop, a push back re-predicts to reach the stop by dt at most
+    // (obligation 3 after an impulse): the slider ends exactly on the stop.
+    t.mechs.begin_tick(DT);
+    t.mechs.apply_impulse(0, 5e-4, p, -Vec3::Y * 10.0);
+    let back = t.mechs.velocity_at(0, 5e-4, p).y;
+    assert!(back < 0.0, "moving back toward the stop: {back}");
+    let x_mid = -back * 5e-4;
+    assert!(x_mid > 0.0 && x_mid < 0.002, "{x_mid}");
+    t.mechs.end_tick(DT);
+    assert_eq!(t.mechs.slider_state(0).unwrap(), (0.0, 0.0));
     // Driven to the end stop: engaged, no push into it, free away from it.
     for _ in 0..100 {
         t.mechs.begin_tick(DT);
@@ -151,4 +162,58 @@ fn seam_obligations_on_the_stops() {
     );
     assert!(t.mechs.max_surface_speed(0) >= s.abs());
     t.mechs.end_tick(DT);
+}
+
+/// Regression (2.4 review B1): at kick-off the slider leaves its rest stop;
+/// it must not act as an infinite mass. Over the first tick the ball can get
+/// at most the impulse the drive supplies (`F·dt`, the kicker starting at
+/// rest), and over the whole kick at most the drive's work as energy.
+#[test]
+fn kick_off_momentum_and_energy_are_bounded_by_the_drive() {
+    let d = pin_core::PhysicsDefaults::builtin();
+    let mb = profiles()[STEEL.index()].mass_kg;
+    for (kind, k) in [
+        (MechKind::Sling, d.mechs.sling),
+        (MechKind::Kickback, d.mechs.kickback),
+    ] {
+        let mut t = Table::new(&[kicker(kind)], world(&[]), 0.0);
+        let h = t.ball(0.0, face(kind) + radius(STEEL) + 2e-5, Vec3::ZERO);
+        t.tick();
+        t.mechs.hold_coil(COIL, true);
+        t.tick();
+        let p1 = mb * t.get(h).velocity.y;
+        println!("{kind:?}: first-tick ball impulse {p1:.4} N·s, drive F·dt {:.4}", k.force * DT);
+        assert!(p1 <= k.force * DT * 1.02 + 1e-5, "{p1}");
+        let mut ke = 0.0f32;
+        for _ in 0..60 {
+            t.tick();
+            ke = ke.max(0.5 * mb * t.get(h).velocity.length_squared());
+        }
+        println!("{kind:?}: ball energy {ke:.4} J, drive work {:.4} J", k.force * k.stroke);
+        assert!(ke <= k.force * k.stroke * 1.02, "{ke}");
+    }
+    // Plunger released from full pull with the ball on the tip.
+    let p = d.mechs.plunger;
+    let spec = MechSpec::new(MechKind::Plunger, v(0.0, -0.3, 0.0));
+    let mut t = Table::new(&[spec], world(&[]), 0.0);
+    t.mechs.set_plunger(1.0);
+    for _ in 0..60 {
+        t.tick();
+    }
+    let h = t.ball(0.0, -0.3 - p.stroke + 0.006 + radius(STEEL) + 2e-5, Vec3::ZERO);
+    t.tick();
+    t.mechs.set_plunger(0.0);
+    t.tick();
+    let p1 = mb * t.get(h).velocity.y;
+    let drive = p.spring_k * p.stroke * DT;
+    println!("plunger: first-tick ball impulse {p1:.4} N·s, spring impulse {drive:.4}");
+    assert!(p1 <= drive * 1.02, "{p1}");
+    let mut ke = 0.0f32;
+    for _ in 0..60 {
+        t.tick();
+        ke = ke.max(0.5 * mb * t.get(h).velocity.length_squared());
+    }
+    let work = 0.5 * p.spring_k * p.stroke * p.stroke;
+    println!("plunger: ball energy {ke:.4} J, spring energy {work:.4} J");
+    assert!(ke <= work * 1.02);
 }

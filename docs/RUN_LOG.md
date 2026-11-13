@@ -197,3 +197,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 2.3 | Reviewer | Opus 5.5 | 1 | running | — | |
 | 4 | 2.4 | Reviewer | Fable 5.2 | 1 | **fail** | fmt/clippy clean (snapshot); 183 tests; mech/ 96.8–100 %, pin_core 99.5 %; CR-004 additive; feel numbers verified; D1/O1 fixes confirmed | B1 slider breaks obligation 1 at kick-off (sling ball gets 2.2× the coil's momentum); B2 spinner parks above the ball after 1–3 shots → fix 1 with N1–N3, N7, docs; obligation-3 slider reading accepted (2.2-S docs to bless it) |
 | 4 | 2.4 | Implementer | Opus 5.5 | fix 1 | running | — | |
+| 4 | 2.2-S | Implementer | Opus 5.5 | fix 2 | done | 353 tests; digests unchanged; 0 allocs; ball/ coverage 96.9–99.5 % | B1 reference rotor fixed + kick-off proptest; B2 guard replaced (reduce-only correction, impulse cap, 100 m/s backstop, 4096 solves/tick budget); N1 early-out only in real pinches; `MovingBodies::restitution` hook; obligation 3 restated (drive increment only) |
+| 4 | 2.2-S | Reviewer | Fable 5.2 | 3 | running | — | |

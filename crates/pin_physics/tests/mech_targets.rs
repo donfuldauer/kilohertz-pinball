@@ -110,43 +110,70 @@ fn dropped_target_lets_balls_pass_and_resets_without_trapping() {
 
 const SPIN_SW: u16 = 70;
 
+/// Verification 2 against the documented model (see `pin_physics::mech::
+/// spinner`): pulses within ±2 of an f64 RK4 reference of the same ODE (a
+/// spin that barely goes over the top in one and not the other differs by
+/// two crossings), the flap settles hanging, and fast spins approach the
+/// pure-damping total `ω₀/d`.
 #[test]
-fn spinner_pulse_count_matches_the_analytic_spin_down() {
-    for (w0, d) in [
-        (20.0f32, 0.8f32),
-        (60.0, 0.8),
-        (150.0, 1.5),
-        (40.0, 0.25),
-        (8.0, 2.0),
-    ] {
+fn spinner_pulse_count_matches_the_documented_spin_down() {
+    let l = 0.028f64;
+    let w_c = 2.0 * (1.5 * 9.81 / l).sqrt();
+    for (w0, d) in [(20.0f32, 0.8f32), (60.0, 0.8), (150.0, 1.5), (40.0, 0.25), (300.0, 0.8), (8.0, 2.0)] {
         let mut spec = MechSpec::new(MechKind::Spinner, Vec3::ZERO).with_switch(SwitchId(SPIN_SW));
         spec.params.damping_per_s = Some(d);
         let mut t = Table::new(&[spec], world(&[]), 0.0);
         t.mechs.set_spinner_speed(0, w0);
         let mut closures = 0u64;
-        for _ in 0..60_000 {
+        let ticks = 30_000;
+        for _ in 0..ticks {
             t.tick();
-            if t.mechs
-                .edges()
-                .contains(&(SwitchId(SPIN_SW), SwitchEdge::Closed))
-            {
+            if t.mechs.edges().contains(&(SwitchId(SPIN_SW), SwitchEdge::Closed)) {
                 closures += 1;
             }
-            if t.mechs.spinner_state(0).unwrap().1 == 0.0 {
-                break;
-            }
         }
-        let total = w0 / d;
+        let (ref_pulses, ref_angle) =
+            spinner_reference(f64::from(w0), f64::from(d), l, 9.81, ticks as f64 * 1e-3);
         let pulses = t.mechs.spinner_pulses(0);
-        let expect = (total / core::f32::consts::PI).floor() as i64;
         let (angle, _) = t.mechs.spinner_state(0).unwrap();
         println!(
-            "spinner ω0 {w0} d {d}: rotation {angle:.3} rad (ω0/d {total:.3}), pulses {pulses} (floor {expect})"
+            "spinner ω0 {w0} d {d}: rotation {angle:.3} rad (reference {ref_angle:.3}, ω0/d {:.3}), pulses {pulses} (reference {ref_pulses})",
+            w0 / d
         );
-        assert!((angle - total).abs() / total < 2e-3);
-        assert!((pulses as i64 - expect).abs() <= 1);
-        // Every pulse is a switch closure (the flap is slow enough).
-        assert_eq!(closures, pulses);
+        assert!((pulses as i64 - ref_pulses as i64).abs() <= 2);
+        // Settles hanging.
+        let turns = (angle / core::f32::consts::TAU).round();
+        assert!((angle - turns * core::f32::consts::TAU).abs() < 0.05, "hanging: {angle}");
+        // High-speed limit: between (ω0 − 2ω_c)/d and ω0/d.
+        let total = f64::from(angle);
+        assert!(total <= f64::from(w0 / d) + 0.1);
+        assert!(total >= (f64::from(w0) - 2.0 * w_c) / f64::from(d) - 6.3);
+        assert!(closures >= pulses / 2 && closures <= pulses);
+    }
+}
+
+/// Regression (2.4 review B2): the flap returns to hanging after every
+/// shot, so every ball spins it.
+#[test]
+fn every_successive_shot_spins_the_spinner() {
+    for speed in [1.0f32, 1.5, 3.0] {
+        let spec = MechSpec::new(MechKind::Spinner, Vec3::ZERO).with_switch(SwitchId(SPIN_SW));
+        let mut t = Table::new(&[spec], world(&[]), 0.0);
+        let mut per_shot = Vec::new();
+        for _ in 0..8 {
+            let before = t.mechs.spinner_pulses(0);
+            let h = t.ball(0.0, -0.08, v(0.0, speed, 0.0));
+            for _ in 0..1500 {
+                t.tick();
+            }
+            t.solver.remove_ball(h);
+            for _ in 0..1500 {
+                t.tick();
+            }
+            per_shot.push(t.mechs.spinner_pulses(0) - before);
+        }
+        println!("spinner pulses per shot at {speed} m/s: {per_shot:?}");
+        assert!(per_shot.iter().all(|&p| p >= 2), "{per_shot:?}");
     }
 }
 
