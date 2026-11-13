@@ -2,7 +2,7 @@
 
 use glam::{DVec3, Vec3};
 
-use super::curve_bounds::{CurveTree, TangentBalls};
+use super::curve_bounds::{CurveTree, EndTerms, TangentBalls};
 use super::shapes::{APPROACH_EPS, any_perpendicular};
 use super::sloped_bounds::{plan_view_folds, wall_reach};
 use super::spline::{
@@ -1113,14 +1113,28 @@ impl GuideCurve {
             // it is also capped by the table, whose every entry is a proven
             // bound, so that the reach of such a guide never exceeds the
             // true reach whatever the sampling.
+            //
+            // Neither the tolerance of those searches nor the table may lower
+            // a reach that the sampled pairs already justify, however (a
+            // spiral's ends are about as far from the next turn as the turns
+            // are from each other): where the ends come within the
+            // tolerance of the sampled estimate they are searched again
+            // until they are proven to reach it or found below it, and the
+            // table is built to prove at least the reach found so far (see
+            // `Rules::target`). Which guides count as end-limited (and get
+            // a table) is decided as before, from the first end search.
             let (mut reach, line) = level_reaches(&spline);
             if reach > 0.0 && !spline.is_closed() {
                 let tree = CurveTree::new(&spline);
-                let ends = tree.end_terms();
-                let exact = ends.iter().fold(f64::INFINITY, |m, e| m.min(e.half));
-                reach = reach.min((0.9 * exact) as f32);
-                if reach < line {
-                    let balls = TangentBalls::new(&tree, &ends);
+                let half = |ends: &[EndTerms; 2]| ends.iter().fold(f64::INFINITY, |m, e| m.min(e.half));
+                let mut ends = tree.end_terms(0.0);
+                let end_limited = reach.min((0.9 * half(&ends)) as f32) < line;
+                if ((0.9 * half(&ends)) as f32) < reach {
+                    ends = tree.end_terms(f64::from(reach) / 0.9);
+                }
+                reach = reach.min((0.9 * half(&ends)) as f32);
+                if end_limited {
+                    let balls = TangentBalls::new(&tree, &ends, f64::from(reach));
                     reach = reach.min(balls.smallest());
                     tangent_balls = Some(balls);
                 }
@@ -1134,7 +1148,7 @@ impl GuideCurve {
             // with its open ends taken exactly as well.)
             let mut plan_reach = level_reaches(&flat).0;
             if plan_reach > 0.0 && !flat.is_closed() {
-                let ends = CurveTree::new(&flat).end_terms();
+                let ends = CurveTree::new(&flat).end_terms(0.0);
                 let exact = ends.iter().fold(f64::INFINITY, |m, e| m.min(e.half));
                 plan_reach = plan_reach.min((0.9 * exact) as f32);
             }
@@ -2191,7 +2205,7 @@ mod tests {
             let t = spline.max_t();
             let e = spline.point(t).as_dvec3();
             let inward = -spline.tangent(t).as_dvec3().normalize();
-            let [_, end] = CurveTree::new(&spline).end_terms();
+            let [_, end] = CurveTree::new(&spline).end_terms(0.0);
             let back = end.back;
             // Brute force over a very dense sampling of the wall below.
             let mut truth = f64::INFINITY;

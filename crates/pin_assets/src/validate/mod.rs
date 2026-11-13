@@ -9,6 +9,7 @@
 //! `(file, path)`. On success, names are interned to `u16` ids (see
 //! [`TableIds`]) and every positional declaration is converted to SI.
 
+mod guide_lint;
 mod ids;
 mod rules;
 

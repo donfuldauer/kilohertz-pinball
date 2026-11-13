@@ -1,5 +1,6 @@
 //! The validation rules (beyond `pin_core`'s parse) and SI conversion.
 
+use super::guide_lint::{self, GapLint};
 use super::ids::suggest;
 use super::{
     BACKGLASS_FILE, BackboxSi, DispenserSi, FlipperStageHint, IdKind, LoadedTable, MagnetSi,
@@ -9,7 +10,7 @@ use super::{
 use crate::Vfs;
 use crate::zip::normalize_path;
 use glam::Vec3;
-use pin_core::profiles::BUILTIN_PROFILE_NAMES;
+use pin_core::profiles::{BUILTIN_PROFILE_NAMES, builtin_profile};
 use pin_core::schema::backglass::ScoreDisplayMode;
 use pin_core::schema::table::{FlipperStagingDef, MechKind, SplineDef, SplineKind};
 use pin_core::schema::{BackglassManifest, PhysicsDefaults, PhysicsParams, TableManifest};
@@ -595,12 +596,24 @@ impl<'v> Checker<'v> {
             });
         }
 
-        // Splines.
+        // Splines. The widest ball the table names (balls.profiles,
+        // balls.restrict and dispenser contents) feeds guide lint (c).
+        let widest = t
+            .balls
+            .profiles
+            .iter()
+            .chain(t.balls.restrict.iter().map(|r| &r.profile))
+            .chain(t.dispensers.iter().flat_map(|d| d.contents.iter()))
+            .filter_map(|name| builtin_profile(name).map(|p| (name.as_str(), p.radius_m())))
+            .fold(None, |w: Option<(&str, f32)>, (n, r)| match w {
+                Some((_, wr)) if wr >= r => w,
+                _ => Some((n, r)),
+            });
         let splines = t
             .splines
             .iter()
             .enumerate()
-            .filter_map(|(i, s)| self.spline(i, s))
+            .filter_map(|(i, s)| self.spline(i, s, widest))
             .collect();
 
         // Layer transitions.
@@ -788,7 +801,7 @@ impl<'v> Checker<'v> {
         self.err(TABLE_FILE, path, format!("spline does not construct: {e}"));
     }
 
-    fn spline(&mut self, i: usize, s: &SplineDef) -> Option<SplineSi> {
+    fn spline(&mut self, i: usize, s: &SplineDef, widest: Option<(&str, f32)>) -> Option<SplineSi> {
         let p = format!("splines[{i}]");
         self.layer(TABLE_FILE, format!("{p}.layer"), s.layer);
         if s.points.len() < 2 {
@@ -896,15 +909,18 @@ impl<'v> Checker<'v> {
             }
         };
         let constructed = match s.kind {
-            SplineKind::Guide => GuideCurve::new(spline, 0.0).map(drop),
+            SplineKind::Guide => GuideCurve::new(spline, 0.0).map(Some),
             SplineKind::Wireform => {
-                Wireform::new(spline, &roll_deg, gauge_m.unwrap_or(0.0), Vec3::Z).map(drop)
+                Wireform::new(spline, &roll_deg, gauge_m.unwrap_or(0.0), Vec3::Z).map(|_| None)
             }
         };
-        if let Err(e) = constructed {
-            self.spline_error(&p, e);
-            return None;
-        }
+        let guide = match constructed {
+            Ok(guide) => guide,
+            Err(e) => {
+                self.spline_error(&p, e);
+                return None;
+            }
+        };
 
         // Uneven through-point spacing: a warning (2.1 HUMAN_QUEUE item).
         let spacing: Vec<f32> = through.windows(2).map(|w| w[0].distance(w[1])).collect();
@@ -926,6 +942,9 @@ impl<'v> Checker<'v> {
                 ),
             );
         }
+        if let Some(guide) = &guide {
+            self.guide_lints(&p, guide, closed, hi, widest);
+        }
         Some(SplineSi {
             name: s.id.clone(),
             kind: s.kind,
@@ -935,6 +954,71 @@ impl<'v> Checker<'v> {
             roll_rad: roll_deg.iter().map(|&d| deg_to_rad(d)).collect(),
             closed,
         })
+    }
+
+    /// Guide authoring lints (b)–(d), warnings at `splines[i]` (see
+    /// [`guide_lint`](super::guide_lint)). `spacing` is the longest
+    /// through-point spacing, metres.
+    fn guide_lints(
+        &mut self,
+        p: &str,
+        guide: &GuideCurve,
+        closed: bool,
+        spacing: f32,
+        widest: Option<(&str, f32)>,
+    ) {
+        let bend = guide_lint::tightest_bend(guide.spline());
+        let radius_mm = bend.radius_m * 1000.0;
+        let near = bend.t.round() as usize;
+        if f64::from(spacing) >= bend.radius_m {
+            self.warn(
+                TABLE_FILE,
+                p,
+                format!(
+                    "through-point spacing {:.1} mm is not below the smallest radius of curvature \
+                     {radius_mm:.1} mm (near points[{near}]); add through-points or soften the bend",
+                    spacing * 1000.0
+                ),
+            );
+        }
+        if !guide.is_level()
+            && let Some((profile, radius)) = widest
+            && f64::from(radius) > bend.radius_m
+        {
+            self.warn(
+                TABLE_FILE,
+                p,
+                format!(
+                    "ball profile {profile:?} (radius {:.1} mm) is wider than this sloped guide's \
+                     tightest bend (radius {radius_mm:.1} mm, near points[{near}]); the ball slides \
+                     slowly there: soften the bend or build the ramp as a wireform",
+                    radius * 1000.0
+                ),
+            );
+        }
+        match guide_lint::gap_lint(guide, closed) {
+            Some(GapLint::Hairline(gap)) => self.warn(
+                TABLE_FILE,
+                p,
+                format!(
+                    "the open ends are only {:.3} mm apart (hairline gap); close the guide or open the gap",
+                    gap * 1000.0
+                ),
+            ),
+            Some(GapLint::EndTouchesWall) => self.warn(
+                TABLE_FILE,
+                p,
+                "no clearance proven: an open end touches or nearly touches the guide's own wall \
+                 (or the curve touches itself); close the guide or open the gap",
+            ),
+            Some(GapLint::SelfTouching) => self.warn(
+                TABLE_FILE,
+                p,
+                "the closed guide touches or crosses itself (no clearance proven); \
+                 move the through-points apart",
+            ),
+            None => {}
+        }
     }
 
     fn backglass(&mut self, b: &BackglassManifest, table_parsed: bool) {

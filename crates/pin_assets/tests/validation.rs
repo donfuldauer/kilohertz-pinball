@@ -526,14 +526,24 @@ fn guide(points: &str) -> String {
 
 #[test]
 fn near_closed_guide_is_snapped_closed() {
-    // End point 0.0005 mm (5e-7 m) from the start.
-    let t = guide(
-        "points = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 100.0, 0.0], [0.0, 100.0, 0.0], [0.0005, 0.0, 0.0]]",
-    );
+    // A 100 mm circle through 12 points whose end point is 0.0005 mm
+    // (5e-7 m) from the start (spacing 51.8 mm, below the radius: no lint).
+    let mut pts: Vec<String> = (0..12)
+        .map(|i| {
+            let a = f64::from(i) * core::f64::consts::TAU / 12.0;
+            format!(
+                "[{}, {}, 0.0]",
+                100.0 + 100.0 * a.cos(),
+                100.0 + 100.0 * a.sin()
+            )
+        })
+        .collect();
+    pts.push("[200.0005, 100.0, 0.0]".to_owned());
+    let t = guide(&format!("points = [{}]", pts.join(", ")));
     let loaded = load(&t, &backglass_text()).unwrap();
     let s = &loaded.splines[0];
     assert!(s.closed);
-    assert_eq!(s.points_m[4], s.points_m[0]);
+    assert_eq!(s.points_m[12], s.points_m[0]);
     assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     // Exactly closed with too few points.
     let t = guide("points = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 0.0, 0.0]]");
@@ -564,12 +574,18 @@ fn near_closed_guide_is_snapped_closed() {
 fn uneven_spacing_is_a_warning() {
     let t = guide("points = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [200.0, 0.0, 0.0]]");
     let loaded = load(&t, &backglass_text()).unwrap();
-    assert_eq!(loaded.warnings.len(), 1);
-    assert_eq!(loaded.warnings[0].path, "splines[0].points");
+    // The spline doubles back on itself (overshoot), so the guide lints also
+    // fire at `splines[0]`; the spacing warning is the one at `.points`.
+    let spacing: Vec<_> = loaded
+        .warnings
+        .iter()
+        .filter(|w| w.path == "splines[0].points")
+        .collect();
+    assert_eq!(spacing.len(), 1, "{:?}", loaded.warnings);
     assert!(
-        loaded.warnings[0].message.contains("ratio 19.0"),
+        spacing[0].message.contains("ratio 19.0"),
         "{}",
-        loaded.warnings[0].message
+        spacing[0].message
     );
 }
 

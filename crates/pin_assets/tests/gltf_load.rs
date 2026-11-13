@@ -515,6 +515,7 @@ fn geometry_and_buffer_budgets() {
         GltfLimits::default(),
         GltfLimits {
             max_image_bytes: 256 << 20,
+            max_image_decode_bytes: 256 << 20,
             max_image_side: 8192,
             max_vertices: 8_000_000,
             max_indices: 24_000_000,

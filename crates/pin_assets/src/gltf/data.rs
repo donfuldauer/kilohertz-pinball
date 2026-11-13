@@ -17,7 +17,11 @@ pub(super) struct Buffers {
 
 impl Buffers {
     /// Loads every buffer. The sum of the declared lengths of the distinct
-    /// sources is checked against `budget` before anything is read.
+    /// sources is checked against `budget` before anything is read; then
+    /// every source is charged the bytes actually held for it (a bundle file
+    /// is sized first and only its first `byteLength` bytes are read; a
+    /// `data:` URI or the GLB `BIN` chunk is charged its whole decoded
+    /// length), so the budget bounds the memory really used (N-d).
     pub(super) fn load(
         document: &Document,
         mut bin: Option<Vec<u8>>,
@@ -25,6 +29,11 @@ impl Buffers {
         base: &str,
         budget: u64,
     ) -> Result<Buffers, AssetError> {
+        let over = |what: &str, n: u64| {
+            gerr(format!(
+                "{what} {n} bytes, over the {budget}-byte buffer budget"
+            ))
+        };
         let mut keys: Vec<Option<String>> = Vec::with_capacity(document.buffers().len());
         let mut seen = std::collections::HashMap::new();
         let mut planned: u64 = 0;
@@ -46,10 +55,9 @@ impl Buffers {
             .values()
             .fold(planned, |acc, &l| acc.saturating_add(l as u64));
         if planned > budget {
-            return Err(gerr(format!(
-                "buffers declare {planned} bytes, over the {budget}-byte budget"
-            )));
+            return Err(over("buffers declare", planned));
         }
+        let mut spent: u64 = 0;
         let mut slot = Vec::with_capacity(keys.len());
         let mut store: Vec<Vec<u8>> = Vec::new();
         let mut by_key: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -57,6 +65,10 @@ impl Buffers {
             let index = match &key {
                 Some(k) if by_key.contains_key(k) => by_key[k],
                 _ => {
+                    let keep = match &key {
+                        Some(k) => seen[k],
+                        None => buffer.length(),
+                    };
                     let mut bytes = match &key {
                         None => bin.take().ok_or_else(|| {
                             gerr(format!(
@@ -64,12 +76,22 @@ impl Buffers {
                                 buffer.index()
                             ))
                         })?,
-                        Some(k) => load_source(k, vfs)?,
+                        Some(k) if k.starts_with("data:") => load_source(k, vfs)?,
+                        Some(k) => {
+                            let size = vfs.file_size(k)?;
+                            if size < keep as u64 {
+                                return Err(gerr(format!(
+                                    "buffer {} has {size} bytes but declares {keep}",
+                                    buffer.index()
+                                )));
+                            }
+                            vfs.read_prefix(k, keep as u64)?
+                        }
                     };
-                    let keep = match &key {
-                        Some(k) => seen[k],
-                        None => buffer.length(),
-                    };
+                    spent = spent.saturating_add(bytes.len() as u64);
+                    if spent > budget {
+                        return Err(over("buffers hold", spent));
+                    }
                     bytes.truncate(keep);
                     bytes.shrink_to_fit();
                     store.push(bytes);

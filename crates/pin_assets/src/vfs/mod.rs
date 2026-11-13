@@ -84,15 +84,16 @@ impl Vfs {
             )));
         }
         // An archive larger than its uncompressed cap (plus headers) is pointless.
-        let cap = limits.max_total_uncompressed.saturating_add(1 << 20);
-        if meta.len() > cap {
+        if meta.len() > crate::zip::archive_cap(&limits) {
             return Err(AssetError::TotalTooLarge(meta.len()));
         }
         let bytes = std::fs::read(path)?;
         Vfs::from_zip_bytes(bytes, limits)
     }
 
-    /// Validates an in-memory archive. Nothing is decompressed until [`read`](Self::read).
+    /// Validates an in-memory archive. Nothing is decompressed until
+    /// [`read`](Self::read). The archive-size cap of [`open`](Self::open)
+    /// applies here too (`TotalTooLarge`).
     pub fn from_zip_bytes(bytes: Vec<u8>, limits: ZipLimits) -> Result<Vfs, AssetError> {
         let mut index = ZipIndex::new(bytes, limits)?;
         index.retain(|name| !is_os_junk(name));
@@ -188,6 +189,65 @@ impl Vfs {
                     });
                 }
                 Ok(std::fs::read(&full)?)
+            }
+        }
+    }
+
+    /// Size in bytes of a file (the declared uncompressed size in an
+    /// archive), without reading it. Same path rules and errors as
+    /// [`read`](Self::read), except that the `max_file` cap is not applied.
+    pub fn file_size(&self, path: &str) -> Result<u64, AssetError> {
+        let norm = normalize_path(path)?;
+        if norm.is_empty() {
+            return Err(AssetError::NotFound(path.to_owned()));
+        }
+        match &self.backend {
+            Backend::Zip(index) => index
+                .size(&norm)
+                .ok_or_else(|| AssetError::NotFound(path.to_owned())),
+            Backend::Dir { root, .. } => {
+                let full = Vfs::resolve_dir(root, &norm, path)?;
+                let meta = std::fs::metadata(&full)?;
+                if !meta.is_file() {
+                    return Err(AssetError::NotFound(path.to_owned()));
+                }
+                Ok(meta.len())
+            }
+        }
+    }
+
+    /// Reads at most the first `max` bytes of a file (all of it when it is
+    /// shorter); only those bytes are read or decompressed. Same path rules
+    /// and errors as [`read`](Self::read); the `max_file` cap applies to the
+    /// bytes read.
+    pub fn read_prefix(&self, path: &str, max: u64) -> Result<Vec<u8>, AssetError> {
+        let norm = normalize_path(path)?;
+        if norm.is_empty() {
+            return Err(AssetError::NotFound(path.to_owned()));
+        }
+        match &self.backend {
+            Backend::Zip(index) => index.read_prefix(&norm, max).map_err(|e| match e {
+                AssetError::NotFound(_) => AssetError::NotFound(path.to_owned()),
+                other => other,
+            }),
+            Backend::Dir { root, max_file } => {
+                use std::io::Read as _;
+                let full = Vfs::resolve_dir(root, &norm, path)?;
+                let meta = std::fs::metadata(&full)?;
+                if !meta.is_file() {
+                    return Err(AssetError::NotFound(path.to_owned()));
+                }
+                let want = meta.len().min(max);
+                if want > *max_file {
+                    return Err(AssetError::TooLarge {
+                        path: norm,
+                        size: meta.len(),
+                    });
+                }
+                let file = std::fs::File::open(&full)?;
+                let mut out = Vec::with_capacity(usize::try_from(want).unwrap_or(0));
+                file.take(want).read_to_end(&mut out)?;
+                Ok(out)
             }
         }
     }

@@ -25,8 +25,17 @@ use data::{Buffers, read_f32s, read_indices};
 /// [`AssetError::Gltf`] whose message contains "budget".
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GltfLimits {
-    /// Sum of the decoded RGBA8 bytes of all images (default 256 MiB).
+    /// Per-scene image budget: sum of the decoded RGBA8 bytes of all images
+    /// (default 256 MiB).
     pub max_image_bytes: u64,
+    /// Per-image decode budget (default 256 MiB): the decoder's own output
+    /// buffer at the file's native colour type and bit depth (a 16-bit RGBA
+    /// PNG is 8 bytes per pixel), plus the RGBA8 copy when the native type is
+    /// not RGBA8. Computed from the header before any pixel is allocated, so
+    /// an image over it is refused at header cost; plus 1 MiB, it also caps the
+    /// size of an encoded image file read from the bundle. 8192² RGBA8 fits exactly;
+    /// 8192² 16-bit (768 MiB) or 8192² RGB8 (448 MiB) does not.
+    pub max_image_decode_bytes: u64,
     /// Largest image width or height, pixels (default 8192).
     pub max_image_side: u32,
     /// Sum of the vertex counts of every [`MeshData`] (default 8 M).
@@ -47,6 +56,7 @@ impl Default for GltfLimits {
     fn default() -> Self {
         GltfLimits {
             max_image_bytes: 256 << 20,
+            max_image_decode_bytes: 256 << 20,
             max_image_side: 8192,
             max_vertices: 8_000_000,
             max_indices: 24_000_000,
@@ -333,22 +343,35 @@ fn compute_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
     normals
 }
 
-/// Decodes to RGBA8. The header is read first: the side limit and the RGBA8
-/// size (charged to `spent`) are checked before any pixel is allocated.
+/// Decodes to RGBA8. The header is read first: the side limit, the
+/// per-image decode budget (native decoder buffer plus any RGBA8 copy, see
+/// [`GltfLimits::max_image_decode_bytes`]) and the per-scene RGBA8 budget
+/// (charged to `spent`) are checked before any pixel is allocated, and the
+/// decoder's own allocation limit is set to the computed peak plus 1 MiB.
 fn decode_image(
     bytes: &[u8],
     what: &str,
     limits: &GltfLimits,
     spent: &mut u64,
 ) -> Result<ImageData, AssetError> {
-    let reader = || {
-        image::ImageReader::new(std::io::Cursor::new(bytes))
-            .with_guessed_format()
-            .map_err(|e| gerr(format!("{what}: {e}")))
-    };
-    let (w, h) = reader()?
-        .into_dimensions()
+    use image::ImageDecoder as _;
+    let fail = |e: image::ImageError| gerr(format!("{what}: {e}"));
+    let mut header_limits = image::Limits::default();
+    header_limits.max_image_width = Some(limits.max_image_side);
+    header_limits.max_image_height = Some(limits.max_image_side);
+    header_limits.max_alloc = Some(limits.max_image_decode_bytes.saturating_add(1 << 20));
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
         .map_err(|e| gerr(format!("{what}: {e}")))?;
+    reader.limits(header_limits);
+    let mut decoder = reader.into_decoder().map_err(|e| match e {
+        image::ImageError::Limits(_) => gerr(format!(
+            "{what}: exceeds the image side budget of {} or the decode budget of {}",
+            limits.max_image_side, limits.max_image_decode_bytes
+        )),
+        e => fail(e),
+    })?;
+    let (w, h) = decoder.dimensions();
     if w.max(h) > limits.max_image_side {
         return Err(gerr(format!(
             "{what}: {w}x{h} exceeds the image side budget of {}",
@@ -356,19 +379,27 @@ fn decode_image(
         )));
     }
     let rgba = u64::from(w) * u64::from(h) * 4;
+    let native = decoder.total_bytes();
+    let peak = if decoder.color_type() == image::ColorType::Rgba8 {
+        native
+    } else {
+        native.saturating_add(rgba)
+    };
+    budget(
+        &format!("{what}: {w}x{h} {:?} decode bytes", decoder.color_type()),
+        peak,
+        limits.max_image_decode_bytes,
+    )?;
     *spent = spent.saturating_add(rgba);
     budget("decoded image bytes", *spent, limits.max_image_bytes)?;
     let mut decoder_limits = image::Limits::default();
     decoder_limits.max_image_width = Some(limits.max_image_side);
     decoder_limits.max_image_height = Some(limits.max_image_side);
-    // Decoder buffer (at most 16-bit RGBA) plus the RGBA8 copy.
-    decoder_limits.max_alloc = Some(rgba.saturating_mul(3).saturating_add(1 << 20));
-    let mut r = reader()?;
-    r.limits(decoder_limits);
-    let decoded = r
-        .decode()
-        .map_err(|e| gerr(format!("{what}: {e}")))?
-        .to_rgba8();
+    decoder_limits.max_alloc = Some(peak.saturating_add(1 << 20));
+    decoder.set_limits(decoder_limits).map_err(fail)?;
+    let decoded = image::DynamicImage::from_decoder(decoder)
+        .map_err(fail)?
+        .into_rgba8();
     Ok(ImageData {
         width: decoded.width(),
         height: decoded.height(),
@@ -457,6 +488,15 @@ fn load_bytes(
                 decode_image(buffers.view(&view)?, &what, limits, &mut spent)?
             }
             ::gltf::image::Source::Uri { .. } => {
+                if !source.starts_with("data:") {
+                    let size = vfs.file_size(&source)?;
+                    // Headroom for headers and metadata chunks.
+                    budget(
+                        &format!("{what}: encoded file bytes"),
+                        size,
+                        limits.max_image_decode_bytes.saturating_add(1 << 20),
+                    )?;
+                }
                 let encoded = data::load_source(&source, vfs)?;
                 decode_image(&encoded, &what, limits, &mut spent)?
             }
