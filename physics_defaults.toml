@@ -88,8 +88,8 @@ length          = 0.10      # m
 height          = 0.025     # m
 thickness       = 0.010     # m
 mass            = 0.06      # kg
-force           = 40.0      # N
-stroke          = 0.010     # m
+force           = 60.0      # N
+stroke          = 0.012     # m
 spring_k        = 200.0     # N/m
 
 [mechs.kickback]

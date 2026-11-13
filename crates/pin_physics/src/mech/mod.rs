@@ -82,7 +82,9 @@
 //!   travels `−stroke ≤ x ≤ 0`, the spring force is `−k·x`, the rest stop
 //!   (`x = 0`) is inelastic. [`MechSet::set_plunger`] (0 rest .. 1 full
 //!   pull) is the hand: a one-sided constraint `x ≤ −depth·stroke` (a hand
-//!   pulls, never pushes). Pulling or a release slower than the spring is
+//!   pulls, never pushes); the hand pulls back at most at [`PULL_SPEED`]
+//!   (a step in the input is followed at that speed, so the tip's reported
+//!   velocity is its real motion and never exceeds 1.5 m/s while pulled). Pulling or a release slower than the spring is
 //!   kinematic; a fast release lets the spring drive the finite-mass rod,
 //!   which launches the ball through the seam. At rest the rod is locked, so
 //!   a resting ball is never pushed. While the plunger's coil is on, the rod
@@ -129,6 +131,10 @@ pub const DEFAULT_BODY_SET: usize = 1;
 
 /// Gap (m) at or below which a ball counts as touching a mech after a step.
 pub const CONTACT_GAP: f32 = 1.0e-4;
+
+/// Fastest pull (m/s) of the plunger rod by the hand or the auto-plunger
+/// coil (a step in [`MechSet::set_plunger`] is followed at this speed).
+pub const PULL_SPEED: f32 = 1.5;
 
 /// How far (m) below the playfield a dropped target starts its rise.
 const DROP_HIDE: f32 = 0.002;
@@ -191,6 +197,8 @@ enum Part {
         plunger: bool,
         stroke: f32,
         auto_pull: f32,
+        /// Current hand (or auto-plunger) pull depth, m.
+        pulled: f32,
     },
     Drop(Drop),
     Spinner(Spinner),
@@ -297,6 +305,7 @@ impl MechSet {
                         plunger,
                         stroke: p.stroke,
                         auto_pull: p.auto_pull,
+                        pulled: 0.0,
                     }
                 }
                 KindP::Drop(d) => Part::Drop(Drop {
@@ -889,10 +898,19 @@ impl MovingBodies for MechSet {
                     plunger,
                     stroke,
                     auto_pull,
+                    pulled,
                 } => {
                     if *plunger {
+                        // The hand (or the auto-plunger coil) pulls the rod
+                        // back at most at PULL_SPEED; letting go is instant.
                         let depth = if on { pull.max(*auto_pull) } else { pull };
-                        s.hand = if depth > 0.0 { -depth * *stroke } else { s.hi };
+                        let target = depth * *stroke;
+                        *pulled = if target > *pulled {
+                            target.min(*pulled + PULL_SPEED * dt)
+                        } else {
+                            target
+                        };
+                        s.hand = if *pulled > 0.0 { -*pulled } else { s.hi };
                     } else {
                         s.coil_on = on;
                     }

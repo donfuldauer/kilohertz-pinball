@@ -138,7 +138,7 @@ impl Slider {
 
     pub fn end_tick(&mut self, dt: f32) {
         self.x = self.x_at(dt);
-        self.v = if self.kinematic { 0.0 } else { self.v_at(dt) };
+        self.v = self.v_at(dt);
         self.seg_t = 0.0;
         self.seg_x = self.x;
         self.seg_v = self.v;

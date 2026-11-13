@@ -207,8 +207,8 @@ impl Default for MechDefaults {
                 height: 0.025,
                 thickness: 0.010,
                 mass: 0.06,
-                force: 40.0,
-                stroke: 0.010,
+                force: 60.0,
+                stroke: 0.012,
                 spring_k: 200.0,
             },
             kickback: KickerDefaults {
