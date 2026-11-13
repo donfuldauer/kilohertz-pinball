@@ -1,10 +1,20 @@
-//! Spinner flap: a thin plate hanging from a horizontal pivot, a 1-DOF rotor
-//! with exponential spin-down.
+//! Spinner flap: a thin uniform plate hanging from a horizontal pivot at its
+//! top edge, a 1-DOF rotor with gravity restoring torque and viscous
+//! spin-down.
 //!
-//! Model: `dω/dt = −d·ω` (balanced flap, no gravity torque), integrated
-//! exactly per segment, so from `ω₀` the flap turns `ω₀/d` in total (the
-//! geometric series of the per-tick advances `ω·(1 − e^{−d·dt})/d`). Within
-//! a tick the flap moves at the constant mean rate of the segment (the pose
+//! Model: `dω/dt = −d·ω + γ(φ)`, with the gravity term of a uniform plate
+//! of length `L` hinged at one edge, `γ(φ) = (3/(2L))·((along(φ) × g)·a)`
+//! (`= −(3g/(2L))·sin φ` for vertical gravity; independent of the plate's
+//! inertia, which only sets how hard a ball can spin it). Per tick the
+//! gravity term is applied to `ω` at the start (semi-implicit Euler), then
+//! the damping is integrated exactly over the segment: the per-tick advance
+//! is `ω·(1 − e^{−d·dt})/d`. Without gravity the flap turns exactly `ω₀/d`
+//! in total (geometric series); with gravity, a fast spin turns `≈ ω₀/d`
+//! (the gravity torque averages out over a revolution: `ω₀/d` is the
+//! high-speed limit) until it can no longer go over the top
+//! (`ω² < 4·3g/(2L)` at the bottom, ≈ 46 rad/s for 28 mm), then it swings
+//! and settles hanging (`φ ≡ 0 mod 2π`), ready for the next ball. Within a
+//! tick the flap moves at the constant mean rate of the segment (the pose
 //! is linear in `t`, as the seam asks); an impulse at `t` changes the
 //! instantaneous `ω` by `((p − c) × J)·a / I` and re-predicts the rest of the
 //! tick. A switch pulse is counted every time the flap passes a horizontal
@@ -32,6 +42,8 @@ pub(crate) struct Spinner {
     pub thickness: f32,
     pub inertia: f32,
     pub damping: f32,
+    /// Gravity (m/s², solver frame) for the restoring torque.
+    pub gravity: Vec3,
     /// Committed angle (unwrapped, rad) and angular velocity.
     pub angle: f32,
     pub omega: f32,
@@ -75,6 +87,7 @@ impl Spinner {
             thickness: 0.002,
             inertia: 1.0e-6,
             damping: 1.0,
+            gravity: Vec3::new(0.0, 0.0, -9.81),
             angle: 0.0,
             omega: 0.0,
             pulses: 0,
@@ -102,9 +115,15 @@ impl Spinner {
         self.seg_rate = omega * gain;
     }
 
+    /// Angular acceleration (rad/s²) from gravity at angle `phi`.
+    pub fn gravity_alpha(&self, phi: f32) -> f32 {
+        1.5 / self.flap * self.along(phi).cross(self.gravity).dot(self.axis)
+    }
+
     pub fn begin_tick(&mut self, dt: f32) {
         self.dt = dt;
-        self.start_segment(0.0, self.angle, self.omega);
+        let omega = self.omega + self.gravity_alpha(self.angle) * dt;
+        self.start_segment(0.0, self.angle, omega);
     }
 
     pub fn end_tick(&mut self, dt: f32) {
@@ -200,6 +219,7 @@ mod tests {
         for (w0, d) in [(30.0f32, 0.8f32), (100.0, 2.0), (5.0, 0.3)] {
             let mut s = flap();
             s.damping = d;
+            s.gravity = Vec3::ZERO;
             s.omega = w0;
             for _ in 0..200_000 {
                 s.begin_tick(1e-3);

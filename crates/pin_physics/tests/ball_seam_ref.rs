@@ -220,9 +220,12 @@ impl RotorBody {
         Vec3::new(libm::cosf(angle), libm::sinf(angle), 0.0)
     }
 
-    /// `omega` limited so that `remaining` seconds of travel from `angle`
-    /// end at a stop at the latest (the stop absorbs the rest).
-    pub fn stop_clamped(&self, angle: f32, omega: f32, remaining: f32) -> f32 {
+    /// Obligation 3: `omega` (after this tick's drive) limited so that the
+    /// drive increment does not carry the bat past a stop within `remaining`
+    /// seconds. Momentum it already held (`carried`, before the drive) may
+    /// carry it to the stop; the position is clamped there and `omega_at`
+    /// reports 0 from the instant it arrives.
+    pub fn stop_clamped(&self, angle: f32, omega: f32, carried: f32, remaining: f32) -> f32 {
         if !self.speculative_stops {
             // Only an already engaged stop holds.
             let into_hi = angle >= self.limits.1 && omega > 0.0;
@@ -233,9 +236,9 @@ impl RotorBody {
             return omega;
         }
         if omega > 0.0 && self.limits.1.is_finite() {
-            omega.min((self.limits.1 - angle).max(0.0) / remaining)
+            omega.min(((self.limits.1 - angle).max(0.0) / remaining).max(carried))
         } else if omega < 0.0 && self.limits.0.is_finite() {
-            omega.max((self.limits.0 - angle).min(0.0) / remaining)
+            omega.max(((self.limits.0 - angle).min(0.0) / remaining).min(carried))
         } else {
             omega
         }
@@ -292,12 +295,14 @@ impl MovingBodies for Rotors {
         self.dt = dt;
         for b in &mut self.bodies {
             // Semi-implicit Euler: the drive changes the velocity first.
+            let carried = b.omega;
             if b.inertia.is_finite() {
                 b.omega += b.torque / b.inertia * dt;
             }
-            // Owner obligation 3: never predict more travel toward a stop
-            // than the stop allows this tick (held on a stop: ω = 0).
-            b.omega = b.stop_clamped(b.angle, b.omega, dt);
+            // Owner obligation 3: the drive increment never carries the bat
+            // past a stop within this tick (held on a stop: ω = 0); momentum
+            // it already had may.
+            b.omega = b.stop_clamped(b.angle, b.omega, carried, dt);
             b.seg_t = 0.0;
             b.seg_angle = b.angle;
             b.seg_omega = b.omega;
@@ -353,7 +358,6 @@ impl MovingBodies for Rotors {
         arm * arm / b.inertia
     }
     fn apply_impulse(&mut self, body: usize, time: f32, point: Vec3, impulse: Vec3) {
-        let dt = self.dt;
         let b = &mut self.bodies[body];
         let l = (point - b.pivot).cross(impulse).z;
         b.angular_impulse += l;
@@ -361,7 +365,9 @@ impl MovingBodies for Rotors {
             return;
         }
         let angle = b.angle_at(time);
-        let omega = b.stop_clamped(angle, b.omega_at(time) + l / b.inertia, dt - time);
+        // An impulse is momentum, not drive: no speculative limit (an
+        // engaged stop still holds, see `omega_at`).
+        let omega = b.omega_at(time) + l / b.inertia;
         b.seg_t = time;
         b.seg_angle = angle;
         b.seg_omega = omega;

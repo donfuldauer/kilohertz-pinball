@@ -34,8 +34,9 @@
 //!    in slice order, before anything else of the step. The body *predicts*
 //!    its trajectory over `[0, dt]` from its committed state and its drive for
 //!    this tick, keeping [owner obligation 3](#owner-obligations) (speculative
-//!    stops): e.g. `ω₁ = ω₀ + α·dt`, then `ω₁ ← min(ω₁, (θ_stop − θ₀)/dt)`
-//!    toward a stop, then `θ(t) = θ₀ + ω₁·t`. The prediction must be a
+//!    stops): e.g. `ω₁ = ω₀ + α·dt`, then toward a stop
+//!    `ω₁ ← min(ω₁, max((θ_stop − θ₀)/dt, ω₀))`, then `θ(t) = θ₀ + ω₁·t`
+//!    clamped at the stop. The prediction must be a
 //!    deterministic function of `t`, continuous in position (velocities may
 //!    jump, e.g. at an end stop or an impulse).
 //! 2. **Mid-tick queries**, any number, from the solver's discrete-event
@@ -80,13 +81,18 @@
 //!    instant an impulse drove the body into it. At a time where the
 //!    velocity jumps (an impulse, reaching a stop) it returns the velocity
 //!    *after* the jump.
-//! 3. **Speculative stops.** Never predict more travel toward a stop than
-//!    the stop allows within the tick: at `begin_tick`, and on re-prediction
-//!    after an impulse at `time`, limit the velocity toward a stop to
-//!    `(stop − pose)/(dt − time)` (the stop absorbs the rest). Predicting the
-//!    full `α·dt` and clamping the position reports a surface speed at `t = 0`
-//!    that the stop cancels microseconds later; a ball cradled on a held
-//!    flipper is then hit by that phantom speed every tick and never rests.
+//! 3. **Speculative stops.** This tick's *drive increment* must not carry
+//!    the body past a stop within the tick: at `begin_tick`, toward a stop,
+//!    `v₁ ← min(v₁, max(gap/dt, v₀))` (`v₀` the velocity before the drive,
+//!    `gap` the distance to the stop). Momentum the body already holds may
+//!    carry it to the stop within the tick (e.g. an auto-plunger arriving
+//!    fast): the position is then clamped at the stop and `velocity_at`
+//!    reports 0 from the instant it arrives (obligation 2). An impulse is
+//!    momentum too, so re-prediction after it needs no extra limit. A body
+//!    held on its stop thus predicts 0. Predicting the full `α·dt` there and
+//!    clamping the position reports a surface speed at `t = 0` that the stop
+//!    cancels microseconds later; a ball cradled on a held flipper is then
+//!    hit by that phantom speed every tick and never rests.
 //!
 //! **Over-reporting is allowed.** An `inverse_mass_at` larger than the
 //! body's real mobility (e.g. a rubber-loss term, Subphase 2.3) makes the
@@ -285,8 +291,8 @@ pub trait MovingBodies {
     fn body_count(&self) -> usize;
 
     /// Start of a step of `dt` seconds: predict the trajectory over
-    /// `[0, dt]` from the committed state and this tick's drive, never
-    /// predicting more travel toward a stop than it allows this tick (owner
+    /// `[0, dt]` from the committed state and this tick's drive; the drive
+    /// increment must not carry the body past a stop within the tick (owner
     /// obligation 3).
     fn begin_tick(&mut self, dt: f32);
 
@@ -338,8 +344,9 @@ pub trait MovingBodies {
     fn inverse_mass_at(&self, body: usize, time: f32, point: Vec3, direction: Vec3) -> f32;
 
     /// The body received `impulse` (N·s) at `point` at `time`: re-predict
-    /// `[time, dt]` (see the module documentation, step 3), again limiting
-    /// travel toward a stop to what it allows by `dt`.
+    /// `[time, dt]` (see the module documentation, step 3). The new velocity
+    /// is momentum: it may carry the body to a stop, where the position is
+    /// clamped and the velocity is 0 from that instant.
     fn apply_impulse(&mut self, body: usize, time: f32, point: Vec3, impulse: Vec3);
 
     /// Coefficient of restitution for an impact of a ball on `body` at

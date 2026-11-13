@@ -283,6 +283,18 @@ fn speculative_stop_prediction() {
     set.end_tick(DT);
     set.begin_tick(DT);
     assert_eq!(set.bodies[0].omega, 0.0); // held
+    // Momentum already held may carry the bat to the stop within the tick
+    // (only the drive increment is limited): 50 rad/s, 10 mrad from the stop.
+    let mut b = RotorBody::new(Vec3::ZERO, L, BR, I_DEFAULT, 0.34);
+    b.limits = (-0.5, 0.35);
+    b.omega = 50.0;
+    b.torque = 1.2;
+    let mut set = Rotors::one(b);
+    set.begin_tick(DT);
+    assert_eq!(set.bodies[0].omega, 50.0);
+    assert_eq!(set.bodies[0].angle_at(DT), 0.35); // clamped at the stop
+    assert_eq!(set.bodies[0].omega_at(0.5 * DT), 0.0); // arrived at 0.2 ms
+    assert_eq!(set.bodies[0].omega_at(0.1 * DT), 50.0);
     // Off: the full α·dt is predicted and the stop clamps the position.
     let mut b = RotorBody::new(Vec3::ZERO, L, BR, I_DEFAULT, 0.345);
     b.limits = (-0.5, 0.35);

@@ -253,6 +253,8 @@ pub struct MechSet {
     states: [u64; 4],
     own: [u64; 4],
     transitions: TransitionSet,
+    /// Events of the current step were lost (full `BallEvents`).
+    events_lost: bool,
 }
 
 fn set_bit(bits: &mut [u64; 4], s: SwitchId) {
@@ -391,6 +393,7 @@ impl MechSet {
             states: [0; 4],
             own,
             transitions: TransitionSet::new(zones),
+            events_lost: false,
         })
     }
 
@@ -614,7 +617,15 @@ impl MechSet {
         }
         let nudge = self.pending_nudge;
         self.pending_nudge = Vec3::ZERO;
-        self.tilt.set_gravity(solver.config().gravity);
+        let gravity = solver.config().gravity;
+        self.tilt.set_gravity(gravity);
+        if gravity.is_finite() {
+            for m in &mut self.mechs {
+                if let Part::Spinner(s) = &mut m.part {
+                    s.gravity = gravity;
+                }
+            }
+        }
         self.tilt.nudge(nudge);
         self.tilt.step(dt);
         if nudge != Vec3::ZERO {
@@ -701,9 +712,32 @@ impl MechSet {
         }
     }
 
+    /// Tells the next [`post_step`](Self::post_step) that some of this
+    /// step's events were lost (`BallEvents::dropped` grew): every standing
+    /// drop target that a ball touched this step then drops, whatever the
+    /// speed (the impact speed is unknown). [`step`](Self::step) does this
+    /// itself.
+    pub fn note_events_dropped(&mut self) {
+        self.events_lost = true;
+    }
+
     /// After the ball step: drop-target hits from `events` (this tick's
-    /// events only), VUK captures, switch states and edges, coil timers.
+    /// events only: clear the `BallEvents` every tick, or pass the slice
+    /// appended by this step), VUK captures, switch states and edges, coil
+    /// timers.
     pub fn post_step(&mut self, solver: &mut BallSolver, events: &[BallEvent], dt: f32) {
+        if core::mem::take(&mut self.events_lost) {
+            for m in &mut self.mechs {
+                if let Part::Drop(d) = &mut m.part
+                    && m.touched
+                    && d.state == DropState::Up
+                {
+                    d.state = DropState::Down;
+                    d.z = -(d.up.half.z * 2.0 + DROP_HIDE);
+                    d.vz = 0.0;
+                }
+            }
+        }
         for e in events {
             if let BallEvent::Impact {
                 other: ImpactTarget::Body { set, body },
@@ -715,6 +749,7 @@ impl MechSet {
                     part: Part::Drop(d),
                     ..
                 }) = self.mechs.get_mut(body)
+                && d.state == DropState::Up
                 && normal_speed >= d.threshold
             {
                 d.state = DropState::Down;
@@ -822,7 +857,9 @@ impl MechSet {
         })
     }
 
-    /// One tick: [`pre_step`](Self::pre_step), the ball step with
+    /// One tick: [`pre_step`](Self::pre_step), the ball step (into
+    /// `events`: clear it before each tick; a full list loses impacts, see
+    /// [`note_events_dropped`](Self::note_events_dropped)) with
     /// `flippers` (set 0, the mechs set 1) or with the mechs alone (set 0),
     /// and [`post_step`](Self::post_step) on this step's events.
     pub fn step(
@@ -835,6 +872,7 @@ impl MechSet {
     ) {
         self.pre_step(solver, dt);
         let first = events.as_slice().len();
+        let lost = events.dropped();
         match flippers {
             Some(f) => {
                 self.body_set = 1;
@@ -844,6 +882,9 @@ impl MechSet {
                 self.body_set = 0;
                 solver.step_with_bodies(geo, &mut [self], dt, events);
             }
+        }
+        if events.dropped() > lost {
+            self.events_lost = true;
         }
         let n = events.as_slice().len();
         let slice = &events.as_slice()[first.min(n)..];
