@@ -127,6 +127,7 @@ impl StaticWorldBuilder {
     #[must_use]
     pub fn build(self) -> StaticWorld {
         let mut prims: Vec<(Primitive, u32)> = Vec::new();
+        let mut fans: Vec<(u32, VertexFans)> = Vec::new();
         let mut layers = Vec::with_capacity(self.shapes.len());
         let mut enabled = Vec::with_capacity(self.shapes.len());
         for (index, (shape, layer_mask, on)) in self.shapes.into_iter().enumerate() {
@@ -168,7 +169,7 @@ impl StaticWorldBuilder {
                     }
                 }
                 StaticShape::TriMesh { vertices, indices } => {
-                    mesh_primitives(&vertices, &indices, collider, &mut prims);
+                    mesh_primitives(&vertices, &indices, collider, &mut prims, &mut fans);
                 }
             }
         }
@@ -191,6 +192,7 @@ impl StaticWorldBuilder {
         StaticWorld {
             bvh,
             prims,
+            fans,
             layers,
             enabled,
         }
@@ -206,14 +208,30 @@ fn weld_key(v: Vec3) -> [u32; 3] {
     ]
 }
 
+/// Per corner of a triangle: the directions (unit, in the plane) of the two
+/// boundary edges of the flat fan of coplanar triangles around that vertex,
+/// or zero when the triangle's own edges there are both boundary edges (no
+/// restriction beyond the triangle's own vertex region).
+type VertexFans = [[Vec3; 2]; 3];
+
 /// Converts a mesh into triangle primitives and flags the edges and vertices
 /// that are interior to a flat region (both adjacent triangles coplanar), so
 /// that a sphere rolling across a tessellated flat never collides with them.
+///
+/// A boundary vertex shared by several coplanar triangles (a flat fan) is
+/// only a real contact feature where the query point projects outside the
+/// whole fan, beyond both of its boundary edges: elsewhere a coplanar face or
+/// a boundary edge owns the contact. For a fan of 180° or more (a straight or
+/// reflex boundary) that region is empty and the vertex is turned off in the
+/// fan's triangles; for a convex fan the boundary edge directions are
+/// recorded in `fans` (by leaf) and checked per query
+/// ([`StaticWorld::fan_allows`]).
 fn mesh_primitives(
     vertices: &[Vec3],
     indices: &[[u32; 3]],
     collider: u32,
     prims: &mut Vec<(Primitive, u32)>,
+    fans: &mut Vec<(u32, VertexFans)>,
 ) {
     struct Tri {
         /// Welded vertex ids.
@@ -303,15 +321,81 @@ fn mesh_primitives(
             vertex_active[key.1 as usize] = true;
         }
     }
-    for tri in &tris {
+    // Corner of triangle `ti` at welded vertex `v`, or None.
+    let corner = |ti: usize, v: u32| tris[ti].ids.iter().position(|&id| id == v);
+    let angle_at = |ti: usize, k: usize| {
+        let t = &tris[ti];
+        let e1 = (t.pos[(k + 1) % 3] - t.pos[k]).normalize_or_zero();
+        let e2 = (t.pos[(k + 2) % 3] - t.pos[k]).normalize_or_zero();
+        libm::acosf(e1.dot(e2).clamp(-1.0, 1.0))
+    };
+    // From triangle `ti`, across its edge (v, w) at vertex `v`, around the
+    // coplanar fan until a boundary edge: its unit direction from `v` and the
+    // angle of the triangles crossed (None: the fan closes, no boundary).
+    let walk = |ti: usize, v: u32, w: u32| -> Option<(Vec3, f32)> {
+        let (mut cur, mut w) = (ti, w);
+        let mut swept = 0.0f32;
+        for _ in 0..tris.len() {
+            let k = corner(cur, v)?;
+            if !edge_is_flat(v, w) {
+                let wk = corner(cur, w)?;
+                return Some((
+                    (tris[cur].pos[wk] - tris[cur].pos[k]).normalize_or_zero(),
+                    swept,
+                ));
+            }
+            let usage = edges.get(&edge_key(v, w))?;
+            let next = if usage.1[0].0 == cur {
+                usage.1[1].0
+            } else {
+                usage.1[0].0
+            };
+            if next == ti {
+                return None;
+            }
+            let nk = corner(next, v)?;
+            swept += angle_at(next, nk);
+            // The neighbour's other edge at `v`.
+            let t = &tris[next];
+            w = if t.ids[(nk + 1) % 3] == w {
+                t.ids[(nk + 2) % 3]
+            } else {
+                t.ids[(nk + 1) % 3]
+            };
+            cur = next;
+        }
+        None
+    };
+    for (ti, tri) in tris.iter().enumerate() {
         let mut active = 0u8;
+        let mut fan: VertexFans = [[Vec3::ZERO; 2]; 3];
+        let mut restricted = false;
         for e in 0..3 {
             if !edge_is_flat(tri.ids[e], tri.ids[(e + 1) % 3]) {
                 active |= FEATURE_EDGE[e];
             }
-            if vertex_active[tri.ids[e] as usize] {
-                active |= FEATURE_VERTEX[e];
+            let v = tri.ids[e];
+            if !vertex_active[v as usize] {
+                continue;
             }
+            let (w1, w2) = (tri.ids[(e + 1) % 3], tri.ids[(e + 2) % 3]);
+            if !edge_is_flat(v, w1) && !edge_is_flat(v, w2) {
+                active |= FEATURE_VERTEX[e];
+                continue;
+            }
+            // Part of a flat fan: find its boundary edges.
+            let (Some((d1, s1)), Some((d2, s2))) = (walk(ti, v, w1), walk(ti, v, w2)) else {
+                continue;
+            };
+            let span = angle_at(ti, e) + s1 + s2;
+            if span < core::f32::consts::PI - 1.0e-3 {
+                active |= FEATURE_VERTEX[e];
+                fan[e] = [d1, d2];
+                restricted = true;
+            }
+        }
+        if restricted {
+            fans.push((prims.len() as u32, fan));
         }
         prims.push((
             Primitive::Triangle {
@@ -333,6 +417,9 @@ pub struct StaticWorld {
     /// Primitive and the index of the collider it belongs to; BVH leaf `i`
     /// is `prims[i]`.
     prims: Vec<(Primitive, u32)>,
+    /// Flat-fan limits of mesh triangle vertices, by ascending leaf (see
+    /// `mesh_primitives`).
+    fans: Vec<(u32, VertexFans)>,
     layers: Vec<u8>,
     enabled: Vec<bool>,
 }
@@ -366,6 +453,29 @@ impl StaticWorld {
 
     fn active(&self, collider: u32, layer_mask: u8) -> bool {
         self.enabled[collider as usize] && self.layers[collider as usize] & layer_mask != 0
+    }
+
+    /// Whether a contact of the query point `p` at `point` of leaf `leaf` is
+    /// owned by that triangle: false for a vertex of a flat fan when `p`
+    /// projects inside the fan or beside one of its boundary edges (another
+    /// coplanar face or the boundary edge owns it).
+    fn fan_allows(&self, leaf: u32, p: Vec3, point: Vec3) -> bool {
+        let Ok(i) = self.fans.binary_search_by_key(&leaf, |(l, _)| *l) else {
+            return true;
+        };
+        let Primitive::Triangle {
+            a, b, c, normal, ..
+        } = self.prims[leaf as usize].0
+        else {
+            return true;
+        };
+        let Some(k) = [a, b, c].iter().position(|&v| v == point) else {
+            return true;
+        };
+        let [d1, d2] = self.fans[i].1[k];
+        let d = p - point;
+        let d = d - normal * d.dot(normal);
+        d.dot(d1) <= 0.0 && d.dot(d2) <= 0.0
     }
 
     /// Continuous collision detection for a ball: the first time in
@@ -410,7 +520,9 @@ impl StaticWorld {
             }
             // Later hits than the best so far cannot win.
             let limit = best.map_or(max_time, |(t, _, _)| t);
-            if let Some((t, cl)) = prim.cast_sphere(center, radius, velocity, limit) {
+            if let Some((t, cl)) = prim.cast_sphere(center, radius, velocity, limit)
+                && self.fan_allows(leaf, center + velocity * t, cl.point)
+            {
                 let better = match best {
                     None => true,
                     Some((bt, bleaf, _)) => t < bt || (t == bt && leaf < bleaf),
@@ -456,7 +568,11 @@ impl StaticWorld {
             }
             let cl = prim.closest(center);
             let depth = radius - cl.distance;
-            if depth.is_nan() || depth < 0.0 || !cl.valid {
+            if depth.is_nan()
+                || depth < 0.0
+                || !cl.valid
+                || !self.fan_allows(leaf, center, cl.point)
+            {
                 continue;
             }
             let contact = SphereContact {
@@ -497,5 +613,73 @@ impl StaticWorld {
         for (_, contact) in found {
             out.push(contact);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A flat fan of three triangles around `a`, which lies on a straight
+    /// boundary (`e`–`a`–`b`): a sphere over the third triangle must touch
+    /// only that face, not vertex `a` of the first one.
+    #[test]
+    fn coplanar_fan_has_no_ghost_vertex_contact() {
+        let a = Vec3::new(0.0, 0.0, 0.0);
+        let b = Vec3::new(1.0, 0.0, 0.0);
+        let c = Vec3::new(1.0, 1.0, 0.0);
+        let d = Vec3::new(-1.0, 1.0, 0.0);
+        let e = Vec3::new(-1.0, 0.0, 0.0);
+        let mut builder = StaticWorldBuilder::new();
+        builder.add_collider(
+            StaticShape::TriMesh {
+                vertices: vec![a, b, c, d, e],
+                indices: vec![[0, 1, 2], [0, 2, 3], [0, 3, 4]],
+            },
+            0xff,
+            true,
+        );
+        let world = builder.build();
+        let mut out = ArrayVec::new();
+        world.sphere_contacts(Vec3::new(-0.005, 0.001, 0.012), 0.0135, 0xff, &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!((out[0].normal - Vec3::Z).length() < 1e-6, "{out:?}");
+        assert!((out[0].depth - 0.0015).abs() < 1e-6, "{out:?}");
+    }
+
+    /// A convex corner of a flat mesh made of several triangles keeps its
+    /// vertex contact outside the corner, but not over the mesh.
+    #[test]
+    fn convex_fan_corner_keeps_its_outside_vertex_contact() {
+        // Square [0,1]² split into four triangles around its centre, plus a
+        // second split at corner o: o is shared by two coplanar triangles.
+        let o = Vec3::ZERO;
+        let p = Vec3::new(1.0, 0.0, 0.0);
+        let q = Vec3::new(1.0, 1.0, 0.0);
+        let r = Vec3::new(0.0, 1.0, 0.0);
+        let mut builder = StaticWorldBuilder::new();
+        builder.add_collider(
+            StaticShape::TriMesh {
+                vertices: vec![o, p, q, r],
+                indices: vec![[0, 1, 2], [0, 2, 3]],
+            },
+            0xff,
+            true,
+        );
+        let world = builder.build();
+        let mut out = ArrayVec::new();
+        // Outside the corner, diagonally: the vertex contact is real.
+        world.sphere_contacts(Vec3::new(-0.005, -0.004, 0.01), 0.0135, 0xff, &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].point.length() < 1e-6, "{out:?}");
+        assert!(out[0].normal.x < 0.0 && out[0].normal.y < 0.0, "{out:?}");
+        // Outside an edge next to the corner: the edge owns it.
+        world.sphere_contacts(Vec3::new(0.003, -0.004, 0.01), 0.0135, 0xff, &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].normal.x.abs() < 1e-6, "{out:?}");
+        // Over the mesh near the corner: the face only.
+        world.sphere_contacts(Vec3::new(0.004, 0.001, 0.012), 0.0135, 0xff, &mut out);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!((out[0].normal - Vec3::Z).length() < 1e-6, "{out:?}");
     }
 }
