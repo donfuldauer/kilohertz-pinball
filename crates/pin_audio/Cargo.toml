@@ -15,7 +15,13 @@ lewton.workspace = true
 ogg.workspace = true
 libm.workspace = true
 arrayvec.workspace = true
-sdl3.workspace = true
+# Only the SDL3 output shell (`mixer::SdlOutput`) needs SDL; the offline
+# mixer, decoding, SSF and telemetry are SDL-free (feature `sdl`, default on).
+sdl3 = { workspace = true, optional = true }
+
+[features]
+default = ["sdl"]
+sdl = ["dep:sdl3"]
 
 [dev-dependencies]
 proptest.workspace = true
@@ -25,8 +31,10 @@ proptest.workspace = true
 [[test]]
 name = "mixer_sdl_smoke"
 harness = false
+required-features = ["sdl"]
 
 # Independent Tester's SDL smoke test (same reason: plain `main` binary).
 [[test]]
 name = "spec_mixer_sdl"
 harness = false
+required-features = ["sdl"]

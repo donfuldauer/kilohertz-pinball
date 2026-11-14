@@ -24,6 +24,8 @@ toml.workspace = true
 # Verification 4.6/1: outputs load through 4.1 (load_table, PNG decoding) and
 # 3.3 (pin_audio's WAV decoder).
 pin_assets = { path = "../pin_assets" }
-pin_audio = { path = "../pin_audio" }
+# `default-features = false`: no SDL output shell, so core-tests (run without
+# SDL packages, PLAN.md §2.3 rule 3) never builds sdl3-sys.
+pin_audio = { path = "../pin_audio", default-features = false }
 image.workspace = true
 proptest.workspace = true

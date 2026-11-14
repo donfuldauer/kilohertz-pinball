@@ -2,7 +2,9 @@
 //! old-style `force`-only hook), the ball solver is bit-identical to the
 //! solver before the seams existed. The expected digests below were recorded
 //! by running this file against HEAD 63243da (= 84c88eb for `pin_physics`),
-//! before any edit to `ball/`.
+//! before any edit to `ball/`, on x86_64 Linux; they are asserted only there
+//! (PLAN.md §2.4, D9: cross-OS/arch digests are report-only). Every target
+//! checks run-to-run bit-identity and prints its digests.
 //!
 //! Run with `PRINT_SEAM_HASHES=1` to print the digests instead of checking.
 
@@ -244,20 +246,41 @@ const EXPECTED: [(&str, u64); 5] = [
     ("slope", 0x1764f34e6e37436f),
 ];
 
-#[test]
-fn no_bodies_no_hooks_is_bit_identical_to_head() {
-    let got = [
+/// The digests above were recorded on x86_64 Linux. PLAN.md §2.4 (D9): the
+/// determinism gate is the same binary on the same machine; cross-OS/arch
+/// results are report-only (aarch64 macOS produces different digests). So
+/// the recorded HEAD digests are asserted only on the recording target.
+const RECORDING_TARGET: bool = cfg!(all(target_arch = "x86_64", target_os = "linux"));
+
+fn digests() -> [(&'static str, u64); 5] {
+    [
         ("spec_scenario", spec_scenario(false)),
         ("spec_scenario_hook", spec_scenario(true)),
         ("box", box_scenario()),
         ("belt", belt_scenario()),
         ("slope", slope_scenario()),
-    ];
+    ]
+}
+
+#[test]
+fn no_bodies_no_hooks_is_bit_identical_to_head() {
+    let got = digests();
     if std::env::var_os("PRINT_SEAM_HASHES").is_some() {
         for (name, h) in got {
             println!("    (\"{name}\", 0x{h:016x}),");
         }
         return;
     }
-    assert_eq!(got, EXPECTED);
+    // Every target: run-to-run bit-identical (same binary, same machine).
+    assert_eq!(digests(), got, "seam digests not stable run to run");
+    // Report-only outside the recording target (D9).
+    for ((name, h), (_, want)) in got.iter().zip(EXPECTED) {
+        println!(
+            "[seam digest] {name}: 0x{h:016x} (x86_64-linux HEAD: 0x{want:016x}, {})",
+            if *h == want { "same" } else { "differs" }
+        );
+    }
+    if RECORDING_TARGET {
+        assert_eq!(got, EXPECTED);
+    }
 }

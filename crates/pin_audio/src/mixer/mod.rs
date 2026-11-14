@@ -6,7 +6,8 @@
 //! [`decode_with_budget`] with a per-bundle [`DecodeBudget`]), and a
 //! lock-free trigger ring ([`trigger_ring`]) fed from the sim thread's
 //! `HostCommandQueue::sounds`. [`Mixer::render`] is pure Rust and renders into
-//! any buffer, so tests run offline; [`SdlOutput`] is a thin SDL3 shell.
+//! any buffer, so tests run offline; [`SdlOutput`] is a thin SDL3 shell
+//! (cargo feature `sdl`, on by default; everything else here is SDL-free).
 //!
 //! # Render semantics
 //! * **Triggers.** `render` first drains every pending [`SoundTrigger`] (at
@@ -46,6 +47,7 @@
 mod decode;
 mod engine;
 mod ring;
+#[cfg(feature = "sdl")]
 mod sdl;
 
 pub use decode::{
@@ -55,4 +57,5 @@ pub use decode::{
 };
 pub use engine::{Bus, Mixer, MixerConfig};
 pub use ring::{SoundReceiver, SoundSender, SoundTrigger, trigger_ring};
+#[cfg(feature = "sdl")]
 pub use sdl::SdlOutput;

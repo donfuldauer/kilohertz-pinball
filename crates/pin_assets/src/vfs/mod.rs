@@ -330,20 +330,58 @@ mod tests {
     use super::*;
 
     /// 4.3 fix round 1, O1: `list` names only what `exists` and `read` find.
+    ///
+    /// The names `list` must skip (`a:`, `x\\y`) and `sub/b:c` cannot be
+    /// created on Windows (os error 3), so they are written on unix only; the
+    /// portable files (nested directories, spaces, dots) and the
+    /// list == exists == read assertions run everywhere (Wave 4 gate fix).
     #[test]
     fn listed_names_exist() {
         let dir = std::env::temp_dir().join(format!("pin_assets_o1_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("sub")).unwrap();
-        for name in ["table.toml", "a:", "x\\y", "sub/b:c", "sub/ok"] {
+        std::fs::create_dir_all(dir.join("sub").join("deep dir")).unwrap();
+        let portable = [
+            "table.toml",
+            "sub/ok",
+            "sub/deep dir/name.v2.txt",
+            ".dotfile",
+        ];
+        #[cfg(unix)]
+        let skipped_or_odd = ["a:", "x\\y", "sub/b:c"];
+        #[cfg(not(unix))]
+        let skipped_or_odd: [&str; 0] = [];
+        for name in portable.iter().chain(&skipped_or_odd) {
             std::fs::write(dir.join(name), b"x").unwrap();
         }
         let vfs = Vfs::open(&dir).unwrap();
         let listed = vfs.list();
-        assert_eq!(listed, ["sub/b:c", "sub/ok", "table.toml"]);
+        let mut expected = vec![
+            ".dotfile",
+            "sub/deep dir/name.v2.txt",
+            "sub/ok",
+            "table.toml",
+        ];
+        if cfg!(unix) {
+            // `a:` (drive letter) and `x\\y` (backslash) are not listed;
+            // `sub/b:c` is, and resolves unchanged.
+            expected.push("sub/b:c");
+        }
+        expected.sort_unstable();
+        assert_eq!(listed, expected);
         for name in &listed {
             assert!(vfs.exists(name), "{name}");
             assert_eq!(vfs.read(name).unwrap(), b"x");
+            // Equivalent spellings normalise to the listed name everywhere.
+            let backslashed = name.replace('/', "\\");
+            let dotted = format!("./{name}");
+            for alias in [backslashed.as_str(), dotted.as_str()] {
+                assert!(vfs.exists(alias), "{alias}");
+                assert_eq!(vfs.read(alias).unwrap(), b"x", "{alias}");
+            }
+        }
+        // Names `list` would skip are rejected by `exists` on every OS.
+        for bad in ["a:", "C:/table.toml", "../table.toml", "/table.toml"] {
+            assert!(!vfs.exists(bad), "{bad}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

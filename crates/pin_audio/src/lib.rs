@@ -4,13 +4,16 @@
 //! module names the subphase that owns it.
 //!
 //! * [`mixer`] (Subphase 3.3): three-bus real-time mixer with voice limiting,
-//!   callout ducking, WAV/Vorbis decoding and an SDL3 output stream.
+//!   callout ducking, WAV/Vorbis decoding and an SDL3 output stream (the
+//!   output stream only with the default cargo feature `sdl`).
 
 pub mod mixer;
 pub mod ssf;
 pub mod telemetry;
 
+#[cfg(feature = "sdl")]
+pub use mixer::SdlOutput;
 pub use mixer::{
-    Bus, DecodeError, Mixer, MixerConfig, Sample, SdlOutput, SoundReceiver, SoundSender,
-    SoundTrigger, decode, trigger_ring,
+    Bus, DecodeError, Mixer, MixerConfig, Sample, SoundReceiver, SoundSender, SoundTrigger, decode,
+    trigger_ring,
 };
