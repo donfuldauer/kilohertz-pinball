@@ -23,18 +23,23 @@ task-executor and checked by the work-verifier. The fast path never routes T2 or
 - Validity and cause are clear (otherwise issue-investigator first).
 - The fix is spelled out by the comment or obvious.
 
-If any check fails, or the Orchestrator is unsure, send the item to the work-classifier.
+If the validity or cause is unclear, the item goes to the issue-investigator first and is then
+triaged again from the investigator's report (fast path if it now passes every check, else the
+work-classifier). Any other failing check, or an unsure Orchestrator, sends the item to the
+work-classifier.
 
 ## 2. Batching procedure (one CodeRabbit review round, or one push)
 
 1. List every new finding.
 2. Triage each one as fast-path T0, fast-path T1, or classifier.
-3. Send all non-fast-path items to ONE work-classifier call as a batch.
-4. Group fast-path items by tier into one Fixer brief per tier; items that touch the same file
-   go in the same brief.
-5. Spawn executors, in parallel when owned paths do not overlap.
-6. Run ONE work-verifier on the resulting head commit covering every item in the round.
-7. Reply to and resolve threads per §2.7 step 3 / D37.
+3. Send findings whose validity or cause is unclear to the issue-investigator first (in
+   parallel when independent), then triage each again from its report.
+4. Send all remaining non-fast-path items to ONE work-classifier call as a batch.
+5. Group fast-path items by tier into one Fixer brief per tier. When items of different tiers
+   touch the same file, put them in one brief at the higher tier.
+6. Spawn executors, in parallel when owned paths do not overlap.
+7. Run ONE work-verifier on the resulting head commit covering every item in the round.
+8. Reply to and resolve threads per §2.7 step 3 / D37.
 
 ## 3. Fixer brief template
 
@@ -48,7 +53,7 @@ MODEL: <Haiku 5.5 | Sonnet 5.5>   TIER: T0 | T1
 BRANCH: <branch>   PR: <number>
 
 OWNED PATHS (you may modify only these):
-  <paths; every file the findings touch, nothing else>
+  <every file the findings touch, plus the regression test file for each code finding, nothing else>
 
 GOAL
   <one paragraph: the findings in this brief are fixed with the smallest change>
@@ -61,6 +66,11 @@ REQUIREMENTS
      Fixed means: <exact observable condition>
   For each finding, report the thread URL and what changed. Do not reply to or resolve
   threads; the Orchestrator does (D37).
+
+TESTS REQUIRED
+  A regression test for each finding that changes code, in the test path listed under OWNED
+  PATHS; for docs/config-only findings write "none (docs only)". Also list the existing suites
+  that must still pass.
 
 RULES
 1. **Crate and module boundaries.** An agent edits only its target crate and module directory. Where two subphases share a crate in one wave, each owns a module directory and the earlier subphase pre-stubs the `mod` declarations.
