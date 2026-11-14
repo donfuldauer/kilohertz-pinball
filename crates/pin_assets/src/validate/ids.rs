@@ -169,21 +169,49 @@ pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// Suggestion work one manifest (or one glTF binding check) may spend, in
+/// [`suggest_within`] units: one per candidate visited plus the cells of each
+/// edit-distance table. Generous for real tables (thousands of names), and it
+/// bounds a hostile one that pairs many unknown references with many names.
+pub(crate) const SUGGEST_WORK_BUDGET: u64 = 1 << 26;
+
 /// The candidate closest to `name` within edit distance 2, if any (ties go to
 /// the earliest candidate).
+#[cfg(test)]
 pub(crate) fn suggest<'a>(
     name: &str,
     candidates: impl Iterator<Item = &'a str>,
 ) -> Option<&'a str> {
+    let mut unlimited = u64::MAX;
+    suggest_within(name, candidates, &mut unlimited)
+}
+
+/// The nearest candidate (as `suggest`) charging its work to `budget`: once the budget is spent the
+/// scan stops (no suggestion is made once it is empty).
+pub(crate) fn suggest_within<'a>(
+    name: &str,
+    candidates: impl Iterator<Item = &'a str>,
+    budget: &mut u64,
+) -> Option<&'a str> {
     // Skip pathological inputs: the distance is quadratic in length.
-    if name.len() > 256 {
+    if name.len() > 256 || *budget == 0 {
         return None;
     }
     let mut best: Option<(usize, &str)> = None;
     for c in candidates {
         if c.len() > 256 || c.len().abs_diff(name.len()) > 2 {
+            *budget = budget.saturating_sub(1);
+            if *budget == 0 {
+                break;
+            }
             continue;
         }
+        let cost = 1 + (name.len() as u64 + 1) * (c.len() as u64 + 1);
+        if *budget < cost {
+            *budget = 0;
+            break;
+        }
+        *budget -= cost;
         let d = edit_distance(name, c);
         if d <= 2 && best.is_none_or(|(bd, _)| d < bd) {
             best = Some((d, c));
@@ -213,6 +241,38 @@ mod tests {
         assert_eq!(suggest("zzzzz", c.into_iter()), None);
         let long = "x".repeat(300);
         assert_eq!(suggest(&long, c.into_iter()), None);
+    }
+
+    /// CodeRabbit PR 4: suggestion work is bounded per budget.
+    #[test]
+    fn suggestion_budget() {
+        let c = ["alpha", "beta", "betta"];
+        let mut budget = SUGGEST_WORK_BUDGET;
+        assert_eq!(
+            suggest_within("bet", c.into_iter(), &mut budget),
+            Some("beta")
+        );
+        assert!(budget < SUGGEST_WORK_BUDGET);
+        let mut empty = 0;
+        assert_eq!(suggest_within("bet", c.into_iter(), &mut empty), None);
+        // Too little for one distance table: the scan stops, budget spent.
+        let mut tight = 5;
+        assert_eq!(suggest_within("bet", c.into_iter(), &mut tight), None);
+        assert_eq!(tight, 0);
+        // 10 000 misses over 10 000 six-byte names stop once the budget is
+        // gone instead of running 10^8 distance computations.
+        let names: Vec<String> = (0..10_000).map(|i| format!("c{i:05}")).collect();
+        let mut budget = SUGGEST_WORK_BUDGET;
+        let mut computed = 0;
+        for _ in 0..10_000 {
+            if budget == 0 {
+                break;
+            }
+            let _ = suggest_within("x00000", names.iter().map(String::as_str), &mut budget);
+            computed += 1;
+        }
+        assert_eq!(budget, 0);
+        assert!(computed < 2_000, "{computed} scans ran");
     }
 
     #[test]
