@@ -16,8 +16,8 @@
 use std::path::PathBuf;
 
 use pin_core::telemetry::{
-    decode_datagram, encode_datagram, TelemetryEntry, TelemetryKind, FLAG_FULL_STATE,
-    MAX_DATAGRAM_LEN, MAX_ENTRIES_PER_DATAGRAM,
+    FLAG_FULL_STATE, MAX_DATAGRAM_LEN, MAX_ENTRIES_PER_DATAGRAM, TelemetryEntry, TelemetryKind,
+    decode_datagram, encode_datagram,
 };
 
 const SWITCHES: usize = 256;

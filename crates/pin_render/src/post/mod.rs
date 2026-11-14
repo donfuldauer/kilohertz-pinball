@@ -255,7 +255,7 @@ fn project_px(camera: &PbrCamera, p: [f32; 3], width: u32, height: u32) -> Optio
     let m = camera.view_proj();
     let c: [f32; 4] =
         core::array::from_fn(|r| m[0][r] * p[0] + m[1][r] * p[1] + m[2][r] * p[2] + m[3][r]);
-    if !(c[3] > camera.near * 0.5) || !c.iter().all(|v| v.is_finite()) {
+    if !c.iter().all(|v| v.is_finite()) || c[3] <= camera.near * 0.5 {
         return None;
     }
     let (nx, ny) = (c[0] / c[3], c[1] / c[3]);

@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use pin_app::dof::{
-    platform_supported, DofBridge, DofError, DofLaunchConfig, DofMapEntry, DofSourceKind,
-    ResolvedDofMap,
+    DofBridge, DofError, DofLaunchConfig, DofMapEntry, DofSourceKind, ResolvedDofMap,
+    platform_supported,
 };
 use pin_core::schema::table::{DofElementType, TableManifest};
 
