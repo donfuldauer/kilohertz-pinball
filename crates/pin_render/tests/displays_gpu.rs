@@ -15,9 +15,15 @@ use pin_render::gpu::{GpuContext, context_for_tests};
 use pin_render::topology::{
     DEFAULT_BACKGLASS_PIP, DEFAULT_SCORE_PIP, DisplayInfo, Rect, TopologyMode, plan_topology,
 };
+use std::sync::OnceLock;
 
-fn ctx(name: &str) -> Option<GpuContext> {
-    context_for_tests(name)
+/// One device per test process, shared by every test (wave 5 gate fix: a
+/// device per test thread crashed lavapipe in CI, as in DECISIONS "1.4 — CI
+/// fix: lavapipe SIGSEGV and macOS occlusion"; post_gpu, reflections_gpu and
+/// gpu_pbr_render share theirs the same way). `name` labels the first log line.
+fn ctx(name: &str) -> Option<&'static GpuContext> {
+    static CTX: OnceLock<Option<GpuContext>> = OnceLock::new();
+    CTX.get_or_init(|| context_for_tests(name)).as_ref()
 }
 
 fn out_dir() -> std::path::PathBuf {
@@ -104,7 +110,7 @@ fn text_scene(text: &str, size: f32) -> Scene {
 fn check_dmd(name: &str, spec: DmdSpec, frame: &DmdFrame, pitch: u32) -> RgbaImage {
     let ctx = ctx(name).unwrap();
     let (w, h) = (spec.width * pitch, spec.height * pitch);
-    let img = render_dmd_to_image(&ctx, spec, frame, w, h).unwrap();
+    let img = render_dmd_to_image(ctx, spec, frame, w, h).unwrap();
     let g = dmd_geometry(&spec, Rect::new(0, 0, w, h));
     assert_eq!(g.pitch, pitch as f32);
     let (mut lit, mut unlit) = (Vec::new(), Vec::new());
@@ -193,7 +199,7 @@ fn dmd_letterboxes_in_a_pip() {
         *d = [255; 3];
     }
     // 4:1 DMD in a 600 × 300 viewport: pitch 600/128, centred vertically.
-    let img = render_dmd_to_image(&ctx, DMD_128X32, &frame, 600, 300).unwrap();
+    let img = render_dmd_to_image(ctx, DMD_128X32, &frame, 600, 300).unwrap();
     let g = dmd_geometry(&DMD_128X32, Rect::new(0, 0, 600, 300));
     assert!((g.origin[1] - (300.0 - g.pitch * 32.0) / 2.0).abs() < 1e-3);
     assert_eq!(&img.pixel(300, 2)[..3], &[0, 0, 0], "letterbox");
@@ -260,7 +266,7 @@ fn dmd_placeholder_scenes_render() {
             .find(|&t| DmdFrame::compose(&spec, scene, t + 450, &st, &im).lit_count() > 20)
             .unwrap_or_else(|| panic!("{id} shows nothing"));
         let frame = DmdFrame::compose(&spec, scene, t + 450, &st, &im);
-        let img = render_dmd_to_image(&ctx, spec, &frame, 512, 128).unwrap();
+        let img = render_dmd_to_image(ctx, spec, &frame, 512, 128).unwrap();
         save(&format!("scene_{id}"), &img);
     }
 }
@@ -309,7 +315,7 @@ fn lamp_mask_blending_is_linear_and_local() {
         let render = |i: f32| {
             let mut lamps = [0.0f32; 16];
             lamps[7] = i;
-            render_backglass_to_image(&ctx, &desc, &lamps, w, h).unwrap()
+            render_backglass_to_image(ctx, &desc, &lamps, w, h).unwrap()
         };
         let imgs: Vec<_> = [0.0, 0.5, 1.0].map(render).into();
         for (k, i) in [0.0f32, 0.5, 1.0].iter().enumerate() {
@@ -408,8 +414,8 @@ fn kit_backglass_lights_only_inside_mask() {
             },
         ],
     };
-    let off = render_backglass_to_image(&ctx, &desc, &[0.0, 0.0], fw, fh).unwrap();
-    let on = render_backglass_to_image(&ctx, &desc, &[1.0, 1.0], fw, fh).unwrap();
+    let off = render_backglass_to_image(ctx, &desc, &[0.0, 0.0], fw, fh).unwrap();
+    let on = render_backglass_to_image(ctx, &desc, &[1.0, 1.0], fw, fh).unwrap();
     let (mut changed_in, mut changed_out) = (0, 0);
     for y in 0..fh {
         for x in 0..fw {
@@ -435,10 +441,10 @@ fn kit_backglass_lights_only_inside_mask() {
     assert!((0..3).all(|c| b[c] >= a[c]) && luma(b) > luma(a) + 50.0);
     snapshot("backglass_kit_lit", &on);
     save("backglass_kit_off", &off);
-    let half = render_backglass_to_image(&ctx, &desc, &[0.5, 0.5], fw, fh).unwrap();
+    let half = render_backglass_to_image(ctx, &desc, &[0.5, 0.5], fw, fh).unwrap();
     save("backglass_kit_half", &half);
     // Renderer change detection.
-    let mut r = BackglassRenderer::new(&ctx, wgpu::TextureFormat::Rgba8Unorm, &desc).unwrap();
+    let mut r = BackglassRenderer::new(ctx, wgpu::TextureFormat::Rgba8Unorm, &desc).unwrap();
     assert_eq!(r.lamps(), vec![LampId(0), LampId(1)]);
     assert_eq!(r.aspect(), (512, 384));
     assert!(r.needs_redraw(&[0.0, 0.0]));
@@ -507,7 +513,7 @@ fn lcd_layer_order_and_alpha() {
         color: [255, 255, 255, 64],
     };
     let a = render_lcd_to_image(
-        &ctx,
+        ctx,
         spec,
         &list(vec![red.clone(), green_half.clone(), blue_img.clone()]),
         &images,
@@ -530,7 +536,7 @@ fn lcd_layer_order_and_alpha() {
     );
     // Reversed order: the opaque red covers everything.
     let b = render_lcd_to_image(
-        &ctx,
+        ctx,
         spec,
         &list(vec![green_half, blue_img, red]),
         &images,
@@ -556,7 +562,7 @@ fn lcd_score_legible_at_16_9() {
         panic!()
     };
     let (w, h) = (640, 360);
-    let img = render_lcd_to_image(&ctx, spec, &list, &ImageSet::new(), w, h).unwrap();
+    let img = render_lcd_to_image(ctx, spec, &list, &ImageSet::new(), w, h).unwrap();
     // Analytic: text pixels lie inside the text boxes, everything else is the
     // black background; each glyph cell of the score has ink.
     let s = w as f32 / 1920.0;
@@ -617,7 +623,7 @@ fn lcd_score_legible_at_16_9() {
     for id in ["scene_powerball_mania", "scene_attract", "scene_jackpot"] {
         let scene = lib.get(lib.id_of(id).unwrap()).unwrap();
         let list = LcdDrawList::compose(&spec, scene, 450, model.scores(), &ImageSet::new());
-        let img = render_lcd_to_image(&ctx, spec, &list, &ImageSet::new(), w, h).unwrap();
+        let img = render_lcd_to_image(ctx, spec, &list, &ImageSet::new(), w, h).unwrap();
         save(&format!("lcd_{id}"), &img);
     }
 }
@@ -653,9 +659,9 @@ fn display_set_draws_into_pip_viewports_only() {
         }],
     };
     let mut set = DisplaySet {
-        backglass: Some(BackglassRenderer::new(&ctx, format, &desc).unwrap()),
+        backglass: Some(BackglassRenderer::new(ctx, format, &desc).unwrap()),
         score: Some(ScoreRenderer::new(
-            &ctx,
+            ctx,
             format,
             ScoreDisplayConfig::Dmd(DMD_128X32),
         )),
@@ -789,10 +795,10 @@ fn oversized_and_invalid_images_are_refused() {
             pixels: vec![0; 10],
         },
     ];
-    let mut lcd = LcdRenderer::new(&ctx, fmt, LcdSpec::default());
+    let mut lcd = LcdRenderer::new(ctx, fmt, LcdSpec::default());
     let base = lcd.texture_count();
     for img in &bad {
-        let e = lcd.set_image(&ctx, "a.png", img).unwrap_err();
+        let e = lcd.set_image(ctx, "a.png", img).unwrap_err();
         assert!(
             matches!(e, pin_render::gpu::GpuError::InvalidArgument(_)),
             "{e}"
@@ -806,7 +812,7 @@ fn oversized_and_invalid_images_are_refused() {
             items: vec![],
         };
         assert!(
-            render_lcd_to_image(&ctx, LcdSpec::new(16, 16).unwrap(), &list, &set, 16, 9).is_err()
+            render_lcd_to_image(ctx, LcdSpec::new(16, 16).unwrap(), &list, &set, 16, 9).is_err()
         );
         for (image, mask) in [
             (img.clone(), solid(4, 4, [0; 4])),
@@ -822,20 +828,18 @@ fn oversized_and_invalid_images_are_refused() {
                     }),
                 }],
             };
-            assert!(BackglassRenderer::new(&ctx, fmt, &desc).is_err());
+            assert!(BackglassRenderer::new(ctx, fmt, &desc).is_err());
         }
     }
     assert_eq!(lcd.texture_count(), base, "nothing uploaded");
     // Setting the same file again replaces the texture in place.
-    lcd.set_image(&ctx, "a.png", &solid(2, 2, [255; 4]))
+    lcd.set_image(ctx, "a.png", &solid(2, 2, [255; 4])).unwrap();
+    lcd.set_image(ctx, "a.png", &solid(3, 3, [0, 0, 255, 255]))
         .unwrap();
-    lcd.set_image(&ctx, "a.png", &solid(3, 3, [0, 0, 255, 255]))
-        .unwrap();
-    lcd.set_image(&ctx, "b.png", &solid(1, 1, [255; 4]))
-        .unwrap();
+    lcd.set_image(ctx, "b.png", &solid(1, 1, [255; 4])).unwrap();
     assert_eq!(lcd.texture_count(), base + 2);
     // A refused replacement keeps the previous image.
-    assert!(lcd.set_image(&ctx, "a.png", &bad[0]).is_err());
+    assert!(lcd.set_image(ctx, "a.png", &bad[0]).is_err());
     let spec = LcdSpec::new(16, 16).unwrap();
     let list = LcdDrawList {
         width: 16,
@@ -847,12 +851,12 @@ fn oversized_and_invalid_images_are_refused() {
             color: [255; 4],
         }],
     };
-    let mut r = LcdRenderer::new(&ctx, fmt, spec);
-    r.set_image(&ctx, "a.png", &solid(2, 2, [255; 4])).unwrap();
-    r.set_image(&ctx, "a.png", &solid(3, 3, [0, 0, 255, 255]))
+    let mut r = LcdRenderer::new(ctx, fmt, spec);
+    r.set_image(ctx, "a.png", &solid(2, 2, [255; 4])).unwrap();
+    r.set_image(ctx, "a.png", &solid(3, 3, [0, 0, 255, 255]))
         .unwrap();
     r.set_draw_list(ctx.queue(), &list);
-    let img = offscreen(&ctx, 16, 16, |enc, view| {
+    let img = offscreen(ctx, 16, 16, |enc, view| {
         r.encode(enc, view, (16, 16), Rect::new(0, 0, 16, 16));
     });
     assert_eq!(&img.pixel(8, 8)[..3], &[0, 0, 255], "replacement drawn");
@@ -925,7 +929,7 @@ fn mark_dirty_forces_a_redraw_report() {
     };
     let fmt = wgpu::TextureFormat::Rgba8Unorm;
     let frame = DmdFrame::new(128, 32);
-    let mut d = DmdRenderer::new(&ctx, fmt, DMD_128X32);
+    let mut d = DmdRenderer::new(ctx, fmt, DMD_128X32);
     assert!(d.set_frame(ctx.queue(), &frame));
     assert!(!d.set_frame(ctx.queue(), &frame));
     d.mark_dirty();
@@ -937,18 +941,18 @@ fn mark_dirty_forces_a_redraw_report() {
         background: [0; 3],
         items: vec![],
     };
-    let mut l = LcdRenderer::new(&ctx, fmt, LcdSpec::new(16, 16).unwrap());
+    let mut l = LcdRenderer::new(ctx, fmt, LcdSpec::new(16, 16).unwrap());
     assert!(l.set_draw_list(ctx.queue(), &list));
     assert!(!l.set_draw_list(ctx.queue(), &list));
     l.mark_dirty();
     assert!(l.set_draw_list(ctx.queue(), &list));
-    l.set_image(&ctx, "x.png", &solid(1, 1, [0; 4])).unwrap();
+    l.set_image(ctx, "x.png", &solid(1, 1, [0; 4])).unwrap();
     assert!(
         l.set_draw_list(ctx.queue(), &list),
         "new image needs a redraw"
     );
     assert!(!l.set_draw_list(ctx.queue(), &list));
-    let mut s = ScoreRenderer::new(&ctx, fmt, ScoreDisplayConfig::Dmd(DMD_128X32));
+    let mut s = ScoreRenderer::new(ctx, fmt, ScoreDisplayConfig::Dmd(DMD_128X32));
     let c = DisplayContent::Dmd(frame);
     assert!(s.update(ctx.queue(), &c));
     assert!(!s.update(ctx.queue(), &c));

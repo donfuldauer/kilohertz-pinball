@@ -9,6 +9,7 @@
 //! `SPEC_5_3_BLESS=1` to (re)write them; they are written only after the analytic checks.
 #![cfg(feature = "gpu-tests")]
 #![allow(clippy::needless_range_loop)] // channel indices read clearer as ranges
+#![allow(clippy::needless_borrow)] // wave 5 gate fix: `ctx` became a shared `&'static GpuContext`; call sites unchanged
 
 use pin_assetgen::fonts::{FONT_5X7, FONT_8X16, blit_text};
 use pin_core::LampId;
@@ -25,6 +26,14 @@ use pin_render::gpu::{GpuContext, context_for_tests, wgpu};
 use pin_render::topology::{
     Corner, DisplayInfo, PipPlacement, Rect, SurfaceRole, TopologyMode, plan_topology,
 };
+
+/// One device per test process, shared by every test (wave 5 gate fix:
+/// creating and dropping a device per test thread crashed lavapipe in CI;
+/// DECISIONS "Wave 5 gate fix"). `name` labels the first log line.
+fn shared_context(name: &str) -> Option<&'static GpuContext> {
+    static CTX: std::sync::OnceLock<Option<GpuContext>> = std::sync::OnceLock::new();
+    CTX.get_or_init(|| context_for_tests(name)).as_ref()
+}
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
@@ -352,7 +361,7 @@ fn check_dmd_dots(
 
 #[test]
 fn dmd_text_dot_positions_and_colours_both_sizes_three_colour_modes() {
-    let Some(ctx) = context_for_tests("dmd_text_dot_positions") else {
+    let Some(ctx) = shared_context("dmd_text_dot_positions") else {
         return;
     };
     // (dots, pitch in px, big font, scale, text)
@@ -431,7 +440,7 @@ fn dmd_text_dot_positions_and_colours_both_sizes_three_colour_modes() {
 
 #[test]
 fn dmd_dots_are_round_and_evenly_pitched() {
-    let Some(ctx) = context_for_tests("dmd_dots_round") else {
+    let Some(ctx) = shared_context("dmd_dots_round") else {
         return;
     };
     for (w, h, pitch) in [(128u32, 32u32, 10u32), (192, 64, 8)] {
@@ -558,7 +567,7 @@ fn dmd_dots_are_round_and_evenly_pitched() {
 
 #[test]
 fn dmd_drive_levels_are_linear_and_rgb_dots_take_their_colour() {
-    let Some(ctx) = context_for_tests("dmd_drive_levels") else {
+    let Some(ctx) = shared_context("dmd_drive_levels") else {
         return;
     };
     // Mono: 16 drive levels in one row, one dot each.
@@ -631,7 +640,7 @@ fn dmd_drive_levels_are_linear_and_rgb_dots_take_their_colour() {
 
 #[test]
 fn dmd_fractional_pitch_is_centred_and_letterboxed() {
-    let Some(ctx) = context_for_tests("dmd_fractional_pitch") else {
+    let Some(ctx) = shared_context("dmd_fractional_pitch") else {
         return;
     };
     let spec = DmdSpec::new(128, 32, DmdColor::Red).unwrap();
@@ -712,7 +721,7 @@ fn find_text(frame: &DmdFrame, text: &str) -> Option<(bool, u32, u32, u32)> {
 
 #[test]
 fn dmd_score_view_renders_the_formatted_score_as_font_dots() {
-    let Some(ctx) = context_for_tests("dmd_score_view") else {
+    let Some(ctx) = shared_context("dmd_score_view") else {
         return;
     };
     for (w, h, pitch) in [(128u32, 32u32, 6u32), (192, 64, 4)] {
@@ -762,7 +771,7 @@ fn dmd_score_view_renders_the_formatted_score_as_font_dots() {
 
 #[test]
 fn placeholder_scenes_render_on_dmd_and_lcd() {
-    let Some(ctx) = context_for_tests("placeholder_scenes_render") else {
+    let Some(ctx) = shared_context("placeholder_scenes_render") else {
         return;
     };
     let ids = [
@@ -930,7 +939,7 @@ fn spread(img: &RgbaImage, r: (u32, u32, u32, u32)) -> f32 {
 
 #[test]
 fn backglass_lamp_mask_blend_is_linear_inside_and_zero_outside() {
-    let Some(ctx) = context_for_tests("backglass_lamp_mask_linear") else {
+    let Some(ctx) = shared_context("backglass_lamp_mask_linear") else {
         return;
     };
     let desc = lamp_desc(LayerBlend::Over, LIT, BASE);
@@ -1013,7 +1022,7 @@ fn backglass_lamp_mask_blend_is_linear_inside_and_zero_outside() {
 
 #[test]
 fn backglass_lamp_layer_alpha_scales_the_blend() {
-    let Some(ctx) = context_for_tests("backglass_layer_alpha") else {
+    let Some(ctx) = shared_context("backglass_layer_alpha") else {
         return;
     };
     // Layer alpha 102/255 = 0.4: k = mask · lamp · 0.4.
@@ -1038,7 +1047,7 @@ fn backglass_lamp_layer_alpha_scales_the_blend() {
 
 #[test]
 fn backglass_flashers_are_additive() {
-    let Some(ctx) = context_for_tests("backglass_flashers_additive") else {
+    let Some(ctx) = shared_context("backglass_flashers_additive") else {
         return;
     };
     let flash = [100u8, 60, 20, 255];
@@ -1092,7 +1101,7 @@ fn backglass_flashers_are_additive() {
 
 #[test]
 fn backglass_layers_composite_back_to_front_with_alpha() {
-    let Some(ctx) = context_for_tests("backglass_layer_order") else {
+    let Some(ctx) = shared_context("backglass_layer_order") else {
         return;
     };
     let (w, h) = (96u32, 72u32);
@@ -1181,7 +1190,7 @@ fn backglass_layers_composite_back_to_front_with_alpha() {
 
 #[test]
 fn backglass_is_letterboxed_to_the_first_layers_aspect() {
-    let Some(ctx) = context_for_tests("backglass_letterbox") else {
+    let Some(ctx) = shared_context("backglass_letterbox") else {
         return;
     };
     let desc = lamp_desc(LayerBlend::Over, LIT, BASE); // 96 × 72 = 4:3
@@ -1225,7 +1234,7 @@ fn lcd_list(items: Vec<LcdItem>) -> LcdDrawList {
 
 #[test]
 fn lcd_layer_order_and_alpha_compositing() {
-    let Some(ctx) = context_for_tests("lcd_layer_order_alpha") else {
+    let Some(ctx) = shared_context("lcd_layer_order_alpha") else {
         return;
     };
     let spec = LcdSpec::new(320, 180).unwrap();
@@ -1329,7 +1338,7 @@ fn lcd_layer_order_and_alpha_compositing() {
 
 #[test]
 fn lcd_images_composite_with_item_and_texel_alpha() {
-    let Some(ctx) = context_for_tests("lcd_image_alpha") else {
+    let Some(ctx) = shared_context("lcd_image_alpha") else {
         return;
     };
     let spec = LcdSpec::new(320, 180).unwrap();
@@ -1413,7 +1422,7 @@ fn lcd_images_composite_with_item_and_texel_alpha() {
 
 #[test]
 fn lcd_vector_text_follows_the_5x7_glyphs_and_scales() {
-    let Some(ctx) = context_for_tests("lcd_vector_text") else {
+    let Some(ctx) = shared_context("lcd_vector_text") else {
         return;
     };
     let spec = LcdSpec::new(320, 180).unwrap();
@@ -1541,7 +1550,7 @@ fn lcd_vector_text_follows_the_5x7_glyphs_and_scales() {
 
 #[test]
 fn lcd_canvas_is_fitted_16_9_with_black_letterbox() {
-    let Some(ctx) = context_for_tests("lcd_letterbox") else {
+    let Some(ctx) = shared_context("lcd_letterbox") else {
         return;
     };
     let spec = LcdSpec::new(1920, 1080).unwrap();
@@ -1621,7 +1630,7 @@ fn lcd_canvas_is_fitted_16_9_with_black_letterbox() {
 
 #[test]
 fn dmd_and_lcd_renderers_report_change_only_on_new_content() {
-    let Some(ctx) = context_for_tests("change_detection_score") else {
+    let Some(ctx) = shared_context("change_detection_score") else {
         return;
     };
     let spec = DmdSpec::new(128, 32, DmdColor::Orange).unwrap();
@@ -1690,7 +1699,7 @@ fn dmd_and_lcd_renderers_report_change_only_on_new_content() {
 
 #[test]
 fn score_model_drives_renderer_updates_only_when_scores_or_scenes_change() {
-    let Some(ctx) = context_for_tests("change_detection_model") else {
+    let Some(ctx) = shared_context("change_detection_model") else {
         return;
     };
     let spec = DmdSpec::new(128, 32, DmdColor::Orange).unwrap();
@@ -1752,7 +1761,7 @@ fn encode_backglass(
 
 #[test]
 fn backglass_needs_redraw_only_when_a_referenced_lamp_moves() {
-    let Some(ctx) = context_for_tests("change_detection_backglass") else {
+    let Some(ctx) = shared_context("change_detection_backglass") else {
         return;
     };
     let desc = lamp_desc(LayerBlend::Over, LIT, BASE);
@@ -1906,7 +1915,7 @@ fn inside(r: &Rect, x: u32, y: u32) -> bool {
 
 #[test]
 fn routing_single_monitor_draws_both_displays_into_their_pip_regions_only() {
-    let Some(ctx) = context_for_tests("routing_pip") else {
+    let Some(ctx) = shared_context("routing_pip") else {
         return;
     };
     let spec = DmdSpec::new(128, 32, DmdColor::Orange).unwrap();
@@ -2008,7 +2017,7 @@ fn routing_single_monitor_draws_both_displays_into_their_pip_regions_only() {
 
 #[test]
 fn routing_cabinet_draws_each_display_in_its_dedicated_window() {
-    let Some(ctx) = context_for_tests("routing_dedicated") else {
+    let Some(ctx) = shared_context("routing_dedicated") else {
         return;
     };
     let spec = DmdSpec::new(128, 32, DmdColor::Orange).unwrap();

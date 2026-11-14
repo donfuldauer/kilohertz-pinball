@@ -331,3 +331,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | gate fix | Implementer | Opus 5.5 | 1 | running | — | |
 | 5 | 2.8 | Implementer | Opus 5.5 | polish | done | pin_tablegen 158/158; large_ball/spec_2_8/seam 35/35; clippy clean | N5 needle areas (Polygon::covers), N2/N3/N6 docs |
 | 5 | 2.8 | Orchestrator re-run | — | final | **green** | fmt clean; pin_physics + pin_tablegen 885 passed, 0 failed | **2.8 complete**; physics target dirs deleted. **All seven Wave 5 subphases complete**; gate fix in progress |
+| 5 | gate fix | Implementer | Opus 5.5 | 1 | done | fmt/clippy clean; spec_ci 20/20; .NET 123 + 176; pin_app dof 38; displays_gpu 11, spec_5_3_gpu 20, ui_overlay_gpu 5 (lavapipe), 25× repeat 0 failures | Windows UDP oversized datagram silently dropped (real defect, fixed); shared GpuContext in displays_gpu/spec_5_3_gpu; Metal background on a rounding boundary (test colour + grey-pixel blob mask); spec_ci replay-hash contract; cfg(unix) import |
+| 5 | gate fix | Reviewer | Fable 5.2 | 1 | running | — | |

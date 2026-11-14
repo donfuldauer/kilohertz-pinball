@@ -20,7 +20,13 @@ use pin_render::ui::{
 use std::sync::OnceLock;
 
 /// Bright, warm "playfield" (written as-is into Rgba8Unorm).
-const BG: [f32; 4] = [0.9, 0.85, 0.6, 1.0];
+///
+/// Every channel is an exact `k / 255`, so the clear colour converts to the
+/// same byte on every backend. (Wave 5 gate fix: it was 0.9, 0.85, 0.6, and
+/// `0.9_f32 · 255` = 229.49999 sits on a rounding boundary; Metal stored 229
+/// where lavapipe stored 230, so every background pixel differed from
+/// `bg_u8()` and the panel's rounded corners counted as "bright" glyph blobs.)
+const BG: [f32; 4] = [230.0 / 255.0, 217.0 / 255.0, 153.0 / 255.0, 1.0];
 
 fn ctx() -> Option<&'static GpuContext> {
     static CTX: OnceLock<Option<GpuContext>> = OnceLock::new();
@@ -180,10 +186,14 @@ fn bright_mask(px: &[u8], dims: [u32; 2], panel: [u32; 4]) -> Vec<bool> {
     for y in panel[1]..panel[3] {
         for x in panel[0]..panel[2] {
             let i = (y * dims[0] + x) as usize;
-            // Bright and not the background (the panel's rounded corners
-            // leave background pixels inside the rect).
+            // Bright and grey: white text over the near-neutral backdrop.
+            // The panel's rounded corners leave playfield pixels inside the
+            // rect; those are bright too but strongly coloured (blue 77 below
+            // red), so they never count, whatever byte the backend's clear
+            // rounds the background to.
             let p = &px[i * 4..i * 4 + 4];
-            m[i] = luma(p) > 128.0 && p != bg_u8();
+            let spread = p[..3].iter().max().unwrap() - p[..3].iter().min().unwrap();
+            m[i] = luma(p) > 128.0 && spread < 32;
         }
     }
     m
