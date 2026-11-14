@@ -440,3 +440,62 @@ fn wrong_format_rejection_hands_its_textures_to_a_replacement_painter() {
         "text lost after a wrong-format rejection: {lit} lit px"
     );
 }
+
+/// A texture uploaded by a deferred (rejected) frame and drawn for the last
+/// time by the next painted frame, which also frees it: the painter must
+/// upload it before drawing and free it only afterwards. (Merging the two
+/// texture deltas with `TexturesDelta::append` dropped the upload.)
+#[test]
+fn deferred_upload_freed_by_the_next_painted_frame_is_still_drawn() {
+    let Some(gpu) = ctx() else { return };
+    let dims = [64, 64];
+    let ectx = egui::Context::default();
+    let mut painter = OverlayPainter::new(
+        gpu.device(),
+        pin_render::gpu::wgpu::TextureFormat::Rgba8Unorm,
+    );
+    let rect = egui::Rect::from_min_max(egui::pos2(16.0, 16.0), egui::pos2(48.0, 48.0));
+    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    let mut handle: Option<egui::TextureHandle> = None;
+    let first = ectx.run_ui(raw_input(dims, 1.0, Vec::new(), None), |ui| {
+        let tex = ui.ctx().load_texture(
+            "red",
+            egui::ColorImage::filled([4, 4], egui::Color32::RED),
+            egui::TextureOptions::NEAREST,
+        );
+        ui.painter().image(tex.id(), rect, uv, egui::Color32::WHITE);
+        handle = Some(tex);
+    });
+    let id = handle.as_ref().unwrap().id();
+    assert!(
+        first.textures_delta.set.contains_key(&id),
+        "the first frame did not upload the texture"
+    );
+    assert!(
+        paint_offscreen_with(gpu, &mut painter, 0, 0, BG, OverlayFrame::new(&ectx, first)).is_err()
+    );
+    let second = ectx.run_ui(raw_input(dims, 1.0, Vec::new(), None), |ui| {
+        ui.painter().image(id, rect, uv, egui::Color32::WHITE);
+        handle = None; // last use: egui frees the texture in this frame
+    });
+    assert!(
+        second.textures_delta.free.contains(&id),
+        "the second frame did not free the texture: the test would not show the loss"
+    );
+    let px = paint_offscreen_with(
+        gpu,
+        &mut painter,
+        dims[0],
+        dims[1],
+        BG,
+        OverlayFrame::new(&ectx, second),
+    )
+    .unwrap();
+    let at = |x: usize, y: usize| &px[(y * dims[0] as usize + x) * 4..][..4];
+    let c = at(32, 32);
+    assert!(
+        c[0] > 200 && c[1] < 60 && c[2] < 60,
+        "deferred texture not drawn: centre pixel {c:?}"
+    );
+    assert_eq!(at(2, 2), bg_u8(), "outside the image");
+}
