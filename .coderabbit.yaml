@@ -1,0 +1,27 @@
+# CodeRabbit is the only code reviewer in the run (PLAN.md §2.7, D36).
+language: en-US
+reviews:
+  profile: chill
+  # Approve once every comment is resolved, so the merge conditions in §2.7 can be checked.
+  request_changes_workflow: true
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+  path_instructions:
+    - path: "crates/**/src/**"
+      instructions: >-
+        Check PLAN.md §2.3: no heap allocation, mutex or file I/O inside step_1ms();
+        fixed iteration order (no HashMap iteration); SI units internally; no branches on
+        named behaviours in solver code; pin_core changes only through contracts/CHANGE_REQUESTS.md.
+    - path: "crates/**/tests/**"
+      instructions: >-
+        Tests must not sleep or assert on wall-clock time. Flag skipped, ignored or weakened
+        assertions.
+    - path: "docs/**"
+      instructions: >-
+        Planning and decision records. Check consistency with PLAN.md decision rows D1–D36.
+chat:
+  auto_reply: true
