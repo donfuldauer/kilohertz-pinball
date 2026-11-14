@@ -100,9 +100,17 @@ public sealed class UdpBridgeHost : IDisposable
             {
                 n = _socket.Receive(buffer);
             }
-            catch (SocketException e) when (!_stopping && (e.SocketErrorCode is SocketError.ConnectionReset or SocketError.MessageSize))
+            catch (SocketException e) when (!_stopping && e.SocketErrorCode is SocketError.MessageSize)
             {
-                // Windows reports ICMP port-unreachable and oversized datagrams this way; skip them.
+                // Windows (WSAEMSGSIZE) reports a datagram larger than the buffer as an error after
+                // filling the buffer with its first bytes and discarding the rest; Linux and macOS
+                // return the truncated length. Treat both alike: it is a received datagram, one byte
+                // longer than any valid one, so the core counts it as rejected.
+                n = buffer.Length;
+            }
+            catch (SocketException e) when (!_stopping && e.SocketErrorCode is SocketError.ConnectionReset)
+            {
+                // Windows reports an ICMP port-unreachable for an earlier send this way: no datagram.
                 continue;
             }
             catch (Exception e) when (_stopping && e is SocketException or ObjectDisposedException)

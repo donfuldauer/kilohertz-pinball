@@ -276,31 +276,84 @@ fn fmt_checks_whole_workspace_on_linux_only() {
     );
 }
 
-#[test]
-fn replay_hash_is_a_marked_placeholder_that_cannot_fail_on_cargo() {
-    let j = job("replay-hash");
-    let script = j.script();
-    assert!(
-        script.contains("echo"),
-        "replay-hash should echo a placeholder message:\n{script}"
-    );
-    for sub in ["test", "run", "build", "bench"] {
-        assert!(
-            cargo_lines(&script, sub).is_empty(),
-            "placeholder must not run cargo {sub} yet"
-        );
-    }
-    // "Clearly marked": the file says, near the job, that Subphase 2.5 fills it in.
+/// A job's text (from its key to the next job key), for the job-level
+/// settings the parsed `Job` does not expose (env, strategy).
+fn job_text(id: &str) -> String {
     let text = workflow_text("ci.yml");
-    let at = text.find("replay-hash").expect("job id present in text");
-    let tail = text[at..].to_ascii_lowercase();
+    let key = format!("\n  {id}:");
+    let start = text.find(&key).expect("job key present in text") + 1;
+    let mut end = start;
+    for (i, line) in text[start..].split_inclusive('\n').enumerate() {
+        let next_job = i > 0
+            && line.starts_with("  ")
+            && line[2..].starts_with(|c: char| !c.is_whitespace() && c != '#');
+        if next_job {
+            break;
+        }
+        end += line.len();
+    }
+    text[start..end].to_owned()
+}
+
+/// Subphase 2.5 filled the 1.2 placeholder: the golden replay-hash check (D9).
+#[test]
+fn replay_hash_records_and_replays_on_every_os_and_fails_only_in_machine() {
+    let j = job("replay-hash");
+    for os in Os::ALL {
+        assert!(j.covers(os), "replay-hash must run on {os:?}");
+    }
+    let script = j.script();
+    let builds = cargo_lines(&script, "build");
     assert!(
-        tail.contains("2.5"),
-        "replay-hash is not marked as filled in by Subphase 2.5"
+        builds
+            .iter()
+            .any(|l| l.contains("--release") && selected_packages(l).iter().any(|p| p == "pin_sim")),
+        "want `cargo build --release -p pin_sim`, got {builds:?}"
+    );
+    let text = job_text("replay-hash");
+    assert!(
+        script.contains("--record-inputs") && script.contains("--ticks"),
+        "replay-hash must record the fixture:\n{script}"
     );
     assert!(
-        tail.contains("placeholder"),
-        "replay-hash is not marked as a placeholder"
+        text.contains("10000") || text.contains("10_000"),
+        "replay-hash must record 10 000 ticks:\n{text}"
+    );
+    assert!(
+        script.contains("--replay-inputs"),
+        "replay-hash must replay the recording:\n{script}"
+    );
+    assert!(
+        ["1 2 3 4 5 6 7 8 9 10", "seq 1 10", "seq 10", "{1..10}"]
+            .iter()
+            .any(|l| script.contains(l)),
+        "replay-hash must replay 10 times:\n{script}"
+    );
+    // In-machine mismatch fails the job: a comparison and a failing exit, and
+    // the job is not allowed to fail silently.
+    assert!(
+        script.contains("!=") && (script.contains("exit $fail") || script.contains("exit 1")),
+        "replay-hash must fail on a mismatch:\n{script}"
+    );
+    assert!(
+        !text.contains("continue-on-error: true"),
+        "replay-hash must gate on in-machine mismatches"
+    );
+    // Cross-OS: reported only. Every OS runs to the end and no job compares
+    // the per-OS results.
+    assert!(
+        text.contains("fail-fast: false"),
+        "one OS must not cancel the others"
+    );
+    let all = workflow_text("ci.yml");
+    assert!(
+        !all.lines()
+            .any(|l| l.trim_start().starts_with("needs:") && l.contains("replay-hash")),
+        "no job may consume (compare) the per-OS replay hashes"
+    );
+    assert!(
+        text.to_ascii_lowercase().contains("report"),
+        "replay-hash must say that cross-OS differences are report-only"
     );
 }
 

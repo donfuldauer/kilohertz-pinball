@@ -10,7 +10,6 @@ use pin_app::dof::{
 use pin_core::schema::table::{DofElementType, TableManifest};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 const TABLE_TOML: &str = include_str!("../../../tools/dof_bridge/tests/fixtures/table.toml");
 
@@ -129,6 +128,7 @@ fn spawn_failure_removes_the_map_file() {
 mod unix {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
 
     /// A stand-in bridge: records its args and the map file, then behaves per `body`.
     fn fake_bridge(dir: &Path, body: &str) -> PathBuf {

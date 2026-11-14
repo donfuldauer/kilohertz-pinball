@@ -93,7 +93,10 @@ public class FixtureReplayTests
         SpinWait.SpinUntil(() => core.Stats.Forwarded >= 1, TimeSpan.FromSeconds(10));
         Assert.Contains("S 1 1", sink.Snapshot());
         host.Dispose();
-        Assert.True(core.Stats.Rejected <= 1);
+        // The oversized datagram is received and rejected on every OS (Windows reports it as
+        // WSAEMSGSIZE, Linux and macOS truncate it): it must not be dropped uncounted.
+        Assert.Equal(1, core.Stats.Rejected);
+        Assert.Equal(2, host.Received);
     }
 
     [Fact]
