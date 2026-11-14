@@ -17,6 +17,24 @@ pub const HOOK_INTERVAL: u32 = 1_000;
 /// Error message raised by the instruction-budget hook.
 pub const BUDGET_EXCEEDED: &str = "instruction budget exceeded";
 
+/// Replacement for the global `xpcall` installed by
+/// [`install_instruction_budget`]: the message handler runs after the
+/// protected call has unwound, as ordinary (hooked, budgeted) code.
+pub const BOUNDED_XPCALL: &str = r#"
+local pcall, type, error = pcall, type, error
+local function xret(h, ok, ...)
+  if ok then return true, ... end
+  local _, r = pcall(h, (...))
+  return false, r
+end
+xpcall = function(f, h, ...)
+  if type(h) ~= "function" then
+    error("bad argument #2 to 'xpcall' (function expected, got " .. type(h) .. ")", 2)
+  end
+  return xret(h, pcall(f, ...))
+end
+"#;
+
 /// Create a Lua 5.4 state with a hard memory cap of `limit_bytes`.
 pub fn lua_with_memory_limit(limit_bytes: usize) -> mlua::Result<Lua> {
     let lua = Lua::new();
@@ -37,9 +55,27 @@ pub fn lua_with_memory_limit(limit_bytes: usize) -> mlua::Result<Lua> {
 /// region, so the error reaches the host. Only count events advance the tick
 /// counter, so the budget arithmetic is unchanged.
 ///
+/// Stock `xpcall` runs its message handler at the error point, before
+/// unwinding; for an error raised by this hook that is still inside the hook
+/// (`allowhook` is 0), so no count, call or return event fires in the
+/// handler and `xpcall(f, function() while true do end end)` never returns.
+/// The global `xpcall` is therefore replaced by [`BOUNDED_XPCALL`], which
+/// runs the handler after unwinding, with hooks active and the budget still
+/// enforced. Differences from stock `xpcall`: the handler sees the unwound
+/// stack (a `debug.traceback` there would not show the error point), and an
+/// error inside the handler is returned as the error value instead of
+/// re-entering the handler.
+///
 /// Not covered: coroutines created from Lua (`coroutine.create`) do not run
 /// this per-thread hook under mlua 0.12, so code inside them is not counted.
+/// `__gc` finalizers also run with hooks disabled, so a looping finalizer is
+/// not bounded either; a production sandbox must refuse `__gc` metatables
+/// (as `pin_script` does).
 pub fn install_instruction_budget(lua: &Lua, budget: u64) -> mlua::Result<Rc<Cell<u64>>> {
+    // Before the hook: this chunk's instructions are not charged.
+    lua.load(BOUNDED_XPCALL)
+        .set_name("=bounded_xpcall")
+        .exec()?;
     let ticks = Rc::new(Cell::new(0u64));
     let ticks_in_hook = Rc::clone(&ticks);
     let mut triggers = HookTriggers::new().every_nth_instruction(HOOK_INTERVAL);
