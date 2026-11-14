@@ -1,0 +1,48 @@
+# Generic SDL gamepad preset: identical to Subphase 1.3's default gamepad map
+# (pin_app::platform::keymap::{gamepad_button_input, gamepad_axis_input}).
+id = "generic_gamepad"
+name = "Gamepad"
+match = [ { any_gamepad = true } ]
+
+[buttons]
+left_flipper = [ "button:left_shoulder" ]
+right_flipper = [ "button:right_shoulder" ]
+left_upper = [ "button:left_stick" ]
+right_upper = [ "button:right_stick" ]
+launch = [ "button:south" ]
+action = [ "button:east" ]
+start = [ "button:start" ]
+tilt = [ "button:back" ]
+
+# Triggers drive the analog flipper travel.
+[[axes]]
+raw = "left_trigger"
+axis = "left_flipper"
+from = 0.0
+to = 1.0
+
+[[axes]]
+raw = "right_trigger"
+axis = "right_flipper"
+from = 0.0
+to = 1.0
+
+# Left stick down (positive Y in SDL) pulls the plunger; up is ignored.
+[[axes]]
+raw = "left_y"
+axis = "plunger"
+from = 0.0
+to = 1.0
+
+# Right stick nudges.
+[[axes]]
+raw = "right_x"
+axis = "nudge_x"
+from = -1.0
+to = 1.0
+
+[[axes]]
+raw = "right_y"
+axis = "nudge_y"
+from = -1.0
+to = 1.0
