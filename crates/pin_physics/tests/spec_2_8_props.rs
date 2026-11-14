@@ -518,7 +518,7 @@ proptest! {
         rho in density(),
         v in 1.0f32..V_MAX,
         max_speed in any::<bool>(),
-        angle in 0.0f32..6.28,
+        angle in 0.0f32..std::f32::consts::TAU,
         sx in -0.1f32..0.1, sy in -0.1f32..0.1,
         rolling in any::<bool>(),
     ) {
@@ -707,6 +707,7 @@ proptest! {
 
 // ------------------------------------------------------------ ball–ball, any two diameters
 
+#[allow(clippy::too_many_arguments)]
 fn pair_case(
     d1: f32,
     rho1: f32,
@@ -821,7 +822,7 @@ proptest! {
         b in 0.0f32..0.9,
         v in 0.3f32..20.0,
         axis in prop::array::uniform3(-1.0f32..1.0),
-        angle in 0.0f32..6.28,
+        angle in 0.0f32..std::f32::consts::TAU,
         w1 in prop::array::uniform3(-100.0f32..100.0),
         w2 in prop::array::uniform3(-100.0f32..100.0),
         v2 in prop::array::uniform3(-3.0f32..3.0),

@@ -322,7 +322,7 @@ proptest! {
         b in 0.0f32..0.93,
         v in 0.3f32..20.0,
         axis in prop::array::uniform3(-1.0f32..1.0),
-        angle in 0.0f32..6.28,
+        angle in 0.0f32..std::f32::consts::TAU,
         wm in prop::array::uniform3(-200.0f32..200.0),
         wx in prop::array::uniform3(-60.0f32..60.0),
         vx in prop::array::uniform3(-3.0f32..3.0),
