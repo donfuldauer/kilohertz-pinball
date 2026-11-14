@@ -1,0 +1,20 @@
+{
+  "format": "kilohertz-dof-map",
+  "version": 1,
+  "rom_name": "dof_fixture_rom",
+  "table_name": "DOF \"Fixture\" Table",
+  "entries": [
+    { "source": "coil", "id": 1, "name": "left_flipper_coil", "type": "S", "number": 1 },
+    { "source": "coil", "id": 2, "name": "right_flipper_coil", "type": "S", "number": 2 },
+    { "source": "coil", "id": 9, "name": "knocker", "type": "S", "number": 3 },
+    { "source": "coil", "id": 12, "name": "bumper_1_coil", "type": "S", "number": 10 },
+    { "source": "coil", "id": 12, "name": "bumper_1_coil", "type": "E", "number": 200 },
+    { "source": "switch", "id": 21, "name": "left_sling_switch", "type": "W", "number": 21 },
+    { "source": "switch", "id": 30, "name": "bumper_1_ring", "type": "W", "number": 30 },
+    { "source": "lamp", "id": 40, "name": "overdrive_ready", "type": "L", "number": 40 },
+    { "source": "lamp", "id": 41, "name": "shoot_again", "type": "L", "number": 41 },
+    { "source": "lamp", "id": 60, "name": "flasher_left", "type": "S", "number": 60 },
+    { "source": "gi", "id": 0, "name": "gi_lower", "type": "G", "number": 1 },
+    { "source": "gi", "id": 2, "name": "gi_upper", "type": "G", "number": 2 }
+  ]
+}
