@@ -41,16 +41,22 @@ pub const TRACK_MAX_JUMP_M: f32 = 0.25;
 /// captured probe nearest to it (by capture position) until its own slot
 /// is captured again.
 ///
-/// Each [`schedule`](Self::schedule) call is one frame and captures at
-/// most `budget` slots: slots never captured first, then the oldest
-/// captures (ties → lower index). With a steady `n` balls this is a round
-/// robin and every age (frames since the capture, 0 = this frame) stays
-/// ≤ ⌈n / budget⌉ − 1; ages survive changes of the ball count, so the
-/// order stays fair across them. Slots past the ball count are freed.
+/// Each [`schedule`](Self::schedule) call is one frame and captures the
+/// next `budget` ball indices after the last captured one, cyclically
+/// modulo the current ball count (0 1 | 2 3 | 4 5 | 6 0 | 1 2 … for seven
+/// balls and budget 2). Positions never change the order. With a steady
+/// `n` balls every ball is captured once every ⌈n / budget⌉ frames or more
+/// often, so its age (frames since its own slot's capture, 0 = this frame)
+/// stays ≤ ⌈n / budget⌉ − 1, and over any window of `n` frames the capture
+/// counts differ by at most 1. A count change keeps the cursor (reduced
+/// modulo the new count); it never restarts. Slots past the ball count are
+/// freed.
 #[derive(Clone, Debug)]
 pub struct ProbeScheduler {
     budget: u32,
     frame: u64,
+    /// Next ball index to capture.
+    cursor: usize,
     // Per ball index of the last frame.
     positions: Vec<[f32; 3]>,
     first_frame: Vec<u64>,
@@ -71,6 +77,7 @@ impl ProbeScheduler {
         ProbeScheduler {
             budget,
             frame: 0,
+            cursor: 0,
             positions: Vec::with_capacity(MAX_PROBES),
             first_frame: Vec::with_capacity(MAX_PROBES),
             ages: Vec::with_capacity(MAX_PROBES),
@@ -140,24 +147,20 @@ impl ProbeScheduler {
         self.positions.clear();
         self.positions.extend_from_slice(positions);
 
-        // Captures: never-captured slots first, then the oldest.
+        // Captures: a cyclic cursor over the ball indices (positions never
+        // change the order); a count change keeps the cursor.
         self.updates.clear();
-        for _ in 0..self.budget {
-            let mut best: Option<(bool, u64, usize)> = None;
-            for i in 0..owned {
-                if self.updates.contains(&i) {
-                    continue;
-                }
-                let key = (self.captured[i].is_none(), self.age_of(i));
-                if best.is_none_or(|(u, a, _)| key > (u, a)) {
-                    best = Some((key.0, key.1, i));
-                }
+        if owned > 0 {
+            self.cursor %= owned;
+            let k = (self.budget as usize).min(owned);
+            for j in 0..k {
+                let i = (self.cursor + j) % owned;
+                self.captured[i] = Some(positions[i]);
+                self.capture_frame[i] = f;
+                self.stale[i] = false;
+                self.updates.push(i);
             }
-            let Some((_, _, i)) = best else { break };
-            self.captured[i] = Some(positions[i]);
-            self.capture_frame[i] = f;
-            self.stale[i] = false;
-            self.updates.push(i);
+            self.cursor = (self.cursor + k) % owned;
         }
 
         // Ages; balls past MAX_PROBES report the age of the probe they reuse.

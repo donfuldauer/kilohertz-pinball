@@ -877,3 +877,61 @@ fn display_shaders_validate_and_translate() {
             .unwrap_or_else(|e| panic!("{name} spv: {e:?}"));
     }
 }
+
+// ---------- review/tester follow-ups (D1, N2, N3) ----------
+
+#[test]
+fn from_needs_exactly_two_numbers() {
+    for bad in ["[0.0]", "[0.0, 0.0, 0.0]", "[]"] {
+        let t = format!("schema_version = 1\n[[layers]]\nkind = \"rect\"\nfrom = {bad}\n");
+        assert!(Scene::from_toml_str(&t).is_err(), "{bad}");
+    }
+    let ok = "schema_version = 1\n[[layers]]\nkind = \"rect\"\nfrom = [0.25, 0.5]\n";
+    assert_eq!(
+        Scene::from_toml_str(ok).unwrap().layers[0].from,
+        Some([0.25, 0.5])
+    );
+}
+
+#[test]
+fn fit_aspect_extremes_do_not_panic() {
+    let r = fit_aspect(
+        Rect::new(i32::MAX, i32::MAX, u32::MAX, u32::MAX),
+        u32::MAX,
+        1,
+    );
+    assert_eq!((r.w, r.x), (u32::MAX, i32::MAX));
+    let r = fit_aspect(Rect::new(i32::MIN, 0, u32::MAX, 1), 1, u32::MAX);
+    assert_eq!(r.h, 1);
+}
+
+proptest! {
+    #[test]
+    fn fit_aspect_never_panics(x in any::<i32>(), y in any::<i32>(), w in any::<u32>(), h in any::<u32>(),
+                               aw in any::<u32>(), ah in any::<u32>()) {
+        let r = fit_aspect(Rect::new(x, y, w, h), aw, ah);
+        prop_assert!(r.w <= w && r.h <= h);
+    }
+}
+
+#[test]
+fn score_layer_stays_inside_its_box() {
+    let spec = DmdSpec::new(192, 64, DmdColor::Orange).unwrap();
+    let scene = Scene::from_toml_str(
+        "schema_version = 1\n[[layers]]\nkind = \"score\"\nx = 0.5\nw = 0.5\n",
+    )
+    .unwrap();
+    let st = ScoreState {
+        scores: [123_456_789, 0, 0, 0],
+        ball: 2,
+        credits: 1,
+        ..ScoreState::default()
+    };
+    let f = DmdFrame::compose(&spec, &scene, 0, &st, &ImageSet::new());
+    assert!(f.lit_count() > 0);
+    for y in 0..64 {
+        for x in 0..96 {
+            assert_eq!(f.get(x, y), [0; 3], "dot ({x},{y}) outside the box");
+        }
+    }
+}

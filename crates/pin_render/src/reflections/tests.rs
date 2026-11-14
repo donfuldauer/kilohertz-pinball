@@ -315,3 +315,44 @@ proptest! {
         }
     }
 }
+
+/// Odd ball counts: the cursor wraps (0 1 | 2 0 | 1 2 for three balls), so
+/// over any n frames the capture counts differ by at most 1, and a count
+/// change keeps the cursor.
+#[test]
+fn odd_ball_counts_share_the_budget_cyclically() {
+    let pos = |n: usize| -> Vec<[f32; 3]> { (0..n).map(|i| [i as f32, 0.0, 0.0]).collect() };
+    let mut s = ProbeScheduler::new(2);
+    let order: Vec<Vec<usize>> = (0..3).map(|_| s.schedule(&pos(3)).to_vec()).collect();
+    assert_eq!(order, vec![vec![0, 1], vec![2, 0], vec![1, 2]]);
+    for n in 1..=MAX_PROBES {
+        let mut s = ProbeScheduler::new(2);
+        let mut counts = vec![0u32; n];
+        let mut frames = Vec::new();
+        for _ in 0..3 * n {
+            frames.push(s.schedule(&pos(n)).to_vec());
+            assert!(
+                (s.stats().max_age as usize) < n.div_ceil(2),
+                "n {n}: ages {:?}",
+                s.ages()
+            );
+        }
+        for w in frames.windows(n) {
+            counts.iter_mut().for_each(|c| *c = 0);
+            for f in w {
+                for &i in f {
+                    counts[i] += 1;
+                }
+            }
+            let (lo, hi) = (counts.iter().min().unwrap(), counts.iter().max().unwrap());
+            assert!(hi - lo <= 1, "n {n}: shares {counts:?}");
+        }
+    }
+    // The cursor survives a count change: 7 balls, 2 frames (next is 4),
+    // then 5 balls → 4 0, then 1 2.
+    let mut s = ProbeScheduler::new(2);
+    s.schedule(&pos(7));
+    s.schedule(&pos(7));
+    assert_eq!(s.schedule(&pos(5)), &[4, 0]);
+    assert_eq!(s.schedule(&pos(5)), &[1, 2]);
+}

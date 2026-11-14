@@ -45,8 +45,8 @@ pub fn display_routes(plan: &TopologyPlan) -> Vec<DisplayRoute> {
 }
 
 /// The largest rectangle of aspect `aspect_w : aspect_h` centred in
-/// `viewport` (sizes rounded down, offsets rounded down). A zero aspect
-/// returns `viewport`.
+/// `viewport` (sizes rounded down, offsets rounded down, positions
+/// saturating at `i32::MAX`). A zero aspect returns `viewport`.
 pub fn fit_aspect(viewport: Rect, aspect_w: u32, aspect_h: u32) -> Rect {
     if aspect_w == 0 || aspect_h == 0 {
         return viewport;
@@ -58,9 +58,12 @@ pub fn fit_aspect(viewport: Rect, aspect_w: u32, aspect_h: u32) -> Rect {
     } else {
         (vh * aw / ah, vh)
     };
+    // Offsets saturate (a rectangle reaching past `i32::MAX` is not
+    // representable anyway); never panics.
+    let off = |d: u64| i32::try_from(d / 2).unwrap_or(i32::MAX);
     Rect::new(
-        viewport.x + ((vw - w) / 2) as i32,
-        viewport.y + ((vh - h) / 2) as i32,
+        viewport.x.saturating_add(off(vw - w)),
+        viewport.y.saturating_add(off(vh - h)),
         w as u32,
         h as u32,
     )

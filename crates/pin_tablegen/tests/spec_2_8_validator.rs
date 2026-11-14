@@ -1137,24 +1137,3 @@ fn cli_generator_command_line_still_works_next_to_validate() {
     let o = validate_cli(&outdir);
     assert_eq!(o.status.code(), Some(0), "{:?}", out(&o));
 }
-
-#[test]
-#[ignore = "diagnostic"]
-fn diag_cli_warn() {
-    let transition = r#"
-[[layer_transitions]]
-id = "ramp_entry"
-from_layer = 0
-to_layer = 2
-zone = { min = [140.0, 340.0, 0.0], max = [190.0, 380.0, 30.0] }
-"#;
-    let dir = bundle(
-        "cli-warn",
-        &layout_toml(""),
-        &table_toml(&balls_restricted(&[STD, XL], XL, &[0], Some(&LOWER_AREA)), transition),
-    );
-    println!("{:?}", out(&validate_cli(&dir)));
-    println!("{:?}", run_validate_cli(&[dir.to_string_lossy().into_owned()]).ok());
-    println!("{:?}", out(&validate_cli(&c2_reject_bundle("d"))));
-    println!("{:?}", out(&cli(&["validate".as_ref()])));
-}

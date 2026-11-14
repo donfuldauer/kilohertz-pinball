@@ -183,11 +183,18 @@ struct Canvas {
     w: u32,
     h: u32,
     acc: Vec<[f32; 3]>,
+    /// Drawable dots `[x0, y0, x1, y1)` (a score layer's box).
+    clip: [i64; 4],
 }
 
 impl Canvas {
     fn blend(&mut self, x: i64, y: i64, col: [f32; 3], a: f32) {
-        if x < 0 || y < 0 || x >= i64::from(self.w) || y >= i64::from(self.h) {
+        let [cx0, cy0, cx1, cy1] = self.clip;
+        if x < cx0.max(0)
+            || y < cy0.max(0)
+            || x >= cx1.min(i64::from(self.w))
+            || y >= cy1.min(i64::from(self.h))
+        {
             return;
         }
         let d = &mut self.acc[y as usize * self.w as usize + x as usize];
@@ -289,6 +296,7 @@ impl DmdFrame {
             w,
             h,
             acc: vec![rgb01(scene.background); w as usize * h as usize],
+            clip: [0, 0, i64::from(w), i64::from(h)],
         };
         for layer in &scene.layers {
             let Some(st) = layer.state_at(elapsed_ms, scene.duration_ms) else {
@@ -346,6 +354,9 @@ impl DmdFrame {
                 LayerKind::Score => {
                     let b = box_px(layer.w * fw, layer.h * fh);
                     let (bw, bh) = (b[2] - b[0], b[3] - b[1]);
+                    // Score text stays inside the box: dots whose centres lie in it.
+                    let edge = |v: f32| (v - 0.5).ceil() as i64;
+                    c.clip = [edge(b[0]), edge(b[1]), edge(b[2]), edge(b[3])];
                     for t in score_view_layout(scores) {
                         let tc = col.map(|v| v * t.emphasis);
                         c.text(
@@ -360,6 +371,7 @@ impl DmdFrame {
                             bw.max(0.0) as u32,
                         );
                     }
+                    c.clip = [0, 0, i64::from(w), i64::from(h)];
                 }
             }
         }

@@ -367,7 +367,7 @@ struct RawLayer {
     fade_in_ms: u64,
     #[serde(default)]
     fade_out_ms: u64,
-    from: Option<[f32; 2]>,
+    from: Option<Vec<f32>>,
     #[serde(default)]
     move_ms: u64,
 }
@@ -500,10 +500,20 @@ fn validate_layer(i: usize, l: RawLayer) -> Result<SceneLayer, SceneError> {
     };
     coord("x", x)?;
     coord("y", y)?;
-    if let Some([fx, fy]) = l.from {
-        coord("from[0]", fx)?;
-        coord("from[1]", fy)?;
-    }
+    let from = match l.from.as_deref() {
+        None => None,
+        Some(&[fx, fy]) => {
+            coord("from[0]", fx)?;
+            coord("from[1]", fy)?;
+            Some([fx, fy])
+        }
+        Some(v) => {
+            return Err(invalid(
+                i,
+                format!("from needs exactly 2 numbers, got {}", v.len()),
+            ));
+        }
+    };
     for (name, v) in [("w", w), ("h", h)] {
         if !(v.is_finite() && (0.0..=MAX_COORD).contains(&v)) {
             return Err(invalid(i, format!("{name} = {v} outside 0..={MAX_COORD}")));
@@ -553,7 +563,7 @@ fn validate_layer(i: usize, l: RawLayer) -> Result<SceneLayer, SceneError> {
         blink_ms: l.blink_ms,
         fade_in_ms: l.fade_in_ms,
         fade_out_ms: l.fade_out_ms,
-        from: l.from,
+        from,
         move_ms: l.move_ms,
     })
 }

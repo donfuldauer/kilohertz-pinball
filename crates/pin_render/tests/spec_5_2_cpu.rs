@@ -474,6 +474,8 @@ struct Model {
     /// Whether slot i's capture is stale for ball i; `None` = the published rule does not
     /// decide (a tie for the nearest ball of the previous frame).
     stale: Vec<Option<bool>>,
+    /// Next index the cyclic cursor captures.
+    cursor: usize,
 }
 
 fn dist2(a: V3, b: V3) -> f32 {
@@ -482,20 +484,13 @@ fn dist2(a: V3, b: V3) -> f32 {
 }
 
 impl Model {
-    /// The published capture order: never-captured slots first, then the oldest capture,
-    /// ties → lower index. Call before ageing; `first` = the first frame.
-    fn expect_updates(&self, budget: usize) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.captured.len()).collect();
-        order.sort_by_key(|&i| {
-            let rank = if self.captured[i].is_some() {
-                self.ages[i]
-            } else {
-                u32::MAX
-            };
-            (std::cmp::Reverse(rank), i)
-        });
-        order.truncate(budget);
-        order
+    /// The published capture order: a cyclic cursor over the ball indices, the next
+    /// `budget` indices after the last captured one, modulo the ball count.
+    fn expect_updates(&mut self, budget: usize) -> Vec<usize> {
+        let n = self.captured.len();
+        let out: Vec<usize> = (0..budget.min(n)).map(|k| (self.cursor + k) % n).collect();
+        self.cursor = (self.cursor + out.len()) % n;
+        out
     }
 
     /// Staleness between two frames (grid positions: a move is 0 or ≥ 1 m > 0.25 m).
@@ -565,7 +560,7 @@ proptest! {
         let mut s = ProbeScheduler::new(budget);
         let b = budget as usize;
         let bound = ceil_div(n, b);
-        let mut m = Model { captured: vec![None; n], ages: vec![0; n], stale: vec![Some(false); n] };
+        let mut m = Model { captured: vec![None; n], ages: vec![0; n], stale: vec![Some(false); n], cursor: 0 };
         let mut prev: Option<Vec<V3>> = None;
         let mut counts = vec![0u32; n];
         for f in 0..frames {
@@ -577,7 +572,7 @@ proptest! {
             got_sorted.sort_unstable();
             let mut want_sorted = want_upd.clone();
             want_sorted.sort_unstable();
-            prop_assert_eq!(got_sorted, want_sorted, "frame {}: capture order must not depend on positions", f);
+            prop_assert_eq!(got_sorted, want_sorted, "frame {}: cyclic cursor, independent of positions", f);
             if let Some(prev) = &prev {
                 m.track(prev, &pos);
             }

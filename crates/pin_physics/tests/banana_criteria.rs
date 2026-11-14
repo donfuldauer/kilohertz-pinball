@@ -466,7 +466,7 @@ fn timing_sweep(
 /// above 0.75 m/s between neighbouring 1 ms timings has a named cause.
 #[test]
 fn timing_sweep_on_the_curved_bat_has_a_dead_spot_and_no_unexplained_jumps() {
-    for radius_mm in [RADIUS_MM, 70.0, 200.0] {
+    for radius_mm in [RADIUS_MM, 70.0, 120.0, 200.0] {
         let config = banana_config(0, [0.0; 3], radius_mm);
         for fraction in [0.5f32, 0.7] {
             let label = format!("banana R {radius_mm} mm");
