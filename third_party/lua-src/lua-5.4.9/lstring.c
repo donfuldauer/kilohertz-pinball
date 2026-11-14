@@ -37,6 +37,9 @@
 ** Per thread: a Lua state runs on one thread at a time.
 */
 KHZ_TLS lua_Integer luaS_khzpending = 0;
+/* KHZ: the state the pending cost belongs to (compared, never dereferenced):
+   the last one to set or spend its budget on this thread */
+KHZ_TLS const void *luaS_khzowner = NULL;
 
 
 int luaS_eqlngstr (TString *a, TString *b) {

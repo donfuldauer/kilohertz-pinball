@@ -61,7 +61,9 @@
 /// Longest supported release window; larger configured windows are clamped.
 pub const MAX_RELEASE_WINDOW_MS: u32 = 1024;
 
-const RING: usize = MAX_RELEASE_WINDOW_MS as usize;
+/// Readings kept for the release window: the window is inclusive at both
+/// ends, so `MAX_RELEASE_WINDOW_MS` of 1 ms differences span one more reading.
+const RING: usize = MAX_RELEASE_WINDOW_MS as usize + 1;
 
 /// When a pull qualifies, rest tracking of the last this-many updates before
 /// it started is undone.
@@ -742,6 +744,32 @@ mod tests {
         let rel: Vec<f32> = out.iter().filter_map(|o| o.release).collect();
         assert_eq!(rel.len(), 1);
         assert!((rel[0] - 10.0).abs() < 0.1, "{}", rel[0]);
+    }
+
+    #[test]
+    fn max_window_keeps_its_oldest_difference() {
+        // With the largest window, the 1 ms difference that starts exactly
+        // `MAX_RELEASE_WINDOW_MS` before the release tick is still eligible.
+        let mut f = PlungerFilter::new(PlungerConfig {
+            rest_tracking_per_s: 0.0,
+            release_min_speed: 100.0,
+            release_window_ms: MAX_RELEASE_WINDOW_MS,
+            ..PlungerConfig::default()
+        });
+        for t in 0..=50 {
+            f.update(0.0, t);
+        }
+        for t in 51..=53 {
+            f.update(1.0, t);
+        }
+        // Still pulled (above the deadzone), but too slow to launch on its own.
+        for t in 54..=1076 {
+            assert_eq!(f.update(0.03, t).release, None);
+        }
+        let release_tick = 1077;
+        assert_eq!(release_tick - 53, u64::from(MAX_RELEASE_WINDOW_MS));
+        let r = f.update(0.0, release_tick).release.expect("release");
+        assert!((r - 970.0).abs() < 0.5, "{r}");
     }
 
     #[test]

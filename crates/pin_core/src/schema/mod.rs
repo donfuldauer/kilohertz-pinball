@@ -77,12 +77,18 @@ pub(crate) trait Manifest: Serialize + DeserializeOwned {
 
 pub(crate) fn parse<T: Manifest>(s: &str) -> Result<T, SchemaError> {
     let value: T = toml::from_str(s).map_err(|e| SchemaError::Parse(e.to_string()))?;
+    check(&value)?;
+    Ok(value)
+}
+
+/// The checks shared by the reader and the writer: schema version, finite
+/// floats and per-manifest semantic validation.
+fn check<T: Manifest>(value: &T) -> Result<(), SchemaError> {
     if value.schema_version() != SCHEMA_VERSION {
         return Err(SchemaError::UnsupportedVersion(value.schema_version()));
     }
-    check_finite(&value)?;
-    value.validate()?;
-    Ok(value)
+    check_finite(value)?;
+    value.validate()
 }
 
 /// Rejects NaN and ±infinity in every float field of a manifest, naming the
@@ -121,7 +127,10 @@ pub(crate) fn check_finite<T: Serialize>(value: &T) -> Result<(), SchemaError> {
     walk(&v, &mut String::new())
 }
 
+/// Serialises a manifest after applying the same checks as [`parse`], so the
+/// writer never emits text the reader would reject.
 pub(crate) fn serialize<T: Manifest>(value: &T) -> Result<String, SchemaError> {
+    check(value)?;
     toml::to_string(value).map_err(|e| SchemaError::Serialize(e.to_string()))
 }
 
@@ -135,7 +144,9 @@ macro_rules! manifest_io {
             }
 
             /// Serialises to TOML text that [`Self::from_toml_str`] parses back
-            /// to an equal value.
+            /// to an equal value. A value that [`Self::from_toml_str`] would
+            /// reject (wrong `schema_version`, a non-finite float, or a
+            /// semantically invalid value) is an error instead.
             pub fn to_toml_string(&self) -> Result<String, $crate::schema::SchemaError> {
                 $crate::schema::serialize(self)
             }
