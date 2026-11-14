@@ -1783,7 +1783,7 @@ neighbours, diagonals only where both orthogonal neighbours are unlit), stroke h
 anti-aliased, scalable; a glyph is 5×7 units, advance 6 units, unit = cell/7 px.
 - Compositing: premultiplied "over" in display-encoded space, back to front; item colour alpha and image
   alpha multiply. `struct LcdRenderer`: `new(ctx, format, spec)`; `set_image(&mut self, ctx, file: &str, image:
-  &RgbaImage)`; `set_draw_list(&mut self, queue, list: &LcdDrawList) -> bool`; `encode(&mut self, encoder,
+  &RgbaImage) -> Result<(), GpuError>` (same file again → replaced in place); `set_draw_list(&mut self, queue, list: &LcdDrawList) -> bool`; `encode(&mut self, encoder,
   view, target_size, viewport)` (canvas fitted with `fit_aspect`, letterbox black).
 
 **Backglass.** `enum LayerBlend { Over, Additive }`; `struct LayerLamp { lamp: LampId, mask: RgbaImage /* red
@@ -1833,6 +1833,16 @@ Encode calls take no queue: per-call uniforms are fresh buffers, so a renderer m
 per submit (e.g. into two windows). `set_frame`/`set_draw_list` upload through the queue (effective at the
 next submit). Score layout helpers: `score_view_layout(&ScoreState) -> Vec<ScoreText>`, `expand_text(&str,
 &ScoreState) -> String` (scene text placeholders).
+
+**Fix round 1 additions.** `RgbaImage::is_valid()` (sides ≥ 1, `pixels.len() == w·h·4`; `RgbaImage::new` uses
+checked size maths and yields an invalid empty image on overflow). GPU uploads (`LcdRenderer::set_image`,
+`BackglassRenderer::new`, `render_lcd_to_image`, `render_backglass_to_image`) refuse invalid images and any
+side above the device's `max_texture_dimension_2d` with `GpuError::InvalidArgument` (D25: bundle images are
+untrusted); CPU composition skips invalid images. Lamp masks and images are premultiplied by their alpha on
+upload (a mask's value = red × alpha). `DmdRenderer::mark_dirty`, `LcdRenderer::mark_dirty`,
+`ScoreRenderer::mark_dirty` (next `set_frame` / `set_draw_list` / `update` reports a change; setting an LCD
+image also does). `LcdRenderer::texture_count()`. `OTHER_PLAYER_EMPHASIS` (0.5) is exported.
+
 
 ## Orchestrator — Wave 5 batch B: 2.6 and 2.8 share a physics target dir
 2.6 and 2.8 start once disk is back at 11 GB free. Both build only `pin_physics` (+ `pin_tablegen`/`pin_assets` for 2.8), so their four roles share `target/sp_phys` (cargo locks it; stale-build rule applies). Reviewers will use `target/sp_phys_rev`.
@@ -2114,3 +2124,23 @@ The 4.4 contract makes `config.toml.bak` when a file with a dropped value is loa
 
 ## Orchestrator — 5.3 review round 1 rulings
 B1 (LCD image larger than `max_texture_dimension_2d` panics via wgpu's default handler; reachable from untrusted bundle art, D25) → fix 1, with N1a–c (malformed `RgbaImage` panics), N2 (hostile scene compose 70–431 ms per frame: clip glyph/score loops to the canvas), N4 (`set_image` leak on reload), N7 (`mark_dirty` on DMD/LCD for symmetry), N8 (checked size maths in `RgbaImage::new`; document mask premultiplication). `pin_assetgen` as a runtime dependency of `pin_render` accepted (light, acyclic; fonts are code per PLAN 4.6). N3, N5, N6, N9 → HUMAN_QUEUE.
+
+## 5.3 — fix round 1 (review B1, N1, N2, N4, N7, N8)
+
+- **B1/N1/N8 (image validation).** One check in the quad compositor (`check_image`) guards every GPU upload:
+  sides 1..=`max_texture_dimension_2d`, exact byte length. Errors are returned, not logged-and-skipped,
+  so the loader can report the bad file; a refused LCD replacement keeps the previous texture. CPU
+  composition (DMD and LCD aspect) skips invalid images. `RgbaImage::pixel` never indexes past the buffer.
+- **N2 (bounded composition).** DMD text visits only the clipped part of the text box, rasterises only the
+  characters reaching the clip and fills lit runs per row; rects fill clipped runs; images sample a
+  precomputed texel column table; score layers lay out in the layer box ∩ display. Worst parseable scenes
+  (64 layers, 4 × 4-display boxes, 256-char texts), opt-level 1 test profile, 192 × 64: text 0.7 ms,
+  8×16 0.9 ms, score 1.7 ms, half-transparent full-screen images 3.3 ms; 512 × 256: 3.5–36 ms (images).
+  The image case is the per-dot blend floor (64 full-screen alpha layers); not reduced further. Printed by
+  `displays_cpu::hostile_scenes_compose_with_bounded_work` (no wall-clock assertion, D8).
+- **N4.** `LcdRenderer::set_image` on a known file replaces the texture in place and drops the cached bind
+  groups that used it.
+- **N7.** `mark_dirty` on the DMD, LCD and score renderers.
+
+## Orchestrator — 2.6 review B1 is a 2.3 defect; fixed under 2.6
+`flipper::plane_axes` (2.3, Wave 4) uses a fixed frame for normals with z < −0.999999, which is not orthonormal for normals up to ~0.08° off −Z (closest-point back-error ~0.1 mm, distance error up to 1.5e-5 m > BODY_SKIN); it affects straight bats too. The 2.6 Implementer (Fable, also the 2.3 implementer) gets ownership of that fallback for the fix; the 2.6 Reviewer (Opus) re-reviews. Gate A1 note from the review: the timing-sweep depth depends on incidence for straight bats as well (straight bat at 50 % fails the 50 % gate from β ≈ 25°); Gate A1 should state the incidence it gates at.
