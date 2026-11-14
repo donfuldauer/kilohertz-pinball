@@ -436,7 +436,7 @@ Implements "Orchestrator — 4.2 re-review round 3". All charging is central (KH
 | `r_tostr_tab` | 3.515 | fault |
 | `r_utf8` | 1.084 | fault |
 | `rep_empty` | 0.018 | fault |
-| `savebomb` | 0.225 | new() fails: Load (64 KiB cap) |
+| `savebomb` | 0.225 | new() fails: Load (64 KiB cap) — original 8 MB file; resized later to load, see `attack_corpus/README.md` |
 | `sortbig` | 0.595 | fault |
 | `strmeta` | 0.026 | fault |
 | `tconcat` | 0.022 | fault |

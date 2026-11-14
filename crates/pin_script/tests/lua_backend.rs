@@ -487,6 +487,43 @@ fn save_state_bomb_is_dropped_not_allocated() {
         .unwrap();
 }
 
+/// The attack-corpus `savebomb.lua` loads under the engine config (its
+/// string is exactly at the 64 KiB cap) and its `on_save_state` result is
+/// dropped by the save byte budget on reload, not at load.
+#[test]
+fn corpus_savebomb_loads_and_its_state_is_dropped_on_reload() {
+    let src = include_str!("attack_corpus/savebomb.lua");
+    let restore = "saved_n = 7 \
+         function on_restore_state(t) saved_n = #t end \
+         function on_tick() pinball.set_score(1, saved_n) end";
+    for cfg in [LuaConfig::engine(), LuaConfig::default()] {
+        let mut b = LuaScriptBackend::new(src.as_bytes(), &names(), cfg)
+            .unwrap_or_else(|e| panic!("savebomb must load under {cfg:?}: {e}"));
+        let mut h = Host::new(0);
+        h.tick(&mut b);
+        assert!(!b.is_faulted(), "{:?}", b.last_error());
+        b.apply_reload(restore.as_bytes()).unwrap();
+        assert_eq!(
+            h.tick(&mut b).scores.as_slice(),
+            &[(0, 7)],
+            "the over-budget state must not reach on_restore_state ({cfg:?})"
+        );
+    }
+    // Control: with 1-byte strings the same 20 000-iteration save loop fits
+    // the engine's instruction budget and the copy fits the byte budget, so
+    // the state is carried to the new script (whose restore of 20 000
+    // entries then runs out of budget and fails the swap). Above, the save
+    // loop is identical, so it is the byte budget that drops the state.
+    let small_save = src.replacen("string.rep(\"x\", 65536)", "\"x\"", 1);
+    assert_ne!(small_save, src);
+    let mut b =
+        LuaScriptBackend::new(small_save.as_bytes(), &names(), LuaConfig::engine()).unwrap();
+    assert_eq!(
+        b.apply_reload(restore.as_bytes()),
+        Err(ScriptError::BudgetExceeded)
+    );
+}
+
 // Review B6 helpers: no addresses leak.
 #[test]
 fn addresses_do_not_leak() {
