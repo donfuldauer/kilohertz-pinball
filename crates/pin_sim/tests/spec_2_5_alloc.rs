@@ -178,6 +178,10 @@ fn guard_bundle(bundle: &Path, what: &str, warm_up: u64) {
     let mut sim = load_at(bundle, DEFAULT_SEED);
     let warm = guarded_run(&mut sim, &events, warm_up, true);
     println!("{what}: step_1ms during the {warm_up}-tick warm-up: {warm:?}");
+    assert!(
+        !sim.script_faulted(),
+        "{what}: the script faulted during the warm-up"
+    );
     assert_eq!(
         warm.engine,
         0,
@@ -189,6 +193,10 @@ fn guard_bundle(bundle: &Path, what: &str, warm_up: u64) {
     );
     let run = guarded_run(&mut sim, &events, TICKS, true);
     println!("{what}: step_1ms over the next {TICKS} ticks: {run:?}");
+    assert!(
+        !sim.script_faulted(),
+        "{what}: the script faulted during the guarded run"
+    );
     assert_eq!(sim.tick(), warm_up + TICKS);
     // The run did real work.
     assert!(sim.switch_hits("left_flipper").unwrap() > 100);

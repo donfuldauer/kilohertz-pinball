@@ -97,7 +97,8 @@ fn sixty_thousand_lua_ticks_allocate_nothing() {
 
 #[test]
 fn sixty_thousand_wasm_ticks_allocate_nothing() {
-    let (allocs, exempt, hits, drained) = guarded_run(wasm_fixture("alloc_wasm"));
+    let bundle = wasm_fixture("alloc_wasm");
+    let (allocs, exempt, hits, drained) = guarded_run(bundle.to_path_buf());
     assert_eq!(allocs, 0);
     assert_eq!(exempt, 0, "Wasm calls are not exempt");
     assert!(hits > 0 && drained > 0, "hits {hits}, drained {drained}");
