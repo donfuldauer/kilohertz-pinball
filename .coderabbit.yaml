@@ -1,0 +1,80 @@
+# CodeRabbit is the only code reviewer in the run (PLAN.md §2.7, D36).
+language: en-US
+reviews:
+  profile: chill
+  # Approve once every comment is resolved, so the merge conditions in §2.7 can be checked.
+  request_changes_workflow: true
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+    # Keep reviewing every push; §2.7 needs an incremental review of each fix.
+    auto_pause_after_reviewed_commits: 0
+    base_branches:
+      - main
+  # Skip files a reviewer cannot read or that are generated, vendored or recorded data.
+  # Code, shaders, Lua/Wasm-text table rules, TOML manifests, CI and docs stay in review.
+  path_filters:
+    # Images and textures (including raw test-reference pixel dumps)
+    - "!**/*.png"
+    - "!**/*.jpg"
+    - "!**/*.jpeg"
+    - "!**/*.gif"
+    - "!**/*.webp"
+    - "!**/*.bmp"
+    - "!**/*.tga"
+    - "!**/*.ktx2"
+    - "!**/*.dds"
+    - "!**/*.hdr"
+    - "!**/*.exr"
+    - "!**/*.ico"
+    - "!**/*.rgba8"
+    # Audio
+    - "!**/*.ogg"
+    - "!**/*.wav"
+    - "!**/*.mp3"
+    - "!**/*.flac"
+    # Fonts
+    - "!**/*.ttf"
+    - "!**/*.otf"
+    - "!**/*.woff"
+    - "!**/*.woff2"
+    # 3D models and packaged tables
+    - "!**/*.glb"
+    - "!**/*.gltf"
+    - "!**/*.bin"
+    - "!**/*.pinbundle"
+    - "!**/*.zip"
+    # Compiled Wasm (the .wat sources stay in review)
+    - "!**/*.wasm"
+    # Lockfiles and vendoring leftovers
+    - "!**/Cargo.lock"
+    - "!**/packages.lock.json"
+    - "!**/*.orig"
+    # Recorded test data: sensor traces, expected-output dumps, proptest seeds
+    - "!**/spec_fixtures/**/*.csv"
+    - "!**/fixtures/**/*.expected.txt"
+    - "!**/fixtures/**/*.mapping.txt"
+    - "!**/fixtures/debug_scene_*.txt"
+    - "!**/proptest-regressions/**"
+    - "!crates/pin_script/tests/attack_corpus/RESULTS_*.txt"
+    # Build output (normally ignored by git; listed in case it is ever committed)
+    - "!**/target/**"
+    - "!tools/dof_bridge/**/bin/**"
+    - "!tools/dof_bridge/**/obj/**"
+    - "!dist/**"
+  path_instructions:
+    - path: "crates/**/src/**"
+      instructions: >-
+        Check PLAN.md §2.3: no heap allocation, mutex or file I/O inside step_1ms();
+        fixed iteration order (no HashMap iteration); SI units internally; no branches on
+        named behaviours in solver code; pin_core changes only through contracts/CHANGE_REQUESTS.md.
+    - path: "crates/**/tests/**"
+      instructions: >-
+        Tests must not sleep or assert on wall-clock time. Flag skipped, ignored or weakened
+        assertions.
+    - path: "docs/**"
+      instructions: >-
+        Planning and decision records. Check consistency with PLAN.md decision rows D1–D36.
+chat:
+  auto_reply: true

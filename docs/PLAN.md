@@ -1,4 +1,4 @@
-# Kilohertz Pinball: Technical Architecture & Agent Execution Plan (v4)
+# Kilohertz Pinball: Technical Architecture & Agent Execution Plan (v5)
 
 > **Run mode: unattended.** One human setup step before the run (§2.6, "Prerequisites"), one human acceptance step after it (Phase 8). Nothing in between waits on a person. Every subphase validates itself through the subphase gate in §2.6.
 
@@ -10,9 +10,11 @@ Every open choice from the v1 audit is settled here. Agents treat this table as 
 
 **v4 changes over v3:** built for unattended execution. Adds the orchestrator runbook (§2.6), written-out schemas and defaults (Appendices A–C), a self-contained brief template (Appendix D), a dependency-spike subphase (0.1), an autoplay soak harness (2.9), a placeholder asset kit (4.6), automated gates A1 and A2 in place of the mid-run human gates, and a single human acceptance step at the end (Phase 8).
 
+**v5 changes over v4 (from Wave 6 on):** Fable 5.2 is no longer a default model. Every unit of work is classified and routed to the cheapest tier that can do it (Haiku 5.5, Sonnet 5.5 or Opus 5.5), and Fable 5.2 is used only for very-high-blast-radius or extremely hard-to-troubleshoot work **and** only when the account's current usage limits leave enough Fable allowance (D34, §2.5). The Implementer / Independent Tester / Reviewer trio becomes four agents defined in `.claude/agents/`: Work Classifier, Task Executor, Work Verifier and Issue Investigator (D35, §2.6). Agents no longer review their own code: each unit of work becomes a pull request against `main`, CodeRabbit reviews it, findings are fixed automatically, and the Orchestrator merges once every finding is accounted for and every thread is resolved (D36, §2.7). Rows for Waves 0–5 in the run log and DECISIONS.md describe the v4 process and stay as they are.
+
 | # | Topic | Decision | Why |
 |---|---|---|---|
-| D1 | Subphase count | **37 subphases** in 10 waves (0–9): Opus 5.5 × 32, Fable 5.2 × 5 | v1 said 18 but listed 20; v2 added CI-first, audio, headless sim, table generator and a grey-box milestone; v3 adds one subphase per restored feature |
+| D1 | Subphase count | **37 subphases** in 10 waves (0–9). Waves 0–5 (27 subphases) ran as Opus 5.5 × 23, Fable 5.2 × 4 (2.1, 2.2, 2.3, 2.6). Later work is routed per D34 | v1 said 18 but listed 20; v2 added CI-first, audio, headless sim, table generator and a grey-box milestone; v3 adds one subphase per restored feature |
 | D2 | Wave ordering | Rebuilt so no subphase shares a wave with its own dependency | v1 had 3.3/4.3 and 7.2 in the same wave as their prerequisites |
 | D3 | Same-crate parallelism | **Module-level ownership** inside shared crates; `mod` lines pre-stubbed by the earlier subphase | Prevents merge conflicts in `pin_physics` and `pin_render` |
 | D4 | Contracts | **All cross-crate types live in `pin_core`**, changed only through the contract-change protocol (§2.3) | v1 had `TableScriptBackend` in `pin_script` while requiring contracts in `pin_core` |
@@ -37,25 +39,28 @@ Every open choice from the v1 audit is settled here. Agents treat this table as 
 | D23 | Sequencing | CI in Wave 2, headless sim + replay in Wave 5, **playable grey-box in Wave 6** | Regression tooling and a playable slice must exist before table authoring |
 | D24 | Table geometry | Procedural generator (`pin_tablegen`), validated by an autoplay bot and automated gates A1/A2; human playtest moves to the end | Agents cannot judge feel, but they can prove a table is free of traps, leaks and unreachable shots |
 | D25 | Security | Sandboxed Lua stdlib, instruction budget, memory cap, hardened zip extraction | Tables are untrusted downloads |
-| D26 | Model routing | 5.2 (probes and post) stays with Opus 5.5. The ray-query path (5.4) and the Banana flipper (2.6) go to Fable 5.2. Every subphase gets a **cross-model review** | The numerically hard parts of v1's 5.2 and 2.3 now live in 5.4 and 2.6 |
-| D27 | Self-validation | Three roles per subphase: Implementer, **Independent Tester** (other model, writes tests from the brief without seeing the code) and Reviewer | Tests written by the implementer alone tend to confirm the implementation rather than the spec |
+| D26 | Model routing | *Superseded by D34 from Wave 6.* v4: 5.2 stayed with Opus 5.5; 5.4 and 2.6 went to Fable 5.2; every subphase got a cross-model review | The numerically hard parts of v1's 5.2 and 2.3 now live in 5.4 and 2.6 |
+| D27 | Self-validation | An **Independent Tester** task (writes tests from the brief without seeing the code) for every subphase; it no longer has to use a different model. The v4 Reviewer role is replaced by the Work Verifier and CodeRabbit (D35, D36) | Tests written by the implementer alone tend to confirm the implementation rather than the spec |
 | D28 | Human involvement | Setup before the run, acceptance after it, nothing between. Ambiguity is resolved by the agent, logged, and reviewed at the end | Requirement: run as unattended as possible |
-| D29 | Failure policy | Three fix attempts, one attempt by the other model, then mark blocked. A blocked restored feature is skipped; a blocked core subphase halts only its dependents | The run should degrade, not stop |
-| D30 | Image tests | Analytic pixel assertions first, regression snapshots second, reviewer-agent visual checklist third | A golden image generated by the code under test proves nothing on its own |
+| D29 | Failure policy | Three fix attempts, then an Issue Investigator pass and one attempt one tier up (never into Fable unless D34 holds), then mark blocked. A blocked restored feature is skipped; a blocked core subphase halts only its dependents | The run should degrade, not stop |
+| D30 | Image tests | Analytic pixel assertions first, regression snapshots second, the Work Verifier's visual checklist third | A golden image generated by the code under test proves nothing on its own |
 | D31 | Hardware | Simulated in CI (virtual joysticks, recorded sensor traces, mock displays, loopback UDP). Physical checks are listed for final acceptance, never gated | No cabinet is attached to CI |
 | D32 | Assets | A code-generated, licence-clean placeholder kit (sounds, fonts, art) with stable IDs | Tables must be complete without sourcing third-party assets; real assets drop in later by ID |
 | D33 | Unverifiable features | Ray-query reflections ship **off by default** unless a ray-tracing-capable runner validated them; the DOF bridge ships marked "unverified on hardware" | Honest defaults for anything CI could not exercise |
+| D34 | Fable 5.2 use | **Exception only.** Work is classified into tiers T0 Haiku 5.5, T1 Sonnet 5.5, T2 Opus 5.5 and T3 Fable 5.2. T3 needs (a) a very-high blast radius or an extremely hard-to-troubleshoot issue, with evidence; (b) a reason T2 is not enough; and (c) enough Fable allowance under the account's current usage limits. Unknown allowance counts as not enough; the work then runs on Opus 5.5 and a line goes to `docs/HUMAN_QUEUE.md` | Fable allowance is scarce and Opus 5.5 handled most of Waves 0–5's hard numerics; the run must not stall or exhaust limits waiting for Fable |
+| D35 | Agent roles | Four agents in `.claude/agents/`: **work-classifier** (classifies, picks the tier, writes the delegation brief), **task-executor** (implements, writes spec tests, fixes), **work-verifier** (requirements traced, coverage, passing tests; no style review) and **issue-investigator** (reproduces and root-causes reported issues, judges review findings) | Clear hand-offs with full briefs; cheap models do cheap work |
+| D36 | Code review | **No agent reviews its own or a sibling's code.** Every unit of work is a PR against `main`; CodeRabbit reviews it; auto-fix is on from the moment the PR opens; the Orchestrator merges, without waiting for a person, once CI is green and every finding is accounted for with its thread resolved (§2.7) | An external reviewer finds different defects than the model that wrote the code, and the run stays unattended |
 
 ### Restored features (each isolated in its own subphase)
 
 | Feature | Subphase | Model | Isolation |
 |---|---|---|---|
-| Curved "Banana" flippers | 2.6 | Fable 5.2 | New `FlipperShape` variant behind the `BatShape` trait |
+| Curved "Banana" flippers | 2.6 | Fable 5.2 (complete) | New `FlipperShape` variant behind the `BatShape` trait |
 | Magnus effect, remanence, `low_rem_steel` | 2.7 | Opus 5.5 | External-force hooks; zero coefficients reproduce the core solver bit-for-bit |
 | Jumbo balls up to 79.4 mm | 2.8 | Opus 5.5 | New profile plus a table clearance validator |
 | DOF bridge | 3.5 | Opus 5.5 | Separate Windows process fed by UDP telemetry |
 | Wasm scripting backend | 4.5 | Opus 5.5 | Second `TableScriptBackend` implementation |
-| Hardware ray-query reflections | 5.4 | Fable 5.2 | Second `ReflectionSource` implementation, probes as fallback |
+| Hardware ray-query reflections | 5.4 | Opus 5.5 (Fable 5.2 only under D34) | Second `ReflectionSource` implementation, probes as fallback |
 | Backbox mini-playfield, vertical flippers, 3D toys | 5.5 | Opus 5.5 | Collision layer bit 4 and a backbox render pass |
 | Wasm ports of table rules | 6.3 | Opus 5.5 | After Gate A2, when rules are frozen |
 | Playable showcase of the above | 6.4 | Opus 5.5 | `tables/feature_lab`, so autoplay soak and final acceptance cover them |
@@ -142,8 +147,9 @@ kilohertz-pinball/
 4. **No blocking on the sim thread (D5).** No heap allocation, mutex, or file I/O in `step_1ms()` in Rust engine code. Tests wrap the tick in a panicking-allocator guard (e.g. `assert_no_alloc`). Two explicit exemptions: the Lua VM allocates from its own capped, pre-reserved arena; and a hot-reload swap tick may allocate and overrun (developer-only event).
 5. **Simulated time in tests (D8).** Headless tests never sleep and never assert on wall-clock time.
 6. **No test-shaped special cases.** Solver code must not branch on named behaviours ("live catch", "powerball"). Tests assert emergent results across parameter sweeps.
-7. **Three roles per subphase (D26, D27).** Implementer, Independent Tester and Reviewer, as defined in §2.6. The Tester and Reviewer use the model that did not implement.
+7. **Agent roles (D34, D35).** Every unit of work is classified by the work-classifier, done by a task-executor (as Implementer, Independent Tester or Fixer), checked by the work-verifier, and diagnosed by the issue-investigator when something fails for a reason that is not obvious (§2.6). The model is whatever the classifier picked (§2.5).
 8. **Never wait on a person (D28).** When the brief is ambiguous, choose the option most consistent with the decision log, record it in `docs/DECISIONS.md`, add a line to `docs/HUMAN_QUEUE.md`, and continue.
+9. **No self-review (D36).** No agent reviews code for style or design, its own or another agent's. The work-verifier checks objective facts only; code review happens on the pull request by CodeRabbit (§2.7).
 
 ### 2.4 Determinism Scope (D9)
 
@@ -151,29 +157,49 @@ kilohertz-pinball/
 * **To stay close across platforms:** no fast-math flags, no FMA contraction, `libm` for transcendental functions, fixed iteration order everywhere, a sim-owned seeded PCG for all randomness.
 * **Report only:** CI records cross-OS replay hashes and flags divergence without failing the build.
 
-### 2.5 Model Routing
+### 2.5 Model Routing (D34)
 
-* **Fable 5.2 (5 subphases):** 2.1 spline and BVH geometry, 2.2 CCD and spin solver, 2.3 flipper solver, 2.6 Banana flipper arcs, 5.4 ray-query reflections. These are the numerically delicate parts where subtle instabilities are most expensive.
-* **Opus 5.5 (32 subphases):** everything else: spikes, scaffolding, platform, input, audio, assets, scripting (Lua and Wasm), rendering, autoplay harness, tables, CI, DOF bridge.
-* **Tester and Reviewer roles** always go to the model that did not implement the subphase.
+Every unit of work (a subphase, an Independent Tester task, a fix task, a CodeRabbit finding, a CI or gate failure) goes through the **work-classifier** before anyone works on it. The classifier rates blast radius and difficulty and picks the lowest tier that can do the job:
+
+| Tier | Model | Typical work |
+|---|---|---|
+| T0 | Haiku 5.5 | Docs-only edits, run-log and queue lines, formatting, renames, a review nit whose fix the comment spells out exactly |
+| T1 | Sonnet 5.5 | Well-specified changes in one module, adding tests, CI and workflow tweaks, most review findings, verification runs |
+| T2 | Opus 5.5 | New subphase implementations, numerics, solvers, render pipelines, concurrency, cross-module changes, ambiguous work, every investigation |
+| T3 | Fable 5.2 | Only under the Fable rule below |
+
+The **Model** column in Phase 4 and §5 is the expected tier for the Implementer; the classifier may route lower, and each fix or finding is classified on its own.
+
+**Fable rule.** Fable 5.2 is used only when all three hold:
+1. **Need.** The work has a *very-high blast radius* (a breaking `pin_core` contract change used by three or more crates; a change to simulation output for every table, such as solver numerics in `pin_physics` world/ball/flipper, the sim tick or the triple buffer; a change to the untrusted-table security boundary, such as the Lua/Wasm sandbox, budgets, memory caps, zip extraction or the vendored Lua patches; or a change one revert cannot undo), **or** it is *extremely hard to troubleshoot* (two full issue-investigator passes on Opus 5.5 found no reproducible root cause, or Opus 5.5 used up the D29 fix attempts, or the failure is non-deterministic below the code's control and two Opus passes did not isolate it).
+2. **Opus is not enough.** The classifier names the T2 attempt that failed, or says exactly why one would.
+3. **Allowance.** Just before routing, the Orchestrator reads the account's current usage limits (the Claude Code `/usage` readout or the latest rate-limit status the session reports) and finds enough Fable allowance left in the current window for the estimated task, with headroom, without going into overage. If the allowance cannot be read, it counts as not enough.
+
+If 1 and 2 hold but 3 does not, the work runs on Opus 5.5 and a line goes to `docs/HUMAN_QUEUE.md`; the run never waits for allowance to return. If a Fable session is throttled or falls back mid-task, the work continues on Opus 5.5. Every Fable use is logged in `docs/RUN_LOG.md` with the classifier's evidence for 1–3.
+
+**Verification and investigation** run on Sonnet 5.5 and Opus 5.5 respectively, by default. Neither needs to differ from the implementing model.
 
 ### 2.6 Orchestrator Runbook
 
-A single long-running **Orchestrator** agent owns the wave table (§5), spawns the role agents, enforces gates, merges, and keeps `docs/RUN_LOG.md` current. It writes no product code.
+A single long-running **Orchestrator** agent (the main session) owns the wave table (§5), routes every unit of work through the work-classifier, spawns the agents the classifier names with the model it picks, opens and drives the pull requests (§2.7), merges, and keeps `docs/RUN_LOG.md` current. It writes no product code and does not review code.
 
 **Prerequisites (the only human step before the run).**
 1. A GitHub repository with Actions enabled on Windows, Linux and macOS hosted runners.
-2. Branch protection on `main`, and agent credentials with write access to branches and pull requests.
-3. Optional: a self-hosted runner with a ray-tracing-capable GPU. Without it, D33 applies.
+2. Branch protection on `main`, and agent credentials with write access to branches and pull requests, including merging.
+3. The CodeRabbit GitHub app installed on the repository, configured by `.coderabbit.yaml`. Its `path_filters` keep binary, generated, vendored-build and recorded-data files (images, audio, fonts, models, compiled Wasm, lockfiles, recorded traces and expected-output dumps) out of review; source, shaders, table rules, manifests, CI and docs are reviewed.
+4. Optional: a self-hosted runner with a ray-tracing-capable GPU. Without it, D33 applies.
 
-**Roles per subphase.**
-* **Implementer** (assigned model): builds the deliverables and its own unit tests.
-* **Independent Tester** (other model): receives only the brief, never the implementation. Writes black-box tests against the public contract under `tests/spec_*`, including property tests for stated invariants. Runs in parallel with the Implementer.
-* **Reviewer** (other model): reads the diff, checks §2.3, runs every gate step, and for render work opens the output images against the brief's visual checklist.
+**Agents (D35).** Defined in `.claude/agents/`. Subagents cannot start subagents, so the Orchestrator does every spawn, passing the classifier's brief verbatim and its model as the `model` override.
+* **work-classifier** (`work-classifier.md`, Sonnet 5.5): rates blast radius and difficulty, picks the tier (§2.5), names the agent, and writes the complete delegation brief (Appendix D). Runs before every delegation.
+* **task-executor** (`task-executor.md`, model from the classifier): does the work as one of three variants. *Implementer* builds the deliverables and their unit tests. *Independent Tester* receives only the brief, never the implementation, and writes black-box tests against the public contract under `tests/spec_*`, including property tests for stated invariants; it runs in parallel with the Implementer. *Fixer* applies one CodeRabbit finding, verifier failure or investigator plan.
+* **work-verifier** (`work-verifier.md`, Sonnet 5.5): confirms each requirement has a passing test, re-runs fmt, clippy, every applicable test suite and coverage, checks owned paths, the sim-thread rules and, for render work, the visual checklist. It gives no opinion on style or design.
+* **issue-investigator** (`issue-investigator.md`, Opus 5.5): reproduces and root-causes any failure whose cause is not obvious (CI, verifier, flaky tests, wrong output) and judges CodeRabbit findings of unclear validity. It returns a fix plan and a thread reply; it does not fix.
 
-**Briefs.** The Orchestrator generates each brief from Appendix D so it is self-contained: the subphase section, §2.3, the relevant parts of §3 and the appendices, and the owned paths. Role agents never need this whole document.
+**Flow per unit of work.** classify → execute (Implementer and Independent Tester in parallel for a subphase) → verify → on `fail`, investigate if the cause is unclear, then classify and execute the fix → verify again → open the PR (§2.7) → CodeRabbit findings go through the same loop until the merge conditions hold.
 
-**Branches.** `main` is protected. Each wave has `wave/N`; each subphase works on `sp/<id>` and merges into `wave/N` when its subphase gate passes. `wave/N` merges into `main` when the wave gate passes and is tagged `wave-N-green`.
+**Briefs.** The work-classifier writes each brief from Appendix D so it is self-contained: the subphase section, §2.3, the relevant parts of §3 and the appendices, and the owned paths. Role agents never need this whole document.
+
+**Branches.** `main` is protected. Each unit of work runs on its own branch from the latest `main` (`sp/<id>`, `fix/<id>`, or the branch the harness assigns) and reaches `main` only through its own pull request (§2.7). A wave is complete when all its PRs are merged and the wave gate passes on `main`; that commit is tagged `wave-N-green`. Wave branches are no longer used.
 
 **Subphase gate (definition of done).** All must hold:
 1. `cargo fmt --check` and `clippy -D warnings` are clean.
@@ -183,22 +209,45 @@ A single long-running **Orchestrator** agent owns the wave table (§5), spawns t
 5. Property tests (`proptest`) cover every solver invariant and numeric helper; every parser (TOML manifests, zip, glTF extras, UDP packets, replay files) survives a bounded random-bytes run without panicking.
 6. For anything on the sim thread: allocation guard passes and a replay hash is stable over 10 runs.
 7. An automated path check confirms the diff touches only owned paths.
-8. Reviewer approves.
+8. The work-verifier reports `pass`. The subphase is then *done* only when its PR is merged under §2.7.
 
 **Wave gate.** Full workspace tests on all three operating systems; replay hashes stable; every earlier wave's tests still pass; tick-time benchmark has not regressed by more than 10 %.
 
 **Failure policy (D29).**
-1. The Implementer gets up to three fix attempts, each with the Reviewer's findings.
-2. Then the other model gets one attempt from a fresh brief plus the failure history.
+1. The executor gets up to three fix attempts, each from a classifier brief built on the verifier's failures, the investigator's report or the CodeRabbit findings.
+2. Then the issue-investigator makes a fresh pass, and the classifier routes one more attempt one tier up from a fresh brief plus the failure history. This can reach Fable 5.2 only if D34 holds, including the allowance check; otherwise it stays on Opus 5.5.
 3. Then the subphase is marked `blocked` in the run log and added to `docs/HUMAN_QUEUE.md`.
 4. A blocked *restored* subphase (2.6, 2.7, 2.8, 3.5, 4.5, 5.4, 5.5, 6.3, 6.4) is skipped along with its dependents; the run continues.
 5. A blocked *core* subphase halts only its dependents. All independent work continues, and the run ends with a partial result and a precise account of what is missing.
 
-**Image test policy (D30).** Every render test uses, in order: (a) analytic assertions on pixels, such as region mean colour, luminance ratios, symmetry and energy conservation; (b) a regression snapshot, stored only after (a) passes, with per-backend tolerance; (c) the Reviewer's visual checklist, logged. A snapshot is never the sole evidence.
+**Image test policy (D30).** Every render test uses, in order: (a) analytic assertions on pixels, such as region mean colour, luminance ratios, symmetry and energy conservation; (b) a regression snapshot, stored only after (a) passes, with per-backend tolerance; (c) the work-verifier's visual checklist, logged. A snapshot is never the sole evidence.
 
 **Hardware simulation policy (D31).** Gamepad-mode devices are SDL virtual joysticks; keyboard-encoder devices are synthetic key events; plunger and accelerometer inputs are recorded traces stored as fixtures; displays are mocked; audio renders offline to buffers; telemetry uses loopback UDP. Anything that needs a physical device goes into `docs/HUMAN_ACCEPTANCE.md`.
 
 **Automated gates.** Gate A1 (after Wave 6) and Gate A2 (after Wave 7) are defined in Phase 6. A failing gate opens fix tasks against the owning subphases under the failure policy; it never pauses for a person.
+
+### 2.7 Pull Request, Review & Merge Workflow (D36)
+
+Agents do not review their own code. Review comes from CodeRabbit on a pull request, and the Orchestrator resolves it without a person.
+
+1. **Open.** When the work-verifier passes, the Orchestrator pushes the branch and opens a PR against `main`. The body follows the repository's PR template if there is one, and otherwise lists: deliverables with the test that proves each one, gate results with numbers, decisions logged, contract-change requests, and every Fable use with its D34 evidence. Bot names in the body go in backticks so nobody is notified by accident.
+2. **Auto-fix on.** Right after opening, the Orchestrator subscribes to the PR's activity (comments, reviews, CI). From then on every CodeRabbit comment and every CI failure is handled as it arrives; nobody polls or sleeps waiting for them.
+3. **Every finding is accounted for.** For each CodeRabbit comment (inline, nitpick, outside-diff or summary item), the Orchestrator sends the finding to the work-classifier, or to the issue-investigator first when its validity or cause is unclear. Each one ends in exactly one disposition, recorded as a reply on its thread:
+   * **Fixed:** an executor commit addresses it, the verifier re-runs the affected checks, and the reply names the commit. The thread is then resolved.
+   * **Not a defect:** the reply gives the evidence (test output, the DECISIONS.md section). The thread is resolved once CodeRabbit accepts or no longer pursues it; if it argues back with new information, the finding goes round again.
+   * **Deferred:** real but out of scope, or it changes simulation output and needs a human ruling. The reply links the `docs/HUMAN_QUEUE.md` line (committed on the PR), then the thread is resolved.
+
+   No thread is resolved without a reply. Nitpicks are fixed when cheap (T0/T1), otherwise answered as above.
+4. **Re-review.** Each push triggers CodeRabbit's incremental review; new findings go through step 3. If CodeRabbit has not reviewed the head commit (for example it is rate-limited), the Orchestrator asks it once with a PR comment `@coderabbitai review`, waits as long as it says, and asks again at most twice. If it still has not reviewed, the PR stays open, a line goes to `docs/HUMAN_QUEUE.md`, and the run continues with work that does not depend on this PR.
+5. **Merge conditions.** The Orchestrator merges, without waiting for a person, when all of these hold on the current head commit:
+   * every required CI check is green;
+   * CodeRabbit has finished reviewing the head commit, with no actionable comments left unanswered and no outstanding change request;
+   * every review conversation has a disposition reply and is resolved, where the thread type allows it;
+   * the branch is up to date with `main` (if not, update it and wait for CI again);
+   * the work-verifier's last result is `pass` for the head commit.
+
+   Then the Orchestrator merges with a merge commit, deletes the branch, unsubscribes from the PR, and adds a row to `docs/RUN_LOG.md` with the PR number and the merge commit.
+6. **Never** to get green: skip, ignore, delete or weaken a test; force-push or rewrite history on a branch it did not create; push an empty commit; close and reopen a PR to restart CI; or merge with a failing required check.
 
 ---
 
@@ -405,7 +454,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 ### Phase 2: Physics & Headless Simulation
 
 #### Subphase 2.1: BVH, Collision Layers & C² Spline Colliders
-* **Model:** Fable 5.2 · **Target:** `pin_physics/world/` · **Dependencies:** 1.1
+* **Model:** Fable 5.2 (complete, v4) · **Target:** `pin_physics/world/` · **Dependencies:** 1.1
 * **Deliverables:**
   1. `parry3d` static BVH for walls, posts, targets and toy meshes with an 8-bit `collision_layer` mask (bit 0 main deck, 1 upper deck, 2 wireform, 3 subway, 4 backbox). Per-collider enable flags for drop targets, gates and diverters.
   2. C² interpolating cubic splines (D13): authored as through-points, stored as cubic Bézier segments. Closest-point by Newton iteration, seeded from the ball's previous parameter with a coarse sample table as fallback.
@@ -415,7 +464,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** A ball at $8.0\text{ m/s}$ through a $180^\circ$ guide of radius 150 mm, then up a ramp from $Z = 0$ to $65\text{ mm}$: kinetic + potential energy never increases; normal force changes by less than 5 % between consecutive ticks away from entry and exit; no tunnelling; layer mask switches exactly once per transition.
 
 #### Subphase 2.2: CCD, Spin, Friction, Magnets & Newton Balls
-* **Model:** Fable 5.2 · **Target:** `pin_physics/ball/` · **Dependencies:** 2.1
+* **Model:** Fable 5.2 (complete, v4) · **Target:** `pin_physics/ball/` · **Dependencies:** 2.1
 * **Deliverables:**
   1. Swept-sphere CCD by conservative advancement, using `parry3d` shape-casts for static geometry and analytic tests for splines and ball-ball pairs.
   2. Angular velocity, Coulomb friction with sliding-to-rolling transition, material-pair restitution and friction tables.
@@ -430,7 +479,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
   5. A spinning ball dropped on a flat surface converges to rolling without slipping.
 
 #### Subphase 2.3: Flipper Solver (Standard, Upper, Zipper, Thing Flip)
-* **Model:** Fable 5.2 · **Target:** `pin_physics/flipper/` · **Dependencies:** 2.2
+* **Model:** Fable 5.2 (complete, v4) · **Target:** `pin_physics/flipper/` · **Dependencies:** 2.2
 * **Deliverables:**
   1. Flipper kinematics on arbitrary mounting planes from `surface_normal`.
   2. Dual-wound coil: power torque until the EOS switch opens at `eos_angle_fraction`, then hold torque; return spring; end-stop restitution.
@@ -463,7 +512,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** A 10,000-tick recording replays to an identical state hash 10 times in a row. The allocation guard passes over 60,000 ticks with a script loaded.
 
 #### Subphase 2.6: Curved "Banana" Flipper *(restored)*
-* **Model:** Fable 5.2 · **Target:** `pin_physics/flipper_banana/` · **Dependencies:** 2.3
+* **Model:** Fable 5.2 (complete, v4) · **Target:** `pin_physics/flipper_banana/` · **Dependencies:** 2.3
 * **Deliverables:**
   1. `CurvedBanana` as a circular-arc tube implementing `BatShape`: analytic closest point (point-to-arc in the bat plane, then tube radius) and surface velocity $\vec{v}_{\text{bat}} = \vec{\omega}_{\text{bat}} \times \vec{r}_{\text{contact}}$.
   2. Rotating-arc vs. sphere CCD by conservative advancement in the flipper's local frame. `parry3d`'s nonlinear cast is not relied on here because it can report a shape pair as unsupported (§6).
@@ -635,7 +684,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** `gpu-tests` goldens for DMD text, score formatting and lamp-mask blending.
 
 #### Subphase 5.4: Hardware Ray-Query Reflections *(restored)*
-* **Model:** Fable 5.2 · **Target:** `pin_render/raytrace/` · **Dependencies:** 5.2
+* **Model:** Opus 5.5 (Fable 5.2 only under D34) · **Target:** `pin_render/raytrace/` · **Dependencies:** 5.2
 * **Deliverables:**
   1. First task: confirm on the pinned `wgpu` which backends report `Features::EXPERIMENTAL_RAY_QUERY` (§6) and record the result in the crate docs.
   2. `RayQueryReflections` implementing `ReflectionSource`, created only when the adapter reports the feature. Bottom-level structures per static mesh; a top-level structure refit each frame for balls, flippers and dynamic meshes.
@@ -741,7 +790,7 @@ Work through `docs/HUMAN_ACCEPTANCE.md`:
 
 ## 5. Wave & Dependency Matrix
 
-A subphase never shares a wave with one of its dependencies. Where a crate appears twice in a wave, the module column shows the split.
+A subphase never shares a wave with one of its dependencies. Where a crate appears twice in a wave, the module column shows the split. The **Model** column records who ran Waves 0–5 and the expected Implementer tier from Wave 6 on; the work-classifier makes the final choice (§2.5, D34).
 
 | Wave | Subphase | Model | Depends on | Crate / module |
 |---|---|---|---|---|
@@ -773,7 +822,7 @@ A subphase never shares a wave with one of its dependencies. Where a crate appea
 | **5** | 2.8 Large balls & clearance *(restored)* | Opus 5.5 | 2.3, 4.3 | `pin_tablegen/clearance`, `pin_physics/tests` |
 | **5** | 3.5 DOF bridge *(restored)* | Opus 5.5 | 3.4 | `tools/dof_bridge` |
 | **6** | 6.0 Integration & grey-box (M1) | Opus 5.5 | 2.5, 3.4, 4.3, 4.4, 4.6, 5.1 | `pin_app/orchestrator`, `tables/greybox` |
-| **6** | 5.4 Ray-query reflections *(restored)* | **Fable 5.2** | 5.2 | `pin_render/raytrace` |
+| **6** | 5.4 Ray-query reflections *(restored)* | Opus 5.5 | 5.2 | `pin_render/raytrace` |
 | **6** | 5.5 Backbox playfield & toys *(restored)* | Opus 5.5 | 2.3, 4.3, 5.3 | `pin_render/backbox`, `pin_tablegen/backbox` |
 | **6** | 2.9 Autoplay bot & soak harness | Opus 5.5 | 2.5 | `pin_sim/autoplay` |
 | — | **Gate A1** (automated) | Orchestrator | 6.0, 2.9 | Physics reference suite + grey-box soak |
@@ -787,7 +836,7 @@ A subphase never shares a wave with one of its dependencies. Where a crate appea
 
 | — | **Final Human Acceptance** (Phase 8) | Human | 7.2 | Feel, hardware, visuals, real assets |
 
-**Totals:** 37 subphases · 10 waves (0–9) · Opus 5.5 × 32 · Fable 5.2 × 5 · 2 automated gates · 1 human step at the end.
+**Totals:** 37 subphases · 10 waves (0–9) · Waves 0–5: Opus 5.5 × 23, Fable 5.2 × 4 · Waves 6–9: routed per D34, expected Opus 5.5 or lower for all 10 remaining subphases plus fix work, Fable 5.2 only by exception · 2 automated gates · 1 human step at the end.
 
 ---
 
@@ -1070,11 +1119,13 @@ These populate `physics_defaults.toml`. They are engineering starting points, no
 
 ## Appendix D: Subphase Brief Template
 
-The Orchestrator fills this in for each role agent. A brief must be usable without access to this document.
+The work-classifier fills this in for each delegation (§2.5, §2.6), and the Orchestrator passes it verbatim to the named agent. A brief must be usable without access to this document.
 
 ```text
-SUBPHASE <id>: <title>                         ROLE: Implementer | Independent Tester | Reviewer
-MODEL: <model>                                 BRANCH: sp/<id>   BASE: wave/<N>
+WORK ITEM <id>: <title>          AGENT: task-executor | work-verifier | issue-investigator
+ROLE: Implementer | Independent Tester | Fixer | Verifier | Investigator
+MODEL: <Haiku 5.5 | Sonnet 5.5 | Opus 5.5 | Fable 5.2>   TIER: T0–T3 (+ D34 evidence if T3)
+BRANCH: <branch>   BASE: main   PR: <number or "not yet open">
 
 OWNED PATHS (you may modify only these):
   <paths>
@@ -1084,14 +1135,21 @@ READ-ONLY CONTEXT:
 GOAL
   <one paragraph>
 
-DELIVERABLES
-  <numbered list copied from the plan>
+REQUIREMENTS / DELIVERABLES
+  <numbered, each testable; for a CodeRabbit finding: the quoted comment, thread URL,
+   file:lines, and what "fixed" means>
 
 CONTRACTS YOU MUST HONOUR
   <relevant excerpts of §3 and Appendices A–C, inlined in full>
 
 RULES
-  <§2.3 rules 1–8, inlined in full>
+  <§2.3 rules 1–9, inlined in full>
+
+TESTS REQUIRED
+  <tests to add or update; existing suites that must still pass>
+
+COMMANDS
+  <exact cargo commands with the environment variables for this run>
 
 VERIFICATION CRITERIA
   <numbered list copied from the plan, with tolerances>
@@ -1099,8 +1157,8 @@ VERIFICATION CRITERIA
 VISUAL CHECKLIST (render subphases only)
   <what a correct image must show>
 
-GATE
-  <the subphase gate from §2.6, inlined>
+GATE / DONE WHEN
+  <the subphase gate from §2.6, inlined, or the checks the work-verifier will run>
 
 WHEN SOMETHING IS UNCLEAR
   Choose the option most consistent with the decision log excerpts below, record it in
@@ -1111,10 +1169,14 @@ ROLE-SPECIFIC
   Implementer:        deliver code + unit tests; do not read tests/spec_*.
   Independent Tester: you have NOT seen the implementation and must not ask for it.
                       Write black-box and property tests under tests/spec_* from this brief alone.
-  Reviewer:           run every gate step; list findings as blocking or non-blocking.
+  Fixer:              smallest change that meets "fixed"; regression test; name the thread(s).
+  Verifier:           re-run every gate step; trace each requirement to a passing test;
+                      no style or design opinions (CodeRabbit reviews the PR).
+  Investigator:       reproduce, root-cause, verdict, fix plan; change no repository files.
 
 REPORT FORMAT
-  status: pass | fail | blocked
+  status: done | pass | fail | blocked | root-caused | not-found
+  requirements: <each → met (test) | not met>
   gate results: <per step>
   decisions logged: <list>
   contract-change requests: <list>
