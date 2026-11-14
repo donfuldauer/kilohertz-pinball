@@ -98,21 +98,37 @@ fn mech_set_tilt_switch_and_ball_nudge() {
 
 #[test]
 fn tilt_bob_period_in_mech_set_follows_solver_gravity() {
-    let mut set = MechSet::new(&[], &PhysicsDefaults::builtin()).unwrap();
-    let mut s = solver(6.5);
-    set.nudge(Vec3::new(0.02, 0.0, 0.0));
-    let mut crossings = Vec::new();
-    let mut last = 0.0f32;
-    for i in 0..3000 {
-        set.pre_step(&mut s, DT);
-        let x = set.tilt_bob_offset().x;
-        if last > 0.0 && x <= 0.0 {
-            crossings.push(i as f32 * DT);
+    // Two gravity magnitudes (same direction): the expected period comes
+    // from the bob length and the solver's gravity, not from the bob's own
+    // report, so a `MechSet` that did not pass gravity on fails one of them.
+    let length = TiltBobParams::default().length;
+    let mut periods = Vec::new();
+    for scale in [1.0f32, 2.0] {
+        let mut set = MechSet::new(&[], &PhysicsDefaults::builtin()).unwrap();
+        let mut s = solver(6.5);
+        let gravity = s.config().gravity * scale;
+        s.set_gravity(gravity);
+        set.nudge(Vec3::new(0.02, 0.0, 0.0));
+        let mut crossings = Vec::new();
+        let mut last = 0.0f32;
+        for i in 0..3000 {
+            set.pre_step(&mut s, DT);
+            let x = set.tilt_bob_offset().x;
+            if last > 0.0 && x <= 0.0 {
+                crossings.push(i as f32 * DT);
+            }
+            last = x;
         }
-        last = x;
+        let period = (crossings[3] - crossings[0]) / 3.0;
+        let analytic = core::f32::consts::TAU * libm::sqrtf(length / gravity.length());
+        println!("tilt bob at {scale}·g: period {period:.4} s, analytic {analytic:.4} s");
+        assert!(
+            (period - analytic).abs() / analytic < 0.02,
+            "{scale}·g: {period} vs {analytic}"
+        );
+        periods.push(period);
     }
-    let period = (crossings[3] - crossings[0]) / 3.0;
-    let analytic = set.tilt_bob().small_swing_period();
-    println!("tilt bob period {period:.4} s, analytic {analytic:.4} s");
-    assert!((period - analytic).abs() / analytic < 0.02);
+    // Doubling g shortens the period by √2.
+    let ratio = periods[0] / periods[1];
+    assert!((ratio - core::f32::consts::SQRT_2).abs() < 0.03, "{ratio}");
 }

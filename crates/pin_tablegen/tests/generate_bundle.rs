@@ -99,7 +99,13 @@ fn check_agreement(layout: &LayoutManifest, table: &LoadedTable, scene: &GltfSce
             assert!(m.extras.collision_layer.is_some(), "{name}");
             assert!(m.material.is_some(), "{name}");
         }
+        // Solid geometry collides, on the main layer unless it is a deck.
+        let solid = |layer: u8| {
+            assert!(m.extras.collider, "{name}: solid geometry must collide");
+            assert_eq!(m.extras.collision_layer, Some(layer), "{name}");
+        };
         if name == "floor" {
+            solid(0);
             let (w, l) = (
                 layout.playfield.width / 1000.0,
                 layout.playfield.length / 1000.0,
@@ -110,6 +116,7 @@ fn check_agreement(layout: &LayoutManifest, table: &LoadedTable, scene: &GltfSce
             assert!((area(m) - f64::from(w * l)).abs() < 1e-9, "{name}");
             seen += 1;
         } else if let Some(i) = index("walls[") {
+            solid(0);
             let wall = &layout.walls[i];
             let mut pts: Vec<[f32; 2]> = wall.points.iter().map(|&p| mm(p)).collect();
             if wall.closed {
@@ -137,6 +144,7 @@ fn check_agreement(layout: &LayoutManifest, table: &LoadedTable, scene: &GltfSce
             }
             seen += 1;
         } else if let Some(i) = index("posts[") {
+            solid(0);
             let post = layout.posts[i];
             let (c, r) = (mm(post.position), post.radius / 1000.0);
             for p in surface_samples(m) {
@@ -148,7 +156,7 @@ fn check_agreement(layout: &LayoutManifest, table: &LoadedTable, scene: &GltfSce
             seen += 1;
         } else if let Some(i) = index("decks[") {
             let deck = &layout.decks[i];
-            assert_eq!(m.extras.collision_layer, Some(deck.layer));
+            solid(deck.layer);
             let z = deck.z / 1000.0;
             let outline: Vec<[f32; 2]> = deck.outline.iter().map(|&p| mm(p)).collect();
             for p in &m.positions {
