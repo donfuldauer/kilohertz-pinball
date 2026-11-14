@@ -61,10 +61,29 @@ pub fn magnus_step_force(
     if f.is_finite() { f } else { NO_FORCE }
 }
 
+/// Gravity of `BallSolverConfig::from_defaults` (m/s²), the default the
+/// hook assumes when it is not told the solver's.
+pub const DEFAULT_GRAVITY: Vec3 = Vec3::new(0.0, 0.0, -9.81);
+
 /// Magnus effect hook (PLAN.md §3.2): `F = S_m (ω × v)` with
 /// `S_m = BallProfile::magnus_coeff`, integrated over each sub-step as an
 /// exact rotation of the velocity ([`magnus_step_force`]), so it bends
 /// the path without changing the speed.
+///
+/// **Midpoint velocity.** The solver adds `g·h` to the ball's velocity
+/// before it calls the hooks, so the hook sees the velocity at the *end*
+/// of the free-fall part of the sub-step. Evaluating Magnus there biases
+/// the lateral acceleration by `(S_m/m)·ω × (g·h/2)` (≈ 2e-3 m/s² for a
+/// spinning Glo-Ball, beyond 1 % at moderate speeds). The hook therefore
+/// rotates the sub-step's midpoint velocity `v_mid = v − g·h/2`. The
+/// applied change is a pure rotation of `v_mid` (perpendicular to it: no
+/// work by the midpoint rule).
+///
+/// `Magnus` assumes the default gravity [`DEFAULT_GRAVITY`] (that of
+/// `BallSolverConfig::from_defaults`); for a solver with another gravity
+/// use [`MagnusWithGravity`] ([`Magnus::with_gravity`]), which
+/// [`register_all`](super::register_all) always registers with the
+/// solver's own gravity (bit-identical to `Magnus` at the default).
 ///
 /// Stateless. A ball whose profile has `magnus_coeff = 0` (every built-in
 /// profile but `uv_globall`) or that does not spin gets exactly no force,
@@ -73,11 +92,47 @@ pub fn magnus_step_force(
 pub struct Magnus;
 
 impl Magnus {
-    /// The Magnus hook.
+    /// The Magnus hook for a solver with the default gravity.
     #[must_use]
     pub const fn new() -> Self {
         Self
     }
+
+    /// The Magnus hook for a solver whose gravity is `gravity` (m/s²; use
+    /// `BallSolver::config().gravity`).
+    #[must_use]
+    pub const fn with_gravity(gravity: Vec3) -> MagnusWithGravity {
+        MagnusWithGravity { gravity }
+    }
+}
+
+/// [`Magnus`] for a solver with gravity `gravity` (m/s²), used for the
+/// midpoint velocity `v − g·h/2`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct MagnusWithGravity {
+    /// The solver's gravity, m/s².
+    pub gravity: Vec3,
+}
+
+impl Default for MagnusWithGravity {
+    fn default() -> Self {
+        Magnus::with_gravity(DEFAULT_GRAVITY)
+    }
+}
+
+/// The hook's force for `ball` over a sub-step `h` with gravity `g`.
+fn step_force(gravity: Vec3, ball: &Ball, profile: &BallProfile, h: f32) -> Vec3 {
+    if profile.magnus_coeff == 0.0 {
+        return NO_FORCE;
+    }
+    let v_mid = ball.velocity - gravity * (0.5 * h);
+    magnus_step_force(
+        profile.magnus_coeff,
+        profile.mass_kg,
+        ball.angular_velocity,
+        v_mid,
+        h,
+    )
 }
 
 impl ExternalForce for Magnus {
@@ -89,22 +144,27 @@ impl ExternalForce for Magnus {
         profile: &BallProfile,
         dt: f32,
     ) -> Vec3 {
-        magnus_step_force(
-            profile.magnus_coeff,
-            profile.mass_kg,
-            ball.angular_velocity,
-            ball.velocity,
-            dt,
-        )
+        step_force(DEFAULT_GRAVITY, ball, profile, dt)
     }
 
     fn force(&mut self, _handle: BallHandle, ball: &Ball, profile: &BallProfile, dt: f32) -> Vec3 {
-        magnus_step_force(
-            profile.magnus_coeff,
-            profile.mass_kg,
-            ball.angular_velocity,
-            ball.velocity,
-            dt,
-        )
+        step_force(DEFAULT_GRAVITY, ball, profile, dt)
+    }
+}
+
+impl ExternalForce for MagnusWithGravity {
+    fn force_in(
+        &mut self,
+        _ctx: &ForceContext<'_>,
+        _handle: BallHandle,
+        ball: &Ball,
+        profile: &BallProfile,
+        dt: f32,
+    ) -> Vec3 {
+        step_force(self.gravity, ball, profile, dt)
+    }
+
+    fn force(&mut self, _handle: BallHandle, ball: &Ball, profile: &BallProfile, dt: f32) -> Vec3 {
+        step_force(self.gravity, ball, profile, dt)
     }
 }

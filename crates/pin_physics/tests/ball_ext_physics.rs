@@ -155,14 +155,30 @@ fn magnus_helpers() {
     // v parallel to ω: no force.
     let par = ball_ext::magnus_step_force(1.0e-5, 0.024, v(0.0, 0.0, 50.0), v(0.0, 0.0, 3.0), DT);
     assert_eq!(par, Vec3::ZERO);
-    // The old `force` entry point gives the same as `force_in`.
+    // The hook rotates the sub-step midpoint velocity v − g·h/2.
+    let g = v(0.0, 0.0, -9.81);
     let mut m = Magnus::new();
+    assert_eq!(ball_ext::DEFAULT_GRAVITY, g);
+    assert_eq!(Magnus, m);
+    let mut mg = ball_ext::MagnusWithGravity::default();
+    assert_eq!(mg.gravity, g);
     let mut b = Ball::new(GLOBALL, Vec3::ZERO);
     b.velocity = v(2.0, 0.0, 0.0);
     b.angular_velocity = v(0.0, 0.0, 100.0);
     let p = &profiles()[GLOBALL.index()];
+    let expect = ball_ext::magnus_step_force(
+        p.magnus_coeff,
+        p.mass_kg,
+        b.angular_velocity,
+        b.velocity - g * (0.5 * DT),
+        DT,
+    );
+    assert_eq!(m.force(BallHandle(0), &b, p, DT), expect);
+    assert_eq!(mg.force(BallHandle(0), &b, p, DT), expect);
+    // No gravity: the velocity itself.
+    let mut flat = Magnus::with_gravity(Vec3::ZERO);
     assert_eq!(
-        m.force(BallHandle(0), &b, p, DT),
+        flat.force(BallHandle(0), &b, p, DT),
         ball_ext::magnus_step_force(
             p.magnus_coeff,
             p.mass_kg,
@@ -171,7 +187,10 @@ fn magnus_helpers() {
             DT
         )
     );
-    assert_eq!(Magnus, Magnus::new());
+    // Zero coefficient: exactly no force (as -0.0) even with gravity.
+    let steel = &profiles()[STEEL.index()];
+    let z = m.force(BallHandle(0), &b, steel, DT);
+    assert!(z == Vec3::ZERO && z.to_array().iter().all(|c| c.is_sign_negative()));
 }
 
 // ------------------------------------------------------------ Remanence
@@ -694,4 +713,73 @@ fn a_second_registered_clone_is_inert() {
         s2.step(&geo, DT, &mut ev);
     }
     assert_eq!(magnetisation(&rem, h2), 0.0);
+}
+
+// ------------------------------------- Fix task: free-flight accuracy
+
+/// The 2.7 spec failing case (spec_2_7_magnus::prop_free_flight seed):
+/// with gravity on, the per-tick lateral acceleration (velocity change
+/// minus g) matches `S_m (ω × v̄)/m` within 1 % plus a small floor, with
+/// `v̄` the tick's mean velocity. Before the midpoint fix the error was
+/// (S_m/m)·ω × (g·h/2) ≈ 1.8e-3 m/s² against a bound of 7.8e-4.
+#[test]
+fn free_flight_lateral_acceleration_with_gravity() {
+    let world = empty_world();
+    let geo = Geometry::new(&world);
+    let mut profs = profiles();
+    let s_m = 3.011_375_2e-5;
+    profs[GLOBALL.index()].magnus_coeff = s_m;
+    let mut s = BallSolver::new(config(), &profs);
+    register_all(&mut s);
+    let mut b = ball_at(GLOBALL, v(0.0, 0.0, 1.0), v(-2.42, -1.28, -1.28));
+    b.angular_velocity = v(-255.0, -155.0, -127.0);
+    let h = s.add_ball(b).unwrap();
+    let g = config().gravity;
+    let m = profs[GLOBALL.index()].mass_kg;
+    let mut ev = BallEvents::new();
+    let mut worst = 0.0f32;
+    for _ in 0..40 {
+        let before = *s.ball(h).unwrap();
+        s.step(&geo, DT, &mut ev);
+        let after = *s.ball(h).unwrap();
+        let acc = (after.velocity - before.velocity) / DT - g;
+        let mean = 0.5 * (before.velocity + after.velocity);
+        let expect = s_m * before.angular_velocity.cross(mean) / m;
+        let err = (acc - expect).length();
+        worst = worst.max(err / expect.length());
+        assert!(err <= 0.01 * expect.length() + 1e-4, "{err} vs {expect}");
+    }
+    eprintln!("worst relative error {worst:e}");
+    // And against the start-of-tick velocity, as the spec states it.
+    let b0 = *s.ball(h).unwrap();
+    s.step(&geo, DT, &mut ev);
+    let b1 = *s.ball(h).unwrap();
+    let acc = (b1.velocity - b0.velocity) / DT - g;
+    let expect = s_m * b0.angular_velocity.cross(b0.velocity) / m;
+    assert!((acc - expect).length() <= 0.01 * expect.length() + 1e-3);
+}
+
+/// `Magnus` (default gravity) registered by hand is bit-identical to the
+/// gravity-aware hook `register_all` installs on a default-gravity solver.
+#[test]
+fn plain_magnus_matches_register_all_at_default_gravity() {
+    let world = empty_world();
+    let geo = Geometry::new(&world);
+    let run = |plain: bool| {
+        let mut s = solver();
+        if plain {
+            s.add_external_force(Box::new(Magnus));
+        } else {
+            register_all(&mut s);
+        }
+        let mut b = ball_at(GLOBALL, v(0.0, 0.0, 1.0), v(3.0, -1.0, 2.0));
+        b.angular_velocity = v(100.0, 300.0, -200.0);
+        let h = s.add_ball(b).unwrap();
+        let mut ev = BallEvents::new();
+        for _ in 0..100 {
+            s.step(&geo, DT, &mut ev);
+        }
+        bits(s.ball(h).unwrap())
+    };
+    assert_eq!(run(true), run(false));
 }

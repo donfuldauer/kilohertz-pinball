@@ -32,7 +32,7 @@
 mod magnus;
 mod remanence;
 
-pub use magnus::{Magnus, magnus_force, magnus_step_force};
+pub use magnus::{DEFAULT_GRAVITY, Magnus, MagnusWithGravity, magnus_force, magnus_step_force};
 pub use remanence::{Remanence, magnetisation_step, remanence_decay, residual_force};
 
 use crate::ball::{BallHandle, BallSolver};
@@ -47,12 +47,14 @@ pub fn magnetisation(remanence: &Remanence, handle: BallHandle) -> f32 {
 }
 
 /// Registers both 2.7 hooks with `solver`, in this order: [`Magnus`]
-/// first, then [`Remanence`] (their forces are summed in that order after
-/// any hook registered earlier). Returns a clone of the registered
+/// (with the solver's gravity, [`Magnus::with_gravity`]) first, then
+/// [`Remanence`] (their forces are summed in that order after any hook
+/// registered earlier). Returns a clone of the registered
 /// [`Remanence`] for reading [`magnetisation`]. Setup-time only (it
 /// allocates the boxes and the shared cells).
 pub fn register_all(solver: &mut BallSolver) -> Remanence {
-    solver.add_external_force(Box::new(Magnus::new()));
+    let gravity = solver.config().gravity;
+    solver.add_external_force(Box::new(Magnus::with_gravity(gravity)));
     let remanence = Remanence::new();
     solver.add_external_force(Box::new(remanence.clone()));
     remanence
