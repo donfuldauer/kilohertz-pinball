@@ -45,10 +45,11 @@ work-classifier.
 5. Group the remaining fast-path items by tier into one Fixer brief per tier. When items of different tiers
    touch the same file, put them in one brief at the higher tier.
 6. Spawn executors, in parallel when owned paths do not overlap.
-7. Run ONE work-verifier on the resulting head commit covering every item in the round. If the
-   round produced no executor group (every finding answered as not a defect or deferred, no
-   files changed), skip the verifier run: the head is unchanged, so the previous verifier pass
-   on that head still satisfies §2.7 step 5, and the replies carry the investigator's evidence.
+7. Run ONE work-verifier on the resulting head commit covering every item in the round whenever
+   the round changed the head (executor fixes, or a commit such as a HUMAN_QUEUE line for a
+   deferred finding). Skip it only when the head is unchanged (for example every finding was
+   answered as not a defect): the previous verifier pass on that head still satisfies §2.7
+   step 5, and the replies carry the investigator's evidence.
 8. Reply to and resolve threads per §2.7 step 3 / D37.
 
 ## 3. Fixer brief template
