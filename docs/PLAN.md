@@ -186,7 +186,7 @@ A single long-running **Orchestrator** agent (the main session) owns the wave ta
 **Prerequisites (the only human step before the run).**
 1. A GitHub repository with Actions enabled on Windows, Linux and macOS hosted runners.
 2. Branch protection on `main`, and agent credentials with write access to branches and pull requests, including merging.
-3. The CodeRabbit GitHub app installed on the repository (configured by `.coderabbit.yaml`).
+3. The CodeRabbit GitHub app installed on the repository, configured by `.coderabbit.yaml`. Its `path_filters` keep binary, generated, vendored-build and recorded-data files (images, audio, fonts, models, compiled Wasm, lockfiles, recorded traces and expected-output dumps) out of review; source, shaders, table rules, manifests, CI and docs are reviewed.
 4. Optional: a self-hosted runner with a ray-tracing-capable GPU. Without it, D33 applies.
 
 **Agents (D35).** Defined in `.claude/agents/`. Subagents cannot start subagents, so the Orchestrator does every spawn, passing the classifier's brief verbatim and its model as the `model` override.
