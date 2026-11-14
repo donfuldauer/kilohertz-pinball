@@ -1,0 +1,13 @@
+# Placeholder ball-saved scene (5.3).
+schema_version = 1
+duration_ms = 2000
+background = "#000000"
+
+[[layers]]
+kind = "text"
+text = "BALL SAVED"
+x = 0.5
+y = 0.5
+size = 0.5
+color = "#40ff60"
+blink_ms = 250
