@@ -1647,3 +1647,129 @@ Published early for the Independent Tester; kept current by the 4.4 Implementer.
 
 ## Orchestrator — Wave 5 disk: shared pin_render target dir
 With four target dirs at 21 GB and 6.7 GB of allowance left, the 5.2 Reviewer and both 5.3 roles share `target/sp_5_2_rev` (cargo's lock serialises their builds; all three build the same shared tree). Stale-build rule as before: `touch` and rebuild before calling a contradiction a defect. 2.6 and 2.8 start only when a passed subphase's target dir is deleted.
+
+## 5.3 — Displays public API
+
+Published early for the 5.3 Tester; kept current by the 5.3 Implementer. Everything is in
+`pin_render::displays` and re-exported at that module's root (`use pin_render::displays::*`). GPU-free parts
+(score formatting, scenes, DMD frames, LCD draw lists, routing, change detection) need no adapter; GPU types
+take the crate's `GpuContext` and a target `wgpu::TextureFormat`.
+
+**Images.** `struct RgbaImage { width: u32, height: u32, pixels: Vec<u8> }` — straight-alpha RGBA8,
+display-encoded (sRGB values as stored in PNGs), row 0 = top. `RgbaImage::new(w, h)` (transparent black),
+`from_gray(w, h, Vec<u8>)` (grey → opaque grey), `from_rgb(w, h, Vec<u8>)`, `from_rgba(w, h, Vec<u8>)` (each
+`Option`, `None` on a length mismatch or a zero size), `pixel(x, y) -> [u8; 4]`.
+
+**Score formatting (GPU-free).** `const MAX_PLAYERS: usize = 4`.
+- `fn format_score(score: i64) -> String`: decimal with `,` thousands separators (`0`, `999`, `1,000`,
+  `-1,234,567`; `i64::MIN` works). `fn format_score_with(score: i64, separator: Option<char>) -> String`
+  (`None` = no grouping).
+- `struct ScoreState { scores: [i64; 4], players: u8, current_player: u8, ball: u8, credits: u32 }`
+  (`players` 1..=4, `current_player` 0-based, `ball` 0 = no game in progress). `Default`: 1 player, all 0.
+  `apply_commands(&mut self, q: &HostCommandQueue) -> bool` applies `q.scores` in order (`(player, score)`,
+  player 0-based; players ≥ 4 ignored; `players` grows to cover the highest player set) and returns whether
+  anything changed.
+- `fn score_lines(state: &ScoreState) -> ScoreLines`; `struct ScoreLines { rows: Vec<PlayerRow>, status:
+  String }`; `struct PlayerRow { player: u8 /* 1-based */, text: String /* format_score */, current: bool }`.
+  One row per player (`players` clamped to 1..=4). Status: `ball == 0` → `"CREDITS <n>"`; one player →
+  `"BALL <b>  CREDITS <n>"`; several → `"PLAYER <p>  BALL <b>"` (`p` 1-based).
+
+**Scenes (GPU-free; format documented in "5.3 — Display scene format").**
+- `Scene::from_toml_str(&str) -> Result<Scene, SceneError>`, `Scene::from_bytes(&[u8])` (UTF-8 + size
+  limit `MAX_SCENE_BYTES` = 64 KiB; never panics on any input). `Scene { duration_ms: u64, repeat: bool,
+  background: [u8; 3], layers: Vec<SceneLayer> }`.
+- `PLACEHOLDER_SCENES: &[(&str, &str)]` (id, TOML text): `scene_attract`, `scene_score`, `scene_game_over`,
+  `scene_powerball_mania`, `scene_ball_saved`, `scene_jackpot`. `fn placeholder_scene(id: &str) -> Option<Scene>`.
+- `struct SceneLibrary`: `new()`; `insert(&mut self, id: SceneId, name: &str, scene: Scene)`;
+  `get(SceneId) -> Option<&Scene>`; `id_of(&str) -> Option<SceneId>`; `len()`;
+  `SceneLibrary::load(defs: &[pin_core::schema::table::SceneDef], read: impl FnMut(&str) -> Result<Vec<u8>, String>)
+  -> Result<SceneLibrary, SceneError>` — `SceneId(i)` = declaration index i (as `pin_assets` interns them);
+  a file that cannot be read falls back to the placeholder of the same id (if any), else `SceneError::Read`.
+  `SceneLibrary::placeholders()` = the placeholder set with ids in `PLACEHOLDER_SCENES` order.
+- `struct ScenePlayer`: `show(&mut self, id: SceneId, now_ms: u64)`; `apply_commands(&mut self, q: &HostCommandQueue,
+  now_ms: u64)` (the last entry of `q.display_scenes` wins); `active<'a>(&self, lib: &'a SceneLibrary, now_ms) ->
+  Option<(&'a Scene, u64 /* elapsed ms */)>` (a scene with `duration_ms > 0` and `repeat = false` ends after its
+  duration; `repeat` wraps elapsed modulo duration; unknown ids show nothing); `clear()`.
+- Time is the caller's monotone ms clock (the snapshot tick; D8 — never wall time).
+
+**Score display model.** `enum ScoreDisplayConfig { Dmd(DmdSpec), Lcd(LcdSpec) }`,
+`ScoreDisplayConfig::from_manifest(&pin_core::schema::backglass::ScoreDisplay) -> Result<_, DisplayError>`
+(missing `dmd`/`lcd` table for the chosen mode → defaults 128×32 orange / 1920×1080).
+`struct ScoreDisplayModel`: `new(config, library: SceneLibrary)`; `scores()` / `scores_mut()`; `scenes()` /
+`scenes_mut() -> &mut ScenePlayer`; `apply_commands(&mut self, q, now_ms)`; `compose(&self, now_ms) ->
+DisplayContent` with `enum DisplayContent { Dmd(DmdFrame), Lcd(LcdDrawList) }`. With no active scene the
+display shows the built-in score view (`scene_score`: one `kind = "score"` layer).
+
+**DMD.** `struct DmdSpec { width: u32, height: u32, color: pin_core::schema::backglass::DmdColor }`;
+`DmdSpec::new(w, h, color) -> Result<DmdSpec, DisplayError>` (w 16..=512, h 8..=256); consts `DMD_128X32`
+(orange) and `DMD_192X64` (orange) sizes. `struct DmdFrame { width, height, dots: Vec<[u8; 3]> }` (row-major,
+row 0 top; per-dot drive level 0..=255 per channel; mono modes store the same value in all three channels,
+quantised to 16 levels: `v = round(b·15)·17`). `DmdFrame::new(w, h)`, `get(x, y)`, `set(x, y, [u8; 3])`,
+`lit_count()`, `DmdFrame::compose(spec, scene, elapsed_ms, scores, images: &ImageSet)`.
+- Text on the DMD uses the kit's bitmap fonts (`pin_assetgen::fonts`, the glyphs of the `font_dmd_5x7` /
+  `font_dmd_8x16` sheets), glyph spacing 1 dot, at integer scale: a text layer of height `size·H` dots uses
+  8×16 at scale ⌊size·H/16⌋ when that is ≥ 1 and the text fits the width, else 5×7 at scale
+  max(1, ⌊size·H/7⌋) (shrunk until it fits, min scale 1). `font = "5x7" | "8x16"` forces a font.
+  `fn dmd_text_dots(text: &str, font: DmdFont, scale: u32) -> (u32, u32)` gives the text's size in dots.
+- Shading (CPU reference = shader): `fn dmd_tint(color: DmdColor) -> [f32; 3]` (orange `[1.0, 0.42, 0.06]`,
+  red `[1.0, 0.12, 0.08]`, rgb `[1, 1, 1]`); `const DMD_UNLIT_LEVEL: f32 = 0.10` (an unlit dot is the tint at
+  10 %); `fn dmd_dot_color(color, drive: [u8; 3]) -> [f32; 3]` = tint · (UNLIT + (1 − UNLIT)·drive/255) per
+  channel (rgb mode: tint = drive colour); background between dots `DMD_BACKGROUND = [0, 0, 0]`.
+  Geometry: `fn dmd_geometry(spec, viewport: Rect) -> DmdGeometry { origin: [f32; 2], pitch: f32,
+  radius: f32 }` — pitch = min(vw/W, vh/H) (not rounded), grid centred in the viewport, dot radius
+  `DMD_DOT_RADIUS = 0.40`·pitch, 1-px anti-aliased edge; `DmdGeometry::dot_center(x, y) -> [f32; 2]` in
+  target pixels.
+- `struct DmdRenderer`: `new(ctx: &GpuContext, format: wgpu::TextureFormat, spec: DmdSpec)`; `spec()`;
+  `set_frame(&mut self, queue: &wgpu::Queue, frame: &DmdFrame) -> bool` (uploads only on change, returns
+  whether it changed); `encode(&mut self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView,
+  target_size: (u32, u32), viewport: Rect)` (paints the whole viewport: background, unlit and lit dots).
+
+**LCD.** `struct LcdSpec { width: u32, height: u32 }` (canvas, default 1920×1080 = 16:9; `LcdSpec::new` →
+`Result`, 16..=8192 each). `struct LcdDrawList { width, height, background: [u8; 3], items: Vec<LcdItem> }`
+with `enum LcdItem { Rect { rect: [f32; 4] /* x0, y0, x1, y1 canvas px */, color: [u8; 4] }, Image { file: String,
+rect: [f32; 4], alpha: f32 }, Text { text: String, origin: [f32; 2] /* top-left */, cell: f32 /* glyph cell
+height px */, color: [u8; 4] } }` in back-to-front order; `LcdDrawList::compose(spec, scene, elapsed_ms,
+scores)`. Text is drawn with the "vector" font: the 5×7 glyphs as strokes (lit dots joined to lit
+neighbours, diagonals only where both orthogonal neighbours are unlit), stroke half-width 0.42 cell units,
+anti-aliased, scalable; a glyph is 5×7 units, advance 6 units, unit = cell/7 px.
+- Compositing: premultiplied "over" in display-encoded space, back to front; item colour alpha and image
+  alpha multiply. `struct LcdRenderer`: `new(ctx, format, spec)`; `set_image(&mut self, ctx, file: &str, image:
+  &RgbaImage)`; `set_draw_list(&mut self, queue, list: &LcdDrawList) -> bool`; `encode(&mut self, encoder,
+  view, target_size, viewport)` (canvas fitted with `fit_aspect`, letterbox black).
+
+**Backglass.** `enum LayerBlend { Over, Additive }`; `struct LayerLamp { lamp: LampId, mask: RgbaImage /* red
+channel = mask */, blend: LayerBlend }`; `struct BackglassLayer { image: RgbaImage, lamp: Option<LayerLamp> }`;
+`struct BackglassDesc { layers: Vec<BackglassLayer> }` (back to front; the first layer's size sets the aspect;
+every layer is stretched over the whole translite).
+`BackglassDesc::from_manifest(m: &BackglassManifest, resolve_lamp: impl Fn(&str) -> Option<(LampId, LampKind)>,
+load_image: impl FnMut(&str) -> Result<RgbaImage, String>) -> Result<BackglassDesc, DisplayError>` (layers
+sorted by `depth`, stable; a mask whose lamp is `LampKind::Flasher` → `Additive`, else `Over`).
+- Blend (per pixel, display-encoded, k = mask·clamp(lamp, 0, 1)·layer alpha): `Over`: out = dst + (rgb − dst)·k;
+  `Additive` (flasher): out = dst + rgb·k (clamped by the target). Layers without a lamp: plain alpha-over.
+  So the output is linear in the lamp level inside the mask and unchanged where mask = 0.
+- `struct BackglassRenderer`: `new(ctx, format, &desc) -> Result<_, GpuError>`; `aspect() -> (u32, u32)`;
+  `lamps() -> Vec<LampId>`; `needs_redraw(&self, lamps: &[f32]) -> bool` (any referenced lamp moved by ≥
+  `LAMP_REDRAW_EPSILON` = 1/1024 since the last `encode`, or never drawn, or `mark_dirty()` called);
+  `encode(&mut self, encoder, view, target_size, viewport: Rect, lamps: &[f32])` (indexed by `LampId`;
+  missing entries = 0; letterboxed black).
+
+**Routing.** `struct DisplayRoute { role: SurfaceRole, window: usize, viewport: Rect, dedicated: bool }`;
+`fn display_routes(plan: &TopologyPlan) -> Vec<DisplayRoute>` (Backglass then Score, each where the plan shows
+it: `dedicated` = the role fills its own window); `fn fit_aspect(viewport: Rect, aspect_w: u32, aspect_h: u32) ->
+Rect` (largest centred rect of that aspect, rounded down). `struct DisplaySet { backglass:
+Option<BackglassRenderer>, score: Option<ScoreRenderer> }` with `enum ScoreRenderer { Dmd(DmdRenderer),
+Lcd(LcdRenderer) }`; `DisplaySet::encode_window(&mut self, window: usize, routes: &[DisplayRoute], encoder,
+view, target_size, lamps: &[f32])` draws every display routed to that window into its viewport.
+
+**Change detection.** Displays redraw only on change: `DmdRenderer::set_frame` / `LcdRenderer::set_draw_list`
+return `false` for content equal to the last one; `ScoreRenderer::update(&mut self, queue, &DisplayContent) ->
+bool`; `BackglassRenderer::needs_redraw(lamps)`. `struct ChangeTracker` (GPU-free): `observe(&mut self,
+lamps: &[f32], content: &DisplayContent) -> DisplayDirty { backglass: bool, score: bool }` for callers without
+renderers (lamp ids registered with `ChangeTracker::new(lamp_ids: Vec<LampId>)`).
+
+**Offscreen rendering for tests.** `fn render_dmd_to_image(ctx, spec, frame: &DmdFrame, width, height) ->
+Result<RgbaImage, GpuError>`, `fn render_lcd_to_image(ctx, spec, list: &LcdDrawList, images: &ImageSet, width,
+height)`, `fn render_backglass_to_image(ctx, desc: &BackglassDesc, lamps: &[f32], width, height)`: each renders
+into an `Rgba8Unorm` texture with the viewport = whole image and reads it back (RGBA8, row 0 top).
+`struct ImageSet` (file → `RgbaImage`, `insert`, `get`) supplies scene images. Errors: `DisplayError`
+(`Display`, `std::error::Error`).
