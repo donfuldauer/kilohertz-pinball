@@ -403,6 +403,23 @@ static void khz_step (MatchState *ms) {
 }
 
 
+/*
+** KHZ: count 'n' steps at once for a variable-length scan below one matching
+** step (callers pass bytes / 16, or / 64 for a 'memcmp'); charges the budget
+** for every multiple of 1024 crossed, like 'khz_step'.
+*/
+static void khz_steps (MatchState *ms, ptrdiff_t n) {
+  lua_Integer before = ms->steps;
+  if (n <= 0)
+    return;
+  ms->steps -= (lua_Integer)n;
+  if (l_unlikely(ms->steps <= 0))
+    luaL_error(ms->L, "pattern too complex");
+  if ((before >> 10) != (ms->steps >> 10))
+    lua_khzcharge(ms->L, ((before >> 10) - (ms->steps >> 10)) << 11);
+}
+
+
 /* maximum recursion depth for 'match' */
 #if !defined(MAXCCALLS)
 #define MAXCCALLS	200
@@ -438,6 +455,7 @@ static const char *classend (MatchState *ms, const char *p) {
       return p+1;
     }
     case '[': {
+      const char *start = p;  /* KHZ */
       if (*p == '^') p++;
       do {  /* look for a ']' */
         if (l_unlikely(p == ms->p_end))
@@ -445,6 +463,7 @@ static const char *classend (MatchState *ms, const char *p) {
         if (*(p++) == L_ESC && p < ms->p_end)
           p++;  /* skip escapes (e.g. '%]') */
       } while (*p != ']');
+      khz_steps(ms, (p - start) >> 4);  /* KHZ: the class scan */
       return p+1;
     }
     default: {
@@ -506,7 +525,9 @@ static int singlematch (MatchState *ms, const char *s, const char *p,
     switch (*p) {
       case '.': return 1;  /* matches any char */
       case L_ESC: return match_class(c, uchar(*(p+1)));
-      case '[': return matchbracketclass(c, p, ep-1);
+      case '[':
+        khz_steps(ms, (ep - p) >> 4);  /* KHZ: the class scan */
+        return matchbracketclass(c, p, ep-1);
       default:  return (uchar(*p) == c);
     }
   }
@@ -519,15 +540,20 @@ static const char *matchbalance (MatchState *ms, const char *s,
     luaL_error(ms->L, "malformed pattern (missing arguments to '%%b')");
   if (*s != *p) return NULL;
   else {
+    const char *start = s;  /* KHZ */
     int b = *p;
     int e = *(p+1);
     int cont = 1;
     while (++s < ms->src_end) {
       if (*s == e) {
-        if (--cont == 0) return s+1;
+        if (--cont == 0) {
+          khz_steps(ms, (s - start) >> 4);  /* KHZ: the scan */
+          return s+1;
+        }
       }
       else if (*s == b) cont++;
     }
+    khz_steps(ms, (s - start) >> 4);  /* KHZ: the scan */
   }
   return NULL;  /* string ends out of balance */
 }
@@ -592,10 +618,12 @@ static const char *match_capture (MatchState *ms, const char *s, int l) {
   size_t len;
   l = check_capture(ms, l);
   len = ms->capture[l].len;
-  if ((size_t)(ms->src_end-s) >= len &&
-      memcmp(ms->capture[l].init, s, len) == 0)
-    return s+len;
-  else return NULL;
+  if ((size_t)(ms->src_end-s) >= len) {
+    khz_steps(ms, (ptrdiff_t)(len >> 6));  /* KHZ: the compare */
+    if (memcmp(ms->capture[l].init, s, len) == 0)
+      return s+len;
+  }
+  return NULL;
 }
 
 
@@ -638,6 +666,7 @@ static const char *match (MatchState *ms, const char *s, const char *p) {
             if (l_unlikely(*p != '['))
               luaL_error(ms->L, "missing '[' after '%%f' in pattern");
             ep = classend(ms, p);  /* points to what is next */
+            khz_steps(ms, (ep - p) >> 3);  /* KHZ: two class scans */
             previous = (s == ms->src_init) ? '\0' : *(s - 1);
             if (!matchbracketclass(uchar(previous), p, ep - 1) &&
                matchbracketclass(uchar(*s), p, ep - 1)) {
