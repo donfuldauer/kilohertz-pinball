@@ -376,46 +376,92 @@ fn nearest_uses_capture_positions_and_ties_take_the_lower_slot() {
         assert_eq!(s.probe_for_ball(2), Some(0), "tie → lower slot");
     }
 
-    // Capture position: budget 1, two captured probes, then the balls swap places without
-    // being recaptured; the third ball must follow the *captured* positions.
-    let mut s = ProbeScheduler::new(1);
-    let p0: [V3; 4] = [
+    // Swap (published staleness rule): four balls, budget 1, capture order 0, 1, 2, 3, …
+    // After every slot holds a capture, balls 0 and 1 swap places in a frame that captures
+    // neither. Each then samples the probe captured nearest its current position (the
+    // other ball's slot), not its own index's slot; captures stay strict round robin.
+    let p: [V3; 4] = [
         [0.0, 0.0, 0.0],
-        [8.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [50.0, 0.0, 0.0],
+        [0.1, 0.0, 0.0],
+        [3.0, 0.0, 0.0],
+        [6.0, 0.0, 0.0],
     ];
-    let mut captured: Vec<(usize, V3)> = Vec::new();
-    for _ in 0..2 {
-        let u = s.schedule(&p0).to_vec();
-        assert_eq!(u.len(), 1);
-        captured.push((u[0], p0[u[0]]));
+    let swapped: [V3; 4] = [p[1], p[0], p[2], p[3]];
+    let mut s = ProbeScheduler::new(1);
+    for f in 0..6 {
+        assert_eq!(s.schedule(&p).to_vec(), vec![f % 4], "frame {f}");
     }
-    // Third frame: every ball moved far along y except in x; the frame captures one more.
-    let p1: Vec<V3> = p0.iter().map(|p| [8.0 - p[0], 0.0, 0.0]).collect();
-    let u = s.schedule(&p1).to_vec();
-    assert_eq!(u.len(), 1);
-    captured.retain(|(slot, _)| *slot != u[0]);
-    captured.push((u[0], p1[u[0]]));
     for i in 0..4 {
-        if captured.iter().any(|(slot, _)| *slot == i) {
-            assert_eq!(s.probe_for_ball(i), Some(i));
-            continue;
-        }
-        let mut best = (f32::INFINITY, usize::MAX);
-        for (slot, cp) in &captured {
-            let d = (cp[0] - p1[i][0]).abs();
-            if d < best.0 || (d == best.0 && *slot < best.1) {
-                best = (d, *slot);
-            }
-        }
-        assert_eq!(
-            s.probe_for_ball(i),
-            Some(best.1),
-            "ball {i} at {:?}, captures {captured:?}",
-            p1[i]
-        );
+        assert_eq!(s.probe_for_ball(i), Some(i));
+        assert!(!s.is_stale(i), "still ball {i} is fresh");
     }
+    // Frame 6 captures slot 2 while 0 and 1 swap.
+    assert_eq!(s.schedule(&swapped).to_vec(), vec![2]);
+    assert!(s.is_stale(0) && s.is_stale(1), "swapped balls are stale");
+    assert!(!s.is_stale(2) && !s.is_stale(3));
+    assert_eq!(
+        s.probe_for_ball(0),
+        Some(1),
+        "ball 0 sits where slot 1 was captured"
+    );
+    assert_eq!(
+        s.probe_for_ball(1),
+        Some(0),
+        "ball 1 sits where slot 0 was captured"
+    );
+    assert_eq!(s.probe_for_ball(2), Some(2));
+    assert_eq!(s.probe_for_ball(3), Some(3));
+    // Ages are the true frames since capture, stale or not (0 at frame 4, 1 at frame 5).
+    assert_eq!(s.ages().to_vec(), vec![2, 1, 0, 3]);
+    // Frame 7 captures slot 3; nothing moved, the swapped balls stay stale.
+    assert_eq!(s.schedule(&swapped).to_vec(), vec![3]);
+    assert_eq!(s.probe_for_ball(0), Some(1));
+    assert_eq!(s.probe_for_ball(1), Some(0));
+    // Frame 8 captures slot 0 at ball 0's new place: fresh again. Ball 1 is still stale;
+    // slots 0 and 1 were both captured 0.1 m from it, the tie goes to the lower slot.
+    assert_eq!(s.schedule(&swapped).to_vec(), vec![0]);
+    assert!(!s.is_stale(0) && s.is_stale(1));
+    assert_eq!(s.probe_for_ball(0), Some(0));
+    assert_eq!(s.probe_for_ball(1), Some(0));
+    // Frame 9 captures slot 1: everything is fresh.
+    assert_eq!(s.schedule(&swapped).to_vec(), vec![1]);
+    for i in 0..4 {
+        assert_eq!(s.probe_for_ball(i), Some(i));
+        assert!(!s.is_stale(i));
+    }
+
+    // Jump: a ball that moves further than 0.25 m in one frame (relaunch) samples the
+    // probe captured nearest its new position until its own slot is captured again; the
+    // capture order does not react to the jump.
+    let mut s = ProbeScheduler::new(1);
+    for f in 0..4 {
+        assert_eq!(s.schedule(&p).to_vec(), vec![f]);
+    }
+    let mut jumped = p;
+    jumped[3] = [3.0, 0.3, 0.0];
+    assert_eq!(
+        s.schedule(&jumped).to_vec(),
+        vec![0],
+        "the jump does not jump the queue"
+    );
+    assert!(s.is_stale(3));
+    assert_eq!(
+        s.probe_for_ball(3),
+        Some(2),
+        "nearest capture to the new place"
+    );
+    assert_eq!(s.schedule(&jumped).to_vec(), vec![1]);
+    assert_eq!(s.schedule(&jumped).to_vec(), vec![2]);
+    assert_eq!(s.probe_for_ball(3), Some(2));
+    assert_eq!(s.schedule(&jumped).to_vec(), vec![3]);
+    assert!(!s.is_stale(3));
+    assert_eq!(s.probe_for_ball(3), Some(3));
+    // A move within the tracking distance keeps the ball's own probe.
+    let mut nudged = jumped;
+    nudged[2] = [3.0, -0.2, 0.0];
+    s.schedule(&nudged);
+    assert!(!s.is_stale(2));
+    assert_eq!(s.probe_for_ball(2), Some(2));
 }
 
 /// Reference model of the documented scheduler behaviour that does not depend on the
@@ -425,23 +471,68 @@ struct Model {
     captured: Vec<Option<V3>>,
     /// Frames since capture (or since first seen).
     ages: Vec<u32>,
+    /// Whether slot i's capture is stale for ball i; `None` = the published rule does not
+    /// decide (a tie for the nearest ball of the previous frame).
+    stale: Vec<Option<bool>>,
+}
+
+fn dist2(a: V3, b: V3) -> f32 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    dot(d, d)
 }
 
 impl Model {
-    fn expect_probe(&self, i: usize, pos: &[V3]) -> Option<usize> {
-        if i < self.captured.len() && self.captured[i].is_some() {
-            return Some(i);
+    /// The published capture order: never-captured slots first, then the oldest capture,
+    /// ties → lower index. Call before ageing; `first` = the first frame.
+    fn expect_updates(&self, budget: usize) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.captured.len()).collect();
+        order.sort_by_key(|&i| {
+            let rank = if self.captured[i].is_some() {
+                self.ages[i]
+            } else {
+                u32::MAX
+            };
+            (std::cmp::Reverse(rank), i)
+        });
+        order.truncate(budget);
+        order
+    }
+
+    /// Staleness between two frames (grid positions: a move is 0 or ≥ 1 m > 0.25 m).
+    fn track(&mut self, prev: &[V3], pos: &[V3]) {
+        for i in 0..pos.len() {
+            if dist2(pos[i], prev[i]) > 0.0 {
+                self.stale[i] = Some(true);
+                continue;
+            }
+            // Did not move: its own previous position is at distance 0; another ball that
+            // was at the same place is a tie the contract does not order.
+            if (0..prev.len()).any(|j| j != i && dist2(prev[j], pos[i]) == 0.0) {
+                if self.stale[i] == Some(false) {
+                    self.stale[i] = None;
+                }
+            }
+        }
+    }
+
+    /// `None` = undecided by the contract; `Some(x)` = `probe_for_ball` must return `x`.
+    fn expect_probe(&self, i: usize, pos: &[V3]) -> Option<Option<usize>> {
+        if self.captured[i].is_some() {
+            match self.stale[i] {
+                Some(false) => return Some(Some(i)),
+                None => return None,
+                Some(true) => {}
+            }
         }
         let mut best: Option<(f32, usize)> = None;
         for (slot, c) in self.captured.iter().enumerate() {
             let Some(c) = c else { continue };
-            let d = [c[0] - pos[i][0], c[1] - pos[i][1], c[2] - pos[i][2]];
-            let d2 = dot(d, d);
+            let d2 = dist2(*c, pos[i]);
             if best.is_none_or(|(b, _)| d2 < b) {
                 best = Some((d2, slot));
             }
         }
-        best.map(|(_, s)| s)
+        Some(best.map(|(_, s)| s))
     }
 }
 
@@ -474,12 +565,23 @@ proptest! {
         let mut s = ProbeScheduler::new(budget);
         let b = budget as usize;
         let bound = ceil_div(n, b);
-        let mut m = Model { captured: vec![None; n], ages: vec![0; n] };
+        let mut m = Model { captured: vec![None; n], ages: vec![0; n], stale: vec![Some(false); n] };
+        let mut prev: Option<Vec<V3>> = None;
         let mut counts = vec![0u32; n];
         for f in 0..frames {
             let pos = grid_positions(&seed, n, f);
+            let want_upd = m.expect_updates(b);
             let upd = s.schedule(&pos).to_vec();
             prop_assert!(upd.len() <= b, "frame {}: {} updates > budget {}", f, upd.len(), b);
+            let mut got_sorted = upd.clone();
+            got_sorted.sort_unstable();
+            let mut want_sorted = want_upd.clone();
+            want_sorted.sort_unstable();
+            prop_assert_eq!(got_sorted, want_sorted, "frame {}: capture order must not depend on positions", f);
+            if let Some(prev) = &prev {
+                m.track(prev, &pos);
+            }
+            prev = Some(pos.clone());
             prop_assert_eq!(upd.len(), b.min(n), "round robin uses the budget");
             let mut sorted = upd.clone();
             sorted.sort_unstable();
@@ -492,6 +594,7 @@ proptest! {
                 prop_assert!(i < n);
                 m.captured[i] = Some(pos[i]);
                 m.ages[i] = 0;
+                m.stale[i] = Some(false);
                 counts[i] += 1;
             }
             let ages = s.ages();
@@ -501,8 +604,15 @@ proptest! {
                 if m.captured[i].is_some() {
                     prop_assert_eq!(ages[i], m.ages[i], "frame {}: ball {} age", f, i);
                 }
-                prop_assert_eq!(s.probe_for_ball(i), m.expect_probe(i, &pos),
-                    "frame {}: ball {} probe (captures {:?}, positions {:?})", f, i, m.captured, pos);
+                if let Some(want) = m.expect_probe(i, &pos) {
+                    prop_assert_eq!(s.probe_for_ball(i), want,
+                        "frame {}: ball {} probe (captures {:?}, stale {:?}, positions {:?})", f, i, m.captured, m.stale, pos);
+                }
+                if let Some(st) = m.stale[i] {
+                    if m.captured[i].is_some() {
+                        prop_assert_eq!(s.is_stale(i), st, "frame {}: ball {} staleness", f, i);
+                    }
+                }
             }
             let st = s.stats();
             prop_assert!(st.max_frame_updates <= budget);

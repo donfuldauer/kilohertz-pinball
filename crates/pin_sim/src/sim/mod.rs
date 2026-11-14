@@ -243,8 +243,13 @@ pub(crate) struct PendingEdge {
 /// smaller, so tests and the `pin_sim` binary run the simulation on a
 /// spawned thread with a larger stack.
 ///
-/// **Allocation:** stepping never allocates in Rust engine code (D5);
-/// the Lua VM allocates only when the script creates objects.
+/// **Allocation:** stepping never allocates in Rust engine code (D5). The
+/// Lua VM allocates in its capped arena when the script creates objects, and
+/// now and then even when it does not: the collector shrinks the VM's
+/// call-info list and the next call regrows it. Those allocations happen
+/// inside [`ExemptScope`](crate::alloc_guard::ExemptScope)s around the Lua
+/// calls (PLAN.md §2.3 rule 4; DECISIONS.md "2.5 — allocation guard and the
+/// Lua arena"). Wasm calls are not exempt.
 pub struct Simulation {
     pub(crate) cfg: SimConfig,
     pub(crate) ids: TableIds,

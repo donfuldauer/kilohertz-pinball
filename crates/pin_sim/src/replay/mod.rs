@@ -28,7 +28,9 @@
 //! (0 button, 1 axis), code `u8` (`CabinetInput` / `CabinetAxis` index in
 //! their `ALL` order), two zero bytes, then for a button the `u32` 0/1 and
 //! for an axis the `f32` bits (finite). Ticks are 1-based, non-decreasing
-//! and at most `ticks`.
+//! and at most `ticks`, and `ticks` is at most [`MAX_TICKS`] (2³² ticks,
+//! about 49.7 days of simulated time) so a valid-looking file cannot ask for
+//! a practically endless replay.
 //!
 //! [`Recording::from_bytes`] never panics, and allocates at most one
 //! event vector sized from a count it has checked against the input length.
@@ -49,6 +51,10 @@ pub const VERSION: u32 = 1;
 pub const HEADER_BYTES: usize = 44;
 /// Size of one event, bytes.
 pub const EVENT_BYTES: usize = 24;
+/// Largest `ticks` a recording may declare (2³² ticks ≈ 49.7 days of
+/// simulated time); [`Recording::from_bytes`] and [`replay`] refuse more
+/// with [`ReplayError::TooManyTicks`].
+pub const MAX_TICKS: u64 = 1 << 32;
 /// Size of the checksum trailer, bytes.
 pub const TRAILER_BYTES: usize = 8;
 
@@ -89,6 +95,8 @@ pub enum ReplayError {
         /// Event index.
         index: u64,
     },
+    /// The recording declares more than [`MAX_TICKS`] ticks.
+    TooManyTicks(u64),
     /// The bundle is not the recorded table.
     TableMismatch {
         /// The recording's table hash.
@@ -114,6 +122,9 @@ impl fmt::Display for ReplayError {
                 "replay file length {actual} does not match its header ({expected} bytes)"
             ),
             ReplayError::Checksum => f.write_str("replay file checksum mismatch"),
+            ReplayError::TooManyTicks(t) => {
+                write!(f, "replay declares {t} ticks (at most {MAX_TICKS})")
+            }
             ReplayError::BadEvent { index } => write!(f, "replay event {index} is malformed"),
             ReplayError::TableMismatch { recorded, bundle } => write!(
                 f,
@@ -228,6 +239,9 @@ impl Recording {
         let body = bytes.len() - TRAILER_BYTES;
         if fnv1a64(&bytes[..body]) != u64_at(bytes, body) {
             return Err(ReplayError::Checksum);
+        }
+        if ticks > MAX_TICKS {
+            return Err(ReplayError::TooManyTicks(ticks));
         }
         // `count` events fit in `bytes`, so this capacity is bounded by the
         // input length.
@@ -378,16 +392,37 @@ impl Recorder {
     }
 }
 
-/// Loads `bundle` with the recorded seed, checks its table hash, replays
-/// `rec` and returns the final [`Simulation::state_hash`].
+/// Checks the bundle's table hash against `rec` (before building anything or
+/// running `on_init`), loads it with the recorded seed, replays `rec` and
+/// returns the final [`Simulation::state_hash`].
+///
+/// The script runs with the default engine limits
+/// ([`SimConfig::default`]: `LuaConfig::engine()` / `WasmConfig::engine()`);
+/// the recording stores only the seed, so a run recorded with other limits
+/// does not replay identically.
 ///
 /// Run it on a thread with enough stack for a Wasm script (see
 /// [`Simulation`]).
 ///
 /// # Errors
-/// [`ReplayError::Sim`] when the bundle does not load,
-/// [`ReplayError::TableMismatch`] when it is not the recorded table.
+/// [`ReplayError::TooManyTicks`] above [`MAX_TICKS`];
+/// [`ReplayError::Sim`] when the bundle cannot be opened or read;
+/// [`ReplayError::TableMismatch`] when it is not the recorded table (even if
+/// it would not load); [`ReplayError::Sim`] when the recorded table does not
+/// load.
 pub fn replay(bundle: &Path, rec: &Recording) -> Result<u64, ReplayError> {
+    if rec.ticks > MAX_TICKS {
+        return Err(ReplayError::TooManyTicks(rec.ticks));
+    }
+    let vfs = pin_assets::Vfs::open(bundle).map_err(SimError::from)?;
+    let bundle_hash = crate::load::bundle_hash(&vfs)?;
+    drop(vfs);
+    if bundle_hash != rec.table_hash {
+        return Err(ReplayError::TableMismatch {
+            recorded: rec.table_hash,
+            bundle: bundle_hash,
+        });
+    }
     let mut sim = Simulation::load(
         bundle,
         SimConfig {

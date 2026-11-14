@@ -105,8 +105,9 @@ impl Simulation {
     }
 
     fn deliver_edges(&mut self) {
-        // Rule 4: the Lua VM's arena allocations are exempt from the guard.
-        let _exempt = matches!(self.script, Script::Lua(_)).then(ExemptScope::enter);
+        // Rule 4: the Lua VM's arena allocations are exempt from the guard;
+        // the scope covers the script calls only, never engine code.
+        let lua = matches!(self.script, Script::Lua(_));
         let mut ctx = HostCtx {
             view: &self.view,
             rng: &mut self.rng,
@@ -119,9 +120,11 @@ impl Simulation {
         for e in &self.pending {
             self.flippers
                 .on_switch_edge(e.switch, e.edge == SwitchEdge::Closed, e.tick);
+            let _exempt = lua.then(ExemptScope::enter);
             script.on_switch_edge(e.switch, e.edge, &mut ctx);
         }
         self.pending.clear();
+        let _exempt = lua.then(ExemptScope::enter);
         script.on_tick(&mut ctx);
     }
 
