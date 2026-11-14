@@ -279,6 +279,45 @@ fn a_dipping_ceiling_vertex_is_found() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Reviewer polish N5: a needle-shaped area (an 11 mm spike whose tip is
+/// 22.5 mm from the deck edge; the XL ball needs 40.7 mm) is rejected: the
+/// area's vertices and edge points are always tested.
+#[test]
+fn a_needle_area_reaching_toward_the_deck_is_rejected() {
+    let layout = layout("apex_layout.toml");
+    let (dir, mut table, scene) = build(
+        &layout,
+        &{
+            let mut base = apex_base();
+            base.balls.restrict = vec![restrict(XL, &[0], &OPEN_AREA)];
+            base.to_toml_string().unwrap()
+        },
+        "needle",
+    );
+    let needle = |tip: f32| {
+        vec![
+            [100.0, 0.0],
+            [514.0, 0.0],
+            [514.0, 500.0],
+            [305.5, 500.0],
+            [300.0, tip],
+            [294.5, 500.0],
+            [100.0, 500.0],
+        ]
+    };
+    for (tip, rejected) in [(677.5f32, true), (655.0, false)] {
+        table.manifest.balls.restrict[0].area = needle(tip);
+        let r = validate_clearance(&table, &scene);
+        assert_eq!(
+            !of(&r, Feature::DeckHeadroom, XL).is_empty(),
+            rejected,
+            "tip {tip}: {:#?}",
+            r.errors
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 // ------------------------------------------------------------ feature checks
 
 #[test]

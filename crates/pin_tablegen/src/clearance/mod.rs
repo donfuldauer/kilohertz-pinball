@@ -215,7 +215,7 @@ impl Allowed {
             Allowed::Anywhere => true,
             Allowed::Only(e) => e
                 .iter()
-                .any(|(l, a)| l.contains(&layer) && a.as_ref().is_none_or(|p| p.contains(q))),
+                .any(|(l, a)| l.contains(&layer) && a.as_ref().is_none_or(|p| p.covers(q))),
         }
     }
 

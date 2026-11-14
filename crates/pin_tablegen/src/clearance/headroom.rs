@@ -35,10 +35,13 @@ fn area_samples(ball: &Ball, spacing: f64) -> Vec<DVec2> {
             continue;
         }
         let h = spacing.min(extent / 16.0).max(extent / 256.0).max(1.0e-6);
+        // Vertices and edge points always (a needle-thin spike has no
+        // interior grid point), at most `spacing` apart along each edge.
         out.extend_from_slice(pts);
+        let edge_step = h.min(spacing);
         for i in 0..pts.len() {
             let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-            let k = ((a.distance(b) / h).ceil() as usize).clamp(1, 4096);
+            let k = ((a.distance(b) / edge_step).ceil() as usize).clamp(1, 4096);
             out.extend((1..k).map(|j| a.lerp(b, j as f64 / k as f64)));
         }
         let nx = ((hi.x - lo.x) / h).ceil() as usize;

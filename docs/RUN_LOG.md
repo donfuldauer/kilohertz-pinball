@@ -327,3 +327,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 2.8 | Reviewer | Fable 5.2 | 2 | running | — | |
 | 5 | 2.8 | Reviewer | Fable 5.2 | 2 | **pass** | fmt/clippy clean; 884/884; pin_physics 96.21 %, pin_tablegen 94.78 %; seam digests same; 4000 hostile tables no panic; B1 vs pre-fix crate: 79.4 mm 2.71 → 0.23 mm; builtin XL ≤ 0.38 mm over 90 000 cases; worst tick time down | cycling cut = solver guard, energy-neutral; N2/N3/N5/N6 → polish; N1/N4/N7 → HUMAN_QUEUE |
 | 5 | 2.8 | Implementer | Opus 5.5 | polish | running | — | N5 needle areas + docs |
+| 5 | Wave 5 gate (early CI run 294, 20f077c) | Orchestrator | — | CI run 294 | **fail** | fmt; clippy Linux/macOS; core-tests macOS/Windows; gpu-tests WARP; replay-hash ×3; coverage green | clippy Windows (unused cfg(unix) import, dof_launcher.rs:13); core-tests Linux (spec_ci still expects the replay-hash placeholder); dof-bridge Windows (UdpHostSpec garbage test timeout); gpu-tests lavapipe (displays_gpu SIGSEGV); gpu-tests Metal (ui_overlay_gpu 4/5) → gate fix task (Opus, review Fable) |
+| 5 | gate fix | Implementer | Opus 5.5 | 1 | running | — | |

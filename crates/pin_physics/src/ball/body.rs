@@ -724,6 +724,10 @@ pub(super) fn solve_body_contact(
                     ball.angular_velocity -= rc.cross(back) / inertia;
                     set.apply_impulse(body, time, point, back);
                     acc.tangent -= back;
+                    // After a cut the accumulated friction is a blend of
+                    // passes: if the normal impulse fell in this pass, it
+                    // may sit slightly outside the friction cone (|J_t| >
+                    // μ·J_n) until the next pass clamps it again.
                 }
             }
         }

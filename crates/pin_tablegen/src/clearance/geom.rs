@@ -261,6 +261,12 @@ impl Polygon {
         inside
     }
 
+    /// Whether `q` is inside or on the boundary (within 1 nm): the area's
+    /// own vertices and edge points count as inside.
+    pub fn covers(&self, q: DVec2) -> bool {
+        self.contains(q) || self.boundary_distance(q) <= 1.0e-9
+    }
+
     /// Distance (m) from `q` to the polygon's boundary.
     pub fn boundary_distance(&self, q: DVec2) -> f64 {
         let n = self.points.len();
