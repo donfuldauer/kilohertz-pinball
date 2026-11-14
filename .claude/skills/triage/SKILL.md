@@ -24,10 +24,11 @@ task-executor and checked by the work-verifier. The fast path never routes T2 or
 - The fix is spelled out by the comment or obvious.
 
 If the validity or cause is unclear, the item goes to the issue-investigator first and is then
-triaged again from the investigator's report, but only if the investigator confirms the finding
-is valid (fast path if it now passes every check, else the work-classifier). If it finds the
-finding invalid or not reproducible, the disposition is "Not a defect": reply with the
-investigator's evidence and resolve per §2.7 step 3 / D37, with no Fixer. Any other failing check, or an unsure Orchestrator, sends the item to the
+handled by the investigator's verdict: `valid-defect` is triaged again from its report (fast
+path if it now passes every check, else the work-classifier); `valid-but-deferred` or
+`pre-existing` is "Deferred" (§2.7 step 3): commit the investigator's HUMAN_QUEUE line, reply
+with it and resolve, with no Fixer; `not-a-defect` is "Not a defect": reply with its evidence
+and resolve per §2.7 step 3 / D37, with no Fixer. Any other failing check, or an unsure Orchestrator, sends the item to the
 work-classifier.
 
 ## 2. Batching procedure (one CodeRabbit review round, or one push)
@@ -35,9 +36,10 @@ work-classifier.
 1. List every new finding.
 2. Triage each one as fast-path T0, fast-path T1, or classifier.
 3. Send findings whose validity or cause is unclear to the issue-investigator first (in
-   parallel when independent). Findings it confirms valid are triaged again from its report;
-   findings it finds invalid or not reproducible are "Not a defect" (reply with its evidence,
-   resolve per §2.7 step 3 / D37), with no Fixer.
+   parallel when independent). Map by verdict: `valid-defect` is triaged again from its
+   report; `valid-but-deferred` or `pre-existing` is "Deferred" (commit its HUMAN_QUEUE line,
+   reply with it, resolve); `not-a-defect` is "Not a defect" (reply with its evidence,
+   resolve). Neither of the last two gets a Fixer (§2.7 step 3 / D37).
 4. Before the classifier call, move any fast-path item that touches a file also touched by a
    classifier-bound item into the classifier batch, so the classifier groups same-file items
    into one brief at the higher tier. Send all classifier-bound items to ONE work-classifier
