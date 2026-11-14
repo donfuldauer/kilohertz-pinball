@@ -17,9 +17,11 @@ The original delegation brief (REQUIREMENTS, TESTS REQUIRED, DONE WHEN, OWNED PA
 executor's report, the branch, and the base (normally `origin/main`).
 
 A single run may cover a batch of fixes on one head commit (a CodeRabbit review round or push,
-D38). Then run every check once on that head commit and report `requirements` and `failures`
-per item (per thread URL where given), so the Orchestrator can resolve each thread on its own
-result.
+D38). Then the Orchestrator supplies the brief and the executor report of every executor group
+in the batch. Run every check once on that head commit: check 1 traces the requirements of each
+group's brief, and check 7 uses the union of all groups' OWNED PATHS. Report `requirements` and
+`failures` per item (per thread URL where given), so the Orchestrator can resolve each thread on
+its own result. A single-brief run is unchanged.
 
 ## Checks (all must pass)
 
