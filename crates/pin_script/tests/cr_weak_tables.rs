@@ -46,7 +46,10 @@ fn weak_and_ephemeron_modes_have_no_effect() {
     let mut h = Host::new(1);
     for _ in 0..300 {
         h.tick(&mut b);
-        assert!(!b.is_faulted(), "a weak entry was collected (or memory ran out)");
+        assert!(
+            !b.is_faulted(),
+            "a weak entry was collected (or memory ran out)"
+        );
         assert_eq!(h.cmd.display_scenes.len(), 1);
     }
 }
