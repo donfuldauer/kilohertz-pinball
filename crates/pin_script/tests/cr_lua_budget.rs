@@ -307,3 +307,38 @@ fn pending_cost_of_a_nested_state_is_kept_apart() {
         2 * LOOKUPS_COST
     );
 }
+
+#[test]
+fn c_api_lookups_after_a_nested_state_call_are_charged_to_the_caller() {
+    // A host callback of A runs B's lookups, then does A's own lookups
+    // through the C API (lua_rawget) before returning to A's VM. Without a
+    // claim on every API entry, B stayed the owner and was charged for A.
+    let a = State::new();
+    let b = std::rc::Rc::new(State::new());
+    let b2 = std::rc::Rc::clone(&b);
+    let f = a
+        .lua
+        .create_function(move |lua, ()| {
+            b2.lookups.call::<()>(())?;
+            let t: mlua::Table = lua.globals().get("t")?;
+            let k: mlua::LuaString = lua.globals().get("k2")?;
+            for _ in 0..2000 {
+                let _: mlua::Value = t.raw_get(k.clone())?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    b.set_budget();
+    a.set_budget();
+    f.call::<()>(()).unwrap();
+    let cb = b.charged();
+    let ca = a.charged();
+    assert!(
+        (LOOKUPS_COST..LOOKUPS_COST + 1000).contains(&cb),
+        "B charged {cb}, expected about {LOOKUPS_COST}"
+    );
+    assert!(
+        (LOOKUPS_COST..LOOKUPS_COST + 1000).contains(&ca),
+        "A charged {ca}, expected about {LOOKUPS_COST}"
+    );
+}
