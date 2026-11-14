@@ -541,7 +541,11 @@ static void traversestrongtable (global_State *g, Table *h) {
 
 static lu_mem traversetable (global_State *g, Table *h) {
   const char *weakkey, *weakvalue;
-  const TValue *mode = gfasttm(g, h->metatable, TM_MODE);
+  /* KHZ: '__mode' is ignored, so every table is strong. A script can set
+     '__mode' after 'setmetatable' (or on a metatable's metatable), and weak
+     and ephemeron tables are cleared and re-traversed in the GC's atomic
+     step, which no budget reaches. The branch below is kept, but dead. */
+  const TValue *mode = NULL;
   TString *smode;
   markobjectN(g, h->metatable);
   if (mode && ttisshrstring(mode) &&  /* is there a weak mode? */

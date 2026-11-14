@@ -118,7 +118,13 @@ struct Ramp {
 }
 
 impl Ramp {
+    /// Starts a ramp to `target` over `frames`. A repeated request for the
+    /// current target keeps the ramp in progress (events that repeat every
+    /// tick must not restart it, or it would never complete).
     fn set(&mut self, target: f64, frames: u32) {
+        if target == self.target {
+            return;
+        }
         self.target = target;
         self.left = frames;
         self.step = (target - self.cur) / f64::from(frames);
@@ -168,7 +174,8 @@ struct RollVoice {
 struct ImpulseVoice {
     active: bool,
     phase: f64,
-    amp: f32,
+    /// `f64` so a long decay (coefficient within 2⁻²⁴ of 1) still decays.
+    amp: f64,
     pan: [f32; 4],
     seq: u64,
 }
@@ -220,7 +227,9 @@ pub struct SsfMixer {
     positions: Vec<(u16, [f32; 2])>,
     ramp_frames: u32,
     hold_frames: u64,
-    decay: f32,
+    /// Per-frame impulse decay, `f64`: in `f32` it rounds to exactly 1.0
+    /// once `tau` exceeds ≈ 3.4e7 frames (≈ 700 s at 48 kHz).
+    decay: f64,
     next_seq: u64,
     stolen: u64,
     ignored: u64,
@@ -268,7 +277,7 @@ impl SsfMixer {
             positions: Vec::new(),
             ramp_frames: ms_frames(cfg.roll_ramp_ms, rate),
             hold_frames: u64::from(ms_frames(cfg.roll_hold_ms, rate)),
-            decay: libm::exp(-1.0 / tau) as f32,
+            decay: libm::exp(-1.0 / tau),
             next_seq: 0,
             stolen: 0,
             ignored: 0,
@@ -356,8 +365,8 @@ impl SsfMixer {
             HapticKind::BallDrop { .. } => self.cfg.drop_gain,
             _ => self.cfg.impulse_gain,
         };
-        let amp = non_neg(class_gain, 0.0).min(16.0) * unit(e.strength);
-        if amp < SILENCE {
+        let amp = f64::from(non_neg(class_gain, 0.0).min(16.0) * unit(e.strength));
+        if amp < f64::from(SILENCE) {
             return;
         }
         let pan = self.source_corners(&e);
@@ -466,7 +475,7 @@ impl SsfMixer {
         let slen = (self.sine.len() - 1) as f64;
         for v in self.impulses.iter_mut().filter(|v| v.active) {
             for f in body.chunks_exact_mut(CHANNELS) {
-                let s = lookup(&self.sine, v.phase) * v.amp;
+                let s = lookup(&self.sine, v.phase) * v.amp as f32;
                 for (ch, p) in CORNERS.iter().zip(v.pan) {
                     f[*ch] += s * p;
                 }
@@ -476,7 +485,7 @@ impl SsfMixer {
                     v.phase -= slen;
                 }
                 v.amp *= self.decay;
-                if v.amp < SILENCE {
+                if v.amp < f64::from(SILENCE) {
                     v.active = false;
                     break;
                 }
@@ -675,6 +684,53 @@ mod tests {
                     .all(|v| v.is_finite() && (-1.0..=1.0).contains(v))
             );
         }
+    }
+
+    /// Identical roll events every millisecond (as `BallRoll` arrives each
+    /// tick) must not restart the ramp: the gain completes after
+    /// `roll_ramp_ms`, and so do pitch and pan.
+    #[test]
+    fn repeated_roll_events_do_not_restart_ramps() {
+        let cfg = SsfConfig::default();
+        let mut m = SsfMixer::new(cfg);
+        let ramp = ms_frames(cfg.roll_ramp_ms, cfg.sample_rate) as usize;
+        let per_ms = cfg.sample_rate as usize / 1000;
+        let mut out = vec![0.0f32; CHANNELS * per_ms];
+        // Start the voice, then change pitch/pan once and repeat that event.
+        m.feed(roll(0, 0.0, 535.0, 1.0));
+        m.render(&mut out);
+        let target = roll(0, 200.0, 900.0, 3.0);
+        for _ in 0..ramp.div_ceil(per_ms) {
+            m.feed(target);
+            m.render(&mut out);
+        }
+        let v = &m.rolls[0];
+        let gain = f64::from(cfg.roll_gain);
+        assert!(v.gain.settled_at(gain), "gain {:?}", v.gain);
+        assert!(v.inc.left == 0 && v.inc.cur == v.inc.target);
+        let corners = m.panner.corner_gains(200.0, 900.0);
+        for (r, g) in v.pan.iter().zip(corners) {
+            assert!(r.settled_at(f64::from(g)), "pan {r:?}");
+        }
+    }
+
+    /// A very long decay must still decay (in `f32` the coefficient rounds
+    /// to 1.0 and the voice would sustain forever).
+    #[test]
+    fn long_impulse_decay_still_decays() {
+        let mut m = SsfMixer::new(SsfConfig {
+            impulse_decay_ms: 1_000_000.0,
+            ..SsfConfig::default()
+        });
+        assert!(m.decay < 1.0);
+        m.feed(HapticEvent::new(0, HapticKind::Bumper { mech: 0 }, 1.0));
+        let a0 = m.impulses[0].amp;
+        let mut out = vec![0.0f32; CHANNELS * 4800];
+        m.render(&mut out);
+        let a1 = m.impulses[0].amp;
+        assert!(a1 < a0, "{a1} !< {a0}");
+        let expect = a0 * libm::exp(-4800.0 / 48_000_000.0);
+        assert!((a1 - expect).abs() < 1e-9 * a0);
     }
 
     #[test]
