@@ -5,7 +5,7 @@ use pin_core::schema::table::TableManifest;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -110,12 +110,20 @@ impl DofLaunchConfig {
 }
 
 /// A running bridge process. Dropping it stops it like [`DofBridge::stop`].
+///
+/// Each bridge gets its reaper thread when it is launched; the thread stays
+/// parked until the stop is requested, so stopping (or dropping) never has
+/// to create a thread and never blocks the caller.
 #[derive(Debug)]
 pub struct DofBridge {
-    child: Option<Child>,
+    /// The child and its map file, shared with the reaper thread, which
+    /// takes them once the stop is requested.
+    slot: ReaperSlot,
     id: u32,
     map_file: PathBuf,
-    grace: Duration,
+    /// Dropping it wakes the reaper thread (the stop request).
+    stop_tx: Option<mpsc::Sender<()>>,
+    reaper: Option<JoinHandle<Option<ExitStatus>>>,
 }
 
 /// The stop in progress of a [`DofBridge`]; dropping it detaches (the reaper
@@ -123,9 +131,6 @@ pub struct DofBridge {
 #[derive(Debug)]
 pub struct DofStopHandle {
     join: Option<JoinHandle<Option<ExitStatus>>>,
-    /// Exit status of a stop completed on the caller's thread (no reaper
-    /// thread could be started).
-    status: Option<ExitStatus>,
 }
 
 impl DofStopHandle {
@@ -133,10 +138,7 @@ impl DofStopHandle {
     /// plus the kill); returns its exit status, `None` if it could not be
     /// determined.
     pub fn wait(mut self) -> Option<ExitStatus> {
-        match self.join.take() {
-            Some(j) => j.join().ok().flatten(),
-            None => self.status,
-        }
+        self.join.take().and_then(|j| j.join().ok().flatten())
     }
 
     /// Whether the stop has completed.
@@ -166,7 +168,8 @@ impl DofBridge {
     /// platform check; [`start_for_table`](Self::start_for_table) adds it).
     /// stdin is a pipe the bridge watches (closing it is the stop signal),
     /// stdout is discarded, stderr goes to `config.log_file` or is discarded.
-    /// On Windows the bridge gets no console window.
+    /// On Windows the bridge gets no console window. Fails (without starting
+    /// the bridge) if the bridge's reaper thread cannot be started.
     pub fn spawn(map: &ResolvedDofMap, config: &DofLaunchConfig) -> Result<Self, DofError> {
         let map_file = map.write_file(&config.map_dir)?;
         let stderr = match &config.log_file {
@@ -195,14 +198,57 @@ impl DofBridge {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        match cmd.spawn() {
-            Ok(child) => Ok(Self {
-                id: child.id(),
-                child: Some(child),
-                map_file,
-                grace: config.stop_grace,
-            }),
+        Self::launch_with(cmd, map_file, config.stop_grace, |f| {
+            std::thread::Builder::new()
+                .name("dof-bridge-reaper".into())
+                .spawn(f)
+        })
+    }
+
+    /// Starts the reaper thread with `spawn_reaper` (tests inject a failing
+    /// one), then the bridge from `cmd`. On any failure nothing is left
+    /// running and `map_file` is deleted.
+    fn launch_with(
+        mut cmd: Command,
+        map_file: PathBuf,
+        grace: Duration,
+        spawn_reaper: impl FnOnce(ReaperJob) -> std::io::Result<JoinHandle<Option<ExitStatus>>>,
+    ) -> Result<Self, DofError> {
+        let slot: ReaperSlot = Arc::new(Mutex::new(None));
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let job_slot = Arc::clone(&slot);
+        let job: ReaperJob = Box::new(move || {
+            // Parked until the bridge handle asks for the stop (drops the
+            // sender); `Err` is that request.
+            let _ = stop_rx.recv();
+            let taken = lock(&job_slot).take();
+            taken.and_then(|(mut child, map_file)| stop_child(&mut child, &map_file, grace))
+        });
+        // The reaper thread first: if it cannot be started, no bridge has
+        // been started either, so nothing is left to clean up but the map.
+        let reaper = match spawn_reaper(job) {
+            Ok(j) => j,
             Err(e) => {
+                let _ = std::fs::remove_file(&map_file);
+                return Err(DofError::Spawn(e));
+            }
+        };
+        match cmd.spawn() {
+            Ok(child) => {
+                let id = child.id();
+                *lock(&slot) = Some((child, map_file.clone()));
+                Ok(Self {
+                    slot,
+                    id,
+                    map_file,
+                    stop_tx: Some(stop_tx),
+                    reaper: Some(reaper),
+                })
+            }
+            Err(e) => {
+                // The reaper wakes on the dropped sender, finds no child and
+                // exits.
+                drop(stop_tx);
                 let _ = std::fs::remove_file(&map_file);
                 Err(DofError::Spawn(e))
             }
@@ -222,14 +268,14 @@ impl DofBridge {
     /// `Some(status)` once the bridge has exited (e.g. DOF not installed:
     /// exit code 4), without blocking.
     pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
-        match &mut self.child {
-            Some(c) => c.try_wait(),
+        match lock(&self.slot).as_mut() {
+            Some((c, _)) => c.try_wait(),
             None => Ok(None),
         }
     }
 
     /// Stops the bridge without blocking: closes its stdin (it then calls
-    /// DOF `Finish` and exits) and hands it to a reaper thread that kills it
+    /// DOF `Finish` and exits) and wakes its reaper thread, which kills it
     /// if it is still running after the grace period, then deletes the map
     /// file.
     pub fn stop(mut self) -> DofStopHandle {
@@ -237,57 +283,27 @@ impl DofBridge {
     }
 
     fn begin_stop(&mut self) -> DofStopHandle {
-        self.begin_stop_with(|f| {
-            std::thread::Builder::new()
-                .name("dof-bridge-reaper".into())
-                .spawn(f)
-        })
-    }
-
-    /// [`begin_stop`](Self::begin_stop) with the reaper thread started by
-    /// `spawn` (tests inject a failing one).
-    fn begin_stop_with(
-        &mut self,
-        spawn: impl FnOnce(ReaperJob) -> std::io::Result<JoinHandle<Option<ExitStatus>>>,
-    ) -> DofStopHandle {
-        let Some(mut child) = self.child.take() else {
-            return DofStopHandle {
-                join: None,
-                status: None,
-            };
-        };
-        drop(child.stdin.take());
-        let map_file = std::mem::take(&mut self.map_file);
-        let grace = self.grace;
-        // The child and map file stay reachable from here until the reaper
-        // has taken them: if no thread can be started, the closure is
-        // dropped unrun and the stop is completed below.
-        let slot = Arc::new(Mutex::new(Some((child, map_file))));
-        let job_slot = Arc::clone(&slot);
-        let job: ReaperJob = Box::new(move || {
-            let taken = job_slot.lock().ok().and_then(|mut s| s.take());
-            taken.and_then(|(mut child, map_file)| stop_child(&mut child, &map_file, grace))
-        });
-        match spawn(job) {
-            Ok(j) => DofStopHandle {
-                join: Some(j),
-                status: None,
-            },
-            // No thread could be created: finish the stop on this thread
-            // (blocks for at most the grace period plus the kill) rather than
-            // drop an unreaped child and leave the map file behind.
-            Err(_) => {
-                let taken = slot.lock().ok().and_then(|mut s| s.take());
-                let status = taken
-                    .and_then(|(mut child, map_file)| stop_child(&mut child, &map_file, grace));
-                DofStopHandle { join: None, status }
-            }
+        if let Some((child, _)) = lock(&self.slot).as_mut() {
+            drop(child.stdin.take());
+        }
+        drop(self.stop_tx.take());
+        DofStopHandle {
+            join: self.reaper.take(),
         }
     }
 }
 
+/// The child and its map file, until the reaper thread takes them.
+type ReaperSlot = Arc<Mutex<Option<(Child, PathBuf)>>>;
+
 /// The reaper thread's work, handed to the thread spawner.
 type ReaperJob = Box<dyn FnOnce() -> Option<ExitStatus> + Send + 'static>;
+
+/// Locks `slot`, ignoring poisoning (the data stays valid).
+fn lock(slot: &ReaperSlot) -> std::sync::MutexGuard<'_, Option<(Child, PathBuf)>> {
+    slot.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// Reaps `child` (see [`reap`]), then deletes its map file.
 fn stop_child(child: &mut Child, map_file: &Path, grace: Duration) -> Option<ExitStatus> {
@@ -321,12 +337,10 @@ impl Drop for DofBridge {
 mod tests {
     use super::*;
 
-    /// Thread creation fails: the stop still kills and reaps the bridge
-    /// (one that ignores stdin EOF and SIGTERM) and deletes the map file.
-    #[test]
-    fn stop_without_a_reaper_thread_still_reaps_and_cleans_up() {
+    /// A fresh empty map file in the temp dir.
+    fn scratch_map(tag: &str) -> PathBuf {
         let map_file = std::env::temp_dir().join(format!(
-            "khz-dof-reaper-fallback-{}-{}.json",
+            "khz-dof-{tag}-{}-{}.json",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -338,32 +352,89 @@ mod tests {
             .create_new(true)
             .open(&map_file)
             .unwrap();
-        let child = Command::new("/bin/sh")
-            .args(["-c", "trap '' TERM; exec sleep 600"])
+        map_file
+    }
+
+    /// A bridge that ignores stdin EOF and SIGTERM.
+    fn stubborn() -> Command {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "trap '' TERM; exec sleep 600"])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        let mut bridge = DofBridge {
-            id: pid,
-            child: Some(child),
-            map_file: map_file.clone(),
-            grace: Duration::from_millis(20),
-        };
-        let handle = bridge.begin_stop_with(|_job| Err(std::io::Error::other("no threads")));
-        assert!(handle.is_finished());
-        let status = handle.wait().expect("child reaped");
-        assert!(!status.success());
-        assert!(!map_file.exists());
-        // Reaped: the pid is gone (signal 0 probes existence).
-        let alive = Command::new("kill")
+            .stderr(Stdio::null());
+        cmd
+    }
+
+    fn real_spawner(f: ReaperJob) -> std::io::Result<JoinHandle<Option<ExitStatus>>> {
+        std::thread::Builder::new().spawn(f)
+    }
+
+    /// Whether process `pid` exists (signal 0 probes existence).
+    fn alive(pid: u32) -> bool {
+        Command::new("kill")
             .args(["-0", &pid.to_string()])
             .stderr(Stdio::null())
             .status()
-            .unwrap();
-        assert!(!alive.success());
+            .unwrap()
+            .success()
+    }
+
+    /// Thread creation fails at launch: the launch fails, no bridge is
+    /// started (so none can be left running) and the map file is deleted.
+    #[test]
+    fn launch_without_a_reaper_thread_fails_and_starts_nothing() {
+        let map_file = scratch_map("reaper-fail");
+        let marker = map_file.with_extension("started");
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(format!("touch '{}'; exec sleep 600", marker.display()))
+            .stdin(Stdio::piped());
+        let r = DofBridge::launch_with(cmd, map_file.clone(), Duration::from_secs(8), |_job| {
+            Err(std::io::Error::other("no threads"))
+        });
+        assert!(matches!(r, Err(DofError::Spawn(_))), "{r:?}");
+        assert!(!map_file.exists());
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!marker.exists(), "the bridge was started");
+    }
+
+    /// stop() and drop() return at once even for a bridge that ignores stdin
+    /// EOF (the whole grace period runs on the parked reaper thread), and
+    /// the bridge is still killed, reaped and its map file deleted.
+    #[test]
+    fn stop_and_drop_never_block_the_caller() {
+        let grace = Duration::from_secs(2);
+        let map_file = scratch_map("stop-prompt");
+        let bridge = DofBridge::launch_with(stubborn(), map_file.clone(), grace, real_spawner)
+            .expect("launch");
+        let pid = bridge.id();
+        let t = Instant::now();
+        let handle = bridge.stop();
+        let took = t.elapsed();
+        assert!(took < Duration::from_millis(500), "stop() blocked {took:?}");
+        assert!(
+            !handle.is_finished(),
+            "stop finished before the grace period"
+        );
+        let status = handle.wait().expect("child reaped");
+        assert!(t.elapsed() >= grace);
+        assert!(!status.success());
+        assert!(!map_file.exists());
+        assert!(!alive(pid));
+
+        let map_file = scratch_map("drop-prompt");
+        let bridge = DofBridge::launch_with(stubborn(), map_file.clone(), grace, real_spawner)
+            .expect("launch");
+        let pid = bridge.id();
+        let t = Instant::now();
         drop(bridge);
+        let took = t.elapsed();
+        assert!(took < Duration::from_millis(500), "drop blocked {took:?}");
+        let deadline = Instant::now() + grace + Duration::from_secs(10);
+        while (map_file.exists() || alive(pid)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!map_file.exists());
+        assert!(!alive(pid));
     }
 }
