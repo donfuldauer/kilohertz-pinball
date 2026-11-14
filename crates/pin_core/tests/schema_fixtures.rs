@@ -274,6 +274,46 @@ fn each_fixture_parses_only_as_its_own_schema() {
     assert_eq!(parse_all(PHYSICS), [false, false, false, true]);
 }
 
+/// The writer applies the reader's checks, so a mutated manifest that the
+/// reader would reject cannot be serialised either.
+#[test]
+fn writer_rejects_manifests_the_reader_would_reject() {
+    let valid = TableManifest::from_toml_str(TABLE).unwrap();
+
+    let mut t = valid.clone();
+    t.schema_version = SCHEMA_VERSION + 1;
+    assert_eq!(
+        t.to_toml_string(),
+        Err(SchemaError::UnsupportedVersion(SCHEMA_VERSION + 1))
+    );
+
+    let mut t = valid.clone();
+    t.meta.pitch_deg = f32::NAN;
+    assert!(matches!(t.to_toml_string(), Err(SchemaError::Invalid(_))));
+
+    let mut t = valid.clone();
+    let m = &mut t.dof.as_mut().unwrap().map[0];
+    m.lamp = Some("x".into());
+    assert!(m.coil.is_some());
+    assert!(matches!(t.to_toml_string(), Err(SchemaError::Invalid(_))));
+
+    let mut b = BackglassManifest::from_toml_str(BACKGLASS).unwrap();
+    b.schema_version = 2;
+    assert_eq!(b.to_toml_string(), Err(SchemaError::UnsupportedVersion(2)));
+    let mut l = LayoutManifest::from_toml_str(LAYOUT).unwrap();
+    l.schema_version = 0;
+    assert_eq!(l.to_toml_string(), Err(SchemaError::UnsupportedVersion(0)));
+
+    let mut p = PhysicsDefaults::from_toml_str(PHYSICS).unwrap();
+    let dup = p.material_pairs[0];
+    p.material_pairs.push(dup);
+    assert!(matches!(p.to_toml_string(), Err(SchemaError::Invalid(_))));
+
+    // The unmutated manifest still round-trips.
+    let back = TableManifest::from_toml_str(&valid.to_toml_string().unwrap()).unwrap();
+    assert_eq!(back, valid);
+}
+
 #[test]
 fn invalid_enum_values_and_dof_sources_are_rejected() {
     let bad_kind = TABLE.replacen("kind = \"opto\"", "kind = \"laser\"", 1);
