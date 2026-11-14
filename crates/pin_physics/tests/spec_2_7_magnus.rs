@@ -11,9 +11,7 @@ mod common;
 use common::*;
 use glam::{DVec3, Vec3};
 use pin_core::{BallProfile, ProfileId};
-use pin_physics::ball::{
-    Ball, BallEvents, BallHandle, BallSolver, ExternalForce, ForceContext, Geometry,
-};
+use pin_physics::ball::{Ball, BallEvents, BallHandle, BallSolver, ForceContext, Geometry};
 use proptest::prelude::*;
 
 /// Which hooks a free-flight run registers.
@@ -331,13 +329,25 @@ fn ctx(magnets: &[pin_physics::ball::MagnetState]) -> ForceContext<'_> {
     }
 }
 
-fn direct_force(p: &BallProfile, v: Vec3, w: Vec3) -> Vec3 {
-    let mut hook = magnus_hook();
+/// The force the hook returns for one sub-step of `DT`. `gravity`: `None`
+/// is the plain `Magnus` (which assumes the default gravity [`G`]),
+/// `Some(g)` is `Magnus::with_gravity(g)`.
+fn direct_force(p: &BallProfile, v: Vec3, w: Vec3, gravity: Option<Vec3>) -> Vec3 {
+    let mut hook = magnus_hook(gravity);
     let mut b = Ball::new(ProfileId(0), Vec3::new(0.1, 0.2, 0.3));
     b.velocity = v;
     b.angular_velocity = w;
     hook.ball_added(BallHandle(0), &b);
     hook.force_in(&ctx(&[]), BallHandle(0), &b, p, DT)
+}
+
+/// The velocity the hook's force acts on. The solver hands a hook the
+/// velocity after the sub-step's gravity kick, `v + g·h`; the hook takes the
+/// sub-step midpoint `v − g·h/2` of what it is given (Orchestrator ruling,
+/// DECISIONS "2.7 Magnus: which velocity the hook rotates"), `h` being the
+/// `dt` passed to the hook. With zero gravity that is `v` itself.
+fn midpoint(v: Vec3, gravity: Vec3) -> DVec3 {
+    v.as_dvec3() - gravity.as_dvec3() * (0.5 * f64::from(DT))
 }
 
 /// `φ = S|ω|h/m`: the angle the velocity turns in one sub-step. A hook may
@@ -350,58 +360,91 @@ fn turn_angle(p: &BallProfile, w: Vec3) -> f64 {
 
 #[test]
 fn hook_force_is_s_omega_cross_v() {
+    // The bare formula, through the zero-gravity hook.
     let p = profile("uv_globall");
     let w = Vec3::new(0.0, 0.0, 200.0);
-    let f = direct_force(&p, Vec3::new(2.0, 0.0, 0.0), w);
+    let v = Vec3::new(2.0, 0.0, 0.0);
+    let f = direct_force(&p, v, w, Some(Vec3::ZERO));
     let tol = 4.0e-3 * (1.0e-5 + turn_angle(&p, w));
     assert!(
         (f.as_dvec3() - DVec3::new(0.0, 4.0e-3, 0.0)).length() < tol,
         "{f:?}"
     );
+    // The plain hook assumes the default gravity: S·(ω × (v − g·h/2)).
+    let w = Vec3::new(0.0, 200.0, 0.0);
+    let f = direct_force(&p, v, w, None);
+    let expect = 1.0e-5 * w.as_dvec3().cross(midpoint(v, G));
+    assert!(
+        (f.as_dvec3() - expect).length() < tol,
+        "{f:?} vs {expect:?}"
+    );
+    let same = direct_force(&p, v, w, Some(G));
+    assert_eq!(f, same, "plain Magnus is with_gravity(default gravity)");
     let mut zero = p.clone();
     zero.magnus_coeff = 0.0;
-    let f = direct_force(
-        &zero,
-        Vec3::new(2.0, 1.0, -3.0),
-        Vec3::new(50.0, 0.0, 200.0),
-    );
-    assert_eq!(f, Vec3::ZERO);
+    for g in [None, Some(Vec3::ZERO), Some(G)] {
+        let f = direct_force(
+            &zero,
+            Vec3::new(2.0, 1.0, -3.0),
+            Vec3::new(50.0, 0.0, 200.0),
+            g,
+        );
+        assert_eq!(f, Vec3::ZERO);
+    }
 }
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, .. ProptestConfig::default() })]
 
-    /// The force helper: `F = S (ω × v)` (to `O(φ)`, see [`turn_angle`]),
-    /// does no work over the sub-step, has no component along `ω`, is finite
-    /// and stateless.
+    /// The force helper: `F = S (ω × u)` (to `O(φ)`, see [`turn_angle`]),
+    /// `u = v` for the zero-gravity hook (the bare formula) and the sub-step
+    /// midpoint `v − g·h/2` for a hook with gravity (plain `Magnus`: the
+    /// default gravity); it does no work on `u` over the sub-step, has no
+    /// component along `ω`, is finite and stateless.
     #[test]
     fn prop_hook_force(
         s in 0.0f32..5.0e-5,
         v in prop::array::uniform3(-10.0f32..10.0),
         w in prop::array::uniform3(-600.0f32..600.0),
         which in 0usize..7,
+        g_other in prop::array::uniform3(-12.0f32..12.0),
     ) {
         let mut p = builtin()[which].clone();
         p.magnus_coeff = s;
         let (v, w) = (Vec3::from(v), Vec3::from(w));
-        let f = direct_force(&p, v, w);
-        prop_assert!(f.is_finite());
+        let g_other = Vec3::from(g_other);
         let phi = turn_angle(&p, w);
-        let (fd, vd, wd) = (f.as_dvec3(), v.as_dvec3(), w.as_dvec3());
-        let expect = f64::from(s) * wd.cross(vd);
-        let scale = f64::from(s) * wd.length() * vd.length();
-        let tol = (1.0e-5 + phi) * scale + 1.0e-12;
-        prop_assert!((fd - expect).length() <= tol, "{:?} vs {:?}", f, expect);
-        // No work: the speed after `v += F h/m` is the speed before, up to
-        // the explicit update's own second-order term φ² (and rounding).
-        let after = vd + fd * (f64::from(DT) / f64::from(p.mass_kg));
-        let gain = (after.length_squared() - vd.length_squared()) / vd.length_squared().max(1e-12);
-        prop_assert!(gain.abs() <= 1.01 * phi * phi + 1.0e-6, "relative |v|² change {}", gain);
-        // No component along the spin axis.
-        prop_assert!(fd.dot(wd).abs() <= (1.0e-5 * scale + 1.0e-12) * wd.length());
-        // Stateless: the same call again gives the same bits.
-        let again = direct_force(&p, v, w);
-        prop_assert_eq!(f.to_array().map(f32::to_bits), again.to_array().map(f32::to_bits));
+        let wd = w.as_dvec3();
+        for (hook_gravity, gravity) in [
+            (Some(Vec3::ZERO), Vec3::ZERO),
+            (None, G),
+            (Some(g_other), g_other),
+        ] {
+            let f = direct_force(&p, v, w, hook_gravity);
+            prop_assert!(f.is_finite());
+            let fd = f.as_dvec3();
+            let u = midpoint(v, gravity);
+            let expect = f64::from(s) * wd.cross(u);
+            let scale = f64::from(s) * wd.length() * u.length();
+            let tol = (1.0e-5 + phi) * scale + 1.0e-12;
+            prop_assert!(
+                (fd - expect).length() <= tol,
+                "gravity {:?}: {:?} vs {:?}", gravity, f, expect
+            );
+            // No work: the speed after `u += F h/m` is the speed before, up
+            // to the explicit update's own second-order term φ² (and rounding).
+            let after = u + fd * (f64::from(DT) / f64::from(p.mass_kg));
+            let gain = (after.length_squared() - u.length_squared()) / u.length_squared().max(1e-12);
+            prop_assert!(
+                gain.abs() <= 1.01 * phi * phi + 1.0e-6,
+                "gravity {:?}: relative |u|² change {}", gravity, gain
+            );
+            // No component along the spin axis.
+            prop_assert!(fd.dot(wd).abs() <= (1.0e-5 * scale + 1.0e-12) * wd.length());
+            // Stateless: the same call again gives the same bits.
+            let again = direct_force(&p, v, w, hook_gravity);
+            prop_assert_eq!(f.to_array().map(f32::to_bits), again.to_array().map(f32::to_bits));
+        }
     }
 
     #[test]
@@ -412,7 +455,9 @@ proptest! {
     ) {
         let mut p = builtin()[which].clone();
         p.magnus_coeff = 0.0;
-        prop_assert_eq!(direct_force(&p, Vec3::from(v), Vec3::from(w)), Vec3::ZERO);
+        for g in [None, Some(Vec3::ZERO), Some(G)] {
+            prop_assert_eq!(direct_force(&p, Vec3::from(v), Vec3::from(w), g), Vec3::ZERO);
+        }
     }
 }
 

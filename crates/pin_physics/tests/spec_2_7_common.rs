@@ -32,14 +32,22 @@ pub fn register(s: &mut BallSolver) -> MagProbe {
     pin_physics::ball_ext::register_all(s)
 }
 
-/// Registers only the Magnus hook.
+/// Registers only the Magnus hook, told the solver's gravity (the hook
+/// rotates the sub-step midpoint velocity `v − g·h/2`).
 pub fn register_magnus(s: &mut BallSolver) {
-    s.add_external_force(Box::new(pin_physics::ball_ext::Magnus));
+    let gravity = s.config().gravity;
+    s.add_external_force(Box::new(pin_physics::ball_ext::Magnus::with_gravity(
+        gravity,
+    )));
 }
 
-/// A Magnus hook of its own, for direct `force_in` calls.
-pub fn magnus_hook() -> pin_physics::ball_ext::Magnus {
-    pin_physics::ball_ext::Magnus
+/// A Magnus hook of its own, for direct `force_in` calls: the plain `Magnus`
+/// (default gravity (0, 0, −9.81)) for `None`, else `Magnus::with_gravity`.
+pub fn magnus_hook(gravity: Option<Vec3>) -> Box<dyn pin_physics::ball::ExternalForce> {
+    match gravity {
+        None => Box::new(pin_physics::ball_ext::Magnus),
+        Some(g) => Box::new(pin_physics::ball_ext::Magnus::with_gravity(g)),
+    }
 }
 
 /// Registers only the remanence hook.

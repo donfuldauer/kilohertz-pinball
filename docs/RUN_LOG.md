@@ -219,3 +219,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 2.2-S | Reviewer | Fable 5.2 | 4 | running | — | |
 | 4 | 2.7 (fix task) | Implementer | Opus 5.5 | 1 | running | — | Magnus free-flight accuracy (spec prop_free_flight 15/20 failing; force evaluated at v + g·h) |
 | 4 | 2.7 (fix task) | Implementer | Opus 5.5 | 1 | done | spec_2_7_magnus 20/20 (prop_free_flight fixed); own tests pass; clippy clean | Magnus rotates the midpoint velocity v − g·h/2; `MagnusWithGravity`; spec prop_hook_force conflicts → Orchestrator ruling, Tester amends |
+| 4 | 2.7 (fix task) | Independent Tester | Fable 5.2 | 1 | done | 46 spec tests pass 10/10 runs (prop_free_flight every run) | prop_hook_force amended per ruling |
+| 4 | 2.7 (fix task) | Reviewer | Fable 5.2 | 1 | running | — | |
