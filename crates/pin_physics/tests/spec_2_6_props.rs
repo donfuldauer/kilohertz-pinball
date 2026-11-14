@@ -211,6 +211,47 @@ fn banana_strategy() -> impl Strategy<Value = Banana> {
 }
 
 #[test]
+fn closest_point_near_minus_z_mounts_fixed_cases() {
+    // Reviewer N6: mounting normals within ~0.06° of −Z (where the plane
+    // axes switch construction). Every region, both sweeps and bends:
+    // point + normal·distance reconstructs the query and the normal is
+    // outward (both checked inside `closest_case`).
+    let mut n = 0;
+    for (theta, phi) in [(3.140_496f32, -2.691_378f32), (3.1405, 0.0)] {
+        let normal = unit(theta, phi);
+        assert!(normal.z < -0.9999, "not near −Z: {normal:?}");
+        for neg_sweep in [false, true] {
+            for neg_bend in [false, true] {
+                for region in [
+                    Region::Concave,
+                    Region::Convex,
+                    Region::TipCap,
+                    Region::BaseCap,
+                ] {
+                    for frac in [0.1f32, 0.5, 0.9] {
+                        for (beta, offset) in [(0.0f32, -0.004f32), (-60.0, 0.0005), (60.0, 0.02)] {
+                            for rest in [-150.0f32, 20.0, 110.0] {
+                                let r = closest_case(
+                                    BANANA, neg_sweep, neg_bend, normal, rest, region, frac, beta,
+                                    offset, -0.006,
+                                );
+                                assert!(
+                                    r.is_ok(),
+                                    "θ {theta} φ {phi} rest {rest}: {}",
+                                    r.unwrap_err()
+                                );
+                                n += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("{n} near −Z closest-point cases");
+}
+
+#[test]
 fn closest_point_regions_fixed_cases() {
     // Every region on the reference banana, both sweeps and bends, flat.
     let mut n = 0;

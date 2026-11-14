@@ -305,3 +305,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 2.6 | Implementer | Fable 5.2 | fix 1 | done | lib flipper 36/36 incl. new plane_axes regression test; spec_2_6_props 6×9/9; clippy clean crate-wide; pin_physics 721/723 (2 failures = GR-1's) | plane_axes near-−Z fallback re-orthogonalised; exact −Z bit-identical; no trajectory change |
 | 5 | 2.6 | Reviewer | Opus 5.5 | 2 | running | — | |
 | 5 | 2.6 | Reviewer | Opus 5.5 | 2 | **pass** | fmt/clippy clean crate-wide; flipper/banana/spec_2_3/spec_2_6 suites all green; spec_2_6_props 12×9/9 (round 1: 0/3); probe back-error 7.5e-9 m (was 1.01e-4); orthonormality 1.2e-7 over 20 000 normals; 2.3 determinism unchanged | N5 frame jump at the −Z threshold → HUMAN_QUEUE; N6 fixed near-−Z spec case → Tester |
+| 5 | 2.6 | Independent Tester | Opus 5.5 | 3 | done | fixed near-−Z closest-point cases (864) pass; fmt/clippy clean | N6 closed |
+| 5 | 2.6 | Orchestrator re-run | — | final | **green** | pin_physics lib flipper tests 47/47 + banana/flipper/spec_2_3/spec_2_6 integration 106/106 | **2.6 complete** (target/sp_phys kept: shared with GR-1 and 2.8) |
