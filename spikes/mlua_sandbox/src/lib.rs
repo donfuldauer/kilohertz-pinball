@@ -8,6 +8,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use mlua::debug::DebugEvent;
 use mlua::{HookTriggers, Lua, VmState};
 
 /// Instructions between hook invocations. Budget granularity is this value.
@@ -26,20 +27,35 @@ pub fn lua_with_memory_limit(limit_bytes: usize) -> mlua::Result<Lua> {
 /// Install an instruction-count hook that aborts execution once more than
 /// `budget` instructions (rounded up to [`HOOK_INTERVAL`]) have executed.
 /// Returns a shared counter of hook ticks for inspection.
+///
+/// The budget error is an ordinary Lua error, so `pcall`/`xpcall` can catch
+/// it. To keep a script such as
+/// `while true do pcall(function() while true do end end) end` from
+/// restarting the work forever, the hook also fires on every call and
+/// return, and once the budget is spent it fails on those events too: the
+/// call into `pcall` and the return from it both run outside the protected
+/// region, so the error reaches the host. Only count events advance the tick
+/// counter, so the budget arithmetic is unchanged.
+///
+/// Not covered: coroutines created from Lua (`coroutine.create`) do not run
+/// this per-thread hook under mlua 0.12, so code inside them is not counted.
 pub fn install_instruction_budget(lua: &Lua, budget: u64) -> mlua::Result<Rc<Cell<u64>>> {
     let ticks = Rc::new(Cell::new(0u64));
     let ticks_in_hook = Rc::clone(&ticks);
-    lua.set_hook(
-        HookTriggers::new().every_nth_instruction(HOOK_INTERVAL),
-        move |_lua, _debug| {
-            let n = ticks_in_hook.get() + 1;
+    let mut triggers = HookTriggers::new().every_nth_instruction(HOOK_INTERVAL);
+    triggers.on_calls = true;
+    triggers.on_returns = true;
+    lua.set_hook(triggers, move |_lua, debug| {
+        let mut n = ticks_in_hook.get();
+        if matches!(debug.event(), DebugEvent::Count) {
+            n += 1;
             ticks_in_hook.set(n);
-            if n * u64::from(HOOK_INTERVAL) > budget {
-                Err(mlua::Error::runtime(BUDGET_EXCEEDED))
-            } else {
-                Ok(VmState::Continue)
-            }
-        },
-    )?;
+        }
+        if n * u64::from(HOOK_INTERVAL) > budget {
+            Err(mlua::Error::runtime(BUDGET_EXCEEDED))
+        } else {
+            Ok(VmState::Continue)
+        }
+    })?;
     Ok(ticks)
 }

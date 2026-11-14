@@ -442,6 +442,9 @@ static StkId tryfuncTM (lua_State *L, StkId func) {
   tm = luaT_gettmbyobj(L, s2v(func), TM_CALL);  /* (after previous GC) */
   if (l_unlikely(ttisnil(tm)))
     luaG_callerror(L, s2v(func));  /* nothing to call */
+  /* KHZ: charge the shift (a cyclic '__call' chain retries this without
+     running an instruction, shifting one more slot each time) */
+  lua_khzcharge(L, cast(lua_Integer, (L->top.p - func) >> 3));
   for (p = L->top.p; p > func; p--)  /* open space for metamethod */
     setobjs2s(L, p, p-1);
   L->top.p++;  /* stack space pre-allocated by the caller */
