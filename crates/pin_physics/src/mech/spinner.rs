@@ -56,6 +56,8 @@ pub(crate) struct Spinner {
     pub pulses: u64,
     /// A pulse happened in the last committed tick.
     pub pulsed: bool,
+    /// Horizontal crossings of the segments completed so far this tick.
+    tick_crossings: u64,
     // Segment: start time, angle and instantaneous ω at the start, mean rate.
     seg_t: f32,
     seg_angle: f32,
@@ -98,6 +100,7 @@ impl Spinner {
             omega: 0.0,
             pulses: 0,
             pulsed: false,
+            tick_crossings: 0,
             seg_t: 0.0,
             seg_angle: 0.0,
             seg_omega: 0.0,
@@ -126,8 +129,16 @@ impl Spinner {
         1.5 / self.flap * self.along(phi).cross(self.gravity).dot(self.axis)
     }
 
+    /// Horizontal crossings (`φ = π/2 + kπ`) between two angles.
+    fn crossings(from: f32, to: f32) -> u64 {
+        let k = |a: f32| libm::floorf((a - core::f32::consts::FRAC_PI_2) / core::f32::consts::PI);
+        let n = (k(to) - k(from)).abs();
+        if n.is_finite() { n as u64 } else { 0 }
+    }
+
     pub fn begin_tick(&mut self, dt: f32) {
         self.dt = dt;
+        self.tick_crossings = 0;
         let mut omega = self.omega + self.gravity_alpha(self.angle) * dt;
         // Pivot friction: decelerates by `friction·dt`, and holds a flap
         // whose gravity torque it can balance (stiction).
@@ -147,7 +158,6 @@ impl Spinner {
     }
 
     pub fn end_tick(&mut self, dt: f32) {
-        let before = self.angle;
         let after = self.angle_at(dt);
         let (_, e) = decay(self.damping, dt - self.seg_t);
         self.angle = after;
@@ -155,13 +165,15 @@ impl Spinner {
         if self.omega.abs() < REST_OMEGA {
             self.omega = 0.0;
         }
-        // Horizontal crossings: φ = π/2 + kπ ⇔ floor((φ − π/2)/π) changes.
-        let k = |a: f32| libm::floorf((a - core::f32::consts::FRAC_PI_2) / core::f32::consts::PI);
-        let n = (k(after) - k(before)).abs();
-        self.pulsed = n > 0.0;
-        if n.is_finite() {
-            self.pulses = self.pulses.saturating_add(n as u64);
-        }
+        // Horizontal crossings (φ = π/2 + kπ ⇔ floor((φ − π/2)/π) changes),
+        // per motion segment: an impulse can reverse the flap within the
+        // tick, so the endpoints alone could miss crossings.
+        let n = self
+            .tick_crossings
+            .saturating_add(Self::crossings(self.seg_angle, after));
+        self.tick_crossings = 0;
+        self.pulsed = n > 0;
+        self.pulses = self.pulses.saturating_add(n);
         self.dt = dt;
         self.start_segment(dt, self.angle, self.omega);
         self.seg_t = 0.0;
@@ -219,6 +231,10 @@ impl Spinner {
         let (_, e) = decay(self.damping, t - self.seg_t);
         let omega = self.seg_omega * e + l / self.inertia;
         let angle = self.angle_at(t);
+        // The segment so far is complete: count its crossings.
+        self.tick_crossings = self
+            .tick_crossings
+            .saturating_add(Self::crossings(self.seg_angle, angle));
         self.start_segment(t, angle, omega);
     }
 }
@@ -257,6 +273,27 @@ mod tests {
             let expected = (total / core::f32::consts::PI).floor() as i64;
             assert!((s.pulses as i64 - expected).abs() <= 1);
         }
+    }
+
+    #[test]
+    fn reversal_within_a_tick_counts_both_crossings() {
+        let mut s = flap();
+        s.gravity = Vec3::ZERO;
+        s.damping = 0.0;
+        s.friction = 0.0;
+        s.angle = core::f32::consts::FRAC_PI_2 - 0.01;
+        s.omega = 40.0;
+        s.begin_tick(1e-3);
+        // Halfway through the flap is 0.01 rad past horizontal; reverse it.
+        let t = 5e-4;
+        let r = s.along(s.angle_at(t)) * s.flap;
+        let impulse = s.axis.cross(r) * (-80.0 * s.inertia / r.length_squared());
+        s.apply_impulse(t, s.pivot + r, impulse);
+        assert!((s.seg_rate + 40.0).abs() < 1e-2, "{}", s.seg_rate);
+        s.end_tick(1e-3);
+        assert!((s.angle - (core::f32::consts::FRAC_PI_2 - 0.01)).abs() < 1e-4);
+        assert_eq!(s.pulses, 2);
+        assert!(s.pulsed);
     }
 
     #[test]

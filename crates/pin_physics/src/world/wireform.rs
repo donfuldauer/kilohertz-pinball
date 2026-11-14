@@ -16,6 +16,13 @@ const GUIDE_SKIN: f32 = 1.0e-5;
 /// Maximum steps (closest-point evaluations) of a guide cast.
 const GUIDE_CAST_STEPS: u32 = 32;
 
+/// Relative tangential offset of a closest point (to the distance) above
+/// which a cast's closing speed is taken perpendicular to the curve instead
+/// of toward the point (see `GuideCurve::closing_direction`). Far above the
+/// rounding of a refined foot (~1e-6), far below the tie tolerance of the
+/// projection (~3e-4).
+const NORMAL_TANGENT_SLACK: f32 = 2.0e-5;
+
 /// An orthonormal, right-handed moving frame: `binormal = tangent × normal`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Frame {
@@ -1599,6 +1606,36 @@ impl GuideCurve {
         if len > 0.0 { n / len } else { Vec3::X }
     }
 
+    /// The direction along which the gap of a level wall closes, for the
+    /// step bounds of a cast: `normal` (toward `p` from the closest point)
+    /// without its part along the curve. The closest point is only resolved
+    /// to the f32 precision of the squared distance, a relative `2^-11.5`
+    /// along the wall (a through-point sample can tie with the true foot):
+    /// the normal toward it can tilt by as much, and a bound that
+    /// extrapolates the closing speed along it over a long step overshoots
+    /// (by the drop times the tilt times the ratio of sliding to closing
+    /// speed). Unchanged on sloped walls (their nearest point comes from the
+    /// plan view), at the open ends (where the normal really points along
+    /// the curve) and below `NORMAL_TANGENT_SLACK`.
+    fn closing_direction(&self, cp: &ClosestPoint, p: Vec3, normal: Vec3) -> Vec3 {
+        if self.sloped.is_some()
+            || cp.distance <= 1.0e-9
+            || cp.t <= 0.0
+            || cp.t >= self.spline.max_t()
+        {
+            return normal;
+        }
+        let e = p - cp.point;
+        let along = self.spline.tangent(cp.t).normalize_or_zero();
+        let off = e.dot(along);
+        if off.abs() <= NORMAL_TANGENT_SLACK * cp.distance {
+            return normal;
+        }
+        let n = e - along * off;
+        let len = n.length();
+        if len > 0.0 { n / len } else { normal }
+    }
+
     /// Continuous collision detection against the wall.
     ///
     /// * `None`: the sphere does not come into contact within `max_time`.
@@ -1738,6 +1775,14 @@ impl GuideCurve {
             } else {
                 // Sliding: may sink to the fixed limit of -skin, no further.
                 gap.min(-GUIDE_SKIN)
+            };
+            // While approaching, the bounds below extrapolate the closing
+            // speed over long steps: take it perpendicular to the curve (see
+            // `closing_direction`). In contact everything stays as decided.
+            let rate = if gap > GUIDE_SKIN {
+                self.closing_direction(&cp, p, normal).dot(velocity)
+            } else {
+                rate
             };
             let drop = gap - floor; // >= 0
             // Bound 1: |d(gap)/dt| <= speed.
