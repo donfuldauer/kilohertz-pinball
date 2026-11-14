@@ -1015,7 +1015,11 @@ fn drop_bad_values(raw: toml::Table, w: &mut Vec<ConfigWarning>) -> toml::Table 
     if deserializes(&raw).is_ok() {
         return raw;
     }
-    fn clean(path: &mut Vec<String>, value: toml::Value, w: &mut Vec<ConfigWarning>) -> Option<toml::Value> {
+    fn clean(
+        path: &mut Vec<String>,
+        value: toml::Value,
+        w: &mut Vec<ConfigWarning>,
+    ) -> Option<toml::Value> {
         let keys: Vec<&str> = path.iter().map(String::as_str).collect();
         let err = match deserializes(&wrap(&keys, value.clone())) {
             Ok(()) => return Some(value),
@@ -1035,7 +1039,11 @@ fn drop_bad_values(raw: toml::Table, w: &mut Vec<ConfigWarning>) -> toml::Table 
             }
             v => {
                 let key = keys.join(".");
-                bad(w, &key, truncate_message(format!("{v} is not valid here ({})", err.trim_end())));
+                bad(
+                    w,
+                    &key,
+                    truncate_message(format!("{v} is not valid here ({})", err.trim_end())),
+                );
                 None
             }
         }

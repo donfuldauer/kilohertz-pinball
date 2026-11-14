@@ -526,14 +526,26 @@ fn opening_releases_what_the_sim_holds() {
     use pin_core::input::CabinetAxis;
     let mut m = MenuState::default();
     // Held into the menu: left flipper, start, plunger pulled, nudge.
-    assert_eq!(m.route_cabinet(CabinetInput::LeftFlipper, true), InputRoute::Sim);
+    assert_eq!(
+        m.route_cabinet(CabinetInput::LeftFlipper, true),
+        InputRoute::Sim
+    );
     assert_eq!(m.route_cabinet(CabinetInput::Start, true), InputRoute::Sim);
-    assert_eq!(m.route_cabinet(CabinetInput::RightFlipper, true), InputRoute::Sim);
-    assert_eq!(m.route_cabinet(CabinetInput::RightFlipper, false), InputRoute::Sim);
+    assert_eq!(
+        m.route_cabinet(CabinetInput::RightFlipper, true),
+        InputRoute::Sim
+    );
+    assert_eq!(
+        m.route_cabinet(CabinetInput::RightFlipper, false),
+        InputRoute::Sim
+    );
     assert_eq!(m.route_axis(CabinetAxis::Plunger, 0.7), InputRoute::Sim);
     assert_eq!(m.route_axis(CabinetAxis::NudgeX, 0.2), InputRoute::Sim);
     assert_eq!(m.route_axis(CabinetAxis::NudgeX, 0.0), InputRoute::Sim);
-    assert_eq!(m.route_axis(CabinetAxis::RightFlipper, 0.4), InputRoute::Sim);
+    assert_eq!(
+        m.route_axis(CabinetAxis::RightFlipper, 0.4),
+        InputRoute::Sim
+    );
     m.apply(MenuInput::Toggle);
     assert_eq!(
         m.drain_commands(),
@@ -546,7 +558,10 @@ fn opening_releases_what_the_sim_holds() {
         ]
     );
     // The real release now goes to the menu; nothing is left for the sim.
-    assert_eq!(m.route_cabinet(CabinetInput::LeftFlipper, false), InputRoute::Menu);
+    assert_eq!(
+        m.route_cabinet(CabinetInput::LeftFlipper, false),
+        InputRoute::Menu
+    );
     assert_eq!(m.route_axis(CabinetAxis::Plunger, 0.0), InputRoute::Menu);
     m.apply(MenuInput::Toggle);
     m.apply(MenuInput::Toggle);
@@ -586,6 +601,9 @@ fn new_sanitizes_the_config() {
     c.audio.decoded_budget_mib = 1;
     let m = MenuState::new(c);
     let d = AppConfig::default();
-    assert_eq!(m.config().calibration.plunger.deadzone, d.calibration.plunger.deadzone);
+    assert_eq!(
+        m.config().calibration.plunger.deadzone,
+        d.calibration.plunger.deadzone
+    );
     assert_eq!(m.config().audio.decoded_budget_mib, 512);
 }

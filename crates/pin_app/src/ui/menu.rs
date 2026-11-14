@@ -786,7 +786,8 @@ impl MenuState {
                     .collect();
                 self.sim_buttons = 0;
                 self.sim_axes = 0;
-                self.commands.push(UiCommand::ReleaseToSim { buttons, axes });
+                self.commands
+                    .push(UiCommand::ReleaseToSim { buttons, axes });
             }
             self.commands.push(UiCommand::MenuOpened);
         }
@@ -837,7 +838,10 @@ impl MenuState {
         if self.open {
             return InputRoute::Menu;
         }
-        let k = CabinetAxis::ALL.iter().position(|a| *a == axis).unwrap_or(0);
+        let k = CabinetAxis::ALL
+            .iter()
+            .position(|a| *a == axis)
+            .unwrap_or(0);
         if value != 0.0 {
             self.sim_axes |= 1 << k;
         } else {

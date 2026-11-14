@@ -100,9 +100,7 @@ impl MenuView {
             ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
                 match state.panel() {
                     Panel::Tables => self.tables(ui, state, scroll, &mut out),
-                    Panel::Display => {
-                        settings(ui, state, &SettingRow::DISPLAY, scroll, &mut out)
-                    }
+                    Panel::Display => settings(ui, state, &SettingRow::DISPLAY, scroll, &mut out),
                     Panel::Input => {
                         // Settings get ~60 % of the width (label + slider +
                         // value box), the live readings the rest.
@@ -111,14 +109,18 @@ impl MenuView {
                         if w >= SIDE_BY_SIDE_MIN_WIDTH {
                             let left = (w * INPUT_SETTINGS_FRACTION).floor();
                             ui.horizontal_top(|ui| {
-                                ui.allocate_ui_with_layout(egui::vec2(left, h), egui::Layout::top_down(egui::Align::Min), |ui| {
-                                    ui.set_max_width(left);
-                                    ui.set_max_height(h);
-                    ui.set_max_height(h);
-                                    settings(ui, state, &SettingRow::INPUT, scroll, &mut out);
-                                });
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(left, h),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        ui.set_max_width(left);
+                                        ui.set_max_height(h);
+                                        ui.set_max_height(h);
+                                        settings(ui, state, &SettingRow::INPUT, scroll, &mut out);
+                                    },
+                                );
                                 ui.separator();
-                                ui.vertical(|ui| live(ui, state));
+                                column(ui, h, |ui| live(ui, state));
                             });
                         } else {
                             let top = (h * INPUT_SETTINGS_FRACTION).floor();
@@ -198,13 +200,17 @@ impl MenuView {
         if w >= TABLES_SIDE_BY_SIDE_MIN_WIDTH {
             let left = (w * TABLE_LIST_FRACTION).floor();
             ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(egui::vec2(left, h), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    ui.set_max_width(left);
-                    ui.set_max_height(h);
-                    table_list(ui, state, focused, scroll, out);
-                });
+                ui.allocate_ui_with_layout(
+                    egui::vec2(left, h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_max_width(left);
+                        ui.set_max_height(h);
+                        table_list(ui, state, focused, scroll, out);
+                    },
+                );
                 ui.separator();
-                ui.vertical(|ui| self.details_or_hint(ui, state, focused, out));
+                column(ui, h, |ui| self.details_or_hint(ui, state, focused, out));
             });
         } else {
             let top = (h * TABLE_LIST_FRACTION).floor();
@@ -317,6 +323,22 @@ impl MenuView {
     }
 }
 
+/// A top-down column filling the rest of a horizontal row, `h` high, whose
+/// width is fixed so wrapping rows (badges) wrap inside it.
+fn column<R>(ui: &mut egui::Ui, h: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let w = ui.available_width();
+    ui.allocate_ui_with_layout(
+        egui::vec2(w, h),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.set_max_width(w);
+            ui.set_max_height(h);
+            add(ui)
+        },
+    )
+    .inner
+}
+
 /// The scrolling table list. The focused row is scrolled into view only when
 /// `scroll` (the focus just changed).
 fn table_list(
@@ -351,22 +373,17 @@ fn table_list(
 fn badges(ui: &mut egui::Ui, features: &[TableFeature]) {
     ui.horizontal_wrapped(|ui| {
         for f in features {
-            egui::Frame::new()
-                .fill(BADGE_FILL)
-                .corner_radius(egui::CornerRadius::same(3))
-                .inner_margin(egui::Margin::symmetric(4, 1))
-                .show(ui, |ui| {
-                    // A badge never wraps inside itself; the row wraps
-                    // between badges.
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(f.label())
-                                .small()
-                                .color(egui::Color32::WHITE),
-                        )
-                        .wrap_mode(egui::TextWrapMode::Extend),
-                    );
-                });
+            // A plain label (known size, so the row wraps between badges)
+            // with a coloured background; it never wraps inside itself.
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!(" {} ", f.label()))
+                        .small()
+                        .color(egui::Color32::WHITE)
+                        .background_color(BADGE_FILL),
+                )
+                .wrap_mode(egui::TextWrapMode::Extend),
+            );
         }
     });
 }
@@ -453,7 +470,16 @@ fn setting_control(
 ) {
     if let (Some(range), Some(mut v)) = (row.range(), row.number(cfg)) {
         let before = v;
-        let resp = ui.add(egui::Slider::new(&mut v, range.min..=range.max).step_by(range.step));
+        // No `step_by`: egui anchors its grid at the range minimum and would
+        // snap (and so "change") values such as the 100 ms release window
+        // on every frame. Cabinet / arrow steps use the row's grid instead.
+        let slider = egui::Slider::new(&mut v, range.min..=range.max);
+        let slider = if range.step >= 1.0 {
+            slider.integer()
+        } else {
+            slider
+        };
+        let resp = ui.add(slider);
         // The slider reports `changed` when it merely snaps the stored value
         // to its step grid (float rounding); only a real move is an edit, so
         // drawing a frame never steals the focus.

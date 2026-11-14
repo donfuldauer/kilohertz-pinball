@@ -24,7 +24,14 @@ fn entries() -> Vec<TableEntry> {
                 players_max: 4,
                 features: vec![
                     TableFeature::LuaRules,
+                    TableFeature::UpperFlippers,
+                    TableFeature::BananaFlippers,
+                    TableFeature::Ramps,
                     TableFeature::Magnets,
+                    TableFeature::Multiball,
+                    TableFeature::Spinner,
+                    TableFeature::NewtonBall,
+                    TableFeature::DmdDisplay,
                     TableFeature::Dof,
                 ],
                 preview: Some(PreviewArt {
@@ -174,6 +181,14 @@ fn layout_inside(size: [u32; 2], ppp: f32) {
     for p in Panel::ALL {
         m.apply(MenuInput::ShowPanel(p));
         m.apply(MenuInput::Down);
+        // Drawing alone never produces inputs (no slider snapping), over
+        // several frames.
+        for _ in 0..3 {
+            let (out, inputs) = h.frame(&mut m, Vec::new());
+            assert!(inputs.is_empty(), "{p:?}: {inputs:?}");
+            out.drop_without_applying_deltas();
+        }
+        assert_eq!(m.focus(), 1, "{p:?}: focus moved by drawing");
         let (out, inputs) = h.frame(&mut m, Vec::new());
         assert!(inputs.is_empty(), "{p:?}: {inputs:?}");
         for (label, _) in Panel::ALL.iter().map(|q| (q.label(), ())) {
@@ -208,6 +223,17 @@ fn layout_inside(size: [u32; 2], ppp: f32) {
                 ] {
                     assert!(has_text(&out, t), "{t} missing");
                 }
+            }
+        }
+        // Every text fits inside the panel's inner margin (nothing relies on
+        // clipping, e.g. a badge row that failed to wrap).
+        let inner = panel.shrink(1.0 + pin_render::ui::PANEL_MARGIN);
+        for (text, r) in texts(&out) {
+            if r.is_positive() {
+                assert!(
+                    r.right() <= inner.right() + 1.0,
+                    "{p:?} {size:?}: {text:?} at {r:?} overflows {inner:?}"
+                );
             }
         }
         // No widget overflows the panel (the only shape with the full-screen
@@ -420,20 +446,30 @@ fn portrait_tables_panel_does_not_overlap() {
     let t = texts(&out);
     // Badges render as single-line labels.
     for name in ["Lua", "Magnets", "DOF"] {
-        let rects: Vec<_> = t.iter().filter(|(s, _)| s == name).map(|(_, r)| *r).collect();
+        let rects: Vec<_> = t
+            .iter()
+            .filter(|(s, _)| s.trim() == name)
+            .map(|(_, r)| *r)
+            .collect();
         assert!(!rects.is_empty(), "{name} missing");
         for r in rects {
             assert!(r.height() < 20.0, "{name} wrapped: {r:?}");
         }
     }
     // Stacked: the details ("by Reference") sit below every list row text.
-    let details = t.iter().find(|(s, _)| s == "by Reference").expect("details").1;
+    let details = t
+        .iter()
+        .find(|(s, _)| s == "by Reference")
+        .expect("details")
+        .1;
     let list_bottom = t
         .iter()
         .filter(|(s, _)| s == "Reference" || s.starts_with("Broken:"))
         .map(|(_, r)| r.bottom())
         .fold(0.0f32, f32::max);
-    assert!(details.top() > list_bottom, "{details:?} vs list bottom {list_bottom}");
+    assert!(
+        details.top() > list_bottom,
+        "{details:?} vs list bottom {list_bottom}"
+    );
     out.drop_without_applying_deltas();
 }
-

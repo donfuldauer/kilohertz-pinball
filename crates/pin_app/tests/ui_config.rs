@@ -476,7 +476,10 @@ future = "kept"
     assert_eq!(c.input_profile, "auto");
     assert_eq!(c.calibration.dual_stage_upper, 0.9);
     assert_eq!(c.calibration.plunger.release_window_ms, 50);
-    assert_eq!(c.calibration.plunger.deadzone, d.calibration.plunger.deadzone);
+    assert_eq!(
+        c.calibration.plunger.deadzone,
+        d.calibration.plunger.deadzone
+    );
     assert_eq!(c.calibration.nudge, d.calibration.nudge);
     assert_eq!(c.score_pip, d.score_pip);
     assert_eq!(c.last_table, None);
@@ -513,7 +516,11 @@ fn corrupt_message_is_truncated() {
     let l = AppConfig::from_toml_str(&long);
     match &l.warnings[..] {
         [ConfigWarning::Corrupt(m)] => {
-            assert!(m.chars().count() <= pin_app::ui::config::MAX_WARNING_CHARS + 1, "{}", m.len())
+            assert!(
+                m.chars().count() <= pin_app::ui::config::MAX_WARNING_CHARS + 1,
+                "{}",
+                m.len()
+            )
         }
         other => panic!("{other:?}"),
     }

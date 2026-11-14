@@ -180,7 +180,10 @@ fn bright_mask(px: &[u8], dims: [u32; 2], panel: [u32; 4]) -> Vec<bool> {
     for y in panel[1]..panel[3] {
         for x in panel[0]..panel[2] {
             let i = (y * dims[0] + x) as usize;
-            m[i] = luma(&px[i * 4..i * 4 + 4]) > 128.0;
+            // Bright and not the background (the panel's rounded corners
+            // leave background pixels inside the rect).
+            let p = &px[i * 4..i * 4 + 4];
+            m[i] = luma(p) > 128.0 && p != bg_u8();
         }
     }
     m
@@ -231,7 +234,10 @@ fn text_renders_distinct_glyphs() {
     let (ma, mb) = (bright_mask(&a, dims, panel), bright_mask(&b, dims, panel));
     let lit_a = ma.iter().filter(|v| **v).count();
     let lit_b = mb.iter().filter(|v| **v).count();
-    assert!(lit_a > 100 && lit_b > 100, "no text drawn: {lit_a} / {lit_b}");
+    assert!(
+        lit_a > 100 && lit_b > 100,
+        "no text drawn: {lit_a} / {lit_b}"
+    );
     let differ = ma.iter().zip(&mb).filter(|(x, y)| x != y).count();
     assert!(
         differ * 4 > lit_a.min(lit_b),
