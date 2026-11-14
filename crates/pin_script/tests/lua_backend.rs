@@ -1165,6 +1165,35 @@ fn corpus_reaches(file: &str, want: &ScriptError, marker: &str, probe: &str, nee
     );
 }
 
+/// The original-size rehash fixtures (`r_rehash*_orig.lua`, kept from before
+/// the resize) still fault in set-up under `LuaConfig::engine()`, at the
+/// recorded tick and kind, and never enter phase 1: a copy with a probe at
+/// phase-1 entry faults identically instead of raising the probe.
+#[test]
+fn corpus_r_rehash_original_sizes_fault_in_set_up() {
+    for (file, want, at) in [
+        ("r_rehash_orig.lua", ScriptError::MemoryLimit, 4),
+        ("r_rehash2_orig.lua", ScriptError::BudgetExceeded, 16),
+        ("r_rehash3_orig.lua", ScriptError::MemoryLimit, 4),
+    ] {
+        let path = format!("{}/tests/attack_corpus/{file}", env!("CARGO_MANIFEST_DIR"));
+        let src = std::fs::read_to_string(&path).unwrap();
+        let (tick, err) = first_engine_fault(&src);
+        assert_eq!((tick, &err), (at, &want), "{file}");
+        let marker = "else local t = t";
+        assert!(src.contains(marker), "{file}: marker missing");
+        let probed = format!(
+            "function probe() error('probe reached') end\n{}",
+            src.replacen(marker, "else probe() local t = t", 1)
+        );
+        assert_eq!(
+            first_engine_fault(&probed),
+            (at, want),
+            "{file}: phase 1 ran"
+        );
+    }
+}
+
 /// `e_sortbig.lua` builds its 60 000-element table within the 2 MiB heap
 /// and then faults inside `table.sort` (previously the table outgrew the
 /// heap first and the sort never ran).
