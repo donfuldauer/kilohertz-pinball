@@ -203,6 +203,62 @@ proptest! {
         }
     }
 
+    /// Events inside a valid envelope (positive tick limit, event count
+    /// matching the body, checksum recomputed after editing the events):
+    /// the length and checksum checks pass, so every case reaches the event
+    /// parser. Unedited recordings parse back exactly; an edited one either
+    /// parses and round-trips or is a `BadEvent` at a real index.
+    #[test]
+    fn edited_events_in_a_valid_envelope_reach_the_event_parser(
+        seed in any::<u64>(),
+        table in any::<u64>(),
+        ticks in 1u64..200,
+        raw in proptest::collection::vec((any::<u64>(), any::<u64>(), 0usize..8, any::<bool>(), -1.0f32..1.0, any::<bool>()), 0..24),
+        edits in proptest::collection::vec((any::<usize>(), any::<u8>()), 0..4),
+    ) {
+        let mut events: Vec<(u64, InputEvent)> = raw
+            .iter()
+            .map(|&(t, ts, code, pressed, v, axis)| {
+                let e = if axis {
+                    InputEvent::axis(ts, CabinetAxis::ALL[code % 5], v)
+                } else {
+                    InputEvent::button(ts, CabinetInput::ALL[code], pressed)
+                };
+                (t % ticks + 1, e)
+            })
+            .collect();
+        events.sort_by_key(|(t, _)| *t);
+        let n = events.len();
+        let r = Recording { seed, table_hash: table, ticks, events };
+        let mut b = r.to_bytes();
+        prop_assert_eq!(
+            u64::from_le_bytes(b[36..44].try_into().unwrap()),
+            n as u64
+        );
+        let edited = n > 0 && !edits.is_empty();
+        if edited {
+            for &(pos, byte) in &edits {
+                b[HEADER_BYTES + pos % (n * EVENT_BYTES)] = byte;
+            }
+            reseal(&mut b);
+        }
+        match Recording::from_bytes(&b) {
+            Ok(back) => {
+                prop_assert_eq!(back.events.len(), n);
+                prop_assert_eq!((back.seed, back.table_hash, back.ticks), (seed, table, ticks));
+                if !edited {
+                    prop_assert_eq!(&back, &r);
+                }
+                prop_assert_eq!(Recording::from_bytes(&back.to_bytes()).unwrap(), back);
+            }
+            Err(ReplayError::BadEvent { index }) => {
+                prop_assert!(edited, "an unedited recording was refused");
+                prop_assert!(index < n as u64);
+            }
+            Err(e) => prop_assert!(false, "envelope check failed: {e}"),
+        }
+    }
+
     #[test]
     fn flipped_bits_never_panic(pos in 0usize..1000, bit in 0u8..8, reseal_it in any::<bool>()) {
         let mut b = sample().to_bytes();

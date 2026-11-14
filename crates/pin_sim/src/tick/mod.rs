@@ -136,6 +136,7 @@ impl Simulation {
             self.prev_positions[usize::from(h.0)] = b.position;
         }
         self.flippers.step_tick(tick);
+        self.collect_flipper_haptics();
         self.events.clear();
         let geo = Geometry {
             world: &self.world,
@@ -195,16 +196,26 @@ impl Simulation {
     }
 
     /// Energises each flipper from its staging button, script hold and
-    /// script pulse; a rising edge is a haptic impulse.
+    /// script pulse (the coil command; a Thing Flip adds to it in
+    /// `FlipperSet::step_tick`).
     pub(crate) fn update_flipper_drive(&mut self) {
         let tick = self.tick;
+        for d in &self.drives {
+            let on = d.staged || d.held || tick < d.pulse_until;
+            self.flippers.set_energised(d.id, on);
+        }
+    }
+
+    /// A rising edge of a flipper's energised state, as the physics sees it
+    /// (coil command or automatic Thing Flip), is a haptic impulse. Runs
+    /// after `FlipperSet::step_tick`, so automatic flips count too.
+    pub(crate) fn collect_flipper_haptics(&mut self) {
         for i in 0..self.drives.len() {
             let d = &mut self.drives[i];
-            let on = d.staged || d.held || tick < d.pulse_until;
+            let on = self.flippers.is_energised(d.id);
             let rising = on && !d.energised;
             d.energised = on;
-            let (id, coil) = (d.id, d.coil);
-            self.flippers.set_energised(id, on);
+            let coil = d.coil;
             if rising {
                 self.push_haptic(coil.0);
             }
