@@ -468,7 +468,7 @@ impl ResidueBook {
 			vals_used :u8, codebooks :&[Codebook])
 			-> Result<Self, HeaderReadError> {
 		let mut val_i :[u8; 8] = [0; 8];
-		for i in 0 .. 7 {
+		for i in 0 .. 8 { // KHZ patch 5: all eight cascade bits (upstream: 0 .. 7)
 			if vals_used & (1 << i) == 0 {
 				continue;
 			}
@@ -735,6 +735,12 @@ fn read_codebook(rdr :&mut BitpackCursor, budget :&mut KhzBudget) -> Result<Code
 		let mut current_entry :u32 = 0;
 		let mut current_length = try!(rdr.read_u5()) + 1;
 		while current_entry < codebook_entries {
+			// KHZ patch 5: codeword lengths are at most 32; entries left
+			// once the length passes 32 make the book incomplete. (Upstream
+			// kept incrementing the u8 and overflowed after 224 empty runs.)
+			if current_length > 32 {
+				try!(Err(HeaderReadError::HeaderBadFormat));
+			}
 			let number = try!(rdr.read_dyn_u32(
 				::ilog((codebook_entries - current_entry) as u64)));
 			for _ in current_entry .. current_entry + number {
@@ -752,6 +758,12 @@ fn read_codebook(rdr :&mut BitpackCursor, budget :&mut KhzBudget) -> Result<Code
 	let codebook_lookup_type = try!(rdr.read_u4());
 	if codebook_lookup_type > 2 {
 		// Not decodable per vorbis spec
+		try!(Err(HeaderReadError::HeaderBadFormat));
+	}
+	if codebook_lookup_type != 0 && codebook_dimensions == 0 {
+		// KHZ patch 5: as stb_vorbis. A VQ book with zero dimensions divides
+		// by zero in residue type 0 decoding (and lookup1_values returns
+		// u32::MAX). Scalar-only books never use their dimensions.
 		try!(Err(HeaderReadError::HeaderBadFormat));
 	}
 	let codebook_lookup :Option<CodebookVqLookup> =
@@ -808,6 +820,11 @@ fn read_floor(rdr :&mut BitpackCursor, codebook_cnt :u16, blocksizes :(u8, u8)) 
 			let floor0_order = try!(rdr.read_u8());
 			let floor0_rate = try!(rdr.read_u16());
 			let floor0_bark_map_size = try!(rdr.read_u16());
+			if floor0_order == 0 || floor0_rate == 0 || floor0_bark_map_size == 0 {
+				// KHZ patch 5: as libvorbis (floor0 unpack). A zero rate or
+				// bark map size makes the cached cos(omega) values NaN.
+				try!(Err(HeaderReadError::HeaderBadFormat));
+			}
 			let floor0_amplitude_bits = try!(rdr.read_u6());
 			if floor0_amplitude_bits > 64 {
 				// Unfortunately the audio decoder part
@@ -823,7 +840,7 @@ fn read_floor(rdr :&mut BitpackCursor, codebook_cnt :u16, blocksizes :(u8, u8)) 
 				convert_to_usize!(floor0_number_of_books, u8));
 			for _ in 0 .. floor0_number_of_books {
 				let value = try!(rdr.read_u8());
-				if value as u16 > codebook_cnt {
+				if value as u16 >= codebook_cnt { // KHZ patch 5: was `>`
 					try!(Err(HeaderReadError::HeaderBadFormat));
 				}
 				floor0_book_list.push(value);
@@ -1187,4 +1204,147 @@ pub fn read_header_setup(packet :&[u8], audio_channels :u8, blocksizes :(u8, u8)
 		mappings,
 		modes,
 	});
+}
+
+/// KHZ patch 5 regression tests (malformed setup headers, CodeRabbit PR #3).
+#[cfg(test)]
+pub(crate) mod khz_tests {
+	use super::*;
+
+	/// Vorbis bit writer (LSB first), the inverse of `BitpackCursor`.
+	pub(crate) struct BitWriter {
+		pub bytes :Vec<u8>,
+		bit :u32,
+	}
+
+	impl BitWriter {
+		pub fn new() -> Self {
+			BitWriter { bytes : Vec::new(), bit : 0 }
+		}
+		pub fn put(&mut self, value :u64, n :u32) {
+			for i in 0 .. n {
+				if self.bit == 0 {
+					self.bytes.push(0);
+				}
+				let b = ((value >> i) & 1) as u8;
+				*self.bytes.last_mut().unwrap() |= b << self.bit;
+				self.bit = (self.bit + 1) % 8;
+			}
+		}
+	}
+
+	fn budget() -> KhzBudget {
+		KhzBudget { entries : 0, vq_scalars : 0 }
+	}
+
+	/// Codebook header: sync, dimensions, entries, unordered, non-sparse,
+	/// every length `len`, then the lookup type.
+	fn codebook(dims :u16, entries :u32, len :u8, lookup_type :u8) -> BitWriter {
+		let mut w = BitWriter::new();
+		w.put(0x564342, 24);
+		w.put(dims as u64, 16);
+		w.put(entries as u64, 24);
+		w.put(0, 1); // unordered
+		w.put(0, 1); // not sparse
+		for _ in 0 .. entries {
+			w.put(len as u64 - 1, 5);
+		}
+		w.put(lookup_type as u64, 4);
+		if lookup_type != 0 {
+			w.put(0, 32); // minimum value
+			w.put(0, 32); // delta value
+			w.put(0, 4); // value bits - 1
+			w.put(0, 1); // sequence_p
+			let n = if lookup_type == 1 {
+				lookup1_values(entries, dims) as u64
+			} else {
+				entries as u64 * dims as u64
+			};
+			for _ in 0 .. n.min(64) {
+				w.put(0, 1);
+			}
+		}
+		w
+	}
+
+	#[test]
+	fn zero_dimension_vq_codebook_is_rejected() {
+		for lookup_type in 1 .. 3 {
+			let w = codebook(0, 1, 1, lookup_type);
+			let r = read_codebook(&mut BitpackCursor::new(&w.bytes), &mut budget());
+			assert_eq!(r.err(), Some(HeaderReadError::HeaderBadFormat));
+		}
+		// Scalar-only books never use their dimensions: still accepted.
+		let w = codebook(0, 2, 1, 0);
+		assert!(read_codebook(&mut BitpackCursor::new(&w.bytes), &mut budget()).is_ok());
+		// And an ordinary VQ book still parses.
+		let w = codebook(1, 2, 1, 2);
+		assert!(read_codebook(&mut BitpackCursor::new(&w.bytes), &mut budget()).is_ok());
+	}
+
+	#[test]
+	fn ordered_codeword_lengths_past_32_are_rejected() {
+		// One entry, ordered, initial length 32, then 224 empty runs: the u8
+		// length overflowed (a panic with overflow checks).
+		let mut w = BitWriter::new();
+		w.put(0x564342, 24);
+		w.put(1, 16);
+		w.put(1, 24);
+		w.put(1, 1); // ordered
+		w.put(31, 5); // length 32
+		for _ in 0 .. 300 {
+			w.put(0, 1); // ilog(1) = 1 bit: a run of 0 entries
+		}
+		let r = read_codebook(&mut BitpackCursor::new(&w.bytes), &mut budget());
+		assert_eq!(r.err(), Some(HeaderReadError::HeaderBadFormat));
+	}
+
+	fn floor0(order :u8, rate :u16, bark :u16, books :&[u8]) -> BitWriter {
+		let mut w = BitWriter::new();
+		w.put(0, 16); // floor type 0
+		w.put(order as u64, 8);
+		w.put(rate as u64, 16);
+		w.put(bark as u64, 16);
+		w.put(8, 6); // amplitude bits
+		w.put(0, 8); // amplitude offset
+		w.put(books.len() as u64 - 1, 4);
+		for &b in books {
+			w.put(b as u64, 8);
+		}
+		w
+	}
+
+	#[test]
+	fn floor0_degenerate_parameters_are_rejected() {
+		let read = |w :BitWriter| read_floor(&mut BitpackCursor::new(&w.bytes), 1, (8, 11)).err();
+		let bad = Some(HeaderReadError::HeaderBadFormat);
+		assert_eq!(read(floor0(0, 44100, 256, &[0])), bad);
+		assert_eq!(read(floor0(8, 0, 256, &[0])), bad);
+		assert_eq!(read(floor0(8, 44100, 0, &[0])), bad);
+		// Book index equal to the codebook count (1): out of range.
+		assert_eq!(read(floor0(8, 44100, 256, &[1])), bad);
+		// Valid parameters, including order 1, still parse.
+		assert_eq!(read(floor0(1, 44100, 256, &[0])), None);
+		assert_eq!(read(floor0(8, 44100, 256, &[0])), None);
+	}
+
+	#[test]
+	fn residue_book_reads_all_eight_cascade_stages() {
+		let book = || Codebook {
+			codebook_dimensions : 1,
+			codebook_entries : 2,
+			codebook_vq_lookup_vec : Some(vec![0.0, 1.0]),
+			codebook_huffman_tree : VorbisHuffmanTree::load_from_array(&[1, 1]).unwrap(),
+		};
+		let codebooks :Vec<Codebook> = (0 .. 9).map(|_| book()).collect();
+		// Stage i uses book i + 1, followed by a sentinel byte.
+		let data = [1, 2, 3, 4, 5, 6, 7, 8, 0xAB];
+		let mut rdr = BitpackCursor::new(&data);
+		let rb = ResidueBook::read_book(&mut rdr, 0xFF, &codebooks).unwrap();
+		for i in 0 .. 8 {
+			assert_eq!(rb.get_val(i), Some(i + 1));
+		}
+		// The next field starts at the right byte.
+		assert_eq!(rdr.read_u8().unwrap(), 0xAB);
+	}
 }

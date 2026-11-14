@@ -461,12 +461,18 @@ void luaE_warnerror (lua_State *L, const char *where) {
 LUA_API void lua_khzsetbudget (lua_State *L, lua_Integer n) {
   G(L)->khzbudget = n;
   luaS_khzpending = 0;
+  luaS_khzowner = G(L);
 }
 
 
 LUA_API lua_Integer lua_khzspend (lua_State *L, lua_Integer n) {
   global_State *g = G(L);
-  if (luaS_khzpending > 0) {  /* take the compares charged without a state */
+  if (l_unlikely(luaS_khzowner != (const void *)g)) {
+    /* KHZ: pending cost left by another state on this thread is not ours */
+    luaS_khzpending = 0;
+    luaS_khzowner = g;
+  }
+  else if (luaS_khzpending > 0) {  /* take the compares charged without a state */
     n = (n > LUA_MAXINTEGER / 4) ? n : n + luaS_khzpending;
     luaS_khzpending = 0;
   }

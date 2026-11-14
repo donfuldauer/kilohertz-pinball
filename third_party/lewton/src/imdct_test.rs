@@ -993,7 +993,9 @@ pub fn fuzzy_compare_array(arr_a :&[f32], arr_b :&[f32],
 		epsilon :f32, print_mismatches :bool) -> usize {
 	let mut mismatch_cnt :usize = 0;
 	for ((idx, entry_a), entry_b) in arr_a.iter().enumerate().zip(arr_b) {
-		if (entry_a - entry_b).abs() >= epsilon {
+		// KHZ patch 5: a non-finite value is a mismatch (NaN >= eps is false).
+		if !entry_a.is_finite() || !entry_b.is_finite() ||
+				(entry_a - entry_b).abs() >= epsilon {
 			if print_mismatches {
 				println!("Mismatch at idx {}. Expected {} but was {}",
 					idx, entry_a, entry_b);
@@ -1002,4 +1004,12 @@ pub fn fuzzy_compare_array(arr_a :&[f32], arr_b :&[f32],
 		}
 	}
 	return mismatch_cnt;
+}
+
+#[test]
+fn khz_fuzzy_compare_counts_non_finite_values() {
+	use std::f32::{NAN, INFINITY};
+	assert_eq!(fuzzy_compare_array(&[NAN, 0.0, 1.0], &[0.0, NAN, 1.0], 0.1, false), 2);
+	assert_eq!(fuzzy_compare_array(&[INFINITY], &[INFINITY], 0.1, false), 1);
+	assert_eq!(fuzzy_compare_array(&[1.0], &[1.05], 0.1, false), 0);
 }
