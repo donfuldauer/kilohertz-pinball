@@ -78,6 +78,64 @@ fn instruction_hook_cannot_be_swallowed_by_pcall() {
     }
 }
 
+/// Runs `script` under a 100 000-instruction budget on its own thread and
+/// returns the error, failing (instead of hanging the test run) if `exec()`
+/// has not returned within 10 s.
+fn exec_with_watchdog(script: &'static str) -> String {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let lua = lua_with_memory_limit(4 * MIB).unwrap();
+        install_instruction_budget(&lua, 100_000).unwrap();
+        let r = lua.load(script).exec().map_err(|e| e.to_string());
+        let _ = tx.send(r);
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(r) => r.expect_err("the script must not finish"),
+        Err(_) => panic!("exec() did not return within 10 s: {script}"),
+    }
+}
+
+#[test]
+fn xpcall_message_handler_cannot_escape_the_budget() {
+    // Stock xpcall runs the handler inside the hook that raised the budget
+    // error (hooks disabled), so a looping handler never returned.
+    for script in [
+        "xpcall(function() while true do end end, function() while true do end end)",
+        "xpcall(function() while true do end end, function(e)
+           if tostring(e):find('budget', 1, true) then while true do end end
+           return e
+         end)",
+        "while true do xpcall(function() while true do end end, function() while true do end end) end",
+    ] {
+        let err = exec_with_watchdog(script);
+        assert!(err.contains(BUDGET_EXCEEDED), "{script}: {err}");
+    }
+}
+
+#[test]
+fn bounded_xpcall_keeps_xpcall_results() {
+    let lua = lua_with_memory_limit(4 * MIB).unwrap();
+    install_instruction_budget(&lua, 1_000_000).unwrap();
+    let (ok, a, b): (bool, i64, i64) = lua
+        .load("return xpcall(function(x, y) return x + y, x * y end, error, 3, 4)")
+        .eval()
+        .unwrap();
+    assert_eq!((ok, a, b), (true, 7, 12));
+    let (ok, msg): (bool, String) = lua
+        .load("return xpcall(function() error('boom', 0) end, function(e) return 'handled ' .. e end)")
+        .eval()
+        .unwrap();
+    assert_eq!((ok, msg.as_str()), (false, "handled boom"));
+    let err = lua
+        .load("xpcall(function() end, 42)")
+        .exec()
+        .expect_err("a non-function handler is an argument error");
+    assert!(
+        err.to_string().contains("bad argument #2 to 'xpcall'"),
+        "{err}"
+    );
+}
+
 #[test]
 fn instruction_hook_is_deterministic_for_finite_work() {
     // Same script, same tick count: the budget is counted in VM instructions.

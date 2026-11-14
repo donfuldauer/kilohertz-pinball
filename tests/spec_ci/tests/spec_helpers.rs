@@ -106,6 +106,47 @@ fn runner_labels_follow_the_axis_runs_on_names() {
         )),
         ["macos-14", "ubuntu-latest"]
     );
+    // `include` entries apply in order: each one that does not clash with an
+    // original axis value is merged into every combination, and a later entry
+    // overwrites `os` set by an earlier one, so every job is on macos-14.
+    assert_eq!(
+        labels(concat!(
+            "    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n",
+            "        version: [1, 2]\n        include:\n",
+            "          - os: windows-latest\n          - os: ubuntu-latest\n",
+            "          - os: macos-14\n",
+        )),
+        ["macos-14"]
+    );
+    // An entry that clashes with every combination's original values adds a
+    // job; one that matches some combinations is merged only into those.
+    assert_eq!(
+        labels(concat!(
+            "    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n",
+            "        version: [1, 2]\n        include:\n",
+            "          - os: ubuntu-latest\n",
+            "          - os: windows-latest\n            version: 3\n",
+            "          - os: macos-14\n            version: 2\n",
+        )),
+        ["macos-14", "ubuntu-latest", "windows-latest"]
+    );
+    // An include entry cannot overwrite an original axis value: it adds a job.
+    assert_eq!(
+        labels(concat!(
+            "    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n",
+            "        os: [ubuntu-latest]\n        include:\n",
+            "          - os: windows-latest\n",
+        )),
+        ["ubuntu-latest", "windows-latest"]
+    );
+    // With no plain axes every `include` entry is its own job.
+    assert_eq!(
+        labels(concat!(
+            "    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n",
+            "        include:\n          - os: windows-latest\n          - os: macos-14\n",
+        )),
+        ["macos-14", "windows-latest"]
+    );
 }
 
 #[test]
