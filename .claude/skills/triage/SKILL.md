@@ -27,9 +27,11 @@ If the validity or cause is unclear, the item goes to the issue-investigator fir
 handled by the investigator's verdict: `valid-defect` is triaged again from its report (fast
 path if it now passes every check, else the work-classifier); `valid-but-deferred` or
 `pre-existing` is "Deferred" (§2.7 step 3): commit the investigator's HUMAN_QUEUE line, reply
-with it and resolve, with no Fixer; `not-a-defect` is "Not a defect": reply with its evidence
-and resolve per §2.7 step 3 / D37, with no Fixer. Any other failing check, or an unsure Orchestrator, sends the item to the
-work-classifier.
+with it and resolve, with no Fixer, unless it is an unfixed security issue or a verified unfixed
+correctness defect (§2.7 step 3 exceptions): then the thread stays unresolved and the item goes
+to the work-classifier for a fix; `not-a-defect` is "Not a defect": reply with its evidence
+and resolve per §2.7 step 3 / D37, with no Fixer. Any other failing check, or an unsure
+Orchestrator, sends the item to the work-classifier.
 
 ## 2. Batching procedure (one CodeRabbit review round, or one push)
 
@@ -38,8 +40,10 @@ work-classifier.
 3. Send findings whose validity or cause is unclear to the issue-investigator first (in
    parallel when independent). Map by verdict: `valid-defect` is triaged again from its
    report; `valid-but-deferred` or `pre-existing` is "Deferred" (commit its HUMAN_QUEUE line,
-   reply with it, resolve); `not-a-defect` is "Not a defect" (reply with its evidence,
-   resolve). Neither of the last two gets a Fixer (§2.7 step 3 / D37).
+   reply with it, resolve; but an unfixed security issue or verified unfixed correctness defect
+   stays unresolved and goes to the classifier for a fix); `not-a-defect` is "Not a defect"
+   (reply with its evidence, resolve). Otherwise neither of the last two gets a Fixer (§2.7
+   step 3 / D37).
 4. Before the classifier call, move any fast-path item that touches a file also touched by a
    classifier-bound item into the classifier batch, so the classifier groups same-file items
    into one brief at the higher tier. Send all classifier-bound items to ONE work-classifier
@@ -51,7 +55,7 @@ work-classifier.
 6. Spawn executors, in parallel when owned paths do not overlap.
 7. Run ONE work-verifier on the resulting head commit covering every item in the round whenever
    the round changed the head (executor fixes, or a commit such as a HUMAN_QUEUE line for a
-   deferred finding). Skip it only when the head is unchanged (for example every finding was
+   deferred finding; a queue-only round uses the verifier's queue-only case). Skip it only when the head is unchanged (for example every finding was
    answered as not a defect): the previous verifier pass on that head still satisfies §2.7
    step 5, and the replies carry the investigator's evidence.
 8. Reply to and resolve threads per §2.7 step 3 / D37.
