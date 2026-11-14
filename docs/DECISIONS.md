@@ -1644,3 +1644,6 @@ Published early for the Independent Tester; kept current by the 4.4 Implementer.
 
 ## 2.5 — replay fixture geometry
 **Decision:** the in-repo fixture `crates/pin_sim/tests/fixtures/replay_table` (generated with `pin_tablegen` from its `layout.toml`) has outlanes wider than a ball (outer walls end at x = 110 / 404 mm, 45 mm from the flipper pivots) and a V-shaped catch wall whose bottom is the trough switch. With the earlier layout (walls ending 7 mm from the pivots, flat catch wall) the ball wedged between a wall end and the left flipper pivot and never drained, so the 10 000-tick run did not exercise drains and relaunches. Now the fixture drains about every 2 000 ticks.
+
+## Orchestrator — Wave 5 disk: shared pin_render target dir
+With four target dirs at 21 GB and 6.7 GB of allowance left, the 5.2 Reviewer and both 5.3 roles share `target/sp_5_2_rev` (cargo's lock serialises their builds; all three build the same shared tree). Stale-build rule as before: `touch` and rebuild before calling a contradiction a defect. 2.6 and 2.8 start only when a passed subphase's target dir is deleted.
