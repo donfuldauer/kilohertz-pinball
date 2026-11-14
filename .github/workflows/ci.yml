@@ -28,10 +28,53 @@ env:
   RUST_VERSION: "1.97.0"
 
 jobs:
+  # Docs-only PRs skip the heavy jobs below. Skipping is done with a job-level `if:` (a skipped
+  # job reports success, so required checks stay satisfied), not `paths-ignore` on the triggers
+  # (which would leave required checks pending). Docs files are `**/*.md` and `.coderabbit.yaml`;
+  # docs/PLAN.md counts as code because crates/pin_core/tests/schema_fixtures.rs include_str!s it.
+  # Pushes and workflow_dispatch always run everything.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect code changes
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          code=false
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            code=true
+          else
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              case "$f" in
+                docs/PLAN.md) code=true ;;
+                *.md | .coderabbit.yaml) ;;
+                *) code=true ;;
+              esac
+            done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code=$code"
+
   # GPU-free crates (PLAN.md §2.3 rule 3): pin_core, pin_physics, pin_input,
   # pin_script, pin_assets, pin_tablegen, pin_sim (+ pin_assetgen, a GPU-free tool).
   core-tests:
     name: core-tests (${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -86,6 +129,8 @@ jobs:
   # lavapipe (Vulkan) on Linux, WARP (DX12) on Windows, Metal on macOS.
   gpu-tests:
     name: gpu-tests (${{ matrix.target }}, ${{ matrix.adapter }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -153,6 +198,8 @@ jobs:
 
   clippy:
     name: clippy (${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -203,6 +250,8 @@ jobs:
 
   fmt:
     name: fmt
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -225,6 +274,8 @@ jobs:
   # reported, never failing (PLAN.md §2.4).
   replay-hash:
     name: replay-hash (${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -288,6 +339,8 @@ jobs:
   # Like core-tests, no SDL/X11 packages are installed.
   coverage:
     name: coverage (core crates, non-gating)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     continue-on-error: true
@@ -313,9 +366,11 @@ jobs:
   # Subphase 3.5: the DOF bridge (tools/dof_bridge, .NET 8), a Windows-only companion
   # process. Builds it and runs every test project under tools/dof_bridge/tests/ (Implementer
   # and Spec*), which replay the recorded telemetry fixtures into the bridge with a mock DOF
-  # sink. No Rust here and no `needs:`, so other jobs and platforms are unaffected.
+  # sink. No Rust here; it only waits for `changes`, so other jobs and platforms are unaffected.
   dof-bridge:
     name: dof-bridge (windows-latest, .NET 8)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     timeout-minutes: 20
     env:
