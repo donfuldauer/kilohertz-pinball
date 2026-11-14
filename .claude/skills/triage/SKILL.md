@@ -45,7 +45,10 @@ work-classifier.
 5. Group the remaining fast-path items by tier into one Fixer brief per tier. When items of different tiers
    touch the same file, put them in one brief at the higher tier.
 6. Spawn executors, in parallel when owned paths do not overlap.
-7. Run ONE work-verifier on the resulting head commit covering every item in the round.
+7. Run ONE work-verifier on the resulting head commit covering every item in the round. If the
+   round produced no executor group (every finding answered as not a defect or deferred, no
+   files changed), skip the verifier run: the head is unchanged, so the previous verifier pass
+   on that head still satisfies §2.7 step 5, and the replies carry the investigator's evidence.
 8. Reply to and resolve threads per §2.7 step 3 / D37.
 
 ## 3. Fixer brief template
@@ -115,5 +118,5 @@ REPORT FORMAT
 
 ## 4. Run-log convention
 
-Rows routed by the fast path show `triage` in the routed column, followed by the tier and a
-one-line reason, for example: `triage T0: docs typo fix spelled out by the comment`.
+Rows routed by the fast path start the Notes column with `triage`, followed by the tier and a
+one-line reason (the Model column keeps the model; Status as usual), for example: `triage T0: docs typo fix spelled out by the comment`.
