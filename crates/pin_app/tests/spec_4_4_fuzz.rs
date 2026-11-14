@@ -219,7 +219,7 @@ proptest! {
         let r = AppConfig::load(&path);
         check(&r)?;
         prop_assert_eq!(format!("{:?}", r.config), format!("{:?}", AppConfig::from_toml_bytes(&bytes).config));
-        prop_assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        prop_assert_eq!(std::fs::read(&path).unwrap(), bytes.clone());
         // Loading never rewrites the file; the only thing it may add is the
         // byte-exact `.bak` copy of a file it could not take in full.
         let names = dir_names(tmp.path());

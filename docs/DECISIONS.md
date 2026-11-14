@@ -2096,3 +2096,6 @@ Tester's rig: Appendix C defaults, R 120 mm banana, ball 200 mm up the table com
 - **Decision (scoop = pocket geometry, not the VUK `radius`).** The 2.4 `radius` is the capture radius of the ball centre (default 12 mm), so reading it as a hole would reject the standard ball on every default VUK; the validator measures the pocket walls around the hold point instead, and checks the exit point against the exit layer. **Alternatives:** a new `MechDef` key for the opening (breaks the `MechDef` struct literals in `spec_2_4_api.rs`).
 - **Decision (wireform rule).** Rails are lines; the ball's contact angle from vertical must be 20°–75° (`sin α = g/d`): below 20° it perches (rolls off at 0.36 g lateral), above 75° it nearly drops through. With 19 mm gauge: 27 mm 44.7° ok, 15.88 mm drops, 79.4 mm 13.8° rejected.
 
+
+## Orchestrator — 4.4 `.bak` timing accepted
+The 4.4 contract makes `config.toml.bak` when a file with a dropped value is loaded, not "before the first save" as the round-1 ruling said. Accepted: the backup exists before any save could overwrite the original; loading a bad file therefore writes one sibling file.

@@ -427,3 +427,23 @@ fn portrait_tables_panel_does_not_overlap() {
     assert!(details.top() > list_bottom, "{details:?} vs list bottom {list_bottom}");
     out.drop_without_applying_deltas();
 }
+
+#[test]
+fn tmp_debug_wheel() {
+    let mut h = Harness::new();
+    h.size = [1280, 720];
+    let mut m = MenuState::default();
+    m.set_tables(many_tables(60));
+    m.apply(MenuInput::Toggle);
+    for f in 0..50 {
+        let mut ev = Vec::new();
+        if f == 3 { ev.push(egui::Event::PointerMoved(egui::pos2(300.0, 300.0))); }
+        if f == 5 { for _ in 0..5 { ev.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, -5.0), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Unknown, modifiers: egui::Modifiers::NONE }); } }
+        let (out, _) = h.frame(&mut m, ev);
+        if f % 10 == 0 || f == 6 { println!("f{f} {:?}", find(&out, "Table 00")); }
+        out.drop_without_applying_deltas();
+    }
+    let (out, _) = h.frame(&mut m, Vec::new());
+    for (t, r) in texts(&out).iter().take(12) { println!("{t} {r:?}"); }
+    out.drop_without_applying_deltas();
+}
