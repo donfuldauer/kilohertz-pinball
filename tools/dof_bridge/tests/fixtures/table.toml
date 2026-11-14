@@ -1,0 +1,112 @@
+# DOF bridge fixture table (Subphase 3.5): the source of map.json.
+# Generated fixtures: crates/pin_app/tests/dof_fixtures.rs (KHZ_REGEN_DOF_FIXTURES=1 rewrites them).
+schema_version = 1
+
+[meta]
+id = "dof_fixture"
+name = "DOF \"Fixture\" Table"
+author = "Kilohertz Pinball tests"
+version = "1.0.0"
+script_entry = "rules.lua"
+playfield_mesh = "playfield.glb"
+players_max = 1
+
+[balls]
+profiles = ["standard_steel"]
+
+[cabinet_switches]
+left_flipper = 1
+right_flipper = 2
+left_upper = 3
+right_upper = 4
+action = 5
+start = 6
+launch = 7
+tilt = 8
+
+[[switches]]
+id = "left_sling_switch"
+number = 21
+kind = "leaf"
+
+[[switches]]
+id = "bumper_1_ring"
+number = 30
+kind = "ring"
+
+[[switches]]
+id = "trough_1"
+number = 50
+kind = "trough"
+
+[[coils]]
+id = "left_flipper_coil"
+number = 1
+kind = "flipper"
+
+[[coils]]
+id = "right_flipper_coil"
+number = 2
+kind = "flipper"
+
+[[coils]]
+id = "knocker"
+number = 9
+kind = "knocker"
+
+[[coils]]
+id = "bumper_1_coil"
+number = 12
+kind = "bumper"
+
+[[coils]]
+id = "trough_eject"
+number = 5
+kind = "kicker"
+
+[[lamps]]
+id = "overdrive_ready"
+number = 40
+kind = "insert"
+
+[[lamps]]
+id = "shoot_again"
+number = 41
+kind = "insert"
+
+[[lamps]]
+id = "flasher_left"
+number = 60
+kind = "flasher"
+
+[[lamps]]
+id = "gi_lower"
+number = 0
+kind = "gi"
+
+[[lamps]]
+id = "gi_upper"
+number = 2
+kind = "gi"
+
+[[lamps]]
+id = "unmapped_insert"
+number = 100
+kind = "insert"
+
+[dof]
+rom_name = "dof_fixture_rom"
+map = [
+  { coil = "left_flipper_coil", type = "S", number = 1 },
+  { coil = "right_flipper_coil", type = "S", number = 2 },
+  { coil = "knocker", type = "S", number = 3 },
+  { coil = "bumper_1_coil", type = "S", number = 10 },
+  { coil = "bumper_1_coil", type = "E", number = 200 },
+  { switch = "left_sling_switch", type = "W", number = 21 },
+  { switch = "bumper_1_ring", type = "W", number = 30 },
+  { lamp = "overdrive_ready", type = "L", number = 40 },
+  { lamp = "shoot_again", type = "L", number = 41 },
+  { lamp = "flasher_left", type = "S", number = 60 },
+  { lamp = "gi_lower", type = "G", number = 1 },
+  { lamp = "gi_upper", type = "G", number = 2 },
+]
