@@ -455,7 +455,8 @@ impl NewtonChain {
         any
     }
 
-    /// Pushes overlapping neighbours apart along the path, keeping order.
+    /// Pushes overlapping neighbours apart along the path. A chain whose
+    /// parameters are strictly ascending stays strictly ascending.
     ///
     /// A ball moved by `ds` metres along its path changes the centre
     /// distance of pair `(k, k + 1)` by `-a_k ds` (ball `k`) or
@@ -471,10 +472,16 @@ impl NewtonChain {
     /// curved paths (CodeRabbit E)").
     ///
     /// What one ball cannot move at an end stop, the other moves, as far as
-    /// its own cosine allows. A pair is skipped when it has no centre line,
-    /// a tangent length is NaN or not positive, `S < MIN_COSINE²` (path
-    /// motion barely changes the distance: the shift would be huge, or
-    /// undefined at `S = 0`), or the result would not keep the pair's order.
+    /// its own cosine allows. A ball whose new parameter would reach or pass
+    /// its other neighbour's (ball `k - 1` for ball `k`, ball `k + 2` for
+    /// ball `k + 1`) moves only halfway to that neighbour (in parameter);
+    /// the overlap left is taken by the next pair, pass or step, so a packed
+    /// chain spreads out over a few steps (docs/DECISIONS.md, "issue-8 —
+    /// separate() order handling when spill inverts a pair (CodeRabbit
+    /// F)"). A pair is skipped when it has no centre line, a tangent length
+    /// is NaN or not positive, `S < MIN_COSINE²` (path motion barely changes
+    /// the distance: the shift would be huge, or undefined at `S = 0`), or
+    /// the result would not keep the pair's own parameter order.
     fn separate(&mut self) {
         /// Smallest cosine through which a ball takes part in the correction.
         const MIN_COSINE: f32 = 0.1;
@@ -516,8 +523,24 @@ impl NewtonChain {
                 } else {
                     0.0
                 };
-                let new_a = (ta + extra_a / la).clamp(0.0, max_t);
-                let new_b = (tb + extra_b / lb).clamp(0.0, max_t);
+                let mut new_a = (ta + extra_a / la).clamp(0.0, max_t);
+                let mut new_b = (tb + extra_b / lb).clamp(0.0, max_t);
+                // A ball that would land on or past its other neighbour goes
+                // halfway to it instead (or stays, if no float lies between):
+                // the chain keeps its order, no two balls share a point, and
+                // the overlap now with that neighbour pushes it on next.
+                if k > 0 && new_a <= self.t[k - 1] {
+                    let mid = 0.5 * (self.t[k - 1] + self.t[k]);
+                    new_a = if mid > self.t[k - 1] { mid } else { self.t[k] };
+                }
+                if k + 2 < n && new_b >= self.t[k + 2] {
+                    let mid = 0.5 * (self.t[k + 1] + self.t[k + 2]);
+                    new_b = if mid < self.t[k + 2] {
+                        mid
+                    } else {
+                        self.t[k + 1]
+                    };
+                }
                 if new_a < new_b {
                     self.t[k] = new_a;
                     self.t[k + 1] = new_b;
@@ -549,7 +572,13 @@ impl NewtonChain {
         let mut remaining = dt;
         // Each end-stop bounce is one more event: two per ball at most. A
         // ball already at a stop and moving outward bounces in zero time
-        // below without using an event.
+        // below without using an event. A ball pressed on a stop by a
+        // neighbour can be handed outward speed again by every contact
+        // resolution: at most `2 n` such zero-time stop events are taken per
+        // step, after which a ball at its stop is left to `drift` (which
+        // holds it there) so the step's time runs (docs/DECISIONS.md,
+        // "issue-8 — advance() zero-time stop/contact cycles (CodeRabbit G)").
+        let mut zero_time = 0;
         for _ in 0..6 * n {
             if self.bounce_at_stops() {
                 self.resolve_touching();
@@ -570,9 +599,13 @@ impl NewtonChain {
             for i in 0..n {
                 if let Some(hit) = self.end_stop_time(i, tau)
                     && hit < tau
+                    && (hit > 0.0 || zero_time < 2 * n)
                 {
                     tau = hit;
                 }
+            }
+            if tau == 0.0 {
+                zero_time += 1;
             }
             self.drift(tau);
             self.resolve_touching();
@@ -580,6 +613,12 @@ impl NewtonChain {
             if remaining.is_nan() || remaining <= 0.0 {
                 break;
             }
+        }
+        // Event budget spent (many contacts in one step): the rest of the
+        // step is integrated without events rather than dropped.
+        if remaining > 0.0 {
+            self.drift(remaining);
+            self.resolve_touching();
         }
         self.separate();
     }
@@ -1243,25 +1282,162 @@ mod tests {
         }
     }
 
-    /// More balls than fit at an end stop: the spill can put two balls on
-    /// the same point, a pair with no centre line, which `separate` skips
-    /// (no direction is invented). Everything stays finite and in range,
-    /// deterministically. (Order across non-neighbours is not kept here,
-    /// as before: the spill can push a ball past the next one.)
+    /// Heavily overlapping chains, packed against either end stop or in the
+    /// open, that fit on the path (one diameter is one unit of parameter
+    /// here, and the path is 11 units long). Correcting one pair must not
+    /// carry a ball onto or past its other neighbour: that froze the chain
+    /// on 16dab2b, with an inverted or coincident pair that `separate` then
+    /// skipped forever (PR #16 CodeRabbit finding F: `[0, 0.05, 0.3]` kept
+    /// 8.1 mm of overlap; e86a430, which let the inverted pair cross back,
+    /// recovered the 3- to 6-ball starts but froze the 8 balls packed at
+    /// t = 0 on coincident pairs). After every step the parameters are
+    /// finite, in range and strictly ascending; within [`SEPARATE_STEPS`]
+    /// steps every neighbour pair is apart to within [`SEPARATE_TOL`]; twin
+    /// runs are bit-equal.
     #[test]
     fn overpacked_end_stays_finite_and_in_range() {
-        for params in [[10.7f32, 10.95, 11.0], [0.0, 0.05, 0.3]] {
-            let mut c = chain(&params, 1.0);
+        let starts: [&[f32]; 8] = [
+            &[0.0, 0.05, 0.3],
+            &[10.7, 10.95, 11.0],
+            &[0.0, 0.0135, 0.05],
+            &[5.0, 5.1, 5.2],
+            &[10.5, 10.9, 10.99, 11.0],
+            &[0.0, 0.2, 0.4, 0.6],
+            &[0.0, 0.01, 0.02, 10.98, 10.99, 11.0],
+            &[0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07],
+        ];
+        for params in starts {
+            let n = params.len();
+            let mut c = chain(params, 1.0);
             let mut d = c.clone();
-            for _ in 0..5 {
+            for step in 1..=SEPARATE_STEPS {
                 c.advance(1.0e-3, Vec3::ZERO, 0.0);
                 d.advance(1.0e-3, Vec3::ZERO, 0.0);
+                for i in 0..n {
+                    let t = c.ball_t(i);
+                    assert!(
+                        t.is_finite() && (0.0..=11.0).contains(&t),
+                        "{params:?} step {step}"
+                    );
+                    assert_eq!(t.to_bits(), d.ball_t(i).to_bits(), "{params:?}");
+                }
+                for k in 0..n - 1 {
+                    assert!(
+                        c.ball_t(k) < c.ball_t(k + 1),
+                        "{params:?} step {step}: order {:?}",
+                        (0..n).map(|i| c.ball_t(i)).collect::<Vec<_>>()
+                    );
+                }
             }
+            for k in 0..n - 1 {
+                assert!(
+                    c.gap(k) >= -SEPARATE_TOL,
+                    "{params:?}: pair {k} gap {} m after {SEPARATE_STEPS} steps, t {:?}",
+                    c.gap(k),
+                    (0..n).map(|i| c.ball_t(i)).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    /// Step bound of [`overpacked_end_stays_finite_and_in_range`]. Measured:
+    /// the 3- to 6-ball starts are within [`SEPARATE_TOL`] after 4 to 16
+    /// steps, the 8 balls packed at t = 0 after 91; 300 leaves a margin of
+    /// more than 3.
+    const SEPARATE_STEPS: usize = 300;
+    /// Overlap (metres) tolerated after [`SEPARATE_STEPS`] steps: half of
+    /// [`CHAIN_TOUCH`], far below the millimetres the chain starts with
+    /// (and the 8.1 mm 16dab2b kept).
+    const SEPARATE_TOL: f32 = 1.0e-5;
+
+    /// Ball 1 struck at 1 m/s into ball 2 resting on the end stop, ball 0
+    /// struck at 1 m/s far away (PR #16 CodeRabbit finding G).
+    fn pressed_on_stop(e: f32) -> NewtonChain {
+        let mut c = chain(&[2.0, 10.0, 11.0], e);
+        c.strike(0, 1.0);
+        c.strike(1, 1.0);
+        c
+    }
+
+    /// `t0` advanced by `u` m/s for `dt` by the midpoint rule of
+    /// [`NewtonChain::travel`], computed here from the tangent lengths.
+    fn midpoint_travel(path: &CubicSpline, t0: f32, u: f32, dt: f32) -> f32 {
+        let len0 = path.tangent(t0).length();
+        t0 + u * dt / path.tangent(t0 + 0.5 * u * dt / len0).length()
+    }
+
+    /// PR #16 CodeRabbit finding G: an inelastic ball pressed on the end
+    /// stop by a struck neighbour. On 16dab2b each zero-time stop bounce
+    /// was undone by the next contact resolution, all `6 n` events were
+    /// spent at time 0 and the isolated ball 0 did not move. It must
+    /// travel its full 1 mm (to within 1e-6 of a parameter unit, 27 nm:
+    /// a few f32 ulps at t = 2), no ball may pass another, and twin runs
+    /// are bit-equal.
+    #[test]
+    fn struck_ball_pressed_on_a_stop_lets_the_step_run() {
+        for &e in &[0.0f32, 0.05, 0.3] {
+            let mut c = pressed_on_stop(e);
+            let mut d = pressed_on_stop(e);
+            let expect = midpoint_travel(c.path(), 2.0, 1.0, 1.0e-3);
+            c.advance(1.0e-3, Vec3::ZERO, 0.0);
+            d.advance(1.0e-3, Vec3::ZERO, 0.0);
+            assert!(
+                (c.ball_t(0) - expect).abs() <= 1.0e-6,
+                "e {e}: ball 0 at {}, expected {expect}",
+                c.ball_t(0)
+            );
             for i in 0..3 {
                 let t = c.ball_t(i);
-                assert!(t.is_finite() && (0.0..=11.0).contains(&t), "{params:?}");
-                assert_eq!(t.to_bits(), d.ball_t(i).to_bits());
+                assert!(t.is_finite() && (0.0..=11.0).contains(&t), "e {e}");
+                assert!(c.ball_speed(i).is_finite(), "e {e}");
+                assert_eq!(t.to_bits(), d.ball_t(i).to_bits(), "e {e}");
+                assert_eq!(c.ball_speed(i).to_bits(), d.ball_speed(i).to_bits());
             }
+            assert!(
+                c.ball_t(0) < c.ball_t(1) && c.ball_t(1) < c.ball_t(2),
+                "e {e}"
+            );
+            assert!(c.gap(1) >= -CHAIN_TOUCH, "e {e}: gap {}", c.gap(1));
+        }
+    }
+
+    /// Finding G with gravity along the path toward the end stop, which
+    /// presses ball 2 (and ball 1 behind it) on the stop every step. Ball 0
+    /// is free: its speed after step `j` is `j a dt` (`a = 5/7 g`, rolling),
+    /// so after `k` steps it has moved `a dt² k (k + 1) / 2`; each step's
+    /// own travel `j a dt²` is checked to 1e-3 relative (f32 rounding of a
+    /// sub-micrometre difference of parameters near 2). Twin runs are
+    /// bit-equal.
+    #[test]
+    fn gravity_pressing_on_a_stop_lets_the_step_run() {
+        let g = Vec3::new(9.81, 0.0, 0.0);
+        let dt = 1.0e-3f32;
+        let a = 5.0 / 7.0 * 9.81f32;
+        for &e in &[0.0f32, 0.05, 0.3] {
+            let mut c = chain(&[2.0, 10.0, 11.0], e);
+            let mut d = c.clone();
+            let p0 = c.ball_position(0);
+            for j in 1..=20 {
+                let before = c.ball_position(0);
+                c.advance(dt, g, 0.0);
+                d.advance(dt, g, 0.0);
+                let moved = before.distance(c.ball_position(0));
+                let expect = a * dt * dt * j as f32;
+                assert!(
+                    (moved - expect).abs() <= 1.0e-3 * expect,
+                    "e {e} step {j}: ball 0 moved {moved} m, expected {expect}"
+                );
+                for i in 0..3 {
+                    let t = c.ball_t(i);
+                    assert!(t.is_finite() && (0.0..=11.0).contains(&t), "e {e}");
+                    assert_eq!(t.to_bits(), d.ball_t(i).to_bits(), "e {e}");
+                }
+                assert!(c.ball_t(0) < c.ball_t(1) && c.ball_t(1) < c.ball_t(2));
+                assert!(c.gap(1) >= -CHAIN_TOUCH, "e {e} step {j}: {}", c.gap(1));
+            }
+            let total = p0.distance(c.ball_position(0));
+            let expect = a * dt * dt * 210.0;
+            assert!((total - expect).abs() <= 1.0e-3 * expect, "e {e}: {total}");
         }
     }
 }
