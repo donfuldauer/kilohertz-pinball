@@ -406,6 +406,16 @@ pub trait MovingBodies {
         None
     }
 
+    /// A reported impact ([`BallEvent::Impact`](super::BallEvent::Impact))
+    /// of a ball on `body` at `point` at `time`: called once per event, just
+    /// before it is pushed, after its impulses were applied. `impulse` is the
+    /// total impulse (N·s) the body received from this impact and
+    /// `approach_speed` the event's `normal_speed`. Lets an owner judge each
+    /// impact by its own direction and speed (default: nothing).
+    fn impact(&mut self, body: usize, time: f32, point: Vec3, impulse: Vec3, approach_speed: f32) {
+        let _ = (body, time, point, impulse, approach_speed);
+    }
+
     /// The first time, within `window` seconds after `time`, at which a
     /// sphere of `radius` whose centre moves as `center + velocity·s` touches
     /// the body *while closing in* (relative normal speed above
@@ -635,6 +645,15 @@ pub(super) fn solve_body_contact(
                 st,
             );
             moved |= st.k > k_ball;
+            // A body that reports no mobility may still change its surface
+            // velocity in response (e.g. against the impulse, which `observe`
+            // does not learn from): whatever it did is this contact's own
+            // doing and must count in `st.own_v`, or the cap would grow from
+            // the contact's own impulses.
+            if !moved {
+                let own = set.velocity_at(body, time, point) - vs;
+                moved = own != Vec3::ZERO && own.is_finite();
+            }
         }
     } else {
         let inertia = sphere.inertia();
@@ -813,5 +832,86 @@ fn observe(
         ball.velocity += n * (dj2 / m);
         set.apply_impulse(body, time, point, n * -dj2);
         acc.normal = fixed;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ball::contact::{ContactCoefficients, ContactImpulse, SphereBody};
+    use pin_core::ids::ProfileId;
+
+    /// Reports zero mobility but moves against every impulse it receives.
+    struct Contrary {
+        v: Vec3,
+    }
+
+    impl MovingBodies for Contrary {
+        fn body_count(&self) -> usize {
+            1
+        }
+        fn begin_tick(&mut self, _dt: f32) {}
+        fn end_tick(&mut self, _dt: f32) {}
+        fn layer_mask(&self, _body: usize) -> u8 {
+            0xff
+        }
+        fn material(&self, _body: usize) -> Material {
+            Material::Steel
+        }
+        fn swept_bounds(&self, _body: usize) -> (Vec3, Vec3) {
+            (Vec3::splat(-1.0), Vec3::splat(1.0))
+        }
+        fn max_surface_speed(&self, _body: usize) -> f32 {
+            self.v.length()
+        }
+        fn closest_point(&self, _body: usize, _time: f32, _point: Vec3) -> Option<BodyPoint> {
+            None
+        }
+        fn velocity_at(&self, _body: usize, _time: f32, _point: Vec3) -> Vec3 {
+            self.v
+        }
+        fn inverse_mass_at(&self, _b: usize, _t: f32, _p: Vec3, _d: Vec3) -> f32 {
+            0.0
+        }
+        fn apply_impulse(&mut self, _body: usize, _time: f32, _point: Vec3, impulse: Vec3) {
+            // Opposite to the impulse, as if 0.08 kg.
+            self.v -= impulse / 0.08;
+        }
+    }
+
+    #[test]
+    fn zero_mobility_body_moving_against_impulse_cannot_inflate_cap() {
+        let sphere = SphereBody {
+            radius: 0.0135,
+            mass: 0.08,
+        };
+        let k = ContactCoefficients {
+            restitution: 0.0,
+            friction: 0.0,
+            rolling_resistance: 0.0,
+        };
+        let mut ball = crate::ball::Ball::new(ProfileId(0), Vec3::ZERO);
+        ball.velocity = Vec3::new(0.0, 0.0, -1.0);
+        let mut set = Contrary { v: Vec3::ZERO };
+        let mut acc = ContactImpulse::default();
+        let mut st = BodyContactState::NEW;
+        for _ in 0..3 {
+            solve_body_contact(
+                &mut ball,
+                sphere,
+                &mut set,
+                0,
+                0.0,
+                Vec3::ZERO,
+                Vec3::Z,
+                k,
+                0.0,
+                &mut acc,
+                &mut st,
+            );
+        }
+        // m·(target − u_free) = 0.08 N·s against an immovable body.
+        assert!(st.cap <= 0.08 * 1.001, "cap grew to {}", st.cap);
+        assert!(acc.normal <= 0.08 * 1.001, "impulse {}", acc.normal);
     }
 }
