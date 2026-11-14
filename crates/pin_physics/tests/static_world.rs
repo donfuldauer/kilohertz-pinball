@@ -745,11 +745,18 @@ fn check_cast(
     }
     match (hit, expected) {
         (Some(hit), Some(t)) => {
+            // Along the path within 20 µm, or (for a grazing path, where a
+            // micrometre of distance is many micrometres of travel) in
+            // contact within 2 µm and no later than the true first contact.
+            let along = (f64::from(hit.time) - t).abs() * f64::from(speed);
+            let grazing_ok = sdf(f64::from(hit.time)).abs() < 2e-6
+                && (f64::from(hit.time) - t) * f64::from(speed) < 2e-5;
             prop_assert!(
-                (f64::from(hit.time) - t).abs() * f64::from(speed) < 2e-5,
-                "time {} vs {}",
+                along < 2e-5 || grazing_ok,
+                "time {} vs {} (sdf at hit {:e})",
                 hit.time,
-                t
+                t,
+                sdf(f64::from(hit.time))
             );
             prop_assert!((hit.normal.length() - 1.0).abs() < 1e-5);
             prop_assert!(hit.normal.dot(vel) < 0.0);
@@ -787,6 +794,23 @@ fn check_cast(
         }
     }
     Ok(())
+}
+
+/// Regression (macOS CI, proptest): the path grazes a box's vertical edge
+/// at under 1 degree, so the cast's 0.8 µm contact skin is 73 µm of travel.
+#[test]
+fn grazing_edge_cast_is_accepted_by_the_oracle() {
+    let (c, h) = (
+        v(0.042_510_834, -0.271_693_9, 0.045_021_962),
+        v(0.005_939_999_5, 0.065_609_194, 0.075_116_746),
+    );
+    let mut b = StaticWorldBuilder::new();
+    b.add_collider(cuboid(c, h), 1, true);
+    let world = b.build();
+    let start = v(0.499_143_57, 0.255_056_92, 0.0);
+    let vel = v(-0.816_488_4, -0.780_988_75, 0.0).normalize() * 0.1;
+    let dist = |p: glam::DVec3| box_sdf(p, c.as_dvec3(), h.as_dvec3());
+    check_cast(&world, &dist, start, vel, 10.0).unwrap();
 }
 
 /// Distance to a solid cylinder (f64 reference).
