@@ -11,8 +11,12 @@ mod common;
 use common::*;
 use glam::{DVec3, Vec3};
 use pin_core::{BallProfile, ProfileId};
-use pin_physics::ball::{Ball, BallEvents, BallHandle, BallSolver, ForceContext, Geometry};
+use pin_physics::ball::{
+    Ball, BallEvents, BallHandle, BallSolver, ExternalForce, ForceContext, Geometry,
+};
 use proptest::prelude::*;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Which hooks a free-flight run registers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -20,6 +24,22 @@ enum Reg {
     None,
     All,
     MagnusOnly,
+}
+
+/// Counts the solver's force calls, i.e. the ball sub-steps (the documented
+/// `ExternalForce` contract: `force_in` is called once per ball sub-step and
+/// the result times `h / m` is added to the velocity). It returns `−0.0` on
+/// every axis: `x + (−0.0) == x` bit for bit for every `x`, signed zeros
+/// included (a `+0.0` force would turn a `−0.0` velocity component into
+/// `+0.0`), so counting does not change the run
+/// (`substep_counter_does_not_change_the_run`).
+struct SubstepCounter(Arc<AtomicU64>);
+
+impl ExternalForce for SubstepCounter {
+    fn force(&mut self, _: BallHandle, _: &Ball, _: &BallProfile, _: f32) -> Vec3 {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Vec3::splat(-0.0)
+    }
 }
 
 /// Free flight of one ball of `profile` (no geometry): the state after every
@@ -32,6 +52,32 @@ fn flight(
     ticks: usize,
     reg: Reg,
 ) -> Vec<Ball> {
+    flight_impl(profile, gravity, v0, w0, ticks, reg, false).0
+}
+
+/// [`flight`] with a [`SubstepCounter`] registered after the hooks of `reg`:
+/// the states (bit-identical to [`flight`]) and the number of ball sub-steps
+/// completed up to and including each tick.
+fn flight_counted(
+    profile: &BallProfile,
+    gravity: Vec3,
+    v0: Vec3,
+    w0: Vec3,
+    ticks: usize,
+    reg: Reg,
+) -> (Vec<Ball>, Vec<u64>) {
+    flight_impl(profile, gravity, v0, w0, ticks, reg, true)
+}
+
+fn flight_impl(
+    profile: &BallProfile,
+    gravity: Vec3,
+    v0: Vec3,
+    w0: Vec3,
+    ticks: usize,
+    reg: Reg,
+    count: bool,
+) -> (Vec<Ball>, Vec<u64>) {
     let world = empty_world();
     let geo = Geometry::new(&world);
     let profiles = [profile.clone()];
@@ -43,18 +89,24 @@ fn flight(
         }
         Reg::MagnusOnly => register_magnus(&mut s),
     }
+    let calls = Arc::new(AtomicU64::new(0));
+    if count {
+        s.add_external_force(Box::new(SubstepCounter(calls.clone())));
+    }
     let mut b = Ball::new(ProfileId(0), Vec3::new(0.0, 0.0, 1.0));
     b.velocity = v0;
     b.angular_velocity = w0;
     let h = s.add_ball(b).unwrap();
     let mut ev = BallEvents::new();
     let mut out = Vec::with_capacity(ticks);
+    let mut substeps = Vec::with_capacity(ticks);
     for _ in 0..ticks {
         ev.clear();
         s.step(&geo, DT, &mut ev);
         out.push(*s.ball(h).unwrap());
+        substeps.push(calls.load(Ordering::Relaxed));
     }
-    out
+    (out, substeps)
 }
 
 /// `f64` reference: velocity after `t` seconds of
@@ -193,16 +245,81 @@ fn v2_lateral_acceleration_scales_with_coefficient_and_mass() {
 
 /// Bound used below, documented: over N ticks of h = 1 ms without gravity the
 /// run without Magnus keeps its velocity bit for bit; with Magnus the
-/// translational kinetic energy may differ by
+/// translational kinetic energy may differ, relative to `|v|²`, by
 /// * the second-order term of adding a perpendicular `F·h/m` to `v`
-///   (`|v + a h|² = |v|²(1 + (ω_c h)²)`, `ω_c = S|ω|/m`): `N (ω_c h)²`
-///   relative, 7e-6 for the stock Glo-Ball at 200 rad/s over 1 s; and
-/// * `f32` rounding of N velocity updates, at worst `2 N ε/2` relative
-///   (1.2e-4 for N = 1000, typically a few 1e-6).
-fn ke_bound(s_over_m: f64, w: f64, ticks: usize) -> f64 {
+///   (`|v + a h|² = |v|²(1 + (ω_c h)²)`, `ω_c = S|ω|/m`, `φ = ω_c h`):
+///   `N φ²`, allowed twice (7e-6 for the stock Glo-Ball at 200 rad/s over
+///   1 s; less when the tick is split into sub-steps or the hook rotates
+///   `v` exactly); and
+/// * `f32` rounding of the velocity updates. The solver adds the hook's
+///   increment to the `f32` velocity once per ball **sub-step** (the
+///   `ExternalForce` contract), not once per tick, and a fast ball takes
+///   several sub-steps per tick. One add `v_i ← fl(v_i + d_i)` is off by at
+///   most half an ulp, `|e_i| ≤ ε|v_i|/2`, so it changes `|v|²` by
+///   `Σ 2 v_i e_i ≤ ε|v|²`: `ε` relative per add, `N_sub ε` for the run
+///   (`n_sub` sub-steps, counted by [`SubstepCounter`]). The increments of
+///   successive sub-steps are almost equal, so the errors are correlated and
+///   a run can come close to this worst case (0.95 of it seen in 20 000
+///   random cases; GR-1) instead of the √N of a random walk. The increment
+///   itself, `fl(F h/m)` with `F` an `f32` cross product, is off by a few
+///   `ε S|ω||v| h/m = ε φ|v|` in any direction, which is `≤ 8 ε φ` relative
+///   work per add.
+///
+/// What the bound still excludes (the property: the Magnus term does no
+/// work): a force with a fraction `α` of `S|ω × v|` along `v` changes `|v|²`
+/// by `2 α φ` per tick, so over 200 ticks it is caught when
+/// `α ⪆ N_sub ε / (400 φ)`: `α = 1e-3` fails 28 % of `prop_free_flight`'s
+/// inputs, `α = 1e-2` 91 % (GR-1 throwaway test, DECISIONS "2.7 — spec
+/// prop_free_flight bound counts sub-steps (GR-1)").
+fn ke_bound(s_over_m: f64, w: f64, ticks: usize, n_sub: u64) -> f64 {
     let n = ticks as f64;
-    let wc_h = s_over_m * w * f64::from(DT);
-    2.0 * n * wc_h * wc_h + n * f64::from(f32::EPSILON)
+    let phi = s_over_m * w * f64::from(DT);
+    2.0 * n * phi * phi + n_sub as f64 * f64::from(f32::EPSILON) * (1.0 + 8.0 * phi)
+}
+
+#[test]
+fn substep_counter_does_not_change_the_run() {
+    let p = globall_with(3.0e-5);
+    let steel = {
+        let mut p = profile("standard_steel");
+        p.magnus_coeff = 3.0e-5;
+        p
+    };
+    let max_substeps = u64::from(config(G).max_substeps);
+    let cases = [
+        // Signed zeros in the velocity, at rest, slow, and fast enough for
+        // several sub-steps per tick.
+        (Vec3::new(-0.0, 2.0, 0.0), Vec3::new(0.0, 0.0, 200.0)),
+        (Vec3::new(-0.0, -0.0, -0.0), Vec3::new(0.0, 100.0, 0.0)),
+        (Vec3::new(1.0, -3.0, 0.5), Vec3::new(30.0, -40.0, 120.0)),
+        (Vec3::new(8.0, 9.0, -0.0), Vec3::new(-0.0, 50.0, 0.0)),
+    ];
+    let ticks = 300;
+    let mut several = false;
+    for p in [&p, &steel] {
+        for g in [Vec3::ZERO, G] {
+            for reg in [Reg::None, Reg::All, Reg::MagnusOnly] {
+                for (v, w) in cases {
+                    let plain = flight(p, g, v, w, ticks, reg);
+                    let (counted, n) = flight_counted(p, g, v, w, ticks, reg);
+                    assert!(bits_equal(&plain, &counted), "g={g:?} {reg:?} v={v:?}");
+                    // At least one sub-step per tick, at most the solver's cap.
+                    let mut before = 0;
+                    for &c in &n {
+                        assert!((1..=max_substeps).contains(&(c - before)));
+                        before = c;
+                    }
+                    several |= n[ticks - 1] > ticks as u64;
+                    // Hooks or not, the same number of sub-steps here.
+                    let (_, bare) = flight_counted(p, g, v, w, ticks, Reg::None);
+                    if g == Vec3::ZERO {
+                        assert_eq!(n, bare);
+                    }
+                }
+            }
+        }
+    }
+    assert!(several, "no case with more than one sub-step per tick");
 }
 
 #[test]
@@ -214,14 +331,16 @@ fn v2_kinetic_energy_unchanged_by_magnus() {
     let mut worst = 0.0f64;
     for w in SPINS {
         for v in VELS {
-            let with = flight(&p, Vec3::ZERO, v, w, ticks, Reg::All);
+            let (with, n_sub) = flight_counted(&p, Vec3::ZERO, v, w, ticks, Reg::All);
             let without = flight(&p, Vec3::ZERO, v, w, ticks, Reg::None);
             // The comparison is not vacuous: the paths differ.
             let dev = (with[ticks - 1].position - without[ticks - 1].position).length();
             assert!(dev > 1.0e-3, "Magnus did not deflect the ball ({dev} m)");
-            let bound = ke_bound(s_over_m, f64::from(w.length()), ticks);
-            assert!(bound < 1.5e-4);
-            for (a, b) in with.iter().zip(&without) {
+            // At most two sub-steps per tick at these speeds (≤ 4.1 m/s).
+            assert!(n_sub[ticks - 1] <= 2 * ticks as u64);
+            assert!(ke_bound(s_over_m, f64::from(w.length()), ticks, n_sub[ticks - 1]) < 3.0e-4);
+            for (i, (a, b)) in with.iter().zip(&without).enumerate() {
+                let bound = ke_bound(s_over_m, f64::from(w.length()), i + 1, n_sub[i]);
                 let ka = 0.5 * m * a.velocity.as_dvec3().length_squared();
                 let kb = 0.5 * m * b.velocity.as_dvec3().length_squared();
                 let rel = (ka - kb).abs() / kb;
@@ -465,7 +584,7 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: 48, .. ProptestConfig::default() })]
 
     /// Free flight through the solver: lateral acceleration within 1 %, and
-    /// the Magnus term does no work.
+    /// the Magnus term does no work (see [`ke_bound`]).
     #[test]
     fn prop_free_flight(
         s in 1.0e-6f32..5.0e-5,
@@ -482,15 +601,24 @@ proptest! {
         check_lateral(&p, g, v, w, 40, Reg::All);
         if !gravity {
             let ticks = 200;
-            let run = flight(&p, g, v, w, ticks, Reg::All);
+            let (run, n_sub) = flight_counted(&p, g, v, w, ticks, Reg::All);
+            let n_sub = n_sub[ticks - 1];
+            // The rounding allowance is per sub-step, so the count must be
+            // what the solver documents: 1..=max_substeps per tick.
+            let cap = ticks as u64 * u64::from(config(g).max_substeps);
+            prop_assert!((ticks as u64..=cap).contains(&n_sub), "{} sub-steps", n_sub);
             let k0 = v.as_dvec3().length_squared();
             let k1 = run[ticks - 1].velocity.as_dvec3().length_squared();
             let bound = ke_bound(
                 f64::from(s) / f64::from(p.mass_kg),
                 f64::from(w.length()),
                 ticks,
+                n_sub,
             );
-            prop_assert!(((k1 - k0) / k0).abs() <= bound, "{} vs {} (bound {})", k1, k0, bound);
+            prop_assert!(
+                ((k1 - k0) / k0).abs() <= bound,
+                "{} vs {} (bound {}, {} sub-steps)", k1, k0, bound, n_sub
+            );
         }
     }
 }

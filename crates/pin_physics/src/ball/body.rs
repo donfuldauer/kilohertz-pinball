@@ -248,6 +248,11 @@
 use glam::Vec3;
 use pin_core::Material;
 
+/// Relative normal speed (m/s) by which a friction impulse may separate a
+/// body contact beyond what its normal solve set before the friction change
+/// is cut back (see `solve_body_contact`).
+const FRICTION_SEPARATION_TOLERANCE: f32 = 1.0e-5;
+
 /// Gap (metres) within which [`conservative_cast`] reports a contact.
 pub const BODY_SKIN: f32 = 1.0e-5;
 
@@ -678,10 +683,38 @@ pub(super) fn solve_body_contact(
         }
         let j = new_t - acc.tangent;
         if j != Vec3::ZERO && j.is_finite() {
+            let un_pre = (ball.velocity - vs).dot(n);
             ball.velocity += j / m;
             ball.angular_velocity += rc.cross(j) / inertia;
             set.apply_impulse(body, time, point, -j);
             acc.tangent = new_t;
+            // Friction must not undo the normal impulse it rests on
+            // (Subphase 2.8). On a light body the friction impulse can turn
+            // the contact apart (it slows the body's surface along the
+            // normal too); the next pass would then take the normal impulse
+            // back, the friction with it, and start over: a two-pass cycle
+            // that never converges, so the cast keeps reporting the same
+            // hit until the ball's event budget runs out and the body
+            // sweeps into it. Keep only the part of the friction change that
+            // leaves the relative normal speed at (or below) what the normal
+            // solve set.
+            let ceiling = target_normal_speed.max(un_pre);
+            let un_post = (ball.velocity - set.velocity_at(body, time, point)).dot(n);
+            let rise = un_post - un_pre;
+            if acc.normal > 0.0
+                && rise.is_finite()
+                && rise > 0.0
+                && un_post > ceiling + FRICTION_SEPARATION_TOLERANCE
+            {
+                let keep = ((ceiling - un_pre) / rise).clamp(0.0, 1.0);
+                let back = j * (1.0 - keep);
+                if back != Vec3::ZERO && back.is_finite() {
+                    ball.velocity -= back / m;
+                    ball.angular_velocity -= rc.cross(back) / inertia;
+                    set.apply_impulse(body, time, point, back);
+                    acc.tangent -= back;
+                }
+            }
         }
         moved = true;
     }
