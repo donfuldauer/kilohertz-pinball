@@ -149,8 +149,11 @@ roll is not an impulse and is not part of the telemetry stream.
   **unless the datagram is itself a full state**: a full state with a lower
   tick means a new session (section 4, rule 4) and replaces the mirror.
   Version 1 has no session id, so a full state delayed past a later one is
-  indistinguishable from a restart; the next periodic full state (at most
-  one second later) corrects the mirror. An unambiguous session id would be
+  indistinguishable from a restart. The sender schedules a full state every
+  1000 simulation ticks (rule 4), and the mirror recovers once a complete,
+  sufficiently recent full state (all of its datagrams) is delivered and
+  applied; any of those datagrams can be lost or reordered, so on a lossy
+  link there is no guaranteed time bound. An unambiguous session id would be
   a breaking change (new `version`).
 - Example (lamp 1 at full, tick `0x1122334455667788`, full-state flag; a
   real full state would carry all 832 entries over 5 datagrams):
