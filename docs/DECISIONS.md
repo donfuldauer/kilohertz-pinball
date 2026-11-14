@@ -1582,8 +1582,9 @@ Published early for the Independent Tester; kept current by the 4.4 Implementer.
   Vec<ConfigWarning> }` (never fails; missing file → defaults, no warning; a wrongly typed or
   unknown-variant known value is dropped alone → that setting's default + `InvalidValue { key: dotted path }`;
   only unparsable TOML / non-UTF-8 is `Corrupt` (message ≤ `config::MAX_WARNING_CHARS` = 512 chars + `…`);
-  when anything was dropped/reset or the file was corrupt/too large, `load` first copies the file to
-  `<name>.bak`);
+  when anything was dropped/reset or the file was corrupt, `load` first copies the file to
+  `<name>.bak` unless that already exists; a too-large file is not copied; a non-table value at a known
+  table key, e.g. `[[calibration]]`, is a dropped value);
   `AppConfig::from_toml_str(&str) -> ConfigLoad`, `from_toml_bytes(&[u8]) -> ConfigLoad`,
   `to_toml_string() -> Result<String, toml::ser::Error>`, `save(&self, &Path) -> std::io::Result<()>`,
   `topology_mode() -> pin_render::topology::TopologyMode`, `sanitize(&mut Vec<ConfigWarning>)`.
@@ -1863,7 +1864,7 @@ one scene works on 128 × 32, 192 × 64 and any LCD canvas. Keys (all optional u
   auto|5x7|8x16 (DMD only); `color` (default white; mono DMDs use the brightest channel); `alpha` 0..=1;
   timeline `start_ms`, `end_ms` (0 = scene end), `blink_ms` (on/off half period), `fade_in_ms`,
   `fade_out_ms` (before the end), `from = [x, y]` + `move_ms` (linear move to `x, y`). Unknown keys are errors.
-- `score` layers draw the score view (`score_view_layout`) inside their box. Without an active scene the
+- `score` layers draw the score view (`score_view_layout`) inside their box. The layout box is the layer box ∩ the display: a partly off-screen score layer is laid out in its visible part, not cropped. Without an active scene the
   display shows `scene_score` (the library's, else the placeholder).
 - Player: the last `display_scenes` entry of a tick wins; a timed scene ends after `duration_ms` and the
   score view returns. Time is the caller's ms clock (snapshot ticks, D8).
@@ -2158,3 +2159,14 @@ B1 (XL–bat tick-end overlap grows with radius without rim contact, contradicti
 **Rationale:** verified black-box (Tester, without reading `ball/` or `ball_ext/` sources; the `ExternalForce` rustdoc states one `force_in` call per ball sub-step, added as `F·h/m`). GR-1's input (steel, s = 2.7939423e-6, |v| = 3.53 m/s) makes 400 force calls in 200 ticks; relative |v|² change 2.6374e-5 = 1.106·(200 ε) = 0.553·(400 ε); with Magnus off the change is exactly 0. One f32 add `v_i ← fl(v_i + d_i)` is off by ≤ ε|v_i|/2, so it changes |v|² by ≤ ε|v|²: ε per add, N_sub·ε per run; the increments of successive sub-steps are nearly equal, so the errors are correlated and approach the worst case. The `8φ` term covers rounding of the increment itself (an f32 cross product times `h/m`: absolute error a few ε·φ|v| in any direction). Sweep of 19 999 spec-distributed cases (gravity off, 200 ticks): old bound fails 17, new bound 0, max (|ΔK/K| − 2nφ²)/(N_sub ε) = 0.948, max N_sub 800. A −0.0 force is exact for every velocity (`x + (−0.0) = x`, signed zeros included); a +0.0 force would not be for a −0.0 component.
 The property stays meaningful: in the same sweep a throwaway hook `S(ω×v) + α·S|ω×v|·v̂` (does work) was flagged by the new bound in 90.8 % of cases at α = 1e-2, 68.1 % at 3e-3, 28.5 % at 1e-3 and 21.5 % at −1e-3, so a 48-case run (half gravity-off) fails with probability > 0.997 for |α| ≥ 1e-3. A force with fraction α along v changes |v|² by 2αφ per tick; the detection threshold is α ≈ N_sub·ε/(2nφ).
 **Alternatives:** `n·max_substeps·ε` (max_substeps = 64): no counting hook, but 32–64× looser, which would hide a parallel component of up to ~5 %. Rejected. A looser constant such as `4n·ε`: wrong again as soon as a ball takes more than 4 sub-steps. Rejected. Comparing against an f64 rotation rounded per sub-step (bit-exact, per GR-1): would duplicate the solver's sub-step schedule in the spec; not black-box.
+
+## 4.4 — review round 2 polish (N13–N15)
+
+**Decision:**
+- **N13** Every known table key (`backglass_pip`, `score_pip`, `calibration`, `calibration.plunger`, `calibration.nudge`, `audio`) must hold a table; anything else (including an array of tables such as `[[calibration]]`, which serde would accept for a struct) is dropped with `InvalidValue { key, "expected a table, found …" }`, the rest of the file is kept, and the file is backed up like any other lossy load.
+- **N14** `load` never overwrites an existing `<name>.bak` (it keeps the oldest known-bad original; the user deletes it to get a fresh one) and never copies a file over `MAX_CONFIG_BYTES` (the `TooLarge` warning text says "not backed up"), so the backup is bounded at 1 MiB. No new `ConfigWarning` variant was added (API stability for the spec tests).
+- **N15** Footer key hints use `view::HINT_TEXT` = rgb(200, 200, 205) at 0.8 × body height (was egui "small" + "weak"); contrast against the backdrop composited over white is ≈ 9:1 (test `ui_view::footer_hint_contrast`, ≥ 4.5:1). The footer reserves three text lines so the hints may wrap on narrow panels.
+
+**Rationale:** Reviewer polish findings; no behaviour change for valid files.
+
+**Alternatives:** a rotating `.bak.N` series (unbounded disk use); a new `BackupSkipped` warning variant (breaks exhaustive matches).

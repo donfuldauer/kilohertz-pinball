@@ -281,6 +281,7 @@ impl LcdRenderer {
 
     /// Textures held (the built-in white one included); for tests of
     /// in-place replacement.
+    #[doc(hidden)]
     pub fn texture_count(&self) -> usize {
         self.quads.texture_count()
     }

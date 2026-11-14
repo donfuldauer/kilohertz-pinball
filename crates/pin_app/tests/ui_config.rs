@@ -546,8 +546,12 @@ fn lossy_load_backs_up_the_original() {
     // Reloading the saved file is clean and keeps the backup.
     assert!(AppConfig::load(&path).warnings.is_empty());
     assert_eq!(std::fs::read_to_string(&bak).unwrap(), original);
-    // Corrupt syntax is backed up too.
+    // Corrupt syntax is backed up too (once the old backup is gone; an
+    // existing backup is never overwritten).
     std::fs::write(&path, "[[[").unwrap();
+    AppConfig::load(&path);
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), original);
+    std::fs::remove_file(&bak).unwrap();
     AppConfig::load(&path);
     assert_eq!(std::fs::read_to_string(&bak).unwrap(), "[[[");
 }
