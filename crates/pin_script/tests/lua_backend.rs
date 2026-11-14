@@ -171,6 +171,8 @@ fn argument_errors_fault() {
         "pinball.set_score(1, 0.5)",
         "pinball.persist_get(64)",
         "pinball.play_sound(1, -1)",
+        // Finite as f64, infinite once narrowed to f32.
+        "pinball.play_sound(1, 1e300)",
         "pinball.set_gi_tint(1, 1, 1)",
         "pinball.random(0)",
         "pinball.random(5, 1)",
@@ -298,6 +300,51 @@ fn memory_bombs_are_aborted() {
         assert_eq!(b.last_error(), Some(&ScriptError::MemoryLimit), "{src}");
         assert!(b.used_memory() <= 4 << 20);
     }
+}
+
+// Review (PR #5): the outer `pcall` of `pcall(pcall, f)` catches the error
+// `memabort` raises for the inner one, so the callback returns normally. The
+// recorded memory hit must still fault it and drop what it queued.
+#[test]
+fn memory_error_swallowed_by_nested_pcall_still_faults() {
+    let src = "function on_tick()
+      pinball.pulse_coil(1, 10)
+      pcall(pcall, function()
+        local t = {} for i = 1, 1e9 do t[i] = string.rep('x', 60000) .. i end
+      end)
+    end";
+    let mut b = small(src, 100_000_000, 2 << 20);
+    let mut h = Host::new(0);
+    let q = h.tick(&mut b);
+    assert_eq!(b.last_error(), Some(&ScriptError::MemoryLimit));
+    assert!(
+        q.coil_pulses.is_empty(),
+        "the faulted callback's commands are rolled back"
+    );
+}
+
+// Review (PR #5): the heap cap also bounds compilation. Distinct long
+// literals (each under the 64 KiB string cap) whose constants together
+// exceed the cap must be rejected, not raise the cap.
+#[test]
+fn compiled_source_over_the_memory_cap_is_rejected() {
+    let mut src = String::from("local t = {");
+    for i in 0..64 {
+        src.push_str(&format!("\"{i:04}{}\",", "x".repeat(50_000)));
+    }
+    src.push_str("}\nfunction on_tick() end");
+    let cfg = LuaConfig {
+        memory_limit_bytes: 2 << 20,
+        instruction_budget: 1_000_000,
+    };
+    let e = LuaScriptBackend::new(src.as_bytes(), &names(), cfg).unwrap_err();
+    assert_eq!(e, ScriptError::MemoryLimit);
+    // The same script fits a cap that covers it.
+    let cfg = LuaConfig {
+        memory_limit_bytes: 16 << 20,
+        ..cfg
+    };
+    assert!(LuaScriptBackend::new(src.as_bytes(), &names(), cfg).is_ok());
 }
 
 /// Faults with a runtime error whose message contains `needle`.

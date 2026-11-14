@@ -613,7 +613,26 @@ proptest! {
             0..12,
         )
     ) {
-        // Wrapped in a never-called function so construction cannot fail at run time.
+        // Wrapped in a never-called function so construction cannot fail at
+        // run time. An `end` with no open `function`/`if`/`do` before it
+        // would close the wrapper and leave the rest as top-level code that
+        // runs (and can fail) at construction, so such `end`s are dropped.
+        let mut open = 0usize;
+        let words: Vec<&str> = words
+            .into_iter()
+            .filter(|w| match *w {
+                "function" | "if" | "do" => {
+                    open += 1;
+                    true
+                }
+                "end" if open == 0 => false,
+                "end" => {
+                    open -= 1;
+                    true
+                }
+                _ => true,
+            })
+            .collect();
         let src = format!("local function spec_wrapper() {} end", words.join(" "));
         let checked = syntax_check(src.as_bytes()).is_ok();
         let built = pin_script::lua::LuaScriptBackend::new(

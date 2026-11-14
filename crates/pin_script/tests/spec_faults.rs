@@ -4,7 +4,7 @@
 
 mod spec_support;
 
-use pin_core::{CoilId, TableScriptBackend};
+use pin_core::{CoilId, ScriptError, TableScriptBackend};
 use pin_script::lua::{LuaConfig, LuaScriptBackend};
 use proptest::prelude::*;
 use spec_support::{Host, backend, backend_with, cfg, names, score};
@@ -564,16 +564,25 @@ fn failed_reload_leaves_a_faulted_backend_faulted() {
 
 #[test]
 fn limits_still_apply_after_reload() {
-    let mut b = backend_with(b"", cfg(4 * MIB, 20_000));
+    // A budget large enough that the memory bomb hits the 4 MiB cap first.
+    let mut b = backend_with(b"", cfg(4 * MIB, 1_000_000));
     b.apply_reload(FAULTS).unwrap();
     let mut h = Host::new(1);
     h.case(&mut b, 1);
     assert!(b.is_faulted(), "instruction budget lost after reload");
+    assert_eq!(b.last_error(), Some(&ScriptError::BudgetExceeded));
 
     b.apply_reload(FAULTS).unwrap();
     assert!(!b.is_faulted());
     h.case(&mut b, 3);
     assert!(b.is_faulted(), "memory cap lost after reload");
+    // The bomb loops forever, so only the cause tells the memory cap apart
+    // from the instruction budget.
+    assert_eq!(
+        b.last_error(),
+        Some(&ScriptError::MemoryLimit),
+        "memory cap lost after reload"
+    );
 }
 
 // ---------------------------------------------------------------------------
