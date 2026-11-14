@@ -435,8 +435,25 @@ impl CubicSpline {
     ///
     /// `seed_t` (typically the ball's parameter from the previous tick) starts
     /// a Newton iteration whose result prunes the search; the coarse sample
-    /// table then guarantees that the global minimum is returned whatever the
-    /// seed is, so seeded and unseeded queries agree. Never allocates.
+    /// table then searches the whole curve whatever the seed is. The seed
+    /// affects only the pruning and the starting point, not which answer is
+    /// correct. Never allocates.
+    ///
+    /// The returned point is the global minimum of the distance up to a
+    /// bounded approximation error, not exactly, and seeded and unseeded
+    /// queries agree to within that bound, not bit-for-bit. Cause:
+    /// `search_interval` bisects a 1/16-segment sample interval at most 5
+    /// times (`MULTI_ROOT_DEPTH`), so the finest piece is `w = 1/512` of a
+    /// segment.
+    /// At that limit a piece that is not provably monotone can be dropped when
+    /// its ends do not bracket a root, or only one bracketed root is refined.
+    /// The analytic bound on what is missed is `|gp_min| w²` in squared
+    /// distance, where `gp_min` is the minimum of `g'` over the piece; on the
+    /// spline sizes the solver meets it is below f32 rounding (docs/DECISIONS.md,
+    /// "closest_point depth-limit bound"). The 1 µm tolerance of the sweeps in
+    /// tests/spline_closest_point_depth_sweep.rs is empirical, not a per-query
+    /// guarantee: they found a worst error of 0.46 µm (unseeded vs brute
+    /// force) and 0.48 µm (seeded vs unseeded).
     ///
     /// Every local minimum of `|C - p|²` is a root of `g = (C - p) · C'`.
     /// Where `g' = |C'|² + (C - p) · C''` is provably positive on a whole
