@@ -221,7 +221,8 @@ impl Allowed {
 
     /// Whether the profile's centre may be anywhere on the polyline through
     /// `path` (m) on `layer`: at a vertex, or where a segment between two
-    /// vertices enters an allowed area lying between them.
+    /// vertices enters or touches (runs along the boundary of) an allowed
+    /// area lying between them.
     fn on_path(&self, layer: u8, path: &[DVec2]) -> bool {
         match self {
             Allowed::Anywhere => true,
@@ -229,7 +230,7 @@ impl Allowed {
                 l.contains(&layer)
                     && a.as_ref().is_none_or(|p| {
                         path.iter().any(|&q| p.covers(q))
-                            || path.windows(2).any(|s| p.crosses_segment(s[0], s[1]))
+                            || path.windows(2).any(|s| p.meets_segment(s[0], s[1]))
                     })
             }),
         }

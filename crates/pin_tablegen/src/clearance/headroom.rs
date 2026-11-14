@@ -133,6 +133,10 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
             if s.nz() < WALKABLE_NZ || !ball.allowed.layer(s.layer) {
                 continue;
             }
+            // Highest resting centre on `s` ([`resting_centre`]) plus the
+            // distance the ceiling must keep from it: a ceiling wholly
+            // above this cannot be too low anywhere on `s`.
+            let top = s.max.z + r / s.nz() + reach;
             w.grid.query(
                 w.tris,
                 s.min.truncate() - pad,
@@ -144,7 +148,7 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                 if c.layer == s.layer
                     || c.nz() < CEILING_NZ
                     || c.max.z <= s.min.z + min_gap
-                    || c.min.z >= s.max.z + need
+                    || c.min.z >= top
                 {
                     continue;
                 }
