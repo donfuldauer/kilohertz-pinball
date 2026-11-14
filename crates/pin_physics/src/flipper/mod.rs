@@ -184,11 +184,17 @@ pub struct EosEdge {
 ///
 /// They are world +X and +Y carried along by the shortest rotation that
 /// takes world +Z to `normal`; for the one normal without a shortest
-/// rotation, −Z, the half turn about world +X is used (`(+X, −Y)`).
+/// rotation, −Z, the half turn about world +X is used (`(+X, −Y)`), and
+/// normals within 0.08° of −Z get that frame re-orthogonalised against
+/// them. The result is orthonormal for every unit normal.
 #[must_use]
 pub fn plane_axes(normal: Vec3) -> (Vec3, Vec3) {
     if normal.z < -0.999_999 {
-        return (Vec3::X, Vec3::NEG_Y);
+        // Next to −Z the shortest rotation is ill-defined; take the half
+        // turn's frame, made exactly orthogonal to this normal (it is
+        // `(+X, −Y)` itself for −Z).
+        let zero = (Vec3::X - normal * normal.dot(Vec3::X)).normalize();
+        return (zero, normal.cross(zero));
     }
     let q = Quat::from_rotation_arc(Vec3::Z, normal);
     let zero = q * Vec3::X;
@@ -1159,6 +1165,46 @@ mod tests {
         let mut c = config();
         edit(&mut c);
         FlipperSet::new(&[c]).unwrap_err()
+    }
+
+    #[test]
+    fn plane_axes_are_orthonormal_next_to_minus_z() {
+        // Exactly −Z: the half turn about +X, bit for bit.
+        let (zero, quarter) = plane_axes(Vec3::NEG_Z);
+        let bits = |v: Vec3| v.to_array().map(f32::to_bits);
+        assert_eq!(bits(zero), bits(Vec3::X));
+        assert_eq!(bits(quarter), bits(Vec3::NEG_Y));
+        // Near −Z, on both sides of the fallback's threshold.
+        for i in 0..400 {
+            let off = 1.0e-5 * i as f32;
+            let around = 0.7 * i as f32;
+            let n = Vec3::new(
+                libm::sinf(off) * libm::cosf(around),
+                libm::sinf(off) * libm::sinf(around),
+                -libm::cosf(off),
+            )
+            .normalize();
+            let (zero, quarter) = plane_axes(n);
+            assert!(zero.dot(n).abs() < 1.0e-6, "{n}: zero·n = {}", zero.dot(n));
+            assert!(quarter.dot(n).abs() < 1.0e-6 && quarter.dot(zero).abs() < 1.0e-6);
+            assert!((zero.length() - 1.0).abs() < 1.0e-6);
+            assert!((quarter.length() - 1.0).abs() < 1.0e-6);
+            assert!((zero.cross(quarter) - n).length() < 1.0e-6);
+        }
+        // The reviewer's case: a flipper on such a plane reports a closest
+        // point that reconstructs the query.
+        let (theta, phi) = (3.140_496f32, -2.691_378f32);
+        let n = Vec3::new(
+            libm::sinf(theta) * libm::cosf(phi),
+            libm::sinf(theta) * libm::sinf(phi),
+            libm::cosf(theta),
+        );
+        let mut c = config();
+        c.surface_normal = n.to_array();
+        let s = FlipperSet::new(&[c]).unwrap();
+        let q = Vec3::new(0.16, 0.02, 0.03);
+        let cp = s.closest_point(0, 0.0, q).unwrap();
+        assert!((cp.point + cp.normal * cp.distance - q).length() < 2.0e-6);
     }
 
     #[test]
