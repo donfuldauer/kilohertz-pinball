@@ -326,9 +326,15 @@ LUA_API int lua_isuserdata (lua_State *L, int idx) {
 
 
 LUA_API int lua_rawequal (lua_State *L, int index1, int index2) {
-  const TValue *o1 = index2value(L, index1);
-  const TValue *o2 = index2value(L, index2);
-  return (isvalid(L, o1) && isvalid(L, o2)) ? luaV_rawequalobj(o1, o2) : 0;
+  const TValue *o1;
+  const TValue *o2;
+  int i;
+  lua_lock(L);  /* KHZ (patch 28): long-string compares accrue pending cost */
+  o1 = index2value(L, index1);
+  o2 = index2value(L, index2);
+  i = (isvalid(L, o1) && isvalid(L, o2)) ? luaV_rawequalobj(o1, o2) : 0;
+  lua_unlock(L);
+  return i;
 }
 
 
@@ -424,7 +430,10 @@ LUA_API const char *lua_tolstring (lua_State *L, int idx, size_t *len) {
 
 
 LUA_API lua_Unsigned lua_rawlen (lua_State *L, int idx) {
-  const TValue *o = index2value(L, idx);
+  const TValue *o;
+  lua_lock(L);  /* KHZ (patch 28): 'luaH_getn' hash-chain walks accrue pending cost */
+  lua_unlock(L);
+  o = index2value(L, idx);
   switch (ttypetag(o)) {
     case LUA_VSHRSTR: return tsvalue(o)->shrlen;
     case LUA_VLNGSTR: return tsvalue(o)->u.lnglen;
