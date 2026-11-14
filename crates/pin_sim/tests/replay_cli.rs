@@ -176,3 +176,40 @@ fn recording_inside_the_folder_bundle_is_refused() {
     );
     assert_eq!(replayed, recorded);
 }
+
+#[cfg(unix)]
+#[test]
+fn recording_through_a_symlink_into_the_bundle_is_refused() {
+    // An existing output path that is a symlink to a bundle file (or a
+    // dangling one pointing into the bundle) would make `save` write into
+    // the bundle; it is judged by where it resolves, not by its parent.
+    use std::os::unix::fs::symlink;
+    let bundle = fixture_variant("rec_symlink", &[]);
+    let victim = std::fs::read_dir(&*bundle)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.is_file())
+        .expect("the bundle has a file");
+    let before = std::fs::read(&victim).unwrap();
+    let outside = scratch_dir("rec_symlink_out");
+    let to_file = outside.join("to_file.khzrec");
+    symlink(&victim, &to_file).unwrap();
+    let dangling = outside.join("dangling.khzrec");
+    symlink(bundle.join("new.khzrec"), &dangling).unwrap();
+    let to_dir = outside.join("bundle_link");
+    symlink(&*bundle, &to_dir).unwrap();
+    for rec in [to_file, dangling, to_dir.join("run.khzrec")] {
+        let err = run(&Command::Run {
+            bundle: bundle.to_path_buf(),
+            ticks: 10,
+            seed: 1,
+            record: Some(rec.clone()),
+            idle: false,
+        })
+        .unwrap_err();
+        assert!(matches!(err, CliError::Usage(_)), "{rec:?}: {err:?}");
+    }
+    assert_eq!(std::fs::read(&victim).unwrap(), before);
+    assert!(!bundle.join("new.khzrec").exists());
+    assert!(!bundle.join("run.khzrec").exists());
+}
