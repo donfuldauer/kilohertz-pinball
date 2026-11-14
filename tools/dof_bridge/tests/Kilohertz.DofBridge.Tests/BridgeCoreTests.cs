@@ -236,6 +236,42 @@ public class BridgeCoreTests
     }
 
     [Fact]
+    public void RestartWithEqualFullStateTickResyncs()
+    {
+        // Review N1: the restarted sender's full state has the same tick (0) as the last one.
+        var (core, sink) = Core();
+        core.Process(Make(0, true, Coil(1, 0)), 0);
+        core.Process(Make(400, false, Coil(1, 1)), 0);
+        core.Process(Make(0, true, Coil(1, 0)), 0);
+        core.Process(Make(100, false, Coil(1, 1)), 0);
+        core.Process(Make(150, false, Coil(1, 0)), 0);
+        Assert.Equal(["S 1 0", "S 1 1", "S 1 0", "S 1 1", "S 1 0"], sink.Snapshot());
+        Assert.Equal(2, core.Stats.Resyncs);
+    }
+
+    [Fact]
+    public void RestartAtAHigherFullStateTickFarBehindResyncs()
+    {
+        var (core, sink) = Core();
+        core.Process(Make(0, true, Coil(1, 0)), 0);
+        core.Process(Make(5000, false, Coil(1, 1)), 0);
+        core.Process(Make(10, true, Coil(1, 0)), 0); // above the last full state (0), far below 5000
+        Assert.Equal(["S 1 0", "S 1 1", "S 1 0"], sink.Snapshot());
+        Assert.Equal(2, core.Stats.Resyncs);
+    }
+
+    [Fact]
+    public void LateFullStateWithinRestartGapIsReordering()
+    {
+        var (core, sink) = Core();
+        core.Process(Make(1000, true, Coil(1, 0)), 0);
+        core.Process(Make(1000 + BridgeCore.RestartGapTicks - 1, false, Coil(1, 1)), 0);
+        core.Process(Make(1000, true, Coil(1, 0)), 0); // duplicate, delivered late
+        Assert.Equal(["S 1 0", "S 1 1"], sink.Snapshot());
+        Assert.Equal(1, core.Stats.Resyncs);
+    }
+
+    [Fact]
     public void BadMapEntryIdThrows()
     {
         var map = new ResolvedDofMap("r", "t", [new DofMapEntry(DofSourceKind.Lamp, 256, "x", 'L', 1)]);
