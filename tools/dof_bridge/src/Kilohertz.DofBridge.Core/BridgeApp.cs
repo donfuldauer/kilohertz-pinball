@@ -69,6 +69,14 @@ public static class BridgeApp
             stdout.WriteLine(BridgeOptions.Usage);
             return ExitOk;
         }
+        if (!IsLoopbackBind(options.Bind))
+        {
+            // Telemetry senders are not authenticated, so anyone who can reach the port could drive
+            // the cabinet's toys: only the engine on this machine may send.
+            stderr.WriteLine($"error: --bind: '{options.Bind}' is not a loopback address (the bridge does not authenticate senders)");
+            stderr.WriteLine(BridgeOptions.Usage);
+            return ExitUsage;
+        }
 
         ResolvedDofMap map;
         try
@@ -203,6 +211,16 @@ public static class BridgeApp
                 SetQuietly(done);
             }
         }, null, TimeSpan.Zero, context.ParentPollInterval);
+    }
+
+    /// <summary>Whether <paramref name="address"/> may be bound: loopback only (127.0.0.0/8, ::1,
+    /// or an IPv4-mapped loopback), since the bridge does not authenticate telemetry senders.</summary>
+    /// <param name="address">The <c>--bind</c> address.</param>
+    /// <returns>True for a loopback address.</returns>
+    public static bool IsLoopbackBind(IPAddress address)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+        return IPAddress.IsLoopback(address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address);
     }
 
     /// <summary>Whether process <paramref name="pid"/> exists and has not exited.</summary>
