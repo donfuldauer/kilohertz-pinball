@@ -143,3 +143,23 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
 - [2.2-S final review, known limits] (N1) An honest owner can exhaust the per-ball budget of 2048 body solves only in extreme sandwiches: 20–30 m/s strikes on a light bat held between balls, 9 of 310 runs, penetration ≤ 0.7 mm. (N5) A 3-ball kinematic pinch still costs about 1 ms worst tick. (N6, process) Reviewers who build scratch worktrees must not share a target dir with the live tree: the artefact hash ignores the checkout path.
 - [Wave 4 gate fix review, non-blocking] (N2) `cargo doc -p pin_audio --no-default-features` has unresolved links to `SdlOutput` (mixer/mod.rs:9, engine.rs:3); CI does not build docs. (N3) The seam's "report-only" digests go to the captured stdout of passing tests, so the cross-OS values are not visible in CI; the 2.5 replay-hash job should report them. (N4) A ci.yml comment still says only pin_app uses sdl3; pin_audio does too, behind its `sdl` feature.
 - [2.1-W wireform frame fix] Natural splines with a short step next to a long one overshoot into near-cusps (tangent reversal); the frame is now robust there, but consider an authoring lint (pin_assets) that flags wireform centerlines whose speed nearly vanishes, since the rail twist at a true 3D near-cusp is a convention.
+- [2.1-W review N2/N4] Wireform frames are exact only when the path's constant coordinate is an axis. In a tilted plane the f32 control points are off-plane by an ulp, so near-cusps can still tilt the rails: about 1 in 100 000 random tilted-plane paths exceed 1e-5 m, and the error is physically harmless. Removing it would need f64 control points in `CubicSpline`, or an authoring lint for wireform centerlines whose speed nearly vanishes. spec_wireform.rs pins `cases: 128`, so CI cannot scale it with PROPTEST_CASES.
+
+## End of Wave 4 — summary for the person
+- **Wave 4 gate green** (CI run 215). All seven subphases, plus the seam task 2.2-S, passed review.
+- **Rulings that need your confirmation:**
+  - 2.3 criterion 1: the 25 % dead-flip depth moved to Gate A1, and 2.3 gates ≤ 50 % with explained continuity (DECISIONS "Orchestrator — 2.3 criterion 1: the 25 % depth moves to Gate A1").
+  - 2.4 kick windows are guaranteed for coil latency of one tick.
+  - 2.7 Magnus rotates the sub-step midpoint velocity.
+  - 2.4 accepted reading of owner obligation 3 for sliders.
+- **Gate A1 tuning notes:**
+  - Flipper feel: rigid stop cliff, a held bat that is not solid, low exit speed from 25 % of the bat.
+  - Mech feel defaults.
+  - Flipper restitution now applies to every ball profile.
+- **Integration notes for 2.5/6.0:** see the 2.3, 2.4, 2.7, 3.4, 4.3 and 4.6 lines above:
+  - wiring order flippers set 0, mechs set 1;
+  - `MechSpec::from_def`;
+  - rumble reset on session start;
+  - telemetry back-pressure;
+  - lane guide wall height;
+  - z-up metres playfield.glb.
