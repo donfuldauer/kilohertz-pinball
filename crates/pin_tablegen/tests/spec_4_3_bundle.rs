@@ -139,6 +139,7 @@ fn write_bundle_failure_after_first_replacement_keeps_previous_outputs() {
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n != pin_tablegen::LOCK_FILE)
         .collect();
     names.sort();
     assert_eq!(names, ["playfield.glb", "table.toml"]);
@@ -152,6 +153,7 @@ fn write_bundle_failure_after_first_replacement_keeps_previous_outputs() {
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n != pin_tablegen::LOCK_FILE)
         .collect();
     names.sort();
     assert_eq!(names, ["playfield.glb", "table.toml"]);
