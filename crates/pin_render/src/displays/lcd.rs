@@ -181,8 +181,8 @@ impl LcdDrawList {
                     let bh = if layer.h > 0.0 {
                         layer.h * fh
                     } else {
-                        match images.get(file) {
-                            Some(img) => bw * img.height as f32 / img.width.max(1) as f32,
+                        match images.get(file).filter(|i| i.is_valid()) {
+                            Some(img) => bw * img.height as f32 / img.width as f32,
                             None => continue,
                         }
                     };

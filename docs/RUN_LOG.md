@@ -296,3 +296,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 5.3 | Implementer | Opus 5.5 | fix 1 | running | — | |
 | 5 | 5.2 | Reviewer | Fable 5.2 | 2 | **pass** | fmt/clippy clean ±gpu-tests; pin_render 492/492 lavapipe; spec 28/28 + 20/20; coverage 97.10 %; 5.1 regression 66/66; odd×odd halo 0.96–0.98 at every parity; scheduler fuzz 500 000 frames 0 violations | B1, N3, N4 verified; N1 odd-edge residual accepted (smooth, no flicker); N1 doc corrections + N2 'steady' bound + N3 doc → polish; N4 perf → HUMAN_QUEUE |
 | 5 | 5.2 | Implementer | Opus 5.5 | polish | running | — | doc-only |
+| 5 | 5.2 | Implementer | Opus 5.5 | polish | done | doc/comment only; rustfmt + clippy -D warnings clean (±gpu-tests); post_gpu 9/9, post_naga 3/3 | N1 bounds corrected, N2 steady-count age bound, N3 multiball staleness documented. **5.2 complete** (target dir kept: shared with 5.3) |

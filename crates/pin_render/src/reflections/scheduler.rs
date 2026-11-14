@@ -39,7 +39,10 @@ pub const TRACK_MAX_JUMP_M: f32 = 0.25;
 /// last frame was another index (a ball before it in the list drained, so
 /// the list shifted). A ball with a stale or missing capture samples the
 /// captured probe nearest to it (by capture position) until its own slot
-/// is captured again.
+/// is captured again. In a tight multiball a ball can be flagged although
+/// it kept its index (another ball's previous position is nearer than its
+/// own); it then samples the nearest capture, a neighbour a few cm away,
+/// which is harmless.
 ///
 /// Each [`schedule`](Self::schedule) call is one frame and captures the
 /// next `budget` ball indices after the last captured one, cyclically
@@ -47,7 +50,10 @@ pub const TRACK_MAX_JUMP_M: f32 = 0.25;
 /// balls and budget 2). Positions never change the order. With a steady
 /// `n` balls every ball is captured once every ⌈n / budget⌉ frames or more
 /// often, so its age (frames since its own slot's capture, 0 = this frame)
-/// stays ≤ ⌈n / budget⌉ − 1, and over any window of `n` frames the capture
+/// stays ≤ ⌈n / budget⌉ − 1 (steady count only: right after a count change
+/// the worst age is < 2·⌈n / budget⌉, and with the count changing every
+/// frame it can be higher, though the cursor keeps advancing so no ball
+/// starves), and over any window of `n` frames the capture
 /// counts differ by at most 1. After each frame the cursor is (last
 /// captured index + 1) mod (that frame's count); the next frame starts at
 /// the cursor mod its own count, whether the count shrank or grew, so a

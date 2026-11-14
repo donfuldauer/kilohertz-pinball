@@ -360,8 +360,8 @@ fn bloom_is_energy_conserving_at_every_position_and_odd_size() {
                 );
                 halos.push(halo);
             } else {
-                // Borders: mirrored levels; exact at even edges; next to an
-                // odd last row / column within 30 % of the scattered part
+                // Borders: mirrored levels; exact at edges that stay even
+                // through the levels, else within 30 % of the scattered part
                 // (DECISIONS "5.2 — fix round 1").
                 let tol = if w % 2 == 0 && h % 2 == 0 { 0.01 } else { 0.3 };
                 assert!(

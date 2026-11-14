@@ -7,7 +7,7 @@ use super::score::{ScoreState, expand_text, score_view_layout};
 use super::{DisplayError, ImageSet, RgbaImage};
 use crate::gpu::{GpuContext, GpuError};
 use crate::topology::Rect;
-use pin_assetgen::fonts::{BitmapFont, FONT_5X7, FONT_8X16, render_text};
+use pin_assetgen::fonts::{BitmapFont, FONT_5X7, FONT_8X16, GLYPH_SPACING, render_text};
 use pin_core::schema::backglass::DmdColor;
 use wgpu::util::DeviceExt;
 
@@ -212,6 +212,17 @@ impl Canvas {
         }
     }
 
+    /// Blends the clipped run `x0..x1` of row `y` with one colour.
+    fn blend_run(&mut self, y: i64, x0: i64, x1: i64, col: [f32; 3], a: f32) {
+        let row = y as usize * self.w as usize;
+        let (inv, ca) = (1.0 - a, col.map(|c| c * a));
+        for d in &mut self.acc[row + x0 as usize..row + x1 as usize] {
+            for i in 0..3 {
+                d[i] = d[i] * inv + ca[i];
+            }
+        }
+    }
+
     /// The clipped dot range of the box `[x0, x1) × [y0, y1)` (integer dots).
     fn range(&self, x0: i64, y0: i64, x1: i64, y1: i64) -> (i64, i64, i64, i64) {
         let [cx0, cy0, cx1, cy1] = self.clip;
@@ -234,19 +245,56 @@ impl Canvas {
         max_w: u32,
     ) {
         let (font, scale) = pick_font(text, size_dots, font, max_w);
-        let mut bits = Vec::new();
-        let (tw, th) = render_text(font.bitmap(), text, &mut bits);
+        let (fw_dots, th) = dmd_text_dots(text, font, scale);
         let s = i64::from(scale);
-        let (w, h) = (i64::from(tw) * s, i64::from(th) * s);
+        let (w, h) = (i64::from(fw_dots), i64::from(th));
         let left = align.left_of(anchor[0], w as f32).round() as i64;
         let top = valign.top_of(anchor[1], h as f32).round() as i64;
         let (x0, y0, x1, y1) = self.range(left, top, left.saturating_add(w), top.saturating_add(h));
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        // Rasterise only the characters that reach the clip.
+        let cell = i64::from(font.bitmap().width() + GLYPH_SPACING) * s;
+        let first = ((x0 - left) / cell).max(0) as usize;
+        let last = ((x1 - 1 - left) / cell).max(0) as usize;
+        let visible: String = text.chars().skip(first).take(last + 1 - first).collect();
+        let left = left + first as i64 * cell;
+        let mut bits = Vec::new();
+        let (tw, th) = render_text(font.bitmap(), &visible, &mut bits);
+        let (x1, y1) = (
+            x1.min(left + i64::from(tw) * s),
+            y1.min(top + i64::from(th) * s),
+        );
+        // Lit runs of each glyph row, as clipped dot spans; each source row is
+        // reused for its `scale` output rows.
+        let mut spans: Vec<(i64, i64)> = Vec::new();
+        let mut src_row = usize::MAX;
         for y in y0..y1 {
-            let row = ((y - top) / s) as usize * tw as usize;
-            for x in x0..x1 {
-                if bits[row + ((x - left) / s) as usize] != 0 {
-                    self.blend_at(x, y, col, a);
+            let r = ((y - top) / s) as usize;
+            if r != src_row {
+                src_row = r;
+                spans.clear();
+                let bits_row = &bits[r * tw as usize..(r + 1) * tw as usize];
+                let mut j = 0;
+                while j < bits_row.len() {
+                    if bits_row[j] == 0 {
+                        j += 1;
+                        continue;
+                    }
+                    let start = j;
+                    while j < bits_row.len() && bits_row[j] != 0 {
+                        j += 1;
+                    }
+                    let sx0 = (left + start as i64 * s).max(x0);
+                    let sx1 = (left + j as i64 * s).min(x1);
+                    if sx0 < sx1 {
+                        spans.push((sx0, sx1));
+                    }
                 }
+            }
+            for &(sx0, sx1) in &spans {
+                self.blend_run(y, sx0, sx1, col, a);
             }
         }
     }
@@ -342,9 +390,9 @@ impl DmdFrame {
                 }
                 LayerKind::Rect => {
                     let (x0, y0, x1, y1) = c.cells(box_px(layer.w * fw, layer.h * fh));
-                    for y in y0..y1 {
-                        for x in x0..x1 {
-                            c.blend_at(x, y, col, a);
+                    if x0 < x1 {
+                        for y in y0..y1 {
+                            c.blend_run(y, x0, x1, col, a);
                         }
                     }
                 }
@@ -363,23 +411,27 @@ impl DmdFrame {
                     }
                     let b = box_px(bw, bh);
                     let (x0, y0, x1, y1) = c.cells(b);
-                    // Nearest texel per column, computed once.
-                    let us: Vec<u32> = (x0..x1)
+                    // Nearest texel per column, computed once (byte offsets).
+                    let us: Vec<usize> = (x0..x1)
                         .map(|x| {
                             (((x as f32 + 0.5 - b[0]) / bw * img.width as f32) as u32)
-                                .min(img.width - 1)
+                                .min(img.width - 1) as usize
+                                * 4
                         })
                         .collect();
+                    let stride = img.width as usize * 4;
+                    let tint = col.map(|v| v / 255.0);
                     for y in y0..y1 {
                         let v = (((y as f32 + 0.5 - b[1]) / bh * img.height as f32) as u32)
-                            .min(img.height - 1);
+                            .min(img.height - 1) as usize;
+                        let src = &img.pixels[v * stride..(v + 1) * stride];
                         for (x, &u) in (x0..x1).zip(&us) {
-                            let p = img.pixel(u, v);
+                            let p = &src[u..u + 4];
                             if p[3] == 0 {
                                 continue;
                             }
                             let pa = f32::from(p[3]) / 255.0;
-                            let tinted = core::array::from_fn(|i| f32::from(p[i]) / 255.0 * col[i]);
+                            let tinted = core::array::from_fn(|i| f32::from(p[i]) * tint[i]);
                             c.blend_at(x, y, tinted, a * pa);
                         }
                     }

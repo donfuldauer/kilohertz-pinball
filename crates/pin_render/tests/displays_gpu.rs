@@ -769,3 +769,189 @@ fn display_set_draws_into_pip_viewports_only() {
     }
     save("routing_pip_640x360", &img);
 }
+
+// ---------- fix round 1 (B1, N1, N4, N7) ----------
+
+#[test]
+fn oversized_and_invalid_images_are_refused() {
+    let Some(ctx) = ctx("oversized_and_invalid_images_are_refused") else {
+        return;
+    };
+    let max = ctx.device().limits().max_texture_dimension_2d;
+    let fmt = wgpu::TextureFormat::Rgba8Unorm;
+    let bad = [
+        RgbaImage::new(max + 1, 1),
+        RgbaImage::new(1, max + 1),
+        RgbaImage::new(0, 0),
+        RgbaImage {
+            width: 8,
+            height: 8,
+            pixels: vec![0; 10],
+        },
+    ];
+    let mut lcd = LcdRenderer::new(&ctx, fmt, LcdSpec::default());
+    let base = lcd.texture_count();
+    for img in &bad {
+        let e = lcd.set_image(&ctx, "a.png", img).unwrap_err();
+        assert!(
+            matches!(e, pin_render::gpu::GpuError::InvalidArgument(_)),
+            "{e}"
+        );
+        let mut set = ImageSet::new();
+        set.insert("a.png", img.clone());
+        let list = LcdDrawList {
+            width: 16,
+            height: 9,
+            background: [0; 3],
+            items: vec![],
+        };
+        assert!(
+            render_lcd_to_image(&ctx, LcdSpec::new(16, 16).unwrap(), &list, &set, 16, 9).is_err()
+        );
+        for (image, mask) in [
+            (img.clone(), solid(4, 4, [0; 4])),
+            (solid(4, 4, [0; 4]), img.clone()),
+        ] {
+            let desc = BackglassDesc {
+                layers: vec![BackglassLayer {
+                    image,
+                    lamp: Some(LayerLamp {
+                        lamp: LampId(0),
+                        mask,
+                        blend: LayerBlend::Over,
+                    }),
+                }],
+            };
+            assert!(BackglassRenderer::new(&ctx, fmt, &desc).is_err());
+        }
+    }
+    assert_eq!(lcd.texture_count(), base, "nothing uploaded");
+    // Setting the same file again replaces the texture in place.
+    lcd.set_image(&ctx, "a.png", &solid(2, 2, [255; 4]))
+        .unwrap();
+    lcd.set_image(&ctx, "a.png", &solid(3, 3, [0, 0, 255, 255]))
+        .unwrap();
+    lcd.set_image(&ctx, "b.png", &solid(1, 1, [255; 4]))
+        .unwrap();
+    assert_eq!(lcd.texture_count(), base + 2);
+    // A refused replacement keeps the previous image.
+    assert!(lcd.set_image(&ctx, "a.png", &bad[0]).is_err());
+    let spec = LcdSpec::new(16, 16).unwrap();
+    let list = LcdDrawList {
+        width: 16,
+        height: 16,
+        background: [0; 3],
+        items: vec![LcdItem::Image {
+            file: "a.png".into(),
+            rect: [0.0, 0.0, 16.0, 16.0],
+            color: [255; 4],
+        }],
+    };
+    let mut r = LcdRenderer::new(&ctx, fmt, spec);
+    r.set_image(&ctx, "a.png", &solid(2, 2, [255; 4])).unwrap();
+    r.set_image(&ctx, "a.png", &solid(3, 3, [0, 0, 255, 255]))
+        .unwrap();
+    r.set_draw_list(ctx.queue(), &list);
+    let img = offscreen(&ctx, 16, 16, |enc, view| {
+        r.encode(enc, view, (16, 16), Rect::new(0, 0, 16, 16));
+    });
+    assert_eq!(&img.pixel(8, 8)[..3], &[0, 0, 255], "replacement drawn");
+}
+
+/// Renders with `draw` into a cleared `w × h` Rgba8Unorm texture and reads it
+/// back (test helper).
+fn offscreen(
+    ctx: &GpuContext,
+    w: u32,
+    h: u32,
+    draw: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
+) -> RgbaImage {
+    let tex = ctx.device().create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&Default::default());
+    let mut enc = ctx.device().create_command_encoder(&Default::default());
+    draw(&mut enc, &view);
+    let row = (w * 4).div_ceil(256) * 256;
+    let buf = ctx.device().create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(row * h),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        tex.size(),
+    );
+    ctx.queue().submit([enc.finish()]);
+    buf.map_async(wgpu::MapMode::Read, .., |_| {});
+    pin_render::gpu::wait_for_device(ctx.device(), std::time::Duration::from_secs(60)).unwrap();
+    let mapped = buf.get_mapped_range(..).unwrap();
+    let mut px = Vec::new();
+    for y in 0..h as usize {
+        px.extend_from_slice(&mapped[y * row as usize..y * row as usize + (w * 4) as usize]);
+    }
+    RgbaImage::from_rgba(w, h, px).unwrap()
+}
+
+#[test]
+fn mark_dirty_forces_a_redraw_report() {
+    let Some(ctx) = ctx("mark_dirty_forces_a_redraw_report") else {
+        return;
+    };
+    let fmt = wgpu::TextureFormat::Rgba8Unorm;
+    let frame = DmdFrame::new(128, 32);
+    let mut d = DmdRenderer::new(&ctx, fmt, DMD_128X32);
+    assert!(d.set_frame(ctx.queue(), &frame));
+    assert!(!d.set_frame(ctx.queue(), &frame));
+    d.mark_dirty();
+    assert!(d.set_frame(ctx.queue(), &frame));
+    assert!(!d.set_frame(ctx.queue(), &frame));
+    let list = LcdDrawList {
+        width: 16,
+        height: 9,
+        background: [0; 3],
+        items: vec![],
+    };
+    let mut l = LcdRenderer::new(&ctx, fmt, LcdSpec::new(16, 16).unwrap());
+    assert!(l.set_draw_list(ctx.queue(), &list));
+    assert!(!l.set_draw_list(ctx.queue(), &list));
+    l.mark_dirty();
+    assert!(l.set_draw_list(ctx.queue(), &list));
+    l.set_image(&ctx, "x.png", &solid(1, 1, [0; 4])).unwrap();
+    assert!(
+        l.set_draw_list(ctx.queue(), &list),
+        "new image needs a redraw"
+    );
+    assert!(!l.set_draw_list(ctx.queue(), &list));
+    let mut s = ScoreRenderer::new(&ctx, fmt, ScoreDisplayConfig::Dmd(DMD_128X32));
+    let c = DisplayContent::Dmd(frame);
+    assert!(s.update(ctx.queue(), &c));
+    assert!(!s.update(ctx.queue(), &c));
+    s.mark_dirty();
+    assert!(s.update(ctx.queue(), &c));
+}

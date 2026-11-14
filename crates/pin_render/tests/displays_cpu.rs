@@ -935,3 +935,98 @@ fn score_layer_stays_inside_its_box() {
         }
     }
 }
+
+// ---------- fix round 1 (B1, N1, N2, N8) ----------
+
+#[test]
+fn invalid_images_are_skipped_by_composition() {
+    let mut im = ImageSet::new();
+    im.insert("zero.png", RgbaImage::new(0, 0));
+    im.insert(
+        "short.png",
+        RgbaImage {
+            width: 8,
+            height: 8,
+            pixels: vec![255; 10],
+        },
+    );
+    let scene = Scene::from_toml_str(
+        "schema_version = 1\n[[layers]]\nkind = \"image\"\nfile = \"zero.png\"\n[[layers]]\nkind = \"image\"\nfile = \"short.png\"\nh = 1.0\n[[layers]]\nkind = \"image\"\nfile = \"short.png\"\n",
+    )
+    .unwrap();
+    let st = ScoreState::default();
+    let f = DmdFrame::compose(&DMD_128X32, &scene, 0, &st, &im);
+    assert_eq!(f.lit_count(), 0);
+    let l = LcdDrawList::compose(&LcdSpec::default(), &scene, 0, &st, &im);
+    // Only the explicit-size layer stays in the list; the renderer has no
+    // texture for it and skips it.
+    assert_eq!(l.items.len(), 1);
+    assert!(!RgbaImage::new(0, 5).is_valid());
+    assert!(RgbaImage::new(3, 2).is_valid());
+    // Byte count overflowing usize: empty buffer, invalid, no panic.
+    if usize::BITS == 32 {
+        assert!(!RgbaImage::new(u32::MAX, u32::MAX).is_valid());
+    }
+    let bad = RgbaImage {
+        width: 4,
+        height: 4,
+        pixels: vec![1; 7],
+    };
+    assert_eq!(bad.pixel(3, 3), [0; 4]);
+}
+
+/// The worst parseable scenes: 64 layers of each heavy kind with boxes 4 × 4
+/// displays large and the longest texts. Composition work is bounded by the
+/// display area per layer. Times are printed for the record only (D8: tests
+/// never assert on wall-clock time).
+#[test]
+fn hostile_scenes_compose_with_bounded_work() {
+    let long = "W".repeat(MAX_TEXT_CHARS);
+    let mut texts = String::from("schema_version = 1\n");
+    let mut scores = String::from("schema_version = 1\n");
+    let mut images = String::from("schema_version = 1\n");
+    let mut huge = String::from("schema_version = 1\n");
+    for i in 0..MAX_SCENE_LAYERS {
+        texts += &format!(
+            "[[layers]]\nkind = \"text\"\ntext = \"{}\"\nsize = 4.0\nx = 0.{i}\n",
+            if i % 2 == 0 { long.as_str() } else { "W" }
+        );
+        scores += "[[layers]]\nkind = \"score\"\nx = -1.0\ny = -1.0\nw = 4.0\nh = 4.0\n";
+        images += "[[layers]]\nkind = \"image\"\nfile = \"big.png\"\nx = -1.0\ny = -1.0\nw = 4.0\nh = 4.0\nalpha = 0.5\n";
+        huge += "[[layers]]\nkind = \"text\"\ntext = \"{score}{score}{score}{score}\"\nsize = 4.0\nfont = \"8x16\"\n";
+    }
+    let mut im = ImageSet::new();
+    im.insert(
+        "big.png",
+        RgbaImage::from_rgba(1024, 1024, vec![200; 1024 * 1024 * 4]).unwrap(),
+    );
+    let st = ScoreState {
+        scores: [i64::MIN, i64::MAX, -1, 1],
+        players: 4,
+        ball: 255,
+        credits: u32::MAX,
+        ..ScoreState::default()
+    };
+    for spec in [DMD_192X64, DmdSpec::new(512, 256, DmdColor::Rgb).unwrap()] {
+        for (name, text) in [
+            ("text", &texts),
+            ("score", &scores),
+            ("image", &images),
+            ("8x16", &huge),
+        ] {
+            let scene = Scene::from_toml_str(text).unwrap();
+            let t = std::time::Instant::now();
+            let f = DmdFrame::compose(&spec, &scene, 0, &st, &im);
+            println!(
+                "hostile {name} {}x{}: {:?} ({} lit)",
+                spec.width,
+                spec.height,
+                t.elapsed(),
+                f.lit_count()
+            );
+            assert_eq!(f.dots.len(), (spec.width * spec.height) as usize);
+            let l = LcdDrawList::compose(&LcdSpec::default(), &scene, 0, &st, &im);
+            assert!(l.items.len() <= MAX_SCENE_LAYERS * 5);
+        }
+    }
+}

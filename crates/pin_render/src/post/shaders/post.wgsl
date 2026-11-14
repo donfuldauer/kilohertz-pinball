@@ -153,10 +153,11 @@ fn fs_prefilter(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 // same total, whatever the parity of the size or the position (energy
 // conserving), and every output texel's weights sum to 1 (a uniform image
 // stays uniform). Outside the image the levels are mirrored about their
-// edges (half-texel symmetric), which keeps both properties at the
-// borders as long as the fine and the coarse edge coincide (even sizes);
-// at an odd last row or column they are a texel apart (see DECISIONS
-// "5.2 — fix round 1").
+// edges, located on each level's grid, which keeps both properties at an
+// edge while the size stays even through the levels; where a level's size
+// turns odd the deeper edges fall a quarter texel off the grid, and a
+// pixel next to that edge has an energy error of up to ~±30 % of its
+// scattered part (see DECISIONS "5.2 — fix round 1").
 
 fn b6(k: i32) -> f32 {
     switch k {
