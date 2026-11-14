@@ -42,8 +42,10 @@ work-classifier.
    classifier-bound item into the classifier batch, so the classifier groups same-file items
    into one brief at the higher tier. Send all classifier-bound items to ONE work-classifier
    call as a batch.
-5. Group the remaining fast-path items by tier into one Fixer brief per tier. When items of different tiers
-   touch the same file, put them in one brief at the higher tier.
+5. Group the remaining fast-path items by tier and module directory: one Fixer brief per
+   (tier, module) group, with all docs-only items (docs/, .claude/, CLAUDE.md) counting as one
+   docs group (PLAN §2.3 rule 1). When items of different tiers touch the same file, put them
+   in one brief at the higher tier.
 6. Spawn executors, in parallel when owned paths do not overlap.
 7. Run ONE work-verifier on the resulting head commit covering every item in the round whenever
    the round changed the head (executor fixes, or a commit such as a HUMAN_QUEUE line for a
