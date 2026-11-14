@@ -31,8 +31,8 @@ use pin_core::ids::{MagnetId, ProfileId};
 use pin_core::{BallProfile, Material};
 
 use super::body::{
-    BODY_REST_SPEED, BODY_SKIN, BodyCast, BodyContactState, MAX_BODY_SOLVES_PER_TICK, MovingBodies,
-    solve_body_contact,
+    BODY_REST_SPEED, BODY_SKIN, BodyCast, BodyContactState, MAX_BODY_SOLVES_PER_BALL,
+    MAX_BODY_SOLVES_PER_TICK, MovingBodies, solve_body_contact,
 };
 use super::contact::{
     ContactCoefficients, ContactImpulse, SphereBody, apply_ball_impulse, apply_surface_impulse,
@@ -221,8 +221,18 @@ struct Bodies<'s, 'b> {
     /// A body with a finite mass was pushed since the last check: its
     /// trajectory changed, so every ball's cast is stale.
     moved: bool,
-    /// Body-contact solve steps this tick (see `MAX_BODY_SOLVES_PER_TICK`).
-    solves: u32,
+    /// Body-contact solve steps this tick, per ball (see
+    /// `MAX_BODY_SOLVES_PER_BALL`) and in all (`MAX_BODY_SOLVES_PER_TICK`).
+    solves: [u32; MAX_BALLS],
+    total: u32,
+}
+
+impl Bodies<'_, '_> {
+    /// Whether ball `i` has spent its body-solve budget this tick (or the
+    /// global cap is spent).
+    fn starved(&self, i: usize) -> bool {
+        self.solves[i] >= MAX_BODY_SOLVES_PER_BALL || self.total >= MAX_BODY_SOLVES_PER_TICK
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -380,6 +390,8 @@ pub struct BallSolver {
     elapsed: f64,
     /// `dt` of the step in progress.
     tick_dt: f32,
+    /// Body-contact solve steps per ball in the last step.
+    body_solves: [u32; MAX_BALLS],
     hooks: Vec<Box<dyn ExternalForce>>,
     surface_velocity: Option<Box<dyn SurfaceVelocity>>,
     chains: Vec<NewtonChain>,
@@ -444,6 +456,7 @@ impl BallSolver {
             steps: 0,
             elapsed: 0.0,
             tick_dt: 0.0,
+            body_solves: [0; MAX_BALLS],
             hooks: Vec::new(),
             surface_velocity: None,
             chains: Vec::new(),
@@ -617,6 +630,14 @@ impl BallSolver {
     #[must_use]
     pub fn step_count(&self) -> u64 {
         self.steps
+    }
+
+    /// Body-contact solve steps each ball used in the last step (diagnostic;
+    /// a ball at [`MAX_BODY_SOLVES_PER_BALL`] was starved).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn body_solves_last_step(&self) -> [u32; MAX_BALLS] {
+        self.body_solves
     }
 
     /// Simulated time of all completed steps, seconds.
@@ -856,10 +877,11 @@ impl BallSolver {
         acc: &mut ContactImpulse,
         st: &mut BodyContactState,
     ) -> f32 {
-        if bodies.solves >= MAX_BODY_SOLVES_PER_TICK {
+        if bodies.starved(i) {
             return 0.0;
         }
-        bodies.solves += 1;
+        bodies.solves[i] += 1;
+        bodies.total += 1;
         let k = self.surface_coefficients(sc.pidx, material);
         let (Some(ball), Some(s)) = (self.slots[i].as_mut(), bodies.sets.get_mut(set)) else {
             return 0.0;
@@ -1769,9 +1791,9 @@ impl BallSolver {
                 }
             }
         }
-        // Once the tick's body-solve budget is spent, bodies are not cast
-        // either (nothing more would be solved against them this tick).
-        let body_sets = if bodies.solves >= MAX_BODY_SOLVES_PER_TICK {
+        // Once this ball's body-solve budget is spent, it is not cast
+        // against bodies either (nothing more would be solved this tick).
+        let body_sets = if bodies.starved(i) {
             &[][..]
         } else {
             &bodies.sets[..]
@@ -1869,14 +1891,48 @@ impl BallSolver {
                 self.advance_ball(j, me.t, sc);
             }
         }
+        // Other balls touching the same moving body are solved together
+        // with this one (a ball resting on a bat that another ball knocks):
+        // alternating single-ball events would converge slowly through the
+        // body and run into the per-sub-step event limit.
+        let mut partners = [false; MAX_BALLS];
+        if let ImpactTarget::Body { set, body } = target {
+            for j in 0..MAX_BALLS {
+                partners[j] = j != i
+                    && sc[j].active
+                    && lists[j].iter().any(|c| {
+                        c.depth >= -c.active_eps
+                            && matches!(c.kind, ContactKind::Surface(ImpactTarget::Body { set: s, body: b }, _) if s == set && b == body)
+                    });
+                if partners[j] {
+                    self.advance_ball(j, me.t, sc);
+                }
+            }
+        }
+        // A new solve: what the earlier solves learnt about the bodies
+        // (observed responses, impulse caps) may be stale now, e.g. after
+        // another ball knocked a body into this one.
+        for (j, list) in lists.iter_mut().enumerate() {
+            if j == i || partners[j] {
+                for c in list.iter_mut() {
+                    c.body = BodyContactState::NEW;
+                }
+            }
+        }
         let alone = [false; MAX_BALLS];
         let mut unused = [false; MAX_BALLS];
         let mut total = 0.0f32;
         let mut mid = 0.0f32;
         for pass in 0..PRESOLVE_PASSES {
-            let change = self
-                .boundary_sweep(i, list, false, &alone, &mut unused, sc, bodies)
-                .max(self.boundary_sweep(i, list, true, &alone, &mut unused, sc, bodies));
+            let mut change = 0.0f32;
+            for j in 0..MAX_BALLS {
+                if j == i || partners[j] {
+                    let list = &mut lists[j];
+                    change = change
+                        .max(self.boundary_sweep(j, list, false, &alone, &mut unused, sc, bodies))
+                        .max(self.boundary_sweep(j, list, true, &alone, &mut unused, sc, bodies));
+                }
+            }
             total = total.max(change);
             if change <= PRESOLVE_TOLERANCE {
                 break;
@@ -1886,9 +1942,14 @@ impl BallSolver {
             }
             if pass == STALL_PASSES
                 && change > 0.5 * mid
-                && self.kinematic_pinch(i, list, me.t, bodies)
+                && self.kinematic_pinch(i, &lists[i], me.t, bodies)
             {
                 break;
+            }
+        }
+        for j in 0..MAX_BALLS {
+            if partners[j] {
+                sc[j].cache = Cache::Dirty;
             }
         }
         total > 0.0
@@ -2121,9 +2182,13 @@ impl BallSolver {
             let mut ctx = Bodies {
                 sets: &mut *bodies,
                 moved: false,
-                solves: 0,
+                solves: [0; MAX_BALLS],
+                total: 0,
             };
             self.run_timeline(geo, &bounds, dt, &mut sc, &mut ctx, events);
+            self.body_solves = ctx.solves;
+        } else {
+            self.body_solves = [0; MAX_BALLS];
         }
         for set in bodies.iter_mut() {
             set.end_tick(dt);

@@ -113,7 +113,7 @@ unchanged):
 
 ### CR-004: kind-specific `[[mechs]]` parameters and a `[mechs]` section of `physics_defaults.toml`
 - **Requested by:** Subphase 2.4 (Implementer); closes 1.1 review N7
-- **Status:** open (additive; landed in the working tree for review with Subphase 2.4)
+- **Status:** merged (with Subphase 2.4, review round 2 pass; additive incl. the spinner `friction` extension, verified by the Reviewer)
 - **Kind:** additive
 - **Items:** `crates/pin_core/src/schema/table.rs` (`MechDef`, new `MechParams`), `crates/pin_core/src/schema/physics.rs` (new `MechDefaults` and per-kind default structs, new field `PhysicsDefaults::mechs`), `crates/pin_core/src/schema/mod.rs` and `crates/pin_core/src/lib.rs` (re-exports), `physics_defaults.toml` (new `[mechs.*]` tables).
 - **Change:**

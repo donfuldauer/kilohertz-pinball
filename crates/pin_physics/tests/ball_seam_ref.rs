@@ -528,3 +528,110 @@ impl FlipperTable {
         out
     }
 }
+
+/// A box translating along a fixed unit axis with finite mass (a 1-DOF
+/// slider: zipper flipper, kicker arm, plunger tip), no drive, no stops.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct SliderBody {
+    /// Centre at the start of the current segment.
+    pub center: Vec3,
+    pub half: Vec3,
+    /// Unit axis of motion.
+    pub axis: Vec3,
+    /// Speed along the axis (committed, start of tick).
+    pub speed: f32,
+    pub mass: f32,
+    seg_t: f32,
+    seg_center: Vec3,
+    seg_speed: f32,
+}
+
+impl SliderBody {
+    pub fn new(center: Vec3, half: Vec3, axis: Vec3, mass: f32) -> Self {
+        Self {
+            center,
+            half,
+            axis,
+            speed: 0.0,
+            mass,
+            seg_t: 0.0,
+            seg_center: center,
+            seg_speed: 0.0,
+        }
+    }
+
+    pub fn center_at(&self, t: f32) -> Vec3 {
+        self.seg_center + self.axis * (self.seg_speed * (t - self.seg_t))
+    }
+
+    fn slab(&self, t: f32) -> SlabBody {
+        SlabBody::new(self.center_at(t), self.half, Vec3::ZERO)
+    }
+
+    pub fn closest(&self, t: f32, p: Vec3) -> BodyPoint {
+        self.slab(t).closest(0.0, p)
+    }
+}
+
+/// A set of [`SliderBody`]s.
+#[derive(Clone, Debug, Default)]
+pub struct Sliders {
+    pub bodies: ArrayVec<SliderBody, MAX_REF_BODIES>,
+    pub dt: f32,
+}
+
+impl MovingBodies for Sliders {
+    fn body_count(&self) -> usize {
+        self.bodies.len()
+    }
+    fn begin_tick(&mut self, dt: f32) {
+        self.dt = dt;
+        for b in &mut self.bodies {
+            b.seg_t = 0.0;
+            b.seg_center = b.center;
+            b.seg_speed = b.speed;
+        }
+    }
+    fn end_tick(&mut self, dt: f32) {
+        for b in &mut self.bodies {
+            b.center = b.center_at(dt);
+            b.speed = b.seg_speed;
+            b.seg_t = 0.0;
+            b.seg_center = b.center;
+        }
+    }
+    fn layer_mask(&self, _body: usize) -> u8 {
+        layers::ALL
+    }
+    fn material(&self, _body: usize) -> Material {
+        Material::Rubber
+    }
+    fn swept_bounds(&self, body: usize) -> (Vec3, Vec3) {
+        // The rest of the tick, at the current speed.
+        let b = &self.bodies[body];
+        let (a, c) = (b.center_at(b.seg_t), b.center_at(self.dt));
+        (a.min(c) - b.half, a.max(c) + b.half)
+    }
+    fn max_surface_speed(&self, body: usize) -> f32 {
+        self.bodies[body].seg_speed.abs()
+    }
+    fn closest_point(&self, body: usize, time: f32, point: Vec3) -> Option<BodyPoint> {
+        Some(self.bodies[body].closest(time, point))
+    }
+    fn velocity_at(&self, body: usize, _time: f32, _point: Vec3) -> Vec3 {
+        let b = &self.bodies[body];
+        b.axis * b.seg_speed
+    }
+    fn inverse_mass_at(&self, body: usize, _time: f32, _point: Vec3, dir: Vec3) -> f32 {
+        let b = &self.bodies[body];
+        let a = dir.dot(b.axis);
+        a * a / b.mass
+    }
+    fn apply_impulse(&mut self, body: usize, time: f32, _point: Vec3, impulse: Vec3) {
+        let b = &mut self.bodies[body];
+        let c = b.center_at(time);
+        b.seg_speed += impulse.dot(b.axis) / b.mass;
+        b.seg_t = time;
+        b.seg_center = c;
+    }
+}

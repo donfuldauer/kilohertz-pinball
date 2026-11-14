@@ -238,10 +238,19 @@ pub const BODY_REST_SPEED: f32 = 1.0e-3;
 /// answers wrongly can do.
 pub const BODY_SPEED_LIMIT: f32 = 100.0;
 
-/// Body-contact solve steps per tick; once spent, body contacts apply no
-/// further impulse until the next tick (penetration is then projected out at
-/// the next sub-step boundary). Bounds the work a misbehaving body can cause.
-pub const MAX_BODY_SOLVES_PER_TICK: u32 = 4096;
+/// Body-contact solve steps one ball may use per tick. Once it has spent
+/// them, that ball's body contacts apply no further impulse and it is not
+/// cast against bodies until the next tick (penetration is then projected
+/// out at its next sub-step boundary); every other ball is unaffected, so
+/// one pinched group cannot let another ball through a flipper. Bounds the
+/// work a misbehaving body can cause per ball.
+pub const MAX_BODY_SOLVES_PER_BALL: u32 = 2048;
+
+/// Global safety cap on body-contact solve steps per tick (all balls); once
+/// spent, no ball is solved or cast against bodies until the next tick. Far
+/// above what the per-ball budgets of the balls touching bodies normally
+/// use.
+pub const MAX_BODY_SOLVES_PER_TICK: u32 = 16_384;
 
 /// Iterations of [`conservative_cast`] before it reports
 /// [`BodyCast::Advance`].
@@ -464,24 +473,26 @@ pub(super) struct BodyContactState {
     /// growth from sweep to sweep).
     pub k: f32,
     /// Upper bound of the accumulated normal impulse (N·s): the largest
-    /// `m · (u_target − u_free)` seen, where `u_free = (v_ball − v₀)·n −
-    /// J_acc/m` is the relative normal velocity the ball would have without
-    /// this contact's own impulse, measured against the body velocity `v₀`
-    /// of the contact's first solve step. A body that keeps the contract
-    /// never needs more (a two-body impulse is at most the impulse against an
-    /// immovable body); pushes from the ball's other contacts raise it,
-    /// whatever the body itself answers does not.
+    /// `m · (u_target − u_free)` seen, where `u_free = (v_ball − (v_body −
+    /// Δv_own))·n − J_acc/m` is the relative normal velocity the ball would
+    /// have if this contact had applied no impulse at all: its own impulse is
+    /// removed from the ball, and the body's measured response to it
+    /// (`Δv_own`) from the body. A body that keeps the contract never needs
+    /// more (a two-body impulse is at most the impulse against an immovable
+    /// body); pushes from the ball's other contacts, and from other contacts
+    /// on the *body* (another ball knocking it into this one), raise it;
+    /// whatever the body answers to this contact's own impulses does not.
     pub cap: f32,
-    /// Body velocity at the contact point at the first solve step (NaN =
-    /// not yet seen).
-    pub v0: Vec3,
+    /// The body's measured velocity change at the contact point caused by
+    /// this contact's own impulses so far (`Δv_own`).
+    pub own_v: Vec3,
 }
 
 impl BodyContactState {
     pub(super) const NEW: Self = Self {
         k: 0.0,
         cap: 0.0,
-        v0: Vec3::NAN,
+        own_v: Vec3::ZERO,
     };
 }
 
@@ -527,10 +538,7 @@ pub(super) fn solve_body_contact(
     if !un.is_finite() || !vs.is_finite() {
         return (0.0, false);
     }
-    if st.v0.is_nan() {
-        st.v0 = vs;
-    }
-    let u_free = (ball.velocity - st.v0).dot(n) - acc.normal / m;
+    let u_free = (ball.velocity - (vs - st.own_v)).dot(n) - acc.normal / m;
     let need = m * (target_normal_speed - u_free);
     if need > st.cap {
         st.cap = need;
@@ -574,7 +582,7 @@ pub(super) fn solve_body_contact(
                 m,
                 set,
                 (body, time, point, n),
-                (un, start.normal),
+                (un, start.normal, k_ball),
                 target_normal_speed,
                 acc,
                 st,
@@ -598,7 +606,7 @@ pub(super) fn solve_body_contact(
                 m,
                 set,
                 (body, time, point, n),
-                (un, start),
+                (un, start, k_n),
                 target_normal_speed,
                 acc,
                 st,
@@ -641,6 +649,15 @@ pub(super) fn solve_body_contact(
         moved = true;
     }
 
+    // What this call's own impulses did to the body (for the cap).
+    if moved || st.k > k_ball {
+        let vs_end = set.velocity_at(body, time, point);
+        let own = vs_end - vs;
+        if own.is_finite() {
+            st.own_v += own;
+        }
+    }
+
     // Backstop: a body contact never makes a ball faster (or spin faster)
     // than the limit, unless it already was.
     let limit = BODY_SPEED_LIMIT.max(before.0.length());
@@ -667,9 +684,10 @@ pub(super) fn solve_body_contact(
 }
 
 /// After a normal impulse change (`acc.normal` now, `start` before, relative
-/// normal speed `un` before): measure the body's real response. If the
-/// relative normal velocity moved more per unit impulse than the solve
-/// assumed (the body moved more than it reported), record the observed
+/// normal speed `un` before, assumed response `assumed` = `1/m + w`): measure
+/// the body's real response. If the relative normal velocity moved more per
+/// unit impulse than the solve assumed (the body moved more than it
+/// reported), record the observed
 /// response in `st.k` and reduce the impulse to what that response needs.
 /// The correction only ever brings the impulse closer to `start`, so it
 /// cannot amplify anything.
@@ -679,7 +697,7 @@ fn observe(
     m: f32,
     set: &mut dyn MovingBodies,
     (body, time, point, n): (usize, f32, Vec3, Vec3),
-    (un, start): (f32, f32),
+    (un, start, assumed): (f32, f32, f32),
     target: f32,
     acc: &mut super::contact::ContactImpulse,
     st: &mut BodyContactState,
@@ -691,8 +709,10 @@ fn observe(
     let vs1 = set.velocity_at(body, time, point);
     let un1 = (ball.velocity - vs1).dot(n);
     let k_obs = (un1 - un) / dj;
-    // 0.1 % tolerance: rounding of an honest response must not count.
-    if !(k_obs.is_finite() && k_obs > st.k.max(1.0 / m) * 1.001) {
+    // Compared with the response the solve assumed for this impulse (the
+    // reported inverse mass, or a larger one seen before); 0.1 % tolerance
+    // so that rounding of an honest response does not count.
+    if !(k_obs.is_finite() && k_obs > assumed.max(st.k) * 1.001) {
         return;
     }
     st.k = k_obs;
