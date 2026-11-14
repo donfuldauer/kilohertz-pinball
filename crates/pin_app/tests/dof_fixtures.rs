@@ -196,8 +196,13 @@ struct Model {
     elem_tick: std::collections::BTreeMap<(u8, u16), u64>,
     has_full: bool,
     last_full: u64,
+    max_tick: u64,
     resync_tick: Option<u64>,
 }
+
+/// `BridgeCore.RestartGapTicks`: a full state this far below the newest tick
+/// applied since the last resync is a sender restart.
+const RESTART_GAP_TICKS: u64 = 100;
 
 fn convert(kind: u8, v: f32) -> i32 {
     if kind <= 1 {
@@ -240,6 +245,7 @@ impl Model {
             elem_tick: Default::default(),
             has_full: false,
             last_full: 0,
+            max_tick: 0,
             resync_tick: None,
         }
     }
@@ -250,9 +256,13 @@ impl Model {
         };
         let full = h.is_full_state();
         if full {
-            if !self.has_full || h.tick < self.last_full {
+            if !self.has_full
+                || h.tick < self.last_full
+                || self.max_tick.saturating_sub(h.tick) >= RESTART_GAP_TICKS
+            {
                 self.has_full = true;
                 self.last_full = h.tick;
+                self.max_tick = h.tick;
                 self.resync_tick = Some(h.tick);
                 self.elem_tick.clear();
                 self.resync_sent.iter_mut().for_each(|s| *s = false);
@@ -262,6 +272,7 @@ impl Model {
         } else if self.has_full && h.tick < self.last_full {
             return;
         }
+        self.max_tick = self.max_tick.max(h.tick);
         let forcing = full && self.resync_tick == Some(h.tick);
         for e in entries {
             let kind = match e.kind {

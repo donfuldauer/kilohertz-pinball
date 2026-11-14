@@ -60,6 +60,7 @@ public sealed class BridgeCore
 
     private bool _hasFull;
     private ulong _lastFullTick;
+    private ulong _maxTick;
     private bool _resyncActive;
     private ulong _resyncTick;
 
@@ -69,6 +70,14 @@ public sealed class BridgeCore
     private long _forwarded;
     private long _resyncs;
     private long _maxLatency;
+
+    /// <summary>
+    /// A full state whose tick is at least this many ticks (100 ms) below the newest tick applied
+    /// since the last resync means the sender restarted (a new session whose full-state tick is not
+    /// below the last one, e.g. both at tick 0), not reordering: it starts a resync like a full state
+    /// with a lower tick (TELEMETRY_PROTOCOL §6: full-state entries are authoritative).
+    /// </summary>
+    public const ulong RestartGapTicks = 100;
 
     /// <summary>Creates a core.</summary>
     /// <param name="map">Resolved mapping.</param>
@@ -163,10 +172,11 @@ public sealed class BridgeCore
         bool full = h.IsFullState;
         if (full)
         {
-            if (!_hasFull || tick < _lastFullTick)
+            if (!_hasFull || tick < _lastFullTick || (_maxTick > tick && _maxTick - tick >= RestartGapTicks))
             {
                 _hasFull = true;
                 _lastFullTick = tick;
+                _maxTick = tick;
                 _resyncActive = true;
                 _resyncTick = tick;
                 Array.Clear(_elemHasTick);
@@ -184,6 +194,10 @@ public sealed class BridgeCore
             return ProcessResult.Stale;
         }
 
+        if (tick > _maxTick)
+        {
+            _maxTick = tick;
+        }
         bool forcing = full && _resyncActive && tick == _resyncTick;
         for (int i = 0; i < h.EntryCount; i++)
         {

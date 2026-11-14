@@ -1993,3 +1993,9 @@ The N3 fix (stale probe after a ball drains) made the scheduler capture moved ba
 - **Fix 1 also:** N1 (equal-tick sender restart not resynced — correctness per protocol §6), N4 (receive-thread exceptions), N5 (incompatible DirectOutput.dll → exit 4), N6 (sanitise the untrusted table name passed to DOF, D25), N7 (map file create_new), N9 (CI coverage line).
 - **N8 ratified:** `pin_audio` (default-features = false) as a `pin_app` dev-dependency for the fixture generator — tests only.
 - N2, N3, N10, N12 → HUMAN_QUEUE; N11 → 6.0 brief.
+
+## Orchestrator — 4.4 review round 1 rulings
+- **B1 fonts:** the root `egui` pin may enable `default_fonts` (same version; logged by 4.4). A glyph-level analytic test is required — the bright-pixel smoke test could not see tofu.
+- **B3 held inputs:** the menu state machine tracks cabinet inputs it forwarded as pressed (and non-neutral axes) and emits their releases/neutral values to the sim side when the menu opens, so 6.0 cannot wire a stuck flipper. Supersedes the "a release does nothing while open" behaviour; the Tester's spec is amended.
+- **N1 config fallback:** per-field (bad value → that field's default + warning) with a one-time `config.toml.bak` copy before the first save that would drop a value. Refines the D1 ruling for wrongly typed values.
+- Fix 1 also takes B2, N4, N5 (abandon a load), N6 (`box_downscale` bounds), N12. N2, N3, N7, N9, N10 → HUMAN_QUEUE.

@@ -4,6 +4,7 @@ using System.Buffers.Binary;
 using System.Globalization;
 using System.Text;
 using Kilohertz.DofBridge;
+using Xunit;
 
 namespace Spec.DofBridge;
 
@@ -88,6 +89,40 @@ public sealed class RecordingSink : IDofSink
             return copy;
         }
     }
+}
+
+/// <summary>
+/// Mock DOF sink for timing runs: stores calls in a preallocated buffer, so a sink call neither allocates
+/// nor takes a lock (the recorded latency is the bridge's, not the mock's or the garbage collector's).
+/// </summary>
+public sealed class FixedSink : IDofSink
+{
+    private readonly Update[] _updates;
+    private int _count;
+
+    public FixedSink(int capacity) => _updates = new Update[capacity];
+
+    public void Init(string romName, string tableName) { }
+
+    public void ReceiveData(char tableElementType, int number, int value)
+    {
+        int i = _count;
+        if (i < _updates.Length) _updates[i] = new Update(tableElementType, number, value);
+        Volatile.Write(ref _count, i + 1);
+    }
+
+    public void Finish() { }
+
+    /// <summary>Number of sink calls, including any beyond the capacity.</summary>
+    public int Count => Volatile.Read(ref _count);
+
+    public Update[] Updates => _updates.AsSpan(0, Math.Min(Count, _updates.Length)).ToArray();
+}
+
+/// <summary>Timing assertions run alone: no other test of this assembly runs beside them.</summary>
+[CollectionDefinition("sockets", DisableParallelization = true)]
+public sealed class SocketCollection
+{
 }
 
 /// <summary>Independent encoder for telemetry protocol v1 datagrams.</summary>

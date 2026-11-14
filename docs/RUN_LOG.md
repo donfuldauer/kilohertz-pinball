@@ -275,3 +275,6 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 3.5 | Reviewer | Fable 5.2 | 1 | **fail** | .NET 90/90 + 173/173; Rust 45/45; dotnet build 0 warnings; pin_app 94.05 %, dof/ 95.4 %, .NET 94.97 %; exact sequences OK; 3 M fuzzed datagrams no exception | B1 2 ms p100 assertion flaky (5/85 runs under load) → fix 1 with N1 equal-tick restart, N4, N5, N6, N7, N9; N8 ratified; N2/N3/N10/N12 → HUMAN_QUEUE; N11 → 6.0 |
 | 5 | 3.5 | Implementer | Opus 5.5 | fix 1 | running | — | |
 | 5 | 3.5 | Independent Tester | Fable 5.2 | 2 | running | — | harden timing specs; N1 spec |
+| 5 | 4.4 | Reviewer | Fable 5.2 | 1 | **fail** | own tests all pass; spec 76/76; pin_app 73.23 %, ui/ 91–98.7 %, pin_render ui/mod.rs 97.5 %; preview decode bounds sound; no I/O in the frame path; extra deps accepted | B1 tofu text (egui default_fonts off), B2 focused row blocks mouse scroll, B3 stuck flipper when menu opens with a button held → fix 1 with N1 per-field config fallback + .bak, N4, N5, N6, N12; Tester amends swallow spec |
+| 5 | 4.4 | Implementer | Opus 5.5 | fix 1 | running | — | |
+| 5 | 4.4 | Independent Tester | Fable 5.2 | 2 | running | — | |
