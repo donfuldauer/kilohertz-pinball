@@ -1,6 +1,6 @@
 ---
 name: work-classifier
-description: Classifies a unit of work (subphase, fix task, CodeRabbit finding, CI failure, gate failure) by complexity and blast radius, picks the model tier under PLAN.md §2.5 and D34, and writes the complete delegation brief the Orchestrator hands to the chosen agent. Use before every delegation. It does not do the work itself.
+description: "Classifies a unit of work (subphase, fix task, CodeRabbit finding, CI failure, gate failure) by complexity and blast radius, picks the model tier under PLAN.md §2.5 and D34, and writes the complete delegation brief the Orchestrator hands to the chosen agent. Use before every delegation. It does not do the work itself."
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
