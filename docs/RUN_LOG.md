@@ -252,3 +252,6 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 2.5 | Reviewer | Fable 5.2 | 1 | running | — | shares target/sp_2_5 (disk) |
 | 5 | 3.5 | Implementer | Opus 5.5 | 1 (resumed) | done | .NET own 90/90 (coverlet 95.7 %), spec 173/173; Rust dof_map 9/9, dof_launcher 9/9, dof_fixtures 4/4, spec 32/32; dof/map.rs 100 %, launcher.rs 92.75 %; fixture replay exact, p100 < 2 ms | resolved map as temp JSON; stop = stdin EOF + --parent-pid, 1.5 s grace; [dof] cross-ref already in pin_assets (rules.rs:785); pin_app crate-wide fmt/clippy blocked only by 4.4's ui/ |
 | 5 | 3.5 | Reviewer | Fable 5.2 | 1 | running | — | |
+| 5 | 5.2 | Reviewer | Fable 5.2 | 1 | **fail** | fmt/clippy clean (±gpu-tests); 342/342 on lavapipe; spec 25/25 + 18/18; coverage 96.66 %; budget fuzz 200 000 frames ≤ 2; 5.1 regression 66/66; re-bless justified (rims only); visual checklist OK | B1 bloom not energy-conserving on odd×odd targets (halo 0×/2× checkerboard, post.wgsl:156-176) → fix 1 with N1 border gain doc, N3 probe identity on drain, N4 pipelines outside error scope; Tester adds odd-size specs; N2, N5–N8 → HUMAN_QUEUE |
+| 5 | 5.2 | Implementer | Opus 5.5 | fix 1 | running | — | |
+| 5 | 5.2 | Independent Tester | Fable 5.2 | 2 | running | — | odd-size bloom specs |
