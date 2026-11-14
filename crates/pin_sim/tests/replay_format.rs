@@ -5,7 +5,7 @@
 use pin_core::input::{CabinetAxis, CabinetInput, InputEvent};
 use pin_sim::hash::fnv1a64;
 use pin_sim::replay::{
-    EVENT_BYTES, HEADER_BYTES, MAGIC, Recording, ReplayError, TRAILER_BYTES, VERSION,
+    EVENT_BYTES, HEADER_BYTES, MAGIC, MAX_TICKS, Recording, ReplayError, TRAILER_BYTES, VERSION,
 };
 use proptest::prelude::*;
 
@@ -43,6 +43,32 @@ fn round_trip_and_layout() {
     assert_eq!(r.events_on(1).len(), 2);
     assert_eq!(r.events_on(7).len(), 1);
     assert!(r.events_on(8).is_empty());
+}
+
+#[test]
+fn tick_count_is_capped() {
+    // A valid 52-byte file declaring u64::MAX ticks is refused, not run.
+    let mut r = Recording::new(1, 2);
+    r.ticks = u64::MAX;
+    let b = r.to_bytes();
+    assert_eq!(b.len(), 52);
+    assert_eq!(
+        Recording::from_bytes(&b),
+        Err(ReplayError::TooManyTicks(u64::MAX))
+    );
+    r.ticks = MAX_TICKS + 1;
+    let e = Recording::from_bytes(&r.to_bytes()).unwrap_err();
+    assert_eq!(e, ReplayError::TooManyTicks(MAX_TICKS + 1));
+    assert!(e.to_string().contains("ticks"));
+    r.ticks = MAX_TICKS;
+    assert_eq!(Recording::from_bytes(&r.to_bytes()).unwrap(), r);
+    // replay() refuses a hand-built recording before touching the bundle.
+    r.ticks = MAX_TICKS + 1;
+    let missing = std::env::temp_dir().join("pin_sim_2_5_no_bundle_for_ticks");
+    assert_eq!(
+        pin_sim::replay::replay(&missing, &r),
+        Err(ReplayError::TooManyTicks(MAX_TICKS + 1))
+    );
 }
 
 #[test]

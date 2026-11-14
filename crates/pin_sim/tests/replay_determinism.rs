@@ -104,6 +104,24 @@ fn replay_refuses_another_table() {
         }
         e => panic!("expected a table mismatch, got {e}"),
     }
+    // A different bundle whose script would not even load is still
+    // reported as the wrong table (the hash is checked before loading).
+    let broken = fixture_variant(
+        "broken_table",
+        &[("rules.lua", Some(b"this is not lua (\n"))],
+    );
+    let (rec2, b2) = (rec.clone(), broken.clone());
+    let err = on_sim_thread(move || replay(&b2, &rec2).unwrap_err());
+    assert!(
+        matches!(err, ReplayError::TableMismatch { .. }),
+        "expected a table mismatch, got {err}"
+    );
+    let direct = on_sim_thread(move || {
+        Simulation::load(&broken, SimConfig::default())
+            .err()
+            .map(|e| e.to_string())
+    });
+    assert!(direct.is_some(), "the broken bundle must not load");
     let missing = std::env::temp_dir().join("pin_sim_2_5_no_bundle_here");
     let e = replay(&missing, &rec).unwrap_err();
     assert!(matches!(e, ReplayError::Sim(_)));
