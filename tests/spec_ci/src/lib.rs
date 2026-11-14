@@ -131,6 +131,69 @@ fn collect_strings(node: &Yaml, out: &mut Vec<String>) {
     }
 }
 
+/// Strings the matrix axis `axis` takes over the job's combinations: the
+/// Cartesian product of the plain axes minus `exclude` entries, plus every
+/// `include` entry that sets `axis`.
+fn matrix_axis_values(matrix: &Yaml, axis: &str) -> Vec<String> {
+    let Some(map) = matrix.as_hash() else {
+        return Vec::new();
+    };
+    let axes: Vec<(&str, &Vec<Yaml>)> = map
+        .iter()
+        .filter_map(|(k, v)| {
+            let k = k.as_str().filter(|k| *k != "include" && *k != "exclude")?;
+            Some((k, v.as_vec()?))
+        })
+        .collect();
+    let mut combos: Vec<Vec<(&str, &Yaml)>> = vec![Vec::new()];
+    for (name, values) in &axes {
+        combos = combos
+            .iter()
+            .flat_map(|c| {
+                values.iter().map(move |v| {
+                    let mut c = c.clone();
+                    c.push((*name, v));
+                    c
+                })
+            })
+            .collect();
+    }
+    let excludes: Vec<&Yaml> = get(matrix, "exclude")
+        .and_then(Yaml::as_vec)
+        .into_iter()
+        .flatten()
+        .collect();
+    let excluded = |combo: &[(&str, &Yaml)]| {
+        excludes.iter().any(|ex| {
+            ex.as_hash().is_some_and(|ex| {
+                ex.iter().all(|(k, v)| {
+                    combo
+                        .iter()
+                        .any(|(name, value)| k.as_str() == Some(*name) && *value == v)
+                })
+            })
+        })
+    };
+    let mut out = Vec::new();
+    for combo in combos.iter().filter(|c| !excluded(c)) {
+        for (name, value) in combo {
+            if *name == axis {
+                collect_strings(value, &mut out);
+            }
+        }
+    }
+    for inc in get(matrix, "include")
+        .and_then(Yaml::as_vec)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(v) = get(inc, axis) {
+            collect_strings(v, &mut out);
+        }
+    }
+    out
+}
+
 fn get<'a>(node: &'a Yaml, key: &str) -> Option<&'a Yaml> {
     let h = node.as_hash()?;
     h.get(&Yaml::String(key.to_owned()))
@@ -261,15 +324,32 @@ impl Job {
         Concurrency::from_node(get(&self.node, "concurrency")?)
     }
 
-    /// Every runner label the job can land on: literal `runs-on` labels plus
-    /// every string anywhere in `strategy.matrix` that names a hosted runner.
+    /// Every runner label the job can land on: literal `runs-on` labels plus,
+    /// for each `${{ matrix.<axis> }}` in `runs-on`, the values that axis
+    /// takes (after `exclude`, with `include`). Matrix axes that `runs-on`
+    /// does not reference do not select a runner and are ignored.
     pub fn runner_labels(&self) -> Vec<String> {
-        let mut all = Vec::new();
+        let mut runs_on = Vec::new();
         if let Some(r) = get(&self.node, "runs-on") {
-            collect_strings(r, &mut all);
+            collect_strings(r, &mut runs_on);
         }
-        if let Some(m) = get(&self.node, "strategy").and_then(|s| get(s, "matrix")) {
-            collect_strings(m, &mut all);
+        let matrix = get(&self.node, "strategy").and_then(|s| get(s, "matrix"));
+        let mut all = Vec::new();
+        for label in runs_on {
+            if !label.contains("${{") {
+                all.push(label);
+                continue;
+            }
+            let Some(m) = matrix else { continue };
+            for axis in label.split("matrix.").skip(1) {
+                let axis: String = axis
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                    .collect();
+                if !axis.is_empty() {
+                    all.extend(matrix_axis_values(m, &axis));
+                }
+            }
         }
         all.retain(|s| runner_os(s).is_some());
         all.sort();
@@ -351,14 +431,19 @@ pub fn normalize_script(script: &str) -> String {
         .join("\n")
 }
 
-/// Lines of `script` that invoke `cargo <sub>` (e.g. `sub = "test"`), also
-/// matching `cargo +toolchain <sub>` and wrappers such as `xvfb-run cargo test`.
+/// Cargo invocations in `script` that run `cargo <sub>` (e.g. `sub = "test"`),
+/// also matching `cargo +toolchain <sub>` and wrappers such as
+/// `xvfb-run cargo test`. Each match is one command of its line: a line is
+/// split at the shell separators `&&`, `||`, `;` and `|`, so the flags of
+/// another command on the same line are not part of the match.
 pub fn cargo_lines<'a>(script: &'a str, sub: &str) -> Vec<&'a str> {
     script
         .lines()
         .filter(|l| !l.trim_start().starts_with('#'))
-        .filter(|l| {
-            let toks: Vec<&str> = l.split_whitespace().collect();
+        .flat_map(|l| l.split(['&', '|', ';']))
+        .map(str::trim)
+        .filter(|cmd| {
+            let toks: Vec<&str> = cmd.split_whitespace().collect();
             toks.iter().enumerate().any(|(i, t)| {
                 *t == "cargo"
                     && match toks.get(i + 1) {
