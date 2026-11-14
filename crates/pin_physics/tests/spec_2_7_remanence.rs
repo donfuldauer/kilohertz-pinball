@@ -195,6 +195,40 @@ fn zero_coupling_ball_is_untouched_by_the_remanence_hook() {
     }
 }
 
+#[test]
+fn profile_swapped_to_zero_coupling_clears_the_magnetisation() {
+    // A ball magnetised under a `c > 0` profile and then switched in place
+    // (`ball_mut`, the debug injection) to a `c = 0` profile is not
+    // magnetisable: its `M` is 0 from the next sub-step, not a decaying
+    // remainder that would pull again after a swap back.
+    let profiles = [steel_with(0.5, 1.0), steel_with(0.5, 0.0)];
+    let mut s = solver(&profiles, Vec3::ZERO);
+    let probe = register_remanence(&mut s);
+    let id = s.add_magnet(magnet_at(Vec3::ZERO));
+    s.set_magnet_power(id, WEAK);
+    let h = s.add_ball(steel_ball(Vec3::new(0.03, 0.0, 0.0))).unwrap();
+    let world = empty_world();
+    let geo = Geometry::new(&world);
+    let mut ev = BallEvents::new();
+    for _ in 0..50 {
+        ev.clear();
+        s.step(&geo, DT, &mut ev);
+    }
+    assert!(mag(&probe, h) > 0.0, "the steel ball was magnetised");
+    s.ball_mut(h).unwrap().profile = ProfileId(1);
+    ev.clear();
+    s.step(&geo, DT, &mut ev);
+    assert_eq!(mag(&probe, h), 0.0);
+    // Back to the magnetisable profile, magnet off, out of range: still 0.
+    s.set_magnet_power(id, 0.0);
+    let b = s.ball_mut(h).unwrap();
+    b.profile = ProfileId(0);
+    b.position = Vec3::new(1.0, 0.0, 0.0);
+    ev.clear();
+    s.step(&geo, DT, &mut ev);
+    assert_eq!(mag(&probe, h), 0.0);
+}
+
 // --------------------------------------------------------- magnetisation law
 
 #[test]

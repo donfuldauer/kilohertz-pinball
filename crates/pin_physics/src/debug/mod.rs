@@ -97,10 +97,9 @@ fn state_is_valid(solver: &BallSolver, s: &BallState) -> bool {
         .chain(&s.angular_velocity_rad_s)
         .chain(&s.orientation)
         .all(|v| v.is_finite());
-    let profile_ok = solver
-        .profiles()
-        .get(s.profile.index())
-        .is_some_and(|p| p.mass_kg.is_finite() && p.mass_kg > 0.0 && p.radius_m() > 0.0);
+    let profile_ok = solver.profiles().get(s.profile.index()).is_some_and(|p| {
+        p.mass_kg.is_finite() && p.mass_kg > 0.0 && p.radius_m().is_finite() && p.radius_m() > 0.0
+    });
     finite && s.layer <= 7 && profile_ok
 }
 
@@ -284,6 +283,26 @@ mod tests {
             } else {
                 proptest::prop_assert_eq!(*s.ball(h).unwrap(), before);
             }
+        }
+    }
+
+    #[test]
+    fn injection_refuses_a_profile_with_a_non_finite_radius() {
+        let good = builtin_profile("standard_steel").unwrap();
+        for diameter in [f32::INFINITY, f32::NAN] {
+            let mut bad = good.clone();
+            bad.diameter_m = diameter;
+            let cfg = BallSolverConfig::from_defaults(&PhysicsDefaults::builtin());
+            let mut s = BallSolver::new(cfg, &[good.clone(), bad]);
+            let h = spawn_ball(&mut s, ProfileId(0), 0, [0.0; 3], [0.0; 3]).unwrap();
+            let before = *s.ball(h).unwrap();
+            let state = BallState {
+                profile: ProfileId(1),
+                ..ball_state(&s, h).unwrap()
+            };
+            assert!(!set_ball_state(&mut s, h, &state), "diameter {diameter}");
+            assert_eq!(*s.ball(h).unwrap(), before);
+            assert!(spawn_ball(&mut s, ProfileId(1), 0, [0.0; 3], [0.0; 3]).is_none());
         }
     }
 

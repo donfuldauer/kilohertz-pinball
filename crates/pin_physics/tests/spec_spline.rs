@@ -400,10 +400,10 @@ fn closest_point_on_semicircle_matches_brute_force() {
         for &r in &[0.0f32, 0.05, 0.12, 0.149, 0.151, 0.2, 0.3] {
             for &z in &[-0.05f32, 0.0, 0.03] {
                 let p = Vec3::new(r * a.cos(), r * a.sin(), z);
+                // Every query is checked (the brute-force reference in
+                // `check_closest` is independent of the value under test).
                 let cp = s.closest_point(p, None);
-                if cp.distance <= 0.2 {
-                    check_closest(&s, p, &cp);
-                }
+                check_closest(&s, p, &cp);
             }
         }
     }
