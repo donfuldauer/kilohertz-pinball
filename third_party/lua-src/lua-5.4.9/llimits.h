@@ -261,7 +261,11 @@ typedef l_uint32 Instruction;
 ** ('lua_lock') and leaves the core ('lua_unlock')
 */
 #if !defined(lua_lock)
-#define lua_lock(L)	((void) 0)
+/* KHZ (patch 28): every entry into the core claims budget ownership for
+   its state, so C code that calls into state B and then back into state A
+   charges A's later work to A (see lstring.c, luaS_khzlock) */
+LUAI_FUNC void luaS_khzlock (lua_State *L);
+#define lua_lock(L)	luaS_khzlock(L)
 #define lua_unlock(L)	((void) 0)
 #endif
 

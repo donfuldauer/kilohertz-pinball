@@ -51,6 +51,13 @@ KHZ_TLS global_State *luaS_khzowner = NULL;
 ** its 'khzpending' (it is charged at that state's next spend) and resume
 ** 'g's own.
 */
+/* KHZ (patch 28): 'lua_lock'; claims budget ownership for 'L' on every
+   entry into the core */
+void luaS_khzlock (lua_State *L) {
+  luaS_khzown(G(L));
+}
+
+
 void luaS_khzclaim (global_State *g) {
   if (luaS_khzowner != NULL)
     luaS_khzowner->khzpending += luaS_khzpending;
