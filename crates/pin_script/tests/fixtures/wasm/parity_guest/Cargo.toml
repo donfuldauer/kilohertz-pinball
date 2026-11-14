@@ -1,0 +1,28 @@
+# Rust source of tests/fixtures/wasm/rules.wasm (Subphase 4.5 parity fixture).
+# A standalone workspace: build it with ../rebuild.sh, never as part of the
+# main workspace (it targets wasm32-unknown-unknown).
+[package]
+name = "parity_rules"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+pin_guest_sdk = { path = "../../../../guest-sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = true
+
+[profile.dev]
+panic = "abort"
+
+[workspace]

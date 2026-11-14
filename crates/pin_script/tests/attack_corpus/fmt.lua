@@ -1,0 +1,1 @@
+function on_tick() local ok, e = pcall(string.format, "%99999d", 1) assert(not ok) local s = string.format("%099d", 1) string.format("%.99f", 1e308) string.format("%s", string.rep("x", 1e6)) pinball.pulse_coil(1,1) end

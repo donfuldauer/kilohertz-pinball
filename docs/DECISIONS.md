@@ -348,7 +348,7 @@ Implements "Orchestrator — 4.2 re-review round 3". All charging is central (KH
 | `m_fmtf2` | 0.597 | fault |
 | `m_fmtg` | 0.477 | fault |
 | `m_fmtlit` | 0.335 | fault |
-| `m_fmtlit2` | 0.224 | new() fails: Load (64 KiB cap) |
+| `m_fmtlit2` | 0.145 | fault (resized to `string.rep("%%", 32768)`, at the 64 KiB cap, so it loads and its format loop runs; the original 128 KiB literal failed to load, 0.224) |
 | `m_fmtq` | 0.048 | fault |
 | `m_gsubf` | 0.581 | fault |
 | `m_gsubn` | 0.254 | fault |
@@ -421,9 +421,9 @@ Implements "Orchestrator — 4.2 re-review round 3". All charging is central (KH
 | `r_ltmeta` | 0.208 | fault |
 | `r_nextscan` | 0.464 | fault |
 | `r_pairsscan` | 0.479 | fault |
-| `r_rehash` | 1.296 | fault |
-| `r_rehash2` | 1.709 | fault |
-| `r_rehash3` | 1.267 | fault |
+| `r_rehash` | 1.041 | fault in phase 1 (resized to N = 8192; the original N = 131072 faulted with MemoryLimit in set-up before phase 1, 1.296) |
+| `r_rehash2` | 1.518 | fault in phase 1 (resized to N = 16384; the original N = 262144 faulted with BudgetExceeded in set-up before phase 1, 1.709) |
+| `r_rehash3` | 1.281 | fault in phase 1 (resized to N = 16384; the original N = 262144 faulted with MemoryLimit in set-up before phase 1, 1.267) |
 | `r_rep1` | 0.350 | fault |
 | `r_rep1b` | 0.287 | fault |
 | `r_rep80` | 0.037 | fault |
@@ -436,7 +436,7 @@ Implements "Orchestrator — 4.2 re-review round 3". All charging is central (KH
 | `r_tostr_tab` | 3.515 | fault |
 | `r_utf8` | 1.084 | fault |
 | `rep_empty` | 0.018 | fault |
-| `savebomb` | 0.225 | new() fails: Load (64 KiB cap) |
+| `savebomb` | 0.009 | loads (resized to the 64 KiB cap); no fault; reload with the save hook 2.03 ms worst of 20, state dropped by the save byte budget (re-measured at 3d9ffc3; the original 8 MB file failed to load, 0.225) |
 | `sortbig` | 0.595 | fault |
 | `strmeta` | 0.026 | fault |
 | `tconcat` | 0.022 | fault |
