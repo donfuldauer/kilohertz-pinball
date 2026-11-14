@@ -278,3 +278,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 4.4 | Reviewer | Fable 5.2 | 1 | **fail** | own tests all pass; spec 76/76; pin_app 73.23 %, ui/ 91–98.7 %, pin_render ui/mod.rs 97.5 %; preview decode bounds sound; no I/O in the frame path; extra deps accepted | B1 tofu text (egui default_fonts off), B2 focused row blocks mouse scroll, B3 stuck flipper when menu opens with a button held → fix 1 with N1 per-field config fallback + .bak, N4, N5, N6, N12; Tester amends swallow spec |
 | 5 | 4.4 | Implementer | Opus 5.5 | fix 1 | running | — | |
 | 5 | 4.4 | Independent Tester | Fable 5.2 | 2 | running | — | |
+| 5 | 5.3 | Implementer | Opus 5.5 | 1 | done | own displays_cpu 35/35, displays_gpu 9/9, unit 3/3; spec 94/94 (lavapipe); pin_render 67.2 %, displays/ 93.9–100 %; clippy clean on displays | D1 fixed; N1–N3 fixed; LCD AA scale bug found by eye and fixed; 6 placeholder scenes; deps pin_assetgen/serde/toml |
+| 5 | 5.3 | Reviewer | Fable 5.2 | 1 | running | — | |
