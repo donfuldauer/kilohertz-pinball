@@ -253,3 +253,43 @@ proptest! {
         prop_assert!(launch(lo) < launch(hi));
     }
 }
+
+// GR1-SCRATCH-BEGIN
+#[test]
+#[ignore]
+fn gr1_scan() {
+    let launch = |depth: f32| {
+        let spec = MechSpec::new(MechKind::Plunger, v(0.0, -0.3, 0.0));
+        let mut t = Table::new(&[spec], world(&[]), 6.5);
+        let h = t.ball(0.0, -0.3 + 0.006 + radius(STEEL) + 0.0005, Vec3::ZERO);
+        let mut last_contact = 0;
+        for i in 0..500 {
+            t.mechs.set_plunger(if i >= 200 { depth * ((i - 200) as f32 / 200.0).min(1.0) } else { 0.0 });
+            t.tick();
+            let b = t.get(h);
+            let tip = -0.3 - depth * 0.05 * ((i as f32 - 199.0).max(0.0) / 200.0).min(1.0) + 0.006;
+            if b.position.y - radius(STEEL) - tip < 2e-4 { last_contact = i; }
+        }
+        let b = t.get(h);
+        let gap = b.position.y - radius(STEEL) - (-0.3 - depth * 0.05 + 0.006);
+        t.mechs.set_plunger(0.0);
+        let mut peak = 0.0f32;
+        for _ in 0..60 { t.tick(); peak = peak.max(t.get(h).velocity.y); }
+        (peak, gap, b.velocity.y, last_contact)
+    };
+    let mut prev = 0.0f32;
+    let mut bad = 0;
+    let n = std::env::var("GR1_N").ok().and_then(|s| s.parse().ok()).unwrap_or(1900usize);
+    for k in 0..=n {
+        let d = 0.05 + 0.95 * k as f32 / n as f32;
+        let (p, gap, vy, lc) = launch(d);
+        let flag = if p <= prev { bad += 1; "  <-- non-monotone" } else { "" };
+        println!("d={d:.5} peak={p:.5} gap_at_release={gap:+.5} vy={vy:+.4} last_contact_tick={lc}{flag}");
+        prev = p;
+    }
+    for d in [0.7304841f32, 0.75067747] {
+        println!("failing input d={d}: {:?}", launch(d));
+    }
+    println!("non-monotone steps: {bad}");
+}
+// GR1-SCRATCH-END
