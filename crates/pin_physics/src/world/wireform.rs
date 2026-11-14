@@ -6,7 +6,8 @@ use super::curve_bounds::{CurveTree, EndTerms, TARGET_ROOM, TangentBalls};
 use super::shapes::{APPROACH_EPS, any_perpendicular};
 use super::sloped_bounds::{plan_view_folds, wall_reach};
 use super::spline::{
-    ClosestPoint, CubicSpline, SAMPLES_PER_SEGMENT, SplineError, natural_second_derivatives,
+    BezierSegment, ClosestPoint, CubicSpline, SAMPLES_PER_SEGMENT, SplineError,
+    natural_second_derivatives,
 };
 
 /// Gap at which a guide cast reports contact (metres).
@@ -101,54 +102,13 @@ impl Wireform {
             .collect();
         let roll: Vec<f32> = roll_points.iter().map(|p| p.x as f32).collect();
 
-        // Rotation-minimizing frame along the sample table (f64).
-        let samples = centerline.samples();
-        let unit = |v: Vec3, fallback: DVec3| -> DVec3 {
-            let d = v.as_dvec3();
-            let len = d.length();
-            if len > 1.0e-20 { d / len } else { fallback }
-        };
-        let mut tangent = unit(samples[0].tangent, DVec3::X);
-        let up = up_hint.as_dvec3().normalize();
-        let mut normal = up - tangent * up.dot(tangent);
-        if normal.length_squared() < 1.0e-10 {
-            normal = any_perpendicular(tangent.as_vec3()).as_dvec3();
-            normal -= tangent * normal.dot(tangent);
-        }
-        normal = normal.normalize();
-
-        let mut normals = Vec::with_capacity(samples.len());
-        normals.push(normal.as_vec3());
-        for k in 0..samples.len() - 1 {
-            let next_tangent = unit(samples[k + 1].tangent, tangent);
-            let v1 = samples[k + 1].point.as_dvec3() - samples[k].point.as_dvec3();
-            let c1 = v1.length_squared();
-            let (mut r, t_reflected) = if c1 > 0.0 {
-                (
-                    normal - v1 * (2.0 / c1 * v1.dot(normal)),
-                    tangent - v1 * (2.0 / c1 * v1.dot(tangent)),
-                )
-            } else {
-                (normal, tangent)
-            };
-            let v2 = next_tangent - t_reflected;
-            let c2 = v2.length_squared();
-            if c2 > 0.0 {
-                r -= v2 * (2.0 / c2 * v2.dot(r));
-            }
-            // Remove accumulated rounding drift.
-            r -= next_tangent * r.dot(next_tangent);
-            let len = r.length();
-            normal = if len > 1.0e-12 { r / len } else { normal };
-            tangent = next_tangent;
-            normals.push(normal.as_vec3());
-        }
+        let normals = rotation_minimizing_normals(&centerline, up_hint);
 
         // d(normal)/dt of a rotation-minimizing frame: the normal only turns
         // towards/away from the tangent.
         let k = SAMPLES_PER_SEGMENT;
         let n = centerline.segment_count();
-        let mut normal_rates = Vec::with_capacity(samples.len());
+        let mut normal_rates = Vec::with_capacity(normals.len());
         for (index, normal) in normals.iter().enumerate() {
             let i = (index / k).min(n - 1);
             let s = (index - i * k) as f32 / k as f32;
@@ -359,6 +319,125 @@ impl Wireform {
             distance: best_d2.sqrt(),
         }
     }
+}
+
+/// Below this length of `v2 = T' − R₁T` (both unit vectors) the second
+/// reflection of the double-reflection step is ill-conditioned: its mirror
+/// direction `v2 / |v2|` is then set by rounding rather than by the curve, and
+/// mirroring across it can turn the normal by an arbitrary angle about the
+/// tangent. With the f64 step below the rounding in `v2` is about 1e-15 (the
+/// chord's relative error, amplified by cancellation, stays far below 1e-10
+/// for any chord longer than about 1 µm), so at this threshold the mirror
+/// direction is still good to about 1e-6 rad.
+const RMF_MIN_V2: f64 = 1.0e-4;
+
+/// Hodograph of a Bézier segment in f64: `C'(s) = 3 Σ Δp_j B²_j(s)`.
+fn hodograph(segment: &BezierSegment) -> [DVec3; 3] {
+    let p = segment.p.map(Vec3::as_dvec3);
+    // Differences of f32 values are exact in f64.
+    [p[1] - p[0], p[2] - p[1], p[3] - p[2]]
+}
+
+/// Tangent `C'(s)` of a segment from its hodograph (f64).
+fn hodograph_tangent(d: &[DVec3; 3], s: f64) -> DVec3 {
+    let a = 1.0 - s;
+    (d[0] * (a * a) + d[1] * (2.0 * a * s) + d[2] * (s * s)) * 3.0
+}
+
+/// Chord `C(s1) − C(s0)` of a segment, integrated from its hodograph:
+/// `∫ 3a² = −a³`, `∫ 6as = 3s² − 2s³`, `∫ 3s² = s³`. Unlike the difference
+/// of two evaluated points it carries no rounding of the positions (which
+/// dominates a short chord), and a coordinate that is constant along the
+/// segment comes out exactly zero.
+fn hodograph_chord(d: &[DVec3; 3], s0: f64, s1: f64) -> DVec3 {
+    let (a0, a1) = (1.0 - s0, 1.0 - s1);
+    let w0 = a0 * a0 * a0 - a1 * a1 * a1;
+    let w1 = (3.0 * s1 * s1 - 2.0 * s1 * s1 * s1) - (3.0 * s0 * s0 - 2.0 * s0 * s0 * s0);
+    let w2 = s1 * s1 * s1 - s0 * s0 * s0;
+    d[0] * w0 + d[1] * w1 + d[2] * w2
+}
+
+/// Rotation-minimizing normal at every sample of `centerline`'s table
+/// (`SAMPLES_PER_SEGMENT` per segment, plus the end), started from `up_hint`.
+///
+/// Double reflection (Wang et al. 2008), computed in f64 from the segments'
+/// control points: the tangents and the chords come from the hodograph, so
+/// no rounding of the f32 sample positions enters (over a short chord that
+/// rounding tilts the first mirror, and the error is only cancelled by the
+/// second mirror where that one is well conditioned). Where the second
+/// mirror is ill-conditioned (`|v2| < RMF_MIN_V2`: the tangent turns back
+/// within one sample step, at a near-cusp of the centerline), the step
+/// instead parallel-transports the normal along the shortest arc from `T`
+/// to `T'` (the minimal rotation; the limit of the double reflection when
+/// the chord bisects the turn), or, if `T'` is nearly `−T`, projects it onto
+/// the plane normal to `T'` (the limit through an exact cusp). Both keep the
+/// normal of a planar centerline exactly out of its plane.
+fn rotation_minimizing_normals(centerline: &CubicSpline, up_hint: Vec3) -> Vec<Vec3> {
+    let k = SAMPLES_PER_SEGMENT;
+    let segments = centerline.segments();
+    let unit = |d: DVec3, fallback: DVec3| -> DVec3 {
+        let len = d.length();
+        if len > 1.0e-20 { d / len } else { fallback }
+    };
+    let h0 = hodograph(&segments[0]);
+    let mut tangent = unit(hodograph_tangent(&h0, 0.0), DVec3::X);
+    let up = up_hint.as_dvec3().normalize();
+    let mut normal = up - tangent * up.dot(tangent);
+    if normal.length_squared() < 1.0e-10 {
+        normal = any_perpendicular(tangent.as_vec3()).as_dvec3();
+        normal -= tangent * normal.dot(tangent);
+    }
+    normal = normal.normalize();
+
+    let mut normals = Vec::with_capacity(segments.len() * k + 1);
+    normals.push(normal.as_vec3());
+    for segment in segments {
+        let d = hodograph(segment);
+        for j in 0..k {
+            let s0 = j as f64 / k as f64;
+            let s1 = (j + 1) as f64 / k as f64;
+            let next_tangent = unit(hodograph_tangent(&d, s1), tangent);
+            let v1 = hodograph_chord(&d, s0, s1);
+            let c1 = v1.length_squared();
+            let (mut r, t_reflected) = if c1 > 0.0 {
+                (
+                    normal - v1 * (2.0 / c1 * v1.dot(normal)),
+                    tangent - v1 * (2.0 / c1 * v1.dot(tangent)),
+                )
+            } else {
+                (normal, tangent)
+            };
+            let v2 = next_tangent - t_reflected;
+            let c2 = v2.length_squared();
+            if c2 >= RMF_MIN_V2 * RMF_MIN_V2 {
+                r -= v2 * (2.0 / c2 * v2.dot(r));
+            } else {
+                r = minimal_rotation(normal, tangent, next_tangent);
+            }
+            // Remove accumulated rounding drift.
+            r -= next_tangent * r.dot(next_tangent);
+            let len = r.length();
+            normal = if len > 1.0e-12 { r / len } else { normal };
+            tangent = next_tangent;
+            normals.push(normal.as_vec3());
+        }
+    }
+    normals
+}
+
+/// `v` (perpendicular to the unit `from`) carried by the smallest rotation
+/// that takes `from` to the unit `to` (Rodrigues, without trigonometry:
+/// `v + w×v + w×(w×v)/(1+c)`, `w = from × to`, `c = from · to`). When `to`
+/// is nearly `−from` that rotation is undefined; `v` is then returned as is
+/// (the caller projects it onto the plane normal to `to`).
+fn minimal_rotation(v: DVec3, from: DVec3, to: DVec3) -> DVec3 {
+    let c = from.dot(to);
+    if c <= -1.0 + 1.0e-6 {
+        return v;
+    }
+    let w = from.cross(to);
+    let wv = w.cross(v);
+    v + wv + w.cross(wv) / (1.0 + c)
 }
 
 /// A contact found by [`GuideCurve::cast_sphere`].
@@ -2793,6 +2872,82 @@ mod tests {
                 g.reach * 1.0e3,
                 g.tangent_balls.is_some()
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod rmf_tests {
+    use super::*;
+
+    #[test]
+    fn hodograph_chord_matches_point_difference() {
+        let seg = BezierSegment {
+            p: [
+                Vec3::new(0.0, 0.0, 0.1),
+                Vec3::new(0.3, -0.2, 0.15),
+                Vec3::new(0.1, 0.4, -0.05),
+                Vec3::new(0.5, 0.1, 0.0),
+            ],
+        };
+        let d = hodograph(&seg);
+        let p64 = seg.p.map(Vec3::as_dvec3);
+        let point = |s: f64| {
+            let a = 1.0 - s;
+            p64[0] * (a * a * a)
+                + p64[1] * (3.0 * a * a * s)
+                + p64[2] * (3.0 * a * s * s)
+                + p64[3] * (s * s * s)
+        };
+        for (s0, s1) in [(0.0, 1.0), (0.25, 0.3125), (0.9375, 1.0), (0.5, 0.5)] {
+            let chord = hodograph_chord(&d, s0, s1);
+            assert!((chord - (point(s1) - point(s0))).length() < 1.0e-12);
+        }
+        // Tangent agrees with the f32 evaluation.
+        for s in [0.0f32, 0.3, 1.0] {
+            let t = hodograph_tangent(&d, f64::from(s));
+            assert!((t - seg.tangent(s).as_dvec3()).length() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn minimal_rotation_carries_normal_along_shortest_arc() {
+        // 90° turn about Z: X → Y carries Z to Z and Y to −X.
+        let r = minimal_rotation(DVec3::Z, DVec3::X, DVec3::Y);
+        assert!((r - DVec3::Z).length() < 1.0e-12);
+        let r = minimal_rotation(DVec3::Y, DVec3::X, DVec3::Y);
+        assert!((r + DVec3::X).length() < 1.0e-12);
+        // Small turn: stays perpendicular to the new tangent, unit length.
+        let to = DVec3::new(1.0, 0.01, 0.02).normalize();
+        let r = minimal_rotation(DVec3::Y, DVec3::X, to);
+        assert!(r.dot(to).abs() < 1.0e-12 && (r.length() - 1.0).abs() < 1.0e-12);
+        // Reversal: undefined rotation, the vector is passed through.
+        assert_eq!(minimal_rotation(DVec3::Z, DVec3::X, -DVec3::X), DVec3::Z);
+    }
+
+    #[test]
+    fn sharp_turn_within_a_sample_step_uses_the_fallback() {
+        // A spline that turns 90° at an exact cusp-like corner in 3D: out
+        // along X, back, then off along Y and up. Whatever branch each step
+        // takes, the normals stay unit and perpendicular to the tangents.
+        let pts = [
+            Vec3::ZERO,
+            Vec3::new(0.2, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.2, 0.05),
+        ];
+        let s = CubicSpline::interpolate(&pts).unwrap();
+        let normals = rotation_minimizing_normals(&s, Vec3::new(0.3, 0.2, 1.0));
+        assert_eq!(normals.len(), s.segment_count() * SAMPLES_PER_SEGMENT + 1);
+        let k = SAMPLES_PER_SEGMENT;
+        for (index, n) in normals.iter().enumerate() {
+            let i = (index / k).min(s.segment_count() - 1);
+            let d = hodograph(&s.segments()[i]);
+            let t = hodograph_tangent(&d, (index - i * k) as f64 / k as f64);
+            assert!((n.length() - 1.0).abs() < 1.0e-6, "{index}: {n:?}");
+            if t.length() > 1.0e-9 {
+                assert!(n.as_dvec3().dot(t.normalize()).abs() < 1.0e-6, "{index}");
+            }
         }
     }
 }
