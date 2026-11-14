@@ -347,15 +347,13 @@ pub(super) fn percent_decode(s: &str) -> Option<String> {
 /// Decodes `%XX` escapes into raw octets (`data:` URI payloads, RFC 2397).
 pub(super) fn percent_decode_bytes(s: &str) -> Option<Vec<u8>> {
     let b = s.as_bytes();
-    // Each `%XX` escape decodes three input bytes to one output byte.
-    let escapes = b.iter().filter(|&&c| c == b'%').count();
-    let mut out = Vec::with_capacity(b.len().saturating_sub(2 * escapes));
+    // Validate every escape before allocating, so a malformed payload is
+    // refused without allocating its valid prefix.
+    let mut out = Vec::with_capacity(percent_decoded_len(b)?);
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'%' {
-            let hex = b.get(i + 1..i + 3)?;
-            let hex = core::str::from_utf8(hex).ok()?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
+            out.push((hex_value(b[i + 1])? << 4) | hex_value(b[i + 2])?);
             i += 3;
         } else {
             out.push(b[i]);
@@ -365,8 +363,36 @@ pub(super) fn percent_decode_bytes(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+fn hex_value(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// The decoded length of a percent-encoded payload, or `None` if any `%`
+/// is not followed by two hexadecimal digits. Each `%XX` escape decodes
+/// three input bytes to one output byte.
+fn percent_decoded_len(b: &[u8]) -> Option<usize> {
+    let (mut i, mut n) = (0, 0);
+    while i < b.len() {
+        if b[i] == b'%' {
+            hex_value(*b.get(i + 1)?)?;
+            hex_value(*b.get(i + 2)?)?;
+            i += 3;
+        } else {
+            i += 1;
+        }
+        n += 1;
+    }
+    Some(n)
+}
+
 /// The length a `data:` URI [`load_source`] decodes to, counted without
-/// decoding (exact for well-formed URIs; malformed ones fail to decode).
+/// decoding: exact for well-formed URIs; a malformed percent-encoded
+/// payload counts at its full length (it then fails to decode).
 pub(super) fn data_uri_decoded_len(key: &str) -> u64 {
     let Some((meta, payload)) = key
         .strip_prefix("data:")
@@ -381,8 +407,9 @@ pub(super) fn data_uri_decoded_len(key: &str) -> u64 {
             .count() as u64;
         sextets * 6 / 8
     } else {
-        let escapes = payload.bytes().filter(|&c| c == b'%').count() as u64;
-        (payload.len() as u64).saturating_sub(2 * escapes)
+        // A malformed escape is charged at its full payload length (it will
+        // not decode); a well-formed payload at its exact decoded length.
+        percent_decoded_len(payload.as_bytes()).unwrap_or(payload.len()) as u64
     }
 }
 
@@ -510,6 +537,20 @@ mod tests {
             assert_eq!(data_uri_decoded_len(key), decoded.len() as u64, "{key}");
         }
         assert_eq!(data_uri_decoded_len("data:no-comma"), 0);
+    }
+
+    #[test]
+    fn malformed_percent_escapes_are_charged_in_full_and_never_decode() {
+        // A valid prefix followed by bare `%`s: the estimate must not drop
+        // to zero (it would pass a tiny budget), and decoding fails.
+        let payload = format!("{}{}", "A".repeat(4096), "%".repeat(4096));
+        let key = format!("data:application/octet-stream,{payload}");
+        assert_eq!(data_uri_decoded_len(&key), payload.len() as u64);
+        assert!(percent_decode_bytes(&payload).is_none());
+        for bad in ["%", "%4", "%G0", "%0G", "ab%zz", "%\u{e9}"] {
+            assert!(percent_decode_bytes(bad).is_none(), "{bad}");
+        }
+        assert_eq!(percent_decode_bytes("%41%62c").unwrap(), b"Abc");
     }
 
     #[test]

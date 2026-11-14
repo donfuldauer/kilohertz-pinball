@@ -109,6 +109,7 @@ void luaD_seterrorobj (lua_State *L, int errcode, StkId oldtop) {
 
 
 l_noret luaD_throw (lua_State *L, int errcode) {
+  luaS_khzown(G(L));  /* KHZ: back in this state (e.g. from a C function) */
   if (L->errorJmp) {  /* thread has an error handler? */
     L->errorJmp->status = errcode;  /* set status */
     LUAI_THROW(L, L->errorJmp);  /* jump to it */
@@ -378,6 +379,7 @@ void luaD_hook (lua_State *L, int event, int line,
     lua_unlock(L);
     (*hook)(L, &ar);
     lua_lock(L);
+    luaS_khzown(G(L));  /* KHZ: the hook may have run another state */
     lua_assert(!L->allowhook);
     L->allowhook = 1;
     ci->top.p = restorestack(L, ci_top);
@@ -558,6 +560,7 @@ l_sinline int precallC (lua_State *L, StkId func, int nresults,
   lua_unlock(L);
   n = (*f)(L);  /* do the actual call */
   lua_lock(L);
+  luaS_khzown(G(L));  /* KHZ: 'f' may have run another state */
   api_checknelems(L, n);
   luaD_poscall(L, ci, n);
   return n;
@@ -866,6 +869,7 @@ LUA_API int lua_resume (lua_State *L, lua_State *from, int nargs,
                                       int *nresults) {
   int status;
   lua_lock(L);
+  luaS_khzown(G(L));  /* KHZ: pending cost accrues to this state */
   if (L->status == LUA_OK) {  /* may be starting a coroutine */
     if (L->ci != &L->base_ci)  /* not in base level? */
       return resume_error(L, "cannot resume non-suspended coroutine", nargs);

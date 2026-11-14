@@ -763,7 +763,10 @@ fn read_codebook(rdr :&mut BitpackCursor, budget :&mut KhzBudget) -> Result<Code
 	if codebook_lookup_type != 0 && codebook_dimensions == 0 {
 		// KHZ patch 5: as stb_vorbis. A VQ book with zero dimensions divides
 		// by zero in residue type 0 decoding (and lookup1_values returns
-		// u32::MAX). Scalar-only books never use their dimensions.
+		// u32::MAX). Scalar-only books (lookup type 0) can still be residue
+		// classbooks, which use their dimensions as classwords per codeword;
+		// residue_packet_decode_inner (audio.rs) rejects a zero classbook
+		// dimension when residue data needs decoding.
 		try!(Err(HeaderReadError::HeaderBadFormat));
 	}
 	let codebook_lookup :Option<CodebookVqLookup> =
@@ -1274,7 +1277,8 @@ pub(crate) mod khz_tests {
 			let r = read_codebook(&mut BitpackCursor::new(&w.bytes), &mut budget());
 			assert_eq!(r.err(), Some(HeaderReadError::HeaderBadFormat));
 		}
-		// Scalar-only books never use their dimensions: still accepted.
+		// Scalar-only books are still accepted with 0 dimensions; as residue
+		// classbooks they are rejected at use (residue_packet_decode_inner).
 		let w = codebook(0, 2, 1, 0);
 		assert!(read_codebook(&mut BitpackCursor::new(&w.bytes), &mut budget()).is_ok());
 		// And an ordinary VQ book still parses.

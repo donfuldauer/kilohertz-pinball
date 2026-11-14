@@ -37,9 +37,27 @@
 ** Per thread: a Lua state runs on one thread at a time.
 */
 KHZ_TLS lua_Integer luaS_khzpending = 0;
-/* KHZ: the state the pending cost belongs to (compared, never dereferenced):
-   the last one to set or spend its budget on this thread */
-KHZ_TLS const void *luaS_khzowner = NULL;
+/* KHZ: the state the pending cost belongs to: the one running on this
+   thread. Every entry into a state ('lua_callk', 'lua_pcallk', 'lua_load',
+   'lua_resume', budget set/spend) and every return to it from a C function,
+   a hook or an error ('precallC', 'luaD_hook', 'luaD_throw') claims it, so
+   cost accrued while a state runs is charged to that state. 'lua_close'
+   releases it (a state must be closed on the thread it last ran on). */
+KHZ_TLS global_State *luaS_khzowner = NULL;
+
+
+/*
+** KHZ: switch the pending cost to 'g': park the old owner's pending cost in
+** its 'khzpending' (it is charged at that state's next spend) and resume
+** 'g's own.
+*/
+void luaS_khzclaim (global_State *g) {
+  if (luaS_khzowner != NULL)
+    luaS_khzowner->khzpending += luaS_khzpending;
+  luaS_khzpending = (g != NULL) ? g->khzpending : 0;
+  if (g != NULL) g->khzpending = 0;
+  luaS_khzowner = g;
+}
 
 
 int luaS_eqlngstr (TString *a, TString *b) {
