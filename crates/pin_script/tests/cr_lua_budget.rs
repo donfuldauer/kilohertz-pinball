@@ -87,7 +87,11 @@ fn long_bracket_class_scans_fault() {
     let setup = "local s = string.rep('b', 60000)
 local p = '[' .. string.rep('a', 60000) .. ']'";
     assert!(faults(setup, "local r = string.find(s, p)", 1_000_000));
-    assert!(faults(setup, "local r = string.find(s, '%f' .. p)", 1_000_000));
+    assert!(faults(
+        setup,
+        "local r = string.find(s, '%f' .. p)",
+        1_000_000
+    ));
 }
 
 #[test]
