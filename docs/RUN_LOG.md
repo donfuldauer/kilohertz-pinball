@@ -213,3 +213,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 2.2-S | Implementer | Opus 5.5 | fix 3 (last) | running | — | |
 | 4 | 2.3 | Reviewer | Opus 5.5 | 2 | **pass** | gates pass (615 pin_physics tests); flipper/ 98.6–98.9 %, crate 95.82 %; 10-process determinism; tunnelling 0/2160; energy bound; obligations met | B1 verified (rebound now scales with rubber_restitution); criterion 1 meets the Gate A1 ruling in all three rigs; unexplained 0.805 m/s step traced to a stop-arrival-tick event; restitution law accepted; N1–N4 → polish / HUMAN_QUEUE. Final re-run after the 2.2-S fix 3 lands |
 | 4 | 2.3 | Implementer | Fable 5.2 | polish | running | — | |
+| 4 | 2.3 | Implementer | Fable 5.2 | polish | done | clippy clean; flipper tests pass | flipper_criteria aligned with the Gate A1 ruling (≤ 50 % gate, causes named, none unexplained); HUMAN_QUEUE N1/N3/N4. Final re-run pending the 2.2-S fix 3 |
