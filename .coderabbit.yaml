@@ -8,6 +8,8 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # Keep reviewing every push; §2.7 needs an incremental review of each fix.
+    auto_pause_after_reviewed_commits: 0
     base_branches:
       - main
   # Skip files a reviewer cannot read or that are generated, vendored or recorded data.
@@ -58,8 +60,8 @@ reviews:
     - "!crates/pin_script/tests/attack_corpus/RESULTS_*.txt"
     # Build output (normally ignored by git; listed in case it is ever committed)
     - "!**/target/**"
-    - "!**/bin/**"
-    - "!**/obj/**"
+    - "!tools/dof_bridge/**/bin/**"
+    - "!tools/dof_bridge/**/obj/**"
     - "!dist/**"
   path_instructions:
     - path: "crates/**/src/**"
