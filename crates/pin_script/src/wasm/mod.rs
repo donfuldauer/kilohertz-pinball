@@ -144,8 +144,12 @@
 //!    non-empty blob is not delivered (and `restore_state` is not called). A
 //!    trap in `alloc_state`/`restore_state` or an out-of-bounds `ptr` fails
 //!    the swap.
-//! 4. On any error the old instance keeps running untouched and the error is
-//!    returned; on success the faulted state is cleared (fault count, last
+//! 4. On any error the old instance keeps running and the error is
+//!    returned. Because `save_state` runs on the old instance and may change
+//!    it, the host first copies what it can put back (linear memory and
+//!    exported mutable globals) and restores that copy when step 3 fails;
+//!    memory grown by `save_state` stays allocated (zeroed), and
+//!    non-exported globals and tables are not covered; on success the faulted state is cleared (fault count, last
 //!    error, overflow count and held-coil tracking carry over). `on_init` is
 //!    not called again.
 //!
@@ -168,8 +172,8 @@ use pin_core::{HostCommandQueue, HostCtx, ScriptError, SwitchEdge, TableScriptBa
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 use wasmtime::{
-    Config, Engine, ExternType, Linker, Memory, Module, Store, StoreLimitsBuilder, Trap, TypedFunc,
-    ValType,
+    Config, Engine, ExternType, Global, Linker, Memory, Module, Mutability, Store,
+    StoreLimitsBuilder, Trap, TypedFunc, Val, ValType,
 };
 
 use crate::NameTables;
@@ -366,6 +370,14 @@ struct Live {
     save_state: Option<TypedFunc<(), i64>>,
     restore_state: Option<TypedFunc<(i32, i32), ()>>,
     alloc_state: Option<TypedFunc<i32, i32>>,
+    /// Exported mutable globals, captured with memory by [`Live::snapshot`].
+    globals: Vec<Global>,
+}
+
+/// The parts of an instance the host can put back after a failed swap.
+struct Snapshot {
+    memory: Vec<u8>,
+    globals: Vec<Val>,
 }
 
 /// Maps a guest-call error to the fault it causes.
@@ -425,6 +437,14 @@ impl Live {
         let save_state = instance.get_typed_func(&mut store, "save_state").ok();
         let restore_state = instance.get_typed_func(&mut store, "restore_state").ok();
         let alloc_state = instance.get_typed_func(&mut store, "alloc_state").ok();
+        let exported: Vec<Global> = instance
+            .exports(&mut store)
+            .filter_map(wasmtime::Export::into_global)
+            .collect();
+        let globals = exported
+            .into_iter()
+            .filter(|g| g.ty(&store).mutability() == Mutability::Var)
+            .collect();
         Ok(Self {
             store,
             memory,
@@ -434,7 +454,33 @@ impl Live {
             save_state,
             restore_state,
             alloc_state,
+            globals,
         })
+    }
+
+    /// Copies linear memory and the exported mutable globals.
+    fn snapshot(&mut self) -> Snapshot {
+        Snapshot {
+            memory: self.memory.data(&self.store).to_vec(),
+            globals: self
+                .globals
+                .iter()
+                .map(|g| g.get(&mut self.store))
+                .collect(),
+        }
+    }
+
+    /// Puts `s` back. Memory cannot shrink: bytes grown since are zeroed,
+    /// as they were when the memory grew.
+    fn roll_back(&mut self, s: Snapshot) {
+        let data = self.memory.data_mut(&mut self.store);
+        let (head, tail) = data.split_at_mut(s.memory.len());
+        head.copy_from_slice(&s.memory);
+        tail.fill(0);
+        for (g, v) in self.globals.iter().zip(s.globals) {
+            // Same global and type as captured, so this cannot fail.
+            let _ = g.set(&mut self.store, v);
+        }
     }
 
     /// Calls the `save_state` hook and copies its blob out (see module docs).
@@ -635,17 +681,29 @@ impl WasmScriptBackend {
 
     /// Swaps in a prepared module at a tick boundary, carrying state through
     /// `save_state` / `restore_state` (see the module docs). On error the
-    /// running instance is untouched.
+    /// running instance keeps running, with what `save_state` may have
+    /// changed in its memory and exported globals put back.
     pub fn apply_prepared(&mut self, m: PreparedModule) -> Result<(), ScriptError> {
         let mut new = Live::new(&m, &self.names, &self.cfg)?;
         let fuel = self.cfg.fuel_per_callback;
+        let mut snapshot = None;
         let state = if self.faulted {
             None
         } else {
+            // Only a `restore_state` on the new side can fail the swap after
+            // the old `save_state` has run.
+            if self.live.save_state.is_some() && new.restore_state.is_some() {
+                snapshot = Some(self.live.snapshot());
+            }
             self.live.save(fuel)
         };
-        if let Some(blob) = state {
-            new.restore(&blob, fuel)?;
+        if let Some(blob) = state
+            && let Err(e) = new.restore(&blob, fuel)
+        {
+            if let Some(s) = snapshot {
+                self.live.roll_back(s);
+            }
+            return Err(e);
         }
         new.store.data_mut().book = self.live.store.data().book.clone();
         self.live = new;

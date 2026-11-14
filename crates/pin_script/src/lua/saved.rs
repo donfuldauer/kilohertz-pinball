@@ -74,10 +74,12 @@ fn save_inner(
             let mut entries = Vec::new();
             for pair in t.pairs::<Value, Value>() {
                 let (k, val) = pair?;
-                let (Some(k), Some(val)) = (
-                    save_inner(&k, depth + 1, seen, left)?,
-                    save_inner(&val, depth + 1, seen, left)?,
-                ) else {
+                // Skip an unsupported key before looking at its value, so
+                // the value of a dropped entry cannot fail the whole copy.
+                let Some(k) = save_inner(&k, depth + 1, seen, left)? else {
+                    continue;
+                };
+                let Some(val) = save_inner(&val, depth + 1, seen, left)? else {
                     continue;
                 };
                 entries.push((k, val));
@@ -154,5 +156,19 @@ mod tests {
             .unwrap();
         assert!(save(&bomb, 1 << 20).is_err());
         assert!(save(&bomb, 8 << 20).is_ok());
+    }
+
+    #[test]
+    fn unsupported_key_skips_its_value_unread() {
+        let a = Lua::new();
+        let v: Value = a
+            .load("local c = {} c.self = c return { score = 42, [print] = c }")
+            .eval()
+            .unwrap();
+        let saved = save(&v, 1 << 20).unwrap().unwrap();
+        assert_eq!(
+            saved,
+            Saved::Table(vec![(Saved::Str(b"score".to_vec()), Saved::Int(42))])
+        );
     }
 }

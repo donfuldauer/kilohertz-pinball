@@ -243,8 +243,12 @@ pub(crate) fn build(lua: &Lua, bridge: &Rc<Bridge>) -> mlua::Result<Table> {
         if g < 0.0 {
             return Err(arg_err("play_sound", &format!("gain {g} is negative")));
         }
-        b.with_ctx(|_, _, q| b.note(q.play_sound(s, g as f32)))
-            .map(drop)
+        // A finite f64 above f32::MAX rounds to infinity.
+        let g32 = g as f32;
+        if !g32.is_finite() {
+            return Err(arg_err("play_sound", &format!("gain {g} overflows f32")));
+        }
+        b.with_ctx(|_, _, q| b.note(q.play_sound(s, g32))).map(drop)
     });
     reg!("persist_set", |b, (k, v): (Value, Value)| {
         let k = persist_key(&k, "persist_set")?;
