@@ -33,6 +33,12 @@ reports and fix attempts for the same issue.
      needs a human ruling; give the HUMAN_QUEUE line and the reply text for the thread.
    - `not-a-defect`: wrong, or it conflicts with a recorded decision; give the evidence (test
      output, DECISIONS.md section) and a short reply text for the thread.
+   `not-a-defect` on "not reproducible" needs a reproduction attempt in the reported environment;
+   otherwise report `root cause: not found` (needs the reported environment), not a recommendation.
+   Every thread reply draft states the reason and the evidence first. For `not-a-defect` (or a
+   documented accepted bound) it ends with "recommend: Orchestrator resolves thread"; never route
+   closing a thread to a human. A HUMAN_QUEUE line is only for rulings that change simulation
+   output or need a person's decision (PLAN §2.7 step 3, D37).
    - `pre-existing`: present on `main` before this work; say which commit introduced it.
 5. **Plan the fix.** Files and functions to change, the regression test that must fail before
    and pass after, other code that could break, and the blast radius in the classifier's terms
@@ -54,6 +60,6 @@ verdict: valid-defect | valid-but-deferred | not-a-defect | pre-existing
 fix plan: <files/functions, change, regression test>
 blast radius: local | crate | very-high (<why>)
 suggested difficulty: mechanical | standard | complex | extreme (<evidence>)
-thread reply draft: <text, for CodeRabbit findings>
+thread reply draft: <reason and evidence first, for CodeRabbit findings; + "recommend: Orchestrator resolves thread" if not-a-defect>
 human queue line: <text or none>
 ```

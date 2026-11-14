@@ -84,7 +84,8 @@ Follow PLAN.md Appendix D. The brief must contain:
 - `OWNED PATHS`, and the paths the agent must not touch.
 - `GOAL`: one paragraph on the result, not the method.
 - `REQUIREMENTS`: a numbered list, each item testable. For a CodeRabbit finding, quote the
-  comment, give the thread URL, file and lines, and say what "fixed" means.
+  comment, give the thread URL, file and lines, and say what "fixed" means. Tell the executor
+  to report the thread URL and what changed; the Orchestrator resolves the thread (D37).
 - `CONTEXT`: signatures, contract excerpts, decision-log rows and earlier failure history,
   pasted in full. Never write "see PLAN.md" for something the agent needs.
 - `TESTS REQUIRED`: which tests to add or update, and which existing suites must still pass.
