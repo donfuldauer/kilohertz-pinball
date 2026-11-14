@@ -70,6 +70,15 @@ pub use score::{
 };
 
 use core::fmt;
+
+/// WGSL sources of the display shaders `(name, source)` (for naga
+/// validation in tests): the quad compositor and the DMD dot grid.
+pub fn shader_sources() -> [(&'static str, String); 2] {
+    [
+        ("display_quads", quad::quad_shader_source()),
+        ("dmd", dmd::dmd_shader_source()),
+    ]
+}
 use std::collections::BTreeMap;
 
 /// Errors from building displays from manifests or images.

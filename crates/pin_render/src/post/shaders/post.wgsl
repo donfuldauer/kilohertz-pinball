@@ -1,8 +1,9 @@
 // post: the HDR post chain (5.2). Entry points: vs_fullscreen, fs_blur
 // (exposure + ball motion blur), fs_prefilter (bloom threshold), fs_down
-// (13-tap downsample), fs_up (tent upsample + level blend), fs_composite
-// (bloom composite, tone mapping, sRGB). Group 0: the frame uniform;
-// group 1: the pass inputs (tex_a, tex_b, a linear clamp sampler).
+// (6x6 binomial downsample), fs_up (binomial upsample + level blend),
+// fs_composite (bloom composite, tone mapping, sRGB). Group 0: the frame
+// uniform; group 1: the pass inputs (tex_a, tex_b, and a linear clamp
+// sampler the bloom no longer uses: every pass reads with textureLoad).
 
 const MAX_BLUR_BALLS: u32 = 16u;
 
@@ -143,57 +144,104 @@ fn fs_prefilter(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4<f32>(bloom_bright(load_a(vec2<i32>(floor(frag.xy)))), 1.0);
 }
 
-fn sample_a(uv: vec2<f32>) -> vec3<f32> {
-    return textureSampleLevel(tex_a, lin, uv, 0.0).rgb;
+// Bloom resampling works on texel indices with explicit weights, zero
+// outside the image, so every level holds exactly the energy of the one
+// before (area-weighted: a level-(i+1) texel covers 2x2 level-i texels).
+// Level sizes are ceil(n / 2). 1-D kernel: binomial [1 5 10 10 5 1] / 32
+// at offsets k = -2..3 around the texel pair (2i, 2i + 1); its even and odd
+// taps each sum to 1/2, so with a stride of 2 every source texel feeds the
+// same total, whatever the parity of the size or the position.
+
+fn b6(k: i32) -> f32 {
+    switch k {
+        case -2, 3: { return 1.0 / 32.0; }
+        case -1, 2: { return 5.0 / 32.0; }
+        case 0, 1: { return 10.0 / 32.0; }
+        default: { return 0.0; }
+    }
 }
 
-fn sample_b(uv: vec2<f32>) -> vec3<f32> {
-    return textureSampleLevel(tex_b, lin, uv, 0.0).rgb;
+// Downsample, 1-D: 1/2 over the total weight source texel `s` gives the
+// `n` destination texels that exist (1 inside the image: the full kernel).
+fn down_norm(s: i32, n: i32) -> f32 {
+    var t = 0.0;
+    for (var d = -2; d <= 2; d = d + 1) {
+        let i = (s >> 1u) + d;
+        if (i >= 0 && i < n) {
+            t = t + b6(s - 2 * i);
+        }
+    }
+    return 0.5 / t;
 }
 
-// 13-tap downsample (Jimenez 2014) of tex_a; weights sum to 1.
+// Upsample, 1-D: coarse texel `i` scatters a total of 2 (its area in fine
+// texels) over the fine texels 2i - 2 .. 2i + 3 that exist (`f` of them).
+fn up_norm(i: i32, f: i32) -> f32 {
+    var t = 0.0;
+    for (var k = -2; k <= 3; k = k + 1) {
+        let s = 2 * i + k;
+        if (s >= 0 && s < f) {
+            t = t + b6(k);
+        }
+    }
+    return 2.0 / t;
+}
+
+// Downsample of tex_a into a ceil(size / 2) target.
 @fragment
 fn fs_down(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    let src = vec2<f32>(textureDimensions(tex_a));
-    let dst = max(floor(src * 0.5), vec2<f32>(1.0));
-    let uv = frag.xy / dst;
-    let t = 1.0 / src;
-    let a = sample_a(uv + t * vec2<f32>(-2.0, -2.0));
-    let b = sample_a(uv + t * vec2<f32>(0.0, -2.0));
-    let c = sample_a(uv + t * vec2<f32>(2.0, -2.0));
-    let d = sample_a(uv + t * vec2<f32>(-2.0, 0.0));
-    let e = sample_a(uv);
-    let f = sample_a(uv + t * vec2<f32>(2.0, 0.0));
-    let g = sample_a(uv + t * vec2<f32>(-2.0, 2.0));
-    let h = sample_a(uv + t * vec2<f32>(0.0, 2.0));
-    let i = sample_a(uv + t * vec2<f32>(2.0, 2.0));
-    let j = sample_a(uv + t * vec2<f32>(-1.0, -1.0));
-    let k = sample_a(uv + t * vec2<f32>(1.0, -1.0));
-    let l = sample_a(uv + t * vec2<f32>(-1.0, 1.0));
-    let m = sample_a(uv + t * vec2<f32>(1.0, 1.0));
-    let o = e * 0.125 + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + m) * 0.125;
-    return vec4<f32>(o, 1.0);
+    let src = vec2<i32>(textureDimensions(tex_a));
+    let dst = (src + vec2<i32>(1)) / 2;
+    let i = vec2<i32>(floor(frag.xy));
+    var acc = vec3<f32>(0.0);
+    for (var ky = -2; ky <= 3; ky = ky + 1) {
+        let sy = 2 * i.y + ky;
+        if (sy < 0 || sy >= src.y) {
+            continue;
+        }
+        let wy = b6(ky) * down_norm(sy, dst.y);
+        for (var kx = -2; kx <= 3; kx = kx + 1) {
+            let sx = 2 * i.x + kx;
+            if (sx < 0 || sx >= src.x) {
+                continue;
+            }
+            let wx = b6(kx) * down_norm(sx, dst.x);
+            acc = acc + (wx * wy) * textureLoad(tex_a, vec2<i32>(sx, sy), 0).rgb;
+        }
+    }
+    return vec4<f32>(acc, 1.0);
 }
 
-// 3x3 tent filter of tex_b at `uv`, one source texel apart; weights sum to 1.
-fn tent_b(uv: vec2<f32>) -> vec3<f32> {
-    let t = 1.0 / vec2<f32>(textureDimensions(tex_b));
-    var o = sample_b(uv) * 4.0;
-    o = o + (sample_b(uv + vec2<f32>(t.x, 0.0)) + sample_b(uv - vec2<f32>(t.x, 0.0))
-        + sample_b(uv + vec2<f32>(0.0, t.y)) + sample_b(uv - vec2<f32>(0.0, t.y))) * 2.0;
-    o = o + sample_b(uv + t) + sample_b(uv - t) + sample_b(uv + vec2<f32>(t.x, -t.y))
-        + sample_b(uv + vec2<f32>(-t.x, t.y));
-    return o / 16.0;
+// Upsample of tex_b (the coarser level) at fine texel `p` of a `fine`-sized
+// level; per axis, the three coarse texels whose kernel reaches `p`.
+fn upsample_b(p: vec2<i32>, fine: vec2<i32>) -> vec3<f32> {
+    let coarse = vec2<i32>(textureDimensions(tex_b));
+    var acc = vec3<f32>(0.0);
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+        let iy = (p.y >> 1u) + dy;
+        if (iy < 0 || iy >= coarse.y) {
+            continue;
+        }
+        let wy = b6(p.y - 2 * iy) * up_norm(iy, fine.y);
+        for (var dx = -1; dx <= 1; dx = dx + 1) {
+            let ix = (p.x >> 1u) + dx;
+            if (ix < 0 || ix >= coarse.x) {
+                continue;
+            }
+            let wx = b6(p.x - 2 * ix) * up_norm(ix, fine.x);
+            acc = acc + (wx * wy) * textureLoad(tex_b, vec2<i32>(ix, iy), 0).rgb;
+        }
+    }
+    return acc;
 }
 
-// up_i = mix(down_i, tent(up_(i+1)), radius); tex_a = down_i (same size as
+// up_i = mix(down_i, upsample(up_(i+1)), radius); tex_a = down_i (same size as
 // the target), tex_b = the coarser level.
 @fragment
 fn fs_up(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    let dst = vec2<f32>(textureDimensions(tex_a));
-    let uv = frag.xy / dst;
-    let here = load_a(vec2<i32>(floor(frag.xy)));
-    let coarse = tent_b(uv);
+    let p = vec2<i32>(floor(frag.xy));
+    let here = load_a(p);
+    let coarse = upsample_b(p, vec2<i32>(textureDimensions(tex_a)));
     return vec4<f32>(mix(here, coarse, clamp(post.flags.x, 0.0, 1.0)), 1.0);
 }
 
@@ -214,12 +262,12 @@ fn srgb_encode(x: vec3<f32>) -> vec3<f32> {
 // tex_a = the exposed, blurred scene; tex_b = the finest bloom level.
 @fragment
 fn fs_composite(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    let dst = vec2<f32>(textureDimensions(tex_a));
-    let scene = load_a(vec2<i32>(floor(frag.xy)));
+    let p = vec2<i32>(floor(frag.xy));
+    let scene = load_a(p);
     var c = scene;
     if (post.flags.w > 0.5) {
         let k = clamp(post.bloom.w, 0.0, 1.0);
-        let bloom = tent_b(frag.xy / dst);
+        let bloom = upsample_b(p, vec2<i32>(textureDimensions(tex_a)));
         c = clean(scene - k * bloom_bright(scene) + k * bloom);
     }
     if (post.flags.z > 0.5) {

@@ -1460,6 +1460,145 @@ fn a_firefly_pixel_blooms_no_more_than_the_clamp() {
     assert!(bg[0] < 128.0, "fireflies washed the image out: {bg:?}");
 }
 
+/// Halo energy of one bright pixel at `(sx, sy)` on a black `w × h` target, as a fraction
+/// of the energy the bloom is specified to scatter (`intensity · luminance(bright)`).
+///
+/// Contract: `out = c − intensity·bright + intensity·blur(bright)` with blur weights that
+/// sum to 1, so everything the composite holds beyond the source pixel's remainder
+/// `c − intensity·bright` is the halo, and it must equal `intensity·bright` up to border
+/// losses, wherever the pixel sits.
+fn single_pixel_halo_fraction(
+    ctx: &GpuContext,
+    chain: &mut PostChain,
+    cam: &PbrCamera,
+    (w, h): (u32, u32),
+    (sx, sy): (u32, u32),
+    value: f32,
+    cfg: BloomConfig,
+) -> f64 {
+    let mut pixels = vec![[0.0, 0.0, 0.0, 1.0]; (w * h) as usize];
+    pixels[(sy * w + sx) as usize] = [value, value, value, 1.0];
+    let img = HdrImage {
+        width: w,
+        height: h,
+        pixels,
+    };
+    chain.set_config(bloom_only(cfg));
+    let input = HdrInput::from_image(ctx, &img).expect("HdrInput");
+    let frame = PostFrame {
+        camera: cam,
+        balls: &[],
+    };
+    let out = chain
+        .render_to_hdr(ctx, &input.view, &frame)
+        .expect("render_to_hdr");
+    assert_eq!((out.width, out.height), (w, h));
+    assert_finite(&out, "single pixel bloom");
+    let moved = f64::from(cfg.intensity) * bright_lum(&img, &cfg);
+    assert!(moved > 0.0, "the source must be above the threshold");
+    let halo = total_lum(&out) - (f64::from(value) - moved);
+    halo / moved
+}
+
+/// Criterion 2 on targets of every parity (round 2, Reviewer finding): the scattered
+/// energy of a single bright pixel must not depend on where the pixel sits, nor on
+/// whether the target sides are odd or even. Firefly clamp off, bloom only; the source is
+/// swept one pixel at a time through the middle of the target (horizontally, vertically
+/// and diagonally). Stated tolerance: halo energy within ±10 % of
+/// `intensity · luminance(bloom_prefilter(source))` at every position.
+#[test]
+fn bloom_energy_of_a_single_pixel_is_position_independent_on_odd_and_even_targets() {
+    let Some(ctx) = gpu() else {
+        return;
+    };
+    let cfg = BloomConfig {
+        firefly_clamp: 1.0e6,
+        ..BloomConfig::default()
+    };
+    // Above the default clamp (64), so the clamp really is off.
+    let value = 100.0f32;
+    let sizes: [(u32, u32, &str); 7] = [
+        (126, 92, "even×even"),
+        (127, 93, "odd×odd"),
+        (97, 75, "odd×odd"),
+        (171, 95, "odd×odd"),
+        (127, 92, "odd×even"),
+        (126, 93, "even×odd"),
+        (93, 127, "odd×odd"),
+    ];
+    let mut failures = Vec::new();
+    for (w, h, parity) in sizes {
+        let mut chain =
+            PostChain::new(&ctx, w, h, wgpu::TextureFormat::Rgba8Unorm).expect("PostChain::new");
+        let cam = Cam { size: w, ..CAM }.pbr();
+        let (cx, cy) = (w / 2 - 4, h / 2 - 4);
+        let mut positions = vec![(cx, cy)];
+        for k in 1..9u32 {
+            positions.push((cx + k, cy));
+            positions.push((cx, cy + k));
+            positions.push((cx + k, cy + k));
+        }
+        let (mut lo, mut hi) = (f64::INFINITY, 0.0f64);
+        let mut row = Vec::new();
+        for &(sx, sy) in &positions {
+            let frac =
+                single_pixel_halo_fraction(&ctx, &mut chain, &cam, (w, h), (sx, sy), value, cfg);
+            lo = lo.min(frac);
+            hi = hi.max(frac);
+            if sy == cy {
+                row.push(format!("{frac:.3}"));
+            }
+            if !(0.90..=1.10).contains(&frac) {
+                failures.push(format!("{w}×{h} ({parity}) source ({sx}, {sy}): {frac:.3}"));
+            }
+        }
+        println!(
+            "{w}×{h} ({parity}): halo / expected in {lo:.3}..{hi:.3}; x sweep {}",
+            row.join(" ")
+        );
+    }
+    assert!(
+        failures.is_empty(),
+        "halo energy outside ±10 % of intensity·bright at {} positions:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The same sweep with the default configuration (firefly clamp on) and a source below
+/// the clamp, on an odd×odd target: the default look conserves energy too.
+#[test]
+fn default_bloom_conserves_a_moving_highlight_on_an_odd_target() {
+    let Some(ctx) = gpu() else {
+        return;
+    };
+    let cfg = BloomConfig::default();
+    let (w, h) = (127u32, 93u32);
+    let mut chain =
+        PostChain::new(&ctx, w, h, wgpu::TextureFormat::Rgba8Unorm).expect("PostChain::new");
+    let cam = Cam { size: w, ..CAM }.pbr();
+    let mut fracs = Vec::new();
+    for k in 0..12u32 {
+        let pos = (50 + k, 40 + k / 2);
+        fracs.push(single_pixel_halo_fraction(
+            &ctx,
+            &mut chain,
+            &cam,
+            (w, h),
+            pos,
+            8.0,
+            cfg,
+        ));
+    }
+    println!("default bloom, 127×93, moving highlight: {fracs:.3?}");
+    for (k, frac) in fracs.iter().enumerate() {
+        assert!(
+            (0.90..=1.10).contains(frac),
+            "step {k}: halo energy {frac:.3} of the expected (all: {fracs:.3?})"
+        );
+    }
+}
+
 // --- motion blur -----------------------------------------------------------------------
 
 const MB_SIZE: u32 = 128;

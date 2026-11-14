@@ -444,6 +444,12 @@ impl Scene {
 }
 
 fn validate_layer(i: usize, l: RawLayer) -> Result<SceneLayer, SceneError> {
+    if l.text.is_some() && l.kind != RawKind::Text {
+        return Err(invalid(i, "`text` is only for kind = \"text\""));
+    }
+    if l.file.is_some() && l.kind != RawKind::Image {
+        return Err(invalid(i, "`file` is only for kind = \"image\""));
+    }
     let kind = match l.kind {
         RawKind::Text => {
             let text = l.text.ok_or_else(|| invalid(i, "kind = \"text\" needs `text`"))?;
@@ -462,12 +468,6 @@ fn validate_layer(i: usize, l: RawLayer) -> Result<SceneLayer, SceneError> {
         RawKind::Rect => LayerKind::Rect,
         RawKind::Score => LayerKind::Score,
     };
-    if l.text.is_some() && l.kind != RawKind::Text {
-        return Err(invalid(i, "`text` is only for kind = \"text\""));
-    }
-    if l.file.is_some() && l.kind != RawKind::Image {
-        return Err(invalid(i, "`file` is only for kind = \"image\""));
-    }
     let is_text = l.kind == RawKind::Text;
     let (dx, dy, da, dv) = if is_text {
         (0.5, 0.5, Align::Center, VAlign::Middle)

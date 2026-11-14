@@ -487,7 +487,7 @@ fn unknown_profile_is_refused_with_a_notice() {
     }
     for p in pin_input::profiles::builtin_profiles() {
         assert!(
-            m.profile_choices().iter().any(|c| *c == p.id),
+            m.profile_choices().contains(&p.id),
             "builtin profile {} is not offered",
             p.id
         );

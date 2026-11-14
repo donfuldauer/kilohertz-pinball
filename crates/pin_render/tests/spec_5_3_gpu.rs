@@ -287,7 +287,7 @@ fn check_dmd_dots(
     viewport: Rect,
     what: &str,
 ) -> (f32, f32) {
-    let geo = dmd_geometry(spec, viewport);
+    let geo = dmd_geometry(&spec, viewport);
     let mut lit_sum = 0.0f64;
     let mut lit_n = 0u32;
     let mut unlit_sum = 0.0f64;
@@ -352,7 +352,7 @@ fn dmd_text_dot_positions_and_colours_both_sizes_three_colour_modes() {
             );
             assert_eq!(frame.lit_count(), n_lit, "DmdFrame::lit_count");
             let (iw, ih) = (w * pitch, h * pitch);
-            let img = render_dmd_to_image(&ctx, &spec, &frame, iw, ih).unwrap();
+            let img = render_dmd_to_image(&ctx, spec, &frame, iw, ih).unwrap();
             assert_eq!((img.width, img.height), (iw, ih));
             let what = format!("{w}x{h} {}", color_name(color));
             let viewport = Rect::new(0, 0, iw, ih);
@@ -402,7 +402,7 @@ fn dmd_text_dot_positions_and_colours_both_sizes_three_colour_modes() {
             }
             if (w, color) == (128, DmdColor::Orange) {
                 // Secondary evidence at a small size.
-                let small = render_dmd_to_image(&ctx, &spec, &frame, 384, 96).unwrap();
+                let small = render_dmd_to_image(&ctx, spec, &frame, 384, 96).unwrap();
                 check_dmd_dots(&small, &spec, &frame, Rect::new(0, 0, 384, 96), "golden");
                 snapshot("dmd_text_orange", &small);
             }
@@ -424,7 +424,7 @@ fn dmd_dots_are_round_and_evenly_pitched() {
             }
         }
         let (iw, ih) = (w * pitch, h * pitch);
-        let img = render_dmd_to_image(&ctx, &spec, &frame, iw, ih).unwrap();
+        let img = render_dmd_to_image(&ctx, spec, &frame, iw, ih).unwrap();
         let geo = dmd_geometry(&spec, Rect::new(0, 0, iw, ih));
         let peak = px_at(&img, geo.dot_center(0, 0))[0];
         assert!(peak > 245.0);
@@ -530,7 +530,7 @@ fn dmd_drive_levels_are_linear_and_rgb_dots_take_their_colour() {
             let v = (i * 17) as u8;
             frame.set(4 + i * 3, 10, [v, v, v]);
         }
-        let img = render_dmd_to_image(&ctx, &spec, &frame, 1024, 256).unwrap();
+        let img = render_dmd_to_image(&ctx, spec, &frame, 1024, 256).unwrap();
         let geo = dmd_geometry(&spec, Rect::new(0, 0, 1024, 256));
         let tint = dmd_tint(color);
         let mut prev = -1.0f32;
@@ -556,7 +556,7 @@ fn dmd_drive_levels_are_linear_and_rgb_dots_take_their_colour() {
     for (i, d) in drives.iter().enumerate() {
         frame.set(10 + 5 * i as u32, 16, *d);
     }
-    let img = render_dmd_to_image(&ctx, &spec, &frame, 1024, 256).unwrap();
+    let img = render_dmd_to_image(&ctx, spec, &frame, 1024, 256).unwrap();
     let geo = dmd_geometry(&spec, Rect::new(0, 0, 1024, 256));
     for (i, d) in drives.iter().enumerate() {
         let got = px_at(&img, geo.dot_center(10 + 5 * i as u32, 16));
@@ -595,7 +595,7 @@ fn dmd_fractional_pitch_is_centred_and_letterboxed() {
     let viewport = Rect::new(0, 0, iw, ih);
     let geo = dmd_geometry(&spec, viewport);
     assert!((geo.pitch - 7.8125).abs() < 1e-4);
-    let img = render_dmd_to_image(&ctx, &spec, &frame, iw, ih).unwrap();
+    let img = render_dmd_to_image(&ctx, spec, &frame, iw, ih).unwrap();
     check_dmd_dots(&img, &spec, &frame, viewport, "fractional pitch");
     // Letterbox bands (25 px above and below the grid) are background.
     let top = geo.dot_center(0, 0)[1] - geo.pitch * 0.5;
@@ -610,7 +610,7 @@ fn dmd_fractional_pitch_is_centred_and_letterboxed() {
     }
     // The same in a tall viewport: bands left and right.
     let (iw, ih) = (640u32, 400u32); // pitch = min(5, 12.5) = 5 → grid 640 × 160, centred
-    let img = render_dmd_to_image(&ctx, &spec, &frame, iw, ih).unwrap();
+    let img = render_dmd_to_image(&ctx, spec, &frame, iw, ih).unwrap();
     check_dmd_dots(&img, &spec, &frame, Rect::new(0, 0, iw, ih), "tall viewport");
     assert_close(mean(&img, 0, 0, iw, 118), [0.0; 3], 0.5, "top band");
     assert_close(mean(&img, 0, 282, iw, 400), [0.0; 3], 0.5, "bottom band");
@@ -687,7 +687,7 @@ fn dmd_score_view_renders_the_formatted_score_as_font_dots() {
             );
             // And it is rendered where the geometry says, in the mode's colour.
             let (iw, ih) = (w * pitch, h * pitch);
-            let img = render_dmd_to_image(&ctx, &spec, &frame, iw, ih).unwrap();
+            let img = render_dmd_to_image(&ctx, spec, &frame, iw, ih).unwrap();
             check_dmd_dots(
                 &img,
                 &spec,
@@ -744,7 +744,7 @@ fn placeholder_scenes_render_on_dmd_and_lcd() {
             }
             assert!(best >= 20, "{id} at {w}x{h}: only {best} lit dots");
             let frame = best_frame.unwrap();
-            let img = render_dmd_to_image(&ctx, &spec, &frame, w * 4, h * 4).unwrap();
+            let img = render_dmd_to_image(&ctx, spec, &frame, w * 4, h * 4).unwrap();
             let lit_px = (0..img.height)
                 .flat_map(|y| (0..img.width).map(move |x| (x, y)))
                 .filter(|&(x, y)| px(&img, x, y)[0] > 200.0)
@@ -771,7 +771,7 @@ fn placeholder_scenes_render_on_dmd_and_lcd() {
             if list.items.is_empty() {
                 continue;
             }
-            let img = render_lcd_to_image(&ctx, &spec, &list, &ImageSet::new(), 480, 270).unwrap();
+            let img = render_lcd_to_image(&ctx, spec, &list, &ImageSet::new(), 480, 270).unwrap();
             let bg = [
                 f32::from(list.background[0]),
                 f32::from(list.background[1]),
@@ -1167,7 +1167,7 @@ fn lcd_layer_order_and_alpha_compositing() {
 
     // Red then translucent blue.
     let list = lcd_list(vec![red.clone(), blue.clone()]);
-    let img = render_lcd_to_image(&ctx, &spec, &list, &images, 640, 360).unwrap();
+    let img = render_lcd_to_image(&ctx, spec, &list, &images, 640, 360).unwrap();
     assert_eq!((img.width, img.height), (640, 360));
     assert_close(m(&img, 0, 0, 320, 20), bg, 1.0, "background");
     assert_close(m(&img, 20, 20, 100, 120), r, 1.5, "red only");
@@ -1178,11 +1178,11 @@ fn lcd_layer_order_and_alpha_compositing() {
     assert_close(px(&img, 38, 100), bg, 1.5, "just left of the red rect");
     assert_close(px(&img, 41, 100), r, 1.5, "just inside the red rect");
     assert_close(px(&img, 398, 60), r, 1.5, "just inside the red rect's right edge");
-    snapshot("lcd_compositing", &render_lcd_to_image(&ctx, &spec, &list, &images, 320, 180).unwrap());
+    snapshot("lcd_compositing", &render_lcd_to_image(&ctx, spec, &list, &images, 320, 180).unwrap());
 
     // Translucent blue then opaque red: red hides blue in the overlap.
     let list = lcd_list(vec![blue.clone(), red.clone()]);
-    let img = render_lcd_to_image(&ctx, &spec, &list, &images, 640, 360).unwrap();
+    let img = render_lcd_to_image(&ctx, spec, &list, &images, 640, 360).unwrap();
     assert_close(m(&img, 100, 60, 200, 120), r, 1.5, "red over blue");
     assert_close(m(&img, 200, 60, 300, 160), lerp3(bg, b, a), 2.0, "blue α over bg");
     assert_close(m(&img, 20, 20, 100, 120), r, 1.5, "red only");
@@ -1194,7 +1194,7 @@ fn lcd_layer_order_and_alpha_compositing() {
     };
     let stack = [[255u8, 0, 0, 102], [0, 255, 0, 153], [0, 0, 255, 51]];
     let list = lcd_list(stack.iter().map(|c| layer(*c)).collect());
-    let img = render_lcd_to_image(&ctx, &spec, &list, &images, 640, 360).unwrap();
+    let img = render_lcd_to_image(&ctx, spec, &list, &images, 640, 360).unwrap();
     let mut want = bg;
     for c in stack {
         want = lerp3(want, f3(c), f32::from(c[3]) / 255.0);
@@ -1202,7 +1202,7 @@ fn lcd_layer_order_and_alpha_compositing() {
     assert_close(m(&img, 40, 40, 280, 140), want, 2.5, "three-layer over");
     // Reversed order gives a different, also exactly predicted, colour.
     let list = lcd_list(stack.iter().rev().map(|c| layer(*c)).collect());
-    let img = render_lcd_to_image(&ctx, &spec, &list, &images, 640, 360).unwrap();
+    let img = render_lcd_to_image(&ctx, spec, &list, &images, 640, 360).unwrap();
     let mut want_rev = bg;
     for c in stack.iter().rev() {
         want_rev = lerp3(want_rev, f3(*c), f32::from(c[3]) / 255.0);
@@ -1211,7 +1211,7 @@ fn lcd_layer_order_and_alpha_compositing() {
     assert_close(m(&img, 40, 40, 280, 140), want_rev, 2.5, "three-layer over, reversed");
 
     // An empty list is just the background.
-    let img = render_lcd_to_image(&ctx, &spec, &lcd_list(vec![]), &images, 640, 360).unwrap();
+    let img = render_lcd_to_image(&ctx, spec, &lcd_list(vec![]), &images, 640, 360).unwrap();
     assert_close(mean(&img, 0, 0, 640, 360), bg, 0.6, "empty draw list");
 }
 
@@ -1240,7 +1240,7 @@ fn lcd_images_composite_with_item_and_texel_alpha() {
     };
     for alpha in [1.0f32, 0.5] {
         let list = lcd_list(vec![img_item(alpha)]);
-        let img = render_lcd_to_image(&ctx, &spec, &list, &images, 640, 360).unwrap();
+        let img = render_lcd_to_image(&ctx, spec, &list, &images, 640, 360).unwrap();
         // The image is stretched over its rect: left half x 40..120, right half 120..200.
         assert_close(
             m(&img, 40, 20, 116, 100),
@@ -1277,7 +1277,7 @@ fn lcd_images_composite_with_item_and_texel_alpha() {
     .unwrap();
     assert_close(m(&img, 100, 50, 220, 130), [0.0, 255.0, 0.0], 1.5, "image over rect");
     let img =
-        render_lcd_to_image(&ctx, &spec, &lcd_list(vec![green, rect]), &images, 640, 360).unwrap();
+        render_lcd_to_image(&ctx, spec, &lcd_list(vec![green, rect]), &images, 640, 360).unwrap();
     assert_close(m(&img, 100, 50, 220, 130), [200.0, 0.0, 200.0], 1.5, "rect over image");
     // A missing image file must not fail the frame.
     let missing = LcdItem::Image {
@@ -1285,7 +1285,7 @@ fn lcd_images_composite_with_item_and_texel_alpha() {
         rect: [0.0, 0.0, 50.0, 50.0],
         alpha: 1.0,
     };
-    let r = render_lcd_to_image(&ctx, &spec, &lcd_list(vec![missing]), &images, 640, 360);
+    let r = render_lcd_to_image(&ctx, spec, &lcd_list(vec![missing]), &images, 640, 360);
     assert!(r.is_ok(), "a missing sprite must not be a render error");
 }
 
@@ -1308,7 +1308,7 @@ fn lcd_vector_text_follows_the_5x7_glyphs_and_scales() {
             cell,
             color: [255, 240, 200, 255],
         }]);
-        let img = render_lcd_to_image(&ctx, &spec, &list, &images, 1280, 720).unwrap();
+        let img = render_lcd_to_image(&ctx, spec, &list, &images, 1280, 720).unwrap();
         let unit = cell / 7.0;
         let mut lit_ok = 0u32;
         let mut lit_n = 0u32;
@@ -1394,7 +1394,7 @@ fn lcd_vector_text_follows_the_5x7_glyphs_and_scales() {
             color: [0, 0, 0, 255],
         },
     ]);
-    let img = render_lcd_to_image(&ctx, &spec, &list, &images, 640, 360).unwrap();
+    let img = render_lcd_to_image(&ctx, spec, &list, &images, 640, 360).unwrap();
     // '8' has its top bar at row 0, columns 1..=3: centre of dot (2, 0).
     let p = px_at(&img, [(100.0 + 25.0) * 2.0, (40.0 + 5.0) * 2.0]);
     assert_close(p, lerp3(bg, [255.0; 3], 128.0 / 255.0), 3.0, "text α 0.5");
@@ -1420,7 +1420,7 @@ fn lcd_canvas_is_fitted_16_9_with_black_letterbox() {
     };
     let images = ImageSet::new();
     // Square target: the 16:9 canvas is 512 × 288, centred (rows 112..400).
-    let img = render_lcd_to_image(&ctx, &spec, &list, &images, 512, 512).unwrap();
+    let img = render_lcd_to_image(&ctx, spec, &list, &images, 512, 512).unwrap();
     assert_eq!(fit_aspect(Rect::new(0, 0, 512, 512), 16, 9), Rect::new(0, 112, 512, 288));
     assert_close(mean(&img, 0, 0, 512, 110), [0.0; 3], 0.5, "top letterbox is black");
     assert_close(mean(&img, 0, 402, 512, 512), [0.0; 3], 0.5, "bottom letterbox is black");
@@ -1428,7 +1428,7 @@ fn lcd_canvas_is_fitted_16_9_with_black_letterbox() {
     assert_close(mean(&img, 260, 116, 508, 396), [60.0, 120.0, 180.0], 1.5, "right half");
     assert_close(mean(&img, 4, 260, 252, 396), [60.0, 120.0, 180.0], 1.5, "bottom-left");
     // Wide target (4:1 score PiP shape): bars left and right.
-    let img = render_lcd_to_image(&ctx, &spec, &list, &images, 640, 160).unwrap();
+    let img = render_lcd_to_image(&ctx, spec, &list, &images, 640, 160).unwrap();
     let r = fit_aspect(Rect::new(0, 0, 640, 160), 16, 9);
     assert_eq!((r.w, r.h), (284, 160));
     assert_close(mean(&img, 0, 0, (r.x - 2) as u32, 160), [0.0; 3], 0.5, "left bar");

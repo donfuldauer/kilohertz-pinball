@@ -367,12 +367,67 @@ pub(super) fn render_offscreen(
         });
     }
     draw(&mut encoder, &view);
-    let pixels = crate::debug::read_texture(ctx, encoder, &texture)?;
+    let pixels = read_texture(ctx, encoder, &texture)?;
     Ok(RgbaImage {
         width,
         height,
         pixels,
     })
+}
+
+/// Submits `encoder` after copying the RGBA8 `texture` into a buffer and
+/// returns its tightly packed rows (bounded waits, as 1.4's debug readback).
+fn read_texture(
+    ctx: &GpuContext,
+    mut encoder: wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+) -> Result<Vec<u8>, GpuError> {
+    let device = ctx.device();
+    let size = texture.size();
+    let (width, height) = (size.width, size.height);
+    let row = width as usize * 4;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+    let padded = row.div_ceil(align) * align;
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("display readback"),
+        size: (padded * height as usize) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded as u32),
+                rows_per_image: Some(height),
+            },
+        },
+        size,
+    );
+    ctx.queue().submit([encoder.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    readback.map_async(wgpu::MapMode::Read, .., move |r| {
+        let _ = tx.send(r);
+    });
+    crate::gpu::finish_map(device, &rx, crate::gpu::READBACK_WAIT_TIMEOUT)?;
+    let mut out = Vec::with_capacity(row * height as usize);
+    {
+        let mapped = readback
+            .get_mapped_range(..)
+            .map_err(|e| GpuError::Readback(format!("get_mapped_range: {e:?}")))?;
+        for y in 0..height as usize {
+            out.extend_from_slice(&mapped[y * padded..y * padded + row]);
+        }
+    }
+    readback.unmap();
+    Ok(out)
 }
 
 impl QuadRenderer {
