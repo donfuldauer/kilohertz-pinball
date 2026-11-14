@@ -11,6 +11,9 @@ use pin_script::{NameTables, load_backend};
 use proptest::prelude::*;
 use std::time::Duration;
 
+mod temp_dir_support;
+use temp_dir_support::TempDir;
+
 fn names() -> NameTables {
     NameTables {
         switches: vec![
@@ -695,6 +698,55 @@ fn hold_release_continues_when_queue_is_full() {
     assert!(h.tick(&mut b).is_empty());
 }
 
+/// A reload between two batches of tilt releases must not strand the coils
+/// still waiting for queue room: the drain continues under the new script.
+#[test]
+fn tilt_releases_keep_draining_after_a_reload_mid_drain() {
+    let mut b = new(
+        "n = 0 function on_tick() n = n + 1 if n == 1 then for i = 1, 32 do pinball.hold_coil(i, true) end \
+         elseif n == 2 then for i = 33, 40 do pinball.hold_coil(i, true) end \
+         else error('x') end end",
+    );
+    let mut h = Host::new(0);
+    assert_eq!(h.tick(&mut b).coil_holds.len(), 32);
+    assert_eq!(h.tick(&mut b).coil_holds.len(), 8);
+    let mut released = Vec::new();
+    let q = h.tick(&mut b);
+    assert!(b.is_faulted());
+    assert_eq!(q.coil_holds.len(), 32);
+    released.extend(q.coil_holds.iter().copied());
+    b.apply_reload(b"function on_tick() pinball.set_lamp(1, 1) end")
+        .unwrap();
+    assert!(!b.is_faulted());
+    for _ in 0..3 {
+        let q = h.tick(&mut b);
+        assert_eq!(
+            q.lamps.len(),
+            1,
+            "the new script runs while the drain goes on"
+        );
+        released.extend(q.coil_holds.iter().copied());
+    }
+    assert!(released.iter().all(|&(_, on)| !on), "{released:?}");
+    let mut ids: Vec<u16> = released.iter().map(|&(c, _)| c.0).collect();
+    ids.sort_unstable();
+    let want: Vec<u16> = (1..=40).collect();
+    assert_eq!(ids, want, "every coil held at the fault is released once");
+}
+
+/// A healthy reload (no fault) still hands the held coils to the new script:
+/// nothing is released behind its back.
+#[test]
+fn healthy_reload_keeps_holds() {
+    let mut b = new("function on_tick() for i = 1, 40 do pinball.hold_coil(i, true) end end");
+    let mut h = Host::new(0);
+    h.tick(&mut b);
+    b.apply_reload(b"function on_tick() end").unwrap();
+    for _ in 0..3 {
+        assert!(h.tick(&mut b).is_empty());
+    }
+}
+
 fn run_trace(seed: u64) -> Vec<HostCommandQueue> {
     let mut b = new(
         "function on_tick() if pinball.random(10) > 7 then pinball.pulse_coil(pinball.random(1, 30), 5) end \
@@ -763,8 +815,8 @@ fn backend_is_send() {
 
 #[test]
 fn watcher_delivers_checked_changes() {
-    let dir = std::env::temp_dir().join(format!("pin_script_watch_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = TempDir::new("watch");
+    let dir = tmp.path();
     let path = dir.join("rules.lua");
     std::fs::write(&path, "x = 1").unwrap();
     let mut w = ReloadWatcher::new(&path).unwrap();
@@ -790,10 +842,11 @@ fn watcher_delivers_checked_changes() {
     let got = w.wait(Duration::from_secs(20)).or_else(|| w.force_check());
     assert_eq!(got.as_deref(), Some(&b"x = 3"[..]));
     assert!(w.last_error().is_none());
+    // The watcher goes before the directory it watches.
     drop(w);
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(ReloadWatcher::new(dir.join("missing_dir/rules.lua")).is_err());
     assert!(ReloadWatcher::new("/").is_err());
+    drop(tmp);
 }
 
 #[test]
