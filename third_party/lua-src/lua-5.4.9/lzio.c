@@ -17,6 +17,7 @@
 #include "llimits.h"
 #include "lmem.h"
 #include "lstate.h"
+#include "lstring.h"
 #include "lzio.h"
 
 
@@ -27,6 +28,7 @@ int luaZ_fill (ZIO *z) {
   lua_unlock(L);
   buff = z->reader(L, z->data, &size);
   lua_lock(L);
+  luaS_khzown(G(L));  /* KHZ: the reader may have run another state */
   if (buff == NULL || size == 0)
     return EOZ;
   z->n = size - 1;  /* discount char being returned */
