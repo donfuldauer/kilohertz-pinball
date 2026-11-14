@@ -271,17 +271,7 @@ impl Polygon {
     pub fn boundary_distance(&self, q: DVec2) -> f64 {
         let n = self.points.len();
         (0..n)
-            .map(|i| {
-                let (a, b) = (self.points[i], self.points[(i + 1) % n]);
-                let ab = b - a;
-                let len2 = ab.length_squared();
-                let t = if len2 > 0.0 {
-                    ((q - a).dot(ab) / len2).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                q.distance(a + ab * t)
-            })
+            .map(|i| segment_distance(q, self.points[i], self.points[(i + 1) % n]))
             .fold(f64::INFINITY, f64::min)
     }
 
@@ -339,10 +329,18 @@ impl Polygon {
         false
     }
 
-    /// Whether segment `a`–`b` crosses one of the polygon's edges.
-    pub fn crosses_segment(&self, a: DVec2, b: DVec2) -> bool {
+    /// Whether segment `a`–`b` meets the polygon's boundary: crosses one of
+    /// its edges, or touches it (within 1 nm, as [`Polygon::covers`]) at a
+    /// vertex or along a collinear stretch of an edge.
+    pub fn meets_segment(&self, a: DVec2, b: DVec2) -> bool {
+        const TOL: f64 = 1.0e-9;
         let n = self.points.len();
         (0..n).any(|i| segments_cross(a, b, self.points[i], self.points[(i + 1) % n]))
+            // Two segments that touch without crossing properly (collinear
+            // overlap included) have an endpoint of one on the other.
+            || self.points.iter().any(|&p| segment_distance(p, a, b) <= TOL)
+            || self.boundary_distance(a) <= TOL
+            || self.boundary_distance(b) <= TOL
     }
 
     /// Whether the polygon and the axis-aligned box `lo..hi` may overlap
@@ -362,6 +360,18 @@ impl Polygon {
             (0..4).any(|k| segments_cross(a, b, corners[k], corners[(k + 1) % 4]))
         })
     }
+}
+
+/// Distance from `q` to the segment `a`–`b`.
+fn segment_distance(q: DVec2, a: DVec2, b: DVec2) -> f64 {
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    let t = if len2 > 0.0 {
+        ((q - a).dot(ab) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    q.distance(a + ab * t)
 }
 
 fn segments_cross(a: DVec2, b: DVec2, c: DVec2, d: DVec2) -> bool {

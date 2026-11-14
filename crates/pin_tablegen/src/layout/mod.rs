@@ -69,7 +69,7 @@ use pin_core::schema::layout::{InsertShape, LaneKind};
 use pin_core::schema::table::{AabbDef, LayerTransitionDef, SplineDef, SplineKind, TableManifest};
 use pin_core::units::{mm_to_m, mm3_to_m};
 use pin_physics::world::{CubicSpline, GuideCurve, Wireform};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use glb::{Extras, FlatMaterial, Node};
 use mesh::Mesh;
@@ -158,8 +158,45 @@ pub fn parse_layout_bytes(bytes: &[u8]) -> Result<LayoutManifest, GenError> {
 /// Both files are staged under temporary names before either output is
 /// replaced; an existing output is moved aside and restored if a later
 /// replacement fails, so a failure leaves the previous pair in place.
+///
+/// Concurrent calls (threads or processes) targeting the same folder are
+/// serialised by an exclusive lock on [`bundle_lock_path`], held through
+/// staging, replacement, rollback and cleanup.
 pub fn write_bundle(generated: &GeneratedTable, dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
+    let lock = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(bundle_lock_path(dir)?)?;
+    lock.lock()?;
+    let result = write_bundle_locked(generated, dir);
+    drop(lock); // releases the lock
+    result
+}
+
+/// The lock file [`write_bundle`] holds while writing into `dir` (an
+/// existing folder): `.<folder name>.tablegen-lock` beside the folder
+/// (canonical path, so every spelling of the folder shares one lock), or
+/// `.tablegen-lock` inside a folder with no parent. It lives outside the
+/// bundle so the bundle holds only its outputs, and is never removed
+/// (removing a lock file another writer may already have opened would let
+/// two writers in at once).
+fn bundle_lock_path(dir: &Path) -> std::io::Result<PathBuf> {
+    let dir = std::fs::canonicalize(dir)?;
+    Ok(match (dir.parent(), dir.file_name()) {
+        (Some(parent), Some(name)) => {
+            let mut file = std::ffi::OsString::from(".");
+            file.push(name);
+            file.push(".tablegen-lock");
+            parent.join(file)
+        }
+        _ => dir.join(".tablegen-lock"),
+    })
+}
+
+fn write_bundle_locked(generated: &GeneratedTable, dir: &Path) -> std::io::Result<()> {
     let files = [
         (PLAYFIELD_FILE, generated.glb.as_slice()),
         (TABLE_FILE, generated.table_toml.as_bytes()),

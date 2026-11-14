@@ -318,6 +318,90 @@ fn a_needle_area_reaching_toward_the_deck_is_rejected() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// CodeRabbit (headroom guard): a ball on an inclined support rests
+/// `r / n·z` above it, not `r`, so the per-pair "ceiling too high to
+/// matter" guard must allow for that. Support plane z = 0.75 (x - 100 mm)
+/// in 1 mm strips, a 27 mm ball restricted to x = 100..100.5 mm, a level
+/// ceiling at 30 mm: the strips under the area top out at 0.75 mm, so the
+/// old guard (30 >= 0.75 + 28) dropped the ceiling, yet at x = 100 mm the
+/// ball's centre is 13.5 / 0.8 = 16.875 mm up and its headroom is only
+/// 26.625 mm (28 mm needed), less still at x = 100.5 mm.
+#[test]
+fn a_ceiling_over_an_inclined_support_is_not_skipped() {
+    let area = [
+        [100.0, 400.0],
+        [100.5, 400.0],
+        [100.5, 500.0],
+        [100.0, 500.0],
+    ];
+    let (dir, table, scene) = build(
+        &layout_with(""),
+        &base_with(&[STEEL], vec![restrict(STEEL, &[0], &area)], ""),
+        "inclined_guard",
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+    // Only the restricted steel ball (the apex dispenser's unrestricted
+    // powerball would reach the higher strips).
+    let mut table = table;
+    table.manifest.dispensers.clear();
+    let mut scene = scene;
+    let floor = scene
+        .meshes
+        .iter()
+        .find(|m| m.name == "floor")
+        .unwrap()
+        .clone();
+    let mut ramp = floor.clone();
+    ramp.name = "ramp".into();
+    ramp.positions.clear();
+    ramp.indices.clear();
+    for k in 0..10u32 {
+        let x0 = 0.100 + f64::from(k) * 1.0e-3;
+        let x1 = x0 + 1.0e-3;
+        let z = |x: f64| (0.75 * (x - 0.100)) as f32;
+        let (x0f, x1f) = (x0 as f32, x1 as f32);
+        ramp.positions.extend([
+            [x0f, 0.350, z(x0)],
+            [x1f, 0.350, z(x1)],
+            [x1f, 0.550, z(x1)],
+            [x0f, 0.550, z(x0)],
+        ]);
+        let b = 4 * k;
+        ramp.indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+    }
+    ramp.normals = vec![[-0.6, 0.0, 0.8]; ramp.positions.len()];
+    ramp.uvs.clear();
+    ramp.extras.collision_layer = Some(0);
+    let mut ceiling = floor;
+    ceiling.name = "ceiling".into();
+    ceiling.positions = vec![
+        [0.050, 0.350, 0.030],
+        [0.150, 0.350, 0.030],
+        [0.150, 0.550, 0.030],
+        [0.050, 0.550, 0.030],
+    ];
+    ceiling.normals = vec![[0.0, 0.0, 1.0]; 4];
+    ceiling.uvs.clear();
+    ceiling.indices = vec![0, 1, 2, 0, 2, 3];
+    ceiling.extras.collision_layer = Some(1);
+    scene.meshes.push(ramp);
+    scene.meshes.push(ceiling);
+    let r = validate_clearance(&table, &scene);
+    let found: Vec<_> = of(&r, Feature::DeckHeadroom, STEEL)
+        .into_iter()
+        .filter(|e| e.name == "ceiling")
+        .collect();
+    assert_eq!(found.len(), 1, "{:#?}", r.errors);
+    // The worst point is the area's high side, x = 100.5 mm: centre
+    // 0.375 + 16.875 = 17.25 mm up, headroom 13.5 + 12.75 = 26.25 mm.
+    assert!(
+        near(found[0].actual_mm, 26.25, 0.05),
+        "{}",
+        found[0].actual_mm
+    );
+    assert!(near(found[0].required_mm, 28.0, 1e-3));
+}
+
 // ------------------------------------------------------------ feature checks
 
 #[test]
