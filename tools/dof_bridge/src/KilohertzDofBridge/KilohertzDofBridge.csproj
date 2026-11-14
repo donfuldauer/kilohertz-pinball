@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Kilohertz.DofBridge.App</RootNamespace>
+    <AssemblyName>KilohertzDofBridge</AssemblyName>
+    <!-- Tiered PGO off and quick JIT for loops off: steadier first-packet latency. -->
+    <TieredPGO>false</TieredPGO>
+    <TieredCompilationQuickJitForLoops>false</TieredCompilationQuickJitForLoops>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Kilohertz.DofBridge.Core/Kilohertz.DofBridge.Core.csproj" />
+  </ItemGroup>
+</Project>
