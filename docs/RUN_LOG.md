@@ -280,3 +280,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 4.4 | Independent Tester | Fable 5.2 | 2 | running | — | |
 | 5 | 5.3 | Implementer | Opus 5.5 | 1 | done | own displays_cpu 35/35, displays_gpu 9/9, unit 3/3; spec 94/94 (lavapipe); pin_render 67.2 %, displays/ 93.9–100 %; clippy clean on displays | D1 fixed; N1–N3 fixed; LCD AA scale bug found by eye and fixed; 6 placeholder scenes; deps pin_assetgen/serde/toml |
 | 5 | 5.3 | Reviewer | Fable 5.2 | 1 | running | — | |
+| 5 | 3.5 | Independent Tester | Fable 5.2 | 2 | done | Spec.DofBridge 176/176 after the fix (174/176 before: the 2 new N1 specs failed as expected); 33 consecutive busy runs (load 16–25), 0 failures; Rust spec 32/32 | latency asserted as min over 5 replays of p100 with a non-allocating sink in a non-parallel collection; N1 confirmed and fixed |

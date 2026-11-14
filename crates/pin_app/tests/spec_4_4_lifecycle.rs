@@ -460,3 +460,107 @@ proptest! {
         prop_assert_eq!(emitted, accepted);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Review round 1: a load can be abandoned; stale outcomes are rejected.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cancel_with_nothing_pending_does_nothing() {
+    let mut m = open_menu();
+    assert_eq!(m.pending_load_id(), None);
+    assert!(!m.cancel_load());
+    assert_eq!(*m.load_state(), TableLoadState::Idle);
+    assert!(m.pending_commands().is_empty());
+}
+
+#[test]
+fn cancel_before_the_loader_took_the_command_drops_it() {
+    let mut m = open_menu();
+    let path = Path::new("/tables/slow");
+    m.request_load(path).unwrap();
+    let id = m.pending_load_id().expect("an accepted request has an id");
+    assert!(m.cancel_load());
+    assert_eq!(*m.load_state(), TableLoadState::Idle);
+    assert_eq!(m.pending_load_id(), None);
+    assert!(
+        load_commands(m.pending_commands()).is_empty(),
+        "the undrained LoadTable is dropped"
+    );
+    assert!(load_commands(&m.drain_commands()).is_empty());
+    assert!(
+        m.notice().is_some_and(|n| n.contains("cancelled")),
+        "{:?}",
+        m.notice()
+    );
+    assert!(!m.report_load_result_for(id, Ok(())));
+    assert!(!m.report_load_result(Ok(())));
+    assert_eq!(*m.load_state(), TableLoadState::Idle);
+    assert_eq!(m.config().last_table, None);
+    assert!(m.is_open());
+}
+
+#[test]
+fn stale_report_after_abandoning_a_running_load_is_rejected() {
+    let mut m = open_menu();
+    let slow = Path::new("/tables/slow");
+    let next = Path::new("/tables/next");
+    m.request_load(slow).unwrap();
+    assert_eq!(load_commands(&m.drain_commands()), vec![slow.to_path_buf()]);
+    assert_eq!(*m.load_state(), TableLoadState::Loading(slow.into()));
+    let slow_id = m.pending_load_id().unwrap();
+
+    assert!(m.cancel_load());
+    assert_eq!(*m.load_state(), TableLoadState::Idle);
+    assert!(!m.cancel_load(), "nothing left to cancel");
+
+    // The loader finally answers for the abandoned load: both outcomes ignored.
+    assert!(!m.report_load_result_for(slow_id, Ok(())));
+    assert!(!m.report_load_result_for(slow_id, Err("late".into())));
+    assert_eq!(*m.load_state(), TableLoadState::Idle);
+    assert_eq!(m.config().last_table, None);
+    assert!(m.is_open(), "a stale success must not close the menu");
+
+    // The menu is not blocked: a new request is accepted with a new id.
+    m.request_load(next).unwrap();
+    let next_id = m.pending_load_id().unwrap();
+    assert_ne!(next_id, slow_id);
+    assert_eq!(load_commands(&m.drain_commands()), vec![next.to_path_buf()]);
+
+    // The stale answer still cannot complete the new load.
+    assert!(!m.report_load_result_for(slow_id, Ok(())));
+    assert_eq!(*m.load_state(), TableLoadState::Loading(next.into()));
+    assert_eq!(m.config().last_table, None);
+
+    assert!(m.report_load_result_for(next_id, Ok(())));
+    assert_eq!(*m.load_state(), TableLoadState::Loaded(next.into()));
+    assert_eq!(m.config().last_table.as_deref(), Some(next));
+    assert_eq!(m.pending_load_id(), None);
+    assert!(
+        !m.report_load_result_for(next_id, Ok(())),
+        "already reported"
+    );
+}
+
+#[test]
+fn every_accepted_request_gets_a_fresh_id() {
+    let mut m = open_menu();
+    let mut seen = Vec::new();
+    for i in 0..5 {
+        let p = PathBuf::from(format!("/tables/{i}"));
+        m.request_load(&p).unwrap();
+        let id = m.pending_load_id().unwrap();
+        assert!(!seen.contains(&id), "id {id} reused");
+        // A refused request does not change the pending id.
+        assert!(m.request_load(Path::new("/tables/other")).is_err());
+        assert_eq!(m.pending_load_id(), Some(id));
+        seen.push(id);
+        m.drain_commands();
+        if i % 2 == 0 {
+            assert!(m.report_load_result_for(id, Err("no".into())));
+        } else {
+            assert!(m.cancel_load());
+        }
+        assert_eq!(m.pending_load_id(), None);
+    }
+}

@@ -692,3 +692,247 @@ proptest! {
         prop_assert_eq!(dir_names(tmp.path()), vec![CONFIG_FILE.to_owned()]);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Review round 1 (N1): per-field fallback and the `.bak` copy.
+// ---------------------------------------------------------------------------
+
+fn invalid_keys(w: &[ConfigWarning]) -> Vec<String> {
+    let mut v: Vec<String> = w
+        .iter()
+        .filter_map(|w| match w {
+            ConfigWarning::InvalidValue { key, .. } => Some(key.clone()),
+            _ => None,
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn a_bad_value_resets_only_its_own_field() {
+    let d = AppConfig::default();
+    assert!(!d.wireframe);
+
+    // Unknown enum variant.
+    let r = AppConfig::from_toml_str("camera_preset = \"sideways\"\nwireframe = true\n");
+    assert!(r.config.wireframe, "wireframe was thrown away");
+    assert_eq!(r.config.camera_preset, d.camera_preset);
+    assert_eq!(invalid_keys(&r.warnings), ["camera_preset"]);
+    assert!(
+        !r.warnings
+            .iter()
+            .any(|w| matches!(w, ConfigWarning::Corrupt(_))),
+        "{:?}",
+        r.warnings
+    );
+    let mut expect = d.clone();
+    expect.wireframe = true;
+    assert_eq!(r.config, expect);
+
+    // Wrong type.
+    let r = AppConfig::from_toml_str(
+        "wireframe = \"yes\"\ncamera_preset = \"cabinet\"\nscore_display = \"lcd\"\n",
+    );
+    assert_eq!(r.config.camera_preset, CameraPreset::Cabinet);
+    assert_eq!(r.config.score_display, ScoreDisplayKind::Lcd);
+    assert_eq!(r.config.wireframe, d.wireframe);
+    assert_eq!(invalid_keys(&r.warnings), ["wireframe"]);
+
+    // Inside sub-tables: the key is the dotted path, siblings are kept.
+    let r = AppConfig::from_toml_str(
+        "display_mode = \"multi\"\n[score_pip]\ncorner = \"middle\"\n\
+         [backglass_pip]\ncorner = \"bottom_left\"\n\
+         [calibration.nudge]\ngain = 1.5\ndeadzone = \"big\"\n\
+         [calibration.plunger]\nrelease_window_ms = \"soon\"\n",
+    );
+    assert_eq!(r.config.display_mode, DisplayMode::Multi);
+    assert_eq!(r.config.score_pip, d.score_pip);
+    assert_eq!(r.config.backglass_pip.corner, PipCorner::BottomLeft);
+    assert_eq!(r.config.calibration.nudge.gain, 1.5);
+    assert_eq!(
+        r.config.calibration.nudge.deadzone,
+        d.calibration.nudge.deadzone
+    );
+    assert_eq!(r.config.calibration.plunger, d.calibration.plunger);
+    assert_eq!(
+        invalid_keys(&r.warnings),
+        [
+            "calibration.nudge.deadzone",
+            "calibration.plunger.release_window_ms",
+            "score_pip.corner"
+        ]
+    );
+
+    // A whole table of the wrong type.
+    let r = AppConfig::from_toml_str(
+        "calibration = \"none\"\nbackglass_pip = 3\nwireframe = true\nstaging_mode = \"dedicated\"\n",
+    );
+    assert!(r.config.wireframe);
+    assert_eq!(r.config.staging_mode, StagingMode::Dedicated);
+    assert_eq!(r.config.calibration, d.calibration);
+    assert_eq!(r.config.backglass_pip, d.backglass_pip);
+    assert_eq!(invalid_keys(&r.warnings), ["backglass_pip", "calibration"]);
+    check_sane(&r.config);
+}
+
+#[test]
+fn every_bad_field_is_reported_and_every_good_one_kept() {
+    // One bad value per top-level scalar key, each next to a good `wireframe`.
+    for (key, bad) in [
+        ("display_mode", "\"sideways\""),
+        ("display_mode", "7"),
+        ("camera_preset", "false"),
+        ("score_display", "\"plasma\""),
+        ("staging_mode", "[1]"),
+        ("playfield_display", "\"left\""),
+        ("input_profile", "3"),
+        ("last_table", "12"),
+        ("tables_dir", "true"),
+    ] {
+        let text = format!("{key} = {bad}\nwireframe = true\nscore_display = \"lcd\"\n");
+        let r = AppConfig::from_toml_str(&text);
+        assert!(r.config.wireframe, "{text:?}");
+        assert!(
+            invalid_keys(&r.warnings).contains(&key.to_string()),
+            "{text:?}: {:?}",
+            r.warnings
+        );
+        assert!(
+            !r.warnings
+                .iter()
+                .any(|w| matches!(w, ConfigWarning::Corrupt(_))),
+            "{text:?}: {:?}",
+            r.warnings
+        );
+        let mut expect = AppConfig::default();
+        expect.wireframe = true;
+        if key != "score_display" {
+            expect.score_display = ScoreDisplayKind::Lcd;
+        }
+        assert_eq!(r.config, expect, "{text:?}");
+    }
+}
+
+#[test]
+fn corrupt_warning_message_is_bounded() {
+    let mut text = String::from("x = [");
+    for _ in 0..20_000 {
+        text.push_str(
+            "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", ",
+        );
+    }
+    text.push_str("\n= = =\n");
+    let r = AppConfig::from_toml_str(&text);
+    assert_eq!(r.config, AppConfig::default());
+    let msg = r
+        .warnings
+        .iter()
+        .find_map(|w| match w {
+            ConfigWarning::Corrupt(m) => Some(m.clone()),
+            _ => None,
+        })
+        .expect("a Corrupt warning");
+    assert!(msg.chars().count() <= 513, "{} chars", msg.chars().count());
+}
+
+#[test]
+fn a_file_with_dropped_values_is_backed_up_before_it_can_be_overwritten() {
+    let tmp = TempDir::new("cfg_bak");
+    let path = tmp.join(CONFIG_FILE);
+    let bak = tmp.join("config.toml.bak");
+    let original = "# my hand-tuned config\ncamera_preset = \"sideways\"\nwireframe = true\n";
+    std::fs::write(&path, original).unwrap();
+
+    let r = AppConfig::load(&path);
+    assert!(r.config.wireframe);
+    assert_eq!(invalid_keys(&r.warnings), ["camera_preset"]);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        original,
+        "load must not rewrite the file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&bak).expect("config.toml.bak exists after the load"),
+        original
+    );
+
+    // The first save replaces config.toml; the backup keeps the original.
+    r.config.save(&path).unwrap();
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), original);
+    assert_eq!(dir_names(tmp.path()), ["config.toml", "config.toml.bak"]);
+    let again = AppConfig::load(&path);
+    assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+    assert_eq!(again.config, r.config);
+    // A clean load does not touch the backup.
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), original);
+}
+
+#[test]
+fn a_corrupt_file_is_backed_up_and_a_clean_one_is_not() {
+    let tmp = TempDir::new("cfg_bak2");
+    let path = tmp.join(CONFIG_FILE);
+    let bak = tmp.join("config.toml.bak");
+
+    // Missing file: nothing to back up.
+    let r = AppConfig::load(&path);
+    assert!(r.warnings.is_empty());
+    assert!(dir_names(tmp.path()).is_empty());
+
+    // Clean file: no backup.
+    let mut c = AppConfig::default();
+    c.wireframe = true;
+    c.save(&path).unwrap();
+    let r = AppConfig::load(&path);
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert_eq!(dir_names(tmp.path()), ["config.toml"]);
+
+    // Corrupt file (not UTF-8): backed up byte for byte.
+    let garbage: &[u8] = b"wireframe = true\n\xff\xfe\x00 [[[ = =\n";
+    std::fs::write(&path, garbage).unwrap();
+    let r = AppConfig::load(&path);
+    assert_eq!(r.config, AppConfig::default());
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| matches!(w, ConfigWarning::Corrupt(_))),
+        "{:?}",
+        r.warnings
+    );
+    assert_eq!(
+        std::fs::read(&bak).expect("backup of the corrupt file"),
+        garbage
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), garbage);
+    r.config.save(&path).unwrap();
+    assert_eq!(std::fs::read(&bak).unwrap(), garbage);
+    assert!(AppConfig::load(&path).warnings.is_empty());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 128, failure_persistence: None, ..ProptestConfig::default() })]
+
+    /// Breaking any one top-level value of a valid file loses at most that
+    /// one top-level setting.
+    #[test]
+    fn one_broken_value_costs_one_setting(c in arb_config(), pick in any::<prop::sample::Index>()) {
+        let text = c.to_toml_string().unwrap();
+        let mut doc: toml::Table = text.parse().unwrap();
+        let keys: Vec<String> = doc.keys().cloned().collect();
+        prop_assume!(!keys.is_empty());
+        let key = keys[pick.index(keys.len())].clone();
+        // An array is the wrong type for every documented key.
+        doc.insert(key.clone(), toml::Value::Array(vec![toml::Value::Boolean(true)]));
+        let broken = toml::to_string(&doc).unwrap();
+        let r = AppConfig::from_toml_str(&broken);
+        prop_assert!(!r.warnings.iter().any(|w| matches!(w, ConfigWarning::Corrupt(_))), "{:?}", r.warnings);
+        // Everything else survives: re-serialised, only `key` may differ.
+        let got: toml::Table = r.config.to_toml_string().unwrap().parse().unwrap();
+        let want: toml::Table = text.parse().unwrap();
+        for (k, v) in &want {
+            if *k != key {
+                prop_assert_eq!(got.get(k), Some(v), "{} was lost when {} was broken", k, key);
+            }
+        }
+    }
+}

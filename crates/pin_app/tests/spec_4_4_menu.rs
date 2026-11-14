@@ -7,7 +7,7 @@ use pin_app::ui::{
     MenuInput, MenuState, Panel, ScoreDisplayKind, SettingChange, SettingRow, UiCommand,
     cabinet_menu_input, is_menu_toggle_button, is_menu_toggle_key,
 };
-use pin_core::CabinetInput;
+use pin_core::{CabinetAxis, CabinetInput};
 use pin_input::profiles::GamepadButton;
 use proptest::prelude::*;
 
@@ -166,8 +166,9 @@ fn open_menu_swallows_every_cabinet_input() {
             );
         }
     }
-    // Held through a toggle: the release that arrives while open is swallowed
-    // too, and a release never navigates.
+    // A release that arrives while open is routed to the menu as well (the sim
+    // gets its release from `UiCommand::ReleaseToSim`, see below), and a
+    // release never navigates.
     let mut m = opened();
     m.apply(MenuInput::Down);
     let focus = m.focus();
@@ -675,6 +676,211 @@ proptest! {
             let changed = m.pending_commands().iter()
                 .filter(|c| matches!(c, UiCommand::ConfigChanged(_))).count();
             prop_assert!(changed <= 1, "ConfigChanged not coalesced");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Review round 1 (B3): inputs held when the menu opens are released to the sim.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn held_buttons_are_released_to_the_sim_when_the_menu_opens() {
+    let mut m = MenuState::default();
+    // Pressed out of `CabinetInput::ALL` order on purpose.
+    assert_eq!(m.route_cabinet(CabinetInput::Start, true), InputRoute::Sim);
+    assert_eq!(
+        m.route_cabinet(CabinetInput::LeftFlipper, true),
+        InputRoute::Sim
+    );
+    // Pressed and released again before the menu opens: not held.
+    assert_eq!(
+        m.route_cabinet(CabinetInput::RightFlipper, true),
+        InputRoute::Sim
+    );
+    assert_eq!(
+        m.route_cabinet(CabinetInput::RightFlipper, false),
+        InputRoute::Sim
+    );
+    assert!(m.pending_commands().is_empty());
+
+    m.apply(MenuInput::Toggle);
+    let expected: Vec<CabinetInput> = CabinetInput::ALL
+        .into_iter()
+        .filter(|i| matches!(i, CabinetInput::LeftFlipper | CabinetInput::Start))
+        .collect();
+    assert_eq!(
+        m.drain_commands(),
+        vec![
+            UiCommand::ReleaseToSim {
+                buttons: expected,
+                axes: vec![]
+            },
+            UiCommand::MenuOpened
+        ],
+        "the release comes immediately before MenuOpened"
+    );
+
+    // The physical releases arrive while open: nothing more goes to the sim.
+    assert_eq!(
+        m.route_cabinet(CabinetInput::LeftFlipper, false),
+        InputRoute::Menu
+    );
+    assert_eq!(
+        m.route_cabinet(CabinetInput::Start, false),
+        InputRoute::Menu
+    );
+    assert!(m.pending_commands().is_empty());
+
+    // Closing re-sends nothing stale.
+    m.apply(MenuInput::Toggle);
+    assert_eq!(m.drain_commands(), vec![UiCommand::MenuClosed]);
+    // Re-opening with nothing held emits no release.
+    m.apply(MenuInput::Toggle);
+    assert_eq!(m.drain_commands(), vec![UiCommand::MenuOpened]);
+}
+
+#[test]
+fn held_axes_are_neutralised_when_the_menu_opens() {
+    let mut m = MenuState::default();
+    assert_eq!(m.route_axis(CabinetAxis::NudgeX, -0.4), InputRoute::Sim);
+    assert_eq!(m.route_axis(CabinetAxis::Plunger, 0.8), InputRoute::Sim);
+    // Back to neutral before the menu opens: not held.
+    assert_eq!(m.route_axis(CabinetAxis::NudgeY, 0.3), InputRoute::Sim);
+    assert_eq!(m.route_axis(CabinetAxis::NudgeY, 0.0), InputRoute::Sim);
+    assert_eq!(
+        m.route_cabinet(CabinetInput::RightFlipper, true),
+        InputRoute::Sim
+    );
+    m.open();
+    let expected_axes: Vec<CabinetAxis> = CabinetAxis::ALL
+        .into_iter()
+        .filter(|a| matches!(a, CabinetAxis::Plunger | CabinetAxis::NudgeX))
+        .collect();
+    assert_eq!(
+        m.drain_commands(),
+        vec![
+            UiCommand::ReleaseToSim {
+                buttons: vec![CabinetInput::RightFlipper],
+                axes: expected_axes
+            },
+            UiCommand::MenuOpened
+        ]
+    );
+    // Axis motion while open stays out of the sim.
+    for axis in CabinetAxis::ALL {
+        assert_eq!(m.route_axis(axis, 0.5), InputRoute::Menu, "{axis:?}");
+    }
+    assert!(m.pending_commands().is_empty());
+    m.close();
+    assert_eq!(m.drain_commands(), vec![UiCommand::MenuClosed]);
+}
+
+#[test]
+fn nothing_held_means_no_release_command() {
+    let mut m = MenuState::default();
+    for input in INPUTS {
+        m.route_cabinet(input, true);
+        m.route_cabinet(input, false);
+    }
+    for axis in CabinetAxis::ALL {
+        m.route_axis(axis, 1.0);
+        m.route_axis(axis, 0.0);
+    }
+    m.apply(MenuInput::Toggle);
+    assert_eq!(m.drain_commands(), vec![UiCommand::MenuOpened]);
+}
+
+#[derive(Clone, Debug)]
+enum Phys {
+    Button(usize, bool),
+    Axis(usize, f32),
+    Toggle,
+    Open,
+    Close,
+}
+
+fn phys() -> impl Strategy<Value = Phys> {
+    prop_oneof![
+        6 => (0usize..8, any::<bool>()).prop_map(|(i, p)| Phys::Button(i, p)),
+        3 => (0usize..5, prop_oneof![Just(0.0f32), -1.0f32..1.0]).prop_map(|(i, v)| Phys::Axis(i, v)),
+        3 => Just(Phys::Toggle),
+        1 => Just(Phys::Open),
+        1 => Just(Phys::Close),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 512, failure_persistence: None, ..ProptestConfig::default() })]
+
+    /// The app forwards what `route_*` sends to the sim and applies
+    /// `ReleaseToSim`. Under any interleaving of presses, releases, axis
+    /// motion and menu toggles the sim never holds an input that is
+    /// physically released, and holds nothing at all while the menu is open.
+    #[test]
+    fn sim_never_keeps_a_physically_released_input(steps in proptest::collection::vec(phys(), 0..120)) {
+        let mut m = MenuState::default();
+        let mut phys_btn = [false; 8];
+        let mut sim_btn = [false; 8];
+        let mut phys_axis = [0.0f32; 5];
+        let mut sim_axis = [0.0f32; 5];
+        for s in steps {
+            match s {
+                Phys::Button(i, pressed) => {
+                    phys_btn[i] = pressed;
+                    let was_open = m.is_open();
+                    let route = m.route_cabinet(CabinetInput::ALL[i], pressed);
+                    prop_assert_eq!(route, if was_open { InputRoute::Menu } else { InputRoute::Sim });
+                    if route == InputRoute::Sim {
+                        sim_btn[i] = pressed;
+                    }
+                }
+                Phys::Axis(i, v) => {
+                    phys_axis[i] = v;
+                    let was_open = m.is_open();
+                    let route = m.route_axis(CabinetAxis::ALL[i], v);
+                    prop_assert_eq!(route, if was_open { InputRoute::Menu } else { InputRoute::Sim });
+                    if route == InputRoute::Sim {
+                        sim_axis[i] = v;
+                    }
+                }
+                Phys::Toggle => m.apply(MenuInput::Toggle),
+                Phys::Open => m.open(),
+                Phys::Close => m.close(),
+            }
+            // The app drains every frame, in order.
+            for c in m.drain_commands() {
+                if let UiCommand::ReleaseToSim { buttons, axes } = c {
+                    let held: Vec<CabinetInput> =
+                        (0..8).filter(|&i| sim_btn[i]).map(|i| CabinetInput::ALL[i]).collect();
+                    let off: Vec<CabinetAxis> =
+                        (0..5).filter(|&i| sim_axis[i] != 0.0).map(|i| CabinetAxis::ALL[i]).collect();
+                    prop_assert!(!buttons.is_empty() || !axes.is_empty(), "empty ReleaseToSim");
+                    prop_assert_eq!(&buttons, &held, "release list is exactly what the sim holds");
+                    prop_assert_eq!(&axes, &off);
+                    for b in buttons {
+                        let i = CabinetInput::ALL.iter().position(|x| *x == b).unwrap();
+                        sim_btn[i] = false;
+                    }
+                    for a in axes {
+                        let i = CabinetAxis::ALL.iter().position(|x| *x == a).unwrap();
+                        sim_axis[i] = 0.0;
+                    }
+                }
+            }
+            if m.is_open() {
+                prop_assert_eq!(sim_btn, [false; 8], "sim holds a button while the menu is open");
+                prop_assert_eq!(sim_axis, [0.0f32; 5], "sim holds an axis while the menu is open");
+            }
+            for i in 0..8 {
+                prop_assert!(!sim_btn[i] || phys_btn[i], "{:?} stuck in the sim", CabinetInput::ALL[i]);
+            }
+            for i in 0..5 {
+                prop_assert!(
+                    sim_axis[i] == 0.0 || sim_axis[i] == phys_axis[i],
+                    "{:?} stale in the sim: {} vs physical {}", CabinetAxis::ALL[i], sim_axis[i], phys_axis[i]
+                );
+            }
         }
     }
 }
