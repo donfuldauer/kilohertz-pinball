@@ -40,10 +40,14 @@ fn collect_strings(node: &Yaml, out: &mut Vec<String>) {
     }
 }
 
-/// Values the matrix axis `axis` takes over the job's combinations: the
-/// Cartesian product of the plain axes minus `exclude` entries, plus every
-/// `include` entry that sets `axis`.
-fn matrix_axis_values(matrix: &Yaml, axis: &str) -> Vec<String> {
+/// The matrix combinations GitHub Actions runs, as `(key, value)` lists:
+/// the Cartesian product of the plain axes, minus `exclude` entries, then each
+/// `include` entry in order. An entry is merged into every product combination
+/// whose original axis values it does not contradict (it may overwrite values
+/// an earlier `include` entry added); an entry merged into none becomes a job
+/// of its own. Include-created jobs are never merge targets. With no plain
+/// axes, every `include` entry is its own job.
+fn matrix_combinations(matrix: &Yaml) -> Vec<Vec<(&str, &Yaml)>> {
     let Some(map) = matrix.as_hash() else {
         return Vec::new();
     };
@@ -54,7 +58,11 @@ fn matrix_axis_values(matrix: &Yaml, axis: &str) -> Vec<String> {
             Some((k, v.as_vec()?.iter().collect()))
         })
         .collect();
-    let mut combos: Vec<Vec<(&str, &Yaml)>> = vec![Vec::new()];
+    let mut combos: Vec<Vec<(&str, &Yaml)>> = if axes.is_empty() {
+        Vec::new()
+    } else {
+        vec![Vec::new()]
+    };
     for (name, values) in &axes {
         combos = combos
             .iter()
@@ -68,8 +76,8 @@ fn matrix_axis_values(matrix: &Yaml, axis: &str) -> Vec<String> {
             .collect();
     }
     let excludes: Vec<&Yaml> = matrix["exclude"].as_vec().into_iter().flatten().collect();
-    let excluded = |combo: &Vec<(&str, &Yaml)>| {
-        excludes.iter().any(|ex| {
+    combos.retain(|combo| {
+        !excludes.iter().any(|ex| {
             ex.as_hash().is_some_and(|ex| {
                 ex.iter().all(|(k, v)| {
                     combo
@@ -78,19 +86,57 @@ fn matrix_axis_values(matrix: &Yaml, axis: &str) -> Vec<String> {
                 })
             })
         })
-    };
-    let mut out = Vec::new();
-    if axes.iter().any(|(name, _)| *name == axis) {
-        for combo in combos.iter().filter(|c| !excluded(c)) {
-            for (name, value) in combo {
-                if *name == axis {
-                    collect_strings(value, &mut out);
+    });
+    // Product combinations keep their original values; `added[i]` holds what
+    // `include` entries merged into combination `i` (later entries win).
+    let mut added: Vec<Vec<(&str, &Yaml)>> = vec![Vec::new(); combos.len()];
+    let mut extra: Vec<Vec<(&str, &Yaml)>> = Vec::new();
+    for inc in matrix["include"].as_vec().into_iter().flatten() {
+        let Some(inc) = inc.as_hash() else { continue };
+        let pairs: Vec<(&str, &Yaml)> = inc
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str()?, v)))
+            .collect();
+        let mut merged = false;
+        for (combo, added) in combos.iter().zip(added.iter_mut()) {
+            let clashes = pairs
+                .iter()
+                .any(|(k, v)| combo.iter().any(|(name, value)| name == k && *value != *v));
+            if clashes {
+                continue;
+            }
+            merged = true;
+            for &(k, v) in &pairs {
+                if combo.iter().any(|(name, _)| *name == k) {
+                    continue;
+                }
+                match added.iter_mut().find(|(name, _)| *name == k) {
+                    Some(slot) => slot.1 = v,
+                    None => added.push((k, v)),
                 }
             }
         }
+        if !merged {
+            extra.push(pairs);
+        }
     }
-    for inc in matrix["include"].as_vec().into_iter().flatten() {
-        collect_strings(&inc[axis], &mut out);
+    for (combo, added) in combos.iter_mut().zip(added) {
+        combo.extend(added);
+    }
+    combos.extend(extra);
+    combos
+}
+
+/// Values the matrix axis `axis` takes over the job's combinations
+/// ([`matrix_combinations`]), lowercased and deduplicated in order.
+fn matrix_axis_values(matrix: &Yaml, axis: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for combo in matrix_combinations(matrix) {
+        for (name, value) in combo {
+            if name == axis {
+                collect_strings(value, &mut out);
+            }
+        }
     }
     let mut seen = std::collections::HashSet::new();
     out.retain(|v| seen.insert(v.clone()));
@@ -148,6 +194,33 @@ fn runner_labels_follow_the_referenced_axis() {
         "    exclude:\n      - os: windows-latest\n        rust: beta\n",
     ));
     assert!(runner_labels(&partly_excluded).contains(&"windows-latest".to_owned()));
+    // `include` entries apply in order: each one that does not clash with an
+    // original axis value is merged into every combination, and a later
+    // entry overwrites `os` set by an earlier one, so every job is on macos-14.
+    let overwritten = job(concat!(
+        "runs-on: ${{ matrix.os }}\nstrategy:\n  matrix:\n    version: [1, 2]\n",
+        "    include:\n      - os: windows-latest\n      - os: ubuntu-latest\n",
+        "      - os: macos-14\n",
+    ));
+    assert_eq!(runner_labels(&overwritten), ["macos-14"]);
+    // An entry that clashes with every combination's original values adds a
+    // job; one that matches some combinations is merged only into those.
+    let added = job(concat!(
+        "runs-on: ${{ matrix.os }}\nstrategy:\n  matrix:\n    version: [1, 2]\n",
+        "    include:\n      - os: ubuntu-latest\n",
+        "      - os: windows-latest\n        version: 3\n",
+        "      - os: macos-14\n        version: 2\n",
+    ));
+    assert_eq!(
+        runner_labels(&added),
+        ["ubuntu-latest", "macos-14", "windows-latest"]
+    );
+    // With no plain axes every `include` entry is its own job.
+    let only_include = job(concat!(
+        "runs-on: ${{ matrix.os }}\nstrategy:\n  matrix:\n",
+        "    include:\n      - os: windows-latest\n      - os: macos-14\n",
+    ));
+    assert_eq!(runner_labels(&only_include), ["windows-latest", "macos-14"]);
 }
 
 #[test]

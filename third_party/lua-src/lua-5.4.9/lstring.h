@@ -52,7 +52,11 @@ LUAI_FUNC int luaS_eqlngstr (TString *a, TString *b);
 #define KHZ_TLS	_Thread_local
 #endif
 extern KHZ_TLS lua_Integer luaS_khzpending;  /* KHZ: see lstring.c */
-extern KHZ_TLS const void *luaS_khzowner;  /* KHZ: see lstring.c */
+extern KHZ_TLS global_State *luaS_khzowner;  /* KHZ: see lstring.c */
+LUAI_FUNC void luaS_khzclaim (global_State *g);  /* KHZ: see lstring.c */
+/* KHZ: make 'g' the owner of the thread-local pending cost (cheap if it is) */
+#define luaS_khzown(g)  \
+  { if (l_unlikely(luaS_khzowner != (g))) luaS_khzclaim(g); }
 LUAI_FUNC void luaS_resize (lua_State *L, int newsize);
 LUAI_FUNC void luaS_clearcache (global_State *g);
 LUAI_FUNC void luaS_init (lua_State *L);
