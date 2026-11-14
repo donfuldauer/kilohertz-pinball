@@ -342,16 +342,40 @@ fn read_capped(r: impl std::io::Read, max: u64) -> Result<Vec<u8>, ReplayError> 
 pub struct Recorder {
     sim: Simulation,
     rec: Recording,
+    /// The current tick's inputs after [`replay_safe`].
+    scratch: Vec<InputEvent>,
+}
+
+/// The form of `e` a recording can hold, with the same effect on input
+/// ingestion (`pin_input::InputIngest`): an axis value of ±∞ is clamped to
+/// the axis range (ingestion clamps it the same way), and a NaN axis event,
+/// which ingestion ignores, is dropped (`None`). The file format only holds
+/// finite axis values.
+fn replay_safe(e: InputEvent) -> Option<InputEvent> {
+    match e.kind {
+        InputEventKind::Axis { axis, value } if !value.is_finite() => {
+            if value.is_nan() {
+                return None;
+            }
+            let (lo, hi) = pin_input::events::axis_range(axis);
+            Some(InputEvent::axis(e.timestamp_ns, axis, value.clamp(lo, hi)))
+        }
+        _ => Some(e),
+    }
 }
 
 impl Recorder {
     /// Starts recording `sim`, which must be at tick 0 (just loaded; the
     /// seed and table hash are taken from it). A recording holds only the
     /// seed and the inputs and [`replay`] starts from a fresh load, so a run
-    /// that already advanced could not be reproduced.
+    /// that already advanced could not be reproduced. For the same reason
+    /// `sim` must run with the default script limits
+    /// ([`SimConfig::default`]'s `lua` and `wasm`), which [`replay`] uses:
+    /// the recording does not store limits.
     ///
     /// # Panics
-    /// When `sim` has already run a tick.
+    /// When `sim` has already run a tick, or runs with non-default script
+    /// limits.
     #[must_use]
     pub fn new(sim: Simulation) -> Self {
         assert_eq!(
@@ -359,19 +383,40 @@ impl Recorder {
             0,
             "Recorder::new needs a simulation at tick 0 (a recording replays from load)"
         );
+        let (cfg, default) = (sim.config(), SimConfig::default());
+        assert!(
+            cfg.lua == default.lua && cfg.wasm == default.wasm,
+            "Recorder::new needs the default script limits (a recording replays with \
+             SimConfig::default()'s limits): lua {:?}, wasm {:?}",
+            cfg.lua,
+            cfg.wasm
+        );
         let rec = Recording::new(sim.config().seed, sim.table_hash());
-        Self { sim, rec }
+        Self {
+            sim,
+            rec,
+            scratch: Vec::new(),
+        }
     }
 
     /// Records `inputs` for the next tick, then runs that tick.
+    ///
+    /// Non-finite axis values cannot be stored, so `inputs` are first put in
+    /// their replay-safe form (NaN axis events dropped, ±∞ clamped to the
+    /// axis range; ingestion would ignore and clamp them the same way), and
+    /// the tick runs on exactly the recorded events: the replay feeds the
+    /// same events and reaches the same state hash.
     pub fn step(&mut self, inputs: &[InputEvent]) {
         let tick = self.sim.tick() + 1;
-        for e in inputs {
+        self.scratch.clear();
+        self.scratch
+            .extend(inputs.iter().copied().filter_map(replay_safe));
+        for e in &self.scratch {
             self.rec.events.push((tick, *e));
         }
         self.rec.ticks = tick;
         let mut out = *self.sim.snapshot();
-        self.sim.step_1ms(tick, inputs, &mut out);
+        self.sim.step_1ms(tick, &self.scratch, &mut out);
     }
 
     /// The simulation.

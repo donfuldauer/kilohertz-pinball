@@ -609,6 +609,7 @@ impl Simulation {
         // No physics runs in load: on_init pulses count from tick 1.
         sim.apply_commands(sim.tick + 1);
         sim.update_flipper_drive();
+        sim.collect_flipper_haptics();
         sim.update_gates();
         sim.publish_snapshot();
         sim.haptics.clear();
