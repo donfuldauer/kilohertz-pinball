@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 2208a7ae751c4edc8e6c81976feabaccd6ee443fa6f6ee88dc5a0dfa8e6eb978 # shrinks to s = 6.606507e-6, v = [0.0, 0.0, 1.6617368], w = [0.0, -532.0657, 0.0], which = 0
+cc 31e2475d170b081817840ea59a2600540845ac6da7872113031b19a16feea952 # shrinks to s = 3.0113752e-5, v = [-2.418511, -1.2821542, -1.2753875], w = [-255.3651, -154.9573, -126.86917], which = 3, gravity = true

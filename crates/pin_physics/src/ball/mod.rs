@@ -36,7 +36,8 @@ mod types;
 
 pub use body::{
     BODY_REST_SPEED, BODY_SKIN, BODY_SPEED_LIMIT, BodyCast, BodyPoint, MAX_BODY_SOLVES_PER_BALL,
-    MAX_BODY_SOLVES_PER_TICK, MAX_CAST_ITERATIONS, MovingBodies, conservative_cast,
+    MAX_BODY_SOLVES_PER_TICK, MAX_CAST_ITERATIONS, MovingBodies, SEPARATING_SPEED,
+    conservative_cast,
 };
 pub use dispenser::{DISPENSER_CAPACITY, Dispenser};
 pub use newton::{MAX_CHAIN_BALLS, NewtonChain, NewtonError};

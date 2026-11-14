@@ -112,26 +112,33 @@
 //!   [`BODY_SPEED_LIMIT`] (100 m/s) or than it was before the contact, if
 //!   that is more; spin likewise (`BODY_SPEED_LIMIT / r`).
 //! * **Relative bound, per solve.** The accumulated normal impulse of a
-//!   body contact is capped at the impulse that brings the ball to the
-//!   target relative to the body's velocity at the contact's first solve
-//!   step, as against an immovable body (pushes from the ball's other
-//!   contacts raise it; the body's own motion does not). So within one solve
-//!   the ball cannot leave faster than `(1 + e) ×` its approach to the body's
-//!   surface velocity at that time; across solves, the body's own surface
-//!   speed (the owner's business) is the reference. Measured over a sweep of
+//!   body contact is capped at the impulse that would bring the ball to the
+//!   target relative to the body *as if this contact had applied no
+//!   impulse*: the contact's own impulse is removed from the ball and the
+//!   body's measured response to it is removed from the body's velocity
+//!   (as against an immovable body). Pushes from the ball's other contacts,
+//!   and from other contacts on the body (another ball knocking it into this
+//!   one), raise the cap; the body's answers to this contact's own impulses
+//!   do not. So within one solve the ball cannot leave faster than `(1 + e) ×`
+//!   its approach to the body's surface velocity; across solves, the body's
+//!   own surface speed (the owner's business) is the reference. Measured over a sweep of
 //!   wrong answers: the ball never exceeded `2 × max(incoming speed, body
 //!   surface speed) + 2 m/s`.
 //! * **No amplification.** After each normal impulse the body's real response
 //!   is measured; if it moved more than it reported, the solve uses the
 //!   observed response from then on and *reduces* the impulse to what that
 //!   response needs. A correction never increases an impulse.
-//! * **Bounded work.** At most [`MAX_BODY_SOLVES_PER_TICK`]-many body
-//!   contact solve steps per tick (then body contacts are neither solved nor
-//!   cast until the next tick; penetration is projected out at the next
-//!   sub-step boundary), within the solver's existing per-tick event budget.
-//!   Measured worst step: 3.8 ms, for an owner whose response is opposite to
-//!   every impulse and whose bat reached 2.5e7 m/s; owners that keep the
-//!   contract stay under 1 ms in every pinch tested.
+//! * **Bounded work.** At most [`MAX_BODY_SOLVES_PER_BALL`] body-contact
+//!   solve steps per ball and tick: a ball that spends them is neither
+//!   solved nor cast against bodies until the next tick (its penetration is
+//!   projected out at its next sub-step boundary), while every other ball is
+//!   unaffected, so a starving pinch cannot let another ball through a
+//!   flipper. A global safety cap ([`MAX_BODY_SOLVES_PER_TICK`]) bounds the
+//!   tick. All within the solver's existing per-tick event budget. Measured
+//!   worst step (noisy host): 3–5 ms, for an owner whose response is opposite
+//!   to every impulse and whose bat reached 2.5e7 m/s; owners that keep the
+//!   contract stay under 1 ms in every pinch tested (an honest 20 m/s kicker
+//!   pinch uses at most ~760 solve steps per ball).
 //!
 //! None of this makes a wrong owner physical: energy is still created when a
 //! body's real response differs from what it reports.
@@ -142,10 +149,12 @@
 //!   Euler) means the drive acts on the whole tick from its start; a driven
 //!   body adds its drive work to the system, as it should, at most
 //!   `τ·Δθ` per tick.
-//! * **The last tick before a stop.** Obligation 3 slows the body in the
-//!   tick in which it would reach a stop so that it arrives exactly at `dt`;
-//!   a ball hit in that tick sees the reduced speed (the stop takes the rest,
-//!   as a real stop would within that millisecond).
+//! * **The last tick before a stop.** Obligation 3 limits only the drive
+//!   increment: a body that would overshoot a stop *because of this tick's
+//!   drive* is slowed so that it arrives at `dt` (if it held less speed than
+//!   that), and a ball hit in that tick sees the reduced speed; a body that
+//!   already holds enough momentum keeps it, reaches the stop inside the
+//!   tick and stops there.
 //! * **Pushed toward a nearby stop.** A body pushed toward a stop it will
 //!   reach within the tick reports its free inverse mass, but its velocity
 //!   change is then limited by obligation 3. The solve under-shoots and
@@ -170,6 +179,21 @@
 //!   iterating after 8 passes instead of 64, so a kicker cannot stall the
 //!   tick. Stacks resting on (or riding) kinematic bodies are not pinches and
 //!   iterate as usual.
+//! * **Several balls on one body.** When a ball's contact with a body is
+//!   re-solved between sub-step boundaries (a continuing contact), every
+//!   other ball currently touching the same body is brought to that instant
+//!   and solved in the same accumulated-impulse loop, so the push one ball
+//!   gives the body reaches the others at once (a ball resting on a bat that
+//!   another ball knocks is pushed, not passed through). Inside one
+//!   sub-step boundary solve this coupling already exists.
+//! * **Known limit: sub-steps are planned at tick start.** A ball's number of
+//!   sub-steps is fixed at the start of the tick from its own speed and the
+//!   bodies near it. A resting ball that a body is knocked into mid-tick
+//!   keeps its few sub-steps; its contact is then held by the joint
+//!   re-solve and by casts (a ball separating faster than
+//!   [`SEPARATING_SPEED`] is cast again, so a body that turns back into it,
+//!   e.g. pushed back onto its stop, is found). Measured: under 0.4 mm at a
+//!   30 m/s knock, under 0.03 mm in a flip sweep.
 //!
 //! `begin_tick`/`end_tick` are called even when there is no ball. Nothing
 //! in a step allocates if the implementations do not; implementations must
@@ -251,6 +275,11 @@ pub const MAX_BODY_SOLVES_PER_BALL: u32 = 2048;
 /// above what the per-ball budgets of the balls touching bodies normally
 /// use.
 pub const MAX_BODY_SOLVES_PER_TICK: u32 = 16_384;
+
+/// Relative normal speed (m/s) above which a sphere that touches a body at
+/// the start of a cast counts as separating (the cast keeps marching)
+/// rather than resting (the cast returns `None`).
+pub const SEPARATING_SPEED: f32 = super::IMPACT_REPORT_SPEED;
 
 /// Iterations of [`conservative_cast`] before it reports
 /// [`BodyCast::Advance`].
@@ -378,7 +407,8 @@ pub trait MovingBodies {
     /// [`BODY_REST_SPEED`]), with the body following its current prediction.
     ///
     /// Must not report a sphere that touches the body at `s = 0` without
-    /// closing in (a resting contact: the boundary solve handles it).
+    /// closing in (a resting contact: the boundary solve handles it), but
+    /// must find a later re-closing of a sphere that separates at `s = 0`.
     /// The default is [`conservative_cast`]; owners may override it with an
     /// exact cast (e.g. in the body's local frame).
     fn cast_sphere(
@@ -400,7 +430,9 @@ pub trait MovingBodies {
 /// never steps over a contact.
 ///
 /// * At `s = 0`, a sphere within [`BODY_SKIN`] of the surface is a hit if it
-///   closes in faster than [`BODY_REST_SPEED`], otherwise `None` (resting).
+///   closes in faster than [`BODY_REST_SPEED`]; if it separates faster than
+///   [`SEPARATING_SPEED`] the cast keeps marching (the body may turn back
+///   into it, e.g. pushed back onto its stop); otherwise `None` (resting).
 /// * Later, the first point within the skin that closes in is a hit; a
 ///   sphere grazing the skin without closing in creeps forward by
 ///   `BODY_SKIN / bound`.
@@ -439,7 +471,12 @@ pub fn conservative_cast<B: MovingBodies + ?Sized>(
                     normal: cp.normal,
                 });
             }
-            if s == 0.0 {
+            // Touching at the start without closing in: a resting contact
+            // (left to the sub-step boundaries), unless the sphere is
+            // clearly separating; then the body may still turn back into it
+            // within the window (a bat pushed back onto its stop), so keep
+            // marching.
+            if s == 0.0 && un <= SEPARATING_SPEED {
                 return None;
             }
             BODY_SKIN / bound
