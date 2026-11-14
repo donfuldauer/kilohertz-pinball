@@ -302,3 +302,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | GR-1 (gate risk: flaky 2.4 plunger / 2.7 Magnus proptests) | Implementer | Opus 5.5 | 1 | running | — | review by Fable |
 | 5 | 4.4 | Implementer | Opus 5.5 | fix 1 | done | own tests all pass (lib 27, ui_config 17, ui_lifecycle 17, ui_view 6, ui_scan 7, ui_fixtures 1, ui_snapshots 1; pin_render ui 5 + ui_overlay_gpu 5/5 incl. glyph test); spec 90/90; pin_app 74.5 %, ui/ 91.5–98.3 % | B1 egui default_fonts + glyph test; B2 scroll on focus change (+ column layout fix); B3 ReleaseToSim; N1 per-field + .bak; N4, N5, N6, N8, N12; slider snap fix |
 | 5 | 4.4 | Reviewer | Fable 5.2 | 2 | running | — | |
+| 5 | 2.6 | Implementer | Fable 5.2 | fix 1 | done | lib flipper 36/36 incl. new plane_axes regression test; spec_2_6_props 6×9/9; clippy clean crate-wide; pin_physics 721/723 (2 failures = GR-1's) | plane_axes near-−Z fallback re-orthogonalised; exact −Z bit-identical; no trajectory change |
+| 5 | 2.6 | Reviewer | Opus 5.5 | 2 | running | — | |
