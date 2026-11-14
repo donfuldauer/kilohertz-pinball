@@ -57,19 +57,56 @@ pub fn bundle() -> PathBuf {
     fixture_dir().join("table")
 }
 
-/// A fresh, empty directory under the cargo test tmpdir.
-pub fn temp_dir(tag: &str) -> PathBuf {
+/// A temporary directory removed (with its contents) when dropped, also
+/// when the test panics. Derefs to its [`Path`].
+#[derive(Debug)]
+pub struct TempDir(PathBuf);
+
+impl TempDir {
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for TempDir {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A fresh, empty directory under the cargo test tmpdir, removed when the
+/// returned guard drops.
+pub fn temp_dir(tag: &str) -> TempDir {
     static N: AtomicUsize = AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("spec_2_5-{tag}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TempDir(dir)
 }
 
 /// Copies the fixture bundle into a fresh temp directory and returns it.
-pub fn bundle_copy(tag: &str) -> PathBuf {
+pub fn bundle_copy(tag: &str) -> TempDir {
     let dir = temp_dir(tag);
     for entry in std::fs::read_dir(bundle()).unwrap() {
         let entry = entry.unwrap();
@@ -79,7 +116,7 @@ pub fn bundle_copy(tag: &str) -> PathBuf {
 }
 
 /// A copy of the fixture bundle with `rules.lua` replaced.
-pub fn bundle_with_script(tag: &str, lua: &str) -> PathBuf {
+pub fn bundle_with_script(tag: &str, lua: &str) -> TempDir {
     let dir = bundle_copy(tag);
     std::fs::write(dir.join("rules.lua"), lua).unwrap();
     dir
@@ -87,7 +124,7 @@ pub fn bundle_with_script(tag: &str, lua: &str) -> PathBuf {
 
 /// A copy of the fixture bundle whose rules are the given WAT text
 /// (`script_entry = "rules.wasm"`).
-pub fn bundle_with_wasm(tag: &str, wat: &str) -> PathBuf {
+pub fn bundle_with_wasm(tag: &str, wat: &str) -> TempDir {
     let dir = bundle_copy(tag);
     std::fs::remove_file(dir.join("rules.lua")).unwrap();
     std::fs::write(dir.join("rules.wasm"), wat).unwrap();

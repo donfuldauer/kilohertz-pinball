@@ -23,18 +23,55 @@ pub fn on_sim_thread<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) 
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
-/// A fresh, empty scratch directory under the system temp dir.
-pub fn scratch_dir(tag: &str) -> PathBuf {
+/// A scratch directory removed (with its contents) when dropped, also when
+/// the test panics. Derefs to its [`Path`].
+#[derive(Debug)]
+pub struct ScratchDir(PathBuf);
+
+impl ScratchDir {
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for ScratchDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for ScratchDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for ScratchDir {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A fresh, empty scratch directory under the system temp dir, removed when
+/// the returned guard drops.
+pub fn scratch_dir(tag: &str) -> ScratchDir {
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("pin_sim_2_5_{tag}_{}_{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
+    ScratchDir(dir)
 }
 
 /// A copy of the fixture bundle in a scratch directory, with `edit`
 /// applied to its files (`(name, Some(contents))` writes, `None` removes).
-pub fn fixture_variant(tag: &str, edits: &[(&str, Option<&[u8]>)]) -> PathBuf {
+pub fn fixture_variant(tag: &str, edits: &[(&str, Option<&[u8]>)]) -> ScratchDir {
     let dir = scratch_dir(tag);
     for entry in std::fs::read_dir(fixture()).expect("read fixture") {
         let entry = entry.expect("dir entry");
@@ -50,7 +87,7 @@ pub fn fixture_variant(tag: &str, edits: &[(&str, Option<&[u8]>)]) -> PathBuf {
 }
 
 /// The fixture with `rules.lua` replaced.
-pub fn with_rules(tag: &str, lua: &str) -> PathBuf {
+pub fn with_rules(tag: &str, lua: &str) -> ScratchDir {
     fixture_variant(tag, &[("rules.lua", Some(lua.as_bytes()))])
 }
 
@@ -92,7 +129,7 @@ pub const RULES_WAT: &str = r#"(module
 "#;
 
 /// The fixture with a Wasm rules module (`rules.wasm`, WAT text).
-pub fn wasm_fixture(tag: &str) -> PathBuf {
+pub fn wasm_fixture(tag: &str) -> ScratchDir {
     let table = fixture_table_toml().replace(
         "script_entry = \"rules.lua\"",
         "script_entry = \"rules.wasm\"",

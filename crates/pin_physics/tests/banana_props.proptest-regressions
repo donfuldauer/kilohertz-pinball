@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc efa3385542b7f390ed00eb12c28991b905c9947a8ee8e8e191e502a6e0f8751b # shrinks to radius_mm = 301.43756, fraction = 0.1510383, concave_leads = false
+cc 110446d6308b104c8ba66c5ac8c15ccb9b85af2c74e22a74f8a514c35e066671 # shrinks to radius_mm = 90.25376, fraction = 0.22921607, concave_leads = true

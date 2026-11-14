@@ -126,3 +126,57 @@ fn input_events_after_the_tick_wait_for_their_tick() {
         assert_eq!(sim.counters().inputs_dropped, 0);
     });
 }
+
+/// A flipper pulse issued in `on_init` is energised for its full length from
+/// the first physics tick (tick 1), like the same pulse issued in tick 1's
+/// `on_tick`.
+#[test]
+fn on_init_pulse_keeps_its_full_length() {
+    const AT_INIT: &str = r#"
+function on_init() pinball.pulse_coil(pinball.coil.left_flipper_coil, 4) end
+function on_tick() end
+function on_switch(id, closed) end
+"#;
+    const AT_TICK_1: &str = r#"
+local fired = false
+function on_init() end
+function on_tick()
+  if not fired then
+    fired = true
+    pinball.pulse_coil(pinball.coil.left_flipper_coil, 4)
+  end
+end
+function on_switch(id, closed) end
+"#;
+    const ONE_MS: &str = r#"
+function on_init() pinball.pulse_coil(pinball.coil.left_flipper_coil, 1) end
+function on_tick() end
+function on_switch(id, closed) end
+"#;
+    let at_init = with_rules("init_pulse", AT_INIT);
+    let at_tick_1 = with_rules("tick1_pulse", AT_TICK_1);
+    let one_ms = with_rules("init_pulse_1ms", ONE_MS);
+    on_sim_thread(move || {
+        let run = |bundle: &std::path::Path, ticks: u64| {
+            let mut sim = Simulation::load(bundle, SimConfig::default()).unwrap();
+            assert!(!sim.script_faulted());
+            let mut trace = Vec::new();
+            for _ in 0..ticks {
+                sim.advance(1);
+                let (a, w) = sim.flipper("lower_left").unwrap();
+                trace.push((a.to_bits(), w.to_bits()));
+            }
+            assert!(!sim.script_faulted());
+            trace
+        };
+        let a = run(&at_init, 30);
+        let b = run(&at_tick_1, 30);
+        assert_eq!(a, b, "on_init pulse differs from the same pulse at tick 1");
+        // A 1 ms on_init pulse still drives one physics tick.
+        let one = run(&one_ms, 1);
+        assert!(
+            f32::from_bits(one[0].1) != 0.0,
+            "a 1 ms on_init pulse had no physics effect"
+        );
+    });
+}

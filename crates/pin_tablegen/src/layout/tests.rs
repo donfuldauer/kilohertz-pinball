@@ -297,3 +297,23 @@ fn parse_paths() {
         .is_ok()
     );
 }
+
+/// Rail samples follow the roll as well as the curvature: a straight 19 mm
+/// wireform rolling through 90° keeps each interval's roll change below the
+/// ~7.4° that holds a rail chord within the facet tolerance.
+#[test]
+fn wire_samples_bound_roll_change() {
+    let pts = [Vec3::ZERO, Vec3::new(0.0, 0.1, 0.0)];
+    let centre = CubicSpline::interpolate(&pts).unwrap();
+    let wf = Wireform::new(centre.clone(), &[0.0, 90.0], 0.019, Vec3::Z).unwrap();
+    let ts = wire_samples(&wf);
+    let limit = 2.0 * libm::acos(1.0 - mesh::FACET_TOLERANCE_M / 0.0095);
+    assert!(limit.to_degrees() < 7.5 && limit.to_degrees() > 7.3);
+    for w in ts.windows(2) {
+        let d = f64::from((wf.roll_rad(w[1]) - wf.roll_rad(w[0])).abs());
+        assert!(d <= limit, "roll step {}° over {:?}", d.to_degrees(), w);
+    }
+    // Without roll the straight rail needs only the minimum sampling.
+    let flat = Wireform::new(centre, &[0.0, 0.0], 0.019, Vec3::Z).unwrap();
+    assert_eq!(wire_samples(&flat).len(), 3);
+}

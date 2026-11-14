@@ -152,6 +152,36 @@ fn set_switch_edges_reach_the_script_next_tick() {
 }
 
 #[test]
+fn releasing_a_forced_cabinet_switch_takes_effect_at_once() {
+    on_sim_thread(|| {
+        let mut sim = load();
+        sim.set_switch("left_flipper", true).unwrap();
+        sim.advance(1);
+        assert_eq!(sim.switch_closed("left_flipper"), Some(true));
+        // The button is not pressed: the switch opens on release, not a tick
+        // later.
+        sim.release_switch("left_flipper").unwrap();
+        assert_eq!(sim.switch_closed("left_flipper"), Some(false));
+        sim.advance(1);
+        assert_eq!(sim.switch_closed("left_flipper"), Some(false));
+        // Forcing open a pressed button and releasing it closes it at once.
+        sim.set_switch("start", false).unwrap();
+        let ts = pin_core::sim::tick_end_ns(0, sim.tick() + 1) - 1;
+        let press = [pin_core::input::InputEvent::button(
+            ts,
+            pin_core::input::CabinetInput::Start,
+            true,
+        )];
+        let mut out = *sim.snapshot();
+        let tick = sim.tick() + 1;
+        pin_core::sim::SimStep::step_1ms(&mut sim, tick, &press, &mut out);
+        assert_eq!(sim.switch_closed("start"), Some(false));
+        sim.release_switch("start").unwrap();
+        assert_eq!(sim.switch_closed("start"), Some(true));
+    });
+}
+
+#[test]
 fn forced_cabinet_switch_drives_the_flipper() {
     on_sim_thread(|| {
         let mut sim = load();

@@ -7,8 +7,11 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 sdk=$(cd "$here/../../../guest-sdk" && pwd)
 target="${CARGO_TARGET_DIR:-$here/parity_guest/target}"
-unset CARGO_ENCODED_RUSTFLAGS
-RUSTFLAGS="--remap-path-prefix=$sdk=/pin_guest_sdk --remap-path-prefix=$here/parity_guest=/parity_guest" \
+# Flags separated by 0x1f, so checkout paths with spaces stay one argument.
+unset RUSTFLAGS
+CARGO_ENCODED_RUSTFLAGS=$(printf '%s\037%s' \
+  "--remap-path-prefix=$sdk=/pin_guest_sdk" \
+  "--remap-path-prefix=$here/parity_guest=/parity_guest") \
   cargo build --release --offline --target wasm32-unknown-unknown \
   --manifest-path "$here/parity_guest/Cargo.toml" --target-dir "$target"
 cp "$target/wasm32-unknown-unknown/release/parity_rules.wasm" "$here/rules.wasm"
