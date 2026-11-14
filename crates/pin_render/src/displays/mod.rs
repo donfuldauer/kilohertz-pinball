@@ -65,8 +65,8 @@ pub use scene::{
     VAlign, parse_color, placeholder_scene,
 };
 pub use score::{
-    MAX_PLAYERS, PlayerRow, ScoreLines, ScoreState, ScoreText, expand_text, format_score,
-    format_score_with, score_lines, score_view_layout,
+    MAX_PLAYERS, OTHER_PLAYER_EMPHASIS, PlayerRow, ScoreLines, ScoreState, ScoreText, expand_text,
+    format_score, format_score_with, score_lines, score_view_layout,
 };
 
 use core::fmt;
