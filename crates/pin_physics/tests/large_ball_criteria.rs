@@ -12,7 +12,8 @@ mod flip;
 use glam::Vec3;
 use pin_core::ids::ProfileId;
 use pin_physics::ball::{
-    Ball, BallEvent, BallEvents, BallHandle, Geometry, ImpactTarget, MovingBodies,
+    Ball, BallEvent, BallEvents, BallHandle, Geometry, IMPACT_REPORT_SPEED, ImpactTarget,
+    MovingBodies,
 };
 use pin_physics::world::StaticWorldBuilder;
 use util::*;
@@ -121,7 +122,18 @@ fn c1_head_on_exchange_matches_the_two_body_formula() {
         f64::from(p[MINI.index()].mass_kg),
         f64::from(p[XL.index()].mass_kg),
     );
+    let (mat_m, mat_x) = (p[MINI.index()].material, p[XL.index()].material);
+    let table_e = config()
+        .pairs
+        .iter()
+        .find(|q| q.materials == [mat_m, mat_x] || q.materials == [mat_x, mat_m])
+        .map_or(
+            p[MINI.index()].restitution.min(p[XL.index()].restitution),
+            |q| q.restitution,
+        );
     for speed in [0.5f32, 4.0, 20.0] {
+        let ramp = ((speed - IMPACT_REPORT_SPEED) / IMPACT_REPORT_SPEED).clamp(0.0, 1.0);
+        let e = f64::from(table_e.clamp(0.0, 1.0) * ramp);
         let mut s = solver_no_gravity();
         let hm = s
             .add_ball(ball_at(MINI, v(-0.1, 0.0, 0.0), v(speed, 0.0, 0.0)))
@@ -137,9 +149,10 @@ fn c1_head_on_exchange_matches_the_two_body_formula() {
             f64::from(s.ball(hm).unwrap().velocity.x),
             f64::from(s.ball(hx).unwrap().velocity.x),
         );
-        // Restitution from the result, then both velocities must agree with it.
+        // Restitution from the configuration (pair table, else the lower
+        // profile value; faded in above the impact report speed), not from
+        // the result: both velocities must agree with it.
         let v1 = f64::from(speed);
-        let e = (vx - vm) / v1;
         assert!(e > 0.0 && e <= 1.0, "e {e}");
         let want_m = (m1 - e * m2) * v1 / (m1 + m2);
         let want_x = (1.0 + e) * m1 * v1 / (m1 + m2);
