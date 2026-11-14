@@ -28,7 +28,9 @@ executor's report, the branch, and the base (normally `origin/main`).
    `tests/spec_*` for the subphase, and the dependents' tests where a public API changed. GPU
    tests run on lavapipe as in the CI `gpu-tests` job. Report counts (run, passed, failed,
    ignored). Treat any new `#[ignore]`, skipped, deleted or weakened assertion in the diff as a
-   failure unless the brief allowed it.
+   failure. A test the executor corrected because it contradicted the brief passes only if the
+   report names the brief clause and evidence, and the corrected test still asserts everything
+   the brief requires.
 4. **Coverage.** `cargo llvm-cov` line coverage of at least 85 % for `pin_core`, `pin_physics`,
    `pin_input`, `pin_script`, `pin_assets`, `pin_tablegen`, `pin_sim`, and at least 60 % for
    `pin_render`, `pin_audio`, `pin_app`, measured on the touched crates and the owned modules.
@@ -37,7 +39,9 @@ executor's report, the branch, and the base (normally `origin/main`).
    has a `proptest`; every parser touched survives a bounded random-bytes run.
 6. **Sim-thread rules**, where the work touches the tick: the allocation guard test passes and
    the replay hash is stable over 10 runs.
-7. **Owned paths.** `git diff --name-only <base>...HEAD` touches only OWNED PATHS plus the
+7. **Owned paths.** Committed, staged, unstaged and untracked changes
+   (`git diff --name-only <base>` plus `git ls-files --others --exclude-standard`) touch only
+   OWNED PATHS plus the
    allowed shared files (`docs/DECISIONS.md`, `docs/HUMAN_QUEUE.md`,
    `contracts/CHANGE_REQUESTS.md`, pins under the wave's comment in the root `Cargo.toml`).
 8. **Images (render work).** Analytic pixel assertions exist and pass before any snapshot; walk
