@@ -330,6 +330,55 @@ fn deterministic_over_ten_runs() {
     std::fs::remove_dir_all(b).unwrap();
 }
 
+/// CodeRabbit (write_bundle): concurrent writes into one folder are
+/// serialised, so staging, replacement, rollback and cleanup of one call
+/// never interleave with another's. Two threads repeatedly writing
+/// different bundles always succeed and leave a matching pair and no
+/// staging or backup files.
+#[test]
+fn concurrent_write_bundles_into_one_folder_leave_a_consistent_pair() {
+    let a = gen_apex("apex_layout.toml");
+    let b = gen_apex("rich_layout.toml");
+    assert!(a.glb != b.glb && a.table_toml != b.table_toml);
+    let dir = bundle_dir("concurrent");
+    let mut expected = names(&dir);
+    expected.extend(["playfield.glb".to_owned(), "table.toml".to_owned()]);
+    expected.sort();
+    expected.dedup();
+    std::thread::scope(|s| {
+        for g in [&a, &b] {
+            let dir = &dir;
+            s.spawn(move || {
+                for _ in 0..200 {
+                    pin_tablegen::write_bundle(g, dir).unwrap();
+                }
+            });
+        }
+    });
+    let glb = std::fs::read(dir.join("playfield.glb")).unwrap();
+    let toml = std::fs::read_to_string(dir.join("table.toml")).unwrap();
+    let pair_of = |g: &pin_tablegen::GeneratedTable| glb == g.glb && toml == g.table_toml;
+    assert!(pair_of(&a) || pair_of(&b), "mixed or damaged pair");
+    assert_eq!(names(&dir), expected);
+    // The lock file lives beside the folder.
+    let lock = dir.with_file_name(format!(
+        ".{}.tablegen-lock",
+        dir.file_name().unwrap().to_string_lossy()
+    ));
+    assert!(lock.is_file(), "{}", lock.display());
+    std::fs::remove_file(lock).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn names(dir: &std::path::Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
 #[test]
 fn rerun_on_generated_table_never_duplicates() {
     let layout = layout("rich_layout.toml");

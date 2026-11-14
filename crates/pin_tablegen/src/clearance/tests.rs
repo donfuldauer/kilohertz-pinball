@@ -53,6 +53,16 @@ fn allowed_regions() {
     let beside = [DVec2::new(1.5, -1.0), DVec2::new(1.5, 2.0)];
     assert!(!a.on_path(0, &beside));
     assert!(a.on_path(0, &[DVec2::new(0.5, 0.5)]));
+    // A path running along an area edge (collinear overlap, both ends
+    // outside) passes over the area's boundary, which counts as inside
+    // (`covers`), in either direction.
+    let along = [DVec2::new(-1.0, 1.0), DVec2::new(2.0, 1.0)];
+    assert!(a.on_path(0, &along));
+    assert!(a.on_path(0, &[along[1], along[0]]));
+    // Touching only a corner counts too; passing just beside it does not.
+    assert!(a.on_path(0, &[DVec2::new(2.0, 0.0), DVec2::new(0.0, 2.0)]));
+    assert!(!a.on_path(0, &[DVec2::new(2.0, 0.0), DVec2::new(0.0, 2.001)]));
+    assert!(!a.on_path(0, &[DVec2::new(-1.0, 1.001), DVec2::new(2.0, 1.001)]));
 }
 
 #[test]
