@@ -20,6 +20,11 @@ const FOCUS_FILL: egui::Color32 = egui::Color32::from_rgb(40, 70, 120);
 const BADGE_FILL: egui::Color32 = egui::Color32::from_rgb(60, 90, 60);
 /// Error text.
 const ERROR_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 120, 110);
+/// Footer key hints: light grey, ≈ 10:1 contrast on the near-black backdrop
+/// (4.4 review N15 asks for ≥ 4.5:1).
+pub const HINT_TEXT: egui::Color32 = egui::Color32::from_rgb(200, 200, 205);
+/// Footer hint size relative to the body text height.
+const HINT_SIZE_FRACTION: f32 = 0.8;
 /// Accent for titles.
 const TITLE_TEXT: egui::Color32 = egui::Color32::from_rgb(250, 230, 160);
 
@@ -95,7 +100,8 @@ impl MenuView {
             ui.style_mut().interaction.selectable_labels = false;
             self.header(ui, state, &mut out);
             ui.separator();
-            let footer_h = ui.text_style_height(&egui::TextStyle::Body) * 2.0 + 8.0;
+            // Notice line + key hints (which may wrap to two lines).
+            let footer_h = ui.text_style_height(&egui::TextStyle::Body) * 3.0 + 8.0;
             let body_h = (ui.available_height() - footer_h).max(0.0);
             ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
                 match state.panel() {
@@ -552,11 +558,12 @@ fn footer(ui: &mut egui::Ui, state: &MenuState) {
         Some(n) => ui.label(egui::RichText::new(n).color(ERROR_TEXT)),
         None => ui.label(egui::RichText::new(" ").small()),
     };
+    let size = ui.text_style_height(&egui::TextStyle::Body) * HINT_SIZE_FRACTION;
     ui.label(
         egui::RichText::new(
             "Esc / Guide: close · Flippers: up/down · Upper flippers: left/right · Start: select · Action: back",
         )
-        .small()
-        .weak(),
+        .size(size)
+        .color(HINT_TEXT),
     );
 }

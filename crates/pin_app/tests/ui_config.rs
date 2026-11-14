@@ -551,3 +551,58 @@ fn lossy_load_backs_up_the_original() {
     AppConfig::load(&path);
     assert_eq!(std::fs::read_to_string(&bak).unwrap(), "[[[");
 }
+
+/// 4.4 review N13: an array of tables where a table is expected is a bad
+/// value (warned, dropped, the rest kept), not silently accepted.
+#[test]
+fn arrays_of_tables_for_known_tables_are_rejected() {
+    for (text, key) in [
+        ("[[calibration]]\nx = 1\n", "calibration"),
+        ("[[score_pip]]\ncorner = \"top_left\"\n", "score_pip"),
+        (
+            "[calibration]\n[[calibration.plunger]]\ndeadzone = 0.1\n",
+            "calibration.plunger",
+        ),
+        ("backglass_pip = [1, 2]\n", "backglass_pip"),
+    ] {
+        let l = AppConfig::from_toml_str(&format!("wireframe = true\n{text}"));
+        assert!(l.config.wireframe, "{text}");
+        assert!(
+            l.warnings
+                .iter()
+                .any(|w| matches!(w, ConfigWarning::InvalidValue { key: k, .. } if k == key)),
+            "{text}: {:?}",
+            l.warnings
+        );
+    }
+    // And the file is backed up before the value is lost.
+    let dir = temp_dir("aot");
+    let path = dir.join(CONFIG_FILE);
+    std::fs::write(&path, "[[calibration]]\nx = 1\n").unwrap();
+    AppConfig::load(&path);
+    assert!(dir.join(format!("{CONFIG_FILE}.bak")).exists());
+}
+
+/// 4.4 review N14: an existing backup is kept, and an oversized file is not
+/// copied.
+#[test]
+fn backup_is_kept_and_bounded() {
+    let dir = temp_dir("bakkeep");
+    let path = dir.join(CONFIG_FILE);
+    let bak = dir.join(format!("{CONFIG_FILE}.bak"));
+    std::fs::write(&path, "camera_preset = \"first\"\n").unwrap();
+    AppConfig::load(&path);
+    std::fs::write(&path, "camera_preset = \"second\"\n").unwrap();
+    AppConfig::load(&path);
+    assert_eq!(
+        std::fs::read_to_string(&bak).unwrap(),
+        "camera_preset = \"first\"\n"
+    );
+    let dir = temp_dir("baklarge");
+    let path = dir.join(CONFIG_FILE);
+    std::fs::write(&path, vec![b'#'; MAX_CONFIG_BYTES as usize * 3]).unwrap();
+    let l = AppConfig::load(&path);
+    assert!(matches!(l.warnings[..], [ConfigWarning::TooLarge(_)]));
+    assert!(l.warnings[0].to_string().contains("not backed up"));
+    assert!(!dir.join(format!("{CONFIG_FILE}.bak")).exists());
+}

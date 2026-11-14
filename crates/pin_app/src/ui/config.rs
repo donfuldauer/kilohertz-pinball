@@ -556,7 +556,7 @@ impl fmt::Display for ConfigWarning {
             }
             ConfigWarning::TooLarge(n) => write!(
                 f,
-                "config.toml is {n} bytes (max {MAX_CONFIG_BYTES}); using defaults"
+                "config.toml is {n} bytes (max {MAX_CONFIG_BYTES}); using defaults (not backed up)"
             ),
             ConfigWarning::Corrupt(e) => {
                 write!(
@@ -632,10 +632,23 @@ impl AppConfig {
                     | ConfigWarning::InvalidValue { .. }
             )
         });
-        if lost && let Some(name) = path.file_name() {
+        // Back up once: an existing `.bak` (the oldest known-bad original)
+        // is kept, and an oversized file is never copied (its warning says
+        // so), so the backup is bounded by `MAX_CONFIG_BYTES`.
+        let too_large = l
+            .warnings
+            .iter()
+            .any(|w| matches!(w, ConfigWarning::TooLarge(_)));
+        if lost
+            && !too_large
+            && let Some(name) = path.file_name()
+        {
             let mut bak = name.to_os_string();
             bak.push(".bak");
-            let _ = std::fs::copy(path, path.with_file_name(bak));
+            let bak = path.with_file_name(bak);
+            if !bak.exists() {
+                let _ = std::fs::copy(path, bak);
+            }
         }
         l
     }
@@ -1007,11 +1020,39 @@ fn wrap(path: &[&str], value: toml::Value) -> toml::Table {
     t
 }
 
+/// Drops the value at `path` (a known table key) when it is not a table.
+fn drop_non_table(raw: &mut toml::Table, path: &[&str], w: &mut Vec<ConfigWarning>) {
+    let (last, parents) = path.split_last().expect("non-empty path");
+    let mut t = raw;
+    for key in parents {
+        match t.get_mut(*key) {
+            Some(toml::Value::Table(next)) => t = next,
+            _ => return,
+        }
+    }
+    if let Some(v) = t.get(*last)
+        && !v.is_table()
+    {
+        let kind = v.type_str();
+        bad(
+            w,
+            &path.join("."),
+            format!("expected a table, found {kind}"),
+        );
+        t.remove(*last);
+    }
+}
+
 /// Keeps every known value of `raw` that deserializes on its own (checked
 /// per top-level key, then per key inside a failing known table, two levels
 /// deep) and drops the rest with one [`ConfigWarning::InvalidValue`] each.
 /// Unknown keys are kept untouched (they end up in `extra`).
-fn drop_bad_values(raw: toml::Table, w: &mut Vec<ConfigWarning>) -> toml::Table {
+fn drop_bad_values(mut raw: toml::Table, w: &mut Vec<ConfigWarning>) -> toml::Table {
+    // serde accepts an array of tables (`[[calibration]]`) where a struct is
+    // expected; every known table key must hold a table (4.4 review N13).
+    for (path, _) in SECTIONS {
+        drop_non_table(&mut raw, path, w);
+    }
     if deserializes(&raw).is_ok() {
         return raw;
     }

@@ -473,3 +473,29 @@ fn portrait_tables_panel_does_not_overlap() {
     );
     out.drop_without_applying_deltas();
 }
+
+/// 4.4 review N15: the footer hints are readable: ≥ 4.5:1 contrast against
+/// the panel backdrop composited over a white playfield (the worst case).
+#[test]
+fn footer_hint_contrast() {
+    fn lin(c: f64) -> f64 {
+        let c = c / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    fn lum(rgb: [f64; 3]) -> f64 {
+        0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2])
+    }
+    let b = pin_render::ui::BACKDROP;
+    let a = f64::from(b.a()) / 255.0;
+    // Premultiplied backdrop over white.
+    let panel = [b.r(), b.g(), b.b()].map(|c| f64::from(c) + 255.0 * (1.0 - a));
+    let h = pin_app::ui::view::HINT_TEXT;
+    let hint = [h.r(), h.g(), h.b()].map(f64::from);
+    let (l1, l2) = (lum(hint), lum(panel));
+    let ratio = (l1.max(l2) + 0.05) / (l1.min(l2) + 0.05);
+    assert!(ratio >= 4.5, "contrast {ratio:.2}");
+}

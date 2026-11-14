@@ -357,6 +357,34 @@ fn v2_kinetic_energy_unchanged_by_magnus() {
     println!("worst relative KE difference with/without Magnus over 1 s: {worst:e}");
 }
 
+/// GR-1: the shrunk input on which the per-tick rounding allowance failed
+/// (saved seed `7354f3a1…` replays the unshrunk case). The ball takes more
+/// than one sub-step per tick, the drift is within the per-sub-step bound,
+/// and without Magnus the velocity does not change at all, so the drift is
+/// rounding of the Magnus adds.
+#[test]
+fn gr1_fast_ball_energy_drift_is_within_the_substep_bound() {
+    let mut p = profile("standard_steel");
+    p.magnus_coeff = 2.793_942_3e-6;
+    let v = Vec3::new(-2.270_528_8, 1.038_747_9, 2.491_711_6);
+    let w = Vec3::new(-171.763_29, 125.194_756, 150.648_48);
+    let ticks = 200;
+    let (run, n_sub) = flight_counted(&p, Vec3::ZERO, v, w, ticks, Reg::All);
+    let n_sub = n_sub[ticks - 1];
+    assert!(n_sub > ticks as u64, "{n_sub} sub-steps");
+    let k0 = v.as_dvec3().length_squared();
+    let rel = ((run[ticks - 1].velocity.as_dvec3().length_squared() - k0) / k0).abs();
+    let s_over_m = f64::from(p.magnus_coeff) / f64::from(p.mass_kg);
+    let bound = ke_bound(s_over_m, f64::from(w.length()), ticks, n_sub);
+    assert!(rel <= bound, "relative KE change {rel} (bound {bound})");
+    println!(
+        "GR-1 input: {n_sub} sub-steps, relative KE change {rel:e} = {:.3} of the bound",
+        rel / bound
+    );
+    let without = flight(&p, Vec3::ZERO, v, w, ticks, Reg::None);
+    assert_eq!(without[ticks - 1].velocity, v);
+}
+
 #[test]
 fn magnus_turns_velocity_on_a_circle() {
     // v ⟂ ω: uniform circular motion at ω_c = S|ω|/m about ω̂, radius |v|/ω_c.
