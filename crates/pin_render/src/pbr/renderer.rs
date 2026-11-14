@@ -52,6 +52,38 @@ impl Default for Environment {
     }
 }
 
+/// `ReflectionBinding::draw_layers` entry of a draw without a probe (it uses
+/// the placeholder [`Environment`]).
+pub const NO_PROBE: u32 = u32::MAX;
+
+/// What the main pass binds as its reflection source (bind group 2, 5.2):
+/// a bind group made with [`PbrRenderer::reflection_layout`] and the atlas
+/// layer each draw samples for its mirror term.
+#[derive(Copy, Clone, Debug)]
+pub struct ReflectionBinding<'a> {
+    /// Group 2: binding 0 a `texture_2d_array<f32>` of octahedral maps,
+    /// binding 1 a filtering sampler.
+    pub bind_group: &'a wgpu::BindGroup,
+    /// Atlas layer of draw `i` (index into [`FrameDesc::draws`]); [`NO_PROBE`]
+    /// or a missing entry = placeholder environment.
+    pub draw_layers: &'a [u32],
+}
+
+/// An external single-sample render target (probe faces, 5.2): an
+/// [`HDR_FORMAT`] colour view and a [`DEPTH_FORMAT`] depth view, both
+/// `width`×`height`.
+#[derive(Copy, Clone, Debug)]
+pub struct ExternalTarget<'a> {
+    /// Colour attachment ([`HDR_FORMAT`], single sample).
+    pub color: &'a wgpu::TextureView,
+    /// Depth attachment ([`DEPTH_FORMAT`], single sample).
+    pub depth: &'a wgpu::TextureView,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+}
+
 /// A mesh uploaded with [`PbrRenderer::upload_mesh`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MeshId(u32);
@@ -261,15 +293,32 @@ struct Targets {
     height: u32,
     hdr: wgpu::Texture,
     hdr_view: wgpu::TextureView,
+    /// Depth with the renderer's sample count.
     depth_view: wgpu::TextureView,
+    /// Multisampled colour resolved into `hdr` (MSAA only).
+    msaa_view: Option<wgpu::TextureView>,
 }
 
-fn make_targets(device: &wgpu::Device, width: u32, height: u32) -> Targets {
+fn make_targets(device: &wgpu::Device, width: u32, height: u32, samples: u32) -> Targets {
     let size = wgpu::Extent3d {
         width,
         height,
         depth_or_array_layers: 1,
     };
+    let msaa_view = (samples > 1).then(|| {
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("pbr hdr msaa"),
+                size,
+                mip_level_count: 1,
+                sample_count: samples,
+                dimension: wgpu::TextureDimension::D2,
+                format: HDR_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    });
     let hdr = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("pbr hdr"),
         size,
@@ -286,7 +335,7 @@ fn make_targets(device: &wgpu::Device, width: u32, height: u32) -> Targets {
         label: Some("pbr depth"),
         size,
         mip_level_count: 1,
-        sample_count: 1,
+        sample_count: samples,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -298,7 +347,149 @@ fn make_targets(device: &wgpu::Device, width: u32, height: u32) -> Targets {
         hdr_view: hdr.create_view(&wgpu::TextureViewDescriptor::default()),
         hdr,
         depth_view: depth.create_view(&wgpu::TextureViewDescriptor::default()),
+        msaa_view,
     }
+}
+
+/// The pipelines of one sample count. Transparent draws use two passes per
+/// draw (5.1 review note on acrylic): back faces first (`blended_back`,
+/// front faces culled), then front faces (`blended_front`), so the far side
+/// of a closed transparent mesh is always under its near side.
+struct Pipelines {
+    opaque: wgpu::RenderPipeline,
+    blended_back: wgpu::RenderPipeline,
+    blended_front: wgpu::RenderPipeline,
+}
+
+fn make_pipelines(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    samples: u32,
+) -> Pipelines {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+    let make = |label: &str, entry: &str, cull: wgpu::Face, blended: bool| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: 24,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &ATTRIBUTES,
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(cull),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(!blended),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: samples,
+                ..Default::default()
+            },
+            fragment: Some(wgpu::FragmentState {
+                module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: blended.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    };
+    Pipelines {
+        opaque: make("pbr opaque", "fs_opaque", wgpu::Face::Back, false),
+        blended_back: make("pbr blended back", "fs_blended", wgpu::Face::Front, true),
+        blended_front: make("pbr blended front", "fs_blended", wgpu::Face::Back, true),
+    }
+}
+
+/// The bind group layout of the reflection source (group 2).
+fn reflection_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("pbr reflections"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
+/// The "no probes" reflection bind group: a black 1×1×1 array texture.
+fn empty_reflections(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::BindGroup {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("pbr no probes"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: HDR_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("pbr no probes"),
+        ..Default::default()
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("pbr no probes"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    })
+}
+
+/// Where [`PbrRenderer::encode_impl`] draws.
+enum Dest<'a> {
+    Main,
+    External(&'a ExternalTarget<'a>),
 }
 
 fn storage_buffer(device: &wgpu::Device, label: &str, bytes: u64) -> wgpu::Buffer {
@@ -322,8 +513,13 @@ pub struct PbrRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     targets: Targets,
-    opaque: wgpu::RenderPipeline,
-    blended: wgpu::RenderPipeline,
+    module: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
+    pipelines: Pipelines,
+    msaa_pipelines: Option<Pipelines>,
+    samples: u32,
+    reflection_layout: wgpu::BindGroupLayout,
+    no_reflections: wgpu::BindGroup,
     frame_layout: wgpu::BindGroupLayout,
     draw_layout: wgpu::BindGroupLayout,
     frame_buffer: wgpu::Buffer,
@@ -405,61 +601,18 @@ impl PbrRenderer {
                 count: None,
             }],
         });
+        let reflection_layout = reflection_layout(device);
+        let no_reflections = empty_reflections(device, &reflection_layout);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pbr"),
-            bind_group_layouts: &[Some(&frame_layout), Some(&draw_layout)],
+            bind_group_layouts: &[
+                Some(&frame_layout),
+                Some(&draw_layout),
+                Some(&reflection_layout),
+            ],
             immediate_size: 0,
         });
-        const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
-        let make = |label: &str, entry: &str, blended: bool| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: 24,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &ATTRIBUTES,
-                    })],
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: if blended {
-                        None
-                    } else {
-                        Some(wgpu::Face::Back)
-                    },
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(!blended),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some(entry),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: HDR_FORMAT,
-                        blend: blended.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let opaque = make("pbr opaque", "fs_opaque", false);
-        let blended = make("pbr blended", "fs_blended", true);
+        let pipelines = make_pipelines(device, &pipeline_layout, &module, 1);
         let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pbr frame"),
             size: core::mem::size_of::<FrameUniform>() as u64,
@@ -489,9 +642,14 @@ impl PbrRenderer {
         Ok(PbrRenderer {
             device: device.clone(),
             queue: ctx.queue().clone(),
-            targets: make_targets(device, width, height),
-            opaque,
-            blended,
+            targets: make_targets(device, width, height, 1),
+            module,
+            pipeline_layout,
+            pipelines,
+            msaa_pipelines: None,
+            samples: 1,
+            reflection_layout,
+            no_reflections,
             frame_layout,
             draw_layout,
             frame_buffer,
@@ -581,9 +739,49 @@ impl PbrRenderer {
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
         check_size(&self.device, width, height)?;
         if (width, height) != self.size() {
-            self.targets = make_targets(&self.device, width, height);
+            self.targets = make_targets(&self.device, width, height, self.samples);
         }
         Ok(())
+    }
+
+    /// Sets the MSAA sample count of the main pass: 1 (off, the default) or
+    /// 4 (multisampled colour and depth, hardware-resolved into
+    /// [`hdr_texture`](Self::hdr_texture)). Other counts are refused.
+    /// External targets ([`encode_to_target`](Self::encode_to_target)) are
+    /// always single-sampled.
+    pub fn set_msaa_samples(&mut self, samples: u32) -> Result<(), GpuError> {
+        if samples != 1 && samples != 4 {
+            return Err(GpuError::InvalidArgument(format!(
+                "MSAA sample count {samples} (supported: 1, 4)"
+            )));
+        }
+        if samples == self.samples {
+            return Ok(());
+        }
+        if samples > 1 && self.msaa_pipelines.is_none() {
+            self.msaa_pipelines = Some(make_pipelines(
+                &self.device,
+                &self.pipeline_layout,
+                &self.module,
+                samples,
+            ));
+        }
+        self.samples = samples;
+        let (w, h) = self.size();
+        self.targets = make_targets(&self.device, w, h, samples);
+        Ok(())
+    }
+
+    /// The MSAA sample count of the main pass (1 = off).
+    pub fn msaa_samples(&self) -> u32 {
+        self.samples
+    }
+
+    /// Layout of the reflection source bind group (group 2): binding 0 a
+    /// `texture_2d_array<f32>` (filterable float) of octahedral maps,
+    /// binding 1 a filtering sampler, both fragment-visible.
+    pub fn reflection_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.reflection_layout
     }
 
     /// The HDR colour target (linear radiance, [`HDR_FORMAT`]; usages
@@ -669,6 +867,41 @@ impl PbrRenderer {
 
     /// Records `frame` into the HDR target (cleared to `frame.clear`).
     pub fn encode(&mut self, encoder: &mut wgpu::CommandEncoder, frame: &FrameDesc<'_>) {
+        self.encode_impl(encoder, frame, None, Dest::Main);
+    }
+
+    /// [`encode`](Self::encode) with a reflection source bound (5.2):
+    /// draws listed in `reflections.draw_layers` sample their probe layer
+    /// for the mirror term; `None` = placeholder environment everywhere.
+    pub fn encode_reflected(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &FrameDesc<'_>,
+        reflections: Option<&ReflectionBinding<'_>>,
+    ) {
+        self.encode_impl(encoder, frame, reflections, Dest::Main);
+    }
+
+    /// Records `frame` into an external single-sample target (probe faces,
+    /// 5.2) instead of the renderer's own; every draw uses the placeholder
+    /// environment. Uploads take effect at the next submit, so submit each
+    /// such frame on its own.
+    pub fn encode_to_target(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &FrameDesc<'_>,
+        target: &ExternalTarget<'_>,
+    ) {
+        self.encode_impl(encoder, frame, None, Dest::External(target));
+    }
+
+    fn encode_impl(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &FrameDesc<'_>,
+        reflections: Option<&ReflectionBinding<'_>>,
+        dest: Dest<'_>,
+    ) {
         let camera = frame.camera;
         // Lights: at most MAX_LIGHTS, the rest counted.
         self.light_list.clear();
@@ -706,7 +939,10 @@ impl PbrRenderer {
             let c = c.map(sanitize_non_negative);
             [c[0], c[1], c[2], 0.0]
         };
-        let (w, h) = self.size();
+        let (w, h) = match dest {
+            Dest::Main => self.size(),
+            Dest::External(t) => (t.width.max(1), t.height.max(1)),
+        };
         let uniform = FrameUniform {
             view: camera.view,
             proj: camera.proj,
@@ -732,12 +968,17 @@ impl PbrRenderer {
 
         // Per-draw uniforms.
         self.draw_data.clear();
-        for d in frame.draws {
+        for (i, d) in frame.draws.iter().enumerate() {
+            // Probe slot: 0 = environment, k + 1 = atlas layer k.
+            let slot = reflections
+                .and_then(|r| r.draw_layers.get(i).copied())
+                .filter(|&l| l != NO_PROBE)
+                .map_or(0.0, |l| l as f32 + 1.0);
             self.draw_data.push(DrawUniform {
                 model: d.model,
                 normal_matrix: normal_matrix(&d.model),
                 material: d.material,
-                emission: [d.emission, 0.0, 0.0, 0.0],
+                emission: [d.emission, slot, 0.0, 0.0],
                 _pad: [[0.0; 4]; 3],
             });
         }
@@ -766,19 +1007,44 @@ impl PbrRenderer {
             .sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
 
         let [r, g, b, a] = frame.clear.map(|c| f64::from(sanitize_non_negative(c)));
+        let (color_view, resolve, depth_view, pipelines) = match dest {
+            Dest::External(t) => (t.color, None, t.depth, &self.pipelines),
+            Dest::Main => match (&self.targets.msaa_view, &self.msaa_pipelines) {
+                (Some(ms), Some(p)) if self.samples > 1 => (
+                    ms,
+                    Some(&self.targets.hdr_view),
+                    &self.targets.depth_view,
+                    p,
+                ),
+                _ => (
+                    &self.targets.hdr_view,
+                    None,
+                    &self.targets.depth_view,
+                    &self.pipelines,
+                ),
+            },
+        };
+        let reflection_group = match (&dest, reflections) {
+            (Dest::Main, Some(r)) => r.bind_group,
+            _ => &self.no_reflections,
+        };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("pbr forward"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.targets.hdr_view,
+                view: color_view,
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target: resolve,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }),
-                    store: wgpu::StoreOp::Store,
+                    store: if resolve.is_some() {
+                        wgpu::StoreOp::Discard
+                    } else {
+                        wgpu::StoreOp::Store
+                    },
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.targets.depth_view,
+                view: depth_view,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
@@ -790,6 +1056,7 @@ impl PbrRenderer {
             multiview_mask: None,
         });
         pass.set_bind_group(0, &self.frame_bind, &[]);
+        pass.set_bind_group(2, reflection_group, &[]);
         let mut skipped = 0u64;
         let mut draw = |pass: &mut wgpu::RenderPass<'_>, i: usize, d: &DrawItem| {
             let Some(mesh) = self.meshes.get(d.mesh.0 as usize) else {
@@ -801,14 +1068,16 @@ impl PbrRenderer {
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.index_count, 0, 0..1);
         };
-        pass.set_pipeline(&self.opaque);
+        pass.set_pipeline(&pipelines.opaque);
         for (i, d) in frame.draws.iter().enumerate() {
             if !d.transparent {
                 draw(&mut pass, i, d);
             }
         }
-        pass.set_pipeline(&self.blended);
         for &(_, i) in &self.blend_order {
+            pass.set_pipeline(&pipelines.blended_back);
+            draw(&mut pass, i as usize, &frame.draws[i as usize]);
+            pass.set_pipeline(&pipelines.blended_front);
             draw(&mut pass, i as usize, &frame.draws[i as usize]);
         }
         drop(pass);
@@ -863,11 +1132,22 @@ impl PbrRenderer {
         ctx: &GpuContext,
         frame: &FrameDesc<'_>,
     ) -> Result<HdrImage, GpuError> {
+        self.render_reflected_to_image(ctx, frame, None)
+    }
+
+    /// [`render_to_image`](Self::render_to_image) with a reflection source
+    /// bound (see [`encode_reflected`](Self::encode_reflected)).
+    pub fn render_reflected_to_image(
+        &mut self,
+        ctx: &GpuContext,
+        frame: &FrameDesc<'_>,
+        reflections: Option<&ReflectionBinding<'_>>,
+    ) -> Result<HdrImage, GpuError> {
         let device = ctx.device();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("pbr offscreen"),
         });
-        self.encode(&mut encoder, frame);
+        self.encode_reflected(&mut encoder, frame, reflections);
         let (width, height) = self.size();
         let row = width as usize * 8;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;

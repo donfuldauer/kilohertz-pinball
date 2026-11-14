@@ -7,5 +7,19 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "pin_sim"
+path = "src/main.rs"
+
 [dependencies]
 pin_core.workspace = true
+pin_physics = { path = "../pin_physics" }
+pin_input = { path = "../pin_input" }
+pin_script = { path = "../pin_script" }
+pin_assets = { path = "../pin_assets" }
+glam.workspace = true
+arrayvec.workspace = true
+libm.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

@@ -20,6 +20,9 @@ pollster.workspace = true
 bytemuck.workspace = true
 # Lamp warm-up curves (5.1): platform-independent exp.
 libm.workspace = true
+# Menu overlay painter (4.4).
+egui.workspace = true
+egui-wgpu.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

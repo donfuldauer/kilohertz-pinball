@@ -26,6 +26,11 @@
 //!   height)`, [`PbrRenderer::upload_mesh`], [`PbrRenderer::encode`] (into a
 //!   command encoder) and [`PbrRenderer::render_to_image`] (render, submit
 //!   and read the HDR target back as linear `f32` RGBA, for tests).
+//! * 5.2 hooks: a reflection source in bind group 2
+//!   ([`ReflectionBinding`], [`PbrRenderer::encode_reflected`]), rendering
+//!   into external targets for probe faces ([`ExternalTarget`],
+//!   [`PbrRenderer::encode_to_target`]) and MSAA
+//!   ([`PbrRenderer::set_msaa_samples`]).
 //!
 //! # Shading model
 //! One model for every material (no per-material branches in the shader):
@@ -53,8 +58,8 @@ pub use material::{MaterialKind, MaterialParams};
 pub use math::PbrCamera;
 pub use mesh::MeshGeometry;
 pub use renderer::{
-    DEPTH_FORMAT, DrawItem, Environment, FrameDesc, HDR_FORMAT, HdrImage, MeshId, PbrRenderer,
-    PbrStats, model_view_proj,
+    DEPTH_FORMAT, DrawItem, Environment, ExternalTarget, FrameDesc, HDR_FORMAT, HdrImage, MeshId,
+    NO_PROBE, PbrRenderer, PbrStats, ReflectionBinding, model_view_proj,
 };
 pub use warmup::{LampBank, LampKind, LampWarmup};
 
@@ -64,10 +69,13 @@ pub const MAX_LIGHTS: usize = 128;
 /// The BRDF library (functions only).
 const BRDF_SOURCE: &str = include_str!("shaders/brdf.wgsl");
 
-/// The forward shading module (the BRDF library followed by the bindings
-/// and entry points `vs_main`, `fs_opaque`, `fs_blended`).
+/// The forward shading module (the BRDF library, the reflection-source
+/// include of 5.2, then the bindings and entry points `vs_main`,
+/// `fs_opaque`, `fs_blended`).
 pub(crate) const FORWARD_SOURCE: &str = concat!(
     include_str!("shaders/brdf.wgsl"),
+    "\n",
+    include_str!("shaders/reflection.wgsl"),
     "\n",
     include_str!("shaders/forward.wgsl")
 );

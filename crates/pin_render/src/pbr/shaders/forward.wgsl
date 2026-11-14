@@ -1,5 +1,5 @@
 // pbr_forward: clustered forward shading (vertex + opaque and blended
-// fragment entry points). Concatenated after pbr_brdf.
+// fragment entry points). Concatenated after pbr_brdf and pbr_reflection.
 //
 // Frames: world = table frame (z up, metres); view space right-handed,
 // camera looking down -Z. Output: linear HDR radiance (Rgba16Float target),
@@ -47,7 +47,8 @@ struct Draw {
     surface: vec4<f32>,
     // transmission, subsurface, gi_emissive, lamp_emissive.
     extra: vec4<f32>,
-    // x: lamp emission level (0..1); yzw unused.
+    // x: lamp emission level (0..1); y: reflection probe (0 = placeholder
+    // environment, k + 1 = probe layer k, 5.2); zw unused.
     emission: vec4<f32>,
 };
 
@@ -88,6 +89,17 @@ fn env_radiance(dir: vec3<f32>) -> vec3<f32> {
     let up = smoothstep(0.0, 0.6, z);
     let down = smoothstep(0.0, 0.6, -z);
     return frame.env_horizon.rgb * (1.0 - up - down) + frame.env_sky.rgb * up + frame.env_ground.rgb * down;
+}
+
+// Mirror radiance towards `dir`: the draw's reflection probe when it has
+// one (5.2), else the placeholder environment.
+fn mirror_radiance(dir: vec3<f32>) -> vec3<f32> {
+    let slot = draw.emission.y;
+    if (slot >= 0.5) {
+        let last = max(textureNumLayers(probe_atlas), 1u) - 1u;
+        return probe_radiance(dir, min(u32(slot - 0.5), last));
+    }
+    return env_radiance(dir);
 }
 
 // Cosine-weighted average of env_radiance around `n` (approximation: the
@@ -144,6 +156,12 @@ fn shade(in: VsOut, front: bool, frag_xy: vec2<f32>) -> Shaded {
     let f0 = mix(vec3<f32>(min(0.04 * specular, 1.0)), base, metallic);
     let f90 = f90_of(f0);
     let diffuse = base * (1.0 - metallic) * (1.0 - transmission);
+    // Energy split by the view angle (5.1 review N2): the diffuse and the
+    // base layer under the coat are scaled by what the specular / coat
+    // Fresnel lets through at n.v (not v.h, which let the grazing albedo
+    // exceed 1).
+    let f_view = f_schlick(f0, f90, n_o_v);
+    let fc_view = f_schlick_scalar(0.04, 1.0, n_o_v) * clearcoat;
 
     var color = vec3<f32>(0.0);
     let ci = cluster_index(frag_xy, in.view_depth);
@@ -176,21 +194,21 @@ fn shade(in: VsOut, front: bool, frag_xy: vec2<f32>) -> Shaded {
 
         let f = f_schlick(f0, f90, v_o_h);
         let spec = f * (d_ggx(n_o_h, alpha) * v_smith_ggx(n_o_v, n_o_l, alpha) * n_o_l);
-        let diff = (vec3<f32>(1.0) - f) * diffuse * (wrapped_n_o_l(n_o_l_signed, wrap) / PI);
+        let diff = (vec3<f32>(1.0) - f_view) * diffuse * (wrapped_n_o_l(n_o_l_signed, wrap) / PI);
         var lobe = diff + spec;
         let fc = f_schlick_scalar(0.04, 1.0, v_o_h) * clearcoat;
-        let spec_c = d_ggx(n_o_h, cc_alpha) * v_kelemen(v_o_h) * fc * n_o_l;
-        lobe = lobe * (1.0 - fc) + vec3<f32>(spec_c);
+        let spec_c = d_ggx(n_o_h, cc_alpha) * v_smith_ggx(n_o_v, n_o_l, cc_alpha) * fc * n_o_l;
+        lobe = lobe * (1.0 - fc_view) + vec3<f32>(spec_c);
         color = color + lobe * radiance;
     }
 
     // Ambient from the placeholder environment.
     let refl = reflect(-v, n);
     let f_amb = f_schlick_roughness(f0, f90, n_o_v, roughness);
-    let spec_env = mix(env_radiance(refl), env_irradiance(refl), roughness);
+    let spec_env = mix(mirror_radiance(refl), env_irradiance(refl), roughness);
     var ambient = diffuse * env_irradiance(n) * (vec3<f32>(1.0) - f_amb) + spec_env * f_amb;
     let fc_amb = f_schlick_scalar(0.04, 1.0, n_o_v) * clearcoat;
-    let cc_env = mix(env_radiance(refl), env_irradiance(refl), cc_roughness);
+    let cc_env = mix(mirror_radiance(refl), env_irradiance(refl), cc_roughness);
     ambient = ambient * (1.0 - fc_amb) + cc_env * fc_amb;
     color = color + ambient;
 

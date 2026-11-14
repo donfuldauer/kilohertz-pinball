@@ -2,7 +2,8 @@
 //
 // Metallic-roughness Cook-Torrance: GGX normal distribution, height-
 // correlated Smith visibility, Schlick Fresnel; Lambert diffuse; a clear-coat
-// lobe with Kelemen visibility. `alpha` is perceptual roughness squared.
+// lobe (height-correlated Smith visibility since 5.2; `v_kelemen` is kept for
+// reference). `alpha` is perceptual roughness squared.
 
 const PI: f32 = 3.14159265358979;
 const MIN_ROUGHNESS: f32 = 0.03;

@@ -13,9 +13,17 @@ pin_render = { path = "../pin_render" }
 pin_input = { path = "../pin_input" }
 sdl3.workspace = true
 arrayvec.workspace = true
+# Menu UI state machine, table scan and config.toml (4.4).
+egui.workspace = true
+pin_assets = { path = "../pin_assets" }
+serde.workspace = true
+toml.workspace = true
+image.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# 3.5: DOF bridge telemetry fixtures are produced with pin_audio::telemetry (tests only).
+pin_audio = { path = "../pin_audio", default-features = false }
 
 # SDL must run on the main thread (Cocoa on macOS) and may only be initialised
 # once per process, so SDL tests are plain `main` binaries instead of libtest.

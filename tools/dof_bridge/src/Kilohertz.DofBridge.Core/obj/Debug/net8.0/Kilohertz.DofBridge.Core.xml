@@ -1,0 +1,576 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Kilohertz.DofBridge.Core</name>
+    </assembly>
+    <members>
+        <member name="T:Kilohertz.DofBridge.BridgeRunContext">
+            <summary>Optional hooks for <see cref="M:Kilohertz.DofBridge.BridgeApp.Run(System.String[],System.IO.TextWriter,System.IO.TextWriter,Kilohertz.DofBridge.BridgeRunContext)"/> (tests and embedding).</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeRunContext.SinkFactory">
+            <summary>Creates the sink instead of the <c>--sink</c> choice.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeRunContext.Stdin">
+            <summary>Stdin watched by <c>--exit-on-stdin-eof</c> (default <see cref="P:System.Console.In"/>).</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeRunContext.Cancel">
+            <summary>Stops the bridge when cancelled.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeRunContext.Listening">
+            <summary>Called with the bound endpoint once the bridge listens.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeRunContext.ProcessAlive">
+            <summary>Whether a process id is alive (for <c>--parent-pid</c>; default asks the OS).</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeRunContext.ParentPollInterval">
+            <summary>How often <c>--parent-pid</c> is checked (default 250 ms).</summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.BridgeApp">
+            <summary>The bridge process: options → map → sink → UDP host, until a stop signal.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.BridgeApp.ExitOk">
+            <summary>Exit code: clean shutdown (or <c>--help</c>).</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.BridgeApp.ExitUsage">
+            <summary>Exit code: bad command line.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.BridgeApp.ExitMap">
+            <summary>Exit code: map file missing or invalid.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.BridgeApp.ExitDof">
+            <summary>Exit code: DOF not found or failed to load.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.BridgeApp.ExitSocket">
+            <summary>Exit code: socket bind failed.</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.BridgeApp.Run(System.String[],System.IO.TextWriter,System.IO.TextWriter,Kilohertz.DofBridge.BridgeRunContext)">
+            <summary>Runs the bridge until stdin EOF (<c>--exit-on-stdin-eof</c>), the parent exits
+            (<c>--parent-pid</c>), Ctrl+C, or <see cref="P:Kilohertz.DofBridge.BridgeRunContext.Cancel"/>.</summary>
+            <param name="args">Command line.</param>
+            <param name="stdout">Standard output (log sink default target).</param>
+            <param name="stderr">Diagnostics.</param>
+            <param name="context">Optional hooks.</param>
+            <returns>Process exit code.</returns>
+        </member>
+        <member name="M:Kilohertz.DofBridge.BridgeApp.IsProcessAlive(System.Int32)">
+            <summary>Whether process <paramref name="pid"/> exists and has not exited.</summary>
+            <param name="pid">Process id.</param>
+            <returns>True while it runs.</returns>
+        </member>
+        <member name="T:Kilohertz.DofBridge.ProcessResult">
+            <summary>What <see cref="M:Kilohertz.DofBridge.BridgeCore.Process(System.ReadOnlySpan{System.Byte},System.Int64)"/> did with a datagram.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.ProcessResult.Applied">
+            <summary>Valid and applied (it may have forwarded nothing).</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.ProcessResult.Rejected">
+            <summary>Failed a protocol §3 receiver check; ignored.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.ProcessResult.Stale">
+            <summary>A non-full-state datagram older than the last full state; ignored.</summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.BridgeStats">
+            <summary>A snapshot of <see cref="T:Kilohertz.DofBridge.BridgeCore"/> counters.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeStats.Accepted">
+            <summary>Datagrams applied.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeStats.Rejected">
+            <summary>Datagrams rejected by the parser.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeStats.Stale">
+            <summary>Datagrams ignored as stale.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeStats.Forwarded">
+            <summary>Sink calls made.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeStats.Resyncs">
+            <summary>Resyncs started (first full state, sender restarts).</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeStats.MaxForwardLatencyTicks">
+            <summary>Largest receive-to-sink-call latency, in <see cref="T:System.Diagnostics.Stopwatch"/> ticks (p100).</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeStats.MaxForwardLatency">
+            <summary><see cref="P:Kilohertz.DofBridge.BridgeStats.MaxForwardLatencyTicks"/> as a <see cref="T:System.TimeSpan"/>.</summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.BridgeCore">
+            <summary>
+            The bridge's translation core: fed telemetry datagrams with their receive timestamps, it keeps a
+            mirror of every mapped element and calls the <see cref="T:Kilohertz.DofBridge.IDofSink"/> for each change. Single-threaded
+            and allocation-free per datagram. Rules: DECISIONS.md "3.5 — DOF bridge public API".
+            </summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.BridgeCore.#ctor(Kilohertz.DofBridge.ResolvedDofMap,Kilohertz.DofBridge.IDofSink,System.Func{System.Int64})">
+            <summary>Creates a core.</summary>
+            <param name="map">Resolved mapping.</param>
+            <param name="sink">Update destination (already initialised).</param>
+            <param name="clock">Monotonic clock in <see cref="T:System.Diagnostics.Stopwatch"/> ticks; default <see cref="M:System.Diagnostics.Stopwatch.GetTimestamp"/>.</param>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeCore.Stats">
+            <summary>Counters so far. Safe to read from another thread once that thread has observed
+            a later write by the processing thread (e.g. <see cref="P:Kilohertz.DofBridge.UdpBridgeHost.Received"/>).</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.BridgeCore.ConvertValue(Kilohertz.DofBridge.DofSourceKind,System.Single)">
+            <summary>The DOF value for a telemetry value: switches/coils 0/1 (≥ 0.5 is 1), lamps/GI 0..255.</summary>
+            <param name="source">Element kind.</param>
+            <param name="value">Telemetry value.</param>
+            <returns>The value sent to DOF.</returns>
+        </member>
+        <member name="M:Kilohertz.DofBridge.BridgeCore.Process(System.ReadOnlySpan{System.Byte},System.Int64)">
+            <summary>Applies one datagram and forwards every resulting change to the sink.</summary>
+            <param name="datagram">Raw datagram bytes.</param>
+            <param name="receiveTimestamp">When it arrived, in the clock's units (latency reference).</param>
+            <returns>What happened to the datagram.</returns>
+        </member>
+        <member name="M:Kilohertz.DofBridge.BridgeCore.Warmup">
+            <summary>
+            Runs a synthetic full state through a scratch core with a <see cref="T:Kilohertz.DofBridge.NullDofSink"/> so the
+            JIT has compiled the datagram path before the first real packet arrives.
+            </summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.SinkKind">
+            <summary>Which sink the bridge drives.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.SinkKind.Dof">
+            <summary>The user's DirectOutput Framework (default).</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.SinkKind.Log">
+            <summary>Text log of updates.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.SinkKind.Null">
+            <summary>Discard.</summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.BridgeUsageException">
+            <summary>Bad command line.</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.BridgeUsageException.#ctor(System.String)">
+            <summary>Creates the exception.</summary>
+            <param name="message">What is wrong.</param>
+        </member>
+        <member name="M:Kilohertz.DofBridge.BridgeUsageException.#ctor">
+            <summary>Creates the exception.</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.BridgeUsageException.#ctor(System.String,System.Exception)">
+            <summary>Creates the exception with an inner cause.</summary>
+            <param name="message">What is wrong.</param>
+            <param name="inner">Cause.</param>
+        </member>
+        <member name="T:Kilohertz.DofBridge.BridgeOptions">
+            <summary>Parsed command line (DECISIONS.md "3.5 — DOF bridge public API").</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.BridgeOptions.DefaultPort">
+            <summary>Default telemetry port (TELEMETRY_PROTOCOL.md §1).</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.BridgeOptions.Usage">
+            <summary>Usage text.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeOptions.MapFile">
+            <summary>Resolved-mapping file.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeOptions.Port">
+            <summary>UDP port.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeOptions.Bind">
+            <summary>Local bind address.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeOptions.RomName">
+            <summary>ROM name override.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeOptions.TableName">
+            <summary>Table name override.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeOptions.DofPath">
+            <summary>DOF install directory or DirectOutput.dll.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeOptions.DofConfig">
+            <summary>DOF global config file.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeOptions.Sink">
+            <summary>Sink kind.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeOptions.LogFile">
+            <summary>Log file for <see cref="F:Kilohertz.DofBridge.SinkKind.Log"/> (stdout when null).</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeOptions.ParentPid">
+            <summary>Exit when this process exits.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeOptions.ExitOnStdinEof">
+            <summary>Exit cleanly when stdin reaches end of file.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.BridgeOptions.Help">
+            <summary><c>--help</c> was given.</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.BridgeOptions.Parse(System.Collections.Generic.IReadOnlyList{System.String})">
+            <summary>Parses arguments.</summary>
+            <param name="args">Command-line arguments.</param>
+            <returns>The options.</returns>
+            <exception cref="T:Kilohertz.DofBridge.BridgeUsageException">Unknown flag, missing or bad value, or no <c>--map</c>.</exception>
+        </member>
+        <member name="T:Kilohertz.DofBridge.DofLocator">
+            <summary>
+            Finds the user's DirectOutput.dll. Search order: the explicit path (when given, nothing else is
+            tried), the <c>KHZ_DOF_PATH</c> environment variable, then <see cref="M:Kilohertz.DofBridge.DofLocator.DefaultSearchDirectories"/>.
+            A directory is probed for an architecture subfolder (<c>x64</c> or <c>x86</c>, matching the
+            process) before the directory itself. Unverified on hardware (D33).
+            </summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.DofLocator.DllName">
+            <summary>The DOF assembly file name.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.DofLocator.EnvironmentVariable">
+            <summary>Environment variable naming a DOF directory or DLL.</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.DofLocator.FindDirectOutputDll(System.String)">
+            <summary>Finds DirectOutput.dll with the process environment and default directories.</summary>
+            <param name="explicitPath">A directory or DLL path from <c>--dof-path</c>, or null.</param>
+            <returns>The DLL path, or null when not found.</returns>
+        </member>
+        <member name="M:Kilohertz.DofBridge.DofLocator.FindDirectOutputDll(System.String,System.Func{System.String,System.String},System.Collections.Generic.IEnumerable{System.String})">
+            <summary>Finds DirectOutput.dll with an injected environment and search list.</summary>
+            <param name="explicitPath">A directory or DLL path, or null.</param>
+            <param name="environment">Environment lookup.</param>
+            <param name="searchDirectories">Directories tried last, in order.</param>
+            <returns>The DLL path, or null when not found.</returns>
+        </member>
+        <member name="M:Kilohertz.DofBridge.DofLocator.DefaultSearchDirectories">
+            <summary>
+            Install locations tried last: registry values (Windows; best effort) and
+            <c>C:\DirectOutput</c>, <c>%ProgramFiles%\DirectOutput</c>, <c>%ProgramFiles(x86)%\DirectOutput</c>.
+            </summary>
+            <returns>Directories in search order (empty off Windows).</returns>
+        </member>
+        <member name="T:Kilohertz.DofBridge.DofSourceKind">
+            <summary>Telemetry element kinds a DOF mapping can name (telemetry kinds 0–3).</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.DofSourceKind.Switch">
+            <summary>Switch (telemetry kind 0).</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.DofSourceKind.Coil">
+            <summary>Coil (telemetry kind 1).</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.DofSourceKind.Lamp">
+            <summary>Lamp (telemetry kind 2).</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.DofSourceKind.Gi">
+            <summary>GI string (telemetry kind 3).</summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.DofMapEntry">
+            <summary>One resolved mapping: telemetry element → DOF table element.</summary>
+            <param name="Source">Telemetry element kind.</param>
+            <param name="Id">Telemetry id (0..255; GI 0..31).</param>
+            <param name="Name">The table's element name (diagnostics only).</param>
+            <param name="Type">DOF table-element type char: S, W, L, G or E.</param>
+            <param name="Number">DOF table-element number (0..65535).</param>
+        </member>
+        <member name="M:Kilohertz.DofBridge.DofMapEntry.#ctor(Kilohertz.DofBridge.DofSourceKind,System.Int32,System.String,System.Char,System.Int32)">
+            <summary>One resolved mapping: telemetry element → DOF table element.</summary>
+            <param name="Source">Telemetry element kind.</param>
+            <param name="Id">Telemetry id (0..255; GI 0..31).</param>
+            <param name="Name">The table's element name (diagnostics only).</param>
+            <param name="Type">DOF table-element type char: S, W, L, G or E.</param>
+            <param name="Number">DOF table-element number (0..65535).</param>
+        </member>
+        <member name="P:Kilohertz.DofBridge.DofMapEntry.Source">
+            <summary>Telemetry element kind.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.DofMapEntry.Id">
+            <summary>Telemetry id (0..255; GI 0..31).</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.DofMapEntry.Name">
+            <summary>The table's element name (diagnostics only).</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.DofMapEntry.Type">
+            <summary>DOF table-element type char: S, W, L, G or E.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.DofMapEntry.Number">
+            <summary>DOF table-element number (0..65535).</summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.DofMapException">
+            <summary>A resolved-mapping file is malformed.</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.DofMapException.#ctor(System.String)">
+            <summary>Creates the exception.</summary>
+            <param name="message">What is wrong.</param>
+        </member>
+        <member name="M:Kilohertz.DofBridge.DofMapException.#ctor(System.String,System.Exception)">
+            <summary>Creates the exception with an inner cause.</summary>
+            <param name="message">What is wrong.</param>
+            <param name="inner">Cause.</param>
+        </member>
+        <member name="M:Kilohertz.DofBridge.DofMapException.#ctor">
+            <summary>Creates the exception.</summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.ResolvedDofMap">
+            <summary>
+            The resolved id → DOF element map the engine writes at table load
+            (format "kilohertz-dof-map", version 1; see DECISIONS.md "3.5 — DOF bridge public API").
+            </summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.ResolvedDofMap.FormatName">
+            <summary>The <c>format</c> value every map file carries.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.ResolvedDofMap.FormatVersion">
+            <summary>The only supported <c>version</c>.</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.ResolvedDofMap.#ctor(System.String,System.String,System.Collections.Generic.IReadOnlyList{Kilohertz.DofBridge.DofMapEntry})">
+            <summary>Creates a map.</summary>
+            <param name="romName">ROM name DOF configs are keyed by.</param>
+            <param name="tableName">Table display name.</param>
+            <param name="entries">Mappings.</param>
+        </member>
+        <member name="P:Kilohertz.DofBridge.ResolvedDofMap.RomName">
+            <summary>ROM name DOF configs are keyed by.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.ResolvedDofMap.TableName">
+            <summary>Table display name.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.ResolvedDofMap.Entries">
+            <summary>All mappings, in file order.</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.ResolvedDofMap.Load(System.String)">
+            <summary>Reads and parses a map file.</summary>
+            <param name="path">File path.</param>
+            <returns>The map.</returns>
+            <exception cref="T:Kilohertz.DofBridge.DofMapException">Unreadable or invalid file.</exception>
+        </member>
+        <member name="M:Kilohertz.DofBridge.ResolvedDofMap.Parse(System.String)">
+            <summary>Parses map JSON.</summary>
+            <param name="json">JSON text.</param>
+            <returns>The map.</returns>
+            <exception cref="T:Kilohertz.DofBridge.DofMapException">Invalid JSON or content.</exception>
+        </member>
+        <member name="T:Kilohertz.DofBridge.IDofSink">
+            <summary>
+            Where the bridge sends table-element updates. The real implementation hosts the user's
+            DirectOutput Framework (<see cref="T:Kilohertz.DofBridge.ReflectionDofSink"/>); tests use a mock.
+            All calls come from one thread (the bridge's receive thread).
+            </summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.IDofSink.Init(System.String,System.String)">
+            <summary>Starts the sink for a table (DOF: <c>Pinball.Setup</c> + <c>Init</c>).</summary>
+            <param name="romName">ROM name DOF configs are keyed by.</param>
+            <param name="tableName">Table display name.</param>
+        </member>
+        <member name="M:Kilohertz.DofBridge.IDofSink.ReceiveData(System.Char,System.Int32,System.Int32)">
+            <summary>One table-element update (DOF: <c>Pinball.ReceiveData</c>).</summary>
+            <param name="tableElementType">S, W, L, G or E.</param>
+            <param name="number">Element number.</param>
+            <param name="value">0/1 for switches and coils, 0..255 for lamps and GI.</param>
+        </member>
+        <member name="M:Kilohertz.DofBridge.IDofSink.Finish">
+            <summary>Stops the sink (DOF: <c>Pinball.Finish</c>).</summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.NullDofSink">
+            <summary>Discards every update.</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.NullDofSink.Init(System.String,System.String)">
+            <inheritdoc />
+        </member>
+        <member name="M:Kilohertz.DofBridge.NullDofSink.ReceiveData(System.Char,System.Int32,System.Int32)">
+            <inheritdoc />
+        </member>
+        <member name="M:Kilohertz.DofBridge.NullDofSink.Finish">
+            <inheritdoc />
+        </member>
+        <member name="T:Kilohertz.DofBridge.LogDofSink">
+            <summary>Writes each update as a <c>"&lt;type&gt; &lt;number&gt; &lt;value&gt;"</c> line (for <c>--sink log</c>).</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.LogDofSink.#ctor(System.IO.TextWriter)">
+            <summary>Creates a sink writing to <paramref name="output"/>.</summary>
+            <param name="output">Destination; flushed after every line.</param>
+        </member>
+        <member name="M:Kilohertz.DofBridge.LogDofSink.Init(System.String,System.String)">
+            <inheritdoc />
+        </member>
+        <member name="M:Kilohertz.DofBridge.LogDofSink.ReceiveData(System.Char,System.Int32,System.Int32)">
+            <inheritdoc />
+        </member>
+        <member name="M:Kilohertz.DofBridge.LogDofSink.Finish">
+            <inheritdoc />
+        </member>
+        <member name="T:Kilohertz.DofBridge.ReflectionDofSink">
+            <summary>
+            Hosts the user's installed DirectOutput Framework by reflection: <c>DirectOutput.Pinball</c>
+            from <c>DirectOutput.dll</c>, driven through <c>Setup(globalConfig, tableName, romName)</c>,
+            <c>Init()</c>, <c>ReceiveData(char, int, int)</c> and <c>Finish()</c>.
+            <para><b>Unverified on hardware</b> (D33): CI has no DOF install; only a stand-in assembly with
+            the same shape is exercised.</para>
+            </summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.ReflectionDofSink.Load(System.String,System.String)">
+            <summary>Loads <c>DirectOutput.Pinball</c> from <paramref name="directOutputDll"/>.</summary>
+            <param name="directOutputDll">Path to DirectOutput.dll.</param>
+            <param name="globalConfig">DOF global config file, or null for DOF's default lookup.</param>
+            <returns>A sink bound to a new <c>Pinball</c> instance.</returns>
+            <exception cref="T:System.InvalidOperationException">The assembly lacks the expected type or methods.</exception>
+        </member>
+        <member name="M:Kilohertz.DofBridge.ReflectionDofSink.Init(System.String,System.String)">
+            <inheritdoc />
+        </member>
+        <member name="M:Kilohertz.DofBridge.ReflectionDofSink.ReceiveData(System.Char,System.Int32,System.Int32)">
+            <inheritdoc />
+        </member>
+        <member name="M:Kilohertz.DofBridge.ReflectionDofSink.Finish">
+            <inheritdoc />
+        </member>
+        <member name="T:Kilohertz.DofBridge.TelemetryKind">
+            <summary>Telemetry entry kinds (docs/TELEMETRY_PROTOCOL.md §2.3).</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.TelemetryKind.Switch">
+            <summary>Switch state, 0 open / 1 closed.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.TelemetryKind.Coil">
+            <summary>Coil state, 0 off / 1 energised.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.TelemetryKind.Lamp">
+            <summary>Lamp intensity 0..1.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.TelemetryKind.Gi">
+            <summary>GI string intensity 0..1.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.TelemetryKind.Magnet">
+            <summary>Magnet power 0..1 (not forwarded to DOF).</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.TelemetryKind.HapticImpulse">
+            <summary>Haptic impulse event (not forwarded to DOF).</summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.TelemetryHeader">
+            <summary>A parsed 16-byte datagram header.</summary>
+            <param name="Version">Protocol version (always 1 when parsed).</param>
+            <param name="Flags">Flags byte; bit 0 = full state.</param>
+            <param name="EntryCount">Number of 8-byte entries that follow.</param>
+            <param name="Tick">The sim tick the entries describe.</param>
+        </member>
+        <member name="M:Kilohertz.DofBridge.TelemetryHeader.#ctor(System.Byte,System.Byte,System.UInt16,System.UInt64)">
+            <summary>A parsed 16-byte datagram header.</summary>
+            <param name="Version">Protocol version (always 1 when parsed).</param>
+            <param name="Flags">Flags byte; bit 0 = full state.</param>
+            <param name="EntryCount">Number of 8-byte entries that follow.</param>
+            <param name="Tick">The sim tick the entries describe.</param>
+        </member>
+        <member name="P:Kilohertz.DofBridge.TelemetryHeader.Version">
+            <summary>Protocol version (always 1 when parsed).</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.TelemetryHeader.Flags">
+            <summary>Flags byte; bit 0 = full state.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.TelemetryHeader.EntryCount">
+            <summary>Number of 8-byte entries that follow.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.TelemetryHeader.Tick">
+            <summary>The sim tick the entries describe.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.TelemetryHeader.IsFullState">
+            <summary>Whether flags bit 0 (full state) is set.</summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.TelemetryEntry">
+            <summary>One decoded 8-byte entry.</summary>
+            <param name="Kind">Entry kind.</param>
+            <param name="Id">Element id.</param>
+            <param name="Value">Element value.</param>
+        </member>
+        <member name="M:Kilohertz.DofBridge.TelemetryEntry.#ctor(Kilohertz.DofBridge.TelemetryKind,System.UInt16,System.Single)">
+            <summary>One decoded 8-byte entry.</summary>
+            <param name="Kind">Entry kind.</param>
+            <param name="Id">Element id.</param>
+            <param name="Value">Element value.</param>
+        </member>
+        <member name="P:Kilohertz.DofBridge.TelemetryEntry.Kind">
+            <summary>Entry kind.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.TelemetryEntry.Id">
+            <summary>Element id.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.TelemetryEntry.Value">
+            <summary>Element value.</summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.ParseStatus">
+            <summary>Outcome of <see cref="M:Kilohertz.DofBridge.TelemetryParser.TryParse(System.ReadOnlySpan{System.Byte},Kilohertz.DofBridge.TelemetryHeader@)"/>.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.ParseStatus.Ok">
+            <summary>The datagram is valid.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.ParseStatus.TooShort">
+            <summary>Shorter than the 16-byte header.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.ParseStatus.BadMagic">
+            <summary>Magic is not "PNTL".</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.ParseStatus.BadVersion">
+            <summary>Version is not 1.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.ParseStatus.TooManyEntries">
+            <summary>Entry count above 180.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.ParseStatus.LengthMismatch">
+            <summary>Length differs from 16 + 8 × entry count.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.ParseStatus.BadKind">
+            <summary>An entry has a kind above 5.</summary>
+        </member>
+        <member name="T:Kilohertz.DofBridge.TelemetryParser">
+            <summary>
+            Allocation-free parser for UDP telemetry v1 datagrams. Implements every receiver check of
+            docs/TELEMETRY_PROTOCOL.md §3 and never throws, whatever the input bytes.
+            </summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.TelemetryParser.HeaderLength">
+            <summary>Header length in bytes.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.TelemetryParser.EntryLength">
+            <summary>Entry length in bytes.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.TelemetryParser.MaxEntries">
+            <summary>Maximum entries per datagram.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.TelemetryParser.Version">
+            <summary>Protocol version understood by this parser.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.TelemetryParser.FlagFullState">
+            <summary>Flags bit 0: full state.</summary>
+        </member>
+        <member name="F:Kilohertz.DofBridge.TelemetryParser.MaxDatagramLength">
+            <summary>Largest valid datagram, bytes.</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.TelemetryParser.TryParse(System.ReadOnlySpan{System.Byte},Kilohertz.DofBridge.TelemetryHeader@)">
+            <summary>Validates <paramref name="datagram"/> and reads its header.</summary>
+            <param name="datagram">Raw datagram bytes.</param>
+            <param name="header">The header when the result is <see cref="F:Kilohertz.DofBridge.ParseStatus.Ok"/>; default otherwise.</param>
+            <returns>The first failed check, or <see cref="F:Kilohertz.DofBridge.ParseStatus.Ok"/>.</returns>
+        </member>
+        <member name="M:Kilohertz.DofBridge.TelemetryParser.ReadEntry(System.ReadOnlySpan{System.Byte},System.Int32)">
+            <summary>Reads entry <paramref name="index"/> of a datagram that parsed <see cref="F:Kilohertz.DofBridge.ParseStatus.Ok"/>.</summary>
+            <param name="datagram">The datagram bytes.</param>
+            <param name="index">Entry index, below the header's entry count.</param>
+            <returns>The decoded entry.</returns>
+        </member>
+        <member name="T:Kilohertz.DofBridge.UdpBridgeHost">
+            <summary>
+            Owns the UDP socket and a dedicated receive thread. Each datagram is stamped with
+            <see cref="M:System.Diagnostics.Stopwatch.GetTimestamp"/> right after <c>Receive</c> returns and handed to
+            <see cref="M:Kilohertz.DofBridge.BridgeCore.Process(System.ReadOnlySpan{System.Byte},System.Int64)"/> on that same thread.
+            </summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.UdpBridgeHost.#ctor(Kilohertz.DofBridge.BridgeCore,System.Net.IPEndPoint)">
+            <summary>Binds the socket (port 0 picks a free port; see <see cref="P:Kilohertz.DofBridge.UdpBridgeHost.LocalEndPoint"/>).</summary>
+            <param name="core">The core to feed.</param>
+            <param name="bind">Local address and port.</param>
+            <exception cref="T:System.Net.Sockets.SocketException">The address cannot be bound.</exception>
+        </member>
+        <member name="P:Kilohertz.DofBridge.UdpBridgeHost.LocalEndPoint">
+            <summary>The bound local endpoint.</summary>
+        </member>
+        <member name="P:Kilohertz.DofBridge.UdpBridgeHost.Received">
+            <summary>Datagrams received and processed so far (incremented after <see cref="M:Kilohertz.DofBridge.BridgeCore.Process(System.ReadOnlySpan{System.Byte},System.Int64)"/>).</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.UdpBridgeHost.Start">
+            <summary>Warms up the datagram path and starts the receive thread.</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.UdpBridgeHost.Stop">
+            <summary>Closes the socket and joins the receive thread.</summary>
+        </member>
+        <member name="M:Kilohertz.DofBridge.UdpBridgeHost.Dispose">
+            <inheritdoc />
+        </member>
+    </members>
+</doc>
