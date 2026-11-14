@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Creates `path` as a new, owner-only directory; `AlreadyExists` (or any
 /// other error) if it cannot be created by this call.
 pub fn create_exclusive(path: &Path) -> io::Result<()> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut b = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
