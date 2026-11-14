@@ -366,22 +366,9 @@ pub(super) fn precheck(bytes: &[u8]) -> Result<(Cow<'_, [u8]>, Usage), ScriptErr
 /// compiling, and reports how much of each it uses. For tests and tools.
 #[doc(hidden)]
 pub fn check_limits(bytes: &[u8]) -> Result<Usage, ScriptError> {
-    let bin = if bytes.starts_with(b"\0asm") {
-        Cow::Borrowed(bytes)
-    } else {
-        Cow::Owned(
-            wat::parse_bytes(bytes)
-                .map_err(|e| load(truncated(&e.to_string(), MAX_ERROR_BYTES)))?
-                .into_owned(),
-        )
-    };
-    if bin.len() > MAX_MODULE_BYTES {
-        return Err(load(format_args!(
-            "module is {} bytes (at most {MAX_MODULE_BYTES} bytes of binary)",
-            bin.len()
-        )));
-    }
-    scan(&bin)
+    // Exactly the checks `prepare` runs before compiling (including the WAT
+    // text cap), so the two never disagree.
+    precheck(bytes).map(|(_, usage)| usage)
 }
 
 fn scan(bin: &[u8]) -> Result<Usage, ScriptError> {
