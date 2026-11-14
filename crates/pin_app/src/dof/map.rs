@@ -177,6 +177,20 @@ fn push_json_string(out: &mut String, s: &str) {
 
 static MAP_FILE_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// An unpredictable 64-bit value: SipHash keyed by a fresh OS-seeded
+/// [`RandomState`](std::collections::hash_map::RandomState), over the
+/// sequence number and the current time (no extra dependency; not
+/// cryptographic, but not guessable by another local user in advance).
+fn random_suffix(seq: u64) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(seq);
+    if let Ok(d) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        h.write_u128(d.as_nanos());
+    }
+    h.finish()
+}
+
 impl ResolvedDofMap {
     /// Resolves the table's `[dof]` section: `Ok(None)` without one.
     ///
@@ -293,12 +307,48 @@ impl ResolvedDofMap {
     }
 
     /// Writes [`to_json`](Self::to_json) to a new file
-    /// `kilohertz-dof-<pid>-<n>.json` in `dir` and returns its path.
+    /// `kilohertz-dof-<pid>-<n>-<random>.json` in `dir` and returns its path.
+    ///
+    /// The file is created with create-new semantics (`O_EXCL` /
+    /// `CREATE_NEW`): an existing file or symlink at that path is never
+    /// followed or overwritten, and the 64-bit random suffix (from the OS-seeded
+    /// `RandomState` keys) makes the name unpredictable; on a collision a new
+    /// name is tried (up to 16 times). The bridge's reaper deletes the file
+    /// once the bridge has stopped; if the engine itself exits or crashes
+    /// before that, the file (a few hundred bytes of non-secret table data)
+    /// stays in `dir` until the OS cleans its temp dir.
     pub fn write_file(&self, dir: &Path) -> Result<PathBuf, DofError> {
-        let n = MAP_FILE_SEQ.fetch_add(1, Ordering::Relaxed);
-        let path = dir.join(format!("kilohertz-dof-{}-{n}.json", std::process::id()));
-        std::fs::write(&path, self.to_json()).map_err(DofError::MapFile)?;
-        Ok(path)
+        use std::io::Write as _;
+        const ATTEMPTS: usize = 16;
+        let json = self.to_json();
+        let mut last_err = None;
+        for _ in 0..ATTEMPTS {
+            let n = MAP_FILE_SEQ.fetch_add(1, Ordering::Relaxed);
+            let path = dir.join(format!(
+                "kilohertz-dof-{}-{n}-{:016x}.json",
+                std::process::id(),
+                random_suffix(n)
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    if let Err(e) = f.write_all(json.as_bytes()).and_then(|()| f.sync_all()) {
+                        drop(f);
+                        let _ = std::fs::remove_file(&path);
+                        return Err(DofError::MapFile(e));
+                    }
+                    return Ok(path);
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => last_err = Some(e),
+                Err(e) => return Err(DofError::MapFile(e)),
+            }
+        }
+        Err(DofError::MapFile(last_err.unwrap_or_else(|| {
+            io::Error::new(io::ErrorKind::AlreadyExists, "no free map file name")
+        })))
     }
 }
 

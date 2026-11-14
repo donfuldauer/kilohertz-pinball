@@ -25,8 +25,11 @@ const TITLE_TEXT: egui::Color32 = egui::Color32::from_rgb(250, 230, 160);
 
 /// Width share of the settings list in the input panel.
 const INPUT_SETTINGS_FRACTION: f32 = 0.62;
-/// Narrowest body (points) that shows settings and live readings side by side.
-const INPUT_SIDE_BY_SIDE_MIN_WIDTH: f32 = 700.0;
+/// Narrowest body (points) that shows two columns side by side (settings +
+/// live readings, table list + details); narrower panels stack them.
+const SIDE_BY_SIDE_MIN_WIDTH: f32 = 700.0;
+/// Width (side by side) or height (stacked) share of the table list.
+const TABLE_LIST_FRACTION: f32 = 0.5;
 
 /// Short names of the cabinet inputs for the live display.
 const INPUT_NAMES: [&str; CabinetInput::COUNT] = [
@@ -38,6 +41,10 @@ const INPUT_NAMES: [&str; CabinetInput::COUNT] = [
 #[derive(Default)]
 pub struct MenuView {
     previews: BTreeMap<PathBuf, egui::TextureHandle>,
+    /// `(panel, focused row)` of the previous frame: the focused row is
+    /// scrolled into view only on the frame the focus changed, so mouse-wheel
+    /// scrolling is not undone every frame.
+    last_focus: Option<(Panel, usize)>,
 }
 
 impl std::fmt::Debug for MenuView {
@@ -74,9 +81,13 @@ impl MenuView {
     /// inputs to `state`. Returns the inputs.
     pub fn show(&mut self, ui: &mut egui::Ui, state: &mut MenuState) -> Vec<MenuInput> {
         if !state.is_open() {
+            self.last_focus = None;
             return Vec::new();
         }
         self.prune_previews(state);
+        let focus_now = Some((state.panel(), state.focus()));
+        let scroll = focus_now != self.last_focus;
+        self.last_focus = focus_now;
         let mut out = Vec::new();
         show_overlay(ui, |ui| {
             ui.style_mut().interaction.selectable_labels = false;
@@ -86,19 +97,21 @@ impl MenuView {
             let body_h = (ui.available_height() - footer_h).max(0.0);
             ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
                 match state.panel() {
-                    Panel::Tables => self.tables(ui, state, &mut out),
-                    Panel::Display => settings(ui, state, &SettingRow::DISPLAY, &mut out),
+                    Panel::Tables => self.tables(ui, state, scroll, &mut out),
+                    Panel::Display => {
+                        settings(ui, state, &SettingRow::DISPLAY, scroll, &mut out)
+                    }
                     Panel::Input => {
                         // Settings get ~60 % of the width (label + slider +
                         // value box), the live readings the rest.
                         // A narrow (portrait) panel stacks them instead.
                         let (w, h) = (ui.available_width(), ui.available_height());
-                        if w >= INPUT_SIDE_BY_SIDE_MIN_WIDTH {
+                        if w >= SIDE_BY_SIDE_MIN_WIDTH {
                             let left = (w * INPUT_SETTINGS_FRACTION).floor();
                             ui.horizontal_top(|ui| {
                                 ui.allocate_ui(egui::vec2(left, h), |ui| {
                                     ui.set_max_width(left);
-                                    settings(ui, state, &SettingRow::INPUT, &mut out);
+                                    settings(ui, state, &SettingRow::INPUT, scroll, &mut out);
                                 });
                                 ui.separator();
                                 ui.vertical(|ui| live(ui, state));
@@ -107,7 +120,7 @@ impl MenuView {
                             let top = (h * INPUT_SETTINGS_FRACTION).floor();
                             ui.allocate_ui(egui::vec2(w, top), |ui| {
                                 ui.set_max_height(top);
-                                settings(ui, state, &SettingRow::INPUT, &mut out);
+                                settings(ui, state, &SettingRow::INPUT, scroll, &mut out);
                             });
                             ui.separator();
                             live(ui, state);
@@ -149,12 +162,18 @@ impl MenuView {
         });
     }
 
-    fn tables(&mut self, ui: &mut egui::Ui, state: &MenuState, out: &mut Vec<MenuInput>) {
-        ui.horizontal(|ui| {
+    fn tables(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &MenuState,
+        scroll: bool,
+        out: &mut Vec<MenuInput>,
+    ) {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Filter:");
             let mut filter = state.filter().to_owned();
             if ui
-                .add(egui::TextEdit::singleline(&mut filter).desired_width(200.0))
+                .add(egui::TextEdit::singleline(&mut filter).desired_width(160.0))
                 .changed()
             {
                 out.push(MenuInput::SetFilter(filter));
@@ -169,35 +188,46 @@ impl MenuView {
             ));
         });
         let focused = state.focused_table();
-        ui.columns(2, |cols| {
-            egui::ScrollArea::vertical()
-                .id_salt("pin_menu_tables")
-                .auto_shrink([false, false])
-                .show(&mut cols[0], |ui| {
-                    if state.visible_tables().is_empty() {
-                        ui.label("No tables found.");
-                    }
-                    for &i in state.visible_tables() {
-                        let t = &state.tables()[i];
-                        let resp = table_row(ui, t, focused == Some(i));
-                        if focused == Some(i) {
-                            resp.scroll_to_me(None);
-                        }
-                        if resp.double_clicked() {
-                            out.push(MenuInput::LoadTable(i));
-                        } else if resp.clicked() {
-                            out.push(MenuInput::FocusTable(i));
-                        }
-                    }
+        let (w, h) = (ui.available_width(), ui.available_height());
+        // List and details side by side; a narrow (portrait) panel stacks
+        // them so badge rows keep a usable width.
+        if w >= SIDE_BY_SIDE_MIN_WIDTH {
+            let left = (w * TABLE_LIST_FRACTION).floor();
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui(egui::vec2(left, h), |ui| {
+                    ui.set_max_width(left);
+                    table_list(ui, state, focused, scroll, out);
                 });
-            let ui = &mut cols[1];
-            if let Some(i) = focused {
-                let t = &state.tables()[i];
-                self.table_details(ui, t, state.load_state(), i, out);
-            } else {
-                ui.label("Select a table.");
-            }
-        });
+                ui.separator();
+                ui.vertical(|ui| self.details_or_hint(ui, state, focused, out));
+            });
+        } else {
+            let top = (h * TABLE_LIST_FRACTION).floor();
+            ui.allocate_ui(egui::vec2(w, top), |ui| {
+                ui.set_max_height(top);
+                table_list(ui, state, focused, scroll, out);
+            });
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .id_salt("pin_menu_details")
+                .auto_shrink([false, false])
+                .show(ui, |ui| self.details_or_hint(ui, state, focused, out));
+        }
+    }
+
+    fn details_or_hint(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &MenuState,
+        focused: Option<usize>,
+        out: &mut Vec<MenuInput>,
+    ) {
+        if let Some(i) = focused {
+            let t = &state.tables()[i];
+            self.table_details(ui, t, state.load_state(), i, out);
+        } else {
+            ui.label("Select a table.");
+        }
     }
 
     fn table_details(
@@ -282,6 +312,37 @@ impl MenuView {
     }
 }
 
+/// The scrolling table list. The focused row is scrolled into view only when
+/// `scroll` (the focus just changed).
+fn table_list(
+    ui: &mut egui::Ui,
+    state: &MenuState,
+    focused: Option<usize>,
+    scroll: bool,
+    out: &mut Vec<MenuInput>,
+) {
+    egui::ScrollArea::vertical()
+        .id_salt("pin_menu_tables")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if state.visible_tables().is_empty() {
+                ui.label("No tables found.");
+            }
+            for &i in state.visible_tables() {
+                let t = &state.tables()[i];
+                let resp = table_row(ui, t, focused == Some(i));
+                if scroll && focused == Some(i) {
+                    resp.scroll_to_me(None);
+                }
+                if resp.double_clicked() {
+                    out.push(MenuInput::LoadTable(i));
+                } else if resp.clicked() {
+                    out.push(MenuInput::FocusTable(i));
+                }
+            }
+        });
+}
+
 fn badges(ui: &mut egui::Ui, features: &[TableFeature]) {
     ui.horizontal_wrapped(|ui| {
         for f in features {
@@ -290,10 +351,15 @@ fn badges(ui: &mut egui::Ui, features: &[TableFeature]) {
                 .corner_radius(egui::CornerRadius::same(3))
                 .inner_margin(egui::Margin::symmetric(4, 1))
                 .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(f.label())
-                            .small()
-                            .color(egui::Color32::WHITE),
+                    // A badge never wraps inside itself; the row wraps
+                    // between badges.
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(f.label())
+                                .small()
+                                .color(egui::Color32::WHITE),
+                        )
+                        .wrap_mode(egui::TextWrapMode::Extend),
                     );
                 });
         }
@@ -333,7 +399,13 @@ fn table_row(ui: &mut egui::Ui, t: &TableEntry, focused: bool) -> egui::Response
     )
 }
 
-fn settings(ui: &mut egui::Ui, state: &MenuState, rows: &[SettingRow], out: &mut Vec<MenuInput>) {
+fn settings(
+    ui: &mut egui::Ui,
+    state: &MenuState,
+    rows: &[SettingRow],
+    scroll: bool,
+    out: &mut Vec<MenuInput>,
+) {
     let cfg: &AppConfig = state.config();
     let focus = state.focus();
     // Sliders take a share of the width so label + slider + value box fit.
@@ -357,7 +429,7 @@ fn settings(ui: &mut egui::Ui, state: &MenuState, rows: &[SettingRow], out: &mut
                             label = label.background_color(FOCUS_FILL).strong();
                         }
                         let resp = ui.label(label);
-                        if focus == r {
+                        if scroll && focus == r {
                             resp.scroll_to_me(None);
                         }
                         setting_control(ui, *row, r, cfg, out);

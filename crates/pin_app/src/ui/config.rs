@@ -616,7 +616,31 @@ pub const MAX_DISPLAY_INDEX: u32 = 15;
 
 impl AppConfig {
     /// Loads `path`. Never fails; see the module docs for the fallback rules.
+    ///
+    /// When the file exists but some of its content could not be used (it
+    /// is corrupt or too large, or a value was dropped or reset), the
+    /// original is first copied to `<name>.bak` next to it (overwriting an
+    /// older backup), so the next [`save`](Self::save) cannot lose it. A
+    /// failed copy is ignored (the load result is unchanged).
     pub fn load(path: &Path) -> ConfigLoad {
+        let l = Self::load_inner(path);
+        let lost = l.warnings.iter().any(|w| {
+            matches!(
+                w,
+                ConfigWarning::Corrupt(_)
+                    | ConfigWarning::TooLarge(_)
+                    | ConfigWarning::InvalidValue { .. }
+            )
+        });
+        if lost && let Some(name) = path.file_name() {
+            let mut bak = name.to_os_string();
+            bak.push(".bak");
+            let _ = std::fs::copy(path, path.with_file_name(bak));
+        }
+        l
+    }
+
+    fn load_inner(path: &Path) -> ConfigLoad {
         let defaults = |w: ConfigWarning| ConfigLoad {
             config: AppConfig::default(),
             warnings: vec![w],
@@ -673,7 +697,7 @@ impl AppConfig {
             Err(e) => {
                 return ConfigLoad {
                     config: AppConfig::default(),
-                    warnings: vec![ConfigWarning::Corrupt(e.to_string())],
+                    warnings: vec![ConfigWarning::Corrupt(truncate_message(e.to_string()))],
                 };
             }
         };
@@ -682,15 +706,20 @@ impl AppConfig {
         // file corrupt.
         let mut typed = raw.clone();
         lenient_audio(&mut typed, &mut warnings);
+        // Any other known value of the wrong type (or an unknown enum
+        // variant) is dropped alone: that setting takes its default, the
+        // rest of the file is kept (4.4 review N1).
+        let typed = drop_bad_values(typed, &mut warnings);
         let mut config = match toml::Value::Table(typed).try_into::<AppConfig>() {
             Ok(mut c) => {
                 c.sanitize(&mut warnings);
                 c
             }
             Err(e) => {
+                // Not expected after `drop_bad_values`; kept as a safety net.
                 return ConfigLoad {
                     config: AppConfig::default(),
-                    warnings: vec![ConfigWarning::Corrupt(e.to_string())],
+                    warnings: vec![ConfigWarning::Corrupt(truncate_message(e.to_string()))],
                 };
             }
         };
@@ -944,6 +973,85 @@ fn lenient_audio(raw: &mut toml::Table, w: &mut Vec<ConfigWarning>) {
             raw.remove("audio");
         }
     }
+}
+
+/// Longest parser message kept in [`ConfigWarning`] texts, characters.
+pub const MAX_WARNING_CHARS: usize = 512;
+
+/// Cuts `m` to [`MAX_WARNING_CHARS`] characters (marking the cut with `…`).
+fn truncate_message(m: String) -> String {
+    match m.char_indices().nth(MAX_WARNING_CHARS) {
+        Some((i, _)) => format!("{}…", &m[..i]),
+        None => m,
+    }
+}
+
+/// Whether `raw` alone deserializes as an [`AppConfig`].
+fn deserializes(raw: &toml::Table) -> Result<(), String> {
+    toml::Value::Table(raw.clone())
+        .try_into::<AppConfig>()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// `value` wrapped in the tables of `path` (`["a", "b"]` → `{a = {b = value}}`).
+fn wrap(path: &[&str], value: toml::Value) -> toml::Table {
+    let mut v = value;
+    for key in path[1..].iter().rev() {
+        let mut t = toml::Table::new();
+        t.insert((*key).to_owned(), v);
+        v = toml::Value::Table(t);
+    }
+    let mut t = toml::Table::new();
+    t.insert(path[0].to_owned(), v);
+    t
+}
+
+/// Keeps every known value of `raw` that deserializes on its own (checked
+/// per top-level key, then per key inside a failing known table, two levels
+/// deep) and drops the rest with one [`ConfigWarning::InvalidValue`] each.
+/// Unknown keys are kept untouched (they end up in `extra`).
+fn drop_bad_values(raw: toml::Table, w: &mut Vec<ConfigWarning>) -> toml::Table {
+    if deserializes(&raw).is_ok() {
+        return raw;
+    }
+    fn clean(path: &mut Vec<String>, value: toml::Value, w: &mut Vec<ConfigWarning>) -> Option<toml::Value> {
+        let keys: Vec<&str> = path.iter().map(String::as_str).collect();
+        let err = match deserializes(&wrap(&keys, value.clone())) {
+            Ok(()) => return Some(value),
+            Err(e) => e,
+        };
+        match value {
+            toml::Value::Table(t) if path.len() < 3 => {
+                let mut out = toml::Table::new();
+                for (k, v) in t {
+                    path.push(k.clone());
+                    if let Some(v) = clean(path, v, w) {
+                        out.insert(k, v);
+                    }
+                    path.pop();
+                }
+                Some(toml::Value::Table(out))
+            }
+            v => {
+                let key = keys.join(".");
+                bad(w, &key, truncate_message(format!("{v} is not valid here ({})", err.trim_end())));
+                None
+            }
+        }
+    }
+    let mut out = toml::Table::new();
+    for (k, v) in raw {
+        if !TOP_KEYS.contains(&k.as_str()) {
+            out.insert(k, v);
+            continue;
+        }
+        let mut path = vec![k.clone()];
+        if let Some(v) = clean(&mut path, v, w) {
+            out.insert(k, v);
+        }
+    }
+    out
 }
 
 fn bad(w: &mut Vec<ConfigWarning>, key: &str, message: String) {

@@ -36,6 +36,9 @@ public static class BridgeApp
     public const int ExitDof = 4;
     /// <summary>Exit code: socket bind failed.</summary>
     public const int ExitSocket = 5;
+    /// <summary>Exit code: the bridge failed while running (the receive thread died, e.g. the DOF
+    /// sink threw, or an unexpected socket error); DOF <c>Finish</c> was still called.</summary>
+    public const int ExitFault = 6;
 
     /// <summary>Runs the bridge until stdin EOF (<c>--exit-on-stdin-eof</c>), the parent exits
     /// (<c>--parent-pid</c>), Ctrl+C, or <see cref="BridgeRunContext.Cancel"/>.</summary>
@@ -87,10 +90,9 @@ public static class BridgeApp
             sink = CreateSink(options, map, stdout, context, ref logFile);
             sink.Init(rom, table);
         }
-        catch (Exception e) when (e is InvalidOperationException or IOException or BadImageFormatException
-                                      or TargetInvocationException or UnauthorizedAccessException or NotSupportedException)
+        catch (Exception e) when (IsDofLoadFailure(e))
         {
-            stderr.WriteLine($"error: DOF could not be started: {e.Message}");
+            stderr.WriteLine($"error: DOF could not be started: {e.GetType().Name}: {e.Message}");
             logFile?.Dispose();
             return ExitDof;
         }
@@ -100,7 +102,7 @@ public static class BridgeApp
         UdpBridgeHost host;
         try
         {
-            host = new UdpBridgeHost(core, new IPEndPoint(options.Bind, options.Port));
+            host = new UdpBridgeHost(core, new IPEndPoint(options.Bind, options.Port), _ => SetQuietly(done));
         }
         catch (SocketException e)
         {
@@ -125,21 +127,47 @@ public static class BridgeApp
             reader.Start();
         }
 
-        host.Start();
-        stderr.WriteLine(string.Create(CultureInfo.InvariantCulture,
-            $"KilohertzDofBridge: rom={rom} entries={map.Entries.Count} listening on {host.LocalEndPoint} (DOF hosting unverified on hardware)"));
-        context.Listening?.Invoke(host.LocalEndPoint);
-        done.Wait();
-
-        Console.CancelKeyPress -= onCtrlC;
-        host.Dispose();
-        sink.Finish();
-        logFile?.Dispose();
+        int exit = ExitOk;
+        try
+        {
+            host.Start();
+            stderr.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"KilohertzDofBridge: rom={rom} entries={map.Entries.Count} listening on {host.LocalEndPoint} (DOF hosting unverified on hardware)"));
+            context.Listening?.Invoke(host.LocalEndPoint);
+            done.Wait();
+        }
+        finally
+        {
+            Console.CancelKeyPress -= onCtrlC;
+            host.Dispose();
+            if (host.Fault is Exception fault)
+            {
+                stderr.WriteLine($"error: the bridge stopped receiving: {fault.GetType().Name}: {fault.Message}");
+                exit = ExitFault;
+            }
+            try
+            {
+                sink.Finish();
+            }
+            catch (Exception e)
+            {
+                stderr.WriteLine($"error: DOF Finish failed: {e.GetType().Name}: {e.Message}");
+                exit = exit == ExitOk ? ExitFault : exit;
+            }
+            logFile?.Dispose();
+        }
         BridgeStats s = core.Stats;
         stderr.WriteLine(string.Create(CultureInfo.InvariantCulture,
             $"KilohertzDofBridge: stopped; accepted={s.Accepted} rejected={s.Rejected} stale={s.Stale} forwarded={s.Forwarded} resyncs={s.Resyncs} max_latency_ms={s.MaxForwardLatency.TotalMilliseconds:F3}"));
-        return ExitOk;
+        return exit;
     }
+
+    /// <summary>Exceptions that mean "DOF could not be loaded or started" (exit 4, no stack trace).</summary>
+    private static bool IsDofLoadFailure(Exception e) =>
+        e is InvalidOperationException or IOException or BadImageFormatException or TargetInvocationException
+            or UnauthorizedAccessException or NotSupportedException or MissingMemberException or TypeLoadException
+            or ReflectionTypeLoadException or ArgumentException or MemberAccessException
+            or System.Security.SecurityException;
 
     private static IDofSink CreateSink(BridgeOptions options, ResolvedDofMap map, TextWriter stdout, BridgeRunContext context, ref TextWriter? logFile)
     {

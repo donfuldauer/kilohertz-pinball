@@ -302,8 +302,11 @@ pub(super) fn flippers(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
             .iter()
             .enumerate()
             .any(|(j, o)| j != i && o.collision_layer == c.collision_layer);
-        if built[i].is_none() && partner {
-            if let Err(e) = FlipperSet::new(core::slice::from_ref(c)) {
+        if built[i].is_none()
+            && partner
+            && let Err(e) = FlipperSet::new(core::slice::from_ref(c))
+        {
+            {
                 let n = name(i);
                 sink.warning(Finding {
                     feature: Feature::FlipperGap,
@@ -333,14 +336,16 @@ pub(super) fn flippers(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
             let pivots = DVec3::from_array(cfgs[i].base_position_mm.map(f64::from))
                 .distance(DVec3::from_array(cfgs[j].base_position_mm.map(f64::from)))
                 * 1.0e-3;
-            if !(pivots - reach.0 - reach.1 < largest) {
+            // NaN-safe: also skips non-finite distances.
+            if (pivots - reach.0 - reach.1).partial_cmp(&largest) != Some(core::cmp::Ordering::Less)
+            {
                 continue;
             }
             let normal = Vec3::from_array(cfgs[i].surface_normal);
             let Some((gap, mid)) = bat_gap(a, b, normal, reach) else {
                 continue;
             };
-            if !(gap > 0.0) {
+            if gap.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater) {
                 continue;
             }
             let layer = cfgs[i].collision_layer;

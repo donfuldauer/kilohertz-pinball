@@ -87,8 +87,6 @@ fn corrupt_file_falls_back_with_warning() {
     let path = dir.join(CONFIG_FILE);
     for bad in [
         &b"display_mode = \"multi\"\n[[[nope"[..],
-        b"display_mode = \"sideways\"",
-        b"wireframe = 3",
         b"\xff\xfe\x00 not utf-8",
     ] {
         std::fs::write(&path, bad).unwrap();
@@ -445,6 +443,104 @@ fn partial_tables_keep_per_key_defaults() {
     // An empty pip table and wrong types inside it.
     let l = AppConfig::from_toml_str("[score_pip]\n");
     assert_eq!(l.config, d);
-    let l = AppConfig::from_toml_str("[score_pip]\ncorner = 3\n");
-    assert!(matches!(l.warnings[..], [ConfigWarning::Corrupt(_)]));
+    let l = AppConfig::from_toml_str("[score_pip]\ncorner = 3\nwidth_fraction = 0.5\n");
+    assert!(
+        matches!(&l.warnings[..], [ConfigWarning::InvalidValue { key, .. }] if key == "score_pip.corner"),
+        "{:?}",
+        l.warnings
+    );
+    assert_eq!(l.config.score_pip.corner, d.score_pip.corner);
+    assert_eq!(l.config.score_pip.width_fraction, 0.5);
+}
+
+#[test]
+fn wrong_types_fall_back_per_field() {
+    let text = r#"
+wireframe = true
+display_mode = "sideways"
+camera_preset = "cabinet"
+playfield_display = -1
+input_profile = 7
+calibration = { dual_stage_upper = 0.9, plunger = { deadzone = "big", release_window_ms = 50 }, nudge = 3 }
+score_pip = "corner"
+last_table = 5
+future = "kept"
+"#;
+    let l = AppConfig::from_toml_str(text);
+    let d = AppConfig::default();
+    let c = &l.config;
+    assert!(c.wireframe);
+    assert_eq!(c.camera_preset, CameraPreset::Cabinet);
+    assert_eq!(c.display_mode, d.display_mode);
+    assert_eq!(c.playfield_display, 0);
+    assert_eq!(c.input_profile, "auto");
+    assert_eq!(c.calibration.dual_stage_upper, 0.9);
+    assert_eq!(c.calibration.plunger.release_window_ms, 50);
+    assert_eq!(c.calibration.plunger.deadzone, d.calibration.plunger.deadzone);
+    assert_eq!(c.calibration.nudge, d.calibration.nudge);
+    assert_eq!(c.score_pip, d.score_pip);
+    assert_eq!(c.last_table, None);
+    assert_eq!(c.extra.get("future").and_then(|v| v.as_str()), Some("kept"));
+    let mut keys: Vec<&str> = l
+        .warnings
+        .iter()
+        .filter_map(|w| match w {
+            ConfigWarning::InvalidValue { key, .. } => Some(key.as_str()),
+            _ => None,
+        })
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "calibration.nudge",
+            "calibration.plunger.deadzone",
+            "display_mode",
+            "input_profile",
+            "last_table",
+            "playfield_display",
+            "score_pip"
+        ]
+    );
+    for w in &l.warnings {
+        assert!(w.to_string().chars().count() < 800, "{w}");
+    }
+}
+
+#[test]
+fn corrupt_message_is_truncated() {
+    let long = format!("key = \"{}", "x".repeat(5000));
+    let l = AppConfig::from_toml_str(&long);
+    match &l.warnings[..] {
+        [ConfigWarning::Corrupt(m)] => {
+            assert!(m.chars().count() <= pin_app::ui::config::MAX_WARNING_CHARS + 1, "{}", m.len())
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn lossy_load_backs_up_the_original() {
+    let dir = temp_dir("backup");
+    let path = dir.join(CONFIG_FILE);
+    let bak = dir.join(format!("{CONFIG_FILE}.bak"));
+    // Clean file: no backup.
+    custom().save(&path).unwrap();
+    AppConfig::load(&path);
+    assert!(!bak.exists());
+    // A dropped value: the original is copied before anything is saved.
+    let original = "wireframe = true\ncamera_preset = \"sideways\"\n";
+    std::fs::write(&path, original).unwrap();
+    let l = AppConfig::load(&path);
+    assert!(l.config.wireframe);
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), original);
+    l.config.save(&path).unwrap();
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), original);
+    // Reloading the saved file is clean and keeps the backup.
+    assert!(AppConfig::load(&path).warnings.is_empty());
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), original);
+    // Corrupt syntax is backed up too.
+    std::fs::write(&path, "[[[").unwrap();
+    AppConfig::load(&path);
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), "[[[");
 }

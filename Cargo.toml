@@ -47,7 +47,7 @@ proptest = "=1.12.0"
 notify = "=8.2.2"
 # Default features off (4.1): `import` reads the real filesystem; bundles go through pin_assets' VFS.
 gltf = { version = "=1.4.1", default-features = false, features = ["names", "extras", "utils"] }
-egui = "=0.37.0"
+egui = { version = "=0.37.0", features = ["default_fonts"] }  # 4.4 review B1: menu text needs the bundled fonts
 egui-wgpu = "=0.37.0"
 libm = "=0.2.16"
 

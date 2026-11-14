@@ -107,6 +107,74 @@ public class BridgeAppTests
         Assert.Contains("unverified on hardware", run.Stderr.ToString());
     }
 
+    /// <summary>Review N4: a sink that throws on the receive thread ends the bridge (exit 6) instead of
+    /// leaving it alive but deaf, and DOF <c>Finish</c> is still called.</summary>
+    [Fact]
+    public void ThrowingSinkEndsTheBridgeWithFinish()
+    {
+        var sink = new ThrowingSink();
+        using var listening = new ManualResetEventSlim();
+        IPEndPoint? ep = null;
+        var ctx = new BridgeRunContext { SinkFactory = (_, _) => sink, Listening = e => { ep = e; listening.Set(); } };
+        var run = new Running(["--map", MapPath, "--port", "0"], ctx, new StringWriter(), new StringWriter());
+        Assert.True(listening.Wait(Timeout));
+        using (Socket tx = Sender(ep!))
+        {
+            tx.Send(Dg.Make(0, true, Dg.Coil(1, 1)));
+        }
+        Assert.Equal(BridgeApp.ExitFault, run.Exit());
+        Assert.True(sink.Finished);
+        Assert.Contains("stopped receiving: IOException: toy on fire", run.Stderr.ToString());
+    }
+
+    [Fact]
+    public void ThrowingFinishIsReportedAsFault()
+    {
+        var sink = new ThrowingSink { ThrowOnReceive = false, ThrowOnFinish = true };
+        using var cts = new CancellationTokenSource();
+        var ctx = new BridgeRunContext { SinkFactory = (_, _) => sink, Cancel = cts.Token, Listening = _ => cts.Cancel() };
+        var run = new Running(["--map", MapPath, "--port", "0"], ctx, new StringWriter(), new StringWriter());
+        Assert.Equal(BridgeApp.ExitFault, run.Exit());
+        Assert.Contains("DOF Finish failed", run.Stderr.ToString());
+    }
+
+    [Fact]
+    public void HostReportsFaultOnce()
+    {
+        var core = new BridgeCore(Fixtures.Map(), new ThrowingSink());
+        Exception? seen = null;
+        using var faulted = new ManualResetEventSlim();
+        using var host = new UdpBridgeHost(core, new IPEndPoint(IPAddress.Loopback, 0), e => { seen = e; faulted.Set(); });
+        host.Start();
+        using (Socket tx = Sender(host.LocalEndPoint))
+        {
+            tx.Send(Dg.Make(0, true, Dg.Coil(1, 1)));
+        }
+        Assert.True(faulted.Wait(Timeout));
+        Assert.IsType<IOException>(seen);
+        Assert.Same(seen, host.Fault);
+        host.Stop();
+    }
+
+    /// <summary>Review N5: reflection failures while loading DOF fail closed with exit 4, no stack trace.</summary>
+    [Theory]
+    [InlineData(typeof(MissingMethodException))]
+    [InlineData(typeof(MissingFieldException))]
+    [InlineData(typeof(TypeLoadException))]
+    [InlineData(typeof(ArgumentException))]
+    [InlineData(typeof(MemberAccessException))]
+    [InlineData(typeof(FileLoadException))]
+    [InlineData(typeof(BadImageFormatException))]
+    public void ReflectionFailuresExit4(Type exception)
+    {
+        var ctx = new BridgeRunContext { SinkFactory = (_, _) => throw (Exception)Activator.CreateInstance(exception, "bad dof")! };
+        var err = new StringWriter();
+        Assert.Equal(BridgeApp.ExitDof, BridgeApp.Run(["--map", MapPath, "--port", "0"], new StringWriter(), err, ctx));
+        Assert.DoesNotContain("   at ", err.ToString());
+        var rtl = new BridgeRunContext { SinkFactory = (_, _) => throw new System.Reflection.ReflectionTypeLoadException([], []) };
+        Assert.Equal(BridgeApp.ExitDof, BridgeApp.Run(["--map", MapPath, "--port", "0"], new StringWriter(), new StringWriter(), rtl));
+    }
+
     [Fact]
     public void LogSinkToFileStopsOnStdinEof()
     {
@@ -235,6 +303,34 @@ public class BridgeAppTests
         Assert.True(p.WaitForExit(20_000));
         Assert.Equal(0, p.ExitCode);
         Assert.Equal("# finish", p.StandardOutput.ReadLine());
+    }
+
+    private sealed class ThrowingSink : IDofSink
+    {
+        public bool ThrowOnReceive { get; init; } = true;
+        public bool ThrowOnFinish { get; init; }
+        public bool Finished { get; private set; }
+
+        public void Init(string romName, string tableName)
+        {
+        }
+
+        public void ReceiveData(char tableElementType, int number, int value)
+        {
+            if (ThrowOnReceive)
+            {
+                throw new IOException("toy on fire");
+            }
+        }
+
+        public void Finish()
+        {
+            Finished = true;
+            if (ThrowOnFinish)
+            {
+                throw new InvalidOperationException("finish failed");
+            }
+        }
     }
 
     /// <summary>A stdin whose end of file the test controls.</summary>

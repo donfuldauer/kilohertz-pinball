@@ -346,6 +346,6 @@ jobs:
         shell: bash
         run: |
           find tools/dof_bridge/TestResults -name coverage.cobertura.xml | while read -r f; do
-            rate=$(grep -o '<coverage line-rate="[0-9.]*"' "$f" | grep -o '[0-9.]*$')
+            rate=$(sed -n 's/.*<coverage line-rate="\([0-9.]*\)".*/\1/p' "$f" | head -n 1)
             echo "::notice title=dof-bridge coverage::$f line-rate $rate"
           done

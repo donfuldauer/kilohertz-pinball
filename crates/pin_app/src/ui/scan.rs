@@ -371,8 +371,13 @@ pub fn decode_preview(bytes: &[u8]) -> Result<PreviewArt, String> {
 
 /// Box-filter downscale of RGBA8 so that both sides are ≤ `max_side`
 /// (integer arithmetic, deterministic). Images already small enough are
-/// returned unchanged.
-pub fn box_downscale(rgba: &[u8], w: u32, h: u32, max_side: u32) -> (Vec<u8>, u32, u32) {
+/// returned unchanged. `rgba` must hold `w * h * 4` bytes (the decoder's
+/// output); anything else yields an empty 0×0 image instead of indexing out
+/// of bounds.
+fn box_downscale(rgba: &[u8], w: u32, h: u32, max_side: u32) -> (Vec<u8>, u32, u32) {
+    if w == 0 || h == 0 || rgba.len() as u64 != u64::from(w) * u64::from(h) * 4 {
+        return (Vec::new(), 0, 0);
+    }
     let max_side = max_side.max(1);
     if w <= max_side && h <= max_side {
         return (rgba.to_vec(), w, h);
@@ -413,4 +418,17 @@ pub fn box_downscale(rgba: &[u8], w: u32, h: u32, max_side: u32) -> (Vec<u8>, u3
         }
     }
     (out, tw, th)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn box_downscale_rejects_inconsistent_input() {
+        assert_eq!(box_downscale(&[0; 7], 2, 1, 1), (Vec::new(), 0, 0));
+        assert_eq!(box_downscale(&[], 0, 5, 4), (Vec::new(), 0, 0));
+        assert_eq!(box_downscale(&[1; 8], 2, 1, 1), (vec![1, 1, 1, 1], 1, 1));
+        assert_eq!(box_downscale(&[1; 8], 2, 1, 8), (vec![1; 8], 2, 1));
+    }
 }

@@ -327,7 +327,7 @@ fn declared_balls(table: &LoadedTable, sink: &mut Sink) -> Vec<Ball> {
             ))
         } else if !poly.points.iter().all(|p| p.is_finite()) {
             Some("has a non-finite coordinate".to_owned())
-        } else if !(poly.area2().abs() > 1.0e-12) {
+        } else if poly.area2().abs().partial_cmp(&1.0e-12) != Some(core::cmp::Ordering::Greater) {
             Some("has no area".to_owned())
         } else {
             None

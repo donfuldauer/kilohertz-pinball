@@ -6,17 +6,12 @@ using Xunit;
 namespace Kilohertz.DofBridge.Tests;
 
 /// <summary>
-/// Verification criterion: recorded telemetry (generated with pin_audio::telemetry by
-/// crates/pin_app/tests/dof_fixtures.rs) replayed into the bridge with a mock DOF sink gives the
-/// exact update sequence, each forwarded within 2 ms of packet arrival (p100 of the bridge's own
-/// monotonic receive-to-sink-call stamps).
+/// Verification criterion, sequence half: recorded telemetry (generated with pin_audio::telemetry
+/// by crates/pin_app/tests/dof_fixtures.rs) replayed into the bridge with a mock DOF sink gives the
+/// exact update sequence (single shot). The 2 ms latency half is <see cref="LatencyTests"/>.
 /// </summary>
 public class FixtureReplayTests
 {
-    private static readonly TimeSpan Budget = TimeSpan.FromMilliseconds(2);
-    private readonly Xunit.Abstractions.ITestOutputHelper _out;
-
-    public FixtureReplayTests(Xunit.Abstractions.ITestOutputHelper output) => _out = output;
 
     [Theory]
     [InlineData("clean")]
@@ -38,7 +33,6 @@ public class FixtureReplayTests
         Assert.True(expected.Length > 100);
         Assert.Equal(expected, sink.Snapshot());
         Assert.Equal(expected.Length, core.Stats.Forwarded);
-        Assert.True(core.Stats.MaxForwardLatency < Budget, $"p100 latency {core.Stats.MaxForwardLatency.TotalMilliseconds} ms");
     }
 
     [Fact]
@@ -58,7 +52,7 @@ public class FixtureReplayTests
     [Theory]
     [InlineData("clean")]
     [InlineData("faulty")]
-    public void ExactSequenceAndLatencyOverUdp(string name)
+    public void ExactSequenceOverUdp(string name)
     {
         var sink = new RecordingSink();
         sink.ReceiveData('S', 0, 0); // JIT the sink before measuring
@@ -81,9 +75,7 @@ public class FixtureReplayTests
         host.Stop();
         Assert.Equal(Fixtures.ExpectedUpdates(name), sink.Snapshot());
         BridgeStats s = core.Stats;
-        _out.WriteLine($"{name}: {records.Count} datagrams, {s.Forwarded} updates, p100 receive-to-sink latency {s.MaxForwardLatency.TotalMilliseconds:F4} ms");
         Assert.Equal(records.Count, s.Accepted + s.Rejected + s.Stale);
-        Assert.True(s.MaxForwardLatency < Budget, $"p100 receive-to-sink latency {s.MaxForwardLatency.TotalMilliseconds:F3} ms over {s.Forwarded} updates");
     }
 
     [Fact]

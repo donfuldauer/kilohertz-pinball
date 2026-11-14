@@ -323,3 +323,106 @@ fn notices_and_failures_are_shown() {
     out.drop_without_applying_deltas();
     assert!(format!("{:?}", h.view).contains("MenuView"));
 }
+
+fn many_tables(n: usize) -> Vec<TableEntry> {
+    (0..n)
+        .map(|k| TableEntry {
+            path: PathBuf::from(format!("/t/t{k:02}")),
+            file_name: format!("t{k:02}"),
+            status: TableStatus::Ready(TableInfo {
+                id: format!("t{k:02}"),
+                name: format!("Table {k:02}"),
+                author: "A".into(),
+                version: "1".into(),
+                players_max: 1,
+                features: vec![TableFeature::LuaRules, TableFeature::Multiball],
+                preview: None,
+                preview_error: None,
+                warning_count: 0,
+            }),
+        })
+        .collect()
+}
+
+/// 4.4 review B2: mouse-wheel scrolling must not snap back to the focused row.
+#[test]
+fn wheel_scrolling_is_not_undone_by_the_focus() {
+    let mut h = Harness::new();
+    h.size = [1280, 720];
+    let mut m = MenuState::default();
+    m.set_tables(many_tables(60));
+    m.apply(MenuInput::Toggle);
+    m.apply(MenuInput::Down);
+    assert_eq!(m.focused_table(), Some(0));
+    let mut y0 = None;
+    for _ in 0..3 {
+        let (out, _) = h.frame(&mut m, Vec::new());
+        y0 = find(&out, "Table 00").map(|r| r.top());
+        out.drop_without_applying_deltas();
+    }
+    let y0 = y0.expect("row 0 visible");
+    let (out, _) = h.frame(&mut m, Vec::new());
+    let over = find(&out, "Table 03").expect("row 3").center();
+    out.drop_without_applying_deltas();
+    let wheel = egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, -5.0),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Unknown,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut events = vec![egui::Event::PointerMoved(over)];
+    events.extend(std::iter::repeat_n(wheel, 5));
+    let (out, _) = h.frame(&mut m, events);
+    out.drop_without_applying_deltas();
+    let mut y = None;
+    for _ in 0..40 {
+        let (out, _) = h.frame(&mut m, Vec::new());
+        y = find(&out, "Table 00").map(|r| r.top());
+        out.drop_without_applying_deltas();
+    }
+    assert!(
+        y.is_none_or(|y| y < y0 - 50.0),
+        "row 0 snapped back: {y:?} vs {y0}"
+    );
+    assert_eq!(m.focused_table(), Some(0));
+    // A focus change scrolls the newly focused row into view.
+    m.apply(MenuInput::FocusTable(59));
+    let mut seen = false;
+    for _ in 0..40 {
+        let (out, _) = h.frame(&mut m, Vec::new());
+        seen = find(&out, "Table 59").is_some();
+        out.drop_without_applying_deltas();
+    }
+    assert!(seen, "focused row 59 not scrolled into view");
+}
+
+/// 4.4 review N8: in a portrait panel the list and the details are stacked
+/// and no badge wraps inside itself.
+#[test]
+fn portrait_tables_panel_does_not_overlap() {
+    let mut h = Harness::new();
+    h.size = [1080, 1920];
+    h.ppp = 1.5;
+    let mut m = open_menu();
+    m.apply(MenuInput::Down);
+    let (out, _) = h.frame(&mut m, Vec::new());
+    let t = texts(&out);
+    // Badges render as single-line labels.
+    for name in ["Lua", "Magnets", "DOF"] {
+        let rects: Vec<_> = t.iter().filter(|(s, _)| s == name).map(|(_, r)| *r).collect();
+        assert!(!rects.is_empty(), "{name} missing");
+        for r in rects {
+            assert!(r.height() < 20.0, "{name} wrapped: {r:?}");
+        }
+    }
+    // Stacked: the details ("by Reference") sit below every list row text.
+    let details = t.iter().find(|(s, _)| s == "by Reference").expect("details").1;
+    let list_bottom = t
+        .iter()
+        .filter(|(s, _)| s == "Reference" || s.starts_with("Broken:"))
+        .map(|(_, r)| r.bottom())
+        .fold(0.0f32, f32::max);
+    assert!(details.top() > list_bottom, "{details:?} vs list bottom {list_bottom}");
+    out.drop_without_applying_deltas();
+}

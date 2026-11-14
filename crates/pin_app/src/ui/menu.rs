@@ -35,7 +35,7 @@ use super::config::{
 };
 use super::live::InputMonitor;
 use super::scan::TableEntry;
-use pin_core::input::CabinetInput;
+use pin_core::input::{CabinetAxis, CabinetInput};
 use pin_input::GamepadButton;
 use std::path::{Path, PathBuf};
 
@@ -449,6 +449,19 @@ pub enum UiCommand {
     /// worker). Consecutive changes are coalesced: at most one is pending,
     /// holding the latest settings.
     ConfigChanged(Box<AppConfig>),
+    /// Emitted when the menu opens, just before [`UiCommand::MenuOpened`]:
+    /// the cabinet buttons the simulation last saw pressed and the axes it
+    /// last saw away from neutral (0.0), as tracked by
+    /// [`MenuState::route_cabinet`] / [`MenuState::route_axis`]. The app
+    /// must send the sim a release for each button and 0.0 for each axis,
+    /// since while the menu is open the real releases go to the menu.
+    /// Not emitted when nothing is held.
+    ReleaseToSim {
+        /// Buttons to release, in `CabinetInput::ALL` order.
+        buttons: Vec<CabinetInput>,
+        /// Axes to set to 0.0, in `CabinetAxis::ALL` order.
+        axes: Vec<CabinetAxis>,
+    },
     /// Scan the tables folder again (on the I/O worker) and pass the result
     /// to [`MenuState::set_tables`].
     Rescan,
@@ -556,6 +569,13 @@ pub struct MenuState {
     notice: Option<String>,
     commands: Vec<UiCommand>,
     monitor: InputMonitor,
+    /// Buttons forwarded to the sim as pressed (bit = `CabinetInput::index`).
+    sim_buttons: u8,
+    /// Axes forwarded to the sim with a non-neutral value (bit = position in
+    /// `CabinetAxis::ALL`).
+    sim_axes: u8,
+    /// Id of the latest accepted load request (0 = none yet).
+    load_id: u64,
 }
 
 impl Default for MenuState {
@@ -579,10 +599,12 @@ fn cycle<T: Copy + PartialEq>(all: &[T], cur: T, dir: i32) -> T {
 }
 
 impl MenuState {
-    /// A closed menu on the table browser, editing `config`, with no tables
+    /// A closed menu on the table browser, editing `config` (sanitized like
+    /// [`set_config`](Self::set_config)), with no tables
     /// (call [`set_tables`](Self::set_tables)), one monitor and the default
     /// profile choices.
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(mut config: AppConfig) -> Self {
+        config.sanitize(&mut Vec::new());
         MenuState {
             open: false,
             panel: Panel::Tables,
@@ -597,6 +619,9 @@ impl MenuState {
             notice: None,
             commands: Vec::new(),
             monitor: InputMonitor::new(),
+            sim_buttons: 0,
+            sim_axes: 0,
+            load_id: 0,
         }
     }
 
@@ -748,6 +773,21 @@ impl MenuState {
         if !self.open {
             self.open = true;
             self.acknowledge_load();
+            if self.sim_buttons != 0 || self.sim_axes != 0 {
+                let buttons = CabinetInput::ALL
+                    .into_iter()
+                    .filter(|i| self.sim_buttons & (1 << i.index()) != 0)
+                    .collect();
+                let axes = CabinetAxis::ALL
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(k, _)| self.sim_axes & (1 << k) != 0)
+                    .map(|(_, a)| a)
+                    .collect();
+                self.sim_buttons = 0;
+                self.sim_axes = 0;
+                self.commands.push(UiCommand::ReleaseToSim { buttons, axes });
+            }
             self.commands.push(UiCommand::MenuOpened);
         }
     }
@@ -763,9 +803,18 @@ impl MenuState {
     /// Routes a cabinet button event: while the menu is open it is consumed
     /// (a press becomes [`cabinet_menu_input`] navigation, a release does
     /// nothing) and must not reach the simulation; while closed it goes to
-    /// the simulation untouched.
+    /// the simulation untouched, and the menu remembers what the sim holds so
+    /// that opening the menu releases it ([`UiCommand::ReleaseToSim`]).
+    /// A button still held when the menu closes reaches the sim on its next
+    /// press.
     pub fn route_cabinet(&mut self, input: CabinetInput, pressed: bool) -> InputRoute {
         if !self.open {
+            let bit = 1u8 << input.index();
+            if pressed {
+                self.sim_buttons |= bit;
+            } else {
+                self.sim_buttons &= !bit;
+            }
             return InputRoute::Sim;
         }
         if pressed && let Some(m) = cabinet_menu_input(input) {
@@ -781,6 +830,55 @@ impl MenuState {
         !self.open
     }
 
+    /// Routes an analog axis value: to the sim while closed (remembering a
+    /// non-neutral value, i.e. not 0.0, so that opening the menu sends the
+    /// neutral value, [`UiCommand::ReleaseToSim`]); consumed while open.
+    pub fn route_axis(&mut self, axis: CabinetAxis, value: f32) -> InputRoute {
+        if self.open {
+            return InputRoute::Menu;
+        }
+        let k = CabinetAxis::ALL.iter().position(|a| *a == axis).unwrap_or(0);
+        if value != 0.0 {
+            self.sim_axes |= 1 << k;
+        } else {
+            self.sim_axes &= !(1 << k);
+        }
+        InputRoute::Sim
+    }
+
+    /// Id of the pending or running load (each accepted request gets a new
+    /// one), for [`report_load_result_for`](Self::report_load_result_for).
+    pub fn pending_load_id(&self) -> Option<u64> {
+        self.load.is_busy().then_some(self.load_id)
+    }
+
+    /// Like [`report_load_result`](Self::report_load_result), but only for
+    /// the request `id`; a stale report (a cancelled or older request)
+    /// returns `false` and changes nothing.
+    pub fn report_load_result_for(&mut self, id: u64, result: Result<(), String>) -> bool {
+        if self.pending_load_id() != Some(id) {
+            return false;
+        }
+        self.report_load_result(result)
+    }
+
+    /// Abandons the pending or running load (e.g. the loader gave up or
+    /// never answered): back to `Idle`, the undrained `LoadTable` command is
+    /// dropped and later reports for it are rejected (by id) or ignored.
+    /// Returns `false` when nothing was pending.
+    pub fn cancel_load(&mut self) -> bool {
+        let path = match &self.load {
+            TableLoadState::LoadRequested(p) | TableLoadState::Loading(p) => p.clone(),
+            _ => return false,
+        };
+        self.commands
+            .retain(|c| !matches!(c, UiCommand::LoadTable(q) if *q == path));
+        self.load = TableLoadState::Idle;
+        self.load_id += 1;
+        self.notice = Some(format!("Loading {} cancelled", path.display()));
+        true
+    }
+
     /// Requests a load of the bundle at `path` (the app may call this too,
     /// e.g. for [`AppConfig::last_table`] at start-up).
     pub fn request_load(&mut self, path: &Path) -> Result<(), LoadRefusal> {
@@ -790,6 +888,7 @@ impl MenuState {
             return Err(r);
         }
         self.load = TableLoadState::LoadRequested(path.to_path_buf());
+        self.load_id += 1;
         self.notice = None;
         self.commands.push(UiCommand::LoadTable(path.to_path_buf()));
         Ok(())

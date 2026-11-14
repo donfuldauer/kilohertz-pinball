@@ -33,6 +33,59 @@ public class SinkAndLocatorTests
         Assert.Throws<InvalidOperationException>(() => ReflectionDofSink.Load(core, null));
     }
 
+    /// <summary>Review N6 (D25): the untrusted table name reaches DOF as a bare file name.</summary>
+    [Theory]
+    [InlineData("Apex Circuit", "Apex Circuit")]
+    [InlineData("../../Windows/System32/x", "_.._Windows_System32_x")]
+    [InlineData("..", "table")]
+    [InlineData(" . ", "table")]
+    [InlineData("", "table")]
+    [InlineData(null, "table")]
+    [InlineData("C:\\evil\\name.vpx", "C__evil_name.vpx")]
+    [InlineData("a\u0000b\nc<>:\"|?*", "a_b_c_______")]
+    [InlineData("...dots...", "dots")]
+    [InlineData("\ud83c\udfb0 slot", "__ slot")]
+    public void TableNameIsSanitizedForDof(string? input, string expected) =>
+        Assert.Equal(expected, ReflectionDofSink.SanitizeTableFileName(input));
+
+    [Fact]
+    public void TableNameIsCappedAt64Chars() =>
+        Assert.Equal(new string('x', 64), ReflectionDofSink.SanitizeTableFileName(new string('x', 200)));
+
+    [Fact]
+    public void ReflectionSinkPassesSanitizedTableName()
+    {
+        ReflectionDofSink sink = ReflectionDofSink.Load(FakeDll, null);
+        lock (DirectOutput.Pinball.Log)
+        {
+            DirectOutput.Pinball.Log.Clear();
+        }
+        sink.Init("rom", "../x");
+        lock (DirectOutput.Pinball.Log)
+        {
+            Assert.Equal("Setup(|_x|rom)", DirectOutput.Pinball.Log[0]);
+        }
+    }
+
+    /// <summary>Review N5: wrongly shaped DirectOutput.Pinball types fail as InvalidOperationException.</summary>
+    [Theory]
+    [InlineData("noctor")]
+    [InlineData("badreceive")]
+    [InlineData("throwingctor")]
+    public void WronglyShapedPinballFailsClosed(string shape)
+    {
+        System.Reflection.Assembly asm = FakePinball.Build(shape);
+        InvalidOperationException e = Assert.Throws<InvalidOperationException>(() => ReflectionDofSink.FromAssembly(asm, null));
+        Assert.Contains("not a usable DirectOutput assembly", e.Message);
+    }
+
+    [Fact]
+    public void MissingMethodFailsClosed()
+    {
+        System.Reflection.Assembly asm = FakePinball.Build("nofinish");
+        Assert.Throws<InvalidOperationException>(() => ReflectionDofSink.FromAssembly(asm, null));
+    }
+
     [Fact]
     public void LogSinkFormat()
     {

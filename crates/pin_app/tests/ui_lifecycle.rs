@@ -520,3 +520,72 @@ fn nan_in_preserved_keys_does_not_fake_changes() {
         matches!(&m.pending_commands()[0], UiCommand::ConfigChanged(c) if c.extra.contains_key("future"))
     );
 }
+
+#[test]
+fn opening_releases_what_the_sim_holds() {
+    use pin_core::input::CabinetAxis;
+    let mut m = MenuState::default();
+    // Held into the menu: left flipper, start, plunger pulled, nudge.
+    assert_eq!(m.route_cabinet(CabinetInput::LeftFlipper, true), InputRoute::Sim);
+    assert_eq!(m.route_cabinet(CabinetInput::Start, true), InputRoute::Sim);
+    assert_eq!(m.route_cabinet(CabinetInput::RightFlipper, true), InputRoute::Sim);
+    assert_eq!(m.route_cabinet(CabinetInput::RightFlipper, false), InputRoute::Sim);
+    assert_eq!(m.route_axis(CabinetAxis::Plunger, 0.7), InputRoute::Sim);
+    assert_eq!(m.route_axis(CabinetAxis::NudgeX, 0.2), InputRoute::Sim);
+    assert_eq!(m.route_axis(CabinetAxis::NudgeX, 0.0), InputRoute::Sim);
+    assert_eq!(m.route_axis(CabinetAxis::RightFlipper, 0.4), InputRoute::Sim);
+    m.apply(MenuInput::Toggle);
+    assert_eq!(
+        m.drain_commands(),
+        [
+            UiCommand::ReleaseToSim {
+                buttons: vec![CabinetInput::LeftFlipper, CabinetInput::Start],
+                axes: vec![CabinetAxis::Plunger, CabinetAxis::RightFlipper],
+            },
+            UiCommand::MenuOpened
+        ]
+    );
+    // The real release now goes to the menu; nothing is left for the sim.
+    assert_eq!(m.route_cabinet(CabinetInput::LeftFlipper, false), InputRoute::Menu);
+    assert_eq!(m.route_axis(CabinetAxis::Plunger, 0.0), InputRoute::Menu);
+    m.apply(MenuInput::Toggle);
+    m.apply(MenuInput::Toggle);
+    assert_eq!(
+        m.drain_commands(),
+        [UiCommand::MenuClosed, UiCommand::MenuOpened]
+    );
+}
+
+#[test]
+fn loads_can_be_cancelled_and_stale_reports_rejected() {
+    let mut m = menu();
+    assert_eq!(m.pending_load_id(), None);
+    assert!(!m.cancel_load());
+    m.request_load_index(0).unwrap();
+    let first = m.pending_load_id().unwrap();
+    assert!(m.cancel_load());
+    assert_eq!(m.load_state(), &TableLoadState::Idle);
+    assert!(m.pending_commands().is_empty());
+    assert!(m.notice().is_some_and(|n| n.contains("cancelled")));
+    // A new request gets a new id; the stale report is rejected.
+    m.request_load_index(2).unwrap();
+    m.drain_commands();
+    let second = m.pending_load_id().unwrap();
+    assert_ne!(first, second);
+    assert!(!m.report_load_result_for(first, Ok(())));
+    assert_eq!(m.load_state(), &TableLoadState::Loading(p("gamma")));
+    assert!(m.report_load_result_for(second, Err("no".into())));
+    assert!(matches!(m.load_state(), TableLoadState::Failed { .. }));
+    assert!(!m.report_load_result_for(second, Ok(())));
+}
+
+#[test]
+fn new_sanitizes_the_config() {
+    let mut c = AppConfig::default();
+    c.calibration.plunger.deadzone = 7.0;
+    c.audio.decoded_budget_mib = 1;
+    let m = MenuState::new(c);
+    let d = AppConfig::default();
+    assert_eq!(m.config().calibration.plunger.deadzone, d.calibration.plunger.deadzone);
+    assert_eq!(m.config().audio.decoded_budget_mib, 512);
+}
