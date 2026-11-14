@@ -332,40 +332,66 @@ fn mesh_primitives(
     // From triangle `ti`, across its edge (v, w) at vertex `v`, around the
     // coplanar fan until a boundary edge: its unit direction from `v` and the
     // angle of the triangles crossed (None: the fan closes, no boundary).
-    let walk = |ti: usize, v: u32, w: u32| -> Option<(Vec3, f32)> {
-        let (mut cur, mut w) = (ti, w);
-        let mut swept = 0.0f32;
-        for _ in 0..tris.len() {
-            let k = corner(cur, v)?;
-            if !edge_is_flat(v, w) {
-                let wk = corner(cur, w)?;
-                return Some((
-                    (tris[cur].pos[wk] - tris[cur].pos[k]).normalize_or_zero(),
-                    swept,
-                ));
+    // `visit` sees each triangle crossed and its edge at `v` leading on.
+    let walk =
+        |ti: usize, v: u32, w: u32, visit: &mut dyn FnMut(usize, u32)| -> Option<(Vec3, f32)> {
+            let (mut cur, mut w) = (ti, w);
+            let mut swept = 0.0f32;
+            for _ in 0..tris.len() {
+                let k = corner(cur, v)?;
+                if !edge_is_flat(v, w) {
+                    let wk = corner(cur, w)?;
+                    return Some((
+                        (tris[cur].pos[wk] - tris[cur].pos[k]).normalize_or_zero(),
+                        swept,
+                    ));
+                }
+                let usage = edges.get(&edge_key(v, w))?;
+                let next = if usage.1[0].0 == cur {
+                    usage.1[1].0
+                } else {
+                    usage.1[0].0
+                };
+                if next == ti {
+                    return None;
+                }
+                let nk = corner(next, v)?;
+                swept += angle_at(next, nk);
+                // The neighbour's other edge at `v`.
+                let t = &tris[next];
+                w = if t.ids[(nk + 1) % 3] == w {
+                    t.ids[(nk + 2) % 3]
+                } else {
+                    t.ids[(nk + 1) % 3]
+                };
+                visit(next, w);
+                cur = next;
             }
-            let usage = edges.get(&edge_key(v, w))?;
-            let next = if usage.1[0].0 == cur {
-                usage.1[1].0
-            } else {
-                usage.1[0].0
-            };
-            if next == ti {
-                return None;
-            }
-            let nk = corner(next, v)?;
-            swept += angle_at(next, nk);
-            // The neighbour's other edge at `v`.
-            let t = &tris[next];
-            w = if t.ids[(nk + 1) % 3] == w {
-                t.ids[(nk + 2) % 3]
-            } else {
-                t.ids[(nk + 1) % 3]
-            };
-            cur = next;
-        }
-        None
-    };
+            None
+        };
+    // The decision for a corner of a flat fan, `span < PI - 1e-3` with
+    // `span = angle_at(ti, e) + s1 + s2` (f32 sums in walk order, so the
+    // rounding depends on the corner), is taken once per fan from the
+    // fan's total angle when that total is further from the threshold than
+    // any such f32 sum can be off (|error| <= γ(n) · total for n
+    // non-negative terms): then every corner's own sum agrees with it. Only
+    // a fan within that band falls back to walking from each corner, which
+    // keeps the result identical to walking from every corner (quadratic
+    // in the fan's size).
+    let threshold = f64::from(core::f32::consts::PI - 1.0e-3);
+    let unit = f64::from(f32::EPSILON) / 2.0;
+    /// One connected flat fan around a vertex.
+    struct Fan {
+        /// Boundary directions at the two ends; None for a closed fan.
+        ends: Option<[Vec3; 2]>,
+        /// Whether `span < PI - 1e-3` for every corner; None when the
+        /// corners must decide one by one.
+        convex: Option<bool>,
+    }
+    let mut fans_found: Vec<Fan> = Vec::new();
+    // Per corner: (fan index, whether the walk across the corner's edge to
+    // ids[(k + 1) % 3] reaches the fan's first end).
+    let mut corner_fan: Vec<[Option<(u32, bool)>; 3]> = vec![[None; 3]; tris.len()];
     for (ti, tri) in tris.iter().enumerate() {
         let mut active = 0u8;
         let mut fan: VertexFans = [[Vec3::ZERO; 2]; 3];
@@ -383,14 +409,66 @@ fn mesh_primitives(
                 active |= FEATURE_VERTEX[e];
                 continue;
             }
-            // Part of a flat fan: find its boundary edges.
-            let (Some((d1, s1)), Some((d2, s2))) = (walk(ti, v, w1), walk(ti, v, w2)) else {
+            // Part of a flat fan: find its boundary edges, once per fan.
+            let (fi, first) = match corner_fan[ti][e] {
+                Some(found) => found,
+                None => {
+                    let fi = fans_found.len() as u32;
+                    // Triangles crossed towards each end, with their edge
+                    // at `v` leading on towards that end.
+                    let (mut to1, mut to2) = (Vec::new(), Vec::new());
+                    let end1 = walk(ti, v, w1, &mut |t, w| to1.push((t, w)));
+                    let end2 = walk(ti, v, w2, &mut |t, w| to2.push((t, w)));
+                    let ends = end1.zip(end2).map(|(a, b)| [a.0, b.0]);
+                    let mut total = f64::from(angle_at(ti, e));
+                    corner_fan[ti][e] = Some((fi, true));
+                    for (list, toward_first) in [(&to1, true), (&to2, false)] {
+                        for &(t, w) in list {
+                            let Some(k) = corner(t, v) else { continue };
+                            total += f64::from(angle_at(t, k));
+                            let leads = tris[t].ids[(k + 1) % 3] == w;
+                            corner_fan[t][k].get_or_insert((fi, leads == toward_first));
+                        }
+                    }
+                    let n = (1 + to1.len() + to2.len()) as f64;
+                    let convex = (n * unit < 0.5 && total.is_finite())
+                        .then(|| {
+                            // γ(n) for the f32 sums, plus the f64 total's own
+                            // rounding.
+                            let margin = (n * unit / (1.0 - n * unit) + n * f64::EPSILON) * total;
+                            if total < threshold - margin {
+                                Some(true)
+                            } else if total > threshold + margin {
+                                Some(false)
+                            } else {
+                                None
+                            }
+                        })
+                        .flatten();
+                    fans_found.push(Fan { ends, convex });
+                    (fi, true)
+                }
+            };
+            let found = &fans_found[fi as usize];
+            let Some([e1, e2]) = found.ends else {
                 continue;
             };
-            let span = angle_at(ti, e) + s1 + s2;
-            if span < core::f32::consts::PI - 1.0e-3 {
+            let convex = match found.convex {
+                Some(convex) => convex,
+                None => {
+                    let none = &mut |_: usize, _: u32| {};
+                    let (Some((_, s1)), Some((_, s2))) =
+                        (walk(ti, v, w1, none), walk(ti, v, w2, none))
+                    else {
+                        continue;
+                    };
+                    let span = angle_at(ti, e) + s1 + s2;
+                    span < core::f32::consts::PI - 1.0e-3
+                }
+            };
+            if convex {
                 active |= FEATURE_VERTEX[e];
-                fan[e] = [d1, d2];
+                fan[e] = if first { [e1, e2] } else { [e2, e1] };
                 restricted = true;
             }
         }
@@ -681,5 +759,39 @@ mod tests {
         world.sphere_contacts(Vec3::new(0.004, 0.001, 0.012), 0.0135, 0xff, &mut out);
         assert_eq!(out.len(), 1, "{out:?}");
         assert!((out[0].normal - Vec3::Z).length() < 1e-6, "{out:?}");
+    }
+
+    /// A flat fan of 5000 triangles around one vertex (a half disc, so its
+    /// boundary is straight there) builds in linear-ish time: the fan's
+    /// boundary is walked once per fan, not once per corner (which took
+    /// seconds), and its hub has no ghost vertex contact.
+    #[test]
+    fn large_flat_fan_builds_quickly() {
+        const N: usize = 5000;
+        let mut vertices = vec![Vec3::ZERO];
+        for i in 0..=N {
+            let t = core::f32::consts::PI * i as f32 / N as f32;
+            vertices.push(Vec3::new(libm::cosf(t), libm::sinf(t), 0.0));
+        }
+        let indices: Vec<[u32; 3]> = (0..N as u32).map(|i| [0, i + 1, i + 2]).collect();
+        let start = std::time::Instant::now();
+        let mut builder = StaticWorldBuilder::new();
+        builder.add_collider(StaticShape::TriMesh { vertices, indices }, 0xff, true);
+        let world = builder.build();
+        let elapsed = start.elapsed();
+        assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
+        let mut out = ArrayVec::new();
+        // Beside the straight boundary at the hub: the boundary edge owns
+        // the contact, the hub vertex is no feature.
+        world.sphere_contacts(Vec3::new(0.0, -0.004, 0.01), 0.0135, 0xff, &mut out);
+        assert!(!out.is_empty(), "{out:?}");
+        assert!(out.iter().all(|c| c.normal.x.abs() < 1e-5), "{out:?}");
+        // Over the fan near the hub: the face only.
+        world.sphere_contacts(Vec3::new(0.001, 0.002, 0.012), 0.0135, 0xff, &mut out);
+        assert!(!out.is_empty(), "{out:?}");
+        assert!(
+            out.iter().all(|c| (c.normal - Vec3::Z).length() < 1e-5),
+            "{out:?}"
+        );
     }
 }
