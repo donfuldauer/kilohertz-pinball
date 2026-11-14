@@ -98,8 +98,15 @@ fn laterally_free(w: &World<'_>, layer: u8, c: DVec3, r: f64, idx: &mut Vec<u32>
     })
 }
 
+/// Most samples along one axis of a (support, ceiling) pair.
+const MAX_AXIS_SAMPLES: f64 = 1024.0;
+
 /// Headroom under non-steep colliders of other layers above every walkable
-/// surface a ball may use.
+/// surface a ball may use: the ball resting on the support (centre at the
+/// support plus `r`) must stay `r + MIN_CLEARANCE_MM` from every such
+/// ceiling triangle (sphere test, so deck edges, slopes and low vertices
+/// count, not only the vertical gap at the centre). The reported headroom
+/// is `r + distance` (the vertical gap under a flat deck).
 pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
     let min_gap = f64::from(MIN_HEADROOM_GAP_MM) * 1.0e-3;
     let mut cands = Vec::new();
@@ -107,15 +114,21 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
     for ball in balls {
         let r = ball.r();
         let need = ball.needed();
+        let reach = need - r; // distance the ceiling must keep from the centre
         let spacing = (0.5 * r).min(MAX_SPACING_M);
         let mut worst: BTreeMap<usize, Worst> = BTreeMap::new();
         let extra = area_samples(ball, spacing);
+        let pad = DVec2::splat(reach);
         for s in w.tris.iter() {
             if s.nz() < WALKABLE_NZ || !ball.allowed.layer(s.layer) {
                 continue;
             }
-            w.grid
-                .query(w.tris, s.min.truncate(), s.max.truncate(), &mut cands);
+            w.grid.query(
+                w.tris,
+                s.min.truncate() - pad,
+                s.max.truncate() + pad,
+                &mut cands,
+            );
             for &ci in &cands {
                 let c = &w.tris[ci as usize];
                 if c.layer == s.layer
@@ -125,18 +138,24 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                 {
                     continue;
                 }
-                let lo = s.min.truncate().max(c.min.truncate());
-                let hi = s.max.truncate().min(c.max.truncate());
-                if lo.x > hi.x || lo.y > hi.y {
+                // Support points whose ball can reach the ceiling.
+                let lo = s.min.truncate().max(c.min.truncate() - pad);
+                let hi = s.max.truncate().min(c.max.truncate() + pad);
+                if !(lo.x <= hi.x && lo.y <= hi.y) {
                     continue;
                 }
                 let size = hi - lo;
-                let mut h = spacing;
+                let mut h = spacing
+                    .max(size.x / MAX_AXIS_SAMPLES)
+                    .max(size.y / MAX_AXIS_SAMPLES);
                 if (size.x / h + 1.0) * (size.y / h + 1.0) > MAX_PAIR_SAMPLES {
-                    h = (size.x * size.y / MAX_PAIR_SAMPLES).sqrt().max(spacing);
+                    h = h.max((size.x * size.y / MAX_PAIR_SAMPLES).sqrt());
                 }
-                let nx = (size.x / h).ceil() as usize;
-                let ny = (size.y / h).ceil() as usize;
+                if !(h.is_finite() && h > 0.0) {
+                    continue;
+                }
+                let nx = (size.x / h).ceil().min(MAX_AXIS_SAMPLES) as usize;
+                let ny = (size.y / h).ceil().min(MAX_AXIS_SAMPLES) as usize;
                 let centre = (lo + hi) * 0.5;
                 let grid = (0..=ny).flat_map(|j| {
                     (0..=nx).map(move |i| {
@@ -146,23 +165,33 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                         )
                     })
                 });
-                let in_box = |q: &&DVec2| q.x >= lo.x && q.x <= hi.x && q.y >= lo.y && q.y <= hi.y;
-                let from_area = extra.iter().filter(in_box).copied();
-                for q in core::iter::once(centre).chain(grid).chain(from_area) {
-                    if !(s.contains_plan(q) && c.contains_plan(q)) {
+                let in_box =
+                    |q: &DVec2| q.x >= lo.x && q.x <= hi.x && q.y >= lo.y && q.y <= hi.y;
+                let from_area = extra.iter().copied().filter(in_box);
+                // The ceiling's own corners (a low vertex) and, under them,
+                // the support.
+                let corners = c.p.iter().map(|v| v.truncate().clamp(lo, hi));
+                for q in core::iter::once(centre)
+                    .chain(corners)
+                    .chain(grid)
+                    .chain(from_area)
+                {
+                    if !s.contains_plan(q) {
                         continue;
                     }
                     let zs = s.z_at(q);
-                    let gap = c.z_at(q) - zs;
-                    if !(gap > min_gap && gap < need) {
+                    let centre3 = DVec3::new(q.x, q.y, zs + r);
+                    let cp = c.closest(centre3);
+                    if cp.z <= zs + min_gap {
                         continue;
                     }
-                    if worst.get(&c.mesh).is_some_and(|e| e.gap <= gap) {
+                    let gap = r + cp.distance(centre3);
+                    if !(gap < need) || worst.get(&c.mesh).is_some_and(|e| e.gap <= gap) {
                         continue;
                     }
                     if !ball.allowed.at(s.layer, q)
                         || in_transition(w, q, zs, ball.d, s.layer, c.layer)
-                        || !laterally_free(w, s.layer, DVec3::new(q.x, q.y, zs + r), r, &mut idx)
+                        || !laterally_free(w, s.layer, centre3, r, &mut idx)
                     {
                         continue;
                     }
@@ -194,7 +223,7 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                 required_m: need,
                 actual_m: e.gap,
                 message: format!(
-                    "deck headroom: {node:?} (layer {}) is {} above {under:?} (layer {}) where ball {:?} ({}) may roll; it needs {}",
+                    "deck headroom: {node:?} (layer {}) leaves {} of headroom over {under:?} (layer {}) where ball {:?} ({}) may roll (ball-to-deck distance plus radius); it needs {}",
                     e.ceiling_layer,
                     mm(e.gap),
                     e.support_layer,

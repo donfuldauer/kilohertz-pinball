@@ -129,8 +129,17 @@ fn bits_equal(a: &[Ball], b: &[Ball]) -> bool {
 
 /// Checks the mean acceleration over `ticks` against the reference, within
 /// 1 % of `S |ω × v0| / m` (plus the `f32` resolution of the velocity).
+///
+/// The resolution floor counts ball sub-steps, not ticks (GR-1): the solver
+/// adds the gravity kick and then the hook's increment to the `f32` velocity
+/// once per sub-step, each add is off by at most half an ulp per component
+/// (`≤ ε|v|/2` as a vector), and because the increments barely change from
+/// one sub-step to the next the errors add up instead of averaging out
+/// (plain free fall at 4.6 m/s, no hook: 0.4 ulp per add, all one way).
 fn check_lateral(profile: &BallProfile, gravity: Vec3, v0: Vec3, w0: Vec3, ticks: usize, reg: Reg) {
-    let run = flight(profile, gravity, v0, w0, ticks, reg);
+    let (run, n_sub) = flight_counted(profile, gravity, v0, w0, ticks, reg);
+    let n_sub = n_sub[ticks - 1];
+    assert!(n_sub >= ticks as u64, "{n_sub} sub-steps in {ticks} ticks");
     let t = ticks as f64 * f64::from(DT);
     let s_over_m = f64::from(profile.magnus_coeff) / f64::from(profile.mass_kg);
     let (g, w, v) = (gravity.as_dvec3(), w0.as_dvec3(), v0.as_dvec3());
@@ -142,13 +151,14 @@ fn check_lateral(profile: &BallProfile, gravity: Vec3, v0: Vec3, w0: Vec3, ticks
     let a_nominal = s_over_m * w.cross(v).length();
     let v_max = v.length() + g.length() * t;
     // f32 resolution of a velocity difference over t (ulp of the largest
-    // component, both ends, plus accumulated rounding of the gravity adds).
-    let floor = (4.0 + ticks as f64) * f64::from(f32::EPSILON) * v_max / t;
+    // component, both ends, plus accumulated rounding of two adds per
+    // sub-step, gravity and hook, ε|v|/2 each).
+    let floor = (4.0 + n_sub as f64) * f64::from(f32::EPSILON) * v_max / t;
     let err = (a_meas - a_ref).length();
     assert!(
         err <= 0.01 * a_nominal + floor,
         "S={} m={} v0={v0:?} w0={w0:?} g={gravity:?}: measured {a_meas:?}, expected {a_ref:?} \
-         (|a| nominal {a_nominal}, error {err}, floor {floor})",
+         (|a| nominal {a_nominal}, error {err}, floor {floor}, {n_sub} sub-steps)",
         profile.magnus_coeff,
         profile.mass_kg
     );

@@ -319,3 +319,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 5.3 | Implementer | Opus 5.5 | polish | running | — | doc only |
 | 5 | 5.3 | Implementer | Opus 5.5 | polish | done | rustfmt/clippy clean | N10 doc line, N11 doc(hidden) |
 | 5 | 5.2 + 5.3 | Orchestrator re-run | — | final | **green** | pin_render fmt clean; clippy -D warnings clean (all targets, gpu-tests); 497 tests passed, 0 failed on lavapipe (incl. 4.4 ui tests) | **5.3 complete**; 5.2 re-confirmed |
+| 5 | 4.4 | Implementer | Opus 5.5 | polish | done | own suites + spec 90/90 + ui_overlay_gpu 5/5; clippy clean (--no-deps) | N13 non-table rejected, N14 .bak kept + 1 MiB cap, N15 hint contrast ≥ 4.5:1 |
+| 5 | 4.4 | Orchestrator re-run | — | final | **green** | pin_app fmt clean; all pin_app tests 269 passed, 0 failed (incl. dof and spec suites) | **4.4 complete**; target/sp_4_4 and target/sp_5_2_rev deleted |

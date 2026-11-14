@@ -33,7 +33,7 @@ fn worst(d: f32, m: f32, bat_h: f32, torque: f32) -> (f32, String) {
                 let dir = flip::bat_dir(-30.0);
                 let n = Vec3::Z.cross(dir);
                 let bat_r = 0.011 + (0.0065 - 0.011) * fraction;
-                let start = dir * (flip::BAT_LEN * fraction) + n * (bat_r + r + 0.002 + speed * 0.0025) + Vec3::new(0.0, 0.0, r.min(0.5 * bat_h));
+                let start = dir * (flip::BAT_LEN * fraction) + n * (bat_r + r + 0.002 + speed * 0.0025) + Vec3::new(0.0, 0.0, r);
                 let mut b = Ball::new(ProfileId(0), start);
                 b.velocity = -n * speed;
                 let h = rig.solver.add_ball(b).unwrap();
@@ -54,7 +54,7 @@ fn worst(d: f32, m: f32, bat_h: f32, torque: f32) -> (f32, String) {
 #[test]
 #[ignore]
 fn probe() {
-    for (d, m, h) in [(0.027f32, 0.08f32, 0.03f32), (0.027, 0.445, 0.03), (0.05, 0.445, 0.06), (0.0794, 0.445, 0.1)] {
+    for (d, m, h) in [(0.0794f32, 0.445f32, 0.03f32), (0.05, 0.445, 0.06), (0.0794, 0.445, 0.1)] {
         for torque in [3.0f32] {
             let (p, s) = worst(d, m, h, torque);
             println!("d {d} m {m} h {h} T {torque}: {:.3} mm  {s}", p * 1e3);
@@ -139,7 +139,9 @@ impl MovingBodies for Log<'_> {
 #[test]
 #[ignore]
 fn trace_calls() {
-    let (d, m, bat_h, torque, fraction, speed) = (0.05f32, 0.445f32, 0.06f32, 3.0f32, 0.71f32, 20.0f32);
+    let e = |k: &str, d: f32| std::env::var(k).map(|s| s.parse().unwrap()).unwrap_or(d);
+    let (d, m, bat_h, torque, fraction, speed) = (e("D", 0.05), 0.445f32, e("H", 0.06), 3.0f32, e("F", 0.71), e("V", 20.0));
+    let flip_at = e("FLIP", 0.0) as u32;
     let r = 0.5 * d;
     let mut c = flip::left_config(0, [0.0; 3]);
     c.power_torque_nm = torque;
@@ -157,10 +159,10 @@ fn trace_calls() {
     let mut b = Ball::new(ProfileId(0), start);
     b.velocity = -n * speed;
     let h = solver.add_ball(b).unwrap();
-    fl.set_energised(flip::LEFT, true);
     let mut ev = BallEvents::new();
     let target: u32 = std::env::var("T").map(|s| s.parse().unwrap()).unwrap_or(42);
     for t in 0..=target {
+        if t == flip_at { fl.set_energised(flip::LEFT, true); }
         fl.step_tick(t as u64);
         let mut lg = Log { inner: &mut fl, on: t == target, r, lines: RefCell::new(Vec::new()) };
         ev.clear();
@@ -176,4 +178,73 @@ fn trace_calls() {
     }
     let bb = solver.ball(h).unwrap();
     println!("end pen {:.3}", (r - fl.closest_point(0, 0.0, bb.position).unwrap().distance) * 1e3);
+}
+
+#[test]
+#[ignore]
+fn probe_random() {
+    let d = std::env::var("D").map(|s| s.parse().unwrap()).unwrap_or(0.0794f32);
+    let r = 0.5 * d;
+    let mut seed = 12345u64;
+    let mut rnd = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); ((seed >> 33) as f32) / (1u64 << 31) as f32 };
+    let mut w = (0.0f32, String::new());
+    for _ in 0..3000 {
+        let (ang, frac, speed, flip_at) = (rnd() * std::f32::consts::TAU, 0.1 + 0.85 * rnd(), 0.5 + 19.5 * rnd(), (rnd() * 40.0) as u32);
+        let mut c = flip::left_config(0, [0.0; 3]);
+        c.power_torque_nm = 3.0;
+        c.inertia_kg_m2 = 5e-5;
+        let mut rig = flip::Rig::with_world(&[c.clone()], StaticWorldBuilder::new().build(), Vec3::ZERO);
+        let mut cfg: BallSolverConfig = BallSolverConfig::from_defaults(&pin_core::PhysicsDefaults::builtin());
+        cfg.gravity = Vec3::ZERO;
+        rig.solver = BallSolver::new(cfg, &[profile(d, 0.445)]);
+        let target = flip::bat_dir(-5.0) * (flip::BAT_LEN * frac);
+        let from = target + Vec3::new(ang.cos(), ang.sin(), 0.0) * (0.12 + r);
+        let mut b = Ball::new(ProfileId(0), from + Vec3::new(0.0, 0.0, r));
+        b.velocity = (target - from).normalize() * speed;
+        let h = rig.solver.add_ball(b).unwrap();
+        for t in 0..60u32 {
+            if t == flip_at { rig.flippers.set_energised(flip::LEFT, true); }
+            rig.step();
+            let cp = rig.flippers.closest_point(0, 0.0, rig.ball(h).position).unwrap();
+            if r - cp.distance > w.0 {
+                w = (r - cp.distance, format!("ang {ang} frac {frac} v {speed} flip {flip_at} tick {t} solves {}", rig.solver.body_solves_last_step()[0]));
+            }
+        }
+    }
+    println!("d {d}: worst {:.3} mm {}", w.0 * 1e3, w.1);
+}
+
+#[test]
+#[ignore]
+fn trace_random() {
+    let e = |k: &str, d: f32| std::env::var(k).map(|s| s.parse().unwrap()).unwrap_or(d);
+    let (d, ang, frac, speed, flip_at, target_t) = (e("D", 0.0794), e("ANG", 4.164538), e("F", 0.31285307), e("V", 19.123137), e("FLIP", 12.0) as u32, e("T", 5.0) as u32);
+    let r = 0.5 * d;
+    let mut c = flip::left_config(0, [0.0; 3]);
+    c.power_torque_nm = 3.0;
+    c.inertia_kg_m2 = 5e-5;
+    let world = StaticWorldBuilder::new().build();
+    let mut cfg: BallSolverConfig = BallSolverConfig::from_defaults(&pin_core::PhysicsDefaults::builtin());
+    cfg.gravity = Vec3::ZERO;
+    let mut solver = BallSolver::new(cfg, &[profile(d, 0.445)]);
+    let mut fl = FlipperSet::new(&[c]).unwrap();
+    let target = flip::bat_dir(-5.0) * (flip::BAT_LEN * frac);
+    let from = target + Vec3::new(ang.cos(), ang.sin(), 0.0) * (0.12 + r);
+    let mut b = Ball::new(ProfileId(0), from + Vec3::new(0.0, 0.0, r));
+    b.velocity = (target - from).normalize() * speed;
+    let h = solver.add_ball(b).unwrap();
+    let mut ev = BallEvents::new();
+    for t in 0..=target_t {
+        if t == flip_at { fl.set_energised(flip::LEFT, true); }
+        fl.step_tick(t as u64);
+        let on = t + 1 >= target_t;
+        let mut lg = Log { inner: &mut fl, on, r, lines: RefCell::new(Vec::new()) };
+        ev.clear();
+        let geo = Geometry::new(&world);
+        solver.step_with_bodies(&geo, &mut [&mut lg], flip::DT, &mut ev);
+        let lines = lg.lines.into_inner();
+        let bb = *solver.ball(h).unwrap();
+        println!("== tick {t}: pen {:.3} angle {:.2} w {:.1} v {} calls {}", (r - fl.closest_point(0, 0.0, bb.position).unwrap().distance) * 1e3, fl.angle_deg(flip::LEFT), fl.angular_velocity(flip::LEFT), bb.velocity, lines.len());
+        if on { for l in lines.iter().filter(|l| !l.starts_with("invm") && !l.starts_with("vel")).take(80) { println!("{l}"); } }
+    }
 }

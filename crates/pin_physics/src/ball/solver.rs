@@ -94,6 +94,10 @@ const WARM_COS: f32 = 0.99;
 const REST_SLOP_SPEED: f32 = 1.0e-3;
 /// Travel per sub-step as a fraction of the ball radius.
 const TRAVEL_FRACTION: f32 = 0.25;
+/// Balls up to this radius (m, the 27 mm standard ball) keep their
+/// tick-start sub-step grid; larger ones refine it when a body speeds up
+/// (see `BallSolver::refine_substeps`).
+const REFINE_MIN_RADIUS: f32 = 0.0135;
 /// Same, while the ball is near a wireform (rails have no sphere cast).
 const RAIL_TRAVEL_FRACTION: f32 = 1.0 / 16.0;
 /// Capacity of `StaticWorld::sphere_contacts` (not re-exported by `world`).
@@ -255,6 +259,9 @@ struct Scratch {
     /// Index of the next sub-step boundary (`n_sub` = none left).
     k: u32,
     h: f32,
+    /// Start of the sub-step grid: boundary `k` is at `t0 + k·h` (0 unless
+    /// the grid was refined mid-tick, see `refine_substeps`).
+    t0: f32,
     events: u8,
     frozen: bool,
     cache: Cache,
@@ -274,6 +281,7 @@ impl Scratch {
         n_sub: 0,
         k: 0,
         h: 0.0,
+        t0: 0.0,
         events: 0,
         frozen: false,
         cache: Cache::Free,
@@ -283,10 +291,15 @@ impl Scratch {
     /// Time of the next sub-step boundary, or `dt` when none is left.
     fn horizon(&self, dt: f32) -> f32 {
         if self.k < self.n_sub {
-            self.k as f32 * self.h
+            self.boundary_time()
         } else {
             dt
         }
+    }
+
+    /// Time of boundary `k` (exactly `k·h` while `t0` is 0).
+    fn boundary_time(&self) -> f32 {
+        self.t0 + self.k as f32 * self.h
     }
 
     fn count_event(&mut self) {
@@ -1631,7 +1644,7 @@ impl BallSolver {
     ) {
         let mut members = [false; MAX_BALLS];
         for (member, s) in members.iter_mut().zip(sc.iter()) {
-            *member = s.active && s.k < s.n_sub && s.k as f32 * s.h == time;
+            *member = s.active && s.k < s.n_sub && s.boundary_time() == time;
         }
         for i in 0..MAX_BALLS {
             if members[i] {
@@ -2177,6 +2190,7 @@ impl BallSolver {
                 };
                 sc[i].n_sub = n;
                 sc[i].h = dt / n as f32;
+                sc[i].t0 = 0.0;
                 sc[i].cache = Cache::Dirty;
             }
             let mut ctx = Bodies {
@@ -2229,7 +2243,7 @@ impl BallSolver {
             // Sub-step boundaries first: at equal times they precede impacts.
             for s in sc.iter() {
                 if s.active && s.k < s.n_sub {
-                    let tb = s.k as f32 * s.h;
+                    let tb = s.boundary_time();
                     if tb < best_time {
                         best_time = tb;
                         best = Next::Boundary;
@@ -2307,6 +2321,9 @@ impl BallSolver {
                     if sc[j].active {
                         self.advance_ball(j, now, sc);
                         sc[j].cache = Cache::Dirty;
+                        let added = self.refine_substeps(j, now, dt, sc, bodies);
+                        budget = budget
+                            .saturating_add(added * (2 * u32::from(MAX_EVENTS_PER_SUBSTEP) + 4));
                     }
                 }
             }
@@ -2322,6 +2339,79 @@ impl BallSolver {
                 self.advance_ball(i, dt, sc);
             }
         }
+    }
+
+    /// After a body changed its trajectory at `now` (Subphase 2.8): a ball
+    /// larger than a standard ball gets a finer sub-step grid for the rest
+    /// of the tick when a body near it now moves faster than its grid was
+    /// planned for (at the start of the tick a resting bat has speed 0). A
+    /// moving body then sweeps at most `TRAVEL_FRACTION · r` between the
+    /// ball's boundaries, as the ball itself does: the boundaries are where
+    /// a touching, non-closing body contact is solved (the casts leave it),
+    /// so with the tick-start grid a large ball could end a tick millimetres
+    /// inside a bat that an impact had just set spinning. Balls of radius
+    /// up to [`REFINE_MIN_RADIUS`] keep their grid (bit-identical to before).
+    /// Returns the number of boundaries added.
+    fn refine_substeps(
+        &self,
+        i: usize,
+        now: f32,
+        dt: f32,
+        sc: &mut [Scratch; MAX_BALLS],
+        bodies: &Bodies<'_, '_>,
+    ) -> u32 {
+        let s = sc[i];
+        let r = s.body.radius;
+        let remaining = dt - now;
+        if r.is_nan()
+            || r <= REFINE_MIN_RADIUS
+            || s.frozen
+            || remaining.is_nan()
+            || remaining <= 0.0
+        {
+            return 0;
+        }
+        let Some(ball) = self.slots[i] else {
+            return 0;
+        };
+        let mask = layers::layer_bit(ball.layer);
+        let end = ball.position + ball.velocity * remaining;
+        let mut body_speed = 0.0f32;
+        for set in bodies.sets.iter() {
+            for b in 0..set.body_count() {
+                if set.layer_mask(b) & mask != 0
+                    && near(Some(&set.swept_bounds(b)), ball.position, end, 2.0 * r)
+                {
+                    let u = set.max_surface_speed(b);
+                    if u.is_finite() {
+                        body_speed = body_speed.max(u);
+                    }
+                }
+            }
+        }
+        let travel = (ball.velocity.length() + body_speed) * remaining;
+        let wanted = libm::ceilf(travel / (TRAVEL_FRACTION * r));
+        let left = s.n_sub.saturating_sub(s.k) + 1;
+        let cap = self.cfg.max_substeps.max(1);
+        if !wanted.is_finite() || wanted <= left as f32 || s.n_sub >= cap {
+            return 0;
+        }
+        let n = (wanted as u32)
+            .min(cap.saturating_sub(s.n_sub) + left)
+            .max(1);
+        if n <= left {
+            return 0;
+        }
+        let h = remaining / n as f32;
+        if h.is_nan() || h <= 0.0 || h >= s.h {
+            return 0;
+        }
+        // Boundaries at now + h, now + 2h, ..., the last interval ends at dt.
+        sc[i].t0 = now;
+        sc[i].h = h;
+        sc[i].k = 1;
+        sc[i].n_sub = n;
+        n - left
     }
 
     fn update_sensors(&mut self, events: &mut BallEvents) {

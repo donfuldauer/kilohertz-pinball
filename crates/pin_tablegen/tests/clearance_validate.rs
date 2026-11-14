@@ -74,9 +74,11 @@ fn near(a: f32, b: f32, tol: f32) -> bool {
 
 // ------------------------------------------------------------ verification 2
 
-/// The open area of the Appendix A.3 main deck: everything below the
-/// upper deck (which starts at y = 700 mm), right of the inlane.
-const OPEN_AREA: [[f32; 2]; 4] = [[100.0, 0.0], [514.0, 0.0], [514.0, 690.0], [100.0, 690.0]];
+/// The open area of the Appendix A.3 main deck: right of the inlane and
+/// below the upper deck (which starts at y = 700 mm), kept a ball radius
+/// plus 1 mm clear of the deck edge (39.7 + 1 mm: y ≤ 659.3 mm), so the
+/// XL ball never reaches under or into the deck sheet.
+const OPEN_AREA: [[f32; 2]; 4] = [[100.0, 0.0], [514.0, 0.0], [514.0, 655.0], [100.0, 655.0]];
 
 #[test]
 fn v2_xl_rejected_under_a_65_mm_deck_and_accepted_in_the_open_area() {
@@ -175,6 +177,74 @@ fn small_areas_under_the_deck_are_rejected() {
                 1,
                 "{side} mm square at ({cx}, {cy})"
             );
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Reviewer B2: the ball is a sphere. An area ending short of the deck edge
+/// still lets the XL ball reach into the deck sheet; walls along the edge
+/// keep it out; a sloped ceiling is measured along its normal.
+#[test]
+fn deck_edges_and_slopes_are_tested_with_the_whole_ball() {
+    let layout = layout("apex_layout.toml");
+    let (dir, mut table, scene) = build(
+        &layout,
+        &{
+            let mut base = apex_base();
+            base.balls.restrict = vec![restrict(XL, &[0], &OPEN_AREA)];
+            base.to_toml_string().unwrap()
+        },
+        "deck_edges",
+    );
+    for (top, rejected) in [(699.0f32, true), (690.0, true), (670.0, true), (659.0, false), (600.0, false)] {
+        table.manifest.balls.restrict[0].area = vec![[100.0, 0.0], [514.0, 0.0], [514.0, top], [100.0, top]];
+        let r = validate_clearance(&table, &scene);
+        assert_eq!(!of(&r, Feature::DeckHeadroom, XL).is_empty(), rejected, "area to y = {top}: {:#?}", r.errors);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+    // A wall along the deck edge (layer 0) keeps the ball's centre r away.
+    let walled = layout_with(
+        "[[decks]]\nlayer = 1\nz = 65.0\noutline = [[0.0, 700.0], [514.0, 700.0], [514.0, 1070.0], [0.0, 1070.0]]\nmaterial = \"acrylic\"\n\
+         [[walls]]\npoints = [[0.0, 700.0], [514.0, 700.0]]\nmaterial = \"wood\"\n",
+    );
+    let area = [[0.0, 0.0], [514.0, 0.0], [514.0, 699.0], [0.0, 699.0]];
+    let r = check(&walled, &base_with(&[STEEL], vec![restrict(XL, &[0], &area)], ""), "walled_edge");
+    assert!(of(&r, Feature::DeckHeadroom, XL).is_empty(), "{:#?}", r.errors);
+}
+
+/// A hand-built scene: the generated floor plus one ceiling triangle on
+/// layer 1, high (60 mm) along one side and dipping to `low_mm` at its
+/// third vertex.
+fn dipping_scene(base: &GltfScene, low_mm: f32) -> GltfScene {
+    let mut scene = base.clone();
+    let mut m = scene.meshes.iter().find(|m| m.name == "floor").unwrap().clone();
+    m.name = "ceiling".into();
+    m.positions = vec![[0.300, 0.400, 0.060], [0.400, 0.400, 0.060], [0.350, 0.500, low_mm * 1e-3]];
+    m.normals = vec![[0.0, 0.0, 1.0]; 3];
+    m.uvs.clear();
+    m.indices = vec![0, 1, 2];
+    m.extras.collision_layer = Some(1);
+    scene.meshes.push(m);
+    scene
+}
+
+/// Reviewer B2 (c): a ceiling whose low point is a vertex is found (the
+/// ball is tested as a sphere against the triangle, including its corners).
+#[test]
+fn a_dipping_ceiling_vertex_is_found() {
+    let (dir, table, scene) = build(&layout_with(""), &base_with(&[STEEL], vec![], ""), "dip");
+    for (low, rejected) in [(22.0f32, true), (27.5, true), (29.0, false), (40.0, false)] {
+        let s = dipping_scene(&scene, low);
+        let r = validate_clearance_diameters(&table, &s, &[0.027]);
+        let found: Vec<_> = r
+            .errors
+            .iter()
+            .filter(|e| e.feature == Feature::DeckHeadroom && e.name == "ceiling")
+            .collect();
+        assert_eq!(!found.is_empty(), rejected, "low {low}: {:#?}", r.errors);
+        if let Some(e) = found.first() {
+            assert!(near(e.actual_mm, low, 0.3), "{} vs {low}", e.actual_mm);
         }
     }
     std::fs::remove_dir_all(dir).unwrap();
