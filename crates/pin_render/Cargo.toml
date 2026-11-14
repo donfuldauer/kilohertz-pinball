@@ -23,6 +23,11 @@ libm.workspace = true
 # Menu overlay painter (4.4).
 egui.workspace = true
 egui-wgpu.workspace = true
+# Displays (5.3): the kit's DMD bitmap fonts (pin_assetgen::fonts) and the
+# display scene format (TOML).
+pin_assetgen = { path = "../pin_assetgen" }
+serde.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

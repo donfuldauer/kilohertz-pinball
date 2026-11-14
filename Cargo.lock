@@ -2027,10 +2027,13 @@ dependencies = [
  "image",
  "libm",
  "naga",
+ "pin_assetgen",
  "pin_core",
  "pollster",
  "proptest",
  "sdl3",
+ "serde",
+ "toml",
  "wgpu",
 ]
 
