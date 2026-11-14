@@ -14,6 +14,11 @@ pub(crate) const SAMPLES_PER_SEGMENT: usize = 16;
 /// Parameter-space convergence threshold of the Newton iterations.
 const NEWTON_EPS: f32 = 1.0e-6;
 
+/// Bisection depth of a sample interval that may hold several roots of
+/// `g = (C - p) · C'` in [`CubicSpline::closest_point`]: the finest
+/// sub-interval is `1 / (SAMPLES_PER_SEGMENT * 2^5)` of a segment.
+const MULTI_ROOT_DEPTH: u32 = 5;
+
 /// Errors from spline, wireform and guide construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplineError {
@@ -118,6 +123,14 @@ struct SegmentBound {
     radius: f32,
     /// Arc-length bound of half a sample interval.
     half_interval_arc: f32,
+    /// Upper bound of `|C'(s)|` on the segment (padded).
+    max_speed: f32,
+    /// Upper bound of `|C''(s)|` on the segment (padded).
+    max_second: f32,
+    /// `|C'''|` (constant on a cubic segment, padded).
+    max_third: f32,
+    /// Lower bound of `|C'(s)|²` on the segment (0 if it may vanish).
+    min_speed_sq: f32,
 }
 
 /// A sample-table entry: position and first derivative.
@@ -285,11 +298,35 @@ impl CubicSpline {
                 max_speed = max_speed.max(seg.p[j + 1].distance(seg.p[j]));
             }
             max_speed *= 3.0;
+            // C'' of a cubic is linear in s: its largest norm is at an end.
+            let max_second = 6.0
+                * (seg.p[2] - seg.p[1] * 2.0 + seg.p[0])
+                    .length()
+                    .max((seg.p[3] - seg.p[2] * 2.0 + seg.p[1]).length());
+            let max_second = max_second * 1.0001 + 1.0e-6;
+            let max_third =
+                6.0 * (seg.p[3] - seg.p[2] * 3.0 + seg.p[1] * 3.0 - seg.p[0]).length() * 1.0001
+                    + 1.0e-6;
+            // Every s is within half a sample interval of a sample, and C'
+            // changes by at most `max_second` per unit s.
+            let mut min_speed = f32::INFINITY;
+            for j in 0..=k {
+                min_speed = min_speed.min(seg.tangent(j as f32 / k as f32).length());
+            }
+            let min_speed = (min_speed - max_second * (0.5 / k as f32)) * 0.9999;
             // Slightly padded so rounding can never make the bounds unsafe.
             bounds.push(SegmentBound {
                 center,
                 radius: radius * 1.0001 + 1.0e-6,
                 half_interval_arc: max_speed * (0.5 / k as f32) * 1.0001 + 1.0e-6,
+                max_speed: max_speed * 1.0001 + 1.0e-6,
+                max_second,
+                max_third,
+                min_speed_sq: if min_speed > 0.0 {
+                    min_speed * min_speed
+                } else {
+                    0.0
+                },
             });
         }
         let last = &segments[n - 1];
@@ -392,6 +429,18 @@ impl CubicSpline {
     /// table then guarantees that the global minimum is returned whatever the
     /// seed is, so seeded and unseeded queries agree. Never allocates.
     ///
+    /// Every local minimum of `|C - p|²` is a root of `g = (C - p) · C'`.
+    /// Where `g' = |C'|² + (C - p) · C''` is provably positive on a whole
+    /// segment (`min |C'|² > max |C - p| max |C''|` from per-segment bounds,
+    /// roughly: `p` is closer than one radius of curvature), `g` increases,
+    /// each sample interval holds at most one root, and it is refined when
+    /// the end samples bracket it: the fast path, which is nearly every
+    /// query. Elsewhere an interval may hold several roots (minima and
+    /// maxima, even with both end signs alike), so it is bisected (bounded
+    /// depth, fixed-size stack) until each piece is provably monotone,
+    /// root-free or no closer than the best candidate, and every bracketed
+    /// root is refined (issue #8).
+    ///
     /// A non-finite `p` yields the curve start with an infinite distance.
     #[must_use]
     pub fn closest_point(&self, p: Vec3, seed_t: Option<f32>) -> ClosestPoint {
@@ -433,8 +482,18 @@ impl CubicSpline {
         // Global pass over the sample table, pruned by conservative bounds.
         for i in 0..n {
             let bound = &self.bounds[i];
-            let lb = bound.center.distance(p) - bound.radius;
+            let center_distance = bound.center.distance(p);
+            let lb = center_distance - bound.radius;
             if lb > 0.0 && lb * lb >= best_d2 {
+                continue;
+            }
+            // Fast path: `g` provably increases on the whole segment
+            // (`min |C'|² > max |C - p| max |C''|`), so each sample interval
+            // holds at most one root, refined when its end samples bracket it.
+            if bound.min_speed_sq <= (center_distance + bound.radius) * bound.max_second {
+                let mut best = (best_d2, best_t, best_point);
+                self.search_segment(i, p, &mut best);
+                (best_d2, best_t, best_point) = best;
                 continue;
             }
             let base = i * k;
@@ -474,6 +533,138 @@ impl CubicSpline {
             t: best_t,
             point: best_point,
             distance: best_d2.sqrt(),
+        }
+    }
+
+    /// The global pass of [`Self::closest_point`] over segment `i` when `g`
+    /// may have several roots in a sample interval: like the fast path, but
+    /// each interval that may hold a closer point goes to
+    /// [`Self::search_interval`] with `g'` at its end samples. `best` is
+    /// (squared distance, global parameter, point).
+    #[inline(never)]
+    fn search_segment(&self, i: usize, p: Vec3, best: &mut (f32, f32, Vec3)) {
+        let k = SAMPLES_PER_SEGMENT;
+        let bound = &self.bounds[i];
+        let dd = second_differences(&self.segments[i]);
+        let base = i * k;
+        let s0 = &self.samples[base];
+        let e0 = s0.point - p;
+        let mut d0 = e0.length_squared();
+        let mut g0 = e0.dot(s0.tangent);
+        let mut gp0 = slope(e0, s0.tangent, dd, 0.0);
+        for j in 0..k {
+            let s1 = &self.samples[base + j + 1];
+            let e1 = s1.point - p;
+            let d1 = e1.length_squared();
+            let g1 = e1.dot(s1.tangent);
+            let hi = (j + 1) as f32 / k as f32;
+            let gp1 = slope(e1, s1.tangent, dd, hi);
+            if d1 < best.0 {
+                *best = (d1, i as f32 + hi, s1.point);
+            }
+            let lbi = d0.min(d1).sqrt() - bound.half_interval_arc;
+            if lbi <= 0.0 || lbi * lbi < best.0 {
+                let root = Node {
+                    lo: j as f32 / k as f32,
+                    hi,
+                    g: [g0, g1],
+                    d2: [d0, d1],
+                    slope: [gp0, gp1],
+                    depth: 0,
+                };
+                self.search_interval(i, p, root, best);
+            }
+            d0 = d1;
+            g0 = g1;
+            gp0 = gp1;
+        }
+    }
+
+    /// Search of one sample interval of segment `i` where `g` may have
+    /// several roots (see [`Self::closest_point`]): depth-first bisection
+    /// on a fixed-size stack (no allocation). On a piece of width `w`,
+    /// `g'` lies within `G2 w / 2` of its value at the nearer end, where
+    /// `G2 >= |g''| = |3 C'·C'' + (C - p)·C'''|`. A piece is
+    /// - dropped when a second-order lower bound of `|C - p|²` (from either
+    ///   end, with `g'` at its lower bound) cannot beat `best` by more than
+    ///   rounding, or when `g` provably keeps one sign or decreases (no
+    ///   interior minimum; the ends are candidates already);
+    /// - refined when `g` provably increases (one root), or at
+    ///   [`MULTI_ROOT_DEPTH`], if its ends bracket a root;
+    /// - otherwise split at its midpoint, which is a candidate too.
+    ///
+    /// `best` is (squared distance, global parameter, point).
+    fn search_interval(&self, i: usize, p: Vec3, root: Node, best: &mut (f32, f32, Vec3)) {
+        let bound = &self.bounds[i];
+        let seg = &self.segments[i];
+        let dd = second_differences(seg);
+        let mut stack = [root; MULTI_ROOT_DEPTH as usize + 1];
+        let mut len = 1;
+        while len > 0 {
+            len -= 1;
+            let node = stack[len];
+            let w = node.hi - node.lo;
+            let [g_lo, g_hi] = node.g;
+            let [d_lo, d_hi] = node.d2;
+            let [gp_lo, gp_hi] = node.slope;
+            let reach = d_lo.max(d_hi).sqrt() + bound.max_speed * 0.5 * w;
+            let g2 = 3.0 * bound.max_speed * bound.max_second + reach * bound.max_third;
+            let slack = g2 * 0.5 * w;
+            let gp_min = gp_lo.min(gp_hi) - slack;
+            let gp_max = gp_lo.max(gp_hi) + slack;
+            // |C - p|² at lo + x is at least d_lo + 2 g_lo x + gp_min x², and
+            // likewise from hi; either bound's minimum bounds the piece.
+            let floor =
+                taylor_floor(d_lo, g_lo, gp_min, w).max(taylor_floor(d_hi, -g_hi, gp_min, w));
+            if floor >= best.0 * (1.0 - 4.0 * f32::EPSILON) {
+                continue;
+            }
+            // `g` decreasing: no interior minimum.
+            if gp_max < 0.0 {
+                continue;
+            }
+            let one_sign = g_lo > 0.0 && g_hi > 0.0 || g_lo < 0.0 && g_hi < 0.0;
+            if one_sign && g_lo.abs() + g_hi.abs() > gp_min.abs().max(gp_max.abs()) * w {
+                continue;
+            }
+            if gp_min > 0.0 || node.depth >= MULTI_ROOT_DEPTH {
+                if g_lo < 0.0 && g_hi > 0.0 {
+                    let (s, q) = self.refine(i, p, node.lo, node.hi, g_lo, g_hi);
+                    let d2 = q.distance_squared(p);
+                    if d2 < best.0 {
+                        *best = (d2, i as f32 + s, q);
+                    }
+                }
+                continue;
+            }
+            let mid = 0.5 * (node.lo + node.hi);
+            let q = seg.point(mid);
+            let tan = seg.tangent(mid);
+            let e = q - p;
+            let (d_mid, g_mid) = (e.length_squared(), e.dot(tan));
+            let gp_mid = slope(e, tan, dd, mid);
+            if d_mid < best.0 {
+                *best = (d_mid, i as f32 + mid, q);
+            }
+            let depth = node.depth + 1;
+            // Right half below the left one: the left half is searched first.
+            stack[len] = Node {
+                lo: mid,
+                hi: node.hi,
+                g: [g_mid, g_hi],
+                d2: [d_mid, d_hi],
+                slope: [gp_mid, gp_hi],
+                depth,
+            };
+            stack[len + 1] = Node {
+                lo: node.lo,
+                hi: mid,
+                g: [g_lo, g_mid],
+                d2: [d_lo, d_mid],
+                slope: [gp_lo, gp_mid],
+                depth,
+            };
+            len += 2;
         }
     }
 
@@ -541,4 +732,41 @@ impl CubicSpline {
         }
         (s, self.segments[i].point(s))
     }
+}
+
+/// Second differences `(A, B)` of a Bézier segment: `C''(s) = (1 - s) A + s B`.
+fn second_differences(seg: &BezierSegment) -> (Vec3, Vec3) {
+    let [p0, p1, p2, p3] = seg.p;
+    ((p2 - p1 * 2.0 + p0) * 6.0, (p3 - p2 * 2.0 + p1) * 6.0)
+}
+
+/// `g'(s) = |C'|² + (C - p) · C''` from `e = C(s) - p` and `C'(s)`.
+fn slope(e: Vec3, tangent: Vec3, dd: (Vec3, Vec3), s: f32) -> f32 {
+    tangent.length_squared() + e.dot(dd.0 * (1.0 - s) + dd.1 * s)
+}
+
+/// Lower bound over `x` in `[0, w]` of `d + 2 g x + c x²`.
+fn taylor_floor(d: f32, g: f32, c: f32, w: f32) -> f32 {
+    let end = d + (2.0 * g + c * w) * w;
+    let mut floor = d.min(end);
+    if c > 0.0 {
+        let x = -g / c;
+        if x > 0.0 && x < w {
+            floor = floor.min(d - g * g / c);
+        }
+    }
+    floor
+}
+
+/// A piece `[lo, hi]` of a sample interval in
+/// [`CubicSpline::search_interval`], with `g`, squared distance and
+/// `g' = |C'|² + (C - p) · C''` at both ends.
+#[derive(Debug, Clone, Copy)]
+struct Node {
+    lo: f32,
+    hi: f32,
+    g: [f32; 2],
+    d2: [f32; 2],
+    slope: [f32; 2],
+    depth: u32,
 }
