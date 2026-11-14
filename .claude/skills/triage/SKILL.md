@@ -24,8 +24,10 @@ task-executor and checked by the work-verifier. The fast path never routes T2 or
 - The fix is spelled out by the comment or obvious.
 
 If the validity or cause is unclear, the item goes to the issue-investigator first and is then
-triaged again from the investigator's report (fast path if it now passes every check, else the
-work-classifier). Any other failing check, or an unsure Orchestrator, sends the item to the
+triaged again from the investigator's report, but only if the investigator confirms the finding
+is valid (fast path if it now passes every check, else the work-classifier). If it finds the
+finding invalid or not reproducible, the disposition is "Not a defect": reply with the
+investigator's evidence and resolve per §2.7 step 3 / D37, with no Fixer. Any other failing check, or an unsure Orchestrator, sends the item to the
 work-classifier.
 
 ## 2. Batching procedure (one CodeRabbit review round, or one push)
@@ -33,9 +35,14 @@ work-classifier.
 1. List every new finding.
 2. Triage each one as fast-path T0, fast-path T1, or classifier.
 3. Send findings whose validity or cause is unclear to the issue-investigator first (in
-   parallel when independent), then triage each again from its report.
-4. Send all remaining non-fast-path items to ONE work-classifier call as a batch.
-5. Group fast-path items by tier into one Fixer brief per tier. When items of different tiers
+   parallel when independent). Findings it confirms valid are triaged again from its report;
+   findings it finds invalid or not reproducible are "Not a defect" (reply with its evidence,
+   resolve per §2.7 step 3 / D37), with no Fixer.
+4. Before the classifier call, move any fast-path item that touches a file also touched by a
+   classifier-bound item into the classifier batch, so the classifier groups same-file items
+   into one brief at the higher tier. Send all classifier-bound items to ONE work-classifier
+   call as a batch.
+5. Group the remaining fast-path items by tier into one Fixer brief per tier. When items of different tiers
    touch the same file, put them in one brief at the higher tier.
 6. Spawn executors, in parallel when owned paths do not overlap.
 7. Run ONE work-verifier on the resulting head commit covering every item in the round.
