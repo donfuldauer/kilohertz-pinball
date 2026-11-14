@@ -37,6 +37,11 @@ fn knock(inertia: f32, vb: f32) -> (f32, bool) {
         ev.clear();
         s.step_with_bodies(&geo, &mut [&mut set], DT, &mut ev);
         let ball = s.ball(a).unwrap();
+        // `max` drops a NaN operand: check before reducing.
+        assert!(
+            ball.position.is_finite() && ball.velocity.is_finite(),
+            "ball state is not finite: {ball:?}"
+        );
         let bat = set.bodies[0];
         deepest = deepest.max(r - bat.closest(0.0, ball.position).distance);
         let dir = RotorBody::direction(bat.angle);
@@ -105,6 +110,11 @@ fn knock_slider(mass: f32, vb: f32) -> (f32, bool) {
         ev.clear();
         s.step_with_bodies(&geo, &mut [&mut set], DT, &mut ev);
         let ball = s.ball(a).unwrap();
+        // `max` drops a NaN operand: check before reducing.
+        assert!(
+            ball.position.is_finite() && ball.velocity.is_finite(),
+            "ball state is not finite: {ball:?}"
+        );
         let plate = set.bodies[0];
         deepest = deepest.max(r - plate.closest(0.0, ball.position).distance);
         through |= ball.position.y < plate.center.y;
@@ -280,6 +290,11 @@ fn flip_depth(d: f32, speed: f32, delay: u32, torque: f32, inertia: f32) -> f32 
         ev.clear();
         s.step_with_bodies(&geo, &mut [&mut set], DT, &mut ev);
         let b = s.ball(h).unwrap();
+        // `max` drops a NaN operand: check before reducing.
+        assert!(
+            b.position.is_finite() && b.velocity.is_finite(),
+            "ball state is not finite: {b:?}"
+        );
         deepest = deepest.max(r - set.bodies[0].closest(0.0, b.position).distance);
     }
     deepest

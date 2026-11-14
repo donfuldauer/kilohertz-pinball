@@ -110,7 +110,7 @@ fn replay_refuses_another_table() {
         "broken_table",
         &[("rules.lua", Some(b"this is not lua (\n"))],
     );
-    let (rec2, b2) = (rec.clone(), broken.clone());
+    let (rec2, b2) = (rec.clone(), broken.to_path_buf());
     let err = on_sim_thread(move || replay(&b2, &rec2).unwrap_err());
     assert!(
         matches!(err, ReplayError::TableMismatch { .. }),
@@ -137,8 +137,12 @@ fn recorder_play_continues_a_loaded_sim() {
         let mut fresh = Simulation::load(&bundle, SimConfig::default()).unwrap();
         assert_eq!(Recorder::play(&mut fresh, &rec), sim.state_hash());
         assert_eq!(fresh.tick(), 800);
-        let recorder = Recorder::new(fresh);
-        assert_eq!(recorder.recording().ticks, 0);
-        assert_eq!(recorder.sim().tick(), 800);
+        // A recording replays from load, so it cannot start mid-run.
+        let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _ = Recorder::new(fresh);
+        }));
+        assert!(started.is_err(), "Recorder::new accepted a sim at tick 800");
+        let at_load = Recorder::new(Simulation::load(&bundle, SimConfig::default()).unwrap());
+        assert_eq!(at_load.recording().ticks, 0);
     });
 }

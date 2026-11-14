@@ -202,7 +202,12 @@ impl Vm {
         let lua = Lua::new_with(libs, LuaOptions::new()).map_err(|e| load_err(&e))?;
         let vm = Self::install(lua, names, bridge).map_err(|e| load_err(&e))?;
 
-        // Compile before applying the cap so syntax errors are always `Load`.
+        // The cap applies from compilation on: the compiled chunk's constants
+        // live in the heap too, so a source whose compiled form does not fit
+        // is a `MemoryLimit`, never a reason to raise the cap.
+        vm.lua
+            .set_memory_limit(cfg.memory_limit_bytes)
+            .map_err(|e| load_err(&e))?;
         let chunk = vm
             .lua
             .load(source)
@@ -216,10 +221,6 @@ impl Vm {
                     load_err(&e)
                 }
             })?;
-        let used = vm.lua.used_memory();
-        vm.lua
-            .set_memory_limit(cfg.memory_limit_bytes.max(used))
-            .map_err(|e| load_err(&e))?;
 
         let hook_bridge = Rc::clone(bridge);
         let raw = vm.raw as usize;
@@ -268,13 +269,15 @@ impl Vm {
         bridge.budget_hit() || unsafe { lua_khzspend(self.raw, 0) } < 0
     }
 
-    /// The fault behind `r`, if any: an error, or a budget that ran out even
-    /// though the call returned (an abort swallowed at the very end).
+    /// The fault behind `r`, if any: an error, or a budget or memory abort
+    /// recorded even though the call returned (an abort swallowed at the very
+    /// end, or a `memabort` error caught by an outer `pcall`).
     pub(crate) fn check<T>(&self, bridge: &Bridge, r: mlua::Result<T>) -> Option<ScriptError> {
         let exhausted = self.exhausted(bridge);
         match r {
             Err(e) => Some(classify(bridge, exhausted, &e)),
             Ok(_) if exhausted => Some(ScriptError::BudgetExceeded),
+            Ok(_) if bridge.memory_hit() => Some(ScriptError::MemoryLimit),
             Ok(_) => None,
         }
     }

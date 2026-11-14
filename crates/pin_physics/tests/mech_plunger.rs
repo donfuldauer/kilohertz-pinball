@@ -115,7 +115,11 @@ fn spring_force_is_minus_k_x() {
     // Force check on the first free tick: Δv = (−k·x/m)·dt.
     t.tick();
     let (x1, v1) = t.mechs.slider_state(0).unwrap();
-    assert!((v1 - k * stroke / m * DT).abs() / v1 < 1e-4, "{v1}");
+    let want = k * stroke / m * DT;
+    assert!(
+        want > 0.0 && (v1 - want).abs() / want < 1e-4,
+        "{v1} vs {want}"
+    );
     assert!(x1 > prev_x);
     prev_x = x1;
     while ticks < 100 {

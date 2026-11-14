@@ -8,7 +8,7 @@
 //!
 //! | list | effect |
 //! |---|---|
-//! | `coil_pulses (coil, ms)` | a flipper coil is energised for `ms` ticks from this tick; mech coils ([`MechSet::fire_coil`](pin_physics::mech::MechSet::fire_coil)); a gate's coil opens it for `ms` ticks; a haptic impulse |
+//! | `coil_pulses (coil, ms)` | a flipper coil is energised for `ms` ticks from this tick (from tick 1 for `on_init`); mech coils ([`MechSet::fire_coil`](pin_physics::mech::MechSet::fire_coil)); a gate's coil opens it for `ms` ticks; a haptic impulse |
 //! | `coil_holds (coil, on)` | flipper hold, [`MechSet::hold_coil`](pin_physics::mech::MechSet::hold_coil), gate hold; a haptic impulse when switched on |
 //! | `magnets (magnet, power)` | the solver magnet's power (clamped `0..=1`) |
 //! | `zippers (flipper, on)` | [`FlipperSet::set_zipper`](pin_physics::flipper::FlipperSet::set_zipper) |
@@ -28,12 +28,17 @@ fn unit(v: f32) -> f32 {
 }
 
 impl Simulation {
-    /// Applies and clears the command queue (tick step 3).
-    pub(crate) fn apply_commands(&mut self) {
-        let tick = self.tick;
+    /// Applies and clears the command queue: tick step 3, or after
+    /// `on_init` in `load`.
+    ///
+    /// `first_physics_tick` is the first tick whose physics step sees the
+    /// commands: the current tick in step 3, tick 1 after `on_init` (load
+    /// runs no physics). A flipper or gate pulse of `ms` is energised for
+    /// the `ms` ticks from there.
+    pub(crate) fn apply_commands(&mut self, first_physics_tick: u64) {
         for i in 0..self.cmd.coil_pulses.len() {
             let (coil, ms) = self.cmd.coil_pulses[i];
-            let until = tick.saturating_add(u64::from(ms));
+            let until = first_physics_tick.saturating_add(u64::from(ms));
             for d in &mut self.drives {
                 if d.coil == coil {
                     d.pulse_until = d.pulse_until.max(until);
