@@ -14,6 +14,7 @@
 //! `SPEC_5_2_BLESS=1` to (re)write them; they are written only after the analytic checks.
 #![cfg(feature = "gpu-tests")]
 #![allow(clippy::needless_range_loop)] // channel/axis indices read clearer as ranges
+#![allow(clippy::needless_borrow)] // Wave 5 gate fix: `ctx` became a shared `&'static GpuContext`; call sites unchanged
 
 use pin_render::gpu::{GpuContext, GpuOptions, require_gpu};
 use pin_render::pbr::math::{Mat4, PbrCamera, translation};
@@ -66,7 +67,7 @@ fn lum(p: [f32; 4]) -> f32 {
     lum3([p[0], p[1], p[2]])
 }
 
-fn gpu() -> Option<GpuContext> {
+fn new_context() -> Option<GpuContext> {
     match GpuContext::new_headless(&GpuOptions::from_env()) {
         Ok(ctx) => Some(ctx),
         Err(e) => {
@@ -77,6 +78,14 @@ fn gpu() -> Option<GpuContext> {
             None
         }
     }
+}
+
+/// One context per test process, shared by every test (Wave 5 gate fix: a
+/// device created and dropped per test thread crashed lavapipe in CI; see
+/// DECISIONS "Wave 5 gate fix").
+fn gpu() -> Option<&'static GpuContext> {
+    static CTX: std::sync::OnceLock<Option<GpuContext>> = std::sync::OnceLock::new();
+    CTX.get_or_init(new_context).as_ref()
 }
 
 fn assert_finite(img: &HdrImage, what: &str) {
@@ -377,7 +386,7 @@ fn no_blur_config() -> PostConfig {
 // ---------------------------------------------------------------------------------------
 
 struct ReflScene {
-    ctx: GpuContext,
+    ctx: &'static GpuContext,
     fr: FrameRenderer,
     sphere: MeshId,
     quad: MeshId,
@@ -883,7 +892,7 @@ fn image(size: u32, f: impl Fn(u32, u32) -> V3) -> HdrImage {
 }
 
 struct Chain {
-    ctx: GpuContext,
+    ctx: &'static GpuContext,
     chain: PostChain,
     cam: PbrCamera,
 }

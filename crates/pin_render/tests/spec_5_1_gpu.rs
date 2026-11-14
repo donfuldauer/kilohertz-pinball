@@ -20,6 +20,7 @@
 //! `SPEC_5_1_BLESS=1` to (re)write them; they are written only after the analytic checks.
 #![cfg(feature = "gpu-tests")]
 #![allow(clippy::needless_range_loop)] // channel/axis indices read clearer as ranges
+#![allow(clippy::needless_borrow)] // Wave 5 gate fix: `ctx` became a shared `&'static GpuContext`; call sites unchanged
 
 use pin_core::FrameStateSnapshot;
 use pin_render::gpu::{GpuContext, GpuOptions, require_gpu};
@@ -59,7 +60,7 @@ fn lum(p: [f32; 4]) -> f32 {
     0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]
 }
 
-fn gpu() -> Option<GpuContext> {
+fn new_context() -> Option<GpuContext> {
     match GpuContext::new_headless(&GpuOptions::from_env()) {
         Ok(ctx) => Some(ctx),
         Err(e) => {
@@ -70,6 +71,14 @@ fn gpu() -> Option<GpuContext> {
             None
         }
     }
+}
+
+/// One context per test process, shared by every test (Wave 5 gate fix: a
+/// device created and dropped per test thread crashed lavapipe in CI; see
+/// DECISIONS "Wave 5 gate fix").
+fn gpu() -> Option<&'static GpuContext> {
+    static CTX: std::sync::OnceLock<Option<GpuContext>> = std::sync::OnceLock::new();
+    CTX.get_or_init(new_context).as_ref()
 }
 
 fn camera() -> PbrCamera {
@@ -148,7 +157,7 @@ fn lambert(h: &Hit, lights: &[PointLight]) -> V3 {
 }
 
 struct Scene {
-    ctx: GpuContext,
+    ctx: &'static GpuContext,
     renderer: PbrRenderer,
     sphere: pin_render::pbr::MeshId,
     cam: PbrCamera,

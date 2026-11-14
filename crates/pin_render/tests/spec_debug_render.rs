@@ -29,9 +29,9 @@ const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
-/// Returns a context, or `None` (after printing a note) when no adapter exists and
+/// Returns a new context, or `None` (after printing a note) when no adapter exists and
 /// `PIN_REQUIRE_GPU` is not set.
-fn gpu() -> Option<GpuContext> {
+fn new_context() -> Option<GpuContext> {
     match GpuContext::new_headless(&GpuOptions::from_env()) {
         Ok(ctx) => Some(ctx),
         Err(e) => {
@@ -42,6 +42,36 @@ fn gpu() -> Option<GpuContext> {
             None
         }
     }
+}
+
+/// Tests hold this shared while they render on the shared context; the one test that
+/// creates and drops its own contexts holds it exclusively, so no device is created or
+/// torn down while another test renders (Wave 5 gate fix: lavapipe crashed in CI when
+/// devices were created and dropped per test thread; see DECISIONS "Wave 5 gate fix").
+static DEVICE_LIFECYCLE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// The process-wide shared context, with a shared hold on [`DEVICE_LIFECYCLE`] for the
+/// rest of the test; derefs to [`GpuContext`].
+struct SharedGpu {
+    _hold: std::sync::RwLockReadGuard<'static, ()>,
+    ctx: &'static GpuContext,
+}
+
+impl std::ops::Deref for SharedGpu {
+    type Target = GpuContext;
+    fn deref(&self) -> &GpuContext {
+        self.ctx
+    }
+}
+
+/// The shared context (see [`SharedGpu`]), or `None` as for [`new_context`].
+fn gpu() -> Option<SharedGpu> {
+    static CTX: std::sync::OnceLock<Option<GpuContext>> = std::sync::OnceLock::new();
+    let hold = DEVICE_LIFECYCLE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let ctx = CTX.get_or_init(new_context).as_ref()?;
+    Some(SharedGpu { _hold: hold, ctx })
 }
 
 fn unit_camera() -> Camera {
@@ -171,8 +201,12 @@ fn headless_context_reports_an_adapter() {
 
 #[test]
 fn two_contexts_can_coexist() {
-    let Some(a) = gpu() else { return };
-    let Some(b) = gpu() else { return };
+    // Exclusive: no other test renders while these devices are created and dropped.
+    let _exclusive = DEVICE_LIFECYCLE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(a) = new_context() else { return };
+    let Some(b) = new_context() else { return };
     let ia = render(&a, 16, 16, BLUE, &unit_camera(), &[]);
     let ib = render(&b, 16, 16, RED, &unit_camera(), &[]);
     assert_eq!(ia.at(3, 3), [0, 0, 255, 255]);

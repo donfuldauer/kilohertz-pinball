@@ -78,7 +78,14 @@ fn write_review_images() {
     let Ok(dir) = std::env::var("PIN_UI_SNAPSHOT_DIR") else {
         return;
     };
-    let Some(gpu) = pin_render::gpu::context_for_tests("ui_snapshots") else {
+    // One context per process, never dropped while the process runs (Wave 5
+    // gate fix, as for the pin_render GPU tests: DECISIONS "Wave 5 gate fix").
+    static GPU: std::sync::OnceLock<Option<pin_render::gpu::GpuContext>> =
+        std::sync::OnceLock::new();
+    let Some(gpu) = GPU
+        .get_or_init(|| pin_render::gpu::context_for_tests("ui_snapshots"))
+        .as_ref()
+    else {
         return;
     };
     std::fs::create_dir_all(&dir).unwrap();
@@ -112,7 +119,7 @@ fn write_review_images() {
             out.textures_delta = delta;
             let frame = OverlayFrame::new(&ctx, out);
             let px =
-                paint_offscreen(&gpu, size[0], size[1], [0.92, 0.86, 0.55, 1.0], frame).unwrap();
+                paint_offscreen(gpu, size[0], size[1], [0.92, 0.86, 0.55, 1.0], frame).unwrap();
             let img = image::RgbaImage::from_raw(size[0], size[1], px).unwrap();
             let path = format!("{dir}/{}_{tag}.png", panel.label().to_lowercase());
             img.save(&path).unwrap();

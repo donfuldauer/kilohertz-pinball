@@ -2183,3 +2183,13 @@ CI run 294 (20f077c) failed five jobs. One fix each:
 
 ## Orchestrator — gate fix review notes
 The "3.5 — DOF bridge public API" line saying Windows `ConnectionReset`/`MessageSize` "are skipped" is superseded by "Wave 5 gate fix": `MessageSize` is now processed as a maximum-length datagram (always rejected by length), `ConnectionReset` is still skipped. The spec_ci replay-hash contract test's textual checks (gate-fix review N2) are acceptable for a conformance spec; tighten them if the job is restructured.
+- **Round 2 (CI run 299, 9eaa3c8): the lavapipe SIGSEGV moved to `spec_5_2_gpu`.** It crashed after 2 of 20 tests. The crash follows whichever test binary still creates and drops a device per test. **Decision:** every GPU test binary whose purpose is not device creation now uses one context per process, held in a `OnceLock` and never dropped. Only device acquisition changed; no assertion did. The binaries:
+  - `spec_5_1_gpu.rs` and `spec_5_2_gpu.rs`: `gpu()` returns `Option<&'static GpuContext>`. The old body is now `new_context()`. The `Scene`, `ReflScene` and `Chain` structs hold `&'static GpuContext`. A file-level `allow(clippy::needless_borrow)` keeps the `&ctx` call sites as they were.
+  - `spec_debug_render.rs`: `two_contexts_can_coexist` still needs two separate contexts. So `gpu()` returns a `SharedGpu`, which derefs to the shared context and holds a read lock on a file-level `RwLock` for the whole test. `two_contexts_can_coexist` takes the write lock, then creates and drops its two contexts with `new_context()`. No device is therefore created or torn down while another test in the binary renders.
+  - `pin_app/tests/ui_snapshots.rs`: this binary already had only one test and one context per process. It now uses a `OnceLock` too, for uniformity.
+
+  **Left alone:**
+  - `spec_gpu_options.rs`: it never creates a device. Its only constructor call has no backends enabled and fails with `NoAdapter`.
+  - `gpu_context_concurrency.rs`: it is the 1.4 regression test, and concurrent create/render/drop is its purpose. Creation and teardown already run under `GpuContext`'s process-wide lifecycle lock. It runs as its own process and passed on lavapipe in runs 294 and 299 (it runs before the `spec_*` binaries). If it ever crashes on lavapipe, that is the driver bug it exists to show; the engine itself has one context.
+
+  **Verified:** on lavapipe under Xvfb, 10 full runs of `cargo test -p pin_render --features gpu-tests` (497 tests each) plus `pin_app --test ui_snapshots` with `PIN_UI_SNAPSHOT_DIR` set: 0 failures. Only CI's Mesa/LLVM 21 has shown the crash; the local driver never has.
