@@ -228,11 +228,12 @@ fn acrylic_two_pass_is_independent_of_triangle_order() {
     let sphere_rev = r.upload_mesh(&reversed).unwrap();
     let card = r.upload_mesh(&MeshGeometry::quad(1.0)).unwrap();
     let card_model = {
-        // Quad facing −y (towards the camera), 1 m behind the sphere.
+        // Quad facing −y (towards the camera), 1 m behind the sphere: a
+        // proper rotation (x → x, y → z, z → −y) so the winding stays CCW.
         let mut m = IDENTITY;
         m[0] = [2.0, 0.0, 0.0, 0.0];
-        m[1] = [0.0, 0.0, -2.0, 0.0];
-        m[2] = [0.0, 2.0, 0.0, 0.0];
+        m[1] = [0.0, 0.0, 2.0, 0.0];
+        m[2] = [0.0, -2.0, 0.0, 0.0];
         m[3] = [0.0, 1.0, 0.0, 1.0];
         m
     };

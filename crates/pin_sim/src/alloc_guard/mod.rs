@@ -16,9 +16,14 @@
 //! the two apart.
 //!
 //! Exemptions (PLAN.md §2.3 rule 4): the Lua VM allocates from its own capped
-//! arena only when a script creates objects, and a hot-reload swap tick may
-//! allocate; guarded runs use scripts that create no objects in steady state
-//! and no reloads.
+//! arena (mlua routes it through the global allocator), and a hot-reload swap
+//! tick may allocate. The simulation marks its calls into a Lua backend with
+//! an [`ExemptScope`]: allocations inside one are counted separately
+//! ([`count_allocs_split`]) and do not fail [`assert_no_alloc`]. Even a script
+//! that creates no objects makes the VM allocate now and then, because the
+//! collector shrinks the VM's call-info list and the next call regrows it
+//! (DECISIONS.md "2.5 — allocation guard and the Lua arena"). Wasm backends
+//! are not exempt.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -26,15 +31,45 @@ use std::cell::Cell;
 thread_local! {
     static DEPTH: Cell<u32> = const { Cell::new(0) };
     static COUNT: Cell<u64> = const { Cell::new(0) };
+    static EXEMPT: Cell<u32> = const { Cell::new(0) };
+    static EXEMPT_COUNT: Cell<u64> = const { Cell::new(0) };
+}
+
+fn bump(c: &'static std::thread::LocalKey<Cell<u64>>) {
+    let _ = c.try_with(|c| c.set(c.get().saturating_add(1)));
 }
 
 fn note_alloc() {
     // `try_with`: the allocator also runs during thread teardown.
     let _ = DEPTH.try_with(|d| {
         if d.get() > 0 {
-            let _ = COUNT.try_with(|c| c.set(c.get().saturating_add(1)));
+            if EXEMPT.try_with(Cell::get).unwrap_or(0) > 0 {
+                bump(&EXEMPT_COUNT);
+            } else {
+                bump(&COUNT);
+            }
         }
     });
+}
+
+/// While alive, allocations on this thread are exempt (rule 4: the Lua VM's
+/// capped arena). Scopes nest. Entering and leaving never allocates.
+#[derive(Debug)]
+pub struct ExemptScope(());
+
+impl ExemptScope {
+    /// Opens an exempt scope on the current thread.
+    #[must_use]
+    pub fn enter() -> Self {
+        let _ = EXEMPT.try_with(|e| e.set(e.get().saturating_add(1)));
+        ExemptScope(())
+    }
+}
+
+impl Drop for ExemptScope {
+    fn drop(&mut self) {
+        let _ = EXEMPT.try_with(|e| e.set(e.get().saturating_sub(1)));
+    }
 }
 
 /// A global allocator that counts the allocations made inside a guard
@@ -74,7 +109,15 @@ unsafe impl GlobalAlloc for CountingAlloc {
 /// this thread (0 when [`CountingAlloc`] is not the global allocator).
 /// Guards nest; the inner count is included in the outer one.
 pub fn count_allocs<R>(f: impl FnOnce() -> R) -> (R, u64) {
+    let (r, n, _) = count_allocs_split(f);
+    (r, n)
+}
+
+/// Like [`count_allocs`], also returning the allocations made inside an
+/// [`ExemptScope`] (third value), which the second value excludes.
+pub fn count_allocs_split<R>(f: impl FnOnce() -> R) -> (R, u64, u64) {
     let before = COUNT.with(Cell::get);
+    let exempt_before = EXEMPT_COUNT.with(Cell::get);
     DEPTH.with(|d| d.set(d.get() + 1));
     struct Close;
     impl Drop for Close {
@@ -86,10 +129,12 @@ pub fn count_allocs<R>(f: impl FnOnce() -> R) -> (R, u64) {
     let r = f();
     drop(close);
     let after = COUNT.with(Cell::get);
-    (r, after - before)
+    let exempt_after = EXEMPT_COUNT.with(Cell::get);
+    (r, after - before, exempt_after - exempt_before)
 }
 
-/// Runs `f` and panics if it allocated on this thread (D5). The panic
+/// Runs `f` and panics if it allocated on this thread outside an
+/// [`ExemptScope`] (D5). The panic
 /// message names `what` and the count.
 ///
 /// # Panics

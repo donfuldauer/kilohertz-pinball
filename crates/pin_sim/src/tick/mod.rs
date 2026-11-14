@@ -21,6 +21,7 @@ use pin_core::{CabinetAxis, HostCtx, SwitchEdge, TableScriptBackend};
 use pin_physics::ball::{BallHandle as PhysHandle, Geometry};
 use pin_physics::world::layers;
 
+use crate::alloc_guard::ExemptScope;
 use crate::sim::{PendingEdge, Script, Simulation, bit, set_bit};
 
 /// Seconds per tick.
@@ -104,6 +105,8 @@ impl Simulation {
     }
 
     fn deliver_edges(&mut self) {
+        // Rule 4: the Lua VM's arena allocations are exempt from the guard.
+        let _exempt = matches!(self.script, Script::Lua(_)).then(ExemptScope::enter);
         let mut ctx = HostCtx {
             view: &self.view,
             rng: &mut self.rng,

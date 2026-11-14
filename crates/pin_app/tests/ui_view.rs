@@ -73,8 +73,10 @@ impl Harness {
             modifiers: egui::Modifiers::NONE,
         };
         let release = egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
             pressed: false,
-            ..press.clone()
+            modifiers: egui::Modifiers::NONE,
         };
         let (o1, mut a) = self.frame(m, vec![egui::Event::PointerMoved(pos), press]);
         o1.drop_without_applying_deltas();
