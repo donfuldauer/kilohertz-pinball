@@ -1,0 +1,15 @@
+{
+  "format": "kilohertz-dof-map",
+  "version": 1,
+  "rom_name": "apexcircuit",
+  "table_name": "Apex Circuit",
+  "entries": [
+    { "source": "coil", "id": 1, "name": "left_flipper_coil", "type": "S", "number": 1 },
+    { "source": "switch", "id": 24, "name": "right_orbit_opto", "type": "W", "number": 24 },
+    { "source": "lamp", "id": 40, "name": "overdrive_ready", "type": "L", "number": 140 },
+    { "source": "gi", "id": 7, "name": "gi_upper", "type": "G", "number": 2 },
+    { "source": "coil", "id": 255, "name": "knocker_coil", "type": "E", "number": 65535 },
+    { "source": "coil", "id": 1, "name": "left_flipper_coil", "type": "S", "number": 48 },
+    { "source": "gi", "id": 31, "name": "gi_edge", "type": "L", "number": 9 }
+  ]
+}

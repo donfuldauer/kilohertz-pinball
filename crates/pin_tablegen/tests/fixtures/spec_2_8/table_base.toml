@@ -1,0 +1,222 @@
+# Subphase 2.8 spec fixture: the 4.3 spec base table without its [balls]
+# section (inserted per test), wireform and layer transition, plus a second
+# flipper coil/EOS switch and a VUK coil/switch.
+schema_version = 1
+
+[meta]
+id = "apex_circuit"
+name = "Apex Circuit"
+author = "Reference"
+version = "1.0.0"
+script_entry = "rules.lua"            # or "rules.wasm"
+playfield_mesh = "playfield.glb"
+pitch_deg = 6.5
+players_max = 4
+palette = ["#0b1d3a", "#f2a900", "#e63946"]   # used by the placeholder asset kit
+
+# @BALLS@ (the [balls] section is inserted here by the spec_2_8 tests)
+
+[physics]                              # optional per-table overrides of physics_defaults.toml
+# flipper_rubber_damping = 0.35
+
+[cabinet_switches]
+left_flipper = 1
+right_flipper = 2
+left_upper = 3
+right_upper = 4
+action = 5
+start = 6
+launch = 7
+tilt = 8
+
+[[switches]]
+id = "right_orbit_opto"
+number = 24
+kind = "opto"        # opto | rollover | eddy | leaf | target | trough | eos | spinner | ring
+layer = 0
+position = [410.0, 720.0, 0.0]         # omit when bound through glTF extras
+radius = 12.0
+
+[[coils]]
+id = "left_flipper_coil"
+number = 1
+kind = "flipper"     # flipper | bumper | sling | kicker | vuk | drop_reset | diverter | autoplunger | knocker | flasher
+
+[[lamps]]
+id = "overdrive_ready"
+number = 40
+kind = "insert"      # insert | gi | flasher
+color = "#ff7a00"
+response = "led"     # led | incandescent
+
+# Added by pin_assets fixtures: the Appendix A example references these
+# without declaring them.
+[[switches]]
+id = "lower_left_eos"
+number = 25
+kind = "eos"
+
+[[switches]]
+id = "bumper_1_ring"
+number = 26
+kind = "ring"
+
+[[switches]]
+id = "ramp_entry_opto"
+number = 27
+kind = "opto"
+
+[[switches]]
+id = "ramp_made_opto"
+number = 28
+kind = "opto"
+
+[[coils]]
+id = "bumper_1_coil"
+number = 2
+kind = "bumper"
+
+[[lamps]]
+id = "backglass_logo"
+number = 41
+kind = "flasher"
+
+[[magnets]]
+id = "orbit_magnet"
+number = 1
+position = [400.0, 700.0, 0.0]
+k_coil = 2.0e-6      # N·m³ at full power
+d_min = 8.0
+range = 60.0
+tau_ms = 60.0
+
+[[flippers]]                           # fields of FlipperConfig (§3.3)
+id = "lower_left"
+coil = "left_flipper_coil"
+eos_switch = "lower_left_eos"
+collision_layer = 0
+base_position = [180.0, 120.0, 0.0]
+surface_normal = [0.0, 0.0, 1.0]
+rest_angle_deg = -30.0
+sweep_angle_deg = 50.0
+eos_angle_fraction = 0.92
+shape = { type = "StraightCapsule", length = 76.0, base_radius = 11.0, tip_radius = 6.5 }
+staging = { type = "DedicatedButton", input = "left_flipper" }
+# torque, inertia, restitution and damping default from physics_defaults.toml
+
+[[dispensers]]
+id = "power_chamber"
+number = 1
+exit_position = [300.0, 880.0, 10.0]
+exit_velocity = [0.0, -0.6, 0.0]       # m/s
+contents = ["standard_steel", "standard_steel"]
+
+[[mechs]]
+id = "bumper_1"
+kind = "bumper"      # bumper | sling | drop_target | spinner | vuk | plunger | kickback | diverter | newton_ball | gate
+coil = "bumper_1_coil"
+switch = "bumper_1_ring"
+position = [260.0, 820.0, 0.0]
+# kind-specific parameters default from physics_defaults.toml
+
+[[shots]]                              # used by the autoplay harness for coverage
+id = "cross_shot_ramp"
+sequence = ["ramp_entry_opto", "ramp_made_opto"]
+window_ms = 2500
+
+# Extra coils and switches for the spec_2_8 flipper and VUK cases.
+[[coils]]
+id = "right_flipper_coil"
+number = 3
+kind = "flipper"
+
+[[coils]]
+id = "scoop_coil"
+number = 4
+kind = "vuk"
+
+[[switches]]
+id = "lower_right_eos"
+number = 29
+kind = "eos"
+
+[[switches]]
+id = "scoop_switch"
+number = 30
+kind = "opto"
+
+[[modes]]                              # rule modes the soak must see start at least once
+id = "powerball_mania"
+start_scene = "scene_powerball_mania"
+
+[[sounds]]
+id = "sfx_bumper"
+file = "audio/bumper.ogg"
+bus = "sfx"          # music | callout | sfx
+
+[[scenes]]
+id = "scene_powerball_mania"
+file = "display/powerball_mania.toml"
+
+[persist]
+keys = ["high_score_1", "high_score_2", "games_played"]
+
+[dof]                                  # optional (Subphase 3.5)
+rom_name = "apexcircuit"
+map = [ { coil = "left_flipper_coil", type = "S", number = 1 } ]
+
+[[lamps]]
+id = "lamp_a"
+number = 50
+kind = "insert"
+color = "#40c0ff"
+response = "led"
+
+[[lamps]]
+id = "lamp_b"
+number = 51
+kind = "insert"
+color = "#40c0ff"
+response = "led"
+
+[[lamps]]
+id = "lamp_c"
+number = 52
+kind = "insert"
+color = "#40c0ff"
+response = "led"
+
+[[lamps]]
+id = "lamp_d"
+number = 53
+kind = "insert"
+color = "#40c0ff"
+response = "led"
+
+[[lamps]]
+id = "lamp_e"
+number = 54
+kind = "insert"
+color = "#40c0ff"
+response = "led"
+
+[[lamps]]
+id = "lamp_f"
+number = 55
+kind = "insert"
+color = "#40c0ff"
+response = "led"
+
+[[lamps]]
+id = "lamp_g"
+number = 56
+kind = "insert"
+color = "#40c0ff"
+response = "led"
+
+[[lamps]]
+id = "lamp_h"
+number = 57
+kind = "insert"
+color = "#40c0ff"
+response = "led"
