@@ -342,4 +342,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 
 **Process change before Wave 6 (PLAN v5, D34–D36).** From here on the Model column shows the tier the work-classifier picked; Fable 5.2 rows carry their D34 evidence; Reviewer rows are replaced by Verifier rows and one row per merged PR (number, merge commit, CodeRabbit findings fixed / not a defect / deferred).
 
-**Process change (D38).** Fast-path rows show `triage` in the routed column; review rounds are batched per push.
+**Process change (D38).** Fast-path rows start the Notes column with `triage`, followed by the tier and a one-line reason; review rounds are batched per push.
