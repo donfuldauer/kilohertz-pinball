@@ -1,0 +1,12 @@
+[package]
+name = "pin_guest_sdk"
+description = "no_std Rust SDK for Kilohertz Pinball table rules compiled to WebAssembly."
+version = "0.1.0"
+# Spelled out rather than inherited, so standalone guest crates (with their own
+# [workspace]) can depend on this crate by path.
+edition = "2024"
+rust-version = "1.97"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]

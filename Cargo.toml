@@ -2,7 +2,7 @@
 # spikes/ is a separate workspace (Subphase 0.1) and is excluded here.
 [workspace]
 resolver = "3"
-members = ["crates/*"]  # guest-sdk is added by stack part 3 (pin_script)
+members = ["crates/*", "crates/pin_script/guest-sdk"]
 exclude = ["spikes"]
 
 [workspace.package]
