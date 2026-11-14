@@ -287,6 +287,10 @@ static void close_state (lua_State *L) {
     luai_userstateclose(L);
   }
   luaM_freearray(L, G(L)->strt.hash, G(L)->strt.size);
+  if (luaS_khzowner == g) {  /* KHZ: drop the pending cost of a dying state */
+    luaS_khzowner = NULL;
+    luaS_khzpending = 0;
+  }
   freestack(L);
   lua_assert(gettotalbytes(g) == sizeof(LG));
   (*g->frealloc)(g->ud, fromstate(L), sizeof(LG), 0);  /* free main block */
@@ -390,6 +394,7 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud) {
   g->mainthread = L;
   g->seed = luai_makeseed(L);
   g->khzbudget = LUA_MAXINTEGER / 4;  /* KHZ: unlimited until the host sets it */
+  g->khzpending = 0;  /* KHZ */
   g->gcstp = GCSTPGC;  /* no GC while building state */
   g->strt.size = g->strt.nuse = 0;
   g->strt.hash = NULL;
@@ -459,20 +464,16 @@ void luaE_warnerror (lua_State *L, const char *where) {
 
 /* KHZ: cost budget shared with the host's count hook (see lua.h) */
 LUA_API void lua_khzsetbudget (lua_State *L, lua_Integer n) {
+  luaS_khzown(G(L));
   G(L)->khzbudget = n;
-  luaS_khzpending = 0;
-  luaS_khzowner = G(L);
+  luaS_khzpending = 0;  /* a fresh budget starts with no pending cost */
 }
 
 
 LUA_API lua_Integer lua_khzspend (lua_State *L, lua_Integer n) {
   global_State *g = G(L);
-  if (l_unlikely(luaS_khzowner != (const void *)g)) {
-    /* KHZ: pending cost left by another state on this thread is not ours */
-    luaS_khzpending = 0;
-    luaS_khzowner = g;
-  }
-  else if (luaS_khzpending > 0) {  /* take the compares charged without a state */
+  luaS_khzown(g);  /* KHZ: another state's pending cost stays parked */
+  if (luaS_khzpending > 0) {  /* take the compares charged without a state */
     n = (n > LUA_MAXINTEGER / 4) ? n : n + luaS_khzpending;
     luaS_khzpending = 0;
   }
