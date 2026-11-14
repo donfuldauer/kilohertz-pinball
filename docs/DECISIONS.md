@@ -1957,3 +1957,12 @@ The N3 fix (stale probe after a ball drains) made the scheduler capture moved ba
 - **Lua-VM exemption accepted.** The engine's guarded ticks see only `luaM_realloc_` frames (≤ 64 B, ~1 per 75–160 ticks), capped by `LuaConfig::engine()` (2 MiB); Wasm is not exempt. The spec allocation test classifies by call stack independently of `ExemptScope`. The VM memory is capped but not pre-reserved; pre-reserving the call-info list in `pin_script` is a follow-up (HUMAN_QUEUE).
 - **Cabinet edges in the same tick (review N2) accepted.** Edges from inputs drained in step 1 reach the script in step 2 of the same tick; edges produced by physics in step 4/5 reach it the next tick. This is the lowest-latency reading of §2.2 that keeps the order deterministic, and it is tested.
 - **Polish round** for N1, N3, N5, N7, N8 (no behaviour change). N4, N6, N9 → HUMAN_QUEUE for 6.0.
+
+## 2.5 — review polish (N1, N3, N5, N7, N8)
+**Decision:**
+- **N7, accepted deviation:** `Recorder::recording(&self)` returns `&Recording`, where the amended brief pins `-> Recording`. A borrow is cheaper, and callers that need ownership can call `.clone()` or `Recorder::finish`.
+- **N3:** a recording may declare at most `replay::MAX_TICKS` = 2³² ticks (about 49.7 days of simulated time). `Recording::from_bytes` (after the checksum) and `replay()` refuse more with `ReplayError::TooManyTicks`, so a valid 52-byte file declaring `u64::MAX` ticks cannot run forever. The file format is unchanged.
+- **N8:** `replay()` hashes the bundle's files and compares the hash with the recording before building physics or running `on_init`. A wrong bundle is reported as `TableMismatch` even if it would not load; the check after load is kept. Replay uses the default engine script limits (`SimConfig::default()` with the recorded seed). The limits are not stored in the recording, because v1 carries only the seed and the engine limits are fixed by ruling; a run recorded with other `SimConfig` limits is documented as not replayable.
+- **N1:** the Lua `ExemptScope` covers only the script calls (`on_switch_edge`, `on_tick`), not the flipper edge handling between them.
+- **N5:** `Simulation`'s rustdoc now states the measured Lua behaviour, matching "2.5 — allocation guard and the Lua arena".
+**Rationale:** review of 2.5. Stepping behaviour does not change, and the fixture hash is unchanged.

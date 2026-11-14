@@ -31,19 +31,32 @@ fn banana(id: u16) -> FlipperConfig {
 // ------------------------------------------------------------ construction
 
 #[test]
-fn curved_banana_is_rejected_with_shape_not_supported() {
-    // Deliverable 6: loading a CurvedBanana flipper before 2.6 is a typed
-    // validation error from the constructor.
-    match FlipperSet::new(&[banana(0)]) {
-        Err(FlipperError::ShapeNotSupported { .. }) => {}
-        Err(e) => panic!("wrong error for CurvedBanana: {e:?}"),
-        Ok(_) => panic!("CurvedBanana accepted before 2.6"),
-    }
-    // Also when it is not the first flipper of the set.
-    match FlipperSet::new(&[flat(0, -30.0, 50.0), banana(1)]) {
-        Err(FlipperError::ShapeNotSupported { .. }) => {}
-        Err(e) => panic!("wrong error for CurvedBanana at index 1: {e:?}"),
-        Ok(_) => panic!("CurvedBanana accepted before 2.6 (index 1)"),
+fn curved_banana_is_accepted_and_invalid_banana_rejected() {
+    // Since Subphase 2.6 a valid CurvedBanana builds (alone and not as the
+    // first flipper of the set); an invalid one (arc radius below half the
+    // chord) is still a typed validation error from the constructor.
+    assert!(
+        FlipperSet::new(&[banana(0)]).is_ok(),
+        "valid CurvedBanana rejected"
+    );
+    assert!(
+        FlipperSet::new(&[flat(0, -30.0, 50.0), banana(1)]).is_ok(),
+        "valid CurvedBanana rejected at index 1"
+    );
+    let mut bad = banana(1);
+    bad.shape = FlipperShape::CurvedBanana {
+        length_mm: 80.0,
+        arc_radius_mm: 30.0,
+        arc_sweep_deg: 30.0,
+        tube_radius_mm: 8.0,
+    };
+    match FlipperSet::new(&[flat(0, -30.0, 50.0), bad]) {
+        Err(FlipperError::OutOfRange { id, field }) => {
+            assert_eq!(id, FlipperId(1));
+            assert_eq!(field, "shape.arc_radius_mm");
+        }
+        Err(e) => panic!("wrong error for an invalid CurvedBanana: {e:?}"),
+        Ok(_) => panic!("invalid CurvedBanana (arc radius < chord/2) accepted"),
     }
 }
 

@@ -1096,3 +1096,26 @@ fn round_robin_is_independent_of_ball_motion() {
         );
     }
 }
+
+/// Strict round robin for every ball count, odd ones included: over any run the balls'
+/// capture counts differ by at most one (with 7 balls and budget 2 the order is
+/// 0 1 | 2 3 | 4 5 | 6 0 | 1 2 | …, never favouring the low indices).
+#[test]
+fn odd_ball_counts_share_the_budget_fairly() {
+    for n in [3usize, 5, 7, 9, 15] {
+        let pos: Vec<V3> = (0..n).map(|i| [i as f32 * 0.06, 0.0, 0.0135]).collect();
+        let mut s = ProbeScheduler::new(PROBE_BUDGET);
+        let mut counts = vec![0u32; n];
+        for f in 0..(20 * n) {
+            for &i in s.schedule(&pos) {
+                counts[i] += 1;
+            }
+            let (lo, hi) = (*counts.iter().min().unwrap(), *counts.iter().max().unwrap());
+            assert!(
+                hi - lo <= 1,
+                "{n} balls, budget 2, after {} frames: capture counts {counts:?}",
+                f + 1
+            );
+        }
+    }
+}
