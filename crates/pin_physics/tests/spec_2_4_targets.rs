@@ -93,6 +93,29 @@ fn threshold_uses_the_normal_impact_speed() {
     assert_eq!(rig.mechs.drop_target_down(0), Some(true));
 }
 
+/// A slow face hit and a fast hit on the top in the same tick: neither
+/// impact is both on a face and at the threshold, so the target stays up.
+#[test]
+fn slow_face_hit_does_not_qualify_a_fast_top_hit() {
+    let d = defaults().mechs.drop_target;
+    let thr = d.threshold_speed;
+    let mut rig = Rig::in_space(&[target_spec(None)]);
+    let (va, vb) = (0.5 * thr, 2.0 * thr);
+    // Both touch 2.5 ms in (during the third tick).
+    let contact = 0.0025;
+    rig.add(steel_ball(
+        in_front(va * contact, 0.0),
+        Vec3::new(0.0, va, 0.0),
+    ));
+    rig.add(steel_ball(
+        DT_POS + Vec3::new(0.0, 0.0, d.height + R + vb * contact),
+        Vec3::new(0.0, 0.0, -vb),
+    ));
+    rig.run(30);
+    assert_eq!(rig.mechs.drop_target_down(0), Some(false));
+    assert!(!rig.mechs.mech_switch_closed(0));
+}
+
 #[test]
 fn drop_edge_and_disabled_collider() {
     let mut rig = Rig::in_space(&[target_spec(None)]);
