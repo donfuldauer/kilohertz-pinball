@@ -346,12 +346,17 @@ fn setting_control(
     out: &mut Vec<MenuInput>,
 ) {
     if let (Some(range), Some(mut v)) = (row.range(), row.number(cfg)) {
+        let before = v;
         let resp = ui.add(
             egui::Slider::new(&mut v, range.min..=range.max)
                 .step_by(range.step)
                 .text(row.value_text(cfg)),
         );
+        // The slider reports `changed` when it merely snaps the stored value
+        // to its step grid (float rounding); only a real move is an edit, so
+        // drawing a frame never steals the focus.
         if resp.changed()
+            && (v - before).abs() > range.step * 1e-3
             && let Some(ch) = SettingChange::number(row, v)
         {
             out.push(MenuInput::FocusRow(r));

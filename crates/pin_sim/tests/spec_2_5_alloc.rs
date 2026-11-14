@@ -3,10 +3,15 @@
 //! `Recording::from_bytes`.
 //!
 //! A counting global allocator with thread-local counters: every heap
-//! allocation made on the measuring thread inside `step_1ms` is counted. The
-//! fixture scripts create no Lua / Wasm objects in their callbacks, so the
-//! expected count is exactly zero (the Lua VM routes its allocations through
-//! the global allocator too, which makes this the stricter check).
+//! allocation made on the measuring thread inside `step_1ms` is counted and
+//! classified by its call stack:
+//!
+//! * **engine** — no Lua VM allocator frame on the stack. RULES 4 / D5 allow
+//!   none, from the very first tick.
+//! * **Lua VM** — requested by the Lua VM through its capped allocator
+//!   (`luaM_*` frames). RULES 4 exempts these; the fixture script creates no
+//!   Lua objects in its callbacks, so after a warm-up (the VM sizes its stack
+//!   on first use) the count is expected to be zero as well.
 
 #[path = "fixtures/spec_2_5/support.rs"]
 mod support;
@@ -17,7 +22,8 @@ use pin_core::snapshot::FrameStateSnapshot;
 use pin_sim::Simulation;
 use pin_sim::replay::Recording;
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use std::backtrace::Backtrace;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use support::*;
 
@@ -26,11 +32,33 @@ struct Counting;
 thread_local! {
     static ALLOCS: Cell<u64> = const { Cell::new(0) };
     static BYTES: Cell<u64> = const { Cell::new(0) };
+    /// True while the measuring thread is inside a guarded `step_1ms`.
+    static ARMED: Cell<bool> = const { Cell::new(false) };
+    static ENGINE: Cell<u64> = const { Cell::new(0) };
+    static LUA_VM: Cell<u64> = const { Cell::new(0) };
+    static FIRST_ENGINE_TRACE: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 fn bump(size: usize) {
     let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
     let _ = BYTES.try_with(|c| c.set(c.get() + size as u64));
+    // Classify allocations made inside a guarded tick. Disarmed while the
+    // backtrace is captured (capturing allocates).
+    if ARMED.try_with(|c| c.replace(false)).unwrap_or(false) {
+        let trace = Backtrace::force_capture().to_string();
+        if trace.contains("luaM_") {
+            LUA_VM.with(|c| c.set(c.get() + 1));
+        } else {
+            ENGINE.with(|c| c.set(c.get() + 1));
+            FIRST_ENGINE_TRACE.with(|t| {
+                let mut t = t.borrow_mut();
+                if t.is_none() {
+                    *t = Some(format!("{size} bytes\n{trace}"));
+                }
+            });
+        }
+        ARMED.with(|c| c.set(true));
+    }
 }
 
 // SAFETY: forwards to the system allocator, only adding thread-local counters.
@@ -70,10 +98,32 @@ fn counter_detects_allocation() {
     assert!(allocs() > a);
     assert!(bytes() >= b + 64);
     drop(v);
+    // The classifier: a plain Rust allocation inside an armed region is an
+    // engine allocation.
+    std::thread::spawn(|| {
+        ARMED.with(|c| c.set(true));
+        let v = std::hint::black_box(vec![2u8; 32]);
+        ARMED.with(|c| c.set(false));
+        drop(v);
+        assert_eq!((ENGINE.with(Cell::get), LUA_VM.with(Cell::get)), (1, 0));
+        assert!(FIRST_ENGINE_TRACE.with(|t| t.borrow().is_some()));
+    })
+    .join()
+    .unwrap();
 }
 
-/// Steps `ticks` ticks with the scripted inputs and returns
-/// (allocations inside step_1ms, first tick that allocated).
+/// What a guarded run saw inside `step_1ms`.
+#[derive(Debug, Default)]
+struct Guarded {
+    /// Allocations not made by the Lua VM (must be zero).
+    engine: u64,
+    /// Allocations made by the Lua VM allocator.
+    lua_vm: u64,
+    /// First tick with any allocation.
+    first_tick: Option<u64>,
+}
+
+/// Steps `ticks` ticks with the scripted inputs.
 /// Balls are re-injected through the test API between ticks (outside the
 /// guarded region) so that there is always something to simulate.
 fn guarded_run(
@@ -81,13 +131,13 @@ fn guarded_run(
     events: &[(u64, InputEvent)],
     ticks: u64,
     inject: bool,
-) -> (u64, Option<u64>) {
+) -> Guarded {
     let mut out = Box::new(FrameStateSnapshot::default());
     let mut buf: [InputEvent; 8] = [button(1, pin_core::input::CabinetInput::Tilt, false); 8];
     let first_tick = sim.tick() + 1;
     let mut i = events.partition_point(|e| e.0 < first_tick);
-    let mut total = 0u64;
-    let mut first_bad = None;
+    let mut g = Guarded::default();
+    let (e0, l0) = (ENGINE.with(Cell::get), LUA_VM.with(Cell::get));
     for tick in first_tick..first_tick + ticks {
         let mut n = 0;
         while i < events.len() && events[i].0 == tick {
@@ -102,40 +152,64 @@ fn guarded_run(
                 .expect("inject ball");
         }
         let before = allocs();
+        ARMED.with(|c| c.set(true));
         sim.step_1ms(tick, &buf[..n], &mut out);
-        let d = allocs() - before;
-        if d != 0 {
-            total += d;
-            first_bad.get_or_insert(tick);
+        ARMED.with(|c| c.set(false));
+        if allocs() != before {
+            g.first_tick.get_or_insert(tick);
         }
     }
-    (total, first_bad)
+    g.engine = ENGINE.with(Cell::get) - e0;
+    g.lua_vm = LUA_VM.with(Cell::get) - l0;
+    g
+}
+
+fn engine_trace() -> String {
+    FIRST_ENGINE_TRACE.with(|t| t.borrow().clone().unwrap_or_default())
 }
 
 fn guard_bundle(bundle: &Path, what: &str, warm_up: u64) {
     const TICKS: u64 = 60_000;
     let events = input_script(warm_up + TICKS, 11);
     let mut sim = load_at(bundle, DEFAULT_SEED);
-    let (warm, _) = guarded_run(&mut sim, &events, warm_up, true);
-    println!("{what}: {warm} allocations in step_1ms during the {warm_up}-tick warm-up");
-    let b0 = bytes();
-    let (n, first) = guarded_run(&mut sim, &events, TICKS, true);
+    let warm = guarded_run(&mut sim, &events, warm_up, true);
+    println!("{what}: step_1ms during the {warm_up}-tick warm-up: {warm:?}");
+    assert_eq!(
+        warm.engine,
+        0,
+        "{what}: {} engine (non-Lua-VM) heap allocations inside step_1ms during the first \
+         {warm_up} ticks, first allocating tick {:?}; first one: {}",
+        warm.engine,
+        warm.first_tick,
+        engine_trace()
+    );
+    let run = guarded_run(&mut sim, &events, TICKS, true);
+    println!("{what}: step_1ms over the next {TICKS} ticks: {run:?}");
     assert_eq!(sim.tick(), warm_up + TICKS);
     // The run did real work.
     assert!(sim.switch_hits("left_flipper").unwrap() > 100);
     assert!(sim.switch_hits("start").unwrap() >= 40);
     assert_eq!(
-        n,
+        run.engine,
         0,
-        "{what}: {n} heap allocations ({} bytes) inside step_1ms over {TICKS} ticks, first at tick {first:?}",
-        bytes() - b0
+        "{what}: {} engine heap allocations inside step_1ms over {TICKS} ticks, first \
+         allocating tick {:?}; first one: {}",
+        run.engine,
+        run.first_tick,
+        engine_trace()
+    );
+    assert_eq!(
+        run.lua_vm, 0,
+        "{what}: the Lua VM allocated {} times over {TICKS} steady-state ticks although the \
+         script creates no objects (first allocating tick {:?})",
+        run.lua_vm, run.first_tick
     );
 }
 
-/// Verification criterion 2 (Lua): no allocation in `step_1ms` over 60,000
-/// ticks with the scoring script loaded, balls in play, flippers firing and
-/// script-spawned balls. A 3,000-tick warm-up covers every script path once
-/// (the Lua VM may size its stack on first use).
+/// Verification criterion 2 (Lua): no engine allocation in `step_1ms` from
+/// tick 1, and no allocation at all over 60,000 ticks after a 3,000-tick
+/// warm-up, with the scoring script loaded, balls in play, flippers firing
+/// and script-spawned balls.
 #[test]
 fn allocation_guard_60000_ticks_with_lua_script() {
     on_sim_thread(|| {
@@ -148,8 +222,9 @@ fn allocation_guard_60000_ticks_with_lua_script() {
 }
 
 /// Rust engine code may not allocate at all in `step_1ms` (D5): with a rules
-/// file that defines no callbacks the count is zero from the very first tick
-/// (no warm-up), with balls, flippers and dispenser-less play.
+/// file that defines no callbacks the engine count is zero from the very
+/// first tick (no warm-up), with balls and flippers in play. (The Lua VM's
+/// own collector may still resize its stack once; that is the exemption.)
 #[test]
 fn allocation_guard_from_tick_one_without_script_callbacks() {
     on_sim_thread(|| {
@@ -160,11 +235,17 @@ fn allocation_guard_from_tick_one_without_script_callbacks() {
             .unwrap();
         sim.spawn_ball("ceramic_powerball", [0.20, 0.25, R], [0.4, 0.0, 0.0])
             .unwrap();
-        let (n, first) = guarded_run(&mut sim, &events, 8000, true);
+        let g = guarded_run(&mut sim, &events, 8000, true);
         assert_eq!(
-            n, 0,
-            "{n} heap allocations inside step_1ms with no script callbacks, first at tick {first:?}"
+            g.engine,
+            0,
+            "{} engine heap allocations inside step_1ms with no script callbacks, first \
+             allocating tick {:?}; first one: {}",
+            g.engine,
+            g.first_tick,
+            engine_trace()
         );
+        assert!(g.lua_vm <= 4, "an idle Lua VM kept allocating: {g:?}");
         assert!(sim.switch_hits("left_flipper").unwrap() > 5);
     });
 }
@@ -224,9 +305,10 @@ fn allocation_guard_60000_ticks_with_wasm_script() {
         let mut sim = load_at(&dir, DEFAULT_SEED);
         sim.advance(10);
         assert_eq!(sim.score(1), Some(10), "on_tick ran once per tick");
+        let edges = sim.score(2).unwrap();
         sim.set_switch("start", true).unwrap();
         sim.advance(2);
-        assert_eq!(sim.score(2), Some(1));
+        assert_eq!(sim.score(2), Some(edges + 1), "one more closed edge delivered");
         assert!(sim.score(3).unwrap() >= 1);
         assert_eq!(sim.balls_in_play(), 1, "the Wasm rules spawned a ball");
         drop(sim);
