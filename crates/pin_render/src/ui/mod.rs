@@ -216,6 +216,22 @@ impl OverlayPainter {
             .append(std::mem::take(&mut frame.textures_delta));
     }
 
+    /// Takes the texture deltas deferred to this painter and not yet applied,
+    /// as an empty frame (no meshes). Hand it to another painter's
+    /// [`defer`](Self::defer) when replacing this one, e.g. after a paint
+    /// was refused for this painter's format: a painter that has not painted
+    /// yet holds every texture delta of its context in this frame. (Deltas a
+    /// painter already applied stay in its GPU textures and are not
+    /// returned; replacing a painter that has painted needs the context to
+    /// resend its textures.)
+    pub fn take_deferred(&mut self) -> OverlayFrame {
+        OverlayFrame {
+            primitives: Vec::new(),
+            textures_delta: std::mem::take(&mut self.pending),
+            pixels_per_point: 1.0,
+        }
+    }
+
     /// The target format.
     pub fn format(&self) -> wgpu::TextureFormat {
         self.format
@@ -314,7 +330,9 @@ pub fn paint_offscreen(
 /// A rejected request (zero or oversized `width`/`height`, a painter of
 /// another format) paints nothing and returns an error, but `painter` keeps
 /// the frame's texture deltas ([`OverlayPainter::defer`]), so a later valid
-/// paint of the same context still has e.g. the font atlas.
+/// paint of the same context still has e.g. the font atlas. After a refusal
+/// for the painter's format, move them to an `Rgba8Unorm` painter with
+/// [`OverlayPainter::take_deferred`] and [`OverlayPainter::defer`].
 pub fn paint_offscreen_with(
     ctx: &GpuContext,
     painter: &mut OverlayPainter,
