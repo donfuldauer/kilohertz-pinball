@@ -50,6 +50,7 @@ Every open choice from the v1 audit is settled here. Agents treat this table as 
 | D34 | Fable 5.2 use | **Exception only.** Work is classified into tiers T0 Haiku 5.5, T1 Sonnet 5.5, T2 Opus 5.5 and T3 Fable 5.2. T3 needs (a) a very-high blast radius or an extremely hard-to-troubleshoot issue, with evidence; (b) a reason T2 is not enough; and (c) enough Fable allowance under the account's current usage limits. Unknown allowance counts as not enough; the work then runs on Opus 5.5 and a line goes to `docs/HUMAN_QUEUE.md` | Fable allowance is scarce and Opus 5.5 handled most of Waves 0–5's hard numerics; the run must not stall or exhaust limits waiting for Fable |
 | D35 | Agent roles | Four agents in `.claude/agents/`: **work-classifier** (classifies, picks the tier, writes the delegation brief), **task-executor** (implements, writes spec tests, fixes), **work-verifier** (requirements traced, coverage, passing tests; no style review) and **issue-investigator** (reproduces and root-causes reported issues, judges review findings) | Clear hand-offs with full briefs; cheap models do cheap work |
 | D36 | Code review | **No agent reviews its own or a sibling's code.** Every unit of work is a PR against `main`; CodeRabbit reviews it; auto-fix is on from the moment the PR opens; the Orchestrator merges, without waiting for a person, once CI is green and every finding is accounted for with its thread resolved (§2.7) | An external reviewer finds different defects than the model that wrote the code, and the run stays unattended |
+| D37 | Review threads | **The Orchestrator resolves review threads itself, on its own judgment**, once a reply gives the reason and evidence (fix verified, not a defect, deferred, or declined by repo convention); it does not wait for CodeRabbit to accept, and may post `@coderabbitai approve` when every other merge condition holds. Security issues and verified unfixed defects are never resolved. No person is asked to close a thread (§2.7) | PR #16 stalled with "Automatic approval withheld" because a justified thread waited on the bot's acceptance; leaving it for a person breaks D28 and D36 |
 
 ### Restored features (each isolated in its own subphase)
 
@@ -149,7 +150,7 @@ kilohertz-pinball/
 6. **No test-shaped special cases.** Solver code must not branch on named behaviours ("live catch", "powerball"). Tests assert emergent results across parameter sweeps.
 7. **Agent roles (D34, D35).** Every unit of work is classified by the work-classifier, done by a task-executor (as Implementer, Independent Tester or Fixer), checked by the work-verifier, and diagnosed by the issue-investigator when something fails for a reason that is not obvious (§2.6). The model is whatever the classifier picked (§2.5).
 8. **Never wait on a person (D28).** When the brief is ambiguous, choose the option most consistent with the decision log, record it in `docs/DECISIONS.md`, add a line to `docs/HUMAN_QUEUE.md`, and continue.
-9. **No self-review (D36).** No agent reviews code for style or design, its own or another agent's. The work-verifier checks objective facts only; code review happens on the pull request by CodeRabbit (§2.7).
+9. **No self-review (D36, D37).** No agent reviews code for style or design, its own or another agent's. The work-verifier checks objective facts only; code review happens on the pull request by CodeRabbit (§2.7). The Orchestrator resolves every review thread itself when justified and never leaves one for a person (§2.7 step 3).
 
 ### 2.4 Determinism Scope (D9)
 
@@ -226,7 +227,7 @@ A single long-running **Orchestrator** agent (the main session) owns the wave ta
 
 **Automated gates.** Gate A1 (after Wave 6) and Gate A2 (after Wave 7) are defined in Phase 6. A failing gate opens fix tasks against the owning subphases under the failure policy; it never pauses for a person.
 
-### 2.7 Pull Request, Review & Merge Workflow (D36)
+### 2.7 Pull Request, Review & Merge Workflow (D36, D37)
 
 Agents do not review their own code. Review comes from CodeRabbit on a pull request, and the Orchestrator resolves it without a person.
 
@@ -234,15 +235,17 @@ Agents do not review their own code. Review comes from CodeRabbit on a pull requ
 2. **Auto-fix on.** Right after opening, the Orchestrator subscribes to the PR's activity (comments, reviews, CI). From then on every CodeRabbit comment and every CI failure is handled as it arrives; nobody polls or sleeps waiting for them.
 3. **Every finding is accounted for.** For each CodeRabbit comment (inline, nitpick, outside-diff or summary item), the Orchestrator sends the finding to the work-classifier, or to the issue-investigator first when its validity or cause is unclear. Each one ends in exactly one disposition, recorded as a reply on its thread:
    * **Fixed:** an executor commit addresses it, the verifier re-runs the affected checks, and the reply names the commit. The thread is then resolved.
-   * **Not a defect:** the reply gives the evidence (test output, the DECISIONS.md section). The thread is resolved once CodeRabbit accepts or no longer pursues it; if it argues back with new information, the finding goes round again.
+   * **Not a defect:** the reply gives the evidence that the finding is not reproducible, already handled, out of scope, a documented accepted bound, or declined by repo convention (test output, commit SHA, the DECISIONS.md section, the PLAN rule or `.coderabbit.yaml` setting, the doc line). The thread is then resolved; if CodeRabbit argues back with new technical information, the finding goes round again.
    * **Deferred:** real but out of scope, or it changes simulation output and needs a human ruling. The reply links the `docs/HUMAN_QUEUE.md` line (committed on the PR), then the thread is resolved.
 
    No thread is resolved without a reply. Nitpicks are fixed when cheap (T0/T1), otherwise answered as above.
+
+   **Resolving (D37).** The Orchestrator resolves threads itself, on its own judgment, with the thread resolve action (`mcp__github__resolve_review_thread`), when a fix landed and the verifier passed on it, when the reply gives evidence that the finding is not reproducible, already handled, out of scope or a documented accepted bound, or when the finding is declined by repo convention (a DECISIONS.md entry, a PLAN rule or a `.coderabbit.yaml` setting), or when it was deferred and the reply links the queue line. Every reply states the reason and the evidence first (test output, commit SHA, DECISIONS.md section, doc line), then anything else. It does not wait for CodeRabbit to accept, agree or mark the finding addressed. A person is never asked to resolve a thread: `docs/HUMAN_QUEUE.md` lines are only for judgement calls a person should see, never for closing a thread. Exceptions: a thread that reports a security issue, or a verified correctness defect not yet fixed, is never resolved; it blocks the merge and goes through classify, fix, verify. A thread whose validity is unclear goes to the issue-investigator first. Where the thread type cannot be resolved (summary or outside-diff items), the reply alone is the disposition. When every thread is resolved or meets one of the resolve conditions above (never an exception), every other merge condition in step 5 holds, and CodeRabbit's approval is what is needed to clear "Automatic approval withheld", the Orchestrator posts a plain PR comment `@coderabbitai approve`.
 4. **Re-review.** Each push triggers CodeRabbit's incremental review; new findings go through step 3. If CodeRabbit has not reviewed the head commit (for example it is rate-limited), the Orchestrator asks it once with a PR comment `@coderabbitai review`, waits as long as it says, and asks again at most twice. If it still has not reviewed, the PR stays open, a line goes to `docs/HUMAN_QUEUE.md`, and the run continues with work that does not depend on this PR.
 5. **Merge conditions.** The Orchestrator merges, without waiting for a person, when all of these hold on the current head commit:
    * every required CI check is green;
    * CodeRabbit has finished reviewing the head commit, with no actionable comments left unanswered and no outstanding change request;
-   * every review conversation has a disposition reply and is resolved, where the thread type allows it;
+   * every review conversation has a disposition reply and has been resolved by the Orchestrator (step 3), except thread types that cannot be resolved, where the reply is the disposition;
    * the branch is up to date with `main` (if not, update it and wait for CI again);
    * the work-verifier's last result is `pass` for the head commit.
 
@@ -1170,6 +1173,7 @@ ROLE-SPECIFIC
   Independent Tester: you have NOT seen the implementation and must not ask for it.
                       Write black-box and property tests under tests/spec_* from this brief alone.
   Fixer:              smallest change that meets "fixed"; regression test; name the thread(s).
+                      Do not reply to or resolve threads unless told to; the Orchestrator does (D37).
   Verifier:           re-run every gate step; trace each requirement to a passing test;
                       no style or design opinions (CodeRabbit reviews the PR).
   Investigator:       reproduce, root-cause, verdict, fix plan; change no repository files.
