@@ -13,4 +13,4 @@ pub mod backbox;
 pub mod clearance;
 pub mod layout;
 
-pub use layout::{GenError, GeneratedTable, generate, write_bundle};
+pub use layout::{GenError, GeneratedTable, LOCK_FILE, generate, write_bundle};
