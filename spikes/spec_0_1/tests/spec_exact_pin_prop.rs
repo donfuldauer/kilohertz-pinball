@@ -29,10 +29,19 @@ proptest! {
     #[test]
     fn prerelease_exact_pins_are_accepted(
         maj in 0u32..1000, min in 0u32..1000, patch in 0u32..1000,
-        pre in r"[a-z][a-z0-9]{0,6}(\.[0-9a-z]{1,4}){0,2}",
+        pre in r"[a-z][a-z0-9]{0,6}(\.(0|[1-9][0-9]{0,3}|[0-9]{0,2}[a-z][0-9a-z]{0,2})){0,2}",
     ) {
         let pin = format!("={maj}.{min}.{patch}-{pre}");
         prop_assert!(is_exact_pin(&pin), "{pin} rejected");
+    }
+
+    #[test]
+    fn prerelease_numeric_leading_zeros_are_rejected(
+        maj in 0u32..1000, min in 0u32..1000, patch in 0u32..1000,
+        lead in r"([a-z][a-z0-9]{0,6}\.)?", digits in r"0[0-9]{1,4}",
+    ) {
+        let pin = format!("={maj}.{min}.{patch}-{lead}{digits}");
+        prop_assert!(!is_exact_pin(&pin), "{pin} accepted");
     }
 
     #[test]

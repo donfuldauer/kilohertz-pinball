@@ -146,7 +146,17 @@ impl<T: Read + Seek> OggStreamReader<T> {
 					};
 					let _decoded_pck = try!(read_audio_packet(&self.ident_hdr,
 						&self.setup_hdr, &pck.data, &mut self.pwr));
-					self.cur_absgp = Some(pck.absgp_page());
+					// KHZ patch 5: the page granule is the position at the end
+					// of the page, so it is the PCM position only if the
+					// priming packet ends the page. Otherwise the position is
+					// unknown until the next page boundary, as at the start of
+					// the first stream (upstream used the page-end granule
+					// and truncated a final packet on the same page to 0).
+					self.cur_absgp = if pck.last_in_page() {
+						Some(pck.absgp_page())
+					} else {
+						None
+					};
 
 					return Ok(try!(self.rdr.read_packet()));
 				} else {

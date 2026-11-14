@@ -296,18 +296,35 @@ static unsigned int setlimittosize (Table *t) {
 ** which may be in array part, nor for floats with integral values.)
 ** See explanation about 'deadok' in function 'equalkey'.
 */
+/*
+** KHZ: cost of walking a long hash chain (keys chosen to collide: integer
+** hashes are a plain modulo and string hashes use a fixed seed). Lookups have
+** no lua_State and must not throw, so the cost goes to the thread-local
+** pending cost, which the count hook drains. Chains shorter than 16 probes
+** (every table not built to collide) cost nothing.
+*/
+#define khz_probes(c)  \
+  { if (l_unlikely((c) >= 16)) luaS_khzpending += (lua_Integer)((c) >> 3); }
+
+
 static const TValue *getgeneric (Table *t, const TValue *key, int deadok) {
   Node *n = mainpositionTV(t, key);
+  unsigned int probes = 0;  /* KHZ */
   for (;;) {  /* check whether 'key' is somewhere in the chain */
     if (equalkey(key, n, deadok))
-      return gval(n);  /* that's it */
+      break;  /* that's it (KHZ: charged below) */
     else {
       int nx = gnext(n);
-      if (nx == 0)
+      if (nx == 0) {
+        khz_probes(probes);  /* KHZ */
         return &absentkey;  /* not found */
+      }
       n += nx;
+      probes++;  /* KHZ */
     }
   }
+  khz_probes(probes);  /* KHZ */
+  return gval(n);
 }
 
 
@@ -700,9 +717,13 @@ static void luaH_newkey (lua_State *L, Table *t, const TValue *key,
     lua_assert(!isdummy(t));
     othern = mainpositionfromnode(t, mp);
     if (othern != mp) {  /* is colliding node out of its main position? */
+      unsigned int probes = 0;  /* KHZ */
       /* yes; move colliding node into free position */
-      while (othern + gnext(othern) != mp)  /* find previous */
+      while (othern + gnext(othern) != mp) {  /* find previous */
         othern += gnext(othern);
+        probes++;  /* KHZ */
+      }
+      khz_probes(probes);  /* KHZ: the same chain walk as a lookup */
       gnext(othern) = cast_int(f - othern);  /* rechain to point to 'f' */
       *f = *mp;  /* copy colliding node into free pos. (mp->next also goes) */
       if (gnext(mp) != 0) {
@@ -760,15 +781,20 @@ const TValue *luaH_getint (Table *t, lua_Integer key) {
   }
   else {  /* key is not in the array part; check the hash */
     Node *n = hashint(t, key);
+    unsigned int probes = 0;  /* KHZ */
     for (;;) {  /* check whether 'key' is somewhere in the chain */
-      if (keyisinteger(n) && keyival(n) == key)
+      if (keyisinteger(n) && keyival(n) == key) {
+        khz_probes(probes);  /* KHZ */
         return gval(n);  /* that's it */
+      }
       else {
         int nx = gnext(n);
         if (nx == 0) break;
         n += nx;
+        probes++;  /* KHZ */
       }
     }
+    khz_probes(probes);  /* KHZ */
     return &absentkey;
   }
 }
@@ -779,15 +805,21 @@ const TValue *luaH_getint (Table *t, lua_Integer key) {
 */
 const TValue *luaH_getshortstr (Table *t, TString *key) {
   Node *n = hashstr(t, key);
+  unsigned int probes = 0;  /* KHZ */
   lua_assert(key->tt == LUA_VSHRSTR);
   for (;;) {  /* check whether 'key' is somewhere in the chain */
-    if (keyisshrstr(n) && eqshrstr(keystrval(n), key))
+    if (keyisshrstr(n) && eqshrstr(keystrval(n), key)) {
+      khz_probes(probes);  /* KHZ */
       return gval(n);  /* that's it */
+    }
     else {
       int nx = gnext(n);
-      if (nx == 0)
+      if (nx == 0) {
+        khz_probes(probes);  /* KHZ */
         return &absentkey;  /* not found */
+      }
       n += nx;
+      probes++;  /* KHZ */
     }
   }
 }

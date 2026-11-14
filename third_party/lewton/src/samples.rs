@@ -50,6 +50,8 @@ impl<S :Sample> Samples for InterleavedSamples<S> {
 		self.samples.len() / self.channel_count
 	}
 	fn truncate(&mut self, limit :usize) {
+		// KHZ patch 5: clamp first, so `limit * channel_count` cannot overflow.
+		let limit = std::cmp::min(limit, self.num_samples());
 		self.samples.truncate(limit * self.channel_count);
 	}
 	fn from_floats(floats :Vec<Vec<f32>>) -> Self {
@@ -100,4 +102,14 @@ impl Sample for i16 {
 			fl as i16
 		}
 	}
+}
+
+#[test]
+fn khz_interleaved_truncate_clamps_before_multiplying() {
+	// KHZ patch 5: `limit * channel_count` wrapped to 0 (or panicked).
+	let mut s = InterleavedSamples::<i16> { samples : vec![1, 2, 3, 4, 5, 6], channel_count : 2 };
+	s.truncate(::std::usize::MAX / 2 + 1);
+	assert_eq!(s.samples.len(), 6);
+	s.truncate(2);
+	assert_eq!(s.samples, vec![1, 2, 3, 4]);
 }
