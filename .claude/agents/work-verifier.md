@@ -1,6 +1,6 @@
 ---
 name: work-verifier
-description: Confirms that delegated work for Kilohertz Pinball meets its brief: every requirement has evidence, the coverage floors hold, and every applicable test, lint and gate step passes. Run after each executor report and after each fix pushed to a PR. It does not review code style or design; CodeRabbit does that on the PR.
+description: "Confirms that delegated work for Kilohertz Pinball meets its brief: every requirement has evidence, the coverage floors hold, and every applicable test, lint and gate step passes. Run after each executor report and after each fix pushed to a PR. It does not review code style or design; CodeRabbit does that on the PR."
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
