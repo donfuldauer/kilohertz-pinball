@@ -126,3 +126,53 @@ fn library_entry_points() {
     let missing = main_with_args(&["/no/such/bundle".to_owned(), "--ticks".into(), "1".into()]);
     assert!(matches!(missing, Err(CliError::Failed(_))));
 }
+
+#[test]
+fn recording_inside_the_folder_bundle_is_refused() {
+    // A recording written into the bundle would change its table hash, so
+    // it could never replay; the run refuses it before loading.
+    let bundle = fixture_variant("rec_inside", &[]);
+    for rec in [
+        bundle.join("run.khzrec"),
+        bundle.join(".").join("run.khzrec"),
+    ] {
+        let err = run(&Command::Run {
+            bundle: bundle.to_path_buf(),
+            ticks: 10,
+            seed: 1,
+            record: Some(rec.clone()),
+            idle: false,
+        })
+        .unwrap_err();
+        assert!(matches!(err, CliError::Usage(_)), "{err:?}");
+        assert_eq!(err.exit_code(), 2);
+        assert!(!rec.exists());
+    }
+    let out = bin()
+        .arg(&*bundle)
+        .args(["--ticks", "10", "--record-inputs"])
+        .arg(bundle.join("run.khzrec"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    // Next to the bundle is fine, and replays.
+    let outside = scratch_dir("rec_outside");
+    let rec = outside.join("run.khzrec");
+    let recorded = hash_of(
+        &bin()
+            .arg(&*bundle)
+            .args(["--ticks", "200", "--record-inputs"])
+            .arg(&rec)
+            .output()
+            .unwrap(),
+    );
+    let replayed = hash_of(
+        &bin()
+            .arg(&*bundle)
+            .arg("--replay-inputs")
+            .arg(&rec)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(replayed, recorded);
+}

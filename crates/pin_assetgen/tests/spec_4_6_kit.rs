@@ -7,16 +7,50 @@ mod spec_4_6_support;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use pin_assetgen::sounds::{SFX_IDS, render_sfx};
 use pin_assetgen::{AssetKind, KitManifest};
 use spec_4_6_support::*;
 
-/// The Appendix A kit, generated once per test binary.
-fn apex() -> &'static (PathBuf, KitManifest) {
-    static KIT: OnceLock<(PathBuf, KitManifest)> = OnceLock::new();
-    KIT.get_or_init(|| generate(&apex_meta(), "apex"))
+/// A generated kit whose directory is removed when the last reader drops it.
+struct Kit {
+    dir: PathBuf,
+    man: KitManifest,
+}
+
+impl Drop for Kit {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The Appendix A kit, shared by every test that runs while it is alive (a
+/// static holds only a weak reference, so the directory is cleaned up once
+/// the concurrent readers finish; a later reader regenerates it).
+fn apex() -> Arc<Kit> {
+    static KIT: Mutex<Weak<Kit>> = Mutex::new(Weak::new());
+    let mut slot = KIT.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(kit) = slot.upgrade() {
+        return kit;
+    }
+    let (dir, man) = generate(&apex_meta(), "apex");
+    let kit = Arc::new(Kit { dir, man });
+    *slot = Arc::downgrade(&kit);
+    kit
+}
+
+#[test]
+fn shared_kit_directory_is_removed_on_drop() {
+    let kit = Kit {
+        dir: tmp("drop_probe"),
+        man: KitManifest::default(),
+    };
+    std::fs::write(kit.dir.join("x"), b"x").unwrap();
+    let dir = kit.dir.clone();
+    assert!(dir.is_dir());
+    drop(kit);
+    assert!(!dir.exists(), "kit directory leaked: {}", dir.display());
 }
 
 fn apex_fixture() -> PathBuf {
@@ -34,7 +68,8 @@ fn of_kind<'a>(man: &'a KitManifest, kind: &str) -> Vec<&'a pin_assetgen::KitEnt
 
 #[test]
 fn manifest_ids_and_paths_are_unique_relative_and_exist() {
-    let (dir, man) = apex();
+    let kit = apex();
+    let (dir, man) = (&kit.dir, &kit.man);
     assert!(!man.entries.is_empty());
     let _ = index(man); // unique ids
     let mut paths = BTreeSet::new();
@@ -83,7 +118,8 @@ fn manifest_ids_and_paths_are_unique_relative_and_exist() {
 
 #[test]
 fn manifest_has_every_deliverable_kind() {
-    let (_, man) = apex();
+    let kit = apex();
+    let (_, man) = (&kit.dir, &kit.man);
     let idx = index(man);
     for id in SFX_IDS {
         let (path, kind, _) = idx
@@ -139,7 +175,8 @@ fn strings(v: &toml::Value, out: &mut BTreeSet<String>) {
 
 #[test]
 fn assets_toml_is_written_and_lists_every_entry() {
-    let (dir, man) = apex();
+    let kit = apex();
+    let (dir, man) = (&kit.dir, &kit.man);
     let text = std::fs::read_to_string(dir.join("assets.toml"))
         .expect("<out_dir>/assets.toml must be written");
     let table: toml::Table = text.parse().expect("assets.toml must be valid TOML");
@@ -160,7 +197,8 @@ fn assets_toml_is_written_and_lists_every_entry() {
 
 #[test]
 fn manifest_hashes_match_the_files() {
-    let (dir, man) = apex();
+    let kit = apex();
+    let (dir, man) = (&kit.dir, &kit.man);
     // Equal bytes <=> equal hash, over every pair of entries.
     let files: Vec<Vec<u8>> = man
         .entries
@@ -203,8 +241,10 @@ fn manifest_hashes_match_the_files() {
 fn a_changed_file_gets_a_changed_hash() {
     // Same id, different content (other seed) => different hash; same content
     // => same hash.
-    let (_, a) = apex();
-    let (dir_a, _) = apex();
+    let kit = apex();
+    let (_, a) = (&kit.dir, &kit.man);
+    let kit = apex();
+    let (dir_a, _) = (&kit.dir, &kit.man);
     let (dir_b, b) = generate(&meta("Apex Circuit", &APEX_PALETTE, 2), "hash_seed2");
     let ib = index(&b);
     for e in &a.entries {
@@ -219,7 +259,8 @@ fn a_changed_file_gets_a_changed_hash() {
 
 #[test]
 fn same_meta_gives_byte_identical_kits() {
-    let (dir_a, man_a) = apex();
+    let kit = apex();
+    let (dir_a, man_a) = (&kit.dir, &kit.man);
     let (dir_b, man_b) = generate(&apex_meta(), "apex_again");
     let (ta, tb) = (read_tree(dir_a), read_tree(&dir_b));
     assert_eq!(
@@ -250,7 +291,8 @@ fn changed_vs_apex(
     other: &pin_assetgen::TableMeta,
     name: &str,
 ) -> BTreeMap<&'static str, Vec<String>> {
-    let (dir_a, a) = apex();
+    let kit = apex();
+    let (dir_a, a) = (&kit.dir, &kit.man);
     let (dir_b, b) = generate(other, name);
     let (ia, ib) = (index(a), index(&b));
     assert_eq!(
@@ -338,7 +380,8 @@ fn a_different_palette_changes_the_art_but_not_the_sfx() {
 
 #[test]
 fn every_wav_is_48k_pcm16_or_float_and_decodes_with_pin_audio() {
-    let (dir, man) = apex();
+    let kit = apex();
+    let (dir, man) = (&kit.dir, &kit.man);
     for e in man.entries.iter().filter(|e| is_audio(&e.kind)) {
         let bytes = file_bytes(dir, &e.path);
         let (tag, channels, rate, bits) = wav_info(&bytes);
@@ -365,7 +408,8 @@ fn every_wav_is_48k_pcm16_or_float_and_decodes_with_pin_audio() {
 
 #[test]
 fn every_sound_file_is_non_silent_and_below_clipping() {
-    let (dir, man) = apex();
+    let kit = apex();
+    let (dir, man) = (&kit.dir, &kit.man);
     for e in man.entries.iter().filter(|e| is_audio(&e.kind)) {
         let (l, r) = decode48(&file_bytes(dir, &e.path));
         for (side, s) in [("left", &l), ("right", &r)] {
@@ -386,7 +430,8 @@ fn every_sound_file_is_non_silent_and_below_clipping() {
 
 #[test]
 fn sfx_files_hold_what_render_sfx_renders() {
-    let (dir, man) = apex();
+    let kit = apex();
+    let (dir, man) = (&kit.dir, &kit.man);
     let idx = index(man);
     for id in SFX_IDS {
         let (l, _) = decode48(&file_bytes(dir, &idx[*id].0));
@@ -405,7 +450,8 @@ fn sfx_files_hold_what_render_sfx_renders() {
 
 #[test]
 fn ball_roll_file_loops_seamlessly() {
-    let (dir, man) = apex();
+    let kit = apex();
+    let (dir, man) = (&kit.dir, &kit.man);
     let (l, _) = decode48(&file_bytes(dir, &index(man)["sfx_ball_roll"].0));
     let (j, m) = (seam(&l), max_step(&l));
     assert!(
@@ -417,7 +463,8 @@ fn ball_roll_file_loops_seamlessly() {
 
 #[test]
 fn music_is_a_short_loop() {
-    let (dir, man) = apex();
+    let kit = apex();
+    let (dir, man) = (&kit.dir, &kit.man);
     for e in of_kind(man, "Music") {
         let (l, _) = decode48(&file_bytes(dir, &e.path));
         let secs = l.len() as f64 / 48_000.0;
@@ -433,7 +480,8 @@ fn music_is_a_short_loop() {
 
 #[test]
 fn motifs_are_distinct_from_each_other() {
-    let (dir, man) = apex();
+    let kit = apex();
+    let (dir, man) = (&kit.dir, &kit.man);
     let motifs = of_kind(man, "Motif");
     for i in 0..motifs.len() {
         for j in i + 1..motifs.len() {
@@ -451,7 +499,8 @@ fn motifs_are_distinct_from_each_other() {
 
 #[test]
 fn every_png_loads_through_pin_assets_and_is_not_a_flat_fill() {
-    let (dir, man) = apex();
+    let kit = apex();
+    let (dir, man) = (&kit.dir, &kit.man);
     for e in of_kind(man, "Image") {
         let bytes = file_bytes(dir, &e.path);
         assert!(bytes.starts_with(&PNG_SIG), "{}: not a PNG", e.id);
@@ -593,7 +642,8 @@ fn a_bundle_referencing_the_kit_passes_load_table() {
 /// manifest entry with an existing file, and so does the stable id list.
 #[test]
 fn appendix_a_sound_ids_and_the_stable_list_resolve() {
-    let (dir, man) = apex();
+    let kit = apex();
+    let (dir, man) = (&kit.dir, &kit.man);
     let idx = index(man);
     let text = std::fs::read_to_string(apex_fixture().join("table.toml")).unwrap();
     let table: toml::Table = text.parse().unwrap();

@@ -151,7 +151,16 @@ pub struct ScoreText {
     pub valign: VAlign,
     /// Brightness multiplier (1 for the player up, 0.5 for the others).
     pub emphasis: f32,
+    /// Widest the text may be drawn, fraction of the display width (the
+    /// renderers shrink it to fit): 1 for full-width lines,
+    /// [`SCORE_COLUMN_WIDTH`] for one column of the multi-player grid.
+    pub max_w: f32,
 }
+
+/// Width available to one column of the multi-player score grid, fraction
+/// of the display width: the columns are anchored at 0.02 and 0.98, so two
+/// of them leave a gap in the middle and never overlap.
+pub const SCORE_COLUMN_WIDTH: f32 = 0.47;
 
 /// Brightness of players who are not up in a multi-player view.
 pub const OTHER_PLAYER_EMPHASIS: f32 = 0.5;
@@ -162,7 +171,8 @@ pub const OTHER_PLAYER_EMPHASIS: f32 = 0.5;
 /// One player: the score large in the upper part (size 0.55, centred at
 /// y = 0.38) and the status line at the bottom (size 0.25). Several: a 2 × 2
 /// grid (players 1 / 2 on the top row, 3 / 4 below; left column
-/// left-aligned, right column right-aligned; size 0.28), the player up at
+/// left-aligned, right column right-aligned; size 0.28; each fitted to its
+/// own column, [`SCORE_COLUMN_WIDTH`]), the player up at
 /// full brightness and the others at [`OTHER_PLAYER_EMPHASIS`], and the
 /// status line at the bottom.
 pub fn score_view_layout(state: &ScoreState) -> Vec<ScoreText> {
@@ -177,6 +187,7 @@ pub fn score_view_layout(state: &ScoreState) -> Vec<ScoreText> {
             align: Align::Center,
             valign: VAlign::Middle,
             emphasis: 1.0,
+            max_w: 1.0,
         });
     } else {
         for (i, row) in lines.rows.iter().enumerate() {
@@ -193,6 +204,7 @@ pub fn score_view_layout(state: &ScoreState) -> Vec<ScoreText> {
                 } else {
                     OTHER_PLAYER_EMPHASIS
                 },
+                max_w: SCORE_COLUMN_WIDTH,
             });
         }
     }
@@ -204,6 +216,7 @@ pub fn score_view_layout(state: &ScoreState) -> Vec<ScoreText> {
         align: Align::Center,
         valign: VAlign::Bottom,
         emphasis: 1.0,
+        max_w: 1.0,
     });
     out
 }

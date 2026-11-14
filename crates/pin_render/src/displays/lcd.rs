@@ -141,7 +141,8 @@ fn text_item(
 
 impl LcdDrawList {
     /// Composes `scene` at `elapsed_ms` on a `spec` canvas. Text is shrunk to
-    /// [`TEXT_FIT`] of the canvas width (score text: of its box width). Images with `h = 0`
+    /// [`TEXT_FIT`] of the canvas width (score text: of its box width, or of its
+    /// column in the multi-player grid). Images with `h = 0`
     /// keep their aspect (from `images`; skipped when missing).
     pub fn compose(
         spec: &LcdSpec,
@@ -206,7 +207,7 @@ impl LcdDrawList {
                             t.align,
                             t.valign,
                             rgba(c, st.opacity),
-                            bw * TEXT_FIT,
+                            bw * t.max_w * TEXT_FIT,
                         ));
                     }
                 }

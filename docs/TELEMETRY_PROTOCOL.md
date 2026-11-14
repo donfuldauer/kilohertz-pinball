@@ -10,8 +10,9 @@ A change to anything in sections 2–4 is a breaking contract change
 
 - UDP. Default destination `127.0.0.1:35120`; the destination is
   configurable (host and port).
-- One datagram per sim tick that has changes; **no datagram** for a tick
-  without changes.
+- One or more datagrams per sim tick that has changes (a tick with more
+  than 180 entries is split, section 4 rule 5; a full state takes 5);
+  **no datagram** for a tick without changes.
 - All multi-byte fields are **little-endian**. `f32` is IEEE 754 binary32.
 - The sim runs at 1000 ticks per second; `tick` counts from 0 at the start of
   the sim session.
@@ -136,13 +137,21 @@ roll is not an impulse and is not part of the telemetry stream.
 ## 6. Listener guidance
 
 - Keep a mirror of all state elements; apply every kind 0–4 entry of every
-  accepted datagram.
+  accepted datagram, unless that element was already set from a later tick
+  (track the tick each element was last set from; an entry from the same or
+  a later tick replaces it; a full state that starts a new session replaces
+  the mirror and these ticks). Otherwise a reordered older datagram would
+  restore a stale value.
 - On a full-state datagram, treat its entries as authoritative; until the
   first full state arrives, the mirror is unknown.
 - Datagrams of one tick may arrive out of order relative to other ticks;
   ignore datagrams whose tick is below the last full-state tick seen,
   **unless the datagram is itself a full state**: a full state with a lower
   tick means a new session (section 4, rule 4) and replaces the mirror.
+  Version 1 has no session id, so a full state delayed past a later one is
+  indistinguishable from a restart; the next periodic full state (at most
+  one second later) corrects the mirror. An unambiguous session id would be
+  a breaking change (new `version`).
 - Example (lamp 1 at full, tick `0x1122334455667788`, full-state flag; a
   real full state would carry all 832 entries over 5 datagrams):
 

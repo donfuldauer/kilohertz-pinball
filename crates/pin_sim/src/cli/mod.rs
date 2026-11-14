@@ -21,8 +21,8 @@
 
 use core::fmt;
 use pin_core::input::{CabinetAxis, CabinetInput, InputEvent};
-use pin_core::sim::TICK_NS;
-use std::path::PathBuf;
+use pin_core::sim::{SimStep, TICK_NS};
+use std::path::{Path, PathBuf};
 
 use crate::replay::{Recorder, Recording, replay};
 use crate::{SimConfig, Simulation};
@@ -203,6 +203,50 @@ pub fn record_pattern(sim: Simulation, ticks: u64, idle: bool) -> (Simulation, R
     rec.finish()
 }
 
+/// Runs `ticks` ticks of [`pattern_events`] (or no input when `idle`) on
+/// `sim` without recording: the input buffer is reused and no history is
+/// kept. Same final state as [`record_pattern`].
+#[must_use]
+pub fn run_pattern(mut sim: Simulation, ticks: u64, idle: bool) -> Simulation {
+    let mut events = Vec::new();
+    let mut out = *sim.snapshot();
+    for _ in 0..ticks {
+        let tick = sim.tick() + 1;
+        events.clear();
+        if !idle {
+            pattern_events(tick, &mut events);
+        }
+        sim.step_1ms(tick, &events, &mut out);
+    }
+    sim
+}
+
+/// Whether `record` would be written inside the folder bundle `bundle` (or
+/// over the bundle file itself). A file there would become part of the
+/// bundle's table hash and the recording could not replay.
+fn record_inside_bundle(bundle: &Path, record: &Path) -> bool {
+    let Ok(bundle) = bundle.canonicalize() else {
+        return false;
+    };
+    let file_name = match record.file_name() {
+        Some(n) => n,
+        None => return false,
+    };
+    let parent = match record.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let Ok(parent) = parent.canonicalize() else {
+        return false;
+    };
+    let target = parent.join(file_name);
+    if bundle.is_dir() {
+        target.starts_with(&bundle)
+    } else {
+        target == bundle
+    }
+}
+
 /// Runs a parsed command; returns the final state hash.
 ///
 /// # Errors
@@ -217,6 +261,16 @@ pub fn run(cmd: &Command) -> Result<u64, CliError> {
             record,
             idle,
         } => {
+            if let Some(path) = record
+                && record_inside_bundle(bundle, path)
+            {
+                return Err(CliError::Usage(format!(
+                    "--record-inputs {} is inside the bundle {}; a recording there changes the \
+                     table hash and cannot be replayed",
+                    path.display(),
+                    bundle.display()
+                )));
+            }
             let sim = Simulation::load(
                 bundle,
                 SimConfig {
@@ -225,10 +279,11 @@ pub fn run(cmd: &Command) -> Result<u64, CliError> {
                 },
             )
             .map_err(|e| fail(&e))?;
+            let Some(path) = record else {
+                return Ok(run_pattern(sim, *ticks, *idle).state_hash());
+            };
             let (sim, recording) = record_pattern(sim, *ticks, *idle);
-            if let Some(path) = record {
-                recording.save(path).map_err(|e| fail(&e))?;
-            }
+            recording.save(path).map_err(|e| fail(&e))?;
             Ok(sim.state_hash())
         }
         Command::Replay { bundle, file } => {

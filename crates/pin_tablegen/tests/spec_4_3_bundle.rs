@@ -116,6 +116,48 @@ fn write_bundle_writes_exactly_the_two_outputs() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A failure after the first output has been replaced rolls it back: both
+/// previous outputs stay intact and no staging files are left behind.
+#[test]
+fn write_bundle_failure_after_first_replacement_keeps_previous_outputs() {
+    let generated = gen_ok(&a3_layout(), &base_table());
+    let dir = temp_dir("write-rollback");
+    std::fs::write(dir.join("playfield.glb"), b"old glb").unwrap();
+    // A non-empty directory where table.toml goes: the playfield is replaced
+    // first, then replacing table.toml fails.
+    std::fs::create_dir_all(dir.join("table.toml")).unwrap();
+    std::fs::write(dir.join("table.toml").join("keep"), b"old table").unwrap();
+    write_bundle(&generated, &dir).unwrap_err();
+    assert_eq!(
+        std::fs::read(dir.join("playfield.glb")).unwrap(),
+        b"old glb"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("table.toml").join("keep")).unwrap(),
+        b"old table"
+    );
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["playfield.glb", "table.toml"]);
+    // Without the obstacle, the same call replaces both and leaves no extras.
+    std::fs::remove_dir_all(dir.join("table.toml")).unwrap();
+    write_bundle(&generated, &dir).unwrap();
+    assert_eq!(
+        std::fs::read(dir.join("playfield.glb")).unwrap(),
+        generated.glb
+    );
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["playfield.glb", "table.toml"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn base_manifest_is_preserved_by_the_merge() {
     let base = base_table();

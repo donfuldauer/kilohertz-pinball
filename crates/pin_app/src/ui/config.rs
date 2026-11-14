@@ -1044,8 +1044,8 @@ fn drop_non_table(raw: &mut toml::Table, path: &[&str], w: &mut Vec<ConfigWarnin
 }
 
 /// Keeps every known value of `raw` that deserializes on its own (checked
-/// per top-level key, then per key inside a failing known table, two levels
-/// deep) and drops the rest with one [`ConfigWarning::InvalidValue`] each.
+/// per top-level key, then per key inside a failing known section of
+/// [`SECTIONS`]) and drops the rest with one [`ConfigWarning::InvalidValue`] each.
 /// Unknown keys are kept untouched (they end up in `extra`).
 fn drop_bad_values(mut raw: toml::Table, w: &mut Vec<ConfigWarning>) -> toml::Table {
     // serde accepts an array of tables (`[[calibration]]`) where a struct is
@@ -1066,8 +1066,13 @@ fn drop_bad_values(mut raw: toml::Table, w: &mut Vec<ConfigWarning>) -> toml::Ta
             Ok(()) => return Some(value),
             Err(e) => e,
         };
+        // Only a known section is cleaned key by key; a table where a scalar
+        // setting belongs (`wireframe = {}`) is dropped whole, or the cleaned
+        // (still invalid) table would fail the final conversion and reset
+        // every setting.
+        let section = SECTIONS.iter().any(|(p, _)| *p == keys.as_slice());
         match value {
-            toml::Value::Table(t) if path.len() < 3 => {
+            toml::Value::Table(t) if section => {
                 let mut out = toml::Table::new();
                 for (k, v) in t {
                     path.push(k.clone());

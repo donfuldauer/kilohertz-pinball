@@ -1,5 +1,5 @@
 //! Implementer property tests: `decode` never panics on random or truncated
-//! input; mixer output is bounded and a pure sum below full scale.
+//! input; mixer output is bounded and the (clipped) pure sum.
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -88,6 +88,8 @@ proptest! {
             let keep = v.len().min(cfg.max_voices[b]);
             expect += v[v.len() - keep..].iter().map(|&x| f64::from(x)).sum::<f64>();
         }
+        // The mixer hard-clips to [-1, 1]; up to 24 Sfx voices can exceed it.
+        let expect = expect.clamp(-1.0, 1.0);
         for f in out.chunks(2) {
             prop_assert!(f[0].abs() <= 1.0 && f[1].abs() <= 1.0);
             prop_assert!((f64::from(f[0]) - expect).abs() < 1e-4);

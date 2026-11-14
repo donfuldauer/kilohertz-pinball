@@ -19,6 +19,7 @@ public sealed class UdpBridgeHost : IDisposable
     private Thread? _thread;
     private long _received;
     private volatile bool _stopping;
+    private int _stopRequested;
 
     /// <summary>Binds the socket (port 0 picks a free port; see <see cref="LocalEndPoint"/>).</summary>
     /// <param name="core">The core to feed.</param>
@@ -128,24 +129,30 @@ public sealed class UdpBridgeHost : IDisposable
         }
     }
 
-    /// <summary>Closes the socket and joins the receive thread.</summary>
+    /// <summary>Closes the socket and joins the receive thread. Safe to call from the
+    /// <c>onFault</c> callback (on the receive thread): it then only requests the stop, and a later
+    /// call from another thread still waits for the receive thread to end.</summary>
     public void Stop()
     {
-        if (_stopping)
+        if (Interlocked.Exchange(ref _stopRequested, 1) == 0)
         {
-            return;
+            _stopping = true;
+            try
+            {
+                _socket.Shutdown(SocketShutdown.Both);
+            }
+            catch (SocketException)
+            {
+                // Not connected: fine for UDP.
+            }
+            _socket.Close();
         }
-        _stopping = true;
-        try
+        Thread? thread = _thread;
+        if (thread != null && thread != Thread.CurrentThread)
         {
-            _socket.Shutdown(SocketShutdown.Both);
+            // Never join the current thread: that waits for itself forever.
+            thread.Join();
         }
-        catch (SocketException)
-        {
-            // Not connected: fine for UDP.
-        }
-        _socket.Close();
-        _thread?.Join();
     }
 
     /// <inheritdoc />

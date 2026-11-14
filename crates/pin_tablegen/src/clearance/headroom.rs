@@ -101,12 +101,19 @@ fn laterally_free(w: &World<'_>, layer: u8, c: DVec3, r: f64, idx: &mut Vec<u32>
     })
 }
 
+/// Centre of a ball of radius `r` resting on support `s` above plan point
+/// `q`: `r / |n·z|` above the support plane, so the sphere is tangent to an
+/// inclined support instead of sinking into it.
+pub(super) fn resting_centre(s: &Tri, q: DVec2, r: f64) -> DVec3 {
+    DVec3::new(q.x, q.y, s.z_at(q) + r / s.nz())
+}
+
 /// Most samples along one axis of a (support, ceiling) pair.
 const MAX_AXIS_SAMPLES: f64 = 1024.0;
 
 /// Headroom under non-steep colliders of other layers above every walkable
-/// surface a ball may use: the ball resting on the support (centre at the
-/// support plus `r`) must stay `r + MIN_CLEARANCE_MM` from every such
+/// surface a ball may use: the ball resting on the support (centre
+/// [`resting_centre`]) must stay `r + MIN_CLEARANCE_MM` from every such
 /// ceiling triangle (sphere test, so deck edges, slopes and low vertices
 /// count, not only the vertical gap at the centre). The reported headroom
 /// is `r + distance` (the vertical gap under a flat deck).
@@ -182,7 +189,7 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                         continue;
                     }
                     let zs = s.z_at(q);
-                    let centre3 = DVec3::new(q.x, q.y, zs + r);
+                    let centre3 = resting_centre(s, q, r);
                     let cp = c.closest(centre3);
                     if cp.z <= zs + min_gap {
                         continue;

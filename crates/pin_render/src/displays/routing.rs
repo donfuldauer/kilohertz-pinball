@@ -183,12 +183,36 @@ impl ScoreDisplayModel {
         self.player.apply_commands(q, now_ms);
     }
 
-    /// The content at `now_ms`: the active scene, else the score view.
+    /// Ms elapsed in the score view at `now_ms`. Its timeline starts when a
+    /// timed scene ends (or when a scene with an unknown id was shown), else
+    /// at clock 0; `repeat` wraps it, and a timed score scene without
+    /// `repeat` holds its last millisecond (the score view never ends).
+    fn score_view_elapsed(&self, now_ms: u64) -> u64 {
+        let since = match self.player.current() {
+            Some((id, start)) => match self.library.get(id) {
+                Some(s) if s.duration_ms > 0 && !s.repeat => start.saturating_add(s.duration_ms),
+                _ => start,
+            },
+            None => 0,
+        };
+        let elapsed = now_ms.saturating_sub(since);
+        let d = self.score_scene.duration_ms;
+        if d == 0 {
+            elapsed
+        } else if self.score_scene.repeat {
+            elapsed % d
+        } else {
+            elapsed.min(d - 1)
+        }
+    }
+
+    /// The content at `now_ms`: the active scene, else the score view (whose
+    /// own timeline keeps advancing).
     pub fn compose(&self, now_ms: u64) -> DisplayContent {
         let (scene, elapsed) = self
             .player
             .active(&self.library, now_ms)
-            .unwrap_or((&self.score_scene, 0));
+            .unwrap_or_else(|| (&self.score_scene, self.score_view_elapsed(now_ms)));
         match &self.config {
             ScoreDisplayConfig::Dmd(spec) => DisplayContent::Dmd(DmdFrame::compose(
                 spec,

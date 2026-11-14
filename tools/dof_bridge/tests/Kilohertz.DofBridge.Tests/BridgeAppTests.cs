@@ -156,6 +156,60 @@ public class BridgeAppTests
         host.Stop();
     }
 
+    /// <summary>Stopping the host from its own fault callback (on the receive thread) must not join
+    /// that thread; an external Stop afterwards still waits for it.</summary>
+    [Fact]
+    public void StopFromFaultCallbackDoesNotDeadlock()
+    {
+        var core = new BridgeCore(Fixtures.Map(), new ThrowingSink());
+        using var callbackDone = new ManualResetEventSlim();
+        UdpBridgeHost? host = null;
+        Thread? faultThread = null;
+        host = new UdpBridgeHost(core, new IPEndPoint(IPAddress.Loopback, 0), _ =>
+        {
+            faultThread = Thread.CurrentThread;
+            host!.Stop();
+            callbackDone.Set();
+        });
+        using (host)
+        {
+            host.Start();
+            using (Socket tx = Sender(host.LocalEndPoint))
+            {
+                tx.Send(Dg.Make(0, true, Dg.Coil(1, 1)));
+            }
+            Assert.True(callbackDone.Wait(Timeout), "Stop() on the receive thread deadlocked");
+            host.Stop();
+            Assert.False(faultThread!.IsAlive);
+            Assert.IsType<IOException>(host.Fault);
+        }
+    }
+
+    /// <summary>The bridge does not authenticate senders, so it only listens on loopback.</summary>
+    [Theory]
+    [InlineData("0.0.0.0")]
+    [InlineData("192.168.1.20")]
+    [InlineData("::")]
+    [InlineData("::ffff:10.0.0.1")]
+    public void NonLoopbackBindIsRejected(string bind)
+    {
+        var err = new StringWriter();
+        var ctx = new BridgeRunContext { SinkFactory = (_, _) => throw new InvalidOperationException("sink must not be created") };
+        Assert.Equal(BridgeApp.ExitUsage, BridgeApp.Run(["--map", MapPath, "--port", "0", "--bind", bind], new StringWriter(), err, ctx));
+        Assert.Contains("not a loopback address", err.ToString());
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1", true)]
+    [InlineData("127.1.2.3", true)]
+    [InlineData("::1", true)]
+    [InlineData("::ffff:127.0.0.1", true)]
+    [InlineData("0.0.0.0", false)]
+    [InlineData("::", false)]
+    [InlineData("10.0.0.1", false)]
+    public void LoopbackBindPredicate(string address, bool loopback) =>
+        Assert.Equal(loopback, BridgeApp.IsLoopbackBind(IPAddress.Parse(address)));
+
     /// <summary>Review N5: reflection failures while loading DOF fail closed with exit 4, no stack trace.</summary>
     [Theory]
     [InlineData(typeof(MissingMethodException))]
@@ -288,21 +342,42 @@ public class BridgeAppTests
             psi.ArgumentList.Add(a);
         }
         using Process p = Process.Start(psi)!;
-        string? line = p.StandardError.ReadLine();
-        Assert.NotNull(line);
-        Match m = Regex.Match(line!, @"listening on [\d.]+:(\d+)");
-        Assert.True(m.Success, line);
-        int port = int.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
-        using (Socket tx = Sender(new IPEndPoint(IPAddress.Loopback, port)))
+        try
         {
-            tx.Send(Dg.Make(0, false, Dg.Coil(1, 1)));
+            string? line = ReadLineWithin(p.StandardError);
+            Assert.NotNull(line);
+            Match m = Regex.Match(line!, @"listening on [\d.]+:(\d+)");
+            Assert.True(m.Success, line);
+            int port = int.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            using (Socket tx = Sender(new IPEndPoint(IPAddress.Loopback, port)))
+            {
+                tx.Send(Dg.Make(0, false, Dg.Coil(1, 1)));
+            }
+            Assert.Equal("# init rom=dof_fixture_rom table=DOF \"Fixture\" Table", ReadLineWithin(p.StandardOutput));
+            Assert.Equal("S 1 1", ReadLineWithin(p.StandardOutput));
+            p.StandardInput.Close();
+            Assert.True(p.WaitForExit(20_000));
+            Assert.Equal(0, p.ExitCode);
+            Assert.Equal("# finish", ReadLineWithin(p.StandardOutput));
         }
-        Assert.Equal("# init rom=dof_fixture_rom table=DOF \"Fixture\" Table", p.StandardOutput.ReadLine());
-        Assert.Equal("S 1 1", p.StandardOutput.ReadLine());
-        p.StandardInput.Close();
-        Assert.True(p.WaitForExit(20_000));
-        Assert.Equal(0, p.ExitCode);
-        Assert.Equal("# finish", p.StandardOutput.ReadLine());
+        finally
+        {
+            // A failed or timed-out step must not leave the bridge running.
+            if (!p.HasExited)
+            {
+                p.Kill(entireProcessTree: true);
+                p.WaitForExit(20_000);
+            }
+        }
+    }
+
+    /// <summary>The next line of <paramref name="reader"/>, failing the test after <see cref="Timeout"/>
+    /// instead of blocking forever when the child never writes it.</summary>
+    private static string? ReadLineWithin(StreamReader reader)
+    {
+        Task<string?> read = reader.ReadLineAsync();
+        Assert.True(read.Wait(Timeout), "timed out waiting for a line from the bridge");
+        return read.Result;
     }
 
     private sealed class ThrowingSink : IDofSink

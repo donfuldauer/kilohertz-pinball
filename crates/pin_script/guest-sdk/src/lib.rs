@@ -124,6 +124,7 @@
 #![cfg_attr(not(test), no_std)]
 
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Largest state blob the host carries across a hot swap, bytes.
 pub const MAX_STATE_BYTES: usize = 64 * 1024;
@@ -375,38 +376,74 @@ pub trait Rules {
     fn restore_state(&mut self, _blob: &[u8]) {}
 }
 
-/// A single-threaded global cell for the rules value (Wasm guests have one
-/// thread and the host never re-enters an export).
+/// The global cell for the rules value, with a busy flag so that only one
+/// export uses it at a time.
 ///
-/// It is `Sync` (so it can live in a `static`) only for `T: Send`, and only
-/// because every access goes through the `unsafe` [`RulesCell::get`], whose
-/// caller promises that no other reference is live. On wasm32 that holds by
-/// construction; in a host build (unit tests) the caller must also ensure
-/// that no two threads use the cell at once.
-pub struct RulesCell<T>(UnsafeCell<T>);
+/// Wasm guests have one thread and the host never re-enters an export, but
+/// the exports [`export_rules!`] generates are safe Rust functions: a
+/// `Rules` method could call one recursively, and a host build (unit tests)
+/// could call them from two threads at once. [`RulesCell::with`] therefore
+/// claims the cell for the whole call and panics (a trap in a Wasm guest)
+/// instead of handing out a second `&mut`.
+pub struct RulesCell<T> {
+    value: UnsafeCell<T>,
+    busy: AtomicBool,
+}
 
-// SAFETY: access is only through the unsafe `get`, whose contract forbids
-// overlapping references (wasm32 guests are single-threaded and the host
-// calls one export at a time, never re-entrantly); `T: Send` because a host
-// build may touch the value from whichever thread runs the test.
+// SAFETY: the value is reached only through `with`, which holds the busy flag
+// (acquired with `Acquire`, released with `Release`) for as long as the `&mut`
+// lives, or through the unsafe `get`, whose caller promises the same
+// exclusivity; `T: Send` because the value may be used from whichever
+// thread holds the flag.
 unsafe impl<T: Send> Sync for RulesCell<T> {}
+
+/// Releases a [`RulesCell`]'s busy flag when the call ends, also on unwind.
+struct Claim<'a>(&'a AtomicBool);
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 impl<T> RulesCell<T> {
     /// Wraps the initial rules value.
     pub const fn new(v: T) -> Self {
-        Self(UnsafeCell::new(v))
+        Self {
+            value: UnsafeCell::new(v),
+            busy: AtomicBool::new(false),
+        }
     }
 
-    /// Mutable access from an export.
+    /// Runs `f` with exclusive access to the value.
+    ///
+    /// # Panics
+    /// If the cell is already in use: a re-entrant call from inside `f`, or
+    /// a call from another thread meanwhile.
+    pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        if self
+            .busy
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            panic!("pin_guest_sdk: rules exports may not overlap or re-enter");
+        }
+        let _claim = Claim(&self.busy);
+        // SAFETY: the busy flag is ours until `_claim` drops after `f`
+        // returns, so no other `with` call holds a reference.
+        f(unsafe { &mut *self.value.get() })
+    }
+
+    /// Mutable access without claiming the cell.
     ///
     /// # Safety
-    /// No other reference from [`Self::get`] may be live, and no other
-    /// thread may use the cell meanwhile (both true for exports called one
-    /// at a time by the host in a single-threaded wasm32 guest).
+    /// No other reference to the value may be live (from this method or
+    /// from inside [`Self::with`]), and no other thread may use the cell
+    /// meanwhile.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn get(&self) -> &mut T {
         // SAFETY: guaranteed by the caller.
-        unsafe { &mut *self.0.get() }
+        unsafe { &mut *self.value.get() }
     }
 }
 
@@ -466,31 +503,29 @@ macro_rules! export_rules {
         /// Export `on_init`.
         #[unsafe(no_mangle)]
         pub extern "C" fn on_init() {
-            // SAFETY: exports run one at a time.
-            $crate::Rules::on_init(unsafe { __PIN_RULES.get() });
+            __PIN_RULES.with($crate::Rules::on_init);
         }
 
         /// Export `on_tick`.
         #[unsafe(no_mangle)]
         pub extern "C" fn on_tick() {
-            // SAFETY: exports run one at a time.
-            $crate::Rules::on_tick(unsafe { __PIN_RULES.get() });
+            __PIN_RULES.with($crate::Rules::on_tick);
         }
 
         /// Export `on_switch_edge`.
         #[unsafe(no_mangle)]
         pub extern "C" fn on_switch_edge(id: i32, closed: i32) {
-            // SAFETY: exports run one at a time. The host passes ids in
-            // 0..=65535.
-            $crate::Rules::on_switch_edge(unsafe { __PIN_RULES.get() }, id as u16, closed != 0);
+            // The host passes ids in 0..=65535.
+            __PIN_RULES.with(|r| $crate::Rules::on_switch_edge(r, id as u16, closed != 0));
         }
 
         /// Export `save_state`.
         #[unsafe(no_mangle)]
         pub extern "C" fn save_state() -> i64 {
-            // SAFETY: exports run one at a time.
-            let blob = $crate::Rules::save_state(unsafe { __PIN_RULES.get() });
-            $crate::pack_state(blob.as_ptr() as usize as u32, blob.len() as u32)
+            __PIN_RULES.with(|r| {
+                let blob = $crate::Rules::save_state(r);
+                $crate::pack_state(blob.as_ptr() as usize as u32, blob.len() as u32)
+            })
         }
 
         /// Export `alloc_state`.
@@ -502,10 +537,13 @@ macro_rules! export_rules {
         /// Export `restore_state`.
         #[unsafe(no_mangle)]
         pub extern "C" fn restore_state(_ptr: i32, len: i32) {
-            // SAFETY: exports run one at a time; the host wrote the blob into
-            // the buffer `alloc_state` returned before this call.
-            let blob = unsafe { __PIN_STATE_IN.contents(len) };
-            $crate::Rules::restore_state(unsafe { __PIN_RULES.get() }, blob);
+            __PIN_RULES.with(|r| {
+                // SAFETY: the host wrote the blob into the buffer
+                // `alloc_state` returned before this call, and nothing
+                // writes it during the call.
+                let blob = unsafe { __PIN_STATE_IN.contents(len) };
+                $crate::Rules::restore_state(r, blob);
+            });
         }
     };
 }
@@ -671,6 +709,37 @@ mod tests {
                 core::ptr::write_bytes(p, byte, len);
             }
         }
+    }
+
+    #[test]
+    fn rules_cell_refuses_reentry() {
+        let c = RulesCell::new(0u32);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.with(|_| c.with(|v| *v += 1));
+        }));
+        let msg = r.expect_err("a re-entrant claim panics");
+        let msg = msg.downcast_ref::<&str>().copied().unwrap_or_default();
+        assert!(msg.contains("may not overlap or re-enter"), "{msg}");
+        // The claim was released on unwind, so the next call proceeds.
+        assert_eq!(c.with(|v| *v), 0);
+    }
+
+    #[test]
+    fn rules_cell_refuses_a_second_thread() {
+        let c = RulesCell::new(0u32);
+        c.with(|v| {
+            *v += 1;
+            let other = std::thread::scope(|s| {
+                s.spawn(|| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.with(|v| *v += 1)))
+                        .is_err()
+                })
+                .join()
+                .unwrap()
+            });
+            assert!(other, "a second thread may not claim a busy cell");
+        });
+        assert_eq!(c.with(|v| *v), 1);
     }
 
     #[test]

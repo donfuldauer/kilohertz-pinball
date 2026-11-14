@@ -270,7 +270,7 @@ fn main() {
             unchanged >= 20,
             "secondary should mostly be unchanged: {unchanged}"
         );
-        if force_presenter_thread {
+        if want_bg.needs_presenter_thread() {
             assert!(set.presenter_thread_frames() >= 1);
         } else {
             assert_eq!(set.presenter_thread_frames(), 0);

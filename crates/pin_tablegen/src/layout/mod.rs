@@ -154,18 +154,64 @@ pub fn parse_layout_bytes(bytes: &[u8]) -> Result<LayoutManifest, GenError> {
 }
 
 /// Writes `playfield.glb` and `table.toml` into `dir` (created if needed).
-/// Each file is written to a temporary name first and renamed into place.
+///
+/// Both files are staged under temporary names before either output is
+/// replaced; an existing output is moved aside and restored if a later
+/// replacement fails, so a failure leaves the previous pair in place.
 pub fn write_bundle(generated: &GeneratedTable, dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    for (name, bytes) in [
+    let files = [
         (PLAYFIELD_FILE, generated.glb.as_slice()),
         (TABLE_FILE, generated.table_toml.as_bytes()),
-    ] {
-        let tmp = dir.join(format!(".{name}.tablegen-tmp"));
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, dir.join(name))?;
+    ];
+    let tmp = |name: &str| dir.join(format!(".{name}.tablegen-tmp"));
+    let bak = |name: &str| dir.join(format!(".{name}.tablegen-bak"));
+    let cleanup = || {
+        for (name, _) in files {
+            let _ = std::fs::remove_file(tmp(name));
+        }
+    };
+    // 1. Stage every output; nothing existing is touched yet.
+    for (name, bytes) in files {
+        if let Err(e) = std::fs::write(tmp(name), bytes) {
+            cleanup();
+            return Err(e);
+        }
     }
-    Ok(())
+    // 2. Commit, remembering how to undo each replacement.
+    let mut committed: Vec<(&str, bool)> = Vec::new();
+    let mut result = Ok(());
+    for (name, _) in files {
+        let dest = dir.join(name);
+        // Only a regular file (or link) is moved aside; anything else makes
+        // the rename below fail, which rolls back.
+        let had_old = std::fs::symlink_metadata(&dest).is_ok_and(|m| !m.is_dir());
+        if had_old && let Err(e) = std::fs::rename(&dest, bak(name)) {
+            result = Err(e);
+            break;
+        }
+        if let Err(e) = std::fs::rename(tmp(name), &dest) {
+            if had_old {
+                let _ = std::fs::rename(bak(name), &dest);
+            }
+            result = Err(e);
+            break;
+        }
+        committed.push((name, had_old));
+    }
+    for &(name, had_old) in committed.iter().rev() {
+        if result.is_ok() {
+            if had_old {
+                let _ = std::fs::remove_file(bak(name));
+            }
+        } else if had_old {
+            let _ = std::fs::rename(bak(name), dir.join(name));
+        } else {
+            let _ = std::fs::remove_file(dir.join(name));
+        }
+    }
+    cleanup();
+    result
 }
 
 /// Checks a finite value lies in `lo..=hi` (`lo` exclusive when
@@ -787,19 +833,41 @@ fn loader_points(s: &SplineDef) -> (Vec<Vec3>, bool) {
     (pts, closed)
 }
 
-/// Two visual rail tubes along a wireform, sampled densely enough that the
-/// tube axes stay within the facet tolerance of the rails.
-fn wire_mesh(wf: &Wireform) -> Mesh {
+/// Rail sample parameters along a wireform: dense enough that the tube axes
+/// stay within the facet tolerance of the rails, both for centre-line
+/// curvature and for the rails swinging about it as the roll changes.
+fn wire_samples(wf: &Wireform) -> Vec<f32> {
+    /// Roll probes per segment for the roll-variation estimate.
+    const ROLL_PROBES: usize = 32;
     let centre = wf.centerline();
+    // Largest roll change per interval keeping the chord of a rail's arc
+    // about the centre line (radius gauge / 2) within the tolerance.
+    let half = f64::from(wf.gauge()) * 0.5;
+    let max_roll_step = if half > mesh::FACET_TOLERANCE_M {
+        2.0 * libm::acos(1.0 - mesh::FACET_TOLERANCE_M / half)
+    } else {
+        f64::INFINITY
+    };
     let samples_per_segment: Vec<usize> = centre
         .segments()
         .iter()
-        .map(|seg| {
+        .enumerate()
+        .map(|(i, seg)| {
             let [p0, p1, p2, p3] = seg.p;
             let a = (p0 - p1 * 2.0 + p2).as_dvec3().length();
             let b = (p1 - p2 * 2.0 + p3).as_dvec3().length();
             // Rails bend somewhat more than the centre line: margin 4.
             let k = libm::sqrt(4.0 * 6.0 * a.max(b) / (8.0 * mesh::FACET_TOLERANCE_M)).ceil();
+            let mut variation = 0.0f64;
+            let mut prev = f64::from(wf.roll_rad(i as f32));
+            for j in 1..=ROLL_PROBES {
+                let r = f64::from(wf.roll_rad(i as f32 + j as f32 / ROLL_PROBES as f32));
+                variation += (r - prev).abs();
+                prev = r;
+            }
+            // Margin 1.25 for roll changes between the probes.
+            let k_roll = (1.25 * variation / max_roll_step).ceil();
+            let k = k.max(k_roll);
             if k.is_finite() {
                 (k as usize).clamp(2, 4096)
             } else {
@@ -813,6 +881,12 @@ fn wire_mesh(wf: &Wireform) -> Mesh {
             ts.push(i as f32 + j as f32 / k as f32);
         }
     }
+    ts
+}
+
+/// Two visual rail tubes along a wireform, sampled by [`wire_samples`].
+fn wire_mesh(wf: &Wireform) -> Mesh {
+    let ts = wire_samples(wf);
     let r = mm_to_m(WIRE_RADIUS_MM);
     let mut out = Mesh::default();
     for side in 0..2 {

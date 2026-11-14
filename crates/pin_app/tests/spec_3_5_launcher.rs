@@ -6,7 +6,6 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use pin_app::dof::{
@@ -19,18 +18,15 @@ use pin_core::schema::table::{DofElementType, TableManifest};
 // Helpers
 // ---------------------------------------------------------------------------
 
-static COUNTER: AtomicU32 = AtomicU32::new(0);
+mod private_tmp;
 
-/// A unique directory under the OS temp dir, removed on drop.
+/// A unique, exclusively created, owner-only directory under the OS temp
+/// dir (never a pre-existing one), removed on drop.
 struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(tag: &str) -> TempDir {
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let p = std::env::temp_dir().join(format!("spec_3_5_{}_{tag}_{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).expect("create temp dir");
-        TempDir(p)
+        TempDir(private_tmp::create(&format!("spec_3_5_{tag}")))
     }
 
     fn path(&self) -> &Path {
@@ -41,6 +37,28 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The scratch dirs that hold executed scripts are fresh and private: a
+/// pre-existing path (e.g. planted by another user) is refused, never reused.
+#[test]
+fn temp_dirs_are_exclusive_and_private() {
+    let a = TempDir::new("excl");
+    let b = TempDir::new("excl");
+    assert_ne!(a.path(), b.path());
+    let err = private_tmp::create_exclusive(a.path()).expect_err("existing dir reused");
+    assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(a.path()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "group/other access: {mode:o}");
+        // A symlink planted at the name is refused too.
+        let link = b.path().join("planted");
+        std::os::unix::fs::symlink(a.path(), &link).unwrap();
+        let err = private_tmp::create_exclusive(&link).expect_err("symlink followed");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
     }
 }
 
@@ -793,8 +811,9 @@ exit 0
     pub fn path() -> PathBuf {
         static PATH: OnceLock<PathBuf> = OnceLock::new();
         PATH.get_or_init(|| {
-            let dir = std::env::temp_dir().join(format!("spec_3_5_{}_fake", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
+            // Exclusively created and owner-only: nobody else can swap the
+            // script between this write and its execution.
+            let dir = super::private_tmp::create("spec_3_5_fake");
             let p = dir.join("fake_bridge.sh");
             std::fs::write(&p, SCRIPT).unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();

@@ -736,6 +736,13 @@ fn check_cast(
         }
     }
     let hit = world.cast_sphere(start, R, vel, max_time, 1);
+    if let Some(hit) = hit {
+        prop_assert!(
+            hit.time.is_finite() && (0.0..=max_time).contains(&hit.time),
+            "hit time {} outside [0, {max_time}]",
+            hit.time
+        );
+    }
     match (hit, expected) {
         (Some(hit), Some(t)) => {
             prop_assert!(
@@ -762,8 +769,16 @@ fn check_cast(
         (None, Some(t)) => {
             // Only acceptable if the true path merely grazes (within
             // rounding) or the hit is at the very end of the window.
-            let deepest = (0..=2000)
-                .map(|k| sdf(t + 2e-4 / f64::from(speed) * k as f64 / 2000.0))
+            // Finely over the first 0.2 mm after contact, then in the
+            // brute-force steps over the rest of the window (a graze
+            // followed by a real collision is a miss too).
+            let end = f64::from(max_time);
+            let near = (0..=2000).map(|k| t + 2e-4 / f64::from(speed) * k as f64 / 2000.0);
+            let rest = (0..=steps).map(|k| t + (end - t) * k as f64 / steps as f64);
+            let deepest = near
+                .chain(rest)
+                .filter(|&x| x <= end)
+                .map(sdf)
                 .fold(f64::INFINITY, f64::min);
             prop_assert!(
                 deepest > -2e-6 || t > f64::from(max_time) * 0.9999,

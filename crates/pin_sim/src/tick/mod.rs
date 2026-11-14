@@ -49,9 +49,15 @@ impl Simulation {
             }
         }
         let mut frame = self.ingest.advance(tick);
+        // `cab_bits` keeps the unforced button states (forced switches are
+        // applied in `compose_switches`, so a release takes effect at once);
+        // the staging frame sees the forced ones.
         let mut cab = [0u64; 4];
         for c in CabinetInput::ALL {
             let n = self.cabinet[c.index()].index();
+            if frame.pressed(c) {
+                set_bit(&mut cab, n, true);
+            }
             if bit(&self.forced_mask, n) {
                 let b = 1u8 << c.index();
                 if bit(&self.forced_val, n) {
@@ -59,9 +65,6 @@ impl Simulation {
                 } else {
                     frame.buttons &= !b;
                 }
-            }
-            if frame.pressed(c) {
-                set_bit(&mut cab, n, true);
             }
         }
         self.cab_bits = cab;
@@ -89,7 +92,7 @@ impl Simulation {
         self.deliver_edges();
 
         // 3. Commands.
-        self.apply_commands();
+        self.apply_commands(tick);
 
         // 4. Physics.
         self.update_flipper_drive();
@@ -151,7 +154,11 @@ impl Simulation {
             .ball_events_dropped
             .saturating_add(self.events.dropped());
 
-        // Layer transitions, then drains and escapes, by slot.
+        // Layer transitions, then drains and escapes, by slot. The sensors
+        // were sampled in `mechs.step`, before the transitions; a drained
+        // ball's trough switches are recorded with its final layer so that
+        // the trough closes this tick even when the ball changed layer.
+        self.drain_bits = [0; 4];
         for slot in 0..MAX_BALLS {
             let h = PhysHandle(slot as u8);
             let Some(b) = self.solver.ball(h).copied() else {
@@ -166,9 +173,14 @@ impl Simulation {
                 m.layer = layer;
             }
             let p = b.position;
-            let drained = self.troughs.iter().any(|z| {
-                z.layer_mask & layers::layer_bit(layer) != 0 && p.distance(z.center) <= z.radius
-            });
+            let mut drained = false;
+            for z in &self.troughs {
+                if z.layer_mask & layers::layer_bit(layer) != 0 && p.distance(z.center) <= z.radius
+                {
+                    drained = true;
+                    set_bit(&mut self.drain_bits, z.switch.index(), true);
+                }
+            }
             let escaped = !(p.is_finite() && b.velocity.is_finite())
                 || p.cmplt(self.bounds.0).any()
                 || p.cmpgt(self.bounds.1).any();
@@ -229,6 +241,14 @@ impl Simulation {
     pub(crate) fn collect_physics_bits(&mut self) {
         let mut bits = self.phys_bits;
         self.solver.sensor_switches(&mut bits);
+        // Trough switches follow the drains of this tick's physics step
+        // (final layers), not the sensors sampled before the transitions.
+        for z in &self.troughs {
+            set_bit(&mut bits, z.switch.index(), false);
+        }
+        for (b, d) in bits.iter_mut().zip(self.drain_bits) {
+            *b |= d;
+        }
         self.mechs.switch_states(&mut bits);
         for d in &self.drives {
             set_bit(

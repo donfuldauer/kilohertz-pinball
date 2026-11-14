@@ -468,6 +468,12 @@ impl <'a> BitpackCursor <'a> {
 			},
 			Err(_) => tree.iter(),
 		};
+		// KHZ patch 5: a book with no used entries cannot be decoded from
+		// (upstream indexed past its one-element `desc_prog`). Only reached
+		// when the 8-bit lookup was inconclusive, so off the fast path.
+		if tree.is_empty() {
+			return Err(());
+		}
 
 		loop {
 			let b = try!(self.read_bit_flag());

@@ -181,7 +181,9 @@ proptest! {
         let v = Vfs::from_zip_bytes(fx::stored_zip(&[("table.toml", b"t"), ("a/b.txt", b"b")]), small_limits()).unwrap();
         match v.read(&req) {
             Ok(data) => {
-                prop_assert!(v.list().contains(&req) , "read({:?}) succeeded for a name not in list()", req);
+                // `read` normalises (`a\\b.txt`, `./a//b.txt`); `list` holds canonical names.
+                let canonical = pin_assets::zip::normalize_path(&req).unwrap();
+                prop_assert!(v.list().contains(&canonical), "read({:?}) succeeded for a name not in list()", req);
                 prop_assert!(data == b"t" || data == b"b");
             }
             Err(_) => prop_assert!(!v.exists(&req) || v.list().contains(&req)),
@@ -465,4 +467,29 @@ fn json_value(depth: u32) -> BoxedStrategy<String> {
         }),
     ]
     .boxed()
+}
+
+/// Alias spellings resolve to the listed canonical name: the branch the
+/// property above checks with `normalize_path`, made deterministic
+/// (CodeRabbit PR 4).
+#[test]
+fn alias_request_paths_resolve_to_listed_names() {
+    let v = Vfs::from_zip_bytes(
+        fx::stored_zip(&[("table.toml", b"t"), ("a/b.txt", b"b")]),
+        small_limits(),
+    )
+    .unwrap();
+    for alias in [
+        "a\\b.txt",
+        "./a/b.txt",
+        "a//b.txt",
+        "a/./b.txt",
+        ".\\a\\b.txt",
+    ] {
+        assert_eq!(v.read(alias).unwrap(), b"b", "{alias}");
+        assert!(v.exists(alias), "{alias}");
+        let canonical = pin_assets::zip::normalize_path(alias).unwrap();
+        assert_eq!(canonical, "a/b.txt", "{alias}");
+        assert!(v.list().contains(&canonical), "{alias}");
+    }
 }

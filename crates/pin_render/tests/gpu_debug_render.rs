@@ -225,14 +225,29 @@ fn invalid_sizes_are_errors() {
 #[test]
 fn many_lines_grow_the_gpu_buffer() {
     // More lines than the renderer's initial GPU buffer (1024).
+    // The first 1024 lines are green and cover one half of the rows only;
+    // the lines past the initial capacity are red and cover the other half,
+    // so a renderer that drops them cannot pass.
     let mut l = DebugLines::new(3000);
     for i in 0..3000 {
-        let y = (i % 256) as f32 / 256.0 + 0.5 / 256.0;
-        l.push(DebugLine::new([0.0, y, 0.0], [1.0, y, 0.0], GREEN));
+        let overflow = i >= 1024;
+        let row = i % 128 + if overflow { 128 } else { 0 };
+        let y = row as f32 / 256.0 + 0.5 / 256.0;
+        let color = if overflow { RED } else { GREEN };
+        l.push(DebugLine::new([0.0, y, 0.0], [1.0, y, 0.0], color));
     }
     let Some(img) = render(&l) else { return };
     let lit = img.lit().len();
     assert!(lit > 250 * 250, "{lit}");
+    let count = |c: [u8; 4]| {
+        (0..256u32)
+            .flat_map(|y| (0..256u32).map(move |x| (x, y)))
+            .filter(|&(x, y)| img.at(x, y) == c)
+            .count()
+    };
+    let (green, red) = (count([0, 255, 0, 255]), count([255, 0, 0, 255]));
+    assert!(green > 125 * 250, "first 1024 lines: {green} px");
+    assert!(red > 125 * 250, "lines past the initial capacity: {red} px");
 }
 
 /// The composite regression scene.

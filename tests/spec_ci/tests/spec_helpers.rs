@@ -76,6 +76,59 @@ fn fixture_is_read_correctly() {
 }
 
 #[test]
+fn runner_labels_follow_the_axis_runs_on_names() {
+    let labels = |yaml: &str| {
+        let wf = Workflow::parse(&format!("on: push\njobs:\n  j:\n{yaml}")).unwrap();
+        wf.job("j").unwrap().runner_labels()
+    };
+    // An axis `runs-on` does not reference selects no runner.
+    assert_eq!(
+        labels(concat!(
+            "    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n",
+            "        os: [ubuntu-latest]\n        artifact: [windows-latest, macos-14]\n",
+        )),
+        ["ubuntu-latest"]
+    );
+    assert_eq!(
+        labels(concat!(
+            "    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n",
+            "        os: [windows-latest, macos-14]\n",
+        )),
+        ["ubuntu-latest"]
+    );
+    // A fully excluded value drops out; a partly excluded one stays.
+    assert_eq!(
+        labels(concat!(
+            "    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n",
+            "        os: [ubuntu-latest, windows-latest, macos-14]\n        rust: [stable, beta]\n",
+            "        exclude:\n          - os: windows-latest\n",
+            "          - os: macos-14\n            rust: beta\n",
+        )),
+        ["macos-14", "ubuntu-latest"]
+    );
+}
+
+#[test]
+fn cargo_lines_split_commands_on_one_line() {
+    let script = "cargo test -p pin_audio && cargo build -p pin_render -p pin_app; cargo test -p a | tee log || cargo test -p b";
+    let tests = cargo_lines(script, "test");
+    assert_eq!(
+        tests,
+        [
+            "cargo test -p pin_audio",
+            "cargo test -p a",
+            "cargo test -p b"
+        ]
+    );
+    let sel: Vec<String> = tests.iter().flat_map(|l| selected_packages(l)).collect();
+    assert_eq!(sel, ["pin_audio", "a", "b"]);
+    assert_eq!(
+        cargo_lines(script, "build"),
+        ["cargo build -p pin_render -p pin_app"]
+    );
+}
+
+#[test]
 fn malformed_workflows_are_rejected() {
     for bad in [
         "",

@@ -49,7 +49,18 @@ fn exercise(p: &DeviceProfile) {
                             "axis value {value} out of range"
                         );
                     }
-                    InputEventKind::Button { .. } => panic!("axis produced a button event"),
+                    InputEventKind::Button { input, .. } => {
+                        // Only an axis bound under `[buttons]` (and not as an
+                        // analog axis) may yield a button event.
+                        assert!(
+                            p.buttons.contains(&(RawInput::Axis(a), input)),
+                            "axis {a:?} produced a button event for unbound {input:?}"
+                        );
+                        assert!(
+                            !p.axes.iter().any(|b| b.raw == a),
+                            "analog axis {a:?} produced a button event"
+                        );
+                    }
                 }
             }
         }
@@ -200,6 +211,25 @@ proptest! {
         let n = cut.index(EXAMPLE.len() + 1);
         run(&String::from_utf8_lossy(&EXAMPLE.as_bytes()[..n]));
     }
+}
+
+#[test]
+fn digital_axis_bindings_pass_the_oracle() {
+    let text = "id = \"t\"\nname = \"T\"\nmatch = [ { any_gamepad = true } ]\n\
+                [buttons]\nlaunch = [ \"axis:right_trigger\" ]\n";
+    let p = parse_profile(text).expect("an axis bound as a button is valid");
+    let m = ProfileMapper::new(&p);
+    let ev = m
+        .axis(1, GamepadAxis::RightTrigger, i16::MAX)
+        .expect("bound");
+    assert!(matches!(
+        ev.kind,
+        InputEventKind::Button {
+            input: CabinetInput::Launch,
+            pressed: true
+        }
+    ));
+    exercise(&p);
 }
 
 #[test]

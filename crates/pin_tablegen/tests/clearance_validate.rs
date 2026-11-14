@@ -616,6 +616,39 @@ fn scoop_pocket_and_vuk_exit() {
         "{:#?}",
         r.warnings
     );
+    // The exit layer being allowed is not enough: the exit point (300, 700)
+    // must lie in the layer-1 area allowed too.
+    for (area, warns) in [
+        (xl_area, true),
+        (
+            [
+                [200.0, 600.0],
+                [400.0, 600.0],
+                [400.0, 800.0],
+                [200.0, 800.0],
+            ],
+            false,
+        ),
+    ] {
+        let r = check(
+            &layout_with(small_deck),
+            &base_with(
+                &[STEEL],
+                vec![restrict(XL, &[0], &xl_area), restrict(XL, &[1], &area)],
+                &vuk([0.0, 300.0, 120.0], 1),
+            ),
+            "vuk_open_area",
+        );
+        assert!(r.is_ok(), "{:#?}", r.errors);
+        assert_eq!(
+            r.warnings
+                .iter()
+                .any(|w| w.profile == XL && w.path == "mechs[0].exit_layer"),
+            warns,
+            "{area:?}: {:#?}",
+            r.warnings
+        );
+    }
     // Reviewer N2: an exit not over any surface of its layer (below the
     // playfield, off the deck) is an error.
     for (offset, layer) in [([0.0f32, 0.0, -200.0], 0u8), ([0.0, 0.0, 120.0], 1)] {

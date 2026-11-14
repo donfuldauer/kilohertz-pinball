@@ -363,3 +363,62 @@ fn map_result_wait_is_bounded() {
     let e = super::recv_map(&rx, Duration::from_millis(20)).unwrap_err();
     assert!(matches!(e, GpuError::Readback(m) if m.contains("dropped")));
 }
+
+/// A logical resize re-anchors the PiP rectangles (they used to keep their
+/// planned position and end up outside a smaller window).
+#[test]
+fn logical_resize_rescales_pip_viewports() {
+    use crate::topology::{DEFAULT_BACKGLASS_PIP, DEFAULT_SCORE_PIP, Rect, pip_rect};
+    let plan = |w, h| {
+        [
+            (SurfaceRole::Playfield, Rect::new(0, 0, w, h)),
+            (
+                SurfaceRole::Backglass,
+                pip_rect(SurfaceRole::Backglass, &DEFAULT_BACKGLASS_PIP, w, h).unwrap(),
+            ),
+            (
+                SurfaceRole::Score,
+                pip_rect(SurfaceRole::Score, &DEFAULT_SCORE_PIP, w, h).unwrap(),
+            ),
+        ]
+    };
+    let planned = plan(1920, 1080);
+    assert_eq!(planned[1].1.x, 1440);
+    // Same result as planning the new size, in either direction.
+    for to in [(1280, 720), (1920, 1080), (3840, 2160), (800, 600)] {
+        let got = surfaces::rescale_viewports(&planned, (1920, 1080), to);
+        assert_eq!(got.as_slice(), &plan(to.0, to.1), "{to:?}");
+        for (_, r) in &got {
+            assert!(Rect::new(0, 0, to.0, to.1).contains(r), "{to:?} {r:?}");
+        }
+    }
+    // A window too flat for a PiP's aspect: shrunk to fit, still anchored.
+    let got = surfaces::rescale_viewports(&planned, (1920, 1080), (1600, 100));
+    assert_eq!(got[1].1, Rect::new(1600 - 133, 0, 133, 100));
+    assert!(Rect::new(0, 0, 1600, 100).contains(&got[2].1));
+    assert_eq!(got[2].1.bottom(), 100);
+    // Zero sizes leave the plan alone (no division by zero).
+    for (from, to) in [((0, 0), (10, 10)), ((1920, 1080), (0, 5))] {
+        assert_eq!(
+            surfaces::rescale_viewports(&planned, from, to).as_slice(),
+            &planned
+        );
+    }
+}
+
+/// A readback larger than `max_buffer_size` is an error, not a buffer
+/// creation that fails validation (8192² `Rgba16Float` needs 512 MiB; the
+/// downlevel limit is 256 MiB).
+#[test]
+fn oversized_readback_is_an_error() {
+    let limit = wgpu::Limits::downlevel_defaults().max_buffer_size;
+    assert_eq!(
+        super::checked_readback_size(limit, 128 * 8, 128),
+        Ok(131_072)
+    );
+    assert_eq!(super::checked_readback_size(1024, 256, 4), Ok(1024));
+    let e = super::checked_readback_size(limit, 8192 * 8, 8192).unwrap_err();
+    assert!(matches!(e, GpuError::Readback(m) if m.contains("max_buffer_size")));
+    assert!(super::checked_readback_size(1024, 256, 5).is_err());
+    assert!(super::checked_readback_size(u64::MAX, usize::MAX, u32::MAX).is_err());
+}

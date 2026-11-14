@@ -486,6 +486,8 @@ pub fn run_shot_arc(
         if impact.is_none() && hit {
             impact = Some(t);
             bat_at_impact = Some(pre);
+            // The impact is the contact, wherever the ball is at the tick end.
+            contact_seen = true;
         }
         if hit && separated {
             episodes += 1;

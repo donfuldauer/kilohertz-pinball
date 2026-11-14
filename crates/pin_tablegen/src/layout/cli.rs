@@ -106,15 +106,33 @@ fn parse_args(args: &[String]) -> Result<Args, CliError> {
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, CliError> {
+    use std::io::Read;
     let fail = |e: std::io::Error| CliError::Failed(format!("{}: {e}", path.display()));
-    let size = std::fs::metadata(path).map_err(fail)?.len();
-    if size > MAX_INPUT_BYTES {
-        return Err(CliError::Failed(format!(
+    let file = std::fs::File::open(path).map_err(fail)?;
+    let too_big = |size: u64| {
+        CliError::Failed(format!(
             "{}: file is {size} bytes (max {MAX_INPUT_BYTES})",
+            path.display()
+        ))
+    };
+    let size = file.metadata().map_err(fail)?.len();
+    if size > MAX_INPUT_BYTES {
+        return Err(too_big(size));
+    }
+    // One bounded read from the same handle: the metadata size can be stale
+    // or meaningless (a growing file, a pipe, a device), so the limit is
+    // enforced on the bytes actually read.
+    let mut bytes = Vec::new();
+    file.take(MAX_INPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(fail)?;
+    if bytes.len() as u64 > MAX_INPUT_BYTES {
+        return Err(CliError::Failed(format!(
+            "{}: file is larger than {MAX_INPUT_BYTES} bytes",
             path.display()
         )));
     }
-    std::fs::read(path).map_err(fail)
+    Ok(bytes)
 }
 
 /// Runs the command with `args` (without the program name). On success,
@@ -242,6 +260,28 @@ mod tests {
         run_cli(&args).unwrap();
         assert!(out.join("playfield.glb").is_file());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn input_reads_are_bounded() {
+        let dir = std::env::temp_dir().join(format!("pin_tablegen_read_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exact = dir.join("exact");
+        std::fs::write(&exact, vec![b'#'; MAX_INPUT_BYTES as usize]).unwrap();
+        assert_eq!(read(&exact).unwrap().len() as u64, MAX_INPUT_BYTES);
+        let over = dir.join("over");
+        std::fs::write(&over, vec![b'#'; MAX_INPUT_BYTES as usize + 1]).unwrap();
+        let e = read(&over).unwrap_err();
+        assert_eq!(e.exit_code(), 1);
+        assert!(e.to_string().contains("max"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+        // A device whose metadata reports no size is still capped.
+        #[cfg(unix)]
+        {
+            let e = read(Path::new("/dev/zero")).unwrap_err();
+            assert!(e.to_string().contains("larger than"), "{e}");
+        }
     }
 
     #[test]

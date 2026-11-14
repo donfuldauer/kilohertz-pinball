@@ -96,15 +96,17 @@ impl Image {
             }
             ColorType::Rgba => {
                 let da = u32::from(self.data[o + 3]);
-                let out_a = a + da * (255 - a) / 255;
-                if out_a == 0 {
+                // Combined alpha scaled by 255, kept unrounded so the RGB
+                // normalisation below can never exceed 255.
+                let out_n = a * 255 + da * (255 - a);
+                if out_n == 0 {
                     return;
                 }
                 for (d, &v) in self.data[o..o + 3].iter_mut().zip(&rgb) {
                     let num = u32::from(v) * a * 255 + u32::from(*d) * da * (255 - a);
-                    *d = ((num + out_a * 255 / 2) / (out_a * 255)) as u8;
+                    *d = ((num + out_n / 2) / out_n) as u8;
                 }
-                self.data[o + 3] = out_a as u8;
+                self.data[o + 3] = ((out_n + 127) / 255) as u8;
             }
         }
     }
@@ -536,6 +538,21 @@ mod tests {
         a.blend(0, 0, [210, 220, 230], 128);
         assert_eq!(a.data[3], 255);
         assert!(a.data[0] > 100 && a.data[0] < 120);
+        // Two half-transparent white layers stay white (no 256 -> 0 wrap).
+        let mut w = Image::new(1, 1, ColorType::Rgba);
+        w.blend(0, 0, WHITE, 128);
+        w.blend(0, 0, WHITE, 128);
+        assert_eq!(w.data, [255, 255, 255, 192]);
+        // Exhaustive: blending white over white never darkens any channel.
+        for da in 1..=255u8 {
+            for sa in 1..=255u8 {
+                let mut p = Image::new(1, 1, ColorType::Rgba);
+                p.data.copy_from_slice(&[255, 255, 255, da]);
+                p.blend(0, 0, WHITE, sa);
+                assert_eq!(&p.data[..3], &[255, 255, 255], "da {da} sa {sa}");
+                assert!(p.data[3] >= da.max(sa), "da {da} sa {sa}");
+            }
+        }
     }
 
     #[test]

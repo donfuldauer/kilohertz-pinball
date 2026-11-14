@@ -592,19 +592,23 @@ impl SceneLibrary {
         lib
     }
 
-    /// Adds or replaces scene `id` named `name`.
+    /// Adds or replaces scene `id` named `name`. Names are unique: a scene
+    /// that already has `name` under another id is removed (the name moves),
+    /// so `get`, `name`, `id_of` and `len` always agree.
     pub fn insert(&mut self, id: SceneId, name: &str, scene: Scene) {
         let i = usize::from(id.0);
         if self.scenes.len() <= i {
             self.scenes.resize(i + 1, None);
         }
-        if let Some((old, _)) = &self.scenes[i]
-            && self.names.get(old) == Some(&id)
-        {
+        if let Some((old, _)) = &self.scenes[i] {
             self.names.remove(old);
         }
         self.scenes[i] = Some((name.to_owned(), scene));
-        self.names.insert(name.to_owned(), id);
+        if let Some(prev) = self.names.insert(name.to_owned(), id)
+            && prev != id
+        {
+            self.scenes[usize::from(prev.0)] = None;
+        }
     }
 
     /// Loads `table.toml`'s `[[scenes]]`: `SceneId(i)` is declaration index
@@ -634,6 +638,12 @@ impl SceneLibrary {
                     reason,
                 })?,
             };
+            if lib.id_of(&def.id).is_some() {
+                return Err(SceneError::Invalid(format!(
+                    "duplicate scene id {:?}",
+                    def.id
+                )));
+            }
             lib.insert(SceneId(i as u16), &def.id, scene);
         }
         Ok(lib)

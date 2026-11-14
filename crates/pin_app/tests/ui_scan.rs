@@ -155,6 +155,9 @@ fn feature_badges_follow_the_manifest() {
         bg.replacen("mode = \"dmd\"", "mode = \"lcd\"", 1)
             .as_bytes(),
     );
+    // The reference backglass already carries a valid `lcd` block, so the
+    // LCD variant is a known-valid bundle and must load.
+    assert!(bg.contains("lcd = { width = 1920, height = 1080 }"));
     write_dir(&root, &lcd);
     match inspect_bundle(&root) {
         TableStatus::Ready(info) => {
@@ -164,11 +167,7 @@ fn feature_badges_follow_the_manifest() {
             );
             assert!(!info.features.contains(&TableFeature::DmdDisplay));
         }
-        other => {
-            // An LCD backglass may need more keys; it must then be reported,
-            // not panic.
-            assert!(matches!(other, TableStatus::Broken(_)));
-        }
+        other => panic!("valid LCD bundle not ready: {other:?}"),
     }
 }
 

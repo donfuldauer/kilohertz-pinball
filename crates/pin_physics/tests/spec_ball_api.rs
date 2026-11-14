@@ -206,10 +206,8 @@ fn ball_ball_impact_event_and_no_overlap() {
                 normal_speed,
             } = *e
             {
-                assert!(
-                    (ball == ha && o == hb) || (ball == hb && o == ha),
-                    "bad pair {e:?}"
-                );
+                // The event names the lower handle first.
+                assert_eq!((ball, o), (ha.min(hb), ha.max(hb)), "bad pair {e:?}");
                 assert!(
                     (normal_speed - 1.0).abs() < 0.02,
                     "normal speed {normal_speed}"
