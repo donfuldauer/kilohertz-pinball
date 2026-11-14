@@ -87,7 +87,11 @@ impl Vfs {
         if meta.len() > crate::zip::archive_cap(&limits) {
             return Err(AssetError::TotalTooLarge(meta.len()));
         }
-        let bytes = std::fs::read(path)?;
+        // Bounded read through one handle: a file that grows after the
+        // metadata check is still refused at the cap.
+        let cap = crate::zip::archive_cap(&limits);
+        let bytes = read_bounded(std::fs::File::open(path)?, cap, meta.len())?
+            .map_err(AssetError::TotalTooLarge)?;
         Vfs::from_zip_bytes(bytes, limits)
     }
 
@@ -188,7 +192,11 @@ impl Vfs {
                         size: meta.len(),
                     });
                 }
-                Ok(std::fs::read(&full)?)
+                // One handle, read to at most `max_file` + 1 bytes: a file
+                // that grew since the metadata check is still refused.
+                let file = std::fs::File::open(&full)?;
+                read_bounded(file, *max_file, meta.len())?
+                    .map_err(|size| AssetError::TooLarge { path: norm, size })
             }
         }
     }
@@ -284,6 +292,17 @@ impl Vfs {
             }
         }
     }
+}
+
+/// Reads `file` to its end, but never more than `cap` + 1 bytes: `Ok(Err(n))`
+/// (`n` > `cap`, a lower bound of the size) when it holds more than `cap`.
+/// `hint` (the expected size) only sizes the first allocation.
+fn read_bounded(file: std::fs::File, cap: u64, hint: u64) -> std::io::Result<Result<Vec<u8>, u64>> {
+    use std::io::Read as _;
+    let mut out = Vec::with_capacity(usize::try_from(hint.min(cap)).unwrap_or(0));
+    file.take(cap.saturating_add(1)).read_to_end(&mut out)?;
+    let n = out.len() as u64;
+    Ok(if n > cap { Err(n) } else { Ok(out) })
 }
 
 fn walk(root: &Path, dir: &Path, prefix: &str, depth: usize, out: &mut Vec<String>) {
@@ -409,6 +428,37 @@ mod tests {
         assert_eq!(wrapper_folder(names.into_iter()), Some("pkg".to_owned()));
         assert!(is_os_junk("a/desktop.ini") && is_os_junk("__MACOSX"));
         assert!(!is_os_junk("a/b.png") && !is_os_junk("__MACOSXY/a"));
+    }
+
+    /// CodeRabbit PR 4: a read never takes more than the cap plus one byte,
+    /// whatever the metadata said beforehand (the file may have grown).
+    #[test]
+    fn reads_are_bounded_by_the_cap() {
+        let dir = std::env::temp_dir().join(format!("pin_assets_bounded_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("grown.bin");
+        std::fs::write(&f, vec![7u8; 4096]).unwrap();
+        let open = || std::fs::File::open(&f).unwrap();
+        // A stale size hint (the file "grew" from 10 bytes) does not matter.
+        assert_eq!(read_bounded(open(), 100, 10).unwrap(), Err(101));
+        assert_eq!(read_bounded(open(), 4095, 10).unwrap(), Err(4096));
+        assert_eq!(read_bounded(open(), 4096, 10).unwrap().unwrap().len(), 4096);
+        assert_eq!(
+            read_bounded(open(), u64::MAX, 4096).unwrap().unwrap().len(),
+            4096
+        );
+        std::fs::write(dir.join(ROOT_MARKER), b"x").unwrap();
+        let limits = ZipLimits {
+            max_file: 1000,
+            ..ZipLimits::default()
+        };
+        let vfs = Vfs::open_with_limits(&dir, limits).unwrap();
+        assert!(matches!(
+            vfs.read("grown.bin"),
+            Err(AssetError::TooLarge { size: 4096, .. })
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

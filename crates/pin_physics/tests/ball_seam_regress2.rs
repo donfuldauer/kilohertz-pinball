@@ -626,6 +626,13 @@ fn column(n: usize, kinematic: bool, walls: bool, lift: f32) -> (f32, f32) {
         } else {
             0.0
         };
+        // `min`/`max` drop a NaN operand: check before reducing.
+        for (h, b) in s.balls() {
+            assert!(
+                b.position.is_finite() && b.velocity.is_finite(),
+                "tick {tick}: ball {h:?} is not finite: {b:?}"
+            );
+        }
         let bottom = s.ball(pin_physics::ball::BallHandle(0)).unwrap();
         sink = sink.min(bottom.position.z - r - floor_top);
         if tick >= 1500 {

@@ -228,6 +228,13 @@ fn energy_case(
         let b = s.ball(h);
         let ke = 0.5 * 0.08 * f64::from(b.velocity.length_squared());
         let tol = 2.0e-4 + 3.0e-3 * ke;
+        // A NaN would make every bound below pass.
+        if !(e.is_finite() && work.is_finite() && ke.is_finite()) {
+            return Err(format!(
+                "tick {}: non-finite audit: energy {e}, work {work}, ball kinetic energy {ke}",
+                s.tick
+            ));
+        }
         // Per tick, with the coil off (and its torque decayed): only the
         // return spring can add energy.
         if !energised && off_ticks > 10 {
@@ -342,7 +349,8 @@ fn compare_rotated(rot: Quat, flip: u64) -> Result<(), String> {
         let da = (a.0 - b.0).abs();
         let dp = (a.1 - b.1).length();
         let dv = (a.2 - b.2).length();
-        if da > 0.05 || dp > 1.0e-3 || dv > 0.05 + 0.02 * a.2.length() {
+        let finite = da.is_finite() && dp.is_finite() && dv.is_finite();
+        if !finite || da > 0.05 || dp > 1.0e-3 || dv > 0.05 + 0.02 * a.2.length() {
             return Err(format!(
                 "tick {k}: Δangle {da}°, Δpos {dp} m, Δvel {dv} m/s (flat {a:?}, tilted {b:?})"
             ));

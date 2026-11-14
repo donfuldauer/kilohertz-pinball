@@ -219,6 +219,22 @@ impl Allowed {
         }
     }
 
+    /// Whether the profile's centre may be anywhere on the polyline through
+    /// `path` (m) on `layer`: at a vertex, or where a segment between two
+    /// vertices enters an allowed area lying between them.
+    fn on_path(&self, layer: u8, path: &[DVec2]) -> bool {
+        match self {
+            Allowed::Anywhere => true,
+            Allowed::Only(e) => e.iter().any(|(l, a)| {
+                l.contains(&layer)
+                    && a.as_ref().is_none_or(|p| {
+                        path.iter().any(|&q| p.covers(q))
+                            || path.windows(2).any(|s| p.crosses_segment(s[0], s[1]))
+                    })
+            }),
+        }
+    }
+
     /// Whether a ball of radius `r` whose centre the profile allows on
     /// `layer` can cover plan point `q` (m): the area contains `q` or comes
     /// within `r` of it.
@@ -342,7 +358,7 @@ fn declared_balls(table: &LoadedTable, sink: &mut Sink) -> Vec<Ball> {
             ))
         } else if !poly.points.iter().all(|p| p.is_finite()) {
             Some("has a non-finite coordinate".to_owned())
-        } else if poly.area2().abs().partial_cmp(&1.0e-12) != Some(core::cmp::Ordering::Greater) {
+        } else if !poly.has_filled_area() {
             Some("has no area".to_owned())
         } else {
             None

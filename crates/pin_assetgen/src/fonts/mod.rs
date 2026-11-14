@@ -264,32 +264,44 @@ pub fn blit_text(
     if scale == 0 || buf.len() < buf_w as usize * buf_h as usize {
         return;
     }
-    let s = i64::from(scale);
-    let cell = i64::from(font.width + GLYPH_SPACING) * s;
+    // Wide arithmetic: no coordinate sum below can overflow, whatever the
+    // inputs, so off-buffer text is clipped rather than panicking.
+    let s = i128::from(scale);
+    let (bw, bh) = (i128::from(buf_w), i128::from(buf_h));
+    let (x, y) = (i128::from(x), i128::from(y));
+    if y >= bh || y + i128::from(font.height) * s <= 0 {
+        return;
+    }
+    let cell = i128::from(font.width + GLYPH_SPACING) * s;
     for (i, c) in text.chars().enumerate() {
-        let gx = x + i as i64 * cell;
-        if gx >= i64::from(buf_w) {
+        let gx = x + i as i128 * cell;
+        if gx >= bw {
             break;
         }
-        if gx + i64::from(font.width) * s <= 0 {
+        if gx + i128::from(font.width) * s <= 0 {
             continue;
         }
         let g = font.glyph_or_fallback(c);
         for py in 0..font.height {
+            // Visible rows of this scaled glyph row, clipped to the buffer.
+            let y0 = y + i128::from(py) * s;
+            let (ys, ye) = (y0.max(0), (y0 + s).min(bh));
+            if ys >= ye {
+                continue;
+            }
             for px in 0..font.width {
                 if !g.pixel(px, py) {
                     continue;
                 }
-                for dy in 0..s {
-                    let yy = y + i64::from(py) * s + dy;
-                    if yy < 0 || yy >= i64::from(buf_h) {
-                        continue;
-                    }
-                    for dx in 0..s {
-                        let xx = gx + i64::from(px) * s + dx;
-                        if xx >= 0 && xx < i64::from(buf_w) {
-                            buf[(yy * i64::from(buf_w) + xx) as usize] = value;
-                        }
+                let x0 = gx + i128::from(px) * s;
+                let (xs, xe) = (x0.max(0), (x0 + s).min(bw));
+                if xs >= xe {
+                    continue;
+                }
+                for yy in ys..ye {
+                    let row = yy * bw;
+                    for xx in xs..xe {
+                        buf[(row + xx) as usize] = value;
                     }
                 }
             }
@@ -408,5 +420,75 @@ mod tests {
         let mut b = vec![0u8; (w * h) as usize];
         blit_text(FONT_8X16, "Kz~", &mut b, w, h, 0, 0, 1, 255);
         assert_eq!(r, b);
+    }
+
+    /// Naive per-pixel reference: scale up the unscaled rendering and clip.
+    fn blit_reference(text: &str, bw: u32, bh: u32, x: i64, y: i64, s: u32) -> Vec<u8> {
+        let mut r = Vec::new();
+        let (w, h) = render_text(FONT_5X7, text, &mut r);
+        let mut out = vec![0u8; (bw * bh) as usize];
+        for ry in 0..i64::from(h) * i64::from(s) {
+            for rx in 0..i64::from(w) * i64::from(s) {
+                let (xx, yy) = (x + rx, y + ry);
+                let src = r[(ry / i64::from(s) * i64::from(w) + rx / i64::from(s)) as usize];
+                if src != 0 && (0..i64::from(bw)).contains(&xx) && (0..i64::from(bh)).contains(&yy)
+                {
+                    out[(yy * i64::from(bw) + xx) as usize] = 7;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn blit_partial_blocks_match_reference() {
+        for s in 1..=4u32 {
+            for y in -30..12i64 {
+                for x in [-40i64, -13, -7, -3, -1, 0, 1, 5, 11, 18] {
+                    let mut b = vec![0u8; 19 * 11];
+                    blit_text(FONT_5X7, "A!q", &mut b, 19, 11, x, y, s, 7);
+                    assert_eq!(
+                        b,
+                        blit_reference("A!q", 19, 11, x, y, s),
+                        "x {x} y {y} s {s}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn blit_extreme_inputs_are_bounded() {
+        // Huge scale far off the buffer: must clip blocks, not scan them.
+        // (Pixel (0, 0) lies in glyph column 2, row 0 of "!".)
+        let mut one = [0u8; 1];
+        blit_text(FONT_5X7, "!", &mut one, 1, 1, -2_000_000, 0, 1_000_000, 9);
+        let lit = FONT_5X7.glyph_or_fallback('!').pixel(2, 0);
+        assert_eq!(one, [if lit { 9 } else { 0 }]);
+        blit_text(
+            FONT_8X16,
+            "#",
+            &mut one,
+            1,
+            1,
+            i64::MIN,
+            i64::MIN,
+            u32::MAX,
+            3,
+        );
+        // Extreme coordinates never overflow.
+        let mut b = vec![0u8; 20 * 10];
+        for (x, y) in [
+            (0, i64::MAX),
+            (i64::MAX, 0),
+            (0, i64::MIN),
+            (i64::MIN, 0),
+            (i64::MAX - 1, i64::MAX - 1),
+            (i64::MIN, i64::MIN),
+        ] {
+            blit_text(FONT_5X7, "!!", &mut b, 20, 10, x, y, 1, 9);
+            blit_text(FONT_5X7, "!!", &mut b, 20, 10, x, y, u32::MAX, 9);
+        }
+        assert!(b.iter().all(|&v| v == 0));
     }
 }
