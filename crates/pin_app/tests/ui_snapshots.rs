@@ -108,7 +108,7 @@ fn write_review_images() {
             let mut out = last.unwrap();
             out.textures_delta = delta;
             let frame = OverlayFrame::new(&ctx, out);
-            let px = paint_offscreen(gpu, size[0], size[1], [0.92, 0.86, 0.55, 1.0], frame)
+            let px = paint_offscreen(&gpu, size[0], size[1], [0.92, 0.86, 0.55, 1.0], frame)
                 .unwrap();
             let img = image::RgbaImage::from_raw(size[0], size[1], px).unwrap();
             let path = format!("{dir}/{}_{tag}.png", panel.label().to_lowercase());

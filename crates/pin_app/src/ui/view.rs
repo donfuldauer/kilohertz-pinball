@@ -28,6 +28,8 @@ const INPUT_SETTINGS_FRACTION: f32 = 0.62;
 /// Narrowest body (points) that shows two columns side by side (settings +
 /// live readings, table list + details); narrower panels stack them.
 const SIDE_BY_SIDE_MIN_WIDTH: f32 = 700.0;
+/// The same for the table browser (list + details need less width).
+const TABLES_SIDE_BY_SIDE_MIN_WIDTH: f32 = 560.0;
 /// Width (side by side) or height (stacked) share of the table list.
 const TABLE_LIST_FRACTION: f32 = 0.5;
 
@@ -191,7 +193,7 @@ impl MenuView {
         let (w, h) = (ui.available_width(), ui.available_height());
         // List and details side by side; a narrow (portrait) panel stacks
         // them so badge rows keep a usable width.
-        if w >= SIDE_BY_SIDE_MIN_WIDTH {
+        if w >= TABLES_SIDE_BY_SIDE_MIN_WIDTH {
             let left = (w * TABLE_LIST_FRACTION).floor();
             ui.horizontal_top(|ui| {
                 ui.allocate_ui(egui::vec2(left, h), |ui| {

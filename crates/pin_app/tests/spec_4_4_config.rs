@@ -790,7 +790,12 @@ fn every_bad_field_is_reported_and_every_good_one_kept() {
         ("last_table", "12"),
         ("tables_dir", "true"),
     ] {
-        let text = format!("{key} = {bad}\nwireframe = true\nscore_display = \"lcd\"\n");
+        let companion = if key == "score_display" {
+            ""
+        } else {
+            "score_display = \"lcd\"\n"
+        };
+        let text = format!("{key} = {bad}\nwireframe = true\n{companion}");
         let r = AppConfig::from_toml_str(&text);
         assert!(r.config.wireframe, "{text:?}");
         assert!(

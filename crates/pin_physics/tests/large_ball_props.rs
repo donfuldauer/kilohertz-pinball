@@ -196,7 +196,7 @@ proptest! {
         let (p0, e0) = (momentum(&s), kinetic_energy(&s));
         let mut ev = BallEvents::new();
         let mut e_prev = e0;
-        for _ in 0..100 {
+        for _ in 0..400 {
             s.step(&geo, DT, &mut ev);
             let e = kinetic_energy(&s);
             prop_assert!(e <= e_prev * (1.0 + 1e-6));
@@ -257,7 +257,11 @@ proptest! {
         }
         let b = rig.ball(h);
         prop_assert!(b.velocity.length() > 0.1, "d {d}: not struck");
-        prop_assert!(b.position.dot(Vec3::Z.cross(flip::bat_dir(20.0))) > 0.0);
+        // Still on the bat's struck side (a weak coil may not get a 2 kg
+        // ball past the end-stop line, so compare with the bat itself).
+        let bat = rig.flippers.bat_direction(flip::LEFT).unwrap();
+        let p = b.position - rig.flippers.pivot_m(flip::LEFT).unwrap();
+        prop_assert!(p.dot(Vec3::Z.cross(bat)) > 0.0, "d {d}: ended behind the bat");
     }
 }
 

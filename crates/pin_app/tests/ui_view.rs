@@ -371,9 +371,10 @@ fn wheel_scrolling_is_not_undone_by_the_focus() {
         source: egui::MouseWheelSource::Unknown,
         modifiers: egui::Modifiers::NONE,
     };
-    let mut events = vec![egui::Event::PointerMoved(over)];
-    events.extend(std::iter::repeat_n(wheel, 5));
-    let (out, _) = h.frame(&mut m, events);
+    // Hover first (egui hit-tests against the previous frame), then wheel.
+    let (out, _) = h.frame(&mut m, vec![egui::Event::PointerMoved(over)]);
+    out.drop_without_applying_deltas();
+    let (out, _) = h.frame(&mut m, std::iter::repeat_n(wheel, 5).collect());
     out.drop_without_applying_deltas();
     let mut y = None;
     for _ in 0..40 {
