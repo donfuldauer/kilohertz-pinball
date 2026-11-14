@@ -1,0 +1,26 @@
+[package]
+name = "pin_tablegen"
+description = "Procedural table generator: layout.toml to .glb, clearance checks, backbox."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pin_tablegen"
+path = "src/main.rs"
+
+[dependencies]
+pin_core.workspace = true
+# Generated guides are built with the loader's own spline and guide types,
+# so the emitted geometry is exactly what `pin_assets` will construct.
+pin_physics = { path = "../pin_physics" }
+glam.workspace = true
+libm.workspace = true
+# The loader's own spline check (generated guides must load without errors
+# or warnings) and its glTF budgets (the glb must load).
+pin_assets = { path = "../pin_assets" }
+
+[dev-dependencies]
+proptest.workspace = true
