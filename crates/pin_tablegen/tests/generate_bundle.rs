@@ -342,7 +342,11 @@ fn concurrent_write_bundles_into_one_folder_leave_a_consistent_pair() {
     assert!(a.glb != b.glb && a.table_toml != b.table_toml);
     let dir = bundle_dir("concurrent");
     let mut expected = names(&dir);
-    expected.extend(["playfield.glb".to_owned(), "table.toml".to_owned()]);
+    expected.extend([
+        "playfield.glb".to_owned(),
+        "table.toml".to_owned(),
+        pin_tablegen::LOCK_FILE.to_owned(),
+    ]);
     expected.sort();
     expected.dedup();
     std::thread::scope(|s| {
@@ -360,14 +364,41 @@ fn concurrent_write_bundles_into_one_folder_leave_a_consistent_pair() {
     let pair_of = |g: &pin_tablegen::GeneratedTable| glb == g.glb && toml == g.table_toml;
     assert!(pair_of(&a) || pair_of(&b), "mixed or damaged pair");
     assert_eq!(names(&dir), expected);
-    // The lock file lives beside the folder.
-    let lock = dir.with_file_name(format!(
-        ".{}.tablegen-lock",
-        dir.file_name().unwrap().to_string_lossy()
-    ));
-    assert!(lock.is_file(), "{}", lock.display());
-    std::fs::remove_file(lock).unwrap();
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A writable output folder under a read-only parent: the lock lives inside
+/// the folder, so writing needs no access to the parent. (Skipped when the
+/// process can write the read-only parent anyway, e.g. as root.)
+#[cfg(unix)]
+#[test]
+fn write_bundle_needs_no_write_access_to_the_parent() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let generated = gen_apex("apex_layout.toml");
+    let parent = bundle_dir("readonly_parent");
+    let dir = parent.join("out");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = parent.join("probe");
+    let privileged = std::fs::write(&probe, b"").is_ok();
+    let result = if privileged {
+        let _ = std::fs::remove_file(&probe);
+        None
+    } else {
+        Some(pin_tablegen::write_bundle(&generated, &dir))
+    };
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    match result {
+        None => eprintln!("skipped: the read-only parent is writable by this process"),
+        Some(r) => {
+            r.unwrap();
+            assert_eq!(
+                std::fs::read(dir.join("playfield.glb")).unwrap(),
+                generated.glb
+            );
+        }
+    }
+    std::fs::remove_dir_all(parent).unwrap();
 }
 
 fn names(dir: &std::path::Path) -> Vec<String> {
