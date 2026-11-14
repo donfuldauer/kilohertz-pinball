@@ -1,0 +1,83 @@
+# Pinned dependency versions — produced by Subphase 0.1 (dependency spikes).
+#
+# Every entry in [crates] is a version that built and passed its spike in
+# spikes/ (see docs/DECISIONS.md "0.1 — Dependency spike results").
+# Subphase 1.1 copies these into the root [workspace.dependencies] unchanged.
+# spikes/dep_smoke/tests/versions.rs asserts this file agrees with
+# spikes/Cargo.toml and spikes/Cargo.lock.
+
+[toolchain]
+# Minimum toolchain: wasmtime 50 declares rust-version 1.97. CI uses
+# dtolnay/rust-toolchain@<this exact version> (pinned; see DECISIONS.md "Orchestrator — 1.2 review B1").
+rust = "1.97.0"
+edition = "2024"
+
+[crates]
+# Platform: windows, input, audio (SDL 3.4.20 vendored and built from source).
+sdl3 = "=0.22.1"
+sdl3-sys = "=0.7.3"          # crate version 0.7.3+SDL-3.4.20; build metadata omitted (cargo ignores it in requirements)
+raw-window-handle = "=0.6.2" # what sdl3's `raw-window-handle` feature and wgpu 30 share
+
+# Graphics.
+wgpu = "=30.0.1"
+pollster = "=1.0.1"
+
+# Physics. parry3d 0.31 uses glam (via glamx), not nalgebra.
+parry3d = "=0.31.1"
+glamx = "=0.3.1"
+glam = "=0.33.12"            # NOT the newest glam (0.34.x): must match parry3d's glamx so math types are shared
+simba = "=0.10.2"            # parry3d's scalar traits (RealField); no nalgebra in the tree
+
+# Scripting.
+mlua = "=0.12.2"             # features lua54 + vendored (Lua 5.4 via lua-src 551.0.2)
+wasmtime = "=50.0.1"
+
+# Utility crates (compile + trivial-use smoke in spikes/dep_smoke).
+serde = "=1.0.229"           # feature derive
+toml = "=1.2.1"              # crate version 1.2.1+spec-1.1.0
+arrayvec = "=0.7.8"
+rand_pcg = "=0.10.2"
+rand_core = "=0.10.1"        # rand_core 0.10 renamed RngCore -> Rng
+proptest = "=1.12.0"
+notify = "=8.2.2"
+gltf = "=1.4.1"
+egui = "=0.37.0"
+egui-wgpu = "=0.37.0"        # requires wgpu ^30 — matches the wgpu pin
+libm = "=0.2.16"
+
+[features]
+# Feature sets the spikes were verified with.
+sdl3 = ["build-from-source-static", "raw-window-handle"]
+mlua = ["lua54", "vendored"]
+serde = ["derive"]
+# wgpu: default features (dx12, metal, vulkan, gles, wgsl, ...); DX12 shader compiler Auto falls back to FXC.
+
+[notes]
+sdl3_build = """
+SDL3 is built from vendored source (sdl3-src 3.4.20) and linked statically via the
+sdl3 feature `build-from-source-static`; CI needs no system SDL. Requirements: cmake and
+a C compiler on every OS. On Linux the native video/audio/input backends are compiled in
+only if their dev headers are present at build time; otherwise SDL builds with just the
+dummy/offscreen video drivers. CI installs: libx11-dev libxext-dev libxrandr-dev
+libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev
+libwayland-dev libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev
+libasound2-dev libpulse-dev.
+"""
+sdl3_events = """
+sdl3::event::Event exposes SDL's nanosecond timestamp on every variant
+(Event::get_timestamp(), SDL_GetTicksNS clock). Always drain poll_iter() completely:
+stopping early leaves SDL3's poll sentinel queued and the next poll loop returns
+nothing. The first change of a virtual-joystick axis also emits the axis's initial
+value (0) before the new value.
+"""
+headless = """
+SDL headless: SDL_VIDEO_DRIVER=dummy, SDL_AUDIO_DRIVER=dummy,
+SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1. SDL code runs from harness=false tests so it is
+on the main thread (required on macOS) and SDL is initialised once per process.
+"""
+gpu_ci = """
+Linux CI: lavapipe (apt mesa-vulkan-drivers) via wgpu Vulkan with force_fallback_adapter.
+Windows CI: WARP via wgpu DX12 with force_fallback_adapter. macOS CI: Metal.
+SPIKE_REQUIRE_GPU=1 makes a missing adapter fail the offscreen spike.
+Linux present-mode probing needs an X server: tests run under xvfb-run.
+"""
