@@ -162,6 +162,11 @@ pub struct BallRestriction {
     pub profile: String,
     /// Allowed layers.
     pub layers: Vec<u8>,
+    /// Optional plan-view area (mm, `[x, y]` polygon of at least 3 points,
+    /// even-odd rule) the ball's centre stays inside on those layers; empty =
+    /// the whole layer (CR-005, Subphase 2.8 clearance validation).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub area: Vec<[f32; 2]>,
 }
 
 /// `[cabinet_switches]`: switch numbers of the eight reserved inputs (§3.4).

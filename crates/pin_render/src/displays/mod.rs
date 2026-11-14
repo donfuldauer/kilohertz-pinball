@@ -53,7 +53,7 @@ pub use dmd::{
 };
 pub use lcd::{
     GLYPH_ADVANCE_UNITS, GLYPH_STROKE_HALF_WIDTH, LcdDrawList, LcdItem, LcdRenderer, LcdSpec,
-    render_lcd_to_image, vector_text_width,
+    TEXT_FIT, render_lcd_to_image, vector_text_width,
 };
 pub use routing::{
     ChangeTracker, DisplayContent, DisplayDirty, DisplayRoute, DisplaySet, ScoreDisplayConfig,

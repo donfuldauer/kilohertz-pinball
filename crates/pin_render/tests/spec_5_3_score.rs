@@ -189,7 +189,10 @@ fn apply_commands_sets_scores_and_reports_change() {
     assert_eq!(s.scores[0], 1_500);
     assert_eq!(s.players, 1);
     // The same command again: no change.
-    assert!(!s.apply_commands(&q), "identical score must not be a change");
+    assert!(
+        !s.apply_commands(&q),
+        "identical score must not be a change"
+    );
 
     q.clear();
     q.set_score(0, 1_501).unwrap();
@@ -206,7 +209,10 @@ fn apply_commands_in_order_last_wins_and_players_grow() {
     q.set_score(2, -5).unwrap();
     assert!(s.apply_commands(&q));
     assert_eq!(s.scores, [0, 20, -5, 0]);
-    assert_eq!(s.players, 3, "players grows to cover the highest player set");
+    assert_eq!(
+        s.players, 3,
+        "players grows to cover the highest player set"
+    );
 
     // Setting a lower player later never shrinks the player count.
     q.clear();
@@ -320,7 +326,11 @@ fn score_lines_multi_player_in_game() {
     let texts: Vec<&str> = l.rows.iter().map(|r| r.text.as_str()).collect();
     assert_eq!(texts, ["1,000", "2,500,000", "-30", "999"]);
     let players: Vec<u8> = l.rows.iter().map(|r| r.player).collect();
-    assert_eq!(players, [1, 2, 3, 4], "rows are 1-based and in player order");
+    assert_eq!(
+        players,
+        [1, 2, 3, 4],
+        "rows are 1-based and in player order"
+    );
     let current: Vec<bool> = l.rows.iter().map(|r| r.current).collect();
     assert_eq!(current, [false, false, true, false]);
     assert_eq!(l.status, "PLAYER 3  BALL 3");
@@ -337,7 +347,10 @@ fn score_lines_multi_player_no_game_shows_credits() {
     };
     let l = score_lines(&s);
     assert_eq!(l.rows.len(), 2);
-    assert_eq!(l.status, "CREDITS 12", "ball == 0 means no game in progress");
+    assert_eq!(
+        l.status, "CREDITS 12",
+        "ball == 0 means no game in progress"
+    );
 }
 
 #[test]

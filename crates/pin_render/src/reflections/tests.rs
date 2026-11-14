@@ -201,3 +201,104 @@ fn balls_past_max_probes_share_the_nearest_slot() {
     t.schedule(&nan);
     assert_eq!(t.probe_for_ball(1), Some(0));
 }
+
+/// 5.2 review N3: a ball draining from the front of the list does not hand
+/// its probe to the next ball; the others keep their own probes and the
+/// round robin goes on oldest-first.
+#[test]
+fn draining_ball_does_not_shift_probes() {
+    let mut s = ProbeScheduler::new(PROBE_BUDGET);
+    let balls: Vec<[f32; 3]> = (0..6).map(|i| [0.03 * i as f32, 0.0, 0.0]).collect();
+    for _ in 0..6 {
+        s.schedule(&balls);
+    }
+    let before: Vec<u32> = s.ages().to_vec();
+    // Ball 0 drains; the others move a little.
+    let after: Vec<[f32; 3]> = balls[1..]
+        .iter()
+        .map(|p| [p[0] + 0.002, p[1], p[2]])
+        .collect();
+    let up = s.schedule(&after).to_vec();
+    for (j, p) in after.iter().enumerate() {
+        assert_eq!(s.slot_of(j), Some(j + 1), "ball {j} lost its slot");
+        let slot = s.probe_for_ball(j).unwrap();
+        assert_eq!(slot, j + 1);
+        // Its probe was captured at its own (earlier) position.
+        let c = s.capture_position(slot).unwrap();
+        assert!(
+            (c[0] - p[0]).abs() < 0.01,
+            "ball {j} samples a probe from {c:?}"
+        );
+        if !up.contains(&j) {
+            assert_eq!(s.ages()[j], before[j + 1] + 1);
+        }
+    }
+    assert!(!s.is_captured(0), "the drained ball's slot is freed");
+    // Oldest first: ages were [2, 2, 1, 1, 0, 0] (by old index), so the
+    // new ages are [3, 2, 2, 1, 1] and balls 0 and 1 (ties → lower) go.
+    assert_eq!(up, vec![0, 1]);
+    for _ in 0..10 {
+        s.schedule(&after);
+        assert!(s.stats().max_age <= 2, "ages {:?}", s.ages());
+    }
+    // A new ball takes the free slot 0 and samples the nearest probe until
+    // its own is captured (it goes first: no capture yet).
+    let mut more = after.clone();
+    more.push([1.0, 0.0, 0.0]);
+    let up = s.schedule(&more).to_vec();
+    assert_eq!(s.slot_of(5), Some(0));
+    assert_eq!(up[0], 5);
+    assert_eq!(s.capture_position(0), Some([1.0, 0.0, 0.0]));
+    // A ball that jumps further than the tracking distance starts over.
+    let mut jumped = more.clone();
+    jumped[2] = [5.0, 0.0, 0.0];
+    s.schedule(&jumped);
+    assert_ne!(
+        s.capture_position(s.probe_for_ball(2).unwrap()),
+        Some(more[2])
+    );
+    assert!(TRACK_MAX_JUMP_M > 0.0);
+}
+
+proptest! {
+    /// Under random arrivals and departures (balls at fixed, distinct
+    /// places), a ball never samples a probe captured at another ball's
+    /// place once it has its own, the budget holds every frame, and once
+    /// the set is steady every age is < ⌈n / budget⌉ again within that
+    /// many frames.
+    #[test]
+    fn probes_follow_balls_through_count_changes(
+        frames in proptest::collection::vec(proptest::collection::vec(any::<bool>(), 20), 1..40),
+        steady in proptest::collection::vec(any::<bool>(), 20),
+    ) {
+        let mut s = ProbeScheduler::new(PROBE_BUDGET);
+        let place = |id: usize| [id as f32, 0.5 * id as f32, 0.0];
+        let run = |s: &mut ProbeScheduler, present: &[bool]| -> Result<Vec<usize>, TestCaseError> {
+            let ids: Vec<usize> = (0..20).filter(|&i| present[i]).collect();
+            let pos: Vec<[f32; 3]> = ids.iter().map(|&i| place(i)).collect();
+            let u = s.schedule(&pos).len();
+            prop_assert!(u <= PROBE_BUDGET as usize);
+            for (j, &id) in ids.iter().enumerate() {
+                if let Some(slot) = s.slot_of(j) {
+                    if let Some(c) = s.capture_position(slot) {
+                        prop_assert_eq!(c, place(id), "ball {} owns a foreign probe", id);
+                        prop_assert_eq!(s.probe_for_ball(j), Some(slot));
+                    }
+                }
+            }
+            Ok(ids)
+        };
+        for f in &frames {
+            run(&mut s, f)?;
+        }
+        let n = steady.iter().filter(|&&b| b).count().min(MAX_PROBES);
+        let period = n.div_ceil(PROBE_BUDGET as usize).max(1);
+        for _ in 0..period {
+            run(&mut s, &steady)?;
+        }
+        for _ in 0..2 * period {
+            run(&mut s, &steady)?;
+            prop_assert!((s.stats().max_age as usize) < period, "ages {:?}", s.ages());
+        }
+    }
+}

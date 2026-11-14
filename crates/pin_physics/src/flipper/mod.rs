@@ -68,6 +68,7 @@ pub use shape::{
 };
 
 use crate::ball::{BodyCast, BodyPoint, MovingBodies};
+use crate::flipper_banana::{BananaError, CurvedBanana};
 use crate::world::layers;
 use arrayvec::ArrayVec;
 use glam::{Quat, Vec3};
@@ -78,8 +79,9 @@ use pin_core::{FlipperConfig, FlipperShape, FlipperStagingMode, Material};
 /// Why [`FlipperSet::new`] rejected a configuration.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum FlipperError {
-    /// The bat shape is not available yet (`CurvedBanana` before Subphase
-    /// 2.6).
+    /// The bat shape is not available. No longer returned: every
+    /// `FlipperShape` is supported since Subphase 2.6 added `CurvedBanana`
+    /// (kept so existing matches still compile).
     ShapeNotSupported {
         /// The flipper.
         id: FlipperId,
@@ -116,7 +118,7 @@ impl core::fmt::Display for FlipperError {
         match *self {
             FlipperError::ShapeNotSupported { id } => write!(
                 f,
-                "flipper {}: this bat shape is not supported yet (CurvedBanana arrives with Subphase 2.6)",
+                "flipper {}: this bat shape is not supported",
                 id.0
             ),
             FlipperError::TooManyFlippers { count } => {
@@ -204,12 +206,14 @@ const COIL_TORQUE_EPSILON: f32 = 1.0e-6;
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum Bat {
     Straight(StraightCapsule),
+    Banana(CurvedBanana),
 }
 
 impl Bat {
     fn shape(&self) -> &dyn BatShape {
         match self {
             Bat::Straight(s) => s,
+            Bat::Banana(b) => b,
         }
     }
 }
@@ -569,9 +573,13 @@ impl Flipper {
                     .ok_or(FlipperError::OutOfRange { id, field: "shape" })?;
                 Bat::Straight(capsule)
             }
-            FlipperShape::CurvedBanana { .. } => {
-                return Err(FlipperError::ShapeNotSupported { id });
-            }
+            FlipperShape::CurvedBanana { .. } => Bat::Banana(
+                CurvedBanana::from_config(c, tuning.bat_height_m).map_err(|e| match e {
+                    BananaError::NonFinite { field } => FlipperError::NonFinite { id, field },
+                    BananaError::OutOfRange { field } => FlipperError::OutOfRange { id, field },
+                    BananaError::NotBanana => FlipperError::ShapeNotSupported { id },
+                })?,
+            ),
         };
         let normal = finite3(id, "surface_normal", c.surface_normal)?;
         let axis = normal.try_normalize().ok_or(FlipperError::OutOfRange {
@@ -705,12 +713,12 @@ impl FlipperSet {
     /// Builds the flippers of a table with the default [`FlipperTuning`].
     ///
     /// # Errors
-    /// [`FlipperError::ShapeNotSupported`] for a `CurvedBanana` bat (until
-    /// Subphase 2.6), and the other variants for configurations the solver
-    /// cannot run: non-finite numbers, a non-positive inertia, negative
-    /// torques, restitutions outside `0..=1`, an EOS fraction outside
-    /// `0..=1`, a zero normal, a degenerate bat, a layer above 7, duplicate
-    /// ids, more than [`MAX_FLIPPERS`] flippers.
+    /// Configurations the solver cannot run: non-finite numbers, a
+    /// non-positive inertia, negative torques, restitutions outside
+    /// `0..=1`, an EOS fraction outside `0..=1`, a zero normal, a degenerate
+    /// bat (for a `CurvedBanana` see
+    /// [`CurvedBanana::from_shape`](crate::flipper_banana::CurvedBanana::from_shape)),
+    /// a layer above 7, duplicate ids, more than [`MAX_FLIPPERS`] flippers.
     pub fn new(configs: &[FlipperConfig]) -> Result<FlipperSet, FlipperError> {
         Self::with_tuning(configs, FlipperTuning::default())
     }
@@ -1156,17 +1164,41 @@ mod tests {
     }
 
     #[test]
-    fn banana_is_a_typed_error_until_2_6() {
-        let e = rejected(|c| {
+    fn banana_is_built_and_its_bad_fields_are_named() {
+        let banana = |arc_radius_mm: f32, tube_radius_mm: f32| {
+            let mut c = config();
             c.shape = FlipperShape::CurvedBanana {
                 length_mm: 80.0,
-                arc_radius_mm: 100.0,
+                arc_radius_mm,
                 arc_sweep_deg: 30.0,
-                tube_radius_mm: 8.0,
+                tube_radius_mm,
+            };
+            FlipperSet::new(&[c])
+        };
+        let s = banana(100.0, 8.0).unwrap();
+        // Reach = chord + tube radius, as for a straight bat of that length.
+        assert!((s.max_surface_speed(0) - 0.0).abs() < 1e-9);
+        let (lo, hi) = s.swept_bounds(0);
+        assert!(((hi - lo).x - 2.0 * libm::sqrtf(0.088 * 0.088 + 0.03 * 0.03)).abs() < 1e-6);
+        assert_eq!(
+            banana(30.0, 8.0).unwrap_err(),
+            FlipperError::OutOfRange {
+                id: ID,
+                field: "shape.arc_radius_mm"
             }
-        });
-        assert_eq!(e, FlipperError::ShapeNotSupported { id: ID });
-        assert!(e.to_string().contains("2.6"));
+        );
+        assert_eq!(
+            banana(100.0, f32::NAN).unwrap_err(),
+            FlipperError::NonFinite {
+                id: ID,
+                field: "shape.tube_radius_mm"
+            }
+        );
+        assert!(
+            !FlipperError::ShapeNotSupported { id: ID }
+                .to_string()
+                .is_empty()
+        );
     }
 
     #[test]

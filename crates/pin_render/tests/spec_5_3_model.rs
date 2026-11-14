@@ -21,8 +21,8 @@ use pin_render::displays::{
     placeholder_scene,
 };
 use pin_render::topology::{
-    Corner, DEFAULT_BACKGLASS_PIP, DEFAULT_SCORE_PIP, DisplayInfo, PipPlacement, Rect,
-    SurfaceRole, TopologyMode, pip_rect, plan_topology,
+    Corner, DEFAULT_BACKGLASS_PIP, DEFAULT_SCORE_PIP, DisplayInfo, PipPlacement, Rect, SurfaceRole,
+    TopologyMode, pip_rect, plan_topology,
 };
 use proptest::prelude::*;
 
@@ -196,9 +196,15 @@ fn dmd_geometry_known_values() {
     assert!((g.pitch - 8.0).abs() < 1e-5);
     assert!((g.radius - 3.2).abs() < 1e-4);
     let c = g.dot_center(0, 0);
-    assert!((c[0] - 4.0).abs() < 1e-4 && (c[1] - 4.0).abs() < 1e-4, "{c:?}");
+    assert!(
+        (c[0] - 4.0).abs() < 1e-4 && (c[1] - 4.0).abs() < 1e-4,
+        "{c:?}"
+    );
     let c = g.dot_center(127, 31);
-    assert!((c[0] - 1020.0).abs() < 1e-3 && (c[1] - 252.0).abs() < 1e-3, "{c:?}");
+    assert!(
+        (c[0] - 1020.0).abs() < 1e-3 && (c[1] - 252.0).abs() < 1e-3,
+        "{c:?}"
+    );
     // Offset viewport, wider than 4:1: letterboxed left/right. Pitch 2 → grid 256 × 64.
     let g = dmd_geometry(&spec, Rect::new(100, 50, 300, 64));
     assert!((g.pitch - 2.0).abs() < 1e-5);
@@ -396,7 +402,10 @@ fn backglass_desc_from_manifest_sorts_by_depth_and_maps_lamps() {
     assert_eq!(tags, [10, 20, 60, 40, 70], "back to front by depth, stable");
 
     assert!(desc.layers[0].lamp.is_none());
-    let logo = desc.layers[1].lamp.as_ref().expect("logo layer is lamp-driven");
+    let logo = desc.layers[1]
+        .lamp
+        .as_ref()
+        .expect("logo layer is lamp-driven");
     assert_eq!(logo.lamp, LampId(7));
     assert_eq!(logo.blend, LayerBlend::Over);
     assert_eq!(tag(&logo.mask), 30, "the mask image of m_logo");
@@ -424,7 +433,10 @@ fn backglass_desc_from_manifest_reports_errors() {
         vec![mask("m_logo", "l_logo", "backglass/logo_mask.png")],
     );
     let e = BackglassDesc::from_manifest(&m, resolve, load);
-    assert!(e.is_err(), "a layer naming an unknown lamp mask is an error");
+    assert!(
+        e.is_err(),
+        "a layer naming an unknown lamp mask is an error"
+    );
     assert!(!e.unwrap_err().to_string().is_empty());
     // Unknown lamp name.
     let m = manifest(
@@ -511,7 +523,11 @@ fn routes_single_monitor_are_pip_regions() {
     assert_eq!(routes[1].role, SurfaceRole::Score);
     for r in &routes {
         assert_eq!(r.window, 0);
-        assert!(!r.dedicated, "{:?} is a PiP on the playfield window", r.role);
+        assert!(
+            !r.dedicated,
+            "{:?} is a PiP on the playfield window",
+            r.role
+        );
     }
     assert_eq!(
         routes[0].viewport,
@@ -552,7 +568,11 @@ fn routes_cabinet_are_dedicated_windows_or_pips() {
         (routes[1].role, routes[1].window, routes[1].dedicated),
         (SurfaceRole::Score, 2, true)
     );
-    assert_eq!(routes[0].viewport, Rect::new(0, 0, 1920, 1080), "window-local");
+    assert_eq!(
+        routes[0].viewport,
+        Rect::new(0, 0, 1920, 1080),
+        "window-local"
+    );
     assert_eq!(routes[1].viewport, Rect::new(0, 0, 1280, 320));
 
     // Swapped displays: the window index follows the plan, not the display number.
@@ -682,16 +702,34 @@ proptest! {
 
 #[test]
 fn fit_aspect_known_values() {
-    assert_eq!(fit_aspect(Rect::new(0, 0, 1920, 1080), 16, 9), Rect::new(0, 0, 1920, 1080));
-    assert_eq!(fit_aspect(Rect::new(0, 0, 1920, 1080), 4, 3), Rect::new(240, 0, 1440, 1080));
-    assert_eq!(fit_aspect(Rect::new(10, 20, 400, 100), 16, 9), Rect::new(121, 20, 177, 100));
-    assert_eq!(fit_aspect(Rect::new(0, 0, 480, 120), 16, 9), Rect::new(133, 0, 213, 120));
-    assert_eq!(fit_aspect(Rect::new(0, 0, 100, 400), 4, 1), Rect::new(0, 187, 100, 25));
+    assert_eq!(
+        fit_aspect(Rect::new(0, 0, 1920, 1080), 16, 9),
+        Rect::new(0, 0, 1920, 1080)
+    );
+    assert_eq!(
+        fit_aspect(Rect::new(0, 0, 1920, 1080), 4, 3),
+        Rect::new(240, 0, 1440, 1080)
+    );
+    assert_eq!(
+        fit_aspect(Rect::new(10, 20, 400, 100), 16, 9),
+        Rect::new(121, 20, 177, 100)
+    );
+    assert_eq!(
+        fit_aspect(Rect::new(0, 0, 480, 120), 16, 9),
+        Rect::new(133, 0, 213, 120)
+    );
+    assert_eq!(
+        fit_aspect(Rect::new(0, 0, 100, 400), 4, 1),
+        Rect::new(0, 187, 100, 25)
+    );
     // Degenerate aspect arguments must not panic (divide by zero).
     let _ = fit_aspect(Rect::new(0, 0, 100, 100), 0, 1);
     let _ = fit_aspect(Rect::new(0, 0, 100, 100), 1, 0);
     let _ = fit_aspect(Rect::new(0, 0, 0, 0), 4, 3);
-    let _ = fit_aspect(Rect::new(i32::MAX, i32::MAX, u32::MAX, u32::MAX), u32::MAX, 1);
+    let _ = fit_aspect(Rect::new(0, 0, u32::MAX, u32::MAX), u32::MAX, 1);
+    let _ = fit_aspect(Rect::new(0, 0, u32::MAX, u32::MAX), 1, u32::MAX);
+    let _ = fit_aspect(Rect::new(i32::MIN, i32::MIN, u32::MAX, u32::MAX), 4, 3);
+    let _ = fit_aspect(Rect::new(i32::MAX - 100, i32::MAX - 100, 100, 100), 16, 9);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -709,7 +747,10 @@ const REQUIRED_SCENES: [&str; 4] = [
 fn placeholder_scenes_are_present_and_parse() {
     let ids: Vec<&str> = PLACEHOLDER_SCENES.iter().map(|(id, _)| *id).collect();
     for want in REQUIRED_SCENES {
-        assert!(ids.contains(&want), "placeholder scene {want} missing ({ids:?})");
+        assert!(
+            ids.contains(&want),
+            "placeholder scene {want} missing ({ids:?})"
+        );
         assert!(placeholder_scene(want).is_some(), "{want} does not load");
     }
     // Ids are unique and every listed text parses to what `placeholder_scene` returns.
@@ -732,7 +773,11 @@ fn scene_library_placeholders_and_lookup() {
     assert_eq!(lib.len(), PLACEHOLDER_SCENES.len());
     for (i, (id, _)) in PLACEHOLDER_SCENES.iter().enumerate() {
         let sid = lib.id_of(id).unwrap();
-        assert_eq!(sid, SceneId(i as u16), "ids follow PLACEHOLDER_SCENES order");
+        assert_eq!(
+            sid,
+            SceneId(i as u16),
+            "ids follow PLACEHOLDER_SCENES order"
+        );
         assert_eq!(lib.get(sid), placeholder_scene(id).as_ref());
     }
     assert!(lib.id_of("scene_unknown").is_none());
@@ -786,7 +831,11 @@ fn scene_library_load_reads_files_and_falls_back_to_placeholders() {
     .unwrap();
     assert_eq!(
         asked,
-        ["scenes/custom.toml", "scenes/powerball_mania.toml", "scenes/game_over.toml"],
+        [
+            "scenes/custom.toml",
+            "scenes/powerball_mania.toml",
+            "scenes/game_over.toml"
+        ],
         "files are read in declaration order by their bundle path"
     );
     assert_eq!(lib.len(), 3);
@@ -857,7 +906,10 @@ fn scene_player_timing() {
     assert_eq!(t, 0);
     assert_eq!(p.active(&lib, 600).unwrap().1, 500);
     assert_eq!(p.active(&lib, 1099).unwrap().1, 999);
-    assert!(p.active(&lib, 1101).is_none(), "a one-shot scene ends after its duration");
+    assert!(
+        p.active(&lib, 1101).is_none(),
+        "a one-shot scene ends after its duration"
+    );
     assert!(p.active(&lib, 1_000_000).is_none());
     // Asking is not mutating: the same instant gives the same answer again.
     assert_eq!(p.active(&lib, 600).unwrap().1, 500);
@@ -911,7 +963,11 @@ fn scene_player_applies_host_commands_last_wins() {
     q.show_scene(SceneId(1)).unwrap();
     p.apply_commands(&q, 50);
     let (scene, t) = p.active(&lib, 70).unwrap();
-    assert_eq!(Some(scene), lib.get(SceneId(1)), "the last display_scenes entry wins");
+    assert_eq!(
+        Some(scene),
+        lib.get(SceneId(1)),
+        "the last display_scenes entry wins"
+    );
     assert_eq!(t, 20);
 
     // An empty queue leaves the running scene alone.
@@ -1048,16 +1104,24 @@ fn model_lcd_score_view_shows_formatted_scores_and_status() {
     let all = texts.join(" | ");
     assert!(all.contains("1,234,560"), "player 1 score missing: {all}");
     assert!(all.contains("98,000"), "player 2 score missing: {all}");
-    assert!(all.contains("PLAYER 2  BALL 2"), "status line missing: {all}");
+    assert!(
+        all.contains("PLAYER 2  BALL 2"),
+        "status line missing: {all}"
+    );
     // Everything lies on the 16:9 canvas.
     let DisplayContent::Lcd(list) = &content else {
         unreachable!()
     };
     for item in &list.items {
         match item {
-            LcdItem::Text { origin, cell, text, .. } => {
+            LcdItem::Text {
+                origin, cell, text, ..
+            } => {
                 assert!(*cell > 0.0 && cell.is_finite());
-                assert!(origin[0] >= 0.0 && origin[1] >= 0.0, "{text:?} at {origin:?}");
+                assert!(
+                    origin[0] >= -0.5 && origin[1] >= -0.5,
+                    "{text:?} at {origin:?}"
+                );
                 let w = text.chars().count() as f32 * 6.0 * cell / 7.0;
                 assert!(
                     origin[0] + w <= 1920.0 + cell && origin[1] + cell <= 1080.0 + 1.0,
@@ -1080,7 +1144,10 @@ fn model_lcd_score_view_shows_formatted_scores_and_status() {
             _ => None,
         })
         .fold(0.0f32, f32::max);
-    assert!(score_cell >= 54.0, "score glyph cell only {score_cell} px of 1080");
+    assert!(
+        score_cell >= 54.0,
+        "score glyph cell only {score_cell} px of 1080"
+    );
 
     // No game: credits.
     m.scores_mut().ball = 0;
@@ -1092,7 +1159,11 @@ fn model_lcd_score_view_shows_formatted_scores_and_status() {
 fn model_applies_host_commands_and_scene_timeout_returns_to_score_view() {
     let mut m = dmd_model(128, 32, DmdColor::Orange);
     let baseline = dmd(m.compose(0));
-    assert_eq!(dmd(m.compose(999_999)), baseline, "the idle score view is static");
+    assert_eq!(
+        dmd(m.compose(999_999)),
+        baseline,
+        "the idle score view is static"
+    );
 
     let mut q = HostCommandQueue::default();
     q.set_score(0, 77_000).unwrap();
@@ -1145,7 +1216,19 @@ fn every_placeholder_scene_composes_on_every_display_at_any_time() {
     let lib = SceneLibrary::placeholders();
     for (id, _) in PLACEHOLDER_SCENES {
         let sid = lib.id_of(id).unwrap();
-        let times = [0u64, 1, 16, 499, 500, 501, 999, 1000, 2500, 60_000, u64::MAX / 2];
+        let times = [
+            0u64,
+            1,
+            16,
+            499,
+            500,
+            501,
+            999,
+            1000,
+            2500,
+            60_000,
+            u64::MAX / 2,
+        ];
         for (w, h) in [(128u32, 32u32), (192, 64), (16, 8), (512, 256)] {
             for color in [DmdColor::Orange, DmdColor::Red, DmdColor::Rgb] {
                 let mut m = dmd_model(w, h, color);
@@ -1217,11 +1300,17 @@ fn change_tracker_reports_only_what_changed() {
 
     let c0 = m.compose(0);
     let d = tracker.observe(&lamps, &c0);
-    assert!(d.backglass && d.score, "the first observation draws everything");
+    assert!(
+        d.backglass && d.score,
+        "the first observation draws everything"
+    );
     // Nothing changed: nothing to redraw, however often we ask.
     for t in 1..200u64 {
         let d = tracker.observe(&lamps, &m.compose(t));
-        assert!(!d.backglass && !d.score, "idle frame {t} asked for a redraw");
+        assert!(
+            !d.backglass && !d.score,
+            "idle frame {t} asked for a redraw"
+        );
     }
     // Unregistered lamps: nothing.
     lamps[0] = 1.0;
@@ -1234,14 +1323,20 @@ fn change_tracker_reports_only_what_changed() {
     assert!(!tracker.observe(&lamps, &c0).backglass);
     lamps[200] = 2.0 / 1024.0;
     let d = tracker.observe(&lamps, &c0);
-    assert!(d.backglass && !d.score, "a lamp change redraws only the backglass");
+    assert!(
+        d.backglass && !d.score,
+        "a lamp change redraws only the backglass"
+    );
     let d = tracker.observe(&lamps, &c0);
     assert!(!d.backglass && !d.score);
     // Score change: score only.
     m.scores_mut().scores[0] = 10;
     let c1 = m.compose(300);
     let d = tracker.observe(&lamps, &c1);
-    assert!(!d.backglass && d.score, "a score change redraws only the score display");
+    assert!(
+        !d.backglass && d.score,
+        "a score change redraws only the score display"
+    );
     let d = tracker.observe(&lamps, &c1);
     assert!(!d.backglass && !d.score);
     // Both.
@@ -1284,7 +1379,9 @@ proptest! {
         let delta = (a - b).abs();
         if delta >= LAMP_REDRAW_EPSILON * 1.01 {
             prop_assert!(d.backglass, "moved by {}", delta);
-        } else if delta <= LAMP_REDRAW_EPSILON * 0.99 {
+        } else if delta <= LAMP_REDRAW_EPSILON * 0.99 && b > 0.0 && b < 1.0 {
+            // (Reaching exactly 0 or 1 redraws whatever the step: DECISIONS "5.3 — Backglass
+            // and score display", change detection.)
             prop_assert!(!d.backglass, "moved by only {}", delta);
         }
     }

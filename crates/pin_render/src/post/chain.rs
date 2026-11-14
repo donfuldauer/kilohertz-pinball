@@ -33,10 +33,13 @@ struct PostUniform {
     params: [f32; 4],
     bloom: [f32; 4],
     flags: [f32; 4],
+    /// Image width and height (px), unused, unused: the bloom levels find
+    /// where the image edge falls on their texel grid.
+    image: [f32; 4],
     balls: [BlurBall; MAX_BLUR_BALLS],
 }
 
-const _: () = assert!(core::mem::size_of::<PostUniform>() == 48 + 32 * MAX_BLUR_BALLS);
+const _: () = assert!(core::mem::size_of::<PostUniform>() == 64 + 32 * MAX_BLUR_BALLS);
 
 /// Post chain counters.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
@@ -645,6 +648,7 @@ impl PostChain {
                 if hdr_out { 1.0 } else { 0.0 },
                 if b.enabled { 1.0 } else { 0.0 },
             ],
+            image: [w as f32, h as f32, 0.0, 0.0],
             balls,
         }
     }

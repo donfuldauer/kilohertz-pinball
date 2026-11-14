@@ -267,7 +267,10 @@ impl DmdFrame {
 
     /// Dots with any channel above 0.
     pub fn lit_count(&self) -> usize {
-        self.dots.iter().filter(|d| d.iter().any(|&c| c > 0)).count()
+        self.dots
+            .iter()
+            .filter(|d| d.iter().any(|&c| c > 0))
+            .count()
     }
 
     /// Composes `scene` at `elapsed_ms` for `spec`: background, then each
@@ -421,7 +424,9 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 pub(super) fn dmd_shader_source() -> String {
     let [r, g, b] = DMD_BACKGROUND;
-    format!("const BACKGROUND: vec3<f32> = vec3<f32>({r:?}, {g:?}, {b:?});\n{OUTPUT_WGSL}\n{DMD_WGSL}")
+    format!(
+        "const BACKGROUND: vec3<f32> = vec3<f32>({r:?}, {g:?}, {b:?});\n{OUTPUT_WGSL}\n{DMD_WGSL}"
+    )
 }
 
 /// Draws [`DmdFrame`]s as a procedural dot grid.
@@ -613,6 +618,11 @@ pub fn render_dmd_to_image(
     let mut r = DmdRenderer::new(ctx, wgpu::TextureFormat::Rgba8Unorm, spec);
     r.set_frame(ctx.queue(), frame);
     render_offscreen(ctx, width, height, |encoder, view| {
-        r.encode(encoder, view, (width, height), Rect::new(0, 0, width, height));
+        r.encode(
+            encoder,
+            view,
+            (width, height),
+            Rect::new(0, 0, width, height),
+        );
     })
 }

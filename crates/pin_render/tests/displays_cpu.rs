@@ -133,8 +133,10 @@ fn score_state_applies_commands() {
 
 #[test]
 fn score_status_lines() {
-    let mut st = ScoreState::default();
-    st.credits = 3;
+    let mut st = ScoreState {
+        credits: 3,
+        ..ScoreState::default()
+    };
     assert_eq!(score_lines(&st).status, "CREDITS 3");
     st.ball = 2;
     assert_eq!(score_lines(&st).status, "BALL 2  CREDITS 3");
@@ -153,7 +155,10 @@ fn expand_text_placeholders() {
         credits: 9,
     };
     assert_eq!(
-        expand_text("{score} {score1} {score4} P{player} B{ball} C{credits} {x} {", &st),
+        expand_text(
+            "{score} {score1} {score4} P{player} B{ball} C{credits} {x} {",
+            &st
+        ),
         "5 1,234 7 P2 B3 C9 {x} {"
     );
     assert_eq!(expand_text("plain", &st), "plain");
@@ -191,7 +196,10 @@ fn scene_validation_errors() {
         ("schema_version = 1\nrepeat = true", "Invalid"),
         ("schema_version = 1\nduration_ms = 99999999", "Invalid"),
         ("schema_version = 1\n[[layers]]\nkind = \"text\"", "Invalid"),
-        ("schema_version = 1\n[[layers]]\nkind = \"image\"", "Invalid"),
+        (
+            "schema_version = 1\n[[layers]]\nkind = \"image\"",
+            "Invalid",
+        ),
         (
             "schema_version = 1\n[[layers]]\nkind = \"rect\"\ntext = \"x\"",
             "Invalid",
@@ -228,10 +236,7 @@ fn scene_validation_errors() {
             "schema_version = 1\n[[layers]]\nkind = \"rect\"\nfrom = [9.0, 0.0]",
             "Invalid",
         ),
-        (
-            "schema_version = 1\n[[layers]]\nkind = \"blob\"",
-            "Parse",
-        ),
+        ("schema_version = 1\n[[layers]]\nkind = \"blob\"", "Parse"),
     ];
     for (text, kind) in bad {
         let e = Scene::from_toml_str(text).unwrap_err();
@@ -262,7 +267,10 @@ fn scene_defaults_and_images() {
     )
     .unwrap();
     let t = &s.layers[0];
-    assert_eq!((t.x, t.y, t.align, t.valign), (0.5, 0.5, Align::Center, VAlign::Middle));
+    assert_eq!(
+        (t.x, t.y, t.align, t.valign),
+        (0.5, 0.5, Align::Center, VAlign::Middle)
+    );
     assert_eq!(t.color, [255, 255, 255]);
     let i = &s.layers[1];
     assert_eq!((i.x, i.y, i.w, i.h), (0.0, 0.0, 1.0, 0.0));
@@ -279,7 +287,10 @@ fn layer_animation_timeline() {
     .unwrap();
     let l = &s.layers[0];
     assert!(l.state_at(99, 1000).is_none());
-    assert!(l.state_at(100, 1000).is_none(), "fade-in starts at 0 opacity");
+    assert!(
+        l.state_at(100, 1000).is_none(),
+        "fade-in starts at 0 opacity"
+    );
     let a = l.state_at(125, 1000).unwrap();
     assert!((a.opacity - 0.25).abs() < 1e-6 && (a.x - 0.125).abs() < 1e-6);
     assert!(l.state_at(150, 1000).is_none(), "blink off phase");
@@ -419,7 +430,9 @@ fn dmd_font_choice_and_scaling() {
     // Too wide for 8×16 → falls back to 5×7.
     let long = "ABCDEFGHIJKLMNOPQRST";
     let f = DmdFrame::compose(&DMD_128X32, &text_scene(long, 0.5, "auto"), 0, &st, &im);
-    let rows = (0..32).filter(|&y| (0..128).any(|x| f.get(x, y)[0] > 0)).count();
+    let rows = (0..32)
+        .filter(|&y| (0..128).any(|x| f.get(x, y)[0] > 0))
+        .count();
     assert!(rows <= 7, "5x7 font used ({rows} rows)");
 }
 
@@ -592,7 +605,10 @@ fn routes_pip_and_dedicated() {
     assert!(r.iter().all(|r| r.window == 0 && !r.dedicated));
     assert_eq!(r[0].role, SurfaceRole::Backglass);
     assert_eq!(r[1].role, SurfaceRole::Score);
-    assert_eq!(Some(r[0].viewport), single.windows[0].viewport(SurfaceRole::Backglass));
+    assert_eq!(
+        Some(r[0].viewport),
+        single.windows[0].viewport(SurfaceRole::Backglass)
+    );
     let cab = plan_topology(
         &displays,
         &TopologyMode::Cabinet {
@@ -681,16 +697,25 @@ fn change_tracker_detects_lamps_scores_and_scenes() {
     let mut lamps = [0.0f32; 8];
     let d = tr.observe(&lamps, &model.compose(0));
     assert!(d.backglass && d.score);
-    assert_eq!(tr.observe(&lamps, &model.compose(1)), DisplayDirty::default());
+    assert_eq!(
+        tr.observe(&lamps, &model.compose(1)),
+        DisplayDirty::default()
+    );
     lamps[5] = 1.0; // unwatched lamp
     lamps[3] = 0.0005; // below epsilon
-    assert_eq!(tr.observe(&lamps, &model.compose(2)), DisplayDirty::default());
+    assert_eq!(
+        tr.observe(&lamps, &model.compose(2)),
+        DisplayDirty::default()
+    );
     lamps[3] = 0.5;
     assert!(tr.observe(&lamps, &model.compose(3)).backglass);
     lamps[3] = 0.5004;
     assert!(!tr.observe(&lamps, &model.compose(3)).backglass);
     lamps[3] = 0.0;
-    assert!(tr.observe(&lamps, &model.compose(3)).backglass, "reaching 0 counts");
+    assert!(
+        tr.observe(&lamps, &model.compose(3)).backglass,
+        "reaching 0 counts"
+    );
     // A score command changes the content.
     let mut q = HostCommandQueue::default();
     q.set_score(0, 100).unwrap();
@@ -796,7 +821,13 @@ fn backglass_from_manifest() {
     assert_eq!((l2.lamp, l2.blend), (LampId(9), LayerBlend::Additive));
     assert_eq!(
         loaded,
-        ["base.png", "logo.png", "logo_mask.png", "flash.png", "flash_mask.png"]
+        [
+            "base.png",
+            "logo.png",
+            "logo_mask.png",
+            "flash.png",
+            "flash_mask.png"
+        ]
     );
     // Errors.
     let e = BackglassDesc::from_manifest(&m, |_| None, |_| Ok(RgbaImage::new(1, 1))).unwrap_err();

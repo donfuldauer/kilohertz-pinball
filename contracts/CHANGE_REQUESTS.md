@@ -125,3 +125,13 @@ unchanged):
 - **Why:** PLAN Appendix A.1 says "kind-specific parameters default from physics_defaults.toml", but neither `MechDef` nor `PhysicsDefaults` had any such parameter (1.1 review N7). Subphase 2.4 needs per-mech geometry, coil force, spring, threshold and damping values with table overrides, so exit speeds come from parameters.
 - **Affected crates:** none (additive: no `MechDef`/`PhysicsDefaults` struct literal exists outside `pin_core`; the new TOML keys are optional).
 - **Workaround meanwhile:** none needed; the brief allows the additive change.
+
+### CR-005: optional `area` of a `[balls] restrict` entry
+- **Requested by:** Subphase 2.8 (Implementer)
+- **Status:** open (applied in the working tree with Subphase 2.8; pending review)
+- **Kind:** additive
+- **Items:** `crates/pin_core/src/schema/table.rs` (`BallRestriction`), TOML key `balls.restrict[*].area`.
+- **Change:** `BallRestriction` gains `#[serde(default, skip_serializing_if = "Vec::is_empty")] pub area: Vec<[f32; 2]>` — a plan-view polygon in mm (≥ 3 points, even-odd rule) the ball centre stays inside on the listed layers; empty / omitted = the whole layer (the old meaning). Existing TOML parses and serialises unchanged.
+- **Why:** PLAN 2.8 verification 2 accepts the XL ball once "restricted to the main deck's open area". The main deck is one collision layer (layer 0) that also runs under the upper deck, so a layer list alone cannot keep the XL ball out from under a 65 mm deck; the clearance validator (`pin_tablegen::clearance`) needs the area to know where the ball may be.
+- **Affected crates:** none (no `BallRestriction` struct literal exists outside `pin_core`; the key is optional).
+- **Workaround meanwhile:** none needed; the additive change is made in the working tree.

@@ -298,6 +298,88 @@ fn bloom_conserves_energy_and_is_centred() {
     assert!(rel0.abs() < 0.01);
 }
 
+/// 5.2 review B1: the bloom chain conserves energy for any image size and
+/// any source position (odd sizes used to drop every other source pixel
+/// and double the rest). One 41-luminance pixel on black, firefly clamp
+/// off, stepped through every parity, near the borders and in the corner.
+#[test]
+fn bloom_is_energy_conserving_at_every_position_and_odd_size() {
+    let Some(ctx) = ctx() else { return };
+    let cam = camera();
+    let frame = PostFrame {
+        camera: &cam,
+        balls: &[],
+    };
+    let mut cfg = PostConfig::neutral();
+    cfg.bloom = BloomConfig {
+        firefly_clamp: 0.0,
+        ..BloomConfig::default()
+    };
+    let k = f64::from(cfg.bloom.intensity);
+    for (w, h) in [(127u32, 93u32), (96, 64), (1365, 767), (1919, 1079)] {
+        let mut c = chain(ctx, w, h, cfg);
+        let (cx, cy) = (w / 2, h / 2);
+        let mut positions: Vec<(u32, u32, bool)> =
+            [(0, 0), (1, 0), (0, 1), (1, 1), (2, 0), (3, 1), (2, 3)]
+                .iter()
+                .map(|&(dx, dy)| (cx + dx, cy + dy, true))
+                .collect();
+        positions.extend([
+            (1, cy, false),
+            (w - 2, cy, false),
+            (w - 1, h - 1, false),
+            (0, 0, false),
+        ]);
+        let mut halos = Vec::new();
+        for (x, y, interior) in positions {
+            let img = flat(w, h, |px, py| {
+                if (px, py) == (x, y) {
+                    [41.0; 3]
+                } else {
+                    [0.0; 3]
+                }
+            });
+            let input = HdrInput::from_image(ctx, &img).unwrap();
+            let out = c.render_to_hdr(ctx, &input.view, &frame).unwrap();
+            let total = total_lum(&out);
+            let src = f64::from(luminance(rgb(out.at(x, y))));
+            let halo = (total - src) / (k * 40.0);
+            let rel = (total - 41.0) / 41.0;
+            let err = (total - 41.0) / (k * 40.0);
+            println!(
+                "{w}x{h} pixel ({x},{y}): total {rel:+.5} ({err:+.4} of the scattered part), halo / (k·40) {halo:.4}"
+            );
+            if interior {
+                assert!(
+                    rel.abs() < 0.005,
+                    "{w}x{h} ({x},{y}): bloom changes the total by {rel:+.4}"
+                );
+                assert!(
+                    (0.85..=1.0).contains(&halo),
+                    "{w}x{h} ({x},{y}): halo {halo}"
+                );
+                halos.push(halo);
+            } else {
+                // Borders: mirrored levels; exact at even edges; next to an
+                // odd last row / column within 30 % of the scattered part
+                // (DECISIONS "5.2 — fix round 1").
+                let tol = if w % 2 == 0 && h % 2 == 0 { 0.01 } else { 0.3 };
+                assert!(
+                    err.abs() < tol,
+                    "{w}x{h} ({x},{y}): border error {err:+.4} of the scattered part"
+                );
+            }
+        }
+        let (lo, hi) = halos
+            .iter()
+            .fold((f64::MAX, 0.0f64), |(a, b), &v| (a.min(v), b.max(v)));
+        assert!(
+            hi - lo < 0.03,
+            "{w}x{h}: halo depends on the position: {halos:?}"
+        );
+    }
+}
+
 fn rgb(p: [f32; 4]) -> [f32; 3] {
     [p[0], p[1], p[2]]
 }

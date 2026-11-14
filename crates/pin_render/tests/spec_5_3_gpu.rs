@@ -102,6 +102,23 @@ fn fixture_path(name: &str, w: u32, h: u32) -> std::path::PathBuf {
         .join(format!("{name}_{w}x{h}.rgba8"))
 }
 
+/// Writes `img` as a PNG into the directory named by `SPEC_5_3_DUMP` (for the Reviewer's
+/// visual checklist); does nothing when the variable is unset.
+fn dump(name: &str, img: &RgbaImage) {
+    let Some(dir) = std::env::var_os("SPEC_5_3_DUMP") else {
+        return;
+    };
+    let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+    image::save_buffer(
+        &path,
+        &img.pixels,
+        img.width,
+        img.height,
+        image::ExtendedColorType::Rgba8,
+    )
+    .unwrap();
+}
+
 /// Secondary evidence (D30 b): compare with the stored snapshot, or store it under
 /// `SPEC_5_3_BLESS=1`. Call only after the analytic assertions on `img` have passed.
 /// Tolerance (lavapipe / WARP / Metal rasterise edges differently): at most 1 % of the
@@ -287,7 +304,7 @@ fn check_dmd_dots(
     viewport: Rect,
     what: &str,
 ) -> (f32, f32) {
-    let geo = dmd_geometry(&spec, viewport);
+    let geo = dmd_geometry(spec, viewport);
     let mut lit_sum = 0.0f64;
     let mut lit_n = 0u32;
     let mut unlit_sum = 0.0f64;
@@ -309,7 +326,9 @@ fn check_dmd_dots(
             // Cell corner (half a pitch diagonally away: 0.707 pitch from every centre,
             // well outside the 0.40-pitch dot radius): background.
             let corner = [c[0] + geo.pitch * 0.5, c[1] + geo.pitch * 0.5];
-            if corner[0] < (viewport.x as f32 + viewport.w as f32) - 1.0
+            // (Only where the pitch leaves a pixel clear of the anti-aliased edges.)
+            if geo.pitch >= 5.0
+                && corner[0] < (viewport.x as f32 + viewport.w as f32) - 1.0
                 && corner[1] < (viewport.y as f32 + viewport.h as f32) - 1.0
             {
                 // Both pixels around the corner point.
@@ -490,21 +509,41 @@ fn dmd_dots_are_round_and_evenly_pitched() {
                 assert!((width - 2.0 * geo.radius).abs() <= 1.5);
             }
         }
-        // Round, not square: inside the radius on the diagonal is lit, the square's corner
-        // (0.9 r, 0.9 r) → 1.27 r from the centre is dark.
+        // Round, not square: every pixel whose centre is well inside the radius is lit,
+        // every pixel well outside it (including the cell's corners) is dark.
         for (x, y) in [(0u32, 0u32), (w / 2, h / 2), (w - 1, h - 1), (7, 3)] {
             let c = geo.dot_center(x, y);
-            for s in [[1.0f32, 1.0], [1.0, -1.0], [-1.0, 1.0], [-1.0, -1.0]] {
-                let k_in = 0.5 * geo.radius; // 0.707 r from the centre
-                let k_out = 0.9 * geo.radius;
-                let inside = px_at(&img, [c[0] + s[0] * k_in, c[1] + s[1] * k_in]);
-                let outside = px_at(&img, [c[0] + s[0] * k_out, c[1] + s[1] * k_out]);
-                assert!(inside[0] > 0.9 * peak, "dot ({x},{y}) diagonal inside");
-                assert!(
-                    outside[0] < 0.1 * peak,
-                    "dot ({x},{y}) is not round: {outside:?} at 1.27 r"
-                );
+            let half_cell = geo.pitch * 0.5;
+            let (x0, y0) = (
+                (c[0] - half_cell).round() as u32,
+                (c[1] - half_cell).round() as u32,
+            );
+            let mut corners_dark = 0;
+            for py in y0..y0 + pitch {
+                for pxx in x0..x0 + pitch {
+                    let d = ((pxx as f32 + 0.5 - c[0]).powi(2) + (py as f32 + 0.5 - c[1]).powi(2))
+                        .sqrt();
+                    let v = px(&img, pxx, py)[0];
+                    if d <= geo.radius - 1.0 {
+                        assert!(
+                            v > 0.95 * peak,
+                            "dot ({x},{y}): px at {d:.2} from centre is {v}"
+                        );
+                    } else if d >= geo.radius + 1.0 {
+                        assert!(
+                            v < 0.03 * peak,
+                            "dot ({x},{y}) is not round: px at {d:.2} from centre is {v}"
+                        );
+                        if d > geo.radius * 1.2 && d < geo.radius * 1.41 {
+                            corners_dark += 1;
+                        }
+                    }
+                }
             }
+            assert!(
+                corners_dark >= 4,
+                "no pixels sampled in the square's corners"
+            );
         }
         // Covered area fraction of a full-on display ≈ π r² / pitch² = π · 0.16.
         let m = mean(&img, 0, 0, iw, ih);
@@ -537,7 +576,11 @@ fn dmd_drive_levels_are_linear_and_rgb_dots_take_their_colour() {
         for i in 0..16u32 {
             let got = px_at(&img, geo.dot_center(4 + i * 3, 10));
             let b = DMD_UNLIT_LEVEL + (1.0 - DMD_UNLIT_LEVEL) * (i as f32 / 15.0);
-            let want = [tint[0] * b * 255.0, tint[1] * b * 255.0, tint[2] * b * 255.0];
+            let want = [
+                tint[0] * b * 255.0,
+                tint[1] * b * 255.0,
+                tint[2] * b * 255.0,
+            ];
             assert_close(got, want, 3.0, &format!("{color:?} level {i}"));
             assert!(got[0] > prev, "{color:?}: level {i} not brighter");
             prev = got[0];
@@ -571,7 +614,10 @@ fn dmd_drive_levels_are_linear_and_rgb_dots_take_their_colour() {
                 assert!(got[k] > 245.0, "rgb drive {d:?}: {got:?}");
             }
             if d[k] == 0 {
-                assert!(got[k] < 60.0, "rgb drive {d:?} leaks into channel {k}: {got:?}");
+                assert!(
+                    got[k] < 60.0,
+                    "rgb drive {d:?} leaks into channel {k}: {got:?}"
+                );
             }
         }
     }
@@ -611,7 +657,13 @@ fn dmd_fractional_pitch_is_centred_and_letterboxed() {
     // The same in a tall viewport: bands left and right.
     let (iw, ih) = (640u32, 400u32); // pitch = min(5, 12.5) = 5 → grid 640 × 160, centred
     let img = render_dmd_to_image(&ctx, spec, &frame, iw, ih).unwrap();
-    check_dmd_dots(&img, &spec, &frame, Rect::new(0, 0, iw, ih), "tall viewport");
+    check_dmd_dots(
+        &img,
+        &spec,
+        &frame,
+        Rect::new(0, 0, iw, ih),
+        "tall viewport",
+    );
     assert_close(mean(&img, 0, 0, iw, 118), [0.0; 3], 0.5, "top band");
     assert_close(mean(&img, 0, 282, iw, 400), [0.0; 3], 0.5, "bottom band");
 }
@@ -666,10 +718,8 @@ fn dmd_score_view_renders_the_formatted_score_as_font_dots() {
     for (w, h, pitch) in [(128u32, 32u32, 6u32), (192, 64, 4)] {
         for color in [DmdColor::Orange, DmdColor::Red, DmdColor::Rgb] {
             let spec = DmdSpec::new(w, h, color).unwrap();
-            let mut model = ScoreDisplayModel::new(
-                ScoreDisplayConfig::Dmd(spec),
-                SceneLibrary::placeholders(),
-            );
+            let mut model =
+                ScoreDisplayModel::new(ScoreDisplayConfig::Dmd(spec), SceneLibrary::placeholders());
             model.scores_mut().scores[0] = 1_234_560;
             model.scores_mut().ball = 1;
             let DisplayContent::Dmd(frame) = model.compose(0) else {
@@ -745,15 +795,14 @@ fn placeholder_scenes_render_on_dmd_and_lcd() {
             assert!(best >= 20, "{id} at {w}x{h}: only {best} lit dots");
             let frame = best_frame.unwrap();
             let img = render_dmd_to_image(&ctx, spec, &frame, w * 4, h * 4).unwrap();
-            let lit_px = (0..img.height)
-                .flat_map(|y| (0..img.width).map(move |x| (x, y)))
-                .filter(|&(x, y)| px(&img, x, y)[0] > 200.0)
-                .count();
-            // Each lit dot covers about π·(0.4·4)² ≈ 8 px.
-            assert!(
-                lit_px >= best * 3,
-                "{id} at {w}x{h}: {lit_px} bright pixels for {best} lit dots"
+            check_dmd_dots(
+                &img,
+                &spec,
+                &frame,
+                Rect::new(0, 0, w * 4, h * 4),
+                &format!("{id} at {w}x{h}"),
             );
+            dump(&format!("scene_{id}_{w}x{h}"), &img);
         }
         // LCD at 16:9.
         let spec = LcdSpec::new(1920, 1080).unwrap();
@@ -885,7 +934,8 @@ fn backglass_lamp_mask_blend_is_linear_inside_and_zero_outside() {
         return;
     };
     let desc = lamp_desc(LayerBlend::Over, LIT, BASE);
-    let render = |v: f32| render_backglass_to_image(&ctx, &desc, &lamps_with(5, v), 384, 288).unwrap();
+    let render =
+        |v: f32| render_backglass_to_image(&ctx, &desc, &lamps_with(5, v), 384, 288).unwrap();
     let levels = [0.0f32, 0.25, 0.5, 0.75, 1.0];
     let imgs: Vec<RgbaImage> = levels.iter().map(|&v| render(v)).collect();
     let (base, lit) = (f3(BASE), f3(LIT));
@@ -993,11 +1043,18 @@ fn backglass_flashers_are_additive() {
     };
     let flash = [100u8, 60, 20, 255];
     let desc = lamp_desc(LayerBlend::Additive, flash, BASE);
-    let render = |v: f32| render_backglass_to_image(&ctx, &desc, &lamps_with(5, v), 384, 288).unwrap();
+    let render =
+        |v: f32| render_backglass_to_image(&ctx, &desc, &lamps_with(5, v), 384, 288).unwrap();
     let (base, add) = (f3(BASE), f3(flash));
     let imgs: Vec<RgbaImage> = [0.0f32, 0.5, 1.0].iter().map(|&v| render(v)).collect();
     for (img, v) in imgs.iter().zip([0.0f32, 0.5, 1.0]) {
-        let want = |k: f32| [base[0] + add[0] * k, base[1] + add[1] * k, base[2] + add[2] * k];
+        let want = |k: f32| {
+            [
+                base[0] + add[0] * k,
+                base[1] + add[1] * k,
+                base[2] + add[2] * k,
+            ]
+        };
         assert_close(region(img, R_FULL), want(v), 2.0, &format!("flasher {v}"));
         assert_close(
             region(img, R_HALF),
@@ -1040,7 +1097,13 @@ fn backglass_layers_composite_back_to_front_with_alpha() {
     };
     let (w, h) = (96u32, 72u32);
     // Layer 1: opaque green on the left two thirds, transparent elsewhere.
-    let l1 = image_fn(w, h, |x, _| if x < 64 { [0, 200, 0, 255] } else { [9, 9, 9, 0] });
+    let l1 = image_fn(w, h, |x, _| {
+        if x < 64 {
+            [0, 200, 0, 255]
+        } else {
+            [9, 9, 9, 0]
+        }
+    });
     // Layer 2: half-transparent white on the right two thirds, transparent elsewhere.
     let l2 = image_fn(w, h, |x, _| {
         if x >= 32 {
@@ -1102,7 +1165,12 @@ fn backglass_layers_composite_back_to_front_with_alpha() {
     };
     let img = render_backglass_to_image(&ctx, &desc, &[], 384, 288).unwrap();
     assert_close(region(&img, R_FULL), green, 2.0, "swapped: green over base");
-    assert_close(region(&img, R_HALF), green, 2.0, "swapped: green hides white");
+    assert_close(
+        region(&img, R_HALF),
+        green,
+        2.0,
+        "swapped: green hides white",
+    );
     assert_close(
         region(&img, R_OUT),
         lerp3(base, white, a),
@@ -1119,9 +1187,22 @@ fn backglass_is_letterboxed_to_the_first_layers_aspect() {
     let desc = lamp_desc(LayerBlend::Over, LIT, BASE); // 96 × 72 = 4:3
     // 400 × 120 → the 4:3 picture is 160 × 120, centred at x = 120..280.
     let img = render_backglass_to_image(&ctx, &desc, &lamps_with(5, 1.0), 400, 120).unwrap();
-    assert_eq!(fit_aspect(Rect::new(0, 0, 400, 120), 4, 3), Rect::new(120, 0, 160, 120));
-    assert_close(mean(&img, 0, 0, 118, 120), [0.0; 3], 0.5, "left bar is black");
-    assert_close(mean(&img, 282, 0, 400, 120), [0.0; 3], 0.5, "right bar is black");
+    assert_eq!(
+        fit_aspect(Rect::new(0, 0, 400, 120), 4, 3),
+        Rect::new(120, 0, 160, 120)
+    );
+    assert_close(
+        mean(&img, 0, 0, 118, 120),
+        [0.0; 3],
+        0.5,
+        "left bar is black",
+    );
+    assert_close(
+        mean(&img, 282, 0, 400, 120),
+        [0.0; 3],
+        0.5,
+        "right bar is black",
+    );
     // Inside: lit third, then base third (mask zero) at the right.
     assert_close(mean(&img, 124, 4, 168, 116), f3(LIT), 2.0, "lit third");
     assert_close(mean(&img, 232, 4, 276, 116), f3(BASE), 2.0, "unlit third");
@@ -1171,20 +1252,43 @@ fn lcd_layer_order_and_alpha_compositing() {
     assert_eq!((img.width, img.height), (640, 360));
     assert_close(m(&img, 0, 0, 320, 20), bg, 1.0, "background");
     assert_close(m(&img, 20, 20, 100, 120), r, 1.5, "red only");
-    assert_close(m(&img, 100, 60, 200, 120), lerp3(r, b, a), 2.0, "blue α over red");
-    assert_close(m(&img, 200, 60, 300, 160), lerp3(bg, b, a), 2.0, "blue α over bg");
+    assert_close(
+        m(&img, 100, 60, 200, 120),
+        lerp3(r, b, a),
+        2.0,
+        "blue α over red",
+    );
+    assert_close(
+        m(&img, 200, 60, 300, 160),
+        lerp3(bg, b, a),
+        2.0,
+        "blue α over bg",
+    );
     assert_close(m(&img, 300, 0, 320, 180), bg, 1.0, "right margin");
     // Edges are where the draw list says (canvas px → 2× target px).
     assert_close(px(&img, 38, 100), bg, 1.5, "just left of the red rect");
     assert_close(px(&img, 41, 100), r, 1.5, "just inside the red rect");
-    assert_close(px(&img, 398, 60), r, 1.5, "just inside the red rect's right edge");
-    snapshot("lcd_compositing", &render_lcd_to_image(&ctx, spec, &list, &images, 320, 180).unwrap());
+    assert_close(
+        px(&img, 398, 60),
+        r,
+        1.5,
+        "just inside the red rect's right edge",
+    );
+    snapshot(
+        "lcd_compositing",
+        &render_lcd_to_image(&ctx, spec, &list, &images, 320, 180).unwrap(),
+    );
 
     // Translucent blue then opaque red: red hides blue in the overlap.
     let list = lcd_list(vec![blue.clone(), red.clone()]);
     let img = render_lcd_to_image(&ctx, spec, &list, &images, 640, 360).unwrap();
     assert_close(m(&img, 100, 60, 200, 120), r, 1.5, "red over blue");
-    assert_close(m(&img, 200, 60, 300, 160), lerp3(bg, b, a), 2.0, "blue α over bg");
+    assert_close(
+        m(&img, 200, 60, 300, 160),
+        lerp3(bg, b, a),
+        2.0,
+        "blue α over bg",
+    );
     assert_close(m(&img, 20, 20, 100, 120), r, 1.5, "red only");
 
     // Three stacked translucent layers: "over" applied back to front.
@@ -1207,8 +1311,16 @@ fn lcd_layer_order_and_alpha_compositing() {
     for c in stack.iter().rev() {
         want_rev = lerp3(want_rev, f3(*c), f32::from(c[3]) / 255.0);
     }
-    assert!((want_rev[1] - want[1]).abs() > 20.0, "test is order-sensitive");
-    assert_close(m(&img, 40, 40, 280, 140), want_rev, 2.5, "three-layer over, reversed");
+    assert!(
+        (want_rev[1] - want[1]).abs() > 20.0,
+        "test is order-sensitive"
+    );
+    assert_close(
+        m(&img, 40, 40, 280, 140),
+        want_rev,
+        2.5,
+        "three-layer over, reversed",
+    );
 
     // An empty list is just the background.
     let img = render_lcd_to_image(&ctx, spec, &lcd_list(vec![]), &images, 640, 360).unwrap();
@@ -1275,10 +1387,20 @@ fn lcd_images_composite_with_item_and_texel_alpha() {
         360,
     )
     .unwrap();
-    assert_close(m(&img, 100, 50, 220, 130), [0.0, 255.0, 0.0], 1.5, "image over rect");
+    assert_close(
+        m(&img, 100, 50, 220, 130),
+        [0.0, 255.0, 0.0],
+        1.5,
+        "image over rect",
+    );
     let img =
         render_lcd_to_image(&ctx, spec, &lcd_list(vec![green, rect]), &images, 640, 360).unwrap();
-    assert_close(m(&img, 100, 50, 220, 130), [200.0, 0.0, 200.0], 1.5, "rect over image");
+    assert_close(
+        m(&img, 100, 50, 220, 130),
+        [200.0, 0.0, 200.0],
+        1.5,
+        "rect over image",
+    );
     // A missing image file must not fail the frame.
     let missing = LcdItem::Image {
         file: "nope.png".to_string(),
@@ -1295,20 +1417,27 @@ fn lcd_vector_text_follows_the_5x7_glyphs_and_scales() {
         return;
     };
     let spec = LcdSpec::new(320, 180).unwrap();
+    let big = LcdSpec::new(1280, 720).unwrap();
     let images = ImageSet::new();
     let text = "1,234,560";
     let fg = [255.0, 240.0, 200.0];
     let bg = [10.0, 20.0, 30.0];
-    // Two glyph cell heights; the canvas is rendered at 4× so a unit is 8 or 16 px.
-    for cell in [14.0f32, 28.0] {
-        let origin = [12.0f32, 30.0];
-        let list = lcd_list(vec![LcdItem::Text {
-            text: text.to_string(),
-            origin,
-            cell,
-            color: [255, 240, 200, 255],
-        }]);
-        let img = render_lcd_to_image(&ctx, spec, &list, &images, 1280, 720).unwrap();
+    // Two glyph cell heights on a 1280 × 720 canvas shown 1:1: a unit is 8 or 16 px.
+    for cell in [56.0f32, 112.0] {
+        let origin = [48.0f32, 120.0];
+        let list = LcdDrawList {
+            width: 1280,
+            height: 720,
+            background: LCD_BG,
+            items: vec![LcdItem::Text {
+                text: text.to_string(),
+                origin,
+                cell,
+                color: [255, 240, 200, 255],
+            }],
+        };
+        let img = render_lcd_to_image(&ctx, big, &list, &images, 1280, 720).unwrap();
+        dump(&format!("lcd_text_cell_{cell}"), &img);
         let unit = cell / 7.0;
         let mut lit_ok = 0u32;
         let mut lit_n = 0u32;
@@ -1320,7 +1449,7 @@ fn lcd_vector_text_follows_the_5x7_glyphs_and_scales() {
                 for gx in 0..5u32 {
                     let cx = origin[0] + (i as f32 * 6.0 + gx as f32 + 0.5) * unit;
                     let cy = origin[1] + (gy as f32 + 0.5) * unit;
-                    let p = px_at(&img, [cx * 4.0, cy * 4.0]);
+                    let p = px_at(&img, [cx, cy]);
                     if g.pixel(gx, gy) {
                         lit_n += 1;
                         if (0..3).all(|k| (p[k] - fg[k]).abs() <= 6.0) {
@@ -1336,7 +1465,10 @@ fn lcd_vector_text_follows_the_5x7_glyphs_and_scales() {
             }
         }
         println!("[lcd text cell {cell}] lit {lit_ok}/{lit_n}, unlit {unlit_ok}/{unlit_n}");
-        assert_eq!(lit_ok, lit_n, "cell {cell}: every lit glyph dot is inked at its centre");
+        assert_eq!(
+            lit_ok, lit_n,
+            "cell {cell}: every lit glyph dot is inked at its centre"
+        );
         assert_eq!(
             unlit_ok, unlit_n,
             "cell {cell}: every unlit glyph dot centre is background"
@@ -1353,10 +1485,9 @@ fn lcd_vector_text_follows_the_5x7_glyphs_and_scales() {
                 }
                 for (dx, dy) in [(1u32, 0u32), (0, 1)] {
                     if gx + dx < 5 && gy + dy < 7 && g.pixel(gx + dx, gy + dy) {
-                        let cx = origin[0]
-                            + (i5 * 6.0 + gx as f32 + 0.5 + 0.5 * dx as f32) * unit;
+                        let cx = origin[0] + (i5 * 6.0 + gx as f32 + 0.5 + 0.5 * dx as f32) * unit;
                         let cy = origin[1] + (gy as f32 + 0.5 + 0.5 * dy as f32) * unit;
-                        let p = px_at(&img, [cx * 4.0, cy * 4.0]);
+                        let p = px_at(&img, [cx, cy]);
                         assert_close(p, fg, 6.0, "stroke between adjacent lit dots");
                         joins += 1;
                     }
@@ -1365,17 +1496,22 @@ fn lcd_vector_text_follows_the_5x7_glyphs_and_scales() {
         }
         assert!(joins >= 8);
         // Nothing is drawn outside the text box (+ half a stroke of slack).
-        let x_end = (origin[0] + (text.len() as f32 * 6.0) * unit + 2.0) * 4.0;
-        let y_end = (origin[1] + cell + 2.0) * 4.0;
+        let x_end = origin[0] + (text.len() as f32 * 6.0) * unit + 2.0;
+        let y_end = origin[1] + cell + 2.0;
         assert_close(
             mean(&img, x_end as u32, 0, 1280, 720),
             bg,
             0.5,
             "right of the text",
         );
-        assert_close(mean(&img, 0, y_end as u32, 1280, 720), bg, 0.5, "below the text");
         assert_close(
-            mean(&img, 0, 0, 1280, ((origin[1] - 2.0) * 4.0) as u32),
+            mean(&img, 0, y_end as u32, 1280, 720),
+            bg,
+            0.5,
+            "below the text",
+        );
+        assert_close(
+            mean(&img, 0, 0, 1280, (origin[1] - 2.0) as u32),
             bg,
             0.5,
             "above the text",
@@ -1421,17 +1557,50 @@ fn lcd_canvas_is_fitted_16_9_with_black_letterbox() {
     let images = ImageSet::new();
     // Square target: the 16:9 canvas is 512 × 288, centred (rows 112..400).
     let img = render_lcd_to_image(&ctx, spec, &list, &images, 512, 512).unwrap();
-    assert_eq!(fit_aspect(Rect::new(0, 0, 512, 512), 16, 9), Rect::new(0, 112, 512, 288));
-    assert_close(mean(&img, 0, 0, 512, 110), [0.0; 3], 0.5, "top letterbox is black");
-    assert_close(mean(&img, 0, 402, 512, 512), [0.0; 3], 0.5, "bottom letterbox is black");
-    assert_close(mean(&img, 4, 116, 252, 252), [250.0, 250.0, 0.0], 1.5, "top-left quadrant");
-    assert_close(mean(&img, 260, 116, 508, 396), [60.0, 120.0, 180.0], 1.5, "right half");
-    assert_close(mean(&img, 4, 260, 252, 396), [60.0, 120.0, 180.0], 1.5, "bottom-left");
+    assert_eq!(
+        fit_aspect(Rect::new(0, 0, 512, 512), 16, 9),
+        Rect::new(0, 112, 512, 288)
+    );
+    assert_close(
+        mean(&img, 0, 0, 512, 110),
+        [0.0; 3],
+        0.5,
+        "top letterbox is black",
+    );
+    assert_close(
+        mean(&img, 0, 402, 512, 512),
+        [0.0; 3],
+        0.5,
+        "bottom letterbox is black",
+    );
+    assert_close(
+        mean(&img, 4, 116, 252, 252),
+        [250.0, 250.0, 0.0],
+        1.5,
+        "top-left quadrant",
+    );
+    assert_close(
+        mean(&img, 260, 116, 508, 396),
+        [60.0, 120.0, 180.0],
+        1.5,
+        "right half",
+    );
+    assert_close(
+        mean(&img, 4, 260, 252, 396),
+        [60.0, 120.0, 180.0],
+        1.5,
+        "bottom-left",
+    );
     // Wide target (4:1 score PiP shape): bars left and right.
     let img = render_lcd_to_image(&ctx, spec, &list, &images, 640, 160).unwrap();
     let r = fit_aspect(Rect::new(0, 0, 640, 160), 16, 9);
     assert_eq!((r.w, r.h), (284, 160));
-    assert_close(mean(&img, 0, 0, (r.x - 2) as u32, 160), [0.0; 3], 0.5, "left bar");
+    assert_close(
+        mean(&img, 0, 0, (r.x - 2) as u32, 160),
+        [0.0; 3],
+        0.5,
+        "left bar",
+    );
     assert_close(
         mean(&img, (r.x + 286) as u32, 0, 640, 160),
         [0.0; 3],
@@ -1462,14 +1631,20 @@ fn dmd_and_lcd_renderers_report_change_only_on_new_content() {
     let (b, _) = text_frame(&spec, "1,010", false, 2, 2, 2, [255, 255, 255]);
     assert!(dmd.set_frame(ctx.queue(), &a), "first frame is a change");
     assert!(!dmd.set_frame(ctx.queue(), &a), "same frame: no upload");
-    assert!(!dmd.set_frame(ctx.queue(), &a.clone()), "equal frame: no upload");
+    assert!(
+        !dmd.set_frame(ctx.queue(), &a.clone()),
+        "equal frame: no upload"
+    );
     assert!(dmd.set_frame(ctx.queue(), &b));
     assert!(!dmd.set_frame(ctx.queue(), &b));
     // One dot, one level.
     let mut c = b.clone();
     let d = c.get(127, 31);
     c.set(127, 31, [d[0] ^ 17, d[1], d[2]]);
-    assert!(dmd.set_frame(ctx.queue(), &c), "a single-dot change is a change");
+    assert!(
+        dmd.set_frame(ctx.queue(), &c),
+        "a single-dot change is a change"
+    );
     assert!(!dmd.set_frame(ctx.queue(), &c));
     assert!(dmd.set_frame(ctx.queue(), &a), "going back is a change");
 
@@ -1534,7 +1709,10 @@ fn score_model_drives_renderer_updates_only_when_scores_or_scenes_change() {
     }
     q.set_score(0, 5_000).unwrap();
     model.apply_commands(&q, 501);
-    assert!(sr.update(ctx.queue(), &model.compose(501)), "score change redraws");
+    assert!(
+        sr.update(ctx.queue(), &model.compose(501)),
+        "score change redraws"
+    );
     // The same command again (scripts re-send absolute scores): no redraw.
     model.apply_commands(&q, 502);
     assert!(!sr.update(ctx.queue(), &model.compose(502)));
@@ -1562,7 +1740,13 @@ fn encode_backglass(
     lamps: &[f32],
 ) {
     let mut enc = ctx.device().create_command_encoder(&Default::default());
-    r.encode(&mut enc, &target.view, (target.w, target.h), viewport, lamps);
+    r.encode(
+        &mut enc,
+        &target.view,
+        (target.w, target.h),
+        viewport,
+        lamps,
+    );
     ctx.queue().submit([enc.finish()]);
 }
 
@@ -1629,12 +1813,27 @@ fn backglass_needs_redraw_only_when_a_referenced_lamp_moves() {
     lamps[5] = 1.0;
     encode_backglass(&ctx, &mut r, &target, vp, &lamps);
     let img = target.read(&ctx);
-    assert_close(region(&img, R_FULL), f3(LIT), 2.0, "renderer output, lamp 1");
-    assert_close(region(&img, R_OUT), f3(BASE), 1.0, "renderer output outside mask");
+    assert_close(
+        region(&img, R_FULL),
+        f3(LIT),
+        2.0,
+        "renderer output, lamp 1",
+    );
+    assert_close(
+        region(&img, R_OUT),
+        f3(BASE),
+        1.0,
+        "renderer output outside mask",
+    );
     // The offscreen helper and the renderer agree.
     let helper = render_backglass_to_image(&ctx, &desc, &lamps, 384, 288).unwrap();
     for r in [R_FULL, R_HALF, R_OUT] {
-        assert_close(region(&img, r), region(&helper, r), 1.0, "helper = renderer");
+        assert_close(
+            region(&img, r),
+            region(&helper, r),
+            1.0,
+            "helper = renderer",
+        );
     }
 }
 
@@ -1730,8 +1929,14 @@ fn routing_single_monitor_draws_both_displays_into_their_pip_regions_only() {
     .unwrap();
     let routes = display_routes(&plan);
     assert_eq!(routes.len(), 2);
-    let bg = routes.iter().find(|r| r.role == SurfaceRole::Backglass).unwrap();
-    let sc = routes.iter().find(|r| r.role == SurfaceRole::Score).unwrap();
+    let bg = routes
+        .iter()
+        .find(|r| r.role == SurfaceRole::Backglass)
+        .unwrap();
+    let sc = routes
+        .iter()
+        .find(|r| r.role == SurfaceRole::Score)
+        .unwrap();
     assert_eq!((bg.window, bg.dedicated), (0, false));
     assert_eq!((sc.window, sc.dedicated), (0, false));
     assert_eq!(bg.viewport, Rect::new(768, 0, 256, 192));
@@ -1753,7 +1958,10 @@ fn routing_single_monitor_draws_both_displays_into_their_pip_regions_only() {
             }
         }
     }
-    assert_eq!(touched, 0, "{touched} pixels outside the PiP regions were drawn");
+    assert_eq!(
+        touched, 0,
+        "{touched} pixels outside the PiP regions were drawn"
+    );
     // Backglass PiP: the flat base colour (4:3 art in a 4:3 PiP: no letterbox).
     assert_close(
         mean(&img, 770, 2, 1022, 190),
@@ -1765,7 +1973,14 @@ fn routing_single_monitor_draws_both_displays_into_their_pip_regions_only() {
     let geo = dmd_geometry(&spec, sc.viewport);
     assert!((geo.pitch - 4.0).abs() < 1e-4);
     let lit = to255(dmd_dot_color(DmdColor::Orange, [255, 255, 255]));
-    for (x, y) in [(0u32, 0u32), (127, 0), (0, 31), (127, 31), (64, 16), (5, 20)] {
+    for (x, y) in [
+        (0u32, 0u32),
+        (127, 0),
+        (0, 31),
+        (127, 31),
+        (64, 16),
+        (5, 20),
+    ] {
         let c = geo.dot_center(x, y);
         assert!(
             inside(&sc.viewport, c[0] as u32, c[1] as u32),
@@ -1831,7 +2046,12 @@ fn routing_cabinet_draws_each_display_in_its_dedicated_window() {
     // Backglass window: the art fills the whole window (4:3 in 4:3), no DMD dots.
     let t1 = Target::new(&ctx, 512, 384, MAGENTA);
     let img = encode_window(&ctx, &mut set, 1, &routes, &t1);
-    assert_close(mean(&img, 0, 0, 512, 384), f3(BASE), 1.0, "backglass window");
+    assert_close(
+        mean(&img, 0, 0, 512, 384),
+        f3(BASE),
+        1.0,
+        "backglass window",
+    );
     // Score window: the DMD fills the whole window at pitch 4.
     let t2 = Target::new(&ctx, 512, 128, MAGENTA);
     let img = encode_window(&ctx, &mut set, 2, &routes, &t2);
@@ -1839,7 +2059,12 @@ fn routing_cabinet_draws_each_display_in_its_dedicated_window() {
     let lit = to255(dmd_dot_color(DmdColor::Orange, [255, 255, 255]));
     for y in (0..32).step_by(5) {
         for x in (0..128).step_by(7) {
-            assert_close(px_at(&img, geo.dot_center(x, y)), lit, 4.0, "DMD window dot");
+            assert_close(
+                px_at(&img, geo.dot_center(x, y)),
+                lit,
+                4.0,
+                "DMD window dot",
+            );
         }
     }
     assert!(
@@ -1860,8 +2085,14 @@ fn routing_cabinet_draws_each_display_in_its_dedicated_window() {
     )
     .unwrap();
     let routes = display_routes(&plan);
-    let bg = routes.iter().find(|r| r.role == SurfaceRole::Backglass).unwrap();
-    let sc = routes.iter().find(|r| r.role == SurfaceRole::Score).unwrap();
+    let bg = routes
+        .iter()
+        .find(|r| r.role == SurfaceRole::Backglass)
+        .unwrap();
+    let sc = routes
+        .iter()
+        .find(|r| r.role == SurfaceRole::Score)
+        .unwrap();
     assert_eq!((bg.window, bg.dedicated), (1, true));
     assert_eq!((sc.window, sc.dedicated), (0, false));
     assert_eq!(Some((0, sc.viewport)), plan.find(SurfaceRole::Score));

@@ -1696,7 +1696,7 @@ display-encoded (sRGB values as stored in PNGs), row 0 = top. `RgbaImage::new(w,
 `ScoreDisplayConfig::from_manifest(&pin_core::schema::backglass::ScoreDisplay) -> Result<_, DisplayError>`
 (missing `dmd`/`lcd` table for the chosen mode → defaults 128×32 orange / 1920×1080).
 `struct ScoreDisplayModel`: `new(config, library: SceneLibrary)`; `scores()` / `scores_mut()`; `scenes()` /
-`scenes_mut() -> &mut ScenePlayer`; `apply_commands(&mut self, q, now_ms)`; `compose(&self, now_ms) ->
+`scenes_mut() -> &mut ScenePlayer`; `library()`; `images_mut() -> &mut ImageSet`; `config()`; `apply_commands(&mut self, q, now_ms)`; `compose(&self, now_ms) ->
 DisplayContent` with `enum DisplayContent { Dmd(DmdFrame), Lcd(LcdDrawList) }`. With no active scene the
 display shows the built-in score view (`scene_score`: one `kind = "score"` layer).
 
@@ -1705,7 +1705,7 @@ display shows the built-in score view (`scene_score`: one `kind = "score"` layer
 (orange) and `DMD_192X64` (orange) sizes. `struct DmdFrame { width, height, dots: Vec<[u8; 3]> }` (row-major,
 row 0 top; per-dot drive level 0..=255 per channel; mono modes store the same value in all three channels,
 quantised to 16 levels: `v = round(b·15)·17`). `DmdFrame::new(w, h)`, `get(x, y)`, `set(x, y, [u8; 3])`,
-`lit_count()`, `DmdFrame::compose(spec, scene, elapsed_ms, scores, images: &ImageSet)`.
+`lit_count()`, `DmdFrame::compose(spec, scene, elapsed_ms, scores, images: &ImageSet)`. `enum DmdFont { Font5x7, Font8x16 }`.
 - Text on the DMD uses the kit's bitmap fonts (`pin_assetgen::fonts`, the glyphs of the `font_dmd_5x7` /
   `font_dmd_8x16` sheets), glyph spacing 1 dot, at integer scale: a text layer of height `size·H` dots uses
   8×16 at scale ⌊size·H/16⌋ when that is ≥ 1 and the text fits the width, else 5×7 at scale
@@ -1727,9 +1727,10 @@ quantised to 16 levels: `v = round(b·15)·17`). `DmdFrame::new(w, h)`, `get(x, 
 **LCD.** `struct LcdSpec { width: u32, height: u32 }` (canvas, default 1920×1080 = 16:9; `LcdSpec::new` →
 `Result`, 16..=8192 each). `struct LcdDrawList { width, height, background: [u8; 3], items: Vec<LcdItem> }`
 with `enum LcdItem { Rect { rect: [f32; 4] /* x0, y0, x1, y1 canvas px */, color: [u8; 4] }, Image { file: String,
-rect: [f32; 4], alpha: f32 }, Text { text: String, origin: [f32; 2] /* top-left */, cell: f32 /* glyph cell
+rect: [f32; 4], color: [u8; 4] /* tint, alpha = opacity */ }, Text { text: String, origin: [f32; 2] /* top-left */, cell: f32 /* glyph cell
 height px */, color: [u8; 4] } }` in back-to-front order; `LcdDrawList::compose(spec, scene, elapsed_ms,
-scores)`. Text is drawn with the "vector" font: the 5×7 glyphs as strokes (lit dots joined to lit
+scores, images: &ImageSet)` (images only for the aspect of `h = 0` image layers). `fn vector_text_width(text, cell) -> f32`,
+`GLYPH_ADVANCE_UNITS = 6`, `GLYPH_STROKE_HALF_WIDTH = 0.42`. Text is drawn with the "vector" font: the 5×7 glyphs as strokes (lit dots joined to lit
 neighbours, diagonals only where both orthogonal neighbours are unlit), stroke half-width 0.42 cell units,
 anti-aliased, scalable; a glyph is 5×7 units, advance 6 units, unit = cell/7 px.
 - Compositing: premultiplied "over" in display-encoded space, back to front; item colour alpha and image
@@ -1772,7 +1773,165 @@ Result<RgbaImage, GpuError>`, `fn render_lcd_to_image(ctx, spec, list: &LcdDrawL
 height)`, `fn render_backglass_to_image(ctx, desc: &BackglassDesc, lamps: &[f32], width, height)`: each renders
 into an `Rgba8Unorm` texture with the viewport = whole image and reads it back (RGBA8, row 0 top).
 `struct ImageSet` (file → `RgbaImage`, `insert`, `get`) supplies scene images. Errors: `DisplayError`
-(`Display`, `std::error::Error`).
+(`Display`, `std::error::Error`). `fn shader_sources() -> [(&str, String); 2]` (WGSL for naga).
+Encode calls take no queue: per-call uniforms are fresh buffers, so a renderer may be encoded several times
+per submit (e.g. into two windows). `set_frame`/`set_draw_list` upload through the queue (effective at the
+next submit). Score layout helpers: `score_view_layout(&ScoreState) -> Vec<ScoreText>`, `expand_text(&str,
+&ScoreState) -> String` (scene text placeholders).
 
 ## Orchestrator — Wave 5 batch B: 2.6 and 2.8 share a physics target dir
 2.6 and 2.8 start once disk is back at 11 GB free. Both build only `pin_physics` (+ `pin_tablegen`/`pin_assets` for 2.8), so their four roles share `target/sp_phys` (cargo locks it; stale-build rule applies). Reviewers will use `target/sp_phys_rev`.
+
+## 5.3 — Display scene format
+
+**Decision.** A display scene is one TOML file per `[[scenes]]` entry of `table.toml` (`SceneId(i)` =
+declaration index, as `pin_assets` interns names). Coordinates and sizes are fractions of the display, so
+one scene works on 128 × 32, 192 × 64 and any LCD canvas. Keys (all optional unless noted):
+- Top level: `schema_version = 1` (required), `duration_ms` (0 = until replaced; ≤ 1 h), `repeat` (loop the
+  timeline; needs `duration_ms > 0`), `background = "#rrggbb"`, `[[layers]]` (≤ 64, back to front).
+- Layer: `kind` (required) = `text` | `rect` | `image` | `score`; `text` (kind text only, ≤ 256 chars,
+  placeholders `{score}` `{score1}`…`{score4}` `{player}` `{ball}` `{credits}`); `file` (kind image only;
+  a bundle path, decoded by the caller into an `ImageSet`); `x`, `y` (anchor, ±4; default 0.5/0.5 for
+  text, 0/0 otherwise); `w`, `h` (box, 0..=4, default 1 × 1; image `h = 0` keeps the image's aspect);
+  `align` = left|center|right, `valign` = top|middle|bottom (defaults: text centre/middle, others
+  left/top); `size` (text glyph-cell height, fraction of display height, default 0.5); `font` =
+  auto|5x7|8x16 (DMD only); `color` (default white; mono DMDs use the brightest channel); `alpha` 0..=1;
+  timeline `start_ms`, `end_ms` (0 = scene end), `blink_ms` (on/off half period), `fade_in_ms`,
+  `fade_out_ms` (before the end), `from = [x, y]` + `move_ms` (linear move to `x, y`). Unknown keys are errors.
+- `score` layers draw the score view (`score_view_layout`) inside their box. Without an active scene the
+  display shows `scene_score` (the library's, else the placeholder).
+- Player: the last `display_scenes` entry of a tick wins; a timed scene ends after `duration_ms` and the
+  score view returns. Time is the caller's ms clock (snapshot ticks, D8).
+- Placeholders (D32, 4.6 N7 hand-off), embedded in `pin_render` (`src/displays/scenes/*.toml`):
+  `scene_attract`, `scene_score`, `scene_game_over`, `scene_powerball_mania`, `scene_ball_saved`,
+  `scene_jackpot`. `SceneLibrary::load` uses the placeholder of the same id when a scene file cannot be read
+  (the A.1 example's `display/powerball_mania.toml` need not exist yet).
+**Rationale.** Fractional coordinates keep tables independent of the display mode the player picks (D32:
+real scenes replace placeholders by id). Limits bound untrusted bundle content (D25); the parser never
+panics (proptest on random and mutated bytes).
+**Alternatives.** Pixel coordinates per mode (a scene per mode and size); frame-by-frame bitmaps (no LCD
+scaling, large files); Lua-driven display code (puts display logic on the sim thread).
+
+## 5.3 — Backglass and score display (Implementer)
+
+- **Colour space.** Art and compositing stay in display-encoded (sRGB-valued) space, like 2D art tools; the
+  1.4 surfaces are non-sRGB formats, so values pass through unchanged. On an `*Srgb` target the shaders decode
+  their output (blending then happens in linear, approximately right). This makes lamp-mask blending exactly
+  linear in the lamp level in stored values (verification criterion).
+- **Lamp layers.** `out = dst + (rgb − dst)·a·mask·lamp` (premultiplied alpha-over with a scaled source);
+  layers whose mask lamp is `LampKind::Flasher` (from `table.toml`) are additive, `out = dst + rgb·a·mask·lamp`
+  (no bloom; 5.2 owns bloom). `backglass.toml` has no flasher keyword, so the lamp kind decides. Lamp levels
+  are the snapshot `lamps[LampId]` (callers may pass 5.1 `LampBank` warm-up levels instead), clamped 0..=1.
+- **DMD look.** Tints orange `[1, 0.42, 0.06]`, red `[1, 0.12, 0.08]`, rgb = drive colour; unlit dots at 10 %
+  of the tint (lit/unlit luminance ratio 10); dot radius 0.40 pitch, 1-px AA edge, black background; pitch
+  not rounded, grid centred (letterboxed in a 4:1 PiP or any window). Mono modes quantise to 16 levels.
+  Fonts: the kit's 5×7 / 8×16 bitmaps (`pin_assetgen::fonts`, the same glyphs as the `font_dmd_*` sheets)
+  — `pin_assetgen` became a `pin_render` dependency (light: no GPU, no pin_assets). The 8×16 smearing of
+  dense glyphs (4.6 N4/N7) is left as is.
+- **LCD.** Canvas from `[score_display] lcd` (default 1920 × 1080), fitted with `fit_aspect` (letterbox). The
+  "vector font" is the 5×7 glyph set drawn as anti-aliased strokes by a signed-distance shader (dots joined
+  to neighbours), so it scales to any size without a font file (D32).
+- **Change detection.** CPU content (DMD frame / LCD draw list) is compared with the last uploaded content;
+  backglass lamps redraw on a change ≥ 1/1024 or on reaching 0 / 1. `ChangeTracker` does the same GPU-free.
+  Animated scenes therefore redraw only while something visibly changes.
+- **Routing.** `display_routes(&TopologyPlan)` + `DisplaySet::encode_window` draw each display into its PiP
+  rectangle or dedicated window (scissored to the viewport, aspect kept). Replacing the 1.4 grey PiP
+  placeholder outline in `gpu::SurfaceSet` with `DisplaySet` is 6.0's integration (outside 5.3's paths).
+- **Readback.** `render_*_to_image` use their own copy of the bounded 1.4 readback (`debug::read_texture` is
+  crate-visible only under `cfg(test)`).
+**Rationale.** D7 (latest snapshot, no interpolation), D19 (secondary surfaces redraw only on change), D30
+(analytic checks first), D32 (code-generated assets). **Alternatives:** CPU compositing of the LCD (slow at
+1080p while animating); MSDF font atlases (needs a font file and a generator).
+
+## 2.6 — Banana flipper public API
+
+Published early for the 2.6 Tester; kept current by the Implementer. Everything is in `pin_physics::flipper_banana` (`crates/pin_physics/src/flipper_banana/`). Units: metres and radians in the type, mm and degrees in `FlipperShape`.
+
+- **Using it through the solver.** `FlipperSet::new` / `with_tuning` now accept `FlipperShape::CurvedBanana { length_mm, arc_radius_mm, arc_sweep_deg, tube_radius_mm }`; `FlipperError::ShapeNotSupported` is no longer returned (the variant stays for source compatibility). A bad banana is `FlipperError::NonFinite { field }` / `OutOfRange { field }` with `field` one of `"shape.length_mm"`, `"shape.arc_radius_mm"`, `"shape.arc_sweep_deg"`, `"shape.tube_radius_mm"`. Everything else of `FlipperSet` (per-tick sequence, EOS, zipper, Thing Flip, `MovingBodies`) is unchanged; no solver code changed.
+- **Geometry convention (bat frame of 2.3: origin at the pivot, `x` = bat angle 0 direction turned by the bat angle, `z` = rotation axis, `y = z × x`).**
+  - The bat is the set of points within `tube_radius` of a circular **centreline arc** in the mounting plane, extruded along `z` from the mounting plane (`z = 0`) to `FlipperTuning::bat_height_m` (30 mm) with flat top and bottom faces, exactly like `StraightCapsule`. Both ends are round caps (half discs of `tube_radius`), the base cap centred on the pivot.
+  - **Where the pivot sits:** the pivot is the **start of the centreline arc**, and the arc leaves the pivot **tangent to bat-frame +x**. So `rest_angle_deg`, `angle_deg()` and `bat_direction()` describe the tangent of the bat at its pivot (the straight bat it would be without the bend), not the chord. The arc then curls toward its concave side.
+  - **`length_mm` is the chord:** straight-line distance from the pivot to the centre of the tip cap. **Arc angle** `φ = 2·asin(length / (2·arc_radius))` (the angle the centreline subtends at its centre of curvature; arc length `arc_radius·φ`). The tip-cap centre is at `length·(cos(φ/2), s·sin(φ/2), 0)`, the centre of curvature at `(0, s·arc_radius, 0)`, with `s = ±1` the concave side. `reach = length + tube_radius`, the same as a `StraightCapsule` of that length whose tip radius is `tube_radius`. As `arc_radius → ∞` the bat becomes the `StraightCapsule { length_mm, base_radius_mm = tip_radius_mm = tube_radius_mm }`.
+  - **Which side is concave:** with `arc_sweep_deg ≥ 0` the **concave face is the leading face of the swing** (the face that strikes the ball when the coil fires): bat-frame `+y` for `sweep_angle_deg ≥ 0`, `−y` for `sweep_angle_deg < 0`. So a left flipper (`rest −30°, sweep +50°`) and its mirror image (`rest 210°, sweep −50°`) with the same `CurvedBanana` values are mirror images, both with the pocket facing up the table and the tip curling up the table. `arc_sweep_deg < 0` puts the convex face in front (tip curls back, away from the swing).
+  - **`arc_sweep_deg` magnitude is not used.** The contract carries three numbers for a two-parameter arc (chord, radius, sweep); `length_mm` and `arc_radius_mm` fix the arc (criterion 2 varies the radius at equal length), and only the sign of `arc_sweep_deg` is read (bend direction). It must be finite. See "2.6 — Banana flipper decisions".
+  - **Valid:** all finite; `length > 0`; `tube_radius > 0`; `arc_radius ≥ length/2` (the arc is at most a half circle); `arc_radius > tube_radius` (the concave face exists).
+- **Types.**
+  ```rust
+  pub enum ConcaveSide { PlusY, MinusY }               // bat-frame side of the centre of curvature
+  impl ConcaveSide { pub fn sign(self) -> f32;          // +1.0 / −1.0
+                     pub fn leading(sweep_angle_deg: f32, arc_sweep_deg: f32) -> ConcaveSide; }
+  pub enum BananaFace { Concave, Convex }
+  pub enum BananaError { NotBanana, NonFinite { field: &'static str }, OutOfRange { field: &'static str } }
+  pub struct CurvedBanana { .. }                        // Copy, Clone, Debug, PartialEq; implements BatShape
+  impl CurvedBanana {
+      /// chord, arc radius, tube radius, z-extent [bottom, top], all metres. None unless valid (see above, and bottom < top).
+      pub fn new(length: f32, arc_radius: f32, tube_radius: f32, concave: ConcaveSide, bottom: f32, top: f32) -> Option<Self>;
+      /// From the contract: `shape` must be `FlipperShape::CurvedBanana`; `sweep_angle_deg` is the flipper's
+      /// (`FlipperConfig::sweep_angle_deg`, decides the leading side); z-extent [0, bat_height_m].
+      pub fn from_shape(shape: &FlipperShape, sweep_angle_deg: f32, bat_height_m: f32) -> Result<Self, BananaError>;
+      pub fn from_config(config: &FlipperConfig, bat_height_m: f32) -> Result<Self, BananaError>;
+      pub fn length(&self) -> f32;        // chord, m
+      pub fn arc_radius(&self) -> f32;    // m
+      pub fn tube_radius(&self) -> f32;   // m
+      pub fn arc_angle(&self) -> f32;     // φ, rad, in (0, π]
+      pub fn arc_length(&self) -> f32;    // arc_radius·φ, m
+      pub fn concave_side(&self) -> ConcaveSide;
+      pub fn center_of_curvature(&self) -> Vec3;        // bat frame, z = 0
+      pub fn tip_center(&self) -> Vec3;                 // bat frame, z = 0
+      /// Centreline point at `fraction` of the arc length from the pivot (0 = pivot, 1 = tip-cap centre; clamped), z = 0.
+      pub fn centerline_point(&self, fraction: f32) -> Vec3;
+      /// Unit tangent of the centreline there (pivot → tip).
+      pub fn centerline_tangent(&self, fraction: f32) -> Vec3;
+      /// Surface point of `face` at `fraction` along the arc and its unit outward normal (bat frame, z = 0):
+      /// centreline_point ± tube_radius·normal. "Contact at 25 % along the arc" = a ball touching this point.
+      pub fn face_point(&self, fraction: f32, face: BananaFace) -> (Vec3, Vec3);
+  }
+  impl BatShape for CurvedBanana { closest_point (analytic), reach, height_range;
+      surface_velocity = ω ẑ × p and cast_sphere = conservative advancement in the bat frame (the trait's defaults). }
+  ```
+  To place a ball in the world from a bat-frame point `p` of flipper `id` (flat mounting plane, normal +z): `pivot_m(id) + x·p.x + y·p.y + z·p.z` with `x = bat_direction(id)`, `y = normal × x`.
+
+## 2.8 — Clearance validator public API
+
+Module `pin_tablegen::clearance` (Subphase 2.8). All lengths in the API are **mm** (table units) unless the name says `_m`; geometry is read in SI from the loaded table and scene. Kept current while 2.8 is in progress.
+
+- **Entry points.**
+  ```rust
+  pub fn validate_clearance(table: &pin_assets::LoadedTable, scene: &pin_assets::GltfScene) -> ClearanceReport;
+  /// load_table(vfs) + load_gltf(vfs, meta.playfield_mesh) + validate_clearance.
+  pub fn validate_bundle(vfs: &pin_assets::Vfs) -> Result<ClearanceReport, pin_assets::AssetError>;
+  pub fn run_validate_cli(args: &[String]) -> Result<String, ValidateCliError>; // args after "validate"
+  ```
+- **Result types.**
+  ```rust
+  pub enum Feature { Lane, FlipperGap, Wireform, Scoop, VukExit, DeckHeadroom, Restriction }   // Copy, Eq, Debug
+  impl Feature { pub fn label(self) -> &'static str }  // "lane", "flipper gap", "wireform", "scoop", "vuk exit", "deck headroom", "restriction"
+  pub struct ClearanceError {           // Clone, Debug, PartialEq
+      pub feature: Feature,
+      pub name: String,      // offending feature: spline id, "flipper_a / flipper_b" (FlipperId numbers if unnamed), mech id, glTF node name, or "balls.restrict[i]"
+      pub profile: String,   // ball profile name, e.g. "jumbo_xl_resin"
+      pub file: String,      // "table.toml" or meta.playfield_mesh (e.g. "playfield.glb")
+      pub path: String,      // key path like pin_assets::ValidationError: "splines[3]", "flippers[0]", "mechs[2]", "mechs[2].exit_offset", "meshes[4]" (GltfScene::meshes index), "balls.restrict[1].area", "layer_transitions[0]"
+      pub required_mm: f32,  // what the profile needs (NaN where not a length, e.g. restriction warnings)
+      pub actual_mm: f32,    // what the geometry offers
+      pub message: String,   // names the feature, the profile and both numbers
+  }
+  impl ClearanceError { pub fn to_validation_error(&self) -> pin_assets::ValidationError }  // same file/path/message
+  impl Display for ClearanceError  // "{file}: {path}: {message}"
+  pub struct ClearanceReport { pub errors: Vec<ClearanceError>, pub warnings: Vec<ClearanceError> }  // each sorted by (file, path, profile, message)
+  impl ClearanceReport {
+      pub fn is_ok(&self) -> bool;                                  // errors.is_empty()
+      pub fn into_result(self) -> Result<Vec<pin_assets::ValidationError>, Vec<pin_assets::ValidationError>>; // Ok(warnings) / Err(errors)
+  }
+  ```
+- **Which profiles.** Every profile the table declares: `balls.profiles`, `balls.restrict[*].profile`, dispenser `contents` (as 4.1-H lint (c)); duplicates once; checked with the profile's diameter `d` (any value works, nothing is special-cased by name).
+- **Restrictions (layers and areas).** `[balls] restrict = [ { profile, layers = [..], area = [[x, y], ...] } ]`. `area` (mm, plan view, optional, CR-005 additive in `pin_core::schema::table::BallRestriction`) is a polygon (≥ 3 points, even-odd rule) the ball **centre** stays inside; omitted/empty = the whole layer. A profile with at least one restrict entry may only be on the union of its entries (layers × area); a profile with none is unrestricted (every layer, everywhere). A feature is checked for a profile only where the profile may be: its layer is allowed and its reference point(s) lie in the area (see each check). A bad area (< 3 points, non-finite, zero area) is an error `Feature::Restriction` at `balls.restrict[i].area`.
+- **Checks (errors), each with `MIN_CLEARANCE_MM = 1.0`:**
+  1. **Lane** — guide pairs `<base>.left` / `<base>.right` on one layer (the generator's `tablegen:lanes[i].left/right`; hand-written guides named the same way also count). Width = smallest distance from the left rail's samples (≤ 2 mm apart) to the right rail; required `d + 1`. Reference points: the midpoints between each left sample and its closest right point (only those inside the area count). Error at `table.toml` `splines[<index of the .left rail>]`, `name` = `<base>`.
+  2. **Flipper gap** — every two flippers on the same `collision_layer`, both at rest (zipper open): smallest distance between the bat surfaces (from the physics `FlipperSet` shapes); a gap `0 < g < d + 1` wedges the ball. Touching/overlapping bats are not a gap. Reference point: the middle of the gap. Error at `flippers[i]` (the lower index), `name` = `"<coil-or-id a> / <b>"` (FlipperId numbers, e.g. `"flipper 0 / flipper 1"`). A flipper whose shape the physics cannot build yet is skipped with a warning.
+  3. **Wireform** — every wireform spline with `gauge` g (rail centre spacing; rails are lines): the ball sits on the rails at contact angle α from vertical, `sin α = (g/2)/r`. Required `WIREFORM_MIN_CONTACT_DEG = 20° ≤ α ≤ WIREFORM_MAX_CONTACT_DEG = 75°` (below: perched on top and rolls off sideways at 0.36 g; above: drops through or nearly). `required_mm`/`actual_mm` report the gauge window `2r·sin 20°…2r·sin 75°` vs g. Reference points: the centreline samples. Error at `splines[i]`.
+  4. **Scoop** (`[[mechs]] kind = "vuk"`): the held ball (centre at `position + r·ẑ`, capture `layer`, default 0) must clear the pocket: opening = 2 × distance from that centre to the nearest colliding geometry on the capture layer that is a wall (triangle steeper than 45°) or above the centre, or a guide wall on that layer; required `d + 1`. A scoop on open floor has an infinite opening. The VUK's `radius` is the 2.4 capture radius of the ball centre, not a hole size, so it is not used. Reference point: the scoop position. Error at `mechs[i]`.
+  5. **VUK exit**: the ejected ball (centre at `position + exit_offset`, on `exit_layer`) must not overlap colliding geometry or guide walls of `exit_layer` by more than `VUK_EXIT_TOLERANCE_MM = 0.5`. Error at `mechs[i].exit_offset`, `actual_mm` = distance to the geometry, `required_mm` = r − 0.5.
+  6. **Deck headroom** — for every walkable collider triangle (normal within 45° of ±z) on a layer the ball may use (the *support*) and every non-steep collider triangle on a **different** layer above it (the *ceiling*, normal within 60° of ±z): sample plan points of their overlap (grid ≤ min(r/2, 10 mm), plus the overlap centre) where the ball may be (area), that are not inside a `[[layer_transitions]]` zone from the support's layer to the ceiling's layer, and where a ball resting on the support clears the support layer's wall triangles (steeper than 60°) by its radius. Gap = ceiling z − support z; ceilings less than `MIN_HEADROOM_GAP_MM = 1.0` above are ignored; a gap `< d + 1` is an error at `<meta.playfield_mesh>` `meshes[<ceiling index>]`, `name` = ceiling node name (e.g. `decks[0]`), reporting the smallest gap. Same-layer overhangs are not checked (the ball collides with them).
+- **Warnings (do not fail validation).** `Feature::Restriction`: a `[[layer_transitions]]` zone the restricted profile can reach (from-layer allowed, zone overlapping the area) leading to a layer it may not use (`layer_transitions[i]`); a VUK that captures the profile and ejects it onto a layer it may not use (`mechs[i].exit_layer`). Flippers the physics cannot build (`flippers[i]`).
+- **CLI.** `pin_tablegen validate <bundle_dir_or_.pinbundle>`: exit 0 and a summary line (plus each warning on stderr) when the bundle loads and passes; exit 1 with every error (`pin_assets` load errors or clearance errors, one per line, `file: path: message`) otherwise; exit 2 for usage errors. Any other first argument keeps the 4.3 generator command line (so a layout file literally named `validate` must be given as `./validate`).

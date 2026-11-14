@@ -585,8 +585,12 @@ impl QuadRenderer {
     }
 
     fn group(&mut self, key: (usize, usize)) -> &wgpu::BindGroup {
-        let (device, layout, sampler, textures) =
-            (&self.device, &self.tex_layout, &self.sampler, &self.textures);
+        let (device, layout, sampler, textures) = (
+            &self.device,
+            &self.tex_layout,
+            &self.sampler,
+            &self.textures,
+        );
         self.groups.entry(key).or_insert_with(|| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("display quad textures"),

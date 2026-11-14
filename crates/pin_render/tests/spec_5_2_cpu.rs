@@ -928,3 +928,23 @@ proptest! {
         prop_assert_eq!(a.center_px, b.center_px);
     }
 }
+
+#[test]
+fn zz_tmp_explore() {
+    // step per frame in metres along x; balls 0.06 m apart
+    for step in [0.0f32, 0.001, 0.01, 0.02, 0.029, 0.031, 0.05, 0.083, 0.2] {
+        let n = 6;
+        let mut s = ProbeScheduler::new(2);
+        let mut counts = vec![0u32; n];
+        let mut max_age = 0;
+        let mut log = Vec::new();
+        for f in 0..66 {
+            let pos: Vec<V3> = (0..n).map(|i| [i as f32 * 0.06 + f as f32 * step, 0.1 * i as f32, 0.0135]).collect();
+            let u = s.schedule(&pos).to_vec();
+            for &i in &u { counts[i] += 1; }
+            max_age = max_age.max(*s.ages().iter().max().unwrap());
+            if f < 5 { log.push(format!("{u:?}")); }
+        }
+        println!("step {step}: counts {counts:?} max age {max_age} stats {:?}; first {}", s.stats(), log.join(" "));
+    }
+}

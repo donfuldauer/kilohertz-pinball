@@ -259,3 +259,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 4.4 | Reviewer | Fable 5.2 | 1 | running | — | |
 | 5 | 2.6 | Implementer + Independent Tester | Fable 5.2 / Opus 5.5 | 1 | running | — | batch B; target/sp_phys |
 | 5 | 2.8 | Implementer + Independent Tester | Opus 5.5 / Fable 5.2 | 1 | running | — | batch B; target/sp_phys |
+| 5 | 5.3 | Independent Tester | Fable 5.2 | 1 | done | 93/94 spec tests (score 19/19, model 30/30, scene 24/25, gpu 20/20 lavapipe); parser fuzz 5×1500 cases no panics; DMD lit/unlit ratio ≈ 9.7; lamp-mask blend linear within ±2 | D1 scene parser accepts 3-element `from` → Implementer; N1 API doc drift, N2 fit_aspect overflow panic, N3 score layer overflows its box → Implementer; fixtures at tests/fixtures/spec_5_3 allowed |

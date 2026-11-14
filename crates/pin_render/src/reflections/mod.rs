@@ -25,7 +25,7 @@ mod scheduler;
 
 pub(crate) use probes::REMAP_SOURCE;
 pub use probes::{EnvironmentReflections, OctahedralProbes, ProbeConfig};
-pub use scheduler::{ProbeScheduler, ProbeStats};
+pub use scheduler::{ProbeScheduler, ProbeStats, TRACK_MAX_JUMP_M};
 
 use crate::gpu::{GpuContext, GpuError};
 use crate::pbr::{FrameDesc, PbrRenderer, ReflectionBinding};

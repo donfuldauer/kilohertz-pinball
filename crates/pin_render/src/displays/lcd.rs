@@ -27,6 +27,10 @@ pub fn vector_text_width(text: &str, cell: f32) -> f32 {
     (GLYPH_ADVANCE_UNITS * n as f32 - 1.0) * cell / 7.0
 }
 
+/// Text wider than this fraction of the canvas (score text: of its box) is
+/// shrunk to fit.
+pub const TEXT_FIT: f32 = 0.96;
+
 /// LCD canvas size.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct LcdSpec {
@@ -137,7 +141,7 @@ fn text_item(
 
 impl LcdDrawList {
     /// Composes `scene` at `elapsed_ms` on a `spec` canvas. Text is shrunk to
-    /// fit the canvas width (score text: its box width). Images with `h = 0`
+    /// [`TEXT_FIT`] of the canvas width (score text: of its box width). Images with `h = 0`
     /// keep their aspect (from `images`; skipped when missing).
     pub fn compose(
         spec: &LcdSpec,
@@ -166,7 +170,7 @@ impl LcdDrawList {
                     layer.align,
                     layer.valign,
                     color,
-                    fw,
+                    fw * TEXT_FIT,
                 )),
                 LayerKind::Rect => items.push(LcdItem::Rect {
                     rect: bx(layer.w * fw, layer.h * fh),
@@ -192,7 +196,9 @@ impl LcdDrawList {
                     let b = bx(layer.w * fw, layer.h * fh);
                     let (bw, bh) = (b[2] - b[0], b[3] - b[1]);
                     for t in score_view_layout(scores) {
-                        let c = layer.color.map(|v| (f32::from(v) * t.emphasis).round() as u8);
+                        let c = layer
+                            .color
+                            .map(|v| (f32::from(v) * t.emphasis).round() as u8);
                         items.push(text_item(
                             t.text,
                             [b[0] + t.x * bw, b[1] + t.y * bh],
@@ -200,7 +206,7 @@ impl LcdDrawList {
                             t.align,
                             t.valign,
                             rgba(c, st.opacity),
-                            bw,
+                            bw * TEXT_FIT,
                         ));
                     }
                 }
@@ -289,7 +295,10 @@ impl LcdRenderer {
         let mut draws = vec![QuadDraw::solid(vp, [0.0, 0.0, 0.0, 1.0])];
         if let Some(list) = &self.list {
             let full = [0.0, 0.0, self.spec.width as f32, self.spec.height as f32];
-            draws.push(QuadDraw::solid(map(full), premul(rgba(list.background, 1.0))));
+            draws.push(QuadDraw::solid(
+                map(full),
+                premul(rgba(list.background, 1.0)),
+            ));
             for item in &list.items {
                 match item {
                     LcdItem::Rect { rect, color } => {
@@ -328,7 +337,7 @@ impl LcdRenderer {
                                     rect: map(r),
                                     uv: [0.0, 0.0, 5.0, 7.0],
                                     color: premul(*color),
-                                    params: [3.0, glyph_slot(ch) as f32, 1.0 / (unit * s), 0.0],
+                                    params: [3.0, glyph_slot(ch) as f32, unit * s, 0.0],
                                 },
                                 tex: (WHITE, WHITE),
                                 blend: super::quad::Blend::Over,
@@ -360,6 +369,11 @@ pub fn render_lcd_to_image(
     }
     r.set_draw_list(ctx.queue(), list);
     render_offscreen(ctx, width, height, |encoder, view| {
-        r.encode(encoder, view, (width, height), Rect::new(0, 0, width, height));
+        r.encode(
+            encoder,
+            view,
+            (width, height),
+            Rect::new(0, 0, width, height),
+        );
     })
 }

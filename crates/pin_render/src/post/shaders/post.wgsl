@@ -21,6 +21,8 @@ struct Post {
     bloom: vec4<f32>,
     // bloom radius, encode sRGB (0/1), output HDR (0/1), bloom on (0/1).
     flags: vec4<f32>,
+    // image width, height (px), unused, unused.
+    image: vec4<f32>,
     balls: array<BlurBall, 16>,
 };
 
@@ -144,13 +146,17 @@ fn fs_prefilter(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4<f32>(bloom_bright(load_a(vec2<i32>(floor(frag.xy)))), 1.0);
 }
 
-// Bloom resampling works on texel indices with explicit weights, zero
-// outside the image, so every level holds exactly the energy of the one
-// before (area-weighted: a level-(i+1) texel covers 2x2 level-i texels).
-// Level sizes are ceil(n / 2). 1-D kernel: binomial [1 5 10 10 5 1] / 32
-// at offsets k = -2..3 around the texel pair (2i, 2i + 1); its even and odd
+// Bloom resampling works on texel indices with explicit weights. Level
+// sizes are ceil(n / 2). 1-D kernel: binomial [1 5 10 10 5 1] / 32 at
+// offsets k = -2..3 around the texel pair (2i, 2i + 1); its even and odd
 // taps each sum to 1/2, so with a stride of 2 every source texel feeds the
-// same total, whatever the parity of the size or the position.
+// same total, whatever the parity of the size or the position (energy
+// conserving), and every output texel's weights sum to 1 (a uniform image
+// stays uniform). Outside the image the levels are mirrored about their
+// edges (half-texel symmetric), which keeps both properties at the
+// borders as long as the fine and the coarse edge coincide (even sizes);
+// at an odd last row or column they are a texel apart (see DECISIONS
+// "5.2 — fix round 1").
 
 fn b6(k: i32) -> f32 {
     switch k {
@@ -161,75 +167,79 @@ fn b6(k: i32) -> f32 {
     }
 }
 
-// Downsample, 1-D: 1/2 over the total weight source texel `s` gives the
-// `n` destination texels that exist (1 inside the image: the full kernel).
-fn down_norm(s: i32, n: i32) -> f32 {
-    var t = 0.0;
-    for (var d = -2; d <= 2; d = d + 1) {
-        let i = (s >> 1u) + d;
-        if (i >= 0 && i < n) {
-            t = t + b6(s - 2 * i);
-        }
+// Where the image edge falls on the grid of a bloom level `n` texels wide
+// along an axis whose full image size is `full` (level sizes are
+// ceil(n / 2) per step): full / 2^level, in that level's texels.
+fn level_edge(n: i32, full: f32) -> f32 {
+    var size = i32(full);
+    var edge = full;
+    for (var l = 0; l < 16 && size > n; l = l + 1) {
+        size = (size + 1) / 2;
+        edge = edge * 0.5;
     }
-    return 0.5 / t;
+    return edge;
 }
 
-// Upsample, 1-D: coarse texel `i` scatters a total of 2 (its area in fine
-// texels) over the fine texels 2i - 2 .. 2i + 3 that exist (`f` of them).
-fn up_norm(i: i32, f: i32) -> f32 {
-    var t = 0.0;
-    for (var k = -2; k <= 3; k = k + 1) {
-        let s = 2 * i + k;
-        if (s >= 0 && s < f) {
-            t = t + b6(k);
+// Mirror of texel index `m` into a level of `n` texels whose image edge is
+// at `edge`: half-texel symmetric at 0; at the high edge about the nearest
+// texel boundary or texel centre to `edge` (an odd image size puts the edge
+// of the next level through the middle of its last texel; mirroring there
+// keeps the half-outside texel from counting twice).
+fn mirror(m0: i32, n: i32, edge: f32) -> i32 {
+    var m = m0;
+    if (m < 0) {
+        m = -1 - m;
+    }
+    let p2 = i32(round(2.0 * edge));
+    if ((p2 & 1) == 0) {
+        let p = p2 / 2;
+        if (m >= p) {
+            m = 2 * p - 1 - m;
+        }
+    } else {
+        let c = (p2 - 1) / 2;
+        if (m > c) {
+            m = 2 * c - m;
         }
     }
-    return 2.0 / t;
+    return clamp(m, 0, n - 1);
 }
 
 // Downsample of tex_a into a ceil(size / 2) target.
 @fragment
 fn fs_down(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let src = vec2<i32>(textureDimensions(tex_a));
-    let dst = (src + vec2<i32>(1)) / 2;
+    let edge = vec2<f32>(level_edge(src.x, post.image.x), level_edge(src.y, post.image.y));
     let i = vec2<i32>(floor(frag.xy));
     var acc = vec3<f32>(0.0);
     for (var ky = -2; ky <= 3; ky = ky + 1) {
-        let sy = 2 * i.y + ky;
-        if (sy < 0 || sy >= src.y) {
-            continue;
-        }
-        let wy = b6(ky) * down_norm(sy, dst.y);
+        let sy = mirror(2 * i.y + ky, src.y, edge.y);
+        let wy = b6(ky);
         for (var kx = -2; kx <= 3; kx = kx + 1) {
-            let sx = 2 * i.x + kx;
-            if (sx < 0 || sx >= src.x) {
-                continue;
-            }
-            let wx = b6(kx) * down_norm(sx, dst.x);
-            acc = acc + (wx * wy) * textureLoad(tex_a, vec2<i32>(sx, sy), 0).rgb;
+            let sx = mirror(2 * i.x + kx, src.x, edge.x);
+            acc = acc + (b6(kx) * wy) * textureLoad(tex_a, vec2<i32>(sx, sy), 0).rgb;
         }
     }
     return vec4<f32>(acc, 1.0);
 }
 
-// Upsample of tex_b (the coarser level) at fine texel `p` of a `fine`-sized
-// level; per axis, the three coarse texels whose kernel reaches `p`.
-fn upsample_b(p: vec2<i32>, fine: vec2<i32>) -> vec3<f32> {
+// Upsample of tex_b (the coarser level) at fine texel `p`: per axis, the
+// three coarse texels whose kernel reaches `p`, weight 2·b6 (a coarse
+// texel covers two fine ones).
+fn upsample_b(p: vec2<i32>) -> vec3<f32> {
     let coarse = vec2<i32>(textureDimensions(tex_b));
+    let fine = vec2<i32>(textureDimensions(tex_a));
+    let edge = 0.5 * vec2<f32>(level_edge(fine.x, post.image.x), level_edge(fine.y, post.image.y));
     var acc = vec3<f32>(0.0);
     for (var dy = -1; dy <= 1; dy = dy + 1) {
         let iy = (p.y >> 1u) + dy;
-        if (iy < 0 || iy >= coarse.y) {
-            continue;
-        }
-        let wy = b6(p.y - 2 * iy) * up_norm(iy, fine.y);
+        let wy = 2.0 * b6(p.y - 2 * iy);
+        let ry = mirror(iy, coarse.y, edge.y);
         for (var dx = -1; dx <= 1; dx = dx + 1) {
             let ix = (p.x >> 1u) + dx;
-            if (ix < 0 || ix >= coarse.x) {
-                continue;
-            }
-            let wx = b6(p.x - 2 * ix) * up_norm(ix, fine.x);
-            acc = acc + (wx * wy) * textureLoad(tex_b, vec2<i32>(ix, iy), 0).rgb;
+            let wx = 2.0 * b6(p.x - 2 * ix);
+            let rx = mirror(ix, coarse.x, edge.x);
+            acc = acc + (wx * wy) * textureLoad(tex_b, vec2<i32>(rx, ry), 0).rgb;
         }
     }
     return acc;
@@ -241,7 +251,7 @@ fn upsample_b(p: vec2<i32>, fine: vec2<i32>) -> vec3<f32> {
 fn fs_up(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let p = vec2<i32>(floor(frag.xy));
     let here = load_a(p);
-    let coarse = upsample_b(p, vec2<i32>(textureDimensions(tex_a)));
+    let coarse = upsample_b(p);
     return vec4<f32>(mix(here, coarse, clamp(post.flags.x, 0.0, 1.0)), 1.0);
 }
 
@@ -267,7 +277,7 @@ fn fs_composite(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     var c = scene;
     if (post.flags.w > 0.5) {
         let k = clamp(post.bloom.w, 0.0, 1.0);
-        let bloom = upsample_b(p, vec2<i32>(textureDimensions(tex_a)));
+        let bloom = upsample_b(p);
         c = clean(scene - k * bloom_bright(scene) + k * bloom);
     }
     if (post.flags.z > 0.5) {

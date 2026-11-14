@@ -52,12 +52,18 @@ pub const SCORE_SCENE: &str = "scene_score";
 pub const PLACEHOLDER_SCENES: &[(&str, &str)] = &[
     ("scene_attract", include_str!("scenes/scene_attract.toml")),
     (SCORE_SCENE, include_str!("scenes/scene_score.toml")),
-    ("scene_game_over", include_str!("scenes/scene_game_over.toml")),
+    (
+        "scene_game_over",
+        include_str!("scenes/scene_game_over.toml"),
+    ),
     (
         "scene_powerball_mania",
         include_str!("scenes/scene_powerball_mania.toml"),
     ),
-    ("scene_ball_saved", include_str!("scenes/scene_ball_saved.toml")),
+    (
+        "scene_ball_saved",
+        include_str!("scenes/scene_ball_saved.toml"),
+    ),
     ("scene_jackpot", include_str!("scenes/scene_jackpot.toml")),
 ];
 
@@ -105,7 +111,9 @@ pub enum SceneError {
 impl fmt::Display for SceneError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SceneError::TooLarge(n) => write!(f, "scene file of {n} bytes exceeds {MAX_SCENE_BYTES}"),
+            SceneError::TooLarge(n) => {
+                write!(f, "scene file of {n} bytes exceeds {MAX_SCENE_BYTES}")
+            }
             SceneError::NotUtf8 => write!(f, "scene file is not UTF-8"),
             SceneError::Parse(e) => write!(f, "scene TOML: {e}"),
             SceneError::SchemaVersion(v) => write!(f, "scene schema_version {v} (expected 1)"),
@@ -395,9 +403,7 @@ impl Scene {
             )));
         }
         if raw.repeat && raw.duration_ms == 0 {
-            return Err(SceneError::Invalid(
-                "repeat needs a duration_ms > 0".into(),
-            ));
+            return Err(SceneError::Invalid("repeat needs a duration_ms > 0".into()));
         }
         let background = match raw.background.as_deref() {
             None => [0, 0, 0],
@@ -452,14 +458,18 @@ fn validate_layer(i: usize, l: RawLayer) -> Result<SceneLayer, SceneError> {
     }
     let kind = match l.kind {
         RawKind::Text => {
-            let text = l.text.ok_or_else(|| invalid(i, "kind = \"text\" needs `text`"))?;
+            let text = l
+                .text
+                .ok_or_else(|| invalid(i, "kind = \"text\" needs `text`"))?;
             if text.chars().count() > MAX_TEXT_CHARS {
                 return Err(invalid(i, format!("text longer than {MAX_TEXT_CHARS}")));
             }
             LayerKind::Text(text)
         }
         RawKind::Image => {
-            let file = l.file.ok_or_else(|| invalid(i, "kind = \"image\" needs `file`"))?;
+            let file = l
+                .file
+                .ok_or_else(|| invalid(i, "kind = \"image\" needs `file`"))?;
             if file.is_empty() || file.len() > 256 {
                 return Err(invalid(i, "file must be 1..=256 bytes"));
             }
@@ -477,7 +487,8 @@ fn validate_layer(i: usize, l: RawLayer) -> Result<SceneLayer, SceneError> {
     let x = l.x.unwrap_or(dx);
     let y = l.y.unwrap_or(dy);
     let w = l.w.unwrap_or(1.0);
-    let h = l.h.unwrap_or(if l.kind == RawKind::Image { 0.0 } else { 1.0 });
+    let h =
+        l.h.unwrap_or(if l.kind == RawKind::Image { 0.0 } else { 1.0 });
     let size = l.size.unwrap_or(0.5);
     let alpha = l.alpha.unwrap_or(1.0);
     let coord = |name: &str, v: f32| {
@@ -499,7 +510,10 @@ fn validate_layer(i: usize, l: RawLayer) -> Result<SceneLayer, SceneError> {
         }
     }
     if !(size.is_finite() && size > 0.0 && size <= MAX_COORD) {
-        return Err(invalid(i, format!("size = {size} outside (0, {MAX_COORD}]")));
+        return Err(invalid(
+            i,
+            format!("size = {size} outside (0, {MAX_COORD}]"),
+        ));
     }
     if !(alpha.is_finite() && (0.0..=1.0).contains(&alpha)) {
         return Err(invalid(i, format!("alpha = {alpha} outside 0..=1")));
@@ -518,7 +532,9 @@ fn validate_layer(i: usize, l: RawLayer) -> Result<SceneLayer, SceneError> {
     }
     let color = match l.color.as_deref() {
         None => [255, 255, 255],
-        Some(s) => parse_color(s).ok_or_else(|| invalid(i, format!("color {s:?} is not #rrggbb")))?,
+        Some(s) => {
+            parse_color(s).ok_or_else(|| invalid(i, format!("color {s:?} is not #rrggbb")))?
+        }
     };
     Ok(SceneLayer {
         kind,

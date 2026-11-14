@@ -190,8 +190,7 @@ impl BackglassRenderer {
         };
         self.lamps().iter().zip(drawn).any(|(&id, &old)| {
             let new = lamp_level(lamps, id);
-            (new - old).abs() >= LAMP_REDRAW_EPSILON
-                || (new != old && (new == 0.0 || new == 1.0))
+            (new - old).abs() >= LAMP_REDRAW_EPSILON || (new != old && (new == 0.0 || new == 1.0))
         })
     }
 
