@@ -202,7 +202,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(16))]
+    #![proptest_config(ProptestConfig::with_cases(2000))]
 
     #[test]
     fn bumper_exit_is_symmetric(a in 0.0f32..core::f32::consts::TAU, speed in 0.2f32..2.0) {
@@ -233,63 +233,39 @@ proptest! {
         prop_assert!(n.dot(dir.truncate()) > 0.99);
     }
 
+    /// The documented property (`mech` module docs, "Plunger"): with the
+    /// ball resting on the tip at release, the launch is monotone in pull
+    /// depth. The rod is pulled back over 0.2 s, which outruns the ball for
+    /// depths above ~0.3 (it rolls back down the 6.5° lane at ~0.8 m/s²),
+    /// so the ball is held 1.1 s after the pull to roll back and settle on
+    /// the tip (1901 depths on 0.05..1 all rest on it from 0.6 s; GR-1).
+    /// Released while it is still rolling, the launch depends on the tick
+    /// phase of the contact and is not monotone (GR-1: up to ~5 %).
     #[test]
     fn plunger_launch_is_monotone(d1 in 0.05f32..1.0, d2 in 0.05f32..1.0) {
         prop_assume!((d1 - d2).abs() > 0.02);
-        let launch = |depth: f32| {
+        let launch = |depth: f32| -> Result<f32, TestCaseError> {
             let spec = MechSpec::new(MechKind::Plunger, v(0.0, -0.3, 0.0));
             let mut t = Table::new(&[spec], world(&[]), 6.5);
             let h = t.ball(0.0, -0.3 + 0.006 + radius(STEEL) + 0.0005, Vec3::ZERO);
-            for i in 0..500 {
+            for i in 0..1500 {
                 t.mechs.set_plunger(if i >= 200 { depth * ((i - 200) as f32 / 200.0).min(1.0) } else { 0.0 });
                 t.tick();
             }
+            // Premise: the rod is at full pull and the ball rests on its tip.
+            let (x, _) = t.mechs.slider_state(0).expect("plunger");
+            let b = t.get(h);
+            let gap = b.position.y - radius(STEEL) - (-0.3 + x + 0.006);
+            prop_assert!((x + depth * 0.05).abs() < 1.0e-5, "rod at {} for depth {}", x, depth);
+            prop_assert!(gap.abs() < 1.0e-4 && b.velocity.length() < 1.0e-3,
+                "ball not resting on the tip at release (depth {}: gap {}, v {:?})", depth, gap, b.velocity);
             t.mechs.set_plunger(0.0);
             let mut peak = 0.0f32;
             for _ in 0..60 { t.tick(); peak = peak.max(t.get(h).velocity.y); }
-            peak
+            Ok(peak)
         };
         let (lo, hi) = if d1 < d2 { (d1, d2) } else { (d2, d1) };
-        prop_assert!(launch(lo) < launch(hi));
+        let (a, b) = (launch(lo)?, launch(hi)?);
+        prop_assert!(a < b, "launch {} at depth {} >= {} at depth {}", a, lo, b, hi);
     }
 }
-
-// GR1-SCRATCH-BEGIN
-#[test]
-#[ignore]
-fn gr1_scan() {
-    let launch = |depth: f32| {
-        let spec = MechSpec::new(MechKind::Plunger, v(0.0, -0.3, 0.0));
-        let mut t = Table::new(&[spec], world(&[]), 6.5);
-        let h = t.ball(0.0, -0.3 + 0.006 + radius(STEEL) + 0.0005, Vec3::ZERO);
-        let mut last_contact = 0;
-        for i in 0..500 {
-            t.mechs.set_plunger(if i >= 200 { depth * ((i - 200) as f32 / 200.0).min(1.0) } else { 0.0 });
-            t.tick();
-            let b = t.get(h);
-            let tip = -0.3 - depth * 0.05 * ((i as f32 - 199.0).max(0.0) / 200.0).min(1.0) + 0.006;
-            if b.position.y - radius(STEEL) - tip < 2e-4 { last_contact = i; }
-        }
-        let b = t.get(h);
-        let gap = b.position.y - radius(STEEL) - (-0.3 - depth * 0.05 + 0.006);
-        t.mechs.set_plunger(0.0);
-        let mut peak = 0.0f32;
-        for _ in 0..60 { t.tick(); peak = peak.max(t.get(h).velocity.y); }
-        (peak, gap, b.velocity.y, last_contact)
-    };
-    let mut prev = 0.0f32;
-    let mut bad = 0;
-    let n = std::env::var("GR1_N").ok().and_then(|s| s.parse().ok()).unwrap_or(1900usize);
-    for k in 0..=n {
-        let d = 0.05 + 0.95 * k as f32 / n as f32;
-        let (p, gap, vy, lc) = launch(d);
-        let flag = if p <= prev { bad += 1; "  <-- non-monotone" } else { "" };
-        println!("d={d:.5} peak={p:.5} gap_at_release={gap:+.5} vy={vy:+.4} last_contact_tick={lc}{flag}");
-        prev = p;
-    }
-    for d in [0.7304841f32, 0.75067747] {
-        println!("failing input d={d}: {:?}", launch(d));
-    }
-    println!("non-monotone steps: {bad}");
-}
-// GR1-SCRATCH-END
