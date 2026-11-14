@@ -564,9 +564,12 @@ impl Default for MenuState {
     }
 }
 
+/// One step of `v` on the grid of multiples of `r.step` (anchored at 0, so
+/// round defaults such as a 100 ms release window stay on it), clamped to the
+/// range. A value off the grid snaps to the nearest grid point first.
 fn step_value(v: f64, dir: i32, r: NumericRange) -> f64 {
-    let steps = ((v - r.min) / r.step).round() + f64::from(dir.signum());
-    (r.min + steps * r.step).clamp(r.min, r.max)
+    let steps = (v / r.step).round() + f64::from(dir.signum());
+    (steps * r.step).clamp(r.min, r.max)
 }
 
 fn cycle<T: Copy + PartialEq>(all: &[T], cur: T, dir: i32) -> T {
@@ -1049,7 +1052,10 @@ impl MenuState {
     /// Applies a direct edit (clamped), emitting [`UiCommand::ConfigChanged`]
     /// when the settings actually changed.
     fn set(&mut self, change: SettingChange) {
-        let before = self.config.clone();
+        // Compared without the preserved unknown keys (`extra`), which an
+        // edit never touches and which may hold a `nan` (never equal).
+        let mut before = self.config.clone();
+        before.extra = toml::Table::new();
         let c = &mut self.config;
         let clamp = |v: f32, row: SettingRow| -> f32 {
             let r = row.range().expect("numeric row");
@@ -1124,7 +1130,10 @@ impl MenuState {
                 c.audio.decoded_budget_mib = mib.clamp(MIN_DECODED_BUDGET_MIB, MAX_DECODED_BUDGET_MIB);
             }
         }
-        if self.config != before {
+        let extra = std::mem::take(&mut self.config.extra);
+        let changed = self.config != before;
+        self.config.extra = extra;
+        if changed {
             self.push_config_changed();
         }
     }

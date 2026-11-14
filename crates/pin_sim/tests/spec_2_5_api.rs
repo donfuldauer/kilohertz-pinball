@@ -396,10 +396,10 @@ fn bumper_ring_scores_and_the_scripted_coil_kicks_the_ball() {
             if hit_tick.is_none() && sim.switch_hits("bumper_1_ring").unwrap() > 0 {
                 hit_tick = Some(t);
             }
-            if let (Some(ht), Some(b)) = (hit_tick, sim.ball(h)) {
-                if t <= ht + 40 {
-                    max_speed_after = max_speed_after.max(speed(b.velocity_m_s));
-                }
+            if let (Some(ht), Some(b)) = (hit_tick, sim.ball(h))
+                && t <= ht + 40
+            {
+                max_speed_after = max_speed_after.max(speed(b.velocity_m_s));
             }
         }
         let ht = hit_tick.expect("the ball never closed the bumper ring switch");
@@ -520,10 +520,8 @@ fn flipper_stroke_launches_a_resting_ball() {
             } else {
                 step(&mut sim, &[], &mut out);
             }
-            if pressed {
-                if let Some(b) = sim.ball(h) {
-                    max_vy = max_vy.max(b.velocity_m_s[1]);
-                }
+            if pressed && let Some(b) = sim.ball(h) {
+                max_vy = max_vy.max(b.velocity_m_s[1]);
             }
         }
         assert!(

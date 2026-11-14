@@ -435,8 +435,12 @@ pub struct AppConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score_display_monitor: Option<u32>,
     /// Backglass PiP placement (used whenever the backglass has no monitor).
+    /// A key missing from `[backglass_pip]` takes its own default.
+    #[serde(deserialize_with = "de_backglass_pip")]
     pub backglass_pip: PipConfig,
-    /// Score display PiP placement.
+    /// Score display PiP placement. A key missing from `[score_pip]` takes
+    /// its own default.
+    #[serde(deserialize_with = "de_score_pip")]
     pub score_pip: PipConfig,
     /// Playfield camera preset.
     pub camera_preset: CameraPreset,
@@ -468,6 +472,30 @@ pub struct AppConfig {
     /// [`AppConfig::save`] wherever they do not clash with a known setting.
     #[serde(flatten)]
     pub extra: toml::Table,
+}
+
+/// A `[*_pip]` table as written: every key optional.
+#[derive(Deserialize)]
+struct PartialPip {
+    corner: Option<PipCorner>,
+    width_fraction: Option<f32>,
+}
+
+impl PartialPip {
+    fn or(self, d: PipConfig) -> PipConfig {
+        PipConfig {
+            corner: self.corner.unwrap_or(d.corner),
+            width_fraction: self.width_fraction.unwrap_or(d.width_fraction),
+        }
+    }
+}
+
+fn de_backglass_pip<'de, D: serde::Deserializer<'de>>(d: D) -> Result<PipConfig, D::Error> {
+    Ok(PartialPip::deserialize(d)?.or(AppConfig::default().backglass_pip))
+}
+
+fn de_score_pip<'de, D: serde::Deserializer<'de>>(d: D) -> Result<PipConfig, D::Error> {
+    Ok(PartialPip::deserialize(d)?.or(AppConfig::default().score_pip))
 }
 
 impl Default for AppConfig {

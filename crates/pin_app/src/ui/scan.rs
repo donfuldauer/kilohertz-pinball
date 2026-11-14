@@ -107,11 +107,7 @@ impl TableFeature {
             Some(ScriptBackendKind::Wasm) => f.push(TableFeature::WasmRules),
             None => {}
         }
-        if table
-            .flipper_stages
-            .iter()
-            .any(|s| *s == FlipperStageHint::Upper)
-        {
+        if table.flipper_stages.contains(&FlipperStageHint::Upper) {
             f.push(TableFeature::UpperFlippers);
         }
         if m.flippers

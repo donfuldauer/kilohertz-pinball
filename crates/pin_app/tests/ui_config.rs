@@ -402,3 +402,27 @@ proptest! {
         prop_assert_eq!(again.config, l.config);
     }
 }
+
+#[test]
+fn partial_tables_keep_per_key_defaults() {
+    let l = AppConfig::from_toml_str(
+        "wireframe = true\n[score_pip]\ncorner = \"bottom_left\"\n[backglass_pip]\nwidth_fraction = 0.5\n[calibration.nudge]\ngain = 1.5\n[audio]\n",
+    );
+    assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+    let d = AppConfig::default();
+    let c = &l.config;
+    assert!(c.wireframe);
+    assert_eq!(c.score_pip.corner, PipCorner::BottomLeft);
+    assert_eq!(c.score_pip.width_fraction, d.score_pip.width_fraction);
+    assert_eq!(c.backglass_pip.corner, d.backglass_pip.corner);
+    assert_eq!(c.backglass_pip.width_fraction, 0.5);
+    assert_eq!(c.calibration.nudge.gain, 1.5);
+    assert_eq!(c.calibration.nudge.max, d.calibration.nudge.max);
+    assert_eq!(c.calibration.plunger, d.calibration.plunger);
+    assert_eq!(c.audio, d.audio);
+    // An empty pip table and wrong types inside it.
+    let l = AppConfig::from_toml_str("[score_pip]\n");
+    assert_eq!(l.config, d);
+    let l = AppConfig::from_toml_str("[score_pip]\ncorner = 3\n");
+    assert!(matches!(l.warnings[..], [ConfigWarning::Corrupt(_)]));
+}

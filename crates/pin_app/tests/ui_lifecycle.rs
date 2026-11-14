@@ -323,6 +323,23 @@ fn input_panel_rows() {
     assert!((cal.nudge.curve_exponent - 0.1).abs() < 1e-6);
     assert_eq!(cal.nudge.deadzone, 0.1);
     assert_eq!(cal.nudge.max, 3.0);
+    // The release window steps on a grid anchored at 0: 100 ms → 110 → 100.
+    m.apply(MenuInput::Set(SettingChange::PlungerReleaseWindow(100)));
+    let row = 1 + SettingRow::INPUT
+        .iter()
+        .position(|r| *r == SettingRow::PlungerReleaseWindow)
+        .unwrap();
+    m.apply(MenuInput::FocusRow(row));
+    m.apply(MenuInput::Right);
+    assert_eq!(m.config().calibration.plunger.release_window_ms, 110);
+    m.apply(MenuInput::Left);
+    assert_eq!(m.config().calibration.plunger.release_window_ms, 100);
+    for _ in 0..20 {
+        m.apply(MenuInput::Left);
+    }
+    assert_eq!(m.config().calibration.plunger.release_window_ms, 1);
+    m.apply(MenuInput::Right);
+    assert_eq!(m.config().calibration.plunger.release_window_ms, 10);
     // Wireframe toggles with Select.
     let last = SettingRow::INPUT.len();
     m.apply(MenuInput::FocusRow(last));
@@ -456,4 +473,17 @@ fn live_monitor_ors_sources() {
     assert_eq!(m.monitor().plunger().rest, 0.05);
     m.monitor_mut().set_nudge([0.1, -0.2]);
     assert_eq!(m.monitor().nudge(), [0.1, -0.2]);
+}
+
+#[test]
+fn nan_in_preserved_keys_does_not_fake_changes() {
+    let l = AppConfig::from_toml_str("future = nan\n");
+    let mut m = MenuState::new(l.config);
+    m.apply(MenuInput::Toggle);
+    m.drain_commands();
+    m.apply(MenuInput::Set(SettingChange::Wireframe(false)));
+    assert!(m.pending_commands().is_empty());
+    m.apply(MenuInput::Set(SettingChange::Wireframe(true)));
+    assert_eq!(m.pending_commands().len(), 1);
+    assert!(matches!(&m.pending_commands()[0], UiCommand::ConfigChanged(c) if c.extra.contains_key("future")));
 }

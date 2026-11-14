@@ -188,11 +188,10 @@ proptest! {
             let mut last_hits = 0;
             for i in 0..1500 {
                 sim.advance(1);
-                if i % 400 == 100 {
-                    if let Some((ex, ey)) = extra.get(i / 400) {
+                if i % 400 == 100
+                    && let Some((ex, ey)) = extra.get(i / 400) {
                         let _ = sim.spawn_ball("standard_steel", [*ex, *ey, R], [0.0; 3]);
                     }
-                }
                 let alive = sim.ball(h).is_some();
                 prop_assert!(!(dead && alive), "a removed ball's handle became valid again at step {}", i);
                 dead |= !alive;
@@ -208,8 +207,10 @@ proptest! {
     /// The hash separates runs that differ in one injected velocity component.
     #[test]
     fn different_injection_different_hash(
-        x in 0.05f32..0.45,
-        y in 0.5f32..1.0,
+        // Clear of the bumper (257, 640) and the posts (y = 520): a ball
+        // injected inside a solid is not a meaningful state.
+        x in 0.05f32..0.20,
+        y in 0.56f32..1.0,
         vx in -1.0f32..1.0,
         dv in prop_oneof![0.001f32..0.5, -0.5f32..-0.001],
         ticks in 0u64..200,

@@ -119,10 +119,10 @@ fn non_finite_injection_is_contained() {
                             );
                         }
                     }
-                    if let Some(h) = h {
-                        if !b.is_finite() {
-                            assert!(sim.ball(h).is_none(), "a non-finite ball must be removed");
-                        }
+                    if let Some(h) = h
+                        && !b.is_finite()
+                    {
+                        assert!(sim.ball(h).is_none(), "a non-finite ball must be removed");
                     }
                     let good = sim.ball(ok).expect("the healthy ball is unaffected");
                     assert!(good.position_m[1] < 0.95);
@@ -218,7 +218,8 @@ fn ev(tick: u64, stamp_tick: u64, input: CabinetInput, pressed: bool) -> (u64, I
 fn replay_survives_inconsistent_recordings() {
     on_sim_thread(|| {
         let th = load().table_hash();
-        let cases: Vec<(&str, u64, Vec<(u64, InputEvent)>)> = vec![
+        type Case = (&'static str, u64, Vec<(u64, InputEvent)>);
+        let cases: Vec<Case> = vec![
             (
                 "event at tick 0",
                 50,

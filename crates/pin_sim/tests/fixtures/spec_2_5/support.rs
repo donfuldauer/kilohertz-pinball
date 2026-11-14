@@ -227,10 +227,11 @@ pub fn recording(
 /// Extracts the hash from a `state_hash=<16 hex>` line of `stdout`.
 pub fn parse_state_hash(stdout: &str) -> Option<u64> {
     for line in stdout.lines() {
-        if let Some(hex) = line.trim().strip_prefix("state_hash=") {
-            if hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return u64::from_str_radix(hex, 16).ok();
-            }
+        if let Some(hex) = line.trim().strip_prefix("state_hash=")
+            && hex.len() == 16
+            && hex.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return u64::from_str_radix(hex, 16).ok();
         }
     }
     None

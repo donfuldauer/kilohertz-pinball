@@ -1,9 +1,12 @@
 //! Subphase 2.5 spec tests (Independent Tester): the fixed tick order of
 //! PLAN §2.2 as seen from outside.
 //!
-//! 1. drain inputs, update cabinet switches   2. deliver last tick's edges,
-//! then on_tick   3. apply the command queue   4. physics   5. collect edges
-//! 6. publish the snapshot.
+//! 1. drain inputs, update cabinet switches
+//! 2. deliver last tick's edges, then on_tick
+//! 3. apply the command queue
+//! 4. physics
+//! 5. collect edges
+//! 6. publish the snapshot
 //!
 //! `rules.lua` reports, as player 2, the number of completed
 //! `on_tick` calls at the moment the last `lane_opto` closed edge was
@@ -305,11 +308,11 @@ fn scripted_coil_pulse_changes_the_physics() {
                 if hit.is_none() && sim.switch_hits("bumper_1_ring").unwrap() > 0 {
                     hit = Some(t);
                 }
-                if let (Some(ht), Some(b)) = (hit, sim.ball(h)) {
-                    if t <= ht + 40 {
-                        let v = b.velocity_m_s;
-                        vmax = vmax.max((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt());
-                    }
+                if let (Some(ht), Some(b)) = (hit, sim.ball(h))
+                    && t <= ht + 40
+                {
+                    let v = b.velocity_m_s;
+                    vmax = vmax.max((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt());
                 }
             }
             (hit.expect("no ring hit"), vmax)
