@@ -204,6 +204,7 @@ impl NewtonChain {
     }
 
     /// Surface gap between balls `k` and `k + 1`.
+    #[cfg(test)]
     fn gap(&self, k: usize) -> f32 {
         self.ball_position(k).distance(self.ball_position(k + 1)) - 2.0 * self.radius
     }
@@ -455,12 +456,36 @@ impl NewtonChain {
     }
 
     /// Pushes overlapping neighbours apart along the path, keeping order.
+    ///
+    /// A ball moved by `ds` metres along its path changes the centre
+    /// distance of pair `(k, k + 1)` by `-a_k ds` (ball `k`) or
+    /// `a_{k+1} ds` (ball `k + 1`), with the cosines of
+    /// [`Self::centre_line`]. The overlap `D = -gap` is removed to first
+    /// order by the smallest shifts that do it: `ds_k = -a_k D / S`,
+    /// `ds_{k+1} = a_{k+1} D / S`, `S = a_k² + a_{k+1}²` (the effective-mass
+    /// denominator of [`Self::resolve_touching`]). On a straight chain
+    /// (`a_k = a_{k+1} = 1`) this is bit for bit the earlier half-and-half
+    /// shift. On a curved path one pass may leave a small residual; the two
+    /// passes take most of it, and the next steps the rest
+    /// (docs/DECISIONS.md, "issue-8 — separate() positional correction on
+    /// curved paths (CodeRabbit E)").
+    ///
+    /// What one ball cannot move at an end stop, the other moves, as far as
+    /// its own cosine allows. A pair is skipped when it has no centre line,
+    /// a tangent length is NaN or not positive, `S < MIN_COSINE²` (path
+    /// motion barely changes the distance: the shift would be huge, or
+    /// undefined at `S = 0`), or the result would not keep the pair's order.
     fn separate(&mut self) {
+        /// Smallest cosine through which a ball takes part in the correction.
+        const MIN_COSINE: f32 = 0.1;
         let n = self.len();
         let max_t = self.path.max_t();
         for _ in 0..2 {
             for k in 0..n.saturating_sub(1) {
-                let gap = self.gap(k);
+                let Some((gap, ca, cb)) = self.centre_line(k) else {
+                    continue;
+                };
+                // Finite: `centre_line` returns only finite distances.
                 if gap >= 0.0 {
                     continue;
                 }
@@ -469,14 +494,34 @@ impl NewtonChain {
                 if la.is_nan() || lb.is_nan() || la <= 0.0 || lb <= 0.0 {
                     continue;
                 }
-                let half = -0.5 * gap;
-                let ta = self.t[k] - half / la;
-                let tb = self.t[k + 1] + half / lb;
-                // What one ball cannot move at an end stop, the other does.
-                let spill_a = (0.0 - ta).max(0.0) * la;
-                let spill_b = (tb - max_t).max(0.0) * lb;
-                self.t[k] = (ta - spill_b / la).clamp(0.0, max_t);
-                self.t[k + 1] = (tb + spill_a / lb).clamp(0.0, max_t);
+                let sum = ca * ca + cb * cb;
+                if !(sum >= MIN_COSINE * MIN_COSINE && sum.is_finite()) {
+                    continue;
+                }
+                // D / S; exactly `-0.5 * gap` when S = 2.
+                let q = -gap / sum;
+                let ta = self.t[k] + (-ca * q) / la;
+                let tb = self.t[k + 1] + (cb * q) / lb;
+                // Path length (metres) each ball would travel past an end
+                // stop, and the centre distance that leaves unmade.
+                let lost_a = ca * ((0.0 - ta).max(0.0) - (ta - max_t).max(0.0)) * la;
+                let lost_b = cb * ((tb - max_t).max(0.0) - (0.0 - tb).max(0.0)) * lb;
+                let extra_a = if ca.abs() >= MIN_COSINE {
+                    -lost_b / ca
+                } else {
+                    0.0
+                };
+                let extra_b = if cb.abs() >= MIN_COSINE {
+                    lost_a / cb
+                } else {
+                    0.0
+                };
+                let new_a = (ta + extra_a / la).clamp(0.0, max_t);
+                let new_b = (tb + extra_b / lb).clamp(0.0, max_t);
+                if new_a < new_b {
+                    self.t[k] = new_a;
+                    self.t[k + 1] = new_b;
+                }
             }
         }
     }
@@ -968,6 +1013,175 @@ mod tests {
         }
     }
 
+    /// Overlapping neighbours on opposite arms of [`hairpin`]: ball 0 on arm
+    /// A at `x1 + reach * (1 - f)`, ball 1 on arm B at `x1`, where `reach`
+    /// is the x offset at which the surfaces just touch. The arms are
+    /// antiparallel, so `a_1 = -a_0`.
+    fn overlapping_hairpin(w: f32, x1: f32, f: f32) -> NewtonChain {
+        let reach = (4.0 * R * R - w * w).sqrt();
+        hairpin_chain(w, x1 + reach * (1.0 - f), x1, 1.0)
+    }
+
+    /// The geometries swept by the hairpin `separate` tests: arm spacing,
+    /// position of ball 1 (up to next to the turn) and overlap fraction.
+    fn hairpin_overlaps() -> impl Iterator<Item = (f32, f32, f32)> {
+        [1.2 * R, 1.5 * R, 1.8 * R].into_iter().flat_map(|w| {
+            [0.06f32, 0.1, 0.14, 0.17]
+                .into_iter()
+                .flat_map(move |x1| [0.05f32, 0.2, 0.4].into_iter().map(move |f| (w, x1, f)))
+        })
+    }
+
+    /// PR #16 CodeRabbit finding E: on a hairpin, `separate` must push
+    /// overlapping neighbours apart in world space. Shifting both balls by
+    /// the same path length moves them the same way across the bend
+    /// (`a_1 = -a_0`), so the pair only translated and the overlap stayed.
+    /// One call (two first-order passes) must increase the centre distance
+    /// and leave at most 1 % of the overlap (and never more than 1 µm);
+    /// one `advance` must then clear it to within [`CHAIN_TOUCH`].
+    #[test]
+    fn separate_clears_overlap_on_a_hairpin() {
+        for (w, x1, f) in hairpin_overlaps() {
+            let mut c = overlapping_hairpin(w, x1, f);
+            let (gap0, ca, cb) = c.centre_line(0).unwrap();
+            assert!(gap0 < 0.0 && ca < 0.0 && cb > 0.0, "w {w} x1 {x1} f {f}");
+            let d0 = centre_distance(&c);
+            c.separate();
+            let d1 = centre_distance(&c);
+            let gap1 = c.gap(0);
+            assert!(
+                d1 > d0,
+                "w {w} x1 {x1} f {f}: a {ca} {cb}, gap {gap0} -> {gap1}"
+            );
+            assert!(
+                gap1 >= -(0.01 * -gap0).min(1.0e-6),
+                "w {w} x1 {x1} f {f}: a {ca} {cb}, gap {gap0} -> {gap1}"
+            );
+            assert!(c.ball_t(0) < c.ball_t(1));
+            let mut c = overlapping_hairpin(w, x1, f);
+            c.advance(1.0e-3, Vec3::ZERO, 0.0);
+            assert!(
+                c.gap(0) >= -CHAIN_TOUCH,
+                "w {w} x1 {x1} f {f}: gap {gap0} -> {} after advance",
+                c.gap(0)
+            );
+        }
+    }
+
+    /// The `separate` of e86a430 (tangent lengths only), kept as the
+    /// reference for the straight-chain bit-identity test.
+    fn separate_straight_reference(c: &mut NewtonChain) {
+        let max_t = c.path.max_t();
+        for _ in 0..2 {
+            for k in 0..c.len() - 1 {
+                let gap = c.gap(k);
+                if gap >= 0.0 {
+                    continue;
+                }
+                let la = c.path.tangent(c.t[k]).length();
+                let lb = c.path.tangent(c.t[k + 1]).length();
+                let half = -0.5 * gap;
+                let ta = c.t[k] - half / la;
+                let tb = c.t[k + 1] + half / lb;
+                let spill_a = (0.0 - ta).max(0.0) * la;
+                let spill_b = (tb - max_t).max(0.0) * lb;
+                c.t[k] = (ta - spill_b / la).clamp(0.0, max_t);
+                c.t[k + 1] = (tb + spill_a / lb).clamp(0.0, max_t);
+            }
+        }
+    }
+
+    /// On a straight chain the cosines are exactly 1 and `separate` gives
+    /// bit for bit the old half-and-half shift, in the open and against
+    /// either end stop (spill), on uniform and non-uniform tangent lengths.
+    #[test]
+    fn separate_is_bit_identical_on_a_straight_chain() {
+        let max_t = 11.0f32;
+        let cases: [&[f32]; 7] = [
+            &[3.0, 3.9],
+            &[3.0, 3.5, 4.2],
+            &[3.0, 3.9, 4.8, 5.1],
+            &[0.0, 0.5],
+            &[0.1, 0.6, 1.2],
+            &[10.4, max_t],
+            &[0.0, 0.3, 9.4, 10.2, max_t],
+        ];
+        let mut spills = 0;
+        for params in cases {
+            let mut c = chain(params, 1.0);
+            let mut r = c.clone();
+            for k in 0..c.len() - 1 {
+                if let Some((g, ca, cb)) = c.centre_line(k)
+                    && g < 0.0
+                {
+                    assert_eq!((ca, cb), (1.0, 1.0), "{params:?}");
+                }
+            }
+            c.separate();
+            separate_straight_reference(&mut r);
+            for i in 0..c.len() {
+                assert_eq!(
+                    c.ball_t(i).to_bits(),
+                    r.ball_t(i).to_bits(),
+                    "{params:?} ball {i}"
+                );
+            }
+            spills += usize::from(c.ball_t(0) == 0.0 || c.ball_t(c.len() - 1) == max_t);
+        }
+        assert!(spills >= 3);
+        let path = varying_tangent();
+        for params in [[0.9f32, 1.4], [0.0, 0.4], [1.7, 2.0]] {
+            let mut c = NewtonChain::new(path.clone(), ProfileId(0), &params).unwrap();
+            c.bind(R, 0.08, 1.0);
+            assert!(c.gap(0) < 0.0, "{params:?}");
+            let mut r = c.clone();
+            c.separate();
+            separate_straight_reference(&mut r);
+            for i in 0..2 {
+                assert_eq!(c.ball_t(i).to_bits(), r.ball_t(i).to_bits(), "{params:?}");
+            }
+        }
+    }
+
+    /// `S = a_k² + a_{k+1}² = 0`: both tangents perpendicular to the centre
+    /// line (two balls on parallel arms at the same x, or a vanishing
+    /// tangent). Path motion cannot change the distance to first order, so
+    /// the pair is left as it is: finite, in range, deterministic.
+    #[test]
+    fn separate_skips_a_pair_with_no_effective_mass() {
+        for &w in &[1.2 * R, 1.5 * R, 1.8 * R] {
+            for &x in &[0.06f32, 0.1, 0.17] {
+                let mut c = hairpin_chain(w, x, x, 1.0);
+                let (gap, ca, cb) = c.centre_line(0).unwrap();
+                assert!(gap < 0.0);
+                assert!(ca * ca + cb * cb < 0.01, "w {w} x {x}: {ca} {cb}");
+                let before = (c.ball_t(0), c.ball_t(1));
+                c.separate();
+                assert_eq!((c.ball_t(0), c.ball_t(1)), before, "w {w} x {x}");
+                let mut d = hairpin_chain(w, x, x, 1.0);
+                for _ in 0..5 {
+                    c.advance(1.0e-3, Vec3::ZERO, 0.0);
+                    d.advance(1.0e-3, Vec3::ZERO, 0.0);
+                }
+                for i in 0..2 {
+                    let t = c.ball_t(i);
+                    assert!(t.is_finite() && (0.0..=c.path().max_t()).contains(&t));
+                    assert!(c.ball_speed(i).is_finite());
+                    assert_eq!(t.to_bits(), d.ball_t(i).to_bits());
+                }
+            }
+        }
+        // Exactly zero: a chain whose path has a vanishing tangent at both
+        // balls (all knots equal) has cosines 0 and no centre line.
+        let p = CubicSpline::interpolate(&[Vec3::ZERO, Vec3::ZERO, Vec3::ZERO]);
+        if let Ok(p) = p {
+            let mut c = NewtonChain::new(p, ProfileId(0), &[0.5, 1.5]).unwrap();
+            c.bind(R, 0.08, 1.0);
+            c.separate();
+            assert_eq!((c.ball_t(0), c.ball_t(1)), (0.5, 1.5));
+        }
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
 
@@ -1000,6 +1214,54 @@ mod tests {
                 proptest::prop_assert_eq!((a, b), (u0, u1));
             }
             proptest::prop_assert!(a * a + b * b <= (u0 * u0 + u1 * u1) * (1.0 + 1e-5) + 1e-9);
+        }
+
+        /// `separate` on an overlapping hairpin pair: parameters stay finite,
+        /// inside the path and in order, and the centre distance grows
+        /// (or, for a skipped pair with `S < MIN_COSINE²`, stays).
+        #[test]
+        fn hairpin_separate_invariants(
+            w in 1.0f32 * R..1.95 * R,
+            x1 in 0.04f32..0.17,
+            f in 0.0f32..1.0,
+        ) {
+            let mut c = overlapping_hairpin(w, x1, f);
+            let (gap0, ca, cb) = c.centre_line(0).unwrap();
+            let d0 = centre_distance(&c);
+            c.separate();
+            let d1 = centre_distance(&c);
+            for i in 0..2 {
+                let t = c.ball_t(i);
+                proptest::prop_assert!(t.is_finite() && (0.0..=c.path().max_t()).contains(&t));
+            }
+            proptest::prop_assert!(c.ball_t(0) < c.ball_t(1));
+            if gap0 < 0.0 && ca * ca + cb * cb >= 0.01 {
+                proptest::prop_assert!(d1 > d0, "a {} {}: {} -> {}", ca, cb, d0, d1);
+            } else {
+                proptest::prop_assert_eq!(d1, d0);
+            }
+        }
+    }
+
+    /// More balls than fit at an end stop: the spill can put two balls on
+    /// the same point, a pair with no centre line, which `separate` skips
+    /// (no direction is invented). Everything stays finite and in range,
+    /// deterministically. (Order across non-neighbours is not kept here,
+    /// as before: the spill can push a ball past the next one.)
+    #[test]
+    fn overpacked_end_stays_finite_and_in_range() {
+        for params in [[10.7f32, 10.95, 11.0], [0.0, 0.05, 0.3]] {
+            let mut c = chain(&params, 1.0);
+            let mut d = c.clone();
+            for _ in 0..5 {
+                c.advance(1.0e-3, Vec3::ZERO, 0.0);
+                d.advance(1.0e-3, Vec3::ZERO, 0.0);
+            }
+            for i in 0..3 {
+                let t = c.ball_t(i);
+                assert!(t.is_finite() && (0.0..=11.0).contains(&t), "{params:?}");
+                assert_eq!(t.to_bits(), d.ball_t(i).to_bits());
+            }
         }
     }
 }
