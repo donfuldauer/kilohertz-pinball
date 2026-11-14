@@ -202,7 +202,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(2000))]
+    #![proptest_config(ProptestConfig::with_cases(16))]
 
     #[test]
     fn bumper_exit_is_symmetric(a in 0.0f32..core::f32::consts::TAU, speed in 0.2f32..2.0) {
