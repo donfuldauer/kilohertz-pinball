@@ -59,6 +59,9 @@ struct FaceBasisUniform {
     up: [[f32; 4]; 6],
     forward: [[f32; 4]; 6],
     params: [f32; 4],
+    env_sky: [f32; 4],
+    env_horizon: [f32; 4],
+    env_ground: [f32; 4],
 }
 
 /// Octahedral reflection probes, one per ball, captured under the
@@ -79,6 +82,8 @@ pub struct OctahedralProbes {
     face_depth: wgpu::TextureView,
     remap_pipeline: wgpu::RenderPipeline,
     remap_bind: wgpu::BindGroup,
+    basis: FaceBasisUniform,
+    basis_buffer: wgpu::Buffer,
     draw_layers: Vec<u32>,
     positions: Vec<[f32; 3]>,
 }
@@ -180,6 +185,9 @@ impl OctahedralProbes {
             up: [[0.0; 4]; 6],
             forward: [[0.0; 4]; 6],
             params: [PROBE_RESOLUTION as f32, 0.0, 0.0, 0.0],
+            env_sky: [0.0; 4],
+            env_horizon: [0.0; 4],
+            env_ground: [0.0; 4],
         };
         for k in 0..6 {
             let (r, u, f) = face_basis(k);
@@ -192,7 +200,7 @@ impl OctahedralProbes {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("probe face basis"),
                 contents: bytemuck::bytes_of(&basis),
-                usage: wgpu::BufferUsages::UNIFORM,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             })
         };
         let remap_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -291,6 +299,8 @@ impl OctahedralProbes {
             face_depth,
             remap_pipeline,
             remap_bind,
+            basis,
+            basis_buffer,
             draw_layers: Vec::new(),
             positions: Vec::with_capacity(MAX_PROBES),
         })
@@ -342,8 +352,11 @@ impl OctahedralProbes {
         let far = self.config.far.max(near * 2.0);
         for face in 0..6 {
             let cam = face_camera(ball.position, face, near, far);
+            // Transparent black: the remap fills uncovered texels with the
+            // environment.
             let face_frame = FrameDesc {
                 camera: &cam,
+                clear: [0.0; 4],
                 ..*frame
             };
             let mut encoder = ctx
@@ -405,6 +418,17 @@ impl ReflectionSource for OctahedralProbes {
         let scheduled = self.scheduler.schedule(&self.positions);
         for (u, &s) in updates.iter_mut().zip(scheduled) {
             *u = s;
+        }
+        if updates[0] != usize::MAX {
+            let env = |c: [f32; 3]| {
+                let c = c.map(|v| if v.is_finite() { v.max(0.0) } else { 0.0 });
+                [c[0], c[1], c[2], 0.0]
+            };
+            self.basis.env_sky = env(frame.environment.sky);
+            self.basis.env_horizon = env(frame.environment.horizon);
+            self.basis.env_ground = env(frame.environment.ground);
+            ctx.queue()
+                .write_buffer(&self.basis_buffer, 0, bytemuck::bytes_of(&self.basis));
         }
         for &i in updates.iter().filter(|&&i| i != usize::MAX) {
             self.capture(ctx, pbr, frame, &balls[i], i);

@@ -133,14 +133,17 @@ fn input_event_updates_the_cabinet_switch_in_its_tick() {
     });
 }
 
-/// Several input events in one tick are applied in arrival order.
+/// Several input events in one tick: the cabinet state of a tick is the
+/// state after its last event (pin_input yields one debounced frame per
+/// tick, applied in timestamp / arrival order), and a closed edge is a
+/// tick-to-tick transition.
 #[test]
-fn input_events_within_a_tick_apply_in_arrival_order() {
+fn input_events_within_a_tick_resolve_to_the_last_one() {
     on_sim_thread(|| {
         let mut sim = load();
         let mut out = Box::new(FrameStateSnapshot::default());
         step(&mut sim, &[], &mut out);
-        // press, release, press within tick 2: ends closed, two closed edges.
+        // press, release, press within tick 2: ends closed.
         step(
             &mut sim,
             &[
@@ -151,8 +154,8 @@ fn input_events_within_a_tick_apply_in_arrival_order() {
             &mut out,
         );
         assert_eq!(sim.switch_closed("action"), Some(true));
-        assert_eq!(sim.switch_hits("action"), Some(2));
-        // release, press: ends closed again.
+        assert_eq!(sim.switch_hits("action"), Some(1));
+        // release, press: still closed, no new edge between ticks.
         step(
             &mut sim,
             &[
@@ -162,10 +165,35 @@ fn input_events_within_a_tick_apply_in_arrival_order() {
             &mut out,
         );
         assert_eq!(sim.switch_closed("action"), Some(true));
-        assert_eq!(sim.switch_hits("action"), Some(3));
+        assert_eq!(sim.switch_hits("action"), Some(1));
         // A repeated press is not an edge.
         step(&mut sim, &[button(4, CabinetInput::Action, true)], &mut out);
-        assert_eq!(sim.switch_hits("action"), Some(3));
+        assert_eq!(sim.switch_hits("action"), Some(1));
+        // press, release: ends open.
+        step(
+            &mut sim,
+            &[
+                button(5, CabinetInput::Action, true),
+                button(5, CabinetInput::Action, false),
+            ],
+            &mut out,
+        );
+        assert_eq!(sim.switch_closed("action"), Some(false));
+        step(&mut sim, &[button(6, CabinetInput::Action, true)], &mut out);
+        assert_eq!(sim.switch_closed("action"), Some(true));
+        assert_eq!(sim.switch_hits("action"), Some(2));
+        // Two different buttons in one tick both apply.
+        step(
+            &mut sim,
+            &[
+                button(7, CabinetInput::Launch, true),
+                button(7, CabinetInput::Start, true),
+            ],
+            &mut out,
+        );
+        assert_eq!(sim.switch_closed("launch"), Some(true));
+        assert_eq!(sim.switch_closed("start"), Some(true));
+        assert_eq!(sim.balls_in_play() + usize::from(sim.tick() == 7), 1, "start spawns by tick 8");
     });
 }
 

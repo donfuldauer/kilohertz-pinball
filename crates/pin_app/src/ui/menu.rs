@@ -228,7 +228,7 @@ impl SettingRow {
     }
 
     /// Range of a numeric (slider) row, `None` for choice and toggle rows.
-    pub const fn range(self) -> Option<NumericRange> {
+    pub fn range(self) -> Option<NumericRange> {
         let r = |min, max, step| Some(NumericRange { min, max, step });
         match self {
             SettingRow::BackglassPipWidth | SettingRow::ScorePipWidth => {
@@ -355,6 +355,33 @@ pub enum SettingChange {
     Wireframe(bool),
 }
 
+impl SettingChange {
+    /// The change setting numeric `row` to `value` (`None` for a row that is
+    /// not numeric). The value is clamped when applied.
+    pub fn number(row: SettingRow, value: f64) -> Option<SettingChange> {
+        let v = value as f32;
+        Some(match row {
+            SettingRow::BackglassPipWidth => SettingChange::BackglassPipWidth(v),
+            SettingRow::ScorePipWidth => SettingChange::ScorePipWidth(v),
+            SettingRow::DualStageLower => SettingChange::DualStageLower(v),
+            SettingRow::DualStageUpper => SettingChange::DualStageUpper(v),
+            SettingRow::PlungerDeadzone => SettingChange::PlungerDeadzone(v),
+            SettingRow::PlungerRestTracking => SettingChange::PlungerRestTracking(v),
+            SettingRow::PlungerReleaseMinSpeed => SettingChange::PlungerReleaseMinSpeed(v),
+            SettingRow::PlungerReleaseWindow => {
+                // Saturating float → int cast; NaN → 0 (clamped to 1 on apply).
+                SettingChange::PlungerReleaseWindow(value.round() as u32)
+            }
+            SettingRow::NudgeHighPass => SettingChange::NudgeHighPass(v),
+            SettingRow::NudgeGain => SettingChange::NudgeGain(v),
+            SettingRow::NudgeCurve => SettingChange::NudgeCurve(v),
+            SettingRow::NudgeDeadzone => SettingChange::NudgeDeadzone(v),
+            SettingRow::NudgeMax => SettingChange::NudgeMax(v),
+            _ => return None,
+        })
+    }
+}
+
 /// Everything that drives the menu.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MenuInput {
@@ -376,6 +403,8 @@ pub enum MenuInput {
     ShowPanel(Panel),
     /// Focus table `i` of the full table list (list click).
     FocusTable(usize),
+    /// Focus row `r` of the shown panel (clamped; 0 = tab bar).
+    FocusRow(usize),
     /// One-click load of table `i` of the full table list.
     LoadTable(usize),
     /// Browser filter text changed (case-insensitive substring of title,
@@ -835,6 +864,10 @@ impl MenuState {
                     self.focus[Panel::Tables.index()] = row + 1;
                 }
             }
+            MenuInput::FocusRow(r) => {
+                let n = self.row_count();
+                self.focus[self.panel.index()] = r.min(n - 1);
+            }
             MenuInput::LoadTable(i) => {
                 let _ = self.request_load_index(i);
             }
@@ -928,26 +961,7 @@ impl MenuState {
         let monitors: Vec<Option<u32>> = std::iter::once(None).chain((0..n).map(Some)).collect();
         let change = if let Some(r) = row.range() {
             let v = step_value(row.number(c).unwrap_or(r.min), dir, r);
-            Some(match row {
-                SettingRow::BackglassPipWidth => SettingChange::BackglassPipWidth(v as f32),
-                SettingRow::ScorePipWidth => SettingChange::ScorePipWidth(v as f32),
-                SettingRow::DualStageLower => SettingChange::DualStageLower(v as f32),
-                SettingRow::DualStageUpper => SettingChange::DualStageUpper(v as f32),
-                SettingRow::PlungerDeadzone => SettingChange::PlungerDeadzone(v as f32),
-                SettingRow::PlungerRestTracking => SettingChange::PlungerRestTracking(v as f32),
-                SettingRow::PlungerReleaseMinSpeed => {
-                    SettingChange::PlungerReleaseMinSpeed(v as f32)
-                }
-                SettingRow::PlungerReleaseWindow => {
-                    SettingChange::PlungerReleaseWindow(v.round() as u32)
-                }
-                SettingRow::NudgeHighPass => SettingChange::NudgeHighPass(v as f32),
-                SettingRow::NudgeGain => SettingChange::NudgeGain(v as f32),
-                SettingRow::NudgeCurve => SettingChange::NudgeCurve(v as f32),
-                SettingRow::NudgeDeadzone => SettingChange::NudgeDeadzone(v as f32),
-                SettingRow::NudgeMax => SettingChange::NudgeMax(v as f32),
-                _ => return,
-            })
+            SettingChange::number(row, v)
         } else {
             match row {
                 SettingRow::DisplayMode => Some(SettingChange::DisplayMode(cycle(

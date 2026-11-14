@@ -686,146 +686,86 @@ impl AppConfig {
     /// [`ConfigWarning::InvalidValue`] each.
     pub fn sanitize(&mut self, warnings: &mut Vec<ConfigWarning>) {
         let d = AppConfig::default();
-        let mut bad = |key: &str, message: String| {
-            warnings.push(ConfigWarning::InvalidValue {
-                key: key.to_owned(),
-                message,
-            })
-        };
-        let mut index = |key: &str, v: &mut u32, dv: u32| {
-            if *v > MAX_DISPLAY_INDEX {
-                bad(key, format!("{v} is not a monitor index 0..={MAX_DISPLAY_INDEX}"));
-                *v = dv;
-            }
-        };
-        index("playfield_display", &mut self.playfield_display, 0);
-        let mut opt = |key: &str, v: &mut Option<u32>| {
+        let w = warnings;
+        if self.playfield_display > MAX_DISPLAY_INDEX {
+            bad(w, "playfield_display", monitor_msg(self.playfield_display));
+            self.playfield_display = d.playfield_display;
+        }
+        for (key, v) in [
+            ("backglass_display", &mut self.backglass_display),
+            ("score_display_monitor", &mut self.score_display_monitor),
+        ] {
             if let Some(i) = *v
                 && i > MAX_DISPLAY_INDEX
             {
-                warnings.push(ConfigWarning::InvalidValue {
-                    key: key.to_owned(),
-                    message: format!("{i} is not a monitor index 0..={MAX_DISPLAY_INDEX}"),
-                });
+                bad(w, key, monitor_msg(i));
                 *v = None;
             }
-        };
-        opt("backglass_display", &mut self.backglass_display);
-        opt("score_display_monitor", &mut self.score_display_monitor);
-        let mut range = |key: &str, v: &mut f32, lo: f32, hi: f32, dv: f32| {
+        }
+        let (pw, sw) = (MIN_PIP_WIDTH, MAX_PIP_WIDTH);
+        let c = &mut self.calibration;
+        let dc = &d.calibration;
+        let checks: [(&str, &mut f32, f32, f32, f32); 12] = [
+            ("backglass_pip.width_fraction", &mut self.backglass_pip.width_fraction, pw, sw, d.backglass_pip.width_fraction),
+            ("score_pip.width_fraction", &mut self.score_pip.width_fraction, pw, sw, d.score_pip.width_fraction),
+            ("calibration.plunger.deadzone", &mut c.plunger.deadzone, 0.0, 0.5, dc.plunger.deadzone),
+            ("calibration.plunger.rest_tracking_per_s", &mut c.plunger.rest_tracking_per_s, 0.0, 100.0, dc.plunger.rest_tracking_per_s),
+            ("calibration.plunger.release_min_speed", &mut c.plunger.release_min_speed, 0.0, 1000.0, dc.plunger.release_min_speed),
+            ("calibration.nudge.high_pass_hz", &mut c.nudge.high_pass_hz, 0.0, 50.0, dc.nudge.high_pass_hz),
+            ("calibration.nudge.gain", &mut c.nudge.gain, 0.0, 10.0, dc.nudge.gain),
+            ("calibration.nudge.curve_exponent", &mut c.nudge.curve_exponent, 0.1, 5.0, dc.nudge.curve_exponent),
+            ("calibration.nudge.deadzone", &mut c.nudge.deadzone, 0.0, 1.0, dc.nudge.deadzone),
+            ("calibration.nudge.max", &mut c.nudge.max, 0.0, 10.0, dc.nudge.max),
+            ("calibration.dual_stage_lower", &mut c.dual_stage_lower, 0.0, 1.0, dc.dual_stage_lower),
+            ("calibration.dual_stage_upper", &mut c.dual_stage_upper, 0.0, 1.0, dc.dual_stage_upper),
+        ];
+        for (key, v, lo, hi, dv) in checks {
             if !(v.is_finite() && *v >= lo && *v <= hi) {
-                warnings.push(ConfigWarning::InvalidValue {
-                    key: key.to_owned(),
-                    message: format!("{v} is outside {lo}..={hi}"),
-                });
+                bad(w, key, format!("{v} is outside {lo}..={hi}"));
                 *v = dv;
             }
-        };
-        range(
-            "backglass_pip.width_fraction",
-            &mut self.backglass_pip.width_fraction,
-            MIN_PIP_WIDTH,
-            MAX_PIP_WIDTH,
-            d.backglass_pip.width_fraction,
-        );
-        range(
-            "score_pip.width_fraction",
-            &mut self.score_pip.width_fraction,
-            MIN_PIP_WIDTH,
-            MAX_PIP_WIDTH,
-            d.score_pip.width_fraction,
-        );
-        let (c, dc) = (&mut self.calibration, &d.calibration);
-        let (p, dp) = (&mut c.plunger, &dc.plunger);
-        range(
-            "calibration.plunger.deadzone",
-            &mut p.deadzone,
-            0.0,
-            0.5,
-            dp.deadzone,
-        );
-        range(
-            "calibration.plunger.rest_tracking_per_s",
-            &mut p.rest_tracking_per_s,
-            0.0,
-            100.0,
-            dp.rest_tracking_per_s,
-        );
-        range(
-            "calibration.plunger.release_min_speed",
-            &mut p.release_min_speed,
-            0.0,
-            1000.0,
-            dp.release_min_speed,
-        );
-        if !(1..=pin_input::calibration::MAX_RELEASE_WINDOW_MS).contains(&p.release_window_ms) {
-            warnings.push(ConfigWarning::InvalidValue {
-                key: "calibration.plunger.release_window_ms".to_owned(),
-                message: format!(
-                    "{} is outside 1..={}",
-                    p.release_window_ms,
-                    pin_input::calibration::MAX_RELEASE_WINDOW_MS
-                ),
-            });
-            p.release_window_ms = dp.release_window_ms;
         }
-        let (n, dn) = (&mut c.nudge, &dc.nudge);
-        range(
-            "calibration.nudge.high_pass_hz",
-            &mut n.high_pass_hz,
-            0.0,
-            50.0,
-            dn.high_pass_hz,
-        );
-        range("calibration.nudge.gain", &mut n.gain, 0.0, 10.0, dn.gain);
-        range(
-            "calibration.nudge.curve_exponent",
-            &mut n.curve_exponent,
-            0.1,
-            5.0,
-            dn.curve_exponent,
-        );
-        range(
-            "calibration.nudge.deadzone",
-            &mut n.deadzone,
-            0.0,
-            1.0,
-            dn.deadzone,
-        );
-        range("calibration.nudge.max", &mut n.max, 0.0, 10.0, dn.max);
-        range(
-            "calibration.dual_stage_lower",
-            &mut c.dual_stage_lower,
-            0.0,
-            1.0,
-            dc.dual_stage_lower,
-        );
-        range(
-            "calibration.dual_stage_upper",
-            &mut c.dual_stage_upper,
-            0.0,
-            1.0,
-            dc.dual_stage_upper,
-        );
+        let max_ms = pin_input::calibration::MAX_RELEASE_WINDOW_MS;
+        if !(1..=max_ms).contains(&c.plunger.release_window_ms) {
+            bad(
+                w,
+                "calibration.plunger.release_window_ms",
+                format!("{} is outside 1..={max_ms}", c.plunger.release_window_ms),
+            );
+            c.plunger.release_window_ms = dc.plunger.release_window_ms;
+        }
         if c.dual_stage_lower > c.dual_stage_upper {
-            warnings.push(ConfigWarning::InvalidValue {
-                key: "calibration.dual_stage_lower".to_owned(),
-                message: format!(
+            bad(
+                w,
+                "calibration.dual_stage_lower",
+                format!(
                     "lower threshold {} is above the upper threshold {}",
                     c.dual_stage_lower, c.dual_stage_upper
                 ),
-            });
+            );
             c.dual_stage_lower = dc.dual_stage_lower;
             c.dual_stage_upper = dc.dual_stage_upper;
         }
         if self.input_profile.trim().is_empty() || self.input_profile.len() > 128 {
-            warnings.push(ConfigWarning::InvalidValue {
-                key: "input_profile".to_owned(),
-                message: "must be \"auto\" or a profile id (1..=128 characters)".to_owned(),
-            });
+            bad(
+                w,
+                "input_profile",
+                "must be \"auto\" or a profile id (1..=128 bytes)".to_owned(),
+            );
             self.input_profile = d.input_profile;
         }
     }
+}
+
+fn bad(w: &mut Vec<ConfigWarning>, key: &str, message: String) {
+    w.push(ConfigWarning::InvalidValue {
+        key: key.to_owned(),
+        message,
+    });
+}
+
+fn monitor_msg(i: u32) -> String {
+    format!("{i} is not a monitor index 0..={MAX_DISPLAY_INDEX}")
 }
 
 /// Known keys of the nested tables (dotted path, keys).

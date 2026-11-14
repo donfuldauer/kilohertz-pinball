@@ -24,13 +24,13 @@ start = 6
 launch = 7
 tilt = 8
 
-# Sensor zones are centred at ball-centre height (13.5 mm for a 27 mm ball).
+# Switch positions are on the playfield surface (z = 0), as in Appendix A.1.
 [[switches]]
 id = "lane_opto"
 number = 20
 kind = "opto"
 layer = 0
-position = [257.0, 850.0, 13.5]
+position = [257.0, 850.0, 0.0]
 radius = 20.0
 
 [[switches]]
@@ -38,7 +38,7 @@ id = "side_opto"
 number = 21
 kind = "opto"
 layer = 0
-position = [90.0, 300.0, 13.5]
+position = [90.0, 300.0, 0.0]
 radius = 20.0
 
 [[switches]]
@@ -46,7 +46,7 @@ id = "trough_1"
 number = 22
 kind = "trough"
 layer = 0
-position = [257.0, 40.0, 13.5]
+position = [257.0, 40.0, 0.0]
 radius = 30.0
 
 [[switches]]

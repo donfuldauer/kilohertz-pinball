@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Kilohertz.DofBridge.Core/Kilohertz.DofBridge.Core.csproj" />
     <ProjectReference Include="../../src/KilohertzDofBridge/KilohertzDofBridge.csproj" />
+    <ProjectReference Include="../support/FakeDirectOutput/FakeDirectOutput.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="../fixtures/**" LinkBase="fixtures" CopyToOutputDirectory="PreserveNewest" />

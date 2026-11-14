@@ -218,17 +218,71 @@ jobs:
       - name: cargo fmt --check (tests/spec_ci)
         run: cargo fmt --manifest-path tests/spec_ci/Cargo.toml --all --check
 
-  # PLACEHOLDER — Subphase 2.5 replaces this with the golden replay-hash check
-  # (record/replay determinism across the three targets). Intentionally a no-op.
+  # Subphase 2.5: golden replay-hash check (D9). On each OS: build pin_sim in
+  # release, record the in-repo fixture for 10 000 ticks, replay it 10 times and
+  # fail on any mismatch on that machine. The hashes and the 2.2-S seam digests
+  # are printed so cross-OS values are visible; cross-OS differences are
+  # reported, never failing (PLAN.md §2.4).
   replay-hash:
-    name: replay-hash (placeholder for 2.5)
-    runs-on: ubuntu-latest
+    name: replay-hash (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    env:
+      SDL_VIDEO_DRIVER: dummy
+      FIXTURE: crates/pin_sim/tests/fixtures/replay_table
+      TICKS: "10000"
     steps:
-      - name: Placeholder (Subphase 2.5 fills this in)
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
+        shell: bash
         run: |
-          echo "replay-hash: placeholder job; Subphase 2.5 implements the replay-hash check."
-          exit 0
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+
+      - name: cargo build --release (pin_sim)
+        run: cargo build --release -p pin_sim --bin pin_sim
+
+      - name: Record the fixture, replay it 10 times
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=target/release/pin_sim
+          rec="$RUNNER_TEMP/replay_fixture.khzrec"
+          recorded=$("$exe" "$FIXTURE" --ticks "$TICKS" --record-inputs "$rec")
+          echo "recorded:  $recorded (${{ matrix.target }}, $TICKS ticks)"
+          fail=0
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            replayed=$("$exe" "$FIXTURE" --replay-inputs "$rec")
+            echo "replay $i: $replayed"
+            if [ "$replayed" != "$recorded" ]; then
+              echo "::error::replay $i gave $replayed, recorded $recorded"
+              fail=1
+            fi
+          done
+          echo "::notice title=replay-hash ${{ matrix.target }}::$recorded"
+          exit $fail
+
+      - name: 2.2-S seam digests (report only, cross-OS)
+        shell: bash
+        run: cargo test --release -p pin_physics --test ball_seam_bitident -- --nocapture
 
   # Line coverage for the GPU-free crates (gate step 4). Non-gating for now: prints the table.
   # Like core-tests, no SDL/X11 packages are installed.
@@ -255,3 +309,43 @@ jobs:
           cargo llvm-cov --summary-only \
             -p pin_core -p pin_physics -p pin_input -p pin_script \
             -p pin_assets -p pin_tablegen -p pin_sim
+
+  # Subphase 3.5: the DOF bridge (tools/dof_bridge, .NET 8), a Windows-only companion
+  # process. Builds it and runs every test project under tools/dof_bridge/tests/ (Implementer
+  # and Spec*), which replay the recorded telemetry fixtures into the bridge with a mock DOF
+  # sink. No Rust here and no `needs:`, so other jobs and platforms are unaffected.
+  dof-bridge:
+    name: dof-bridge (windows-latest, .NET 8)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: dotnet build (bridge executable)
+        shell: bash
+        run: dotnet build tools/dof_bridge/src/KilohertzDofBridge/KilohertzDofBridge.csproj -c Release
+
+      - name: dotnet test (every tools/dof_bridge/tests/*/*.csproj, coverlet)
+        shell: bash
+        run: |
+          set -e
+          for p in tools/dof_bridge/tests/*/*.csproj; do
+            echo "::group::$p"
+            dotnet test "$p" -c Release --collect:"XPlat Code Coverage" --results-directory tools/dof_bridge/TestResults --logger "console;verbosity=normal"
+            echo "::endgroup::"
+          done
+
+      - name: .NET line coverage (report only)
+        shell: bash
+        run: |
+          find tools/dof_bridge/TestResults -name coverage.cobertura.xml | while read -r f; do
+            rate=$(grep -o '<coverage line-rate="[0-9.]*"' "$f" | grep -o '[0-9.]*$')
+            echo "::notice title=dof-bridge coverage::$f line-rate $rate"
+          done

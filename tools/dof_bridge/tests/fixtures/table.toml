@@ -9,6 +9,7 @@ author = "Kilohertz Pinball tests"
 version = "1.0.0"
 script_entry = "rules.lua"
 playfield_mesh = "playfield.glb"
+players_max = 1
 
 [balls]
 profiles = ["standard_steel"]

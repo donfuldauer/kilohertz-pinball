@@ -35,7 +35,11 @@ Units (D17): SI internally; TOML uses mm / g / deg, converted at load.
 
 * 4 cores, 15 GB RAM, shared by up to four subphases. **Every cargo command:** `CARGO_BUILD_JOBS=2`
   and `CARGO_TARGET_DIR=/home/user/kilohertz-pinball/target/sp_<X_Y>` (your subphase's dir, shared by its
-  Implementer and Tester; Reviewers use `target/sp_<X_Y>_rev`). Build only the crates you need
+  Implementer and Tester; Reviewers use `target/sp_<X_Y>_rev`).
+  **Disk (added after a restart filled the allowance):** also export `CARGO_INCREMENTAL=0`,
+  `CARGO_PROFILE_DEV_DEBUG=line-tables-only` and `CARGO_PROFILE_TEST_DEBUG=line-tables-only` for every
+  cargo command. Check `df -h /home/user` before big builds; if free space is under 4 GB, run
+  `cargo clean -p <crate>` for crates you no longer need and tell the Orchestrator in your report. Build only the crates you need
   (`-p <crate>`); never `cargo build --workspace` unless the brief says so.
 * Toolchain: rustc 1.97.0 (CI pins it), clippy, rustfmt, cargo-llvm-cov + llvm-tools, lavapipe
   (`mesa-vulkan-drivers`), Xvfb, SDL3 build headers, .NET 8 SDK (`dotnet`). Do not install other

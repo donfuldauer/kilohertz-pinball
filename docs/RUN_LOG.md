@@ -239,3 +239,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 4.4 | Implementer + Independent Tester | Opus 5.5 / Fable 5.2 | 1 | running | — | |
 | 5 | 5.2 | Implementer + Independent Tester | Opus 5.5 / Fable 5.2 | 1 | running | — | |
 | 5 | 3.5 | Implementer + Independent Tester | Opus 5.5 / Fable 5.2 | 1 | running | — | |
+| 5 | 2.5, 4.4, 5.2, 3.5 | all roles | — | 1 | restarted | — | container restart stopped all eight agents; target dirs cleared (disk); roles relaunched to resume from the working tree (DECISIONS "Wave 5 restart: disk budget") |

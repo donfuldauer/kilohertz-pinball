@@ -506,11 +506,14 @@ impl Simulation {
         }
     }
 
-    /// The last score the script reported for `player` (`None` before
-    /// any; players are numbered from 1 as in `pinball.set_score`).
+    /// The last score the script reported for `player`, numbered as the
+    /// script numbers players (`pinball.set_score(1, …)` is player 1;
+    /// `HostCommandQueue::scores` holds `player − 1`). `None` before any
+    /// report, and for player 0.
     #[must_use]
     pub fn score(&self, player: u8) -> Option<i64> {
-        bit(&self.scores_reported, usize::from(player)).then(|| self.scores[usize::from(player)])
+        let i = usize::from(player.checked_sub(1)?);
+        bit(&self.scores_reported, i).then(|| self.scores[i])
     }
 
     /// Whether switch `name` is closed (`None` for an unknown name).
@@ -654,7 +657,7 @@ impl Simulation {
     /// of the 16 ball slots a presence byte and, for a ball, the exact `f32`
     /// bits of position, velocity, angular velocity and orientation, its
     /// layer and profile; the 256 switch-hit counts; the switch bitset;
-    /// every reported score (player and value, ascending player); every
+    /// every reported score (queue player index and value, ascending); every
     /// flipper's relative angle and angular velocity (body order); and the
     /// RNG state (the next `u64` a clone of the sim's `Pcg32` would draw).
     #[must_use]

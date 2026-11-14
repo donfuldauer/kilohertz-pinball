@@ -1061,12 +1061,13 @@ impl PbrRenderer {
         let mut draw = |pass: &mut wgpu::RenderPass<'_>, i: usize, d: &DrawItem| {
             let Some(mesh) = self.meshes.get(d.mesh.0 as usize) else {
                 skipped += 1;
-                return;
+                return false;
             };
             pass.set_bind_group(1, &self.draw_bind, &[(i as u64 * DRAW_STRIDE) as u32]);
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            true
         };
         pass.set_pipeline(&pipelines.opaque);
         for (i, d) in frame.draws.iter().enumerate() {
@@ -1075,10 +1076,12 @@ impl PbrRenderer {
             }
         }
         for &(_, i) in &self.blend_order {
+            let d = &frame.draws[i as usize];
             pass.set_pipeline(&pipelines.blended_back);
-            draw(&mut pass, i as usize, &frame.draws[i as usize]);
-            pass.set_pipeline(&pipelines.blended_front);
-            draw(&mut pass, i as usize, &frame.draws[i as usize]);
+            if draw(&mut pass, i as usize, d) {
+                pass.set_pipeline(&pipelines.blended_front);
+                draw(&mut pass, i as usize, d);
+            }
         }
         drop(pass);
         self.stats.draws_skipped = self.stats.draws_skipped.saturating_add(skipped);

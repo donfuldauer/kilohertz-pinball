@@ -35,28 +35,16 @@ function on_tick()
 end
 "#;
 
-/// `action` builds a 4 MiB string (over the 2 MiB engine heap, under the
-/// 16 MiB default); `launch` builds a 256 KiB string.
+/// Keeps one more 64 KiB string alive every tick (a cheap callback: the
+/// probe is the heap cap, not the instruction budget). The 2 MiB engine heap
+/// is full after about 30 ticks; the 16 MiB default would last about 250.
 const MEMORY_RULES: &str = r#"
-local ticks = 0
-local want = 0
-local sw_action, sw_launch = -1, -1
-function on_init()
-  sw_action = pinball.sw.action
-  sw_launch = pinball.sw.launch
-end
-function on_switch(id, closed)
-  if closed and id == sw_action then want = 4 * 1024 * 1024 end
-  if closed and id == sw_launch then want = 256 * 1024 end
-end
+local n = 0
+local held = {}
 function on_tick()
-  ticks = ticks + 1
-  pinball.set_score(1, ticks)
-  if want > 0 then
-    local s = string.rep("x", want)
-    want = 0
-    pinball.set_score(2, #s)
-  end
+  n = n + 1
+  held[n] = string.rep("x", 65536)
+  pinball.set_score(1, n)
 end
 "#;
 
@@ -107,22 +95,18 @@ fn memory_cap_is_the_engine_cap() {
     on_sim_thread(|| {
         let dir = bundle_with_script("memory", MEMORY_RULES);
         let mut sim = load_at(&dir, DEFAULT_SEED);
-        sim.advance(10);
-        press(&mut sim, "launch");
-        assert_eq!(sim.score(1), Some(256 * 1024), "256 KiB fits the 2 MiB cap");
-        sim.advance(20);
-        assert_eq!(sim.score(0), Some(34));
-
-        press(&mut sim, "action");
+        sim.advance(5);
+        assert_eq!(sim.score(0), Some(5), "the first 64 KiB strings fit");
+        sim.advance(595);
         let frozen = sim.score(0).unwrap();
-        sim.advance(300);
-        assert_eq!(
-            sim.score(0),
-            Some(frozen),
-            "a 4 MiB string exceeds the 2 MiB engine heap: the script must fault \
-             (still running => the 16 MiB default cap is in use)"
+        assert!(
+            (8..=40).contains(&frozen),
+            "holding 64 KiB more per tick must hit the 2 MiB engine heap cap after about \
+             30 ticks (the 16 MiB default lasts about 250): the script ran {frozen} ticks"
         );
-        assert_eq!(sim.score(1), Some(256 * 1024), "the faulting callback reported nothing");
+        assert_eq!(sim.tick(), 600, "the tick never stalls");
+        sim.advance(100);
+        assert_eq!(sim.score(0), Some(frozen));
     });
 }
 

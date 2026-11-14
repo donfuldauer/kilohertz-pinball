@@ -64,7 +64,7 @@ use std::path::Path;
 use crate::hash::Fnv64;
 use crate::sim::{
     DiverterBinding, FlipperDrive, GateBinding, NewtonBinding, Script, SimConfig, SimError,
-    Simulation, TroughZone, set_bit,
+    Simulation, TroughZone,
 };
 
 /// Guide wall height when the bundle has no `layout.toml`, mm (the
@@ -611,10 +611,5 @@ impl Simulation {
         sim.publish_snapshot();
         sim.haptics.clear();
         Ok(sim)
-    }
-
-    /// Sets bit `n` of the physics switch bits (helper for the bindings).
-    pub(crate) fn set_phys_bit(&mut self, n: usize, on: bool) {
-        set_bit(&mut self.phys_bits, n, on);
     }
 }

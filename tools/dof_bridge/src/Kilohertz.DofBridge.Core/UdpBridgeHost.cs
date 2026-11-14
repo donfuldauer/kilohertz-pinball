@@ -84,6 +84,11 @@ public sealed class UdpBridgeHost : IDisposable
                 return;
             }
             long stamp = Stopwatch.GetTimestamp();
+            if (_stopping)
+            {
+                // A shut-down socket returns 0 bytes on some platforms: not a datagram.
+                return;
+            }
             _core.Process(buffer.AsSpan(0, n), stamp);
             Interlocked.Increment(ref _received);
         }
@@ -92,6 +97,10 @@ public sealed class UdpBridgeHost : IDisposable
     /// <summary>Closes the socket and joins the receive thread.</summary>
     public void Stop()
     {
+        if (_stopping)
+        {
+            return;
+        }
         _stopping = true;
         try
         {

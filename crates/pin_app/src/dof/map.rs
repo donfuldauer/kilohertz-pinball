@@ -266,7 +266,9 @@ impl ResolvedDofMap {
         let mut out = String::with_capacity(128 + 96 * self.entries.len());
         out.push_str("{\n  \"format\": ");
         push_json_string(&mut out, MAP_FORMAT);
-        out.push_str(&format!(",\n  \"version\": {MAP_VERSION},\n  \"rom_name\": "));
+        out.push_str(&format!(
+            ",\n  \"version\": {MAP_VERSION},\n  \"rom_name\": "
+        ));
         push_json_string(&mut out, &self.rom_name);
         out.push_str(",\n  \"table_name\": ");
         push_json_string(&mut out, &self.table_name);

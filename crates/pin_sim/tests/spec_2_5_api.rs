@@ -213,23 +213,24 @@ fn advance_equals_stepping_without_inputs() {
 fn free_fall_matches_gravity_at_one_millisecond_ticks() {
     on_sim_thread(|| {
         let mut sim = load();
+        // 55 mm up: inside the playfield volume (well under the glass).
         let h = sim
-            .spawn_ball("standard_steel", [0.25, 0.5, 0.30], [0.0; 3])
+            .spawn_ball("standard_steel", [0.25, 0.5, 0.055], [0.0; 3])
             .unwrap();
-        sim.advance(100); // 0.1 s
-        let b = sim.ball(h).unwrap();
+        sim.advance(60); // 0.06 s
+        let b = sim.ball(h).expect("a ball 55 mm above the playfield is in bounds");
         let pitch = 6.5f32.to_radians();
-        let dz = 0.30 - b.position_m[2];
+        let dz = 0.055 - b.position_m[2];
         let dy = 0.5 - b.position_m[1];
-        let want_z = 0.5 * 9.81 * pitch.cos() * 0.01;
-        let want_y = 0.5 * 9.81 * pitch.sin() * 0.01;
+        let want_z = 0.5 * 9.81 * pitch.cos() * 0.0036;
+        let want_y = 0.5 * 9.81 * pitch.sin() * 0.0036;
         assert!(
             (dz - want_z).abs() < 0.05 * want_z,
-            "fell {dz} m along -z in 100 ticks, expected about {want_z}"
+            "fell {dz} m along -z in 60 ticks, expected about {want_z}"
         );
         assert!(
             (dy - want_y).abs() < 0.10 * want_y,
-            "drifted {dy} m down the table in 100 ticks, expected about {want_y}"
+            "drifted {dy} m down the table in 60 ticks, expected about {want_y}"
         );
         assert!((b.position_m[0] - 0.25).abs() < 1e-4);
     });

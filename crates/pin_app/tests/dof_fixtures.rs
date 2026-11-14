@@ -68,7 +68,11 @@ fn scenario(t: u64, variant: u64, st: &mut TelemetryState, imp: &mut Vec<Haptics
     st.coils[5] = (t2 / 50) % 2 == 1;
     st.switches[50] = (t2 / 70) % 2 == 1;
     st.lamps[100] = ((t2 * 7919) % 1000) as f32 / 1000.0;
-    st.magnets[0] = if (t2 / 90) % 3 == 0 { 0.25 } else { 0.0 };
+    st.magnets[0] = if (t2 / 90).is_multiple_of(3) {
+        0.25
+    } else {
+        0.0
+    };
     if t2 % 100 == 7 {
         imp.push(HapticsTelemetryEvent {
             tick: t,
@@ -369,7 +373,7 @@ fn faulty_fixture_matches() {
         .iter()
         .filter(|r| decode_datagram(r).is_err())
         .count();
-    assert_eq!(rejected, 7 * 8, "garbage records");
+    assert_eq!(rejected, 7 * 7, "garbage records: 7 kinds at 7 places");
     let exp = expected(&map, &records, "faulty");
     check_or_write("faulty.datagrams.bin", &bin(&records));
     check_or_write("faulty.expected.txt", exp.as_bytes());

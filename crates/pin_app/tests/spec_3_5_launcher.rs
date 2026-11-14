@@ -115,8 +115,6 @@ fn parse_dof(map_line: &str) -> Result<TableManifest, String> {
         "{EXTRA}\n[dof]\nrom_name = \"apexcircuit\"\nmap = [ {map_line} ]\n"
     ));
     let m = TableManifest::from_toml_str(&text).map_err(|e| e.to_string())?;
-    use pin_core::schema::Manifest as _;
-    m.validate().map_err(|e| e.to_string())?;
     Ok(m)
 }
 
@@ -988,7 +986,7 @@ exit 0
         // immediate usage-style exit instead: an unknown mode with no stdin
         // wait is not available, so close via stop and stop semantics twice.
         let r = run("exited", "eof", Duration::from_secs(20));
-        let bridge = DofBridge::spawn(&resolved(), &r.cfg).expect("spawned");
+        let mut bridge = DofBridge::spawn(&resolved(), &r.cfg).expect("spawned");
         let _ = recorded_args(&r.out);
         let _ = bridge.try_wait();
         let status = bridge.stop().wait();

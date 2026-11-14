@@ -24,6 +24,7 @@ mod probes;
 mod scheduler;
 
 pub use probes::{EnvironmentReflections, OctahedralProbes, ProbeConfig};
+pub(crate) use probes::REMAP_SOURCE;
 pub use scheduler::{ProbeScheduler, ProbeStats};
 
 use crate::gpu::{GpuContext, GpuError};

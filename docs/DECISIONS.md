@@ -1448,3 +1448,88 @@ Published early for the 5.2 Tester; kept current by the 5.2 Implementer. All GPU
   fr.pbr_mut().upload_mesh(&MeshGeometry::uv_sphere(r, 48, 32))?;` build `DrawItem`s (ball i at draw k_i),
   `FrameDesc::new(&cam, &lights, &draws)`, then `fr.render(&ctx, &frame, &balls)` per frame and read
   `.ldr`, `.hdr`, `.probes` (or `fr.reflections().stats()`).
+
+## 4.4 — Menu UI public API
+
+Published early for the Independent Tester; kept current by the 4.4 Implementer. Everything is in
+`pin_app::ui` (re-exported at the module root) unless marked `pin_render::ui`.
+
+- **State machine.** `MenuState::new(AppConfig) -> MenuState` (closed, `Panel::Tables`, no tables, one
+  monitor, profile choices `["auto", <builtin ids>]`); `Default` = `new(AppConfig::default())`.
+  Queries: `is_open()`, `panel() -> Panel`, `focus() -> usize` (0 = tab bar), `row_count()`,
+  `focused_setting() -> Option<SettingRow>`, `focused_table() -> Option<usize>` (index into `tables()`),
+  `tables() -> &[TableEntry]`, `visible_tables() -> &[usize]`, `filter()`, `config() -> &AppConfig`,
+  `load_state() -> &TableLoadState`, `notice() -> Option<&str>`, `profile_choices()`, `display_count()`,
+  `monitor()` / `monitor_mut() -> &mut InputMonitor`, `pending_commands() -> &[UiCommand]`.
+  Mutators: `apply(MenuInput)`, `apply_all(iter)`, `open()`, `close()`, `set_tables(Vec<TableEntry>)`,
+  `set_config(AppConfig)`, `set_profile_choices(Vec<String>)`, `set_display_count(u32)`,
+  `drain_commands() -> Vec<UiCommand>`, `request_load(&Path) -> Result<(), LoadRefusal>`,
+  `request_load_index(usize) -> Result<(), LoadRefusal>`, `report_load_result(Result<(), String>) -> bool`,
+  `acknowledge_load()`, `route_cabinet(CabinetInput, pressed: bool) -> InputRoute`, `forwards_to_sim() -> bool`.
+- **`MenuInput`**: `Toggle, Up, Down, Left, Right, Select, Back, ShowPanel(Panel), FocusTable(usize),
+  LoadTable(usize), SetFilter(String), Set(SettingChange), Rescan`. Every input except `Toggle` is ignored
+  while closed. Row 0 is the tab bar: `Left`/`Right`/`Select` there switch panels (wrapping
+  Tables → Display → Input). `Up`/`Down` clamp (no wrap). Tables rows `1..` = visible tables; `Select`
+  requests the load. Settings rows `1..` = `SettingRow::DISPLAY` / `SettingRow::INPUT`; `Left`/`Right`
+  step (numeric rows snap to the step grid and clamp; choice rows cycle with wrap), `Select` cycles choice
+  rows forward and toggles `Wireframe` (no-op on numeric rows). `Back` on a row → tab bar; `Back` on the
+  tab bar closes the menu.
+- **`UiCommand`**: `MenuOpened, MenuClosed, LoadTable(PathBuf), ConfigChanged(Box<AppConfig>), Rescan`.
+  `ConfigChanged` is emitted only when a value actually changed and is coalesced (at most one pending,
+  the latest settings, moved to the end of the queue).
+- **`Panel`**: `Tables, Display, Input` (`ALL`, `label`, `next`, `prev`).
+- **`SettingRow`** (`DISPLAY`: DisplayMode, PlayfieldDisplay, BackglassDisplay, ScoreDisplayMonitor,
+  BackglassPipCorner, BackglassPipWidth, ScorePipCorner, ScorePipWidth, CameraPreset, ScoreDisplay;
+  `INPUT`: InputProfile, StagingMode, DualStageLower, DualStageUpper, PlungerDeadzone,
+  PlungerRestTracking, PlungerReleaseMinSpeed, PlungerReleaseWindow, NudgeHighPass, NudgeGain, NudgeCurve,
+  NudgeDeadzone, NudgeMax, Wireframe) with `label`, `range() -> Option<NumericRange{min,max,step}>`,
+  `number(&AppConfig)`, `value_text(&AppConfig)`. **`SettingChange`** has one variant per row
+  (e.g. `CameraPreset(CameraPreset)`, `ScoreDisplay(ScoreDisplayKind)`, `PlungerDeadzone(f32)`,
+  `PlungerReleaseWindow(u32)`, `BackglassDisplay(Option<u32>)`, `InputProfile(String)`, `Wireframe(bool)`);
+  values are clamped to the row range, non-finite → the default; an unknown profile id is refused (notice).
+- **Lifecycle.** `TableLoadState::{Idle, LoadRequested(PathBuf), Loading(PathBuf), Loaded(PathBuf),
+  Failed { path, error: String }}` (`is_busy()`). Request → `LoadRequested` + `UiCommand::LoadTable`;
+  `drain_commands()` that returns the `LoadTable` → `Loading`; `report_load_result(Ok(()))` → `Loaded`,
+  `config().last_table = Some(path)`, `ConfigChanged` + `MenuClosed` (menu closes);
+  `report_load_result(Err(e))` → `Failed` (menu stays open). `report_load_result` returns `false` when
+  nothing is pending. `Loaded`/`Failed` → `Idle` on `acknowledge_load()`, on any `apply` while open, on
+  `open()`, or on a new request. A request while `LoadRequested`/`Loading` is **refused**:
+  `LoadRefusal::Busy(pending path)`; also `LoadRefusal::Broken(error)` for a broken listed table and
+  `NoSuchTable(i)`.
+- **Cabinet routing.** `route_cabinet` returns `InputRoute::Sim` while closed; while open it returns
+  `InputRoute::Menu` (never forwarded) and a press applies `cabinet_menu_input(input)`: LeftFlipper → Up,
+  RightFlipper → Down, LeftUpper → Left, RightUpper → Right, Start/Launch → Select, Action → Back,
+  Tilt → none. Menu toggles: `MENU_TOGGLE_SCANCODE = 41` (Esc), `MENU_TOGGLE_BUTTON = GamepadButton::Guide`,
+  `is_menu_toggle_key(u32)`, `is_menu_toggle_button(GamepadButton)`.
+- **Scan.** `scan_tables(root: &Path) -> Vec<TableEntry>` (missing/unreadable root → empty).
+  `TableEntry { path: PathBuf, file_name: String, status: TableStatus }` with `info()`, `error()`,
+  `is_ready()`, `title()`, `sort_key()`; `TableStatus::{Ready(TableInfo), Broken(String)}`;
+  `TableInfo { id, name, author, version, players_max, features: Vec<TableFeature>, preview:
+  Option<PreviewArt>, preview_error: Option<String>, warning_count }`; `PreviewArt { file, width, height,
+  rgba }`; `TableFeature` badges (`LuaRules, WasmRules, UpperFlippers, BananaFlippers, Ramps, Magnets,
+  Multiball, Spinner, Vuk, Kickback, Diverter, NewtonBall, Backbox, LcdDisplay, DmdDisplay, Dof`, sorted,
+  `label()`, `TableFeature::of(&LoadedTable)`); `inspect_bundle(&Path) -> TableStatus`;
+  `decode_preview(&[u8]) -> Result<PreviewArt, String>`.
+- **Config.** `AppConfig { display_mode: DisplayMode{Single,Multi}, playfield_display: u32,
+  backglass_display: Option<u32>, score_display_monitor: Option<u32>, backglass_pip: PipConfig,
+  score_pip: PipConfig { corner: PipCorner{TopLeft,TopRight,BottomLeft,BottomRight}, width_fraction: f32 },
+  camera_preset: CameraPreset{Desktop,Cabinet,TopDown}, score_display: ScoreDisplayKind{Dmd,Lcd},
+  input_profile: String ("auto" default), staging_mode: StagingMode{Table,Dedicated,DualStage},
+  calibration: CalibrationConfig { plunger: PlungerCalibration{deadzone, rest_tracking_per_s,
+  release_min_speed, release_window_ms: u32}, nudge: NudgeCalibration{high_pass_hz, gain, curve_exponent,
+  deadzone, max}, dual_stage_lower, dual_stage_upper }, wireframe: bool, tables_dir: Option<PathBuf>,
+  last_table: Option<PathBuf>, extra: toml::Table }`. TOML keys = field names; enums snake_case
+  (`"single"`, `"multi"`, `"top_right"`, `"dmd"`, `"lcd"`, `"desktop"`, `"cabinet"`, `"top_down"`,
+  `"table"`, `"dedicated"`, `"dual_stage"`). `AppConfig::load(&Path) -> ConfigLoad { config, warnings:
+  Vec<ConfigWarning> }` (never fails; missing file → defaults, no warning);
+  `AppConfig::from_toml_str(&str) -> ConfigLoad`, `from_toml_bytes(&[u8]) -> ConfigLoad`,
+  `to_toml_string() -> Result<String, toml::ser::Error>`, `save(&self, &Path) -> std::io::Result<()>`,
+  `topology_mode() -> pin_render::topology::TopologyMode`, `sanitize(&mut Vec<ConfigWarning>)`.
+  `ConfigWarning::{Unreadable(String), TooLarge(u64), Corrupt(String), InvalidValue{key, message},
+  UnknownKey(String)}`. `MAX_CONFIG_BYTES = 1 MiB`, `CONFIG_FILE = "config.toml"`, `AUTO_PROFILE = "auto"`.
+- **Live input.** `InputMonitor::new()`, `set_button(source: u8, CabinetInput, pressed)`,
+  `is_pressed(CabinetInput)` (OR over sources), `pressed_mask() -> u8`, `clear_source(u8)`,
+  `set_axis/axis`, `set_plunger(PlungerOutput, rest)`, `plunger() -> PlungerReading`, `set_nudge/nudge`.
+
+## Orchestrator — Wave 5 restart: disk budget
+**Observation:** the container restarted mid-batch-A; all eight role agents stopped, and the four target dirs had grown to 25 GB (2.5 alone 12 GB of debug test binaries), leaving 3.9 GB of the session's disk allowance. **Decision:** target dirs deleted; every cargo command now also sets `CARGO_INCREMENTAL=0` and `CARGO_PROFILE_{DEV,TEST}_DEBUG=line-tables-only` (COMMON.md ENVIRONMENT). The roles are relaunched with resume prompts and continue from the files in the working tree (WIP snapshot commits). No code change.
