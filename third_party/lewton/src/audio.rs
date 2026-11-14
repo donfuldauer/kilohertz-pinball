@@ -171,25 +171,23 @@ fn floor_zero_compute_curve(cos_coefficients :&[f32], amplitude :u64,
 		let cos_omega = cached_bark_cos_omega[i];
 
 		// Compute p and q
-		let (p_upper_border, q_upper_border) =
-		if fl.floor0_order & 1 == 1 {
-			((fl.floor0_order as usize - 3) / 2,
-				(fl.floor0_order as usize - 1) / 2)
-		} else {
-			let v = (fl.floor0_order as usize - 2) / 2;
-			(v, v)
-		};
+		// KHZ patch 5: loop counts without the upstream `order - 3` /
+		// `order - 2` subtractions, which underflowed for order 1 (and 0).
+		// Same counts as the spec's `(order-3)/2`/`(order-1)/2` (odd) and
+		// `(order-2)/2` (even) upper bounds, inclusive.
+		let p_count = fl.floor0_order as usize / 2;
+		let q_count = (fl.floor0_order as usize + 1) / 2;
 		let (mut p, mut q) =
 		if fl.floor0_order & 1 == 1 {
 			(1.0 - cos_omega * cos_omega, 0.25)
 		} else {
 			((1.0 - cos_omega) / 2.0, (1.0 + cos_omega) / 2.0)
 		};
-		for j in 0 .. p_upper_border + 1 {
+		for j in 0 .. p_count {
 			let pm = cos_coefficients[2 * j + 1] - cos_omega;
 			p *= 4.0 * pm * pm;
 		}
-		for j in 0 .. q_upper_border + 1 {
+		for j in 0 .. q_count {
 			let qm = cos_coefficients[2 * j] - cos_omega;
 			q *= 4.0 * qm * qm;
 		}
@@ -200,14 +198,15 @@ fn floor_zero_compute_curve(cos_coefficients :&[f32], amplitude :u64,
 		).exp();
 
 		// Write into output
-		let mut iteration_condition = cos_omega;
-		while cos_omega == iteration_condition {
+		// KHZ patch 5: always emit the current value and advance, so a NaN
+		// `cos_omega` (NaN != NaN) cannot stop `i` from advancing.
+		loop {
 			output.push(linear_floor_value);
 			i += 1;
-			iteration_condition = match cached_bark_cos_omega.get(i) {
-				Some(v) => *v,
-				None => break,
-			};
+			match cached_bark_cos_omega.get(i) {
+				Some(v) if *v == cos_omega => (),
+				_ => break,
+			}
 		}
 	}
 	return output;
@@ -788,7 +787,9 @@ fn dual_mut_idx<T>(v :&mut [T], idx_a :usize, idx_b :usize)
 	let segment = &mut v[range];
 	let (first, rest) = segment.split_first_mut().unwrap();
 	let (last, _) = rest.split_last_mut().unwrap();
-	(first, last)
+	// KHZ patch 5: return in argument order (upstream always returned the
+	// lower index first, swapping magnitude and angle when magnitude > angle).
+	if idx_a < idx_b { (first, last) } else { (last, first) }
 }
 
 fn dct_iv_slow(buffer :&mut [f32]) {
@@ -879,7 +880,11 @@ pub fn get_decoded_sample_count(ident :&IdentHeader, setup :&SetupHeader, packet
 		try!(Err(AudioReadError::AudioIsHeader));
 	}
 	let mode_number = try!(rdr.read_dyn_u8(ilog(setup.modes.len() as u64 - 1)));
-	let mode = &setup.modes[mode_number as usize];
+	// KHZ patch 5: an unused mode selector is an error, as in `read_audio_packet`.
+	let mode = match setup.modes.get(mode_number as usize) {
+		Some(mode) => mode,
+		None => try!(Err(AudioReadError::AudioBadFormat)),
+	};
 	let bs = if mode.mode_blockflag { ident.blocksize_1 } else { ident.blocksize_0 };
 	let n :u16 = 1 << bs;
 	let previous_next_window_flag = if mode.mode_blockflag {
@@ -1172,4 +1177,80 @@ from the ident header.
 pub fn read_audio_packet(ident :&IdentHeader, setup :&SetupHeader, packet :&[u8], pwr :&mut PreviousWindowRight)
 		-> Result<Vec<Vec<i16>>, AudioReadError> {
 	read_audio_packet_generic(ident, setup, packet, pwr)
+}
+
+/// KHZ patch 5 regression tests (CodeRabbit PR #3).
+#[cfg(test)]
+mod khz_tests {
+	use super::*;
+	use header::{FloorTypeZero, ModeInfo, read_header_ident};
+
+	fn floor0(order :u8, cos_omega :Vec<f32>) -> FloorTypeZero {
+		FloorTypeZero {
+			floor0_order : order,
+			floor0_rate : 44100,
+			floor0_bark_map_size : 256,
+			floor0_amplitude_bits : 8,
+			floor0_amplitude_offset : 100,
+			floor0_number_of_books : 1,
+			floor0_book_list : vec![0],
+			cached_bark_cos_omega : [cos_omega.clone(), cos_omega],
+		}
+	}
+
+	#[test]
+	fn floor0_curve_of_order_one_and_two() {
+		// Order 1 underflowed `order - 3` (a panic with overflow checks).
+		let fl = floor0(1, vec![0.5; 16]);
+		assert_eq!(floor_zero_compute_curve(&[0.25], 7, &fl, false, 16).len(), 16);
+		let fl = floor0(2, vec![0.5; 16]);
+		assert_eq!(floor_zero_compute_curve(&[0.25, 0.75], 7, &fl, false, 16).len(), 16);
+		// The counts match the spec's inclusive upper bounds for larger orders.
+		let fl = floor0(5, vec![0.1, 0.1, 0.2, 0.3]);
+		let c = [0.0, 0.1, 0.2, 0.3, 0.4];
+		assert_eq!(floor_zero_compute_curve(&c, 7, &fl, true, 4).len(), 4);
+	}
+
+	#[test]
+	fn floor0_curve_with_nan_omega_terminates() {
+		// NaN != NaN: the upstream inner loop never advanced `i`.
+		let fl = floor0(2, vec![::std::f32::NAN; 8]);
+		assert_eq!(floor_zero_compute_curve(&[0.25, 0.75], 7, &fl, false, 8).len(), 8);
+	}
+
+	#[test]
+	fn dual_mut_idx_keeps_argument_order() {
+		let mut v = [10, 11, 12, 13];
+		{
+			let (a, b) = dual_mut_idx(&mut v, 3, 1);
+			assert_eq!((*a, *b), (13, 11));
+		}
+		let (a, b) = dual_mut_idx(&mut v, 0, 2);
+		assert_eq!((*a, *b), (10, 12));
+	}
+
+	#[test]
+	fn unused_mode_selector_is_an_error() {
+		// Identification header: mono, 44.1 kHz, blocksizes 2^8 / 2^11.
+		let mut id = vec![1];
+		id.extend_from_slice(b"vorbis");
+		id.extend_from_slice(&[0, 0, 0, 0, 1]);
+		id.extend_from_slice(&44100u32.to_le_bytes());
+		id.extend_from_slice(&[0; 12]);
+		id.push(0xB8);
+		id.push(1);
+		let ident = read_header_ident(&id).unwrap();
+		let mode = || ModeInfo { mode_blockflag : false, mode_mapping : 0 };
+		let setup = SetupHeader {
+			codebooks : vec![],
+			floors : vec![],
+			residues : vec![],
+			mappings : vec![],
+			modes : vec![mode(), mode(), mode()],
+		};
+		// Audio packet flag 0, then mode number 3 in ilog(2) = 2 bits.
+		assert_eq!(get_decoded_sample_count(&ident, &setup, &[0b110]),
+			Err(AudioReadError::AudioBadFormat));
+		assert!(get_decoded_sample_count(&ident, &setup, &[0b100]).is_ok());
+	}
 }

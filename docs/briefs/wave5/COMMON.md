@@ -52,7 +52,7 @@ Units (D17): SI internally; TOML uses mm / g / deg, converted at load.
 
 ## GATE (PLAN §2.6 "Subphase gate", all must hold)
 
-1. `cargo fmt --check` and `cargo clippy --all-targets -D warnings` (on the touched crates) are clean.
+1. `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` (on the touched crates) are clean.
 2. Implementer tests and every listed verification criterion pass.
 3. Independent Tester's spec tests pass. A disagreement between spec tests and implementation is
    resolved against the brief, not by deleting the test.

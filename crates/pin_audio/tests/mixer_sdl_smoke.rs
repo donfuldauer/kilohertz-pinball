@@ -37,7 +37,14 @@ fn main() {
     let mixer = out.close();
     assert!(calls >= 1, "audio callback never ran");
     assert!(mixer.frames_rendered() > 0, "mixer rendered nothing");
-    assert_eq!(mixer.active_voices(Bus::Sfx), 1);
+    // The 48 000-frame sample may already have finished if the callbacks
+    // outran this thread; it must still be playing otherwise.
+    let active = mixer.active_voices(Bus::Sfx);
+    assert!(
+        active == 1 || (active == 0 && mixer.frames_rendered() >= 48_000),
+        "{active} Sfx voices after {} frames",
+        mixer.frames_rendered()
+    );
     println!(
         "[mixer_sdl_smoke] ok: {calls} callbacks, {} frames",
         mixer.frames_rendered()

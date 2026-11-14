@@ -306,6 +306,12 @@ impl VorbisHuffmanTree {
 		});
 	}
 
+	/// KHZ patch 5: true for a book without used entries (`desc_prog` is a
+	/// single childless root); `VorbisHuffmanIter::next` must not run on it.
+	pub fn is_empty(&self) -> bool {
+		self.desc_prog.len() < 3
+	}
+
 	/// Returns an iterator over this tree.
 	pub fn iter<'l>(&'l self) -> VorbisHuffmanIter<'l> {
 		return VorbisHuffmanIter { desc_prog :&self.desc_prog, pos :0 };
@@ -482,4 +488,17 @@ fn test_extracted_huffman_tree() {
 	6,  5,  5,  7,  9,  9, 11,  8,  8, 11,  8,  7,  6,  6,  7,  9,
 	12,11, 10, 13,  9,  9,  7,  7,  7,  9, 11, 13, 12, 15, 12, 11,
 	9,  8,  8,  8]).unwrap();
+}
+
+#[test]
+fn khz_empty_codebook_is_not_traversed() {
+	// KHZ patch 5: an all-unused book builds, but decoding from it is an
+	// error rather than an out-of-bounds index into `desc_prog`.
+	let tree = VorbisHuffmanTree::load_from_array(&[0; 4]).unwrap();
+	assert!(tree.is_empty());
+	for data in [&[0xFFu8, 0xFF][..], &[0x00], &[]].iter() {
+		let mut rdr = ::bitpacking::BitpackCursor::new(data);
+		assert_eq!(rdr.read_huffman(&tree), Err(()));
+	}
+	assert!(!VorbisHuffmanTree::load_from_array(&[1, 1]).unwrap().is_empty());
 }

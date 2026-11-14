@@ -103,18 +103,37 @@ fn hundred_thousand_publishes_no_torn_reads_monotonic_ticks() {
 fn small_payload_stress_every_value_is_a_real_publish() {
     // A 3-word payload with redundant encodings of the same counter.
     let (mut writer, mut reader) = TripleBuffer::new([0u64, !0u64, 0u64]);
+    let done = Arc::new(AtomicBool::new(false));
+
+    /// Sets `done` when the writer thread exits, including by panic, so the
+    /// reader loop below always terminates.
+    struct SetOnDrop(Arc<AtomicBool>);
+    impl Drop for SetOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    let guard = SetOnDrop(Arc::clone(&done));
     let w = std::thread::spawn(move || {
+        let _guard = guard;
         for i in 1..=PUBLISHES {
             writer.publish([i, !i, i.wrapping_mul(0x9E37_79B9_7F4A_7C15)]);
         }
     });
     let mut last = 0;
     while last < PUBLISHES {
+        let finished = done.load(Ordering::Acquire);
         let v = *reader.read();
         assert_eq!(v[1], !v[0]);
         assert_eq!(v[2], v[0].wrapping_mul(0x9E37_79B9_7F4A_7C15));
         assert!(v[0] >= last);
         last = v[0];
+        // Once the writer has exited, the next read must see the last publish.
+        assert!(
+            last == PUBLISHES || !finished,
+            "writer exited but reader saw {last}"
+        );
     }
     w.join().unwrap();
 }
