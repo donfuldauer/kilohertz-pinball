@@ -27,6 +27,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::marker::PhantomData;
 
 thread_local! {
     static DEPTH: Cell<u32> = const { Cell::new(0) };
@@ -54,15 +55,23 @@ fn note_alloc() {
 
 /// While alive, allocations on this thread are exempt (rule 4: the Lua VM's
 /// capped arena). Scopes nest. Entering and leaving never allocates.
+///
+/// The scope is `!Send` (and `!Sync`): it must be dropped on the thread that
+/// entered it, since it decrements that thread's counter.
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<pin_sim::alloc_guard::ExemptScope>();
+/// ```
 #[derive(Debug)]
-pub struct ExemptScope(());
+pub struct ExemptScope(PhantomData<*const ()>);
 
 impl ExemptScope {
     /// Opens an exempt scope on the current thread.
     #[must_use]
     pub fn enter() -> Self {
         let _ = EXEMPT.try_with(|e| e.set(e.get().saturating_add(1)));
-        ExemptScope(())
+        ExemptScope(PhantomData)
     }
 }
 

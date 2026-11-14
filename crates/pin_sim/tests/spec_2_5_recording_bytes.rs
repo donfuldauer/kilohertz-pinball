@@ -5,7 +5,10 @@
 
 use pin_core::input::{CabinetAxis, CabinetInput, InputEvent, InputEventKind};
 use pin_core::sim::TICK_NS;
-use pin_sim::replay::{MAX_TICKS, Recording, ReplayError};
+use pin_sim::hash::fnv1a64;
+use pin_sim::replay::{
+    EVENT_BYTES, HEADER_BYTES, MAX_TICKS, Recording, ReplayError, TRAILER_BYTES,
+};
 use proptest::prelude::*;
 
 /// (tick offset, sub-tick ns, kind selector, index, pressed, value bits)
@@ -355,4 +358,89 @@ proptest! {
             let _ = r.to_bytes();
         }
     }
+}
+
+/// One named byte edit of an encoded recording.
+type Edit = Box<dyn Fn(&mut [u8])>;
+
+/// Recomputes the checksum trailer after editing the body.
+fn reseal(bytes: &mut [u8]) {
+    let body = bytes.len() - TRAILER_BYTES;
+    let sum = fnv1a64(&bytes[..body]);
+    bytes[body..].copy_from_slice(&sum.to_le_bytes());
+}
+
+#[test]
+fn malformed_events_behind_a_valid_checksum_are_bad_events() {
+    let r = sample();
+    let good = r.to_bytes();
+    let n = r.events.len();
+    assert!(n >= 2);
+    let ticks = r.ticks;
+    let mut kinds_seen = [false; 2];
+    for i in 0..n {
+        let at = HEADER_BYTES + i * EVENT_BYTES;
+        let kind = good[at + 16];
+        kinds_seen[usize::from(kind)] = true;
+        let mut cases: Vec<(&str, Edit)> = vec![
+            ("kind 2", Box::new(move |b| b[at + 16] = 2)),
+            ("kind 0xFF", Box::new(move |b| b[at + 16] = 0xFF)),
+            ("code 0xFF", Box::new(move |b| b[at + 17] = 0xFF)),
+            ("reserved byte 18", Box::new(move |b| b[at + 18] = 1)),
+            ("reserved byte 19", Box::new(move |b| b[at + 19] = 0x80)),
+            (
+                "tick 0",
+                Box::new(move |b| b[at..at + 8].copy_from_slice(&0u64.to_le_bytes())),
+            ),
+            (
+                "tick above ticks",
+                Box::new(move |b| b[at..at + 8].copy_from_slice(&(ticks + 1).to_le_bytes())),
+            ),
+        ];
+        if kind == 0 {
+            for v in [2u32, 0x100, u32::MAX] {
+                cases.push((
+                    "button value not 0/1",
+                    Box::new(move |b| b[at + 20..at + 24].copy_from_slice(&v.to_le_bytes())),
+                ));
+            }
+        } else {
+            for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                cases.push((
+                    "nonfinite axis value",
+                    Box::new(move |b| {
+                        b[at + 20..at + 24].copy_from_slice(&v.to_bits().to_le_bytes());
+                    }),
+                ));
+            }
+        }
+        if i > 0 {
+            let prev_at = at - EVENT_BYTES;
+            let prev = u64::from_le_bytes(good[prev_at..prev_at + 8].try_into().unwrap());
+            if prev > 1 {
+                cases.push((
+                    "tick decreasing",
+                    Box::new(move |b| b[at..at + 8].copy_from_slice(&(prev - 1).to_le_bytes())),
+                ));
+            }
+        }
+        for (what, edit) in &cases {
+            let mut bad = good.clone();
+            edit(&mut bad);
+            // Unsealed, the edit stops at the checksum ...
+            assert_eq!(
+                Recording::from_bytes(&bad).unwrap_err(),
+                ReplayError::Checksum,
+                "event {i}: {what}"
+            );
+            // ... resealed, it reaches event validation.
+            reseal(&mut bad);
+            assert_eq!(
+                Recording::from_bytes(&bad).unwrap_err(),
+                ReplayError::BadEvent { index: i as u64 },
+                "event {i}: {what}"
+            );
+        }
+    }
+    assert_eq!(kinds_seen, [true, true], "the sample has buttons and axes");
 }

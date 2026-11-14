@@ -179,14 +179,27 @@ pub(crate) fn gc_step(lua: &Lua, kbytes: i32) -> mlua::Result<()> {
 }
 
 /// Compile-only check of `source` in text mode (no state is kept).
+///
+/// Compilation runs under the engine's heap cap
+/// ([`LuaConfig::engine`]`.memory_limit_bytes`), so the parser's allocations
+/// are bounded no matter how large the file is; a source whose compiled form
+/// does not fit is a [`ScriptError::MemoryLimit`].
 pub(crate) fn syntax_check(source: &[u8]) -> Result<(), ScriptError> {
     let lua = Lua::new_with(StdLib::NONE, LuaOptions::new()).map_err(|e| load_err(&e))?;
+    lua.set_memory_limit(LuaConfig::engine().memory_limit_bytes)
+        .map_err(|e| load_err(&e))?;
     lua.load(source)
         .set_name(CHUNK_NAME)
         .set_mode(ChunkMode::Text)
         .into_function()
         .map(drop)
-        .map_err(|e| load_err(&e))
+        .map_err(|e| {
+            if is_memory_error(&e) {
+                ScriptError::MemoryLimit
+            } else {
+                load_err(&e)
+            }
+        })
 }
 
 impl Vm {

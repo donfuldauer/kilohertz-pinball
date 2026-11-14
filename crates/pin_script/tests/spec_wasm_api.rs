@@ -683,6 +683,32 @@ fn more_held_coils_than_the_queue_holds_are_released_over_later_callbacks() {
     );
 }
 
+/// A reload between two batches of tilt releases must not strand the coils
+/// still waiting for queue room: the drain continues under the new instance.
+#[test]
+fn tilt_releases_keep_draining_after_a_reload_mid_drain() {
+    let mut d = Driver::new();
+    assert_eq!(d.call(op::HOLD_RANGE, &[1000, 32]).coil_holds.len(), 32);
+    assert_eq!(d.call(op::HOLD_RANGE, &[2000, 8]).coil_holds.len(), 8);
+    let mut released = Vec::new();
+    let q = d.call(op::DIV_ZERO, &[0, 0, 0, 0]).clone();
+    assert!(d.b.is_faulted());
+    assert_eq!(q.coil_holds.len(), 32);
+    released.extend(q.coil_holds.iter().copied());
+    let m = WasmScriptBackend::prepare(support::DRIVER_WAT.as_bytes(), WasmConfig::default())
+        .expect("driver prepares");
+    d.b.apply_prepared(m).expect("reload succeeds");
+    assert!(!d.b.is_faulted());
+    for _ in 0..3 {
+        released.extend(d.tick().coil_holds.iter().copied());
+    }
+    assert!(released.iter().all(|&(_, on)| !on), "{released:?}");
+    let mut ids: Vec<u16> = released.iter().map(|&(c, _)| c.0).collect();
+    ids.sort_unstable();
+    let want: Vec<u16> = (1000..1032).chain(2000..2008).collect();
+    assert_eq!(ids, want, "every coil held at the fault is released once");
+}
+
 #[test]
 fn queue_overflow_drops_and_counts_but_does_not_fault() {
     let mut d = Driver::new();
