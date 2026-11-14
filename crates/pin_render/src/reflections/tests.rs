@@ -202,70 +202,78 @@ fn balls_past_max_probes_share_the_nearest_slot() {
     assert_eq!(t.probe_for_ball(1), Some(0));
 }
 
-/// 5.2 review N3: a ball draining from the front of the list does not hand
-/// its probe to the next ball; the others keep their own probes and the
-/// round robin goes on oldest-first.
+/// The captured slot nearest to `p` (what a ball without a fresh probe of
+/// its own must sample).
+fn nearest_capture(s: &ProbeScheduler, p: [f32; 3]) -> Option<usize> {
+    let mut best: Option<(f32, usize)> = None;
+    for slot in 0..MAX_PROBES {
+        if let Some(c) = s.capture_position(slot) {
+            let d = (c[0] - p[0]).powi(2) + (c[1] - p[1]).powi(2) + (c[2] - p[2]).powi(2);
+            if best.is_none_or(|(b, _)| d < b) {
+                best = Some((d, slot));
+            }
+        }
+    }
+    best.map(|(_, s)| s)
+}
+
+/// 5.2 review N3: a ball draining from the front of the list shifts the
+/// others down; their old slots no longer describe them, so they sample the
+/// nearest capture (their own previous one where it still exists) instead
+/// of a neighbour's, and the round robin stays oldest-first.
 #[test]
-fn draining_ball_does_not_shift_probes() {
+fn draining_ball_does_not_hand_its_probe_to_the_next_ball() {
     let mut s = ProbeScheduler::new(PROBE_BUDGET);
     let balls: Vec<[f32; 3]> = (0..6).map(|i| [0.03 * i as f32, 0.0, 0.0]).collect();
     for _ in 0..6 {
         s.schedule(&balls);
     }
-    let before: Vec<u32> = s.ages().to_vec();
-    // Ball 0 drains; the others move a little.
-    let after: Vec<[f32; 3]> = balls[1..]
-        .iter()
-        .map(|p| [p[0] + 0.002, p[1], p[2]])
-        .collect();
+    assert_eq!(s.ages(), &[2, 2, 1, 1, 0, 0]);
+    // Ball 0 drains; the others move a little and shift down one index.
+    let after: Vec<[f32; 3]> = balls[1..].iter().map(|p| [p[0] + 0.002, p[1], p[2]]).collect();
     let up = s.schedule(&after).to_vec();
-    for (j, p) in after.iter().enumerate() {
-        assert_eq!(s.slot_of(j), Some(j + 1), "ball {j} lost its slot");
+    // Oldest first, ages carried over by index: [3, 3, 2, 2, 1] → 0 and 1.
+    assert_eq!(up, vec![0, 1]);
+    for (j, &p) in after.iter().enumerate() {
         let slot = s.probe_for_ball(j).unwrap();
-        assert_eq!(slot, j + 1);
-        // Its probe was captured at its own (earlier) position.
-        let c = s.capture_position(slot).unwrap();
-        assert!(
-            (c[0] - p[0]).abs() < 0.01,
-            "ball {j} samples a probe from {c:?}"
-        );
-        if !up.contains(&j) {
-            assert_eq!(s.ages()[j], before[j + 1] + 1);
+        if up.contains(&j) {
+            assert_eq!(slot, j);
+        } else {
+            assert!(s.is_stale(j), "ball {j} keeps a neighbour's probe");
+            assert_eq!(Some(slot), nearest_capture(&s, p));
+            // Its own previous capture (old slot j + 1) where it still exists.
+            if j + 1 < after.len() {
+                assert_eq!(slot, j + 1);
+            }
         }
     }
-    assert!(!s.is_captured(0), "the drained ball's slot is freed");
-    // Oldest first: ages were [2, 2, 1, 1, 0, 0] (by old index), so the
-    // new ages are [3, 2, 2, 1, 1] and balls 0 and 1 (ties → lower) go.
-    assert_eq!(up, vec![0, 1]);
+    assert!(!s.is_captured(5), "slots past the ball count are freed");
     for _ in 0..10 {
         s.schedule(&after);
         assert!(s.stats().max_age <= 2, "ages {:?}", s.ages());
     }
-    // A new ball takes the free slot 0 and samples the nearest probe until
-    // its own is captured (it goes first: no capture yet).
-    let mut more = after.clone();
-    more.push([1.0, 0.0, 0.0]);
-    let up = s.schedule(&more).to_vec();
-    assert_eq!(s.slot_of(5), Some(0));
-    assert_eq!(up[0], 5);
-    assert_eq!(s.capture_position(0), Some([1.0, 0.0, 0.0]));
-    // A ball that jumps further than the tracking distance starts over.
-    let mut jumped = more.clone();
+    for j in 0..after.len() {
+        assert_eq!(s.probe_for_ball(j), Some(j));
+        assert!(!s.is_stale(j));
+    }
+    // A ball that jumps further than the tracking distance samples the
+    // probe nearest to where it is now.
+    let mut jumped = after.clone();
     jumped[2] = [5.0, 0.0, 0.0];
     s.schedule(&jumped);
-    assert_ne!(
-        s.capture_position(s.probe_for_ball(2).unwrap()),
-        Some(more[2])
-    );
+    if !s.last_updates().contains(&2) {
+        assert!(s.is_stale(2));
+        assert_eq!(s.probe_for_ball(2), nearest_capture(&s, jumped[2]));
+    }
     assert!(TRACK_MAX_JUMP_M > 0.0);
 }
 
 proptest! {
     /// Under random arrivals and departures (balls at fixed, distinct
-    /// places), a ball never samples a probe captured at another ball's
-    /// place once it has its own, the budget holds every frame, and once
-    /// the set is steady every age is < ⌈n / budget⌉ again within that
-    /// many frames.
+    /// places, kept in id order), the budget holds every frame, a ball
+    /// samples its own slot only while that slot was captured at its own
+    /// place and otherwise the nearest capture, and once the set is steady
+    /// every age is < ⌈n / budget⌉ again within that many frames.
     #[test]
     fn probes_follow_balls_through_count_changes(
         frames in proptest::collection::vec(proptest::collection::vec(any::<bool>(), 20), 1..40),
@@ -273,20 +281,22 @@ proptest! {
     ) {
         let mut s = ProbeScheduler::new(PROBE_BUDGET);
         let place = |id: usize| [id as f32, 0.5 * id as f32, 0.0];
-        let run = |s: &mut ProbeScheduler, present: &[bool]| -> Result<Vec<usize>, TestCaseError> {
-            let ids: Vec<usize> = (0..20).filter(|&i| present[i]).collect();
-            let pos: Vec<[f32; 3]> = ids.iter().map(|&i| place(i)).collect();
+        let run = |s: &mut ProbeScheduler, present: &[bool]| -> Result<(), TestCaseError> {
+            let pos: Vec<[f32; 3]> = (0..20).filter(|&i| present[i]).map(place).collect();
             let u = s.schedule(&pos).len();
             prop_assert!(u <= PROBE_BUDGET as usize);
-            for (j, &id) in ids.iter().enumerate() {
-                if let Some(slot) = s.slot_of(j) {
-                    if let Some(c) = s.capture_position(slot) {
-                        prop_assert_eq!(c, place(id), "ball {} owns a foreign probe", id);
-                        prop_assert_eq!(s.probe_for_ball(j), Some(slot));
-                    }
+            for (j, &p) in pos.iter().enumerate() {
+                let Some(slot) = s.probe_for_ball(j) else { continue };
+                if slot == j && j < MAX_PROBES && !s.is_stale(j) {
+                    prop_assert_eq!(s.capture_position(slot), Some(p), "ball {} owns a foreign probe", j);
+                } else {
+                    let c = s.capture_position(slot).unwrap();
+                    let d = |c: [f32; 3]| (c[0] - p[0]).powi(2) + (c[1] - p[1]).powi(2);
+                    let n = s.capture_position(nearest_capture(s, p).unwrap()).unwrap();
+                    prop_assert!(d(c) <= d(n), "ball {} samples a farther probe", j);
                 }
             }
-            Ok(ids)
+            Ok(())
         };
         for f in &frames {
             run(&mut s, f)?;

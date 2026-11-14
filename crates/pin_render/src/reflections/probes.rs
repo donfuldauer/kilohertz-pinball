@@ -440,9 +440,7 @@ impl ReflectionSource for OctahedralProbes {
                 .write_buffer(&self.basis_buffer, 0, bytemuck::bytes_of(&self.basis));
         }
         for &i in updates.iter().filter(|&&i| i != usize::MAX) {
-            if let Some(slot) = self.scheduler.slot_of(i) {
-                self.capture(ctx, pbr, frame, &balls[i], slot);
-            }
+            self.capture(ctx, pbr, frame, &balls[i], i);
         }
         self.draw_layers.clear();
         self.draw_layers.resize(frame.draws.len(), NO_PROBE);

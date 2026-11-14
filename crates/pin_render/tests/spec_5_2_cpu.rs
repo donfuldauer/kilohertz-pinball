@@ -929,22 +929,60 @@ proptest! {
     }
 }
 
+/// Criterion 3 does not depend on how the balls move: the budget, the round-robin shares
+/// and the age bound hold for six balls whatever their per-frame displacement (slow roll,
+/// 5 m/s at 60 Hz = 83 mm, a fast ball at a low frame rate, a relaunch across the table).
 #[test]
-fn zz_tmp_explore() {
-    // step per frame in metres along x; balls 0.06 m apart
-    for step in [0.2f32, 0.25, 0.3, 0.4, 0.5, 0.7, 1.0, 2.0] {
-        let n = 6;
-        let mut s = ProbeScheduler::new(2);
+fn round_robin_is_independent_of_ball_motion() {
+    for step in [0.0f32, 0.001, 0.027, 0.083, 0.2, 0.25, 0.3, 0.5, 1.0] {
+        let n = 6usize;
+        let mut s = ProbeScheduler::new(PROBE_BUDGET);
         let mut counts = vec![0u32; n];
-        let mut max_age = 0;
-        let mut log = Vec::new();
-        for f in 0..66 {
-            let pos: Vec<V3> = (0..n).map(|i| [i as f32 * 0.06 + f as f32 * step, 0.1 * i as f32, 0.0135]).collect();
-            let u = s.schedule(&pos).to_vec();
-            for &i in &u { counts[i] += 1; }
-            max_age = max_age.max(*s.ages().iter().max().unwrap());
-            if f < 5 { log.push(format!("{u:?}")); }
+        let mut model_age = vec![0u32; n];
+        for f in 0..66u32 {
+            // Balls 60 mm apart, all travelling along x and bouncing between the walls of a
+            // 0.5 m wide table (triangle wave), so every per-frame move is `step`.
+            let pos: Vec<V3> = (0..n)
+                .map(|i| {
+                    let t = (i as f32 * 0.06 + f as f32 * step) % 1.0;
+                    let x = if t < 0.5 { t } else { 1.0 - t };
+                    [x, 0.1 * i as f32, 0.0135]
+                })
+                .collect();
+            let upd = s.schedule(&pos).to_vec();
+            assert!(
+                upd.len() <= PROBE_BUDGET as usize,
+                "step {step} frame {f}: {upd:?}"
+            );
+            for a in model_age.iter_mut() {
+                *a += 1;
+            }
+            for &i in &upd {
+                counts[i] += 1;
+                model_age[i] = 0;
+            }
+            // Frames since each ball really was scheduled, independent of `ages()`.
+            if f >= 2 {
+                for (i, a) in model_age.iter().enumerate() {
+                    assert!(
+                        *a <= 3,
+                        "step {step} m/frame, frame {f}: ball {i} not updated for {a} frames (bound ⌈6/2⌉ = 3)"
+                    );
+                }
+            }
+            for (i, a) in s.ages().iter().enumerate() {
+                assert!(*a <= 3, "step {step} frame {f}: ball {i} age {a}");
+            }
         }
-        println!("step {step}: counts {counts:?} max age {max_age} stats {:?}; first {}", s.stats(), log.join(" "));
+        let (lo, hi) = (*counts.iter().min().unwrap(), *counts.iter().max().unwrap());
+        assert!(
+            hi - lo <= 1,
+            "step {step} m/frame: unfair probe shares {counts:?} over 66 frames"
+        );
+        assert_eq!(
+            counts.iter().sum::<u32>(),
+            132,
+            "step {step}: budget not used"
+        );
     }
 }
