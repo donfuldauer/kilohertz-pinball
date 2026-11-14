@@ -206,6 +206,12 @@ proptest! {
         let pts = walk(start, a, b, &steps);
         prop_assume!(pts.windows(2).all(|p| p[0] != p[1]));
         let s = CubicSpline::interpolate(&pts).unwrap();
+        // An up hint (anti)parallel to the start tangent does not fix the
+        // frame: `Wireform::new` then uses its documented fallback axis,
+        // which need not lie in the plane (see
+        // `up_hint_along_the_start_tangent_uses_the_fallback_axis`). Keep a
+        // margin over its threshold (sin < 1e-5).
+        prop_assume!(s.tangent(0.0).normalize().cross(up.normalize()).length() > 1.0e-4);
         // The up hint lies in the plane, so the normal starts and stays in
         // it and the rails straddle the plane by half the gauge.
         let w = Wireform::new(s, &vec![0.0; pts.len()], GAUGE, up).unwrap();
@@ -248,5 +254,35 @@ proptest! {
             let (a, b) = w.rail_points(t);
             prop_assert!(((a - b).length() - GAUGE).abs() < 1.0e-5);
         }
+    }
+}
+
+/// CI case (proptest, macOS/Linux): a natural-spline start tangent that is
+/// anti-parallel to the up hint to within 2e-6 rad. The hint then does not
+/// fix the frame, so the documented deterministic fallback axis is used; the
+/// frame is still orthonormal and finite.
+#[test]
+fn up_hint_along_the_start_tangent_uses_the_fallback_axis() {
+    let steps = [
+        (0.005_148_779_f32, -0.006_147_095_5),
+        (0.011_290_187, 0.004_177_062_3),
+    ];
+    let pts = walk(Vec3::ZERO, Vec3::X, Vec3::Z, &steps);
+    let s = CubicSpline::interpolate(&pts).unwrap();
+    let up = Vec3::new(-0.413_995_06, 0.0, 1.0);
+    assert!(s.tangent(0.0).normalize().cross(up.normalize()).length() < 1.0e-5);
+    let w = Wireform::new(s, &vec![0.0; pts.len()], GAUGE, up).unwrap();
+    let n = w.centerline().segment_count();
+    for k in 0..=n * 32 {
+        let t = k as f32 / 32.0;
+        let f = w.frame_at(t);
+        assert!(
+            f.normal.is_finite() && (f.normal.length() - 1.0).abs() < 1.0e-5,
+            "t = {t}: {f:?}"
+        );
+        assert!(
+            f.normal.dot(w.centerline().tangent(t).normalize()).abs() < 1.0e-4,
+            "t = {t}: {f:?}"
+        );
     }
 }
