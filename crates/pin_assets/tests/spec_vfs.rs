@@ -530,8 +530,8 @@ fn lying_uncompressed_size_never_yields_more_than_declared() {
         match v.read("bomb.bin") {
             Err(_) => {}
             Ok(data) => assert!(
-                data.len() <= 1024,
-                "read() returned {} bytes for an entry declared as 16 under max_file = 1024",
+                data.len() <= 16,
+                "read() returned {} bytes for an entry declared as 16 bytes",
                 data.len()
             ),
         }

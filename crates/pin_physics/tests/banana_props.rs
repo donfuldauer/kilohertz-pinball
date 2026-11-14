@@ -400,12 +400,20 @@ proptest! {
 
     /// A left banana and its mirror-image right banana play mirror-image
     /// shots for any bend and contact point.
+    ///
+    /// The mirror image is only continuous away from a marginal contact:
+    /// 210° and −30° do not round alike, so the two balls differ by some
+    /// micrometres when the bat reaches its end stop, and a last light
+    /// touch there (the bat catching the leaving ball once more just before
+    /// it stops) can happen on one side only. Such an unmatched impact must
+    /// be light, and the shots may then differ by what it can add.
     #[test]
     fn mirror_flippers_play_mirror_shots(
         radius_mm in 45.0f32..500.0,
         fraction in 0.15f32..0.9,
         concave_leads in any::<bool>(),
     ) {
+        const TICKS: u32 = 25;
         let arc = if concave_leads { 30.0 } else { -30.0 };
         let left = bent(radius_mm, arc);
         let right = FlipperConfig { shape: left.shape, ..right_config(0, [0.0; 3]) };
@@ -414,13 +422,42 @@ proptest! {
             let (start, _) = ball_on_face(config, config.rest_angle_deg, fraction, 2.0e-5);
             let h = rig.add_ball(start, Vec3::ZERO);
             rig.flippers.set_energised(LEFT, true);
-            rig.run(25);
-            (rig.ball(h).position, rig.ball(h).velocity)
+            // Reported bat impacts: (tick, normal speed).
+            let mut impacts = Vec::new();
+            for tick in 0..TICKS {
+                rig.step();
+                impacts.extend(rig.hits.iter().map(|&(_, _, speed)| (tick, speed)));
+            }
+            (rig.ball(h).position, rig.ball(h).velocity, impacts)
         };
-        let ((pl, vl), (pr, vr)) = (shoot(&left), shoot(&right));
+        let ((pl, vl, il), (pr, vr, mut ir)) = (shoot(&left), shoot(&right));
+        // Impacts without a counterpart on the other side (same tick ± 1).
+        let mut unmatched = Vec::new();
+        for (tick, speed) in il {
+            match ir.iter().position(|&(t, _)| t.abs_diff(tick) <= 1) {
+                Some(k) => {
+                    ir.remove(k);
+                }
+                None => unmatched.push((tick, speed)),
+            }
+        }
+        unmatched.extend(ir);
+        let (mut dv_extra, mut dp_extra) = (0.0f32, 0.0f32);
+        for &(tick, speed) in &unmatched {
+            prop_assert!(speed < 0.5, "one-sided impact of {} m/s at tick {}", speed, tick);
+            // At most (1 + e)·speed of extra velocity, for the rest of the run.
+            dv_extra += 2.0 * speed;
+            dp_extra += 2.0 * speed * DT * (TICKS - tick) as f32;
+        }
         // (The solver itself mirrors a straight bat's shot only to about
         // 0.03 mm and 0.06 m/s: 210° and −30° do not round alike.)
-        prop_assert!((pl - v(-pr.x, pr.y, pr.z)).length() < 5.0e-4, "{} vs {}", pl, pr);
-        prop_assert!((vl - v(-vr.x, vr.y, vr.z)).length() < 0.1, "{} vs {}", vl, vr);
+        prop_assert!(
+            (pl - v(-pr.x, pr.y, pr.z)).length() < 5.0e-4 + dp_extra,
+            "{} vs {} (one-sided impacts {:?})", pl, pr, unmatched
+        );
+        prop_assert!(
+            (vl - v(-vr.x, vr.y, vr.z)).length() < 0.1 + dv_extra,
+            "{} vs {} (one-sided impacts {:?})", vl, vr, unmatched
+        );
     }
 }

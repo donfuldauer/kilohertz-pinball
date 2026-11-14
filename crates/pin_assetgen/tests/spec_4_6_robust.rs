@@ -39,6 +39,13 @@ fn check(m: &TableMeta, name: &str, deep: bool) -> Result<(), String> {
         if deep && is_audio(&e.kind) {
             let s = pin_audio::mixer::decode(bytes, 48_000)
                 .map_err(|err| format!("{}: {err:?}", e.id))?;
+            if let Some(i) = s.data().iter().position(|v| !v.is_finite()) {
+                return Err(format!(
+                    "{}: non-finite sample {} at {i}",
+                    e.id,
+                    s.data()[i]
+                ));
+            }
             let (r, p) = (rms(s.data()), peak(s.data()));
             if r <= RMS_FLOOR || p > PEAK_CEIL {
                 return Err(format!("{}: RMS {r}, peak {p}", e.id));

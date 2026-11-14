@@ -794,16 +794,38 @@ fn table_run() -> (u64, Vec<u32>, usize) {
         for w in t.state_bits() {
             hash = (hash ^ u64::from(w)).wrapping_mul(0x0000_0100_0000_01b3);
         }
+        // Every event with its whole payload, then the overflow count.
+        let mut mix = |w: u64| hash = (hash ^ w).wrapping_mul(0x0000_0100_0000_01b3);
         for e in ev.as_slice() {
-            if let BallEvent::Impact {
-                ball, normal_speed, ..
-            } = e
-            {
-                hash = (hash ^ u64::from(ball.0)).wrapping_mul(0x0000_0100_0000_01b3);
-                hash =
-                    (hash ^ u64::from(normal_speed.to_bits())).wrapping_mul(0x0000_0100_0000_01b3);
+            match *e {
+                BallEvent::Impact {
+                    ball,
+                    other,
+                    normal_speed,
+                } => {
+                    mix(1);
+                    mix(u64::from(ball.0));
+                    let (tag, a, b) = match other {
+                        ImpactTarget::Collider(c) => (0u64, c.index() as u64, 0u64),
+                        ImpactTarget::Guide(i) => (1, i as u64, 0),
+                        ImpactTarget::Wireform(i) => (2, i as u64, 0),
+                        ImpactTarget::Ball(o) => (3, u64::from(o.0), 0),
+                        ImpactTarget::Newton(i) => (4, i as u64, 0),
+                        ImpactTarget::Body { set, body } => (5, set as u64, body as u64),
+                    };
+                    mix(tag);
+                    mix(a);
+                    mix(b);
+                    mix(u64::from(normal_speed.to_bits()));
+                }
+                BallEvent::SensorEdge { switch, closed } => {
+                    mix(2);
+                    mix(u64::from(switch.0));
+                    mix(u64::from(closed));
+                }
             }
         }
+        mix(u64::from(ev.dropped()));
     }
     (hash, t.state_bits(), body_hits)
 }

@@ -145,6 +145,9 @@ fn closest_case(
     let lq = libm::hypotf(dq[0], dq[1]);
     let expect = [dq[0] / lq, dq[1] / lq];
     let tag = format!("{region:?} frac {frac:.3} β {beta_deg:.1} offset {offset:.5} z {z:.4}");
+    if !(bp.distance.is_finite() && bp.point.is_finite() && bp.normal.is_finite()) {
+        return Err(format!("{tag}: non-finite closest point: {bp:?}"));
+    }
     if (bp.distance - brute).abs() > 3.0e-5 {
         return Err(format!(
             "{tag}: distance {} vs brute force {brute}",

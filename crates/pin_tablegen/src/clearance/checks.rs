@@ -86,20 +86,7 @@ impl World<'_> {
         });
         floor
             || self.table.splines.iter().any(|s| {
-                s.layer == layer
-                    && s.points_m.windows(2).any(|p| {
-                        let (a, b) = (
-                            DVec3::from_array(p[0].map(f64::from)),
-                            DVec3::from_array(p[1].map(f64::from)),
-                        );
-                        let ab = b - a;
-                        let t = if ab.length_squared() > 0.0 {
-                            ((e - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
-                        } else {
-                            0.0
-                        };
-                        (a + ab * t).distance(e) <= EXIT_SPLINE_REACH_M
-                    })
+                s.layer == layer && near_spline(&s.points_m, s.closed, e, EXIT_SPLINE_REACH_M)
             })
     }
 
@@ -144,6 +131,30 @@ impl World<'_> {
         }
         best
     }
+}
+
+/// Whether `e` lies within `reach` of the interpolated spline through
+/// `points` (as the loader builds it, closing segment included); the
+/// control-point chords stand in only when the spline does not construct.
+pub(super) fn near_spline(points: &[[f32; 3]], closed: bool, e: DVec3, reach: f64) -> bool {
+    let pts: Vec<Vec3> = points.iter().map(|&p| vec3(p)).collect();
+    if let Some(sp) = geom::build_spline(&pts, closed) {
+        let d = f64::from(sp.closest_point(e.as_vec3(), None).distance);
+        return d <= reach;
+    }
+    points.windows(2).any(|p| {
+        let (a, b) = (
+            DVec3::from_array(p[0].map(f64::from)),
+            DVec3::from_array(p[1].map(f64::from)),
+        );
+        let ab = b - a;
+        let t = if ab.length_squared() > 0.0 {
+            ((e - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (a + ab * t).distance(e) <= reach
+    })
 }
 
 fn vec3(p: [f32; 3]) -> Vec3 {
@@ -442,7 +453,7 @@ pub(super) fn wireforms(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
             None => pts.iter().map(|p| p.as_dvec3().truncate()).collect(),
         };
         for ball in balls {
-            if !samples.iter().any(|&q| ball.allowed.at(s.layer, q)) {
+            if !ball.allowed.on_path(s.layer, &samples) {
                 continue;
             }
             let (min_g, max_g) = (ball.d * lo_sin, ball.d * hi_sin);
@@ -591,7 +602,13 @@ pub(super) fn vuks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                     });
                 }
             }
-            if !ball.allowed.layer(exit_layer) {
+            // Where the ball lands, when that is known; else the layer.
+            let exit_allowed = if e.is_finite() {
+                ball.allowed.at(exit_layer, e.truncate())
+            } else {
+                ball.allowed.layer(exit_layer)
+            };
+            if !exit_allowed {
                 sink.warning(Finding {
                     feature: Feature::Restriction,
                     name: &m.id,
@@ -601,7 +618,7 @@ pub(super) fn vuks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                     required_m: 0.0,
                     actual_m: 0.0,
                     message: format!(
-                        "vuk {:?} can capture ball {:?} on layer {layer} and eject it onto layer {exit_layer}, which its restriction does not allow",
+                        "vuk {:?} can capture ball {:?} on layer {layer} and eject it onto layer {exit_layer} where its restriction does not allow it",
                         m.id, ball.name
                     ),
                 });
