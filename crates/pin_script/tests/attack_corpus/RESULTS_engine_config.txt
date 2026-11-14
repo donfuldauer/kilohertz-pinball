@@ -164,7 +164,7 @@ r_tailargs.lua         rc=0 max tick 436.083µs slow(>=8ms)=0 faulted=true fault
 r_tostr_tab.lua        rc=0 max tick 4.836495ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 4.836495ms: Some("BudgetExceeded")
 r_utf8.lua             rc=0 max tick 852.166µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 852.166µs: Some("BudgetExceeded")
 rep_empty.lua          rc=0 max tick 18.153µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 18.153µs: Some("BudgetExceeded")
-savebomb.lua           rc=0 NEW ERR Load("runtime error: rules.lua:1: string length exceeds the 64 KiB  | 
+savebomb.lua           rc=0 max tick 8.643µs slow(>=8ms)=0 faulted=false faults=0 | re-measured at 3d9ffc3 after the resize; worst of 20 reloads (save hook + swap) 2.031634ms
 sortbig.lua            rc=0 max tick 736.985µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 736.985µs: Some("BudgetExceeded")
 strmeta.lua            rc=0 max tick 28.738µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 28.738µs: Some("Runtime(\"runtime err
 tconcat.lua            rc=0 max tick 22.903µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 22.903µs: Some("BudgetExceeded")
