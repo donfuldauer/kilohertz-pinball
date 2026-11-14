@@ -1,0 +1,43 @@
+# Spec fixture: the example from the Subphase 3.2 brief, written out as valid TOML.
+id = "my_pad"
+name = "My Pad"
+match = [ { gamepad = { vendor = 0x1234, product = 0x5678 } } ]
+
+[buttons]
+left_flipper = [ "key:225", "button:left_shoulder" ]
+right_flipper = [ "key:229", "button:right_shoulder" ]
+start = [ "button:start" ]
+launch = [ "button:south", "key:40" ]
+
+[[axes]]
+raw = "left_trigger"
+axis = "left_flipper"
+from = 0.0
+to = 1.0
+invert = false
+
+[[axes]]
+raw = "right_x"
+axis = "nudge_x"
+from = -1.0
+to = 1.0
+invert = false
+
+[[axes]]
+raw = "right_y"
+axis = "nudge_y"
+from = -1.0
+to = 1.0
+invert = true
+
+[[axes]]
+raw = "left_y"
+axis = "plunger"
+from = 0.0
+to = 1.0
+invert = false
+
+[nudge]
+left = [ "key:224" ]
+right = [ "key:228", "button:dpad_right" ]
+forward = [ "key:44" ]

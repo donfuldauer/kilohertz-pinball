@@ -1,0 +1,13 @@
+# Subphase 2.8 spec fixture: an open 514 x 1070 mm playfield with only its
+# outer wall. Tests append [[decks]], [[lanes]], [[walls]] ... sections.
+schema_version = 1
+
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 28.0
+
+[[walls]]
+points = [[0.0, 0.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 0.0]]
+closed = false
+material = "wood"

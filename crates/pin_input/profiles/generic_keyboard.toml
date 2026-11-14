@@ -1,0 +1,16 @@
+# Generic keyboard preset: identical to Subphase 1.3's default keymap
+# (pin_app::platform::keymap::key_input). Keys are SDL_Scancode numbers, so
+# the map is keyboard-layout independent.
+id = "generic_keyboard"
+name = "Keyboard"
+match = [ { keyboard = true } ]
+
+[buttons]
+left_flipper = [ "key:225" ]                     # Left Shift
+right_flipper = [ "key:229" ]                    # Right Shift
+left_upper = [ "key:224" ]                       # Left Ctrl
+right_upper = [ "key:228" ]                      # Right Ctrl
+launch = [ "key:44", "key:40", "key:88" ]        # Space, Return, keypad Enter
+start = [ "key:30" ]                             # 1
+action = [ "key:4" ]                             # A
+tilt = [ "key:23" ]                              # T

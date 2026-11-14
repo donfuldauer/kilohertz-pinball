@@ -1,0 +1,94 @@
+name: spikes
+
+# Subphase 0.1 dependency spikes (spikes/ is a standalone Cargo workspace).
+on:
+  push:
+    paths:
+      - "spikes/**"
+      - "versions.toml"
+      - ".github/workflows/spikes.yml"
+  pull_request:
+    paths:
+      - "spikes/**"
+      - "versions.toml"
+      - ".github/workflows/spikes.yml"
+  workflow_dispatch:
+
+# One run per workflow, ref and event; a newer push cancels the older push run
+# (event_name keeps a workflow_dispatch run from being cancelled by pushes).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  # Q5: a missing lavapipe/WARP/Metal adapter is a failure in CI.
+  SPIKE_REQUIRE_GPU: "1"
+
+jobs:
+  spikes:
+    name: spikes (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            spikes -> target
+            spikes/spec_0_1 -> target
+
+      - name: Install Linux packages (lavapipe, Xvfb, SDL3 build headers)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 xvfb xauth cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
+      - name: Toolchain
+        run: rustc --version && cargo --version
+
+      - name: cargo fmt --check
+        if: runner.os == 'Linux'
+        run: cargo fmt --manifest-path spikes/Cargo.toml --all -- --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --manifest-path spikes/Cargo.toml --workspace --all-targets -- -D warnings
+
+      - name: cargo test (Linux, under Xvfb for the present-mode probe)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo test --manifest-path spikes/Cargo.toml --workspace -- --nocapture
+
+      - name: cargo test
+        if: runner.os != 'Linux'
+        run: cargo test --manifest-path spikes/Cargo.toml --workspace -- --nocapture
+
+      # spec_0_1: the Independent Tester's standalone conformance package (Linux only).
+      - name: cargo fmt --check (spec_0_1)
+        if: runner.os == 'Linux'
+        run: cargo fmt --manifest-path spikes/spec_0_1/Cargo.toml --all -- --check
+
+      - name: cargo clippy -D warnings (spec_0_1)
+        if: runner.os == 'Linux'
+        run: cargo clippy --manifest-path spikes/spec_0_1/Cargo.toml --all-targets -- -D warnings
+
+      - name: cargo test (spec_0_1)
+        if: runner.os == 'Linux'
+        run: cargo test --manifest-path spikes/spec_0_1/Cargo.toml
