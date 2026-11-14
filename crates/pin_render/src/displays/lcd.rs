@@ -237,6 +237,7 @@ pub struct LcdRenderer {
     spec: LcdSpec,
     images: BTreeMap<String, usize>,
     list: Option<LcdDrawList>,
+    dirty: bool,
 }
 
 impl LcdRenderer {
@@ -247,6 +248,7 @@ impl LcdRenderer {
             spec,
             images: BTreeMap::new(),
             list: None,
+            dirty: true,
         }
     }
 
@@ -255,19 +257,47 @@ impl LcdRenderer {
         self.spec
     }
 
-    /// Uploads the image used by scene layers with `file = <file>`. Marks
-    /// the display changed.
-    pub fn set_image(&mut self, ctx: &GpuContext, file: &str, image: &RgbaImage) {
-        let i = self.quads.add_image(ctx.queue(), image);
-        self.images.insert(file.to_owned(), i);
-        self.list = None;
+    /// Uploads the image used by scene layers with `file = <file>` (setting
+    /// the same file again replaces its texture in place). Marks the display
+    /// changed. An invalid image, or one with a side above the device's
+    /// `max_texture_dimension_2d` (untrusted bundles, D25), is refused with
+    /// [`GpuError::InvalidArgument`]; a previous image of that file stays.
+    pub fn set_image(
+        &mut self,
+        ctx: &GpuContext,
+        file: &str,
+        image: &RgbaImage,
+    ) -> Result<(), GpuError> {
+        match self.images.get(file) {
+            Some(&i) => self.quads.replace_image(ctx.queue(), i, image)?,
+            None => {
+                let i = self.quads.add_image(ctx.queue(), image)?;
+                self.images.insert(file.to_owned(), i);
+            }
+        }
+        self.dirty = true;
+        Ok(())
     }
 
-    /// Takes `list` as the content; returns whether it differs from the
-    /// current content (the display then needs a redraw).
+    /// Textures held (the built-in white one included); for tests of
+    /// in-place replacement.
+    pub fn texture_count(&self) -> usize {
+        self.quads.texture_count()
+    }
+
+    /// Forces the next [`set_draw_list`](Self::set_draw_list) to report a
+    /// change (resize, expose).
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Takes `list` as the content; returns whether the display needs a
+    /// redraw: the content differs from the current one, or an image was set
+    /// or [`mark_dirty`](Self::mark_dirty) was called since the last call.
     pub fn set_draw_list(&mut self, _queue: &wgpu::Queue, list: &LcdDrawList) -> bool {
+        let dirty = core::mem::take(&mut self.dirty);
         if self.list.as_ref() == Some(list) {
-            return false;
+            return dirty;
         }
         self.list = Some(list.clone());
         true
@@ -354,7 +384,7 @@ impl LcdRenderer {
 
 /// Renders `list` on a `spec` LCD filling a `width × height` image
 /// (`Rgba8Unorm`, viewport = whole image) and reads it back. `images`
-/// supplies the image items.
+/// supplies the image items; an invalid or oversized one is an error.
 pub fn render_lcd_to_image(
     ctx: &GpuContext,
     spec: LcdSpec,
@@ -365,7 +395,7 @@ pub fn render_lcd_to_image(
 ) -> Result<RgbaImage, GpuError> {
     let mut r = LcdRenderer::new(ctx, wgpu::TextureFormat::Rgba8Unorm, spec);
     for (file, img) in images.iter() {
-        r.set_image(ctx, file, img);
+        r.set_image(ctx, file, img)?;
     }
     r.set_draw_list(ctx.queue(), list);
     render_offscreen(ctx, width, height, |encoder, view| {

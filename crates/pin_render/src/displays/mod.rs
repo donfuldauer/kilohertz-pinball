@@ -117,13 +117,25 @@ pub struct RgbaImage {
 }
 
 impl RgbaImage {
-    /// A transparent black image.
+    /// A transparent black image. A size whose byte count overflows `usize`
+    /// gives an empty pixel buffer, which [`is_valid`](Self::is_valid)
+    /// rejects (never a panic from the size arithmetic).
     pub fn new(width: u32, height: u32) -> RgbaImage {
+        let len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .unwrap_or(0);
         RgbaImage {
             width,
             height,
-            pixels: vec![0; width as usize * height as usize * 4],
+            pixels: vec![0; len],
         }
+    }
+
+    /// Both sides ≥ 1 and `pixels.len() == width · height · 4`. Renderers
+    /// refuse (GPU upload) or skip (CPU composition) invalid images.
+    pub fn is_valid(&self) -> bool {
+        Self::checked(self.width, self.height, &self.pixels, 4)
     }
 
     fn checked(width: u32, height: u32, data: &[u8], channels: usize) -> bool {
@@ -177,18 +189,16 @@ impl RgbaImage {
         })
     }
 
-    /// Pixel `(x, y)`; transparent black outside the image.
+    /// Pixel `(x, y)`; transparent black outside the image (or the buffer).
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
         if x >= self.width || y >= self.height {
             return [0; 4];
         }
         let o = (y as usize * self.width as usize + x as usize) * 4;
-        [
-            self.pixels[o],
-            self.pixels[o + 1],
-            self.pixels[o + 2],
-            self.pixels[o + 3],
-        ]
+        match self.pixels.get(o..o + 4) {
+            Some(p) => [p[0], p[1], p[2], p[3]],
+            None => [0; 4],
+        }
     }
 
     /// The pixels with colour multiplied by alpha (for GPU upload).

@@ -183,26 +183,43 @@ struct Canvas {
     w: u32,
     h: u32,
     acc: Vec<[f32; 3]>,
-    /// Drawable dots `[x0, y0, x1, y1)` (a score layer's box).
+    /// Drawable dots `[x0, y0, x1, y1)`, always inside the canvas (a score
+    /// layer's box, else the whole canvas).
     clip: [i64; 4],
 }
 
 impl Canvas {
-    fn blend(&mut self, x: i64, y: i64, col: [f32; 3], a: f32) {
-        let [cx0, cy0, cx1, cy1] = self.clip;
-        if x < cx0.max(0)
-            || y < cy0.max(0)
-            || x >= cx1.min(i64::from(self.w))
-            || y >= cy1.min(i64::from(self.h))
-        {
-            return;
-        }
+    fn full(&self) -> [i64; 4] {
+        [0, 0, i64::from(self.w), i64::from(self.h)]
+    }
+
+    /// Sets the clip to `[x0, y0, x1, y1)` intersected with the canvas.
+    fn set_clip(&mut self, c: [i64; 4]) {
+        let [w, h] = [i64::from(self.w), i64::from(self.h)];
+        self.clip = [
+            c[0].clamp(0, w),
+            c[1].clamp(0, h),
+            c[2].clamp(0, w),
+            c[3].clamp(0, h),
+        ];
+    }
+
+    /// Blends dot `(x, y)`, which the caller has clipped.
+    fn blend_at(&mut self, x: i64, y: i64, col: [f32; 3], a: f32) {
         let d = &mut self.acc[y as usize * self.w as usize + x as usize];
         for i in 0..3 {
             d[i] = d[i] * (1.0 - a) + col[i] * a;
         }
     }
 
+    /// The clipped dot range of the box `[x0, x1) × [y0, y1)` (integer dots).
+    fn range(&self, x0: i64, y0: i64, x1: i64, y1: i64) -> (i64, i64, i64, i64) {
+        let [cx0, cy0, cx1, cy1] = self.clip;
+        (x0.max(cx0), y0.max(cy0), x1.min(cx1), y1.min(cy1))
+    }
+
+    /// Draws `text`; only the dots inside the clip are visited, so the cost
+    /// is bounded by the clip area whatever the text's size (D25).
     #[allow(clippy::too_many_arguments)]
     fn text(
         &mut self,
@@ -219,27 +236,25 @@ impl Canvas {
         let (font, scale) = pick_font(text, size_dots, font, max_w);
         let mut bits = Vec::new();
         let (tw, th) = render_text(font.bitmap(), text, &mut bits);
-        let (w, h) = (tw * scale, th * scale);
+        let s = i64::from(scale);
+        let (w, h) = (i64::from(tw) * s, i64::from(th) * s);
         let left = align.left_of(anchor[0], w as f32).round() as i64;
         let top = valign.top_of(anchor[1], h as f32).round() as i64;
-        for y in 0..h {
-            for x in 0..w {
-                if bits[((y / scale) * tw + x / scale) as usize] != 0 {
-                    self.blend(left + i64::from(x), top + i64::from(y), col, a);
+        let (x0, y0, x1, y1) = self.range(left, top, left.saturating_add(w), top.saturating_add(h));
+        for y in y0..y1 {
+            let row = ((y - top) / s) as usize * tw as usize;
+            for x in x0..x1 {
+                if bits[row + ((x - left) / s) as usize] != 0 {
+                    self.blend_at(x, y, col, a);
                 }
             }
         }
     }
 
-    /// Dots whose centres lie in `[x0, x1) × [y0, y1)` (dot units).
-    fn cells(&self, b: [f32; 4]) -> impl Iterator<Item = (i64, i64)> + use<> {
-        let lo = |v: f32| (v - 0.5).ceil().max(0.0) as i64;
-        let (x0, y0) = (lo(b[0]), lo(b[1]));
-        let (x1, y1) = (
-            ((b[2] - 0.5).ceil() as i64).min(i64::from(self.w)),
-            ((b[3] - 0.5).ceil() as i64).min(i64::from(self.h)),
-        );
-        (y0..y1.max(y0)).flat_map(move |y| (x0..x1.max(x0)).map(move |x| (x, y)))
+    /// Clipped dots whose centres lie in `[x0, x1) × [y0, y1)` (dot units).
+    fn cells(&self, b: [f32; 4]) -> (i64, i64, i64, i64) {
+        let edge = |v: f32| (v - 0.5).ceil() as i64;
+        self.range(edge(b[0]), edge(b[1]), edge(b[2]), edge(b[3]))
     }
 }
 
@@ -298,6 +313,7 @@ impl DmdFrame {
             acc: vec![rgb01(scene.background); w as usize * h as usize],
             clip: [0, 0, i64::from(w), i64::from(h)],
         };
+        let full = c.full();
         for layer in &scene.layers {
             let Some(st) = layer.state_at(elapsed_ms, scene.duration_ms) else {
                 continue;
@@ -325,38 +341,61 @@ impl DmdFrame {
                     );
                 }
                 LayerKind::Rect => {
-                    let b = box_px(layer.w * fw, layer.h * fh);
-                    for (x, y) in c.cells(b).collect::<Vec<_>>() {
-                        c.blend(x, y, col, a);
+                    let (x0, y0, x1, y1) = c.cells(box_px(layer.w * fw, layer.h * fh));
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            c.blend_at(x, y, col, a);
+                        }
                     }
                 }
                 LayerKind::Image(file) => {
-                    let Some(img) = images.get(file) else {
+                    let Some(img) = images.get(file).filter(|i| i.is_valid()) else {
                         continue;
                     };
                     let bw = layer.w * fw;
                     let bh = if layer.h > 0.0 {
                         layer.h * fh
                     } else {
-                        bw * img.height as f32 / img.width.max(1) as f32
+                        bw * img.height as f32 / img.width as f32
                     };
+                    if bw <= 0.0 || bh <= 0.0 {
+                        continue;
+                    }
                     let b = box_px(bw, bh);
-                    for (x, y) in c.cells(b).collect::<Vec<_>>() {
-                        let u = ((x as f32 + 0.5 - b[0]) / bw * img.width as f32) as u32;
-                        let v = ((y as f32 + 0.5 - b[1]) / bh * img.height as f32) as u32;
-                        let p = img.pixel(u.min(img.width - 1), v.min(img.height - 1));
-                        let pa = f32::from(p[3]) / 255.0;
-                        let pc = [p[0], p[1], p[2]].map(|v| f32::from(v) / 255.0);
-                        let tinted = core::array::from_fn(|i| pc[i] * col[i]);
-                        c.blend(x, y, tinted, a * pa);
+                    let (x0, y0, x1, y1) = c.cells(b);
+                    // Nearest texel per column, computed once.
+                    let us: Vec<u32> = (x0..x1)
+                        .map(|x| {
+                            (((x as f32 + 0.5 - b[0]) / bw * img.width as f32) as u32)
+                                .min(img.width - 1)
+                        })
+                        .collect();
+                    for y in y0..y1 {
+                        let v = (((y as f32 + 0.5 - b[1]) / bh * img.height as f32) as u32)
+                            .min(img.height - 1);
+                        for (x, &u) in (x0..x1).zip(&us) {
+                            let p = img.pixel(u, v);
+                            if p[3] == 0 {
+                                continue;
+                            }
+                            let pa = f32::from(p[3]) / 255.0;
+                            let tinted = core::array::from_fn(|i| f32::from(p[i]) / 255.0 * col[i]);
+                            c.blend_at(x, y, tinted, a * pa);
+                        }
                     }
                 }
                 LayerKind::Score => {
+                    // The layout box is the layer box ∩ the display, so a huge or
+                    // off-screen box cannot blow up text sizes (D25).
                     let b = box_px(layer.w * fw, layer.h * fh);
+                    let b = [b[0].max(0.0), b[1].max(0.0), b[2].min(fw), b[3].min(fh)];
                     let (bw, bh) = (b[2] - b[0], b[3] - b[1]);
+                    if bw <= 0.0 || bh <= 0.0 {
+                        continue;
+                    }
                     // Score text stays inside the box: dots whose centres lie in it.
                     let edge = |v: f32| (v - 0.5).ceil() as i64;
-                    c.clip = [edge(b[0]), edge(b[1]), edge(b[2]), edge(b[3])];
+                    c.set_clip([edge(b[0]), edge(b[1]), edge(b[2]), edge(b[3])]);
                     for t in score_view_layout(scores) {
                         let tc = col.map(|v| v * t.emphasis);
                         c.text(
@@ -371,7 +410,7 @@ impl DmdFrame {
                             bw.max(0.0) as u32,
                         );
                     }
-                    c.clip = [0, 0, i64::from(w), i64::from(h)];
+                    c.clip = full;
                 }
             }
         }
@@ -450,6 +489,7 @@ pub struct DmdRenderer {
     dots: wgpu::Texture,
     dots_view: wgpu::TextureView,
     frame: Option<DmdFrame>,
+    dirty: bool,
     srgb: bool,
 }
 
@@ -530,6 +570,7 @@ impl DmdRenderer {
             dots,
             dots_view,
             frame: None,
+            dirty: true,
             srgb: format.is_srgb(),
         }
     }
@@ -539,12 +580,20 @@ impl DmdRenderer {
         self.spec
     }
 
+    /// Forces the next [`set_frame`](Self::set_frame) to report a change
+    /// (resize, expose).
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
     /// Uploads `frame` if it differs from the current one; returns whether it
-    /// changed (the display then needs a redraw). A frame of another size is
+    /// changed or [`mark_dirty`](Self::mark_dirty) was called since the last
+    /// call (the display then needs a redraw). A frame of another size is
     /// cropped / padded with off dots.
     pub fn set_frame(&mut self, queue: &wgpu::Queue, frame: &DmdFrame) -> bool {
+        let dirty = core::mem::take(&mut self.dirty);
         if self.frame.as_ref() == Some(frame) {
-            return false;
+            return dirty;
         }
         let (w, h) = (self.spec.width, self.spec.height);
         let mut data = vec![0u8; w as usize * h as usize * 4];

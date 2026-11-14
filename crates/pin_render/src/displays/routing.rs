@@ -239,6 +239,15 @@ impl ScoreRenderer {
         }
     }
 
+    /// Forces the next [`update`](Self::update) to report a change (resize,
+    /// expose).
+    pub fn mark_dirty(&mut self) {
+        match self {
+            ScoreRenderer::Dmd(r) => r.mark_dirty(),
+            ScoreRenderer::Lcd(r) => r.mark_dirty(),
+        }
+    }
+
     /// Records the display into `viewport`.
     pub fn encode(
         &mut self,

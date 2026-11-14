@@ -27,8 +27,8 @@ pub enum LayerBlend {
 pub struct LayerLamp {
     /// Lamp (index into the snapshot's `lamps`).
     pub lamp: LampId,
-    /// Mask; its red channel is the mask value (a grey PNG decodes to
-    /// equal channels). Stretched over the translite like the layer.
+    /// Mask; its red channel times its alpha is the mask value (a grey PNG
+    /// decodes to equal channels, opaque; colour is premultiplied on upload). Stretched over the translite like the layer.
     pub mask: RgbaImage,
     /// Blend mode.
     pub blend: LayerBlend,
@@ -123,37 +123,25 @@ pub struct BackglassRenderer {
 }
 
 impl BackglassRenderer {
-    /// Uploads the layers of `desc` for targets of `format`.
+    /// Uploads the layers of `desc` for targets of `format`. An image that is
+    /// invalid ([`RgbaImage::is_valid`]) or has a side above the device's
+    /// `max_texture_dimension_2d` is refused with [`GpuError::InvalidArgument`].
     pub fn new(
         ctx: &GpuContext,
         format: wgpu::TextureFormat,
         desc: &BackglassDesc,
     ) -> Result<BackglassRenderer, GpuError> {
-        let max = ctx.device().limits().max_texture_dimension_2d;
         let mut quads = QuadRenderer::new(ctx, format);
         let mut layers = Vec::with_capacity(desc.layers.len());
-        let check = |img: &RgbaImage| {
-            if img.width == 0 || img.height == 0 || img.width > max || img.height > max {
-                Err(GpuError::InvalidArgument(format!(
-                    "backglass image {}x{} (each side 1..={max})",
-                    img.width, img.height
-                )))
-            } else {
-                Ok(())
-            }
-        };
         for l in &desc.layers {
-            check(&l.image)?;
-            let image = quads.add_image(ctx.queue(), &l.image);
+            // `add_image` refuses invalid or oversized images (D25).
+            let image = quads.add_image(ctx.queue(), &l.image)?;
             let (mask, lamp) = match &l.lamp {
                 None => (WHITE, None),
-                Some(ll) => {
-                    check(&ll.mask)?;
-                    (
-                        quads.add_image(ctx.queue(), &ll.mask),
-                        Some((ll.lamp, ll.blend)),
-                    )
-                }
+                Some(ll) => (
+                    quads.add_image(ctx.queue(), &ll.mask)?,
+                    Some((ll.lamp, ll.blend)),
+                ),
             };
             layers.push(GpuLayer {
                 tex: (image, mask),

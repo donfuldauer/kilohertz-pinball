@@ -570,18 +570,75 @@ impl QuadRenderer {
         }
     }
 
-    /// Uploads `image` (premultiplied) and returns its texture index.
-    pub(super) fn add_image(&mut self, queue: &wgpu::Queue, image: &RgbaImage) -> usize {
+    /// Checks that `image` can be uploaded: valid ([`RgbaImage::is_valid`])
+    /// and each side within the device's `max_texture_dimension_2d`.
+    pub(super) fn check_image(&self, image: &RgbaImage) -> Result<(), GpuError> {
+        let max = self.device.limits().max_texture_dimension_2d;
+        if !image.is_valid() || image.width > max || image.height > max {
+            return Err(GpuError::InvalidArgument(format!(
+                "display image {}x{} with {} bytes (each side 1..={max}, 4 bytes per pixel)",
+                image.width,
+                image.height,
+                image.pixels.len()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Uploads `image` and returns its texture index. Colour is
+    /// premultiplied by alpha on upload (lamp masks too: a mask's value is
+    /// its red channel times its alpha). Invalid or oversized images are
+    /// refused with [`GpuError::InvalidArgument`], never a wgpu panic.
+    pub(super) fn add_image(
+        &mut self,
+        queue: &wgpu::Queue,
+        image: &RgbaImage,
+    ) -> Result<usize, GpuError> {
+        let view = self.upload(queue, image)?;
+        self.textures.push(view);
+        Ok(self.textures.len() - 1)
+    }
+
+    /// Replaces texture `index` (from [`add_image`](Self::add_image)) with
+    /// `image`; the old texture is released and cached bind groups that
+    /// used it are dropped.
+    pub(super) fn replace_image(
+        &mut self,
+        queue: &wgpu::Queue,
+        index: usize,
+        image: &RgbaImage,
+    ) -> Result<(), GpuError> {
+        if index == WHITE || index >= self.textures.len() {
+            return Err(GpuError::InvalidArgument(format!(
+                "no display texture {index}"
+            )));
+        }
+        let view = self.upload(queue, image)?;
+        self.textures[index] = view;
+        self.groups.retain(|k, _| k.0 != index && k.1 != index);
+        Ok(())
+    }
+
+    /// Number of textures held (the built-in white one included).
+    pub(super) fn texture_count(&self) -> usize {
+        self.textures.len()
+    }
+
+    fn upload(
+        &self,
+        queue: &wgpu::Queue,
+        image: &RgbaImage,
+    ) -> Result<wgpu::TextureView, GpuError> {
+        self.check_image(image)?;
         let tex = upload_rgba8(
             &self.device,
             queue,
             "display image",
-            image.width.max(1),
-            image.height.max(1),
+            image.width,
+            image.height,
             &image.premultiplied(),
         );
-        self.textures.push(tex.create_view(&Default::default()));
-        self.textures.len() - 1
+        Ok(tex.create_view(&Default::default()))
     }
 
     fn group(&mut self, key: (usize, usize)) -> &wgpu::BindGroup {
