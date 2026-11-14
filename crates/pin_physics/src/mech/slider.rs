@@ -15,8 +15,9 @@
 //! before its stop at that speed), then `x(t) = clamp(x₀ + v₁·t)` with the
 //! velocity 0 from the instant the stop is reached (obligation 2). A slider
 //! resting on (or pushed slightly off) a stop has `v₀ ≈ 0`, so it reports
-//! no phantom surface speed. After an impulse the plain limit
-//! `(stop − x)/(dt − t)` applies. When the hand
+//! no phantom surface speed. After an impulse the same rule applies with
+//! `(stop − x)/(dt − t)`: the velocity change it adds toward a stop is
+//! limited, the momentum the slider had is kept. When the hand
 //! holds the rod back the tick is kinematic (`x` follows the hand linearly,
 //! inverse mass 0). A slider on its rest stop with nothing driving it away
 //! is *locked* (held by its preloaded spring: kinematic in every direction),
@@ -217,8 +218,19 @@ impl Slider {
             return;
         }
         let x = self.x_at(t);
-        let v = self.v_at(t) + impulse.dot(self.axis) / self.mass;
-        let v = self.stop_clamped(x, v, self.dt - t);
+        let v0 = self.v_at(t);
+        let v1 = v0 + impulse.dot(self.axis) / self.mass;
+        // As in `begin_tick`: the stop limits what the impulse adds toward
+        // it, but the momentum the slider already had toward the stop is
+        // kept (an impulse with no axial part changes nothing).
+        let limited = self.stop_clamped(x, v1, self.dt - t);
+        let v = if v1 > 0.0 {
+            limited.max(v0.max(0.0).min(v1))
+        } else if v1 < 0.0 {
+            limited.min(v0.min(0.0).max(v1))
+        } else {
+            v1
+        };
         self.seg_t = t;
         self.seg_x = x;
         self.seg_v = if v.is_finite() { v } else { 0.0 };
@@ -304,6 +316,29 @@ mod tests {
         // stop_clamped with no time left.
         assert_eq!(s.stop_clamped(s.lo, -1.0, 0.0), 0.0);
         assert_eq!(s.stop_clamped(0.005, 1.0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn transverse_impulse_keeps_axial_momentum_near_a_stop() {
+        let b = OBox {
+            center: Vec3::ZERO,
+            axes: [Vec3::Y, -Vec3::X, Vec3::Z],
+            half: Vec3::new(0.006, 0.012, 0.012),
+        };
+        let mut s = Slider::new(b, Vec3::Y, (-0.05, 0.0), 0.0);
+        s.mass = 0.05;
+        s.x = -0.001;
+        s.v = 4.0;
+        s.begin_tick(1e-3);
+        let v0 = s.v_at(0.0);
+        assert!(v0 > 3.9, "{v0}");
+        // No axial projection: no axial response (inverse mass 0 along x).
+        assert_eq!(s.inverse_mass(0.0, Vec3::X), 0.0);
+        s.apply_impulse(0.0, Vec3::X * 0.01);
+        assert_eq!(s.v_at(0.0), v0);
+        // An axial impulse changes the momentum by J/m on top of it.
+        s.apply_impulse(0.0, Vec3::Y * -0.05);
+        assert!((s.v_at(0.0) - (v0 - 1.0)).abs() < 1e-5, "{}", s.v_at(0.0));
     }
 
     #[test]

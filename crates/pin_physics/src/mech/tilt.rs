@@ -183,11 +183,17 @@ impl TiltBob {
                 let u = off / rho;
                 let along = libm::sqrtf((p.length * p.length - p.gap * p.gap).max(0.0));
                 r = u * p.gap + g * along;
-                // New velocity from the projected motion, then the bounce.
-                self.v = (r - self.r) / h;
-                let vn = self.v.dot(u);
+                // The position is corrected onto the ring; the bounce acts on
+                // the incoming velocity (not on the clamped displacement,
+                // which can be arbitrarily short), with the rod constraint
+                // applied at the contact point: the ring normal is `u` made
+                // tangent to the sphere there.
+                let n = r / p.length;
+                self.v -= n * self.v.dot(n);
+                let un = (u - n * u.dot(n)).normalize_or(u);
+                let vn = self.v.dot(un);
                 if vn > 0.0 {
-                    self.v -= u * (vn * (1.0 + p.restitution));
+                    self.v -= un * (vn * (1.0 + p.restitution));
                 }
             } else {
                 self.v = (r - self.r) / h;
@@ -243,9 +249,52 @@ mod tests {
             assert!(bob.offset().length() <= bob.params().gap + 1e-5);
         }
         assert!(any);
+        // The rebound sends the bob back inward (toward the rest position).
+        let mut bob = TiltBob::new(TiltBobParams::default());
+        bob.nudge(Vec3::new(0.0, 1.0, 0.0));
+        let mut v_in = 0.0f32;
+        for _ in 0..300 {
+            let before = bob.velocity().y;
+            bob.step(1e-3);
+            if bob.closed() {
+                v_in = before;
+                break;
+            }
+        }
+        let e = bob.params().restitution;
+        let v_out = bob.velocity().y;
+        assert!(v_in < 0.0 && v_out > 0.0, "{v_in} -> {v_out}");
+        assert!(v_out >= 0.5 * e * -v_in, "{v_in} -> {v_out} (e = {e})");
         bob.nudge(Vec3::NAN);
         bob.step(f32::NAN);
         assert!(!bob.closed());
+    }
+
+    #[test]
+    fn ring_rebound_uses_the_incoming_velocity() {
+        let p = TiltBobParams {
+            damping: 0.0,
+            restitution: 1.0,
+            ..TiltBobParams::default()
+        };
+        let mut bob = TiltBob::new(p);
+        // Just inside the ring (10 µm), moving out at 0.5 m/s.
+        let rho = p.gap - 1.0e-5;
+        let along = libm::sqrtf(p.length * p.length - rho * rho);
+        bob.r = Vec3::new(rho, 0.0, -along);
+        bob.v = Vec3::new(0.5, 0.0, 0.0);
+        let n = bob.r / p.length;
+        bob.v -= n * bob.v.dot(n);
+        let incoming = bob.v.x;
+        bob.step(1e-3);
+        assert!(bob.closed());
+        assert!(bob.offset().length() <= p.gap + 1e-5);
+        // Elastic: it leaves the ring at (about) the speed it arrived with.
+        let out = bob.velocity().x;
+        assert!(
+            out < -0.9 * incoming,
+            "outgoing {out} m/s for incoming {incoming} m/s"
+        );
     }
 
     #[test]
