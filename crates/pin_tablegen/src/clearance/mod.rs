@@ -133,9 +133,10 @@ pub struct ClearanceError {
     /// `mechs[2].exit_offset`, `meshes[4]`, `balls.restrict[1].area`,
     /// `layer_transitions[0]`).
     pub path: String,
-    /// What the profile needs, mm (NaN where no length applies).
+    /// What the profile needs, mm (0 where no length applies: restriction
+    /// findings and the flipper-build warning).
     pub required_mm: f32,
-    /// What the geometry offers, mm (NaN where no length applies).
+    /// What the geometry offers, mm (0 where no length applies).
     pub actual_mm: f32,
     /// Human-readable description naming the feature, the profile and
     /// both numbers.
@@ -215,6 +216,20 @@ impl Allowed {
             Allowed::Only(e) => e
                 .iter()
                 .any(|(l, a)| l.contains(&layer) && a.as_ref().is_none_or(|p| p.contains(q))),
+        }
+    }
+
+    /// Whether a ball of radius `r` whose centre the profile allows on
+    /// `layer` can cover plan point `q` (m): the area contains `q` or comes
+    /// within `r` of it.
+    fn near(&self, layer: u8, q: DVec2, r: f64) -> bool {
+        match self {
+            Allowed::Anywhere => true,
+            Allowed::Only(e) => e.iter().any(|(l, a)| {
+                l.contains(&layer)
+                    && a.as_ref()
+                        .is_none_or(|p| p.contains(q) || p.boundary_distance(q) <= r)
+            }),
         }
     }
 
@@ -341,8 +356,8 @@ fn declared_balls(table: &LoadedTable, sink: &mut Sink) -> Vec<Ball> {
                     ball: &r.profile,
                     file: TABLE,
                     path: format!("balls.restrict[{i}].area"),
-                    required_m: f64::NAN,
-                    actual_m: f64::NAN,
+                    required_m: 0.0,
+                    actual_m: 0.0,
                     message: format!("the area of the {:?} restriction {m}", r.profile),
                 });
                 areas.push(None);

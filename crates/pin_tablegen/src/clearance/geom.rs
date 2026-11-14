@@ -261,6 +261,24 @@ impl Polygon {
         inside
     }
 
+    /// Distance (m) from `q` to the polygon's boundary.
+    pub fn boundary_distance(&self, q: DVec2) -> f64 {
+        let n = self.points.len();
+        (0..n)
+            .map(|i| {
+                let (a, b) = (self.points[i], self.points[(i + 1) % n]);
+                let ab = b - a;
+                let len2 = ab.length_squared();
+                let t = if len2 > 0.0 {
+                    ((q - a).dot(ab) / len2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                q.distance(a + ab * t)
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
     /// Twice the signed area.
     pub fn area2(&self) -> f64 {
         let pts = &self.points;
@@ -395,6 +413,8 @@ mod tests {
         assert!(sq.contains(DVec2::new(0.5, 0.5)));
         assert!(!sq.contains(DVec2::new(1.5, 0.5)));
         assert!((sq.area2() - 2.0).abs() < 1e-12);
+        assert!((sq.boundary_distance(DVec2::new(0.5, 0.25)) - 0.25).abs() < 1e-12);
+        assert!((sq.boundary_distance(DVec2::new(3.0, 0.5)) - 2.0).abs() < 1e-12);
         assert!(sq.overlaps_box(DVec2::new(0.5, 0.5), DVec2::new(3.0, 3.0)));
         assert!(sq.overlaps_box(DVec2::new(-1.0, -1.0), DVec2::new(3.0, 3.0)));
         assert!(sq.overlaps_box(DVec2::new(-1.0, 0.4), DVec2::new(3.0, 0.6)));

@@ -14,6 +14,10 @@ use pin_physics::ball::MovingBodies;
 use pin_physics::flipper::FlipperSet;
 use pin_physics::world::CubicSpline;
 
+/// A VUK exit within this plan distance (m) of a guide or wireform of its
+/// layer counts as supported (a ramp or rail catches it).
+const EXIT_SPLINE_REACH_M: f64 = 0.1;
+
 /// Spacing (m) of the samples along lane rails and wireform centrelines.
 const SAMPLE_STEP_M: f64 = 2.0e-3;
 
@@ -63,6 +67,40 @@ impl World<'_> {
             });
         }
         out
+    }
+
+    /// Whether a ball of radius `r` centred at `e` on `layer` is over a
+    /// walkable collider of that layer (whose surface is below the ball's
+    /// centre by at least `r` minus a millimetre), or near a guide or
+    /// wireform of the layer.
+    fn supported(&self, layer: u8, e: DVec3, r: f64) -> bool {
+        let q = e.truncate();
+        let mut idx = Vec::new();
+        self.grid.query(self.tris, q, q, &mut idx);
+        let floor = idx.iter().any(|&i| {
+            let t = &self.tris[i as usize];
+            t.layer == layer
+                && t.nz() >= WALKABLE_NZ
+                && t.contains_plan(q)
+                && t.z_at(q) <= e.z - r + 1.0e-3
+        });
+        floor
+            || self.table.splines.iter().any(|s| {
+                s.layer == layer
+                    && s.points_m.windows(2).any(|p| {
+                        let (a, b) = (
+                            DVec3::from_array(p[0].map(f64::from)),
+                            DVec3::from_array(p[1].map(f64::from)),
+                        );
+                        let ab = b - a;
+                        let t = if ab.length_squared() > 0.0 {
+                            ((e - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        (a + ab * t).distance(e) <= EXIT_SPLINE_REACH_M
+                    })
+            })
     }
 
     /// Smallest distance from `c` to the colliders of `layer` accepted by
@@ -129,8 +167,14 @@ pub(super) fn lanes(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
         }) else {
             continue;
         };
-        let pts =
-            |s: &pin_assets::SplineSi| s.points_m.iter().map(|&p| vec3(p)).collect::<Vec<_>>();
+        // Plan view: the width is horizontal (a raised rail does not widen
+        // the lane).
+        let pts = |s: &pin_assets::SplineSi| {
+            s.points_m
+                .iter()
+                .map(|&p| Vec3::new(p[0], p[1], 0.0))
+                .collect::<Vec<_>>()
+        };
         let (Some(ls), Some(rs)) = (
             geom::build_spline(&pts(left), left.closed),
             geom::build_spline(&pts(right), right.closed),
@@ -156,7 +200,7 @@ pub(super) fn lanes(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
             }
             let narrowest = widths
                 .iter()
-                .filter(|(_, mid)| ball.allowed.at(left.layer, *mid))
+                .filter(|(_, mid)| ball.allowed.near(left.layer, *mid, ball.r()))
                 .map(|(d, _)| *d)
                 .fold(f64::INFINITY, f64::min);
             if narrowest < ball.needed() {
@@ -314,8 +358,8 @@ pub(super) fn flippers(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                     ball: "",
                     file: TABLE,
                     path: format!("flippers[{i}]"),
-                    required_m: f64::NAN,
-                    actual_m: f64::NAN,
+                    required_m: 0.0,
+                    actual_m: 0.0,
                     message: format!(
                         "flipper {n:?}: gaps to other flippers not checked (the physics cannot build it: {e})"
                     ),
@@ -351,7 +395,7 @@ pub(super) fn flippers(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
             let layer = cfgs[i].collision_layer;
             let pair = format!("{} / {}", name(i), name(j));
             for ball in balls {
-                if gap < ball.needed() && ball.allowed.at(layer, mid.truncate()) {
+                if gap < ball.needed() && ball.allowed.near(layer, mid.truncate(), ball.r()) {
                     sink.error(Finding {
                         feature: Feature::FlipperGap,
                         name: &pair,
@@ -470,7 +514,7 @@ pub(super) fn vuks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
             |o| DVec3::from_array(o.map(f64::from)) * 1.0e-3,
         );
         for ball in balls {
-            if !ball.allowed.at(layer, pos.truncate()) {
+            if !ball.allowed.near(layer, pos.truncate(), ball.r()) {
                 continue;
             }
             let r = ball.r();
@@ -525,6 +569,26 @@ pub(super) fn vuks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                             mm(tol)
                         ),
                     });
+                } else if !w.supported(exit_layer, e, r) {
+                    // Not overlapping anything, but not in free space over
+                    // a surface of its layer either (below the playfield,
+                    // inside a solid, off the table).
+                    sink.error(Finding {
+                        feature: Feature::VukExit,
+                        name: &m.id,
+                        ball: &ball.name,
+                        file: TABLE,
+                        path: format!("mechs[{i}].exit_offset"),
+                        required_m: need,
+                        actual_m: gap,
+                        message: format!(
+                            "vuk {:?} ejects ball {:?} ({}) to a point with no surface of layer {exit_layer} below it (and no guide or wireform of that layer within {}): the ball would fall out of the table",
+                            m.id,
+                            ball.name,
+                            mm(ball.d),
+                            mm(EXIT_SPLINE_REACH_M)
+                        ),
+                    });
                 }
             }
             if !ball.allowed.layer(exit_layer) {
@@ -534,8 +598,8 @@ pub(super) fn vuks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                     ball: &ball.name,
                     file: TABLE,
                     path: format!("mechs[{i}].exit_layer"),
-                    required_m: f64::NAN,
-                    actual_m: f64::NAN,
+                    required_m: 0.0,
+                    actual_m: 0.0,
                     message: format!(
                         "vuk {:?} can capture ball {:?} on layer {layer} and eject it onto layer {exit_layer}, which its restriction does not allow",
                         m.id, ball.name
@@ -559,8 +623,8 @@ pub(super) fn transitions(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                     ball: &ball.name,
                     file: TABLE,
                     path: format!("layer_transitions[{i}]"),
-                    required_m: f64::NAN,
-                    actual_m: f64::NAN,
+                    required_m: 0.0,
+                    actual_m: 0.0,
                     message: format!(
                         "layer transition {:?} ({} -> {}) is within ball {:?}'s restriction and leads to layer {}, which it does not allow",
                         t.name, t.from_layer, t.to_layer, ball.name, t.to_layer

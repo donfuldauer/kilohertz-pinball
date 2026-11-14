@@ -128,7 +128,7 @@ unchanged):
 
 ### CR-005: optional `area` of a `[balls] restrict` entry
 - **Requested by:** Subphase 2.8 (Implementer)
-- **Status:** open (applied in the working tree with Subphase 2.8; pending review)
+- **Status:** applied (in the working tree with Subphase 2.8, snapshotted by the Orchestrator; additive, confirmed by the 2.8 Reviewer)
 - **Kind:** additive
 - **Items:** `crates/pin_core/src/schema/table.rs` (`BallRestriction`), TOML key `balls.restrict[*].area`.
 - **Change:** `BallRestriction` gains `#[serde(default, skip_serializing_if = "Vec::is_empty")] pub area: Vec<[f32; 2]>` — a plan-view polygon in mm (≥ 3 points, even-odd rule) the ball centre stays inside on the listed layers; empty / omitted = the whole layer (the old meaning). Existing TOML parses and serialises unchanged.

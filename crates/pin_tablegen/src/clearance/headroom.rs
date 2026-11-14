@@ -165,8 +165,7 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                         )
                     })
                 });
-                let in_box =
-                    |q: &DVec2| q.x >= lo.x && q.x <= hi.x && q.y >= lo.y && q.y <= hi.y;
+                let in_box = |q: &DVec2| q.x >= lo.x && q.x <= hi.x && q.y >= lo.y && q.y <= hi.y;
                 let from_area = extra.iter().copied().filter(in_box);
                 // The ceiling's own corners (a low vertex) and, under them,
                 // the support.
@@ -186,7 +185,10 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                         continue;
                     }
                     let gap = r + cp.distance(centre3);
-                    if !(gap < need) || worst.get(&c.mesh).is_some_and(|e| e.gap <= gap) {
+                    if gap.is_nan()
+                        || gap >= need
+                        || worst.get(&c.mesh).is_some_and(|e| e.gap <= gap)
+                    {
                         continue;
                     }
                     if !ball.allowed.at(s.layer, q)

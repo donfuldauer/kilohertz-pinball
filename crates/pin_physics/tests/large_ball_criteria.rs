@@ -267,3 +267,63 @@ fn c3_xl_balls_bounce_off_held_and_resting_bats_at_any_speed() {
         }
     }
 }
+
+/// Reviewer B1 regressions (fix round 1). A light bat (5e-5 kg·m², 3 N·m)
+/// and a 445 g ball of 27, 50 and 79.4 mm, fired from many directions at up
+/// to 20 m/s with the flip at any tick: the tick-end overlap stays far below
+/// 5 % of the radius. Before the fix the XL ball ended 2.9 mm inside a bat
+/// its impact had set spinning (the tick-start sub-step grid was planned
+/// for a bat at rest) and a 50 mm ball 0.8 mm inside one whose normal and
+/// friction impulses cycled without converging.
+#[test]
+fn c3_heavy_balls_of_any_size_stay_out_of_a_light_fast_bat() {
+    use pin_core::BallProfile;
+    use pin_physics::ball::{BallSolver, BallSolverConfig};
+    let mut seed = 12345u64;
+    let mut rnd = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((seed >> 33) as f32) / (1u64 << 31) as f32
+    };
+    for d in [0.027f32, 0.05, 0.0794] {
+        let r = 0.5 * d;
+        let mut p: BallProfile = pin_core::profiles::builtin_profile("standard_steel").unwrap();
+        p.diameter_m = d;
+        p.mass_kg = 0.445;
+        let mut worst = 0.0f32;
+        for _ in 0..600 {
+            let (ang, frac, speed, flip_at) = (
+                rnd() * std::f32::consts::TAU,
+                0.1 + 0.85 * rnd(),
+                0.5 + 19.5 * rnd(),
+                (rnd() * 40.0) as u32,
+            );
+            let mut c = flip::left_config(0, [0.0; 3]);
+            c.power_torque_nm = 3.0;
+            c.inertia_kg_m2 = 5e-5;
+            let mut rig = space_rig(c);
+            let mut cfg = BallSolverConfig::from_defaults(&pin_core::PhysicsDefaults::builtin());
+            cfg.gravity = Vec3::ZERO;
+            rig.solver = BallSolver::new(cfg, std::slice::from_ref(&p));
+            let target = flip::bat_dir(-5.0) * (flip::BAT_LEN * frac);
+            let from = target + v(libm::cosf(ang), libm::sinf(ang), 0.0) * (0.12 + r);
+            let mut b = Ball::new(ProfileId(0), from + v(0.0, 0.0, r));
+            b.velocity = (target - from).normalize() * speed;
+            let h = rig.solver.add_ball(b).unwrap();
+            for t in 0..60u32 {
+                if t == flip_at {
+                    rig.flippers.set_energised(flip::LEFT, true);
+                }
+                rig.step();
+                let cp = rig
+                    .flippers
+                    .closest_point(0, 0.0, rig.ball(h).position)
+                    .unwrap();
+                worst = worst.max(r - cp.distance);
+            }
+        }
+        println!("d {d}: worst tick-end overlap {:.3} mm", worst * 1e3);
+        assert!(worst < 0.02 * r, "d {d}: {:.3} mm", worst * 1e3);
+    }
+}

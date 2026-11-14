@@ -184,9 +184,9 @@ fn small_areas_under_the_deck_are_rejected() {
 
 /// Reviewer B2: the ball is a sphere. An area ending short of the deck edge
 /// still lets the XL ball reach into the deck sheet; walls along the edge
-/// keep it out; a sloped ceiling is measured along its normal.
+/// keep it out.
 #[test]
-fn deck_edges_and_slopes_are_tested_with_the_whole_ball() {
+fn deck_edges_are_tested_with_the_whole_ball() {
     let layout = layout("apex_layout.toml");
     let (dir, mut table, scene) = build(
         &layout,
@@ -197,10 +197,22 @@ fn deck_edges_and_slopes_are_tested_with_the_whole_ball() {
         },
         "deck_edges",
     );
-    for (top, rejected) in [(699.0f32, true), (690.0, true), (670.0, true), (659.0, false), (600.0, false)] {
-        table.manifest.balls.restrict[0].area = vec![[100.0, 0.0], [514.0, 0.0], [514.0, top], [100.0, top]];
+    for (top, rejected) in [
+        (699.0f32, true),
+        (690.0, true),
+        (670.0, true),
+        (659.0, false),
+        (600.0, false),
+    ] {
+        table.manifest.balls.restrict[0].area =
+            vec![[100.0, 0.0], [514.0, 0.0], [514.0, top], [100.0, top]];
         let r = validate_clearance(&table, &scene);
-        assert_eq!(!of(&r, Feature::DeckHeadroom, XL).is_empty(), rejected, "area to y = {top}: {:#?}", r.errors);
+        assert_eq!(
+            !of(&r, Feature::DeckHeadroom, XL).is_empty(),
+            rejected,
+            "area to y = {top}: {:#?}",
+            r.errors
+        );
     }
     std::fs::remove_dir_all(dir).unwrap();
     // A wall along the deck edge (layer 0) keeps the ball's centre r away.
@@ -209,8 +221,16 @@ fn deck_edges_and_slopes_are_tested_with_the_whole_ball() {
          [[walls]]\npoints = [[0.0, 700.0], [514.0, 700.0]]\nmaterial = \"wood\"\n",
     );
     let area = [[0.0, 0.0], [514.0, 0.0], [514.0, 699.0], [0.0, 699.0]];
-    let r = check(&walled, &base_with(&[STEEL], vec![restrict(XL, &[0], &area)], ""), "walled_edge");
-    assert!(of(&r, Feature::DeckHeadroom, XL).is_empty(), "{:#?}", r.errors);
+    let r = check(
+        &walled,
+        &base_with(&[STEEL], vec![restrict(XL, &[0], &area)], ""),
+        "walled_edge",
+    );
+    assert!(
+        of(&r, Feature::DeckHeadroom, XL).is_empty(),
+        "{:#?}",
+        r.errors
+    );
 }
 
 /// A hand-built scene: the generated floor plus one ceiling triangle on
@@ -218,9 +238,18 @@ fn deck_edges_and_slopes_are_tested_with_the_whole_ball() {
 /// third vertex.
 fn dipping_scene(base: &GltfScene, low_mm: f32) -> GltfScene {
     let mut scene = base.clone();
-    let mut m = scene.meshes.iter().find(|m| m.name == "floor").unwrap().clone();
+    let mut m = scene
+        .meshes
+        .iter()
+        .find(|m| m.name == "floor")
+        .unwrap()
+        .clone();
     m.name = "ceiling".into();
-    m.positions = vec![[0.300, 0.400, 0.060], [0.400, 0.400, 0.060], [0.350, 0.500, low_mm * 1e-3]];
+    m.positions = vec![
+        [0.300, 0.400, 0.060],
+        [0.400, 0.400, 0.060],
+        [0.350, 0.500, low_mm * 1e-3],
+    ];
     m.normals = vec![[0.0, 0.0, 1.0]; 3];
     m.uvs.clear();
     m.indices = vec![0, 1, 2];
@@ -522,14 +551,21 @@ fn scoop_pocket_and_vuk_exit() {
         "vuk60",
     );
     assert_eq!(of(&r, Feature::VukExit, STEEL).len(), 1, "{:#?}", r.errors);
-    // On open floor the scoop is wide open; an exit to a layer the
-    // restriction does not allow is a warning.
+    // On open floor the scoop is wide open; an exit onto a small layer-1
+    // deck the XL restriction does not allow is a warning.
+    let small_deck = "[[decks]]\nlayer = 1\nz = 65.0\noutline = [[250.0, 650.0], [350.0, 650.0], [350.0, 750.0], [250.0, 750.0]]\nmaterial = \"acrylic\"\n";
+    let xl_area = [
+        [200.0, 300.0],
+        [400.0, 300.0],
+        [400.0, 500.0],
+        [200.0, 500.0],
+    ];
     let r = check(
-        &layout_with(""),
+        &layout_with(small_deck),
         &base_with(
             &[STEEL],
-            vec![restrict(XL, &[0], &[])],
-            &vuk([0.0, 300.0, 100.0], 1),
+            vec![restrict(XL, &[0], &xl_area)],
+            &vuk([0.0, 300.0, 120.0], 1),
         ),
         "vuk_open",
     );
@@ -541,6 +577,18 @@ fn scoop_pocket_and_vuk_exit() {
         "{:#?}",
         r.warnings
     );
+    // Reviewer N2: an exit not over any surface of its layer (below the
+    // playfield, off the deck) is an error.
+    for (offset, layer) in [([0.0f32, 0.0, -200.0], 0u8), ([0.0, 0.0, 120.0], 1)] {
+        let r = check(
+            &layout_with(small_deck),
+            &base_with(&[STEEL], vec![], &vuk(offset, layer)),
+            "vuk_nowhere",
+        );
+        let e = of(&r, Feature::VukExit, STEEL);
+        assert_eq!(e.len(), 1, "{offset:?}: {:#?}", r.errors);
+        assert!(e[0].message.contains("no surface"), "{}", e[0].message);
+    }
 }
 
 #[test]

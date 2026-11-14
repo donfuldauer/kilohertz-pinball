@@ -242,12 +242,15 @@ proptest! {
         for _ in 0..80 {
             rig.step();
             let cp = rig.flippers.closest_point(0, 0.0, rig.ball(h).position).unwrap();
-            // Tick-end overlap: < 0.03 mm while the ball meets the bat's side
-            // (centre below its 30 mm top); up to ~1.5 mm for one tick when
-            // a ball wider than ~57 mm rides the top rim of a fast bat
-            // (DECISIONS "2.8 — large balls and the flipper rim"). Cleared
-            // the next tick; the side check below is the tunnelling test.
-            prop_assert!(cp.distance > r - 2.0e-3, "d {d}: {} mm inside", (r - cp.distance) * 1e3);
+            // Tick-end overlap within 5 % of the radius (the spec bound;
+            // fix round 1 removed the radius-dependent causes, see
+            // DECISIONS "2.8 — large balls: …"); the side check below is
+            // the tunnelling test.
+            prop_assert!(
+                cp.distance > 0.95 * r,
+                "d {d}: {} mm inside",
+                (r - cp.distance) * 1e3
+            );
             let p = rig.ball(h).position - rig.flippers.pivot_m(flip::LEFT).unwrap();
             let bat = rig.flippers.bat_direction(flip::LEFT).unwrap();
             let along = p.dot(bat);
