@@ -16,7 +16,16 @@ const NEWTON_EPS: f32 = 1.0e-6;
 
 /// Bisection depth of a sample interval that may hold several roots of
 /// `g = (C - p) · C'` in [`CubicSpline::closest_point`]: the finest
-/// sub-interval is `1 / (SAMPLES_PER_SEGMENT * 2^5)` of a segment.
+/// sub-interval is `w = 1 / (SAMPLES_PER_SEGMENT * 2^5) = 1/512` of a
+/// segment.
+///
+/// The depth limit is not a proof that a piece holds no closer point: at
+/// this depth a piece with `g' <= 0` somewhere is dropped if its ends do not
+/// bracket a root, and only one root is refined if they do. What is missed
+/// there is bounded by `|g'_min| w²` in squared distance (see
+/// `CubicSpline::search_interval`), which on the spline sizes the solver
+/// meets is below f32 rounding (docs/DECISIONS.md, "closest_point
+/// depth-limit bound").
 const MULTI_ROOT_DEPTH: u32 = 5;
 
 /// Errors from spline, wireform and guide construction.
@@ -439,7 +448,9 @@ impl CubicSpline {
     /// maxima, even with both end signs alike), so it is bisected (bounded
     /// depth, fixed-size stack) until each piece is provably monotone,
     /// root-free or no closer than the best candidate, and every bracketed
-    /// root is refined (issue #8).
+    /// root is refined (issue #8); pieces that reach the depth limit are
+    /// settled without that proof, within the bound stated on
+    /// `search_interval` (well below f32 rounding at pinball scale).
     ///
     /// A non-finite `p` yields the curve start with an infinite distance.
     #[must_use]
@@ -592,6 +603,26 @@ impl CubicSpline {
     /// - refined when `g` provably increases (one root), or at
     ///   [`MULTI_ROOT_DEPTH`], if its ends bracket a root;
     /// - otherwise split at its midpoint, which is a candidate too.
+    ///
+    /// Guarantee. Every dropped piece other than at the depth limit provably
+    /// holds no point closer than `best` by more than the prune margin of
+    /// 4 ulps of the squared distance (about 2 ulps of the distance). At the
+    /// depth limit a piece is not proven: one whose ends do not bracket a
+    /// root is dropped (an interior minimum and maximum may sit between
+    /// same-sign ends) and one whose ends bracket a root has only one root
+    /// refined (there may be three). With `c = gp_min <= 0` there (else it
+    /// would be the provably increasing case), the second-order bound from
+    /// a candidate already taken bounds the miss: with both `g > 0`,
+    /// `|C - p|²` on the piece is at least `d_lo + c w²` (from the lower
+    /// end; with both `g < 0`, `d_hi + c w²` from the upper end), and around
+    /// a refined root `s*` it is at least `d(s*) + c w²`. So the result
+    /// exceeds the true minimum by at most `|gp_min| w²` in squared
+    /// distance, plus the 4-ulp margin and f32 rounding, with `w = 1/512` of
+    /// a segment. Release sweeps of about 3.7 · 10^5 queries on tight
+    /// splines near centres of curvature (the generator of
+    /// tests/spline_closest_point_depth_sweep.rs, which keeps 10^4 of them)
+    /// found no miss above f32 rounding: at most 31 nm lost in a
+    /// depth-limit piece, at 0.27 m coordinates.
     ///
     /// `best` is (squared distance, global parameter, point).
     fn search_interval(&self, i: usize, p: Vec3, root: Node, best: &mut (f32, f32, Vec3)) {
