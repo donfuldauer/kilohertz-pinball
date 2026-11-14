@@ -288,3 +288,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 2.6 | Independent Tester | Opus 5.5 | 2 | running | — | amend c4 per ruling |
 | 5 | 2.6 | Reviewer | Opus 5.5 | 1 | running | — | target/sp_phys_rev |
 | 5 | 2.6 | Independent Tester | Opus 5.5 | 2 | done | spec_2_6_criteria 12/12, props 9/9, alloc 2/2, spec_2_3_api 17/17; clippy/fmt clean; c4 square aim: 50 % 29.6 %, 70 % 10.0 % (straight 27.2 / 10.3 %); all steps > 0.75 m/s named | down-table oblique kept as report (40.4 / 68.7 %); impacts counted separately; D2 named |
+| 5 | 2.8 | Implementer | Opus 5.5 | 1 | done | pin_tablegen 155/155 (spec 34/34 + random); pin_physics all pass except a then-unamended 2.6 spec; ball_seam_bitident unchanged; large_ball_* 12/12; spec_2_8 21/21; c1 |Δp|/p ≤ 3.84e-7; c3 overlap ≤ 0.044 mm at 20 m/s tip; pin_tablegen 94.74 %; pin_physics coverage not re-measured (disk) | D1 restriction-area sampling; D2 warnings to stderr; CR-005 BallRestriction.area; N1 = 2.3 rim-riding (balls > ~57 mm) → HUMAN_QUEUE/Gate A1 |
+| 5 | 2.8 | Reviewer | Fable 5.2 | 1 | running | — | |
