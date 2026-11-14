@@ -246,7 +246,7 @@ fn a_ball_in_the_concave_pocket_of_a_raised_bat_stays_cradled() {
         // Dropped onto the face a little way up from the pocket.
         let (start, _) = ball_on_face(&config, end, 0.6, 1.0e-4);
         let h = rig.add_ball(start, Vec3::ZERO);
-        rig.run(4000);
+        rig.run(6000);
         let label = format!("free pocket, R {radius_mm} mm, bat at {end}°");
         cradled_for_2000_ticks(&mut rig, h, end, &label);
         // It rests where the face is level: at −end / arc angle of the arc.

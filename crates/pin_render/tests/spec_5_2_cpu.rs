@@ -932,7 +932,7 @@ proptest! {
 #[test]
 fn zz_tmp_explore() {
     // step per frame in metres along x; balls 0.06 m apart
-    for step in [0.0f32, 0.001, 0.01, 0.02, 0.029, 0.031, 0.05, 0.083, 0.2] {
+    for step in [0.2f32, 0.25, 0.3, 0.4, 0.5, 0.7, 1.0, 2.0] {
         let n = 6;
         let mut s = ProbeScheduler::new(2);
         let mut counts = vec![0u32; n];

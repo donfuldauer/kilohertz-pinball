@@ -139,3 +139,24 @@ pub fn reference_bat() -> CurvedBanana {
 pub fn reach_of(bat: &CurvedBanana) -> f32 {
     bat.reach()
 }
+
+/// Where a bat-frame point lies relative to the centreline arc of `bat`:
+/// the fraction of the arc its radial projection falls on (outside `0..=1`
+/// beyond the ends) and its distance from the centreline toward the
+/// concave side (negative on the convex side).
+pub fn arc_coords(bat: &CurvedBanana, local: Vec3) -> (f32, f32) {
+    let s = bat.concave_side().sign();
+    let from_center = local - bat.center_of_curvature();
+    let rho = libm::sqrtf(from_center.x * from_center.x + from_center.y * from_center.y);
+    let turned = libm::atan2f(from_center.x, -s * from_center.y);
+    (turned / bat.arc_angle(), bat.arc_radius() - rho)
+}
+
+/// A flipper in empty space without gravity.
+pub fn space_rig(config: FlipperConfig) -> Rig {
+    Rig::with_world(
+        &[config],
+        pin_physics::world::StaticWorldBuilder::new().build(),
+        Vec3::ZERO,
+    )
+}
