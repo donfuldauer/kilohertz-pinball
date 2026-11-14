@@ -170,7 +170,8 @@ impl OverlayFrame {
     /// Drops the frame without painting. Its texture deltas are discarded,
     /// so a painter that never saw them lacks those textures (egui's font
     /// atlas is sent once): discard only frames of a context that is not
-    /// painted by an [`OverlayPainter`] later, or tests.
+    /// painted by an [`OverlayPainter`] later, or tests. To skip a frame
+    /// of a painted context, hand it to [`OverlayPainter::defer`] instead.
     pub fn discard(self) {}
 }
 
@@ -185,6 +186,9 @@ impl Drop for OverlayFrame {
 pub struct OverlayPainter {
     renderer: egui_wgpu::Renderer,
     format: wgpu::TextureFormat,
+    /// Texture deltas of frames handed to [`defer`](Self::defer), applied
+    /// before the next painted frame's own.
+    pending: egui::TexturesDelta,
 }
 
 impl OverlayPainter {
@@ -198,7 +202,18 @@ impl OverlayPainter {
         OverlayPainter {
             renderer: egui_wgpu::Renderer::new(device, format, options),
             format,
+            pending: egui::TexturesDelta::default(),
         }
+    }
+
+    /// Keeps the texture deltas of `frame`, which is not painted (its
+    /// meshes are dropped), and applies them with the next painted frame,
+    /// so a skipped frame never loses a texture upload such as egui's font
+    /// atlas.
+    pub fn defer(&mut self, frame: OverlayFrame) {
+        let mut frame = frame;
+        self.pending
+            .append(std::mem::take(&mut frame.textures_delta));
     }
 
     /// The target format.
@@ -222,7 +237,9 @@ impl OverlayPainter {
     ) -> Vec<wgpu::CommandBuffer> {
         let mut frame = frame;
         let primitives = std::mem::take(&mut frame.primitives);
-        let mut textures_delta = std::mem::take(&mut frame.textures_delta);
+        // Deltas of deferred frames first, then this frame's (newer).
+        let mut textures_delta = std::mem::take(&mut self.pending);
+        textures_delta.append(std::mem::take(&mut frame.textures_delta));
         let pixels_per_point = frame.pixels_per_point;
         drop(frame);
         for (id, deltas) in &textures_delta.set {
@@ -265,6 +282,13 @@ impl OverlayPainter {
     }
 }
 
+impl Drop for OverlayPainter {
+    fn drop(&mut self) {
+        // epaint panics when a TexturesDelta with pending changes is dropped.
+        self.pending.clear();
+    }
+}
+
 /// Paints `frame` over a solid `background` (linear 0..1 RGBA written as-is
 /// into `Rgba8Unorm`) in a `width` × `height` offscreen texture and returns
 /// the tightly packed RGBA8 pixels. Used by the GPU tests.
@@ -286,6 +310,11 @@ pub fn paint_offscreen(
 /// [`paint_offscreen`] with a caller-kept `painter` (of format
 /// `Rgba8Unorm`), which holds the textures of earlier frames: use the same
 /// painter for every frame of one `egui::Context`.
+///
+/// A rejected request (zero or oversized `width`/`height`, a painter of
+/// another format) paints nothing and returns an error, but `painter` keeps
+/// the frame's texture deltas ([`OverlayPainter::defer`]), so a later valid
+/// paint of the same context still has e.g. the font atlas.
 pub fn paint_offscreen_with(
     ctx: &GpuContext,
     painter: &mut OverlayPainter,
@@ -296,7 +325,7 @@ pub fn paint_offscreen_with(
 ) -> Result<Vec<u8>, GpuError> {
     let max = ctx.device().limits().max_texture_dimension_2d;
     if width == 0 || height == 0 || width > max || height > max {
-        frame.discard();
+        painter.defer(frame);
         return Err(GpuError::InvalidArgument(format!(
             "image size {width}x{height} (each side must be 1..={max})"
         )));
@@ -304,7 +333,7 @@ pub fn paint_offscreen_with(
     let device = ctx.device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     if painter.format() != format {
-        frame.discard();
+        painter.defer(frame);
         return Err(GpuError::InvalidArgument(format!(
             "offscreen painter format {:?} (must be {format:?})",
             painter.format()
