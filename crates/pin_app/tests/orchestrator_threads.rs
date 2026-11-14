@@ -18,7 +18,9 @@ fn wait_for(threads: &Threads, limit: Duration, cond: impl Fn(&Threads) -> bool)
         if cond(threads) {
             return true;
         }
-        std::thread::yield_now();
+        // Sleep rather than spin: on a 2-core CI runner a busy wait competes
+        // with the threads under test.
+        std::thread::sleep(Duration::from_millis(1));
     }
     cond(threads)
 }
@@ -111,7 +113,9 @@ fn panicking_sim_is_reported() {
     let mut cfg = ThreadsConfig::idle(rx);
     cfg.sim = Box::new(Panics);
     let threads = spawn_threads(cfg).unwrap();
-    assert!(wait_for(&threads, Duration::from_secs(10), |t| t
+    // Unwinding prints a backtrace; symbolising it on a cold Windows CI runner
+    // can take well over 10 s, so allow a minute.
+    assert!(wait_for(&threads, Duration::from_secs(60), |t| t
         .finished()
         == ["sim"]));
     let e = threads.shutdown().unwrap_err();
