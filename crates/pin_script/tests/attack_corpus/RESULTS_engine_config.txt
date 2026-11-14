@@ -1,0 +1,174 @@
+ccost.lua              rc=0 NEW ERR Load("runtime error: rules.lua:1: string length exceeds the 64 KiB  | 
+ccost2.lua             rc=0 NEW ERR Load("runtime error: rules.lua:1: string length exceeds the 64 KiB  | 
+close.lua              rc=0 NEW ERR Load("syntax error: rules.lua:2: to-be-closed variables are not all | 
+close2.lua             rc=0 NEW ERR Load("syntax error: rules.lua:2: to-be-closed variables are not all | 
+close3.lua             rc=0 NEW ERR Load("syntax error: rules.lua:2: to-be-closed variables are not all | 
+close4.lua             rc=0 NEW ERR Load("syntax error: rules.lua:3: to-be-closed variables are not all | 
+close5.lua             rc=0 NEW ERR Load("syntax error: rules.lua:3: to-be-closed variables are not all | 
+close6.lua             rc=0 NEW ERR Load("syntax error: rules.lua:3: to-be-closed variables are not all | 
+concatop.lua           rc=0 NEW ERR Load("runtime error: rules.lua:1: string length exceeds the 64 KiB  | 
+coro.lua               rc=0 max tick 10.874µs slow(>=8ms)=0 faulted=false faults=0 | 
+deepconcat.lua         rc=0 max tick 123.17µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 123.17µs: Some("Runtime(\"runtime err
+deepgsub.lua           rc=0 max tick 313.053µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 313.053µs: Some("Runtime(\"runtime er
+deepmeta.lua           rc=0 max tick 111.564µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 111.564µs: Some("Runtime(\"runtime er
+deeppcall.lua          rc=0 max tick 182.412µs slow(>=8ms)=0 faulted=false faults=0 | 
+deeprec.lua            rc=0 max tick 2.815031ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 2.815031ms: Some("MemoryLimit")
+det.lua                rc=0 max tick 759.677µs slow(>=8ms)=0 faulted=false faults=0 | 
+e_closure.lua          rc=0 max tick 3.007786ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 3.007786ms: Some("MemoryLimit")
+e_concat.lua           rc=0 max tick 119.172µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 119.172µs: Some("BudgetExceeded")
+e_concat1.lua          rc=0 max tick 281.05µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 281.05µs: Some("BudgetExceeded")
+e_fmtmany.lua          rc=0 max tick 42.782µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 42.782µs: Some("BudgetExceeded")
+e_fmtmany2.lua         rc=0 max tick 216.407µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 216.407µs: Some("BudgetExceeded")
+e_gcfull1200.lua       rc=0 max tick 1.237173ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 5 after 1.237173ms: Some("BudgetExceeded")
+e_gcfull1700.lua       rc=0 max tick 1.099803ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 6 after 1.099803ms: Some("BudgetExceeded")
+e_gcfull1900.lua       rc=0 max tick 592.465µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 7 after 10.006µs: Some("MemoryLimit")
+e_gcfull600.lua        rc=0 max tick 1.02927ms slow(>=8ms)=0 faulted=false faults=0 | 
+e_gcfullw1200.lua      rc=0 max tick 1.033135ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 5 after 1.033135ms: Some("BudgetExceeded")
+e_gcfullw1700.lua      rc=0 max tick 5.178187ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 6 after 5.178187ms: Some("BudgetExceeded")
+e_gcfullw1900.lua      rc=0 max tick 450.792µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 7 after 7.483µs: Some("MemoryLimit")
+e_gcfullw600.lua       rc=0 max tick 972.285µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 3 after 972.285µs: Some("BudgetExceeded")
+e_gctab.lua            rc=0 max tick 1.185536ms slow(>=8ms)=0 faulted=false faults=0 | 
+e_gsub.lua             rc=0 max tick 172.951µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 172.951µs: Some("BudgetExceeded")
+e_gsub1.lua            rc=0 max tick 328.833µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 328.833µs: Some("BudgetExceeded")
+e_len.lua              rc=0 max tick 641.996µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 8 after 483.369µs: Some("BudgetExceeded")
+e_memfault.lua         rc=0 max tick 865.372µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 5 after 865.372µs: Some("MemoryLimit")
+e_memfault2.lua        rc=0 max tick 763.133µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 1 after 257.859µs: Some("MemoryLimit")
+e_mempcall.lua         rc=0 max tick 900.715µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 900.715µs: Some("BudgetExceeded")
+e_nextscan.lua         rc=0 max tick 534.028µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 20 after 284.567µs: Some("BudgetExceeded")
+e_pairsscan.lua        rc=0 max tick 449.962µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 20 after 282.733µs: Some("BudgetExceeded")
+e_pairsscan_nf.lua     rc=0 max tick 4.421953ms slow(>=8ms)=0 faulted=false faults=0 | 
+e_rehash16384.lua      rc=0 max tick 1.522959ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 5 after 1.522959ms: Some("BudgetExceeded")
+e_rehash32768.lua      rc=0 max tick 984.359µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 9 after 51.192µs: Some("MemoryLimit")
+e_rehash8192.lua       rc=0 max tick 2.247616ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 3 after 2.247616ms: Some("BudgetExceeded")
+e_rehashnf16384.lua    rc=0 max tick 708.578µs slow(>=8ms)=0 faulted=false faults=0 | 
+e_rehashnf32768.lua    rc=0 max tick 987.391µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 9 after 56.574µs: Some("MemoryLimit")
+e_rehashnf8192.lua     rc=0 max tick 498.064µs slow(>=8ms)=0 faulted=false faults=0 | 
+e_rep1.lua             rc=0 max tick 269.434µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 269.434µs: Some("BudgetExceeded")
+e_repnf.lua            rc=0 max tick 324.396µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 324.396µs: Some("BudgetExceeded")
+e_repsep.lua           rc=0 max tick 280.683µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 280.683µs: Some("BudgetExceeded")
+e_sortbig.lua          rc=0 max tick 557.236µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 10 after 329.426µs: Some("MemoryLimit")
+e_sortc.lua            rc=0 max tick 82.615µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 82.615µs: Some("BudgetExceeded")
+e_sortlt.lua           rc=0 NEW ERR BudgetExceeded after 457.615µs | 
+e_stackmem.lua         rc=0 max tick 2.264246ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 2.264246ms: Some("MemoryLimit")
+e_strkeygrow.lua       rc=0 max tick 1.978353ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 20 after 1.978353ms: Some("BudgetExceeded")
+e_tostr.lua            rc=0 max tick 684.247µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 684.247µs: Some("BudgetExceeded")
+e_unpackbig.lua        rc=0 max tick 469.743µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 10 after 9.568µs: Some("BudgetExceeded")
+eph.lua                rc=0 NEW ERR Load("runtime error: rules.lua:1: weak tables (__mode) are not allo | 
+eqop.lua               rc=0 NEW ERR Load("runtime error: rules.lua:1: string length exceeds the 64 KiB  | 
+errobj.lua             rc=0 max tick 277.62µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 277.62µs: Some("BudgetExceeded")
+fmt.lua                rc=0 max tick 37.572µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 37.572µs: Some("Runtime(\"runtime err
+fmtp.lua               rc=0 max tick 22.659µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 22.659µs: Some("Runtime(\"runtime err
+gc1.lua                rc=0 max tick 53.686µs slow(>=8ms)=0 faulted=false faults=0 | 
+gc2.lua                rc=0 max tick 29.808µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 29.808µs: Some("Runtime(\"runtime err
+m_api.lua              rc=0 max tick 88.062µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 88.062µs: Some("BudgetExceeded")
+m_apierr.lua           rc=0 max tick 763.831µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 763.831µs: Some("BudgetExceeded")
+m_arith.lua            rc=0 max tick 96.19µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 96.19µs: Some("BudgetExceeded")
+m_base.lua             rc=0 max tick 271.188µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 271.188µs: Some("BudgetExceeded")
+m_bigtab.lua           rc=0 max tick 732.457µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 732.457µs: Some("BudgetExceeded")
+m_cg.lua               rc=0 max tick 228.648µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 228.648µs: Some("BudgetExceeded")
+m_cgerr.lua            rc=0 max tick 752.73µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 752.73µs: Some("BudgetExceeded")
+m_closure.lua          rc=0 max tick 2.029136ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 2.029136ms: Some("BudgetExceeded")
+m_err.lua              rc=0 max tick 31.41µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 31.41µs: Some("BudgetExceeded")
+m_errdeep.lua          rc=0 max tick 2.955274ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 2.955274ms: Some("BudgetExceeded")
+m_fmodop.lua           rc=0 max tick 312.129µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 312.129µs: Some("BudgetExceeded")
+m_fmta.lua             rc=0 max tick 63.514µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 63.514µs: Some("BudgetExceeded")
+m_fmtf.lua             rc=0 max tick 2.199726ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 2.199726ms: Some("BudgetExceeded")
+m_fmtf2.lua            rc=0 max tick 565.721µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 565.721µs: Some("BudgetExceeded")
+m_fmtg.lua             rc=0 max tick 377.868µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 377.868µs: Some("BudgetExceeded")
+m_fmtlit.lua           rc=0 max tick 302.376µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 302.376µs: Some("BudgetExceeded")
+m_fmtlit2.lua          rc=0 NEW ERR Load("runtime error: rules.lua:1: string length exceeds the 64 KiB  | 
+m_fmtq.lua             rc=0 max tick 8.316µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 8.316µs: Some("BudgetExceeded")
+m_gsubf.lua            rc=0 max tick 620.767µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 620.767µs: Some("BudgetExceeded")
+m_gsubn.lua            rc=0 max tick 301.856µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 301.856µs: Some("BudgetExceeded")
+m_mathf.lua            rc=0 max tick 337.427µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 337.427µs: Some("BudgetExceeded")
+m_newtab.lua           rc=0 max tick 1.027126ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 1.027126ms: Some("BudgetExceeded")
+m_packc.lua            rc=0 max tick 34.799µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 34.799µs: Some("BudgetExceeded")
+m_packz.lua            rc=0 max tick 35.581µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 35.581µs: Some("BudgetExceeded")
+m_pow.lua              rc=0 max tick 878.148µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 878.148µs: Some("BudgetExceeded")
+m_rnd.lua              rc=0 max tick 368.153µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 368.153µs: Some("BudgetExceeded")
+m_rnderr.lua           rc=0 max tick 667.445µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 667.445µs: Some("BudgetExceeded")
+m_setlist.lua          rc=0 max tick 197.501µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 197.501µs: Some("BudgetExceeded")
+m_sub.lua              rc=0 max tick 374.757µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 374.757µs: Some("BudgetExceeded")
+m_tonum.lua            rc=0 max tick 115.569µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 115.569µs: Some("BudgetExceeded")
+m_tonum2.lua           rc=0 max tick 507.194µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 507.194µs: Some("BudgetExceeded")
+m_tonum3.lua           rc=0 max tick 62.176µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 62.176µs: Some("BudgetExceeded")
+m_tostrn.lua           rc=0 max tick 213.982µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 213.982µs: Some("BudgetExceeded")
+m_unpk.lua             rc=0 max tick 37.586µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 37.586µs: Some("BudgetExceeded")
+membig.lua             rc=0 max tick 27.217µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 22.228µs: Some("Runtime(\"runtime err
+mempcall.lua           rc=0 max tick 94.711µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 94.711µs: Some("BudgetExceeded")
+memxp.lua              rc=0 max tick 589.834µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 589.834µs: Some("BudgetExceeded")
+n_after.lua            rc=0 max tick 272.551µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 272.551µs: Some("BudgetExceeded")
+n_byte.lua             rc=0 max tick 604.736µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 604.736µs: Some("MemoryLimit")
+n_cmp.lua              rc=0 max tick 141.865µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 141.865µs: Some("BudgetExceeded")
+n_concatbuf.lua        rc=0 max tick 101.988µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 101.988µs: Some("BudgetExceeded")
+n_fmtbuf.lua           rc=0 max tick 58.462µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 58.462µs: Some("BudgetExceeded")
+n_gmatch.lua           rc=0 max tick 300.376µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 300.376µs: Some("BudgetExceeded")
+n_gmatch2.lua          rc=0 max tick 58.51µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 58.51µs: Some("BudgetExceeded")
+n_gsubbuf.lua          rc=0 max tick 178.689µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 178.689µs: Some("BudgetExceeded")
+n_gsubbuf2.lua         rc=0 max tick 115.745µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 115.745µs: Some("BudgetExceeded")
+n_holdroll.lua         rc=0 max tick 28.123µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 1 after 28.123µs: Some("Runtime(\"runtime err
+n_lenscan.lua          rc=0 max tick 993.686µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 993.686µs: Some("BudgetExceeded")
+n_lit.lua              rc=0 NEW ERR Load("runtime error: string length exceeds the 64 KiB limit") after | 
+n_litcat.lua           rc=0 NEW ERR Load("runtime error: rules.lua:1: string length exceeds the 64 KiB  | 
+n_nextscan.lua         rc=0 max tick 686.278µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 686.278µs: Some("BudgetExceeded")
+n_nextscan2.lua        rc=0 max tick 632.841µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 632.841µs: Some("BudgetExceeded")
+n_pack.lua             rc=0 max tick 34.305µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 34.305µs: Some("BudgetExceeded")
+n_pack2.lua            rc=0 max tick 19.182µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 19.182µs: Some("Runtime(\"runtime err
+n_sortcmp.lua          rc=0 NEW ERR BudgetExceeded after 988.262µs | 
+n_tblkey.lua           rc=0 max tick 301.145µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 301.145µs: Some("BudgetExceeded")
+n_tostr.lua            rc=0 NEW ERR BudgetExceeded after 1.383084ms | 
+n_utf8char.lua         rc=0 max tick 936.804µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 936.804µs: Some("BudgetExceeded")
+next2.lua              rc=0 max tick 2.28185ms slow(>=8ms)=0 faulted=false faults=0 | 
+ok.lua                 rc=0 max tick 10.571µs slow(>=8ms)=0 faulted=false faults=0 | 
+pairsleak.lua          rc=0 max tick 30.185µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 30.185µs: Some("Runtime(\"runtime err
+pattern.lua            rc=0 max tick 284.117µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 284.117µs: Some("BudgetExceeded")
+r_bigctor.lua          rc=0 max tick 1.800334ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 1.800334ms: Some("BudgetExceeded")
+r_closure.lua          rc=0 max tick 2.941475ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 2.941475ms: Some("MemoryLimit")
+r_concat80.lua         rc=0 max tick 131.315µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 131.315µs: Some("BudgetExceeded")
+r_errmsg.lua           rc=0 max tick 30.619µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 30.619µs: Some("BudgetExceeded")
+r_errmsg2.lua          rc=0 max tick 741.922µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 741.922µs: Some("BudgetExceeded")
+r_forvars.lua          rc=0 max tick 448.16µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 448.16µs: Some("BudgetExceeded")
+r_gcfull.lua           rc=0 max tick 1.0178ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 3 after 1.0178ms: Some("MemoryLimit")
+r_gcfull2.lua          rc=0 max tick 1.049077ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 3 after 773.984µs: Some("MemoryLimit")
+r_gcfull2b.lua         rc=0 max tick 1.008601ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 3 after 827.815µs: Some("MemoryLimit")
+r_gcfull3.lua          rc=0 max tick 998.874µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 3 after 934.033µs: Some("MemoryLimit")
+r_gcfull4.lua          rc=0 max tick 917.234µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 3 after 822.445µs: Some("MemoryLimit")
+r_gcfull4b.lua         rc=0 max tick 908.071µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 3 after 796.347µs: Some("MemoryLimit")
+r_gcfull5.lua          rc=0 max tick 995.033µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 3 after 839.747µs: Some("MemoryLimit")
+r_gcfull6.lua          rc=0 max tick 5.0557ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 3 after 815.603µs: Some("MemoryLimit")
+r_gcsmall.lua          rc=0 max tick 379.936µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 379.936µs: Some("BudgetExceeded")
+r_gcsmall2.lua         rc=0 max tick 336.234µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 336.234µs: Some("BudgetExceeded")
+r_gcsmallb.lua         rc=0 max tick 350.759µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 350.759µs: Some("BudgetExceeded")
+r_grow.lua             rc=0 max tick 1.064247ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 6 after 304.606µs: Some("MemoryLimit")
+r_growarr.lua          rc=0 max tick 608.681µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 7 after 171.161µs: Some("MemoryLimit")
+r_gsub80.lua           rc=0 max tick 172.633µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 172.633µs: Some("BudgetExceeded")
+r_gsub80t.lua          rc=0 max tick 132.934µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 132.934µs: Some("BudgetExceeded")
+r_holdfull.lua         rc=0 max tick 23.519µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 3 after 23.519µs: Some("Runtime(\"runtime err
+r_holdvar.lua          rc=0 max tick 24.081µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 24.081µs: Some("Runtime(\"runtime err
+r_len.lua              rc=0 max tick 798.226µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 4 after 124.47µs: Some("MemoryLimit")
+r_ltmeta.lua           rc=0 max tick 230.769µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 230.769µs: Some("BudgetExceeded")
+r_nextscan.lua         rc=0 max tick 1.696652ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 8 after 321.92µs: Some("MemoryLimit")
+r_pairsscan.lua        rc=0 max tick 493.469µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 8 after 132.052µs: Some("MemoryLimit")
+r_rehash.lua           rc=0 max tick 1.815881ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 4 after 115.676µs: Some("MemoryLimit")
+r_rehash2.lua          rc=0 max tick 1.834496ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 16 after 1.834496ms: Some("BudgetExceeded")
+r_rehash3.lua          rc=0 max tick 1.426536ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 4 after 120.618µs: Some("MemoryLimit")
+r_rep1.lua             rc=0 max tick 265.913µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 265.913µs: Some("BudgetExceeded")
+r_rep1b.lua            rc=0 max tick 295.684µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 295.684µs: Some("BudgetExceeded")
+r_rep80.lua            rc=0 max tick 39.241µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 39.241µs: Some("BudgetExceeded")
+r_schar.lua            rc=0 max tick 1.070923ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 1.070923ms: Some("MemoryLimit")
+r_selneg.lua           rc=0 max tick 349.048µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 349.048µs: Some("BudgetExceeded")
+r_selunpack.lua        rc=0 max tick 141.86µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 141.86µs: Some("BudgetExceeded")
+r_stackgrow.lua        rc=0 max tick 446.523µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 446.523µs: Some("BudgetExceeded")
+r_strkey.lua           rc=0 max tick 1.747882ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 1.747882ms: Some("BudgetExceeded")
+r_tailargs.lua         rc=0 max tick 436.083µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 436.083µs: Some("BudgetExceeded")
+r_tostr_tab.lua        rc=0 max tick 4.836495ms slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 4.836495ms: Some("BudgetExceeded")
+r_utf8.lua             rc=0 max tick 852.166µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 852.166µs: Some("BudgetExceeded")
+rep_empty.lua          rc=0 max tick 18.153µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 18.153µs: Some("BudgetExceeded")
+savebomb.lua           rc=0 NEW ERR Load("runtime error: rules.lua:1: string length exceeds the 64 KiB  | 
+sortbig.lua            rc=0 max tick 736.985µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 736.985µs: Some("BudgetExceeded")
+strmeta.lua            rc=0 max tick 28.738µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 28.738µs: Some("Runtime(\"runtime err
+tconcat.lua            rc=0 max tick 22.903µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 22.903µs: Some("BudgetExceeded")
+tinsert.lua            rc=0 max tick 37.665µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 20.504µs: Some("BudgetExceeded")
+tmove.lua              rc=0 max tick 28.817µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 28.817µs: Some("BudgetExceeded")
+tremove.lua            rc=0 max tick 20.281µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 20.281µs: Some("BudgetExceeded")
+tunpack.lua            rc=0 max tick 17.785µs slow(>=8ms)=0 faulted=true faults=1 | FAULT at tick 0 after 17.785µs: Some("BudgetExceeded")

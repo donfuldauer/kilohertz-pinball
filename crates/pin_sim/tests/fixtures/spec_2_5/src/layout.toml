@@ -1,0 +1,21 @@
+schema_version = 1
+
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 28.0
+
+[[walls]]
+points = [[0.0, 0.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 0.0]]
+closed = true
+material = "wood"
+
+[[posts]]
+position = [120.0, 520.0]
+radius = 6.0
+rubber = true
+
+[[posts]]
+position = [394.0, 520.0]
+radius = 6.0
+rubber = true
