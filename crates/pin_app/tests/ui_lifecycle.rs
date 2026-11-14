@@ -99,10 +99,7 @@ fn lifecycle_failure_and_ack() {
 fn second_request_is_refused_while_busy() {
     let mut m = menu();
     m.request_load_index(0).unwrap();
-    assert_eq!(
-        m.request_load_index(2),
-        Err(LoadRefusal::Busy(p("alpha")))
-    );
+    assert_eq!(m.request_load_index(2), Err(LoadRefusal::Busy(p("alpha"))));
     m.drain_commands();
     assert_eq!(
         m.request_load(Path::new("/x")),
@@ -187,7 +184,10 @@ fn tab_bar_navigation_wraps_and_back_closes() {
         m.apply(MenuInput::Down);
     }
     assert_eq!(m.focus(), SettingRow::INPUT.len());
-    assert_eq!(m.focused_setting(), Some(SettingRow::INPUT[SettingRow::INPUT.len() - 1]));
+    assert_eq!(
+        m.focused_setting(),
+        Some(SettingRow::INPUT[SettingRow::INPUT.len() - 1])
+    );
     m.apply(MenuInput::FocusRow(999));
     assert_eq!(m.focus(), SettingRow::INPUT.len());
     m.apply(MenuInput::Back);
@@ -221,7 +221,9 @@ fn settings_steps_clamp_cycle_and_coalesce() {
         .filter(|c| matches!(c, UiCommand::ConfigChanged(_)))
         .collect();
     assert_eq!(pending.len(), 1);
-    assert!(matches!(pending[0], UiCommand::ConfigChanged(c) if c.display_mode == DisplayMode::Multi));
+    assert!(
+        matches!(pending[0], UiCommand::ConfigChanged(c) if c.display_mode == DisplayMode::Multi)
+    );
     m.drain_commands();
     // Backglass monitor cycles PiP → 1 → 2 → PiP.
     m.apply_all([MenuInput::Down, MenuInput::Down]);
@@ -282,7 +284,12 @@ fn settings_steps_clamp_cycle_and_coalesce() {
 fn input_panel_rows() {
     let mut m = menu();
     m.apply(MenuInput::ShowPanel(Panel::Input));
-    m.set_profile_choices(vec!["xarcade".into(), "auto".into(), "pad".into(), "pad".into()]);
+    m.set_profile_choices(vec![
+        "xarcade".into(),
+        "auto".into(),
+        "pad".into(),
+        "pad".into(),
+    ]);
     assert_eq!(m.profile_choices(), ["auto", "xarcade", "pad"]);
     m.apply(MenuInput::Down);
     assert_eq!(m.focused_setting(), Some(SettingRow::InputProfile));
@@ -377,7 +384,10 @@ fn audio_budget_row() {
     m.apply(MenuInput::Set(SettingChange::DecodedAudioBudget(u32::MAX)));
     assert_eq!(m.config().audio.decoded_budget_mib, 8192);
     assert_eq!(m.config().audio.decoded_budget_bytes(), 8192 << 20);
-    assert_eq!(SettingRow::DecodedAudioBudget.value_text(m.config()), "8192 MiB");
+    assert_eq!(
+        SettingRow::DecodedAudioBudget.value_text(m.config()),
+        "8192 MiB"
+    );
     assert!(matches!(
         m.pending_commands().last(),
         Some(UiCommand::ConfigChanged(c)) if c.audio.decoded_budget_mib == 8192
@@ -400,18 +410,36 @@ fn cabinet_inputs_drive_the_menu_and_never_reach_the_sim() {
         assert_eq!(m.route_cabinet(i, false), InputRoute::Menu);
     }
     // Right flipper = Down, Start = Select (loads the focused table).
-    assert_eq!(m.route_cabinet(CabinetInput::RightFlipper, true), InputRoute::Menu);
+    assert_eq!(
+        m.route_cabinet(CabinetInput::RightFlipper, true),
+        InputRoute::Menu
+    );
     assert_eq!(m.focus(), 1);
     assert_eq!(m.route_cabinet(CabinetInput::Start, true), InputRoute::Menu);
     assert_eq!(m.load_state(), &TableLoadState::LoadRequested(p("alpha")));
     // Tilt does nothing; Action = Back.
     assert_eq!(m.route_cabinet(CabinetInput::Tilt, true), InputRoute::Menu);
-    assert_eq!(m.route_cabinet(CabinetInput::Action, true), InputRoute::Menu);
+    assert_eq!(
+        m.route_cabinet(CabinetInput::Action, true),
+        InputRoute::Menu
+    );
     assert_eq!(m.focus(), 0);
-    assert_eq!(cabinet_menu_input(CabinetInput::LeftFlipper), Some(MenuInput::Up));
-    assert_eq!(cabinet_menu_input(CabinetInput::LeftUpper), Some(MenuInput::Left));
-    assert_eq!(cabinet_menu_input(CabinetInput::RightUpper), Some(MenuInput::Right));
-    assert_eq!(cabinet_menu_input(CabinetInput::Launch), Some(MenuInput::Select));
+    assert_eq!(
+        cabinet_menu_input(CabinetInput::LeftFlipper),
+        Some(MenuInput::Up)
+    );
+    assert_eq!(
+        cabinet_menu_input(CabinetInput::LeftUpper),
+        Some(MenuInput::Left)
+    );
+    assert_eq!(
+        cabinet_menu_input(CabinetInput::RightUpper),
+        Some(MenuInput::Right)
+    );
+    assert_eq!(
+        cabinet_menu_input(CabinetInput::Launch),
+        Some(MenuInput::Select)
+    );
     assert_eq!(cabinet_menu_input(CabinetInput::Tilt), None);
     assert!(is_menu_toggle_key(MENU_TOGGLE_SCANCODE));
     assert!(!is_menu_toggle_key(40));
@@ -429,7 +457,10 @@ fn rescan_and_set_config() {
     c.wireframe = true;
     m.set_config(c);
     assert!(m.config().wireframe);
-    assert_eq!(m.config().calibration.nudge.gain, AppConfig::default().calibration.nudge.gain);
+    assert_eq!(
+        m.config().calibration.nudge.gain,
+        AppConfig::default().calibration.nudge.gain
+    );
     assert!(m.pending_commands().is_empty());
     m.set_display_count(0);
     assert_eq!(m.display_count(), 1);
@@ -485,5 +516,7 @@ fn nan_in_preserved_keys_does_not_fake_changes() {
     assert!(m.pending_commands().is_empty());
     m.apply(MenuInput::Set(SettingChange::Wireframe(true)));
     assert_eq!(m.pending_commands().len(), 1);
-    assert!(matches!(&m.pending_commands()[0], UiCommand::ConfigChanged(c) if c.extra.contains_key("future")));
+    assert!(
+        matches!(&m.pending_commands()[0], UiCommand::ConfigChanged(c) if c.extra.contains_key("future"))
+    );
 }

@@ -19,8 +19,12 @@ fn load_runs_on_init_and_starts_at_tick_zero() {
         assert_eq!(sim.tick(), 0);
         assert_eq!(sim.snapshot().tick, 0);
         // on_init: score 0 reported, one ball launched from the dispenser.
-        assert_eq!(sim.score(1), Some(0));
-        assert_eq!(sim.score(2), None);
+        assert_eq!(sim.score(0), Some(0));
+        assert_eq!(sim.score(1), None);
+        // 0-based like HostCommandQueue::scores; beyond the capacity: None.
+        assert_eq!(pin_sim::MAX_PLAYERS, 4);
+        assert_eq!(sim.score(4), None);
+        assert_eq!(sim.score(255), None);
         assert_eq!(sim.balls_in_play(), 1);
         assert_eq!(sim.snapshot().balls().len(), 1);
         let b = sim.snapshot().balls()[0];
@@ -129,9 +133,9 @@ fn set_switch_edges_reach_the_script_next_tick() {
         sim.set_switch("center_rollover", true).unwrap();
         assert_eq!(sim.switch_closed("center_rollover"), Some(true));
         assert_eq!(sim.switch_hits("center_rollover"), Some(1));
-        assert_eq!(sim.score(1), Some(0));
+        assert_eq!(sim.score(0), Some(0));
         sim.advance(1);
-        let s = sim.score(1).unwrap();
+        let s = sim.score(0).unwrap();
         assert!((10..=19).contains(&s), "{s}");
         // Forced: physics does not reopen it.
         sim.advance(5);
@@ -209,7 +213,7 @@ fn drained_ball_handle_goes_stale_and_the_script_relaunches() {
         let second = sim.ball_handles()[0];
         assert_eq!(second.slot(), first.slot());
         assert_ne!(second, first);
-        assert_eq!(sim.score(1), Some(1));
+        assert_eq!(sim.score(0), Some(1));
         // A ball thrown off the table escapes.
         let h = sim
             .spawn_ball("standard_steel", [0.25, 0.5, 0.5], [0.0, 0.0, 50.0])

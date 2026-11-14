@@ -6,8 +6,8 @@ mod fixtures;
 
 use fixtures::temp_dir;
 use pin_app::ui::{
-    AppConfig, CONFIG_FILE, CameraPreset, ConfigWarning, DisplayMode, MAX_CONFIG_BYTES,
-    PipCorner, ScoreDisplayKind, StagingMode,
+    AppConfig, CONFIG_FILE, CameraPreset, ConfigWarning, DisplayMode, MAX_CONFIG_BYTES, PipCorner,
+    ScoreDisplayKind, StagingMode,
 };
 use proptest::prelude::*;
 use std::path::PathBuf;
@@ -180,12 +180,30 @@ fn audio_budget_setting() {
     assert_eq!(ok.config.audio.decoded_budget_mib, 2048);
     assert_eq!(AppConfig::default().audio.decoded_budget_mib, 512);
     for (text, key) in [
-        ("[audio]\ndecoded_budget_mib = 63\n", "audio.decoded_budget_mib"),
-        ("[audio]\ndecoded_budget_mib = 8193\n", "audio.decoded_budget_mib"),
-        ("[audio]\ndecoded_budget_mib = -5\n", "audio.decoded_budget_mib"),
-        ("[audio]\ndecoded_budget_mib = 99999999999\n", "audio.decoded_budget_mib"),
-        ("[audio]\ndecoded_budget_mib = \"lots\"\n", "audio.decoded_budget_mib"),
-        ("[audio]\ndecoded_budget_mib = 512.5\n", "audio.decoded_budget_mib"),
+        (
+            "[audio]\ndecoded_budget_mib = 63\n",
+            "audio.decoded_budget_mib",
+        ),
+        (
+            "[audio]\ndecoded_budget_mib = 8193\n",
+            "audio.decoded_budget_mib",
+        ),
+        (
+            "[audio]\ndecoded_budget_mib = -5\n",
+            "audio.decoded_budget_mib",
+        ),
+        (
+            "[audio]\ndecoded_budget_mib = 99999999999\n",
+            "audio.decoded_budget_mib",
+        ),
+        (
+            "[audio]\ndecoded_budget_mib = \"lots\"\n",
+            "audio.decoded_budget_mib",
+        ),
+        (
+            "[audio]\ndecoded_budget_mib = 512.5\n",
+            "audio.decoded_budget_mib",
+        ),
         ("audio = 7\n", "audio"),
     ] {
         let l = AppConfig::from_toml_str(&format!("wireframe = true\n{text}"));
@@ -266,7 +284,11 @@ fn save_is_atomic_and_cleans_up_on_error() {
     assert!(!dir.join(".blocked.tmp").exists());
     assert_eq!(std::fs::read(&path).unwrap(), before);
     // No file name.
-    assert!(AppConfig::default().save(std::path::Path::new("/")).is_err());
+    assert!(
+        AppConfig::default()
+            .save(std::path::Path::new("/"))
+            .is_err()
+    );
     // A stale temporary file from a crash is overwritten.
     std::fs::write(dir.join(format!(".{CONFIG_FILE}.tmp")), b"junk").unwrap();
     AppConfig::default().save(&path).unwrap();

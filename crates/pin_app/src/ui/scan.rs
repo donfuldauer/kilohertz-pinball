@@ -270,7 +270,9 @@ pub fn scan_tables(root: &Path) -> Vec<TableEntry> {
         let path = entry.path();
         // Follows symlinks: a linked table folder is listed (its contents are
         // still confined by the VFS rules).
-        let is_dir = std::fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false);
+        let is_dir = std::fs::metadata(&path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
         if is_candidate(&path, is_dir) {
             let name = entry.file_name().to_string_lossy().into_owned();
             candidates.push((name, path));
@@ -329,9 +331,7 @@ fn read_preview(vfs: &Vfs) -> Result<Option<PreviewArt>, String> {
     };
     let size = vfs.file_size(file).map_err(|e| e.to_string())?;
     if size > MAX_PREVIEW_BYTES {
-        return Err(format!(
-            "{file} is {size} bytes (max {MAX_PREVIEW_BYTES})"
-        ));
+        return Err(format!("{file} is {size} bytes (max {MAX_PREVIEW_BYTES})"));
     }
     let bytes = vfs.read(file).map_err(|e: AssetError| e.to_string())?;
     let art = decode_preview(&bytes).map_err(|e| format!("{file}: {e}"))?;
@@ -378,9 +378,15 @@ pub fn box_downscale(rgba: &[u8], w: u32, h: u32, max_side: u32) -> (Vec<u8>, u3
         return (rgba.to_vec(), w, h);
     }
     let (tw, th) = if w >= h {
-        (max_side, (u64::from(h) * u64::from(max_side) / u64::from(w)).max(1) as u32)
+        (
+            max_side,
+            (u64::from(h) * u64::from(max_side) / u64::from(w)).max(1) as u32,
+        )
     } else {
-        ((u64::from(w) * u64::from(max_side) / u64::from(h)).max(1) as u32, max_side)
+        (
+            (u64::from(w) * u64::from(max_side) / u64::from(h)).max(1) as u32,
+            max_side,
+        )
     };
     let mut out = vec![0u8; (tw * th * 4) as usize];
     for ty in 0..th {

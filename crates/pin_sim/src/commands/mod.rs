@@ -15,7 +15,7 @@
 //! | `diverters (diverter, on)` | enables the diverter's `on` colliders and disables its `off` ones (or the reverse) |
 //! | `ball_spawns (dispenser, profile)` | a ball of `profile` at the dispenser's exit with its exit velocity (layer 0); counted as failed when the slot arena is full or an id is unknown |
 //! | `lamps`, `gi_tint` | the snapshot's lamp intensities (clamped `0..=1`) and GI tint |
-//! | `scores (player, score)` | stored for [`Simulation::score`] (the host only stores what scripts report) |
+//! | `scores (player, score)` | stored for [`Simulation::score`] (0-based players below [`MAX_PLAYERS`](crate::MAX_PLAYERS); the host only stores what scripts report) |
 //! | `persist_writes (key, value)` | `HostView::persist` |
 //! | `display_scenes`, `sounds` | not consumed here (Subphase 6.0) |
 
@@ -121,6 +121,9 @@ impl Simulation {
             self.gi = t.map(unit);
         }
         for &(player, score) in &self.cmd.scores {
+            if player >= crate::sim::MAX_PLAYERS {
+                continue;
+            }
             self.scores[usize::from(player)] = score;
             set_bit(&mut self.scores_reported, usize::from(player), true);
         }

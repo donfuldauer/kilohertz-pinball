@@ -980,70 +980,69 @@ impl MenuState {
         let c = &self.config;
         let n = self.display_count;
         let monitors: Vec<Option<u32>> = std::iter::once(None).chain((0..n).map(Some)).collect();
-        let change = if let Some(r) = row.range() {
-            let v = step_value(row.number(c).unwrap_or(r.min), dir, r);
-            SettingChange::number(row, v)
-        } else {
-            match row {
-                SettingRow::DisplayMode => Some(SettingChange::DisplayMode(cycle(
-                    &[DisplayMode::Single, DisplayMode::Multi],
-                    c.display_mode,
-                    dir,
-                ))),
-                SettingRow::PlayfieldDisplay => {
-                    let all: Vec<u32> = (0..n).collect();
-                    let cur = c.playfield_display.min(n - 1);
-                    Some(SettingChange::PlayfieldDisplay(cycle(&all, cur, dir)))
+        let change =
+            if let Some(r) = row.range() {
+                let v = step_value(row.number(c).unwrap_or(r.min), dir, r);
+                SettingChange::number(row, v)
+            } else {
+                match row {
+                    SettingRow::DisplayMode => Some(SettingChange::DisplayMode(cycle(
+                        &[DisplayMode::Single, DisplayMode::Multi],
+                        c.display_mode,
+                        dir,
+                    ))),
+                    SettingRow::PlayfieldDisplay => {
+                        let all: Vec<u32> = (0..n).collect();
+                        let cur = c.playfield_display.min(n - 1);
+                        Some(SettingChange::PlayfieldDisplay(cycle(&all, cur, dir)))
+                    }
+                    SettingRow::BackglassDisplay => Some(SettingChange::BackglassDisplay(cycle(
+                        &monitors,
+                        c.backglass_display.filter(|i| *i < n),
+                        dir,
+                    ))),
+                    SettingRow::ScoreDisplayMonitor => Some(SettingChange::ScoreDisplayMonitor(
+                        cycle(&monitors, c.score_display_monitor.filter(|i| *i < n), dir),
+                    )),
+                    SettingRow::BackglassPipCorner => Some(SettingChange::BackglassPipCorner(
+                        cycle(&PipCorner::ALL, c.backglass_pip.corner, dir),
+                    )),
+                    SettingRow::ScorePipCorner => Some(SettingChange::ScorePipCorner(cycle(
+                        &PipCorner::ALL,
+                        c.score_pip.corner,
+                        dir,
+                    ))),
+                    SettingRow::CameraPreset => Some(SettingChange::CameraPreset(cycle(
+                        &CameraPreset::ALL,
+                        c.camera_preset,
+                        dir,
+                    ))),
+                    SettingRow::ScoreDisplay => Some(SettingChange::ScoreDisplay(cycle(
+                        &[ScoreDisplayKind::Dmd, ScoreDisplayKind::Lcd],
+                        c.score_display,
+                        dir,
+                    ))),
+                    SettingRow::InputProfile => {
+                        let len = self.profiles.len() as i64;
+                        let i = self
+                            .profiles
+                            .iter()
+                            .position(|p| *p == c.input_profile)
+                            .map(|i| i as i64)
+                            // An unlisted profile: Right goes to the first, Left to the last.
+                            .unwrap_or(if dir > 0 { -1 } else { 0 });
+                        let next = (i + i64::from(dir.signum())).rem_euclid(len) as usize;
+                        Some(SettingChange::InputProfile(self.profiles[next].clone()))
+                    }
+                    SettingRow::StagingMode => Some(SettingChange::StagingMode(cycle(
+                        &StagingMode::ALL,
+                        c.staging_mode,
+                        dir,
+                    ))),
+                    SettingRow::Wireframe => Some(SettingChange::Wireframe(!c.wireframe)),
+                    _ => None,
                 }
-                SettingRow::BackglassDisplay => Some(SettingChange::BackglassDisplay(cycle(
-                    &monitors,
-                    c.backglass_display.filter(|i| *i < n),
-                    dir,
-                ))),
-                SettingRow::ScoreDisplayMonitor => Some(SettingChange::ScoreDisplayMonitor(
-                    cycle(&monitors, c.score_display_monitor.filter(|i| *i < n), dir),
-                )),
-                SettingRow::BackglassPipCorner => Some(SettingChange::BackglassPipCorner(cycle(
-                    &PipCorner::ALL,
-                    c.backglass_pip.corner,
-                    dir,
-                ))),
-                SettingRow::ScorePipCorner => Some(SettingChange::ScorePipCorner(cycle(
-                    &PipCorner::ALL,
-                    c.score_pip.corner,
-                    dir,
-                ))),
-                SettingRow::CameraPreset => Some(SettingChange::CameraPreset(cycle(
-                    &CameraPreset::ALL,
-                    c.camera_preset,
-                    dir,
-                ))),
-                SettingRow::ScoreDisplay => Some(SettingChange::ScoreDisplay(cycle(
-                    &[ScoreDisplayKind::Dmd, ScoreDisplayKind::Lcd],
-                    c.score_display,
-                    dir,
-                ))),
-                SettingRow::InputProfile => {
-                    let len = self.profiles.len() as i64;
-                    let i = self
-                        .profiles
-                        .iter()
-                        .position(|p| *p == c.input_profile)
-                        .map(|i| i as i64)
-                        // An unlisted profile: Right goes to the first, Left to the last.
-                        .unwrap_or(if dir > 0 { -1 } else { 0 });
-                    let next = (i + i64::from(dir.signum())).rem_euclid(len) as usize;
-                    Some(SettingChange::InputProfile(self.profiles[next].clone()))
-                }
-                SettingRow::StagingMode => Some(SettingChange::StagingMode(cycle(
-                    &StagingMode::ALL,
-                    c.staging_mode,
-                    dir,
-                ))),
-                SettingRow::Wireframe => Some(SettingChange::Wireframe(!c.wireframe)),
-                _ => None,
-            }
-        };
+            };
         if let Some(ch) = change {
             self.set(ch);
         }
@@ -1117,7 +1116,9 @@ impl MenuState {
             SettingChange::NudgeHighPass(v) => {
                 c.calibration.nudge.high_pass_hz = clamp(v, SettingRow::NudgeHighPass);
             }
-            SettingChange::NudgeGain(v) => c.calibration.nudge.gain = clamp(v, SettingRow::NudgeGain),
+            SettingChange::NudgeGain(v) => {
+                c.calibration.nudge.gain = clamp(v, SettingRow::NudgeGain)
+            }
             SettingChange::NudgeCurve(v) => {
                 c.calibration.nudge.curve_exponent = clamp(v, SettingRow::NudgeCurve);
             }
@@ -1127,7 +1128,8 @@ impl MenuState {
             SettingChange::NudgeMax(v) => c.calibration.nudge.max = clamp(v, SettingRow::NudgeMax),
             SettingChange::Wireframe(on) => c.wireframe = on,
             SettingChange::DecodedAudioBudget(mib) => {
-                c.audio.decoded_budget_mib = mib.clamp(MIN_DECODED_BUDGET_MIB, MAX_DECODED_BUDGET_MIB);
+                c.audio.decoded_budget_mib =
+                    mib.clamp(MIN_DECODED_BUDGET_MIB, MAX_DECODED_BUDGET_MIB);
             }
         }
         let extra = std::mem::take(&mut self.config.extra);

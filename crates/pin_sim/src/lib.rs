@@ -30,6 +30,6 @@ pub mod sim;
 pub mod tick;
 
 pub use sim::{
-    BallHandle, DEFAULT_SEED, HAPTICS_CAPACITY, MAX_PENDING_EDGES, SimConfig, SimCounters,
-    SimError, Simulation,
+    BallHandle, DEFAULT_SEED, HAPTICS_CAPACITY, MAX_PENDING_EDGES, MAX_PLAYERS, SimConfig,
+    SimCounters, SimError, Simulation,
 };

@@ -147,7 +147,7 @@ fn run(seed: u64, ops: &[Op]) -> Result<Trace, TestCaseError> {
         hashes,
         tick: sim.tick(),
         balls: handles.iter().map(|h| sim.ball(*h)).collect(),
-        scores: (1..=4).map(|p| sim.score(p)).collect(),
+        scores: (0..4).map(|p| sim.score(p)).collect(),
         hits: SWITCHES
             .iter()
             .chain(&["trough_1", "bumper_1_ring", "lower_left_eos"])

@@ -20,13 +20,13 @@ pub const SIM_STACK_BYTES: usize = 16 * 1024 * 1024;
 /// Default seed pinned by the brief.
 pub const DEFAULT_SEED: u64 = 0x4B485A;
 
-/// Player numbers of the fixture script's four reports (see rules.lua).
-/// `Simulation::score` uses the script's 1-based numbering (DECISIONS "2.5 —
-/// tick order details, switch composition and test API semantics").
-pub const P_SCORE: u8 = 1;
-pub const P_LANE_AT: u8 = 2;
-pub const P_ACTION_AT: u8 = 3;
-pub const P_RNG: u8 = 4;
+/// Host player indices of the fixture script's four reports (see rules.lua).
+/// `Simulation::score` is 0-based (the `HostCommandQueue` numbering,
+/// Orchestrator ruling): Lua `set_score(1, ..)` is `score(0)`.
+pub const P_SCORE: u8 = 0;
+pub const P_LANE_AT: u8 = 1;
+pub const P_ACTION_AT: u8 = 2;
+pub const P_RNG: u8 = 3;
 
 /// Ball radius of `standard_steel`, m.
 pub const R: f32 = 0.0135;

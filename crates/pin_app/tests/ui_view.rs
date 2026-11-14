@@ -22,7 +22,11 @@ fn entries() -> Vec<TableEntry> {
                 author: "Reference".into(),
                 version: "1.0.0".into(),
                 players_max: 4,
-                features: vec![TableFeature::LuaRules, TableFeature::Magnets, TableFeature::Dof],
+                features: vec![
+                    TableFeature::LuaRules,
+                    TableFeature::Magnets,
+                    TableFeature::Dof,
+                ],
                 preview: Some(PreviewArt {
                     file: "preview.png".into(),
                     width: 2,
@@ -62,7 +66,11 @@ impl Harness {
         }
     }
 
-    fn frame(&mut self, m: &mut MenuState, events: Vec<egui::Event>) -> (egui::FullOutput, Vec<MenuInput>) {
+    fn frame(
+        &mut self,
+        m: &mut MenuState,
+        events: Vec<egui::Event>,
+    ) -> (egui::FullOutput, Vec<MenuInput>) {
         self.time += 1.0 / 60.0;
         let raw = raw_input(self.size, self.ppp, events, Some(self.time));
         self.view.run_frame(&self.ctx, raw, m)
@@ -142,7 +150,12 @@ fn closed_menu_draws_nothing() {
 
 #[test]
 fn every_panel_lays_out_inside_the_overlay() {
-    for (size, ppp) in [(SIZE, 1.0), ([800, 600], 1.0), ([2560, 1440], 2.0), ([1080, 1920], 1.5)] {
+    for (size, ppp) in [
+        (SIZE, 1.0),
+        ([800, 600], 1.0),
+        ([2560, 1440], 2.0),
+        ([1080, 1920], 1.5),
+    ] {
         layout_inside(size, ppp);
     }
 }
@@ -168,7 +181,15 @@ fn layout_inside(size: [u32; 2], ppp: f32) {
         }
         match p {
             Panel::Tables => {
-                for t in ["Apex Circuit", "Lua", "Magnets", "DOF", "Play", "by Reference", "broken"] {
+                for t in [
+                    "Apex Circuit",
+                    "Lua",
+                    "Magnets",
+                    "DOF",
+                    "Play",
+                    "by Reference",
+                    "broken",
+                ] {
                     assert!(has_text(&out, t), "{t} missing");
                 }
                 assert!(has_text(&out, "Broken: table.toml: line 1"));
@@ -179,7 +200,12 @@ fn layout_inside(size: [u32; 2], ppp: f32) {
                 }
             }
             Panel::Input => {
-                for t in ["Input profile", "Flipper staging", "Live input", "Plunger raw"] {
+                for t in [
+                    "Input profile",
+                    "Flipper staging",
+                    "Live input",
+                    "Plunger raw",
+                ] {
                     assert!(has_text(&out, t), "{t} missing");
                 }
             }
@@ -189,7 +215,10 @@ fn layout_inside(size: [u32; 2], ppp: f32) {
         for c in &out.shapes {
             let r = c.shape.visual_bounding_rect();
             if r.is_positive() {
-                assert!(panel.contains_rect(r), "{p:?}: shape {r:?} outside {panel:?}");
+                assert!(
+                    panel.contains_rect(r),
+                    "{p:?}: shape {r:?} outside {panel:?}"
+                );
             }
         }
         let frame = OverlayFrame::new(&h.ctx, out);
@@ -199,7 +228,10 @@ fn layout_inside(size: [u32; 2], ppp: f32) {
             if let egui::epaint::Primitive::Mesh(mesh) = &prim.primitive {
                 let bounds = mesh.calc_bounds().intersect(prim.clip_rect);
                 if bounds.is_positive() {
-                    assert!(panel.contains_rect(bounds), "{p:?}: {bounds:?} outside {panel:?}");
+                    assert!(
+                        panel.contains_rect(bounds),
+                        "{p:?}: {bounds:?} outside {panel:?}"
+                    );
                 }
             }
         }
@@ -223,7 +255,10 @@ fn clicks_become_menu_inputs() {
     let tab = find(&out, "Display").expect("tab");
     out.drop_without_applying_deltas();
     let inputs = h.click(&mut m, tab.center());
-    assert!(inputs.contains(&MenuInput::ShowPanel(Panel::Display)), "{inputs:?}");
+    assert!(
+        inputs.contains(&MenuInput::ShowPanel(Panel::Display)),
+        "{inputs:?}"
+    );
     assert_eq!(m.panel(), Panel::Display);
     // Choice row ">" button steps the value.
     let (out, _) = h.frame(&mut m, Vec::new());
@@ -288,4 +323,3 @@ fn notices_and_failures_are_shown() {
     out.drop_without_applying_deltas();
     assert!(format!("{:?}", h.view).contains("MenuView"));
 }
-

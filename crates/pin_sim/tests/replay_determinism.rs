@@ -42,7 +42,7 @@ fn ten_thousand_tick_recording_replays_identically_ten_times() {
         sim.switch_hits("right_eos").unwrap() >= 20,
         "flippers fired"
     );
-    assert!(sim.score(1).unwrap() > 0, "the script scored");
+    assert!(sim.score(0).unwrap() > 0, "the script scored");
     assert!(sim.counters().balls_drained >= 1, "balls moved and drained");
     assert!(!sim.script_faulted());
 

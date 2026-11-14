@@ -16,7 +16,13 @@ fn populated_root() -> std::path::PathBuf {
     let with_preview = with_file(
         &files,
         "preview.png",
-        &png(2, 1, |x, _| if x == 0 { [255, 0, 0, 255] } else { [0, 255, 0, 255] }),
+        &png(2, 1, |x, _| {
+            if x == 0 {
+                [255, 0, 0, 255]
+            } else {
+                [0, 255, 0, 255]
+            }
+        }),
     );
     write_dir(&root.join("b_apex"), &with_preview);
     // Valid folder, renamed table, no preview; upper-case name sorts by
@@ -68,7 +74,11 @@ fn scan_lists_candidates_sorted_with_status() {
     assert_eq!(entries[1].title(), "Apex Circuit");
     // Broken entries keep their file name as title and expose the error.
     assert_eq!(entries[2].title(), "c_broken");
-    assert!(entries[2].error().is_some_and(|e| e.contains("table.toml")), "{:?}", entries[2].error());
+    assert!(
+        entries[2].error().is_some_and(|e| e.contains("table.toml")),
+        "{:?}",
+        entries[2].error()
+    );
     assert!(entries[3].error().is_some());
     for e in &entries {
         assert_eq!(e.path, root.join(&e.file_name));
@@ -94,7 +104,11 @@ fn metadata_badges_and_preview() {
         TableFeature::DmdDisplay,
         TableFeature::Dof,
     ] {
-        assert!(info.features.contains(&f), "{f:?} missing in {:?}", info.features);
+        assert!(
+            info.features.contains(&f),
+            "{f:?} missing in {:?}",
+            info.features
+        );
     }
     assert!(!info.features.contains(&TableFeature::LcdDisplay));
     let mut sorted = info.features.clone();
@@ -105,7 +119,10 @@ fn metadata_badges_and_preview() {
         assert!(!f.label().is_empty());
     }
     let art = info.preview.as_ref().expect("preview");
-    assert_eq!((art.file.as_str(), art.width, art.height), ("preview.png", 2, 1));
+    assert_eq!(
+        (art.file.as_str(), art.width, art.height),
+        ("preview.png", 2, 1)
+    );
     assert_eq!(art.rgba, [255, 0, 0, 255, 0, 255, 0, 255]);
     assert!(info.preview_error.is_none());
     // No preview file: none, no error.
@@ -114,7 +131,11 @@ fn metadata_badges_and_preview() {
     // Broken preview: the table still loads, the error is noted.
     let bad = entries[5].info().unwrap();
     assert!(bad.preview.is_none());
-    assert!(bad.preview_error.as_deref().is_some_and(|e| e.contains("preview.png")));
+    assert!(
+        bad.preview_error
+            .as_deref()
+            .is_some_and(|e| e.contains("preview.png"))
+    );
     // The packed archive has the same metadata as the folder.
     assert_eq!(entries[4].info().unwrap().features, info.features);
 }
@@ -131,12 +152,16 @@ fn feature_badges_follow_the_manifest() {
     let lcd = with_file(
         &files,
         "backglass.toml",
-        bg.replacen("mode = \"dmd\"", "mode = \"lcd\"", 1).as_bytes(),
+        bg.replacen("mode = \"dmd\"", "mode = \"lcd\"", 1)
+            .as_bytes(),
     );
     write_dir(&root, &lcd);
     match inspect_bundle(&root) {
         TableStatus::Ready(info) => {
-            assert!(info.features.contains(&TableFeature::LcdDisplay), "{info:?}");
+            assert!(
+                info.features.contains(&TableFeature::LcdDisplay),
+                "{info:?}"
+            );
             assert!(!info.features.contains(&TableFeature::DmdDisplay));
         }
         other => {

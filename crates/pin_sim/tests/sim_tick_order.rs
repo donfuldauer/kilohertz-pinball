@@ -47,7 +47,7 @@ fn tick_order_as_seen_by_the_script() {
         let press = InputEvent::button(2 * TICK_NS + 400_000, CabinetInput::Start, true);
         step(&mut sim, &[press]);
         assert_eq!(sim.tick(), 3);
-        assert_eq!(sim.score(2), Some(3));
+        assert_eq!(sim.score(1), Some(3));
         assert_eq!(sim.switch_closed("start"), Some(true));
 
         // Steps 2 → 3 → 4: a coil pulsed in on_tick of tick 5 moves the bat
@@ -78,9 +78,9 @@ fn tick_order_as_seen_by_the_script() {
         }
         let n = closed_at.expect("the ball reached the rollover");
         assert!(sim.ball(ball).is_some());
-        assert_eq!(sim.score(1), None, "not delivered in the tick it happened");
+        assert_eq!(sim.score(0), None, "not delivered in the tick it happened");
         step(&mut sim, &[]);
-        assert_eq!(sim.score(1), Some(n as i64 + 1));
+        assert_eq!(sim.score(0), Some(n as i64 + 1));
         assert_eq!(sim.switch_hits("center_rollover"), Some(1));
         // Step 6: lamps reach the snapshot in the tick they are set.
         while sim.tick() < 59 {
@@ -91,7 +91,7 @@ fn tick_order_as_seen_by_the_script() {
         assert_eq!(out.lamps[1], 1.0);
         assert_eq!(out.tick, 60);
         // The EOS edge of the raised bat reached the script after tick 5.
-        let eos = sim.score(3).expect("EOS edge delivered");
+        let eos = sim.score(2).expect("EOS edge delivered");
         assert!(eos > 5, "{eos}");
 
         // A script fault is state, not a stall: ticks go on.
@@ -120,9 +120,9 @@ fn input_events_after_the_tick_wait_for_their_tick() {
         step(&mut sim, &[press]);
         assert_eq!(sim.switch_closed("start"), Some(false));
         step(&mut sim, &[]);
-        assert_eq!(sim.score(2), None);
+        assert_eq!(sim.score(1), None);
         step(&mut sim, &[]);
-        assert_eq!(sim.score(2), Some(4));
+        assert_eq!(sim.score(1), Some(4));
         assert_eq!(sim.counters().inputs_dropped, 0);
     });
 }

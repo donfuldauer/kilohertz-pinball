@@ -191,11 +191,11 @@ fn runaway_wasm_callback_does_not_stall_the_tick() {
             .spawn_ball("standard_steel", [0.06, 0.95, R], [0.0; 3])
             .unwrap();
         sim.advance(20);
-        assert_eq!(sim.score(1), Some(20));
+        assert_eq!(sim.score(0), Some(20));
         sim.set_switch("action", true).unwrap();
         sim.advance(500);
         assert_eq!(sim.tick(), 520);
-        let frozen = sim.score(1).unwrap();
+        let frozen = sim.score(0).unwrap();
         assert!(
             frozen == 20 || frozen == 21,
             "a faulted module is not called: {frozen}"
@@ -339,10 +339,15 @@ proptest! {
     fn injected_balls_stay_finite_and_on_the_table(
         ceramic in any::<bool>(),
         x in 0.02f32..0.49,
-        y in 0.02f32..1.05,
+        y in 0.25f32..1.05,
         vx in -6.0f32..6.0,
         vy in -6.0f32..6.0,
     ) {
+        // A ball injected inside a solid (bumper body, post) is not a
+        // meaningful state: keep clear of them and of the flipper bats.
+        let near = |cx: f32, cy: f32, r: f32| (x - cx).hypot(y - cy) < r;
+        prop_assume!(!near(0.257, 0.640, 0.060));
+        prop_assume!(!near(0.120, 0.520, 0.025) && !near(0.394, 0.520, 0.025));
         let r: Result<(), TestCaseError> = on_sim_thread(move || {
             let mut sim = load();
             let profile = if ceramic { "ceramic_powerball" } else { "standard_steel" };

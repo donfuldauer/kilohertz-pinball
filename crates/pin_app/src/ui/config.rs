@@ -237,8 +237,8 @@ impl StagingMode {
         match self {
             StagingMode::Table => table,
             StagingMode::Dedicated => {
-                if let FlipperStagingMode::DedicatedButton(_) | FlipperStagingMode::ParallelLinked(_) =
-                    table
+                if let FlipperStagingMode::DedicatedButton(_)
+                | FlipperStagingMode::ParallelLinked(_) = table
                 {
                     return FlipperStagingMode::DedicatedButton(match table {
                         FlipperStagingMode::DedicatedButton(i)
@@ -559,7 +559,11 @@ impl fmt::Display for ConfigWarning {
                 "config.toml is {n} bytes (max {MAX_CONFIG_BYTES}); using defaults"
             ),
             ConfigWarning::Corrupt(e) => {
-                write!(f, "config.toml is corrupt; using defaults: {}", e.trim_end())
+                write!(
+                    f,
+                    "config.toml is corrupt; using defaults: {}",
+                    e.trim_end()
+                )
             }
             ConfigWarning::InvalidValue { key, message } => {
                 write!(f, "config.toml: {key}: {message}; using the default")
@@ -782,18 +786,90 @@ impl AppConfig {
         let c = &mut self.calibration;
         let dc = &d.calibration;
         let checks: [(&str, &mut f32, f32, f32, f32); 12] = [
-            ("backglass_pip.width_fraction", &mut self.backglass_pip.width_fraction, pw, sw, d.backglass_pip.width_fraction),
-            ("score_pip.width_fraction", &mut self.score_pip.width_fraction, pw, sw, d.score_pip.width_fraction),
-            ("calibration.plunger.deadzone", &mut c.plunger.deadzone, 0.0, 0.5, dc.plunger.deadzone),
-            ("calibration.plunger.rest_tracking_per_s", &mut c.plunger.rest_tracking_per_s, 0.0, 100.0, dc.plunger.rest_tracking_per_s),
-            ("calibration.plunger.release_min_speed", &mut c.plunger.release_min_speed, 0.0, 1000.0, dc.plunger.release_min_speed),
-            ("calibration.nudge.high_pass_hz", &mut c.nudge.high_pass_hz, 0.0, 50.0, dc.nudge.high_pass_hz),
-            ("calibration.nudge.gain", &mut c.nudge.gain, 0.0, 10.0, dc.nudge.gain),
-            ("calibration.nudge.curve_exponent", &mut c.nudge.curve_exponent, 0.1, 5.0, dc.nudge.curve_exponent),
-            ("calibration.nudge.deadzone", &mut c.nudge.deadzone, 0.0, 1.0, dc.nudge.deadzone),
-            ("calibration.nudge.max", &mut c.nudge.max, 0.0, 10.0, dc.nudge.max),
-            ("calibration.dual_stage_lower", &mut c.dual_stage_lower, 0.0, 1.0, dc.dual_stage_lower),
-            ("calibration.dual_stage_upper", &mut c.dual_stage_upper, 0.0, 1.0, dc.dual_stage_upper),
+            (
+                "backglass_pip.width_fraction",
+                &mut self.backglass_pip.width_fraction,
+                pw,
+                sw,
+                d.backglass_pip.width_fraction,
+            ),
+            (
+                "score_pip.width_fraction",
+                &mut self.score_pip.width_fraction,
+                pw,
+                sw,
+                d.score_pip.width_fraction,
+            ),
+            (
+                "calibration.plunger.deadzone",
+                &mut c.plunger.deadzone,
+                0.0,
+                0.5,
+                dc.plunger.deadzone,
+            ),
+            (
+                "calibration.plunger.rest_tracking_per_s",
+                &mut c.plunger.rest_tracking_per_s,
+                0.0,
+                100.0,
+                dc.plunger.rest_tracking_per_s,
+            ),
+            (
+                "calibration.plunger.release_min_speed",
+                &mut c.plunger.release_min_speed,
+                0.0,
+                1000.0,
+                dc.plunger.release_min_speed,
+            ),
+            (
+                "calibration.nudge.high_pass_hz",
+                &mut c.nudge.high_pass_hz,
+                0.0,
+                50.0,
+                dc.nudge.high_pass_hz,
+            ),
+            (
+                "calibration.nudge.gain",
+                &mut c.nudge.gain,
+                0.0,
+                10.0,
+                dc.nudge.gain,
+            ),
+            (
+                "calibration.nudge.curve_exponent",
+                &mut c.nudge.curve_exponent,
+                0.1,
+                5.0,
+                dc.nudge.curve_exponent,
+            ),
+            (
+                "calibration.nudge.deadzone",
+                &mut c.nudge.deadzone,
+                0.0,
+                1.0,
+                dc.nudge.deadzone,
+            ),
+            (
+                "calibration.nudge.max",
+                &mut c.nudge.max,
+                0.0,
+                10.0,
+                dc.nudge.max,
+            ),
+            (
+                "calibration.dual_stage_lower",
+                &mut c.dual_stage_lower,
+                0.0,
+                1.0,
+                dc.dual_stage_lower,
+            ),
+            (
+                "calibration.dual_stage_upper",
+                &mut c.dual_stage_upper,
+                0.0,
+                1.0,
+                dc.dual_stage_upper,
+            ),
         ];
         for (key, v, lo, hi, dv) in checks {
             if !(v.is_finite() && *v >= lo && *v <= hi) {

@@ -31,16 +31,16 @@ pub mod scan;
 pub mod view;
 
 pub use config::{
-    AUTO_PROFILE, AppConfig, AudioConfig, CONFIG_FILE, CalibrationConfig, CameraPreset,
-    ConfigLoad, ConfigWarning, DEFAULT_DECODED_BUDGET_MIB, DisplayMode, MAX_CONFIG_BYTES,
+    AUTO_PROFILE, AppConfig, AudioConfig, CONFIG_FILE, CalibrationConfig, CameraPreset, ConfigLoad,
+    ConfigWarning, DEFAULT_DECODED_BUDGET_MIB, DisplayMode, MAX_CONFIG_BYTES,
     MAX_DECODED_BUDGET_MIB, MIN_DECODED_BUDGET_MIB, NudgeCalibration, PipConfig, PipCorner,
     PlungerCalibration, ScoreDisplayKind, StagingMode,
 };
 pub use live::{InputMonitor, MAX_INPUT_SOURCES, PlungerReading};
 pub use menu::{
     InputRoute, LoadRefusal, MENU_TOGGLE_BUTTON, MENU_TOGGLE_SCANCODE, MenuInput, MenuState,
-    NumericRange, Panel, SettingChange, SettingRow, TableLoadState, UiCommand,
-    cabinet_menu_input, default_profile_choices, is_menu_toggle_button, is_menu_toggle_key,
+    NumericRange, Panel, SettingChange, SettingRow, TableLoadState, UiCommand, cabinet_menu_input,
+    default_profile_choices, is_menu_toggle_button, is_menu_toggle_key,
 };
 pub use scan::{
     PreviewArt, TableEntry, TableFeature, TableInfo, TableStatus, decode_preview, inspect_bundle,

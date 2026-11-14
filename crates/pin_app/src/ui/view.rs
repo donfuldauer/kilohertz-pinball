@@ -249,7 +249,10 @@ impl MenuView {
                 let busy = load.is_busy();
                 let label = if busy { "Loading…" } else { "Play" };
                 if ui
-                    .add_enabled(!busy, egui::Button::new(egui::RichText::new(label).strong()))
+                    .add_enabled(
+                        !busy,
+                        egui::Button::new(egui::RichText::new(label).strong()),
+                    )
                     .clicked()
                 {
                     out.push(MenuInput::LoadTable(index));
@@ -373,10 +376,7 @@ fn setting_control(
 ) {
     if let (Some(range), Some(mut v)) = (row.range(), row.number(cfg)) {
         let before = v;
-        let resp = ui.add(
-            egui::Slider::new(&mut v, range.min..=range.max)
-                .step_by(range.step),
-        );
+        let resp = ui.add(egui::Slider::new(&mut v, range.min..=range.max).step_by(range.step));
         // The slider reports `changed` when it merely snaps the stored value
         // to its step grid (float rounding); only a real move is an edit, so
         // drawing a frame never steals the focus.
@@ -425,27 +425,18 @@ fn live(ui: &mut egui::Ui, state: &MenuState) {
         }
     });
     let p = m.plunger();
-    ui.label(format!(
-        "Plunger raw {:+.3}  rest {:+.3}",
-        p.raw, p.rest
-    ));
-    ui.add(egui::ProgressBar::new(p.position.clamp(0.0, 1.0)).text(format!(
-        "position {:.2}",
-        p.position
-    )));
+    ui.label(format!("Plunger raw {:+.3}  rest {:+.3}", p.raw, p.rest));
+    ui.add(
+        egui::ProgressBar::new(p.position.clamp(0.0, 1.0))
+            .text(format!("position {:.2}", p.position)),
+    );
     if let Some(v) = p.last_release {
         ui.label(format!("Last release {v:.2}/s"));
     }
     let [nx, ny] = m.nudge();
     ui.label(format!("Nudge x {nx:+.3}  y {ny:+.3}"));
-    ui.add(
-        egui::ProgressBar::new((nx.abs()).clamp(0.0, 1.0))
-            .text(format!("x {nx:+.2}")),
-    );
-    ui.add(
-        egui::ProgressBar::new((ny.abs()).clamp(0.0, 1.0))
-            .text(format!("y {ny:+.2}")),
-    );
+    ui.add(egui::ProgressBar::new((nx.abs()).clamp(0.0, 1.0)).text(format!("x {nx:+.2}")));
+    ui.add(egui::ProgressBar::new((ny.abs()).clamp(0.0, 1.0)).text(format!("y {ny:+.2}")));
     ui.label(format!(
         "Flipper axes L {:.2}  R {:.2}",
         m.axis(CabinetAxis::LeftFlipper),

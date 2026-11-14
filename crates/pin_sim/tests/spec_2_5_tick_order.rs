@@ -8,9 +8,9 @@
 //! 5. collect edges
 //! 6. publish the snapshot
 //!
-//! `rules.lua` reports, as player 2, the number of completed
+//! `rules.lua` reports, as host player 1, the number of completed
 //! `on_tick` calls at the moment the last `lane_opto` closed edge was
-//! delivered, and as player 3 the same for `action` edges.
+//! delivered, and as host player 2 the same for `action` edges.
 
 #[path = "fixtures/spec_2_5/support.rs"]
 mod support;

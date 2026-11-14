@@ -15,8 +15,7 @@
 
 use pin_render::gpu::{GpuContext, context_for_tests};
 use pin_render::ui::{
-    OverlayFrame, egui, menu_panel_rect_px, overlay_style, paint_offscreen, raw_input,
-    show_overlay,
+    OverlayFrame, egui, menu_panel_rect_px, overlay_style, paint_offscreen, raw_input, show_overlay,
 };
 use std::sync::OnceLock;
 
@@ -109,7 +108,11 @@ fn overlay_darkens_panel_and_leaves_the_rest_untouched() {
         s.inside_mean_luma
     );
     // Text and widgets are drawn on the backdrop.
-    assert!(s.inside_bright > 50, "only {} bright pixels", s.inside_bright);
+    assert!(
+        s.inside_bright > 50,
+        "only {} bright pixels",
+        s.inside_bright
+    );
     // The panel centre row band (backdrop between widgets) is not background.
     let (cx, cy) = (size[0] / 2, panel[3] - 4);
     let i = ((cy * size[0] + cx) * 4) as usize;
@@ -128,7 +131,11 @@ fn overlay_scales_with_dpi() {
     assert_eq!(s.outside_changed, 0);
     assert!(s.inside_mean_luma < luma(&bg_u8()) * 0.4);
     // Text at 2x has about four times the lit area of 1x; just require plenty.
-    assert!(s.inside_bright > 200, "only {} bright pixels", s.inside_bright);
+    assert!(
+        s.inside_bright > 200,
+        "only {} bright pixels",
+        s.inside_bright
+    );
 }
 
 #[test]

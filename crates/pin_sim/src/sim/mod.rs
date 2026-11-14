@@ -24,6 +24,11 @@ use pin_script::wasm::{WasmConfig, WasmScriptBackend};
 
 use crate::hash::Fnv64;
 
+/// Players a table can report scores for (`HostCommandQueue::scores`
+/// indices `0..MAX_PLAYERS`; Lua's `set_score` takes players 1..=4). Reports
+/// for higher indices are ignored.
+pub const MAX_PLAYERS: u8 = 4;
+
 /// Default RNG seed of [`SimConfig`] (`0x4B485A`, "KHZ").
 pub const DEFAULT_SEED: u64 = 0x4B_485A;
 
@@ -501,14 +506,14 @@ impl Simulation {
         }
     }
 
-    /// The last score the script reported for `player`, numbered as the
-    /// script numbers players (`pinball.set_score(1, …)` is player 1;
-    /// `HostCommandQueue::scores` holds `player − 1`). `None` before any
-    /// report, and for player 0.
+    /// The last score the script reported for `player`, numbered 0-based
+    /// like `HostCommandQueue::scores` (pin_core is the contract): Lua's
+    /// `pinball.set_score(1, …)` is `score(0)`. `None` before any report for
+    /// that player and for `player >= MAX_PLAYERS`.
     #[must_use]
     pub fn score(&self, player: u8) -> Option<i64> {
-        let i = usize::from(player.checked_sub(1)?);
-        bit(&self.scores_reported, i).then(|| self.scores[i])
+        let i = usize::from(player);
+        (player < MAX_PLAYERS && bit(&self.scores_reported, i)).then(|| self.scores[i])
     }
 
     /// Whether switch `name` is closed (`None` for an unknown name).

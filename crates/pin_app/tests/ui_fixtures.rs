@@ -18,10 +18,8 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// A fresh empty folder under the cargo test temp dir.
 pub fn temp_dir(tag: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "ui_4_4_{tag}_{}_{n}",
-        std::process::id()
-    ));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("ui_4_4_{tag}_{}_{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
