@@ -5,6 +5,8 @@
 
 mod sim_support;
 
+use pin_core::input::{CabinetAxis, InputEvent};
+use pin_core::sim::SimStep;
 use pin_sim::cli::record_pattern;
 use pin_sim::replay::{Recorder, Recording, ReplayError, replay};
 use pin_sim::{SimConfig, Simulation};
@@ -144,5 +146,103 @@ fn recorder_play_continues_a_loaded_sim() {
         assert!(started.is_err(), "Recorder::new accepted a sim at tick 800");
         let at_load = Recorder::new(Simulation::load(&bundle, SimConfig::default()).unwrap());
         assert_eq!(at_load.recording().ticks, 0);
+    });
+}
+
+/// A recording stores only the seed and replays with the default script
+/// limits, so recording a simulation with other limits is refused instead of
+/// producing a file that replays differently.
+#[test]
+fn recorder_refuses_non_default_script_limits() {
+    let bundle = fixture();
+    on_sim_thread(move || {
+        let defaults = SimConfig::default();
+        let mut lua = defaults.lua;
+        lua.instruction_budget /= 2;
+        let mut wasm = defaults.wasm;
+        wasm.fuel_per_callback /= 2;
+        for cfg in [
+            SimConfig {
+                lua,
+                ..SimConfig::default()
+            },
+            SimConfig {
+                wasm,
+                ..SimConfig::default()
+            },
+        ] {
+            let sim = Simulation::load(&bundle, cfg).unwrap();
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _ = record_pattern(sim, 10, false);
+            }));
+            assert!(r.is_err(), "recorded with non-default limits {cfg:?}");
+        }
+        let sim = Simulation::load(&bundle, SimConfig::default()).unwrap();
+        let (_, rec) = record_pattern(sim, 10, false);
+        assert_eq!(rec.ticks, 10);
+    });
+}
+
+/// Non-finite axis inputs: the recorder stores what ingestion does with
+/// them (NaN ignored, ±inf clamped to the axis range), so the saved file
+/// parses back, replays to the recorded hash, and the recorded run matches a
+/// plain run fed the raw values.
+#[test]
+fn non_finite_axis_inputs_round_trip() {
+    let bundle = fixture();
+    on_sim_thread(move || {
+        let ts = |t: u64| (t - 1) * 1_000_000 + 500_000;
+        let raw = |t: u64| -> Vec<InputEvent> {
+            match t {
+                5 => vec![
+                    InputEvent::axis(ts(5), CabinetAxis::Plunger, f32::INFINITY),
+                    InputEvent::axis(ts(5), CabinetAxis::NudgeX, f32::NAN),
+                ],
+                6 => vec![
+                    InputEvent::axis(ts(6), CabinetAxis::NudgeY, f32::NEG_INFINITY),
+                    InputEvent::axis(ts(6), CabinetAxis::NudgeX, 0.5),
+                ],
+                7 => vec![
+                    InputEvent::axis(ts(7), CabinetAxis::NudgeX, f32::NAN),
+                    InputEvent::axis(ts(7), CabinetAxis::NudgeY, 0.0),
+                ],
+                9 => vec![InputEvent::axis(ts(9), CabinetAxis::NudgeX, -0.0)],
+                40 => vec![InputEvent::axis(ts(40), CabinetAxis::Plunger, 0.0)],
+                _ => Vec::new(),
+            }
+        };
+        const T: u64 = 300;
+        let mut rec = Recorder::new(Simulation::load(&bundle, SimConfig::default()).unwrap());
+        for t in 1..=T {
+            rec.step(&raw(t));
+        }
+        let (sim, rec) = rec.finish();
+
+        let mut plain = Simulation::load(&bundle, SimConfig::default()).unwrap();
+        let mut out = *plain.snapshot();
+        for t in 1..=T {
+            plain.step_1ms(t, &raw(t), &mut out);
+        }
+        assert_eq!(plain.state_hash(), sim.state_hash());
+
+        let back = Recording::from_bytes(&rec.to_bytes()).expect("the recording parses back");
+        assert_eq!(back, rec);
+        let axes = |tick| -> Vec<(CabinetAxis, f32)> {
+            rec.events_on(tick)
+                .iter()
+                .map(|(_, e)| match e.kind {
+                    pin_core::input::InputEventKind::Axis { axis, value } => (axis, value),
+                    pin_core::input::InputEventKind::Button { .. } => panic!("{e:?}"),
+                })
+                .collect()
+        };
+        assert_eq!(axes(5), [(CabinetAxis::Plunger, 1.0)]);
+        assert_eq!(
+            axes(6),
+            [(CabinetAxis::NudgeY, -1.0), (CabinetAxis::NudgeX, 0.5)]
+        );
+        assert_eq!(axes(7), [(CabinetAxis::NudgeY, 0.0)]);
+
+        assert_eq!(replay(&bundle, &back).unwrap(), sim.state_hash());
     });
 }
