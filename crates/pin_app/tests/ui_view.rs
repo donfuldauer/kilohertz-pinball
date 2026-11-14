@@ -344,6 +344,15 @@ fn many_tables(n: usize) -> Vec<TableEntry> {
         .collect()
 }
 
+/// A list row text (the left half of the panel; the details column on the
+/// right repeats the focused title).
+fn in_list(out: &egui::FullOutput, needle: &str) -> Option<egui::Rect> {
+    texts(out)
+        .into_iter()
+        .find(|(t, r)| t == needle && r.left() < 600.0)
+        .map(|(_, r)| r)
+}
+
 /// 4.4 review B2: mouse-wheel scrolling must not snap back to the focused row.
 #[test]
 fn wheel_scrolling_is_not_undone_by_the_focus() {
@@ -357,12 +366,12 @@ fn wheel_scrolling_is_not_undone_by_the_focus() {
     let mut y0 = None;
     for _ in 0..3 {
         let (out, _) = h.frame(&mut m, Vec::new());
-        y0 = find(&out, "Table 00").map(|r| r.top());
+        y0 = in_list(&out, "Table 00").map(|r| r.top());
         out.drop_without_applying_deltas();
     }
     let y0 = y0.expect("row 0 visible");
     let (out, _) = h.frame(&mut m, Vec::new());
-    let over = find(&out, "Table 03").expect("row 3").center();
+    let over = in_list(&out, "Table 03").expect("row 3").center();
     out.drop_without_applying_deltas();
     let wheel = egui::Event::MouseWheel {
         unit: egui::MouseWheelUnit::Line,
@@ -379,7 +388,7 @@ fn wheel_scrolling_is_not_undone_by_the_focus() {
     let mut y = None;
     for _ in 0..40 {
         let (out, _) = h.frame(&mut m, Vec::new());
-        y = find(&out, "Table 00").map(|r| r.top());
+        y = in_list(&out, "Table 00").map(|r| r.top());
         out.drop_without_applying_deltas();
     }
     assert!(
@@ -392,7 +401,7 @@ fn wheel_scrolling_is_not_undone_by_the_focus() {
     let mut seen = false;
     for _ in 0..40 {
         let (out, _) = h.frame(&mut m, Vec::new());
-        seen = find(&out, "Table 59").is_some();
+        seen = in_list(&out, "Table 59").is_some();
         out.drop_without_applying_deltas();
     }
     assert!(seen, "focused row 59 not scrolled into view");
@@ -428,52 +437,3 @@ fn portrait_tables_panel_does_not_overlap() {
     out.drop_without_applying_deltas();
 }
 
-#[test]
-fn tmp_debug_wheel() {
-    let mut h = Harness::new();
-    h.size = [1280, 720];
-    let mut m = MenuState::default();
-    m.set_tables(many_tables(60));
-    m.apply(MenuInput::Toggle);
-    for f in 0..50 {
-        let mut ev = Vec::new();
-        if f == 3 { ev.push(egui::Event::PointerMoved(egui::pos2(300.0, 300.0))); }
-        if f == 5 { for _ in 0..5 { ev.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, -5.0), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Unknown, modifiers: egui::Modifiers::NONE }); } }
-        let (out, _) = h.frame(&mut m, ev);
-        let (d, pp, raw) = h.ctx.input(|i| (i.smooth_scroll_delta(), i.pointer.interact_pos(), i.time));
-        if f < 12 || f % 10 == 0 { println!("f{f} {:?} d={d:?} p={pp:?} raw={raw:?} layer={:?}", find(&out, "Table 00"), pp.and_then(|p| h.ctx.layer_id_at(p))); }
-        out.drop_without_applying_deltas();
-    }
-    let (out, _) = h.frame(&mut m, Vec::new());
-    let rows: Vec<_> = texts(&out).into_iter().filter(|(t, _)| t.starts_with("Table ")).collect();
-    println!("rows {} first {:?} last {:?}", rows.len(), rows.first(), rows.last());
-    for c in out.shapes.iter().take(3) { println!("clip {:?}", c.clip_rect); }
-    let clips: std::collections::BTreeSet<String> = out.shapes.iter().map(|c| format!("{:?}", c.clip_rect)).collect();
-    println!("{clips:?}");
-    out.drop_without_applying_deltas();
-}
-
-#[test]
-fn tmp_debug_plain_scroll() {
-    for overlay in [false, true] {
-        let ctx = egui::Context::default();
-        let mut ys = Vec::new();
-        for f in 0..40 {
-            let mut ev = Vec::new();
-            if f == 2 { ev.push(egui::Event::PointerMoved(egui::pos2(300.0, 300.0))); }
-            if f == 4 { ev.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, -5.0), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Unknown, modifiers: egui::Modifiers::NONE }); }
-            let raw = raw_input([1280, 720], 1.0, ev, Some(f as f64 / 60.0));
-            let out = ctx.run_ui(raw, |ui| {
-                let body = |ui: &mut egui::Ui| {
-                    egui::ScrollArea::vertical().id_salt("x").auto_shrink([false, false]).show(ui, |ui| {
-                        for k in 0..100 { ui.label(format!("Row {k:03}")); }
-                    });
-                };
-                if overlay { pin_render::ui::show_overlay(ui, body); } else { body(ui); }
-            });
-            ys.push(find(&out, "Row 000").map(|r| r.top()));
-            out.drop_without_applying_deltas();
-        }
-        println!("overlay={overlay} first={:?} last={:?}", ys[0], ys[39]);
-    }
-}

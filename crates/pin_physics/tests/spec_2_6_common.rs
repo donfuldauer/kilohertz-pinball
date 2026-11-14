@@ -24,7 +24,7 @@ pub use c23::*;
 use glam::{Quat, Vec3};
 use pin_core::ids::FlipperId;
 use pin_core::{FlipperConfig, FlipperShape};
-use pin_physics::ball::{BallHandle, MovingBodies};
+use pin_physics::ball::{BallEvent, BallHandle, ImpactTarget, MovingBodies};
 use pin_physics::flipper::FlipperSet;
 
 /// Banana bat dimensions in table units (mm, degrees).
@@ -433,6 +433,9 @@ pub struct ArcShot {
     /// Bat (angle °, ω rad/s) at the start of the first-impact tick.
     pub bat_at_impact: Option<(f32, f32)>,
     pub episodes: u32,
+    /// Impact events of the ball with the bat (each counted, however close
+    /// together; up to the clearing tick or the window end).
+    pub impacts: u32,
 }
 
 /// Half the bat height (`FlipperTuning::bat_height_m` = 30 mm, flat top
@@ -463,6 +466,7 @@ pub fn run_shot_arc(
     let mut contact_seen = false;
     let mut bat_at_impact = None;
     let mut episodes = 0u32;
+    let mut impacts = 0u32;
     let mut separated = true;
     for _ in 0..ticks {
         drive(scene.tick, &mut scene.set);
@@ -470,6 +474,15 @@ pub fn run_shot_arc(
         let pre = (scene.set.angle_deg(id), scene.set.angular_velocity(id));
         scene.advance();
         let hit = scene.hit(h, body);
+        impacts += scene
+            .ev
+            .as_slice()
+            .iter()
+            .filter(|e| {
+                matches!(e, BallEvent::Impact { ball, other: ImpactTarget::Body { set: 0, body: b }, .. }
+                    if *ball == h && *b == body)
+            })
+            .count() as u32;
         if impact.is_none() && hit {
             impact = Some(t);
             bat_at_impact = Some(pre);
@@ -498,6 +511,7 @@ pub fn run_shot_arc(
                     clear_tick: Some(t),
                     bat_at_impact,
                     episodes,
+                    impacts,
                 };
             }
         }
@@ -511,6 +525,7 @@ pub fn run_shot_arc(
         clear_tick: None,
         bat_at_impact,
         episodes,
+        impacts,
     }
 }
 

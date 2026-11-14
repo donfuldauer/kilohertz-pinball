@@ -527,16 +527,42 @@ fn phase(c: &FlipperConfig, s: &ArcShot) -> Phase {
     }
 }
 
-/// A ball 200 mm up the table, straight down at 3.5 m/s, aimed at `frac`
-/// of the raised bat's centreline; flip pressed at `flip` and held.
-fn rebound_held_aim(r: &Rig, frac: f32, flip: u64) -> ArcShot {
+/// How the timing-sweep ball is aimed at the raised bat.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum Aim {
+    /// Straight down the table from 200 mm above the contact point (the
+    /// 2.3 rig; oblique to a curved face: report only).
+    DownTable,
+    /// Square onto the leading face: 200 mm out along the face's outward
+    /// normal at the contact point (own analytic arc model), travelling
+    /// back along it (Orchestrator "2.6 criterion 4: gated at square
+    /// incidence").
+    Square,
+}
+
+/// A 3.5 m/s ball aimed at `frac` of the raised bat's centreline (`aim`);
+/// flip pressed at `flip` and held.
+fn rebound_aimed(r: &Rig, frac: f32, flip: u64, aim: Aim) -> ArcShot {
     let mut s = table(&r.c);
     let raised = pose(&s, r).turned(r.c.sweep_angle_deg);
-    let a = raised.to_world(r.model.point(frac), 0.0);
-    let h: BallHandle = s
-        .solver
-        .add_ball(ball(v(a.x, a.y + 0.20, R), v(0.0, -3.5, 0.0)))
-        .unwrap();
+    let (start, vel) = match aim {
+        Aim::DownTable => {
+            let a = raised.to_world(r.model.point(frac), 0.0);
+            (v(a.x, a.y + 0.20, R), v(0.0, -3.5, 0.0))
+        }
+        Aim::Square => {
+            // Leading face: the side the bat swings toward (+y of the bat
+            // frame for a positive sweep).
+            let side = r.c.sweep_angle_deg.signum();
+            let a = r.model.point(frac);
+            let m = r.model.side_normal(frac, side);
+            let d = r.model.tube() + R + 0.20;
+            let p = raised.to_world([a[0] + m[0] * d, a[1] + m[1] * d], 0.0);
+            let nw = raised.vec_to_world(m);
+            (v(p.x, p.y, R), -nw * 3.5)
+        }
+    };
+    let h: BallHandle = s.solver.add_ball(ball(start, vel)).unwrap();
     run_shot_arc(
         &mut s,
         h,
@@ -557,8 +583,8 @@ fn rebound_held_aim(r: &Rig, frac: f32, flip: u64) -> ArcShot {
 const STEP: f32 = 0.75;
 
 /// Returns (minimum, held rebound, unexplained steps).
-fn timing_sweep(r: &Rig, frac: f32, label: &str) -> (f32, f32, Vec<String>) {
-    let held = rebound_held_aim(r, frac, 0);
+fn timing_sweep(r: &Rig, frac: f32, aim: Aim, label: &str) -> (f32, f32, Vec<String>) {
+    let held = rebound_aimed(r, frac, 0, aim);
     let th = held.impact_tick.expect("ball missed the held bat");
     assert!(th >= 25, "{label}: impact too early: {th}");
     println!(
@@ -567,13 +593,19 @@ fn timing_sweep(r: &Rig, frac: f32, label: &str) -> (f32, f32, Vec<String>) {
     );
     let mut curve = Vec::new();
     for k in -20i64..=20 {
-        let s = rebound_held_aim(r, frac, (th as i64 + k) as u64);
+        let s = rebound_aimed(r, frac, (th as i64 + k) as u64, aim);
         assert!(s.impact_tick.is_some(), "{label}: offset {k}: no impact");
         curve.push((k, s));
     }
-    println!("{label}: offset_ms rebound_m_s bat_phase contact_episodes");
+    println!("{label}: offset_ms rebound_m_s bat_phase contact_episodes impacts");
     for (k, s) in &curve {
-        println!("{k:>4} {:.3} {:?} {}", s.speed, phase(&r.c, s), s.episodes);
+        println!(
+            "{k:>4} {:.3} {:?} {} {}",
+            s.speed,
+            phase(&r.c, s),
+            s.episodes,
+            s.impacts
+        );
     }
     let mut unexplained = Vec::new();
     for w in curve.windows(2) {
@@ -592,10 +624,15 @@ fn timing_sweep(r: &Rig, frac: f32, label: &str) -> (f32, f32, Vec<String>) {
                 "{label}: step {d:.3} m/s between {k0} and {k1} ms: hit/miss of a rebounding ball ({} → {} episodes)",
                 s0.episodes, s1.episodes
             );
+        } else if s0.impacts != s1.impacts {
+            println!(
+                "{label}: step {d:.3} m/s between {k0} and {k1} ms: hit/miss of a rebounding ball at the bat ({} → {} separate impacts)",
+                s0.impacts, s1.impacts
+            );
         } else {
             let m = format!(
-                "{label}: UNEXPLAINED step {d:.3} m/s between {k0} and {k1} ms ({:.3} → {:.3}, bat {p0:?}, {} episodes)",
-                s0.speed, s1.speed, s0.episodes
+                "{label}: UNEXPLAINED step {d:.3} m/s between {k0} and {k1} ms ({:.3} → {:.3}, bat {p0:?}, {} episodes, {} impacts)",
+                s0.speed, s1.speed, s0.episodes, s0.impacts
             );
             println!("{m}");
             unexplained.push(m);
@@ -618,10 +655,16 @@ fn timing_sweep(r: &Rig, frac: f32, label: &str) -> (f32, f32, Vec<String>) {
     (min.1, held.speed, unexplained)
 }
 
+/// Criterion 4 as ruled (Orchestrator "2.6 criterion 4: gated at square
+/// incidence"): ball square onto the leading face at `frac`, dead spot
+/// ≤ 50 % of the held rebound, every step > 0.75 m/s named.
 fn c4_case(frac: f32) {
     let r = left_banana(BANANA);
-    let label = format!("banana, contact {:.0} % of the raised arc", frac * 100.0);
-    let (min, held, unexplained) = timing_sweep(&r, frac, &label);
+    let label = format!(
+        "banana, square onto {:.0} % of the raised arc",
+        frac * 100.0
+    );
+    let (min, held, unexplained) = timing_sweep(&r, frac, Aim::Square, &label);
     assert!(
         min <= 0.5 * held,
         "{label}: sweep minimum {min:.3} m/s > 50 % of held rebound {held:.3}"
@@ -640,12 +683,25 @@ fn c4_timing_sweep_banana_70_percent() {
 }
 
 #[test]
+fn c4_timing_sweep_banana_down_table_oblique_report() {
+    // Report only (the original 2.3-style aim: straight down the table, so
+    // 15–40° off the curved face's normal); unexplained steps are printed.
+    let r = left_banana(BANANA);
+    for frac in [0.5f32, 0.7] {
+        let label = format!("banana, down-table onto {:.0} %", frac * 100.0);
+        let _ = timing_sweep(&r, frac, Aim::DownTable, &label);
+    }
+}
+
+#[test]
 fn c4_timing_sweep_straight_reference_report() {
-    // Report only: the same rig on the equal-length straight capsule.
+    // Report only: the equal-length straight capsule, both aims.
     let r = left_straight(BANANA);
     for frac in [0.5f32, 0.7] {
-        let label = format!("straight equiv, contact {:.0} %", frac * 100.0);
-        let _ = timing_sweep(&r, frac, &label);
+        for aim in [Aim::Square, Aim::DownTable] {
+            let label = format!("straight equiv, {aim:?} onto {:.0} %", frac * 100.0);
+            let _ = timing_sweep(&r, frac, aim, &label);
+        }
     }
 }
 
@@ -764,13 +820,14 @@ fn free_hit(
 #[test]
 fn c4_dead_spot_location_report() {
     // Report: where the minimum lies when the sweep is widened to −40 ms
-    // (outside the gated ±20 ms), banana and straight, 50 % and 70 %.
+    // (outside the gated ±20 ms), ball square onto the face, banana and
+    // straight, 50–80 %.
     for (name, r) in [
         ("banana", left_banana(BANANA)),
         ("straight equiv", left_straight(BANANA)),
     ] {
         for frac in [0.5f32, 0.6, 0.7, 0.8] {
-            let held = rebound_held_aim(&r, frac, 0);
+            let held = rebound_aimed(&r, frac, 0, Aim::Square);
             let th = held.impact_tick.unwrap() as i64;
             let mut row = String::new();
             let mut m = (0i64, f32::INFINITY);
@@ -778,7 +835,7 @@ fn c4_dead_spot_location_report() {
                 if th + k < 0 {
                     continue;
                 }
-                let s = rebound_held_aim(&r, frac, (th + k) as u64);
+                let s = rebound_aimed(&r, frac, (th + k) as u64, Aim::Square);
                 row.push_str(&format!(" {k}:{:.2}", s.speed));
                 if s.speed < m.1 {
                     m = (k, s.speed);
