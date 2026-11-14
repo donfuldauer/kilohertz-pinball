@@ -1311,7 +1311,7 @@ Status: **contract for the 3.5 Tester** (kept current by the Implementer). Real 
 
 **Command line.**
 ```
-KilohertzDofBridge --map <file> [--port <u16, default 35120>] [--bind <ip, default 127.0.0.1>]
+KilohertzDofBridge --map <file> [--port <u16, default 35120>] [--bind <loopback ip, default 127.0.0.1>]
                    [--rom <name>] [--table <name>] [--dof-path <dir or DirectOutput.dll>] [--dof-config <file>]
                    [--sink dof|log|null (default dof)] [--log <file>] [--parent-pid <pid>] [--exit-on-stdin-eof] [--help]
 ```
@@ -1341,7 +1341,7 @@ KilohertzDofBridge --map <file> [--port <u16, default 35120>] [--bind <ip, defau
 - A `lamp = "<name>"` mapping whose lamp has `kind = "gi"` resolves to source `gi` with id = lamp number (must be < 32); other lamps → `lamp`. Switch/coil/lamp numbers must be ≤ 255 (`DofError::IdOutOfRange`); unknown names → `DofError::UnknownName`.
 - `struct DofLaunchConfig { bridge_exe: PathBuf, udp_port: u16, dof_path: Option<PathBuf>, map_dir: PathBuf, stop_grace: Duration, log_file: Option<PathBuf>, extra_args: Vec<OsString> }`, `DofLaunchConfig::new(bridge_exe, udp_port)` (map_dir = temp dir, stop_grace = `DEFAULT_STOP_GRACE` 1.5 s, no log file: the bridge's stderr is discarded unless `log_file` is set, then appended to it), `const BRIDGE_EXE_NAME` (`KilohertzDofBridge[.exe]`), `DofLaunchConfig::default_bridge_exe() -> Option<PathBuf>` (`<exe dir>/dof_bridge/KilohertzDofBridge.exe`, then `<exe dir>/KilohertzDofBridge.exe`; `find_bridge_exe(engine_dir)` is the same search for an explicit directory), `args(&self, map, map_file) -> Vec<OsString>`.
 - `fn platform_supported() -> bool` (`cfg!(windows)`).
-- `struct DofBridge`: `DofBridge::start_for_table(&TableManifest, &DofLaunchConfig) -> Result<Option<DofBridge>, DofError>` (the call 6.0 makes at table load: `Ok(None)` on Linux/macOS or without `[dof]`); `DofBridge::spawn(&ResolvedDofMap, &DofLaunchConfig) -> Result<DofBridge, DofError>` (any OS; tests); `id()`, `map_file()`, `try_wait()`; `stop(self) -> DofStopHandle` (never blocks: closes the child's stdin and hands the child to a reaper thread that kills it after `stop_grace` and deletes the map file); `DofStopHandle::wait(self) -> Option<ExitStatus>`, `DofStopHandle::is_finished(&self) -> bool` (dropping the handle detaches; the reaper still finishes); `Drop` = `stop`. Spawned args: `--map <file> --port <p> --rom <rom> --table <name> --parent-pid <engine pid> --exit-on-stdin-eof [--dof-path <dir>] <extra_args…>`.
+- `struct DofBridge`: `DofBridge::start_for_table(&TableManifest, &DofLaunchConfig) -> Result<Option<DofBridge>, DofError>` (the call 6.0 makes at table load: `Ok(None)` on Linux/macOS or without `[dof]`); `DofBridge::spawn(&ResolvedDofMap, &DofLaunchConfig) -> Result<DofBridge, DofError>` (any OS; tests); `id()`, `map_file()`, `try_wait()`; `stop(self) -> DofStopHandle` (never blocks: closes the child's stdin and hands the child to a reaper thread that kills it after `stop_grace` and deletes the map file; only if the reaper thread cannot be created does the stop complete on the caller's thread, blocking for at most `stop_grace` — CodeRabbit PR #6); `DofStopHandle::wait(self) -> Option<ExitStatus>`, `DofStopHandle::is_finished(&self) -> bool` (dropping the handle detaches; the reaper still finishes); `Drop` = `stop`. Spawned args: `--map <file> --port <p> --rom <rom> --table <name> --parent-pid <engine pid> --exit-on-stdin-eof [--dof-path <dir>] <extra_args…>`.
 
 ## 3.5 — DOF bridge design choices
 
@@ -2193,3 +2193,9 @@ The "3.5 — DOF bridge public API" line saying Windows `ConnectionReset`/`Messa
   - `gpu_context_concurrency.rs`: it is the 1.4 regression test, and concurrent create/render/drop is its purpose. Creation and teardown already run under `GpuContext`'s process-wide lifecycle lock. It runs as its own process and passed on lavapipe in runs 294 and 299 (it runs before the `spec_*` binaries). If it ever crashes on lavapipe, that is the driver bug it exists to show; the engine itself has one context.
 
   **Verified:** on lavapipe under Xvfb, 10 full runs of `cargo test -p pin_render --features gpu-tests` (497 tests each) plus `pin_app --test ui_snapshots` with `PIN_UI_SNAPSHOT_DIR` set: 0 failures. Only CI's Mesa/LLVM 21 has shown the crash; the local driver never has.
+
+## CodeRabbit review round 1 (stacked PRs #3–#6) — Orchestrator notes
+
+- **DOF bridge `--bind` is loopback-only.** The bridge does not authenticate senders, so `BridgeApp.Run` refuses a non-loopback `--bind` (exit 2; IPv4-mapped loopback allowed; `BridgeApp.IsLoopbackBind(IPAddress)` is public). `BridgeOptions.Parse` stays permissive. Revisit if a remote-telemetry use case appears (needs an authenticated transport first).
+- **`DofBridge::stop` reaper-start failure.** See the 3.5 Rust API entry: the stop completes synchronously only when the reaper thread cannot be spawned.
+- **Deferred findings that change simulation output** (pin_physics chain/end-stop, mesh vertex ownership, drop-target face check, slider/spinner/tilt-bob edge cases, spline bracket refinement) are left to the person; see the PR #4 threads.
