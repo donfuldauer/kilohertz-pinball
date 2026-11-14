@@ -52,6 +52,33 @@ fn instruction_hook_aborts_infinite_loop() {
 }
 
 #[test]
+fn instruction_hook_cannot_be_swallowed_by_pcall() {
+    // The budget error is catchable; a loop that restarts the work after
+    // each catch must still return control to the host.
+    for script in [
+        "while true do pcall(function() while true do end end) end",
+        "while true do xpcall(function() while true do end end, function(e) return e end) end",
+    ] {
+        let lua = lua_with_memory_limit(4 * MIB).unwrap();
+        let budget = 100_000;
+        let ticks = install_instruction_budget(&lua, budget).unwrap();
+        let err = lua
+            .load(script)
+            .exec()
+            .expect_err("a pcall loop must not outlive the budget");
+        assert!(
+            err.to_string().contains(BUDGET_EXCEEDED),
+            "{script}: {err:?}"
+        );
+        assert_eq!(
+            ticks.get(),
+            budget / u64::from(HOOK_INTERVAL) + 1,
+            "{script}"
+        );
+    }
+}
+
+#[test]
 fn instruction_hook_is_deterministic_for_finite_work() {
     // Same script, same tick count: the budget is counted in VM instructions.
     let run = || {

@@ -81,8 +81,16 @@ fn is_negative(body: &str) -> bool {
         r"|\b(not|isn't|is not|aren't|are not) (supported|available|exposed|possible|present|usable)\b",
         r"|\b(does not|doesn't|did not|didn't|do not|don't|cannot|can't) (work|exist|expose|support|run|compile|build)\b",
         r"|\bfail(s|ed)\b",
+        // A plain "No." / "no," that opens a line, sentence or clause.
+        r"|(?m:(^|[.!?:;]\s+)[\s*_>`-]*no\b[*_`]*\s*[.,;:!—–-])",
     ))
     .is_match(body)
+}
+
+/// A subsection fails the fallback rule when it reports a negative result
+/// without the word "fallback".
+fn missing_fallback(body: &str) -> bool {
+    is_negative(body) && !re(r"(?i)fall[ -]?back").is_match(body)
 }
 
 #[test]
@@ -176,17 +184,14 @@ fn every_subsection_states_an_answer() {
 #[test]
 fn negative_answers_name_a_fallback() {
     let subs = subsections();
-    let fallback = re(r"(?i)fall[ -]?back");
     for (label, pattern) in QUESTIONS {
         let sub = find(&subs, label, pattern);
-        if is_negative(&sub.body) {
-            assert!(
-                fallback.is_match(&sub.body),
-                "{FILE}: subsection {:?} ({label}) reports a negative or partially negative result \
-                 but does not name a fallback (the word \"fallback\" must appear in that subsection)",
-                sub.heading
-            );
-        }
+        assert!(
+            !missing_fallback(&sub.body),
+            "{FILE}: subsection {:?} ({label}) reports a negative or partially negative result \
+             but does not name a fallback (the word \"fallback\" must appear in that subsection)",
+            sub.heading
+        );
     }
 }
 
@@ -198,6 +203,8 @@ fn negative_detector_self_check() {
         "Ray query is unsupported on WARP.",
         "The adapter does not support Mailbox.",
         "Creation failed under the dummy driver.",
+        "No. This API is absent on the tested adapter.",
+        "Linux GL (llvmpipe via EGL): no. Metal: pending.",
     ] {
         assert!(
             is_negative(text),
@@ -208,10 +215,18 @@ fn negative_detector_self_check() {
         "**Answer:** Yes. `Event::timestamp` is in nanoseconds.",
         "Answer: yes — works on all three adapters, no caveats.",
         "Fuel metering traps deterministically.",
+        "Yes. There is no caveat; no fallback is needed.",
+        "Works everywhere. Notably, nothing regressed.",
     ] {
         assert!(
             !is_negative(text),
             "should not be detected as negative: {text:?}"
         );
     }
+    assert!(missing_fallback(
+        "No. This API is absent on the tested adapter."
+    ));
+    assert!(!missing_fallback(
+        "No. This API is absent on the tested adapter; fallback: use the GL path."
+    ));
 }

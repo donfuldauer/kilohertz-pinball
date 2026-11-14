@@ -76,7 +76,12 @@ pub const fn axis_range(a: CabinetAxis) -> (f32, f32) {
 /// Converts timestamped events into per-tick, debounced cabinet frames.
 ///
 /// Pending events are kept sorted by timestamp (stable for equal timestamps)
-/// in a fixed-capacity buffer, so slightly out-of-order delivery is fine.
+/// in a fixed-capacity buffer, so out-of-order delivery among the events
+/// pending at one [`InputIngest::advance`] is fine. A late event (stamped
+/// before events an earlier `advance` already applied) is never dropped: it
+/// is applied at the next `advance`, in timestamp order among the events due
+/// then. Each source's SDL timestamps are monotone, so this only matters for
+/// events from different sources.
 #[derive(Clone, Debug)]
 pub struct InputIngest {
     cfg: IngestConfig,
