@@ -73,8 +73,9 @@
 //!   and the measurement window.
 //! * **Drop target.** Up: a static box. An [`BallEvent::Impact`] on it with
 //!   `normal_speed ≥ threshold_speed` drops it (no surface, switch closed),
-//!   if the target is fully up and the push was on a face (within ~45° of
-//!   the face normal: a ball landing on its top does not drop it).
+//!   if the target is fully up and that same impact pushed on a face
+//!   (within ~45° of the face normal: a ball landing on its top does not
+//!   drop it, even in a tick in which another ball touches a face slowly).
 //!   While its coil (the bank's reset coil: every target sharing it) is on,
 //!   a dropped target rises from below the playfield at `kick_speed` as a
 //!   kinematic box, so a ball over it is lifted out, never trapped inside;
@@ -185,9 +186,19 @@ struct Drop {
     vz: f32,
     /// A ball pushed on a face (not the top or an edge) this step.
     face_hit: bool,
+    /// One reported impact this step was both on a face and at least at
+    /// the threshold speed (judged per impact, see `MovingBodies::impact`).
+    face_drop: bool,
 }
 
 impl Drop {
+    /// Only a push on a face drops a target (not a ball landing on its top
+    /// or lifted by it while it rises).
+    fn is_face_push(&self, impulse: Vec3) -> bool {
+        let along = impulse.dot(self.up.axes[0]).abs();
+        along >= FACE_HIT_COS * impulse.length() && impulse != Vec3::ZERO
+    }
+
     fn body(&self, t: f32) -> OBox {
         let mut b = self.up;
         b.center.z += (self.z + self.vz * t).min(0.0);
@@ -346,6 +357,7 @@ impl MechSet {
                     z: 0.0,
                     vz: 0.0,
                     face_hit: false,
+                    face_drop: false,
                 }),
                 KindP::Spinner(p) => {
                     let mut s = Spinner::new(pos + Vec3::Z * p.pivot_height, u);
@@ -657,6 +669,7 @@ impl MechSet {
             self.mechs[mi].touched = false;
             if let Part::Drop(d) = &mut self.mechs[mi].part {
                 d.face_hit = false;
+                d.face_drop = false;
             }
             match m.part {
                 Part::Bumper {
@@ -770,7 +783,7 @@ impl MechSet {
                     ..
                 }) = self.mechs.get_mut(body)
                 && d.state == DropState::Up
-                && d.face_hit
+                && d.face_drop
                 && normal_speed >= d.threshold
             {
                 d.state = DropState::Down;
@@ -1101,15 +1114,24 @@ impl MovingBodies for MechSet {
         match &mut m.part {
             Part::Slider { s, .. } => s.apply_impulse(time, impulse),
             Part::Spinner(s) => s.apply_impulse(time, point, impulse),
-            Part::Drop(d) => {
-                // Only a push on a face drops a target (not a ball landing
-                // on its top or lifted by it while it rises).
-                let along = impulse.dot(d.up.axes[0]).abs();
-                if along >= FACE_HIT_COS * impulse.length() {
-                    d.face_hit = true;
-                }
-            }
+            Part::Drop(d) if d.is_face_push(impulse) => d.face_hit = true,
             _ => {}
+        }
+    }
+
+    fn impact(&mut self, body: usize, _time: f32, _point: Vec3, impulse: Vec3, approach: f32) {
+        // The drop condition belongs to one impact: on a face *and* at the
+        // threshold (a slow face push and a fast landing on the top in the
+        // same tick do not add up to a drop).
+        if let Some(Mech {
+            part: Part::Drop(d),
+            ..
+        }) = self.mechs.get_mut(body)
+            && d.state == DropState::Up
+            && approach >= d.threshold
+            && d.is_face_push(impulse)
+        {
+            d.face_drop = true;
         }
     }
 }
