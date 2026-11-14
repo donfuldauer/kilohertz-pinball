@@ -192,6 +192,7 @@ fn ordinary_xpcall_still_works() {
 unsafe extern "C-unwind" {
     fn lua_khzsetbudget(state: *mut mlua::ffi::lua_State, n: i64);
     fn lua_khzspend(state: *mut mlua::ffi::lua_State, n: i64) -> i64;
+    fn lua_rawequal(state: *mut mlua::ffi::lua_State, a: i32, b: i32) -> i32;
 }
 
 const BUDGET: i64 = 1_000_000_000;
@@ -331,6 +332,42 @@ fn c_api_lookups_after_a_nested_state_call_are_charged_to_the_caller() {
     b.set_budget();
     a.set_budget();
     f.call::<()>(()).unwrap();
+    let cb = b.charged();
+    let ca = a.charged();
+    assert!(
+        (LOOKUPS_COST..LOOKUPS_COST + 1000).contains(&cb),
+        "B charged {cb}, expected about {LOOKUPS_COST}"
+    );
+    assert!(
+        (LOOKUPS_COST..LOOKUPS_COST + 1000).contains(&ca),
+        "A charged {ca}, expected about {LOOKUPS_COST}"
+    );
+}
+
+#[test]
+fn c_api_raw_equal_after_a_nested_state_call_is_charged_to_the_caller() {
+    // `lua_rawequal` takes no lock in stock Lua: a host function of A that
+    // runs B and then compares A's long strings through it (and nothing
+    // else) charged the compares to B.
+    let a = State::new();
+    let b = std::rc::Rc::new(State::new());
+    let b2 = std::rc::Rc::clone(&b);
+    let k1: mlua::LuaString = a.lua.globals().get("k1").unwrap();
+    let k2: mlua::LuaString = a.lua.globals().get("k2").unwrap();
+    b.set_budget();
+    a.set_budget();
+    // SAFETY: the closure only calls `lua_rawequal` on the two values
+    // `exec_raw` pushed onto A's stack.
+    unsafe {
+        a.lua
+            .exec_raw::<()>((k1, k2), |state| {
+                b2.lookups.call::<()>(()).unwrap();
+                for _ in 0..2000 {
+                    assert_eq!(lua_rawequal(state, -2, -1), 1);
+                }
+            })
+            .unwrap();
+    }
     let cb = b.charged();
     let ca = a.charged();
     assert!(
