@@ -400,3 +400,51 @@ fn model_conversion_rules() {
     assert_eq!(convert(2, -1.0), 0);
     assert_eq!(convert(2, f32::NAN), 0);
 }
+
+/// One-entry coil datagram for the model tests.
+fn coil_datagram(tick: u64, full: bool, id: u16, value: f32) -> Vec<u8> {
+    let mut d = header_bytes(b"PNTL", 1, u8::from(full), 1, tick);
+    d.extend_from_slice(&[1, 0]);
+    d.extend_from_slice(&id.to_le_bytes());
+    d.extend_from_slice(&value.to_le_bytes());
+    d
+}
+
+/// Review N1: a restarted sender whose full state has the same tick as the
+/// last one (both 0) is a new session; its full state and later deltas must
+/// reach DOF (the coil ends OFF).
+#[test]
+fn model_restart_with_equal_full_state_tick() {
+    let map = fixture_map();
+    let mut model = Model::new(&map);
+    let mut out = String::new();
+    let records = [
+        coil_datagram(0, true, 1, 0.0),
+        coil_datagram(400, false, 1, 1.0),
+        coil_datagram(0, true, 1, 0.0),
+        coil_datagram(100, false, 1, 1.0),
+        coil_datagram(150, false, 1, 0.0),
+    ];
+    for (i, r) in records.iter().enumerate() {
+        model.process(i, r, &mut out);
+    }
+    assert_eq!(out, "0 S 1 0\n1 S 1 1\n2 S 1 0\n3 S 1 1\n4 S 1 0\n");
+}
+
+/// Reordering within the restart gap is not a restart: a duplicated
+/// full-state datagram arriving a few ticks late forwards nothing.
+#[test]
+fn model_late_duplicate_full_state_is_not_a_restart() {
+    let map = fixture_map();
+    let mut model = Model::new(&map);
+    let mut out = String::new();
+    let records = [
+        coil_datagram(1000, true, 1, 0.0),
+        coil_datagram(1003, false, 1, 1.0),
+        coil_datagram(1000, true, 1, 0.0),
+    ];
+    for (i, r) in records.iter().enumerate() {
+        model.process(i, r, &mut out);
+    }
+    assert_eq!(out, "0 S 1 0\n1 S 1 1\n");
+}
