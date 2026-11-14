@@ -189,6 +189,10 @@ pub struct OverlayPainter {
     /// Texture deltas of frames handed to [`defer`](Self::defer), applied
     /// before the next painted frame's own.
     pending: egui::TexturesDelta,
+    /// Textures freed by the last painted frame. egui_wgpu destroys a texture
+    /// at once, so they are freed at the next paint, once the caller has
+    /// submitted the commands that still draw them.
+    to_free: Vec<egui::TextureId>,
 }
 
 impl OverlayPainter {
@@ -203,6 +207,7 @@ impl OverlayPainter {
             renderer: egui_wgpu::Renderer::new(device, format, options),
             format,
             pending: egui::TexturesDelta::default(),
+            to_free: Vec::new(),
         }
     }
 
@@ -241,7 +246,8 @@ impl OverlayPainter {
     /// `encoder`: applies the texture deltas, uploads buffers, and draws in a
     /// render pass that loads the existing contents. Returns the extra
     /// command buffers egui callbacks produced (none for the menu); submit
-    /// them before `encoder`.
+    /// them before `encoder`, and submit `encoder` before the next `paint`
+    /// (which frees the textures this frame released after drawing them).
     pub fn paint(
         &mut self,
         device: &wgpu::Device,
@@ -253,14 +259,25 @@ impl OverlayPainter {
     ) -> Vec<wgpu::CommandBuffer> {
         let mut frame = frame;
         let primitives = std::mem::take(&mut frame.primitives);
-        // Deltas of deferred frames first, then this frame's (newer).
-        let mut textures_delta = std::mem::take(&mut self.pending);
-        textures_delta.append(std::mem::take(&mut frame.textures_delta));
+        // Uploads of deferred frames first, then this frame's (newer). The
+        // two deltas are not merged: `TexturesDelta::append` drops earlier
+        // uploads of every texture the newer delta frees, but this frame may
+        // still draw a texture it frees (its last use).
+        let mut deltas = [
+            std::mem::take(&mut self.pending),
+            std::mem::take(&mut frame.textures_delta),
+        ];
         let pixels_per_point = frame.pixels_per_point;
         drop(frame);
-        for (id, deltas) in &textures_delta.set {
-            for delta in deltas {
-                self.renderer.update_texture(device, queue, *id, delta);
+        // The previous frame's commands have been submitted by now.
+        for id in std::mem::take(&mut self.to_free) {
+            self.renderer.free_texture(&id);
+        }
+        for textures_delta in &deltas {
+            for (id, uploads) in &textures_delta.set {
+                for delta in uploads {
+                    self.renderer.update_texture(device, queue, *id, delta);
+                }
             }
         }
         let screen = egui_wgpu::ScreenDescriptor {
@@ -290,10 +307,12 @@ impl OverlayPainter {
             let mut pass = pass.forget_lifetime();
             self.renderer.render(&mut pass, &primitives, &screen);
         }
-        for id in &textures_delta.free {
-            self.renderer.free_texture(id);
+        // This frame may draw the textures it frees (their last use): free
+        // them at the next paint, after the caller submitted this one.
+        for textures_delta in &mut deltas {
+            self.to_free.extend(textures_delta.free.drain());
+            textures_delta.clear();
         }
-        textures_delta.clear();
         extra
     }
 }
