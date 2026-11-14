@@ -56,7 +56,10 @@ pub struct GltfLimits {
     /// header before the file is read; while a document loads, its JSON, the
     /// parsed strings and one decoded `data:` URI are held at once, so this
     /// bounds that peak to about 2.75 × the cap. Large payloads belong in a
-    /// GLB `BIN` chunk or in separate bundle files.
+    /// GLB `BIN` chunk or in separate bundle files. The same cap bounds the
+    /// sum of the name and extras string bytes copied into every
+    /// [`MeshData`]: one mesh placed by many nodes is charged once per
+    /// placed primitive.
     pub max_json_bytes: u64,
 }
 
@@ -713,7 +716,7 @@ fn load_bytes(
         }
     };
     let mut meshes = Vec::new();
-    let (mut vertices, mut index_total) = (0u64, 0u64);
+    let (mut vertices, mut index_total, mut meta_bytes) = (0u64, 0u64, 0u64);
     let mut visited = vec![false; document.nodes().len()];
     let mut stack: Vec<(::gltf::Node<'_>, [[f32; 4]; 4], usize)> =
         roots.into_iter().rev().map(|n| (n, IDENTITY, 0)).collect();
@@ -747,6 +750,19 @@ fn load_bytes(
                 if prim.mode() != ::gltf::mesh::Mode::Triangles {
                     continue;
                 }
+                // Name and extras are copied into every placed primitive:
+                // charge them before cloning, so one long string on a mesh
+                // that many nodes place cannot multiply past the JSON size.
+                let copied = [extras.switch.as_deref(), extras.lamp.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .fold(name.len(), |acc, s| acc.saturating_add(s.len()));
+                meta_bytes = meta_bytes.saturating_add(copied as u64);
+                budget(
+                    "mesh name and extras bytes",
+                    meta_bytes,
+                    limits.max_json_bytes,
+                )?;
                 let what = format!("mesh {name:?} primitive {}", prim.index());
                 let Some(pos) = prim.get(&Semantic::Positions) else {
                     return Err(gerr(format!("{what}: no POSITION attribute")));
@@ -832,6 +848,7 @@ pub fn validate_gltf_bindings_in(
     file: &str,
 ) -> Vec<ValidationError> {
     let mut errors = Vec::new();
+    let mut budget = crate::validate::SUGGEST_WORK_BUDGET;
     for (i, mesh) in scene.meshes.iter().enumerate() {
         for (key, kind, name) in [
             ("switch", IdKind::Switch, &mesh.extras.switch),
@@ -841,7 +858,7 @@ pub fn validate_gltf_bindings_in(
             if ids.get(kind, name).is_some() {
                 continue;
             }
-            let hint = crate::validate::suggest_name(ids, kind, name)
+            let hint = crate::validate::suggest_name(ids, kind, name, &mut budget)
                 .map(|s| format!(" (did you mean {s:?}?)"))
                 .unwrap_or_default();
             errors.push(ValidationError::new(
