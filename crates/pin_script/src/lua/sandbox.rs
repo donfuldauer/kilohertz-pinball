@@ -270,7 +270,14 @@ impl Vm {
     }
 
     /// Starts a fresh budget of `instructions` for the next call into Lua.
+    ///
+    /// Also restores the hook interval: a budget hit lowers it to every
+    /// instruction (see the hook in [`Vm::build`]), and a state that is kept
+    /// after that (e.g. the old state after a failed reload whose save hook ran
+    /// out of budget) must not keep paying `hook_interval` per instruction.
     pub(crate) fn reset_budget(&self, bridge: &Bridge, instructions: u32) {
+        // Cannot fail: no arguments are pushed and the closure does not raise.
+        let _ = set_hook_count(&self.lua, bridge.hook_interval);
         bridge.reset_flags();
         // SAFETY: `raw` is the live main state of `self.lua`.
         unsafe { lua_khzsetbudget(self.raw, i64::from(instructions)) };
