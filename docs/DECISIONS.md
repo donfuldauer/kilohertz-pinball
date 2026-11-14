@@ -2099,3 +2099,7 @@ Tester's rig: Appendix C defaults, R 120 mm banana, ball 200 mm up the table com
 
 ## Orchestrator — 4.4 `.bak` timing accepted
 The 4.4 contract makes `config.toml.bak` when a file with a dropped value is loaded, not "before the first save" as the round-1 ruling said. Accepted: the backup exists before any save could overwrite the original; loading a bad file therefore writes one sibling file.
+
+## Orchestrator — 2.6 criterion 4: gated at square incidence (Tester D1)
+**Evidence (2.6 Implementer, "2.6 — criterion 4 on an oblique face"):** in the Tester's rig the ball meets the 70 % point of the curved face 37.8° off its normal. The normal component dies as on the straight bat (0.53 vs 0.58 m/s left); the tangential component keeps rolling at ~5/7 of its incoming value, which alone is 63 % of the held rebound. A straight capsule turned to the same contact normal gives 74.5 %. With the ball square onto the banana face the dead spot is 15.0 % (straight: 14.9 %). D2 (0.817 m/s step) is a hit-or-miss at the rigid stop (ball 0.37 mm ahead of the stopped bat vs caught at 17.9°), named by a test.
+**Ruling:** for a curved bat, 2.6 criterion 4 is gated as the 2.3 sweep is — ball square onto the face at the contact point (incidence within the straight rig's ~15°): dead spot ≤ 50 % at 50 % and 70 %, every step > 0.75 m/s named. Oblique-incidence figures (e.g. the 68.7 % down-table case) are reported and handed to Gate A1 with the 25 % depth. This is the same physics test as 2.3, not a relaxation for the banana.

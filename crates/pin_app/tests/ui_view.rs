@@ -440,10 +440,40 @@ fn tmp_debug_wheel() {
         if f == 3 { ev.push(egui::Event::PointerMoved(egui::pos2(300.0, 300.0))); }
         if f == 5 { for _ in 0..5 { ev.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, -5.0), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Unknown, modifiers: egui::Modifiers::NONE }); } }
         let (out, _) = h.frame(&mut m, ev);
-        if f % 10 == 0 || f == 6 { println!("f{f} {:?}", find(&out, "Table 00")); }
+        let (d, pp, raw) = h.ctx.input(|i| (i.smooth_scroll_delta(), i.pointer.interact_pos(), i.time));
+        if f < 12 || f % 10 == 0 { println!("f{f} {:?} d={d:?} p={pp:?} raw={raw:?} layer={:?}", find(&out, "Table 00"), pp.and_then(|p| h.ctx.layer_id_at(p))); }
         out.drop_without_applying_deltas();
     }
     let (out, _) = h.frame(&mut m, Vec::new());
-    for (t, r) in texts(&out).iter().take(12) { println!("{t} {r:?}"); }
+    let rows: Vec<_> = texts(&out).into_iter().filter(|(t, _)| t.starts_with("Table ")).collect();
+    println!("rows {} first {:?} last {:?}", rows.len(), rows.first(), rows.last());
+    for c in out.shapes.iter().take(3) { println!("clip {:?}", c.clip_rect); }
+    let clips: std::collections::BTreeSet<String> = out.shapes.iter().map(|c| format!("{:?}", c.clip_rect)).collect();
+    println!("{clips:?}");
     out.drop_without_applying_deltas();
+}
+
+#[test]
+fn tmp_debug_plain_scroll() {
+    for overlay in [false, true] {
+        let ctx = egui::Context::default();
+        let mut ys = Vec::new();
+        for f in 0..40 {
+            let mut ev = Vec::new();
+            if f == 2 { ev.push(egui::Event::PointerMoved(egui::pos2(300.0, 300.0))); }
+            if f == 4 { ev.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, -5.0), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Unknown, modifiers: egui::Modifiers::NONE }); }
+            let raw = raw_input([1280, 720], 1.0, ev, Some(f as f64 / 60.0));
+            let out = ctx.run_ui(raw, |ui| {
+                let body = |ui: &mut egui::Ui| {
+                    egui::ScrollArea::vertical().id_salt("x").auto_shrink([false, false]).show(ui, |ui| {
+                        for k in 0..100 { ui.label(format!("Row {k:03}")); }
+                    });
+                };
+                if overlay { pin_render::ui::show_overlay(ui, body); } else { body(ui); }
+            });
+            ys.push(find(&out, "Row 000").map(|r| r.top()));
+            out.drop_without_applying_deltas();
+        }
+        println!("overlay={overlay} first={:?} last={:?}", ys[0], ys[39]);
+    }
 }

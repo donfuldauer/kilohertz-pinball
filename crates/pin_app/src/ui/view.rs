@@ -111,8 +111,10 @@ impl MenuView {
                         if w >= SIDE_BY_SIDE_MIN_WIDTH {
                             let left = (w * INPUT_SETTINGS_FRACTION).floor();
                             ui.horizontal_top(|ui| {
-                                ui.allocate_ui(egui::vec2(left, h), |ui| {
+                                ui.allocate_ui_with_layout(egui::vec2(left, h), egui::Layout::top_down(egui::Align::Min), |ui| {
                                     ui.set_max_width(left);
+                                    ui.set_max_height(h);
+                    ui.set_max_height(h);
                                     settings(ui, state, &SettingRow::INPUT, scroll, &mut out);
                                 });
                                 ui.separator();
@@ -196,8 +198,9 @@ impl MenuView {
         if w >= TABLES_SIDE_BY_SIDE_MIN_WIDTH {
             let left = (w * TABLE_LIST_FRACTION).floor();
             ui.horizontal_top(|ui| {
-                ui.allocate_ui(egui::vec2(left, h), |ui| {
+                ui.allocate_ui_with_layout(egui::vec2(left, h), egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.set_max_width(left);
+                    ui.set_max_height(h);
                     table_list(ui, state, focused, scroll, out);
                 });
                 ui.separator();
