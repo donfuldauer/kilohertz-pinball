@@ -102,6 +102,43 @@ fn hot_swap_preserves_state_through_save_and_restore() {
     assert_eq!(b.config(), WasmConfig::default());
 }
 
+// Review (PR #5): `save_state` runs on the old instance and may change it.
+// When the new `restore_state` then traps, the old instance resumes with its
+// memory and exported mutable globals as they were before the save.
+#[test]
+fn failed_restore_puts_back_what_save_state_changed() {
+    let old = module(
+        r#"(memory (export "memory") 1)
+           (global $g (export "g") (mut i64) (i64.const 0))
+           (func (export "on_init"))
+           (func (export "on_tick")
+             (i64.store (i32.const 0) (i64.add (i64.load (i32.const 0)) (i64.const 1)))
+             (global.set $g (i64.add (global.get $g) (i64.const 1000)))
+             (call $set_score (i32.const 1) (i64.add (i64.load (i32.const 0)) (global.get $g))))
+           (func (export "on_switch_edge") (param $id i32) (param $closed i32))
+           (func (export "save_state") (result i64)
+             (i64.store (i32.const 0) (i64.const 0))
+             (global.set $g (i64.const 0))
+             (drop (memory.grow (i32.const 1)))
+             (i64.store (i32.const 65536) (i64.const 7))
+             (i64.const 0))"#,
+    );
+    let trapping = counter(
+        1,
+        1,
+        4,
+        r#"(func (export "restore_state") (param $ptr i32) (param $len i32) (unreachable))"#,
+    );
+    let mut b = backend(&old);
+    let mut h = Host::new(1);
+    for i in 1..=3 {
+        assert_eq!(tick(&mut h, &mut b), (0, i * 1001));
+    }
+    assert!(b.apply_prepared(prepare(&trapping).unwrap()).is_err());
+    assert_eq!(tick(&mut h, &mut b), (0, 4004), "old state was put back");
+    assert!(!b.is_faulted());
+}
+
 #[test]
 fn state_is_only_carried_when_both_sides_have_the_hooks() {
     // Old module has no save_state: the new one starts fresh.
