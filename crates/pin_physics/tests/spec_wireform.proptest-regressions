@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ab9f17fb7216e375fc0b00fe30d71dd6ca695525f4b38b2f7c7ce37aefeff6a8 # shrinks to steps = [(0.062586926, -0.024000647), (0.2949628, -0.08280204), (0.2334368, 0.050341614), (0.28453517, 0.0058401655)], z0 = -0.03604334, t_frac[15] = 0.28218904 (Wave 4 gate CI, fixed by 2.1-W)

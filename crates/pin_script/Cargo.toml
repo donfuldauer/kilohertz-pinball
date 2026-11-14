@@ -1,0 +1,23 @@
+[package]
+name = "pin_script"
+description = "Table scripting backends: Lua 5.4 and WebAssembly."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+pin_core.workspace = true
+mlua.workspace = true
+notify.workspace = true
+# 4.5 fix B1: wasmtime::wasmparser (the exact version wasmtime uses) for the
+# pre-compile size scan.
+wasmtime = { workspace = true, features = ["reexport-wasmparser"] }
+# 4.5 fix B1: WAT text -> binary before the size pre-scan. The exact version
+# wasmtime 50 already pulls in (Cargo.lock); Orchestrator may move the pin to
+# the root.
+wat.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
