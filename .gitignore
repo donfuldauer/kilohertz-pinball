@@ -20,3 +20,8 @@ Thumbs.db
 config.toml.local
 *.pinbundle
 /dist/
+
+# Wave 5 (3.5): .NET build output
+tools/dof_bridge/**/bin/
+tools/dof_bridge/**/obj/
+tools/dof_bridge/**/TestResults/

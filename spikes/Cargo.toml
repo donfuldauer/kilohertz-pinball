@@ -1,0 +1,41 @@
+# Standalone spike workspace for Subphase 0.1 (dependency spikes & version pinning).
+# Not a member of any root workspace. spec_0_1/ is owned by the Independent Tester
+# and is deliberately NOT listed here.
+[workspace]
+resolver = "3"
+members = [
+    "sdl_timestamp",
+    "sdl_virtual_joystick",
+    "wgpu_probe",
+    "mlua_sandbox",
+    "wasmtime_fuel",
+    "parry_nonlinear",
+    "dep_smoke",
+]
+exclude = ["spec_0_1"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# Versions mirror ../versions.toml exactly (checked by dep_smoke/tests/versions.rs).
+[workspace.dependencies]
+sdl3 = { version = "=0.22.1", features = ["build-from-source-static", "raw-window-handle"] }
+wgpu = "=30.0.1"
+pollster = "=1.0.1"
+mlua = { version = "=0.12.2", features = ["lua54", "vendored"] }
+wasmtime = "=50.0.1"
+parry3d = "=0.31.1"
+serde = { version = "=1.0.229", features = ["derive"] }
+toml = "=1.2.1"
+arrayvec = "=0.7.8"
+rand_pcg = "=0.10.2"
+rand_core = "=0.10.1"
+proptest = "=1.12.0"
+notify = "=8.2.2"
+gltf = "=1.4.1"
+egui = "=0.37.0"
+egui-wgpu = "=0.37.0"
+libm = "=0.2.16"

@@ -1,0 +1,81 @@
+# Kilohertz Pinball workspace (PLAN.md §2.1). Created by Subphase 1.1.
+# spikes/ is a separate workspace (Subphase 0.1) and is excluded here.
+[workspace]
+resolver = "3"
+members = ["crates/*", "crates/pin_script/guest-sdk"]
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# Pins copied unchanged from versions.toml (Subphase 0.1), with the feature sets
+# recorded there. Crates enable these with `<name>.workspace = true`.
+[workspace.dependencies]
+# Internal crates.
+pin_core = { path = "crates/pin_core" }
+
+# Platform.
+sdl3 = { version = "=0.22.1", features = ["build-from-source-static", "raw-window-handle"] }
+sdl3-sys = "=0.7.3"
+raw-window-handle = "=0.6.2"
+
+# Graphics.
+wgpu = "=30.0.1"
+pollster = "=1.0.1"
+
+# Physics.
+parry3d = "=0.31.1"
+glamx = "=0.3.1"
+glam = "=0.33.12"
+simba = "=0.10.2"
+
+# Scripting.
+mlua = { version = "=0.12.2", features = ["lua54", "vendored"] }
+wasmtime = "=50.0.1"
+
+# Utility.
+serde = { version = "=1.0.229", features = ["derive"] }
+toml = "=1.2.1"
+arrayvec = "=0.7.8"
+rand_pcg = "=0.10.2"
+rand_core = "=0.10.1"
+proptest = "=1.12.0"
+notify = "=8.2.2"
+# Default features off (4.1): `import` reads the real filesystem; bundles go through pin_assets' VFS.
+gltf = { version = "=1.4.1", default-features = false, features = ["names", "extras", "utils"] }
+egui = { version = "=0.37.0", features = ["default_fonts"] }  # 4.4 review B1: menu text needs the bundled fonts
+egui-wgpu = "=0.37.0"
+libm = "=0.2.16"
+
+# Wave 3 additions (Orchestrator; DECISIONS.md "Orchestrator — Wave 3 brief decisions").
+# Not in versions.toml: its [crates] must match the spikes lockfile (0.1 spike test).
+zip = { version = "=9.5.1", default-features = false, features = ["deflate"] }
+hound = "=3.5.1"
+lewton = "=0.10.2"
+bytemuck = { version = "=1.25.2", features = ["derive"] }
+image = { version = "=0.25.6", default-features = false, features = ["png", "jpeg"] }
+serde_json = "=1.0.151"
+flate2 = { version = "=1.1.11", default-features = false, features = ["zlib-rs"] }  # 4.1: own inflate with live ratio check
+crc32fast = "=1.5.5"
+wat = "=1.263.0"           # 4.5: WAT → binary before the module pre-scan (same version wasmtime resolves)
+ogg = "=0.8.0"            # 3.3: packet reader for the vendored lewton
+
+# Wave 4 additions (5.1)
+naga = { version = "=30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }  # 5.1: the version wgpu 30.0.1 uses; shader validation tests
+
+[profile.dev]
+# Keep the 1 kHz solver usable in debug test runs.
+opt-level = 1
+
+[profile.test]
+opt-level = 1
+
+# Subphase 4.2 review (DECISIONS.md "Orchestrator — 4.2 review: patched vendored Lua"):
+# Lua 5.4 is built from a patched copy of lua-src (third_party/lua-src/KHZ_PATCHES.md).
+[patch.crates-io]
+lua-src = { path = "third_party/lua-src" }
+lewton = { path = "third_party/lewton" }

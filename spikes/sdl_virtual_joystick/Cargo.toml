@@ -1,0 +1,16 @@
+[package]
+name = "sdl_virtual_joystick"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sdl3.workspace = true
+
+# SDL must run on the main thread (Cocoa on macOS) and may only be initialised
+# once per process, so the spike runs as a plain `main` instead of libtest.
+[[test]]
+name = "virtual_joystick"
+harness = false

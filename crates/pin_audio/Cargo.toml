@@ -1,0 +1,40 @@
+[package]
+name = "pin_audio"
+description = "Audio mixer, SSF channel mixer and UDP telemetry output."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+pin_core.workspace = true
+hound.workspace = true
+lewton.workspace = true
+# Same version lewton 0.10.2 depends on (already in Cargo.lock).
+ogg.workspace = true
+libm.workspace = true
+arrayvec.workspace = true
+# Only the SDL3 output shell (`mixer::SdlOutput`) needs SDL; the offline
+# mixer, decoding, SSF and telemetry are SDL-free (feature `sdl`, default on).
+sdl3 = { workspace = true, optional = true }
+
+[features]
+default = ["sdl"]
+sdl = ["dep:sdl3"]
+
+[dev-dependencies]
+proptest.workspace = true
+
+# SDL must run on the main thread (Cocoa on macOS) and may only be initialised
+# once per process, so SDL tests are plain `main` binaries instead of libtest.
+[[test]]
+name = "mixer_sdl_smoke"
+harness = false
+required-features = ["sdl"]
+
+# Independent Tester's SDL smoke test (same reason: plain `main` binary).
+[[test]]
+name = "spec_mixer_sdl"
+harness = false
+required-features = ["sdl"]
