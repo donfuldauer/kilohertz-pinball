@@ -116,11 +116,9 @@ pub enum FlipperError {
 impl core::fmt::Display for FlipperError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match *self {
-            FlipperError::ShapeNotSupported { id } => write!(
-                f,
-                "flipper {}: this bat shape is not supported",
-                id.0
-            ),
+            FlipperError::ShapeNotSupported { id } => {
+                write!(f, "flipper {}: this bat shape is not supported", id.0)
+            }
             FlipperError::TooManyFlippers { count } => {
                 write!(f, "{count} flippers, at most {MAX_FLIPPERS} are supported")
             }

@@ -1368,13 +1368,25 @@ Published early for the 5.2 Tester; kept current by the 5.2 Implementer. All GPU
   and the index of its draw in `FrameDesc::draws` (that draw samples the ball's probe).
 - `struct ProbeScheduler` (GPU-free round-robin scheduler): `ProbeScheduler::new(budget: u32)` (clamped to
   `1..=PROBE_BUDGET`); `schedule(&mut self, positions: &[[f32; 3]]) -> &[usize]` advances one frame and
-  returns the ball indices whose probes are updated this frame (≤ budget, round-robin over balls; balls
-  past `MAX_PROBES` never get their own probe); `probe_for_ball(i) -> Option<usize>` (the ball's own probe
-  slot `i` once captured, else the captured probe whose capture position is nearest to the ball, ties →
-  lower slot; `None` before any capture); `ages() -> &[u32]` (per ball: frames since its probe was last
-  captured, 0 = this frame; an uncaptured ball counts from its first frame); `stats() -> ProbeStats`.
-  Bound: with n balls and budget b, every age ≤ ⌈n/b⌉ − 1 ≤ ⌈n/b⌉. A shrinking ball count forgets the
-  dropped slots.
+  returns the ball indices whose probes are captured this frame. Ball `i` (list index) owns slot `i`
+  (`i < MAX_PROBES`; balls past it never get their own probe). **Capture order** depends only on the indices
+  and the frame history, never on positions or motion: slots never captured first, then the oldest
+  capture, ties → lower index (a strict round robin with a steady count; ages carry over by index through
+  count changes, so a change neither restarts nor starves the order). A shrinking ball count frees the
+  dropped slots (their captures are forgotten).
+  **Sampling** — `probe_for_ball(i) -> Option<usize>`: slot `i` if it holds a capture that is *fresh* for
+  ball `i`; otherwise the captured slot whose capture position is nearest to the ball's current position
+  (ties → lower slot); `None` before any capture or for an unknown ball. Slot `i`'s capture becomes
+  *stale* (`is_stale(i)`) when, between two frames, the ball at index `i` moved further than
+  `TRACK_MAX_JUMP_M` = 0.25 m, or the nearest ball of the previous frame to it had another index (a ball
+  before it drained and the list shifted, or two balls swapped places); it is fresh again when slot `i` is
+  next captured. So after two balls swap places, each samples the probe captured nearest its current
+  position (the other ball's old slot), not its own index's slot.
+  `ages() -> &[u32]` (per ball: frames since slot `i` was last captured, 0 = this frame, whether or not
+  that capture is stale; a ball whose slot holds no capture counts from its first frame at that index; a
+  ball past `MAX_PROBES` reports the age of the probe it samples); `stats() -> ProbeStats`;
+  `capture_position(slot) -> Option<[f32; 3]>`; `is_captured(slot)`; `last_updates()`; `budget()`.
+  Bound: with n balls and budget b, every age ≤ ⌈n/b⌉ − 1 once the count has been steady for ⌈n/b⌉ frames.
 - `struct ProbeStats { frames: u64, total_updates: u64, last_frame_updates: u32, max_frame_updates: u32,
   max_age: u32, max_age_ever: u32, budget: u32, balls: u32 }` (`max_age` = largest age after the last
   frame; `max_age_ever` = over all frames).
@@ -1411,15 +1423,17 @@ Published early for the 5.2 Tester; kept current by the 5.2 Implementer. All GPU
 
 **`pin_render::post`:**
 - `struct PostConfig { exposure: f32, bloom: BloomConfig, tone_map: ToneMap, motion_blur: MotionBlurConfig, aa: AaMode }`
-  (`Default`: exposure 1, bloom on, ACES, motion blur on, MSAA 4×). `PostConfig::neutral()`: exposure 1, bloom and motion blur off, `ToneMap::Linear`, AA off (the identity on 0..1). Also `fn luminance(rgb) -> f32` (Rec. 709), `MAX_BLUR_BALLS = 16`, `PostChain::{size, output_format, output_texture, output_view}`, `OctahedralProbes::{config, draw_layers}`, `ProbeScheduler::{budget, is_captured, last_updates}`, `shader_sources()` (post chain + probe remap, for naga).
-- Errors: `PostChain::new` and `OctahedralProbes::new` build their shaders and pipelines inside a wgpu validation error scope and return `GpuError::InvalidArgument` instead of panicking in wgpu's default handler.
+  (`Default`: exposure 1, bloom on, ACES, motion blur on, MSAA 4×). `PostConfig::neutral()`: exposure 1, bloom and motion blur off, `ToneMap::Linear`, AA off (the identity on 0..1). Also `fn luminance(rgb) -> f32` (Rec. 709), `MAX_BLUR_BALLS = 16`, `PostChain::{size, output_format, output_texture, output_view}`, `OctahedralProbes::{config, draw_layers}`, `ProbeScheduler::{budget, is_captured, is_stale, capture_position, last_updates}`, `reflections::TRACK_MAX_JUMP_M`, `shader_sources()` (post chain + probe remap, for naga).
+- Errors: `PostChain::new` and `OctahedralProbes::new` build their shaders, pipelines and render targets inside a wgpu validation error scope and return `GpuError::InvalidArgument` instead of panicking in wgpu's default handler.
 - `struct BloomConfig { enabled: bool, threshold: f32 (1.0), knee: f32 (0.5), intensity: f32 (0.15),
   radius: f32 (0.65), firefly_clamp: f32 (64.0), max_levels: u32 (6) }`. Model (energy conserving, in
   exposed radiance): `bright = bloom_prefilter(c)` (soft-knee threshold on luminance, then scaled so its
   luminance ≤ `firefly_clamp`); `out = c − intensity·bright + intensity·blur(bright)`, where `blur` is a
-  mip chain (13-tap down, 3×3 tent up, level i weighted (1−radius)·radiusⁱ, last level radiusᴸ⁻¹; the
-  weights sum to 1). So Σ luminance(out) = Σ luminance(in) up to border losses, and only the
-  above-threshold part moves. `threshold = 0, knee = 0` blooms the whole image.
+  mip chain (levels of ceil(n/2) texels; separable binomial [1 5 10 10 5 1]/32 down and its transpose up,
+  on texel indices, levels mirrored at the image edge; level i weighted (1−radius)·radiusⁱ, last level radiusᴸ⁻¹;
+  the weights sum to 1). So Σ luminance(out) = Σ luminance(in) at every position and image size, exactly at
+  even image edges (an odd last row/column: see "5.2 — fix round 1"), and only the above-threshold part
+  moves; a uniform image is unchanged. `threshold = 0, knee = 0` blooms the whole image.
 - `enum ToneMap { AcesFilm, Linear }`: `AcesFilm` = Narkowicz 2015 fit per channel
   `clamp(x(2.51x + 0.03) / (x(2.43x + 0.59) + 0.14), 0, 1)` with no implicit pre-scale (exposure is
   separate); `Linear` = clamp to 0..1. CPU reference: `fn aces_film(x: f32) -> f32`.
@@ -1627,7 +1641,7 @@ Published early for the Independent Tester; kept current by the 4.4 Implementer.
 - **Decision (anti-aliasing).** MSAA 4× in the PBR pass (`PbrRenderer::set_msaa_samples(4)`, hardware resolve into `hdr_texture`), not SMAA. Mean edge error against the analytic coverage of a disc: 0.205 without AA, 0.068 with MSAA 4×. **Rationale:** geometric edges (ball silhouettes, inserts) are the aliasing that matters; MSAA needs no extra pass or lookup textures and is exact on lavapipe. **Alternatives:** SMAA (lookup textures, a three-pass chain, and it blurs the probe-sampled chrome).
 - **Decision (5.1 N2, grazing albedo).** The diffuse and the base layer under the coat are scaled by (1 − F(n·v)) and (1 − Fc(n·v)) instead of (1 − F(v·h)); the coat lobe uses height-correlated Smith visibility instead of Kelemen. White-furnace albedo at n·v 0.02–0.08 is now 0.885 (white dielectric r 0.1), 0.59 (pearl), 0.59 (wood), was 1.72 / 1.35 / 1.14. 5.1's own analytic tests and implementer goldens (`tests/fixtures/pbr/*.png`) pass unchanged; three 5.1 spec snapshots moved at the rims only (mean |Δ| 0.34–0.40 of 0.5 allowed, 0.7–1.0 % channels > 12 of 0.5 % allowed), so after their analytic assertions passed they were re-blessed (`SPEC_5_1_BLESS=1`, only `golden_ceramic_pearl`, `golden_playfield_wood`, `golden_light_insert_glows_and_warms_up`): `tests/fixtures/spec_5_1/{ceramic_pearl,playfield_wood,light_insert_unlit}.rgba8` (`light_insert_lit` came out byte-identical). **Alternatives:** a multiple-scattering energy-compensation term (needs a DFG lookup texture; more than the review asked).
 - **Decision (acrylic).** The blended pass draws each transparent draw twice: back faces first (front faces culled), then front faces (back culled), so the far side is always under the near side and the result does not depend on triangle order (test: reversed index order gives a bit-identical image, and the red card shows through). Refraction is left to 5.4 (ray queries). **Alternatives:** depth-sorted triangles (CPU sort each frame); weighted blended OIT (approximate for two layers that are known).
-- **Decision (errors).** `PostChain::new` and `OctahedralProbes::new` create their shaders and pipelines inside a wgpu validation error scope and return `GpuError::InvalidArgument` on failure (no new `GpuError` variant: `gpu/` is not 5.2's). The PBR pipeline (5.1) still uses wgpu's default handler; all shader modules are validated GPU-free by `pbr_naga` / `post_naga`.
+- **Decision (errors).** `PostChain::new` and `OctahedralProbes::new` create their shaders, pipelines and targets inside a wgpu validation error scope (fix round 1: the post chain's pipelines and targets had been created after the scope was popped) and return `GpuError::InvalidArgument` on failure (no new `GpuError` variant: `gpu/` is not 5.2's). The PBR pipeline (5.1) still uses wgpu's default handler; all shader modules are validated GPU-free by `pbr_naga` / `post_naga`.
 - **Test harness note.** The implementer's post/reflection test images go to `target/<dir>/tmp/5_2_images/*.png` (`CARGO_TARGET_TMPDIR`); goldens in `tests/fixtures/{post,reflections}/*.png` are written only with `PIN_UPDATE_SNAPSHOTS=1` and checked after the analytic assertions (mean |Δ| ≤ 3/255, ≤ 2 % px off by > 16/255, and 8-bit energy within 2 % for bloom).
 
 ## Orchestrator — 2.5 Tester round 1 rulings
@@ -1938,3 +1952,8 @@ Module `pin_tablegen::clearance` (Subphase 2.8). All lengths in the API are **mm
 
 ## Orchestrator — 5.2 fix round 1: probe staleness must not change capture order
 The N3 fix (stale probe after a ball drains) made the scheduler capture moved balls first, which starved others at ≥ 0.3 m/frame and reported age 0 for uncaptured balls (Tester D3). **Ruling:** staleness only changes which probe a ball samples (fallback to the nearest captured probe); captures remain strict round-robin by ball index with the published age bound, count changes may not restart or starve the cursor, and `ages()` reports true ages. After two balls swap places each samples the probe captured nearest its current position; the Tester amends the one spec that expected the old index-based answer.
+
+## Orchestrator — 2.5 review round 1 (pass) rulings
+- **Lua-VM exemption accepted.** The engine's guarded ticks see only `luaM_realloc_` frames (≤ 64 B, ~1 per 75–160 ticks), capped by `LuaConfig::engine()` (2 MiB); Wasm is not exempt. The spec allocation test classifies by call stack independently of `ExemptScope`. The VM memory is capped but not pre-reserved; pre-reserving the call-info list in `pin_script` is a follow-up (HUMAN_QUEUE).
+- **Cabinet edges in the same tick (review N2) accepted.** Edges from inputs drained in step 1 reach the script in step 2 of the same tick; edges produced by physics in step 4/5 reach it the next tick. This is the lowest-latency reading of §2.2 that keeps the order deterministic, and it is tested.
+- **Polish round** for N1, N3, N5, N7, N8 (no behaviour change). N4, N6, N9 → HUMAN_QUEUE for 6.0.

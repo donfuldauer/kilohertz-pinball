@@ -657,11 +657,9 @@ fn surface_velocity_case(b: Banana, sweep: f32, k: u64, t_frac: f32) -> Result<f
     MovingBodies::begin_tick(&mut s.set, DT);
     let t = t_frac * DT;
     let tube = model.tube();
-    // Surface points at the start of the tick, carried to time t by the
-    // angle change implied by the field itself is not needed: the field is
-    // queried at the material point's position at `t`, so use the pose at
-    // t from closest_point of a far probe: simpler, query points on the
-    // pose at the tick start and allow the rotation by ω·t (< 0.2 rad).
+    // Surface points of the pose at the tick start. The field of a rigid
+    // rotation is `ω n × (p − pivot)` at every point, so querying these
+    // points at time t (the bat has turned by < 0.11 rad since) is valid.
     let mut pts = Vec::new();
     for f in [0.2f32, 0.5, 0.8] {
         for side in [-1.0f32, 1.0] {

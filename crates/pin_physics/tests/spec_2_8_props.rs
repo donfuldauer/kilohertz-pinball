@@ -90,7 +90,10 @@ fn wall_world(half: f32, floor: bool) -> StaticWorld {
     );
     if floor {
         b.add_collider(
-            bc::cuboid(Vec3::new(-1.0, 0.0, -0.05), Vec3::new(1.0 - half, 2.0, 0.05)),
+            bc::cuboid(
+                Vec3::new(-1.0, 0.0, -0.05),
+                Vec3::new(1.0 - half, 2.0, 0.05),
+            ),
             layers::ALL,
             true,
         );
@@ -132,7 +135,9 @@ fn thin_wall_case(
     } else {
         w
     };
-    let h = s.add_ball(b).ok_or_else(|| "add_ball refused the ball".to_owned())?;
+    let h = s
+        .add_ball(b)
+        .ok_or_else(|| "add_ball refused the ball".to_owned())?;
     let mut ev = bc::events();
     let vx = (dir * speed).x;
     let ticks = (run_up / vx / DT) as usize + 40;
@@ -200,10 +205,28 @@ fn no_tunnelling_thin_wall_fixed_grid_of_diameters() {
         for &v in &[0.5f32, 3.0, 10.0, 20.0, V_MAX] {
             for &half in &[0.00025f32, 0.001] {
                 for floor in [false, true] {
-                    thin_wall_case("jumbo_xl_resin", d, 1700.0, half, v, Vec3::X, Vec3::ZERO, floor)
-                        .unwrap_or_else(|e| panic!("{e}"));
-                    thin_wall_case("standard_steel", d, 7850.0, half, v, Vec3::X, Vec3::ZERO, floor)
-                        .unwrap_or_else(|e| panic!("{e}"));
+                    thin_wall_case(
+                        "jumbo_xl_resin",
+                        d,
+                        1700.0,
+                        half,
+                        v,
+                        Vec3::X,
+                        Vec3::ZERO,
+                        floor,
+                    )
+                    .unwrap_or_else(|e| panic!("{e}"));
+                    thin_wall_case(
+                        "standard_steel",
+                        d,
+                        7850.0,
+                        half,
+                        v,
+                        Vec3::X,
+                        Vec3::ZERO,
+                        floor,
+                    )
+                    .unwrap_or_else(|e| panic!("{e}"));
                     n += 2;
                 }
             }
@@ -269,7 +292,14 @@ proptest! {
 /// A ball shot at a thin vertical post (radius `post_r`) with a lateral
 /// offset: the centre never comes closer to the post axis than
 /// `r + post_r` (less 0.1 mm).
-fn post_case(base: &str, d: f32, rho: f32, post_r: f32, speed: f32, offset: f32) -> Result<(), String> {
+fn post_case(
+    base: &str,
+    d: f32,
+    rho: f32,
+    post_r: f32,
+    speed: f32,
+    offset: f32,
+) -> Result<(), String> {
     let prof = custom(base, d, rho);
     let profs = table_with(std::slice::from_ref(&prof));
     let r = 0.5 * d;
@@ -289,7 +319,9 @@ fn post_case(base: &str, d: f32, rho: f32, post_r: f32, speed: f32, offset: f32)
     let reach = r + post_r;
     let mut ball = Ball::new(first_extra(), Vec3::new(-reach - 0.04, offset * reach, 0.0));
     ball.velocity = Vec3::new(speed, 0.0, 0.0);
-    let h = s.add_ball(ball).ok_or_else(|| "add_ball refused the ball".to_owned())?;
+    let h = s
+        .add_ball(ball)
+        .ok_or_else(|| "add_ball refused the ball".to_owned())?;
     let mut ev = bc::events();
     let ticks = ((2.0 * reach + 0.08) / speed / DT) as usize + 20;
     for tick in 0..ticks {
@@ -460,8 +492,16 @@ fn no_tunnelling_guide_wall_fixed_grid_of_diameters() {
         for &v in &[1.0f32, 8.0, V_MAX] {
             for k in 0..5 {
                 for rolling in [false, true] {
-                    guide_case("jumbo_xl_resin", d, 1700.0, v, k as f32 * 1.3, [0.0, 0.0], rolling)
-                        .unwrap_or_else(|e| panic!("{e}"));
+                    guide_case(
+                        "jumbo_xl_resin",
+                        d,
+                        1700.0,
+                        v,
+                        k as f32 * 1.3,
+                        [0.0, 0.0],
+                        rolling,
+                    )
+                    .unwrap_or_else(|e| panic!("{e}"));
                 }
             }
         }
@@ -491,13 +531,23 @@ proptest! {
 // ------------------------------------------------------------ resting contact
 
 /// Largest displacement of a ball set down on a level floor over `ticks`.
-fn rest_drift(base: &str, d: f32, rho: f32, xy: [f32; 2], floor_top: f32, ticks: usize) -> Result<f32, String> {
+fn rest_drift(
+    base: &str,
+    d: f32,
+    rho: f32,
+    xy: [f32; 2],
+    floor_top: f32,
+    ticks: usize,
+) -> Result<f32, String> {
     let prof = custom(base, d, rho);
     let profs = table_with(std::slice::from_ref(&prof));
     let r = prof.radius_m();
     let mut b = StaticWorldBuilder::new();
     b.add_collider(
-        bc::cuboid(Vec3::new(0.0, 0.0, floor_top - 0.05), Vec3::new(2.0, 2.0, 0.05)),
+        bc::cuboid(
+            Vec3::new(0.0, 0.0, floor_top - 0.05),
+            Vec3::new(2.0, 2.0, 0.05),
+        ),
         layers::ALL,
         true,
     );
@@ -612,8 +662,13 @@ fn corner_rest(base: &str, d: f32, rho: f32, x: f32) -> Result<(f32, f32), Strin
 #[test]
 fn resting_in_a_corner_is_as_stable_as_the_standard_ball() {
     // Reference: what the 27 mm, 80 g steel ball does in the same corner.
-    let (d0, v0) = corner_rest("standard_steel", 0.027, 80.0e-3 / (std::f32::consts::PI / 6.0 * 0.027f32.powi(3)), 0.1)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let (d0, v0) = corner_rest(
+        "standard_steel",
+        0.027,
+        80.0e-3 / (std::f32::consts::PI / 6.0 * 0.027f32.powi(3)),
+        0.1,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     println!("corner rest, standard ball: drift {d0:e} m, max speed {v0:e} m/s");
     let (lim_d, lim_v) = (d0.max(1e-5), v0.max(1e-3));
     for &d in &[D_MIN, 0.020, 0.03175, 0.045, 0.060, D_MAX] {
@@ -653,8 +708,16 @@ proptest! {
 // ------------------------------------------------------------ ball–ball, any two diameters
 
 fn pair_case(
-    d1: f32, rho1: f32, d2: f32, rho2: f32,
-    b: f32, vrel: f32, rot: Quat, w1: Vec3, w2: Vec3, v2: Vec3,
+    d1: f32,
+    rho1: f32,
+    d2: f32,
+    rho2: f32,
+    b: f32,
+    vrel: f32,
+    rot: Quat,
+    w1: Vec3,
+    w2: Vec3,
+    v2: Vec3,
 ) -> Result<(), String> {
     let p1 = custom("standard_steel", d1, rho1);
     let mut p2 = custom("jumbo_xl_resin", d2, rho2);
@@ -669,8 +732,10 @@ fn pair_case(
     let mut c = Ball::new(i2, Vec3::ZERO);
     c.velocity = v2;
     c.angular_velocity = w2;
-    s.add_ball(a).ok_or_else(|| "add_ball refused the ball".to_owned())?;
-    s.add_ball(c).ok_or_else(|| "add_ball refused the ball".to_owned())?;
+    s.add_ball(a)
+        .ok_or_else(|| "add_ball refused the ball".to_owned())?;
+    s.add_ball(c)
+        .ok_or_else(|| "add_ball refused the ball".to_owned())?;
     let world = bc::empty_world();
     let g = bc::geo(&world);
     let mut ev = bc::events();
@@ -702,12 +767,18 @@ fn pair_case(
     let mut collided = false;
     let tag = format!(
         "d1={:.2} mm ({:.1} g) d2={:.2} mm ({:.1} g) b={b} v={vrel}",
-        d1 * 1e3, p1.mass_kg * 1e3, d2 * 1e3, p2.mass_kg * 1e3
+        d1 * 1e3,
+        p1.mass_kg * 1e3,
+        d2 * 1e3,
+        p2.mass_kg * 1e3
     );
     for tick in 0..((reach + 0.02) / vrel / DT) as usize + 100 {
         ev.clear();
         s.step(&g, DT, &mut ev);
-        collided |= ev.as_slice().iter().any(|e| matches!(e, BallEvent::Impact { .. }));
+        collided |= ev
+            .as_slice()
+            .iter()
+            .any(|e| matches!(e, BallEvent::Impact { .. }));
         let (p, l, ke) = totals(&s);
         if !(p.is_finite() && l.is_finite() && ke.is_finite()) {
             return Err(format!("tick {tick}: non-finite state ({tag})"));
@@ -718,7 +789,9 @@ fn pair_case(
             return Err(format!("tick {tick}: linear momentum drift {dp:e} ({tag})"));
         }
         if dl > 1e-3 {
-            return Err(format!("tick {tick}: angular momentum drift {dl:e} ({tag})"));
+            return Err(format!(
+                "tick {tick}: angular momentum drift {dl:e} ({tag})"
+            ));
         }
         if ke > prev * (1.0 + 1e-6) + 1e-12 {
             return Err(format!("tick {tick}: KE rose {prev:e} -> {ke:e} ({tag})"));
@@ -727,7 +800,9 @@ fn pair_case(
         let ps: Vec<Vec3> = s.balls().map(|(_, x)| x.position).collect();
         let dist = (ps[0] - ps[1]).length();
         if dist < reach - 1e-4 {
-            return Err(format!("tick {tick}: overlap, centres {dist} m apart, contact at {reach} ({tag})"));
+            return Err(format!(
+                "tick {tick}: overlap, centres {dist} m apart, contact at {reach} ({tag})"
+            ));
         }
     }
     if b < 0.93 && !collided {
@@ -766,14 +841,26 @@ fn standard_trace(profs: &[BallProfile], id: ProfileId, v: Vec3, w: Vec3) -> Vec
     let mut b = StaticWorldBuilder::new();
     b.add_collider(bc::floor_shape(), layers::ALL, true);
     for x in [-0.25f32, 0.25] {
-        b.add_collider(bc::cuboid(Vec3::new(x, 0.0, 0.03), Vec3::new(0.001, 0.5, 0.04)), layers::ALL, true);
+        b.add_collider(
+            bc::cuboid(Vec3::new(x, 0.0, 0.03), Vec3::new(0.001, 0.5, 0.04)),
+            layers::ALL,
+            true,
+        );
     }
     for y in [-0.5f32, 0.5] {
-        b.add_collider(bc::cuboid(Vec3::new(0.0, y, 0.03), Vec3::new(0.25, 0.001, 0.04)), layers::ALL, true);
+        b.add_collider(
+            bc::cuboid(Vec3::new(0.0, y, 0.03), Vec3::new(0.25, 0.001, 0.04)),
+            layers::ALL,
+            true,
+        );
     }
     for (x, y) in [(-0.1f32, 0.2f32), (0.12, -0.1), (0.0, 0.33), (-0.15, -0.3)] {
         b.add_collider(
-            StaticShape::Cylinder { base: Vec3::new(x, y, -0.005), axis: Vec3::Z * 0.05, radius: 0.004 },
+            StaticShape::Cylinder {
+                base: Vec3::new(x, y, -0.005),
+                axis: Vec3::Z * 0.05,
+                radius: 0.004,
+            },
             layers::ALL,
             true,
         );

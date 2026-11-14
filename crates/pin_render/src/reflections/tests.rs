@@ -230,7 +230,10 @@ fn draining_ball_does_not_hand_its_probe_to_the_next_ball() {
     }
     assert_eq!(s.ages(), &[2, 2, 1, 1, 0, 0]);
     // Ball 0 drains; the others move a little and shift down one index.
-    let after: Vec<[f32; 3]> = balls[1..].iter().map(|p| [p[0] + 0.002, p[1], p[2]]).collect();
+    let after: Vec<[f32; 3]> = balls[1..]
+        .iter()
+        .map(|p| [p[0] + 0.002, p[1], p[2]])
+        .collect();
     let up = s.schedule(&after).to_vec();
     // Oldest first, ages carried over by index: [3, 3, 2, 2, 1] → 0 and 1.
     assert_eq!(up, vec![0, 1]);
@@ -256,7 +259,8 @@ fn draining_ball_does_not_hand_its_probe_to_the_next_ball() {
         assert_eq!(s.probe_for_ball(j), Some(j));
         assert!(!s.is_stale(j));
     }
-    // A ball that jumps further than the tracking distance samples the
+    // A ball that jumps further than the tracking distance
+    // (TRACK_MAX_JUMP_M) samples the
     // probe nearest to where it is now.
     let mut jumped = after.clone();
     jumped[2] = [5.0, 0.0, 0.0];
@@ -265,7 +269,6 @@ fn draining_ball_does_not_hand_its_probe_to_the_next_ball() {
         assert!(s.is_stale(2));
         assert_eq!(s.probe_for_ball(2), nearest_capture(&s, jumped[2]));
     }
-    assert!(TRACK_MAX_JUMP_M > 0.0);
 }
 
 proptest! {

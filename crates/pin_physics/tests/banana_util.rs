@@ -80,7 +80,11 @@ pub fn leading_face(config: &FlipperConfig, fraction: f32) -> (Vec3, Vec3) {
             // Both radii are equal in these tests: the face is parallel to
             // the axis.
             assert_eq!(base_radius_mm, tip_radius_mm);
-            let side = if config.sweep_angle_deg < 0.0 { -1.0 } else { 1.0 };
+            let side = if config.sweep_angle_deg < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
             let n = v(0.0, side, 0.0);
             (
                 v(length_mm * 1.0e-3 * fraction, 0.0, 0.0) + n * (base_radius_mm * 1.0e-3),
@@ -102,7 +106,12 @@ pub fn bat_to_world(angle_deg: f32, local: Vec3) -> Vec3 {
 /// bat of `config` (pivot at the config's base, z-normal plane) at
 /// `fraction` with `gap` to spare, the bat at `angle_deg`; and the face's
 /// outward normal in the world.
-pub fn ball_on_face(config: &FlipperConfig, angle_deg: f32, fraction: f32, gap: f32) -> (Vec3, Vec3) {
+pub fn ball_on_face(
+    config: &FlipperConfig,
+    angle_deg: f32,
+    fraction: f32,
+    gap: f32,
+) -> (Vec3, Vec3) {
     let (p, n) = leading_face(config, fraction);
     let base = Vec3::from_array(config.base_position_mm) * 1.0e-3;
     let normal = bat_to_world(angle_deg, n);

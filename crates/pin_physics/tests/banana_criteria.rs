@@ -78,10 +78,7 @@ fn release_angles_change_monotonically_and_shift_one_way() {
         // counter-clockwise for this left flipper), and farther for the
         // contacts farther out.
         assert!(shifts.iter().all(|&s| s > 5.0), "R {radius_mm}: {shifts:?}");
-        assert!(
-            shifts[0] < shifts[1] && shifts[1] < shifts[2],
-            "{shifts:?}"
-        );
+        assert!(shifts[0] < shifts[1] && shifts[1] < shifts[2], "{shifts:?}");
         // A tighter bend shifts more.
         if previous_shift[0] != 0.0 {
             for i in 0..3 {
@@ -145,7 +142,10 @@ fn a_large_arc_radius_converges_to_the_straight_capsule() {
             let angle = (libm::atan2f(b.y, b.x) - libm::atan2f(s.y, s.x))
                 .to_degrees()
                 .abs();
-            worst = (worst.0.max(angle), worst.1.max((b.length() - s.length()).abs()));
+            worst = (
+                worst.0.max(angle),
+                worst.1.max((b.length() - s.length()).abs()),
+            );
         }
         worst
     };
@@ -181,7 +181,10 @@ fn a_large_arc_radius_converges_to_the_straight_capsule() {
     // From 500 m on the banana is the straight bat within the tolerance
     // floor.
     for &(radius_mm, angle, speed) in rows.iter().filter(|r| r.0 >= 5.0e5) {
-        assert!(angle <= 0.05 && speed <= 0.005, "R {radius_mm}: {angle}° {speed}");
+        assert!(
+            angle <= 0.05 && speed <= 0.005,
+            "R {radius_mm}: {angle}° {speed}"
+        );
     }
     // The limit itself: a radius beyond single precision's reach of the
     // bend gives the straight capsule's surface to within 0.1 µm, and the
@@ -193,7 +196,11 @@ fn a_large_arc_radius_converges_to_the_straight_capsule() {
     );
     for i in 0..200 {
         let t = i as f32 * 0.37;
-        let p = v(0.12 * libm::cosf(t) + 0.03, 0.1 * libm::sinf(1.7 * t), 0.015);
+        let p = v(
+            0.12 * libm::cosf(t) + 0.03,
+            0.1 * libm::sinf(1.7 * t),
+            0.015,
+        );
         let (x, y) = (
             a.flippers.closest_point(0, 0.0, p).unwrap(),
             b.flippers.closest_point(0, 0.0, p).unwrap(),
@@ -277,7 +284,11 @@ fn cradled_for_2000_ticks(rig: &mut Rig, h: BallHandle, end_angle: f32, label: &
             "{label}: the ball left the bat ({} mm)",
             (cp.distance - BALL_R) * 1e3
         );
-        assert_eq!(rig.flippers.angle_deg(LEFT), end_angle, "{label}: bat moved");
+        assert_eq!(
+            rig.flippers.angle_deg(LEFT),
+            end_angle,
+            "{label}: bat moved"
+        );
     }
     println!(
         "{label}: ball at ({:.2}, {:.2}) mm moved {:.4} mm at most in 2,000 ticks, fastest {fastest:.6} m/s",
@@ -335,7 +346,10 @@ fn sweep_shot(config: &FlipperConfig, fraction: f32, button: Button, approach: A
         Approach::Square => -normal,
         Approach::DownTable => v(0.0, -1.0, 0.0),
     };
-    let h = rig.add_ball(contact - heading * (speed * LEAD as f32 * DT), heading * speed);
+    let h = rig.add_ball(
+        contact - heading * (speed * LEAD as f32 * DT),
+        heading * speed,
+    );
     if matches!(button, Button::Held) {
         rig.flippers.set_energised(LEFT, true);
         for _ in 0..200 {

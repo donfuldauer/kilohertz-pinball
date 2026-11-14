@@ -114,8 +114,12 @@ fn xl_mini(
     let mut c = bc::ball(XL, Vec3::ZERO);
     c.velocity = v_xl;
     c.angular_velocity = w_xl;
-    let hm = s.add_ball(a).ok_or_else(|| "add_ball refused the ball".to_owned())?;
-    let hx = s.add_ball(c).ok_or_else(|| "add_ball refused the ball".to_owned())?;
+    let hm = s
+        .add_ball(a)
+        .ok_or_else(|| "add_ball refused the ball".to_owned())?;
+    let hx = s
+        .add_ball(c)
+        .ok_or_else(|| "add_ball refused the ball".to_owned())?;
     let world = bc::empty_world();
     let g = bc::geo(&world);
     let mut ev = bc::events();
@@ -249,8 +253,8 @@ fn c1_xl_vs_mini_with_spins_and_moving_xl() {
                 Vec3::new(-2.5, 0.0, 0.0),
                 Vec3::new(4.0, 1.0, -2.0),
             ] {
-                let d = xl_mini(b, 3.0, Quat::IDENTITY, wm, wx, vx)
-                    .unwrap_or_else(|e| panic!("{e}"));
+                let d =
+                    xl_mini(b, 3.0, Quat::IDENTITY, wm, wx, vx).unwrap_or_else(|e| panic!("{e}"));
                 worst.dp = worst.dp.max(d.dp);
                 worst.dl = worst.dl.max(d.dl);
             }
@@ -303,7 +307,10 @@ fn c1_xl_strikes_resting_mini() {
             "v={v}: mini leaves at {vm} m/s"
         );
         assert!(vx <= -0.92 * v && vx >= -v * 1.0001, "v={v}: XL at {vx}");
-        assert!(vm < vx, "v={v}: mini ({vm}) not ahead of the XL ball ({vx})");
+        assert!(
+            vm < vx,
+            "v={v}: mini ({vm}) not ahead of the XL ball ({vx})"
+        );
     }
 }
 

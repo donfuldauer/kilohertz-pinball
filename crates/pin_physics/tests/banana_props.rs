@@ -141,22 +141,31 @@ fn fast_balls_bounce_off_both_faces_and_the_tip() {
 
 #[test]
 fn a_fast_bat_does_not_swing_through_a_ball() {
-    // Up to the fastest a flipper can turn: a coil ten times the default on
-    // a bat of half the default inertia.
+    // Far beyond what a flipper turns at: coils up to 33 times the default
+    // on a bat of half the default inertia.
     let mut fastest = (0.0f32, 0.0f32);
+    let mut cases = 0;
     for arc_sweep in [30.0f32, -30.0] {
         for radius_mm in [50.0f32, RADIUS_MM, 300.0] {
-            for torque in [1.2f32, 4.0, 15.0] {
+            for torque in [1.2f32, 4.0, 15.0, 40.0] {
                 for fraction in [0.3f32, 0.6, 0.95] {
                     for gap_mm in [0.5f32, 5.0, 20.0, 40.0] {
-                        // Only gaps the stroke can close at this point.
-                        if gap_mm > 0.5 * fraction * LENGTH_MM * 50.0f32.to_radians() {
-                            continue;
-                        }
                         let mut config = bent(radius_mm, arc_sweep);
                         config.power_torque_nm = torque;
                         config.inertia_kg_m2 = 0.5e-4;
                         let bat = shape_of(&config);
+                        // Only where the stroke carries the face into the
+                        // ball: the face moves along its own normal there
+                        // (a tip curled far back moves edge-on), and half
+                        // the stroke closes the gap.
+                        let (p, n) = leading_face(&config, fraction);
+                        let advance = Vec3::Z.cross(p).dot(n);
+                        if advance < 0.7 * p.length()
+                            || gap_mm * 1e-3 > 0.5 * advance * 50.0f32.to_radians()
+                        {
+                            continue;
+                        }
+                        cases += 1;
                         let (start, _) = ball_on_face(&config, -30.0, fraction, gap_mm * 1e-3);
                         let mut rig = space_rig(config);
                         let h = rig.add_ball(start, Vec3::ZERO);
@@ -201,6 +210,7 @@ fn a_fast_bat_does_not_swing_through_a_ball() {
         fastest.0, fastest.1
     );
     assert!(fastest.1 > 15.0);
+    assert!(cases > 100, "the sweep covers both bends: {cases}");
 }
 
 fn tilt(axis_angle: f32, tilt_deg: f32) -> Quat {
