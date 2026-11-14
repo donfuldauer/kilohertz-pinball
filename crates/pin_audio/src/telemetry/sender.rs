@@ -15,6 +15,12 @@ pub const DEFAULT_TELEMETRY_RING_CAPACITY: usize = 64;
 
 /// Creates the datagram ring (`capacity` exact; 0 is treated as 1). This is
 /// the ring's only allocation.
+///
+/// Use at least [`MAX_DATAGRAMS_PER_TICK`](super::MAX_DATAGRAMS_PER_TICK)
+/// (5; the default [`DEFAULT_TELEMETRY_RING_CAPACITY`] is 64): a full state
+/// takes that many datagrams, so a smaller ring can never carry one whole
+/// and the [`force_full_state`](super::TelemetryEncoder::force_full_state)
+/// recovery of [`TelemetryTx::push_batch`] cannot complete.
 pub fn telemetry_channel(capacity: usize) -> (TelemetryTx, TelemetryReceiver) {
     let (tx, rx) = channel(capacity.max(1));
     let dropped = Arc::new(AtomicU64::new(0));
@@ -56,6 +62,10 @@ impl TelemetryTx {
     ///     encoder.force_full_state();
     /// }
     /// ```
+    ///
+    /// A batch that does not fit is truncated (its first datagrams are
+    /// queued, the rest dropped), so the ring needs room for a whole batch
+    /// for the recovery to succeed: see [`telemetry_channel`].
     pub fn push_batch(&mut self, batch: &DatagramBatch) -> bool {
         let mut all = true;
         for d in batch.datagrams() {
@@ -125,12 +135,17 @@ impl TelemetrySender {
         }
     }
 
-    /// Sends every queued datagram; returns how many were taken from the
-    /// ring. A failed send (e.g. no listener on loopback) is counted in
+    /// Sends the queued datagrams, at most the ring's capacity per call (so
+    /// a producer refilling the ring concurrently cannot keep one call
+    /// running forever); returns how many were taken from the ring. A
+    /// failed send (e.g. no listener on loopback) is counted in
     /// [`send_errors`](Self::send_errors) and skipped.
     pub fn pump(&mut self) -> usize {
+        let limit = self.rx.rx.capacity();
         let mut n = 0;
-        while let Some(d) = self.rx.pop() {
+        while n < limit
+            && let Some(d) = self.rx.pop()
+        {
             match self.socket.send_to(d.as_bytes(), self.dest) {
                 Ok(_) => self.sent += 1,
                 Err(_) => self.errors += 1,
@@ -166,7 +181,9 @@ impl TelemetrySender {
     }
 
     /// Moves the sender to its own thread ("pin-telemetry"), which pumps the
-    /// ring and parks for up to `poll` whenever it is empty. A datagram can
+    /// ring and parks for up to `poll` whenever it is empty. On stop it does
+    /// one final bounded [`pump`](Self::pump), so a producer that keeps
+    /// pushing cannot delay shutdown. A datagram can
     /// therefore leave up to `poll` after the sim pushed it: use
     /// `poll ≤ 1 ms` (one tick) in the app.
     pub fn spawn(mut self, poll: Duration) -> io::Result<TelemetrySenderHandle> {
@@ -260,5 +277,87 @@ mod tests {
             .spawn(Duration::from_millis(1))
             .unwrap();
         drop(h);
+    }
+
+    /// With the documented minimum capacity, a full state that overflowed a
+    /// busy ring is delivered whole by the forced full state of the next
+    /// tick when the consumer pumps between ticks.
+    #[test]
+    fn forced_full_state_recovers_at_minimum_capacity() {
+        use super::super::MAX_DATAGRAMS_PER_TICK;
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (mut tx, rx) = telemetry_channel(MAX_DATAGRAMS_PER_TICK);
+        let mut s = TelemetrySender::new(rx, listener.local_addr().unwrap()).unwrap();
+        let mut enc = TelemetryEncoder::new();
+        let st = TelemetryState::new();
+        let mut batch = DatagramBatch::new();
+        // Tick 0's full state fills the ring, so tick 1's overflows.
+        enc.encode_tick(0, &st, &[], &mut batch);
+        assert!(tx.push_batch(&batch));
+        enc.force_full_state();
+        enc.encode_tick(1, &st, &[], &mut batch);
+        assert_eq!(batch.len(), MAX_DATAGRAMS_PER_TICK);
+        let mut tick = 1;
+        let mut ok = tx.push_batch(&batch);
+        assert!(!ok, "the first full state must overflow");
+        while !ok {
+            enc.force_full_state();
+            s.pump();
+            tick += 1;
+            enc.encode_tick(tick, &st, &[], &mut batch);
+            ok = tx.push_batch(&batch);
+            assert!(tick < 10, "recovery never completed");
+        }
+        assert_eq!(s.pump(), MAX_DATAGRAMS_PER_TICK);
+        let mut buf = [0u8; 2048];
+        let mut got = 0;
+        loop {
+            let n = listener.recv(&mut buf).unwrap();
+            let (h, _) = decode_datagram(&buf[..n]).unwrap();
+            if h.tick == tick {
+                got += 1;
+                if got == MAX_DATAGRAMS_PER_TICK {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// A producer that keeps refilling the ring cannot keep `pump` (or the
+    /// spawned thread's shutdown) running forever.
+    #[test]
+    fn pump_and_stop_are_bounded_under_continuous_production() {
+        let dead = UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let (mut tx, rx) = telemetry_channel(4);
+        let d = {
+            let mut enc = TelemetryEncoder::new();
+            let mut batch = DatagramBatch::new();
+            enc.encode_tick(0, &TelemetryState::new(), &[], &mut batch);
+            batch.datagrams()[0]
+        };
+        let run = Arc::new(AtomicBool::new(true));
+        let producer = {
+            let run = Arc::clone(&run);
+            std::thread::spawn(move || {
+                while run.load(Ordering::Relaxed) {
+                    tx.push(&d);
+                }
+            })
+        };
+        let mut s = TelemetrySender::new(rx, dead).unwrap();
+        for _ in 0..100 {
+            assert!(s.pump() <= 4);
+        }
+        let h = s.spawn(Duration::from_millis(1)).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(h.stop().is_some());
+        run.store(false, Ordering::Relaxed);
+        producer.join().unwrap();
     }
 }

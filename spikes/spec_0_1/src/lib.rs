@@ -11,7 +11,9 @@ use regex::Regex;
 static EXACT_PIN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"^=(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
-        r"(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?",
+        // Pre-release identifiers: numeric ones have no leading zero (SemVer 2.0.0 §9).
+        r"(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)",
+        r"(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?",
         r"(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$",
     ))
     .expect("exact-pin regex compiles")
@@ -78,16 +80,52 @@ fn heading_level(line: &str) -> Option<(usize, &str)> {
         .then(|| (hashes, rest.trim().trim_end_matches('#').trim_end()))
 }
 
+/// A CommonMark code-fence delimiter: up to three spaces of indentation and
+/// a run of at least three backticks or tildes. Returns the fence character,
+/// the run length and the text after the run.
+fn fence_run(line: &str) -> Option<(u8, usize, &str)> {
+    let indent = line.bytes().take_while(|b| *b == b' ').count();
+    if indent > 3 {
+        return None;
+    }
+    let rest = &line[indent..];
+    let ch = *rest.as_bytes().first()?;
+    if ch != b'`' && ch != b'~' {
+        return None;
+    }
+    let len = rest.bytes().take_while(|b| *b == ch).count();
+    (len >= 3).then(|| (ch, len, &rest[len..]))
+}
+
+/// Advances fenced-code state over one line: `fence` holds the opening
+/// delimiter while inside a block. A block closes only on a run of the same
+/// character, at least as long as the opener, followed by nothing but
+/// whitespace. Returns whether the line belongs to a fenced block.
+fn update_fence(fence: &mut Option<(u8, usize)>, line: &str) -> bool {
+    match (*fence, fence_run(line)) {
+        (Some((ch, len)), Some((c, l, after)))
+            if c == ch && l >= len && after.trim().is_empty() =>
+        {
+            *fence = None;
+            true
+        }
+        (Some(_), _) => true,
+        (None, Some((c, l, after))) if c == b'~' || !after.contains('`') => {
+            *fence = Some((c, l));
+            true
+        }
+        (None, _) => false,
+    }
+}
+
 /// Extracts the body of the first level-2 (`## `) section whose heading
 /// satisfies `matches`, up to the next level-1/2 heading. Fenced code blocks
 /// are not treated as headings.
 pub fn level2_section(markdown: &str, matches: impl Fn(&str) -> bool) -> Option<String> {
     let mut out: Option<String> = None;
-    let mut in_fence = false;
+    let mut fence = None;
     for line in markdown.lines() {
-        if line.trim_start().starts_with("```") {
-            in_fence = !in_fence;
-        }
+        let in_fence = update_fence(&mut fence, line);
         let heading = if in_fence { None } else { heading_level(line) };
         match (&mut out, heading) {
             (None, Some((2, title))) if matches(title) => out = Some(String::new()),
@@ -106,11 +144,9 @@ pub fn level2_section(markdown: &str, matches: impl Fn(&str) -> bool) -> Option<
 /// Deeper headings stay inside the body of their parent subsection.
 pub fn level3_subsections(section: &str) -> Vec<Subsection> {
     let mut subs: Vec<Subsection> = Vec::new();
-    let mut in_fence = false;
+    let mut fence = None;
     for line in section.lines() {
-        if line.trim_start().starts_with("```") {
-            in_fence = !in_fence;
-        }
+        let in_fence = update_fence(&mut fence, line);
         match heading_level(line) {
             Some((3, title)) if !in_fence => subs.push(Subsection {
                 heading: title.to_owned(),
@@ -140,6 +176,11 @@ mod tests {
             "=1.0.0-rc.1",
             "=0.3.0-alpha",
             "=1.2.1+spec-1.1.0",
+            "=1.0.0-rc.0",
+            "=1.0.0-rc.10",
+            "=1.0.0-0a.01x",
+            "=1.0.0-x-y.0-1",
+            "=1.0.0+build.01",
         ] {
             assert!(is_exact_pin(ok), "{ok:?} should be accepted");
         }
@@ -161,6 +202,9 @@ mod tests {
             "=1.2.3.4",
             "=01.2.3",
             "=1.2.3-",
+            "=1.2.3-rc.01",
+            "=1.2.3-01",
+            "=1.2.3-rc..1",
             "=v1.2.3",
             "=1.2.3, <2",
             "=١.٢.٣",
@@ -182,5 +226,53 @@ mod tests {
         assert!(subs[0].body.contains("deep") && subs[0].body.contains('b'));
         assert_eq!(subs[1].heading, "Two");
         assert!(level2_section(md, |h| h == "missing").is_none());
+    }
+
+    #[test]
+    fn fences_match_delimiter_and_length() {
+        // A ``` line inside a ```` block, and a ~~~ block, do not end or start
+        // a fence early; headings inside either stay in the body.
+        let md = "## 0.1 X
+### One
+````md
+```
+## inside
+### inside
+```
+````
+~~~
+## tilde
+### tilde
+```
+~~~
+### Two
+b
+## Z
+";
+        let sec = level2_section(md, |h| h.starts_with("0.1")).expect("section");
+        assert!(sec.contains("## inside") && sec.contains("## tilde") && sec.contains("### Two"));
+        let subs = level3_subsections(&sec);
+        let heads: Vec<&str> = subs.iter().map(|s| s.heading.as_str()).collect();
+        assert_eq!(heads, ["One", "Two"]);
+        // An unclosed fence runs to the end of the document.
+        let open = "## 0.1 X
+```
+## not a heading
+";
+        assert!(
+            level2_section(open, |h| h.starts_with("0.1"))
+                .unwrap()
+                .contains("not a heading")
+        );
+        // A fence indented four spaces is code, not a fence.
+        let indented = "## 0.1 X
+    ```
+## Z
+";
+        assert!(
+            !level2_section(indented, |h| h.starts_with("0.1"))
+                .unwrap()
+                .contains("Z")
+        );
     }
 }

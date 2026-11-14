@@ -11,6 +11,11 @@ const AXES: usize = GamepadAxis::ALL.len();
 /// Construction allocates (the keyboard tables are sorted vectors); the
 /// per-event methods never allocate. Where a profile built by hand binds one
 /// raw input twice, the first binding wins.
+///
+/// The mapper is stateless: each raw edge becomes a cabinet event on its own,
+/// so where several raw inputs (or devices) are bound to one cabinet input the
+/// last edge wins. Holding a cabinet input while any of its sources is held
+/// (the OR of the sources) is the caller's job.
 #[derive(Clone, Debug)]
 pub struct ProfileMapper {
     /// `(scancode, input)`, sorted by scancode, unique.
