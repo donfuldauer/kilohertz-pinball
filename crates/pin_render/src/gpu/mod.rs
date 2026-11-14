@@ -303,6 +303,36 @@ pub fn wait_for_device(
         .map(|_| ())
 }
 
+/// Byte size of a readback buffer of `height` rows of `padded_row` bytes on
+/// `device`, or [`GpuError::Readback`] when it exceeds the device's
+/// `max_buffer_size` (a texture the device accepts can still be too large
+/// to read back in one buffer; creating that buffer would be a validation
+/// error).
+pub(crate) fn readback_buffer_size(
+    device: &wgpu::Device,
+    padded_row: usize,
+    height: u32,
+) -> Result<u64, GpuError> {
+    checked_readback_size(device.limits().max_buffer_size, padded_row, height)
+}
+
+/// [`readback_buffer_size`] for a given `max_buffer_size`.
+pub(crate) fn checked_readback_size(
+    max_buffer_size: u64,
+    padded_row: usize,
+    height: u32,
+) -> Result<u64, GpuError> {
+    (padded_row as u64)
+        .checked_mul(u64::from(height))
+        .filter(|&n| n <= max_buffer_size)
+        .ok_or_else(|| {
+            GpuError::Readback(format!(
+                "a {height}-row image of {padded_row} bytes per row needs a readback buffer \
+                 larger than the device's max_buffer_size ({max_buffer_size} bytes)"
+            ))
+        })
+}
+
 /// Result channel of a `Buffer::map_async` callback.
 pub(crate) type MapReceiver = std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>;
 

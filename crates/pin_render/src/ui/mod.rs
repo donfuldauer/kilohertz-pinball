@@ -268,8 +268,27 @@ impl OverlayPainter {
 /// Paints `frame` over a solid `background` (linear 0..1 RGBA written as-is
 /// into `Rgba8Unorm`) in a `width` × `height` offscreen texture and returns
 /// the tightly packed RGBA8 pixels. Used by the GPU tests.
+///
+/// Uses a fresh [`OverlayPainter`], so it only suits the *first* frame of
+/// an `egui::Context` (later frames do not resend the font atlas); paint a
+/// sequence of frames with [`paint_offscreen_with`] and one painter.
 pub fn paint_offscreen(
     ctx: &GpuContext,
+    width: u32,
+    height: u32,
+    background: [f32; 4],
+    frame: OverlayFrame,
+) -> Result<Vec<u8>, GpuError> {
+    let mut painter = OverlayPainter::new(ctx.device(), wgpu::TextureFormat::Rgba8Unorm);
+    paint_offscreen_with(ctx, &mut painter, width, height, background, frame)
+}
+
+/// [`paint_offscreen`] with a caller-kept `painter` (of format
+/// `Rgba8Unorm`), which holds the textures of earlier frames: use the same
+/// painter for every frame of one `egui::Context`.
+pub fn paint_offscreen_with(
+    ctx: &GpuContext,
+    painter: &mut OverlayPainter,
     width: u32,
     height: u32,
     background: [f32; 4],
@@ -284,6 +303,13 @@ pub fn paint_offscreen(
     }
     let device = ctx.device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
+    if painter.format() != format {
+        frame.discard();
+        return Err(GpuError::InvalidArgument(format!(
+            "offscreen painter format {:?} (must be {format:?})",
+            painter.format()
+        )));
+    }
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("menu overlay offscreen"),
         size: wgpu::Extent3d {
@@ -321,7 +347,6 @@ pub fn paint_offscreen(
             multiview_mask: None,
         });
     }
-    let mut painter = OverlayPainter::new(device, format);
     let extra = painter.paint(
         device,
         ctx.queue(),
@@ -351,7 +376,7 @@ fn read_rgba8(
     let padded = row.div_ceil(align) * align;
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("menu overlay readback"),
-        size: (padded * height as usize) as u64,
+        size: crate::gpu::readback_buffer_size(device, padded, height)?,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });

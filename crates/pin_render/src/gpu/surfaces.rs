@@ -32,7 +32,9 @@ use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 /// # Safety
 /// The window (and its display connection) must outlive the returned surface:
 /// drop the [`SurfaceSet`] holding it (i.e. join the render thread) before
-/// destroying the window.
+/// destroying the window. Known gap: a presenter thread that does not stop
+/// within [`PRESENTER_JOIN_TIMEOUT`] is detached and still owns its surface
+/// after the set is dropped (DECISIONS "1.4 — fix round 1", N4).
 pub unsafe fn create_surface<W: HasDisplayHandle + HasWindowHandle>(
     instance: &wgpu::Instance,
     window: &W,
@@ -43,6 +45,68 @@ pub unsafe fn create_surface<W: HasDisplayHandle + HasWindowHandle>(
     // SAFETY: as above.
     unsafe { instance.create_surface_unsafe(target) }
         .map_err(|e| GpuError::Surface(format!("create_surface: {e}")))
+}
+
+/// The planned viewports of a `from`-sized window for the same window at
+/// size `to` (both logical). The window's own viewport (the first) scales
+/// with the window. A PiP keeps its width fraction and aspect (shrunk to fit
+/// a window that became too flat) and the window edges it touched, i.e. its
+/// corner anchor; other positions scale with the window. With a zero size on
+/// either side the planned rectangles are returned unchanged.
+pub(super) fn rescale_viewports(
+    planned: &[(SurfaceRole, Rect)],
+    from: (u32, u32),
+    to: (u32, u32),
+) -> ArrayVec<(SurfaceRole, Rect), 3> {
+    let scale = |v: u64, num: u32, den: u32| (v * u64::from(num) / u64::from(den.max(1))) as u32;
+    let mut out = ArrayVec::new();
+    for (i, &(role, r)) in planned.iter().take(3).enumerate() {
+        if from == to
+            || from.0 == 0
+            || from.1 == 0
+            || to.0 == 0
+            || to.1 == 0
+            || r.w == 0
+            || r.h == 0
+        {
+            out.push((role, r));
+            continue;
+        }
+        let (w, h) = if i == 0 {
+            (
+                scale(u64::from(r.w), to.0, from.0),
+                scale(u64::from(r.h), to.1, from.1),
+            )
+        } else {
+            let w = scale(u64::from(r.w), to.0, from.0).min(to.0);
+            let h = scale(u64::from(w), r.h, r.w);
+            if h > to.1 {
+                (scale(u64::from(to.1), r.w, r.h).min(to.0), to.1)
+            } else {
+                (w, h)
+            }
+        };
+        // Position along one axis: keep a touched window edge, else scale.
+        let place = |pos: i32, len: u32, new_len: u32, from: u32, to: u32| -> i32 {
+            if pos == 0 {
+                0
+            } else if i64::from(pos) + i64::from(len) == i64::from(from) {
+                (i64::from(to) - i64::from(new_len)) as i32
+            } else {
+                (i64::from(pos) * i64::from(to) / i64::from(from)) as i32
+            }
+        };
+        out.push((
+            role,
+            Rect::new(
+                place(r.x, r.w, w, from.0, to.0),
+                place(r.y, r.h, h, from.1, to.1),
+                w,
+                h,
+            ),
+        ));
+    }
+    out
 }
 
 /// One window's surface as handed from the main thread to the render thread.
@@ -192,6 +256,9 @@ struct Slot {
     window: usize,
     role: SurfaceRole,
     viewports: ArrayVec<(SurfaceRole, Rect), 3>,
+    /// Viewports and logical size as planned; resizes rescale from these
+    /// (not from the current rectangles, so rounding does not accumulate).
+    planned: (ArrayVec<(SurfaceRole, Rect), 3>, (u32, u32)),
     choice: PresentChoice,
     format: wgpu::TextureFormat,
     logical_size: (u32, u32),
@@ -468,6 +535,7 @@ impl SurfaceSet {
             slots.push(Slot {
                 window: src.window,
                 role,
+                planned: (src.viewports.clone(), src.logical_size),
                 viewports: src.viewports,
                 choice,
                 format: draw_format,
@@ -581,6 +649,7 @@ impl SurfaceSet {
             }
             WindowEventKind::Resized { w, h } => {
                 s.logical_size = (w, h);
+                s.viewports = rescale_viewports(&s.planned.0, s.planned.1, (w, h));
                 s.dirty = true;
             }
             WindowEventKind::Minimized | WindowEventKind::Hidden => s.minimized = true,

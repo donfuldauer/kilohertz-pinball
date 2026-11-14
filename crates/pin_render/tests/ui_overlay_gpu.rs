@@ -15,7 +15,8 @@
 
 use pin_render::gpu::{GpuContext, context_for_tests};
 use pin_render::ui::{
-    OverlayFrame, egui, menu_panel_rect_px, overlay_style, paint_offscreen, raw_input, show_overlay,
+    OverlayFrame, OverlayPainter, egui, menu_panel_rect_px, overlay_style, paint_offscreen,
+    paint_offscreen_with, raw_input, show_overlay,
 };
 use std::sync::OnceLock;
 
@@ -258,4 +259,57 @@ fn text_renders_distinct_glyphs() {
     let (c, _, _) = text_image("i i i", 48.0).unwrap();
     let n = blobs(&bright_mask(&c, dims, panel), dims[0], 4);
     assert_eq!(n, 6, "expected 6 glyph blobs for \"i i i\"");
+}
+
+/// Later frames of one `egui::Context` do not resend the font atlas, so
+/// they need the painter that saw the first frame: with a reused painter
+/// the second frame still shows its text.
+#[test]
+fn second_frame_of_a_context_keeps_its_text() {
+    let Some(gpu) = ctx() else { return };
+    let dims = [480, 240];
+    let panel = menu_panel_rect_px(dims, 1.0);
+    let ectx = egui::Context::default();
+    overlay_style(&ectx);
+    let mut painter = OverlayPainter::new(
+        gpu.device(),
+        pin_render::gpu::wgpu::TextureFormat::Rgba8Unorm,
+    );
+    let mut lit = Vec::new();
+    for frame in 0..3 {
+        let out = ectx.run_ui(raw_input(dims, 1.0, Vec::new(), None), |ui| {
+            show_overlay(ui, |ui| {
+                ui.label(
+                    egui::RichText::new("oooo")
+                        .size(40.0)
+                        .color(egui::Color32::WHITE),
+                );
+            });
+        });
+        if frame > 0 {
+            assert!(
+                out.textures_delta.set.is_empty(),
+                "frame {frame} resent a texture: the test would not show the reuse"
+            );
+        }
+        let px = paint_offscreen_with(
+            gpu,
+            &mut painter,
+            dims[0],
+            dims[1],
+            BG,
+            OverlayFrame::new(&ectx, out),
+        )
+        .unwrap();
+        lit.push(bright_mask(&px, dims, panel).iter().filter(|v| **v).count());
+    }
+    assert!(lit[0] > 100, "no text in the first frame: {lit:?}");
+    assert_eq!(lit[1], lit[0], "text lost in the second frame: {lit:?}");
+    assert_eq!(lit[2], lit[0], "{lit:?}");
+    // A painter of another format is refused.
+    let mut bgra = OverlayPainter::new(
+        gpu.device(),
+        pin_render::gpu::wgpu::TextureFormat::Bgra8Unorm,
+    );
+    assert!(paint_offscreen_with(gpu, &mut bgra, 8, 8, BG, menu_frame([8, 8], 1.0)).is_err());
 }

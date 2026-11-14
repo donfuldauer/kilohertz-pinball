@@ -355,10 +355,37 @@ fn make_targets(device: &wgpu::Device, width: u32, height: u32, samples: u32) ->
 /// draw (5.1 review note on acrylic): back faces first (`blended_back`,
 /// front faces culled), then front faces (`blended_front`), so the far side
 /// of a closed transparent mesh is always under its near side.
-struct Pipelines {
+struct PipelineSet {
     opaque: wgpu::RenderPipeline,
     blended_back: wgpu::RenderPipeline,
     blended_front: wgpu::RenderPipeline,
+}
+
+/// Both windings of one sample count: a model matrix with a negative
+/// determinant (a mirrored instance, as glTF allows) reverses the triangle
+/// winding on screen, so such draws use the clockwise-front set.
+struct Pipelines {
+    ccw: PipelineSet,
+    cw: PipelineSet,
+}
+
+impl Pipelines {
+    fn for_model(&self, model: &Mat4) -> &PipelineSet {
+        if is_mirrored(model) {
+            &self.cw
+        } else {
+            &self.ccw
+        }
+    }
+}
+
+/// `true` when the upper 3×3 block of `model` has a negative determinant.
+pub(crate) fn is_mirrored(model: &Mat4) -> bool {
+    let m = model;
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[1][0] * (m[0][1] * m[2][2] - m[0][2] * m[2][1])
+        + m[2][0] * (m[0][1] * m[1][2] - m[0][2] * m[1][1]);
+    det < 0.0
 }
 
 fn make_pipelines(
@@ -369,55 +396,72 @@ fn make_pipelines(
 ) -> Pipelines {
     const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
         wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
-    let make = |label: &str, entry: &str, cull: wgpu::Face, blended: bool| {
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(layout),
-            vertex: wgpu::VertexState {
-                module,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 24,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &ATTRIBUTES,
-                })],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(cull),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(!blended),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: samples,
-                ..Default::default()
-            },
-            fragment: Some(wgpu::FragmentState {
-                module,
-                entry_point: Some(entry),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: HDR_FORMAT,
-                    blend: blended.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        })
+    let make =
+        |label: &str, entry: &str, front_face: wgpu::FrontFace, cull: wgpu::Face, blended: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: 24,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &ATTRIBUTES,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face,
+                    cull_mode: Some(cull),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(!blended),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: samples,
+                    ..Default::default()
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: HDR_FORMAT,
+                        blend: blended.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+    let set = |front: wgpu::FrontFace| PipelineSet {
+        opaque: make("pbr opaque", "fs_opaque", front, wgpu::Face::Back, false),
+        blended_back: make(
+            "pbr blended back",
+            "fs_blended",
+            front,
+            wgpu::Face::Front,
+            true,
+        ),
+        blended_front: make(
+            "pbr blended front",
+            "fs_blended",
+            front,
+            wgpu::Face::Back,
+            true,
+        ),
     };
     Pipelines {
-        opaque: make("pbr opaque", "fs_opaque", wgpu::Face::Back, false),
-        blended_back: make("pbr blended back", "fs_blended", wgpu::Face::Front, true),
-        blended_front: make("pbr blended front", "fs_blended", wgpu::Face::Back, true),
+        ccw: set(wgpu::FrontFace::Ccw),
+        cw: set(wgpu::FrontFace::Cw),
     }
 }
 
@@ -1069,17 +1113,24 @@ impl PbrRenderer {
             pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             true
         };
-        pass.set_pipeline(&pipelines.opaque);
+        // Opaque draws: the pipeline changes only when the winding does.
+        let mut winding = None;
         for (i, d) in frame.draws.iter().enumerate() {
             if !d.transparent {
+                let mirrored = is_mirrored(&d.model);
+                if winding != Some(mirrored) {
+                    winding = Some(mirrored);
+                    pass.set_pipeline(&pipelines.for_model(&d.model).opaque);
+                }
                 draw(&mut pass, i, d);
             }
         }
         for &(_, i) in &self.blend_order {
             let d = &frame.draws[i as usize];
-            pass.set_pipeline(&pipelines.blended_back);
+            let set = pipelines.for_model(&d.model);
+            pass.set_pipeline(&set.blended_back);
             if draw(&mut pass, i as usize, d) {
-                pass.set_pipeline(&pipelines.blended_front);
+                pass.set_pipeline(&set.blended_front);
                 draw(&mut pass, i as usize, d);
             }
         }
@@ -1157,7 +1208,7 @@ impl PbrRenderer {
         let padded = row.div_ceil(align) * align;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pbr readback"),
-            size: (padded * height as usize) as u64,
+            size: crate::gpu::readback_buffer_size(device, padded, height)?,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });

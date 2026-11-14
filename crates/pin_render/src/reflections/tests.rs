@@ -57,6 +57,25 @@ fn face_bases_are_orthonormal_right_handed_and_cover_the_axes() {
     }
 }
 
+/// The outer border of the map is a seam: `(0, 0)` decodes to −z, which
+/// encodes to `(1, 1)`. Directions round-trip there, coordinates need not.
+#[test]
+fn octahedral_border_round_trips_by_direction() {
+    for i in 0..=8 {
+        let t = i as f32 / 8.0;
+        for uv in [[0.0, t], [1.0, t], [t, 0.0], [t, 1.0]] {
+            let d = oct_decode(uv);
+            let back = oct_decode(oct_encode(d));
+            assert!(dot(back, d) > 1.0 - 1e-5, "{uv:?}: {d:?} -> {back:?}");
+        }
+    }
+    for corner in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
+        assert!(oct_decode(corner)[2] < -1.0 + 1e-6, "{corner:?}");
+    }
+    // The case that used to fail the coordinate comparison.
+    assert_eq!(oct_encode(oct_decode([0.0, 0.0])), [1.0, 1.0]);
+}
+
 proptest! {
     #[test]
     fn octahedral_round_trip(x in -1.0f32..1.0, y in -1.0f32..1.0, z in -1.0f32..1.0) {
@@ -74,11 +93,14 @@ proptest! {
     fn decode_then_encode_is_identity_on_the_map(u in 0.0f32..=1.0, v in 0.0f32..=1.0) {
         let d = oct_decode([u, v]);
         let uv = oct_encode(d);
-        // The fold edges (|x| + |y| = 1) and the corners are shared; compare
-        // the directions there instead of the coordinates.
+        // The fold edges (|x| + |y| = 1) are shared, and so is the outer
+        // border (each border point has a mirror twin with the same
+        // direction; the four corners are all −z): compare the directions
+        // there instead of the coordinates.
         let back = oct_decode(uv);
         prop_assert!(dot(back, d) > 1.0 - 1e-5);
-        let on_edge = ((u * 2.0 - 1.0).abs() + (v * 2.0 - 1.0).abs() - 1.0).abs() < 1e-3;
+        let (px, py) = ((u * 2.0 - 1.0).abs(), (v * 2.0 - 1.0).abs());
+        let on_edge = (px + py - 1.0).abs() < 1e-3 || px > 1.0 - 1e-3 || py > 1.0 - 1e-3;
         if !on_edge {
             prop_assert!((uv[0] - u).abs() < 1e-4 && (uv[1] - v).abs() < 1e-4, "{u},{v} -> {uv:?}");
         }
