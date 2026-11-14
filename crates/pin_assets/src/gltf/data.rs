@@ -300,7 +300,14 @@ pub(super) fn read_indices(
 
 /// Decodes standard or URL-safe base64 (padding optional, whitespace ignored).
 pub(super) fn decode_base64(s: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(s.len() / 4 * 3 + 3);
+    // Reserve exactly the decoded length (alphabet symbols x 6 bits), not an
+    // estimate from the encoded length: whitespace must not inflate the
+    // allocation past what the buffer budget was charged for.
+    let symbols = s
+        .bytes()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'/' | b'_'))
+        .count();
+    let mut out = Vec::with_capacity(symbols * 6 / 8);
     let mut acc: u32 = 0;
     let mut bits = 0;
     let mut padding = false;
@@ -340,7 +347,9 @@ pub(super) fn percent_decode(s: &str) -> Option<String> {
 /// Decodes `%XX` escapes into raw octets (`data:` URI payloads, RFC 2397).
 pub(super) fn percent_decode_bytes(s: &str) -> Option<Vec<u8>> {
     let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
+    // Each `%XX` escape decodes three input bytes to one output byte.
+    let escapes = b.iter().filter(|&&c| c == b'%').count();
+    let mut out = Vec::with_capacity(b.len().saturating_sub(2 * escapes));
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'%' {
@@ -441,6 +450,20 @@ pub(super) fn load_source(key: &str, vfs: &Vfs) -> Result<Vec<u8>, AssetError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoder_reservations_follow_the_decoded_length() {
+        // One decoded byte padded with 1 MiB of whitespace must not reserve
+        // an encoded-length-sized buffer.
+        let padded = String::from("AA==") + &" ".repeat(1 << 20);
+        let out = decode_base64(&padded).unwrap();
+        assert_eq!(out, [0u8]);
+        assert!(out.capacity() <= 8, "capacity {}", out.capacity());
+        let pct = "%41".repeat(1000);
+        let out = percent_decode_bytes(&pct).unwrap();
+        assert_eq!(out.len(), 1000);
+        assert_eq!(out.capacity(), 1000);
+    }
 
     #[test]
     fn base64_round() {
