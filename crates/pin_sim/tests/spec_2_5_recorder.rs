@@ -18,6 +18,11 @@ use support::*;
 
 /// Feeds `events` through a Recorder for `ticks` ticks.
 fn record(seed: u64, ticks: u64, events: &[(u64, InputEvent)]) -> Recording {
+    taken(&recorder(seed, ticks, events))
+}
+
+/// A Recorder that has been fed `events` for `ticks` ticks.
+fn recorder(seed: u64, ticks: u64, events: &[(u64, InputEvent)]) -> Recorder {
     let mut rec = Recorder::new(load_at(&bundle(), seed));
     let mut buf: Vec<InputEvent> = Vec::new();
     let mut i = 0;
@@ -29,7 +34,7 @@ fn record(seed: u64, ticks: u64, events: &[(u64, InputEvent)]) -> Recording {
         }
         rec.step(&buf);
     }
-    taken(&rec)
+    rec
 }
 
 /// The recording so far, independent of whether `recording()` returns a
@@ -66,7 +71,11 @@ fn recorded_run_replays_to_the_hash_of_the_same_run_without_a_recorder() {
         // Recording does not change the simulation.
         let live = drive(&bundle(), 5, TICKS, &events);
         assert!(live.score(P_SCORE).unwrap() > 0);
-        let rec = record(5, TICKS, &events);
+        let recorder = recorder(5, TICKS, &events);
+        // The Recorder's own simulation matches the live run.
+        assert_eq!(recorder.sim().tick(), live.tick());
+        assert_eq!(recorder.sim().state_hash(), live.state_hash());
+        let rec = taken(&recorder);
         let bytes = rec.to_bytes();
         for _ in 0..10 {
             assert_eq!(replay(&bundle(), &rec).unwrap(), live.state_hash());
