@@ -79,8 +79,20 @@ fn restrict() -> impl Strategy<Value = Restrict> {
 }
 
 fn rect() -> impl Strategy<Value = [f32; 4]> {
-    (10.0f32..400.0, 10.0f32..900.0, 20.0f32..300.0, 20.0f32..400.0)
-        .prop_map(|(x, y, w, h)| [r1(x), r1(y), r1((x + w).min(504.0)), r1((y + h).min(1060.0))])
+    (
+        10.0f32..400.0,
+        10.0f32..900.0,
+        20.0f32..300.0,
+        20.0f32..400.0,
+    )
+        .prop_map(|(x, y, w, h)| {
+            [
+                r1(x),
+                r1(y),
+                r1((x + w).min(504.0)),
+                r1((y + h).min(1060.0)),
+            ]
+        })
 }
 
 fn case() -> impl Strategy<Value = Case> {
@@ -98,7 +110,12 @@ fn case() -> impl Strategy<Value = Case> {
     let table = (
         prop::option::of((250.0f32..500.0, 60.0f32..200.0, 150.0f32..260.0, 0u8..2)),
         prop::option::of((3.0f32..100.0, 0u8..4, 0.0f32..150.0)),
-        prop::option::of((point(), 0u8..3, 0u8..3, prop::array::uniform3(-120.0f32..200.0))),
+        prop::option::of((
+            point(),
+            0u8..3,
+            0u8..3,
+            prop::array::uniform3(-120.0f32..200.0),
+        )),
         prop::option::of((10.0f32..120.0, 0u8..3)),
         prop::option::of((0u8..4, 0u8..4, point())),
     );
@@ -185,7 +202,9 @@ impl Case {
         for (p, radius) in &self.posts {
             s.push_str(&format!(
                 "\n[[posts]]\nposition = [{:?}, {:?}]\nradius = {:?}\nrubber = true\n",
-                p[0], p[1], r1(*radius)
+                p[0],
+                p[1],
+                r1(*radius)
             ));
         }
         layout_toml(&s)
@@ -411,14 +430,22 @@ fn tweak() -> impl Strategy<Value = Tweak> {
         any::<usize>().prop_map(Tweak::DuplicateMesh),
         any::<usize>().prop_map(Tweak::ToggleCollider),
         (any::<usize>(), prop::option::of(any::<u8>())).prop_map(|(i, l)| Tweak::SetLayer(i, l)),
-        (any::<usize>(), prop_oneof![Just(0.0f32), 0.01f32..3.0, -2.0f32..-0.1])
+        (
+            any::<usize>(),
+            prop_oneof![Just(0.0f32), 0.01f32..3.0, -2.0f32..-0.1]
+        )
             .prop_map(|(i, s)| Tweak::Scale(i, s)),
-        (any::<usize>(), prop::array::uniform3(-0.3f32..0.3)).prop_map(|(i, o)| Tweak::Offset(i, o)),
+        (any::<usize>(), prop::array::uniform3(-0.3f32..0.3))
+            .prop_map(|(i, o)| Tweak::Offset(i, o)),
         any::<usize>().prop_map(Tweak::Collapse),
         (any::<usize>(), 0usize..3).prop_map(|(i, a)| Tweak::Flatten(i, a)),
         (any::<usize>(), any::<u64>()).prop_map(|(i, s)| Tweak::Jitter(i, s)),
         (any::<usize>(), 0usize..8).prop_map(|(i, n)| Tweak::DropTriangles(i, n)),
-        (any::<usize>(), prop::array::uniform3(-0.5f32..0.5), 0.2f32..2.0)
+        (
+            any::<usize>(),
+            prop::array::uniform3(-0.5f32..0.5),
+            0.2f32..2.0
+        )
             .prop_map(|(i, t, s)| Tweak::Transform(i, t, s)),
         Just(Tweak::Clear),
     ]
@@ -474,7 +501,9 @@ fn apply(scene: &mut GltfScene, t: &Tweak) {
             let mut s = *seed | 1;
             for p in &mut scene.meshes[i % n].positions {
                 for c in p.iter_mut() {
-                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    s = s
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
                     *c += ((s >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.04;
                 }
             }
@@ -565,7 +594,11 @@ fn validator_handles_an_empty_scene() {
     assert_eq!(r.is_ok(), r.errors.is_empty());
     for m in 0..3 {
         // Meshes without triangles, or with triangles but all collapsed.
-        let dir = bundle("empty-scene-2", &layout_toml(""), &table_toml(&balls(&[STD, XL]), ""));
+        let dir = bundle(
+            "empty-scene-2",
+            &layout_toml(""),
+            &table_toml(&balls(&[STD, XL]), ""),
+        );
         let mut l = load(&dir);
         let _ = std::fs::remove_dir_all(&dir);
         for mesh in &mut l.scene.meshes {
@@ -622,9 +655,23 @@ fn random_cases_exercise_every_feature() {
     println!(
         "random cases: 300 drawn, {built} generated, {loaded_n} loaded, {ok} accepted, {warned} with warnings; rejected by feature: {by_feature:?}; first refusal: {first_fail:?}"
     );
-    assert!(loaded_n >= 150, "only {loaded_n}/300 random cases load: {first_fail:?}");
+    assert!(
+        loaded_n >= 150,
+        "only {loaded_n}/300 random cases load: {first_fail:?}"
+    );
     assert!(ok >= 5 && ok < loaded_n, "accepted {ok} of {loaded_n}");
-    for f in ["lane", "flipper gap", "wireform", "scoop", "vuk exit", "deck headroom", "restriction"] {
-        assert!(by_feature.get(f).copied().unwrap_or(0) > 0, "no random case violates {f:?}: {by_feature:?}");
+    for f in [
+        "lane",
+        "flipper gap",
+        "wireform",
+        "scoop",
+        "vuk exit",
+        "deck headroom",
+        "restriction",
+    ] {
+        assert!(
+            by_feature.get(f).copied().unwrap_or(0) > 0,
+            "no random case violates {f:?}: {by_feature:?}"
+        );
     }
 }

@@ -178,10 +178,16 @@ pub fn validate(tag: &str, layout: &str, table: &str) -> ClearanceReport {
 pub fn describe(report: &ClearanceReport) -> String {
     let mut s = String::new();
     for e in &report.errors {
-        s.push_str(&format!("  error   [{:?} {:?} {}] {e}\n", e.feature, e.name, e.profile));
+        s.push_str(&format!(
+            "  error   [{:?} {:?} {}] {e}\n",
+            e.feature, e.name, e.profile
+        ));
     }
     for w in &report.warnings {
-        s.push_str(&format!("  warning [{:?} {:?} {}] {w}\n", w.feature, w.name, w.profile));
+        s.push_str(&format!(
+            "  warning [{:?} {:?} {}] {w}\n",
+            w.feature, w.name, w.profile
+        ));
     }
     if s.is_empty() {
         s.push_str("  (no errors, no warnings)\n");
@@ -218,7 +224,11 @@ pub fn assert_rejects_only<'a>(
     profile: &str,
     what: &str,
 ) -> Vec<&'a ClearanceError> {
-    assert!(!report.is_ok(), "{what}: must be rejected, got\n{}", describe(report));
+    assert!(
+        !report.is_ok(),
+        "{what}: must be rejected, got\n{}",
+        describe(report)
+    );
     let hits = errors_of(report, feature, profile);
     assert!(
         !hits.is_empty(),
@@ -254,9 +264,15 @@ pub fn check_error_shape(e: &ClearanceError, loaded: Option<&Loaded>) {
         e.name,
         e.message
     );
-    assert_eq!(e.to_string(), format!("{}: {}: {}", e.file, e.path, e.message));
+    assert_eq!(
+        e.to_string(),
+        format!("{}: {}: {}", e.file, e.path, e.message)
+    );
     let v = e.to_validation_error();
-    assert_eq!((&v.file, &v.path, &v.message), (&e.file, &e.path, &e.message));
+    assert_eq!(
+        (&v.file, &v.path, &v.message),
+        (&e.file, &e.path, &e.message)
+    );
     if let Some(l) = loaded {
         let mesh = &l.table.manifest.meta.playfield_mesh;
         assert!(
@@ -272,7 +288,10 @@ pub fn assert_sorted(list: &[ClearanceError], what: &str) {
     for w in list.windows(2) {
         let a = (&w[0].file, &w[0].path, &w[0].profile, &w[0].message);
         let b = (&w[1].file, &w[1].path, &w[1].profile, &w[1].message);
-        assert!(a <= b, "{what} not sorted by (file, path, profile, message): {a:?} > {b:?}");
+        assert!(
+            a <= b,
+            "{what} not sorted by (file, path, profile, message): {a:?} > {b:?}"
+        );
     }
 }
 

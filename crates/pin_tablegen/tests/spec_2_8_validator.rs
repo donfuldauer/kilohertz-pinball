@@ -72,7 +72,11 @@ fn run(tag: &str, layout: &str, table: &str) -> (Loaded, ClearanceReport) {
         .unwrap_or_else(|e| panic!("{tag}: validate_bundle failed on a loadable bundle: {e}"));
     // (Compared as text: `required_mm` / `actual_mm` may be NaN.)
     let text = |r: &ClearanceReport| format!("{:?}\n{:?}", r.errors, r.warnings);
-    assert_eq!(text(&report), text(&via_vfs), "{tag}: validate_bundle differs");
+    assert_eq!(
+        text(&report),
+        text(&via_vfs),
+        "{tag}: validate_bundle differs"
+    );
     // And it is a pure function of its inputs.
     let again = validate_clearance(&l.table, &l.scene);
     assert_eq!(text(&report), text(&again), "{tag}: not deterministic");
@@ -146,7 +150,12 @@ fn c2_restrictions_that_still_reach_under_the_deck_are_rejected() {
         &layout_toml(&deck(65.0)),
         &table_toml(&balls_restricted(&[STD, XL], XL, &[0], Some(&under)), ""),
     );
-    assert_rejects_only(&r, Feature::DeckHeadroom, XL, "XL area reaching under the deck");
+    assert_rejects_only(
+        &r,
+        Feature::DeckHeadroom,
+        XL,
+        "XL area reaching under the deck",
+    );
     // An area only under the deck.
     let only: [[f32; 2]; 3] = [[300.0, 750.0], [470.0, 750.0], [380.0, 1000.0]];
     let (_, r) = run(
@@ -161,14 +170,25 @@ fn c2_restrictions_that_still_reach_under_the_deck_are_rejected() {
 fn c2_profiles_count_wherever_the_table_declares_them() {
     // Only in a restriction (as the Appendix A example writes it), without
     // an area: declared, so checked.
-    let b = format!(
-        "profiles = [{STD:?}]\nrestrict = [ {{ profile = {XL:?}, layers = [0] }} ]"
+    let b = format!("profiles = [{STD:?}]\nrestrict = [ {{ profile = {XL:?}, layers = [0] }} ]");
+    let (_, r) = run(
+        "c2-restrict-only",
+        &layout_toml(&deck(65.0)),
+        &table_toml(&b, ""),
     );
-    let (_, r) = run("c2-restrict-only", &layout_toml(&deck(65.0)), &table_toml(&b, ""));
-    assert_rejects_only(&r, Feature::DeckHeadroom, XL, "XL declared by a restriction only");
+    assert_rejects_only(
+        &r,
+        Feature::DeckHeadroom,
+        XL,
+        "XL declared by a restriction only",
+    );
     // The same table accepts once the restriction names the open area.
     let b = balls_restricted(&[STD], XL, &[0], Some(&OPEN_AREA));
-    let (_, r) = run("c2-restrict-only-ok", &layout_toml(&deck(65.0)), &table_toml(&b, ""));
+    let (_, r) = run(
+        "c2-restrict-only-ok",
+        &layout_toml(&deck(65.0)),
+        &table_toml(&b, ""),
+    );
     assert_accepts(&r, "XL declared by a restriction with the open area");
     // A table that never mentions the XL ball is fine with the 65 mm deck.
     let (_, r) = run(
@@ -196,9 +216,17 @@ fn deck_headroom_accepts_a_deck_high_enough_and_rejects_one_too_low() {
         &layout_toml(&deck(25.0)),
         &table_toml(&balls(&[STD, MINI]), ""),
     );
-    let errs = assert_rejects_only(&r, Feature::DeckHeadroom, STD, "27 mm ball under a 25 mm deck");
+    let errs = assert_rejects_only(
+        &r,
+        Feature::DeckHeadroom,
+        STD,
+        "27 mm ball under a 25 mm deck",
+    );
     assert_eq!(errs[0].name, "decks[0]");
-    assert_eq!(errs[0].path, format!("meshes[{}]", mesh_index(&l, "decks[0]")));
+    assert_eq!(
+        errs[0].path,
+        format!("meshes[{}]", mesh_index(&l, "decks[0]"))
+    );
     assert!(close(errs[0].actual_mm, 25.0, 0.05));
     assert!(errs[0].required_mm >= 27.0 && errs[0].required_mm <= 29.0);
     assert!(errors_of(&r, Feature::DeckHeadroom, MINI).is_empty());
@@ -213,8 +241,18 @@ fn deck_headroom_reports_each_profile_that_does_not_fit() {
         &table_toml(&balls(&[MINI, STD, JUMBO, XL]), ""),
     );
     assert!(!r.is_ok());
-    assert_eq!(errors_of(&r, Feature::DeckHeadroom, JUMBO).len(), 1, "{}", describe(&r));
-    assert_eq!(errors_of(&r, Feature::DeckHeadroom, XL).len(), 1, "{}", describe(&r));
+    assert_eq!(
+        errors_of(&r, Feature::DeckHeadroom, JUMBO).len(),
+        1,
+        "{}",
+        describe(&r)
+    );
+    assert_eq!(
+        errors_of(&r, Feature::DeckHeadroom, XL).len(),
+        1,
+        "{}",
+        describe(&r)
+    );
     assert_eq!(r.errors.len(), 2, "{}", describe(&r));
 }
 
@@ -255,9 +293,20 @@ fn lane_width_rejects_a_ball_wider_than_the_lane_and_accepts_a_wide_lane() {
     let e = errs[0];
     assert_eq!(e.name, "tablegen:lanes[0]");
     assert_eq!(e.file, "table.toml");
-    assert_eq!(e.path, format!("splines[{}]", spline_index(&l, "tablegen:lanes[0].left")));
-    assert!(close(e.actual_mm, 32.0, 0.2), "lane width measured {}", e.actual_mm);
-    assert!(e.required_mm >= 31.75 && e.required_mm <= 33.75, "required {}", e.required_mm);
+    assert_eq!(
+        e.path,
+        format!("splines[{}]", spline_index(&l, "tablegen:lanes[0].left"))
+    );
+    assert!(
+        close(e.actual_mm, 32.0, 0.2),
+        "lane width measured {}",
+        e.actual_mm
+    );
+    assert!(
+        e.required_mm >= 31.75 && e.required_mm <= 33.75,
+        "required {}",
+        e.required_mm
+    );
     // 36 mm: both fit.
     let (_, r) = run(
         "lane-36",
@@ -284,7 +333,12 @@ fn lane_width_rejects_a_ball_wider_than_the_lane_and_accepts_a_wide_lane() {
 #[test]
 fn lane_width_follows_the_restriction() {
     // The XL ball kept out of the lane's region: accepted.
-    let away: [[f32; 2]; 4] = [[45.0, 600.0], [469.0, 600.0], [469.0, 1025.0], [45.0, 1025.0]];
+    let away: [[f32; 2]; 4] = [
+        [45.0, 600.0],
+        [469.0, 600.0],
+        [469.0, 1025.0],
+        [45.0, 1025.0],
+    ];
     let (_, r) = run(
         "lane-xl-away",
         &layout_toml(&lane(36.0)),
@@ -298,7 +352,12 @@ fn lane_width_follows_the_restriction() {
         &layout_toml(&lane(36.0)),
         &table_toml(&balls_restricted(&[STD, XL], XL, &[0], Some(&around)), ""),
     );
-    assert_rejects_only(&r, Feature::Lane, XL, "XL ball restricted to an area with the lane");
+    assert_rejects_only(
+        &r,
+        Feature::Lane,
+        XL,
+        "XL ball restricted to an area with the lane",
+    );
     // Restricted to another layer: the layer-0 lane does not concern it.
     let (_, r) = run(
         "lane-xl-layer1",
@@ -334,10 +393,18 @@ fn hand_written_guide_pairs_named_left_and_right_are_lanes_too() {
         &layout_toml(""),
         &table_toml(&balls(&[STD, MINI]), &hand_lane(24.0)),
     );
-    let errs = assert_rejects_only(&r, Feature::Lane, STD, "27 mm ball between guides 24 mm apart");
+    let errs = assert_rejects_only(
+        &r,
+        Feature::Lane,
+        STD,
+        "27 mm ball between guides 24 mm apart",
+    );
     assert_eq!(errs[0].name, "feed");
     assert_eq!(errs[0].file, "table.toml");
-    assert_eq!(errs[0].path, format!("splines[{}]", spline_index(&l, "feed.left")));
+    assert_eq!(
+        errs[0].path,
+        format!("splines[{}]", spline_index(&l, "feed.left"))
+    );
     assert!(close(errs[0].actual_mm, 24.0, 0.2), "{}", errs[0].actual_mm);
     let (_, r) = run(
         "hand-lane-40",
@@ -412,13 +479,26 @@ fn flipper_gap_rejects_a_ball_that_wedges_and_accepts_a_wide_gap() {
         gap > 29.0 && gap < 79.0,
         "fixture: the gap {gap} mm must lie between the two balls' needs"
     );
-    let errs = assert_rejects_only(&r, Feature::FlipperGap, XL, "XL ball over a ~55 mm flipper gap");
+    let errs = assert_rejects_only(
+        &r,
+        Feature::FlipperGap,
+        XL,
+        "XL ball over a ~55 mm flipper gap",
+    );
     assert_eq!(errs.len(), 1, "{}", describe(&r));
     let e = errs[0];
     assert_eq!(e.file, "table.toml");
     assert_eq!(e.path, "flippers[0]", "the lower index of the pair");
-    assert!(close(e.actual_mm, gap, 1.0), "gap reported {} mm, physics shapes {gap} mm", e.actual_mm);
-    assert!(e.required_mm >= 79.4 && e.required_mm <= 81.4, "required {}", e.required_mm);
+    assert!(
+        close(e.actual_mm, gap, 1.0),
+        "gap reported {} mm, physics shapes {gap} mm",
+        e.actual_mm
+    );
+    assert!(
+        e.required_mm >= 79.4 && e.required_mm <= 81.4,
+        "required {}",
+        e.required_mm
+    );
     // The name identifies both flippers of the pair.
     assert!(e.name.contains('/'), "pair name {:?}", e.name);
 
@@ -452,7 +532,12 @@ fn flipper_gap_standard_ball_and_restrictions() {
 
     // The XL ball kept away from the flippers (layer 0, upper half only)
     // is not concerned by the ~55 mm gap; nor is it on another layer.
-    let upper: [[f32; 2]; 4] = [[45.0, 500.0], [469.0, 500.0], [469.0, 1025.0], [45.0, 1025.0]];
+    let upper: [[f32; 2]; 4] = [
+        [45.0, 500.0],
+        [469.0, 500.0],
+        [469.0, 1025.0],
+        [45.0, 1025.0],
+    ];
     for (tag, b) in [
         ("area", balls_restricted(&[STD, XL], XL, &[0], Some(&upper))),
         ("layer", balls_restricted(&[STD, XL], XL, &[1], None)),
@@ -462,7 +547,10 @@ fn flipper_gap_standard_ball_and_restrictions() {
             &layout_toml(""),
             &table_toml(&b, &right_flipper(380.0)),
         );
-        assert_accepts(&r, &format!("XL ball restricted away from the flippers ({tag})"));
+        assert_accepts(
+            &r,
+            &format!("XL ball restricted away from the flippers ({tag})"),
+        );
     }
 }
 
@@ -495,8 +583,15 @@ fn wireform_gauge_rejects_a_ball_the_rails_cannot_carry() {
     let e = errs[0];
     assert_eq!(e.name, "return_wireform");
     assert_eq!(e.file, "table.toml");
-    assert_eq!(e.path, format!("splines[{}]", spline_index(&l, "return_wireform")));
-    assert!(close(e.actual_mm, 19.0, 0.01), "gauge reported {}", e.actual_mm);
+    assert_eq!(
+        e.path,
+        format!("splines[{}]", spline_index(&l, "return_wireform"))
+    );
+    assert!(
+        close(e.actual_mm, 19.0, 0.01),
+        "gauge reported {}",
+        e.actual_mm
+    );
     assert!(e.message.contains("19"), "{}", e.message);
 
     // The mini ball (15.88 mm) drops between rails 19 mm apart.
@@ -505,7 +600,12 @@ fn wireform_gauge_rejects_a_ball_the_rails_cannot_carry() {
         &layout_toml(""),
         &table_toml(&balls(&[STD, MINI]), &wireform(19.0)),
     );
-    let errs = assert_rejects_only(&r, Feature::Wireform, MINI, "15.88 mm ball on a 19 mm wireform");
+    let errs = assert_rejects_only(
+        &r,
+        Feature::Wireform,
+        MINI,
+        "15.88 mm ball on a 19 mm wireform",
+    );
     assert_eq!(errs[0].name, "return_wireform");
 }
 
@@ -523,8 +623,15 @@ fn wireform_gauge_accepts_a_matching_gauge_or_a_restricted_ball() {
     let b = format!(
         "profiles = [{STD:?}, {XL:?}]\nrestrict = [ {{ profile = {STD:?}, layers = [0] }} ]"
     );
-    let (_, r) = run("wire-50-xl", &layout_toml(""), &table_toml(&b, &wireform(50.0)));
-    assert_accepts(&r, "XL ball on a 50 mm wireform, standard ball restricted to layer 0");
+    let (_, r) = run(
+        "wire-50-xl",
+        &layout_toml(""),
+        &table_toml(&b, &wireform(50.0)),
+    );
+    assert_accepts(
+        &r,
+        "XL ball on a 50 mm wireform, standard ball restricted to layer 0",
+    );
     // Without that restriction the 27 mm ball falls through the 50 mm gauge.
     let (_, r) = run(
         "wire-50-std",
@@ -536,7 +643,10 @@ fn wireform_gauge_accepts_a_matching_gauge_or_a_restricted_ball() {
     let (_, r) = run(
         "wire-19-xl-restricted",
         &layout_toml(""),
-        &table_toml(&balls_restricted(&[STD, XL], XL, &[0], None), &wireform(19.0)),
+        &table_toml(
+            &balls_restricted(&[STD, XL], XL, &[0], None),
+            &wireform(19.0),
+        ),
     );
     assert_accepts(&r, "XL ball restricted to layer 0, wireform on layer 2");
 }
@@ -591,7 +701,11 @@ fn scoop_diameter_rejects_a_ball_that_does_not_fit_the_pocket() {
     assert_eq!(e.name, "scoop");
     assert_eq!(e.file, "table.toml");
     assert_eq!(e.path, format!("mechs[{}]", mech_index(&l, "scoop")));
-    assert!(e.required_mm >= 79.4 && e.required_mm <= 81.4, "required {}", e.required_mm);
+    assert!(
+        e.required_mm >= 79.4 && e.required_mm <= 81.4,
+        "required {}",
+        e.required_mm
+    );
     // The 39.7 mm-high centre is 20 mm beside and 11.7 mm above the 28 mm
     // wall tops: an opening of 2·√(20² + 11.7²) = 46.3 mm, 40 mm if only
     // the plan view is measured.
@@ -608,7 +722,11 @@ fn scoop_diameter_rejects_a_ball_that_does_not_fit_the_pocket() {
     );
     let errs = assert_rejects_only(&r, Feature::Scoop, STD, "27 mm ball in a 24 mm scoop");
     assert_eq!(errs[0].name, "scoop");
-    assert!(close(errs[0].actual_mm, 24.0, 0.5), "opening {}", errs[0].actual_mm);
+    assert!(
+        close(errs[0].actual_mm, 24.0, 0.5),
+        "opening {}",
+        errs[0].actual_mm
+    );
 }
 
 #[test]
@@ -654,9 +772,20 @@ fn vuk_exit_rejects_a_ball_ejected_into_geometry_and_accepts_a_clear_exit() {
     let e = errs[0];
     assert_eq!(e.name, "scoop");
     assert_eq!(e.file, "table.toml");
-    assert_eq!(e.path, format!("mechs[{}].exit_offset", mech_index(&l, "scoop")));
-    assert!(close(e.actual_mm, 5.0, 0.1), "distance to the deck {}", e.actual_mm);
-    assert!(e.required_mm >= 12.5 && e.required_mm <= 13.5, "required {}", e.required_mm);
+    assert_eq!(
+        e.path,
+        format!("mechs[{}].exit_offset", mech_index(&l, "scoop"))
+    );
+    assert!(
+        close(e.actual_mm, 5.0, 0.1),
+        "distance to the deck {}",
+        e.actual_mm
+    );
+    assert!(
+        e.required_mm >= 12.5 && e.required_mm <= 13.5,
+        "required {}",
+        e.required_mm
+    );
     // Centre 20 mm above the deck: clear.
     let (_, r) = run(
         "vuk-exit-ok",
@@ -671,7 +800,12 @@ fn vuk_exit_rejects_a_ball_ejected_into_geometry_and_accepts_a_clear_exit() {
         &layout_toml(&deck(65.0)),
         &table_toml(&balls(&[STD, JUMBO]), &vuk(1, [100.0, 300.0, 80.0])),
     );
-    let errs = assert_rejects_only(&r, Feature::VukExit, JUMBO, "jumbo VUK exit 15 mm above the deck");
+    let errs = assert_rejects_only(
+        &r,
+        Feature::VukExit,
+        JUMBO,
+        "jumbo VUK exit 15 mm above the deck",
+    );
     assert!(errs[0].path.ends_with(".exit_offset"));
 }
 
@@ -753,7 +887,12 @@ fn several_violations_are_all_reported_sorted_and_named() {
 
     // Restricted to the open main-deck area away from lane, scoop and
     // flippers, the same table is accepted.
-    let safe: [[f32; 2]; 4] = [[45.0, 600.0], [215.0, 600.0], [215.0, 1025.0], [45.0, 1025.0]];
+    let safe: [[f32; 2]; 4] = [
+        [45.0, 600.0],
+        [215.0, 600.0],
+        [215.0, 1025.0],
+        [45.0, 1025.0],
+    ];
     let (_, r) = run(
         "many-restricted",
         &layout,
@@ -807,9 +946,16 @@ fn a_malformed_restriction_area_is_not_silently_accepted() {
         let b = format!(
             "profiles = [{STD:?}, {XL:?}]\nrestrict = [ {{ profile = {XL:?}, layers = [0], area = {area} }} ]"
         );
-        let dir = bundle(&format!("bad-area-{tag}"), &layout_toml(""), &table_toml(&b, ""));
+        let dir = bundle(
+            &format!("bad-area-{tag}"),
+            &layout_toml(""),
+            &table_toml(&b, ""),
+        );
         match try_load(&dir) {
-            Err(e) => assert!(e.contains("restrict"), "{tag}: loader error names something else: {e}"),
+            Err(e) => assert!(
+                e.contains("restrict"),
+                "{tag}: loader error names something else: {e}"
+            ),
             Ok(l) => {
                 let r = validate_clearance(&l.table, &l.scene);
                 check_all(&r);
@@ -828,10 +974,17 @@ fn a_malformed_restriction_area_is_not_silently_accepted() {
 
 #[test]
 fn validate_bundle_reports_load_failures_as_asset_errors() {
-    let dir = bundle("unloadable", &layout_toml(""), &table_toml(&balls(&[STD]), ""));
+    let dir = bundle(
+        "unloadable",
+        &layout_toml(""),
+        &table_toml(&balls(&[STD]), ""),
+    );
     std::fs::write(dir.join("table.toml"), "schema_version = 1\n[meta\n").unwrap();
     let vfs = Vfs::open(&dir).unwrap();
-    assert!(validate_bundle(&vfs).is_err(), "a broken table.toml must be an error");
+    assert!(
+        validate_bundle(&vfs).is_err(),
+        "a broken table.toml must be an error"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -865,14 +1018,21 @@ fn assert_no_panic(o: &Output, what: &str) {
 }
 
 fn c2_reject_bundle(tag: &str) -> std::path::PathBuf {
-    bundle(tag, &layout_toml(&deck(65.0)), &table_toml(&balls(&[STD, XL]), ""))
+    bundle(
+        tag,
+        &layout_toml(&deck(65.0)),
+        &table_toml(&balls(&[STD, XL]), ""),
+    )
 }
 
 fn c2_accept_bundle(tag: &str) -> std::path::PathBuf {
     bundle(
         tag,
         &layout_toml(&deck(65.0)),
-        &table_toml(&balls_restricted(&[STD, XL], XL, &[0], Some(&OPEN_AREA)), ""),
+        &table_toml(
+            &balls_restricted(&[STD, XL], XL, &[0], Some(&OPEN_AREA)),
+            "",
+        ),
     )
 }
 
@@ -882,7 +1042,11 @@ fn cli_validate_exits_0_with_a_summary_for_a_passing_bundle() {
     let o = validate_cli(&dir);
     let (stdout, stderr) = out(&o);
     assert_no_panic(&o, "passing bundle");
-    assert_eq!(o.status.code(), Some(0), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
     assert!(
         !stdout.trim().is_empty(),
         "a summary line is expected on stdout; stderr:\n{stderr}"
@@ -902,12 +1066,17 @@ fn cli_validate_exits_1_and_names_the_feature_for_a_failing_bundle() {
     let o = validate_cli(&dir);
     let (stdout, stderr) = out(&o);
     assert_no_panic(&o, "failing bundle");
-    assert_eq!(o.status.code(), Some(1), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(
+        o.status.code(),
+        Some(1),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
     // One line per error, `file: path: message`.
     let line = report.errors[0].to_string();
     let all = format!("{stdout}\n{stderr}");
     assert!(
-        all.lines().any(|l| l.trim_end().ends_with(&line) || l.contains(&line)),
+        all.lines()
+            .any(|l| l.trim_end().ends_with(&line) || l.contains(&line)),
         "the error line {line:?} is missing from the output:\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(all.contains("decks[0]") && all.contains(XL) && all.contains("playfield.glb"));
@@ -936,7 +1105,11 @@ zone = { min = [140.0, 340.0, 0.0], max = [190.0, 380.0, 30.0] }
     );
     let o = validate_cli(&dir);
     let (stdout, stderr) = out(&o);
-    assert_eq!(o.status.code(), Some(0), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
     assert!(
         stderr.contains("layer_transitions[0]"),
         "the warning is expected on stderr:\n{stderr}"
@@ -955,7 +1128,11 @@ fn cli_validate_reports_loader_errors_with_exit_1() {
     let o = validate_cli(&dir);
     let (stdout, stderr) = out(&o);
     assert_no_panic(&o, "loader error");
-    assert_eq!(o.status.code(), Some(1), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(
+        o.status.code(),
+        Some(1),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
     let all = format!("{stdout}\n{stderr}");
     assert!(
         all.contains("table.toml") && all.contains("no_such_coil"),
@@ -1012,14 +1189,21 @@ fn crc32(data: &[u8]) -> u32 {
     for &b in data {
         crc ^= u32::from(b);
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
 }
 
 fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
-    let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap())
+        .collect();
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
         let p = e.path();
@@ -1119,7 +1303,10 @@ fn cli_generator_command_line_still_works_next_to_validate() {
     std::fs::write(&layout, layout_toml(&deck(65.0))).unwrap();
     std::fs::write(
         &table,
-        table_toml(&balls_restricted(&[STD, XL], XL, &[0], Some(&OPEN_AREA)), ""),
+        table_toml(
+            &balls_restricted(&[STD, XL], XL, &[0], Some(&OPEN_AREA)),
+            "",
+        ),
     )
     .unwrap();
     let outdir = work.join("bundle");
@@ -1153,7 +1340,12 @@ fn square(x: f32, y: f32, size: f32) -> [[f32; 2]; 4] {
 #[test]
 fn deck_headroom_rejects_a_small_area_entirely_under_the_deck() {
     let mut missed = Vec::new();
-    for (x, y) in [(383.3f32, 881.7f32), (351.9, 803.3), (420.1, 955.5), (300.0, 750.0)] {
+    for (x, y) in [
+        (383.3f32, 881.7f32),
+        (351.9, 803.3),
+        (420.1, 955.5),
+        (300.0, 750.0),
+    ] {
         for size in [50.0f32, 20.0, 8.0, 3.0, 1.0] {
             let r = validate(
                 "small-area",
@@ -1228,7 +1420,12 @@ fn deck_headroom_rejects_an_area_reaching_a_few_mm_under_the_deck() {
     for reach in [40.0f32, 12.0, 5.0, 2.0] {
         // x 45..469, y 45..(700 + reach): `reach` mm under the deck edge
         // over the deck's whole width.
-        let area = [[45.0, 45.0], [469.0, 45.0], [469.0, 700.0 + reach], [45.0, 700.0 + reach]];
+        let area = [
+            [45.0, 45.0],
+            [469.0, 45.0],
+            [469.0, 700.0 + reach],
+            [45.0, 700.0 + reach],
+        ];
         let r = validate(
             "strip",
             &layout_toml(&deck(65.0)),
