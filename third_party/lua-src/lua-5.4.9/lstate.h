@@ -263,6 +263,7 @@ typedef struct global_State {
   TValue nilvalue;  /* a nil value */
   unsigned int seed;  /* randomized seed for hashes */
   lua_Integer khzbudget;  /* KHZ: remaining cost budget (see lua.h) */
+  lua_Integer khzpending;  /* KHZ: parked pending cost (see lstring.c) */
   lu_byte currentwhite;
   lu_byte gcstate;  /* state of garbage collector */
   lu_byte gckind;  /* kind of GC running */
