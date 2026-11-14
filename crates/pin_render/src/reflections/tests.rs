@@ -355,4 +355,12 @@ fn odd_ball_counts_share_the_budget_cyclically() {
     s.schedule(&pos(7));
     assert_eq!(s.schedule(&pos(5)), &[4, 0]);
     assert_eq!(s.schedule(&pos(5)), &[1, 2]);
+    // Growing: 3 balls, [0, 1] then [2, 0] leave the cursor at 1 (the index
+    // after the last capture, modulo the count at that frame); 7 balls then
+    // continue from 1.
+    let mut s = ProbeScheduler::new(2);
+    assert_eq!(s.schedule(&pos(3)), &[0, 1]);
+    assert_eq!(s.schedule(&pos(3)), &[2, 0]);
+    assert_eq!(s.schedule(&pos(7)), &[1, 2]);
+    assert_eq!(s.schedule(&pos(7)), &[3, 4]);
 }

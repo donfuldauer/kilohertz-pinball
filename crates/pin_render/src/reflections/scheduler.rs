@@ -48,9 +48,11 @@ pub const TRACK_MAX_JUMP_M: f32 = 0.25;
 /// `n` balls every ball is captured once every ⌈n / budget⌉ frames or more
 /// often, so its age (frames since its own slot's capture, 0 = this frame)
 /// stays ≤ ⌈n / budget⌉ − 1, and over any window of `n` frames the capture
-/// counts differ by at most 1. A count change keeps the cursor (reduced
-/// modulo the new count); it never restarts. Slots past the ball count are
-/// freed.
+/// counts differ by at most 1. After each frame the cursor is (last
+/// captured index + 1) mod (that frame's count); the next frame starts at
+/// the cursor mod its own count, whether the count shrank or grew, so a
+/// count change never restarts it (3 balls: [0, 1], [2, 0]; then 7 balls:
+/// [1, 2], [3, 4], …). Slots past the ball count are freed.
 #[derive(Clone, Debug)]
 pub struct ProbeScheduler {
     budget: u32,

@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a3e6412c09bb6454e74a1b5f878b45877fb131c5f469a162aac375bf6314bf94 # shrinks to d = 0.01588, kind = Mesh, speed = 0.5, gap = 0.045126807, along = 0.0, up = 0.0, spin = 0.0
+cc 26959258e1588d93f27baa2528be3416b644bf78953c241edab4a8493acc4f77 # shrinks to d1 = 0.047945116, d2 = 0.053223338, speed = 0.2, offset = 0.7694706
+cc ace1c62749bb1210386e8bd7b25e96fe38bcf21df9f66dfce8b7fef04a0c0765 # shrinks to d = 0.057379294, torque = 16.624344, fraction = 0.7883044, gap = 0.009980065
+cc bfbe37ada1be51c5c1e2f1fd0f10c9407beb3ae35f94f57d78f2be99d0f3e464 # shrinks to d = 0.01588, x = 0.0, pitch_deg = 0.13594268

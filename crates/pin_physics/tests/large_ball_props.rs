@@ -282,3 +282,30 @@ fn tilted_thin_wall_holds_the_xl_ball_at_full_speed() {
         assert!(s.ball(h).unwrap().velocity.dot(normal) < 0.0);
     }
 }
+
+#[test]
+#[ignore]
+fn probe_flipper_penetration() {
+    for d in [0.027f32, 0.04, 0.05, 0.0574, 0.065, 0.0794] {
+        for torque in [4.0f32, 16.6, 40.0] {
+            let r = 0.5 * d;
+            let mut rig = sized_flipper_rig(d, torque);
+            let fraction = 0.788;
+            let dir = flip::bat_dir(-30.0);
+            let n = Vec3::Z.cross(dir);
+            let bat_r = 0.011 + (0.0065 - 0.011) * fraction;
+            let start = dir * (flip::BAT_LEN * fraction) + n * (bat_r + r + 0.00998) + v(0.0, 0.0, r);
+            let h = rig.solver.add_ball(ball(0, start, Vec3::ZERO)).unwrap();
+            rig.flippers.set_energised(flip::LEFT, true);
+            let mut worst = (0.0f32, 0);
+            for t in 0..80 {
+                rig.step();
+                let cp = rig.flippers.closest_point(0, 0.0, rig.ball(h).position).unwrap();
+                if r - cp.distance > worst.0 {
+                    worst = (r - cp.distance, t);
+                }
+            }
+            println!("d {d} torque {torque}: worst {:.3} mm at tick {} v {}", worst.0 * 1e3, worst.1, rig.ball(h).velocity);
+        }
+    }
+}

@@ -1372,8 +1372,10 @@ Published early for the 5.2 Tester; kept current by the 5.2 Implementer. All GPU
   (`i < MAX_PROBES`; balls past it never get their own probe). **Capture order** is a cyclic cursor over the ball
   indices and never looks at positions or motion: each frame captures the next `budget` indices after the
   last captured one, modulo the current ball count (7 balls, budget 2: 0 1 | 2 3 | 4 5 | 6 0 | 1 2 | …),
-  so over any n frames the capture counts differ by at most 1. A count change keeps the cursor (reduced
-  modulo the new count); it never restarts. A shrinking ball count frees the
+  so over any n frames the capture counts differ by at most 1. Exact rule: after each frame the cursor is
+  (last captured index + 1) mod (that frame's count); the next frame starts at cursor mod (its count), whether
+  the count shrank or grew, and never restarts at 0. Example: 3 balls give [0, 1], [2, 0] (cursor 1); growing
+  to 7 balls continues [1, 2], [3, 4], …; 7 balls for two frames (cursor 4), then 5 balls → [4, 0], [1, 2]. A shrinking ball count frees the
   dropped slots (their captures are forgotten).
   **Sampling** — `probe_for_ball(i) -> Option<usize>`: slot `i` if it holds a capture that is *fresh* for
   ball `i`; otherwise the captured slot whose capture position is nearest to the ball's current position
