@@ -21,6 +21,11 @@ conversation, PLAN.md as a whole, or a follow-up question.
 - `FABLE_ALLOWANCE`: `sufficient`, `insufficient` or `unknown`, as read by the Orchestrator from
   the account's current usage limits. Treat a missing value as `unknown`.
 - Any history: earlier attempts, earlier investigator reports, failure counts.
+- A **batch** of items (one CodeRabbit review round or one push, D38). Then return one routing
+  block per item plus one brief per executor group (grouped by tier and module directory,
+  PLAN §2.3 rule 1; docs-only items form one docs group; items on the same file go together in
+  one brief at the higher tier). Obvious T0/T1 items may already have been
+  routed by the Orchestrator's `triage` fast path (D38), so you will mostly see harder items.
 
 If the work item itself is missing, return `status: needs-input` and name what is missing. Any
 other gap you fill from the repository (PLAN.md, `docs/DECISIONS.md`, the code) yourself.
