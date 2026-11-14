@@ -182,6 +182,22 @@ fn replay_refuses_a_table_hash_mismatch() {
     });
 }
 
+/// `replay` itself refuses a recording over the tick cap (it never starts a
+/// run that could not finish), also when the value is built in memory.
+#[test]
+fn replay_refuses_tick_counts_over_the_cap() {
+    on_sim_thread(|| {
+        let th = fixture_table_hash();
+        for ticks in [pin_sim::replay::MAX_TICKS + 1, u64::MAX] {
+            match replay(&bundle(), &recording(th, 1, ticks, &[])) {
+                Err(pin_sim::replay::ReplayError::TooManyTicks(n)) => assert_eq!(n, ticks),
+                Err(e) => panic!("ticks = {ticks}: expected TooManyTicks, got {e:?}"),
+                Ok(h) => panic!("ticks = {ticks} replayed to {h:016x}"),
+            }
+        }
+    });
+}
+
 /// Axis events (plunger, nudge, analog flipper travel) are part of the
 /// recorded stream and replay deterministically.
 #[test]

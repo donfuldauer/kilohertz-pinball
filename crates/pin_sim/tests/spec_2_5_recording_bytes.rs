@@ -5,7 +5,7 @@
 
 use pin_core::input::{CabinetAxis, CabinetInput, InputEvent, InputEventKind};
 use pin_core::sim::TICK_NS;
-use pin_sim::replay::Recording;
+use pin_sim::replay::{MAX_TICKS, Recording, ReplayError};
 use proptest::prelude::*;
 
 /// (tick offset, sub-tick ns, kind selector, index, pressed, value bits)
@@ -121,13 +121,40 @@ fn round_trip_preserves_every_field() {
     let max = Recording {
         seed: u64::MAX,
         table_hash: u64::MAX,
-        ticks: u64::MAX,
+        ticks: MAX_TICKS,
         events: vec![(
-            u64::MAX,
+            MAX_TICKS,
             InputEvent::button(u64::MAX, CabinetInput::Tilt, true),
         )],
     };
     assert_same(&max, &Recording::from_bytes(&max.to_bytes()).unwrap());
+}
+
+/// The documented replay tick cap: `MAX_TICKS = 1 << 32`; a larger tick
+/// count is refused by `from_bytes` with `ReplayError::TooManyTicks`.
+#[test]
+fn tick_counts_over_the_cap_are_refused() {
+    assert_eq!(MAX_TICKS, 1u64 << 32);
+    let at_cap = Recording {
+        seed: 1,
+        table_hash: 2,
+        ticks: MAX_TICKS,
+        events: Vec::new(),
+    };
+    assert_same(&at_cap, &Recording::from_bytes(&at_cap.to_bytes()).unwrap());
+    for ticks in [MAX_TICKS + 1, MAX_TICKS * 2, u64::MAX / 2, u64::MAX] {
+        let over = Recording {
+            seed: 1,
+            table_hash: 2,
+            ticks,
+            events: Vec::new(),
+        };
+        match Recording::from_bytes(&over.to_bytes()) {
+            Err(ReplayError::TooManyTicks(n)) => assert_eq!(n, ticks),
+            Err(e) => panic!("ticks = {ticks}: expected TooManyTicks, got {e:?}"),
+            Ok(_) => panic!("ticks = {ticks} > MAX_TICKS was accepted"),
+        }
+    }
 }
 
 #[test]
