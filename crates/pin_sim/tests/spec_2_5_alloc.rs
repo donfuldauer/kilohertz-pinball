@@ -20,7 +20,8 @@ use pin_core::input::InputEvent;
 use pin_core::sim::SimStep;
 use pin_core::snapshot::FrameStateSnapshot;
 use pin_sim::Simulation;
-use pin_sim::replay::Recording;
+use pin_sim::hash::fnv1a64;
+use pin_sim::replay::{EVENT_BYTES, HEADER_BYTES, Recording, TRAILER_BYTES};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::backtrace::Backtrace;
 use std::cell::{Cell, RefCell};
@@ -348,6 +349,17 @@ fn wasm_run_is_deterministic() {
     });
 }
 
+/// Recomputes the checksum trailer after editing the body (as in
+/// `replay_format.rs`).
+fn reseal(bytes: &mut [u8]) {
+    if bytes.len() < TRAILER_BYTES {
+        return;
+    }
+    let body = bytes.len() - TRAILER_BYTES;
+    let sum = fnv1a64(&bytes[..body]);
+    bytes[body..].copy_from_slice(&sum.to_le_bytes());
+}
+
 /// `from_bytes` must bound its allocation by the input length: a header that
 /// claims 2^64 events in a 200-byte file must not reserve for them.
 #[test]
@@ -391,8 +403,38 @@ fn from_bytes_allocation_is_bounded_by_the_input_length() {
                 // ... and the same cut right after the overwritten field.
                 let cut = (i + width).min(bad.len());
                 check(&bad[..cut], "overwritten field, truncated");
+                // ... and resealed, so the edit gets past the checksum.
+                reseal(&mut bad);
+                check(&bad, "overwritten field, resealed");
             }
         }
+    }
+    // Declared event count overwritten, the body resized to match it and the
+    // checksum recomputed: these pass the length and checksum checks and
+    // reach event validation, which runs after the event vector is reserved.
+    let n = (good.len() - HEADER_BYTES - TRAILER_BYTES) / EVENT_BYTES;
+    for count in [0usize, 1, n - 1, n + 1, 2 * n, 64, 1000] {
+        for pad in [0x00u8, 0xFF, 0x01] {
+            let mut bad = good[..HEADER_BYTES].to_vec();
+            bad[36..44].copy_from_slice(&(count as u64).to_le_bytes());
+            let keep = count.min(n) * EVENT_BYTES;
+            bad.extend_from_slice(&good[HEADER_BYTES..HEADER_BYTES + keep]);
+            bad.resize(HEADER_BYTES + count * EVENT_BYTES, pad);
+            bad.extend_from_slice(&[0; TRAILER_BYTES]);
+            reseal(&mut bad);
+            check(&bad, "event count overwritten, resized and resealed");
+        }
+        // Count overwritten and resealed without resizing the body.
+        let mut bad = good.clone();
+        bad[36..44].copy_from_slice(&(count as u64).to_le_bytes());
+        reseal(&mut bad);
+        check(&bad, "event count overwritten, resealed");
+    }
+    for count in [u64::MAX, u64::MAX / EVENT_BYTES as u64, 1 << 40] {
+        let mut bad = good.clone();
+        bad[36..44].copy_from_slice(&count.to_le_bytes());
+        reseal(&mut bad);
+        check(&bad, "huge event count, resealed");
     }
     println!(
         "from_bytes: worst case {worst} bytes allocated for a {}-byte input",
