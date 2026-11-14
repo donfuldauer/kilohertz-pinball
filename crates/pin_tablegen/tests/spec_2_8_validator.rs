@@ -1137,3 +1137,138 @@ fn cli_generator_command_line_still_works_next_to_validate() {
     let o = validate_cli(&outdir);
     assert_eq!(o.status.code(), Some(0), "{:?}", out(&o));
 }
+
+// ------------------------------------------------------------ small restriction areas
+
+/// A square restriction area of side `size` mm with its lower-left corner
+/// at (`x`, `y`).
+fn square(x: f32, y: f32, size: f32) -> [[f32; 2]; 4] {
+    [[x, y], [x + size, y], [x + size, y + size], [x, y + size]]
+}
+
+/// An XL ball confined to a small area that lies entirely under the 65 mm
+/// deck cannot be there at all: the validator must reject it however small
+/// the area is (a held or captive ball has exactly such an area). A sampled
+/// check that misses the area accepts a table the criterion rejects.
+#[test]
+fn deck_headroom_rejects_a_small_area_entirely_under_the_deck() {
+    let mut missed = Vec::new();
+    for (x, y) in [(383.3f32, 881.7f32), (351.9, 803.3), (420.1, 955.5), (300.0, 750.0)] {
+        for size in [50.0f32, 20.0, 8.0, 3.0, 1.0] {
+            let r = validate(
+                "small-area",
+                &layout_toml(&deck(65.0)),
+                &table_toml(
+                    &balls_restricted(&[STD, XL], XL, &[0], Some(&square(x, y, size))),
+                    "",
+                ),
+            );
+            if errors_of(&r, Feature::DeckHeadroom, XL).is_empty() {
+                missed.push((x, y, size));
+            }
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "XL ball restricted to an area wholly under the 65 mm deck was ACCEPTED for (x, y, side mm): {missed:?}"
+    );
+}
+
+/// The same on the largest playfield the generator allows (5 m × 5 m)
+/// under a deck covering it: the contract's sampling grid is at most
+/// min(r/2, 10 mm), so a 20 mm area cannot fall between samples.
+#[test]
+fn deck_headroom_rejects_a_20_mm_area_under_a_large_deck() {
+    let layout = r#"
+schema_version = 1
+
+[playfield]
+width = 5000.0
+length = 5000.0
+wall_height = 28.0
+
+[[walls]]
+points = [[0.0, 0.0], [0.0, 5000.0], [5000.0, 5000.0], [5000.0, 0.0]]
+closed = false
+material = "wood"
+
+[[decks]]
+layer = 1
+z = 65.0
+outline = [[10.0, 10.0], [4990.0, 10.0], [4990.0, 4990.0], [10.0, 4990.0]]
+material = "acrylic"
+"#;
+    let mut missed = Vec::new();
+    for (x, y) in [(1234.3f32, 3456.7f32), (2500.0, 2500.0), (4000.5, 700.25)] {
+        for size in [200.0f32, 50.0, 20.0] {
+            let r = validate(
+                "small-area-big",
+                layout,
+                &table_toml(
+                    &balls_restricted(&[STD, XL], XL, &[0], Some(&square(x, y, size))),
+                    "",
+                ),
+            );
+            if errors_of(&r, Feature::DeckHeadroom, XL).is_empty() {
+                missed.push((x, y, size));
+            }
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "XL ball restricted to an area under a 5 m deck was ACCEPTED for (x, y, side mm): {missed:?}"
+    );
+}
+
+/// An area that is open floor except for a strip reaching under the deck:
+/// rejected whatever the strip's width.
+#[test]
+fn deck_headroom_rejects_an_area_reaching_a_few_mm_under_the_deck() {
+    let mut missed = Vec::new();
+    for reach in [40.0f32, 12.0, 5.0, 2.0] {
+        // x 45..469, y 45..(700 + reach): `reach` mm under the deck edge
+        // over the deck's whole width.
+        let area = [[45.0, 45.0], [469.0, 45.0], [469.0, 700.0 + reach], [45.0, 700.0 + reach]];
+        let r = validate(
+            "strip",
+            &layout_toml(&deck(65.0)),
+            &table_toml(&balls_restricted(&[STD, XL], XL, &[0], Some(&area)), ""),
+        );
+        if errors_of(&r, Feature::DeckHeadroom, XL).is_empty() {
+            missed.push(reach);
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "XL area reaching under the 65 mm deck was ACCEPTED for a reach of (mm): {missed:?}"
+    );
+}
+
+/// The lane check under a small area on the lane's centre line.
+#[test]
+fn lane_width_rejects_a_small_area_on_the_lane() {
+    // Lane centre line from (140, 420) to (160, 280); its middle is (150, 350).
+    let mut missed = Vec::new();
+    for size in [30.0f32, 6.0, 1.0] {
+        let r = validate(
+            "lane-small-area",
+            &layout_toml(&lane(36.0)),
+            &table_toml(
+                &balls_restricted(
+                    &[STD, XL],
+                    XL,
+                    &[0],
+                    Some(&square(150.0 - 0.5 * size, 350.0 - 0.5 * size, size)),
+                ),
+                "",
+            ),
+        );
+        if errors_of(&r, Feature::Lane, XL).is_empty() {
+            missed.push(size);
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "XL ball restricted to a square on the centre line of a 36 mm lane was ACCEPTED for sides (mm): {missed:?}"
+    );
+}

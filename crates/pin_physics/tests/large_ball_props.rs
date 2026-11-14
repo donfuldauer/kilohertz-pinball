@@ -301,6 +301,10 @@ fn probe_flipper_penetration() {
             for t in 0..80 {
                 rig.step();
                 let cp = rig.flippers.closest_point(0, 0.0, rig.ball(h).position).unwrap();
+                if d == 0.0574 && torque == 16.6 && (15..40).contains(&t) {
+                    let b = rig.ball(h);
+                    println!("  t {t}: pen {:.3} mm angle {:.2} w {:.1} pos {} v {} n {} hits {:?}", (r - cp.distance) * 1e3, rig.flippers.angle_deg(flip::LEFT), rig.flippers.angular_velocity(flip::LEFT), b.position, b.velocity, cp.normal, rig.hits);
+                }
                 if r - cp.distance > worst.0 {
                     worst = (r - cp.distance, t);
                 }
