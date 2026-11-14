@@ -91,7 +91,10 @@ fn replay_depends_on_inputs_seed_and_length() {
         );
         // Other inputs.
         let other = input_script(TICKS, 99);
-        assert_ne!(base, replay(&bundle(), &recording(th, 1, TICKS, &other)).unwrap());
+        assert_ne!(
+            base,
+            replay(&bundle(), &recording(th, 1, TICKS, &other)).unwrap()
+        );
         // No inputs at all = advance().
         let mut quiet = load_at(&bundle(), 1);
         quiet.advance(TICKS);
@@ -118,7 +121,10 @@ fn replay_applies_each_event_at_its_recorded_tick() {
             let ev = vec![
                 (5, button(5, CabinetInput::Start, true)),
                 (press, button(press, CabinetInput::LeftFlipper, true)),
-                (press + 80, button(press + 80, CabinetInput::LeftFlipper, false)),
+                (
+                    press + 80,
+                    button(press + 80, CabinetInput::LeftFlipper, false),
+                ),
             ];
             let live = drive(&bundle(), DEFAULT_SEED, press + 81, &ev).state_hash();
             let rep = replay(&bundle(), &recording(th, DEFAULT_SEED, press + 81, &ev)).unwrap();

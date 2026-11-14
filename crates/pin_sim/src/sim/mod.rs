@@ -362,14 +362,9 @@ impl Simulation {
         if self.solver.ball_count() >= MAX_BALLS {
             return Err(SimError::BallArenaFull);
         }
-        let h = pin_physics::debug::spawn_ball(
-            &mut self.solver,
-            id,
-            layer,
-            position_m,
-            velocity_m_s,
-        )
-        .ok_or(SimError::BallArenaFull)?;
+        let h =
+            pin_physics::debug::spawn_ball(&mut self.solver, id, layer, position_m, velocity_m_s)
+                .ok_or(SimError::BallArenaFull)?;
         Ok(self.adopt(h))
     }
 
@@ -599,7 +594,11 @@ impl Simulation {
     /// The persistent value at `key` (0 when out of range).
     #[must_use]
     pub fn persist(&self, key: u16) -> i64 {
-        self.view.persist.get(usize::from(key)).copied().unwrap_or(0)
+        self.view
+            .persist
+            .get(usize::from(key))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Magnetisation `M` of ball `h` (Subphase 2.7 remanence; 0 when gone).

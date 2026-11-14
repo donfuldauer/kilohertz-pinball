@@ -40,7 +40,10 @@ fn cli_fails(args: &[&OsStr], what: &str) {
     let out = run(args);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "{what}: pin_sim {args:?} succeeded: {stdout}");
+    assert!(
+        !out.status.success(),
+        "{what}: pin_sim {args:?} succeeded: {stdout}"
+    );
     assert!(
         parse_state_hash(&stdout).is_none(),
         "{what}: a failed run must not print a state hash: {stdout}"
@@ -49,7 +52,10 @@ fn cli_fails(args: &[&OsStr], what: &str) {
         !stderr.contains("panicked"),
         "{what}: pin_sim panicked instead of reporting an error: {stderr}"
     );
-    assert!(!stderr.trim().is_empty(), "{what}: no error message on stderr");
+    assert!(
+        !stderr.trim().is_empty(),
+        "{what}: no error message on stderr"
+    );
 }
 
 fn s(x: &str) -> &OsStr {
@@ -103,7 +109,10 @@ fn ticks_run_equals_the_replay_of_its_own_recording() {
     assert_eq!(rec.seed, DEFAULT_SEED, "the default seed is recorded");
     assert_eq!(rec.ticks, 2500);
     assert!(rec.events.iter().all(|e| (1..=2500).contains(&e.0)));
-    assert!(rec.events.windows(2).all(|w| w[0].0 <= w[1].0), "events sorted by tick");
+    assert!(
+        rec.events.windows(2).all(|w| w[0].0 <= w[1].0),
+        "events sorted by tick"
+    );
     let want = on_sim_thread(move || {
         let live = drive(&bundle(), rec.seed, rec.ticks, &rec.events);
         (live.state_hash(), replay(&bundle(), &rec).unwrap())
@@ -135,7 +144,14 @@ fn seed_flag_sets_the_rng_seed() {
     // The default seed is 0x4B485A = 4933722.
     assert_eq!(with(&["--seed", "4933722"]), default);
     // Flag order does not matter.
-    let swapped = cli_hash(&[b.as_os_str(), s("--seed"), s("7"), s("--idle"), s("--ticks"), s("300")]);
+    let swapped = cli_hash(&[
+        b.as_os_str(),
+        s("--seed"),
+        s("7"),
+        s("--idle"),
+        s("--ticks"),
+        s("300"),
+    ]);
     assert_eq!(swapped, seven);
 }
 
@@ -171,7 +187,10 @@ fn record_then_replay_round_trip_prints_the_same_hash() {
 
     for _ in 0..3 {
         let replayed = cli_hash(&[b.as_os_str(), s("--replay-inputs"), file.as_os_str()]);
-        assert_eq!(replayed, recorded, "replay {replayed:016x} vs record {recorded:016x}");
+        assert_eq!(
+            replayed, recorded,
+            "replay {replayed:016x} vs record {recorded:016x}"
+        );
     }
 }
 
@@ -301,16 +320,31 @@ fn bad_invocations_fail_cleanly() {
     let b = bundle();
     let dir = temp_dir("cli_args");
     let missing_bundle = dir.join("no_such_bundle");
-    cli_fails(&[missing_bundle.as_os_str(), s("--ticks"), s("10")], "missing bundle");
-    cli_fails(&[b.as_os_str(), s("--ticks"), s("ten")], "non-numeric --ticks");
+    cli_fails(
+        &[missing_bundle.as_os_str(), s("--ticks"), s("10")],
+        "missing bundle",
+    );
+    cli_fails(
+        &[b.as_os_str(), s("--ticks"), s("ten")],
+        "non-numeric --ticks",
+    );
     cli_fails(&[b.as_os_str(), s("--ticks")], "--ticks without a value");
-    cli_fails(&[b.as_os_str(), s("--ticks"), s("10"), s("--seed"), s("x")], "bad --seed");
+    cli_fails(
+        &[b.as_os_str(), s("--ticks"), s("10"), s("--seed"), s("x")],
+        "bad --seed",
+    );
     cli_fails(&[b.as_os_str(), s("--no-such-flag")], "unknown flag");
     cli_fails(&[], "no arguments");
     // An unwritable record path is an error, not a silent success.
     let unwritable = dir.join("no_such_dir").join("x.khzrec");
     cli_fails(
-        &[b.as_os_str(), s("--ticks"), s("10"), s("--record-inputs"), unwritable.as_os_str()],
+        &[
+            b.as_os_str(),
+            s("--ticks"),
+            s("10"),
+            s("--record-inputs"),
+            unwritable.as_os_str(),
+        ],
         "unwritable --record-inputs path",
     );
 }

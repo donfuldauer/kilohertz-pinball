@@ -4,7 +4,8 @@ use proptest::prelude::*;
 #[test]
 fn aces_film_reference_points() {
     // Narkowicz 2015, evaluated in f64.
-    let reference = |x: f64| ((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)).clamp(0.0, 1.0);
+    let reference =
+        |x: f64| ((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)).clamp(0.0, 1.0);
     for x in [0.0f32, 0.01, 0.1, 0.18, 0.5, 1.0, 2.0, 4.0, 10.0, 100.0] {
         let got = aces_film(x);
         let want = reference(f64::from(x)) as f32;
@@ -113,7 +114,11 @@ fn screen_motion_geometry() {
     assert_eq!(m.displacement_px, [0.0, 0.0]);
     // Radius: 0.25 m at 3 m with a 30° fov over 128 px.
     let want = 0.25 / 3.0 / (15f32.to_radians().tan()) * 64.0;
-    assert!((m.radius_px - want).abs() < 0.05, "{} vs {want}", m.radius_px);
+    assert!(
+        (m.radius_px - want).abs() < 0.05,
+        "{} vs {want}",
+        m.radius_px
+    );
     // Moving +x (screen right) at 6 m/s for 1/60 s: 0.1 m.
     let fast = MotionBall {
         velocity: [6.0, 0.0, 0.0],

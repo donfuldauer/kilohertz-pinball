@@ -23,6 +23,11 @@ const ERROR_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 120, 110);
 /// Accent for titles.
 const TITLE_TEXT: egui::Color32 = egui::Color32::from_rgb(250, 230, 160);
 
+/// Width share of the settings list in the input panel.
+const INPUT_SETTINGS_FRACTION: f32 = 0.62;
+/// Narrowest body (points) that shows settings and live readings side by side.
+const INPUT_SIDE_BY_SIDE_MIN_WIDTH: f32 = 700.0;
+
 /// Short names of the cabinet inputs for the live display.
 const INPUT_NAMES: [&str; CabinetInput::COUNT] = [
     "L flip", "R flip", "L upper", "R upper", "Action", "Start", "Launch", "Tilt",
@@ -84,10 +89,29 @@ impl MenuView {
                     Panel::Tables => self.tables(ui, state, &mut out),
                     Panel::Display => settings(ui, state, &SettingRow::DISPLAY, &mut out),
                     Panel::Input => {
-                        ui.columns(2, |cols| {
-                            settings(&mut cols[0], state, &SettingRow::INPUT, &mut out);
-                            live(&mut cols[1], state);
-                        });
+                        // Settings get ~60 % of the width (label + slider +
+                        // value box), the live readings the rest.
+                        // A narrow (portrait) panel stacks them instead.
+                        let (w, h) = (ui.available_width(), ui.available_height());
+                        if w >= INPUT_SIDE_BY_SIDE_MIN_WIDTH {
+                            let left = (w * INPUT_SETTINGS_FRACTION).floor();
+                            ui.horizontal_top(|ui| {
+                                ui.allocate_ui(egui::vec2(left, h), |ui| {
+                                    ui.set_max_width(left);
+                                    settings(ui, state, &SettingRow::INPUT, &mut out);
+                                });
+                                ui.separator();
+                                ui.vertical(|ui| live(ui, state));
+                            });
+                        } else {
+                            let top = (h * INPUT_SETTINGS_FRACTION).floor();
+                            ui.allocate_ui(egui::vec2(w, top), |ui| {
+                                ui.set_max_height(top);
+                                settings(ui, state, &SettingRow::INPUT, &mut out);
+                            });
+                            ui.separator();
+                            live(ui, state);
+                        }
                     }
                 }
             });
@@ -309,6 +333,8 @@ fn table_row(ui: &mut egui::Ui, t: &TableEntry, focused: bool) -> egui::Response
 fn settings(ui: &mut egui::Ui, state: &MenuState, rows: &[SettingRow], out: &mut Vec<MenuInput>) {
     let cfg: &AppConfig = state.config();
     let focus = state.focus();
+    // Sliders take a share of the width so label + slider + value box fit.
+    ui.spacing_mut().slider_width = (ui.available_width() * 0.3).clamp(60.0, 220.0);
     egui::ScrollArea::vertical()
         .id_salt(("pin_menu_settings", state.panel().label()))
         .auto_shrink([false, false])
@@ -349,8 +375,7 @@ fn setting_control(
         let before = v;
         let resp = ui.add(
             egui::Slider::new(&mut v, range.min..=range.max)
-                .step_by(range.step)
-                .text(row.value_text(cfg)),
+                .step_by(range.step),
         );
         // The slider reports `changed` when it merely snaps the stored value
         // to its step grid (float rounding); only a real move is an edit, so

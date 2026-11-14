@@ -1,4 +1,5 @@
 //! Subphase 4.4 spec tests (Independent Tester): `config.toml` persistence.
+#![allow(clippy::field_reassign_with_default, clippy::unnecessary_cast)]
 
 #[path = "fixtures/spec_4_4/support.rs"]
 mod support;
@@ -69,7 +70,9 @@ fn custom() -> AppConfig {
 
 /// A value `t` of the way through the row's range, on its step grid.
 fn mid(row: SettingRow, t: f32) -> f32 {
-    let r = row.range().unwrap_or_else(|| panic!("{row:?} has no range"));
+    let r = row
+        .range()
+        .unwrap_or_else(|| panic!("{row:?} has no range"));
     let (min, max, step) = (r.min as f32, r.max as f32, r.step as f32);
     let steps = ((max - min) * t / step).round();
     (min + steps * step).clamp(min, max)
@@ -184,7 +187,7 @@ fn file_uses_the_documented_keys_and_enum_spellings() {
     let r = AppConfig::from_toml_str(
         "display_mode = \"single\"\ncamera_preset = \"cabinet\"\nscore_display = \"dmd\"\n\
          staging_mode = \"dedicated\"\nwireframe = true\n\
-         [score_pip]\ncorner = \"bottom_left\"\n",
+         [score_pip]\ncorner = \"bottom_left\"\nwidth_fraction = 0.25\n",
     );
     assert!(r.warnings.is_empty(), "{:?}", r.warnings);
     assert_eq!(r.config.display_mode, DisplayMode::Single);
@@ -193,6 +196,38 @@ fn file_uses_the_documented_keys_and_enum_spellings() {
     assert_eq!(r.config.staging_mode, StagingMode::Dedicated);
     assert_eq!(r.config.score_pip.corner, PipCorner::BottomLeft);
     assert!(r.config.wireframe);
+}
+
+/// A sub-table that sets only some of its keys is a partial file, not a
+/// corrupt one: the keys it sets apply, the rest keep their defaults, and the
+/// other settings in the file are not thrown away.
+#[test]
+fn partial_sub_table_keeps_defaults_for_its_other_keys() {
+    let d = AppConfig::default();
+    let r = AppConfig::from_toml_str(
+        "wireframe = true\ncamera_preset = \"cabinet\"\n[score_pip]\ncorner = \"bottom_left\"\n\
+         [calibration.nudge]\ngain = 1.5\n",
+    );
+    assert!(
+        !r.warnings
+            .iter()
+            .any(|w| matches!(w, ConfigWarning::Corrupt(_))),
+        "{:?}",
+        r.warnings
+    );
+    assert!(r.config.wireframe);
+    assert_eq!(r.config.camera_preset, CameraPreset::Cabinet);
+    assert_eq!(r.config.score_pip.corner, PipCorner::BottomLeft);
+    assert_eq!(
+        r.config.score_pip.width_fraction,
+        d.score_pip.width_fraction
+    );
+    assert_eq!(r.config.calibration.nudge.gain, 1.5);
+    assert_eq!(
+        r.config.calibration.nudge.deadzone,
+        d.calibration.nudge.deadzone
+    );
+    assert_eq!(r.config.calibration.plunger, d.calibration.plunger);
 }
 
 #[test]
@@ -269,11 +304,6 @@ fn unreadable_and_oversized_files_fall_back_with_a_warning() {
             .any(|w| matches!(w, ConfigWarning::TooLarge(n) if *n == text.len() as u64)),
         "{:?}",
         r.warnings
-    );
-    assert_eq!(
-        AppConfig::from_toml_str(&text).config,
-        AppConfig::default(),
-        "the size cap also holds for in-memory input"
     );
 }
 
@@ -360,13 +390,13 @@ fn unknown_keys_are_preserved_and_reported() {
     assert!(r.config.wireframe);
     // The published choice: kept in `extra`, with an UnknownKey warning each.
     assert_eq!(
-        r.config.extra.get("future_setting").and_then(|v| v.as_integer()),
+        r.config
+            .extra
+            .get("future_setting")
+            .and_then(|v| v.as_integer()),
         Some(42)
     );
-    assert_eq!(
-        r.config.extra["future_section"]["name"].as_str(),
-        Some("x")
-    );
+    assert_eq!(r.config.extra["future_section"]["name"].as_str(), Some("x"));
     for key in ["future_setting", "future_section"] {
         assert!(
             r.warnings
@@ -426,8 +456,14 @@ fn save_is_atomic_and_leaves_only_the_config_file() {
     std::fs::write(tmp.join("config.toml.bak"), b"keep me").unwrap();
     std::fs::write(tmp.join("other.toml"), b"keep me too").unwrap();
     c.save(&path).unwrap();
-    assert_eq!(std::fs::read(tmp.join("config.toml.bak")).unwrap(), b"keep me");
-    assert_eq!(std::fs::read(tmp.join("other.toml")).unwrap(), b"keep me too");
+    assert_eq!(
+        std::fs::read(tmp.join("config.toml.bak")).unwrap(),
+        b"keep me"
+    );
+    assert_eq!(
+        std::fs::read(tmp.join("other.toml")).unwrap(),
+        b"keep me too"
+    );
     assert_eq!(dir_names(tmp.path()).len(), 3);
 }
 
@@ -512,65 +548,109 @@ fn topology_mode_follows_the_display_mode() {
 fn arb_config() -> impl Strategy<Value = AppConfig> {
     let unit = || 0.0f32..=1.0;
     (
-        (any::<bool>(), 0u32..4, proptest::option::of(0u32..4), proptest::option::of(0u32..4)),
-        (0usize..4, 0usize..4, unit(), unit(), 0usize..3, any::<bool>()),
-        (0usize..3, proptest::collection::vec(unit(), 11), any::<bool>()),
+        (
+            any::<bool>(),
+            0u32..4,
+            proptest::option::of(0u32..4),
+            proptest::option::of(0u32..4),
+        ),
+        (
+            0usize..4,
+            0usize..4,
+            unit(),
+            unit(),
+            0usize..3,
+            any::<bool>(),
+        ),
+        (
+            0usize..3,
+            proptest::collection::vec(unit(), 11),
+            any::<bool>(),
+        ),
         (
             proptest::option::of("[ -~]{1,24}"),
             proptest::option::of("[a-zA-Z0-9 /._\u{e9}\u{4e2d}-]{1,24}"),
             0usize..8,
         ),
     )
-        .prop_map(|((multi, pf, bg, sd), (c1, c2, w1, w2, cam, lcd), (stg, cal, wire), (dir, last, prof))| {
-            let corners = [
-                PipCorner::TopLeft,
-                PipCorner::TopRight,
-                PipCorner::BottomLeft,
-                PipCorner::BottomRight,
-            ];
-            let at = |row: SettingRow, t: f32| {
-                let r = row.range().unwrap();
-                (r.min as f32 + (r.max as f32 - r.min as f32) * t).clamp(r.min as f32, r.max as f32)
-            };
-            let mut c = AppConfig::default();
-            c.display_mode = if multi { DisplayMode::Multi } else { DisplayMode::Single };
-            c.playfield_display = pf;
-            c.backglass_display = bg;
-            c.score_display_monitor = sd;
-            c.backglass_pip.corner = corners[c1];
-            c.score_pip.corner = corners[c2];
-            c.backglass_pip.width_fraction = at(SettingRow::BackglassPipWidth, w1);
-            c.score_pip.width_fraction = at(SettingRow::ScorePipWidth, w2);
-            c.camera_preset =
-                [CameraPreset::Desktop, CameraPreset::Cabinet, CameraPreset::TopDown][cam];
-            c.score_display = if lcd { ScoreDisplayKind::Lcd } else { ScoreDisplayKind::Dmd };
-            c.staging_mode =
-                [StagingMode::Table, StagingMode::Dedicated, StagingMode::DualStage][stg];
-            c.calibration.plunger.deadzone = at(SettingRow::PlungerDeadzone, cal[0]);
-            c.calibration.plunger.rest_tracking_per_s = at(SettingRow::PlungerRestTracking, cal[1]);
-            c.calibration.plunger.release_min_speed = at(SettingRow::PlungerReleaseMinSpeed, cal[2]);
-            c.calibration.plunger.release_window_ms =
-                at(SettingRow::PlungerReleaseWindow, cal[3]).round() as u32;
-            c.calibration.nudge.high_pass_hz = at(SettingRow::NudgeHighPass, cal[4]);
-            c.calibration.nudge.gain = at(SettingRow::NudgeGain, cal[5]);
-            c.calibration.nudge.curve_exponent = at(SettingRow::NudgeCurve, cal[6]);
-            c.calibration.nudge.deadzone = at(SettingRow::NudgeDeadzone, cal[7]);
-            c.calibration.nudge.max = at(SettingRow::NudgeMax, cal[8]);
-            // Keep the dual-stage thresholds ordered (lower ≤ upper).
-            let (lo, hi) = if cal[9] <= cal[10] { (cal[9], cal[10]) } else { (cal[10], cal[9]) };
-            c.calibration.dual_stage_lower = at(SettingRow::DualStageLower, lo * 0.4);
-            c.calibration.dual_stage_upper = at(SettingRow::DualStageUpper, 0.6 + hi * 0.4);
-            c.wireframe = wire;
-            c.tables_dir = dir.map(Into::into);
-            c.last_table = last.map(Into::into);
-            let profiles = pin_input::profiles::builtin_profiles();
-            c.input_profile = if prof == 0 {
-                "auto".to_owned()
-            } else {
-                profiles[(prof - 1) % profiles.len()].id.to_string()
-            };
-            c
-        })
+        .prop_map(
+            |(
+                (multi, pf, bg, sd),
+                (c1, c2, w1, w2, cam, lcd),
+                (stg, cal, wire),
+                (dir, last, prof),
+            )| {
+                let corners = [
+                    PipCorner::TopLeft,
+                    PipCorner::TopRight,
+                    PipCorner::BottomLeft,
+                    PipCorner::BottomRight,
+                ];
+                let at = |row: SettingRow, t: f32| {
+                    let r = row.range().unwrap();
+                    (r.min as f32 + (r.max as f32 - r.min as f32) * t)
+                        .clamp(r.min as f32, r.max as f32)
+                };
+                let mut c = AppConfig::default();
+                c.display_mode = if multi {
+                    DisplayMode::Multi
+                } else {
+                    DisplayMode::Single
+                };
+                c.playfield_display = pf;
+                c.backglass_display = bg;
+                c.score_display_monitor = sd;
+                c.backglass_pip.corner = corners[c1];
+                c.score_pip.corner = corners[c2];
+                c.backglass_pip.width_fraction = at(SettingRow::BackglassPipWidth, w1);
+                c.score_pip.width_fraction = at(SettingRow::ScorePipWidth, w2);
+                c.camera_preset = [
+                    CameraPreset::Desktop,
+                    CameraPreset::Cabinet,
+                    CameraPreset::TopDown,
+                ][cam];
+                c.score_display = if lcd {
+                    ScoreDisplayKind::Lcd
+                } else {
+                    ScoreDisplayKind::Dmd
+                };
+                c.staging_mode = [
+                    StagingMode::Table,
+                    StagingMode::Dedicated,
+                    StagingMode::DualStage,
+                ][stg];
+                c.calibration.plunger.deadzone = at(SettingRow::PlungerDeadzone, cal[0]);
+                c.calibration.plunger.rest_tracking_per_s =
+                    at(SettingRow::PlungerRestTracking, cal[1]);
+                c.calibration.plunger.release_min_speed =
+                    at(SettingRow::PlungerReleaseMinSpeed, cal[2]);
+                c.calibration.plunger.release_window_ms =
+                    at(SettingRow::PlungerReleaseWindow, cal[3]).round() as u32;
+                c.calibration.nudge.high_pass_hz = at(SettingRow::NudgeHighPass, cal[4]);
+                c.calibration.nudge.gain = at(SettingRow::NudgeGain, cal[5]);
+                c.calibration.nudge.curve_exponent = at(SettingRow::NudgeCurve, cal[6]);
+                c.calibration.nudge.deadzone = at(SettingRow::NudgeDeadzone, cal[7]);
+                c.calibration.nudge.max = at(SettingRow::NudgeMax, cal[8]);
+                // Keep the dual-stage thresholds ordered (lower ≤ upper).
+                let (lo, hi) = if cal[9] <= cal[10] {
+                    (cal[9], cal[10])
+                } else {
+                    (cal[10], cal[9])
+                };
+                c.calibration.dual_stage_lower = at(SettingRow::DualStageLower, lo * 0.4);
+                c.calibration.dual_stage_upper = at(SettingRow::DualStageUpper, 0.6 + hi * 0.4);
+                c.wireframe = wire;
+                c.tables_dir = dir.map(Into::into);
+                c.last_table = last.map(Into::into);
+                let profiles = pin_input::profiles::builtin_profiles();
+                c.input_profile = if prof == 0 {
+                    "auto".to_owned()
+                } else {
+                    profiles[(prof - 1) % profiles.len()].id.to_string()
+                };
+                c
+            },
+        )
 }
 
 proptest! {

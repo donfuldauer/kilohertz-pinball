@@ -1,6 +1,7 @@
 //! Subphase 4.4 spec tests (Independent Tester): gate 5, the `config.toml`
 //! parser survives bounded random input without panicking, and whatever it
 //! returns is a usable config.
+#![allow(clippy::field_reassign_with_default, clippy::unnecessary_cast)]
 
 #[path = "fixtures/spec_4_4/support.rs"]
 mod support;
@@ -25,14 +26,20 @@ fn check(r: &ConfigLoad) -> Result<(), TestCaseError> {
     }
     // The result can always be written back and read again unchanged.
     let text = c.to_toml_string();
-    prop_assert!(text.is_ok(), "loaded config cannot be serialised: {:?}", text.err());
+    prop_assert!(
+        text.is_ok(),
+        "loaded config cannot be serialised: {:?}",
+        text.err()
+    );
     let again = AppConfig::from_toml_str(&text.unwrap());
-    prop_assert_eq!(&again.config, c);
+    // Compared through `Debug`: preserved unknown keys may hold NaN, which is
+    // never `==` to itself.
+    prop_assert_eq!(format!("{:?}", again.config), format!("{c:?}"));
     // Sanitising a loaded config is a no-op.
     let mut s = c.clone();
     let mut w = Vec::new();
     s.sanitize(&mut w);
-    prop_assert_eq!(&s, c);
+    prop_assert_eq!(format!("{s:?}"), format!("{c:?}"));
     for w in &r.warnings {
         let shown = format!("{w:?}");
         prop_assert!(!shown.is_empty());
@@ -74,13 +81,53 @@ const KEYS: &[&str] = &[
 ];
 
 const VALUES: &[&str] = &[
-    "true", "false", "0", "1", "-1", "7", "4294967295", "4294967296", "-9223372036854775808",
-    "9223372036854775807", "0.0", "-0.0", "0.5", "1e30", "-1e30", "1e-40", "nan", "-nan", "inf",
-    "-inf", "\"\"", "\"single\"", "\"multi\"", "\"dmd\"", "\"lcd\"", "\"top_down\"", "\"cabinet\"",
-    "\"desktop\"", "\"table\"", "\"dedicated\"", "\"dual_stage\"", "\"top_left\"", "\"bottom_right\"",
-    "\"auto\"", "\"x_arcade\"", "\"/tmp/a b\"", "\"\\u0000\"", "[]", "[1, 2]", "[[1], [\"a\"]]",
-    "{}", "{ corner = \"top_left\" }", "{ width_fraction = nan }", "{ deadzone = -1 }",
-    "{ plunger = 1, nudge = { gain = inf } }", "1979-05-27T07:32:00Z", "'''multi\nline'''",
+    "true",
+    "false",
+    "0",
+    "1",
+    "-1",
+    "7",
+    "4294967295",
+    "4294967296",
+    "-9223372036854775808",
+    "9223372036854775807",
+    "0.0",
+    "-0.0",
+    "0.5",
+    "1e30",
+    "-1e30",
+    "1e-40",
+    "nan",
+    "-nan",
+    "inf",
+    "-inf",
+    "\"\"",
+    "\"single\"",
+    "\"multi\"",
+    "\"dmd\"",
+    "\"lcd\"",
+    "\"top_down\"",
+    "\"cabinet\"",
+    "\"desktop\"",
+    "\"table\"",
+    "\"dedicated\"",
+    "\"dual_stage\"",
+    "\"top_left\"",
+    "\"bottom_right\"",
+    "\"auto\"",
+    "\"x_arcade\"",
+    "\"/tmp/a b\"",
+    "\"\\u0000\"",
+    "[]",
+    "[1, 2]",
+    "[[1], [\"a\"]]",
+    "{}",
+    "{ corner = \"top_left\" }",
+    "{ width_fraction = nan }",
+    "{ deadzone = -1 }",
+    "{ plunger = 1, nudge = { gain = inf } }",
+    "1979-05-27T07:32:00Z",
+    "'''multi\nline'''",
 ];
 
 fn line() -> impl Strategy<Value = String> {
@@ -128,7 +175,7 @@ proptest! {
         check(&r)?;
         // Parsing is a pure function of the text.
         let again = AppConfig::from_toml_str(&text);
-        prop_assert_eq!(&again.config, &r.config);
+        prop_assert_eq!(format!("{:?}", again.config), format!("{:?}", r.config));
         prop_assert_eq!(again.warnings.len(), r.warnings.len());
     }
 
@@ -171,7 +218,7 @@ proptest! {
         std::fs::write(&path, &bytes).unwrap();
         let r = AppConfig::load(&path);
         check(&r)?;
-        prop_assert_eq!(&r.config, &AppConfig::from_toml_bytes(&bytes).config);
+        prop_assert_eq!(format!("{:?}", r.config), format!("{:?}", AppConfig::from_toml_bytes(&bytes).config));
         prop_assert_eq!(std::fs::read(&path).unwrap(), bytes);
         prop_assert_eq!(dir_names(tmp.path()), vec!["config.toml".to_owned()]);
     }

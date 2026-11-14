@@ -3,6 +3,7 @@
 //! Black-box, written from the brief and the published API
 //! (`docs/DECISIONS.md` "4.4 — Menu UI public API"). The oracle for "valid
 //! bundle" is `pin_assets::load_table` over `pin_assets::Vfs::open`.
+#![allow(clippy::field_reassign_with_default, clippy::unnecessary_cast)]
 
 #[path = "fixtures/spec_4_4/support.rs"]
 mod support;

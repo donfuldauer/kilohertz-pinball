@@ -20,8 +20,8 @@
 //! * [`autoplay`]: Subphase 2.9 (stub).
 
 pub mod alloc_guard;
-pub mod cli;
 pub mod autoplay;
+pub mod cli;
 pub mod commands;
 pub mod hash;
 pub mod load;

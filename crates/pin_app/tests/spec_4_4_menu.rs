@@ -1,5 +1,6 @@
 //! Subphase 4.4 spec tests (Independent Tester): menu toggle, navigation,
 //! cabinet-input routing and the live input monitor.
+#![allow(clippy::field_reassign_with_default, clippy::unnecessary_cast)]
 
 use pin_app::ui::{
     AppConfig, CameraPreset, InputMonitor, InputRoute, MENU_TOGGLE_BUTTON, MENU_TOGGLE_SCANCODE,
@@ -38,7 +39,10 @@ fn starts_closed_on_the_table_browser() {
     assert!(m.tables().is_empty());
     assert_eq!(*m.config(), AppConfig::default());
     assert!(m.pending_commands().is_empty());
-    assert_eq!(m.profile_choices().first().map(String::as_str), Some("auto"));
+    assert_eq!(
+        m.profile_choices().first().map(String::as_str),
+        Some("auto")
+    );
 }
 
 #[test]
@@ -177,13 +181,34 @@ fn open_menu_swallows_every_cabinet_input() {
 
 #[test]
 fn cabinet_inputs_navigate_the_menu() {
-    assert_eq!(cabinet_menu_input(CabinetInput::LeftFlipper), Some(MenuInput::Up));
-    assert_eq!(cabinet_menu_input(CabinetInput::RightFlipper), Some(MenuInput::Down));
-    assert_eq!(cabinet_menu_input(CabinetInput::LeftUpper), Some(MenuInput::Left));
-    assert_eq!(cabinet_menu_input(CabinetInput::RightUpper), Some(MenuInput::Right));
-    assert_eq!(cabinet_menu_input(CabinetInput::Start), Some(MenuInput::Select));
-    assert_eq!(cabinet_menu_input(CabinetInput::Launch), Some(MenuInput::Select));
-    assert_eq!(cabinet_menu_input(CabinetInput::Action), Some(MenuInput::Back));
+    assert_eq!(
+        cabinet_menu_input(CabinetInput::LeftFlipper),
+        Some(MenuInput::Up)
+    );
+    assert_eq!(
+        cabinet_menu_input(CabinetInput::RightFlipper),
+        Some(MenuInput::Down)
+    );
+    assert_eq!(
+        cabinet_menu_input(CabinetInput::LeftUpper),
+        Some(MenuInput::Left)
+    );
+    assert_eq!(
+        cabinet_menu_input(CabinetInput::RightUpper),
+        Some(MenuInput::Right)
+    );
+    assert_eq!(
+        cabinet_menu_input(CabinetInput::Start),
+        Some(MenuInput::Select)
+    );
+    assert_eq!(
+        cabinet_menu_input(CabinetInput::Launch),
+        Some(MenuInput::Select)
+    );
+    assert_eq!(
+        cabinet_menu_input(CabinetInput::Action),
+        Some(MenuInput::Back)
+    );
     assert_eq!(cabinet_menu_input(CabinetInput::Tilt), None);
 
     // A press through route_cabinet has the same effect as the mapped input.
@@ -241,7 +266,10 @@ fn flipper_buttons_walk_the_panels_and_action_backs_out() {
         "the press that closes the menu is not forwarded"
     );
     assert!(!m.is_open());
-    assert_eq!(m.route_cabinet(CabinetInput::Action, false), InputRoute::Sim);
+    assert_eq!(
+        m.route_cabinet(CabinetInput::Action, false),
+        InputRoute::Sim
+    );
 }
 
 #[test]
@@ -299,7 +327,9 @@ fn settings_change_the_config_and_emit_one_coalesced_command() {
     let mut m = opened();
     let d = AppConfig::default();
     assert_ne!(d.camera_preset, CameraPreset::TopDown);
-    m.apply(MenuInput::Set(SettingChange::CameraPreset(CameraPreset::TopDown)));
+    m.apply(MenuInput::Set(SettingChange::CameraPreset(
+        CameraPreset::TopDown,
+    )));
     assert_eq!(m.config().camera_preset, CameraPreset::TopDown);
     let other = if d.score_display == ScoreDisplayKind::Dmd {
         ScoreDisplayKind::Lcd
@@ -320,7 +350,9 @@ fn settings_change_the_config_and_emit_one_coalesced_command() {
         c => panic!("unexpected {c:?}"),
     }
     // Setting the same value again is not a change.
-    m.apply(MenuInput::Set(SettingChange::CameraPreset(CameraPreset::TopDown)));
+    m.apply(MenuInput::Set(SettingChange::CameraPreset(
+        CameraPreset::TopDown,
+    )));
     assert!(m.pending_commands().is_empty());
 }
 
@@ -347,7 +379,7 @@ fn numeric_rows_step_and_clamp_inside_their_range() {
     ] {
         for (i, row) in rows.iter().enumerate() {
             let Some(range) = row.range() else { continue };
-            let (min, max, step) = (range.min as f64, range.max as f64, range.step as f64);
+            let (min, max, step) = (range.min, range.max, range.step);
             assert!(min < max && step > 0.0, "{row:?}: bad range");
             let mut m = opened();
             m.apply(MenuInput::ShowPanel(panel));
@@ -355,7 +387,7 @@ fn numeric_rows_step_and_clamp_inside_their_range() {
                 m.apply(MenuInput::Down);
             }
             assert_eq!(m.focused_setting(), Some(*row));
-            let value = |m: &MenuState| row.number(m.config()).expect("numeric row") as f64;
+            let value = |m: &MenuState| row.number(m.config()).expect("numeric row");
             let start = value(&m);
             assert!((min..=max).contains(&start), "{row:?} default out of range");
             assert!(!row.value_text(m.config()).is_empty());
@@ -369,17 +401,44 @@ fn numeric_rows_step_and_clamp_inside_their_range() {
                 m.apply(MenuInput::Right);
                 let v = value(&m);
                 assert!(v >= prev - eps && v <= max + eps, "{row:?}: {prev} → {v}");
-                assert!(v - prev <= step + eps, "{row:?}: step too large {prev} → {v}");
+                // One press moves one step, then snaps to the grid anchored at
+                // `min` (so an off-grid start may move by up to 1.5 steps).
+                assert!(
+                    v - prev <= 1.5 * step + eps,
+                    "{row:?}: step too large {prev} → {v} (range {min}..{max} step {step})"
+                );
                 prev = v;
             }
-            assert!((prev - max).abs() <= eps, "{row:?} does not reach max: {prev}");
+            // The two dual-stage thresholds bound each other (lower ≤ upper),
+            // so each stops at the other instead of at its own range end.
+            let c = &m.config().calibration;
+            assert!(
+                c.dual_stage_lower <= c.dual_stage_upper,
+                "{row:?}: thresholds crossed"
+            );
+            if *row != SettingRow::DualStageLower {
+                assert!(
+                    (prev - max).abs() <= eps,
+                    "{row:?} does not reach max: {prev}"
+                );
+            }
             for _ in 0..steps.min(100_000) {
                 m.apply(MenuInput::Left);
                 let v = value(&m);
                 assert!(v <= prev + eps && v >= min - eps, "{row:?}: {prev} → {v}");
                 prev = v;
             }
-            assert!((prev - min).abs() <= eps, "{row:?} does not reach min: {prev}");
+            let c = &m.config().calibration;
+            assert!(
+                c.dual_stage_lower <= c.dual_stage_upper,
+                "{row:?}: thresholds crossed"
+            );
+            if *row != SettingRow::DualStageUpper {
+                assert!(
+                    (prev - min).abs() <= eps,
+                    "{row:?} does not reach min: {prev}"
+                );
+            }
         }
     }
 }

@@ -23,7 +23,10 @@ fn hash_of(out: &std::process::Output) -> String {
     assert!(line.starts_with("state_hash="), "{line}");
     let hex = &line["state_hash=".len()..];
     assert_eq!(hex.len(), 16, "{line}");
-    assert!(hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    assert!(
+        hex.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    );
     line.to_owned()
 }
 

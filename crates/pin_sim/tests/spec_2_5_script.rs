@@ -68,7 +68,11 @@ fn instruction_budget_is_the_engine_budget() {
         assert_eq!(sim.score(1), Some(14));
         assert_eq!(sim.score(2), Some(0), "the loop result of the last tick");
         sim.advance(50);
-        assert_eq!(sim.score(1), Some(64), "15 000 iterations fit the engine budget");
+        assert_eq!(
+            sim.score(1),
+            Some(64),
+            "15 000 iterations fit the engine budget"
+        );
 
         // Over the engine budget (but under the 1 M default): the script is
         // aborted and stays in its fault state; its callbacks stop.
@@ -146,13 +150,21 @@ fn faulted_script_does_not_stop_the_simulation() {
                 let mut out = Box::new(FrameStateSnapshot::default());
                 let rest = sim.snapshot().flippers()[0].angle_rad;
                 let t = sim.tick() + 1;
-                step(&mut sim, &[button(t, CabinetInput::LeftFlipper, true)], &mut out);
+                step(
+                    &mut sim,
+                    &[button(t, CabinetInput::LeftFlipper, true)],
+                    &mut out,
+                );
                 for _ in 0..600 {
                     step(&mut sim, &[], &mut out);
                 }
                 assert_eq!(sim.tick(), 622, "{tag}");
                 assert_eq!(out.tick, 622, "{tag}");
-                assert_eq!(sim.score(1), Some(frozen), "{tag}: a faulted script is not called");
+                assert_eq!(
+                    sim.score(1),
+                    Some(frozen),
+                    "{tag}: a faulted script is not called"
+                );
                 let b = sim.ball(h).expect("ball still simulated");
                 assert!(b.position_m[1] < y0 - 0.05, "{tag}: physics stopped");
                 assert_eq!(
@@ -164,7 +176,10 @@ fn faulted_script_does_not_stop_the_simulation() {
                     .flippers()
                     .iter()
                     .any(|f| (f.angle_rad - rest).abs() > 0.5);
-                assert!(moved, "{tag}: flipper buttons still work after a script fault");
+                assert!(
+                    moved,
+                    "{tag}: flipper buttons still work after a script fault"
+                );
                 sim.state_hash()
             };
             assert_eq!(run(), run(), "{tag}: a faulting run is still deterministic");

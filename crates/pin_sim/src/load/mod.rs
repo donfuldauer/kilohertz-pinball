@@ -221,7 +221,10 @@ fn wall_height_m(vfs: &Vfs) -> Result<f32, SimError> {
 
 /// Collider nodes named after a mech: `<id>` / `<id>.on` (on) and
 /// `<id>.off` (off).
-fn bound_colliders(named: &[(String, ColliderHandle)], id: &str) -> (Vec<ColliderHandle>, Vec<ColliderHandle>) {
+fn bound_colliders(
+    named: &[(String, ColliderHandle)],
+    id: &str,
+) -> (Vec<ColliderHandle>, Vec<ColliderHandle>) {
     let mut on = Vec::new();
     let mut off = Vec::new();
     for (name, h) in named {
@@ -507,12 +510,8 @@ impl Simulation {
             }
         }
         let mut mechs = MechSet::new(&specs, &defaults).map_err(|e| build_err(format!("{e:?}")))?;
-        let cabinet = CabinetInput::ALL.map(|c| {
-            table
-                .ids
-                .switch(c.name())
-                .unwrap_or(SwitchId(u16::MAX))
-        });
+        let cabinet =
+            CabinetInput::ALL.map(|c| table.ids.switch(c.name()).unwrap_or(SwitchId(u16::MAX)));
         mechs.set_tilt_switch(Some(cabinet[CabinetInput::Tilt.index()]));
         let mut zones: Vec<LayerTransition> = table
             .transitions

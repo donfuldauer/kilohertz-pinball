@@ -148,8 +148,12 @@ fn guarded_run(
         if inject && tick % 2000 == 1 && sim.balls_in_play() < 3 {
             let k = (tick / 2000) as f32;
             let x = 0.08 + 0.35 * (k * 0.618).fract();
-            sim.spawn_ball("standard_steel", [x, 0.98, R], [0.3 - 0.6 * (k * 0.37).fract(), -0.8, 0.0])
-                .expect("inject ball");
+            sim.spawn_ball(
+                "standard_steel",
+                [x, 0.98, R],
+                [0.3 - 0.6 * (k * 0.37).fract(), -0.8, 0.0],
+            )
+            .expect("inject ball");
         }
         let before = allocs();
         ARMED.with(|c| c.set(true));
@@ -308,7 +312,11 @@ fn allocation_guard_60000_ticks_with_wasm_script() {
         let edges = sim.score(2).unwrap();
         sim.set_switch("start", true).unwrap();
         sim.advance(2);
-        assert_eq!(sim.score(2), Some(edges + 1), "one more closed edge delivered");
+        assert_eq!(
+            sim.score(2),
+            Some(edges + 1),
+            "one more closed edge delivered"
+        );
         assert!(sim.score(3).unwrap() >= 1);
         assert_eq!(sim.balls_in_play(), 1, "the Wasm rules spawned a ball");
         drop(sim);
@@ -344,7 +352,11 @@ fn from_bytes_allocation_is_bounded_by_the_input_length() {
         events: events.into_iter().take(12).collect(),
     }
     .to_bytes();
-    assert!(good.len() < 4096, "sample recording is {} bytes", good.len());
+    assert!(
+        good.len() < 4096,
+        "sample recording is {} bytes",
+        good.len()
+    );
     let limit = |len: usize| 64 * len as u64 + 4096;
     let mut worst = 0u64;
     let mut check = |data: &[u8], what: &str| {
@@ -374,5 +386,8 @@ fn from_bytes_allocation_is_bounded_by_the_input_length() {
             }
         }
     }
-    println!("from_bytes: worst case {worst} bytes allocated for a {}-byte input", good.len());
+    println!(
+        "from_bytes: worst case {worst} bytes allocated for a {}-byte input",
+        good.len()
+    );
 }

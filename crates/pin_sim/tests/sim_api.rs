@@ -67,10 +67,7 @@ fn spawn_query_and_inject_ball_state() {
         };
         assert!(sim.set_ball_state(h, &target));
         assert_eq!(sim.ball(h), Some(target));
-        let bad = BallState {
-            layer: 9,
-            ..target
-        };
+        let bad = BallState { layer: 9, ..target };
         assert!(!sim.set_ball_state(h, &bad));
         // Layered spawn.
         let up = sim

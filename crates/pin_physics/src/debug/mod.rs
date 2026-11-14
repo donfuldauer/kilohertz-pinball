@@ -299,7 +299,11 @@ mod tests {
             ..BallState::default()
         };
         assert!(!set_ball_state(&mut s, h, &bad));
-        assert!(!set_ball_state(&mut s, BallHandle(9), &BallState::default()));
+        assert!(!set_ball_state(
+            &mut s,
+            BallHandle(9),
+            &BallState::default()
+        ));
         assert_eq!(ball_state(&s, BallHandle(9)), None);
         for _ in 1..crate::ball::MAX_BALLS {
             assert!(spawn_ball(&mut s, ProfileId(0), 0, [0.0; 3], [0.0; 3]).is_some());

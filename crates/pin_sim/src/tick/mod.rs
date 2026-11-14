@@ -228,7 +228,11 @@ impl Simulation {
         self.solver.sensor_switches(&mut bits);
         self.mechs.switch_states(&mut bits);
         for d in &self.drives {
-            set_bit(&mut bits, d.eos_switch.index(), self.flippers.eos_closed(d.id));
+            set_bit(
+                &mut bits,
+                d.eos_switch.index(),
+                self.flippers.eos_closed(d.id),
+            );
         }
         for g in &self.gates {
             if let Some(s) = g.switch {
@@ -238,7 +242,8 @@ impl Simulation {
         for n in &self.newtons {
             if let Some(s) = n.switch {
                 let chain = self.solver.newton_chain(n.chain);
-                let moving = (0..chain.len()).any(|i| chain.ball_speed(i).abs() > NEWTON_SWITCH_SPEED);
+                let moving =
+                    (0..chain.len()).any(|i| chain.ball_speed(i).abs() > NEWTON_SWITCH_SPEED);
                 set_bit(&mut bits, s.index(), moving);
             }
         }
@@ -260,8 +265,8 @@ impl Simulation {
     /// and every closing edge counts as a hit.
     pub(crate) fn update_switches(&mut self, tick: u64) {
         let new = self.compose_switches();
-        for w in 0..4 {
-            let mut diff = new[w] ^ self.view.switches[w];
+        for (w, &word) in new.iter().enumerate() {
+            let mut diff = word ^ self.view.switches[w];
             while diff != 0 {
                 let b = diff.trailing_zeros() as usize;
                 diff &= diff - 1;
@@ -269,7 +274,7 @@ impl Simulation {
                 if n >= MAX_SWITCHES {
                     continue;
                 }
-                let closed = new[w] & (1u64 << b) != 0;
+                let closed = word & (1u64 << b) != 0;
                 if closed {
                     self.switch_hits[n] = self.switch_hits[n].saturating_add(1);
                 }

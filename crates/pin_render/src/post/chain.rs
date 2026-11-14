@@ -301,6 +301,10 @@ impl PostChain {
         output_format: wgpu::TextureFormat,
     ) -> Result<PostChain, GpuError> {
         let device = ctx.device();
+        // A shader or pipeline validation error becomes a `GpuError`
+        // instead of reaching wgpu's default (panicking) handler; dropping
+        // the guard on an early return pops the scope.
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         check_size(device, width, height)?;
         let Some((is_srgb, _)) = output_kind(output_format) else {
             return Err(GpuError::InvalidArgument(format!(
@@ -322,7 +326,7 @@ impl PostChain {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(
-                        core::mem::size_of::<PostUniform>() as u64,
+                        core::mem::size_of::<PostUniform>() as u64
                     ),
                 },
                 count: None,
@@ -405,6 +409,11 @@ impl PostChain {
             })
         };
         let config = PostConfig::default();
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            return Err(GpuError::InvalidArgument(format!(
+                "post chain shaders/pipelines: {e}"
+            )));
+        }
         Ok(PostChain {
             device: device.clone(),
             queue: ctx.queue().clone(),
@@ -653,7 +662,13 @@ impl PostChain {
         let bloom_on = self.config.bloom.enabled;
         if bloom_on {
             let g = self.bind(&t.scene.view, &t.scene.view);
-            self.pass(encoder, "post prefilter", &self.prefilter, &g, &t.bright.view);
+            self.pass(
+                encoder,
+                "post prefilter",
+                &self.prefilter,
+                &g,
+                &t.bright.view,
+            );
             let mut src = &t.bright.view;
             for d in &t.down {
                 let g = self.bind(src, src);

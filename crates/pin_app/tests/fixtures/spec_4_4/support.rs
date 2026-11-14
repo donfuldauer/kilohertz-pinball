@@ -101,7 +101,11 @@ pub fn write_missing_script_bundle(dir: &Path) {
 
 /// A file with an archive extension that is not a zip.
 pub fn write_fake_archive(path: &Path) {
-    std::fs::write(path, b"PK\x03\x04 definitely not a zip archive \xff\xff\xff\xff").unwrap();
+    std::fs::write(
+        path,
+        b"PK\x03\x04 definitely not a zip archive \xff\xff\xff\xff",
+    )
+    .unwrap();
 }
 
 fn crc32(data: &[u8]) -> u32 {

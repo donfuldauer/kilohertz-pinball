@@ -91,7 +91,9 @@ fn spawn_injects_the_exact_state() {
         let v = [0.25, -1.5, 0.125];
         let h = sim.spawn_ball("standard_steel", p, v).unwrap();
         assert_eq!(sim.balls_in_play(), 1);
-        let b = sim.ball(h).expect("spawned ball is queryable before any tick");
+        let b = sim
+            .ball(h)
+            .expect("spawned ball is queryable before any tick");
         assert_eq!(b.position_m.map(f32::to_bits), p.map(f32::to_bits));
         assert_eq!(b.velocity_m_s.map(f32::to_bits), v.map(f32::to_bits));
         assert_eq!(b.layer, 0, "spawn_ball spawns on layer 0");
@@ -219,7 +221,9 @@ fn free_fall_matches_gravity_at_one_millisecond_ticks() {
             .spawn_ball("standard_steel", [0.25, 0.5, 0.055], [0.0; 3])
             .unwrap();
         sim.advance(60); // 0.06 s
-        let b = sim.ball(h).expect("a ball 55 mm above the playfield is in bounds");
+        let b = sim
+            .ball(h)
+            .expect("a ball 55 mm above the playfield is in bounds");
         let pitch = 6.5f32.to_radians();
         let dz = 0.055 - b.position_m[2];
         let dy = 0.5 - b.position_m[1];
@@ -301,8 +305,8 @@ fn opto_closes_while_a_ball_is_inside_and_counts_one_hit_per_pass() {
             sim.advance(1);
             let closed = sim.switch_closed("side_opto").unwrap();
             if let Some(b) = sim.ball(h) {
-                let d = ((b.position_m[0] - 0.09).powi(2) + (b.position_m[1] - 0.30).powi(2))
-                    .sqrt();
+                let d =
+                    ((b.position_m[0] - 0.09).powi(2) + (b.position_m[1] - 0.30).powi(2)).sqrt();
                 // Well inside / well outside the 20 mm zone (2 mm margin for
                 // the one-tick sampling).
                 if d < 0.018 {
@@ -339,7 +343,11 @@ fn set_switch_forces_state_and_counts_closed_edges() {
         assert_eq!(sim.score(P_SCORE), Some(10), "the script scored the lane");
         sim.set_switch("lane_opto", false).unwrap();
         assert_eq!(sim.switch_closed("lane_opto"), Some(false));
-        assert_eq!(sim.switch_hits("lane_opto"), Some(1), "opening is not a hit");
+        assert_eq!(
+            sim.switch_hits("lane_opto"),
+            Some(1),
+            "opening is not a hit"
+        );
         sim.advance(3);
         sim.set_switch("lane_opto", true).unwrap();
         sim.advance(3);
@@ -365,7 +373,11 @@ fn score_is_what_the_script_last_reported() {
         sim.advance(2);
         assert_eq!(sim.score(P_SCORE), Some(5));
         sim.advance(500);
-        assert_eq!(sim.score(P_SCORE), Some(5), "the host keeps the last report");
+        assert_eq!(
+            sim.score(P_SCORE),
+            Some(5),
+            "the host keeps the last report"
+        );
     });
 }
 
@@ -418,7 +430,11 @@ fn flipper_buttons_drive_the_flippers() {
 
         // Press the left button and hold it for 100 ticks.
         let t = sim.tick() + 1;
-        step(&mut sim, &[button(t, CabinetInput::LeftFlipper, true)], &mut out);
+        step(
+            &mut sim,
+            &[button(t, CabinetInput::LeftFlipper, true)],
+            &mut out,
+        );
         assert_eq!(sim.switch_closed("left_flipper"), Some(true));
         assert_eq!(sim.switch_hits("left_flipper"), Some(1));
         let mut moved_by = 0;
@@ -461,7 +477,11 @@ fn flipper_buttons_drive_the_flippers() {
 
         // Release: it returns to rest.
         let t = sim.tick() + 1;
-        step(&mut sim, &[button(t, CabinetInput::LeftFlipper, false)], &mut out);
+        step(
+            &mut sim,
+            &[button(t, CabinetInput::LeftFlipper, false)],
+            &mut out,
+        );
         assert_eq!(sim.switch_closed("left_flipper"), Some(false));
         for _ in 0..400 {
             step(&mut sim, &[], &mut out);
@@ -491,7 +511,11 @@ fn flipper_stroke_launches_a_resting_ball() {
         for i in 0..400u64 {
             let t = sim.tick() + 1;
             if i == 60 {
-                step(&mut sim, &[button(t, CabinetInput::LeftFlipper, true)], &mut out);
+                step(
+                    &mut sim,
+                    &[button(t, CabinetInput::LeftFlipper, true)],
+                    &mut out,
+                );
                 pressed = true;
             } else {
                 step(&mut sim, &[], &mut out);
@@ -531,7 +555,11 @@ fn trough_switch_drains_the_ball() {
         let t = drained_at.expect("a ball in the trough must drain (ball() -> None)");
         assert!(t < 500, "drained after {t} ticks");
         assert_eq!(sim.balls_in_play(), 0);
-        assert_eq!(sim.switch_hits("trough_1"), Some(1), "drain is a trough hit");
+        assert_eq!(
+            sim.switch_hits("trough_1"),
+            Some(1),
+            "drain is a trough hit"
+        );
         sim.advance(3);
         assert_eq!(sim.snapshot().ball_count, 0);
         // The script saw the trough edge (+1000): drain is detected by the
@@ -672,10 +700,18 @@ fn state_hash_covers_the_pinned_state() {
         for axis in 0..3 {
             let mut p2 = p;
             p2[axis] = f32::from_bits(p2[axis].to_bits() + 1);
-            assert_ne!(hash_with(p2, v, "standard_steel", 0), hb, "position[{axis}] ulp");
+            assert_ne!(
+                hash_with(p2, v, "standard_steel", 0),
+                hb,
+                "position[{axis}] ulp"
+            );
             let mut v2 = v;
             v2[axis] = f32::from_bits(v2[axis].to_bits() + 1);
-            assert_ne!(hash_with(p, v2, "standard_steel", 0), hb, "velocity[{axis}] ulp");
+            assert_ne!(
+                hash_with(p, v2, "standard_steel", 0),
+                hb,
+                "velocity[{axis}] ulp"
+            );
         }
         assert_ne!(hash_with(p, v, "ceramic_powerball", 0), hb, "profile");
         assert_ne!(hash_with(p, v, "standard_steel", 1), hb, "layer");

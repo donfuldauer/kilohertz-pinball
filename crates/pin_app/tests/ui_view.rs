@@ -45,6 +45,8 @@ struct Harness {
     ctx: egui::Context,
     view: MenuView,
     time: f64,
+    size: [u32; 2],
+    ppp: f32,
 }
 
 impl Harness {
@@ -55,12 +57,14 @@ impl Harness {
             ctx,
             view: MenuView::new(),
             time: 0.0,
+            size: SIZE,
+            ppp: 1.0,
         }
     }
 
     fn frame(&mut self, m: &mut MenuState, events: Vec<egui::Event>) -> (egui::FullOutput, Vec<MenuInput>) {
         self.time += 1.0 / 60.0;
-        let raw = raw_input(SIZE, 1.0, events, Some(self.time));
+        let raw = raw_input(self.size, self.ppp, events, Some(self.time));
         self.view.run_frame(&self.ctx, raw, m)
     }
 
@@ -138,11 +142,19 @@ fn closed_menu_draws_nothing() {
 
 #[test]
 fn every_panel_lays_out_inside_the_overlay() {
+    for (size, ppp) in [(SIZE, 1.0), ([800, 600], 1.0), ([2560, 1440], 2.0), ([1080, 1920], 1.5)] {
+        layout_inside(size, ppp);
+    }
+}
+
+fn layout_inside(size: [u32; 2], ppp: f32) {
     let mut h = Harness::new();
+    h.size = size;
+    h.ppp = ppp;
     let mut m = open_menu();
     let screen = egui::Rect::from_min_size(
         egui::Pos2::ZERO,
-        egui::vec2(SIZE[0] as f32, SIZE[1] as f32),
+        egui::vec2(size[0] as f32 / ppp, size[1] as f32 / ppp),
     );
     let panel = menu_panel_rect(screen).expand(1.0);
     m.apply(MenuInput::FocusTable(0));
@@ -167,16 +179,27 @@ fn every_panel_lays_out_inside_the_overlay() {
                 }
             }
             Panel::Input => {
-                for t in ["Input profile", "Live input", "Plunger raw", "Debug wireframe"] {
+                for t in ["Input profile", "Flipper staging", "Live input", "Plunger raw"] {
                     assert!(has_text(&out, t), "{t} missing");
                 }
             }
         }
+        // No widget overflows the panel (the only shape with the full-screen
+        // clip rect is the backdrop, which is the panel itself).
+        for c in &out.shapes {
+            let r = c.shape.visual_bounding_rect();
+            if r.is_positive() {
+                assert!(panel.contains_rect(r), "{p:?}: shape {r:?} outside {panel:?}");
+            }
+        }
         let frame = OverlayFrame::new(&h.ctx, out);
         for prim in &frame.primitives {
+            // What is painted is the mesh scissored by its clip rect: it must
+            // stay inside the overlay panel.
             if let egui::epaint::Primitive::Mesh(mesh) = &prim.primitive {
-                for v in &mesh.vertices {
-                    assert!(panel.contains(v.pos), "{p:?}: vertex {:?} outside", v.pos);
+                let bounds = mesh.calc_bounds().intersect(prim.clip_rect);
+                if bounds.is_positive() {
+                    assert!(panel.contains_rect(bounds), "{p:?}: {bounds:?} outside {panel:?}");
                 }
             }
         }
@@ -265,3 +288,4 @@ fn notices_and_failures_are_shown() {
     out.drop_without_applying_deltas();
     assert!(format!("{:?}", h.view).contains("MenuView"));
 }
+

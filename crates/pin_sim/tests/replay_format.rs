@@ -56,7 +56,10 @@ fn save_and_load_files() {
         Recording::load(&dir.join("missing")),
         Err(ReplayError::Io(_))
     ));
-    assert!(matches!(sample().save(&dir.join("no/such/dir/x")), Err(ReplayError::Io(_))));
+    assert!(matches!(
+        sample().save(&dir.join("no/such/dir/x")),
+        Err(ReplayError::Io(_))
+    ));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -64,7 +67,10 @@ fn save_and_load_files() {
 fn malformed_files_are_rejected() {
     let good = sample().to_bytes();
     assert_eq!(Recording::from_bytes(b""), Err(ReplayError::BadMagic));
-    assert_eq!(Recording::from_bytes(b"KHZREPL"), Err(ReplayError::BadMagic));
+    assert_eq!(
+        Recording::from_bytes(b"KHZREPL"),
+        Err(ReplayError::BadMagic)
+    );
     let mut b = good.clone();
     b[0] = b'X';
     assert_eq!(Recording::from_bytes(&b), Err(ReplayError::BadMagic));
@@ -74,18 +80,27 @@ fn malformed_files_are_rejected() {
     ));
     let mut b = good.clone();
     b[8] = 2;
-    assert_eq!(Recording::from_bytes(&b), Err(ReplayError::UnsupportedVersion(2)));
+    assert_eq!(
+        Recording::from_bytes(&b),
+        Err(ReplayError::UnsupportedVersion(2))
+    );
     assert!(matches!(
         Recording::from_bytes(&good[..good.len() - 1]),
         Err(ReplayError::BadLength { .. })
     ));
     let mut long = good.clone();
     long.push(0);
-    assert!(matches!(Recording::from_bytes(&long), Err(ReplayError::BadLength { .. })));
+    assert!(matches!(
+        Recording::from_bytes(&long),
+        Err(ReplayError::BadLength { .. })
+    ));
     // A huge declared count is a length error, not an allocation.
     let mut b = good.clone();
     b[36..44].copy_from_slice(&u64::MAX.to_le_bytes());
-    assert!(matches!(Recording::from_bytes(&b), Err(ReplayError::BadLength { .. })));
+    assert!(matches!(
+        Recording::from_bytes(&b),
+        Err(ReplayError::BadLength { .. })
+    ));
     let mut b = good.clone();
     let last = b.len() - 1;
     b[last] ^= 1;
@@ -93,15 +108,15 @@ fn malformed_files_are_rejected() {
 
     let event = |i: usize| HEADER_BYTES + i * EVENT_BYTES;
     let cases: [(usize, usize, &[u8]); 9] = [
-        (0, 0, &0u64.to_le_bytes()),          // tick 0
-        (3, 0, &51u64.to_le_bytes()),         // tick > ticks
-        (3, 0, &[6]),                         // tick 50 → 6: decreasing
-        (0, 16, &[2]),                        // unknown kind
-        (0, 17, &[8]),                        // unknown cabinet input
-        (1, 17, &[5]),                        // unknown axis
-        (0, 20, &2u32.to_le_bytes()),         // button value not 0/1
+        (0, 0, &0u64.to_le_bytes()),                // tick 0
+        (3, 0, &51u64.to_le_bytes()),               // tick > ticks
+        (3, 0, &[6]),                               // tick 50 → 6: decreasing
+        (0, 16, &[2]),                              // unknown kind
+        (0, 17, &[8]),                              // unknown cabinet input
+        (1, 17, &[5]),                              // unknown axis
+        (0, 20, &2u32.to_le_bytes()),               // button value not 0/1
         (1, 20, &f32::NAN.to_bits().to_le_bytes()), // non-finite axis
-        (0, 18, &[1]),                        // reserved byte
+        (0, 18, &[1]),                              // reserved byte
     ];
     for (i, (ev, off, patch)) in cases.iter().enumerate() {
         let mut b = good.clone();
@@ -117,10 +132,16 @@ fn malformed_files_are_rejected() {
     for e in [
         ReplayError::BadMagic,
         ReplayError::UnsupportedVersion(9),
-        ReplayError::BadLength { expected: 1, actual: 2 },
+        ReplayError::BadLength {
+            expected: 1,
+            actual: 2,
+        },
         ReplayError::Checksum,
         ReplayError::BadEvent { index: 3 },
-        ReplayError::TableMismatch { recorded: 1, bundle: 2 },
+        ReplayError::TableMismatch {
+            recorded: 1,
+            bundle: 2,
+        },
         ReplayError::Io("x".into()),
     ] {
         assert!(!e.to_string().is_empty());

@@ -228,7 +228,7 @@ impl SettingRow {
             SettingRow::NudgeDeadzone => "Nudge deadzone",
             SettingRow::NudgeMax => "Nudge max",
             SettingRow::Wireframe => "Debug wireframe",
-            SettingRow::DecodedAudioBudget => "Audio decode budget (MiB, next load)",
+            SettingRow::DecodedAudioBudget => "Audio decode budget",
         }
     }
 

@@ -246,7 +246,10 @@ fn acrylic_two_pass_is_independent_of_triangle_order() {
     };
     let lights = [PointLight::new([-1.5, -2.5, 2.0], [1.0; 3], 12.0, 50.0)];
     let render = |r: &mut PbrRenderer, mesh| {
-        let draws = [red, DrawItem::new(mesh, IDENTITY, MaterialKind::ClearAcrylic)];
+        let draws = [
+            red,
+            DrawItem::new(mesh, IDENTITY, MaterialKind::ClearAcrylic),
+        ];
         let frame = FrameDesc::new(&cam, &lights, &draws);
         r.render_to_image(ctx, &frame).unwrap()
     };
@@ -309,7 +312,10 @@ fn msaa_hook_softens_edges_and_keeps_the_interior() {
     let (p4, t4) = edge_steps(&four);
     println!("edge pixels with partial coverage: 1x {p1}, 4x {p4}; coverage {t1} vs {t4}");
     assert!(p1 < 10, "no MSAA should give hard edges ({p1})");
-    assert!(p4 > 100, "MSAA 4x gives partial coverage at the edges ({p4})");
+    assert!(
+        p4 > 100,
+        "MSAA 4x gives partial coverage at the edges ({p4})"
+    );
     // Same total coverage (area) within 1 %, same interior.
     assert!((t1 - t4).abs() < 0.01 * t1);
     assert_eq!(one.at(64, 64), four.at(64, 64));
@@ -369,7 +375,9 @@ fn external_targets_and_reflection_bindings() {
         bind_group: &bind,
         draw_layers: &[NO_PROBE],
     };
-    let same = r.render_reflected_to_image(ctx, &frame, Some(&none)).unwrap();
+    let same = r
+        .render_reflected_to_image(ctx, &frame, Some(&none))
+        .unwrap();
     assert_eq!(same.pixels, plain.pixels);
     // Layer 1 of an all-black atlas: the mirror term goes black, the
     // highlight from the light stays.
@@ -389,26 +397,27 @@ fn external_targets_and_reflection_bindings() {
         bind_group: &bind,
         draw_layers: &[1000],
     };
-    let clamped = r.render_reflected_to_image(ctx, &frame, Some(&far)).unwrap();
+    let clamped = r
+        .render_reflected_to_image(ctx, &frame, Some(&far))
+        .unwrap();
     assert_eq!(clamped.pixels, dark.pixels);
 
     // External target: same image as the main target at the same size.
     let mk = |format, usage| {
-        device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: None,
-                size: wgpu::Extent3d {
-                    width: N,
-                    height: N,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            })
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: N,
+                height: N,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        })
     };
     let color = mk(
         HDR_FORMAT,
@@ -478,12 +487,11 @@ fn external_targets_and_reflection_bindings() {
     for (x, y) in [(64u32, 64u32), (50, 70), (80, 40), (5, 5)] {
         let i = ((y * N + x) * 8) as usize;
         let want = plain.at(x, y);
-        for k in 0..3 {
+        for (k, &w) in want.iter().take(3).enumerate() {
             let got = half(i + 2 * k);
             assert!(
-                (got - want[k]).abs() <= 1e-3 * (1.0 + want[k]),
-                "external target ({x},{y}) channel {k}: {got} vs {}",
-                want[k]
+                (got - w).abs() <= 1e-3 * (1.0 + w),
+                "external target ({x},{y}) channel {k}: {got} vs {w}"
             );
         }
     }

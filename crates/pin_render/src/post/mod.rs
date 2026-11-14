@@ -281,7 +281,9 @@ pub fn screen_motion(
 ) -> Option<ScreenMotion> {
     let shutter = finite_non_negative(shutter_s);
     let half = |s: f32| {
-        core::array::from_fn::<f32, 3, _>(|k| ball.position[k] + s * 0.5 * shutter * ball.velocity[k])
+        core::array::from_fn::<f32, 3, _>(|k| {
+            ball.position[k] + s * 0.5 * shutter * ball.velocity[k]
+        })
     };
     let (center, depth) = project_px(camera, ball.position, width, height)?;
     let (a, _) = project_px(camera, half(-1.0), width, height)?;

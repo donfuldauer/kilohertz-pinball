@@ -38,7 +38,10 @@ fn ten_thousand_tick_recording_replays_identically_ten_times() {
     assert!(rec.events.len() >= 50, "{} events", rec.events.len());
     assert!(sim.switch_hits("left_flipper").unwrap() >= 25);
     assert!(sim.switch_hits("left_eos").unwrap() >= 25, "flippers fired");
-    assert!(sim.switch_hits("right_eos").unwrap() >= 20, "flippers fired");
+    assert!(
+        sim.switch_hits("right_eos").unwrap() >= 20,
+        "flippers fired"
+    );
     assert!(sim.score(1).unwrap() > 0, "the script scored");
     assert!(sim.counters().balls_drained >= 1, "balls moved and drained");
     assert!(!sim.script_faulted());
@@ -54,7 +57,10 @@ fn ten_thousand_tick_recording_replays_identically_ten_times() {
             .collect::<Vec<u64>>()
     });
     for (i, h) in hashes.iter().enumerate() {
-        assert_eq!(*h, recorded_hash, "replay {i}: {h:016x} != {recorded_hash:016x}");
+        assert_eq!(
+            *h, recorded_hash,
+            "replay {i}: {h:016x} != {recorded_hash:016x}"
+        );
     }
 }
 

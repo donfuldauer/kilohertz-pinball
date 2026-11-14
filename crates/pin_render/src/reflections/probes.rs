@@ -97,6 +97,10 @@ impl OctahedralProbes {
         config: ProbeConfig,
     ) -> Result<OctahedralProbes, GpuError> {
         let device = ctx.device();
+        // A shader or pipeline validation error becomes a `GpuError`
+        // instead of reaching wgpu's default (panicking) handler; dropping
+        // the guard on an early return pops the scope.
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let atlas = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("probe atlas"),
             size: wgpu::Extent3d {
@@ -289,6 +293,11 @@ impl OctahedralProbes {
             multiview_mask: None,
             cache: None,
         });
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            return Err(GpuError::InvalidArgument(format!(
+                "probe shaders/pipelines: {e}"
+            )));
+        }
         Ok(OctahedralProbes {
             config,
             scheduler: ProbeScheduler::new(config.budget),
@@ -359,11 +368,11 @@ impl OctahedralProbes {
                 clear: [0.0; 4],
                 ..*frame
             };
-            let mut encoder = ctx
-                .device()
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("probe capture"),
-                });
+            let mut encoder =
+                ctx.device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("probe capture"),
+                    });
             pbr.encode_to_target(
                 &mut encoder,
                 &face_frame,

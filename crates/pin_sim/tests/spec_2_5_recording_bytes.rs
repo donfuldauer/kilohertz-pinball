@@ -21,10 +21,18 @@ fn build(seed: u64, table_hash: u64, base_ticks: u64, raw: &[RawEvent]) -> Recor
         let ts = (tick1 - 1) * TICK_NS + 1 + sub % TICK_NS;
         let ev = if is_axis {
             let v = f32::from_bits(bits);
-            let v = if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.25 };
+            let v = if v.is_finite() {
+                v.clamp(-1.0, 1.0)
+            } else {
+                0.25
+            };
             InputEvent::axis(ts, CabinetAxis::ALL[idx % CabinetAxis::ALL.len()], v)
         } else {
-            InputEvent::button(ts, CabinetInput::ALL[idx % CabinetInput::ALL.len()], pressed)
+            InputEvent::button(
+                ts,
+                CabinetInput::ALL[idx % CabinetInput::ALL.len()],
+                pressed,
+            )
         };
         events.push((tick1, ev));
     }
@@ -60,8 +68,14 @@ fn assert_same(a: &Recording, b: &Recording) {
         assert_eq!(x.1.timestamp_ns, y.1.timestamp_ns, "event {i}: timestamp");
         match (x.1.kind, y.1.kind) {
             (
-                InputEventKind::Axis { axis: a1, value: v1 },
-                InputEventKind::Axis { axis: a2, value: v2 },
+                InputEventKind::Axis {
+                    axis: a1,
+                    value: v1,
+                },
+                InputEventKind::Axis {
+                    axis: a2,
+                    value: v2,
+                },
             ) => {
                 assert_eq!(a1, a2, "event {i}: axis");
                 assert_eq!(v1.to_bits(), v2.to_bits(), "event {i}: axis value bits");
@@ -127,7 +141,15 @@ fn every_cabinet_input_and_axis_round_trips() {
         }
     }
     for axis in CabinetAxis::ALL {
-        for value in [0.0f32, -0.0, 1.0, -1.0, 0.333_333_34, f32::MIN_POSITIVE, 1.0e-40] {
+        for value in [
+            0.0f32,
+            -0.0,
+            1.0,
+            -1.0,
+            0.333_333_34,
+            f32::MIN_POSITIVE,
+            1.0e-40,
+        ] {
             events.push((tick, InputEvent::axis(tick * TICK_NS, axis, value)));
             tick += 1;
         }
@@ -202,7 +224,14 @@ fn every_single_byte_corruption_is_handled_without_panic() {
     let r = sample();
     let bytes = r.to_bytes();
     for i in 0..bytes.len() {
-        for v in [0x00u8, 0xFF, 0x80, 0x7F, bytes[i].wrapping_add(1), bytes[i] ^ 0x55] {
+        for v in [
+            0x00u8,
+            0xFF,
+            0x80,
+            0x7F,
+            bytes[i].wrapping_add(1),
+            bytes[i] ^ 0x55,
+        ] {
             let mut bad = bytes.clone();
             bad[i] = v;
             if let Ok(parsed) = Recording::from_bytes(&bad) {

@@ -26,7 +26,15 @@ pub struct SceneBall {
 pub struct RenderedFrame {
     /// The display image (after the post chain).
     pub ldr: LdrImage,
-    /// The PBR output with reflections, before post (linear).
+    /// The PBR output with reflections, before post (linear). Raw: specular
+    /// peaks are not firefly-clamped here (a roughness-0.06 chrome
+    /// highlight reaches ~1.5·10⁴), only the f16 range is. The clamp
+    /// ([`BloomConfig::firefly_clamp`](super::BloomConfig::firefly_clamp))
+    /// and tone mapping happen in the [`PostChain`]; anything that shows
+    /// or encodes the frame (display, screenshots, 8-bit goldens) must go
+    /// through the chain ([`ldr`](Self::ldr), or
+    /// [`PostChain::render_to_hdr`] for a linear composite). Use this field
+    /// only for analytic radiance checks.
     pub hdr: HdrImage,
     /// Reflection budget counters after this frame.
     pub probes: ProbeStats,

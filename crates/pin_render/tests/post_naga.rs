@@ -85,7 +85,10 @@ fn shaders_match_the_cpu_references() {
         "2.51 * v + 0.03",
         "2.43 * v + 0.59) + 0.14",
         "vec3<f32>(0.2126, 0.7152, 0.0722)",
-        &format!("MAX_BLUR_BALLS: u32 = {}u", pin_render::post::MAX_BLUR_BALLS),
+        &format!(
+            "MAX_BLUR_BALLS: u32 = {}u",
+            pin_render::post::MAX_BLUR_BALLS
+        ),
         &format!("array<BlurBall, {}>", pin_render::post::MAX_BLUR_BALLS),
     ] {
         assert!(post.contains(needle), "post shader lacks `{needle}`");

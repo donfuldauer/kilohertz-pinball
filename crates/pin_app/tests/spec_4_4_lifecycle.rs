@@ -2,6 +2,7 @@
 //!
 //! Idle → LoadRequested(path) → Loading → Loaded | Failed(error) → Idle; a
 //! second request while a load is pending is refused (published choice).
+#![allow(clippy::field_reassign_with_default, clippy::unnecessary_cast)]
 
 #[path = "fixtures/spec_4_4/support.rs"]
 mod support;
@@ -47,7 +48,10 @@ fn successful_load_walks_the_whole_lifecycle() {
     assert_eq!(*m.load_state(), TableLoadState::LoadRequested(path.into()));
     assert!(m.load_state().is_busy());
     // Peeking at the command stream does not start the load.
-    assert_eq!(load_commands(m.pending_commands()), vec![path.to_path_buf()]);
+    assert_eq!(
+        load_commands(m.pending_commands()),
+        vec![path.to_path_buf()]
+    );
     assert_eq!(*m.load_state(), TableLoadState::LoadRequested(path.into()));
 
     let cmds = m.drain_commands();
@@ -100,7 +104,11 @@ fn failed_load_reports_the_error_and_keeps_the_menu_open() {
     );
     assert!(!m.load_state().is_busy());
     assert!(m.is_open());
-    assert_eq!(*m.config(), before, "a failed load must not change last_table");
+    assert_eq!(
+        *m.config(),
+        before,
+        "a failed load must not change last_table"
+    );
     assert!(load_commands(m.pending_commands()).is_empty());
     assert!(!m.pending_commands().contains(&UiCommand::MenuClosed));
 
@@ -117,20 +125,17 @@ fn second_request_while_pending_is_refused() {
 
     m.request_load(first).unwrap();
     // While LoadRequested.
-    assert_eq!(
-        m.request_load(second),
-        Err(LoadRefusal::Busy(first.into()))
-    );
+    assert_eq!(m.request_load(second), Err(LoadRefusal::Busy(first.into())));
     assert_eq!(m.request_load(first), Err(LoadRefusal::Busy(first.into())));
     assert_eq!(*m.load_state(), TableLoadState::LoadRequested(first.into()));
-    assert_eq!(load_commands(m.pending_commands()), vec![first.to_path_buf()]);
+    assert_eq!(
+        load_commands(m.pending_commands()),
+        vec![first.to_path_buf()]
+    );
 
     // While Loading.
     m.drain_commands();
-    assert_eq!(
-        m.request_load(second),
-        Err(LoadRefusal::Busy(first.into()))
-    );
+    assert_eq!(m.request_load(second), Err(LoadRefusal::Busy(first.into())));
     assert_eq!(*m.load_state(), TableLoadState::Loading(first.into()));
     assert!(
         load_commands(m.pending_commands()).is_empty(),

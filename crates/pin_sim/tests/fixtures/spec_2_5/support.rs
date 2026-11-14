@@ -95,7 +95,10 @@ pub fn bundle_with_wasm(tag: &str, wat: &str) -> PathBuf {
     assert!(toml.contains("script_entry = \"rules.lua\""));
     std::fs::write(
         dir.join("table.toml"),
-        toml.replace("script_entry = \"rules.lua\"", "script_entry = \"rules.wasm\""),
+        toml.replace(
+            "script_entry = \"rules.lua\"",
+            "script_entry = \"rules.wasm\"",
+        ),
     )
     .unwrap();
     dir

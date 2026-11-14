@@ -22,7 +22,12 @@ use support::*;
 #[test]
 fn physics_edge_of_tick_k_is_delivered_in_tick_k_plus_1_before_on_tick() {
     on_sim_thread(|| {
-        for (y0, vy) in [(0.90f32, -0.4f32), (0.93, -1.0), (0.885, -0.05), (0.95, -2.5)] {
+        for (y0, vy) in [
+            (0.90f32, -0.4f32),
+            (0.93, -1.0),
+            (0.885, -0.05),
+            (0.95, -2.5),
+        ] {
             let mut sim = load();
             // lane_opto: centre (257, 850) mm, radius 20 mm.
             sim.spawn_ball("standard_steel", [0.257, y0, R], [0.0, vy, 0.0])
@@ -70,7 +75,11 @@ fn forced_switch_edge_is_delivered_at_the_next_tick() {
             sim.advance(t0);
             sim.set_switch("lane_opto", true).unwrap();
             if t0 > 0 {
-                assert_eq!(sim.score(P_LANE_AT), Some(-1), "not delivered before a tick runs");
+                assert_eq!(
+                    sim.score(P_LANE_AT),
+                    Some(-1),
+                    "not delivered before a tick runs"
+                );
             }
             sim.advance(1);
             assert_eq!(
@@ -87,7 +96,11 @@ fn forced_switch_edge_is_delivered_at_the_next_tick() {
         sim.set_switch("action", true).unwrap();
         sim.advance(5);
         assert_eq!(sim.score(P_ACTION_AT), Some(20));
-        assert_eq!(sim.switch_closed("action"), Some(true), "a forced cabinet switch stays");
+        assert_eq!(
+            sim.switch_closed("action"),
+            Some(true),
+            "a forced cabinet switch stays"
+        );
         sim.set_switch("action", false).unwrap();
         sim.advance(1);
         assert_eq!(sim.score(P_ACTION_AT), Some(25));
@@ -109,7 +122,11 @@ fn input_event_updates_the_cabinet_switch_in_its_tick() {
         }
         assert_eq!(sim.switch_closed("action"), Some(false));
         // Tick 31 carries the press.
-        step(&mut sim, &[button(31, CabinetInput::Action, true)], &mut out);
+        step(
+            &mut sim,
+            &[button(31, CabinetInput::Action, true)],
+            &mut out,
+        );
         assert_eq!(sim.tick(), 31);
         assert_eq!(sim.switch_closed("action"), Some(true));
         assert_eq!(sim.switch_hits("action"), Some(1));
@@ -124,7 +141,11 @@ fn input_event_updates_the_cabinet_switch_in_its_tick() {
         for _ in 33..40 {
             step(&mut sim, &[], &mut out);
         }
-        step(&mut sim, &[button(40, CabinetInput::Action, false)], &mut out);
+        step(
+            &mut sim,
+            &[button(40, CabinetInput::Action, false)],
+            &mut out,
+        );
         assert_eq!(sim.switch_closed("action"), Some(false));
         step(&mut sim, &[], &mut out);
         let at2 = sim.score(P_ACTION_AT).unwrap();
@@ -211,7 +232,11 @@ fn command_queued_in_a_tick_reaches_physics_in_the_same_tick() {
         assert_eq!(sim.balls_in_play(), 0);
         // `start` closed -> on_switch spawns from dispenser `feed`.
         sim.set_switch("start", true).unwrap();
-        assert_eq!(sim.balls_in_play(), 0, "nothing happens until the tick runs");
+        assert_eq!(
+            sim.balls_in_play(),
+            0,
+            "nothing happens until the tick runs"
+        );
         sim.advance(1); // tick 101: edge delivered, spawn queued, applied, stepped
         assert_eq!(
             sim.balls_in_play(),
@@ -220,7 +245,10 @@ fn command_queued_in_a_tick_reaches_physics_in_the_same_tick() {
         );
         let snap = sim.snapshot();
         assert_eq!(snap.tick, 101);
-        assert_eq!(snap.ball_count, 1, "... and published in that tick's snapshot");
+        assert_eq!(
+            snap.ball_count, 1,
+            "... and published in that tick's snapshot"
+        );
         let b = snap.balls()[0];
         assert_eq!(b.layer, 0);
         // Stepped once: exit position + 1 ms of exit velocity (gravity adds
@@ -245,12 +273,17 @@ fn command_queued_in_a_tick_reaches_physics_in_the_same_tick() {
         assert!((b.velocity_m_s[1] - FEED_VEL[1]).abs() < 0.01);
         // The dispenser's first content is standard_steel.
         let mut probe = load();
-        let h = probe.spawn_ball("standard_steel", [0.1, 0.5, R], [0.0; 3]).unwrap();
+        let h = probe
+            .spawn_ball("standard_steel", [0.1, 0.5, R], [0.0; 3])
+            .unwrap();
         assert_eq!(b.profile, probe.ball(h).unwrap().profile);
 
         // The script's RNG draw on `start` was reported in the same tick.
         let r = sim.score(P_RNG).unwrap();
-        assert!((1..=1_000_000).contains(&r), "pinball.random(1000000) = {r}");
+        assert!(
+            (1..=1_000_000).contains(&r),
+            "pinball.random(1000000) = {r}"
+        );
     });
 }
 
@@ -313,6 +346,9 @@ fn script_rng_is_the_seeded_sim_rng() {
         assert_eq!(a, draw(1));
         assert_ne!(a, draw(2));
         assert_ne!(a, draw(DEFAULT_SEED));
-        assert!(a.windows(2).all(|w| w[1] > w[0]), "four draws accumulate: {a:?}");
+        assert!(
+            a.windows(2).all(|w| w[1] > w[0]),
+            "four draws accumulate: {a:?}"
+        );
     });
 }

@@ -12,8 +12,8 @@
 use pin_render::gpu::{GpuContext, context_for_tests};
 use pin_render::pbr::math::{IDENTITY, scale_translation};
 use pin_render::pbr::{
-    DrawItem, Environment, FrameDesc, HdrImage, MaterialKind, MaterialParams, MeshGeometry,
-    MeshId, NO_PROBE, PbrCamera, PbrRenderer, PointLight,
+    DrawItem, Environment, FrameDesc, HdrImage, MaterialKind, MaterialParams, MeshGeometry, MeshId,
+    NO_PROBE, PbrCamera, PbrRenderer, PointLight,
 };
 use pin_render::post::{FrameRenderer, LdrImage, PostConfig, SceneBall};
 use pin_render::reflections::{
@@ -50,8 +50,14 @@ pub fn image_dir() -> PathBuf {
 
 fn save_ldr(name: &str, img: &LdrImage) {
     let path = image_dir().join(format!("{name}.png"));
-    image::save_buffer(&path, &img.to_rgba8(), img.width, img.height, image::ColorType::Rgba8)
-        .unwrap();
+    image::save_buffer(
+        &path,
+        &img.to_rgba8(),
+        img.width,
+        img.height,
+        image::ColorType::Rgba8,
+    )
+    .unwrap();
     println!("[{name}] image: {}", path.display());
 }
 
@@ -66,8 +72,14 @@ fn save_hdr(name: &str, img: &HdrImage, scale: f32) {
             .collect(),
     };
     let path = image_dir().join(format!("{name}.png"));
-    image::save_buffer(&path, &scaled.to_srgb8(), img.width, img.height, image::ColorType::Rgba8)
-        .unwrap();
+    image::save_buffer(
+        &path,
+        &scaled.to_srgb8(),
+        img.width,
+        img.height,
+        image::ColorType::Rgba8,
+    )
+    .unwrap();
     println!("[{name}] image: {}", path.display());
 }
 
@@ -208,7 +220,11 @@ fn reflection_hit(cam: &PbrCamera, x: u32, y: u32, margin: f32) -> Option<Option
         return None;
     }
     let t = -b - (b * b - c).sqrt();
-    let p = [cam.eye[0] + t * d[0], cam.eye[1] + t * d[1], cam.eye[2] + t * d[2]];
+    let p = [
+        cam.eye[0] + t * d[0],
+        cam.eye[1] + t * d[1],
+        cam.eye[2] + t * d[2],
+    ];
     let n = norm(sub(p, BALL));
     let k = 2.0 * dot(d, n);
     let r = [d[0] - k * n[0], d[1] - k * n[1], d[2] - k * n[2]];
@@ -278,7 +294,12 @@ fn chrome_ball_reflects_the_lit_red_insert() {
     let sc = insert_scene(sphere, quad);
     let frame = FrameDesc::new(&cam, &sc.lights, &sc.draws);
     let out = fr.render(ctx, &frame, &scene_balls()).unwrap();
-    assert!(out.hdr.pixels.iter().all(|p| p.iter().all(|c| c.is_finite() && *c >= 0.0)));
+    assert!(
+        out.hdr
+            .pixels
+            .iter()
+            .all(|p| p.iter().all(|c| c.is_finite() && *c >= 0.0))
+    );
     let (red, nr, ctl, nc) = regions(&out.hdr, &cam);
     println!("probe: insert region {red:.3?} over {nr} px; control {ctl:.3?} over {nc} px");
     assert!(nr >= 30, "expected-red region has only {nr} px");
@@ -288,7 +309,10 @@ fn chrome_ball_reflects_the_lit_red_insert() {
         red[0] > 4.0 * red[1].max(red[2]),
         "insert reflection not red: {red:?}"
     );
-    assert!(ctl[0] < 1.5 * ctl[1].max(1e-3), "control region red: {ctl:?}");
+    assert!(
+        ctl[0] < 1.5 * ctl[1].max(1e-3),
+        "control region red: {ctl:?}"
+    );
     assert_eq!(out.probes.total_updates, 1);
 
     // Without probes the same pixels show the grey studio environment.
@@ -340,7 +364,10 @@ fn probe_map_holds_the_surroundings() {
         .unwrap();
     assert_eq!(probes.draw_layers(), &[0, NO_PROBE, NO_PROBE]);
     let map = probes.read_probe(ctx, 0).unwrap();
-    assert_eq!((map.width, map.height), (PROBE_RESOLUTION, PROBE_RESOLUTION));
+    assert_eq!(
+        (map.width, map.height),
+        (PROBE_RESOLUTION, PROBE_RESOLUTION)
+    );
     save_hdr("reflections_probe_map", &map, 1.0);
     let texel = |dir: V3| {
         let uv = oct_encode(dir);
@@ -348,10 +375,7 @@ fn probe_map_holds_the_surroundings() {
         let y = ((uv[1] * PROBE_RESOLUTION as f32) as u32).min(PROBE_RESOLUTION - 1);
         map.region_mean(x.saturating_sub(1), y.saturating_sub(1), x + 2, y + 2)
     };
-    let to_insert = norm(sub(
-        [0.5 * (INSERT[0] + INSERT[1]), 0.0, INSERT_Z],
-        BALL,
-    ));
+    let to_insert = norm(sub([0.5 * (INSERT[0] + INSERT[1]), 0.0, INSERT_Z], BALL));
     let red = texel(to_insert);
     println!("probe towards the insert {red:?}");
     assert!(red[0] > 2.0 && red[0] > 5.0 * red[1], "{red:?}");
@@ -362,7 +386,10 @@ fn probe_map_holds_the_surroundings() {
     }
     let down = texel([0.0, 0.0, -1.0]);
     println!("probe up {up:?}, down {down:?}");
-    assert!((down[0] - down[1]).abs() < 0.05 * down[0].max(1e-3), "floor is grey: {down:?}");
+    assert!(
+        (down[0] - down[1]).abs() < 0.05 * down[0].max(1e-3),
+        "floor is grey: {down:?}"
+    );
     assert!(down[0] > 0.01, "the lit floor is below the ball: {down:?}");
     assert!(probes.read_probe(ctx, MAX_PROBES).is_err());
 }
@@ -428,7 +455,11 @@ fn six_balls_stay_within_the_probe_budget() {
     assert_eq!(st.total_updates, total);
     assert_eq!(total, 2 * frames);
     assert_eq!(st.max_frame_updates, 2);
-    assert!(st.max_age_ever <= 2, "max age {} > ⌈6/2⌉ − 1", st.max_age_ever);
+    assert!(
+        st.max_age_ever <= 2,
+        "max age {} > ⌈6/2⌉ − 1",
+        st.max_age_ever
+    );
     assert_eq!(st.balls, 6);
 }
 
@@ -446,7 +477,13 @@ fn uncaptured_balls_sample_the_nearest_probe() {
     ];
     let draws: Vec<DrawItem> = positions
         .iter()
-        .map(|p| DrawItem::new(sphere, scale_translation(1.0, *p), MaterialKind::ChromeSteel))
+        .map(|p| {
+            DrawItem::new(
+                sphere,
+                scale_translation(1.0, *p),
+                MaterialKind::ChromeSteel,
+            )
+        })
         .collect();
     // Draw order reversed against ball order.
     let balls: Vec<ReflectiveBall> = positions
@@ -526,7 +563,10 @@ fn neighbouring_balls_reflect_each_other_deterministically() {
     let frame = FrameDesc::new(&cam, &lights, &draws);
     let first = fr.render(ctx, &frame, &balls).unwrap();
     let second = fr.render(ctx, &frame, &balls).unwrap();
-    assert_eq!(first.hdr.pixels, second.hdr.pixels, "same frame, same image");
+    assert_eq!(
+        first.hdr.pixels, second.hdr.pixels,
+        "same frame, same image"
+    );
     assert_eq!(first.ldr, second.ldr);
     assert_eq!(second.probes.total_updates, 4);
     save_ldr("reflections_two_balls", &second.ldr);

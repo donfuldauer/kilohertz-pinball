@@ -190,9 +190,7 @@ fn uncaptured_balls_reuse_the_nearest_probe() {
 #[test]
 fn balls_past_max_probes_share_the_nearest_slot() {
     let mut s = ProbeScheduler::new(PROBE_BUDGET);
-    let balls: Vec<[f32; 3]> = (0..MAX_PROBES + 2)
-        .map(|i| [i as f32, 0.0, 0.0])
-        .collect();
+    let balls: Vec<[f32; 3]> = (0..MAX_PROBES + 2).map(|i| [i as f32, 0.0, 0.0]).collect();
     for _ in 0..MAX_PROBES {
         assert!(s.schedule(&balls).iter().all(|&i| i < MAX_PROBES));
     }

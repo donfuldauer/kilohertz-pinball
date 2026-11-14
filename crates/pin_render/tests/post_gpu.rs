@@ -37,8 +37,14 @@ fn image_dir() -> PathBuf {
 
 fn save_ldr(name: &str, img: &LdrImage) {
     let path = image_dir().join(format!("{name}.png"));
-    image::save_buffer(&path, &img.to_rgba8(), img.width, img.height, image::ColorType::Rgba8)
-        .unwrap();
+    image::save_buffer(
+        &path,
+        &img.to_rgba8(),
+        img.width,
+        img.height,
+        image::ColorType::Rgba8,
+    )
+    .unwrap();
     println!("[{name}] image: {}", path.display());
 }
 
@@ -111,7 +117,14 @@ fn aces_matches_the_reference_fit_at_sample_points() {
         let mut c = chain(ctx, 16, 4, cfg);
         let cam = camera();
         let out = c
-            .render_to_ldr(ctx, &input.view, &PostFrame { camera: &cam, balls: &[] })
+            .render_to_ldr(
+                ctx,
+                &input.view,
+                &PostFrame {
+                    camera: &cam,
+                    balls: &[],
+                },
+            )
             .unwrap();
         for (x, &s) in samples.iter().enumerate() {
             let want = srgb8(aces_film(s * exposure));
@@ -138,11 +151,18 @@ fn aces_matches_the_reference_fit_at_sample_points() {
 fn neutral_chain_is_the_identity_and_formats_agree() {
     let Some(ctx) = ctx() else { return };
     let img = flat(40, 24, |x, y| {
-        [x as f32 / 40.0, y as f32 / 24.0, 0.25 + 0.5 * ((x + y) % 2) as f32]
+        [
+            x as f32 / 40.0,
+            y as f32 / 24.0,
+            0.25 + 0.5 * ((x + y) % 2) as f32,
+        ]
     });
     let input = HdrInput::from_image(ctx, &img).unwrap();
     let cam = camera();
-    let frame = PostFrame { camera: &cam, balls: &[] };
+    let frame = PostFrame {
+        camera: &cam,
+        balls: &[],
+    };
     let mut c = chain(ctx, 40, 24, PostConfig::neutral());
     let hdr = c.render_to_hdr(ctx, &input.view, &frame).unwrap();
     for (a, b) in hdr.pixels.iter().zip(&img.pixels) {
@@ -176,15 +196,17 @@ fn neutral_chain_is_the_identity_and_formats_agree() {
     assert!(c.resize(0, 3).is_err());
     c.resize(20, 10).unwrap();
     assert_eq!(c.size(), (20, 10));
-    assert!(HdrInput::from_image(
-        ctx,
-        &HdrImage {
-            width: 2,
-            height: 2,
-            pixels: vec![]
-        }
-    )
-    .is_err());
+    assert!(
+        HdrInput::from_image(
+            ctx,
+            &HdrImage {
+                width: 2,
+                height: 2,
+                pixels: vec![]
+            }
+        )
+        .is_err()
+    );
 }
 
 /// A 4×4 spot centred on the pixel corner (64, 64), which every bloom mip
@@ -205,7 +227,10 @@ fn spot_image(value: f32, background: f32) -> HdrImage {
 fn bloom_conserves_energy_and_is_centred() {
     let Some(ctx) = ctx() else { return };
     let cam = camera();
-    let frame = PostFrame { camera: &cam, balls: &[] };
+    let frame = PostFrame {
+        camera: &cam,
+        balls: &[],
+    };
     let img = spot_image(40.0, 0.1);
     let input = HdrInput::from_image(ctx, &img).unwrap();
     let mut cfg = PostConfig::neutral();
@@ -224,7 +249,10 @@ fn bloom_conserves_energy_and_is_centred() {
         .map(|(x, y)| f64::from(luminance(rgb(out.at(x, y)))))
         .sum();
     let spot_before = 16.0 * f64::from(luminance([40.0; 3]));
-    println!("spot lost {:.3}, expected about {moved:.3}", spot_before - spot_after);
+    println!(
+        "spot lost {:.3}, expected about {moved:.3}",
+        spot_before - spot_after
+    );
     assert!(spot_before - spot_after > 0.6 * moved && spot_before - spot_after < moved);
     // Far below the threshold and far from the spot: unchanged.
     for (x, y) in [(2, 2), (125, 3), (5, 120)] {
@@ -243,14 +271,20 @@ fn bloom_conserves_energy_and_is_centred() {
         println!("halo at {d}px: {s:?}");
         assert!(mean > 0.1 + 1e-3, "no halo at {d}px");
         for v in s {
-            assert!((v - mean).abs() < 0.1 * (mean - 0.1) + 2e-3, "asymmetric halo at {d}: {s:?}");
+            assert!(
+                (v - mean).abs() < 0.1 * (mean - 0.1) + 2e-3,
+                "asymmetric halo at {d}: {s:?}"
+            );
         }
     }
     // Smooth: no blocky steps along a row (second difference small).
     let row: Vec<f32> = (40..90).map(|x| out.at(x, 70)[0]).collect();
     for w in row.windows(3) {
         let dd = (w[0] - 2.0 * w[1] + w[2]).abs();
-        assert!(dd < 0.05 + 0.2 * w[1].abs().min(1.0), "step in halo row: {w:?}");
+        assert!(
+            dd < 0.05 + 0.2 * w[1].abs().min(1.0),
+            "step in halo row: {w:?}"
+        );
     }
 
     // Whole-image bloom (threshold 0) conserves energy too.
@@ -274,8 +308,17 @@ fn rgb(p: [f32; 4]) -> [f32; 3] {
 fn firefly_clamp_bounds_the_halo() {
     let Some(ctx) = ctx() else { return };
     let cam = camera();
-    let frame = PostFrame { camera: &cam, balls: &[] };
-    let img = flat(N, N, |x, y| if (x, y) == (64, 64) { [3000.0; 3] } else { [0.0; 3] });
+    let frame = PostFrame {
+        camera: &cam,
+        balls: &[],
+    };
+    let img = flat(N, N, |x, y| {
+        if (x, y) == (64, 64) {
+            [3000.0; 3]
+        } else {
+            [0.0; 3]
+        }
+    });
     let input = HdrInput::from_image(ctx, &img).unwrap();
     let mut cfg = PostConfig::neutral();
     cfg.bloom = BloomConfig::default();
@@ -297,7 +340,10 @@ fn firefly_clamp_bounds_the_halo() {
 fn bloom_matches_the_golden_image() {
     let Some(ctx) = ctx() else { return };
     let cam = camera();
-    let frame = PostFrame { camera: &cam, balls: &[] };
+    let frame = PostFrame {
+        camera: &cam,
+        balls: &[],
+    };
     let img = flat(N, N, |x, y| {
         let d2 = (x as f32 - 50.0).powi(2) + (y as f32 - 70.0).powi(2);
         let e2 = (x as f32 - 90.0).powi(2) + (y as f32 - 40.0).powi(2);
@@ -347,7 +393,11 @@ fn check_golden(name: &str, img: &LdrImage) {
     // Energy of the 8-bit images (linearised) must agree too.
     let lin = |v: u8| {
         let s = f64::from(v) / 255.0;
-        if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
     };
     let (mut eg, mut ew) = (0.0f64, 0.0f64);
     for (g, w) in got.chunks(4).zip(want.chunks(4)) {
@@ -364,17 +414,30 @@ fn check_golden(name: &str, img: &LdrImage) {
     println!(
         "[{name}] snapshot: mean |diff| {mean:.3}/255, {far} px off by > 16/255, energy {eg:.2} vs {ew:.2}"
     );
-    assert!(mean <= 3.0 && far * 50 <= px, "[{name}] differs from the golden");
-    assert!((eg - ew).abs() <= 0.02 * ew, "[{name}] energy {eg} vs golden {ew}");
+    assert!(
+        mean <= 3.0 && far * 50 <= px,
+        "[{name}] differs from the golden"
+    );
+    assert!(
+        (eg - ew).abs() <= 0.02 * ew,
+        "[{name}] energy {eg} vs golden {ew}"
+    );
 }
 
 /// A grey background with a textured disc where `ball` projects.
 fn ball_image(cam: &PbrCamera, ball: &MotionBall) -> HdrImage {
     let m = screen_motion(cam, ball, 0.0, N, N).unwrap();
     flat(N, N, |x, y| {
-        let (dx, dy) = (x as f32 + 0.5 - m.center_px[0], y as f32 + 0.5 - m.center_px[1]);
+        let (dx, dy) = (
+            x as f32 + 0.5 - m.center_px[0],
+            y as f32 + 0.5 - m.center_px[1],
+        );
         if dx * dx + dy * dy < m.radius_px * m.radius_px {
-            [0.9 + 0.05 * (dx / m.radius_px), 0.85, 0.8 + 0.05 * (dy / m.radius_px)]
+            [
+                0.9 + 0.05 * (dx / m.radius_px),
+                0.85,
+                0.8 + 0.05 * (dy / m.radius_px),
+            ]
         } else {
             [0.1, 0.12, 0.15]
         }
@@ -430,13 +493,27 @@ fn motion_blur_is_zero_when_still_and_follows_the_velocity() {
     let input = HdrInput::from_image(ctx, &img).unwrap();
     let mut c = chain(ctx, N, N, cfg);
     let out = c
-        .render_to_hdr(ctx, &input.view, &PostFrame { camera: &cam, balls: &[still] })
+        .render_to_hdr(
+            ctx,
+            &input.view,
+            &PostFrame {
+                camera: &cam,
+                balls: &[still],
+            },
+        )
         .unwrap();
     assert_eq!(c.stats().blurred_balls, 0);
     // Bit-identical to the neutral chain without balls.
     let mut plain = chain(ctx, N, N, PostConfig::neutral());
     let reference = plain
-        .render_to_hdr(ctx, &input.view, &PostFrame { camera: &cam, balls: &[] })
+        .render_to_hdr(
+            ctx,
+            &input.view,
+            &PostFrame {
+                camera: &cam,
+                balls: &[],
+            },
+        )
         .unwrap();
     assert_eq!(out.pixels, reference.pixels, "a still ball must not blur");
 
@@ -447,10 +524,20 @@ fn motion_blur_is_zero_when_still_and_follows_the_velocity() {
         ([0.0, 0.0, 6.0], -core::f32::consts::FRAC_PI_2),
         ([4.0, 0.0, 4.0], -core::f32::consts::FRAC_PI_4),
     ] {
-        let ball = MotionBall { velocity: v, ..still };
+        let ball = MotionBall {
+            velocity: v,
+            ..still
+        };
         let m = screen_motion(&cam, &ball, cfg.motion_blur.shutter_s, N, N).unwrap();
         let out = c
-            .render_to_hdr(ctx, &input.view, &PostFrame { camera: &cam, balls: &[ball] })
+            .render_to_hdr(
+                ctx,
+                &input.view,
+                &PostFrame {
+                    camera: &cam,
+                    balls: &[ball],
+                },
+            )
             .unwrap();
         assert_eq!(c.stats().blurred_balls, 1);
         // Analytic: a centred shutter smears the footprint by a box of
@@ -460,7 +547,11 @@ fn motion_blur_is_zero_when_still_and_follows_the_velocity() {
         let bg = luminance([0.1, 0.12, 0.15]);
         let (m_ref, c_ref, v_ref) = ball_moments(&reference, bg);
         let (m_out, c_out, v_out) = ball_moments(&out, bg);
-        let dv = [v_out[0] - v_ref[0], v_out[1] - v_ref[1], v_out[2] - v_ref[2]];
+        let dv = [
+            v_out[0] - v_ref[0],
+            v_out[1] - v_ref[1],
+            v_out[2] - v_ref[2],
+        ];
         let angle = (0.5 * (2.0 * dv[2]).atan2(dv[0] - dv[1])) as f32;
         let s = f64::from(m.displacement_px[0].hypot(m.displacement_px[1]));
         let n = f64::from(cfg.motion_blur.samples);
@@ -484,13 +575,23 @@ fn motion_blur_is_zero_when_still_and_follows_the_velocity() {
             (m_out - m_ref) / m_ref
         );
         // Screen y points down: +z (up) moves towards row 0.
-        assert!((vel_angle - want).abs() < 1e-3, "screen motion direction {vel_angle}");
-        assert!(diff < 5f32.to_radians(), "streak axis off by {}°", diff.to_degrees());
+        assert!(
+            (vel_angle - want).abs() < 1e-3,
+            "screen motion direction {vel_angle}"
+        );
+        assert!(
+            diff < 5f32.to_radians(),
+            "streak axis off by {}°",
+            diff.to_degrees()
+        );
         assert!(
             (along - want_growth).abs() < 0.1 * want_growth,
             "streak variance {along} vs analytic {want_growth}"
         );
-        assert!(across.abs() < 0.1 * want_growth, "blur across the velocity: {across}");
+        assert!(
+            across.abs() < 0.1 * want_growth,
+            "blur across the velocity: {across}"
+        );
         assert!(shift < 0.25, "centroid moved by {shift} px");
         // Energy roughly conserved (the ball smears, it does not vanish).
         let rel = (total_lum(&out) - total_lum(&reference)) / total_lum(&reference);
@@ -500,7 +601,14 @@ fn motion_blur_is_zero_when_still_and_follows_the_velocity() {
             ldr_cfg.tone_map = ToneMap::AcesFilm;
             c.set_config(ldr_cfg);
             let ldr = c
-                .render_to_ldr(ctx, &input.view, &PostFrame { camera: &cam, balls: &[ball] })
+                .render_to_ldr(
+                    ctx,
+                    &input.view,
+                    &PostFrame {
+                        camera: &cam,
+                        balls: &[ball],
+                    },
+                )
                 .unwrap();
             save_ldr("post_motion_blur_streak", &ldr);
             c.set_config(cfg);
@@ -512,7 +620,14 @@ fn motion_blur_is_zero_when_still_and_follows_the_velocity() {
         ..still
     };
     let _ = c
-        .render_to_hdr(ctx, &input.view, &PostFrame { camera: &cam, balls: &[fast] })
+        .render_to_hdr(
+            ctx,
+            &input.view,
+            &PostFrame {
+                camera: &cam,
+                balls: &[fast],
+            },
+        )
         .unwrap();
     assert!((c.stats().max_blur_px - 64.0).abs() < 1e-3);
 }
@@ -530,7 +645,9 @@ fn msaa_reduces_edge_aliasing() {
     let mut white = MaterialParams::lambert([0.0; 3]);
     white.emissive = [0.8, 0.8, 0.8];
     let scene = |pbr: &mut PbrRenderer| {
-        let sphere = pbr.upload_mesh(&MeshGeometry::uv_sphere(0.5, 96, 64)).unwrap();
+        let sphere = pbr
+            .upload_mesh(&MeshGeometry::uv_sphere(0.5, 96, 64))
+            .unwrap();
         vec![DrawItem {
             mesh: sphere,
             model: IDENTITY,
@@ -584,7 +701,12 @@ fn msaa_reduces_edge_aliasing() {
             save_ldr("post_msaa_sphere", &out.ldr);
         }
     }
-    assert!(errors[1] < 0.5 * errors[0], "MSAA error {} vs none {}", errors[1], errors[0]);
+    assert!(
+        errors[1] < 0.5 * errors[0],
+        "MSAA error {} vs none {}",
+        errors[1],
+        errors[0]
+    );
 }
 
 /// 5.1 review N4: with exposure and ACES before 8-bit encoding the lit

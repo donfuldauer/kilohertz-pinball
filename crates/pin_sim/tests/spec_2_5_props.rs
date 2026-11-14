@@ -12,8 +12,17 @@ use support::*;
 /// One scripted operation on the test API.
 #[derive(Clone, Debug)]
 enum Op {
-    Spawn { ceramic: bool, x: f32, y: f32, vx: f32, vy: f32 },
-    Switch { which: usize, closed: bool },
+    Spawn {
+        ceramic: bool,
+        x: f32,
+        y: f32,
+        vx: f32,
+        vy: f32,
+    },
+    Switch {
+        which: usize,
+        closed: bool,
+    },
     Advance(u64),
 }
 
@@ -54,8 +63,18 @@ fn run(seed: u64, ops: &[Op]) -> Result<Trace, TestCaseError> {
     let mut expected_tick = 0u64;
     for op in ops {
         match *op {
-            Op::Spawn { ceramic, x, y, vx, vy } => {
-                let profile = if ceramic { "ceramic_powerball" } else { "standard_steel" };
+            Op::Spawn {
+                ceramic,
+                x,
+                y,
+                vx,
+                vy,
+            } => {
+                let profile = if ceramic {
+                    "ceramic_powerball"
+                } else {
+                    "standard_steel"
+                };
                 let before = sim.balls_in_play();
                 match sim.spawn_ball(profile, [x, y, R], [vx, vy, 0.0]) {
                     Ok(h) => {
@@ -101,12 +120,21 @@ fn run(seed: u64, ops: &[Op]) -> Result<Trace, TestCaseError> {
                         snap.balls().contains(&b),
                         "ball() is not in the published snapshot"
                     );
-                    for c in b.position_m.iter().chain(&b.velocity_m_s).chain(&b.angular_velocity_rad_s) {
+                    for c in b
+                        .position_m
+                        .iter()
+                        .chain(&b.velocity_m_s)
+                        .chain(&b.angular_velocity_rad_s)
+                    {
                         prop_assert!(c.is_finite());
                     }
                     let q = b.orientation;
                     let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
-                    prop_assert!((n - 1.0).abs() < 1e-3, "orientation is a unit quaternion: {:?}", q);
+                    prop_assert!(
+                        (n - 1.0).abs() < 1e-3,
+                        "orientation is a unit quaternion: {:?}",
+                        q
+                    );
                 }
             }
         }

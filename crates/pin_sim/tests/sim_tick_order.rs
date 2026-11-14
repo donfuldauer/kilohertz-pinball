@@ -3,10 +3,10 @@
 
 mod sim_support;
 
+use pin_core::ScriptError;
 use pin_core::input::{CabinetInput, InputEvent};
 use pin_core::sim::{SimStep, TICK_NS};
 use pin_core::snapshot::FrameStateSnapshot;
-use pin_core::ScriptError;
 use pin_sim::{SimConfig, Simulation};
 use sim_support::*;
 

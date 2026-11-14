@@ -26,10 +26,7 @@ static NEXT: AtomicU32 = AtomicU32::new(0);
 /// A fresh, empty scratch directory under the system temp dir.
 pub fn scratch_dir(tag: &str) -> PathBuf {
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "pin_sim_2_5_{tag}_{}_{n}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("pin_sim_2_5_{tag}_{}_{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create scratch dir");
     dir
