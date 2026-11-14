@@ -86,7 +86,7 @@ fn busy_rig() -> Rig {
 fn drive(rig: &mut Rig, t: u64) {
     rig.flippers.set_energised(LEFT, (t / 90) % 2 == 1);
     rig.flippers.set_energised(RIGHT, (t / 70) % 3 == 1);
-    rig.flippers.set_energised(BACK, (t / 130) % 2 == 0);
+    rig.flippers.set_energised(BACK, (t / 130) % 2 == 1);
     rig.flippers.set_zipper(LEFT, (t / 400) % 2 == 1);
     if t % 250 == 40 {
         rig.flippers.on_switch_edge(SwitchId(9), true, t);

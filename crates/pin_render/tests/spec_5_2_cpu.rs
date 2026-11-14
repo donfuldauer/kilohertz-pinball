@@ -1112,3 +1112,44 @@ fn odd_ball_counts_share_the_budget_fairly() {
         }
     }
 }
+
+/// The published example order, and the cursor surviving a count change (it never
+/// restarts at ball 0).
+#[test]
+fn cyclic_cursor_order_and_count_changes() {
+    let pos = |n: usize| -> Vec<V3> { (0..n).map(|i| [i as f32 * 0.06, 0.0, 0.0135]).collect() };
+    let mut s = ProbeScheduler::new(2);
+    let want: [[usize; 2]; 8] = [
+        [0, 1],
+        [2, 3],
+        [4, 5],
+        [6, 0],
+        [1, 2],
+        [3, 4],
+        [5, 6],
+        [0, 1],
+    ];
+    for (f, w) in want.iter().enumerate() {
+        let mut u = s.schedule(&pos(7)).to_vec();
+        u.sort_unstable();
+        let mut w = w.to_vec();
+        w.sort_unstable();
+        assert_eq!(u, w, "7 balls, frame {f}");
+    }
+    // Shrinking keeps the cursor: after 0 1 | 2 3 with seven balls, five balls continue
+    // with 4 0, then three balls with 1 2.
+    let mut s = ProbeScheduler::new(2);
+    s.schedule(&pos(7));
+    s.schedule(&pos(7));
+    let mut u = s.schedule(&pos(5)).to_vec();
+    u.sort_unstable();
+    assert_eq!(u, vec![0, 4], "cursor kept when two balls drain");
+    let mut u = s.schedule(&pos(3)).to_vec();
+    u.sort_unstable();
+    assert_eq!(u, vec![1, 2], "cursor kept when two more drain");
+    // Budget 1, one ball: it is captured every frame.
+    let mut s = ProbeScheduler::new(1);
+    for _ in 0..3 {
+        assert_eq!(s.schedule(&pos(1)).to_vec(), vec![0]);
+    }
+}
