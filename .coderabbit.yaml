@@ -10,6 +10,57 @@ reviews:
     drafts: false
     base_branches:
       - main
+  # Skip files a reviewer cannot read or that are generated, vendored or recorded data.
+  # Code, shaders, Lua/Wasm-text table rules, TOML manifests, CI and docs stay in review.
+  path_filters:
+    # Images and textures (including raw test-reference pixel dumps)
+    - "!**/*.png"
+    - "!**/*.jpg"
+    - "!**/*.jpeg"
+    - "!**/*.gif"
+    - "!**/*.webp"
+    - "!**/*.bmp"
+    - "!**/*.tga"
+    - "!**/*.ktx2"
+    - "!**/*.dds"
+    - "!**/*.hdr"
+    - "!**/*.exr"
+    - "!**/*.ico"
+    - "!**/*.rgba8"
+    # Audio
+    - "!**/*.ogg"
+    - "!**/*.wav"
+    - "!**/*.mp3"
+    - "!**/*.flac"
+    # Fonts
+    - "!**/*.ttf"
+    - "!**/*.otf"
+    - "!**/*.woff"
+    - "!**/*.woff2"
+    # 3D models and packaged tables
+    - "!**/*.glb"
+    - "!**/*.gltf"
+    - "!**/*.bin"
+    - "!**/*.pinbundle"
+    - "!**/*.zip"
+    # Compiled Wasm (the .wat sources stay in review)
+    - "!**/*.wasm"
+    # Lockfiles and vendoring leftovers
+    - "!**/Cargo.lock"
+    - "!**/packages.lock.json"
+    - "!**/*.orig"
+    # Recorded test data: sensor traces, expected-output dumps, proptest seeds
+    - "!**/spec_fixtures/**/*.csv"
+    - "!**/fixtures/**/*.expected.txt"
+    - "!**/fixtures/**/*.mapping.txt"
+    - "!**/fixtures/debug_scene_*.txt"
+    - "!**/proptest-regressions/**"
+    - "!crates/pin_script/tests/attack_corpus/RESULTS_*.txt"
+    # Build output (normally ignored by git; listed in case it is ever committed)
+    - "!**/target/**"
+    - "!**/bin/**"
+    - "!**/obj/**"
+    - "!dist/**"
   path_instructions:
     - path: "crates/**/src/**"
       instructions: >-
