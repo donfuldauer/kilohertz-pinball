@@ -1,0 +1,38 @@
+# Subphase 2.5 replay fixture: a small flat-walled table (PLAN.md Appendix A.3).
+# Regenerate playfield.glb and the generated part of table.toml with
+#   pin_tablegen layout.toml --table table.toml --out . --force
+schema_version = 1
+
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 28.0
+
+# Outer walls: open at the bottom between the flippers (the centre drain) and
+# beside them (outlanes wider than a ball, so no ball wedges at a pivot).
+[[walls]]
+points = [[110.0, 95.0], [0.0, 260.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 260.0], [404.0, 95.0]]
+closed = false
+material = "wood"
+
+# A V-shaped catch wall below the drains, so every drained ball rolls to the
+# trough switch at its bottom.
+[[walls]]
+points = [[0.0, 120.0], [257.0, 0.0], [514.0, 120.0]]
+closed = false
+material = "wood"
+
+[[posts]]
+position = [140.0, 760.0]
+radius = 8.0
+rubber = true
+
+[[posts]]
+position = [374.0, 760.0]
+radius = 8.0
+rubber = true
+
+[[lanes]]
+kind = "orbit"
+points = [[60.0, 600.0], [60.0, 900.0]]
+width = 34.0
