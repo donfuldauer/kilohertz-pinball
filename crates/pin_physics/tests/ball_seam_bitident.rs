@@ -237,10 +237,14 @@ fn slope_scenario() -> u64 {
     run_hashed(&mut s, &geo, 4000, |_, _| {})
 }
 
-/// Digests recorded at HEAD 63243da before the seam change.
+/// Digests recorded at HEAD 63243da before the seam change; `spec_scenario`
+/// and `spec_scenario_hook` re-recorded once on top of b5e92d5 for issue #8
+/// (was 0x360d6fa3b46cb723 and 0x9896df4948301cd5): the golden scenario's
+/// Newton chain hits an end stop, which now keeps its post-bounce travel.
+/// The issue #8 contact and closest-point fixes moved no digest.
 const EXPECTED: [(&str, u64); 5] = [
-    ("spec_scenario", 0x360d6fa3b46cb723),
-    ("spec_scenario_hook", 0x9896df4948301cd5),
+    ("spec_scenario", 0xa8e8957e1b4cee40),
+    ("spec_scenario_hook", 0x9da6a4436316c72e),
     ("box", 0x7850af7058aace12),
     ("belt", 0x710c25cd832c76c2),
     ("slope", 0x1764f34e6e37436f),
