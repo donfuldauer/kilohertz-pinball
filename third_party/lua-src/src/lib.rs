@@ -347,4 +347,5 @@ pub const KHZ_PATCHED_SOURCES: &[&str] = &[
     include_str!("../lua-5.4.9/ltable.c"),
     include_str!("../lua-5.4.9/lgc.c"),
     include_str!("../lua-5.4.9/lapi.c"),
+    include_str!("../lua-5.4.9/lzio.c"),
 ];
