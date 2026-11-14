@@ -209,3 +209,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 4 | 2.4 | Independent Tester | Fable 5.2 | 3 | running | — | spinner tests to the documented model |
 | 4 | 2.4 | Independent Tester | Fable 5.2 | 3 | done | 86/86 spec tests pass | spinner tests re-based on an independent RK4 of the documented model + exact ω0/d viscous case; absurd_parameters_are_rejected |
 | 4 | 2.4 | Reviewer | Fable 5.2 | 2 | running | — | |
+| 4 | 2.2-S | Reviewer | Fable 5.2 | 3 | **fail** | gates pass (scratch 155356f); coverage 95.68 %; digests identical; all earlier repros/sweeps clean; lying-owner bounds hold; restitution hook correct; perf 5–6 µs | B1 impulse cap uses a stale body velocity in the mid-sub-step re-solve → a bat knocked into a resting ball doesn't push it (tunnels at 30 m/s, multiball) → fix 3 (last); N1 global solve budget can starve unrelated balls; N6–N8 |
+| 4 | 2.2-S | Implementer | Opus 5.5 | fix 3 (last) | running | — | |
