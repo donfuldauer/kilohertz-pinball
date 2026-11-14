@@ -204,9 +204,17 @@ proptest! {
         let tol = 1e-3;
         prop_assert!((lo[0] + 1.0).abs() < tol && (lo[1] + 1.0).abs() < tol);
         prop_assert!((hi[0] - 1.0).abs() < tol && (hi[1] - 1.0).abs() < tol);
-        let p = c.project([x0 + u * w, y0 + v * h, 0.0]);
-        prop_assert!((p[0] - (2.0 * u - 1.0)).abs() < tol);
-        prop_assert!((p[1] - (2.0 * v - 1.0)).abs() < tol);
+        // Measure against the point actually built: far from the origin a
+        // small rectangle spans few f32 steps, so `x0 + u * w` rounds and the
+        // camera's offset term cancels with a relative error of about
+        // |x0| / w ulp.
+        let (px, py) = (x0 + u * w, y0 + v * h);
+        let (ue, ve) = ((px - x0) / w, (py - y0) / h);
+        let tol_x = tol + 8.0 * f32::EPSILON * (x0.abs() + w) / w;
+        let tol_y = tol + 8.0 * f32::EPSILON * (y0.abs() + h) / h;
+        let p = c.project([px, py, 0.0]);
+        prop_assert!((p[0] - (2.0 * ue - 1.0)).abs() < tol_x, "{} vs {}", p[0], 2.0 * ue - 1.0);
+        prop_assert!((p[1] - (2.0 * ve - 1.0)).abs() < tol_y, "{} vs {}", p[1], 2.0 * ve - 1.0);
         prop_assert_eq!(p[3], 1.0);
     }
 
