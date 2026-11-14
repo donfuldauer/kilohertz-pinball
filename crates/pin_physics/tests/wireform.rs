@@ -920,3 +920,37 @@ proptest! {
 fn radial_at(p: Vec3) -> Vec3 {
     v(p.x, p.y, 0.0).normalize()
 }
+
+/// CI regression (aarch64-apple-darwin, also on x86_64): the start lies
+/// 7.5 µm along the wall from a through-point sample, which ties in f32 with
+/// the true foot of the perpendicular; the normal toward the sample tilted
+/// by 1.9e-4 rad and the cast's single long step (25 mm at a 12° approach)
+/// overshot the wall by 1.7 µm.
+#[test]
+fn guide_cast_straight_wall_sample_tie_is_not_late() {
+    let (gap, angle, speed, along, travel) = (
+        0.025518417f32,
+        -0.21677208f32,
+        0.05f32,
+        0.60938257f32,
+        0.13648109f32,
+    );
+    let g = straight_wall_x();
+    let start = v(along, BALL + gap, 0.0135);
+    let vel = v(libm::cosf(angle), libm::sinf(angle), 0.0) * speed;
+    let res = resolve(&g, start, BALL, vel, travel / speed);
+    let hit = res.hit.expect("closing in: contact");
+    let closing = -vel.y;
+    let gap_at = gap - closing * hit.time;
+    assert!(
+        (-2e-6..=SKIN + 2e-6).contains(&gap_at),
+        "gap at contact {gap_at}"
+    );
+    assert!(
+        hit.time <= gap / closing + 1e-6 / closing,
+        "contact at {} s, wall reached at {} s (gap at contact {gap_at})",
+        hit.time,
+        gap / closing
+    );
+    assert!((hit.normal - Vec3::Y).length() < 1e-3);
+}
