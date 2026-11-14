@@ -313,3 +313,60 @@ fn second_frame_of_a_context_keeps_its_text() {
     );
     assert!(paint_offscreen_with(gpu, &mut bgra, 8, 8, BG, menu_frame([8, 8], 1.0)).is_err());
 }
+
+/// A rejected paint (zero size) must not lose the frame's texture deltas:
+/// the painter keeps them, and the next valid paint of the same context
+/// (which does not resend the font atlas) still shows its text.
+#[test]
+fn rejected_frame_keeps_its_textures_for_the_next_paint() {
+    let Some(gpu) = ctx() else { return };
+    let dims = [480, 240];
+    let panel = menu_panel_rect_px(dims, 1.0);
+    let ectx = egui::Context::default();
+    overlay_style(&ectx);
+    let mut painter = OverlayPainter::new(
+        gpu.device(),
+        pin_render::gpu::wgpu::TextureFormat::Rgba8Unorm,
+    );
+    let run = || {
+        ectx.run_ui(raw_input(dims, 1.0, Vec::new(), None), |ui| {
+            show_overlay(ui, |ui| {
+                ui.label(
+                    egui::RichText::new("oooo")
+                        .size(40.0)
+                        .color(egui::Color32::WHITE),
+                );
+            });
+        })
+    };
+    let first = run();
+    assert!(
+        !first.textures_delta.set.is_empty(),
+        "the first frame sent no texture: the test would not show the loss"
+    );
+    let rejected = paint_offscreen_with(
+        gpu,
+        &mut painter,
+        0,
+        dims[1],
+        BG,
+        OverlayFrame::new(&ectx, first),
+    );
+    assert!(rejected.is_err());
+    let second = run();
+    assert!(
+        second.textures_delta.set.is_empty(),
+        "the second frame resent a texture: the test would not show the recovery"
+    );
+    let px = paint_offscreen_with(
+        gpu,
+        &mut painter,
+        dims[0],
+        dims[1],
+        BG,
+        OverlayFrame::new(&ectx, second),
+    )
+    .unwrap();
+    let lit = bright_mask(&px, dims, panel).iter().filter(|v| **v).count();
+    assert!(lit > 100, "text lost after a rejected frame: {lit} lit px");
+}
