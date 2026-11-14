@@ -16,12 +16,30 @@ wastes the run.
 The original delegation brief (REQUIREMENTS, TESTS REQUIRED, DONE WHEN, OWNED PATHS), the
 executor's report, the branch, and the base (normally `origin/main`).
 
+A single run may cover a batch of fixes on one head commit (a CodeRabbit review round or push,
+D38). Then the Orchestrator supplies the brief and the executor report of every executor group
+in the batch. Run every check once on that head commit: check 1 traces the requirements of each
+group's brief, and check 7 uses the union of all groups' OWNED PATHS. For a batch on an open PR
+the Orchestrator also gives the pre-batch head SHA, and check 7 compares `<pre-batch head>..HEAD`
+(not the whole `<base>...HEAD`) against that union. Report `requirements` and
+`failures` per item (per thread URL where given), so the Orchestrator can resolve each thread on
+its own result. A single-brief run is unchanged.
+
+**Queue-only case.** A round whose only change is a `docs/HUMAN_QUEUE.md` line for deferred
+findings has no brief and no executor report. The Orchestrator then gives the pre-batch head,
+the new head and the list of deferred findings. Run check 7 (the diff `<pre-batch head>..HEAD`
+touches only `docs/HUMAN_QUEUE.md`) and confirm each deferred finding has its queue line. Cargo
+checks do not apply because no code changed; report `requirements: 0/0`. The result is `pass`
+if both hold.
+
 ## Checks (all must pass)
 
 1. **Requirements traced.** For each REQUIREMENTS item, find the code that implements it and a
    test that exercises it. Run that test. Each item is `met` (give the test name and result),
    `not met`, or `untestable here` (for example it needs physical hardware; check that it is in
-   `docs/HUMAN_ACCEPTANCE.md`).
+   `docs/HUMAN_ACCEPTANCE.md`). A docs/config-only requirement is `met` on evidence of the doc
+   change itself (file:line quoting the required text); it needs no test. Code requirements
+   keep both the code and a passing test.
 2. **Formatting and lints.** `cargo fmt --check`; `cargo clippy --all-targets -- -D warnings`
    on every touched crate, and with `--features gpu-tests` for render crates.
 3. **Tests.** Every applicable suite passes: the touched crates' unit and integration tests,
