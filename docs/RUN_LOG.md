@@ -313,3 +313,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 2.8 | Reviewer | Fable 5.2 | 1 | **fail** | fmt/clippy clean; own + spec_2_8 pass except c3 random (8/9 after a saved seed); c1 3.84e-7; pin_tablegen 94.70 %, pin_physics 91.70 %, pin_core 99.39 %; 6000 hostile tables no panic; seam digests same | B1 radius-dependent XL–bat overlap (to 3.3 mm, no rim contact) → locate + fix; B2 headroom at ball centre only (false accepts at deck edges / sloped ceilings) → sphere test; N1, N2, N4, N5, N6, N8 in fix 1; N3/N7 → HUMAN_QUEUE |
 | 5 | 2.8 | Implementer | Opus 5.5 | fix 1 | running | — | |
 | 5 | GR-1 + 2.7 spec bound | Reviewer / Tester | Fable 5.2 | 1 | running | — | |
+| 5 | 4.4 | Reviewer | Fable 5.2 | 2 | **pass** | fmt/clippy clean all targets (pin_app, pin_render ±gpu-tests); own tests all pass; spec 90/90; pin_app 74.52 %, ui/mod.rs 97.52 %; 13 adversarial configs handled; visual checklist pass | B1–B3 verified; N13 [[calibration]] silent default, N14 .bak unbounded/overwritten, N15 footer contrast → polish |
+| 5 | 4.4 | Implementer | Opus 5.5 | polish | running | — | N13–N15 |

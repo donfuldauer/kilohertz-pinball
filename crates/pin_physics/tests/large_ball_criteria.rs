@@ -168,9 +168,9 @@ fn c3_fastest_bat_does_not_swing_through_the_xl_ball() {
     let r = radius(XL);
     let mut fastest_tip = 0.0f32;
     let mut deepest = 0.0f32;
-    for torque in [1.2f32, 4.0, 15.0, 40.0] {
+    for torque in [1.2f32, 4.0, 15.0, 40.0, 80.0] {
         for fraction in [0.3f32, 0.6, 0.95] {
-            for gap_mm in [0.5f32, 5.0, 20.0] {
+            for gap_mm in [0.5f32, 5.0, 20.0, 30.0] {
                 if gap_mm > 0.5 * fraction * 76.0 * 50.0f32.to_radians() {
                     continue;
                 }
