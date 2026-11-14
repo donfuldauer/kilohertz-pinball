@@ -343,6 +343,22 @@ fn scene_library_load_with_fallback() {
     assert_eq!(lib.id_of("a"), None);
     assert_eq!(lib.id_of("b"), Some(SceneId(2)));
     assert!(lib.get(SceneId(0)).is_none());
+    // A name reused under another id moves there; the indices stay in step.
+    let s = placeholder_scene("scene_score").unwrap();
+    lib.insert(SceneId(0), "b", s.clone());
+    assert_eq!(lib.len(), 1);
+    assert_eq!(lib.id_of("b"), Some(SceneId(0)));
+    assert!(lib.get(SceneId(2)).is_none());
+    assert_eq!(lib.name(SceneId(2)), None);
+    lib.insert(SceneId(1), "c", s.clone());
+    lib.insert(SceneId(1), "d", s);
+    assert_eq!(lib.len(), 2);
+    assert_eq!(lib.id_of("b"), Some(SceneId(0)));
+    assert_eq!(lib.id_of("c"), None);
+    // `load` refuses a repeated id instead of dropping a scene.
+    let dup = [defs[1].clone(), defs[1].clone()];
+    let e = SceneLibrary::load(&dup, |_| Err("gone".into())).unwrap_err();
+    assert!(matches!(e, SceneError::Invalid(_)), "{e:?}");
 }
 
 #[test]
@@ -758,6 +774,45 @@ fn lcd_model_composes_draw_lists() {
     assert_eq!(text, "0");
 }
 
+#[test]
+fn score_view_timeline_advances() {
+    // A table-supplied `scene_score` with a late layer and a repeat.
+    let score = Scene::from_toml_str(
+        "schema_version = 1\nduration_ms = 1000\nrepeat = true\n\
+         [[layers]]\nkind = \"score\"\n\
+         [[layers]]\nkind = \"text\"\ntext = \"HI\"\nstart_ms = 600\n",
+    )
+    .unwrap();
+    let timed = Scene::from_toml_str(
+        "schema_version = 1\nduration_ms = 500\n[[layers]]\nkind = \"text\"\ntext = \"X\"\n",
+    )
+    .unwrap();
+    let mut lib = SceneLibrary::new();
+    lib.insert(SceneId(0), "scene_score", score);
+    lib.insert(SceneId(1), "timed", timed);
+    let mut model = ScoreDisplayModel::new(ScoreDisplayConfig::Lcd(LcdSpec::default()), lib);
+    let has_hi = |m: &ScoreDisplayModel, t: u64| {
+        let DisplayContent::Lcd(l) = m.compose(t) else {
+            panic!()
+        };
+        l.items
+            .iter()
+            .any(|i| matches!(i, LcdItem::Text { text, .. } if text == "HI"))
+    };
+    // Nothing shown yet: the score view runs on the clock and repeats.
+    assert!(!has_hi(&model, 0));
+    assert!(!has_hi(&model, 599));
+    assert!(has_hi(&model, 600));
+    assert!(!has_hi(&model, 1000));
+    assert!(has_hi(&model, 1700));
+    // After a timed scene the score view restarts at the scene's end.
+    model.scenes_mut().show(SceneId(1), 10_000);
+    assert!(!has_hi(&model, 10_499)); // the timed scene itself
+    assert!(!has_hi(&model, 10_500));
+    assert!(!has_hi(&model, 11_099));
+    assert!(has_hi(&model, 11_100));
+}
+
 // ---------- backglass description ----------
 
 #[test]
@@ -936,6 +991,58 @@ fn score_layer_stays_inside_its_box() {
     }
 }
 
+#[test]
+fn multiplayer_scores_stay_in_their_columns() {
+    let score = placeholder_scene("scene_score").unwrap();
+    let im = ImageSet::new();
+    for scores in [
+        [100, 200, 300, 400],
+        [1_234_567, 7_654_321, 9, 99_999_999_999],
+    ] {
+        let st = ScoreState {
+            scores,
+            players: 4,
+            current_player: 0,
+            ball: 1,
+            credits: 0,
+        };
+        // LCD: the horizontal extents of each row's two scores are disjoint.
+        let spec = LcdSpec::new(800, 600).unwrap();
+        let l = LcdDrawList::compose(&spec, &score, 0, &st, &im);
+        let extent = |i: usize| {
+            let LcdItem::Text {
+                text, origin, cell, ..
+            } = &l.items[i]
+            else {
+                panic!()
+            };
+            (origin[0], origin[0] + vector_text_width(text, *cell))
+        };
+        for row in [0, 2] {
+            let (left, right) = (extent(row), extent(row + 1));
+            assert!(left.0 >= 0.0 && right.1 <= 800.0, "{left:?} {right:?}");
+            assert!(left.1 < right.0, "{scores:?}: {left:?} overlaps {right:?}");
+        }
+        // DMD: the font is chosen to fit the column (the long scores fit the
+        // full width in 8x16 but a column only in 5x7), so no dot of the
+        // score rows is lit in the gap between the columns.
+        let f = DmdFrame::compose(&DMD_192X64, &score, 0, &st, &im);
+        assert!(f.lit_count() > 0);
+        for y in 0..44 {
+            assert_eq!(f.get(96, y), [0; 3], "{scores:?} row {y}");
+        }
+    }
+    for t in score_view_layout(&ScoreState {
+        players: 2,
+        ..ScoreState::default()
+    })
+    .iter()
+    .take(2)
+    {
+        assert_eq!(t.max_w, SCORE_COLUMN_WIDTH);
+    }
+}
+
 // ---------- fix round 1 (B1, N1, N2, N8) ----------
 
 #[test]
@@ -973,6 +1080,11 @@ fn invalid_images_are_skipped_by_composition() {
         pixels: vec![1; 7],
     };
     assert_eq!(bad.pixel(3, 3), [0; 4]);
+    // An in-range coordinate whose byte offset overflows usize is
+    // transparent too (the fields are public, so such an image can exist).
+    let huge = RgbaImage::new(u32::MAX, u32::MAX);
+    assert_eq!(huge.pixel(0, u32::MAX - 1), [0; 4]);
+    assert_eq!(huge.pixel(u32::MAX - 1, u32::MAX - 1), [0; 4]);
 }
 
 /// The worst parseable scenes: 64 layers of each heavy kind with boxes 4 × 4

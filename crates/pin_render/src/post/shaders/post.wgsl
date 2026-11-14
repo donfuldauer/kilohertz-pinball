@@ -84,6 +84,15 @@ fn fs_blur(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     var color = load_a(vec2<i32>(floor(p)));
     let count = min(u32(post.params.y), MAX_BLUR_BALLS);
     let samples = max(u32(post.params.z), 1u);
+    // Every ball whose swept capsule covers `p` contributes (in any order:
+    // a later ball is not dropped because an earlier one matched).
+    var hits: array<u32, 16>;
+    var n = 0u;
+    // What `p` shows while no ball is over it: the image, or, inside a
+    // ball's own disc, the background behind that disc (of the ball `p` is
+    // deepest in, in disc radii).
+    var bg = color;
+    var bg_rank = 1.0e30;
     for (var k = 0u; k < count; k = k + 1u) {
         let ball = post.balls[k];
         let c = ball.center_radius.xy;
@@ -97,24 +106,51 @@ fn fs_blur(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         if (segment_distance(p, c - 0.5 * d, c + 0.5 * d) > r + 1.0) {
             continue;
         }
-        let dir = d / len;
-        let bg = background(p, c, r, dir);
+        hits[n] = k;
+        n = n + 1u;
+        let pc = p - c;
+        let rank = dot(pc, pc) / (r * r);
+        if (rank < bg_rank) {
+            bg_rank = rank;
+            bg = background(p, c, r, d / len);
+        }
+    }
+    if (n > 0u) {
         var acc = vec3<f32>(0.0);
         for (var i = 0u; i < samples; i = i + 1u) {
-            // At shutter time t the ball is at c + d t; p then shows the
+            // At shutter time t a ball is at c + d t; p then shows the
             // static ball image at p - d t when that lies on the disc.
             let t = (f32(i) + 0.5) / f32(samples) - 0.5;
-            // The pixel q falls in decides, by its centre (the same test
-            // the rasteriser used), so the disc smears without losing its
-            // rim pixels.
-            let q = p - d * t;
-            let qp = floor(q);
-            let qc = qp + vec2<f32>(0.5) - c;
-            let on_ball = dot(qc, qc) < r * r;
-            acc = acc + select(bg, load_a(vec2<i32>(qp)), on_ball);
+            var on_ball = false;
+            var best = 1.0e30;
+            var src = vec2<f32>(0.0);
+            for (var j = 0u; j < n; j = j + 1u) {
+                let ball = post.balls[hits[j]];
+                let c = ball.center_radius.xy;
+                let r = ball.center_radius.z;
+                // The pixel q falls in decides, by its centre (the same
+                // test the rasteriser used), so the disc smears without
+                // losing its rim pixels.
+                let q = p - ball.disp.xy * t;
+                let qp = floor(q);
+                let qc = qp + vec2<f32>(0.5) - c;
+                let d2 = dot(qc, qc);
+                // Two balls over p at the same time: the one p is deepest
+                // in wins (there is no depth here), whatever their order.
+                let rank = d2 / (r * r);
+                if (d2 < r * r && rank < best) {
+                    on_ball = true;
+                    best = rank;
+                    src = qp;
+                }
+            }
+            if (on_ball) {
+                acc = acc + load_a(vec2<i32>(src));
+            } else {
+                acc = acc + bg;
+            }
         }
         color = acc / f32(samples);
-        break;
     }
     return vec4<f32>(clean(color * exposure), 1.0);
 }
