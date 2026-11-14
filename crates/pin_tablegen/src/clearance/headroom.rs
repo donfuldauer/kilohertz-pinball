@@ -13,6 +13,51 @@ const MAX_SPACING_M: f64 = 0.01;
 /// Penetration (m) of a wall that still lets a ball rest at a sample.
 const WALL_TOLERANCE_M: f64 = 1.0e-4;
 
+/// Extra plan samples (m) covering the areas a restricted ball is limited
+/// to: vertices, edge points and an interior grid, at most `spacing` apart
+/// and fine enough for areas much smaller than the grid, so a small area
+/// under a low deck is never missed.
+fn area_samples(ball: &Ball, spacing: f64) -> Vec<DVec2> {
+    let mut out = Vec::new();
+    let super::Allowed::Only(entries) = &ball.allowed else {
+        return out;
+    };
+    for poly in entries.iter().filter_map(|(_, a)| a.as_ref()) {
+        let pts = &poly.points;
+        let mut lo = DVec2::splat(f64::INFINITY);
+        let mut hi = DVec2::splat(f64::NEG_INFINITY);
+        for &p in pts {
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        let extent = (hi - lo).max_element();
+        if !extent.is_finite() {
+            continue;
+        }
+        let h = spacing.min(extent / 16.0).max(extent / 256.0).max(1.0e-6);
+        out.extend_from_slice(pts);
+        for i in 0..pts.len() {
+            let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+            let k = ((a.distance(b) / h).ceil() as usize).clamp(1, 4096);
+            out.extend((1..k).map(|j| a.lerp(b, j as f64 / k as f64)));
+        }
+        let nx = ((hi.x - lo.x) / h).ceil() as usize;
+        let ny = ((hi.y - lo.y) / h).ceil() as usize;
+        for j in 0..=ny {
+            for i in 0..=nx {
+                let q = DVec2::new(
+                    (lo.x + i as f64 * h).min(hi.x),
+                    (lo.y + j as f64 * h).min(hi.y),
+                );
+                if poly.contains(q) {
+                    out.push(q);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The smallest headroom found under one ceiling mesh for one ball.
 struct Worst {
     gap: f64,
@@ -64,6 +109,7 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
         let need = ball.needed();
         let spacing = (0.5 * r).min(MAX_SPACING_M);
         let mut worst: BTreeMap<usize, Worst> = BTreeMap::new();
+        let extra = area_samples(ball, spacing);
         for s in w.tris.iter() {
             if s.nz() < WALKABLE_NZ || !ball.allowed.layer(s.layer) {
                 continue;
@@ -100,7 +146,10 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                         )
                     })
                 });
-                for q in core::iter::once(centre).chain(grid) {
+                let in_box =
+                    |q: &&DVec2| q.x >= lo.x && q.x <= hi.x && q.y >= lo.y && q.y <= hi.y;
+                let from_area = extra.iter().filter(in_box).copied();
+                for q in core::iter::once(centre).chain(grid).chain(from_area) {
                     if !(s.contains_plan(q) && c.contains_plan(q)) {
                         continue;
                     }
