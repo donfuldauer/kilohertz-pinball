@@ -819,6 +819,35 @@ fn sliding_without_push_out_stays_within_the_sliding_limit() {
     }
 }
 
+/// CI case: outside an arc wall at the slowest speed, the path passes 11.3 µm
+/// from the wall (1.3 µm outside the contact skin) over half a second. The
+/// cast finds no contact, within a bounded number of steps.
+#[test]
+fn guide_cast_arc_graze_just_outside_the_skin_is_free() {
+    let (gap, at, angle, speed, travel) = (
+        0.000521483f32,
+        40.0f32,
+        -0.07889041f32,
+        0.05f32,
+        0.025136665f32,
+    );
+    let wall = 0.15f32;
+    let g = arc_wall(wall, 180);
+    let a = at.to_radians();
+    let radial = v(libm::cosf(a), libm::sinf(a), 0.0);
+    let tangent = v(-radial.y, radial.x, 0.0);
+    let start = radial * (wall + BALL + gap) + Vec3::Z * 0.0135;
+    let vel = (tangent * libm::cosf(angle) + radial * libm::sinf(angle)) * speed;
+    let res = resolve(&g, start, BALL, vel, travel / speed);
+    assert!(res.hit.is_none(), "{:?}", res.hit);
+    assert!(
+        res.casts <= 2 && res.steps <= 16,
+        "{} casts, {} steps",
+        res.casts,
+        res.steps
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 400, failure_persistence: None, ..ProptestConfig::default() })]
 
@@ -883,7 +912,11 @@ proptest! {
         let vel = (tangent * libm::cosf(angle) + radial * libm::sinf(angle)) * speed;
         let max_time = travel / speed;
         let res = resolve(&g, start, BALL, vel, max_time);
-        prop_assert!(res.casts <= 2 && res.steps <= 12, "{} casts, {} steps", res.casts, res.steps);
+        // A slow pass grazing just outside the skin takes many short steps:
+        // over 200 000 random cases the step count falls off about fourfold
+        // per step beyond 6, with the worst seen at 13
+        // (`guide_cast_arc_graze_just_outside_the_skin_is_free`).
+        prop_assert!(res.casts <= 2 && res.steps <= 16, "{} casts, {} steps", res.casts, res.steps);
         // Analytic gap to the ideal circle (the spline is within ~1 µm of it).
         let gap_at = |t: f32| {
             let p = start.as_dvec3() + vel.as_dvec3() * f64::from(t);
