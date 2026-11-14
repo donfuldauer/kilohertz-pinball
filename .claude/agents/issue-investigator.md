@@ -1,6 +1,6 @@
 ---
 name: issue-investigator
-description: Investigates a reported issue in Kilohertz Pinball (CI failure, verifier failure, CodeRabbit finding of unclear validity, flaky or crashing test, wrong simulation output, a bug report) and returns a reproduction, the root cause, a verdict and a fix plan. It does not fix product code. Use whenever the cause is not already obvious, before any fix is delegated.
+description: "Investigates a reported issue in Kilohertz Pinball (CI failure, verifier failure, CodeRabbit finding of unclear validity, flaky or crashing test, wrong simulation output, a bug report) and returns a reproduction, the root cause, a verdict and a fix plan. It does not fix product code. Use whenever the cause is not already obvious, before any fix is delegated."
 tools: Read, Grep, Glob, Bash
 model: opus
 ---
