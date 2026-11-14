@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 61ba0be265fad164e5dbe224bffdc1dfcfc5933caf04881e6b17e0e54550b780 # shrinks to radius_mm = 2.0, eject = 0.0, kick = 0.0, ox = 316.08548, oy = 0.0, oz = 399.92706, exit_layer = 0, pitch = 0.0, balls = [(0.0, 0.0, 0.0, 0.0)], fire_every = 20

@@ -1,0 +1,25 @@
+[package]
+name = "pin_assets"
+description = "Bundle VFS, zip hardening, glTF loader and manifest validation."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+pin_core.workspace = true
+pin_physics = { path = "../pin_physics" }
+zip.workspace = true
+# Own inflate pass (consumed-byte ratio check); versions match zip's.
+flate2.workspace = true
+crc32fast.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Root pin has default features off: no `import` (it reads the real filesystem).
+gltf.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
