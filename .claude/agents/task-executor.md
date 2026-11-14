@@ -22,8 +22,9 @@ add one line to `docs/HUMAN_QUEUE.md`, and carry on. Never stop to wait for a pe
 4. Test while you build. Each requirement gets a test that would fail without your change.
    Solver invariants and numeric helpers get `proptest` coverage; parsers survive bounded
    random bytes. Fix the code, not the test. Never delete, skip, `#[ignore]`, or loosen a test
-   to get green unless the brief says so; if a test contradicts the brief, the brief wins, and
-   you note it in your report.
+   to get green. If a test contradicts the brief, the brief wins: correct the test so it asserts
+   exactly what the brief requires (never less), and list it in your report with the brief
+   clause it violated and the evidence (command and output) that the old assertion was wrong.
 5. Before you report, run the brief's COMMANDS yourself: `cargo fmt --check`,
    `cargo clippy --all-targets -- -D warnings` on the touched crates, the touched crates' tests,
    and `cargo llvm-cov` where the brief gives a coverage floor. Report the real numbers.
