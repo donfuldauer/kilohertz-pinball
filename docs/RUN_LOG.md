@@ -257,3 +257,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 5.2 | Independent Tester | Fable 5.2 | 2 | running | — | odd-size bloom specs |
 | 5 | 4.4 | Implementer | Opus 5.5 | 1 (resumed) | done | own tests all pass (pin_app lib 26, ui_config 14 incl. 2 proptests, ui_lifecycle 14, ui_scan 7, ui_view 4, ui_fixtures 1; pin_render ui 5 + ui_overlay_gpu 4/4 lavapipe); spec 76/76; ui/ 91.2–99.4 %, pin_app 73.4 %; pin_render coverage blocked by 5.3 WIP | D1 per-key PiP defaults; step grid anchored at 0; NaN extra keys excluded from change detection; decoded-audio budget row (64–8192 MiB, default 512); load-while-busy refused; extra pin_app deps pin_assets/serde/toml/image (Reviewer to accept) |
 | 5 | 4.4 | Reviewer | Fable 5.2 | 1 | running | — | |
+| 5 | 2.6 | Implementer + Independent Tester | Fable 5.2 / Opus 5.5 | 1 | running | — | batch B; target/sp_phys |
+| 5 | 2.8 | Implementer + Independent Tester | Opus 5.5 / Fable 5.2 | 1 | running | — | batch B; target/sp_phys |

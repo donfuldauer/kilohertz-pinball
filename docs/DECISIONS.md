@@ -1773,3 +1773,6 @@ height)`, `fn render_backglass_to_image(ctx, desc: &BackglassDesc, lamps: &[f32]
 into an `Rgba8Unorm` texture with the viewport = whole image and reads it back (RGBA8, row 0 top).
 `struct ImageSet` (file → `RgbaImage`, `insert`, `get`) supplies scene images. Errors: `DisplayError`
 (`Display`, `std::error::Error`).
+
+## Orchestrator — Wave 5 batch B: 2.6 and 2.8 share a physics target dir
+2.6 and 2.8 start once disk is back at 11 GB free. Both build only `pin_physics` (+ `pin_tablegen`/`pin_assets` for 2.8), so their four roles share `target/sp_phys` (cargo locks it; stale-build rule applies). Reviewers will use `target/sp_phys_rev`.

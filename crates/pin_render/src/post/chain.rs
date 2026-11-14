@@ -187,7 +187,8 @@ struct Targets {
     scene: Level,
     /// Bloom source (prefiltered scene).
     bright: Level,
-    /// Downsample chain: `down[i]` is `(w >> (i + 1)) × (h >> (i + 1))`.
+    /// Downsample chain: `down[i]` is `w`×`h` halved `i + 1` times,
+    /// rounding up ([`level_size`]).
     down: Vec<Level>,
     /// Upsample chain: `up[i]` has the size of `down[i]`, `i < levels − 1`.
     up: Vec<Level>,
@@ -195,17 +196,33 @@ struct Targets {
     hdr: Level,
 }
 
-/// Bloom levels for a `w`×`h` image: halvings while both sides stay ≥ 1,
-/// at most `max_levels`, at least 1.
+/// Size of the next bloom level: `ceil(n / 2)` (an odd last row or column
+/// gets a half-covered texel, so no source texel is dropped).
+fn half_up(n: u32) -> u32 {
+    n.div_ceil(2).max(1)
+}
+
+/// Bloom levels for a `w`×`h` image: halvings (rounding up) while both
+/// sides are ≥ 2, at most `max_levels`, at least 1.
 fn bloom_levels(w: u32, h: u32, max_levels: u32) -> usize {
     let mut n = 0;
     let (mut a, mut b) = (w, h);
     while n < max_levels.clamp(1, 16) && a >= 2 && b >= 2 {
-        a /= 2;
-        b /= 2;
+        a = half_up(a);
+        b = half_up(b);
         n += 1;
     }
     n.max(1) as usize
+}
+
+/// Size of bloom level `i` (`0` = half the image) of a `w`×`h` image.
+fn level_size(w: u32, h: u32, i: usize) -> (u32, u32) {
+    let (mut a, mut b) = (half_up(w), half_up(h));
+    for _ in 0..i {
+        a = half_up(a);
+        b = half_up(b);
+    }
+    (a, b)
 }
 
 fn make_targets(
@@ -216,7 +233,7 @@ fn make_targets(
     output: wgpu::TextureFormat,
 ) -> Targets {
     let n = bloom_levels(w, h, max_levels);
-    let size = |i: usize| ((w >> (i + 1)).max(1), (h >> (i + 1)).max(1));
+    let size = |i: usize| level_size(w, h, i);
     let down = (0..n)
         .map(|i| {
             let (a, b) = size(i);
@@ -409,12 +426,7 @@ impl PostChain {
             })
         };
         let config = PostConfig::default();
-        if let Some(e) = pollster::block_on(scope.pop()) {
-            return Err(GpuError::InvalidArgument(format!(
-                "post chain shaders/pipelines: {e}"
-            )));
-        }
-        Ok(PostChain {
+        let chain = PostChain {
             device: device.clone(),
             queue: ctx.queue().clone(),
             output_format,
@@ -438,7 +450,14 @@ impl PostChain {
             tex_layout,
             sampler,
             stats: PostStats::default(),
-        })
+        };
+        // Pipelines and targets are created above, inside the scope.
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            return Err(GpuError::InvalidArgument(format!(
+                "post chain shaders/pipelines: {e}"
+            )));
+        }
+        Ok(chain)
     }
 
     /// The configuration.
@@ -794,7 +813,11 @@ mod tests {
         assert_eq!(bloom_levels(128, 128, 0), 1);
         assert_eq!(bloom_levels(4, 64, 6), 2);
         assert_eq!(bloom_levels(1, 1, 6), 1);
-        assert_eq!(bloom_levels(3, 3, 99), 1);
+        assert_eq!(bloom_levels(3, 3, 99), 2);
+        assert_eq!(bloom_levels(2, 2, 99), 1);
+        assert_eq!(level_size(127, 93, 0), (64, 47));
+        assert_eq!(level_size(127, 93, 1), (32, 24));
+        assert_eq!(level_size(1919, 1079, 5), (30, 17));
         assert!(output_kind(wgpu::TextureFormat::Rgba16Float).is_none());
         assert_eq!(
             output_kind(wgpu::TextureFormat::Bgra8UnormSrgb),

@@ -1233,12 +1233,12 @@ fn lcd_images_composite_with_item_and_texel_alpha() {
     let img_item = |alpha: f32| LcdItem::Image {
         file: "sprites/y.png".to_string(),
         rect: [40.0, 20.0, 200.0, 100.0],
-        alpha,
+        color: [255, 255, 255, (alpha * 255.0f32).round() as u8],
     };
     let m = |img: &RgbaImage, x0: u32, y0: u32, x1: u32, y1: u32| {
         mean(img, 2 * x0 + 8, 2 * y0 + 8, 2 * x1 - 8, 2 * y1 - 8)
     };
-    for alpha in [1.0f32, 0.5] {
+    for alpha in [1.0f32, 0.4] {
         let list = lcd_list(vec![img_item(alpha)]);
         let img = render_lcd_to_image(&ctx, spec, &list, &images, 640, 360).unwrap();
         // The image is stretched over its rect: left half x 40..120, right half 120..200.
@@ -1264,11 +1264,11 @@ fn lcd_images_composite_with_item_and_texel_alpha() {
     let green = LcdItem::Image {
         file: "sprites/g.png".to_string(),
         rect: [100.0, 50.0, 220.0, 130.0],
-        alpha: 1.0,
+        color: [255, 255, 255, 255],
     };
     let img = render_lcd_to_image(
         &ctx,
-        &spec,
+        spec,
         &lcd_list(vec![rect.clone(), green.clone()]),
         &images,
         640,
@@ -1283,7 +1283,7 @@ fn lcd_images_composite_with_item_and_texel_alpha() {
     let missing = LcdItem::Image {
         file: "nope.png".to_string(),
         rect: [0.0, 0.0, 50.0, 50.0],
-        alpha: 1.0,
+        color: [255, 255, 255, 255],
     };
     let r = render_lcd_to_image(&ctx, spec, &lcd_list(vec![missing]), &images, 640, 360);
     assert!(r.is_ok(), "a missing sprite must not be a render error");
