@@ -755,6 +755,7 @@ static void finishCcall (lua_State *L, CallInfo *ci) {
     lua_unlock(L);
     n = (*ci->u.c.k)(L, status, ci->u.c.ctx);  /* call continuation */
     lua_lock(L);
+    luaS_khzown(G(L));  /* KHZ: the continuation may have run another state */
     api_checknelems(L, n);
   }
   luaD_poscall(L, ci, n);  /* finish 'luaD_call' */
@@ -837,6 +838,7 @@ static void resume (lua_State *L, void *ud) {
         lua_unlock(L);
         n = (*ci->u.c.k)(L, LUA_YIELD, ci->u.c.ctx); /* call continuation */
         lua_lock(L);
+        luaS_khzown(G(L));  /* KHZ: the continuation may have run another state */
         api_checknelems(L, n);
       }
       luaD_poscall(L, ci, n);  /* finish 'luaD_call' */
