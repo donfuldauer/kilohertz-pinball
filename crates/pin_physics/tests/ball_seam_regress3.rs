@@ -8,7 +8,7 @@ mod util;
 #[path = "ball_seam_ref.rs"]
 mod reference;
 use glam::Vec3;
-use pin_physics::ball::{BallEvents, Geometry};
+use pin_physics::ball::{BallEvents, Geometry, MovingBodies};
 use reference::*;
 use util::*;
 
