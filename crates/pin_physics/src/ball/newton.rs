@@ -13,6 +13,10 @@ pub const MAX_CHAIN_BALLS: usize = 8;
 /// Gap (metres) up to which two captive balls count as touching.
 pub(crate) const CHAIN_TOUCH: f32 = 2.0e-5;
 
+/// Iteration budget of the end-stop event time search
+/// (`NewtonChain::end_stop_time`); fixed for determinism.
+const END_STOP_ITERATIONS: u32 = 8;
+
 /// Errors from [`NewtonChain::new`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NewtonError {
@@ -286,8 +290,127 @@ impl NewtonChain {
         }
     }
 
+    /// Curve parameter reached (unclamped) by a ball at `t0` moving at path
+    /// speed `u` for `tau` seconds, by the midpoint rule in the curve
+    /// parameter, and the tangent length that step used. `None` when the
+    /// tangent at `t0` vanishes or is NaN (the ball cannot move).
+    ///
+    /// [`Self::drift`] and the end-stop event search both use this, so the
+    /// event time puts the drift exactly on the stop.
+    fn travel(&self, t0: f32, u: f32, tau: f32) -> Option<(f32, f32)> {
+        let max_t = self.path.max_t();
+        let len0 = self.path.tangent(t0).length();
+        if len0.is_nan() || len0 <= 0.0 {
+            return None;
+        }
+        let mid = (t0 + 0.5 * u * tau / len0).clamp(0.0, max_t);
+        let len_mid = self.path.tangent(mid).length();
+        let len = if len_mid > 0.0 { len_mid } else { len0 };
+        Some((t0 + u * tau / len, len))
+    }
+
+    /// Whether parameter `t1` (reached with tangent length `len`) is at the
+    /// end stop that speed `u` points to: within [`CHAIN_TOUCH`] of it, or
+    /// past it.
+    fn at_stop(&self, t1: f32, len: f32, u: f32) -> bool {
+        let touch = CHAIN_TOUCH / len;
+        t1 <= touch && u < 0.0 || t1 >= self.path.max_t() - touch && u > 0.0
+    }
+
+    /// Signed distance (metres, positive past the stop) of `t1` beyond the
+    /// end stop that speed `u` points to, with tangent length `len`.
+    fn overshoot(&self, t1: f32, len: f32, u: f32) -> f32 {
+        if u > 0.0 {
+            (t1 - self.path.max_t()) * len
+        } else {
+            -t1 * len
+        }
+    }
+
+    /// Time within `[0, horizon]` at which ball `i`, moving as
+    /// [`Self::travel`] integrates, reaches the end stop its speed points
+    /// to: `None` if it does not reach it within `horizon`. The returned
+    /// time `h` satisfies [`Self::at_stop`] for `travel(t, u, h)` (so
+    /// [`Self::drift`] bounces the ball there) and, unless the fixed
+    /// iteration budget runs out, overshoots the stop by at most
+    /// [`CHAIN_TOUCH`].
+    ///
+    /// The first guess is the distance to the stop at the starting tangent
+    /// length over the speed, which is exact (and bit for bit the earlier
+    /// constant-scale event time) when the tangent length is constant along
+    /// the way. If it misses, a bracketed regula falsi (Illinois variant) on
+    /// the overshoot as a function of the time runs
+    /// [`END_STOP_ITERATIONS`] steps at most. The upper end of the bracket
+    /// always reaches the stop, so the bounce is never missed.
+    fn end_stop_time(&self, i: usize, horizon: f32) -> Option<f32> {
+        let (t0, u) = (self.t[i], self.speed[i]);
+        if u == 0.0 {
+            return None;
+        }
+        let (t_hi, len_hi) = self.travel(t0, u, horizon)?;
+        if !self.at_stop(t_hi, len_hi, u) {
+            return None;
+        }
+        let (t_lo, len_lo) = self.travel(t0, u, 0.0)?;
+        if self.at_stop(t_lo, len_lo, u) {
+            return Some(0.0);
+        }
+        let mut f_lo = self.overshoot(t_lo, len_lo, u);
+        let mut f_hi = self.overshoot(t_hi, len_hi, u);
+        let (mut lo, mut hi) = (0.0f32, horizon);
+        let guess = -f_lo / u.abs();
+        if guess > lo && guess < hi {
+            let (t1, len) = self.travel(t0, u, guess)?;
+            let f = self.overshoot(t1, len, u);
+            if self.at_stop(t1, len, u) {
+                if f <= CHAIN_TOUCH {
+                    return Some(guess);
+                }
+                (hi, f_hi) = (guess, f);
+            } else {
+                (lo, f_lo) = (guess, f);
+            }
+        }
+        if f_hi <= CHAIN_TOUCH {
+            return Some(hi);
+        }
+        // Which end moved last (Illinois: halve the stale end's value).
+        let mut last = 0i8;
+        for _ in 0..END_STOP_ITERATIONS {
+            let mut x = lo + (hi - lo) * (f_lo / (f_lo - f_hi));
+            if !(x > lo && x < hi) {
+                x = 0.5 * (lo + hi);
+                if !(x > lo && x < hi) {
+                    break;
+                }
+            }
+            let (t1, len) = self.travel(t0, u, x)?;
+            let f = self.overshoot(t1, len, u);
+            if self.at_stop(t1, len, u) {
+                if f <= CHAIN_TOUCH {
+                    return Some(x);
+                }
+                hi = x;
+                f_hi = f;
+                if last == 1 {
+                    f_lo *= 0.5;
+                }
+                last = 1;
+            } else {
+                lo = x;
+                f_lo = f;
+                if last == -1 {
+                    f_hi *= 0.5;
+                }
+                last = -1;
+            }
+        }
+        Some(hi)
+    }
+
     /// Moves every ball for `tau` seconds along the path (midpoint rule in
-    /// the curve parameter); balls reaching an end of the path bounce off it.
+    /// the curve parameter, [`Self::travel`]); balls reaching an end of the
+    /// path bounce off it.
     fn drift(&mut self, tau: f32) {
         let max_t = self.path.max_t();
         for i in 0..self.len() {
@@ -295,23 +418,40 @@ impl NewtonChain {
             if u == 0.0 {
                 continue;
             }
-            let t0 = self.t[i];
-            let len0 = self.path.tangent(t0).length();
-            if len0.is_nan() || len0 <= 0.0 {
+            let Some((t1, len)) = self.travel(self.t[i], u, tau) else {
                 continue;
-            }
-            let mid = (t0 + 0.5 * u * tau / len0).clamp(0.0, max_t);
-            let len_mid = self.path.tangent(mid).length();
-            let len = if len_mid > 0.0 { len_mid } else { len0 };
-            let t1 = t0 + u * tau / len;
+            };
             // Within the touch distance of the stop it is reached (the event
             // search stopped the step there, up to rounding).
-            let touch = CHAIN_TOUCH / len;
-            if t1 <= touch && u < 0.0 || t1 >= max_t - touch && u > 0.0 {
+            if self.at_stop(t1, len, u) {
                 self.speed[i] = -self.restitution * u;
             }
             self.t[i] = t1.clamp(0.0, max_t);
         }
+    }
+
+    /// Bounces, in zero time, every ball that is at an end stop (within
+    /// [`CHAIN_TOUCH`]) with its speed pointing out of the path, so that it
+    /// moves back during the rest of the step instead of spending it pressed
+    /// on the stop. Returns whether any ball bounced.
+    fn bounce_at_stops(&mut self) -> bool {
+        let mut any = false;
+        for i in 0..self.len() {
+            let u = self.speed[i];
+            if u == 0.0 {
+                continue;
+            }
+            let t = self.t[i];
+            let len = self.path.tangent(t).length();
+            if len.is_nan() || len <= 0.0 {
+                continue;
+            }
+            if self.at_stop(t, len, u) {
+                self.speed[i] = -self.restitution * u;
+                any = true;
+            }
+        }
+        any
     }
 
     /// Pushes overlapping neighbours apart along the path, keeping order.
@@ -362,9 +502,13 @@ impl NewtonChain {
         }
         self.resolve_touching();
         let mut remaining = dt;
-        let max_t = self.path.max_t();
-        // Each end-stop bounce is one more event: two per ball at most.
+        // Each end-stop bounce is one more event: two per ball at most. A
+        // ball already at a stop and moving outward bounces in zero time
+        // below without using an event.
         for _ in 0..6 * n {
+            if self.bounce_at_stops() {
+                self.resolve_touching();
+            }
             // Earliest time at which two neighbours come into contact, or a
             // ball reaches an end stop (it bounces there and the rest of the
             // step is integrated from the stop).
@@ -379,20 +523,10 @@ impl NewtonChain {
                 }
             }
             for i in 0..n {
-                let (t, u) = (self.t[i], self.speed[i]);
-                let room = if u > 0.0 {
-                    max_t - t
-                } else if u < 0.0 {
-                    t
-                } else {
-                    continue;
-                };
-                let len = self.path.tangent(t).length();
-                if room > 0.0 && len > 0.0 {
-                    let hit = room * len / u.abs();
-                    if hit.is_finite() && hit < tau {
-                        tau = hit;
-                    }
+                if let Some(hit) = self.end_stop_time(i, tau)
+                    && hit < tau
+                {
+                    tau = hit;
                 }
             }
             self.drift(tau);
@@ -524,6 +658,167 @@ mod tests {
         assert!((c.ball_speed(0) + 1.0).abs() < 1e-6, "{}", c.ball_speed(0));
         let back = c.ball_position(0).distance(c.path().point(max_t));
         assert!((back - 0.9e-3).abs() < 1e-6, "{back} m from the end");
+    }
+
+    /// Natural spline through x = 0, 30, 50 mm (y = 0, z = R): straight,
+    /// but its tangent length falls from 32.5 mm to 17.5 mm per unit
+    /// of parameter along the path (PR #16 review, finding A).
+    fn varying_tangent() -> CubicSpline {
+        CubicSpline::interpolate(&[
+            Vec3::new(0.0, 0.0, R),
+            Vec3::new(0.03, 0.0, R),
+            Vec3::new(0.05, 0.0, R),
+        ])
+        .unwrap()
+    }
+
+    /// x at curve parameter 1.5 of [`varying_tangent`], exactly: the natural
+    /// spline has `M_1 = -0.015` m and segment 1 at `s = 1/2` gives
+    /// `M_1 / 48 + (0.03 - M_1 / 6) / 2 + 0.05 / 2 = 0.0409375` m.
+    const X_AT_1_5: f32 = 0.040_937_5;
+
+    /// PR #16 finding A: on a path whose tangent length varies, the end-stop
+    /// event is timed with the integration `drift` performs, so the ball
+    /// bounces at the stop and keeps all of its post-bounce travel. At
+    /// 10 m/s for 1 ms it covers 10 mm: 9.0625 mm to the stop at x = 50 mm,
+    /// then 0.9375 mm back (the old constant-scale event time gave about
+    /// 0.31 mm back).
+    ///
+    /// Checked three ways: the event time puts `travel` within
+    /// [`CHAIN_TOUCH`] of the stop; one 1 ms step lands within 50 µm (5 % of
+    /// 0.9375 mm) of the exact return distance (what is left is the midpoint
+    /// rule's own error over the 9 mm approach, the same with or without the
+    /// fix); and ten 0.1 ms steps, which shrink that integration error,
+    /// within 5 µm.
+    #[test]
+    fn end_stop_time_follows_a_varying_tangent_length() {
+        let path = varying_tangent();
+        assert!((path.point(1.5).x - X_AT_1_5).abs() < 1e-7);
+        let lens = [0.0f32, 1.0, 1.5, 2.0].map(|t| path.tangent(t).length());
+        assert!(lens[3] < 0.6 * lens[0], "tangent lengths {lens:?}");
+        for &(e, u) in &[(1.0f32, 10.0f32), (1.0, 12.0), (0.5, 10.0), (0.8, 9.5)] {
+            let mk = || {
+                let mut c = NewtonChain::new(path.clone(), ProfileId(0), &[1.5]).unwrap();
+                c.bind(R, 0.08, e);
+                c.strike(0, u);
+                c
+            };
+            let c = mk();
+            let hit = c.end_stop_time(0, 1.0e-3).unwrap();
+            let (t1, len) = c.travel(1.5, u, hit).unwrap();
+            assert!(c.at_stop(t1, len, u), "e {e} u {u}: t1 {t1}");
+            assert!(
+                c.overshoot(t1, len, u).abs() <= CHAIN_TOUCH,
+                "e {e} u {u}: t1 {t1}"
+            );
+            let to_stop = 0.05 - X_AT_1_5;
+            let expect = e * (u * 1.0e-3 - to_stop);
+            for &(steps, tol) in &[(1, 5.0e-5f32), (10, 5.0e-6)] {
+                let mut c = mk();
+                for _ in 0..steps {
+                    c.advance(1.0e-3 / steps as f32, Vec3::ZERO, 0.0);
+                }
+                let back = 0.05 - c.ball_position(0).x;
+                assert!(
+                    (back - expect).abs() <= tol,
+                    "e {e} u {u} steps {steps}: {back} m back from the end, expected {expect}"
+                );
+                assert!((c.ball_speed(0) + e * u).abs() < 1e-5, "e {e} u {u}");
+            }
+        }
+    }
+
+    /// The same at the t = 0 end of [`varying_tangent`]: from x = 10 mm at
+    /// -20 m/s for 1 ms, the ball reaches the stop and travels the rest of
+    /// the 20 mm back.
+    #[test]
+    fn start_stop_time_follows_a_varying_tangent_length() {
+        let path = varying_tangent();
+        // Parameter of x = 10 mm by bisection (x increases along the path).
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..40 {
+            let m = 0.5 * (lo + hi);
+            if path.point(m).x < 0.01 {
+                lo = m
+            } else {
+                hi = m
+            }
+        }
+        for &e in &[1.0f32, 0.5] {
+            let mut c = NewtonChain::new(path.clone(), ProfileId(0), &[lo]).unwrap();
+            c.bind(R, 0.08, e);
+            c.strike(0, -20.0);
+            c.advance(1.0e-3, Vec3::ZERO, 0.0);
+            let expect = e * (0.02 - path.point(lo).x);
+            let back = c.ball_position(0).x;
+            assert!(
+                (back - expect).abs() <= 0.01 * expect,
+                "e {e}: {back} m from the start, expected {expect}"
+            );
+        }
+    }
+
+    /// PR #16 finding B: a ball exactly at an end stop (or within the touch
+    /// distance of it) with its speed pointing out of the path bounces at
+    /// once and travels back for the whole step, at both ends.
+    #[test]
+    fn ball_at_a_stop_moving_outward_bounces_at_once() {
+        let max_t = 11.0;
+        for &e in &[1.0f32, 0.5, 0.0] {
+            for &(t, u, end) in &[
+                (max_t, 1.0f32, max_t),
+                (max_t - 0.5 * CHAIN_TOUCH / (2.0 * R), 1.0, max_t),
+                (0.0, -1.0, 0.0),
+                (0.5 * CHAIN_TOUCH / (2.0 * R), -1.0, 0.0),
+            ] {
+                let mut c = chain(&[t], e);
+                c.strike(0, u);
+                let gap0 = c.ball_position(0).distance(c.path().point(end));
+                c.advance(1.0e-3, Vec3::ZERO, 0.0);
+                assert!(
+                    (c.ball_speed(0) + e * u).abs() < 1e-6,
+                    "e {e} t {t}: speed {}",
+                    c.ball_speed(0)
+                );
+                let back = c.ball_position(0).distance(c.path().point(end));
+                let expect = gap0 + e * 1.0e-3;
+                assert!(
+                    (back - expect).abs() < 1e-6,
+                    "e {e} t {t}: {back} m from the end, expected {expect}"
+                );
+            }
+        }
+    }
+
+    /// A ball resting at a stop stays there.
+    #[test]
+    fn ball_resting_at_a_stop_stays() {
+        for &t in &[0.0f32, 11.0] {
+            let mut c = chain(&[t], 1.0);
+            for _ in 0..10 {
+                c.advance(1.0e-3, Vec3::ZERO, 0.0);
+            }
+            assert_eq!(c.ball_t(0), t);
+            assert_eq!(c.ball_speed(0), 0.0);
+        }
+    }
+
+    /// Two touching balls pressed against the end stop by a strike: the
+    /// zero-time bounces stay within the event budget and the energy does
+    /// not grow (elastic: the impulse comes back out of the chain).
+    #[test]
+    fn chain_struck_into_a_stop_comes_back() {
+        for &e in &[1.0f32, 0.7] {
+            let mut c = chain(&[9.0, 10.0, 11.0], e);
+            c.strike(0, 1.0);
+            for _ in 0..30 {
+                c.advance(1.0e-3, Vec3::ZERO, 0.0);
+                let energy: f32 = (0..3).map(|i| c.ball_speed(i).powi(2)).sum();
+                assert!(energy <= 1.0 + 1e-5, "e {e}");
+                assert!(c.ball_t(2) <= 11.0);
+            }
+            assert!(c.ball_speed(0) < 0.0, "e {e}: {}", c.ball_speed(0));
+        }
     }
 
     #[test]
