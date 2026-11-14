@@ -201,3 +201,43 @@ fn trough_closes_when_a_ball_drains_across_a_layer_transition() {
     });
     drop(dir);
 }
+
+/// An automatic Thing Flip (no script coil command) energises the flipper
+/// in `FlipperSet::step_tick`; its rising edge is a haptic impulse from the
+/// flipper's coil like any commanded flip.
+#[test]
+fn automatic_thing_flip_is_a_haptic_event() {
+    let staging = "[flippers.staging]\ntype = \"DedicatedButton\"\ninput = \"left_flipper\"";
+    let toml = fixture_table_toml();
+    assert!(toml.contains(staging));
+    let toml = toml.replacen(
+        staging,
+        "[flippers.staging]\ntype = \"AutoSensorThingFlip\"\n\
+         trigger_switch = \"center_rollover\"\ndelay_ms = 2.0\nhold_duration_ms = 30.0",
+        1,
+    );
+    let dir = fixture_variant(
+        "thing_flip_haptic",
+        &[
+            ("table.toml", Some(toml.as_bytes())),
+            ("rules.lua", Some(b"function on_tick() end\n")),
+        ],
+    );
+    on_sim_thread(move || {
+        let mut sim = Simulation::load(&dir, SimConfig::default()).unwrap();
+        sim.advance(5);
+        assert!(sim.haptic_events().is_empty());
+        sim.set_switch("center_rollover", true).unwrap();
+        let mut seen = Vec::new();
+        let mut raised = false;
+        for _ in 0..20 {
+            sim.advance(1);
+            seen.extend(sim.haptic_events().iter().map(|h| (h.tick, h.source)));
+            raised |= sim.flipper("lower_left").unwrap().0 > 0.0;
+        }
+        assert!(raised, "the Thing Flip raised the bat");
+        // `left_flipper_coil` is coil 1.
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].1, 1, "{seen:?}");
+    });
+}

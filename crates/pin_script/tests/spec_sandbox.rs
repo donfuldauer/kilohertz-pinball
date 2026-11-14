@@ -3,6 +3,7 @@
 //! pinball name tables) and name tables are read-only.
 
 mod spec_support;
+mod temp_dir_support;
 
 use pin_core::{CoilId, ScriptError, TableScriptBackend};
 use pin_script::lua::{LuaConfig, LuaScriptBackend};
@@ -210,10 +211,8 @@ fn unprotected_use_of_forbidden_library_faults_the_script() {
 
 #[test]
 fn a_script_cannot_touch_the_file_system_or_run_processes() {
-    let dir = std::env::temp_dir().join(format!("pin_script_spec_sandbox_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let target = dir.join("escaped.txt");
-    let _ = std::fs::remove_file(&target);
+    let dir = temp_dir_support::TempDir::new("spec_sandbox");
+    let target = dir.path().join("escaped.txt");
     let path = target.to_string_lossy().replace('\\', "/");
     let src = format!(
         r#"
@@ -244,7 +243,6 @@ fn a_script_cannot_touch_the_file_system_or_run_processes() {
         !target.exists(),
         "the script created a file outside the sandbox"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------
