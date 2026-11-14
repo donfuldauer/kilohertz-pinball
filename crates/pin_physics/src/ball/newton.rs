@@ -13,6 +13,10 @@ pub const MAX_CHAIN_BALLS: usize = 8;
 /// Gap (metres) up to which two captive balls count as touching.
 pub(crate) const CHAIN_TOUCH: f32 = 2.0e-5;
 
+/// Iteration budget of the end-stop event time search
+/// (`NewtonChain::end_stop_time`); fixed for determinism.
+const END_STOP_ITERATIONS: u32 = 8;
+
 /// Errors from [`NewtonChain::new`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NewtonError {
@@ -200,12 +204,61 @@ impl NewtonChain {
     }
 
     /// Surface gap between balls `k` and `k + 1`.
+    #[cfg(test)]
     fn gap(&self, k: usize) -> f32 {
         self.ball_position(k).distance(self.ball_position(k + 1)) - 2.0 * self.radius
     }
 
+    /// Surface gap between balls `k` and `k + 1` and the cosines `(a_k,
+    /// a_{k+1})` between each ball's path tangent and the unit centre line
+    /// `d` from ball `k` to ball `k + 1`, so that a ball's world velocity
+    /// along `d` is `a_i * speed[i]`. `None` when the centres coincide or
+    /// are not finite (no centre line). A ball whose tangent vanishes gets
+    /// cosine 0: it cannot move along the centre line.
+    ///
+    /// The cosines are formed as `T·D / (|T| |D|)` from the raw vectors, so
+    /// they are exactly ±1 whenever the tangent and the centre line are
+    /// parallel coordinate-wise (a straight chain).
+    fn centre_line(&self, k: usize) -> Option<(f32, f32, f32)> {
+        let delta = self.ball_position(k + 1) - self.ball_position(k);
+        let dist = delta.length();
+        if !(dist > 0.0 && dist.is_finite()) {
+            return None;
+        }
+        let cosine = |t: f32| {
+            let tan = self.path.tangent(t);
+            let len = tan.length();
+            if len > 0.0 && len.is_finite() {
+                tan.dot(delta) / (len * dist)
+            } else {
+                0.0
+            }
+        };
+        Some((
+            dist - 2.0 * self.radius,
+            cosine(self.t[k]),
+            cosine(self.t[k + 1]),
+        ))
+    }
+
     /// Exchanges impulses between touching neighbours that approach each
-    /// other, sweeping until the chain is quiet (equal masses, 1D).
+    /// other along their centre line, sweeping until the chain is quiet
+    /// (equal masses).
+    ///
+    /// Pair `(k, k + 1)` collides when its gap is at most [`CHAIN_TOUCH`]
+    /// and its closing speed along the centre line `d`,
+    /// `c = a_k u_k - a_{k+1} u_{k+1}` (see [`Self::centre_line`]), is
+    /// positive; on a curved or hairpin path this differs from comparing the
+    /// path speeds. The equal and opposite normal impulse `±J d` acts on
+    /// balls that can only move along their path, so each path speed changes
+    /// by the impulse projected onto its tangent: `Δu_k = -a_k J / m`,
+    /// `Δu_{k+1} = a_{k+1} J / m`. `J / m = (1 + e) c / (a_k² + a_{k+1}²)`
+    /// (the pair's effective mass along `d`) turns `c` into exactly `-e c`,
+    /// and the kinetic energy changes by `-(1 - e) J c / 2 <= 0`. The update
+    /// below is that formula rearranged so that with `a_k = a_{k+1} = ±1`
+    /// (a straight chain) it is bit for bit the 1D exchange
+    /// `u_k' = ((1 - e) u_k + (1 + e) u_{k+1}) / 2` (docs/DECISIONS.md,
+    /// "issue-8 — Newton-chain contact on curved paths").
     pub(crate) fn resolve_touching(&mut self) {
         let n = self.len();
         if n < 2 {
@@ -215,11 +268,20 @@ impl NewtonChain {
         for _ in 0..2 * n {
             let mut any = false;
             for k in 0..n - 1 {
+                let Some((gap, ca, cb)) = self.centre_line(k) else {
+                    continue;
+                };
                 let (a, b) = (self.speed[k], self.speed[k + 1]);
-                // `a > b`: the pair closes in.
-                if a > b && self.gap(k) <= CHAIN_TOUCH {
-                    self.speed[k] = 0.5 * ((1.0 - e) * a + (1.0 + e) * b);
-                    self.speed[k + 1] = 0.5 * ((1.0 + e) * a + (1.0 - e) * b);
+                let closing = ca * a - cb * b;
+                let sum = ca * ca + cb * cb;
+                if closing > 0.0 && gap <= CHAIN_TOUCH && sum > 0.0 {
+                    let qa = 2.0 * ca * ca / sum;
+                    let qb = 2.0 * cb * cb / sum;
+                    let r = 2.0 * ca * cb / sum;
+                    self.speed[k] =
+                        0.5 * (((1.0 - e) + (1.0 + e) * (1.0 - qa)) * a + (1.0 + e) * r * b);
+                    self.speed[k + 1] =
+                        0.5 * ((1.0 + e) * r * a + ((1.0 - e) + (1.0 + e) * (1.0 - qb)) * b);
                     any = true;
                 }
             }
@@ -229,8 +291,127 @@ impl NewtonChain {
         }
     }
 
+    /// Curve parameter reached (unclamped) by a ball at `t0` moving at path
+    /// speed `u` for `tau` seconds, by the midpoint rule in the curve
+    /// parameter, and the tangent length that step used. `None` when the
+    /// tangent at `t0` vanishes or is NaN (the ball cannot move).
+    ///
+    /// [`Self::drift`] and the end-stop event search both use this, so the
+    /// event time puts the drift exactly on the stop.
+    fn travel(&self, t0: f32, u: f32, tau: f32) -> Option<(f32, f32)> {
+        let max_t = self.path.max_t();
+        let len0 = self.path.tangent(t0).length();
+        if len0.is_nan() || len0 <= 0.0 {
+            return None;
+        }
+        let mid = (t0 + 0.5 * u * tau / len0).clamp(0.0, max_t);
+        let len_mid = self.path.tangent(mid).length();
+        let len = if len_mid > 0.0 { len_mid } else { len0 };
+        Some((t0 + u * tau / len, len))
+    }
+
+    /// Whether parameter `t1` (reached with tangent length `len`) is at the
+    /// end stop that speed `u` points to: within [`CHAIN_TOUCH`] of it, or
+    /// past it.
+    fn at_stop(&self, t1: f32, len: f32, u: f32) -> bool {
+        let touch = CHAIN_TOUCH / len;
+        t1 <= touch && u < 0.0 || t1 >= self.path.max_t() - touch && u > 0.0
+    }
+
+    /// Signed distance (metres, positive past the stop) of `t1` beyond the
+    /// end stop that speed `u` points to, with tangent length `len`.
+    fn overshoot(&self, t1: f32, len: f32, u: f32) -> f32 {
+        if u > 0.0 {
+            (t1 - self.path.max_t()) * len
+        } else {
+            -t1 * len
+        }
+    }
+
+    /// Time within `[0, horizon]` at which ball `i`, moving as
+    /// [`Self::travel`] integrates, reaches the end stop its speed points
+    /// to: `None` if it does not reach it within `horizon`. The returned
+    /// time `h` satisfies [`Self::at_stop`] for `travel(t, u, h)` (so
+    /// [`Self::drift`] bounces the ball there) and, unless the fixed
+    /// iteration budget runs out, overshoots the stop by at most
+    /// [`CHAIN_TOUCH`].
+    ///
+    /// The first guess is the distance to the stop at the starting tangent
+    /// length over the speed, which is exact (and bit for bit the earlier
+    /// constant-scale event time) when the tangent length is constant along
+    /// the way. If it misses, a bracketed regula falsi (Illinois variant) on
+    /// the overshoot as a function of the time runs
+    /// [`END_STOP_ITERATIONS`] steps at most. The upper end of the bracket
+    /// always reaches the stop, so the bounce is never missed.
+    fn end_stop_time(&self, i: usize, horizon: f32) -> Option<f32> {
+        let (t0, u) = (self.t[i], self.speed[i]);
+        if u == 0.0 {
+            return None;
+        }
+        let (t_hi, len_hi) = self.travel(t0, u, horizon)?;
+        if !self.at_stop(t_hi, len_hi, u) {
+            return None;
+        }
+        let (t_lo, len_lo) = self.travel(t0, u, 0.0)?;
+        if self.at_stop(t_lo, len_lo, u) {
+            return Some(0.0);
+        }
+        let mut f_lo = self.overshoot(t_lo, len_lo, u);
+        let mut f_hi = self.overshoot(t_hi, len_hi, u);
+        let (mut lo, mut hi) = (0.0f32, horizon);
+        let guess = -f_lo / u.abs();
+        if guess > lo && guess < hi {
+            let (t1, len) = self.travel(t0, u, guess)?;
+            let f = self.overshoot(t1, len, u);
+            if self.at_stop(t1, len, u) {
+                if f <= CHAIN_TOUCH {
+                    return Some(guess);
+                }
+                (hi, f_hi) = (guess, f);
+            } else {
+                (lo, f_lo) = (guess, f);
+            }
+        }
+        if f_hi <= CHAIN_TOUCH {
+            return Some(hi);
+        }
+        // Which end moved last (Illinois: halve the stale end's value).
+        let mut last = 0i8;
+        for _ in 0..END_STOP_ITERATIONS {
+            let mut x = lo + (hi - lo) * (f_lo / (f_lo - f_hi));
+            if !(x > lo && x < hi) {
+                x = 0.5 * (lo + hi);
+                if !(x > lo && x < hi) {
+                    break;
+                }
+            }
+            let (t1, len) = self.travel(t0, u, x)?;
+            let f = self.overshoot(t1, len, u);
+            if self.at_stop(t1, len, u) {
+                if f <= CHAIN_TOUCH {
+                    return Some(x);
+                }
+                hi = x;
+                f_hi = f;
+                if last == 1 {
+                    f_lo *= 0.5;
+                }
+                last = 1;
+            } else {
+                lo = x;
+                f_lo = f;
+                if last == -1 {
+                    f_hi *= 0.5;
+                }
+                last = -1;
+            }
+        }
+        Some(hi)
+    }
+
     /// Moves every ball for `tau` seconds along the path (midpoint rule in
-    /// the curve parameter); balls reaching an end of the path bounce off it.
+    /// the curve parameter, [`Self::travel`]); balls reaching an end of the
+    /// path bounce off it.
     fn drift(&mut self, tau: f32) {
         let max_t = self.path.max_t();
         for i in 0..self.len() {
@@ -238,29 +419,80 @@ impl NewtonChain {
             if u == 0.0 {
                 continue;
             }
-            let t0 = self.t[i];
-            let len0 = self.path.tangent(t0).length();
-            if len0.is_nan() || len0 <= 0.0 {
+            let Some((t1, len)) = self.travel(self.t[i], u, tau) else {
                 continue;
-            }
-            let mid = (t0 + 0.5 * u * tau / len0).clamp(0.0, max_t);
-            let len_mid = self.path.tangent(mid).length();
-            let len = if len_mid > 0.0 { len_mid } else { len0 };
-            let t1 = t0 + u * tau / len;
-            if t1 <= 0.0 && u < 0.0 || t1 >= max_t && u > 0.0 {
+            };
+            // Within the touch distance of the stop it is reached (the event
+            // search stopped the step there, up to rounding).
+            if self.at_stop(t1, len, u) {
                 self.speed[i] = -self.restitution * u;
             }
             self.t[i] = t1.clamp(0.0, max_t);
         }
     }
 
-    /// Pushes overlapping neighbours apart along the path, keeping order.
+    /// Bounces, in zero time, every ball that is at an end stop (within
+    /// [`CHAIN_TOUCH`]) with its speed pointing out of the path, so that it
+    /// moves back during the rest of the step instead of spending it pressed
+    /// on the stop. Returns whether any ball bounced.
+    fn bounce_at_stops(&mut self) -> bool {
+        let mut any = false;
+        for i in 0..self.len() {
+            let u = self.speed[i];
+            if u == 0.0 {
+                continue;
+            }
+            let t = self.t[i];
+            let len = self.path.tangent(t).length();
+            if len.is_nan() || len <= 0.0 {
+                continue;
+            }
+            if self.at_stop(t, len, u) {
+                self.speed[i] = -self.restitution * u;
+                any = true;
+            }
+        }
+        any
+    }
+
+    /// Pushes overlapping neighbours apart along the path. A chain whose
+    /// parameters are strictly ascending stays strictly ascending.
+    ///
+    /// A ball moved by `ds` metres along its path changes the centre
+    /// distance of pair `(k, k + 1)` by `-a_k ds` (ball `k`) or
+    /// `a_{k+1} ds` (ball `k + 1`), with the cosines of
+    /// [`Self::centre_line`]. The overlap `D = -gap` is removed to first
+    /// order by the smallest shifts that do it: `ds_k = -a_k D / S`,
+    /// `ds_{k+1} = a_{k+1} D / S`, `S = a_k² + a_{k+1}²` (the effective-mass
+    /// denominator of [`Self::resolve_touching`]). On a straight chain
+    /// (`a_k = a_{k+1} = 1`) this is bit for bit the earlier half-and-half
+    /// shift. On a curved path one pass may leave a small residual; the two
+    /// passes take most of it, and the next steps the rest
+    /// (docs/DECISIONS.md, "issue-8 — separate() positional correction on
+    /// curved paths (CodeRabbit E)").
+    ///
+    /// What one ball cannot move at an end stop, the other moves, as far as
+    /// its own cosine allows. A ball whose new parameter would reach or pass
+    /// its other neighbour's (ball `k - 1` for ball `k`, ball `k + 2` for
+    /// ball `k + 1`) moves only halfway to that neighbour (in parameter);
+    /// the overlap left is taken by the next pair, pass or step, so a packed
+    /// chain spreads out over a few steps (docs/DECISIONS.md, "issue-8 —
+    /// separate() order handling when spill inverts a pair (CodeRabbit
+    /// F)"). A pair is skipped when it has no centre line, a tangent length
+    /// is NaN or not positive, `S < MIN_COSINE²` (path motion barely changes
+    /// the distance: the shift would be huge, or undefined at `S = 0`), or
+    /// the result would not keep the pair's own parameter order.
     fn separate(&mut self) {
+        /// Smallest cosine through which a ball takes part in the correction.
+        const MIN_COSINE: f32 = 0.1;
         let n = self.len();
         let max_t = self.path.max_t();
         for _ in 0..2 {
             for k in 0..n.saturating_sub(1) {
-                let gap = self.gap(k);
+                let Some((gap, ca, cb)) = self.centre_line(k) else {
+                    continue;
+                };
+                // Finite: `centre_line` returns only finite distances.
                 if gap >= 0.0 {
                     continue;
                 }
@@ -269,14 +501,50 @@ impl NewtonChain {
                 if la.is_nan() || lb.is_nan() || la <= 0.0 || lb <= 0.0 {
                     continue;
                 }
-                let half = -0.5 * gap;
-                let ta = self.t[k] - half / la;
-                let tb = self.t[k + 1] + half / lb;
-                // What one ball cannot move at an end stop, the other does.
-                let spill_a = (0.0 - ta).max(0.0) * la;
-                let spill_b = (tb - max_t).max(0.0) * lb;
-                self.t[k] = (ta - spill_b / la).clamp(0.0, max_t);
-                self.t[k + 1] = (tb + spill_a / lb).clamp(0.0, max_t);
+                let sum = ca * ca + cb * cb;
+                if !(sum >= MIN_COSINE * MIN_COSINE && sum.is_finite()) {
+                    continue;
+                }
+                // D / S; exactly `-0.5 * gap` when S = 2.
+                let q = -gap / sum;
+                let ta = self.t[k] + (-ca * q) / la;
+                let tb = self.t[k + 1] + (cb * q) / lb;
+                // Path length (metres) each ball would travel past an end
+                // stop, and the centre distance that leaves unmade.
+                let lost_a = ca * ((0.0 - ta).max(0.0) - (ta - max_t).max(0.0)) * la;
+                let lost_b = cb * ((tb - max_t).max(0.0) - (0.0 - tb).max(0.0)) * lb;
+                let extra_a = if ca.abs() >= MIN_COSINE {
+                    -lost_b / ca
+                } else {
+                    0.0
+                };
+                let extra_b = if cb.abs() >= MIN_COSINE {
+                    lost_a / cb
+                } else {
+                    0.0
+                };
+                let mut new_a = (ta + extra_a / la).clamp(0.0, max_t);
+                let mut new_b = (tb + extra_b / lb).clamp(0.0, max_t);
+                // A ball that would land on or past its other neighbour goes
+                // halfway to it instead (or stays, if no float lies between):
+                // the chain keeps its order, no two balls share a point, and
+                // the overlap now with that neighbour pushes it on next.
+                if k > 0 && new_a <= self.t[k - 1] {
+                    let mid = 0.5 * (self.t[k - 1] + self.t[k]);
+                    new_a = if mid > self.t[k - 1] { mid } else { self.t[k] };
+                }
+                if k + 2 < n && new_b >= self.t[k + 2] {
+                    let mid = 0.5 * (self.t[k + 1] + self.t[k + 2]);
+                    new_b = if mid < self.t[k + 2] {
+                        mid
+                    } else {
+                        self.t[k + 1]
+                    };
+                }
+                if new_a < new_b {
+                    self.t[k] = new_a;
+                    self.t[k + 1] = new_b;
+                }
             }
         }
     }
@@ -302,17 +570,42 @@ impl NewtonChain {
         }
         self.resolve_touching();
         let mut remaining = dt;
-        for _ in 0..4 * n {
-            // Earliest time at which two neighbours come into contact.
+        // Each end-stop bounce is one more event: two per ball at most. A
+        // ball already at a stop and moving outward bounces in zero time
+        // below without using an event. A ball pressed on a stop by a
+        // neighbour can be handed outward speed again by every contact
+        // resolution: at most `2 n` such zero-time stop events are taken per
+        // step, after which a ball at its stop is left to `drift` (which
+        // holds it there) so the step's time runs (docs/DECISIONS.md,
+        // "issue-8 — advance() zero-time stop/contact cycles (CodeRabbit G)").
+        let mut zero_time = 0;
+        for _ in 0..6 * n {
+            if self.bounce_at_stops() {
+                self.resolve_touching();
+            }
+            // Earliest time at which two neighbours come into contact, or a
+            // ball reaches an end stop (it bounces there and the rest of the
+            // step is integrated from the stop).
             let mut tau = remaining;
+            // The closing speed is the one `resolve_touching` tests.
             for k in 0..n.saturating_sub(1) {
-                let closing = self.speed[k] - self.speed[k + 1];
-                if closing > 0.0 {
-                    let gap = self.gap(k);
-                    if gap > CHAIN_TOUCH {
+                if let Some((gap, ca, cb)) = self.centre_line(k) {
+                    let closing = ca * self.speed[k] - cb * self.speed[k + 1];
+                    if closing > 0.0 && gap > CHAIN_TOUCH {
                         tau = tau.min(gap / closing);
                     }
                 }
+            }
+            for i in 0..n {
+                if let Some(hit) = self.end_stop_time(i, tau)
+                    && hit < tau
+                    && (hit > 0.0 || zero_time < 2 * n)
+                {
+                    tau = hit;
+                }
+            }
+            if tau == 0.0 {
+                zero_time += 1;
             }
             self.drift(tau);
             self.resolve_touching();
@@ -320,6 +613,12 @@ impl NewtonChain {
             if remaining.is_nan() || remaining <= 0.0 {
                 break;
             }
+        }
+        // Event budget spent (many contacts in one step): the rest of the
+        // step is integrated without events rather than dropped.
+        if remaining > 0.0 {
+            self.drift(remaining);
+            self.resolve_touching();
         }
         self.separate();
     }
@@ -432,6 +731,181 @@ mod tests {
     }
 
     #[test]
+    fn end_stop_bounce_keeps_the_rest_of_the_step() {
+        // 0.1 mm before the end at 1 m/s, elastic, 1 ms: it reaches the stop
+        // after 0.1 ms and travels 0.9 mm back (issue #7, PR #4 r4573613066).
+        let max_t = 11.0;
+        let mut c = chain(&[max_t - 1.0e-4 / (2.0 * R)], 1.0);
+        assert_eq!(c.path().max_t(), max_t);
+        c.strike(0, 1.0);
+        c.advance(1.0e-3, Vec3::ZERO, 0.0);
+        assert!((c.ball_speed(0) + 1.0).abs() < 1e-6, "{}", c.ball_speed(0));
+        let back = c.ball_position(0).distance(c.path().point(max_t));
+        assert!((back - 0.9e-3).abs() < 1e-6, "{back} m from the end");
+    }
+
+    /// Natural spline through x = 0, 30, 50 mm (y = 0, z = R): straight,
+    /// but its tangent length falls from 32.5 mm to 17.5 mm per unit
+    /// of parameter along the path (PR #16 review, finding A).
+    fn varying_tangent() -> CubicSpline {
+        CubicSpline::interpolate(&[
+            Vec3::new(0.0, 0.0, R),
+            Vec3::new(0.03, 0.0, R),
+            Vec3::new(0.05, 0.0, R),
+        ])
+        .unwrap()
+    }
+
+    /// x at curve parameter 1.5 of [`varying_tangent`], exactly: the natural
+    /// spline has `M_1 = -0.015` m and segment 1 at `s = 1/2` gives
+    /// `M_1 / 48 + (0.03 - M_1 / 6) / 2 + 0.05 / 2 = 0.0409375` m.
+    const X_AT_1_5: f32 = 0.040_937_5;
+
+    /// PR #16 finding A: on a path whose tangent length varies, the end-stop
+    /// event is timed with the integration `drift` performs, so the ball
+    /// bounces at the stop and keeps all of its post-bounce travel. At
+    /// 10 m/s for 1 ms it covers 10 mm: 9.0625 mm to the stop at x = 50 mm,
+    /// then 0.9375 mm back (the old constant-scale event time gave about
+    /// 0.31 mm back).
+    ///
+    /// Checked three ways: the event time puts `travel` within
+    /// [`CHAIN_TOUCH`] of the stop; one 1 ms step lands within 50 µm (5 % of
+    /// 0.9375 mm) of the exact return distance (what is left is the midpoint
+    /// rule's own error over the 9 mm approach, the same with or without the
+    /// fix); and ten 0.1 ms steps, which shrink that integration error,
+    /// within 5 µm.
+    #[test]
+    fn end_stop_time_follows_a_varying_tangent_length() {
+        let path = varying_tangent();
+        assert!((path.point(1.5).x - X_AT_1_5).abs() < 1e-7);
+        let lens = [0.0f32, 1.0, 1.5, 2.0].map(|t| path.tangent(t).length());
+        assert!(lens[3] < 0.6 * lens[0], "tangent lengths {lens:?}");
+        for &(e, u) in &[(1.0f32, 10.0f32), (1.0, 12.0), (0.5, 10.0), (0.8, 9.5)] {
+            let mk = || {
+                let mut c = NewtonChain::new(path.clone(), ProfileId(0), &[1.5]).unwrap();
+                c.bind(R, 0.08, e);
+                c.strike(0, u);
+                c
+            };
+            let c = mk();
+            let hit = c.end_stop_time(0, 1.0e-3).unwrap();
+            let (t1, len) = c.travel(1.5, u, hit).unwrap();
+            assert!(c.at_stop(t1, len, u), "e {e} u {u}: t1 {t1}");
+            assert!(
+                c.overshoot(t1, len, u).abs() <= CHAIN_TOUCH,
+                "e {e} u {u}: t1 {t1}"
+            );
+            let to_stop = 0.05 - X_AT_1_5;
+            let expect = e * (u * 1.0e-3 - to_stop);
+            for &(steps, tol) in &[(1, 5.0e-5f32), (10, 5.0e-6)] {
+                let mut c = mk();
+                for _ in 0..steps {
+                    c.advance(1.0e-3 / steps as f32, Vec3::ZERO, 0.0);
+                }
+                let back = 0.05 - c.ball_position(0).x;
+                assert!(
+                    (back - expect).abs() <= tol,
+                    "e {e} u {u} steps {steps}: {back} m back from the end, expected {expect}"
+                );
+                assert!((c.ball_speed(0) + e * u).abs() < 1e-5, "e {e} u {u}");
+            }
+        }
+    }
+
+    /// The same at the t = 0 end of [`varying_tangent`]: from x = 10 mm at
+    /// -20 m/s for 1 ms, the ball reaches the stop and travels the rest of
+    /// the 20 mm back.
+    #[test]
+    fn start_stop_time_follows_a_varying_tangent_length() {
+        let path = varying_tangent();
+        // Parameter of x = 10 mm by bisection (x increases along the path).
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..40 {
+            let m = 0.5 * (lo + hi);
+            if path.point(m).x < 0.01 {
+                lo = m
+            } else {
+                hi = m
+            }
+        }
+        for &e in &[1.0f32, 0.5] {
+            let mut c = NewtonChain::new(path.clone(), ProfileId(0), &[lo]).unwrap();
+            c.bind(R, 0.08, e);
+            c.strike(0, -20.0);
+            c.advance(1.0e-3, Vec3::ZERO, 0.0);
+            let expect = e * (0.02 - path.point(lo).x);
+            let back = c.ball_position(0).x;
+            assert!(
+                (back - expect).abs() <= 0.01 * expect,
+                "e {e}: {back} m from the start, expected {expect}"
+            );
+        }
+    }
+
+    /// PR #16 finding B: a ball exactly at an end stop (or within the touch
+    /// distance of it) with its speed pointing out of the path bounces at
+    /// once and travels back for the whole step, at both ends.
+    #[test]
+    fn ball_at_a_stop_moving_outward_bounces_at_once() {
+        let max_t = 11.0;
+        for &e in &[1.0f32, 0.5, 0.0] {
+            for &(t, u, end) in &[
+                (max_t, 1.0f32, max_t),
+                (max_t - 0.5 * CHAIN_TOUCH / (2.0 * R), 1.0, max_t),
+                (0.0, -1.0, 0.0),
+                (0.5 * CHAIN_TOUCH / (2.0 * R), -1.0, 0.0),
+            ] {
+                let mut c = chain(&[t], e);
+                c.strike(0, u);
+                let gap0 = c.ball_position(0).distance(c.path().point(end));
+                c.advance(1.0e-3, Vec3::ZERO, 0.0);
+                assert!(
+                    (c.ball_speed(0) + e * u).abs() < 1e-6,
+                    "e {e} t {t}: speed {}",
+                    c.ball_speed(0)
+                );
+                let back = c.ball_position(0).distance(c.path().point(end));
+                let expect = gap0 + e * 1.0e-3;
+                assert!(
+                    (back - expect).abs() < 1e-6,
+                    "e {e} t {t}: {back} m from the end, expected {expect}"
+                );
+            }
+        }
+    }
+
+    /// A ball resting at a stop stays there.
+    #[test]
+    fn ball_resting_at_a_stop_stays() {
+        for &t in &[0.0f32, 11.0] {
+            let mut c = chain(&[t], 1.0);
+            for _ in 0..10 {
+                c.advance(1.0e-3, Vec3::ZERO, 0.0);
+            }
+            assert_eq!(c.ball_t(0), t);
+            assert_eq!(c.ball_speed(0), 0.0);
+        }
+    }
+
+    /// Two touching balls pressed against the end stop by a strike: the
+    /// zero-time bounces stay within the event budget and the energy does
+    /// not grow (elastic: the impulse comes back out of the chain).
+    #[test]
+    fn chain_struck_into_a_stop_comes_back() {
+        for &e in &[1.0f32, 0.7] {
+            let mut c = chain(&[9.0, 10.0, 11.0], e);
+            c.strike(0, 1.0);
+            for _ in 0..30 {
+                c.advance(1.0e-3, Vec3::ZERO, 0.0);
+                let energy: f32 = (0..3).map(|i| c.ball_speed(i).powi(2)).sum();
+                assert!(energy <= 1.0 + 1e-5, "e {e}");
+                assert!(c.ball_t(2) <= 11.0);
+            }
+            assert!(c.ball_speed(0) < 0.0, "e {e}: {}", c.ball_speed(0));
+        }
+    }
+
+    #[test]
     fn gravity_and_rolling_resistance() {
         // Level path: gravity across the path, resistance stops the ball.
         let mut c = chain(&[5.0], 1.0);
@@ -461,5 +935,509 @@ mod tests {
         }
         assert_eq!(c.ball_t(0), 0.0);
         assert!(c.gap(0) > -1e-5);
+    }
+
+    /// Hairpin path: arm A along +x at y = 0 (t = 0..20, 10 mm per knot), a
+    /// half turn of diameter `w` (t = 20..23), arm B back along -x at y = `w`
+    /// (t = 23..43). With `w < 2R`, balls on opposite arms touch.
+    fn hairpin(w: f32) -> CubicSpline {
+        let mut pts: Vec<Vec3> = (0..=20)
+            .map(|i| Vec3::new(0.01 * i as f32, 0.0, R))
+            .collect();
+        let rho = 0.5 * w;
+        for j in 1..3 {
+            let a = -core::f32::consts::FRAC_PI_2 + core::f32::consts::PI * j as f32 / 3.0;
+            pts.push(Vec3::new(0.2 + rho * a.cos(), rho + rho * a.sin(), R));
+        }
+        pts.extend((0..=20).map(|i| Vec3::new(0.2 - 0.01 * i as f32, w, R)));
+        CubicSpline::interpolate(&pts).unwrap()
+    }
+
+    /// Curve parameter of the point at `x` on arm A or arm B.
+    fn arm_a(x: f32) -> f32 {
+        x / 0.01
+    }
+    fn arm_b(x: f32) -> f32 {
+        23.0 + (0.2 - x) / 0.01
+    }
+
+    fn hairpin_chain(w: f32, x0: f32, x1: f32, e: f32) -> NewtonChain {
+        let mut c = NewtonChain::new(hairpin(w), ProfileId(0), &[arm_a(x0), arm_b(x1)]).unwrap();
+        c.bind(R, 0.08, e);
+        c
+    }
+
+    fn centre_distance(c: &NewtonChain) -> f32 {
+        c.ball_position(0).distance(c.ball_position(1))
+    }
+
+    /// Issue #8: ball 0 runs back along arm A (path speed < 0, away from
+    /// ball 1 in path terms) toward ball 1 resting on arm B, less than a
+    /// diameter away across the hairpin. It must hit ball 1 rather than pass
+    /// through it (the old path-speed test applied no impulse and let the
+    /// centres come to 22.8 mm, well inside 2R = 27 mm).
+    #[test]
+    fn hairpin_neighbours_collide_across_the_bend() {
+        for &w in &[1.2 * R, 1.5 * R, 1.8 * R] {
+            for &v in &[0.3f32, 1.0, 2.5] {
+                for &e in &[1.0f32, 0.6, 0.0] {
+                    let mut c = hairpin_chain(w, 0.15, 0.08, e);
+                    c.strike(0, -v);
+                    let energy0 = v * v;
+                    let mut min_d = f32::INFINITY;
+                    let mut ticks = 0;
+                    // Until ball 0 has reached ball 1 and ball 1 has moved
+                    // away (well before ball 1 reaches its end stop).
+                    while ticks < 2000 && c.ball_position(1).x > 0.04 {
+                        c.advance(1.0e-3, Vec3::ZERO, 0.0);
+                        min_d = min_d.min(centre_distance(&c));
+                        let energy = c.ball_speed(0).powi(2) + c.ball_speed(1).powi(2);
+                        assert!(energy <= energy0 * (1.0 + 1e-5), "w {w} v {v} e {e}");
+                        ticks += 1;
+                    }
+                    assert!(
+                        min_d >= 2.0 * R - CHAIN_TOUCH,
+                        "w {w} v {v} e {e}: centres {min_d} m apart"
+                    );
+                    // Momentum went across the centre line: ball 1 runs
+                    // along arm B (-x, path speed > 0), and the pair is apart
+                    // (or, perfectly inelastic, rides on touching).
+                    assert!(c.ball_position(1).x <= 0.04, "w {w} v {v} e {e}");
+                    assert!(c.ball_speed(1) > 0.0, "w {w} v {v} e {e}");
+                    if e > 0.0 {
+                        assert!(centre_distance(&c) > 2.0 * R, "w {w} v {v} e {e}");
+                    }
+                    if e == 1.0 {
+                        // Symmetric geometry: an elastic hit hands over the
+                        // whole speed, as on a straight chain.
+                        assert!((c.ball_speed(1) - v).abs() < 1e-3 * v, "w {w} v {v}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// PR #4 review r4573613069: on a three-point hairpin, two balls with
+    /// equal path speeds approach each other in world space (zero path
+    /// closing speed). They must collide instead of overlapping.
+    #[test]
+    fn equal_path_speeds_still_collide_on_a_hairpin() {
+        let path = CubicSpline::interpolate(&[
+            Vec3::new(-0.1, 0.0, 0.0),
+            Vec3::new(0.0, 0.01, 0.0),
+            Vec3::new(-0.1, 0.02, 0.0),
+        ])
+        .unwrap();
+        for &e in &[1.0f32, 0.5] {
+            for &u in &[0.5f32, 3.0] {
+                let mut c = NewtonChain::new(path.clone(), ProfileId(0), &[0.2, 1.6]).unwrap();
+                c.bind(R, 0.08, e);
+                c.strike(0, u);
+                c.strike(1, u);
+                let mut min_d = centre_distance(&c);
+                let mut hit = false;
+                for _ in 0..40 {
+                    c.advance(1.0e-3, Vec3::ZERO, 0.0);
+                    min_d = min_d.min(centre_distance(&c));
+                    hit |= c.ball_speed(0) != u || c.ball_speed(1) != u;
+                    let energy = c.ball_speed(0).powi(2) + c.ball_speed(1).powi(2);
+                    assert!(energy <= 2.0 * u * u * (1.0 + 1e-5), "e {e} u {u}");
+                }
+                assert!(hit, "e {e} u {u}: no impulse");
+                assert!(
+                    min_d >= 2.0 * R - CHAIN_TOUCH,
+                    "e {e} u {u}: centres {min_d} m apart"
+                );
+            }
+        }
+    }
+
+    /// Overlapping neighbours on opposite arms of [`hairpin`]: ball 0 on arm
+    /// A at `x1 + reach * (1 - f)`, ball 1 on arm B at `x1`, where `reach`
+    /// is the x offset at which the surfaces just touch. The arms are
+    /// antiparallel, so `a_1 = -a_0`.
+    fn overlapping_hairpin(w: f32, x1: f32, f: f32) -> NewtonChain {
+        let reach = (4.0 * R * R - w * w).sqrt();
+        hairpin_chain(w, x1 + reach * (1.0 - f), x1, 1.0)
+    }
+
+    /// The geometries swept by the hairpin `separate` tests: arm spacing,
+    /// position of ball 1 (up to next to the turn) and overlap fraction.
+    fn hairpin_overlaps() -> impl Iterator<Item = (f32, f32, f32)> {
+        [1.2 * R, 1.5 * R, 1.8 * R].into_iter().flat_map(|w| {
+            [0.06f32, 0.1, 0.14, 0.17]
+                .into_iter()
+                .flat_map(move |x1| [0.05f32, 0.2, 0.4].into_iter().map(move |f| (w, x1, f)))
+        })
+    }
+
+    /// PR #16 CodeRabbit finding E: on a hairpin, `separate` must push
+    /// overlapping neighbours apart in world space. Shifting both balls by
+    /// the same path length moves them the same way across the bend
+    /// (`a_1 = -a_0`), so the pair only translated and the overlap stayed.
+    /// One call (two first-order passes) must increase the centre distance
+    /// and leave at most 1 % of the overlap (and never more than 1 µm);
+    /// one `advance` must then clear it to within [`CHAIN_TOUCH`].
+    #[test]
+    fn separate_clears_overlap_on_a_hairpin() {
+        for (w, x1, f) in hairpin_overlaps() {
+            let mut c = overlapping_hairpin(w, x1, f);
+            let (gap0, ca, cb) = c.centre_line(0).unwrap();
+            assert!(gap0 < 0.0 && ca < 0.0 && cb > 0.0, "w {w} x1 {x1} f {f}");
+            let d0 = centre_distance(&c);
+            c.separate();
+            let d1 = centre_distance(&c);
+            let gap1 = c.gap(0);
+            assert!(
+                d1 > d0,
+                "w {w} x1 {x1} f {f}: a {ca} {cb}, gap {gap0} -> {gap1}"
+            );
+            assert!(
+                gap1 >= -(0.01 * -gap0).min(1.0e-6),
+                "w {w} x1 {x1} f {f}: a {ca} {cb}, gap {gap0} -> {gap1}"
+            );
+            assert!(c.ball_t(0) < c.ball_t(1));
+            let mut c = overlapping_hairpin(w, x1, f);
+            c.advance(1.0e-3, Vec3::ZERO, 0.0);
+            assert!(
+                c.gap(0) >= -CHAIN_TOUCH,
+                "w {w} x1 {x1} f {f}: gap {gap0} -> {} after advance",
+                c.gap(0)
+            );
+        }
+    }
+
+    /// The `separate` of e86a430 (tangent lengths only), kept as the
+    /// reference for the straight-chain bit-identity test.
+    fn separate_straight_reference(c: &mut NewtonChain) {
+        let max_t = c.path.max_t();
+        for _ in 0..2 {
+            for k in 0..c.len() - 1 {
+                let gap = c.gap(k);
+                if gap >= 0.0 {
+                    continue;
+                }
+                let la = c.path.tangent(c.t[k]).length();
+                let lb = c.path.tangent(c.t[k + 1]).length();
+                let half = -0.5 * gap;
+                let ta = c.t[k] - half / la;
+                let tb = c.t[k + 1] + half / lb;
+                let spill_a = (0.0 - ta).max(0.0) * la;
+                let spill_b = (tb - max_t).max(0.0) * lb;
+                c.t[k] = (ta - spill_b / la).clamp(0.0, max_t);
+                c.t[k + 1] = (tb + spill_a / lb).clamp(0.0, max_t);
+            }
+        }
+    }
+
+    /// On a straight chain the cosines are exactly 1 and `separate` gives
+    /// bit for bit the old half-and-half shift, in the open and against
+    /// either end stop (spill), on uniform and non-uniform tangent lengths.
+    #[test]
+    fn separate_is_bit_identical_on_a_straight_chain() {
+        let max_t = 11.0f32;
+        let cases: [&[f32]; 7] = [
+            &[3.0, 3.9],
+            &[3.0, 3.5, 4.2],
+            &[3.0, 3.9, 4.8, 5.1],
+            &[0.0, 0.5],
+            &[0.1, 0.6, 1.2],
+            &[10.4, max_t],
+            &[0.0, 0.3, 9.4, 10.2, max_t],
+        ];
+        let mut spills = 0;
+        for params in cases {
+            let mut c = chain(params, 1.0);
+            let mut r = c.clone();
+            for k in 0..c.len() - 1 {
+                if let Some((g, ca, cb)) = c.centre_line(k)
+                    && g < 0.0
+                {
+                    assert_eq!((ca, cb), (1.0, 1.0), "{params:?}");
+                }
+            }
+            c.separate();
+            separate_straight_reference(&mut r);
+            for i in 0..c.len() {
+                assert_eq!(
+                    c.ball_t(i).to_bits(),
+                    r.ball_t(i).to_bits(),
+                    "{params:?} ball {i}"
+                );
+            }
+            spills += usize::from(c.ball_t(0) == 0.0 || c.ball_t(c.len() - 1) == max_t);
+        }
+        assert!(spills >= 3);
+        let path = varying_tangent();
+        for params in [[0.9f32, 1.4], [0.0, 0.4], [1.7, 2.0]] {
+            let mut c = NewtonChain::new(path.clone(), ProfileId(0), &params).unwrap();
+            c.bind(R, 0.08, 1.0);
+            assert!(c.gap(0) < 0.0, "{params:?}");
+            let mut r = c.clone();
+            c.separate();
+            separate_straight_reference(&mut r);
+            for i in 0..2 {
+                assert_eq!(c.ball_t(i).to_bits(), r.ball_t(i).to_bits(), "{params:?}");
+            }
+        }
+    }
+
+    /// `S = a_k² + a_{k+1}² = 0`: both tangents perpendicular to the centre
+    /// line (two balls on parallel arms at the same x, or a vanishing
+    /// tangent). Path motion cannot change the distance to first order, so
+    /// the pair is left as it is: finite, in range, deterministic.
+    #[test]
+    fn separate_skips_a_pair_with_no_effective_mass() {
+        for &w in &[1.2 * R, 1.5 * R, 1.8 * R] {
+            for &x in &[0.06f32, 0.1, 0.17] {
+                let mut c = hairpin_chain(w, x, x, 1.0);
+                let (gap, ca, cb) = c.centre_line(0).unwrap();
+                assert!(gap < 0.0);
+                assert!(ca * ca + cb * cb < 0.01, "w {w} x {x}: {ca} {cb}");
+                let before = (c.ball_t(0), c.ball_t(1));
+                c.separate();
+                assert_eq!((c.ball_t(0), c.ball_t(1)), before, "w {w} x {x}");
+                let mut d = hairpin_chain(w, x, x, 1.0);
+                for _ in 0..5 {
+                    c.advance(1.0e-3, Vec3::ZERO, 0.0);
+                    d.advance(1.0e-3, Vec3::ZERO, 0.0);
+                }
+                for i in 0..2 {
+                    let t = c.ball_t(i);
+                    assert!(t.is_finite() && (0.0..=c.path().max_t()).contains(&t));
+                    assert!(c.ball_speed(i).is_finite());
+                    assert_eq!(t.to_bits(), d.ball_t(i).to_bits());
+                }
+            }
+        }
+        // Exactly zero: a chain whose path has a vanishing tangent at both
+        // balls (all knots equal) has cosines 0 and no centre line.
+        let p = CubicSpline::interpolate(&[Vec3::ZERO, Vec3::ZERO, Vec3::ZERO]);
+        if let Ok(p) = p {
+            let mut c = NewtonChain::new(p, ProfileId(0), &[0.5, 1.5]).unwrap();
+            c.bind(R, 0.08, 1.0);
+            c.separate();
+            assert_eq!((c.ball_t(0), c.ball_t(1)), (0.5, 1.5));
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// One contact on the hairpin: the closing speed along the centre
+        /// line becomes `-e` times itself, kinetic energy does not increase,
+        /// and a separating pair is left alone.
+        #[test]
+        fn hairpin_contact_reflects_the_closing_speed(
+            w in 1.0f32 * R..1.95 * R,
+            x1 in 0.04f32..0.16,
+            overlap in 0.0f32..1.0,
+            u0 in -3.0f32..3.0,
+            u1 in -3.0f32..3.0,
+            e in 0.0f32..=1.0,
+        ) {
+            let reach = (4.0 * R * R - w * w).sqrt();
+            let x0 = x1 + reach * (1.0 - 0.5 * overlap);
+            let mut c = hairpin_chain(w, x0, x1, e);
+            c.strike(0, u0);
+            c.strike(1, u1);
+            let (gap, ca, cb) = c.centre_line(0).unwrap();
+            proptest::prop_assert!(gap <= CHAIN_TOUCH);
+            let before = ca * u0 - cb * u1;
+            c.resolve_touching();
+            let (a, b) = (c.ball_speed(0), c.ball_speed(1));
+            let after = ca * a - cb * b;
+            if before > 0.0 {
+                proptest::prop_assert!((after + e * before).abs() <= 1e-4 * (1.0 + before));
+            } else {
+                proptest::prop_assert_eq!((a, b), (u0, u1));
+            }
+            proptest::prop_assert!(a * a + b * b <= (u0 * u0 + u1 * u1) * (1.0 + 1e-5) + 1e-9);
+        }
+
+        /// `separate` on an overlapping hairpin pair: parameters stay finite,
+        /// inside the path and in order, and the centre distance grows
+        /// (or, for a skipped pair with `S < MIN_COSINE²`, stays).
+        #[test]
+        fn hairpin_separate_invariants(
+            w in 1.0f32 * R..1.95 * R,
+            x1 in 0.04f32..0.17,
+            f in 0.0f32..1.0,
+        ) {
+            let mut c = overlapping_hairpin(w, x1, f);
+            let (gap0, ca, cb) = c.centre_line(0).unwrap();
+            let d0 = centre_distance(&c);
+            c.separate();
+            let d1 = centre_distance(&c);
+            for i in 0..2 {
+                let t = c.ball_t(i);
+                proptest::prop_assert!(t.is_finite() && (0.0..=c.path().max_t()).contains(&t));
+            }
+            proptest::prop_assert!(c.ball_t(0) < c.ball_t(1));
+            if gap0 < 0.0 && ca * ca + cb * cb >= 0.01 {
+                proptest::prop_assert!(d1 > d0, "a {} {}: {} -> {}", ca, cb, d0, d1);
+            } else {
+                proptest::prop_assert_eq!(d1, d0);
+            }
+        }
+    }
+
+    /// Heavily overlapping chains, packed against either end stop or in the
+    /// open, that fit on the path (one diameter is one unit of parameter
+    /// here, and the path is 11 units long). Correcting one pair must not
+    /// carry a ball onto or past its other neighbour: that froze the chain
+    /// on 16dab2b, with an inverted or coincident pair that `separate` then
+    /// skipped forever (PR #16 CodeRabbit finding F: `[0, 0.05, 0.3]` kept
+    /// 8.1 mm of overlap; e86a430, which let the inverted pair cross back,
+    /// recovered the 3- to 6-ball starts but froze the 8 balls packed at
+    /// t = 0 on coincident pairs). After every step the parameters are
+    /// finite, in range and strictly ascending; within [`SEPARATE_STEPS`]
+    /// steps every neighbour pair is apart to within [`SEPARATE_TOL`]; twin
+    /// runs are bit-equal.
+    #[test]
+    fn overpacked_end_stays_finite_and_in_range() {
+        let starts: [&[f32]; 8] = [
+            &[0.0, 0.05, 0.3],
+            &[10.7, 10.95, 11.0],
+            &[0.0, 0.0135, 0.05],
+            &[5.0, 5.1, 5.2],
+            &[10.5, 10.9, 10.99, 11.0],
+            &[0.0, 0.2, 0.4, 0.6],
+            &[0.0, 0.01, 0.02, 10.98, 10.99, 11.0],
+            &[0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07],
+        ];
+        for params in starts {
+            let n = params.len();
+            let mut c = chain(params, 1.0);
+            let mut d = c.clone();
+            for step in 1..=SEPARATE_STEPS {
+                c.advance(1.0e-3, Vec3::ZERO, 0.0);
+                d.advance(1.0e-3, Vec3::ZERO, 0.0);
+                for i in 0..n {
+                    let t = c.ball_t(i);
+                    assert!(
+                        t.is_finite() && (0.0..=11.0).contains(&t),
+                        "{params:?} step {step}"
+                    );
+                    assert_eq!(t.to_bits(), d.ball_t(i).to_bits(), "{params:?}");
+                }
+                for k in 0..n - 1 {
+                    assert!(
+                        c.ball_t(k) < c.ball_t(k + 1),
+                        "{params:?} step {step}: order {:?}",
+                        (0..n).map(|i| c.ball_t(i)).collect::<Vec<_>>()
+                    );
+                }
+            }
+            for k in 0..n - 1 {
+                assert!(
+                    c.gap(k) >= -SEPARATE_TOL,
+                    "{params:?}: pair {k} gap {} m after {SEPARATE_STEPS} steps, t {:?}",
+                    c.gap(k),
+                    (0..n).map(|i| c.ball_t(i)).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    /// Step bound of [`overpacked_end_stays_finite_and_in_range`]. Measured:
+    /// the 3- to 6-ball starts are within [`SEPARATE_TOL`] after 4 to 16
+    /// steps, the 8 balls packed at t = 0 after 91; 300 leaves a margin of
+    /// more than 3.
+    const SEPARATE_STEPS: usize = 300;
+    /// Overlap (metres) tolerated after [`SEPARATE_STEPS`] steps: half of
+    /// [`CHAIN_TOUCH`], far below the millimetres the chain starts with
+    /// (and the 8.1 mm 16dab2b kept).
+    const SEPARATE_TOL: f32 = 1.0e-5;
+
+    /// Ball 1 struck at 1 m/s into ball 2 resting on the end stop, ball 0
+    /// struck at 1 m/s far away (PR #16 CodeRabbit finding G).
+    fn pressed_on_stop(e: f32) -> NewtonChain {
+        let mut c = chain(&[2.0, 10.0, 11.0], e);
+        c.strike(0, 1.0);
+        c.strike(1, 1.0);
+        c
+    }
+
+    /// `t0` advanced by `u` m/s for `dt` by the midpoint rule of
+    /// [`NewtonChain::travel`], computed here from the tangent lengths.
+    fn midpoint_travel(path: &CubicSpline, t0: f32, u: f32, dt: f32) -> f32 {
+        let len0 = path.tangent(t0).length();
+        t0 + u * dt / path.tangent(t0 + 0.5 * u * dt / len0).length()
+    }
+
+    /// PR #16 CodeRabbit finding G: an inelastic ball pressed on the end
+    /// stop by a struck neighbour. On 16dab2b each zero-time stop bounce
+    /// was undone by the next contact resolution, all `6 n` events were
+    /// spent at time 0 and the isolated ball 0 did not move. It must
+    /// travel its full 1 mm (to within 1e-6 of a parameter unit, 27 nm:
+    /// a few f32 ulps at t = 2), no ball may pass another, and twin runs
+    /// are bit-equal.
+    #[test]
+    fn struck_ball_pressed_on_a_stop_lets_the_step_run() {
+        for &e in &[0.0f32, 0.05, 0.3] {
+            let mut c = pressed_on_stop(e);
+            let mut d = pressed_on_stop(e);
+            let expect = midpoint_travel(c.path(), 2.0, 1.0, 1.0e-3);
+            c.advance(1.0e-3, Vec3::ZERO, 0.0);
+            d.advance(1.0e-3, Vec3::ZERO, 0.0);
+            assert!(
+                (c.ball_t(0) - expect).abs() <= 1.0e-6,
+                "e {e}: ball 0 at {}, expected {expect}",
+                c.ball_t(0)
+            );
+            for i in 0..3 {
+                let t = c.ball_t(i);
+                assert!(t.is_finite() && (0.0..=11.0).contains(&t), "e {e}");
+                assert!(c.ball_speed(i).is_finite(), "e {e}");
+                assert_eq!(t.to_bits(), d.ball_t(i).to_bits(), "e {e}");
+                assert_eq!(c.ball_speed(i).to_bits(), d.ball_speed(i).to_bits());
+            }
+            assert!(
+                c.ball_t(0) < c.ball_t(1) && c.ball_t(1) < c.ball_t(2),
+                "e {e}"
+            );
+            assert!(c.gap(1) >= -CHAIN_TOUCH, "e {e}: gap {}", c.gap(1));
+        }
+    }
+
+    /// Finding G with gravity along the path toward the end stop, which
+    /// presses ball 2 (and ball 1 behind it) on the stop every step. Ball 0
+    /// is free: its speed after step `j` is `j a dt` (`a = 5/7 g`, rolling),
+    /// so after `k` steps it has moved `a dt² k (k + 1) / 2`; each step's
+    /// own travel `j a dt²` is checked to 1e-3 relative (f32 rounding of a
+    /// sub-micrometre difference of parameters near 2). Twin runs are
+    /// bit-equal.
+    #[test]
+    fn gravity_pressing_on_a_stop_lets_the_step_run() {
+        let g = Vec3::new(9.81, 0.0, 0.0);
+        let dt = 1.0e-3f32;
+        let a = 5.0 / 7.0 * 9.81f32;
+        for &e in &[0.0f32, 0.05, 0.3] {
+            let mut c = chain(&[2.0, 10.0, 11.0], e);
+            let mut d = c.clone();
+            let p0 = c.ball_position(0);
+            for j in 1..=20 {
+                let before = c.ball_position(0);
+                c.advance(dt, g, 0.0);
+                d.advance(dt, g, 0.0);
+                let moved = before.distance(c.ball_position(0));
+                let expect = a * dt * dt * j as f32;
+                assert!(
+                    (moved - expect).abs() <= 1.0e-3 * expect,
+                    "e {e} step {j}: ball 0 moved {moved} m, expected {expect}"
+                );
+                for i in 0..3 {
+                    let t = c.ball_t(i);
+                    assert!(t.is_finite() && (0.0..=11.0).contains(&t), "e {e}");
+                    assert_eq!(t.to_bits(), d.ball_t(i).to_bits(), "e {e}");
+                }
+                assert!(c.ball_t(0) < c.ball_t(1) && c.ball_t(1) < c.ball_t(2));
+                assert!(c.gap(1) >= -CHAIN_TOUCH, "e {e} step {j}: {}", c.gap(1));
+            }
+            let total = p0.distance(c.ball_position(0));
+            let expect = a * dt * dt * 210.0;
+            assert!((total - expect).abs() <= 1.0e-3 * expect, "e {e}: {total}");
+        }
     }
 }
