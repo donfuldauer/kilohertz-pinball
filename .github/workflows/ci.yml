@@ -32,7 +32,9 @@ jobs:
   # job reports success, so required checks stay satisfied), not `paths-ignore` on the triggers
   # (which would leave required checks pending). Docs files are `**/*.md` and `.coderabbit.yaml`;
   # docs/PLAN.md counts as code because crates/pin_core/tests/schema_fixtures.rs include_str!s it.
-  # Pushes and workflow_dispatch always run everything.
+  # Pushes and workflow_dispatch always run everything. The diff is from the merge base
+  # (three dots), so later changes on the base branch are not counted, and --no-renames lists
+  # both the old and new path of a rename, so renaming a .rs file to .md still counts as code.
   changes:
     name: changes
     runs-on: ubuntu-latest
@@ -53,18 +55,21 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          code=false
-          if [ "$EVENT_NAME" != "pull_request" ]; then
-            code=true
-          else
-            while IFS= read -r f; do
-              [ -n "$f" ] || continue
-              case "$f" in
-                docs/PLAN.md) code=true ;;
-                *.md | .coderabbit.yaml) ;;
-                *) code=true ;;
-              esac
-            done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          # Fail closed: any doubt (diff failure, no merge base, empty list) runs the full CI.
+          code=true
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if files=$(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA") && [ -n "$files" ]; then
+              code=false
+              while IFS= read -r f; do
+                case "$f" in
+                  docs/PLAN.md) code=true ;;
+                  *.md | .coderabbit.yaml) ;;
+                  *) code=true ;;
+                esac
+              done <<< "$files"
+            else
+              echo "::warning::could not list changed files (or none); running full CI"
+            fi
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "code=$code"
