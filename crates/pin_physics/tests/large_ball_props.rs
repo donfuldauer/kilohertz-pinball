@@ -289,7 +289,7 @@ fn probe_flipper_penetration() {
     let mut global = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
     let ds: Vec<f32> = std::env::var("PROBE_D").map(|s| s.split(',').map(|x| x.parse().unwrap()).collect()).unwrap_or_else(|_| (0..=64).map(|k| D_MIN + (D_MAX - D_MIN) * k as f32 / 64.0).collect());
     for d in ds {
-        for torque in [2.0f32, 8.0, 16.6, 30.0, 40.0] {
+        for torque in [1.2f32, 4.0, 8.0, 12.0, 15.0] {
             for fraction in [0.35f32, 0.6, 0.79, 0.93] {
                 for gap in [0.0005f32, 0.004, 0.00998] {
                     let r = 0.5 * d;
