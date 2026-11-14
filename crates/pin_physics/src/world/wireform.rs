@@ -325,10 +325,11 @@ impl Wireform {
 /// reflection of the double-reflection step is ill-conditioned: its mirror
 /// direction `v2 / |v2|` is then set by rounding rather than by the curve, and
 /// mirroring across it can turn the normal by an arbitrary angle about the
-/// tangent. With the f64 step below the rounding in `v2` is about 1e-15 (the
-/// chord's relative error, amplified by cancellation, stays far below 1e-10
-/// for any chord longer than about 1 µm), so at this threshold the mirror
-/// direction is still good to about 1e-6 rad.
+/// tangent. `v2` is that small only when `T'` is (nearly) the mirror image of
+/// `T` across the plane normal to the chord, e.g. at an exact cusp where the
+/// path runs straight back along itself; on an ordinary step `|v2| ≈ 2`.
+/// With the f64 step below the rounding in `v2` is about 1e-15, so at this
+/// threshold the mirror direction is still good to about 1e-10 rad.
 const RMF_MIN_V2: f64 = 1.0e-4;
 
 /// Hodograph of a Bézier segment in f64: `C'(s) = 3 Σ Δp_j B²_j(s)`.
@@ -362,16 +363,22 @@ fn hodograph_chord(d: &[DVec3; 3], s0: f64, s1: f64) -> DVec3 {
 ///
 /// Double reflection (Wang et al. 2008), computed in f64 from the segments'
 /// control points: the tangents and the chords come from the hodograph, so
-/// no rounding of the f32 sample positions enters (over a short chord that
-/// rounding tilts the first mirror, and the error is only cancelled by the
-/// second mirror where that one is well conditioned). Where the second
-/// mirror is ill-conditioned (`|v2| < RMF_MIN_V2`: the tangent turns back
-/// within one sample step, at a near-cusp of the centerline), the step
-/// instead parallel-transports the normal along the shortest arc from `T`
-/// to `T'` (the minimal rotation; the limit of the double reflection when
-/// the chord bisects the turn), or, if `T'` is nearly `−T`, projects it onto
-/// the plane normal to `T'` (the limit through an exact cusp). Both keep the
-/// normal of a planar centerline exactly out of its plane.
+/// no rounding of the f32 sample positions enters. That rounding used to
+/// matter at near-cusps: where the tangent reverses within one sample step
+/// while the micro-chord runs sideways, `R₁T ≈ T` and `v2 ≈ 2T'`, so the
+/// second mirror acts only along `T'` and cannot undo the tilt that the
+/// rounded chord gave the first mirror perpendicular to `T'`. From the
+/// hodograph, a coordinate that is constant over a segment's control points
+/// has exactly zero chord and tangent components, so a centerline in an
+/// axis-aligned plane keeps its normal exactly perpendicular to the plane.
+/// (A tilted plane is only planar to within the f32 rounding of the control
+/// points, and near-cusps can still tilt its frame slightly.)
+///
+/// Where the second mirror is ill-conditioned (`|v2| < RMF_MIN_V2`, see
+/// there), the step instead parallel-transports the normal along the
+/// shortest arc from `T` to `T'` (the minimal rotation), or, if `T'` is
+/// nearly `−T` (an exact cusp), projects it onto the plane normal to `T'`.
+/// Neither depends on the rounding-set mirror direction.
 fn rotation_minimizing_normals(centerline: &CubicSpline, up_hint: Vec3) -> Vec<Vec3> {
     let k = SAMPLES_PER_SEGMENT;
     let segments = centerline.segments();
@@ -2926,10 +2933,12 @@ mod rmf_tests {
     }
 
     #[test]
-    fn sharp_turn_within_a_sample_step_uses_the_fallback() {
-        // A spline that turns 90° at an exact cusp-like corner in 3D: out
-        // along X, back, then off along Y and up. Whatever branch each step
-        // takes, the normals stay unit and perpendicular to the tangents.
+    fn frame_stays_orthonormal_around_a_3d_cusp_corner() {
+        // Out along X, back to the start (a 3D near-cusp at the turn), then
+        // off along Y and up. The normals stay unit and perpendicular to the
+        // tangents. (This input stays on the double reflection; the fallback
+        // branches are covered by the direct `minimal_rotation` test and by
+        // the exact-cusp test in `tests/wireform_frame.rs`.)
         let pts = [
             Vec3::ZERO,
             Vec3::new(0.2, 0.0, 0.0),
