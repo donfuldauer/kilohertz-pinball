@@ -163,3 +163,6 @@ Items for a person to look at after the run (PLAN.md §2.3 rule 8, §2.6 failure
   - telemetry back-pressure;
   - lane guide wall height;
   - z-up metres playfield.glb.
+- [2.5] Implementer choices to confirm: concrete Lua/Wasm backends instead of `load_backend_with` (same engine configs; needed for fault/overflow counters); mechs wired by glb node names (`<id>`, `<id>.on/.off`); cabinet edges reach the script the same tick, physics edges the next; `score(1)` = script player 1; CLI `--ticks` feeds a fixed input pattern (DECISIONS "2.5 — …" sections).
+- [3.5] DOF bridge choices to confirm (DECISIONS "3.5 — DOF bridge design choices"): resolved map passed as a temp JSON file, stop = stdin EOF + 1.5 s grace then kill, GI driven via `lamp =` mappings to `kind = "gi"` lamps (no `gi =` key in `[dof]`), lamp value round(v·255). Real DOF hosting (reflection on `DirectOutput.Pinball`) is unverified on hardware (D33) — please try it on a cabinet.
+- [4.4] Menu choices to confirm (DECISIONS "4.4 — Menu UI decisions"): table load while another is loading is refused (not queued); unknown `config.toml` keys are kept and written back; the audio decode budget sits as the last "Advanced · audio" row of the Display panel (no fourth panel); the menu toggle on controllers is the Guide button.

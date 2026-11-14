@@ -326,10 +326,7 @@ fn resolve_rejects_unknown_names() {
         r#"{ coil = "overdrive_ready", type = "S", number = 1 }"#,
     ] {
         let e = resolve_err(EXTRA, line);
-        assert!(
-            matches!(e, DofError::UnknownName { .. }),
-            "{line}: {e:?}"
-        );
+        assert!(matches!(e, DofError::UnknownName { .. }), "{line}: {e:?}");
         // Errors are printable and name the problem.
         assert!(!e.to_string().is_empty());
     }
@@ -366,10 +363,7 @@ kind = "gi"
         r#"{ lamp = "far_gi", type = "G", number = 1 }"#,
     ] {
         let e = resolve_err(extra, line);
-        assert!(
-            matches!(e, DofError::IdOutOfRange { .. }),
-            "{line}: {e:?}"
-        );
+        assert!(matches!(e, DofError::IdOutOfRange { .. }), "{line}: {e:?}");
     }
 }
 
@@ -398,7 +392,11 @@ impl JsonReader<'_> {
 
     fn eat(&mut self, c: u8) {
         self.ws();
-        assert_eq!(self.s[self.i], c, "JSON: expected {:?} at {}", c as char, self.i);
+        assert_eq!(
+            self.s[self.i], c,
+            "JSON: expected {:?} at {}",
+            c as char, self.i
+        );
         self.i += 1;
     }
 
@@ -549,7 +547,13 @@ fn check_map_json(text: &str, table_name: &str) {
                 Json::Num(v) => *v,
                 other => panic!("{k}: {other:?}"),
             };
-            (text("source"), num("id"), text("name"), text("type"), num("number"))
+            (
+                text("source"),
+                num("id"),
+                text("name"),
+                text("type"),
+                num("number"),
+            )
         })
         .collect();
     let want = [
@@ -598,7 +602,10 @@ fn write_file_writes_to_json_into_the_directory() {
     let dir = TempDir::new("write");
     let map = resolved();
     let a = map.write_file(dir.path()).expect("written");
-    assert_eq!(a.parent().map(|p| p.canonicalize().unwrap()), Some(dir.path().canonicalize().unwrap()));
+    assert_eq!(
+        a.parent().map(|p| p.canonicalize().unwrap()),
+        Some(dir.path().canonicalize().unwrap())
+    );
     assert_eq!(std::fs::read_to_string(&a).unwrap(), map.to_json());
     // A second table load must not clobber the first bridge's file.
     let b = map.write_file(dir.path()).expect("written again");
@@ -626,7 +633,10 @@ fn os(v: &[&str]) -> Vec<OsString> {
 #[test]
 fn launch_config_defaults() {
     let cfg = DofLaunchConfig::new(PathBuf::from("bridge/KilohertzDofBridge.exe"), 35120);
-    assert_eq!(cfg.bridge_exe, PathBuf::from("bridge/KilohertzDofBridge.exe"));
+    assert_eq!(
+        cfg.bridge_exe,
+        PathBuf::from("bridge/KilohertzDofBridge.exe")
+    );
     assert_eq!(cfg.udp_port, 35120);
     assert_eq!(cfg.dof_path, None);
     assert_eq!(cfg.map_dir, std::env::temp_dir());
@@ -899,7 +909,10 @@ exit 0
         // stop: stdin closes, the bridge shuts down cleanly, the file goes away.
         let status = bridge.stop().wait().expect("exit status");
         assert!(status.success(), "{status:?}");
-        assert!(done(&r.out), "the bridge was killed instead of asked to stop");
+        assert!(
+            done(&r.out),
+            "the bridge was killed instead of asked to stop"
+        );
         assert!(!map_file.exists(), "mapping file not removed on stop");
     }
 
@@ -1005,7 +1018,10 @@ exit 0
         let second_file = second.map_file().to_path_buf();
         assert!(first.stop().wait().is_some());
         assert!(!first_file.exists());
-        assert!(second_file.is_file(), "stopping one bridge removed the other's file");
+        assert!(
+            second_file.is_file(),
+            "stopping one bridge removed the other's file"
+        );
         assert!(second.stop().wait().is_some());
         assert!(!second_file.exists());
     }

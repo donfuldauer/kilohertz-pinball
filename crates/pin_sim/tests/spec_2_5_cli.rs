@@ -56,10 +56,13 @@ fn s(x: &str) -> &OsStr {
     OsStr::new(x)
 }
 
+/// `--ticks N` alone feeds the CLI's built-in input pattern (DECISIONS
+/// "2.5 — CLI input pattern"); the additive `--idle` flag feeds no inputs,
+/// which makes the run comparable with `Simulation::advance`.
 #[test]
 fn ticks_prints_the_state_hash_of_an_inputless_run() {
     let b = bundle();
-    let got = cli_hash(&[b.as_os_str(), s("--ticks"), s("2000")]);
+    let got = cli_hash(&[b.as_os_str(), s("--ticks"), s("2000"), s("--idle")]);
     let want = on_sim_thread(|| {
         let mut sim = load();
         sim.advance(2000);
@@ -67,7 +70,7 @@ fn ticks_prints_the_state_hash_of_an_inputless_run() {
     });
     assert_eq!(got, want, "CLI {got:016x} vs library {want:016x}");
 
-    // The line format is exactly `state_hash=` + 16 lower/upper hex digits.
+    // The line format is exactly `state_hash=` + 16 hex digits.
     let out = run(&[b.as_os_str(), s("--ticks"), s("3")]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let line = stdout
@@ -75,14 +78,52 @@ fn ticks_prints_the_state_hash_of_an_inputless_run() {
         .find(|l| l.starts_with("state_hash="))
         .expect("state_hash line");
     assert_eq!(line.len(), "state_hash=".len() + 16, "{line:?}");
+    assert!(out.status.success());
+
+    // `--ticks 0` is the freshly loaded state.
+    let zero = cli_hash(&[b.as_os_str(), s("--ticks"), s("0")]);
+    assert_eq!(zero, on_sim_thread(|| load().state_hash()));
+}
+
+/// Without `--idle` the run is still a pure function of (bundle, ticks,
+/// seed): the hash is the replay of what `--record-inputs` wrote.
+#[test]
+fn ticks_run_equals_the_replay_of_its_own_recording() {
+    let b = bundle();
+    let dir = temp_dir("cli_self");
+    let file = dir.join("self.khzrec");
+    let got = cli_hash(&[
+        b.as_os_str(),
+        s("--ticks"),
+        s("2500"),
+        s("--record-inputs"),
+        file.as_os_str(),
+    ]);
+    let rec = Recording::from_bytes(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(rec.seed, DEFAULT_SEED, "the default seed is recorded");
+    assert_eq!(rec.ticks, 2500);
+    assert!(rec.events.iter().all(|e| (1..=2500).contains(&e.0)));
+    assert!(rec.events.windows(2).all(|w| w[0].0 <= w[1].0), "events sorted by tick");
+    let want = on_sim_thread(move || {
+        let live = drive(&bundle(), rec.seed, rec.ticks, &rec.events);
+        (live.state_hash(), replay(&bundle(), &rec).unwrap())
+    });
+    assert_eq!(want.0, got, "driving the recorded events through step_1ms");
+    assert_eq!(want.1, got, "replay()");
 }
 
 #[test]
 fn seed_flag_sets_the_rng_seed() {
     let b = bundle();
-    let default = cli_hash(&[b.as_os_str(), s("--ticks"), s("300")]);
-    let seven = cli_hash(&[b.as_os_str(), s("--ticks"), s("300"), s("--seed"), s("7")]);
-    let eight = cli_hash(&[b.as_os_str(), s("--ticks"), s("300"), s("--seed"), s("8")]);
+    let base = [b.as_os_str(), s("--ticks"), s("300"), s("--idle")];
+    let with = |extra: &[&'static str]| {
+        let mut args: Vec<&OsStr> = base.to_vec();
+        args.extend(extra.iter().map(|x| OsStr::new(*x)));
+        cli_hash(&args)
+    };
+    let default = with(&[]);
+    let seven = with(&["--seed", "7"]);
+    let eight = with(&["--seed", "8"]);
     assert_ne!(seven, eight, "the RNG state is part of the hash");
     assert_ne!(seven, default);
     let want = on_sim_thread(|| {
@@ -92,10 +133,9 @@ fn seed_flag_sets_the_rng_seed() {
     });
     assert_eq!(seven, want);
     // The default seed is 0x4B485A = 4933722.
-    let explicit = cli_hash(&[b.as_os_str(), s("--ticks"), s("300"), s("--seed"), s("4933722")]);
-    assert_eq!(explicit, default);
+    assert_eq!(with(&["--seed", "4933722"]), default);
     // Flag order does not matter.
-    let swapped = cli_hash(&[b.as_os_str(), s("--seed"), s("7"), s("--ticks"), s("300")]);
+    let swapped = cli_hash(&[b.as_os_str(), s("--seed"), s("7"), s("--idle"), s("--ticks"), s("300")]);
     assert_eq!(swapped, seven);
 }
 

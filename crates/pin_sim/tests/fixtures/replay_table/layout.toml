@@ -8,15 +8,17 @@ width = 514.0
 length = 1070.0
 wall_height = 28.0
 
-# Outer walls: open at the bottom between the flippers (the drain).
+# Outer walls: open at the bottom between the flippers (the centre drain) and
+# beside them (outlanes wider than a ball, so no ball wedges at a pivot).
 [[walls]]
-points = [[150.0, 95.0], [0.0, 260.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 260.0], [364.0, 95.0]]
+points = [[110.0, 95.0], [0.0, 260.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 260.0], [404.0, 95.0]]
 closed = false
 material = "wood"
 
-# A catch wall below the drain, so a drained ball reaches the trough switch.
+# A V-shaped catch wall below the drains, so every drained ball rolls to the
+# trough switch at its bottom.
 [[walls]]
-points = [[60.0, 0.0], [454.0, 0.0]]
+points = [[0.0, 120.0], [257.0, 0.0], [514.0, 120.0]]
 closed = false
 material = "wood"
 

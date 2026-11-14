@@ -30,8 +30,8 @@
 //! the first table start, and a refusal is visible in the menu at once.
 
 use super::config::{
-    AUTO_PROFILE, AppConfig, CameraPreset, DisplayMode, MAX_DISPLAY_INDEX, MAX_PIP_WIDTH,
-    MIN_PIP_WIDTH, PipCorner, ScoreDisplayKind, StagingMode,
+    AUTO_PROFILE, AppConfig, CameraPreset, DisplayMode, MAX_DECODED_BUDGET_MIB, MAX_DISPLAY_INDEX,
+    MAX_PIP_WIDTH, MIN_DECODED_BUDGET_MIB, MIN_PIP_WIDTH, PipCorner, ScoreDisplayKind, StagingMode,
 };
 use super::live::InputMonitor;
 use super::scan::TableEntry;
@@ -151,6 +151,9 @@ pub enum SettingRow {
     NudgeMax,
     /// [`AppConfig::wireframe`].
     Wireframe,
+    /// [`AudioConfig::decoded_budget_mib`](super::config::AudioConfig) (advanced;
+    /// last row of the display panel; applies to the next table load).
+    DecodedAudioBudget,
 }
 
 /// Numeric range and step of a slider row.
@@ -166,7 +169,7 @@ pub struct NumericRange {
 
 impl SettingRow {
     /// Rows of the display panel, in order (menu rows `1..`).
-    pub const DISPLAY: [SettingRow; 10] = [
+    pub const DISPLAY: [SettingRow; 11] = [
         SettingRow::DisplayMode,
         SettingRow::PlayfieldDisplay,
         SettingRow::BackglassDisplay,
@@ -177,6 +180,7 @@ impl SettingRow {
         SettingRow::ScorePipWidth,
         SettingRow::CameraPreset,
         SettingRow::ScoreDisplay,
+        SettingRow::DecodedAudioBudget,
     ];
 
     /// Rows of the input panel, in order (menu rows `1..`).
@@ -224,6 +228,7 @@ impl SettingRow {
             SettingRow::NudgeDeadzone => "Nudge deadzone",
             SettingRow::NudgeMax => "Nudge max",
             SettingRow::Wireframe => "Debug wireframe",
+            SettingRow::DecodedAudioBudget => "Audio decode budget (MiB, next load)",
         }
     }
 
@@ -244,6 +249,11 @@ impl SettingRow {
             SettingRow::NudgeCurve => r(0.1, 5.0, 0.1),
             SettingRow::NudgeDeadzone => r(0.0, 1.0, 0.005),
             SettingRow::NudgeMax => r(0.0, 10.0, 0.1),
+            SettingRow::DecodedAudioBudget => r(
+                f64::from(MIN_DECODED_BUDGET_MIB),
+                f64::from(MAX_DECODED_BUDGET_MIB),
+                64.0,
+            ),
             _ => None,
         }
     }
@@ -265,6 +275,7 @@ impl SettingRow {
             SettingRow::NudgeCurve => cal.nudge.curve_exponent.into(),
             SettingRow::NudgeDeadzone => cal.nudge.deadzone.into(),
             SettingRow::NudgeMax => cal.nudge.max.into(),
+            SettingRow::DecodedAudioBudget => c.audio.decoded_budget_mib.into(),
             _ => return None,
         })
     }
@@ -293,6 +304,7 @@ impl SettingRow {
             SettingRow::PlungerReleaseWindow => {
                 format!("{}", c.calibration.plunger.release_window_ms)
             }
+            SettingRow::DecodedAudioBudget => format!("{} MiB", c.audio.decoded_budget_mib),
             SettingRow::BackglassPipWidth | SettingRow::ScorePipWidth => {
                 format!("{:.0} %", self.number(c).unwrap_or(0.0) * 100.0)
             }
@@ -353,6 +365,8 @@ pub enum SettingChange {
     NudgeMax(f32),
     /// Debug wireframe on/off.
     Wireframe(bool),
+    /// Decoded-audio budget, MiB (clamped to 64..=8192).
+    DecodedAudioBudget(u32),
 }
 
 impl SettingChange {
@@ -377,6 +391,10 @@ impl SettingChange {
             SettingRow::NudgeCurve => SettingChange::NudgeCurve(v),
             SettingRow::NudgeDeadzone => SettingChange::NudgeDeadzone(v),
             SettingRow::NudgeMax => SettingChange::NudgeMax(v),
+            SettingRow::DecodedAudioBudget => {
+                // Saturating cast; NaN → 0 (clamped to the minimum on apply).
+                SettingChange::DecodedAudioBudget(value.round() as u32)
+            }
             _ => return None,
         })
     }
@@ -1102,6 +1120,9 @@ impl MenuState {
             }
             SettingChange::NudgeMax(v) => c.calibration.nudge.max = clamp(v, SettingRow::NudgeMax),
             SettingChange::Wireframe(on) => c.wireframe = on,
+            SettingChange::DecodedAudioBudget(mib) => {
+                c.audio.decoded_budget_mib = mib.clamp(MIN_DECODED_BUDGET_MIB, MAX_DECODED_BUDGET_MIB);
+            }
         }
         if self.config != before {
             self.push_config_changed();

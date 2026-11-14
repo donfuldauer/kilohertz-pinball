@@ -223,11 +223,11 @@ fn allocation_guard_60000_ticks_with_wasm_script() {
         // The Wasm rules run: tick counter, edges, RNG, script-spawned ball.
         let mut sim = load_at(&dir, DEFAULT_SEED);
         sim.advance(10);
-        assert_eq!(sim.score(0), Some(10), "on_tick ran once per tick");
+        assert_eq!(sim.score(1), Some(10), "on_tick ran once per tick");
         sim.set_switch("start", true).unwrap();
         sim.advance(2);
-        assert_eq!(sim.score(1), Some(1));
-        assert!(sim.score(2).unwrap() >= 1);
+        assert_eq!(sim.score(2), Some(1));
+        assert!(sim.score(3).unwrap() >= 1);
         assert_eq!(sim.balls_in_play(), 1, "the Wasm rules spawned a ball");
         drop(sim);
         guard_bundle(&dir, "wasm", 3000);
@@ -244,7 +244,7 @@ fn wasm_run_is_deterministic() {
         let a = drive(&dir, 42, 3000, &events);
         let b = drive(&dir, 42, 3000, &events);
         assert_eq!(a.state_hash(), b.state_hash());
-        assert_eq!(a.score(0), Some(3000));
+        assert_eq!(a.score(1), Some(3000));
         let rec = recording(a.table_hash(), 42, 3000, &events);
         assert_eq!(pin_sim::replay::replay(&dir, &rec).unwrap(), a.state_hash());
     });

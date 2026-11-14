@@ -406,7 +406,11 @@ impl ReflScene {
     /// Chrome ball at the origin (draw 0) and the red insert `q` at lamp level `level`.
     fn render(&mut self, q: &Quad, level: f32, env: Environment) -> (HdrImage, LdrImage, V3) {
         let cam = CAM.pbr();
-        let ball = DrawItem::new(self.sphere, translation([0.0; 3]), MaterialKind::ChromeSteel);
+        let ball = DrawItem::new(
+            self.sphere,
+            translation([0.0; 3]),
+            MaterialKind::ChromeSteel,
+        );
         // The unit quad scaled to the emitter's side: scale the in-plane axes.
         let mut model = q.model();
         for col in 0..2 {
@@ -609,10 +613,7 @@ fn probe_map_holds_the_emitter_in_its_world_direction() {
         let mut off_max = 0.0f32;
         for y in 0..res {
             for x in 0..res {
-                let d = oct_decode([
-                    (x as f32 + 0.5) / res as f32,
-                    (y as f32 + 0.5) / res as f32,
-                ]);
+                let d = oct_decode([(x as f32 + 0.5) / res as f32, (y as f32 + 0.5) / res as f32]);
                 let cosang = dot(d, axis);
                 let p = map.at(x, y);
                 if cosang > 0.985 {
@@ -627,9 +628,16 @@ fn probe_map_holds_the_emitter_in_its_world_direction() {
                 }
             }
         }
-        assert!(on.1 >= 20, "axis {axis:?}: only {} texels near the axis", on.1);
+        assert!(
+            on.1 >= 20,
+            "axis {axis:?}: only {} texels near the axis",
+            on.1
+        );
         let mean = on.0.map(|v| (v / f64::from(on.1)) as f32);
-        println!("axis {axis:?}: probe mean {mean:?} over {} texels, off max {off_max}", on.1);
+        println!(
+            "axis {axis:?}: probe mean {mean:?} over {} texels, off max {off_max}",
+            on.1
+        );
         for c in 0..3 {
             assert!(
                 (mean[c] - radiance[c]).abs() < 0.15 * radiance[c] + 0.02,
@@ -785,7 +793,10 @@ fn a_ball_without_its_own_probe_reuses_the_nearest_probe() {
         .render_reflected_to_image(&ctx, &frame, None)
         .expect("render");
     for r in &regs {
-        assert!(mean_rgb(&plain, &r.inside)[1] < 0.02, "control is not black");
+        assert!(
+            mean_rgb(&plain, &r.inside)[1] < 0.02,
+            "control is not black"
+        );
     }
 
     let mut probes = OctahedralProbes::new(
@@ -825,7 +836,10 @@ fn a_ball_without_its_own_probe_reuses_the_nearest_probe() {
             m[1] > 0.6 * chrome_g * green[1] && m[1] < 1.2 * chrome_g * green[1],
             "frame 1: ball {i} does not show the ceiling through probe {owner}: {m:?}"
         );
-        assert!(m[1] > 8.0 * m[0].max(m[2]), "ball {i} region not green: {m:?}");
+        assert!(
+            m[1] > 8.0 * m[0].max(m[2]),
+            "ball {i} region not green: {m:?}"
+        );
     }
     // Frame 2: the other ball gets its own probe; both still show the ceiling.
     probes
@@ -878,11 +892,7 @@ impl Chain {
     fn new(size: u32, format: wgpu::TextureFormat) -> Option<Chain> {
         let ctx = gpu()?;
         let chain = PostChain::new(&ctx, size, size, format).expect("PostChain::new");
-        let cam = Cam {
-            size,
-            ..CAM
-        }
-        .pbr();
+        let cam = Cam { size, ..CAM }.pbr();
         Some(Chain { ctx, chain, cam })
     }
     fn hdr(&mut self, cfg: PostConfig, img: &HdrImage, balls: &[MotionBall]) -> HdrImage {
@@ -982,22 +992,34 @@ fn tone_mapping_matches_the_aces_reference_at_sample_points() {
         return;
     };
     let img = image(64, chart_value);
-    let narkowicz = |x: f32| ((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)).clamp(0.0, 1.0);
+    let narkowicz =
+        |x: f32| ((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)).clamp(0.0, 1.0);
 
     let ldr = c.ldr(plain(ToneMap::AcesFilm, 1.0), &img, &[]);
     check_chart(&ldr, "ACES, exposure 1", narkowicz);
     // The CPU reference agrees with the fit too (ties the shader to `aces_film`).
     check_chart(&ldr, "ACES vs aces_film", aces_film);
     // Mid grey 0.18 → 0.267 → sRGB 141; white 1.0 → 0.804 → 232; 16 → clipped.
-    assert!((i32::from(ldr.at(36, 4)[1]) - 141).abs() <= 2, "{:?}", ldr.at(36, 4));
-    assert!((i32::from(ldr.at(4, 12)[1]) - 232).abs() <= 2, "{:?}", ldr.at(4, 12));
+    assert!(
+        (i32::from(ldr.at(36, 4)[1]) - 141).abs() <= 2,
+        "{:?}",
+        ldr.at(36, 4)
+    );
+    assert!(
+        (i32::from(ldr.at(4, 12)[1]) - 232).abs() <= 2,
+        "{:?}",
+        ldr.at(4, 12)
+    );
     assert_eq!(ldr.at(60, 12)[0], 255);
     // Monotone along the grey ramp.
     let ramp: Vec<u8> = (0..16)
         .map(|i| ldr.at((i % 8) * 8 + 4, (i / 8) * 8 + 4)[1])
         .collect();
     assert!(ramp.windows(2).all(|w| w[0] <= w[1]), "grey ramp {ramp:?}");
-    assert!(ramp[..14].windows(2).all(|w| w[0] < w[1]), "grey ramp {ramp:?}");
+    assert!(
+        ramp[..14].windows(2).all(|w| w[0] < w[1]),
+        "grey ramp {ramp:?}"
+    );
 
     // Exposure is a linear scale before the curve (5.1 N4: the tone-mapping stage owns it).
     for e in [0.25f32, 0.5, 2.0] {
@@ -1066,13 +1088,12 @@ fn in_spot(x: u32, y: u32) -> bool {
 }
 
 fn spot_image() -> HdrImage {
-    image(BLOOM_SIZE, |x, y| {
-        if in_spot(x, y) {
-            SPOT
-        } else {
-            [BLOOM_BG; 3]
-        }
-    })
+    image(
+        BLOOM_SIZE,
+        |x, y| {
+            if in_spot(x, y) { SPOT } else { [BLOOM_BG; 3] }
+        },
+    )
 }
 
 fn bloom_only(bloom: BloomConfig) -> PostConfig {
@@ -1106,15 +1127,24 @@ fn bloom_conserves_energy_and_moves_only_the_part_above_the_threshold() {
         return;
     };
     let cfg = BloomConfig::default();
-    assert!(BLOOM_BG < cfg.threshold - cfg.knee, "test background must be below the knee");
+    assert!(
+        BLOOM_BG < cfg.threshold - cfg.knee,
+        "test background must be below the knee"
+    );
     let img = spot_image();
     let out = c.hdr(bloom_only(cfg), &img, &[]);
     let stats = c.chain.stats();
-    assert!(stats.bloom_levels >= 2 && stats.bloom_levels <= cfg.max_levels, "{stats:?}");
+    assert!(
+        stats.bloom_levels >= 2 && stats.bloom_levels <= cfg.max_levels,
+        "{stats:?}"
+    );
 
     let (sum_in, sum_out) = (total_lum(&img), total_lum(&out));
     let moved_max = f64::from(cfg.intensity) * bright_lum(&img, &cfg);
-    assert!(moved_max > 1.0, "test image has nothing above the threshold");
+    assert!(
+        moved_max > 1.0,
+        "test image has nothing above the threshold"
+    );
     let mut lost = 0.0f64; // leaves the spot
     let mut gained = 0.0f64; // arrives outside
     let mut darkened = 0.0f32;
@@ -1141,14 +1171,28 @@ fn bloom_conserves_energy_and_moves_only_the_part_above_the_threshold() {
         "energy not conserved: {lost} left the spot, {gained} arrived"
     );
     // Only the above-threshold part moves, and most of it leaves a 4×4 spot.
-    assert!(lost <= 1.001 * moved_max, "more energy moved ({lost}) than is above the threshold ({moved_max})");
-    assert!(lost >= 0.5 * moved_max, "bloom too weak: {lost} of {moved_max}");
+    assert!(
+        lost <= 1.001 * moved_max,
+        "more energy moved ({lost}) than is above the threshold ({moved_max})"
+    );
+    assert!(
+        lost >= 0.5 * moved_max,
+        "bloom too weak: {lost} of {moved_max}"
+    );
     // Outside the spot the bloom only adds light.
-    assert!(darkened > -2e-3, "bloom darkened a background pixel by {darkened}");
+    assert!(
+        darkened > -2e-3,
+        "bloom darkened a background pixel by {darkened}"
+    );
     // The spot keeps its colour (out = c − i·bright + i·blur(bright), all ∝ the spot hue).
     let centre = out.at(63, 63);
-    assert!(centre[0] < SPOT[0] && centre[0] > (1.0 - cfg.intensity) * SPOT[0] - 0.01, "{centre:?}");
-    assert!((centre[1] / centre[0] - 0.5).abs() < 0.02 && (centre[2] / centre[0] - 0.25).abs() < 0.02);
+    assert!(
+        centre[0] < SPOT[0] && centre[0] > (1.0 - cfg.intensity) * SPOT[0] - 0.01,
+        "{centre:?}"
+    );
+    assert!(
+        (centre[1] / centre[0] - 0.5).abs() < 0.02 && (centre[2] / centre[0] - 0.25).abs() < 0.02
+    );
 
     // Halo shape: centred, symmetric, soft, decaying, with the hue of the source.
     let gain = |x: u32, y: u32| lum(out.at(x, y)) - BLOOM_BG;
@@ -1163,15 +1207,30 @@ fn bloom_conserves_energy_and_moves_only_the_part_above_the_threshold() {
             gx += g * (f64::from(x) + 0.5);
             gy += g * (f64::from(y) + 0.5);
             gsum += g;
-            if x < 64 { left += g } else { right += g }
+            if x < 64 {
+                left += g
+            } else {
+                right += g
+            }
             if y < 64 { top += g } else { bottom += g }
         }
     }
     let (cx, cy) = (gx / gsum, gy / gsum);
-    println!("halo centroid ({cx:.2}, {cy:.2}); halves L {left:.3} R {right:.3} T {top:.3} B {bottom:.3}");
-    assert!((cx - 64.0).abs() < 0.75 && (cy - 64.0).abs() < 0.75, "halo off centre: ({cx}, {cy})");
-    assert!((left - right).abs() < 0.05 * (left + right), "halo lopsided: L {left} R {right}");
-    assert!((top - bottom).abs() < 0.05 * (top + bottom), "halo lopsided: T {top} B {bottom}");
+    println!(
+        "halo centroid ({cx:.2}, {cy:.2}); halves L {left:.3} R {right:.3} T {top:.3} B {bottom:.3}"
+    );
+    assert!(
+        (cx - 64.0).abs() < 0.75 && (cy - 64.0).abs() < 0.75,
+        "halo off centre: ({cx}, {cy})"
+    );
+    assert!(
+        (left - right).abs() < 0.05 * (left + right),
+        "halo lopsided: L {left} R {right}"
+    );
+    assert!(
+        (top - bottom).abs() < 0.05 * (top + bottom),
+        "halo lopsided: T {top} B {bottom}"
+    );
     // Ring means decay with distance.
     let radii = [5.0f32, 8.0, 12.0, 18.0, 26.0, 38.0, 54.0];
     let mut rings = Vec::new();
@@ -1189,8 +1248,14 @@ fn bloom_conserves_energy_and_moves_only_the_part_above_the_threshold() {
         rings.push(s / f64::from(n));
     }
     println!("halo ring means {rings:?}");
-    assert!(rings[0] > 0.01, "no visible halo next to the spot: {rings:?}");
-    assert!(rings.windows(2).all(|w| w[1] < w[0]), "halo does not decay: {rings:?}");
+    assert!(
+        rings[0] > 0.01,
+        "no visible halo next to the spot: {rings:?}"
+    );
+    assert!(
+        rings.windows(2).all(|w| w[1] < w[0]),
+        "halo does not decay: {rings:?}"
+    );
     // Soft, not blocky: between neighbouring pixels the halo changes by a fraction of its
     // local value (a nearest-neighbour upsample of a coarse mip would jump).
     let mut worst = 0.0f32;
@@ -1207,7 +1272,11 @@ fn bloom_conserves_energy_and_moves_only_the_part_above_the_threshold() {
         }
     }
     println!("halo worst neighbour jump {worst:.3}");
-    assert!(worst < 0.5, "halo is blocky: neighbouring pixels differ by {:.0} %", worst * 100.0);
+    assert!(
+        worst < 0.5,
+        "halo is blocky: neighbouring pixels differ by {:.0} %",
+        worst * 100.0
+    );
     // Hue of the halo = hue of the bright source.
     let h = out.at(72, 64);
     let halo = [h[0] - BLOOM_BG, h[1] - BLOOM_BG, h[2] - BLOOM_BG];
@@ -1233,7 +1302,11 @@ fn bloom_conserves_energy_and_moves_only_the_part_above_the_threshold() {
             }
         }
     }
-    assert!((gained2 / gained - 2.0).abs() < 0.05, "halo energy ratio {}", gained2 / gained);
+    assert!(
+        (gained2 / gained - 2.0).abs() < 0.05,
+        "halo energy ratio {}",
+        gained2 / gained
+    );
     assert!((total_lum(&out2) - sum_in).abs() <= 0.05 * 2.0 * moved_max);
 
     // Secondary evidence (D30 b): the golden display image, after the analytic checks.
@@ -1264,8 +1337,14 @@ fn bloom_leaves_images_below_the_threshold_untouched() {
     );
     for ((a, b), src) in on.pixels.iter().zip(&off.pixels).zip(&img.pixels) {
         for ch in 0..3 {
-            assert!((a[ch] - b[ch]).abs() <= 1e-3, "bloom changed a dim pixel: {a:?} vs {b:?}");
-            assert!((b[ch] - src[ch]).abs() <= 1e-3, "disabled bloom changed a pixel: {b:?} vs {src:?}");
+            assert!(
+                (a[ch] - b[ch]).abs() <= 1e-3,
+                "bloom changed a dim pixel: {a:?} vs {b:?}"
+            );
+            assert!(
+                (b[ch] - src[ch]).abs() <= 1e-3,
+                "disabled bloom changed a pixel: {b:?} vs {src:?}"
+            );
         }
     }
     // And the display images are identical.
@@ -1341,11 +1420,23 @@ fn a_firefly_pixel_blooms_no_more_than_the_clamp() {
         }
     }
     let limit = f64::from(cfg.intensity * cfg.firefly_clamp);
-    println!("firefly: halo energy {gained:.3} (limit {limit:.3}), halo peak {peak:.4}, centre {:?}", out.at(64, 64));
-    assert!(gained <= 1.02 * limit, "firefly halo energy {gained} > intensity · clamp = {limit}");
-    assert!(gained >= 0.3 * limit, "a firefly at the clamp still blooms: {gained}");
+    println!(
+        "firefly: halo energy {gained:.3} (limit {limit:.3}), halo peak {peak:.4}, centre {:?}",
+        out.at(64, 64)
+    );
+    assert!(
+        gained <= 1.02 * limit,
+        "firefly halo energy {gained} > intensity · clamp = {limit}"
+    );
+    assert!(
+        gained >= 0.3 * limit,
+        "a firefly at the clamp still blooms: {gained}"
+    );
     // One pixel of at most 64 spread over at least a 13-tap footprint: a faint halo.
-    assert!(peak < f32::from(1u8) * cfg.intensity * cfg.firefly_clamp * 0.25, "halo peak {peak}");
+    assert!(
+        peak < f32::from(1u8) * cfg.intensity * cfg.firefly_clamp * 0.25,
+        "halo peak {peak}"
+    );
     // The pixel itself only loses what it gave.
     let centre = lum(out.at(64, 64));
     assert!(
@@ -1476,12 +1567,18 @@ fn motion_blur_is_zero_for_a_still_ball() {
 
     let off_hdr = c.hdr(motion_cfg(false), &img, &[still]);
     let on_hdr = c.hdr(motion_cfg(true), &img, &[still]);
-    assert_eq!(on_hdr.pixels, off_hdr.pixels, "a still ball must leave the image bit-identical");
+    assert_eq!(
+        on_hdr.pixels, off_hdr.pixels,
+        "a still ball must leave the image bit-identical"
+    );
     let none_hdr = c.hdr(motion_cfg(true), &img, &[]);
     assert_eq!(none_hdr.pixels, off_hdr.pixels, "no balls: nothing to blur");
     let off = c.ldr(motion_cfg(false), &img, &[still]);
     let on = c.ldr(motion_cfg(true), &img, &[still]);
-    assert_eq!(on.pixels, off.pixels, "display image changed for a still ball");
+    assert_eq!(
+        on.pixels, off.pixels,
+        "display image changed for a still ball"
+    );
     // And the image is the input (linear tone map, exposure 1).
     for (p, q) in off_hdr.pixels.iter().zip(&img.pixels) {
         assert!((p[0] - q[0]).abs() < 1e-3);
@@ -1508,21 +1605,36 @@ fn motion_blur_streak_is_aligned_with_the_velocity() {
             radius: MB_R,
         };
         let m = screen_motion(&c.cam, &ball, shutter, MB_SIZE, MB_SIZE).expect("in view");
-        let d = [f64::from(m.displacement_px[0]), f64::from(m.displacement_px[1])];
+        let d = [
+            f64::from(m.displacement_px[0]),
+            f64::from(m.displacement_px[1]),
+        ];
         let dl = d[0].hypot(d[1]);
         // Independent expectation of the streak direction and length (pixels, y down).
         let want_dir = [f64::from(a.cos()), -f64::from(a.sin())];
         let want_len = f64::from(speed * shutter * mb_cam().px_per_m_at_origin());
-        assert!((dl - want_len).abs() < 0.05 * want_len, "{deg}°: |d| {dl} vs {want_len}");
-        assert!((d[0] * want_dir[0] + d[1] * want_dir[1]) / dl > 0.995, "{deg}°: {d:?}");
+        assert!(
+            (dl - want_len).abs() < 0.05 * want_len,
+            "{deg}°: |d| {dl} vs {want_len}"
+        );
+        assert!(
+            (d[0] * want_dir[0] + d[1] * want_dir[1]) / dl > 0.995,
+            "{deg}°: {d:?}"
+        );
 
         let img = disc_image(m.center_px, m.radius_px);
         let sharp = c.hdr(motion_cfg(false), &img, &[ball]);
         let blurred = c.hdr(motion_cfg(true), &img, &[ball]);
         let stats = c.chain.stats();
         assert!(stats.blurred_balls >= 1, "{deg}°: {stats:?}");
-        assert!(stats.max_blur_px > 0.5 * want_len as f32 && stats.max_blur_px <= 64.0, "{stats:?}");
-        assert_ne!(blurred.pixels, sharp.pixels, "{deg}°: a moving ball was not blurred");
+        assert!(
+            stats.max_blur_px > 0.5 * want_len as f32 && stats.max_blur_px <= 64.0,
+            "{stats:?}"
+        );
+        assert_ne!(
+            blurred.pixels, sharp.pixels,
+            "{deg}°: a moving ball was not blurred"
+        );
 
         let (c0, _, s1, s2, e0) = moments(&sharp, MB_BG);
         let (c1, axis, l1, l2, e1) = moments(&blurred, MB_BG);
@@ -1535,10 +1647,19 @@ fn motion_blur_streak_is_aligned_with_the_velocity() {
         // The streak is elongated…
         assert!(l1 > 1.3 * l2, "{deg}°: no streak (variances {l1} / {l2})");
         // …along the velocity (within 8°)…
-        assert!(cosang > 0.990, "{deg}°: streak axis {axis:?} vs velocity {want_dir:?}");
+        assert!(
+            cosang > 0.990,
+            "{deg}°: streak axis {axis:?} vs velocity {want_dir:?}"
+        );
         // …and not across it: the width stays the ball's.
-        assert!(l2 < 1.25 * s2 + 1.0, "{deg}°: the ball got wider across its velocity: {s2} → {l2}");
-        assert!(l1 > 1.3 * s1, "{deg}°: no elongation along the velocity: {s1} → {l1}");
+        assert!(
+            l2 < 1.25 * s2 + 1.0,
+            "{deg}°: the ball got wider across its velocity: {s2} → {l2}"
+        );
+        assert!(
+            l1 > 1.3 * s1,
+            "{deg}°: no elongation along the velocity: {s1} → {l1}"
+        );
         // Length of the streak ≈ diameter + displacement; width ≈ diameter.
         let level = MB_BG + 0.035 * contrast;
         let along = extent(&blurred, level, want_dir);
@@ -1549,22 +1670,35 @@ fn motion_blur_streak_is_aligned_with_the_velocity() {
             along > diameter + 0.6 * dl && along < diameter + 1.25 * dl + 4.0,
             "{deg}°: streak length {along} vs diameter {diameter} + displacement {dl}"
         );
-        assert!(across < diameter + 4.0, "{deg}°: streak width {across} vs diameter {diameter}");
+        assert!(
+            across < diameter + 4.0,
+            "{deg}°: streak width {across} vs diameter {diameter}"
+        );
         // The streak stays near the ball: its centroid moves by at most the displacement.
         let shift = (c1[0] - c0[0]).hypot(c1[1] - c0[1]);
         assert!(shift < 0.6 * dl + 1.0, "{deg}°: centroid moved {shift} px");
         // A mean over the shutter never brightens or darkens beyond the input range, and
         // keeps the light of the ball (within 25 %).
         for p in &blurred.pixels {
-            assert!(p[0] <= MB_BALL + 2e-3 && p[0] >= MB_BG - 2e-3, "{deg}°: pixel {p:?} out of range");
+            assert!(
+                p[0] <= MB_BALL + 2e-3 && p[0] >= MB_BG - 2e-3,
+                "{deg}°: pixel {p:?} out of range"
+            );
         }
-        assert!((e1 / e0 - 1.0).abs() < 0.25, "{deg}°: ball light changed {e0} → {e1}");
+        assert!(
+            (e1 / e0 - 1.0).abs() < 0.25,
+            "{deg}°: ball light changed {e0} → {e1}"
+        );
         // Pixels far from the ball are untouched.
         for y in 0..MB_SIZE {
             for x in 0..MB_SIZE {
                 let r = (f64::from(x) + 0.5 - c0[0]).hypot(f64::from(y) + 0.5 - c0[1]);
                 if r > f64::from(m.radius_px) + dl + 3.0 {
-                    assert_eq!(blurred.at(x, y), sharp.at(x, y), "{deg}°: far pixel ({x}, {y}) changed");
+                    assert_eq!(
+                        blurred.at(x, y),
+                        sharp.at(x, y),
+                        "{deg}°: far pixel ({x}, {y}) changed"
+                    );
                 }
             }
         }
@@ -1593,7 +1727,10 @@ fn motion_blur_grows_with_speed_and_is_clamped() {
         let out = c.hdr(motion_cfg(true), &img, &[ball]);
         let along = extent(&out, level, [1.0, 0.0]);
         println!("speed {speed}: streak length {along:.1}");
-        assert!(along > last, "streak does not grow with speed: {last} → {along}");
+        assert!(
+            along > last,
+            "streak does not grow with speed: {last} → {along}"
+        );
         last = along;
     }
     // A short clamp limits the streak whatever the speed.
@@ -1611,8 +1748,15 @@ fn motion_blur_grows_with_speed_and_is_clamped() {
     let out = c.hdr(cfg, &img, &[fast]);
     let along = extent(&out, level, [1.0, 0.0]);
     let diameter = 2.0 * f64::from(m.radius_px);
-    assert!(along <= diameter + 8.0 + 4.0, "clamped streak is {along} px long (diameter {diameter})");
-    assert!(c.chain.stats().max_blur_px <= 8.0 + 1e-3, "{:?}", c.chain.stats());
+    assert!(
+        along <= diameter + 8.0 + 4.0,
+        "clamped streak is {along} px long (diameter {diameter})"
+    );
+    assert!(
+        c.chain.stats().max_blur_px <= 8.0 + 1e-3,
+        "{:?}",
+        c.chain.stats()
+    );
     assert_finite(&out, "clamped blur");
     // A ball behind the camera or with a NaN velocity cannot poison the frame.
     for bad in [
@@ -1680,7 +1824,14 @@ fn frame_renderer_blurs_a_moving_ball_along_its_velocity() {
         pixels: l
             .pixels
             .iter()
-            .map(|p| [f32::from(p[0]) / 255.0, f32::from(p[1]) / 255.0, f32::from(p[2]) / 255.0, 1.0])
+            .map(|p| {
+                [
+                    f32::from(p[0]) / 255.0,
+                    f32::from(p[1]) / 255.0,
+                    f32::from(p[2]) / 255.0,
+                    1.0,
+                ]
+            })
             .collect(),
     };
     let (_, _, s1, s2, _) = moments(&as_hdr(&sharp), 0.0);
@@ -1690,13 +1841,21 @@ fn frame_renderer_blurs_a_moving_ball_along_its_velocity() {
         let v = [0.0, 3.0 * a.cos(), 3.0 * a.sin()];
         let moving = shot(&mut fr, true, v);
         let moved_blur_off = shot(&mut fr, false, v);
-        assert_eq!(moved_blur_off.pixels, sharp.pixels, "velocity must only matter to the blur");
+        assert_eq!(
+            moved_blur_off.pixels, sharp.pixels,
+            "velocity must only matter to the blur"
+        );
         let (_, axis, l1, l2, _) = moments(&as_hdr(&moving), 0.0);
         let want = [f64::from(a.cos()), -f64::from(a.sin())];
         let cosang = (axis[0] * want[0] + axis[1] * want[1]).abs();
-        println!("frame {deg}°: variances {l1:.1} / {l2:.1} (sharp {s1:.1}), axis {axis:?}, cos {cosang:.4}");
+        println!(
+            "frame {deg}°: variances {l1:.1} / {l2:.1} (sharp {s1:.1}), axis {axis:?}, cos {cosang:.4}"
+        );
         assert!(l1 > 1.3 * l2, "{deg}°: no streak");
-        assert!(cosang > 0.990, "{deg}°: streak {axis:?} not along the velocity {want:?}");
+        assert!(
+            cosang > 0.990,
+            "{deg}°: streak {axis:?} not along the velocity {want:?}"
+        );
         assert!(l2 < 1.25 * s2 + 1.0, "{deg}°: wider across the velocity");
         if deg == 0.0 {
             snapshot(&ctx, "motion_blur_right", &moving);
@@ -1761,10 +1920,7 @@ fn edge_metrics(img: &HdrImage, cov: &[f32], e: f32) -> (f64, f64, f64) {
 fn msaa_reduces_edge_aliasing_measurably() {
     let Some(ctx) = gpu() else { return };
     let size = 96u32;
-    let cam = Cam {
-        size,
-        ..CAM
-    };
+    let cam = Cam { size, ..CAM };
     let e = 0.5f32;
     // Off-centre by a fraction of a pixel so the edge is not symmetric about pixel centres.
     let centre = [0.0, 0.0031, -0.0017];
@@ -1801,9 +1957,18 @@ fn msaa_reduces_edge_aliasing_measurably() {
         let (err, mid, inner) = edge_metrics(&out.hdr, &cov, e);
         let total: f64 = out.hdr.pixels.iter().map(|p| f64::from(p[1] / e)).sum();
         let want_total: f64 = cov.iter().map(|c| f64::from(*c)).sum();
-        println!("{aa:?}: edge coverage error {err:.4}, intermediate edge pixels {:.1} %, interior {inner:.4}, area {total:.1} (analytic {want_total:.1})", mid * 100.0);
-        assert!((inner - 1.0).abs() < 0.01, "{aa:?}: interior radiance {inner}");
-        assert!((total / want_total - 1.0).abs() < 0.01, "{aa:?}: disc area {total} vs {want_total}");
+        println!(
+            "{aa:?}: edge coverage error {err:.4}, intermediate edge pixels {:.1} %, interior {inner:.4}, area {total:.1} (analytic {want_total:.1})",
+            mid * 100.0
+        );
+        assert!(
+            (inner - 1.0).abs() < 0.01,
+            "{aa:?}: interior radiance {inner}"
+        );
+        assert!(
+            (total / want_total - 1.0).abs() < 0.01,
+            "{aa:?}: disc area {total} vs {want_total}"
+        );
         // The display image shows the same edge (linear tone map → sRGB bytes).
         let mut ldr_mid = 0u32;
         let full = srgb8(e);
@@ -1818,16 +1983,33 @@ fn msaa_reduces_edge_aliasing_measurably() {
     let (off, on) = (&results[0], &results[1]);
     // Without AA an edge pixel is all or nothing: mean |coverage error| ≈ 0.25. Four
     // samples quantise coverage to quarters: ≈ 0.08.
-    assert!(off.0 > 0.15, "the no-AA reference is unexpectedly smooth: {}", off.0);
+    assert!(
+        off.0 > 0.15,
+        "the no-AA reference is unexpectedly smooth: {}",
+        off.0
+    );
     assert!(
         on.0 < 0.6 * off.0,
         "MSAA does not reduce edge aliasing: coverage error {} → {}",
         off.0,
         on.0
     );
-    assert!(off.1 < 0.05, "no-AA edge has intermediate values: {}", off.1);
-    assert!(on.1 > 0.4, "MSAA edge has too few intermediate values: {}", on.1);
-    assert!(on.2 > off.2 + 50, "display image edge is not smoother: {} vs {}", on.2, off.2);
+    assert!(
+        off.1 < 0.05,
+        "no-AA edge has intermediate values: {}",
+        off.1
+    );
+    assert!(
+        on.1 > 0.4,
+        "MSAA edge has too few intermediate values: {}",
+        on.1
+    );
+    assert!(
+        on.2 > off.2 + 50,
+        "display image edge is not smoother: {} vs {}",
+        on.2,
+        off.2
+    );
     snapshot(&ctx, "disc_msaa4", &on.3);
 }
 
@@ -1835,10 +2017,7 @@ fn msaa_reduces_edge_aliasing_measurably() {
 fn pbr_msaa_setting_resolves_into_the_hdr_target() {
     let Some(ctx) = gpu() else { return };
     let size = 64u32;
-    let cam = Cam {
-        size,
-        ..CAM
-    };
+    let cam = Cam { size, ..CAM };
     let mut pbr = PbrRenderer::new(&ctx, size, size).expect("pbr");
     assert_eq!(pbr.msaa_samples(), 1, "default is the 5.1 look");
     let sphere = pbr
@@ -1861,13 +2040,24 @@ fn pbr_msaa_setting_resolves_into_the_hdr_target() {
             .filter(|p| p[0] > 0.1 && p[0] < 0.9)
             .count()
     };
-    println!("partial edge pixels: 1× {}, 4× {}", partial(&one), partial(&four));
+    println!(
+        "partial edge pixels: 1× {}, 4× {}",
+        partial(&one),
+        partial(&four)
+    );
     assert_eq!(partial(&one), 0, "1× has all-or-nothing edges");
-    assert!(partial(&four) > 40, "4× resolve gives fractional edge coverage");
+    assert!(
+        partial(&four) > 40,
+        "4× resolve gives fractional edge coverage"
+    );
     // Resolved values are multiples of a quarter.
     for p in &four.pixels {
         let q = p[0] * 4.0;
-        assert!((q - q.round()).abs() < 0.02, "resolved coverage {} is not n/4", p[0]);
+        assert!(
+            (q - q.round()).abs() < 0.02,
+            "resolved coverage {} is not n/4",
+            p[0]
+        );
     }
     // Same area.
     let area = |img: &HdrImage| img.pixels.iter().map(|p| f64::from(p[0])).sum::<f64>();
@@ -1888,10 +2078,7 @@ fn pbr_msaa_setting_resolves_into_the_hdr_target() {
 fn tone_mapped_test_scenes_are_finite_and_not_clipped() {
     let Some(ctx) = gpu() else { return };
     let size = 128u32;
-    let cam = Cam {
-        size,
-        ..CAM
-    };
+    let cam = Cam { size, ..CAM };
     let mut fr = FrameRenderer::new(&ctx, size, size, PostConfig::default()).expect("renderer");
     let sphere = fr
         .pbr_mut()
@@ -1921,7 +2108,12 @@ fn tone_mapped_test_scenes_are_finite_and_not_clipped() {
         }];
         let out = fr.render(&ctx, &frame, &balls).expect("render");
         assert_finite(&out.hdr, name);
-        let peak = out.hdr.pixels.iter().map(|p| lum(*p)).fold(0.0f32, f32::max);
+        let peak = out
+            .hdr
+            .pixels
+            .iter()
+            .map(|p| lum(*p))
+            .fold(0.0f32, f32::max);
         let clipped = clipped_fraction(&out.ldr);
         // Largest run of saturated pixels in a row: a "flat clipped region".
         let mut run_max = 0u32;
@@ -1952,15 +2144,26 @@ fn tone_mapped_test_scenes_are_finite_and_not_clipped() {
         );
         // The ball covers ~35 % of the frame; a specular highlight may saturate a few
         // pixels, a flat clipped region may not exist.
-        assert!(clipped < 0.01, "{name}: {:.2} % clipped white", clipped * 100.0);
-        assert!(any < 0.03, "{name}: {:.2} % of the pixels have a clipped channel", any * 100.0);
+        assert!(
+            clipped < 0.01,
+            "{name}: {:.2} % clipped white",
+            clipped * 100.0
+        );
+        assert!(
+            any < 0.03,
+            "{name}: {:.2} % of the pixels have a clipped channel",
+            any * 100.0
+        );
         assert!(run_max <= 12, "{name}: a clipped run of {run_max} px");
         // The background grey 0.18 is tone mapped, not clipped or crushed.
         let bg = out.ldr.region_mean(2, 2, 10, 10);
         assert!(bg[1] > 100.0 && bg[1] < 190.0, "{name}: background {bg:?}");
         // The image has content: the ball differs from the background.
         let mid = out.ldr.region_mean(56, 56, 72, 72);
-        assert!((mid[0] - bg[0]).abs() + (mid[2] - bg[2]).abs() > 4.0, "{name}: ball invisible");
+        assert!(
+            (mid[0] - bg[0]).abs() + (mid[2] - bg[2]).abs() > 4.0,
+            "{name}: ball invisible"
+        );
         snapshot(&ctx, &format!("scene_{name}"), &out.ldr);
     }
 }

@@ -423,7 +423,8 @@ proptest! {
                     prop_assert!(find(&entries, name).error().is_some());
                 }
                 Kind::FakeZip => {
-                    prop_assert!(find(&entries, &format!("{name}.zip")).error().is_some());
+                    let zip_name = format!("{name}.zip");
+                    prop_assert!(find(&entries, &zip_name).error().is_some());
                 }
                 Kind::EmptyDir => {}
             }

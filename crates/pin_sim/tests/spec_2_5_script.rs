@@ -61,26 +61,26 @@ fn instruction_budget_is_the_engine_budget() {
         let dir = bundle_with_script("budget", BUDGET_RULES);
         let mut sim = load_at(&dir, DEFAULT_SEED);
         sim.advance(10);
-        assert_eq!(sim.score(0), Some(10));
+        assert_eq!(sim.score(1), Some(10));
 
         // Under the budget: the script keeps running.
         press(&mut sim, "launch");
-        assert_eq!(sim.score(0), Some(14));
-        assert_eq!(sim.score(1), Some(0), "the loop result of the last tick");
+        assert_eq!(sim.score(1), Some(14));
+        assert_eq!(sim.score(2), Some(0), "the loop result of the last tick");
         sim.advance(50);
-        assert_eq!(sim.score(0), Some(64), "15 000 iterations fit the engine budget");
+        assert_eq!(sim.score(1), Some(64), "15 000 iterations fit the engine budget");
 
         // Over the engine budget (but under the 1 M default): the script is
         // aborted and stays in its fault state; its callbacks stop.
         press(&mut sim, "action");
-        let frozen = sim.score(0).unwrap();
+        let frozen = sim.score(1).unwrap();
         assert!(
             (64..=66).contains(&frozen),
             "on_tick must have been aborted on the burning tick: score {frozen}"
         );
         sim.advance(500);
         assert_eq!(
-            sim.score(0),
+            sim.score(1),
             Some(frozen),
             "150 000 loop iterations in one callback exceed 100 000 instructions: with \
              LuaConfig::engine() the script faults and is no longer called \
@@ -96,9 +96,9 @@ fn memory_cap_is_the_engine_cap() {
         let dir = bundle_with_script("memory", MEMORY_RULES);
         let mut sim = load_at(&dir, DEFAULT_SEED);
         sim.advance(5);
-        assert_eq!(sim.score(0), Some(5), "the first 64 KiB strings fit");
+        assert_eq!(sim.score(1), Some(5), "the first 64 KiB strings fit");
         sim.advance(595);
-        let frozen = sim.score(0).unwrap();
+        let frozen = sim.score(1).unwrap();
         assert!(
             (8..=40).contains(&frozen),
             "holding 64 KiB more per tick must hit the 2 MiB engine heap cap after about \
@@ -106,7 +106,7 @@ fn memory_cap_is_the_engine_cap() {
         );
         assert_eq!(sim.tick(), 600, "the tick never stalls");
         sim.advance(100);
-        assert_eq!(sim.score(0), Some(frozen));
+        assert_eq!(sim.score(1), Some(frozen));
     });
 }
 
@@ -134,11 +134,11 @@ fn faulted_script_does_not_stop_the_simulation() {
                     .spawn_ball("standard_steel", [0.09, 0.50, R], [0.0, -0.3, 0.0])
                     .unwrap();
                 sim.advance(20);
-                assert_eq!(sim.score(0), Some(20), "{tag}");
+                assert_eq!(sim.score(1), Some(20), "{tag}");
                 sim.set_switch("action", true).unwrap();
                 sim.advance(1); // the edge is delivered and the script faults
                 assert_eq!(sim.tick(), 21, "{tag}");
-                let frozen = sim.score(0).unwrap();
+                let frozen = sim.score(1).unwrap();
                 assert!(frozen == 20 || frozen == 21, "{tag}: {frozen}");
                 let y0 = sim.ball(h).unwrap().position_m[1];
 
@@ -152,7 +152,7 @@ fn faulted_script_does_not_stop_the_simulation() {
                 }
                 assert_eq!(sim.tick(), 622, "{tag}");
                 assert_eq!(out.tick, 622, "{tag}");
-                assert_eq!(sim.score(0), Some(frozen), "{tag}: a faulted script is not called");
+                assert_eq!(sim.score(1), Some(frozen), "{tag}: a faulted script is not called");
                 let b = sim.ball(h).expect("ball still simulated");
                 assert!(b.position_m[1] < y0 - 0.05, "{tag}: physics stopped");
                 assert_eq!(
@@ -202,12 +202,12 @@ fn queue_overflow_drops_commands_without_faulting() {
         let mut sim = load_at(&dir, DEFAULT_SEED);
         sim.advance(1);
         assert_eq!(
-            sim.score(0),
+            sim.score(1),
             Some(14),
             "scores holds 4 entries per tick: reports 5 and 6 are dropped"
         );
         sim.advance(99);
-        assert_eq!(sim.score(0), Some(1004), "overflow is not a fault");
+        assert_eq!(sim.score(1), Some(1004), "overflow is not a fault");
         assert_eq!(sim.tick(), 100);
     });
 }

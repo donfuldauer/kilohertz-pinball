@@ -351,7 +351,10 @@ fn checked_in_fixtures_match_the_generator() {
     let f = session();
     let files = [
         ("session.bin", recording_bytes(&f.delivered)),
-        ("session.expected.txt", expected_text(&f.expected).into_bytes()),
+        (
+            "session.expected.txt",
+            expected_text(&f.expected).into_bytes(),
+        ),
         ("session.mapping.txt", mapping_text().into_bytes()),
     ];
     let dir = fixture_dir();

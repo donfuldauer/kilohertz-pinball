@@ -2,7 +2,7 @@
 -- callbacks create no Lua objects (no strings, tables or closures), so the
 -- steady state performs no Lua allocation.
 --
--- Reported scores (Lua player 1..4 = host player 0..3):
+-- Reported scores (player 1..4, read back with Simulation::score(1..4)):
 --   1: game score: +10 lane_opto, +5 side_opto, +100 bumper ring (and the
 --      bumper coil is pulsed), +1000 trough_1, +1 each flipper button press
 --   2: number of on_tick calls completed when the last lane_opto closed edge

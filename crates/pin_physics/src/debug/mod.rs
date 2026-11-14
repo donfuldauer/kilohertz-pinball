@@ -242,6 +242,51 @@ mod tests {
         assert_eq!(ball_from_state(&got), *s.ball(h).unwrap());
     }
 
+    fn finite3() -> impl proptest::strategy::Strategy<Value = [f32; 3]> {
+        proptest::array::uniform3(-1.0e3f32..1.0e3)
+    }
+
+    proptest::proptest! {
+        /// Injection writes exactly the given bits, for any finite state;
+        /// any non-finite component or layer above 7 is refused unchanged.
+        #[test]
+        fn injection_round_trips_or_refuses(
+            p in finite3(), v in finite3(), w in finite3(),
+            q in proptest::array::uniform4(-1.0f32..1.0),
+            layer in 0u8..12, poison in 0usize..13,
+        ) {
+            let mut s = solver();
+            let h = spawn_ball(&mut s, ProfileId(0), 0, [0.0; 3], [0.0; 3]).unwrap();
+            let before = *s.ball(h).unwrap();
+            let mut st = BallState {
+                position_m: p,
+                orientation: q,
+                velocity_m_s: v,
+                angular_velocity_rad_s: w,
+                profile: ProfileId(0),
+                layer,
+            };
+            if poison < 12 {
+                let comps: [&mut [f32]; 4] = [
+                    &mut st.position_m, &mut st.velocity_m_s,
+                    &mut st.angular_velocity_rad_s, &mut st.orientation[..3],
+                ];
+                let mut i = poison;
+                for c in comps {
+                    if i < c.len() { c[i] = f32::NAN; break; }
+                    i -= c.len();
+                }
+            }
+            let ok = set_ball_state(&mut s, h, &st);
+            proptest::prop_assert_eq!(ok, poison >= 12 && layer <= 7);
+            if ok {
+                proptest::prop_assert_eq!(ball_state(&s, h).unwrap(), st);
+            } else {
+                proptest::prop_assert_eq!(*s.ball(h).unwrap(), before);
+            }
+        }
+    }
+
     #[test]
     fn invalid_injection_is_refused() {
         let mut s = solver();

@@ -1339,9 +1339,19 @@ KilohertzDofBridge --map <file> [--port <u16, default 35120>] [--bind <ip, defau
 **Rust API (`pin_app::dof`).**
 - `enum DofSourceKind { Switch, Coil, Lamp, Gi }` (telemetry kinds 0–3); `struct DofMapEntry { source, id: u16, name: String, element_type: DofElementType, number: u16 }`; `struct ResolvedDofMap { rom_name: String, table_name: String, entries: Vec<DofMapEntry> }` with `ResolvedDofMap::resolve(&TableManifest) -> Result<Option<Self>, DofError>` (None without `[dof]`), `to_json(&self) -> String`, `write_file(&self, dir: &Path) -> Result<PathBuf, DofError>`.
 - A `lamp = "<name>"` mapping whose lamp has `kind = "gi"` resolves to source `gi` with id = lamp number (must be < 32); other lamps → `lamp`. Switch/coil/lamp numbers must be ≤ 255 (`DofError::IdOutOfRange`); unknown names → `DofError::UnknownName`.
-- `struct DofLaunchConfig { bridge_exe: PathBuf, udp_port: u16, dof_path: Option<PathBuf>, map_dir: PathBuf, stop_grace: Duration, extra_args: Vec<OsString> }`, `DofLaunchConfig::new(bridge_exe, udp_port)` (map_dir = temp dir, stop_grace = `DEFAULT_STOP_GRACE` 1.5 s), `DofLaunchConfig::default_bridge_exe() -> Option<PathBuf>` (`<exe dir>/dof_bridge/KilohertzDofBridge.exe`, then `<exe dir>/KilohertzDofBridge.exe`), `args(&self, map, map_file) -> Vec<OsString>`.
+- `struct DofLaunchConfig { bridge_exe: PathBuf, udp_port: u16, dof_path: Option<PathBuf>, map_dir: PathBuf, stop_grace: Duration, log_file: Option<PathBuf>, extra_args: Vec<OsString> }`, `DofLaunchConfig::new(bridge_exe, udp_port)` (map_dir = temp dir, stop_grace = `DEFAULT_STOP_GRACE` 1.5 s, no log file: the bridge's stderr is discarded unless `log_file` is set, then appended to it), `const BRIDGE_EXE_NAME` (`KilohertzDofBridge[.exe]`), `DofLaunchConfig::default_bridge_exe() -> Option<PathBuf>` (`<exe dir>/dof_bridge/KilohertzDofBridge.exe`, then `<exe dir>/KilohertzDofBridge.exe`; `find_bridge_exe(engine_dir)` is the same search for an explicit directory), `args(&self, map, map_file) -> Vec<OsString>`.
 - `fn platform_supported() -> bool` (`cfg!(windows)`).
-- `struct DofBridge`: `DofBridge::start_for_table(&TableManifest, &DofLaunchConfig) -> Result<Option<DofBridge>, DofError>` (the call 6.0 makes at table load: `Ok(None)` on Linux/macOS or without `[dof]`); `DofBridge::spawn(&ResolvedDofMap, &DofLaunchConfig) -> Result<DofBridge, DofError>` (any OS; tests); `id()`, `map_file()`, `try_wait()`; `stop(self) -> DofStopHandle` (never blocks: closes the child's stdin and hands the child to a reaper thread that kills it after `stop_grace` and deletes the map file); `DofStopHandle::wait(self) -> Option<ExitStatus>`; `Drop` = `stop`. Spawned args: `--map <file> --port <p> --rom <rom> --table <name> --parent-pid <engine pid> --exit-on-stdin-eof [--dof-path <dir>] <extra_args…>`.
+- `struct DofBridge`: `DofBridge::start_for_table(&TableManifest, &DofLaunchConfig) -> Result<Option<DofBridge>, DofError>` (the call 6.0 makes at table load: `Ok(None)` on Linux/macOS or without `[dof]`); `DofBridge::spawn(&ResolvedDofMap, &DofLaunchConfig) -> Result<DofBridge, DofError>` (any OS; tests); `id()`, `map_file()`, `try_wait()`; `stop(self) -> DofStopHandle` (never blocks: closes the child's stdin and hands the child to a reaper thread that kills it after `stop_grace` and deletes the map file); `DofStopHandle::wait(self) -> Option<ExitStatus>`, `DofStopHandle::is_finished(&self) -> bool` (dropping the handle detaches; the reaper still finishes); `Drop` = `stop`. Spawned args: `--map <file> --port <p> --rom <rom> --table <name> --parent-pid <engine pid> --exit-on-stdin-eof [--dof-path <dir>] <extra_args…>`.
+
+## 3.5 — DOF bridge design choices
+
+- **Decision (resolved map as a JSON file).** At table load the engine resolves `[dof]` names to telemetry ids and writes `kilohertz-dof-map` v1 JSON to the temp dir (unique name per process and bridge); the bridge gets its path with `--map`, and the reaper deletes it after the bridge exits. **Rationale:** a map can have hundreds of entries (command lines are length-limited on Windows); a versioned file is easy to test from both languages and to inspect by hand. **Alternatives:** one command-line argument per entry (length limit, quoting); passing `table.toml` (the bridge would need a TOML parser and the name→id rules twice).
+- **Decision (stop signal = stdin EOF, plus `--parent-pid`).** `DofBridge::stop`/`Drop` close the child's stdin; the bridge then calls DOF `Finish` (outputs off) and exits; a reaper thread kills it after `stop_grace` (1.5 s). The bridge also exits when the engine process is gone. **Rationale:** portable, never blocks the caller, and the bridge never outlives a crashed engine with toys left on. **Alternatives:** `Child::kill` only (no `Finish`, toys stay on), a control UDP port or named event (more surface, Windows-only).
+- **Decision (GI mapping).** `[dof]` has no `gi` key (1.1 schema); a `lamp =` mapping naming a lamp with `kind = "gi"` reads the GI telemetry (kind 3, id = lamp number < 32). **Rationale:** that is how the engine publishes GI strings; no CR needed. **Alternatives:** a CR adding `gi =` to `DofMapping` (breaking-ish, deferred).
+- **Decision (value conversion and "only changes").** Switch/coil `≥ 0.5 → 1`; lamp/GI `round(clamp(v,0,1)·255)` (half up, NaN → 0); a change is judged per map entry on the converted integer, so sub-1/255 flicker is not forwarded. Full state after (re)start (first full state, or a full-state tick below the last one) forwards every map entry once. **Rationale:** brief design notes; DOF works on integers. **Alternatives:** compare raw floats (would flood DOF with no visible change).
+- **Decision (latency criterion).** Measured in `BridgeCore`: `clock()` read immediately before each sink call minus the datagram's receive stamp (`Stopwatch` ticks taken by `UdpBridgeHost` right after `Receive`); the fixture tests assert the p100 (`Stats.MaxForwardLatency`) < 2 ms over the whole replay, through the core and over loopback UDP. `BridgeCore.Warmup()` pre-JITs the path so the first datagram does not pay JIT cost. **Rationale:** monotonic, measured inside the bridge as the brief asks; no sleeps. **Alternatives:** wall-clock timing from the sender (flaky on CI runners).
+- **Decision (no .sln; CI loops over `tests/*/*.csproj`).** Tester projects under `tests/Spec*/` are picked up without editing a shared solution file. **Alternatives:** a .sln both roles would have to edit.
+- **Decision (real DOF path).** `ReflectionDofSink` loads `DirectOutput.Pinball` by reflection and calls `Setup(globalConfig, tableName, romName)`, `Init()`, `ReceiveData(char,int,int)`, `Finish()`; tested only against a fake `DirectOutput.dll` (`tests/support/FakeDirectOutput`). **Unverified on hardware (D33).**
 
 ## 5.2 — Reflection probes and post public API
 
@@ -1479,13 +1489,15 @@ Published early for the Independent Tester; kept current by the 4.4 Implementer.
   the latest settings, moved to the end of the queue).
 - **`Panel`**: `Tables, Display, Input` (`ALL`, `label`, `next`, `prev`).
 - **`SettingRow`** (`DISPLAY`: DisplayMode, PlayfieldDisplay, BackglassDisplay, ScoreDisplayMonitor,
-  BackglassPipCorner, BackglassPipWidth, ScorePipCorner, ScorePipWidth, CameraPreset, ScoreDisplay;
+  BackglassPipCorner, BackglassPipWidth, ScorePipCorner, ScorePipWidth, CameraPreset, ScoreDisplay,
+  DecodedAudioBudget (added for the decoded-audio ruling: range 64…8192 step 64 MiB);
   `INPUT`: InputProfile, StagingMode, DualStageLower, DualStageUpper, PlungerDeadzone,
   PlungerRestTracking, PlungerReleaseMinSpeed, PlungerReleaseWindow, NudgeHighPass, NudgeGain, NudgeCurve,
   NudgeDeadzone, NudgeMax, Wireframe) with `label`, `range() -> Option<NumericRange{min,max,step}>`,
   `number(&AppConfig)`, `value_text(&AppConfig)`. **`SettingChange`** has one variant per row
   (e.g. `CameraPreset(CameraPreset)`, `ScoreDisplay(ScoreDisplayKind)`, `PlungerDeadzone(f32)`,
-  `PlungerReleaseWindow(u32)`, `BackglassDisplay(Option<u32>)`, `InputProfile(String)`, `Wireframe(bool)`);
+  `PlungerReleaseWindow(u32)`, `BackglassDisplay(Option<u32>)`, `InputProfile(String)`, `Wireframe(bool)`,
+  `DecodedAudioBudget(u32)`);
   values are clamped to the row range, non-finite → the default; an unknown profile id is refused (notice).
 - **Lifecycle.** `TableLoadState::{Idle, LoadRequested(PathBuf), Loading(PathBuf), Loaded(PathBuf),
   Failed { path, error: String }}` (`is_busy()`). Request → `LoadRequested` + `UiCommand::LoadTable`;
@@ -1517,7 +1529,8 @@ Published early for the Independent Tester; kept current by the 4.4 Implementer.
   input_profile: String ("auto" default), staging_mode: StagingMode{Table,Dedicated,DualStage},
   calibration: CalibrationConfig { plunger: PlungerCalibration{deadzone, rest_tracking_per_s,
   release_min_speed, release_window_ms: u32}, nudge: NudgeCalibration{high_pass_hz, gain, curve_exponent,
-  deadzone, max}, dual_stage_lower, dual_stage_upper }, wireframe: bool, tables_dir: Option<PathBuf>,
+  deadzone, max}, dual_stage_lower, dual_stage_upper }, wireframe: bool, audio: AudioConfig {
+  decoded_budget_mib: u32 /* default 512, 64..=8192; decoded_budget_bytes() */ }, tables_dir: Option<PathBuf>,
   last_table: Option<PathBuf>, extra: toml::Table }`. TOML keys = field names; enums snake_case
   (`"single"`, `"multi"`, `"top_right"`, `"dmd"`, `"lcd"`, `"desktop"`, `"cabinet"`, `"top_down"`,
   `"table"`, `"dedicated"`, `"dual_stage"`). `AppConfig::load(&Path) -> ConfigLoad { config, warnings:
@@ -1526,10 +1539,77 @@ Published early for the Independent Tester; kept current by the 4.4 Implementer.
   `to_toml_string() -> Result<String, toml::ser::Error>`, `save(&self, &Path) -> std::io::Result<()>`,
   `topology_mode() -> pin_render::topology::TopologyMode`, `sanitize(&mut Vec<ConfigWarning>)`.
   `ConfigWarning::{Unreadable(String), TooLarge(u64), Corrupt(String), InvalidValue{key, message},
-  UnknownKey(String)}`. `MAX_CONFIG_BYTES = 1 MiB`, `CONFIG_FILE = "config.toml"`, `AUTO_PROFILE = "auto"`.
+  UnknownKey(String)}`. `MAX_CONFIG_BYTES = 1 MiB`, `CONFIG_FILE = "config.toml"`, `AUTO_PROFILE = "auto"`,
+  `DEFAULT_DECODED_BUDGET_MIB = 512`, `MIN_DECODED_BUDGET_MIB = 64`, `MAX_DECODED_BUDGET_MIB = 8192`. An
+  `[audio] decoded_budget_mib` that is out of range *or* unparsable (wrong type) resets alone to 512 with
+  `InvalidValue { key: "audio.decoded_budget_mib" }`; a non-table `audio` resets with key `"audio"`.
+- **View / painter.** `pin_app::ui::MenuView::{new, run_frame(&egui::Context, egui::RawInput, &mut MenuState)
+  -> (egui::FullOutput, Vec<MenuInput>), show(&mut egui::Ui, &mut MenuState)}`. `pin_render::ui`: re-exports
+  `egui`, `egui_wgpu`; `BACKDROP`, `menu_panel_rect(screen) / menu_panel_rect_px(size_px, ppp)`,
+  `raw_input(size_px, ppp, events, time)`, `overlay_style(ctx)`, `show_overlay(ui, f)`,
+  `OverlayFrame::new(ctx, FullOutput)`, `OverlayPainter::{new(device, format), paint(device, queue, encoder,
+  view, size_px, frame)}`, `paint_offscreen(ctx, w, h, background, frame) -> Result<Vec<u8>, GpuError>`.
 - **Live input.** `InputMonitor::new()`, `set_button(source: u8, CabinetInput, pressed)`,
   `is_pressed(CabinetInput)` (OR over sources), `pressed_mask() -> u8`, `clear_source(u8)`,
   `set_axis/axis`, `set_plunger(PlungerOutput, rest)`, `plunger() -> PlungerReading`, `set_nudge/nudge`.
 
 ## Orchestrator — Wave 5 restart: disk budget
 **Observation:** the container restarted mid-batch-A; all eight role agents stopped, and the four target dirs had grown to 25 GB (2.5 alone 12 GB of debug test binaries), leaving 3.9 GB of the session's disk allowance. **Decision:** target dirs deleted; every cargo command now also sets `CARGO_INCREMENTAL=0` and `CARGO_PROFILE_{DEV,TEST}_DEBUG=line-tables-only` (COMMON.md ENVIRONMENT). The roles are relaunched with resume prompts and continue from the files in the working tree (WIP snapshot commits). No code change.
+
+## 2.5 — script backend construction
+**Decision:** `Simulation::load` builds the rules backend as a concrete `LuaScriptBackend::new(src, names, cfg.lua)` or `WasmScriptBackend::new(src, names, cfg.wasm)` chosen by the `meta.script_entry` extension (`.lua` / `.wasm`), with `SimConfig::default()` = `LuaConfig::engine()` / `WasmConfig::engine()` (100 000 instructions, 2 MiB). Any other extension is passed to `pin_script::load_backend_with(.., cfg.lua, cfg.wasm)` so the error text is the same as the library's. `load_backend()` is never used.
+**Rationale:** `load_backend_with` returns `Box<dyn TableScriptBackend>`, which hides the fault state, fault count, last error and queue-overflow counter the brief requires the sim to expose (`script_faulted`, `script_fault_count`, `script_error`, `script_queue_overflows`). The concrete constructors are exactly what `load_backend_with` calls, with the same configs, so behaviour is identical.
+**Alternatives:** an additive trait method in `pin_script` for these counters (outside owned paths; can be done later).
+
+## 2.5 — tick order details, switch composition and test API semantics
+**Decision:**
+- Switch state each tick = (cabinet buttons | physics bits) overridden by switches forced with `Simulation::set_switch` (which lasts until the additive `release_switch`). Every change of the composed state is an edge (ascending switch number); every closing edge increments `switch_hits`.
+- Cabinet edges produced in step 1 are delivered in step 2 of the same tick (step 1 precedes step 2 in §2.2). Physics edges (step 5) and `set_switch` edges are delivered in step 2 of the next tick, so an `on_switch_edge` in tick N sees physics edges from tick N−1. Within one delivery edges keep the order they happened in. Flippers also see every delivered edge (`FlipperSet::on_switch_edge`, Thing Flips).
+- A forced cabinet switch also acts as its button for flipper staging.
+- `score(player)` uses the script's numbering: `pinball.set_score(1, …)` is `score(1)`; `score(0)` is `None` (the queue stores `player − 1`).
+- Haptic events: one `HapticsTelemetryEvent { source = coil id, strength 1 }` per coil pulse, coil hold switched on and flipper energise rising edge, in a 32-entry per-tick buffer (`haptic_events()`); overflow is counted.
+- Drains: a ball whose centre enters a `kind = "trough"` switch sphere (position + radius, centre lifted by 13.5 mm) on a matching layer is removed after physics (counted `balls_drained`); a ball outside the table's bounding box + 50 mm, or non-finite, is removed (`balls_escaped`). Ball handles carry a generation, so a stale handle returns `None` even if the slot is reused.
+- Nudge axes: `NudgeX/NudgeY` deflection × 0.03 m/s per tick is applied to the balls through `MechSet::nudge` (also feeds the tilt bob). Plunger axis → `MechSet::set_plunger`.
+- Script `spawn_ball(dispenser, profile)` places the ball at the dispenser exit with its exit velocity on layer 0; a full arena or unknown id is counted in `spawns_failed`.
+**Rationale:** PLAN §2.2 order read literally; script numbering avoids an off-by-one between tests written against Lua and the host API.
+**Alternatives:** delay cabinet edges one tick like physics edges (adds 1 ms of flipper latency for nothing).
+
+## 2.5 — diverters, gates and Newton balls
+**Decision:** mechs that 2.4 leaves inert are wired in `pin_sim` by glTF collider node names: for a diverter `<id>`, nodes named `<id>` or `<id>.on` are enabled only while the diverter is on and `<id>.off` only while it is off (`StaticWorld::set_enabled`, driven by `HostCommandQueue::diverters`; initially off). A gate's nodes `<id>` / `<id>.on` are solid while closed and disabled while its coil is pulsed (for `ms` ticks) or held; its switch (if any) reads "open". A `newton_ball` becomes a one-ball `NewtonChain` on a straight path of `length` mm (default 50) in the plan direction `angle_deg` (default 90°, up the table) starting at the mech position lifted by one ball radius; its switch is closed while the captive ball moves faster than 0.05 m/s.
+**Rationale:** the schema has no collider references for mechs; node names are already unique and authored in the glb. 
+**Alternatives:** an additive `collider` field on mech defs (pin_core CR) — deferred until a real table needs it.
+
+## 2.5 — guide wall height
+**Decision:** every `kind = "guide"` spline gets the playfield wall height from `layout.toml` `[playfield] wall_height` (mm) when the bundle has one, else 28 mm (the Appendix A.3 example). This applies to generated `tablegen:` guides, which carry no height. Each spline collides only on its own layer.
+**Rationale:** brief obligation; A.1 guides have no height field.
+**Alternatives:** per-guide height field (schema change).
+
+## 2.5 — state hash, table hash and replay file format
+**Decision:**
+- Hash: FNV-1a 64 (offset `0xcbf29ce484222325`, prime `0x100000001b3`), integers little-endian, `f32` as exact bits.
+- `state_hash` covers, in order: tick; for each of the 16 slots a presence byte and, for a ball, position, velocity, angular velocity, orientation (x,y,z,w), layer, profile id; the 256 switch-hit counts; the 4×u64 switch bitset; every reported score (player index + value); each flipper's relative angle and angular velocity (body order); the next `u64` of a clone of the sim's `Pcg32`.
+- `table_hash`: over every file of the bundle by sorted path (path bytes, NUL, length, contents), so a folder and a zip with the same files hash alike.
+- Replay file v1: magic `KHZREPL\0`, version u32, seed, table hash, ticks, event count (u64 each), 24-byte events (tick, timestamp ns, kind, code, 2 zero bytes, value bits), FNV-1a 64 checksum trailer. `from_bytes` checks the length against the count before allocating, so allocation is bounded by the input length. Events are validated (known codes, 0/1 buttons, finite axes, ticks 1..=ticks non-decreasing).
+- State injected through the test API is not recorded; recordings cover input events only (plus seed and table).
+**Rationale:** D9 (same binary + machine); fixed iteration order; no `HashMap`.
+
+## 2.5 — CLI input pattern
+**Decision:** `pin_sim <bundle> --ticks N` feeds a fixed built-in input pattern (`cli::pattern_events`: start at tick 20–120, left flipper 90 ticks every 337, right flipper 80 ticks every 421, a one-tick `NudgeX = 0.5` every 2500) so the recorded CI fixture has flippers firing from recorded inputs; the additive `--idle` flag feeds none. The binary runs the sim on a thread with a 16 MiB stack (≥ `MIN_HOST_STACK_BYTES`).
+**Rationale:** the brief's CLI has no input source other than a recording; a deterministic pattern makes `--record-inputs` meaningful.
+**Alternatives:** record nothing (a recording without inputs would not exercise the flipper path).
+
+## 4.4 — Menu UI decisions
+
+**Decision:**
+- **Load while busy is refused, not queued.** `request_load*` while `LoadRequested`/`Loading` returns `LoadRefusal::Busy(pending)` and sets a notice. A queued switch would fire after the player has already seen the first table start; a refusal is visible at once. The lifecycle moves `LoadRequested → Loading` when the consumer drains the `LoadTable` command; success records `last_table`, emits `ConfigChanged` and closes the menu; failure keeps it open with the error.
+- **Unknown `config.toml` keys are preserved** (top-level via `#[serde(flatten)] extra`, nested ones re-read from the raw table into `extra` at their path) and written back by `save`; each one is also reported as `ConfigWarning::UnknownKey`. A file that is not TOML, not UTF-8, larger than 1 MiB or has a wrongly typed known value gives the defaults plus one warning (`Corrupt` / `TooLarge` / `Unreadable`); a well-typed out-of-range value is reset alone (`InvalidValue`). `save` writes `.<name>.tmp`, `sync_all`, renames; the temp file is removed on error.
+- **Decoded-audio budget (human ruling):** `[audio] decoded_budget_mib`, default 512, accepted 64…8192. Unlike other keys, a wrong type (string, float, negative, > u32) also falls back alone with an `InvalidValue` warning instead of making the file corrupt, as the ruling says "out-of-range or unparsable values fall back to 512". It is the last row of the Display panel (`SettingRow::DecodedAudioBudget`, step 64 MiB) under an "Advanced · audio" heading, not a fourth panel, so the three-panel tab order stays as the brief and the published API describe. `AudioConfig::decoded_budget_bytes()` gives the `DecodeBudget` size for 2.5/6.0.
+- **Scan:** direct children only (folders, `.zip`, `.pinbundle`; dot-names skipped), sorted by (ASCII-lower-cased file name, file name), at most 4096 candidates; broken bundles are listed with the `AssetError` text. Preview = `preview.png|jpg|jpeg` at the bundle root, ≤ 8 MiB, ≤ 4096 px per side, box-downscaled to ≤ 256 px; a bad preview is dropped and noted, the table stays loadable. Feature badges are derived from the validated manifests (`TableFeature::of`).
+- **Menu toggles:** `Esc` (scancode 41) and the gamepad Guide button (Start/Back are cabinet inputs in the built-in profiles). While open, cabinet presses map to navigation (flippers up/down, upper flippers left/right, Start/Launch select, Action back, Tilt nothing) and are never forwarded.
+- **Live input display** ORs per-source pressed bits per cabinet input (`InputMonitor`, 3.2 review N5); the platform-layer OR is 6.0's.
+- **Rendering split:** `pin_app::ui::view` builds the egui widgets on the CPU (focused row highlighted so cabinet navigation is visible); `pin_render::ui` owns layout constants, the semi-opaque backdrop (≈ 88 % near-black), `raw_input` with `pixels_per_point` = display content scale (DPI), and `OverlayPainter` (egui-wgpu, `LoadOp::Load` over the playfield). The panel is drawn directly in the root `Ui` (no `Area`) so frames have no fade-in and nothing is drawn outside the panel rect.
+- **Extra pin_app dependencies.** Besides `egui`, `pin_app` needs `pin_assets` (scan/validate), `serde` + `toml` (config) and `image` (preview decode), all existing workspace pins. The brief limits the Cargo.toml edit to egui lines; these are recorded here for the Reviewer.
+
+**Rationale:** Consistent with D5/D8 (no I/O outside the I/O worker; deterministic order), D19/D20 (GPU work only behind `gpu-tests`), D31/D32 (no waiting on a person; settings are user-owned files).
+
+**Alternatives:** queue one pending load (rejected above); drop unknown keys (loses newer builds' settings); a fourth "Advanced" panel for the audio budget (changes tab wrapping that tests and the published API rely on).

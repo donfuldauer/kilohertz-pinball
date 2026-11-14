@@ -11,6 +11,8 @@
 //! * `bloom_prefilter` (threshold, soft knee, firefly clamp, hue, energy bound);
 //! * `screen_motion` (projection of a ball's motion over the shutter).
 
+#![allow(clippy::needless_range_loop)]
+
 use pin_core::snapshot::BallState;
 use pin_render::pbr::PbrCamera;
 use pin_render::post::{
@@ -57,8 +59,8 @@ fn constants_match_the_brief() {
     assert_eq!(PROBE_BUDGET, 2);
     assert_eq!(PROBE_RESOLUTION, 128);
     assert_eq!(MAX_PROBES, pin_core::snapshot::MAX_BALLS);
-    assert!(MAX_PROBES >= 6, "6 balls must each be able to own a probe");
-    assert!(CUBE_FACE_RESOLUTION >= 16);
+    const { assert!(MAX_PROBES >= 6, "6 balls must each be able to own a probe") };
+    const { assert!(CUBE_FACE_RESOLUTION >= 16) };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -164,7 +166,7 @@ proptest! {
     /// along the planes x = 0 and y = 0, where the square's border wraps): two directions
     /// 0.5° apart land within a few texels of each other.
     #[test]
-    fn oct_is_continuous_above_the_ground(u in 0.51f32..1.0, v in 0.0f32..1.0, a in 0.0f32..6.28) {
+    fn oct_is_continuous_above_the_ground(u in 0.51f32..1.0, v in 0.0f32..1.0, a in 0.0f32..std::f32::consts::TAU) {
         let d = sphere_dir(u, v);
         // A perpendicular nudge.
         let t = norm([d[1] - d[2] * a.sin(), d[2] * a.cos() - d[0], d[0] * a.sin() - d[1] * a.cos() + 1e-3]);
@@ -585,7 +587,10 @@ fn aces_matches_the_reference_fit_at_sample_points() {
         let x = i as f32 * 0.004;
         let got = aces_film(x);
         let want = aces_ref(x as f64) as f32;
-        assert!((got - want).abs() < 1e-4, "aces_film({x}) = {got} vs {want}");
+        assert!(
+            (got - want).abs() < 1e-4,
+            "aces_film({x}) = {got} vs {want}"
+        );
     }
     // Saturation: the fit reaches 1 near x ≈ 7.24 and stays there.
     assert!(aces_film(7.0) < 1.0);
@@ -672,7 +677,10 @@ fn bloom_prefilter_threshold_and_clamp() {
         "a firefly still blooms at the clamp, got {out:?}"
     );
     let out = bloom_prefilter([60_000.0, 0.0, 0.0], &cfg);
-    assert!(lum(out) <= cfg.firefly_clamp * 1.02, "saturated red: {out:?}");
+    assert!(
+        lum(out) <= cfg.firefly_clamp * 1.02,
+        "saturated red: {out:?}"
+    );
     // threshold 0, knee 0: the whole image blooms (identity below the clamp).
     let all = BloomConfig {
         threshold: 0.0,

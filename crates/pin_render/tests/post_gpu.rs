@@ -381,24 +381,22 @@ fn ball_image(cam: &PbrCamera, ball: &MotionBall) -> HdrImage {
     })
 }
 
-/// Principal axis (angle, radians) and the two extents of |out − in|.
-fn blur_axis(a: &HdrImage, b: &HdrImage) -> (f32, f32, f32) {
+/// Mass, centroid and covariance `(sxx, syy, sxy)` of the luminance above
+/// the background (`bg`): the ball's footprint.
+fn ball_moments(img: &HdrImage, bg: f32) -> (f64, [f64; 2], [f64; 3]) {
     let (mut w, mut mx, mut my) = (0.0f64, 0.0f64, 0.0f64);
     let mut pts = Vec::new();
     for y in 0..N {
         for x in 0..N {
-            let d = (luminance(rgb(a.at(x, y))) - luminance(rgb(b.at(x, y)))).abs();
-            if d > 1e-3 {
-                let d = f64::from(d);
-                pts.push((f64::from(x), f64::from(y), d));
+            let d = f64::from(luminance(rgb(img.at(x, y))) - bg);
+            if d.abs() > 1e-4 {
+                let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+                pts.push((px, py, d));
                 w += d;
-                mx += d * f64::from(x);
-                my += d * f64::from(y);
+                mx += d * px;
+                my += d * py;
             }
         }
-    }
-    if w == 0.0 {
-        return (0.0, 0.0, 0.0);
     }
     let (mx, my) = (mx / w, my / w);
     let (mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0);
@@ -407,11 +405,7 @@ fn blur_axis(a: &HdrImage, b: &HdrImage) -> (f32, f32, f32) {
         syy += d * (y - my) * (y - my);
         sxy += d * (x - mx) * (y - my);
     }
-    let angle = 0.5 * (2.0 * sxy).atan2(sxx - syy);
-    let (c, s) = (angle.cos(), angle.sin());
-    let major = (c * c * sxx + 2.0 * c * s * sxy + s * s * syy) / w;
-    let minor = (s * s * sxx - 2.0 * c * s * sxy + c * c * syy) / w;
-    (angle as f32, major.sqrt() as f32, minor.max(0.0).sqrt() as f32)
+    (w, [mx, my], [sxx / w, syy / w, sxy / w])
 }
 
 /// Motion blur: none for a still ball (bit-identical), and a streak along
@@ -446,10 +440,11 @@ fn motion_blur_is_zero_when_still_and_follows_the_velocity() {
         .unwrap();
     assert_eq!(out.pixels, reference.pixels, "a still ball must not blur");
 
-    // Directions: +x (screen right), +z (screen up), diagonal.
+    // Directions (pixel frame, y down): +x (screen right), +z (screen up),
+    // diagonal.
     for (v, want) in [
         ([6.0f32, 0.0, 0.0], 0.0f32),
-        ([0.0, 0.0, 6.0], core::f32::consts::FRAC_PI_2),
+        ([0.0, 0.0, 6.0], -core::f32::consts::FRAC_PI_2),
         ([4.0, 0.0, 4.0], -core::f32::consts::FRAC_PI_4),
     ] {
         let ball = MotionBall { velocity: v, ..still };
@@ -458,22 +453,45 @@ fn motion_blur_is_zero_when_still_and_follows_the_velocity() {
             .render_to_hdr(ctx, &input.view, &PostFrame { camera: &cam, balls: &[ball] })
             .unwrap();
         assert_eq!(c.stats().blurred_balls, 1);
-        let (angle, major, minor) = blur_axis(&out, &reference);
+        // Analytic: a centred shutter smears the footprint by a box of
+        // length s = |displacement| along the velocity, so the footprint
+        // covariance grows by (s²/12)·d̂d̂ᵀ (exactly (1 − 1/n²)·s²/12 for n
+        // samples) and the centroid and mass stay put.
+        let bg = luminance([0.1, 0.12, 0.15]);
+        let (m_ref, c_ref, v_ref) = ball_moments(&reference, bg);
+        let (m_out, c_out, v_out) = ball_moments(&out, bg);
+        let dv = [v_out[0] - v_ref[0], v_out[1] - v_ref[1], v_out[2] - v_ref[2]];
+        let angle = (0.5 * (2.0 * dv[2]).atan2(dv[0] - dv[1])) as f32;
+        let s = f64::from(m.displacement_px[0].hypot(m.displacement_px[1]));
+        let n = f64::from(cfg.motion_blur.samples);
+        let want_growth = (1.0 - 1.0 / (n * n)) * s * s / 12.0;
+        let (ca, sa) = (f64::from(angle).cos(), f64::from(angle).sin());
+        let along = ca * ca * dv[0] + 2.0 * ca * sa * dv[2] + sa * sa * dv[1];
+        let across = sa * sa * dv[0] - 2.0 * ca * sa * dv[2] + ca * ca * dv[1];
         let vel_angle = m.displacement_px[1].atan2(m.displacement_px[0]);
         // Axis angle modulo π.
         let mut diff = (angle - vel_angle).rem_euclid(core::f32::consts::PI);
         if diff > core::f32::consts::FRAC_PI_2 {
             diff = core::f32::consts::PI - diff;
         }
+        let shift = (c_out[0] - c_ref[0]).hypot(c_out[1] - c_ref[1]);
         println!(
-            "velocity {v:?}: streak {:?} px, axis {:.1}° (velocity {:.1}°, want {:.1}°), extents {major:.1} / {minor:.1}",
+            "velocity {v:?}: streak {:?} px, axis {:.1}° (velocity {:.1}°, want {:.1}°), variance growth along {along:.2} (analytic {want_growth:.2}) across {across:.3} px², centroid shift {shift:.3} px, mass {:+.4}",
             m.displacement_px,
             angle.to_degrees(),
             vel_angle.to_degrees(),
-            want.to_degrees()
+            want.to_degrees(),
+            (m_out - m_ref) / m_ref
         );
+        // Screen y points down: +z (up) moves towards row 0.
+        assert!((vel_angle - want).abs() < 1e-3, "screen motion direction {vel_angle}");
         assert!(diff < 5f32.to_radians(), "streak axis off by {}°", diff.to_degrees());
-        assert!(major > 2.0 * minor, "streak not elongated: {major} vs {minor}");
+        assert!(
+            (along - want_growth).abs() < 0.1 * want_growth,
+            "streak variance {along} vs analytic {want_growth}"
+        );
+        assert!(across.abs() < 0.1 * want_growth, "blur across the velocity: {across}");
+        assert!(shift < 0.25, "centroid moved by {shift} px");
         // Energy roughly conserved (the ball smears, it does not vanish).
         let rel = (total_lum(&out) - total_lum(&reference)) / total_lum(&reference);
         assert!(rel.abs() < 0.03, "blur changes energy by {rel:+.4}");

@@ -5,9 +5,9 @@
 //! then on_tick   3. apply the command queue   4. physics   5. collect edges
 //! 6. publish the snapshot.
 //!
-//! `rules.lua` reports, as player 1 (host index), the number of completed
+//! `rules.lua` reports, as player 2, the number of completed
 //! `on_tick` calls at the moment the last `lane_opto` closed edge was
-//! delivered, and as player 2 the same for `action` edges.
+//! delivered, and as player 3 the same for `action` edges.
 
 #[path = "fixtures/spec_2_5/support.rs"]
 mod support;
@@ -193,7 +193,11 @@ fn input_events_within_a_tick_resolve_to_the_last_one() {
         );
         assert_eq!(sim.switch_closed("launch"), Some(true));
         assert_eq!(sim.switch_closed("start"), Some(true));
-        assert_eq!(sim.balls_in_play() + usize::from(sim.tick() == 7), 1, "start spawns by tick 8");
+        // `start` spawns a ball in tick 7 (cabinet edge delivered in its own
+        // tick) or tick 8 (delivered one tick later); exactly one either way.
+        assert!(sim.balls_in_play() <= 1);
+        step(&mut sim, &[], &mut out);
+        assert_eq!(sim.balls_in_play(), 1, "start spawns by tick 8");
     });
 }
 

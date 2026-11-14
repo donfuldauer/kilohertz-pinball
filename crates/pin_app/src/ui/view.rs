@@ -319,6 +319,10 @@ fn settings(ui: &mut egui::Ui, state: &MenuState, rows: &[SettingRow], out: &mut
                 .show(ui, |ui| {
                     for (k, row) in rows.iter().enumerate() {
                         let r = k + 1;
+                        if *row == SettingRow::DecodedAudioBudget {
+                            ui.label(egui::RichText::new("Advanced · audio").strong().weak());
+                            ui.end_row();
+                        }
                         let mut label = egui::RichText::new(row.label());
                         if focus == r {
                             label = label.background_color(FOCUS_FILL).strong();

@@ -381,6 +381,41 @@ impl Default for CalibrationConfig {
     }
 }
 
+/// Default per-bundle decoded-audio budget, MiB (human ruling "decoded-audio
+/// budget (512 MiB, user setting)").
+pub const DEFAULT_DECODED_BUDGET_MIB: u32 = 512;
+/// Smallest accepted decoded-audio budget, MiB.
+pub const MIN_DECODED_BUDGET_MIB: u32 = 64;
+/// Largest accepted decoded-audio budget, MiB.
+pub const MAX_DECODED_BUDGET_MIB: u32 = 8192;
+
+/// Audio settings (`[audio]` in `config.toml`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioConfig {
+    /// Per-bundle decoded-audio safety cap, MiB,
+    /// [`MIN_DECODED_BUDGET_MIB`]..=[`MAX_DECODED_BUDGET_MIB`] (default
+    /// [`DEFAULT_DECODED_BUDGET_MIB`]). Out-of-range or unparsable values fall
+    /// back to the default with a warning. A change applies to the next table
+    /// load (the loader builds one `DecodeBudget` per bundle from it).
+    pub decoded_budget_mib: u32,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        AudioConfig {
+            decoded_budget_mib: DEFAULT_DECODED_BUDGET_MIB,
+        }
+    }
+}
+
+impl AudioConfig {
+    /// The budget in bytes (`decoded_budget_mib` × 1 MiB).
+    pub fn decoded_budget_bytes(&self) -> u64 {
+        u64::from(self.decoded_budget_mib) << 20
+    }
+}
+
 /// The application settings stored in `config.toml`.
 ///
 /// Field names are the TOML keys. Every key is optional in the file (missing
@@ -417,6 +452,8 @@ pub struct AppConfig {
     pub calibration: CalibrationConfig,
     /// Debug wireframe overlay on the playfield.
     pub wireframe: bool,
+    /// Audio settings (`[audio]`).
+    pub audio: AudioConfig,
     /// Folder scanned for table bundles; `None` = `tables/` next to the
     /// executable (resolved by the app).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -454,6 +491,7 @@ impl Default for AppConfig {
             staging_mode: StagingMode::Table,
             calibration: CalibrationConfig::default(),
             wireframe: false,
+            audio: AudioConfig::default(),
             tables_dir: None,
             last_table: None,
             extra: toml::Table::new(),
@@ -526,6 +564,7 @@ const TOP_KEYS: &[&str] = &[
     "staging_mode",
     "calibration",
     "wireframe",
+    "audio",
     "tables_dir",
     "last_table",
 ];
@@ -538,6 +577,7 @@ const PLUNGER_KEYS: &[&str] = &[
     "release_window_ms",
 ];
 const NUDGE_KEYS: &[&str] = &["high_pass_hz", "gain", "curve_exponent", "deadzone", "max"];
+const AUDIO_KEYS: &[&str] = &["decoded_budget_mib"];
 
 /// Largest monitor index the config accepts.
 pub const MAX_DISPLAY_INDEX: u32 = 15;
@@ -596,28 +636,36 @@ impl AppConfig {
     /// Parses `config.toml` text. Never panics.
     pub fn from_toml_str(text: &str) -> ConfigLoad {
         let mut warnings = Vec::new();
-        let config = match toml::from_str::<AppConfig>(text) {
+        let raw = match toml::from_str::<toml::Table>(text) {
+            Ok(raw) => raw,
+            Err(e) => {
+                return ConfigLoad {
+                    config: AppConfig::default(),
+                    warnings: vec![ConfigWarning::Corrupt(e.to_string())],
+                };
+            }
+        };
+        // Values the ruling says fall back individually even when they do not
+        // parse (`audio.decoded_budget_mib`), instead of making the whole
+        // file corrupt.
+        let mut typed = raw.clone();
+        lenient_audio(&mut typed, &mut warnings);
+        let mut config = match toml::Value::Table(typed).try_into::<AppConfig>() {
             Ok(mut c) => {
                 c.sanitize(&mut warnings);
                 c
             }
             Err(e) => {
-                warnings.push(ConfigWarning::Corrupt(e.to_string()));
-                AppConfig::default()
+                return ConfigLoad {
+                    config: AppConfig::default(),
+                    warnings: vec![ConfigWarning::Corrupt(e.to_string())],
+                };
             }
         };
         // Unknown keys: every top-level extra, plus the nested tables'
         // unknown keys (serde ignores those; report them, and keep them by
         // re-reading the raw table).
-        let mut config = config;
-        if warnings
-            .iter()
-            .all(|w| !matches!(w, ConfigWarning::Corrupt(_)))
-        {
-            if let Ok(raw) = toml::from_str::<toml::Table>(text) {
-                collect_unknown(&raw, &mut config, &mut warnings);
-            }
-        }
+        collect_unknown(&raw, &mut config, &mut warnings);
         ConfigLoad { config, warnings }
     }
 
@@ -746,6 +794,17 @@ impl AppConfig {
             c.dual_stage_lower = dc.dual_stage_lower;
             c.dual_stage_upper = dc.dual_stage_upper;
         }
+        let budget = self.audio.decoded_budget_mib;
+        if !(MIN_DECODED_BUDGET_MIB..=MAX_DECODED_BUDGET_MIB).contains(&budget) {
+            bad(
+                w,
+                "audio.decoded_budget_mib",
+                format!(
+                    "{budget} MiB is outside {MIN_DECODED_BUDGET_MIB}..={MAX_DECODED_BUDGET_MIB}"
+                ),
+            );
+            self.audio.decoded_budget_mib = d.audio.decoded_budget_mib;
+        }
         if self.input_profile.trim().is_empty() || self.input_profile.len() > 128 {
             bad(
                 w,
@@ -753,6 +812,32 @@ impl AppConfig {
                 "must be \"auto\" or a profile id (1..=128 bytes)".to_owned(),
             );
             self.input_profile = d.input_profile;
+        }
+    }
+}
+
+/// Drops an `[audio]` value that would not deserialize (wrong type, negative,
+/// too large for `u32`) or an `audio` key that is not a table, with a warning,
+/// so it takes its default instead of failing the whole file.
+fn lenient_audio(raw: &mut toml::Table, w: &mut Vec<ConfigWarning>) {
+    match raw.get_mut("audio") {
+        None => {}
+        Some(toml::Value::Table(audio)) => {
+            if let Some(v) = audio.get("decoded_budget_mib") {
+                let ok = v.as_integer().is_some_and(|i| u32::try_from(i).is_ok());
+                if !ok {
+                    bad(
+                        w,
+                        "audio.decoded_budget_mib",
+                        format!("{v} is not a whole number of MiB"),
+                    );
+                    audio.remove("decoded_budget_mib");
+                }
+            }
+        }
+        Some(v) => {
+            bad(w, "audio", format!("{v} is not a table"));
+            raw.remove("audio");
         }
     }
 }
@@ -769,12 +854,13 @@ fn monitor_msg(i: u32) -> String {
 }
 
 /// Known keys of the nested tables (dotted path, keys).
-const SECTIONS: [(&[&str], &[&str]); 5] = [
+const SECTIONS: [(&[&str], &[&str]); 6] = [
     (&["backglass_pip"], PIP_KEYS),
     (&["score_pip"], PIP_KEYS),
     (&["calibration"], CALIBRATION_KEYS),
     (&["calibration", "plunger"], PLUNGER_KEYS),
     (&["calibration", "nudge"], NUDGE_KEYS),
+    (&["audio"], AUDIO_KEYS),
 ];
 
 /// Adds every key of `src` missing from `dst`, recursing into tables both

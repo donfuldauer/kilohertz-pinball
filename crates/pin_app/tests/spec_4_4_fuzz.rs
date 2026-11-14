@@ -34,7 +34,8 @@ fn check(r: &ConfigLoad) -> Result<(), TestCaseError> {
     s.sanitize(&mut w);
     prop_assert_eq!(&s, c);
     for w in &r.warnings {
-        prop_assert!(!format!("{w:?}").is_empty());
+        let shown = format!("{w:?}");
+        prop_assert!(!shown.is_empty());
     }
     Ok(())
 }

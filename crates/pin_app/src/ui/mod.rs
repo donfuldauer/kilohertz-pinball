@@ -31,8 +31,9 @@ pub mod scan;
 pub mod view;
 
 pub use config::{
-    AUTO_PROFILE, AppConfig, CONFIG_FILE, CalibrationConfig, CameraPreset, ConfigLoad,
-    ConfigWarning, DisplayMode, MAX_CONFIG_BYTES, NudgeCalibration, PipConfig, PipCorner,
+    AUTO_PROFILE, AppConfig, AudioConfig, CONFIG_FILE, CalibrationConfig, CameraPreset,
+    ConfigLoad, ConfigWarning, DEFAULT_DECODED_BUDGET_MIB, DisplayMode, MAX_CONFIG_BYTES,
+    MAX_DECODED_BUDGET_MIB, MIN_DECODED_BUDGET_MIB, NudgeCalibration, PipConfig, PipCorner,
     PlungerCalibration, ScoreDisplayKind, StagingMode,
 };
 pub use live::{InputMonitor, MAX_INPUT_SOURCES, PlungerReading};

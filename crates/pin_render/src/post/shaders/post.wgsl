@@ -101,9 +101,14 @@ fn fs_blur(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
             // At shutter time t the ball is at c + d t; p then shows the
             // static ball image at p - d t when that lies on the disc.
             let t = (f32(i) + 0.5) / f32(samples) - 0.5;
+            // The pixel q falls in decides, by its centre (the same test
+            // the rasteriser used), so the disc smears without losing its
+            // rim pixels.
             let q = p - d * t;
-            let on_ball = dot(q - c, q - c) < r * r;
-            acc = acc + select(bg, load_a(vec2<i32>(floor(q))), on_ball);
+            let qp = floor(q);
+            let qc = qp + vec2<f32>(0.5) - c;
+            let on_ball = dot(qc, qc) < r * r;
+            acc = acc + select(bg, load_a(vec2<i32>(qp)), on_ball);
         }
         color = acc / f32(samples);
         break;

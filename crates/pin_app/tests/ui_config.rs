@@ -1,0 +1,404 @@
+//! `config.toml` persistence tests (4.4 verification: "config.toml
+//! persistence"; gate 5: the parser survives bounded random bytes).
+
+#[path = "ui_fixtures.rs"]
+mod fixtures;
+
+use fixtures::temp_dir;
+use pin_app::ui::{
+    AppConfig, CONFIG_FILE, CameraPreset, ConfigWarning, DisplayMode, MAX_CONFIG_BYTES,
+    PipCorner, ScoreDisplayKind, StagingMode,
+};
+use proptest::prelude::*;
+use std::path::PathBuf;
+
+fn custom() -> AppConfig {
+    let mut c = AppConfig {
+        display_mode: DisplayMode::Multi,
+        playfield_display: 1,
+        backglass_display: Some(2),
+        score_display_monitor: None,
+        camera_preset: CameraPreset::Cabinet,
+        score_display: ScoreDisplayKind::Lcd,
+        input_profile: "xarcade_tankstick".into(),
+        staging_mode: StagingMode::DualStage,
+        wireframe: true,
+        tables_dir: Some(PathBuf::from("/srv/tables")),
+        last_table: Some(PathBuf::from("/srv/tables/apex")),
+        ..AppConfig::default()
+    };
+    c.backglass_pip.corner = PipCorner::BottomLeft;
+    c.backglass_pip.width_fraction = 0.3;
+    c.score_pip.width_fraction = 0.15;
+    c.calibration.plunger.deadzone = 0.02;
+    c.calibration.plunger.release_window_ms = 80;
+    c.calibration.nudge.gain = 2.5;
+    c.calibration.dual_stage_lower = 0.2;
+    c.calibration.dual_stage_upper = 0.7;
+    c.audio.decoded_budget_mib = 1024;
+    c
+}
+
+#[test]
+fn save_load_round_trip() {
+    let dir = temp_dir("roundtrip");
+    let path = dir.join(CONFIG_FILE);
+    let c = custom();
+    c.save(&path).unwrap();
+    let loaded = AppConfig::load(&path);
+    assert_eq!(loaded.warnings, []);
+    assert_eq!(loaded.config, c);
+    // No temporary file is left behind.
+    let names: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(names, [CONFIG_FILE]);
+    // Keys and enum spellings are the documented ones.
+    let text = std::fs::read_to_string(&path).unwrap();
+    for needle in [
+        "display_mode = \"multi\"",
+        "camera_preset = \"cabinet\"",
+        "score_display = \"lcd\"",
+        "staging_mode = \"dual_stage\"",
+        "corner = \"bottom_left\"",
+        "decoded_budget_mib = 1024",
+        "wireframe = true",
+    ] {
+        assert!(text.contains(needle), "{needle:?} missing in\n{text}");
+    }
+    // Overwrite with defaults.
+    AppConfig::default().save(&path).unwrap();
+    assert_eq!(AppConfig::load(&path).config, AppConfig::default());
+}
+
+#[test]
+fn missing_file_gives_defaults_silently() {
+    let dir = temp_dir("missing");
+    let l = AppConfig::load(&dir.join(CONFIG_FILE));
+    assert_eq!(l.config, AppConfig::default());
+    assert!(l.warnings.is_empty());
+    assert_eq!(AppConfig::from_toml_str("").config, AppConfig::default());
+}
+
+#[test]
+fn corrupt_file_falls_back_with_warning() {
+    let dir = temp_dir("corrupt");
+    let path = dir.join(CONFIG_FILE);
+    for bad in [
+        &b"display_mode = \"multi\"\n[[[nope"[..],
+        b"display_mode = \"sideways\"",
+        b"wireframe = 3",
+        b"\xff\xfe\x00 not utf-8",
+    ] {
+        std::fs::write(&path, bad).unwrap();
+        let l = AppConfig::load(&path);
+        assert_eq!(l.config, AppConfig::default());
+        assert_eq!(l.warnings.len(), 1, "{:?}", l.warnings);
+        assert!(matches!(l.warnings[0], ConfigWarning::Corrupt(_)));
+        assert!(l.warnings[0].to_string().contains("defaults"));
+    }
+    // Too large.
+    std::fs::write(&path, vec![b'#'; MAX_CONFIG_BYTES as usize + 10]).unwrap();
+    let l = AppConfig::load(&path);
+    assert_eq!(l.warnings, [ConfigWarning::TooLarge(MAX_CONFIG_BYTES + 10)]);
+    assert!(matches!(
+        AppConfig::from_toml_bytes(&vec![b' '; MAX_CONFIG_BYTES as usize + 1]).warnings[..],
+        [ConfigWarning::TooLarge(_)]
+    ));
+    // A directory is unreadable.
+    let l = AppConfig::load(&dir);
+    assert_eq!(l.config, AppConfig::default());
+    assert!(matches!(l.warnings[..], [ConfigWarning::Unreadable(_)]));
+    assert!(!l.warnings[0].to_string().is_empty());
+}
+
+#[test]
+fn bad_values_reset_individually() {
+    let text = r#"
+wireframe = true
+playfield_display = 99
+backglass_display = 40
+camera_preset = "top_down"
+input_profile = ""
+[score_pip]
+corner = "top_left"
+width_fraction = 7.0
+[calibration]
+dual_stage_lower = 0.9
+dual_stage_upper = 0.1
+[calibration.plunger]
+deadzone = -1.0
+release_window_ms = 0
+[calibration.nudge]
+gain = 11.0
+curve_exponent = 0.01
+max = nan
+"#;
+    let l = AppConfig::from_toml_str(text);
+    let d = AppConfig::default();
+    let c = &l.config;
+    assert!(c.wireframe);
+    assert_eq!(c.camera_preset, CameraPreset::TopDown);
+    assert_eq!(c.score_pip.corner, PipCorner::TopLeft);
+    assert_eq!(c.playfield_display, 0);
+    assert_eq!(c.backglass_display, None);
+    assert_eq!(c.input_profile, "auto");
+    assert_eq!(c.score_pip.width_fraction, d.score_pip.width_fraction);
+    assert_eq!(c.calibration, d.calibration);
+    let keys: Vec<&str> = l
+        .warnings
+        .iter()
+        .map(|w| match w {
+            ConfigWarning::InvalidValue { key, .. } => key.as_str(),
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    for k in [
+        "playfield_display",
+        "backglass_display",
+        "input_profile",
+        "score_pip.width_fraction",
+        "calibration.dual_stage_lower",
+        "calibration.plunger.deadzone",
+        "calibration.plunger.release_window_ms",
+        "calibration.nudge.gain",
+        "calibration.nudge.curve_exponent",
+        "calibration.nudge.max",
+    ] {
+        assert!(keys.contains(&k), "{k} not warned: {keys:?}");
+    }
+    for w in &l.warnings {
+        assert!(w.to_string().contains("default"));
+    }
+}
+
+#[test]
+fn audio_budget_setting() {
+    let ok = AppConfig::from_toml_str("[audio]\ndecoded_budget_mib = 2048\n");
+    assert!(ok.warnings.is_empty(), "{:?}", ok.warnings);
+    assert_eq!(ok.config.audio.decoded_budget_mib, 2048);
+    assert_eq!(AppConfig::default().audio.decoded_budget_mib, 512);
+    for (text, key) in [
+        ("[audio]\ndecoded_budget_mib = 63\n", "audio.decoded_budget_mib"),
+        ("[audio]\ndecoded_budget_mib = 8193\n", "audio.decoded_budget_mib"),
+        ("[audio]\ndecoded_budget_mib = -5\n", "audio.decoded_budget_mib"),
+        ("[audio]\ndecoded_budget_mib = 99999999999\n", "audio.decoded_budget_mib"),
+        ("[audio]\ndecoded_budget_mib = \"lots\"\n", "audio.decoded_budget_mib"),
+        ("[audio]\ndecoded_budget_mib = 512.5\n", "audio.decoded_budget_mib"),
+        ("audio = 7\n", "audio"),
+    ] {
+        let l = AppConfig::from_toml_str(&format!("wireframe = true\n{text}"));
+        assert_eq!(l.config.audio.decoded_budget_mib, 512, "{text}");
+        assert!(l.config.wireframe, "{text}: other settings kept");
+        assert!(
+            matches!(&l.warnings[..], [ConfigWarning::InvalidValue { key: k, .. }] if k == key),
+            "{text}: {:?}",
+            l.warnings
+        );
+    }
+}
+
+#[test]
+fn unknown_keys_are_preserved_and_reported() {
+    let dir = temp_dir("unknown");
+    let path = dir.join(CONFIG_FILE);
+    let text = r#"
+future_top = "keep me"
+wireframe = true
+[future_section]
+a = 1
+[calibration.plunger]
+deadzone = 0.01
+future_nested = [1, 2]
+[audio]
+future_audio = true
+"#;
+    std::fs::write(&path, text).unwrap();
+    let l = AppConfig::load(&path);
+    let unknown: Vec<&str> = l
+        .warnings
+        .iter()
+        .filter_map(|w| match w {
+            ConfigWarning::UnknownKey(k) => Some(k.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        unknown,
+        [
+            "future_section",
+            "future_top",
+            "calibration.plunger.future_nested",
+            "audio.future_audio"
+        ]
+    );
+    assert_eq!(l.warnings.len(), 4);
+    assert!(l.config.wireframe);
+    assert_eq!(l.config.calibration.plunger.deadzone, 0.01);
+    l.config.save(&path).unwrap();
+    let again = AppConfig::load(&path);
+    assert_eq!(again.config, l.config);
+    let saved: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(saved["future_top"].as_str(), Some("keep me"));
+    assert_eq!(saved["future_section"]["a"].as_integer(), Some(1));
+    assert_eq!(
+        saved["calibration"]["plunger"]["future_nested"]
+            .as_array()
+            .map(|a| a.len()),
+        Some(2)
+    );
+    assert_eq!(saved["audio"]["future_audio"].as_bool(), Some(true));
+    assert_eq!(saved["audio"]["decoded_budget_mib"].as_integer(), Some(512));
+}
+
+#[test]
+fn save_is_atomic_and_cleans_up_on_error() {
+    let dir = temp_dir("atomic");
+    let path = dir.join(CONFIG_FILE);
+    custom().save(&path).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    // The rename target is a non-empty directory: the rename fails, the
+    // temporary file is removed and nothing else changes.
+    let blocked = dir.join("blocked");
+    std::fs::create_dir_all(blocked.join("child")).unwrap();
+    assert!(AppConfig::default().save(&blocked).is_err());
+    assert!(!dir.join(".blocked.tmp").exists());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    // No file name.
+    assert!(AppConfig::default().save(std::path::Path::new("/")).is_err());
+    // A stale temporary file from a crash is overwritten.
+    std::fs::write(dir.join(format!(".{CONFIG_FILE}.tmp")), b"junk").unwrap();
+    AppConfig::default().save(&path).unwrap();
+    assert!(!dir.join(format!(".{CONFIG_FILE}.tmp")).exists());
+    assert_eq!(AppConfig::load(&path).config, AppConfig::default());
+}
+
+#[test]
+fn topology_mode_follows_display_settings() {
+    use pin_render::topology::TopologyMode;
+    let c = custom();
+    match c.topology_mode() {
+        TopologyMode::Cabinet {
+            playfield,
+            backglass,
+            score,
+        } => assert_eq!((playfield, backglass, score), (1, Some(2), None)),
+        other => panic!("{other:?}"),
+    }
+    match AppConfig::default().topology_mode() {
+        TopologyMode::SingleMonitor {
+            display,
+            backglass,
+            score,
+        } => {
+            assert_eq!(display, 0);
+            assert_eq!(backglass.width_fraction, 0.25);
+            assert_eq!(score.width_fraction, 0.25);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn staging_mode_resolution() {
+    use pin_core::flipper::FlipperStagingMode as F;
+    use pin_core::input::{CabinetAxis, CabinetInput};
+    use pin_input::FlipperStage;
+    let ded = F::DedicatedButton(CabinetInput::LeftFlipper);
+    let par = F::ParallelLinked(CabinetInput::RightUpper);
+    let dual = F::DualStageThreshold {
+        axis: CabinetAxis::RightFlipper,
+        lower_threshold: 0.3,
+        upper_threshold: 0.8,
+    };
+    let lo = FlipperStage::Lower;
+    let up = FlipperStage::Upper;
+    assert_eq!(StagingMode::Table.resolve(par, up, 0.1, 0.9), par);
+    assert_eq!(
+        StagingMode::Dedicated.resolve(par, up, 0.1, 0.9),
+        F::DedicatedButton(CabinetInput::RightUpper)
+    );
+    assert_eq!(StagingMode::Dedicated.resolve(ded, lo, 0.1, 0.9), ded);
+    assert_eq!(
+        StagingMode::Dedicated.resolve(dual, up, 0.1, 0.9),
+        F::DedicatedButton(CabinetInput::RightUpper)
+    );
+    assert_eq!(
+        StagingMode::Dedicated.resolve(dual, lo, 0.1, 0.9),
+        F::DedicatedButton(CabinetInput::RightFlipper)
+    );
+    assert_eq!(
+        StagingMode::DualStage.resolve(ded, lo, 0.1, 0.9),
+        F::DualStageThreshold {
+            axis: CabinetAxis::LeftFlipper,
+            lower_threshold: 0.1,
+            upper_threshold: 0.9
+        }
+    );
+    // Non-flipper buttons keep their staging.
+    let action = F::DedicatedButton(CabinetInput::Action);
+    for m in StagingMode::ALL {
+        assert_eq!(m.resolve(action, lo, 0.1, 0.9), action);
+        assert!(!m.label().is_empty());
+    }
+    for c in CameraPreset::ALL {
+        assert!(!c.label().is_empty());
+    }
+    for c in PipCorner::ALL {
+        assert!(!c.label().is_empty());
+    }
+    assert_eq!(ScoreDisplayKind::Lcd.label(), "LCD");
+}
+
+#[test]
+fn plunger_and_nudge_conversions_round_trip() {
+    let c = custom().calibration;
+    let p = c.plunger.to_config();
+    assert_eq!(pin_app::ui::PlungerCalibration::from(p), c.plunger);
+    let n = c.nudge.to_config();
+    assert_eq!(pin_app::ui::NudgeCalibration::from(n), c.nudge);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 512, .. ProptestConfig::default() })]
+
+    /// Random bytes never panic; the result is always sanitized.
+    #[test]
+    fn random_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
+        let l = AppConfig::from_toml_bytes(&bytes);
+        let mut c = l.config.clone();
+        let mut w = Vec::new();
+        c.sanitize(&mut w);
+        prop_assert!(w.is_empty(), "{w:?}");
+        prop_assert_eq!(c, l.config);
+    }
+
+    /// TOML-shaped noise (known keys with random values) never panics, and
+    /// whatever loads saves and reloads to the same settings.
+    #[test]
+    fn toml_noise_round_trips(
+        lines in proptest::collection::vec(
+            (prop::sample::select(vec![
+                "wireframe", "display_mode", "playfield_display", "backglass_display",
+                "camera_preset", "input_profile", "unknown", "audio.decoded_budget_mib",
+                "calibration.nudge.gain", "score_pip.width_fraction", "last_table",
+            ]),
+            prop::sample::select(vec![
+                "true", "1", "-1", "0.5", "1e400", "-0.0", "\"multi\"", "\"x\"", "[1]",
+                "{a = 1}", "99999999999", "\"\"", "inf",
+            ])),
+            0..8,
+        )
+    ) {
+        let text: String = lines.iter().map(|(k, v)| format!("{k} = {v}\n")).collect();
+        let l = AppConfig::from_toml_str(&text);
+        let saved = l.config.to_toml_string().unwrap();
+        let again = AppConfig::from_toml_str(&saved);
+        prop_assert!(
+            again.warnings.iter().all(|w| matches!(w, ConfigWarning::UnknownKey(_))),
+            "{:?}\n{saved}", again.warnings
+        );
+        prop_assert_eq!(again.config, l.config);
+    }
+}

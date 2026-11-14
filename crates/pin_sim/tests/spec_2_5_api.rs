@@ -76,8 +76,9 @@ fn unknown_names_are_errors_or_none() {
                 .is_err()
         );
         assert_eq!(sim.balls_in_play(), 0, "a failed spawn must not add a ball");
-        // The script reports at most players 0..=3.
-        assert_eq!(sim.score(4), None);
+        // Players are numbered 1..=4 as in the script API.
+        assert_eq!(sim.score(0), None);
+        assert_eq!(sim.score(5), None);
         assert_eq!(sim.score(255), None);
     });
 }
@@ -695,7 +696,7 @@ fn state_hash_covers_the_pinned_state() {
         let mut b = load_at(&bundle_with_script("hash_loud", loud), DEFAULT_SEED);
         a.advance(3);
         b.advance(3);
-        assert_eq!(b.score(0), Some(42));
+        assert_eq!(b.score(1), Some(42));
         assert_ne!(a.state_hash(), b.state_hash(), "reported scores are hashed");
     });
 }

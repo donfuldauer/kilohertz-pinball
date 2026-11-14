@@ -240,3 +240,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 5.2 | Implementer + Independent Tester | Opus 5.5 / Fable 5.2 | 1 | running | — | |
 | 5 | 3.5 | Implementer + Independent Tester | Opus 5.5 / Fable 5.2 | 1 | running | — | |
 | 5 | 2.5, 4.4, 5.2, 3.5 | all roles | — | 1 | restarted | — | container restart stopped all eight agents; target dirs cleared (disk); roles relaunched to resume from the working tree (DECISIONS "Wave 5 restart: disk budget") |
+| 5 | 5.2 | Independent Tester | Fable 5.2 | 1 (resumed) | done | spec_5_2_cpu 25/25 (9 proptests), spec_5_2_gpu 18/18 on lavapipe; red-insert region [3.57, 0.18, 0.07]; bloom energy 225.89 → 225.13; ≤ 2 probe updates/frame over 64 frames; MSAA edge error 0.245 → 0.088 | D1 clippy neg_cmp_op_on_partial_ord at post/mod.rs:258 → Implementer; invalid WGSL panics instead of GpuError; raw PBR HDR peak ~14 769 unclamped before post (N7) |
