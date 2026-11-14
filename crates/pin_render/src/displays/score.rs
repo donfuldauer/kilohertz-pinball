@@ -23,7 +23,7 @@ pub fn format_score_with(score: i64, separator: Option<char>) -> String {
     let n = digits.len();
     for (i, d) in digits.chars().enumerate() {
         if i > 0
-            && (n - i) % 3 == 0
+            && (n - i).is_multiple_of(3)
             && let Some(sep) = separator
         {
             out.push(sep);
