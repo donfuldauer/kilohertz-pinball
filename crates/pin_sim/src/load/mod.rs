@@ -413,6 +413,7 @@ impl Simulation {
             });
             if sw.kind == SwitchKind::Trough {
                 troughs.push(TroughZone {
+                    switch: sw.id,
                     center,
                     radius,
                     layer_mask,
@@ -574,6 +575,7 @@ impl Simulation {
             pending: ArrayVec::new(),
             cab_bits: [0; 4],
             phys_bits: [0; 4],
+            drain_bits: [0; 4],
             forced_mask: [0; 4],
             forced_val: [0; 4],
             switch_hits: [0; 256],
@@ -604,7 +606,8 @@ impl Simulation {
                 Script::Wasm(b) => pin_core::TableScriptBackend::on_init(b.as_mut(), &mut ctx),
             }
         }
-        sim.apply_commands();
+        // No physics runs in load: on_init pulses count from tick 1.
+        sim.apply_commands(sim.tick + 1);
         sim.update_flipper_drive();
         sim.update_gates();
         sim.publish_snapshot();

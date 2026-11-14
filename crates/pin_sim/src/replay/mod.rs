@@ -306,14 +306,8 @@ impl Recording {
     /// [`ReplayError::Io`] and the [`from_bytes`](Self::from_bytes) errors.
     pub fn load(path: &Path) -> Result<Recording, ReplayError> {
         const MAX_FILE: u64 = 1 << 30;
-        let len = std::fs::metadata(path)
-            .map_err(|e| ReplayError::Io(e.to_string()))?
-            .len();
-        if len > MAX_FILE {
-            return Err(ReplayError::Io(format!("{len} bytes is too large")));
-        }
-        let bytes = std::fs::read(path).map_err(|e| ReplayError::Io(e.to_string()))?;
-        Recording::from_bytes(&bytes)
+        let file = std::fs::File::open(path).map_err(|e| ReplayError::Io(e.to_string()))?;
+        Recording::from_bytes(&read_capped(file, MAX_FILE)?)
     }
 
     /// The events fed on `tick`, in order (`events` is sorted by tick).
@@ -323,6 +317,22 @@ impl Recording {
         let hi = self.events.partition_point(|(t, _)| *t <= tick);
         &self.events[lo..hi]
     }
+}
+
+/// Reads all of `r`, but at most `max + 1` bytes: more than `max` is an
+/// error, whatever size the source claimed beforehand.
+fn read_capped(r: impl std::io::Read, max: u64) -> Result<Vec<u8>, ReplayError> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    r.take(max.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| ReplayError::Io(e.to_string()))?;
+    if bytes.len() as u64 > max {
+        return Err(ReplayError::Io(format!(
+            "more than {max} bytes is too large"
+        )));
+    }
+    Ok(bytes)
 }
 
 /// Steps a [`Simulation`] and records every tick's input events.
@@ -335,10 +345,20 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    /// Starts recording `sim` from its current tick (normally 0, just
-    /// loaded; the seed and table hash are taken from it).
+    /// Starts recording `sim`, which must be at tick 0 (just loaded; the
+    /// seed and table hash are taken from it). A recording holds only the
+    /// seed and the inputs and [`replay`] starts from a fresh load, so a run
+    /// that already advanced could not be reproduced.
+    ///
+    /// # Panics
+    /// When `sim` has already run a tick.
     #[must_use]
     pub fn new(sim: Simulation) -> Self {
+        assert_eq!(
+            sim.tick(),
+            0,
+            "Recorder::new needs a simulation at tick 0 (a recording replays from load)"
+        );
         let rec = Recording::new(sim.config().seed, sim.table_hash());
         Self { sim, rec }
     }
@@ -437,4 +457,20 @@ pub fn replay(bundle: &Path, rec: &Recording) -> Result<u64, ReplayError> {
         });
     }
     Ok(Recorder::play(&mut sim, rec))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_capped_enforces_the_limit_on_the_bytes_read() {
+        // A source longer than the cap is rejected after reading cap + 1
+        // bytes, whatever its size looked like beforehand.
+        let big = std::io::repeat(7u8);
+        assert!(matches!(read_capped(big, 16), Err(ReplayError::Io(_))));
+        assert_eq!(read_capped(&[1u8; 16][..], 16).unwrap(), vec![1u8; 16]);
+        assert!(read_capped(&[1u8; 17][..], 16).is_err());
+        assert!(read_capped(&[][..], 16).unwrap().is_empty());
+    }
 }

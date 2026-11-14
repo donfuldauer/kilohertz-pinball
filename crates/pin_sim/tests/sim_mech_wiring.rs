@@ -51,7 +51,7 @@ angle_deg = 90.0
 length = 50.0
 "#;
 
-fn bundle(tag: &str, rules: &str) -> std::path::PathBuf {
+fn bundle(tag: &str, rules: &str) -> ScratchDir {
     let table = fixture_table_toml() + EXTRA;
     fixture_variant(
         tag,
@@ -157,4 +157,47 @@ fn newton_ball_switch_closes_when_struck() {
         assert!(sim.switch_hits("newton_sw").unwrap() >= 1);
         assert_eq!(sim.solver().newton_chain_count(), 1);
     });
+}
+
+/// A trough on layer 1 behind a 0 -> 1 layer transition. A ball that enters
+/// both in one tick drains, and the trough switch still closes in that tick
+/// (the drain uses the ball's final layer; so does the trough switch).
+const UPPER_TROUGH: &str = r#"
+[[switches]]
+id = "upper_trough"
+number = 22
+kind = "trough"
+layer = 1
+position = [440.0, 600.0, 0.0]
+radius = 20.0
+
+[[layer_transitions]]
+id = "to_upper"
+from_layer = 0
+to_layer = 1
+zone = { min = [420.0, 580.0, -50.0], max = [460.0, 620.0, 100.0] }
+"#;
+
+#[test]
+fn trough_closes_when_a_ball_drains_across_a_layer_transition() {
+    let table = fixture_table_toml() + UPPER_TROUGH;
+    let dir = fixture_variant("upper_trough", &[("table.toml", Some(table.as_bytes()))]);
+    let path = dir.to_path_buf();
+    on_sim_thread(move || {
+        let mut sim = Simulation::load(&path, SimConfig::default()).unwrap();
+        let drained = sim.counters().balls_drained;
+        // 0.5 mm short of the zone, 1 m/s up the table (1 mm per tick).
+        let h = sim
+            .spawn_ball("standard_steel", [0.440, 0.5795, 0.0135], [0.0, 1.0, 0.0])
+            .unwrap();
+        assert_eq!(sim.switch_closed("upper_trough"), Some(false));
+        sim.advance(1);
+        assert!(sim.ball(h).is_none(), "the ball drained");
+        assert_eq!(sim.counters().balls_drained, drained + 1);
+        assert_eq!(sim.switch_closed("upper_trough"), Some(true));
+        assert_eq!(sim.switch_hits("upper_trough"), Some(1));
+        sim.advance(1);
+        assert_eq!(sim.switch_closed("upper_trough"), Some(false));
+    });
+    drop(dir);
 }

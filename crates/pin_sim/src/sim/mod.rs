@@ -200,6 +200,8 @@ pub(crate) struct NewtonBinding {
 /// A trough switch zone: a ball whose centre enters it has drained.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct TroughZone {
+    /// The trough's switch (its sensor has the same zone).
+    pub switch: SwitchId,
     pub center: Vec3,
     pub radius: f32,
     pub layer_mask: u8,
@@ -284,6 +286,9 @@ pub struct Simulation {
     pub(crate) pending: ArrayVec<PendingEdge, MAX_PENDING_EDGES>,
     pub(crate) cab_bits: [u64; 4],
     pub(crate) phys_bits: [u64; 4],
+    /// Trough switches a ball drained through in this tick's physics step
+    /// (sampled with the ball's final layer).
+    pub(crate) drain_bits: [u64; 4],
     pub(crate) forced_mask: [u64; 4],
     pub(crate) forced_val: [u64; 4],
     pub(crate) switch_hits: [u32; MAX_SWITCHES],
