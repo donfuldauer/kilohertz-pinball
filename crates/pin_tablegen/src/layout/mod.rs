@@ -69,7 +69,7 @@ use pin_core::schema::layout::{InsertShape, LaneKind};
 use pin_core::schema::table::{AabbDef, LayerTransitionDef, SplineDef, SplineKind, TableManifest};
 use pin_core::units::{mm_to_m, mm3_to_m};
 use pin_physics::world::{CubicSpline, GuideCurve, Wireform};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use glb::{Extras, FlatMaterial, Node};
 use mesh::Mesh;
@@ -160,8 +160,9 @@ pub fn parse_layout_bytes(bytes: &[u8]) -> Result<LayoutManifest, GenError> {
 /// replacement fails, so a failure leaves the previous pair in place.
 ///
 /// Concurrent calls (threads or processes) targeting the same folder are
-/// serialised by an exclusive lock on [`bundle_lock_path`], held through
-/// staging, replacement, rollback and cleanup.
+/// serialised by an exclusive lock on [`LOCK_FILE`] inside `dir`, held
+/// through staging, replacement, rollback and cleanup. Only `dir` itself
+/// needs to be writable.
 pub fn write_bundle(generated: &GeneratedTable, dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let lock = std::fs::File::options()
@@ -169,32 +170,18 @@ pub fn write_bundle(generated: &GeneratedTable, dir: &Path) -> std::io::Result<(
         .write(true)
         .create(true)
         .truncate(false)
-        .open(bundle_lock_path(dir)?)?;
+        .open(dir.join(LOCK_FILE))?;
     lock.lock()?;
     let result = write_bundle_locked(generated, dir);
     drop(lock); // releases the lock
     result
 }
 
-/// The lock file [`write_bundle`] holds while writing into `dir` (an
-/// existing folder): `.<folder name>.tablegen-lock` beside the folder
-/// (canonical path, so every spelling of the folder shares one lock), or
-/// `.tablegen-lock` inside a folder with no parent. It lives outside the
-/// bundle so the bundle holds only its outputs, and is never removed
-/// (removing a lock file another writer may already have opened would let
-/// two writers in at once).
-fn bundle_lock_path(dir: &Path) -> std::io::Result<PathBuf> {
-    let dir = std::fs::canonicalize(dir)?;
-    Ok(match (dir.parent(), dir.file_name()) {
-        (Some(parent), Some(name)) => {
-            let mut file = std::ffi::OsString::from(".");
-            file.push(name);
-            file.push(".tablegen-lock");
-            parent.join(file)
-        }
-        _ => dir.join(".tablegen-lock"),
-    })
-}
+/// The lock file [`write_bundle`] holds while writing into a bundle folder.
+/// It stays in the folder after the write: removing a lock file another
+/// writer may already have opened would let two writers in at once. Bundle
+/// loading reads only the files the manifests name, so it is ignored.
+pub const LOCK_FILE: &str = ".tablegen-lock";
 
 fn write_bundle_locked(generated: &GeneratedTable, dir: &Path) -> std::io::Result<()> {
     let files = [
