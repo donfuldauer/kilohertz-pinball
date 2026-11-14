@@ -1124,3 +1124,100 @@ fn table_resize_is_charged() {
     assert_eq!(run("t[0.5] = true"), Some(ScriptError::BudgetExceeded));
     assert_eq!(run("t[-1] = false"), None);
 }
+
+/// Ticks `src` under [`LuaConfig::engine()`] until it faults; returns the
+/// tick index and the error.
+fn first_engine_fault(src: &str) -> (usize, ScriptError) {
+    let mut b = LuaScriptBackend::new(src.as_bytes(), &names(), LuaConfig::engine())
+        .unwrap_or_else(|e| panic!("must load under the engine config: {e}"));
+    let mut h = Host::new(0);
+    for t in 0..64 {
+        h.tick(&mut b);
+        if let Some(e) = b.last_error() {
+            return (t, e.clone());
+        }
+    }
+    panic!("no fault in 64 ticks");
+}
+
+/// An attack-corpus file reaches its targeted code under the engine config:
+/// the file as given faults with `want` at some tick, and the same file with
+/// `marker` replaced by `probe` (code that raises a recognisable error once
+/// the targeted path runs) raises that error at the same tick, so the fault
+/// is the targeted path's and not the set-up's.
+fn corpus_reaches(file: &str, want: &ScriptError, marker: &str, probe: &str, needle: &str) {
+    let path = format!("{}/tests/attack_corpus/{file}", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(&path).unwrap();
+    let (tick, err) = first_engine_fault(&src);
+    assert_eq!(&err, want, "{file}: fault at tick {tick}");
+    assert!(src.contains(marker), "{file}: marker {marker:?} missing");
+    let probed = format!(
+        "probe_calls = 0 \
+         function probe(n) probe_calls = probe_calls + 1 \
+         if probe_calls >= n then error('probe reached') end end\n{}",
+        src.replacen(marker, probe, 1)
+    );
+    let (probe_tick, probe_err) = first_engine_fault(&probed);
+    assert_eq!(probe_tick, tick, "{file}: {probe_err:?}");
+    assert!(
+        matches!(&probe_err, ScriptError::Runtime(m) if m.contains(needle)),
+        "{file}: {probe_err:?}"
+    );
+}
+
+/// `e_sortbig.lua` builds its 60 000-element table within the 2 MiB heap
+/// and then faults inside `table.sort` (previously the table outgrew the
+/// heap first and the sort never ran).
+#[test]
+fn corpus_e_sortbig_reaches_the_sort() {
+    corpus_reaches(
+        "e_sortbig.lua",
+        &ScriptError::BudgetExceeded,
+        "table.sort(t)",
+        "if #t == 60000 then probe(1) end table.sort(t)",
+        "probe reached",
+    );
+}
+
+/// `e_sortlt.lua` builds its 3 000 objects over several ticks and then runs
+/// out of budget inside the allocating `__lt` comparator (previously the
+/// set-up ran out of budget at load and `__lt` never ran).
+#[test]
+fn corpus_e_sortlt_reaches_the_comparator() {
+    corpus_reaches(
+        "e_sortlt.lua",
+        &ScriptError::BudgetExceeded,
+        "return a.v < b.v",
+        "probe(200) return a.v < b.v",
+        "probe reached",
+    );
+}
+
+/// `m_fmtlit2.lua`'s 64 KiB format literal loads (it is exactly at the
+/// string cap) and its `string.format` loop runs until the budget stops it.
+#[test]
+fn corpus_m_fmtlit2_loads_and_formats() {
+    corpus_reaches(
+        "m_fmtlit2.lua",
+        &ScriptError::BudgetExceeded,
+        "while true do sf(s) end",
+        "local r = sf(s) if #r == 32768 then probe(1) end",
+        "probe reached",
+    );
+}
+
+/// The `r_rehash*` files finish their set-up within the engine limits and
+/// fault in their phase-1 rehash loop (previously they stopped with
+/// `MemoryLimit` or `BudgetExceeded` during set-up).
+#[test]
+fn corpus_r_rehash_reach_phase_1() {
+    for file in ["r_rehash.lua", "r_rehash2.lua", "r_rehash3.lua"] {
+        corpus_reaches(
+            file,
+            &ScriptError::BudgetExceeded,
+            "else local t = t",
+            "else if n == N and k >= N then probe(1) end local t = t",
+            "probe reached",
+        );
+    }
+}
