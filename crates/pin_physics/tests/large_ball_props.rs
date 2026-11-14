@@ -16,9 +16,7 @@ mod flip;
 use glam::{Quat, Vec3};
 use pin_core::BallProfile;
 use pin_core::ids::ProfileId;
-use pin_physics::ball::{
-    Ball, BallEvents, BallSolver, BallSolverConfig, Geometry, MovingBodies,
-};
+use pin_physics::ball::{Ball, BallEvents, BallSolver, BallSolverConfig, Geometry, MovingBodies};
 use pin_physics::flipper::FlipperSet;
 use pin_physics::world::{
     CubicSpline, GuideCurve, StaticShape, StaticWorld, StaticWorldBuilder, layers,
@@ -79,7 +77,11 @@ fn wall_world(kind: Wall) -> (StaticWorld, Vec<GuideCurve>) {
             );
         }
         Wall::Plate => {
-            b.add_collider(cuboid(v(0.0005, 0.0, 0.0), v(0.0005, e, e)), layers::ALL, true);
+            b.add_collider(
+                cuboid(v(0.0005, 0.0, 0.0), v(0.0005, e, e)),
+                layers::ALL,
+                true,
+            );
         }
         Wall::Guide => {}
     }
@@ -209,7 +211,8 @@ fn sized_flipper_rig(d: f32, torque: f32) -> flip::Rig {
     let mut c = flip::left_config(0, [0.0; 3]);
     c.power_torque_nm = torque;
     c.inertia_kg_m2 = 0.5e-4;
-    let mut rig = flip::Rig::with_world(&[c.clone()], StaticWorldBuilder::new().build(), Vec3::ZERO);
+    let mut rig =
+        flip::Rig::with_world(&[c.clone()], StaticWorldBuilder::new().build(), Vec3::ZERO);
     rig.solver = sized_solver(&[d], Vec3::ZERO);
     rig.flippers = FlipperSet::new(&[c]).unwrap();
     rig
@@ -287,7 +290,13 @@ fn tilted_thin_wall_holds_the_xl_ball_at_full_speed() {
 #[ignore]
 fn probe_flipper_penetration() {
     let mut global = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
-    let ds: Vec<f32> = std::env::var("PROBE_D").map(|s| s.split(',').map(|x| x.parse().unwrap()).collect()).unwrap_or_else(|_| (0..=64).map(|k| D_MIN + (D_MAX - D_MIN) * k as f32 / 64.0).collect());
+    let ds: Vec<f32> = std::env::var("PROBE_D")
+        .map(|s| s.split(',').map(|x| x.parse().unwrap()).collect())
+        .unwrap_or_else(|_| {
+            (0..=64)
+                .map(|k| D_MIN + (D_MAX - D_MIN) * k as f32 / 64.0)
+                .collect()
+        });
     for d in ds {
         for torque in [1.2f32, 4.0, 8.0, 12.0, 15.0] {
             for fraction in [0.35f32, 0.6, 0.79, 0.93] {
@@ -297,12 +306,16 @@ fn probe_flipper_penetration() {
                     let dir = flip::bat_dir(-30.0);
                     let n = Vec3::Z.cross(dir);
                     let bat_r = 0.011 + (0.0065 - 0.011) * fraction;
-                    let start = dir * (flip::BAT_LEN * fraction) + n * (bat_r + r + gap) + v(0.0, 0.0, r);
+                    let start =
+                        dir * (flip::BAT_LEN * fraction) + n * (bat_r + r + gap) + v(0.0, 0.0, r);
                     let h = rig.solver.add_ball(ball(0, start, Vec3::ZERO)).unwrap();
                     rig.flippers.set_energised(flip::LEFT, true);
                     for _ in 0..80 {
                         rig.step();
-                        let cp = rig.flippers.closest_point(0, 0.0, rig.ball(h).position).unwrap();
+                        let cp = rig
+                            .flippers
+                            .closest_point(0, 0.0, rig.ball(h).position)
+                            .unwrap();
                         if r - cp.distance > global.0 {
                             global = (r - cp.distance, d, torque, fraction, gap);
                         }
@@ -312,7 +325,14 @@ fn probe_flipper_penetration() {
         }
     }
     let _ = global;
-    println!("worst penetration {:.3} mm at d {} torque {} fraction {} gap {}", global.0 * 1e3, global.1, global.2, global.3, global.4);
+    println!(
+        "worst penetration {:.3} mm at d {} torque {} fraction {} gap {}",
+        global.0 * 1e3,
+        global.1,
+        global.2,
+        global.3,
+        global.4
+    );
 }
 
 #[test]
@@ -331,7 +351,16 @@ fn probe_trace() {
         rig.step();
         let b = rig.ball(h);
         let cp = rig.flippers.closest_point(0, 0.0, b.position).unwrap();
-        println!("t {t}: pen {:.3} mm angle {:.2} w {:.1} pos {} v {} n {} hits {:?}", (r - cp.distance) * 1e3, rig.flippers.angle_deg(flip::LEFT), rig.flippers.angular_velocity(flip::LEFT), b.position, b.velocity, cp.normal, rig.hits);
+        println!(
+            "t {t}: pen {:.3} mm angle {:.2} w {:.1} pos {} v {} n {} hits {:?}",
+            (r - cp.distance) * 1e3,
+            rig.flippers.angle_deg(flip::LEFT),
+            rig.flippers.angular_velocity(flip::LEFT),
+            b.position,
+            b.velocity,
+            cp.normal,
+            rig.hits
+        );
     }
 }
 
@@ -340,7 +369,11 @@ fn probe_trace() {
 fn probe_fine_dt() {
     for div in [1u32, 2, 4, 8] {
         let mut worst = 0.0f32;
-        for (d, torque, fraction, gap) in [(0.0794f32, 30.0f32, 0.79f32, 0.00998f32), (0.0724525, 30.0, 0.79, 0.00998), (0.057379294, 16.6, 0.788, 0.00998)] {
+        for (d, torque, fraction, gap) in [
+            (0.0794f32, 30.0f32, 0.79f32, 0.00998f32),
+            (0.0724525, 30.0, 0.79, 0.00998),
+            (0.057379294, 16.6, 0.788, 0.00998),
+        ] {
             let r = 0.5 * d;
             let mut rig = sized_flipper_rig(d, torque);
             let dir = flip::bat_dir(-30.0);
@@ -353,8 +386,12 @@ fn probe_fine_dt() {
             for _ in 0..(60 * div) {
                 rig.events.clear();
                 let geo = Geometry::new(&rig.world);
-                rig.solver.step_with_bodies(&geo, &mut [&mut rig.flippers], dt, &mut rig.events);
-                let cp = rig.flippers.closest_point(0, 0.0, rig.ball(h).position).unwrap();
+                rig.solver
+                    .step_with_bodies(&geo, &mut [&mut rig.flippers], dt, &mut rig.events);
+                let cp = rig
+                    .flippers
+                    .closest_point(0, 0.0, rig.ball(h).position)
+                    .unwrap();
                 worst = worst.max(r - cp.distance);
             }
         }

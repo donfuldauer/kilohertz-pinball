@@ -7,7 +7,14 @@
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
-        Some("validate") => pin_tablegen::clearance::run_validate_cli(&args[1..]),
+        Some("validate") => {
+            pin_tablegen::clearance::validate_cli_output(&args[1..]).map(|(summary, warnings)| {
+                for w in warnings {
+                    eprintln!("warning: {w}");
+                }
+                summary
+            })
+        }
         _ => pin_tablegen::layout::run_cli(&args),
     };
     match result {

@@ -19,6 +19,21 @@ pub const VALIDATE_USAGE: &str = "usage: pin_tablegen validate <bundle_dir_or_.p
 /// [`CliError::Failed`] (exit code 1) listing every load error or
 /// clearance error, one `file: path: message` per line.
 pub fn run_validate_cli(args: &[String]) -> Result<String, CliError> {
+    let (mut out, warnings) = validate_cli_output(args)?;
+    for w in warnings {
+        out.push_str("\nwarning: ");
+        out.push_str(&w);
+    }
+    Ok(out)
+}
+
+/// As [`run_validate_cli`], with the summary line and the warnings
+/// (`file: path: message`, without a prefix) apart: the binary prints the
+/// summary on stdout and each warning, prefixed `warning: `, on stderr.
+///
+/// # Errors
+/// As [`run_validate_cli`].
+pub fn validate_cli_output(args: &[String]) -> Result<(String, Vec<String>), CliError> {
     let mut bundle = None;
     for a in args {
         match a.as_str() {
@@ -53,7 +68,7 @@ fn usage(m: &str) -> CliError {
     CliError::Usage(format!("{m}\n{VALIDATE_USAGE}"))
 }
 
-fn summarize(path: &Path, report: ClearanceReport) -> Result<String, CliError> {
+fn summarize(path: &Path, report: ClearanceReport) -> Result<(String, Vec<String>), CliError> {
     if !report.is_ok() {
         return Err(CliError::Failed(
             report
@@ -64,14 +79,14 @@ fn summarize(path: &Path, report: ClearanceReport) -> Result<String, CliError> {
                 .join("\n"),
         ));
     }
-    let mut out = format!(
+    let out = format!(
         "{}: clearance ok ({} warning{})",
         path.display(),
         report.warnings.len(),
         if report.warnings.len() == 1 { "" } else { "s" }
     );
-    for w in &report.warnings {
-        out.push_str(&format!("\nwarning: {w}"));
-    }
-    Ok(out)
+    Ok((
+        out,
+        report.warnings.iter().map(ToString::to_string).collect(),
+    ))
 }

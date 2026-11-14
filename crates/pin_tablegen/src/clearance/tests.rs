@@ -39,7 +39,10 @@ fn allowed_regions() {
     assert!(a.at(2, DVec2::new(9.0, 9.0)) && !a.at(1, DVec2::new(0.5, 0.5)));
     assert!(a.in_box(0, DVec2::new(0.9, 0.9), DVec2::new(2.0, 2.0)));
     assert!(!a.in_box(0, DVec2::new(1.5, 1.5), DVec2::new(2.0, 2.0)));
-    assert!(Allowed::Anywhere.at(5, DVec2::ZERO) && Allowed::Anywhere.in_box(5, DVec2::ZERO, DVec2::ONE));
+    assert!(
+        Allowed::Anywhere.at(5, DVec2::ZERO)
+            && Allowed::Anywhere.in_box(5, DVec2::ZERO, DVec2::ONE)
+    );
 }
 
 #[test]

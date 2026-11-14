@@ -1987,3 +1987,9 @@ The N3 fix (stale probe after a ball drains) made the scheduler capture moved ba
 
 ## Orchestrator — 5.2 probe capture order: cyclic cursor (Tester D5)
 "Oldest capture first, ties → lower index" favours low indices when the ball count is not a multiple of the budget (3 balls / budget 2: ball 0 every frame). **Ruling:** captures take the next `budget` indices after the last captured one, modulo the current ball count; the cursor survives count changes (clamped, never reset). This is the plain reading of "round-robin across balls" in the brief. Staleness still only changes which probe a ball samples.
+
+## Orchestrator — 3.5 review round 1 rulings
+- **B1** (wall-clock-flaky 2 ms assertion) → fix 1: latency asserted as the minimum over several replays of the per-replay p100, non-allocating sink, non-parallel test collection. Same hardening for the Tester's timing specs.
+- **Fix 1 also:** N1 (equal-tick sender restart not resynced — correctness per protocol §6), N4 (receive-thread exceptions), N5 (incompatible DirectOutput.dll → exit 4), N6 (sanitise the untrusted table name passed to DOF, D25), N7 (map file create_new), N9 (CI coverage line).
+- **N8 ratified:** `pin_audio` (default-features = false) as a `pin_app` dev-dependency for the fixture generator — tests only.
+- N2, N3, N10, N12 → HUMAN_QUEUE; N11 → 6.0 brief.

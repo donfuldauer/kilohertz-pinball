@@ -93,7 +93,10 @@ impl World<'_> {
                 best = best.min(q.distance(c));
             }
         }
-        for g in guides.iter().filter(|g| g.layer == layer && g.z_lo <= c.z + top) {
+        for g in guides
+            .iter()
+            .filter(|g| g.layer == layer && g.z_lo <= c.z + top)
+        {
             let cp = g
                 .flat
                 .closest_point(Vec3::new(c.x as f32, c.y as f32, 0.0), None);
@@ -126,7 +129,8 @@ pub(super) fn lanes(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
         }) else {
             continue;
         };
-        let pts = |s: &pin_assets::SplineSi| s.points_m.iter().map(|&p| vec3(p)).collect::<Vec<_>>();
+        let pts =
+            |s: &pin_assets::SplineSi| s.points_m.iter().map(|&p| vec3(p)).collect::<Vec<_>>();
         let (Some(ls), Some(rs)) = (
             geom::build_spline(&pts(left), left.closed),
             geom::build_spline(&pts(right), right.closed),
@@ -373,7 +377,11 @@ pub(super) fn wireforms(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
         if s.kind != SplineKind::Wireform {
             continue;
         }
-        let Some(g) = s.gauge_m.map(f64::from).filter(|g| g.is_finite() && *g > 0.0) else {
+        let Some(g) = s
+            .gauge_m
+            .map(f64::from)
+            .filter(|g| g.is_finite() && *g > 0.0)
+        else {
             continue;
         };
         let pts: Vec<Vec3> = s.points_m.iter().map(|&p| vec3(p)).collect();

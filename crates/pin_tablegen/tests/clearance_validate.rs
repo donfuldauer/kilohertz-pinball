@@ -97,11 +97,19 @@ fn v2_xl_rejected_under_a_65_mm_deck_and_accepted_in_the_open_area() {
     let e = deck_errors[0];
     assert_eq!(e.file, "playfield.glb");
     assert_eq!(e.name, "decks[0]");
-    let idx = scene.meshes.iter().position(|m| m.name == "decks[0]").unwrap();
+    let idx = scene
+        .meshes
+        .iter()
+        .position(|m| m.name == "decks[0]")
+        .unwrap();
     assert_eq!(e.path, format!("meshes[{idx}]"));
     assert!(near(e.actual_mm, 65.0, 1e-3), "{}", e.actual_mm);
     assert!(near(e.required_mm, 80.4, 1e-3), "{}", e.required_mm);
-    assert!(e.message.contains("decks[0]") && e.message.contains(XL), "{}", e.message);
+    assert!(
+        e.message.contains("decks[0]") && e.message.contains(XL),
+        "{}",
+        e.message
+    );
     // The standard ball fits everywhere.
     assert!(r.errors.iter().all(|e| e.profile == XL), "{:#?}", r.errors);
     // The same bundle through the bundle entry point.
@@ -112,7 +120,12 @@ fn v2_xl_rejected_under_a_65_mm_deck_and_accepted_in_the_open_area() {
     // Layer 0 alone (Appendix A's restriction) still runs under the deck.
     base.balls.restrict = vec![restrict(XL, &[0], &[])];
     let r = check(&layout, &base.to_toml_string().unwrap(), "v2_layer0");
-    assert_eq!(of(&r, Feature::DeckHeadroom, XL).len(), 1, "{:#?}", r.errors);
+    assert_eq!(
+        of(&r, Feature::DeckHeadroom, XL).len(),
+        1,
+        "{:#?}",
+        r.errors
+    );
     // Not on the layer-2 wireform any more.
     assert!(of(&r, Feature::Wireform, XL).is_empty());
 
@@ -130,6 +143,43 @@ fn v2_xl_rejected_under_a_65_mm_deck_and_accepted_in_the_open_area() {
     );
 }
 
+/// Tester defect D1: a restriction area of any size lying under the deck
+/// is rejected, wherever it is (the area itself is sampled, not only a
+/// grid over the deck).
+#[test]
+fn small_areas_under_the_deck_are_rejected() {
+    let layout = layout("apex_layout.toml");
+    let g = |area: &[[f32; 2]]| {
+        let mut base = apex_base();
+        base.balls.restrict = vec![restrict(XL, &[0], area)];
+        base.to_toml_string().unwrap()
+    };
+    let (dir, mut table, scene) = build(&layout, &g(&OPEN_AREA), "small_areas");
+    for (cx, cy) in [
+        (351.9f32, 803.3f32),
+        (420.1, 955.5),
+        (300.0, 750.0),
+        (261.0, 701.0),
+    ] {
+        for side in [1.0f32, 3.0, 8.0, 20.0] {
+            let h = 0.5 * side;
+            table.manifest.balls.restrict[0].area = vec![
+                [cx - h, cy - h],
+                [cx + h, cy - h],
+                [cx + h, cy + h],
+                [cx - h, cy + h],
+            ];
+            let r = validate_clearance(&table, &scene);
+            assert_eq!(
+                of(&r, Feature::DeckHeadroom, XL).len(),
+                1,
+                "{side} mm square at ({cx}, {cy})"
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 // ------------------------------------------------------------ feature checks
 
 #[test]
@@ -144,7 +194,10 @@ fn lanes_are_measured_rail_to_rail() {
         assert_eq!(lane.is_empty(), xl_fits, "{width}: {:#?}", r.errors);
         if let Some(e) = lane.first() {
             assert_eq!(e.name, "tablegen:lanes[0]");
-            assert_eq!((e.file.as_str(), e.path.as_str()), ("table.toml", "splines[0]"));
+            assert_eq!(
+                (e.file.as_str(), e.path.as_str()),
+                ("table.toml", "splines[0]")
+            );
             assert!(near(e.actual_mm, width, 0.05), "{}", e.actual_mm);
             assert!(near(e.required_mm, 80.4, 1e-3));
         }
@@ -229,7 +282,11 @@ fn flipper_gap_between_resting_tips() {
     for (gap, xl_fits) in [(50.0f32, false), (85.0, true)] {
         let r = check(
             &layout,
-            &base_with(&[STEEL, XL, MINI], vec![], &flipper_pair(180.0 + tips + gap, 0)),
+            &base_with(
+                &[STEEL, XL, MINI],
+                vec![],
+                &flipper_pair(180.0 + tips + gap, 0),
+            ),
             "flippers",
         );
         assert!(of(&r, Feature::FlipperGap, STEEL).is_empty());
@@ -245,7 +302,11 @@ fn flipper_gap_between_resting_tips() {
     // A 20 mm gap traps even the standard ball, but not the mini ball.
     let r = check(
         &layout,
-        &base_with(&[STEEL, MINI], vec![], &flipper_pair(180.0 + tips + 20.0, 0)),
+        &base_with(
+            &[STEEL, MINI],
+            vec![],
+            &flipper_pair(180.0 + tips + 20.0, 0),
+        ),
         "flippers_20",
     );
     assert_eq!(of(&r, Feature::FlipperGap, STEEL).len(), 1);
@@ -278,19 +339,42 @@ points = [[100.0, 300.0, 40.0], [200.0, 500.0, 60.0], [300.0, 700.0, 40.0]]
 fn wireform_gauge_holds_the_ball_between_20_and_75_degrees() {
     let layout = layout_with("");
     // 19 mm: standard (44.7°) fine, mini drops through, XL perches (13.8°).
-    let r = check(&layout, &base_with(&[STEEL, MINI, XL], vec![], &wireform(19.0, 2)), "wire19");
+    let r = check(
+        &layout,
+        &base_with(&[STEEL, MINI, XL], vec![], &wireform(19.0, 2)),
+        "wire19",
+    );
     assert!(of(&r, Feature::Wireform, STEEL).is_empty());
     let mini = of(&r, Feature::Wireform, MINI);
     assert_eq!(mini.len(), 1);
-    assert!(mini[0].message.contains("drops through"), "{}", mini[0].message);
-    assert!(near(mini[0].required_mm, 15.88 * 75.0f32.to_radians().sin(), 0.01));
+    assert!(
+        mini[0].message.contains("drops through"),
+        "{}",
+        mini[0].message
+    );
+    assert!(near(
+        mini[0].required_mm,
+        15.88 * 75.0f32.to_radians().sin(),
+        0.01
+    ));
     let xl = of(&r, Feature::Wireform, XL);
     assert_eq!(xl.len(), 1);
-    assert_eq!((xl[0].path.as_str(), xl[0].name.as_str()), ("splines[0]", "rail"));
+    assert_eq!(
+        (xl[0].path.as_str(), xl[0].name.as_str()),
+        ("splines[0]", "rail")
+    );
     assert!(near(xl[0].actual_mm, 19.0, 1e-3));
-    assert!(near(xl[0].required_mm, 79.4 * 20.0f32.to_radians().sin(), 0.01));
+    assert!(near(
+        xl[0].required_mm,
+        79.4 * 20.0f32.to_radians().sin(),
+        0.01
+    ));
     // 60 mm carries the XL ball only.
-    let r = check(&layout, &base_with(&[STEEL, XL], vec![], &wireform(60.0, 2)), "wire60");
+    let r = check(
+        &layout,
+        &base_with(&[STEEL, XL], vec![], &wireform(60.0, 2)),
+        "wire60",
+    );
     assert!(of(&r, Feature::Wireform, XL).is_empty());
     assert_eq!(of(&r, Feature::Wireform, STEEL).len(), 1);
     // Restricted off its layer, the XL ball is not checked on it.
@@ -323,18 +407,38 @@ const POCKET: &str = "[[walls]]\npoints = [[285.0, 440.0], [285.0, 385.0], [315.
 fn scoop_pocket_and_vuk_exit() {
     let deck = "[[decks]]\nlayer = 1\nz = 65.0\noutline = [[250.0, 350.0], [350.0, 350.0], [350.0, 450.0], [250.0, 450.0]]\nmaterial = \"acrylic\"\n";
     // Exit centre 80 mm up, on the deck's layer: 15 mm above the deck.
-    let area = [[250.0, 360.0], [350.0, 360.0], [350.0, 470.0], [250.0, 470.0]];
+    let area = [
+        [250.0, 360.0],
+        [350.0, 360.0],
+        [350.0, 470.0],
+        [250.0, 470.0],
+    ];
     let r = check(
         &layout_with(&format!("{POCKET}{deck}")),
-        &base_with(&[STEEL, MINI], vec![restrict(XL, &[0, 1], &area)], &vuk([0.0, 0.0, 80.0], 1)),
+        &base_with(
+            &[STEEL, MINI],
+            vec![restrict(XL, &[0, 1], &area)],
+            &vuk([0.0, 0.0, 80.0], 1),
+        ),
         "vuk",
     );
     assert!(of(&r, Feature::Scoop, STEEL).is_empty(), "{:#?}", r.errors);
-    assert!(of(&r, Feature::VukExit, STEEL).is_empty(), "{:#?}", r.errors);
+    assert!(
+        of(&r, Feature::VukExit, STEEL).is_empty(),
+        "{:#?}",
+        r.errors
+    );
     let scoop = of(&r, Feature::Scoop, XL);
     assert_eq!(scoop.len(), 1, "{:#?}", r.errors);
-    assert_eq!((scoop[0].path.as_str(), scoop[0].name.as_str()), ("mechs[0]", "scoop"));
-    assert!(scoop[0].actual_mm < 80.4 && scoop[0].actual_mm > 30.0, "{}", scoop[0].actual_mm);
+    assert_eq!(
+        (scoop[0].path.as_str(), scoop[0].name.as_str()),
+        ("mechs[0]", "scoop")
+    );
+    assert!(
+        scoop[0].actual_mm < 80.4 && scoop[0].actual_mm > 30.0,
+        "{}",
+        scoop[0].actual_mm
+    );
     let exit = of(&r, Feature::VukExit, XL);
     assert_eq!(exit.len(), 1);
     assert_eq!(exit[0].path, "mechs[0].exit_offset");
@@ -352,7 +456,11 @@ fn scoop_pocket_and_vuk_exit() {
     // restriction does not allow is a warning.
     let r = check(
         &layout_with(""),
-        &base_with(&[STEEL], vec![restrict(XL, &[0], &[])], &vuk([0.0, 300.0, 100.0], 1)),
+        &base_with(
+            &[STEEL],
+            vec![restrict(XL, &[0], &[])],
+            &vuk([0.0, 300.0, 100.0], 1),
+        ),
         "vuk_open",
     );
     assert!(r.is_ok(), "{:#?}", r.errors);
@@ -404,12 +512,21 @@ fn base_no_nan(b: &pin_core::schema::TableManifest) -> pin_core::schema::TableMa
 #[test]
 fn deck_headroom_follows_the_diameter() {
     let deck = "[[decks]]\nlayer = 1\nz = 40.0\noutline = [[200.0, 600.0], [400.0, 600.0], [400.0, 900.0], [200.0, 900.0]]\nmaterial = \"acrylic\"\n";
-    let (dir, table, scene) = build(&layout_with(deck), &base_with(&[STEEL], vec![], ""), "sweep");
+    let (dir, table, scene) = build(
+        &layout_with(deck),
+        &base_with(&[STEEL], vec![], ""),
+        "sweep",
+    );
     // jumbo 31.75 mm fits under 40 mm, the 39.5 mm ball does not.
     let ds = [0.01588f32, 0.027, 0.03175, 0.0395, 0.0794];
     let r = validate_clearance_diameters(&table, &scene, &ds);
     let failing: Vec<&str> = r.errors.iter().map(|e| e.profile.as_str()).collect();
-    assert_eq!(failing, ["39.50 mm ball", "79.40 mm ball"], "{:#?}", r.errors);
+    assert_eq!(
+        failing,
+        ["39.50 mm ball", "79.40 mm ball"],
+        "{:#?}",
+        r.errors
+    );
     assert!(r.errors.iter().all(|e| near(e.actual_mm, 40.0, 1e-3)));
     // Deterministic.
     assert_eq!(validate_clearance_diameters(&table, &scene, &ds), r);
@@ -429,7 +546,12 @@ fn walls_under_a_deck_keep_the_ball_out_of_a_narrow_channel() {
              [[walls]]\npoints = [[{x1}, 600.0], [{x1}, 900.0]]\nmaterial = \"wood\"\n"
         ));
         let r = check(&layout, &base_with(&[STEEL], vec![], ""), "channel");
-        assert_eq!(of(&r, Feature::DeckHeadroom, STEEL).len(), errors, "{channel}: {:#?}", r.errors);
+        assert_eq!(
+            of(&r, Feature::DeckHeadroom, STEEL).len(),
+            errors,
+            "{channel}: {:#?}",
+            r.errors
+        );
     }
 }
 
@@ -449,7 +571,10 @@ fn validate_cli() {
     };
     let out = run_validate_cli(&s(&[ok_dir.to_str().unwrap()])).unwrap();
     assert!(out.contains("clearance ok"), "{out}");
-    assert!(out.contains("warning: table.toml: layer_transitions[0]"), "{out}");
+    assert!(
+        out.contains("warning: table.toml: layer_transitions[0]"),
+        "{out}"
+    );
     let bad_dir = {
         let g = generate(&layout, &apex_base()).unwrap();
         let dir = bundle_dir("cli_bad");
@@ -482,7 +607,24 @@ fn validate_cli() {
             .unwrap()
     };
     let ok = run(&ok_dir);
-    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    // Summary on stdout, warnings on stderr.
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&ok.stdout),
+        String::from_utf8_lossy(&ok.stderr),
+    );
+    assert!(
+        stdout.contains("clearance ok") && !stdout.contains("warning:"),
+        "{stdout}"
+    );
+    assert!(
+        stderr.contains("warning: table.toml: layer_transitions[0]"),
+        "{stderr}"
+    );
     let bad = run(&bad_dir);
     assert_eq!(bad.status.code(), Some(1));
     std::fs::remove_dir_all(ok_dir).unwrap();

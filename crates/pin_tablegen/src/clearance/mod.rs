@@ -56,7 +56,7 @@ mod headroom;
 #[cfg(test)]
 mod tests;
 
-pub use cli::{VALIDATE_USAGE, run_validate_cli};
+pub use cli::{VALIDATE_USAGE, run_validate_cli, validate_cli_output};
 
 use core::fmt;
 use geom::Polygon;
@@ -180,7 +180,8 @@ impl ClearanceReport {
     /// # Errors
     /// Every clearance error, when there is at least one.
     pub fn into_result(self) -> Result<Vec<ValidationError>, Vec<ValidationError>> {
-        let conv = |v: Vec<ClearanceError>| v.iter().map(ClearanceError::to_validation_error).collect();
+        let conv =
+            |v: Vec<ClearanceError>| v.iter().map(ClearanceError::to_validation_error).collect();
         if self.errors.is_empty() {
             Ok(conv(self.warnings))
         } else {

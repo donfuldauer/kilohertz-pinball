@@ -7,9 +7,9 @@ mod support;
 
 use pin_assets::{GltfScene, LoadedTable, Vfs, load_gltf, load_table};
 use pin_core::Material;
+use pin_core::schema::layout::{Deck, Lane, LaneKind, Playfield, Post, Wall};
 use pin_core::schema::table::BallRestriction;
 use pin_core::schema::{LayoutManifest, TableManifest};
-use pin_core::schema::layout::{Deck, Lane, LaneKind, Playfield, Post, Wall};
 use pin_tablegen::clearance::{
     ClearanceReport, Feature, validate_clearance, validate_clearance_diameters,
 };
@@ -52,24 +52,33 @@ fn post() -> impl Strategy<Value = Post> {
 }
 
 fn lane() -> impl Strategy<Value = Lane> {
-    (point(), 0.0f32..core::f32::consts::TAU, 30.0f32..400.0, 15.0f32..100.0).prop_map(
-        |(p, a, len, width)| Lane {
+    (
+        point(),
+        0.0f32..core::f32::consts::TAU,
+        30.0f32..400.0,
+        15.0f32..100.0,
+    )
+        .prop_map(|(p, a, len, width)| Lane {
             kind: LaneKind::Orbit,
             points: vec![p, [p[0] + len * a.cos(), p[1] + len * a.sin()]],
             width,
-        },
-    )
+        })
 }
 
 fn deck() -> impl Strategy<Value = Deck> {
-    (1u8..8, 5.0f32..120.0, point(), 20.0f32..300.0, 20.0f32..300.0).prop_map(
-        |(layer, z, p, w, h)| Deck {
+    (
+        1u8..8,
+        5.0f32..120.0,
+        point(),
+        20.0f32..300.0,
+        20.0f32..300.0,
+    )
+        .prop_map(|(layer, z, p, w, h)| Deck {
             layer,
             z,
             outline: vec![p, [p[0] + w, p[1]], [p[0] + w, p[1] + h], [p[0], p[1] + h]],
             material: Material::Acrylic,
-        },
-    )
+        })
 }
 
 fn arb_layout() -> impl Strategy<Value = LayoutManifest> {
@@ -134,7 +143,12 @@ fn extras() -> impl Strategy<Value = String> {
 
 fn sorted(r: &ClearanceReport) -> bool {
     let key = |e: &pin_tablegen::clearance::ClearanceError| {
-        (e.file.clone(), e.path.clone(), e.profile.clone(), e.message.clone())
+        (
+            e.file.clone(),
+            e.path.clone(),
+            e.profile.clone(),
+            e.message.clone(),
+        )
     };
     r.errors.windows(2).all(|w| key(&w[0]) <= key(&w[1]))
         && r.warnings.windows(2).all(|w| key(&w[0]) <= key(&w[1]))

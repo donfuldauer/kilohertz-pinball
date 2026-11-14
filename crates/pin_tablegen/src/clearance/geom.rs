@@ -347,7 +347,10 @@ mod tests {
             (v(0.2, 0.2, 3.0), v(0.2, 0.2, 0.0)),
         ];
         for (p, want) in cases {
-            assert!(closest_on_triangle(p, a, b, c).distance(want) < 1e-12, "{p}");
+            assert!(
+                closest_on_triangle(p, a, b, c).distance(want) < 1e-12,
+                "{p}"
+            );
         }
     }
 

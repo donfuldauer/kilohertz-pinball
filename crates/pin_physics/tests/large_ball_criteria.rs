@@ -87,7 +87,13 @@ fn c1_xl_vs_mini_free_collision_conserves_momenta() {
                         );
                     }
                     if ev.as_slice().iter().any(|e| {
-                        matches!(e, BallEvent::Impact { other: ImpactTarget::Ball(_), .. })
+                        matches!(
+                            e,
+                            BallEvent::Impact {
+                                other: ImpactTarget::Ball(_),
+                                ..
+                            }
+                        )
                     }) {
                         collisions += 1;
                         assert!(kinetic_energy(&s) < e0);
@@ -117,8 +123,12 @@ fn c1_head_on_exchange_matches_the_two_body_formula() {
     );
     for speed in [0.5f32, 4.0, 20.0] {
         let mut s = solver_no_gravity();
-        let hm = s.add_ball(ball_at(MINI, v(-0.1, 0.0, 0.0), v(speed, 0.0, 0.0))).unwrap();
-        let hx = s.add_ball(ball_at(XL, v(0.0, 0.0, 0.0), Vec3::ZERO)).unwrap();
+        let hm = s
+            .add_ball(ball_at(MINI, v(-0.1, 0.0, 0.0), v(speed, 0.0, 0.0)))
+            .unwrap();
+        let hx = s
+            .add_ball(ball_at(XL, v(0.0, 0.0, 0.0), Vec3::ZERO))
+            .unwrap();
         let mut ev = BallEvents::new();
         for _ in 0..300 {
             s.step(&geo, DT, &mut ev);
@@ -193,13 +203,19 @@ fn c3_fastest_bat_does_not_swing_through_the_xl_ball() {
                     );
                 }
                 let b = rig.ball(h);
-                assert!(b.velocity.length() > 0.1, "torque {torque}, {fraction}, gap {gap_mm}: not hit");
+                assert!(
+                    b.velocity.length() > 0.1,
+                    "torque {torque}, {fraction}, gap {gap_mm}: not hit"
+                );
                 assert!(b.position.dot(Vec3::Z.cross(flip::bat_dir(20.0))) > 0.0);
                 fastest_tip = fastest_tip.max(peak_tip);
             }
         }
     }
-    println!("XL vs bat: fastest tip {fastest_tip:.1} m/s, deepest {:.3} mm", deepest * 1e3);
+    println!(
+        "XL vs bat: fastest tip {fastest_tip:.1} m/s, deepest {:.3} mm",
+        deepest * 1e3
+    );
     assert!(fastest_tip > 15.0, "{fastest_tip}");
 }
 
@@ -236,7 +252,10 @@ fn c3_xl_balls_bounce_off_held_and_resting_bats_at_any_speed() {
                         "held {held}, {speed} m/s at {fraction}: went through"
                     );
                     let cp = rig.flippers.closest_point(0, 0.0, b.position).unwrap();
-                    assert!(cp.distance > r - 1.0e-3, "held {held}, {speed} m/s: inside the bat");
+                    assert!(
+                        cp.distance > r - 1.0e-3,
+                        "held {held}, {speed} m/s: inside the bat"
+                    );
                 }
                 assert!(hit, "held {held}, {speed} m/s at {fraction}: never touched");
                 let b = rig.ball(h);

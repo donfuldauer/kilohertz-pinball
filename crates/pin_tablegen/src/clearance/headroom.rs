@@ -146,8 +146,7 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                         )
                     })
                 });
-                let in_box =
-                    |q: &&DVec2| q.x >= lo.x && q.x <= hi.x && q.y >= lo.y && q.y <= hi.y;
+                let in_box = |q: &&DVec2| q.x >= lo.x && q.x <= hi.x && q.y >= lo.y && q.y <= hi.y;
                 let from_area = extra.iter().filter(in_box).copied();
                 for q in core::iter::once(centre).chain(grid).chain(from_area) {
                     if !(s.contains_plan(q) && c.contains_plan(q)) {
