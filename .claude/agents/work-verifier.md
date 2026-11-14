@@ -39,11 +39,16 @@ executor's report, the branch, and the base (normally `origin/main`).
    has a `proptest`; every parser touched survives a bounded random-bytes run.
 6. **Sim-thread rules**, where the work touches the tick: the allocation guard test passes and
    the replay hash is stable over 10 runs.
-7. **Owned paths.** Committed, staged, unstaged and untracked changes
-   (`git diff --name-only <base>` plus `git ls-files --others --exclude-standard`) touch only
-   OWNED PATHS plus the
-   allowed shared files (`docs/DECISIONS.md`, `docs/HUMAN_QUEUE.md`,
-   `contracts/CHANGE_REQUESTS.md`, pins under the wave's comment in the root `Cargo.toml`).
+7. **Owned paths.** Take the union of these four lists; every path in it must be in OWNED
+   PATHS or the allowed shared files listed below. `--no-renames` makes a move report both its
+   source and its destination, so a file moved in from outside the owned paths is caught.
+   - committed: `git diff --no-renames --name-only <base>...HEAD`
+   - staged: `git diff --no-renames --name-only --cached`
+   - unstaged: `git diff --no-renames --name-only`
+   - untracked: `git ls-files --others --exclude-standard`
+
+   The allowed shared files are `docs/DECISIONS.md`, `docs/HUMAN_QUEUE.md`,
+   `contracts/CHANGE_REQUESTS.md` and pins under the wave's comment in the root `Cargo.toml`.
 8. **Images (render work).** Analytic pixel assertions exist and pass before any snapshot; walk
    through the brief's visual checklist on the produced images and log each item.
 
