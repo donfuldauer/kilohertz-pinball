@@ -25,6 +25,13 @@ the Orchestrator also gives the pre-batch head SHA, and check 7 compares `<pre-b
 `failures` per item (per thread URL where given), so the Orchestrator can resolve each thread on
 its own result. A single-brief run is unchanged.
 
+**Queue-only case.** A round whose only change is a `docs/HUMAN_QUEUE.md` line for deferred
+findings has no brief and no executor report. The Orchestrator then gives the pre-batch head,
+the new head and the list of deferred findings. Run check 7 (the diff `<pre-batch head>..HEAD`
+touches only `docs/HUMAN_QUEUE.md`) and confirm each deferred finding has its queue line. Cargo
+checks do not apply because no code changed; report `requirements: 0/0`. The result is `pass`
+if both hold.
+
 ## Checks (all must pass)
 
 1. **Requirements traced.** For each REQUIREMENTS item, find the code that implements it and a
