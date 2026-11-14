@@ -121,7 +121,8 @@
 //! imports) aborts the callback, and the commands it queued are dropped
 //! (all-or-nothing; holds it dropped count as held so they get released).
 //! The backend then queues `(coil, false)` for every coil the script holds
-//! (continuing on later callbacks if the queue is full), stops calling the
+//! (continuing on later callbacks if the queue is full, also after a
+//! successful reload clears the fault), stops calling the
 //! guest and stays faulted until a successful reload — exactly like the Lua
 //! backend.
 //!
@@ -743,11 +744,14 @@ impl WasmScriptBackend {
 
     fn run(&mut self, entry: Entry, ctx: &mut HostCtx) {
         let live = &mut self.live;
+        // Tilt releases still owed from a fault keep draining even after a
+        // reload has cleared `faulted`; they go ahead of the callback's own
+        // commands and outside its rollback mark.
+        let book = &mut live.store.data_mut().book;
+        if book.releases_pending() {
+            book.drain_releases(ctx.cmd);
+        }
         if self.faulted {
-            let book = &mut live.store.data_mut().book;
-            if book.any_held() {
-                book.release_holds(ctx.cmd);
-            }
             return;
         }
         let mark = QueueMark::new(ctx.cmd, live.store.data().book.overflow);

@@ -112,12 +112,16 @@ struct RawCtx {
 // nor are they dereferenced from another thread.
 unsafe impl Send for RawCtx {}
 
-/// Host bookkeeping that survives hot swaps: dropped-command counter and the
-/// set of coils the script holds (for the tilt release).
+/// Host bookkeeping that survives hot swaps: dropped-command counter, the
+/// set of coils the script holds, and the set of coils whose tilt release is
+/// still queued for a later callback (kept apart from `holds` so a reload in
+/// the middle of the drain neither stops it nor hands those coils to the new
+/// script).
 #[derive(Clone)]
 pub(crate) struct Book {
     pub(crate) overflow: u32,
     holds: [u64; HOLD_WORDS],
+    releasing: [u64; HOLD_WORDS],
 }
 
 impl Book {
@@ -125,6 +129,7 @@ impl Book {
         Self {
             overflow: 0,
             holds: [0; HOLD_WORDS],
+            releasing: [0; HOLD_WORDS],
         }
     }
 
@@ -139,12 +144,14 @@ impl Book {
         }
     }
 
-    /// Records the hold state of `coil`.
+    /// Records the hold state of `coil`. The script now owns the coil
+    /// again, so any tilt release still pending for it is dropped.
     pub(crate) fn set_held(&mut self, coil: CoilId, on: bool) {
         let i = coil.index();
         let bit = 1u64 << (i % 64);
         let w = &mut self.holds[i / 64];
         *w = if on { *w | bit } else { *w & !bit };
+        self.releasing[i / 64] &= !bit;
     }
 
     /// True if the script currently holds `coil`.
@@ -155,14 +162,30 @@ impl Book {
     }
 
     /// True while any coil is marked held.
+    #[cfg(test)]
     pub(crate) fn any_held(&self) -> bool {
         self.holds.iter().any(|w| *w != 0)
     }
 
-    /// Queues `(coil, false)` for every held coil while the queue has room;
-    /// coils that do not fit stay marked and are released by the next call.
+    /// True while tilt releases are still waiting for queue room.
+    pub(crate) fn releases_pending(&self) -> bool {
+        self.releasing.iter().any(|w| *w != 0)
+    }
+
+    /// Starts the tilt release: every held coil moves to the pending-release
+    /// set, then as many releases are queued as fit ([`Self::drain_releases`]).
     pub(crate) fn release_holds(&mut self, cmd: &mut HostCommandQueue) {
-        for (wi, w) in self.holds.iter_mut().enumerate() {
+        for (r, h) in self.releasing.iter_mut().zip(self.holds.iter_mut()) {
+            *r |= *h;
+            *h = 0;
+        }
+        self.drain_releases(cmd);
+    }
+
+    /// Queues `(coil, false)` for every coil pending release while the queue
+    /// has room; coils that do not fit stay pending for the next call.
+    pub(crate) fn drain_releases(&mut self, cmd: &mut HostCommandQueue) {
+        for (wi, w) in self.releasing.iter_mut().enumerate() {
             while *w != 0 {
                 let b = w.trailing_zeros() as usize;
                 // `wi * 64 + b` ≤ u16::MAX by construction of HOLD_WORDS.
@@ -486,12 +509,13 @@ mod tests {
         assert_eq!(q.coil_holds.len(), 32);
         assert_eq!(q.coil_holds[0], (CoilId(0), false));
         assert_eq!(q.coil_holds[31], (CoilId(93), false));
-        assert!(b.any_held());
+        assert!(!b.any_held());
+        assert!(b.releases_pending());
         q.clear();
-        b.release_holds(&mut q);
+        b.drain_releases(&mut q);
         assert_eq!(q.coil_holds.len(), 9);
         assert_eq!(q.coil_holds[8], (CoilId(u16::MAX), false));
-        assert!(!b.any_held());
+        assert!(!b.releases_pending());
         b.set_held(CoilId(7), true);
         b.set_held(CoilId(7), false);
         assert!(!b.is_held(CoilId(7)));
