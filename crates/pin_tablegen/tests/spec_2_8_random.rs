@@ -335,12 +335,19 @@ fn check_report(
     Ok(())
 }
 
-fn keys(report: &ClearanceReport) -> BTreeSet<(String, String, String)> {
+fn keys(report: &ClearanceReport) -> BTreeSet<(&'static str, String, String, String)> {
     report
         .errors
         .iter()
         .filter(|e| e.feature != Feature::Restriction)
-        .map(|e| (e.file.clone(), e.path.clone(), e.profile.clone()))
+        .map(|e| {
+            (
+                e.feature.label(),
+                e.file.clone(),
+                e.path.clone(),
+                e.profile.clone(),
+            )
+        })
         .collect()
 }
 
@@ -393,7 +400,7 @@ proptest! {
                 let open_keys = keys(&open_report);
                 let still = c.declared(false);
                 for k in keys(&report) {
-                    if still.contains(k.2.as_str()) {
+                    if still.contains(k.3.as_str()) {
                         prop_assert!(
                             open_keys.contains(&k),
                             "restricting profiles added the finding {:?}\nrestricted:\n{}unrestricted:\n{}",
