@@ -97,13 +97,17 @@ cases[3] = function()
     report(i - 1, function()
       local name, id = next(expected[t])
       local f, state, ctl = pairs(p[t])
-      for _, obj in ipairs({ state, ctl, f }) do
+      -- Probed one by one: ipairs would stop at the first nil (ctl is nil).
+      local function mutate(obj)
         pcall(rawset, obj, name, 9999)
         pcall(rawset, obj, "spec_pairs_new", 4242)
         pcall(function() obj[name] = 9999 end)
         pcall(function() obj.spec_pairs_new = 4242 end)
         pcall(setmetatable, obj, {})
       end
+      mutate(state)
+      mutate(ctl)
+      mutate(f)
       -- Also through whatever keys/values the iterator itself yields.
       pcall(function()
         for k, v in pairs(p[t]) do
@@ -121,12 +125,15 @@ cases[4] = function()
   local function evil() hijacked = true end
   pcall(function()
     local f, state, ctl = pairs(p)
-    for _, obj in ipairs({ state, ctl }) do
+    -- Probed one by one: ipairs would stop at the first nil.
+    local function mutate(obj)
       pcall(rawset, obj, "pulse_coil", evil)
       pcall(function() obj.pulse_coil = evil end)
       pcall(function() obj.sw = { left_sling = 9999 } end)
       pcall(rawset, obj, "sw", { left_sling = 9999 })
     end
+    mutate(state)
+    mutate(ctl)
   end)
   pcall(function()
     for k, v in pairs(p) do

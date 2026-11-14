@@ -1,7 +1,7 @@
 //! The validation rules (beyond `pin_core`'s parse) and SI conversion.
 
 use super::guide_lint::{self, GapLint};
-use super::ids::suggest;
+use super::ids::{SUGGEST_WORK_BUDGET, suggest_within};
 use super::{
     BACKGLASS_FILE, BackboxSi, DispenserSi, FlipperStageHint, IdKind, LoadedTable, MagnetSi,
     MechSi, ModeSi, ShotSi, SplineSi, SwitchSi, TABLE_FILE, TableIds, TransitionSi,
@@ -92,6 +92,8 @@ pub(super) struct Checker<'v> {
     pub(super) errors: Vec<ValidationError>,
     pub(super) warnings: Vec<ValidationError>,
     ids: TableIds,
+    /// Suggestion work left for this manifest ([`suggest_within`]).
+    suggest_budget: u64,
 }
 
 /// A ball profile the table names, for guide lint (c).
@@ -126,6 +128,14 @@ impl<'a, T: Eq + core::hash::Hash> Seen<'a, T> {
     }
 }
 
+/// "unknown <label> <name>", with the suggestion when there is one.
+fn unknown_message(label: &str, name: &str, hint: Option<&str>) -> String {
+    match hint {
+        Some(s) => format!("unknown {label} {name:?} (did you mean {s:?}?)"),
+        None => format!("unknown {label} {name:?}"),
+    }
+}
+
 /// Most entries of one kind: ids are `u16` in declaration order.
 pub(super) const MAX_PER_KIND: usize = 1 << 16;
 
@@ -140,6 +150,7 @@ impl<'v> Checker<'v> {
             errors: Vec::new(),
             warnings: Vec::new(),
             ids: TableIds::default(),
+            suggest_budget: SUGGEST_WORK_BUDGET,
         }
     }
 
@@ -171,10 +182,17 @@ impl<'v> Checker<'v> {
         name: &str,
         candidates: impl Iterator<Item = &'a str>,
     ) {
-        let message = match suggest(name, candidates) {
-            Some(s) => format!("unknown {label} {name:?} (did you mean {s:?}?)"),
-            None => format!("unknown {label} {name:?}"),
-        };
+        let hint = suggest_within(name, candidates, &mut self.suggest_budget);
+        let message = unknown_message(label, name, hint);
+        self.err(file, path, message);
+    }
+
+    /// Error for an unresolved `name` of `kind`, with a suggestion from the
+    /// declared ids (borrowed, never copied per miss).
+    fn unknown_id(&mut self, file: &str, path: impl Into<String>, kind: IdKind, name: &str) {
+        let candidates = self.ids.entries(kind).iter().map(|(n, _)| n.as_str());
+        let hint = suggest_within(name, candidates, &mut self.suggest_budget);
+        let message = unknown_message(kind.label(), name, hint);
         self.err(file, path, message);
     }
 
@@ -183,19 +201,7 @@ impl<'v> Checker<'v> {
         if let Some(id) = self.ids.get(kind, name) {
             return Some(id);
         }
-        let candidates: Vec<String> = self
-            .ids
-            .entries(kind)
-            .iter()
-            .map(|(n, _)| n.clone())
-            .collect();
-        self.unknown(
-            TABLE_FILE,
-            path,
-            kind.label(),
-            name,
-            candidates.iter().map(String::as_str),
-        );
+        self.unknown_id(TABLE_FILE, path, kind, name);
         None
     }
 
@@ -857,6 +863,7 @@ impl<'v> Checker<'v> {
             errors: Vec::new(),
             warnings: Vec::new(),
             ids: TableIds::default(),
+            suggest_budget: SUGGEST_WORK_BUDGET,
         }
     }
 
@@ -1201,19 +1208,7 @@ impl<'v> Checker<'v> {
             }
             self.file_exists(f, format!("{p}.file"), &m.file);
             if table_parsed && self.ids.get(IdKind::Lamp, &m.lamp).is_none() {
-                let candidates: Vec<String> = self
-                    .ids
-                    .entries(IdKind::Lamp)
-                    .iter()
-                    .map(|(n, _)| n.clone())
-                    .collect();
-                self.unknown(
-                    f,
-                    format!("{p}.lamp"),
-                    "lamp",
-                    &m.lamp,
-                    candidates.iter().map(String::as_str),
-                );
+                self.unknown_id(f, format!("{p}.lamp"), IdKind::Lamp, &m.lamp);
             }
         }
         let sd = &b.score_display;
@@ -1234,5 +1229,40 @@ impl<'v> Checker<'v> {
             self.file_exists(f, "backbox.scene", &bb.scene);
             self.layer(f, "backbox.collision_layer", bb.collision_layer);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CodeRabbit PR 4: 10 000 references to an unknown coil among 10 000
+    /// declared coils are all reported, but suggestion work stops at the
+    /// per-manifest budget instead of running 10^8 distance computations.
+    #[test]
+    fn suggestion_work_is_bounded_per_manifest() {
+        let mut checker = Checker::detached();
+        for i in 0..10_000u16 {
+            checker.ids.push(IdKind::Coil, &format!("c{i:05}"), i);
+        }
+        for i in 0..10_000 {
+            assert_eq!(
+                checker.resolve(IdKind::Coil, "c0000x", format!("mechs[{i}].coil")),
+                None
+            );
+        }
+        assert_eq!(checker.errors.len(), 10_000);
+        assert_eq!(checker.suggest_budget, 0);
+        let hinted = checker
+            .errors
+            .iter()
+            .filter(|e| e.message.contains("did you mean"))
+            .count();
+        assert!(hinted > 0 && hinted < 1_000, "{hinted} suggestions");
+        assert_eq!(
+            checker.errors[0].message,
+            "unknown coil \"c0000x\" (did you mean \"c00000\"?)"
+        );
+        assert_eq!(checker.errors[9_999].message, "unknown coil \"c0000x\"");
     }
 }

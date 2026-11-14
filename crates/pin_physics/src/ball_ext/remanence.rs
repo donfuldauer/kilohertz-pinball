@@ -251,6 +251,12 @@ impl ExternalForce for Remanence {
                 self.source[i] = k as u32;
                 magnetisation_step(m, p, dt, ctx.magnets[k].remanence_tau_s)
             }
+            // Not magnetisable (a magnetised ball whose profile was swapped
+            // for one with `c = 0`): `M` is 0, not a decaying remainder.
+            None if c == 0.0 => {
+                self.source[i] = NO_SOURCE;
+                0.0
+            }
             None if m != 0.0 => {
                 let tau = ctx
                     .magnets

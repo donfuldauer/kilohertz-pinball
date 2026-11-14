@@ -183,8 +183,10 @@ fn committed_rules_wasm_matches_its_source() {
     let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("guest-sdk");
     let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("parity_guest");
     let canon = |p: &Path| p.canonicalize().unwrap().display().to_string();
+    // `CARGO_ENCODED_RUSTFLAGS` (flags separated by 0x1f) keeps a checkout
+    // path with spaces in one argument; `RUSTFLAGS` would split it.
     let flags = format!(
-        "--remap-path-prefix={}=/pin_guest_sdk --remap-path-prefix={}=/parity_guest",
+        "--remap-path-prefix={}=/pin_guest_sdk\x1f--remap-path-prefix={}=/parity_guest",
         canon(&sdk),
         canon(&guest)
     );
@@ -201,8 +203,8 @@ fn committed_rules_wasm_matches_its_source() {
         .arg(guest.join("Cargo.toml"))
         .arg("--target-dir")
         .arg(&target)
-        .env("RUSTFLAGS", flags)
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env("CARGO_ENCODED_RUSTFLAGS", flags)
+        .env_remove("RUSTFLAGS")
         .env_remove("RUSTC_WRAPPER")
         .env_remove("CARGO_BUILD_TARGET")
         .env_remove("CARGO_TARGET_DIR")

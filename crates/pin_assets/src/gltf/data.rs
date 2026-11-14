@@ -82,7 +82,16 @@ impl Buffers {
                                 buffer.index()
                             ))
                         })?,
-                        Some(k) if k.starts_with("data:") => load_source(k, vfs)?,
+                        Some(k) if k.starts_with("data:") => {
+                            // Charge the exact decoded length before decoding,
+                            // so a `data:` URI over the remaining budget is
+                            // refused without allocating its payload.
+                            let n = data_uri_decoded_len(k);
+                            if spent.saturating_add(n) > budget {
+                                return Err(over("buffers hold", spent.saturating_add(n)));
+                            }
+                            load_source(k, vfs)?
+                        }
                         Some(k) => {
                             let size = vfs.file_size(k)?;
                             if size < keep as u64 {
@@ -127,8 +136,11 @@ impl Buffers {
             .get(view.buffer().index())
             .map(|&i| &self.store[i])
             .ok_or_else(|| gerr("buffer view refers to a missing buffer"))?;
+        // Bounded by the view's own buffer's declared `byteLength`, not the
+        // shared storage: buffers naming one source keep its longest prefix.
         view.offset()
             .checked_add(view.length())
+            .filter(|&end| end <= view.buffer().length())
             .and_then(|end| buffer.get(view.offset()..end))
             .ok_or_else(|| gerr(format!("buffer view {} runs past its buffer", view.index())))
     }
@@ -288,7 +300,14 @@ pub(super) fn read_indices(
 
 /// Decodes standard or URL-safe base64 (padding optional, whitespace ignored).
 pub(super) fn decode_base64(s: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(s.len() / 4 * 3 + 3);
+    // Reserve exactly the decoded length (alphabet symbols x 6 bits), not an
+    // estimate from the encoded length: whitespace must not inflate the
+    // allocation past what the buffer budget was charged for.
+    let symbols = s
+        .bytes()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'/' | b'_'))
+        .count();
+    let mut out = Vec::with_capacity(symbols * 6 / 8);
     let mut acc: u32 = 0;
     let mut bits = 0;
     let mut padding = false;
@@ -320,10 +339,17 @@ pub(super) fn decode_base64(s: &str) -> Option<Vec<u8>> {
     (bits < 6).then_some(out)
 }
 
-/// Decodes `%XX` escapes.
+/// Decodes `%XX` escapes into UTF-8 text (resource paths).
 pub(super) fn percent_decode(s: &str) -> Option<String> {
+    String::from_utf8(percent_decode_bytes(s)?).ok()
+}
+
+/// Decodes `%XX` escapes into raw octets (`data:` URI payloads, RFC 2397).
+pub(super) fn percent_decode_bytes(s: &str) -> Option<Vec<u8>> {
     let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
+    // Each `%XX` escape decodes three input bytes to one output byte.
+    let escapes = b.iter().filter(|&&c| c == b'%').count();
+    let mut out = Vec::with_capacity(b.len().saturating_sub(2 * escapes));
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'%' {
@@ -336,7 +362,28 @@ pub(super) fn percent_decode(s: &str) -> Option<String> {
             i += 1;
         }
     }
-    String::from_utf8(out).ok()
+    Some(out)
+}
+
+/// The length a `data:` URI [`load_source`] decodes to, counted without
+/// decoding (exact for well-formed URIs; malformed ones fail to decode).
+pub(super) fn data_uri_decoded_len(key: &str) -> u64 {
+    let Some((meta, payload)) = key
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(','))
+    else {
+        return 0;
+    };
+    if meta.ends_with(";base64") {
+        let sextets = payload
+            .bytes()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'/' | b'_'))
+            .count() as u64;
+        sextets * 6 / 8
+    } else {
+        let escapes = payload.bytes().filter(|&c| c == b'%').count() as u64;
+        (payload.len() as u64).saturating_sub(2 * escapes)
+    }
 }
 
 /// Joins a relative URI path to `base` lexically; `..` may not climb above
@@ -394,9 +441,7 @@ pub(super) fn load_source(key: &str, vfs: &Vfs) -> Result<Vec<u8>, AssetError> {
         return if meta.ends_with(";base64") {
             decode_base64(payload).ok_or_else(|| gerr("invalid base64 in data: URI"))
         } else {
-            percent_decode(payload)
-                .map(String::into_bytes)
-                .ok_or_else(|| gerr("invalid escape in data: URI"))
+            percent_decode_bytes(payload).ok_or_else(|| gerr("invalid escape in data: URI"))
         };
     }
     vfs.read(key)
@@ -405,6 +450,20 @@ pub(super) fn load_source(key: &str, vfs: &Vfs) -> Result<Vec<u8>, AssetError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoder_reservations_follow_the_decoded_length() {
+        // One decoded byte padded with 1 MiB of whitespace must not reserve
+        // an encoded-length-sized buffer.
+        let padded = String::from("AA==") + &" ".repeat(1 << 20);
+        let out = decode_base64(&padded).unwrap();
+        assert_eq!(out, [0u8]);
+        assert!(out.capacity() <= 8, "capacity {}", out.capacity());
+        let pct = "%41".repeat(1000);
+        let out = percent_decode_bytes(&pct).unwrap();
+        assert_eq!(out.len(), 1000);
+        assert_eq!(out.capacity(), 1000);
+    }
 
     #[test]
     fn base64_round() {
@@ -424,6 +483,33 @@ mod tests {
         assert!(percent_decode("a%2").is_none());
         assert!(percent_decode("a%zz").is_none());
         assert!(percent_decode("%ff").is_none());
+        // Payloads are octets: a percent-encoded PNG signature decodes.
+        assert_eq!(
+            percent_decode_bytes("%89PNG%FF").unwrap(),
+            [0x89, b'P', b'N', b'G', 0xff]
+        );
+        assert!(percent_decode_bytes("a%2").is_none());
+    }
+
+    #[test]
+    fn data_uri_lengths_match_decoding() {
+        for key in [
+            "data:application/octet-stream;base64,aGVsbG8=",
+            "data:application/octet-stream;base64,aGV sbG8\n",
+            "data:;base64,-_8=",
+            "data:;base64,",
+            "data:application/octet-stream,%89PNG%FFx",
+            "data:,",
+        ] {
+            let (meta, payload) = key[5..].split_once(',').unwrap();
+            let decoded = if meta.ends_with(";base64") {
+                decode_base64(payload).unwrap()
+            } else {
+                percent_decode_bytes(payload).unwrap()
+            };
+            assert_eq!(data_uri_decoded_len(key), decoded.len() as u64, "{key}");
+        }
+        assert_eq!(data_uri_decoded_len("data:no-comma"), 0);
     }
 
     #[test]

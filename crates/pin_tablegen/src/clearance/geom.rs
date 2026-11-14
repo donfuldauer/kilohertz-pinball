@@ -285,15 +285,64 @@ impl Polygon {
             .fold(f64::INFINITY, f64::min)
     }
 
-    /// Twice the signed area.
-    pub fn area2(&self) -> f64 {
+    /// Whether the even-odd filled region has positive area (a
+    /// self-intersecting outline with filled lobes counts even when its
+    /// signed area cancels; one traced twice over does not). Sweeps the
+    /// horizontal slabs between vertex heights: a slab is empty exactly when
+    /// the edges spanning it pair up into coincident lines (within 1 nm).
+    pub fn has_filled_area(&self) -> bool {
+        const TOL: f64 = 1.0e-9;
         let pts = &self.points;
-        let mut s = 0.0;
-        for i in 0..pts.len() {
-            let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-            s += cross2(a, b);
+        let n = pts.len();
+        if n < 3 {
+            return false;
         }
-        s
+        let mut ys: Vec<f64> = pts.iter().map(|p| p.y).collect();
+        ys.sort_by(f64::total_cmp);
+        ys.dedup();
+        let mut edges: Vec<(DVec2, DVec2)> = (0..n)
+            .filter_map(|i| {
+                let (a, b) = (pts[i], pts[(i + 1) % n]);
+                match a.y.total_cmp(&b.y) {
+                    core::cmp::Ordering::Equal => None,
+                    core::cmp::Ordering::Less => Some((a, b)),
+                    core::cmp::Ordering::Greater => Some((b, a)),
+                }
+            })
+            .collect();
+        edges.sort_by(|e, f| e.0.y.total_cmp(&f.0.y));
+        let mut next = 0;
+        let mut active: Vec<(DVec2, DVec2)> = Vec::new();
+        let mut xs: Vec<(f64, f64)> = Vec::new();
+        for w in ys.windows(2) {
+            let (y0, y1) = (w[0], w[1]);
+            while next < edges.len() && edges[next].0.y <= y0 {
+                active.push(edges[next]);
+                next += 1;
+            }
+            // Every vertex height is a slab boundary, so an edge still
+            // above `y0` spans the whole slab.
+            active.retain(|e| e.1.y > y0);
+            xs.clear();
+            for &(a, b) in &active {
+                let at = |y: f64| a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y);
+                xs.push((at(y0), at(y1)));
+            }
+            xs.sort_by(|p, q| p.0.total_cmp(&q.0).then(p.1.total_cmp(&q.1)));
+            let unpaired = |c: &[(f64, f64)]| {
+                c.len() == 1 || (c[1].0 - c[0].0).abs() > TOL || (c[1].1 - c[0].1).abs() > TOL
+            };
+            if xs.chunks(2).any(unpaired) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Whether segment `a`–`b` crosses one of the polygon's edges.
+    pub fn crosses_segment(&self, a: DVec2, b: DVec2) -> bool {
+        let n = self.points.len();
+        (0..n).any(|i| segments_cross(a, b, self.points[i], self.points[(i + 1) % n]))
     }
 
     /// Whether the polygon and the axis-aligned box `lo..hi` may overlap
@@ -418,12 +467,39 @@ mod tests {
         };
         assert!(sq.contains(DVec2::new(0.5, 0.5)));
         assert!(!sq.contains(DVec2::new(1.5, 0.5)));
-        assert!((sq.area2() - 2.0).abs() < 1e-12);
+        assert!(sq.has_filled_area());
         assert!((sq.boundary_distance(DVec2::new(0.5, 0.25)) - 0.25).abs() < 1e-12);
         assert!((sq.boundary_distance(DVec2::new(3.0, 0.5)) - 2.0).abs() < 1e-12);
         assert!(sq.overlaps_box(DVec2::new(0.5, 0.5), DVec2::new(3.0, 3.0)));
         assert!(sq.overlaps_box(DVec2::new(-1.0, -1.0), DVec2::new(3.0, 3.0)));
         assert!(sq.overlaps_box(DVec2::new(-1.0, 0.4), DVec2::new(3.0, 0.6)));
         assert!(!sq.overlaps_box(DVec2::new(2.0, 2.0), DVec2::new(3.0, 3.0)));
+    }
+
+    /// Even-odd emptiness, not signed area: a bow tie (signed area 0) has
+    /// two filled lobes; a square traced twice (signed area 4) has none.
+    #[test]
+    fn filled_area_follows_the_even_odd_rule() {
+        let poly = |p: &[[f64; 2]]| Polygon {
+            points: p.iter().map(|&[x, y]| DVec2::new(x, y)).collect(),
+        };
+        let bow_tie = poly(&[[0.0, 0.0], [1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]);
+        assert!(bow_tie.contains(DVec2::new(0.1, 0.5)));
+        assert!(bow_tie.has_filled_area());
+        let sq = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        assert!(poly(&sq).has_filled_area());
+        let twice: Vec<[f64; 2]> = sq.iter().chain(&sq).copied().collect();
+        assert!(!poly(&twice).contains(DVec2::new(0.5, 0.5)));
+        assert!(!poly(&twice).has_filled_area());
+        for empty in [
+            &[[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]][..],
+            &[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]],
+            &[[0.0, 0.0], [2.0, 2.0], [1.0, 1.0], [3.0, 3.0]],
+            &[[0.0, 0.0], [1.0, 0.0]],
+        ] {
+            assert!(!poly(empty).has_filled_area(), "{empty:?}");
+        }
+        // A thin but real sliver still counts.
+        assert!(poly(&[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0e-6]]).has_filled_area());
     }
 }

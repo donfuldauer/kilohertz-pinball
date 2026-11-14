@@ -1238,24 +1238,33 @@ fn deep_recursion_traps_cleanly_on_a_small_host_stack() {
     }
 }
 
-/// Bulk operations are charged by size: loops of whole-memory or
-/// whole-table fills/copies exhaust the engine budget within a few
-/// iterations and fault like any other budget overrun.
+/// Bulk operations are charged by size: a handful of whole-memory or
+/// whole-table fills/copies, far below the engine budget in instructions,
+/// exceeds it in bytes or elements and faults like any other budget overrun
+/// (finite workloads, so plain instruction fuel cannot be what stops them).
 #[test]
-fn bulk_memory_and_table_loops_exhaust_the_budget() {
-    let bodies = [
-        "(loop $l (memory.fill (i32.const 0) (i32.const 7) (i32.const 65536)) (br $l))",
-        "(loop $l (memory.copy (i32.const 0) (i32.const 32768) (i32.const 32768)) (br $l))",
-        "(loop $l (table.fill $t (i32.const 0) (ref.null func) (i32.const 65536)) (br $l))",
-        // A single fill bigger than the budget also faults.
-        "(memory.fill (i32.const 0) (i32.const 1) (i32.const 65536)) (memory.fill (i32.const 0) (i32.const 1) (i32.const 65536))",
-    ];
-    for body in bodies {
-        let src = wat("(table $t 65536 funcref)", "", body, "");
+fn bulk_memory_and_table_operations_exhaust_the_budget() {
+    let fill = "(memory.fill (i32.const 0) (i32.const 1) (i32.const 65536))";
+    let copy = "(memory.copy (i32.const 0) (i32.const 32768) (i32.const 32768))";
+    let tfill = "(table.fill $t (i32.const 0) (ref.null func) (i32.const 65536))";
+    let budget = WasmConfig::engine().fuel_per_callback;
+    for (op, size) in [(fill, 65_536), (copy, 32_768), (tfill, 65_536)] {
+        // One operation fits the budget...
+        let src = wat("(table $t 65536 funcref)", "", op, "");
         let mut b = new(&src, WasmConfig::engine());
-        let mut h = Host::new();
-        h.tick(&mut b);
-        assert_eq!(b.last_error(), Some(&ScriptError::BudgetExceeded), "{body}");
+        Host::new().tick(&mut b);
+        assert!(!b.is_faulted(), "{op}: {:?}", b.last_error());
+        // ...enough of them to exceed it by size do not.
+        let n = budget / size + 1;
+        let body = op.repeat(n as usize);
+        let src = wat("(table $t 65536 funcref)", "", &body, "");
+        let mut b = new(&src, WasmConfig::engine());
+        Host::new().tick(&mut b);
+        assert_eq!(
+            b.last_error(),
+            Some(&ScriptError::BudgetExceeded),
+            "{n} x {op}"
+        );
     }
 }
 

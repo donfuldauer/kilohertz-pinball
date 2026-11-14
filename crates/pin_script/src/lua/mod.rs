@@ -334,8 +334,8 @@ impl LuaScriptBackend {
         self.vm
             .reset_budget(&self.bridge, self.cfg.instruction_budget);
         let r = f.call::<Value>(());
-        let exhausted = self.vm.exhausted(&self.bridge);
-        let v = r.ok().filter(|_| !exhausted)?;
+        let aborted = self.vm.exhausted(&self.bridge) || self.bridge.memory_hit();
+        let v = r.ok().filter(|_| !aborted)?;
         saved::save(&v, self.cfg.memory_limit_bytes).ok().flatten()
     }
 }

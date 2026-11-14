@@ -273,16 +273,23 @@ fn schema_error(file: &str, e: SchemaError) -> ValidationError {
 pub const MAX_MANIFEST_BYTES: usize = 4 << 20;
 
 fn read_text(vfs: &Vfs, file: &str) -> Result<Result<String, ValidationError>, AssetError> {
-    let bytes = vfs.read(file)?;
-    if bytes.len() > MAX_MANIFEST_BYTES {
-        return Ok(Err(ValidationError::new(
+    let too_large = |size: u64| {
+        ValidationError::new(
             file,
             "",
-            format!(
-                "manifest is {} bytes (max {MAX_MANIFEST_BYTES})",
-                bytes.len()
-            ),
-        )));
+            format!("manifest is {size} bytes (max {MAX_MANIFEST_BYTES})"),
+        )
+    };
+    // Sized first and read to at most one byte past the cap, so an oversized
+    // manifest is refused without loading it (the size can change between
+    // the two calls; the read bound still holds).
+    let size = vfs.file_size(file)?;
+    if size > MAX_MANIFEST_BYTES as u64 {
+        return Ok(Err(too_large(size)));
+    }
+    let bytes = vfs.read_prefix(file, MAX_MANIFEST_BYTES as u64 + 1)?;
+    if bytes.len() > MAX_MANIFEST_BYTES {
+        return Ok(Err(too_large(bytes.len() as u64)));
     }
     Ok(String::from_utf8(bytes)
         .map_err(|e| ValidationError::new(file, "", format!("not valid UTF-8 text: {e}"))))
@@ -348,9 +355,23 @@ pub fn check_spline(
     (errors, warnings)
 }
 
-/// Nearest name of `kind` within edit distance 2.
-pub(crate) fn suggest_name(ids: &TableIds, kind: IdKind, name: &str) -> Option<String> {
-    ids::suggest(name, ids.entries(kind).iter().map(|(n, _)| n.as_str())).map(str::to_owned)
+/// Suggestion work one check may spend ([`suggest_name`]).
+pub(crate) const SUGGEST_WORK_BUDGET: u64 = ids::SUGGEST_WORK_BUDGET;
+
+/// Nearest name of `kind` within edit distance 2, charging the search to
+/// `budget` (none once it is spent).
+pub(crate) fn suggest_name(
+    ids: &TableIds,
+    kind: IdKind,
+    name: &str,
+    budget: &mut u64,
+) -> Option<String> {
+    ids::suggest_within(
+        name,
+        ids.entries(kind).iter().map(|(n, _)| n.as_str()),
+        budget,
+    )
+    .map(str::to_owned)
 }
 
 fn sort(v: &mut [ValidationError]) {

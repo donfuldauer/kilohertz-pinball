@@ -403,7 +403,10 @@ fn mini_jumbo(b: f32, vrel: f32, w_mini: Vec3, w_jumbo: Vec3, v_jumbo: Vec3) {
     let l_scale = t0.l.length().max(mu * f64::from(vrel) * f64::from(reach));
     let mut prev_ke = t0.ke;
     let mut collided = false;
-    for tick in 0..250 {
+    // The mini ball starts 60 mm away and closes at `vrel`: cover the whole
+    // approach (contact is at most 60 mm of travel away) plus 50 ticks.
+    let horizon = 250.max((0.06 / vrel / DT).ceil() as u32 + 50);
+    for tick in 0..horizon {
         ev.clear();
         s.step(&g, DT, &mut ev);
         if ev

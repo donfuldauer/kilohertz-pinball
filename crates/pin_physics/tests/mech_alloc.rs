@@ -139,6 +139,8 @@ fn state_bits(t: &Table) -> Vec<u32> {
             .to_array()
             .into_iter()
             .chain(b.velocity.to_array())
+            .chain(b.angular_velocity.to_array())
+            .chain(b.orientation.to_array())
         {
             out.push(x.to_bits());
         }
