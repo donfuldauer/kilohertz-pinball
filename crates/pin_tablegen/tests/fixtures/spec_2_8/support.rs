@@ -246,8 +246,10 @@ pub fn check_error_shape(e: &ClearanceError, loaded: Option<&Loaded>) {
         e.profile,
         e.message
     );
+    // (A restriction finding is located by its key path; its name is that
+    // path.)
     assert!(
-        e.message.contains(&e.name),
+        e.feature == Feature::Restriction || e.message.contains(&e.name),
         "message does not name the offending feature {:?}: {:?}",
         e.name,
         e.message

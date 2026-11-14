@@ -76,7 +76,7 @@ fn near(a: f32, b: f32, tol: f32) -> bool {
 
 /// The open area of the Appendix A.3 main deck: everything below the
 /// upper deck (which starts at y = 700 mm), right of the inlane.
-const OPEN_AREA: [[f32; 2]; 4] = [[100.0, 0.0], [514.0, 0.0], [514.0, 600.0], [100.0, 600.0]];
+const OPEN_AREA: [[f32; 2]; 4] = [[100.0, 0.0], [514.0, 0.0], [514.0, 690.0], [100.0, 690.0]];
 
 #[test]
 fn v2_xl_rejected_under_a_65_mm_deck_and_accepted_in_the_open_area() {
@@ -180,12 +180,12 @@ fn a_lane_outside_the_area_is_not_checked() {
 const FLIPPER_SWITCHES: &str = r#"
 [[coils]]
 id = "right_flipper_coil"
-number = 41
+number = 61
 kind = "flipper"
 
 [[switches]]
 id = "lower_right_eos"
-number = 41
+number = 61
 kind = "eos"
 "#;
 
@@ -198,8 +198,10 @@ coil = "left_flipper_coil"
 eos_switch = "lower_left_eos"
 collision_layer = 0
 base_position = [180.0, 120.0, 0.0]
+surface_normal = [0.0, 0.0, 1.0]
 rest_angle_deg = -30.0
 sweep_angle_deg = 50.0
+eos_angle_fraction = 0.92
 shape = {{ type = "StraightCapsule", length = 76.0, base_radius = 11.0, tip_radius = 6.5 }}
 staging = {{ type = "DedicatedButton", input = "left_flipper" }}
 
@@ -209,8 +211,10 @@ coil = "right_flipper_coil"
 eos_switch = "lower_right_eos"
 collision_layer = {right_layer}
 base_position = [{right_x}, 120.0, 0.0]
+surface_normal = [0.0, 0.0, 1.0]
 rest_angle_deg = 210.0
 sweep_angle_deg = -50.0
+eos_angle_fraction = 0.92
 shape = {{ type = "StraightCapsule", length = 76.0, base_radius = 11.0, tip_radius = 6.5 }}
 staging = {{ type = "DedicatedButton", input = "right_flipper" }}
 "#
@@ -313,7 +317,7 @@ exit_offset = [{}, {}, {}]
 }
 
 /// A U-shaped pocket 30 mm across around (300, 400), open toward +y.
-const POCKET: &str = "[[walls]]\npoints = [[285.0, 440.0], [285.0, 385.0], [315.0, 385.0], [315.0, 440.0]]\nmaterial = \"metal\"\n";
+const POCKET: &str = "[[walls]]\npoints = [[285.0, 440.0], [285.0, 385.0], [315.0, 385.0], [315.0, 440.0]]\nmaterial = \"steel\"\n";
 
 #[test]
 fn scoop_pocket_and_vuk_exit() {

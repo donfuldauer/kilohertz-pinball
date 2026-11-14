@@ -507,10 +507,10 @@ impl Model {
             }
             // Did not move: its own previous position is at distance 0; another ball that
             // was at the same place is a tie the contract does not order.
-            if (0..prev.len()).any(|j| j != i && dist2(prev[j], pos[i]) == 0.0) {
-                if self.stale[i] == Some(false) {
-                    self.stale[i] = None;
-                }
+            if self.stale[i] == Some(false)
+                && (0..prev.len()).any(|j| j != i && dist2(prev[j], pos[i]) == 0.0)
+            {
+                self.stale[i] = None;
             }
         }
     }
@@ -608,10 +608,8 @@ proptest! {
                     prop_assert_eq!(s.probe_for_ball(i), want,
                         "frame {}: ball {} probe (captures {:?}, stale {:?}, positions {:?})", f, i, m.captured, m.stale, pos);
                 }
-                if let Some(st) = m.stale[i] {
-                    if m.captured[i].is_some() {
-                        prop_assert_eq!(s.is_stale(i), st, "frame {}: ball {} staleness", f, i);
-                    }
+                if let (Some(st), true) = (m.stale[i], m.captured[i].is_some()) {
+                    prop_assert_eq!(s.is_stale(i), st, "frame {}: ball {} staleness", f, i);
                 }
             }
             let st = s.stats();
