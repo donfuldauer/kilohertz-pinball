@@ -38,7 +38,7 @@ public sealed class BridgeOptions
 
     /// <summary>Usage text.</summary>
     public const string Usage =
-        "KilohertzDofBridge --map <file> [--port <u16>] [--bind <ip>] [--rom <name>] [--table <name>]\n" +
+        "KilohertzDofBridge --map <file> [--port <u16>] [--bind <loopback ip>] [--rom <name>] [--table <name>]\n" +
         "                   [--dof-path <dir|DirectOutput.dll>] [--dof-config <file>] [--sink dof|log|null]\n" +
         "                   [--log <file>] [--parent-pid <pid>] [--exit-on-stdin-eof] [--help]\n" +
         "Forwards Kilohertz Pinball UDP telemetry to the DirectOutput Framework (unverified on hardware).";
@@ -47,7 +47,7 @@ public sealed class BridgeOptions
     public string MapFile { get; private set; } = string.Empty;
     /// <summary>UDP port.</summary>
     public int Port { get; private set; } = DefaultPort;
-    /// <summary>Local bind address.</summary>
+    /// <summary>Local bind address (<see cref="BridgeApp.Run"/> accepts loopback only).</summary>
     public IPAddress Bind { get; private set; } = IPAddress.Loopback;
     /// <summary>ROM name override.</summary>
     public string? RomName { get; private set; }

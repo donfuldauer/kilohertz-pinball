@@ -21,11 +21,12 @@ fn map() -> ResolvedDofMap {
     ResolvedDofMap::resolve(&fixture_table()).unwrap().unwrap()
 }
 
+mod private_tmp;
+
+/// A fresh, exclusively created, owner-only scratch dir: the process tests
+/// write a stand-in bridge script here and execute it.
 fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("khz-dof-launcher-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    private_tmp::create(&format!("khz-dof-launcher-{name}"))
 }
 
 #[test]
@@ -128,7 +129,7 @@ fn spawn_failure_removes_the_map_file() {
 mod unix {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// A stand-in bridge: records its args and the map file, then behaves per `body`.
     fn fake_bridge(dir: &Path, body: &str) -> PathBuf {
@@ -213,10 +214,9 @@ mod unix {
         drop(bridge);
         // Dropped: the reaper deletes the map file; a fresh stop of a
         // never-started handle is a no-op.
-        let mut waited = 0u32;
-        while map_file.exists() && waited < 1_000_000 {
-            std::thread::yield_now();
-            waited += 1;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while map_file.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
         }
         assert!(!map_file.exists());
         std::fs::remove_dir_all(d).unwrap();
