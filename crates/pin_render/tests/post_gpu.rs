@@ -469,8 +469,15 @@ fn check_golden(name: &str, img: &LdrImage) {
     }
     let want = image::open(&path)
         .unwrap_or_else(|e| panic!("[{name}] missing snapshot {} ({e})", path.display()))
-        .to_rgba8()
-        .into_raw();
+        .to_rgba8();
+    // A cropped or resized fixture must not pass on its first pixels.
+    assert_eq!(
+        want.dimensions(),
+        (img.width, img.height),
+        "[{name}] snapshot size"
+    );
+    let want = want.into_raw();
+    assert_eq!(got.len(), want.len(), "[{name}] snapshot byte count");
     let (mut sum, mut far) = (0u64, 0usize);
     // Energy of the 8-bit images (linearised) must agree too.
     let lin = |v: u8| {
@@ -712,6 +719,117 @@ fn motion_blur_is_zero_when_still_and_follows_the_velocity() {
         )
         .unwrap();
     assert!((c.stats().max_blur_px - 64.0).abs() < 1e-3);
+}
+
+/// Two streaks that cross: every ball over a pixel during the shutter
+/// contributes (not only the first in the list), so the image does not
+/// depend on the order of `balls`, and it matches the per-sample model
+/// "the ball over the pixel at that time, else the image".
+#[test]
+fn crossing_motion_blur_streaks_composite_in_any_order() {
+    let Some(ctx) = ctx() else { return };
+    let cam = camera();
+    let mut cfg = PostConfig::neutral();
+    cfg.motion_blur = MotionBlurConfig {
+        enabled: true,
+        shutter_s: 1.0 / 60.0,
+        samples: 32,
+        max_length_px: 64.0,
+    };
+    // Red moves right through the crossing late in the shutter, green moves
+    // up through it early: they are never over it at the same time.
+    let red = MotionBall {
+        position: [-0.2, 0.0, 0.0],
+        velocity: [30.0, 0.0, 0.0],
+        radius: 0.05,
+    };
+    let green = MotionBall {
+        position: [0.0, 0.0, -0.1],
+        velocity: [0.0, 0.0, 30.0],
+        radius: 0.05,
+    };
+    const BG: [f32; 3] = [0.1, 0.12, 0.15];
+    let balls = [(red, [1.0, 0.0, 0.0]), (green, [0.0, 1.0, 0.0])];
+    let motion: Vec<_> = balls
+        .iter()
+        .map(|(b, _)| screen_motion(&cam, b, cfg.motion_blur.shutter_s, N, N).unwrap())
+        .collect();
+    let on = |k: usize, x: f32, y: f32| {
+        let (dx, dy) = (x - motion[k].center_px[0], y - motion[k].center_px[1]);
+        dx * dx + dy * dy < motion[k].radius_px * motion[k].radius_px
+    };
+    let source = |x: f32, y: f32| (0..2).find(|&k| on(k, x, y)).map_or(BG, |k| balls[k].1);
+    let img = flat(N, N, |x, y| source(x as f32 + 0.5, y as f32 + 0.5));
+    let input = HdrInput::from_image(ctx, &img).unwrap();
+    let mut c = chain(ctx, N, N, cfg);
+    let mut run = |list: &[MotionBall]| {
+        let out = c
+            .render_to_hdr(
+                ctx,
+                &input.view,
+                &PostFrame {
+                    camera: &cam,
+                    balls: list,
+                },
+            )
+            .unwrap();
+        assert_eq!(c.stats().blurred_balls, 2);
+        out
+    };
+    let ab = run(&[red, green]);
+    let ba = run(&[green, red]);
+    assert_eq!(ab.pixels, ba.pixels, "the ball order changed the image");
+
+    // Per-sample model, for pixels outside both still discs: the ball over
+    // the pixel at that shutter time (if two are, the one the pixel is
+    // deepest in, in disc radii), else the image.
+    let n = cfg.motion_blur.samples;
+    let (mut checked, mut off, mut both) = (0, 0, 0);
+    for y in 0..N {
+        for x in 0..N {
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            if on(0, px, py) || on(1, px, py) {
+                continue;
+            }
+            let mut want = [0.0f32; 3];
+            for i in 0..n {
+                let t = (i as f32 + 0.5) / n as f32 - 0.5;
+                let (mut s, mut best) = (BG, f32::MAX);
+                for k in 0..2 {
+                    let m = &motion[k];
+                    let d = m.displacement_px;
+                    let (qx, qy) = ((px - d[0] * t).floor() + 0.5, (py - d[1] * t).floor() + 0.5);
+                    let (dx, dy) = (qx - m.center_px[0], qy - m.center_px[1]);
+                    let rank = (dx * dx + dy * dy) / (m.radius_px * m.radius_px);
+                    if on(k, qx, qy) && rank < best {
+                        best = rank;
+                        s = balls[k].1;
+                    }
+                }
+                for ch in 0..3 {
+                    want[ch] += s[ch] / n as f32;
+                }
+            }
+            let got = ab.at(x, y);
+            checked += 1;
+            if (0..3).any(|ch| (got[ch] - want[ch]).abs() > 2e-3) {
+                off += 1;
+            }
+            // Where the streaks cross, both colours are in the pixel (the
+            // first-ball-only shader left one of them out).
+            if want[0] > BG[0] + 0.05 && want[1] > BG[1] + 0.05 {
+                both += 1;
+                assert!(
+                    got[0] > BG[0] + 0.03 && got[1] > BG[1] + 0.03,
+                    "crossing pixel {x},{y} = {got:?} (want {want:?})"
+                );
+            }
+        }
+    }
+    println!("crossing streaks: {checked} px checked, {off} off the model, {both} crossing px");
+    assert!(both >= 8, "the streaks cross in only {both} px");
+    // Disc-edge pixels may round differently on the GPU.
+    assert!(off * 200 <= checked, "{off} of {checked} px off the model");
 }
 
 fn lum4(p: [f32; 4]) -> f32 {

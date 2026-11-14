@@ -459,7 +459,7 @@ impl DmdFrame {
                             layer.font,
                             tc,
                             a,
-                            bw.max(0.0) as u32,
+                            (bw * t.max_w).max(0.0) as u32,
                         );
                     }
                     c.clip = full;

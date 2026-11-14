@@ -32,7 +32,7 @@ pub(crate) fn read_layer(
     let padded = row.div_ceil(align) * align;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("post readback"),
-        size: (padded * height as usize) as u64,
+        size: crate::gpu::readback_buffer_size(device, padded, height)?,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });

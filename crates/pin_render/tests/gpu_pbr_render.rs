@@ -1012,3 +1012,94 @@ fn non_finite_frame_inputs_are_sanitized() {
     let img = sc.renderer.render_to_image(ctx, &frame).unwrap();
     assert_eq!(img.at(0, 0), [0.0, 0.0, 0.0, 1.0]);
 }
+
+/// A model matrix with a negative determinant (a mirrored instance) reverses
+/// the triangle winding on screen. The renderer picks the clockwise-front
+/// pipelines for it, so a mirrored sphere (the same surface, as a sphere is
+/// symmetric) renders like the plain one, opaque and blended, instead of
+/// having its front faces culled.
+#[test]
+fn mirrored_models_keep_their_front_faces() {
+    let Some(ctx) = ctx() else { return };
+    let mut sc = scene(ctx);
+    // On the mirror plane, so the mirrored scene is the same scene.
+    let light = PointLight::new([0.0, -1.2, 0.6], [1.0; 3], 1.0, 100.0);
+    let mut mirror = IDENTITY;
+    mirror[0][0] = -1.0;
+    for transparent in [false, true] {
+        let mut shots = Vec::new();
+        for model in [IDENTITY, mirror] {
+            let draw = DrawItem {
+                model,
+                transparent,
+                ..sphere_draw(sc.sphere, MaterialParams::lambert([1.0; 3]))
+            };
+            let img = render(
+                ctx,
+                &mut sc.renderer,
+                &[draw],
+                &[light],
+                Environment::BLACK,
+                [0.0; 4],
+            );
+            assert_clean(&img, "mirrored");
+            shots.push(img);
+        }
+        let cam = camera();
+        let (mut checked, mut lit) = (0, 0);
+        for y in 0..N {
+            for x in 0..N {
+                let Some((hit, n)) = sphere_hit(&cam, x, y, SPHERE_R, 0.03) else {
+                    continue;
+                };
+                let (a, b) = (shots[0].at(x, y), shots[1].at(x, y));
+                for k in 0..3 {
+                    assert!(
+                        (a[k] - b[k]).abs() <= 0.03 * a[k] + 2e-3,
+                        "transparent {transparent}, pixel {x},{y}: plain {a:?} vs mirrored {b:?}"
+                    );
+                }
+                checked += 1;
+                // The light side really is lit in the mirrored render.
+                let to_l = sub(light.position, hit);
+                if dot(n, norm(to_l)) > 0.5 {
+                    assert!(
+                        b[0] > 0.02,
+                        "pixel {x},{y}: mirrored front face is dark: {b:?}"
+                    );
+                    lit += 1;
+                }
+            }
+        }
+        assert!(checked > 1000 && lit > 200, "{checked} / {lit}");
+    }
+    // A quad facing the camera, mirrored in x: still drawn (with a fixed
+    // counter-clockwise front face both of its triangles were culled).
+    let mut facing = IDENTITY; // quad normal +z → −y (towards the camera)
+    facing[1] = [0.0, 0.0, 1.0, 0.0];
+    facing[2] = [0.0, -1.0, 0.0, 0.0];
+    let mut facing_mirrored = facing;
+    facing_mirrored[0][0] = -1.0;
+    // Bright enough to be far from the grey background.
+    let light = PointLight::new([0.0, -1.2, 0.6], [1.0; 3], 6.0, 100.0);
+    for model in [facing, facing_mirrored] {
+        let draw = DrawItem {
+            model,
+            ..sphere_draw(sc.quad, MaterialParams::lambert([1.0; 3]))
+        };
+        let img = render(
+            ctx,
+            &mut sc.renderer,
+            &[draw],
+            &[light],
+            Environment::BLACK,
+            [0.0; 4],
+        );
+        let centre = img.at(N / 2, N / 2);
+        assert!(
+            centre[0] > GREY[0] + 0.2,
+            "quad not drawn (model x scale {}): centre {centre:?}",
+            model[0][0]
+        );
+    }
+}

@@ -65,8 +65,8 @@ pub use scene::{
     VAlign, parse_color, placeholder_scene,
 };
 pub use score::{
-    MAX_PLAYERS, OTHER_PLAYER_EMPHASIS, PlayerRow, ScoreLines, ScoreState, ScoreText, expand_text,
-    format_score, format_score_with, score_lines, score_view_layout,
+    MAX_PLAYERS, OTHER_PLAYER_EMPHASIS, PlayerRow, SCORE_COLUMN_WIDTH, ScoreLines, ScoreState,
+    ScoreText, expand_text, format_score, format_score_with, score_lines, score_view_layout,
 };
 
 use core::fmt;
@@ -194,8 +194,14 @@ impl RgbaImage {
         if x >= self.width || y >= self.height {
             return [0; 4];
         }
-        let o = (y as usize * self.width as usize + x as usize) * 4;
-        match self.pixels.get(o..o + 4) {
+        // Checked: `width`/`height` are public, so an oversized (invalid)
+        // image must read as transparent rather than overflow the offset.
+        let range = (y as usize)
+            .checked_mul(self.width as usize)
+            .and_then(|n| n.checked_add(x as usize))
+            .and_then(|n| n.checked_mul(4))
+            .and_then(|o| Some(o..o.checked_add(4)?));
+        match range.and_then(|r| self.pixels.get(r)) {
             Some(p) => [p[0], p[1], p[2], p[3]],
             None => [0; 4],
         }
