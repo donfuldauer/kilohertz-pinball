@@ -1,0 +1,715 @@
+//! Spec: "Faults never panic or stall the tick". These scenarios hide script
+//! code in places a naive per-callback budget does not reach (message
+//! handlers, finalizers). They live in their own binary because a regression
+//! here shows up as a hang rather than a failed assertion.
+
+mod spec_support;
+
+use pin_core::TableScriptBackend;
+use spec_support::{Host, backend_with, cfg};
+
+const FAULTS: &[u8] = include_bytes!("fixtures/spec_faults.lua");
+const MIB: usize = 1024 * 1024;
+
+/// `while true do xpcall(function() error("x") end, <handler that loops>) end`
+#[test]
+fn xpcall_with_a_looping_message_handler_is_aborted() {
+    let mut b = backend_with(FAULTS, cfg(16 * MIB, 50_000));
+    let mut h = Host::new(1);
+    h.case(&mut b, 25);
+    assert!(b.is_faulted());
+    assert_eq!(b.fault_count(), 1);
+    h.tick(&mut b);
+    assert!(h.cmd.is_empty());
+}
+
+/// A single xpcall whose handler loops, without the outer retry loop.
+#[test]
+fn a_single_looping_message_handler_is_aborted() {
+    let src = b"function on_tick()
+                  xpcall(function() error('x') end, function() while true do end end)
+                  while true do end
+                end";
+    let mut b = backend_with(src, cfg(16 * MIB, 50_000));
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    assert!(b.is_faulted());
+}
+
+/// 200 objects whose `__gc` never returns become garbage; later ticks (and the
+/// per-tick GC step) must still return.
+#[test]
+fn looping_finalizers_do_not_stall_later_ticks() {
+    let mut b = backend_with(FAULTS, cfg(16 * MIB, 20_000));
+    let mut h = Host::new(1);
+    h.case(&mut b, 16);
+    for _ in 0..300 {
+        h.tick(&mut b);
+        h.case(&mut b, 27);
+    }
+}
+
+/// Garbage with looping finalizers created while memory pressure forces
+/// collections inside the callback itself.
+#[test]
+fn looping_finalizers_under_memory_pressure_do_not_stall() {
+    let src = b"function on_tick()
+                  for i = 1, 50 do
+                    setmetatable({}, { __gc = function() while true do end end })
+                  end
+                  local t = {}
+                  for i = 1, 64 do t[i] = string.rep('p', 32768) .. i end
+                end";
+    let mut b = backend_with(src, cfg(4 * MIB, 50_000));
+    let mut h = Host::new(1);
+    for _ in 0..200 {
+        h.tick(&mut b);
+    }
+}
+
+#[test]
+fn looping_finalizers_do_not_stall_reload() {
+    let mut b = backend_with(FAULTS, cfg(16 * MIB, 20_000));
+    let mut h = Host::new(1);
+    h.case(&mut b, 16);
+    let _ = b.apply_reload(b"function on_tick() pinball.show_scene(1) end");
+    for _ in 0..50 {
+        h.tick(&mut b);
+    }
+}
+
+/// Closing a Lua state runs every pending finalizer.
+#[test]
+fn looping_finalizers_do_not_stall_drop() {
+    let src = b"keep = {}
+                function on_tick()
+                  for i = 1, 20 do
+                    keep[#keep + 1] = setmetatable({}, { __gc = function() while true do end end })
+                  end
+                end";
+    let mut b = backend_with(src, cfg(16 * MIB, 20_000));
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    drop(b);
+}
+
+/// A finalizer that raises instead of looping must not take the host down.
+#[test]
+fn erroring_finalizers_do_not_panic() {
+    let src = b"function on_tick()
+                  for i = 1, 100 do
+                    setmetatable({}, { __gc = function() error('in gc') end })
+                  end
+                  pinball.show_scene(1)
+                end";
+    let mut b = backend_with(src, cfg(16 * MIB, 50_000));
+    let mut h = Host::new(1);
+    for _ in 0..300 {
+        h.tick(&mut b);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Library loops the instruction hook cannot see (Orchestrator decision
+// "4.2 review: patched vendored Lua"). Every case must fault, not hang.
+
+/// Runs `body` as an unprotected `on_tick` under a 50 000 instruction budget;
+/// it must fault before reaching the marker command.
+fn assert_faults(setup: &str, body: &str) {
+    let src = format!("{setup}\nfunction on_tick() {body} pinball.show_scene(1) end");
+    let mut b = backend_with(src.as_bytes(), cfg(16 * MIB, 50_000));
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    assert!(b.is_faulted(), "`{body}` must fault the script");
+    assert!(
+        h.cmd.display_scenes.is_empty(),
+        "`{body}` did not abort the callback"
+    );
+    assert_eq!(b.fault_count(), 1);
+    // The backend recovers afterwards.
+    b.apply_reload(b"function on_tick() pinball.show_scene(2) end")
+        .expect("recovery reload");
+    h.tick(&mut b);
+    assert_eq!(h.cmd.display_scenes.len(), 1);
+}
+
+/// The same call retried forever under pcall must also end in a fault.
+fn assert_faults_under_pcall(setup: &str, body: &str) {
+    let src =
+        format!("{setup}\nfunction on_tick() while true do pcall(function() {body} end) end end");
+    let mut b = backend_with(src.as_bytes(), cfg(16 * MIB, 50_000));
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    assert!(
+        b.is_faulted(),
+        "`{body}` retried under pcall must fault the script"
+    );
+}
+
+const HUGE_LEN: &str = "
+local function huge(n)
+  return setmetatable({}, { __len = function() return n end })
+end
+local function bottomless(n)
+  return setmetatable({}, {
+    __len = function() return n end,
+    __index = function() return '' end,
+    __newindex = function() end,
+  })
+end";
+
+macro_rules! must_fault {
+    ($($name:ident => $body:expr;)*) => {$(
+        #[test]
+        fn $name() {
+            assert_faults(HUGE_LEN, $body);
+        }
+    )*};
+}
+
+must_fault! {
+    rep_of_empty_string_maxinteger_times => "local s = string.rep('', math.maxinteger)";
+    rep_of_empty_string_with_separator => "local s = string.rep('', math.maxinteger, '')";
+    rep_one_billion => "local s = string.rep('x', 1e9)";
+    table_move_huge_range => "table.move({}, 1, 1e15, 2)";
+    table_move_huge_range_between_tables => "table.move({}, 1, 1e15, 1, {})";
+    table_move_huge_range_backwards => "table.move({}, 2, 1e15, 1)";
+    table_remove_with_len_maxinteger => "table.remove(huge(math.maxinteger), 1)";
+    table_remove_with_len_maxinteger_minus_one => "table.remove(huge(math.maxinteger - 1), 1)";
+    table_remove_bottomless_maxinteger_minus_one =>
+        "table.remove(bottomless(math.maxinteger - 1), 1)";
+    table_insert_with_len_maxinteger_minus_one =>
+        "table.insert(huge(math.maxinteger - 1), 1, 'v')";
+    table_insert_bottomless_maxinteger_minus_one =>
+        "table.insert(bottomless(math.maxinteger - 1), 1, 'v')";
+    table_concat_huge_range => "local s = table.concat({}, '', 1, 1e15)";
+    table_concat_huge_range_of_empty_strings =>
+        "local s = table.concat(bottomless(0), '', 1, math.maxinteger)";
+    table_concat_huge_len_of_empty_strings =>
+        "local s = table.concat(bottomless(math.maxinteger))";
+    table_unpack_huge_range => "local a = table.unpack({}, 1, 1e15)";
+    table_unpack_ten_million => "local a = table.unpack({}, 1, 1e7)";
+    table_unpack_huge_len => "local a = table.unpack(huge(math.maxinteger))";
+    table_sort_huge_len => "table.sort(bottomless(1e15))";
+    find_backtracking_30000 => "local r = string.find(string.rep('a', 30000), '.-.-.-.-b')";
+    find_backtracking_60000 => "local r = string.find(string.rep('a', 60000), '.-.-.-.-b')";
+    match_backtracking_60000 => "local r = string.match(string.rep('a', 60000), '.-.-.-.-b')";
+    gsub_backtracking_60000 => "local r = string.gsub(string.rep('a', 60000), '.-.-.-.-b', '')";
+    gmatch_backtracking_60000 =>
+        "for m in string.gmatch(string.rep('a', 60000), '.-.-.-.-b') do end";
+    find_method_backtracking_60000 => "local r = (('a'):rep(60000)):find('a*a*a*a*a*b')";
+}
+
+/// `#t + 1` wraps for a length of maxinteger, so stock Lua shifts nothing and
+/// returns at once: completing is as acceptable as faulting, hanging is not.
+#[test]
+fn table_insert_with_len_maxinteger_returns() {
+    let src =
+        format!("{HUGE_LEN}\nfunction on_tick() table.insert(huge(math.maxinteger), 1, 'v') end");
+    let mut b = backend_with(src.as_bytes(), cfg(16 * MIB, 50_000));
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    h.tick(&mut b);
+}
+
+#[test]
+fn library_loops_retried_under_pcall_still_fault() {
+    for body in [
+        "string.rep('', math.maxinteger)",
+        "table.move({}, 1, 1e15, 2)",
+        "table.remove(huge(math.maxinteger - 1), 1)",
+        "table.insert(huge(math.maxinteger - 1), 1, 'v')",
+        "table.concat(bottomless(0), '', 1, math.maxinteger)",
+        "string.find(string.rep('a', 60000), '.-.-.-.-b')",
+    ] {
+        assert_faults_under_pcall(HUGE_LEN, body);
+    }
+}
+
+#[test]
+fn library_loops_at_load_time_do_not_hang_construction() {
+    for src in [
+        &b"string.rep('', math.maxinteger)"[..],
+        b"table.move({}, 1, 1e15, 2)",
+        b"string.find(string.rep('a', 60000), '.-.-.-.-b')",
+    ] {
+        match pin_script::lua::LuaScriptBackend::new(
+            src,
+            &spec_support::names(),
+            cfg(16 * MIB, 50_000),
+        ) {
+            Err(_) => {}
+            Ok(b) => assert!(b.is_faulted()),
+        }
+    }
+}
+
+/// Ordinary, small uses of the same library functions keep working.
+#[test]
+fn bounded_library_calls_still_work() {
+    let src = b"function on_tick()
+                  local t = { 5, 3, 1, 4, 2 }
+                  table.sort(t)
+                  table.insert(t, 6)
+                  table.insert(t, 1, 0)
+                  local last = table.remove(t)
+                  local first = table.remove(t, 1)
+                  local moved = table.move(t, 1, #t, 2, {})
+                  local s = table.concat(t, ',')
+                  local a, b = table.unpack(t, 1, 2)
+                  local i, j = string.find(string.rep('a', 1000) .. 'b', '.-b')
+                  local ok = (last == 6 and first == 0 and s == '1,2,3,4,5' and a == 1 and b == 2
+                    and moved[2] == 1 and moved[6] == 5 and i == 1 and j == 1001
+                    and string.rep('ab', 3, '-') == 'ab-ab-ab'
+                    and ('x'):rep(0) == '' and string.rep('', 1000) == '')
+                  pinball.persist_set(0, ok and 1 or 0)
+                end";
+    let mut b = backend_with(src, cfg(16 * MIB, 50_000));
+    let mut h = Host::new(1);
+    for _ in 0..50 {
+        h.tick(&mut b);
+        assert!(!b.is_faulted());
+        assert_eq!(spec_support::persisted(&h.cmd, 0), Some(1));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// on_save_state returning pathological state: the host never aborts and
+// apply_reload never panics; reload proceeds without state or errors cleanly.
+
+const NEW_SCRIPT: &[u8] = b"local restored = 0
+function on_restore_state(s) restored = restored + 1 end
+function on_tick() pinball.set_score(2, 7) pinball.persist_set(0, restored) end";
+
+/// Runs `old` for `ticks` ticks, reloads into `NEW_SCRIPT` and checks the
+/// backend is in one of the two clean outcomes.
+fn reload_with_pathological_state(old: &str, ticks: u32) {
+    let mut b = backend_with(old.as_bytes(), cfg(16 * MIB, 1_000_000));
+    let mut h = Host::new(1);
+    for _ in 0..ticks {
+        h.tick(&mut b);
+        assert!(
+            !b.is_faulted(),
+            "the old script must stay healthy while building its state"
+        );
+    }
+    match b.apply_reload(NEW_SCRIPT) {
+        Ok(()) => {
+            assert!(
+                !b.is_faulted(),
+                "a successful reload leaves a healthy backend"
+            );
+            h.tick(&mut b);
+            assert!(!b.is_faulted());
+            assert_eq!(
+                spec_support::score(&h.cmd, 1),
+                Some(7),
+                "the new script runs"
+            );
+        }
+        Err(_) => {
+            // Clean error: the old script is still installed and ticking.
+            h.tick(&mut b);
+            if !b.is_faulted() {
+                assert_eq!(
+                    spec_support::score(&h.cmd, 0),
+                    Some(1),
+                    "the old script still runs"
+                );
+            }
+        }
+    }
+    // Either way a plain reload brings the backend to a known-good script.
+    let _ = b.apply_reload(b"function on_tick() pinball.show_scene(3) end");
+    h.tick(&mut b);
+}
+
+#[test]
+fn save_state_with_many_references_to_one_large_string() {
+    reload_with_pathological_state(
+        "local big = string.rep('s', 60000)
+         function on_tick() pinball.set_score(1, 1) end
+         function on_save_state()
+           local t = {}
+           for i = 1, 5000 do t[i] = big end
+           return t
+         end",
+        2,
+    );
+}
+
+#[test]
+fn save_state_with_many_references_to_one_large_string_as_keys_and_nested() {
+    reload_with_pathological_state(
+        "local big = string.rep('s', 60000)
+         function on_tick() pinball.set_score(1, 1) end
+         function on_save_state()
+           local t = {}
+           for i = 1, 2000 do t[i] = { name = big, [big] = i } end
+           return t
+         end",
+        2,
+    );
+}
+
+#[test]
+fn save_state_with_a_huge_flat_table() {
+    reload_with_pathological_state(
+        "local state = {}
+         function on_tick()
+           for i = 1, 10000 do state[#state + 1] = i end
+           pinball.set_score(1, 1)
+         end
+         function on_save_state() return state end",
+        20,
+    );
+}
+
+#[test]
+fn save_state_with_a_huge_string_keyed_table() {
+    reload_with_pathological_state(
+        "local state, n = {}, 0
+         function on_tick()
+           for i = 1, 2000 do n = n + 1 state['key_' .. n] = { n, 'v' .. n } end
+           pinball.set_score(1, 1)
+         end
+         function on_save_state() return state end",
+        10,
+    );
+}
+
+#[test]
+fn save_state_with_a_very_deep_table() {
+    reload_with_pathological_state(
+        "local root = {}
+         local tip = root
+         function on_tick()
+           for i = 1, 5000 do local n = {} tip.next = n tip = n end
+           pinball.set_score(1, 1)
+         end
+         function on_save_state() return root end",
+        20,
+    );
+}
+
+#[test]
+fn save_state_with_a_wide_shared_dag() {
+    // 2^40 paths through 40 shared levels: exponential for a naive deep copy.
+    reload_with_pathological_state(
+        "function on_tick() pinball.set_score(1, 1) end
+         function on_save_state()
+           local level = { leaf = true }
+           for i = 1, 40 do level = { a = level, b = level } end
+           return level
+         end",
+        2,
+    );
+}
+
+#[test]
+fn save_state_built_inside_the_hook_past_the_memory_cap() {
+    reload_with_pathological_state(
+        "function on_tick() pinball.set_score(1, 1) end
+         function on_save_state()
+           local t = {}
+           while true do t[#t + 1] = string.rep('m', 60000) .. #t end
+         end",
+        2,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// DECISIONS "4.2 re-review round 2" (B9): C-function calls are charged against
+// the budget, so a loop that only calls into C still faults. No wall-clock
+// assertions (rule 5): each case must simply return, faulted, at the default
+// configuration.
+
+fn assert_c_loop_faults(body: &str) {
+    let src = format!(
+        "local big0 = string.rep('\\0', 65536)
+         local bigfmt = string.rep('x', 65536)
+         local bigpct = string.rep('%%', 32768)
+         local nines = string.rep('9', 200)
+         local zs = string.rep('z', 200)
+         function on_tick()
+           while true do {body} end
+         end"
+    );
+    let mut b = spec_support::backend(src.as_bytes());
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    assert!(b.is_faulted(), "`while true do {body} end` must fault");
+    assert_eq!(b.fault_count(), 1);
+    assert!(
+        h.cmd.is_empty(),
+        "a faulting callback's commands are dropped"
+    );
+    h.tick(&mut b);
+    assert!(h.cmd.is_empty());
+}
+
+macro_rules! c_loop_must_fault {
+    ($($name:ident => $body:expr;)*) => {$(
+        #[test]
+        fn $name() {
+            assert_c_loop_faults($body);
+        }
+    )*};
+}
+
+c_loop_must_fault! {
+    c_loop_format_q_of_64k_nuls =>
+        "pcall(string.format, '%q', string.rep('\\0', 65536))";
+    c_loop_format_q_of_prebuilt_64k_nuls => "pcall(string.format, '%q', big0)";
+    c_loop_format_with_64k_format_string => "pcall(string.format, bigfmt)";
+    c_loop_format_with_64k_percent_format_string => "pcall(string.format, bigpct)";
+    c_loop_format_wide_float => "local s = string.format('%99.99f', 1e300)";
+    c_loop_format_precise_g => "local s = string.format('%.99g', 1e-300)";
+    c_loop_float_modulo => "local r = 1e308 % 3e-308";
+    c_loop_float_modulo_of_variables => "local a, b = 1e308, 3e-308 local r = a % b";
+    c_loop_math_fmod => "local r = math.fmod(1e308, 1e-308)";
+    c_loop_tostring_large_float => "local s = tostring(1e300)";
+    c_loop_tonumber_200_digits => "local n = tonumber(nines)";
+    c_loop_tonumber_200_digits_built_in_loop => "local n = tonumber(string.rep('9', 200))";
+    c_loop_tonumber_base_36 => "local n = tonumber(zs, 36)";
+    c_loop_tonumber_base_36_built_in_loop => "local n = tonumber(string.rep('z', 200), 36)";
+    c_loop_pcall_of_failing_api_call => "pcall(pinball.pulse_coil)";
+    c_loop_pcall_collectgarbage_collect => "pcall(collectgarbage, 'collect')";
+    c_loop_pcall_math_random_bad_arity => "pcall(math.random, 1, 2, 3)";
+    c_loop_math_random => "local r = math.random(1, 3)";
+    c_loop_pinball_random => "local r = pinball.random(3)";
+    c_loop_pinball_tick => "local t = pinball.tick()";
+    c_loop_pinball_switch => "local s = pinball.switch(1)";
+    c_loop_queue_overflow => "pinball.set_score(1, 1)";
+}
+
+/// The same loops with every error swallowed must fault too.
+#[test]
+fn c_loops_wrapped_in_pcall_fault() {
+    for body in [
+        "pcall(function() local s = string.format('%99.99f', 1e300) end)",
+        "pcall(function() local r = math.fmod(1e308, 1e-308) end)",
+        "pcall(function() error('x') end)",
+        "pcall(error)",
+        "pcall(tonumber, nines)",
+    ] {
+        assert_c_loop_faults(body);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round 3 (review B10–B13). Default configuration; every case must return,
+// faulted or completed. No wall-clock assertions.
+
+/// B10: a 400 000-slot table is filled over several callbacks, every slot is
+/// cleared, then `loop_body` runs in a `while true` on the emptied table.
+/// `next` on such a table scans dead slots in C on every call.
+fn emptied_table_loop(loop_body: &str) {
+    let src = format!(
+        "local t, n = {{}}, 0
+         function on_tick()
+           n = n + 1
+           if n <= 20 then
+             local base = (n - 1) * 20000
+             for i = base + 1, base + 20000 do t[i] = i end
+           elseif n <= 40 then
+             local base = (n - 21) * 20000
+             for i = base + 1, base + 20000 do t[i] = nil end
+           else
+             while true do {loop_body} end
+           end
+           pinball.persist_set(0, n)
+         end"
+    );
+    let mut b = spec_support::backend(src.as_bytes());
+    let mut h = Host::new(1);
+    for i in 0..40 {
+        h.tick(&mut b);
+        assert!(!b.is_faulted(), "building the table faulted at tick {i}");
+    }
+    h.tick(&mut b);
+    assert!(b.is_faulted(), "`while true do {loop_body} end` must fault");
+    assert!(h.cmd.is_empty());
+    b.apply_reload(b"function on_tick() pinball.show_scene(2) end")
+        .expect("recovery reload");
+    h.tick(&mut b);
+    assert_eq!(h.cmd.display_scenes.len(), 1);
+}
+
+#[test]
+fn next_on_a_huge_emptied_table_in_a_loop_faults() {
+    emptied_table_loop("local k = next(t)");
+}
+
+#[test]
+fn pairs_on_a_huge_emptied_table_in_a_loop_faults() {
+    emptied_table_loop("for k, v in pairs(t) do end");
+}
+
+#[test]
+fn pcall_next_on_a_huge_emptied_table_in_a_loop_faults() {
+    emptied_table_loop("pcall(next, t)");
+}
+
+#[test]
+fn length_and_sort_on_a_huge_emptied_table_in_a_loop_fault() {
+    emptied_table_loop("local n = #t");
+    emptied_table_loop("pcall(table.sort, t)");
+}
+
+/// The same table with string keys (pure hash part).
+#[test]
+fn next_on_a_huge_emptied_hash_table_in_a_loop_faults() {
+    let src = b"local t, n = {}, 0
+                function on_tick()
+                  n = n + 1
+                  if n <= 20 then
+                    for i = 1, 5000 do t[n * 100000 + i + 0.5] = true end
+                  elseif n <= 40 then
+                    for i = 1, 5000 do t[(n - 20) * 100000 + i + 0.5] = nil end
+                  else
+                    while true do local k = next(t) end
+                  end
+                end";
+    let mut b = spec_support::backend(src);
+    let mut h = Host::new(1);
+    for i in 0..40 {
+        h.tick(&mut b);
+        assert!(!b.is_faulted(), "building the table faulted at tick {i}");
+    }
+    h.tick(&mut b);
+    assert!(b.is_faulted());
+}
+
+/// B12: large allocations in a loop.
+#[test]
+fn rep_of_65000_bytes_in_a_loop_faults() {
+    for body in [
+        "string.rep('x', 65000)",
+        "local s = string.rep('x', 65000)",
+        "pcall(string.rep, 'x', 65000)",
+        "local s = ('x'):rep(65535):upper()",
+    ] {
+        let src = format!("function on_tick() while true do {body} end end");
+        let mut b = spec_support::backend(src.as_bytes());
+        let mut h = Host::new(1);
+        h.tick(&mut b);
+        assert!(b.is_faulted(), "`while true do {body} end` must fault");
+        h.tick(&mut b);
+        assert!(h.cmd.is_empty());
+    }
+}
+
+/// B13: results that would exceed the string cap are refused with a Lua error
+/// and the callback still returns. Lamp 0 reports that the call raised.
+fn over_cap_call_raises(setup: &str, call: &str) {
+    let src = format!(
+        "local big = string.rep('b', 65535)
+         {setup}
+         function on_tick()
+           local ok = pcall({call})
+           pinball.set_lamp(0, ok and 0 or 1)
+         end"
+    );
+    let mut b = spec_support::backend(src.as_bytes());
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    // Completing is the expected outcome; a fault is tolerated, a hang is not.
+    if !b.is_faulted() {
+        assert_eq!(
+            spec_support::lamp(&h.cmd, 0),
+            Some(1.0),
+            "`{call}` must raise: its result exceeds the 64 KiB cap"
+        );
+        for _ in 0..20 {
+            h.tick(&mut b);
+        }
+    }
+
+    // And retried forever it ends in a fault.
+    let src = format!(
+        "local big = string.rep('b', 65535)
+         {setup}
+         function on_tick() while true do pcall({call}) end end"
+    );
+    let mut b = spec_support::backend(src.as_bytes());
+    let mut h = Host::new(1);
+    h.tick(&mut b);
+    assert!(
+        b.is_faulted(),
+        "`while true do pcall({call}) end` must fault"
+    );
+}
+
+#[test]
+fn concat_of_80_near_cap_strings_raises_and_returns() {
+    let setup = "local t = {} for i = 1, 80 do t[i] = big end";
+    over_cap_call_raises(setup, "table.concat, t");
+    over_cap_call_raises(setup, "table.concat, t, ', '");
+    over_cap_call_raises(setup, "table.concat, t, '', 1, 80");
+}
+
+/// 80 different strings (about 5 MiB) rather than 80 references to one. They
+/// are built two per callback, because building is itself charged to the budget.
+#[test]
+fn concat_of_80_distinct_near_cap_strings_raises_and_returns() {
+    let src = b"local t, n = {}, 0
+                function on_tick()
+                  n = n + 1
+                  if n <= 40 then
+                    for i = 1, 2 do
+                      t[#t + 1] = string.rep(string.char(64 + #t % 26), 65535)
+                    end
+                    pinball.set_lamp(1, #t / 80)
+                  else
+                    local ok = pcall(table.concat, t)
+                    pinball.set_lamp(0, ok and 0 or 1)
+                  end
+                end";
+    let mut b = spec_support::backend(src);
+    let mut h = Host::new(1);
+    for i in 0..40 {
+        h.tick(&mut b);
+        assert!(!b.is_faulted(), "building the strings faulted at tick {i}");
+    }
+    assert_eq!(spec_support::lamp(&h.cmd, 1), Some(1.0), "80 strings built");
+    for _ in 0..5 {
+        h.tick(&mut b);
+        if b.is_faulted() {
+            return; // tolerated; hanging is not
+        }
+        assert_eq!(
+            spec_support::lamp(&h.cmd, 0),
+            Some(1.0),
+            "table.concat must raise"
+        );
+    }
+}
+
+#[test]
+fn gsub_with_a_near_cap_replacement_raises_and_returns() {
+    over_cap_call_raises(
+        "local subject = ('a'):rep(80)",
+        "string.gsub, subject, 'a', big",
+    );
+    over_cap_call_raises(
+        "local subject = ('a'):rep(80) local map = { a = big }",
+        "string.gsub, subject, 'a', map",
+    );
+    over_cap_call_raises(
+        "local subject = ('a'):rep(80) local function f() return big end",
+        "string.gsub, subject, 'a', f",
+    );
+    over_cap_call_raises(
+        "local subject = ('a'):rep(80)",
+        "string.gsub, subject, '', big",
+    );
+}
+
+#[test]
+fn other_over_cap_builders_raise_and_return() {
+    over_cap_call_raises("", "string.rep, big, 80");
+    over_cap_call_raises("", "string.rep, 'x', 80, big");
+    over_cap_call_raises("", "string.format, '%s%s%s', big, big, big");
+    over_cap_call_raises("", "function() return big .. big end");
+}
