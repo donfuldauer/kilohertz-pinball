@@ -514,6 +514,10 @@ pub(super) struct BodyContactState {
     /// reports is never pushed past the target again (no overshoot, no
     /// growth from sweep to sweep).
     pub k: f32,
+    /// The normal impulse of this contact was taken back to zero after it
+    /// had been positive (Subphase 2.8): from then on a friction change that
+    /// would separate the contact is cut back (see `solve_body_contact`).
+    pub cycling: bool,
     /// Upper bound of the accumulated normal impulse (N·s): the largest
     /// `m · (u_target − u_free)` seen, where `u_free = (v_ball − (v_body −
     /// Δv_own))·n − J_acc/m` is the relative normal velocity the ball would
@@ -533,6 +537,7 @@ pub(super) struct BodyContactState {
 impl BodyContactState {
     pub(super) const NEW: Self = Self {
         k: 0.0,
+        cycling: false,
         cap: 0.0,
         own_v: Vec3::ZERO,
     };
@@ -655,6 +660,9 @@ pub(super) fn solve_body_contact(
             );
         }
         let total = acc.normal;
+        if start > 0.0 && total <= 0.0 {
+            st.cycling = true;
+        }
 
         // Rolling and pivoting resistance act on the ball's spin only.
         let f_max = k.friction.max(0.0) * total;
@@ -691,17 +699,20 @@ pub(super) fn solve_body_contact(
             // Friction must not undo the normal impulse it rests on
             // (Subphase 2.8). On a light body the friction impulse can turn
             // the contact apart (it slows the body's surface along the
-            // normal too); the next pass would then take the normal impulse
-            // back, the friction with it, and start over: a two-pass cycle
-            // that never converges, so the cast keeps reporting the same
-            // hit until the ball's event budget runs out and the body
-            // sweeps into it. Keep only the part of the friction change that
-            // leaves the relative normal speed at (or below) what the normal
-            // solve set.
+            // normal too); the next pass then takes the normal impulse back,
+            // the friction with it, and starts over: a two-pass cycle that
+            // never converges, so the cast keeps reporting the same hit
+            // until the ball's event budget runs out and the body sweeps
+            // into it. Once a contact has shown that (its normal impulse
+            // went back to zero), keep only the part of a friction change
+            // that leaves the relative normal speed at (or below) what the
+            // normal solve set. Contacts that never drop to zero are solved
+            // exactly as before.
             let ceiling = target_normal_speed.max(un_pre);
             let un_post = (ball.velocity - set.velocity_at(body, time, point)).dot(n);
             let rise = un_post - un_pre;
-            if acc.normal > 0.0
+            if st.cycling
+                && acc.normal > 0.0
                 && rise.is_finite()
                 && rise > 0.0
                 && un_post > ceiling + FRICTION_SEPARATION_TOLERANCE

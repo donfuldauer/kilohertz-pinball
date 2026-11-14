@@ -317,3 +317,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 5 | 4.4 | Implementer | Opus 5.5 | polish | running | — | N13–N15 |
 | 5 | 5.3 | Reviewer | Fable 5.2 | 2 | **pass** | fmt/clippy clean ±gpu-tests; own lib 3, displays_cpu 37, displays_gpu 11; spec 94/94; pin_render 97.15 %, displays/ 97.4–100 %; six bad-image kinds → Err on every upload path; replace ×200 leak-free; hostile scenes ≤ 3.8 ms at 192×64 (opt 3) | B1 and N1/N2/N4/N7/N8 closed; N10 doc line, N11 doc(hidden) → polish; N3/N5/N6/N9 already in HUMAN_QUEUE |
 | 5 | 5.3 | Implementer | Opus 5.5 | polish | running | — | doc only |
+| 5 | 5.3 | Implementer | Opus 5.5 | polish | done | rustfmt/clippy clean | N10 doc line, N11 doc(hidden) |
+| 5 | 5.2 + 5.3 | Orchestrator re-run | — | final | **green** | pin_render fmt clean; clippy -D warnings clean (all targets, gpu-tests); 497 tests passed, 0 failed on lavapipe (incl. 4.4 ui tests) | **5.3 complete**; 5.2 re-confirmed |
