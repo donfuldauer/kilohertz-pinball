@@ -83,7 +83,9 @@ fn run(seed: u64, ops: &[Op]) -> Result<Trace, TestCaseError> {
                         prop_assert!(b.is_some());
                         prop_assert_eq!(b.unwrap().position_m, [x, y, R]);
                         prop_assert_eq!(b.unwrap().velocity_m_s, [vx, vy, 0.0]);
-                        prop_assert!(!handles.contains(&h) || sim.ball(h).is_some());
+                        // Handles are generational: a new ball never gets a
+                        // handle that was handed out before.
+                        prop_assert!(!handles.contains(&h), "handle {:?} reused", h);
                         handles.push(h);
                     }
                     Err(_) => prop_assert_eq!(sim.balls_in_play(), before),
