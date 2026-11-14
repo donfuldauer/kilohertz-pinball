@@ -969,6 +969,10 @@ impl BallSolver {
                 return false;
             }
             if !persistent && approach >= IMPACT_REPORT_SPEED {
+                if let Some(s) = bodies.sets.get_mut(set) {
+                    let impulse = -(normal * acc.normal + acc.tangent);
+                    s.impact(body, sc.t, point, impulse, approach);
+                }
                 events.push(BallEvent::Impact {
                     ball: BallHandle(i as u8),
                     other: target,
