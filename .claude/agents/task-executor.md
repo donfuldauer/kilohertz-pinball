@@ -39,7 +39,9 @@ add one line to `docs/HUMAN_QUEUE.md`, and carry on. Never stop to wait for a pe
   them). If the API you compile against differs from the brief, report the mismatch.
 - **Fixer** (a CodeRabbit finding, a verifier failure or an investigator report): make the
   smallest change that meets the stated "fixed" condition, add a regression test where the
-  finding is behavioural, and give the thread URL(s) you addressed.
+  finding is behavioural, and give the thread URL(s) you addressed. Do not reply to or resolve
+  threads unless your brief says so: report the thread URLs and the commit, and the
+  Orchestrator resolves them (PLAN §2.7 step 3, D37).
 
 ## Git
 
