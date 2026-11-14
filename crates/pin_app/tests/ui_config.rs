@@ -558,6 +558,56 @@ fn lossy_load_backs_up_the_original() {
 
 /// 4.4 review N13: an array of tables where a table is expected is a bad
 /// value (warned, dropped, the rest kept), not silently accepted.
+/// A table where a scalar setting belongs is dropped alone: the valid
+/// non-default settings (monitor assignment, calibration) survive.
+#[test]
+fn table_valued_scalars_fall_back_alone() {
+    for (bad, key) in [
+        ("wireframe = {}", "wireframe"),
+        ("wireframe = { x = 1 }", "wireframe"),
+        ("last_table = { a = \"b\" }", "last_table"),
+        (
+            "[calibration]\ndual_stage_upper = { v = 1 }",
+            "calibration.dual_stage_upper",
+        ),
+        (
+            "[calibration.plunger]\ndeadzone = {}",
+            "calibration.plunger.deadzone",
+        ),
+    ] {
+        let text = format!(
+            "playfield_display = 2\nbackglass_display = 1\n{bad}\n[calibration.nudge]\ngain = 2.5\n"
+        );
+        let l = AppConfig::from_toml_str(&text);
+        let c = &l.config;
+        let d = AppConfig::default();
+        assert_eq!(c.playfield_display, 2, "{bad}");
+        assert_eq!(c.backglass_display, Some(1), "{bad}");
+        assert_eq!(c.wireframe, d.wireframe, "{bad}");
+        assert_eq!(c.calibration.nudge.gain, 2.5, "{bad}");
+        assert_ne!(d.calibration.nudge.gain, 2.5);
+        assert_eq!(c.calibration.plunger, d.calibration.plunger, "{bad}");
+        assert_eq!(
+            c.calibration.dual_stage_upper, d.calibration.dual_stage_upper,
+            "{bad}"
+        );
+        assert!(
+            !l.warnings
+                .iter()
+                .any(|w| matches!(w, ConfigWarning::Corrupt(_))),
+            "{bad}: {:?}",
+            l.warnings
+        );
+        assert!(
+            l.warnings
+                .iter()
+                .any(|w| matches!(w, ConfigWarning::InvalidValue { key: k, .. } if k == key)),
+            "{bad}: {:?}",
+            l.warnings
+        );
+    }
+}
+
 #[test]
 fn arrays_of_tables_for_known_tables_are_rejected() {
     for (text, key) in [

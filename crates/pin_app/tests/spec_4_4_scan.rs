@@ -322,8 +322,16 @@ fn hostile_directory_contents_do_not_panic() {
     // A name that is not UTF-8.
     let bad = std::ffi::OsStr::from_bytes(b"bad_\xff\xfe_name");
     let _ = std::fs::create_dir(tmp.path().join(bad));
-    // A bundle whose manifest is a symlink out of the bundle.
-    std::fs::create_dir_all(tmp.join("escape")).unwrap();
+    // A bundle whose manifest is a symlink out of the bundle: an otherwise
+    // complete bundle (Ready as written) whose `table.toml` is then replaced
+    // by a symlink to a valid manifest outside it, so only the symlink
+    // check can reject it.
+    write_valid_bundle(&tmp.join("escape"), "escape", "Escape", "E");
+    assert!(
+        find(&scan_tables(tmp.path()), "escape").is_ready(),
+        "the escape bundle must be valid before its manifest is swapped"
+    );
+    std::fs::remove_file(tmp.join("escape/table.toml")).unwrap();
     std::os::unix::fs::symlink(
         base_bundle().join("table.toml"),
         tmp.join("escape/table.toml"),
