@@ -59,8 +59,26 @@ fn main() {
 }
 
 mod present_modes {
-    use wgpu::{Adapter, Backends, SurfaceTargetUnsafe};
-    use wgpu_probe::{AdapterReport, instance};
+    use wgpu::rwh::{DisplayHandle, HandleError, HasDisplayHandle, RawDisplayHandle};
+    use wgpu::{Adapter, Backends, Instance, InstanceDescriptor, SurfaceTargetUnsafe};
+    use wgpu_probe::AdapterReport;
+
+    /// SDL's display connection, owned by the SDL video subsystem.
+    #[derive(Debug)]
+    struct SdlDisplay(RawDisplayHandle);
+
+    // SAFETY: the handle is a plain connection pointer that wgpu only passes
+    // to the platform; the SDL video subsystem keeps the connection alive for
+    // all of `probe`, and the instance holding this is dropped before it.
+    unsafe impl Send for SdlDisplay {}
+    unsafe impl Sync for SdlDisplay {}
+
+    impl HasDisplayHandle for SdlDisplay {
+        fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+            // SAFETY: see the `Send`/`Sync` note above.
+            Ok(unsafe { DisplayHandle::borrow_raw(self.0) })
+        }
+    }
 
     /// SDL video drivers whose raw window handles wgpu can consume.
     const NATIVE_DRIVERS: [&str; 4] = ["windows", "cocoa", "x11", "wayland"];
@@ -93,7 +111,18 @@ mod present_modes {
             }
         };
         // One instance for the surface; adapters must come from the same instance.
-        let instance = instance(Backends::all());
+        // GLES needs the platform display connection at instance creation to
+        // present (wgpu 30 `InstanceDescriptor::display`, notably on Wayland),
+        // so Q4 hands SDL's display handle over; Q3/Q5 stay headless.
+        let display = match window.display_handle() {
+            Ok(d) => SdlDisplay(d.as_raw()),
+            Err(e) => {
+                return println!("[wgpu Q4] no surface available: display handle on {driver}: {e}");
+            }
+        };
+        let mut desc = InstanceDescriptor::new_with_display_handle(Box::new(display));
+        desc.backends = Backends::all();
+        let instance = Instance::new(desc.with_env());
         // SAFETY: `window` outlives `surface` (both dropped at end of scope, surface first).
         let surface =
             match unsafe { SurfaceTargetUnsafe::from_display_and_window(&window, &window) }
@@ -130,6 +159,8 @@ mod present_modes {
             }
         }
         drop(surface);
+        drop(surface_adapters);
+        drop(instance);
         drop(window);
     }
 }
