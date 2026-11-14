@@ -191,7 +191,7 @@ impl ClearanceReport {
 
 /// Where a profile may be.
 #[derive(Clone, Debug)]
-pub(crate) enum Allowed {
+enum Allowed {
     /// No restriction: every layer, everywhere.
     Anywhere,
     /// The union of (layers, optional area) entries.
@@ -200,7 +200,7 @@ pub(crate) enum Allowed {
 
 impl Allowed {
     /// Whether the profile may be on `layer` at all.
-    pub(crate) fn layer(&self, layer: u8) -> bool {
+    fn layer(&self, layer: u8) -> bool {
         match self {
             Allowed::Anywhere => true,
             Allowed::Only(e) => e.iter().any(|(l, _)| l.contains(&layer)),
@@ -208,7 +208,7 @@ impl Allowed {
     }
 
     /// Whether the profile's centre may be at plan point `q` (m) on `layer`.
-    pub(crate) fn at(&self, layer: u8, q: DVec2) -> bool {
+    fn at(&self, layer: u8, q: DVec2) -> bool {
         match self {
             Allowed::Anywhere => true,
             Allowed::Only(e) => e
@@ -219,7 +219,7 @@ impl Allowed {
 
     /// Whether the profile may be somewhere in the box `lo..hi` (m) on
     /// `layer`.
-    pub(crate) fn in_box(&self, layer: u8, lo: DVec2, hi: DVec2) -> bool {
+    fn in_box(&self, layer: u8, lo: DVec2, hi: DVec2) -> bool {
         match self {
             Allowed::Anywhere => true,
             Allowed::Only(e) => e.iter().any(|(l, a)| {
@@ -228,14 +228,14 @@ impl Allowed {
         }
     }
 
-    pub(crate) fn restricted(&self) -> bool {
+    fn restricted(&self) -> bool {
         matches!(self, Allowed::Only(_))
     }
 }
 
 /// A declared ball profile with its restriction.
 #[derive(Clone, Debug)]
-pub(crate) struct Ball {
+struct Ball {
     pub name: String,
     /// Diameter, m.
     pub d: f64,
@@ -243,29 +243,25 @@ pub(crate) struct Ball {
 }
 
 impl Ball {
-    pub(crate) fn r(&self) -> f64 {
+    fn r(&self) -> f64 {
         0.5 * self.d
     }
 
     /// `d + MIN_CLEARANCE_MM`, m.
-    pub(crate) fn needed(&self) -> f64 {
+    fn needed(&self) -> f64 {
         self.d + f64::from(MIN_CLEARANCE_MM) * 1.0e-3
-    }
-
-    pub(crate) fn d_mm(&self) -> f32 {
-        (self.d * 1.0e3) as f32
     }
 }
 
 /// Collects findings.
 #[derive(Default)]
-pub(crate) struct Sink {
+struct Sink {
     pub errors: Vec<ClearanceError>,
     pub warnings: Vec<ClearanceError>,
 }
 
 /// Fields of one finding (file defaults to `table.toml`).
-pub(crate) struct Finding<'a> {
+struct Finding<'a> {
     pub feature: Feature,
     pub name: &'a str,
     pub ball: &'a str,
@@ -290,20 +286,20 @@ impl Sink {
         }
     }
 
-    pub(crate) fn error(&mut self, f: Finding<'_>) {
+    fn error(&mut self, f: Finding<'_>) {
         self.errors.push(Self::make(f));
     }
 
-    pub(crate) fn warning(&mut self, f: Finding<'_>) {
+    fn warning(&mut self, f: Finding<'_>) {
         self.warnings.push(Self::make(f));
     }
 }
 
 /// File name of `table.toml` in findings.
-pub(crate) const TABLE: &str = pin_assets::validate::TABLE_FILE;
+const TABLE: &str = pin_assets::validate::TABLE_FILE;
 
 /// Formats metres as millimetres with one decimal.
-pub(crate) fn mm(m: f64) -> String {
+fn mm(m: f64) -> String {
     format!("{:.1} mm", m * 1.0e3)
 }
 
