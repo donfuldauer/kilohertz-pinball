@@ -223,28 +223,44 @@ pub fn run_pattern(mut sim: Simulation, ticks: u64, idle: bool) -> Simulation {
 
 /// Whether `record` would be written inside the folder bundle `bundle` (or
 /// over the bundle file itself). A file there would become part of the
-/// bundle's table hash and the recording could not replay.
+/// bundle's table hash and the recording could not replay. An existing
+/// `record` (or a symlink, even a dangling one) is judged by where it
+/// resolves to, so a symlink to a bundle file is caught.
 fn record_inside_bundle(bundle: &Path, record: &Path) -> bool {
     let Ok(bundle) = bundle.canonicalize() else {
         return false;
     };
-    let file_name = match record.file_name() {
-        Some(n) => n,
-        None => return false,
-    };
-    let parent = match record.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    let Ok(parent) = parent.canonicalize() else {
+    let Some(target) = write_target(record) else {
         return false;
     };
-    let target = parent.join(file_name);
     if bundle.is_dir() {
         target.starts_with(&bundle)
     } else {
         target == bundle
     }
+}
+
+/// The canonical path a write to `path` lands on: the path itself with every
+/// symlink followed when it exists, else its canonical parent joined with
+/// its file name (following dangling symlinks first). `None` if that cannot
+/// be worked out (missing parent, symlink loop).
+fn write_target(path: &Path) -> Option<PathBuf> {
+    let mut p = path.to_path_buf();
+    // Bounded like the kernel's own symlink-follow limit.
+    for _ in 0..40 {
+        if let Ok(c) = p.canonicalize() {
+            return Some(c);
+        }
+        let parent = match p.parent() {
+            Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        match std::fs::read_link(&p) {
+            Ok(link) => p = parent.join(link),
+            Err(_) => return Some(parent.canonicalize().ok()?.join(p.file_name()?)),
+        }
+    }
+    None
 }
 
 /// Runs a parsed command; returns the final state hash.

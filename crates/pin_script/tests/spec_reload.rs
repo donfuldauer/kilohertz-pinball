@@ -345,6 +345,27 @@ fn syntax_check_only_compiles_and_never_runs_the_chunk() {
     }
 }
 
+#[test]
+fn syntax_check_compiles_under_the_engine_heap_cap() {
+    // Many distinct string constants: each is interned in the compiling
+    // state's heap, so together they need more than the engine's 2 MiB cap.
+    let cap = pin_script::lua::LuaConfig::engine().memory_limit_bytes;
+    // Each literal stays under the 64 KiB per-string cap.
+    let per = 60 * 1024;
+    let mut src = String::from("local t = {\n");
+    for i in 0..(cap / per + 8) {
+        src.push('"');
+        src.push_str(&format!("{i:08}"));
+        src.push_str(&"x".repeat(per));
+        src.push_str("\",\n");
+    }
+    src.push_str("}\n");
+    assert!(src.len() > cap);
+    assert_eq!(syntax_check(src.as_bytes()), Err(ScriptError::MemoryLimit));
+    // A small source with the same shape still compiles.
+    assert_eq!(syntax_check(b"local t = { \"a\", \"b\" }"), Ok(()));
+}
+
 // ---------------------------------------------------------------------------
 // reload::ReloadWatcher (I/O worker side). No sleeping: bounded yield loops.
 
