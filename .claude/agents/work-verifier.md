@@ -39,8 +39,11 @@ executor's report, the branch, and the base (normally `origin/main`).
    has a `proptest`; every parser touched survives a bounded random-bytes run.
 6. **Sim-thread rules**, where the work touches the tick: the allocation guard test passes and
    the replay hash is stable over 10 runs.
-7. **Owned paths.** Take the union of these four lists; every path in it must be in OWNED
-   PATHS or the allowed shared files listed below. `--no-renames` makes a move report both its
+7. **Owned paths.** Run all four commands from the repository root
+   (`cd "$(git rev-parse --show-toplevel)"` first): `git ls-files` lists only the current
+   directory and below, so running it from a crate directory would miss sibling directories.
+   Take the union of the four lists; every path in it must be in OWNED PATHS or the allowed
+   shared files listed below. `--no-renames` makes a move report both its
    source and its destination, so a file moved in from outside the owned paths is caught.
    - committed: `git diff --no-renames --name-only <base>...HEAD`
    - staged: `git diff --no-renames --name-only --cached`
