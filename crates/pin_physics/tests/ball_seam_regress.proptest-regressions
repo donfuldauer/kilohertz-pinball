@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc faab418069a4bd9f9331e81aae6abc3d3d37c596710b6ee2866cb51ccb35046d # shrinks to x = 0.064126015, speed = 12.4077215, flip = 5, torque = 1.3689575, inertia = 0.00029952076, speculative = false

@@ -1,0 +1,38 @@
+# PLAN.md Appendix A.3 example layout (verbatim values).
+schema_version = 1
+
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 28.0
+
+[[walls]]
+points = [[0.0, 0.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 0.0]]
+closed = false
+material = "wood"
+
+[[posts]]
+position = [120.0, 300.0]
+radius = 5.0
+rubber = true
+
+[[lanes]]
+kind = "inlane"                # inlane | outlane | shooter | orbit
+points = [[40.0, 320.0], [60.0, 180.0]]
+width = 32.0
+
+[[ramps]]
+spline = "return_wireform"     # references table.toml [[splines]]
+entry_width = 60.0
+
+[[decks]]
+layer = 1
+z = 65.0
+outline = [[260.0, 700.0], [514.0, 700.0], [514.0, 1070.0], [260.0, 1070.0]]
+material = "acrylic"
+
+[[inserts]]
+lamp = "overdrive_ready"
+position = [257.0, 240.0]
+shape = "circle"               # circle | arrow | triangle | rect
+size = 18.0

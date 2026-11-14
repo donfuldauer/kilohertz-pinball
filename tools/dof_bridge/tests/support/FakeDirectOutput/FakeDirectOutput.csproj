@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- A stand-in for the DirectOutput Framework's DirectOutput.dll with the same entry points
+       (DirectOutput.Pinball: Setup, Init, ReceiveData, Finish). Test support only. -->
+  <PropertyGroup>
+    <AssemblyName>DirectOutput</AssemblyName>
+    <RootNamespace>DirectOutput</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <NoWarn>$(NoWarn);CA1002;CA1822;CA1716;CA1720;CA1724</NoWarn>
+  </PropertyGroup>
+</Project>

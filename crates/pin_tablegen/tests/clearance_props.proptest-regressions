@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0b779c54129a5e5cf379452fb165daa7a653e55d16254e31a7040d8fb0de22f7 # shrinks to layout = LayoutManifest { schema_version: 1, playfield: Playfield { width: 514.0, length: 1070.0, wall_height: 28.0 }, walls: [], posts: [], lanes: [], ramps: [], decks: [], inserts: [] }, profiles = [], restrict = [BallRestriction { profile: "jumbo_xl_resin", layers: [], area: [[0.0, 0.0]] }], extra = "[[splines]]\nid = \"rail\"\nkind = \"wireform\"\nlayer = 0\ngauge = 5.0\npoints = [[100.0, 300.0, 40.0], [200.0, 500.0, 60.0], [300.0, 700.0, 40.0]]\n[[mechs]]\nid = \"scoop\"\nkind = \"vuk\"\nposition = [0.0, 0.0, 0.0]\nlayer = 0\nexit_layer = 0\nexit_offset = [0.0, 0.0, 0.0]\n", diameters = [0.01588]

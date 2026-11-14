@@ -1,0 +1,18 @@
+# Black-box conformance tests for Subphase 1.2 (CI matrix skeleton).
+# Standalone on purpose: the empty [workspace] table keeps this package out of
+# the root workspace, so it never shares a build with the code under test.
+[package]
+name = "spec_ci"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Conformance checks for .github/workflows/ci.yml and spikes.yml"
+
+[workspace]
+
+[dependencies]
+yaml-rust2 = "=0.13.0"
+
+[dev-dependencies]
+proptest = "=1.12.0"

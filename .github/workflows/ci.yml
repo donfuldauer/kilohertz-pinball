@@ -1,0 +1,351 @@
+name: ci
+
+# Subphase 1.2: CI matrix skeleton for the root workspace (PLAN.md §4, 1.2).
+# Targets: x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu, aarch64-apple-darwin.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# One run per workflow, ref and event; a newer push cancels the older push run
+# (event_name keeps a workflow_dispatch run from being cancelled by pushes).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  # Headless SDL hints (DECISIONS.md 0.1). SDL_VIDEO_DRIVER=dummy is set per job:
+  # gpu-tests runs under a real (Xvfb) display on Linux instead.
+  SDL_AUDIO_DRIVER: dummy
+  SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS: "1"
+  # Exact toolchain from versions.toml [toolchain]; bump it there and in the
+  # dtolnay/rust-toolchain@<version> lines together (DECISIONS.md "Orchestrator — 1.2 review B1").
+  RUST_VERSION: "1.97.0"
+
+jobs:
+  # GPU-free crates (PLAN.md §2.3 rule 3): pin_core, pin_physics, pin_input,
+  # pin_script, pin_assets, pin_tablegen, pin_sim (+ pin_assetgen, a GPU-free tool).
+  core-tests:
+    name: core-tests (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    env:
+      SDL_VIDEO_DRIVER: dummy
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # No SDL/X11/audio packages here on purpose: the GPU-free crates must build
+      # and test without display or GPU (PLAN.md §2.3 rule 3); only pin_app uses sdl3.
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "::error::host $host, expected ${{ matrix.target }}"; exit 1
+          fi
+
+      - name: cargo test (GPU-free crates)
+        run: cargo test --workspace --exclude pin_render --exclude pin_audio --exclude pin_app
+
+      - name: cargo clippy -D warnings (tests/spec_ci)
+        if: runner.os == 'Linux'
+        run: cargo clippy --manifest-path tests/spec_ci/Cargo.toml --all-targets -- -D warnings
+
+      - name: cargo test (tests/spec_ci workflow conformance)
+        if: runner.os == 'Linux'
+        run: cargo test --manifest-path tests/spec_ci/Cargo.toml
+
+  # GPU/audio/app crates on each OS's software or OS adapter:
+  # lavapipe (Vulkan) on Linux, WARP (DX12) on Windows, Metal on macOS.
+  gpu-tests:
+    name: gpu-tests (${{ matrix.target }}, ${{ matrix.adapter }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            adapter: WARP
+            wgpu_backend: dx12
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            adapter: lavapipe
+            wgpu_backend: vulkan
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            adapter: Metal
+            wgpu_backend: metal
+    env:
+      # Not read by anything yet: from Subphase 1.4, pin_render's gpu-tests are expected to
+      # build their wgpu Instance with InstanceDescriptor::with_env() (honouring WGPU_BACKEND)
+      # and to treat a missing lavapipe/WARP/Metal adapter as a failure when PIN_REQUIRE_GPU=1
+      # (the counterpart of SPIKE_REQUIRE_GPU in spikes.yml).
+      WGPU_BACKEND: ${{ matrix.wgpu_backend }}
+      PIN_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux packages (lavapipe, Xvfb, SDL3 build headers)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 xvfb xauth cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "::error::host $host, expected ${{ matrix.target }}"; exit 1
+          fi
+
+      # pin_render's adapter-dependent tests are behind its `gpu-tests` feature (Subphase 1.4).
+      - name: cargo test (GPU crates, Linux under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app
+
+      - name: cargo test (GPU crates)
+        if: runner.os != 'Linux'
+        run: cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app
+
+  clippy:
+    name: clippy (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux packages (SDL3 build headers)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "::error::host $host, expected ${{ matrix.target }}"; exit 1
+          fi
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo fmt --check (tests/spec_ci)
+        run: cargo fmt --manifest-path tests/spec_ci/Cargo.toml --all --check
+
+  # Subphase 2.5: golden replay-hash check (D9). On each OS: build pin_sim in
+  # release, record the in-repo fixture for 10 000 ticks, replay it 10 times and
+  # fail on any mismatch on that machine. The hashes and the 2.2-S seam digests
+  # are printed so cross-OS values are visible; cross-OS differences are
+  # reported, never failing (PLAN.md §2.4).
+  replay-hash:
+    name: replay-hash (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    env:
+      SDL_VIDEO_DRIVER: dummy
+      FIXTURE: crates/pin_sim/tests/fixtures/replay_table
+      TICKS: "10000"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+
+      - name: cargo build --release (pin_sim)
+        run: cargo build --release -p pin_sim --bin pin_sim
+
+      - name: Record the fixture, replay it 10 times
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=target/release/pin_sim
+          rec="$RUNNER_TEMP/replay_fixture.khzrec"
+          recorded=$("$exe" "$FIXTURE" --ticks "$TICKS" --record-inputs "$rec")
+          echo "recorded:  $recorded (${{ matrix.target }}, $TICKS ticks)"
+          fail=0
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            replayed=$("$exe" "$FIXTURE" --replay-inputs "$rec")
+            echo "replay $i: $replayed"
+            if [ "$replayed" != "$recorded" ]; then
+              echo "::error::replay $i gave $replayed, recorded $recorded"
+              fail=1
+            fi
+          done
+          echo "::notice title=replay-hash ${{ matrix.target }}::$recorded"
+          exit $fail
+
+      - name: 2.2-S seam digests (report only, cross-OS)
+        shell: bash
+        run: cargo test --release -p pin_physics --test ball_seam_bitident -- --nocapture
+
+  # Line coverage for the GPU-free crates (gate step 4). Non-gating for now: prints the table.
+  # Like core-tests, no SDL/X11 packages are installed.
+  coverage:
+    name: coverage (core crates, non-gating)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    env:
+      SDL_VIDEO_DRIVER: dummy
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: cargo llvm-cov (summary)
+        run: |
+          cargo llvm-cov --summary-only \
+            -p pin_core -p pin_physics -p pin_input -p pin_script \
+            -p pin_assets -p pin_tablegen -p pin_sim
+
+  # Subphase 3.5: the DOF bridge (tools/dof_bridge, .NET 8), a Windows-only companion
+  # process. Builds it and runs every test project under tools/dof_bridge/tests/ (Implementer
+  # and Spec*), which replay the recorded telemetry fixtures into the bridge with a mock DOF
+  # sink. No Rust here and no `needs:`, so other jobs and platforms are unaffected.
+  dof-bridge:
+    name: dof-bridge (windows-latest, .NET 8)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: dotnet build (bridge executable)
+        shell: bash
+        run: dotnet build tools/dof_bridge/src/KilohertzDofBridge/KilohertzDofBridge.csproj -c Release
+
+      - name: dotnet test (every tools/dof_bridge/tests/*/*.csproj, coverlet)
+        shell: bash
+        run: |
+          set -e
+          for p in tools/dof_bridge/tests/*/*.csproj; do
+            echo "::group::$p"
+            dotnet test "$p" -c Release --collect:"XPlat Code Coverage" --results-directory tools/dof_bridge/TestResults --logger "console;verbosity=normal"
+            echo "::endgroup::"
+          done
+
+      - name: .NET line coverage (report only)
+        shell: bash
+        run: |
+          find tools/dof_bridge/TestResults -name coverage.cobertura.xml | while read -r f; do
+            rate=$(sed -n 's/.*<coverage line-rate="\([0-9.]*\)".*/\1/p' "$f" | head -n 1)
+            echo "::notice title=dof-bridge coverage::$f line-rate $rate"
+          done

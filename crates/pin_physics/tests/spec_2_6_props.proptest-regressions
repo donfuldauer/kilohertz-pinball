@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 040a87978a46d86504a831f61bb9b267b7a987de4122e1299a640553de00edf5 # shrinks to b = Banana { length_mm: 50.0, arc_radius_mm: 25.5, tube_radius_mm: 10.9256525 }, neg_sweep = false, neg_bend = false, theta = 0.0, phi = 0.0, rest = 0.0, region = Concave, frac = 0.02, beta = 0.0, off01 = 0.0, z = -0.008164628

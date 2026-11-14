@@ -1,0 +1,18 @@
+[package]
+name = "wgpu_probe"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+wgpu.workspace = true
+pollster.workspace = true
+sdl3.workspace = true
+
+# The present-mode probe opens a (hidden) SDL window, which must happen on the
+# main thread on macOS; run as a plain `main` instead of libtest.
+[[test]]
+name = "probe"
+harness = false
