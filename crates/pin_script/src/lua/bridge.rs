@@ -26,6 +26,10 @@ pub(crate) struct Bridge {
     ctx: Cell<Option<RawCtx>>,
     overflow: Cell<u32>,
     holds: [Cell<u64>; HOLD_WORDS],
+    /// Coils whose tilt release is still waiting for queue room. Kept apart
+    /// from `holds` so a reload in the middle of the drain neither stops it
+    /// nor hands those coils to the new script.
+    releasing: [Cell<u64>; HOLD_WORDS],
     budget_hit: Cell<bool>,
     memory_hit: Cell<bool>,
     /// Instructions between two hook calls.
@@ -47,6 +51,7 @@ impl Bridge {
             ctx: Cell::new(None),
             overflow: Cell::new(0),
             holds: [const { Cell::new(0) }; HOLD_WORDS],
+            releasing: [const { Cell::new(0) }; HOLD_WORDS],
             budget_hit: Cell::new(false),
             memory_hit: Cell::new(false),
             hook_interval,
@@ -105,11 +110,15 @@ impl Bridge {
     }
 
     /// Records the hold state of `coil` after a successfully queued hold.
+    /// The script now owns the coil again, so any tilt release still pending
+    /// for it is dropped.
     pub(crate) fn set_held(&self, coil: CoilId, on: bool) {
         let i = coil.index();
         let w = &self.holds[i / 64];
         let bit = 1u64 << (i % 64);
         w.set(if on { w.get() | bit } else { w.get() & !bit });
+        let r = &self.releasing[i / 64];
+        r.set(r.get() & !bit);
     }
 
     /// True if the script currently holds `coil`.
@@ -119,10 +128,20 @@ impl Bridge {
         self.holds[i / 64].get() & (1u64 << (i % 64)) != 0
     }
 
-    /// Queues `(coil, false)` for every held coil while the queue has room;
-    /// coils that do not fit stay marked and are released by the next call.
+    /// Starts the tilt release: every held coil moves to the pending-release
+    /// set, then as many releases are queued as fit ([`Self::drain_releases`]).
     pub(crate) fn release_holds(&self, cmd: &mut HostCommandQueue) {
-        for (wi, w) in self.holds.iter().enumerate() {
+        for (r, h) in self.releasing.iter().zip(self.holds.iter()) {
+            r.set(r.get() | h.get());
+            h.set(0);
+        }
+        self.drain_releases(cmd);
+    }
+
+    /// Queues `(coil, false)` for every coil pending release while the queue
+    /// has room; coils that do not fit stay pending for the next call.
+    pub(crate) fn drain_releases(&self, cmd: &mut HostCommandQueue) {
+        for (wi, w) in self.releasing.iter().enumerate() {
             let mut bits = w.get();
             while bits != 0 {
                 let b = bits.trailing_zeros() as usize;
@@ -138,8 +157,14 @@ impl Bridge {
     }
 
     /// True while any coil is marked held.
+    #[cfg(test)]
     pub(crate) fn any_held(&self) -> bool {
         self.holds.iter().any(|w| w.get() != 0)
+    }
+
+    /// True while tilt releases are still waiting for queue room.
+    pub(crate) fn releases_pending(&self) -> bool {
+        self.releasing.iter().any(|w| w.get() != 0)
     }
 
     /// Clears the abort flags before a callback (the budget itself lives in
@@ -185,12 +210,16 @@ mod tests {
         assert_eq!(q.coil_holds.len(), 32);
         assert_eq!(q.coil_holds[0], (CoilId(0), false));
         assert_eq!(q.coil_holds[31], (CoilId(93), false));
-        assert!(b.any_held());
+        assert!(!b.any_held());
+        assert!(b.releases_pending());
         q.clear();
-        b.release_holds(&mut q);
+        b.drain_releases(&mut q);
         assert_eq!(q.coil_holds.len(), 9);
         assert_eq!(q.coil_holds[8], (CoilId(u16::MAX), false));
-        assert!(!b.any_held());
+        assert!(!b.releases_pending());
+        b.set_held(CoilId(7), true);
+        b.set_held(CoilId(7), false);
+        assert!(!b.is_held(CoilId(7)));
     }
 
     #[test]

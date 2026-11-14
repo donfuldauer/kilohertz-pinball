@@ -1080,6 +1080,29 @@ fn load_msg(src: &[u8]) -> String {
     }
 }
 
+/// `check_limits` applies the same WAT text cap as `prepare`: valid WAT
+/// padded past the cap with whitespace is rejected by both.
+#[test]
+fn check_limits_applies_the_wat_text_cap() {
+    use pin_script::wasm::{MAX_WAT_BYTES, check_limits};
+    let module = br#"(module
+  (memory (export "memory") 1)
+  (func (export "on_init"))
+  (func (export "on_tick"))
+  (func (export "on_switch_edge") (param i32 i32)))"#;
+    let mut text = module.to_vec();
+    text.resize(MAX_WAT_BYTES, b' ');
+    assert!(check_limits(&text).is_ok());
+    assert!(WasmScriptBackend::prepare(&text, WasmConfig::default()).is_ok());
+    text.push(b' ');
+    let want = format!("at most {MAX_WAT_BYTES} bytes of WAT text");
+    match check_limits(&text) {
+        Err(ScriptError::Load(m)) => assert!(m.contains(&want), "{m}"),
+        other => panic!("check_limits accepted over-cap WAT: {other:?}"),
+    }
+    assert!(WasmScriptBackend::prepare(&text, WasmConfig::default()).is_err());
+}
+
 /// Each limit is enforced by the pre-scan: the messages name the limit,
 /// which wasmtime's compiler would never produce.
 #[test]

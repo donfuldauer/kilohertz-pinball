@@ -21,7 +21,8 @@
 
 use pin_core::ScriptError;
 use pin_script::wasm::{
-    MAX_FUNCTIONS, MAX_OPERATORS_PER_FUNCTION, WasmConfig, WasmScriptBackend, check_limits,
+    MAX_FUNCTIONS, MAX_OPERATORS, MAX_OPERATORS_PER_FUNCTION, WasmConfig, WasmScriptBackend,
+    check_limits,
 };
 use wasmtime::wasmparser::{Parser, Payload, Validator, WasmFeatures};
 
@@ -420,7 +421,13 @@ impl Template {
         if let Err(e) = check_limits(&self.build_v(0, v)) {
             panic!("the empty module must be accepted: {e:?}");
         }
-        let mut hi = (MAX_OPERATORS_PER_FUNCTION / self.unit_ops.max(1)) + 1;
+        // First rejected candidate: over the per-function operator cap, or
+        // (with `v.funcs` copies) over the module-wide one, whichever is
+        // smaller, so the `max fns` variant never builds a huge module.
+        let unit_ops = self.unit_ops.max(1);
+        let per_fn = MAX_OPERATORS_PER_FUNCTION / unit_ops;
+        let module_wide = MAX_OPERATORS / (unit_ops * v.funcs.max(1));
+        let mut hi = per_fn.min(module_wide) + 1;
         if ok(hi) {
             return hi;
         }

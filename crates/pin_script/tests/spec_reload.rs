@@ -3,12 +3,14 @@
 //! handling.
 
 mod spec_support;
+mod temp_dir_support;
 
 use pin_core::{CoilId, ScriptError, TableScriptBackend};
 use pin_script::lua::reload::{ReloadWatcher, syntax_check};
 use pin_script::{NameTables, load_backend};
 use proptest::prelude::*;
 use spec_support::{Host, backend, backend_with, cfg, names, persisted, score};
+use temp_dir_support::TempDir;
 
 const V1: &[u8] = include_bytes!("fixtures/spec_reload_v1.lua");
 const V2: &[u8] = include_bytes!("fixtures/spec_reload_v2.lua");
@@ -374,24 +376,6 @@ const B: &[u8] = b"function on_tick() pinball.set_score(1, 2) end -- edited\n";
 const C: &[u8] = b"function on_tick() pinball.set_score(1, 3) end -- edited again\n";
 const BROKEN: &[u8] = b"function on_tick( pinball.set_score(1, 4) end -- broken\n";
 
-struct TempDir(std::path::PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let dir =
-            std::env::temp_dir().join(format!("pin_script_spec_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// Polls until `want` is delivered, rewriting the file now and then so a lost
 /// file-system event cannot wedge the test. Every delivered source must be
 /// syntactically valid and must never be `BROKEN`.
@@ -421,7 +405,7 @@ fn poll_until(w: &mut ReloadWatcher, path: &std::path::Path, want: &[u8]) -> boo
 #[test]
 fn watcher_delivers_changed_valid_source() {
     let dir = TempDir::new("watch_ok");
-    let path = dir.0.join("rules.lua");
+    let path = dir.path().join("rules.lua");
     std::fs::write(&path, A).unwrap();
     let mut w = ReloadWatcher::new(&path).expect("watch an existing file");
     assert!(poll_until(&mut w, &path, B), "the edit was never delivered");
@@ -434,7 +418,7 @@ fn watcher_delivers_changed_valid_source() {
 #[test]
 fn watcher_never_delivers_a_file_that_fails_the_syntax_check() {
     let dir = TempDir::new("watch_broken");
-    let path = dir.0.join("rules.lua");
+    let path = dir.path().join("rules.lua");
     std::fs::write(&path, A).unwrap();
     let mut w = ReloadWatcher::new(&path).expect("watch an existing file");
     assert!(poll_until(&mut w, &path, B));
@@ -458,7 +442,7 @@ fn watcher_never_delivers_a_file_that_fails_the_syntax_check() {
 #[test]
 fn watcher_output_feeds_apply_reload() {
     let dir = TempDir::new("watch_apply");
-    let path = dir.0.join("rules.lua");
+    let path = dir.path().join("rules.lua");
     std::fs::write(&path, A).unwrap();
     let mut w = ReloadWatcher::new(&path).unwrap();
     let mut b = backend(A);
@@ -488,7 +472,7 @@ fn watcher_output_feeds_apply_reload() {
 #[test]
 fn poll_without_changes_is_cheap_and_returns_valid_source_or_nothing() {
     let dir = TempDir::new("watch_idle");
-    let path = dir.0.join("rules.lua");
+    let path = dir.path().join("rules.lua");
     std::fs::write(&path, A).unwrap();
     let mut w = ReloadWatcher::new(&path).unwrap();
     for _ in 0..10_000 {

@@ -15,7 +15,8 @@
 //! A runtime error, an exhausted instruction budget or the memory cap aborts
 //! the callback, and the commands it had queued are dropped (all-or-nothing).
 //! The backend then queues `(coil, false)` for every coil the
-//! script holds (continuing on later callbacks if the queue is full), stops
+//! script holds (continuing on later callbacks if the queue is full, also
+//! after a successful reload clears the fault), stops
 //! calling the script and stays faulted until a successful
 //! [`TableScriptBackend::apply_reload`].
 //!
@@ -282,10 +283,13 @@ impl LuaScriptBackend {
     }
 
     fn run(&mut self, entry: Entry, switch: SwitchId, closed: bool, ctx: &mut HostCtx) {
+        // Tilt releases still owed from a fault keep draining even after a
+        // reload has cleared `faulted`; they go ahead of the callback's own
+        // commands and outside its rollback mark.
+        if self.bridge.releases_pending() {
+            self.bridge.drain_releases(ctx.cmd);
+        }
         if self.faulted {
-            if self.bridge.any_held() {
-                self.bridge.release_holds(ctx.cmd);
-            }
             return;
         }
         let keys = &self.vm.keys;
@@ -356,7 +360,8 @@ impl TableScriptBackend for LuaScriptBackend {
     /// Builds the new script in a fresh sandbox; on any error (syntax, top
     /// level, or the new `on_restore_state` failing) the old script keeps
     /// running and the error is returned. On success the faulted state is
-    /// cleared (held coils stay tracked: the new script inherits them).
+    /// cleared (held coils stay tracked: the new script inherits them; tilt
+    /// releases still pending from a fault keep draining).
     fn apply_reload(&mut self, source: &[u8]) -> Result<(), ScriptError> {
         let new_vm = Vm::build(source, &self.names, &self.cfg, &self.bridge)?;
         let state = self.save_state();
@@ -430,6 +435,25 @@ mod tests {
             .unwrap();
         assert!(!b.is_faulted());
         assert_eq!(tick(&mut b).coil_pulses.len(), 1);
+    }
+
+    /// A budget hit lowers the hook interval to every instruction; the next
+    /// callback on the same state must get its normal interval back. Reached
+    /// here through a save hook that runs out of budget (the state is kept
+    /// when a reload fails after the save), driven directly because
+    /// `apply_reload` only fails after the save when a state was carried.
+    #[test]
+    fn budget_hit_does_not_shrink_later_budgets() {
+        let mut b = backend(
+            "function on_save_state() while true do end end \
+             function on_tick() local x = 0 for i = 1, 50000 do x = x + i end \
+             pinball.set_score(1, x) end",
+        );
+        assert!(b.save_state().is_none());
+        assert!(b.bridge.budget_hit());
+        let q = tick(&mut b);
+        assert!(!b.is_faulted(), "{:?}", b.last_error());
+        assert_eq!(q.scores.len(), 1);
     }
 
     #[test]
