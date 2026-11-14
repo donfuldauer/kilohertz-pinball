@@ -369,24 +369,19 @@ fn mesh_primitives(
             }
             None
         };
-    // The decision for a corner of a flat fan, `span < PI - 1e-3` with
-    // `span = angle_at(ti, e) + s1 + s2` (f32 sums in walk order, so the
-    // rounding depends on the corner), is taken once per fan from the
-    // fan's total angle when that total is further from the threshold than
-    // any such f32 sum can be off (|error| <= γ(n) · total for n
-    // non-negative terms): then every corner's own sum agrees with it. Only
-    // a fan within that band falls back to walking from each corner, which
-    // keeps the result identical to walking from every corner (quadratic
-    // in the fan's size).
+    // A flat fan is convex at its vertex when its total angle is below
+    // `PI - 1e-3`. The total is summed once per fan in f64, so every corner
+    // of the fan gets the same decision and a fan costs linear time
+    // whatever its angle. (Summing per corner in f32 made the decision
+    // depend on the corner's summation order within a few ulp of the
+    // threshold, and walking from every corner was quadratic.)
     let threshold = f64::from(core::f32::consts::PI - 1.0e-3);
-    let unit = f64::from(f32::EPSILON) / 2.0;
     /// One connected flat fan around a vertex.
     struct Fan {
         /// Boundary directions at the two ends; None for a closed fan.
         ends: Option<[Vec3; 2]>,
-        /// Whether `span < PI - 1e-3` for every corner; None when the
-        /// corners must decide one by one.
-        convex: Option<bool>,
+        /// Whether the fan's total angle is below `PI - 1e-3`.
+        convex: bool,
     }
     let mut fans_found: Vec<Fan> = Vec::new();
     // Per corner: (fan index, whether the walk across the corner's edge to
@@ -430,21 +425,7 @@ fn mesh_primitives(
                             corner_fan[t][k].get_or_insert((fi, leads == toward_first));
                         }
                     }
-                    let n = (1 + to1.len() + to2.len()) as f64;
-                    let convex = (n * unit < 0.5 && total.is_finite())
-                        .then(|| {
-                            // γ(n) for the f32 sums, plus the f64 total's own
-                            // rounding.
-                            let margin = (n * unit / (1.0 - n * unit) + n * f64::EPSILON) * total;
-                            if total < threshold - margin {
-                                Some(true)
-                            } else if total > threshold + margin {
-                                Some(false)
-                            } else {
-                                None
-                            }
-                        })
-                        .flatten();
+                    let convex = total < threshold;
                     fans_found.push(Fan { ends, convex });
                     (fi, true)
                 }
@@ -453,20 +434,7 @@ fn mesh_primitives(
             let Some([e1, e2]) = found.ends else {
                 continue;
             };
-            let convex = match found.convex {
-                Some(convex) => convex,
-                None => {
-                    let none = &mut |_: usize, _: u32| {};
-                    let (Some((_, s1)), Some((_, s2))) =
-                        (walk(ti, v, w1, none), walk(ti, v, w2, none))
-                    else {
-                        continue;
-                    };
-                    let span = angle_at(ti, e) + s1 + s2;
-                    span < core::f32::consts::PI - 1.0e-3
-                }
-            };
-            if convex {
+            if found.convex {
                 active |= FEATURE_VERTEX[e];
                 fan[e] = if first { [e1, e2] } else { [e2, e1] };
                 restricted = true;
@@ -759,6 +727,38 @@ mod tests {
         world.sphere_contacts(Vec3::new(0.004, 0.001, 0.012), 0.0135, 0xff, &mut out);
         assert_eq!(out.len(), 1, "{out:?}");
         assert!((out[0].normal - Vec3::Z).length() < 1e-6, "{out:?}");
+    }
+
+    /// A large flat fan whose total angle sits at the convexity threshold
+    /// (`PI - 1e-3`, within the f32 rounding of a per-corner sum) is decided
+    /// once for the whole fan, in linear time.
+    #[test]
+    fn threshold_fan_builds_quickly() {
+        const N: usize = 5000;
+        let threshold = core::f32::consts::PI - 1.0e-3;
+        // N - 1 thin triangles over a quarter turn, measured the way the
+        // build measures them, then one wide triangle closing the fan at
+        // the threshold.
+        let at = |t: f32| Vec3::new(libm::cosf(t), libm::sinf(t), 0.0);
+        let mut vertices = vec![Vec3::ZERO];
+        let mut swept = 0.0f64;
+        for i in 0..N {
+            let p = at(core::f32::consts::FRAC_PI_2 * i as f32 / (N - 1) as f32);
+            if let Some(&q) = vertices.last().filter(|_| i > 0) {
+                let c = q.normalize().dot(p.normalize()).clamp(-1.0, 1.0);
+                swept += f64::from(libm::acosf(c));
+            }
+            vertices.push(p);
+        }
+        let last = (f64::from(threshold) - swept) as f32;
+        vertices.push(at(core::f32::consts::FRAC_PI_2 + last));
+        let indices: Vec<[u32; 3]> = (0..N as u32).map(|i| [0, i + 1, i + 2]).collect();
+        let start = std::time::Instant::now();
+        let mut builder = StaticWorldBuilder::new();
+        builder.add_collider(StaticShape::TriMesh { vertices, indices }, 0xff, true);
+        let _world = builder.build();
+        let elapsed = start.elapsed();
+        assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
     }
 
     /// A flat fan of 5000 triangles around one vertex (a half disc, so its
