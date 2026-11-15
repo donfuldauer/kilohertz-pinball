@@ -388,4 +388,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 6 | 5.4 | Fixer (adapter) | Sonnet 5.5 | 1 | done | spec_5_4_* bound to the real API | triage T1: adapter only, no assertion changed (f955627) |
 | 6 | 5.4 | Fixer | Opus 5.5 | 1 | done | spec_5_4 failures | second traced bounce at mirror-like hits; exact-match ReflectionQuality parsing; fixtures blessed (029fcf8) |
 | 6 | 5.4 | Verifier | Opus 5.5 | 1 | **fail** | visual check: aliasing in reflections | → fixer: atlas resolution 512, 4 rotated-grid rays per texel, full-rate clear coat (575238a) |
-| 6 | 5.4 | Verifier | Opus 5.5 | 2 | pass (575238a) | crisp/straightness tests with a negative control | re-verification pending after merging main (6.0) |
+| 6 | 5.4 | Verifier | Opus 5.5 | 2 | pass (575238a) | crisp/straightness tests with a negative control | superseded by attempt 3 after merging main |
+| 6 | 5.4 | Verifier | Opus 5.5 | 3 | local pass (44beee2); gate pending CI | fmt/clippy clean; pin_render 454/454; CI GPU selection 1297 pass (lavapipe exposes ray query, no skips); snapshots exact; merge integrity clean; hash 3f370ef860b8880c ×10 | |
