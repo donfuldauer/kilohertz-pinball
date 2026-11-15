@@ -42,8 +42,9 @@ pub enum RayJobKind {
         radius: f32,
     },
     /// A planar clear coat: texel direction `R` is traced from the plane
-    /// point where the eye ray reflects into `R` (exact for a plane),
-    /// computed at half resolution.
+    /// point where the eye ray reflects into `R` (exact for a plane), with
+    /// [`RayQueryConfig::clearcoat_block`](super::RayQueryConfig::clearcoat_block)²
+    /// texels per ray cell.
     Plane {
         /// A point on the plane.
         point: [f32; 3],
@@ -59,7 +60,10 @@ pub struct RayJob {
     pub layer: u32,
     /// What it traces.
     pub kind: RayJobKind,
-    /// Traced at half resolution (2×2 texel blocks share one ray).
+    /// The clear-coat layer: square blocks of
+    /// [`RayQueryConfig::clearcoat_block`](super::RayQueryConfig::clearcoat_block)
+    /// texels share one ray cell (2×2 when the block is 2; every texel at
+    /// the default block 1). Ball layers trace every texel.
     pub half_res: bool,
 }
 

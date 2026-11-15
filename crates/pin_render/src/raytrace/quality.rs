@@ -24,11 +24,14 @@ pub enum ReflectionQuality {
     #[default]
     #[serde(rename = "off")]
     Off,
-    /// Ray-traced reflections on ball surfaces only (full resolution).
+    /// Ray-traced reflections on ball surfaces only (every texel of a
+    /// [`RayQueryConfig::map_resolution`](super::RayQueryConfig::map_resolution)²
+    /// map traced).
     #[serde(rename = "balls")]
     BallsOnly,
-    /// Ball surfaces plus the clear coat of the playfield (half
-    /// resolution).
+    /// Ball surfaces plus the clear coat of the playfield (one ray cell per
+    /// [`RayQueryConfig::clearcoat_block`](super::RayQueryConfig::clearcoat_block)²
+    /// texels).
     #[serde(rename = "balls_and_clearcoat")]
     BallsAndClearCoat,
 }
