@@ -465,7 +465,9 @@ at = 160.0
     )
     .unwrap();
     let g = pin_tablegen::backbox::generate_backbox(&layout.backbox, &base).unwrap();
-    let dir = std::env::temp_dir().join(format!("pin_render_backbox_{}", std::process::id()));
+    static FIXTURE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = FIXTURE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("pin_render_backbox_{}_{seq}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("backbox.glb"), &g.scene_glb).unwrap();
     let vfs = pin_assets::Vfs::open(&dir).unwrap();

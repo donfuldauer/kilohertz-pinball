@@ -423,4 +423,113 @@ impl Outline {
         }
         inside
     }
+
+    /// The convex hull of the discs `(a, ra)` and `(b, rb)` (a tapered
+    /// capsule, e.g. a flipper bat) lies inside the outline: both end
+    /// centres inside (even-odd, as [`Outline::contains_disc`]) and no edge
+    /// closer to the axis than the linearly interpolated radius (strict
+    /// rejection, so a tangent edge is accepted).
+    pub fn contains_tapered_capsule(&self, a: [f32; 2], ra: f32, b: [f32; 2], rb: f32) -> bool {
+        self.tapered_capsule_breach(a, ra, b, rb).is_none()
+    }
+
+    /// Where the hull of [`Outline::contains_tapered_capsule`] leaves the
+    /// outline: `None` when it is inside, else an end centre outside the
+    /// polygon or the axis point of the deepest edge intrusion, mm.
+    ///
+    /// Exact up to rounding: the hull is the union of the discs centred at
+    /// `A(t) = a + t (b - a)` with radius `r(t) = (1 - t) ra + t rb`,
+    /// `t` in `0..=1`, and per edge `g(t) = dist(A(t), edge) - r(t)` is
+    /// convex in `t`. Its minimum is at `t = 0`, `t = 1`, or the minimum
+    /// of one of the pieces of the point-to-segment distance: the
+    /// stationary point of the distance to either edge end, the ends of the
+    /// range where `A(t)` projects inside the edge, or the axis crossing
+    /// the edge's line. `g` is evaluated at each of those candidates.
+    pub fn tapered_capsule_breach(
+        &self,
+        a: [f32; 2],
+        ra: f32,
+        b: [f32; 2],
+        rb: f32,
+    ) -> Option<[f32; 2]> {
+        if !self.contains_disc(a, 0.0) {
+            return Some(a);
+        }
+        if !self.contains_disc(b, 0.0) {
+            return Some(b);
+        }
+        let (pa, pb) = (d2(a), d2(b));
+        let (ra, rb) = (f64::from(ra), f64::from(rb));
+        let dv = [pb[0] - pa[0], pb[1] - pa[1]];
+        let len = libm::hypot(dv[0], dv[1]);
+        let at = |t: f64| [pa[0] + t * dv[0], pa[1] + t * dv[1]];
+        let radius = |t: f64| (1.0 - t) * ra + t * rb;
+        let mut worst: Option<(f64, f64)> = None;
+        for i in 0..self.len() {
+            let (p, q) = self.edge(i);
+            let (p, q) = (d2(p), d2(q));
+            let mut cand = [f64::NAN; 7];
+            cand[0] = 0.0;
+            cand[1] = 1.0;
+            if len > 0.0 {
+                let u = [dv[0] / len, dv[1] / len];
+                // Radius change per mm along the axis; |k| >= 1 means one
+                // end disc contains the other (no interior stationary point).
+                let k = (rb - ra) / len;
+                if k.abs() < 1.0 {
+                    for (slot, e) in [(2, p), (3, q)] {
+                        let w0 = [pa[0] - e[0], pa[1] - e[1]];
+                        let s0 = w0[0] * u[0] + w0[1] * u[1];
+                        let h = (w0[0] * u[1] - w0[1] * u[0]).abs();
+                        // d/ds (sqrt(s² + h²) - k s) = 0.
+                        let s = k * h / libm::sqrt(1.0 - k * k);
+                        cand[slot] = (s - s0) / len;
+                    }
+                }
+                let ee = [q[0] - p[0], q[1] - p[1]];
+                let l2 = ee[0] * ee[0] + ee[1] * ee[1];
+                if l2 > 0.0 {
+                    // Projection parameter of A(t) on the edge: c0 + t c1.
+                    let c0 = ((pa[0] - p[0]) * ee[0] + (pa[1] - p[1]) * ee[1]) / l2;
+                    let c1 = (dv[0] * ee[0] + dv[1] * ee[1]) / l2;
+                    if c1 != 0.0 {
+                        cand[4] = -c0 / c1;
+                        cand[5] = (1.0 - c0) / c1;
+                    }
+                    // Signed distance to the edge's line: o0 + t o1.
+                    let o0 = ee[0] * (pa[1] - p[1]) - ee[1] * (pa[0] - p[0]);
+                    let o1 = ee[0] * dv[1] - ee[1] * dv[0];
+                    if o1 != 0.0 {
+                        cand[6] = -o0 / o1;
+                    }
+                }
+            }
+            for t in cand {
+                if !t.is_finite() {
+                    continue;
+                }
+                let t = t.clamp(0.0, 1.0);
+                let g = dist_to_segment(at(t), p, q) - radius(t);
+                if g < 0.0 && worst.is_none_or(|(wg, _)| g < wg) {
+                    worst = Some((g, t));
+                }
+            }
+        }
+        worst.map(|(_, t)| {
+            let x = at(t);
+            [x[0] as f32, x[1] as f32]
+        })
+    }
+}
+
+/// Distance from `x` to the closed segment `p q`, mm.
+fn dist_to_segment(x: [f64; 2], p: [f64; 2], q: [f64; 2]) -> f64 {
+    let (ex, ey) = (q[0] - p[0], q[1] - p[1]);
+    let l2 = ex * ex + ey * ey;
+    let t = if l2 > 0.0 {
+        (((x[0] - p[0]) * ex + (x[1] - p[1]) * ey) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    libm::hypot(x[0] - (p[0] + t * ex), x[1] - (p[1] + t * ey))
 }

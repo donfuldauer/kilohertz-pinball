@@ -428,12 +428,13 @@ proptest! {
                 prop_assert!(m.iter().flatten().all(|v| v.is_finite() && v.abs() <= 2.0));
             }
         }
+        let pre_final: Vec<f32> = (0..4).map(|i| rig.reel_angle(i)).collect();
         rig.advance(1.0e3);
         for i in 0..4u32 {
             let s = scores[i as usize % scores.len()];
             prop_assert_eq!(digit_at(rig.reel_angle(i as usize)), score_digit(s, i));
             let total = travelled[i as usize]
-                + shortest_delta_deg(rig.reel_angle(i as usize), rig.reel_angle(i as usize)).abs();
+                + shortest_delta_deg(pre_final[i as usize], rig.reel_angle(i as usize)).abs();
             let shortest = shortest_delta_deg(before[i as usize], reel_angle_deg(score_digit(s, i))).abs();
             prop_assert!(total <= shortest + 1e-2, "{} > {}", total, shortest);
         }
