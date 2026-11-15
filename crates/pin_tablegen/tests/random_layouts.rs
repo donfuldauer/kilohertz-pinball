@@ -169,6 +169,7 @@ fn layout() -> impl Strategy<Value = LayoutManifest> {
                     width: W,
                     length: L,
                     wall_height: 28.0,
+                    glass_height: None,
                 },
                 walls,
                 posts,
