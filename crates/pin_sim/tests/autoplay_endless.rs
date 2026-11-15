@@ -384,13 +384,15 @@ fn greybox_game(
 /// investigator's Gate A1 standard soak on the 452eedf grey-box (which
 /// passed Gate A1 with these games ending at `max_ticks` and no finding):
 /// game 6 (steel ball VUK <-> deck loop), game 98 (powerball bumper_1 <->
-/// orbit guide ping-pong) and game 44 (powerball wedged against the
-/// refiring left sling). With the new detectors each one is named: the two
-/// loops as EndlessBall at the 300 s default age limit (before the cap), the
-/// sling pocket as StuckBall through the displacement test.
+/// orbit guide ping-pong) and game 334 (powerball wedged against the
+/// refiring left sling; the case moved from game 44 when the receding-captive
+/// fix (6cdb26d) changed simulation output). With the new detectors each one
+/// is named: the two loops as EndlessBall at the 300 s default age limit
+/// (before the cap), the sling pocket as StuckBall through the displacement
+/// test.
 #[test]
 fn the_pre_fix_greybox_traps_are_caught_and_named() {
-    let runs = [(6u32, 320_000u64), (98, 330_000), (44, 120_000)];
+    let runs = [(6u32, 320_000u64), (98, 330_000), (334, 120_000)];
     let handles: Vec<_> = runs
         .iter()
         .map(|&(g, cap)| {
@@ -447,12 +449,12 @@ fn the_pre_fix_greybox_traps_are_caught_and_named() {
                 assert!(e[0].detail.contains("longer than the 300000 ms limit"));
                 assert_eq!(e[0].subject, "bumper_1_ring");
             }
-            44 => {
+            334 => {
                 let s: Vec<_> = findings
                     .iter()
                     .filter(|f| f.kind == FindingKind::StuckBall)
                     .collect();
-                assert_eq!(s.len(), 1, "game 44: {findings:?}");
+                assert_eq!(s.len(), 1, "game 334: {findings:?}");
                 assert!(
                     s[0].detail.contains("within one ball diameter"),
                     "{}",
@@ -461,7 +463,7 @@ fn the_pre_fix_greybox_traps_are_caught_and_named() {
                 // Named at the pocket between sling_left and the left
                 // inlane wall (`walls[3]`), where the investigator found it
                 // at (110, 243) mm.
-                assert_eq!(s[0].subject, "walls[3] @ (108, 244, 14) mm");
+                assert_eq!(s[0].subject, "walls[3] @ (112, 243, 14) mm");
                 assert_eq!(summary.end, GameEnd::Stuck);
             }
             _ => unreachable!(),
