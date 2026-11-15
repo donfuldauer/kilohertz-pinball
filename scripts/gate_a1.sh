@@ -113,8 +113,35 @@ done
 
 # 3. Soak
 echo "== cargo build --release -p pin_sim --bin pin_sim"
-if cargo build --release -p pin_sim --bin pin_sim >"$LOGS/build_release.log" 2>&1; then
-  PIN_SIM="${CARGO_TARGET_DIR:-target}/release/pin_sim"
+PIN_SIM=""
+# Ask cargo where the binary is: CARGO_TARGET_DIR alone is wrong when the
+# config sets build.target or build.target-dir.
+if cargo build --release -p pin_sim --bin pin_sim --message-format=json-render-diagnostics \
+  >"$LOGS/build_release.json" 2>"$LOGS/build_release.log"; then
+  if command -v jq >/dev/null 2>&1; then
+    PIN_SIM="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "pin_sim"
+      and (.target.kind | index("bin")) and .executable != null) | .executable' \
+      "$LOGS/build_release.json" | tail -n 1)"
+  elif command -v python3 >/dev/null 2>&1; then
+    PIN_SIM="$(python3 -I -c '
+import json, sys
+exe = ""
+for line in open(sys.argv[1]):
+    try:
+        m = json.loads(line)
+    except ValueError:
+        continue
+    if (m.get("reason") == "compiler-artifact" and m["target"]["name"] == "pin_sim"
+            and "bin" in m["target"]["kind"] and m.get("executable")):
+        exe = m["executable"]
+print(exe)' "$LOGS/build_release.json")"
+  else
+    PIN_SIM="$(grep '"reason":"compiler-artifact"' "$LOGS/build_release.json" \
+      | grep '"name":"pin_sim"' | grep '"kind":\["bin"\]' \
+      | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -n 1)"
+  fi
+fi
+if [ -n "$PIN_SIM" ] && [ -x "$PIN_SIM" ]; then
   for skill in novice standard expert; do
     echo "== soak $skill: $GAMES games, seed $SEED"
     log="$LOGS/soak_${skill}.log"
@@ -140,7 +167,7 @@ if cargo build --release -p pin_sim --bin pin_sim >"$LOGS/build_release.log" 2>&
   done
 else
   tail -n 25 "$LOGS/build_release.log" || true
-  record "3 release build of pin_sim" "FAIL (see $LOGS/build_release.log)"
+  record "3 release build of pin_sim" "FAIL (no pin_sim binary; see $LOGS/build_release.log)"
 fi
 
 echo
