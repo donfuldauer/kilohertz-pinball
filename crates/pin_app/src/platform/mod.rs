@@ -9,17 +9,35 @@
 //! with SDL's nanosecond timestamp; window events go into the window ring
 //! (→ render thread).
 //!
+//! Cabinet input goes through an [`InputRouter`] when one is set on the
+//! forwarder (device profiles + [`HeldInputs`], issue #9b). Windows that
+//! render threads may outlive are owned by the platform's [`WindowKeeper`]
+//! and destroyed on the main thread by `pump` once no [`WindowGuard`]
+//! holds them (issue #9a).
+//!
 //! Headless use (tests, CI, `--headless-ticks`): [`PlatformConfig::headless`]
 //! selects SDL's dummy video and audio drivers, which still provide a display,
 //! windows, virtual joysticks and the event queue.
 
 mod display;
 mod events;
+mod held_inputs;
+mod input_router;
 pub mod keymap;
 pub mod rumble;
+mod window_keeper;
 
 pub use display::{DisplayTopologyManager, PlatformWindow, window_title};
 pub use events::{EventForwarder, ForwardStats, Translated, translate};
+pub use held_inputs::{
+    HeldInputs, MAX_HELD_SOURCES, RAW_AXIS, RAW_BITS, RAW_BUTTON, RAW_KEY, source_device, source_id,
+};
+pub use input_router::{
+    DIGITAL_NUDGE_MS, DIGITAL_NUDGE_STRENGTH, InputRouter, KEYBOARD_DEVICE, MAX_ROUTED_GAMEPADS,
+    RouterStats, gamepad_axis, gamepad_button, raw_code,
+};
+pub use pin_render::gpu::WindowGuard;
+pub use window_keeper::{DeferredDestroy, WindowKeeper};
 
 use core::fmt;
 use core::time::Duration;
@@ -105,13 +123,16 @@ pub struct PumpOutcome {
     pub quit: bool,
     /// Displays changed; re-query with [`DisplayTopologyManager::refresh`].
     pub displays_changed: bool,
+    /// Kept windows destroyed because their last guard was dropped.
+    pub windows_destroyed: u32,
 }
 
 /// SDL with the video, audio, gamepad (and joystick) and sensor subsystems
 /// initialised, plus the event pump. Lives on the main thread.
 pub struct Platform {
-    // Field order is drop order: gamepads and the pump go before subsystems,
-    // the `Sdl` context last.
+    // Field order is drop order: kept windows, gamepads and the pump go
+    // before subsystems, the `Sdl` context last.
+    windows: WindowKeeper<PlatformWindow>,
     gamepads: Vec<Gamepad>,
     event_pump: EventPump,
     events: EventSubsystem,
@@ -137,6 +158,7 @@ impl Platform {
         let events = sdl.event().map_err(PlatformError::sdl)?;
         let event_pump = sdl.event_pump().map_err(PlatformError::sdl)?;
         let mut platform = Self {
+            windows: WindowKeeper::new(),
             gamepads: Vec::new(),
             event_pump,
             events,
@@ -187,9 +209,34 @@ impl Platform {
         &self.events
     }
 
+    /// The windows kept for render threads (issue #9a). Adopt a window with
+    /// [`WindowKeeper::adopt`] and pass guard clones as surface
+    /// `keep_alive`; [`pump`](Self::pump) destroys released windows.
+    pub fn windows(&self) -> &WindowKeeper<PlatformWindow> {
+        &self.windows
+    }
+
+    /// Mutable access to the kept windows.
+    pub fn windows_mut(&mut self) -> &mut WindowKeeper<PlatformWindow> {
+        &mut self.windows
+    }
+
     /// Joystick ids of the open gamepads.
     pub fn open_gamepads(&self) -> Vec<JoystickId> {
         self.gamepads.iter().filter_map(|g| g.id().ok()).collect()
+    }
+
+    /// The SDL GUID of joystick `id` (vendor/product ids for profile
+    /// detection), `None` when SDL reports none.
+    pub fn gamepad_guid(&self, id: JoystickId) -> Option<pin_input::SdlGuid> {
+        // SAFETY: SDL is initialised (self owns the context); the call only
+        // reads SDL's device list and has no other preconditions.
+        let guid = unsafe {
+            sdl3::sys::joystick::SDL_GetJoystickGUIDForID(sdl3::sys::joystick::SDL_JoystickID(
+                id.raw(),
+            ))
+        };
+        (guid.data != [0; 16]).then_some(pin_input::SdlGuid(guid.data))
     }
 
     fn open_gamepad(&mut self, id: JoystickId) {
@@ -204,14 +251,19 @@ impl Platform {
         match forwarder.forward(event) {
             Translated::Quit => out.quit = true,
             Translated::DisplaysChanged => out.displays_changed = true,
-            Translated::GamepadAdded(id) => self.open_gamepad(id),
+            Translated::GamepadAdded(id) => {
+                self.open_gamepad(id);
+                forwarder.gamepad_added(id.raw(), self.gamepad_guid(id));
+            }
             Translated::GamepadRemoved(id) => self.gamepads.retain(|g| g.id().ok() != Some(id)),
             Translated::Input(_) | Translated::Window { .. } | Translated::Ignored => {}
         }
     }
 
     /// One main-thread iteration: waits up to `timeout` for an event, then
-    /// drains the queue completely, forwarding every event.
+    /// drains the queue completely, forwarding every event; then lets the
+    /// forwarder's router end timed input (digital nudge) and destroys kept
+    /// windows whose guards were all dropped.
     ///
     /// A zero timeout only drains (used by tests, which never sleep).
     pub fn pump(&mut self, forwarder: &mut EventForwarder, timeout: Duration) -> PumpOutcome {
@@ -229,6 +281,9 @@ impl Platform {
                 self.handle(forwarder, &ev, &mut out);
             }
         }
+        // SAFETY: SDL_GetTicksNS has no preconditions and is thread-safe.
+        forwarder.poll(unsafe { sdl3::sys::timer::SDL_GetTicksNS() });
+        out.windows_destroyed = self.windows.drain() as u32;
         out
     }
 }

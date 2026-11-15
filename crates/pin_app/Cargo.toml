@@ -19,11 +19,21 @@ pin_assets = { path = "../pin_assets" }
 serde.workspace = true
 toml.workspace = true
 image.workspace = true
+# Wave 6 additions (6.0): the real simulation, the 2.8 clearance validator in
+# the load path, and the audio thread's SSF / telemetry consumers (no SDL
+# output stream: the audio sink is a null sink until the output is wired).
+# pin_audio moved here from [dev-dependencies] (3.5 DOF fixtures still use it).
+pin_sim = { path = "../pin_sim" }
+pin_tablegen = { path = "../pin_tablegen" }
+pin_audio = { path = "../pin_audio", default-features = false }
 
 [dev-dependencies]
 proptest.workspace = true
-# 3.5: DOF bridge telemetry fixtures are produced with pin_audio::telemetry (tests only).
-pin_audio = { path = "../pin_audio", default-features = false }
+# Wave 6 additions (6.0): greybox tests read the rules script's command queue
+# directly (display scenes are not exposed by pin_sim), and build the
+# greybox bundle with the 4.6 placeholder kit.
+pin_script = { path = "../pin_script" }
+pin_assetgen = { path = "../pin_assetgen" }
 
 # SDL must run on the main thread (Cocoa on macOS) and may only be initialised
 # once per process, so SDL tests are plain `main` binaries instead of libtest.

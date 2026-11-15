@@ -21,6 +21,8 @@ pub use surfaces::{
     SurfaceOptions, SurfaceSet, SurfaceSource, SurfaceStatus, create_surface, paced_by,
     role_clear_color,
 };
+// 6.0 (issue #9a): window lifetime guard for surfaces and presenter threads.
+pub use surfaces::{PRESENTER_JOIN_TIMEOUT, WindowGuard, spawn_guarded};
 
 /// The wgpu crate as used by `pin_render` (so dependants need no own pin).
 pub use wgpu;
