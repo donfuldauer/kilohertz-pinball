@@ -19,7 +19,11 @@ use soak_support::*;
 use support::*;
 
 fn one_game(bundle: &std::path::Path, max_ticks: u64) -> pin_sim::autoplay::SoakReport {
-    soak(bundle, cfg(1, 3, SkillLevel::Standard, 1, max_ticks))
+    let mut c = cfg(1, 3, SkillLevel::Standard, 1, max_ticks);
+    // The bot's nudges would reset the stuck clock; this test is about the
+    // detector's 10 s threshold alone.
+    c.bot.nudge.enabled = false;
+    soak(bundle, c)
 }
 
 #[test]
