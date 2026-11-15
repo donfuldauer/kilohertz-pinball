@@ -408,3 +408,197 @@ proptest! {
         }
     }
 }
+
+mod outline_geometry {
+    //! The planar helpers behind the optional `outline` (5.5-FIX1b).
+
+    use super::super::outline::{Outline, check_outline, segments_touch};
+    use proptest::prelude::*;
+
+    fn rect() -> Outline {
+        check_outline(&[[-200.0, 0.0], [200.0, 0.0], [200.0, 300.0], [-200.0, 300.0]]).unwrap()
+    }
+
+    #[test]
+    fn winding_and_bounds() {
+        let o = rect();
+        assert!(o.ccw);
+        assert_eq!((o.lo, o.hi), ([-200.0, 0.0], [200.0, 300.0]));
+        let cw =
+            check_outline(&[[-200.0, 0.0], [-200.0, 300.0], [200.0, 300.0], [200.0, 0.0]]).unwrap();
+        assert!(!cw.ccw);
+        assert!(o.check_fits(400.0, 300.0).is_ok());
+        assert!(o.check_fits(400.005, 299.995).is_ok());
+        assert_eq!(
+            o.check_fits(f32::NAN, 300.0).unwrap_err().element,
+            "backbox"
+        );
+    }
+
+    #[test]
+    fn holes_cut_only_downward_edges() {
+        let o = rect();
+        let holes = [(-140.0, -100.0), (130.0, 170.0)];
+        // Bottom edge: three pieces, in order, end points exact.
+        let p = o.edge_pieces(0, &holes);
+        assert_eq!(
+            p,
+            vec![
+                ([-200.0, 0.0], [-140.0, 0.0]),
+                ([-100.0, 0.0], [130.0, 0.0]),
+                ([170.0, 0.0], [200.0, 0.0]),
+            ]
+        );
+        // The top edge faces up: whole.
+        assert_eq!(
+            o.edge_pieces(2, &holes),
+            vec![([200.0, 300.0], [-200.0, 300.0])]
+        );
+        // A hole covering the whole edge leaves nothing; one off the edge
+        // leaves it whole; one over the edge's end trims one side.
+        assert!(o.edge_pieces(0, &[(-300.0, 300.0)]).is_empty());
+        assert_eq!(o.edge_pieces(0, &[(250.0, 260.0)]).len(), 1);
+        assert_eq!(
+            o.edge_pieces(0, &[(150.0, 260.0)]),
+            vec![([-200.0, 0.0], [150.0, 0.0])]
+        );
+    }
+
+    #[test]
+    fn floors_follow_the_bottom() {
+        // A V-shaped bottom: lowest at u = 0.
+        let o = check_outline(&[
+            [-200.0, 100.0],
+            [0.0, 0.0],
+            [200.0, 100.0],
+            [200.0, 300.0],
+            [-200.0, 300.0],
+        ])
+        .unwrap();
+        assert!(o.floor_at(0.0).abs() < 1e-6);
+        assert!((o.floor_at(100.0) - 50.0).abs() < 1e-4);
+        assert!((o.lowest_floor((50.0, 150.0)) - 25.0).abs() < 1e-4);
+        assert!(o.lowest_floor((-20.0, 20.0)).abs() < 1e-6);
+        // Off the outline: the bounding-box bottom.
+        assert_eq!(o.floor_at(500.0), 0.0);
+        assert_eq!(o.lowest_floor((300.0, 400.0)), 0.0);
+    }
+
+    #[test]
+    fn discs_inside_the_outline() {
+        let o = rect();
+        assert!(o.contains_disc([0.0, 150.0], 100.0));
+        assert!(!o.contains_disc([0.0, 150.0], 160.0));
+        assert!(!o.contains_disc([195.0, 150.0], 10.0));
+        assert!(!o.contains_disc([300.0, 150.0], 1.0));
+    }
+
+    #[test]
+    fn touching_cases() {
+        let p = |x: f64, y: f64| [x, y];
+        // Proper crossing, T touch, end-to-end touch, collinear overlap.
+        assert!(segments_touch(
+            p(0.0, 0.0),
+            p(2.0, 2.0),
+            p(0.0, 2.0),
+            p(2.0, 0.0)
+        ));
+        assert!(segments_touch(
+            p(0.0, 0.0),
+            p(2.0, 0.0),
+            p(1.0, 0.0),
+            p(1.0, 5.0)
+        ));
+        assert!(segments_touch(
+            p(0.0, 0.0),
+            p(2.0, 0.0),
+            p(2.0, 0.0),
+            p(3.0, 1.0)
+        ));
+        assert!(segments_touch(
+            p(0.0, 0.0),
+            p(2.0, 0.0),
+            p(1.0, 0.0),
+            p(3.0, 0.0)
+        ));
+        // Collinear disjoint, parallel, far apart, straddling one line only.
+        assert!(!segments_touch(
+            p(0.0, 0.0),
+            p(1.0, 0.0),
+            p(1.5, 0.0),
+            p(3.0, 0.0)
+        ));
+        assert!(!segments_touch(
+            p(0.0, 0.0),
+            p(2.0, 0.0),
+            p(0.0, 1.0),
+            p(2.0, 1.0)
+        ));
+        assert!(!segments_touch(
+            p(0.0, 0.0),
+            p(1.0, 1.0),
+            p(5.0, 5.0),
+            p(6.0, 7.0)
+        ));
+        assert!(!segments_touch(
+            p(0.0, 0.0),
+            p(2.0, 2.0),
+            p(1.0, 0.0),
+            p(3.0, 1.0)
+        ));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
+
+        /// The touch test is symmetric in the two segments and in each
+        /// segment's direction.
+        #[test]
+        fn touch_is_symmetric(v in proptest::array::uniform8(-20i32..20)) {
+            let q = |i: usize| [f64::from(v[i]), f64::from(v[i + 1])];
+            let (a, b, c, d) = (q(0), q(2), q(4), q(6));
+            let t = segments_touch(a, b, c, d);
+            prop_assert_eq!(t, segments_touch(c, d, a, b));
+            prop_assert_eq!(t, segments_touch(b, a, c, d));
+            prop_assert_eq!(t, segments_touch(a, b, d, c));
+        }
+
+        /// Cutting holes out of an edge keeps exactly the edge length outside
+        /// the holes, in order, inside the edge.
+        #[test]
+        fn cut_pieces_conserve_length(
+            x0 in -300.0f32..-50.0,
+            x1 in 50.0f32..300.0,
+            h0 in -320.0f32..320.0,
+            hw0 in 1.0f32..100.0,
+            h1 in -320.0f32..320.0,
+            hw1 in 1.0f32..100.0,
+        ) {
+            let o = check_outline(&[[x0, 0.0], [x1, 0.0], [x1, 200.0], [x0, 200.0]]).unwrap();
+            let holes = [(h0, h0 + hw0), (h1, h1 + hw1)];
+            let pieces = o.edge_pieces(0, &holes);
+            let mut covered = 0.0f64;
+            let mut last = x0;
+            for (a, b) in &pieces {
+                prop_assert!(a[0] >= last && b[0] > a[0] && b[0] <= x1);
+                prop_assert!(a[1] == 0.0 && b[1] == 0.0);
+                for (ha, hb) in holes {
+                    prop_assert!(b[0] <= ha + 1e-3 || a[0] >= hb - 1e-3);
+                }
+                covered += f64::from(b[0] - a[0]);
+                last = b[0];
+            }
+            // Length outside the holes, sampled.
+            let n = 4000;
+            let step = f64::from(x1 - x0) / f64::from(n);
+            let outside = (0..n)
+                .filter(|k| {
+                    let u = f64::from(x0) + (f64::from(*k) + 0.5) * step;
+                    !holes.iter().any(|(a, b)| u > f64::from(*a) && u < f64::from(*b))
+                })
+                .count() as f64
+                * step;
+            prop_assert!((covered - outside).abs() < 2.0 * step + 1e-3, "{} vs {}", covered, outside);
+        }
+    }
+}
