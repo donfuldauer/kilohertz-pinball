@@ -493,6 +493,115 @@ mod outline_geometry {
         assert!(!o.contains_disc([300.0, 150.0], 1.0));
     }
 
+    /// The concave outline of CodeRabbit finding D: a notch u -40..-20,
+    /// v 80..300 cut down from the top.
+    fn notch() -> Outline {
+        check_outline(&[
+            [-200.0, 0.0],
+            [200.0, 0.0],
+            [200.0, 300.0],
+            [-20.0, 300.0],
+            [-20.0, 80.0],
+            [-40.0, 80.0],
+            [-40.0, 300.0],
+            [-200.0, 300.0],
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn tapered_capsule_inside_and_crossing_an_edge() {
+        let o = rect();
+        assert!(o.contains_tapered_capsule([0.0, 150.0], 20.0, [100.0, 150.0], 10.0));
+        assert_eq!(
+            o.tapered_capsule_breach([0.0, 150.0], 20.0, [100.0, 150.0], 10.0),
+            None
+        );
+        // The tip disc crosses the right edge (u = 200).
+        assert!(!o.contains_tapered_capsule([0.0, 150.0], 20.0, [195.0, 150.0], 10.0));
+        // An end centre outside: that centre is the breach.
+        assert_eq!(
+            o.tapered_capsule_breach([150.0, 150.0], 5.0, [250.0, 150.0], 5.0),
+            Some([250.0, 150.0])
+        );
+        assert_eq!(
+            o.tapered_capsule_breach([-250.0, 150.0], 5.0, [0.0, 150.0], 5.0),
+            Some([-250.0, 150.0])
+        );
+        // The axis crosses an edge and comes back (a concave outline):
+        // both centres inside.
+        let n = notch();
+        assert!(n.contains_disc([-70.0, 100.0], 14.5));
+        assert!(n.contains_disc([30.0, 100.0], 8.5));
+        let q = n
+            .tapered_capsule_breach([-70.0, 100.0], 14.5, [30.0, 100.0], 8.5)
+            .expect("the shaft crosses the notch");
+        assert!((-45.0..=-15.0).contains(&q[0]) && q[1] == 100.0, "{q:?}");
+        assert!(!n.contains_tapered_capsule([-70.0, 100.0], 14.5, [30.0, 100.0], 8.5));
+    }
+
+    #[test]
+    fn tapered_capsule_touching_is_inside() {
+        let o = rect();
+        // 10 mm from the bottom edge (v = 0) with radius 10: tangent.
+        assert!(o.contains_tapered_capsule([-100.0, 10.0], 10.0, [100.0, 10.0], 10.0));
+        assert!(!o.contains_tapered_capsule([-100.0, 10.0], 10.01, [100.0, 10.0], 10.0));
+        assert!(!o.contains_tapered_capsule([-100.0, 10.0], 10.0, [100.0, 10.0], 10.01));
+        // Tangent to the notch bottom (v = 80) from below.
+        let n = notch();
+        assert!(n.contains_tapered_capsule([-100.0, 70.0], 10.0, [100.0, 70.0], 10.0));
+    }
+
+    #[test]
+    fn tapered_capsule_hull_crossing_a_notch() {
+        // The axis (v = 70) stays 10 mm below the notch; the hull reaches
+        // it when the radius there exceeds 10 mm. Both end discs are well
+        // inside.
+        let n = notch();
+        for (a, b) in [([-70.0, 70.0], [30.0, 70.0]), ([30.0, 70.0], [-70.0, 70.0])] {
+            assert!(n.contains_disc(a, 12.0) && n.contains_disc(b, 12.0));
+            assert!(!n.contains_tapered_capsule(a, 12.0, b, 12.0));
+            assert!(n.contains_tapered_capsule(a, 9.0, b, 9.0));
+            let q = n.tapered_capsule_breach(a, 12.0, b, 12.0).unwrap();
+            assert!((-40.0..=-20.0).contains(&q[0]) && q[1] == 70.0, "{q:?}");
+        }
+    }
+
+    #[test]
+    fn tapered_capsule_zero_length_axis_is_the_larger_disc() {
+        let o = rect();
+        for (ra, rb) in [(10.0, 140.0), (140.0, 10.0)] {
+            assert!(o.contains_tapered_capsule([0.0, 150.0], ra, [0.0, 150.0], rb));
+        }
+        for (ra, rb) in [(10.0, 160.0), (160.0, 10.0)] {
+            assert!(!o.contains_tapered_capsule([0.0, 150.0], ra, [0.0, 150.0], rb));
+            assert_eq!(
+                o.contains_tapered_capsule([0.0, 150.0], ra, [0.0, 150.0], rb),
+                o.contains_disc([0.0, 150.0], 160.0)
+            );
+        }
+        // Zero radius, zero length: the point test.
+        assert!(o.contains_tapered_capsule([0.0, 0.5], 0.0, [0.0, 0.5], 0.0));
+        assert!(!o.contains_tapered_capsule([0.0, -0.5], 0.0, [0.0, -0.5], 0.0));
+    }
+
+    #[test]
+    fn tapered_capsule_radii_differ() {
+        let n = notch();
+        // Thin near the notch (u -40..-20 at t ≈ 0.33..0.4): the radius
+        // there is below the 10 mm gap.
+        assert!(n.contains_tapered_capsule([-140.0, 70.0], 2.0, [160.0, 70.0], 20.0));
+        // Thick near the notch: 12.8 mm at u = -20.
+        assert!(!n.contains_tapered_capsule([-140.0, 70.0], 20.0, [160.0, 70.0], 2.0));
+        // One end disc contains the other (|rb - ra| >= length).
+        let o = rect();
+        assert!(o.contains_tapered_capsule([0.0, 150.0], 100.0, [10.0, 150.0], 5.0));
+        assert!(!o.contains_tapered_capsule([0.0, 150.0], 155.0, [10.0, 150.0], 5.0));
+        // Left edge 50 mm away from the thick end.
+        assert!(o.contains_tapered_capsule([-150.0, 150.0], 40.0, [150.0, 150.0], 5.0));
+        assert!(!o.contains_tapered_capsule([-150.0, 150.0], 55.0, [150.0, 150.0], 5.0));
+    }
+
     #[test]
     fn touching_cases() {
         let p = |x: f64, y: f64| [x, y];
@@ -548,6 +657,51 @@ mod outline_geometry {
         ));
     }
 
+    /// Oracle for the tapered capsule: the smallest `dist(disc centre,
+    /// edge) - radius` over discs along the axis (2001 samples per edge,
+    /// then a ternary search around the best sample: the clearance is
+    /// convex along the axis), mm.
+    fn oracle_clearance(o: &Outline, a: [f32; 2], ra: f32, b: [f32; 2], rb: f32) -> f64 {
+        let f = |p: [f32; 2]| [f64::from(p[0]), f64::from(p[1])];
+        let (a, b, ra, rb) = (f(a), f(b), f64::from(ra), f64::from(rb));
+        let mut best = f64::INFINITY;
+        for i in 0..o.len() {
+            let (p, q) = o.edge(i);
+            let (p, q) = (f(p), f(q));
+            let g = |t: f64| {
+                let x = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+                let (ex, ey) = (q[0] - p[0], q[1] - p[1]);
+                let s = (((x[0] - p[0]) * ex + (x[1] - p[1]) * ey) / (ex * ex + ey * ey))
+                    .clamp(0.0, 1.0);
+                let d = ((x[0] - p[0] - s * ex).powi(2) + (x[1] - p[1] - s * ey).powi(2)).sqrt();
+                d - ((1.0 - t) * ra + t * rb)
+            };
+            let n: u32 = 2000;
+            let k = (0..=n)
+                .min_by(|&i, &j| {
+                    g(f64::from(i) / f64::from(n)).total_cmp(&g(f64::from(j) / f64::from(n)))
+                })
+                .unwrap();
+            let (mut lo, mut hi) = (
+                f64::from(k.saturating_sub(1)) / f64::from(n),
+                f64::from((k + 1).min(n)) / f64::from(n),
+            );
+            for _ in 0..100 {
+                let m1 = lo + (hi - lo) / 3.0;
+                let m2 = hi - (hi - lo) / 3.0;
+                if g(m1) < g(m2) {
+                    hi = m2;
+                } else {
+                    lo = m1;
+                }
+            }
+            best = best
+                .min(g(0.5 * (lo + hi)))
+                .min(g(f64::from(k) / f64::from(n)));
+        }
+        best
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
 
@@ -561,6 +715,62 @@ mod outline_geometry {
             prop_assert_eq!(t, segments_touch(c, d, a, b));
             prop_assert_eq!(t, segments_touch(b, a, c, d));
             prop_assert_eq!(t, segments_touch(a, b, d, c));
+        }
+
+        /// `contains_tapered_capsule` agrees with an independent oracle (the
+        /// minimum over every edge of the distance from the swept discs
+        /// to the edge minus their radius, by dense sampling of the axis
+        /// refined by a ternary search on the convex clearance) whenever
+        /// the oracle is more than 1e-3 mm from the boundary, and never
+        /// panics on any outline `check_outline` accepts.
+        #[test]
+        fn tapered_capsule_matches_the_disc_oracle(
+            pts in proptest::collection::vec((-200.0f32..200.0, -200.0f32..200.0), 3..9),
+            a in (-220.0f32..220.0, -220.0f32..220.0),
+            b in (-220.0f32..220.0, -220.0f32..220.0),
+            ra in 0.0f32..40.0,
+            rb in 0.0f32..40.0,
+        ) {
+            let pts: Vec<[f32; 2]> = pts.iter().map(|&(x, y)| [x, y]).collect();
+            let Ok(o) = check_outline(&pts) else { return Ok(()); };
+            let (a, b) = ([a.0, a.1], [b.0, b.1]);
+            let got = o.contains_tapered_capsule(a, ra, b, rb);
+            prop_assert_eq!(got, o.tapered_capsule_breach(a, ra, b, rb).is_none());
+            let centres_in = o.contains_disc(a, 0.0) && o.contains_disc(b, 0.0);
+            if !centres_in {
+                prop_assert!(!got);
+                return Ok(());
+            }
+            let m = oracle_clearance(&o, a, ra, b, rb);
+            if m > 1e-3 {
+                prop_assert!(got, "clearance {} but rejected", m);
+            } else if m < -1e-3 {
+                prop_assert!(!got, "clearance {} but accepted", m);
+            }
+        }
+
+        /// The same agreement on the fixed concave notch outline, with the
+        /// capsule mostly inside it (both outcomes common).
+        #[test]
+        fn tapered_capsule_matches_the_oracle_in_a_notch(
+            a in (-200.0f32..200.0, 0.0f32..300.0),
+            b in (-200.0f32..200.0, 0.0f32..300.0),
+            ra in 0.0f32..30.0,
+            rb in 0.0f32..30.0,
+        ) {
+            let o = notch();
+            let (a, b) = ([a.0, a.1], [b.0, b.1]);
+            let got = o.contains_tapered_capsule(a, ra, b, rb);
+            if !(o.contains_disc(a, 0.0) && o.contains_disc(b, 0.0)) {
+                prop_assert!(!got);
+                return Ok(());
+            }
+            let m = oracle_clearance(&o, a, ra, b, rb);
+            if m > 1e-3 {
+                prop_assert!(got, "clearance {} but rejected", m);
+            } else if m < -1e-3 {
+                prop_assert!(!got, "clearance {} but accepted", m);
+            }
         }
 
         /// Cutting holes out of an edge keeps exactly the edge length outside

@@ -170,6 +170,9 @@ pub const DEFAULT_FLIPPER_LENGTH_MM: f32 = 50.0;
 pub const FLIPPER_LENGTH_MM: (f32, f32) = (30.0, 100.0);
 /// Most backbox flippers.
 pub const MAX_BACKBOX_FLIPPERS: usize = 8;
+/// Largest angle step at which a backbox flipper's stroke is checked
+/// against a polygon `outline`, degrees.
+pub const STROKE_STEP_DEG: f32 = 0.5;
 /// Panel thickness behind every collider face, mm.
 pub const PANEL_MM: f32 = 5.0;
 /// Largest `backbox_layout.toml` accepted, bytes.
@@ -989,35 +992,96 @@ pub fn generate_backbox(
             FlipperSide::Right => (210.0, -50.0),
         };
         let (rb, rt) = (0.145 * f.length, 0.085 * f.length);
-        // The whole stroke must stay inside the box.
-        for deg in [rest, rest + 0.5 * sweep, rest + sweep] {
+        let outside_at = |deg: f32, q: [f32; 2]| {
+            gen_err(
+                &fe,
+                format!(
+                    "the bat reaches outside the backbox at {deg} degrees ({:.1}, {:.1}) mm",
+                    q[0], q[1]
+                ),
+            )
+        };
+        let tip_at = |deg: f32| {
             let a = deg.to_radians();
-            let tip = [
+            [
                 f.position[0] + f.length * libm::cosf(a),
                 f.position[1] + f.length * libm::sinf(a),
-            ];
-            for (q, r) in [(f.position, rb), (tip, rt)] {
-                let outside = match &outline {
-                    None => {
-                        q[0] - r < -half_w || q[0] + r > half_w || q[1] - r < 0.0 || q[1] + r > h
+            ]
+        };
+        // The whole stroke must stay inside the backbox.
+        match &outline {
+            None => {
+                // The box is convex: the bat body is inside iff both end
+                // discs are, checked at rest, mid-stroke and end of stroke.
+                for deg in [rest, rest + 0.5 * sweep, rest + sweep] {
+                    let tip = tip_at(deg);
+                    for (q, r) in [(f.position, rb), (tip, rt)] {
+                        if q[0] - r < -half_w || q[0] + r > half_w || q[1] - r < 0.0 || q[1] + r > h
+                        {
+                            return Err(outside_at(deg, q));
+                        }
                     }
-                    Some(o) => !o.contains_disc(q, r),
-                };
-                if outside {
-                    return Err(gen_err(
-                        &fe,
-                        format!(
-                            "the bat reaches outside the backbox at {deg} degrees ({:.1}, {:.1}) mm",
-                            q[0], q[1]
-                        ),
-                    ));
+                }
+            }
+            Some(o) => {
+                // A polygon may be concave: the whole tapered body (hull of
+                // the pivot and tip discs) is checked at every
+                // STROKE_STEP_DEG (0.5 degrees for the 50-degree stroke, both
+                // ends exact). Between two samples a bat point moves at most
+                // (length + rt) * sin(0.25°) ≈ 0.47 mm (length 100 mm), and
+                // the in-between bat reaches past the union of the two
+                // sampled bats by at most rt - sqrt(rt² - (length *
+                // sin 0.25°)²) ≈ 0.012 mm at the tip (rt = 8.5 mm): far
+                // below the bat radii.
+                let steps = libm::ceilf(sweep.abs() / STROKE_STEP_DEG).max(1.0) as u32;
+                let step = sweep / steps as f32;
+                for k in 0..=steps {
+                    let deg = if k == steps {
+                        rest + sweep
+                    } else {
+                        rest + step * k as f32
+                    };
+                    let tip = tip_at(deg);
+                    for (q, r) in [(f.position, rb), (tip, rt)] {
+                        if !o.contains_disc(q, r) {
+                            return Err(outside_at(deg, q));
+                        }
+                    }
+                    if !o.contains_tapered_capsule(f.position, rb, tip, rt) {
+                        let q = o
+                            .tapered_capsule_breach(f.position, rb, tip, rt)
+                            .unwrap_or(tip);
+                        return Err(outside_at(deg, q));
+                    }
                 }
             }
         }
         check_name(&fe, "coil", &f.coil, coils())?;
         check_name(&fe, "eos_switch", &f.eos_switch, switches())?;
-        if let FlipperStagingDef::AutoSensorThingFlip { trigger_switch, .. } = &f.staging {
-            check_name(&fe, "trigger_switch", trigger_switch, switches())?;
+        match &f.staging {
+            FlipperStagingDef::AutoSensorThingFlip { trigger_switch, .. } => {
+                check_name(&fe, "trigger_switch", trigger_switch, switches())?;
+            }
+            FlipperStagingDef::DualStageThreshold {
+                lower_threshold: lo,
+                upper_threshold: hi,
+                ..
+            } => {
+                // The runtime staging router's rule (pin_input
+                // `FlipperStagingRouter::new`): finite and
+                // 0 <= lower <= upper <= 1 (equal thresholds allowed).
+                let ok = lo.is_finite() && hi.is_finite() && 0.0 <= *lo && lo <= hi && *hi <= 1.0;
+                if !ok {
+                    return Err(gen_err(
+                        &fe,
+                        format!(
+                            "staging.lower_threshold {lo} and staging.upper_threshold {hi}: \
+                             need finite 0 <= lower_threshold <= upper_threshold <= 1"
+                        ),
+                    ));
+                }
+            }
+            _ => {}
         }
         let pivot = frame.to_table(Vec3::new(mm(f.position[0]), mm(d), mm(f.position[1])));
         let id = format!("{BACKBOX_PREFIX}flippers[{i}]");
