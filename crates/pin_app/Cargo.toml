@@ -64,3 +64,11 @@ required-features = ["gpu-tests"]
 [[test]]
 name = "wiring_render"
 required-features = ["gpu-tests"]
+
+# The presenter-thread hand-off on real windows (PR #21 round 4): SDL video
+# on the main thread, so a plain `main`; GPU job only, where a missing
+# display or adapter is a failure.
+[[test]]
+name = "presenter_thread_window"
+harness = false
+required-features = ["gpu-tests"]

@@ -4,7 +4,7 @@
 //! The 1.4 [`SurfaceSet`](pin_render::gpu::SurfaceSet) only draws debug
 //! lines and has no hook for other content, and `pin_render` internals are
 //! not changed in this round. So when a table is loaded, the render thread
-//! presents its own frames here: each drawn window's surface gets a
+//! draws its own frames here: each window's surface gets a
 //! [`TableRenderer`] that draws the PBR playfield and the displays routed
 //! to that window.
 //!
@@ -16,26 +16,34 @@
 //!   or, with VRR, `FifoRelaxed` acquire paces the loop by design, D19) and
 //!   a backglass / score window whose chosen mode is non-blocking
 //!   (`Mailbox`, `Immediate`; see [`is_blocking_mode`]).
-//! * [`SurfacePlan::Deferred`]: a backglass / score window whose chosen
-//!   mode is blocking (it offers only `Fifo` / `FifoRelaxed`). D19 wants
-//!   such a surface on its own presenter thread, and handing table frames
-//!   to one needs a hand-off that does not exist yet, so the surface is
-//!   **not drawn** on the table path (one stderr note; its window stays
-//!   undrawn). The render thread therefore never acquires or presents a
-//!   blocking-mode surface for a secondary window, and a vsync-bound
+//! * [`SurfacePlan::Presenter`]: a backglass / score window whose chosen
+//!   mode is blocking (it offers only `Fifo` / `FifoRelaxed`), or any
+//!   backglass / score window with `SurfaceOptions::force_presenter_thread`.
+//!   D19: "a separate presenter if only FIFO is available". The render
+//!   thread still draws the window's frame (playfield-free: a clear, then
+//!   every display routed to it) into an offscreen texture and hands it to
+//!   a presenter thread that owns the `wgpu::Surface` through a
+//!   latest-frame mailbox (`handoff`, `presenter` modules): the render
+//!   thread never acquires or presents that surface, so a vsync-bound
 //!   secondary acquire can neither stall the playfield nor block the
 //!   render-thread join (DECISIONS "6.0 — secondary Fifo-only surfaces,
-//!   round 3").
+//!   round 4").
 //! * [`SurfacePlan::Unsupported`]: no 8-bit colour format. A secondary
 //!   surface planned so is skipped (one stderr note); only an unsupported
 //!   **playfield** rejects the set ([`table_set_accepted`]), and the render
 //!   thread then falls back to the `SurfaceSet` debug view (DECISIONS
 //!   "6.0 — wiring completed").
 //!
-//! A deferred or skipped secondary surface never turns the cabinet into
-//! the debug view, so the table renderer and the sim's display commands
-//! (scenes, scores) stay on whenever the playfield can be drawn.
+//! A presenter-thread or skipped secondary surface never turns the cabinet
+//! into the debug view, so the table renderer and the sim's display
+//! commands (scenes, scores) stay on whenever the playfield can be drawn;
+//! display commands reach the renderer of every retained surface, direct
+//! or presenter-thread.
 
+use super::handoff::{HANDOFF_SLOTS, Handoff, HandoffStats, PresenterThread, TakeFree};
+use super::presenter::{
+    CopyPath, PresenterTarget, configure_surface, lock_gpu, offscreen_frame_texture, run_presenter,
+};
 use super::table::DisplayCommand;
 use super::view::{TableRenderOptions, TableRenderer, TableVisuals, routes_for_window};
 use pin_core::snapshot::FrameStateSnapshot;
@@ -45,6 +53,7 @@ use pin_render::gpu::{
     wgpu,
 };
 use pin_render::topology::{Rect, SurfaceRole, WindowEvent, WindowEventKind};
+use std::sync::{Arc, Mutex};
 
 /// The 8-bit colour format of a surface the table renderer can draw.
 fn pick_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
@@ -79,9 +88,10 @@ pub enum SurfacePlan {
     /// iteration with this mode (the playfield, or a backglass / score
     /// surface with a non-blocking mode).
     Direct(wgpu::PresentMode),
-    /// A backglass / score surface whose chosen mode (carried here) is
-    /// blocking: not drawn on the table path.
-    Deferred(wgpu::PresentMode),
+    /// A backglass / score surface drawn by the render thread into an
+    /// offscreen frame and presented with this mode by its own presenter
+    /// thread (a blocking chosen mode, or a forced presenter thread).
+    Presenter(wgpu::PresentMode),
     /// No 8-bit colour format: the table renderer cannot draw it.
     Unsupported,
 }
@@ -90,12 +100,11 @@ pub enum SurfacePlan {
 /// under `opts` (pure; see the [module docs](self)).
 ///
 /// The playfield is always [`SurfacePlan::Direct`] when it has an 8-bit
-/// format. A backglass / score surface is [`SurfacePlan::Deferred`] when
-/// the §2.2 policy ([`choose_present_mode`]) picks a blocking mode for it
-/// and [`SurfacePlan::Direct`] otherwise. `opts.force_presenter_thread`
-/// does not change the plan: a non-blocking secondary present needs no
-/// presenter thread on the table path, and a blocking one is deferred
-/// either way.
+/// format (it paces the loop; forcing never applies to it). A backglass /
+/// score surface is [`SurfacePlan::Presenter`] when the §2.2 policy
+/// ([`choose_present_mode`]) picks a blocking mode for it or when
+/// `opts.force_presenter_thread` is set (then with the mode the policy
+/// picked, e.g. `Mailbox`), and [`SurfacePlan::Direct`] otherwise.
 pub fn plan_surface(
     role: SurfaceRole,
     formats: &[wgpu::TextureFormat],
@@ -106,8 +115,8 @@ pub fn plan_surface(
         return SurfacePlan::Unsupported;
     }
     let mode = choose_present_mode(role, present_modes, opts.vrr).mode();
-    if role != SurfaceRole::Playfield && is_blocking_mode(mode) {
-        SurfacePlan::Deferred(mode)
+    if role != SurfaceRole::Playfield && (is_blocking_mode(mode) || opts.force_presenter_thread) {
+        SurfacePlan::Presenter(mode)
     } else {
         SurfacePlan::Direct(mode)
     }
@@ -116,12 +125,13 @@ pub fn plan_surface(
 /// What [`AppSurfaces::new`] does with one surface source.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SlotDecision {
-    /// Configure the surface with this mode and format and draw it every
-    /// render-loop iteration.
+    /// Configure the surface with this mode and format and draw and present
+    /// it from the render thread every render-loop iteration.
     Draw(wgpu::PresentMode, wgpu::TextureFormat),
-    /// A backglass / score surface with this blocking mode: not drawn on
-    /// the table path (one stderr note).
-    Defer(wgpu::PresentMode),
+    /// A backglass / score surface: configure it with this mode and format,
+    /// hand it to its own presenter thread, and draw its frames offscreen
+    /// on the render thread.
+    Present(wgpu::PresentMode, wgpu::TextureFormat),
     /// A backglass / score surface without an 8-bit format: not drawn (one
     /// stderr note).
     Skip,
@@ -131,36 +141,35 @@ pub enum SlotDecision {
 }
 
 /// The decision for a `role` surface planned `plan` whose 8-bit format is
-/// `format` (pure). Only a playfield or a non-blocking secondary surface
-/// is ever [`SlotDecision::Draw`]: a blocking mode on a backglass / score
-/// surface is [`SlotDecision::Defer`] even if `plan` says
-/// [`SurfacePlan::Direct`].
+/// `format` (pure). A playfield with a format is always
+/// [`SlotDecision::Draw`] (never a presenter thread: it paces the loop). A
+/// backglass / score surface is [`SlotDecision::Present`] when `plan` says
+/// [`SurfacePlan::Presenter`] or its mode is blocking (even if `plan` says
+/// [`SurfacePlan::Direct`]), so the render thread never acquires a
+/// blocking secondary surface; otherwise [`SlotDecision::Draw`].
 pub fn slot_decision(
     role: SurfaceRole,
     plan: SurfacePlan,
     format: Option<wgpu::TextureFormat>,
 ) -> SlotDecision {
-    let mode = match plan {
-        SurfacePlan::Direct(m) | SurfacePlan::Deferred(m) => Some(m),
-        SurfacePlan::Unsupported => None,
-    };
-    match (role, mode, format) {
-        (SurfaceRole::Playfield, Some(m), Some(f)) => SlotDecision::Draw(m, f),
+    match (role, plan, format) {
+        (SurfaceRole::Playfield, SurfacePlan::Direct(m) | SurfacePlan::Presenter(m), Some(f)) => {
+            SlotDecision::Draw(m, f)
+        }
         (SurfaceRole::Playfield, _, _) => SlotDecision::Reject,
-        (_, Some(m), Some(_)) if is_blocking_mode(m) => SlotDecision::Defer(m),
-        (_, Some(m), Some(f)) => match plan {
-            SurfacePlan::Deferred(_) => SlotDecision::Defer(m),
-            _ => SlotDecision::Draw(m, f),
-        },
+        (_, SurfacePlan::Presenter(m), Some(f)) => SlotDecision::Present(m, f),
+        (_, SurfacePlan::Direct(m), Some(f)) if is_blocking_mode(m) => SlotDecision::Present(m, f),
+        (_, SurfacePlan::Direct(m), Some(f)) => SlotDecision::Draw(m, f),
         (_, _, _) => SlotDecision::Skip,
     }
 }
 
 /// Whether the table renderer can present a window set whose surfaces got
-/// `plans`: at least one surface is drawable ([`SurfacePlan::Direct`]) and
-/// no playfield surface is [`SurfacePlan::Unsupported`] (unsupported
-/// secondary surfaces are skipped and [`SurfacePlan::Deferred`] ones are
-/// not drawn; neither rejects the set).
+/// `plans`: at least one surface is drawn directly ([`SurfacePlan::Direct`])
+/// and no playfield surface is [`SurfacePlan::Unsupported`] (unsupported
+/// secondary surfaces are skipped and [`SurfacePlan::Presenter`] ones are
+/// presented by their own threads; neither rejects the set, but neither
+/// counts as the directly drawn surface either).
 pub fn table_set_accepted(plans: &[(SurfaceRole, SurfacePlan)]) -> bool {
     plans
         .iter()
@@ -170,30 +179,61 @@ pub fn table_set_accepted(plans: &[(SurfaceRole, SurfacePlan)]) -> bool {
             .any(|(r, p)| *r == SurfaceRole::Playfield && *p == SurfacePlan::Unsupported)
 }
 
-/// Polls a future that wgpu resolves synchronously on native backends
-/// (error scopes), yielding between polls; `None` if it never resolves.
-fn resolve<F: core::future::Future>(f: F) -> Option<F::Output> {
-    let mut f = core::pin::pin!(f);
-    let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
-    for _ in 0..10_000 {
-        if let core::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return Some(v);
-        }
-        std::thread::yield_now();
-    }
-    None
+/// How a retained surface is presented ([`AppSurfaces::slots`]).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SlotPath {
+    /// Acquired and presented by the render thread.
+    Direct,
+    /// Drawn offscreen by the render thread, presented by its own presenter
+    /// thread along this copy path.
+    PresenterThread(CopyPath),
 }
 
-/// Configures `surface`, capturing validation errors instead of letting
-/// wgpu's default handler panic. `false` on failure.
-fn configure(
-    device: &wgpu::Device,
-    surface: &wgpu::Surface<'_>,
-    config: &wgpu::SurfaceConfiguration,
-) -> bool {
-    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    surface.configure(device, config);
-    matches!(resolve(scope.pop()), Some(None))
+/// One retained surface as seen from outside ([`AppSurfaces::slots`]).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct SlotInfo {
+    /// Window index (as in [`WindowEvent`]).
+    pub window: usize,
+    /// The window's primary role.
+    pub role: SurfaceRole,
+    /// Direct or presenter thread.
+    pub path: SlotPath,
+    /// The configured present mode.
+    pub mode: wgpu::PresentMode,
+    /// The draw (and surface) format.
+    pub format: wgpu::TextureFormat,
+    /// Display commands its renderer applied so far.
+    pub display_commands: u64,
+    /// The hand-off counters of a presenter-thread surface.
+    pub presenter: Option<HandoffStats>,
+    /// A presenter-thread surface whose thread ended (closed hand-off):
+    /// no longer drawn.
+    pub dead: bool,
+}
+
+/// A surface the render thread acquires and presents itself.
+struct Direct {
+    needs_configure: bool,
+    config: wgpu::SurfaceConfiguration,
+    surface: wgpu::Surface<'static>,
+    /// Dropped after `surface` (field order).
+    _keep_alive: Option<WindowGuard>,
+}
+
+/// A surface owned by a presenter thread; the render thread keeps the
+/// frame pool's textures (inside the hand-off) and the thread handle.
+struct Threaded {
+    mode: wgpu::PresentMode,
+    format: wgpu::TextureFormat,
+    path: CopyPath,
+    /// The presenter thread ended: stop drawing (one stderr note).
+    dead: bool,
+    presenter: PresenterThread<wgpu::Texture>,
+}
+
+enum SlotKind {
+    Direct(Direct),
+    Threaded(Threaded),
 }
 
 struct Slot {
@@ -203,23 +243,30 @@ struct Slot {
     planned_size: (u32, u32),
     pixel_size: (u32, u32),
     minimized: bool,
-    needs_configure: bool,
-    config: wgpu::SurfaceConfiguration,
     routes: Vec<DisplayRoute>,
     renderer: TableRenderer,
-    surface: wgpu::Surface<'static>,
-    /// Dropped after `surface` (field order).
-    _keep_alive: Option<WindowGuard>,
+    kind: SlotKind,
 }
 
-/// The table's surfaces, presented directly from the render thread (only
-/// those [`slot_decision`] says to draw; see the [module docs](self)).
+impl Slot {
+    /// Whether display commands still reach this slot's renderer.
+    fn live(&self) -> bool {
+        !matches!(&self.kind, SlotKind::Threaded(t) if t.dead)
+    }
+}
+
+/// The table's surfaces: the playfield and non-blocking secondary surfaces
+/// presented directly from the render thread, blocking (or forced)
+/// backglass / score surfaces through their own presenter threads (see the
+/// [module docs](self)).
 pub struct AppSurfaces {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// Serialises `queue.submit` and `Surface::configure` across the render
+    /// thread and the presenter threads.
+    gpu_lock: Arc<Mutex<()>>,
     slots: Vec<Slot>,
     frames: u64,
-    deferred: usize,
     skipped: usize,
 }
 
@@ -241,15 +288,16 @@ impl AppSurfaces {
     }
 
     /// Configures every source [`slot_decision`] marks
-    /// [`SlotDecision::Draw`] and builds its renderer; a
-    /// [`SlotDecision::Defer`] (blocking-mode backglass / score) or
-    /// [`SlotDecision::Skip`] (no 8-bit format) source gets one note on
-    /// stderr and no slot, so it is never acquired or presented.
+    /// [`SlotDecision::Draw`] or [`SlotDecision::Present`] and builds its
+    /// renderer; a [`SlotDecision::Present`] source's surface moves to a new
+    /// presenter thread (with its window guard). A [`SlotDecision::Skip`]
+    /// (no 8-bit format) source gets one note on stderr and no slot.
     ///
     /// # Errors
     /// An unsupported playfield surface (the caller falls back to the debug
     /// view, see [`table_set_accepted`]), a surface that cannot be
-    /// configured, or a renderer that cannot be built.
+    /// configured, a renderer that cannot be built, or a presenter thread
+    /// that cannot be spawned.
     pub fn new(
         ctx: &GpuContext,
         sources: Vec<SurfaceSource>,
@@ -258,45 +306,42 @@ impl AppSurfaces {
         render: TableRenderOptions,
     ) -> Result<AppSurfaces, String> {
         let device = ctx.device().clone();
+        let queue = ctx.queue().clone();
+        let gpu_lock = Arc::new(Mutex::new(()));
         let mut slots = Vec::with_capacity(sources.len());
-        let mut deferred = 0;
         let mut skipped = 0;
         for src in sources {
             let role = src.role();
             let caps = src.surface.get_capabilities(ctx.adapter());
             let plan = plan_surface(role, &caps.formats, &caps.present_modes, opts);
-            let (mode, format) = match slot_decision(role, plan, pick_format(&caps.formats)) {
-                SlotDecision::Draw(m, f) => (m, f),
-                SlotDecision::Reject => {
-                    return Err(format!(
-                        "window {} ({role:?}): no 8-bit surface format",
-                        src.window
-                    ));
-                }
-                SlotDecision::Defer(m) => {
-                    eprintln!(
-                        "pin_app: window {} ({role:?}) offers only blocking present modes \
-                         ({:?}, would use {m:?}); not drawn on the table path until a \
-                         presenter-thread hand-off exists (DECISIONS \"6.0 — secondary \
-                         Fifo-only surfaces, round 3\")",
-                        src.window, caps.present_modes
-                    );
-                    deferred += 1;
-                    continue;
-                }
-                SlotDecision::Skip => {
-                    eprintln!(
-                        "pin_app: window {} ({role:?}) offers no 8-bit surface format; \
-                         not drawing it",
-                        src.window
-                    );
-                    skipped += 1;
-                    continue;
-                }
-            };
+            let (mode, format, threaded) =
+                match slot_decision(role, plan, pick_format(&caps.formats)) {
+                    SlotDecision::Draw(m, f) => (m, f, false),
+                    SlotDecision::Present(m, f) => (m, f, true),
+                    SlotDecision::Reject => {
+                        return Err(format!(
+                            "window {} ({role:?}): no 8-bit surface format",
+                            src.window
+                        ));
+                    }
+                    SlotDecision::Skip => {
+                        eprintln!(
+                            "pin_app: window {} ({role:?}) offers no 8-bit surface format; \
+                             not drawing it",
+                            src.window
+                        );
+                        skipped += 1;
+                        continue;
+                    }
+                };
+            let path = CopyPath::for_usages(caps.usages);
             let (w, h) = (src.pixel_size.0.max(1), src.pixel_size.1.max(1));
             let config = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                usage: if threaded {
+                    path.target_usages()
+                } else {
+                    wgpu::TextureUsages::RENDER_ATTACHMENT
+                },
                 format,
                 color_space: Default::default(),
                 width: w,
@@ -310,7 +355,7 @@ impl AppSurfaces {
                     .unwrap_or(wgpu::CompositeAlphaMode::Auto),
                 view_formats: Vec::new(),
             };
-            if !configure(&device, &src.surface, &config) {
+            if !configure_surface(&device, &src.surface, &config, &gpu_lock) {
                 return Err(format!(
                     "window {} ({role:?}): configure failed",
                     src.window
@@ -320,6 +365,42 @@ impl AppSurfaces {
                 .map_err(|e| format!("window {} ({role:?}): {e}", src.window))?;
             let planned: Vec<(SurfaceRole, Rect)> = src.viewports.iter().copied().collect();
             let routes = routes_for_window(src.window, &planned, src.logical_size, (w, h));
+            let kind = if threaded {
+                let handoff = Arc::new(Handoff::new(HANDOFF_SLOTS, (w, h)));
+                let target = PresenterTarget {
+                    device: device.clone(),
+                    queue: queue.clone(),
+                    surface: src.surface,
+                    config,
+                    path,
+                    gpu_lock: Arc::clone(&gpu_lock),
+                };
+                // The thread drops the surface before the guard; a thread
+                // without a guard gets a placeholder (the caller keeps the
+                // window alive, `SurfaceSource::keep_alive`).
+                let guard = src.keep_alive.unwrap_or_else(|| WindowGuard::new(()));
+                let presenter = PresenterThread::spawn(
+                    &format!("presenter-{}", src.window),
+                    guard,
+                    handoff,
+                    move |h| run_presenter(h, target),
+                )
+                .map_err(|e| format!("window {} ({role:?}): presenter thread: {e}", src.window))?;
+                SlotKind::Threaded(Threaded {
+                    mode,
+                    format,
+                    path,
+                    dead: false,
+                    presenter,
+                })
+            } else {
+                SlotKind::Direct(Direct {
+                    needs_configure: false,
+                    config,
+                    surface: src.surface,
+                    _keep_alive: src.keep_alive,
+                })
+            };
             slots.push(Slot {
                 window: src.window,
                 role,
@@ -327,67 +408,124 @@ impl AppSurfaces {
                 planned_size: src.logical_size,
                 pixel_size: src.pixel_size,
                 minimized: false,
-                needs_configure: false,
-                config,
                 routes,
                 renderer,
-                surface: src.surface,
-                _keep_alive: src.keep_alive,
+                kind,
             });
         }
         let out = AppSurfaces {
             device,
-            queue: ctx.queue().clone(),
+            queue,
+            gpu_lock,
             slots,
             frames: 0,
-            deferred,
             skipped,
         };
         debug_assert!(
             out.drawn_modes()
                 .all(|(r, m)| r == SurfaceRole::Playfield || !is_blocking_mode(m)),
-            "a backglass / score surface with a blocking present mode got a slot"
+            "the render thread presents a backglass / score surface with a blocking mode"
         );
         Ok(out)
     }
 
-    /// `(drawn, deferred, skipped)`: surfaces drawn every iteration,
-    /// blocking-mode backglass / score surfaces not drawn
-    /// ([`SlotDecision::Defer`]) and surfaces without an 8-bit format
+    /// `(direct, threaded, skipped)`: surfaces presented by the render
+    /// thread, surfaces presented by their own presenter threads
+    /// ([`SlotDecision::Present`]) and surfaces without an 8-bit format
     /// ([`SlotDecision::Skip`]).
     pub fn plan_counts(&self) -> (usize, usize, usize) {
-        (self.slots.len(), self.deferred, self.skipped)
+        let threaded = self
+            .slots
+            .iter()
+            .filter(|s| matches!(s.kind, SlotKind::Threaded(_)))
+            .count();
+        (self.slots.len() - threaded, threaded, self.skipped)
     }
 
-    /// The role and configured present mode of every drawn surface, in
-    /// slot order (the surfaces the render thread acquires and presents).
+    /// The role and configured present mode of every surface the render
+    /// thread acquires and presents itself, in slot order.
     pub fn drawn_modes(&self) -> impl Iterator<Item = (SurfaceRole, wgpu::PresentMode)> + '_ {
-        self.slots.iter().map(|s| (s.role, s.config.present_mode))
+        self.slots.iter().filter_map(|s| match &s.kind {
+            SlotKind::Direct(d) => Some((s.role, d.config.present_mode)),
+            SlotKind::Threaded(_) => None,
+        })
     }
 
-    /// Number of drawn surfaces.
+    /// Every retained surface, in slot order (the order of
+    /// [`render`](Self::render)'s statuses).
+    pub fn slots(&self) -> impl Iterator<Item = SlotInfo> + '_ {
+        self.slots.iter().map(|s| {
+            let (path, mode, format, presenter, dead) = match &s.kind {
+                SlotKind::Direct(d) => (
+                    SlotPath::Direct,
+                    d.config.present_mode,
+                    d.config.format,
+                    None,
+                    false,
+                ),
+                SlotKind::Threaded(t) => (
+                    SlotPath::PresenterThread(t.path),
+                    t.mode,
+                    t.format,
+                    Some(t.presenter.handoff().stats()),
+                    t.dead,
+                ),
+            };
+            SlotInfo {
+                window: s.window,
+                role: s.role,
+                path,
+                mode,
+                format,
+                display_commands: s.renderer.display_commands(),
+                presenter,
+                dead,
+            }
+        })
+    }
+
+    /// The hand-off counters of every presenter-thread surface: `(window,
+    /// role, stats)` in slot order.
+    pub fn presenter_stats(&self) -> Vec<(usize, SurfaceRole, HandoffStats)> {
+        self.slots
+            .iter()
+            .filter_map(|s| match &s.kind {
+                SlotKind::Threaded(t) => Some((s.window, s.role, t.presenter.handoff().stats())),
+                SlotKind::Direct(_) => None,
+            })
+            .collect()
+    }
+
+    /// Number of retained surfaces (direct and presenter-thread).
     pub fn len(&self) -> usize {
         self.slots.len()
     }
 
-    /// `true` without drawn surfaces.
+    /// `true` without retained surfaces.
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
 
-    /// Frames presented on any surface.
+    /// Render-loop iterations in which some surface was presented or handed
+    /// to its presenter thread.
     pub fn frames(&self) -> u64 {
         self.frames
     }
 
-    /// Hands a display command to every drawn window's renderer.
+    /// Hands a display command to the renderer of every retained window
+    /// (direct and presenter-thread; a presenter-thread window whose thread
+    /// ended is no longer drawn and ignores it).
     pub fn apply_display_command(&mut self, cmd: DisplayCommand, now_ms: u64) {
         for s in &mut self.slots {
-            s.renderer.apply_display_command(cmd, now_ms);
+            if s.live() {
+                s.renderer.apply_display_command(cmd, now_ms);
+            }
         }
     }
 
     /// Applies a window event from the main thread (resize, minimise, ...).
+    /// A presenter-thread surface is reconfigured by its thread on the next
+    /// frame of the new size (the render thread does not hold it).
     pub fn handle_window_event(&mut self, ev: &WindowEvent) {
         let Some(s) = self.slots.iter_mut().find(|s| s.window == ev.window) else {
             return;
@@ -396,9 +534,24 @@ impl AppSurfaces {
             WindowEventKind::PixelSizeChanged { w, h } => {
                 s.pixel_size = (w, h);
                 if w > 0 && h > 0 {
-                    s.config.width = w;
-                    s.config.height = h;
-                    s.needs_configure = !configure(&self.device, &s.surface, &s.config);
+                    match &mut s.kind {
+                        SlotKind::Direct(d) => {
+                            d.config.width = w;
+                            d.config.height = h;
+                            d.needs_configure = !configure_surface(
+                                &self.device,
+                                &d.surface,
+                                &d.config,
+                                &self.gpu_lock,
+                            );
+                        }
+                        SlotKind::Threaded(t) => {
+                            // Frames of the old size are discarded, never
+                            // presented; free slots get new textures when
+                            // next taken.
+                            t.presenter.handoff().set_size((w, h));
+                        }
+                    }
                     if let Err(e) = s.renderer.resize(w, h) {
                         eprintln!("pin_app: resize window {}: {e}", s.window);
                     }
@@ -414,13 +567,21 @@ impl AppSurfaces {
         }
     }
 
-    /// Draws and presents one frame of `snap` on every drawn surface.
-    /// Returns each drawn surface's status in slot order (deferred and
-    /// skipped surfaces have no slot).
+    /// Draws one frame of `snap` for every retained surface: presents it
+    /// (direct) or hands it to the presenter thread (never blocking on it).
+    /// Returns each surface's status in slot order: for a presenter-thread
+    /// surface [`SurfaceStatus::Presented`] means handed off and
+    /// [`SurfaceStatus::Busy`] that no frame slot was free.
     pub fn render(&mut self, snap: &FrameStateSnapshot) -> Vec<SurfaceStatus> {
         let mut out = Vec::with_capacity(self.slots.len());
         for s in &mut self.slots {
-            out.push(Self::render_slot(&self.device, &self.queue, s, snap));
+            out.push(Self::render_slot(
+                &self.device,
+                &self.queue,
+                &self.gpu_lock,
+                s,
+                snap,
+            ));
         }
         if out.contains(&SurfaceStatus::Presented) {
             self.frames += 1;
@@ -429,7 +590,7 @@ impl AppSurfaces {
     }
 
     /// `true` when a playfield surface presented (its `Fifo` acquire paced
-    /// the frame).
+    /// the frame); a presenter-thread hand-off never paces.
     pub fn frame_paced(&self, statuses: &[SurfaceStatus]) -> bool {
         pin_render::gpu::paced_by(self.slots.iter().map(|s| s.role), statuses)
     }
@@ -437,69 +598,198 @@ impl AppSurfaces {
     fn render_slot(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        gpu_lock: &Mutex<()>,
         s: &mut Slot,
         snap: &FrameStateSnapshot,
     ) -> SurfaceStatus {
+        if !s.live() {
+            return SurfaceStatus::Skipped;
+        }
         if s.minimized || s.pixel_size.0 == 0 || s.pixel_size.1 == 0 {
             return SurfaceStatus::Hidden;
         }
-        if s.needs_configure {
-            if !configure(device, &s.surface, &s.config) {
-                return SurfaceStatus::Skipped;
-            }
-            s.needs_configure = false;
-        }
-        let (frame, suboptimal) = match s.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) => (t, false),
-            wgpu::CurrentSurfaceTexture::Suboptimal(t) => (t, true),
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                s.needs_configure = !configure(device, &s.surface, &s.config);
-                return SurfaceStatus::Skipped;
-            }
-            wgpu::CurrentSurfaceTexture::Occluded => return SurfaceStatus::Occluded,
-            _ => return SurfaceStatus::Skipped,
+        let target = FrameTarget {
+            role: s.role,
+            window: s.window,
+            routes: &s.routes,
         };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("table frame"),
+        match &mut s.kind {
+            SlotKind::Direct(d) => {
+                render_direct(device, queue, gpu_lock, d, &mut s.renderer, target, snap)
+            }
+            SlotKind::Threaded(t) => {
+                let st = render_threaded(device, queue, gpu_lock, t, &mut s.renderer, target, snap);
+                if t.dead {
+                    eprintln!(
+                        "pin_app: the presenter thread of window {} ({:?}) ended; the window is \
+                         no longer drawn",
+                        s.window, s.role
+                    );
+                }
+                st
+            }
+        }
+    }
+}
+
+impl Drop for AppSurfaces {
+    /// Closes every presenter hand-off first, so all presenter threads stop
+    /// together; each slot's `PresenterThread` then joins its thread with
+    /// the bounded `PRESENTER_JOIN_TIMEOUT` (detaching a stuck one, which
+    /// keeps its window through its guard) when the slots drop. No lock is
+    /// held while joining.
+    fn drop(&mut self) {
+        for s in &self.slots {
+            if let SlotKind::Threaded(t) = &s.kind {
+                t.presenter.handoff().close();
+            }
+        }
+    }
+}
+
+/// What a frame is drawn for (disjoint from the slot's renderer and kind).
+#[derive(Copy, Clone)]
+struct FrameTarget<'a> {
+    role: SurfaceRole,
+    window: usize,
+    routes: &'a [DisplayRoute],
+}
+
+/// Records the table frame for `target` into `view`: for a backglass /
+/// score window a clear first, then the renderer's frame.
+fn encode_frame(
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    renderer: &mut TableRenderer,
+    target: FrameTarget<'_>,
+    snap: &FrameStateSnapshot,
+) {
+    let playfield = target.role == SurfaceRole::Playfield;
+    if !playfield {
+        // Backglass / score window: clear, then its displays.
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("secondary clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
         });
-        let playfield = s.role == SurfaceRole::Playfield;
-        if !playfield {
-            // Backglass / score window: clear, then its displays.
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("secondary clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+    }
+    renderer.encode(
+        queue,
+        encoder,
+        view,
+        playfield,
+        target.window,
+        target.routes,
+        snap,
+    );
+}
+
+/// Acquires, draws and presents a direct surface.
+fn render_direct(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    gpu_lock: &Mutex<()>,
+    d: &mut Direct,
+    renderer: &mut TableRenderer,
+    target: FrameTarget<'_>,
+    snap: &FrameStateSnapshot,
+) -> SurfaceStatus {
+    if d.needs_configure {
+        if !configure_surface(device, &d.surface, &d.config, gpu_lock) {
+            return SurfaceStatus::Skipped;
         }
-        s.renderer.encode(
-            queue,
-            &mut encoder,
-            &view,
-            playfield,
-            s.window,
-            &s.routes,
-            snap,
-        );
+        d.needs_configure = false;
+    }
+    let (frame, suboptimal) = match d.surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(t) => (t, false),
+        wgpu::CurrentSurfaceTexture::Suboptimal(t) => (t, true),
+        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            d.needs_configure = !configure_surface(device, &d.surface, &d.config, gpu_lock);
+            return SurfaceStatus::Skipped;
+        }
+        wgpu::CurrentSurfaceTexture::Occluded => return SurfaceStatus::Occluded,
+        _ => return SurfaceStatus::Skipped,
+    };
+    let view = frame
+        .texture
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("table frame"),
+    });
+    encode_frame(queue, &mut encoder, &view, renderer, target, snap);
+    {
+        let _g = lock_gpu(gpu_lock);
         queue.submit([encoder.finish()]);
-        queue.present(frame);
-        if suboptimal {
-            s.needs_configure = !configure(device, &s.surface, &s.config);
+    }
+    queue.present(frame);
+    if suboptimal {
+        d.needs_configure = !configure_surface(device, &d.surface, &d.config, gpu_lock);
+    }
+    SurfaceStatus::Presented
+}
+
+/// Draws a presenter-thread surface's frame into a free pool texture,
+/// submits it and posts it to the presenter thread. Never touches the
+/// surface and never waits for the presenter: [`SurfaceStatus::Busy`] when
+/// no slot is free; [`SurfaceStatus::Skipped`] (and `t.dead`) when the
+/// presenter thread ended.
+fn render_threaded(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    gpu_lock: &Mutex<()>,
+    t: &mut Threaded,
+    renderer: &mut TableRenderer,
+    target: FrameTarget<'_>,
+    snap: &FrameStateSnapshot,
+) -> SurfaceStatus {
+    let handoff = t.presenter.handoff();
+    let mut frame = match handoff.try_take_free() {
+        TakeFree::Frame(f) => f,
+        TakeFree::Busy => return SurfaceStatus::Busy,
+        TakeFree::Closed => {
+            t.dead = true;
+            return SurfaceStatus::Skipped;
         }
+    };
+    let size = renderer.size();
+    if frame.size() != size || frame.payload().is_none() {
+        // A stale-size (or new) slot: a texture of the current size.
+        frame.set_payload(offscreen_frame_texture(device, t.format, size), size);
+    }
+    let Some(view) = frame
+        .payload()
+        .map(|tex| tex.create_view(&wgpu::TextureViewDescriptor::default()))
+    else {
+        handoff.give_back(frame);
+        return SurfaceStatus::Skipped;
+    };
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("presenter-thread frame"),
+    });
+    encode_frame(queue, &mut encoder, &view, renderer, target, snap);
+    {
+        // Submitted before the post: the presenter's copy, submitted later
+        // on the same queue, sees the finished frame (no CPU wait).
+        let _g = lock_gpu(gpu_lock);
+        queue.submit([encoder.finish()]);
+    }
+    if handoff.post(frame) {
         SurfaceStatus::Presented
+    } else {
+        t.dead = true;
+        SurfaceStatus::Skipped
     }
 }
 
@@ -562,7 +852,7 @@ mod tests {
         );
         assert_eq!(
             plan_surface(score, &[F::Bgra8Unorm], &[M::Fifo], no),
-            SurfacePlan::Deferred(M::Fifo)
+            SurfacePlan::Presenter(M::Fifo)
         );
         assert_eq!(
             plan_surface(bg, &[F::Bgra8Unorm], &[M::Fifo, M::Mailbox], no),
@@ -575,13 +865,21 @@ mod tests {
                 &[M::Fifo, M::Mailbox],
                 opts(false, true)
             ),
-            // Forcing a presenter thread does not apply on the table path:
-            // a Mailbox present on the render thread never blocks.
-            SurfacePlan::Direct(M::Mailbox)
+            // Forcing a presenter thread keeps the mode the policy picked.
+            SurfacePlan::Presenter(M::Mailbox)
+        );
+        assert_eq!(
+            plan_surface(
+                pf,
+                &[F::Bgra8Unorm],
+                &[M::Fifo, M::Mailbox],
+                opts(false, true)
+            ),
+            SurfacePlan::Direct(M::Fifo)
         );
         assert_eq!(
             plan_surface(score, &[F::Bgra8Unorm], &[M::Fifo], opts(false, true)),
-            SurfacePlan::Deferred(M::Fifo)
+            SurfacePlan::Presenter(M::Fifo)
         );
         assert_eq!(
             plan_surface(pf, &[F::Rgba16Float], &[M::Fifo], no),
@@ -600,8 +898,8 @@ mod tests {
                             // The playfield always paces directly (forcing
                             // never applies to it).
                             SurfacePlan::Direct(choice.mode())
-                        } else if is_blocking_mode(choice.mode()) {
-                            SurfacePlan::Deferred(choice.mode())
+                        } else if force || is_blocking_mode(choice.mode()) {
+                            SurfacePlan::Presenter(choice.mode())
                         } else {
                             SurfacePlan::Direct(choice.mode())
                         };
@@ -614,7 +912,7 @@ mod tests {
                             && !modes.contains(&M::Mailbox)
                             && !modes.contains(&M::Immediate)
                         {
-                            assert_eq!(p, SurfacePlan::Deferred(M::Fifo));
+                            assert_eq!(p, SurfacePlan::Presenter(M::Fifo));
                         }
                     }
                 }
@@ -641,11 +939,15 @@ mod tests {
         ]));
         assert!(table_set_accepted(&[
             pf(P::Direct(M::Fifo)),
-            score(P::Deferred(M::Fifo)),
-            bg(P::Deferred(M::FifoRelaxed)),
+            score(P::Presenter(M::Fifo)),
+            bg(P::Presenter(M::FifoRelaxed)),
         ]));
-        // Deferred surfaces alone are nothing to draw.
-        assert!(!table_set_accepted(&[score(P::Deferred(M::Fifo))]));
+        // Presenter-thread surfaces alone have no direct (pacing) surface.
+        assert!(!table_set_accepted(&[score(P::Presenter(M::Fifo))]));
+        assert!(!table_set_accepted(&[
+            score(P::Presenter(M::Fifo)),
+            bg(P::Presenter(M::Mailbox)),
+        ]));
         assert!(table_set_accepted(&[
             pf(P::Direct(M::Fifo)),
             score(P::Unsupported)
@@ -674,10 +976,12 @@ mod tests {
         }
     }
 
-    /// PR #21 round 3 (thread 4577325408): the render thread never gets a
-    /// slot for a backglass / score surface with a blocking mode.
+    /// PR #21 rounds 3 and 4 (threads 4577325408, 4577423193): the render
+    /// thread never presents a backglass / score surface with a blocking
+    /// mode itself, and such a surface is retained on a presenter thread
+    /// instead of being dropped.
     #[test]
-    fn only_non_blocking_secondary_surfaces_are_drawn() {
+    fn blocking_secondary_surfaces_get_a_presenter_thread() {
         for role in ROLES {
             for modes in MODE_SETS {
                 for formats in FORMAT_SETS {
@@ -700,17 +1004,19 @@ mod tests {
                         match d {
                             SlotDecision::Draw(m, f) => {
                                 assert!(!is_blocking_mode(m), "{ctx}: drawn with {m:?}");
+                                assert!(!force, "{ctx}: forced but drawn directly");
                                 assert_eq!(Some(f), pick_format(formats), "{ctx}");
                             }
-                            SlotDecision::Defer(m) => {
-                                assert!(is_blocking_mode(m), "{ctx}: deferred {m:?}")
+                            SlotDecision::Present(m, f) => {
+                                assert!(force || is_blocking_mode(m), "{ctx}: {m:?}");
+                                assert_eq!(Some(f), pick_format(formats), "{ctx}");
                             }
                             other => panic!("{ctx}: {other:?}"),
                         }
                         let offers_non_blocking = modes.iter().any(|m| !is_blocking_mode(*m));
                         assert_eq!(
                             matches!(d, SlotDecision::Draw(..)),
-                            offers_non_blocking,
+                            offers_non_blocking && !force,
                             "{ctx}"
                         );
                     }
@@ -720,25 +1026,33 @@ mod tests {
     }
 
     #[test]
-    fn slot_decision_defers_blocking_secondary_whatever_the_plan_says() {
+    fn slot_decision_sends_blocking_secondary_to_a_presenter_whatever_the_plan_says() {
         let f = Some(F::Bgra8Unorm);
         for role in [SurfaceRole::Backglass, SurfaceRole::Score] {
             for m in [M::Fifo, M::FifoRelaxed, M::AutoVsync] {
                 assert_eq!(
                     slot_decision(role, SurfacePlan::Direct(m), f),
-                    SlotDecision::Defer(m)
+                    SlotDecision::Present(m, F::Bgra8Unorm)
                 );
                 assert_eq!(
-                    slot_decision(role, SurfacePlan::Deferred(m), f),
-                    SlotDecision::Defer(m)
+                    slot_decision(role, SurfacePlan::Presenter(m), f),
+                    SlotDecision::Present(m, F::Bgra8Unorm)
                 );
             }
+            assert_eq!(
+                slot_decision(role, SurfacePlan::Presenter(M::Mailbox), f),
+                SlotDecision::Present(M::Mailbox, F::Bgra8Unorm)
+            );
             assert_eq!(
                 slot_decision(role, SurfacePlan::Direct(M::Mailbox), f),
                 SlotDecision::Draw(M::Mailbox, F::Bgra8Unorm)
             );
             assert_eq!(
                 slot_decision(role, SurfacePlan::Direct(M::Mailbox), None),
+                SlotDecision::Skip
+            );
+            assert_eq!(
+                slot_decision(role, SurfacePlan::Presenter(M::Fifo), None),
                 SlotDecision::Skip
             );
             assert_eq!(
@@ -749,6 +1063,11 @@ mod tests {
         let pf = SurfaceRole::Playfield;
         assert_eq!(
             slot_decision(pf, SurfacePlan::Direct(M::Fifo), f),
+            SlotDecision::Draw(M::Fifo, F::Bgra8Unorm)
+        );
+        // The playfield is never handed to a presenter thread.
+        assert_eq!(
+            slot_decision(pf, SurfacePlan::Presenter(M::Fifo), f),
             SlotDecision::Draw(M::Fifo, F::Bgra8Unorm)
         );
         assert_eq!(

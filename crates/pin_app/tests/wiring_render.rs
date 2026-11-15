@@ -12,8 +12,8 @@
 mod support;
 
 use pin_app::orchestrator::{
-    DisplayCommand, TABLE_LINE_COLOR, TableRenderOptions, TableRenderer, TableVisuals,
-    load_checked, validate_table,
+    CopyPath, DisplayCommand, FrameCopy, TABLE_LINE_COLOR, TableRenderOptions, TableRenderer,
+    TableVisuals, load_checked, offscreen_frame_texture, validate_table,
 };
 use pin_core::snapshot::{BallState, FrameStateSnapshot};
 use pin_render::displays::{DisplayRoute, RgbaImage};
@@ -370,4 +370,179 @@ fn a_missing_scene_image_is_a_warning() {
     let lcd = pin_render::displays::fit_aspect(viewport, LCD.0, LCD.1);
     let m = mean(&img, Rect::new(lcd.x + 2, lcd.y + 2, lcd.w - 4, lcd.h - 4));
     assert!(luma(m) < 10.0, "{m:?}");
+}
+
+/// Raw texel bytes of an 8-bit texture (row 0 at the top, no swizzle).
+fn read_raw(ctx: &GpuContext, tex: &wgpu::Texture) -> Vec<u8> {
+    let device = ctx.device();
+    let (w, h) = (tex.width(), tex.height());
+    let row = w as usize * 4;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+    let padded = row.div_ceil(align) * align;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("presenter test readback"),
+        size: (padded * h as usize) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    enc.copy_texture_to_buffer(
+        tex.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded as u32),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    ctx.queue().submit([enc.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    buffer.map_async(wgpu::MapMode::Read, .., move |r| {
+        let _ = tx.send(r);
+    });
+    pin_render::gpu::wait_for_device(device, pin_render::gpu::READBACK_WAIT_TIMEOUT)
+        .expect("device wait");
+    rx.recv().expect("map callback").expect("map");
+    let mut out = Vec::with_capacity(row * h as usize);
+    {
+        let mapped = buffer.get_mapped_range(..).expect("mapped range");
+        for y in 0..h as usize {
+            out.extend_from_slice(&mapped[y * padded..y * padded + row]);
+        }
+    }
+    buffer.unmap();
+    out
+}
+
+/// Clears `tex` to `c` (a render pass; the texture is a render target).
+fn clear(ctx: &GpuContext, tex: &wgpu::Texture, c: wgpu::Color) {
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut enc = ctx
+        .device()
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let _pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("presenter test clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(c),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+    }
+    ctx.queue().submit([enc.finish()]);
+}
+
+/// PR #21 round 4 (CodeRabbit thread 4577423193): a presenter-thread score
+/// window's frame is drawn into an offscreen pool texture (the score display
+/// driven by a display command), and the presenter's copy, along either
+/// path (`COPY_DST` copy, or the blit when the surface lacks `COPY_DST`),
+/// reproduces it texel for texel in a texture standing in for the
+/// swap-chain image.
+#[test]
+fn presenter_copy_and_blit_reproduce_the_offscreen_frame() {
+    let ctx = gpu();
+    let (v, snap, [attract, _]) = table();
+    let (w, h) = (192u32, 64u32);
+    let window = 1;
+    let route = DisplayRoute {
+        role: SurfaceRole::Score,
+        window,
+        viewport: Rect::new(0, 0, w, h),
+        dedicated: true,
+    };
+    let magenta = wgpu::Color {
+        r: 1.0,
+        g: 0.0,
+        b: 1.0,
+        a: 1.0,
+    };
+    for format in [
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+    ] {
+        let mut r =
+            TableRenderer::new(ctx, format, (w, h), &v, TableRenderOptions::default()).unwrap();
+        r.apply_display_command(DisplayCommand::Scene(attract), 0);
+        assert_eq!(r.display_commands(), 1);
+        // The render thread's side: clear, then the window's displays.
+        let src = offscreen_frame_texture(ctx.device(), format, (w, h));
+        assert!(src.usage().contains(
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING
+        ));
+        clear(ctx, &src, wgpu::Color::BLACK);
+        let view = src.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut enc = ctx
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let mut s = snap;
+        s.tick = 500;
+        let drawn = r.encode(ctx.queue(), &mut enc, &view, false, window, &[route], &s);
+        assert_eq!(drawn, 1, "{format:?}: the score display was not drawn");
+        ctx.queue().submit([enc.finish()]);
+        let src_px = read_raw(ctx, &src);
+        // The frame has content: lit (non-black) texels, and no magenta.
+        let lit = src_px
+            .chunks_exact(4)
+            .filter(|p| u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]) > 30)
+            .count();
+        assert!(
+            lit > 50,
+            "{format:?}: score frame is blank ({lit} lit texels)"
+        );
+
+        for path in [CopyPath::CopyDst, CopyPath::Blit] {
+            let dst = ctx.device().create_texture(&wgpu::TextureDescriptor {
+                label: Some("stand-in swap-chain image"),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: path.target_usages() | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            clear(ctx, &dst, magenta);
+            let copy = FrameCopy::new(ctx.device(), format, path);
+            assert_eq!(copy.path(), path);
+            let mut enc = ctx
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            copy.encode(ctx.device(), &mut enc, &src, &dst);
+            ctx.queue().submit([enc.finish()]);
+            let dst_px = read_raw(ctx, &dst);
+            assert_eq!(dst_px.len(), src_px.len());
+            let differing = src_px
+                .chunks_exact(4)
+                .zip(dst_px.chunks_exact(4))
+                .filter(|(a, b)| a != b)
+                .count();
+            assert_eq!(
+                differing, 0,
+                "{format:?} {path:?}: {differing} texels differ from the offscreen frame"
+            );
+        }
+    }
 }
