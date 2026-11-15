@@ -23,9 +23,9 @@ use pin_render::pbr::{
     PbrCamera, PbrRenderer, PointLight,
 };
 use pin_render::raytrace::{
-    CLEARCOAT_LAYER, RAY_ATLAS_LAYERS, RAY_QUERY_FEATURE, RayCapability, RayCaps, RayQueryConfig,
-    RayQueryError, RayQueryReflections, ReflectionQuality, select_reflection_source,
-    select_reflection_source_with,
+    CLEARCOAT_LAYER, RAY_ATLAS_LAYERS, RAY_QUERY_FEATURE, RayCapability, RayCaps, RayJobKind,
+    RayQueryConfig, RayQueryError, RayQueryReflections, ReflectionQuality,
+    select_reflection_source, select_reflection_source_with,
 };
 use pin_render::reflections::{
     OctahedralProbes, PROBE_RESOLUTION, ReflectionSource, ReflectiveBall, oct_decode,
@@ -1830,4 +1830,244 @@ fn raytrace_new_declines_an_unusable_map_resolution() {
         );
         assert_eq!(src.name(), "octahedral-probes");
     }
+}
+
+// ---------------------------------------------------------------------
+// (h) Mixed roughness (CodeRabbit PR #22 finding 2): a ball above the
+// cutoff in a frame that traces another ball gets the probe-equivalent
+// one-bounce map, never the second bounce at mirror-like hits.
+// ---------------------------------------------------------------------
+
+/// `PIN_REQUIRE_RAY_QUERY=1`: a device without ray queries fails the test.
+fn require_ray_query() -> bool {
+    std::env::var("PIN_REQUIRE_RAY_QUERY").is_ok_and(|v| v.trim() == "1")
+}
+
+/// The mixed scene: chrome ball A (roughness 0.06, at or below the cutoff:
+/// traced as BallView) and rough ball B (above the cutoff: BallCentre), no
+/// lights, black environment. `bounce`: A plain, plus the emissive panel
+/// above (B sees the panel through mirror-like A only by a second bounce).
+/// Otherwise A emits the panel radiance itself and there is no panel (B
+/// sees A directly; a second bounce at A finds only the black environment
+/// or unlit, non-emissive B, so it adds nothing).
+fn mixed_draws(rig: &Rig, bounce: bool, b_rough: f32) -> Vec<DrawItem> {
+    let ball = |c: V3, e: V3, rough: f32| DrawItem {
+        mesh: rig.sphere,
+        model: scale_translation(1.0, c),
+        material: ball_material(e, rough),
+        transparent: false,
+        emission: 0.0,
+    };
+    if !bounce {
+        return vec![ball(A, PANEL_L, 0.06), ball(B, [0.0; 3], b_rough)];
+    }
+    let mut panel_model = scale_translation(2.0 * PANEL_HALF, [0.0, 0.0, PANEL_Z]);
+    // Face down: flip the quad's +z normal (mirror y and z).
+    for col in [1, 2] {
+        for v in &mut panel_model[col][..3] {
+            *v = -*v;
+        }
+    }
+    vec![
+        ball(A, [0.0; 3], 0.06),
+        ball(B, [0.0; 3], b_rough),
+        DrawItem {
+            mesh: rig.quad,
+            model: panel_model,
+            material: MaterialParams {
+                emissive: PANEL_L,
+                ..MaterialParams::lambert([0.0; 3])
+            },
+            transparent: false,
+            emission: 0.0,
+        },
+    ]
+}
+
+/// Renders the mixed scene `frames` times with `source`, returning the last
+/// image.
+fn render_mixed(
+    ctx: &GpuContext,
+    rig: &mut Rig,
+    source: &mut dyn ReflectionSource,
+    draws: &[DrawItem],
+    frames: usize,
+) -> HdrImage {
+    let cam = camera();
+    let frame = FrameDesc {
+        environment: BLACK,
+        ..FrameDesc::new(&cam, &[], draws)
+    };
+    let mut img = None;
+    for _ in 0..frames {
+        source.prepare(ctx, &mut rig.pbr, &frame, &balls()).unwrap();
+        let binding = source.binding();
+        img = Some(
+            rig.pbr
+                .render_reflected_to_image(ctx, &frame, Some(&binding))
+                .unwrap(),
+        );
+    }
+    img.unwrap()
+}
+
+/// Pixels of ball B whose reflected direction, traced from B's centre
+/// (what B's probe-equivalent map stores), hits ball A (shrunk 15 %).
+fn rough_ball_towards_a() -> Vec<(u32, u32)> {
+    let cam = camera();
+    let mut out = Vec::new();
+    for y in 0..W {
+        for x in 0..W {
+            let Some((_, r)) = on_ball(&cam, x, y, B) else {
+                continue;
+            };
+            if hit_sphere(B, r, A, 0.85 * R).is_some() {
+                out.push((x, y));
+            }
+        }
+    }
+    out
+}
+
+/// All pixels of ball A (6 % rim margin, not hidden behind B).
+fn chrome_ball_pixels() -> Vec<(u32, u32)> {
+    let cam = camera();
+    let mut out = Vec::new();
+    for y in 0..W {
+        for x in 0..W {
+            if on_ball(&cam, x, y, A).is_some() {
+                out.push((x, y));
+            }
+        }
+    }
+    out
+}
+
+fn region_mean(img: &HdrImage, px: &[(u32, u32)]) -> [f64; 3] {
+    let mut m = Region::default();
+    for &(x, y) in px {
+        m.add(img.at(x, y));
+    }
+    m.mean()
+}
+
+/// Largest per-channel difference of the region means.
+fn mean_diff(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (0..3).map(|c| (a[c] - b[c]).abs()).fold(0.0, f64::max)
+}
+
+/// Mean per-pixel absolute difference (all channels) over `px`.
+fn pixel_diff(a: &HdrImage, b: &HdrImage, px: &[(u32, u32)]) -> f64 {
+    let mut sum = 0.0;
+    for &(x, y) in px {
+        let (p, q) = (a.at(x, y), b.at(x, y));
+        for c in 0..3 {
+            sum += f64::from((p[c] - q[c]).abs());
+        }
+    }
+    sum / (3 * px.len().max(1)) as f64
+}
+
+/// Ray-path and probe-path images of the mixed scene.
+fn mixed_pair(ctx: &GpuContext, bounce: bool, b_rough: f32) -> (HdrImage, HdrImage) {
+    let mut rig = Rig::new(ctx);
+    let draws = mixed_draws(&rig, bounce, b_rough);
+    let mut src = ray_source(ctx, &rig, ReflectionQuality::BallsOnly);
+    let ray = render_mixed(ctx, &mut rig, &mut src, &draws, 2);
+    assert_eq!(src.name(), "ray_query");
+    assert!(!src.probes_bound(), "the mixed frame must trace");
+    let kinds: Vec<_> = src.plan().jobs.iter().map(|j| (j.layer, j.kind)).collect();
+    assert!(
+        matches!(
+            kinds[..],
+            [
+                (0, RayJobKind::BallView { .. }),
+                (1, RayJobKind::BallCentre { .. })
+            ]
+        ),
+        "plan {kinds:?}"
+    );
+    let mut rig = Rig::new(ctx);
+    let mut probe = probes(ctx, &rig);
+    // Quality Off: the probe path, settled over the capture budget.
+    let want = render_mixed(ctx, &mut rig, &mut probe, &draws, 3);
+    (ray, want)
+}
+
+#[test]
+fn raytrace_mixed_roughness_rough_ball_equals_probe_output() {
+    let Some(ctx) = rq_ctx("mixed_roughness") else {
+        assert!(
+            !require_ray_query(),
+            "[mixed_roughness] PIN_REQUIRE_RAY_QUERY=1 but no ray-query device"
+        );
+        return;
+    };
+    let cutoff = RayQueryConfig::default().ray_roughness_cutoff;
+    let b_rough = cutoff + 0.05;
+    let towards_a = rough_ball_towards_a();
+    let chrome = chrome_ball_pixels();
+    assert!(
+        towards_a.len() >= 40,
+        "test geometry: {} px",
+        towards_a.len()
+    );
+    assert!(chrome.len() >= 200, "test geometry: {} px", chrome.len());
+
+    // Baseline: B sees emissive A directly; nothing for a second bounce to
+    // find. The ray and probe maps differ only in sampling (map
+    // resolution, rasterised capture vs rays).
+    let (ray0, probe0) = mixed_pair(ctx, false, b_rough);
+    save("raytrace_mixed_baseline_ray", &ray0);
+    save("raytrace_mixed_baseline_probe", &probe0);
+    let (r0, p0) = (
+        region_mean(&ray0, &towards_a),
+        region_mean(&probe0, &towards_a),
+    );
+    let base = mean_diff(r0, p0);
+    // B shows A's emission there in both paths (the region is meaningful).
+    assert!(
+        p0[2] > 0.2 && r0[2] > 0.2,
+        "baseline: A not seen in B: ray {r0:?} probe {p0:?}"
+    );
+    let tol = (3.0 * base).max(0.01);
+
+    // The scene under test: A plain, the panel above. A probe capture shades
+    // A with the (black) environment as its mirror term, so B's region
+    // towards A is dark; a second bounce would show the panel there.
+    let (ray, probe) = mixed_pair(ctx, true, b_rough);
+    save("raytrace_mixed_bounce_ray", &ray);
+    save("raytrace_mixed_bounce_probe", &probe);
+    assert!(
+        ray.pixels
+            .iter()
+            .flatten()
+            .all(|c| c.is_finite() && *c >= 0.0)
+    );
+    let (r1, p1) = (
+        region_mean(&ray, &towards_a),
+        region_mean(&probe, &towards_a),
+    );
+    let diff = mean_diff(r1, p1);
+    let chrome_diff = pixel_diff(&ray, &probe, &chrome);
+    println!(
+        "[mixed_roughness] B roughness {b_rough}, region towards A {} px: \
+         baseline ray {r0:.4?} probe {p0:.4?} diff {base:.4}; tolerance {tol:.4}; \
+         bounce scene ray {r1:.4?} probe {p1:.4?} diff {diff:.4}; \
+         chrome ball A ({} px) mean |ray - probe| {chrome_diff:.4}",
+        towards_a.len(),
+        chrome.len()
+    );
+    assert!(
+        diff <= tol,
+        "rough ball B differs from the probe output towards mirror-like A: \
+         ray {r1:?} probe {p1:?} (diff {diff} > tolerance {tol}; a second bounce?)"
+    );
+    // The ray path is active: chrome A (traced from its surface, with
+    // parallax) differs from its probe image. The images are deterministic,
+    // so any difference well above rounding shows the traced map is bound.
+    assert!(
+        chrome_diff > 1e-3,
+        "chrome ball A matches the probe image (mean |ray - probe| {chrome_diff})"
+    );
 }

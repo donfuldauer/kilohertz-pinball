@@ -34,7 +34,11 @@ pub enum RayJobKind {
     },
     /// A rough ball (above the cutoff) in a frame that traces other
     /// surfaces: the probe-equivalent map, rays leave the sphere radially
-    /// (what a probe at the centre sees, without the capture budget).
+    /// (what a probe at the centre sees, without the capture budget). One
+    /// bounce only: a hit is shaded with the environment as its mirror
+    /// term, exactly what a probe capture renders (no second traced
+    /// bounce, unlike [`BallView`](RayJobKind::BallView) and
+    /// [`Plane`](RayJobKind::Plane)).
     BallCentre {
         /// Ball centre.
         centre: [f32; 3],

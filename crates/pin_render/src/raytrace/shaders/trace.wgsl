@@ -15,7 +15,11 @@
 // reflection exact for the surface the layer serves:
 //   MODE_BALL_VIEW   the sphere point whose mirror reflection of the eye
 //                    ray is R (three fixed-point iterations);
-//   MODE_BALL_CENTRE radially from the sphere (a probe-equivalent map);
+//   MODE_BALL_CENTRE radially from the sphere: the probe-equivalent map of
+//                    a rough ball (above the cutoff) in a traced frame, one
+//                    bounce only (trace_radiance_1), because a probe capture
+//                    shades what it sees with the environment as the mirror
+//                    term;
 //   MODE_PLANE       the plane point where the eye ray reflects into R
 //                    (the eye mirrored in the plane).
 // A ray that misses returns the environment, so a map never goes black.
@@ -26,8 +30,10 @@
 // further traced ray, whose own hit uses the environment as its mirror term:
 // two bounces at most, so a chrome ball seen in another chrome ball shows
 // that ball's reflections. Rougher hits use the environment as the mirror
-// term (one bounce). WGSL has no recursion, so the two bounces are two
-// functions with their own ray queries.
+// term (one bounce). The second bounce applies to MODE_BALL_VIEW and
+// MODE_PLANE only; MODE_BALL_CENTRE stays at one bounce like a probe. WGSL
+// has no recursion, so the two bounces are two functions with their own
+// ray queries.
 
 const TRACE_MAX_LIGHTS: u32 = 128u;
 const TRACE_MAX_JOBS: u32 = 17u;
@@ -66,7 +72,7 @@ struct TraceParams {
     counts: vec4<u32>,
     // x: ray t_max (m), y: origin offset (fraction of the ball radius),
     // z: plane origin offset (m), w: ray roughness cutoff (a hit at or
-    // below it gets a second traced bounce).
+    // below it gets a second traced bounce in BALL_VIEW and PLANE jobs).
     tune: vec4<f32>,
     jobs: array<TraceJob, 17>,
     lights: array<TraceLight, 128>,
@@ -298,7 +304,9 @@ fn job_radiance(job: TraceJob, dir: vec3<f32>) -> vec3<f32> {
         return trace_radiance(c + n * (r * lift), dir, 0.0);
     }
     if (mode == MODE_BALL_CENTRE) {
-        return trace_radiance(c + dir * (r * lift), dir, 0.0);
+        // Probe-equivalent: one bounce, the hit's mirror term is the
+        // environment (what a probe capture renders), never a second ray.
+        return trace_radiance_1(c + dir * (r * lift), dir, 0.0);
     }
     // MODE_PLANE: the eye mirrored in the plane looks through the plane
     // point along `dir`; trace from that point on.

@@ -33,7 +33,8 @@
 //! Skips: ray-mode tests skip with a printed note when the adapter lacks
 //! `EXPERIMENTAL_RAY_QUERY`; with `PIN_REQUIRE_GPU=1` they fail instead on an adapter
 //! known to report it (lavapipe, DECISIONS Q3) or when the adapter reports it but the
-//! device was created without it. `PIN_REQUIRE_RAY_QUERY=1` makes any skip a failure.
+//! device was created without it. `PIN_REQUIRE_RAY_QUERY=1` makes any skip a failure,
+//! including a failed context creation (as does `PIN_REQUIRE_GPU=1`).
 #![cfg(feature = "gpu-tests")]
 #![allow(clippy::needless_range_loop)] // channel/axis indices read clearer as ranges
 #![allow(clippy::needless_update)] // `..RayQueryConfig::default()` stays valid whatever fields the config grows
@@ -119,7 +120,12 @@ fn new_context() -> Option<GpuContext> {
             if require_gpu() {
                 panic!("PIN_REQUIRE_GPU=1 but no GPU context: {e}");
             }
-            println!("SKIP (no GPU adapter, PIN_REQUIRE_GPU not set): {e}");
+            if require_ray_query() {
+                panic!("PIN_REQUIRE_RAY_QUERY=1 but no GPU context: {e}");
+            }
+            println!(
+                "SKIP (no GPU adapter, neither PIN_REQUIRE_GPU nor PIN_REQUIRE_RAY_QUERY set): {e}"
+            );
             None
         }
     }
@@ -1280,11 +1286,11 @@ fn blas_built_once_per_mesh_and_tlas_refit_per_frame() {
         render(ctx, &mut pbr, &meshes, &mut src, &view, &frames[0], "stats");
         let (blas1, tlas1) = ray_counts(&src);
         println!("{q}: after frame 1: {blas1} BLAS builds, {tlas1} TLAS refits");
-        assert!(
-            (1..=2).contains(&blas1),
+        assert_eq!(
+            blas1, 2,
             "{q}: {blas1} BLAS builds for 2 meshes after the first frame"
         );
-        assert!(tlas1 <= 1, "{q}: {tlas1} TLAS refits in the first frame");
+        assert_eq!(tlas1, 1, "{q}: {tlas1} TLAS refits in the first frame");
         let mut tlas = tlas1;
         for i in 1..6 {
             // Balls move every other frame.
