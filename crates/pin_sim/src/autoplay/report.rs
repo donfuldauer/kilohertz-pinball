@@ -20,6 +20,14 @@
 //! (ModeCoverage). TickBudget is wall-clock and lives in the timing section;
 //! it is reported but never fails the soak (it is not reproducible across
 //! machines; Gate A1 checks it separately).
+//!
+//! # Gate A1
+//!
+//! [`SoakReport::gate_a1`] applies the soak criteria of PLAN Gate A1 as code
+//! (see [`GateA1Verdict`]): zero stuck / escaped / non-finite balls, full
+//! coverage, a median ball time of 15..=120 s (judged at skill `standard`
+//! only) and a 99.9th-percentile tick strictly under 0.35 ms. It only reads
+//! values already in the report. It does not change [`SoakReport::passed`].
 
 use core::fmt::Write as _;
 
@@ -363,6 +371,81 @@ pub struct SoakReport {
     pub timing: Timing,
 }
 
+/// Lower bound (inclusive) of the Gate A1 median ball time, ms.
+pub const GATE_A1_MEDIAN_MIN_MS: i64 = 15_000;
+
+/// Upper bound (inclusive) of the Gate A1 median ball time, ms.
+pub const GATE_A1_MEDIAN_MAX_MS: i64 = 120_000;
+
+/// Gate A1 limit of the 99.9th percentile tick time, ns (strict: the
+/// measured value must be below it).
+pub const GATE_A1_P999_TICK_NS: u64 = 350_000;
+
+/// The outcome of one Gate A1 check.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CheckStatus {
+    /// The criterion holds.
+    Pass,
+    /// The criterion is violated or could not be measured.
+    Fail,
+    /// Reported for information; not judged at this skill.
+    Reported,
+}
+
+impl CheckStatus {
+    /// `PASS`, `FAIL` or `REPORTED`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            CheckStatus::Pass => "PASS",
+            CheckStatus::Fail => "FAIL",
+            CheckStatus::Reported => "REPORTED",
+        }
+    }
+}
+
+/// One named Gate A1 check with its value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GateCheck {
+    /// Check name (`no_stuck`, `median_ball_time_15_120s`, ...).
+    pub name: &'static str,
+    /// Outcome.
+    pub status: CheckStatus,
+    /// The measured value or the reason, human-readable.
+    pub value: String,
+}
+
+/// The soak part of Gate A1, one [`GateCheck`] per criterion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GateA1Verdict {
+    /// The checks, in report order.
+    pub checks: Vec<GateCheck>,
+}
+
+impl GateA1Verdict {
+    /// The check called `name`.
+    #[must_use]
+    pub fn check(&self, name: &str) -> Option<&GateCheck> {
+        self.checks.iter().find(|c| c.name == name)
+    }
+
+    /// Whether no check failed (`Reported` checks never fail).
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.checks.iter().all(|c| c.status != CheckStatus::Fail)
+    }
+
+    /// One line per check: `PASS|FAIL|REPORTED  <name>  <value>`.
+    #[must_use]
+    pub fn lines(&self) -> String {
+        let mut o = String::new();
+        for c in &self.checks {
+            let _ = writeln!(o, "{}  {}  {}", c.status.name(), c.name, c.value);
+        }
+        o
+    }
+}
+
 /// A JSON string literal for `s`.
 #[must_use]
 pub fn json_string(s: &str) -> String {
@@ -467,6 +550,99 @@ impl SoakReport {
     #[must_use]
     pub fn passed(&self) -> bool {
         self.failing_findings().next().is_none() && self.coverage_complete()
+    }
+
+    /// The soak criteria of Gate A1 as named checks. `skill` is the skill the
+    /// soak was played at: the 15..=120 s median ball time (bounds
+    /// inclusive) is judged only at [`SkillLevel::Standard`] and merely
+    /// `Reported` otherwise; every other check applies at every skill.
+    ///
+    /// The tick check compares the 99.9th percentile with
+    /// [`GATE_A1_P999_TICK_NS`] strictly (`p99.9 < 0.35 ms`) and fails when
+    /// the timing was not measured or the budget not checked
+    /// (`--no-tick-budget`). A median over zero ball-time samples fails.
+    #[must_use]
+    pub fn gate_a1(&self, skill: SkillLevel) -> GateA1Verdict {
+        let count = |k: FindingKind| self.findings.iter().filter(|f| f.kind == k).count();
+        let mk = |name: &'static str, ok: bool, value: String| GateCheck {
+            name,
+            status: if ok {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Fail
+            },
+            value,
+        };
+        let zero = |name: &'static str, kind: FindingKind| {
+            let n = count(kind);
+            mk(name, n == 0, format!("{n} findings"))
+        };
+        let mut checks = vec![
+            zero("no_stuck", FindingKind::StuckBall),
+            zero("no_escaped", FindingKind::EscapedBall),
+            zero("no_nonfinite", FindingKind::NonFinite),
+        ];
+        let never = self.never_hit();
+        let unreachable = count(FindingKind::UnreachableSwitch);
+        checks.push(mk(
+            "switch_coverage_100",
+            never.is_empty() && unreachable == 0,
+            format!(
+                "{} of {} switches never hit, {unreachable} UnreachableSwitch findings",
+                never.len(),
+                self.switches.len()
+            ),
+        ));
+        let sm = count(FindingKind::ShotCoverage) + count(FindingKind::ModeCoverage);
+        checks.push(mk(
+            "shot_mode_coverage",
+            sm == 0,
+            format!("{sm} shot/mode coverage findings"),
+        ));
+        let d = &self.ball_time_ms;
+        checks.push(GateCheck {
+            name: "ball_time_samples",
+            status: CheckStatus::Reported,
+            value: d.count.to_string(),
+        });
+        let median_value = format!("{} ms (n={})", d.median, d.count);
+        checks.push(if d.count == 0 {
+            mk(
+                "median_ball_time_15_120s",
+                false,
+                "no ball-time samples".into(),
+            )
+        } else if skill == SkillLevel::Standard {
+            mk(
+                "median_ball_time_15_120s",
+                (GATE_A1_MEDIAN_MIN_MS..=GATE_A1_MEDIAN_MAX_MS).contains(&d.median),
+                median_value,
+            )
+        } else {
+            GateCheck {
+                name: "median_ball_time_15_120s",
+                status: CheckStatus::Reported,
+                value: median_value,
+            }
+        });
+        let t = &self.timing;
+        checks.push(
+            if !t.measured || t.ticks_measured == 0 || !t.budget_checked {
+                mk(
+                    "p999_tick_under_0_35ms",
+                    false,
+                    "tick timing not measured".into(),
+                )
+            } else {
+                let limit_us = GATE_A1_P999_TICK_NS as f64 / 1000.0;
+                mk(
+                    "p999_tick_under_0_35ms",
+                    t.tick_p999_us < limit_us,
+                    format!("{:.3} us (limit {limit_us:.3} us, strict)", t.tick_p999_us),
+                )
+            },
+        );
+        GateA1Verdict { checks }
     }
 
     /// Names of the declared switches never hit, in declaration order.
