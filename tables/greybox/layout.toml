@@ -3,21 +3,17 @@
 # Units mm, x across (0 = left), y up the table (0 = bottom).
 schema_version = 1
 
-# Walls and posts 90 mm tall under a glass at 112 mm (Gate A1 zero-escape
-# fix, docs/DECISIONS.md "a1-glass-height — grey-box walls to the glass";
-# was 50 mm walls under the default glass, geometry max z + 50 mm). A wall
-# seals against the glass only if the gap (glass underside - wall top) is
-# under one ball diameter (27 mm): here 22 mm, so a ball in the air cannot
-# cross a wall or post. The glass sits 32 mm above the ramp-top covers
-# (z 80, the highest deck), at least a ball diameter + 3 mm, so a ball
-# resting on a cover (top at 107 mm) still moves freely.
+# Walls and posts 90 mm tall under the playfield glass at 112 mm (Gate A1
+# zero-escape fix, docs/DECISIONS.md "a1-glass-height — grey-box walls to
+# the glass"; was 50 mm walls under the default glass, geometry max z +
+# 50 mm). The glass height lives in glass.toml (a1-glass-height — sim reads
+# glass.toml); see there for the seal rule (gap under one ball diameter).
 # wall_height is also the height of the guides (ramp side rails, deck
 # rails; DECISIONS "2.5 — guide wall height").
 [playfield]
 width = 514.0
 length = 1070.0
 wall_height = 90.0
-glass_height = 112.0
 
 # Cabinet: closed outer wall.
 [[walls]]

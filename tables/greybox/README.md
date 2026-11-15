@@ -38,6 +38,7 @@ committed.
 | File | What |
 | --- | --- |
 | `layout.toml` | `pin_tablegen` layout: walls, orbit lane, ramp, upper deck |
+| `glass.toml` | playfield glass underside, 112 mm (22 mm over the 90 mm walls; DECISIONS "a1-glass-height — grey-box walls to the glass") |
 | `table.toml` | base manifest: switches, coils, flippers, mechs, magnet, ramp spline, layer transitions, dispenser, shots, modes, sounds, scenes |
 | `rules.lua` | rules (integer only): attract → 3-ball game → game over |
 | `backglass.toml` | placeholder translite and a 128 × 32 orange DMD |
@@ -53,7 +54,7 @@ tables/greybox/build.sh target/greybox-bundle
 ```
 
 It runs `pin_tablegen` (layout → `playfield.glb` + merged `table.toml`),
-copies the rules, backglass and scenes, runs `pin_assetgen` (the 4.6
+copies the rules, backglass, layout, glass and scenes, runs `pin_assetgen` (the 4.6
 placeholder kit: sounds, fonts, backglass art; title "Grey Box", the table's
 palette, seed 0) and finally `pin_tablegen validate` (ball clearances). The
 tests build the same bundle with `build_greybox_bundle(out_dir)` in
