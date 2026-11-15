@@ -2030,7 +2030,17 @@ fn raytrace_mixed_roughness_rough_ball_equals_probe_output() {
         p0[2] > 0.2 && r0[2] > 0.2,
         "baseline: A not seen in B: ray {r0:?} probe {p0:?}"
     );
-    let tol = (3.0 * base).max(0.01);
+    // Fixed bounds, independent of the measured baseline so a bad baseline
+    // cannot loosen the second-bounce check. Measured on lavapipe (Vulkan, the
+    // only ray-query backend so far; Metal/WARP skip): base = 0.0000 (printed to 4 dp).
+    // The old shader (second bounce present) gave a diff of 0.3052.
+    const BASE_MAX: f64 = 0.005;
+    const TOL: f64 = 0.01;
+    assert!(
+        base <= BASE_MAX,
+        "baseline ray-vs-probe diff {base} exceeds {BASE_MAX}"
+    );
+    let tol = TOL;
 
     // The scene under test: A plain, the panel above. A probe capture shades
     // A with the (black) environment as its mirror term, so B's region

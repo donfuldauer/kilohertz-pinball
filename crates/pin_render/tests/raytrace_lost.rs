@@ -23,10 +23,10 @@ const R: f32 = 0.0135;
 ///
 /// - [`required`] (`PIN_REQUIRE_GPU=1` or `PIN_REQUIRE_RAY_QUERY=1`): a
 ///   context that fails to create is fatal instead of skipping.
-/// - [`require_ray_query`] (`PIN_REQUIRE_RAY_QUERY=1` only): an adapter that
-///   lacks `EXPERIMENTAL_RAY_QUERY` is fatal. Under `PIN_REQUIRE_GPU=1` alone
-///   it skips with a message, so a Metal adapter without ray query does not
-///   fail the GPU job.
+/// - [`ray_query_missing_is_fatal`]: an adapter that lacks
+///   `EXPERIMENTAL_RAY_QUERY` fails the test iff `PIN_REQUIRE_RAY_QUERY=1`
+///   (any adapter) or `PIN_REQUIRE_GPU=1` on a Vulkan adapter. WARP and Metal
+///   never have the feature, so there it skips with a message.
 fn required() -> bool {
     require_gpu() || require_ray_query()
 }
@@ -34,6 +34,12 @@ fn required() -> bool {
 /// `PIN_REQUIRE_RAY_QUERY=1`: a missing ray-query feature fails the test.
 fn require_ray_query() -> bool {
     std::env::var("PIN_REQUIRE_RAY_QUERY").is_ok_and(|v| v.trim() == "1")
+}
+
+/// The missing-feature rule: fatal iff `PIN_REQUIRE_RAY_QUERY=1`, or
+/// `PIN_REQUIRE_GPU=1` on a Vulkan adapter (docs/HUMAN_QUEUE.md).
+fn ray_query_missing_is_fatal(backend: wgpu::Backend) -> bool {
+    require_ray_query() || (require_gpu() && backend == wgpu::Backend::Vulkan)
 }
 
 #[test]
@@ -50,7 +56,7 @@ fn raytrace_lost_device_reports_the_loss_and_stops_rendering() {
     if !ctx.supports_ray_query() {
         let info = ctx.adapter_info();
         assert!(
-            !require_ray_query(),
+            !ray_query_missing_is_fatal(info.backend),
             "[raytrace_lost] ray queries required but adapter {} ({:?}) lacks EXPERIMENTAL_RAY_QUERY",
             info.name,
             info.backend
