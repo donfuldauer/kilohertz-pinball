@@ -37,5 +37,5 @@ pub use report::{
     CheckStatus, CounterTotals, Distribution, Finding, FindingKind, GameEnd, GameSummary,
     GateA1Verdict, GateCheck, ModeCount, ShotCount, SoakReport, SwitchCount, Timing,
 };
-pub use soak::{SoakConfig, TickHistogram, bot_seed, game_seed, run_soak};
+pub use soak::{SoakConfig, TickHistogram, bot_seed, game_seed, play_soak_game, run_soak};
 pub use table::TableInfo;

@@ -22,6 +22,7 @@ fn good(skill: SkillLevel) -> SoakReport {
         shots: vec![],
         modes: vec![],
         ball_time_ms: Distribution::of(&[30_000, 30_000, 30_000]),
+        ball_time_censored: 0,
         game_score: Distribution::default(),
         counters: CounterTotals::default(),
         bot: BotStats::default(),
@@ -156,6 +157,7 @@ fn missing_timing_fails_never_passes_silently() {
 fn each_failing_finding_fails_its_own_check() {
     for (kind, name) in [
         (FindingKind::StuckBall, "no_stuck"),
+        (FindingKind::EndlessBall, "no_endless_balls"),
         (FindingKind::EscapedBall, "no_escaped"),
         (FindingKind::NonFinite, "no_nonfinite"),
         (FindingKind::UnreachableSwitch, "switch_coverage_100"),
@@ -204,4 +206,44 @@ fn lines_format_and_passed_semantics_unchanged() {
     let mut t = good(SkillLevel::Standard);
     t.timing.findings.push(finding(FindingKind::TickBudget));
     assert!(t.passed());
+}
+
+#[test]
+fn an_endless_ball_fails_no_endless_balls_at_every_skill() {
+    for skill in [SkillLevel::Novice, SkillLevel::Standard, SkillLevel::Expert] {
+        let clean = good(skill).gate_a1(skill);
+        let c = clean
+            .check("no_endless_balls")
+            .expect("no_endless_balls row");
+        assert_eq!(c.status, CheckStatus::Pass);
+        assert_eq!(c.value, "0 findings");
+        assert!(clean.passed(), "{}", clean.lines());
+
+        let mut r = good(skill);
+        r.findings.push(finding(FindingKind::EndlessBall));
+        r.findings.push(finding(FindingKind::EndlessBall));
+        let v = r.gate_a1(skill);
+        let c = v.check("no_endless_balls").unwrap();
+        assert_eq!(c.status, CheckStatus::Fail);
+        assert_eq!(c.value, "2 findings");
+        assert!(!v.passed());
+        assert!(
+            v.lines().contains("FAIL  no_endless_balls  2 findings"),
+            "{}",
+            v.lines()
+        );
+        // EndlessBall is a failing kind of the soak itself too.
+        assert!(!r.passed());
+    }
+}
+
+#[test]
+fn censored_ball_times_are_reported_not_judged() {
+    let mut r = good(SkillLevel::Standard);
+    r.ball_time_censored = 2;
+    let v = r.gate_a1(SkillLevel::Standard);
+    let c = v.check("ball_time_censored").unwrap();
+    assert_eq!(c.status, CheckStatus::Reported);
+    assert!(c.value.starts_with("2 of 3 samples"), "{}", c.value);
+    assert!(v.passed());
 }

@@ -14,7 +14,7 @@
 //!
 //! [`SoakReport::passed`] is false (and `pin_sim soak` exits 1) when any
 //! finding of a [failing kind](FindingKind::fails_soak) exists (StuckBall,
-//! EscapedBall, NonFinite, ScriptError, QueueOverflow) or the coverage is
+//! EndlessBall, EscapedBall, NonFinite, ScriptError, QueueOverflow) or the coverage is
 //! incomplete: a declared switch never hit (UnreachableSwitch), a shot never
 //! completed (ShotCoverage) or a mode never observed started
 //! (ModeCoverage). TickBudget is wall-clock and lives in the timing section;
@@ -24,10 +24,19 @@
 //! # Gate A1
 //!
 //! [`SoakReport::gate_a1`] applies the soak criteria of PLAN Gate A1 as code
-//! (see [`GateA1Verdict`]): zero stuck / escaped / non-finite balls, full
-//! coverage, a median ball time of 15..=120 s (judged at skill `standard`
+//! (see [`GateA1Verdict`]): zero stuck / endless / escaped / non-finite
+//! balls, full coverage, a median ball time of 15..=120 s (judged at skill `standard`
 //! only) and a 99.9th-percentile tick strictly under 0.35 ms. It only reads
 //! values already in the report. It does not change [`SoakReport::passed`].
+//!
+//! # Censored ball times
+//!
+//! A ball still on the table when its game ended (stopped at
+//! `max_game_ticks`, or ended stuck) has no drain time. It is counted in
+//! [`SoakReport::ball_time_ms`] at its observed age, a lower bound of its
+//! real time on the table, so the median can only be under-, never
+//! over-estimated by it; [`SoakReport::ball_time_censored`] says how many
+//! samples are such lower bounds (DECISIONS.md "A1-endless-detector — censored ball times").
 
 use core::fmt::Write as _;
 
@@ -44,8 +53,12 @@ pub const SOAK_WIDE: u32 = u32::MAX;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FindingKind {
     /// A ball slower than 1 cm/s for more than 10 s outside a trough, lock,
-    /// held cradle, holding magnet or plunger lane.
+    /// held cradle, holding magnet or plunger lane, or within one ball
+    /// diameter of one point for that long at any speed.
     StuckBall,
+    /// A ball on the table for longer than the endless-ball limit (default
+    /// 300 s), or still in play when its game reached `max_game_ticks`.
+    EndlessBall,
     /// A ball left the table's bounds (collider bounds plus a margin, or
     /// below the floor).
     EscapedBall,
@@ -68,8 +81,9 @@ pub enum FindingKind {
 
 impl FindingKind {
     /// Every kind, in report order.
-    pub const ALL: [FindingKind; 9] = [
+    pub const ALL: [FindingKind; 10] = [
         FindingKind::StuckBall,
+        FindingKind::EndlessBall,
         FindingKind::EscapedBall,
         FindingKind::NonFinite,
         FindingKind::UnreachableSwitch,
@@ -85,6 +99,7 @@ impl FindingKind {
     pub fn name(self) -> &'static str {
         match self {
             FindingKind::StuckBall => "StuckBall",
+            FindingKind::EndlessBall => "EndlessBall",
             FindingKind::EscapedBall => "EscapedBall",
             FindingKind::NonFinite => "NonFinite",
             FindingKind::UnreachableSwitch => "UnreachableSwitch",
@@ -108,6 +123,7 @@ impl FindingKind {
         matches!(
             self,
             FindingKind::StuckBall
+                | FindingKind::EndlessBall
                 | FindingKind::EscapedBall
                 | FindingKind::NonFinite
                 | FindingKind::ScriptError
@@ -356,8 +372,13 @@ pub struct SoakReport {
     pub shots: Vec<ShotCount>,
     /// Mode starts, in declaration order.
     pub modes: Vec<ModeCount>,
-    /// Time each ball spent on the table (balls that left it), ms.
+    /// Time each ball spent on the table, ms: the balls that left it, plus
+    /// the censored balls still on it when their game ended, at their
+    /// observed age (see the [module docs](self)).
     pub ball_time_ms: Distribution,
+    /// How many of the [`ball_time_ms`](Self::ball_time_ms) samples are
+    /// censored (lower bounds).
+    pub ball_time_censored: u64,
     /// Player 1's final score per game (games without a reported score
     /// count as 0).
     pub game_score: Distribution,
@@ -552,7 +573,9 @@ impl SoakReport {
         self.failing_findings().next().is_none() && self.coverage_complete()
     }
 
-    /// The soak criteria of Gate A1 as named checks. `skill` is the skill the
+    /// The soak criteria of Gate A1 as named checks (`no_stuck`,
+    /// `no_endless_balls`, `no_escaped`, `no_nonfinite`, coverage, ball time,
+    /// tick time). `skill` is the skill the
     /// soak was played at: the 15..=120 s median ball time (bounds
     /// inclusive) is judged only at [`SkillLevel::Standard`] and merely
     /// `Reported` otherwise; every other check applies at every skill.
@@ -579,6 +602,7 @@ impl SoakReport {
         };
         let mut checks = vec![
             zero("no_stuck", FindingKind::StuckBall),
+            zero("no_endless_balls", FindingKind::EndlessBall),
             zero("no_escaped", FindingKind::EscapedBall),
             zero("no_nonfinite", FindingKind::NonFinite),
         ];
@@ -604,6 +628,14 @@ impl SoakReport {
             name: "ball_time_samples",
             status: CheckStatus::Reported,
             value: d.count.to_string(),
+        });
+        checks.push(GateCheck {
+            name: "ball_time_censored",
+            status: CheckStatus::Reported,
+            value: format!(
+                "{} of {} samples are balls still in play at game end (counted at their observed age)",
+                self.ball_time_censored, d.count
+            ),
         });
         let median_value = format!("{} ms (n={})", d.median, d.count);
         checks.push(if d.count == 0 {
@@ -746,8 +778,9 @@ impl SoakReport {
         let _ = writeln!(o, "  }},");
         let _ = writeln!(
             o,
-            "  \"distributions\": {{\"ball_time_ms\": {}, \"game_score\": {}}},",
+            "  \"distributions\": {{\"ball_time_ms\": {}, \"ball_time_censored\": {}, \"game_score\": {}}},",
             dist_json(&self.ball_time_ms),
+            self.ball_time_censored,
             dist_json(&self.game_score)
         );
         let c = &self.counters;
@@ -851,6 +884,11 @@ impl SoakReport {
         let _ = writeln!(o, "| balls played | {balls} |");
         let _ = writeln!(
             o,
+            "| balls censored (in play at game end) | {} |",
+            self.ball_time_censored
+        );
+        let _ = writeln!(
+            o,
             "| coverage complete | {} |",
             if self.coverage_complete() {
                 "yes"
@@ -934,6 +972,11 @@ impl SoakReport {
                 d.count, d.min, d.median, d.p90, d.p99, d.max
             );
         }
+        let _ = writeln!(
+            o,
+            "\nBall times include {} censored samples: balls still in play when their game ended, counted at their observed age (a lower bound).",
+            self.ball_time_censored
+        );
         let c = &self.counters;
         let b = &self.bot;
         let _ = writeln!(o, "\n## Counters\n");
