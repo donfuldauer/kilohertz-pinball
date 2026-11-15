@@ -34,17 +34,20 @@ tilt = 8
 # loader lifts each zone to ball-centre height.
 
 # The two trough zones overlap and span the drain funnel's bottom
-# (x 192..322 at ball height; layout.toml funnel walls): a ball cannot come
+# (x 189..325 at ball height; layout.toml funnel walls): a ball cannot come
 # to rest on the cabinet bottom between or beside them. They are symmetric
 # about the centre line x = 257, so a ball draining down the middle closes
-# both.
+# both. Radius 36 (Gate A1 play-length fix, was 34): a ball resting in the
+# corner of the right funnel wall and the cabinet bottom has its centre at
+# (323.3, 13.5), 34.9 mm from trough_2's centre at ball height; a standard
+# soak found one stuck there.
 [[switches]]
 id = "trough_1"
 number = 10
 kind = "trough"
 layer = 0
 position = [225.0, 20.0, 0.0]
-radius = 34.0
+radius = 36.0
 
 [[switches]]
 id = "trough_2"
@@ -52,7 +55,7 @@ number = 11
 kind = "trough"
 layer = 0
 position = [289.0, 20.0, 0.0]
-radius = 34.0
+radius = 36.0
 
 [[switches]]
 id = "lower_left_eos"
@@ -94,12 +97,14 @@ id = "bumper_3_ring"
 number = 19
 kind = "ring"
 
+# In the orbit's left leg, above its lower bend (Gate A1 play-length fix:
+# the lane now ends at (85, 615), layout.toml).
 [[switches]]
 id = "orbit_entry"
 number = 20
 kind = "opto"
 layer = 0
-position = [30.0, 470.0, 0.0]
+position = [38.0, 700.0, 0.0]
 radius = 15.0
 
 [[switches]]

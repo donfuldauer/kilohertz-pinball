@@ -22,6 +22,15 @@ it return a stray ball to layer 0, and covers at z 80 mm hold a fast ball on
 the wire's level end. The upper deck is at z 50 mm and the Newton ball at
 (330, 450).
 
+Gate A1 play length (`docs/DECISIONS.md` "6.0 fix — grey-box play length
+(Gate A1 median), iteration 3"): the orbit's lower end bends right and ends
+at (85, 615) above the upper-left flipper, so the plunge (which rides the
+orbit top first) comes out in mid-field instead of onto the left inlane;
+`orbit_entry` sits in the orbit's left leg at (38, 700). A guide wall below
+the upper deck's edge drops balls onto `bumper_2`, a short wall closes the
+alcove right of the ramp lane, walls are 50 mm tall and both trough zones
+have radius 36 mm.
+
 Only the sources live here; the generated `playfield.glb`, the merged
 `table.toml` and the placeholder art and sounds are build output and are not
 committed.
