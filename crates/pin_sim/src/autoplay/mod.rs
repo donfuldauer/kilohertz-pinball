@@ -34,8 +34,8 @@ pub mod table;
 pub use bot::{Bot, BotConfig, BotStats, FlipperModel, NudgeConfig, SkillLevel, SkillParams};
 pub use monitor::{GameMonitor, GameOutcome};
 pub use report::{
-    CounterTotals, Distribution, Finding, FindingKind, GameEnd, GameSummary, ModeCount, ShotCount,
-    SoakReport, SwitchCount, Timing,
+    CheckStatus, CounterTotals, Distribution, Finding, FindingKind, GameEnd, GameSummary,
+    GateA1Verdict, GateCheck, ModeCount, ShotCount, SoakReport, SwitchCount, Timing,
 };
 pub use soak::{SoakConfig, TickHistogram, bot_seed, game_seed, run_soak};
 pub use table::TableInfo;

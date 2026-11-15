@@ -340,6 +340,47 @@ jobs:
         shell: bash
         run: cargo test --release -p pin_physics --test ball_seam_bitident -- --nocapture
 
+  # Gate A1 runner (PLAN Gate A1): analytic and rig tests plus the 1,000-game soak at novice,
+  # standard and expert, judged by `pin_sim soak --gate a1`. Manual only: the soak plays about
+  # 4.4 games/s on one thread in release (measured: 50 games in 11.3 s), so 3 x 1,000 games take
+  # roughly 11-12 minutes of soak plus the release build (about 6 minutes cold), well beyond what
+  # every push should pay. The push-time `core-tests` job already runs the analytic and rig tests.
+  # Run it from the Actions tab (workflow_dispatch); a failing criterion fails the job.
+  gate-a1:
+    name: gate-a1 (manual)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      SDL_VIDEO_DRIVER: dummy
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+
+      - name: Gate A1 (scripts/gate_a1.sh)
+        shell: bash
+        run: scripts/gate_a1.sh
+
+      - name: Upload the soak reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-a1-soak-reports
+          path: target/gate_a1/soak_*/
+          if-no-files-found: warn
+
   # Line coverage for the GPU-free crates (gate step 4). Non-gating for now: prints the table.
   # Like core-tests, no SDL/X11 packages are installed.
   coverage:
