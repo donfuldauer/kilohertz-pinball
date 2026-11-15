@@ -30,11 +30,14 @@
 //! * **Playfield glass** (a1-glass): once every source has fed the table
 //!   bounds (collider meshes, splines, flippers, mechs, dispensers), a static
 //!   [`Material::Acrylic`] box on every layer is added as the last collider
-//!   and the world is built. Its underside is the old escape ceiling (bounds
-//!   max `z` + [`BOUNDS_MARGIN_M`]), it is [`GLASS_THICKNESS_M`] thick and
-//!   covers the bounds in `x`/`y` (with the margin). The escape box keeps
-//!   its `x`/`y` and floor; its top is the glass's top face +
-//!   [`BOUNDS_MARGIN_M`] ([`Simulation::escape_bounds`]).
+//!   and the world is built. Its underside is at `height`
+//!   (mm, of the bundle's optional `glass.toml`) when that file exists, which must be at
+//!   least the table geometry's max `z` (else [`SimError::Build`]);
+//!   otherwise it is the old escape ceiling (bounds max `z` +
+//!   [`BOUNDS_MARGIN_M`]). It is [`GLASS_THICKNESS_M`] thick and covers the
+//!   bounds in `x`/`y` (with the margin). The escape box keeps its `x`/`y`
+//!   and floor; its top is the glass's top face + [`BOUNDS_MARGIN_M`]
+//!   ([`Simulation::escape_bounds`]). The glass never feeds the bounds.
 //!
 //! [`Simulation::load_snapshot`] builds from a [`BundleSnapshot`] (an
 //! immutable in-memory copy, Subphase 6.0) so a caller can validate and
@@ -51,8 +54,8 @@ use pin_core::ids::{
 };
 use pin_core::input::CabinetInput;
 use pin_core::profiles::{BUILTIN_PROFILE_NAMES, builtin_profile};
-use pin_core::schema::LayoutManifest;
 use pin_core::schema::table::{MechKind, SplineKind, SwitchKind};
+use pin_core::schema::{GLASS_FILE, GlassManifest, LayoutManifest};
 use pin_core::snapshot::{FrameStateSnapshot, MAX_BALLS};
 use pin_core::{
     BallProfile, HostCommandQueue, HostCtx, HostView, Material, Pcg32, PhysicsDefaults,
@@ -87,9 +90,10 @@ pub const DEFAULT_WALL_HEIGHT_MM: f32 = 28.0;
 /// Margin around the table's geometry beyond which a ball has escaped, m.
 pub const BOUNDS_MARGIN_M: f32 = 0.05;
 
-/// Thickness of the playfield glass, m. Its underside sits
-/// [`BOUNDS_MARGIN_M`] above the table's bounds max `z`, and the escape
-/// ceiling [`BOUNDS_MARGIN_M`] above its top face.
+/// Thickness of the playfield glass, m. Its underside sits at the bundle's
+/// `glass.toml` `height` when present, else [`BOUNDS_MARGIN_M`] above the
+/// table's bounds max `z`; the escape ceiling is [`BOUNDS_MARGIN_M`] above
+/// its top face.
 pub const GLASS_THICKNESS_M: f32 = 0.025;
 
 /// Height of a switch sensor's centre above the switch's playfield
@@ -212,6 +216,11 @@ impl Bounds {
         }
     }
 
+    /// Highest `z` of the geometry, before the margin (`-inf` when empty).
+    fn max_z(&self) -> f32 {
+        self.max.z
+    }
+
     fn finish(&self) -> (Vec3, Vec3) {
         if self.min.x > self.max.x {
             return (Vec3::splat(-1.0), Vec3::splat(1.0));
@@ -224,33 +233,55 @@ impl Bounds {
 }
 
 /// The playfield glass for the finished table bounds `(lo, hi)` (margin
-/// included): a box covering `lo..hi` in `x`/`y` whose underside is `hi.z`.
-/// Returns the shape and the escape bounds (the same box with its top raised
-/// to the glass's top face + [`BOUNDS_MARGIN_M`]).
-fn glass_lid(lo: Vec3, hi: Vec3) -> (StaticShape, (Vec3, Vec3)) {
+/// included): a box covering `lo..hi` in `x`/`y` whose underside is at
+/// `under` (m). Returns the shape and the escape bounds (`lo` and `hi` in
+/// `x`/`y` and the floor, with the top at the glass's top face +
+/// [`BOUNDS_MARGIN_M`]).
+fn glass_lid(lo: Vec3, hi: Vec3, under: f32) -> (StaticShape, (Vec3, Vec3)) {
     let half = GLASS_THICKNESS_M * 0.5;
     let shape = StaticShape::Cuboid {
-        center: Vec3::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5, hi.z + half),
+        center: Vec3::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5, under + half),
         half_extents: Vec3::new((hi.x - lo.x) * 0.5, (hi.y - lo.y) * 0.5, half),
         rotation: Quat::IDENTITY,
     };
-    let top = hi.z + GLASS_THICKNESS_M;
+    let top = under + GLASS_THICKNESS_M;
     (shape, (lo, Vec3::new(hi.x, hi.y, top + BOUNDS_MARGIN_M)))
+}
+
+/// Underside of the playfield glass, m: `glass_height_m` when the bundle's
+/// `glass.toml` sets it (an error if it is below the geometry's max `z`, `max_z`, before
+/// the margin; equal is allowed), else the finished bounds' top `hi_z`
+/// (max `z` + [`BOUNDS_MARGIN_M`]).
+fn glass_underside(glass_height_m: Option<f32>, max_z: f32, hi_z: f32) -> Result<f32, SimError> {
+    let Some(g) = glass_height_m else {
+        return Ok(hi_z);
+    };
+    if g < max_z {
+        return Err(build_err(format!(
+            "glass.toml height {:.3} mm is below the table geometry's max z {:.3} mm",
+            g * 1.0e3,
+            max_z * 1.0e3
+        )));
+    }
+    Ok(g)
 }
 
 impl Simulation {
     /// The box outside which a ball counts as escaped and is removed
     /// (`(min, max)`, m): the table bounds plus [`BOUNDS_MARGIN_M`] in `x`,
     /// `y` and below, and the playfield glass's top face plus
-    /// [`BOUNDS_MARGIN_M`] above. The glass's underside is
-    /// `max.z − GLASS_THICKNESS_M − BOUNDS_MARGIN_M` (to f32 rounding).
+    /// [`BOUNDS_MARGIN_M`] above. The glass's underside (the bundle's
+    /// `glass.toml` `height` when present, else the table bounds' max `z` +
+    /// [`BOUNDS_MARGIN_M`]) is `max.z − GLASS_THICKNESS_M − BOUNDS_MARGIN_M`
+    /// (to f32 rounding).
     #[must_use]
     pub fn escape_bounds(&self) -> ([f32; 3], [f32; 3]) {
         (self.bounds.0.to_array(), self.bounds.1.to_array())
     }
 }
 
-fn wall_height_m(vfs: &Vfs) -> Result<f32, SimError> {
+/// The playfield wall height of the bundle's `layout.toml`, m.
+fn layout_wall_height(vfs: &Vfs) -> Result<f32, SimError> {
     const LAYOUT: &str = "layout.toml";
     if !vfs.exists(LAYOUT) {
         return Ok(DEFAULT_WALL_HEIGHT_MM * 1.0e-3);
@@ -266,6 +297,19 @@ fn wall_height_m(vfs: &Vfs) -> Result<f32, SimError> {
         )));
     }
     Ok(h * 1.0e-3)
+}
+
+/// The glass underside height of the bundle's optional `glass.toml`, m
+/// (`None` when the file is absent).
+fn glass_height_m(vfs: &Vfs) -> Result<Option<f32>, SimError> {
+    if !vfs.exists(GLASS_FILE) {
+        return Ok(None);
+    }
+    let bytes = vfs.read(GLASS_FILE)?;
+    let text = String::from_utf8(bytes).map_err(|e| build_err(format!("{GLASS_FILE}: {e}")))?;
+    let glass =
+        GlassManifest::from_toml_str(&text).map_err(|e| build_err(format!("{GLASS_FILE}: {e}")))?;
+    Ok(Some(glass.height * 1.0e-3))
 }
 
 /// Collider nodes named after a mech: `<id>` / `<id>.on` (on) and
@@ -331,7 +375,8 @@ impl Simulation {
         let table_hash = bundle_hash(vfs)?;
         let table = load_table(vfs)?;
         let scene = load_gltf(vfs, &table.manifest.meta.playfield_mesh)?;
-        let wall_height = wall_height_m(vfs)?;
+        let wall_height = layout_wall_height(vfs)?;
+        let glass_m = glass_height_m(vfs)?;
         let mut bounds = Bounds::new();
 
         // --- Static world. ---
@@ -615,11 +660,13 @@ impl Simulation {
             .collect();
 
         // --- Playfield glass, then the world. ---
-        // The ceiling is taken from the finished bounds before the glass
-        // exists; the glass never feeds `bounds`. Added last, so every
-        // existing collider handle is unchanged.
+        // The ceiling is taken from the finished bounds (or the layout's
+        // glass.toml) before the glass exists; the glass never feeds
+        // `bounds`. Added last, so every existing collider handle is
+        // unchanged.
         let (lo, hi) = bounds.finish();
-        let (glass, escape_bounds) = glass_lid(lo, hi);
+        let under = glass_underside(glass_m, bounds.max_z(), hi.z)?;
+        let (glass, escape_bounds) = glass_lid(lo, hi, under);
         let glass = builder.add_collider(glass, layers::ALL, true);
         solver.set_collider_material(glass, Material::Acrylic);
         let mut world = builder.build();
@@ -718,7 +765,7 @@ mod tests {
         b.add(Vec3::new(-0.01, 0.02, -0.03));
         b.add(Vec3::new(0.514, 1.07, 0.12));
         let (lo, hi) = b.finish();
-        let (shape, (elo, ehi)) = glass_lid(lo, hi);
+        let (shape, (elo, ehi)) = glass_lid(lo, hi, hi.z);
         let StaticShape::Cuboid {
             center,
             half_extents,
@@ -753,10 +800,53 @@ mod tests {
     #[test]
     fn empty_bounds_still_get_a_glass() {
         let (lo, hi) = Bounds::new().finish();
-        let (shape, (elo, ehi)) = glass_lid(lo, hi);
+        let (shape, (elo, ehi)) = glass_lid(lo, hi, hi.z);
         assert!(matches!(shape, StaticShape::Cuboid { .. }));
         assert_eq!(elo, Vec3::splat(-1.0));
         assert_eq!((ehi.x, ehi.y), (1.0, 1.0));
         assert!(ehi.z > 1.0 + GLASS_THICKNESS_M);
+    }
+
+    #[test]
+    fn glass_height_sets_the_underside_and_the_escape_top() {
+        let mut b = Bounds::new();
+        b.add(Vec3::new(0.0, 0.0, 0.0));
+        b.add(Vec3::new(0.514, 1.07, 0.092));
+        let (lo, hi) = b.finish();
+        let under = glass_underside(Some(0.112), b.max_z(), hi.z).unwrap();
+        assert_eq!(under, 0.112);
+        let (shape, (elo, ehi)) = glass_lid(lo, hi, under);
+        let StaticShape::Cuboid {
+            center,
+            half_extents,
+            ..
+        } = shape
+        else {
+            panic!("glass is not a cuboid: {shape:?}");
+        };
+        assert!((center.z - half_extents.z - 0.112).abs() <= 1.0e-6);
+        assert!((half_extents.z * 2.0 - GLASS_THICKNESS_M).abs() <= 1.0e-6);
+        assert_eq!(elo, lo);
+        assert_eq!((ehi.x, ehi.y), (hi.x, hi.y));
+        assert!((ehi.z - (0.112 + GLASS_THICKNESS_M + BOUNDS_MARGIN_M)).abs() <= 1.0e-6);
+    }
+
+    #[test]
+    fn glass_height_absent_is_the_old_ceiling_and_equal_max_z_is_allowed() {
+        assert_eq!(glass_underside(None, 0.03, 0.08).unwrap(), 0.08);
+        assert_eq!(glass_underside(Some(0.03), 0.03, 0.08).unwrap(), 0.03);
+        assert_eq!(
+            glass_underside(Some(1.0), f32::NEG_INFINITY, 1.0).unwrap(),
+            1.0
+        );
+    }
+
+    #[test]
+    fn glass_height_below_the_geometry_is_an_error() {
+        let Err(SimError::Build(msg)) = glass_underside(Some(0.02), 0.028, 0.078) else {
+            panic!("expected a build error");
+        };
+        assert!(msg.contains("glass.toml height"), "{msg}");
+        assert!(msg.contains("20") && msg.contains("28"), "{msg}");
     }
 }
