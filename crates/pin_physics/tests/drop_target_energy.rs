@@ -230,9 +230,14 @@ fn trial(speed: f32, angle_deg: f32, phase: i32, off: f32, e: f32, mu: f32) -> W
         let Some(&now) = t.solver.ball(h) else {
             break;
         };
-        // In reach of the target's box (footprint + radius + 1 mm).
+        // In reach of the target's box (footprint + radius + 1 mm), widened
+        // by the farthest the ball can travel in one tick (up to 3.5 mm at
+        // 3.5 m/s). A ball that starts the tick outside a fixed margin can
+        // still hit during it; skipping that tick would leave the next
+        // baseline post-impact and hide an excessive impulse.
         let p = prev.position;
-        let near = p.x.abs() <= half_thk + r + 1.0e-3 && p.y.abs() <= half_len + r + 1.0e-3;
+        let reach = r + 1.0e-3 + DT * prev.velocity.length().max(now.velocity.length());
+        let near = p.x.abs() <= half_thk + reach && p.y.abs() <= half_len + reach;
         if near {
             w.contact_ticks += 1;
             let bound = curb_bound(prev.velocity, v_rise, e, mu);

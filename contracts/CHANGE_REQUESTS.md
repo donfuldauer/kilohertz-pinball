@@ -146,12 +146,13 @@ unchanged):
 - **Affected crates:** none (data only). Behaviour note: acrylic table colliders (e.g. the grey-box upper deck) now also use this pair for steel balls instead of the fallback; no committed replay or autoplay fixture uses acrylic.
 - **Workaround meanwhile:** none.
 
-### CR-007: optional `[playfield] glass_height`
+### CR-007: optional `glass.toml` (`GlassManifest`)
 - **Requested by:** Wave 6 work item a1-glass-height (task executor)
 - **Status:** open (pin_core-only PR; additive)
 - **Kind:** additive
-- **Items:** `crates/pin_core/src/schema/layout.rs` (`Playfield`, `LayoutManifest::validate`), TOML key `playfield.glass_height`; tests in `crates/pin_core/tests/layout_glass_height.rs`.
-- **Change:** `Playfield` gains `#[serde(default, skip_serializing_if = "Option::is_none")] pub glass_height: Option<f32>`, mm: the height of the glass underside above the playfield surface. Absent: the simulator derives it from the table geometry (unchanged behaviour). Present: it must be finite and > 0 (checked by `LayoutManifest` parse and serialise); the simulator additionally requires it to be at least the geometry's maximum z. Existing TOML parses and serialises unchanged.
+- **Items:** new module `crates/pin_core/src/schema/glass.rs` with `GlassManifest { schema_version: u32, height: f32 }` and `pub const GLASS_FILE: &str = "glass.toml"`, re-exported from `pin_core::schema`; tests in `crates/pin_core/tests/glass_manifest.rs` and in `glass.rs`; PLAN.md Appendix A.3a documents the file.
+- **Change:** a new optional bundle file `glass.toml` (`schema_version = 1`, `height` in mm: the height of the glass underside above the playfield surface). Absent: the simulator derives the glass from the table geometry (max z + 50 mm, unchanged behaviour). Present: `height` must be finite and > 0 (checked on parse and serialise); the simulator additionally requires it to be at least the geometry's maximum z. No existing type, field or file changes.
 - **Why:** the 50 mm margin between the geometry's max z and the glass underside can never be sealed by any wall; the grey-box needs a table-set glass height so Gate A1 has zero EscapedBall.
-- **Affected crates:** `pin_sim` reads it. `pin_tablegen` constructs `Playfield { .. }` without `..Default` in `src/layout/tests.rs` (2 literals), `tests/fix_round1.rs`, `tests/clearance_props.rs`, `tests/random_layouts.rs` and `tests/fixtures/spec_4_3/support.rs`; each needs `glass_height: None`. `pin_assets`: none found.
+- **Affected crates:** `pin_sim` reads it (new code only). None break: no existing struct changes.
+- **Withdrawn first version:** an earlier revision added `Playfield.glass_height` (`Option<f32>`). It was withdrawn because adding a public field is breaking under the protocol (struct literals in `pin_tablegen`), and breaking changes merge only between waves.
 - **Workaround meanwhile:** none.
