@@ -808,8 +808,9 @@ enum Presenter {
     /// The 1.4 surfaces with the debug view (no table, or a table whose
     /// playfield surface cannot be drawn directly).
     Debug(GpuContext, SurfaceSet),
-    /// The table renderer, presented from the render thread
-    /// ([`AppSurfaces`]: per-surface plans).
+    /// The table renderer, drawn on the render thread and presented from it
+    /// or from per-surface presenter threads ([`AppSurfaces`]: per-surface
+    /// plans).
     Table(GpuContext, AppSurfaces),
 }
 
@@ -825,9 +826,9 @@ enum PresenterKind {
 /// The presenter for a table (`has_table`) whose surfaces got `plans`:
 /// the table renderer whenever the playfield can be drawn directly
 /// ([`table_set_accepted`]; a backglass / score surface that offers only
-/// blocking present modes is deferred, not drawn, and one without an 8-bit
-/// format is skipped; neither turns the cabinet into the debug view), else
-/// the debug view.
+/// blocking present modes is presented by its own presenter thread, and one
+/// without an 8-bit format is skipped; neither turns the cabinet into the
+/// debug view), else the debug view.
 fn choose_presenter(has_table: bool, plans: &[(SurfaceRole, SurfacePlan)]) -> PresenterKind {
     if has_table && table_set_accepted(plans) {
         PresenterKind::Table
@@ -945,10 +946,10 @@ fn render_thread(
                             set.choices().collect::<Vec<_>>()
                         ),
                         Presenter::Table(_, s) => {
-                            let (drawn, deferred, skipped) = s.plan_counts();
+                            let (drawn, threaded, skipped) = s.plan_counts();
                             eprintln!(
                                 "pin_app: render on {} ({:?}); PBR table on {} surface(s): \
-                                 {drawn} drawn / {deferred} deferred / {skipped} skipped",
+                                 {drawn} direct / {threaded} presenter-thread / {skipped} skipped",
                                 info.name,
                                 info.backend,
                                 s.len()
@@ -1228,14 +1229,18 @@ mod tests {
                 ),
             ),
         ];
-        assert_eq!(plans[1].1, SurfacePlan::Deferred(PresentMode::Fifo));
+        assert_eq!(plans[1].1, SurfacePlan::Presenter(PresentMode::Fifo));
         assert_eq!(choose_presenter(true, &plans), PresenterKind::Table);
-        // PR #21 round 3: the deferred score window gets no slot; the
-        // playfield is drawn and still receives every display command.
+        // PR #21 round 4: the Fifo-only score window is retained on its own
+        // presenter thread (not dropped); the playfield is drawn directly,
+        // and both renderers receive every display command.
         let f = Some(wgpu::TextureFormat::Bgra8UnormSrgb);
         assert_eq!(
             super::super::present::slot_decision(plans[1].0, plans[1].1, f),
-            super::super::present::SlotDecision::Defer(PresentMode::Fifo)
+            super::super::present::SlotDecision::Present(
+                PresentMode::Fifo,
+                wgpu::TextureFormat::Bgra8UnormSrgb
+            )
         );
         assert!(matches!(
             super::super::present::slot_decision(plans[0].0, plans[0].1, f),

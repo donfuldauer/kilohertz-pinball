@@ -21,10 +21,15 @@
 //!   mixes the sounds (3.3 mixer) with the SSF exciter channels
 //!   ([`AudioEngine`]) into an [`AudioSink`] (SDL device, offline recording
 //!   or null); the render thread draws the table with the 5.1 PBR renderer
-//!   and the 5.3 displays ([`TableRenderer`], presented by [`AppSurfaces`]).
+//!   and the 5.3 displays ([`TableRenderer`], presented by [`AppSurfaces`]:
+//!   directly for the playfield and non-blocking secondary windows, through a
+//!   per-surface presenter thread and a latest-frame hand-off for blocking
+//!   (`Fifo`-only) backglass / score windows, D19).
 
 mod audio;
+mod handoff;
 mod present;
+mod presenter;
 mod table;
 mod threads;
 mod view;
@@ -33,10 +38,12 @@ pub use audio::{
     AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, DEVICE_QUEUE_BLOCKS, DeviceSink, DeviceStream,
     NullSink, OfflineRecording, OfflineSink, RegisteredSound, ssf_playfield_mm, table_samples,
 };
+pub use handoff::{HANDOFF_SLOTS, HandoffStats};
 pub use present::{
-    AppSurfaces, SlotDecision, SurfacePlan, is_blocking_mode, plan_surface, slot_decision,
-    table_set_accepted,
+    AppSurfaces, SlotDecision, SlotInfo, SlotPath, SurfacePlan, is_blocking_mode, plan_surface,
+    slot_decision, table_set_accepted,
 };
+pub use presenter::{CopyPath, FrameCopy, offscreen_frame_texture};
 pub use table::{
     DISPLAY_RING_CAPACITY, DisplayCommand, FlipperOutline, SIM_STACK_BYTES, SOUND_RING_CAPACITY,
     TABLE_LINE_COLOR, TableSim, ValidatedTable, load_checked, load_validated, on_sim_stack,
