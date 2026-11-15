@@ -19,10 +19,21 @@ use pin_render::reflections::{ReflectionSource, ReflectiveBall};
 
 const R: f32 = 0.0135;
 
-/// `PIN_REQUIRE_GPU=1` or `PIN_REQUIRE_RAY_QUERY=1`: a missing device or
-/// feature fails the test instead of skipping it.
+/// Which flag governs which failure:
+///
+/// - [`required`] (`PIN_REQUIRE_GPU=1` or `PIN_REQUIRE_RAY_QUERY=1`): a
+///   context that fails to create is fatal instead of skipping.
+/// - [`require_ray_query`] (`PIN_REQUIRE_RAY_QUERY=1` only): an adapter that
+///   lacks `EXPERIMENTAL_RAY_QUERY` is fatal. Under `PIN_REQUIRE_GPU=1` alone
+///   it skips with a message, so a Metal adapter without ray query does not
+///   fail the GPU job.
 fn required() -> bool {
-    require_gpu() || std::env::var("PIN_REQUIRE_RAY_QUERY").is_ok_and(|v| v.trim() == "1")
+    require_gpu() || require_ray_query()
+}
+
+/// `PIN_REQUIRE_RAY_QUERY=1`: a missing ray-query feature fails the test.
+fn require_ray_query() -> bool {
+    std::env::var("PIN_REQUIRE_RAY_QUERY").is_ok_and(|v| v.trim() == "1")
 }
 
 #[test]
@@ -39,8 +50,8 @@ fn raytrace_lost_device_reports_the_loss_and_stops_rendering() {
     if !ctx.supports_ray_query() {
         let info = ctx.adapter_info();
         assert!(
-            !required(),
-            "[raytrace_lost] GPU and ray queries required but adapter {} ({:?}) lacks EXPERIMENTAL_RAY_QUERY",
+            !require_ray_query(),
+            "[raytrace_lost] ray queries required but adapter {} ({:?}) lacks EXPERIMENTAL_RAY_QUERY",
             info.name,
             info.backend
         );
