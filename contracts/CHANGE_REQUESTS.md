@@ -145,3 +145,13 @@ unchanged):
 - **Why:** a1-glass adds a static playfield glass (`Material::Acrylic`) over the table in `pin_sim`, so balls launched upward (the drop-target reset launch, Gate A1 EscapedBall) bounce back instead of leaving the escape box. Without a pair the contact would use the ball profile's fallback restitution (0.65 for steel) and friction 0.2.
 - **Affected crates:** none (data only). Behaviour note: acrylic table colliders (e.g. the grey-box upper deck) now also use this pair for steel balls instead of the fallback; no committed replay or autoplay fixture uses acrylic.
 - **Workaround meanwhile:** none.
+
+### CR-007: optional `[playfield] glass_height`
+- **Requested by:** Wave 6 work item a1-glass-height (task executor)
+- **Status:** open (pin_core-only PR; additive)
+- **Kind:** additive
+- **Items:** `crates/pin_core/src/schema/layout.rs` (`Playfield`, `LayoutManifest::validate`), TOML key `playfield.glass_height`; tests in `crates/pin_core/tests/layout_glass_height.rs`.
+- **Change:** `Playfield` gains `#[serde(default, skip_serializing_if = "Option::is_none")] pub glass_height: Option<f32>`, mm: the height of the glass underside above the playfield surface. Absent: the simulator derives it from the table geometry (unchanged behaviour). Present: it must be finite and > 0 (checked by `LayoutManifest` parse and serialise); the simulator additionally requires it to be at least the geometry's maximum z. Existing TOML parses and serialises unchanged.
+- **Why:** the 50 mm margin between the geometry's max z and the glass underside can never be sealed by any wall; the grey-box needs a table-set glass height so Gate A1 has zero EscapedBall.
+- **Affected crates:** `pin_sim` reads it. `pin_tablegen` constructs `Playfield { .. }` without `..Default` in `src/layout/tests.rs` (2 literals), `tests/fix_round1.rs`, `tests/clearance_props.rs`, `tests/random_layouts.rs` and `tests/fixtures/spec_4_3/support.rs`; each needs `glass_height: None`. `pin_assets`: none found.
+- **Workaround meanwhile:** none.
