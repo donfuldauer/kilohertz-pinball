@@ -63,3 +63,22 @@ fn app_runs_on_dummy_drivers_and_exits() {
     let out = pin_app(&["--headless", "--run-ms", "x"]);
     assert!(!out.status.success());
 }
+
+/// `--run-frames` / `--run-ticks` take unsigned integers; anything else is
+/// a normal argument error (non-zero exit, a message naming the flag, no
+/// run).
+#[test]
+fn run_condition_flags_reject_bad_values() {
+    for args in [
+        &["--headless", "--run-frames", "x"][..],
+        &["--headless", "--run-ticks", "x"],
+        &["--headless", "--run-frames", "-3"],
+        &["--headless", "--run-ticks"],
+    ] {
+        let out = pin_app(args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?}: {stderr}");
+        assert!(stderr.contains(args[1]), "{args:?}: {stderr}");
+        assert!(!stderr.contains("sim ticks"), "{args:?} ran: {stderr}");
+    }
+}

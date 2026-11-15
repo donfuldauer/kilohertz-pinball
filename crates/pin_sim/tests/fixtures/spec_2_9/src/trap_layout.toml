@@ -1,0 +1,39 @@
+# Spec 2.9 trap fixture: clean geometry plus walls[5], a U pocket (open at the top)
+# right under the dispenser exit, where every served ball comes to rest.
+# walls[0] outer frame, walls[1..2] inlane guides, walls[3..4] drain funnel.
+schema_version = 1
+
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 28.0
+
+[[walls]]
+points = [[0.0, 0.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 0.0]]
+closed = true
+material = "wood"
+
+[[walls]]
+points = [[0.0, 330.0], [146.0, 170.0]]
+closed = false
+material = "wood"
+
+[[walls]]
+points = [[514.0, 330.0], [368.0, 170.0]]
+closed = false
+material = "wood"
+
+[[walls]]
+points = [[146.0, 140.0], [212.0, 0.0]]
+closed = false
+material = "wood"
+
+[[walls]]
+points = [[368.0, 140.0], [302.0, 0.0]]
+closed = false
+material = "wood"
+
+[[walls]]
+points = [[210.0, 935.0], [210.0, 880.0], [300.0, 880.0], [300.0, 935.0]]
+closed = false
+material = "wood"
