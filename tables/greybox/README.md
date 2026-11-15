@@ -9,6 +9,19 @@ shooter lane served by a ball dispenser (steel balls and one ceramic
 Powerball), a two-switch trough and the tilt switch. Design notes:
 `docs/DECISIONS.md` "6.0 — grey-box table layout".
 
+Gate A1 geometry (`docs/DECISIONS.md` "6.0 fix — Gate A1 grey-box
+geometry"): the inlane walls end on the back of the flipper pivot caps; the
+right drain-funnel wall meets the cabinet bottom at x 335 and the two trough
+zones cover the whole funnel bottom; the drop target faces 290°. The ramp
+entry is a 40 mm lane (x 405..445) whose right wall reaches down to y 430,
+so it takes balls rolling straight up beside the right inlane and the left
+flipper's 25..35° shots, which glance off that wall. Its layer change is the
+generated entry zone over a layer-2 floor; the 13 mm gauge rails rise out of
+that floor, layer-2 side rails line the wire, catch zones beside and below
+it return a stray ball to layer 0, and covers at z 80 mm hold a fast ball on
+the wire's level end. The upper deck is at z 50 mm and the Newton ball at
+(330, 450).
+
 Only the sources live here; the generated `playfield.glb`, the merged
 `table.toml` and the placeholder art and sounds are build output and are not
 committed.

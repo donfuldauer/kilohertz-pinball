@@ -24,22 +24,25 @@ material = "wood"
 points = [[400.0, 1070.0], [514.0, 956.0]]
 material = "wood"
 
-# Inlane slopes onto the flipper pivots.
+# Inlane slopes onto the flipper pivots. Each ends on the back of the
+# pivot cap (11 mm radius): no V-pocket between wall end and cap.
 [[walls]]
-points = [[0.0, 330.0], [140.0, 160.0]]
+points = [[0.0, 330.0], [152.0, 172.0]]
 material = "wood"
 
 [[walls]]
-points = [[470.0, 330.0], [374.0, 160.0]]
+points = [[470.0, 330.0], [362.0, 172.0]]
 material = "wood"
 
-# Drain funnel below the flippers into the trough.
+# Drain funnel below the flippers into the trough. The right wall meets the
+# cabinet bottom at x = 335 (Gate A1 fix): no pocket beside trough_2 below
+# its lower end; the trough switches cover the whole funnel bottom.
 [[walls]]
 points = [[157.0, 150.0], [215.0, 10.0]]
 material = "wood"
 
 [[walls]]
-points = [[357.0, 150.0], [299.0, 10.0]]
+points = [[357.0, 150.0], [335.0, 0.0]]
 material = "wood"
 
 # Orbit: from the left side up and around the top (switches orbit_entry,
@@ -50,16 +53,61 @@ points = [[30.0, 420.0], [30.0, 700.0], [45.0, 880.0], [90.0, 1000.0], [170.0, 1
 width = 40.0
 
 # Wireform ramp (spline `ramp_wire`, layer 2) up the right side onto the
-# upper deck.
+# upper deck (Gate A1 fix, docs/DECISIONS.md "6.0 fix — Gate A1 grey-box
+# geometry"). Entry lane x 405..445, the wire on its axis (x 425). The
+# right wall reaches down to y 430 and the left wall starts at y 545 with a
+# funnel wall below it, so the mouth takes a ball rolling straight up beside
+# the right inlane as well as the left flipper's shots (about 25..35 degrees
+# right of straight up), which glance off the right wall. The generated
+# 0 -> 2 entry zone (entry_width 40: x 405..445, y 575..615) spans the lane
+# exactly. The lane walls end on a roof (y 640..660) sloping down to the
+# left from the shooter-lane wall: below it no layer-0 ball can enter the
+# entry zone except up the lane, and the roof stays clear of where balls
+# land after dropping off the upper deck.
 [[ramps]]
 spline = "ramp_wire"
-entry_width = 24.0
+entry_width = 40.0
+
+[[walls]]
+points = [[370.0, 485.0], [405.0, 545.0], [405.0, 640.0], [470.0, 660.0]]
+material = "wood"
+
+[[walls]]
+points = [[445.0, 430.0], [445.0, 652.3]]
+material = "wood"
+
+# Layer-2 floor of the entry lane (z 0.1 mm, the playfield height): a ball
+# promoted in the entry zone rolls on it until the rails rise to its
+# contact height (y ~662).
+[[decks]]
+layer = 2
+z = 0.1
+outline = [[403.0, 560.0], [447.0, 560.0], [447.0, 692.5], [403.0, 692.5]]
+material = "wood"
+
+# Covers over the top of the ramp (z 80 mm, 3 mm above a ball riding the
+# wire's last section or rolling onto the deck): a fast ball that leaves the
+# rails where they level out is held down instead of flying over the deck
+# and its rails. One on the wire's layer, one on the deck's layer past the
+# layer change (table.toml `ramp_exit`).
+[[decks]]
+layer = 2
+z = 80.0
+outline = [[403.0, 800.0], [447.0, 800.0], [447.0, 905.0], [403.0, 905.0]]
+material = "acrylic"
+
+[[decks]]
+layer = 1
+z = 80.0
+outline = [[395.0, 870.0], [455.0, 870.0], [455.0, 960.0], [395.0, 960.0]]
+material = "acrylic"
 
 # Upper deck (layer 1, top right): fed by the VUK and the ramp, rails
 # (layer-1 guides in table.toml) on three sides, drains back to the
-# playfield over its lower edge (transition `deck_exit`).
+# playfield over its lower edge (transition `deck_exit`). At z 50 mm (Gate A1
+# fix, was 60): the ramp climbs 10 mm less.
 [[decks]]
 layer = 1
-z = 60.0
+z = 50.0
 outline = [[300.0, 860.0], [460.0, 860.0], [460.0, 1040.0], [300.0, 1040.0]]
 material = "acrylic"
