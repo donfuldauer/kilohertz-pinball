@@ -16,7 +16,14 @@
 --
 -- Persistent values (`[persist]` keys, readable by the host):
 --   games_played, high_score, ball (ball in play, 0 when no game),
---   game_state (0 attract, 1 game, 2 game over), powerball_modes (starts).
+--   game_state (0 attract, 1 game, 2 game over), powerball_modes (starts),
+--   mode:powerball (the same start count, the 2.9 soak's `mode:<id>` signal).
+--
+-- Hot reload: a reload runs this file in a fresh state and does not call
+-- on_init again; the old on_save_state() result is handed to the new
+-- on_restore_state(). The id tables are therefore bound lazily (bind_ids,
+-- name lookups only, no actions) and every rule-state local round-trips
+-- through on_save_state / on_restore_state as plain data.
 
 local ATTRACT, GAME, OVER = 0, 1, 2
 local BALLS_PER_GAME = 3
@@ -42,9 +49,13 @@ local last_drain = -1
 
 local sw, coil, scene, snd = {}, {}, {}, {}
 local disp_feed, prof_steel, prof_power, mag, lamp_pb
-local k_games, k_high, k_ball, k_state, k_pb
+local k_games, k_high, k_ball, k_state, k_pb, k_mode_pb
 
-function on_init()
+-- Fills the id tables from the read-only `pinball` name tables. Performs no
+-- action (no scene, persist write, coil or sound), so it is safe from the
+-- reload hooks. Cheap no-op once bound.
+local function bind_ids()
+  if sw.start ~= nil then return end
   local s = pinball.sw
   sw.start, sw.launch, sw.tilt = s.start, s.launch, s.tilt
   sw.trough_1, sw.trough_2 = s.trough_1, s.trough_2
@@ -70,14 +81,43 @@ function on_init()
   mag = pinball.magnet.lock_magnet
   lamp_pb = pinball.lamp.powerball_lamp
   local p = pinball.persist_key
-  k_games, k_high, k_ball, k_state, k_pb =
-    p.games_played, p.high_score, p.ball, p.game_state, p.powerball_modes
+  k_games, k_high, k_ball, k_state, k_pb, k_mode_pb =
+    p.games_played, p.high_score, p.ball, p.game_state, p.powerball_modes,
+    p["mode:powerball"]
+end
+
+function on_init()
+  bind_ids()
   games = pinball.persist_get(k_games)
   high = pinball.persist_get(k_high)
   pinball.persist_set(k_ball, 0)
   pinball.persist_set(k_state, ATTRACT)
   pinball.persist_set(k_pb, 0)
+  pinball.persist_set(k_mode_pb, 0)
   pinball.show_scene(scene.attract)
+end
+
+-- Plain-data snapshot of every rule-state local (reload contract).
+function on_save_state()
+  return {
+    state = state, score = score, ball = ball, games = games, high = high,
+    ticks = ticks, pb_mode = pb_mode, pb_starts = pb_starts,
+    opto_tick = opto_tick, eddy_tick = eddy_tick, opto_pending = opto_pending,
+    vuk_at = vuk_at, drop_at = drop_at, magnet_off_at = magnet_off_at,
+    attract_at = attract_at, last_drain = last_drain,
+  }
+end
+
+function on_restore_state(v)
+  bind_ids()
+  if type(v) ~= "table" then return end
+  state, score, ball, games, high = v.state, v.score, v.ball, v.games, v.high
+  ticks, pb_mode, pb_starts = v.ticks, v.pb_mode, v.pb_starts
+  opto_tick, eddy_tick, opto_pending = v.opto_tick, v.eddy_tick, v.opto_pending
+  vuk_at, drop_at, magnet_off_at = v.vuk_at, v.drop_at, v.magnet_off_at
+  attract_at, last_drain = v.attract_at, v.last_drain
+  -- The new state redraws the score on its first tick.
+  dirty = true
 end
 
 local function add(points)
@@ -107,6 +147,8 @@ local function start_game()
 end
 
 local function end_ball()
+  -- A detector event still being judged belongs to the ball that ended.
+  opto_pending = false
   if pb_mode then
     pb_mode = false
     pinball.set_lamp(lamp_pb, 0)
@@ -132,11 +174,13 @@ local function start_powerball()
   pb_mode = true
   pb_starts = pb_starts + 1
   pinball.persist_set(k_pb, pb_starts)
+  pinball.persist_set(k_mode_pb, pb_starts)
   pinball.set_lamp(lamp_pb, 1)
   pinball.show_scene(scene.pb)
 end
 
 function on_switch(id, closed)
+  bind_ids()
   if not closed then return end
   if id == sw.start then
     if state ~= GAME then start_game() end
@@ -191,6 +235,7 @@ function on_switch(id, closed)
 end
 
 function on_tick()
+  bind_ids()
   ticks = ticks + 1
   if opto_pending and ticks - opto_tick > DETECT_WINDOW then
     opto_pending = false

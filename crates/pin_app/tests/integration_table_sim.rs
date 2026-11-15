@@ -17,7 +17,8 @@ use pin_core::{CabinetInput, FrameStateSnapshot, InputEvent, SimStep, TICK_NS, T
 use pin_input::haptics::haptics_ring;
 use pin_sim::SimConfig;
 use pin_sim::alloc_guard::{CountingAlloc, count_allocs, count_allocs_split, is_installed};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use support::{greybox_bundle, on_big_stack};
 
 #[global_allocator]
@@ -108,6 +109,19 @@ fn sim_loop_with_the_real_sim_does_not_allocate() {
     assert!(haptics > 0, "flipper coils produce haptic impulses");
 }
 
+/// A simulated clock for the threads (D8): every read advances it by 250 us,
+/// so the sim thread's pacing is driven by reads, not by wall time.
+static SIM_CLOCK_NS: AtomicU64 = AtomicU64::new(1_000_000_000);
+
+fn simulated_now_ns() -> u64 {
+    SIM_CLOCK_NS.fetch_add(250_000, Ordering::Relaxed)
+}
+
+/// Upper bound on progress polls (a count of polls, not a duration): the
+/// simulated clock makes the sim thread run as fast as it can, so the
+/// condition holds long before it.
+const MAX_POLLS: u64 = 200_000_000;
+
 #[test]
 fn threads_run_the_table_and_feed_the_audio_thread() {
     let dir = greybox_bundle().to_path_buf();
@@ -117,6 +131,7 @@ fn threads_run_the_table_and_feed_the_audio_thread() {
     let (htx, hrx) = haptics_ring(256);
     let (mut tx, rx) = channel(64);
     let mut cfg = ThreadsConfig::with_sim(Box::new(TableSim::new(sim, Some(htx))), rx);
+    cfg.now_ns = simulated_now_ns;
     cfg.audio = AudioConfig {
         haptics: Some(hrx),
         period: Duration::from_millis(1),
@@ -124,23 +139,32 @@ fn threads_run_the_table_and_feed_the_audio_thread() {
     };
     let threads = spawn_threads(cfg).unwrap();
     assert_eq!(threads.names(), ["sim", "render", "audio", "io"]);
-    // Flipper presses on the real-time path (timestamps on the std clock the
-    // threads use).
-    let now = pin_app::orchestrator::monotonic_now_ns();
+    // Flipper presses (timestamps on the simulated clock the threads use).
+    let now = simulated_now_ns();
     for k in 0..6u64 {
         let t = now + k * 20 * TICK_NS;
         tx.push(InputEvent::button(t, CabinetInput::LeftFlipper, k % 2 == 0))
             .unwrap();
     }
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while threads.audio_stats().haptic_events == 0 || threads.stats().sim_ticks < 200 {
+    let mut polls = 0u64;
+    // Wait for every outcome the assertions below need (explicit progress,
+    // not a delay): impulses received, SSF frames rendered, datagrams encoded.
+    let progressed = |t: &pin_app::orchestrator::Threads| {
+        let a = t.audio_stats();
+        a.haptic_events > 0
+            && a.frames > 0
+            && a.telemetry_datagrams > 0
+            && t.stats().sim_ticks >= 200
+    };
+    while !progressed(&threads) {
+        polls += 1;
         assert!(
-            Instant::now() < deadline,
+            polls < MAX_POLLS,
             "no haptics reached the audio thread: {:?} {:?}",
             threads.stats(),
             threads.audio_stats()
         );
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::yield_now();
     }
     let audio = threads.audio_stats();
     let stats = threads.shutdown().unwrap();

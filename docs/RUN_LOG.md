@@ -370,4 +370,4 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 6 | 6.0 | Implementer | Opus 5.5 | 1 | done | pin_app, pin_render, pin_input green | integration, grey-box table, issue #9 (window guard, held inputs) |
 | 6 | 6.0 | Independent Tester | Opus 5.5 | 1 | done | spec_6_0_* 5 files | |
 | 6 | 6.0 | Fixer (adapter) | Sonnet 5.5 | 1 | done | spec_6_0_* 44/44 | triage T1: adapters bound to the real API, no assertion changed |
-| 6 | 6.0 | Verifier | Sonnet 5.5 | — | pass (e9df0d8) | all suites; issue #9 done-when met | C2 partial (PBR playfield, DisplaySet, 3.3 mixer not wired) accepted as a logged deviation (D28) |
+| 6 | 6.0 | Verifier | Sonnet 5.5 | — | superseded (e9df0d8); re-verification pending | the e9df0d8 pass covered the incomplete state (C2 partial: PBR playfield, DisplaySet, 3.3 mixer not wired) and no longer stands | wiring completed in the PR #21 review fix round (DECISIONS "6.0 — wiring completed (supersedes the D28 deviation)"); gate pending re-verification on the new head |

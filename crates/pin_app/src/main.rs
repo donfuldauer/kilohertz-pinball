@@ -12,9 +12,16 @@
 //! * otherwise: opens the playfield window (single-monitor topology), spawns
 //!   the sim/render/audio/I/O threads and pumps SDL events on the main thread
 //!   until quit. `--table <path>` (a bundle folder or `.zip`) runs that
-//!   table, else the idle stub sim. `--headless` uses SDL's dummy drivers (no
-//!   surfaces are created then), `--run-ms N` quits after N ms of wall time,
-//!   `--vrr` requests `FifoRelaxed` for the playfield.
+//!   table — drawn with the PBR renderer and its backglass / score display,
+//!   its sounds mixed into the default audio device — else the idle stub sim
+//!   (debug view). `--headless` uses SDL's dummy drivers (no surfaces are
+//!   created then, audio goes to the null sink), `--run-ms N` quits after N
+//!   ms of wall time, `--vrr` requests `FifoRelaxed` for the playfield,
+//!   `--debug-overlay` draws the debug lines over the PBR table.
+//!
+//! The table is loaded (validated and simulated from one in-memory bundle
+//! snapshot) and the headless table run happens on a thread with a
+//! `SIM_STACK_BYTES` stack, never on the main thread (1 MiB on Windows).
 //!
 //! Input goes through the device profiles and `HeldInputs`
 //! (`platform::InputRouter`). Windows are owned by the platform's
@@ -25,22 +32,26 @@
 //! and if one never does, exit without destroying it.
 
 use pin_app::orchestrator::{
-    AudioConfig, ClosePolicy, DropMonitor, FlipperOutline, RenderConfig, RenderGpu, TableSim,
-    ThreadsConfig, run_headless, run_headless_table, spawn_threads, table_lines, validate_table,
+    AudioConfig, AudioSink, ClosePolicy, DISPLAY_RING_CAPACITY, DeviceStream, DropMonitor,
+    FlipperOutline, NullSink, RegisteredSound, RenderConfig, RenderGpu, SOUND_RING_CAPACITY,
+    TableRenderOptions, TableSim, TableVisuals, ThreadsConfig, load_checked, on_sim_stack,
+    run_headless, run_headless_table, spawn_threads, table_lines, table_samples, validate_table,
 };
 use pin_app::platform::{
     DisplayTopologyManager, EventForwarder, INPUT_RING_CAPACITY, InputRouter, PUMP_TIMEOUT,
     Platform, PlatformConfig, WINDOW_RING_CAPACITY, WindowGuard,
 };
+use pin_audio::mixer::{MixerConfig, trigger_ring};
 use pin_input::haptics::{DEFAULT_HAPTICS_RING_CAPACITY, haptics_ring};
 use pin_render::gpu::{
     GpuOptions, PRESENTER_JOIN_TIMEOUT, SurfaceOptions, SurfaceSource, create_instance,
     create_surface,
 };
 use pin_render::topology::{DEFAULT_BACKGLASS_PIP, DEFAULT_SCORE_PIP, TopologyMode};
-use pin_sim::{SimConfig, Simulation};
+use pin_sim::SimConfig;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// How long shutdown waits for a detached presenter thread to release its
@@ -113,31 +124,83 @@ fn main() -> ExitCode {
     }
 }
 
-/// The table to run: validated, loaded, with its debug-view lines.
+/// The table to run: validated and loaded from one snapshot, with what the
+/// render and audio threads need.
 struct LoadedApp {
-    sim: Simulation,
+    sim: Box<TableSim>,
+    visuals: TableVisuals,
+    samples: Vec<RegisteredSound>,
     table_lines: Vec<pin_render::debug::DebugLine>,
     flippers: Vec<FlipperOutline>,
+    haptics: pin_input::haptics::HapticsConsumer<pin_core::input::HapticsTelemetryEvent>,
+    sounds: pin_audio::mixer::SoundReceiver,
+    displays: pin_input::haptics::HapticsConsumer<pin_app::orchestrator::DisplayCommand>,
 }
 
-fn load_app_table(path: &Path) -> Result<LoadedApp, String> {
-    let checked = validate_table(path)?;
-    for w in &checked.warnings {
-        eprintln!("pin_app: table warning: {w}");
+/// Validates and loads the table on a big-stack thread (the simulation is
+/// built, wrapped and boxed there; only the box reaches this thread).
+fn load_app_table(path: &Path, mixer: MixerConfig) -> Result<LoadedApp, String> {
+    let path = path.to_path_buf();
+    on_sim_stack("table-load", move || -> Result<LoadedApp, String> {
+        let checked = validate_table(&path)?;
+        for w in &checked.warnings {
+            eprintln!("pin_app: table warning: {w}");
+        }
+        let sim = load_checked(&checked, SimConfig::default())?;
+        let (htx, hrx) = haptics_ring(DEFAULT_HAPTICS_RING_CAPACITY);
+        let (stx, srx) = trigger_ring(SOUND_RING_CAPACITY);
+        let (dtx, drx) = haptics_ring(DISPLAY_RING_CAPACITY);
+        let sim = Box::new(
+            TableSim::new(sim, Some(htx))
+                .with_sounds(stx)
+                .with_displays(dtx),
+        );
+        let visuals = TableVisuals::of(&checked);
+        for w in &visuals.warnings {
+            eprintln!("pin_app: table display warning: {w}");
+        }
+        let (samples, errors) = table_samples(&checked, mixer.sample_rate);
+        for e in &errors {
+            eprintln!("pin_app: table sound warning: {e}");
+        }
+        eprintln!(
+            "pin_app: table {:?} loaded ({} switches, {} mechs, {} sounds)",
+            checked.table.manifest.meta.name,
+            checked.table.switches.len(),
+            checked.table.mechs.len(),
+            samples.len()
+        );
+        Ok(LoadedApp {
+            sim,
+            table_lines: table_lines(&checked.scene, MAX_TABLE_LINES),
+            flippers: FlipperOutline::of(&checked.table),
+            visuals,
+            samples,
+            haptics: hrx,
+            sounds: srx,
+            displays: drx,
+        })
+    })?
+}
+
+/// The audio sink: the default playback device (its owner stays on this
+/// thread until the audio thread was joined), or the null sink headless or
+/// without a device.
+fn audio_output(
+    platform: &Platform,
+    headless: bool,
+    mixer: MixerConfig,
+) -> (Option<DeviceStream>, Box<dyn AudioSink>) {
+    if headless {
+        return (None, Box::new(NullSink::default()));
     }
-    let sim = Simulation::load(path, SimConfig::default())
-        .map_err(|e| format!("table {}: {e}", path.display()))?;
-    eprintln!(
-        "pin_app: table {:?} loaded ({} switches, {} mechs)",
-        checked.table.manifest.meta.name,
-        checked.table.switches.len(),
-        checked.table.mechs.len()
-    );
-    Ok(LoadedApp {
-        sim,
-        table_lines: table_lines(&checked.scene, MAX_TABLE_LINES),
-        flippers: FlipperOutline::of(&checked.table),
-    })
+    match DeviceStream::open(platform.audio(), mixer.sample_rate) {
+        Ok((owner, sink)) => (Some(owner), Box::new(sink)),
+        Err(e) => {
+            eprintln!("pin_app: no audio output device ({e}); audio goes to the null sink");
+            (None, Box::new(NullSink::default()))
+        }
+    }
 }
 
 fn list_displays(headless: bool) -> ExitCode {
@@ -172,10 +235,12 @@ fn run_app(args: &[String]) -> Result<(), String> {
         .transpose()?
         .map(Duration::from_millis);
     let vrr = args.iter().any(|a| a == "--vrr");
+    let debug_overlay = args.iter().any(|a| a == "--debug-overlay");
+    let mixer = MixerConfig::default();
     // Load the table before opening windows: a bad table fails fast.
     let table = path_of(args, "--table")
         .transpose()?
-        .map(|p| load_app_table(&p))
+        .map(|p| load_app_table(&p, mixer))
         .transpose()?;
 
     let mut platform = Platform::init(PlatformConfig { headless }).map_err(|e| e.to_string())?;
@@ -245,29 +310,43 @@ fn run_app(args: &[String]) -> Result<(), String> {
         None
     };
 
-    let (mut cfg, table_render) = match table {
-        Some(t) => {
-            let (htx, hrx) = haptics_ring(DEFAULT_HAPTICS_RING_CAPACITY);
-            let mut cfg =
-                ThreadsConfig::with_sim(Box::new(TableSim::new(t.sim, Some(htx))), input_rx);
-            cfg.audio = AudioConfig {
-                haptics: Some(hrx),
-                ..AudioConfig::default()
-            };
-            (cfg, Some((t.table_lines, t.flippers)))
-        }
-        None => (ThreadsConfig::idle(input_rx), None),
-    };
-    let (table_lines, flippers) = table_render.unwrap_or_default();
-    cfg.now_ns = sdl_now_ns;
-    cfg.render = RenderConfig {
+    // Declared before `threads`: dropped after the audio thread was joined.
+    let (audio_device, sink) = audio_output(&platform, headless, mixer);
+    let mut render = RenderConfig {
         gpu,
         window_events: Some(window_rx),
         close_policy: ClosePolicy::PlayfieldOnly,
-        table_lines,
-        flippers,
+        table_render: TableRenderOptions {
+            debug_overlay,
+            ..TableRenderOptions::default()
+        },
         ..RenderConfig::default()
     };
+    let mut cfg = match table {
+        Some(t) => {
+            let mut cfg = ThreadsConfig::with_sim(t.sim, input_rx);
+            cfg.audio = AudioConfig {
+                haptics: Some(t.haptics),
+                sounds: Some(t.sounds),
+                mixer,
+                samples: t.samples,
+                sink: Some(sink),
+                ..AudioConfig::default()
+            };
+            render.table_lines = t.table_lines;
+            render.flippers = t.flippers;
+            render.table = Some(Arc::new(t.visuals));
+            render.displays = Some(t.displays);
+            cfg
+        }
+        None => {
+            let mut cfg = ThreadsConfig::idle(input_rx);
+            cfg.audio.sink = Some(sink);
+            cfg
+        }
+    };
+    cfg.now_ns = sdl_now_ns;
+    cfg.render = render;
     let threads = spawn_threads(cfg)?;
 
     let started = Instant::now();
@@ -292,6 +371,8 @@ fn run_app(args: &[String]) -> Result<(), String> {
     //    its guard).
     let audio = threads.audio_stats();
     let stats = threads.shutdown()?;
+    // The audio thread is joined: the device stream can go.
+    drop(audio_device);
     // The main thread's own guards: from here only a detached presenter can
     // still hold a window.
     drop(guards);

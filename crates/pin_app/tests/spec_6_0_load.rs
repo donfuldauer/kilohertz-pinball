@@ -90,12 +90,14 @@ fn run_headless_with_runs_the_real_sim() {
     assert_eq!(run_headless_with(sim, 1), Ok(1));
     let sim = load_validated(&fixture("fits"), SimConfig::default()).expect("loads");
     // 60 s of simulated time returns without real-time pacing (D8: no
-    // wall-clock assertion; a sleeping loop shows up as a hung test).
+    // wall-clock assertion; a paced loop shows up as a hung test).
     assert_eq!(run_headless_with(sim, 60_000), Ok(60_000));
 }
 
-fn try_load(path: &Path) {
-    let _ = load_validated(path, SimConfig::default());
+fn try_load(path: &Path) -> Result<(), String> {
+    load_validated(path, SimConfig::default())
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 proptest! {
@@ -107,12 +109,12 @@ proptest! {
         let dir = scratch("fuzz_zip");
         let path = dir.join("bundle.zip");
         std::fs::write(&path, &bytes).expect("write");
-        try_load(&path);
+        prop_assert!(try_load(&path).is_err(), "random/empty bytes as a zip bundle must be an error");
         // A zip header followed by random bytes.
         let mut z = b"PK\x03\x04".to_vec();
         z.extend_from_slice(&bytes);
         std::fs::write(&path, &z).expect("write");
-        try_load(&path);
+        prop_assert!(try_load(&path).is_err(), "PK header + random bytes (malformed zip) must be an error");
     }
 
     /// Bounded random bytes as `table.toml` of a folder bundle.
@@ -123,13 +125,13 @@ proptest! {
             std::fs::copy(fixture("fits").join(f), dir.join(f)).expect("copy");
         }
         std::fs::write(dir.join("table.toml"), &bytes).expect("write");
-        try_load(&dir);
+        let _ = try_load(&dir);
     }
 
     /// Random path names (no panic on odd or non-existent paths).
     #[test]
     fn random_paths_do_not_panic(name in "[a-zA-Z0-9 ._/-]{0,64}") {
         let dir = scratch("fuzz_path");
-        try_load(&dir.join(name));
+        let _ = try_load(&dir.join(name));
     }
 }
