@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn builtin_matches_appendix_c() {
         let d = PhysicsDefaults::builtin();
-        assert_eq!(d.material_pairs.len(), 9);
+        assert_eq!(d.material_pairs.len(), 10);
         let p = d.material_pair(Material::Rubber, Material::Steel).unwrap();
         assert_eq!((p.restitution, p.friction), (0.65, 0.80));
         let p = d.material_pair(Material::Resin, Material::Wood).unwrap();
@@ -561,6 +561,49 @@ mod tests {
         assert_eq!(without.material_pairs, d.material_pairs);
         // Unknown keys inside a kind table are errors.
         let bad = DEFAULT_PHYSICS_TOML.replacen("kick_reach ", "kick_reachy ", 1);
+        assert!(PhysicsDefaults::from_toml_str(&bad).is_err());
+    }
+
+    #[test]
+    fn steel_acrylic_pair_is_symmetric() {
+        // CR-006 (a1-glass): the playfield glass / acrylic deck pair.
+        let d = PhysicsDefaults::builtin();
+        let a = d.material_pair(Material::Steel, Material::Acrylic).unwrap();
+        let b = d.material_pair(Material::Acrylic, Material::Steel).unwrap();
+        assert_eq!(a, b);
+        assert_eq!((a.restitution, a.friction), (0.45, 0.15));
+        // Only steel gained an acrylic pair.
+        for m in [Material::Ceramic, Material::Plastic, Material::Resin] {
+            assert!(d.material_pair(m, Material::Acrylic).is_none(), "{m:?}");
+        }
+        // Exactly one row names the pair, so duplicate detection still
+        // passes on the shipped file, and repeating it (either order) fails.
+        let rows = d
+            .material_pairs
+            .iter()
+            .filter(|p| p.matches(Material::Steel, Material::Acrylic))
+            .count();
+        assert_eq!(rows, 1);
+        for order in ["[\"steel\", \"acrylic\"]", "[\"acrylic\", \"steel\"]"] {
+            let mut s = DEFAULT_PHYSICS_TOML.to_owned();
+            s.push_str(&format!(
+                "\n[[material_pairs]]\nmaterials = {order}\nrestitution = 0.45\nfriction = 0.15\n"
+            ));
+            assert!(
+                matches!(
+                    PhysicsDefaults::from_toml_str(&s),
+                    Err(SchemaError::Invalid(_))
+                ),
+                "{order}"
+            );
+        }
+        // deny_unknown_fields still applies to the new row.
+        let bad = DEFAULT_PHYSICS_TOML.replacen(
+            "materials = [\"steel\", \"acrylic\"]\nrestitution = 0.45",
+            "materials = [\"steel\", \"acrylic\"]\nrestitution = 0.45\nhardness = 1.0",
+            1,
+        );
+        assert_ne!(bad, DEFAULT_PHYSICS_TOML);
         assert!(PhysicsDefaults::from_toml_str(&bad).is_err());
     }
 

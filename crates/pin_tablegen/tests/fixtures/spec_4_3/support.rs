@@ -771,6 +771,7 @@ pub fn build_layout(
             width: r2(width),
             length: r2(length),
             wall_height: r2(wall_height),
+            glass_height: None,
         },
         walls: Vec::new(),
         posts: Vec::new(),

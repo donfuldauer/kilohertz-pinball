@@ -399,3 +399,8 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 6 | vuk-remove-ball | Classifier | — | 1 | routed T2 Opus | VUK hold survives remove_ball (found in Gate A1 grey-box work) | separate PR from main; does not block Gate A1 |
 | 6 | vuk-remove-ball | Implementer | Opus 5.5 | 1 | done (b9bdee8) | MechSet::release_ball called from Sim::remove_slot | 6 pin_sim tests fail on 88188bf, pass on branch; sweeps 360 + proptest 256 |
 | 6 | vuk-remove-ball | Verifier | Sonnet 5.5 | 1 | pass (b9bdee8) | fmt/clippy clean; pin_physics + pin_sim 1054/0/15 (pre-existing ignores); alloc guards and replay tests pass; diff owned paths only | |
+| 6 | a1-drop-reset | Investigator | Opus 5.5 | 1 | root-caused | drop-target reset launch (Gate A1 escapes) | correct rigid-body physics (curb contact; analytic bound within 0.8 %, energy audit 5,292 trials); missing playfield glass (HUMAN_QUEUE N9) |
+| 6 | a1-glass | Classifier | — | 1 | routed T2 Opus | glass lid + CR-006 steel/acrylic pair | two PRs: CR-006 (#24, pin_core) then pin_sim glass |
+| 6 | a1-glass | Implementer | Opus 5.5 | 1 | done (5afe67d) | static acrylic lid at the old escape ceiling, built last | tests (i)/(ii) assert no loss through the top (rule-8 deviation: sideways losses remain) |
+| 6 | a1-glass | Verifier | Sonnet 5.5 | 1 | pass (5afe67d) | fmt/clippy clean; pin_core, pin_sim pass; goldens unchanged; lid-removed negative check fails glass_lid 5/5, drop_reset_escape 4/4 | |
+| 6 | a1-wire-fall | Investigator | Opus 5.5 | 1 | root-caused | ramp_wire roll-back fall-through on main's grey box | table data (overlapping entry/fallback zones) from a pin_tablegen generator defect; a1/fix not affected (0/1,640 vs 725/1,640); generator fix already queued |
