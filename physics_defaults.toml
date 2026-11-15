@@ -55,6 +55,14 @@ materials = ["resin", "wood"]
 restitution = 0.30
 friction = 0.22
 
+# Playfield glass (a1-glass, CR-006): the static lid over the table. Clear
+# acrylic decks share the pair. Provisional engineering starting points, not
+# measurements.
+[[material_pairs]]
+materials = ["steel", "acrylic"]
+restitution = 0.45
+friction = 0.15
+
 [tunables]
 flipper_inertia              = { default = 1.0e-4, min = 0.5e-4, max = 3.0e-4 }  # kg·m², 76 mm bat
 flipper_power_torque         = { default = 1.2,    min = 0.6,    max = 3.0 }     # N·m
