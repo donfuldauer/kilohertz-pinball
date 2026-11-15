@@ -225,7 +225,6 @@ struct Offscreen {
 /// and composites it into a backglass.
 pub struct BackboxRenderer {
     device: wgpu::Device,
-    queue: wgpu::Queue,
     scene_pipeline: wgpu::RenderPipeline,
     composite_pipeline: wgpu::RenderPipeline,
     composite_layout: wgpu::BindGroupLayout,
@@ -417,7 +416,6 @@ impl BackboxRenderer {
         });
         Ok(BackboxRenderer {
             device: device.clone(),
-            queue: ctx.queue().clone(),
             scene_pipeline,
             composite_pipeline,
             composite_layout,
@@ -578,6 +576,11 @@ impl BackboxRenderer {
     /// Records the scene into the offscreen target of `size` (created or
     /// resized as needed): cleared to transparent, depth-tested, with the
     /// backbox camera at the target's aspect.
+    ///
+    /// The draw uniforms are captured from the renderer's state at the time
+    /// of this call and uploaded by a copy recorded in `encoder` just before
+    /// the scene pass, so it is safe to record several encodes (with state
+    /// changes in between) before one submit: each pass sees its own data.
     pub fn encode_scene(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -614,13 +617,19 @@ impl BackboxRenderer {
             });
             order.push((usize::MAX, Some(k)));
         }
-        if !self.draws.is_empty() {
-            self.queue
-                .write_buffer(&self.draw_buffer, 0, bytemuck::cast_slice(&self.draws));
-        }
         let Some(target) = &self.target else {
             return Ok(());
         };
+        if !self.draws.is_empty() {
+            let bytes: &[u8] = bytemuck::cast_slice(&self.draws);
+            encode_upload(
+                &self.device,
+                encoder,
+                "backbox draws",
+                bytes,
+                &self.draw_buffer,
+            );
+        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("backbox scene"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -662,6 +671,11 @@ impl BackboxRenderer {
     /// `view` (a texture of `target_size`) with its top-left at `rect`'s
     /// (1:1 pixels, premultiplied "over", clipped to `rect` and the target).
     /// Does nothing before the first scene encode.
+    ///
+    /// The composite uniform (`rect` origin, sRGB flag) is uploaded by a copy
+    /// recorded in `encoder` just before the composite pass, so it is safe to
+    /// record several composites (into different rectangles or views) before
+    /// one submit: each pass uses its own `rect`.
     pub fn encode_composite(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -685,8 +699,13 @@ impl BackboxRenderer {
             if self.srgb { 1.0 } else { 0.0 },
             0.0f32,
         ];
-        self.queue
-            .write_buffer(&self.composite_uniform, 0, bytemuck::cast_slice(&uniform));
+        encode_upload(
+            &self.device,
+            encoder,
+            "backbox composite",
+            bytemuck::cast_slice(&uniform),
+            &self.composite_uniform,
+        );
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("backbox composite"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -733,6 +752,25 @@ impl BackboxRenderer {
             pixels,
         })
     }
+}
+
+/// Records an upload of `bytes` to the start of `dst` into `encoder`, ordered
+/// against the passes recorded around it (unlike `Queue::write_buffer`, which
+/// lands before every command of the next submit). The staging buffer is
+/// released by wgpu once the submit that uses it completes.
+fn encode_upload(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    label: &str,
+    bytes: &[u8],
+    dst: &wgpu::Buffer,
+) {
+    let staging = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: bytes,
+        usage: wgpu::BufferUsages::COPY_SRC,
+    });
+    encoder.copy_buffer_to_buffer(&staging, 0, dst, 0, bytes.len() as u64);
 }
 
 /// Records a backglass with its backbox into `viewport` of `view` (a texture

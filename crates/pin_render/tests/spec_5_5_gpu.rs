@@ -140,14 +140,21 @@ fn fixture_path(name: &str, w: u32, h: u32) -> std::path::PathBuf {
         .join(format!("{name}_{w}x{h}.rgba8"))
 }
 
-/// Secondary evidence (D30): compare with the stored snapshot; store it when
-/// missing or under `SPEC_5_5_BLESS=1`. Call only after the analytic
+/// Secondary evidence (D30): compare with the stored snapshot; it is
+/// written only under `SPEC_5_5_BLESS=1` (a missing one fails). Call only after the analytic
 /// assertions on `img` passed. Tolerance as in 5.3 (rasterisers differ on
 /// edges): at most 1 % of channels off by more than 6 levels, none by more
 /// than 96.
 fn snapshot(name: &str, img: &RgbaImage) {
     let path = fixture_path(name, img.width, img.height);
-    if std::env::var_os("SPEC_5_5_BLESS").is_some() || !path.exists() {
+    let bless = std::env::var("SPEC_5_5_BLESS").is_ok_and(|v| v == "1");
+    if !bless && !path.exists() {
+        panic!(
+            "[{name}] snapshot {} is missing; bless it on lavapipe with SPEC_5_5_BLESS=1",
+            path.display()
+        );
+    }
+    if bless {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &img.pixels).unwrap();
         println!(
@@ -304,10 +311,7 @@ fn reels_change_only_their_own_region() {
     );
     // Same digits, same image (reels settle deterministically).
     let a2 = render(ctx, &desc, Some(&scene), &[1, 2, 3, 4], W, H);
-    assert!(
-        diff_bbox(&a, &a2).is_none(),
-        "same score rendered differently"
-    );
+    assert!(a.pixels == a2.pixels, "same score rendered differently");
 
     snapshot("backbox_reels_1234", &a);
 }
