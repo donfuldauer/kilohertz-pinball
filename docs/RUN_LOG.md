@@ -382,3 +382,10 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 6 | 6.0 | Verifier | Opus 5.5 | 5 | local pass (fb001b7); gate pending CI | 19/19 requirements; fmt/clippy clean (default and gpu-tests); pin_app default 430 pass, CI GPU selection 1221 pass; presenter_thread_window 15/15 + 5/5 at 4K one core, fails without display; handoff tests 20x; alloc guards pass; hash 3f370ef860b8880c | gate recorded only after CI is green |
 | 6 | 6.0 | Fixer (CR round 5) | Sonnet 5.5 / Haiku 5.5 | 1 | done | triage T1: presenter join on injectable clock (simulated in tests), post-acquire size recheck, separate render/poll budgets; triage T0: brief 6(b) wording and two leftover delete-after-run lines | |
 | 6 | 6.0 | Verifier | Sonnet 5.5 | 6 | local pass (9a309bc); gate pending CI | fmt/clippy clean both variants; lib 69/69 ×11; GPU presenter_thread_window 10/10, wiring_render 6/6, integration_window_gpu, orchestrator_window pass; docs-only follow-up (2 lines) checked by grep | |
+| 6 | 6.0 | Gate | — | — | **pass** | PR #21 merged (43712fb) after 6 CodeRabbit rounds; CI green on e8844bb incl. Metal and WARP gpu-tests; last code verifier pass 9a309bc | issue #9 closed by the merge; HUMAN_QUEUE: D31 hardware acceptance of a Fifo-only secondary display |
+| 6 | 5.4 | Implementer | Opus 5.5 | 1 | done | pin_render raytrace | hardware ray-query reflections (dbede8f) |
+| 6 | 5.4 | Independent Tester | Opus 5.5 | 1 | done | spec_5_4_cpu, spec_5_4_gpu | 0809bb8 |
+| 6 | 5.4 | Fixer (adapter) | Sonnet 5.5 | 1 | done | spec_5_4_* bound to the real API | triage T1: adapter only, no assertion changed (f955627) |
+| 6 | 5.4 | Fixer | Opus 5.5 | 1 | done | spec_5_4 failures | second traced bounce at mirror-like hits; exact-match ReflectionQuality parsing; fixtures blessed (029fcf8) |
+| 6 | 5.4 | Verifier | Opus 5.5 | 1 | **fail** | visual check: aliasing in reflections | → fixer: atlas resolution 512, 4 rotated-grid rays per texel, full-rate clear coat (575238a) |
+| 6 | 5.4 | Verifier | Opus 5.5 | 2 | pass (575238a) | crisp/straightness tests with a negative control | re-verification pending after merging main (6.0) |
