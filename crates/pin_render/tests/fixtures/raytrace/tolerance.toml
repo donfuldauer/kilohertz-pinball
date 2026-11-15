@@ -1,8 +1,9 @@
 # Snapshot tolerance per wgpu backend for tests/raytrace_gpu.rs (5.4, D30):
 # `mean` = largest mean |difference| per channel (of 255), `far_fraction` =
 # largest fraction of pixels off by more than 16/255 in any channel.
-# Ray queries run on Vulkan only (see the `raytrace` module docs), so only
-# Vulkan (lavapipe in CI) has a golden image.
+# Only Vulkan (lavapipe in CI) is confirmed to report ray queries; DX12 and
+# Metal are unsurveyed at runtime (see the `raytrace` module docs), so only
+# Vulkan has a golden image.
 [vulkan]
 mean = 3.0
 far_fraction = 0.02

@@ -77,11 +77,13 @@
 //!
 //! The trace module validates with the ray-query capability (and fails
 //! without it) and translates to SPIR-V with `OpCapability RayQueryKHR`,
-//! the back end wgpu uses for ray queries (the only back end observed to report the feature; DX12 and Metal on real hardware are open).
-//! Recorded, not asserted (`tests/raytrace_naga.rs`): naga's MSL back end
-//! rejects it at the default language version ("ray tracing is not
-//! supported prior to MSL 2.4") and accepts it at MSL 2.4; the HLSL back
-//! end accepts it with default options.
+//! the back end wgpu uses for ray queries. Vulkan is confirmed at runtime
+//! (lavapipe, the only back end observed to report the feature); the DX12
+//! and Metal runtime paths on real hardware are unsurveyed. Asserted in
+//! `tests/raytrace_naga.rs`: naga's MSL back end accepts every module at
+//! MSL 2.4, the HLSL back end accepts it with default options, and the
+//! default MSL language version is rejected (an error containing "MSL
+//! 2.4": ray tracing is not supported prior to MSL 2.4).
 //!
 //! # Fallback
 //!
