@@ -114,6 +114,7 @@ done
 # 3. Soak
 echo "== cargo build --release -p pin_sim --bin pin_sim"
 PIN_SIM=""
+NO_PARSER=0
 # Ask cargo where the binary is: CARGO_TARGET_DIR alone is wrong when the
 # config sets build.target or build.target-dir.
 if cargo build --release -p pin_sim --bin pin_sim --message-format=json-render-diagnostics \
@@ -136,9 +137,8 @@ for line in open(sys.argv[1]):
         exe = m["executable"]
 print(exe)' "$LOGS/build_release.json")"
   else
-    PIN_SIM="$(grep '"reason":"compiler-artifact"' "$LOGS/build_release.json" \
-      | grep '"name":"pin_sim"' | grep '"kind":\["bin"\]' \
-      | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -n 1)"
+    echo "gate_a1.sh: needs jq or python3 to read cargo's JSON output" >&2
+    NO_PARSER=1
   fi
 fi
 if [ -n "$PIN_SIM" ] && [ -x "$PIN_SIM" ]; then
@@ -165,6 +165,8 @@ if [ -n "$PIN_SIM" ] && [ -x "$PIN_SIM" ]; then
       record "3 soak $skill: exit status" "FAIL (pin_sim exited $rc, see $log)"
     fi
   done
+elif [ "$NO_PARSER" -eq 1 ]; then
+  record "3 release build of pin_sim" "FAIL (needs jq or python3 to read cargo's JSON output; see $LOGS/build_release.json)"
 else
   tail -n 25 "$LOGS/build_release.log" || true
   record "3 release build of pin_sim" "FAIL (no pin_sim binary; see $LOGS/build_release.log)"
