@@ -3,10 +3,14 @@
 # Units mm, x across (0 = left), y up the table (0 = bottom).
 schema_version = 1
 
+# Walls and posts 50 mm tall (Gate A1 play-length fix, was 28): a ball
+# that hops off a mech is kept out of the dead areas behind the inlanes
+# unless its centre climbs above 63.5 mm (a standard soak once found one
+# behind the left inlane with its centre at z 49 mm).
 [playfield]
 width = 514.0
 length = 1070.0
-wall_height = 28.0
+wall_height = 50.0
 
 # Cabinet: closed outer wall.
 [[walls]]
@@ -46,10 +50,15 @@ points = [[357.0, 150.0], [335.0, 0.0]]
 material = "wood"
 
 # Orbit: from the left side up and around the top (switches orbit_entry,
-# orbit_top).
+# orbit_top). Gate A1 play-length fix (docs/DECISIONS.md "6.0 fix —
+# grey-box play length (Gate A1 median)"): the lower end bends right and
+# ends at (85, 615), above and left of the upper-left flipper (pivot
+# (130, 560)), instead of running straight down the left side to y 420.
+# Every plunge rides the orbit top first; it now comes out towards the
+# upper flipper in mid-field instead of dropping onto the left inlane.
 [[lanes]]
 kind = "orbit"
-points = [[30.0, 420.0], [30.0, 700.0], [45.0, 880.0], [90.0, 1000.0], [170.0, 1040.0], [260.0, 1046.0]]
+points = [[85.0, 615.0], [55.0, 650.0], [38.0, 700.0], [36.0, 780.0], [45.0, 880.0], [90.0, 1000.0], [170.0, 1040.0], [260.0, 1046.0]]
 width = 40.0
 
 # Wireform ramp (spline `ramp_wire`, layer 2) up the right side onto the
@@ -111,3 +120,19 @@ layer = 1
 z = 50.0
 outline = [[300.0, 860.0], [460.0, 860.0], [460.0, 1040.0], [300.0, 1040.0]]
 material = "acrylic"
+
+# Gate A1 play-length fix: guide below the upper deck's lower edge. A ball
+# dropping off the deck (or coming down the right side above the ramp
+# entry) rolls down it to the left and drops onto bumper_2 (324, 720)
+# instead of straight down the right side onto the right inlane.
+[[walls]]
+points = [[468.0, 860.0], [372.0, 800.0]]
+material = "wood"
+
+# Gate A1 play-length fix: closes the alcove between the ramp lane's right
+# wall (x 445, from y 430) and the shooter-lane wall (x 470). A ball sent
+# up the right side is turned left towards the ramp mouth instead of
+# stalling in the alcove and creeping back down the right inlane.
+[[walls]]
+points = [[470.0, 395.0], [445.0, 430.0]]
+material = "wood"
