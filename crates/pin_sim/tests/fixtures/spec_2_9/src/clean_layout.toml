@@ -1,0 +1,33 @@
+# Spec 2.9 clean fixture geometry (mm). Walls are zero-thickness ribbons.
+# walls[0] outer frame, walls[1..2] inlane guides, walls[3..4] drain funnel.
+schema_version = 1
+
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 28.0
+
+[[walls]]
+points = [[0.0, 0.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 0.0]]
+closed = true
+material = "wood"
+
+[[walls]]
+points = [[0.0, 330.0], [146.0, 170.0]]
+closed = false
+material = "wood"
+
+[[walls]]
+points = [[514.0, 330.0], [368.0, 170.0]]
+closed = false
+material = "wood"
+
+[[walls]]
+points = [[146.0, 140.0], [212.0, 0.0]]
+closed = false
+material = "wood"
+
+[[walls]]
+points = [[368.0, 140.0], [302.0, 0.0]]
+closed = false
+material = "wood"
