@@ -2289,3 +2289,18 @@ The "3.5 — DOF bridge public API" line saying Windows `ConnectionReset`/`Messa
 - **Decision.** `clean_fixture_has_zero_findings` requires zero findings of every kind except `TickBudget`. The determinism tests compare `to_json()` byte for byte after removing every `"timing"` member and nothing else.
 - **Rationale.** TickBudget's input is wall-clock tick time (the 99.9th percentile against 0.35 ms). On a shared, unoptimised test build it depends on machine load, and D8 forbids tests that assert on wall-clock time. The brief puts wall-clock data in the separate `timing` section, so outside it the report must be byte-identical. A TickBudget finding in `findings` that varies between runs therefore fails the determinism tests, which is the intended result.
 - **Alternatives.** Assert zero TickBudget findings too: rejected under D8. Filter TickBudget findings out of the determinism comparison: rejected, since it would weaken T3 beyond what the brief allows.
+
+## 2.9 — bot serves a waiting table with `launch`
+- **Decision.** Besides the rest-based plunge, the bot presses `launch` when `start` has been pressed and released at least once, no ball has been on the table for `launch_after_ms` consecutive ticks, and the `launch_interval_ms` throttle allows it. The hold is the same PCG draw in `launch_hold_ms`. The bot counts the empty ticks (`empty_ticks`, reset whenever a ball is on the table).
+- **Rationale.** A table that serves on `launch` (no auto-serve) has no resting ball, so the rest trigger never fired and the game never began. The new trigger uses only the observable "game started, table empty" state, with no table name or behaviour special case (rule 6). It adds PCG draws only in ball-less stretches after a start.
+- **Alternatives.** Press `launch` together with `start` (wastes the press on auto-serve tables and ignores the start delay); only rely on `max_starts` retries (never serves).
+
+## 2.9 Tester — mode persist key in fixtures
+- **Decision.** The four fixture tables declare `mode:frenzy` as the last `[persist]` key (indices 0..3 unchanged) and the rules (`clean`, `launch`, `flood` and the bundle copies) increment it in `start_mode()` before `show_scene`. `mode_error.lua` is unchanged: its error comes first, so ModeCoverage still reports `frenzy`.
+- **Rationale.** Follows DECISIONS "2.9 — mode-start signal": the fixtures were written before that convention was settled and so never signalled the mode start.
+- **Alternatives.** Report the mode as unobservable in the clean fixture: fails the zero-findings check.
+
+## 2.9 Tester — stuck-ball tests and the nudge
+- **Decision.** `ball_trap_is_a_stuck_ball_naming_the_pocket` uses a 90 s game cap with the default bot. `ball_at_rest_is_stuck_at_11_s` sets `bot.nudge.enabled = false` in `one_game`, keeping the `> 10 s && <= 11 s` assertion.
+- **Rationale.** The brief-mandated nudge (1.5 cm/s, every 2 s) lifts the ball above the 1 cm/s stuck speed, so with the default bot StuckBall first appears about 51 s in. The 11 s test isolates the detector's 10 s threshold; the trap test checks the end-to-end behaviour with the bot.
+- **Alternatives.** Loosen the 11 s bound (weakens the test); lower the nudge strength (changes the brief's bot).

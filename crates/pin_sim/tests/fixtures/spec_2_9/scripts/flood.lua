@@ -45,6 +45,8 @@ end
 
 local function start_mode()
   frenzy = true
+  local k = key["mode:frenzy"]
+  pinball.persist_set(k, pinball.persist_get(k) + 1)
   pinball.show_scene(scene.scene_frenzy)
   pinball.set_lamp(pinball.lamp.lamp_frenzy, 1.0)
 end

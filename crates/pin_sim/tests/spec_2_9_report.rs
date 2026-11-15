@@ -49,7 +49,15 @@ fn json_has_schema_1_and_every_finding_field() {
         }
         assert_eq!(j["subject"].as_str(), Some(f.subject.as_str()));
         assert_eq!(j["detail"].as_str(), Some(f.detail.as_str()));
-        assert_eq!(j["game"].as_u64(), Some(u64::from(f.game)));
+        if f.game == pin_sim::autoplay::report::SOAK_WIDE {
+            assert!(
+                j["game"].is_null(),
+                "soak-wide finding has game {}",
+                j["game"]
+            );
+        } else {
+            assert_eq!(j["game"].as_u64(), Some(u64::from(f.game)));
+        }
         assert_eq!(j["tick"].as_u64(), Some(f.tick));
         assert_eq!(
             norm(j["kind"].as_str().expect("kind is a string")),

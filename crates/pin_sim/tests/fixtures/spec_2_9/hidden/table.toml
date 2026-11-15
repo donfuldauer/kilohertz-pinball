@@ -202,4 +202,4 @@ id = "scene_frenzy"
 file = "frenzy_scene.toml"
 
 [persist]
-keys = ["game_state", "ball_ticks", "games_done", "balls_served"]
+keys = ["game_state", "ball_ticks", "games_done", "balls_served", "mode:frenzy"]

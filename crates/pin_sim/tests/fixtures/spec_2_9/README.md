@@ -21,7 +21,8 @@ serves every ball down the centre: through `top_opto` (y 850) then `mid_opto`
 (`show_scene(scene_frenzy)`). `scripts/clean.lua`: `start` begins a 3-ball
 game (auto-serve), each `trough_1` edge ends a ball; persist keys
 `game_state`, `ball_ticks`, `games_done`, `balls_served` expose the game to
-tests. Declared switches: `top_opto`, `mid_opto`, `trough_1`,
+tests. The rules also increment the persist key `mode:frenzy` (declared last in each
+table) when the mode starts, the soak's mode-start signal (DECISIONS "2.9 — mode-start signal"); `mode_error.lua` errors first and does not. Declared switches: `top_opto`, `mid_opto`, `trough_1`,
 `lower_left_eos`, `lower_right_eos`, `bumper_1_ring`.
 
 ## Planted defects
