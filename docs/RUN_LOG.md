@@ -390,3 +390,6 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 6 | 5.4 | Verifier | Opus 5.5 | 1 | **fail** | visual check: aliasing in reflections | → fixer: atlas resolution 512, 4 rotated-grid rays per texel, full-rate clear coat (575238a) |
 | 6 | 5.4 | Verifier | Opus 5.5 | 2 | pass (575238a) | crisp/straightness tests with a negative control | superseded by attempt 3 after merging main |
 | 6 | 5.4 | Verifier | Opus 5.5 | 3 | local pass (44beee2); gate pending CI | fmt/clippy clean; pin_render 454/454; CI GPU selection 1297 pass (lavapipe exposes ray query, no skips); snapshots exact; merge integrity clean; hash 3f370ef860b8880c ×10 | |
+| 6 | 5.4 CR1 | Fixer | Opus 5.5 / Sonnet 5.5 | 1 | done (ff4701a) | CodeRabbit round 1 (6 threads + 1 nitpick) | BallCentre one-bounce trace, device-lost callback, strict ray-query/AS/naga asserts, survey wording |
+| 6 | 5.4 CR1 | Verifier | Sonnet 5.5 | 1 | **fail** (ff4701a) | 1304 GPU / 459 default pass; stale "Vulkan only" comment, untested mark_device_lost, stale naga doc | → fixer (cb47540) |
+| 6 | 5.4 CR1 | Verifier | Sonnet 5.5 | 2 | pass (cb47540) | fmt/clippy clean; pin_render 459/0/0; gpu-tests 641/0/1 (pre-existing benchmark ignore); raytrace_lost 1/0/0 | push to PR #22 |
