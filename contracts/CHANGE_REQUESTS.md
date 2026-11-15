@@ -145,3 +145,14 @@ unchanged):
 - **Why:** a1-glass adds a static playfield glass (`Material::Acrylic`) over the table in `pin_sim`, so balls launched upward (the drop-target reset launch, Gate A1 EscapedBall) bounce back instead of leaving the escape box. Without a pair the contact would use the ball profile's fallback restitution (0.65 for steel) and friction 0.2.
 - **Affected crates:** none (data only). Behaviour note: acrylic table colliders (e.g. the grey-box upper deck) now also use this pair for steel balls instead of the fallback; no committed replay or autoplay fixture uses acrylic.
 - **Workaround meanwhile:** none.
+
+### CR-007: optional `glass.toml` (`GlassManifest`)
+- **Requested by:** Wave 6 work item a1-glass-height (task executor)
+- **Status:** open (pin_core-only PR; additive)
+- **Kind:** additive
+- **Items:** new module `crates/pin_core/src/schema/glass.rs` with `GlassManifest { schema_version: u32, height: f32 }` and `pub const GLASS_FILE: &str = "glass.toml"`, re-exported from `pin_core::schema`; tests in `crates/pin_core/tests/glass_manifest.rs` and in `glass.rs`; PLAN.md Appendix A.3a documents the file.
+- **Change:** a new optional bundle file `glass.toml` (`schema_version = 1`, `height` in mm: the height of the glass underside above the playfield surface). Absent: the simulator derives the glass from the table geometry (max z + 50 mm, unchanged behaviour). Present: `height` must be finite and > 0 (checked on parse and serialise); the simulator additionally requires it to be at least the geometry's maximum z. No existing type, field or file changes.
+- **Why:** the 50 mm margin between the geometry's max z and the glass underside can never be sealed by any wall; the grey-box needs a table-set glass height so Gate A1 has zero EscapedBall.
+- **Affected crates:** `pin_sim` reads it (new code only). None break: no existing struct changes.
+- **Withdrawn first version:** an earlier revision added `Playfield.glass_height` (`Option<f32>`). It was withdrawn because adding a public field is breaking under the protocol (struct literals in `pin_tablegen`), and breaking changes merge only between waves.
+- **Workaround meanwhile:** none.
