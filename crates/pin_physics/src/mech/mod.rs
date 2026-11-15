@@ -605,6 +605,24 @@ impl MechSet {
         }
     }
 
+    /// Forgets ball slot `h` in every mech, for a ball the caller removed
+    /// from the solver (drain, escape, test removal). Call it after
+    /// [`BallSolver::remove_ball`] and before a ball can be added to the
+    /// same slot: a VUK holding `h` lets go at once (its switch opens, with
+    /// the normal edge, at the next [`post_step`](Self::post_step)), so a
+    /// new ball in that slot is free and is captured only through the
+    /// normal capture path. VUK holds are the only per-ball mech state.
+    /// No-op for a slot no mech refers to. Allocation-free (tick-safe).
+    pub fn release_ball(&mut self, h: BallHandle) {
+        for m in &mut self.mechs {
+            if let Part::Vuk(v) = &mut m.part
+                && v.held == Some(h)
+            {
+                v.held = None;
+            }
+        }
+    }
+
     /// The VUK exit zones (one per VUK, in mech order), for the table's
     /// transition handling.
     #[must_use]
