@@ -419,3 +419,6 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 6 | PR #28 CR r1 passive rise | Investigator | Opus 5.5 | 1 | root-caused | bumper_1 rise = Newton captive returning energy (outside E); sweep rise = frozen ball gets full-substep gravity at a receding captive (pin_physics, deferred) | |
 | 6 | PR #28 CR r1 items 2+4 (a1_bundle_passive) | Fixer | Sonnet 5.5 | 1 | done | running-minimum check, finite assert, Newton-chain windows excluded; TOL_J 1e-6 unchanged; DECISIONS + HUMAN_QUEUE entries | |
 | 6 | PR #28 CR r2 gate script parser | Fixer | Haiku 5.5 | 1 | done | triage T0: drop grep/sed JSON fallback, fail clearly without jq/python3 | |
+| 6 | PR #28 CI core-tests aarch64 (energy_non_increasing_sweep) | Investigator | Opus 5.5 | 1 | root-caused | pre-existing pin_physics warm-start defect (solver.rs:1526), random proptest seed, ~0.08 % of runs; deferred (DECISIONS ball-warm-start-pair) | |
+| 6 | PR #28 CR r3 passive compared-sample assert | Fixer | Haiku 5.5 | 1 | done | triage T0: worst_margin.is_finite() before the margin assert | |
+| 6 | PR #28 CR r3 docs (thread disposition, warm-start entry) | Fixer | Haiku 5.5 | 1 | done | triage T0: DECISIONS + HUMAN_QUEUE appends | |
