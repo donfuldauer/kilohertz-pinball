@@ -39,7 +39,7 @@ use super::contact::{
     effective_restitution, integrate_orientation, resolve_ball_contact, resolve_surface_contact,
     solve_ball_contact, solve_surface_contact, sphere_toi,
 };
-use super::newton::NewtonChain;
+use super::newton::{MAX_CHAIN_BALLS, NewtonChain};
 use super::types::{
     Ball, BallEvent, BallEvents, BallHandle, BallSolverConfig, ExternalForce, ForceContext,
     Geometry, IMPACT_REPORT_SPEED, ImpactTarget, MAX_BALLS, Magnet, MagnetState, Sensor,
@@ -71,6 +71,9 @@ const PERSIST_COS: f32 = 0.94;
 const FALLBACK_FRICTION: f32 = 0.2;
 /// Impacts a ball may have per sub-step before it waits for its next one.
 const MAX_EVENTS_PER_SUBSTEP: u8 = 12;
+/// Captive balls a ball may pass per sub-step (see `Scratch::passed`)
+/// before it waits for its next one.
+const MAX_PASSED_CAPTIVES: usize = 4;
 /// Velocity-solver sweeps over the touching contacts at a sub-step boundary.
 const PRESOLVE_PASSES: usize = 64;
 /// Pass after which a ball held only by static surfaces, other balls and
@@ -264,6 +267,14 @@ struct Scratch {
     t0: f32,
     events: u8,
     frozen: bool,
+    /// Captive balls (chain, ball, path speed bits) whose cast this ball
+    /// reached with nothing to apply: the captive moves away from it at
+    /// least as fast as it follows. The casts skip them until the ball's
+    /// next sub-step boundary, or until the captive's speed changes, so the
+    /// ball keeps moving instead of waiting (docs/DECISIONS.md
+    /// "a1fix-A-resolved"). The first `n_passed` entries are valid.
+    passed: [(usize, usize, u32); MAX_PASSED_CAPTIVES],
+    n_passed: u8,
     cache: Cache,
     /// The ball's own clock: the time within the tick at which its stored
     /// position is valid.
@@ -284,6 +295,8 @@ impl Scratch {
         t0: 0.0,
         events: 0,
         frozen: false,
+        passed: [(0, 0, 0); MAX_PASSED_CAPTIVES],
+        n_passed: 0,
         cache: Cache::Free,
         t: 0.0,
     };
@@ -300,6 +313,25 @@ impl Scratch {
     /// Time of boundary `k` (exactly `k·h` while `t0` is 0).
     fn boundary_time(&self) -> f32 {
         self.t0 + self.k as f32 * self.h
+    }
+
+    /// Whether the casts skip captive ball `bi` of chain `ci`, now moving
+    /// at path speed `speed` (see `passed`).
+    fn passes(&self, ci: usize, bi: usize, speed: f32) -> bool {
+        self.passed[..usize::from(self.n_passed)]
+            .iter()
+            .any(|&(c, b, u)| c == ci && b == bi && u == speed.to_bits())
+    }
+
+    /// Records a captive ball to pass; `false` when the list is full.
+    fn pass(&mut self, ci: usize, bi: usize, speed: f32) -> bool {
+        let k = usize::from(self.n_passed);
+        if k >= MAX_PASSED_CAPTIVES {
+            return false;
+        }
+        self.passed[k] = (ci, bi, speed.to_bits());
+        self.n_passed += 1;
+        true
     }
 
     fn count_event(&mut self) {
@@ -408,6 +440,11 @@ pub struct BallSolver {
     hooks: Vec<Box<dyn ExternalForce>>,
     surface_velocity: Option<Box<dyn SurfaceVelocity>>,
     chains: Vec<NewtonChain>,
+    /// Path speed of every captive ball right after its chain advanced this
+    /// tick (one entry per chain, sized when the chain is added). A captive
+    /// still at that speed sits where that speed carried it; one whose speed
+    /// an impact changed since has not moved on yet.
+    chain_tick_speeds: Vec<[f32; MAX_CHAIN_BALLS]>,
 }
 
 fn set_at<T: Copy>(v: &mut Vec<T>, index: usize, value: T, default: T) {
@@ -473,6 +510,7 @@ impl BallSolver {
             hooks: Vec::new(),
             surface_velocity: None,
             chains: Vec::new(),
+            chain_tick_speeds: Vec::new(),
         }
     }
 
@@ -693,6 +731,11 @@ impl BallSolver {
                 .map_or(p.restitution, |(e, _)| e);
             chain.bind(p.body.radius, p.body.mass, e);
         }
+        let mut speeds = [0.0; MAX_CHAIN_BALLS];
+        for (k, s) in speeds.iter_mut().enumerate().take(chain.len()) {
+            *s = chain.ball_speed(k);
+        }
+        self.chain_tick_speeds.push(speeds);
         self.chains.push(chain);
         self.chains.len() - 1
     }
@@ -1733,6 +1776,7 @@ impl BallSolver {
             if *member {
                 s.events = 0;
                 s.frozen = false;
+                s.n_passed = 0;
                 s.cache = Cache::Dirty;
                 s.k += 1;
             }
@@ -1799,6 +1843,9 @@ impl BallSolver {
                 continue;
             }
             for bi in 0..chain.len() {
+                if sc.passes(ci, bi, chain.ball_speed(bi)) {
+                    continue;
+                }
                 let p = pos - chain.ball_position(bi);
                 if let Some(t) = sphere_toi_resting(p, v, r + rc, limit)
                     && (t < limit || best.is_none())
@@ -2040,6 +2087,29 @@ impl BallSolver {
                         let persistent = rests_on(&self.touch[i], normal);
                         applied = self.chain_hit(i, &me, ci, bi, normal, persistent, 0.0, events);
                         add_touch(&mut self.touch[i], normal, true);
+                        // Nothing to apply: the captive moves away at least as
+                        // fast as the ball follows. If it still has the speed
+                        // it advanced with this tick, its position already
+                        // reflects that motion and the ball passes it (keeps
+                        // moving). If an impact changed its speed since, it
+                        // has not moved on yet: the ball waits for its next
+                        // sub-step without the gravity of the time it waits,
+                        // which it would otherwise gain as energy without
+                        // moving (docs/DECISIONS.md "a1fix-A-resolved").
+                        if !applied {
+                            let speed = self.chains[ci].ball_speed(bi);
+                            if speed.to_bits() == self.chain_tick_speeds[ci][bi].to_bits() {
+                                applied = sc[i].pass(ci, bi, speed);
+                            }
+                        }
+                        if !applied {
+                            let wait = sc[i].horizon(self.tick_dt) - me.t;
+                            if wait > 0.0
+                                && let Some(b) = self.slots[i].as_mut()
+                            {
+                                b.velocity -= self.cfg.gravity * wait;
+                            }
+                        }
                     }
                 }
             }
@@ -2120,6 +2190,11 @@ impl BallSolver {
         for chain in &mut self.chains {
             if chain.ball_radius() > 0.0 {
                 chain.advance(dt, gravity, self.cfg.rolling_resistance);
+            }
+        }
+        for (chain, speeds) in self.chains.iter().zip(self.chain_tick_speeds.iter_mut()) {
+            for (k, s) in speeds.iter_mut().enumerate().take(chain.len()) {
+                *s = chain.ball_speed(k);
             }
         }
 
