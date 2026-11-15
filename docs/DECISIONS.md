@@ -2628,3 +2628,46 @@ Why each is rejected. (1) fails `greybox_game.rs` `every_mechanism_kind_closes_i
 
 **Alternatives.** None.
 
+
+## 6.0 fix — grey-box play length (Gate A1 median), iteration 3
+
+**Decision.** Applied per the Orchestrator ruling. The changes are data only, plus the allowed injection edit.
+- Iteration 1:
+  - The orbit lane's lower end now runs `[[85,615],[55,650],[38,700],[36,780],…]`, and `orbit_entry` moves to (38, 700).
+  - A deck-exit guide wall (468,860)–(372,800).
+  - `wall_height` 50 mm.
+- The alcove wall (470,395)–(445,430).
+- Radius 36 mm for `trough_1` and `trough_2`.
+- No extra upfield feature: none of the candidates tried added margin (below).
+- In `greybox_game.rs` `every_mechanism_kind_closes_its_switch`, the orbit injection now starts at (80, 621) mm. Its velocity is (−1.628, 1.898) m/s, which is the same 2.5 m/s along the new lane's lower leg (heading (−30, 35)). The assertions are unchanged.
+
+Results (seed 1):
+
+| skill | games | median ball time | p90 | p99 | stuck | escaped | non-finite | coverage | tick p99.9 |
+|---|---|---|---|---|---|---|---|---|---|
+| standard | 200 | 15,981 ms | 40,427 ms | — | 0 | 0 | 0 | complete | — |
+| standard | 1,000 | 16,107 ms | 38,568 ms | 70,720 ms | 0 | 2 | 0 | complete | 47.8 µs |
+| expert | 1,000 | 13,498 ms | — | — | 0 | 0 | 0 | complete | 43.0 µs |
+| novice | 1,000 | 15,666 ms | — | — | 0 | 4 | 0 | complete | 42.8 µs |
+
+At 1,000 games the orbit shot was made 161 / 159 / 153 times (standard / expert / novice) and the ramp 109 / 12 / 284 times.
+
+Every one of the 6 escapes has the drop-target reset signature. The ball crosses `drop_1` 1.0–1.1 s after a `drop_1_sw` hit (the rules' `DROP_RESET_DELAY` is 1,000 ms) and leaves with vz 1.2–2.0 m/s. Each escape, as game / ball / escape tick / last `drop_1_sw` hit tick:
+- standard: 852 / 3 / 60360 / 59275, and 921 / 1 / 8122 / 6982;
+- novice: 0 / 1 / 7980 / 6907, 297 / 3 / 60006 / 58741, 330 / 1 / 22589 / 21395, and 447 / 1 / 8166 / 7036.
+
+So Gate A1 3 is blocked on the drop-target reset launch, which is being investigated separately. The median criterion is met.
+
+**Rationale.** The orbit reroute and the alcove wall are the largest gains possible without a feature near the flippers. The upfield candidates tried on top of them (standard, 200 games) gave no gain beyond the about 1 s spread between these runs (base 15,981 ms):
+- rubber posts r 6 at (257,665): 15,989 ms; (120,720): 14,962 ms; (395,740): 15,824 ms; (190,830): 15,989 ms;
+- post r 8 at (60,480): 15,492 ms; post r 8 at (257,900): 16,045 ms;
+- slanted wall (125,690)–(145,830): 14,424 ms.
+
+Two different lane ends were also tried:
+- ending at (100,600): 12,542 ms;
+- ending at (112,598): 107 StuckBall.
+In the chosen lane most plunges glance off the upper flipper's pivot cap and still reach the left inlane, but more slowly.
+
+**Alternatives.**
+- A centre guard post: ruled out by the ruling (it breaks the feel test).
+- Working around the reset launch in the table: ruled out by the ruling.
