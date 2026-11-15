@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6a503267c6bdac35543e9c604e8c2b083b84fc37af5cc1b0926adae58a3ef8f9 # shrinks to games = 1, threads = 1, max_game_ticks = 1000, seed = 98552513832569, sk = 0
