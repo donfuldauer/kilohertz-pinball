@@ -1,0 +1,36 @@
+# Subphase 2.9 autoplay fixture (gap) layout: planted defect: a gap in the left wall
+schema_version = 1
+
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 28.0
+
+# Outer walls with a planted defect: a gap in the left wall from y = 750 to
+# y = 1000 (between walls[0] and walls[1]).
+[[walls]]
+points = [[160.0, 110.0], [0.0, 260.0], [0.0, 750.0]]
+closed = false
+material = "wood"
+
+[[walls]]
+points = [[0.0, 1000.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 260.0], [354.0, 110.0]]
+closed = false
+material = "wood"
+
+# A V-shaped catch basin below the drain, closed at the sides, leading to
+# the trough switch.
+[[walls]]
+points = [[0.0, 260.0], [0.0, 120.0], [257.0, 0.0], [514.0, 120.0], [514.0, 260.0]]
+closed = false
+material = "wood"
+
+[[posts]]
+position = [140.0, 760.0]
+radius = 8.0
+rubber = true
+
+[[posts]]
+position = [374.0, 760.0]
+radius = 8.0
+rubber = true

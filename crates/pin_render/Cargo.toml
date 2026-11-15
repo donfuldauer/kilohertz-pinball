@@ -28,6 +28,10 @@ egui-wgpu.workspace = true
 pin_assetgen = { path = "../pin_assetgen" }
 serde.workspace = true
 toml.workspace = true
+# Wave 6 additions (5.5): the backbox scene is built from the runtime glTF
+# loader's output (`BackboxScene::from_gltf(&pin_assets::GltfScene)`).
+# Internal crate; no new external pin.
+pin_assets = { path = "../pin_assets" }
 
 [dev-dependencies]
 proptest.workspace = true
@@ -37,6 +41,9 @@ naga.workspace = true
 image.workspace = true
 # Real windows for the surface smoke test (tests/gpu_window.rs).
 sdl3.workspace = true
+# Wave 6 additions (5.5): the backbox GPU tests render the generated
+# mini-playfield (`pin_tablegen::backbox`). Internal crate.
+pin_tablegen = { path = "../pin_tablegen" }
 
 # Real SDL windows + surfaces (gpu-tests only). SDL video must run on the main
 # thread (Cocoa), so a plain `main`. Skips without a native video driver unless
