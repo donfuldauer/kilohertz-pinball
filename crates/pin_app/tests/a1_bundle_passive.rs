@@ -324,6 +324,12 @@ fn check(label: &str, r: &SceneResult) {
         r.coil_ticks,
         r.chain_ticks
     );
+    // worst_margin starts at -inf and is set only on compared ticks, to
+    // rise - tol with both finite; so it is finite iff a tick was compared.
+    assert!(
+        r.worst_margin.is_finite(),
+        "{label}: no coil-free, chain-free tick was compared: {r:?}"
+    );
     assert!(
         r.worst_margin <= 0.0,
         "{label}: energy rose above the start by more than 1e-6 J + N(t): {r:?}"
