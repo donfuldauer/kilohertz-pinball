@@ -2071,6 +2071,7 @@ dependencies = [
  "pin_physics",
  "pin_script",
  "proptest",
+ "serde_json",
 ]
 
 [[package]]
