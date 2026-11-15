@@ -115,12 +115,23 @@ fn rolling_107m_default_parameters_match_the_resistance_model() {
 }
 
 struct Bounce {
+    /// End-of-impact-tick normal speed over the Impact event's `normal_speed`.
     e_speed: f64,
-    ratio: f64,
+    /// Median of `vs[k] + gn (k - k0) dt` for k0..k0+5 over the impact speed.
+    e_cross: f64,
+    /// Parabolic apex height above the floor.
+    apex: f64,
+    /// The Impact event's approach speed.
+    impact_speed: f64,
 }
 
 /// Drops a ball from `drop` metres above the floor, along the floor normal,
 /// and measures the rebound along that normal.
+///
+/// The restitution is the post-impact normal velocity at the end of the impact
+/// tick over the Impact event's `normal_speed`. (The apex height carries a
+/// tick-phase bias of g h (1/2 - phi) from the semi-implicit Euler integrator,
+/// so it is only used for the phase-averaged height ratio.)
 fn bounce(profile: pin_core::ids::ProfileId, material: Material, pitch: f32, drop: f32) -> Bounce {
     let (world, c, rot) = floor(pitch);
     let geo = Geometry::new(&world);
@@ -145,9 +156,13 @@ fn bounce(profile: pin_core::ids::ProfileId, material: Material, pitch: f32, dro
     let mut apex = None;
     for tick in 1..=2000usize {
         s.step(&geo, DT, &mut ev);
-        if impact.is_none()
-            && let Some(BallEvent::Impact { normal_speed, .. }) = ev.as_slice().first()
-        {
+        if impact.is_none() && !ev.as_slice().is_empty() {
+            // Guard: exactly one event, an Impact, and so no other contact
+            // between the impact and the end of this tick.
+            assert_eq!(ev.as_slice().len(), 1, "extra events on the impact tick");
+            let Some(BallEvent::Impact { normal_speed, .. }) = ev.as_slice().first() else {
+                panic!("first event is not an Impact");
+            };
             impact = Some(tick);
             impact_speed = f64::from(*normal_speed);
         }
@@ -155,45 +170,61 @@ fn bounce(profile: pin_core::ids::ProfileId, material: Material, pitch: f32, dro
         vs.push(vn(&s));
         if let Some(k0) = impact {
             // Apex: first fall after the rebound, parabola through the
-            // three samples around the maximum.
+            // the last three samples (the vertex lies between the last two).
             if tick > k0 + 1 && vs[tick] < 0.0 && vs[tick - 1] >= 0.0 {
-                let i = if hs[tick] > hs[tick - 1] {
-                    tick
-                } else {
-                    tick - 1
-                };
+                let i = tick - 1;
                 let (y0, y1, y2) = (hs[i - 1], hs[i], hs[i + 1]);
                 let denom = y0 - 2.0 * y1 + y2;
-                let apex_h = y1 - (y2 - y0) * (y2 - y0) / (8.0 * denom);
-                apex = Some(apex_h);
+                apex = Some(y1 - (y2 - y0) * (y2 - y0) / (8.0 * denom));
                 break;
             }
         }
     }
     let k0 = impact.expect("no impact");
     let apex = apex.expect("no apex");
-    // Rebound speed at the impact instant, from the ballistic flight to the
-    // measured apex: v_out = sqrt(2 gn H). (Sampling the per-tick velocity
-    // instead carries the integrator's half-tick offset, g dt / 2 = 5 mm/s,
-    // i.e. 2 % of a 0.25 m/s rebound; that is printed for information only.)
-    // The impact speed is the solver's own reported approach speed, checked
-    // against the free-fall value. The effective restitution is the measured
-    // ratio; it is also asserted against the pair table's value by the caller
-    // (restitution does not depend on speed above 0.1 m/s, and every drop
-    // here arrives at more than 0.9 m/s).
-    let v_out = (2.0 * gn * apex).sqrt();
-    let (hp, vp) = (hs[k0 - 1], vs[k0 - 1]);
-    let tau = ((vp + (vp * vp + 2.0 * gn * hp).sqrt()) / gn).clamp(0.0, dt);
-    let v_out_tick = vs[k0] + gn * (dt - tau);
     let v_fall = (2.0 * gn * f64::from(drop)).sqrt();
-    println!(
-        "    v_in: fall {v_fall:.4}, event {impact_speed:.4}; v_out: apex {v_out:.4}, per-tick {v_out_tick:.4}"
+    assert!(
+        (impact_speed - v_fall).abs() < 0.01 * v_fall,
+        "impact speed {impact_speed} vs free fall {v_fall}"
     );
-    assert!((impact_speed - v_fall).abs() < 0.01 * v_fall);
+    let mut cross: Vec<f64> = (k0..k0 + 5)
+        .map(|k| vs[k] + gn * (k - k0) as f64 * dt)
+        .collect();
+    cross.sort_by(f64::total_cmp);
     Bounce {
-        e_speed: v_out / impact_speed,
-        ratio: apex / f64::from(drop),
+        e_speed: vs[k0] / impact_speed,
+        e_cross: cross[2] / impact_speed,
+        apex,
+        impact_speed,
     }
+}
+
+/// Phase-averaged height ratio: `N` drops spread evenly over one tick of fall
+/// (`drop + k v_impact dt / N`), mean of apex / drop. Also asserts the speed
+/// ratios of every drop.
+fn mean_height_ratio(
+    profile: pin_core::ids::ProfileId,
+    fm: Material,
+    pitch: f32,
+    drop: f32,
+    e: f64,
+) -> f64 {
+    const N: usize = 20;
+    let v_impact = (2.0 * 9.81f64 * f64::from(pitch.cos()) * f64::from(drop)).sqrt();
+    let step = v_impact * f64::from(DT) / N as f64;
+    // Fall distance of one tick at v_impact is v dt; spread phase over it.
+    let mut sum = 0.0;
+    for k in 0..N {
+        let d = f64::from(drop) + k as f64 * step;
+        let b = bounce(profile, fm, pitch, d as f32);
+        assert!(
+            (b.e_speed / e - 1.0).abs() < 0.01,
+            "speed ratio {} vs e {e} (drop {d})",
+            b.e_speed
+        );
+        sum += b.apex / d;
+    }
+    sum / N as f64
 }
 
 const CASES: [(pin_core::ids::ProfileId, Material); 4] = [
@@ -214,68 +245,84 @@ fn table_e(profile: pin_core::ids::ProfileId, floor_material: Material) -> f64 {
     f64::from(pair.restitution)
 }
 
-fn print_case(
-    profile: pin_core::ids::ProfileId,
-    fm: Material,
-    pitch: f32,
-    drop: f32,
-    e: f64,
-    b: &Bounce,
-) {
-    println!(
-        "{:?}/{fm:?} pitch {:.1} deg drop {:.0} mm: e_table {e:.3} \
-         speed ratio {:.4} (err {:+.2} %), height ratio {:.5} vs e^2 {:.5} (err {:+.2} %)",
-        profiles()[profile.index()].material,
-        pitch.to_degrees(),
-        drop * 1000.0,
-        b.e_speed,
-        (b.e_speed / e - 1.0) * 100.0,
-        b.ratio,
-        e * e,
-        (b.ratio / (e * e) - 1.0) * 100.0
-    );
-}
-
-/// Gate A1 1b: drop onto a flat floor, every pair and both drop heights.
-/// Restitution is not speed dependent above 0.1 m/s (every drop arrives at
-/// more than 0.9 m/s), so the effective restitution is asserted against the
-/// pair table's value (1 %) and the height ratio against e^2 (2 %).
-#[test]
-fn drop_bounce_height_ratio_is_restitution_squared() {
+/// Shared body of the flat and pitched gating tests.
+fn check_floor(pitch: f32) {
     for (profile, fm) in CASES {
         let e = table_e(profile, fm);
         for drop in [0.05f32, 0.15] {
-            let b = bounce(profile, fm, 0.0, drop);
-            print_case(profile, fm, 0.0, drop, e, &b);
+            let b = bounce(profile, fm, pitch, drop);
+            let mean = mean_height_ratio(profile, fm, pitch, drop, e);
+            println!(
+                "{:?}/{fm:?} pitch {:.1} deg drop {:.0} mm: e_table {e:.3} \
+                 speed ratio {:.5} (err {:+.3} %), cross-check {:.5} (err {:+.3} %), \
+                 v_in {:.4}, phase-averaged height ratio {mean:.5} vs e^2 {:.5} (err {:+.3} %)",
+                profiles()[profile.index()].material,
+                pitch.to_degrees(),
+                drop * 1000.0,
+                b.e_speed,
+                (b.e_speed / e - 1.0) * 100.0,
+                b.e_cross,
+                (b.e_cross / e - 1.0) * 100.0,
+                b.impact_speed,
+                e * e,
+                (mean / (e * e) - 1.0) * 100.0
+            );
             assert!(
                 (b.e_speed / e - 1.0).abs() < 0.01,
                 "speed ratio {} vs e {e}",
                 b.e_speed
             );
             assert!(
-                (b.ratio / (e * e) - 1.0).abs() < 0.02,
-                "height ratio {} vs e^2 {}",
-                b.ratio,
+                (b.e_cross / e - 1.0).abs() < 0.01,
+                "cross-check speed ratio {} vs e {e}",
+                b.e_cross
+            );
+            assert!(
+                (mean / (e * e) - 1.0).abs() < 0.02,
+                "phase-averaged height ratio {mean} vs e^2 {}",
                 e * e
             );
         }
     }
 }
 
-/// The same drops onto the 6.5 degree playfield, heights along the floor
-/// normal. Report only (finite and in (0, 1)): the pitched-floor deviation of
-/// about -1.1 % in speed ratio and -2.8 % in height ratio for steel/wood at
-/// 50 mm is recorded for an investigation, not hidden.
+/// Gate A1 1b: drop onto a flat floor, every pair and both drop heights.
+/// Restitution is not speed dependent above 0.1 m/s (every drop arrives at
+/// more than 0.9 m/s): the post-impact normal speed over the impact speed is
+/// asserted against the pair table's e (1 %) and the phase-averaged height
+/// ratio against e^2 (2 %).
 #[test]
-fn drop_bounce_on_the_pitched_playfield_report() {
-    let pitch = PITCH_DEG.to_radians();
-    for (profile, fm) in CASES {
-        let e = table_e(profile, fm);
-        for drop in [0.05f32, 0.15] {
-            let b = bounce(profile, fm, pitch, drop);
-            print_case(profile, fm, pitch, drop, e, &b);
-            assert!(b.e_speed.is_finite() && b.e_speed > 0.0 && b.e_speed < 1.0);
-            assert!(b.ratio.is_finite() && b.ratio > 0.0 && b.ratio < 1.0);
+fn drop_bounce_height_ratio_is_restitution_squared() {
+    check_floor(0.0);
+}
+
+/// The same drops onto the 6.5 degree playfield, heights along the floor
+/// normal. Investigation result: not a solver defect. The earlier apex-based
+/// estimate was biased by the integrator's tick phase (g h (1/2 - phi), about
+/// +-1.9 % in speed and +-4.8 % in height ratio over a 2 mm sweep of drop
+/// heights, on flat and pitched floors alike); the solver's post-impact normal
+/// velocity equals e times the impact speed to under 1e-5. Measured with the
+/// post-impact velocity and a phase-averaged apex it matches the table.
+#[test]
+fn drop_bounce_on_the_pitched_playfield_restitution() {
+    check_floor(PITCH_DEG.to_radians());
+}
+
+/// Phase sweep: 100 drops from 50.00 to 51.98 mm in 0.02 mm steps, steel on
+/// wood, flat and pitched. Every end-of-impact-tick speed ratio is within 1 %
+/// of e, whatever the tick phase of the impact.
+#[test]
+fn drop_bounce_restitution_is_independent_of_tick_phase() {
+    let e = table_e(STEEL, Material::Wood);
+    for pitch in [0.0f32, PITCH_DEG.to_radians()] {
+        for i in 0..100 {
+            let drop = (50.0 + 0.02 * i as f64) / 1000.0;
+            let b = bounce(STEEL, Material::Wood, pitch, drop as f32);
+            assert!(
+                (b.e_speed / e - 1.0).abs() < 0.01,
+                "pitch {pitch} drop {drop}: speed ratio {} vs e {e}",
+                b.e_speed
+            );
         }
     }
 }
