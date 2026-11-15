@@ -496,6 +496,17 @@ fn soak_command_failures() {
     .unwrap_err();
     assert_eq!(e.exit_code(), 2, "{e}");
     assert!(!inside.exists());
+    // A not-yet-existing nested directory inside the bundle is refused too.
+    let nested = fixture("gap").join("new").join("reports");
+    let e = main_with_args(&args(&[
+        "soak",
+        fixture("gap").to_str().unwrap(),
+        "--out",
+        nested.to_str().unwrap(),
+    ]))
+    .unwrap_err();
+    assert_eq!(e.exit_code(), 2, "{e}");
+    assert!(!fixture("gap").join("new").exists());
     // An --out that is a file cannot be created (exit 1).
     let file = scratch("file").join("f");
     std::fs::write(&file, b"x").unwrap();
@@ -575,8 +586,14 @@ fn tick_budget_is_a_timing_finding_only() {
     });
     assert!(r.timing.budget_checked && r.timing.measured);
     assert_eq!(r.timing.ticks_measured, r.game_list[0].ticks);
-    assert_eq!(r.timing.findings.len(), 1);
-    assert_eq!(r.timing.findings[0].kind, FindingKind::TickBudget);
+    // Whether a TickBudget finding appears depends on measured time (D8);
+    // the comparison itself is unit-tested in soak.rs. Placement only:
+    assert!(
+        r.timing
+            .findings
+            .iter()
+            .all(|f| f.kind == FindingKind::TickBudget)
+    );
     assert!(r.findings.iter().all(|f| f.kind != FindingKind::TickBudget));
     // Not measured: nothing checked.
     let bundle = fixture("gap");

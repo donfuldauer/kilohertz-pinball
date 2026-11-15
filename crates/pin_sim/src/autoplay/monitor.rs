@@ -268,6 +268,16 @@ impl<'t> GameMonitor<'t> {
                 ),
             );
         }
+        // Escapes with no matching track: the ball spawned outside the
+        // bounds or escaped on the tick it appeared, so no observation saw it.
+        for _ in 0..new_escapes {
+            self.push(
+                FindingKind::EscapedBall,
+                "untracked ball".to_string(),
+                tick,
+                "a ball escaped the table bounds but was never tracked (it left between monitor observations)".to_string(),
+            );
+        }
 
         for h in handles {
             let Some(b) = sim.ball(h) else { continue };
