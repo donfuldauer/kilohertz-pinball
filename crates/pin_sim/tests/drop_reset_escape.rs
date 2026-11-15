@@ -13,7 +13,7 @@
 //! `Simulation` of the grey-box bundle (built from `tables/greybox` into the
 //! target dir by `tables/greybox/build.sh`) and of the same bundle with its
 //! glass lifted out of reach (one unused dispenser 3 m up and no
-//! `[playfield] glass_height`; see `glass_lid.rs`), which behaves as the
+//! `glass.toml`; see `glass_lid.rs`), which behaves as the
 //! table without a glass. Per trial:
 //! * no ball passes the glass (no escape through the top); before
 //!   a1-glass 105 of the 432 trials at 0° and 45° lost the ball, most of
@@ -70,21 +70,11 @@ fn bundles() -> &'static (PathBuf, PathBuf) {
         build_greybox(&lid);
         let raised = base.join("greybox_raised");
         copy_dir(&lid, &raised);
-        // The baseline drops the layout's glass_height, so its glass follows
+        // The baseline removes the bundle's glass.toml, so its glass follows
         // the (raised) bounds.
-        let layout = raised.join("layout.toml");
-        let text = std::fs::read_to_string(&layout).expect("layout.toml");
-        let stripped: String = text
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("glass_height"))
-            .map(|l| format!("{l}\n"))
-            .collect();
-        assert_ne!(
-            stripped.len(),
-            text.len(),
-            "layout.toml has no glass_height"
-        );
-        std::fs::write(&layout, stripped).expect("write layout.toml");
+        let glass = raised.join("glass.toml");
+        assert!(glass.is_file(), "the grey-box bundle has no glass.toml");
+        std::fs::remove_file(&glass).expect("remove glass.toml");
         let toml = raised.join("table.toml");
         let mut text = std::fs::read_to_string(&toml).expect("table.toml");
         text.push_str(&format!(

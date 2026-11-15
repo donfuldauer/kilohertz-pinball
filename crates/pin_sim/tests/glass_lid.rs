@@ -8,9 +8,9 @@
 //!
 //! **No-lid baseline.** `SimConfig` has no switch to leave the glass out,
 //! so the baseline is the same bundle with one extra dispenser whose exit
-//! is 3 m above the playfield (`[[dispensers]] glass_lid_raise`) and whose
-//! `layout.toml` has no `[playfield] glass_height` (the grey box sets one,
-//! DECISIONS "a1-glass-height — grey-box walls to the glass"). Dispenser
+//! is 3 m above the playfield (`[[dispensers]] glass_lid_raise`) and no
+//! `glass.toml` (the grey box ships one, DECISIONS "a1-glass-height —
+//! grey-box walls to the glass"). Dispenser
 //! exits feed the table bounds, so that bundle's glass sits above 3 m, out
 //! of reach of every ball of the sweep (a 6 m/s launch rises < 1.9 m); the
 //! dispenser is never used.
@@ -67,21 +67,11 @@ fn bundles() -> &'static (PathBuf, PathBuf) {
         build_greybox(&lid);
         let raised = base.join("greybox_raised");
         copy_dir(&lid, &raised);
-        // The baseline drops the layout's glass_height, so its glass follows
+        // The baseline removes the bundle's glass.toml, so its glass follows
         // the (raised) bounds.
-        let layout = raised.join("layout.toml");
-        let text = std::fs::read_to_string(&layout).expect("layout.toml");
-        let stripped: String = text
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("glass_height"))
-            .map(|l| format!("{l}\n"))
-            .collect();
-        assert_ne!(
-            stripped.len(),
-            text.len(),
-            "layout.toml has no glass_height"
-        );
-        std::fs::write(&layout, stripped).expect("write layout.toml");
+        let glass = raised.join("glass.toml");
+        assert!(glass.is_file(), "the grey-box bundle has no glass.toml");
+        std::fs::remove_file(&glass).expect("remove glass.toml");
         let toml = raised.join("table.toml");
         let mut text = std::fs::read_to_string(&toml).expect("table.toml");
         text.push_str(&format!(
@@ -289,13 +279,13 @@ fn glass_lid_sweep_directions_12_to_15() {
 }
 
 #[test]
-fn glass_sits_at_the_layout_glass_height() {
+fn glass_sits_at_the_glass_toml_height() {
     on_big_stack(|| {
         let (lid, _) = bundles().clone();
         let s = Simulation::load(&lid, SimConfig::default()).expect("load grey-box");
         let (lo, hi) = s.escape_bounds();
         let under = glass_underside(&s);
-        // The grey-box layout puts the glass underside at 112 mm, 22 mm
+        // The grey-box glass.toml puts the glass underside at 112 mm, 22 mm
         // above its 90 mm walls; the escape box's floor and sides are the
         // usual 50 mm margin.
         assert!((under - 0.112).abs() < 1.0e-6, "glass underside {under} m");
