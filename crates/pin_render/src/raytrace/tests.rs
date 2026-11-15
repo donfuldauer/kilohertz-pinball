@@ -636,3 +636,163 @@ proptest! {
         prop_assert_eq!(source::trace_tune(&cfg)[3].to_bits(), c.to_bits());
     }
 }
+
+// ---------------------------------------------------------------------
+// Ray-atlas map resolution and supersampling (visual-checklist fix)
+// ---------------------------------------------------------------------
+
+#[test]
+fn config_defaults_for_map_resolution_and_supersampling() {
+    let c = RayQueryConfig::default();
+    assert_eq!(c.map_resolution, DEFAULT_MAP_RESOLUTION);
+    assert_eq!(c.clearcoat_block, DEFAULT_CLEARCOAT_BLOCK);
+    assert_eq!(c.supersample, DEFAULT_SUPERSAMPLE);
+    assert_eq!(c.ray_roughness_cutoff, 0.3);
+    assert!(c.map_resolution > crate::reflections::PROBE_RESOLUTION);
+    assert_eq!(validate_config(&c, 8192), Ok(()));
+    // Atlas memory budget: at most 80 MB.
+    assert!(ray_atlas_bytes(c.map_resolution) <= 80_000_000);
+    assert_eq!(ray_atlas_bytes(512), 17 * 512 * 512 * 8);
+}
+
+#[test]
+fn config_validation_rejects_unusable_values_with_a_reason() {
+    let ok = RayQueryConfig::default();
+    let with_n = |n: u32| RayQueryConfig {
+        map_resolution: n,
+        ..ok
+    };
+    for n in [1, 2, 4, 8, 16, 24, 128, 520, 640, 768, 1024, 2048] {
+        assert_eq!(validate_config(&with_n(n), 2048), Ok(()), "{n}");
+    }
+    for n in [0, 3, 12, 100, 129, 1001] {
+        let e = validate_config(&with_n(n), 8192).unwrap_err();
+        assert!(
+            e.contains("map_resolution") && e.contains(&n.to_string()),
+            "{e}"
+        );
+    }
+    let e = validate_config(&with_n(4096), 2048).unwrap_err();
+    assert!(
+        e.contains("max_texture_dimension_2d") && e.contains("2048"),
+        "{e}"
+    );
+    for b in [0, 3, 4] {
+        let e = validate_config(
+            &RayQueryConfig {
+                clearcoat_block: b,
+                ..ok
+            },
+            8192,
+        )
+        .unwrap_err();
+        assert!(e.contains("clearcoat_block"), "{e}");
+    }
+    for s in [0, 2, 3, 8, 16] {
+        let e = validate_config(
+            &RayQueryConfig {
+                supersample: s,
+                ..ok
+            },
+            8192,
+        )
+        .unwrap_err();
+        assert!(e.contains("supersample"), "{e}");
+    }
+    // The first 5.4 atlas is still a valid configuration.
+    let old = RayQueryConfig {
+        map_resolution: 128,
+        clearcoat_block: 2,
+        supersample: 1,
+        ..ok
+    };
+    assert_eq!(validate_config(&old, 2048), Ok(()));
+    let err = RayQueryError::InvalidConfig("map_resolution 3".into());
+    assert_eq!(err.reason(), FallbackReason::RuntimeError);
+    assert!(err.to_string().contains("map_resolution 3"));
+}
+
+#[test]
+fn trace_counts_and_cell_block_follow_the_config() {
+    let c = RayQueryConfig {
+        map_resolution: 256,
+        clearcoat_block: 2,
+        supersample: 4,
+        ..RayQueryConfig::default()
+    };
+    assert_eq!(source::trace_counts(&c, 3, 5), [3, 256, 5, 4]);
+    assert_eq!(source::cell_block(&c, true), 2);
+    assert_eq!(source::cell_block(&c, false), 1);
+    let d = RayQueryConfig::default();
+    assert_eq!(source::cell_block(&d, true), d.clearcoat_block);
+    assert_eq!(
+        source::trace_counts(&d, 0, 1),
+        [0, d.map_resolution, 1, d.supersample]
+    );
+    // The shader reads the map side from counts.y and the rays per cell
+    // from counts.w.
+    assert!(TRACE_SOURCE.contains("let size = max(params.counts.y, 1u);"));
+    assert!(TRACE_SOURCE.contains("if (params.counts.w >= 4u) {"));
+}
+
+#[test]
+fn supersample_offsets_match_the_wgsl_table() {
+    assert_eq!(supersample_offsets(1), Some(&[[0.5f32, 0.5]][..]));
+    let grid = supersample_offsets(4).unwrap();
+    let body = TRACE_SOURCE
+        .split("const SS_ROTATED_GRID")
+        .nth(1)
+        .and_then(|t| t.split(");\n").next())
+        .expect("SS_ROTATED_GRID in trace.wgsl");
+    let wgsl: Vec<[f32; 2]> = body
+        .split("vec2<f32>(")
+        .skip(1) // the declaration
+        .map(|v| {
+            let v = v.split(')').next().unwrap();
+            let mut it = v.split(',').map(|x| x.trim().parse::<f32>().unwrap());
+            [it.next().unwrap(), it.next().unwrap()]
+        })
+        .collect();
+    assert_eq!(wgsl, grid);
+}
+
+proptest! {
+    /// Every offset table: inside the cell, centred on it (no shift of the
+    /// edge position), and for more than one ray each sample on its own
+    /// row and column (a rotated grid: n distinct coverage levels per axis).
+    #[test]
+    fn supersample_offsets_are_inside_centred_and_rotated(samples in 0u32..32) {
+        match supersample_offsets(samples) {
+            None => prop_assert!(!matches!(samples, 1 | 4)),
+            Some(t) => {
+                prop_assert_eq!(t.len() as u32, samples);
+                for axis in 0..2 {
+                    let mut v: Vec<f32> = t.iter().map(|o| o[axis]).collect();
+                    prop_assert!(v.iter().all(|&x| x > 0.0 && x < 1.0));
+                    let mean = v.iter().sum::<f32>() / v.len() as f32;
+                    prop_assert!((mean - 0.5).abs() < 1e-6);
+                    v.sort_by(f32::total_cmp);
+                    v.dedup();
+                    prop_assert_eq!(v.len(), t.len());
+                }
+            }
+        }
+    }
+
+    /// `validate_config` accepts exactly the nonzero powers of two and
+    /// multiples of 8 up to the device limit (block and rays valid).
+    #[test]
+    fn map_resolution_validation_is_exact(n in 0u32..20_000, max in 1u32..16_384) {
+        let cfg = RayQueryConfig { map_resolution: n, ..RayQueryConfig::default() };
+        let want = n > 0 && (n.is_power_of_two() || n.is_multiple_of(8)) && n <= max;
+        prop_assert_eq!(validate_config(&cfg, max).is_ok(), want);
+    }
+
+    /// Any block and ray count: valid exactly for {1, 2} x {1, 4}.
+    #[test]
+    fn block_and_ray_count_validation_is_exact(b in 0u32..8, s in 0u32..8) {
+        let cfg = RayQueryConfig { clearcoat_block: b, supersample: s, ..RayQueryConfig::default() };
+        let want = matches!(b, 1 | 2) && matches!(s, 1 | 4);
+        prop_assert_eq!(validate_config(&cfg, 8192).is_ok(), want);
+    }
+}

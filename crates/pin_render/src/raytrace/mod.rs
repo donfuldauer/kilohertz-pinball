@@ -40,17 +40,23 @@
 //!   static mesh, built once when the mesh is registered; one TLAS refitted
 //!   every frame from the draws' transforms (balls, flippers and any other
 //!   moving mesh). [`RayStats`] counts BLAS builds and TLAS refits.
-//! * **Balls (full resolution).** Every texel direction `R` of a ball's
-//!   [`PROBE_RESOLUTION`](crate::reflections::PROBE_RESOLUTION)² map is
+//! * **Map resolution.** Every atlas layer is a
+//!   [`RayQueryConfig::map_resolution`]² octahedral map (default
+//!   [`DEFAULT_MAP_RESOLUTION`], 4× the probes' 128 per side), and each ray
+//!   cell averages [`RayQueryConfig::supersample`] rays (default 4, a
+//!   rotated grid), so reflected hard edges land at their sub-pixel place
+//!   on screen instead of in texel-sized steps (DECISIONS "5.4 — ray atlas
+//!   map resolution (visual-checklist fix)").
+//! * **Balls.** Every texel direction `R` of a ball's map is
 //!   traced from the sphere point whose mirror reflection of the eye ray is
 //!   `R`, so a neighbouring ball appears at its true size and place (a
 //!   probe captured at the centre has no parallax and shows it smaller).
-//! * **Clear coat (half resolution).** With
+//! * **Clear coat.** With
 //!   [`ReflectionQuality::BallsAndClearCoat`], the playfield clear coat
 //!   (the first opaque clear-coated draw, taken as the plane of its mesh's
 //!   top face) gets one extra map ([`CLEARCOAT_LAYER`]) traced from the eye
-//!   mirrored in that plane: exact planar reflections, one ray per 2×2
-//!   texels.
+//!   mirrored in that plane: exact planar reflections, one ray cell per
+//!   [`RayQueryConfig::clearcoat_block`]² texels (default 1: every texel).
 //! * **Roughness cutoff.** Surfaces rougher than
 //!   [`RayQueryConfig::ray_roughness_cutoff`] (default 0.3) use the probe
 //!   result ([`reflection_choice`]). A frame with nothing at or below the
@@ -130,6 +136,25 @@ pub struct RayQueryConfig {
     pub origin_offset: f32,
     /// Clear-coat ray origins sit this far (m) above the plane.
     pub plane_offset: f32,
+    /// Side (texels) of every ray-atlas layer: the octahedral map each
+    /// traced surface samples (default [`DEFAULT_MAP_RESOLUTION`]). A power
+    /// of two or a multiple of 8, at most the device's
+    /// `max_texture_dimension_2d`; [`RayQueryReflections::new`] declines
+    /// anything else ([`RayQueryError::InvalidConfig`]). The atlas holds
+    /// [`RAY_ATLAS_LAYERS`] layers of `map_resolution`² Rgba16Float texels
+    /// ([`ray_atlas_bytes`]). 128 with `clearcoat_block` 2 and
+    /// `supersample` 1 reproduces the first 5.4 atlas.
+    pub map_resolution: u32,
+    /// Side (texels) of the square block of the clear-coat layer that
+    /// shares one ray cell: 1 (every texel traced) or 2 (2×2 texels share
+    /// one result). Ball layers always trace every texel.
+    pub clearcoat_block: u32,
+    /// Rays averaged per ray cell: 1 (the cell centre) or 4 (a rotated
+    /// grid, [`supersample_offsets`]): a reflected hard edge becomes a
+    /// coverage gradient across the texel it crosses, so bilinear sampling
+    /// puts its 50 % level at the true sub-texel position instead of a
+    /// texel-sized step.
+    pub supersample: u32,
 }
 
 impl Default for RayQueryConfig {
@@ -140,8 +165,80 @@ impl Default for RayQueryConfig {
             max_distance: 20.0,
             origin_offset: 1e-3,
             plane_offset: 1e-4,
+            map_resolution: DEFAULT_MAP_RESOLUTION,
+            clearcoat_block: DEFAULT_CLEARCOAT_BLOCK,
+            supersample: DEFAULT_SUPERSAMPLE,
         }
     }
+}
+
+/// Default [`RayQueryConfig::map_resolution`] (DECISIONS "5.4 — ray atlas
+/// map resolution (visual-checklist fix)").
+pub const DEFAULT_MAP_RESOLUTION: u32 = 512;
+
+/// Default [`RayQueryConfig::clearcoat_block`].
+pub const DEFAULT_CLEARCOAT_BLOCK: u32 = 1;
+
+/// Default [`RayQueryConfig::supersample`].
+pub const DEFAULT_SUPERSAMPLE: u32 = 4;
+
+/// Sub-cell ray positions (fractions of the cell side, origin at the
+/// cell's low corner) for `samples` rays per cell: the centre for 1, the
+/// 4-ray rotated grid (every sample on its own row and column, offsets
+/// 1/8, 3/8, 5/8, 7/8 on each axis) for 4; `None` for any other count.
+/// Fixed, so a frame never depends on an earlier one; the WGSL holds the
+/// same table (`SS_ROTATED_GRID` in `shaders/trace.wgsl`).
+pub const fn supersample_offsets(samples: u32) -> Option<&'static [[f32; 2]]> {
+    match samples {
+        1 => Some(&[[0.5, 0.5]]),
+        4 => Some(&SS_ROTATED_GRID),
+        _ => None,
+    }
+}
+
+const SS_ROTATED_GRID: [[f32; 2]; 4] = [
+    [0.375, 0.125],
+    [0.875, 0.375],
+    [0.625, 0.875],
+    [0.125, 0.625],
+];
+
+/// Bytes of the ray atlas at map side `map_resolution`
+/// ([`RAY_ATLAS_LAYERS`] layers, 8 bytes per Rgba16Float texel).
+pub const fn ray_atlas_bytes(map_resolution: u32) -> u64 {
+    RAY_ATLAS_LAYERS as u64 * map_resolution as u64 * map_resolution as u64 * 8
+}
+
+/// Checks the resolution fields of `config` against a device whose
+/// `max_texture_dimension_2d` is `max_texture_dimension`: `Err` with the
+/// reason when [`RayQueryConfig::map_resolution`] is 0, neither a power of
+/// two nor a multiple of 8, or above the limit, or when
+/// [`RayQueryConfig::clearcoat_block`] is not 1 or 2, or
+/// [`RayQueryConfig::supersample`] has no offset table
+/// ([`supersample_offsets`]).
+pub fn validate_config(config: &RayQueryConfig, max_texture_dimension: u32) -> Result<(), String> {
+    let n = config.map_resolution;
+    if n == 0 || !(n.is_power_of_two() || n.is_multiple_of(8)) {
+        return Err(format!(
+            "map_resolution {n} must be a power of two or a multiple of 8 (and not 0)"
+        ));
+    }
+    if n > max_texture_dimension {
+        return Err(format!(
+            "map_resolution {n} exceeds the device's max_texture_dimension_2d \
+             {max_texture_dimension}"
+        ));
+    }
+    if !matches!(config.clearcoat_block, 1 | 2) {
+        return Err(format!(
+            "clearcoat_block {} must be 1 or 2",
+            config.clearcoat_block
+        ));
+    }
+    if supersample_offsets(config.supersample).is_none() {
+        return Err(format!("supersample {} must be 1 or 4", config.supersample));
+    }
+    Ok(())
 }
 
 /// The trace module: the ray-query enable directive, the PBR BRDF library

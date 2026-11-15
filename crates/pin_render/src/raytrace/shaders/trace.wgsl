@@ -4,14 +4,20 @@
 // pbr_brdf comes first (the hit shading uses the forward pass's BRDF).
 //
 // One compute dispatch per frame: x/y cover the octahedral map, z selects a
-// job (one atlas layer). Each texel direction R is traced against the
+// job (one atlas layer). The map side is `params.counts.y` texels
+// (RayQueryConfig::map_resolution). A job covers its map in square ray cells
+// of `mode.z` texels (1 for balls; RayQueryConfig::clearcoat_block for the
+// clear coat); each cell averages `params.counts.w` rays (1: the cell
+// centre; 4: the rotated grid SS_ROTATED_GRID), so a reflected hard edge
+// becomes a coverage gradient that bilinear sampling resolves below a
+// texel. Each ray direction R is traced against the
 // scene's top-level acceleration structure from an origin that makes the
 // reflection exact for the surface the layer serves:
 //   MODE_BALL_VIEW   the sphere point whose mirror reflection of the eye
 //                    ray is R (three fixed-point iterations);
 //   MODE_BALL_CENTRE radially from the sphere (a probe-equivalent map);
 //   MODE_PLANE       the plane point where the eye ray reflects into R
-//                    (the eye mirrored in the plane), half resolution.
+//                    (the eye mirrored in the plane).
 // A ray that misses returns the environment, so a map never goes black.
 // Hits are shaded like pbr_forward's `shade` (frame point lights, here
 // unshadowed and unclustered; ambient from the environment). At a
@@ -37,7 +43,7 @@ struct TraceJob {
     a: vec4<f32>,
     // Plane: unit normal xyz.
     b: vec4<f32>,
-    // x: mode, y: atlas layer, z: block size (1 full, 2 half resolution).
+    // x: mode, y: atlas layer, z: ray cell side in texels (1 or 2).
     mode: vec4<u32>,
 };
 
@@ -55,7 +61,8 @@ struct TraceParams {
     env_ground: vec4<f32>,
     // GI tint: rgb, intensity.
     gi: vec4<f32>,
-    // x: light count, y: map side (texels), z: job count, w unused.
+    // x: light count, y: map side (texels), z: job count, w: rays per cell
+    // (1 or 4).
     counts: vec4<u32>,
     // x: ray t_max (m), y: origin offset (fraction of the ball radius),
     // z: plane origin offset (m), w: ray roughness cutoff (a hit at or
@@ -308,6 +315,16 @@ fn job_radiance(job: TraceJob, dir: vec3<f32>) -> vec3<f32> {
     return trace_radiance(on_plane + np * max(params.tune.z, 0.0), dir, 0.0);
 }
 
+// Sub-cell ray positions (fractions of the cell side) for 4 rays per cell:
+// a rotated grid, every sample on its own row and column. Same table as
+// raytrace::supersample_offsets(4) on the CPU.
+const SS_ROTATED_GRID: array<vec2<f32>, 4> = array<vec2<f32>, 4>(
+    vec2<f32>(0.375, 0.125),
+    vec2<f32>(0.875, 0.375),
+    vec2<f32>(0.625, 0.875),
+    vec2<f32>(0.125, 0.625),
+);
+
 @compute @workgroup_size(8, 8, 1)
 fn cs_trace(@builtin(global_invocation_id) gid: vec3<u32>) {
     let j = gid.z;
@@ -322,9 +339,19 @@ fn cs_trace(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let texel0 = gid.xy * block;
-    let centre = (vec2<f32>(texel0) + vec2<f32>(0.5 * f32(block))) / f32(size);
-    let dir = oct_decode(centre);
-    let c = job_radiance(job, dir);
+    let cell = f32(block);
+    var c = vec3<f32>(0.0);
+    if (params.counts.w >= 4u) {
+        var grid = SS_ROTATED_GRID;
+        for (var s = 0u; s < 4u; s = s + 1u) {
+            let uv = (vec2<f32>(texel0) + grid[s] * cell) / f32(size);
+            c = c + job_radiance(job, oct_decode(uv));
+        }
+        c = c * 0.25;
+    } else {
+        let centre = (vec2<f32>(texel0) + vec2<f32>(0.5 * cell)) / f32(size);
+        c = job_radiance(job, oct_decode(centre));
+    }
     for (var dy = 0u; dy < block; dy = dy + 1u) {
         for (var dx = 0u; dx < block; dx = dx + 1u) {
             let t = texel0 + vec2<u32>(dx, dy);
