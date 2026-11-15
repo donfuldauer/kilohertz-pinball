@@ -15,9 +15,20 @@
 //!   table — drawn with the PBR renderer and its backglass / score display,
 //!   its sounds mixed into the default audio device — else the idle stub sim
 //!   (debug view). `--headless` uses SDL's dummy drivers (no surfaces are
-//!   created then, audio goes to the null sink), `--run-ms N` quits after N
-//!   ms of wall time, `--vrr` requests `FifoRelaxed` for the playfield,
-//!   `--debug-overlay` draws the debug lines over the PBR table.
+//!   created then, audio goes to the null sink), `--vrr` requests
+//!   `FifoRelaxed` for the playfield, `--debug-overlay` draws the debug
+//!   lines over the PBR table.
+//! * Run conditions (`orchestrator::RunLimits`): `--run-frames N` quits
+//!   once N frames were presented, `--run-ticks M` once the sim computed M
+//!   ticks; with both, once both hold. The main thread evaluates them from
+//!   the threads' atomic counters each pump. `--run-ms T` is then only a
+//!   wall-clock safety cap: reaching it before the conditions hold prints
+//!   `pin_app: run cap reached` and exits non-zero (as does asking for
+//!   frames when nothing renders); meeting them prints `pin_app: run
+//!   condition met`. `--run-ms T` alone quits silently after T ms, as
+//!   before. After the shutdown line (`pin_app: N sim ticks (D dropped), F
+//!   frames, ...`) a render diagnostics line follows (`pin_app: render: gpu
+//!   ready after X ms, first frame after Y ms, ...`).
 //!
 //! The table is loaded (validated and simulated from one in-memory bundle
 //! snapshot) and the headless table run happens on a thread with a
@@ -33,15 +44,17 @@
 
 use pin_app::orchestrator::{
     AudioConfig, AudioSink, ClosePolicy, DISPLAY_RING_CAPACITY, DeviceStream, DropMonitor,
-    FlipperOutline, NullSink, RegisteredSound, RenderConfig, RenderGpu, SOUND_RING_CAPACITY,
-    TableRenderOptions, TableSim, TableVisuals, ThreadsConfig, load_checked, on_sim_stack,
-    run_headless, run_headless_table, spawn_threads, table_lines, table_samples, validate_table,
+    FlipperOutline, NullSink, RegisteredSound, RenderConfig, RenderGpu, RunExit, RunLimits,
+    SOUND_RING_CAPACITY, TableRenderOptions, TableSim, TableVisuals, ThreadsConfig, load_checked,
+    on_sim_stack, run_headless, run_headless_table, spawn_threads, ssf_playfield_mm, table_lines,
+    table_samples, table_source_positions, validate_table,
 };
 use pin_app::platform::{
     DisplayTopologyManager, EventForwarder, INPUT_RING_CAPACITY, InputRouter, PUMP_TIMEOUT,
     Platform, PlatformConfig, WINDOW_RING_CAPACITY, WindowGuard,
 };
 use pin_audio::mixer::{MixerConfig, trigger_ring};
+use pin_audio::ssf::SsfConfig;
 use pin_input::haptics::{DEFAULT_HAPTICS_RING_CAPACITY, haptics_ring};
 use pin_render::gpu::{
     GpuOptions, PRESENTER_JOIN_TIMEOUT, SurfaceOptions, SurfaceSource, create_instance,
@@ -132,6 +145,7 @@ struct LoadedApp {
     samples: Vec<RegisteredSound>,
     table_lines: Vec<pin_render::debug::DebugLine>,
     flippers: Vec<FlipperOutline>,
+    source_positions: Vec<(u16, [f32; 2])>,
     haptics: pin_input::haptics::HapticsConsumer<pin_core::input::HapticsTelemetryEvent>,
     sounds: pin_audio::mixer::SoundReceiver,
     displays: pin_input::haptics::HapticsConsumer<pin_app::orchestrator::DisplayCommand>,
@@ -174,6 +188,7 @@ fn load_app_table(path: &Path, mixer: MixerConfig) -> Result<LoadedApp, String> 
             sim,
             table_lines: table_lines(&checked.scene, MAX_TABLE_LINES),
             flippers: FlipperOutline::of(&checked.table),
+            source_positions: table_source_positions(&checked.table),
             visuals,
             samples,
             haptics: hrx,
@@ -231,9 +246,7 @@ fn list_displays(headless: bool) -> ExitCode {
 
 fn run_app(args: &[String]) -> Result<(), String> {
     let headless = args.iter().any(|a| a == "--headless");
-    let run_for = value_of(args, "--run-ms")
-        .transpose()?
-        .map(Duration::from_millis);
+    let limits = RunLimits::from_args(args)?;
     let vrr = args.iter().any(|a| a == "--vrr");
     let debug_overlay = args.iter().any(|a| a == "--debug-overlay");
     let mixer = MixerConfig::default();
@@ -327,10 +340,15 @@ fn run_app(args: &[String]) -> Result<(), String> {
             let mut cfg = ThreadsConfig::with_sim(t.sim, input_rx);
             cfg.audio = AudioConfig {
                 haptics: Some(t.haptics),
+                ssf: SsfConfig {
+                    playfield_mm: ssf_playfield_mm(t.visuals.bounds),
+                    ..SsfConfig::default()
+                },
                 sounds: Some(t.sounds),
                 mixer,
                 samples: t.samples,
                 sink: Some(sink),
+                source_positions: t.source_positions,
                 ..AudioConfig::default()
             };
             render.table_lines = t.table_lines;
@@ -346,11 +364,13 @@ fn run_app(args: &[String]) -> Result<(), String> {
         }
     };
     cfg.now_ns = sdl_now_ns;
+    let rendering = render.gpu.is_some();
     cfg.render = render;
     let threads = spawn_threads(cfg)?;
 
     let started = Instant::now();
     let mut input_drops = DropMonitor::default();
+    let mut failure = None;
     loop {
         let outcome = platform.pump(&mut forwarder, PUMP_TIMEOUT);
         if let Some(n) = input_drops.check(forwarder.stats().input_dropped) {
@@ -362,15 +382,34 @@ fn run_app(args: &[String]) -> Result<(), String> {
         if outcome.quit || threads.close_requested() {
             break;
         }
-        if run_for.is_some_and(|d| started.elapsed() >= d) {
+        let live = threads.stats();
+        if limits.frames.is_some() && (!rendering || live.gpu_error) {
+            eprintln!("pin_app: run condition unreachable: --run-frames but nothing renders");
+            failure = Some("--run-frames cannot be met: nothing renders".to_owned());
             break;
+        }
+        match limits.check(&live, started.elapsed()) {
+            Some(RunExit::ConditionMet) => {
+                eprintln!("pin_app: run condition met");
+                break;
+            }
+            Some(RunExit::CapReached) => {
+                eprintln!("pin_app: run cap reached");
+                failure = Some(format!(
+                    "run cap reached before the run conditions held ({} frames of {:?}, {} \
+                     ticks of {:?})",
+                    live.render_frames, limits.frames, live.sim_ticks, limits.ticks
+                ));
+                break;
+            }
+            Some(RunExit::Elapsed) => break,
+            None => {}
         }
     }
     // 1. Join the engine threads (the render thread drops the surfaces; a
     //    presenter stalled past PRESENTER_JOIN_TIMEOUT is detached and keeps
     //    its guard).
-    let audio = threads.audio_stats();
-    let stats = threads.shutdown()?;
+    let (stats, audio) = threads.shutdown_with_audio()?;
     // The audio thread is joined: the device stream can go.
     drop(audio_device);
     // The main thread's own guards: from here only a detached presenter can
@@ -384,6 +423,7 @@ fn run_app(args: &[String]) -> Result<(), String> {
         forwarder.stats().input_dropped,
         audio.haptic_events
     );
+    eprintln!("{}", stats.render_diagnostics());
     // 2. Destroy the released windows here, on the main thread, and wait for
     //    a detached presenter to release its window.
     if !platform
@@ -401,5 +441,5 @@ fn run_app(args: &[String]) -> Result<(), String> {
         std::process::exit(0);
     }
     drop(platform);
-    Ok(())
+    failure.map_or(Ok(()), Err)
 }

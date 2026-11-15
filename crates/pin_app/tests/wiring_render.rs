@@ -242,3 +242,123 @@ fn the_debug_overlay_is_optional_and_off_by_default() {
     // The overlay draws over the PBR image, it does not replace it.
     assert!(luma(mean(&lines, Rect::new(40, 120, 120, 160))) > 20.0);
 }
+
+/// The colour of the synthetic scene image (display-encoded RGB).
+const SOLID: [u8; 3] = [40, 160, 220];
+/// The LCD canvas of the synthetic table.
+const LCD: (u32, u32) = (160, 90);
+
+/// The grey-box bundle with an LCD score display whose attract scene is one
+/// full-canvas `kind = "image"` layer over `display/solid.png` (written
+/// only when `with_image`).
+fn lcd_image_bundle(with_image: bool) -> std::path::PathBuf {
+    let d = support::scratch(if with_image {
+        "lcd_image"
+    } else {
+        "lcd_no_image"
+    });
+    support::build_greybox_bundle(&d);
+    let bg = std::fs::read_to_string(d.join("backglass.toml")).unwrap();
+    assert!(bg.contains("mode = \"dmd\""), "{bg}");
+    let bg = bg.replace("mode = \"dmd\"", "mode = \"lcd\"").replace(
+        "lcd = { width = 1920, height = 1080 }",
+        &format!("lcd = {{ width = {}, height = {} }}", LCD.0, LCD.1),
+    );
+    std::fs::write(d.join("backglass.toml"), bg).unwrap();
+    std::fs::write(
+        d.join("display/scene_attract.toml"),
+        "schema_version = 1\nbackground = \"#000000\"\n\n[[layers]]\nkind = \"image\"\n\
+         file = \"display/solid.png\"\nx = 0.0\ny = 0.0\nw = 1.0\nh = 1.0\n",
+    )
+    .unwrap();
+    if with_image {
+        let img =
+            image::RgbaImage::from_pixel(8, 8, image::Rgba([SOLID[0], SOLID[1], SOLID[2], 255]));
+        img.save(d.join("display/solid.png")).unwrap();
+    }
+    d
+}
+
+fn lcd_table(with_image: bool) -> (TableVisuals, FrameStateSnapshot, pin_core::SceneId) {
+    let dir = lcd_image_bundle(with_image);
+    on_big_stack(move || {
+        let checked = validate_table(&dir).unwrap();
+        let sim = load_checked(&checked, SimConfig::default()).unwrap();
+        let attract = checked.table.ids.scene("scene_attract").unwrap();
+        (TableVisuals::of(&checked), *sim.snapshot(), attract)
+    })
+}
+
+/// PR #21 review (view.rs:515): scene images are decoded from the bundle
+/// snapshot and reach the LCD, so an image layer draws its pixels.
+#[test]
+fn lcd_scene_image_layers_draw_the_bundle_image() {
+    let (v, snap, attract) = lcd_table(true);
+    assert!(v.warnings.is_empty(), "{:?}", v.warnings);
+    let d = v.displays.as_ref().expect("displays");
+    assert!(matches!(
+        d.score,
+        pin_render::displays::ScoreDisplayConfig::Lcd(_)
+    ));
+    assert_eq!(d.scene_images.len(), 1, "{:?}", d.scene_images.len());
+    assert_eq!(d.scene_images[0].0, "display/solid.png");
+    assert_eq!(
+        d.scene_images[0].1.pixel(3, 3),
+        [SOLID[0], SOLID[1], SOLID[2], 255]
+    );
+
+    let Some(ctx) = gpu() else { return };
+    let mut r = renderer(ctx, &v, false);
+    r.apply_display_command(DisplayCommand::Scene(attract), 0);
+    let viewport = Rect::new(10, 300, 180, 90);
+    let route = DisplayRoute {
+        role: SurfaceRole::Score,
+        window: 0,
+        viewport,
+        dedicated: false,
+    };
+    let mut s = snap;
+    s.tick = 100;
+    let img = r.render_to_image(ctx, &[route], &s).unwrap();
+    // The LCD keeps its aspect inside the viewport; sample its inner part
+    // (2 px away from the edges, filtering).
+    let lcd = pin_render::displays::fit_aspect(viewport, LCD.0, LCD.1);
+    let inner = Rect::new(lcd.x + 2, lcd.y + 2, lcd.w - 4, lcd.h - 4);
+    let m = mean(&img, inner);
+    for k in 0..3 {
+        assert!(
+            (m[k] - f32::from(SOLID[k])).abs() <= 3.0,
+            "LCD region mean {m:?}, image {SOLID:?}"
+        );
+    }
+}
+
+/// A scene image missing from the bundle is a warning, not a panic; the
+/// renderer still builds and draws (the layer is left out).
+#[test]
+fn a_missing_scene_image_is_a_warning() {
+    let (v, snap, attract) = lcd_table(false);
+    assert!(
+        v.warnings
+            .iter()
+            .any(|w| w.starts_with("scene image display/solid.png: ")),
+        "{:?}",
+        v.warnings
+    );
+    assert!(v.displays.as_ref().unwrap().scene_images.is_empty());
+    let Some(ctx) = gpu() else { return };
+    let mut r = renderer(ctx, &v, false);
+    r.apply_display_command(DisplayCommand::Scene(attract), 0);
+    let viewport = Rect::new(10, 300, 180, 90);
+    let route = DisplayRoute {
+        role: SurfaceRole::Score,
+        window: 0,
+        viewport,
+        dedicated: false,
+    };
+    let img = r.render_to_image(ctx, &[route], &snap).unwrap();
+    // The black scene background, not the image colour.
+    let lcd = pin_render::displays::fit_aspect(viewport, LCD.0, LCD.1);
+    let m = mean(&img, Rect::new(lcd.x + 2, lcd.y + 2, lcd.w - 4, lcd.h - 4));
+    assert!(luma(m) < 10.0, "{m:?}");
+}

@@ -59,10 +59,13 @@ const AXES: usize = GamepadAxis::ALL.len();
 /// the timestamp of the next router call.
 const MAX_PENDING: usize = CabinetInput::COUNT + CabinetAxis::ALL.len();
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 enum Pending {
     Button(CabinetInput),
+    /// A cabinet axis goes neutral (0.0).
     Axis(CabinetAxis),
+    /// A cabinet axis takes the last value of a pad that still drives it.
+    AxisValue(CabinetAxis, f32),
 }
 
 /// The raw-input code of `raw` inside a [`source_id`].
@@ -171,8 +174,8 @@ impl InputRouter {
     /// [`add_gamepad`](Self::add_gamepad) with an explicit profile.
     ///
     /// Replacing the profile of a routed gamepad first releases everything
-    /// that gamepad holds (buttons it alone holds, analog axes it alone
-    /// drives, which go neutral); holds of other devices are kept. The
+    /// that gamepad holds (buttons it alone holds; analog axes it drove go
+    /// neutral, or take the last value of another pad still driving them); holds of other devices are kept. The
     /// release events are sent with the timestamp of the next router call
     /// ([`poll`](Self::poll), a key, button, axis or removal).
     pub fn add_gamepad_with_profile(&mut self, which: u32, profile: &DeviceProfile) -> Option<u32> {
@@ -214,16 +217,28 @@ impl InputRouter {
         }
     }
 
-    /// Queues a neutral for each cabinet axis in `analog` (driven by
-    /// `device`) that no other routed pad still drives.
+    /// Queues, for each cabinet axis in `analog` (driven by the leaving
+    /// `device`), the value the axis must take now: the stored value of
+    /// another routed pad that still drives it, else neutral 0.0. No
+    /// per-update recency is stored, so when several other pads drive the
+    /// axis the one with the lowest device number wins (deterministic).
     fn queue_neutral_axes(&mut self, device: u32, analog: &[Option<(CabinetAxis, f32)>; AXES]) {
         for (cab, _) in analog.iter().flatten() {
-            let driven_elsewhere = self
+            let remaining = self
                 .pads
                 .iter()
-                .any(|p| p.device != device && p.analog.iter().flatten().any(|(c, _)| c == cab));
-            if !driven_elsewhere {
-                self.queue(Pending::Axis(*cab));
+                .filter(|p| p.device != device)
+                .filter_map(|p| {
+                    p.analog
+                        .iter()
+                        .flatten()
+                        .find(|(c, _)| c == cab)
+                        .map(|(_, v)| (p.device, *v))
+                })
+                .min_by_key(|(d, _)| *d);
+            match remaining {
+                Some((_, v)) => self.queue(Pending::AxisValue(*cab, v)),
+                None => self.queue(Pending::Axis(*cab)),
             }
         }
     }
@@ -239,14 +254,18 @@ impl InputRouter {
                     self.stats.axes += 1;
                     out(InputEvent::axis(ts_ns, axis, 0.0));
                 }
+                Pending::AxisValue(axis, value) => {
+                    self.stats.axes += 1;
+                    out(InputEvent::axis(ts_ns, axis, value));
+                }
             }
         }
     }
 
     /// Stops routing gamepad `which` and releases every cabinet input only
-    /// it held; analog cabinet axes it drove go neutral (0) unless another
-    /// routed gamepad still drives them (release events at `ts_ns` go to
-    /// `out`).
+    /// it held; analog cabinet axes it drove go neutral (0), or take the last
+    /// value of another routed gamepad that still drives them (lowest device
+    /// number if several do). Events at `ts_ns` go to `out`.
     pub fn remove_gamepad(&mut self, ts_ns: u64, which: u32, out: &mut impl FnMut(InputEvent)) {
         self.flush_pending(ts_ns, out);
         let Some(i) = self.pads.iter().position(|p| p.which == which) else {

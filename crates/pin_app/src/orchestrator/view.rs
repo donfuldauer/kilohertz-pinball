@@ -68,6 +68,11 @@ pub struct DisplayAssets {
     pub score: ScoreDisplayConfig,
     /// The `[[scenes]]` (missing files fall back to placeholders).
     pub scenes: SceneLibrary,
+    /// The decoded images of the scenes' `kind = "image"` layers, by
+    /// bundle path (each file once, path order). A file that cannot be
+    /// read or decoded is missing here (a warning says why) and its layers
+    /// are not drawn.
+    pub scene_images: Vec<(String, RgbaImage)>,
     /// The translite layers; `None` when they could not be loaded (the
     /// reason is in [`TableVisuals::warnings`]).
     pub backglass: Option<BackglassDesc>,
@@ -147,6 +152,33 @@ fn decode_image(bytes: &[u8]) -> Result<RgbaImage, String> {
         .to_rgba8();
     let (w, h) = img.dimensions();
     RgbaImage::from_rgba(w, h, img.into_raw()).ok_or_else(|| "bad image size".to_owned())
+}
+
+/// Decodes every image the first `count` scenes of `scenes` reference
+/// (`kind = "image"` layers; `SceneId(i)` for `i < count`, as
+/// [`SceneLibrary::load`] numbers them), each file once, in path order.
+/// `read` returns a bundle file's bytes; a file that cannot be read or
+/// decoded adds a warning and is left out.
+pub fn load_scene_images(
+    scenes: &SceneLibrary,
+    count: usize,
+    mut read: impl FnMut(&str) -> Result<Vec<u8>, String>,
+    warnings: &mut Vec<String>,
+) -> Vec<(String, RgbaImage)> {
+    let mut files: Vec<&str> = (0..count.min(usize::from(u16::MAX) + 1))
+        .filter_map(|i| scenes.get(pin_core::SceneId(i as u16)))
+        .flat_map(|s| s.image_files())
+        .collect();
+    files.sort_unstable();
+    files.dedup();
+    let mut out = Vec::with_capacity(files.len());
+    for f in files {
+        match read(f).and_then(|b| decode_image(&b)) {
+            Ok(img) => out.push((f.to_owned(), img)),
+            Err(e) => warnings.push(format!("scene image {f}: {e}")),
+        }
+    }
+    out
 }
 
 /// Most collider outline lines kept for the debug overlay.
@@ -241,6 +273,12 @@ impl TableVisuals {
                         SceneLibrary::new()
                     }
                 };
+                let scene_images = load_scene_images(
+                    &scenes,
+                    table.manifest.scenes.len(),
+                    |f| snap.read(f).map_err(|e| e.to_string()),
+                    &mut warnings,
+                );
                 let backglass = BackglassDesc::from_manifest(
                     &table.backglass,
                     |name| {
@@ -269,6 +307,7 @@ impl TableVisuals {
                 Some(DisplayAssets {
                     score,
                     scenes,
+                    scene_images,
                     backglass,
                 })
             }
@@ -512,7 +551,16 @@ impl TableRenderer {
             if let Some(b) = &d.backglass {
                 displays.backglass = Some(BackglassRenderer::new(ctx, format, b)?);
             }
-            score = Some(ScoreDisplayModel::new(d.score, d.scenes.clone()));
+            let mut model = ScoreDisplayModel::new(d.score, d.scenes.clone());
+            for (file, img) in &d.scene_images {
+                model.images_mut().insert(file, img.clone());
+                if let Some(ScoreRenderer::Lcd(lcd)) = &mut displays.score
+                    && let Err(e) = lcd.set_image(ctx, file, img)
+                {
+                    eprintln!("pin_app: LCD scene image {file}: {e}");
+                }
+            }
+            score = Some(model);
         }
         let overlay = opts.debug_overlay.then(|| {
             (

@@ -133,19 +133,68 @@ fn remove_gamepad_neutralises_its_analog_axes() {
     assert_eq!(ev[0].timestamp_ns, 2_000);
 }
 
-#[test]
-fn remove_gamepad_keeps_axis_another_pad_drives() {
+/// Pad 2 drives LeftFlipper with 8192, then pad 1 with full travel; returns
+/// the router and the value the router emitted for pad 2's sample.
+fn two_trigger_pads() -> (InputRouter, f32) {
     let mut r = InputRouter::new();
     r.add_gamepad_with_profile(1, &profile(TRIGGER_FLIPPER));
     r.add_gamepad_with_profile(2, &profile(TRIGGER_FLIPPER));
+    let ev = collect(|o| r.axis(1_000, 2, GamepadAxis::LeftTrigger, 8192, o));
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    let InputEventKind::Axis { axis, value } = ev[0].kind else {
+        panic!("axis event expected: {ev:?}");
+    };
+    assert_eq!(axis, CabinetAxis::LeftFlipper);
+    assert!(value > 0.0 && value < 1.0, "{value}");
     let mut sink = |_: InputEvent| {};
-    r.axis(1_000, 1, GamepadAxis::LeftTrigger, i16::MAX, &mut sink);
-    r.axis(1_500, 2, GamepadAxis::LeftTrigger, 16000, &mut sink);
+    r.axis(1_500, 1, GamepadAxis::LeftTrigger, i16::MAX, &mut sink);
+    (r, value)
+}
+
+#[test]
+fn remove_gamepad_hands_axis_to_remaining_pad() {
+    let (mut r, v2) = two_trigger_pads();
     let ev = collect(|o| r.remove_gamepad(2_000, 1, o));
-    assert!(ev.is_empty(), "pad 2 still drives the axis: {ev:?}");
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert!(is_axis(&ev[0], CabinetAxis::LeftFlipper, v2), "{ev:?}");
+    assert_eq!(ev[0].timestamp_ns, 2_000);
     // Once pad 2 returns to zero it no longer drives it: removal is silent.
+    let mut sink = |_: InputEvent| {};
     r.axis(2_500, 2, GamepadAxis::LeftTrigger, 0, &mut sink);
     assert!(collect(|o| r.remove_gamepad(3_000, 2, o)).is_empty());
+}
+
+#[test]
+fn profile_change_hands_axis_to_remaining_pad() {
+    let (mut r, v2) = two_trigger_pads();
+    r.add_gamepad_with_profile(1, &profile(SOUTH_START));
+    let ev = collect(|o| r.poll(2_000, o));
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert!(is_axis(&ev[0], CabinetAxis::LeftFlipper, v2), "{ev:?}");
+    assert!(collect(|o| r.poll(3_000, o)).is_empty());
+}
+
+#[test]
+fn remove_gamepad_only_driver_goes_neutral() {
+    let (mut r, _) = two_trigger_pads();
+    let mut sink = |_: InputEvent| {};
+    r.axis(1_800, 2, GamepadAxis::LeftTrigger, 0, &mut sink);
+    let ev = collect(|o| r.remove_gamepad(2_000, 1, o));
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    assert!(is_axis(&ev[0], CabinetAxis::LeftFlipper, 0.0), "{ev:?}");
+}
+
+#[test]
+fn remove_gamepad_on_other_axis_leaves_shared_axis_alone() {
+    let mut r = InputRouter::new();
+    r.add_gamepad_with_profile(1, &profile(TRIGGER_FLIPPER));
+    r.add_gamepad_with_profile(2, &profile(SOUTH_START));
+    let mut sink = |_: InputEvent| {};
+    r.axis(1_000, 1, GamepadAxis::LeftTrigger, i16::MAX, &mut sink);
+    // Pad 2 has no analog mapping for LeftFlipper: removing it emits nothing.
+    r.axis(1_500, 2, GamepadAxis::LeftTrigger, 20_000, &mut sink);
+    let ev = collect(|o| r.remove_gamepad(2_000, 2, o));
+    assert!(ev.is_empty(), "pad 2 drove nothing: {ev:?}");
 }
 
 #[test]
@@ -195,17 +244,28 @@ fn nudge_axis_state_is_per_pad() {
     r.add_gamepad_with_profile(1, &profile(AXIS_NUDGE));
     r.add_gamepad_with_profile(2, &profile(AXIS_NUDGE));
     let ms = 1_000_000u64;
+    // Pad 1 crosses: one negative NudgeX event.
     let a = collect(|o| r.axis(ms, 1, GamepadAxis::RightX, 30_000, o));
-    assert_eq!(a.len(), 1);
-    // Pad 2 crossing is not suppressed by pad 1 being above the threshold
-    // (the nudge vector is unchanged, so poll emits nothing new, but the
-    // press must have been registered: letting it expire then re-pressing
-    // on pad 2 alone proves independent state).
-    let _ = collect(|o| r.axis(2 * ms, 2, GamepadAxis::RightX, 30_000, o));
-    let _ = collect(|o| r.poll(500 * ms, o)); // nudge ended
-    let _ = collect(|o| r.axis(501 * ms, 1, GamepadAxis::RightX, 32_000, o));
-    let b = collect(|o| r.axis(502 * ms, 2, GamepadAxis::RightX, 0, o));
-    assert!(b.is_empty());
-    let c = collect(|o| r.axis(503 * ms, 2, GamepadAxis::RightX, 30_000, o));
+    assert_eq!(a.len(), 1, "{a:?}");
+    assert!(matches!(
+        a[0].kind,
+        InputEventKind::Axis { axis: CabinetAxis::NudgeX, value } if value < 0.0
+    ));
+    // Pad 1 stays above the threshold; its nudge expires.
+    assert!(collect(|o| r.axis(2 * ms, 1, GamepadAxis::RightX, 32_000, o)).is_empty());
+    let ended = collect(|o| r.poll(500 * ms, o));
+    assert_eq!(ended.len(), 1, "nudge ended: {ended:?}");
+    // Pad 2's first high sample, with pad 1 still above threshold, is its own
+    // crossing and must start a new nudge.
+    let b = collect(|o| r.axis(501 * ms, 2, GamepadAxis::RightX, 30_000, o));
+    assert_eq!(b.len(), 1, "pad 2 crossing independent of pad 1: {b:?}");
+    assert!(matches!(
+        b[0].kind,
+        InputEventKind::Axis { axis: CabinetAxis::NudgeX, value } if value < 0.0
+    ));
+    // Pad 2 drops below and crosses again (after expiry): re-armed on its own.
+    let _ = collect(|o| r.poll(1_000 * ms, o));
+    assert!(collect(|o| r.axis(1_001 * ms, 2, GamepadAxis::RightX, 0, o)).is_empty());
+    let c = collect(|o| r.axis(1_002 * ms, 2, GamepadAxis::RightX, 30_000, o));
     assert_eq!(c.len(), 1, "pad 2 re-armed on its own: {c:?}");
 }
