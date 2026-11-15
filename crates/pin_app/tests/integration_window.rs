@@ -1,52 +1,17 @@
-//! 6.0 C6: the windowed path. Runs the real binary,
-//! `pin_app --table <greybox bundle> --run-ms N`, which opens the windows of
-//! the single-monitor topology plan, wires the table simulation, input
-//! router, audio thread and render thread, runs for N ms of wall time and
-//! shuts down in the issue #9a order. Also `--headless --table` (SDL dummy
-//! drivers, no surfaces) and `--headless-ticks N --table`.
+//! 6.0 C6: the app paths without a GPU. Runs the real binary:
+//! `pin_app --headless --table <greybox bundle> --run-ticks M` (SDL dummy
+//! drivers, no surfaces) wires the table simulation, input router, audio
+//! and render threads and quits once the sim computed M ticks; and
+//! `--headless-ticks N --table` (simulated time). The windowed run is in
+//! `integration_window_gpu.rs` (feature `gpu-tests`).
 //!
-//! The windowed run needs a native SDL video driver (Xvfb + lavapipe on
-//! Linux CI). Without one it prints SKIP, or fails when `PIN_REQUIRE_GPU=1`.
+//! Exit conditions are progress counters, never wall time (D8): `--run-ms`
+//! is only a safety cap, and reaching it fails the run.
 
 mod support;
 
 use std::process::Command;
 use support::greybox_bundle;
-
-fn require_gpu() -> bool {
-    std::env::var("PIN_REQUIRE_GPU").is_ok_and(|v| v.trim() == "1")
-}
-
-/// Slack (in ticks) on the `--run-ms` upper bound: pump overshoot plus the
-/// join at shutdown. The bound only catches a runaway sim; progress is never
-/// asserted from wall time.
-const RUN_SLACK_TICKS: u64 = 2000;
-
-/// The known "this machine cannot open a window / get a GPU" diagnostics of
-/// `pin_app`, matched as whole stderr lines by prefix (never by a generic
-/// substring). Returns what was unavailable.
-fn unavailable(err: &str) -> Option<&'static str> {
-    const KNOWN: [(&str, &str); 4] = [
-        ("pin_app: SDL error: ", "SDL video unavailable"),
-        (
-            "pin_app: window creation failed: ",
-            "SDL window creation unavailable",
-        ),
-        ("pin_app: SDL video driver ", "no native SDL video driver"),
-        (
-            "pin_app: GPU setup failed, rendering disabled: ",
-            "no GPU adapter",
-        ),
-    ];
-    err.lines().find_map(|line| {
-        KNOWN.iter().find_map(|(prefix, why)| {
-            let hit = line.starts_with(prefix)
-                && (*prefix != "pin_app: SDL video driver "
-                    || line.contains(" has no native windows"));
-            hit.then_some(*why)
-        })
-    })
-}
 
 fn run(args: &[&str]) -> (bool, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_pin_app"))
@@ -91,42 +56,50 @@ fn headless_ticks_with_table_runs_the_real_sim() {
 }
 
 #[test]
-fn headless_app_runs_the_table_on_real_time() {
+fn headless_app_runs_the_table_until_the_tick_condition() {
     let bundle = greybox_bundle().to_str().unwrap().to_owned();
-    let (ok, out, err) = run(&["--headless", "--table", &bundle, "--run-ms", "600"]);
+    let (ok, out, err) = run(&[
+        "--headless",
+        "--table",
+        &bundle,
+        "--run-ticks",
+        "600",
+        "--run-ms",
+        "60000",
+    ]);
+    assert!(
+        !err.contains("run cap reached"),
+        "the safety cap ended the run before 600 ticks\nstdout {out}\nstderr {err}"
+    );
     assert!(ok, "stdout {out}\nstderr {err}");
     assert!(err.contains("table \"Grey Box\" loaded"), "{err}");
+    assert!(err.contains("pin_app: run condition met"), "{err}");
     let ticks = count_before(&err, "sim ticks").expect("shutdown line");
-    // Bounded completion only (D8): the sim ran, and not past the run time.
-    assert!(ticks > 0, "{err}");
-    assert!(ticks <= 600 + RUN_SLACK_TICKS, "{err}");
+    assert!(ticks >= 600, "{err}");
+    assert!(err.contains("pin_app: render: "), "{err}");
 }
 
+/// `--run-frames` without rendering (dummy drivers) can never hold: the
+/// app says so and fails at once instead of waiting for the cap.
 #[test]
-fn windowed_app_opens_windows_and_renders_the_table() {
-    let bundle = greybox_bundle().to_str().unwrap().to_owned();
-    let (ok, out, err) = run(&["--table", &bundle, "--run-ms", "2500"]);
-    let skip = |why: &str| {
-        assert!(
-            !require_gpu(),
-            "PIN_REQUIRE_GPU=1 but {why}\nstdout {out}\nstderr {err}"
-        );
-        println!("[integration_window] SKIP: {why}");
-    };
-    if let Some(why) = unavailable(&err) {
-        return skip(why);
-    }
-    if !ok {
-        panic!("pin_app failed\nstdout {out}\nstderr {err}");
-    }
-    println!("[integration_window] {err}");
-    let ticks = count_before(&err, "sim ticks").expect("shutdown line");
-    let frames = count_before(&err, "frames").expect("frames");
-    assert!(ticks > 0, "{err}");
-    assert!(ticks <= 2500 + RUN_SLACK_TICKS, "{err}");
-    assert!(frames > 0, "no frame presented: {err}");
-    assert!(
-        !err.contains("still holds a window"),
-        "a presenter kept a window at shutdown: {err}"
-    );
+fn frames_condition_without_rendering_fails() {
+    let (ok, _, err) = run(&["--headless", "--run-frames", "1", "--run-ms", "60000"]);
+    assert!(!ok, "{err}");
+    assert!(err.contains("run condition unreachable"), "{err}");
+    assert!(!err.contains("run condition met"), "{err}");
+}
+
+/// The cap ends a run whose conditions never hold, as a failure.
+#[test]
+fn reaching_the_cap_before_the_conditions_fails() {
+    let (ok, _, err) = run(&[
+        "--headless",
+        "--run-ticks",
+        &u64::MAX.to_string(),
+        "--run-ms",
+        "50",
+    ]);
+    assert!(!ok, "{err}");
+    assert!(err.contains("pin_app: run cap reached"), "{err}");
+    assert!(err.contains("sim ticks"), "{err}");
 }

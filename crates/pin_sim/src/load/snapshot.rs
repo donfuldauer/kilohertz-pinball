@@ -62,8 +62,31 @@ fn u32_of(n: usize, what: &str) -> Result<u32, SimError> {
     u32::try_from(n).map_err(|_| too_big(what))
 }
 
-/// Writes `files` (name, bytes) as a stored zip archive.
+/// Local file header (30 bytes) plus central directory record (46 bytes)
+/// per entry, before the name (written twice).
+const ENTRY_OVERHEAD: u64 = 30 + 46;
+/// End of central directory record, bytes.
+const EOCD_LEN: u64 = 22;
+
+/// Exact size in bytes of the archive [`stored_zip`] writes for entries of
+/// the given (name length, data length), or `None` on `u64` overflow.
+fn stored_zip_len(entries: impl IntoIterator<Item = (usize, usize)>) -> Option<u64> {
+    entries.into_iter().try_fold(EOCD_LEN, |acc, (name, data)| {
+        let name = u64::try_from(name).ok()?;
+        let data = u64::try_from(data).ok()?;
+        acc.checked_add(ENTRY_OVERHEAD)?
+            .checked_add(name.checked_mul(2)?)?
+            .checked_add(data)
+    })
+}
+
+/// Writes `files` (name, bytes) as a stored zip archive. The output size is
+/// computed first and refused (zip32 range) before anything is copied.
 fn stored_zip(files: &[(String, Vec<u8>)]) -> Result<Vec<u8>, SimError> {
+    let total = stored_zip_len(files.iter().map(|(n, d)| (n.len(), d.len())));
+    if total.is_none_or(|t| t > u64::from(u32::MAX)) {
+        return Err(too_big("archive size"));
+    }
     let mut out = Vec::new();
     let mut central = Vec::new();
     let count = u16::try_from(files.len()).map_err(|_| too_big("file count"))?;
@@ -122,6 +145,19 @@ fn stored_zip(files: &[(String, Vec<u8>)]) -> Result<Vec<u8>, SimError> {
     Ok(out)
 }
 
+/// [`AssetError::TooLarge`] when file `name` of `size` bytes exceeds
+/// `limits.max_file`.
+fn check_file(name: &str, size: u64, limits: &ZipLimits) -> Result<(), SimError> {
+    if size > limits.max_file {
+        return Err(AssetError::TooLarge {
+            path: name.to_owned(),
+            size,
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// An immutable in-memory copy of a table bundle (see the
 /// [module docs](self)). Validate it and build the simulation from it
 /// ([`Simulation::load_snapshot`](crate::Simulation::load_snapshot)) so
@@ -147,20 +183,63 @@ impl BundleSnapshot {
 
     /// Copies every file of an open `vfs` into memory, reading each once.
     ///
+    /// The [`ZipLimits::default`] entry-count, per-file and aggregate limits
+    /// are enforced while capturing, before data beyond them is retained.
+    ///
     /// # Errors
     /// As [`capture`](Self::capture).
     pub fn from_vfs(vfs: &Vfs) -> Result<BundleSnapshot, SimError> {
+        BundleSnapshot::from_vfs_with_limits(vfs, &ZipLimits::default())
+    }
+
+    /// [`from_vfs`](Self::from_vfs) with explicit `limits` (the snapshot
+    /// archive is validated with the same limits). Limits are checked before
+    /// data is retained beyond them: the entry count before any read, the
+    /// declared sizes ([`Vfs::file_size`]) before any read, and the bytes
+    /// actually read after each file, so a failing capture holds at most
+    /// `max_total_uncompressed` plus one file.
+    ///
+    /// # Errors
+    /// [`AssetError::TooManyEntries`] when the bundle lists more than
+    /// `max_entries` files, [`AssetError::TooLarge`] when a file exceeds
+    /// `max_file`, [`AssetError::TotalTooLarge`] when the sum of the sizes
+    /// exceeds `max_total_uncompressed` (all wrapped in [`SimError::Asset`]),
+    /// and the other [`capture`](Self::capture) errors.
+    #[doc(hidden)]
+    pub fn from_vfs_with_limits(vfs: &Vfs, limits: &ZipLimits) -> Result<BundleSnapshot, SimError> {
         let mut names = vfs.list();
         names.sort();
-        let mut files = Vec::with_capacity(names.len());
+        if names.len() > limits.max_entries {
+            return Err(AssetError::TooManyEntries(names.len()).into());
+        }
+        // Declared sizes first: refuse an oversized bundle before reading.
+        let mut declared = 0u64;
+        for name in &names {
+            let size = vfs.file_size(name)?;
+            check_file(name, size, limits)?;
+            declared = declared.saturating_add(size);
+            if declared > limits.max_total_uncompressed {
+                return Err(AssetError::TotalTooLarge(declared).into());
+            }
+        }
+        // Files may change between the size check and the read: count the
+        // bytes actually read and stop at the first overrun.
+        let mut files = Vec::new();
+        let mut total = 0u64;
         for name in names {
             let bytes = vfs.read(&name)?;
+            let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            check_file(&name, size, limits)?;
+            total = total.saturating_add(size);
+            if total > limits.max_total_uncompressed {
+                return Err(AssetError::TotalTooLarge(total).into());
+            }
             files.push((name, bytes));
         }
         let count = files.len();
         let archive = stored_zip(&files)?;
         drop(files);
-        let vfs = Vfs::from_zip_bytes(archive, ZipLimits::default())?;
+        let vfs = Vfs::from_zip_bytes(archive, *limits)?;
         let hash = super::bundle_hash(&vfs)?;
         Ok(BundleSnapshot {
             vfs,
@@ -224,6 +303,189 @@ mod tests {
         assert_eq!(snap.file_count(), 3);
         assert_eq!(snap.bundle_hash(), super::super::bundle_hash(&vfs).unwrap());
         assert_eq!(snap.read("dir/b.bin").unwrap(), vec![0u8, 1, 2, 255]);
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A fresh folder bundle under the system temp dir holding `files`
+    /// (flat names). Removed by the returned guard.
+    struct TempBundle(std::path::PathBuf);
+
+    impl Drop for TempBundle {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn folder(files: &[(String, Vec<u8>)]) -> TempBundle {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "pin_sim_snapshot_limits_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (n, b) in files {
+            std::fs::write(dir.join(n), b).unwrap();
+        }
+        TempBundle(dir)
+    }
+
+    fn files_of(sizes: &[usize]) -> Vec<(String, Vec<u8>)> {
+        sizes
+            .iter()
+            .enumerate()
+            .map(|(i, &n)| (format!("f{i:03}.bin"), vec![(i % 251) as u8; n]))
+            .collect()
+    }
+
+    fn limits(max_entries: usize, max_file: u64, max_total: u64) -> ZipLimits {
+        ZipLimits {
+            max_total_uncompressed: max_total,
+            max_file,
+            max_ratio: 100,
+            max_entries,
+        }
+    }
+
+    #[test]
+    fn too_many_entries_is_refused_before_any_read() {
+        let files = files_of(&[8, 8, 8, 8]);
+        let dir = folder(&files);
+        // The folder Vfs refuses every read (8 bytes > its max_file of 4):
+        // reaching a read would give TooLarge, not TooManyEntries.
+        let vfs = Vfs::open_with_limits(&dir.0, limits(10_000, 4, 1 << 20)).unwrap();
+        let err =
+            BundleSnapshot::from_vfs_with_limits(&vfs, &limits(3, 1 << 20, 1 << 20)).unwrap_err();
+        assert!(
+            matches!(err, SimError::Asset(AssetError::TooManyEntries(4))),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn aggregate_over_the_limit_is_refused_before_any_read() {
+        // Each file is under the per-file limit, the sum (32 * 128) is not.
+        let files = files_of(&[128; 32]);
+        let dir = folder(&files);
+        let vfs = Vfs::open_with_limits(&dir.0, limits(10_000, 4, 1 << 20)).unwrap();
+        let err =
+            BundleSnapshot::from_vfs_with_limits(&vfs, &limits(10_000, 256, 512)).unwrap_err();
+        assert!(
+            matches!(err, SimError::Asset(AssetError::TotalTooLarge(n)) if n > 512 && n <= 512 + 128),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn aggregate_over_the_limit_from_a_readable_folder_is_the_size_error() {
+        let files = files_of(&[128; 32]);
+        let dir = folder(&files);
+        let vfs = Vfs::open(&dir.0).unwrap();
+        let err =
+            BundleSnapshot::from_vfs_with_limits(&vfs, &limits(10_000, 256, 512)).unwrap_err();
+        assert!(
+            matches!(err, SimError::Asset(AssetError::TotalTooLarge(_))),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_over_the_per_file_limit_is_refused() {
+        let files = files_of(&[8, 300, 8]);
+        let dir = folder(&files);
+        let vfs = Vfs::open(&dir.0).unwrap();
+        let err =
+            BundleSnapshot::from_vfs_with_limits(&vfs, &limits(10_000, 256, 1 << 20)).unwrap_err();
+        assert!(
+            matches!(&err, SimError::Asset(AssetError::TooLarge { path, size: 300 }) if path == "f001.bin"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_bundle_exactly_at_the_limits_is_captured() {
+        let files = files_of(&[128; 4]);
+        let dir = folder(&files);
+        let vfs = Vfs::open(&dir.0).unwrap();
+        let snap = BundleSnapshot::from_vfs_with_limits(&vfs, &limits(4, 128, 512)).unwrap();
+        assert_eq!(snap.file_count(), 4);
+        assert_eq!(snap.bundle_hash(), super::super::bundle_hash(&vfs).unwrap());
+        assert_eq!(
+            snap.bundle_hash(),
+            BundleSnapshot::from_vfs(&vfs).unwrap().bundle_hash()
+        );
+        for (n, b) in &files {
+            assert_eq!(&snap.read(n).unwrap(), b, "{n}");
+        }
+    }
+
+    #[test]
+    fn a_folder_bundle_within_the_default_limits_is_captured() {
+        let files = files_of(&[0, 1, 1000, 17]);
+        let dir = folder(&files);
+        let snap = BundleSnapshot::capture(&dir.0).unwrap();
+        assert_eq!(snap.file_count(), 4);
+        let vfs = Vfs::open(&dir.0).unwrap();
+        assert_eq!(snap.bundle_hash(), super::super::bundle_hash(&vfs).unwrap());
+    }
+
+    #[test]
+    fn stored_zip_len_matches_the_written_archive_and_overflows_to_none() {
+        let files = files_of(&[0, 5, 300]);
+        let len = stored_zip_len(files.iter().map(|(n, d)| (n.len(), d.len())));
+        assert_eq!(len, Some(stored_zip(&files).unwrap().len() as u64));
+        assert_eq!(stored_zip_len([]), Some(EOCD_LEN));
+        assert_eq!(stored_zip_len([(usize::MAX, 0)]), None);
+        assert_eq!(stored_zip_len([(0, usize::MAX), (0, usize::MAX)]), None);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(128))]
+        /// Ok iff count <= max_entries, every size <= max_file and the sum
+        /// <= max_total; otherwise the matching size error. Never panics.
+        #[test]
+        fn capture_succeeds_iff_within_the_limits(
+            sizes in proptest::collection::vec(0usize..64, 0..12),
+            max_entries in 0usize..12,
+            max_file in 0u64..64,
+            max_total in 0u64..400,
+        ) {
+            let files = files_of(&sizes);
+            let vfs = Vfs::from_zip_bytes(stored_zip(&files).unwrap(), ZipLimits::default())
+                .unwrap();
+            let lim = limits(max_entries, max_file, max_total);
+            let sum: u64 = sizes.iter().map(|&n| n as u64).sum();
+            let within = sizes.len() <= max_entries
+                && sizes.iter().all(|&n| n as u64 <= max_file)
+                && sum <= max_total;
+            match BundleSnapshot::from_vfs_with_limits(&vfs, &lim) {
+                Ok(snap) => {
+                    proptest::prop_assert!(within);
+                    proptest::prop_assert_eq!(snap.file_count(), files.len());
+                    proptest::prop_assert_eq!(
+                        snap.bundle_hash(),
+                        super::super::bundle_hash(&vfs).unwrap()
+                    );
+                }
+                Err(err) => {
+                    proptest::prop_assert!(!within, "{:?}", err);
+                    proptest::prop_assert!(
+                        matches!(
+                            err,
+                            SimError::Asset(
+                                AssetError::TooManyEntries(_)
+                                    | AssetError::TooLarge { .. }
+                                    | AssetError::TotalTooLarge(_)
+                            )
+                        ),
+                        "{:?}",
+                        err
+                    );
+                }
+            }
+        }
     }
 
     proptest::proptest! {

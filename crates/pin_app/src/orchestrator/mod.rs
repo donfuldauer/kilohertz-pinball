@@ -31,22 +31,24 @@ mod view;
 
 pub use audio::{
     AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, DEVICE_QUEUE_BLOCKS, DeviceSink, DeviceStream,
-    NullSink, OfflineRecording, OfflineSink, RegisteredSound, table_samples,
+    NullSink, OfflineRecording, OfflineSink, RegisteredSound, ssf_playfield_mm, table_samples,
 };
-pub use present::AppSurfaces;
+pub use present::{
+    AppSurfaces, SECONDARY_FRAME_INTERVAL, SurfacePlan, plan_surface, table_set_accepted,
+};
 pub use table::{
     DISPLAY_RING_CAPACITY, DisplayCommand, FlipperOutline, SIM_STACK_BYTES, SOUND_RING_CAPACITY,
     TABLE_LINE_COLOR, TableSim, ValidatedTable, load_checked, load_validated, on_sim_stack,
-    run_headless_table, table_lines, validate_snapshot, validate_table,
+    run_headless_table, table_lines, table_source_positions, validate_snapshot, validate_table,
 };
 pub use threads::{
     AudioConfig, AudioStats, ClosePolicy, DropMonitor, FLIPPER_LINE_COLOR, OrchestratorStats,
-    RenderConfig, RenderGpu, StatsSnapshot, Threads, ThreadsConfig, default_ball_radius,
-    monotonic_now_ns, spawn_threads,
+    RenderConfig, RenderGpu, RunExit, RunLimits, StatsSnapshot, Threads, ThreadsConfig,
+    default_ball_radius, monotonic_now_ns, spawn_threads,
 };
 pub use view::{
     DisplayAssets, MAX_OVERLAY_TABLE_LINES, TableRenderOptions, TableRenderer, TableVisuals,
-    VisualMesh, routes_for_window, table_camera, vertex_normals,
+    VisualMesh, load_scene_images, routes_for_window, table_camera, vertex_normals,
 };
 
 use arrayvec::ArrayVec;

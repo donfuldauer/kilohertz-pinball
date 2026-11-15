@@ -8,7 +8,7 @@
 //! buffer and the atomics in [`OrchestratorStats`].
 
 use super::audio::{AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, NullSink, RegisteredSound};
-use super::present::AppSurfaces;
+use super::present::{AppSurfaces, SurfacePlan, table_set_accepted};
 use super::table::{DisplayCommand, FlipperOutline};
 use super::view::{TableRenderOptions, TableVisuals};
 use super::{HybridTimer, SimClock, SimLoop};
@@ -23,7 +23,7 @@ use pin_core::{FrameStateSnapshot, InputEvent, ProfileId, SimStep, TripleBuffer,
 use pin_input::haptics::HapticsConsumer;
 use pin_render::debug::{Camera, DebugLine, DebugLines, snapshot_lines};
 use pin_render::gpu::{GpuContext, GpuOptions, SurfaceOptions, SurfaceSet, SurfaceSource, wgpu};
-use pin_render::topology::{WindowEvent, WindowEventKind};
+use pin_render::topology::{SurfaceRole, WindowEvent, WindowEventKind};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -136,6 +136,13 @@ pub struct AudioConfig {
     pub samples: Vec<RegisteredSound>,
     /// Where the 7.1 blocks go; `None` = [`NullSink`].
     pub sink: Option<Box<dyn AudioSink>>,
+    /// Playfield position `[x, y]` (mm, the SSF playfield frame,
+    /// [`SsfConfig::playfield_mm`]) of each haptic source id, registered
+    /// with the SSF mixer before the first block
+    /// ([`AudioEngine::with_source_positions`];
+    /// [`table_source_positions`](super::table_source_positions) for a
+    /// loaded table). Sources without one play at the playfield centre.
+    pub source_positions: Vec<(u16, [f32; 2])>,
 }
 
 impl Default for AudioConfig {
@@ -148,6 +155,7 @@ impl Default for AudioConfig {
             mixer: MixerConfig::default(),
             samples: Vec::new(),
             sink: None,
+            source_positions: Vec::new(),
         }
     }
 }
@@ -225,9 +233,12 @@ impl ThreadsConfig {
     }
 }
 
+/// Sentinel of the "ms since spawn" counters: the event never happened.
+const NEVER: u64 = u64::MAX;
+
 /// Counters shared by the threads (all relaxed atomics; read with
 /// [`OrchestratorStats::snapshot`]).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct OrchestratorStats {
     sim_ticks: AtomicU64,
     sim_dropped_ticks: AtomicU64,
@@ -236,6 +247,14 @@ pub struct OrchestratorStats {
     render_frames: AtomicU64,
     render_last_tick: AtomicU64,
     render_non_monotonic: AtomicU64,
+    render_presented: AtomicU64,
+    render_occluded: AtomicU64,
+    render_skipped: AtomicU64,
+    render_hidden: AtomicU64,
+    /// ms from spawn to GPU ready, [`NEVER`] until then.
+    gpu_ready_ms: AtomicU64,
+    /// ms from spawn to the first presented frame, [`NEVER`] until then.
+    first_frame_ms: AtomicU64,
     close_requested: AtomicBool,
     gpu_ready: AtomicBool,
     gpu_error: AtomicBool,
@@ -262,6 +281,24 @@ pub struct StatsSnapshot {
     pub render_last_tick: u64,
     /// Times the render thread read a snapshot older than the previous one.
     pub render_non_monotonic: u64,
+    /// Surface presents (one per surface and frame;
+    /// [`SurfaceStatus::Presented`](pin_render::gpu::SurfaceStatus::Presented)).
+    pub render_presented: u64,
+    /// Surface acquires that reported the window as covered
+    /// ([`SurfaceStatus::Occluded`](pin_render::gpu::SurfaceStatus::Occluded)).
+    pub render_occluded: u64,
+    /// Surface acquires that failed (timeout, outdated, lost;
+    /// [`SurfaceStatus::Skipped`](pin_render::gpu::SurfaceStatus::Skipped)).
+    pub render_skipped: u64,
+    /// Surface draws skipped because the window was minimised or zero-sized
+    /// ([`SurfaceStatus::Hidden`](pin_render::gpu::SurfaceStatus::Hidden)).
+    pub render_hidden: u64,
+    /// ms from [`spawn_threads`] until the render thread's GPU context and
+    /// surfaces were ready (`None`: not (yet) ready).
+    pub gpu_ready_ms: Option<u64>,
+    /// ms from [`spawn_threads`] until the first presented frame (`None`:
+    /// none yet).
+    pub first_frame_ms: Option<u64>,
     /// A window close request matched the close policy.
     pub close_requested: bool,
     /// The render thread created its GPU context and surfaces.
@@ -270,7 +307,69 @@ pub struct StatsSnapshot {
     pub gpu_error: bool,
 }
 
+impl Default for OrchestratorStats {
+    fn default() -> Self {
+        Self {
+            sim_ticks: AtomicU64::new(0),
+            sim_dropped_ticks: AtomicU64::new(0),
+            sim_ticks_due: AtomicU64::new(0),
+            render_iterations: AtomicU64::new(0),
+            render_frames: AtomicU64::new(0),
+            render_last_tick: AtomicU64::new(0),
+            render_non_monotonic: AtomicU64::new(0),
+            render_presented: AtomicU64::new(0),
+            render_occluded: AtomicU64::new(0),
+            render_skipped: AtomicU64::new(0),
+            render_hidden: AtomicU64::new(0),
+            gpu_ready_ms: AtomicU64::new(NEVER),
+            first_frame_ms: AtomicU64::new(NEVER),
+            close_requested: AtomicBool::new(false),
+            gpu_ready: AtomicBool::new(false),
+            gpu_error: AtomicBool::new(false),
+            audio_haptic_events: AtomicU64::new(0),
+            audio_frames: AtomicU64::new(0),
+            audio_datagrams: AtomicU64::new(0),
+            audio_mixer_frames: AtomicU64::new(0),
+            audio_mixer_voices: AtomicU64::new(0),
+            audio_mixer_peak: AtomicU64::new(0),
+        }
+    }
+}
+
+fn ms_or_none(v: u64) -> Option<u64> {
+    (v != NEVER).then_some(v)
+}
+
+fn ms_since(t: Instant) -> u64 {
+    u64::try_from(t.elapsed().as_millis()).unwrap_or(NEVER - 1)
+}
+
 impl OrchestratorStats {
+    /// Counts one render-loop iteration's surface statuses: presents,
+    /// occluded / skipped / hidden surfaces, and (on the first frame with a
+    /// present) the frame counter and the time to the first frame.
+    fn record_statuses(&self, statuses: &[pin_render::gpu::SurfaceStatus], spawned: Instant) {
+        use pin_render::gpu::SurfaceStatus as S;
+        let mut presented = false;
+        for st in statuses {
+            let counter = match st {
+                S::Presented => {
+                    presented = true;
+                    &self.render_presented
+                }
+                S::Occluded => &self.render_occluded,
+                S::Skipped => &self.render_skipped,
+                S::Hidden => &self.render_hidden,
+                S::Unchanged | S::Busy => continue,
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+        if presented && self.render_frames.fetch_add(1, Ordering::Relaxed) == 0 {
+            self.first_frame_ms
+                .store(ms_since(spawned), Ordering::Relaxed);
+        }
+    }
+
     /// Current values.
     pub fn snapshot(&self) -> StatsSnapshot {
         StatsSnapshot {
@@ -280,6 +379,12 @@ impl OrchestratorStats {
             render_frames: self.render_frames.load(Ordering::Relaxed),
             render_last_tick: self.render_last_tick.load(Ordering::Relaxed),
             render_non_monotonic: self.render_non_monotonic.load(Ordering::Relaxed),
+            render_presented: self.render_presented.load(Ordering::Relaxed),
+            render_occluded: self.render_occluded.load(Ordering::Relaxed),
+            render_skipped: self.render_skipped.load(Ordering::Relaxed),
+            render_hidden: self.render_hidden.load(Ordering::Relaxed),
+            gpu_ready_ms: ms_or_none(self.gpu_ready_ms.load(Ordering::Relaxed)),
+            first_frame_ms: ms_or_none(self.first_frame_ms.load(Ordering::Relaxed)),
             close_requested: self.close_requested.load(Ordering::Relaxed),
             gpu_ready: self.gpu_ready.load(Ordering::Relaxed),
             gpu_error: self.gpu_error.load(Ordering::Relaxed),
@@ -295,6 +400,109 @@ impl OrchestratorStats {
             mixer_frames: self.audio_mixer_frames.load(Ordering::Relaxed),
             mixer_voices: self.audio_mixer_voices.load(Ordering::Relaxed),
             mixer_peak_voices: self.audio_mixer_peak.load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl StatsSnapshot {
+    /// The render diagnostics line `pin_app` prints after its shutdown
+    /// line: `pin_app: render: gpu ready after X ms, first frame after Y
+    /// ms, N iterations, P presented / O occluded / S skipped / H hidden`
+    /// (`-` for an event that never happened).
+    pub fn render_diagnostics(&self) -> String {
+        let ms = |v: Option<u64>| v.map_or_else(|| "-".to_owned(), |v| v.to_string());
+        format!(
+            "pin_app: render: gpu ready after {} ms, first frame after {} ms, {} iterations, \
+             {} presented / {} occluded / {} skipped / {} hidden",
+            ms(self.gpu_ready_ms),
+            ms(self.first_frame_ms),
+            self.render_iterations,
+            self.render_presented,
+            self.render_occluded,
+            self.render_skipped,
+            self.render_hidden
+        )
+    }
+}
+
+/// When `pin_app`'s main loop stops by itself: after `--run-frames N`
+/// presented frames **and** `--run-ticks M` sim ticks (every condition
+/// given must hold), with `--run-ms` as a wall-clock safety cap. With no
+/// condition, `--run-ms` alone ends the run as before (a plain duration).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunLimits {
+    /// `--run-frames`: frames presented ([`StatsSnapshot::render_frames`]).
+    pub frames: Option<u64>,
+    /// `--run-ticks`: sim ticks computed ([`StatsSnapshot::sim_ticks`]).
+    pub ticks: Option<u64>,
+    /// `--run-ms`: the cap (or, without conditions, the run time).
+    pub cap: Option<Duration>,
+}
+
+/// Why [`RunLimits::check`] ends the run.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RunExit {
+    /// Every given condition holds (`pin_app: run condition met`).
+    ConditionMet,
+    /// The cap elapsed while a condition did not hold yet (a failure;
+    /// `pin_app: run cap reached`).
+    CapReached,
+    /// The cap elapsed and no condition was given (`--run-ms` alone: the
+    /// plain run time, silent as before).
+    Elapsed,
+}
+
+fn flag_u64(args: &[String], flag: &str) -> Result<Option<u64>, String> {
+    let Some(i) = args.iter().position(|a| a == flag) else {
+        return Ok(None);
+    };
+    let v = args
+        .get(i + 1)
+        .ok_or_else(|| format!("{flag} needs a number"))?;
+    v.parse::<u64>()
+        .map(Some)
+        .map_err(|e| format!("{flag} {v:?}: {e}"))
+}
+
+impl RunLimits {
+    /// Reads `--run-frames N`, `--run-ticks M` and `--run-ms T` (unsigned
+    /// integers).
+    ///
+    /// # Errors
+    /// A flag without a value or with a value that is not a `u64`.
+    pub fn from_args(args: &[String]) -> Result<RunLimits, String> {
+        Ok(RunLimits {
+            frames: flag_u64(args, "--run-frames")?,
+            ticks: flag_u64(args, "--run-ticks")?,
+            cap: flag_u64(args, "--run-ms")?.map(Duration::from_millis),
+        })
+    }
+
+    /// `true` when `--run-frames` or `--run-ticks` was given.
+    pub fn has_conditions(&self) -> bool {
+        self.frames.is_some() || self.ticks.is_some()
+    }
+
+    /// `true` when there is at least one condition and every given one
+    /// holds in `stats`.
+    pub fn conditions_met(&self, stats: &StatsSnapshot) -> bool {
+        self.has_conditions()
+            && self.frames.is_none_or(|n| stats.render_frames >= n)
+            && self.ticks.is_none_or(|n| stats.sim_ticks >= n)
+    }
+
+    /// Whether the run ends now, `elapsed` after it started.
+    pub fn check(&self, stats: &StatsSnapshot, elapsed: Duration) -> Option<RunExit> {
+        if self.conditions_met(stats) {
+            return Some(RunExit::ConditionMet);
+        }
+        match self.cap {
+            Some(cap) if elapsed >= cap => Some(if self.has_conditions() {
+                RunExit::CapReached
+            } else {
+                RunExit::Elapsed
+            }),
+            _ => None,
         }
     }
 }
@@ -334,6 +542,7 @@ pub struct Threads {
 
 /// Spawns the sim, render, audio and I/O threads.
 pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
+    let spawned = Instant::now();
     let shutdown = Arc::new(AtomicBool::new(false));
     let stats = Arc::new(OrchestratorStats::default());
     let (writer, reader) = TripleBuffer::new(FrameStateSnapshot::default());
@@ -380,7 +589,7 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
         spawn(
             &mut threads,
             "render",
-            Box::new(move || render_thread(render, reader, &sd, &st)),
+            Box::new(move || render_thread(render, reader, &sd, &st, spawned)),
         )
     });
     let (sd, st) = (Arc::clone(&shutdown), Arc::clone(&stats));
@@ -435,7 +644,14 @@ impl Threads {
 
     /// Requests shutdown, wakes every thread and joins them all. Returns the
     /// final counters, or the names of threads that panicked.
-    pub fn shutdown(mut self) -> Result<StatsSnapshot, String> {
+    pub fn shutdown(self) -> Result<StatsSnapshot, String> {
+        self.shutdown_with_audio().map(|(s, _)| s)
+    }
+
+    /// [`shutdown`](Self::shutdown), also returning the audio thread's
+    /// final counters, read after every thread was joined (so they are
+    /// mutually consistent: e.g. `frames == mixer_frames`).
+    pub fn shutdown_with_audio(mut self) -> Result<(StatsSnapshot, AudioStats), String> {
         self.shutdown.store(true, Ordering::Release);
         for (_, h) in &self.handles {
             h.thread().unpark();
@@ -447,7 +663,7 @@ impl Threads {
             }
         }
         if panicked.is_empty() {
-            Ok(self.stats.snapshot())
+            Ok((self.stats.snapshot(), self.stats.audio()))
         } else {
             Err(format!("thread(s) panicked: {}", panicked.join(", ")))
         }
@@ -482,9 +698,12 @@ fn audio_thread(cfg: AudioConfig, shutdown: &AtomicBool, stats: &OrchestratorSta
         mixer,
         samples,
         sink,
+        source_positions,
     } = cfg;
-    let mut engine = AudioEngine::new(ssf, mixer, sounds, &samples);
+    let mut engine =
+        AudioEngine::new(ssf, mixer, sounds, &samples).with_source_positions(&source_positions);
     drop(samples);
+    drop(source_positions);
     let mut sink: Box<dyn AudioSink> = sink.unwrap_or_else(|| Box::new(NullSink::default()));
     let mut encoder = TelemetryEncoder::new();
     let mut batch = DatagramBatch::new();
@@ -587,10 +806,94 @@ fn sim_thread<S: SimStep>(
 /// What the render thread presents with.
 enum Presenter {
     /// The 1.4 surfaces with the debug view (no table, or a table whose
-    /// surfaces need presenter threads).
+    /// playfield surface cannot be drawn directly).
     Debug(GpuContext, SurfaceSet),
-    /// The table renderer, presented directly.
+    /// The table renderer, presented from the render thread
+    /// ([`AppSurfaces`]: per-surface plans).
     Table(GpuContext, AppSurfaces),
+}
+
+/// Which presenter the render thread builds.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum PresenterKind {
+    /// [`Presenter::Debug`].
+    Debug,
+    /// [`Presenter::Table`].
+    Table,
+}
+
+/// The presenter for a table (`has_table`) whose surfaces got `plans`:
+/// the table renderer whenever the playfield can be drawn directly
+/// ([`table_set_accepted`]; a secondary surface that needs a presenter
+/// thread or has no 8-bit format never turns the cabinet into the debug
+/// view), else the debug view.
+fn choose_presenter(has_table: bool, plans: &[(SurfaceRole, SurfacePlan)]) -> PresenterKind {
+    if has_table && table_set_accepted(plans) {
+        PresenterKind::Table
+    } else {
+        PresenterKind::Debug
+    }
+}
+
+/// Something that takes the sim's display commands (the table presenter).
+trait DisplayCommandSink {
+    fn apply_display_command(&mut self, cmd: DisplayCommand, now_ms: u64);
+}
+
+impl DisplayCommandSink for AppSurfaces {
+    fn apply_display_command(&mut self, cmd: DisplayCommand, now_ms: u64) {
+        AppSurfaces::apply_display_command(self, cmd, now_ms);
+    }
+}
+
+/// Drains every pending display command into `sink` (the table presenter
+/// whenever the table path was chosen); without one they are discarded
+/// (the debug view has no displays). Returns the commands drained.
+fn drain_display_commands<T: DisplayCommandSink>(
+    rx: &mut HapticsConsumer<DisplayCommand>,
+    mut sink: Option<&mut T>,
+    now_ms: u64,
+) -> usize {
+    let mut n = 0;
+    while let Some(cmd) = rx.pop() {
+        if let Some(s) = sink.as_deref_mut() {
+            s.apply_display_command(cmd, now_ms);
+        }
+        n += 1;
+    }
+    n
+}
+
+/// Builds the render thread's presenter on `ctx` (see [`choose_presenter`]).
+fn build_presenter(
+    ctx: GpuContext,
+    surfaces: Vec<SurfaceSource>,
+    surface_options: SurfaceOptions,
+    table: Option<&TableVisuals>,
+    table_render: TableRenderOptions,
+) -> Result<Presenter, String> {
+    let plans: Vec<(SurfaceRole, SurfacePlan)> = surfaces
+        .iter()
+        .zip(AppSurfaces::plan(&ctx, &surfaces, surface_options))
+        .map(|(s, p)| (s.role(), p))
+        .collect();
+    match (table, choose_presenter(table.is_some(), &plans)) {
+        (Some(visuals), PresenterKind::Table) => {
+            AppSurfaces::new(&ctx, surfaces, surface_options, visuals, table_render)
+                .map(|s| Presenter::Table(ctx, s))
+        }
+        (other, _) => {
+            if other.is_some() {
+                eprintln!(
+                    "pin_app: the playfield surface offers no 8-bit format; drawing the debug \
+                     view instead of the PBR table"
+                );
+            }
+            SurfaceSet::new(&ctx, surfaces, surface_options)
+                .map(|s| Presenter::Debug(ctx, s))
+                .map_err(|e| e.to_string())
+        }
+    }
 }
 
 fn render_thread(
@@ -598,6 +901,7 @@ fn render_thread(
     mut reader: TripleReader<FrameStateSnapshot>,
     shutdown: &AtomicBool,
     stats: &OrchestratorStats,
+    spawned: Instant,
 ) {
     let RenderConfig {
         gpu,
@@ -617,22 +921,14 @@ fn render_thread(
         Some(g) if !g.surfaces.is_empty() => {
             let ctx =
                 GpuContext::with_instance(g.instance, &g.options, Some(&g.surfaces[0].surface));
-            let made = ctx.map_err(|e| e.to_string()).and_then(|ctx| match &table {
-                Some(visuals) if AppSurfaces::supported(&ctx, &g.surfaces, g.surface_options) => {
-                    AppSurfaces::new(&ctx, g.surfaces, g.surface_options, visuals, table_render)
-                        .map(|s| Presenter::Table(ctx, s))
-                }
-                other => {
-                    if other.is_some() {
-                        eprintln!(
-                            "pin_app: a surface needs a presenter thread or an unsupported \
-                             format; drawing the debug view instead of the PBR table"
-                        );
-                    }
-                    SurfaceSet::new(&ctx, g.surfaces, g.surface_options)
-                        .map(|s| Presenter::Debug(ctx, s))
-                        .map_err(|e| e.to_string())
-                }
+            let made = ctx.map_err(|e| e.to_string()).and_then(|ctx| {
+                build_presenter(
+                    ctx,
+                    g.surfaces,
+                    g.surface_options,
+                    table.as_deref(),
+                    table_render,
+                )
             });
             match made {
                 Ok(p) => {
@@ -647,13 +943,20 @@ fn render_thread(
                             info.backend,
                             set.choices().collect::<Vec<_>>()
                         ),
-                        Presenter::Table(_, s) => eprintln!(
-                            "pin_app: render on {} ({:?}); PBR table on {} surface(s)",
-                            info.name,
-                            info.backend,
-                            s.len()
-                        ),
+                        Presenter::Table(_, s) => {
+                            let (direct, secondary, skipped) = s.plan_counts();
+                            eprintln!(
+                                "pin_app: render on {} ({:?}); PBR table on {} surface(s): \
+                                 {direct} direct / {secondary} secondary / {skipped} skipped",
+                                info.name,
+                                info.backend,
+                                s.len()
+                            );
+                        }
                     }
+                    stats
+                        .gpu_ready_ms
+                        .store(ms_since(spawned), Ordering::Relaxed);
                     stats.gpu_ready.store(true, Ordering::Relaxed);
                     Some(p)
                 }
@@ -688,11 +991,11 @@ fn render_thread(
         last_tick = snap.tick;
         stats.render_last_tick.store(last_tick, Ordering::Relaxed);
         if let Some(rx) = displays.as_mut() {
-            while let Some(cmd) = rx.pop() {
-                if let Some(Presenter::Table(_, s)) = presenter.as_mut() {
-                    s.apply_display_command(cmd, last_tick);
-                }
-            }
+            let sink = match presenter.as_mut() {
+                Some(Presenter::Table(_, s)) => Some(s),
+                _ => None,
+            };
+            drain_display_commands(rx, sink, last_tick);
         }
         let mut paced = false;
         match presenter.as_mut() {
@@ -708,16 +1011,12 @@ fn render_thread(
                 }
                 snapshot_lines(snap, &default_ball_radius, &mut lines);
                 let st = set.render(&lines, &camera);
-                if st.contains(&pin_render::gpu::SurfaceStatus::Presented) {
-                    stats.render_frames.fetch_add(1, Ordering::Relaxed);
-                }
+                stats.record_statuses(&st, spawned);
                 paced = set.frame_paced(&st);
             }
             Some(Presenter::Table(_, s)) => {
                 let st = s.render(snap);
-                if st.contains(&pin_render::gpu::SurfaceStatus::Presented) {
-                    stats.render_frames.fetch_add(1, Ordering::Relaxed);
-                }
+                stats.record_statuses(&st, spawned);
                 paced = s.frame_paced(&st);
             }
             None => {}
@@ -730,4 +1029,229 @@ fn render_thread(
     // Surfaces drop here, on the render thread, before the main thread
     // destroys the windows (it joins this thread first).
     drop(presenter);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pin_render::gpu::SurfaceStatus as S;
+    use pin_render::gpu::wgpu::PresentMode;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn run_limits_parse_the_flags() {
+        assert_eq!(RunLimits::from_args(&[]).unwrap(), RunLimits::default());
+        let l = RunLimits::from_args(&args(&[
+            "--table",
+            "t",
+            "--run-frames",
+            "3",
+            "--run-ticks",
+            "100",
+            "--run-ms",
+            "120000",
+        ]))
+        .unwrap();
+        assert_eq!(
+            l,
+            RunLimits {
+                frames: Some(3),
+                ticks: Some(100),
+                cap: Some(Duration::from_millis(120_000)),
+            }
+        );
+        assert!(l.has_conditions());
+        let l = RunLimits::from_args(&args(&["--run-ms", "5"])).unwrap();
+        assert!(!l.has_conditions());
+        for bad in [
+            &["--run-frames", "x"][..],
+            &["--run-ticks", "x"],
+            &["--run-ms", "x"],
+            &["--run-frames"],
+            &["--run-ticks", "-1"],
+        ] {
+            let e = RunLimits::from_args(&args(bad)).unwrap_err();
+            assert!(e.starts_with(bad[0]), "{bad:?}: {e}");
+        }
+    }
+
+    fn stats(frames: u64, ticks: u64) -> StatsSnapshot {
+        StatsSnapshot {
+            render_frames: frames,
+            sim_ticks: ticks,
+            ..StatsSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn run_condition_needs_every_given_condition() {
+        let both = RunLimits {
+            frames: Some(3),
+            ticks: Some(100),
+            cap: Some(Duration::from_secs(120)),
+        };
+        assert!(!both.conditions_met(&stats(2, 1000)));
+        assert!(!both.conditions_met(&stats(30, 99)));
+        assert!(both.conditions_met(&stats(3, 100)));
+        let frames = RunLimits {
+            frames: Some(1),
+            ..RunLimits::default()
+        };
+        assert!(!frames.conditions_met(&stats(0, 10_000)));
+        assert!(frames.conditions_met(&stats(1, 0)));
+        let ticks = RunLimits {
+            ticks: Some(600),
+            ..RunLimits::default()
+        };
+        assert!(ticks.conditions_met(&stats(0, 600)));
+        assert!(!ticks.conditions_met(&stats(9, 599)));
+        // No condition: never "met" (only the cap or a quit ends the run).
+        assert!(!RunLimits::default().conditions_met(&stats(u64::MAX, u64::MAX)));
+    }
+
+    #[test]
+    fn run_check_distinguishes_met_cap_and_plain_duration() {
+        let s = Duration::from_millis;
+        let l = RunLimits {
+            frames: Some(3),
+            ticks: Some(100),
+            cap: Some(s(1000)),
+        };
+        assert_eq!(l.check(&stats(0, 0), s(999)), None);
+        assert_eq!(l.check(&stats(3, 100), s(0)), Some(RunExit::ConditionMet));
+        // Met conditions win over an elapsed cap.
+        assert_eq!(
+            l.check(&stats(3, 100), s(5000)),
+            Some(RunExit::ConditionMet)
+        );
+        assert_eq!(l.check(&stats(2, 100), s(1000)), Some(RunExit::CapReached));
+        let plain = RunLimits {
+            cap: Some(s(50)),
+            ..RunLimits::default()
+        };
+        assert_eq!(plain.check(&stats(0, 0), s(49)), None);
+        assert_eq!(plain.check(&stats(0, 0), s(50)), Some(RunExit::Elapsed));
+        // Conditions without a cap: run until they hold.
+        let uncapped = RunLimits {
+            ticks: Some(10),
+            ..RunLimits::default()
+        };
+        assert_eq!(uncapped.check(&stats(0, 9), s(u64::MAX)), None);
+        assert_eq!(
+            uncapped.check(&stats(0, 10), s(0)),
+            Some(RunExit::ConditionMet)
+        );
+    }
+
+    #[test]
+    fn render_diagnostics_line() {
+        let s = StatsSnapshot::default();
+        assert_eq!(
+            s.render_diagnostics(),
+            "pin_app: render: gpu ready after - ms, first frame after - ms, 0 iterations, \
+             0 presented / 0 occluded / 0 skipped / 0 hidden"
+        );
+        let s = StatsSnapshot {
+            gpu_ready_ms: Some(812),
+            first_frame_ms: Some(0),
+            render_iterations: 42,
+            render_presented: 7,
+            render_occluded: 3,
+            render_skipped: 2,
+            render_hidden: 1,
+            ..StatsSnapshot::default()
+        };
+        assert_eq!(
+            s.render_diagnostics(),
+            "pin_app: render: gpu ready after 812 ms, first frame after 0 ms, 42 iterations, \
+             7 presented / 3 occluded / 2 skipped / 1 hidden"
+        );
+    }
+
+    #[test]
+    fn statuses_are_counted_per_surface_and_frames_once_per_iteration() {
+        let st = OrchestratorStats::default();
+        let spawned = Instant::now();
+        assert_eq!(st.snapshot().first_frame_ms, None);
+        assert_eq!(st.snapshot().gpu_ready_ms, None);
+        st.record_statuses(&[S::Occluded, S::Hidden], spawned);
+        st.record_statuses(&[S::Skipped, S::Unchanged, S::Busy], spawned);
+        assert_eq!(st.snapshot().render_frames, 0);
+        assert_eq!(st.snapshot().first_frame_ms, None);
+        st.record_statuses(&[S::Presented, S::Presented, S::Occluded], spawned);
+        st.record_statuses(&[S::Presented], spawned);
+        let s = st.snapshot();
+        assert_eq!(s.render_frames, 2);
+        assert_eq!(s.render_presented, 3);
+        assert_eq!(s.render_occluded, 2);
+        assert_eq!(s.render_skipped, 1);
+        assert_eq!(s.render_hidden, 1);
+        assert!(s.first_frame_ms.is_some());
+    }
+
+    #[derive(Default)]
+    struct Recorder(Vec<(DisplayCommand, u64)>);
+
+    impl DisplayCommandSink for Recorder {
+        fn apply_display_command(&mut self, cmd: DisplayCommand, now_ms: u64) {
+            self.0.push((cmd, now_ms));
+        }
+    }
+
+    /// PR #21 review (threads.rs:621): a Fifo-only score window keeps the
+    /// table presenter, and the display commands reach it.
+    #[test]
+    fn a_fifo_only_score_surface_keeps_the_table_and_its_display_commands() {
+        let opts = SurfaceOptions::default();
+        let formats = [wgpu::TextureFormat::Bgra8UnormSrgb];
+        let plans = [
+            (
+                SurfaceRole::Playfield,
+                super::super::present::plan_surface(
+                    SurfaceRole::Playfield,
+                    &formats,
+                    &[PresentMode::Fifo, PresentMode::Mailbox],
+                    opts,
+                ),
+            ),
+            (
+                SurfaceRole::Score,
+                super::super::present::plan_surface(
+                    SurfaceRole::Score,
+                    &formats,
+                    &[PresentMode::Fifo],
+                    opts,
+                ),
+            ),
+        ];
+        assert_eq!(plans[1].1, SurfacePlan::Secondary(PresentMode::Fifo));
+        assert_eq!(choose_presenter(true, &plans), PresenterKind::Table);
+        assert_eq!(choose_presenter(false, &plans), PresenterKind::Debug);
+        // Playfield without an 8-bit format: the debug view.
+        let bad = [(SurfaceRole::Playfield, SurfacePlan::Unsupported), plans[1]];
+        assert_eq!(choose_presenter(true, &bad), PresenterKind::Debug);
+
+        let (mut tx, mut rx) = pin_input::haptics::haptics_ring(8);
+        let cmds = [
+            DisplayCommand::Scene(pin_core::SceneId(2)),
+            DisplayCommand::Score {
+                player: 0,
+                score: 1230,
+            },
+        ];
+        for c in cmds {
+            assert!(tx.push(c));
+        }
+        let mut table = Recorder::default();
+        assert_eq!(drain_display_commands(&mut rx, Some(&mut table), 77), 2);
+        assert_eq!(table.0, vec![(cmds[0], 77), (cmds[1], 77)]);
+        // Without a table presenter they are drained and dropped.
+        assert!(tx.push(cmds[0]));
+        assert_eq!(drain_display_commands::<Recorder>(&mut rx, None, 78), 1);
+        assert_eq!(drain_display_commands(&mut rx, Some(&mut table), 79), 0);
+        assert_eq!(table.0.len(), 2);
+    }
 }
