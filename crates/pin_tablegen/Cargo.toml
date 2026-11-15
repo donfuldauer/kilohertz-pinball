@@ -21,6 +21,13 @@ libm.workspace = true
 # The loader's own spline check (generated guides must load without errors
 # or warnings) and its glTF budgets (the glb must load).
 pin_assets = { path = "../pin_assets" }
+# Wave 6 additions (5.5): the backbox layout block (`backbox_layout.toml`)
+# is parsed with the workspace's serde/toml pins (already used by pin_core).
+serde.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Wave 6 additions (5.5): the staging router drives the generated backbox
+# flippers in tests/backbox_staging.rs (internal crate, no new external pin).
+pin_input = { path = "../pin_input" }

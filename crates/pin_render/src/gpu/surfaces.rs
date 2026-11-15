@@ -30,11 +30,25 @@ use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 /// Creates a surface for `window` on `instance`.
 ///
 /// # Safety
-/// The window (and its display connection) must outlive the returned surface:
-/// drop the [`SurfaceSet`] holding it (i.e. join the render thread) before
-/// destroying the window. Known gap: a presenter thread that does not stop
-/// within [`PRESENTER_JOIN_TIMEOUT`] is detached and still owns its surface
-/// after the set is dropped (DECISIONS "1.4 — fix round 1", N4).
+/// The window (and its display connection) must outlive the returned surface.
+///
+/// How the engine guarantees it (DECISIONS "6.0 — window lifetime", issue
+/// #9a): the caller wraps the window, or a token that owns it, in a
+/// [`WindowGuard`] and passes a clone as [`SurfaceSource::keep_alive`]. The
+/// [`SurfaceSet`] slot keeps that clone until its surface is dropped, and a
+/// presenter thread is spawned with [`spawn_guarded`], which drops the
+/// surface before the guard. So even a presenter thread that is detached
+/// after [`PRESENTER_JOIN_TIMEOUT`] keeps the window alive until it exits.
+///
+/// What remains the caller's duty:
+/// * pass a `keep_alive` guard whose last drop is what destroys the window
+///   (with `keep_alive: None` the window must outlive every thread that can
+///   hold the surface, which a detached presenter breaks);
+/// * destroy the window only when the guard says so: for windows that must
+///   be destroyed on one thread (SDL on Cocoa), the guard's value must defer
+///   the destruction to that thread rather than destroy it in `Drop`;
+/// * keep the display connection (the windowing system) open as long as
+///   the window.
 pub unsafe fn create_surface<W: HasDisplayHandle + HasWindowHandle>(
     instance: &wgpu::Instance,
     window: &W,
@@ -45,6 +59,65 @@ pub unsafe fn create_surface<W: HasDisplayHandle + HasWindowHandle>(
     // SAFETY: as above.
     unsafe { instance.create_surface_unsafe(target) }
         .map_err(|e| GpuError::Surface(format!("create_surface: {e}")))
+}
+
+/// A shared, type-erased handle that keeps a window alive (issue #9a).
+///
+/// Clones share one value; the value is dropped when the last clone is.
+/// Surfaces created with [`create_surface`] hold a clone (through
+/// [`SurfaceSource::keep_alive`]) for as long as they exist, including on a
+/// presenter thread started with [`spawn_guarded`], so the window cannot be
+/// destroyed under a surface. The value must be `Send + Sync`, because the
+/// last clone may be dropped on any thread: windows that may only be
+/// destroyed on one thread (SDL windows on the main thread) are wrapped in a
+/// token whose `Drop` hands the destruction to that thread.
+#[derive(Clone)]
+pub struct WindowGuard {
+    inner: Arc<dyn Send + Sync>,
+}
+
+impl WindowGuard {
+    /// Wraps `window` (or a token owning it).
+    pub fn new<T: Send + Sync + 'static>(window: T) -> WindowGuard {
+        WindowGuard {
+            inner: Arc::new(window),
+        }
+    }
+
+    /// Live clones of this guard (including `self`).
+    pub fn strong_count(&self) -> usize {
+        Arc::strong_count(&self.inner)
+    }
+}
+
+impl std::fmt::Debug for WindowGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowGuard")
+            .field("strong_count", &self.strong_count())
+            .finish()
+    }
+}
+
+/// Spawns a thread named `name` that runs `body` and drops `guard` only
+/// after `body` has returned, so everything `body` owns (a surface) is
+/// dropped before the window the guard keeps alive. Used for presenter
+/// threads; a detached thread therefore still keeps its window.
+///
+/// # Errors
+/// The OS error when the thread cannot be spawned (`guard` is then dropped
+/// on the calling thread).
+pub fn spawn_guarded(
+    name: &str,
+    guard: WindowGuard,
+    body: impl FnOnce() + Send + 'static,
+) -> std::io::Result<JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || {
+            let guard = guard;
+            body();
+            drop(guard);
+        })
 }
 
 /// The planned viewports of a `from`-sized window for the same window at
@@ -122,6 +195,11 @@ pub struct SurfaceSource {
     pub logical_size: (u32, u32),
     /// Drawable size in physical pixels.
     pub pixel_size: (u32, u32),
+    /// Keeps the window alive while anything (the [`SurfaceSet`] slot or a
+    /// presenter thread, even a detached one) still holds this surface; see
+    /// the `# Safety` section of [`create_surface`]. `None` leaves the
+    /// lifetime entirely to the caller.
+    pub keep_alive: Option<WindowGuard>,
 }
 
 impl SurfaceSource {
@@ -208,7 +286,9 @@ struct PresentJob {
 }
 
 /// How long dropping a presenter waits for its thread (which may be inside a
-/// blocking `Fifo` acquire or present) before detaching it.
+/// blocking `Fifo` acquire or present) before detaching it. A detached
+/// presenter keeps its window alive through its [`WindowGuard`] (given as
+/// [`SurfaceSource::keep_alive`]) until it exits.
 pub const PRESENTER_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl Drop for Presenter {
@@ -219,8 +299,9 @@ impl Drop for Presenter {
                 let _ = h.join();
             } else {
                 // A stalled swap chain: detach rather than hang shutdown. The
-                // thread still owns the surface (see DECISIONS "1.4 — fix
-                // round 1": the window may then be destroyed under it).
+                // thread still owns the surface, and its `WindowGuard` keeps
+                // the window alive until it exits (DECISIONS "6.0 — window
+                // lifetime", issue #9a).
                 eprintln!(
                     "pin_render: presenter thread did not stop within {PRESENTER_JOIN_TIMEOUT:?}; detaching it"
                 );
@@ -273,6 +354,9 @@ struct Slot {
     /// Renderers for this slot's format (lines, PiP outlines).
     lines: DebugRenderer,
     overlay: DebugRenderer,
+    /// Keeps the window alive until `present` (the surface, or the
+    /// presenter holding it) is dropped: fields drop in declaration order.
+    _keep_alive: Option<WindowGuard>,
 }
 
 /// One to three configured surfaces on the render thread.
@@ -523,7 +607,10 @@ impl SurfaceSet {
                     Present::Thread(spawn_presenter(
                         &device,
                         &queue,
-                        src.surface,
+                        GuardedSurface {
+                            surface: src.surface,
+                            keep_alive: src.keep_alive.clone(),
+                        },
                         config,
                         src.window,
                         Arc::clone(&gpu_lock),
@@ -548,6 +635,7 @@ impl SurfaceSet {
                 present,
                 lines: DebugRenderer::new(&device, draw_format),
                 overlay: DebugRenderer::new(&device, draw_format),
+                _keep_alive: src.keep_alive,
             });
         }
         Ok(SurfaceSet {
@@ -862,15 +950,25 @@ impl SurfaceSet {
     }
 }
 
+/// A surface handed to a presenter thread with the guard of its window.
+struct GuardedSurface {
+    surface: wgpu::Surface<'static>,
+    keep_alive: Option<WindowGuard>,
+}
+
 fn spawn_presenter(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    surface: wgpu::Surface<'static>,
+    target: GuardedSurface,
     mut config: wgpu::SurfaceConfiguration,
     window: usize,
     gpu_lock: Arc<Mutex<()>>,
     configure_log: Arc<ConfigureLog>,
 ) -> Result<Presenter, GpuError> {
+    let GuardedSurface {
+        surface,
+        keep_alive,
+    } = target;
     let (tx, rx) = sync_channel::<PresentJob>(1);
     let busy = Arc::new(AtomicBool::new(false));
     let presented = Arc::new(AtomicU64::new(0));
@@ -880,66 +978,59 @@ fn spawn_presenter(
     let retry2 = Arc::clone(&retry);
     let busy2 = Arc::clone(&busy);
     let presented2 = Arc::clone(&presented);
-    let handle = std::thread::Builder::new()
-        .name(format!("presenter-{window}"))
-        .spawn(move || {
-            let blit = Blit::new(&device, config.format);
-            let mut configured = true;
-            for job in rx {
-                if (config.width, config.height) != (job.width.max(1), job.height.max(1)) {
-                    config.width = job.width.max(1);
-                    config.height = job.height.max(1);
-                    configured =
-                        try_configure_now(&device, &surface, &config, &gpu_lock, &configure_log);
-                } else if !configured {
-                    configured =
-                        try_configure(&device, &surface, &config, &gpu_lock, &configure_log);
-                }
-                let frame = if configured {
-                    match surface.get_current_texture() {
-                        wgpu::CurrentSurfaceTexture::Success(t)
-                        | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
-                        wgpu::CurrentSurfaceTexture::Outdated
-                        | wgpu::CurrentSurfaceTexture::Lost => {
-                            configured = try_configure(
-                                &device,
-                                &surface,
-                                &config,
-                                &gpu_lock,
-                                &configure_log,
-                            );
-                            None
-                        }
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                if let Some(frame) = frame {
-                    let dst = frame
-                        .texture
-                        .create_view(&wgpu::TextureViewDescriptor::default());
-                    let src = job
-                        .source
-                        .create_view(&wgpu::TextureViewDescriptor::default());
-                    let mut encoder =
-                        device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("presenter blit"),
-                        });
-                    blit.encode(&device, &mut encoder, &src, &dst);
-                    {
-                        let _g = lock(&gpu_lock);
-                        queue.submit([encoder.finish()]);
-                    }
-                    queue.present(frame);
-                    presented2.fetch_add(1, Ordering::AcqRel);
-                } else {
-                    retry2.store(true, Ordering::Release);
-                }
-                busy2.store(false, Ordering::Release);
+    // The thread holds the window guard (if any) and drops it only after the
+    // closure below, which owns the surface, has returned (issue #9a).
+    let guard = keep_alive.unwrap_or_else(|| WindowGuard::new(()));
+    let handle = spawn_guarded(&format!("presenter-{window}"), guard, move || {
+        let blit = Blit::new(&device, config.format);
+        let mut configured = true;
+        for job in rx {
+            if (config.width, config.height) != (job.width.max(1), job.height.max(1)) {
+                config.width = job.width.max(1);
+                config.height = job.height.max(1);
+                configured =
+                    try_configure_now(&device, &surface, &config, &gpu_lock, &configure_log);
+            } else if !configured {
+                configured = try_configure(&device, &surface, &config, &gpu_lock, &configure_log);
             }
-        })
-        .map_err(|e| GpuError::Surface(format!("presenter thread: {e}")))?;
+            let frame = if configured {
+                match surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(t)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
+                    wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                        configured =
+                            try_configure(&device, &surface, &config, &gpu_lock, &configure_log);
+                        None
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(frame) = frame {
+                let dst = frame
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let src = job
+                    .source
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("presenter blit"),
+                });
+                blit.encode(&device, &mut encoder, &src, &dst);
+                {
+                    let _g = lock(&gpu_lock);
+                    queue.submit([encoder.finish()]);
+                }
+                queue.present(frame);
+                presented2.fetch_add(1, Ordering::AcqRel);
+            } else {
+                retry2.store(true, Ordering::Release);
+            }
+            busy2.store(false, Ordering::Release);
+        }
+    })
+    .map_err(|e| GpuError::Surface(format!("presenter thread: {e}")))?;
     Ok(Presenter {
         tx: Some(tx),
         busy,

@@ -1,0 +1,39 @@
+# Subphase 2.9 autoplay fixture (unreachable) layout: planted defect: hidden_opto is walled in
+schema_version = 1
+
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 28.0
+
+# Outer walls; the lower ends meet the flipper bases (inlanes), so the only
+# drain is between the flippers.
+[[walls]]
+points = [[160.0, 110.0], [0.0, 260.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 260.0], [354.0, 110.0]]
+closed = false
+material = "wood"
+
+# A V-shaped catch basin below the drain, closed at the sides, leading to
+# the trough switch.
+[[walls]]
+points = [[0.0, 260.0], [0.0, 120.0], [257.0, 0.0], [514.0, 120.0], [514.0, 260.0]]
+closed = false
+material = "wood"
+
+[[posts]]
+position = [140.0, 760.0]
+radius = 8.0
+rubber = true
+
+[[posts]]
+position = [374.0, 760.0]
+radius = 8.0
+rubber = true
+
+# Planted defect: a closed diamond around the hidden_opto switch (pointed
+# at the top, so no ball can rest on it, and far enough from the outer wall
+# that no ball wedges beside it).
+[[walls]]
+points = [[400.0, 910.0], [440.0, 950.0], [400.0, 990.0], [360.0, 950.0]]
+closed = true
+material = "wood"

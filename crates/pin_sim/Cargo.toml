@@ -23,3 +23,5 @@ libm.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Wave 6 additions (2.9): parses the soak's JSON report in the round-trip tests.
+serde_json.workspace = true

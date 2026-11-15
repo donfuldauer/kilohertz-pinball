@@ -97,6 +97,7 @@ fn source(
         surface: unsafe { create_surface(instance, w) }.expect("create_surface"),
         logical_size: (lw, lh),
         pixel_size: (pw, ph),
+        keep_alive: None,
     }
 }
 

@@ -18,12 +18,29 @@
 //! [`run`] does the work on the calling thread; the binary calls it on a
 //! thread with [`SIM_THREAD_STACK_BYTES`] of stack (enough for a Wasm
 //! script, see [`Simulation`](crate::Simulation)).
+//!
+//! # `soak` (Subphase 2.9)
+//!
+//! ```text
+//! pin_sim soak <bundle> [--games N] [--seed S] [--skill novice|standard|expert]
+//!                       [--threads T] [--max-ticks N] [--no-tick-budget] --out DIR
+//! ```
+//!
+//! Plays `N` (default 100) seeded bot games with
+//! [`run_soak`] and writes `DIR/soak_report.json`
+//! and `DIR/soak_report.md`. stdout gets a summary naming every finding;
+//! exit code 0 when the soak passes, 1 when it fails
+//! ([`SoakReport::passed`]: a StuckBall, EscapedBall, NonFinite,
+//! ScriptError or QueueOverflow finding, or incomplete switch / shot / mode
+//! coverage; the summary then goes to stderr) or cannot run, 2 for bad
+//! arguments. A bundle literally named `soak` must be given as `./soak`.
 
 use core::fmt;
 use pin_core::input::{CabinetAxis, CabinetInput, InputEvent};
 use pin_core::sim::{SimStep, TICK_NS};
 use std::path::{Path, PathBuf};
 
+use crate::autoplay::{SkillLevel, SoakConfig, SoakReport, run_soak};
 use crate::replay::{Recorder, Recording, replay};
 use crate::{SimConfig, Simulation};
 
@@ -230,8 +247,9 @@ fn record_inside_bundle(bundle: &Path, record: &Path) -> bool {
     let Ok(bundle) = bundle.canonicalize() else {
         return false;
     };
+    // An unresolvable target is never assumed to be outside the bundle.
     let Some(target) = write_target(record) else {
-        return false;
+        return true;
     };
     if bundle.is_dir() {
         target.starts_with(&bundle)
@@ -241,24 +259,35 @@ fn record_inside_bundle(bundle: &Path, record: &Path) -> bool {
 }
 
 /// The canonical path a write to `path` lands on: the path itself with every
-/// symlink followed when it exists, else its canonical parent joined with
-/// its file name (following dangling symlinks first). `None` if that cannot
-/// be worked out (missing parent, symlink loop).
+/// symlink followed when it exists, else the canonical form of its nearest
+/// existing ancestor joined with the missing components (following dangling
+/// symlinks on the way). `None` if that cannot be worked out (symlink loop,
+/// a missing component that is not a plain name).
 fn write_target(path: &Path) -> Option<PathBuf> {
     let mut p = path.to_path_buf();
-    // Bounded like the kernel's own symlink-follow limit.
-    for _ in 0..40 {
+    // Missing trailing components, last first.
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    // Bounded like the kernel's own symlink-follow limit, plus the depth.
+    for _ in 0..4096 {
         if let Ok(c) = p.canonicalize() {
-            return Some(c);
+            return Some(tail.iter().rev().fold(c, |acc, name| acc.join(name)));
         }
-        let parent = match p.parent() {
+        if let Ok(link) = std::fs::read_link(&p) {
+            if tail.len() > 4000 {
+                return None;
+            }
+            let parent = match p.parent() {
+                Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+                _ => PathBuf::from("."),
+            };
+            p = parent.join(link);
+            continue;
+        }
+        tail.push(p.file_name()?.to_owned());
+        p = match p.parent() {
             Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
             _ => PathBuf::from("."),
         };
-        match std::fs::read_link(&p) {
-            Ok(link) => p = parent.join(link),
-            Err(_) => return Some(parent.canonicalize().ok()?.join(p.file_name()?)),
-        }
     }
     None
 }
@@ -315,12 +344,184 @@ pub fn hash_line(hash: u64) -> String {
     format!("state_hash={hash:016x}")
 }
 
+/// Usage text of `pin_sim soak`.
+pub const SOAK_USAGE: &str = "usage: pin_sim soak <bundle> [--games N] [--seed S] [--skill novice|standard|expert] [--threads T] [--max-ticks N] [--no-tick-budget] --out DIR";
+
+/// File name of the JSON soak report.
+pub const SOAK_JSON: &str = "soak_report.json";
+
+/// File name of the Markdown soak report.
+pub const SOAK_MARKDOWN: &str = "soak_report.md";
+
+/// The arguments of `pin_sim soak`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoakArgs {
+    /// Bundle path.
+    pub bundle: PathBuf,
+    /// Report folder.
+    pub out: PathBuf,
+    /// Soak settings.
+    pub cfg: SoakConfig,
+}
+
+fn soak_usage(m: String) -> CliError {
+    CliError::Usage(format!("{m}\n{SOAK_USAGE}"))
+}
+
+/// Parses the arguments after `soak`.
+///
+/// # Errors
+/// [`CliError::Usage`] for an unknown flag, a missing or malformed value,
+/// zero games or threads, an unknown skill, a missing bundle or `--out`.
+pub fn parse_soak_args(args: &[String]) -> Result<SoakArgs, CliError> {
+    let mut bundle = None;
+    let mut out = None;
+    let mut cfg = SoakConfig::default();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut value = |flag: &str| {
+            it.next()
+                .cloned()
+                .ok_or_else(|| soak_usage(format!("{flag} needs a value")))
+        };
+        let num = |flag: &str, v: String| {
+            parse_u64(flag, &v).map_err(|_| soak_usage(format!("{flag}: not a number: {v:?}")))
+        };
+        match a.as_str() {
+            "--games" => {
+                let n = num("--games", value("--games")?)?;
+                cfg.games = u32::try_from(n)
+                    .ok()
+                    .filter(|&n| n > 0)
+                    .ok_or_else(|| soak_usage(format!("--games must be 1..={}", u32::MAX)))?;
+            }
+            "--seed" => cfg.seed = num("--seed", value("--seed")?)?,
+            "--skill" => {
+                let v = value("--skill")?;
+                cfg.skill = SkillLevel::from_name(&v)
+                    .ok_or_else(|| soak_usage(format!("--skill: unknown level {v:?}")))?;
+            }
+            "--threads" => {
+                let n = num("--threads", value("--threads")?)?;
+                cfg.threads = usize::try_from(n)
+                    .ok()
+                    .filter(|&n| (1..=1024).contains(&n))
+                    .ok_or_else(|| soak_usage("--threads must be 1..=1024".into()))?;
+            }
+            "--max-ticks" => {
+                let n = num("--max-ticks", value("--max-ticks")?)?;
+                if n == 0 {
+                    return Err(soak_usage("--max-ticks must be at least 1".into()));
+                }
+                cfg.max_game_ticks = n;
+            }
+            "--no-tick-budget" => cfg.check_tick_budget = false,
+            "--out" => out = Some(PathBuf::from(value("--out")?)),
+            s if s.starts_with("--") => return Err(soak_usage(format!("unknown flag {s}"))),
+            s => {
+                if bundle.replace(PathBuf::from(s)).is_some() {
+                    return Err(soak_usage("more than one bundle given".into()));
+                }
+            }
+        }
+    }
+    let bundle = bundle.ok_or_else(|| soak_usage("no bundle given".into()))?;
+    let out = out.ok_or_else(|| soak_usage("give --out DIR".into()))?;
+    Ok(SoakArgs { bundle, out, cfg })
+}
+
+/// The summary `pin_sim soak` prints: the verdict, every finding by kind
+/// and subject, the report paths and the speed.
+#[must_use]
+pub fn soak_summary(report: &SoakReport, out: &Path) -> String {
+    let mut s = format!(
+        "soak {}: {} games, {} findings, coverage {} -> {}",
+        report.table_id,
+        report.game_list.len(),
+        report.findings.len(),
+        if report.coverage_complete() {
+            "complete"
+        } else {
+            "incomplete"
+        },
+        if report.passed() { "PASS" } else { "FAIL" }
+    );
+    for f in report.findings.iter().chain(&report.timing.findings) {
+        let game = if f.game == crate::autoplay::report::SOAK_WIDE {
+            "all games".to_owned()
+        } else {
+            format!("game {}, tick {}", f.game, f.tick)
+        };
+        s.push_str(&format!(
+            "\n{} {} ({game}): {}",
+            f.kind.name(),
+            f.subject,
+            f.detail
+        ));
+    }
+    let never = report.never_hit();
+    if !never.is_empty() {
+        s.push_str(&format!("\nnever-hit switches: {}", never.join(", ")));
+    }
+    s.push_str(&format!(
+        "\nreport: {} and {}\nspeed: {:.2} games/s, {:.0} ticks/s on {} threads",
+        out.join(SOAK_JSON).display(),
+        out.join(SOAK_MARKDOWN).display(),
+        report.timing.games_per_s,
+        report.timing.ticks_per_s,
+        report.timing.threads
+    ));
+    s
+}
+
+/// Runs `pin_sim soak`: plays the games, writes both reports into
+/// `args.out` (created if missing) and returns the summary.
+///
+/// # Errors
+/// [`CliError::Usage`] when `--out` lies inside a folder bundle;
+/// [`CliError::Failed`] when the soak cannot run, the reports cannot be
+/// written, or the soak fails (the message is the summary, which names
+/// every finding).
+pub fn run_soak_command(args: &SoakArgs) -> Result<String, CliError> {
+    if record_inside_bundle(&args.bundle, &args.out) {
+        return Err(soak_usage(format!(
+            "--out {} is inside the bundle {}; reports there change the table hash",
+            args.out.display(),
+            args.bundle.display()
+        )));
+    }
+    let report =
+        run_soak(&args.bundle, &args.cfg).map_err(|e| CliError::Failed(format!("soak: {e}")))?;
+    let write = |name: &str, text: String| {
+        std::fs::write(args.out.join(name), text).map_err(|e| {
+            CliError::Failed(format!(
+                "cannot write {}: {e}",
+                args.out.join(name).display()
+            ))
+        })
+    };
+    std::fs::create_dir_all(&args.out)
+        .map_err(|e| CliError::Failed(format!("cannot create {}: {e}", args.out.display())))?;
+    write(SOAK_JSON, report.to_json())?;
+    write(SOAK_MARKDOWN, report.to_markdown())?;
+    let summary = soak_summary(&report, &args.out);
+    if report.passed() {
+        Ok(summary)
+    } else {
+        Err(CliError::Failed(summary))
+    }
+}
+
 /// Parses the arguments and runs on a thread with
 /// [`SIM_THREAD_STACK_BYTES`] of stack; returns the stdout line.
 ///
 /// # Errors
 /// As [`parse_args`] and [`run`].
 pub fn main_with_args(args: &[String]) -> Result<String, CliError> {
+    if args.first().map(String::as_str) == Some("soak") {
+        let soak = parse_soak_args(&args[1..])?;
+        return run_soak_command(&soak);
+    }
     let cmd = parse_args(args)?;
     let handle = std::thread::Builder::new()
         .name("pin_sim".into())
