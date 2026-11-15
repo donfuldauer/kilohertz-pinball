@@ -416,11 +416,15 @@ impl Simulation {
         }
     }
 
-    /// Removes the ball in solver slot `slot` (its handle goes stale).
+    /// Removes the ball in solver slot `slot` (its handle goes stale) and
+    /// releases any mech hold on it (a VUK lets go at once, so a ball later
+    /// spawned into the slot is free). Allocation-free: the drain path calls
+    /// it inside the tick.
     pub(crate) fn remove_slot(&mut self, slot: usize) {
         let h = pin_physics::ball::BallHandle(slot as u8);
         if self.solver.remove_ball(h).is_some() {
             self.generations[slot] = self.generations[slot].wrapping_add(1);
+            self.mechs.release_ball(h);
         }
     }
 
