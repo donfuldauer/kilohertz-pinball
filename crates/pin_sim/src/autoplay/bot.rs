@@ -449,6 +449,9 @@ pub struct Bot {
     applied: [bool; 8],
     seen_ball: bool,
     next_start_at: u64,
+    /// Raw draw taken at construction, so a later config can reschedule the
+    /// first start without consuming more randomness.
+    start_draw: u32,
     start_release_at: u64,
     launch_release_at: u64,
     next_launch_at: u64,
@@ -469,7 +472,8 @@ impl Bot {
     pub fn new(seed: u64, skill: SkillLevel) -> Bot {
         let mut rng = Pcg32::seed_from_u64(seed);
         let cfg = BotConfig::default();
-        let next_start_at = 1 + u64::from(draw_range(&mut rng, cfg.start_delay_ms));
+        let start_draw = rng.next_u32();
+        let next_start_at = 1 + u64::from(range_from_draw(start_draw, cfg.start_delay_ms));
         Bot {
             rng,
             seed,
@@ -481,6 +485,7 @@ impl Bot {
             applied: [false; 8],
             seen_ball: false,
             next_start_at,
+            start_draw,
             start_release_at: 0,
             launch_release_at: 0,
             next_launch_at: 0,
@@ -503,6 +508,12 @@ impl Bot {
     #[must_use]
     pub fn with_config(mut self, cfg: BotConfig) -> Bot {
         self.cfg = cfg;
+        if self.stats.starts == 0 {
+            // The first start has not been pressed yet: reschedule it from
+            // the configured delay using the draw taken in `new`.
+            self.next_start_at =
+                1 + u64::from(range_from_draw(self.start_draw, self.cfg.start_delay_ms));
+        }
         self
     }
 
@@ -869,12 +880,17 @@ impl Bot {
 }
 
 /// A uniform draw from `lo..=hi` (`hi < lo` gives `lo`).
-fn draw_range(rng: &mut Pcg32, (lo, hi): (u32, u32)) -> u32 {
+fn draw_range(rng: &mut Pcg32, range: (u32, u32)) -> u32 {
+    range_from_draw(rng.next_u32(), range)
+}
+
+/// Maps a raw 32-bit draw into the inclusive `(lo, hi)` range.
+fn range_from_draw(draw: u32, (lo, hi): (u32, u32)) -> u32 {
     if hi <= lo {
         return lo;
     }
     let span = u64::from(hi - lo) + 1;
-    lo + (u64::from(rng.next_u32()) % span) as u32
+    lo + (u64::from(draw) % span) as u32
 }
 
 #[cfg(test)]

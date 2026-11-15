@@ -192,6 +192,31 @@ impl TickHistogram {
     }
 }
 
+/// The [`FindingKind::TickBudget`] finding when the 99.9th-percentile tick
+/// time in `hist` exceeds `budget_ms`; `None` for an empty histogram or a
+/// tick time within budget. A pure comparison, kept apart from the timing
+/// measurement.
+#[must_use]
+pub fn tick_budget_finding(hist: &TickHistogram, budget_ms: f64) -> Option<Finding> {
+    if hist.count() == 0 {
+        return None;
+    }
+    let p999_us = hist.quantile_ns(0.999) as f64 / 1000.0;
+    if p999_us <= budget_ms * 1000.0 {
+        return None;
+    }
+    Some(Finding {
+        kind: FindingKind::TickBudget,
+        subject: "tick p99.9".to_owned(),
+        game: SOAK_WIDE,
+        tick: 0,
+        detail: format!(
+            "99.9th percentile tick time {p999_us:.1} µs exceeds the {budget_ms:.3} ms budget ({} ticks measured)",
+            hist.count()
+        ),
+    })
+}
+
 /// One finished game, before merging.
 #[derive(Clone, Debug)]
 struct GameResult {
@@ -233,11 +258,11 @@ fn play_game(
         } else {
             idle = 0;
         }
-        if bot.seen_ball() && idle >= cfg.idle_end_ticks {
+        if bot.seen_ball() && sim.balls_in_play() == 0 && idle >= cfg.idle_end_ticks {
             end = GameEnd::GameOver;
             break;
         }
-        if !bot.seen_ball() && sim.tick() >= cfg.start_timeout_ticks {
+        if !bot.seen_ball() && sim.balls_in_play() == 0 && sim.tick() >= cfg.start_timeout_ticks {
             end = GameEnd::NoBall;
             break;
         }
@@ -461,17 +486,10 @@ fn merge(
         budget_checked: cfg.check_tick_budget && cfg.measure_timing,
         findings: Vec::new(),
     };
-    if timing.budget_checked && hist.count() > 0 && us(p999) > cfg.tick_budget_ms * 1000.0 {
-        timing.findings.push(wide(
-            FindingKind::TickBudget,
-            "tick p99.9",
-            format!(
-                "99.9th percentile tick time {:.1} µs exceeds the {:.3} ms budget ({} ticks measured)",
-                us(p999),
-                cfg.tick_budget_ms,
-                hist.count()
-            ),
-        ));
+    if timing.budget_checked
+        && let Some(f) = tick_budget_finding(hist, cfg.tick_budget_ms)
+    {
+        timing.findings.push(f);
     }
 
     SoakReport {
@@ -530,6 +548,18 @@ mod tests {
         assert_ne!(bot_seed(5), 5);
         // SplitMix64 reference value for input 0.
         assert_eq!(splitmix64(0), 0xE220_A839_7B1D_CDAF);
+    }
+
+    #[test]
+    fn tick_budget_finding_is_a_pure_comparison() {
+        let empty = TickHistogram::new();
+        assert!(tick_budget_finding(&empty, 0.0).is_none());
+        let mut h = TickHistogram::new();
+        h.record(150);
+        let f = tick_budget_finding(&h, 0.0).expect("over a zero budget");
+        assert_eq!(f.kind, FindingKind::TickBudget);
+        assert_eq!(f.game, SOAK_WIDE);
+        assert!(tick_budget_finding(&h, 1.0).is_none());
     }
 
     #[test]
