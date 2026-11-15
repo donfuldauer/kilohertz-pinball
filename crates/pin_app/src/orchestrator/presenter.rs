@@ -312,6 +312,12 @@ pub(crate) struct PresenterTarget {
     pub(crate) gpu_lock: std::sync::Arc<Mutex<()>>,
 }
 
+/// Whether a frame of `frame_size` still matches the published window size
+/// (`current`) and may be presented.
+pub(crate) fn frame_still_current(frame_size: (u32, u32), current: (u32, u32)) -> bool {
+    frame_size == current
+}
+
 /// The presenter thread body: until the hand-off closes, takes the latest
 /// frame, reconfigures on a size change (or after a failed configure),
 /// acquires, copies, submits and presents, then returns the slot.
@@ -345,7 +351,7 @@ pub(crate) fn run_presenter(h: &Handoff<wgpu::Texture>, target: PresenterTarget)
                 continue;
             }
         }
-        if size != h.size() {
+        if !frame_still_current(size, h.size()) {
             // Resized while this frame was in flight: never present it.
             h.release(frame, Outcome::Discarded);
             continue;
@@ -364,6 +370,13 @@ pub(crate) fn run_presenter(h: &Handoff<wgpu::Texture>, target: PresenterTarget)
                 continue;
             }
         };
+        if !frame_still_current(size, h.size()) {
+            // Resized while `get_current_texture` blocked: drop the acquired
+            // image without presenting it; the next frame reconfigures.
+            drop(image);
+            h.release(frame, Outcome::Discarded);
+            continue;
+        }
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("presenter copy"),
         });
@@ -385,6 +398,13 @@ pub(crate) fn run_presenter(h: &Handoff<wgpu::Texture>, target: PresenterTarget)
 mod tests {
     use super::*;
     use wgpu::TextureUsages as U;
+
+    #[test]
+    fn a_frame_is_current_only_at_the_published_size() {
+        assert!(frame_still_current((640, 480), (640, 480)));
+        assert!(!frame_still_current((640, 480), (800, 480)));
+        assert!(!frame_still_current((640, 480), (640, 600)));
+    }
 
     #[test]
     fn copy_dst_capable_surfaces_copy_others_blit() {
