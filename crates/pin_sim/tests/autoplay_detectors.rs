@@ -290,3 +290,78 @@ fn nudges_are_bounded_and_never_tilt() {
     // bob closes it once while settling after load, nudged or not).
     assert_eq!(tilts, t_off);
 }
+
+#[test]
+fn configured_start_delay_applies_to_the_first_press() {
+    let (mut sim, _) = load("clean");
+    let mut bot = Bot::new(5, SkillLevel::Standard).with_config(BotConfig {
+        start_delay_ms: (0, 0),
+        ..BotConfig::default()
+    });
+    for _ in 0..2 {
+        bot.tick(&mut sim);
+        sim.advance(1);
+    }
+    assert_eq!(bot.stats().starts, 1, "a zero delay presses start at once");
+    // The default delay (20..=200 ms) is still honoured.
+    let (mut sim, _) = load("clean");
+    let mut bot = Bot::new(5, SkillLevel::Standard).with_config(BotConfig::default());
+    for _ in 0..2 {
+        bot.tick(&mut sim);
+        sim.advance(1);
+    }
+    assert_eq!(bot.stats().starts, 0);
+}
+
+#[test]
+fn an_escape_before_any_observation_is_still_reported() {
+    let (mut sim, info) = load("clean");
+    let mut mon = GameMonitor::new(&info, &sim, 0, 10_000);
+    mon.observe(&sim);
+    // Spawned beside the wall and flying out: removed within the tick it
+    // appears, so the monitor never sees it.
+    sim.spawn_ball("standard_steel", [-0.04, 0.5, BALL_Z], [-100.0, 0.0, 0.0])
+        .unwrap();
+    sim.advance(1);
+    mon.observe(&sim);
+    assert_eq!(sim.counters().balls_escaped, 1);
+    let f = mon.findings();
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(f[0].kind, FindingKind::EscapedBall);
+    assert_eq!(f[0].subject, "untracked ball");
+    assert!(f[0].detail.contains("never tracked"), "{}", f[0].detail);
+}
+
+#[test]
+fn idle_end_zero_does_not_end_a_game_with_a_ball_in_play() {
+    use pin_sim::autoplay::{GameEnd, run_soak};
+    let mut c = cfg(1, 1, 1_500);
+    c.idle_end_ticks = 0;
+    let r = on_sim_thread(move || run_soak(&fixture("clean"), &c).unwrap());
+    let g = &r.game_list[0];
+    // The ball is in play for the whole short game: only an empty table
+    // may end it as game over.
+    assert_ne!(g.end, GameEnd::GameOver, "{g:?}");
+}
+
+#[test]
+fn a_ball_served_on_the_start_timeout_tick_is_not_no_ball() {
+    use pin_sim::autoplay::{GameEnd, run_soak};
+    // Whatever tick the serve lands on, a ball in play at the timeout tick
+    // must not end the game as NoBall.
+    let ends = on_sim_thread(|| {
+        (1..=300u64)
+            .map(|t| {
+                let mut c = cfg(1, 1, t + 5);
+                c.start_timeout_ticks = t;
+                run_soak(&fixture("clean"), &c).unwrap().game_list[0].end
+            })
+            .collect::<Vec<_>>()
+    });
+    assert!(ends.contains(&GameEnd::NoBall), "early timeouts still fire");
+    let first_ball = ends.iter().position(|e| *e != GameEnd::NoBall).unwrap();
+    assert!(
+        ends[first_ball..].iter().all(|e| *e != GameEnd::NoBall),
+        "{ends:?}"
+    );
+}

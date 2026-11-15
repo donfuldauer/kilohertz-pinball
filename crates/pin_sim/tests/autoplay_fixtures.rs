@@ -89,11 +89,13 @@ fn trap_is_a_stuck_ball_named_after_the_pocket() {
         panic!("trap must fail the soak: {res:?}");
     };
     assert!(text.contains("StuckBall trap_pocket @ "), "{text}");
-    assert!(
-        json_subjects(&json, "StuckBall")
-            .iter()
-            .all(|s| feature(s) == "trap_pocket")
+    let json_stuck = json_subjects(&json, "StuckBall");
+    assert_eq!(
+        json_stuck.len(),
+        2,
+        "one stuck ball per game: {json_stuck:?}"
     );
+    assert!(json_stuck.iter().all(|s| feature(s) == "trap_pocket"));
     assert!(
         md.contains("### StuckBall") && md.contains("trap_pocket @ "),
         "{md}"
@@ -196,11 +198,9 @@ fn script_error_names_the_mode_and_the_unstarted_mode() {
     };
     assert!(text.contains("ScriptError frenzy ("), "{text}");
     assert!(text.contains("ModeCoverage wizard"), "{text}");
-    assert!(
-        json_subjects(&json, "ScriptError")
-            .iter()
-            .all(|s| s == "frenzy")
-    );
+    let json_errors = json_subjects(&json, "ScriptError");
+    assert!(!json_errors.is_empty(), "the JSON report lists the faults");
+    assert!(json_errors.iter().all(|s| s == "frenzy"));
     assert_eq!(json_subjects(&json, "ModeCoverage"), ["wizard"]);
     assert!(
         md.contains("### ScriptError") && md.contains("| frenzy |"),

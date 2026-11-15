@@ -247,8 +247,9 @@ fn record_inside_bundle(bundle: &Path, record: &Path) -> bool {
     let Ok(bundle) = bundle.canonicalize() else {
         return false;
     };
+    // An unresolvable target is never assumed to be outside the bundle.
     let Some(target) = write_target(record) else {
-        return false;
+        return true;
     };
     if bundle.is_dir() {
         target.starts_with(&bundle)
@@ -258,24 +259,35 @@ fn record_inside_bundle(bundle: &Path, record: &Path) -> bool {
 }
 
 /// The canonical path a write to `path` lands on: the path itself with every
-/// symlink followed when it exists, else its canonical parent joined with
-/// its file name (following dangling symlinks first). `None` if that cannot
-/// be worked out (missing parent, symlink loop).
+/// symlink followed when it exists, else the canonical form of its nearest
+/// existing ancestor joined with the missing components (following dangling
+/// symlinks on the way). `None` if that cannot be worked out (symlink loop,
+/// a missing component that is not a plain name).
 fn write_target(path: &Path) -> Option<PathBuf> {
     let mut p = path.to_path_buf();
-    // Bounded like the kernel's own symlink-follow limit.
-    for _ in 0..40 {
+    // Missing trailing components, last first.
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    // Bounded like the kernel's own symlink-follow limit, plus the depth.
+    for _ in 0..4096 {
         if let Ok(c) = p.canonicalize() {
-            return Some(c);
+            return Some(tail.iter().rev().fold(c, |acc, name| acc.join(name)));
         }
-        let parent = match p.parent() {
+        if let Ok(link) = std::fs::read_link(&p) {
+            if tail.len() > 4000 {
+                return None;
+            }
+            let parent = match p.parent() {
+                Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+                _ => PathBuf::from("."),
+            };
+            p = parent.join(link);
+            continue;
+        }
+        tail.push(p.file_name()?.to_owned());
+        p = match p.parent() {
             Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
             _ => PathBuf::from("."),
         };
-        match std::fs::read_link(&p) {
-            Ok(link) => p = parent.join(link),
-            Err(_) => return Some(parent.canonicalize().ok()?.join(p.file_name()?)),
-        }
     }
     None
 }
