@@ -251,7 +251,7 @@ proptest! {
 #[cfg(feature = "gpu-tests")]
 #[test]
 fn small_circles_have_no_joint_gaps() {
-    let Some(ctx) = crate::gpu::context_for_tests("small_circles_have_no_joint_gaps") else {
+    let Some(ctx) = crate::gpu::shared_context_for_tests("small_circles_have_no_joint_gaps") else {
         return;
     };
     const W: u32 = 64;
@@ -273,7 +273,7 @@ fn small_circles_have_no_joint_gaps() {
     for &(r, c) in &cases {
         let mut lines = DebugLines::new(64);
         circle_lines(c, r, BALL_COLOR, &mut lines);
-        let px = render_offscreen(&ctx, W, W, [0.0, 0.0, 0.0, 1.0], &camera, &lines).unwrap();
+        let px = render_offscreen(ctx, W, W, [0.0, 0.0, 0.0, 1.0], &camera, &lines).unwrap();
         let lit = |x: i32, y: i32| {
             (0..W as i32).contains(&x)
                 && (0..W as i32).contains(&y)
@@ -322,7 +322,7 @@ fn small_circles_have_no_joint_gaps() {
         [50.5, 20.5, 0.0],
         BALL_COLOR,
     ));
-    let px = render_offscreen(&ctx, W, W, [0.0, 0.0, 0.0, 1.0], &camera, &long).unwrap();
+    let px = render_offscreen(ctx, W, W, [0.0, 0.0, 0.0, 1.0], &camera, &long).unwrap();
     let row = (W - 1 - 20) as usize;
     let cols: Vec<usize> = (0..W as usize)
         .filter(|&x| px[(row * W as usize + x) * 4] > 128)
