@@ -2,11 +2,15 @@
 //!
 //! 3.2 review N5: `ProfileMapper` is last-writer-wins per cabinet input, so
 //! with two devices bound to the same input (keyboard + gamepad) a release on
-//! one would hide a press on the other. The monitor keeps one pressed bit per
-//! *source* (device) per cabinet input and shows the OR, so the panel's live
-//! display is correct whatever the mapper does. Wiring the same OR into the
-//! platform layer is 6.0's.
+//! one would hide a press on the other. The monitor keeps the set of
+//! *sources* holding each cabinet input and shows the OR, so the panel's live
+//! display is correct whatever the mapper does. It is built on
+//! [`HeldInputs`](crate::platform::HeldInputs), the same type the platform
+//! layer's input path (`pin_app::platform::InputRouter`, issue #9b) uses to
+//! forward a cabinet edge to the sim only when the first source presses or
+//! the last one releases.
 
+use crate::platform::HeldInputs;
 use pin_core::input::{CabinetAxis, CabinetInput};
 use pin_input::PlungerOutput;
 
@@ -30,12 +34,18 @@ pub struct PlungerReading {
 /// Live button, axis, plunger and nudge readings. Fixed size, no allocation.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InputMonitor {
-    /// Per cabinet input (`CabinetInput::index`), bit `s` = source `s` holds it.
-    sources: [u32; CabinetInput::COUNT],
+    /// Which sources hold each cabinet input (source id = the `u8` source).
+    held: HeldInputs,
     /// Latest axis values in `CabinetAxis::ALL` order.
     axes: [f32; 5],
     plunger: PlungerReading,
     nudge: [f32; 2],
+}
+
+/// The [`HeldInputs`] source id of monitor source `source` (sources at or
+/// above [`MAX_INPUT_SOURCES`] share the last one).
+fn source_slot(source: u8) -> u32 {
+    u32::from(source.min(MAX_INPUT_SOURCES - 1))
 }
 
 fn axis_slot(a: CabinetAxis) -> usize {
@@ -51,35 +61,23 @@ impl InputMonitor {
     /// Records that `source` pressed or released `input`. Sources at or above
     /// [`MAX_INPUT_SOURCES`] share the last slot.
     pub fn set_button(&mut self, source: u8, input: CabinetInput, pressed: bool) {
-        let bit = 1u32 << source.min(MAX_INPUT_SOURCES - 1);
-        let slot = &mut self.sources[input.index()];
-        if pressed {
-            *slot |= bit;
-        } else {
-            *slot &= !bit;
-        }
+        let _ = self.held.set(source_slot(source), input, pressed);
     }
 
     /// Whether any source holds `input` (the OR of the sources).
     pub fn is_pressed(&self, input: CabinetInput) -> bool {
-        self.sources[input.index()] != 0
+        self.held.is_held(input)
     }
 
     /// Bit `CabinetInput::index` set for every input any source holds (the
     /// `CabinetFrame::buttons` layout).
     pub fn pressed_mask(&self) -> u8 {
-        CabinetInput::ALL
-            .iter()
-            .filter(|i| self.is_pressed(**i))
-            .fold(0u8, |m, i| m | (1 << i.index()))
+        self.held.pressed_mask()
     }
 
     /// Releases everything `source` held (device disconnected).
     pub fn clear_source(&mut self, source: u8) {
-        let bit = 1u32 << source.min(MAX_INPUT_SOURCES - 1);
-        for s in &mut self.sources {
-            *s &= !bit;
-        }
+        let _ = self.held.release_source(source_slot(source));
     }
 
     /// Records an axis value.

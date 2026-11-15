@@ -12,10 +12,14 @@ const AXES: usize = GamepadAxis::ALL.len();
 /// per-event methods never allocate. Where a profile built by hand binds one
 /// raw input twice, the first binding wins.
 ///
-/// The mapper is stateless: each raw edge becomes a cabinet event on its own,
-/// so where several raw inputs (or devices) are bound to one cabinet input the
-/// last edge wins. Holding a cabinet input while any of its sources is held
-/// (the OR of the sources) is the caller's job.
+/// The mapper is stateless and stays so: each raw edge becomes a cabinet
+/// event on its own, so where several raw inputs (or devices) are bound to
+/// one cabinet input the last edge wins. Holding a cabinet input while any
+/// of its sources is held (the OR of the sources) is the caller's job: the
+/// platform layer's `HeldInputs` (`pin_app::platform::HeldInputs`, fed by
+/// `pin_app::platform::InputRouter`) tracks which raw input of which device
+/// holds each cabinet input and forwards an edge only on the first press and
+/// the last release, so aliases hold until their last release (issue #9b).
 #[derive(Clone, Debug)]
 pub struct ProfileMapper {
     /// `(scancode, input)`, sorted by scancode, unique.
