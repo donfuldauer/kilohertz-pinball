@@ -435,6 +435,74 @@ impl GpuContext {
         })
     }
 
+    /// A headless context like [`new_headless`](Self::new_headless) whose
+    /// device additionally enables every feature of `wanted` that the
+    /// adapter reports (5.4). Features the adapter lacks are silently left
+    /// out: check [`wgpu::Device::features`] on the result. Experimental
+    /// features (e.g. [`wgpu::Features::EXPERIMENTAL_RAY_QUERY`]) are
+    /// opted into only when requested and supported; with ray queries the
+    /// adapter's acceleration-structure limits are requested as well.
+    pub fn new_headless_with_features(
+        opts: &GpuOptions,
+        wanted: wgpu::Features,
+    ) -> Result<GpuContext, GpuError> {
+        let instance = create_instance(opts.backends);
+        let _g = lifecycle_lock();
+        let adapter =
+            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: opts.force_fallback_adapter,
+                compatible_surface: None,
+                apply_limit_buckets: false,
+            })) {
+                Ok(a) => a,
+                Err(e) => {
+                    drop(instance); // under the lock
+                    return Err(GpuError::NoAdapter(format!(
+                        "{e} (backends {:?}, force_fallback_adapter {})",
+                        opts.backends, opts.force_fallback_adapter
+                    )));
+                }
+            };
+        let features = wanted & adapter.features();
+        let mut limits = wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
+        if features.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY) {
+            limits = limits.using_acceleration_structure_values(adapter.limits());
+        }
+        let experimental = if features.intersects(wgpu::Features::all_experimental_mask()) {
+            // SAFETY: the experimental features are requested explicitly by
+            // the caller (the optional ray-query path of 5.4, which falls
+            // back to probes on any runtime error); see
+            // `wgpu::ExperimentalFeatures::enabled`.
+            unsafe { wgpu::ExperimentalFeatures::enabled() }
+        } else {
+            wgpu::ExperimentalFeatures::disabled()
+        };
+        let (device, queue) =
+            match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("pin_render"),
+                required_features: features,
+                required_limits: limits,
+                experimental_features: experimental,
+                ..Default::default()
+            })) {
+                Ok(dq) => dq,
+                Err(e) => {
+                    drop(adapter); // under the lock
+                    drop(instance);
+                    return Err(GpuError::RequestDevice(e.to_string()));
+                }
+            };
+        Ok(GpuContext {
+            inner: Some(Inner {
+                queue,
+                device,
+                adapter,
+                instance,
+            }),
+        })
+    }
+
     fn inner(&self) -> &Inner {
         self.inner.as_ref().expect("GpuContext used while dropping")
     }
