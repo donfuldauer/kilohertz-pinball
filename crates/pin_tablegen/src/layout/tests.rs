@@ -56,6 +56,7 @@ fn empty() -> LayoutManifest {
             width: 514.0,
             length: 1070.0,
             wall_height: 28.0,
+            glass_height: None,
         },
         walls: vec![],
         posts: vec![],
@@ -92,6 +93,7 @@ fn playfield_ranges() {
             width: w,
             length: l,
             wall_height: h,
+            glass_height: None,
         };
         assert_eq!(err(&lay).element, "playfield");
     }
