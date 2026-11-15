@@ -1,0 +1,8 @@
+schema_version = 1
+
+[translite]
+layers = []
+
+[score_display]
+mode = "dmd"
+dmd = { width = 128, height = 32, color = "orange" }

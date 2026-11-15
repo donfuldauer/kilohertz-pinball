@@ -349,3 +349,25 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | — | D38 | Implementer | Sonnet 5.5 | 1 | done | verifier pass (033ad64): owned paths only, RULES block identical | T1 via work-classifier: process docs and agent config only |
 | — | D38 | Fixer ×8 rounds | Sonnet 5.5 | 1–8 | done | verifier pass on every head; final b884d9e | triage T1: CodeRabbit rounds 1–8 on PR #17 (17 findings: all fixed, 0 not a defect, 0 deferred); one Fixer brief and one verifier run per round |
 | — | **PR #17** | Orchestrator | — | — | **merged** | CI 31/31 green on b884d9e; CodeRabbit: no actionable comments, merge risk minimal | merge commit 851103e; 13 threads + 2 outside-diff items replied and resolved (D37). One lavapipe SIGSEGV on fcc2830 (known driver crash, DECISIONS 1.4/Wave 5) did not recur |
+| 6 | all | Classifier | Sonnet 5.5 | — | routed | — | Wave 6 batch: 6.0 (+ issue #9), 5.4, 5.5, 2.9 all T2 Opus 5.5; Implementer and Independent Tester in parallel per subphase in separate worktrees; FABLE_ALLOWANCE unknown, no Fable (D34) |
+| 6 | 2.9 | Implementer | Opus 5.5 | 1 | done | pin_sim 183 passed | autoplay bot, soak harness, health checks, reports, `pin_sim soak` CLI |
+| 6 | 2.9 | Independent Tester | Opus 5.5 | 1 | done | spec_2_9_* 8 files + fixture tables | 7 spec failures on merge with the implementation |
+| 6 | 2.9 | Investigator | Opus 5.5 | 1 | root-caused | — | 4 causes: bot never served a launch-wait table (impl); fixtures lacked the mode persist key; nudges delay StuckBall; soak-wide `"game": null` |
+| 6 | 2.9 | Fixer | Sonnet 5.5 | 1 | done | verifier pass (6d2a544) | triage T1: investigator fix plan; no assertion weakened |
+| 6 | 2.9 | Fixer | Sonnet 5.5 | CR 1 | done | verifier pass (1975c96) | triage T1: CodeRabbit round 1 on PR #19 (7 findings: all fixed, 0 not a defect, 0 deferred) |
+| 6 | **PR #19 (2.9)** | Orchestrator | — | — | **merged** | CI green on 1975c96 (both runs; one lavapipe `pin_render --lib` SIGSEGV on the first push run, known driver crash, did not recur); CodeRabbit approved | merge commit 9ae5a57; 7 threads replied and resolved (D37). **2.9 complete** |
+| 6 | 5.5 | Implementer | Opus 5.5 | 1 | done | pin_tablegen, pin_physics backbox_*, pin_render backbox lib + GPU green | backbox renderer, ToyRig, layer-4 physics tests, `pin_tablegen::backbox` |
+| 6 | 5.5 | Independent Tester | Opus 5.5 | 1 | done | physics spec 16/16 | tablegen/render spec written against an assumed API |
+| 6 | 5.5 | Fixer (adapter) | Sonnet 5.5 | 1 | done | render spec green; 4 tablegen outline tests fail | triage T1: adapters bound to the real API |
+| 6 | 5.5 | Fixer | Opus 5.5 | 2 | done | verifier pass (b19ed9a): tablegen 224, physics 787, pin_render gpu 542 | T2 via classifier: optional polygon `outline` + `[[walls]]` (Orchestrator ruling, spec-test ruling in DECISIONS); spec_5_5_shot one-sided bound accepted (VC1 carried by the Implementer's two-sided backbox_flipper test) |
+| 6 | 5.5 | Fixer | Sonnet 5.5 | CR 1 (tests) | done | — | triage T1: 4 CodeRabbit test findings on PR #20 (reel distance, unique fixture dirs, explicit bless, byte-exact determinism) |
+| 6 | 5.5 | Investigator | Opus 5.5 | 1 | root-caused | — | lavapipe `pin_render --lib` SIGSEGV (CI only, Mesa 26.0.8): the two lib GPU tests each created/dropped their own device in parallel; pre-existing, not 5.5 |
+| 6 | 5.5 | Fixer | Sonnet 5.5 | CI | done | lavapipe green 4/4 runs after the fix | T1 via classifier: shared never-dropped lib-test GpuContext (DECISIONS "Wave 5 gate fix - round 3") |
+| 6 | 5.5 | Fixer | Opus 5.5 | CR 1 (A+B) | done | verifier pass (4a6f7a5) | T2 via classifier: encoder-ordered uniform uploads in BackboxRenderer |
+| 6 | 5.5 | Fixer | Opus 5.5 | CR 1 (C+D+E) | done | verifier pass (4a6f7a5) | T2 via classifier: dense swept tapered-body flipper check on outlines; staging thresholds per runtime router |
+| 6 | 5.5 | Fixer | Sonnet 5.5 | CR 2 | done | verifier pass (4b3502c, stray seed file removed in f37a7fd) | triage T1: conservative swept-stroke margin after CodeRabbit's counterexample |
+| 6 | **PR #20 (5.5)** | Orchestrator | — | — | **merged** | CI green on f37a7fd (both runs); CodeRabbit approved, no actionable comments | merge commit 1236d3d; 10 threads: 9 fixed, 1 deferred (backbox_colliders.glb load path, HUMAN_QUEUE) (D37). **5.5 complete** |
+| 6 | 6.0 | Implementer | Opus 5.5 | 1 | done | pin_app, pin_render, pin_input green | integration, grey-box table, issue #9 (window guard, held inputs) |
+| 6 | 6.0 | Independent Tester | Opus 5.5 | 1 | done | spec_6_0_* 5 files | |
+| 6 | 6.0 | Fixer (adapter) | Sonnet 5.5 | 1 | done | spec_6_0_* 44/44 | triage T1: adapters bound to the real API, no assertion changed |
+| 6 | 6.0 | Verifier | Sonnet 5.5 | — | pass (e9df0d8) | all suites; issue #9 done-when met | C2 partial (PBR playfield, DisplaySet, 3.3 mixer not wired) accepted as a logged deviation (D28) |
