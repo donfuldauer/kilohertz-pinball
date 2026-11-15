@@ -343,3 +343,9 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 **Process change before Wave 6 (PLAN v5, D34–D36).** From here on the Model column shows the tier the work-classifier picked; Fable 5.2 rows carry their D34 evidence; Reviewer rows are replaced by Verifier rows and one row per merged PR (number, merge commit, CodeRabbit findings fixed / not a defect / deferred).
 
 **Process change (D38).** Fast-path rows start the Notes column with `triage`, followed by the tier and a one-line reason; each review round or push is one batch.
+
+| Wave | Subphase | Role | Model | Attempt | Status | Gate results | Notes |
+|---|---|---|---|---|---|---|---|
+| — | D38 | Implementer | Sonnet 5.5 | 1 | done | verifier pass (033ad64): owned paths only, RULES block identical | T1 via work-classifier: process docs and agent config only |
+| — | D38 | Fixer ×8 rounds | Sonnet 5.5 | 1–8 | done | verifier pass on every head; final b884d9e | triage T1: CodeRabbit rounds 1–8 on PR #17 (17 findings: all fixed, 0 not a defect, 0 deferred); one Fixer brief and one verifier run per round |
+| — | **PR #17** | Orchestrator | — | — | **merged** | CI 31/31 green on b884d9e; CodeRabbit: no actionable comments, merge risk minimal | merge commit 851103e; 13 threads + 2 outside-diff items replied and resolved (D37). One lavapipe SIGSEGV on fcc2830 (known driver crash, DECISIONS 1.4/Wave 5) did not recur |
