@@ -6,9 +6,10 @@ use core::str::FromStr;
 /// Which surfaces get ray-traced reflections (D33: [`Off`](Self::Off) by
 /// default).
 ///
-/// Text form (settings files, command line; [`FromStr`] accepts any ASCII
-/// case and surrounding whitespace, [`Display`](fmt::Display) writes the
-/// canonical lower-case name):
+/// Text form (settings files, command line). [`FromStr`] is exact-match,
+/// like the serde form: no trimming and no case folding, so only the
+/// canonical lower-case names below parse; [`Display`](fmt::Display) writes
+/// them:
 ///
 /// | variant | text |
 /// |---|---|
@@ -86,10 +87,9 @@ impl FromStr for ReflectionQuality {
     type Err = ParseReflectionQualityError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let t = s.trim();
         ReflectionQuality::ALL
             .into_iter()
-            .find(|q| q.as_str().eq_ignore_ascii_case(t))
+            .find(|q| q.as_str() == s)
             .ok_or_else(|| ParseReflectionQualityError(s.to_owned()))
     }
 }

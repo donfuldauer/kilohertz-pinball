@@ -58,8 +58,11 @@
 //!   path.
 //! * **Misses** return the frame's environment (as a probe does), so a map
 //!   never goes black. Hits are shaded with the PBR pass's model (same
-//!   BRDF library, unshadowed point lights) with the environment as their
-//!   mirror term: one bounce.
+//!   BRDF library, unshadowed point lights). A mirror-like hit (roughness,
+//!   or clear-coat roughness with a clear coat, at or below the cutoff)
+//!   takes one further traced ray as its mirror term, whose own hit uses
+//!   the environment: two bounces at most, so chrome balls show each
+//!   other's reflections. Rougher hits use the environment (one bounce).
 //!
 //! # Shader translation (naga 30.0.1)
 //!
