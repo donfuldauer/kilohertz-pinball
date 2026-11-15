@@ -2575,3 +2575,51 @@ Mechanism: the dead flip is the one whose stroke ends in the tick the ball arriv
 **Rationale.** Measured with the new tests (`crates/pin_app/tests/a1_inlane.rs`, `a1_ramp.rs`) and 100-game soaks: cradled left-flipper shots span 1.7..35.4° (speeds 3.6 m/s at 7° down to 2.5 m/s at 35°); only the 25..35° ones can reach the right side, and the old Newton position blocked the 29..35° lines from (220,180). The straight-up injection at x 420 in `greybox_game.rs` (must not be edited) fixes the lane on the right, so the wire stays straight up and the angled shots are turned by one glancing impact on a wood wall (e = 0.25) in a lane wide enough that the rebound does not hit the far side. Every loss on the way up counts, so the narrower gauge (less spin to gain on the rails), the lower deck (10 mm less climb) and an entry right after the impact zone were chosen. The covers stop fast balls (4 m/s) that leave the rails where they level out from flying over the deck rail. Escapes on the approach sweep went from 33 of 75 (unfixed) to 0; soak seed 1: 0 StuckBall / 0 EscapedBall / 0 NonFinite at all three skills, ramp made 12 / 9 / 2 times (novice / standard / expert).
 
 **Alternatives.** (a) Turning the wire's first section towards the left flipper's line: the lane would leave x 420 (breaks the unchanged `greybox_game` ramp injection) and runs into the shooter-lane wall within 100 mm. (b) A 30 mm lane with a slanted funnel or a two-stage right wall: the rebound hit the funnel at 40° and the ball stalled on the wire (v1/v2 in the investigation). (c) Narrowing the lane on layer 2 with guides: the guides are steel (e ≈ 0.8) and threw the ball across the lane. (d) Upper deck at z 40: more ramp makes, but the escape bound (collider bounds + 50 mm, so wire top + 50 mm) dropped to 94 mm and a ball launched by the drop target's reset reached 94 mm. (e) Lane walls up to y 800 to close layer 0 under the whole low wire: balls dropping off the upper deck landed on the roof and bounced into a bumper in the air; the roof now ends at y 660 and layer-0 balls pass under the wire's 0..20 mm section (visual only, layers do not collide). (f) Fixing the generated entry zone in `pin_tablegen`: out of this brief (see the HUMAN_QUEUE follow-up).
+
+## 6.0 fix — grey-box play length (Gate A1 median)
+
+**Decision.** Blocked: no grey-box layout change is applied. Within this brief's constraints (flippers, bumpers, slings, rules, physics, slope and length unchanged; every existing pin_app test passing unmodified), no layout tried puts the standard median ball time at 15 s or more. Measured before any change (`measure` step, 1,000 games, standard, seed 1, a1/fix e950670): median 10,491 ms, p90 30,304 ms, p99 57,584 ms. The soak report has no p10; a 100-game probe gave about 4.0 s. 0 findings. Design runs (standard, seed 1, 200 games unless stated):
+- (1) Orbit lane rerouted to end at (85, 615) above the upper-left flipper, with `orbit_entry` moved to (38, 700). Every plunge rides the orbit backwards, so this feeds the upper flipper instead of the left inlane. With walls 50 mm and a deck-exit guide wall (468,860)–(372,800) onto `bumper_2`: 14,561 ms, 0 findings. Adding a wall (470,395)–(445,430) that closes the alcove right of the ramp lane: 16,333 ms, 1 StuckBall at (323, 14).
+- (2) Centre guard post (255, 200) r 6, rubber, with walls 50 mm, the deck guide and trough radii 36: 26,306 ms (2 EscapedBall). With (1) as well: 31,773 ms (1,000 games: 32,017 ms, 3 EscapedBall, tick p99.9 105.6 µs).
+- Without (1) and (2): walls 50, deck guide and alcove wall give 11,576 ms. Posts at (255, 290) and (255, 320) give 11,321 and 11,114 ms. A post at (255, 165) nearly closes the drain: games ran to max ticks, so the run was stopped.
+- A plunge deflector (276,1046)–(300,1070) at the orbit's top mouth bounced weak plunges back down the shooter lane (17 of 100 games ended at max ticks with no ball drained). It also removed every `orbit_top` hit.
+
+Why each is rejected. (1) fails `greybox_game.rs` `every_mechanism_kind_closes_its_switch`, which injects a ball at (30, 430) moving up at 2.5 m/s and expects `orbit_entry` once (line 224). Any geometry that turns the descending orbit ball towards the field also blocks that ascending ball. (2) fails `a1_bundle_feel.rs` `full_shot_from_a_cradle_exits_in_the_window_on_both_lower_flippers`: the shots from 0.72 of the bat hit the post before the 100 mm measuring point (2.371 and 2.836 m/s, window 3–7). (2) also raises drop-target hits per game from 1.45 to about 4, which exposes the drop-target reset launch. All three escapes traced came 1,000 to 1,018 ms after a `drop_1_sw` hit, which is the rules' `DROP_RESET_DELAY`. A ball kicked by `sling_right` at 2.5–3.6 m/s crosses the rising target and leaves with vz 1.2–2.35 m/s, up to z 130 mm (the ceiling) or over the cabinet wall.
+
+**Rationale.** The window may not be relaxed. Tests may not be edited, and loosening one is not allowed (rule 6). So the outcome is reported, not forced. Most of the drains (45 % at base) are slow balls that come down the right inlane. The bot flips them near the pivot, and they dribble across the centre between the flipper tips. Only geometry near the centre line (the post) or a different plunge route (the orbit) changes that, and each of those breaks a pinned test.
+
+**Alternatives.** (a) Update the `greybox_game` orbit injection to the rerouted lane, and accept design (1) plus another upfield feature. (b) Move the centre guard post's effect out of the feel measurement: needs a ruling on the feel test's 100 mm measuring point or on bat geometry. (c) Fix the drop-target reset launch, in the physics (edge launch off a rising kinematic box) or in rules.lua (reset only when no ball is over the target), before any longer-play design is soaked at 3 × 1,000 games. (d) Pre-existing pocket found by the alcove variant soak: a ball resting in the corner of the right funnel wall and the cabinet bottom sits at (323.3, 13.5), 34.9 mm from `trough_2` at ball height (radius 34). Trough radii 36 close it. This geometry is unchanged from the current table, so it can happen on main too.
+
+## Orchestrator — Gate A1 median: orbit-test injection may follow a rerouted orbit; one more design iteration
+
+**Decision.**
+- The median group may move the orbit-injection start point in `crates/pin_app/tests/greybox_game.rs` (`every_mechanism_kind_closes_its_switch`, the ball fired from (30,430)) to follow a rerouted orbit lane. The test must keep its assertion unchanged: a ball travelling up the orbit lane closes `orbit_entry` exactly once. Only the injection position and heading may change.
+- Trough radii go to 36 mm. This closes the measured corner gap at (323.3, 13.5), which sits 34.9 mm from `trough_2`.
+- The group gets one further iteration: iteration 1, plus the alcove wall, plus r 36 troughs, plus at most one upfield feature.
+- The centre guard post is rejected. It breaks the Appendix C full-shot window measured on the bundle.
+
+**Rationale.**
+- The test checks that the orbit mechanism closes its switch. The injection point is fixture data tied to the layout, so moving it with the geometry keeps what the test proves. Rule 6 forbids weakening the assertion, not repositioning a fixture.
+- The trough gap is a real hazard on the current table.
+- The guard post would trade one Gate A1 criterion (feel window) for another (median).
+
+**Alternatives.**
+- Relax the 15 s window or tune the bot. Rejected by the earlier criterion-3 ruling.
+- Keep the injection fixed and give up the orbit reroute. That leaves about 11 s with no other layout path found in two iterations.
+
+## a1fix bundle — cradle shot procedure
+
+**Decision.** In `crates/pin_app/tests/a1_bundle_feel.rs` the brief's "held-down flipper" is read as the button held, so the bat is up and the cradle is at its low pivot end. "Flipper fired" is the 2.4 rig's release-then-refire full shot, with exit speed taken when the ball centre is 100 mm from the raised tip.
+
+**Rationale.** Matches `flipper_criteria::full_shot_from_a_cradle_exits_in_the_feel_window`. Firing an already-held flipper does nothing, and with the bat at rest the pivot is its high end, so a ball cannot rest there.
+
+**Alternatives.** Firing straight from a bat at rest with the ball near the pivot: rejected, because the ball cannot be at rest in that position.
+
+## a1fix bundle — EOS switch sense
+
+**Decision.** The unloaded stroke ends when the EOS switch changes state. On the grey-box the EOS switches are normally closed and open at end of stroke.
+
+**Rationale.** Same as the pin_physics rig and `FlipperSet::eos_closed`.
+
+**Alternatives.** None.
+
