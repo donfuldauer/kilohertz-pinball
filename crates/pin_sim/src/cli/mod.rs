@@ -23,7 +23,7 @@
 //!
 //! ```text
 //! pin_sim soak <bundle> [--games N] [--seed S] [--skill novice|standard|expert]
-//!                       [--threads T] [--max-ticks N] [--no-tick-budget] --out DIR
+//!                       [--threads T] [--max-ticks N] [--no-tick-budget] [--gate a1] --out DIR
 //! ```
 //!
 //! Plays `N` (default 100) seeded bot games with
@@ -34,6 +34,12 @@
 //! ScriptError or QueueOverflow finding, or incomplete switch / shot / mode
 //! coverage; the summary then goes to stderr) or cannot run, 2 for bad
 //! arguments. A bundle literally named `soak` must be given as `./soak`.
+//!
+//! `--gate a1` also applies [`SoakReport::gate_a1`]: after the soak, stdout
+//! gets one `PASS|FAIL|REPORTED  <name>  <value>` line per Gate A1 soak
+//! check, and the exit code is 1 when the soak did not pass or any check
+//! failed (including a soak run with `--no-tick-budget`, whose tick timing is
+//! then not measured). Without the flag nothing changes.
 
 use core::fmt;
 use pin_core::input::{CabinetAxis, CabinetInput, InputEvent};
@@ -345,7 +351,7 @@ pub fn hash_line(hash: u64) -> String {
 }
 
 /// Usage text of `pin_sim soak`.
-pub const SOAK_USAGE: &str = "usage: pin_sim soak <bundle> [--games N] [--seed S] [--skill novice|standard|expert] [--threads T] [--max-ticks N] [--no-tick-budget] --out DIR";
+pub const SOAK_USAGE: &str = "usage: pin_sim soak <bundle> [--games N] [--seed S] [--skill novice|standard|expert] [--threads T] [--max-ticks N] [--no-tick-budget] [--gate a1] --out DIR";
 
 /// File name of the JSON soak report.
 pub const SOAK_JSON: &str = "soak_report.json";
@@ -362,6 +368,8 @@ pub struct SoakArgs {
     pub out: PathBuf,
     /// Soak settings.
     pub cfg: SoakConfig,
+    /// `--gate a1`: print and enforce the Gate A1 soak verdict.
+    pub gate_a1: bool,
 }
 
 fn soak_usage(m: String) -> CliError {
@@ -377,6 +385,7 @@ pub fn parse_soak_args(args: &[String]) -> Result<SoakArgs, CliError> {
     let mut bundle = None;
     let mut out = None;
     let mut cfg = SoakConfig::default();
+    let mut gate_a1 = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = |flag: &str| {
@@ -416,6 +425,13 @@ pub fn parse_soak_args(args: &[String]) -> Result<SoakArgs, CliError> {
                 cfg.max_game_ticks = n;
             }
             "--no-tick-budget" => cfg.check_tick_budget = false,
+            "--gate" => {
+                let v = value("--gate")?;
+                if !v.eq_ignore_ascii_case("a1") {
+                    return Err(soak_usage(format!("--gate: unknown gate {v:?}")));
+                }
+                gate_a1 = true;
+            }
             "--out" => out = Some(PathBuf::from(value("--out")?)),
             s if s.starts_with("--") => return Err(soak_usage(format!("unknown flag {s}"))),
             s => {
@@ -427,7 +443,12 @@ pub fn parse_soak_args(args: &[String]) -> Result<SoakArgs, CliError> {
     }
     let bundle = bundle.ok_or_else(|| soak_usage("no bundle given".into()))?;
     let out = out.ok_or_else(|| soak_usage("give --out DIR".into()))?;
-    Ok(SoakArgs { bundle, out, cfg })
+    Ok(SoakArgs {
+        bundle,
+        out,
+        cfg,
+        gate_a1,
+    })
 }
 
 /// The summary `pin_sim soak` prints: the verdict, every finding by kind
@@ -504,7 +525,15 @@ pub fn run_soak_command(args: &SoakArgs) -> Result<String, CliError> {
         .map_err(|e| CliError::Failed(format!("cannot create {}: {e}", args.out.display())))?;
     write(SOAK_JSON, report.to_json())?;
     write(SOAK_MARKDOWN, report.to_markdown())?;
-    let summary = soak_summary(&report, &args.out);
+    let mut summary = soak_summary(&report, &args.out);
+    if args.gate_a1 {
+        let verdict = report.gate_a1(report.skill);
+        print!("{}", verdict.lines());
+        if !verdict.passed() {
+            summary.push_str("\ngate a1: FAIL");
+            return Err(CliError::Failed(summary));
+        }
+    }
     if report.passed() {
         Ok(summary)
     } else {
