@@ -24,9 +24,12 @@
 //! | DX12 | none on Linux; WARP on the hosted Windows runner (Q3 spike) | no |
 //! | Metal | none on Linux; the hosted macOS runner (Q3 spike) | no |
 //!
-//! wgpu 30.0.1 documents the feature as Vulkan-only. So lavapipe on Linux
-//! CI validates the ray path, and on Windows / macOS (and GL)
-//! [`select_reflection_source`] always takes the probe path.
+//! Observed: Vulkan (lavapipe) reports the bit; GL does not; the hosted
+//! Windows (DX12/WARP) and macOS (Metal) runners did not in the Q3 spike.
+//! The ray path is taken only when the device reports and enables
+//! `RAY_QUERY_FEATURE` ([`select_reflection_source`] follows the device's
+//! feature bit); DX12 and Metal coverage on real hardware is open (PLAN
+//! risk row 5).
 //!
 //! # How it works
 //!
@@ -74,7 +77,7 @@
 //!
 //! The trace module validates with the ray-query capability (and fails
 //! without it) and translates to SPIR-V with `OpCapability RayQueryKHR`,
-//! the back end wgpu uses for ray queries (the feature is Vulkan-only).
+//! the back end wgpu uses for ray queries (the only back end observed to report the feature; DX12 and Metal on real hardware are open).
 //! Recorded, not asserted (`tests/raytrace_naga.rs`): naga's MSL back end
 //! rejects it at the default language version ("ray tracing is not
 //! supported prior to MSL 2.4") and accepts it at MSL 2.4; the HLSL back
