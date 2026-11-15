@@ -13,7 +13,6 @@
 //!   which fits neither the 32 mm lane `tablegen:lanes[0]` nor the flipper gap.
 //!   `Simulation::load` alone accepts it (it does not check clearance).
 
-#[allow(dead_code, unused_imports)]
 mod support;
 
 #[path = "fixtures/spec_6_0/common.rs"]

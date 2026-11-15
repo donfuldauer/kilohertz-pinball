@@ -2285,3 +2285,13 @@ The "3.5 — DOF bridge public API" line saying Windows `ConnectionReset`/`Messa
 - **Decision.** In the 6.0 grey-box spec tests: an "orbit" is any `[[splines]]`, `[[switches]]`, `[[shots]]` or `[[mechs]]` id containing "orbit" (case-insensitive), plus at least one guide spline; "two lower, one upper" flippers uses `LoadedTable::flipper_stages` (the Wave 2 `FlipperStageHint`); "the game ends after the 3rd ball / 0 balls remaining" is checked as: a ball is served within 10 s simulated after start and after the 1st and 2nd drain, none for 10 s after the 3rd, and `balls_in_play() == 0` with `score(0) > 0`. A drain moves the ball onto the first positioned trough switch (the sim's own drain path); a `[[mechs]]` entry without a switch gets a steel ball spawned onto its position instead of a switch-count assertion. Each bumper and sling switch must raise `score(0)` on its own.
 - **Rationale.** The public sim API has no "balls left" or "game over" query, so game end must be observed through ball serving. Tablegen lane ids are generic (`tablegen:lanes[i]`), so the orbit can only be recognised by a hand-chosen name. Moving the ball onto the trough uses the real drain detection instead of forcing the switch.
 - **Alternatives.** Count trough switch closures only: rejected (does not show the rules decrement balls). Require a named "orbit" spline: rejected (tablegen renames lanes).
+
+## 6.0 — spec adapter bound to the real API
+
+**Decision.** The Implementer's real API stands. The only adapter change needed to compile and run the 6.0 spec tests: `crates/pin_app/tests/spec_6_0_alloc.rs` calls `SimLoop::run_ticks(n: u32)` with `u32::try_from(warm)` instead of passing a `u64` (the real signature takes `u32`). All other assumed calls (`run_headless_with`, `build_greybox_bundle`, `load_validated`, `pin_sim` from pin_app tests, `WindowGuard`/`spawn_guarded` via the approved `pub use` in `pin_render::gpu`, and the `WindowGuard`/`keep_alive`/`HeldInputs` doc greps) already matched the real API. No assertion, threshold or expected value was changed.
+
+**Rationale.** PLAN §2.6 gate 3: the spec adapts to the implemented API when the brief is not contradicted.
+
+**Alternatives.** Changing `run_ticks` to take `u64` (rejected: it would change src outside the Fixer's owned paths).
+
+Addendum (clippy -D warnings): `common.rs` drops the `BundleOut` flexible-return adapter and uses the real `build_greybox_bundle(&Path)` (returns `()`; the bundle is `out_dir`). The now-duplicate `#[allow(dead_code, unused_imports)]` on `mod support;` is removed from the four spec files (`support/mod.rs` already carries `#![allow(dead_code)]`).
