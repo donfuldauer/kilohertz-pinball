@@ -49,6 +49,29 @@
 //! width = 40.0                   # optional, mm (>= 30, default 40)
 //! ```
 //!
+//! ## Optional `outline` and `[[backbox.walls]]`
+//!
+//! ```toml
+//! [backbox]
+//! # ... origin, width, height, depth as above ...
+//! outline = [[-200.0, 0.0], [200.0, 0.0], [200.0, 300.0], [-200.0, 300.0]]
+//!
+//! [[backbox.walls]]              # optional, any number
+//! points = [[-160.0, 40.0], [-160.0, 260.0]]
+//! ```
+//!
+//! Both are in plane coordinates `[u, v]`, mm from `origin` (`u` across =
+//! table `x`, `v` up the backbox), like flipper positions. Without
+//! `outline` the panel is the box `u` in `±width/2`, `v` in `0..height`
+//! (the output is unchanged by this option). With `outline` the panel is
+//! that polygon (3..=1024 points, either winding, non-zero area, not
+//! self-intersecting, bounding box 100..=1000 mm each way); `width` and
+//! `height` stay required and must equal its bounding box within 0.01 mm
+//! (DECISIONS.md "5.5 — backbox outline and walls (spec-test ruling)").
+//! Each wall is a polyline of 2..=1024 points, not all equal. Errors name
+//! `backbox.outline`, `backbox.outline[i]` (a bad point) or
+//! `backbox.walls[i]`.
+//!
 //! # Frames (DECISIONS.md "5.5 — Backbox vertical-plane convention")
 //!
 //! The **backbox frame** (`backbox.glb`, the `[backbox]` camera, metres in
@@ -74,6 +97,20 @@
 //! | `[[backbox.flippers]]` | `backbox.flippers[i]`: the bat at rest (a dynamic mesh) | — (moving body) | `[[flippers]]` `tablegen:backbox.flippers[i]` on the backbox plane |
 //! | `[backbox.entry]` | — | — | `[[mechs]]` `tablegen:backbox.vuk` (kind `vuk`, layer 0, `exit_layer` = the backbox layer, `exit_offset` to the entry hole) and `[[layer_transitions]]` `tablegen:backbox.entry` (0 → layer, under the entry hole) |
 //! | `[backbox.drain]` | — | — | `[[layer_transitions]]` `tablegen:backbox.drain` (layer → 0, under the drain hole) |
+//! | `[[backbox.walls]]` | `backbox.walls[i].segments[j]`, one panel per polyline segment | same (wood) | — |
+//!
+//! With an `outline`, the back panel and the glass cover its bounding box
+//! and the side walls, roof and shelf are replaced by one panel per outline
+//! edge, `backbox.outline[i]` (edge `i` runs from point `i` to point
+//! `i + 1`), standing on the outside of the edge. The entry and drain holes
+//! are vertical slots: every downward-facing outline edge (interior above
+//! it) loses its part over `at ± width/2`; a cut edge's pieces are
+//! `backbox.outline[i].k`. Holes must lie within the outline's `u` range,
+//! flippers' discs inside the polygon, and the VUK exit and transition
+//! zones are placed from the outline's bottom over each hole.
+//! Wall and edge panels are 5 mm thick, span glass to back panel and are
+//! [`StaticShape::Cuboid`]s rotated in the backbox plane; a wall panel is
+//! centred on its segment.
 //!
 //! The flippers' `surface_normal` is the backbox normal towards the glass,
 //! `(0, −cos p, sin p)`; their bat angles use the usual plane axes
@@ -87,8 +124,13 @@
 //! `layout` (whose re-run drops every `tablegen:` transition).
 
 mod glb;
+mod outline;
 #[cfg(test)]
 mod tests;
+
+pub use outline::{
+    MAX_OUTLINE_POINTS, MIN_OUTLINE_AREA_MM2, OUTLINE_FIT_TOLERANCE_MM, ZERO_SIZE_MM,
+};
 
 use crate::layout::{GENERATED_HEADER, GENERATED_PREFIX, GenError, MAX_COORD_MM, MAX_SIZE_MM};
 use glam::{Quat, Vec3};
@@ -177,6 +219,27 @@ pub struct BackboxLayout {
     pub entry: BackboxEntry,
     /// `[backbox.drain]`.
     pub drain: BackboxDrain,
+    /// Optional panel polygon, plane coordinates `[u, v]` in mm from
+    /// `origin`: `u` across (table `x`, the `width` direction), `v` up the
+    /// backbox (the `height` direction). Without it the panel is the box
+    /// `u` in `±width/2`, `v` in `0..height`. With it, `width` and `height`
+    /// must equal its bounding box.
+    #[serde(default)]
+    pub outline: Option<Vec<[f32; 2]>>,
+    /// `[[backbox.walls]]`: optional polylines on the backbox plane, each
+    /// segment a wall panel on the backbox collision layer.
+    #[serde(default)]
+    pub walls: Vec<BackboxWall>,
+}
+
+/// `[[backbox.walls]]`: one polyline wall standing between the glass and
+/// the back panel.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackboxWall {
+    /// The polyline, plane coordinates `[u, v]` in mm from `origin` (the
+    /// axes of [`BackboxLayout::outline`]); 2..=1024 points, not all equal.
+    pub points: Vec<[f32; 2]>,
 }
 
 /// Which way a backbox flipper points.
@@ -385,6 +448,62 @@ fn check_hole(element: &str, at: f32, width: f32, half_w: f32) -> Result<(f32, f
     Ok((a, b))
 }
 
+/// A hole `[at ± width/2]` within the outline's `u` range `lo..=hi`.
+fn check_hole_in(
+    element: &str,
+    at: f32,
+    width: f32,
+    lo: f32,
+    hi: f32,
+) -> Result<(f32, f32), GenError> {
+    check_range(element, "width", width, MIN_HOLE_MM, hi - lo)?;
+    check_range(element, "at", at, lo, hi)?;
+    let (a, b) = (at - 0.5 * width, at + 0.5 * width);
+    if a < lo || b > hi {
+        return Err(gen_err(
+            element,
+            format!("the hole {a}..{b} mm reaches past the outline (u {lo}..{hi} mm)"),
+        ));
+    }
+    Ok((a, b))
+}
+
+/// A panel standing on the in-plane segment `a b` (plane coordinates, mm),
+/// spanning glass to back, across the segment from `band.0` to `band.1` mm
+/// along its left normal.
+struct SegmentPanel {
+    name: String,
+    a: [f32; 2],
+    b: [f32; 2],
+    band: (f32, f32),
+}
+
+impl SegmentPanel {
+    /// Centre (m, backbox frame), half extents (m) and the rotation about
+    /// the backbox `y` axis taking local `x` along the segment and local
+    /// `z` to its left normal; `None` for a zero-length segment.
+    fn placement(&self, depth_mm: f32) -> Option<(Vec3, Vec3, Quat)> {
+        let (du, dv) = (self.b[0] - self.a[0], self.b[1] - self.a[1]);
+        let len = libm::sqrtf(du * du + dv * dv);
+        if len.is_nan() || len <= 1.0e-3 {
+            return None;
+        }
+        // Rotation by −θ about y maps x to (cos θ, 0, sin θ) and z to
+        // (−sin θ, 0, cos θ): along and left of the segment in (u, v) = (x, z).
+        let half_angle = -0.5 * libm::atan2f(dv, du);
+        let rot = Quat::from_xyzw(0.0, libm::sinf(half_angle), 0.0, libm::cosf(half_angle));
+        let across = 0.5 * (self.band.0 + self.band.1);
+        let mid = Vec3::new(
+            0.5 * (self.a[0] + self.b[0]),
+            0.5 * depth_mm,
+            0.5 * (self.a[1] + self.b[1]),
+        );
+        let center = (mid + rot * Vec3::new(0.0, 0.0, across)) * 1.0e-3;
+        let half = Vec3::new(0.5 * len, 0.5 * depth_mm, 0.5 * (self.band.1 - self.band.0)) * 1.0e-3;
+        Some((center, half, rot))
+    }
+}
+
 /// Material indices of the scene.
 const MAT_WOOD: usize = 0;
 const MAT_BAT: usize = 1;
@@ -583,9 +702,18 @@ pub fn generate_backbox(
             MAX_COORD_MM,
         )?;
     }
+    // The outline and walls first: their errors name them, not the box.
+    let outline = match &layout.outline {
+        Some(pts) => Some(outline::check_outline(pts)?),
+        None => None,
+    };
+    outline::check_walls(&layout.walls)?;
     check_range(e, "width", layout.width, MIN_EXTENT_MM, MAX_SIZE_MM)?;
     check_range(e, "height", layout.height, MIN_EXTENT_MM, MAX_SIZE_MM)?;
     check_range(e, "depth", layout.depth, MIN_DEPTH_MM, MAX_DEPTH_MM)?;
+    if let Some(o) = &outline {
+        o.check_fits(layout.width, layout.height)?;
+    }
     let layer = layout.collision_layer;
     if !(1..=7).contains(&layer) {
         return Err(gen_err(
@@ -611,11 +739,15 @@ pub fn generate_backbox(
     for (k, &c) in layout.entry.vuk.iter().enumerate() {
         check_range(ee, &format!("vuk[{k}]"), c, -MAX_COORD_MM, MAX_COORD_MM)?;
     }
-    let entry = check_hole(ee, layout.entry.at, layout.entry.width, half_w)?;
+    let hole = |element: &str, at: f32, width: f32| match &outline {
+        None => check_hole(element, at, width, half_w),
+        Some(o) => check_hole_in(element, at, width, o.lo[0], o.hi[0]),
+    };
+    let entry = hole(ee, layout.entry.at, layout.entry.width)?;
     check_name(ee, "coil", &layout.entry.coil, coils())?;
     check_name(ee, "switch", &layout.entry.switch, switches())?;
     let de = "backbox.drain";
-    let drain = check_hole(de, layout.drain.at, layout.drain.width, half_w)?;
+    let drain = hole(de, layout.drain.at, layout.drain.width)?;
     if entry.0 < drain.1 && drain.0 < entry.1 {
         return Err(gen_err(
             de,
@@ -628,59 +760,113 @@ pub fn generate_backbox(
 
     // Panels: (name, lo, hi, material, drawn), backbox frame, mm.
     let v3 = Vec3::new;
-    let mut panels: Vec<(String, Vec3, Vec3, Material, bool)> = vec![
-        (
-            "backbox.back".into(),
-            v3(-half_w, d, 0.0),
-            v3(half_w, d + t, h),
-            Material::Wood,
-            true,
-        ),
-        (
-            "backbox.glass".into(),
-            v3(-half_w, -t, 0.0),
-            v3(half_w, 0.0, h),
-            Material::Acrylic,
-            false,
-        ),
-        (
-            "backbox.walls[0]".into(),
-            v3(-half_w - t, 0.0, 0.0),
-            v3(-half_w, d, h),
-            Material::Wood,
-            true,
-        ),
-        (
-            "backbox.walls[1]".into(),
-            v3(half_w, 0.0, 0.0),
-            v3(half_w + t, d, h),
-            Material::Wood,
-            true,
-        ),
-        (
-            "backbox.roof".into(),
-            v3(-half_w - t, 0.0, h),
-            v3(half_w + t, d, h + t),
-            Material::Wood,
-            true,
-        ),
-    ];
     let (first, second) = if entry.0 < drain.0 {
         (entry, drain)
     } else {
         (drain, entry)
     };
-    let mut shelf = 0;
-    for (a, b) in [(-half_w, first.0), (first.1, second.0), (second.1, half_w)] {
-        if b - a > 1.0e-3 {
-            panels.push((
-                format!("backbox.shelf[{shelf}]"),
-                v3(a, 0.0, -t),
-                v3(b, d, 0.0),
-                Material::Wood,
-                true,
-            ));
-            shelf += 1;
+    let mut panels: Vec<(String, Vec3, Vec3, Material, bool)>;
+    // Rotated in-plane panels (outline edges, walls).
+    let mut segments: Vec<SegmentPanel> = Vec::new();
+    match &outline {
+        None => {
+            panels = vec![
+                (
+                    "backbox.back".into(),
+                    v3(-half_w, d, 0.0),
+                    v3(half_w, d + t, h),
+                    Material::Wood,
+                    true,
+                ),
+                (
+                    "backbox.glass".into(),
+                    v3(-half_w, -t, 0.0),
+                    v3(half_w, 0.0, h),
+                    Material::Acrylic,
+                    false,
+                ),
+                (
+                    "backbox.walls[0]".into(),
+                    v3(-half_w - t, 0.0, 0.0),
+                    v3(-half_w, d, h),
+                    Material::Wood,
+                    true,
+                ),
+                (
+                    "backbox.walls[1]".into(),
+                    v3(half_w, 0.0, 0.0),
+                    v3(half_w + t, d, h),
+                    Material::Wood,
+                    true,
+                ),
+                (
+                    "backbox.roof".into(),
+                    v3(-half_w - t, 0.0, h),
+                    v3(half_w + t, d, h + t),
+                    Material::Wood,
+                    true,
+                ),
+            ];
+            let mut shelf = 0;
+            for (a, b) in [(-half_w, first.0), (first.1, second.0), (second.1, half_w)] {
+                if b - a > 1.0e-3 {
+                    panels.push((
+                        format!("backbox.shelf[{shelf}]"),
+                        v3(a, 0.0, -t),
+                        v3(b, d, 0.0),
+                        Material::Wood,
+                        true,
+                    ));
+                    shelf += 1;
+                }
+            }
+        }
+        Some(o) => {
+            panels = vec![
+                (
+                    "backbox.back".into(),
+                    v3(o.lo[0], d, o.lo[1]),
+                    v3(o.hi[0], d + t, o.hi[1]),
+                    Material::Wood,
+                    true,
+                ),
+                (
+                    "backbox.glass".into(),
+                    v3(o.lo[0], -t, o.lo[1]),
+                    v3(o.hi[0], 0.0, o.hi[1]),
+                    Material::Acrylic,
+                    false,
+                ),
+            ];
+            // Outside of each edge: the interior is on the left of a
+            // counter-clockwise edge (local +z of its panel).
+            let band = if o.ccw { (-t, 0.0) } else { (0.0, t) };
+            for i in 0..o.len() {
+                let pieces = o.edge_pieces(i, &[first, second]);
+                let split = pieces.len() > 1;
+                for (k, (a, b)) in pieces.into_iter().enumerate() {
+                    segments.push(SegmentPanel {
+                        name: if split {
+                            format!("backbox.outline[{i}].{k}")
+                        } else {
+                            format!("backbox.outline[{i}]")
+                        },
+                        a,
+                        b,
+                        band,
+                    });
+                }
+            }
+        }
+    }
+    for (i, w) in layout.walls.iter().enumerate() {
+        for (j, pair) in w.points.windows(2).enumerate() {
+            segments.push(SegmentPanel {
+                name: format!("backbox.walls[{i}].segments[{j}]"),
+                a: pair[0],
+                b: pair[1],
+                band: (-0.5 * t, 0.5 * t),
+            });
         }
     }
 
@@ -725,6 +911,51 @@ pub fn generate_backbox(
             material: *material,
         });
     }
+    for seg in &segments {
+        let Some((center, half, rot)) = seg.placement(d) else {
+            continue; // a zero-length wall segment (repeated point)
+        };
+        let local = box_mesh(-half, half);
+        let placed = Mesh {
+            positions: local
+                .positions
+                .iter()
+                .map(|&p| (center + rot * Vec3::from(p)).to_array())
+                .collect(),
+            normals: local
+                .normals
+                .iter()
+                .map(|&n| (rot * Vec3::from(n)).to_array())
+                .collect(),
+            indices: local.indices,
+        };
+        scene_nodes.push(Node {
+            name: seg.name.clone(),
+            mesh: placed.clone(),
+            material: MAT_WOOD,
+            collider: false,
+            collision_layer: layer,
+            strings: Vec::new(),
+        });
+        collider_nodes.push(Node {
+            name: format!("{GENERATED_PREFIX}{}", seg.name),
+            mesh: to_table(&frame, &placed),
+            material: MAT_WOOD,
+            collider: true,
+            collision_layer: layer,
+            strings: Vec::new(),
+        });
+        colliders.push(BackboxCollider {
+            name: seg.name.clone(),
+            shape: StaticShape::Cuboid {
+                center: frame.to_table(center),
+                half_extents: half,
+                rotation: frame.rotation * rot,
+            },
+            layer_mask: mask,
+            material: Material::Wood,
+        });
+    }
 
     // Flippers.
     if layout.flippers.len() > MAX_BACKBOX_FLIPPERS {
@@ -747,8 +978,12 @@ pub fn generate_backbox(
             FLIPPER_LENGTH_MM.0,
             FLIPPER_LENGTH_MM.1,
         )?;
-        check_range(&fe, "position[0]", f.position[0], -half_w, half_w)?;
-        check_range(&fe, "position[1]", f.position[1], 0.0, h)?;
+        let (u_range, v_range) = match &outline {
+            None => ((-half_w, half_w), (0.0, h)),
+            Some(o) => ((o.lo[0], o.hi[0]), (o.lo[1], o.hi[1])),
+        };
+        check_range(&fe, "position[0]", f.position[0], u_range.0, u_range.1)?;
+        check_range(&fe, "position[1]", f.position[1], v_range.0, v_range.1)?;
         let (rest, sweep) = match f.side {
             FlipperSide::Left => (-30.0f32, 50.0f32),
             FlipperSide::Right => (210.0, -50.0),
@@ -762,7 +997,13 @@ pub fn generate_backbox(
                 f.position[1] + f.length * libm::sinf(a),
             ];
             for (q, r) in [(f.position, rb), (tip, rt)] {
-                if q[0] - r < -half_w || q[0] + r > half_w || q[1] - r < 0.0 || q[1] + r > h {
+                let outside = match &outline {
+                    None => {
+                        q[0] - r < -half_w || q[0] + r > half_w || q[1] - r < 0.0 || q[1] + r > h
+                    }
+                    Some(o) => !o.contains_disc(q, r),
+                };
+                if outside {
                     return Err(gen_err(
                         &fe,
                         format!(
@@ -825,8 +1066,21 @@ pub fn generate_backbox(
 
     // VUK feed and transitions.
     let slot = mm(d - BALL_R_MM);
+    // Heights of the bottom (mm): 0 for the box shelf.
+    let (entry_floor, entry_low, drain_low) = match &outline {
+        None => (0.0, 0.0, 0.0),
+        Some(o) => (
+            o.floor_at(0.5 * (entry.0 + entry.1)),
+            o.lowest_floor(entry),
+            o.lowest_floor(drain),
+        ),
+    };
     let entry_mid = mm(0.5 * (entry.0 + entry.1));
-    let exit = frame.to_table(Vec3::new(entry_mid, slot, mm(BALL_R_MM + 2.0))) * 1.0e3;
+    let exit = frame.to_table(Vec3::new(
+        entry_mid,
+        slot,
+        mm(BALL_R_MM + 2.0 + entry_floor),
+    )) * 1.0e3;
     let vuk = Vec3::new(layout.entry.vuk[0], layout.entry.vuk[1], 0.0);
     let mechs = vec![MechDef {
         id: format!("{BACKBOX_PREFIX}vuk"),
@@ -861,8 +1115,8 @@ pub fn generate_backbox(
             to_layer: layer,
             zone: aabb_mm(
                 &frame,
-                Vec3::new(mm(entry.0), 0.0, mm(-60.0)),
-                Vec3::new(mm(entry.1), mm(d), mm(-20.0)),
+                Vec3::new(mm(entry.0), 0.0, mm(-60.0 + entry_low)),
+                Vec3::new(mm(entry.1), mm(d), mm(-20.0 + entry_low)),
             ),
         },
         LayerTransitionDef {
@@ -871,8 +1125,8 @@ pub fn generate_backbox(
             to_layer: 0,
             zone: aabb_mm(
                 &frame,
-                Vec3::new(mm(drain.0), 0.0, mm(-80.0)),
-                Vec3::new(mm(drain.1), mm(d), mm(-30.0)),
+                Vec3::new(mm(drain.0), 0.0, mm(-80.0 + drain_low)),
+                Vec3::new(mm(drain.1), mm(d), mm(-30.0 + drain_low)),
             ),
         },
     ];

@@ -3,12 +3,20 @@
 //! `#[path]` (an empty test crate on its own).
 //!
 //! BOUND TO THE REAL API (5.5-FIX1, DECISIONS "5.5 — spec adapter bound to
-//! the real API"): the real input is `backbox_layout.toml`
-//! (`pin_tablegen::backbox` rustdoc), a box with entry and drain holes, not
-//! an outline. Each call below translates the assumed block (text and
-//! values) onto the real one and calls the real functions; assumed concepts
-//! with no real equivalent (polygon outlines, walls, the 1024-point limit,
-//! self-intersection) are NOT emulated here. The original header follows.
+//! the real API"; 5.5-FIX1b, DECISIONS "5.5 — backbox outline and walls
+//! (spec-test ruling)"): the real input is `backbox_layout.toml`
+//! (`pin_tablegen::backbox` rustdoc), whose `[backbox]` now has a real
+//! optional polygon `outline` and real `[[backbox.walls]]` polylines with
+//! the same TOML shape as the assumed block. The adapter passes the assumed
+//! block's `[backbox]` table through unchanged (outline and walls values
+//! 1:1, no bounding-box translation, walls forwarded) and only fills the
+//! fields the real file requires that the assumed block lacks:
+//! `schema_version = 1`, `origin = [0, 1150, 250]`, `depth = 35`, `width`
+//! and `height` = the outline's bounding box (the real rule: they must equal
+//! it), and one entry and one drain hole at the quarter points of that box.
+//! Outline validation (NaN/inf, 3..=1024 points, zero size,
+//! self-intersection) and wall validation are the real generator's. The
+//! original header follows.
 //!
 //! The 5.5 brief fixes only the module (`pin_tablegen::backbox`) and the
 //! behaviour ("generates deterministic backbox geometry from an optional
@@ -44,17 +52,6 @@ fn err(element: &str, message: impl Into<String>) -> GenError {
     }
 }
 
-/// A TOML float literal for `v` (including `nan` and `inf`).
-fn num(v: f32) -> String {
-    if v.is_nan() {
-        "nan".into()
-    } else if v.is_infinite() {
-        if v > 0.0 { "inf".into() } else { "-inf".into() }
-    } else {
-        format!("{v:?}")
-    }
-}
-
 fn as_f32(v: &toml::Value) -> Option<f32> {
     match v {
         toml::Value::Float(f) => Some(*f as f32),
@@ -74,46 +71,68 @@ fn extent(vals: impl Iterator<Item = f32>) -> (f32, f32) {
     })
 }
 
-/// Translates the assumed block (`[backbox] outline = [[x, y], ...]`, mm)
-/// into the real `backbox_layout.toml` text: the outline's bounding box
-/// becomes `width` and `height` (centred on `origin`), with a fixed
-/// `depth` and one entry and one drain hole at the quarter points. The
-/// `[[backbox.walls]]` have no real equivalent and are not translated.
-fn translate(text: &str) -> Result<String, GenError> {
-    let table: toml::Table =
-        toml::from_str(text).map_err(|e| err("backbox", e.to_string().trim_end().to_owned()))?;
-    let bb = table
-        .get("backbox")
-        .and_then(toml::Value::as_table)
-        .ok_or_else(|| err("backbox", "missing [backbox] table"))?;
-    let outline = bb
-        .get("outline")
-        .and_then(toml::Value::as_array)
-        .ok_or_else(|| err("backbox.outline", "missing outline array"))?;
+/// The outline's points as `f32` pairs, when it is a non-empty array of
+/// `[x, y]` numbers.
+fn outline_points(bb: &toml::Table) -> Option<Vec<(f32, f32)>> {
+    let outline = bb.get("outline")?.as_array()?;
     let mut pts = Vec::with_capacity(outline.len());
     for p in outline {
-        let xy = p.as_array().filter(|a| a.len() == 2);
-        let (x, y) = xy
-            .and_then(|a| Some((as_f32(&a[0])?, as_f32(&a[1])?)))
-            .ok_or_else(|| err("backbox.outline", "points must be [x, y] numbers"))?;
-        pts.push((x, y));
+        let a = p.as_array().filter(|a| a.len() == 2)?;
+        pts.push((as_f32(&a[0])?, as_f32(&a[1])?));
     }
-    if pts.is_empty() {
-        return Err(err("backbox.outline", "empty outline"));
+    (!pts.is_empty()).then_some(pts)
+}
+
+/// Translates the assumed block (`[backbox] outline = [[x, y], ...]` and
+/// `[[backbox.walls]] points = [[x, y], ...]`, mm) into the real
+/// `backbox_layout.toml` text: the `[backbox]` table is kept as written
+/// (outline and walls passed through 1:1) and the fields the real file
+/// requires but the assumed block has no notion of are filled in when
+/// absent: `schema_version`, `origin`, `depth`, `width` / `height` (the
+/// outline's bounding box, which the real file requires them to equal) and
+/// the entry and drain holes at the quarter points of that box. When the
+/// outline is not an array of number pairs the size-derived fields are left
+/// out and the real parser reports what is missing.
+fn translate(text: &str) -> Result<String, GenError> {
+    let mut table: toml::Table =
+        toml::from_str(text).map_err(|e| err("backbox", e.to_string().trim_end().to_owned()))?;
+    let bb = table
+        .get_mut("backbox")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| err("backbox", "missing [backbox] table"))?;
+    let float = |v: f32| toml::Value::Float(f64::from(v));
+    let fill = |bb: &mut toml::Table, key: &str, v: toml::Value| {
+        bb.entry(key.to_owned()).or_insert(v);
+    };
+    fill(
+        bb,
+        "origin",
+        toml::Value::Array(vec![float(0.0), float(1150.0), float(250.0)]),
+    );
+    fill(bb, "depth", float(35.0));
+    if let Some(pts) = outline_points(bb) {
+        let (x0, x1) = extent(pts.iter().map(|p| p.0));
+        let (y0, y1) = extent(pts.iter().map(|p| p.1));
+        let w = x1 - x0;
+        fill(bb, "width", float(w));
+        fill(bb, "height", float(y1 - y0));
+        let mut entry = toml::Table::new();
+        entry.insert(
+            "vuk".into(),
+            toml::Value::Array(vec![float(120.0), float(1000.0)]),
+        );
+        entry.insert("at".into(), float(x0 + 0.25 * w));
+        entry.insert("coil".into(), toml::Value::String("bb_vuk_coil".into()));
+        entry.insert("switch".into(), toml::Value::String("bb_vuk_switch".into()));
+        fill(bb, "entry", toml::Value::Table(entry));
+        let mut drain = toml::Table::new();
+        drain.insert("at".into(), float(x0 + 0.75 * w));
+        fill(bb, "drain", toml::Value::Table(drain));
     }
-    let (x0, x1) = extent(pts.iter().map(|p| p.0));
-    let (y0, y1) = extent(pts.iter().map(|p| p.1));
-    let (w, h) = (x1 - x0, y1 - y0);
-    Ok(format!(
-        "schema_version = 1\n\n[backbox]\norigin = [{}, 1150.0, 250.0]\nwidth = {}\nheight = {}\n\
-         depth = 35.0\n\n[backbox.entry]\nvuk = [120.0, 1000.0]\nat = {}\n\
-         coil = \"bb_vuk_coil\"\nswitch = \"bb_vuk_switch\"\n\n[backbox.drain]\nat = {}\n",
-        num(0.5 * (x0 + x1)),
-        num(w),
-        num(h),
-        num(-0.25 * w),
-        num(0.25 * w),
-    ))
+    table
+        .entry("schema_version".to_owned())
+        .or_insert(toml::Value::Integer(1));
+    toml::to_string(&table).map_err(|e| err("backbox", e.to_string()))
 }
 
 /// Parses the text of the assumed backbox layout block (through the real
