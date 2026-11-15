@@ -34,7 +34,8 @@ pub use audio::{
     NullSink, OfflineRecording, OfflineSink, RegisteredSound, ssf_playfield_mm, table_samples,
 };
 pub use present::{
-    AppSurfaces, SECONDARY_FRAME_INTERVAL, SurfacePlan, plan_surface, table_set_accepted,
+    AppSurfaces, SlotDecision, SurfacePlan, is_blocking_mode, plan_surface, slot_decision,
+    table_set_accepted,
 };
 pub use table::{
     DISPLAY_RING_CAPACITY, DisplayCommand, FlipperOutline, SIM_STACK_BYTES, SOUND_RING_CAPACITY,

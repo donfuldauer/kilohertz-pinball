@@ -58,3 +58,9 @@ harness = false
 [[test]]
 name = "integration_window_gpu"
 required-features = ["gpu-tests"]
+
+# The offscreen table render checks (PR #21): GPU job only, where a missing
+# adapter is a failure (the GPU-free LCD checks are wiring_scene_images).
+[[test]]
+name = "wiring_render"
+required-features = ["gpu-tests"]

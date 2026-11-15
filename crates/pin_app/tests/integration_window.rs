@@ -5,8 +5,10 @@
 //! `--headless-ticks N --table` (simulated time). The windowed run is in
 //! `integration_window_gpu.rs` (feature `gpu-tests`).
 //!
-//! Exit conditions are progress counters, never wall time (D8): `--run-ms`
-//! is only a safety cap, and reaching it fails the run.
+//! Exit conditions are progress counters, never wall time (D8): no test here
+//! passes `--run-ms` or asserts on elapsed time; a hung run is bounded by the
+//! CI job timeout (ci.yml `timeout-minutes: 45`). The cap logic is covered
+//! on supplied durations by `RunLimits::check` (`run_limits_cap.rs`).
 
 mod support;
 
@@ -58,19 +60,7 @@ fn headless_ticks_with_table_runs_the_real_sim() {
 #[test]
 fn headless_app_runs_the_table_until_the_tick_condition() {
     let bundle = greybox_bundle().to_str().unwrap().to_owned();
-    let (ok, out, err) = run(&[
-        "--headless",
-        "--table",
-        &bundle,
-        "--run-ticks",
-        "600",
-        "--run-ms",
-        "60000",
-    ]);
-    assert!(
-        !err.contains("run cap reached"),
-        "the safety cap ended the run before 600 ticks\nstdout {out}\nstderr {err}"
-    );
+    let (ok, out, err) = run(&["--headless", "--table", &bundle, "--run-ticks", "600"]);
     assert!(ok, "stdout {out}\nstderr {err}");
     assert!(err.contains("table \"Grey Box\" loaded"), "{err}");
     assert!(err.contains("pin_app: run condition met"), "{err}");
@@ -80,26 +70,11 @@ fn headless_app_runs_the_table_until_the_tick_condition() {
 }
 
 /// `--run-frames` without rendering (dummy drivers) can never hold: the
-/// app says so and fails at once instead of waiting for the cap.
+/// app says so and fails at once.
 #[test]
 fn frames_condition_without_rendering_fails() {
-    let (ok, _, err) = run(&["--headless", "--run-frames", "1", "--run-ms", "60000"]);
+    let (ok, _, err) = run(&["--headless", "--run-frames", "1"]);
     assert!(!ok, "{err}");
     assert!(err.contains("run condition unreachable"), "{err}");
     assert!(!err.contains("run condition met"), "{err}");
-}
-
-/// The cap ends a run whose conditions never hold, as a failure.
-#[test]
-fn reaching_the_cap_before_the_conditions_fails() {
-    let (ok, _, err) = run(&[
-        "--headless",
-        "--run-ticks",
-        &u64::MAX.to_string(),
-        "--run-ms",
-        "50",
-    ]);
-    assert!(!ok, "{err}");
-    assert!(err.contains("pin_app: run cap reached"), "{err}");
-    assert!(err.contains("sim ticks"), "{err}");
 }

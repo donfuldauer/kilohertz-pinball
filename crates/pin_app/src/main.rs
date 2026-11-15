@@ -20,15 +20,17 @@
 //!   lines over the PBR table.
 //! * Run conditions (`orchestrator::RunLimits`): `--run-frames N` quits
 //!   once N frames were presented, `--run-ticks M` once the sim computed M
-//!   ticks; with both, once both hold. The main thread evaluates them from
-//!   the threads' atomic counters each pump. `--run-ms T` is then only a
-//!   wall-clock safety cap: reaching it before the conditions hold prints
-//!   `pin_app: run cap reached` and exits non-zero (as does asking for
-//!   frames when nothing renders); meeting them prints `pin_app: run
-//!   condition met`. `--run-ms T` alone quits silently after T ms, as
-//!   before. After the shutdown line (`pin_app: N sim ticks (D dropped), F
-//!   frames, ...`) a render diagnostics line follows (`pin_app: render: gpu
-//!   ready after X ms, first frame after Y ms, ...`).
+//!   ticks; with both, once both hold. They work without `--run-ms` (a hung
+//!   run is then bounded by whoever supervises it, e.g. a CI job timeout).
+//!   The main thread evaluates them from the threads' atomic counters each
+//!   pump; meeting them prints `pin_app: run condition met`. `--run-ms T`
+//!   is an optional wall-clock safety cap meant for manual use, not for
+//!   tests: reaching it before the conditions hold prints `pin_app: run cap
+//!   reached` and exits non-zero (as does asking for frames when nothing
+//!   renders). `--run-ms T` alone quits silently after T ms, as before.
+//!   After the shutdown line (`pin_app: N sim ticks (D dropped), F frames,
+//!   ...`) a render diagnostics line follows (`pin_app: render: gpu ready
+//!   after X ms, first frame after Y ms, ...`).
 //!
 //! The table is loaded (validated and simulated from one in-memory bundle
 //! snapshot) and the headless table run happens on a thread with a
@@ -244,6 +246,12 @@ fn list_displays(headless: bool) -> ExitCode {
     }
 }
 
+/// Exit code of the teardown that skips SDL's destruction because a
+/// presenter still holds a window: 1 when the run recorded a failure, else 0.
+fn teardown_exit_code(failure: Option<&str>) -> i32 {
+    i32::from(failure.is_some())
+}
+
 fn run_app(args: &[String]) -> Result<(), String> {
     let headless = args.iter().any(|a| a == "--headless");
     let limits = RunLimits::from_args(args)?;
@@ -438,8 +446,22 @@ fn run_app(args: &[String]) -> Result<(), String> {
              ({PRESENTER_JOIN_TIMEOUT:?} join timeout); exiting without destroying it",
             WINDOW_RELEASE_TIMEOUT
         );
-        std::process::exit(0);
+        if let Some(f) = &failure {
+            eprintln!("pin_app: {f}");
+        }
+        std::process::exit(teardown_exit_code(failure.as_deref()));
     }
     drop(platform);
     failure.map_or(Ok(()), Err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::teardown_exit_code;
+
+    #[test]
+    fn stuck_presenter_teardown_keeps_the_failure_exit_code() {
+        assert_eq!(teardown_exit_code(Some("run cap reached")), 1);
+        assert_eq!(teardown_exit_code(None), 0);
+    }
 }
