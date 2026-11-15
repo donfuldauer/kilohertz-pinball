@@ -135,3 +135,13 @@ unchanged):
 - **Why:** PLAN 2.8 verification 2 accepts the XL ball once "restricted to the main deck's open area". The main deck is one collision layer (layer 0) that also runs under the upper deck, so a layer list alone cannot keep the XL ball out from under a 65 mm deck; the clearance validator (`pin_tablegen::clearance`) needs the area to know where the ball may be.
 - **Affected crates:** none (no `BallRestriction` struct literal exists outside `pin_core`; the key is optional).
 - **Workaround meanwhile:** none needed; the additive change is made in the working tree.
+
+### CR-006: steel–acrylic material pair (playfield glass)
+- **Requested by:** Wave 6 work item a1-glass (task executor)
+- **Status:** open (PR-A of a1-glass; additive)
+- **Kind:** additive
+- **Items:** `physics_defaults.toml` (one new `[[material_pairs]]` row); tests in `crates/pin_core/src/schema/physics.rs` (pair count 9 → 10, new `steel_acrylic_pair_is_symmetric`).
+- **Change:** new row `materials = ["steel", "acrylic"]`, `restitution = 0.45`, `friction = 0.15` (provisional glass/acrylic values, engineering starting points). No Rust type, field or key changes; the file still parses with `deny_unknown_fields` and passes duplicate-pair detection.
+- **Why:** a1-glass adds a static playfield glass (`Material::Acrylic`) over the table in `pin_sim`, so balls launched upward (the drop-target reset launch, Gate A1 EscapedBall) bounce back instead of leaving the escape box. Without a pair the contact would use the ball profile's fallback restitution (0.65 for steel) and friction 0.2.
+- **Affected crates:** none (data only). Behaviour note: acrylic table colliders (e.g. the grey-box upper deck) now also use this pair for steel balls instead of the fallback; no committed replay or autoplay fixture uses acrylic.
+- **Workaround meanwhile:** none.
