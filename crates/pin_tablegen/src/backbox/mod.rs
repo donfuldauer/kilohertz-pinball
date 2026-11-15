@@ -173,6 +173,28 @@ pub const MAX_BACKBOX_FLIPPERS: usize = 8;
 /// Largest angle step at which a backbox flipper's stroke is checked
 /// against a polygon `outline`, degrees.
 pub const STROKE_STEP_DEG: f32 = 0.5;
+
+/// Radius inflation (mm) that makes sampling the stroke at angles `step_deg`
+/// apart a proof of continuous containment.
+///
+/// Proof: every point of the bat (a tapered capsule about the pivot) lies at
+/// distance at most `R = max(length + rt, rb)` from the pivot. Any angle
+/// `theta` in the stroke is within `step/2` of a sampled angle, and rotating
+/// a point at radius `<= R` about the pivot by `phi` moves it by the chord
+/// `2 R sin(phi/2)`. With `phi = step/2` the moved point is within
+/// `d = 2 R sin(step/4)` of the same body point at the sample, so the bat at
+/// `theta` is inside the sampled bat grown by `d` (Minkowski sum with a disc
+/// of radius `d`). Growing a tapered capsule by `d` is the same capsule with
+/// both radii `+ d`. If every grown sampled bat is inside the outline, so is
+/// every in-between bat. About 0.48 mm at length 100 mm and 0.5 degrees.
+fn stroke_margin_mm(length: f32, rb: f32, rt: f32, step_deg: f32) -> f32 {
+    let r = f64::from(length + rt).max(f64::from(rb));
+    let step = f64::from(step_deg).abs().to_radians();
+    // Rounded up to f32 and padded for the f32 geometry that follows.
+    let d = 2.0 * r * libm::sin(0.25 * step);
+    (d * (1.0 + 1.0e-6)) as f32 + f32::EPSILON * 64.0
+}
+
 /// Panel thickness behind every collider face, mm.
 pub const PANEL_MM: f32 = 5.0;
 /// Largest `backbox_layout.toml` accepted, bytes.
@@ -1025,16 +1047,14 @@ pub fn generate_backbox(
             }
             Some(o) => {
                 // A polygon may be concave: the whole tapered body (hull of
-                // the pivot and tip discs) is checked at every
-                // STROKE_STEP_DEG (0.5 degrees for the 50-degree stroke, both
-                // ends exact). Between two samples a bat point moves at most
-                // (length + rt) * sin(0.25°) ≈ 0.47 mm (length 100 mm), and
-                // the in-between bat reaches past the union of the two
-                // sampled bats by at most rt - sqrt(rt² - (length *
-                // sin 0.25°)²) ≈ 0.012 mm at the tip (rt = 8.5 mm): far
-                // below the bat radii.
+                // the pivot and tip discs) is checked at every sampled
+                // angle (at most STROKE_STEP_DEG apart, both ends exact),
+                // with every radius inflated by `stroke_margin_mm`, so that
+                // passing the samples proves the continuous sweep inside.
                 let steps = libm::ceilf(sweep.abs() / STROKE_STEP_DEG).max(1.0) as u32;
                 let step = sweep / steps as f32;
+                let margin = stroke_margin_mm(f.length, rb, rt, step);
+                let (rb_m, rt_m) = (rb + margin, rt + margin);
                 for k in 0..=steps {
                     let deg = if k == steps {
                         rest + sweep
@@ -1042,14 +1062,14 @@ pub fn generate_backbox(
                         rest + step * k as f32
                     };
                     let tip = tip_at(deg);
-                    for (q, r) in [(f.position, rb), (tip, rt)] {
+                    for (q, r) in [(f.position, rb_m), (tip, rt_m)] {
                         if !o.contains_disc(q, r) {
                             return Err(outside_at(deg, q));
                         }
                     }
-                    if !o.contains_tapered_capsule(f.position, rb, tip, rt) {
+                    if !o.contains_tapered_capsule(f.position, rb_m, tip, rt_m) {
                         let q = o
-                            .tapered_capsule_breach(f.position, rb, tip, rt)
+                            .tapered_capsule_breach(f.position, rb_m, tip, rt_m)
                             .unwrap_or(tip);
                         return Err(outside_at(deg, q));
                     }

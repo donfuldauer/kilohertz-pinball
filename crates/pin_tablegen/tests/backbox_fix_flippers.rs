@@ -158,11 +158,10 @@ fn assert_outside(r: Result<GeneratedBackbox, GenError>) -> (f32, [f32; 2]) {
 #[test]
 fn finding_c_notch_between_the_old_samples_is_rejected() {
     let (deg, p) = assert_outside(flipper(Some(NOTCH_C), "left", [0.0, 100.0], 100.0));
-    // Inside the stroke, not one of the three angles checked before.
-    assert!(
-        (-30.0..=20.0).contains(&deg) && ![-30.0, -5.0, 20.0].contains(&deg),
-        "{deg}"
-    );
+    // Inside the stroke. The swept-stroke margin (about 0.5 mm) makes the
+    // notch breach already at the rest angle, so the first rejected sample
+    // may be one of the three angles the old check used.
+    assert!((-30.0..=20.0).contains(&deg), "{deg}");
     // A multiple of the step from rest.
     assert_eq!(((deg + 30.0) / STROKE_STEP_DEG).fract(), 0.0, "{deg}");
     // The offending point is at the notch (u 80..200, v 65..75), within a
@@ -176,11 +175,43 @@ fn finding_c_notch_between_the_old_samples_is_rejected() {
     // Right-flipper mirror.
     let m = mirror(NOTCH_C);
     let (deg, p) = assert_outside(flipper(Some(&m), "right", [0.0, 100.0], 100.0));
-    assert!(
-        (160.0..=210.0).contains(&deg) && ![210.0, 185.0, 160.0].contains(&deg),
-        "{deg}"
-    );
+    assert!((160.0..=210.0).contains(&deg), "{deg}");
     assert!(p[0] < -80.0 + 9.0, "{p:?}");
+    flipper(Some(&mirror(RECT)), "right", [0.0, 100.0], 100.0).unwrap();
+}
+
+/// CodeRabbit's counterexample: a sharp notch whose apex lies between two
+/// sampled angles; the tip penetrates it by about 0.0005 mm at -17.25 degrees
+/// while every sampled bat clears it.
+const NOTCH_APEX: &[[f32; 2]] = &[
+    [-200.0, 0.0],
+    [200.0, 0.0],
+    [200.0, 50.0],
+    [103.619_19, 67.825_39],
+    [200.0, 150.0],
+    [200.0, 300.0],
+    [-200.0, 300.0],
+];
+
+#[test]
+fn sharp_notch_between_samples_is_rejected_by_the_swept_margin() {
+    let e = gen_text(&layout(
+        Some(NOTCH_APEX),
+        "left",
+        [0.0, 100.0],
+        100.0,
+        PARALLEL,
+    ))
+    .expect_err("accepted");
+    assert_eq!(e.element, "backbox.flippers[0]", "{e}");
+    assert!(e.message.contains("outside the backbox"), "{e}");
+    let m = mirror(NOTCH_APEX);
+    let e =
+        gen_text(&layout(Some(&m), "right", [0.0, 100.0], 100.0, PARALLEL)).expect_err("accepted");
+    assert_eq!(e.element, "backbox.flippers[0]", "{e}");
+    assert!(e.message.contains("outside the backbox"), "{e}");
+    // Positive controls.
+    flipper(Some(RECT), "left", [0.0, 100.0], 100.0).unwrap();
     flipper(Some(&mirror(RECT)), "right", [0.0, 100.0], 100.0).unwrap();
 }
 
@@ -367,6 +398,13 @@ fn oracle(poly: &[[f32; 2]], pos: [f32; 2], len: f32, angles: &[f32]) -> f64 {
     best
 }
 
+/// The most the generator's swept-stroke margin can be (mm) for a flipper
+/// of this length (tip radius 8.5 mm, step at most STROKE_STEP_DEG), plus a
+/// little for f32 rounding.
+fn swept_margin(len: f32) -> f64 {
+    2.0 * (f64::from(len) + 8.5) * (f64::from(STROKE_STEP_DEG).to_radians() / 4.0).sin() + 1e-3
+}
+
 fn rest_sweep(side: &str) -> (f32, f32) {
     if side == "left" {
         (-30.0, 50.0)
@@ -408,7 +446,9 @@ proptest! {
         let side = if left { "left" } else { "right" };
         let r = flipper(Some(poly), side, [u, v], len);
         let m = oracle(poly, [u, v], len, &dense_angles(side));
-        if m > 1e-3 {
+        // The check is conservative by the swept-stroke margin
+        // 2 (len + rt) sin(step / 4): accepted only with that much room.
+        if m > 1e-3 + swept_margin(len) {
             prop_assert!(r.is_ok(), "clearance {} but {:?}", m, r.err());
         } else if m < -1e-3 {
             let e = r.err();
@@ -441,7 +481,9 @@ proptest! {
         };
         let r = flipper(Some(&poly), side, [u, v], len);
         let m = oracle(&poly, [u, v], len, &dense_angles(side));
-        if m > 1e-3 {
+        // The check is conservative by the swept-stroke margin
+        // 2 (len + rt) sin(step / 4): accepted only with that much room.
+        if m > 1e-3 + swept_margin(len) {
             prop_assert!(r.is_ok(), "clearance {} but {:?}", m, r.err());
         } else if m < -1e-3 {
             let e = r.err();
