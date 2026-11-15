@@ -30,8 +30,8 @@
 //! * **Playfield glass** (a1-glass): once every source has fed the table
 //!   bounds (collider meshes, splines, flippers, mechs, dispensers), a static
 //!   [`Material::Acrylic`] box on every layer is added as the last collider
-//!   and the world is built. Its underside is at `[playfield] glass_height`
-//!   (mm, of the bundle's `layout.toml`) when that is set, which must be at
+//!   and the world is built. Its underside is at `height`
+//!   (mm, of the bundle's optional `glass.toml`) when that file exists, which must be at
 //!   least the table geometry's max `z` (else [`SimError::Build`]);
 //!   otherwise it is the old escape ceiling (bounds max `z` +
 //!   [`BOUNDS_MARGIN_M`]). It is [`GLASS_THICKNESS_M`] thick and covers the
@@ -54,8 +54,8 @@ use pin_core::ids::{
 };
 use pin_core::input::CabinetInput;
 use pin_core::profiles::{BUILTIN_PROFILE_NAMES, builtin_profile};
-use pin_core::schema::LayoutManifest;
 use pin_core::schema::table::{MechKind, SplineKind, SwitchKind};
+use pin_core::schema::{GLASS_FILE, GlassManifest, LayoutManifest};
 use pin_core::snapshot::{FrameStateSnapshot, MAX_BALLS};
 use pin_core::{
     BallProfile, HostCommandQueue, HostCtx, HostView, Material, Pcg32, PhysicsDefaults,
@@ -90,8 +90,8 @@ pub const DEFAULT_WALL_HEIGHT_MM: f32 = 28.0;
 /// Margin around the table's geometry beyond which a ball has escaped, m.
 pub const BOUNDS_MARGIN_M: f32 = 0.05;
 
-/// Thickness of the playfield glass, m. Its underside sits at the layout's
-/// `[playfield] glass_height` when set, else [`BOUNDS_MARGIN_M`] above the
+/// Thickness of the playfield glass, m. Its underside sits at the bundle's
+/// `glass.toml` `height` when present, else [`BOUNDS_MARGIN_M`] above the
 /// table's bounds max `z`; the escape ceiling is [`BOUNDS_MARGIN_M`] above
 /// its top face.
 pub const GLASS_THICKNESS_M: f32 = 0.025;
@@ -248,8 +248,8 @@ fn glass_lid(lo: Vec3, hi: Vec3, under: f32) -> (StaticShape, (Vec3, Vec3)) {
     (shape, (lo, Vec3::new(hi.x, hi.y, top + BOUNDS_MARGIN_M)))
 }
 
-/// Underside of the playfield glass, m: `glass_height_m` when the layout
-/// sets it (an error if it is below the geometry's max `z`, `max_z`, before
+/// Underside of the playfield glass, m: `glass_height_m` when the bundle's
+/// `glass.toml` sets it (an error if it is below the geometry's max `z`, `max_z`, before
 /// the margin; equal is allowed), else the finished bounds' top `hi_z`
 /// (max `z` + [`BOUNDS_MARGIN_M`]).
 fn glass_underside(glass_height_m: Option<f32>, max_z: f32, hi_z: f32) -> Result<f32, SimError> {
@@ -258,7 +258,7 @@ fn glass_underside(glass_height_m: Option<f32>, max_z: f32, hi_z: f32) -> Result
     };
     if g < max_z {
         return Err(build_err(format!(
-            "layout.toml: playfield.glass_height {:.3} mm is below the table geometry's max z {:.3} mm",
+            "glass.toml height {:.3} mm is below the table geometry's max z {:.3} mm",
             g * 1.0e3,
             max_z * 1.0e3
         )));
@@ -270,8 +270,8 @@ impl Simulation {
     /// The box outside which a ball counts as escaped and is removed
     /// (`(min, max)`, m): the table bounds plus [`BOUNDS_MARGIN_M`] in `x`,
     /// `y` and below, and the playfield glass's top face plus
-    /// [`BOUNDS_MARGIN_M`] above. The glass's underside (the layout's
-    /// `[playfield] glass_height` when set, else the table bounds' max `z` +
+    /// [`BOUNDS_MARGIN_M`] above. The glass's underside (the bundle's
+    /// `glass.toml` `height` when present, else the table bounds' max `z` +
     /// [`BOUNDS_MARGIN_M`]) is `max.z − GLASS_THICKNESS_M − BOUNDS_MARGIN_M`
     /// (to f32 rounding).
     #[must_use]
@@ -280,20 +280,11 @@ impl Simulation {
     }
 }
 
-/// The playfield wall height and the glass underside height (if set) of
-/// the bundle's `layout.toml`, m.
-struct LayoutHeights {
-    wall_m: f32,
-    glass_m: Option<f32>,
-}
-
-fn layout_heights(vfs: &Vfs) -> Result<LayoutHeights, SimError> {
+/// The playfield wall height of the bundle's `layout.toml`, m.
+fn layout_wall_height(vfs: &Vfs) -> Result<f32, SimError> {
     const LAYOUT: &str = "layout.toml";
     if !vfs.exists(LAYOUT) {
-        return Ok(LayoutHeights {
-            wall_m: DEFAULT_WALL_HEIGHT_MM * 1.0e-3,
-            glass_m: None,
-        });
+        return Ok(DEFAULT_WALL_HEIGHT_MM * 1.0e-3);
     }
     let bytes = vfs.read(LAYOUT)?;
     let text = String::from_utf8(bytes).map_err(|e| build_err(format!("{LAYOUT}: {e}")))?;
@@ -305,19 +296,20 @@ fn layout_heights(vfs: &Vfs) -> Result<LayoutHeights, SimError> {
             "{LAYOUT}: playfield.wall_height {h} must be positive"
         )));
     }
-    let glass_m = match layout.playfield.glass_height {
-        None => None,
-        Some(g) if g.is_finite() && g > 0.0 => Some(g * 1.0e-3),
-        Some(g) => {
-            return Err(build_err(format!(
-                "{LAYOUT}: playfield.glass_height {g} must be positive"
-            )));
-        }
-    };
-    Ok(LayoutHeights {
-        wall_m: h * 1.0e-3,
-        glass_m,
-    })
+    Ok(h * 1.0e-3)
+}
+
+/// The glass underside height of the bundle's optional `glass.toml`, m
+/// (`None` when the file is absent).
+fn glass_height_m(vfs: &Vfs) -> Result<Option<f32>, SimError> {
+    if !vfs.exists(GLASS_FILE) {
+        return Ok(None);
+    }
+    let bytes = vfs.read(GLASS_FILE)?;
+    let text = String::from_utf8(bytes).map_err(|e| build_err(format!("{GLASS_FILE}: {e}")))?;
+    let glass =
+        GlassManifest::from_toml_str(&text).map_err(|e| build_err(format!("{GLASS_FILE}: {e}")))?;
+    Ok(Some(glass.height * 1.0e-3))
 }
 
 /// Collider nodes named after a mech: `<id>` / `<id>.on` (on) and
@@ -383,8 +375,8 @@ impl Simulation {
         let table_hash = bundle_hash(vfs)?;
         let table = load_table(vfs)?;
         let scene = load_gltf(vfs, &table.manifest.meta.playfield_mesh)?;
-        let heights = layout_heights(vfs)?;
-        let wall_height = heights.wall_m;
+        let wall_height = layout_wall_height(vfs)?;
+        let glass_m = glass_height_m(vfs)?;
         let mut bounds = Bounds::new();
 
         // --- Static world. ---
@@ -669,11 +661,11 @@ impl Simulation {
 
         // --- Playfield glass, then the world. ---
         // The ceiling is taken from the finished bounds (or the layout's
-        // glass_height) before the glass exists; the glass never feeds
+        // glass.toml) before the glass exists; the glass never feeds
         // `bounds`. Added last, so every existing collider handle is
         // unchanged.
         let (lo, hi) = bounds.finish();
-        let under = glass_underside(heights.glass_m, bounds.max_z(), hi.z)?;
+        let under = glass_underside(glass_m, bounds.max_z(), hi.z)?;
         let (glass, escape_bounds) = glass_lid(lo, hi, under);
         let glass = builder.add_collider(glass, layers::ALL, true);
         solver.set_collider_material(glass, Material::Acrylic);
@@ -854,7 +846,7 @@ mod tests {
         let Err(SimError::Build(msg)) = glass_underside(Some(0.02), 0.028, 0.078) else {
             panic!("expected a build error");
         };
-        assert!(msg.contains("glass_height"), "{msg}");
+        assert!(msg.contains("glass.toml height"), "{msg}");
         assert!(msg.contains("20") && msg.contains("28"), "{msg}");
     }
 }
