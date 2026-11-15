@@ -483,7 +483,11 @@ switch = "bumper_3_ring"
 position = [257.0, 810.0, 0.0]
 
 # Scoop on the left of the playfield; ejects the ball onto the upper deck
-# (layer 1, top right).
+# (layer 1, top right). Exit x offset 265 mm (Gate A1 endless-ball fix, was
+# 270; docs/DECISIONS.md "a1-endless-table — loop 1: VUK exit offset"):
+# from 270 an ejected steel ball followed a fixed path off the deck, round
+# the right side and back into the scoop, for ever. Knife-edge relief
+# only: +-2 mm on the exit x can restore the loop.
 [[mechs]]
 id = "vuk"
 kind = "vuk"
@@ -493,7 +497,7 @@ position = [110.0, 800.0, 0.0]
 angle_deg = 270.0
 layer = 0
 exit_layer = 1
-exit_offset = [270.0, 160.0, 65.0]
+exit_offset = [265.0, 160.0, 65.0]
 eject_speed_m_s = 0.2
 kick_speed_m_s = 0.1
 
