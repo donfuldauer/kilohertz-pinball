@@ -4,7 +4,6 @@
 //! `pin_sim::alloc_guard`; allocations of the Lua VM's own arena are exempt
 //! by that guard's rules (counted separately).
 
-#[allow(dead_code, unused_imports)]
 mod support;
 
 #[path = "fixtures/spec_6_0/common.rs"]
@@ -58,7 +57,7 @@ fn check(bundle: &Path, warm: u64, measured: u64) {
         left = !left;
     }
 
-    sim_loop.run_ticks(warm);
+    sim_loop.run_ticks(u32::try_from(warm).expect("warm-up fits u32"));
     let mut worst = 0u64;
     for _ in 0..measured {
         let ((), n) = count_allocs(|| sim_loop.run_ticks(1));
