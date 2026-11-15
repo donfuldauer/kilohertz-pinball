@@ -35,9 +35,16 @@ proptest! {
         let v = parse_json(&json);
         prop_assert_eq!(v.get("schema").and_then(serde_json::Value::as_u64), Some(1));
         for f in json_findings(&v) {
-            let game = f["game"].as_u64().unwrap_or(u64::MAX);
+            if !f["game"].is_null() {
+                let game = f["game"].as_u64();
+                prop_assert!(
+                    game.is_some_and(|g| g < u64::from(games)),
+                    "game {:?} of {}",
+                    game,
+                    games
+                );
+            }
             let tick = f["tick"].as_u64().unwrap_or(u64::MAX);
-            prop_assert!(game <= u64::from(games), "game {} of {}", game, games);
             prop_assert!(tick <= max_game_ticks, "tick {} > max {}", tick, max_game_ticks);
         }
     }

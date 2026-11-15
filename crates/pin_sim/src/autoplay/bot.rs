@@ -15,7 +15,11 @@
 //! * **Plunge:** when a ball has rested (speed below
 //!   [`BotConfig::rest_speed_m_s`]) away from every flipper for
 //!   [`BotConfig::launch_after_ms`], holds `launch` for a PCG-drawn time in
-//!   [`BotConfig::launch_hold_ms`].
+//!   [`BotConfig::launch_hold_ms`]. A table that serves on `launch` has no
+//!   ball to rest, so after `start` has been pressed and released the bot
+//!   also holds `launch` once the table has been empty for
+//!   [`BotConfig::launch_after_ms`] (same hold draw, same
+//!   [`BotConfig::launch_interval_ms`] throttle).
 //! * **Flip on prediction:** each flipper with a cabinet button is modelled
 //!   as an annular sector around its pivot (bat length plus radius plus a
 //!   ball radius, from its rest angle across its sweep). A ball on the
@@ -451,6 +455,8 @@ pub struct Bot {
     next_nudge_at: u64,
     /// Rest ticks per ball slot (away from the flippers).
     rest_ticks: [u32; MAX_BALLS],
+    /// Consecutive ticks with no ball on the table.
+    empty_ticks: u32,
     stats: BotStats,
 }
 
@@ -480,6 +486,7 @@ impl Bot {
             next_launch_at: 0,
             next_nudge_at: 0,
             rest_ticks: [0; MAX_BALLS],
+            empty_ticks: 0,
             stats: BotStats::default(),
         }
     }
@@ -624,15 +631,18 @@ impl Bot {
                 }
             }
         }
-        if !balls.is_empty() {
+        if balls.is_empty() {
+            self.empty_ticks = self.empty_ticks.saturating_add(1);
+        } else {
             self.seen_ball = true;
+            self.empty_ticks = 0;
         }
 
         let mut desired = [false; 8];
         self.update_flippers(sim, now, &balls, g, up, &mut desired);
         let resting = self.update_rest(sim, &balls);
         self.update_start(now, &mut desired);
-        self.update_launch(now, resting, &mut desired);
+        self.update_launch(now, resting, self.empty_ticks, &mut desired);
         self.update_nudge(sim, now, resting);
         self.apply(sim, &desired);
     }
@@ -784,12 +794,21 @@ impl Bot {
         }
     }
 
-    fn update_launch(&mut self, now: u64, (resting, _): (bool, u32), desired: &mut [bool; 8]) {
+    fn update_launch(
+        &mut self,
+        now: u64,
+        (resting, _): (bool, u32),
+        empty_ticks: u32,
+        desired: &mut [bool; 8],
+    ) {
         if now < self.launch_release_at {
             desired[CabinetInput::Launch.index()] = true;
             return;
         }
-        if resting && now >= self.next_launch_at {
+        let waiting = self.stats.starts > 0
+            && now >= self.start_release_at
+            && empty_ticks >= self.cfg.launch_after_ms;
+        if (resting || waiting) && now >= self.next_launch_at {
             let hold = u64::from(draw_range(&mut self.rng, self.cfg.launch_hold_ms)).max(1);
             self.stats.launches += 1;
             self.launch_release_at = now + hold;

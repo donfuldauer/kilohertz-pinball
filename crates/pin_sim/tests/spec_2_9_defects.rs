@@ -24,7 +24,9 @@ fn defect_soak(bundle: &std::path::Path) -> pin_sim::autoplay::SoakReport {
 #[test]
 fn ball_trap_is_a_stuck_ball_naming_the_pocket() {
     let b = variant("trap", "clean");
-    let r = defect_soak(&b);
+    // The bot's nudges reset the 1 cm/s stuck clock, so StuckBall appears
+    // about 51 s in: this test gets a 90 s game cap.
+    let r = soak(&b, cfg(2, 11, SkillLevel::Standard, 2, 90 * SECOND));
     let stuck = of_kind(&r, "StuckBall");
     assert!(!stuck.is_empty(), "no StuckBall:{}", describe(&r));
     let named: Vec<_> = stuck.iter().filter(|f| names_pocket(&f.subject)).collect();
