@@ -378,11 +378,16 @@ impl<T> PresenterThread<T> {
     /// when it was joined (or already was); on timeout one stderr note and
     /// `Err` with the detached thread's handle (dropping it detaches).
     pub(crate) fn stop(&mut self, timeout: Duration) -> Result<(), JoinHandle<()>> {
+        self.stop_with(&mut RealClock::new(timeout))
+    }
+
+    /// [`stop`](Self::stop) over an injectable wait strategy.
+    pub(crate) fn stop_with(&mut self, clock: &mut impl JoinClock) -> Result<(), JoinHandle<()>> {
         self.handoff.close();
         let Some(h) = self.handle.take() else {
             return Ok(());
         };
-        if join_with_timeout(&h, timeout) {
+        if join_with(&h, clock) {
             // A panic in the body was already reported by the panic hook.
             let _ = h.join();
             Ok(())
@@ -392,7 +397,7 @@ impl<T> PresenterThread<T> {
             // window alive until it exits (DECISIONS "6.0 — window
             // lifetime", issue #9a).
             eprintln!(
-                "pin_app: presenter thread {} did not stop within {timeout:?}, detaching it",
+                "pin_app: presenter thread {} did not stop in time, detaching it",
                 self.name
             );
             Err(h)
@@ -406,15 +411,48 @@ impl<T> Drop for PresenterThread<T> {
     }
 }
 
-/// Waits (polling every millisecond, render side only) until `h` finished or
-/// `timeout` passed; `true` when it finished.
-pub(crate) fn join_with_timeout<T>(h: &JoinHandle<T>, timeout: Duration) -> bool {
-    let start = Instant::now();
+/// Wait strategy for a bounded join: when to give up and how to pause.
+pub(crate) trait JoinClock {
+    /// `true` once the wait budget is used up.
+    fn expired(&mut self) -> bool;
+    /// Pauses before the next poll.
+    fn wait(&mut self);
+}
+
+/// The production clock: wall time, polling every millisecond.
+pub(crate) struct RealClock {
+    start: Instant,
+    timeout: Duration,
+}
+
+impl RealClock {
+    /// A clock that expires `timeout` after now.
+    pub(crate) fn new(timeout: Duration) -> Self {
+        RealClock {
+            start: Instant::now(),
+            timeout,
+        }
+    }
+}
+
+impl JoinClock for RealClock {
+    fn expired(&mut self) -> bool {
+        self.start.elapsed() >= self.timeout
+    }
+
+    fn wait(&mut self) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Waits (polling, render side only) until `h` finished or `clock` expired;
+/// `true` when it finished.
+pub(crate) fn join_with<T>(h: &JoinHandle<T>, clock: &mut impl JoinClock) -> bool {
     while !h.is_finished() {
-        if start.elapsed() >= timeout {
+        if clock.expired() {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(1));
+        clock.wait();
     }
     true
 }
@@ -425,6 +463,24 @@ mod tests {
     use std::sync::mpsc::{channel, sync_channel};
 
     const S: (u32, u32) = (64, 32);
+
+    /// Simulated clock: a tick budget, no wall time; `wait` only yields.
+    struct SimClock {
+        ticks_left: u64,
+    }
+
+    impl JoinClock for SimClock {
+        fn expired(&mut self) -> bool {
+            self.ticks_left == 0
+        }
+        fn wait(&mut self) {
+            self.ticks_left -= 1;
+            std::thread::yield_now();
+        }
+    }
+
+    /// Large enough that a thread that is going to finish does so first.
+    const LONG: u64 = u64::MAX;
 
     fn take(h: &Handoff<u32>) -> Frame<u32> {
         match h.try_take_free() {
@@ -638,13 +694,13 @@ mod tests {
     #[test]
     fn bounded_join_finishes_or_times_out() {
         let quick = std::thread::spawn(|| ());
-        assert!(join_with_timeout(&quick, Duration::from_secs(10)));
+        assert!(join_with(&quick, &mut SimClock { ticks_left: LONG }));
         quick.join().unwrap();
         let (tx, rx) = channel::<()>();
         let stuck = std::thread::spawn(move || {
             let _ = rx.recv();
         });
-        assert!(!join_with_timeout(&stuck, Duration::from_millis(5)));
+        assert!(!join_with(&stuck, &mut SimClock { ticks_left: 5 }));
         drop(tx);
         stuck.join().unwrap();
     }
@@ -661,7 +717,7 @@ mod tests {
         .unwrap();
         let f = take(p.handoff());
         assert!(p.handoff().post(f));
-        assert!(p.stop(Duration::from_secs(30)).is_ok());
+        assert!(p.stop_with(&mut SimClock { ticks_left: LONG }).is_ok());
         assert!(p.handoff().is_closed());
         assert_eq!(guard.strong_count(), 1);
         drop(p);
@@ -682,7 +738,7 @@ mod tests {
         .unwrap();
         blocked_rx.recv().unwrap();
         let detached = p
-            .stop(Duration::from_millis(5))
+            .stop_with(&mut SimClock { ticks_left: 5 })
             .expect_err("a blocked presenter must be detached");
         assert!(p.handoff().is_closed());
         assert!(matches!(p.handoff().try_take_free(), TakeFree::Closed));
@@ -713,6 +769,6 @@ mod tests {
         assert!(p.handoff().is_closed());
         assert!(matches!(p.handoff().try_take_free(), TakeFree::Closed));
         assert_eq!(guard.strong_count(), 1);
-        assert!(p.stop(Duration::from_secs(30)).is_ok());
+        assert!(p.stop_with(&mut SimClock { ticks_left: LONG }).is_ok());
     }
 }

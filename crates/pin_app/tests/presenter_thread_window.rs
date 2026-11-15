@@ -35,9 +35,14 @@ use pin_render::topology::{Rect, SurfaceRole};
 use pin_sim::SimConfig;
 use support::{greybox_bundle, on_big_stack};
 
-/// Render iterations the windows may take to become presentable and the
-/// presenter threads to present once (a count, not a duration: D8).
-const WARM_UP_ITERS: u64 = 5_000_000;
+/// Paced renders the windows may take to become presentable and the
+/// presenter threads to present once (a count, not a duration: D8; about ten
+/// seconds at 60 Hz).
+const MAX_RENDER_ATTEMPTS: u64 = 600;
+
+/// Counter-only polls (no render, a `yield_now` each) while the presenter
+/// threads drain their last hand-offs (a count, not a duration: D8).
+const MAX_COUNTER_POLLS: u64 = 5_000_000;
 
 /// Iterations of the checked run after the warm-up.
 const RUN_ITERS: u64 = 60;
@@ -188,7 +193,7 @@ fn main() {
     let mut seen: Vec<Vec<SurfaceStatus>> = Vec::new();
     let mut playfield_presented = false;
     let mut warm = None;
-    for iter in 0..WARM_UP_ITERS {
+    for iter in 0..MAX_RENDER_ATTEMPTS {
         while pump.poll_event().is_some() {}
         frame.tick = 500 + iter;
         let st = surfaces.render(&frame);
@@ -216,7 +221,7 @@ fn main() {
     let stats = surfaces.presenter_stats();
     let Some(warm) = warm else {
         panic!(
-            "presenter threads did not present within {WARM_UP_ITERS} iterations: playfield \
+            "presenter threads did not present within {MAX_RENDER_ATTEMPTS} render attempts: playfield \
              presented {playfield_presented}, presenter stats {stats:?}, status changes {seen:?}"
         );
     };
@@ -266,7 +271,7 @@ fn main() {
     // Bounded poll (iterations, D8) until each presenter took the newest
     // hand-offs: presented frames and posts both advanced.
     let mut after = surfaces.presenter_stats();
-    for _ in 0..WARM_UP_ITERS {
+    for _ in 0..MAX_COUNTER_POLLS {
         if after
             .iter()
             .zip(&before)
