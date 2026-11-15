@@ -7,7 +7,9 @@ use arrayvec::ArrayVec;
 use core::fmt;
 use glam::Vec3;
 use pin_assets::{AssetError, TableIds};
-use pin_core::ids::{CoilId, DispenserId, DiverterId, FlipperId, MagnetId, ProfileId, SwitchId};
+use pin_core::ids::{
+    CoilId, DispenserId, DiverterId, FlipperId, MagnetId, ProfileId, SceneId, SoundId, SwitchId,
+};
 use pin_core::input::HapticsTelemetryEvent;
 use pin_core::profiles::BUILTIN_PROFILE_NAMES;
 use pin_core::script::MAX_SWITCHES;
@@ -34,6 +36,16 @@ pub const DEFAULT_SEED: u64 = 0x4B_485A;
 
 /// Capacity of the per-tick haptic event buffer ([`Simulation::haptic_events`]).
 pub const HAPTICS_CAPACITY: usize = 32;
+
+/// Capacity of [`Simulation::display_scenes`] (as
+/// `HostCommandQueue::display_scenes`).
+pub const SCENES_CAPACITY: usize = 8;
+
+/// Capacity of [`Simulation::sound_commands`] (as `HostCommandQueue::sounds`).
+pub const SOUNDS_CAPACITY: usize = 16;
+
+/// Capacity of [`Simulation::score_reports`] (as `HostCommandQueue::scores`).
+pub const SCORE_REPORTS_CAPACITY: usize = 4;
 
 /// Capacity of the switch-edge queue between two script deliveries; edges
 /// beyond it are dropped and counted ([`SimCounters::edges_dropped`]).
@@ -299,6 +311,13 @@ pub struct Simulation {
     pub(crate) snapshot: FrameStateSnapshot,
     pub(crate) events: BallEvents,
     pub(crate) haptics: ArrayVec<HapticsTelemetryEvent, HAPTICS_CAPACITY>,
+    /// The last applied command queue's `display_scenes` (output only:
+    /// never read by the simulation, not in `state_hash`).
+    pub(crate) out_scenes: ArrayVec<SceneId, SCENES_CAPACITY>,
+    /// The last applied command queue's `sounds` (output only).
+    pub(crate) out_sounds: ArrayVec<(SoundId, f32), SOUNDS_CAPACITY>,
+    /// The last applied command queue's `scores` (output only).
+    pub(crate) out_scores: ArrayVec<(u8, i64), SCORE_REPORTS_CAPACITY>,
     pub(crate) generations: [u32; MAX_BALLS],
     pub(crate) prev_positions: [Vec3; MAX_BALLS],
     pub(crate) tick: u64,
@@ -560,6 +579,37 @@ impl Simulation {
     #[must_use]
     pub fn haptic_events(&self) -> &[HapticsTelemetryEvent] {
         &self.haptics
+    }
+
+    /// Display scenes the script showed in the last tick, in queue order
+    /// (`HostCommandQueue::display_scenes`, the last one wins on a display).
+    /// After [`load`](Simulation::load): those of `on_init` (e.g. the attract
+    /// scene). Output only: the simulation never reads them back, so they
+    /// change neither [`state_hash`](Self::state_hash) nor replays. Copied
+    /// in tick step 3 into fixed-capacity storage (no allocation, D5);
+    /// Subphase 6.0 routes them to the display renderer.
+    #[must_use]
+    pub fn display_scenes(&self) -> &[SceneId] {
+        &self.out_scenes
+    }
+
+    /// Sounds the script played in the last tick, `(sound, gain)` in queue
+    /// order (`HostCommandQueue::sounds`); after load, those of `on_init`.
+    /// Output only, like [`display_scenes`](Self::display_scenes); Subphase
+    /// 6.0 feeds them to the 3.3 mixer.
+    #[must_use]
+    pub fn sound_commands(&self) -> &[(SoundId, f32)] {
+        &self.out_sounds
+    }
+
+    /// Score reports of the last tick, `(player 0-based, score)` in queue
+    /// order (`HostCommandQueue::scores`, including reports for players the
+    /// sim ignores); after load, those of `on_init`. Output only, like
+    /// [`display_scenes`](Self::display_scenes); the score display shows
+    /// them.
+    #[must_use]
+    pub fn score_reports(&self) -> &[(u8, i64)] {
+        &self.out_scores
     }
 
     /// Drop and removal counters.

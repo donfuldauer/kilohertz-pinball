@@ -517,4 +517,4 @@ id = "scene_powerball_mania"
 file = "display/scene_powerball_mania.toml"
 
 [persist]
-keys = ["games_played", "high_score", "ball", "game_state", "powerball_modes"]
+keys = ["games_played", "high_score", "ball", "game_state", "powerball_modes", "mode:powerball"]

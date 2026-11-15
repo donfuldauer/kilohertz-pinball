@@ -49,6 +49,22 @@ pub const DIGITAL_NUDGE_MS: u32 = 60;
 
 const NS_PER_MS: u64 = 1_000_000;
 
+/// Normalised value at which an axis bound as a nudge button counts as
+/// pressed (the same threshold `pin_input` uses for axes bound as buttons).
+const AXIS_BUTTON_THRESHOLD: f32 = 0.5;
+
+const AXES: usize = GamepadAxis::ALL.len();
+
+/// Releases owed after a device lost its holds (profile swap), flushed with
+/// the timestamp of the next router call.
+const MAX_PENDING: usize = CabinetInput::COUNT + CabinetAxis::ALL.len();
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Pending {
+    Button(CabinetInput),
+    Axis(CabinetAxis),
+}
+
 /// The raw-input code of `raw` inside a [`source_id`].
 pub const fn raw_code(raw: RawInput) -> u32 {
     match raw {
@@ -79,6 +95,10 @@ struct Pad {
     device: u32,
     profile: String,
     mapper: ProfileMapper,
+    /// Per raw axis, the cabinet axis and non-zero value last forwarded.
+    analog: [Option<(CabinetAxis, f32)>; AXES],
+    /// Per raw axis, whether it is above the nudge threshold (edge state).
+    nudge_down: [bool; AXES],
 }
 
 /// Counters kept by [`InputRouter`].
@@ -104,6 +124,7 @@ pub struct InputRouter {
     plunger: PlungerFilter,
     nudge: DigitalNudge,
     nudge_out: [f32; 2],
+    pending: ArrayVec<Pending, MAX_PENDING>,
     stats: RouterStats,
 }
 
@@ -129,6 +150,7 @@ impl InputRouter {
             plunger: PlungerFilter::new(PlungerConfig::default()),
             nudge: DigitalNudge::new(DIGITAL_NUDGE_STRENGTH, DIGITAL_NUDGE_MS),
             nudge_out: [0.0; 2],
+            pending: ArrayVec::new(),
             stats: RouterStats::default(),
         }
     }
@@ -147,8 +169,23 @@ impl InputRouter {
     }
 
     /// [`add_gamepad`](Self::add_gamepad) with an explicit profile.
+    ///
+    /// Replacing the profile of a routed gamepad first releases everything
+    /// that gamepad holds (buttons it alone holds, analog axes it alone
+    /// drives, which go neutral); holds of other devices are kept. The
+    /// release events are sent with the timestamp of the next router call
+    /// ([`poll`](Self::poll), a key, button, axis or removal).
     pub fn add_gamepad_with_profile(&mut self, which: u32, profile: &DeviceProfile) -> Option<u32> {
-        if let Some(p) = self.pads.iter_mut().find(|p| p.which == which) {
+        if let Some(i) = self.pads.iter().position(|p| p.which == which) {
+            let device = self.pads[i].device;
+            let analog = self.pads[i].analog;
+            for input in self.held.release_all_for_device(device) {
+                self.queue(Pending::Button(input));
+            }
+            self.queue_neutral_axes(device, &analog);
+            let p = &mut self.pads[i];
+            p.analog = [None; AXES];
+            p.nudge_down = [false; AXES];
             p.mapper = ProfileMapper::new(profile);
             p.profile.clone_from(&profile.id);
             return Some(p.device);
@@ -165,13 +202,53 @@ impl InputRouter {
             device,
             profile: profile.id.clone(),
             mapper: ProfileMapper::new(profile),
+            analog: [None; AXES],
+            nudge_down: [false; AXES],
         });
         Some(device)
     }
 
+    fn queue(&mut self, p: Pending) {
+        if !self.pending.contains(&p) {
+            let _ = self.pending.try_push(p);
+        }
+    }
+
+    /// Queues a neutral for each cabinet axis in `analog` (driven by
+    /// `device`) that no other routed pad still drives.
+    fn queue_neutral_axes(&mut self, device: u32, analog: &[Option<(CabinetAxis, f32)>; AXES]) {
+        for (cab, _) in analog.iter().flatten() {
+            let driven_elsewhere = self
+                .pads
+                .iter()
+                .any(|p| p.device != device && p.analog.iter().flatten().any(|(c, _)| c == cab));
+            if !driven_elsewhere {
+                self.queue(Pending::Axis(*cab));
+            }
+        }
+    }
+
+    fn flush_pending(&mut self, ts_ns: u64, out: &mut impl FnMut(InputEvent)) {
+        for p in std::mem::take(&mut self.pending) {
+            match p {
+                Pending::Button(input) => {
+                    self.stats.edges += 1;
+                    out(InputEvent::button(ts_ns, input, false));
+                }
+                Pending::Axis(axis) => {
+                    self.stats.axes += 1;
+                    out(InputEvent::axis(ts_ns, axis, 0.0));
+                }
+            }
+        }
+    }
+
     /// Stops routing gamepad `which` and releases every cabinet input only
-    /// it held (release events at `ts_ns` go to `out`).
+    /// it held; analog cabinet axes it drove go neutral (0) unless another
+    /// routed gamepad still drives them (release events at `ts_ns` go to
+    /// `out`).
     pub fn remove_gamepad(&mut self, ts_ns: u64, which: u32, out: &mut impl FnMut(InputEvent)) {
+        self.flush_pending(ts_ns, out);
         let Some(i) = self.pads.iter().position(|p| p.which == which) else {
             return;
         };
@@ -180,6 +257,8 @@ impl InputRouter {
             self.stats.edges += 1;
             out(InputEvent::button(ts_ns, input, false));
         }
+        self.queue_neutral_axes(pad.device, &pad.analog);
+        self.flush_pending(ts_ns, out);
     }
 
     /// Device number and profile id of gamepad `which`.
@@ -236,6 +315,7 @@ impl InputRouter {
     /// `now_ns` differs from the last one sent (call once per main-thread
     /// iteration so a nudge ends on time).
     pub fn poll(&mut self, now_ns: u64, out: &mut impl FnMut(InputEvent)) {
+        self.flush_pending(now_ns, out);
         let v = self.nudge.sample(now_ns / NS_PER_MS);
         for (k, axis) in [CabinetAxis::NudgeX, CabinetAxis::NudgeY]
             .into_iter()
@@ -257,6 +337,7 @@ impl InputRouter {
         pressed: bool,
         out: &mut impl FnMut(InputEvent),
     ) {
+        self.flush_pending(ts_ns, out);
         let raw = RawInput::Key(scancode);
         if let Some(ev) = self.keyboard.key(ts_ns, scancode, pressed)
             && let InputEventKind::Button { input, pressed } = ev.kind
@@ -278,6 +359,7 @@ impl InputRouter {
         pressed: bool,
         out: &mut impl FnMut(InputEvent),
     ) {
+        self.flush_pending(ts_ns, out);
         let Some(i) = self.pad_index(which) else {
             return;
         };
@@ -304,30 +386,39 @@ impl InputRouter {
         raw: i16,
         out: &mut impl FnMut(InputEvent),
     ) {
+        self.flush_pending(ts_ns, out);
         let Some(i) = self.pad_index(which) else {
             return;
         };
         let device = self.pads[i].device;
-        let Some(ev) = self.pads[i].mapper.axis(ts_ns, a, raw) else {
-            return;
-        };
-        match ev.kind {
-            InputEventKind::Button { input, pressed } => {
-                let source = source_id(device, raw_code(RawInput::Axis(a)));
-                self.digital(ts_ns, source, input, pressed, out);
+        let mapped = self.pads[i].mapper.axis(ts_ns, a, raw);
+        let nudge = self.pads[i].mapper.nudge_button(RawInput::Axis(a));
+        if let Some(ev) = mapped {
+            match ev.kind {
+                InputEventKind::Button { input, pressed } => {
+                    let source = source_id(device, raw_code(RawInput::Axis(a)));
+                    self.digital(ts_ns, source, input, pressed, out);
+                }
+                InputEventKind::Axis { axis, value } => {
+                    let sent = if axis == CabinetAxis::Plunger {
+                        self.plunger.update(value, ts_ns / NS_PER_MS).position
+                    } else {
+                        value
+                    };
+                    self.pads[i].analog[a as usize] = (sent != 0.0).then_some((axis, sent));
+                    self.stats.axes += 1;
+                    out(InputEvent::axis(ts_ns, axis, sent));
+                }
             }
-            InputEventKind::Axis {
-                axis: CabinetAxis::Plunger,
-                value,
-            } => {
-                let f = self.plunger.update(value, ts_ns / NS_PER_MS);
-                self.stats.axes += 1;
-                out(InputEvent::axis(ts_ns, CabinetAxis::Plunger, f.position));
-            }
-            InputEventKind::Axis { .. } => {
-                self.stats.axes += 1;
-                out(ev);
-            }
+        }
+        // A nudge bound to an axis fires once per crossing of the threshold.
+        let down = a.normalise(raw) >= AXIS_BUTTON_THRESHOLD;
+        let was_down = std::mem::replace(&mut self.pads[i].nudge_down[a as usize], down);
+        if down
+            && !was_down
+            && let Some(dir) = nudge
+        {
+            self.nudge_press(ts_ns, dir, out);
         }
     }
 
