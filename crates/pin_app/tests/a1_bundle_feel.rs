@@ -282,10 +282,18 @@ fn full_shot_from_a_cradle_exits_in_the_window_on_both_lower_flippers() {
                             }
                         }
                     }
-                    None => println!(
-                        "cradle shot {id}: flip {wait} ms after release, ball at {at:.2} \
-                         of the bat: never 100 mm from the tip"
-                    ),
+                    None => {
+                        println!(
+                            "cradle shot {id}: flip {wait} ms after release, ball at {at:.2} \
+                             of the bat: never 100 mm from the tip"
+                        );
+                        if (0.4..=0.8).contains(&at) {
+                            failures.push(format!(
+                                "{id}: full shot from {at:.2} of the bat, flip {wait} ms after \
+                                 release: never 100 mm from the tip"
+                            ));
+                        }
+                    }
                 }
             }
             let (v, at, wait) = best.unwrap_or_else(|| panic!("{id}: no shot left the bat"));

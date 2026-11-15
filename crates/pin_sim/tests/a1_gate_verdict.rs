@@ -10,7 +10,7 @@ fn good(skill: SkillLevel) -> SoakReport {
     SoakReport {
         table_id: "t".into(),
         table_hash: 1,
-        games: 1,
+        games: 1000,
         seed: 1,
         skill,
         max_game_ticks: 1000,
@@ -246,4 +246,24 @@ fn censored_ball_times_are_reported_not_judged() {
     assert_eq!(c.status, CheckStatus::Reported);
     assert!(c.value.starts_with("2 of 3 samples"), "{}", c.value);
     assert!(v.passed());
+}
+
+#[test]
+fn game_count_must_reach_1000() {
+    for (games, ok) in [(0u32, false), (999, false), (1000, true), (1001, true)] {
+        let mut r = good(SkillLevel::Standard);
+        r.games = games;
+        let v = r.gate_a1(SkillLevel::Standard);
+        let want = if ok {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        };
+        assert_eq!(status(&v, "games_1000"), want, "{games}");
+        assert_eq!(
+            v.check("games_1000").unwrap().value,
+            format!("{games} games")
+        );
+        assert_eq!(v.passed(), ok, "{games}");
+    }
 }
