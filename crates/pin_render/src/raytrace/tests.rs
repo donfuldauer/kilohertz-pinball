@@ -796,3 +796,81 @@ proptest! {
         prop_assert_eq!(validate_config(&cfg, 8192).is_ok(), want);
     }
 }
+
+// ---------------------------------------------------------------------
+// Device loss (CodeRabbit PR #22 finding 3)
+// ---------------------------------------------------------------------
+
+use super::source::{FrameOutcome, LossFlag, device_lost_reason, frame_outcome};
+
+#[test]
+fn loss_flag_starts_clear_and_keeps_the_first_reason() {
+    let f = LossFlag::default();
+    assert!(!f.is_set());
+    assert_eq!(f.reason(), "");
+    f.set("Unknown: driver reset");
+    f.set("Destroyed");
+    assert!(f.is_set());
+    assert_eq!(f.reason(), "Unknown: driver reset");
+    match f.error() {
+        crate::gpu::GpuError::RequestDevice(m) => {
+            assert_eq!(m, "device lost: Unknown: driver reset");
+        }
+        e => panic!("wrong error variant: {e:?}"),
+    }
+}
+
+#[test]
+fn loss_flag_is_shared_with_a_callback_on_another_thread() {
+    // The device-lost callback runs on a wgpu thread and owns an Arc.
+    let flag = std::sync::Arc::new(LossFlag::default());
+    let cb_flag = std::sync::Arc::clone(&flag);
+    let callback = move |r: wgpu::DeviceLostReason, m: String| {
+        cb_flag.set(&device_lost_reason(r, &m));
+    };
+    fn assert_send<T: Send + 'static>(_: &T) {}
+    assert_send(&callback);
+    std::thread::spawn(move || callback(wgpu::DeviceLostReason::Unknown, "gone".into()))
+        .join()
+        .unwrap();
+    assert!(flag.is_set());
+    assert_eq!(flag.reason(), "Unknown: gone");
+}
+
+#[test]
+fn device_lost_reason_text() {
+    assert_eq!(
+        device_lost_reason(wgpu::DeviceLostReason::Destroyed, ""),
+        "Destroyed"
+    );
+    assert_eq!(
+        device_lost_reason(wgpu::DeviceLostReason::Unknown, "VK_ERROR_DEVICE_LOST"),
+        "Unknown: VK_ERROR_DEVICE_LOST"
+    );
+}
+
+#[test]
+fn frame_outcome_lost_wins_over_the_trace_result() {
+    let ok: Result<u32, String> = Ok(3);
+    let err: Result<u32, String> = Err("validation".into());
+    assert_eq!(frame_outcome(false, &ok), FrameOutcome::Continue);
+    assert_eq!(frame_outcome(false, &err), FrameOutcome::FallBackToProbes);
+    // wgpu drops errors raised on a lost device, so a trace may "succeed".
+    assert_eq!(frame_outcome(true, &ok), FrameOutcome::Lost);
+    assert_eq!(frame_outcome(true, &err), FrameOutcome::Lost);
+}
+
+proptest! {
+    #[test]
+    fn frame_outcome_touches_probes_only_on_a_live_device(
+        lost in any::<bool>(),
+        trace_ok in any::<bool>(),
+        jobs in any::<u32>(),
+    ) {
+        let trace: Result<u32, ()> = if trace_ok { Ok(jobs) } else { Err(()) };
+        let out = frame_outcome(lost, &trace);
+        prop_assert_eq!(out == FrameOutcome::Lost, lost);
+        prop_assert_eq!(out == FrameOutcome::Continue, !lost && trace_ok);
+        prop_assert_eq!(out == FrameOutcome::FallBackToProbes, !lost && !trace_ok);
+    }
+}

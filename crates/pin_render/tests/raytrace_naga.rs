@@ -1,8 +1,10 @@
 //! 5.4 shader validation (GPU-free): naga 30.0.1 parses and validates every
 //! ray-query WGSL module with the ray-query capability and translates it to
-//! SPIR-V (the only back end wgpu uses for ray queries). MSL and HLSL are
-//! tried and their outcome printed, not asserted (wgpu exposes
-//! `EXPERIMENTAL_RAY_QUERY` on Vulkan only; see the `raytrace` docs).
+//! SPIR-V (the back end wgpu uses for ray queries on the tested setup). MSL
+//! and HLSL are also tried and asserted: both translate (MSL at 2.4), and the
+//! default MSL version is rejected. The outcome is printed too. This says
+//! nothing about which devices report `EXPERIMENTAL_RAY_QUERY` (only Vulkan
+//! was observed to; see the `raytrace` docs).
 
 use naga::back::{hlsl, msl, spv};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
@@ -76,10 +78,11 @@ fn raytrace_every_module_translates_to_spirv() {
     }
 }
 
-/// Recorded, not asserted: naga's MSL / HLSL support of ray queries is not
-/// part of the 5.4 contract (Vulkan only).
+/// naga 30.0.1 translates every module to HLSL and to MSL 2.4; the default MSL
+/// version rejects ray tracing. wgpu is not claimed to use these back ends for
+/// ray queries; the outcome is printed as well.
 #[test]
-fn raytrace_msl_and_hlsl_outcome_is_recorded() {
+fn raytrace_msl_2_4_and_hlsl_translate_and_default_msl_is_rejected() {
     for (name, src) in shader_sources() {
         let (module, info) = validated(name, src);
         let msl_with = |options: &msl::Options| {
@@ -104,6 +107,10 @@ fn raytrace_msl_and_hlsl_outcome_is_recorded() {
         println!(
             "[{name}] naga 30.0.1 MSL (default): {msl:?}; MSL 2.4: {msl_2_4:?}; HLSL: {hlsl:?}"
         );
+        assert_eq!(msl_2_4, Ok(()), "{name}: MSL 2.4");
+        assert_eq!(hlsl, Ok(()), "{name}: HLSL");
+        let err = msl.expect_err("default MSL version must reject ray tracing");
+        assert!(err.contains("MSL 2.4"), "{name}: default MSL error: {err}");
     }
 }
 
