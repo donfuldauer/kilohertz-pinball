@@ -23,7 +23,8 @@
 #        (unloaded_stroke_time_is_in_the_feel_window, ...), pin_app a1_bundle_feel
 #   2b flipper in-lane / ramp behaviour         pin_app a1_inlane, a1_ramp
 #   2c spec 2.3 criteria                        pin_physics spec_2_3_criteria
-#   3  soak at novice/standard/expert: zero stuck/escaped/non-finite, 100 %
+#   3  soak at novice/standard/expert: zero stuck/endless/escaped/non-finite
+#      (no_endless_balls: no ball on the table > 300 s or at the cap), 100 %
 #      switch coverage, p99.9 tick < 0.35 ms at every skill; median ball
 #      time 15..=120 s judged at `standard` only (the other medians are
 #      reported). Judged by `pin_sim soak --gate a1`.

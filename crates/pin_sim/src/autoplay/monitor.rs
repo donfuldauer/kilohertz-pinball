@@ -18,6 +18,24 @@
 //!   [`PLUNGER_RADIUS_M`] of a plunger mech (the plunger lane at rest); in
 //!   range of a powered magnet; on the bat of an energised (held) flipper.
 //!   The subject is the nearest named feature and the position.
+//! * **Stuck (displacement):** a ball that stays within one ball diameter
+//!   (`2 *` [`BALL_RADIUS_M`]) of an anchor point for more than
+//!   `stuck_ticks` consecutive observed ticks while no exemption holds, at
+//!   any speed: a ball pinned against a refiring sling or rattling in a
+//!   pocket. The anchor is the ball's position when it first appears and is
+//!   moved to the ball's position whenever it leaves the circle. The same
+//!   exemptions apply, and the speed test above still runs; a ball is
+//!   reported stuck once, by whichever test trips first.
+//! * **Endless:** a ball still on the table when its age exceeds
+//!   `endless_ticks` (default [`DEFAULT_ENDLESS_BALL_TICKS`] = 300 s), or
+//!   still on the table when the soak stops a game at `max_game_ticks`
+//!   ([`GameMonitor::end_at_cap`]), whichever comes first; once per ball, and
+//!   not for a ball already reported stuck. The subject is the switch that
+//!   ball hit most often (ties to the lowest switch id), or the nearest
+//!   feature and position when it hit none. The detail lists the switches
+//!   it hit in the last 60 s with their counts (most hits first, ties to the
+//!   lowest id). A switch closing is credited to the nearest ball when the
+//!   switch has a position, else to every ball on the table.
 //! * **Escaped:** a ball outside the simulation's bounds (the collider
 //!   bounds plus [`BOUNDS_MARGIN_M`](crate::load::BOUNDS_MARGIN_M), which
 //!   includes "below the floor"), seen directly, or removed by the
@@ -28,8 +46,15 @@
 //!   velocity or angular velocity, or a flipper's angle, angular velocity or
 //!   zipper offset. (Scores are integers.)
 //!
+//! # Allocation
+//!
+//! All per-ball state is fixed-size and allocated in [`GameMonitor::new`];
+//! [`observe`](GameMonitor::observe) allocates only when it records a
+//! finding or the time of a ball that left the table.
+//!
 //! [`SimCounters::balls_escaped`]: crate::SimCounters::balls_escaped
 
+use arrayvec::ArrayVec;
 use glam::Vec3;
 use pin_core::ids::SwitchId;
 use pin_core::schema::table::{MechKind, SwitchKind};
@@ -54,6 +79,17 @@ pub const PLUNGER_RADIUS_M: f32 = 0.06;
 
 /// Extra reach beyond the bat for the held-cradle exemption, m.
 pub const CRADLE_MARGIN_M: f32 = 0.01;
+
+/// Default ball age after which a ball still on the table is an
+/// [`FindingKind::EndlessBall`], ticks (300 s of simulated time).
+pub const DEFAULT_ENDLESS_BALL_TICKS: u64 = 300_000;
+
+/// Length of one hit-count bucket of the endless-ball window, ticks (1 s).
+pub const HIT_BUCKET_TICKS: u64 = 1_000;
+
+/// Buckets in the endless-ball window: the current second and the 59 before
+/// it, so the window covers the last 59 to 60 s.
+pub const HIT_BUCKETS: usize = 60;
 
 /// Whether every component of `b` is finite.
 #[must_use]
@@ -90,7 +126,12 @@ struct Track {
     first_tick: u64,
     slow_ticks: u64,
     last: BallState,
+    /// Displacement anchor (see the module docs).
+    anchor: Vec3,
+    /// Consecutive non-exempt ticks within one diameter of `anchor`.
+    near_ticks: u64,
     stuck: bool,
+    endless: bool,
     reported_escape: bool,
     reported_nonfinite: bool,
 }
@@ -114,6 +155,9 @@ pub struct GameOutcome {
     pub mode_starts: Vec<u64>,
     /// Time on the table of every ball that left it, ms.
     pub ball_times_ms: Vec<i64>,
+    /// Observed time on the table of every ball still on it when the game
+    /// ended (censored: the real time is at least this), ms.
+    pub censored_ball_times_ms: Vec<i64>,
     /// Counters at the end.
     pub counters: CounterTotals,
 }
@@ -138,6 +182,18 @@ pub struct GameMonitor<'t> {
     reported_flipper: Vec<bool>,
     findings: Vec<Finding>,
     ball_times: Vec<i64>,
+    endless_ticks: u64,
+    /// Coverage switches by ascending id: (bit index, plane position).
+    hit_switches: Vec<(usize, Option<[f32; 2]>)>,
+    /// Hit-count row length: the largest coverage switch index + 1.
+    hit_row: usize,
+    /// Hits per ball slot and switch over the ball's life.
+    hits: Vec<u32>,
+    /// Hits per ball slot, window bucket and switch.
+    window: Vec<u16>,
+    /// The second (tick / [`HIT_BUCKET_TICKS`]) each slot's window was last
+    /// advanced to.
+    window_sec: [u64; MAX_BALLS],
 }
 
 fn bit(bits: &[u64; 4], n: usize) -> bool {
@@ -161,6 +217,14 @@ impl<'t> GameMonitor<'t> {
             .iter()
             .map(|m| m.persist_key.map_or(0, |k| sim.persist(k)))
             .collect();
+        let mut hit_switches: Vec<(usize, Option<[f32; 2]>)> = info
+            .coverage_switches()
+            .filter(|s| s.id.index() < 256)
+            .map(|s| (s.id.index(), s.position_m.map(|p| [p[0], p[1]])))
+            .collect();
+        hit_switches.sort_unstable_by_key(|h| h.0);
+        hit_switches.dedup_by_key(|h| h.0);
+        let hit_row = hit_switches.last().map_or(0, |h| h.0 + 1);
         Self {
             info,
             game,
@@ -178,7 +242,22 @@ impl<'t> GameMonitor<'t> {
             reported_flipper: vec![false; 16],
             findings: Vec::new(),
             ball_times: Vec::new(),
+            endless_ticks: DEFAULT_ENDLESS_BALL_TICKS,
+            hit_switches,
+            hit_row,
+            hits: vec![0; MAX_BALLS * hit_row],
+            window: vec![0; MAX_BALLS * HIT_BUCKETS * hit_row],
+            window_sec: [0; MAX_BALLS],
         }
+    }
+
+    /// Sets the ball age after which a ball still on the table is an
+    /// [`FindingKind::EndlessBall`], ticks (default
+    /// [`DEFAULT_ENDLESS_BALL_TICKS`]).
+    #[must_use]
+    pub fn with_endless_ticks(mut self, ticks: u64) -> Self {
+        self.endless_ticks = ticks;
+        self
     }
 
     /// Findings so far.
@@ -217,6 +296,7 @@ impl<'t> GameMonitor<'t> {
         self.observe_balls(sim, tick);
         self.observe_flippers(sim, tick);
         self.observe_switches(sim, tick);
+        self.observe_endless(tick);
         self.observe_modes(sim);
         self.observe_script(sim, tick);
     }
@@ -225,7 +305,7 @@ impl<'t> GameMonitor<'t> {
         let handles = sim.ball_handles();
         let bounds = sim.bounds;
         // Balls that left the table since the last observation.
-        let mut vanished: Vec<(f32, Track)> = Vec::new();
+        let mut vanished: ArrayVec<(f32, Track), MAX_BALLS> = ArrayVec::new();
         for slot in 0..MAX_BALLS {
             if let Some(t) = self.tracks[slot]
                 && !handles.contains(&t.handle)
@@ -242,7 +322,7 @@ impl<'t> GameMonitor<'t> {
         let mut new_escapes = escaped.saturating_sub(self.escaped_seen) as usize;
         self.escaped_seen = escaped;
         // Furthest outside first; ties by slot.
-        vanished.sort_by(|a, b| {
+        vanished.sort_unstable_by(|a, b| {
             b.0.total_cmp(&a.0)
                 .then(a.1.handle.slot().cmp(&b.1.handle.slot()))
         });
@@ -284,15 +364,21 @@ impl<'t> GameMonitor<'t> {
             let slot = usize::from(h.slot());
             let mut t = match self.tracks[slot] {
                 Some(t) if t.handle == h => t,
-                _ => Track {
-                    handle: h,
-                    first_tick: tick,
-                    slow_ticks: 0,
-                    last: b,
-                    stuck: false,
-                    reported_escape: false,
-                    reported_nonfinite: false,
-                },
+                _ => {
+                    self.reset_hits(slot, tick);
+                    Track {
+                        handle: h,
+                        first_tick: tick,
+                        slow_ticks: 0,
+                        last: b,
+                        anchor: Vec3::from_array(b.position_m),
+                        near_ticks: 0,
+                        stuck: false,
+                        endless: false,
+                        reported_escape: false,
+                        reported_nonfinite: false,
+                    }
+                }
             };
             t.last = b;
             let p = Vec3::from_array(b.position_m);
@@ -321,24 +407,44 @@ impl<'t> GameMonitor<'t> {
                 );
             }
             let speed = Vec3::from_array(b.velocity_m_s).length();
-            if speed < STUCK_SPEED_M_S && !self.exempt(sim, &b) {
+            let slow = speed < STUCK_SPEED_M_S;
+            let finite = p.is_finite();
+            if !finite || p.distance(t.anchor) > 2.0 * BALL_RADIUS_M {
+                t.anchor = p;
+                t.near_ticks = 0;
+            }
+            // A ball already reported stuck needs no exemption test.
+            let exempt = !t.stuck && (slow || finite) && self.exempt(sim, &b);
+            if slow && !exempt {
                 t.slow_ticks += 1;
             } else {
                 t.slow_ticks = 0;
             }
-            if t.slow_ticks > self.stuck_ticks && !t.stuck {
+            if finite && !exempt {
+                t.near_ticks = t.near_ticks.saturating_add(1);
+            } else {
+                t.near_ticks = 0;
+            }
+            if !t.stuck && (t.slow_ticks > self.stuck_ticks || t.near_ticks > self.stuck_ticks) {
                 t.stuck = true;
                 let subject = self.info.subject_at(p);
-                self.push(
-                    FindingKind::StuckBall,
-                    subject,
-                    tick,
+                let detail = if t.slow_ticks > self.stuck_ticks {
                     format!(
                         "ball in slot {} slower than 1 cm/s for {} ms outside any trough, lock, held cradle, magnet or plunger lane",
                         h.slot(),
                         t.slow_ticks
-                    ),
-                );
+                    )
+                } else {
+                    format!(
+                        "ball in slot {} stayed within one ball diameter ({:.0} mm) of {} for {} ms (now at {:.3} m/s) outside any trough, lock, held cradle, magnet or plunger lane",
+                        h.slot(),
+                        2.0e3 * BALL_RADIUS_M,
+                        fmt_mm(t.anchor),
+                        t.near_ticks,
+                        speed
+                    )
+                };
+                self.push(FindingKind::StuckBall, subject, tick, detail);
             }
             self.tracks[slot] = Some(t);
         }
@@ -423,6 +529,7 @@ impl<'t> GameMonitor<'t> {
         if rising == [0; 4] {
             return;
         }
+        self.credit_hits(&rising, tick);
         for k in 0..self.shot_switches.len() {
             let sw = self.shot_switches[k];
             if !bit(&rising, sw.index()) {
@@ -448,6 +555,185 @@ impl<'t> GameMonitor<'t> {
                 }
             }
         }
+    }
+
+    /// Clears slot `slot`'s hit counts for a new ball seen at `tick`.
+    fn reset_hits(&mut self, slot: usize, tick: u64) {
+        let row = self.hit_row;
+        self.hits[slot * row..(slot + 1) * row].fill(0);
+        let w = HIT_BUCKETS * row;
+        self.window[slot * w..(slot + 1) * w].fill(0);
+        self.window_sec[slot] = tick / HIT_BUCKET_TICKS;
+    }
+
+    /// Moves slot `slot`'s window to second `sec`, clearing the buckets of
+    /// the seconds it skips (at most the whole window).
+    fn advance_window(&mut self, slot: usize, sec: u64) {
+        let last = self.window_sec[slot];
+        if sec <= last {
+            return;
+        }
+        let row = self.hit_row;
+        let n = (sec - last).min(HIT_BUCKETS as u64);
+        for k in 0..n {
+            let b = ((sec - k) % HIT_BUCKETS as u64) as usize;
+            let at = (slot * HIT_BUCKETS + b) * row;
+            self.window[at..at + row].fill(0);
+        }
+        self.window_sec[slot] = sec;
+    }
+
+    /// Credits one hit of switch index `sw` to slot `slot`.
+    fn credit(&mut self, slot: usize, sw: usize, tick: u64) {
+        let sec = tick / HIT_BUCKET_TICKS;
+        self.advance_window(slot, sec);
+        let row = self.hit_row;
+        let total = &mut self.hits[slot * row + sw];
+        *total = total.saturating_add(1);
+        let b = (sec % HIT_BUCKETS as u64) as usize;
+        let w = &mut self.window[(slot * HIT_BUCKETS + b) * row + sw];
+        *w = w.saturating_add(1);
+    }
+
+    /// Credits the rising coverage switches in `rising` to the balls on
+    /// the table: to the nearest ball (ties to the lowest slot) when the
+    /// switch has a position, else to every ball.
+    fn credit_hits(&mut self, rising: &[u64; 4], tick: u64) {
+        for k in 0..self.hit_switches.len() {
+            let (sw, pos) = self.hit_switches[k];
+            if !bit(rising, sw) {
+                continue;
+            }
+            if let Some(q) = pos {
+                let mut best: Option<(f32, usize)> = None;
+                for (slot, t) in self.tracks.iter().enumerate() {
+                    let Some(t) = t else { continue };
+                    let d =
+                        glam::Vec2::new(t.last.position_m[0] - q[0], t.last.position_m[1] - q[1])
+                            .length();
+                    // A non-finite distance never wins over a finite one.
+                    let d = if d.is_finite() { d } else { f32::INFINITY };
+                    if best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, slot));
+                    }
+                }
+                if let Some((_, slot)) = best {
+                    self.credit(slot, sw, tick);
+                }
+            } else {
+                for slot in 0..MAX_BALLS {
+                    if self.tracks[slot].is_some() {
+                        self.credit(slot, sw, tick);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Raises [`FindingKind::EndlessBall`] for every ball older than the
+    /// endless limit.
+    fn observe_endless(&mut self, tick: u64) {
+        for slot in 0..MAX_BALLS {
+            if let Some(t) = self.tracks[slot]
+                && !t.endless
+                && !t.stuck
+                && tick.saturating_sub(t.first_tick) > self.endless_ticks
+            {
+                let why = format!(
+                    "on the table longer than the {} ms limit",
+                    self.endless_ticks
+                );
+                self.raise_endless(slot, tick, &why);
+            }
+        }
+    }
+
+    /// Raises [`FindingKind::EndlessBall`] for every ball still on the
+    /// table that has none yet and is not reported stuck. The soak calls
+    /// this when it stops a game at `max_game_ticks`.
+    pub fn end_at_cap(&mut self, sim: &Simulation) {
+        let tick = sim.tick();
+        for slot in 0..MAX_BALLS {
+            if let Some(t) = self.tracks[slot]
+                && !t.endless
+                && !t.stuck
+            {
+                self.raise_endless(
+                    slot,
+                    tick,
+                    "still in play when the game reached max_game_ticks",
+                );
+            }
+        }
+    }
+
+    /// The coverage switch indices with their counts in `counts` (one hit
+    /// row), most hits first, ties to the lowest index; zero counts left
+    /// out.
+    fn ranked(&self, counts: &[u64]) -> Vec<(usize, u64)> {
+        let mut v: Vec<(usize, u64)> = self
+            .hit_switches
+            .iter()
+            .map(|&(sw, _)| (sw, counts[sw]))
+            .filter(|&(_, n)| n > 0)
+            .collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v
+    }
+
+    fn switch_label(&self, sw: usize) -> String {
+        self.info
+            .switches
+            .iter()
+            .find(|s| s.id.index() == sw)
+            .map_or_else(|| format!("switch {sw}"), |s| s.name.clone())
+    }
+
+    fn raise_endless(&mut self, slot: usize, tick: u64, why: &str) {
+        let Some(mut t) = self.tracks[slot] else {
+            return;
+        };
+        t.endless = true;
+        self.tracks[slot] = Some(t);
+        self.advance_window(slot, tick / HIT_BUCKET_TICKS);
+        let row = self.hit_row;
+        let total: Vec<u64> = self.hits[slot * row..(slot + 1) * row]
+            .iter()
+            .map(|&n| u64::from(n))
+            .collect();
+        let mut recent = vec![0u64; row];
+        for b in 0..HIT_BUCKETS {
+            let at = (slot * HIT_BUCKETS + b) * row;
+            for (r, &n) in recent.iter_mut().zip(&self.window[at..at + row]) {
+                *r += u64::from(n);
+            }
+        }
+        let p = Vec3::from_array(t.last.position_m);
+        let subject = self
+            .ranked(&total)
+            .first()
+            .map_or_else(|| self.info.subject_at(p), |&(sw, _)| self.switch_label(sw));
+        let recent = self.ranked(&recent);
+        let list = if recent.is_empty() {
+            "none".to_owned()
+        } else {
+            recent
+                .iter()
+                .map(|&(sw, n)| format!("{} x{n}", self.switch_label(sw)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let age = tick.saturating_sub(t.first_tick);
+        self.push(
+            FindingKind::EndlessBall,
+            subject,
+            tick,
+            format!(
+                "ball in slot {} {why}: {age} ms on the table, last at {}; switches hit in the last 60 s: {list}",
+                t.handle.slot(),
+                fmt_mm(p)
+            ),
+        );
     }
 
     fn observe_modes(&mut self, sim: &Simulation) {
@@ -485,7 +771,9 @@ impl<'t> GameMonitor<'t> {
         );
     }
 
-    /// Ends the game: queue-overflow findings, switch hits and counters.
+    /// Ends the game: queue-overflow findings, switch hits, counters, and
+    /// the observed ages of the balls still on the table (censored ball
+    /// times).
     #[must_use]
     pub fn finish(mut self, sim: &Simulation) -> GameOutcome {
         let tick = sim.tick();
@@ -512,12 +800,19 @@ impl<'t> GameMonitor<'t> {
             .coverage_switches()
             .map(|s| u64::from(sim.switch_hits(&s.name).unwrap_or(0)))
             .collect();
+        let censored = self
+            .tracks
+            .iter()
+            .flatten()
+            .map(|t| i64::try_from(tick.saturating_sub(t.first_tick)).unwrap_or(i64::MAX))
+            .collect();
         GameOutcome {
             findings: self.findings,
             switch_hits,
             shot_counts: self.shot_counts,
             mode_starts: self.mode_starts,
             ball_times_ms: self.ball_times,
+            censored_ball_times_ms: censored,
             counters: CounterTotals {
                 edges_dropped: u64::from(c.edges_dropped),
                 haptics_dropped: u64::from(c.haptics_dropped),

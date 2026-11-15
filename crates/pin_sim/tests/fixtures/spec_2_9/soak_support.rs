@@ -46,9 +46,11 @@ pub fn soak(bundle: &Path, c: SoakConfig) -> SoakReport {
     })
 }
 
-/// The brief's finding kinds, by name.
-pub const KINDS: [&str; 9] = [
+/// The brief's finding kinds, by name (EndlessBall added by work item
+/// A1-endless-detector).
+pub const KINDS: [&str; 10] = [
     "StuckBall",
+    "EndlessBall",
     "EscapedBall",
     "NonFinite",
     "UnreachableSwitch",
@@ -63,6 +65,8 @@ pub const KINDS: [&str; 9] = [
 pub fn kind_name(k: &FindingKind) -> &'static str {
     if matches!(k, FindingKind::StuckBall) {
         "StuckBall"
+    } else if matches!(k, FindingKind::EndlessBall) {
+        "EndlessBall"
     } else if matches!(k, FindingKind::EscapedBall) {
         "EscapedBall"
     } else if matches!(k, FindingKind::NonFinite) {

@@ -5,7 +5,7 @@
 #[path = "fixtures/autoplay/support.rs"]
 mod support;
 
-use pin_sim::autoplay::{FindingKind, SoakReport, run_soak};
+use pin_sim::autoplay::{FindingKind, GameEnd, SkillLevel, SoakReport, run_soak};
 use pin_sim::cli::{CliError, SOAK_JSON, SOAK_MARKDOWN, main_with_args};
 use support::*;
 
@@ -18,8 +18,23 @@ fn subjects(r: &SoakReport, kind: FindingKind) -> Vec<String> {
     r.findings_of(kind).map(|f| f.subject.clone()).collect()
 }
 
-fn kinds(r: &SoakReport) -> Vec<FindingKind> {
-    let mut k: Vec<FindingKind> = r.findings.iter().map(|f| f.kind).collect();
+/// The finding kinds of `r` (consecutive repeats merged) without the EndlessBall findings
+/// that work item A1-endless-detector requires for a game stopped at the
+/// `cap` with a ball in play, after checking that every EndlessBall is
+/// exactly such a finding: at the cap tick, of a game that ended there.
+fn kinds_besides_cap_endless(r: &SoakReport, cap: u64) -> Vec<FindingKind> {
+    for f in r.findings_of(FindingKind::EndlessBall) {
+        assert_eq!(f.tick, cap, "{f:?}");
+        assert!(f.detail.contains("reached max_game_ticks"), "{f:?}");
+        let g = &r.game_list[f.game as usize];
+        assert!(g.end == GameEnd::MaxTicks && g.ticks == cap, "{g:?}");
+    }
+    let mut k: Vec<FindingKind> = r
+        .findings
+        .iter()
+        .map(|f| f.kind)
+        .filter(|k| *k != FindingKind::EndlessBall)
+        .collect();
     k.dedup();
     k
 }
@@ -27,6 +42,16 @@ fn kinds(r: &SoakReport) -> Vec<FindingKind> {
 /// Runs `pin_sim soak` in-process on `name`; returns the result and the
 /// two report files.
 fn cli(name: &str, games: u32, max_ticks: u64) -> (Result<String, CliError>, String, String) {
+    cli_at(name, games, max_ticks, "standard")
+}
+
+/// [`cli`] at bot skill `skill`.
+fn cli_at(
+    name: &str,
+    games: u32,
+    max_ticks: u64,
+    skill: &str,
+) -> (Result<String, CliError>, String, String) {
     let out = scratch(&format!("cli_{name}"));
     let args: Vec<String> = [
         "soak",
@@ -36,7 +61,7 @@ fn cli(name: &str, games: u32, max_ticks: u64) -> (Result<String, CliError>, Str
         "--seed",
         "1",
         "--skill",
-        "standard",
+        skill,
         "--threads",
         "2",
         "--max-ticks",
@@ -135,7 +160,7 @@ fn hidden_switch_is_the_only_unreachable_one() {
     );
     assert_eq!(r.never_hit(), ["hidden_opto"]);
     assert_eq!(
-        kinds(&r),
+        kinds_besides_cap_endless(&r, 60_000),
         [FindingKind::UnreachableSwitch],
         "{:?}",
         r.findings
@@ -180,7 +205,7 @@ fn script_error_names_the_mode_and_the_unstarted_mode() {
     }
     assert_eq!(subjects(&r, FindingKind::ModeCoverage), ["wizard"]);
     assert_eq!(
-        kinds(&r)
+        kinds_besides_cap_endless(&r, 60_000)
             .into_iter()
             .filter(|k| *k != FindingKind::ScriptError)
             .collect::<Vec<_>>(),
@@ -212,10 +237,26 @@ fn script_error_names_the_mode_and_the_unstarted_mode() {
     );
 }
 
+/// The clean fixture plays to game over and passes with zero findings.
+///
+/// Work item A1-endless-detector: a game stopped at `max_game_ticks` with a
+/// ball in play is now an EndlessBall finding, and a Standard bot on this
+/// easy table keeps a ball up for more than the 300 s endless limit, so the
+/// soak runs at Novice skill with the default 600 000-tick cap, where every
+/// game ends by game over (asserted) and the zero-findings check is exact.
 #[test]
 fn clean_fixture_passes_with_full_coverage() {
-    let r = on_sim_thread(|| run_soak(&fixture("clean"), &cfg(6, 1, 60_000)).unwrap());
+    let mut c = cfg(6, 1, 600_000);
+    c.skill = SkillLevel::Novice;
+    c.threads = 3;
+    let r = on_sim_thread(move || run_soak(&fixture("clean"), &c).unwrap());
     assert!(r.findings.is_empty(), "{:?}", r.findings);
+    assert!(
+        r.game_list.iter().all(|g| g.end == GameEnd::GameOver),
+        "{:?}",
+        r.game_list
+    );
+    assert_eq!(r.ball_time_censored, 0);
     assert!(r.passed() && r.coverage_complete());
     assert!(r.never_hit().is_empty());
     assert!(
@@ -232,7 +273,7 @@ fn clean_fixture_passes_with_full_coverage() {
     assert_eq!(r.game_list.len(), 6);
     assert_eq!(r.game_score.count, 6);
 
-    let (res, json, md) = cli("clean", 6, 60_000);
+    let (res, json, md) = cli_at("clean", 6, 600_000, "novice");
     let text = res.expect("the clean fixture passes");
     assert!(
         text.contains("0 findings, coverage complete -> PASS"),
