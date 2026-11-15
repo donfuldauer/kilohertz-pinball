@@ -22,8 +22,8 @@
 //! (`g` the solver's gravity vector: the pitch is in it, so `−m g·p` is
 //! `m g h` along the pitch plus the normal component; position, velocity
 //! and spin from the public [`Simulation::ball`] state; the spin *is*
-//! exposed, so no rolling-ball 7/5 bound is needed) must not exceed its
-//! start value by more than `1e-6 J + N(t)`, where `N(t)` is the f32
+//! exposed, so no rolling-ball 7/5 bound is needed) must not exceed the
+//! lowest value recorded at any earlier tick (the start included) by more than `1e-6 J + N(t)`, where `N(t)` is the f32
 //! rounding bound derived at [`rounding_bound`]. Collisions with static
 //! geometry, flippers at rest, mechs at rest and other balls are counted:
 //! they may only dissipate (energy handed to a movable body at rest, such as
@@ -35,6 +35,19 @@
 //! energise edges). If anything fires, the energy reference restarts after
 //! the activity ends, so the assertion covers only coil-free windows; the
 //! count of such ticks is printed (it is 0 in attract mode).
+//!
+//! Newton chains: the energy of a captive ball is outside `E`, and the
+//! captive model has no single conserved energy. Impulses use the captive
+//! mass `m`, so `1/2 m u^2` is conserved in the exchange, but gravity along
+//! the captive's path is scaled by 5/7, so `7/10 m u^2` is conserved in
+//! rolling. A free ball that hits a captive one can therefore get energy
+//! back from the captive (and its end stop) without any violation. Ticks
+//! with any captive ball faster than `CAPTIVE_ACTIVE_M_S`, or a free ball
+//! within `2r + 0.1 mm` of a captive ball, are excluded exactly like coil
+//! windows (the count is printed). A second reason is a deferred pin_physics
+//! defect (a frozen ball at a receding captive still gets full gravity),
+//! see DECISIONS "a1-bundle-passive — Newton captive windows excluded;
+//! receding-captive gravity defect deferred"; this test does not cover it.
 //!
 //! Simulated time only (rule 5); deterministic (D9).
 
@@ -53,6 +66,10 @@ const BALL_R_MM: f32 = 13.5;
 
 /// 5 simulated seconds.
 const TICKS: u64 = 5000;
+
+/// Captive speed above which a Newton chain counts as active, m/s (the end
+/// stop hold leaves about 2.9e-4 m/s).
+const CAPTIVE_ACTIVE_M_S: f64 = 1.0e-3;
 
 /// Fixed part of the tolerance, J (the brief).
 const TOL_J: f64 = 1.0e-6;
@@ -150,6 +167,8 @@ struct SceneResult {
     e0: f64,
     /// Largest `E(t) − E_ref` seen, J.
     max_rise: f64,
+    /// Tick (1-based) at which `max_rise` was seen.
+    tick_at_max: u64,
     /// The tolerance at the tick of `max_rise` (`1e-6 + N(t)`), J.
     tol_at_max: f64,
     /// Largest `E(t) − E_ref − tol(t)` (must be ≤ 0).
@@ -165,6 +184,9 @@ struct SceneResult {
     ticks: u64,
     /// Ticks with a coil on or a haptic event (excluded windows).
     coil_ticks: u64,
+    /// Ticks with a Newton captive moving or a free ball touching one
+    /// (excluded windows; may overlap `coil_ticks`).
+    chain_ticks: u64,
 }
 
 /// Spawns `balls` (position, velocity) on layer 0, runs up to [`TICKS`]
@@ -190,11 +212,20 @@ fn run_scene(s: &mut Simulation, balls: &[([f32; 3], [f32; 3])]) -> SceneResult 
         Some((e, n))
     };
     let (e0, _) = total(s).unwrap();
+    // Reference energy: the LOWEST E recorded at an earlier tick of the
+    // current coil-free window (the start tick included). A later rise above
+    // that minimum is a violation even if E stays under the start value.
+    //
+    // Noise choice: `noise` is reset to 0 whenever the minimum updates. The
+    // rise `E(t) - E_min` only spans the ticks after the minimum was taken,
+    // so the rounding errors that can account for it are the per-tick bounds
+    // summed over those ticks alone; the older ones belong to the reference.
     let mut e_ref = e0;
     let mut noise = 0.0f64;
     let mut res = SceneResult {
         e0,
         max_rise: f64::NEG_INFINITY,
+        tick_at_max: 0,
         tol_at_max: 0.0,
         worst_margin: f64::NEG_INFINITY,
         min_rel: 0.0,
@@ -202,6 +233,7 @@ fn run_scene(s: &mut Simulation, balls: &[([f32; 3], [f32; 3])]) -> SceneResult 
         max_step_rise: f64::NEG_INFINITY,
         ticks: 0,
         coil_ticks: 0,
+        chain_ticks: 0,
     };
     let mut in_coil_window = false;
     let mut e_prev = e0;
@@ -209,12 +241,37 @@ fn run_scene(s: &mut Simulation, balls: &[([f32; 3], [f32; 3])]) -> SceneResult 
         s.advance(1);
         res.ticks += 1;
         let Some((e, n)) = total(s) else { break };
+        assert!(
+            e.is_finite() && n.is_finite(),
+            "non-finite energy sample in scene {balls:?} at tick {}: E {e}, noise bound {n}",
+            res.ticks
+        );
         let step = e - e_prev;
         e_prev = e;
-        let active =
+        let coil_active =
             !s.haptic_events().is_empty() || coil_ids.iter().any(|c| s.mech_set().coil_on(*c));
-        if active {
-            res.coil_ticks += 1;
+        let mut chain_active = false;
+        for k in 0..s.solver().newton_chain_count() {
+            let chain = s.solver().newton_chain(k);
+            for j in 0..chain.len() {
+                if f64::from(chain.ball_speed(j)).abs() > CAPTIVE_ACTIVE_M_S {
+                    chain_active = true;
+                }
+                let c = chain.ball_position(j);
+                for h in &hs {
+                    let Some(b) = s.ball(*h) else { continue };
+                    let dx = f64::from(b.position_m[0] - c.x);
+                    let dy = f64::from(b.position_m[1] - c.y);
+                    let dz = f64::from(b.position_m[2] - c.z);
+                    if (dx * dx + dy * dy + dz * dz).sqrt() < 2.0 * r + 1.0e-4 {
+                        chain_active = true;
+                    }
+                }
+            }
+        }
+        res.coil_ticks += u64::from(coil_active);
+        res.chain_ticks += u64::from(chain_active);
+        if coil_active || chain_active {
             in_coil_window = true;
             continue;
         }
@@ -232,9 +289,14 @@ fn run_scene(s: &mut Simulation, balls: &[([f32; 3], [f32; 3])]) -> SceneResult 
         if rise > res.max_rise {
             res.max_rise = rise;
             res.tol_at_max = tol;
+            res.tick_at_max = res.ticks;
         }
         res.worst_margin = res.worst_margin.max(rise - tol);
         res.min_rel = res.min_rel.min(e - e0);
+        if e < e_ref {
+            e_ref = e;
+            noise = 0.0;
+        }
     }
     res.final_bound = noise;
     assert_eq!(
@@ -251,7 +313,7 @@ fn run_scene(s: &mut Simulation, balls: &[([f32; 3], [f32; 3])]) -> SceneResult 
 fn check(label: &str, r: &SceneResult) {
     println!(
         "{label}: E0 {:.6} J, max rise {:+.3e} J (tol there {:.3e} J), lowest {:+.4e} J, \
-         final N {:.3e} J, largest one-tick rise {:+.3e} J, {} ticks, {} coil ticks",
+         final N {:.3e} J, largest one-tick rise {:+.3e} J, {} ticks, {} coil ticks, {} chain ticks",
         r.e0,
         r.max_rise,
         r.tol_at_max,
@@ -259,7 +321,8 @@ fn check(label: &str, r: &SceneResult) {
         r.final_bound,
         r.max_step_rise,
         r.ticks,
-        r.coil_ticks
+        r.coil_ticks,
+        r.chain_ticks
     );
     assert!(
         r.worst_margin <= 0.0,
