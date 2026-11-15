@@ -23,3 +23,5 @@ libm.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Wave 6 additions (2.9 tester)
+serde_json.workspace = true
