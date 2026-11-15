@@ -346,11 +346,13 @@ jobs:
   # roughly 11-12 minutes of soak plus the release build (about 6 minutes cold), well beyond what
   # every push should pay. The push-time `core-tests` job already runs the analytic and rig tests.
   # Run it from the Actions tab (workflow_dispatch); a failing criterion fails the job.
+  # Timeout 45 min, the repository-wide job limit (tests/spec_ci): about 12 min of soak, 6 min of
+  # cold release build and the rig tests fit with room to spare.
   gate-a1:
     name: gate-a1 (manual)
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 45
     env:
       SDL_VIDEO_DRIVER: dummy
     steps:
