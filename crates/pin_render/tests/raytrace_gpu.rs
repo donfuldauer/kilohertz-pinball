@@ -626,10 +626,12 @@ fn raytrace_traced_ball_map_holds_the_other_ball_and_the_sky() {
     let draws = rig.draws(0.06, 0.06);
     rig.render(ctx, &mut src, &draws);
     let map = src.read_layer(ctx, 0).unwrap();
-    assert_eq!(map.width, PROBE_RESOLUTION);
+    let side = RayQueryConfig::default().map_resolution;
+    assert_eq!((map.width, map.height), (side, side));
+    assert!(side > PROBE_RESOLUTION);
     let texel = |dir: V3| {
         let uv = pin_render::reflections::oct_encode(dir);
-        let px = |u: f32| ((u * PROBE_RESOLUTION as f32) as u32).min(PROBE_RESOLUTION - 1);
+        let px = |u: f32| ((u * side as f32) as u32).min(side - 1);
         map.at(px(uv[0]), px(uv[1]))
     };
     let up = texel([0.0, 0.0, 1.0]);
@@ -1093,4 +1095,739 @@ fn raytrace_second_bounce_shows_the_panel_through_the_other_ball() {
         lean(m)
     );
     assert!(lean(m) >= 0.3, "raised cutoff: lean {}", lean(m));
+}
+
+// ---------------------------------------------------------------------
+// (g) Crisp reflected edges (DECISIONS "5.4 — ray atlas map resolution
+// (visual-checklist fix)"). A reflected hard emissive edge must land where
+// exact mirror geometry puts it, without the texel-sized steps a coarse
+// atlas gives once the PBR pass magnifies it. Analytic measures first,
+// snapshots second (D30); each scene is also rendered with the first 5.4
+// atlas (128² maps, 2×2 texels per clear-coat ray, one ray per cell) as a
+// negative control that the measures must reject.
+// ---------------------------------------------------------------------
+
+/// The first 5.4 atlas.
+fn old_atlas() -> RayQueryConfig {
+    RayQueryConfig {
+        map_resolution: 128,
+        clearcoat_block: 2,
+        supersample: 1,
+        ..RayQueryConfig::default()
+    }
+}
+
+/// Unit ray through the continuous image point `(u, v)` of a `size`²
+/// image (pixel `(x, y)` has its centre at `(x + 0.5, y + 0.5)`).
+fn ray_at(cam: &PbrCamera, size: u32, u: f32, v: f32) -> V3 {
+    let t = (0.5 * cam.fov_y).tan();
+    let nx = (2.0 * u / size as f32 - 1.0) * t * cam.aspect;
+    let ny = (1.0 - 2.0 * v / size as f32) * t;
+    let m = &cam.view;
+    let s = [m[0][0], m[1][0], m[2][0]];
+    let up = [m[0][1], m[1][1], m[2][1]];
+    let f = [-m[0][2], -m[1][2], -m[2][2]];
+    norm([
+        s[0] * nx + up[0] * ny + f[0],
+        s[1] * nx + up[1] * ny + f[1],
+        s[2] * nx + up[2] * ny + f[2],
+    ])
+}
+
+fn luminance(p: [f32; 4]) -> f32 {
+    0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]
+}
+
+/// `MeshGeometry::quad(1.0)` as a `2 hx` × `2 hy` rectangle centred at
+/// `c`, facing down (−z), edges along world x and y.
+fn down_rect(c: V3, hx: f32, hy: f32) -> [[f32; 4]; 4] {
+    [
+        [2.0 * hx, 0.0, 0.0, 0.0],
+        [0.0, -2.0 * hy, 0.0, 0.0],
+        [0.0, 0.0, -1.0, 0.0],
+        [c[0], c[1], c[2], 1.0],
+    ]
+}
+
+fn emissive(l: V3) -> MaterialParams {
+    MaterialParams {
+        emissive: l,
+        ..MaterialParams::lambert([0.0; 3])
+    }
+}
+
+/// A `size`² renderer with a finely tessellated ball and the unit quad.
+struct CrispRig {
+    pbr: PbrRenderer,
+    size: u32,
+    sphere: MeshId,
+    quad: MeshId,
+    sphere_geo: MeshGeometry,
+    quad_geo: MeshGeometry,
+}
+
+impl CrispRig {
+    fn new(ctx: &GpuContext, size: u32) -> CrispRig {
+        let mut pbr = PbrRenderer::new(ctx, size, size).unwrap();
+        let sphere_geo = MeshGeometry::uv_sphere(R, 128, 96);
+        let quad_geo = MeshGeometry::quad(1.0);
+        let sphere = pbr.upload_mesh(&sphere_geo).unwrap();
+        let quad = pbr.upload_mesh(&quad_geo).unwrap();
+        CrispRig {
+            pbr,
+            size,
+            sphere,
+            quad,
+            sphere_geo,
+            quad_geo,
+        }
+    }
+
+    /// One frame with a fresh ray-query source (black environment, no
+    /// lights); also the wall time of prepare + render (printed only, D8).
+    fn render(
+        &mut self,
+        ctx: &GpuContext,
+        quality: ReflectionQuality,
+        cfg: &RayQueryConfig,
+        cam: &PbrCamera,
+        draws: &[DrawItem],
+        balls: &[ReflectiveBall],
+    ) -> (HdrImage, f64) {
+        let meshes = [(self.sphere, &self.sphere_geo), (self.quad, &self.quad_geo)];
+        let mut src = RayQueryReflections::new(ctx, &self.pbr, quality, &meshes, cfg).unwrap();
+        let frame = FrameDesc {
+            environment: BLACK,
+            ..FrameDesc::new(cam, &[], draws)
+        };
+        let start = std::time::Instant::now();
+        src.prepare(ctx, &mut self.pbr, &frame, balls).unwrap();
+        assert!(!src.probes_bound(), "the frame must be traced");
+        let binding = src.binding();
+        let img = self
+            .pbr
+            .render_reflected_to_image(ctx, &frame, Some(&binding))
+            .unwrap();
+        let ms = start.elapsed().as_secs_f64() * 1e3;
+        assert_eq!(img.width, self.size);
+        assert!(
+            img.pixels
+                .iter()
+                .flatten()
+                .all(|c| c.is_finite() && *c >= 0.0)
+        );
+        (img, ms)
+    }
+}
+
+// --- (a) clear-coat straightness ------------------------------------------
+
+const COAT_SIZE: u32 = 160;
+const COAT_L: V3 = [8.0, 8.0, 8.0];
+
+/// A camera above a clear-coated playfield (z = 0) and an emissive panel
+/// facing down (centre, half sizes along x and y); the panel's back face is
+/// culled, so the camera sees only its mirror image in the clear coat.
+#[derive(Copy, Clone, Debug)]
+struct CoatPose {
+    eye: V3,
+    target: V3,
+    fov: f32,
+    centre: V3,
+    hx: f32,
+    hy: f32,
+}
+
+fn coat_poses() -> [CoatPose; 2] {
+    [
+        // The spec overview camera, a tall panel.
+        CoatPose {
+            eye: [0.0, -0.22, 0.25],
+            target: [0.0, 0.0, 0.01],
+            fov: 0.62,
+            centre: [0.0, 0.0, 0.032],
+            hx: 0.04,
+            hy: 0.1,
+        },
+        // Off to the side and lower: slanted edge images, a narrower panel
+        // higher up.
+        CoatPose {
+            eye: [0.07, -0.2, 0.2],
+            target: [0.0, 0.01, 0.0],
+            fov: 0.55,
+            centre: [0.01, 0.0, 0.05],
+            hx: 0.03,
+            hy: 0.11,
+        },
+    ]
+}
+
+impl CoatPose {
+    fn camera(&self) -> PbrCamera {
+        PbrCamera::look_at(
+            self.eye,
+            self.target,
+            [0.0, 0.0, 1.0],
+            self.fov,
+            1.0,
+            0.01,
+            5.0,
+        )
+    }
+
+    /// The panel-plane point the clear coat at image point `(u, v)`
+    /// mirrors (the eye mirrored in z = 0, through the playfield point):
+    /// `None` off the playfield.
+    fn mirrored(&self, cam: &PbrCamera, u: f32, v: f32) -> Option<V3> {
+        let d = ray_at(cam, COAT_SIZE, u, v);
+        if d[2] >= -1e-4 {
+            return None;
+        }
+        let q = add_scaled(cam.eye, d, -cam.eye[2] / d[2]);
+        if q[0].abs() > 0.45 || q[1].abs() > 0.45 {
+            return None;
+        }
+        let r = [d[0], d[1], -d[2]];
+        Some(add_scaled(q, r, (self.centre[2] - q[2]) / r[2]))
+    }
+
+    fn draws(&self, rig: &CrispRig) -> [DrawItem; 2] {
+        [
+            DrawItem {
+                mesh: rig.quad,
+                model: scale_translation(1.0, [0.0; 3]),
+                material: MaterialKind::PlayfieldWood.params(),
+                transparent: false,
+                emission: 0.0,
+            },
+            DrawItem {
+                mesh: rig.quad,
+                model: down_rect(self.centre, self.hx, self.hy),
+                material: emissive(COAT_L),
+                transparent: false,
+                emission: 0.0,
+            },
+        ]
+    }
+}
+
+/// The straightness of one reflected panel edge (`x = edge_x`, the middle
+/// 80 % of its length) over the image rows that cross it.
+#[derive(Copy, Clone, Debug, Default)]
+struct EdgeFit {
+    /// Rows with an analytic and a measured crossing.
+    rows: usize,
+    /// RMS and largest residual (px) of the measured crossings about their
+    /// least-squares line.
+    rms: f32,
+    max: f32,
+    /// Largest |measured − analytic| crossing (px).
+    off: f32,
+}
+
+fn fit_edge(img: &HdrImage, pose: &CoatPose, edge_x: f32) -> EdgeFit {
+    let cam = pose.camera();
+    let n = COAT_SIZE;
+    // Signed distance (m, along x) of the mirrored point from the edge, or
+    // None off the playfield or outside the middle of the edge.
+    let g = |u: f32, v: f32| -> Option<f32> {
+        let p = pose.mirrored(&cam, u, v)?;
+        ((p[1] - pose.centre[1]).abs() <= 0.8 * pose.hy).then_some(p[0] - edge_x)
+    };
+    let mut pts: Vec<(f32, f32, f32)> = Vec::new(); // (v, measured u, analytic u)
+    for y in 0..n {
+        let v = y as f32 + 0.5;
+        let mut crossings = Vec::new();
+        for x in 0..n - 1 {
+            let (u0, u1) = (x as f32 + 0.5, x as f32 + 1.5);
+            let (Some(a), Some(b)) = (g(u0, v), g(u1, v)) else {
+                continue;
+            };
+            if (a < 0.0) != (b < 0.0) {
+                let (mut lo, mut hi, a0) = (u0, u1, a);
+                for _ in 0..40 {
+                    let mid = 0.5 * (lo + hi);
+                    match g(mid, v) {
+                        Some(m) if (m < 0.0) == (a0 < 0.0) => lo = mid,
+                        _ => hi = mid,
+                    }
+                }
+                crossings.push(0.5 * (lo + hi));
+            }
+        }
+        let [want] = crossings[..] else {
+            continue;
+        };
+        // Measured: the 50 % level of the local luminance range, linearly
+        // interpolated between pixel centres; the crossing nearest the
+        // analytic one.
+        const WIN: i64 = 12;
+        let c = want.floor() as i64;
+        let (x0, x1) = ((c - WIN).max(0), (c + WIN).min(i64::from(n) - 1));
+        let l: Vec<f32> = (x0..=x1).map(|x| luminance(img.at(x as u32, y))).collect();
+        let lo = l.iter().copied().fold(f32::INFINITY, f32::min);
+        let hi = l.iter().copied().fold(0.0, f32::max);
+        assert!(
+            hi > 0.05 && hi > 10.0 * lo,
+            "row {y}: no reflected edge near u = {want} (lum {lo}..{hi})"
+        );
+        let level = 0.5 * (lo + hi);
+        let best = l
+            .windows(2)
+            .enumerate()
+            .filter_map(|(i, w)| {
+                let (a, b) = (w[0] - level, w[1] - level);
+                ((a <= 0.0) != (b <= 0.0)).then(|| (x0 + i as i64) as f32 + 0.5 + a / (a - b))
+            })
+            .min_by(|p, q| (p - want).abs().total_cmp(&(q - want).abs()));
+        if let Some(got) = best {
+            pts.push((v, got, want));
+        }
+    }
+    let m = pts.len() as f64;
+    if pts.len() < 2 {
+        return EdgeFit {
+            rows: pts.len(),
+            ..EdgeFit::default()
+        };
+    }
+    let (sv, su) = pts.iter().fold((0.0, 0.0), |(a, b), p| {
+        (a + f64::from(p.0), b + f64::from(p.1))
+    });
+    let (mv, mu) = (sv / m, su / m);
+    let (mut svv, mut svu) = (0.0, 0.0);
+    for p in &pts {
+        let dv = f64::from(p.0) - mv;
+        svv += dv * dv;
+        svu += dv * (f64::from(p.1) - mu);
+    }
+    let slope = svu / svv;
+    let res: Vec<f64> = pts
+        .iter()
+        .map(|p| f64::from(p.1) - (mu + slope * (f64::from(p.0) - mv)))
+        .collect();
+    EdgeFit {
+        rows: pts.len(),
+        rms: (res.iter().map(|r| r * r).sum::<f64>() / m).sqrt() as f32,
+        max: res.iter().fold(0.0f64, |a, r| a.max(r.abs())) as f32,
+        off: pts.iter().fold(0.0f32, |a, p| a.max((p.1 - p.2).abs())),
+    }
+}
+
+/// Renders `pose` with `cfg` and fits both edges along y.
+fn coat_edges(
+    ctx: &GpuContext,
+    rig: &mut CrispRig,
+    pose: &CoatPose,
+    cfg: &RayQueryConfig,
+) -> (HdrImage, [EdgeFit; 2], f64) {
+    let draws = pose.draws(rig);
+    let (img, ms) = rig.render(
+        ctx,
+        ReflectionQuality::BallsAndClearCoat,
+        cfg,
+        &pose.camera(),
+        &draws,
+        &[],
+    );
+    let fits = [-1.0, 1.0].map(|s| fit_edge(&img, pose, pose.centre[0] + s * pose.hx));
+    (img, fits, ms)
+}
+
+#[test]
+fn raytrace_crisp_clear_coat_edges_are_straight() {
+    let Some(ctx) = rq_ctx("crisp_clear_coat_edges") else {
+        return;
+    };
+    let mut rig = CrispRig::new(ctx, COAT_SIZE);
+    let def = RayQueryConfig::default();
+    let mut first = None;
+    for (i, pose) in coat_poses().iter().enumerate() {
+        let (img, new, ms_new) = coat_edges(ctx, &mut rig, pose, &def);
+        let (old_img, old, ms_old) = coat_edges(ctx, &mut rig, pose, &old_atlas());
+        save(&format!("raytrace_crisp_clearcoat_pose{i}"), &img);
+        save(
+            &format!("raytrace_crisp_clearcoat_pose{i}_old_atlas"),
+            &old_img,
+        );
+        println!(
+            "[crisp_clear_coat] pose {i}: default {:?} ({ms_new:.0} ms); old atlas {:?} \
+             ({ms_old:.0} ms)",
+            new, old
+        );
+        assert!(
+            new.iter().any(|f| f.rows >= 60),
+            "pose {i}: the test needs one edge over >= 60 rows: {new:?}"
+        );
+        let measured = |fits: &[EdgeFit; 2]| -> Vec<EdgeFit> {
+            fits.iter().copied().filter(|f| f.rows >= 30).collect()
+        };
+        // Measured on lavapipe at the default: worst edge RMS 0.29 px, max
+        // 0.67 px, 0.70 px from the analytic edge; the first atlas: RMS
+        // 3.15 / 4.19 px, max 6.6 / 8.3 px (DECISIONS "5.4 — ray atlas map
+        // resolution (visual-checklist fix)").
+        for (k, f) in measured(&new).iter().enumerate() {
+            assert!(
+                f.rms <= 0.35,
+                "pose {i} edge {k}: RMS residual {} px",
+                f.rms
+            );
+            assert!(f.max <= 1.0, "pose {i} edge {k}: max residual {} px", f.max);
+            assert!(
+                f.off <= 1.5,
+                "pose {i} edge {k}: {} px from the analytic reflection",
+                f.off
+            );
+        }
+        // (c) the first 5.4 atlas fails the same measure clearly: its worst
+        // edge's RMS residual is at least twice the new worst one (an edge
+        // that happens to run along its texel grid stays straight there,
+        // only displaced, so the comparison is per pose).
+        let worst = |fits: &[EdgeFit]| fits.iter().map(|f| f.rms).fold(0.0f32, f32::max);
+        let (w_new, w_old) = (worst(&measured(&new)), worst(&measured(&old)));
+        assert!(
+            w_old >= 2.0 * w_new,
+            "pose {i}: old atlas worst RMS {w_old} not >= 2x the new {w_new}"
+        );
+        first.get_or_insert(img);
+    }
+    check_snapshot(ctx, "crisp_clearcoat", &first.unwrap());
+}
+
+// --- (b) ball outline fidelity ----------------------------------------------
+
+const BALL_SIZE: u32 = 128;
+const BALL_C: V3 = [0.0, 0.0, R];
+const BALL_PANEL_Z: f32 = 0.06;
+const BALL_L: V3 = [4.0, 4.0, 4.0];
+/// Lower bound of chrome's mirror reflectance in this scene: base colour
+/// 0.9 (Schlick only raises it) times the 0.94 mirror weight of
+/// roughness 0.06 against the black irradiance.
+const BALL_MIRROR: f32 = 0.9 * 0.94;
+
+/// A camera 250 mm from the ball along `dir`, zoomed (`fov`) on the point
+/// whose mirror ray goes up into the panel's straight edge; the panel
+/// (facing down, 60 mm up) lies on one side of that edge.
+#[derive(Copy, Clone, Debug)]
+struct BallPose {
+    dir: V3,
+    fov: f32,
+    /// `true`: the edge runs along world x (panel on the +y side);
+    /// `false`: along world y (panel on the −x side).
+    edge_along_x: bool,
+}
+
+fn ball_poses() -> [BallPose; 2] {
+    [
+        BallPose {
+            dir: norm([0.25, -1.0, 1.0]),
+            fov: 0.03,
+            edge_along_x: false,
+        },
+        BallPose {
+            dir: norm([0.35, -0.7, 0.65]),
+            fov: 0.04,
+            edge_along_x: true,
+        },
+    ]
+}
+
+struct BallScene {
+    cam: PbrCamera,
+    centre: V3,
+    hx: f32,
+    hy: f32,
+}
+
+impl BallPose {
+    fn scene(&self) -> BallScene {
+        let eye = add_scaled(BALL_C, self.dir, 0.25);
+        let n_mid = norm([self.dir[0], self.dir[1], self.dir[2] + 1.0]);
+        let s = add_scaled(BALL_C, n_mid, R);
+        let d = norm(sub(s, eye));
+        let k = 2.0 * dot(d, n_mid);
+        let r = [
+            d[0] - k * n_mid[0],
+            d[1] - k * n_mid[1],
+            d[2] - k * n_mid[2],
+        ];
+        let p = add_scaled(s, r, (BALL_PANEL_Z - s[2]) / r[2]);
+        let (centre, hx, hy) = if self.edge_along_x {
+            ([p[0], p[1] + 0.15, BALL_PANEL_Z], 0.3, 0.15)
+        } else {
+            ([p[0] - 0.15, p[1], BALL_PANEL_Z], 0.15, 0.3)
+        };
+        let cam = PbrCamera::look_at(eye, s, [0.0, 0.0, 1.0], self.fov, 1.0, 0.01, 5.0);
+        BallScene {
+            cam,
+            centre,
+            hx,
+            hy,
+        }
+    }
+}
+
+impl BallScene {
+    /// Pixel `(x, y)`: `None` off the ball's disc (3 % rim margin), else
+    /// whether the exact mirror ray hits the panel.
+    fn analytic(&self, x: u32, y: u32) -> Option<bool> {
+        let d = ray_at(&self.cam, BALL_SIZE, x as f32 + 0.5, y as f32 + 0.5);
+        hit_sphere(self.cam.eye, d, BALL_C, 0.97 * R)?;
+        let t = hit_sphere(self.cam.eye, d, BALL_C, R)?;
+        let p = add_scaled(self.cam.eye, d, t);
+        let n = norm(sub(p, BALL_C));
+        let k = 2.0 * dot(d, n);
+        let r = [d[0] - k * n[0], d[1] - k * n[1], d[2] - k * n[2]];
+        if r[2] <= 1e-6 {
+            return Some(false);
+        }
+        let q = add_scaled(p, r, (BALL_PANEL_Z - p[2]) / r[2]);
+        Some((q[0] - self.centre[0]).abs() <= self.hx && (q[1] - self.centre[1]).abs() <= self.hy)
+    }
+}
+
+/// Pixel classes over the disc and the outline measures.
+#[derive(Copy, Clone, Debug, Default)]
+struct OutlineFit {
+    disc: usize,
+    mismatched: usize,
+    /// Mismatched pixels over disc pixels.
+    fraction: f64,
+    /// Mean distance (px) from each traced boundary pixel to the nearest
+    /// analytic boundary pixel.
+    boundary_mean: f64,
+    boundary_px: usize,
+}
+
+fn outline_fit(img: &HdrImage, scene: &BallScene) -> OutlineFit {
+    let n = BALL_SIZE as i64;
+    let thr = 0.5 * BALL_MIRROR * luminance([BALL_L[0], BALL_L[1], BALL_L[2], 1.0]);
+    let idx = |x: i64, y: i64| (y * n + x) as usize;
+    let mut want = vec![None; (n * n) as usize];
+    let mut got = vec![false; (n * n) as usize];
+    for y in 0..n {
+        for x in 0..n {
+            want[idx(x, y)] = scene.analytic(x as u32, y as u32);
+            got[idx(x, y)] = luminance(img.at(x as u32, y as u32)) >= thr;
+        }
+    }
+    let boundary = |class: &dyn Fn(usize) -> bool| -> Vec<(i64, i64)> {
+        let mut out = Vec::new();
+        for y in 0..n {
+            for x in 0..n {
+                if want[idx(x, y)].is_none() {
+                    continue;
+                }
+                let c = class(idx(x, y));
+                let edge = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| {
+                    let (u, v) = (x + dx, y + dy);
+                    (0..n).contains(&u)
+                        && (0..n).contains(&v)
+                        && want[idx(u, v)].is_some()
+                        && class(idx(u, v)) != c
+                });
+                if edge {
+                    out.push((x, y));
+                }
+            }
+        }
+        out
+    };
+    let a_b = boundary(&|i| want[i] == Some(true));
+    let t_b = boundary(&|i| got[i]);
+    let disc = want.iter().filter(|w| w.is_some()).count();
+    let mismatched = want
+        .iter()
+        .zip(&got)
+        .filter(|(w, g)| w.is_some_and(|w| w != **g))
+        .count();
+    let boundary_mean = t_b
+        .iter()
+        .map(|&(x, y)| {
+            a_b.iter()
+                .map(|&(u, v)| (((x - u) * (x - u) + (y - v) * (y - v)) as f64).sqrt())
+                .fold(f64::INFINITY, f64::min)
+        })
+        .sum::<f64>()
+        / t_b.len().max(1) as f64;
+    OutlineFit {
+        disc,
+        mismatched,
+        fraction: mismatched as f64 / disc.max(1) as f64,
+        boundary_mean,
+        boundary_px: t_b.len(),
+    }
+}
+
+fn ball_outline(
+    ctx: &GpuContext,
+    rig: &mut CrispRig,
+    pose: &BallPose,
+    cfg: &RayQueryConfig,
+) -> (HdrImage, OutlineFit, f64) {
+    let scene = pose.scene();
+    let draws = [
+        DrawItem {
+            mesh: rig.sphere,
+            model: scale_translation(1.0, BALL_C),
+            material: ball_material([0.0; 3], 0.06),
+            transparent: false,
+            emission: 0.0,
+        },
+        DrawItem {
+            mesh: rig.quad,
+            model: down_rect(scene.centre, scene.hx, scene.hy),
+            material: emissive(BALL_L),
+            transparent: false,
+            emission: 0.0,
+        },
+    ];
+    let ball = [ReflectiveBall {
+        position: BALL_C,
+        radius: R,
+        draw: 0,
+    }];
+    let (img, ms) = rig.render(
+        ctx,
+        ReflectionQuality::BallsOnly,
+        cfg,
+        &scene.cam,
+        &draws,
+        &ball,
+    );
+    let fit = outline_fit(&img, &scene);
+    (img, fit, ms)
+}
+
+#[test]
+fn raytrace_crisp_ball_outline_follows_the_analytic_reflection() {
+    let Some(ctx) = rq_ctx("crisp_ball_outline") else {
+        return;
+    };
+    let mut rig = CrispRig::new(ctx, BALL_SIZE);
+    let def = RayQueryConfig::default();
+    let mut first = None;
+    for (i, pose) in ball_poses().iter().enumerate() {
+        let (img, new, ms_new) = ball_outline(ctx, &mut rig, pose, &def);
+        let (old_img, old, ms_old) = ball_outline(ctx, &mut rig, pose, &old_atlas());
+        save(&format!("raytrace_crisp_ball_pose{i}"), &img);
+        save(&format!("raytrace_crisp_ball_pose{i}_old_atlas"), &old_img);
+        println!(
+            "[crisp_ball] pose {i}: default {new:?} ({ms_new:.0} ms); old atlas {old:?} \
+             ({ms_old:.0} ms)"
+        );
+        let px = (BALL_SIZE * BALL_SIZE) as usize;
+        assert!(new.disc >= px / 2, "pose {i}: disc {} px", new.disc);
+        assert!(
+            new.boundary_px >= BALL_SIZE as usize / 2,
+            "pose {i}: the outline must cross the view ({} px)",
+            new.boundary_px
+        );
+        // Measured on lavapipe at the default: at most 0.0005 of the disc
+        // and 0.031 px; the first atlas: 0.0063 / 0.43 px and 0.0038 /
+        // 0.24 px (DECISIONS "5.4 — ray atlas map resolution
+        // (visual-checklist fix)").
+        assert!(
+            new.fraction <= 0.002,
+            "pose {i}: {:.4} of the disc mismatched",
+            new.fraction
+        );
+        assert!(
+            new.boundary_mean <= 0.2,
+            "pose {i}: mean boundary distance {} px",
+            new.boundary_mean
+        );
+        // (c) the first 5.4 atlas is measurably worse.
+        assert!(
+            old.fraction >= 2.0 * new.fraction && old.mismatched >= 2 * new.mismatched + 20,
+            "pose {i}: old atlas mismatch {old:?} not clearly above the new {new:?}"
+        );
+        assert!(
+            old.boundary_mean >= 2.0 * new.boundary_mean,
+            "pose {i}: old atlas boundary distance {} not >= 2x the new {}",
+            old.boundary_mean,
+            new.boundary_mean
+        );
+        first.get_or_insert(img);
+    }
+    check_snapshot(ctx, "crisp_ball", &first.unwrap());
+}
+
+/// (c) The config reproduces the first 5.4 atlas: 128² layers, and the
+/// clear-coat layer in 2×2 blocks of one ray.
+#[test]
+fn raytrace_old_atlas_config_reproduces_the_first_atlas() {
+    let Some(ctx) = rq_ctx("old_atlas_config") else {
+        return;
+    };
+    let mut rig = Rig::new(ctx);
+    let mut src = RayQueryReflections::new(
+        ctx,
+        &rig.pbr,
+        ReflectionQuality::BallsAndClearCoat,
+        &rig.meshes(),
+        &old_atlas(),
+    )
+    .unwrap();
+    let draws = rig.draws(0.06, 0.06);
+    rig.render(ctx, &mut src, &draws);
+    let coat = src.read_layer(ctx, CLEARCOAT_LAYER).unwrap();
+    assert_eq!((coat.width, coat.height), (128, 128));
+    for by in 0..64 {
+        for bx in 0..64 {
+            let p = coat.at(2 * bx, 2 * by);
+            for (dx, dy) in [(1, 0), (0, 1), (1, 1)] {
+                assert_eq!(coat.at(2 * bx + dx, 2 * by + dy), p, "block {bx},{by}");
+            }
+        }
+    }
+    let ball = src.read_layer(ctx, 0).unwrap();
+    assert_eq!((ball.width, ball.height), (128, 128));
+    // The default traces every clear-coat texel: neighbours differ somewhere
+    // inside a 2×2 block.
+    let mut src = ray_source(ctx, &rig, ReflectionQuality::BallsAndClearCoat);
+    rig.render(ctx, &mut src, &draws);
+    let coat = src.read_layer(ctx, CLEARCOAT_LAYER).unwrap();
+    let n = RayQueryConfig::default().map_resolution;
+    assert_eq!((coat.width, coat.height), (n, n));
+    let split = (0..n / 2)
+        .flat_map(|by| (0..n / 2).map(move |bx| (bx, by)))
+        .any(|(bx, by)| coat.at(2 * bx, 2 * by) != coat.at(2 * bx + 1, 2 * by));
+    assert!(split, "default clear coat is not traced per texel");
+}
+
+/// An unusable map resolution is declined with the reason, never a panic.
+#[test]
+fn raytrace_new_declines_an_unusable_map_resolution() {
+    let Some(ctx) = rq_ctx("declines_unusable_map_resolution") else {
+        return;
+    };
+    let rig = Rig::new(ctx);
+    let max = ctx.device().limits().max_texture_dimension_2d;
+    for n in [0, 100, max.next_power_of_two() * 2] {
+        let cfg = RayQueryConfig {
+            map_resolution: n,
+            ..RayQueryConfig::default()
+        };
+        let e = RayQueryReflections::new(
+            ctx,
+            &rig.pbr,
+            ReflectionQuality::BallsOnly,
+            &rig.meshes(),
+            &cfg,
+        )
+        .err()
+        .unwrap();
+        assert!(matches!(e, RayQueryError::InvalidConfig(_)), "{e}");
+        assert!(e.to_string().contains("map_resolution"), "{e}");
+        // The selector falls back to probes.
+        let src = select_reflection_source(
+            ctx,
+            ReflectionQuality::BallsOnly,
+            &rig.pbr,
+            &rig.meshes(),
+            &cfg,
+        );
+        assert_eq!(src.name(), "octahedral-probes");
+    }
 }

@@ -6,14 +6,14 @@ use super::plan::{
     instance_record, mesh_top, plan_layers, tlas_transform, validate_mesh,
 };
 use super::select::FallbackReason;
-use super::{RAY_QUERY_FEATURE, RayQueryConfig, ReflectionQuality, TRACE_SOURCE};
+use super::{RAY_QUERY_FEATURE, RayQueryConfig, ReflectionQuality, TRACE_SOURCE, validate_config};
 use crate::gpu::{GpuContext, GpuError};
 use crate::pbr::{
     FrameDesc, HDR_FORMAT, HdrImage, MAX_LIGHTS, MeshGeometry, MeshId, PbrRenderer,
     ReflectionBinding,
 };
 use crate::reflections::{
-    MAX_PROBES, OctahedralProbes, PROBE_RESOLUTION, ProbeStats, ReflectionSource, ReflectiveBall,
+    MAX_PROBES, OctahedralProbes, ProbeStats, ReflectionSource, ReflectiveBall,
 };
 use core::fmt;
 use std::collections::HashMap;
@@ -68,6 +68,9 @@ pub enum RayQueryError {
     QualityOff,
     /// A static mesh cannot become an acceleration structure.
     InvalidMesh(String),
+    /// The [`RayQueryConfig`] cannot be used on this device
+    /// ([`validate_config`](super::validate_config) gives the reason).
+    InvalidConfig(String),
     /// Creating the GPU objects failed.
     Gpu(GpuError),
 }
@@ -78,7 +81,9 @@ impl RayQueryError {
         match self {
             RayQueryError::FeatureAbsent { .. } => FallbackReason::FeatureAbsent,
             RayQueryError::QualityOff => FallbackReason::QualityOff,
-            RayQueryError::InvalidMesh(_) | RayQueryError::Gpu(_) => FallbackReason::RuntimeError,
+            RayQueryError::InvalidMesh(_)
+            | RayQueryError::InvalidConfig(_)
+            | RayQueryError::Gpu(_) => FallbackReason::RuntimeError,
         }
     }
 }
@@ -93,6 +98,7 @@ impl fmt::Display for RayQueryError {
             ),
             RayQueryError::QualityOff => f.write_str("reflection quality is off"),
             RayQueryError::InvalidMesh(e) => write!(f, "static mesh rejected: {e}"),
+            RayQueryError::InvalidConfig(e) => write!(f, "ray-query config rejected: {e}"),
             RayQueryError::Gpu(e) => write!(f, "ray-query setup failed: {e}"),
         }
     }
@@ -142,6 +148,19 @@ pub(crate) fn trace_tune(config: &RayQueryConfig) -> [f32; 4] {
     ]
 }
 
+/// The `counts` vector of the trace uniform: x light count, y map side
+/// (texels, [`RayQueryConfig::map_resolution`]), z job count, w rays per
+/// ray cell ([`RayQueryConfig::supersample`]).
+pub(crate) fn trace_counts(config: &RayQueryConfig, lights: u32, jobs: u32) -> [u32; 4] {
+    [lights, config.map_resolution, jobs, config.supersample]
+}
+
+/// Ray cell side (texels; `mode.z` of a trace job): the clear-coat block
+/// for a job planned at reduced resolution, 1 otherwise.
+pub(crate) fn cell_block(config: &RayQueryConfig, half_res: bool) -> u32 {
+    if half_res { config.clearcoat_block } else { 1 }
+}
+
 /// Byte size of the trace uniform (checked against the WGSL layout).
 pub(crate) const TRACE_PARAMS_SIZE: usize = core::mem::size_of::<TraceParams>();
 
@@ -158,10 +177,13 @@ struct StaticMesh {
 /// Each frame ([`prepare`](ReflectionSource::prepare)) refits one TLAS
 /// over every draw whose mesh was registered (balls, flippers, other
 /// moving meshes by their transforms), then one compute dispatch traces the
-/// octahedral reflection map of every ball (full [`PROBE_RESOLUTION`]) and,
-/// with [`ReflectionQuality::BallsAndClearCoat`], of the playfield clear
-/// coat (half resolution) into its own atlas, which the PBR pass samples
-/// through the unchanged [`ReflectionBinding`]. Surfaces rougher than
+/// octahedral reflection map of every ball and, with
+/// [`ReflectionQuality::BallsAndClearCoat`], of the playfield clear coat
+/// into its own atlas ([`RayQueryConfig::map_resolution`]² texels per
+/// layer, [`RayQueryConfig::supersample`] rays per ray cell, one cell per
+/// texel for balls and [`RayQueryConfig::clearcoat_block`]² texels for the
+/// clear coat), which the PBR pass samples through the unchanged
+/// [`ReflectionBinding`]. Surfaces rougher than
 /// [`RayQueryConfig::ray_roughness_cutoff`] use the probe result: when no
 /// surface of a frame is at or below the cutoff the frame runs the inner
 /// [`OctahedralProbes`] and binds them (output identical to the probe
@@ -253,8 +275,9 @@ impl RayQueryReflections {
     /// `Err` with the reason when the device lacks [`RAY_QUERY_FEATURE`]
     /// (create the context with
     /// [`GpuContext::new_headless_with_features`]), for
-    /// [`ReflectionQuality::Off`], for an unusable mesh, or when a GPU
-    /// object cannot be created; the caller then uses the probe path
+    /// [`ReflectionQuality::Off`], for an unusable mesh, for a config that
+    /// [`validate_config`](super::validate_config) rejects on this device,
+    /// or when a GPU object cannot be created; the caller then uses the probe path
     /// ([`select_reflection_source`](super::select_reflection_source) does
     /// that).
     pub fn new(
@@ -273,6 +296,8 @@ impl RayQueryReflections {
         if quality == ReflectionQuality::Off {
             return Err(RayQueryError::QualityOff);
         }
+        validate_config(config, device.limits().max_texture_dimension_2d)
+            .map_err(RayQueryError::InvalidConfig)?;
         for (_, m) in meshes {
             validate_mesh(m).map_err(RayQueryError::InvalidMesh)?;
         }
@@ -281,8 +306,8 @@ impl RayQueryReflections {
         let atlas = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("raytrace atlas"),
             size: wgpu::Extent3d {
-                width: PROBE_RESOLUTION,
-                height: PROBE_RESOLUTION,
+                width: config.map_resolution,
+                height: config.map_resolution,
                 depth_or_array_layers: RAY_ATLAS_LAYERS,
             },
             mip_level_count: 1,
@@ -585,7 +610,8 @@ impl RayQueryReflections {
         }
     }
 
-    /// Reads atlas layer `layer` back (`PROBE_RESOLUTION`², linear; the
+    /// Reads atlas layer `layer` back
+    /// ([`RayQueryConfig::map_resolution`]², linear; the
     /// octahedral layout of [`oct_decode`](crate::reflections::oct_decode)).
     pub fn read_layer(&self, ctx: &GpuContext, layer: u32) -> Result<HdrImage, GpuError> {
         if layer >= RAY_ATLAS_LAYERS {
@@ -652,11 +678,11 @@ impl RayQueryReflections {
                 RayJobKind::Plane { point, normal } => JobGpu {
                     a: [point[0], point[1], point[2], 0.0],
                     b: [normal[0], normal[1], normal[2], 0.0],
-                    mode: [2, job.layer, if job.half_res { 2 } else { 1 }, 0],
+                    mode: [2, job.layer, cell_block(&self.config, job.half_res), 0],
                 },
             };
         }
-        p.counts = [n_lights as u32, PROBE_RESOLUTION, n_jobs as u32, 0];
+        p.counts = trace_counts(&self.config, n_lights as u32, n_jobs as u32);
         p.tune = trace_tune(&self.config);
     }
 
@@ -770,7 +796,7 @@ impl RayQueryReflections {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, self.trace_bind.as_ref(), &[]);
-            let groups = PROBE_RESOLUTION.div_ceil(8);
+            let groups = self.config.map_resolution.div_ceil(8);
             pass.dispatch_workgroups(groups, groups, jobs);
         }
         queue.submit([encoder.finish()]);
