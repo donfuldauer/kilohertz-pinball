@@ -23,7 +23,19 @@ fn quality_text_roundtrip() {
     for (q, n) in ReflectionQuality::ALL.into_iter().zip(names) {
         assert_eq!(q.to_string(), n);
         assert_eq!(n.parse::<ReflectionQuality>(), Ok(q));
-        assert_eq!(format!("  {} ", n.to_uppercase()).parse(), Ok(q));
+        // Exact match, like the serde form: no trimming, no case folding.
+        for bad in [
+            format!("  {n} "),
+            format!("{n} "),
+            format!(" {n}"),
+            n.to_uppercase(),
+            format!("  {} ", n.to_uppercase()),
+        ] {
+            assert_eq!(
+                bad.parse::<ReflectionQuality>(),
+                Err(ParseReflectionQualityError(bad.clone()))
+            );
+        }
     }
     let e = "ball".parse::<ReflectionQuality>().unwrap_err();
     assert_eq!(e, ParseReflectionQualityError("ball".into()));
@@ -49,7 +61,7 @@ proptest! {
     #[test]
     fn quality_parse_is_total_and_canonical(s in ".{0,24}") {
         match s.parse::<ReflectionQuality>() {
-            Ok(q) => prop_assert!(q.as_str().eq_ignore_ascii_case(s.trim())),
+            Ok(q) => prop_assert!(q.as_str() == s),
             Err(e) => prop_assert_eq!(e.0, s),
         }
     }
@@ -589,4 +601,38 @@ fn survey_constants() {
     let c = RayQueryConfig::default();
     assert_eq!(c.probes, crate::reflections::ProbeConfig::default());
     assert!(c.max_distance > 1.0 && c.origin_offset > 0.0 && c.plane_offset > 0.0);
+}
+
+// ---------------------------------------------------------------------
+// Trace uniform: tune
+// ---------------------------------------------------------------------
+
+#[test]
+fn trace_tune_carries_the_roughness_cutoff_in_w() {
+    let d = RayQueryConfig::default();
+    let t = source::trace_tune(&d);
+    assert_eq!(t, [d.max_distance, d.origin_offset, d.plane_offset, 0.3]);
+    for c in [0.0, 0.2, 0.5, 1.0] {
+        let cfg = RayQueryConfig {
+            ray_roughness_cutoff: c,
+            ..d
+        };
+        assert_eq!(source::trace_tune(&cfg)[3].to_bits(), c.to_bits());
+    }
+    // NaN passes through (the shader's `<=` is then false: never traces).
+    let nan = RayQueryConfig {
+        ray_roughness_cutoff: f32::NAN,
+        ..d
+    };
+    assert!(source::trace_tune(&nan)[3].is_nan());
+    // The shader reads the cutoff from tune.w.
+    assert!(TRACE_SOURCE.contains("let cutoff = params.tune.w;"));
+}
+
+proptest! {
+    #[test]
+    fn trace_tune_w_roundtrips_any_cutoff(c in -1.0f32..2.0) {
+        let cfg = RayQueryConfig { ray_roughness_cutoff: c, ..RayQueryConfig::default() };
+        prop_assert_eq!(source::trace_tune(&cfg)[3].to_bits(), c.to_bits());
+    }
 }

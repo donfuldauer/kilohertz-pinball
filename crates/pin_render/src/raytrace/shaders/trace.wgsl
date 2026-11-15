@@ -14,8 +14,14 @@
 //                    (the eye mirrored in the plane), half resolution.
 // A ray that misses returns the environment, so a map never goes black.
 // Hits are shaded like pbr_forward's `shade` (frame point lights, here
-// unshadowed and unclustered; ambient from the environment) with the
-// environment as the mirror term at the hit: one bounce, no further rays.
+// unshadowed and unclustered; ambient from the environment). At a
+// mirror-like hit (roughness, or clear-coat roughness with a clear coat, at
+// or below the ray roughness cutoff, `params.tune.w`) the mirror term is one
+// further traced ray, whose own hit uses the environment as its mirror term:
+// two bounces at most, so a chrome ball seen in another chrome ball shows
+// that ball's reflections. Rougher hits use the environment as the mirror
+// term (one bounce). WGSL has no recursion, so the two bounces are two
+// functions with their own ray queries.
 
 const TRACE_MAX_LIGHTS: u32 = 128u;
 const TRACE_MAX_JOBS: u32 = 17u;
@@ -52,7 +58,8 @@ struct TraceParams {
     // x: light count, y: map side (texels), z: job count, w unused.
     counts: vec4<u32>,
     // x: ray t_max (m), y: origin offset (fraction of the ball radius),
-    // z: plane origin offset (m), w unused.
+    // z: plane origin offset (m), w: ray roughness cutoff (a hit at or
+    // below it gets a second traced bounce).
     tune: vec4<f32>,
     jobs: array<TraceJob, 17>,
     lights: array<TraceLight, 128>,
@@ -126,9 +133,14 @@ fn hit_normal(hit: RayIntersection, dir: vec3<f32>) -> vec3<f32> {
     return n;
 }
 
-// One-bounce radiance leaving a hit towards the ray origin: pbr_forward's
-// shading model with the environment as the mirror term.
-fn shade_hit(origin: vec3<f32>, dir: vec3<f32>, hit: RayIntersection) -> vec3<f32> {
+// Second-bounce origin offset along the hit normal and t_min (m), against
+// self-intersection on tessellated meshes.
+const SECOND_BOUNCE_EPS: f32 = 1e-4;
+
+// Radiance leaving a hit towards the ray origin: pbr_forward's shading
+// model with `mirror` (the radiance arriving along the mirror direction
+// reflect(dir, n)) as the mirror term of the base and clear-coat lobes.
+fn shade_hit_with(origin: vec3<f32>, dir: vec3<f32>, hit: RayIntersection, mirror: vec3<f32>) -> vec3<f32> {
     let inst = instances[hit.instance_custom_data];
     let n = hit_normal(hit, dir);
     let pos = origin + dir * hit.t;
@@ -187,10 +199,10 @@ fn shade_hit(origin: vec3<f32>, dir: vec3<f32>, hit: RayIntersection) -> vec3<f3
 
     let refl = reflect(dir, n);
     let f_amb = f_schlick_roughness(f0, f90, n_o_v, roughness);
-    let spec_env = mix(trace_env(refl), trace_env_irradiance(refl), roughness);
+    let spec_env = mix(mirror, trace_env_irradiance(refl), roughness);
     var ambient = diffuse * trace_env_irradiance(n) * (vec3<f32>(1.0) - f_amb) + spec_env * f_amb;
     let fc_amb = f_schlick_scalar(0.04, 1.0, n_o_v) * clearcoat;
-    let cc_env = mix(trace_env(refl), trace_env_irradiance(refl), cc_roughness);
+    let cc_env = mix(mirror, trace_env_irradiance(refl), cc_roughness);
     ambient = ambient * (1.0 - fc_amb) + cc_env * fc_amb;
     color = color + ambient;
 
@@ -202,7 +214,36 @@ fn shade_hit(origin: vec3<f32>, dir: vec3<f32>, hit: RayIntersection) -> vec3<f3
     return clamp(color, vec3<f32>(0.0), vec3<f32>(TRACE_MAX_RADIANCE));
 }
 
+// One bounce: radiance arriving at `origin` along `dir` (the environment
+// on a miss), the hit shaded with the environment as its mirror term.
+fn trace_radiance_1(origin: vec3<f32>, dir: vec3<f32>, t_min: f32) -> vec3<f32> {
+    var rq1: ray_query;
+    rayQueryInitialize(&rq1, scene, RayDesc(RAY_FLAG_FORCE_OPAQUE, MASK_OPAQUE, t_min, params.tune.x, origin, dir));
+    loop {
+        if (!rayQueryProceed(&rq1)) {
+            break;
+        }
+    }
+    let hit = rayQueryGetCommittedIntersection(&rq1);
+    if (hit.kind == RAY_QUERY_INTERSECTION_NONE) {
+        return trace_env(dir);
+    }
+    let n = hit_normal(hit, dir);
+    return shade_hit_with(origin, dir, hit, trace_env(reflect(dir, n)));
+}
+
+// `true` when the hit instance's mirror term is traced: its roughness, or
+// with a clear coat its clear-coat roughness, is at or below the cutoff
+// (false for a NaN cutoff, like `reflection_choice`).
+fn hit_is_mirror_like(hit: RayIntersection) -> bool {
+    let inst = instances[hit.instance_custom_data];
+    let cutoff = params.tune.w;
+    return inst.surface.x <= cutoff || (inst.coat.x > 0.0 && inst.coat.y <= cutoff);
+}
+
 // Radiance arriving at `origin` along `dir` (the environment on a miss).
+// A mirror-like hit gets one further traced bounce as its mirror term
+// (trace_radiance_1), any other hit the environment.
 fn trace_radiance(origin: vec3<f32>, dir: vec3<f32>, t_min: f32) -> vec3<f32> {
     var rq: ray_query;
     rayQueryInitialize(&rq, scene, RayDesc(RAY_FLAG_FORCE_OPAQUE, MASK_OPAQUE, t_min, params.tune.x, origin, dir));
@@ -215,7 +256,14 @@ fn trace_radiance(origin: vec3<f32>, dir: vec3<f32>, t_min: f32) -> vec3<f32> {
     if (hit.kind == RAY_QUERY_INTERSECTION_NONE) {
         return trace_env(dir);
     }
-    return shade_hit(origin, dir, hit);
+    let n = hit_normal(hit, dir);
+    let refl = reflect(dir, n);
+    var mirror = trace_env(refl);
+    if (hit_is_mirror_like(hit)) {
+        let pos = origin + dir * hit.t;
+        mirror = trace_radiance_1(pos + n * SECOND_BOUNCE_EPS, refl, SECOND_BOUNCE_EPS);
+    }
+    return shade_hit_with(origin, dir, hit, mirror);
 }
 
 // The point of the sphere (centre c, radius r) whose mirror reflection of

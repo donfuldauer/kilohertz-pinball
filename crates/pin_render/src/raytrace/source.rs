@@ -129,6 +129,19 @@ struct TraceParams {
     lights: [LightGpu; MAX_LIGHTS],
 }
 
+/// The `tune` vector of the trace uniform: x ray `t_max` (m), y ball
+/// origin offset (fraction of the radius), z plane origin offset (m), w the
+/// ray roughness cutoff (a hit at or below it gets a second traced bounce in
+/// the shader; passed through unchanged, so a NaN cutoff never traces).
+pub(crate) fn trace_tune(config: &RayQueryConfig) -> [f32; 4] {
+    [
+        config.max_distance.max(1e-3),
+        config.origin_offset.max(0.0),
+        config.plane_offset.max(0.0),
+        config.ray_roughness_cutoff,
+    ]
+}
+
 /// Byte size of the trace uniform (checked against the WGSL layout).
 pub(crate) const TRACE_PARAMS_SIZE: usize = core::mem::size_of::<TraceParams>();
 
@@ -644,12 +657,7 @@ impl RayQueryReflections {
             };
         }
         p.counts = [n_lights as u32, PROBE_RESOLUTION, n_jobs as u32, 0];
-        p.tune = [
-            self.config.max_distance.max(1e-3),
-            self.config.origin_offset.max(0.0),
-            self.config.plane_offset.max(0.0),
-            0.0,
-        ];
+        p.tune = trace_tune(&self.config);
     }
 
     /// TLAS refit and (when anything is traced) the trace dispatch, all in

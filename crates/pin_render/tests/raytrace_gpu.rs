@@ -905,3 +905,192 @@ fn raytrace_benchmark_added_gpu_time_per_quality() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// (f) second bounce at mirror-like hits: plain chrome balls (no emission)
+// under an emissive panel, black environment, no lights. Every colour on
+// the balls comes from the panel by reflection, so ball A shows the panel
+// through ball B only when B's hit is shaded with a traced mirror term.
+// ---------------------------------------------------------------------
+
+/// The panel's emitted radiance (blue) and its plane (facing down).
+const PANEL_L: V3 = [0.04, 0.1, 2.0];
+const PANEL_Z: f32 = 0.05;
+const PANEL_HALF: f32 = 0.1;
+const BLACK: Environment = Environment {
+    sky: [0.0; 3],
+    horizon: [0.0; 3],
+    ground: [0.0; 3],
+};
+
+/// Pixels of ball A whose exact mirror path A -> B -> panel holds with
+/// margins (B shrunk 15 %, panel shrunk 10 %, ball A grown 15 % as an
+/// occluder of the second ray).
+fn second_bounce_region() -> Vec<(u32, u32)> {
+    let cam = camera();
+    let mut out = Vec::new();
+    for y in 0..W {
+        for x in 0..W {
+            let Some((p, r)) = on_ball(&cam, x, y, A) else {
+                continue;
+            };
+            if hit_sphere(p, r, B, 0.85 * R).is_none() {
+                continue;
+            }
+            let Some(tb) = hit_sphere(p, r, B, R) else {
+                continue;
+            };
+            let q = add_scaled(p, r, tb);
+            let nb = norm(sub(q, B));
+            let k = 2.0 * dot(r, nb);
+            let r2 = [r[0] - k * nb[0], r[1] - k * nb[1], r[2] - k * nb[2]];
+            if r2[2] <= 1e-3 || hit_sphere(q, r2, A, 1.15 * R).is_some() {
+                continue;
+            }
+            let hit = add_scaled(q, r2, (PANEL_Z - q[2]) / r2[2]);
+            if hit[0].abs() <= 0.9 * PANEL_HALF && hit[1].abs() <= 0.9 * PANEL_HALF {
+                out.push((x, y));
+            }
+        }
+    }
+    out
+}
+
+/// Renders the panel scene (ball A roughness 0.06; ball B roughness
+/// `b_rough`) with the ray-query source (balls only) on its second frame.
+fn render_panel_scene(ctx: &GpuContext, b_rough: f32, cutoff: f32) -> HdrImage {
+    let mut rig = Rig::new(ctx);
+    let cfg = RayQueryConfig {
+        ray_roughness_cutoff: cutoff,
+        ..RayQueryConfig::default()
+    };
+    let mut src = RayQueryReflections::new(
+        ctx,
+        &rig.pbr,
+        ReflectionQuality::BallsOnly,
+        &rig.meshes(),
+        &cfg,
+    )
+    .unwrap();
+    let ball = |c: V3, rough: f32| DrawItem {
+        mesh: rig.sphere,
+        model: scale_translation(1.0, c),
+        material: ball_material([0.0; 3], rough),
+        transparent: false,
+        emission: 0.0,
+    };
+    let mut panel_model = scale_translation(2.0 * PANEL_HALF, [0.0, 0.0, PANEL_Z]);
+    // Face down: flip the quad's +z normal (mirror y and z).
+    for col in [1, 2] {
+        for v in &mut panel_model[col][..3] {
+            *v = -*v;
+        }
+    }
+    let draws = [
+        ball(A, 0.06),
+        ball(B, b_rough),
+        DrawItem {
+            mesh: rig.quad,
+            model: panel_model,
+            material: MaterialParams {
+                emissive: PANEL_L,
+                ..MaterialParams::lambert([0.0; 3])
+            },
+            transparent: false,
+            emission: 0.0,
+        },
+    ];
+    let cam = camera();
+    let frame = FrameDesc {
+        environment: BLACK,
+        ..FrameDesc::new(&cam, &[], &draws)
+    };
+    let mut img = None;
+    for _ in 0..2 {
+        src.prepare(ctx, &mut rig.pbr, &frame, &balls()).unwrap();
+        let binding = src.binding();
+        img = Some(
+            rig.pbr
+                .render_reflected_to_image(ctx, &frame, Some(&binding))
+                .unwrap(),
+        );
+    }
+    img.unwrap()
+}
+
+#[test]
+fn raytrace_second_bounce_shows_the_panel_through_the_other_ball() {
+    let Some(ctx) = rq_ctx("second_bounce") else {
+        return;
+    };
+    let region = second_bounce_region();
+    assert!(region.len() >= 40, "test geometry: {} px", region.len());
+    let mean = |img: &HdrImage| {
+        let mut m = Region::default();
+        for &(x, y) in &region {
+            m.add(img.at(x, y));
+        }
+        m.mean()
+    };
+    // Two chrome reflections of the panel: F_A * F_B * L with F >= the base
+    // colour 0.9 (Schlick only raises it), each attenuated by at most the
+    // (1 - roughness) mirror weight against the black irradiance.
+    let expected = f64::from(0.9 * 0.9 * PANEL_L[2]);
+    let lean = |m: [f64; 3]| (m[2] - m[0]) / expected;
+    let cutoff = RayQueryConfig::default().ray_roughness_cutoff;
+
+    // B mirror-like (chrome default and just below the cutoff): A shows the
+    // panel through B.
+    for b_rough in [0.06, cutoff - 0.01] {
+        let img = render_panel_scene(ctx, b_rough, cutoff);
+        assert!(
+            img.pixels
+                .iter()
+                .flatten()
+                .all(|c| c.is_finite() && *c >= 0.0)
+        );
+        save(&format!("raytrace_second_bounce_b{b_rough:.2}"), &img);
+        let m = mean(&img);
+        println!(
+            "B roughness {b_rough}: {} px, mean {m:.4?}, lean {:.3}",
+            region.len(),
+            lean(m)
+        );
+        let min = if b_rough <= 0.1 { 0.5 } else { 0.3 };
+        assert!(
+            lean(m) >= min,
+            "B roughness {b_rough}: lean {} < {min}",
+            lean(m)
+        );
+        assert!(m[2] > 4.0 * m[0], "B roughness {b_rough}: {m:?}");
+    }
+
+    // B rougher than the cutoff: its hit takes the environment (black) as
+    // the mirror term, so there is no second bounce and the one-bounce
+    // result is black (no lights, no emission, black irradiance).
+    let img = render_panel_scene(ctx, cutoff + 0.01, cutoff);
+    let m = mean(&img);
+    println!(
+        "B roughness {}: mean {m:.4?}, lean {:.3}",
+        cutoff + 0.01,
+        lean(m)
+    );
+    for (c, v) in m.iter().enumerate() {
+        assert!(
+            *v <= 0.02 * expected,
+            "B above the cutoff: channel {c} = {v} (one-bounce result is black)"
+        );
+    }
+
+    // The cutoff is the switch: the same rough B with a cutoff above its
+    // roughness gets the second bounce.
+    let img = render_panel_scene(ctx, cutoff + 0.01, cutoff + 0.1);
+    let m = mean(&img);
+    println!(
+        "B roughness {} with cutoff {}: lean {:.3}",
+        cutoff + 0.01,
+        cutoff + 0.1,
+        lean(m)
+    );
+    assert!(lean(m) >= 0.3, "raised cutoff: lean {}", lean(m));
+}
