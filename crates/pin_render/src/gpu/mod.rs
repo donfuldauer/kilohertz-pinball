@@ -21,6 +21,8 @@ pub use surfaces::{
     SurfaceOptions, SurfaceSet, SurfaceSource, SurfaceStatus, create_surface, paced_by,
     role_clear_color,
 };
+// 6.0 (issue #9a): window lifetime guard for surfaces and presenter threads.
+pub use surfaces::{PRESENTER_JOIN_TIMEOUT, WindowGuard, spawn_guarded};
 
 /// The wgpu crate as used by `pin_render` (so dependants need no own pin).
 pub use wgpu;
@@ -550,6 +552,18 @@ pub fn context_for_tests(test: &str) -> Option<GpuContext> {
             None
         }
     }
+}
+
+/// Test helper for the `pin_render --lib` unit tests: one process-wide headless context, created on first use and never
+/// dropped. Two lavapipe devices alive at once (one being created or destroyed while the other renders) crash the
+/// driver, so the lib tests must not each build their own; see DECISIONS "Wave 5 gate fix", round 3. `None` when no
+/// adapter is available (the PIN_REQUIRE_GPU panic and SKIP note come from [`context_for_tests`]).
+#[cfg(all(test, feature = "gpu-tests"))]
+pub(crate) fn shared_context_for_tests(test: &str) -> Option<&'static GpuContext> {
+    use std::sync::OnceLock;
+    static CTX: OnceLock<Option<GpuContext>> = OnceLock::new();
+    println!("[{test}] using the shared lib-test context");
+    CTX.get_or_init(|| context_for_tests("lib-shared")).as_ref()
 }
 
 #[cfg(test)]

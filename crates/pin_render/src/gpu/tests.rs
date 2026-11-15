@@ -267,7 +267,7 @@ fn pacing_requires_a_presented_playfield() {
 #[cfg(feature = "gpu-tests")]
 #[test]
 fn blit_copies_source_pixels_exactly() {
-    let Some(ctx) = context_for_tests("blit") else {
+    let Some(ctx) = crate::gpu::shared_context_for_tests("blit") else {
         return;
     };
     let device = ctx.device();
@@ -334,7 +334,7 @@ fn blit_copies_source_pixels_exactly() {
         let mut enc =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         b.encode(device, &mut enc, &src_view, &dst_view);
-        let got = crate::debug::read_texture(&ctx, enc, &dst).expect("readback");
+        let got = crate::debug::read_texture(ctx, enc, &dst).expect("readback");
         let want: Vec<u8> = if format == wgpu::TextureFormat::Bgra8Unorm {
             src_px
                 .chunks(4)

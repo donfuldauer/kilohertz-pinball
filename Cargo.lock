@@ -1925,11 +1925,15 @@ dependencies = [
  "arrayvec",
  "egui",
  "image",
+ "pin_assetgen",
  "pin_assets",
  "pin_audio",
  "pin_core",
  "pin_input",
  "pin_render",
+ "pin_script",
+ "pin_sim",
+ "pin_tablegen",
  "proptest",
  "sdl3",
  "serde",
@@ -2035,7 +2039,9 @@ dependencies = [
  "libm",
  "naga",
  "pin_assetgen",
+ "pin_assets",
  "pin_core",
+ "pin_tablegen",
  "pollster",
  "proptest",
  "sdl3",
@@ -2069,6 +2075,7 @@ dependencies = [
  "pin_physics",
  "pin_script",
  "proptest",
+ "serde_json",
 ]
 
 [[package]]
@@ -2079,8 +2086,11 @@ dependencies = [
  "libm",
  "pin_assets",
  "pin_core",
+ "pin_input",
  "pin_physics",
  "proptest",
+ "serde",
+ "toml",
 ]
 
 [[package]]

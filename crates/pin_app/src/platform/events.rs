@@ -4,7 +4,14 @@
 //! initialising SDL. [`EventForwarder`] owns the producer ends of the two rings
 //! and pushes translated events; it never blocks: when a ring is full the event
 //! is dropped and counted in [`ForwardStats`].
+//!
+//! Cabinet input: without an [`InputRouter`] the forwarder uses the fixed
+//! 1.3 keymap ([`translate`]); with one ([`EventForwarder::set_router`], what
+//! the app does) keys and gamepads go through their device profiles and
+//! [`HeldInputs`](super::HeldInputs), and a cabinet edge reaches the input
+//! ring only when `HeldInputs::set` reports one (issue #9b).
 
+use super::input_router::InputRouter;
 use super::keymap;
 use arrayvec::ArrayVec;
 use pin_core::InputEvent;
@@ -145,6 +152,8 @@ pub struct EventForwarder {
     /// SDL window id of each `TopologyPlan` window, by plan index.
     window_ids: ArrayVec<u32, 3>,
     stats: ForwardStats,
+    /// Profile-based input path (`None`: the 1.3 keymap).
+    router: Option<InputRouter>,
 }
 
 impl EventForwarder {
@@ -155,6 +164,53 @@ impl EventForwarder {
             window,
             window_ids: ArrayVec::new(),
             stats: ForwardStats::default(),
+            router: None,
+        }
+    }
+
+    /// Routes cabinet input through `router` (device profiles and
+    /// [`HeldInputs`](super::HeldInputs)) instead of the 1.3 keymap.
+    pub fn set_router(&mut self, router: InputRouter) {
+        self.router = Some(router);
+    }
+
+    /// The input router, if set.
+    pub fn router(&self) -> Option<&InputRouter> {
+        self.router.as_ref()
+    }
+
+    /// The input router, if set (e.g. to change a device profile).
+    pub fn router_mut(&mut self) -> Option<&mut InputRouter> {
+        self.router.as_mut()
+    }
+
+    fn push_input(input: &mut SpscProducer<InputEvent>, stats: &mut ForwardStats, ev: InputEvent) {
+        if input.push(ev).is_ok() {
+            stats.input_forwarded += 1;
+        } else {
+            stats.input_dropped += 1;
+        }
+    }
+
+    /// A gamepad was connected (the platform passes its SDL GUID): the
+    /// router picks its profile. No effect without a router.
+    pub fn gamepad_added(&mut self, which: u32, guid: Option<pin_input::SdlGuid>) {
+        if let Some(r) = self.router.as_mut() {
+            let _ = r.add_gamepad(which, guid);
+        }
+    }
+
+    /// Time-driven input at `now_ns` (SDL ns clock): ends digital nudges.
+    /// Called by [`Platform::pump`](super::Platform::pump) every iteration.
+    pub fn poll(&mut self, now_ns: u64) {
+        let Self {
+            input,
+            stats,
+            router,
+            ..
+        } = self;
+        if let Some(r) = router.as_mut() {
+            r.poll(now_ns, &mut |ev| Self::push_input(input, stats, ev));
         }
     }
 
@@ -177,14 +233,22 @@ impl EventForwarder {
     /// gamepads, display changes).
     pub fn forward(&mut self, event: &Event) -> Translated {
         let t = translate(event);
-        match t {
-            Translated::Input(ev) => {
-                if self.input.push(ev).is_ok() {
-                    self.stats.input_forwarded += 1;
-                } else {
-                    self.stats.input_dropped += 1;
-                }
+        if let Some(router) = self.router.as_mut() {
+            let (input, stats) = (&mut self.input, &mut self.stats);
+            let mut last = None;
+            let handled = router.route(event, &mut |ev| {
+                last = Some(ev);
+                Self::push_input(input, stats, ev);
+            });
+            if handled {
+                return match t {
+                    Translated::GamepadRemoved(_) => t,
+                    _ => last.map_or(Translated::Ignored, Translated::Input),
+                };
             }
+        }
+        match t {
+            Translated::Input(ev) => Self::push_input(&mut self.input, &mut self.stats, ev),
             Translated::Window {
                 timestamp_ns,
                 window_id,

@@ -1,0 +1,65 @@
+# Grey-box table (Subphase 6.0, milestone M1): pin_tablegen layout.
+# Build the bundle with tables/greybox/build.sh (see README.md).
+# Units mm, x across (0 = left), y up the table (0 = bottom).
+schema_version = 1
+
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 28.0
+
+# Cabinet: closed outer wall.
+[[walls]]
+points = [[0.0, 0.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 0.0]]
+closed = true
+material = "wood"
+
+# Shooter lane wall (lane x = 470..514).
+[[walls]]
+points = [[470.0, 0.0], [470.0, 800.0]]
+material = "wood"
+
+# Top-right corner: turns the launched ball into the playfield.
+[[walls]]
+points = [[400.0, 1070.0], [514.0, 956.0]]
+material = "wood"
+
+# Inlane slopes onto the flipper pivots.
+[[walls]]
+points = [[0.0, 330.0], [140.0, 160.0]]
+material = "wood"
+
+[[walls]]
+points = [[470.0, 330.0], [374.0, 160.0]]
+material = "wood"
+
+# Drain funnel below the flippers into the trough.
+[[walls]]
+points = [[157.0, 150.0], [215.0, 10.0]]
+material = "wood"
+
+[[walls]]
+points = [[357.0, 150.0], [299.0, 10.0]]
+material = "wood"
+
+# Orbit: from the left side up and around the top (switches orbit_entry,
+# orbit_top).
+[[lanes]]
+kind = "orbit"
+points = [[30.0, 420.0], [30.0, 700.0], [45.0, 880.0], [90.0, 1000.0], [170.0, 1040.0], [260.0, 1046.0]]
+width = 40.0
+
+# Wireform ramp (spline `ramp_wire`, layer 2) up the right side onto the
+# upper deck.
+[[ramps]]
+spline = "ramp_wire"
+entry_width = 24.0
+
+# Upper deck (layer 1, top right): fed by the VUK and the ramp, rails
+# (layer-1 guides in table.toml) on three sides, drains back to the
+# playfield over its lower edge (transition `deck_exit`).
+[[decks]]
+layer = 1
+z = 60.0
+outline = [[300.0, 860.0], [460.0, 860.0], [460.0, 1040.0], [300.0, 1040.0]]
+material = "acrylic"
