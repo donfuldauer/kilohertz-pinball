@@ -199,6 +199,33 @@ impl BackglassRenderer {
         viewport: Rect,
         lamps: &[f32],
     ) {
+        let all = 0..self.layers.len();
+        self.encode_layers(encoder, view, target_size, viewport, lamps, all, true);
+    }
+
+    /// Number of translite layers (back to front).
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
+    }
+
+    /// Extension point for the backbox pass (Subphase 5.5): records only the
+    /// translite layers with indices in `layers` (back-to-front order,
+    /// clamped to [`layer_count`](Self::layer_count)), after the letterbox
+    /// black when `letterbox` is set. [`encode`](Self::encode) is
+    /// `encode_layers(.., 0..layer_count(), true)`; the backbox compositor
+    /// draws the layers behind the backbox, the backbox, then the layers in
+    /// front (`letterbox = false`).
+    #[allow(clippy::too_many_arguments)] // the encode arguments plus the split
+    pub fn encode_layers(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        target_size: (u32, u32),
+        viewport: Rect,
+        lamps: &[f32],
+        layers: core::ops::Range<usize>,
+        letterbox: bool,
+    ) {
         let art = fit_aspect(viewport, self.aspect.0, self.aspect.1);
         let rect = [
             art.x as f32,
@@ -212,8 +239,13 @@ impl BackglassRenderer {
             viewport.right() as f32,
             viewport.bottom() as f32,
         ];
-        let mut draws = vec![QuadDraw::solid(vp, [0.0, 0.0, 0.0, 1.0])];
-        for l in &self.layers {
+        let mut draws = Vec::with_capacity(self.layers.len() + 1);
+        if letterbox {
+            draws.push(QuadDraw::solid(vp, [0.0, 0.0, 0.0, 1.0]));
+        }
+        let end = layers.end.min(self.layers.len());
+        let start = layers.start.min(end);
+        for l in &self.layers[start..end] {
             let (k, mode, blend) = match l.lamp {
                 None => (1.0, 1.0, Blend::Over),
                 Some((id, b)) => (
