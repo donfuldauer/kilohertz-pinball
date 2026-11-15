@@ -8,7 +8,6 @@
 //! behaviour through the public `pin_sim::Simulation` API (state injection,
 //! switch hit counts, scores) on simulated time.
 
-#[allow(dead_code, unused_imports)]
 mod support;
 
 #[path = "fixtures/spec_6_0/common.rs"]

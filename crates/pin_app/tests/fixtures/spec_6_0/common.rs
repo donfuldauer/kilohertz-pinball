@@ -8,7 +8,6 @@
 #![allow(dead_code)]
 
 use pin_assets::{LoadedTable, Vfs, load_table};
-use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -20,38 +19,6 @@ pub fn steel_radius_m() -> f32 {
     pin_core::builtin_profile(STEEL)
         .expect("built-in profile")
         .radius_m()
-}
-
-/// What `build_greybox_bundle` may return: the bundle path, or nothing when
-/// the bundle is `out_dir` itself (either possibly wrapped in a `Result`).
-pub trait BundleOut {
-    /// The bundle directory.
-    fn bundle_path(self, out_dir: &Path) -> PathBuf;
-}
-
-impl BundleOut for PathBuf {
-    fn bundle_path(self, _out_dir: &Path) -> PathBuf {
-        self
-    }
-}
-
-impl BundleOut for () {
-    fn bundle_path(self, out_dir: &Path) -> PathBuf {
-        out_dir.to_path_buf()
-    }
-}
-
-impl<E: Debug> BundleOut for Result<PathBuf, E> {
-    fn bundle_path(self, _out_dir: &Path) -> PathBuf {
-        self.expect("build_greybox_bundle")
-    }
-}
-
-impl<E: Debug> BundleOut for Result<(), E> {
-    fn bundle_path(self, out_dir: &Path) -> PathBuf {
-        self.expect("build_greybox_bundle");
-        out_dir.to_path_buf()
-    }
 }
 
 /// Scratch directory under the test target dir, unique to this process.
@@ -70,7 +37,8 @@ pub fn greybox_bundle() -> &'static Path {
     static BUNDLE: OnceLock<PathBuf> = OnceLock::new();
     BUNDLE.get_or_init(|| {
         let out = scratch("greybox");
-        crate::support::build_greybox_bundle(&out).bundle_path(&out)
+        crate::support::build_greybox_bundle(&out);
+        out
     })
 }
 
