@@ -98,10 +98,21 @@ struct Pad {
     device: u32,
     profile: String,
     mapper: ProfileMapper,
-    /// Per raw axis, the cabinet axis and non-zero value last forwarded.
-    analog: [Option<(CabinetAxis, f32)>; AXES],
+    /// Per cabinet axis (indexed by [`axis_slot`]), the non-zero value this
+    /// pad last emitted for it; `None` when it never drove the axis or its
+    /// last emission was 0. Several raw axes may feed one cabinet axis, so
+    /// this is per cabinet axis, not per raw axis.
+    emitted: [Option<f32>; CabinetAxis::ALL.len()],
     /// Per raw axis, whether it is above the nudge threshold (edge state).
     nudge_down: [bool; AXES],
+}
+
+/// Position of `axis` in [`CabinetAxis::ALL`].
+fn axis_slot(axis: CabinetAxis) -> usize {
+    CabinetAxis::ALL
+        .iter()
+        .position(|a| *a == axis)
+        .unwrap_or(0)
 }
 
 /// Counters kept by [`InputRouter`].
@@ -175,19 +186,20 @@ impl InputRouter {
     ///
     /// Replacing the profile of a routed gamepad first releases everything
     /// that gamepad holds (buttons it alone holds; analog axes it drove go
-    /// neutral, or take the last value of another pad still driving them); holds of other devices are kept. The
+    /// neutral, or take the value another pad still driving them last
+    /// emitted); holds of other devices are kept. The
     /// release events are sent with the timestamp of the next router call
     /// ([`poll`](Self::poll), a key, button, axis or removal).
     pub fn add_gamepad_with_profile(&mut self, which: u32, profile: &DeviceProfile) -> Option<u32> {
         if let Some(i) = self.pads.iter().position(|p| p.which == which) {
             let device = self.pads[i].device;
-            let analog = self.pads[i].analog;
+            let emitted = self.pads[i].emitted;
             for input in self.held.release_all_for_device(device) {
                 self.queue(Pending::Button(input));
             }
-            self.queue_neutral_axes(device, &analog);
+            self.queue_neutral_axes(device, &emitted);
             let p = &mut self.pads[i];
-            p.analog = [None; AXES];
+            p.emitted = [None; CabinetAxis::ALL.len()];
             p.nudge_down = [false; AXES];
             p.mapper = ProfileMapper::new(profile);
             p.profile.clone_from(&profile.id);
@@ -205,40 +217,56 @@ impl InputRouter {
             device,
             profile: profile.id.clone(),
             mapper: ProfileMapper::new(profile),
-            analog: [None; AXES],
+            emitted: [None; CabinetAxis::ALL.len()],
             nudge_down: [false; AXES],
         });
         Some(device)
     }
 
+    /// Queues `p`. A button release is dropped when already pending. An
+    /// axis event replaces any earlier pending event for the same cabinet
+    /// axis (the later value wins; neutral and valued events coalesce), so at
+    /// most one entry per axis exists and [`MAX_PENDING`] cannot overflow.
     fn queue(&mut self, p: Pending) {
-        if !self.pending.contains(&p) {
-            let _ = self.pending.try_push(p);
+        let axis = match p {
+            Pending::Axis(a) | Pending::AxisValue(a, _) => a,
+            Pending::Button(_) => {
+                if !self.pending.contains(&p) {
+                    let _ = self.pending.try_push(p);
+                }
+                return;
+            }
+        };
+        let earlier = self.pending.iter_mut().find(|q| match q {
+            Pending::Axis(a) | Pending::AxisValue(a, _) => *a == axis,
+            Pending::Button(_) => false,
+        });
+        match earlier {
+            Some(q) => *q = p,
+            None => {
+                let _ = self.pending.try_push(p);
+            }
         }
     }
 
-    /// Queues, for each cabinet axis in `analog` (driven by the leaving
-    /// `device`), the value the axis must take now: the stored value of
-    /// another routed pad that still drives it, else neutral 0.0. No
-    /// per-update recency is stored, so when several other pads drive the
-    /// axis the one with the lowest device number wins (deterministic).
-    fn queue_neutral_axes(&mut self, device: u32, analog: &[Option<(CabinetAxis, f32)>; AXES]) {
-        for (cab, _) in analog.iter().flatten() {
+    /// Queues, for each cabinet axis in `emitted` (driven by the leaving
+    /// `device`: its last emitted value is non-zero), the value the axis must
+    /// take now: the value another routed pad that still drives it last
+    /// emitted for that cabinet axis, else neutral 0.0. No per-update
+    /// recency is stored, so when several other pads drive the axis the one
+    /// with the lowest device number wins (deterministic).
+    fn queue_neutral_axes(&mut self, device: u32, emitted: &[Option<f32>; CabinetAxis::ALL.len()]) {
+        for (slot, _) in emitted.iter().enumerate().filter(|(_, v)| v.is_some()) {
+            let cab = CabinetAxis::ALL[slot];
             let remaining = self
                 .pads
                 .iter()
                 .filter(|p| p.device != device)
-                .filter_map(|p| {
-                    p.analog
-                        .iter()
-                        .flatten()
-                        .find(|(c, _)| c == cab)
-                        .map(|(_, v)| (p.device, *v))
-                })
+                .filter_map(|p| p.emitted[slot].map(|v| (p.device, v)))
                 .min_by_key(|(d, _)| *d);
             match remaining {
-                Some((_, v)) => self.queue(Pending::AxisValue(*cab, v)),
-                None => self.queue(Pending::Axis(*cab)),
+                Some((_, v)) => self.queue(Pending::AxisValue(cab, v)),
+                None => self.queue(Pending::Axis(cab)),
             }
         }
     }
@@ -263,9 +291,9 @@ impl InputRouter {
     }
 
     /// Stops routing gamepad `which` and releases every cabinet input only
-    /// it held; analog cabinet axes it drove go neutral (0), or take the last
-    /// value of another routed gamepad that still drives them (lowest device
-    /// number if several do). Events at `ts_ns` go to `out`.
+    /// it held; analog cabinet axes it drove go neutral (0), or take the value
+    /// another routed gamepad that still drives them last emitted (lowest
+    /// device number if several do). Events at `ts_ns` go to `out`.
     pub fn remove_gamepad(&mut self, ts_ns: u64, which: u32, out: &mut impl FnMut(InputEvent)) {
         self.flush_pending(ts_ns, out);
         let Some(i) = self.pads.iter().position(|p| p.which == which) else {
@@ -276,7 +304,7 @@ impl InputRouter {
             self.stats.edges += 1;
             out(InputEvent::button(ts_ns, input, false));
         }
-        self.queue_neutral_axes(pad.device, &pad.analog);
+        self.queue_neutral_axes(pad.device, &pad.emitted);
         self.flush_pending(ts_ns, out);
     }
 
@@ -424,7 +452,7 @@ impl InputRouter {
                     } else {
                         value
                     };
-                    self.pads[i].analog[a as usize] = (sent != 0.0).then_some((axis, sent));
+                    self.pads[i].emitted[axis_slot(axis)] = (sent != 0.0).then_some(sent);
                     self.stats.axes += 1;
                     out(InputEvent::axis(ts_ns, axis, sent));
                 }
@@ -489,5 +517,51 @@ impl InputRouter {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flushed(r: &mut InputRouter) -> Vec<Pending> {
+        let v: Vec<Pending> = r.pending.iter().copied().collect();
+        r.pending.clear();
+        v
+    }
+
+    #[test]
+    fn queue_replaces_earlier_axis_events_of_the_same_axis() {
+        let mut r = InputRouter::new();
+        let ax = CabinetAxis::LeftFlipper;
+        r.queue(Pending::Axis(ax));
+        r.queue(Pending::AxisValue(ax, 0.5));
+        assert_eq!(flushed(&mut r), [Pending::AxisValue(ax, 0.5)]);
+        r.queue(Pending::AxisValue(ax, 0.5));
+        r.queue(Pending::AxisValue(ax, 0.25));
+        r.queue(Pending::AxisValue(ax, 0.5));
+        assert_eq!(flushed(&mut r), [Pending::AxisValue(ax, 0.5)]);
+        r.queue(Pending::AxisValue(ax, 0.5));
+        r.queue(Pending::Axis(ax));
+        assert_eq!(flushed(&mut r), [Pending::Axis(ax)]);
+    }
+
+    #[test]
+    fn queue_keeps_axes_apart_and_dedups_buttons() {
+        let mut r = InputRouter::new();
+        let b = CabinetInput::LeftFlipper;
+        r.queue(Pending::Button(b));
+        r.queue(Pending::Button(b));
+        r.queue(Pending::Axis(CabinetAxis::LeftFlipper));
+        r.queue(Pending::Axis(CabinetAxis::Plunger));
+        assert_eq!(flushed(&mut r).len(), 3);
+        for a in CabinetAxis::ALL {
+            r.queue(Pending::Axis(a));
+            r.queue(Pending::AxisValue(a, 1.0));
+        }
+        for i in CabinetInput::ALL {
+            r.queue(Pending::Button(i));
+        }
+        assert_eq!(r.pending.len(), MAX_PENDING);
     }
 }

@@ -269,3 +269,109 @@ fn nudge_axis_state_is_per_pad() {
     let c = collect(|o| r.axis(1_002 * ms, 2, GamepadAxis::RightX, 30_000, o));
     assert_eq!(c.len(), 1, "pad 2 re-armed on its own: {c:?}");
 }
+
+/// Two raw axes (both triggers) feed the same cabinet axis.
+const TWO_TRIGGERS_FLIPPER: &str = r#"
+id = "two_triggers"
+name = "Two triggers"
+[[axes]]
+raw = "left_trigger"
+axis = "left_flipper"
+[[axes]]
+raw = "right_trigger"
+axis = "left_flipper"
+"#;
+
+fn emitted_value(ev: &[InputEvent]) -> f32 {
+    assert_eq!(ev.len(), 1, "{ev:?}");
+    let InputEventKind::Axis { axis, value } = ev[0].kind else {
+        panic!("axis event expected: {ev:?}");
+    };
+    assert_eq!(axis, CabinetAxis::LeftFlipper);
+    value
+}
+
+/// Pad 1 (single trigger) and pad 2 (two raw axes on one cabinet axis).
+fn pads_with_double_bound_pad() -> InputRouter {
+    let mut r = InputRouter::new();
+    r.add_gamepad_with_profile(1, &profile(TRIGGER_FLIPPER));
+    r.add_gamepad_with_profile(2, &profile(TWO_TRIGGERS_FLIPPER));
+    r
+}
+
+#[test]
+fn hand_off_uses_the_value_the_pad_last_emitted_across_raw_axes() {
+    let mut r = pads_with_double_bound_pad();
+    let a = emitted_value(&collect(|o| {
+        r.axis(1_000, 2, GamepadAxis::LeftTrigger, 8192, o)
+    }));
+    let b = emitted_value(&collect(|o| {
+        r.axis(1_100, 2, GamepadAxis::RightTrigger, 20_000, o)
+    }));
+    assert!(a > 0.0 && b > a, "{a} {b}");
+    let mut sink = |_: InputEvent| {};
+    r.axis(1_500, 1, GamepadAxis::LeftTrigger, i16::MAX, &mut sink);
+    let ev = collect(|o| r.remove_gamepad(2_000, 1, o));
+    assert!(is_axis(&ev[0], CabinetAxis::LeftFlipper, b), "{ev:?}");
+    assert_eq!(emitted_value(&ev), b, "last emitted, not the older {a}");
+}
+
+#[test]
+fn hand_off_is_neutral_when_the_last_emission_was_zero() {
+    let mut r = pads_with_double_bound_pad();
+    let mut sink = |_: InputEvent| {};
+    r.axis(1_000, 2, GamepadAxis::LeftTrigger, 8192, &mut sink);
+    // The other raw axis ends at 0.0 while the first still reads non-zero.
+    r.axis(1_100, 2, GamepadAxis::RightTrigger, 20_000, &mut sink);
+    r.axis(1_200, 2, GamepadAxis::RightTrigger, 0, &mut sink);
+    r.axis(1_500, 1, GamepadAxis::LeftTrigger, i16::MAX, &mut sink);
+    let ev = collect(|o| r.remove_gamepad(2_000, 1, o));
+    assert!(is_axis(&ev[0], CabinetAxis::LeftFlipper, 0.0), "{ev:?}");
+    assert_eq!(ev.len(), 1, "{ev:?}");
+}
+
+#[test]
+fn pending_axis_events_coalesce_per_cabinet_axis() {
+    // Pads 2 and 4 hold L, pad 3 holds H; pad 1 holds something else.
+    let mut r = InputRouter::new();
+    for w in 1..=4 {
+        r.add_gamepad_with_profile(w, &profile(TRIGGER_FLIPPER));
+    }
+    let mut sink = |_: InputEvent| {};
+    r.axis(1_000, 1, GamepadAxis::LeftTrigger, i16::MAX, &mut sink);
+    let low = emitted_value(&collect(|o| {
+        r.axis(1_100, 2, GamepadAxis::LeftTrigger, 8192, o)
+    }));
+    let high = emitted_value(&collect(|o| {
+        r.axis(1_200, 3, GamepadAxis::LeftTrigger, 24_000, o)
+    }));
+    let low4 = emitted_value(&collect(|o| {
+        r.axis(1_300, 4, GamepadAxis::LeftTrigger, 8192, o)
+    }));
+    assert_eq!(low, low4);
+    assert!(high > low);
+    // Replace the profiles of pads 1, 2, 3 in order, no poll in between.
+    for w in 1..=3 {
+        r.add_gamepad_with_profile(w, &profile(SOUTH_START));
+    }
+    let ev = collect(|o| r.poll(2_000, o));
+    assert_eq!(emitted_value(&ev), low, "only pad 4 remains: {ev:?}");
+    assert!(collect(|o| r.poll(3_000, o)).is_empty(), "none stale");
+}
+
+#[test]
+fn a_later_neutral_replaces_an_earlier_pending_value() {
+    let mut r = InputRouter::new();
+    r.add_gamepad_with_profile(1, &profile(TRIGGER_FLIPPER));
+    r.add_gamepad_with_profile(2, &profile(TRIGGER_FLIPPER));
+    let mut sink = |_: InputEvent| {};
+    r.axis(1_000, 1, GamepadAxis::LeftTrigger, 8192, &mut sink);
+    r.axis(1_100, 2, GamepadAxis::LeftTrigger, 24_000, &mut sink);
+    // Pad 1 leaves: pending takes pad 2's value; pad 2 then leaves too, so
+    // the neutral must replace that value.
+    r.add_gamepad_with_profile(1, &profile(SOUTH_START));
+    r.add_gamepad_with_profile(2, &profile(SOUTH_START));
+    let ev = collect(|o| r.poll(2_000, o));
+    assert!(is_axis(&ev[0], CabinetAxis::LeftFlipper, 0.0), "{ev:?}");
+    assert_eq!(ev.len(), 1, "{ev:?}");
+}

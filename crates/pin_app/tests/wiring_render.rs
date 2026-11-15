@@ -4,7 +4,10 @@
 //! the test adapter (lavapipe in CI). Analytic pixel assertions only (D30):
 //! region means, luminance and differences between frames.
 //!
-//! Skips (with a note) without an adapter unless `PIN_REQUIRE_GPU=1`.
+//! A required GPU target: it exists only under `--features gpu-tests` (the CI
+//! GPU job) and without an adapter every test FAILS, it never skips or
+//! returns early (PR #21 review). The GPU-free scene-image checks run in the
+//! default build from `wiring_scene_images.rs`.
 
 mod support;
 
@@ -36,12 +39,18 @@ const BACKGLASS: Rect = Rect {
     h: 45,
 };
 
-fn gpu() -> Option<&'static GpuContext> {
+/// The shared test adapter. Panics without one (set `PIN_REQUIRE_GPU=1` to
+/// make a missing adapter fail inside `context_for_tests` itself).
+fn gpu() -> &'static GpuContext {
     // One context per test binary (lavapipe and many devices, DECISIONS
     // "Wave 5 gate fix").
     static GPU: OnceLock<Option<GpuContext>> = OnceLock::new();
     GPU.get_or_init(|| pin_render::gpu::context_for_tests("wiring_render"))
         .as_ref()
+        .expect(
+            "wiring_render needs a GPU adapter (PIN_REQUIRE_GPU=1 and a working \
+             Vulkan/Metal/DX12 adapter, e.g. lavapipe); it never skips",
+        )
 }
 
 fn routes() -> Vec<DisplayRoute> {
@@ -147,7 +156,7 @@ fn renderer(ctx: &GpuContext, v: &TableVisuals, overlay: bool) -> TableRenderer 
 
 #[test]
 fn playfield_is_pbr_shaded_and_the_dmd_follows_the_scenes() {
-    let Some(ctx) = gpu() else { return };
+    let ctx = gpu();
     let (v, snap, [attract, over]) = table();
     assert!(v.warnings.is_empty(), "{:?}", v.warnings);
     assert!(!v.meshes.is_empty());
@@ -197,7 +206,7 @@ fn playfield_is_pbr_shaded_and_the_dmd_follows_the_scenes() {
 
 #[test]
 fn a_ball_is_drawn_where_the_snapshot_puts_it() {
-    let Some(ctx) = gpu() else { return };
+    let ctx = gpu();
     let (v, snap, _) = table();
     let mut r = renderer(ctx, &v, false);
     let without = r.render_to_image(ctx, &[], &snap).unwrap();
@@ -228,7 +237,7 @@ fn a_ball_is_drawn_where_the_snapshot_puts_it() {
 
 #[test]
 fn the_debug_overlay_is_optional_and_off_by_default() {
-    let Some(ctx) = gpu() else { return };
+    let ctx = gpu();
     let (v, snap, _) = table();
     assert!(!TableRenderOptions::default().debug_overlay);
     let plain = renderer(ctx, &v, false)
@@ -307,7 +316,7 @@ fn lcd_scene_image_layers_draw_the_bundle_image() {
         [SOLID[0], SOLID[1], SOLID[2], 255]
     );
 
-    let Some(ctx) = gpu() else { return };
+    let ctx = gpu();
     let mut r = renderer(ctx, &v, false);
     r.apply_display_command(DisplayCommand::Scene(attract), 0);
     let viewport = Rect::new(10, 300, 180, 90);
@@ -346,7 +355,7 @@ fn a_missing_scene_image_is_a_warning() {
         v.warnings
     );
     assert!(v.displays.as_ref().unwrap().scene_images.is_empty());
-    let Some(ctx) = gpu() else { return };
+    let ctx = gpu();
     let mut r = renderer(ctx, &v, false);
     r.apply_display_command(DisplayCommand::Scene(attract), 0);
     let viewport = Rect::new(10, 300, 180, 90);

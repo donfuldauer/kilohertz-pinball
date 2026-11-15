@@ -1,14 +1,13 @@
 //! 6.0 C6, the windowed path (feature `gpu-tests`, the CI GPU job only):
-//! `pin_app --table <greybox bundle> --run-frames 3 --run-ticks 100
-//! --run-ms 120000` opens the windows of the single-monitor topology plan,
-//! wires the table simulation, input router, audio thread and render
+//! `pin_app --table <greybox bundle> --run-frames 3 --run-ticks 100` opens the windows of the single-monitor
+//! topology plan, wires the table simulation, input router, audio thread and render
 //! thread, quits once 3 frames were presented and the sim computed 100
 //! ticks, and shuts down in the issue #9a order.
 //!
 //! It needs a native SDL video driver and a GPU (Xvfb + lavapipe on Linux
-//! CI). Without them the test FAILS: it never skips (PR #21 review). The
-//! `--run-ms` cap only bounds a hung run; reaching it is a failure that
-//! prints the render diagnostics.
+//! CI). Without them the test FAILS: it never skips (PR #21 review). There
+//! is no wall-clock cap (D8): a hung run is bounded by the CI job timeout
+//! (ci.yml `timeout-minutes: 45`); a failure prints the render diagnostics.
 
 mod support;
 
@@ -52,15 +51,7 @@ fn windowed_app_opens_windows_and_renders_the_table() {
         "3",
         "--run-ticks",
         "100",
-        "--run-ms",
-        "120000",
     ]);
-    if err.contains("run cap reached") {
-        panic!(
-            "the 120 s cap was reached before 3 frames and 100 ticks\n{}\nstdout {out}\nstderr {err}",
-            diagnostics(&err)
-        );
-    }
     assert!(
         ok,
         "pin_app failed (a missing display or GPU is a failure here)\n{}\nstdout {out}\nstderr {err}",
