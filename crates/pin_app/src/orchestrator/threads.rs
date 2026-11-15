@@ -824,9 +824,10 @@ enum PresenterKind {
 
 /// The presenter for a table (`has_table`) whose surfaces got `plans`:
 /// the table renderer whenever the playfield can be drawn directly
-/// ([`table_set_accepted`]; a secondary surface that needs a presenter
-/// thread or has no 8-bit format never turns the cabinet into the debug
-/// view), else the debug view.
+/// ([`table_set_accepted`]; a backglass / score surface that offers only
+/// blocking present modes is deferred, not drawn, and one without an 8-bit
+/// format is skipped; neither turns the cabinet into the debug view), else
+/// the debug view.
 fn choose_presenter(has_table: bool, plans: &[(SurfaceRole, SurfacePlan)]) -> PresenterKind {
     if has_table && table_set_accepted(plans) {
         PresenterKind::Table
@@ -944,10 +945,10 @@ fn render_thread(
                             set.choices().collect::<Vec<_>>()
                         ),
                         Presenter::Table(_, s) => {
-                            let (direct, secondary, skipped) = s.plan_counts();
+                            let (drawn, deferred, skipped) = s.plan_counts();
                             eprintln!(
                                 "pin_app: render on {} ({:?}); PBR table on {} surface(s): \
-                                 {direct} direct / {secondary} secondary / {skipped} skipped",
+                                 {drawn} drawn / {deferred} deferred / {skipped} skipped",
                                 info.name,
                                 info.backend,
                                 s.len()
@@ -1227,8 +1228,19 @@ mod tests {
                 ),
             ),
         ];
-        assert_eq!(plans[1].1, SurfacePlan::Secondary(PresentMode::Fifo));
+        assert_eq!(plans[1].1, SurfacePlan::Deferred(PresentMode::Fifo));
         assert_eq!(choose_presenter(true, &plans), PresenterKind::Table);
+        // PR #21 round 3: the deferred score window gets no slot; the
+        // playfield is drawn and still receives every display command.
+        let f = Some(wgpu::TextureFormat::Bgra8UnormSrgb);
+        assert_eq!(
+            super::super::present::slot_decision(plans[1].0, plans[1].1, f),
+            super::super::present::SlotDecision::Defer(PresentMode::Fifo)
+        );
+        assert!(matches!(
+            super::super::present::slot_decision(plans[0].0, plans[0].1, f),
+            super::super::present::SlotDecision::Draw(PresentMode::Fifo, _)
+        ));
         assert_eq!(choose_presenter(false, &plans), PresenterKind::Debug);
         // Playfield without an 8-bit format: the debug view.
         let bad = [(SurfaceRole::Playfield, SurfacePlan::Unsupported), plans[1]];
