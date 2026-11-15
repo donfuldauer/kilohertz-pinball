@@ -6,7 +6,8 @@ mod support;
 
 use pin_app::orchestrator::{
     AUDIO_BLOCK_FRAMES, AudioConfig, AudioEngine, IdleSim, OfflineSink, SOUND_RING_CAPACITY,
-    TableSim, ThreadsConfig, load_checked, spawn_threads, table_samples, validate_table,
+    TableSim, TableVisuals, ThreadsConfig, load_checked, spawn_threads, ssf_playfield_mm,
+    table_samples, table_source_positions, validate_table,
 };
 use pin_audio::mixer::{Bus, MixerConfig, Sample, SoundTrigger, trigger_ring};
 use pin_audio::ssf::{CH_FL, CH_FR, CHANNELS, SsfConfig};
@@ -143,9 +144,65 @@ fn audio_stats_count_mixer_frames_and_voices() {
     while threads.audio_stats().mixer_frames < 2 * AUDIO_BLOCK_FRAMES as u64 {
         std::thread::yield_now();
     }
-    let st = threads.audio_stats();
-    threads.shutdown().unwrap();
+    // Read after the join (PR #21 review, wiring_audio.rs:150): a live
+    // read loads `frames` and `mixer_frames` separately, so a reader
+    // preempted between the two loads can see them a block or more apart.
+    // Joined, every rendered block counted in both.
+    let (_, st) = threads.shutdown_with_audio().unwrap();
     assert_eq!(st.mixer_peak_voices, 1);
     assert!(st.mixer_frames >= 2 * AUDIO_BLOCK_FRAMES as u64);
-    assert!(st.frames >= st.mixer_frames - AUDIO_BLOCK_FRAMES as u64);
+    assert_eq!(st.frames, st.mixer_frames, "{st:?}");
+}
+
+/// PR #21 review (audio.rs:101): the grey-box table places its haptic
+/// sources (flipper coils at their pivots, sling / bumper / kicker coils at
+/// their mechs) for the SSF mixer, with both slings on their own sides.
+#[test]
+fn greybox_table_places_its_haptic_sources() {
+    let dir = greybox_bundle().to_path_buf();
+    on_big_stack(move || {
+        let checked = validate_table(&dir).unwrap();
+        let pos = table_source_positions(&checked.table);
+        assert!(!pos.is_empty());
+        assert!(
+            pos.windows(2).all(|w| w[0].0 < w[1].0),
+            "sorted, unique: {pos:?}"
+        );
+        let coil = |name: &str| {
+            checked
+                .table
+                .ids
+                .entries(pin_assets::IdKind::Coil)
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|&(_, i)| i)
+                .unwrap_or_else(|| panic!("coil {name}"))
+        };
+        let at = |name: &str| {
+            let c = coil(name);
+            pos.iter()
+                .find(|(s, _)| *s == c)
+                .map(|&(_, p)| p)
+                .unwrap_or_else(|| panic!("no position for {name} ({c}): {pos:?}"))
+        };
+        let (sl, sr) = (at("sling_left_coil"), at("sling_right_coil"));
+        let (fl, fr) = (at("left_flipper_coil"), at("right_flipper_coil"));
+        assert!(sl[0] < sr[0], "slings: {sl:?} {sr:?}");
+        assert!(fl[0] < fr[0], "flippers: {fl:?} {fr:?}");
+        for b in ["bumper_1_coil", "bumper_2_coil", "bumper_3_coil"] {
+            at(b);
+        }
+        // Inside the SSF playfield of the table bounds: the slings pan to
+        // their own sides of the exciters.
+        let visuals = TableVisuals::of(&checked);
+        let [x0, x1, y0, y1] = ssf_playfield_mm(visuals.bounds);
+        let mid = 0.5 * (x0 + x1);
+        assert!(sl[0] < mid && sr[0] > mid, "{sl:?} {sr:?} in x {x0}..{x1}");
+        for (_, p) in &pos {
+            assert!(
+                (x0..=x1).contains(&p[0]) && (y0..=y1).contains(&p[1]),
+                "{p:?} outside {x0}..{x1} x {y0}..{y1}"
+            );
+        }
+    });
 }

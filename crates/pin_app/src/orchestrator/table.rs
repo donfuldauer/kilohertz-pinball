@@ -243,6 +243,36 @@ fn push_displays(sim: &Simulation, out: &mut HapticsProducer<DisplayCommand>) {
     }
 }
 
+/// The playfield position `[x, y]` (mm, table frame) of every haptic
+/// source the simulation can emit that the table data places: pin_sim
+/// pushes a coil's impulses with `source = CoilId.0` (the same id as
+/// `pin_core::haptics::class_source(SOURCE_CLASS_COIL, coil)` for coils
+/// below 4096) for flipper coils (rising edge of the energised state) and for every
+/// pulsed or held coil, so each flipper's coil sits at its pivot
+/// (`base_position_mm`) and each mech's coil (slingshot, bumper, kicker,
+/// ...) at the mech's `position`. A coil driving several placed elements
+/// keeps the first (flippers, then mechs in declaration order). Coils
+/// without a placed element are not listed (they play at the centre).
+/// Sorted by source id.
+pub fn table_source_positions(table: &LoadedTable) -> Vec<(u16, [f32; 2])> {
+    let mut out: Vec<(u16, [f32; 2])> = Vec::new();
+    let mut add = |source: u16, p: [f32; 3]| {
+        if p[0].is_finite() && p[1].is_finite() && !out.iter().any(|(s, _)| *s == source) {
+            out.push((source, [p[0], p[1]]));
+        }
+    };
+    for f in &table.flippers {
+        add(f.coil.0, f.base_position_mm);
+    }
+    for m in &table.mechs {
+        if let (Some(coil), Some(p)) = (m.coil, m.position_m) {
+            add(coil.0, p.map(|v| v * 1000.0));
+        }
+    }
+    out.sort_by_key(|(s, _)| *s);
+    out
+}
+
 /// Plan-view outline of a flipper for the debug view: pivot, length and
 /// rest angle (table frame, m / rad).
 #[derive(Copy, Clone, Debug, PartialEq)]

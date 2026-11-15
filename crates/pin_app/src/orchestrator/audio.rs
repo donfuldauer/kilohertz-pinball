@@ -106,6 +106,19 @@ impl AudioEngine {
         }
     }
 
+    /// Registers the playfield position `[x, y]` (mm, the
+    /// [`SsfConfig::playfield_mm`] frame) of each haptic source id with the
+    /// SSF exciter mixer, so its impulses are panned there instead of at
+    /// the playfield centre (load time only: allocates). Call before the
+    /// first [`render_block`](Self::render_block).
+    #[must_use]
+    pub fn with_source_positions(mut self, positions: &[(u16, [f32; 2])]) -> AudioEngine {
+        for &(source, [x, y]) in positions {
+            self.ssf.set_source_position(source, x, y);
+        }
+        self
+    }
+
     /// Feeds one haptic impulse to the SSF exciter mixer.
     pub fn feed_haptic(&mut self, e: HapticEvent) {
         self.ssf.feed(e);
@@ -145,6 +158,21 @@ impl AudioEngine {
     /// The SSF exciter mixer.
     pub fn ssf(&self) -> &SsfMixer {
         &self.ssf
+    }
+}
+
+/// The SSF playfield rectangle `[x_min, x_max, y_min, y_max]` (mm) of a
+/// table whose plan bounds are `(min, max)` in metres
+/// ([`TableVisuals::bounds`](super::TableVisuals::bounds)), so source
+/// positions in the table frame pan across the exciters. A degenerate or
+/// non-finite rectangle keeps the [`SsfConfig`] default.
+pub fn ssf_playfield_mm(bounds: ([f32; 3], [f32; 3])) -> [f32; 4] {
+    let (a, b) = bounds;
+    let r = [a[0], b[0], a[1], b[1]].map(|v| v * 1000.0);
+    if r.iter().all(|v| v.is_finite()) && r[1] > r[0] && r[3] > r[2] {
+        r
+    } else {
+        SsfConfig::default().playfield_mm
     }
 }
 
@@ -412,5 +440,69 @@ mod tests {
         assert_eq!(b[pin_audio::ssf::CH_FL], 0.5);
         assert_eq!(b[pin_audio::ssf::CH_FR], -0.5);
         assert_eq!(e.mixer().frames_rendered(), 2 * AUDIO_BLOCK_FRAMES as u64);
+    }
+
+    /// Energy on the left (SL + BL) and right (SR + BR) exciters of a few
+    /// blocks after one impulse from `source`.
+    fn exciter_energy(positions: &[(u16, [f32; 2])], source: u16) -> (f64, f64) {
+        use pin_audio::ssf::{CH_BL, CH_BR, CH_SL, CH_SR};
+        let mut e = AudioEngine::new(SsfConfig::default(), MixerConfig::default(), None, &[])
+            .with_source_positions(positions);
+        e.feed_haptic(HapticEvent::from(pin_core::input::HapticsTelemetryEvent {
+            tick: 1,
+            source,
+            strength: 1.0,
+        }));
+        let (mut l, mut r) = (0.0f64, 0.0f64);
+        for _ in 0..8 {
+            for f in e.render_block().chunks_exact(CHANNELS) {
+                let sq = |c: usize| f64::from(f[c]) * f64::from(f[c]);
+                l += sq(CH_SL) + sq(CH_BL);
+                r += sq(CH_SR) + sq(CH_BR);
+            }
+        }
+        (l, r)
+    }
+
+    /// PR #21 review (audio.rs:101): registered source positions pan the
+    /// impulses; a left source is louder on the left exciters than a right
+    /// one, and mirrored.
+    #[test]
+    fn source_positions_pan_impulses_left_and_right() {
+        let positions = [(4u16, [-200.0f32, 150.0]), (5, [200.0, 150.0])];
+        let (l4, r4) = exciter_energy(&positions, 4);
+        let (l5, r5) = exciter_energy(&positions, 5);
+        assert!(l4 > 0.0 && r5 > 0.0, "silent: {l4} {r5}");
+        assert!(
+            l4 > l5 * 4.0,
+            "left source not louder on the left: {l4} vs {l5}"
+        );
+        assert!(
+            r5 > r4 * 4.0,
+            "right source not louder on the right: {r5} vs {r4}"
+        );
+        assert!(l4 > r4 && r5 > l5);
+        // Mirrored positions give mirrored energy.
+        assert!((l4 - r5).abs() <= 1e-6 * l4, "{l4} vs {r5}");
+        assert!((r4 - l5).abs() <= 1e-6 * l4.max(1e-12), "{r4} vs {l5}");
+        // Without positions both sources play at the centre: identical.
+        let (lc4, rc4) = exciter_energy(&[], 4);
+        let (lc5, rc5) = exciter_energy(&[], 5);
+        assert_eq!((lc4, rc4), (lc5, rc5));
+        assert!((lc4 - rc4).abs() <= 1e-6 * lc4);
+    }
+
+    #[test]
+    fn playfield_rect_follows_the_table_bounds() {
+        assert_eq!(
+            ssf_playfield_mm(([0.0, 0.0, 0.0], [0.514, 1.07, 0.1])),
+            [0.0, 514.0, 0.0, 1070.0]
+        );
+        let default = SsfConfig::default().playfield_mm;
+        assert_eq!(ssf_playfield_mm(([0.0; 3], [0.0; 3])), default);
+        assert_eq!(
+            ssf_playfield_mm(([f32::NAN, 0.0, 0.0], [1.0, 1.0, 0.0])),
+            default
+        );
     }
 }
