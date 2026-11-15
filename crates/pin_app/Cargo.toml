@@ -19,11 +19,26 @@ pin_assets = { path = "../pin_assets" }
 serde.workspace = true
 toml.workspace = true
 image.workspace = true
+# Wave 6 additions (6.0): the real simulation, the 2.8 clearance validator in
+# the load path, and the audio thread's SSF / telemetry consumers (no SDL
+# output stream: the audio sink is a null sink until the output is wired).
+# pin_audio moved here from [dev-dependencies] (3.5 DOF fixtures still use it).
+pin_sim = { path = "../pin_sim" }
+pin_tablegen = { path = "../pin_tablegen" }
+pin_audio = { path = "../pin_audio", default-features = false }
+
+[features]
+# Tests that need a GPU and a native window (the CI `gpu-tests` job):
+# compiled only with this feature, and they fail (never skip) without one.
+gpu-tests = []
 
 [dev-dependencies]
 proptest.workspace = true
-# 3.5: DOF bridge telemetry fixtures are produced with pin_audio::telemetry (tests only).
-pin_audio = { path = "../pin_audio", default-features = false }
+# Wave 6 additions (6.0): greybox tests read the rules script's command queue
+# directly (display scenes are not exposed by pin_sim), and build the
+# greybox bundle with the 4.6 placeholder kit.
+pin_script = { path = "../pin_script" }
+pin_assetgen = { path = "../pin_assetgen" }
 
 # SDL must run on the main thread (Cocoa on macOS) and may only be initialised
 # once per process, so SDL tests are plain `main` binaries instead of libtest.
@@ -37,3 +52,23 @@ harness = false
 [[test]]
 name = "orchestrator_window"
 harness = false
+
+# The windowed end-to-end run (PR #21): only in the GPU job, where an
+# unavailable display or GPU is a failure.
+[[test]]
+name = "integration_window_gpu"
+required-features = ["gpu-tests"]
+
+# The offscreen table render checks (PR #21): GPU job only, where a missing
+# adapter is a failure (the GPU-free LCD checks are wiring_scene_images).
+[[test]]
+name = "wiring_render"
+required-features = ["gpu-tests"]
+
+# The presenter-thread hand-off on real windows (PR #21 round 4): SDL video
+# on the main thread, so a plain `main`; GPU job only, where a missing
+# display or adapter is a failure.
+[[test]]
+name = "presenter_thread_window"
+harness = false
+required-features = ["gpu-tests"]
