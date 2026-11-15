@@ -17,7 +17,7 @@
 //! | `lamps`, `gi_tint` | the snapshot's lamp intensities (clamped `0..=1`) and GI tint |
 //! | `scores (player, score)` | stored for [`Simulation::score`] (0-based players below [`MAX_PLAYERS`](crate::MAX_PLAYERS); the host only stores what scripts report) |
 //! | `persist_writes (key, value)` | `HostView::persist` |
-//! | `display_scenes`, `sounds` | not consumed here (Subphase 6.0) |
+//! | `display_scenes`, `sounds`, `scores` | also copied (replacing the previous tick's) for [`Simulation::display_scenes`], [`Simulation::sound_commands`] and [`Simulation::score_reports`]: output only, never read back by the sim (Subphase 6.0 routes them to the displays and the mixer) |
 
 use pin_physics::ball::Ball;
 
@@ -137,6 +137,20 @@ impl Simulation {
                 *p = value;
             }
         }
+        // Output-only copies for the host (6.0): fixed capacities equal to
+        // the queue's, so nothing allocates or overflows.
+        self.out_scenes.clear();
+        self.out_scenes
+            .try_extend_from_slice(&self.cmd.display_scenes)
+            .expect("same capacity as the queue");
+        self.out_sounds.clear();
+        self.out_sounds
+            .try_extend_from_slice(&self.cmd.sounds)
+            .expect("same capacity as the queue");
+        self.out_scores.clear();
+        self.out_scores
+            .try_extend_from_slice(&self.cmd.scores)
+            .expect("same capacity as the queue");
         self.cmd.clear();
     }
 }

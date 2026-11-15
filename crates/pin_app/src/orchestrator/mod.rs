@@ -10,12 +10,53 @@
 //! * [`spawn_threads`] / [`Threads`]: the sim, render, audio and I/O
 //!   threads. The main thread stays the SDL pump (D6).
 //! * [`HybridTimer`]: sleep + spin wait used on the real-time sim path.
+//! * [`load_validated`] / [`TableSim`] (Subphase 6.0): a table bundle
+//!   validated (manifests, 2.8 clearance for every ball profile) and loaded
+//!   into the real [`pin_sim::Simulation`], driven by the sim thread instead
+//!   of [`IdleSim`]. Validation and the simulation use one immutable
+//!   [`BundleSnapshot`](pin_sim::load::BundleSnapshot) of the bundle
+//!   ([`validate_table`] + [`load_checked`]).
+//! * Wiring (6.0): [`TableSim`] pushes each tick's haptic impulses, sound
+//!   triggers and display commands into wait-free rings; the audio thread
+//!   mixes the sounds (3.3 mixer) with the SSF exciter channels
+//!   ([`AudioEngine`]) into an [`AudioSink`] (SDL device, offline recording
+//!   or null); the render thread draws the table with the 5.1 PBR renderer
+//!   and the 5.3 displays ([`TableRenderer`], presented by [`AppSurfaces`]:
+//!   directly for the playfield and non-blocking secondary windows, through a
+//!   per-surface presenter thread and a latest-frame hand-off for blocking
+//!   (`Fifo`-only) backglass / score windows, D19).
 
+mod audio;
+mod handoff;
+mod present;
+mod presenter;
+mod table;
 mod threads;
+mod view;
 
+pub use audio::{
+    AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, DEVICE_QUEUE_BLOCKS, DeviceSink, DeviceStream,
+    NullSink, OfflineRecording, OfflineSink, RegisteredSound, ssf_playfield_mm, table_samples,
+};
+pub use handoff::{HANDOFF_SLOTS, HandoffStats};
+pub use present::{
+    AppSurfaces, SlotDecision, SlotInfo, SlotPath, SurfacePlan, is_blocking_mode, plan_surface,
+    slot_decision, table_set_accepted,
+};
+pub use presenter::{CopyPath, FrameCopy, offscreen_frame_texture};
+pub use table::{
+    DISPLAY_RING_CAPACITY, DisplayCommand, FlipperOutline, SIM_STACK_BYTES, SOUND_RING_CAPACITY,
+    TABLE_LINE_COLOR, TableSim, ValidatedTable, load_checked, load_validated, on_sim_stack,
+    run_headless_table, table_lines, table_source_positions, validate_snapshot, validate_table,
+};
 pub use threads::{
-    ClosePolicy, DropMonitor, OrchestratorStats, RenderConfig, RenderGpu, StatsSnapshot, Threads,
-    ThreadsConfig, default_ball_radius, monotonic_now_ns, spawn_threads,
+    AudioConfig, AudioStats, ClosePolicy, DropMonitor, FLIPPER_LINE_COLOR, OrchestratorStats,
+    RenderConfig, RenderGpu, RunExit, RunLimits, StatsSnapshot, Threads, ThreadsConfig,
+    default_ball_radius, monotonic_now_ns, spawn_threads,
+};
+pub use view::{
+    DisplayAssets, MAX_OVERLAY_TABLE_LINES, TableRenderOptions, TableRenderer, TableVisuals,
+    VisualMesh, load_scene_images, routes_for_window, table_camera, vertex_normals,
 };
 
 use arrayvec::ArrayVec;
@@ -95,8 +136,8 @@ impl SimClock {
     }
 }
 
-/// The stub [`SimStep`] used until Subphase 6.0: sets `out.tick = tick`,
-/// otherwise the default snapshot.
+/// The stub [`SimStep`] used when no table is loaded (`pin_app` without
+/// `--table`): sets `out.tick = tick`, otherwise the default snapshot.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct IdleSim;
 
@@ -213,6 +254,16 @@ impl<S: SimStep> SimLoop<S> {
     pub fn sim(&self) -> &S {
         &self.sim
     }
+
+    /// The sim step, mutably (state injection between ticks in tests).
+    pub fn sim_mut(&mut self) -> &mut S {
+        &mut self.sim
+    }
+
+    /// Ends the loop, returning the sim step.
+    pub fn into_sim(self) -> S {
+        self.sim
+    }
 }
 
 /// Runs `ticks` ticks of [`IdleSim`] on simulated time (no SDL, no GPU, no
@@ -225,6 +276,12 @@ pub fn run_headless(ticks: u64) -> Result<u64, String> {
 
 /// [`run_headless`] with any [`SimStep`].
 pub fn run_headless_with<S: SimStep>(sim: S, ticks: u64) -> Result<u64, String> {
+    run_headless_returning(sim, ticks).map(|(last, _)| last)
+}
+
+/// [`run_headless_with`] that also returns the sim step afterwards (to read
+/// its final state).
+pub fn run_headless_returning<S: SimStep>(sim: S, ticks: u64) -> Result<(u64, S), String> {
     let (_producer, consumer) = pin_core::spsc::channel::<InputEvent>(1);
     let (writer, mut reader) = TripleBuffer::new(FrameStateSnapshot::default());
     let mut sim_loop = SimLoop::new(sim, consumer, writer);
@@ -240,7 +297,7 @@ pub fn run_headless_with<S: SimStep>(sim: S, ticks: u64) -> Result<u64, String> 
         }
         last = got;
     }
-    Ok(last)
+    Ok((last, sim_loop.into_sim()))
 }
 
 /// Longest single sleep of [`HybridTimer::wait_until`] (50 ms), so a stop
