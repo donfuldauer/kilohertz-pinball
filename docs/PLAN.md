@@ -1067,6 +1067,18 @@ shape = "circle"               # circle | arrow | triangle | rect
 size = 18.0
 ```
 
+
+### A.3a `glass.toml` (optional bundle file)
+
+```toml
+schema_version = 1
+height = 112.0                 # mm
+```
+
+- `height`: mm, the height of the playfield glass underside above the playfield surface.
+- Constraint: finite and > 0; the simulator also requires it to be at least the geometry's maximum z.
+- The file is optional. When it is absent, the simulator derives the glass from the table geometry (geometry max z + 50 mm).
+
 ---
 
 ## Appendix B: UDP Telemetry Protocol v1 (normative)

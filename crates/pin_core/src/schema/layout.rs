@@ -1,7 +1,7 @@
 //! `layout.toml`, the input to `pin_tablegen` (PLAN.md Appendix A.3). Units mm;
 //! 2-D points are playfield-plane `[x, y]`.
 
-use super::{Manifest, SchemaError, manifest_io};
+use super::{Manifest, manifest_io};
 use crate::materials::Material;
 use serde::{Deserialize, Serialize};
 
@@ -37,17 +37,6 @@ impl Manifest for LayoutManifest {
     fn schema_version(&self) -> u32 {
         self.schema_version
     }
-
-    fn validate(&self) -> Result<(), SchemaError> {
-        if let Some(g) = self.playfield.glass_height
-            && !(g.is_finite() && g > 0.0)
-        {
-            return Err(SchemaError::Invalid(format!(
-                "playfield.glass_height must be finite and > 0 mm, got {g}"
-            )));
-        }
-        Ok(())
-    }
 }
 
 manifest_io!(LayoutManifest);
@@ -62,12 +51,6 @@ pub struct Playfield {
     pub length: f32,
     /// Outer wall height, mm.
     pub wall_height: f32,
-    /// Height of the playfield glass underside above the playfield surface, mm.
-    /// Absent: the simulator derives it from the table geometry. When present it
-    /// must be finite and > 0, and the simulator requires it to be at least the
-    /// geometry's maximum z.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub glass_height: Option<f32>,
 }
 
 /// `[[walls]]`: a polyline.
@@ -172,38 +155,4 @@ pub struct Insert {
     pub shape: InsertShape,
     /// Size, mm.
     pub size: f32,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const BASE: &str =
-        "schema_version = 1\n[playfield]\nwidth = 500.0\nlength = 1000.0\nwall_height = 28.0\n";
-
-    #[test]
-    fn absent_is_none_and_not_serialised() {
-        let l = LayoutManifest::from_toml_str(BASE).unwrap();
-        assert_eq!(l.playfield.glass_height, None);
-        assert!(!l.to_toml_string().unwrap().contains("glass_height"));
-    }
-
-    #[test]
-    fn present_round_trips() {
-        let l = LayoutManifest::from_toml_str(&format!("{BASE}glass_height = 120.5\n")).unwrap();
-        assert_eq!(l.playfield.glass_height, Some(120.5));
-        let back = LayoutManifest::from_toml_str(&l.to_toml_string().unwrap()).unwrap();
-        assert_eq!(back, l);
-    }
-
-    #[test]
-    fn bad_values_rejected() {
-        for v in ["0.0", "-5.0", "nan", "inf", "-inf"] {
-            let t = format!("{BASE}glass_height = {v}\n");
-            assert!(LayoutManifest::from_toml_str(&t).is_err(), "{v}");
-        }
-        let mut l = LayoutManifest::from_toml_str(BASE).unwrap();
-        l.playfield.glass_height = Some(0.0);
-        assert!(l.to_toml_string().is_err());
-    }
 }
