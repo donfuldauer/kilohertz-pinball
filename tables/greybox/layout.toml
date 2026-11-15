@@ -139,3 +139,41 @@ material = "wood"
 [[walls]]
 points = [[470.0, 395.0], [445.0, 430.0]]
 material = "wood"
+
+# Gate A1 endless-ball fix (docs/DECISIONS.md "a1-endless-table — loop 2:
+# fill outside the orbit's right rail"): a fill on the playfield side of
+# the orbit's right rail (`tablegen:lanes[0].right`), from the rail's
+# through-point (73.5, 658.2) out to (111.5, 724) and back to the rail at
+# (55.7, 752.3). The rail's outer face there pointed up and right, so a
+# Powerball kicked left by bumper_1 (190, 720) came straight back into it
+# (a ping-pong at y 677..712 that never drained). The new lower face is
+# turned 30 degrees below horizontal: a ball from bumper_1 leaves it down
+# and right, below the bumper. The upper face slopes down to the right, so
+# nothing rests on it; the space enclosed with the rail is unreachable.
+[[walls]]
+points = [[73.53804, 658.2306], [111.5, 724.0], [55.695015, 752.3393]]
+material = "wood"
+
+# Gate A1 endless-ball fix (docs/DECISIONS.md "a1-endless-table — loop 3:
+# guard behind the left sling"): a guard 2 mm behind the back of sling_left
+# (centre (100, 290), kick direction 35 degrees, 100 x 10 mm rubber box),
+# over its length plus 3 mm at each end. A ball rolling down the left
+# inlane touched the sling's back, which closed the sling switch; the
+# refiring sling held a Powerball at (110, 243) for good. The guard keeps
+# the inlane corridor at least 29 mm wide (ball 27 mm) and does not touch
+# the sling, so the sling and its kick are unchanged.
+[[walls]]
+points = [[63.87, 329.40], [124.67, 242.57]]
+material = "wood"
+
+# Gate A1 endless-ball fix (docs/DECISIONS.md "a1-endless-table — orbit
+# top dead spot"): a ramp on the orbit's lower (right) rail at its right
+# end, from the rail's through-point (221.7, 1024.5) up to (262, 1034).
+# The rail's last 20 mm rise under 2 degrees, flat enough for a slow ball to
+# stop there for good (StuckBall at (254, 1039) in a novice soak). On the
+# ramp (13 degrees) a slow ball rolls back down the orbit; a fast one leaves
+# over its end. Plunged balls pass above it (they enter the lane at y 1046
+# and up).
+[[walls]]
+points = [[221.73027, 1024.4989], [262.0, 1034.0]]
+material = "wood"
