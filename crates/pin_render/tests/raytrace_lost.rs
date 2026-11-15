@@ -2,7 +2,8 @@
 //! #22 finding 3).
 //!
 //! Its own test binary with its own context, because the test destroys the
-//! device: no other test may share it. The only test in this binary.
+//! device: no other test may share it. The only test in this binary (it also covers `mark_device_lost` on a
+//! second source).
 #![cfg(feature = "gpu-tests")]
 
 use pin_render::gpu::{GpuContext, GpuError, GpuOptions, require_gpu, wgpu};
@@ -53,14 +54,21 @@ fn raytrace_lost_device_reports_the_loss_and_stops_rendering() {
     let mut pbr = PbrRenderer::new(&ctx, 64, 64).unwrap();
     let sphere_geo = MeshGeometry::uv_sphere(R, 32, 24);
     let sphere = pbr.upload_mesh(&sphere_geo).unwrap();
-    let mut src = RayQueryReflections::new(
-        &ctx,
-        &pbr,
-        ReflectionQuality::BallsOnly,
-        &[(sphere, &sphere_geo)],
-        &RayQueryConfig::default(),
-    )
-    .unwrap();
+    let make = || {
+        RayQueryReflections::new(
+            &ctx,
+            &pbr,
+            ReflectionQuality::BallsOnly,
+            &[(sphere, &sphere_geo)],
+            &RayQueryConfig::default(),
+        )
+        .unwrap()
+    };
+    // `forwarded` is built first: wgpu keeps one device-lost callback per
+    // device, so the later `src` owns it and `forwarded` only learns of a
+    // loss through `mark_device_lost`.
+    let mut forwarded = make();
+    let mut src = make();
     let ball = |x: f32| DrawItem {
         mesh: sphere,
         model: scale_translation(1.0, [x, 0.0, R]),
@@ -95,6 +103,33 @@ fn raytrace_lost_device_reports_the_loss_and_stops_rendering() {
     );
     let lights = [PointLight::new([0.0, -0.05, 0.2], [1.0; 3], 0.1, 5.0)];
     let frame = FrameDesc::new(&cam, &lights, &draws);
+
+    // `mark_device_lost` (an application forwarding a loss): the source
+    // reports it and every frame returns the loss without touching the GPU
+    // (the device is still alive here, yet nothing is traced).
+    assert!(!forwarded.device_lost());
+    forwarded.mark_device_lost("forwarded by the test");
+    assert!(forwarded.device_lost());
+    for i in 0..2 {
+        match forwarded.prepare(&ctx, &mut pbr, &frame, &balls) {
+            Err(GpuError::RequestDevice(m)) => {
+                assert_eq!(m, "device lost: forwarded by the test", "frame {i}");
+            }
+            other => panic!("forwarded frame {i}: expected the device-lost error, got {other:?}"),
+        }
+        assert_eq!(forwarded.ray_stats().frames, 0);
+        assert_eq!(forwarded.stats().frames, 0);
+        assert!(forwarded.ray_stats().fallen_back);
+    }
+    forwarded.mark_device_lost("a later reason is ignored");
+    assert!(
+        forwarded
+            .fallback_reason()
+            .is_some_and(|r| r == "device lost: forwarded by the test"),
+        "{:?}",
+        forwarded.fallback_reason()
+    );
+    assert!(!src.device_lost(), "the other source is unaffected");
 
     // One healthy traced frame.
     src.prepare(&ctx, &mut pbr, &frame, &balls).unwrap();
