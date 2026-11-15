@@ -37,8 +37,9 @@
 //!
 //! `--gate a1` also applies [`SoakReport::gate_a1`]: after the soak, stdout
 //! gets one `PASS|FAIL|REPORTED  <name>  <value>` line per Gate A1 soak
-//! check, and the exit code is 1 when the soak did not pass or any check
-//! failed (including a soak run with `--no-tick-budget`, whose tick timing is
+//! check (the first, `games_1000`, needs at least 1,000 games; the CLI
+//! default of `--games` is lower), and the exit code is 1 when the soak did
+//! not pass or any check failed (including a soak run with `--no-tick-budget`, whose tick timing is
 //! then not measured). Without the flag nothing changes.
 
 use core::fmt;

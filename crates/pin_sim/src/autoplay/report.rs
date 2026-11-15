@@ -24,7 +24,7 @@
 //! # Gate A1
 //!
 //! [`SoakReport::gate_a1`] applies the soak criteria of PLAN Gate A1 as code
-//! (see [`GateA1Verdict`]): zero stuck / endless / escaped / non-finite
+//! (see [`GateA1Verdict`]): at least [`GATE_A1_GAMES`] games, zero stuck / endless / escaped / non-finite
 //! balls, full coverage, a median ball time of 15..=120 s (judged at skill `standard`
 //! only) and a 99.9th-percentile tick strictly under 0.35 ms. It only reads
 //! values already in the report. It does not change [`SoakReport::passed`].
@@ -398,6 +398,10 @@ pub const GATE_A1_MEDIAN_MIN_MS: i64 = 15_000;
 /// Upper bound (inclusive) of the Gate A1 median ball time, ms.
 pub const GATE_A1_MEDIAN_MAX_MS: i64 = 120_000;
 
+/// Games a Gate A1 soak must have played (PLAN Gate A1: a 1,000-game
+/// autoplay soak). [`SoakReport::gate_a1`] fails a report with fewer.
+pub const GATE_A1_GAMES: u32 = 1_000;
+
 /// Gate A1 limit of the 99.9th percentile tick time, ns (strict: the
 /// measured value must be below it).
 pub const GATE_A1_P999_TICK_NS: u64 = 350_000;
@@ -573,7 +577,8 @@ impl SoakReport {
         self.failing_findings().next().is_none() && self.coverage_complete()
     }
 
-    /// The soak criteria of Gate A1 as named checks (`no_stuck`,
+    /// The soak criteria of Gate A1 as named checks (`games_1000`: at least
+    /// [`GATE_A1_GAMES`] games were played; `no_stuck`,
     /// `no_endless_balls`, `no_escaped`, `no_nonfinite`, coverage, ball time,
     /// tick time). `skill` is the skill the
     /// soak was played at: the 15..=120 s median ball time (bounds
@@ -601,6 +606,11 @@ impl SoakReport {
             mk(name, n == 0, format!("{n} findings"))
         };
         let mut checks = vec![
+            mk(
+                "games_1000",
+                self.games >= GATE_A1_GAMES,
+                format!("{} games", self.games),
+            ),
             zero("no_stuck", FindingKind::StuckBall),
             zero("no_endless_balls", FindingKind::EndlessBall),
             zero("no_escaped", FindingKind::EscapedBall),
