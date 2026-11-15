@@ -252,6 +252,16 @@ fn teardown_exit_code(failure: Option<&str>) -> i32 {
     i32::from(failure.is_some())
 }
 
+/// Combines the failure recorded by the run loop with a thread-join error so
+/// neither is lost: `"{earlier}; {join_error}"` when both are present.
+fn merge_failure(earlier: Option<String>, join_error: Option<String>) -> Option<String> {
+    match (earlier, join_error) {
+        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+        (a, None) => a,
+        (None, b) => b,
+    }
+}
+
 fn run_app(args: &[String]) -> Result<(), String> {
     let headless = args.iter().any(|a| a == "--headless");
     let limits = RunLimits::from_args(args)?;
@@ -417,21 +427,33 @@ fn run_app(args: &[String]) -> Result<(), String> {
     // 1. Join the engine threads (the render thread drops the surfaces; a
     //    presenter stalled past PRESENTER_JOIN_TIMEOUT is detached and keeps
     //    its guard).
-    let (stats, audio) = threads.shutdown_with_audio()?;
+    //    A join error (a panicked thread) is recorded, never returned early:
+    //    a detached presenter may still hold a window guard, so the teardown
+    //    below must still run in order before `platform` is dropped.
+    let (report, join_error) = match threads.shutdown_with_audio() {
+        Ok(done) => (Some(done), None),
+        Err(e) => {
+            eprintln!("pin_app: {e}");
+            (None, Some(e))
+        }
+    };
+    failure = merge_failure(failure, join_error);
     // The audio thread is joined: the device stream can go.
     drop(audio_device);
     // The main thread's own guards: from here only a detached presenter can
     // still hold a window.
     drop(guards);
-    eprintln!(
-        "pin_app: {} sim ticks ({} dropped), {} frames, input dropped {}, {} haptic events",
-        stats.sim_ticks,
-        stats.sim_dropped_ticks,
-        stats.render_frames,
-        forwarder.stats().input_dropped,
-        audio.haptic_events
-    );
-    eprintln!("{}", stats.render_diagnostics());
+    if let Some((stats, audio)) = report {
+        eprintln!(
+            "pin_app: {} sim ticks ({} dropped), {} frames, input dropped {}, {} haptic events",
+            stats.sim_ticks,
+            stats.sim_dropped_ticks,
+            stats.render_frames,
+            forwarder.stats().input_dropped,
+            audio.haptic_events
+        );
+        eprintln!("{}", stats.render_diagnostics());
+    }
     // 2. Destroy the released windows here, on the main thread, and wait for
     //    a detached presenter to release its window.
     if !platform
@@ -457,7 +479,18 @@ fn run_app(args: &[String]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::teardown_exit_code;
+    use super::{merge_failure, teardown_exit_code};
+
+    #[test]
+    fn merge_failure_keeps_every_recorded_message() {
+        assert_eq!(merge_failure(None, None), None);
+        assert_eq!(merge_failure(Some("a".into()), None).as_deref(), Some("a"));
+        assert_eq!(merge_failure(None, Some("b".into())).as_deref(), Some("b"));
+        assert_eq!(
+            merge_failure(Some("a".into()), Some("b".into())).as_deref(),
+            Some("a; b")
+        );
+    }
 
     #[test]
     fn stuck_presenter_teardown_keeps_the_failure_exit_code() {
