@@ -1,12 +1,20 @@
-//! The engine threads: sim (1 kHz, real time), render, audio and I/O
-//! (placeholders that park until shutdown). The main thread stays the SDL
+//! The engine threads: sim (1 kHz, real time), render, audio (haptics →
+//! SSF exciter mix and telemetry impulses into a null sink) and I/O (a
+//! placeholder that parks until shutdown). The main thread stays the SDL
 //! pump (D6) and only talks to these threads through rings, the triple
 //! buffer and the atomics in [`OrchestratorStats`].
 
+use super::table::FlipperOutline;
 use super::{HybridTimer, SimClock, SimLoop};
+use arrayvec::ArrayVec;
+use pin_audio::ssf::{CHANNELS, SsfConfig, SsfMixer};
+use pin_audio::telemetry::{DatagramBatch, TelemetryEncoder, TelemetryState};
+use pin_core::haptics::HapticEvent;
+use pin_core::input::HapticsTelemetryEvent;
 use pin_core::spsc::SpscConsumer;
 use pin_core::{FrameStateSnapshot, InputEvent, ProfileId, SimStep, TripleBuffer, TripleReader};
-use pin_render::debug::{Camera, DebugLines, snapshot_lines};
+use pin_input::haptics::HapticsConsumer;
+use pin_render::debug::{Camera, DebugLine, DebugLines, snapshot_lines};
 use pin_render::gpu::{GpuContext, GpuOptions, SurfaceOptions, SurfaceSet, SurfaceSource, wgpu};
 use pin_render::topology::{WindowEvent, WindowEventKind};
 use std::sync::Arc;
@@ -82,6 +90,48 @@ pub struct RenderConfig {
     pub close_policy: ClosePolicy,
     /// Sleep between iterations when no playfield surface paces the loop.
     pub idle_period: Duration,
+    /// Static table lines drawn every frame under the balls (the loaded
+    /// table's collider outlines, [`table_lines`](super::table_lines)).
+    pub table_lines: Vec<DebugLine>,
+    /// Flipper outlines, drawn at each snapshot's flipper angles.
+    pub flippers: Vec<FlipperOutline>,
+}
+
+/// Colour of flipper bats in the debug view.
+pub const FLIPPER_LINE_COLOR: [f32; 4] = [0.95, 0.95, 0.3, 1.0];
+
+/// Frames the audio thread renders per block (5.3 ms at 48 kHz).
+pub const AUDIO_BLOCK_FRAMES: usize = 256;
+
+/// Audio thread configuration.
+pub struct AudioConfig {
+    /// Haptic impulses from the sim thread ([`TableSim`](super::TableSim)).
+    pub haptics: Option<HapticsConsumer<HapticsTelemetryEvent>>,
+    /// SSF exciter mixer settings.
+    pub ssf: SsfConfig,
+    /// Sleep between blocks.
+    pub period: Duration,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        Self {
+            haptics: None,
+            ssf: SsfConfig::default(),
+            period: Duration::from_millis(5),
+        }
+    }
+}
+
+/// What the audio thread did (read with [`Threads::audio_stats`]).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct AudioStats {
+    /// Haptic impulses received from the sim.
+    pub haptic_events: u64,
+    /// SSF frames rendered into the (null) sink.
+    pub frames: u64,
+    /// Telemetry datagrams encoded (haptic impulses, kind 5).
+    pub telemetry_datagrams: u64,
 }
 
 impl Default for RenderConfig {
@@ -94,6 +144,8 @@ impl Default for RenderConfig {
             camera: Camera::ortho_top_down_with_margin([0.0, 0.0], [0.52, 1.07], 0.01),
             close_policy: ClosePolicy::default(),
             idle_period: Duration::from_millis(4),
+            table_lines: Vec::new(),
+            flippers: Vec::new(),
         }
     }
 }
@@ -110,17 +162,27 @@ pub struct ThreadsConfig {
     pub timer: HybridTimer,
     /// Render thread configuration.
     pub render: RenderConfig,
+    /// Audio thread configuration.
+    pub audio: AudioConfig,
 }
 
 impl ThreadsConfig {
-    /// [`IdleSim`](super::IdleSim), the std monotonic clock, no GPU.
+    /// [`IdleSim`](super::IdleSim), the std monotonic clock, no GPU, no
+    /// haptics.
     pub fn idle(input: SpscConsumer<InputEvent>) -> Self {
+        Self::with_sim(Box::new(super::IdleSim), input)
+    }
+
+    /// `sim` (e.g. a [`TableSim`](super::TableSim)), the std monotonic
+    /// clock, no GPU, no haptics.
+    pub fn with_sim(sim: Box<dyn SimStep>, input: SpscConsumer<InputEvent>) -> Self {
         Self {
-            sim: Box::new(super::IdleSim),
+            sim,
             input,
             now_ns: monotonic_now_ns,
             timer: HybridTimer::default(),
             render: RenderConfig::default(),
+            audio: AudioConfig::default(),
         }
     }
 }
@@ -139,6 +201,9 @@ pub struct OrchestratorStats {
     close_requested: AtomicBool,
     gpu_ready: AtomicBool,
     gpu_error: AtomicBool,
+    audio_haptic_events: AtomicU64,
+    audio_frames: AtomicU64,
+    audio_datagrams: AtomicU64,
 }
 
 /// A copy of [`OrchestratorStats`].
@@ -177,6 +242,15 @@ impl OrchestratorStats {
             close_requested: self.close_requested.load(Ordering::Relaxed),
             gpu_ready: self.gpu_ready.load(Ordering::Relaxed),
             gpu_error: self.gpu_error.load(Ordering::Relaxed),
+        }
+    }
+
+    /// The audio thread's counters.
+    pub fn audio(&self) -> AudioStats {
+        AudioStats {
+            haptic_events: self.audio_haptic_events.load(Ordering::Relaxed),
+            frames: self.audio_frames.load(Ordering::Relaxed),
+            telemetry_datagrams: self.audio_datagrams.load(Ordering::Relaxed),
         }
     }
 }
@@ -231,6 +305,7 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
         now_ns,
         timer,
         render,
+        audio,
     } = cfg;
 
     let spawn = |threads: &mut Threads, name: &'static str, f: Box<dyn FnOnce() + Send>| {
@@ -258,8 +333,14 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
             Box::new(move || render_thread(render, reader, &sd, &st)),
         )
     });
-    let sd = Arc::clone(&shutdown);
-    let r = r.and_then(|()| spawn(&mut threads, "audio", Box::new(move || park_until(&sd))));
+    let (sd, st) = (Arc::clone(&shutdown), Arc::clone(&stats));
+    let r = r.and_then(|()| {
+        spawn(
+            &mut threads,
+            "audio",
+            Box::new(move || audio_thread(audio, &sd, &st)),
+        )
+    });
     let sd = Arc::clone(&shutdown);
     let r = r.and_then(|()| spawn(&mut threads, "io", Box::new(move || park_until(&sd))));
     match r {
@@ -281,6 +362,11 @@ impl Threads {
     /// thread should then quit.
     pub fn close_requested(&self) -> bool {
         self.stats.close_requested.load(Ordering::Relaxed)
+    }
+
+    /// The audio thread's counters.
+    pub fn audio_stats(&self) -> AudioStats {
+        self.stats.audio()
     }
 
     /// Names of the running threads (sim, render, audio, io).
@@ -332,7 +418,56 @@ impl Drop for Threads {
     }
 }
 
-/// Audio / I/O placeholder: parks until shutdown.
+/// The audio thread: drains haptic impulses into the SSF exciter mixer and
+/// the telemetry encoder, and renders SSF blocks into a null sink (no output
+/// device is opened yet). Allocates its buffers once, before the loop.
+fn audio_thread(cfg: AudioConfig, shutdown: &AtomicBool, stats: &OrchestratorStats) {
+    let AudioConfig {
+        mut haptics,
+        ssf,
+        period,
+    } = cfg;
+    let mut mixer = SsfMixer::new(ssf);
+    let mut encoder = TelemetryEncoder::new();
+    let mut batch = DatagramBatch::new();
+    let state = TelemetryState::new();
+    let mut block = vec![0.0f32; AUDIO_BLOCK_FRAMES * CHANNELS];
+    let mut impulses: ArrayVec<HapticsTelemetryEvent, 64> = ArrayVec::new();
+    while !shutdown.load(Ordering::Acquire) {
+        if let Some(rx) = haptics.as_mut() {
+            loop {
+                impulses.clear();
+                while !impulses.is_full() {
+                    match rx.pop() {
+                        Some(e) => {
+                            mixer.feed(HapticEvent::from(e));
+                            impulses.push(e);
+                        }
+                        None => break,
+                    }
+                }
+                if impulses.is_empty() {
+                    break;
+                }
+                stats
+                    .audio_haptic_events
+                    .fetch_add(impulses.len() as u64, Ordering::Relaxed);
+                let tick = impulses.last().map_or(0, |e| e.tick);
+                encoder.encode_tick(tick, &state, &impulses, &mut batch);
+                stats
+                    .audio_datagrams
+                    .fetch_add(batch.len() as u64, Ordering::Relaxed);
+            }
+        }
+        mixer.render(&mut block);
+        stats
+            .audio_frames
+            .fetch_add(AUDIO_BLOCK_FRAMES as u64, Ordering::Relaxed);
+        std::thread::park_timeout(period);
+    }
+}
+
+/// I/O placeholder: parks until shutdown.
 fn park_until(shutdown: &AtomicBool) {
     while !shutdown.load(Ordering::Acquire) {
         std::thread::park_timeout(Duration::from_millis(100));
@@ -386,6 +521,8 @@ fn render_thread(
         camera,
         close_policy,
         idle_period,
+        table_lines,
+        flippers,
     } = cfg;
     // GPU setup on this thread (the device lives here). Without surfaces
     // there is nothing to present, so no adapter is requested.
@@ -416,7 +553,7 @@ fn render_thread(
         }
         _ => None,
     };
-    let mut lines = DebugLines::new(4096);
+    let mut lines = DebugLines::new(4096 + table_lines.len() + flippers.len());
     let mut last_tick = 0u64;
     while !shutdown.load(Ordering::Acquire) {
         if let Some(rx) = window_events.as_mut() {
@@ -438,6 +575,14 @@ fn render_thread(
         let mut paced = false;
         if let Some((_, set)) = surfaces.as_mut() {
             lines.clear();
+            for l in &table_lines {
+                lines.push(*l);
+            }
+            for st in snap.flippers() {
+                if let Some(f) = flippers.get(usize::from(st.id.0)) {
+                    lines.push(f.line(st.angle_rad, FLIPPER_LINE_COLOR));
+                }
+            }
             snapshot_lines(snap, &default_ball_radius, &mut lines);
             let st = set.render(&lines, &camera);
             if st.contains(&pin_render::gpu::SurfaceStatus::Presented) {
