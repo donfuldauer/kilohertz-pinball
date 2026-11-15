@@ -409,3 +409,5 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 6 | CR-007 | Verifier | Sonnet 5.5 | 1 | pass (3062450) | pin_core 240/0, pin_tablegen 242/0, workspace check ok; all layouts parse to None and round-trip | |
 | 6 | CR-007 CR1 | Fixer | Sonnet 5.5 | 1 | done (d21ba7d) | CodeRabbit PR #26: Playfield field is breaking under the protocol; PLAN appendix missing | reworked as new GlassManifest + optional glass.toml (additive); PLAN A.3a added |
 | 6 | CR-007 CR1 | Verifier | Sonnet 5.5 | 1 | pass (d21ba7d) | 8 files, +159/-0; pin_tablegen and layout.rs identical to main; only new pub items; pin_core all pass (glass_manifest 7/7), pin_tablegen pass, workspace check ok | |
+| 6 | a1-glass-height sim | Implementer | Opus 5.5 / Sonnet 5.5 | 2 | done (2cbaa80) | pin_sim honours optional glass.toml (after CR-007 rework) | glass_height tests 5 incl. sealed-wall sweep with a losing control |
+| 6 | a1-glass-height sim | Verifier | Sonnet 5.5 | 2 | pass (d8d5fd9) | 4 files; absent path identical to main; pin_sim all pass (glass_height 5/5, glass_lid 5/5, drop_reset_escape 4/4, replay/autoplay/spec_2_9/alloc suites); workspace check ok | |
