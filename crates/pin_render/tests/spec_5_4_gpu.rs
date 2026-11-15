@@ -56,30 +56,46 @@ const RQ: wgpu::Features = wgpu::Features::EXPERIMENTAL_RAY_QUERY;
 // brief does not fix; see the module docs)
 // ---------------------------------------------------------------------------------------
 
+/// The static meshes of the scene (sphere for the balls, quad for playfield and panels),
+/// as the `(MeshId, geometry)` list the real API takes: the same geometry `new_pbr`
+/// uploads, under the ids it got.
+fn static_meshes(meshes: &Meshes) -> [(MeshId, MeshGeometry); 2] {
+    [
+        (meshes.sphere, MeshGeometry::uv_sphere(R, 96, 48)),
+        (meshes.quad, MeshGeometry::quad(1.0)),
+    ]
+}
+
 /// `select_reflection_source` for `pbr`'s main pass.
 fn select(
     ctx: &GpuContext,
     pbr: &PbrRenderer,
+    meshes: &Meshes,
     quality: ReflectionQuality,
     config: RayQueryConfig,
 ) -> Box<dyn ReflectionSource> {
-    select_reflection_source(ctx, pbr, quality, config)
+    let owned = static_meshes(meshes);
+    let refs: Vec<(MeshId, &MeshGeometry)> = owned.iter().map(|(i, g)| (*i, g)).collect();
+    select_reflection_source(ctx, quality, pbr, &refs, &config)
 }
 
 /// `RayQueryReflections` creation; `Err` carries a printable reason.
 fn new_ray(
     ctx: &GpuContext,
     pbr: &PbrRenderer,
+    meshes: &Meshes,
     quality: ReflectionQuality,
     config: RayQueryConfig,
 ) -> Result<RayQueryReflections, String> {
-    RayQueryReflections::new(ctx, pbr, quality, config).map_err(|e| format!("{e:?}"))
+    let owned = static_meshes(meshes);
+    let refs: Vec<(MeshId, &MeshGeometry)> = owned.iter().map(|(i, g)| (*i, g)).collect();
+    RayQueryReflections::new(ctx, pbr, quality, &refs, &config).map_err(|e| format!("{e:?}"))
 }
 
 /// BLAS builds and TLAS refits so far.
 fn ray_counts(src: &RayQueryReflections) -> (u64, u64) {
-    let s: RayStats = src.stats();
-    (s.blas_builds as u64, s.tlas_refits as u64)
+    let s: RayStats = src.ray_stats();
+    (s.blas_builds, s.tlas_refits)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -87,7 +103,7 @@ fn ray_counts(src: &RayQueryReflections) -> (u64, u64) {
 // ---------------------------------------------------------------------------------------
 
 fn new_context() -> Option<GpuContext> {
-    match GpuContext::new_headless(&GpuOptions::from_env()) {
+    match GpuContext::new_headless_with_features(&GpuOptions::from_env(), RQ) {
         Ok(ctx) => {
             let info = ctx.adapter_info();
             println!(
@@ -624,7 +640,7 @@ impl Rig {
             Source::Probes => {
                 Box::new(OctahedralProbes::new(ctx, &pbr, ProbeConfig::default()).expect("probes"))
             }
-            Source::Select(q, c) => select(ctx, &pbr, q, c),
+            Source::Select(q, c) => select(ctx, &pbr, &meshes, q, c),
         };
         Rig {
             ctx,
@@ -780,13 +796,13 @@ fn check_fallback_identity() {
         ] {
             check_identical_to_probes(bare, ray(q), &format!("feature absent, {q}"));
         }
-        let (pbr, _) = new_pbr(bare, 16);
+        let (pbr, bare_meshes) = new_pbr(bare, 16);
         for q in [
             ReflectionQuality::BallsOnly,
             ReflectionQuality::BallsAndClearCoat,
         ] {
             let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                new_ray(bare, &pbr, q, RayQueryConfig::default()).is_err()
+                new_ray(bare, &pbr, &bare_meshes, q, RayQueryConfig::default()).is_err()
             }));
             assert!(
                 matches!(made, Ok(true)),
@@ -1253,7 +1269,7 @@ fn blas_built_once_per_mesh_and_tlas_refit_per_frame() {
         ReflectionQuality::BallsAndClearCoat,
     ] {
         let (mut pbr, meshes) = new_pbr(ctx, 64);
-        let mut src = new_ray(ctx, &pbr, q, RayQueryConfig::default())
+        let mut src = new_ray(ctx, &pbr, &meshes, q, RayQueryConfig::default())
             .unwrap_or_else(|e| panic!("RayQueryReflections::new with the feature present: {e}"));
         assert_eq!(src.name(), "ray_query");
         let view = View {
@@ -1292,20 +1308,27 @@ fn selector_picks_ray_query_when_the_feature_is_present() {
     let Some(ctx) = ray_ctx("selector") else {
         return;
     };
-    let (pbr, _) = new_pbr(ctx, 16);
+    let (pbr, meshes) = new_pbr(ctx, 16);
     for q in [
         ReflectionQuality::BallsOnly,
         ReflectionQuality::BallsAndClearCoat,
     ] {
         assert_eq!(
-            select(ctx, &pbr, q, RayQueryConfig::default()).name(),
+            select(ctx, &pbr, &meshes, q, RayQueryConfig::default()).name(),
             "ray_query",
             "{q}"
         );
     }
     let probes = OctahedralProbes::new(ctx, &pbr, ProbeConfig::default()).expect("probes");
     assert_eq!(
-        select(ctx, &pbr, ReflectionQuality::Off, RayQueryConfig::default()).name(),
+        select(
+            ctx,
+            &pbr,
+            &meshes,
+            ReflectionQuality::Off,
+            RayQueryConfig::default()
+        )
+        .name(),
         probes.name(),
         "Off selects the probe path"
     );
@@ -1313,6 +1336,7 @@ fn selector_picks_ray_query_when_the_feature_is_present() {
         select(
             ctx,
             &pbr,
+            &meshes,
             ReflectionQuality::default(),
             RayQueryConfig::default()
         )
