@@ -2035,7 +2035,9 @@ dependencies = [
  "libm",
  "naga",
  "pin_assetgen",
+ "pin_assets",
  "pin_core",
+ "pin_tablegen",
  "pollster",
  "proptest",
  "sdl3",
@@ -2080,8 +2082,11 @@ dependencies = [
  "libm",
  "pin_assets",
  "pin_core",
+ "pin_input",
  "pin_physics",
  "proptest",
+ "serde",
+ "toml",
 ]
 
 [[package]]
