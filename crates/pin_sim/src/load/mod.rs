@@ -27,6 +27,11 @@
 //! * **Script**: Lua or Wasm by the extension of `meta.script_entry`, with
 //!   [`SimConfig::lua`] / [`SimConfig::wasm`] (the engine limits by
 //!   default); `on_init` runs at tick 0 and its commands are applied.
+//!
+//! [`Simulation::load_snapshot`] builds from a [`BundleSnapshot`] (an
+//! immutable in-memory copy, Subphase 6.0) so a caller can validate and
+//! simulate exactly the same bytes; [`Simulation::load`] is
+//! [`Simulation::load_from_vfs`] on a freshly opened bundle.
 
 use arrayvec::ArrayVec;
 use glam::{Mat4, Vec3};
@@ -83,6 +88,10 @@ pub const DEFAULT_NEWTON_PATH_MM: f32 = 50.0;
 
 /// Gravity, m/s².
 pub const GRAVITY_M_S2: f32 = 9.81;
+
+mod snapshot;
+
+pub use snapshot::BundleSnapshot;
 
 fn build_err(what: impl core::fmt::Display) -> SimError {
     SimError::Build(what.to_string())
@@ -254,10 +263,35 @@ impl Simulation {
     /// (physics construction).
     pub fn load(bundle: &Path, cfg: SimConfig) -> Result<Simulation, SimError> {
         let vfs = Vfs::open(bundle)?;
-        let table_hash = bundle_hash(&vfs)?;
-        let table = load_table(&vfs)?;
-        let scene = load_gltf(&vfs, &table.manifest.meta.playfield_mesh)?;
-        let wall_height = wall_height_m(&vfs)?;
+        Simulation::load_from_vfs(&vfs, cfg)
+    }
+
+    /// [`load`](Self::load) from a [`BundleSnapshot`]: every file is read
+    /// from the snapshot's in-memory copy, never from disk, so the
+    /// simulation is built from exactly the bytes a validator saw in the
+    /// same snapshot ([`Simulation::table_hash`] equals
+    /// [`BundleSnapshot::bundle_hash`]).
+    ///
+    /// # Errors
+    /// As [`load`](Self::load).
+    pub fn load_snapshot(
+        snapshot: &BundleSnapshot,
+        cfg: SimConfig,
+    ) -> Result<Simulation, SimError> {
+        Simulation::load_from_vfs(snapshot.vfs(), cfg)
+    }
+
+    /// [`load`](Self::load) from an open [`Vfs`] (a folder `Vfs` reads its
+    /// files from disk during the call; use [`load_snapshot`](Self::load_snapshot)
+    /// for an immutable copy).
+    ///
+    /// # Errors
+    /// As [`load`](Self::load).
+    pub fn load_from_vfs(vfs: &Vfs, cfg: SimConfig) -> Result<Simulation, SimError> {
+        let table_hash = bundle_hash(vfs)?;
+        let table = load_table(vfs)?;
+        let scene = load_gltf(vfs, &table.manifest.meta.playfield_mesh)?;
+        let wall_height = wall_height_m(vfs)?;
         let mut bounds = Bounds::new();
 
         // --- Static world. ---
@@ -586,6 +620,9 @@ impl Simulation {
             snapshot: FrameStateSnapshot::default(),
             events: BallEvents::new(),
             haptics: ArrayVec::new(),
+            out_scenes: ArrayVec::new(),
+            out_sounds: ArrayVec::new(),
+            out_scores: ArrayVec::new(),
             generations: [0; MAX_BALLS],
             prev_positions: [Vec3::ZERO; MAX_BALLS],
             tick: 0,

@@ -17,28 +17,27 @@
 
 use arrayvec::ArrayVec;
 use pin_app::orchestrator::{RenderConfig, RenderGpu, ThreadsConfig, spawn_threads};
+use pin_app::platform::{WindowGuard, WindowKeeper};
 use pin_render::debug::{Camera, DebugLines, box_lines};
 use pin_render::gpu::{
     GpuContext, GpuOptions, PresentChoice, SurfaceOptions, SurfaceSet, SurfaceSource,
     SurfaceStatus, create_instance, create_surface, require_gpu, wgpu,
 };
 use pin_render::topology::{Rect, SurfaceRole, WindowEvent, WindowEventKind};
-use std::time::{Duration, Instant};
-
-/// How long a new window may take to become visible (presentable).
-const WARM_UP: Duration = Duration::from_secs(15);
+/// How many render iterations a new window may take to become visible
+/// (presentable). A count, not a duration (D8): unpaced iterations yield.
+const WARM_UP_ITERS: u64 = 5_000_000;
 
 /// Renders until the playfield and the secondary surface have each
 /// presented once (a presenter-thread surface counts once its thread
-/// presented), pumping SDL events in between and sleeping briefly whenever
-/// the frame was not paced (as the render thread does). Panics with the
-/// statuses seen if that does not happen within [`WARM_UP`].
+/// presented), pumping SDL events in between and yielding whenever
+/// the frame was not paced. Panics with the statuses seen if that does not
+/// happen within [`WARM_UP_ITERS`] iterations.
 fn warm_up(set: &mut SurfaceSet, pump: &mut sdl3::EventPump, lines: &DebugLines, camera: &Camera) {
     let presenter = set.choices().any(|c| c.2.needs_presenter_thread());
-    let t0 = Instant::now();
     let mut seen: Vec<[SurfaceStatus; 2]> = Vec::new();
     let (mut playfield, mut secondary) = (false, false);
-    while t0.elapsed() < WARM_UP {
+    for iter in 0..WARM_UP_ITERS {
         while pump.poll_event().is_some() {}
         let st = set.render(lines, camera);
         playfield |= st[0] == SurfaceStatus::Presented;
@@ -52,20 +51,22 @@ fn warm_up(set: &mut SurfaceSet, pump: &mut sdl3::EventPump, lines: &DebugLines,
         }
         if playfield && secondary {
             println!(
-                "[orchestrator_window] windows presentable after {:?} (status changes {seen:?})",
-                t0.elapsed()
+                "[orchestrator_window] windows presentable after {iter} iterations (status changes {seen:?})"
             );
             return;
         }
         if !set.frame_paced(&st) {
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::yield_now();
         }
     }
     panic!(
-        "windows not presentable within {WARM_UP:?}: playfield {playfield}, secondary \
+        "windows not presentable within {WARM_UP_ITERS} iterations: playfield {playfield}, secondary \
          {secondary}; status changes {seen:?}"
     );
 }
+
+/// Bound on render-thread progress polls (a count, not a duration).
+const RENDER_POLLS: u64 = 50_000_000;
 
 const NATIVE: [&str; 4] = ["windows", "cocoa", "x11", "wayland"];
 
@@ -81,6 +82,7 @@ fn source(
     w: &sdl3::video::Window,
     index: usize,
     role: SurfaceRole,
+    keep_alive: WindowGuard,
 ) -> SurfaceSource {
     let (lw, lh) = w.size();
     let (pw, ph) = w.size_in_pixels();
@@ -97,7 +99,7 @@ fn source(
         surface: unsafe { create_surface(instance, w) }.expect("create_surface"),
         logical_size: (lw, lh),
         pixel_size: (pw, ph),
-        keep_alive: None,
+        keep_alive: Some(keep_alive),
     }
 }
 
@@ -126,8 +128,15 @@ fn main() {
         win.raise();
         win
     };
-    let playfield = mk("pin_app test playfield", 64, 160, 240);
-    let score = mk("pin_app test score", 288, 128, 32);
+    // As the app does: the keeper owns the windows, guards go with the
+    // surfaces (`keep_alive`), so a stalled presenter cannot outlive a window.
+    let mut keeper = WindowKeeper::new();
+    let g_playfield = keeper.adopt(mk("pin_app test playfield", 64, 160, 240));
+    let g_score = keeper.adopt(mk("pin_app test score", 288, 128, 32));
+    let (playfield, score) = {
+        let mut w = keeper.windows();
+        (w.next().expect("playfield"), w.next().expect("score"))
+    };
     let mut pump = sdl.event_pump().expect("pump");
 
     let opts = GpuOptions::from_env();
@@ -144,8 +153,14 @@ fn main() {
     {
         let instance = create_instance(opts.backends);
         let sources = vec![
-            source(&instance, &playfield, 0, SurfaceRole::Playfield),
-            source(&instance, &score, 1, SurfaceRole::Score),
+            source(
+                &instance,
+                playfield,
+                0,
+                SurfaceRole::Playfield,
+                g_playfield.clone(),
+            ),
+            source(&instance, score, 1, SurfaceRole::Score, g_score.clone()),
         ];
         let ctx = match GpuContext::with_instance(instance, &opts, Some(&sources[0].surface)) {
             Ok(c) => c,
@@ -194,7 +209,7 @@ fn main() {
                 assert!(set.frame_paced(&st));
             } else {
                 assert!(!set.frame_paced(&st));
-                std::thread::sleep(Duration::from_millis(5));
+                std::thread::yield_now();
             }
             for (i, s) in st.iter().enumerate() {
                 if *s == SurfaceStatus::Presented {
@@ -227,7 +242,13 @@ fn main() {
 
     // Part 2: the orchestrator's render thread presenting the playfield.
     let instance = create_instance(opts.backends);
-    let sources = vec![source(&instance, &playfield, 0, SurfaceRole::Playfield)];
+    let sources = vec![source(
+        &instance,
+        playfield,
+        0,
+        SurfaceRole::Playfield,
+        g_playfield.clone(),
+    )];
     let (_tx, rx) = pin_core::spsc::channel(16);
     let mut cfg = ThreadsConfig::idle(rx);
     cfg.render = RenderConfig {
@@ -240,28 +261,22 @@ fn main() {
         ..RenderConfig::default()
     };
     let threads = spawn_threads(cfg).expect("spawn");
-    let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_secs(20) {
+    for _ in 0..RENDER_POLLS {
         let s = threads.stats();
         if s.gpu_error || s.render_frames >= 10 {
             break;
         }
         // Keep the windows serviced (main thread = SDL pump).
         while pump.poll_event().is_some() {}
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::yield_now();
     }
     let s = threads.stats();
     println!("[orchestrator_window] render thread stats {s:?}");
     assert!(s.gpu_ready && !s.gpu_error, "{s:?}");
     assert!(s.render_frames >= 10, "{s:?}");
-    let t1 = Instant::now();
+    // The join returning is the shutdown assertion (a hang fails the test run).
     threads.shutdown().expect("shutdown");
-    assert!(
-        t1.elapsed() < Duration::from_secs(1),
-        "shutdown took {:?}",
-        t1.elapsed()
-    );
-    drop(score);
-    drop(playfield);
+    drop((g_score, g_playfield));
+    keeper.drain();
     println!("[orchestrator_window] ok");
 }

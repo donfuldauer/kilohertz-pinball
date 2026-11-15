@@ -13,20 +13,40 @@
 //! * [`load_validated`] / [`TableSim`] (Subphase 6.0): a table bundle
 //!   validated (manifests, 2.8 clearance for every ball profile) and loaded
 //!   into the real [`pin_sim::Simulation`], driven by the sim thread instead
-//!   of [`IdleSim`]; its haptic impulses feed the audio thread
-//!   ([`AudioConfig`]).
+//!   of [`IdleSim`]. Validation and the simulation use one immutable
+//!   [`BundleSnapshot`](pin_sim::load::BundleSnapshot) of the bundle
+//!   ([`validate_table`] + [`load_checked`]).
+//! * Wiring (6.0): [`TableSim`] pushes each tick's haptic impulses, sound
+//!   triggers and display commands into wait-free rings; the audio thread
+//!   mixes the sounds (3.3 mixer) with the SSF exciter channels
+//!   ([`AudioEngine`]) into an [`AudioSink`] (SDL device, offline recording
+//!   or null); the render thread draws the table with the 5.1 PBR renderer
+//!   and the 5.3 displays ([`TableRenderer`], presented by [`AppSurfaces`]).
 
+mod audio;
+mod present;
 mod table;
 mod threads;
+mod view;
 
+pub use audio::{
+    AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, DEVICE_QUEUE_BLOCKS, DeviceSink, DeviceStream,
+    NullSink, OfflineRecording, OfflineSink, RegisteredSound, table_samples,
+};
+pub use present::AppSurfaces;
 pub use table::{
-    FlipperOutline, TABLE_LINE_COLOR, TableSim, ValidatedTable, load_validated, run_headless_table,
-    table_lines, validate_table,
+    DISPLAY_RING_CAPACITY, DisplayCommand, FlipperOutline, SIM_STACK_BYTES, SOUND_RING_CAPACITY,
+    TABLE_LINE_COLOR, TableSim, ValidatedTable, load_checked, load_validated, on_sim_stack,
+    run_headless_table, table_lines, validate_snapshot, validate_table,
 };
 pub use threads::{
-    AUDIO_BLOCK_FRAMES, AudioConfig, AudioStats, ClosePolicy, DropMonitor, OrchestratorStats,
+    AudioConfig, AudioStats, ClosePolicy, DropMonitor, FLIPPER_LINE_COLOR, OrchestratorStats,
     RenderConfig, RenderGpu, StatsSnapshot, Threads, ThreadsConfig, default_ball_radius,
     monotonic_now_ns, spawn_threads,
+};
+pub use view::{
+    DisplayAssets, MAX_OVERLAY_TABLE_LINES, TableRenderOptions, TableRenderer, TableVisuals,
+    VisualMesh, routes_for_window, table_camera, vertex_normals,
 };
 
 use arrayvec::ArrayVec;

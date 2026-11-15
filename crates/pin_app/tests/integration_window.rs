@@ -17,6 +17,37 @@ fn require_gpu() -> bool {
     std::env::var("PIN_REQUIRE_GPU").is_ok_and(|v| v.trim() == "1")
 }
 
+/// Slack (in ticks) on the `--run-ms` upper bound: pump overshoot plus the
+/// join at shutdown. The bound only catches a runaway sim; progress is never
+/// asserted from wall time.
+const RUN_SLACK_TICKS: u64 = 2000;
+
+/// The known "this machine cannot open a window / get a GPU" diagnostics of
+/// `pin_app`, matched as whole stderr lines by prefix (never by a generic
+/// substring). Returns what was unavailable.
+fn unavailable(err: &str) -> Option<&'static str> {
+    const KNOWN: [(&str, &str); 4] = [
+        ("pin_app: SDL error: ", "SDL video unavailable"),
+        (
+            "pin_app: window creation failed: ",
+            "SDL window creation unavailable",
+        ),
+        ("pin_app: SDL video driver ", "no native SDL video driver"),
+        (
+            "pin_app: GPU setup failed, rendering disabled: ",
+            "no GPU adapter",
+        ),
+    ];
+    err.lines().find_map(|line| {
+        KNOWN.iter().find_map(|(prefix, why)| {
+            let hit = line.starts_with(prefix)
+                && (*prefix != "pin_app: SDL video driver "
+                    || line.contains(" has no native windows"));
+            hit.then_some(*why)
+        })
+    })
+}
+
 fn run(args: &[&str]) -> (bool, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_pin_app"))
         .args(args)
@@ -66,7 +97,9 @@ fn headless_app_runs_the_table_on_real_time() {
     assert!(ok, "stdout {out}\nstderr {err}");
     assert!(err.contains("table \"Grey Box\" loaded"), "{err}");
     let ticks = count_before(&err, "sim ticks").expect("shutdown line");
-    assert!(ticks > 100, "{err}");
+    // Bounded completion only (D8): the sim ran, and not past the run time.
+    assert!(ticks > 0, "{err}");
+    assert!(ticks <= 600 + RUN_SLACK_TICKS, "{err}");
 }
 
 #[test]
@@ -80,22 +113,17 @@ fn windowed_app_opens_windows_and_renders_the_table() {
         );
         println!("[integration_window] SKIP: {why}");
     };
+    if let Some(why) = unavailable(&err) {
+        return skip(why);
+    }
     if !ok {
-        if err.contains("SDL error") || err.contains("window creation failed") {
-            return skip("SDL video unavailable");
-        }
         panic!("pin_app failed\nstdout {out}\nstderr {err}");
-    }
-    if err.contains("has no native windows") {
-        return skip("no native SDL video driver");
-    }
-    if err.contains("GPU setup failed") {
-        return skip("no GPU adapter");
     }
     println!("[integration_window] {err}");
     let ticks = count_before(&err, "sim ticks").expect("shutdown line");
     let frames = count_before(&err, "frames").expect("frames");
-    assert!(ticks > 500, "{err}");
+    assert!(ticks > 0, "{err}");
+    assert!(ticks <= 2500 + RUN_SLACK_TICKS, "{err}");
     assert!(frames > 0, "no frame presented: {err}");
     assert!(
         !err.contains("still holds a window"),

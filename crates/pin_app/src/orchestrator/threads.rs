@@ -1,13 +1,20 @@
-//! The engine threads: sim (1 kHz, real time), render, audio (haptics →
-//! SSF exciter mix and telemetry impulses into a null sink) and I/O (a
-//! placeholder that parks until shutdown). The main thread stays the SDL
+//! The engine threads: sim (1 kHz, real time), render (with a table: the
+//! 5.1 PBR playfield and the 5.3 displays, [`TableRenderer`](super::TableRenderer);
+//! without one: the 1.4 debug view), audio (sim sound triggers → 3.3 mixer,
+//! haptics → SSF exciter mix and telemetry, the 7.1 mix into an
+//! [`AudioSink`]: a device, an offline recording or the null sink) and I/O
+//! (a placeholder that parks until shutdown). The main thread stays the SDL
 //! pump (D6) and only talks to these threads through rings, the triple
 //! buffer and the atomics in [`OrchestratorStats`].
 
-use super::table::FlipperOutline;
+use super::audio::{AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, NullSink, RegisteredSound};
+use super::present::AppSurfaces;
+use super::table::{DisplayCommand, FlipperOutline};
+use super::view::{TableRenderOptions, TableVisuals};
 use super::{HybridTimer, SimClock, SimLoop};
 use arrayvec::ArrayVec;
-use pin_audio::ssf::{CHANNELS, SsfConfig, SsfMixer};
+use pin_audio::mixer::{MixerConfig, SoundReceiver};
+use pin_audio::ssf::{CHANNELS, SsfConfig};
 use pin_audio::telemetry::{DatagramBatch, TelemetryEncoder, TelemetryState};
 use pin_core::haptics::HapticEvent;
 use pin_core::input::HapticsTelemetryEvent;
@@ -95,13 +102,21 @@ pub struct RenderConfig {
     pub table_lines: Vec<DebugLine>,
     /// Flipper outlines, drawn at each snapshot's flipper angles.
     pub flippers: Vec<FlipperOutline>,
+    /// The loaded table ([`TableVisuals::of`](super::TableVisuals::of)).
+    /// `Some`: the surfaces show the PBR table and the displays
+    /// ([`TableRenderer`](super::TableRenderer)); `None`: the debug view
+    /// (`table_lines`, `flippers`, balls).
+    pub table: Option<std::sync::Arc<TableVisuals>>,
+    /// PBR / post settings and the debug overlay switch (default: post
+    /// defaults, overlay off).
+    pub table_render: TableRenderOptions,
+    /// Display commands (scenes, scores) from the sim thread
+    /// ([`TableSim::with_displays`](super::TableSim::with_displays)).
+    pub displays: Option<HapticsConsumer<DisplayCommand>>,
 }
 
 /// Colour of flipper bats in the debug view.
 pub const FLIPPER_LINE_COLOR: [f32; 4] = [0.95, 0.95, 0.3, 1.0];
-
-/// Frames the audio thread renders per block (5.3 ms at 48 kHz).
-pub const AUDIO_BLOCK_FRAMES: usize = 256;
 
 /// Audio thread configuration.
 pub struct AudioConfig {
@@ -109,8 +124,18 @@ pub struct AudioConfig {
     pub haptics: Option<HapticsConsumer<HapticsTelemetryEvent>>,
     /// SSF exciter mixer settings.
     pub ssf: SsfConfig,
-    /// Sleep between blocks.
+    /// Sleep between blocks (unpaced sinks render one block per period).
     pub period: Duration,
+    /// Sound triggers from the sim thread
+    /// ([`TableSim::with_sounds`](super::TableSim::with_sounds)), drained
+    /// by the 3.3 mixer.
+    pub sounds: Option<SoundReceiver>,
+    /// 3.3 mixer settings.
+    pub mixer: MixerConfig,
+    /// The table's decoded sounds ([`table_samples`](super::table_samples)).
+    pub samples: Vec<RegisteredSound>,
+    /// Where the 7.1 blocks go; `None` = [`NullSink`].
+    pub sink: Option<Box<dyn AudioSink>>,
 }
 
 impl Default for AudioConfig {
@@ -119,6 +144,10 @@ impl Default for AudioConfig {
             haptics: None,
             ssf: SsfConfig::default(),
             period: Duration::from_millis(5),
+            sounds: None,
+            mixer: MixerConfig::default(),
+            samples: Vec::new(),
+            sink: None,
         }
     }
 }
@@ -128,10 +157,16 @@ impl Default for AudioConfig {
 pub struct AudioStats {
     /// Haptic impulses received from the sim.
     pub haptic_events: u64,
-    /// SSF frames rendered into the (null) sink.
+    /// 7.1 frames (3.3 mixer + SSF) rendered into the sink.
     pub frames: u64,
     /// Telemetry datagrams encoded (haptic impulses, kind 5).
     pub telemetry_datagrams: u64,
+    /// Frames the 3.3 mixer rendered.
+    pub mixer_frames: u64,
+    /// Mixer voices still playing at the end of the last block.
+    pub mixer_voices: u64,
+    /// Most mixer voices playing at the end of a block so far.
+    pub mixer_peak_voices: u64,
 }
 
 impl Default for RenderConfig {
@@ -146,6 +181,9 @@ impl Default for RenderConfig {
             idle_period: Duration::from_millis(4),
             table_lines: Vec::new(),
             flippers: Vec::new(),
+            table: None,
+            table_render: TableRenderOptions::default(),
+            displays: None,
         }
     }
 }
@@ -204,6 +242,9 @@ pub struct OrchestratorStats {
     audio_haptic_events: AtomicU64,
     audio_frames: AtomicU64,
     audio_datagrams: AtomicU64,
+    audio_mixer_frames: AtomicU64,
+    audio_mixer_voices: AtomicU64,
+    audio_mixer_peak: AtomicU64,
 }
 
 /// A copy of [`OrchestratorStats`].
@@ -251,6 +292,9 @@ impl OrchestratorStats {
             haptic_events: self.audio_haptic_events.load(Ordering::Relaxed),
             frames: self.audio_frames.load(Ordering::Relaxed),
             telemetry_datagrams: self.audio_datagrams.load(Ordering::Relaxed),
+            mixer_frames: self.audio_mixer_frames.load(Ordering::Relaxed),
+            mixer_voices: self.audio_mixer_voices.load(Ordering::Relaxed),
+            mixer_peak_voices: self.audio_mixer_peak.load(Ordering::Relaxed),
         }
     }
 }
@@ -309,7 +353,13 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
     } = cfg;
 
     let spawn = |threads: &mut Threads, name: &'static str, f: Box<dyn FnOnce() + Send>| {
-        match std::thread::Builder::new().name(name.to_owned()).spawn(f) {
+        let mut b = std::thread::Builder::new().name(name.to_owned());
+        if name == "sim" {
+            // A Wasm rules script needs MIN_HOST_STACK_BYTES on the thread
+            // that steps the simulation (see `Simulation`).
+            b = b.stack_size(super::table::SIM_STACK_BYTES);
+        }
+        match b.spawn(f) {
             Ok(h) => {
                 threads.handles.push((name, h));
                 Ok(())
@@ -419,20 +469,29 @@ impl Drop for Threads {
 }
 
 /// The audio thread: drains haptic impulses into the SSF exciter mixer and
-/// the telemetry encoder, and renders SSF blocks into a null sink (no output
-/// device is opened yet). Allocates its buffers once, before the loop.
+/// the telemetry encoder; the 3.3 mixer drains the sim's sound triggers;
+/// each block (the mixer's stereo on FL/FR plus the SSF channels) goes to
+/// the sink. Unpaced sinks get one block per `period`; a device sink is
+/// kept a few blocks ahead. Allocates its buffers once, before the loop.
 fn audio_thread(cfg: AudioConfig, shutdown: &AtomicBool, stats: &OrchestratorStats) {
     let AudioConfig {
         mut haptics,
         ssf,
         period,
+        sounds,
+        mixer,
+        samples,
+        sink,
     } = cfg;
-    let mut mixer = SsfMixer::new(ssf);
+    let mut engine = AudioEngine::new(ssf, mixer, sounds, &samples);
+    drop(samples);
+    let mut sink: Box<dyn AudioSink> = sink.unwrap_or_else(|| Box::new(NullSink::default()));
     let mut encoder = TelemetryEncoder::new();
     let mut batch = DatagramBatch::new();
     let state = TelemetryState::new();
-    let mut block = vec![0.0f32; AUDIO_BLOCK_FRAMES * CHANNELS];
     let mut impulses: ArrayVec<HapticsTelemetryEvent, 64> = ArrayVec::new();
+    /// Most blocks a paced sink gets per wake-up (catch-up bound).
+    const MAX_BLOCKS_PER_WAKE: usize = 8;
     while !shutdown.load(Ordering::Acquire) {
         if let Some(rx) = haptics.as_mut() {
             loop {
@@ -440,7 +499,7 @@ fn audio_thread(cfg: AudioConfig, shutdown: &AtomicBool, stats: &OrchestratorSta
                 while !impulses.is_full() {
                     match rx.pop() {
                         Some(e) => {
-                            mixer.feed(HapticEvent::from(e));
+                            engine.feed_haptic(HapticEvent::from(e));
                             impulses.push(e);
                         }
                         None => break,
@@ -459,10 +518,26 @@ fn audio_thread(cfg: AudioConfig, shutdown: &AtomicBool, stats: &OrchestratorSta
                     .fetch_add(batch.len() as u64, Ordering::Relaxed);
             }
         }
-        mixer.render(&mut block);
-        stats
-            .audio_frames
-            .fetch_add(AUDIO_BLOCK_FRAMES as u64, Ordering::Relaxed);
+        let blocks = if sink.paced() { MAX_BLOCKS_PER_WAKE } else { 1 };
+        for _ in 0..blocks {
+            if sink.paced() && !sink.wants_block() {
+                break;
+            }
+            let block = engine.render_block();
+            sink.write(block, CHANNELS);
+            stats
+                .audio_frames
+                .fetch_add(AUDIO_BLOCK_FRAMES as u64, Ordering::Relaxed);
+            stats
+                .audio_mixer_frames
+                .store(engine.mixer().frames_rendered(), Ordering::Relaxed);
+            stats
+                .audio_mixer_voices
+                .store(engine.active_voices() as u64, Ordering::Relaxed);
+            stats
+                .audio_mixer_peak
+                .store(engine.peak_voices() as u64, Ordering::Relaxed);
+        }
         std::thread::park_timeout(period);
     }
 }
@@ -509,6 +584,15 @@ fn sim_thread<S: SimStep>(
     }
 }
 
+/// What the render thread presents with.
+enum Presenter {
+    /// The 1.4 surfaces with the debug view (no table, or a table whose
+    /// surfaces need presenter threads).
+    Debug(GpuContext, SurfaceSet),
+    /// The table renderer, presented directly.
+    Table(GpuContext, AppSurfaces),
+}
+
 fn render_thread(
     cfg: RenderConfig,
     mut reader: TripleReader<FrameStateSnapshot>,
@@ -523,26 +607,55 @@ fn render_thread(
         idle_period,
         table_lines,
         flippers,
+        table,
+        table_render,
+        mut displays,
     } = cfg;
     // GPU setup on this thread (the device lives here). Without surfaces
     // there is nothing to present, so no adapter is requested.
-    let mut surfaces = match gpu {
+    let mut presenter = match gpu {
         Some(g) if !g.surfaces.is_empty() => {
             let ctx =
                 GpuContext::with_instance(g.instance, &g.options, Some(&g.surfaces[0].surface));
-            match ctx.and_then(|ctx| {
-                SurfaceSet::new(&ctx, g.surfaces, g.surface_options).map(|s| (ctx, s))
-            }) {
-                Ok((ctx, set)) => {
+            let made = ctx.map_err(|e| e.to_string()).and_then(|ctx| match &table {
+                Some(visuals) if AppSurfaces::supported(&ctx, &g.surfaces, g.surface_options) => {
+                    AppSurfaces::new(&ctx, g.surfaces, g.surface_options, visuals, table_render)
+                        .map(|s| Presenter::Table(ctx, s))
+                }
+                other => {
+                    if other.is_some() {
+                        eprintln!(
+                            "pin_app: a surface needs a presenter thread or an unsupported \
+                             format; drawing the debug view instead of the PBR table"
+                        );
+                    }
+                    SurfaceSet::new(&ctx, g.surfaces, g.surface_options)
+                        .map(|s| Presenter::Debug(ctx, s))
+                        .map_err(|e| e.to_string())
+                }
+            });
+            match made {
+                Ok(p) => {
+                    let ctx = match &p {
+                        Presenter::Debug(c, _) | Presenter::Table(c, _) => c,
+                    };
                     let info = ctx.adapter_info();
-                    eprintln!(
-                        "pin_app: render on {} ({:?}); present modes {:?}",
-                        info.name,
-                        info.backend,
-                        set.choices().collect::<Vec<_>>()
-                    );
+                    match &p {
+                        Presenter::Debug(_, set) => eprintln!(
+                            "pin_app: render on {} ({:?}); debug view; present modes {:?}",
+                            info.name,
+                            info.backend,
+                            set.choices().collect::<Vec<_>>()
+                        ),
+                        Presenter::Table(_, s) => eprintln!(
+                            "pin_app: render on {} ({:?}); PBR table on {} surface(s)",
+                            info.name,
+                            info.backend,
+                            s.len()
+                        ),
+                    }
                     stats.gpu_ready.store(true, Ordering::Relaxed);
-                    Some((ctx, set))
+                    Some(p)
                 }
                 Err(e) => {
                     eprintln!("pin_app: GPU setup failed, rendering disabled: {e}");
@@ -561,8 +674,10 @@ fn render_thread(
                 if ev.kind == WindowEventKind::CloseRequested && close_policy.quits(ev.window) {
                     stats.close_requested.store(true, Ordering::Relaxed);
                 }
-                if let Some((_, set)) = surfaces.as_mut() {
-                    set.handle_window_event(&ev);
+                match presenter.as_mut() {
+                    Some(Presenter::Debug(_, set)) => set.handle_window_event(&ev),
+                    Some(Presenter::Table(_, s)) => s.handle_window_event(&ev),
+                    None => {}
                 }
             }
         }
@@ -572,23 +687,40 @@ fn render_thread(
         }
         last_tick = snap.tick;
         stats.render_last_tick.store(last_tick, Ordering::Relaxed);
-        let mut paced = false;
-        if let Some((_, set)) = surfaces.as_mut() {
-            lines.clear();
-            for l in &table_lines {
-                lines.push(*l);
-            }
-            for st in snap.flippers() {
-                if let Some(f) = flippers.get(usize::from(st.id.0)) {
-                    lines.push(f.line(st.angle_rad, FLIPPER_LINE_COLOR));
+        if let Some(rx) = displays.as_mut() {
+            while let Some(cmd) = rx.pop() {
+                if let Some(Presenter::Table(_, s)) = presenter.as_mut() {
+                    s.apply_display_command(cmd, last_tick);
                 }
             }
-            snapshot_lines(snap, &default_ball_radius, &mut lines);
-            let st = set.render(&lines, &camera);
-            if st.contains(&pin_render::gpu::SurfaceStatus::Presented) {
-                stats.render_frames.fetch_add(1, Ordering::Relaxed);
+        }
+        let mut paced = false;
+        match presenter.as_mut() {
+            Some(Presenter::Debug(_, set)) => {
+                lines.clear();
+                for l in &table_lines {
+                    lines.push(*l);
+                }
+                for st in snap.flippers() {
+                    if let Some(f) = flippers.get(usize::from(st.id.0)) {
+                        lines.push(f.line(st.angle_rad, FLIPPER_LINE_COLOR));
+                    }
+                }
+                snapshot_lines(snap, &default_ball_radius, &mut lines);
+                let st = set.render(&lines, &camera);
+                if st.contains(&pin_render::gpu::SurfaceStatus::Presented) {
+                    stats.render_frames.fetch_add(1, Ordering::Relaxed);
+                }
+                paced = set.frame_paced(&st);
             }
-            paced = set.frame_paced(&st);
+            Some(Presenter::Table(_, s)) => {
+                let st = s.render(snap);
+                if st.contains(&pin_render::gpu::SurfaceStatus::Presented) {
+                    stats.render_frames.fetch_add(1, Ordering::Relaxed);
+                }
+                paced = s.frame_paced(&st);
+            }
+            None => {}
         }
         stats.render_iterations.fetch_add(1, Ordering::Relaxed);
         if !paced {
@@ -597,5 +729,5 @@ fn render_thread(
     }
     // Surfaces drop here, on the render thread, before the main thread
     // destroys the windows (it joins this thread first).
-    drop(surfaces);
+    drop(presenter);
 }

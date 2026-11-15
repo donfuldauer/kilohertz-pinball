@@ -1,14 +1,20 @@
-//! Loading a table bundle into the engine (Subphase 6.0): manifest
-//! validation, the 2.8 clearance validator for every declared ball profile,
-//! then [`Simulation::load`]; and [`TableSim`], the [`SimStep`] the sim
-//! thread drives, which also hands the tick's haptic impulses to the audio
-//! thread.
+//! Loading a table bundle into the engine (Subphase 6.0): the bundle is
+//! copied once into an immutable in-memory [`BundleSnapshot`]; manifest
+//! validation and the 2.8 clearance validator (every declared ball profile)
+//! run on that snapshot, and [`Simulation::load_snapshot`] builds the
+//! simulation from the same snapshot, so a bundle replaced on disk between
+//! the two steps can never skip validation. [`TableSim`] is the [`SimStep`]
+//! the sim thread drives; it also hands the tick's haptic impulses, sound
+//! commands and display commands (scenes, score reports) to the audio and
+//! render threads through wait-free rings.
 
-use pin_assets::{GltfScene, LoadedTable, Vfs, load_gltf, load_table};
+use pin_assets::{GltfScene, LoadedTable, load_gltf, load_table};
+use pin_audio::mixer::{SoundSender, SoundTrigger};
 use pin_core::input::HapticsTelemetryEvent;
-use pin_core::{FrameStateSnapshot, InputEvent, SimStep};
+use pin_core::{FrameStateSnapshot, InputEvent, SceneId, SimStep};
 use pin_input::haptics::HapticsProducer;
 use pin_render::debug::DebugLine;
+use pin_sim::load::BundleSnapshot;
 use pin_sim::{SimConfig, Simulation};
 use pin_tablegen::clearance::{ClearanceError, validate_clearance};
 use std::path::Path;
@@ -22,6 +28,9 @@ pub struct ValidatedTable {
     /// Non-fatal findings: manifest warnings (`file: path: message`), then
     /// clearance warnings (feature, name, profile and the finding).
     pub warnings: Vec<String>,
+    /// The in-memory copy of the bundle that was validated; build the
+    /// simulation from it ([`load_checked`]), never from the path again.
+    pub snapshot: BundleSnapshot,
 }
 
 fn clearance_line(e: &ClearanceError) -> String {
@@ -34,20 +43,31 @@ fn clearance_line(e: &ClearanceError) -> String {
     )
 }
 
-/// Opens `bundle` (folder, `.zip` or `.pinbundle`), validates its manifests
-/// (`pin_assets::load_table`), loads the playfield glTF and runs the 2.8
-/// clearance validator (`pin_tablegen::clearance`) for every declared ball
-/// profile.
+/// Copies `bundle` (folder, `.zip` or `.pinbundle`) into an immutable
+/// in-memory [`BundleSnapshot`] (each file read once) and validates that
+/// copy with [`validate_snapshot`].
 ///
 /// # Errors
 /// A message naming the bundle and every problem: manifest errors as
 /// `file: path: message`, clearance errors as `<feature> <name> (<profile>
 /// ball): <file>: <path>: <message>`.
 pub fn validate_table(bundle: &Path) -> Result<ValidatedTable, String> {
-    let name = bundle.display();
-    let vfs = Vfs::open(bundle).map_err(|e| format!("table {name}: {e}"))?;
-    let table = load_table(&vfs).map_err(|e| format!("table {name}: {e}"))?;
-    let scene = load_gltf(&vfs, &table.manifest.meta.playfield_mesh)
+    let name = bundle.display().to_string();
+    let snapshot = BundleSnapshot::capture(bundle).map_err(|e| format!("table {name}: {e}"))?;
+    validate_snapshot(&name, snapshot)
+}
+
+/// Validates `snapshot` (named `name` in messages): its manifests
+/// (`pin_assets::load_table`), the playfield glTF and the 2.8 clearance
+/// validator (`pin_tablegen::clearance`) for every declared ball profile.
+/// Everything is read from the snapshot.
+///
+/// # Errors
+/// As [`validate_table`].
+pub fn validate_snapshot(name: &str, snapshot: BundleSnapshot) -> Result<ValidatedTable, String> {
+    let vfs = snapshot.vfs();
+    let table = load_table(vfs).map_err(|e| format!("table {name}: {e}"))?;
+    let scene = load_gltf(vfs, &table.manifest.meta.playfield_mesh)
         .map_err(|e| format!("table {name}: {e}"))?;
     let report = validate_clearance(&table, &scene);
     if !report.is_ok() {
@@ -63,12 +83,24 @@ pub fn validate_table(bundle: &Path) -> Result<ValidatedTable, String> {
         table,
         scene,
         warnings,
+        snapshot,
     })
 }
 
-/// [`validate_table`], then [`Simulation::load`]. Warnings are printed to
-/// stderr (`pin_app: table warning: ...`). This is the engine's table load
-/// path (`pin_app --table <path>`).
+/// Builds the [`Simulation`] from the snapshot `checked` was validated on
+/// ([`Simulation::load_snapshot`]); the bundle path is not touched again.
+///
+/// # Errors
+/// The [`pin_sim::SimError`] text.
+pub fn load_checked(checked: &ValidatedTable, cfg: SimConfig) -> Result<Simulation, String> {
+    Simulation::load_snapshot(&checked.snapshot, cfg)
+        .map_err(|e| format!("table {:?}: {e}", checked.table.manifest.meta.name.as_str()))
+}
+
+/// [`validate_table`], then [`load_checked`] on the same snapshot (the path
+/// is opened once). Warnings are printed to stderr (`pin_app: table
+/// warning: ...`). This is the engine's table load path (`pin_app --table
+/// <path>`).
 ///
 /// # Errors
 /// [`validate_table`]'s errors, or the [`pin_sim::SimError`] text.
@@ -77,21 +109,85 @@ pub fn load_validated(bundle: &Path, cfg: SimConfig) -> Result<Simulation, Strin
     for w in &checked.warnings {
         eprintln!("pin_app: table warning: {w}");
     }
-    Simulation::load(bundle, cfg).map_err(|e| format!("table {}: {e}", bundle.display()))
+    Simulation::load_snapshot(&checked.snapshot, cfg)
+        .map_err(|e| format!("table {}: {e}", bundle.display()))
 }
 
+/// A display update from the sim thread to the render thread (the score
+/// display and the backglass): one per scene shown and per score report.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DisplayCommand {
+    /// The rules showed scene `SceneId` (`HostCommandQueue::display_scenes`).
+    Scene(SceneId),
+    /// The rules reported `score` for `player` (0-based).
+    Score {
+        /// Player, 0-based.
+        player: u8,
+        /// Absolute score.
+        score: i64,
+    },
+}
+
+/// Default capacity of the display command ring (a burst of scene and
+/// score updates per frame is a handful; overflow drops and counts).
+pub const DISPLAY_RING_CAPACITY: usize = 256;
+
+/// Default capacity of the sound trigger ring.
+pub const SOUND_RING_CAPACITY: usize = 256;
+
 /// The table [`SimStep`]: steps the [`Simulation`] and pushes each tick's
-/// haptic impulses into the audio thread's ring (wait-free, no allocation;
-/// a full ring drops the newest and counts it).
+/// haptic impulses and sound triggers into the audio thread's rings and its
+/// display commands into the render thread's ring (all wait-free, no
+/// allocation; a full ring drops the newest and counts it).
 pub struct TableSim {
     sim: Simulation,
     haptics: Option<HapticsProducer<HapticsTelemetryEvent>>,
+    sounds: Option<SoundSender>,
+    displays: Option<HapticsProducer<DisplayCommand>>,
 }
 
 impl TableSim {
     /// Wraps `sim`; `haptics` receives every haptic impulse.
     pub fn new(sim: Simulation, haptics: Option<HapticsProducer<HapticsTelemetryEvent>>) -> Self {
-        Self { sim, haptics }
+        Self {
+            sim,
+            haptics,
+            sounds: None,
+            displays: None,
+        }
+    }
+
+    /// Sends every sound command ([`Simulation::sound_commands`]) to the
+    /// 3.3 mixer's trigger ring. At tick 0 the `on_init` sounds are sent at
+    /// once.
+    pub fn with_sounds(mut self, mut sounds: SoundSender) -> Self {
+        if self.sim.tick() == 0 {
+            push_sounds(&self.sim, &mut sounds);
+        }
+        self.sounds = Some(sounds);
+        self
+    }
+
+    /// Sends every display scene and score report
+    /// ([`Simulation::display_scenes`], [`Simulation::score_reports`]) to
+    /// the render thread. At tick 0 the `on_init` ones (the attract scene)
+    /// are sent at once.
+    pub fn with_displays(mut self, mut displays: HapticsProducer<DisplayCommand>) -> Self {
+        if self.sim.tick() == 0 {
+            push_displays(&self.sim, &mut displays);
+        }
+        self.displays = Some(displays);
+        self
+    }
+
+    /// Sound triggers dropped because the ring was full.
+    pub fn sounds_dropped(&self) -> u64 {
+        self.sounds.as_ref().map_or(0, SoundSender::dropped)
+    }
+
+    /// Display commands dropped because the ring was full.
+    pub fn displays_dropped(&self) -> u64 {
+        self.displays.as_ref().map_or(0, HapticsProducer::dropped)
     }
 
     /// The simulation.
@@ -123,6 +219,27 @@ impl SimStep for TableSim {
                 h.push(*e);
             }
         }
+        if let Some(s) = self.sounds.as_mut() {
+            push_sounds(&self.sim, s);
+        }
+        if let Some(d) = self.displays.as_mut() {
+            push_displays(&self.sim, d);
+        }
+    }
+}
+
+fn push_sounds(sim: &Simulation, out: &mut SoundSender) {
+    for &(sound, gain) in sim.sound_commands() {
+        out.send(SoundTrigger { sound, gain });
+    }
+}
+
+fn push_displays(sim: &Simulation, out: &mut HapticsProducer<DisplayCommand>) {
+    for &(player, score) in sim.score_reports() {
+        out.push(DisplayCommand::Score { player, score });
+    }
+    for &id in sim.display_scenes() {
+        out.push(DisplayCommand::Scene(id));
     }
 }
 
@@ -213,15 +330,43 @@ pub fn table_lines(scene: &GltfScene, max: usize) -> Vec<DebugLine> {
     out
 }
 
+/// Stack of every thread that loads or steps a [`Simulation`]
+/// ([`pin_sim::cli::SIM_THREAD_STACK_BYTES`], 16 MiB): a Wasm rules script
+/// needs [`pin_script::wasm::MIN_HOST_STACK_BYTES`], and the simulation
+/// (about 70 KiB by value) is moved through several frames while it is
+/// built and wrapped, which overflows a 1 MiB main-thread stack (Windows).
+pub const SIM_STACK_BYTES: usize = pin_sim::cli::SIM_THREAD_STACK_BYTES;
+
+/// Runs `f` on a new thread with a [`SIM_STACK_BYTES`] stack and returns
+/// its result (a panic in `f` is resumed on the caller).
+///
+/// # Errors
+/// The thread could not be spawned.
+pub fn on_sim_stack<R: Send + 'static>(
+    name: &str,
+    f: impl FnOnce() -> R + Send + 'static,
+) -> Result<R, String> {
+    let h = std::thread::Builder::new()
+        .name(name.to_owned())
+        .stack_size(SIM_STACK_BYTES)
+        .spawn(f)
+        .map_err(|e| format!("spawning the {name} thread: {e}"))?;
+    Ok(h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+}
+
 /// Runs `ticks` ticks of the table at `bundle` on simulated time with no
 /// input (`pin_app --headless-ticks N --table <path>`), reading every
 /// snapshot back through the triple buffer. Returns the last tick read back
-/// and the simulation's state hash.
+/// and the simulation's state hash. Load and run happen on a thread with a
+/// [`SIM_STACK_BYTES`] stack ([`on_sim_stack`]), never on the caller's.
 ///
 /// # Errors
 /// Load errors ([`load_validated`]) and non-monotonic snapshots.
 pub fn run_headless_table(bundle: &Path, ticks: u64) -> Result<(u64, u64), String> {
-    let sim = load_validated(bundle, SimConfig::default())?;
-    let (last, table) = super::run_headless_returning(TableSim::new(sim, None), ticks)?;
-    Ok((last, table.sim().state_hash()))
+    let bundle = bundle.to_path_buf();
+    on_sim_stack("headless-table", move || {
+        let sim = load_validated(&bundle, SimConfig::default())?;
+        let (last, table) = super::run_headless_returning(TableSim::new(sim, None), ticks)?;
+        Ok((last, table.sim().state_hash()))
+    })?
 }
