@@ -1,17 +1,17 @@
-//! a1-glass-height: `[playfield] glass_height` (mm, CR-007) places the
+//! a1-glass-height: `glass.toml` `height` (mm, CR-007) places the
 //! playfield glass underside.
 //!
 //! The bundles are copies of the 2.9 `autoplay/clean` fixture (a closed
 //! 514 x 1070 mm playfield with 28 mm walls) in `CARGO_TARGET_TMPDIR`, with
-//! `layout.toml` edited:
+//! `layout.toml` / `glass.toml` edited:
 //!
-//! * `glass_60`: `glass_height = 60` (the glb is unchanged; walls 28 mm);
-//! * `glass_10`: `glass_height = 10`, below the 28 mm walls;
+//! * `glass_60`: `glass.toml` `height = 60` (the glb is unchanged; walls 28 mm);
+//! * `glass_10`: `height = 10`, below the 28 mm walls;
 //! * `tall_walls_glass` / `tall_walls_default`: `wall_height` raised to
 //!   92 mm and the glb and generated table entries regenerated with
 //!   `pin_tablegen` (a nested `cargo run`, as `glass_lid.rs` runs
-//!   `build.sh`); the first sets `glass_height = 112` (gap 20 mm, under the
-//!   27 mm ball diameter), the second leaves it unset (the glass then sits
+//!   `build.sh`); the first sets `glass.toml` `height = 112` (gap 20 mm, under the
+//!   27 mm ball diameter), the second has no `glass.toml` (the glass then sits
 //!   50 mm above the geometry, a gap a ball fits through).
 //!
 //! The sweeps launch one steel ball per run from the open playfield with an
@@ -63,37 +63,38 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-/// Rewrites the `[playfield]` table of `dir/layout.toml`: `wall_height`
-/// (when given) and `glass_height` (set when given, removed otherwise).
-fn edit_layout(dir: &Path, wall_mm: Option<f32>, glass_mm: Option<f32>) {
+/// Rewrites `wall_height` (when given) in the `[playfield]` table of
+/// `dir/layout.toml`, and writes `dir/glass.toml` with `height = glass_mm`
+/// (or removes it when `None`).
+fn edit_bundle(dir: &Path, wall_mm: Option<f32>, glass_mm: Option<f32>) {
     let path = dir.join("layout.toml");
-    let text = std::fs::read_to_string(&path).expect("layout.toml");
-    let mut out = String::new();
-    for line in text.lines() {
-        let key = line.split('=').next().unwrap_or("").trim();
-        if key == "glass_height" {
-            continue;
+    if let Some(w) = wall_mm {
+        let text = std::fs::read_to_string(&path).expect("layout.toml");
+        let mut out = String::new();
+        for line in text.lines() {
+            let key = line.split('=').next().unwrap_or("").trim();
+            if key == "wall_height" {
+                out.push_str(&format!("wall_height = {w:.1}\n"));
+            } else {
+                out.push_str(line);
+                out.push('\n');
+            }
         }
-        if key == "wall_height"
-            && let Some(w) = wall_mm
-        {
-            out.push_str(&format!("wall_height = {w:.1}\n"));
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
-        if line.trim() == "[playfield]"
-            && let Some(g) = glass_mm
-        {
-            out.push_str(&format!("glass_height = {g:.1}\n"));
+        assert!(
+            out.contains(&format!("wall_height = {w:.1}")),
+            "no wall_height in {}",
+            path.display()
+        );
+        std::fs::write(&path, out).expect("write layout.toml");
+    }
+    let glass = dir.join("glass.toml");
+    match glass_mm {
+        Some(g) => std::fs::write(&glass, format!("schema_version = 1\nheight = {g:.1}\n"))
+            .expect("write glass.toml"),
+        None => {
+            let _ = std::fs::remove_file(&glass);
         }
     }
-    assert!(
-        wall_mm.is_none() || out.contains(&format!("wall_height = {:.1}", wall_mm.unwrap())),
-        "no wall_height in {}",
-        path.display()
-    );
-    std::fs::write(&path, out).expect("write layout.toml");
 }
 
 /// Regenerates the glb and the generated `table.toml` entries of `dir`
@@ -114,12 +115,12 @@ fn regenerate(dir: &Path) {
     assert!(status.success(), "pin_tablegen failed: {status}");
 }
 
-/// A copy of the fixture with `layout.toml` edited, built once per binary.
+/// A copy of the fixture with `layout.toml` / `glass.toml` edited, built once per binary.
 fn bundle(name: &str, glass_mm: Option<f32>) -> PathBuf {
     let dir = base_dir().join(name);
     let _ = std::fs::remove_dir_all(&dir);
     copy_dir(&fixture(), &dir);
-    edit_layout(&dir, None, glass_mm);
+    edit_bundle(&dir, None, glass_mm);
     dir
 }
 
@@ -130,12 +131,12 @@ fn tall_wall_bundles() -> &'static (PathBuf, PathBuf) {
         let with = base_dir().join("tall_walls_glass");
         let _ = std::fs::remove_dir_all(&with);
         copy_dir(&fixture(), &with);
-        edit_layout(&with, Some(TALL_WALL_MM), Some(GLASS_TALL_MM));
+        edit_bundle(&with, Some(TALL_WALL_MM), Some(GLASS_TALL_MM));
         regenerate(&with);
         let without = base_dir().join("tall_walls_default");
         let _ = std::fs::remove_dir_all(&without);
         copy_dir(&with, &without);
-        edit_layout(&without, None, None);
+        edit_bundle(&without, None, None);
         (with, without)
     })
 }
@@ -226,7 +227,7 @@ fn glass_height_below_the_geometry_is_a_build_error() {
         let dir = bundle("glass_10", Some(GLASS_BELOW_MM));
         match load(&dir) {
             Err(SimError::Build(msg)) => {
-                assert!(msg.contains("glass_height"), "{msg}");
+                assert!(msg.contains("glass.toml height"), "{msg}");
                 assert!(msg.contains("10.000"), "{msg}");
                 assert!(msg.contains("max z"), "{msg}");
             }
@@ -299,5 +300,30 @@ fn walls_within_a_ball_diameter_of_the_glass_lose_no_ball_sideways() {
         let open = sweep(&without);
         println!("walls {TALL_WALL_MM} mm, default glass: {open:?}");
         assert!(open.escaped_sideways > 0, "{open:?}");
+    });
+}
+
+#[test]
+fn malformed_glass_toml_is_a_build_error_naming_the_file() {
+    on_big_stack(|| {
+        let cases = [
+            ("zero_height", "schema_version = 1\nheight = 0.0\n"),
+            (
+                "unknown_key",
+                "schema_version = 1\nheight = 60.0\nextra = 1\n",
+            ),
+            ("bad_version", "schema_version = 2\nheight = 60.0\n"),
+        ];
+        for (name, body) in cases {
+            let dir = base_dir().join(format!("glass_bad_{name}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            copy_dir(&fixture(), &dir);
+            std::fs::write(dir.join("glass.toml"), body).unwrap();
+            match load(&dir) {
+                Err(SimError::Build(msg)) => assert!(msg.contains("glass.toml"), "{name}: {msg}"),
+                Err(e) => panic!("{name}: expected a build error, got {e}"),
+                Ok(_) => panic!("{name}: malformed glass.toml loaded"),
+            }
+        }
     });
 }
