@@ -1523,10 +1523,27 @@ impl BallSolver {
         }
     }
 
+    /// Whether the last boundary solve of ball `a` stored an impulse for
+    /// its contact with ball `b` along `normal` (seen from `a`).
+    fn warm_pair(&self, a: usize, b: usize, normal: Vec3) -> bool {
+        self.warm[a].iter().any(|w| {
+            matches!(w.kind, ContactKind::Ball(k) if k == b) && w.normal.dot(normal) > WARM_COS
+        })
+    }
+
     /// Starts the resting contacts of ball `i` from the impulses they ended
     /// the previous boundary solve with (scaled to this sub-step). The
     /// impulses stay under the solver's clamps, so one that is no longer
     /// needed is taken back in the first sweep.
+    ///
+    /// A ball pair is warm-started by the ball that solves it now (the
+    /// lower index when both have a boundary). When only the other ball
+    /// stored the pair's impulse (it solved the pair alone, at a boundary
+    /// of its own: the two balls' sub-steps were not aligned), the pair
+    /// starts cold, and so do the surface contacts of both balls: the
+    /// surface impulses of that solve were balanced by the pair impulse,
+    /// and alone they would push the ball into its partner harder than the
+    /// sweeps can take back through a light ball pinned between the two.
     fn warm_start(
         &mut self,
         i: usize,
@@ -1535,6 +1552,20 @@ impl BallSolver {
         sc: &mut [Scratch; MAX_BALLS],
     ) {
         let me = sc[i];
+        let unbalanced = contacts.iter().any(|c| {
+            let ContactKind::Ball(j) = c.kind else {
+                return false;
+            };
+            if c.depth < -c.active_eps || !c.persistent {
+                return false;
+            }
+            let (owner, other, normal) = if members[j] && j < i {
+                (j, i, -c.normal)
+            } else {
+                (i, j, c.normal)
+            };
+            !self.warm_pair(owner, other, normal) && self.warm_pair(other, owner, -normal)
+        });
         for c in contacts.iter_mut() {
             if c.depth < -c.active_eps || !c.persistent {
                 continue;
@@ -1559,6 +1590,7 @@ impl BallSolver {
                 // A body's reaction goes through its own solve (no warm
                 // start: the impulses would have to be replayed on it).
                 ContactKind::Surface(ImpactTarget::Body { .. }, _) => {}
+                ContactKind::Surface(..) if unbalanced => {}
                 ContactKind::Surface(..) => {
                     if let Some(ball) = self.slots[i].as_mut() {
                         apply_surface_impulse(ball, me.body, c.normal, &acc);
