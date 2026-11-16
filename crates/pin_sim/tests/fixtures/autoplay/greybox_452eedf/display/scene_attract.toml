@@ -1,0 +1,24 @@
+# Placeholder attract scene (5.3). Loops until the rules show another scene.
+schema_version = 1
+duration_ms = 4000
+repeat = true
+background = "#000000"
+
+[[layers]]
+kind = "text"
+text = "KILOHERTZ"
+x = 0.5
+y = 0.36
+size = 0.55
+color = "#ffd040"
+fade_in_ms = 400
+
+[[layers]]
+kind = "text"
+text = "PRESS START"
+x = 0.5
+y = 0.97
+valign = "bottom"
+size = 0.25
+color = "#ffffff"
+blink_ms = 500

@@ -12,20 +12,22 @@
 //! perpendicular offsets −10 / 0 / +10 mm, each trial on a fresh
 //! `Simulation` of the grey-box bundle (built from `tables/greybox` into the
 //! target dir by `tables/greybox/build.sh`) and of the same bundle with its
-//! glass lifted out of reach (one unused dispenser 3 m up; see
-//! `glass_lid.rs`), which behaves as the table without a glass. Per trial:
+//! glass lifted out of reach (one unused dispenser 3 m up and no
+//! `glass.toml`; see `glass_lid.rs`), which behaves as the
+//! table without a glass. Per trial:
 //! * no ball passes the glass (no escape through the top); before
 //!   a1-glass 105 of the 432 trials at 0° and 45° lost the ball, most of
 //!   them through the top;
 //! * the glass adds no loss to a trial that never reaches it: a trial
 //!   that loses its ball with the glass lost it before a1-glass too
-//!   (escaped, or its centre rose above the old ceiling, which is the glass
-//!   underside), or its top reached the glass height.
+//!   (escaped, or its centre rose above the glass underside), or its top
+//!   reached the glass height.
 //!
-//! Some balls still leave sideways (over the 28 mm perimeter walls) or drop
-//! through the floor as layer-2 balls at the ramp entry (main's grey box;
-//! fixed by a1/fix). Neither is the glass's to stop (DECISIONS "a1-glass —
-//! playfield glass"); the test prints their count.
+//! The grey box now has 90 mm walls under a glass at 112 mm (DECISIONS
+//! "a1-glass-height — grey-box walls to the glass"), which seal against the
+//! glass. Earlier grey boxes lost balls sideways over lower walls or through
+//! the floor at the ramp entry; neither is the glass's to stop (DECISIONS
+//! "a1-glass — playfield glass"); the test prints any loss.
 
 use pin_core::snapshot::BallState;
 use pin_sim::load::{BOUNDS_MARGIN_M, GLASS_THICKNESS_M};
@@ -68,6 +70,11 @@ fn bundles() -> &'static (PathBuf, PathBuf) {
         build_greybox(&lid);
         let raised = base.join("greybox_raised");
         copy_dir(&lid, &raised);
+        // The baseline removes the bundle's glass.toml, so its glass follows
+        // the (raised) bounds.
+        let glass = raised.join("glass.toml");
+        assert!(glass.is_file(), "the grey-box bundle has no glass.toml");
+        std::fs::remove_file(&glass).expect("remove glass.toml");
         let toml = raised.join("table.toml");
         let mut text = std::fs::read_to_string(&toml).expect("table.toml");
         text.push_str(&format!(
@@ -289,8 +296,7 @@ fn sweep(angles: &[u32]) {
         }
         println!(
             "directions {angles:?}: {trials} trials, highest ball centre {:.1} mm; balls lost \
-             before a1-glass {lost_before}, with the glass {} (sideways or through the floor; \
-             trial, last position and layer: {lost_with:?})",
+             without the glass {lost_before}, with the glass {} (trial, last position and layer: {lost_with:?})",
             peak * 1.0e3,
             lost_with.len()
         );
