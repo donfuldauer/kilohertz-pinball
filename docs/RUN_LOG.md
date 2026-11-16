@@ -422,3 +422,7 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 6 | PR #28 CI core-tests aarch64 (energy_non_increasing_sweep) | Investigator | Opus 5.5 | 1 | root-caused | pre-existing pin_physics warm-start defect (solver.rs:1526), random proptest seed, ~0.08 % of runs; deferred (DECISIONS ball-warm-start-pair) | |
 | 6 | PR #28 CR r3 passive compared-sample assert | Fixer | Haiku 5.5 | 1 | done | triage T0: worst_margin.is_finite() before the margin assert | |
 | 6 | PR #28 CR r3 docs (thread disposition, warm-start entry) | Fixer | Haiku 5.5 | 1 | done | triage T0: DECISIONS + HUMAN_QUEUE appends | |
+| 6 | PR #28 CR r4 a1fix-A receding captive (pin_physics) | Fixer | Opus 5.5 | 1 | done (6cdb26d) | captive passed or gravity-limited wait; ball_chain_receding fails pre-fix; a1_bundle_passive excludes only approaching ticks; no digest changed | T2 via classifier |
+| 6 | PR #28 a1fix-A follow-up: trap test game 44 -> 334 | Fixer | Haiku 5.5 | 1 | done (9123c6e) | triage T0: sim output moved game 44 off the sling pocket | |
+| 6 | PR #28 CR r4 a1fix-B warm-start pair (pin_physics) | Fixer | Opus 5.5 | 1 | done | guard: no surface warm start when only the partner stored the pair impulse; regression test + cc seed; 16,000 random cases 0 failures; no digest changed | T2 via classifier |
+| 6 | Gate A1 (after a1fix-A + B) | Fixer | Opus 5.5 | 1 | **pass** | every row PASS; 0 stuck/endless/escaped/non-finite; 0 censored; 22/22 coverage; medians 15,099 / 15,350 / 13,483 ms; p99.9 tick ≤ 51 µs | |
