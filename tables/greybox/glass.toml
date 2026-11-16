@@ -1,0 +1,14 @@
+# Grey-box playfield glass (Gate A1 zero-escape fix, docs/DECISIONS.md
+# "a1-glass-height — grey-box walls to the glass"). pin_sim reads this
+# optional bundle file (pin_core GlassManifest, CR-007); height is the glass
+# underside above the playfield surface, mm, and must be at least the table
+# geometry's max z.
+#
+# Seal rule: a wall seals against the glass only if glass underside minus
+# wall top is under one ball diameter (27 mm). Here 112 - 90 (layout.toml
+# wall_height) = 22 mm, so a ball in the air cannot cross a wall or post.
+# The glass also sits 32 mm above the ramp-top deck covers (z 80, the
+# highest deck), at least a ball diameter + 3 mm (30 mm), so a ball resting
+# on a cover (top at 107 mm) still moves freely.
+schema_version = 1
+height = 112.0

@@ -8,7 +8,9 @@
 //!
 //! **No-lid baseline.** `SimConfig` has no switch to leave the glass out,
 //! so the baseline is the same bundle with one extra dispenser whose exit
-//! is 3 m above the playfield (`[[dispensers]] glass_lid_raise`). Dispenser
+//! is 3 m above the playfield (`[[dispensers]] glass_lid_raise`) and no
+//! `glass.toml` (the grey box ships one, DECISIONS "a1-glass-height —
+//! grey-box walls to the glass"). Dispenser
 //! exits feed the table bounds, so that bundle's glass sits above 3 m, out
 //! of reach of every ball of the sweep (a 6 m/s launch rises < 1.9 m); the
 //! dispenser is never used.
@@ -21,17 +23,14 @@
 //!   to the baseline's;
 //! * the glass adds no loss to a run that never reaches it: a run whose ball
 //!   escapes with the glass lost it before a1-glass (it escaped in the
-//!   baseline, or its centre rose above the old ceiling, which is the glass
-//!   underside) or its top reached the glass height (from there on the run
-//!   may differ; the underside is the old ceiling, so a ball whose top
-//!   passes it without its centre doing so was not lost before).
+//!   baseline, or its centre rose above the glass underside) or its top
+//!   reached the glass height (from there on the run may differ).
 //!
-//! Balls still escape sideways here: the grey-box perimeter walls are 28 mm
-//! tall and a ball in the air crosses them, and main's grey box drops some
-//! layer-2 balls through the floor at the ramp entry (a1/fix). Those losses
-//! are not the glass's to stop (DECISIONS "a1-glass — playfield glass"), so
-//! the sweep checks that the glass never adds one and saves some, not that
-//! there are none.
+//! The grey box's walls are 90 mm tall under a glass at 112 mm (a 22 mm gap,
+//! under one ball diameter), so they seal against the glass; earlier
+//! grey boxes with lower walls lost balls sideways, which are not the
+//! glass's to stop (DECISIONS "a1-glass — playfield glass"). The sweep
+//! checks that the glass never adds a loss and saves some.
 
 use pin_sim::load::{BOUNDS_MARGIN_M, GLASS_THICKNESS_M};
 use pin_sim::{SimConfig, Simulation};
@@ -68,6 +67,11 @@ fn bundles() -> &'static (PathBuf, PathBuf) {
         build_greybox(&lid);
         let raised = base.join("greybox_raised");
         copy_dir(&lid, &raised);
+        // The baseline removes the bundle's glass.toml, so its glass follows
+        // the (raised) bounds.
+        let glass = raised.join("glass.toml");
+        assert!(glass.is_file(), "the grey-box bundle has no glass.toml");
+        std::fs::remove_file(&glass).expect("remove glass.toml");
         let toml = raised.join("table.toml");
         let mut text = std::fs::read_to_string(&toml).expect("table.toml");
         text.push_str(&format!(
@@ -183,8 +187,8 @@ struct Totals {
     /// Runs whose ball reached the glass height.
     reached: u32,
     compared_ticks: u64,
-    /// Runs that lose the ball before a1-glass (escaped, or centre above
-    /// the old ceiling) and with the glass.
+    /// Runs that lose the ball without the glass (escaped, or centre above
+    /// the glass underside) and with the glass.
     lost_before: u32,
     lost_with: u32,
 }
@@ -246,8 +250,7 @@ fn sweep(dirs: core::ops::Range<u32>) {
         }
         println!(
             "directions {dirs:?}: {} runs, {} reached the glass, {} ticks compared; \
-             balls lost before a1-glass {}, with the glass {} (all over the side walls \
-             or through the floor)",
+             balls lost without the glass {}, with the glass {}",
             t.runs, t.reached, t.compared_ticks, t.lost_before, t.lost_with
         );
         assert!(t.reached > 0, "no ball reached the glass");
@@ -276,15 +279,16 @@ fn glass_lid_sweep_directions_12_to_15() {
 }
 
 #[test]
-fn glass_sits_on_the_old_ceiling() {
+fn glass_sits_at_the_glass_toml_height() {
     on_big_stack(|| {
         let (lid, _) = bundles().clone();
         let s = Simulation::load(&lid, SimConfig::default()).expect("load grey-box");
         let (lo, hi) = s.escape_bounds();
         let under = glass_underside(&s);
-        // The grey-box geometry is a few cm tall; the glass is above it and
-        // the escape box's floor and sides are the usual 50 mm margin.
-        assert!(under > 0.05 && under < 0.5, "glass underside {under} m");
+        // The grey-box glass.toml puts the glass underside at 112 mm, 22 mm
+        // above its 90 mm walls; the escape box's floor and sides are the
+        // usual 50 mm margin.
+        assert!((under - 0.112).abs() < 1.0e-6, "glass underside {under} m");
         assert!(lo[2] < 0.0 && hi[2] > under + GLASS_THICKNESS_M);
         assert!(lo[0] < 0.0 && hi[0] > 0.514 && lo[1] < 0.0 && hi[1] > 1.07);
         // A ball parked just under the glass falls back; one parked above

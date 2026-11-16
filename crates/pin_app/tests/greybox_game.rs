@@ -217,8 +217,8 @@ fn every_mechanism_kind_closes_its_switch() {
         let (b, a, _) = trial(
             &mut s,
             "standard_steel",
-            mm(30.0, 430.0),
-            [0.0, 2.5, 0.0],
+            mm(80.0, 621.0),
+            [-1.628, 1.898, 0.0],
             700,
         );
         assert_eq!(delta(&b, &a, "orbit_entry"), 1);

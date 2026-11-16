@@ -10,13 +10,21 @@
 //! is identical for every thread count. The only wall-clock reads are the
 //! tick-time measurement around `sim.advance(1)` and the soak's total wall
 //! time, both reported in the separate [`Timing`] section.
+//!
+//! A game stopped at `max_game_ticks` with a ball still on the table gets an
+//! [`FindingKind::EndlessBall`] finding for that ball
+//! ([`GameMonitor::end_at_cap`]); a ball older than
+//! [`SoakConfig::endless_ball_ticks`] gets one as soon as it passes the
+//! limit. Balls still on the table when a game ends count in the ball-time
+//! distribution at their observed age, as censored samples
+//! ([`SoakReport::ball_time_censored`]).
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 use super::bot::{Bot, BotConfig, BotStats, SkillLevel};
-use super::monitor::{DEFAULT_STUCK_TICKS, GameMonitor, GameOutcome};
+use super::monitor::{DEFAULT_ENDLESS_BALL_TICKS, DEFAULT_STUCK_TICKS, GameMonitor, GameOutcome};
 use super::report::{
     CounterTotals, Distribution, Finding, FindingKind, GameEnd, GameSummary, ModeCount, SOAK_WIDE,
     ShotCount, SoakReport, SwitchCount, Timing,
@@ -55,6 +63,9 @@ pub struct SoakConfig {
     pub start_timeout_ticks: u64,
     /// Slow ticks before a ball is reported stuck.
     pub stuck_ticks: u64,
+    /// Ball age after which a ball still on the table is an
+    /// [`FindingKind::EndlessBall`], ticks.
+    pub endless_ball_ticks: u64,
     /// Whether tick times are measured (wall clock).
     pub measure_timing: bool,
     /// Whether a 99.9th percentile above `tick_budget_ms` is a TickBudget
@@ -71,8 +82,8 @@ pub struct SoakConfig {
 impl Default for SoakConfig {
     /// 100 games, [`DEFAULT_SEED`], Standard skill, 1 thread, at most 10
     /// minutes of simulated time per game, game over after 5 s without a
-    /// ball, 10 s start timeout, 10 s stuck time, timing measured and the
-    /// 0.35 ms budget checked.
+    /// ball, 10 s start timeout, 10 s stuck time, 300 s endless-ball limit,
+    /// timing measured and the 0.35 ms budget checked.
     fn default() -> Self {
         Self {
             games: 100,
@@ -83,6 +94,7 @@ impl Default for SoakConfig {
             idle_end_ticks: 5_000,
             start_timeout_ticks: 10_000,
             stuck_ticks: DEFAULT_STUCK_TICKS,
+            endless_ball_ticks: DEFAULT_ENDLESS_BALL_TICKS,
             measure_timing: true,
             check_tick_budget: true,
             tick_budget_ms: DEFAULT_TICK_BUDGET_MS,
@@ -239,7 +251,8 @@ fn play_game(
     let mut bot = Bot::new(bot_seed(seed), cfg.skill)
         .with_table(info)
         .with_config(cfg.bot);
-    let mut mon = GameMonitor::new(info, &sim, game, cfg.stuck_ticks);
+    let mut mon = GameMonitor::new(info, &sim, game, cfg.stuck_ticks)
+        .with_endless_ticks(cfg.endless_ball_ticks);
     mon.observe(&sim);
     let mut idle = 0u64;
     let mut end = GameEnd::MaxTicks;
@@ -271,6 +284,9 @@ fn play_game(
             break;
         }
     }
+    if end == GameEnd::MaxTicks {
+        mon.end_at_cap(&sim);
+    }
     let outcome = mon.finish(&sim);
     Ok(GameResult {
         summary: GameSummary {
@@ -286,6 +302,28 @@ fn play_game(
         bot: bot.stats(),
         table_hash: sim.table_hash(),
     })
+}
+
+/// Plays only game `game` of the soak `cfg` describes, exactly as
+/// [`run_soak`] plays it (same seeds, same monitor), on the calling thread
+/// without tick timing; returns its summary and outcome. For reproducing
+/// one game of a large soak.
+///
+/// # Errors
+/// The [`SimError`] of a bundle or table that does not load.
+pub fn play_soak_game(
+    bundle: &Path,
+    cfg: &SoakConfig,
+    game: u32,
+) -> Result<(GameSummary, GameOutcome), SimError> {
+    let info = TableInfo::load(bundle)?;
+    let cfg = SoakConfig {
+        measure_timing: false,
+        ..*cfg
+    };
+    let mut hist = TickHistogram::new();
+    let r = play_game(bundle, &info, &cfg, game, &mut hist)?;
+    Ok((r.summary, r.outcome))
 }
 
 type WorkerOut = (Vec<(u32, Result<GameResult, SimError>)>, TickHistogram);
@@ -380,6 +418,7 @@ fn merge(
     let mut mode_starts = vec![0u64; info.modes.len()];
     let mut findings: Vec<Finding> = Vec::new();
     let mut ball_times = Vec::new();
+    let mut censored = 0u64;
     let mut scores = Vec::with_capacity(played.len());
     let mut counters = CounterTotals::default();
     let mut bot = BotStats::default();
@@ -397,6 +436,8 @@ fn merge(
         }
         findings.extend(g.outcome.findings);
         ball_times.extend(g.outcome.ball_times_ms);
+        censored += g.outcome.censored_ball_times_ms.len() as u64;
+        ball_times.extend(g.outcome.censored_ball_times_ms);
         scores.push(g.summary.score.unwrap_or(0));
         counters.add(&g.outcome.counters);
         bot.add(&g.bot);
@@ -528,6 +569,7 @@ fn merge(
             })
             .collect(),
         ball_time_ms: Distribution::of(&ball_times),
+        ball_time_censored: censored,
         game_score: Distribution::of(&scores),
         counters,
         bot,

@@ -16,10 +16,14 @@ pub fn greybox_src() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tables/greybox")
 }
 
-/// Files copied unchanged from the sources into the bundle.
-pub const COPIED: [&str; 6] = [
+/// Files copied unchanged from the sources into the bundle (as
+/// `tables/greybox/build.sh` does; `pin_sim` reads `wall_height` from
+/// `layout.toml` and the glass underside from `glass.toml`).
+pub const COPIED: [&str; 8] = [
     "rules.lua",
     "backglass.toml",
+    "layout.toml",
+    "glass.toml",
     "display/scene_attract.toml",
     "display/scene_score.toml",
     "display/scene_game_over.toml",
@@ -34,8 +38,8 @@ fn parse_hex(c: &str) -> [u8; 3] {
 
 /// Builds the grey-box bundle into `out_dir` (what `tables/greybox/build.sh`
 /// does): `pin_tablegen` generates `playfield.glb` and the merged
-/// `table.toml` from `layout.toml` + `table.toml`, the rules, backglass and
-/// display scenes are copied, and the 4.6 placeholder kit
+/// `table.toml` from `layout.toml` + `table.toml`, the rules, backglass,
+/// layout, glass and display scenes are copied, and the 4.6 placeholder kit
 /// (`pin_assetgen::generate_kit`) adds the sounds, fonts and backglass art.
 pub fn build_greybox_bundle(out_dir: &Path) {
     let src = greybox_src();
