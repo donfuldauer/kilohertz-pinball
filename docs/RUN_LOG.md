@@ -426,3 +426,6 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 6 | PR #28 a1fix-A follow-up: trap test game 44 -> 334 | Fixer | Haiku 5.5 | 1 | done (9123c6e) | triage T0: sim output moved game 44 off the sling pocket | |
 | 6 | PR #28 CR r4 a1fix-B warm-start pair (pin_physics) | Fixer | Opus 5.5 | 1 | done | guard: no surface warm start when only the partner stored the pair impulse; regression test + cc seed; 16,000 random cases 0 failures; no digest changed | T2 via classifier |
 | 6 | Gate A1 (after a1fix-A + B) | Fixer | Opus 5.5 | 1 | **pass** | every row PASS; 0 stuck/endless/escaped/non-finite; 0 censored; 22/22 coverage; medians 15,099 / 15,350 / 13,483 ms; p99.9 tick ≤ 51 µs | |
+| 6 | PR #28 verify d920f6a (a1fix-A + B) | Verifier | Sonnet 5.5 | 1 | **pass** | new tests fail on old solver, pass now; no digest changed; pin_physics/pin_sim/pin_app 1560 passed; fmt/clippy/spec_ci clean; Gate A1 logs match | |
+| 6 | PR #28 CR r5 a1fix-A2 pass-record reset (pin_physics) | Fixer | Opus 5.5 | 1 | done | clear captive pass records on any applied impulse; ball_chain_pass_reset fails pre-fix; pin_physics 807 / pin_sim 304 / pin_app 452 pass; no digest changed | T2 via classifier |
+| 6 | PR #28 CR r5 test comment | Fixer | Haiku 5.5 | 1 | done | triage T0: stale doc comment on the warm-start regression test | |
