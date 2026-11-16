@@ -337,8 +337,9 @@ fn energy_non_increasing_frictional_contacts() {
 /// 4a60fcc5…, PR #28 CI run 43760917707): the jumbo ball (one sub-step per
 /// tick) presses the mini ball (two sub-steps) into the ceiling, so at the
 /// shared boundary only the mini ball holds the pair impulse from its
-/// mid-tick boundary. The warm start must apply it together with the
-/// ceiling impulse it balances (DECISIONS "a1fix-B-resolved").
+/// mid-tick boundary. That stored impulse is stale by then, so the warm
+/// start must not apply the ceiling impulse it balanced: the pair and
+/// both balls' surface contacts start cold (DECISIONS "a1fix-B-resolved").
 #[test]
 fn energy_non_increasing_warm_start_unequal_substeps() {
     energy_box(
