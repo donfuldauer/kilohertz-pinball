@@ -272,7 +272,12 @@ struct Scratch {
     /// least as fast as it follows. The casts skip them until the ball's
     /// next sub-step boundary, or until the captive's speed changes, so the
     /// ball keeps moving instead of waiting (docs/DECISIONS.md
-    /// "a1fix-A-resolved"). The first `n_passed` entries are valid.
+    /// "a1fix-A-resolved"). A record only matches the speed it was made at,
+    /// but a cached cast does not look at it again: when a chain impulse
+    /// changes a captive's speed, `chain_speed_changed` makes the event loop
+    /// bring every ball holding records to that instant and cast it again
+    /// (docs/DECISIONS.md "a1fix-A3-resolved"). The first `n_passed`
+    /// entries are valid.
     passed: [(usize, usize, u32); MAX_PASSED_CAPTIVES],
     n_passed: u8,
     cache: Cache,
@@ -453,6 +458,10 @@ pub struct BallSolver {
     /// still at that speed sits where that speed carried it; one whose speed
     /// an impact changed since has not moved on yet.
     chain_tick_speeds: Vec<[f32; MAX_CHAIN_BALLS]>,
+    /// A chain impulse changed a captive's speed since the event loop last
+    /// looked: casts that skipped a passed captive may be stale
+    /// (docs/DECISIONS.md "a1fix-A3-resolved").
+    chain_speed_changed: bool,
 }
 
 fn set_at<T: Copy>(v: &mut Vec<T>, index: usize, value: T, default: T) {
@@ -519,6 +528,7 @@ impl BallSolver {
             surface_velocity: None,
             chains: Vec::new(),
             chain_tick_speeds: Vec::new(),
+            chain_speed_changed: false,
         }
     }
 
@@ -1128,6 +1138,7 @@ impl BallSolver {
         ball.velocity += normal * (dj * im);
         chain.add_speed(bi, -dj * nt * imc);
         chain.resolve_touching();
+        self.chain_speed_changed = true;
         (dj * im).abs()
     }
 
@@ -2377,6 +2388,7 @@ impl BallSolver {
     ) {
         let mut now = 0.0f32;
         let mut complete = false;
+        self.chain_speed_changed = false;
         let mut lists: [ContactList; MAX_BALLS] = std::array::from_fn(|_| ContactList::new());
         let lists = &mut lists;
         // Every loop pass consumes a boundary or an impact; impacts are
@@ -2457,6 +2469,20 @@ impl BallSolver {
                     self.advance_ball(i, now, sc);
                     self.advance_ball(j, now, sc);
                     self.pair_event(i, j, sc, events);
+                }
+            }
+            if self.chain_speed_changed {
+                // A chain impulse (event or boundary) changed a captive's
+                // speed at `now`: a ball that passed a captive may now be
+                // closing in on it, but its cached cast skipped it. Bring
+                // the balls holding records to this instant and cast them
+                // again; the records stay (they key on the old speed).
+                self.chain_speed_changed = false;
+                for j in 0..MAX_BALLS {
+                    if sc[j].active && !sc[j].frozen && sc[j].n_passed > 0 {
+                        self.advance_ball(j, now, sc);
+                        sc[j].cache = Cache::Dirty;
+                    }
                 }
             }
             if bodies.moved {

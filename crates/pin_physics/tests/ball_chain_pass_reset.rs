@@ -349,3 +349,160 @@ fn ball_bounced_toward_a_passed_captive_by_a_wall_hits_it() {
     }
     assert!(cases >= 60, "only {cases} wall cases were checked");
 }
+
+/// What one step of the far-side scene did.
+struct FarOutcome {
+    /// Captive path speed after the step.
+    u1: f32,
+    /// Distance between the surfaces of A and the captive after the step
+    /// (negative: overlap); 0 without A.
+    gap: f32,
+    /// A's velocity after the step (zero without A).
+    va1: Vec3,
+    /// Impacts on the captive reported for A and for B.
+    a_newton: bool,
+    b_newton: bool,
+}
+
+/// Runs one tick of the far-side scene: ball A (optional) touching the
+/// captive's end-of-tick position along `n` with velocity `va`, and ball B
+/// (optional, absolute position and velocity).
+fn run_far(
+    gravity: Vec3,
+    u: f32,
+    n: Vec3,
+    a: Option<Vec3>,
+    b: Option<(Vec3, Vec3)>,
+    world: &StaticWorld,
+) -> FarOutcome {
+    let geo = Geometry::new(world);
+    let (q_end, _) = twin(gravity, u, &geo);
+    let rsum = 2.0 * radius(STEEL);
+    let mut s = chain_solver(gravity, u);
+    let pa = q_end + n * rsum;
+    let ha = a.map(|va| s.add_ball(ball_at(STEEL, pa, va)).unwrap());
+    let hb = b.map(|(pb, vb)| s.add_ball(ball_at(STEEL, pb, vb)).unwrap());
+    let mut ev = BallEvents::new();
+    s.step(&geo, DT, &mut ev);
+    assert_eq!(
+        s.newton_chain(0).ball_position(0),
+        q_end,
+        "the twin predicts the captive"
+    );
+    let hit = |h: Option<pin_physics::ball::BallHandle>| {
+        h.is_some_and(|h| {
+            ev.as_slice().iter().any(|e| {
+                matches!(e, BallEvent::Impact { ball, other: ImpactTarget::Newton(0), .. } if *ball == h)
+            })
+        })
+    };
+    let (gap, va1) = ha.map_or((0.0, Vec3::ZERO), |h| {
+        let ball = s.ball(h).unwrap();
+        (
+            ball.position.distance(s.newton_chain(0).ball_position(0)) - rsum,
+            ball.velocity,
+        )
+    });
+    FarOutcome {
+        u1: s.newton_chain(0).ball_speed(0),
+        gap,
+        va1,
+        a_newton: hit(ha),
+        b_newton: hit(hb),
+    }
+}
+
+/// Fix a1fix-A3 (CodeRabbit PR #28 thread r4581052814, docs/DECISIONS.md
+/// "a1fix-A3-resolved"): ball A passes a receding captive at the start of its
+/// only sub-step, so its cast holds no event until the end of the tick. Ball
+/// B then hits the captive from the far side at `t_b` and turns it toward A.
+/// A's cast must be redone at that moment: A hits the captive inside the
+/// event loop (its only boundary is at the start of the tick), instead of
+/// sinking into it for the rest of the tick.
+///
+/// Swept: pitch, captive speed, A's contact normal and closing speed, B's
+/// arrival time, approach direction and speed. Controls: without B (A passes
+/// and sinks the whole tick: the stale depth) and without A (the captive
+/// speed B alone leaves).
+#[test]
+fn captive_turned_toward_a_passing_ball_hits_it() {
+    let world = StaticWorldBuilder::new().build();
+    let rsum = 2.0 * radius(STEEL);
+    let mut cases = 0;
+    for pitch in [-0.12f32, 0.0, 0.12] {
+        let gravity = gravity_at(pitch);
+        for u in [0.2f32, 0.3, 0.5] {
+            let (q_end, u_end) = twin(gravity, u, &Geometry::new(&world));
+            for n in normals() {
+                for closing in [0.01f32, 0.03, 0.06] {
+                    let va = -n * closing;
+                    if !passes(gravity, u_end, n, va) {
+                        continue;
+                    }
+                    let label = format!("pitch {pitch} u {u} n {n:?} closing {closing}");
+                    // No-B control: A passes the captive for the whole tick.
+                    let c = run_far(gravity, u, n, Some(va), None, &world);
+                    assert!(!c.a_newton, "{label}: control: no impact");
+                    assert_eq!(c.u1, u_end, "{label}: control: captive untouched");
+                    let close = (-va.dot(n)).max(-(va + gravity * DT).dot(n));
+                    let close_min = (-va.dot(n)).min(-(va + gravity * DT).dot(n));
+                    for t_b in [0.2e-3f32, 0.3e-3, 0.5e-3] {
+                        // B comes from the far (+x) side of the captive.
+                        for (g, h) in [(0.0f32, 0.0f32), (0.4, 0.0), (-0.5, 0.0), (0.2, 0.3)] {
+                            let m = v(g.cos() * h.cos(), g.sin() * h.cos(), h.sin());
+                            for vb in [1.0f32, 2.5] {
+                                let b = Some((q_end + m * (rsum + vb * t_b), -m * vb));
+                                let label = format!("{label} t_b {t_b} m {m:?} vb {vb}");
+                                // No-A control: the captive speed B leaves.
+                                let ob = run_far(gravity, u, n, None, b, &world);
+                                assert!(ob.b_newton, "{label}: B hits the captive");
+                                // A's approach on the captive once B turned it.
+                                let approach = closing + ob.u1 * Vec3::X.dot(n);
+                                if approach < 0.08 {
+                                    continue;
+                                }
+                                cases += 1;
+                                let o = run_far(gravity, u, n, Some(va), b, &world);
+                                assert!(o.b_newton, "{label}: B hits the captive");
+                                // A's only boundary is at the start of the
+                                // tick, so any impulse it gets in the tick is
+                                // applied in the event loop. (The pass left a
+                                // resting touch, so the hit is not reported
+                                // as an impact event.)
+                                assert!(
+                                    (o.va1 - c.va1).dot(n) > 0.25 * approach,
+                                    "{label}: A must be pushed back by the captive turned \
+                                     toward it (approach {approach} m/s) inside the tick: \
+                                     {:?} vs control {:?}",
+                                    o.va1,
+                                    c.va1
+                                );
+                                assert!(
+                                    o.u1 > ob.u1 + 1.0e-3,
+                                    "{label}: captive speed {} (B alone {}): A's impulse missing",
+                                    o.u1,
+                                    ob.u1
+                                );
+                                // An immediate response stops A sinking at t_b.
+                                let immediate = close * t_b + 2.0e-6;
+                                assert!(
+                                    -o.gap <= immediate,
+                                    "{label}: A ends {} m inside the captive \
+                                     (immediate response: {immediate} m)",
+                                    -o.gap
+                                );
+                                assert!(
+                                    -o.gap < -c.gap - 0.5 * close_min * (DT - t_b),
+                                    "{label}: A ends {} m inside the captive, stale depth {} m",
+                                    -o.gap,
+                                    -c.gap
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(cases >= 1000, "only {cases} cases were checked");
+}
