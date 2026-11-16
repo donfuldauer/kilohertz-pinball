@@ -333,6 +333,22 @@ fn energy_non_increasing_frictional_contacts() {
     );
 }
 
+/// Minimal failing input of `energy_non_increasing_sweep` (proptest cc
+/// 4a60fcc5…, PR #28 CI run 43760917707): the jumbo ball (one sub-step per
+/// tick) presses the mini ball (two sub-steps) into the ceiling, so at the
+/// shared boundary only the mini ball holds the pair impulse from its
+/// mid-tick boundary. The warm start must apply it together with the
+/// ceiling impulse it balances (DECISIONS "a1fix-B-resolved").
+#[test]
+fn energy_non_increasing_warm_start_unequal_substeps() {
+    energy_box(
+        pin_core::profiles::BUILTIN_PROFILE_NAMES[6],
+        Vec3::new(2.4252539, -3.2106457, -7.285373),
+        Vec3::new(0.0, 143.79646, 0.0),
+        [Material::ALL[0]; 3],
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 16, .. ProptestConfig::default() })]
 
