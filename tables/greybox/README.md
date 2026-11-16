@@ -9,6 +9,28 @@ shooter lane served by a ball dispenser (steel balls and one ceramic
 Powerball), a two-switch trough and the tilt switch. Design notes:
 `docs/DECISIONS.md` "6.0 — grey-box table layout".
 
+Gate A1 geometry (`docs/DECISIONS.md` "6.0 fix — Gate A1 grey-box
+geometry"): the inlane walls end on the back of the flipper pivot caps; the
+right drain-funnel wall meets the cabinet bottom at x 335 and the two trough
+zones cover the whole funnel bottom; the drop target faces 290°. The ramp
+entry is a 40 mm lane (x 405..445) whose right wall reaches down to y 430,
+so it takes balls rolling straight up beside the right inlane and the left
+flipper's 25..35° shots, which glance off that wall. Its layer change is the
+generated entry zone over a layer-2 floor; the 13 mm gauge rails rise out of
+that floor, layer-2 side rails line the wire, catch zones beside and below
+it return a stray ball to layer 0, and covers at z 80 mm hold a fast ball on
+the wire's level end. The upper deck is at z 50 mm and the Newton ball at
+(330, 450).
+
+Gate A1 play length (`docs/DECISIONS.md` "6.0 fix — grey-box play length
+(Gate A1 median), iteration 3"): the orbit's lower end bends right and ends
+at (85, 615) above the upper-left flipper, so the plunge (which rides the
+orbit top first) comes out in mid-field instead of onto the left inlane;
+`orbit_entry` sits in the orbit's left leg at (38, 700). A guide wall below
+the upper deck's edge drops balls onto `bumper_2`, a short wall closes the
+alcove right of the ramp lane, walls are 50 mm tall and both trough zones
+have radius 36 mm.
+
 Only the sources live here; the generated `playfield.glb`, the merged
 `table.toml` and the placeholder art and sounds are build output and are not
 committed.
@@ -16,6 +38,7 @@ committed.
 | File | What |
 | --- | --- |
 | `layout.toml` | `pin_tablegen` layout: walls, orbit lane, ramp, upper deck |
+| `glass.toml` | playfield glass underside, 112 mm (22 mm over the 90 mm walls; DECISIONS "a1-glass-height — grey-box walls to the glass") |
 | `table.toml` | base manifest: switches, coils, flippers, mechs, magnet, ramp spline, layer transitions, dispenser, shots, modes, sounds, scenes |
 | `rules.lua` | rules (integer only): attract → 3-ball game → game over |
 | `backglass.toml` | placeholder translite and a 128 × 32 orange DMD |
@@ -31,7 +54,7 @@ tables/greybox/build.sh target/greybox-bundle
 ```
 
 It runs `pin_tablegen` (layout → `playfield.glb` + merged `table.toml`),
-copies the rules, backglass and scenes, runs `pin_assetgen` (the 4.6
+copies the rules, backglass, layout, glass and scenes, runs `pin_assetgen` (the 4.6
 placeholder kit: sounds, fonts, backglass art; title "Grey Box", the table's
 palette, seed 0) and finally `pin_tablegen validate` (ball clearances). The
 tests build the same bundle with `build_greybox_bundle(out_dir)` in

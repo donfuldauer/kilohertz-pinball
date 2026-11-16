@@ -97,6 +97,7 @@ fn sample() -> SoakReport {
             observable: false,
         }],
         ball_time_ms: Distribution::of(&[100, 200, 300]),
+        ball_time_censored: 1,
         game_score: Distribution::of(&[-5, 7]),
         counters: CounterTotals {
             edges_dropped: 1,
@@ -232,6 +233,7 @@ fn from_json(text: &str, timing: Timing) -> SoakReport {
             })
             .collect(),
         ball_time_ms: dist(&v["distributions"]["ball_time_ms"]),
+        ball_time_censored: n(&v["distributions"], "ball_time_censored"),
         game_score: dist(&v["distributions"]["game_score"]),
         counters: CounterTotals {
             edges_dropped: n(c, "edges_dropped"),
@@ -547,16 +549,20 @@ fn binary_exit_codes() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("UnreachableSwitch left_eos"), "{err}");
     assert!(out.join(SOAK_JSON).exists() && out.join(SOAK_MARKDOWN).exists());
-    // ...a full one passes (exit 0) and prints the summary on stdout.
+    // ...a full one passes (exit 0) and prints the summary on stdout. Work
+    // item A1-endless-detector: a game stopped at --max-ticks with a ball in
+    // play is an EndlessBall finding (exit 1), and a Standard bot keeps a
+    // ball up on this table for more than the 300 s endless limit, so the
+    // full run plays Novice games to game over under the default cap.
     let o = run(
         "clean",
         &[
             "--games",
             "6",
             "--threads",
-            "2",
-            "--max-ticks",
-            "60000",
+            "3",
+            "--skill",
+            "novice",
             "--seed",
             "1",
         ],

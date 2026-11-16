@@ -24,3 +24,11 @@ increments the mode's `mode:<id>` persist key (how the soak observes it).
 | `unreachable` | `hidden_opto` inside a closed diamond of walls (`walls[2]`) | UnreachableSwitch `hidden_opto` |
 | `script_error` | mode `frenzy` raises a Lua error 500 ms after it starts; mode `wizard` is never started | ScriptError `frenzy`, ModeCoverage `wizard` |
 | `overflow` | the `gap` playfield (same glb) whose rules send six `set_score` commands in one callback (the list holds four) | QueueOverflow `script command queue` (and the gap's EscapedBall) |
+
+`greybox_452eedf` is not hand-authored: it is the grey-box bundle built from
+commit 452eedf (`tables/greybox/build.sh`), trimmed to the files the
+simulation loads (no music, callouts, fonts or insert art). It pins the
+pre-fix table for the before/after proof of work item A1-endless-detector
+(`autoplay_endless.rs`): Gate A1 standard soak (seed 1) games 6 (VUK <-> deck
+loop), 98 (bumper_1 <-> orbit guide ping-pong) and 44 (ball wedged against
+the refiring left sling) ran to the cap with no finding before the fix.

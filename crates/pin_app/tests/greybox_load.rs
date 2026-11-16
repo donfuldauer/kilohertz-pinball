@@ -173,3 +173,23 @@ fn load_validated_names_the_failing_feature() {
     let e = validate_table(&missing).err().unwrap();
     assert!(e.contains("nope"), "{e}");
 }
+
+#[test]
+fn greybox_bundle_carries_its_layout_and_glass() {
+    // The bundle carries layout.toml (pin_sim reads wall_height, the guide
+    // height) and glass.toml (the glass underside, 112 mm: 22 mm over the
+    // 90 mm walls, DECISIONS "a1-glass-height — grey-box walls to the
+    // glass"), exactly as tables/greybox/build.sh copies them.
+    let dir = greybox_bundle().to_path_buf();
+    let src = support::greybox_src();
+    for f in ["layout.toml", "glass.toml"] {
+        let bundled = std::fs::read(dir.join(f)).unwrap_or_else(|e| panic!("bundle {f}: {e}"));
+        assert_eq!(bundled, std::fs::read(src.join(f)).unwrap(), "{f}");
+    }
+    let hi_z = on_big_stack(move || {
+        let sim = load_validated(&dir, SimConfig::default()).unwrap_or_else(|e| panic!("{e}"));
+        sim.escape_bounds().1[2]
+    });
+    let under = hi_z - pin_sim::load::GLASS_THICKNESS_M - pin_sim::load::BOUNDS_MARGIN_M;
+    assert!((under - 0.112).abs() < 1.0e-6, "glass underside {under} m");
+}
