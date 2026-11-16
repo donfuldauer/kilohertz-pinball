@@ -334,6 +334,14 @@ impl Scratch {
         true
     }
 
+    /// Forgets the captive balls this ball passed: an impulse changed its
+    /// velocity, so it may now close in on them faster than they recede and
+    /// the casts must test them again (docs/DECISIONS.md "a1fix-A2-resolved").
+    /// Never called for the pass itself, which applies no impulse.
+    fn clear_passes(&mut self) {
+        self.n_passed = 0;
+    }
+
     fn count_event(&mut self) {
         self.events = self.events.saturating_add(1);
         if self.events > MAX_EVENTS_PER_SUBSTEP {
@@ -1513,7 +1521,9 @@ impl BallSolver {
                 ContactKind::Ball(j) => {
                     // A pair of two members is handled once, by the lower.
                     if !(members[j] && j < i) && self.pair_hit(i, j, sc, false, min, events) {
+                        // `j` need not have a boundary now: its passes are stale.
                         sc[j].cache = Cache::Dirty;
+                        sc[j].clear_passes();
                     }
                 }
                 ContactKind::Chain(ci, bi) => {
@@ -1616,6 +1626,7 @@ impl BallSolver {
                     self.slots[i] = Some(a);
                     self.slots[j] = Some(b);
                     sc[j].cache = Cache::Dirty;
+                    sc[j].clear_passes();
                     c.acc = acc;
                 }
                 // A captive ball's reaction depends on the whole chain.
@@ -1688,6 +1699,7 @@ impl BallSolver {
                         self.slots[i] = Some(a);
                         self.slots[j] = Some(b);
                         sc[j].cache = Cache::Dirty;
+                        sc[j].clear_passes();
                     }
                     if moved > PRESOLVE_TOLERANCE {
                         // The partner has to be swept again.
@@ -2019,14 +2031,17 @@ impl BallSolver {
         let mut unused = [false; MAX_BALLS];
         let mut total = 0.0f32;
         let mut mid = 0.0f32;
+        let mut moved = [false; MAX_BALLS];
         for pass in 0..PRESOLVE_PASSES {
             let mut change = 0.0f32;
             for j in 0..MAX_BALLS {
                 if j == i || partners[j] {
                     let list = &mut lists[j];
-                    change = change
-                        .max(self.boundary_sweep(j, list, false, &alone, &mut unused, sc, bodies))
+                    let c = self
+                        .boundary_sweep(j, list, false, &alone, &mut unused, sc, bodies)
                         .max(self.boundary_sweep(j, list, true, &alone, &mut unused, sc, bodies));
+                    moved[j] |= c > 0.0;
+                    change = change.max(c);
                 }
             }
             total = total.max(change);
@@ -2046,6 +2061,10 @@ impl BallSolver {
         for j in 0..MAX_BALLS {
             if partners[j] {
                 sc[j].cache = Cache::Dirty;
+                // Ball `i`'s own records are handled by `static_event`.
+                if moved[j] {
+                    sc[j].clear_passes();
+                }
             }
         }
         total > 0.0
@@ -2065,6 +2084,9 @@ impl BallSolver {
         // An impact that changes nothing (a surface receding faster than the
         // ball follows) would repeat forever: the ball waits instead.
         let mut applied = true;
+        // Whether an impulse changed the ball's velocity (not a pass, not
+        // the guide's position fix, not the wait's gravity take-back).
+        let mut impulse = false;
         match ev {
             StaticEvent::World(hit) => {
                 let target = ImpactTarget::Collider(hit.collider);
@@ -2072,14 +2094,14 @@ impl BallSolver {
                 applied = self.surface_event(
                     i, hit.normal, hit.point, target, material, sc, lists, bodies, events,
                 );
+                impulse = applied;
             }
             StaticEvent::Guide(gi, Some(hit)) => {
                 let material = self.guide_material(gi);
                 let gap = self.slots[i].map_or(0.0, |b| {
                     (b.position - hit.point).dot(hit.normal) - me.body.radius
                 });
-                applied = gap < 0.0;
-                applied |= self.surface_event(
+                impulse = self.surface_event(
                     i,
                     hit.normal,
                     hit.point,
@@ -2090,6 +2112,7 @@ impl BallSolver {
                     bodies,
                     events,
                 );
+                applied = gap < 0.0 || impulse;
                 // A guide cast lets a sliding ball sink into its skin; put
                 // the ball back on the wall so that the next cast makes
                 // progress.
@@ -2109,6 +2132,7 @@ impl BallSolver {
                 applied = self.surface_event(
                     i, normal, point, target, material, sc, lists, bodies, events,
                 );
+                impulse = applied;
             }
             StaticEvent::Chain(ci, bi) => {
                 if let Some(ball) = self.slots[i] {
@@ -2118,6 +2142,7 @@ impl BallSolver {
                         let normal = offset / d;
                         let persistent = rests_on(&self.touch[i], normal);
                         applied = self.chain_hit(i, &me, ci, bi, normal, persistent, 0.0, events);
+                        impulse = applied;
                         add_touch(&mut self.touch[i], normal, true);
                         // Nothing to apply: the captive moves away at least as
                         // fast as the ball follows. If it still has the speed
@@ -2146,6 +2171,13 @@ impl BallSolver {
                 }
             }
         }
+        // An impulse makes the ball's earlier passes stale; the pass made
+        // in this event (no impulse) keeps its record. The wait's gravity
+        // take-back needs no clear: the ball is frozen, frozen balls are not
+        // cast, and its next boundary clears the records.
+        if impulse {
+            sc[i].clear_passes();
+        }
         sc[i].count_event();
         if !applied {
             sc[i].frozen = true;
@@ -2171,6 +2203,10 @@ impl BallSolver {
                 add_touch(&mut self.touch[i], normal, true);
                 add_touch(&mut self.touch[j], -normal, true);
             }
+        }
+        if applied {
+            sc[i].clear_passes();
+            sc[j].clear_passes();
         }
         sc[i].count_event();
         sc[j].count_event();
@@ -2545,5 +2581,33 @@ impl BallSolver {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pass record survives the event count of its own event and is gone
+    /// after `clear_passes`; the list holds at most `MAX_PASSED_CAPTIVES`.
+    #[test]
+    fn pass_records_survive_count_event_and_go_with_clear_passes() {
+        let mut s = Scratch::IDLE;
+        assert!(!s.passes(0, 1, 0.5));
+        assert!(s.pass(0, 1, 0.5));
+        s.count_event();
+        assert!(s.passes(0, 1, 0.5), "count_event keeps the record");
+        assert!(!s.passes(0, 1, 0.25), "another captive speed is not passed");
+        s.clear_passes();
+        assert!(!s.passes(0, 1, 0.5), "clear_passes forgets the record");
+        for b in 0..MAX_PASSED_CAPTIVES {
+            assert!(s.pass(0, b, 0.5));
+        }
+        assert!(!s.pass(0, MAX_PASSED_CAPTIVES, 0.5), "the list is full");
+        s.clear_passes();
+        assert!(
+            s.pass(0, MAX_PASSED_CAPTIVES, 0.5),
+            "room again after a clear"
+        );
     }
 }
