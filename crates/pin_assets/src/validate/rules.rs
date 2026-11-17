@@ -22,7 +22,6 @@ use pin_core::{
 };
 use pin_physics::world::{CubicSpline, GuideCurve, SplineError, Wireform};
 
-/// Highest collision layer.
 /// Largest allowed gap, in degrees, between a `CurvedBanana` flipper's
 /// authored `|arc_sweep_deg|` and the sweep its chord and radius imply,
 /// `2 * asin(length / (2 * arc_radius))`. The arc is fixed by `length` and
@@ -31,6 +30,7 @@ use pin_physics::world::{CubicSpline, GuideCurve, SplineError, Wireform};
 /// simulated. One degree allows rounding in hand-written values.
 pub(crate) const TOLERANCE_DEG: f64 = 1.0;
 
+/// Highest collision layer.
 const MAX_LAYER: u8 = 7;
 /// Highest switch and lamp number (256-entry runtime tables).
 const MAX_SWITCH_LAMP: u16 = 255;
