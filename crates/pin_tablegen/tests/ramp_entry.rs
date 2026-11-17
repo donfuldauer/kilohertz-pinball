@@ -485,6 +485,39 @@ fn layer_exit_warning() {
     assert!(g.warnings.is_empty(), "{:?}", g.warnings);
 }
 
+/// A deck exactly at the exit zone's top (in mm) is support: the zone top
+/// uses the same f32 conversion as the deck's mesh height. 100.2 mm is a
+/// value whose f32 metres exceed its f64 metres.
+#[test]
+fn layer_exit_deck_at_zone_top_supports() {
+    let pts = [
+        [425.0, 595.0, -6.0],
+        [425.0, 650.0, 0.0],
+        [425.0, 705.0, 8.0],
+    ];
+    let exit = transition(
+        "exit",
+        2,
+        0,
+        zone([395.0, 875.0, 30.0], [455.0, 950.0, 100.2]),
+    );
+    let mut l = layout(40.0);
+    l.decks = vec![Deck {
+        z: 100.2,
+        ..deck(
+            2,
+            &[
+                [390.0, 870.0],
+                [460.0, 870.0],
+                [460.0, 955.0],
+                [390.0, 955.0],
+            ],
+        )
+    }];
+    let g = generate(&l, &base(&pts, std::slice::from_ref(&exit))).unwrap();
+    assert_eq!(g.warnings.len(), 1, "{:?}", g.warnings);
+}
+
 /// Requirement 5: warnings never fail the command line; it prints them.
 #[test]
 fn cli_prints_warnings_and_succeeds() {
