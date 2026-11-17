@@ -354,13 +354,20 @@ pub(super) fn gap_lint(guide: &GuideCurve, closed: bool, bends: &[Bend]) -> Opti
 }
 
 /// Plan-view distance between segments `a0 a1` and `b0 b1`.
+///
+/// A crossing (distance 0) is accepted only when the intersection is well
+/// conditioned: `|cross(d1, d2)| > 1e-6 * |d1| * |d2|`. Nearer than that the
+/// segments are treated as parallel or collinear, where f32 rounding leaves
+/// a noise determinant and zero numerators that read as a false crossing,
+/// and are measured by the four point-to-segment distances (which give 0 for
+/// collinear overlap).
 fn segment_distance(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> f32 {
     let flat = |v: Vec3| glam::Vec2::new(v.x, v.y);
     let (p, q, r, s) = (flat(a0), flat(a1), flat(b0), flat(b1));
     let cross = |u: glam::Vec2, v: glam::Vec2| u.perp_dot(v);
     let (d1, d2) = (q - p, s - r);
     let denom = cross(d1, d2);
-    if denom != 0.0 {
+    if denom.abs() > 1e-6 * d1.length() * d2.length() {
         let t = cross(r - p, d2) / denom;
         let u = cross(r - p, d1) / denom;
         if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
@@ -588,6 +595,33 @@ mod tests {
         assert_eq!(
             spacing_lint(&bends, &[0.01, 0.01, 0.05], true).map(|x| x.1),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn segment_distance_collinear_disjoint_is_not_a_crossing() {
+        // f32 gives these a determinant of rounding noise and both
+        // numerators exactly 0, which once read as a crossing.
+        let v = |x: f32, y: f32| Vec3::new(x, y, 0.0);
+        let d = segment_distance(
+            v(0.32244128, 0.24750935),
+            v(0.32209128, 0.24715969),
+            v(0.31894112, 0.24401261),
+            v(0.3185911, 0.24366292),
+        );
+        assert!(d > 1e-3, "{d}");
+        // Collinear overlap is still 0, a proper X and a T still touch.
+        assert_eq!(
+            segment_distance(v(0., 0.), v(2., 2.), v(1., 1.), v(3., 3.)),
+            0.0
+        );
+        assert_eq!(
+            segment_distance(v(0., 0.), v(1., 1.), v(0., 1.), v(1., 0.)),
+            0.0
+        );
+        assert_eq!(
+            segment_distance(v(0., 0.), v(2., 0.), v(1., 0.), v(1., 1.)),
+            0.0
         );
     }
 
