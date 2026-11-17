@@ -2069,11 +2069,13 @@ dependencies = [
  "arrayvec",
  "glam",
  "libm",
+ "pin_assetgen",
  "pin_assets",
  "pin_core",
  "pin_input",
  "pin_physics",
  "pin_script",
+ "pin_tablegen",
  "proptest",
  "serde_json",
 ]
