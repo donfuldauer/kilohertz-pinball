@@ -18,7 +18,10 @@
 //!   1..=7, appended after the playfield glass in node order. Their
 //!   geometry and the flippers on their layers grow the escape box instead
 //!   of the playfield bounds (so the glass does not move), and the glass
-//!   leaves those layers out (the backbox has its own glass panel).
+//!   leaves those layers out (the backbox has its own glass panel). A
+//!   backbox layer is the backbox's alone: a playfield collider, a guide or
+//!   wireform, or a flipper whose base is outside the backbox geometry on
+//!   one is a load error (it would lose its glass).
 //!   DECISIONS.md "w7pre-backbox-colliders".
 //! * **Splines**: guides become [`GuideCurve`]s with the playfield wall height
 //!   (`[playfield] wall_height` of a `layout.toml` in the bundle, else
@@ -286,7 +289,8 @@ impl Simulation {
     /// [`BOUNDS_MARGIN_M`]) is `max.z − GLASS_THICKNESS_M − BOUNDS_MARGIN_M`
     /// (to f32 rounding) when the bundle has no backbox colliders; with
     /// them, the box is grown to hold the backbox geometry and the flippers
-    /// on its layers plus [`BOUNDS_MARGIN_M`] ([`backbox_colliders`]).
+    /// on its layers plus [`BOUNDS_MARGIN_M`] ([`backbox_colliders`]). A
+    /// backbox layer shared with a playfield element is rejected at load.
     #[must_use]
     pub fn escape_bounds(&self) -> ([f32; 3], [f32; 3]) {
         (self.bounds.0.to_array(), self.bounds.1.to_array())
@@ -454,6 +458,25 @@ pub fn backbox_colliders(vfs: &Vfs) -> Result<Vec<MeshCollider>, SimError> {
     Ok(out)
 }
 
+/// Rejects a playfield element (named by `who`) on a backbox layer: the
+/// playfield glass leaves the backbox layers out, so a playfield element
+/// sharing one would lose its glass. A no-op when `backbox_mask` is 0.
+fn reject_backbox_overlap(
+    backbox_mask: u8,
+    mask: u8,
+    who: impl FnOnce() -> String,
+) -> Result<(), SimError> {
+    let shared = backbox_mask & mask;
+    if shared == 0 {
+        return Ok(());
+    }
+    Err(backbox_err(format!(
+        "backbox layer {} is also used by {}",
+        shared.trailing_zeros(),
+        who()
+    )))
+}
+
 /// The escape box `escape` grown to hold the backbox geometry `backbox`
 /// plus [`BOUNDS_MARGIN_M`] (unchanged when `backbox` is empty).
 fn escape_with_backbox(escape: (Vec3, Vec3), backbox: &Bounds) -> (Vec3, Vec3) {
@@ -524,24 +547,12 @@ impl Simulation {
         let glass_m = glass_height_m(vfs)?;
         let mut bounds = Bounds::new();
 
-        // --- Static world. ---
-        let mut builder = StaticWorldBuilder::new();
-        let mut materials: Vec<(ColliderHandle, Material)> = Vec::new();
-        let mut named: Vec<(String, ColliderHandle)> = Vec::new();
-        for mesh in scene.meshes.iter().filter(|m| m.extras.collider) {
-            let c = mesh_collider(&scene, mesh);
-            if let StaticShape::TriMesh { vertices, .. } = &c.shape {
-                for &v in vertices {
-                    bounds.add(v);
-                }
-            }
-            let h = builder.add_collider(c.shape, c.layer_mask, true);
-            materials.push((h, c.material));
-            named.push((c.name, h));
-        }
         // Backbox colliders (DECISIONS.md "w7pre-backbox-colliders"): only
         // when the bundle has the file. Their geometry and the flippers on
-        // their layers feed the escape box, never the playfield glass.
+        // their layers feed the escape box, never the playfield glass. A
+        // backbox layer is the backbox's alone: a playfield collider, a
+        // guide or wireform, or a flipper based outside the backbox geometry
+        // on one is a build error (the glass leaves those layers out).
         let backbox = backbox_colliders(vfs)?;
         let backbox_mask = backbox.iter().fold(0u8, |m, c| m | c.layer_mask);
         let mut backbox_bounds = Bounds::new();
@@ -551,6 +562,32 @@ impl Simulation {
                     backbox_bounds.add(v);
                 }
             }
+        }
+        // The backbox geometry's box (vertices only, before any flipper base
+        // joins `backbox_bounds`) plus the margin; empty when it has no
+        // vertices, so no flipper base is inside it.
+        let backbox_box = (
+            backbox_bounds.min - Vec3::splat(BOUNDS_MARGIN_M),
+            backbox_bounds.max + Vec3::splat(BOUNDS_MARGIN_M),
+        );
+
+        // --- Static world. ---
+        let mut builder = StaticWorldBuilder::new();
+        let mut materials: Vec<(ColliderHandle, Material)> = Vec::new();
+        let mut named: Vec<(String, ColliderHandle)> = Vec::new();
+        for mesh in scene.meshes.iter().filter(|m| m.extras.collider) {
+            let c = mesh_collider(&scene, mesh);
+            reject_backbox_overlap(backbox_mask, c.layer_mask, || {
+                format!("playfield collider {:?}", c.name)
+            })?;
+            if let StaticShape::TriMesh { vertices, .. } = &c.shape {
+                for &v in vertices {
+                    bounds.add(v);
+                }
+            }
+            let h = builder.add_collider(c.shape, c.layer_mask, true);
+            materials.push((h, c.material));
+            named.push((c.name, h));
         }
         // The world is built after the last `bounds.add` (dispensers), so the
         // playfield glass can sit on the final bounds; collider state set
@@ -577,6 +614,9 @@ impl Simulation {
                 SplineKind::Guide => {
                     let g = GuideCurve::new(spline, wall_height)
                         .map_err(|e| build_err(format!("guide {}: {e}", s.name)))?;
+                    reject_backbox_overlap(backbox_mask, layers::layer_bit(s.layer), || {
+                        format!("guide {:?}", s.name)
+                    })?;
                     guides.push(g);
                     guide_layers.push(layers::layer_bit(s.layer));
                 }
@@ -590,6 +630,9 @@ impl Simulation {
                         .unwrap_or_else(|| vec![0.0; through.len()]);
                     let w = Wireform::new(spline, &roll, s.gauge_m.unwrap_or(0.0), Vec3::Z)
                         .map_err(|e| build_err(format!("wireform {}: {e}", s.name)))?;
+                    reject_backbox_overlap(backbox_mask, layers::layer_bit(s.layer), || {
+                        format!("wireform {:?}", s.name)
+                    })?;
                     wireforms.push(w);
                     wireform_layers.push(layers::layer_bit(s.layer));
                 }
@@ -690,6 +733,19 @@ impl Simulation {
         for (i, c) in table.flippers.iter().enumerate() {
             let base = Vec3::from_array(c.base_position_mm) * 1.0e-3;
             if layers::layer_bit(c.collision_layer) & backbox_mask != 0 {
+                let inside = base.cmpge(backbox_box.0).all() && base.cmple(backbox_box.1).all();
+                if !inside {
+                    let name = table
+                        .manifest
+                        .flippers
+                        .get(i)
+                        .map_or_else(|| format!("{:?}", c.id), |d| d.id.clone());
+                    return Err(backbox_err(format!(
+                        "backbox layer {} is also used by flipper {name:?} whose base is \
+                         outside the backbox geometry",
+                        c.collision_layer
+                    )));
+                }
                 backbox_bounds.add(base);
             } else {
                 bounds.add(base);
@@ -812,7 +868,8 @@ impl Simulation {
         let (lo, hi) = bounds.finish();
         let under = glass_underside(glass_m, bounds.max_z(), hi.z)?;
         let (glass, escape_bounds) = glass_lid(lo, hi, under);
-        // The backbox layers have their own glass panel (a backbox collider).
+        // The backbox layers have their own glass panel (a backbox collider);
+        // no playfield element uses them (rejected above), so none loses glass.
         let glass = builder.add_collider(glass, layers::ALL & !backbox_mask, true);
         solver.set_collider_material(glass, Material::Acrylic);
         let escape_bounds = escape_with_backbox(escape_bounds, &backbox_bounds);
