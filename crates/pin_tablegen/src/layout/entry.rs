@@ -44,6 +44,7 @@ use glam::{DVec2, DVec3, Vec3};
 use pin_assets::ValidationError;
 use pin_assets::validate::TABLE_FILE;
 use pin_core::schema::table::{AabbDef, LayerTransitionDef};
+use pin_core::units::mm_to_m;
 
 /// Smallest plan component of the unit start tangent: below it the spline
 /// starts vertically and has no plan direction to lay the zone along.
@@ -148,7 +149,7 @@ fn supports(nodes: &[Node], layer: u8) -> Vec<Support> {
 /// Whether some point of `zone`'s plan 3 × 3 sample grid (mm) has no
 /// support in `sup` at or below the zone's top.
 fn over_unsupported(zone: &AabbDef, sup: &[Support]) -> bool {
-    let top = f64::from(zone.max[2]) * 1.0e-3;
+    let top = f64::from(mm_to_m(zone.max[2]));
     let at = |k: usize, f: f64| {
         let (a, b) = (f64::from(zone.min[k]), f64::from(zone.max[k]));
         (a + (b - a) * f) * 1.0e-3
