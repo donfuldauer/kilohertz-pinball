@@ -854,6 +854,25 @@ fn vuk_exit_zone_is_a_layer_zero_to_one_transition() {
     assert_eq!(ts.update(1, VUK_POS + Vec3::new(0.0, 0.0, R), exit), 1);
 }
 
+/// Euclidean distance from `along` to the segment of offsets that differ from
+/// zero only by a lateral (y) shift of at most `lateral` (scatter moves the
+/// exit point sideways only).
+fn distance_to_lateral_segment(along: Vec3, lateral: f32) -> f32 {
+    let y_excess = along.y - along.y.clamp(-lateral, lateral);
+    Vec3::new(along.x, y_excess, along.z).length()
+}
+
+#[test]
+fn lateral_segment_distance_rejects_combined_xz_error() {
+    let l = VUK_SCATTER_LATERAL;
+    // The old per-component check accepted this; the segment check must not.
+    let bad = Vec3::new(1.9e-3, 0.0, 1.9e-3);
+    assert!(bad.x.abs() < 2.0e-3 && bad.z.abs() < 2.0e-3);
+    assert!(distance_to_lateral_segment(bad, l) > 2.0e-3);
+    assert!(distance_to_lateral_segment(Vec3::new(0.0, -l, 0.0), l) < 1.0e-6);
+    assert!(distance_to_lateral_segment(Vec3::new(1.0e-3, l + 1.0e-3, 0.0), l) < 2.0e-3);
+}
+
 #[test]
 fn vuk_eject_velocity_and_exit_layer_come_from_parameters() {
     let mut p = params();
@@ -880,11 +899,10 @@ fn vuk_eject_velocity_and_exit_layer_come_from_parameters() {
     // (2 mm, 0.03 m/s) are unchanged on top of those bounds.
     let nominal_pos = Vec3::new(0.010, 0.0, 0.080);
     let along = b.position - nominal_pos;
+    let miss = distance_to_lateral_segment(along, VUK_SCATTER_LATERAL);
     assert!(
-        along.x.abs() < 2.0e-3
-            && along.z.abs() < 2.0e-3
-            && along.y.abs() < 2.0e-3 + VUK_SCATTER_LATERAL,
-        "{:?}",
+        miss < 2.0e-3,
+        "{miss} m off the scatter segment: {:?}",
         b.position
     );
     let nominal_vel = Vec3::new(-0.5, 0.0, 0.6);
