@@ -2840,3 +2840,11 @@ The user approved the Orchestrator's recommendations on the items that could blo
 - **Rationale.** The arc is fixed by length and radius and the sign alone is read, so any visible disagreement means the authored number is not what is simulated. 1 degree allows rounding in hand-written values (76 mm on R 100 is 44.7 deg) while catching real mismatches (80 on 100 is 47.2 deg, authored 30). Tests: `crates/pin_assets/tests/banana_sweep_lint.rs`.
 - **Fixtures.** No fixture or test in pin_assets uses CurvedBanana, so no existing expectation changed. The pin_core/pin_physics 80/100/30 fixtures do not go through the validator in their tests and stay as they are; a table that uses them would now warn.
 - **Alternatives.** Making it an error (rejected: ruling says warning); dropping the field (needs a contract change).
+
+## w7pre-guide-lint-parallel — collinear segments in lint (d) (2026-11-17)
+
+**Decision:** `segment_distance` reports a crossing only when `|cross(d1, d2)| > 1e-6 * |d1| * |d2|`; nearer than that the pair is treated as parallel and measured by the four point-to-segment distances (collinear overlap still gives 0).
+
+**Rationale:** For collinear, disjoint pieces of a straight lane near 45 degrees, f32 gave a noise determinant (about 1.4e-14) and exactly-zero numerators, so t = u = 0 read as a crossing between pieces 5 mm apart. This falsely failed about 0.55 % of near-diagonal straight lanes in lint (d) and in the pin_tablegen generator. The relative threshold is far above f32 noise (about 1e-9 relative here) and far below any real crossing angle.
+
+**Alternatives:** compute in f64 with strict opposite-sign orientation tests (more code, same result); keep `denom != 0.0` and add an absolute epsilon (not scale-free).
