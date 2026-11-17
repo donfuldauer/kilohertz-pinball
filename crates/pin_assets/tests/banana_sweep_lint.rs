@@ -29,18 +29,17 @@ fn lints(shape: &str) -> Vec<ValidationError> {
     lints_opt(shape).expect("warnings still load")
 }
 
-/// `None` when the table is rejected by other checks (never by this lint).
-fn lints_opt(shape: &str) -> Option<Vec<ValidationError>> {
+/// The load result: `Err` when other checks reject the table, else the
+/// `arc_sweep_deg` warnings of the loaded table.
+fn lints_opt(shape: &str) -> Result<Vec<ValidationError>, AssetError> {
     let t = table_text();
     assert!(t.contains(STRAIGHT));
-    let loaded = load_text(&t.replacen(STRAIGHT, shape, 1)).ok()?;
-    Some(
-        loaded
-            .warnings
-            .into_iter()
-            .filter(|w| w.path.contains("arc_sweep_deg"))
-            .collect(),
-    )
+    let loaded = load_text(&t.replacen(STRAIGHT, shape, 1))?;
+    Ok(loaded
+        .warnings
+        .into_iter()
+        .filter(|w| w.path.contains("arc_sweep_deg"))
+        .collect())
 }
 
 #[test]
@@ -81,18 +80,33 @@ fn mirror_image_flippers_agree() {
 
 #[test]
 fn impossible_arcs_do_not_warn_or_panic() {
+    // Geometry that loads but is impossible: loads, and the lint stays silent.
     for (l, r, s) in [
         ("250.0", "100.0", "30.0"),
         ("80.0", "0.0", "30.0"),
         ("80.0", "-5.0", "30.0"),
+    ] {
+        let w =
+            lints_opt(&banana(l, r, s)).unwrap_or_else(|e| panic!("{l} {r} {s} must load: {e:?}"));
+        assert!(w.is_empty(), "{l} {r} {s}: {w:?}");
+    }
+    // Non-finite numbers are rejected by the manifest check, never by this lint.
+    for (l, r, s) in [
         ("nan", "100.0", "30.0"),
         ("80.0", "nan", "30.0"),
         ("80.0", "100.0", "nan"),
         ("80.0", "100.0", "inf"),
     ] {
-        // Other checks may reject the table; this lint must never fire.
-        let w = lints_opt(&banana(l, r, s)).unwrap_or_default();
-        assert!(w.is_empty(), "{l} {r} {s}: {w:?}");
+        match lints_opt(&banana(l, r, s)) {
+            Err(AssetError::Invalid(errs)) => {
+                assert!(
+                    errs.iter().all(|e| e.message.contains("finite number")),
+                    "{l} {r} {s}: {errs:?}"
+                );
+                assert!(errs.iter().all(|e| !e.path.contains("arc_sweep_deg")));
+            }
+            other => panic!("{l} {r} {s} must be rejected as non-finite: {other:?}"),
+        }
     }
 }
 
