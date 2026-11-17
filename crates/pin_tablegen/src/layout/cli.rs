@@ -136,7 +136,9 @@ fn read(path: &Path) -> Result<Vec<u8>, CliError> {
 }
 
 /// Runs the command with `args` (without the program name). On success,
-/// returns a one-line summary.
+/// returns a one-line summary followed by one `warning: ...` line per
+/// [`GeneratedTable::warnings`](super::GeneratedTable::warnings) entry
+/// (warnings never fail the command).
 pub fn run_cli(args: &[String]) -> Result<String, CliError> {
     let args = parse_args(args)?;
     let layout = parse_layout_bytes(&read(&args.layout)?)
@@ -171,13 +173,18 @@ pub fn run_cli(args: &[String]) -> Result<String, CliError> {
         .map_err(|e| CliError::Failed(format!("{}: {e}", args.layout.display())))?;
     write_bundle(&generated, &args.out)
         .map_err(|e| CliError::Failed(format!("{}: {e}", args.out.display())))?;
-    Ok(format!(
+    let mut out = format!(
         "wrote {} ({} bytes) and {} to {}",
         super::PLAYFIELD_FILE,
         generated.glb.len(),
         super::TABLE_FILE,
         args.out.display()
-    ))
+    );
+    for w in &generated.warnings {
+        out.push_str("\nwarning: ");
+        out.push_str(&w.to_string());
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
