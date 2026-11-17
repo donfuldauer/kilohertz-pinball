@@ -11,7 +11,9 @@ use pin_core::ids::{CoilId, SwitchId};
 use pin_core::schema::table::MechKind;
 use pin_core::script::SwitchEdge;
 use pin_physics::ball::BallHandle;
-use pin_physics::mech::MechSpec;
+use pin_physics::mech::{
+    MechSpec, VUK_SCATTER_ANGLE_DEG, VUK_SCATTER_LATERAL, VUK_SCATTER_SPEED_FRAC,
+};
 use pin_physics::world::{StaticWorldBuilder, layers};
 use proptest::prelude::*;
 
@@ -871,13 +873,38 @@ fn vuk_eject_velocity_and_exit_layer_come_from_parameters() {
     rig.step();
     let b = rig.ball(h);
     assert_eq!(b.layer, 2);
+    // Every eject is scattered (w7pre-vuk-scatter): the exit point moves
+    // sideways (along z × u = -y here) by at most VUK_SCATTER_LATERAL, the
+    // horizontal direction turns by at most VUK_SCATTER_ANGLE_DEG and the
+    // velocity scales by 1 ± VUK_SCATTER_SPEED_FRAC. The one-tick tolerances
+    // (2 mm, 0.03 m/s) are unchanged on top of those bounds.
+    let nominal_pos = Vec3::new(0.010, 0.0, 0.080);
+    let along = b.position - nominal_pos;
     assert!(
-        (b.position - Vec3::new(0.010, 0.0, 0.080)).length() < 2.0e-3,
+        along.x.abs() < 2.0e-3
+            && along.z.abs() < 2.0e-3
+            && along.y.abs() < 2.0e-3 + VUK_SCATTER_LATERAL,
         "{:?}",
         b.position
     );
+    let nominal_vel = Vec3::new(-0.5, 0.0, 0.6);
+    let gain = VUK_SCATTER_SPEED_FRAC;
     assert!(
-        (b.velocity - Vec3::new(-0.5, 0.0, 0.6)).length() < 0.03,
+        (b.velocity.z - 0.6).abs() < 0.03 + 0.6 * gain,
+        "{:?}",
+        b.velocity
+    );
+    let horizontal = Vec3::new(b.velocity.x, b.velocity.y, 0.0);
+    assert!(
+        (horizontal.length() - 0.5).abs() < 0.03 + 0.5 * gain,
+        "{:?}",
+        b.velocity
+    );
+    let turn = libm::atan2f(-horizontal.y, -horizontal.x).to_degrees();
+    assert!(turn.abs() <= VUK_SCATTER_ANGLE_DEG + 1.0, "turn {turn} deg");
+    assert!(
+        (b.velocity - nominal_vel).length()
+            < 0.03 + nominal_vel.length() * (gain + VUK_SCATTER_ANGLE_DEG.to_radians()),
         "{:?}",
         b.velocity
     );
