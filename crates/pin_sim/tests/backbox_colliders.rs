@@ -518,3 +518,108 @@ fn the_vuk_ejects_into_the_box_and_the_ball_reaches_a_flipper() {
         drop(dir);
     }
 }
+
+// --- CodeRabbit r4606779403: a backbox layer is the backbox's alone. ---
+
+fn load_err(dir: &Path) -> String {
+    let path = dir.to_path_buf();
+    on_sim_thread(
+        move || match Simulation::load(&path, SimConfig::default()) {
+            Ok(_) => panic!("load unexpectedly succeeded"),
+            Err(e) => e.to_string(),
+        },
+    )
+}
+
+/// Rewrites the playfield glb's JSON chunk with `edit`.
+fn edit_playfield_json(dir: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let path = dir.join("playfield.glb");
+    let d = std::fs::read(&path).expect("playfield.glb");
+    let n = u32::from_le_bytes(d[12..16].try_into().unwrap()) as usize;
+    let mut json: serde_json::Value = serde_json::from_slice(&d[20..20 + n]).expect("json");
+    edit(&mut json);
+    let mut text = serde_json::to_vec(&json).unwrap();
+    while !text.len().is_multiple_of(4) {
+        text.push(b' ');
+    }
+    let rest = &d[20 + n..];
+    let mut out = Vec::new();
+    out.extend_from_slice(&d[0..8]);
+    out.extend_from_slice(&((12 + 8 + text.len() + rest.len()) as u32).to_le_bytes());
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(&d[16..20]);
+    out.extend_from_slice(&text);
+    out.extend_from_slice(rest);
+    std::fs::write(path, out).expect("write playfield.glb");
+}
+
+#[test]
+fn the_unmodified_generated_backbox_still_loads_with_its_flippers_and_vuk() {
+    let (dir, g) = backbox_bundle("bb_overlap_ok", |_| {});
+    assert!(g.table.flippers.iter().any(|f| f.collision_layer == 4));
+    assert!(g.table.mechs.iter().any(|m| m.kind == MechKind::Vuk));
+    let _ = load(&dir);
+}
+
+#[test]
+fn a_playfield_collider_on_the_backbox_layer_is_a_load_error() {
+    let (dir, _g) = backbox_bundle("bb_overlap_a", |_| {});
+    edit_playfield_json(&dir, |j| {
+        let node = j["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|n| n["name"] == "walls[0]")
+            .expect("walls[0]");
+        node["extras"]["collision_layer"] = 4.into();
+    });
+    let m = load_err(&dir);
+    assert!(m.contains("backbox layer 4"), "{m}");
+    assert!(m.contains("playfield collider \"walls[0]\""), "{m}");
+}
+
+#[test]
+fn a_guide_or_wireform_on_the_backbox_layer_is_a_load_error() {
+    use pin_core::schema::table::{SplineDef, SplineKind};
+    for (kind, what) in [
+        (SplineKind::Guide, "guide"),
+        (SplineKind::Wireform, "wireform"),
+    ] {
+        let (dir, _g) = backbox_bundle(&format!("bb_overlap_b_{what}"), |t| {
+            t.splines.push(SplineDef {
+                id: "bad_spline".to_owned(),
+                kind,
+                layer: 4,
+                gauge: Some(30.0),
+                points: vec![
+                    [100.0, 200.0, 5.0],
+                    [150.0, 300.0, 5.0],
+                    [200.0, 400.0, 5.0],
+                    [250.0, 500.0, 5.0],
+                ],
+                roll_deg: None,
+            });
+        });
+        let m = load_err(&dir);
+        assert!(m.contains("backbox layer 4"), "{what}: {m}");
+        assert!(m.contains(&format!("{what} \"bad_spline\"")), "{what}: {m}");
+    }
+}
+
+#[test]
+fn a_flipper_on_the_backbox_layer_far_from_the_backbox_is_a_load_error() {
+    let (dir, _g) = backbox_bundle("bb_overlap_c", |t| {
+        let mut f = t.flippers[0].clone();
+        assert_ne!(f.collision_layer, 4);
+        f.id = "pf_flip".to_owned();
+        f.collision_layer = 4;
+        f.base_position = [100.0, 100.0, 0.0];
+        t.flippers.push(f);
+    });
+    let m = load_err(&dir);
+    assert!(m.contains("backbox layer 4"), "{m}");
+    assert!(
+        m.contains("flipper \"pf_flip\" whose base is outside the backbox geometry"),
+        "{m}"
+    );
+}
