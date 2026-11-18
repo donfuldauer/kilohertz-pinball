@@ -1,0 +1,24 @@
+# Start scene of the "combo_chain" mode (the combo multiplier reached 2x on a ball).
+schema_version = 1
+duration_ms = 2500
+background = "#000000"
+
+[[layers]]
+kind = "text"
+text = "COMBO CHAIN"
+x = 0.5
+y = 0.36
+size = 0.42
+color = "#40ff80"
+fade_in_ms = 200
+
+[[layers]]
+kind = "text"
+text = "2X SCORING"
+x = 0.5
+y = 0.97
+valign = "bottom"
+size = 0.25
+color = "#ffffff"
+start_ms = 300
+blink_ms = 250
