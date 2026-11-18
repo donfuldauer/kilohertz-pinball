@@ -22,13 +22,27 @@
 //! instantaneous `ω` by `((p − c) × J)·a / I` and re-predicts the rest of the
 //! tick. A switch pulse is counted every time the flap passes a horizontal
 //! position (`φ = π/2 + kπ`): one pulse per 180° of rotation.
+//!
+//! Rest: an angular speed below `REST_OMEGA` is snapped to exactly zero only
+//! where the flap can rest, i.e. in its lower half (`cos φ > 0`, where
+//! gravity restores it or stiction holds it) or where gravity exerts no
+//! torque at all (no gravity, or an exact equilibrium). In the upper half
+//! the tiny speed is kept: near the top the per-tick gravity kick
+//! `|γ(φ)|·dt` is itself smaller than `REST_OMEGA`, so snapping there would
+//! freeze the flap upside down; kept, the speed grows until the flap falls
+//! over and settles hanging.
 
 use glam::Vec3;
 
 use super::geom::OBox;
 use crate::ball::BodyPoint;
 
-/// Below this angular speed (rad/s) the flap is at rest.
+/// Below this angular speed (rad/s) the flap is at rest, provided it is at
+/// a valid rest point (see [`Spinner::rests`]): its lower half, or an angle
+/// with no gravity torque. The upper half is excluded because the gravity
+/// kick per tick near the top (`|γ|·dt`, below `REST_OMEGA` for
+/// `|sin φ| ≲ 1.9e-4` with the defaults) is smaller than this threshold, so
+/// a snap there would park the flap upside down.
 const REST_OMEGA: f32 = 1.0e-4;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -110,12 +124,26 @@ impl Spinner {
         }
     }
 
-    fn start_segment(&mut self, t: f32, angle: f32, omega: f32) {
-        let omega = if omega.is_finite() && omega.abs() >= REST_OMEGA {
-            omega
-        } else {
+    /// Whether a flap at angle `phi` may be snapped to rest: in its lower
+    /// half (`cos φ > 0`: gravity restores it, so a zero `ω` is at worst a
+    /// one-tick pause before the next kick, or stiction holds it), or where
+    /// gravity exerts no torque at all.
+    fn rests(&self, phi: f32) -> bool {
+        libm::cosf(phi) > 0.0 || self.gravity_alpha(phi) == 0.0
+    }
+
+    /// `ω` after the rest snap at angle `phi`: non-finite becomes 0; below
+    /// `REST_OMEGA` becomes 0 only where the flap [`rests`](Self::rests).
+    fn snap(&self, phi: f32, omega: f32) -> f32 {
+        if !omega.is_finite() || (omega.abs() < REST_OMEGA && self.rests(phi)) {
             0.0
-        };
+        } else {
+            omega
+        }
+    }
+
+    fn start_segment(&mut self, t: f32, angle: f32, omega: f32) {
+        let omega = self.snap(angle, omega);
         let (gain, _) = decay(self.damping, self.dt - t);
         self.seg_t = t;
         self.seg_angle = angle;
@@ -161,10 +189,7 @@ impl Spinner {
         let after = self.angle_at(dt);
         let (_, e) = decay(self.damping, dt - self.seg_t);
         self.angle = after;
-        self.omega = self.seg_omega * e;
-        if self.omega.abs() < REST_OMEGA {
-            self.omega = 0.0;
-        }
+        self.omega = self.snap(after, self.seg_omega * e);
         // Horizontal crossings (φ = π/2 + kπ ⇔ floor((φ − π/2)/π) changes),
         // per motion segment: an impulse can reverse the flap within the
         // tick, so the endpoints alone could miss crossings.
@@ -322,5 +347,62 @@ mod tests {
         assert!(b.axes[2].z.abs() > 0.999);
         assert_eq!(decay(1.0, 0.0), (1.0, 1.0));
         assert!((decay(1e-9, 1e-3).0 - 1.0).abs() < 1e-6);
+    }
+
+    /// Distance (rad) from hanging, `φ` taken mod 2π.
+    fn from_hanging(phi: f32) -> f32 {
+        let a = phi.rem_euclid(core::f32::consts::TAU);
+        a.min(core::f32::consts::TAU - a)
+    }
+
+    #[test]
+    fn upper_half_rest_falls_to_hanging() {
+        use core::f32::consts::PI;
+        let hold = libm::asinf(60.0 * 2.0 * 0.028 / (3.0 * 9.81)) + 0.02;
+        for phi0 in [PI - 1e-4, PI + 1e-4, 3.0 * PI - 2e-5] {
+            let mut s = flap();
+            s.friction = 60.0;
+            s.damping = 0.8;
+            s.angle = phi0;
+            s.omega = 0.0;
+            let mut settled = None;
+            for i in 0..8000 {
+                s.begin_tick(1e-3);
+                s.end_tick(1e-3);
+                if settled.is_none() && s.omega == 0.0 && from_hanging(s.angle) <= hold {
+                    settled = Some(i + 1);
+                }
+                if s.omega != 0.0 {
+                    settled = None;
+                }
+            }
+            assert_eq!(s.omega, 0.0, "φ0 {phi0}: still moving at {} rad", s.angle);
+            assert!(
+                from_hanging(s.angle) <= hold,
+                "φ0 {phi0}: parked {} rad from hanging (ticks to settle {settled:?})",
+                from_hanging(s.angle)
+            );
+            println!(
+                "φ0 {phi0}: settled after {settled:?} ticks at {} rad from hanging",
+                from_hanging(s.angle)
+            );
+        }
+    }
+
+    #[test]
+    fn free_flap_still_rests_anywhere() {
+        let mut s = flap();
+        s.gravity = Vec3::ZERO;
+        s.friction = 0.0;
+        s.angle = core::f32::consts::PI;
+        s.omega = 5e-5;
+        s.begin_tick(1e-3);
+        s.end_tick(1e-3);
+        assert_eq!(s.omega, 0.0);
+        assert!(
+            (s.angle - core::f32::consts::PI).abs() <= 1e-6,
+            "{}",
+            s.angle
+        );
     }
 }
