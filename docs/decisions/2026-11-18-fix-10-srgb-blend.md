@@ -3,9 +3,11 @@
 **Decision:** The cause in issue #10 is confirmed in the display code, but the surface it was
 attributed to is not where it happens. `QuadRenderer` and `DmdRenderer` (`displays/quad.rs`,
 `displays/dmd.rs`) are built for the target format; for an `*Srgb` format they set `srgb` and the
-shader decodes its output (`encode_output`), but their pipelines blend with fixed-function
-`PREMULTIPLIED_ALPHA_BLENDING` into the `*Srgb` view, which decodes the destination, blends in linear
-space and re-encodes. `pin_render`'s `SurfaceSet` (`gpu/surfaces.rs`) picks the `*Srgb` fallback in
+shader decodes its output (`encode_output`). `QuadRenderer`'s alpha-over pipeline blends with
+fixed-function `PREMULTIPLIED_ALPHA_BLENDING` into the `*Srgb` view, which decodes the destination,
+blends in linear space and re-encodes. `DmdRenderer` builds its colour target with `format.into()`
+(no blend state), so it replaces the destination through the `*Srgb` view; its shader's sRGB output
+conversion is a separate behaviour from the linear-space blend. `pin_render`'s `SurfaceSet` (`gpu/surfaces.rs`) picks the `*Srgb` fallback in
 `pick_format` and configures it with `view_formats: Vec::new()`, but it draws only debug lines and the
 secondary clear; it never draws display layers. The production path that draws display layers onto a
 surface is `pin_app`'s table renderer (`crates/pin_app/src/orchestrator/present.rs`: its own
