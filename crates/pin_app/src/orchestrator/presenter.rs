@@ -370,10 +370,11 @@ impl FrameCopy {
     ///
     /// # Extent precondition
     /// The format-pair check in the constructors covers formats only, not
-    /// extents. A [`CopyPath::CopyDst`] copy of a depth/stencil format must
-    /// cover the full texture extent (wgpu rejects a partial copy), so
-    /// `src` and `dst` must have equal sizes for such formats; ordinary
-    /// colour formats may copy the overlapping extent.
+    /// extents. A [`CopyPath::CopyDst`] copy must cover the full texture
+    /// extent (wgpu rejects a partial copy) when the format is depth/stencil
+    /// or when the texture is multisampled (`sample_count > 1`) of any
+    /// format, so `src` and `dst` must have equal sizes in those cases. Only
+    /// single-sample colour textures may copy the overlapping extent.
     pub fn encode(
         &self,
         device: &wgpu::Device,
