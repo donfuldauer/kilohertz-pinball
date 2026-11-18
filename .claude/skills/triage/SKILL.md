@@ -26,7 +26,7 @@ task-executor and checked by the work-verifier. The fast path never routes T2 or
 If the validity or cause is unclear, the item goes to the issue-investigator first and is then
 handled by the investigator's verdict: `valid-defect` is triaged again from its report (fast
 path if it now passes every check, else the work-classifier); `valid-but-deferred` or
-`pre-existing` is "Deferred" (§2.7 step 3): commit the investigator's HUMAN_QUEUE line, reply
+`pre-existing` is "Deferred" (§2.7 step 3): commit the investigator's line in `docs/queue/<unit-id>.md`, reply
 with it and resolve, with no Fixer, unless it is an unfixed security issue or a verified unfixed
 correctness defect (§2.7 step 3 exceptions): then the thread stays unresolved and the item goes
 to the work-classifier for a fix; `not-a-defect` is "Not a defect": reply with its evidence
@@ -39,7 +39,7 @@ Orchestrator, sends the item to the work-classifier.
 2. Triage each one as fast-path T0, fast-path T1, or classifier.
 3. Send findings whose validity or cause is unclear to the issue-investigator first (in
    parallel when independent). Map by verdict: `valid-defect` is triaged again from its
-   report; `valid-but-deferred` or `pre-existing` is "Deferred" (commit its HUMAN_QUEUE line,
+   report; `valid-but-deferred` or `pre-existing` is "Deferred" (commit its line in `docs/queue/<unit-id>.md`,
    reply with it, resolve; but an unfixed security issue or verified unfixed correctness defect
    stays unresolved and goes to the classifier for a fix); `not-a-defect` is "Not a defect"
    (reply with its evidence, resolve). Otherwise neither of the last two gets a Fixer (§2.7
@@ -54,7 +54,7 @@ Orchestrator, sends the item to the work-classifier.
    in one brief at the higher tier.
 6. Spawn executors, in parallel when owned paths do not overlap.
 7. Run ONE work-verifier on the resulting head commit covering every item in the round whenever
-   the round changed the head (executor fixes, or a commit such as a HUMAN_QUEUE line for a
+   the round changed the head (executor fixes, or a commit such as a `docs/queue/<unit-id>.md` line for a
    deferred finding; a queue-only round uses the verifier's queue-only case). Skip it only when the head is unchanged (for example every finding was
    answered as not a defect): the previous verifier pass on that head still satisfies §2.7
    step 5, and the replies carry the investigator's evidence.
@@ -99,7 +99,7 @@ RULES
 5. **Simulated time in tests (D8).** Headless tests never sleep and never assert on wall-clock time.
 6. **No test-shaped special cases.** Solver code must not branch on named behaviours ("live catch", "powerball"). Tests assert emergent results across parameter sweeps.
 7. **Agent roles (D34, D35).** Every unit of work is classified by the work-classifier (or, for items that pass the triage checks in §2.5, by the `triage` skill, D38), done by a task-executor (as Implementer, Independent Tester or Fixer), checked by the work-verifier, and diagnosed by the issue-investigator when something fails for a reason that is not obvious (§2.6). The model is whatever the classifier picked (§2.5).
-8. **Never wait on a person (D28).** When the brief is ambiguous, choose the option most consistent with the decision log, record it in `docs/DECISIONS.md`, add a line to `docs/HUMAN_QUEUE.md`, and continue.
+8. **Never wait on a person (D28).** When the brief is ambiguous, choose the option most consistent with the decision log, record it in a new file `docs/decisions/<YYYY-MM-DD>-<unit-id>.md` (a `## <id> — <topic>` section with Decision / Rationale / Alternatives), add the human-queue line in `docs/queue/<unit-id>.md`, and continue. Never edit another unit's file (D41).
 9. **No self-review (D36, D37).** No agent reviews code for style or design, its own or another agent's. The work-verifier checks objective facts only; code review happens on the pull request by CodeRabbit (§2.7). The Orchestrator resolves every review thread itself when justified and never leaves one for a person (§2.7 step 3).
 
 COMMANDS

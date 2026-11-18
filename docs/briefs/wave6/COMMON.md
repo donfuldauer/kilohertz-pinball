@@ -6,7 +6,7 @@ RULES (PLAN §2.3, binding)
  5. Simulated time in tests (D8). Headless tests never sleep and never assert on wall-clock time.
  6. No test-shaped special cases. Solver code must not branch on named behaviours ("live catch", "powerball"). Tests assert emergent results across parameter sweeps.
  7. Agent roles (D34, D35). Every unit of work is classified by the work-classifier (or, for small items, the triage skill, D38), done by a task-executor (Implementer, Independent Tester or Fixer), checked by the work-verifier, and diagnosed by the issue-investigator when something fails for a non-obvious reason. The model is whatever the classifier picked.
- 8. Never wait on a person (D28). When the brief is ambiguous, choose the option most consistent with the decision log, record it in `docs/DECISIONS.md` (a `## <id> — <topic>` section with Decision / Rationale / Alternatives), add one line to `docs/HUMAN_QUEUE.md`, and continue. Append only; never rewrite other entries.
+ 8. Never wait on a person (D28). When the brief is ambiguous, choose the option most consistent with the decision log, record it in a new file `docs/decisions/<YYYY-MM-DD>-<unit-id>.md` (a `## <id> — <topic>` section with Decision / Rationale / Alternatives), add one line to `docs/queue/<unit-id>.md`, and continue. One file per unit; never edit other units' files.
  9. No self-review (D36, D37). No agent reviews code for style or design, its own or another agent's. The work-verifier checks objective facts only; code review happens on the pull request by CodeRabbit. The Orchestrator resolves review threads, not you.
 
 DETERMINISM (D9): same binary + same machine => identical replay. No fast-math, no FMA contraction, `libm` for transcendental functions, fixed iteration order (no HashMap iteration), one seeded PCG. UNITS (D17): SI internally; TOML uses mm / g / deg, converted at load.
@@ -31,7 +31,7 @@ GATE / DONE WHEN (the work-verifier re-runs these on the head commit)
  8. Render work: analytic pixel assertions first (region mean colour, luminance ratios, symmetry, energy), a regression snapshot only after those pass, never as sole evidence (D30). The verifier also walks the VISUAL CHECKLIST.
 
 WHEN SOMETHING IS UNCLEAR
- Choose the option most consistent with the decision log (PLAN D1–D38, `docs/DECISIONS.md`), record it in docs/DECISIONS.md, add a line to docs/HUMAN_QUEUE.md, and continue. Do not wait. Relevant rows: D4 contract changes via CHANGE_REQUESTS only; D5 no alloc/lock/IO on sim thread; D8 simulated time; D9 determinism; D17 SI units; D19 secondary surfaces / presenter threads; D20 GPU tests separate; D24 tables validated by autoplay and gates A1/A2; D28 never wait on a person; D30 image-test policy; D32 placeholder asset kit with stable IDs; D33 ray-query ships OFF by default unless a runner validated it; D36/D37 no self-review, Orchestrator resolves threads.
+ Choose the option most consistent with the decision log (PLAN D1–D38, `docs/decisions/` and the frozen `docs/DECISIONS.md`), record it in a new docs/decisions/<date>-<unit-id>.md, add a line in docs/queue/<unit-id>.md, and continue. Do not wait. Relevant rows: D4 contract changes via CHANGE_REQUESTS only; D5 no alloc/lock/IO on sim thread; D8 simulated time; D9 determinism; D17 SI units; D19 secondary surfaces / presenter threads; D20 GPU tests separate; D24 tables validated by autoplay and gates A1/A2; D28 never wait on a person; D30 image-test policy; D32 placeholder asset kit with stable IDs; D33 ray-query ships OFF by default unless a runner validated it; D36/D37 no self-review, Orchestrator resolves threads.
 
 ROLE-SPECIFIC
  Implementer: deliver code + unit tests (own `src/` modules and `tests/<your prefix>_*.rs`); do not read `tests/spec_*` of your subphase. Public rustdoc for every public item.
@@ -41,7 +41,7 @@ REPORT FORMAT (your final message)
  status: done | blocked
  gate results: <per step, with numbers: tests run/passed, coverage %, timings>
  files changed: <list>
- decisions logged: <DECISIONS.md section titles>
+ decisions logged: <decision file path and section titles>
  contract-change requests: <CR ids or none>
  requests outside owned paths: <list or none>
  findings: <defects found (Tester), anything the verifier should know>
