@@ -7,7 +7,7 @@ name: ci
 # lavapipe GPU tests and the DOF bridge only when their paths change). Pushes to main and
 # workflow_dispatch run everything: the Windows/macOS legs live in the `*-cross` jobs below
 # (job-level `if: github.event_name != 'pull_request'`, so a skipped job reports success), and
-# coverage is push-only too. Linux jobs keep their ids; every target stays covered across the file.
+# coverage runs on push and workflow_dispatch, not on pull requests. Linux jobs keep their ids; every target stays covered across the file.
 on:
   push:
     branches: [main]
