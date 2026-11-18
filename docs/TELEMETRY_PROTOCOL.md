@@ -165,3 +165,21 @@ roll is not an impulse and is not part of the telemetry stream.
   ```text
   50 4E 54 4C 01 01 01 00 88 77 66 55 44 33 22 11  02 00 01 00 00 00 80 3F
   ```
+
+## 7. Implementation notes (non-normative)
+
+This section describes the `pin_audio` implementation, is not part of the wire
+contract, and can change without a new `version`.
+
+- **Ring capacity.** `telemetry_channel` clamps the ring capacity to at least
+  `MAX_DATAGRAMS_PER_TICK` = 5, so a whole full state fits in an empty ring.
+  A ring that still holds earlier datagrams can truncate a batch, so the
+  minimum makes `force_full_state` recovery possible but does not guarantee
+  delivery on the next tick. A best-effort warning is written to stderr when
+  a smaller value is raised. The default is 64
+  (`DEFAULT_TELEMETRY_RING_CAPACITY`).
+- **Unclamped constructor.** The truncating behaviour below 5 (a batch that
+  does not fit is cut off, the rest dropped and counted, never blocking)
+  exists only in the `#[doc(hidden)]` `telemetry_channel_unclamped`
+  constructor, which the spec tests use to pin it. Production code uses
+  `telemetry_channel`.

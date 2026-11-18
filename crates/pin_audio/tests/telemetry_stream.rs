@@ -6,6 +6,7 @@ use pin_audio::telemetry::{
     DatagramBatch, FLAG_FULL_STATE, FULL_STATE_ENTRIES, FULL_STATE_INTERVAL_TICKS,
     HapticsTelemetryEvent, MAX_DATAGRAM_LEN, TelemetryEncoder, TelemetryEntry, TelemetryKind,
     TelemetrySender, TelemetryState, decode_datagram, telemetry_channel,
+    telemetry_channel_unclamped,
 };
 use proptest::prelude::*;
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -376,7 +377,7 @@ fn new_session_with_lower_tick_is_a_full_state() {
 /// full state, which reaches the listener once the ring drains.
 #[test]
 fn ring_overflow_then_forced_full_state_resynchronises() {
-    let (mut tx, mut rx) = telemetry_channel(2);
+    let (mut tx, mut rx) = telemetry_channel_unclamped(2);
     let mut enc = TelemetryEncoder::new();
     let mut st = TelemetryState::default();
     let mut out = DatagramBatch::new();

@@ -38,7 +38,7 @@ mod sender;
 
 pub use sender::{
     DEFAULT_TELEMETRY_RING_CAPACITY, TelemetryReceiver, TelemetrySender, TelemetrySenderHandle,
-    TelemetryTx, telemetry_channel,
+    TelemetryTx, telemetry_channel, telemetry_channel_unclamped,
 };
 
 pub use pin_core::input::HapticsTelemetryEvent;

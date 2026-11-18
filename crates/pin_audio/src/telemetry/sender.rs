@@ -1,10 +1,10 @@
 //! Datagram ring (sim thread → telemetry thread) and the UDP sender.
 
-use super::{Datagram, DatagramBatch};
+use super::{Datagram, DatagramBatch, MAX_DATAGRAMS_PER_TICK};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use pin_core::spsc::{SpscConsumer, SpscProducer, channel};
-use std::io;
+use std::io::{self, Write as _};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -13,15 +13,39 @@ use std::thread::JoinHandle;
 /// ticks, or 64 ms of single-datagram ticks).
 pub const DEFAULT_TELEMETRY_RING_CAPACITY: usize = 64;
 
-/// Creates the datagram ring (`capacity` exact; 0 is treated as 1). This is
-/// the ring's only allocation.
+/// Creates the datagram ring. This is the ring's only allocation.
 ///
-/// Use at least [`MAX_DATAGRAMS_PER_TICK`](super::MAX_DATAGRAMS_PER_TICK)
-/// (5; the default [`DEFAULT_TELEMETRY_RING_CAPACITY`] is 64): a full state
-/// takes that many datagrams, so a smaller ring can never carry one whole
-/// and the [`force_full_state`](super::TelemetryEncoder::force_full_state)
-/// recovery of [`TelemetryTx::push_batch`] cannot complete.
+/// The capacity is clamped to at least
+/// [`MAX_DATAGRAMS_PER_TICK`](super::MAX_DATAGRAMS_PER_TICK) (5): a full
+/// state takes that many datagrams, so a smaller ring could never carry one
+/// whole. With the clamp a full state fits in an *empty* ring; a ring still
+/// holding earlier datagrams can truncate a batch, so the minimum makes the
+/// [`force_full_state`](super::TelemetryEncoder::force_full_state) recovery of [`TelemetryTx::push_batch`] possible but does not guarantee
+/// delivery on the next tick. When the requested value is raised, one
+/// best-effort warning stating the requested and the effective capacity is
+/// written to stderr (a failed write is ignored; construction time only). The
+/// default, [`DEFAULT_TELEMETRY_RING_CAPACITY`], is 64.
 pub fn telemetry_channel(capacity: usize) -> (TelemetryTx, TelemetryReceiver) {
+    let effective = capacity.max(MAX_DATAGRAMS_PER_TICK);
+    if capacity < MAX_DATAGRAMS_PER_TICK {
+        // Best-effort: a failed stderr write must not prevent construction.
+        let _ = writeln!(
+            io::stderr(),
+            "warning: telemetry ring capacity {capacity} is below the minimum \
+             {MAX_DATAGRAMS_PER_TICK} datagrams per tick; using {effective}"
+        );
+    }
+    telemetry_channel_unclamped(effective)
+}
+
+/// Creates the datagram ring with exactly `capacity` slots (0 is treated as
+/// 1) and no warning.
+///
+/// For tests and for pinning the spec's truncating, non-blocking behaviour
+/// when a full state does not fit. Production code must use
+/// [`telemetry_channel`].
+#[doc(hidden)]
+pub fn telemetry_channel_unclamped(capacity: usize) -> (TelemetryTx, TelemetryReceiver) {
     let (tx, rx) = channel(capacity.max(1));
     let dropped = Arc::new(AtomicU64::new(0));
     (
@@ -245,7 +269,7 @@ mod tests {
         listener
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        let (mut tx, rx) = telemetry_channel(0);
+        let (mut tx, rx) = telemetry_channel_unclamped(0);
         let mut enc = TelemetryEncoder::new();
         let mut batch = DatagramBatch::new();
         enc.encode_tick(7, &TelemetryState::new(), &[], &mut batch);
@@ -269,9 +293,9 @@ mod tests {
         assert_eq!(s.sent(), 2);
         // IPv6 may be unavailable in CI containers; only the error path is certain.
         let _ = TelemetrySender::new(s.rx, "[::1]:9");
-        let (_, rx3) = telemetry_channel(1);
+        let (_, rx3) = telemetry_channel_unclamped(1);
         assert!(TelemetrySender::new(rx3, &[][..] as &[SocketAddr]).is_err());
-        let (_, rx2) = telemetry_channel(1);
+        let (_, rx2) = telemetry_channel_unclamped(1);
         let h = TelemetrySender::new(rx2, "127.0.0.1:9")
             .unwrap()
             .spawn(Duration::from_millis(1))
@@ -284,7 +308,6 @@ mod tests {
     /// tick when the consumer pumps between ticks.
     #[test]
     fn forced_full_state_recovers_at_minimum_capacity() {
-        use super::super::MAX_DATAGRAMS_PER_TICK;
         let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
         listener
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -334,7 +357,7 @@ mod tests {
             .unwrap()
             .local_addr()
             .unwrap();
-        let (mut tx, rx) = telemetry_channel(4);
+        let (mut tx, rx) = telemetry_channel_unclamped(4);
         let d = {
             let mut enc = TelemetryEncoder::new();
             let mut batch = DatagramBatch::new();
@@ -359,5 +382,35 @@ mod tests {
         assert!(h.stop().is_some());
         run.store(false, Ordering::Relaxed);
         producer.join().unwrap();
+    }
+
+    #[test]
+    fn public_constructor_clamps_to_minimum() {
+        for (req, want) in [(0, 5), (2, 5), (4, 5), (5, 5), (6, 6), (64, 64)] {
+            let (_tx, rx) = telemetry_channel(req);
+            assert_eq!(rx.rx.capacity(), want, "requested {req}");
+        }
+    }
+
+    #[test]
+    fn full_state_fits_when_two_requested() {
+        let (mut tx, _rx) = telemetry_channel(2);
+        let mut enc = TelemetryEncoder::new();
+        let mut batch = DatagramBatch::new();
+        enc.encode_tick(0, &TelemetryState::new(), &[], &mut batch);
+        assert_eq!(batch.len(), MAX_DATAGRAMS_PER_TICK);
+        assert!(tx.push_batch(&batch));
+        assert_eq!(tx.dropped(), 0);
+    }
+
+    #[test]
+    fn unclamped_constructor_keeps_truncating_behaviour() {
+        let (mut tx, rx) = telemetry_channel_unclamped(2);
+        assert_eq!(rx.rx.capacity(), 2);
+        let mut enc = TelemetryEncoder::new();
+        let mut batch = DatagramBatch::new();
+        enc.encode_tick(0, &TelemetryState::new(), &[], &mut batch);
+        assert!(!tx.push_batch(&batch));
+        assert_eq!(tx.dropped(), MAX_DATAGRAMS_PER_TICK as u64 - 2);
     }
 }
