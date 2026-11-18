@@ -572,6 +572,16 @@ jobs:
             echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
           fi
 
+      - name: Install Linux packages (SDL3 build headers for pin_app)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 xvfb xauth cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
       - name: Gate A1 (scripts/gate_a1.sh)
         shell: bash
         run: scripts/gate_a1.sh
