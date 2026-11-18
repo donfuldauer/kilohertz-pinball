@@ -90,7 +90,16 @@
 //!   While the coil is on, the held ball is moved to `position +
 //!   exit_offset` with velocity `eject_speed·z + kick_speed·u`, on
 //!   `exit_layer` (the move enters the scoop's [`LayerTransition`], listed in
-//!   [`MechSet::transitions`]).
+//!   [`MechSet::transitions`]). Every eject is scattered (so a single
+//!   VUK → playfield → VUK path cannot repeat for ever): the exit point moves
+//!   sideways (along `z × u`) by up to [`VUK_SCATTER_LATERAL`] (never more
+//!   than a quarter of the scoop radius or of the exit zone), the horizontal
+//!   direction turns about `z` by up to [`VUK_SCATTER_ANGLE_DEG`], and the
+//!   whole velocity is scaled by `1 ± `[`VUK_SCATTER_SPEED_FRAC`]. The draws
+//!   (three per eject, uniform) come from a per-mech [`Pcg32`] derived from
+//!   the sim seed and the mech index ([`MechSet::set_scatter_seed`]), so a
+//!   table without a VUK draws nothing and adding a VUK shifts no other
+//!   random stream.
 //! * **Plunger.** `x ≤ 0` is the forward displacement from rest; the rod
 //!   travels `−stroke ≤ x ≤ 0`, the spring force is `−k·x`, the rest stop
 //!   (`x = 0`) is inelastic. [`MechSet::set_plunger`] (0 rest .. 1 full
@@ -125,7 +134,7 @@ use glam::Vec3;
 use pin_core::ids::{CoilId, SwitchId};
 use pin_core::materials::{Material, MaterialPair, lookup_pair};
 use pin_core::schema::table::MechKind;
-use pin_core::{PhysicsDefaults, SwitchEdge};
+use pin_core::{Pcg32, PhysicsDefaults, Rng, SwitchEdge};
 
 use crate::ball::{
     BallEvent, BallEvents, BallHandle, BallSolver, BodyPoint, Geometry, ImpactTarget, MAX_BALLS,
@@ -167,6 +176,30 @@ const VUK_CAPTURE_HEIGHT: f32 = 0.003;
 
 /// Half size (m) of a VUK's exit transition zone.
 const VUK_ZONE: f32 = 0.02;
+
+/// Largest sideways shift (m) of a VUK's exit point per eject, along
+/// `z × u` in the playfield plane (uniform in `±` this). It is also capped
+/// at a quarter of the scoop `radius` and of the exit zone half size, so
+/// the scattered exit point stays well inside the hold/exit geometry.
+pub const VUK_SCATTER_LATERAL: f32 = 0.003;
+
+/// Largest turn (degrees, about `z`) of a VUK's horizontal eject direction
+/// per eject (uniform in `±` this).
+pub const VUK_SCATTER_ANGLE_DEG: f32 = 4.0;
+
+/// Largest relative change of a VUK's eject velocity magnitude per eject
+/// (both `eject_speed` and `kick_speed` scale by one factor, uniform in
+/// `1 ± ` this).
+pub const VUK_SCATTER_SPEED_FRAC: f32 = 0.04;
+
+/// Seed of the per-mech scatter generators until
+/// [`MechSet::set_scatter_seed`] is called.
+pub const DEFAULT_SCATTER_SEED: u64 = 0;
+
+/// Stream constant mixed with the mech index for the per-mech scatter
+/// generator (`Pcg32::new(seed, VUK_SCATTER_STREAM ^ index)`), so it never
+/// shares a stream with the sim's `Pcg32::seed_from_u64(seed)`.
+const VUK_SCATTER_STREAM: u64 = 0x5655_4b5f_5343_4154; // "VUK_SCAT"
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum DropState {
@@ -281,6 +314,14 @@ pub struct MechSet {
     transitions: TransitionSet,
     /// Events of the current step were lost (full `BallEvents`).
     events_lost: bool,
+    /// Per-mech eject scatter generators (index = mech index; only VUKs
+    /// draw).
+    scatter: Vec<Pcg32>,
+}
+
+/// The scatter generator of mech `index` for `seed`.
+fn scatter_rng(seed: u64, index: usize) -> Pcg32 {
+    Pcg32::new(seed, VUK_SCATTER_STREAM ^ index as u64)
 }
 
 fn set_bit(bits: &mut [u64; 4], s: SwitchId) {
@@ -410,6 +451,9 @@ impl MechSet {
             });
         }
         let edges = Vec::with_capacity(2 * (mechs.len() + 1));
+        let scatter = (0..mechs.len())
+            .map(|i| scatter_rng(DEFAULT_SCATTER_SEED, i))
+            .collect();
         Ok(MechSet {
             mechs,
             pairs: defaults.material_pairs.clone(),
@@ -423,7 +467,19 @@ impl MechSet {
             own,
             transitions: TransitionSet::new(zones),
             events_lost: false,
+            scatter,
         })
+    }
+
+    /// Re-seeds every mech's eject scatter generator from the sim `seed`
+    /// (mech `i` gets its own `Pcg32` stream derived from `seed` and `i`;
+    /// see the [module documentation](self)). Call it once at load, with
+    /// the seed of the sim's own generator; without it the seed is
+    /// [`DEFAULT_SCATTER_SEED`]. Draws nothing and allocates nothing.
+    pub fn set_scatter_seed(&mut self, seed: u64) {
+        for (i, r) in self.scatter.iter_mut().enumerate() {
+            *r = scatter_rng(seed, i);
+        }
     }
 
     /// Number of mechs (the body count).
@@ -702,7 +758,7 @@ impl MechSet {
                         if solver.ball(h).is_none() {
                             v.held = None;
                         } else if m.coil_on() {
-                            eject(solver, &v, h);
+                            eject(solver, &v, h, &mut self.scatter[mi]);
                             v.held = None;
                         } else {
                             hold(solver, &v, h);
@@ -969,13 +1025,31 @@ fn hold(solver: &mut BallSolver, v: &Vuk, h: BallHandle) {
     }
 }
 
-/// Ejects the held ball to the exit point and layer.
-fn eject(solver: &mut BallSolver, v: &Vuk, h: BallHandle) {
+/// A uniform draw in `[-1, 1)` (24 bits).
+fn signed_unit(rng: &mut Pcg32) -> f32 {
+    ((rng.next_u32() >> 8) as f32) * (2.0 / 16_777_216.0) - 1.0
+}
+
+/// Ejects the held ball to the (scattered) exit point and layer: three
+/// draws from `rng` (lateral shift, direction turn, speed factor).
+fn eject(solver: &mut BallSolver, v: &Vuk, h: BallHandle, rng: &mut Pcg32) {
+    if solver.ball(h).is_none() {
+        return;
+    }
+    let lateral = VUK_SCATTER_LATERAL
+        .min(0.25 * v.radius)
+        .min(0.25 * VUK_ZONE);
+    let shift = signed_unit(rng) * lateral;
+    let turn = signed_unit(rng) * VUK_SCATTER_ANGLE_DEG.to_radians();
+    let gain = 1.0 + signed_unit(rng) * VUK_SCATTER_SPEED_FRAC;
+    let side = Vec3::Z.cross(v.dir);
+    let (sin, cos) = (libm::sinf(turn), libm::cosf(turn));
+    let dir = v.dir * cos + side * sin;
     if let Some(b) = solver.ball_mut(h) {
         let from = b.position;
-        let to = v.position + v.exit_offset;
+        let to = v.position + v.exit_offset + side * shift;
         b.position = to;
-        b.velocity = Vec3::Z * v.eject_speed + v.dir * v.kick_speed;
+        b.velocity = (Vec3::Z * v.eject_speed + dir * v.kick_speed) * gain;
         b.angular_velocity = Vec3::ZERO;
         // Through the scoop's zone; a zone that cannot fire (exit point
         // inside the hold zone) still moves the ball to its exit layer.
