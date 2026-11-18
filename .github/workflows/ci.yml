@@ -69,11 +69,15 @@ jobs:
           gpu=true
           dof=true
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            if files=$(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA") && [ -n "$files" ]; then
+            # -z: NUL-separated, unquoted paths (git quotes non-ASCII and special characters
+            # otherwise, which would miss the globs below). Written to a file, not a variable,
+            # so git's exit status can be checked and the NULs survive.
+            list="$(mktemp)"
+            if git diff -z --name-only --no-renames "$BASE_SHA...$HEAD_SHA" > "$list" && [ -s "$list" ]; then
               code=false
               gpu=false
               dof=false
-              while IFS= read -r f; do
+              while IFS= read -r -d '' f; do
                 case "$f" in
                   docs/PLAN.md) code=true ;;
                   *.md | .coderabbit.yaml) ;;
@@ -86,10 +90,11 @@ jobs:
                 case "$f" in
                   tools/dof_bridge/*) dof=true ;;
                 esac
-              done <<< "$files"
+              done < "$list"
             else
               echo "::warning::could not list changed files (or none); running full CI"
             fi
+            rm -f "$list"
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "gpu=$gpu" >> "$GITHUB_OUTPUT"

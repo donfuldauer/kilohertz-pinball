@@ -195,6 +195,10 @@ fn path_gated_jobs_follow_the_changes_outputs() {
         "gpu and dof must default to true (fail closed)"
     );
     assert!(
+        text.contains("git diff -z --name-only --no-renames") && text.contains("read -r -d ''"),
+        "changes step must read NUL-separated paths (git diff -z) so quoted paths cannot miss globs"
+    );
+    assert!(
         text.contains("docs/PLAN.md) code=true"),
         "docs-only skip must stay"
     );
