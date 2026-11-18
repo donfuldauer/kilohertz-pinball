@@ -12,13 +12,23 @@ use crate::zip::normalize_path;
 use glam::Vec3;
 use pin_core::profiles::{BUILTIN_PROFILE_NAMES, builtin_profile};
 use pin_core::schema::backglass::ScoreDisplayMode;
-use pin_core::schema::table::{FlipperStagingDef, MechKind, SplineDef, SplineKind};
+use pin_core::schema::table::{
+    FlipperShapeDef, FlipperStagingDef, MechKind, SplineDef, SplineKind,
+};
 use pin_core::schema::{BackglassManifest, PhysicsDefaults, PhysicsParams, TableManifest};
 use pin_core::units::{deg_to_rad, mm_to_m, mm3_to_m};
 use pin_core::{
     CabinetInput, DiverterId, FlipperConfig, FlipperId, MagnetId, ProfileId, SceneId, SwitchId,
 };
 use pin_physics::world::{CubicSpline, GuideCurve, SplineError, Wireform};
+
+/// Largest allowed gap, in degrees, between a `CurvedBanana` flipper's
+/// authored `|arc_sweep_deg|` and the sweep its chord and radius imply,
+/// `2 * asin(length / (2 * arc_radius))`. The arc is fixed by `length` and
+/// `arc_radius`; the simulation reads only the sign of `arc_sweep_deg`, so
+/// any visible disagreement means the authored number is not what is
+/// simulated. One degree allows rounding in hand-written values.
+pub(crate) const TOLERANCE_DEG: f64 = 1.0;
 
 /// Highest collision layer.
 const MAX_LAYER: u8 = 7;
@@ -607,6 +617,16 @@ impl<'v> Checker<'v> {
                 format!("{p}.collision_layer"),
                 f.collision_layer,
             );
+            if let FlipperShapeDef::CurvedBanana {
+                length,
+                arc_radius,
+                arc_sweep_deg,
+                ..
+            } = f.shape
+                && let Some(msg) = banana_sweep_lint(length, arc_radius, arc_sweep_deg)
+            {
+                self.warn(TABLE_FILE, format!("{p}.shape.arc_sweep_deg"), msg);
+            }
             let upper_input = matches!(
                 f.staging,
                 FlipperStagingDef::DedicatedButton { input }
@@ -1229,6 +1249,62 @@ impl<'v> Checker<'v> {
             self.file_exists(f, "backbox.scene", &bb.scene);
             self.layer(f, "backbox.collision_layer", bb.collision_layer);
         }
+    }
+}
+
+/// The warning text for a `CurvedBanana` whose authored sweep disagrees with
+/// the one its chord and radius imply, or `None` when it agrees (within
+/// [`TOLERANCE_DEG`]) or when the arc cannot exist (non-finite values,
+/// `arc_radius <= 0`, chord longer than the diameter): those are not this
+/// lint's concern.
+pub(crate) fn banana_sweep_lint(length_mm: f32, radius_mm: f32, sweep_deg: f32) -> Option<String> {
+    let (l, r, s) = (
+        f64::from(length_mm),
+        f64::from(radius_mm),
+        f64::from(sweep_deg),
+    );
+    if !(l.is_finite() && r.is_finite() && s.is_finite()) || r <= 0.0 {
+        return None;
+    }
+    let ratio = l / (2.0 * r);
+    if !(-1.0..=1.0).contains(&ratio) {
+        return None;
+    }
+    let implied = (2.0 * ratio.asin()).to_degrees();
+    ((s.abs() - implied).abs() > TOLERANCE_DEG).then(|| {
+        format!(
+            "arc_sweep_deg: authored |sweep| {:.1} deg, but length {l} mm on arc_radius {r} mm \
+             implies {implied:.1} deg (tolerance {TOLERANCE_DEG} deg); the arc is fixed by length \
+             and radius, and only the sign of arc_sweep_deg is used (bend direction)",
+            s.abs()
+        )
+    })
+}
+
+#[cfg(test)]
+mod banana_lint_tests {
+    use super::banana_sweep_lint as lint;
+
+    #[test]
+    fn impossible_arcs_are_silent() {
+        for (l, r, s) in [
+            (250.0, 100.0, 30.0),
+            (80.0, 0.0, 30.0),
+            (80.0, -5.0, 30.0),
+            (f32::NAN, 100.0, 30.0),
+            (80.0, f32::NAN, 30.0),
+            (80.0, 100.0, f32::NAN),
+            (80.0, 100.0, f32::INFINITY),
+            (f32::INFINITY, 100.0, 30.0),
+        ] {
+            assert!(lint(l, r, s).is_none(), "{l} {r} {s}");
+        }
+    }
+
+    #[test]
+    fn chord_equal_to_diameter_is_a_half_turn() {
+        assert!(lint(200.0, 100.0, 180.0).is_none());
+        assert!(lint(200.0, 100.0, 30.0).is_some());
     }
 }
 
