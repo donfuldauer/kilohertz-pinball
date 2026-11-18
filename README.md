@@ -110,9 +110,11 @@ Commands CI runs (`.github/workflows/ci.yml`):
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --exclude pin_render --exclude pin_audio --exclude pin_app   # GPU-free crates
-cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app               # needs a GPU adapter; use xvfb-run -a on Linux
-cargo test --manifest-path tests/spec_ci/Cargo.toml                                 # CI workflow conformance
+cargo test --workspace --exclude pin_render --exclude pin_audio --exclude pin_app         # GPU-free crates
+PIN_REQUIRE_GPU=1 cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app   # needs a GPU adapter; use xvfb-run -a on Linux; PIN_REQUIRE_GPU=1 makes a missing adapter fail instead of skipping
+cargo test --manifest-path tests/spec_ci/Cargo.toml                                       # CI workflow conformance
+cargo fmt --manifest-path tests/spec_ci/Cargo.toml --all --check                          # CI formatting check for tests/spec_ci
+cargo clippy --manifest-path tests/spec_ci/Cargo.toml --all-targets -- -D warnings        # CI Clippy check for tests/spec_ci
 ```
 
 The DOF bridge is tested on Windows with .NET 8 (`dotnet build` / `dotnet test` under `tools/dof_bridge`). CI also runs a replay-hash job on all three OSes (record a fixture with `pin_sim`, replay it 10 times), a non-gating `cargo llvm-cov` coverage summary, and a manual `gate-a1` job.
