@@ -20,7 +20,7 @@ const GUIDE_CAST_STEPS: u32 = 32;
 /// which a cast's closing speed is taken perpendicular to the curve instead
 /// of toward the point (see `GuideCurve::closing_direction`). Far above the
 /// rounding of a refined foot (~1e-6), far below the tie tolerance of the
-/// projection (~3e-4).
+/// projection (~1.1e-3).
 const NORMAL_TANGENT_SLACK: f32 = 2.0e-5;
 
 /// An orthonormal, right-handed moving frame: `binormal = tangent × normal`.
@@ -1609,7 +1609,7 @@ impl GuideCurve {
     /// The direction along which the gap of a level wall closes, for the
     /// step bounds of a cast: `normal` (toward `p` from the closest point)
     /// without its part along the curve. The closest point is only resolved
-    /// to the f32 precision of the squared distance, a relative `2^-11.5`
+    /// to the f32 precision of the squared distance, a relative ~1.1e-3
     /// along the wall (a through-point sample can tie with the true foot):
     /// the normal toward it can tilt by as much, and a bound that
     /// extrapolates the closing speed along it over a long step overshoots
@@ -1765,7 +1765,10 @@ impl GuideCurve {
             // The lowest gap the next step may reach.
             let floor = if gap > GUIDE_SKIN {
                 0.5 * GUIDE_SKIN
-            } else if rate < approach || (gap < -GUIDE_SKIN && rate < 0.0) {
+            } else if (rate < approach
+                && self.closing_direction(&cp, p, normal).dot(velocity) < approach)
+                || (gap < -GUIDE_SKIN && rate < 0.0)
+            {
                 // Touching and closing in, or sunk past the sliding limit and
                 // still sinking.
                 return contact();
