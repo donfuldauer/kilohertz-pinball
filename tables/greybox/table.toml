@@ -376,9 +376,10 @@ to_layer = 1
 zone = { min = [395.0, 875.0, 30.0], max = [455.0, 950.0, 140.0] }
 
 # A layer-2 ball leaving the entry zone downwards (rolled back down the
-# wire) returns to layer 0 in the entry lane. The zone ends 1 mm below the
-# generated entry zone, so it never contains a ball that has just been
-# promoted.
+# wire) returns to layer 0 in the entry lane. The zone ends 21 mm below the
+# generated entry zone (y 595..635, from the rails' start along the wire;
+# pin_tablegen refuses an entry zone that overlaps a 2 -> 0 zone), so it
+# never contains a ball that has just been promoted.
 [[layer_transitions]]
 id = "ramp_fallback"
 from_layer = 2
@@ -401,11 +402,19 @@ from_layer = 2
 to_layer = 0
 zone = { min = [447.0, 575.0, -50.0], max = [525.0, 890.0, 200.0] }
 
+# Below the floor: in two parts, before and after the generated entry zone
+# (x 405..445, y 595..635, z -6..20), which a 2 -> 0 zone may not overlap.
+[[layer_transitions]]
+id = "ramp_catch_below_mouth"
+from_layer = 2
+to_layer = 0
+zone = { min = [403.0, 575.0, -50.0], max = [447.0, 594.0, 9.0] }
+
 [[layer_transitions]]
 id = "ramp_catch_below"
 from_layer = 2
 to_layer = 0
-zone = { min = [403.0, 575.0, -50.0], max = [447.0, 890.0, 9.0] }
+zone = { min = [403.0, 636.0, -50.0], max = [447.0, 890.0, 9.0] }
 
 # Over the deck's lower edge back to the playfield.
 [[layer_transitions]]

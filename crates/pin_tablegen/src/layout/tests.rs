@@ -2,6 +2,7 @@
 
 use super::*;
 use pin_core::schema::layout::{Deck, Insert, Lane, Playfield, Post, Ramp, Wall};
+use pin_core::schema::table::AabbDef;
 
 pub(crate) const BASE: &str = r##"
 schema_version = 1
@@ -237,7 +238,22 @@ fn lane_and_ramp_errors() {
     lay.ramps[0].spline = "wire".into();
     let g = generate(&lay, &base()).unwrap();
     assert_eq!(g.table.layer_transitions.len(), 1);
-    assert_eq!(g.table.layer_transitions[0].to_layer, 2);
+    let t = &g.table.layer_transitions[0];
+    assert_eq!(t.id, "tablegen:ramps[0].entry");
+    assert_eq!((t.from_layer, t.to_layer), (0, 2));
+    // w7pre-ramp-entry: the zone starts at the rails' start (60, 900, 40)
+    // and runs 60 mm (entry_width) along the start tangent, down the table
+    // about 5° left of -y and rising; 30 mm (half the width) above the end
+    // of that run (45.6 mm). The tight bounds of the turned box reach 5.3 mm
+    // behind the start (y 905.3). Was the cube centred on the start: x
+    // 30..90, y 870..930, z 0..70.
+    assert_eq!(
+        t.zone,
+        AabbDef {
+            min: [19.83773, 835.87085, 0.0],
+            max: [89.52016, 905.3442, 75.57444],
+        }
+    );
     lay.ramps[0].entry_width = f32::INFINITY;
     assert_eq!(err(&lay).element, "ramps[0]");
     // Tester D1: a width that would collapse the entry zone in f32.
@@ -249,6 +265,10 @@ fn lane_and_ramp_errors() {
     let g = generate(&lay, &base()).unwrap();
     let z = &g.table.layer_transitions[0].zone;
     assert!((0..3).all(|k| z.min[k] < z.max[k]));
+    // It still holds the rails' start.
+    assert!(
+        (0..3).all(|k| z.min[k] <= [60.0, 900.0, 40.0][k] && [60.0, 900.0, 40.0][k] <= z.max[k])
+    );
     // Every other size has the same floor.
     lay.ramps.clear();
     lay.posts = vec![Post {
@@ -316,4 +336,31 @@ fn wire_samples_bound_roll_change() {
     // Without roll the straight rail needs only the minimum sampling.
     let flat = Wireform::new(centre, &[0.0, 0.0], 0.019, Vec3::Z).unwrap();
     assert_eq!(wire_samples(&flat).len(), 3);
+}
+
+/// The entry zone needs a start direction with a plan component.
+#[test]
+fn entry_zone_needs_a_plan_direction() {
+    let p0 = [0.0, 0.0, 0.0];
+    for t in [Vec3::ZERO, Vec3::NAN, Vec3::new(f32::INFINITY, 0.0, 0.0)] {
+        let e = entry::entry_zone(p0, t, 40.0).unwrap_err();
+        assert!(e.contains("no start direction"), "{t:?}: {e}");
+    }
+    let e = entry::entry_zone(p0, Vec3::new(1.0e-9, 0.0, -1.0), 40.0).unwrap_err();
+    assert!(e.contains("starts vertically"), "{e}");
+    // Level along +x: the square ahead of the start.
+    let z = entry::entry_zone([10.0, 20.0, 0.0], Vec3::X * 0.3, 40.0).unwrap();
+    assert_eq!(z.min, [10.0, 0.0, 0.0]);
+    assert_eq!(z.max, [50.0, 40.0, 20.0]);
+    assert!(entry::overlaps(&z, &z));
+    let touching = AabbDef {
+        min: [50.0, 0.0, 0.0],
+        max: [60.0, 1.0, 1.0],
+    };
+    assert!(entry::overlaps(&z, &touching));
+    let apart = AabbDef {
+        min: [50.001, 0.0, 0.0],
+        max: [60.0, 1.0, 1.0],
+    };
+    assert!(!entry::overlaps(&z, &apart));
 }
