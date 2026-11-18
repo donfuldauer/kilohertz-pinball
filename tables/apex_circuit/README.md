@@ -114,11 +114,13 @@ at 10.
     + 1, `scene_firewall_save`.
   * **Apex Jackpot** otherwise. It scores 50,000 − 1,000 × (whole 100 ms
     since Overdrive was lit), at least 5,000. This award is fixed.
-    `apex_jackpot_count` + 1, `scene_apex_jackpot`.
+    `apex_jackpot_count` + 1, `scene_apex_jackpot`. The scene shows the total
+    score, not the award (the renderer cannot show a scene-specific value).
 * **Bonus.** At the drain the ball's counters are summed: ramps made, left
   orbits (`orbit_top`), right orbits, drop targets, scoops and top lanes.
-  The bonus is that sum × 1,000 × the combo level, shown with `scene_bonus`.
-  The value is published in `last_bonus`.
+  The bonus is that sum × 1,000 × the combo level. It is announced with
+  `scene_bonus`, which shows the player's total score (the renderer cannot
+  display the bonus amount itself); the amount is published in `last_bonus`.
 * **Points (multiplied).** Bumper 100, sling 10, spinner pulse 50, orbit top
   2,000, right-orbit entry 1,000, magnet opto 2,500, ramp entry 500, ramp
   made 10,000, drop target 750, completed bank 10,000 (the bank resets 1 s
