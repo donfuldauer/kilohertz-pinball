@@ -12,6 +12,17 @@
 //!   `layer_bit(collision_layer)` (default layer 0), with the material named
 //!   by its glTF material (the generator writes the physics material name
 //!   there; unknown names are wood).
+//! * **Backbox colliders** (optional): when the bundle has
+//!   [`BACKBOX_COLLIDERS_FILE`], its nodes become colliders the same way
+//!   ([`backbox_colliders`], [`mesh_collider`]), each on a backbox layer
+//!   4..=7, appended after the playfield glass in node order. Their
+//!   geometry and the flippers on their layers grow the escape box instead
+//!   of the playfield bounds (so the glass does not move), and the glass
+//!   leaves those layers out (the backbox has its own glass panel). A
+//!   backbox layer is the backbox's alone: a playfield collider, a guide or
+//!   wireform, or a flipper whose base is outside the backbox geometry on
+//!   one is a load error (it would lose its glass).
+//!   DECISIONS.md "w7pre-backbox-colliders".
 //! * **Splines**: guides become [`GuideCurve`]s with the playfield wall height
 //!   (`[playfield] wall_height` of a `layout.toml` in the bundle, else
 //!   [`DEFAULT_WALL_HEIGHT_MM`]); wireforms become [`Wireform`]s (gauge,
@@ -47,7 +58,10 @@
 use arrayvec::ArrayVec;
 use glam::{Mat4, Quat, Vec3};
 use pin_assets::validate::FlipperStageHint;
-use pin_assets::{IdKind, LoadedTable, TableIds, Vfs, load_gltf, load_table};
+use pin_assets::{
+    AssetError, BACKBOX_COLLIDERS_FILE, GltfLimits, GltfScene, IdKind, LoadedTable, MeshData,
+    TableIds, Vfs, load_gltf, load_gltf_with_limits, load_table,
+};
 use pin_core::ids::{
     CoilId, DispenserId, DiverterId, FlipperId, LampId, MagnetId, PersistKey, ProfileId, SceneId,
     SoundId, SwitchId,
@@ -69,8 +83,8 @@ use pin_physics::ball_ext::register_all;
 use pin_physics::flipper::FlipperSet;
 use pin_physics::mech::{MechSet, MechSpec};
 use pin_physics::world::{
-    ColliderHandle, CubicSpline, GuideCurve, LayerTransition, StaticShape, StaticWorldBuilder,
-    TransitionSet, Wireform, layers,
+    ColliderHandle, CubicSpline, GuideCurve, LayerTransition, StaticShape, StaticWorld,
+    StaticWorldBuilder, TransitionSet, Wireform, layers,
 };
 use pin_script::NameTables;
 use pin_script::lua::LuaScriptBackend;
@@ -273,7 +287,10 @@ impl Simulation {
     /// [`BOUNDS_MARGIN_M`] above. The glass's underside (the bundle's
     /// `glass.toml` `height` when present, else the table bounds' max `z` +
     /// [`BOUNDS_MARGIN_M`]) is `max.z − GLASS_THICKNESS_M − BOUNDS_MARGIN_M`
-    /// (to f32 rounding).
+    /// (to f32 rounding) when the bundle has no backbox colliders; with
+    /// them, the box is grown to hold the backbox geometry and the flippers
+    /// on its layers plus [`BOUNDS_MARGIN_M`] ([`backbox_colliders`]). A
+    /// backbox layer shared with a playfield element is rejected at load.
     #[must_use]
     pub fn escape_bounds(&self) -> ([f32; 3], [f32; 3]) {
         (self.bounds.0.to_array(), self.bounds.1.to_array())
@@ -332,6 +349,156 @@ fn bound_colliders(
     (on, off)
 }
 
+/// Most collider nodes a bundle's [`BACKBOX_COLLIDERS_FILE`] may hold;
+/// re-exported from `pin_assets`, shared with the `pin_tablegen` generator.
+pub use pin_assets::MAX_BACKBOX_COLLIDERS;
+
+/// A static collider converted from one glTF collider node (a placed
+/// triangle primitive with extras `collider: true`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeshCollider {
+    /// Node name (see [`pin_assets::MeshData::name`]).
+    pub name: String,
+    /// Two-sided triangle mesh: the node's positions through its world
+    /// transform (table frame, m) and its triangle list.
+    pub shape: StaticShape,
+    /// `layer_bit(collision_layer)`; layer 0 when the node names none.
+    pub layer_mask: u8,
+    /// The material named by the node's glTF material; wood when it has
+    /// none or the name is not a physics material.
+    pub material: Material,
+}
+
+/// Converts collider node `mesh` of `scene` exactly as the loader does for
+/// the playfield mesh and the backbox colliders.
+#[must_use]
+pub fn mesh_collider(scene: &GltfScene, mesh: &MeshData) -> MeshCollider {
+    let m = Mat4::from_cols_array_2d(&mesh.transform);
+    let vertices: Vec<Vec3> = mesh
+        .positions
+        .iter()
+        .map(|&p| m.transform_point3(Vec3::from_array(p)))
+        .collect();
+    let indices: Vec<[u32; 3]> = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|t| [t[0], t[1], t[2]])
+        .collect();
+    let layer = mesh.extras.collision_layer.unwrap_or(0);
+    let material = mesh
+        .material
+        .and_then(|i| scene.materials.get(i))
+        .and_then(|m| Material::from_name(&m.name))
+        .unwrap_or(Material::Wood);
+    MeshCollider {
+        name: mesh.name.clone(),
+        shape: StaticShape::TriMesh { vertices, indices },
+        layer_mask: layers::layer_bit(layer),
+        material,
+    }
+}
+
+fn backbox_err(what: impl core::fmt::Display) -> SimError {
+    SimError::Asset(AssetError::Gltf(format!(
+        "{BACKBOX_COLLIDERS_FILE}: {what}"
+    )))
+}
+
+/// The colliders of the bundle's [`BACKBOX_COLLIDERS_FILE`], in glTF node
+/// order, converted by [`mesh_collider`]; empty when the bundle has no such
+/// file. Every node must be a collider (`collider: true`) on a backbox
+/// layer (`collision_layer` given, 4..=7), with finite table-frame
+/// vertices, and there are at most [`MAX_BACKBOX_COLLIDERS`].
+///
+/// # Errors
+/// [`SimError::Asset`] ([`AssetError::Gltf`], or the read error): a
+/// malformed or over-budget glTF, or a node breaking a rule above.
+pub fn backbox_colliders(vfs: &Vfs) -> Result<Vec<MeshCollider>, SimError> {
+    if !vfs.exists(BACKBOX_COLLIDERS_FILE) {
+        return Ok(Vec::new());
+    }
+    let limits = GltfLimits {
+        max_nodes: MAX_BACKBOX_COLLIDERS,
+        max_meshes: MAX_BACKBOX_COLLIDERS,
+        ..GltfLimits::default()
+    };
+    let scene = load_gltf_with_limits(vfs, BACKBOX_COLLIDERS_FILE, &limits)?;
+    if scene.meshes.len() > MAX_BACKBOX_COLLIDERS {
+        return Err(backbox_err(format!(
+            "{} collider nodes exceed the limit of {MAX_BACKBOX_COLLIDERS}",
+            scene.meshes.len()
+        )));
+    }
+    let mut out = Vec::with_capacity(scene.meshes.len());
+    for mesh in &scene.meshes {
+        if !mesh.extras.collider {
+            return Err(backbox_err(format!(
+                "node {:?} is not a collider (extras.collider must be true)",
+                mesh.name
+            )));
+        }
+        if !matches!(mesh.extras.collision_layer, Some(4..=7)) {
+            return Err(backbox_err(format!(
+                "node {:?}: extras.collision_layer must be a backbox layer 4..=7, got {:?}",
+                mesh.name, mesh.extras.collision_layer
+            )));
+        }
+        let c = mesh_collider(&scene, mesh);
+        if let StaticShape::TriMesh { vertices, .. } = &c.shape
+            && !vertices.iter().all(|v| v.is_finite())
+        {
+            return Err(backbox_err(format!(
+                "node {:?}: non-finite vertex in the table frame",
+                mesh.name
+            )));
+        }
+        out.push(c);
+    }
+    Ok(out)
+}
+
+/// Rejects a playfield element (named by `who`) on a backbox layer: the
+/// playfield glass leaves the backbox layers out, so a playfield element
+/// sharing one would lose its glass. A no-op when `backbox_mask` is 0.
+fn reject_backbox_overlap(
+    backbox_mask: u8,
+    mask: u8,
+    who: impl FnOnce() -> String,
+) -> Result<(), SimError> {
+    let shared = backbox_mask & mask;
+    if shared == 0 {
+        return Ok(());
+    }
+    Err(backbox_err(format!(
+        "backbox layer {} is also used by {}",
+        shared.trailing_zeros(),
+        who()
+    )))
+}
+
+/// The escape box `escape` grown to hold the backbox geometry `backbox`
+/// plus [`BOUNDS_MARGIN_M`] (unchanged when `backbox` is empty).
+fn escape_with_backbox(escape: (Vec3, Vec3), backbox: &Bounds) -> (Vec3, Vec3) {
+    if backbox.min.x > backbox.max.x {
+        return escape;
+    }
+    let margin = Vec3::splat(BOUNDS_MARGIN_M);
+    (
+        escape.0.min(backbox.min - margin),
+        escape.1.max(backbox.max + margin),
+    )
+}
+
+impl Simulation {
+    /// The static collision world: the playfield mesh's colliders (glb
+    /// node order), the playfield glass, then the bundle's backbox
+    /// colliders ([`backbox_colliders`], node order).
+    #[must_use]
+    pub fn static_world(&self) -> &StaticWorld {
+        &self.world
+    }
+}
+
 impl Simulation {
     /// Loads the bundle at `bundle` (a folder, `.zip` or `.pinbundle`),
     /// builds the physics, input and script, runs the script's `on_init` and
@@ -379,38 +546,47 @@ impl Simulation {
         let glass_m = glass_height_m(vfs)?;
         let mut bounds = Bounds::new();
 
+        // Backbox colliders (DECISIONS.md "w7pre-backbox-colliders"): only
+        // when the bundle has the file. Their geometry and the flippers on
+        // their layers feed the escape box, never the playfield glass. A
+        // backbox layer is the backbox's alone: a playfield collider, a
+        // guide or wireform, or a flipper based outside the backbox geometry
+        // on one is a build error (the glass leaves those layers out).
+        let backbox = backbox_colliders(vfs)?;
+        let backbox_mask = backbox.iter().fold(0u8, |m, c| m | c.layer_mask);
+        let mut backbox_bounds = Bounds::new();
+        for c in &backbox {
+            if let StaticShape::TriMesh { vertices, .. } = &c.shape {
+                for &v in vertices {
+                    backbox_bounds.add(v);
+                }
+            }
+        }
+        // The backbox geometry's box (vertices only, before any flipper base
+        // joins `backbox_bounds`) plus the margin; empty when it has no
+        // vertices, so no flipper base is inside it.
+        let backbox_box = (
+            backbox_bounds.min - Vec3::splat(BOUNDS_MARGIN_M),
+            backbox_bounds.max + Vec3::splat(BOUNDS_MARGIN_M),
+        );
+
         // --- Static world. ---
         let mut builder = StaticWorldBuilder::new();
         let mut materials: Vec<(ColliderHandle, Material)> = Vec::new();
         let mut named: Vec<(String, ColliderHandle)> = Vec::new();
         for mesh in scene.meshes.iter().filter(|m| m.extras.collider) {
-            let m = Mat4::from_cols_array_2d(&mesh.transform);
-            let vertices: Vec<Vec3> = mesh
-                .positions
-                .iter()
-                .map(|&p| m.transform_point3(Vec3::from_array(p)))
-                .collect();
-            for &v in &vertices {
-                bounds.add(v);
+            let c = mesh_collider(&scene, mesh);
+            reject_backbox_overlap(backbox_mask, c.layer_mask, || {
+                format!("playfield collider {:?}", c.name)
+            })?;
+            if let StaticShape::TriMesh { vertices, .. } = &c.shape {
+                for &v in vertices {
+                    bounds.add(v);
+                }
             }
-            let indices: Vec<[u32; 3]> = mesh
-                .indices
-                .chunks_exact(3)
-                .map(|t| [t[0], t[1], t[2]])
-                .collect();
-            let layer = mesh.extras.collision_layer.unwrap_or(0);
-            let h = builder.add_collider(
-                StaticShape::TriMesh { vertices, indices },
-                layers::layer_bit(layer),
-                true,
-            );
-            let material = mesh
-                .material
-                .and_then(|i| scene.materials.get(i))
-                .and_then(|m| Material::from_name(&m.name))
-                .unwrap_or(Material::Wood);
-            materials.push((h, material));
-            named.push((mesh.name.clone(), h));
+            let h = builder.add_collider(c.shape, c.layer_mask, true);
+            materials.push((h, c.material));
+            named.push((c.name, h));
         }
         // The world is built after the last `bounds.add` (dispensers), so the
         // playfield glass can sit on the final bounds; collider state set
@@ -437,6 +613,9 @@ impl Simulation {
                 SplineKind::Guide => {
                     let g = GuideCurve::new(spline, wall_height)
                         .map_err(|e| build_err(format!("guide {}: {e}", s.name)))?;
+                    reject_backbox_overlap(backbox_mask, layers::layer_bit(s.layer), || {
+                        format!("guide {:?}", s.name)
+                    })?;
                     guides.push(g);
                     guide_layers.push(layers::layer_bit(s.layer));
                 }
@@ -450,6 +629,9 @@ impl Simulation {
                         .unwrap_or_else(|| vec![0.0; through.len()]);
                     let w = Wireform::new(spline, &roll, s.gauge_m.unwrap_or(0.0), Vec3::Z)
                         .map_err(|e| build_err(format!("wireform {}: {e}", s.name)))?;
+                    reject_backbox_overlap(backbox_mask, layers::layer_bit(s.layer), || {
+                        format!("wireform {:?}", s.name)
+                    })?;
                     wireforms.push(w);
                     wireform_layers.push(layers::layer_bit(s.layer));
                 }
@@ -548,7 +730,25 @@ impl Simulation {
         let mut drives = ArrayVec::new();
         let mut staging = Vec::new();
         for (i, c) in table.flippers.iter().enumerate() {
-            bounds.add(Vec3::from_array(c.base_position_mm) * 1.0e-3);
+            let base = Vec3::from_array(c.base_position_mm) * 1.0e-3;
+            if layers::layer_bit(c.collision_layer) & backbox_mask != 0 {
+                let inside = base.cmpge(backbox_box.0).all() && base.cmple(backbox_box.1).all();
+                if !inside {
+                    let name = table
+                        .manifest
+                        .flippers
+                        .get(i)
+                        .map_or_else(|| format!("{:?}", c.id), |d| d.id.clone());
+                    return Err(backbox_err(format!(
+                        "backbox layer {} is also used by flipper {name:?} whose base is \
+                         outside the backbox geometry",
+                        c.collision_layer
+                    )));
+                }
+                backbox_bounds.add(base);
+            } else {
+                bounds.add(base);
+            }
             drives.push(FlipperDrive {
                 id: c.id,
                 coil: c.coil,
@@ -670,8 +870,17 @@ impl Simulation {
         let (lo, hi) = bounds.finish();
         let under = glass_underside(glass_m, bounds.max_z(), hi.z)?;
         let (glass, escape_bounds) = glass_lid(lo, hi, under);
-        let glass = builder.add_collider(glass, layers::ALL, true);
+        // The backbox layers have their own glass panel (a backbox collider);
+        // no playfield element uses them (rejected above), so none loses glass.
+        let glass = builder.add_collider(glass, layers::ALL & !backbox_mask, true);
         solver.set_collider_material(glass, Material::Acrylic);
+        let escape_bounds = escape_with_backbox(escape_bounds, &backbox_bounds);
+        // Backbox colliders append after every playfield collider and the
+        // glass (glb node order), so every existing handle is unchanged.
+        for c in backbox {
+            let h = builder.add_collider(c.shape, c.layer_mask, true);
+            solver.set_collider_material(h, c.material);
+        }
         let mut world = builder.build();
         for &h in &disabled_at_load {
             world.set_enabled(h, false);
