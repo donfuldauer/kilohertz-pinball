@@ -11,7 +11,9 @@ use pin_core::ids::{CoilId, SwitchId};
 use pin_core::schema::table::MechKind;
 use pin_core::script::SwitchEdge;
 use pin_physics::ball::BallHandle;
-use pin_physics::mech::MechSpec;
+use pin_physics::mech::{
+    MechSpec, VUK_SCATTER_ANGLE_DEG, VUK_SCATTER_LATERAL, VUK_SCATTER_SPEED_FRAC,
+};
 use pin_physics::world::{StaticWorldBuilder, layers};
 use proptest::prelude::*;
 
@@ -852,6 +854,25 @@ fn vuk_exit_zone_is_a_layer_zero_to_one_transition() {
     assert_eq!(ts.update(1, VUK_POS + Vec3::new(0.0, 0.0, R), exit), 1);
 }
 
+/// Euclidean distance from `along` to the segment of offsets that differ from
+/// zero only by a lateral (y) shift of at most `lateral` (scatter moves the
+/// exit point sideways only).
+fn distance_to_lateral_segment(along: Vec3, lateral: f32) -> f32 {
+    let y_excess = along.y - along.y.clamp(-lateral, lateral);
+    Vec3::new(along.x, y_excess, along.z).length()
+}
+
+#[test]
+fn lateral_segment_distance_rejects_combined_xz_error() {
+    let l = VUK_SCATTER_LATERAL;
+    // The old per-component check accepted this; the segment check must not.
+    let bad = Vec3::new(1.9e-3, 0.0, 1.9e-3);
+    assert!(bad.x.abs() < 2.0e-3 && bad.z.abs() < 2.0e-3);
+    assert!(distance_to_lateral_segment(bad, l) > 2.0e-3);
+    assert!(distance_to_lateral_segment(Vec3::new(0.0, -l, 0.0), l) < 1.0e-6);
+    assert!(distance_to_lateral_segment(Vec3::new(1.0e-3, l + 1.0e-3, 0.0), l) < 2.0e-3);
+}
+
 #[test]
 fn vuk_eject_velocity_and_exit_layer_come_from_parameters() {
     let mut p = params();
@@ -871,13 +892,37 @@ fn vuk_eject_velocity_and_exit_layer_come_from_parameters() {
     rig.step();
     let b = rig.ball(h);
     assert_eq!(b.layer, 2);
+    // Every eject is scattered (w7pre-vuk-scatter): the exit point moves
+    // sideways (along z × u = -y here) by at most VUK_SCATTER_LATERAL, the
+    // horizontal direction turns by at most VUK_SCATTER_ANGLE_DEG and the
+    // velocity scales by 1 ± VUK_SCATTER_SPEED_FRAC. The one-tick tolerances
+    // (2 mm, 0.03 m/s) are unchanged on top of those bounds.
+    let nominal_pos = Vec3::new(0.010, 0.0, 0.080);
+    let along = b.position - nominal_pos;
+    let miss = distance_to_lateral_segment(along, VUK_SCATTER_LATERAL);
     assert!(
-        (b.position - Vec3::new(0.010, 0.0, 0.080)).length() < 2.0e-3,
-        "{:?}",
+        miss < 2.0e-3,
+        "{miss} m off the scatter segment: {:?}",
         b.position
     );
+    let nominal_vel = Vec3::new(-0.5, 0.0, 0.6);
+    let gain = VUK_SCATTER_SPEED_FRAC;
     assert!(
-        (b.velocity - Vec3::new(-0.5, 0.0, 0.6)).length() < 0.03,
+        (b.velocity.z - 0.6).abs() < 0.03 + 0.6 * gain,
+        "{:?}",
+        b.velocity
+    );
+    let horizontal = Vec3::new(b.velocity.x, b.velocity.y, 0.0);
+    assert!(
+        (horizontal.length() - 0.5).abs() < 0.03 + 0.5 * gain,
+        "{:?}",
+        b.velocity
+    );
+    let turn = libm::atan2f(-horizontal.y, -horizontal.x).to_degrees();
+    assert!(turn.abs() <= VUK_SCATTER_ANGLE_DEG + 1.0, "turn {turn} deg");
+    assert!(
+        (b.velocity - nominal_vel).length()
+            < 0.03 + nominal_vel.length() * (gain + VUK_SCATTER_ANGLE_DEG.to_radians()),
         "{:?}",
         b.velocity
     );
