@@ -481,6 +481,39 @@ impl Job {
             .collect()
     }
 
+    /// The job ids in `needs:` (a scalar or a list); empty when absent.
+    pub fn needs(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(n) = get(&self.node, "needs") {
+            collect_strings(n, &mut out);
+        }
+        out
+    }
+
+    /// `run:` scripts exactly as written (no continuation joining), for running them in a shell.
+    pub fn raw_run_scripts(&self) -> Vec<String> {
+        self.steps()
+            .iter()
+            .filter_map(|s| get(s, "run")?.as_str())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The `env:` value of the step whose `run:` contains `needle`.
+    pub fn step_env(&self, needle: &str, key: &str) -> Option<String> {
+        self.steps()
+            .iter()
+            .find(|s| {
+                get(s, "run")
+                    .and_then(Yaml::as_str)
+                    .is_some_and(|r| r.contains(needle))
+            })
+            .and_then(|s| get(s, "env"))
+            .and_then(|e| get(e, key))
+            .and_then(Yaml::as_str)
+            .map(str::to_owned)
+    }
+
     /// Number of steps of any kind.
     pub fn step_count(&self) -> usize {
         self.steps().len()
