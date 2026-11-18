@@ -34,6 +34,16 @@
 //!   thread then falls back to the `SurfaceSet` debug view (DECISIONS
 //!   "6.0 — wiring completed").
 //!
+//! Display layers (score display, backglass) blend in display-encoded
+//! space on every surface (issue #10). Each slot gets a
+//! [`LayerTarget`] at configure time ([`slot_layers`]): a direct `*Srgb`
+//! (fallback) surface lists its non-sRGB twin in `view_formats` or gets
+//! `COPY_SRC | COPY_DST`, its display renderers are built for the twin and
+//! drawn through a [`LayerCompositor`]; a presenter-thread surface is drawn
+//! into an offscreen texture of the twin format ([`offscreen_format`]),
+//! which the presenter copies (or blits, decoding first) into the `*Srgb`
+//! image byte for byte. Non-sRGB surfaces are unchanged.
+//!
 //! A presenter-thread or skipped secondary surface never turns the cabinet
 //! into the debug view, so the table renderer and the sim's display
 //! commands (scenes, scores) stay on whenever the playfield can be drawn;
@@ -49,8 +59,8 @@ use super::view::{TableRenderOptions, TableRenderer, TableVisuals, routes_for_wi
 use pin_core::snapshot::FrameStateSnapshot;
 use pin_render::displays::DisplayRoute;
 use pin_render::gpu::{
-    GpuContext, SurfaceOptions, SurfaceSource, SurfaceStatus, WindowGuard, choose_present_mode,
-    wgpu,
+    GpuContext, LayerCompositor, LayerTarget, SurfaceOptions, SurfaceSource, SurfaceStatus,
+    WindowGuard, choose_present_mode, wgpu,
 };
 use pin_render::topology::{Rect, SurfaceRole, WindowEvent, WindowEventKind};
 use std::sync::{Arc, Mutex};
@@ -68,6 +78,52 @@ fn pick_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
                 .copied()
                 .find(|f| matches!(f, F::Bgra8UnormSrgb | F::Rgba8UnormSrgb))
         })
+}
+
+/// The format the render thread draws a presenter-thread surface's frames
+/// in (the offscreen pool textures): the surface `format` without its sRGB
+/// suffix, so the frame's display layers blend in display-encoded space
+/// with no compositing step (issue #10). The presenter's copy into the
+/// surface moves the bytes unchanged (`copy_texture_to_texture` allows
+/// formats that differ only in sRGB-ness; the blit decodes first,
+/// [`FrameCopy::with_source`](super::presenter::FrameCopy::with_source)).
+/// A non-sRGB `format` is returned unchanged.
+pub(crate) fn offscreen_format(format: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    format.remove_srgb_suffix()
+}
+
+/// How one slot's frames are drawn, from its surface `format`, whether it
+/// is `threaded` (presenter thread), its presenter copy `path`, the
+/// adapter's `downlevel` flags and the surface's allowed `usages` (pure).
+///
+/// Returns `(draw_format, layers, usage)`: the format of the texture the
+/// render thread draws into (the surface for a direct slot,
+/// [`offscreen_format`] for a threaded one), the [`LayerTarget`] of that
+/// texture (`LayerTarget::for_target(draw_format, downlevel, usages)`;
+/// always [`LayerTarget::Direct`] for a threaded slot, whose offscreen
+/// format is never `*Srgb`), and the surface's configured usage
+/// (`RENDER_ATTACHMENT`, or the copy path's usages, plus
+/// [`LayerTarget::extra_usages`]). The surface's `view_formats` are
+/// [`LayerTarget::view_formats`].
+pub(crate) fn slot_layers(
+    format: wgpu::TextureFormat,
+    threaded: bool,
+    path: CopyPath,
+    downlevel: wgpu::DownlevelFlags,
+    usages: wgpu::TextureUsages,
+) -> (wgpu::TextureFormat, LayerTarget, wgpu::TextureUsages) {
+    let draw_format = if threaded {
+        offscreen_format(format)
+    } else {
+        format
+    };
+    let layers = LayerTarget::for_target(draw_format, downlevel, usages);
+    let base = if threaded {
+        path.target_usages()
+    } else {
+        wgpu::TextureUsages::RENDER_ATTACHMENT
+    };
+    (draw_format, layers, base | layers.extra_usages())
 }
 
 /// `true` for a present mode whose `get_current_texture` / `present` can
@@ -200,7 +256,8 @@ pub struct SlotInfo {
     pub path: SlotPath,
     /// The configured present mode.
     pub mode: wgpu::PresentMode,
-    /// The draw (and surface) format.
+    /// The surface format (a presenter-thread surface's frames are drawn
+    /// in its non-sRGB twin, see the [module docs](self)).
     pub format: wgpu::TextureFormat,
     /// Display commands its renderer applied so far.
     pub display_commands: u64,
@@ -214,6 +271,10 @@ pub struct SlotInfo {
 /// A surface the render thread acquires and presents itself.
 struct Direct {
     needs_configure: bool,
+    /// Its surface was configured with this target's view formats and
+    /// usages (format and capabilities never change on resize, so it is
+    /// kept for the slot's lifetime).
+    layers: LayerCompositor,
     config: wgpu::SurfaceConfiguration,
     surface: wgpu::Surface<'static>,
     /// Dropped after `surface` (field order).
@@ -224,7 +285,12 @@ struct Direct {
 /// frame pool's textures (inside the hand-off) and the thread handle.
 struct Threaded {
     mode: wgpu::PresentMode,
+    /// The surface format.
     format: wgpu::TextureFormat,
+    /// The offscreen frame format ([`offscreen_format`]).
+    draw_format: wgpu::TextureFormat,
+    /// Layers of the offscreen frames (always direct).
+    layers: LayerCompositor,
     path: CopyPath,
     /// The presenter thread ended: stop drawing (one stderr note).
     dead: bool,
@@ -335,13 +401,16 @@ impl AppSurfaces {
                     }
                 };
             let path = CopyPath::for_usages(caps.usages);
+            let (draw_format, layers, usage) = slot_layers(
+                format,
+                threaded,
+                path,
+                ctx.adapter().get_downlevel_capabilities().flags,
+                caps.usages,
+            );
             let (w, h) = (src.pixel_size.0.max(1), src.pixel_size.1.max(1));
             let config = wgpu::SurfaceConfiguration {
-                usage: if threaded {
-                    path.target_usages()
-                } else {
-                    wgpu::TextureUsages::RENDER_ATTACHMENT
-                },
+                usage,
                 format,
                 color_space: Default::default(),
                 width: w,
@@ -353,7 +422,7 @@ impl AppSurfaces {
                     .first()
                     .copied()
                     .unwrap_or(wgpu::CompositeAlphaMode::Auto),
-                view_formats: Vec::new(),
+                view_formats: layers.view_formats(),
             };
             if !configure_surface(&device, &src.surface, &config, &gpu_lock) {
                 return Err(format!(
@@ -361,8 +430,17 @@ impl AppSurfaces {
                     src.window
                 ));
             }
-            let renderer = TableRenderer::new(ctx, format, (w, h), visuals, render)
-                .map_err(|e| format!("window {} ({role:?}): {e}", src.window))?;
+            // Post and debug draw in the frame's format; the displays in
+            // the layer format (the twin of an `*Srgb` surface).
+            let renderer = TableRenderer::with_layer_format(
+                ctx,
+                draw_format,
+                layers.layer_format(),
+                (w, h),
+                visuals,
+                render,
+            )
+            .map_err(|e| format!("window {} ({role:?}): {e}", src.window))?;
             let planned: Vec<(SurfaceRole, Rect)> = src.viewports.iter().copied().collect();
             let routes = routes_for_window(src.window, &planned, src.logical_size, (w, h));
             let kind = if threaded {
@@ -372,6 +450,7 @@ impl AppSurfaces {
                     queue: queue.clone(),
                     surface: src.surface,
                     config,
+                    src_format: draw_format,
                     path,
                     gpu_lock: Arc::clone(&gpu_lock),
                 };
@@ -389,6 +468,8 @@ impl AppSurfaces {
                 SlotKind::Threaded(Threaded {
                     mode,
                     format,
+                    draw_format,
+                    layers: LayerCompositor::new(layers),
                     path,
                     dead: false,
                     presenter,
@@ -396,6 +477,7 @@ impl AppSurfaces {
             } else {
                 SlotKind::Direct(Direct {
                     needs_configure: false,
+                    layers: LayerCompositor::new(layers),
                     config,
                     surface: src.surface,
                     _keep_alive: src.keep_alive,
@@ -655,12 +737,20 @@ struct FrameTarget<'a> {
     routes: &'a [DisplayRoute],
 }
 
-/// Records the table frame for `target` into `view`: for a backglass /
-/// score window a clear first, then the renderer's frame.
+/// Records the table frame for `target` into `frame` (default view
+/// `view`): for a backglass / score window a clear first, then the
+/// renderer's frame, its displays through `layers`
+/// ([`TableRenderer::encode_composited`]: `LayerCompositor::begin` after
+/// the playfield, post and debug, `end` after the displays, both before the
+/// caller's submit).
+#[allow(clippy::too_many_arguments)]
 fn encode_frame(
+    device: &wgpu::Device,
     queue: &wgpu::Queue,
     encoder: &mut wgpu::CommandEncoder,
+    frame: &wgpu::Texture,
     view: &wgpu::TextureView,
+    layers: &mut LayerCompositor,
     renderer: &mut TableRenderer,
     target: FrameTarget<'_>,
     snap: &FrameStateSnapshot,
@@ -685,10 +775,13 @@ fn encode_frame(
             multiview_mask: None,
         });
     }
-    renderer.encode(
+    renderer.encode_composited(
+        device,
         queue,
         encoder,
+        frame,
         view,
+        layers,
         playfield,
         target.window,
         target.routes,
@@ -728,7 +821,17 @@ fn render_direct(
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("table frame"),
     });
-    encode_frame(queue, &mut encoder, &view, renderer, target, snap);
+    encode_frame(
+        device,
+        queue,
+        &mut encoder,
+        &frame.texture,
+        &view,
+        &mut d.layers,
+        renderer,
+        target,
+        snap,
+    );
     {
         let _g = lock_gpu(gpu_lock);
         queue.submit([encoder.finish()]);
@@ -766,19 +869,27 @@ fn render_threaded(
     let size = renderer.size();
     if frame.size() != size || frame.payload().is_none() {
         // A stale-size (or new) slot: a texture of the current size.
-        frame.set_payload(offscreen_frame_texture(device, t.format, size), size);
+        frame.set_payload(offscreen_frame_texture(device, t.draw_format, size), size);
     }
-    let Some(view) = frame
-        .payload()
-        .map(|tex| tex.create_view(&wgpu::TextureViewDescriptor::default()))
-    else {
+    let Some(tex) = frame.payload() else {
         handoff.give_back(frame);
         return SurfaceStatus::Skipped;
     };
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("presenter-thread frame"),
     });
-    encode_frame(queue, &mut encoder, &view, renderer, target, snap);
+    encode_frame(
+        device,
+        queue,
+        &mut encoder,
+        tex,
+        &view,
+        &mut t.layers,
+        renderer,
+        target,
+        snap,
+    );
     {
         // Submitted before the post: the presenter's copy, submitted later
         // on the same queue, sees the finished frame (no CPU wait).
@@ -1078,5 +1189,102 @@ mod tests {
             slot_decision(pf, SurfacePlan::Direct(M::Fifo), None),
             SlotDecision::Reject
         );
+    }
+    /// Issue #10: the layer target, usage and view formats of every slot
+    /// kind, over formats × downlevel flags × surface usages × copy paths.
+    #[test]
+    fn slot_layers_route_srgb_display_layers_through_the_twin() {
+        use wgpu::DownlevelFlags as D;
+        use wgpu::TextureUsages as U;
+        const COPY: U = U::COPY_SRC.union(U::COPY_DST);
+        let flag_sets = [
+            D::empty(),
+            D::VIEW_FORMATS,
+            D::SURFACE_VIEW_FORMATS,
+            D::all(),
+        ];
+        let usage_sets = [
+            U::RENDER_ATTACHMENT,
+            U::RENDER_ATTACHMENT | U::COPY_DST,
+            U::RENDER_ATTACHMENT | COPY,
+        ];
+        for f in [
+            F::Bgra8Unorm,
+            F::Rgba8Unorm,
+            F::Bgra8UnormSrgb,
+            F::Rgba8UnormSrgb,
+        ] {
+            let twin = f.remove_srgb_suffix();
+            for d in flag_sets {
+                for u in usage_sets {
+                    let path = CopyPath::for_usages(u);
+                    let ctx = format!("{f:?} {d:?} {u:?}");
+                    // Direct slot: the surface itself is the target.
+                    let (draw, lt, usage) = slot_layers(f, false, path, d, u);
+                    assert_eq!(draw, f, "{ctx}");
+                    assert_eq!(lt, LayerTarget::for_target(f, d, u), "{ctx}");
+                    assert_eq!(lt.target_format(), f, "{ctx}");
+                    assert_eq!(usage, U::RENDER_ATTACHMENT | lt.extra_usages(), "{ctx}");
+                    if f.is_srgb() {
+                        let want = if d.contains(D::SURFACE_VIEW_FORMATS) {
+                            LayerTarget::TwinView { target: f, twin }
+                        } else if u.contains(COPY) {
+                            LayerTarget::Intermediate { target: f, twin }
+                        } else {
+                            // Degraded last resort (pin_render part 1).
+                            LayerTarget::Direct(f)
+                        };
+                        if want != LayerTarget::Direct(f) {
+                            assert_eq!(lt.layer_format(), twin, "{ctx}");
+                            assert!(!lt.layer_format().is_srgb(), "{ctx}");
+                        }
+                        assert_eq!(lt, want, "{ctx}");
+                        match want {
+                            LayerTarget::TwinView { .. } => {
+                                assert_eq!(lt.view_formats(), vec![twin], "{ctx}");
+                                assert_eq!(usage, U::RENDER_ATTACHMENT, "{ctx}");
+                            }
+                            LayerTarget::Intermediate { .. } => {
+                                assert!(lt.view_formats().is_empty(), "{ctx}");
+                                assert_eq!(usage, U::RENDER_ATTACHMENT | COPY, "{ctx}");
+                            }
+                            LayerTarget::Direct(_) => {}
+                        }
+                    } else {
+                        // Non-sRGB surfaces are configured exactly as before.
+                        assert_eq!(lt, LayerTarget::Direct(f), "{ctx}");
+                        assert!(lt.view_formats().is_empty(), "{ctx}");
+                        assert!(lt.extra_usages().is_empty(), "{ctx}");
+                        assert_eq!(usage, U::RENDER_ATTACHMENT, "{ctx}");
+                    }
+                    // Presenter-thread slot: drawn offscreen in the twin,
+                    // surface configured with the copy path's usages only.
+                    let (draw, lt, usage) = slot_layers(f, true, path, d, u);
+                    assert_eq!(draw, twin, "{ctx}");
+                    assert_eq!(draw, offscreen_format(f), "{ctx}");
+                    assert_eq!(lt, LayerTarget::Direct(twin), "{ctx}");
+                    assert!(lt.view_formats().is_empty(), "{ctx}");
+                    assert_eq!(usage, path.target_usages(), "{ctx}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn offscreen_frames_are_never_srgb_and_keep_plain_formats() {
+        for f in [F::Bgra8Unorm, F::Rgba8Unorm] {
+            assert_eq!(offscreen_format(f), f);
+        }
+        assert_eq!(offscreen_format(F::Bgra8UnormSrgb), F::Bgra8Unorm);
+        assert_eq!(offscreen_format(F::Rgba8UnormSrgb), F::Rgba8Unorm);
+        // Every format `pick_format` can return gets a non-sRGB offscreen
+        // twin that `copy_texture_to_texture` accepts against the surface.
+        for formats in FORMAT_SETS {
+            if let Some(f) = pick_format(formats) {
+                let o = offscreen_format(f);
+                assert!(!o.is_srgb(), "{f:?}");
+                assert_eq!(o.remove_srgb_suffix(), f.remove_srgb_suffix());
+            }
+        }
     }
 }

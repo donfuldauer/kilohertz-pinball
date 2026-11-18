@@ -2,7 +2,9 @@
 //! D19: "a separate presenter if only FIFO is available").
 //!
 //! The render thread draws the surface's table frame into an offscreen
-//! texture ([`offscreen_frame_texture`], same format as the surface) and
+//! texture ([`offscreen_frame_texture`], of the surface format without its
+//! sRGB suffix, so display layers blend in display-encoded space: issue #10)
+//! and
 //! posts it through the latest-frame [`Handoff`]. The presenter thread owns
 //! the `wgpu::Surface`; it reconfigures on a size change, acquires the
 //! swap-chain image (the only call that may block on vertical blank),
@@ -148,7 +150,31 @@ fn vs(@builtin(vertex_index) i: u32) -> VsOut {
 fn fs(v: VsOut) -> @location(0) vec4<f32> {
     return textureSample(src, samp, v.uv);
 }
+
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        return c / 12.92;
+    }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+// A non-sRGB source into an `*Srgb` target: the source holds encoded
+// values, which the target's write encodes again, so decode them first
+// (the stored bytes then equal the source bytes up to rounding).
+@fragment
+fn fs_decode(v: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, samp, v.uv);
+    return vec4<f32>(srgb_to_linear(c.r), srgb_to_linear(c.g), srgb_to_linear(c.b), c.a);
+}
 "#;
+
+/// Whether the blit from a `src`-format texture into a `dst`-format target
+/// decodes the sampled colour (`fs_decode`): a non-sRGB source holds
+/// display-encoded bytes, and an `*Srgb` target would encode them a second
+/// time. Same-encoding pairs blit unchanged (`fs`).
+pub(crate) fn blit_decodes(src: wgpu::TextureFormat, dst: wgpu::TextureFormat) -> bool {
+    dst.is_srgb() && !src.is_srgb()
+}
 
 struct Blit {
     pipeline: wgpu::RenderPipeline,
@@ -164,9 +190,29 @@ pub struct FrameCopy {
 }
 
 impl FrameCopy {
-    /// A copier into targets of `format` along `path` (the blit pipeline
-    /// is built only for [`CopyPath::Blit`]).
+    /// A copier of `format` frames into targets of `format` along `path`
+    /// (the blit pipeline is built only for [`CopyPath::Blit`]).
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, path: CopyPath) -> FrameCopy {
+        FrameCopy::with_source(device, format, format, path)
+    }
+
+    /// A copier of `src`-format frames into targets of `dst` format along
+    /// `path`. The formats must be equal up to the sRGB suffix
+    /// (`copy_texture_to_texture` copies the bytes); the blit of a non-sRGB
+    /// source into an `*Srgb` target decodes in the shader, so the target
+    /// stores the source's bytes (no second sRGB encode) on both paths.
+    pub fn with_source(
+        device: &wgpu::Device,
+        src: wgpu::TextureFormat,
+        dst: wgpu::TextureFormat,
+        path: CopyPath,
+    ) -> FrameCopy {
+        let format = dst;
+        let fs_entry = if blit_decodes(src, dst) {
+            "fs_decode"
+        } else {
+            "fs"
+        };
         let blit = (path == CopyPath::Blit).then(|| {
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("presenter blit"),
@@ -212,7 +258,7 @@ impl FrameCopy {
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
-                    entry_point: Some("fs"),
+                    entry_point: Some(fs_entry),
                     compilation_options: Default::default(),
                     targets: &[Some(format.into())],
                 }),
@@ -308,6 +354,9 @@ pub(crate) struct PresenterTarget {
     pub(crate) surface: wgpu::Surface<'static>,
     /// Already applied once on the render thread before the hand-over.
     pub(crate) config: wgpu::SurfaceConfiguration,
+    /// The format of the posted frames (the surface format without its
+    /// sRGB suffix, see [`FrameCopy::with_source`]).
+    pub(crate) src_format: wgpu::TextureFormat,
     pub(crate) path: CopyPath,
     pub(crate) gpu_lock: std::sync::Arc<Mutex<()>>,
 }
@@ -327,10 +376,11 @@ pub(crate) fn run_presenter(h: &Handoff<wgpu::Texture>, target: PresenterTarget)
         queue,
         surface,
         mut config,
+        src_format,
         path,
         gpu_lock,
     } = target;
-    let copy = FrameCopy::new(&device, config.format, path);
+    let copy = FrameCopy::with_source(&device, src_format, config.format, path);
     let mut configured = true;
     while let Some(frame) = h.wait_take() {
         let Some(src) = frame.payload().cloned() else {
@@ -423,5 +473,69 @@ mod tests {
         );
         assert!(CopyPath::CopyDst.target_usages().contains(U::COPY_DST));
         assert_eq!(CopyPath::Blit.target_usages(), U::RENDER_ATTACHMENT);
+    }
+
+    /// Issue #10: a non-sRGB offscreen frame blitted into an `*Srgb`
+    /// swap-chain image is decoded in the shader (else it would be encoded
+    /// twice); every other pair is sampled and written unchanged.
+    #[test]
+    fn only_a_plain_source_into_an_srgb_target_decodes() {
+        use wgpu::TextureFormat as F;
+        assert!(blit_decodes(F::Bgra8Unorm, F::Bgra8UnormSrgb));
+        assert!(blit_decodes(F::Rgba8Unorm, F::Rgba8UnormSrgb));
+        for f in [
+            F::Bgra8Unorm,
+            F::Rgba8Unorm,
+            F::Bgra8UnormSrgb,
+            F::Rgba8UnormSrgb,
+        ] {
+            assert!(!blit_decodes(f, f), "{f:?}");
+        }
+        assert!(!blit_decodes(F::Bgra8UnormSrgb, F::Bgra8Unorm));
+    }
+
+    /// The blit shader (both entry points) parses and validates (naga, as
+    /// wgpu does at pipeline creation; GPU-free).
+    #[test]
+    fn blit_shader_validates() {
+        use wgpu::naga;
+        let module = naga::front::wgsl::parse_str(BLIT_SHADER).expect("blit shader parses");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .expect("blit shader validates");
+        for entry in ["vs", "fs", "fs_decode"] {
+            assert!(
+                module.entry_points.iter().any(|e| e.name == entry),
+                "missing entry point {entry}"
+            );
+        }
+    }
+
+    /// The decode in `fs_decode` is the sRGB transfer function's inverse:
+    /// encoding its result back (as an `*Srgb` target does) returns every
+    /// 8-bit input unchanged.
+    #[test]
+    fn decode_then_encode_round_trips_every_byte() {
+        let decode = |c: f32| {
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let encode = |l: f32| {
+            if l <= 0.003_130_8 {
+                l * 12.92
+            } else {
+                1.055 * l.powf(1.0 / 2.4) - 0.055
+            }
+        };
+        for b in 0u8..=255 {
+            let back = (encode(decode(f32::from(b) / 255.0)) * 255.0).round();
+            assert_eq!(back, f32::from(b), "byte {b}");
+        }
     }
 }

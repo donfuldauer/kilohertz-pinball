@@ -92,3 +92,64 @@ blending is about 60 LSB off at mid-tones, so the tolerance cannot accept it.
 
 **Alternatives:** Exact equality (rejected: no spec guarantees identical rounding across the two
 views); snapshot images (rejected: D30, analytic first).
+
+## fix-10-srgb-blend (part 2) — pin_app wiring
+
+**Decision:** `pin_app`'s table presentation (`crates/pin_app/src/orchestrator/present.rs`) now
+computes one `LayerTarget` per slot at configure time (`slot_layers`, pure and unit-tested) and keeps
+it, in a `LayerCompositor`, with the slot's state for its lifetime: resizing changes only the
+surface's width and height, never its format or capabilities, so nothing is recomputed there (the
+`Intermediate` scratch texture is resized by the compositor itself on the first frame of a new size).
+
+- **Direct slots** (the playfield, non-blocking secondary windows): `LayerTarget::for_target(format,
+  adapter downlevel flags, caps.usages)`; the surface is configured with `view_formats =
+  lt.view_formats()` and `usage = RENDER_ATTACHMENT | lt.extra_usages()`. `TableRenderer` is built
+  with `TableRenderer::with_layer_format(ctx, format, lt.layer_format(), ..)` (`view.rs`): the score
+  display and backglass renderers are built for the layer format, the post chain and the debug overlay
+  for the surface format. Each renderer owns its pipelines, so the display and post pipelines cannot
+  be mixed up (no pipeline cache is shared between them). A frame is recorded by
+  `TableRenderer::encode_composited`: PBR, post and debug overlay into the frame's own view, then
+  `LayerCompositor::begin(device, encoder, &frame.texture)` (falling back to the frame's own view on
+  `None`), the displays, and `LayerCompositor::end`, all before the submit. The brief's "call `end`
+  before post and debug" is read as "post and debug are not drawn through the layer view": the draw
+  order stays as before (post, debug, then displays on top), because `begin` must see the finished
+  frame content for `Intermediate` to copy it in under the layers.
+- **Presenter-thread slots** (requirement 4): **a twin-format offscreen.** The render thread draws
+  the frame into `offscreen_frame_texture(offscreen_format(format))`, where `offscreen_format` strips
+  the sRGB suffix, and the renderer is built entirely for that format. Its `LayerTarget` is
+  `for_target(twin, ..) = Direct(twin)` (`begin` returns `None`, no extra pass), and the surface is
+  configured as before (copy-path usages, `view_formats` from that `Direct` target, which is empty).
+  The presenter's copy into the `*Srgb` swap-chain image moves the bytes unchanged:
+  `copy_texture_to_texture` accepts formats that differ only in sRGB-ness (wgpu-core 30.0.1
+  `command/transfer.rs`) and copies raw bytes; the blit path (surfaces without `COPY_DST`) now uses
+  `FrameCopy::with_source(device, twin, surface_format, path)`, whose fragment entry `fs_decode`
+  decodes the sampled (display-encoded) colour before the `*Srgb` target encodes it again, so no
+  double encode happens (an 8-bit decode→encode round trip returns every byte; unit test). The secondary
+  window's black clear is the same bytes in either format.
+- **Non-sRGB surfaces**: `for_target` gives `Direct(format)`, `offscreen_format` returns the format
+  unchanged, `view_formats` is empty and `usage` is as before; `begin` and `end` return without
+  recording or allocating, and the blit keeps `fs`. No texture, view, pass or heap allocation is added
+  per frame. A frame without any display routed to its window skips `begin`/`end` too.
+- `TableRenderer::render_to_image` (tests) uses the same `encode_composited`, with `Direct` when the
+  layer format equals the target format (unchanged) and `Intermediate` otherwise (texture view
+  formats would need `DownlevelFlags::VIEW_FORMATS`; copies work everywhere). `TableRenderer::new`
+  and `encode` keep their old behaviour (layer format = target format).
+- The side finding about `pin_render`'s `SurfaceSet` presenter-thread blit (`gpu/blit.rs`:
+  `textureLoad` of the `Rgba8Unorm` offscreen into the surface's default view) does not apply to
+  `pin_app`, whose presenter path is handled above. In `SurfaceSet` it is not a defect either: that
+  offscreen holds only debug lines and the secondary clear, drawn as raw values, and the `*Srgb` write
+  encodes them exactly as the direct `*Srgb` path does when the debug renderer draws through the
+  surface's `*Srgb` view, so both paths store the same bytes. No queue line or request.
+
+**Rationale:** The twin-format offscreen needs no downlevel flag, no extra usage, no extra pass and no
+per-frame view on the render thread, and its frame is already display-encoded; giving the offscreen
+the same `LayerTarget` treatment as the surface would need `DownlevelFlags::VIEW_FORMATS` on the pool
+textures (or a copy in and out per frame) to get the same bytes. A presenter-thread window never
+draws the playfield, so building its whole renderer in the twin format changes nothing but the
+display blend.
+
+**Alternatives:** Same treatment for the offscreen (`*Srgb` pool texture with twin view formats or a
+scratch copy; rejected: needs a flag or two copies per frame for an identical result); blit into a
+twin-format view of the swap-chain image (rejected: needs `SURFACE_VIEW_FORMATS`, which the fallback
+path cannot assume; the shader decode works everywhere); recompute the `LayerTarget` on every
+reconfigure (rejected: its inputs cannot change after configuration).
