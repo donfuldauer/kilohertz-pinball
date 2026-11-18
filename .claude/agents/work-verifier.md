@@ -25,10 +25,10 @@ the Orchestrator also gives the pre-batch head SHA, and check 7 compares `<pre-b
 `failures` per item (per thread URL where given), so the Orchestrator can resolve each thread on
 its own result. A single-brief run is unchanged.
 
-**Queue-only case.** A round whose only change is a `docs/HUMAN_QUEUE.md` line for deferred
+**Queue-only case.** A round whose only change is a line in `docs/queue/<unit-id>.md` for deferred
 findings has no brief and no executor report. The Orchestrator then gives the pre-batch head,
 the new head and the list of deferred findings. Run check 7 (the diff `<pre-batch head>..HEAD`
-touches only `docs/HUMAN_QUEUE.md`) and confirm each deferred finding has its queue line. Cargo
+touches only `docs/queue/<unit-id>.md`) and confirm each deferred finding has its queue line. Cargo
 checks do not apply because no code changed; report `requirements: 0/0`. The result is `pass`
 if both hold.
 
@@ -68,7 +68,7 @@ if both hold.
    - unstaged: `git diff --no-renames --name-only`
    - untracked: `git ls-files --others --exclude-standard`
 
-   The allowed shared files are `docs/DECISIONS.md`, `docs/HUMAN_QUEUE.md`,
+   The allowed shared files are `docs/decisions/<date>-<unit>.md` and `docs/queue/<unit>.md` for the unit's own files,
    `contracts/CHANGE_REQUESTS.md` and pins under the wave's comment in the root `Cargo.toml`.
 8. **Images (render work).** Analytic pixel assertions exist and pass before any snapshot; walk
    through the brief's visual checklist on the produced images and log each item.
