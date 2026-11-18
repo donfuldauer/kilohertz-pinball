@@ -732,3 +732,18 @@ fn diverters_and_persist_overflow() {
     assert_eq!(loaded.warnings.len(), 1);
     assert_eq!(loaded.warnings[0].path, "persist.keys");
 }
+
+#[test]
+fn backglass_backbox_layer_is_4_to_7() {
+    for bad in [0, 1, 2, 3] {
+        bg_err(
+            &[("collision_layer = 4", &format!("collision_layer = {bad}"))],
+            "backbox.collision_layer",
+            "must be 4..=7",
+        );
+    }
+    for ok in 4..=7 {
+        let bg = bg_with(&[("collision_layer = 4", &format!("collision_layer = {ok}"))]);
+        load(&table_text(), &bg).unwrap();
+    }
+}
