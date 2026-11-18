@@ -4,7 +4,7 @@ use super::{Datagram, DatagramBatch, MAX_DATAGRAMS_PER_TICK};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use pin_core::spsc::{SpscConsumer, SpscProducer, channel};
-use std::io;
+use std::io::{self, Write as _};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -18,15 +18,19 @@ pub const DEFAULT_TELEMETRY_RING_CAPACITY: usize = 64;
 /// The capacity is clamped to at least
 /// [`MAX_DATAGRAMS_PER_TICK`](super::MAX_DATAGRAMS_PER_TICK) (5): a full
 /// state takes that many datagrams, so a smaller ring could never carry one
-/// whole and the [`force_full_state`](super::TelemetryEncoder::force_full_state)
-/// recovery of [`TelemetryTx::push_batch`] could not complete. When the
-/// requested value is raised, one warning stating the requested and the
-/// effective capacity is printed to stderr (at construction time only). The
+/// whole. With the clamp a full state fits in an *empty* ring; a ring still
+/// holding earlier datagrams can truncate a batch, so the minimum makes the
+/// [`force_full_state`](super::TelemetryEncoder::force_full_state) recovery of [`TelemetryTx::push_batch`] possible but does not guarantee
+/// delivery on the next tick. When the requested value is raised, one
+/// best-effort warning stating the requested and the effective capacity is
+/// written to stderr (a failed write is ignored; construction time only). The
 /// default, [`DEFAULT_TELEMETRY_RING_CAPACITY`], is 64.
 pub fn telemetry_channel(capacity: usize) -> (TelemetryTx, TelemetryReceiver) {
     let effective = capacity.max(MAX_DATAGRAMS_PER_TICK);
     if capacity < MAX_DATAGRAMS_PER_TICK {
-        eprintln!(
+        // Best-effort: a failed stderr write must not prevent construction.
+        let _ = writeln!(
+            io::stderr(),
             "warning: telemetry ring capacity {capacity} is below the minimum \
              {MAX_DATAGRAMS_PER_TICK} datagrams per tick; using {effective}"
         );
