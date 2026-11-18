@@ -12,7 +12,11 @@
 //!   [`DisplaySet`] draws the backglass and score display (DMD / LCD) into
 //!   their viewports (PiPs on the playfield window or their own windows);
 //!   the 1.4 debug lines are an optional overlay
-//!   ([`TableRenderOptions::debug_overlay`], default off).
+//!   ([`TableRenderOptions::debug_overlay`], default off). The displays may
+//!   be built for a different layer format than the target (the non-sRGB
+//!   twin of an `*Srgb` target, issue #10: [`TableRenderer::with_layer_format`]),
+//!   and are then drawn through a [`LayerCompositor`]
+//!   ([`TableRenderer::encode_composited`]).
 //! * [`TableRenderer::render_to_image`]: the same frame offscreen, read
 //!   back (analytic pixel tests, D30).
 
@@ -27,7 +31,7 @@ use pin_render::displays::{
     BackglassDesc, BackglassRenderer, DisplayRoute, DisplaySet, RgbaImage, SceneLibrary,
     ScoreDisplayConfig, ScoreDisplayModel, ScoreRenderer,
 };
-use pin_render::gpu::{GpuContext, GpuError, wgpu};
+use pin_render::gpu::{GpuContext, GpuError, LayerCompositor, LayerTarget, wgpu};
 use pin_render::pbr::{
     DrawItem, Environment, FrameDesc, MaterialKind, MaterialParams, MeshGeometry, MeshId,
     PbrCamera, PbrRenderer, PointLight,
@@ -492,6 +496,7 @@ fn key_lights(min: [f32; 3], max: [f32; 3]) -> Vec<PointLight> {
 /// docs](self)).
 pub struct TableRenderer {
     format: wgpu::TextureFormat,
+    layer_format: wgpu::TextureFormat,
     size: (u32, u32),
     pbr: PbrRenderer,
     post: PostChain,
@@ -512,17 +517,43 @@ pub struct TableRenderer {
 
 impl TableRenderer {
     /// Uploads `visuals` for `width`×`height` targets of `format` (8-bit
-    /// RGBA / BGRA, sRGB or not).
+    /// RGBA / BGRA, sRGB or not); the displays are drawn in `format` too.
     ///
     /// # Errors
     /// Invalid sizes, formats or meshes ([`GpuError`]).
     pub fn new(
         ctx: &GpuContext,
         format: wgpu::TextureFormat,
+        size: (u32, u32),
+        visuals: &TableVisuals,
+        opts: TableRenderOptions,
+    ) -> Result<TableRenderer, GpuError> {
+        TableRenderer::with_layer_format(ctx, format, format, size, visuals, opts)
+    }
+
+    /// Like [`new`](Self::new), but the display renderers (score display,
+    /// backglass) are built for `layer_format`
+    /// ([`LayerTarget::layer_format`]: the non-sRGB twin of an `*Srgb`
+    /// target, issue #10) while the post chain and the debug overlay stay
+    /// on `format`. Draw such a renderer with
+    /// [`encode_composited`](Self::encode_composited).
+    ///
+    /// # Errors
+    /// Invalid sizes, formats or meshes ([`GpuError`]); a `layer_format`
+    /// that differs from `format` by more than the sRGB suffix.
+    pub fn with_layer_format(
+        ctx: &GpuContext,
+        format: wgpu::TextureFormat,
+        layer_format: wgpu::TextureFormat,
         (width, height): (u32, u32),
         visuals: &TableVisuals,
         opts: TableRenderOptions,
     ) -> Result<TableRenderer, GpuError> {
+        if layer_format.remove_srgb_suffix() != format.remove_srgb_suffix() {
+            return Err(GpuError::InvalidArgument(format!(
+                "display layer format {layer_format:?} is not a twin of {format:?}"
+            )));
+        }
         let mut pbr = PbrRenderer::new(ctx, width, height)?;
         pbr.set_msaa_samples(opts.post.aa.samples())?;
         let mut post = PostChain::new(ctx, width, height, format)?;
@@ -547,9 +578,9 @@ impl TableRenderer {
         let mut displays = DisplaySet::default();
         let mut score = None;
         if let Some(d) = &visuals.displays {
-            displays.score = Some(ScoreRenderer::new(ctx, format, d.score));
+            displays.score = Some(ScoreRenderer::new(ctx, layer_format, d.score));
             if let Some(b) = &d.backglass {
-                displays.backglass = Some(BackglassRenderer::new(ctx, format, b)?);
+                displays.backglass = Some(BackglassRenderer::new(ctx, layer_format, b)?);
             }
             let mut model = ScoreDisplayModel::new(d.score, d.scenes.clone());
             for (file, img) in &d.scene_images {
@@ -572,6 +603,7 @@ impl TableRenderer {
         });
         Ok(TableRenderer {
             format,
+            layer_format,
             size: (width, height),
             camera: table_camera(plan.0, plan.1, width as f32 / height.max(1) as f32),
             pbr,
@@ -591,9 +623,16 @@ impl TableRenderer {
         })
     }
 
-    /// Target format.
+    /// Target format (post chain, debug overlay).
     pub fn format(&self) -> wgpu::TextureFormat {
         self.format
+    }
+
+    /// The format the display renderers are built for (equal to
+    /// [`format`](Self::format) unless built by
+    /// [`with_layer_format`](Self::with_layer_format)).
+    pub fn layer_format(&self) -> wgpu::TextureFormat {
+        self.layer_format
     }
 
     /// Target size.
@@ -673,7 +712,11 @@ impl TableRenderer {
     /// [`size`](Self::size) pixels): if `playfield`, the PBR table through
     /// the post chain over the whole target (and the debug overlay when
     /// enabled), then every display of `routes` on `window` into its pixel
-    /// viewport. Returns the displays drawn.
+    /// viewport. Returns the displays drawn. The displays are drawn through
+    /// `view` too, so this is for a renderer whose
+    /// [`layer_format`](Self::layer_format) equals its
+    /// [`format`](Self::format); otherwise use
+    /// [`encode_composited`](Self::encode_composited).
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &mut self,
@@ -686,66 +729,144 @@ impl TableRenderer {
         snap: &FrameStateSnapshot,
     ) -> usize {
         if playfield {
-            self.draws.clear();
-            for (d, lamp) in &self.table_draws {
-                let mut d = *d;
-                if let Some(l) = lamp {
-                    d.emission = snap.lamps.get(*l).copied().unwrap_or(0.0).clamp(0.0, 1.0);
-                }
-                self.draws.push(d);
+            self.encode_playfield(queue, encoder, view, snap);
+        }
+        self.encode_displays(queue, encoder, view, window, routes, snap)
+    }
+
+    /// Records one frame of `snap` into `frame` (a texture of this
+    /// renderer's [`format`](Self::format) whose default view is `view`,
+    /// created with `layers`' target's view formats and extra usages): if
+    /// `playfield`, the PBR table through the post chain and the debug
+    /// overlay into `view`; then every display of `routes` on `window`
+    /// into the view [`LayerCompositor::begin`] returns (`view` itself
+    /// when it returns `None`, the [`LayerTarget::Direct`] path), and
+    /// [`LayerCompositor::end`]. Display layers so blend in display-encoded
+    /// space on an `*Srgb` target too (issue #10). On the direct path this
+    /// is exactly [`encode`](Self::encode). Returns the displays drawn.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_composited(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &wgpu::Texture,
+        view: &wgpu::TextureView,
+        layers: &mut LayerCompositor,
+        playfield: bool,
+        window: usize,
+        routes: &[DisplayRoute],
+        snap: &FrameStateSnapshot,
+    ) -> usize {
+        if playfield {
+            self.encode_playfield(queue, encoder, view, snap);
+        }
+        // No display on this window: nothing to composite (an intermediate
+        // target would otherwise copy the frame out and back for nothing).
+        if !routes.iter().any(|r| r.window == window) {
+            return self.encode_displays(queue, encoder, view, window, routes, snap);
+        }
+        let layer_view = layers.begin(device, encoder, frame);
+        let drawn = self.encode_displays(
+            queue,
+            encoder,
+            layer_view.as_ref().unwrap_or(view),
+            window,
+            routes,
+            snap,
+        );
+        layers.end(encoder, frame);
+        drawn
+    }
+
+    /// The playfield part of [`encode`](Self::encode): PBR table, post
+    /// chain and the optional debug overlay into `view` (this renderer's
+    /// [`format`](Self::format)).
+    fn encode_playfield(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        snap: &FrameStateSnapshot,
+    ) {
+        self.draws.clear();
+        for (d, lamp) in &self.table_draws {
+            let mut d = *d;
+            if let Some(l) = lamp {
+                d.emission = snap.lamps.get(*l).copied().unwrap_or(0.0).clamp(0.0, 1.0);
             }
-            self.motion.clear();
-            for b in snap.balls() {
-                let r = super::threads::default_ball_radius(b.profile);
+            self.draws.push(d);
+        }
+        self.motion.clear();
+        for b in snap.balls() {
+            let r = super::threads::default_ball_radius(b.profile);
+            self.draws.push(DrawItem::new(
+                self.ball_mesh,
+                ball_model(b.position_m, r),
+                ball_material(b.profile),
+            ));
+            self.motion.push(MotionBall::from_state(b, r));
+        }
+        for st in snap.flippers() {
+            if let Some(f) = self.flippers.get(usize::from(st.id.0)) {
                 self.draws.push(DrawItem::new(
-                    self.ball_mesh,
-                    ball_model(b.position_m, r),
-                    ball_material(b.profile),
+                    self.bat_mesh,
+                    flipper_model(f, st.angle_rad),
+                    MaterialKind::CeramicPearl,
                 ));
-                self.motion.push(MotionBall::from_state(b, r));
+            }
+        }
+        let mut frame = FrameDesc::new(&self.camera, &self.lights, &self.draws);
+        frame.environment = Environment::STUDIO;
+        frame.gi = snap.gi;
+        self.pbr.encode(encoder, &frame);
+        let pf = PostFrame {
+            camera: &self.camera,
+            balls: &self.motion,
+        };
+        self.post.encode(encoder, self.pbr.hdr_view(), &pf, view);
+        if let Some((r, lines, table, cam)) = &mut self.overlay {
+            lines.clear();
+            for l in table.iter() {
+                lines.push(*l);
             }
             for st in snap.flippers() {
                 if let Some(f) = self.flippers.get(usize::from(st.id.0)) {
-                    self.draws.push(DrawItem::new(
-                        self.bat_mesh,
-                        flipper_model(f, st.angle_rad),
-                        MaterialKind::CeramicPearl,
-                    ));
+                    lines.push(f.line(st.angle_rad, FLIPPER_LINE_COLOR));
                 }
             }
-            let mut frame = FrameDesc::new(&self.camera, &self.lights, &self.draws);
-            frame.environment = Environment::STUDIO;
-            frame.gi = snap.gi;
-            self.pbr.encode(encoder, &frame);
-            let pf = PostFrame {
-                camera: &self.camera,
-                balls: &self.motion,
-            };
-            self.post.encode(encoder, self.pbr.hdr_view(), &pf, view);
-            if let Some((r, lines, table, cam)) = &mut self.overlay {
-                lines.clear();
-                for l in table.iter() {
-                    lines.push(*l);
-                }
-                for st in snap.flippers() {
-                    if let Some(f) = self.flippers.get(usize::from(st.id.0)) {
-                        lines.push(f.line(st.angle_rad, FLIPPER_LINE_COLOR));
-                    }
-                }
-                snapshot_lines(snap, &super::threads::default_ball_radius, lines);
-                r.draw(encoder, queue, view, cam, lines);
-            }
+            snapshot_lines(snap, &super::threads::default_ball_radius, lines);
+            r.draw(encoder, queue, view, cam, lines);
         }
+    }
+
+    /// The display part of [`encode`](Self::encode): every display of
+    /// `routes` on `window` into `layer_view` (a view of this renderer's
+    /// [`layer_format`](Self::layer_format)). Returns the displays drawn.
+    fn encode_displays(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        layer_view: &wgpu::TextureView,
+        window: usize,
+        routes: &[DisplayRoute],
+        snap: &FrameStateSnapshot,
+    ) -> usize {
         if let (Some(model), Some(sr)) = (&self.score, &mut self.displays.score) {
             let content = model.compose(snap.tick);
             sr.update(queue, &content);
         }
         self.displays
-            .encode_window(window, routes, encoder, view, self.size, &snap.lamps)
+            .encode_window(window, routes, encoder, layer_view, self.size, &snap.lamps)
     }
 
     /// Renders one frame of `snap` offscreen (playfield + the displays of
-    /// `routes` on window 0) and reads it back: RGBA8, row 0 at the top.
+    /// `routes` on window 0) and reads it back: RGBA8 (the stored bytes),
+    /// row 0 at the top. The displays go through
+    /// [`encode_composited`](Self::encode_composited) with
+    /// [`offscreen_layer_target`]: when the layer format differs from the
+    /// target format, a twin-format scratch texture
+    /// ([`LayerTarget::Intermediate`]).
     ///
     /// # Errors
     /// Readback failures.
@@ -756,6 +877,7 @@ impl TableRenderer {
         snap: &FrameStateSnapshot,
     ) -> Result<RgbaImage, GpuError> {
         let (w, h) = self.size;
+        let layers = offscreen_layer_target(self.format, self.layer_format);
         let tex = ctx.device().create_texture(&wgpu::TextureDescriptor {
             label: Some("table frame"),
             size: wgpu::Extent3d {
@@ -767,7 +889,9 @@ impl TableRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: self.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | layers.extra_usages(),
             view_formats: &[],
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -776,9 +900,40 @@ impl TableRenderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("table frame"),
             });
-        self.encode(ctx.queue(), &mut enc, &view, true, 0, routes, snap);
+        let mut comp = LayerCompositor::new(layers);
+        self.encode_composited(
+            ctx.device(),
+            ctx.queue(),
+            &mut enc,
+            &tex,
+            &view,
+            &mut comp,
+            true,
+            0,
+            routes,
+            snap,
+        );
         ctx.queue().submit([enc.finish()]);
         read_rgba8(ctx, &tex, self.format)
+    }
+}
+
+/// The layer target of an offscreen texture of `format` (created without
+/// view formats) for display renderers built for `layer_format`:
+/// [`LayerTarget::Direct`] when they are equal, else
+/// [`LayerTarget::Intermediate`] (copies work on every backend, unlike
+/// texture view formats).
+pub fn offscreen_layer_target(
+    format: wgpu::TextureFormat,
+    layer_format: wgpu::TextureFormat,
+) -> LayerTarget {
+    if format == layer_format {
+        LayerTarget::Direct(format)
+    } else {
+        LayerTarget::Intermediate {
+            target: format,
+            twin: layer_format,
+        }
     }
 }
 
@@ -949,6 +1104,37 @@ mod tests {
         );
         assert_eq!(r[0].viewport, Rect::new(0, 0, 18, 18));
         assert!(r[0].dedicated);
+    }
+
+    #[test]
+    fn offscreen_layers_are_direct_unless_the_layer_format_is_a_twin() {
+        use wgpu::TextureFormat as F;
+        for f in [
+            F::Rgba8Unorm,
+            F::Bgra8Unorm,
+            F::Rgba8UnormSrgb,
+            F::Bgra8UnormSrgb,
+        ] {
+            let t = offscreen_layer_target(f, f);
+            assert_eq!(t, LayerTarget::Direct(f));
+            assert!(t.extra_usages().is_empty() && t.view_formats().is_empty());
+        }
+        for (srgb, twin) in [
+            (F::Rgba8UnormSrgb, F::Rgba8Unorm),
+            (F::Bgra8UnormSrgb, F::Bgra8Unorm),
+        ] {
+            let t = offscreen_layer_target(srgb, twin);
+            assert_eq!(t, LayerTarget::Intermediate { target: srgb, twin });
+            assert_eq!(t.layer_format(), twin);
+            assert!(
+                t.view_formats().is_empty(),
+                "no texture view formats needed"
+            );
+            assert_eq!(
+                t.extra_usages(),
+                wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST
+            );
+        }
     }
 
     #[test]
