@@ -540,7 +540,9 @@ impl TableRenderer {
     ///
     /// # Errors
     /// Invalid sizes, formats or meshes ([`GpuError`]); a `layer_format`
-    /// that differs from `format` by more than the sRGB suffix.
+    /// that is neither `format` nor (for an `*Srgb` `format`) its non-sRGB
+    /// twin (an `*Srgb` layer on a non-sRGB target would blend in linear
+    /// space and copy the bytes back unchanged).
     pub fn with_layer_format(
         ctx: &GpuContext,
         format: wgpu::TextureFormat,
@@ -549,9 +551,10 @@ impl TableRenderer {
         visuals: &TableVisuals,
         opts: TableRenderOptions,
     ) -> Result<TableRenderer, GpuError> {
-        if layer_format.remove_srgb_suffix() != format.remove_srgb_suffix() {
+        if !layer_format_allowed(format, layer_format) {
             return Err(GpuError::InvalidArgument(format!(
-                "display layer format {layer_format:?} is not a twin of {format:?}"
+                "display layer format {layer_format:?} is not allowed for target {format:?} \
+                 (equal formats, or an *Srgb target with its non-sRGB twin)"
             )));
         }
         let mut pbr = PbrRenderer::new(ctx, width, height)?;
@@ -744,6 +747,10 @@ impl TableRenderer {
     /// [`LayerCompositor::end`]. Display layers so blend in display-encoded
     /// space on an `*Srgb` target too (issue #10). On the direct path this
     /// is exactly [`encode`](Self::encode). Returns the displays drawn.
+    ///
+    /// # Panics
+    /// If `layers`' target formats are not this renderer's
+    /// ([`compositor_matches`]): a wiring error, never a runtime condition.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_composited(
         &mut self,
@@ -758,6 +765,14 @@ impl TableRenderer {
         routes: &[DisplayRoute],
         snap: &FrameStateSnapshot,
     ) -> usize {
+        assert!(
+            compositor_matches(self.format, self.layer_format, layers.target()),
+            "encode_composited: compositor {:?} does not match the renderer (target {:?}, \
+             display layer format {:?})",
+            layers.target(),
+            self.format,
+            self.layer_format
+        );
         if playfield {
             self.encode_playfield(queue, encoder, view, snap);
         }
@@ -1053,9 +1068,78 @@ pub fn routes_for_window(
         .collect()
 }
 
+/// Whether display layers of `layer` format may be drawn for a `target`
+/// format texture: equal formats, or an `*Srgb` target with its non-sRGB
+/// twin. An `*Srgb` layer on a non-sRGB target is refused (the layers would
+/// blend in linear space in a scratch texture, then be copied back
+/// unchanged).
+pub(crate) fn layer_format_allowed(
+    target: wgpu::TextureFormat,
+    layer: wgpu::TextureFormat,
+) -> bool {
+    layer == target
+        || (target.is_srgb() && !layer.is_srgb() && layer == target.remove_srgb_suffix())
+}
+
+/// Whether a compositor for `compositor` suits a renderer built for
+/// `target` / `layer`: its layer and target formats must equal the
+/// renderer's (else the display pipelines and the view they draw into
+/// would disagree, which wgpu rejects).
+pub(crate) fn compositor_matches(
+    target: wgpu::TextureFormat,
+    layer: wgpu::TextureFormat,
+    compositor: LayerTarget,
+) -> bool {
+    compositor.target_format() == target && compositor.layer_format() == layer
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layer_format_pairs() {
+        use wgpu::TextureFormat as F;
+        assert!(layer_format_allowed(F::Rgba8Unorm, F::Rgba8Unorm));
+        assert!(layer_format_allowed(F::Rgba8UnormSrgb, F::Rgba8UnormSrgb));
+        assert!(layer_format_allowed(F::Rgba8UnormSrgb, F::Rgba8Unorm));
+        assert!(layer_format_allowed(F::Bgra8UnormSrgb, F::Bgra8Unorm));
+        assert!(layer_format_allowed(F::Bgra8Unorm, F::Bgra8Unorm));
+        assert!(!layer_format_allowed(F::Rgba8Unorm, F::Rgba8UnormSrgb));
+        assert!(!layer_format_allowed(F::Bgra8Unorm, F::Bgra8UnormSrgb));
+        assert!(!layer_format_allowed(F::Rgba8Unorm, F::Bgra8Unorm));
+        assert!(!layer_format_allowed(F::Rgba8UnormSrgb, F::Bgra8Unorm));
+        assert!(!layer_format_allowed(F::Rgba16Float, F::Rgba8Unorm));
+    }
+
+    #[test]
+    fn compositor_must_match_renderer_formats() {
+        use wgpu::TextureFormat as F;
+        let twin = LayerTarget::TwinView {
+            target: F::Rgba8UnormSrgb,
+            twin: F::Rgba8Unorm,
+        };
+        assert!(compositor_matches(F::Rgba8UnormSrgb, F::Rgba8Unorm, twin));
+        // Renderer built with an sRGB layer format: compositor wants the twin.
+        assert!(!compositor_matches(
+            F::Rgba8UnormSrgb,
+            F::Rgba8UnormSrgb,
+            twin
+        ));
+        assert!(!compositor_matches(F::Bgra8UnormSrgb, F::Rgba8Unorm, twin));
+        let direct = LayerTarget::Direct(F::Rgba8UnormSrgb);
+        assert!(compositor_matches(
+            F::Rgba8UnormSrgb,
+            F::Rgba8UnormSrgb,
+            direct
+        ));
+        // Non-sRGB layer pipelines with a Direct sRGB compositor: rejected.
+        assert!(!compositor_matches(
+            F::Rgba8UnormSrgb,
+            F::Rgba8Unorm,
+            direct
+        ));
+    }
 
     #[test]
     fn normals_of_a_flat_quad_point_up() {

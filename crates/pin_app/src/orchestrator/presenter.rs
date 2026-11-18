@@ -176,6 +176,14 @@ pub(crate) fn blit_decodes(src: wgpu::TextureFormat, dst: wgpu::TextureFormat) -
     dst.is_srgb() && !src.is_srgb()
 }
 
+/// Whether [`FrameCopy::with_source`] supports a `src` frame into a `dst`
+/// target: equal formats, or a non-sRGB source into its `*Srgb` twin. An
+/// `*Srgb` source into a non-sRGB target is not supported (the copy path
+/// would store the sampled-linear bytes, the blit path the decoded ones).
+pub(crate) fn copy_pair_supported(src: wgpu::TextureFormat, dst: wgpu::TextureFormat) -> bool {
+    src == dst || (dst.is_srgb() && !src.is_srgb() && src == dst.remove_srgb_suffix())
+}
+
 struct Blit {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
@@ -197,16 +205,24 @@ impl FrameCopy {
     }
 
     /// A copier of `src`-format frames into targets of `dst` format along
-    /// `path`. The formats must be equal up to the sRGB suffix
-    /// (`copy_texture_to_texture` copies the bytes); the blit of a non-sRGB
-    /// source into an `*Srgb` target decodes in the shader, so the target
-    /// stores the source's bytes (no second sRGB encode) on both paths.
+    /// `path`. Supported pairs: equal formats, and a non-sRGB source into
+    /// its `*Srgb` twin (`copy_texture_to_texture` copies the bytes; the
+    /// blit decodes in the shader, so the target stores the source's bytes
+    /// with no second sRGB encode, on both paths).
+    ///
+    /// # Panics
+    /// On any other pair, notably an `*Srgb` source into a non-sRGB target
+    /// (the two paths would disagree): a wiring error.
     pub fn with_source(
         device: &wgpu::Device,
         src: wgpu::TextureFormat,
         dst: wgpu::TextureFormat,
         path: CopyPath,
     ) -> FrameCopy {
+        assert!(
+            copy_pair_supported(src, dst),
+            "FrameCopy: unsupported copy of {src:?} frames into {dst:?} targets"
+        );
         let format = dst;
         let fs_entry = if blit_decodes(src, dst) {
             "fs_decode"
@@ -492,6 +508,19 @@ mod tests {
             assert!(!blit_decodes(f, f), "{f:?}");
         }
         assert!(!blit_decodes(F::Bgra8UnormSrgb, F::Bgra8Unorm));
+    }
+
+    /// `with_source` supports equal pairs and plain -> its sRGB twin only.
+    #[test]
+    fn copy_pairs_exclude_srgb_into_plain() {
+        use wgpu::TextureFormat as F;
+        assert!(copy_pair_supported(F::Bgra8Unorm, F::Bgra8UnormSrgb));
+        assert!(copy_pair_supported(F::Rgba8Unorm, F::Rgba8UnormSrgb));
+        assert!(copy_pair_supported(F::Rgba8Unorm, F::Rgba8Unorm));
+        assert!(copy_pair_supported(F::Bgra8UnormSrgb, F::Bgra8UnormSrgb));
+        assert!(!copy_pair_supported(F::Bgra8UnormSrgb, F::Bgra8Unorm));
+        assert!(!copy_pair_supported(F::Rgba8UnormSrgb, F::Rgba8Unorm));
+        assert!(!copy_pair_supported(F::Rgba8Unorm, F::Bgra8UnormSrgb));
     }
 
     /// The blit shader (both entry points) parses and validates (naga, as
