@@ -25,9 +25,19 @@
 //!   [`BackglassRenderer::needs_redraw`], [`ChangeTracker`]).
 //!
 //! Colour: images and compositing are in display-encoded (sRGB-valued)
-//! space, as 2D art tools blend; the render targets of 1.4 are non-sRGB
-//! formats, so shader output is written unchanged. On an `*Srgb` target the
-//! shaders decode their output first, so stored values still match.
+//! space, as 2D art tools blend. On a non-sRGB target (the preferred
+//! surface format and every offscreen target) shader output is written and
+//! blended unchanged. On an `*Srgb` target (the fallback surface format) the
+//! fixed-function blend would mix in linear space, so the renderers are
+//! built for the target's non-sRGB twin
+//! ([`LayerTarget::layer_format`](crate::gpu::LayerTarget::layer_format))
+//! and draw through a twin-format view of the target, or a twin-format
+//! scratch texture copied back where twin views are unavailable
+//! ([`LayerCompositor`](crate::gpu::LayerCompositor)); the stored bytes then
+//! match the non-sRGB path. Only a renderer built for an `*Srgb` format
+//! itself (the degraded last resort, `LayerTarget::Direct` of an `*Srgb`
+//! format) still decodes its output in the shader so unblended stored
+//! values match, while its blending stays linear.
 //!
 //! Everything except the renderers is GPU-free.
 
