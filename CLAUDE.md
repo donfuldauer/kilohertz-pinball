@@ -14,5 +14,5 @@ The plan is `docs/PLAN.md` (v5). Before delegating or starting any work, follow:
   finding with a reply, and merge without waiting for a person once the §2.7 merge conditions
   hold. Resolve every CodeRabbit thread yourself when justified (§2.7 step 3, D37); never leave
   one for a person.
-- Rules in §2.3 apply to every change; record ambiguous choices in `docs/DECISIONS.md` and
-  `docs/HUMAN_QUEUE.md` and continue.
+- Rules in §2.3 apply to every change; record ambiguous choices in a new `docs/decisions/<date>-<unit-id>.md` and
+  add queue lines in `docs/queue/<unit-id>.md`, and continue.

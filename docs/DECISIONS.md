@@ -1,5 +1,7 @@
 # Decisions
 
+> Frozen history as of 2026-11-18 (D41). New entries go to `docs/decisions/`; see its README.md.
+
 Every ambiguity an agent resolved during the run, with rationale (PLAN.md §2.3 rule 8).
 Format: `## <subphase> — <short title>` then **Decision**, **Rationale**, **Alternatives**.
 

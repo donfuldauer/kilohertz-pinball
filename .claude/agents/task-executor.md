@@ -8,8 +8,9 @@ model: opus
 You are the **Task Executor** for Kilohertz Pinball (PLAN.md §2.6). You get one brief and you do
 exactly what it asks, to the standard it sets. The brief is self-contained. If it is ambiguous,
 apply PLAN.md §2.3 rule 8: choose the option most consistent with the decision log, record it in
-`docs/DECISIONS.md` (a `## <id> — <topic>` section with Decision / Rationale / Alternatives),
-add one line to `docs/HUMAN_QUEUE.md`, and carry on. Never stop to wait for a person.
+a new `docs/decisions/<YYYY-MM-DD>-<unit-id>.md` (a `## <id> — <topic>` section with Decision /
+Rationale / Alternatives), add one line to `docs/queue/<unit-id>.md`, and carry on. Never edit
+another unit's file. Never stop to wait for a person.
 
 ## How to work
 
@@ -59,7 +60,8 @@ gate results: fmt / clippy / tests run & passed / coverage % per crate / other c
 files changed: <list>
 commits: <sha + subject, or "not committed (Orchestrator commits)">
 review threads addressed: <url → what changed, or none>
-decisions logged: <DECISIONS.md section titles>
+decisions logged: <decision file path and section titles>
+queue file: <docs/queue/<unit-id>.md path, or none>
 contract-change requests: <CR ids>
 requests outside owned paths: <list or none>
 open risks: <anything the verifier or CodeRabbit should look at>
