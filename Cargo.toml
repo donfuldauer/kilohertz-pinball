@@ -74,6 +74,15 @@ opt-level = 1
 [profile.test]
 opt-level = 1
 
+# proptest 1.12.0 has a wrong-sign debug_assert in FloatUniform::sample (negative split step)
+# that panics about once per 3e6 f32 range samples; its clamp is correct. Turn off only
+# proptest's own debug assertions (DECISIONS "w7pre-proptest-f32"). Re-enable on a fixed release.
+[profile.dev.package.proptest]
+debug-assertions = false
+
+[profile.test.package.proptest]
+debug-assertions = false
+
 # Subphase 4.2 review (DECISIONS.md "Orchestrator — 4.2 review: patched vendored Lua"):
 # Lua 5.4 is built from a patched copy of lua-src (third_party/lua-src/KHZ_PATCHES.md).
 [patch.crates-io]

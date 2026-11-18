@@ -2856,3 +2856,9 @@ The user approved the Orchestrator's recommendations on the items that could blo
 - Decision: the job now installs the same packages as the core Linux jobs.
 - Rationale: the job had never been dispatched before; the first dispatch, run 44197036089, could not build pin_app, so 1d/2b/2d/2e failed while the soak passed.
 - Alternatives: running the gate locally only (no independent CI evidence).
+
+## w7pre-proptest-f32 — proptest internal debug assertions off (2026-11-18)
+- Decision: the workspace `Cargo.toml` sets `debug-assertions = false` for the `proptest` package only (`[profile.dev.package.proptest]` and `[profile.test.package.proptest]`). Our crates keep their debug assertions. Regression test: `crates/pin_physics/tests/proptest_f32_sampler.rs` (fixed ChaCha seeds that panic without the override).
+- Rationale: proptest 1.12.0 `FloatUniform::sample` has `debug_assert!(self.low - result < initial.step)`, which is wrong when `step` is negative (`split_interval` gives a negative step for a positive range whose low bound is not aligned to ulp(high), e.g. `0.001f32..0.02`, `0.05f32..0.3`). The clamp to `low` right after it is correct, so release builds are fine; with debug assertions it panicked about once per 3e6 samples (CI: `wireform_frame::prop_planar_rails_stay_in_horizontal_plane`, `arbitrary_input_keeps_outputs_in_range`). Every property stays as strong; values are still in range.
+- Scope limit: profiles apply only at a workspace root. `tests/spec_ci` and `spikes` are separate workspaces that also pin proptest 1.12.0 and are not covered; they would need the same stanza if they start hitting it.
+- Alternatives: rewrite about 99 f32 range strategies (disproportionate); upgrade proptest (no fixed release available offline); vendor a patched proptest (maintenance burden).
