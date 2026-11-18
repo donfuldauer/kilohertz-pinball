@@ -361,6 +361,11 @@ pub(super) fn gap_lint(guide: &GuideCurve, closed: bool, bends: &[Bend]) -> Opti
 /// a noise determinant and zero numerators that read as a false crossing,
 /// and are measured by the four point-to-segment distances (which give 0 for
 /// collinear overlap).
+///
+/// Limit: a real crossing shallower than about 1e-6 rad (relative) is
+/// classified as parallel and so reports a small positive endpoint distance
+/// (for example about 2.5e-7 m) instead of 0; an exact orientation test would
+/// return 0. The discrepancy is bounded far below any lint clearance.
 fn segment_distance(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> f32 {
     let flat = |v: Vec3| glam::Vec2::new(v.x, v.y);
     let (p, q, r, s) = (flat(a0), flat(a1), flat(b0), flat(b1));
@@ -802,12 +807,103 @@ mod tests {
         }
     }
 
+    /// Two one-unit segments that cross at their midpoints at about 5e-7 rad
+    /// are classified as parallel (determinant below the 1e-6 relative
+    /// threshold) and measured by endpoint distances. The result is positive
+    /// but tiny (about 2.5e-7 m), far below any lint clearance; an exact
+    /// orientation test would return 0. This pins that accepted discrepancy.
+    #[test]
+    fn segment_distance_near_parallel_crossing_is_tiny_not_zero() {
+        let v = |x: f32, y: f32| Vec3::new(x, y, 0.0);
+        let d = segment_distance(v(0., 0.), v(1., 0.), v(0., -2.5e-7), v(1., 2.5e-7));
+        assert!(d > 0.0 && d < 1e-6, "{d}");
+    }
+
+    /// Builds a point on the plane at `c + dir(angle) * s`.
+    fn along(c: (f32, f32), angle: f32, s: f32) -> Vec3 {
+        Vec3::new(c.0 + angle.cos() * s, c.1 + angle.sin() * s, 0.0)
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig {
             cases: 64,
             failure_persistence: None,
             ..proptest::prelude::ProptestConfig::default()
         })]
+
+        /// Never negative or non-finite; symmetric under swapping the two
+        /// segments and under reversing either (within 1e-6 m: f32 rounding
+        /// can differ by an ulp or so between orderings).
+        #[test]
+        fn segment_distance_nonneg_and_symmetric(
+            c in proptest::collection::vec((-1.0f32..1.0, -1.0f32..1.0), 4),
+        ) {
+            let v = |i: usize| Vec3::new(c[i].0, c[i].1, 0.0);
+            let (a0, a1, b0, b1) = (v(0), v(1), v(2), v(3));
+            // Skip degenerate zero-length segments.
+            proptest::prop_assume!(a0.distance(a1) > 1e-3 && b0.distance(b1) > 1e-3);
+            let d = segment_distance(a0, a1, b0, b1);
+            proptest::prop_assert!(d.is_finite() && d >= 0.0, "{d}");
+            for other in [
+                segment_distance(b0, b1, a0, a1),
+                segment_distance(a1, a0, b0, b1),
+                segment_distance(a0, a1, b1, b0),
+            ] {
+                proptest::prop_assert!((other - d).abs() < 1e-6, "{d} vs {other}");
+            }
+        }
+
+        /// Two segments through a common interior point, at least 1 degree
+        /// apart, cross: the distance is exactly 0.
+        #[test]
+        fn segment_distance_proper_crossing_is_zero(
+            cx in -0.5f32..0.5, cy in -0.5f32..0.5,
+            a in 0.0f32..std::f32::consts::PI,
+            dtheta in 0.0175f32..3.124,
+            la in 0.05f32..0.5, ma in 0.05f32..0.5,
+            lb in 0.05f32..0.5, mb in 0.05f32..0.5,
+        ) {
+            let c = (cx, cy);
+            let b = a + dtheta;
+            let d = segment_distance(
+                along(c, a, -la), along(c, a, ma),
+                along(c, b, -lb), along(c, b, mb),
+            );
+            proptest::prop_assert_eq!(d, 0.0);
+        }
+
+        /// Collinear overlapping segments: about 0 (within 1e-5 m of f32
+        /// rounding in the endpoints).
+        #[test]
+        fn segment_distance_collinear_overlap_is_zero(
+            cx in -0.5f32..0.5, cy in -0.5f32..0.5,
+            a in 0.0f32..std::f32::consts::TAU,
+            len_a in 0.1f32..0.8, len_b in 0.1f32..0.8, f in 0.0f32..1.0,
+        ) {
+            let c = (cx, cy);
+            // B starts inside A.
+            let s = f * len_a;
+            let d = segment_distance(
+                along(c, a, 0.0), along(c, a, len_a),
+                along(c, a, s), along(c, a, s + len_b),
+            );
+            proptest::prop_assert!((0.0..1e-5).contains(&d), "{d}");
+        }
+
+        /// Collinear segments with a gap g >= 1e-4 m: about g (within 1e-5 m).
+        #[test]
+        fn segment_distance_collinear_gap(
+            cx in -0.5f32..0.5, cy in -0.5f32..0.5,
+            a in 0.0f32..std::f32::consts::TAU,
+            len_a in 0.1f32..0.8, len_b in 0.1f32..0.8, g in 1e-4f32..0.5,
+        ) {
+            let c = (cx, cy);
+            let d = segment_distance(
+                along(c, a, 0.0), along(c, a, len_a),
+                along(c, a, len_a + g), along(c, a, len_a + g + len_b),
+            );
+            proptest::prop_assert!(d > 0.5 * g && (d - g).abs() < 1e-5, "{d} vs {g}");
+        }
 
         /// A circle through n ≥ 16 points: the smallest radius is the circle's
         /// within 2 %.
