@@ -58,9 +58,13 @@ fn decision_files_have_dated_names() {
 
 /// Checks every `## ` section of a decision file carries the three labels.
 fn check_decision_text(text: &str) -> Result<(), String> {
+    let heading = Regex::new(r"^## (\S.*?) — (\S.*)$").unwrap();
     let mut sections: Vec<Vec<&str>> = Vec::new();
     for l in text.lines() {
-        if l.starts_with("## ") {
+        if l.starts_with("## ") || l == "##" {
+            if !heading.is_match(l) {
+                return Err(format!("heading `{l}` must be `## <id> — <topic>`"));
+            }
             sections.push(Vec::new());
         }
         if let Some(cur) = sections.last_mut() {
@@ -114,19 +118,29 @@ fn decision_files_have_heading_and_labels() {
     }
 }
 
-const SECTION: &str = "## a\n**Decision:** x\n**Rationale:** y\n**Alternatives:** z\n";
+const SECTION: &str =
+    "## a-1 — first topic\n**Decision:** x\n**Rationale:** y\n**Alternatives:** z\n";
 
 #[test]
 fn decision_check_rejects_second_section_without_rationale() {
-    let text = format!("{SECTION}\n## b\n**Decision:** x\n**Alternatives:** z\n");
+    let text = format!("{SECTION}\n## b-2 — second\n**Decision:** x\n**Alternatives:** z\n");
     let e = check_decision_text(&text).unwrap_err();
-    assert!(e.contains("## b") && e.contains("Rationale"), "{e}");
+    assert!(e.contains("## b-2") && e.contains("Rationale"), "{e}");
+}
+
+#[test]
+fn decision_check_rejects_malformed_headings() {
+    let body = "**Decision:** x\n**Rationale:** y\n**Alternatives:** z\n";
+    for bad in ["## ", "##", "## a", "## a — ", "## — topic", "## a - topic"] {
+        let text = format!("{bad}\n{body}");
+        assert!(check_decision_text(&text).is_err(), "accepted `{bad}`");
+    }
 }
 
 #[test]
 fn decision_check_accepts_multi_section_and_title() {
     let text = format!(
-        "# Title\n\n{SECTION}\n## b\n**Decision** x\n**Rationale** y\n**Alternatives** z\n"
+        "# Title\n\n{SECTION}\n## b-2 — second\n**Decision** x\n**Rationale** y\n**Alternatives** z\n"
     );
     assert_eq!(check_decision_text(&text), Ok(()));
     assert!(check_decision_text("no heading").is_err());
@@ -145,6 +159,14 @@ fn queue_check_accepts_checkbox_and_legacy_lines() {
     assert_eq!(check_queue_text("- [x] [a-1] done\n"), Ok(()));
     assert_eq!(check_queue_text("- [a-1] legacy text\n"), Ok(()));
     assert_eq!(check_queue_text("- ~~[a-1] struck~~ Resolved: x\n"), Ok(()));
+}
+
+#[test]
+fn queue_check_accepts_frozen_item_update_and_resolution_forms() {
+    let upd = "- [ ] [a-1] update: new info (frozen HUMAN_QUEUE.md item: \"quote\")\n";
+    let res = "- [x] [a-1] resolved: done (frozen HUMAN_QUEUE.md item: \"quote\")\n";
+    assert_eq!(check_queue_text(upd), Ok(()));
+    assert_eq!(check_queue_text(res), Ok(()));
 }
 
 #[test]

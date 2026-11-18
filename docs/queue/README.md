@@ -10,7 +10,11 @@ failure policy).
 - **Later edits:** when a unit edits or resolves an existing queue item, it edits that item's own
   file in `docs/queue/`, not another file.
 - **Frozen history:** `docs/HUMAN_QUEUE.md` is frozen and is never edited, not even to strike a
-  line through. A unit that resolves or updates an item from it adds this line to its own
+  line through. A unit that resolves or updates an item from it adds one of these lines to its own
   `docs/queue/<unit-id>.md`:
-  `- [x] [<original id>] resolved: <how> (frozen HUMAN_QUEUE.md item: "<short quote>")`.
-  To find how a frozen item was resolved, grep `docs/queue/` for its id.
+  - an update that still awaits a ruling:
+    `- [ ] [<original id>] update: <what changed> (frozen HUMAN_QUEUE.md item: "<short quote>")`;
+  - an actual resolution:
+    `- [x] [<original id>] resolved: <how> (frozen HUMAN_QUEUE.md item: "<short quote>")`.
+
+  Both forms match the checkbox regex above. To find how a frozen item was resolved, grep `docs/queue/` for its id.
