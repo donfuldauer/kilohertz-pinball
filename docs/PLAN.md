@@ -252,7 +252,7 @@ Agents do not review their own code. Review comes from CodeRabbit on a pull requ
    * CodeRabbit has finished reviewing the head commit, with no actionable comments left unanswered and no outstanding change request;
    * every review conversation has a disposition reply and has been resolved by the Orchestrator (step 3), except thread types that cannot be resolved, where the reply is the disposition;
    * the branch is up to date with `main` whenever merging `main` in would touch a file the PR also changes or conflicts; a clean merge that touches none of the PR's files does not require a re-sync;
-   * `main`'s last push CI is green; if it is red, merges stop and a fix or revert task goes first;
+   * `main`'s last push CI is green; if it is red, only a PR that fixes or reverts the failing `main` run may merge (it must still meet every other condition here: PR checks, CodeRabbit review with no open threads, verifier pass), and all other merges stay blocked until `main` is green;
    * the work-verifier's last result is `pass` for the head commit.
 
    Then the Orchestrator merges with a merge commit, deletes the branch, unsubscribes from the PR, and adds a row to `docs/RUN_LOG.md` with the PR number and the merge commit.
