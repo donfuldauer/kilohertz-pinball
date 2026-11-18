@@ -711,6 +711,33 @@ proptest! {
     }
 }
 
+/// Regression for a proptest case that parked the flap upside down: near
+/// φ = π the gravity kick per tick is below the rest threshold, so a rest
+/// snap there froze the flap inverted.
+#[test]
+fn spinner_settles_hanging_from_the_failing_proptest_case() {
+    let sp = defaults().mechs.spinner;
+    let (d, w0) = (0.407_582_46f32, -113.6817f32);
+    let s = spin_down(spinner_rig(Some(d)), w0, 60.0);
+    let (expected, _) = reference(
+        f64::from(d),
+        f64::from(w0),
+        f64::from(sp.radius),
+        f64::from(sp.friction),
+        f64::from(G),
+    );
+    assert!(
+        s.pulses.abs_diff(expected) <= 4.max(expected / 10),
+        "d {d} ω0 {w0}: {} pulses, reference {expected}",
+        s.pulses
+    );
+    assert!(
+        from_hanging(s.total_angle) <= hold_angle() + 0.02,
+        "parked {} rad from hanging",
+        from_hanging(s.total_angle)
+    );
+}
+
 // --------------------------------------------------------------------- VUK
 
 const VUK_SW: SwitchId = SwitchId(64);
