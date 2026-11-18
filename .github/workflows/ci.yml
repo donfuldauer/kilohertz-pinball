@@ -2,8 +2,15 @@ name: ci
 
 # Subphase 1.2: CI matrix skeleton for the root workspace (PLAN.md §4, 1.2).
 # Targets: x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu, aarch64-apple-darwin.
+#
+# D40: pull requests run the Linux set only (fmt, Linux clippy, core-tests, replay-hash; the
+# lavapipe GPU tests and the DOF bridge only when their paths change). Pushes to main and
+# workflow_dispatch run everything: the Windows/macOS legs live in the `*-cross` jobs below
+# (job-level `if: github.event_name != 'pull_request'`, so a skipped job reports success), and
+# coverage runs on push and workflow_dispatch, not on pull requests. Linux jobs keep their ids; every target stays covered across the file.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -32,7 +39,7 @@ jobs:
   # job reports success, so required checks stay satisfied), not `paths-ignore` on the triggers
   # (which would leave required checks pending). Docs files are `**/*.md` and `.coderabbit.yaml`;
   # docs/PLAN.md counts as code because crates/pin_core/tests/schema_fixtures.rs include_str!s it.
-  # Pushes and workflow_dispatch always run everything. The diff is from the merge base
+  # Pushes and workflow_dispatch always run everything (gpu and dof default to true). The diff is from the merge base
   # (three dots), so later changes on the base branch are not counted, and --no-renames lists
   # both the old and new path of a rename, so renaming a .rs file to .md still counts as code.
   changes:
@@ -41,6 +48,8 @@ jobs:
     timeout-minutes: 45
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      gpu: ${{ steps.filter.outputs.gpu }}
+      dof: ${{ steps.filter.outputs.dof }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -57,22 +66,40 @@ jobs:
           set -euo pipefail
           # Fail closed: any doubt (diff failure, no merge base, empty list) runs the full CI.
           code=true
+          gpu=true
+          dof=true
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            if files=$(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA") && [ -n "$files" ]; then
+            # -z: NUL-separated, unquoted paths (git quotes non-ASCII and special characters
+            # otherwise, which would miss the globs below). Written to a file, not a variable,
+            # so git's exit status can be checked and the NULs survive.
+            list="$(mktemp)"
+            if git diff -z --name-only --no-renames "$BASE_SHA...$HEAD_SHA" > "$list" && [ -s "$list" ]; then
               code=false
-              while IFS= read -r f; do
+              gpu=false
+              dof=false
+              while IFS= read -r -d '' f; do
                 case "$f" in
                   docs/PLAN.md) code=true ;;
                   *.md | .coderabbit.yaml) ;;
                   *) code=true ;;
                 esac
-              done <<< "$files"
+                # GPU tests: render/app crates and shaders. DOF bridge: its own tree.
+                case "$f" in
+                  crates/pin_render/* | crates/pin_app/* | *.wgsl) gpu=true ;;
+                esac
+                case "$f" in
+                  tools/dof_bridge/*) dof=true ;;
+                esac
+              done < "$list"
             else
               echo "::warning::could not list changed files (or none); running full CI"
             fi
+            rm -f "$list"
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "code=$code"
+          echo "gpu=$gpu" >> "$GITHUB_OUTPUT"
+          echo "dof=$dof" >> "$GITHUB_OUTPUT"
+          echo "code=$code gpu=$gpu dof=$dof"
 
   # GPU-free crates (PLAN.md §2.3 rule 3): pin_core, pin_physics, pin_input,
   # pin_script, pin_assets, pin_tablegen, pin_sim (+ pin_assetgen, a GPU-free tool).
@@ -86,12 +113,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
     env:
       SDL_VIDEO_DRIVER: dummy
     steps:
@@ -130,12 +153,11 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo test --manifest-path tests/spec_ci/Cargo.toml
 
-  # GPU/audio/app crates on each OS's software or OS adapter:
-  # lavapipe (Vulkan) on Linux, WARP (DX12) on Windows, Metal on macOS.
-  gpu-tests:
-    name: gpu-tests (${{ matrix.target }}, ${{ matrix.adapter }})
+
+  core-tests-cross:
+    name: core-tests (${{ matrix.target }})
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -144,16 +166,55 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            adapter: WARP
-            wgpu_backend: dx12
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    env:
+      SDL_VIDEO_DRIVER: dummy
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # No SDL/X11/audio packages here on purpose: the GPU-free crates must build
+      # and test without display or GPU (PLAN.md §2.3 rule 3); only pin_app uses sdl3.
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "::error::host $host, expected ${{ matrix.target }}"; exit 1
+          fi
+
+      - name: cargo test (GPU-free crates)
+        run: cargo test --workspace --exclude pin_render --exclude pin_audio --exclude pin_app
+
+
+  # GPU/audio/app crates on each OS's software or OS adapter:
+  # lavapipe (Vulkan) on Linux, WARP (DX12) on Windows, Metal on macOS.
+  gpu-tests:
+    name: gpu-tests (${{ matrix.target }}, ${{ matrix.adapter }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.gpu == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             adapter: lavapipe
             wgpu_backend: vulkan
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            adapter: Metal
-            wgpu_backend: metal
     env:
       # Not read by anything yet: from Subphase 1.4, pin_render's gpu-tests are expected to
       # build their wgpu Instance with InstanceDescriptor::with_env() (honouring WGPU_BACKEND)
@@ -201,6 +262,57 @@ jobs:
         if: runner.os != 'Linux'
         run: cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app
 
+
+  gpu-tests-cross:
+    name: gpu-tests (${{ matrix.target }}, ${{ matrix.adapter }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            adapter: WARP
+            wgpu_backend: dx12
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            adapter: Metal
+            wgpu_backend: metal
+    env:
+      # Not read by anything yet: from Subphase 1.4, pin_render's gpu-tests are expected to
+      # build their wgpu Instance with InstanceDescriptor::with_env() (honouring WGPU_BACKEND)
+      # and to treat a missing lavapipe/WARP/Metal adapter as a failure when PIN_REQUIRE_GPU=1
+      # (the counterpart of SPIKE_REQUIRE_GPU in spikes.yml).
+      WGPU_BACKEND: ${{ matrix.wgpu_backend }}
+      PIN_REQUIRE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "::error::host $host, expected ${{ matrix.target }}"; exit 1
+          fi
+
+      # pin_render's adapter-dependent tests are behind its `gpu-tests` feature (Subphase 1.4).
+      - name: cargo test (GPU crates)
+        if: runner.os != 'Linux'
+        run: cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app
+
   clippy:
     name: clippy (${{ matrix.target }})
     needs: changes
@@ -211,12 +323,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v5
 
@@ -236,6 +344,46 @@ jobs:
             libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
             libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
             libasound2-dev libpulse-dev
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            echo "::error::host $host, expected ${{ matrix.target }}"; exit 1
+          fi
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+
+  clippy-cross:
+    name: clippy (${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
         shell: bash
@@ -287,10 +435,68 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+    env:
+      SDL_VIDEO_DRIVER: dummy
+      FIXTURE: crates/pin_sim/tests/fixtures/replay_table
+      TICKS: "10000"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+
+      - name: cargo build --release (pin_sim)
+        run: cargo build --release -p pin_sim --bin pin_sim
+
+      - name: Record the fixture, replay it 10 times
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=target/release/pin_sim
+          rec="$RUNNER_TEMP/replay_fixture.khzrec"
+          recorded=$("$exe" "$FIXTURE" --ticks "$TICKS" --record-inputs "$rec")
+          echo "recorded:  $recorded (${{ matrix.target }}, $TICKS ticks)"
+          fail=0
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            replayed=$("$exe" "$FIXTURE" --replay-inputs "$rec")
+            echo "replay $i: $replayed"
+            if [ "$replayed" != "$recorded" ]; then
+              echo "::error::replay $i gave $replayed, recorded $recorded"
+              fail=1
+            fi
+          done
+          echo "::notice title=replay-hash ${{ matrix.target }}::$recorded"
+          exit $fail
+
+      - name: 2.2-S seam digests (report only, cross-OS)
+        shell: bash
+        run: cargo test --release -p pin_physics --test ball_seam_bitident -- --nocapture
+
+
+  replay-hash-cross:
+    name: replay-hash (${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
           - os: macos-latest
             target: aarch64-apple-darwin
     env:
@@ -398,7 +604,7 @@ jobs:
   coverage:
     name: coverage (core crates, non-gating)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     continue-on-error: true
@@ -428,7 +634,7 @@ jobs:
   dof-bridge:
     name: dof-bridge (windows-latest, .NET 8)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.dof == 'true'
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -462,3 +668,40 @@ jobs:
             rate=$(sed -n 's/.*<coverage line-rate="\([0-9.]*\)".*/\1/p' "$f" | head -n 1)
             echo "::notice title=dof-bridge coverage::$f line-rate $rate"
           done
+
+  # The single required status check for the `main` ruleset (PLAN §2.7 step 5, D40). A matrix job
+  # skipped by its job-level `if` is reported under its unexpanded name
+  # (`gpu-tests (${{ matrix.target }}, ...)`), so requiring the real names would stay pending on
+  # PRs that skip them; and a skipped dependent of a failed `changes` reads as success. This job
+  # always runs, requires `changes` to succeed, and fails on any needed job that failed or was
+  # cancelled (success and skipped both pass). The `*-cross` jobs, coverage and gate-a1 are not
+  # part of the PR set and are not aggregated.
+  pr-checks:
+    needs:
+      - changes
+      - fmt
+      - clippy
+      - core-tests
+      - replay-hash
+      - gpu-tests
+      - dof-bridge
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate the PR checks
+        shell: bash
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if [ "$(echo "$NEEDS" | jq -r '.changes.result')" != "success" ]; then
+            echo "::error::changes did not succeed"
+            exit 1
+          fi
+          bad=$(echo "$NEEDS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key')
+          if [ -n "$bad" ]; then
+            echo "::error::failed or cancelled: $bad"
+            exit 1
+          fi
