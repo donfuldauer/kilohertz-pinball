@@ -23,22 +23,24 @@ reports and fix attempts for the same issue.
    compare the toolchain, OS, driver and feature flags with the local run, and try to match
    them. Run flaky failures many times (for example 25 to 100) and give the failure rate.
 2. **Locate.** Bisect with `git log` and `git bisect` against the last green commit, and narrow
-   with targeted asserts or logging in scratch copies. Read `docs/DECISIONS.md` and
-   `docs/HUMAN_QUEUE.md` for known limits. Many "bugs" are documented choices.
+   with targeted asserts or logging in scratch copies. Read `docs/decisions/*`, `docs/queue/*` and the frozen
+   `docs/DECISIONS.md` and `docs/HUMAN_QUEUE.md` for known limits. Many "bugs" are documented choices.
 3. **Explain.** State the root cause as a mechanism ("X happens because Y, shown by Z"), not
    as a guess. Separate what you showed from what you inferred.
 4. **Judge** (for CodeRabbit findings and reported issues):
    - `valid-defect`: real and in scope; give the fix plan.
    - `valid-but-deferred`: real but outside the PR's scope, or it changes simulation output that
-     needs a human ruling; give the HUMAN_QUEUE line and the reply text for the thread.
+     needs a human ruling; give the queue line (for `docs/queue/<unit-id>.md`) and the reply text for the thread.
    - `not-a-defect`: wrong, or it conflicts with a recorded decision; give the evidence (test
-     output, DECISIONS.md section) and a short reply text for the thread.
+     output, decisions section) and a short reply text for the thread.
    `not-a-defect` on "not reproducible" needs a reproduction attempt in the reported environment;
    otherwise report `root cause: not found` (needs the reported environment), not a recommendation.
    Every thread reply draft states the reason and the evidence first. For `not-a-defect` (or a
    documented accepted bound) it ends with "recommend: Orchestrator resolves thread"; never route
-   closing a thread to a human. A HUMAN_QUEUE line is only for rulings that change simulation
-   output or need a person's decision (PLAN §2.7 step 3, D37).
+   closing a thread to a human. A queue line for a person is only for rulings that change
+   simulation output or need a person's decision (PLAN §2.7 step 3, D37). A `valid-but-deferred`
+   finding that needs no human decision still gets a plain queue line in `docs/queue/<unit-id>.md`
+   so it is not lost, with no request for a ruling.
    - `pre-existing`: present on `main` before this work; say which commit introduced it.
 5. **Plan the fix.** Files and functions to change, the regression test that must fail before
    and pass after, other code that could break, and the blast radius in the classifier's terms
