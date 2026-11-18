@@ -15,7 +15,7 @@
 //! * **Backbox colliders** (optional): when the bundle has
 //!   [`BACKBOX_COLLIDERS_FILE`], its nodes become colliders the same way
 //!   ([`backbox_colliders`], [`mesh_collider`]), each on a backbox layer
-//!   1..=7, appended after the playfield glass in node order. Their
+//!   4..=7, appended after the playfield glass in node order. Their
 //!   geometry and the flippers on their layers grow the escape box instead
 //!   of the playfield bounds (so the glass does not move), and the glass
 //!   leaves those layers out (the backbox has its own glass panel). A
@@ -408,7 +408,7 @@ fn backbox_err(what: impl core::fmt::Display) -> SimError {
 /// The colliders of the bundle's [`BACKBOX_COLLIDERS_FILE`], in glTF node
 /// order, converted by [`mesh_collider`]; empty when the bundle has no such
 /// file. Every node must be a collider (`collider: true`) on a backbox
-/// layer (`collision_layer` given, 1..=7), with finite table-frame
+/// layer (`collision_layer` given, 4..=7), with finite table-frame
 /// vertices, and there are at most [`MAX_BACKBOX_COLLIDERS`].
 ///
 /// # Errors
@@ -438,9 +438,9 @@ pub fn backbox_colliders(vfs: &Vfs) -> Result<Vec<MeshCollider>, SimError> {
                 mesh.name
             )));
         }
-        if !matches!(mesh.extras.collision_layer, Some(1..=7)) {
+        if !matches!(mesh.extras.collision_layer, Some(4..=7)) {
             return Err(backbox_err(format!(
-                "node {:?}: extras.collision_layer must be a backbox layer 1..=7, got {:?}",
+                "node {:?}: extras.collision_layer must be a backbox layer 4..=7, got {:?}",
                 mesh.name, mesh.extras.collision_layer
             )));
         }
