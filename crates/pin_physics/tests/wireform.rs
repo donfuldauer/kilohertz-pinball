@@ -954,6 +954,26 @@ fn radial_at(p: Vec3) -> Vec3 {
     v(p.x, p.y, 0.0).normalize()
 }
 
+/// CI regression (`prop_guide_cast_arc_wall`, about 0.5 % of runs): a ball
+/// touching the outside of an arc wall and moving along its tangent. The
+/// refined foot of the perpendicular evaluates 2.6e-8 m farther in f32 than a
+/// through-point sample 14.8 µm along the wall, so the sample wins and the
+/// normal toward it tilts by 1.0e-3 rad: the tilted rate reads as closing,
+/// while the true rate across the curve is separating. Never a contact.
+#[test]
+fn guide_cast_arc_tangent_touching_sample_tie_is_free() {
+    let (gap, at, angle, speed, travel) = (0.0f32, 117.18233f32, 0.0f32, 0.05f32, 0.001f32);
+    let wall = 0.15f32;
+    let g = arc_wall(wall, 180);
+    let a = at.to_radians();
+    let radial = v(libm::cosf(a), libm::sinf(a), 0.0);
+    let tangent = v(-radial.y, radial.x, 0.0);
+    let start = radial * (wall + BALL + gap) + Vec3::Z * 0.0135;
+    let vel = (tangent * libm::cosf(angle) + radial * libm::sinf(angle)) * speed;
+    let res = resolve(&g, start, BALL, vel, travel / speed);
+    assert!(res.hit.is_none(), "{:?}", res.hit);
+}
+
 /// CI regression (aarch64-apple-darwin, also on x86_64): the start lies
 /// 7.5 µm along the wall from a through-point sample, which ties in f32 with
 /// the true foot of the perpendicular; the normal toward the sample tilted
