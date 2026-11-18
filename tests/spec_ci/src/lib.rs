@@ -287,6 +287,23 @@ impl Workflow {
         }
     }
 
+    /// The `branches:` filter of one trigger event (`push`, `pull_request`), or `None` when the
+    /// event is absent or has no branch filter.
+    pub fn trigger_branches(&self, event: &str) -> Option<Vec<String>> {
+        let node =
+            get(&self.root, "on").or_else(|| self.root.as_hash()?.get(&Yaml::Boolean(true)))?;
+        let branches = get(get(node, event)?, "branches")?;
+        match branches {
+            Yaml::String(s) => Some(vec![s.clone()]),
+            Yaml::Array(a) => Some(
+                a.iter()
+                    .filter_map(|n| n.as_str().map(str::to_owned))
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
     pub fn jobs(&self) -> Vec<Job> {
         let jobs = get(&self.root, "jobs")
             .and_then(Yaml::as_hash)
@@ -399,6 +416,15 @@ impl Job {
         all.sort();
         all.dedup();
         all
+    }
+
+    /// The job-level `if:` expression, if any (whitespace as written).
+    pub fn condition(&self) -> Option<String> {
+        match get(&self.node, "if")? {
+            Yaml::String(s) => Some(s.clone()),
+            Yaml::Boolean(b) => Some(b.to_string()),
+            _ => None,
+        }
     }
 
     pub fn covers(&self, os: Os) -> bool {
