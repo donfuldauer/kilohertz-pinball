@@ -20,8 +20,9 @@ Existing defences:
 
 ## Out of scope
 
-- A hostile local filesystem: another local process with write access to the bundle folder while
-  the bundle is loaded.
+- A hostile local filesystem: another local process with write access to the bundle folder, or to
+  any folder above it on the path (which lets it rename or replace the bundle folder), while the
+  bundle is loaded.
 
 ## Accepted risks
 
@@ -29,14 +30,17 @@ Existing defences:
 
 The VFS validates that a path stays inside the bundle (canonicalize, then compare to the root). It
 then opens the file by path. A symlink swapped in between the check and the open could therefore
-escape the bundle.
+escape the bundle. The swap can be a symlink anywhere on the checked path, including the bundle
+folder itself, replaced through its parent. So the attacker needs write access to the bundle folder
+or to a parent folder, not necessarily inside the bundle.
 
-Exploiting this needs a concurrent local attacker with write access to the bundle folder. That
-attacker is outside the scope above.
+Exploiting this needs a concurrent local attacker with write access to the bundle folder or to a
+parent folder. Write access inside the bundle is not required for this risk. That attacker is
+outside the scope above.
 
 - **Status:** accepted.
-- **Revisit trigger:** bundles are ever loaded from a shared or downloaded location that another
-  process can write to.
+- **Revisit trigger:** bundles are ever loaded from a shared or downloaded location where another
+  process can write to the bundle folder or any of its parent folders.
 - **Fix then:** handle-relative opens (`cap-std`, or `openat2` with `RESOLVE_BENEATH` on Linux),
   which bind validation to the opened file.
 - **Source:** GitHub issue #13; review thread https://github.com/donfuldauer/kilohertz-pinball/pull/4#discussion_r4573613058.
