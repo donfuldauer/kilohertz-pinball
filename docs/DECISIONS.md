@@ -2909,3 +2909,11 @@ The user approved the Orchestrator's recommendations on the items that could blo
 - Rationale: proptest 1.12.0 `FloatUniform::sample` has `debug_assert!(self.low - result < initial.step)`, which is wrong when `step` is negative (`split_interval` gives a negative step for a positive range whose low bound is not aligned to ulp(high), e.g. `0.001f32..0.02`, `0.05f32..0.3`). The clamp to `low` right after it is correct, so release builds are fine; with debug assertions it panicked about once per 3e6 samples (CI: `wireform_frame::prop_planar_rails_stay_in_horizontal_plane`, `arbitrary_input_keeps_outputs_in_range`). Every property stays as strong; values are still in range.
 - Scope limit: profiles apply only at a workspace root. `tests/spec_ci` and `spikes` are separate workspaces that also pin proptest 1.12.0 and are not covered; they would need the same stanza if they start hitting it.
 - Alternatives: rewrite about 99 f32 range strategies (disproportionate); upgrade proptest (no fixed release available offline); vendor a patched proptest (maintenance burden).
+
+## w7pre-ci-main-no-cancel — main push runs are not cancelled (2026-11-18)
+
+**Decision.** In `ci.yml`, `concurrency.cancel-in-progress` is `${{ github.event_name == 'pull_request' }}`: only pull_request runs are cancelled when superseded. Push (main) and workflow_dispatch runs queue and complete.
+
+**Rationale.** Under D40 the full matrix (Windows/macOS legs, WARP/Metal GPU tests, coverage) exists only on main, and back-to-back merges were cancelling it (runs b0160aa and cdf7e6a). GitHub keeps one pending run per group, so in a burst the intermediate commits are skipped but the newest one runs; it contains all earlier commits.
+
+**Alternatives.** A per-SHA group for push (every commit runs, but runner load is high); leaving it as it was (rejected: the safety net never finishes during a merge streak).
