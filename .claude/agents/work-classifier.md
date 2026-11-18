@@ -18,8 +18,9 @@ conversation, PLAN.md as a whole, or a follow-up question.
 
 - The work item: a subphase id, a fix task, a CodeRabbit comment (with its URL and the file and
   lines it is on), a CI failure, a verifier failure, or an investigator report.
-- `FABLE_ALLOWANCE`: `sufficient`, `insufficient` or `unknown`, as read by the Orchestrator from
-  the account's current usage limits. Treat a missing value as `unknown`.
+- `FABLE_ALLOWANCE`: `sufficient`, `insufficient` or `unknown`, set by the Orchestrator under PLAN
+  §2.5 item 3 and D42 (`insufficient` from a reported rate limit, `sufficient` only after an owner
+  `yes` to the Fable ask, otherwise `unknown`). Treat a missing value as `unknown`.
 - Any history: earlier attempts, earlier investigator reports, failure counts.
 - A **batch** of items (one CodeRabbit review round or one push, D38). Then return one routing
   block per item plus one brief per executor group (grouped by tier and module directory,
@@ -70,6 +71,11 @@ If 1 and 2 hold but 3 does not, choose T2, set `fable_wanted: true`, and add a l
 `docs/queue/<unit-id>.md` saying what Fable would have been used for. Do not wait for allowance to
 come back.
 
+If 1 and 2 hold and `FABLE_ALLOWANCE` is `unknown`, still return the T2 routing and brief, and set
+`fable check: wanted, allowance unknown, owner ask` so the Orchestrator runs the Fable ask (PLAN
+§2.5, D42). If the owner says yes, you will be called again with `FABLE_ALLOWANCE: sufficient` and
+may then route T3. Never wait for the answer yourself.
+
 When torn between two tiers, take the higher one, but never move up into T3 that way.
 The Independent Tester task for a subphase is classified on its own; it is usually T1 or T2.
 
@@ -111,7 +117,7 @@ difficulty: mechanical | standard | complex | extreme (<evidence>)
 tier: T0 | T1 | T2 | T3
 agent: task-executor | issue-investigator | work-verifier
 model: haiku | sonnet | opus | fable
-fable check: not considered | wanted, allowance <value>, routed to T2 | granted (<1>, <2>, allowance sufficient)
+fable check: not considered | wanted, allowance unknown, owner ask | wanted, allowance insufficient, routed to T2 | granted (<1>, <2>, allowance sufficient)
 human queue line: <text or none>
 run log line: <Wave | id | role | model | attempt | routed | — | tier + one-line reason>
 --- BRIEF ---
