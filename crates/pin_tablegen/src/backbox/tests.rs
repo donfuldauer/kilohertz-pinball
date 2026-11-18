@@ -190,6 +190,18 @@ fn errors_name_the_element() {
             "backbox.collision_layer",
         ),
         (
+            Box::new(|l| l.collision_layer = 1),
+            "backbox.collision_layer",
+        ),
+        (
+            Box::new(|l| l.collision_layer = 2),
+            "backbox.collision_layer",
+        ),
+        (
+            Box::new(|l| l.collision_layer = 3),
+            "backbox.collision_layer",
+        ),
+        (
             Box::new(|l| l.collision_layer = 9),
             "backbox.collision_layer",
         ),
@@ -384,7 +396,7 @@ proptest! {
         height in 150.0f32..1000.0,
         depth in 30.0f32..200.0,
         pitch in 0.0f32..15.0,
-        layer in 1u8..8,
+        layer in 4u8..8,
     ) {
         let mut l = example();
         l.width = width;
