@@ -7,8 +7,8 @@
 # Seal rule: a wall seals against the glass only if glass underside minus
 # wall top is under one ball diameter (27 mm). Here 112 - 90 (layout.toml
 # wall_height) = 22 mm, so a ball in the air cannot cross a wall or post.
-# The glass also sits 32 mm above the ramp-top deck covers (z 80, the
+# The glass also sits 52 mm above the ramp-top deck covers (z 60, the
 # highest deck), at least a ball diameter + 3 mm (30 mm), so a ball resting
-# on a cover (top at 107 mm) still moves freely.
+# on a cover (top at 87 mm) still has 25 mm to the glass and moves freely.
 schema_version = 1
 height = 112.0

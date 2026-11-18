@@ -458,6 +458,7 @@ pub fn settle(sim: &mut Simulation, max: u64) {
         }
         sim.advance(1);
     }
+    panic!("settle: balls still moving after {max} ticks");
 }
 
 /// Plan-view distance, m.
