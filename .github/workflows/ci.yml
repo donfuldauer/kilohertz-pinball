@@ -668,3 +668,40 @@ jobs:
             rate=$(sed -n 's/.*<coverage line-rate="\([0-9.]*\)".*/\1/p' "$f" | head -n 1)
             echo "::notice title=dof-bridge coverage::$f line-rate $rate"
           done
+
+  # The single required status check for the `main` ruleset (PLAN §2.7 step 5, D40). A matrix job
+  # skipped by its job-level `if` is reported under its unexpanded name
+  # (`gpu-tests (${{ matrix.target }}, ...)`), so requiring the real names would stay pending on
+  # PRs that skip them; and a skipped dependent of a failed `changes` reads as success. This job
+  # always runs, requires `changes` to succeed, and fails on any needed job that failed or was
+  # cancelled (success and skipped both pass). The `*-cross` jobs, coverage and gate-a1 are not
+  # part of the PR set and are not aggregated.
+  pr-checks:
+    needs:
+      - changes
+      - fmt
+      - clippy
+      - core-tests
+      - replay-hash
+      - gpu-tests
+      - dof-bridge
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate the PR checks
+        shell: bash
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if [ "$(echo "$NEEDS" | jq -r '.changes.result')" != "success" ]; then
+            echo "::error::changes did not succeed"
+            exit 1
+          fi
+          bad=$(echo "$NEEDS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key')
+          if [ -n "$bad" ]; then
+            echo "::error::failed or cancelled: $bad"
+            exit 1
+          fi

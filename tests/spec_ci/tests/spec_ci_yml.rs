@@ -160,7 +160,8 @@ fn pull_requests_run_only_the_linux_set() {
         }
     }
     // A guard that could run a job after an upstream failure would defeat the split.
-    for j in ci().jobs() {
+    // The one exception is the `pr-checks` aggregator, which must run after any failure.
+    for j in ci().jobs().into_iter().filter(|j| j.id != "pr-checks") {
         if let Some(c) = j.condition() {
             assert!(!c.contains("always()"), "job `{}`: {c}", j.id);
         }
@@ -714,4 +715,140 @@ fn cargo_commands_in_ci_exist_in_the_brief() {
             }
         }
     }
+}
+
+/// The Linux/PR-set job ids that `pr-checks` aggregates (D40).
+const PR_SET: [&str; 7] = [
+    "changes",
+    "fmt",
+    "clippy",
+    "core-tests",
+    "replay-hash",
+    "gpu-tests",
+    "dof-bridge",
+];
+
+#[test]
+fn pr_checks_aggregates_exactly_the_pr_set_and_always_runs() {
+    let j = job("pr-checks");
+    assert_eq!(j.condition().as_deref(), Some("always()"));
+    let mut needs = j.needs();
+    needs.sort();
+    let mut want: Vec<String> = PR_SET.iter().map(|s| (*s).to_owned()).collect();
+    want.sort();
+    assert_eq!(needs, want, "pr-checks needs");
+    assert!(
+        !needs.iter().any(|n| n.ends_with("-cross")),
+        "pr-checks must not need a -cross job: {needs:?}"
+    );
+    // The check name must be exactly `pr-checks` (the required check in the ruleset).
+    let text = job_text("pr-checks");
+    assert!(
+        !text.contains("\n    name:") || text.contains("\n    name: pr-checks\n"),
+        "pr-checks check name must be `pr-checks`"
+    );
+    assert!(j.runner_labels().contains(&"ubuntu-latest".to_owned()));
+}
+
+#[test]
+fn every_pull_request_job_is_wired_into_pr_checks() {
+    let needs = job("pr-checks").needs();
+    for j in ci().jobs() {
+        if j.id == "pr-checks" || j.id.ends_with("-cross") {
+            continue;
+        }
+        let runs_on_pr = !skips_pull_requests(&j)
+            && !j
+                .condition()
+                .is_some_and(|c| c.contains("github.event_name == 'workflow_dispatch'"));
+        if runs_on_pr {
+            assert!(
+                needs.contains(&j.id),
+                "job `{}` can run on pull_request but is not in pr-checks needs {needs:?}",
+                j.id
+            );
+        }
+    }
+}
+
+fn pr_checks_script() -> String {
+    let j = job("pr-checks");
+    let scripts = j.raw_run_scripts();
+    assert_eq!(scripts.len(), 1, "pr-checks has one run step");
+    assert_eq!(
+        j.step_env("jq", "NEEDS").as_deref(),
+        Some("${{ toJSON(needs) }}"),
+        "needs must reach the script as JSON through an env var"
+    );
+    assert!(
+        !scripts[0].contains("${{"),
+        "no expression interpolation inside the script"
+    );
+    scripts[0].clone()
+}
+
+#[test]
+fn pr_checks_script_requires_changes_to_succeed() {
+    let script = pr_checks_script();
+    assert!(
+        script.contains(".changes.result") && script.contains("\"success\""),
+        "script must require changes == success:\n{script}"
+    );
+}
+
+/// Run the extracted script with a NEEDS fixture; the exit code.
+fn run_pr_checks(results: [(&str, &str); 7]) -> Option<i32> {
+    let body: Vec<String> = results
+        .iter()
+        .map(|(k, v)| format!("\"{k}\": {{\"result\": \"{v}\", \"outputs\": {{}}}}"))
+        .collect();
+    let needs = format!("{{{}}}", body.join(","));
+    std::process::Command::new("bash")
+        .arg("-c")
+        .arg(pr_checks_script())
+        .env("NEEDS", needs)
+        .output()
+        .expect("bash and jq are required")
+        .status
+        .code()
+}
+
+fn fixture(over: &[(&str, &str)], default: &str) -> [(&'static str, &'static str); 7] {
+    let mut out = [("", ""); 7];
+    for (i, id) in PR_SET.iter().enumerate() {
+        let r = over
+            .iter()
+            .find(|(k, _)| k == id)
+            .map_or(default, |(_, v)| *v);
+        out[i] = (id, Box::leak(r.to_owned().into_boxed_str()));
+    }
+    out
+}
+
+#[test]
+fn pr_checks_script_exit_codes() {
+    assert_eq!(run_pr_checks(fixture(&[], "success")), Some(0));
+    assert_eq!(
+        run_pr_checks(fixture(
+            &[("gpu-tests", "skipped"), ("dof-bridge", "skipped")],
+            "success"
+        )),
+        Some(0)
+    );
+    assert_ne!(
+        run_pr_checks(fixture(&[("clippy", "failure")], "success")),
+        Some(0)
+    );
+    assert_ne!(
+        run_pr_checks(fixture(&[("core-tests", "cancelled")], "success")),
+        Some(0)
+    );
+    assert_ne!(
+        run_pr_checks(fixture(&[("changes", "failure")], "skipped")),
+        Some(0)
+    );
+    assert_ne!(
+        run_pr_checks(fixture(&[("changes", "skipped")], "skipped")),
+        Some(0)
+    );
 }
