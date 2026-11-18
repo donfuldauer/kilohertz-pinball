@@ -27,7 +27,7 @@
 //! width = 400.0                  # mm across (table x)
 //! height = 300.0                 # mm, world-vertical
 //! depth = 35.0                   # mm, glass to back panel (>= 30: a 27 mm ball plus clearance)
-//! collision_layer = 4            # optional, default 4 (1..=7; 0 is the main deck)
+//! collision_layer = 4            # optional, default 4 (4..=7; layers 0-3 are the playfield, upper deck, wireform and subway)
 //!
 //! [[backbox.flippers]]
 //! side = "left"                  # left | right
@@ -135,6 +135,7 @@ pub use outline::{
 use crate::layout::{GENERATED_HEADER, GENERATED_PREFIX, GenError, MAX_COORD_MM, MAX_SIZE_MM};
 use glam::{Quat, Vec3};
 use glb::{FlatMaterial, Mesh, Node};
+use pin_assets::MAX_BACKBOX_COLLIDERS;
 use pin_core::Material;
 use pin_core::schema::table::{
     AabbDef, FlipperDef, FlipperShapeDef, FlipperStagingDef, LayerTransitionDef, MechDef, MechKind,
@@ -234,7 +235,8 @@ pub struct BackboxLayout {
     pub height: f32,
     /// Glass to back panel, mm.
     pub depth: f32,
-    /// Collision layer index (1..=7, default 4).
+    /// Collision layer index (4..=7, default 4; layers 0-3 belong to the
+    /// playfield, upper deck, wireform and subway, PLAN §5.5).
     #[serde(default = "default_layer")]
     pub collision_layer: u8,
     /// `[[backbox.flippers]]`.
@@ -740,10 +742,12 @@ pub fn generate_backbox(
         o.check_fits(layout.width, layout.height)?;
     }
     let layer = layout.collision_layer;
-    if !(1..=7).contains(&layer) {
+    if !(4..=7).contains(&layer) {
         return Err(gen_err(
             "backbox.collision_layer",
-            format!("layer {layer} must be 1..=7 (0 is the main deck)"),
+            format!(
+                "layer {layer} must be 4..=7 (layers 0–3 are the playfield, upper deck, wireform and subway; PLAN §5.5)"
+            ),
         ));
     }
     let pitch = base.meta.pitch_deg;
@@ -935,6 +939,19 @@ pub fn generate_backbox(
             layer_mask: mask,
             material: *material,
         });
+    }
+    // Every mesh of backbox_colliders.glb: the panels plus the non-degenerate
+    // segments. The loader rejects more than MAX_BACKBOX_COLLIDERS.
+    let total_colliders =
+        panels.len() + segments.iter().filter(|s| s.placement(d).is_some()).count();
+    if total_colliders > MAX_BACKBOX_COLLIDERS {
+        return Err(gen_err(
+            "backbox.walls",
+            format!(
+                "{total_colliders} collider meshes in total, at most {MAX_BACKBOX_COLLIDERS} \
+                 (the loader's limit)"
+            ),
+        ));
     }
     for seg in &segments {
         let Some((center, half, rot)) = seg.placement(d) else {
