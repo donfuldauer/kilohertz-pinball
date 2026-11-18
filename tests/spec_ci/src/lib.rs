@@ -290,9 +290,18 @@ impl Workflow {
     /// The `branches:` filter of one trigger event (`push`, `pull_request`), or `None` when the
     /// event is absent or has no branch filter.
     pub fn trigger_branches(&self, event: &str) -> Option<Vec<String>> {
+        self.trigger_filter(event, "branches")
+    }
+
+    /// The `paths:` filter of one trigger event, or `None` when absent.
+    pub fn trigger_paths(&self, event: &str) -> Option<Vec<String>> {
+        self.trigger_filter(event, "paths")
+    }
+
+    fn trigger_filter(&self, event: &str, key: &str) -> Option<Vec<String>> {
         let node =
             get(&self.root, "on").or_else(|| self.root.as_hash()?.get(&Yaml::Boolean(true)))?;
-        let branches = get(get(node, event)?, "branches")?;
+        let branches = get(get(node, event)?, key)?;
         match branches {
             Yaml::String(s) => Some(vec![s.clone()]),
             Yaml::Array(a) => Some(
@@ -304,6 +313,7 @@ impl Workflow {
         }
     }
 
+    /// All jobs of the workflow, in file order.
     pub fn jobs(&self) -> Vec<Job> {
         let jobs = get(&self.root, "jobs")
             .and_then(Yaml::as_hash)
@@ -316,6 +326,7 @@ impl Workflow {
             .collect()
     }
 
+    /// One job by id.
     pub fn job(&self, id: &str) -> Option<Job> {
         self.jobs().into_iter().find(|j| j.id == id)
     }
