@@ -186,6 +186,58 @@ fn layout() -> impl Strategy<Value = LayoutManifest> {
         })
 }
 
+/// A layout of one straight lane and nothing else.
+fn one_lane(from: [f32; 2], to: [f32; 2], width: f32) -> LayoutManifest {
+    LayoutManifest {
+        schema_version: 1,
+        playfield: Playfield {
+            width: W,
+            length: L,
+            wall_height: 28.0,
+        },
+        walls: vec![],
+        posts: vec![],
+        lanes: vec![Lane {
+            kind: LaneKind::Inlane,
+            points: vec![from, to],
+            width,
+        }],
+        ramps: vec![],
+        decks: vec![],
+        inserts: vec![],
+    }
+}
+
+/// A straight lane near a diagonal once tripped the doubles-back lint
+/// (f32 parallel determinant read as a crossing).
+#[test]
+fn straight_diagonal_lane_generates() {
+    let layout = one_lane([364.8081, 278.6047], [274.15408, 188.0386], 15.889875);
+    generate(&layout, &apex_base()).unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// Fixed sweep of straight lanes within 0.1 degrees of each diagonal.
+#[test]
+fn straight_lanes_near_diagonals_generate() {
+    let base = apex_base();
+    let mut cases = 0;
+    for quadrant in 0..4 {
+        let centre = (45.0 + 90.0 * quadrant as f32).to_radians();
+        for i in 0..=24 {
+            let a = centre + (-0.1 + 0.2 * i as f32 / 24.0).to_radians();
+            for j in 0..20 {
+                let len = 60.0 + 23.0 * j as f32;
+                let from = [200.0 + 1.37 * j as f32, 400.0 + 0.91 * i as f32];
+                let to = [from[0] + len * a.cos(), from[1] + len * a.sin()];
+                let layout = one_lane(from, to, 15.0 + 1.7 * (j % 7) as f32);
+                generate(&layout, &base).unwrap_or_else(|e| panic!("{e}\n{layout:#?}"));
+                cases += 1;
+            }
+        }
+    }
+    assert!(cases >= 1900);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
