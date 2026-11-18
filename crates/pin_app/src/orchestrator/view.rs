@@ -744,9 +744,15 @@ impl TableRenderer {
     /// overlay into `view`; then every display of `routes` on `window`
     /// into the view [`LayerCompositor::begin`] returns (`view` itself
     /// when it returns `None`, the [`LayerTarget::Direct`] path), and
-    /// [`LayerCompositor::end`]. Display layers so blend in display-encoded
-    /// space on an `*Srgb` target too (issue #10). On the direct path this
-    /// is exactly [`encode`](Self::encode). Returns the displays drawn.
+    /// [`LayerCompositor::end`]. With [`LayerTarget::TwinView`] or
+    /// [`LayerTarget::Intermediate`] the display layers blend in
+    /// display-encoded space, on an `*Srgb` target too (issue #10). With
+    /// [`LayerTarget::Direct`] on a non-sRGB target they blend in
+    /// display-encoded space likewise; on an `*Srgb` target (the last
+    /// resort when neither a twin view nor copy usages are available) the
+    /// display shaders encode their output and fixed-function blending
+    /// happens in linear space. On the direct path this is exactly
+    /// [`encode`](Self::encode). Returns the displays drawn.
     ///
     /// # Panics
     /// If `layers`' target formats are not this renderer's
