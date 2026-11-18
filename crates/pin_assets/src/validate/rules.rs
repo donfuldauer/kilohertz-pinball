@@ -1247,7 +1247,16 @@ impl<'v> Checker<'v> {
         }
         if let Some(bb) = &b.backbox {
             self.file_exists(f, "backbox.scene", &bb.scene);
-            self.layer(f, "backbox.collision_layer", bb.collision_layer);
+            if !(4..=7).contains(&bb.collision_layer) {
+                self.err(
+                    f,
+                    "backbox.collision_layer",
+                    format!(
+                        "layer {} must be 4..=7 (layers 0-3 are the playfield, upper deck, wireform and subway; PLAN §5.5)",
+                        bb.collision_layer
+                    ),
+                );
+            }
         }
     }
 }
