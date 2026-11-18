@@ -349,10 +349,9 @@ fn bound_colliders(
     (on, off)
 }
 
-/// Most collider nodes (placed triangle primitives) a bundle's
-/// [`BACKBOX_COLLIDERS_FILE`] may hold; more is a load error. Also the
-/// glTF `nodes` and `meshes` budgets of that file.
-pub const MAX_BACKBOX_COLLIDERS: usize = 4096;
+/// Most collider nodes a bundle's [`BACKBOX_COLLIDERS_FILE`] may hold;
+/// re-exported from `pin_assets`, shared with the `pin_tablegen` generator.
+pub use pin_assets::MAX_BACKBOX_COLLIDERS;
 
 /// A static collider converted from one glTF collider node (a placed
 /// triangle primitive with extras `collider: true`).

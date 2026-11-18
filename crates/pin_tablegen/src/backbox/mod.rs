@@ -135,6 +135,7 @@ pub use outline::{
 use crate::layout::{GENERATED_HEADER, GENERATED_PREFIX, GenError, MAX_COORD_MM, MAX_SIZE_MM};
 use glam::{Quat, Vec3};
 use glb::{FlatMaterial, Mesh, Node};
+use pin_assets::MAX_BACKBOX_COLLIDERS;
 use pin_core::Material;
 use pin_core::schema::table::{
     AabbDef, FlipperDef, FlipperShapeDef, FlipperStagingDef, LayerTransitionDef, MechDef, MechKind,
@@ -938,6 +939,19 @@ pub fn generate_backbox(
             layer_mask: mask,
             material: *material,
         });
+    }
+    // Every mesh of backbox_colliders.glb: the panels plus the non-degenerate
+    // segments. The loader rejects more than MAX_BACKBOX_COLLIDERS.
+    let total_colliders =
+        panels.len() + segments.iter().filter(|s| s.placement(d).is_some()).count();
+    if total_colliders > MAX_BACKBOX_COLLIDERS {
+        return Err(gen_err(
+            "backbox.walls",
+            format!(
+                "{total_colliders} collider meshes in total, at most {MAX_BACKBOX_COLLIDERS} \
+                 (the loader's limit)"
+            ),
+        ));
     }
     for seg in &segments {
         let Some((center, half, rot)) = seg.placement(d) else {
