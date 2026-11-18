@@ -2,7 +2,7 @@
 
 **Decision:** `telemetry_channel` clamps the ring capacity to
 `max(requested, MAX_DATAGRAMS_PER_TICK)` (5) and prints one warning via
-`eprintln!` when it raises the value. The old exact-capacity behaviour stays
+a best-effort warning on stderr (a failed write is ignored) when it raises the value. The old exact-capacity behaviour stays
 available as `#[doc(hidden)] pub fn telemetry_channel_unclamped`, re-exported
 from `telemetry`, which the public function delegates to.
 
