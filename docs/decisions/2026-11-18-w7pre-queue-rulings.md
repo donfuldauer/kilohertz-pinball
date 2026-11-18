@@ -16,7 +16,10 @@ if a Wave 7 table's soak shows eject loops or exit misses.
 - The combined Gate A1 (A1 ramp entry plus A3 scatter, GAMES=1000 SEED=1) passed with 0 stuck,
   endless or escaped balls at all skills and a standard median of 15,433 ms.
 - The 1,000-game soak of the frozen `greybox_452eedf` fixture found no VUK-deck loop.
-- The values are small next to the 2 mm knife-edge (plus or minus) that caused the loop.
+- The 3 mm lateral scatter is deliberately larger than the plus-or-minus 2 mm eject-x
+  knife-edge that decided whether the loop exists, so one deterministic eject path cannot
+  repeat. It stays capped at a quarter of the 20 mm exit-zone half size (5 mm) and
+  of the scoop radius, so the ball still leaves on its intended line.
 
 **Alternatives:**
 - Per-table tuning fields: not needed, and would require a contract change.
@@ -46,14 +49,17 @@ backbox ball never touches layers 0 to 3).
 
 **Decision:** Keep it as an accepted, stated limit: layer transitions test only sub-step end
 points (`TransitionSet::update`), so a sub-step that clips a zone corner can skip it. No swept
-segment-vs-AABB test now. Trigger to revisit: any soak finding traced to a missed entry or exit
-transition, or a Wave 7 table with steep oblique ramp entries.
+segment-vs-AABB test now. Trigger to revisit: a soak finding, bug report or replay traced to a
+missed entry or exit transition, or a Wave 7 table with steep oblique ramp entries.
 
 **Rationale:**
 - Generated ramps funnel the ball along the start tangent, where the chord is the full
   `entry_width`.
-- Gate A1's soak detects the symptoms a skip would cause (StuckBall, EscapedBall or EndlessBall),
-  and the combined Gate A1 showed none in 3,000 balls.
+- Gate A1's soak only reports a skip that ends badly (StuckBall, EscapedBall or EndlessBall); the
+  combined Gate A1 showed none in 3,000 balls. A skip that leaves the ball on its old layer and
+  drains normally raises no soak finding, so the soak does not bound how often skips happen.
+  Such a skip would be seen as a ball visibly passing through a ramp mouth or deck in play or in
+  a replay, which is the observable form of the revisit trigger.
 - A swept test changes simulation output for every table and would need a new determinism and
   Gate A1 baseline for no observed benefit.
 
