@@ -83,6 +83,42 @@ fn err_of(layout: &BackboxLayout) -> GenError {
     generate_backbox(layout, &base()).expect_err("invalid layout")
 }
 
+/// `segments` distinct-point wall segments as walls of at most 1024 points.
+fn walls_with_segments(mut segments: usize) -> Vec<BackboxWall> {
+    let mut walls = Vec::new();
+    while segments > 0 {
+        let n = segments.min(1023);
+        let points = (0..=n)
+            .map(|k| [if k % 2 == 0 { -100.0 } else { 100.0 }, 50.0])
+            .collect();
+        walls.push(BackboxWall { points });
+        segments -= n;
+    }
+    walls
+}
+
+#[test]
+fn collider_mesh_count_is_limited_to_the_loaders_budget() {
+    let base_count = generate_backbox(&example(), &base())
+        .expect("generates")
+        .colliders
+        .len();
+    let mut at_limit = example();
+    at_limit.walls = walls_with_segments(MAX_BACKBOX_COLLIDERS - base_count);
+    let g = generate_backbox(&at_limit, &base()).expect("exactly the limit generates");
+    assert_eq!(g.colliders.len(), MAX_BACKBOX_COLLIDERS);
+
+    let mut over = example();
+    over.walls = walls_with_segments(MAX_BACKBOX_COLLIDERS - base_count + 1);
+    let e = err_of(&over).to_string();
+    assert!(e.contains("backbox.walls"), "{e}");
+    assert!(e.contains(&format!("{}", MAX_BACKBOX_COLLIDERS + 1)), "{e}");
+    assert!(
+        e.contains(&format!("at most {MAX_BACKBOX_COLLIDERS}")),
+        "{e}"
+    );
+}
+
 #[test]
 fn frame_axes_follow_the_pitch() {
     let f = BackboxFrame::new([0.0, 1000.0, 200.0], 6.5);

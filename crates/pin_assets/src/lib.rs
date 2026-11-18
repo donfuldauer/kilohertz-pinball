@@ -35,6 +35,12 @@ pub use zip::ZipLimits;
 /// no backbox physics.
 pub const BACKBOX_COLLIDERS_FILE: &str = "backbox_colliders.glb";
 
+/// Most collider nodes (placed triangle primitives) a bundle's
+/// [`BACKBOX_COLLIDERS_FILE`] may hold; more is a load error. Also the glTF
+/// `nodes` and `meshes` budgets of that file. The single source for both
+/// the `pin_sim` loader and the `pin_tablegen` generator.
+pub const MAX_BACKBOX_COLLIDERS: usize = 4096;
+
 /// Errors from opening a bundle, reading from it, or loading its contents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AssetError {
