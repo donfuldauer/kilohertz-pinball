@@ -23,6 +23,21 @@ fn job(id: &str) -> Job {
         .unwrap_or_else(|| panic!("ci.yml has no job `{id}`"))
 }
 
+/// Jobs that are split into a Linux job (`<id>`, PR and push) and a cross-OS job
+/// (`<id>-cross`, Windows and macOS, never on pull requests) (D40).
+const SPLIT_JOBS: [&str; 4] = ["core-tests", "gpu-tests", "clippy", "replay-hash"];
+
+/// The Linux job and the cross-OS job of a split family.
+fn family(id: &str) -> [Job; 2] {
+    [job(id), job(&format!("{id}-cross"))]
+}
+
+/// Whether a job-level `if:` excludes pull requests.
+fn skips_pull_requests(j: &Job) -> bool {
+    j.condition()
+        .is_some_and(|c| c.contains("github.event_name != 'pull_request'"))
+}
+
 #[test]
 fn parses_as_a_single_workflow_document() {
     ci();
@@ -39,6 +54,8 @@ fn has_no_tabs_and_ends_with_newline() {
 fn triggers_on_push_and_only_known_events() {
     let t = ci().triggers();
     assert!(t.iter().any(|e| e == "push"), "push trigger missing: {t:?}");
+    assert!(t.iter().any(|e| e == "pull_request"), "{t:?}");
+    assert!(t.iter().any(|e| e == "workflow_dispatch"), "{t:?}");
     for e in &t {
         assert!(
             [
@@ -55,6 +72,16 @@ fn triggers_on_push_and_only_known_events() {
 }
 
 #[test]
+fn push_runs_only_for_main() {
+    // D40: the full CI runs on pushes to main; PR branches are covered by pull_request.
+    assert_eq!(
+        ci().trigger_branches("push"),
+        Some(vec!["main".to_owned()]),
+        "push must be limited to `branches: [main]`"
+    );
+}
+
+#[test]
 fn required_jobs_exist() {
     let ids: Vec<String> = ci().jobs().into_iter().map(|j| j.id).collect();
     for want in REQUIRED_JOBS {
@@ -63,25 +90,129 @@ fn required_jobs_exist() {
             "job `{want}` missing; have {ids:?}"
         );
     }
+    for id in SPLIT_JOBS {
+        let cross = format!("{id}-cross");
+        assert!(ids.contains(&cross), "job `{cross}` missing; have {ids:?}");
+    }
+    for want in ["changes", "coverage", "dof-bridge", "gate-a1"] {
+        assert!(ids.iter().any(|i| i == want), "job `{want}` missing");
+    }
 }
 
 #[test]
 fn build_and_test_jobs_cover_all_three_platforms() {
-    for id in ["core-tests", "gpu-tests", "clippy"] {
-        let j = job(id);
+    for id in SPLIT_JOBS {
+        let [lin, cross] = family(id);
         for os in Os::ALL {
             assert!(
-                j.covers(os),
-                "{id} does not run on {os:?}; runners: {:?}",
-                j.runner_labels()
+                lin.covers(os) || cross.covers(os),
+                "{id} does not run on {os:?} (Linux job {:?}, cross job {:?})",
+                lin.runner_labels(),
+                cross.runner_labels()
             );
+        }
+        // The split itself: Linux job is Linux only, the cross job is Windows + macOS only.
+        assert!(lin.covers(Os::Linux), "{id} must run on Linux");
+        assert!(
+            !lin.covers(Os::Windows) && !lin.covers(Os::Macos),
+            "{id}: the Linux job must not run on Windows or macOS"
+        );
+        assert!(
+            cross.covers(Os::Windows) && cross.covers(Os::Macos) && !cross.covers(Os::Linux),
+            "{id}-cross must run on Windows and macOS only"
+        );
+    }
+}
+
+#[test]
+fn pull_requests_run_only_the_linux_set() {
+    // D40: every Windows/macOS job and coverage is skipped on pull_request (job-level `if`,
+    // so a skipped job reports success), and no Linux job of the split families is.
+    for id in SPLIT_JOBS {
+        let [lin, cross] = family(id);
+        assert!(
+            skips_pull_requests(&cross),
+            "{id}-cross must skip pull requests: {:?}",
+            cross.condition()
+        );
+        assert!(
+            !skips_pull_requests(&lin),
+            "{id} (Linux) must run on pull requests: {:?}",
+            lin.condition()
+        );
+    }
+    assert!(
+        !skips_pull_requests(&job("fmt")),
+        "fmt must run on pull requests"
+    );
+    assert!(
+        skips_pull_requests(&job("coverage")),
+        "coverage must skip pull requests"
+    );
+    // Any other job on a non-Linux runner (dof-bridge, path-gated) is exempt from the blanket rule.
+    for j in ci().jobs() {
+        if (j.covers(Os::Windows) || j.covers(Os::Macos)) && j.id != "dof-bridge" {
+            assert!(
+                skips_pull_requests(&j),
+                "job `{}` runs on Windows/macOS but is not skipped on pull requests",
+                j.id
+            );
+        }
+    }
+    // A guard that could run a job after an upstream failure would defeat the split.
+    // The one exception is the `pr-checks` aggregator, which must run after any failure.
+    for j in ci().jobs().into_iter().filter(|j| j.id != "pr-checks") {
+        if let Some(c) = j.condition() {
+            assert!(!c.contains("always()"), "job `{}`: {c}", j.id);
         }
     }
 }
 
 #[test]
+fn path_gated_jobs_follow_the_changes_outputs() {
+    let gpu = job("gpu-tests").condition().unwrap_or_default();
+    assert!(
+        gpu.contains("needs.changes.outputs.code == 'true'")
+            && gpu.contains("needs.changes.outputs.gpu == 'true'"),
+        "gpu-tests (lavapipe) must be gated on the gpu output: {gpu}"
+    );
+    let dof = job("dof-bridge").condition().unwrap_or_default();
+    assert!(
+        dof.contains("needs.changes.outputs.dof == 'true'"),
+        "dof-bridge must be gated on the dof output: {dof}"
+    );
+    let text = job_text("changes");
+    for path in [
+        "crates/pin_render/",
+        "crates/pin_app/",
+        "*.wgsl",
+        "tools/dof_bridge/",
+    ] {
+        assert!(text.contains(path), "changes job does not look at {path}");
+    }
+    // Fail closed: gpu and dof start true and are only cleared for a PR with a file list.
+    assert!(
+        text.contains("gpu=true\n          dof=true"),
+        "gpu and dof must default to true (fail closed)"
+    );
+    assert!(
+        text.contains("git diff -z --name-only --no-renames") && text.contains("read -r -d ''"),
+        "changes step must read NUL-separated paths (git diff -z) so quoted paths cannot miss globs"
+    );
+    assert!(
+        text.contains("docs/PLAN.md) code=true"),
+        "docs-only skip must stay"
+    );
+}
+
+#[test]
 fn macos_runner_is_apple_silicon() {
-    for id in ["core-tests", "gpu-tests", "clippy"] {
+    for id in [
+        "core-tests-cross",
+        "gpu-tests-cross",
+        "clippy-cross",
+        "replay-hash-cross",
+    ] {
         let labels = job(id).runner_labels();
         let mac: Vec<_> = labels
             .iter()
@@ -155,11 +286,18 @@ fn concurrency_cancels_superseded_runs_per_ref() {
 
 #[test]
 fn core_tests_runs_every_gpu_free_crate_and_no_gpu_crate() {
-    let script = job("core-tests").script();
+    for j in family("core-tests") {
+        core_tests_job_runs_every_gpu_free_crate(&j);
+    }
+}
+
+fn core_tests_job_runs_every_gpu_free_crate(j: &Job) {
+    let script = j.script();
     let lines = cargo_lines(&script, "test");
     assert!(
         !lines.is_empty(),
-        "core-tests never runs `cargo test`:\n{script}"
+        "{} never runs `cargo test`:\n{script}",
+        j.id
     );
 
     let mut covered: Vec<String> = Vec::new();
@@ -213,13 +351,48 @@ fn core_tests_runs_every_gpu_free_crate_and_no_gpu_crate() {
 }
 
 #[test]
+fn core_tests_linux_also_runs_the_spec_ci_steps() {
+    // The workflow conformance tests run in the PR set, so in the Linux core-tests job.
+    let script = job("core-tests").script();
+    assert!(
+        cargo_lines(&script, "test")
+            .iter()
+            .any(|l| l.contains("--manifest-path tests/spec_ci/Cargo.toml")),
+        "core-tests (Linux) must run the spec_ci tests:\n{script}"
+    );
+    assert!(
+        cargo_lines(&script, "clippy")
+            .iter()
+            .any(|l| l.contains("tests/spec_ci/Cargo.toml") && l.contains("-D warnings")),
+        "core-tests (Linux) must lint spec_ci:\n{script}"
+    );
+}
+
+#[test]
 fn gpu_tests_runs_render_audio_app() {
-    let j = job("gpu-tests");
+    for id in ["gpu-tests", "gpu-tests-cross"] {
+        gpu_job_runs_render_audio_app(&job(id));
+    }
+}
+
+#[test]
+fn gpu_tests_cover_every_adapter_across_the_split() {
+    let text = format!("{}{}", job_text("gpu-tests"), job_text("gpu-tests-cross"));
+    for adapter in ["adapter: lavapipe", "adapter: WARP", "adapter: Metal"] {
+        assert!(text.contains(adapter), "no gpu-tests leg for {adapter}");
+    }
+    assert!(job_text("gpu-tests").contains("adapter: lavapipe"));
+    assert!(!job_text("gpu-tests").contains("adapter: WARP"));
+    assert!(!job_text("gpu-tests").contains("adapter: Metal"));
+}
+
+fn gpu_job_runs_render_audio_app(j: &Job) {
     let script = j.script();
     let lines = cargo_lines(&script, "test");
     assert!(
         !lines.is_empty(),
-        "gpu-tests never runs `cargo test`:\n{script}"
+        "{} never runs `cargo test`:\n{script}",
+        j.id
     );
     let sel: Vec<String> = lines.iter().flat_map(|l| selected_packages(l)).collect();
     for g in GPU {
@@ -240,11 +413,18 @@ fn gpu_tests_installs_software_vulkan_and_xvfb_on_linux() {
 
 #[test]
 fn clippy_denies_warnings_across_the_workspace() {
-    let script = job("clippy").script();
+    for id in ["clippy", "clippy-cross"] {
+        clippy_job_denies_warnings(&job(id));
+    }
+}
+
+fn clippy_job_denies_warnings(j: &Job) {
+    let script = j.script();
     let lines = cargo_lines(&script, "clippy");
     assert!(
         !lines.is_empty(),
-        "clippy job never runs `cargo clippy`:\n{script}"
+        "{} never runs `cargo clippy`:\n{script}",
+        j.id
     );
     assert!(
         lines.iter().any(|l| {
@@ -298,10 +478,25 @@ fn job_text(id: &str) -> String {
 /// Subphase 2.5 filled the 1.2 placeholder: the golden replay-hash check (D9).
 #[test]
 fn replay_hash_records_and_replays_on_every_os_and_fails_only_in_machine() {
-    let j = job("replay-hash");
+    let [lin, cross] = family("replay-hash");
     for os in Os::ALL {
-        assert!(j.covers(os), "replay-hash must run on {os:?}");
+        assert!(
+            lin.covers(os) || cross.covers(os),
+            "replay-hash must run on {os:?}"
+        );
     }
+    for (j, text_id) in [(lin, "replay-hash"), (cross, "replay-hash-cross")] {
+        replay_hash_job_checks(&j, text_id);
+    }
+    let all = workflow_text("ci.yml");
+    assert!(
+        !all.lines()
+            .any(|l| l.trim_start().starts_with("needs:") && (l.contains("replay-hash"))),
+        "no job may consume (compare) the per-OS replay hashes"
+    );
+}
+
+fn replay_hash_job_checks(j: &Job, text_id: &str) {
     let script = j.script();
     let builds = cargo_lines(&script, "build");
     assert!(
@@ -310,7 +505,7 @@ fn replay_hash_records_and_replays_on_every_os_and_fails_only_in_machine() {
             .any(|l| l.contains("--release") && selected_packages(l).iter().any(|p| p == "pin_sim")),
         "want `cargo build --release -p pin_sim`, got {builds:?}"
     );
-    let text = job_text("replay-hash");
+    let text = job_text(text_id);
     assert!(
         script.contains("--record-inputs") && script.contains("--ticks"),
         "replay-hash must record the fixture:\n{script}"
@@ -345,12 +540,6 @@ fn replay_hash_records_and_replays_on_every_os_and_fails_only_in_machine() {
         text.contains("fail-fast: false"),
         "one OS must not cancel the others"
     );
-    let all = workflow_text("ci.yml");
-    assert!(
-        !all.lines()
-            .any(|l| l.trim_start().starts_with("needs:") && l.contains("replay-hash")),
-        "no job may consume (compare) the per-OS replay hashes"
-    );
     assert!(
         text.to_ascii_lowercase().contains("report"),
         "replay-hash must say that cross-OS differences are report-only"
@@ -366,7 +555,14 @@ fn toolchain_is_the_exact_pin_from_versions_toml_with_cache() {
         workflow_text("ci.yml").contains(&pin),
         "ci.yml never mentions toolchain {pin}"
     );
-    for id in ["core-tests", "gpu-tests", "clippy"] {
+    for id in [
+        "core-tests",
+        "core-tests-cross",
+        "gpu-tests",
+        "gpu-tests-cross",
+        "clippy",
+        "clippy-cross",
+    ] {
         let uses = wf.job(id).unwrap().uses();
         assert!(
             uses.iter().any(|u| u.starts_with("actions/checkout@")),
@@ -395,7 +591,12 @@ fn toolchain_is_the_exact_pin_from_versions_toml_with_cache() {
 #[test]
 fn core_tests_installs_no_sdl_or_windowing_packages() {
     // GPU-free crates must build without SDL / display / audio system headers.
-    let script = job("core-tests").script().to_ascii_lowercase();
+    let script = family("core-tests")
+        .iter()
+        .map(Job::script)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
     for pkg in [
         "libsdl",
         "libx11",
@@ -514,4 +715,140 @@ fn cargo_commands_in_ci_exist_in_the_brief() {
             }
         }
     }
+}
+
+/// The Linux/PR-set job ids that `pr-checks` aggregates (D40).
+const PR_SET: [&str; 7] = [
+    "changes",
+    "fmt",
+    "clippy",
+    "core-tests",
+    "replay-hash",
+    "gpu-tests",
+    "dof-bridge",
+];
+
+#[test]
+fn pr_checks_aggregates_exactly_the_pr_set_and_always_runs() {
+    let j = job("pr-checks");
+    assert_eq!(j.condition().as_deref(), Some("always()"));
+    let mut needs = j.needs();
+    needs.sort();
+    let mut want: Vec<String> = PR_SET.iter().map(|s| (*s).to_owned()).collect();
+    want.sort();
+    assert_eq!(needs, want, "pr-checks needs");
+    assert!(
+        !needs.iter().any(|n| n.ends_with("-cross")),
+        "pr-checks must not need a -cross job: {needs:?}"
+    );
+    // The check name must be exactly `pr-checks` (the required check in the ruleset).
+    let text = job_text("pr-checks");
+    assert!(
+        !text.contains("\n    name:") || text.contains("\n    name: pr-checks\n"),
+        "pr-checks check name must be `pr-checks`"
+    );
+    assert!(j.runner_labels().contains(&"ubuntu-latest".to_owned()));
+}
+
+#[test]
+fn every_pull_request_job_is_wired_into_pr_checks() {
+    let needs = job("pr-checks").needs();
+    for j in ci().jobs() {
+        if j.id == "pr-checks" || j.id.ends_with("-cross") {
+            continue;
+        }
+        let runs_on_pr = !skips_pull_requests(&j)
+            && !j
+                .condition()
+                .is_some_and(|c| c.contains("github.event_name == 'workflow_dispatch'"));
+        if runs_on_pr {
+            assert!(
+                needs.contains(&j.id),
+                "job `{}` can run on pull_request but is not in pr-checks needs {needs:?}",
+                j.id
+            );
+        }
+    }
+}
+
+fn pr_checks_script() -> String {
+    let j = job("pr-checks");
+    let scripts = j.raw_run_scripts();
+    assert_eq!(scripts.len(), 1, "pr-checks has one run step");
+    assert_eq!(
+        j.step_env("jq", "NEEDS").as_deref(),
+        Some("${{ toJSON(needs) }}"),
+        "needs must reach the script as JSON through an env var"
+    );
+    assert!(
+        !scripts[0].contains("${{"),
+        "no expression interpolation inside the script"
+    );
+    scripts[0].clone()
+}
+
+#[test]
+fn pr_checks_script_requires_changes_to_succeed() {
+    let script = pr_checks_script();
+    assert!(
+        script.contains(".changes.result") && script.contains("\"success\""),
+        "script must require changes == success:\n{script}"
+    );
+}
+
+/// Run the extracted script with a NEEDS fixture; the exit code.
+fn run_pr_checks(results: [(&str, &str); 7]) -> Option<i32> {
+    let body: Vec<String> = results
+        .iter()
+        .map(|(k, v)| format!("\"{k}\": {{\"result\": \"{v}\", \"outputs\": {{}}}}"))
+        .collect();
+    let needs = format!("{{{}}}", body.join(","));
+    std::process::Command::new("bash")
+        .arg("-c")
+        .arg(pr_checks_script())
+        .env("NEEDS", needs)
+        .output()
+        .expect("bash and jq are required")
+        .status
+        .code()
+}
+
+fn fixture(over: &[(&str, &str)], default: &str) -> [(&'static str, &'static str); 7] {
+    let mut out = [("", ""); 7];
+    for (i, id) in PR_SET.iter().enumerate() {
+        let r = over
+            .iter()
+            .find(|(k, _)| k == id)
+            .map_or(default, |(_, v)| *v);
+        out[i] = (id, Box::leak(r.to_owned().into_boxed_str()));
+    }
+    out
+}
+
+#[test]
+fn pr_checks_script_exit_codes() {
+    assert_eq!(run_pr_checks(fixture(&[], "success")), Some(0));
+    assert_eq!(
+        run_pr_checks(fixture(
+            &[("gpu-tests", "skipped"), ("dof-bridge", "skipped")],
+            "success"
+        )),
+        Some(0)
+    );
+    assert_ne!(
+        run_pr_checks(fixture(&[("clippy", "failure")], "success")),
+        Some(0)
+    );
+    assert_ne!(
+        run_pr_checks(fixture(&[("core-tests", "cancelled")], "success")),
+        Some(0)
+    );
+    assert_ne!(
+        run_pr_checks(fixture(&[("changes", "failure")], "skipped")),
+        Some(0)
+    );
+    assert_ne!(
+        run_pr_checks(fixture(&[("changes", "skipped")], "skipped")),
+        Some(0)
+    );
 }
