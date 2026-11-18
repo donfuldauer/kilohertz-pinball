@@ -285,6 +285,20 @@ fn concurrency_cancels_superseded_runs_per_ref() {
 }
 
 #[test]
+fn main_push_runs_are_never_cancelled() {
+    // D40: the full matrix exists only on main push / workflow_dispatch runs, so only
+    // pull_request runs may be cancelled by a newer run.
+    let raw = ci()
+        .concurrency_cancel_raw()
+        .expect("ci.yml has no workflow-level concurrency.cancel-in-progress");
+    assert_ne!(raw, "true", "cancel-in-progress is a literal true");
+    assert_eq!(
+        raw, "${{ github.event_name == 'pull_request' }}",
+        "only pull_request runs may be cancelled"
+    );
+}
+
+#[test]
 fn core_tests_runs_every_gpu_free_crate_and_no_gpu_crate() {
     for j in family("core-tests") {
         core_tests_job_runs_every_gpu_free_crate(&j);

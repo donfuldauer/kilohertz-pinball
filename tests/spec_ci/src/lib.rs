@@ -324,6 +324,16 @@ impl Workflow {
     pub fn concurrency(&self) -> Option<Concurrency> {
         Concurrency::from_node(get(&self.root, "concurrency")?)
     }
+
+    /// Raw `concurrency.cancel-in-progress` value of the workflow-level block:
+    /// `true`/`false` for booleans, the verbatim text for strings.
+    pub fn concurrency_cancel_raw(&self) -> Option<String> {
+        match get(get(&self.root, "concurrency")?, "cancel-in-progress")? {
+            Yaml::Boolean(b) => Some(b.to_string()),
+            Yaml::String(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
 }
 
 /// A `concurrency:` block.
