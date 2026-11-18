@@ -1,7 +1,7 @@
 ## w7pre-proptest-tripwire — proptest workaround removal is test-enforced
 
-**Decision:** `tests/spec_ci/tests/spec_proptest_workaround.rs` reads the root `Cargo.toml` and
-`Cargo.lock`. It fails if either `[profile.{dev,test}.package.proptest] debug-assertions = false`
+**Decision:** `tests/spec_ci/tests/spec_proptest_workaround.rs` parses the root `Cargo.toml` and
+`Cargo.lock` as TOML (so quoted headers and inline tables count). It fails if either `[profile.{dev,test}.package.proptest] debug-assertions = false`
 stanza is present while the locked proptest version is not exactly 1.12.0, and also fails if the
 stanzas are missing while it is 1.12.0. The failure message tells the reader to check whether the
 negative-step `debug_assert` in `FloatUniform::sample` is fixed, then either remove both stanzas

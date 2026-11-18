@@ -10,52 +10,58 @@ use spec_ci::repo_root;
 /// The only proptest version the workaround has been verified against.
 const PINNED_PROPTEST: &str = "1.12.0";
 
-const STANZA_HEADERS: [&str; 2] = [
-    "[profile.dev.package.proptest]",
-    "[profile.test.package.proptest]",
-];
+const PROFILES: [&str; 2] = ["dev", "test"];
 
-/// Version of the `proptest` package in `Cargo.lock` text, if present.
-fn locked_proptest_version(cargo_lock: &str) -> Option<String> {
-    let mut in_proptest = false;
-    for raw in cargo_lock.lines() {
-        let line = raw.trim();
-        if line == "[[package]]" {
-            in_proptest = false;
-        } else if line == "name = \"proptest\"" {
-            in_proptest = true;
-        } else if in_proptest && let Some(v) = line.strip_prefix("version = \"") {
-            return v.strip_suffix('"').map(str::to_owned);
-        }
-    }
-    None
+/// Parse `text` as a TOML table, naming `what` in the error.
+fn parse_table(text: &str, what: &str) -> Result<toml::Table, String> {
+    text.parse::<toml::Table>()
+        .map_err(|e| format!("{what} is not valid TOML: {e}"))
 }
 
-/// Whether the table `header` exists in `cargo_toml` with `debug-assertions = false`.
-fn has_stanza(cargo_toml: &str, header: &str) -> bool {
-    let mut in_table = false;
-    for raw in cargo_toml.lines() {
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.starts_with('[') {
-            in_table = line == header;
-        } else if in_table {
-            let compact: String = line.split_whitespace().collect();
-            if compact == "debug-assertions=false" {
-                return true;
-            }
-        }
+/// Version of the `proptest` package in `Cargo.lock` text.
+///
+/// Errors when the lock is malformed, has no proptest entry, or has more than one.
+fn locked_proptest_version(cargo_lock: &str) -> Result<String, String> {
+    let table = parse_table(cargo_lock, "Cargo.lock")?;
+    let packages = table
+        .get("package")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| "Cargo.lock has no `package` array".to_owned())?;
+    let versions: Vec<&str> = packages
+        .iter()
+        .filter(|p| p.get("name").and_then(toml::Value::as_str) == Some("proptest"))
+        .map(|p| p.get("version").and_then(toml::Value::as_str).unwrap_or(""))
+        .collect();
+    match versions.as_slice() {
+        [] => Err("Cargo.lock has no proptest package".to_owned()),
+        [""] => Err("Cargo.lock proptest entry has no version".to_owned()),
+        [v] => Ok((*v).to_owned()),
+        many => Err(format!(
+            "Cargo.lock has {} proptest entries ({many:?}); expected exactly one",
+            many.len()
+        )),
     }
-    false
+}
+
+/// Whether `profile.<profile>.package.proptest.debug-assertions` is the boolean `false`.
+///
+/// Works on the parsed table, so quoted keys and inline tables are equivalent to bare headers.
+fn has_stanza(manifest: &toml::Table, profile: &str) -> bool {
+    manifest
+        .get("profile")
+        .and_then(|v| v.get(profile))
+        .and_then(|v| v.get("package"))
+        .and_then(|v| v.get("proptest"))
+        .and_then(|v| v.get("debug-assertions"))
+        .and_then(toml::Value::as_bool)
+        == Some(false)
 }
 
 /// Check the workaround against the locked proptest version.
 fn check_workaround(cargo_toml: &str, cargo_lock: &str) -> Result<(), String> {
-    let version = locked_proptest_version(cargo_lock)
-        .ok_or_else(|| "Cargo.lock has no proptest package".to_owned())?;
-    let present: Vec<bool> = STANZA_HEADERS
-        .iter()
-        .map(|h| has_stanza(cargo_toml, h))
-        .collect();
+    let manifest = parse_table(cargo_toml, "Cargo.toml")?;
+    let version = locked_proptest_version(cargo_lock)?;
+    let present: Vec<bool> = PROFILES.iter().map(|p| has_stanza(&manifest, p)).collect();
     let any = present.iter().any(|p| *p);
     let all = present.iter().all(|p| *p);
     if any && version != PINNED_PROPTEST {
@@ -131,4 +137,49 @@ fn newer_proptest_without_stanza_passes() {
 #[test]
 fn missing_proptest_in_lock_fails() {
     assert!(check_workaround(STANZA, "[[package]]\nname = \"x\"\nversion = \"1.0.0\"\n").is_err());
+}
+
+const STANZA_QUOTED: &str = "[profile.dev.package.\"proptest\"]\ndebug-assertions = false\n\n\
+                             [profile.test.package.\"proptest\"]\ndebug-assertions = false\n";
+const STANZA_INLINE: &str = "[profile.dev.package]\nproptest = { debug-assertions = false }\n\n\
+                             [profile.test.package]\nproptest = { debug-assertions = false }\n";
+const STANZA_TRUE: &str = "[profile.dev.package.proptest]\ndebug-assertions = true\n\n\
+                           [profile.test.package.proptest]\ndebug-assertions = true\n";
+
+#[test]
+fn quoted_headers_match_bare_headers() {
+    assert_eq!(check_workaround(STANZA_QUOTED, &lock("1.12.0")), Ok(()));
+    let err = check_workaround(STANZA_QUOTED, &lock("1.13.0")).unwrap_err();
+    assert!(err.contains("upgraded"));
+}
+
+#[test]
+fn inline_table_form_is_detected() {
+    assert_eq!(check_workaround(STANZA_INLINE, &lock("1.12.0")), Ok(()));
+    assert!(check_workaround(STANZA_INLINE, &lock("1.13.0")).is_err());
+}
+
+#[test]
+fn debug_assertions_true_counts_as_absent() {
+    assert!(check_workaround(STANZA_TRUE, &lock("1.12.0")).is_err());
+    assert_eq!(check_workaround(STANZA_TRUE, &lock("1.13.0")), Ok(()));
+}
+
+#[test]
+fn malformed_manifest_is_an_error() {
+    let err = check_workaround("[profile.dev.package.proptest\n", &lock("1.12.0")).unwrap_err();
+    assert!(err.contains("Cargo.toml is not valid TOML"), "{err}");
+}
+
+#[test]
+fn malformed_lock_is_an_error() {
+    let err = check_workaround(STANZA, "[[package\n").unwrap_err();
+    assert!(err.contains("Cargo.lock is not valid TOML"), "{err}");
+}
+
+#[test]
+fn duplicate_proptest_entries_fail() {
+    let dup = format!("{}\n{}", lock("1.12.0"), lock("1.13.0"));
+    let err = check_workaround(STANZA, &dup).unwrap_err();
+    assert!(err.contains("2 proptest entries"), "{err}");
 }
