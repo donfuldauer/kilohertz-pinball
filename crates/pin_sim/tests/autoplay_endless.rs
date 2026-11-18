@@ -386,10 +386,11 @@ fn greybox_game(
 /// game 6 (steel ball VUK <-> deck loop), game 98 (powerball bumper_1 <->
 /// orbit guide ping-pong) and game 334 (powerball wedged against the
 /// refiring left sling; the case moved from game 44 when the receding-captive
-/// fix (6cdb26d) changed simulation output). With the new detectors each one
-/// is named: the two loops as EndlessBall at the 300 s default age limit
-/// (before the cap), the sling pocket as StuckBall through the displacement
-/// test.
+/// fix (6cdb26d) changed simulation output). With the new detectors games 98
+/// and 334 are named: the bumper loop as EndlessBall at the 300 s default age
+/// limit (before the cap), the sling pocket as StuckBall through the
+/// displacement test. Game 6 now pins the VUK eject scatter breaking the
+/// VUK <-> deck loop (user ruling A3; DECISIONS "w7pre-vuk-scatter").
 #[test]
 fn the_pre_fix_greybox_traps_are_caught_and_named() {
     let runs = [(6u32, 320_000u64), (98, 330_000), (334, 120_000)];
@@ -420,22 +421,25 @@ fn the_pre_fix_greybox_traps_are_caught_and_named() {
         );
         match g {
             6 => {
-                // As before the fix, the game runs on to the cap; now the
-                // trapped ball is named on the way.
-                assert_eq!(summary.end, GameEnd::MaxTicks);
-                let e: Vec<_> = findings
-                    .iter()
-                    .filter(|f| f.kind == FindingKind::EndlessBall)
-                    .collect();
-                assert_eq!(e.len(), 1, "game 6: {findings:?}");
-                assert!(e[0].detail.contains("longer than the 300000 ms limit"));
+                // Changed by user ruling A3 (VUK eject scatter, DECISIONS
+                // "w7pre-vuk-scatter"). Before the scatter, every eject was
+                // identical, the steel ball looped VUK <-> deck to the cap
+                // (MaxTicks) and was named as one EndlessBall ("vuk_sw x").
+                // With the scatter the same seed's ejects differ, the loop
+                // breaks, and the game drains to game_over well before the
+                // cap with no EndlessBall and nothing naming the VUK.
+                assert_eq!(summary.end, GameEnd::GameOver, "game 6: {findings:?}");
+                assert_eq!(summary.ticks, 72_764, "game 6 end tick");
                 assert!(
-                    ["vuk_sw", "deck_opto", "bumper_2_ring", "bumper_3_ring"]
-                        .contains(&e[0].subject.as_str()),
-                    "{}",
-                    e[0].subject
+                    findings.iter().all(|f| f.kind != FindingKind::EndlessBall),
+                    "game 6: {findings:?}"
                 );
-                assert!(e[0].detail.contains("vuk_sw x"), "{}", e[0].detail);
+                assert!(
+                    findings
+                        .iter()
+                        .all(|f| !f.subject.contains("vuk_sw") && !f.detail.contains("vuk_sw")),
+                    "game 6: {findings:?}"
+                );
             }
             98 => {
                 // As before the fix, the game runs on to the cap; now the
