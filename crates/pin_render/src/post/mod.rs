@@ -80,6 +80,11 @@ pub enum ToneMap {
 }
 
 /// Velocity-based motion blur of the balls.
+///
+/// Known limitation (deferred, issue #14): blur is drawn from each ball's projected disc, so it
+/// also appears where the ball is hidden behind geometry. Fixing it needs visible ball coverage,
+/// i.e. a new depth-test or object-mask input to the post chain. Revisit during render polish, or
+/// earlier if the artefact is visible in a gate screenshot or reported by a player.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct MotionBlurConfig {
     /// Blur on.
