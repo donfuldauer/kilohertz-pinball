@@ -832,6 +832,9 @@ impl Simulation {
             }
         }
         let mut mechs = MechSet::new(&specs, &defaults).map_err(|e| build_err(format!("{e:?}")))?;
+        // Eject scatter: one Pcg32 per mech derived from the sim seed (only
+        // VUKs draw; the sim's own generator is untouched).
+        mechs.set_scatter_seed(cfg.seed);
         let cabinet =
             CabinetInput::ALL.map(|c| table.ids.switch(c.name()).unwrap_or(SwitchId(u16::MAX)));
         mechs.set_tilt_switch(Some(cabinet[CabinetInput::Tilt.index()]));
