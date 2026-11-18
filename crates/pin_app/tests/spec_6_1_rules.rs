@@ -804,7 +804,7 @@ fn f_firewall_save_closes_the_zipper_for_5000_ticks() {
         let c1 = action_counters(&sim);
         assert_eq!(c1[0], c0[0] + 1, "firewall_save_count + 1");
         assert_eq!(c1[1], c0[1], "not a Jackpot");
-        assert!(score(&sim) - s0 < 5_000, "no jackpot award");
+        assert_eq!(score(&sim), s0, "Firewall Save scores nothing");
         assert_eq!(persist(&sim, "overdrive_ready"), 0, "used up");
         assert_healthy(&sim, "firewall");
     });

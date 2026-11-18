@@ -350,13 +350,41 @@ fn zipper_closes_the_gap_to_below_a_ball() {
         let closed = tip_gap(&s);
         assert!((closed - 24.0).abs() < 0.1, "closed tip gap {closed} mm");
         assert!(closed < 27.0, "a 27 mm ball can no longer pass");
-        let (a, b) = trial(
-            &mut s,
-            "standard_steel",
-            (257.0, 180.0),
-            [0.0, -0.4, 0.0],
-            600,
+        // Inline trial: keep the handle until retention is proven, so a ball
+        // stuck below the flippers cannot pass for a held one.
+        let a = hits(&s);
+        let h = s
+            .spawn_ball("standard_steel", mm(257.0, 180.0), [0.0, -0.4, 0.0])
+            .unwrap();
+        for _ in 0..600 {
+            s.advance(1);
+            if s.ball(h).is_none() {
+                break;
+            }
+        }
+        // Criterion: the survivor is live, finite, and its plan-view y is
+        // above the flipper tip line (the lower of the two tip centres).
+        let ball = s.ball(h).expect("the ball is still live on the closed gap");
+        let tip_y = ["left_flipper", "right_flipper"]
+            .iter()
+            .map(|n| {
+                let id: FlipperId = s.ids().flipper(n).unwrap();
+                let fs = s.flipper_set();
+                (fs.pivot_m(id).unwrap() + fs.bat_direction(id).unwrap() * 0.076).y
+            })
+            .fold(f32::INFINITY, f32::min);
+        let [bx, by, bz] = ball.position_m;
+        assert!(
+            bx.is_finite() && by.is_finite() && bz.is_finite(),
+            "finite ball position {:?}",
+            ball.position_m
         );
+        assert!(
+            by > tip_y,
+            "ball held above the flipper tips: y {by} m vs tip line {tip_y} m"
+        );
+        s.remove_ball(h);
+        let b = hits(&s);
         assert_eq!(
             delta(&a, &b, "trough_1") + delta(&a, &b, "trough_2"),
             0,

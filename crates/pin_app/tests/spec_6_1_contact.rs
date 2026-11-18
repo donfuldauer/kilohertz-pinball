@@ -418,6 +418,26 @@ fn physics_contact_scoop_ejects_back_into_play() {
         // Held, then ejected: the ball leaves the scoop (no longer held,
         // > 60 mm away or on another layer) and is still in play.
         let layer0 = def.layer.unwrap_or(0);
+        // First prove the scoop captured this ball, then check the release.
+        let mut captured = sim
+            .mech_set()
+            .vuk_ball(index)
+            .is_some_and(|c| c.0 == h.slot());
+        for _ in 0..8_000 {
+            if captured {
+                break;
+            }
+            sim.advance(1);
+            captured = sim
+                .mech_set()
+                .vuk_ball(index)
+                .is_some_and(|c| c.0 == h.slot());
+        }
+        assert!(
+            captured,
+            "the scoop captured the ball (ball {:?})",
+            sim.ball(h)
+        );
         let mut ejected = false;
         for _ in 0..8_000 {
             sim.advance(1);

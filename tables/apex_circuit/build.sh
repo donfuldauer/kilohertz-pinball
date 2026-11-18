@@ -14,9 +14,9 @@ if [ "$#" -ne 1 ]; then
   echo "usage: $0 <out_dir>" >&2
   exit 2
 fi
-src=$(cd "$(dirname "$0")" && pwd)
+src=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 mkdir -p "$1"
-out=$(cd "$1" && pwd)
+out=$(CDPATH= cd -- "$1" && pwd)
 cargo run -q -p pin_tablegen -- "$src/layout.toml" --table "$src/table.toml" --out "$out"
 mkdir -p "$out/display"
 cp "$src/rules.lua" "$src/backglass.toml" "$src/layout.toml" "$src/glass.toml" "$out/"
