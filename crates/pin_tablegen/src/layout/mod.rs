@@ -21,7 +21,7 @@
 //! | `[[walls]]` | `walls[i]`: the polyline extruded from z = 0 to `wall_height` (zero-thickness, two-sided) | yes | — |
 //! | `[[posts]]` | `posts[i]`: a cylinder to `wall_height`, material `rubber` or `steel` | yes | — |
 //! | `[[lanes]]` | `tablegen:lanes[i].left` / `.right`: visual walls of the two rails | no | two level guide `[[splines]]` with those ids |
-//! | `[[ramps]]` | `ramps[i]`: visual rails (wireform) or wall (guide) of the referenced spline | no | a `[[layer_transitions]]` entry `tablegen:ramps[i].entry` when the spline's layer is not 0 |
+//! | `[[ramps]]` | `ramps[i]`: visual rails (wireform) or wall (guide) of the referenced spline | no | a `[[layer_transitions]]` entry `tablegen:ramps[i].entry` (0 to the spline's layer) when the spline's layer is not 0: the zone starts at the spline's first point and lies along its start tangent, `entry_width` long and wide (see `entry.rs`) |
 //! | `[[inserts]]` | `inserts[i]`: the shape 0.1 mm above the floor, extras `lamp` | no | — |
 //!
 //! Collider nodes are their own collision geometry (a two-sided triangle
@@ -48,9 +48,14 @@
 //! `meta.playfield_mesh` is set to `playfield.glb`.
 //!
 //! A layout that cannot be generated validly is an error naming the element
-//! (`walls[2]`, `lanes[0]`, ...); nothing is written.
+//! (`walls[2]`, `lanes[0]`, ...); nothing is written. A ramp entry zone that
+//! would overlap a transition from the ramp's layer back to layer 0 is such
+//! an error. [`GeneratedTable::warnings`] holds findings that do not stop
+//! generation: a transition leading to a layer `N > 0` that has no exit
+//! zone (a transition from `N`) over area without a layer-`N` deck under it.
 
 mod cli;
+mod entry;
 mod geom;
 mod glb;
 mod guides;
@@ -66,7 +71,7 @@ use pin_assets::validate::MAX_MANIFEST_BYTES;
 use pin_core::Material;
 use pin_core::schema::LayoutManifest;
 use pin_core::schema::layout::{InsertShape, LaneKind};
-use pin_core::schema::table::{AabbDef, LayerTransitionDef, SplineDef, SplineKind, TableManifest};
+use pin_core::schema::table::{LayerTransitionDef, SplineDef, SplineKind, TableManifest};
 use pin_core::units::{mm_to_m, mm3_to_m};
 use pin_physics::world::{CubicSpline, GuideCurve, Wireform};
 use std::path::Path;
@@ -111,6 +116,11 @@ pub struct GeneratedTable {
     pub table: TableManifest,
     /// `table.toml` text.
     pub table_toml: String,
+    /// Findings that do not stop generation, at `table.toml` paths: the
+    /// layer-exit lint (a transition leads to a layer that has no exit zone
+    /// over unsupported area; see the [module docs](self)). The command
+    /// line prints them as `warning: ...` lines.
+    pub warnings: Vec<pin_assets::ValidationError>,
 }
 
 /// Why a layout cannot be generated: the offending element (a TOML path of
@@ -368,7 +378,9 @@ fn kind_of(node: &str) -> &str {
 /// validly: a value out of range, a repeated point, a self-intersecting
 /// closed wall or deck outline, a lane too tight for its width or with
 /// more than 4096 through-points per rail, a ramp whose spline is not in
-/// `base`, or an insert whose lamp is not in `base`.
+/// `base` or starts vertically, a ramp entry zone overlapping a transition
+/// from the ramp's layer to layer 0, or an insert whose lamp is not in
+/// `base`.
 pub fn generate(layout: &LayoutManifest, base: &TableManifest) -> Result<GeneratedTable, GenError> {
     let mut b = Builder {
         layout,
@@ -699,13 +711,10 @@ impl Builder<'_> {
         };
         self.push(e.clone(), mesh, mat, extras)?;
         if spline.layer != 0 {
+            // The zone starts where the rails start (the spline's first
+            // point) and lies along the start tangent (`entry.rs`).
             let p0 = spline.points[0];
-            let half = 0.5 * r.entry_width;
-            let top = p0[2].max(0.0) + half;
-            let zone = AabbDef {
-                min: [p0[0] - half, p0[1] - half, p0[2].min(0.0)],
-                max: [p0[0] + half, p0[1] + half, top],
-            };
+            let zone = entry::entry_zone(p0, centre.tangent(0.0), r.entry_width).map_err(bad)?;
             // The loader requires min < max on every axis (after f32).
             if (0..3).any(|k| zone.min[k] >= zone.max[k]) {
                 return Err(GenError::new(
@@ -717,8 +726,33 @@ impl Builder<'_> {
                     ),
                 ));
             }
+            let id = format!("{GENERATED_PREFIX}{e}.entry");
+            // Never inside a zone that returns the ramp's layer to the
+            // playfield: a promoted ball would drop straight back.
+            let fallback = self
+                .base
+                .layer_transitions
+                .iter()
+                .filter(|t| !t.id.starts_with(GENERATED_PREFIX))
+                .chain(&self.transitions)
+                .find(|t| {
+                    t.from_layer == spline.layer
+                        && t.to_layer == 0
+                        && entry::overlaps(&zone, &t.zone)
+                });
+            if let Some(t) = fallback {
+                return Err(GenError::new(
+                    &e,
+                    format!(
+                        "the generated entry zone {id:?} (min {:?}, max {:?}) overlaps the \
+                         {} -> 0 transition {:?} (min {:?}, max {:?}); move that zone off the \
+                         spline's start or start the spline elsewhere",
+                        zone.min, zone.max, t.from_layer, t.id, t.zone.min, t.zone.max
+                    ),
+                ));
+            }
             self.transitions.push(LayerTransitionDef {
-                id: format!("{GENERATED_PREFIX}{e}.entry"),
+                id,
                 from_layer: 0,
                 to_layer: spline.layer,
                 zone,
@@ -797,6 +831,7 @@ impl Builder<'_> {
                 ),
             ));
         }
+        let warnings = entry::layer_exit_warnings(&table.layer_transitions, &self.nodes);
         let glb = glb::write(&self.nodes, &self.materials.list);
         let json = glb
             .get(12..16)
@@ -828,6 +863,7 @@ impl Builder<'_> {
             glb,
             table,
             table_toml,
+            warnings,
         })
     }
 }
