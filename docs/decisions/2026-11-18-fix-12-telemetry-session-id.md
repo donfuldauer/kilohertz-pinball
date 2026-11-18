@@ -6,8 +6,10 @@ indistinguishable from a sender restart. The session id is deferred to a version
 
 **Rationale:** A session id changes the header layout, which is a breaking v2 change. It needs a
 `pin_core` contract change request (PLAN §2.3 rule 2) and updates to `pin_core` and `pin_audio`.
-v1 recovers on the next full state, which the sender schedules every 1000 ticks, so the cost of
-the missing id is a bounded delay and not a permanent desync.
+v1 recovers once a complete, sufficiently recent full state (all of its datagrams) is delivered
+and applied. The sender schedules one every 1000 ticks, but on a lossy link there is no guaranteed
+time bound (matching `docs/TELEMETRY_PROTOCOL.md` §6). The cost of the missing id is a delayed
+resync, not a permanent desync.
 
 **Revisit when:** a v2 protocol bump is made for another reason, or reconnect bugs are observed in
 practice (a listener mistaking a delayed full state for a sender restart, or the reverse).
