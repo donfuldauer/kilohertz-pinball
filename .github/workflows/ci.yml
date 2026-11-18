@@ -14,11 +14,15 @@ on:
   pull_request:
   workflow_dispatch:
 
-# One run per workflow, ref and event; a newer push cancels the older push run
-# (event_name keeps a workflow_dispatch run from being cancelled by pushes).
+# One run per workflow, ref and event (event_name keeps a workflow_dispatch run from being
+# cancelled by pushes). Only pull_request runs are cancelled when superseded. Push (main) and
+# workflow_dispatch runs queue and complete: under D40 they are the only place the Windows/macOS
+# legs, GPU tests and coverage run. GitHub keeps at most one pending run per group, so in a burst
+# of merges the oldest in-progress run plus the newest queued one run; intermediate commits are
+# skipped, which is fine because the newest commit contains all earlier ones.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
