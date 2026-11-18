@@ -34,6 +34,21 @@ fn parses_and_still_triggers_on_push() {
 }
 
 #[test]
+fn push_and_pr_paths_include_the_log_split_dirs() {
+    for event in ["push", "pull_request"] {
+        let paths = spikes()
+            .trigger_paths(event)
+            .unwrap_or_else(|| panic!("{event}: no paths filter"));
+        for want in ["docs/decisions/**", "docs/queue/**"] {
+            assert!(
+                paths.iter().any(|p| p == want),
+                "{event} paths lack {want}: {paths:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn runs_spec_0_1_tests_on_linux() {
     let lines = spec_0_1_lines("test");
     assert!(
