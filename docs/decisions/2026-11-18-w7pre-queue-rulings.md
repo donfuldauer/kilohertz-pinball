@@ -16,10 +16,13 @@ if a Wave 7 table's soak shows eject loops or exit misses.
 - The combined Gate A1 (A1 ramp entry plus A3 scatter, GAMES=1000 SEED=1) passed with 0 stuck,
   endless or escaped balls at all skills and a standard median of 15,433 ms.
 - The 1,000-game soak of the frozen `greybox_452eedf` fixture found no VUK-deck loop.
-- The 3 mm lateral scatter is deliberately larger than the plus-or-minus 2 mm eject-x
-  knife-edge that decided whether the loop exists, so one deterministic eject path cannot
-  repeat. It stays capped at a quarter of the 20 mm exit-zone half size (5 mm) and
-  of the scoop radius, so the ball still leaves on its intended line.
+- The 3 mm lateral value is the upper bound of a uniform per-eject draw, deliberately wider
+  than the plus-or-minus 2 mm eject-x knife-edge that decided whether the loop exists, so ejects
+  no longer follow one fixed path. It is not a guarantee: about two thirds of draws still land
+  inside that band, and a run of them could repeat the loop. Non-recurrence is shown only for
+  the sampled seeds (the soaks above). The value stays capped at a quarter of the 20 mm
+  exit-zone half size (5 mm) and of the scoop radius, so the ball still leaves on its intended
+  line.
 
 **Alternatives:**
 - Per-table tuning fields: not needed, and would require a contract change.
