@@ -383,17 +383,22 @@ fn greybox_game(
 /// Test e: before/after proof. One game per loop class from the
 /// investigator's Gate A1 standard soak on the 452eedf grey-box (which
 /// passed Gate A1 with these games ending at `max_ticks` and no finding):
-/// game 6 (steel ball VUK <-> deck loop), game 98 (powerball bumper_1 <->
-/// orbit guide ping-pong) and game 334 (powerball wedged against the
-/// refiring left sling; the case moved from game 44 when the receding-captive
-/// fix (6cdb26d) changed simulation output). With the new detectors games 98
-/// and 334 are named: the bumper loop as EndlessBall at the 300 s default age
+/// game 6 (steel ball VUK <-> deck loop), game 82 (powerball bumper_1 <->
+/// orbit guide ping-pong) and game 763 (powerball wedged against the
+/// refiring left sling). History: the sling case moved from game 44 to 334
+/// when the receding-captive fix (6cdb26d) changed simulation output; variant B
+/// of the guide cast contact fix (fix-wireform-flake, user ruling 2026-11-18)
+/// changed guide contact decisions and moved the cases again: game 6's end
+/// tick went 72_764 -> 82_935, the bumper loop moved from game 98 to 82 and
+/// the sling pocket from game 334 to 763 (the old games 98 and 334 now drain
+/// to game_over at t55,812 and t39,400). With the new detectors games 82
+/// and 763 are named: the bumper loop as EndlessBall at the 300 s default age
 /// limit (before the cap), the sling pocket as StuckBall through the
 /// displacement test. Game 6 now pins the VUK eject scatter breaking the
 /// VUK <-> deck loop (user ruling A3; DECISIONS "w7pre-vuk-scatter").
 #[test]
 fn the_pre_fix_greybox_traps_are_caught_and_named() {
-    let runs = [(6u32, 320_000u64), (98, 330_000), (334, 120_000)];
+    let runs = [(6u32, 320_000u64), (82, 330_000), (763, 120_000)];
     let handles: Vec<_> = runs
         .iter()
         .map(|&(g, cap)| {
@@ -421,6 +426,7 @@ fn the_pre_fix_greybox_traps_are_caught_and_named() {
         );
         match g {
             6 => {
+                // End tick was 72_764 before variant B of the guide cast fix.
                 // Changed by user ruling A3 (VUK eject scatter, DECISIONS
                 // "w7pre-vuk-scatter"). Before the scatter, every eject was
                 // identical, the steel ball looped VUK <-> deck to the cap
@@ -429,7 +435,7 @@ fn the_pre_fix_greybox_traps_are_caught_and_named() {
                 // breaks, and the game drains to game_over well before the
                 // cap with no EndlessBall and nothing naming the VUK.
                 assert_eq!(summary.end, GameEnd::GameOver, "game 6: {findings:?}");
-                assert_eq!(summary.ticks, 72_764, "game 6 end tick");
+                assert_eq!(summary.ticks, 82_935, "game 6 end tick");
                 assert!(
                     findings.iter().all(|f| f.kind != FindingKind::EndlessBall),
                     "game 6: {findings:?}"
@@ -441,7 +447,7 @@ fn the_pre_fix_greybox_traps_are_caught_and_named() {
                     "game 6: {findings:?}"
                 );
             }
-            98 => {
+            82 => {
                 // As before the fix, the game runs on to the cap; now the
                 // trapped ball is named on the way.
                 assert_eq!(summary.end, GameEnd::MaxTicks);
@@ -449,25 +455,25 @@ fn the_pre_fix_greybox_traps_are_caught_and_named() {
                     .iter()
                     .filter(|f| f.kind == FindingKind::EndlessBall)
                     .collect();
-                assert_eq!(e.len(), 1, "game 98: {findings:?}");
+                assert_eq!(e.len(), 1, "game 82: {findings:?}");
                 assert!(e[0].detail.contains("longer than the 300000 ms limit"));
                 assert_eq!(e[0].subject, "bumper_1_ring");
             }
-            334 => {
+            763 => {
                 let s: Vec<_> = findings
                     .iter()
                     .filter(|f| f.kind == FindingKind::StuckBall)
                     .collect();
-                assert_eq!(s.len(), 1, "game 334: {findings:?}");
+                assert_eq!(s.len(), 1, "game 763: {findings:?}");
                 assert!(
                     s[0].detail.contains("within one ball diameter"),
                     "{}",
                     s[0].detail
                 );
                 // Named at the pocket between sling_left and the left
-                // inlane wall (`walls[3]`), where the investigator found it
-                // at (110, 243) mm.
-                assert_eq!(s[0].subject, "walls[3] @ (112, 243, 14) mm");
+                // inlane wall (`walls[3]`); the investigator found it first
+                // at (110, 243) mm; the contact point named is now (112, 247) mm.
+                assert_eq!(s[0].subject, "walls[3] @ (112, 247, 14) mm");
                 assert_eq!(summary.end, GameEnd::Stuck);
             }
             _ => unreachable!(),
