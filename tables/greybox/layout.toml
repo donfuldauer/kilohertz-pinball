@@ -71,8 +71,8 @@ width = 40.0
 # funnel wall below it, so the mouth takes a ball rolling straight up beside
 # the right inlane as well as the left flipper's shots (about 25..35 degrees
 # right of straight up), which glance off the right wall. The generated
-# 0 -> 2 entry zone (entry_width 40: x 405..445, y 575..615) spans the lane
-# exactly. The lane walls end on a roof (y 640..660) sloping down to the
+# 0 -> 2 entry zone (entry_width 40: from the rails' start along the wire,
+# x 405..445, y 595..635) spans the lane exactly. The lane walls end on a roof (y 640..660) sloping down to the
 # left from the shooter-lane wall: below it no layer-0 ball can enter the
 # entry zone except up the lane, and the roof stays clear of where balls
 # land after dropping off the upper deck.
