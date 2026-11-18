@@ -30,7 +30,7 @@ pub use zip::ZipLimits;
 
 /// Bundle path of the optional backbox collision geometry: a glTF whose
 /// nodes are the backbox's static colliders in the table frame, each with
-/// `collider: true` and a backbox `collision_layer` (1..=7). Written by
+/// `collider: true` and a backbox `collision_layer` (4..=7). Written by
 /// `pin_tablegen::backbox` next to `backbox.glb`; a bundle without it has
 /// no backbox physics.
 pub const BACKBOX_COLLIDERS_FILE: &str = "backbox_colliders.glb";
