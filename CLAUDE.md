@@ -6,7 +6,9 @@ The plan is `docs/PLAN.md` (v5). Before delegating or starting any work, follow:
   first, except items that pass the `triage` skill's fast-path checks (D38); review rounds are
   batched per push. Tiers: Haiku 5.5, Sonnet 5.5, Opus 5.5. **Fable 5.2 only** for very-high-blast-radius or
   extremely hard-to-troubleshoot work, with evidence, **and** only when the account's current
-  usage limits leave enough Fable allowance. Unknown allowance means no Fable.
+  usage limits leave enough Fable allowance. The agent cannot read usage itself, so when Fable is
+  wanted the Orchestrator asks the owner and waits up to 30 minutes (§2.5 "Fable ask", D42); no
+  answer means unknown, and unknown means no Fable.
 - **Agents (§2.6, D35).** `.claude/agents/`: `work-classifier`, `task-executor`, `work-verifier`,
   `issue-investigator`. Pass the classifier's brief verbatim and its model as the `model` override.
 - **No self-review (§2.3 rule 9, D36).** Do not review code yourself or with a sibling agent.
