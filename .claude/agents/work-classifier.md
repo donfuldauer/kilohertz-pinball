@@ -28,12 +28,12 @@ conversation, PLAN.md as a whole, or a follow-up question.
   routed by the Orchestrator's `triage` fast path (D38), so you will mostly see harder items.
 
 If the work item itself is missing, return `status: needs-input` and name what is missing. Any
-other gap you fill from the repository (PLAN.md, `docs/DECISIONS.md`, the code) yourself.
+other gap you fill from the repository (PLAN.md, `docs/decisions/`, the frozen `docs/DECISIONS.md`, the code) yourself.
 
 ## Step 1: classify
 
 Read only what you need: the PLAN.md subphase section, the files the item touches
-(`git diff --stat`, `git log`, `grep`), and the relevant DECISIONS.md entries.
+(`git diff --stat`, `git log`, `grep`), and the relevant entries in `docs/decisions/` and the frozen DECISIONS.md.
 
 Set each of these:
 
@@ -67,7 +67,7 @@ Set each of these:
 3. `FABLE_ALLOWANCE` is `sufficient`. `unknown` and `insufficient` both mean no.
 
 If 1 and 2 hold but 3 does not, choose T2, set `fable_wanted: true`, and add a line for
-`docs/HUMAN_QUEUE.md` saying what Fable would have been used for. Do not wait for allowance to
+`docs/queue/<unit-id>.md` saying what Fable would have been used for. Do not wait for allowance to
 come back.
 
 When torn between two tiers, take the higher one, but never move up into T3 that way.
