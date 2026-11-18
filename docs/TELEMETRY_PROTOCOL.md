@@ -154,7 +154,11 @@ roll is not an impulse and is not part of the telemetry stream.
   sufficiently recent full state (all of its datagrams) is delivered and
   applied; any of those datagrams can be lost or reordered, so on a lossy
   link there is no guaranteed time bound. An unambiguous session id would be
-  a breaking change (new `version`).
+  a breaking change (new `version`). The session id is deferred to a version
+  2 header: it is taken up only as part of a v2 protocol bump made for other
+  reasons, or if reconnect bugs show up in practice (a listener mistaking a
+  delayed full state for a sender restart, or the reverse); see GitHub issue
+  #12.
 - Example (lamp 1 at full, tick `0x1122334455667788`, full-state flag; a
   real full state would carry all 832 entries over 5 datagrams):
 
