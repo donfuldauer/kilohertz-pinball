@@ -100,6 +100,13 @@ never panics on arbitrary bytes.
 6. **Back-pressure.** The sim thread never blocks on the network: encoded
    datagrams go through a bounded lock-free ring to a telemetry thread that
    owns the socket. If the ring is full, datagrams are dropped (counted).
+   The ring capacity is clamped to at least `MAX_DATAGRAMS_PER_TICK` = 5, so a
+   full state always fits; a warning is logged when a smaller requested
+   value is raised. The default is 64 (`DEFAULT_TELEMETRY_RING_CAPACITY`).
+   The truncating behaviour at capacity < 5 (a batch that does not fit is
+   cut off, the rest dropped and counted, never blocking) exists only in the
+   `#[doc(hidden)]` `telemetry_channel_unclamped` constructor, which the spec
+   tests use to pin it; production code must use `telemetry_channel`.
    The back-pressure loop is closed by the sim loop, not by the ring itself:
    when `TelemetryTx::push_batch` returns `false` the sim loop must call
    `TelemetryEncoder::force_full_state()`, so the next tick sends a full
