@@ -17,7 +17,7 @@
 
 use pin_audio::telemetry::{
     DatagramBatch, TelemetryEncoder, TelemetrySender, TelemetryState, decode_datagram,
-    telemetry_channel,
+    telemetry_channel, telemetry_channel_unclamped,
 };
 use pin_core::input::HapticsTelemetryEvent;
 use pin_core::telemetry::{
@@ -302,7 +302,7 @@ fn dropping_the_handle_stops_the_thread() {
 #[test]
 fn full_ring_drops_and_counts_without_blocking() {
     let (rx, addr) = listener();
-    let (mut tx, ring_rx) = telemetry_channel(2);
+    let (mut tx, ring_rx) = telemetry_channel_unclamped(2);
     let mut sender = TelemetrySender::new(ring_rx, addr).unwrap();
     let mut state = Box::new(TelemetryState::default());
     let mut enc = TelemetryEncoder::new();
