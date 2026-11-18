@@ -25,3 +25,8 @@ libm.workspace = true
 proptest.workspace = true
 # Wave 6 additions (2.9): parses the soak's JSON report in the round-trip tests.
 serde_json.workspace = true
+# w7pre-backbox-colliders: tests generate a backbox bundle and the grey-box
+# bundle (what tables/greybox/build.sh runs) with the real generators
+# (internal crates, no new external pin).
+pin_tablegen = { path = "../pin_tablegen" }
+pin_assetgen = { path = "../pin_assetgen" }
