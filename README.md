@@ -117,6 +117,13 @@ cargo fmt --manifest-path tests/spec_ci/Cargo.toml --all --check                
 cargo clippy --manifest-path tests/spec_ci/Cargo.toml --all-targets -- -D warnings        # CI Clippy check for tests/spec_ci
 ```
 
+On Windows PowerShell, set the variable first:
+
+```powershell
+$env:PIN_REQUIRE_GPU = '1'
+cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app
+```
+
 The DOF bridge is tested on Windows with .NET 8 (`dotnet build` / `dotnet test` under `tools/dof_bridge`). CI also runs a replay-hash job on all three OSes (record a fixture with `pin_sim`, replay it 10 times), a non-gating `cargo llvm-cov` coverage summary, and a manual `gate-a1` job.
 
 Binaries that exist in the workspace:
