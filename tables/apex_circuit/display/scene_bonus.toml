@@ -14,7 +14,7 @@ fade_in_ms = 200
 
 [[layers]]
 kind = "text"
-text = "{score}"
+text = "TOTAL {score}"
 x = 0.5
 y = 0.97
 valign = "bottom"

@@ -165,3 +165,32 @@ material = "wood"
 [[walls]]
 points = [[221.73027, 1024.4989], [262.0, 1034.0]]
 material = "wood"
+
+# Insert lamps (flat decals; no collision). Lane lamps sit under the
+# skill-shot top lanes, between the dividers at x 280/320/360/400.
+[[inserts]]
+lamp = "lane_1_lamp"
+position = [300.0, 945.0]
+shape = "circle"
+size = 14.0
+
+[[inserts]]
+lamp = "lane_2_lamp"
+position = [340.0, 945.0]
+shape = "circle"
+size = 14.0
+
+[[inserts]]
+lamp = "lane_3_lamp"
+position = [380.0, 945.0]
+shape = "circle"
+size = 14.0
+
+# Overdrive lamp: open mid-left playfield at (150, 520), clear of the lock
+# scoop (257, 600), drop targets (x 244..262, y 425..474), the orbit fill
+# wall (y >= 658) and the left inlane slope.
+[[inserts]]
+lamp = "overdrive_lamp"
+position = [150.0, 520.0]
+shape = "circle"
+size = 18.0

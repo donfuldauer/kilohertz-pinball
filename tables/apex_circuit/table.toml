@@ -723,6 +723,10 @@ window_ms = 3000
 
 # All three drop targets (a bank stays down until the rules reset it, so
 # the window spans a ball's worth of play).
+# Known limitation: the pin_sim monitor currently keeps sequence progress
+# across a ball drain, so a bank split over two balls inside the window can
+# be credited. Clearing progress on drain/reset is deferred to the Gate A2
+# harness work (queue: docs/queue/6.1.md).
 [[shots]]
 id = "drop_bank"
 sequence = ["drop_1_sw", "drop_2_sw", "drop_3_sw"]
