@@ -63,6 +63,20 @@ impl Tri {
         (d1 >= eps && d2 >= eps && d3 >= eps) || (d1 <= -eps && d2 <= -eps && d3 <= -eps)
     }
 
+    /// Closest point to plan point `q` of the triangle's plan projection
+    /// (`q` itself when the projection contains it).
+    pub fn plan_closest(&self, q: DVec2) -> DVec2 {
+        if self.contains_plan(q) {
+            return q;
+        }
+        let [a, b, c] = self.p.map(|v| v.truncate());
+        [(a, b), (b, c), (c, a)]
+            .into_iter()
+            .map(|(u, v)| segment_closest(q, u, v))
+            .min_by(|x, y| x.distance(q).total_cmp(&y.distance(q)))
+            .unwrap_or(q)
+    }
+
     /// Distance from `q` to the triangle.
     pub fn distance(&self, q: DVec3) -> f64 {
         q.distance(closest_on_triangle(q, self.p[0], self.p[1], self.p[2]))
@@ -121,6 +135,21 @@ pub(super) fn closest_on_triangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> DVe
 /// applied; default layer 0, as the engine builds them).
 pub(super) fn collider_triangles(scene: &GltfScene) -> Vec<Tri> {
     let mut out = Vec::new();
+    append_collider_triangles(scene, 0, 0, &mut out);
+    out
+}
+
+/// Appends the collider triangles of `scene` to `out` as
+/// [`collider_triangles`] builds them, with `default_layer` for nodes that
+/// name no `collision_layer` and `mesh_offset` added to every
+/// [`Tri::mesh`] (so the triangles of a second scene keep distinct mesh
+/// indices).
+pub(super) fn append_collider_triangles(
+    scene: &GltfScene,
+    default_layer: u8,
+    mesh_offset: usize,
+    out: &mut Vec<Tri>,
+) {
     for (mi, mesh) in scene.meshes.iter().enumerate() {
         if !mesh.extras.collider {
             continue;
@@ -136,7 +165,7 @@ pub(super) fn collider_triangles(scene: &GltfScene) -> Vec<Tri> {
             }
             DVec3::from_array(o)
         };
-        let layer = mesh.extras.collision_layer.unwrap_or(0);
+        let layer = mesh.extras.collision_layer.unwrap_or(default_layer);
         for t in mesh.indices.chunks_exact(3) {
             let get = |i: u32| mesh.positions.get(i as usize).copied();
             let (Some(a), Some(b), Some(c)) = (get(t[0]), get(t[1]), get(t[2])) else {
@@ -144,13 +173,12 @@ pub(super) fn collider_triangles(scene: &GltfScene) -> Vec<Tri> {
             };
             let p = [tf(a), tf(b), tf(c)];
             if p.iter().all(|v| v.is_finite())
-                && let Some(tri) = Tri::new(p, layer, mi)
+                && let Some(tri) = Tri::new(p, layer, mesh_offset + mi)
             {
                 out.push(tri);
             }
         }
     }
-    out
 }
 
 /// Uniform plan-view grid over triangle bounding boxes.
@@ -362,8 +390,8 @@ impl Polygon {
     }
 }
 
-/// Distance from `q` to the segment `a`–`b`.
-fn segment_distance(q: DVec2, a: DVec2, b: DVec2) -> f64 {
+/// Closest point to `q` of the segment `a`–`b`.
+fn segment_closest(q: DVec2, a: DVec2, b: DVec2) -> DVec2 {
     let ab = b - a;
     let len2 = ab.length_squared();
     let t = if len2 > 0.0 {
@@ -371,7 +399,12 @@ fn segment_distance(q: DVec2, a: DVec2, b: DVec2) -> f64 {
     } else {
         0.0
     };
-    q.distance(a + ab * t)
+    a + ab * t
+}
+
+/// Distance from `q` to the segment `a`–`b`.
+fn segment_distance(q: DVec2, a: DVec2, b: DVec2) -> f64 {
+    q.distance(segment_closest(q, a, b))
 }
 
 fn segments_cross(a: DVec2, b: DVec2, c: DVec2, d: DVec2) -> bool {
