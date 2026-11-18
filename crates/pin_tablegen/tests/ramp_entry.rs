@@ -591,3 +591,185 @@ fn greybox_generates_without_warnings() {
         assert!(!overlap(z, &t.zone), "{}", t.id);
     }
 }
+
+/// The grey box generated from `tables/greybox` (no warnings checked here).
+fn greybox() -> GeneratedTable {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tables/greybox");
+    let layout = parse_layout(&std::fs::read_to_string(src.join("layout.toml")).unwrap()).unwrap();
+    let base =
+        TableManifest::from_toml_str(&std::fs::read_to_string(src.join("table.toml")).unwrap())
+            .unwrap();
+    generate(&layout, &base).unwrap()
+}
+
+/// The old below-floor catch volume under the wire (mm): x 403..447,
+/// y 575..890, z -50..9.
+const OLD_CATCH: AabbDef = AabbDef {
+    min: [403.0, 575.0, -50.0],
+    max: [447.0, 890.0, 9.0],
+};
+
+/// Number of f32 steps from `a` up to `b` (`a <= b`, same sign or zero).
+fn ulps(a: f32, b: f32) -> i64 {
+    let key = |v: f32| {
+        let bits = i64::from(v.to_bits() as i32);
+        if bits < 0 {
+            i64::from(i32::MIN) - bits
+        } else {
+            bits
+        }
+    };
+    key(b) - key(a)
+}
+
+/// The sample values on one axis: a regular grid over the old volume
+/// (`step` mm), the entry zone's bounds and the f32 values on and around
+/// them, values in the strips the old two-part split left open, and the
+/// old volume's own bounds; all clipped to the old volume.
+fn axis_samples(k: usize, entry: &AabbDef, step: f32, extra: &[f32]) -> Vec<f32> {
+    let (lo, hi) = (OLD_CATCH.min[k], OLD_CATCH.max[k]);
+    let mut v = Vec::new();
+    let mut i = 0u32;
+    loop {
+        let x = lo + step * i as f32;
+        if x > hi {
+            break;
+        }
+        v.push(x);
+        i += 1;
+    }
+    v.extend([lo, hi, lo.next_up(), hi.next_down()]);
+    for f in [entry.min[k], entry.max[k]] {
+        let mut d = f;
+        let mut u = f;
+        v.push(f);
+        for _ in 0..3 {
+            d = d.next_down();
+            u = u.next_up();
+            v.extend([d, u]);
+        }
+        v.extend([f - 0.5, f + 0.5, f - 1.0, f + 1.0, f - 0.001, f + 0.001]);
+    }
+    v.extend_from_slice(extra);
+    v.retain(|x| (lo..=hi).contains(x));
+    v.sort_by(f32::total_cmp);
+    v.dedup();
+    v
+}
+
+/// w7pre-catch-gaps: every point of the old below-floor catch volume is in
+/// the generated entry zone or in a 2 -> 0 zone, no 2 -> 0 zone overlaps
+/// (or touches) the entry zone, and each face of the entry zone inside the
+/// old volume has a catch exactly one f32 step outside it (in mm; in
+/// metres, after the loader's mm -> m conversion, still disjoint and at
+/// most two steps).
+#[test]
+fn greybox_below_deck_catch_has_no_gaps() {
+    let g = greybox();
+    let e = entry(&g).zone;
+    let catches: Vec<&LayerTransitionDef> = g
+        .table
+        .layer_transitions
+        .iter()
+        .filter(|t| t.from_layer == 2 && t.to_layer == 0)
+        .collect();
+    for t in &catches {
+        assert!(!overlap(&e, &t.zone), "{} overlaps the entry {e:?}", t.id);
+    }
+
+    // Sampling: a deterministic grid plus the special values on each axis.
+    let xs = axis_samples(0, &e, 1.0, &[403.5, 404.0, 404.5, 445.5, 446.0, 446.5]);
+    let ys = axis_samples(
+        1,
+        &e,
+        2.5,
+        &[
+            594.0, 594.5, 594.9, 634.79, 634.8, 635.0, 635.5, 636.0, 610.0,
+        ],
+    );
+    let zs = axis_samples(2, &e, 0.5, &[-6.5, -5.5, 0.0, 0.1, 8.9]);
+    let m = pin_core::units::mm3_to_m;
+    let zones_m: Vec<pin_physics::world::LayerTransition> = catches
+        .iter()
+        .map(|t| pin_physics::world::LayerTransition {
+            from_layer: 2,
+            to_layer: 0,
+            min: Vec3::from_array(m(t.zone.min)),
+            max: Vec3::from_array(m(t.zone.max)),
+        })
+        .collect();
+    let entry_m = pin_physics::world::LayerTransition {
+        from_layer: 0,
+        to_layer: 2,
+        min: Vec3::from_array(m(e.min)),
+        max: Vec3::from_array(m(e.max)),
+    };
+    let mut gaps = Vec::new();
+    let mut n = 0usize;
+    for &x in &xs {
+        for &y in &ys {
+            for &z in &zs {
+                let p = [x, y, z];
+                n += 1;
+                if !(contains(&e, p) || catches.iter().any(|t| contains(&t.zone, p))) {
+                    gaps.push(p);
+                    continue;
+                }
+                // The same point as the simulation sees it (metres).
+                let pm = Vec3::from_array(m(p));
+                if !(entry_m.contains(pm) || zones_m.iter().any(|t| t.contains(pm))) {
+                    gaps.push(p);
+                }
+            }
+        }
+    }
+    assert!(n > 100_000, "only {n} samples");
+    // The spec example in the old side strip.
+    assert!(xs.contains(&404.0) && ys.contains(&610.0) && zs.contains(&0.0));
+    assert!(
+        gaps.is_empty(),
+        "{} of {n} sampled points uncovered, e.g. {:?}",
+        gaps.len(),
+        &gaps[..gaps.len().min(8)]
+    );
+
+    // The slivers: each entry face inside the old volume has a catch whose
+    // facing bound is the adjacent f32 (mm) and stays disjoint in metres.
+    // In metres the step can be two ulps: the mm f32 grid divided by 1000
+    // is coarser than the metre grid at some values (595 mm).
+    for k in 0..3 {
+        let (lo, hi) = (OLD_CATCH.min[k], OLD_CATCH.max[k]);
+        if lo < e.min[k] && e.min[k] <= hi {
+            let near = catches
+                .iter()
+                .map(|t| t.zone.max[k])
+                .filter(|&b| b < e.min[k])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert_eq!(near, e.min[k].next_down(), "axis {k} min face");
+            let w = ulps(
+                pin_core::units::mm_to_m(near),
+                pin_core::units::mm_to_m(e.min[k]),
+            );
+            assert!(
+                (1..=2).contains(&w),
+                "axis {k} min face: {w} ulps in metres"
+            );
+        }
+        if lo <= e.max[k] && e.max[k] < hi {
+            let near = catches
+                .iter()
+                .map(|t| t.zone.min[k])
+                .filter(|&b| b > e.max[k])
+                .fold(f32::INFINITY, f32::min);
+            assert_eq!(near, e.max[k].next_up(), "axis {k} max face");
+            let w = ulps(
+                pin_core::units::mm_to_m(e.max[k]),
+                pin_core::units::mm_to_m(near),
+            );
+            assert!(
+                (1..=2).contains(&w),
+                "axis {k} max face: {w} ulps in metres"
+            );
+        }
+    }
+}

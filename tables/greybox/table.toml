@@ -402,19 +402,46 @@ from_layer = 2
 to_layer = 0
 zone = { min = [447.0, 575.0, -50.0], max = [525.0, 890.0, 200.0] }
 
-# Below the floor: in two parts, before and after the generated entry zone
-# (x 405..445, y 595..635, z -6..20), which a 2 -> 0 zone may not overlap.
+# Below the floor (x 403..447, y 575..890, z -50..9), in five parts around
+# the generated entry zone (x 405..445, y 595..634.7894, z -6..20), which a
+# 2 -> 0 zone may neither overlap nor touch (pin_tablegen's bounds are
+# inclusive). Each face towards the entry zone is the adjacent f32 just
+# outside it (594.99994 below 595, 634.7895 above 634.7894, 404.99997 below
+# 405, 445.00003 above 445, -6.0000005 below -6), so only a one-ulp sliver
+# with no representable f32 inside is left between them. 634.7895 follows
+# the entry zone's generated y max (from layout.toml): if the layout moves
+# the rails' start, update it (greybox_below_deck_catch_has_no_gaps in
+# pin_tablegen's ramp_entry tests fails until it is). The catches may touch
+# one another.
 [[layer_transitions]]
 id = "ramp_catch_below_mouth"
 from_layer = 2
 to_layer = 0
-zone = { min = [403.0, 575.0, -50.0], max = [447.0, 594.0, 9.0] }
+zone = { min = [403.0, 575.0, -50.0], max = [447.0, 594.99994, 9.0] }
 
 [[layer_transitions]]
 id = "ramp_catch_below"
 from_layer = 2
 to_layer = 0
-zone = { min = [403.0, 636.0, -50.0], max = [447.0, 890.0, 9.0] }
+zone = { min = [403.0, 634.7895, -50.0], max = [447.0, 890.0, 9.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_below_side_left"
+from_layer = 2
+to_layer = 0
+zone = { min = [403.0, 575.0, -50.0], max = [404.99997, 890.0, 9.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_below_side_right"
+from_layer = 2
+to_layer = 0
+zone = { min = [445.00003, 575.0, -50.0], max = [447.0, 890.0, 9.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_below_under"
+from_layer = 2
+to_layer = 0
+zone = { min = [403.0, 575.0, -50.0], max = [447.0, 890.0, -6.0000005] }
 
 # Over the deck's lower edge back to the playfield.
 [[layer_transitions]]
