@@ -37,8 +37,10 @@ reports and fix attempts for the same issue.
    otherwise report `root cause: not found` (needs the reported environment), not a recommendation.
    Every thread reply draft states the reason and the evidence first. For `not-a-defect` (or a
    documented accepted bound) it ends with "recommend: Orchestrator resolves thread"; never route
-   closing a thread to a human. A queue line is only for rulings that change simulation
-   output or need a person's decision (PLAN §2.7 step 3, D37).
+   closing a thread to a human. A queue line for a person is only for rulings that change
+   simulation output or need a person's decision (PLAN §2.7 step 3, D37). A `valid-but-deferred`
+   finding that needs no human decision still gets a plain queue line in `docs/queue/<unit-id>.md`
+   so it is not lost, with no request for a ruling.
    - `pre-existing`: present on `main` before this work; say which commit introduced it.
 5. **Plan the fix.** Files and functions to change, the regression test that must fail before
    and pass after, other code that could break, and the blast radius in the classifier's terms

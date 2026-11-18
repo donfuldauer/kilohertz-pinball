@@ -56,22 +56,95 @@ fn decision_files_have_dated_names() {
     decision_files();
 }
 
+/// Checks every `## ` section of a decision file carries the three labels.
+fn check_decision_text(text: &str) -> Result<(), String> {
+    let mut sections: Vec<Vec<&str>> = Vec::new();
+    for l in text.lines() {
+        if l.starts_with("## ") {
+            sections.push(Vec::new());
+        }
+        if let Some(cur) = sections.last_mut() {
+            cur.push(l);
+        }
+    }
+    if sections.is_empty() {
+        return Err("needs a `## ` heading".into());
+    }
+    for sec in &sections {
+        let body = sec.join("\n");
+        for label in ["Decision", "Rationale", "Alternatives"] {
+            let re = Regex::new(&format!(r"\*\*{label}(:\*\*|\*\*)")).unwrap();
+            if !re.is_match(&body) {
+                return Err(format!("section `{}` missing **{label}**", sec[0]));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Checks a queue file has at least one line and that checkbox lines are well formed.
+fn check_queue_text(text: &str) -> Result<(), String> {
+    let boxed = Regex::new(r"^- \[( |x)\] \[[^\]]+\] \S").unwrap();
+    let legacy = Regex::new(r"^- \[[^\]]+\] \S").unwrap();
+    let mut any = false;
+    for l in text.lines() {
+        if l.starts_with("- [ ]") || l.starts_with("- [x]") {
+            if !boxed.is_match(l) {
+                return Err(format!("malformed checkbox line: `{l}`"));
+            }
+            any = true;
+        } else if l.starts_with("- ~~") || legacy.is_match(l) {
+            any = true;
+        }
+    }
+    if any {
+        Ok(())
+    } else {
+        Err("needs at least one queue line".into())
+    }
+}
+
 #[test]
 fn decision_files_have_heading_and_labels() {
     for n in decision_files() {
         let text = read_repo_file(&format!("docs/decisions/{n}"));
-        assert!(
-            text.lines().any(|l| l.starts_with("## ")),
-            "docs/decisions/{n}: needs a `## ` heading"
-        );
-        for label in ["Decision", "Rationale", "Alternatives"] {
-            let re = Regex::new(&format!(r"\*\*{label}(:\*\*|\*\*)")).unwrap();
-            assert!(
-                re.is_match(&text),
-                "docs/decisions/{n}: missing **{label}**"
-            );
+        if let Err(e) = check_decision_text(&text) {
+            panic!("docs/decisions/{n}: {e}");
         }
     }
+}
+
+const SECTION: &str = "## a\n**Decision:** x\n**Rationale:** y\n**Alternatives:** z\n";
+
+#[test]
+fn decision_check_rejects_second_section_without_rationale() {
+    let text = format!("{SECTION}\n## b\n**Decision:** x\n**Alternatives:** z\n");
+    let e = check_decision_text(&text).unwrap_err();
+    assert!(e.contains("## b") && e.contains("Rationale"), "{e}");
+}
+
+#[test]
+fn decision_check_accepts_multi_section_and_title() {
+    let text = format!(
+        "# Title\n\n{SECTION}\n## b\n**Decision** x\n**Rationale** y\n**Alternatives** z\n"
+    );
+    assert_eq!(check_decision_text(&text), Ok(()));
+    assert!(check_decision_text("no heading").is_err());
+}
+
+#[test]
+fn queue_check_rejects_bare_checkbox() {
+    assert!(check_queue_text("- [ ]\n").is_err());
+    assert!(check_queue_text("- [ ] [id]\n").is_err());
+    assert!(check_queue_text("- [x] no id here\n").is_err());
+}
+
+#[test]
+fn queue_check_accepts_checkbox_and_legacy_lines() {
+    assert_eq!(check_queue_text("- [ ] [a-1] open\n"), Ok(()));
+    assert_eq!(check_queue_text("- [x] [a-1] done\n"), Ok(()));
+    assert_eq!(check_queue_text("- [a-1] legacy text\n"), Ok(()));
+    assert_eq!(check_queue_text("- ~~[a-1] struck~~ Resolved: x\n"), Ok(()));
 }
 
 #[test]
@@ -94,12 +167,9 @@ fn queue_files_are_named_by_unit_and_hold_items() {
     for n in &names {
         assert!(re.is_match(n), "docs/queue/{n} must be <unit-id>.md");
         let text = read_repo_file(&format!("docs/queue/{n}"));
-        assert!(
-            text.lines().any(|l| {
-                l.starts_with("- [ ]") || l.starts_with("- [x]") || l.starts_with("- ~~")
-            }),
-            "docs/queue/{n}: needs at least one queue line"
-        );
+        if let Err(e) = check_queue_text(&text) {
+            panic!("docs/queue/{n}: {e}");
+        }
     }
     assert_unique("docs/queue", &names, |n| n.to_lowercase(), "unit id");
 }
