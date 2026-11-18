@@ -58,7 +58,10 @@ resolves the frozen HUMAN_QUEUE.md item `[w7pre-ramp-entry follow-up]` "grey-box
     (touching), generation failed with the overlap error.
 - **Gate A1** (`GAMES=1000 SEED=1 scripts/gate_a1.sh`). Baseline: main c4aab01's
   `tables/greybox/table.toml`, swapped into the same worktree and target dir for the run and
-  then restored. New: this change. Both exit 0, and every criterion PASSes in both.
+  then restored. New: this change. Both exit 0, and every gated criterion PASSes in both. The
+  15–120 s median-ball-time window is judged at skill `standard` only (DECISIONS "Orchestrator —
+  Gate A1 criterion 3", `scripts/gate_a1.sh`); the novice and expert medians are reported, not
+  gated, and both sit below 15 s, unchanged from the baseline.
 
   | soak | stuck / endless / escaped / non-finite | switches | median ball time | p99.9 tick (base → new) |
   |---|---|---|---|---|
