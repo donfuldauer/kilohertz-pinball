@@ -2,7 +2,9 @@
 //! D19: "a separate presenter if only FIFO is available").
 //!
 //! The render thread draws the surface's table frame into an offscreen
-//! texture ([`offscreen_frame_texture`], same format as the surface) and
+//! texture ([`offscreen_frame_texture`], of the surface format without its
+//! sRGB suffix, so display layers blend in display-encoded space: issue #10)
+//! and
 //! posts it through the latest-frame [`Handoff`]. The presenter thread owns
 //! the `wgpu::Surface`; it reconfigures on a size change, acquires the
 //! swap-chain image (the only call that may block on vertical blank),
@@ -148,7 +150,98 @@ fn vs(@builtin(vertex_index) i: u32) -> VsOut {
 fn fs(v: VsOut) -> @location(0) vec4<f32> {
     return textureSample(src, samp, v.uv);
 }
+
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        return c / 12.92;
+    }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+// A non-sRGB source into an `*Srgb` target: the source holds encoded
+// values, which the target's write encodes again, so decode them first
+// (the stored bytes then equal the source bytes up to rounding).
+@fragment
+fn fs_decode(v: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src, samp, v.uv);
+    return vec4<f32>(srgb_to_linear(c.r), srgb_to_linear(c.g), srgb_to_linear(c.b), c.a);
+}
 "#;
+
+/// Whether the blit from a `src`-format texture into a `dst`-format target
+/// decodes the sampled colour (`fs_decode`): a non-sRGB source holds
+/// display-encoded bytes, and an `*Srgb` target would encode them a second
+/// time. Same-encoding pairs blit unchanged (`fs`).
+pub(crate) fn blit_decodes(src: wgpu::TextureFormat, dst: wgpu::TextureFormat) -> bool {
+    dst.is_srgb() && !src.is_srgb()
+}
+
+/// Whether `src`/`dst` form a supported pair on either path: equal
+/// formats, or a non-sRGB source into its `*Srgb` twin. An `*Srgb` source
+/// into a non-sRGB target is not supported on either path. A raw copy
+/// (`CopyDst`) would preserve the stored bytes (an sRGB byte of 128 stays
+/// 128), while a blit samples through the sRGB view, which decodes on
+/// sampling, so the plain target would store about 55. The two paths would
+/// disagree; rejecting the pair on both keeps `FrameCopy`'s result
+/// independent of the path.
+fn same_or_srgb_twin(src: wgpu::TextureFormat, dst: wgpu::TextureFormat) -> bool {
+    src == dst || (dst.is_srgb() && !src.is_srgb() && src == dst.remove_srgb_suffix())
+}
+
+/// Whether the blit pipeline can use `src` (sampled as a filterable float
+/// texture) and `dst` (a float-output colour render target) on a device
+/// with `features` enabled (callers pass `device.features()`): neither is
+/// compressed, the source's sample type is filterable float, the
+/// destination's a float type, and the destination's guaranteed usages
+/// include `RENDER_ATTACHMENT`. Taking `features` keeps this GPU-free.
+fn blit_formats_usable(
+    src: wgpu::TextureFormat,
+    dst: wgpu::TextureFormat,
+    features: wgpu::Features,
+) -> bool {
+    let float = |f: wgpu::TextureFormat| {
+        matches!(
+            f.sample_type(None, Some(features)),
+            Some(wgpu::TextureSampleType::Float { .. })
+        )
+    };
+    !src.is_compressed()
+        && !dst.is_compressed()
+        && src.sample_type(None, Some(features))
+            == Some(wgpu::TextureSampleType::Float { filterable: true })
+        && float(dst)
+        && dst
+            .guaranteed_format_features(features)
+            .allowed_usages
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+}
+
+/// Whether [`FrameCopy::with_source`] supports a `src` frame into a `dst`
+/// target along `path` on a device with `features` (pure, GPU-free).
+///
+/// - [`CopyPath::CopyDst`]: equal formats, or a non-sRGB source into its
+///   `*Srgb` twin (`copy_texture_to_texture` copies raw bytes, so any such
+///   pair is valid, including compressed and integer formats).
+/// - [`CopyPath::Blit`]: the same pair rule, and both formats must suit
+///   the float-sampling, float-output blit pipeline on `features`: the source samples as
+///   a filterable float texture, the destination is a renderable float
+///   colour format, and neither is compressed. So `Bc1RgbaUnorm` into
+///   `Bc1RgbaUnormSrgb` or `Rgba8Uint` into itself is rejected here though
+///   valid for `CopyDst`.
+///
+/// An `*Srgb` source into a non-sRGB target is unsupported on both paths.
+pub(crate) fn copy_pair_supported(
+    src: wgpu::TextureFormat,
+    dst: wgpu::TextureFormat,
+    path: CopyPath,
+    features: wgpu::Features,
+) -> bool {
+    same_or_srgb_twin(src, dst)
+        && match path {
+            CopyPath::CopyDst => true,
+            CopyPath::Blit => blit_formats_usable(src, dst, features),
+        }
+}
 
 struct Blit {
     pipeline: wgpu::RenderPipeline,
@@ -164,9 +257,41 @@ pub struct FrameCopy {
 }
 
 impl FrameCopy {
-    /// A copier into targets of `format` along `path` (the blit pipeline
-    /// is built only for [`CopyPath::Blit`]).
+    /// A copier of `format` frames into targets of `format` along `path`
+    /// (the blit pipeline is built only for [`CopyPath::Blit`]).
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, path: CopyPath) -> FrameCopy {
+        FrameCopy::with_source(device, format, format, path)
+    }
+
+    /// A copier of `src`-format frames into targets of `dst` format along
+    /// `path`. Supported pairs: equal formats, and
+    /// a non-sRGB source into its `*Srgb` twin (`copy_texture_to_texture`
+    /// copies the bytes; the blit decodes in the shader, so the target
+    /// stores the source's bytes with no second sRGB encode). Additionally,
+    /// [`CopyPath::Blit`] requires the source to sample as a filterable
+    /// float texture and the destination to be a renderable float colour
+    /// format, neither compressed (so e.g. `Bc1RgbaUnorm` into
+    /// `Bc1RgbaUnormSrgb` and `Rgba8Uint` into itself are `CopyDst`-only).
+    ///
+    /// # Panics
+    /// On any other pair for `path`, notably an `*Srgb` source into a
+    /// non-sRGB target (the two paths would disagree): a wiring error.
+    pub fn with_source(
+        device: &wgpu::Device,
+        src: wgpu::TextureFormat,
+        dst: wgpu::TextureFormat,
+        path: CopyPath,
+    ) -> FrameCopy {
+        assert!(
+            copy_pair_supported(src, dst, path, device.features()),
+            "FrameCopy: unsupported {path:?} copy of {src:?} frames into {dst:?} targets"
+        );
+        let format = dst;
+        let fs_entry = if blit_decodes(src, dst) {
+            "fs_decode"
+        } else {
+            "fs"
+        };
         let blit = (path == CopyPath::Blit).then(|| {
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("presenter blit"),
@@ -212,7 +337,7 @@ impl FrameCopy {
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
-                    entry_point: Some("fs"),
+                    entry_point: Some(fs_entry),
                     compilation_options: Default::default(),
                     targets: &[Some(format.into())],
                 }),
@@ -242,6 +367,14 @@ impl FrameCopy {
 
     /// Records the copy of `src` into `dst` (the overlapping extent for
     /// [`CopyPath::CopyDst`]; the whole of `dst` for [`CopyPath::Blit`]).
+    ///
+    /// # Extent precondition
+    /// The format-pair check in the constructors covers formats only, not
+    /// extents. A [`CopyPath::CopyDst`] copy must cover the full texture
+    /// extent (wgpu rejects a partial copy) when the format is depth/stencil
+    /// or when the texture is multisampled (`sample_count > 1`) of any
+    /// format, so `src` and `dst` must have equal sizes in those cases. Only
+    /// single-sample colour textures may copy the overlapping extent.
     pub fn encode(
         &self,
         device: &wgpu::Device,
@@ -308,6 +441,9 @@ pub(crate) struct PresenterTarget {
     pub(crate) surface: wgpu::Surface<'static>,
     /// Already applied once on the render thread before the hand-over.
     pub(crate) config: wgpu::SurfaceConfiguration,
+    /// The format of the posted frames (the surface format without its
+    /// sRGB suffix, see [`FrameCopy::with_source`]).
+    pub(crate) src_format: wgpu::TextureFormat,
     pub(crate) path: CopyPath,
     pub(crate) gpu_lock: std::sync::Arc<Mutex<()>>,
 }
@@ -327,10 +463,11 @@ pub(crate) fn run_presenter(h: &Handoff<wgpu::Texture>, target: PresenterTarget)
         queue,
         surface,
         mut config,
+        src_format,
         path,
         gpu_lock,
     } = target;
-    let copy = FrameCopy::new(&device, config.format, path);
+    let copy = FrameCopy::with_source(&device, src_format, config.format, path);
     let mut configured = true;
     while let Some(frame) = h.wait_take() {
         let Some(src) = frame.payload().cloned() else {
@@ -423,5 +560,169 @@ mod tests {
         );
         assert!(CopyPath::CopyDst.target_usages().contains(U::COPY_DST));
         assert_eq!(CopyPath::Blit.target_usages(), U::RENDER_ATTACHMENT);
+    }
+
+    /// Issue #10: a non-sRGB offscreen frame blitted into an `*Srgb`
+    /// swap-chain image is decoded in the shader (else it would be encoded
+    /// twice); every other pair is sampled and written unchanged.
+    #[test]
+    fn only_a_plain_source_into_an_srgb_target_decodes() {
+        use wgpu::TextureFormat as F;
+        assert!(blit_decodes(F::Bgra8Unorm, F::Bgra8UnormSrgb));
+        assert!(blit_decodes(F::Rgba8Unorm, F::Rgba8UnormSrgb));
+        for f in [
+            F::Bgra8Unorm,
+            F::Rgba8Unorm,
+            F::Bgra8UnormSrgb,
+            F::Rgba8UnormSrgb,
+        ] {
+            assert!(!blit_decodes(f, f), "{f:?}");
+        }
+        assert!(!blit_decodes(F::Bgra8UnormSrgb, F::Bgra8Unorm));
+    }
+
+    /// `with_source` supports equal pairs and plain -> its sRGB twin only;
+    /// the blit path additionally needs float-sampleable, renderable,
+    /// uncompressed formats.
+    #[test]
+    fn copy_pairs_exclude_srgb_into_plain() {
+        use wgpu::TextureFormat as F;
+        const E: wgpu::Features = wgpu::Features::empty();
+        for path in [CopyPath::CopyDst, CopyPath::Blit] {
+            assert!(copy_pair_supported(
+                F::Bgra8Unorm,
+                F::Bgra8UnormSrgb,
+                path,
+                E
+            ));
+            assert!(copy_pair_supported(
+                F::Rgba8Unorm,
+                F::Rgba8UnormSrgb,
+                path,
+                E
+            ));
+            assert!(copy_pair_supported(F::Bgra8Unorm, F::Bgra8Unorm, path, E));
+            assert!(copy_pair_supported(F::Rgba8Unorm, F::Rgba8Unorm, path, E));
+            assert!(copy_pair_supported(
+                F::Bgra8UnormSrgb,
+                F::Bgra8UnormSrgb,
+                path,
+                E
+            ));
+            assert!(!copy_pair_supported(
+                F::Bgra8UnormSrgb,
+                F::Bgra8Unorm,
+                path,
+                E
+            ));
+            assert!(!copy_pair_supported(
+                F::Rgba8UnormSrgb,
+                F::Rgba8Unorm,
+                path,
+                E
+            ));
+            assert!(!copy_pair_supported(
+                F::Rgba8Unorm,
+                F::Bgra8UnormSrgb,
+                path,
+                E
+            ));
+        }
+        // Raw copies of formats the blit pipeline cannot sample or render.
+        assert!(copy_pair_supported(
+            F::Bc1RgbaUnorm,
+            F::Bc1RgbaUnormSrgb,
+            CopyPath::CopyDst,
+            E
+        ));
+        assert!(copy_pair_supported(
+            F::Rgba8Uint,
+            F::Rgba8Uint,
+            CopyPath::CopyDst,
+            E
+        ));
+        assert!(!copy_pair_supported(
+            F::Bc1RgbaUnorm,
+            F::Bc1RgbaUnormSrgb,
+            CopyPath::Blit,
+            E
+        ));
+        assert!(!copy_pair_supported(
+            F::Rgba8Uint,
+            F::Rgba8Uint,
+            CopyPath::Blit,
+            E
+        ));
+    }
+
+    /// The blit check follows the device's features: `R32Float` is
+    /// filterable only with `FLOAT32_FILTERABLE`, `Rg11b10Ufloat` is
+    /// renderable only with `RG11B10UFLOAT_RENDERABLE`.
+    #[test]
+    fn blit_check_follows_device_features() {
+        use wgpu::TextureFormat as F;
+        let blit = CopyPath::Blit;
+        let none = wgpu::Features::empty();
+        let f32f = wgpu::Features::FLOAT32_FILTERABLE;
+        let rg11 = wgpu::Features::RG11B10UFLOAT_RENDERABLE;
+        assert!(!copy_pair_supported(F::R32Float, F::R32Float, blit, none));
+        assert!(copy_pair_supported(F::R32Float, F::R32Float, blit, f32f));
+        assert!(copy_pair_supported(
+            F::Rg11b10Ufloat,
+            F::Rg11b10Ufloat,
+            blit,
+            rg11
+        ));
+        assert!(!copy_pair_supported(
+            F::Rg11b10Ufloat,
+            F::Rg11b10Ufloat,
+            blit,
+            none
+        ));
+    }
+
+    /// The blit shader (both entry points) parses and validates (naga, as
+    /// wgpu does at pipeline creation; GPU-free).
+    #[test]
+    fn blit_shader_validates() {
+        use wgpu::naga;
+        let module = naga::front::wgsl::parse_str(BLIT_SHADER).expect("blit shader parses");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .expect("blit shader validates");
+        for entry in ["vs", "fs", "fs_decode"] {
+            assert!(
+                module.entry_points.iter().any(|e| e.name == entry),
+                "missing entry point {entry}"
+            );
+        }
+    }
+
+    /// The decode in `fs_decode` is the sRGB transfer function's inverse:
+    /// encoding its result back (as an `*Srgb` target does) returns every
+    /// 8-bit input unchanged.
+    #[test]
+    fn decode_then_encode_round_trips_every_byte() {
+        let decode = |c: f32| {
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let encode = |l: f32| {
+            if l <= 0.003_130_8 {
+                l * 12.92
+            } else {
+                1.055 * l.powf(1.0 / 2.4) - 0.055
+            }
+        };
+        for b in 0u8..=255 {
+            let back = (encode(decode(f32::from(b) / 255.0)) * 255.0).round();
+            assert_eq!(back, f32::from(b), "byte {b}");
+        }
     }
 }

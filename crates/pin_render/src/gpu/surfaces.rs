@@ -342,6 +342,8 @@ struct Slot {
     planned: (ArrayVec<(SurfaceRole, Rect), 3>, (u32, u32)),
     choice: PresentChoice,
     format: wgpu::TextureFormat,
+    /// How display layers reach this surface's frames.
+    layer: LayerTarget,
     logical_size: (u32, u32),
     pixel_size: (u32, u32),
     minimized: bool,
@@ -517,7 +519,12 @@ fn lock(m: &Mutex<()>) -> MutexGuard<'_, ()> {
 
 fn pick_format(caps: &wgpu::SurfaceCapabilities) -> Option<wgpu::TextureFormat> {
     // Prefer a non-sRGB 8-bit format so debug colours land unchanged, like
-    // the offscreen path; otherwise the first offered format.
+    // the offscreen path; otherwise the first offered format (the fallback
+    // path; usually an `*Srgb` one). On that fallback the debug renderers
+    // still draw through the `*Srgb` view, but display layers are composited
+    // in display-encoded space through the non-sRGB twin
+    // (`LayerTarget::for_target`: a twin view via `view_formats`, or a
+    // twin-format scratch texture), exactly as on the preferred path.
     caps.formats
         .iter()
         .copied()
@@ -530,14 +537,234 @@ fn pick_format(caps: &wgpu::SurfaceCapabilities) -> Option<wgpu::TextureFormat> 
         .or_else(|| caps.formats.first().copied())
 }
 
+/// How display layers (DMD, LCD, backglass: [`crate::displays`]) are
+/// composited onto a target texture of a given format (issue #10).
+///
+/// The displays blend in display-encoded (sRGB-valued) space, as 2D art
+/// tools do. On a non-sRGB target that is what fixed-function blending does
+/// already. On an `*Srgb` target the blend unit decodes the destination to
+/// linear, blends and re-encodes, so a half-transparent layer would blend in
+/// linear space; the layers are therefore drawn through the target's
+/// non-sRGB twin format (`Rgba8UnormSrgb` → `Rgba8Unorm`, `Bgra8UnormSrgb`
+/// → `Bgra8Unorm`), which stores the same bytes without conversion.
+///
+/// Build the display renderers for [`layer_format`](Self::layer_format) and
+/// draw them through a [`LayerCompositor`] built from this target.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum LayerTarget {
+    /// Layers are drawn through the target's own view and the renderers are
+    /// built for this format. Every non-sRGB target; also an `*Srgb` target
+    /// that allows neither a twin view nor copies (then the display shaders
+    /// decode their output and blending happens in linear space: the
+    /// degraded last resort).
+    Direct(wgpu::TextureFormat),
+    /// An `*Srgb` target whose texture lists its non-sRGB twin in
+    /// `view_formats` (surfaces need
+    /// [`wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS`]): layers are drawn
+    /// through a twin-format view of the same texture. No extra pass.
+    TwinView {
+        /// The target (surface) format.
+        target: wgpu::TextureFormat,
+        /// Its non-sRGB twin, the layer format.
+        twin: wgpu::TextureFormat,
+    },
+    /// An `*Srgb` target without twin views but with `COPY_SRC | COPY_DST`:
+    /// the target is copied into a twin-format scratch texture (a raw byte
+    /// copy: the formats differ only in sRGB-ness), the layers are drawn
+    /// there and the result is copied back.
+    Intermediate {
+        /// The target (surface) format.
+        target: wgpu::TextureFormat,
+        /// Its non-sRGB twin, the layer and scratch format.
+        twin: wgpu::TextureFormat,
+    },
+}
+
+impl LayerTarget {
+    /// The layer target for a target texture of `format` on a device with
+    /// `downlevel` flags whose target texture allows `usages`.
+    ///
+    /// A non-sRGB format gives [`Direct`](Self::Direct). An `*Srgb` format
+    /// gives [`TwinView`](Self::TwinView) when `downlevel` has
+    /// [`SURFACE_VIEW_FORMATS`](wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS)
+    /// (DX12, Metal, Vulkan with `VK_KHR_swapchain_mutable_format`), else
+    /// [`Intermediate`](Self::Intermediate) when `usages` has `COPY_SRC` and
+    /// `COPY_DST`, else `Direct` (degraded: linear-space blending).
+    pub fn for_target(
+        format: wgpu::TextureFormat,
+        downlevel: wgpu::DownlevelFlags,
+        usages: wgpu::TextureUsages,
+    ) -> LayerTarget {
+        let twin = format.remove_srgb_suffix();
+        if !format.is_srgb() || twin == format {
+            return LayerTarget::Direct(format);
+        }
+        if downlevel.contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS) {
+            LayerTarget::TwinView {
+                target: format,
+                twin,
+            }
+        } else if usages.contains(wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST) {
+            LayerTarget::Intermediate {
+                target: format,
+                twin,
+            }
+        } else {
+            LayerTarget::Direct(format)
+        }
+    }
+
+    /// The format of the target texture.
+    pub fn target_format(&self) -> wgpu::TextureFormat {
+        match *self {
+            LayerTarget::Direct(f) => f,
+            LayerTarget::TwinView { target, .. } | LayerTarget::Intermediate { target, .. } => {
+                target
+            }
+        }
+    }
+
+    /// The format to build the display renderers for (the twin, except for
+    /// [`Direct`](Self::Direct)).
+    pub fn layer_format(&self) -> wgpu::TextureFormat {
+        match *self {
+            LayerTarget::Direct(f) => f,
+            LayerTarget::TwinView { twin, .. } | LayerTarget::Intermediate { twin, .. } => twin,
+        }
+    }
+
+    /// The `view_formats` the target texture (or surface configuration)
+    /// must list: the twin for [`TwinView`](Self::TwinView), else none.
+    pub fn view_formats(&self) -> Vec<wgpu::TextureFormat> {
+        match *self {
+            LayerTarget::TwinView { twin, .. } => vec![twin],
+            LayerTarget::Direct(_) | LayerTarget::Intermediate { .. } => Vec::new(),
+        }
+    }
+
+    /// Usages the target texture needs on top of `RENDER_ATTACHMENT`:
+    /// `COPY_SRC | COPY_DST` for [`Intermediate`](Self::Intermediate), else
+    /// none.
+    pub fn extra_usages(&self) -> wgpu::TextureUsages {
+        match self {
+            LayerTarget::Intermediate { .. } => {
+                wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST
+            }
+            LayerTarget::Direct(_) | LayerTarget::TwinView { .. } => wgpu::TextureUsages::empty(),
+        }
+    }
+}
+
+/// Composites display layers onto frames of a [`LayerTarget`].
+///
+/// Per frame: [`begin`](Self::begin) gives the view to draw the layers
+/// into (`None`: the caller's own view of the frame), the layers are
+/// recorded, then [`end`](Self::end). On a [`LayerTarget::Direct`] target
+/// both calls record and allocate nothing, so the non-sRGB path is
+/// unchanged. The [`LayerTarget::Intermediate`] scratch texture is created
+/// on first use and again only when the frame size changes.
+#[derive(Debug)]
+pub struct LayerCompositor {
+    target: LayerTarget,
+    scratch: Option<wgpu::Texture>,
+}
+
+impl LayerCompositor {
+    /// A compositor for frames of `target`.
+    pub fn new(target: LayerTarget) -> LayerCompositor {
+        LayerCompositor {
+            target,
+            scratch: None,
+        }
+    }
+
+    /// The layer target.
+    pub fn target(&self) -> LayerTarget {
+        self.target
+    }
+
+    /// Prepares `frame` (a texture of the target format, created with the
+    /// target's [`view_formats`](LayerTarget::view_formats) and
+    /// [`extra_usages`](LayerTarget::extra_usages)) for the layers and
+    /// returns the view to draw them into, of format
+    /// [`layer_format`](LayerTarget::layer_format); `None` means "draw
+    /// through your own view of `frame`" ([`LayerTarget::Direct`], or a
+    /// frame whose format is not this target's). Content already recorded
+    /// into `frame` is kept under the layers.
+    pub fn begin(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &wgpu::Texture,
+    ) -> Option<wgpu::TextureView> {
+        if frame.format() != self.target.target_format() {
+            return None;
+        }
+        match self.target {
+            LayerTarget::Direct(_) => None,
+            LayerTarget::TwinView { twin, .. } => {
+                Some(frame.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("display layers (twin view)"),
+                    format: Some(twin),
+                    ..Default::default()
+                }))
+            }
+            LayerTarget::Intermediate { twin, .. } => {
+                let size = frame.size();
+                let stale = self.scratch.as_ref().is_none_or(|t| t.size() != size);
+                if stale {
+                    self.scratch = Some(device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("display layers (scratch)"),
+                        size,
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: twin,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::COPY_SRC
+                            | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    }));
+                }
+                let scratch = self.scratch.as_ref()?;
+                encoder.copy_texture_to_texture(
+                    frame.as_image_copy(),
+                    scratch.as_image_copy(),
+                    size,
+                );
+                Some(scratch.create_view(&wgpu::TextureViewDescriptor::default()))
+            }
+        }
+    }
+
+    /// Finishes the layers of `frame` (the texture given to
+    /// [`begin`](Self::begin)): copies the scratch texture back for
+    /// [`LayerTarget::Intermediate`]; nothing otherwise.
+    pub fn end(&self, encoder: &mut wgpu::CommandEncoder, frame: &wgpu::Texture) {
+        if frame.format() != self.target.target_format() {
+            return;
+        }
+        if let (LayerTarget::Intermediate { .. }, Some(scratch)) = (self.target, &self.scratch)
+            && scratch.size() == frame.size()
+        {
+            encoder.copy_texture_to_texture(
+                scratch.as_image_copy(),
+                frame.as_image_copy(),
+                frame.size(),
+            );
+        }
+    }
+}
+
 fn surface_config(
     format: wgpu::TextureFormat,
     caps: &wgpu::SurfaceCapabilities,
     (w, h): (u32, u32),
     mode: wgpu::PresentMode,
+    layer: LayerTarget,
 ) -> wgpu::SurfaceConfiguration {
     wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | layer.extra_usages(),
         format,
         color_space: Default::default(),
         width: w.max(1),
@@ -549,7 +776,7 @@ fn surface_config(
             .first()
             .copied()
             .unwrap_or(wgpu::CompositeAlphaMode::Auto),
-        view_formats: Vec::new(),
+        view_formats: layer.view_formats(),
     }
 }
 
@@ -587,7 +814,21 @@ impl SurfaceSet {
             if opts.force_presenter_thread && role != SurfaceRole::Playfield {
                 choice = PresentChoice::PresenterThread(wgpu::PresentMode::Fifo);
             }
-            let config = surface_config(format, &caps, src.pixel_size, choice.mode());
+            // Display layers on a direct surface follow the surface format
+            // (a twin view or scratch texture on the `*Srgb` fallback); a
+            // presenter-thread surface is drawn into an `Rgba8Unorm`
+            // offscreen texture, so its layers are direct.
+            let layer = match choice {
+                PresentChoice::Direct(_) => LayerTarget::for_target(
+                    format,
+                    ctx.adapter().get_downlevel_capabilities().flags,
+                    caps.usages,
+                ),
+                PresentChoice::PresenterThread(_) => {
+                    LayerTarget::Direct(wgpu::TextureFormat::Rgba8Unorm)
+                }
+            };
+            let config = surface_config(format, &caps, src.pixel_size, choice.mode(), layer);
             let configure_log = ConfigureLog::new(src.window, role);
             if !try_configure_now(&device, &src.surface, &config, &gpu_lock, &configure_log) {
                 return Err(GpuError::Surface(format!(
@@ -626,6 +867,7 @@ impl SurfaceSet {
                 viewports: src.viewports,
                 choice,
                 format: draw_format,
+                layer,
                 logical_size: src.logical_size,
                 pixel_size: src.pixel_size,
                 minimized: false,
@@ -948,6 +1190,15 @@ impl SurfaceSet {
     pub fn formats(&self) -> impl Iterator<Item = wgpu::TextureFormat> + '_ {
         self.slots.iter().map(|s| s.format)
     }
+
+    /// The display-layer target of each surface, in source order: its
+    /// surface is configured with the target's
+    /// [`view_formats`](LayerTarget::view_formats) and
+    /// [`extra_usages`](LayerTarget::extra_usages); display renderers for
+    /// it are built for [`layer_format`](LayerTarget::layer_format).
+    pub fn layer_targets(&self) -> impl Iterator<Item = LayerTarget> + '_ {
+        self.slots.iter().map(|s| s.layer)
+    }
 }
 
 /// A surface handed to a presenter thread with the guard of its window.
@@ -1103,5 +1354,105 @@ mod join_tests {
         assert!(!join_with_timeout(&stuck, Duration::from_millis(5)));
         drop(tx);
         stuck.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod layer_target_tests {
+    use super::*;
+    use wgpu::DownlevelFlags as D;
+    use wgpu::TextureFormat as F;
+    use wgpu::TextureUsages as U;
+
+    const COPY: U = U::COPY_SRC.union(U::COPY_DST);
+
+    #[test]
+    fn non_srgb_targets_are_direct_whatever_the_device() {
+        for f in [
+            F::Rgba8Unorm,
+            F::Bgra8Unorm,
+            F::Rgba16Float,
+            F::Rgb10a2Unorm,
+        ] {
+            for d in [D::empty(), D::all()] {
+                for u in [U::RENDER_ATTACHMENT, U::RENDER_ATTACHMENT | COPY] {
+                    let t = LayerTarget::for_target(f, d, u);
+                    assert_eq!(t, LayerTarget::Direct(f));
+                    assert_eq!((t.target_format(), t.layer_format()), (f, f));
+                    assert!(t.view_formats().is_empty());
+                    assert!(t.extra_usages().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn srgb_targets_draw_layers_in_the_twin_format() {
+        for (f, twin) in [
+            (F::Rgba8UnormSrgb, F::Rgba8Unorm),
+            (F::Bgra8UnormSrgb, F::Bgra8Unorm),
+        ] {
+            let all = D::SURFACE_VIEW_FORMATS | D::VIEW_FORMATS;
+            for u in [U::RENDER_ATTACHMENT, U::RENDER_ATTACHMENT | COPY] {
+                let t = LayerTarget::for_target(f, all, u);
+                assert_eq!(t, LayerTarget::TwinView { target: f, twin });
+                assert_eq!((t.target_format(), t.layer_format()), (f, twin));
+                assert_eq!(t.view_formats(), vec![twin]);
+                assert!(t.extra_usages().is_empty());
+                assert!(!t.layer_format().is_srgb());
+            }
+            let t = LayerTarget::for_target(f, D::VIEW_FORMATS, U::RENDER_ATTACHMENT | COPY);
+            assert_eq!(t, LayerTarget::Intermediate { target: f, twin });
+            assert_eq!((t.target_format(), t.layer_format()), (f, twin));
+            assert!(t.view_formats().is_empty());
+            assert_eq!(t.extra_usages(), COPY);
+            // Neither a twin view nor both copy usages: the degraded direct
+            // path.
+            for u in [
+                U::RENDER_ATTACHMENT,
+                U::RENDER_ATTACHMENT | U::COPY_DST,
+                U::RENDER_ATTACHMENT | U::COPY_SRC,
+            ] {
+                assert_eq!(
+                    LayerTarget::for_target(f, D::VIEW_FORMATS, u),
+                    LayerTarget::Direct(f)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn surface_config_lists_the_twin_view_and_copy_usages() {
+        let caps = wgpu::SurfaceCapabilities {
+            formats: vec![F::Bgra8UnormSrgb],
+            present_modes: vec![wgpu::PresentMode::Fifo],
+            alpha_modes: vec![wgpu::CompositeAlphaMode::Opaque],
+            usages: U::RENDER_ATTACHMENT | COPY,
+            ..Default::default()
+        };
+        let f = pick_format(&caps).unwrap();
+        assert_eq!(f, F::Bgra8UnormSrgb, "the fallback: first offered");
+        let mode = wgpu::PresentMode::Fifo;
+        let twin = LayerTarget::for_target(f, D::SURFACE_VIEW_FORMATS, caps.usages);
+        let c = surface_config(f, &caps, (8, 4), mode, twin);
+        assert_eq!((c.format, c.usage), (f, U::RENDER_ATTACHMENT));
+        assert_eq!(c.view_formats, vec![F::Bgra8Unorm]);
+        let inter = LayerTarget::for_target(f, D::empty(), caps.usages);
+        let c = surface_config(f, &caps, (8, 4), mode, inter);
+        assert_eq!(c.usage, U::RENDER_ATTACHMENT | COPY);
+        assert!(c.view_formats.is_empty());
+        // The preferred (non-sRGB) path is configured exactly as before.
+        let caps = wgpu::SurfaceCapabilities {
+            formats: vec![F::Bgra8UnormSrgb, F::Bgra8Unorm],
+            ..caps
+        };
+        let f = pick_format(&caps).unwrap();
+        assert_eq!(f, F::Bgra8Unorm);
+        let direct = LayerTarget::for_target(f, D::all(), caps.usages);
+        let c = surface_config(f, &caps, (8, 4), mode, direct);
+        assert_eq!(
+            (c.usage, c.view_formats),
+            (U::RENDER_ATTACHMENT, Vec::new())
+        );
     }
 }
