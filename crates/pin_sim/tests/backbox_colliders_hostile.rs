@@ -141,8 +141,16 @@ fn a_valid_hand_made_file_loads_and_appends_its_nodes() {
 }
 
 #[test]
-fn every_backbox_layer_1_to_7_is_accepted() {
-    for layer in 1..=7u8 {
+fn every_backbox_layer_4_to_7_is_accepted_and_1_to_3_rejected() {
+    for layer in 1..=3u8 {
+        let extras = format!("\"collider\":true,\"collision_layer\":{layer}");
+        let dir = bundle("bbh_lowlayer", &glb(&[node(&extras)], TRI));
+        assert!(
+            matches!(load(&dir), Err(SimError::Asset(AssetError::Gltf(_)))),
+            "collision_layer {layer}"
+        );
+    }
+    for layer in 4..=7u8 {
         let extras = format!("\"collider\":true,\"collision_layer\":{layer}");
         let dir = bundle("bbh_layers", &glb(&[node(&extras)], TRI));
         let vfs = Vfs::open(&dir).unwrap();
@@ -189,12 +197,12 @@ fn layer_0_missing_or_above_7_is_an_error() {
     assert_gltf_error(
         "bbh_layer0",
         &glb(&[node("\"collider\":true,\"collision_layer\":0")], TRI),
-        "1..=7",
+        "4..=7",
     );
     assert_gltf_error(
         "bbh_nolayer",
         &glb(&[node("\"collider\":true")], TRI),
-        "1..=7",
+        "4..=7",
     );
     for bad in ["8", "255", "-1", "4.5", "\"4\""] {
         let extras = format!("\"collider\":true,\"collision_layer\":{bad}");
