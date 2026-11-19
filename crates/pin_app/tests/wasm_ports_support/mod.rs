@@ -577,8 +577,20 @@ pub fn check_rebuild(table: &str) {
 /// target from a skip into a failure (set by `.github/workflows/rules-wasm.yml`).
 pub const REQUIRE_WASM32_ENV: &str = "PIN_REQUIRE_WASM32";
 
+/// The outcome of probing the toolchain for `wasm32-unknown-unknown`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WasmTarget {
+    /// The probe succeeded and the target is installed.
+    Installed,
+    /// The probe succeeded and the target is absent.
+    Missing,
+    /// `rustc` could not be run or exited non-zero; holds the command and
+    /// its error, status or stderr.
+    ProbeFailed(String),
+}
+
 /// What a test that needs the `wasm32-unknown-unknown` target does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Wasm32Gate {
     /// The target is installed: run the check.
     Run,
@@ -586,23 +598,28 @@ pub enum Wasm32Gate {
     Skip,
     /// The target is missing and [`REQUIRE_WASM32_ENV`] requires it: fail.
     Fail,
+    /// The `rustc` probe itself failed: fail with the probe's details,
+    /// whether or not the target is required.
+    ProbeFailed(String),
 }
 
-/// The gate decision for `target_installed` and the value of
+/// The gate decision for the `probe` outcome and the value of
 /// [`REQUIRE_WASM32_ENV`] (`None` when unset). The target is required when
-/// the value is non-empty and not `"0"`.
-pub fn wasm32_gate_decision(target_installed: bool, require: Option<&str>) -> Wasm32Gate {
+/// the value is non-empty and not `"0"`. A failed probe is never a skip.
+pub fn wasm32_gate_decision(probe: WasmTarget, require: Option<&str>) -> Wasm32Gate {
     let required = require.is_some_and(|v| !v.is_empty() && v != "0");
-    match (target_installed, required) {
-        (true, _) => Wasm32Gate::Run,
-        (false, false) => Wasm32Gate::Skip,
-        (false, true) => Wasm32Gate::Fail,
+    match (probe, required) {
+        (WasmTarget::ProbeFailed(e), _) => Wasm32Gate::ProbeFailed(e),
+        (WasmTarget::Installed, _) => Wasm32Gate::Run,
+        (WasmTarget::Missing, false) => Wasm32Gate::Skip,
+        (WasmTarget::Missing, true) => Wasm32Gate::Fail,
     }
 }
 
 /// Acts on a gate decision for a check described by `skipped` (what is
 /// not done when it skips): `true` to run, `false` after printing
-/// `SKIP: <reason>`; panics on [`Wasm32Gate::Fail`].
+/// `SKIP: <reason>`; panics on [`Wasm32Gate::Fail`] and
+/// [`Wasm32Gate::ProbeFailed`].
 pub fn apply_wasm32_gate(decision: Wasm32Gate, skipped: &str) -> bool {
     match decision {
         Wasm32Gate::Run => true,
@@ -614,6 +631,9 @@ pub fn apply_wasm32_gate(decision: Wasm32Gate, skipped: &str) -> bool {
             "wasm32-unknown-unknown is not installed but {REQUIRE_WASM32_ENV} is set: {skipped} \
              (install it with `rustup target add wasm32-unknown-unknown`)"
         ),
+        Wasm32Gate::ProbeFailed(e) => {
+            panic!("could not probe the toolchain for wasm32-unknown-unknown ({e}); {skipped}")
+        }
     }
 }
 
@@ -623,7 +643,7 @@ pub fn apply_wasm32_gate(decision: Wasm32Gate, skipped: &str) -> bool {
 pub fn wasm32_gate(skipped: &str) -> bool {
     let require = std::env::var(REQUIRE_WASM32_ENV).ok();
     apply_wasm32_gate(
-        wasm32_gate_decision(wasm_target_installed(), require.as_deref()),
+        wasm32_gate_decision(wasm_target_probe(), require.as_deref()),
         skipped,
     )
 }
@@ -660,20 +680,31 @@ impl Drop for TempDir {
     }
 }
 
-/// Whether the current toolchain has the `wasm32-unknown-unknown` target.
-pub fn wasm_target_installed() -> bool {
+/// Probes the current toolchain (`rustc --print sysroot`) for the
+/// `wasm32-unknown-unknown` target, keeping the probe's error on failure.
+pub fn wasm_target_probe() -> WasmTarget {
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
-    Command::new(rustc)
-        .args(["--print", "sysroot"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        .is_some_and(|root| {
-            Path::new(&root)
-                .join("lib/rustlib/wasm32-unknown-unknown")
-                .is_dir()
-        })
+    let cmd = format!("{rustc} --print sysroot");
+    let out = match Command::new(&rustc).args(["--print", "sysroot"]).output() {
+        Ok(o) => o,
+        Err(e) => return WasmTarget::ProbeFailed(format!("`{cmd}` could not be run: {e}")),
+    };
+    if !out.status.success() {
+        return WasmTarget::ProbeFailed(format!(
+            "`{cmd}` exited with {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let root = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if Path::new(&root)
+        .join("lib/rustlib/wasm32-unknown-unknown")
+        .is_dir()
+    {
+        WasmTarget::Installed
+    } else {
+        WasmTarget::Missing
+    }
 }
 
 /// A seeded random edge source for [`Lockstep`] fuzzing: every tick, with

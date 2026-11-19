@@ -287,9 +287,28 @@ fn ci_rebuilds_and_compares_every_module() {
 // A small reading of the workflow's shell commands
 // ---------------------------------------------------------------------------
 
-/// The lines of `text` that are not comments (first non-space char `#`).
+/// `line` without its comment: a `#` that starts a word (at the line start
+/// or after whitespace or `;`) outside single and double quotes ends it.
+/// `$#`, `${#x}` and `#` inside quotes do not.
+fn strip_comment(line: &str) -> &str {
+    let (mut dq, mut sq, mut prev) = (false, false, None::<char>);
+    for (i, c) in line.char_indices() {
+        match c {
+            '\'' if !dq => sq = !sq,
+            '"' if !sq => dq = !dq,
+            '#' if !sq && !dq && prev.is_none_or(|p| p.is_whitespace() || p == ';') => {
+                return &line[..i];
+            }
+            _ => {}
+        }
+        prev = Some(c);
+    }
+    line
+}
+
+/// The lines of `text` with comments (full-line and inline) removed.
 fn code_lines(text: &str) -> impl Iterator<Item = &str> {
-    text.lines().filter(|l| !l.trim_start().starts_with('#'))
+    text.lines().map(strip_comment)
 }
 
 /// Splits a shell line into words: blanks separate words outside quotes
@@ -510,6 +529,24 @@ fn the_workflow_reader_needs_a_real_cmp_of_the_rebuilt_file() {
         compares_rebuild(&commented, "apex_circuit").is_err(),
         "comment"
     );
+    let inline = good.replace(
+        "if ! cmp \"$out\" \"$committed\"; then exit 1; fi",
+        "elif ! true; then # cmp \"$out\" \"$committed\"",
+    );
+    assert!(compares_rebuild(&inline, "apex_circuit").is_err(), "inline");
+    let inline2 = good.replace(
+        "if ! cmp \"$out\" \"$committed\"; then exit 1; fi",
+        "true # cmp \"$out\" tables/apex_circuit/rules.wasm",
+    );
+    assert!(
+        compares_rebuild(&inline2, "apex_circuit").is_err(),
+        "inline 2"
+    );
+    assert_eq!(
+        strip_comment("echo \"a # b\" 'c # d' $# ${#x}"),
+        "echo \"a # b\" 'c # d' $# ${#x}"
+    );
+    assert_eq!(strip_comment("a; # b"), "a; ");
     let echoed = good.replace(
         "if ! cmp \"$out\" \"$committed\"; then exit 1; fi",
         "echo \"cmp $out $committed\"",
