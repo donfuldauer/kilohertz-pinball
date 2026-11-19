@@ -68,6 +68,7 @@ use pin_core::{FlipperId, Pcg32, Rng, SeedableRng};
 
 use super::table::{DEFAULT_BAT_LENGTH_M, TableInfo};
 use crate::Simulation;
+use crate::replay::{GameOp, GameOpSink};
 use crate::tick::NUDGE_DV_PER_TICK;
 
 /// Nominal ball radius for the sweep sector, m (a standard 27 mm ball).
@@ -686,6 +687,17 @@ impl Bot {
     /// and releases through the switch API, nudges as a cabinet velocity
     /// change). Call once per tick, before `sim.advance(1)`.
     pub fn tick(&mut self, sim: &mut Simulation) {
+        self.tick_recorded(sim, &mut ());
+    }
+
+    /// [`tick`](Self::tick), also reporting every operation it applies to
+    /// `sim` to `sink`, in application order, with the tick it is applied
+    /// before (`sim.tick() + 1`): the nudge first, then the switch changes.
+    /// Only successful calls are reported. The decisions do not depend on
+    /// `sink`; with `()` this is exactly [`tick`](Self::tick). A
+    /// [`GameRecording`](crate::replay::GameRecording) sink makes the game
+    /// replayable without the bot ([`crate::replay::replay_game`]).
+    pub fn tick_recorded<S: GameOpSink>(&mut self, sim: &mut Simulation, sink: &mut S) {
         if self.brains.is_none() {
             self.build(sim);
         }
@@ -721,8 +733,8 @@ impl Bot {
         let resting = self.update_rest(sim, &balls);
         self.update_start(now, &mut desired);
         self.update_launch(now, resting, self.empty_ticks, &mut desired);
-        self.update_nudge(sim, now, resting);
-        self.apply(sim, &desired);
+        self.update_nudge(sim, now, resting, sink);
+        self.apply(sim, now, &desired, sink);
     }
 
     fn update_flippers(
@@ -896,7 +908,13 @@ impl Bot {
         }
     }
 
-    fn update_nudge(&mut self, sim: &mut Simulation, now: u64, (_, longest): (bool, u32)) {
+    fn update_nudge<S: GameOpSink>(
+        &mut self,
+        sim: &mut Simulation,
+        now: u64,
+        (_, longest): (bool, u32),
+        sink: &mut S,
+    ) {
         let n = self.cfg.nudge;
         if !n.enabled
             || longest < n.after_rest_ms
@@ -923,11 +941,18 @@ impl Bot {
         // The same cabinet velocity change a `NudgeX` axis event applies in
         // tick step 1; applied between ticks, outside the tick path.
         sim.mechs.nudge(dv);
+        sink.op(now, GameOp::Nudge { dv: dv.to_array() });
         self.stats.nudges += 1;
         self.next_nudge_at = now + u64::from(n.min_interval_ms);
     }
 
-    fn apply(&mut self, sim: &mut Simulation, desired: &[bool; 8]) {
+    fn apply<S: GameOpSink>(
+        &mut self,
+        sim: &mut Simulation,
+        now: u64,
+        desired: &[bool; 8],
+        sink: &mut S,
+    ) {
         for c in CabinetInput::ALL {
             let i = c.index();
             if desired[i] == self.applied[i] {
@@ -935,12 +960,22 @@ impl Bot {
             }
             // Cabinet switches always exist (`[cabinet_switches]` is
             // mandatory), so these cannot fail on a loaded table.
-            let ok = if desired[i] {
-                sim.set_switch(c.name(), true).is_ok()
+            let (ok, op) = if desired[i] {
+                (
+                    sim.set_switch(c.name(), true).is_ok(),
+                    GameOp::SetSwitch {
+                        input: c,
+                        closed: true,
+                    },
+                )
             } else {
-                sim.release_switch(c.name()).is_ok()
+                (
+                    sim.release_switch(c.name()).is_ok(),
+                    GameOp::ReleaseSwitch { input: c },
+                )
             };
             if ok {
+                sink.op(now, op);
                 self.applied[i] = desired[i];
             }
         }
