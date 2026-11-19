@@ -26,6 +26,8 @@ cp "$src"/display/*.toml "$out/display/"
 # bundle whose script_entry names rules.wasm.
 if [ -f "$src/rules.wasm" ]; then
   cp "$src/rules.wasm" "$out/"
+else
+  rm -f "$out/rules.wasm"
 fi
 cargo run -q -p pin_assetgen -- --title "Apex Circuit" --palette "#0b132b,#1c2541,#ff6b35" --out "$out"
 cargo run -q -p pin_tablegen -- validate "$out"

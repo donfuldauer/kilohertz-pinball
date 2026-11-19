@@ -3,8 +3,9 @@
 //! Owner: Subphase 2.5. Stub created by Subphase 1.1.
 //!
 //! Tick step 3 (PLAN.md §2.2): everything the script queued in step 2 (or in
-//! `on_init`) is applied in list order, then the queue is cleared. Nothing
-//! allocates.
+//! `on_init`) is applied in list order. The queue is kept until the next
+//! tick's step 2 clears it (before the first script call), so
+//! [`Simulation::last_commands`] can show it read-only. Nothing allocates.
 //!
 //! | list | effect |
 //! |---|---|
@@ -28,8 +29,9 @@ fn unit(v: f32) -> f32 {
 }
 
 impl Simulation {
-    /// Applies and clears the command queue: tick step 3, or after
-    /// `on_init` in `load`.
+    /// Applies the command queue: tick step 3, or after `on_init` in
+    /// `load`. The queue is not cleared here: step 2 of the next tick
+    /// clears it, so [`Simulation::last_commands`] shows what was applied.
     ///
     /// `first_physics_tick` is the first tick whose physics step sees the
     /// commands: the current tick in step 3, tick 1 after `on_init` (load
@@ -151,6 +153,5 @@ impl Simulation {
         self.out_scores
             .try_extend_from_slice(&self.cmd.scores)
             .expect("same capacity as the queue");
-        self.cmd.clear();
     }
 }

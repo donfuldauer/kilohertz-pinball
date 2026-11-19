@@ -4,9 +4,9 @@
 //!
 //! * A recorded played game (mode selector steps on `action` included)
 //!   replays tick for tick to identical simulation output under the Lua and
-//!   the Wasm bundle, with identical final scores and `state_hash`, while
-//!   the two backends, fed the game's switch edges, emit byte-identical
-//!   command queues every tick.
+//!   the Wasm bundle, with identical final scores and `state_hash`, and
+//!   byte-identical command queues in the two simulations after every tick
+//!   (`Simulation::last_commands`).
 //! * Seeded random switch traffic gives byte-identical queues and identical
 //!   PCG draws (the `on_init` mode-selector draw) for several seeds, and
 //!   starts every one of the five modes.
@@ -14,35 +14,38 @@
 mod feature_lab_support;
 mod wasm_ports_support;
 
-use feature_lab_support::{MODES, bundle, scratch};
+use feature_lab_support::{MODES, bundle};
 use pin_sim::{SimConfig, Simulation};
 use std::path::PathBuf;
 use wasm_ports_support::{
-    Lockstep, RandomEdges, key, on_big_stack, played_game_parity, wasm_bundle,
+    Lockstep, RandomEdges, TempDir, key, on_big_stack, played_game_parity, wasm_bundle,
 };
 
 const TABLE: &str = "feature_lab";
 
-fn bundles() -> (PathBuf, PathBuf) {
+/// The Lua bundle and a Wasm copy of it; the copy is removed when the
+/// returned [`TempDir`] drops (keep it alive through the replay).
+fn bundles() -> (PathBuf, TempDir) {
     let lua = bundle().to_path_buf();
-    let wasm = scratch("feature_lab_wasm_bundle");
-    wasm_bundle(&lua, TABLE, &wasm);
+    let wasm = TempDir::new("feature_lab_wasm_bundle");
+    wasm_bundle(&lua, TABLE, wasm.path());
     (lua, wasm)
 }
 
 #[test]
 fn a_recorded_game_matches_tick_for_tick_under_lua_and_wasm() {
-    let (lua, wasm) = bundles();
+    let (lua, wasm_dir) = bundles();
     on_big_stack(move || {
+        let wasm = wasm_dir.path();
         let keys = MODES.map(|m| format!("mode:{m}"));
         let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
-        let (r, busy, commands) = played_game_parity(TABLE, &lua, &wasm, 7000, 300_000, &keys);
-        println!("{r:?}; lockstep busy ticks {busy}, commands {commands}");
+        let r = played_game_parity(&lua, wasm, 7000, 300_000, &keys);
+        println!("{r:?}");
         assert_eq!(r.scores.0, r.scores.1, "final scores");
         assert_eq!(r.hashes.0, r.hashes.1, "final state_hash");
         assert!(r.scores.1.is_some_and(|s| s > 0), "the Wasm game scored");
         assert!(r.max_ball >= 2, "the Wasm game ran past ball 1");
-        assert!(r.ticks_with_output > 100 && busy > 100 && commands > 500);
+        assert!(r.ticks_with_output > 100 && r.queue_busy_ticks > 100 && r.queue_commands > 500);
         assert!(r.games >= 2, "several games were played");
         let started = r.modes.iter().filter(|(_, n)| *n > 0).count();
         assert!(started >= 2, "several modes started in the played games");
