@@ -42,8 +42,17 @@ fn parse_hex(c: &str) -> [u8; 3] {
 /// layout, glass and display scenes are copied, and the 4.6 placeholder kit
 /// (`pin_assetgen::generate_kit`) adds the sounds, fonts and backglass art.
 pub fn build_greybox_bundle(out_dir: &Path) {
+    build_greybox_bundle_with_layout_extra(out_dir, "");
+}
+
+/// [`build_greybox_bundle`] with `layout_extra` appended to the layout text
+/// `pin_tablegen` generates the glTF from (the copied `layout.toml` stays the
+/// grey box's: the extra only adds visual elements such as `[[inserts]]`).
+pub fn build_greybox_bundle_with_layout_extra(out_dir: &Path, layout_extra: &str) {
     let src = greybox_src();
-    let layout_text = std::fs::read_to_string(src.join("layout.toml")).expect("layout.toml");
+    let mut layout_text = std::fs::read_to_string(src.join("layout.toml")).expect("layout.toml");
+    layout_text.push('\n');
+    layout_text.push_str(layout_extra);
     let table_text = std::fs::read_to_string(src.join("table.toml")).expect("table.toml");
     let layout = parse_layout(&layout_text).expect("layout.toml parses");
     let base = TableManifest::from_toml_str(&table_text).expect("table.toml parses");
@@ -96,4 +105,31 @@ pub fn on_big_stack<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -
         .expect("spawn")
         .join()
         .unwrap_or_else(|e| std::panic::resume_unwind(e))
+}
+
+/// Two `[[inserts]]` for the grey box (lamps `powerball_lamp` and
+/// `backglass_logo`): `inserts[0]` on the bare lower playfield, `inserts[1]`
+/// under the acrylic upper deck (x 300..460, y 860..1040 mm).
+pub const GREYBOX_INSERTS: &str = "\
+[[inserts]]
+lamp = \"powerball_lamp\"
+position = [200.0, 300.0]
+shape = \"circle\"
+size = 60.0
+
+[[inserts]]
+lamp = \"backglass_logo\"
+position = [380.0, 950.0]
+shape = \"circle\"
+size = 60.0
+";
+
+/// The grey-box bundle with [`GREYBOX_INSERTS`], built once per test binary.
+pub fn greybox_inserts_bundle() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let d = scratch("greybox_inserts_bundle");
+        build_greybox_bundle_with_layout_extra(&d, GREYBOX_INSERTS);
+        d
+    })
 }
