@@ -1967,6 +1967,7 @@ dependencies = [
  "glam",
  "gltf",
  "image",
+ "libm",
  "pin_core",
  "pin_physics",
  "proptest",

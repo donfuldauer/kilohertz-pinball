@@ -55,7 +55,7 @@ fn warns_for_80_on_100_at_30() {
 #[test]
 fn matching_and_tolerance_band() {
     // 76 mm on R 100 implies 44.7 deg (44.70...).
-    let implied: f64 = 2.0 * (76.0f64 / 200.0_f64).asin().to_degrees();
+    let implied: f64 = 2.0 * libm::asin(76.0f64 / 200.0_f64).to_degrees();
     assert!((implied - 44.7).abs() < 0.05);
     for d in [0.0, 0.9, -0.9] {
         for sign in ["", "-"] {
