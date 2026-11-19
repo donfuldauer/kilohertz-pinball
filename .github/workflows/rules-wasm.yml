@@ -1,0 +1,121 @@
+name: rules-wasm
+
+# Subphase 6.3: the Wasm ports of the table rules. Every committed
+# tables/<t>/rules.wasm must be exactly what tables/<t>/rules-wasm/rebuild.sh
+# builds from the Rust port (pinned toolchain, --offline --locked, remapped
+# paths), and the ports must behave exactly as the frozen rules.lua (the
+# pin_app wasm_ports_* parity tests). A separate workflow file (not ci.yml),
+# path-filtered so unrelated changes do not pay for it; see
+# docs/decisions/2026-11-19-6.3.md.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tables/*/rules-wasm/**"
+      - "tables/*/rules.wasm"
+      - "tables/*/rules.lua"
+      - "crates/pin_script/guest-sdk/**"
+      - ".github/workflows/rules-wasm.yml"
+  pull_request:
+    paths:
+      - "tables/*/rules-wasm/**"
+      - "tables/*/rules.wasm"
+      - "tables/*/rules.lua"
+      - "crates/pin_script/guest-sdk/**"
+      - ".github/workflows/rules-wasm.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  SDL_AUDIO_DRIVER: dummy
+  SDL_VIDEO_DRIVER: dummy
+  # Exact toolchain from versions.toml [toolchain], as in ci.yml.
+  RUST_VERSION: "1.97.0"
+
+jobs:
+  rules-wasm:
+    name: rules-wasm (rebuild + parity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, wasm32 target)
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+          test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-unknown-unknown" \
+            || { echo "::error::wasm32-unknown-unknown is not installed"; exit 1; }
+
+      # Each port is built twice into separate scratch dirs: both builds must
+      # be byte-identical (reproducible) and equal to the committed binary.
+      - name: Rebuild every rules.wasm and compare with the committed binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          for crate in tables/*/rules-wasm; do
+            table=$(basename "$(dirname "$crate")")
+            committed="tables/$table/rules.wasm"
+            for run in 1 2; do
+              out="$RUNNER_TEMP/$table.$run.wasm"
+              CARGO_TARGET_DIR="$RUNNER_TEMP/target-$table-$run" sh "$crate/rebuild.sh" "$out"
+              if [ ! -f "$committed" ]; then
+                echo "::error title=rules.wasm missing::$table: $committed is not committed (run $crate/rebuild.sh)"
+                fail=1
+              elif ! cmp "$out" "$committed"; then
+                echo "::error title=rules.wasm stale::$table: build $run of $crate differs from $committed; run $crate/rebuild.sh and commit the result"
+                fail=1
+              else
+                echo "$table: build $run matches $committed ($(wc -c < "$committed") bytes)"
+              fi
+            done
+          done
+          exit $fail
+
+      - name: Guest crates (fmt, clippy, unit tests on the host)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for crate in tables/*/rules-wasm; do
+            cargo fmt --manifest-path "$crate/Cargo.toml" --check
+            cargo clippy --offline --locked --all-targets --manifest-path "$crate/Cargo.toml" -- -D warnings
+            cargo test --offline --locked --manifest-path "$crate/Cargo.toml"
+          done
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux packages (SDL3 build headers for pin_app)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
+      # The 6.3 parity tests (Lua vs Wasm, per-tick) and the rebuild check
+      # (runs here: the wasm32 target is installed).
+      - name: Parity tests (release)
+        run: >-
+          cargo test --release --locked -p pin_app
+          --test wasm_ports_rebuild --test wasm_ports_apex
+          --test wasm_ports_sky_deck --test wasm_ports_feature_lab
+          -- --nocapture

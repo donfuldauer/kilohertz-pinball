@@ -18,5 +18,11 @@ mkdir -p "$1"
 out=$(cd "$1" && pwd)
 cd "$(dirname "$0")"
 cargo run -q -p pin_app --example build_feature_lab -- "$out"
+# The Wasm port of the rules (Subphase 6.3) rides along when it is
+# committed; table.toml still selects rules.lua, so it is used only by a
+# bundle whose script_entry names rules.wasm.
+if [ -f rules.wasm ]; then
+  cp rules.wasm "$out/"
+fi
 cargo run -q -p pin_tablegen -- validate "$out"
 echo "feature_lab bundle: $out"
