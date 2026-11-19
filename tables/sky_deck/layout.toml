@@ -51,14 +51,15 @@ material = "wood"
 
 # Inlane/outlane separators (x 30 and x 440): the outlanes are the 30 mm
 # channels between them and the cabinet / shooter-lane wall. The right one
-# reaches up to y 430 (the left one to 385), so fewer balls crossing the
-# table from the left drop over its top into the right outlane.
+# reaches up to y 455 (the left one to 385), so fewer balls crossing the
+# table from the left drop over its top into the right outlane (a2 fix: at
+# y 430 the right outlane took 72-86 % of drains).
 [[walls]]
 points = [[30.0, 298.8], [30.0, 385.0]]
 material = "wood"
 
 [[walls]]
-points = [[440.0, 286.1], [440.0, 430.0]]
+points = [[440.0, 286.1], [440.0, 455.0]]
 material = "wood"
 
 # Left outlane guard: a ball rolling down along the cabinet wall is turned
