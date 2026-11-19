@@ -557,7 +557,10 @@ impl HitTrace {
             if open && *t - start > window {
                 open = false;
             }
-            if open && *n == order[1] {
+            // Same-tick hits are recorded in declaration order, which may
+            // not be their real order: a finishing hit counts only on a
+            // tick strictly after the opening hit (decision 6.4-cr1-C-3).
+            if open && *t > start && *n == order[1] {
                 open = false;
                 made = Some(*t);
             } else if *n == order[0] {
@@ -567,6 +570,14 @@ impl HitTrace {
         }
         made
     }
+}
+
+/// Whether a shot whose finishing hit was observed at tick `finished` (the
+/// tick whose physics closed the switch) is the one whose edge Lua received
+/// on tick `counter_tick`, the first tick `mode:<id>` showed the increase:
+/// physics edges of tick N reach Lua in step 2 of tick N + 1.
+fn finishing_edge_started_mode(finished: Option<u64>, counter_tick: u64) -> bool {
+    finished.is_some() && finished == counter_tick.checked_sub(1)
 }
 
 /// The declared window, in ticks (1 ms each), of the `[[shots]]` entry
@@ -684,11 +695,16 @@ fn start_mode_by_physics(mode: &str, first: usize, pre_delay: u64) -> Started {
             // counter. Edges closed by the physics of tick N are queued in
             // step 5 and reach Lua in step 2 of tick N + 1 (pin_sim
             // tick/mod.rs `step_tick`, `deliver_edges`), so the finishing
-            // hit must be observed before the tick the counter changed.
+            // hit must be observed on the tick immediately before the one
+            // on which the counter changed. Trace convention: `observe`
+            // runs after `sim.advance(1)` and records `sim.tick()`, the tick
+            // whose physics closed the switch; `run_until` checks every
+            // tick, so `sim.tick()` here is the first tick the counter
+            // showed the change.
             let window = shot_window_ticks(&shot);
             let finished = trace.last_made(&shot, window);
             assert!(
-                finished.is_some_and(|t| t < sim.tick()),
+                finishing_edge_started_mode(finished, sim.tick()),
                 "{mode}: mode:{mode} increased at tick {} (start state {vi} {v:?}) without the README shot {shot:?} completed within {window} ticks by an edge Lua had received (latest completion {finished:?}); switch hits since the attempt began: {:?}",
                 sim.tick(),
                 trace.hits
@@ -1068,4 +1084,55 @@ fn e_magnet_compare_holds_both_and_standard_releases_later() {
             assert_healthy(sim, "magnet compare");
         }
     });
+}
+
+fn synthetic_trace(hits: &[(u64, &str)]) -> HitTrace {
+    HitTrace {
+        names: Vec::new(),
+        counts: Vec::new(),
+        hits: hits.iter().map(|(t, n)| (*t, (*n).to_owned())).collect(),
+    }
+}
+
+#[test]
+fn finishing_edge_must_be_the_one_delivered_on_the_counter_tick() {
+    let shot = ["a".to_owned(), "b".to_owned()];
+    // A shot completed at tick 110, the counter increase seen at tick 120.
+    let old = synthetic_trace(&[(100, "a"), (110, "b")]);
+    let made = old.last_made(&shot, 50);
+    assert_eq!(made, Some(110));
+    assert!(!finishing_edge_started_mode(made, 120), "several ticks old");
+    assert!(
+        !finishing_edge_started_mode(made, 110),
+        "same tick: not yet delivered"
+    );
+    // The edge observed on tick 119 is delivered on tick 120.
+    let fresh = synthetic_trace(&[(100, "a"), (110, "b"), (115, "a"), (119, "b")]);
+    let made = fresh.last_made(&shot, 50);
+    assert_eq!(made, Some(119), "the latest completed shot");
+    assert!(finishing_edge_started_mode(made, 120));
+    assert!(!finishing_edge_started_mode(None, 120));
+    assert!(!finishing_edge_started_mode(Some(0), 0));
+}
+
+#[test]
+fn last_made_uses_the_latest_opening_hit_and_the_window() {
+    let shot = ["a".to_owned(), "b".to_owned()];
+    // Window 100: the second opening hit restarts it.
+    let t = synthetic_trace(&[(0, "a"), (90, "a"), (180, "b")]);
+    assert_eq!(t.last_made(&shot, 100), Some(180));
+    // Expired: finishing 101 ticks after the only opening hit.
+    let t = synthetic_trace(&[(0, "a"), (101, "b")]);
+    assert_eq!(t.last_made(&shot, 100), None);
+    let t = synthetic_trace(&[(0, "a"), (100, "b")]);
+    assert_eq!(t.last_made(&shot, 100), Some(100));
+}
+
+#[test]
+fn last_made_needs_a_strictly_later_tick_for_the_finishing_hit() {
+    let shot = ["a".to_owned(), "b".to_owned()];
+    let same = synthetic_trace(&[(50, "a"), (50, "b")]);
+    assert_eq!(same.last_made(&shot, 100), None, "same tick is rejected");
+    let next = synthetic_trace(&[(50, "a"), (51, "b")]);
+    assert_eq!(next.last_made(&shot, 100), Some(51), "consecutive ticks");
 }
