@@ -14,9 +14,13 @@
 //!   below it.
 //! * [`fits`] decides whether a circle of a given diameter fits: it stops
 //!   as soon as the lower bound reaches the radius (fits) or the upper
-//!   bound drops below it (too small), so the verdict is exact up to
-//!   floating point and does not depend on a precision. A circle that
-//!   just touches (both bounds within 1 nm of the radius) fits.
+//!   bound drops below it (too small), so it does not depend on a
+//!   precision. The decision tolerance is a 1 µm radius bracket: once the
+//!   bounds are within 1 µm of each other with the radius between them the
+//!   circle counts as fitting, so a ball up to 1 µm (radius; 2 µm in
+//!   diameter) wider than the inscribed circle is accepted. A narrower
+//!   bracket would let a strip exactly as wide as the ball exhaust
+//!   [`MAX_CELLS`] (the centre line is a plateau at the inscribed radius).
 //!
 //! The boundary is that of the even-odd filled region, not the outline as
 //! traced: [`Boundary`] splits collinear overlapping edges at each other's
@@ -37,15 +41,16 @@ const MAX_START_SIDE: f64 = 256.0;
 /// Most cells examined; past it [`largest_inscribed_diameter`] returns the
 /// best centre so far (still a lower bound) and [`fits`] returns
 /// [`Fit::Undecided`]. Never reached by a polygon of the table's size at the
-/// validator's precision, nor by [`fits`] unless the inscribed radius is
-/// within a few nm of the ball's along a long plateau.
+/// validator's precision, nor by [`fits`], whose 1 µm bracket ends the search
+/// on a plateau at the ball's radius after about 10^5 cells.
 const MAX_CELLS: usize = 2_000_000;
 
 /// Coincidence tolerance (m) of edge endpoints and of collinearity.
 const TOL: f64 = 1.0e-9;
 /// Width (m) of the radius bracket at which [`fits`] calls a circle that
-/// just touches the boundary fitting (1 nm, as [`TOL`]).
-const TOUCH_TOLERANCE: f64 = TOL;
+/// just touches the boundary fitting (1 µm). A narrower bracket lets a
+/// strip exactly as wide as the ball exhaust `MAX_CELLS`.
+const TOUCH_TOLERANCE: f64 = 1.0e-6;
 
 /// The boundary of a polygon's even-odd filled region: the edges, split
 /// where collinear edges overlap partially, without the pieces covered an
@@ -296,7 +301,7 @@ pub(super) fn largest_inscribed_diameter(poly: &Polygon, precision: f64) -> f64 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum Fit {
     /// A circle of the diameter fits (or touches: the inscribed diameter
-    /// is within 2 nm of it).
+    /// is at most 2 µm below it, a 1 µm bracket on the radius).
     Fits,
     /// The largest circle inside is narrower (every remaining cell bound
     /// is below the radius).
@@ -309,10 +314,12 @@ pub(super) enum Fit {
 /// Whether a circle of `diameter` (same unit as the polygon, > 0) fits
 /// inside `poly` (even-odd rule): refines until the best centre's distance
 /// reaches the radius ([`Fit::Fits`]) or the largest remaining cell bound
-/// is below it ([`Fit::TooSmall`]). The verdict is exact up to floating
-/// point, except for exact touching: when both bounds are within 1 nm of
-/// the radius the circle counts as fitting (otherwise the search would
-/// never stop). A degenerate polygon (see [`largest_inscribed_diameter`])
+/// is below it ([`Fit::TooSmall`]). Decision tolerance: when the two bounds
+/// are within 1 µm of each other (a radius bracket, [`TOUCH_TOLERANCE`])
+/// with the radius between them, the circle counts as fitting, so a ball
+/// up to 1 µm wider in radius (2 µm in diameter) than the inscribed circle
+/// is accepted; a finer bracket would never stop on a strip as wide as the
+/// ball. A degenerate polygon (see [`largest_inscribed_diameter`])
 /// holds nothing ([`Fit::TooSmall`]); a non-positive or NaN diameter
 /// fits.
 pub(super) fn fits(poly: &Polygon, diameter: f64) -> Fit {
