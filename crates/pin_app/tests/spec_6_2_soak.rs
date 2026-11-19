@@ -110,17 +110,24 @@ fn summary(r: &SoakReport) -> String {
 /// expert (seed 1, 2 threads). Ignored in the default run: at the 20-120 s
 /// ball times it asserts, the 120 games are 6-36 hours of simulated play,
 /// minutes of CPU on the shared 4-core box (the brief allows `#[ignore]`
-/// with the reason; it is run with `--ignored` and its numbers reported).
+/// with the reason; it is run with `--ignored --nocapture` and its numbers
+/// reported. `--nocapture` (or `--show-output`) is required: libtest hides a
+/// passing test's stdout, and without it the `REPORT:` line with the median
+/// scores by skill is dropped).
 ///
 /// Asserts, per skill: no stuck / escaped / non-finite / endless ball, no
 /// script error or queue overflow. Across the 120 games (decision log
 /// 6.2-tester "coverage over the union of the three skill soaks"): 100 %
 /// of `TableInfo::coverage_switches()` hit, every declared shot made, the
 /// `night_overdrive` mode started (observed through its persist key).
-/// Standard median ball time in 20-120 s; median game scores ascend
-/// novice < standard < expert.
+/// Standard median ball time in 20-120 s. The median game scores by skill
+/// (novice < standard < expert) are report-only here, printed on a
+/// `REPORT:` line: at n=40 games per skill a correct bot passes a strict
+/// ascending check only about 40 % of the time. The binding check is Gate
+/// A2 A2.3b at 1,000 games per skill (PLAN.md: "scores increase with skill
+/// level"); decision log 6.2-a2-score-order.
 #[test]
-#[ignore = "120-game soak: minutes of CPU; run with --ignored"]
+#[ignore = "120-game soak: minutes of CPU; run with --ignored --nocapture"]
 fn c6a_soak_readiness_40_games_per_skill() {
     let info = TableInfo::load(bundle()).expect("TableInfo");
     let mut reports = Vec::new();
@@ -174,8 +181,9 @@ fn c6a_soak_readiness_40_games_per_skill() {
         "standard median ball time {m} ms outside 20-120 s"
     );
     // C6c: 5 sampled games of the standard soak replay to the same hash,
-    // twice. All of them run before the score-order check, so a score-order
-    // failure never hides a replay result; each failure is reported.
+    // twice. All replay checks are collected and asserted together; score
+    // order by skill is printed as a REPORT line, not asserted
+    // (decision 6.2-a2-score-order). Each failure is reported.
     let mut replay_failures = Vec::new();
     for g in [0u32, 9, 17, 28, 39] {
         let expected = standard.game_list[g as usize].state_hash;
@@ -193,7 +201,7 @@ fn c6a_soak_readiness_40_games_per_skill() {
     let med: Vec<i64> = reports.iter().map(|r| r.game_score.median).collect();
     let ascending = med[0] < med[1] && med[1] < med[2];
     println!(
-        "replay checks: {} failure(s) {replay_failures:?}; median scores by skill {med:?} \
+        "REPORT: replay checks: {} failure(s) {replay_failures:?}; median scores by skill {med:?} \
          (ascending: {ascending})",
         replay_failures.len()
     );
@@ -201,7 +209,6 @@ fn c6a_soak_readiness_40_games_per_skill() {
         replay_failures.is_empty(),
         "state hash differs: {replay_failures:?} (score order ascending: {ascending}, {med:?})"
     );
-    assert!(ascending, "median scores do not ascend with skill: {med:?}");
 }
 
 /// C6a (always run): a 3-game standard soak is sound, and every game
