@@ -49,7 +49,11 @@ fn ball_trap_is_a_stuck_ball_naming_the_pocket() {
 #[test]
 fn wall_gap_is_an_escaped_ball() {
     let b = variant("gap", "clean");
-    let r = defect_soak(&b);
+    // fix-2.9-bot-timing: the calibrated flip timing keeps the ball up
+    // longer, and in both 30 s games it never reached the open drain wall
+    // (two EndlessBall at the cap, no EscapedBall), so this test gets the
+    // 90 s cap the trap test uses.
+    let r = soak(&b, cfg(2, 11, SkillLevel::Standard, 2, 90 * SECOND));
     let esc = of_kind(&r, "EscapedBall");
     assert!(!esc.is_empty(), "no EscapedBall:{}", describe(&r));
     for f in esc {
