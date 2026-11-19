@@ -157,10 +157,13 @@ impl TestClock {
         }
     }
 
-    /// The current time (no advance on read); counts the read.
+    /// The current time (no advance on read); counts the read. The value is
+    /// loaded before the read is published, so a test that sees `reads > 0`
+    /// and then advances the clock cannot shift the reader's epoch.
     fn read(&self) -> u64 {
+        let t = self.now.load(Ordering::Acquire);
         self.reads.fetch_add(1, Ordering::AcqRel);
-        self.now.load(Ordering::Acquire)
+        t
     }
 }
 
