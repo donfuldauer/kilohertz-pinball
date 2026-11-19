@@ -22,8 +22,9 @@
 //! its profile's ball: when the largest circle inside it (the even-odd
 //! region's, so retraced edges do not count) is narrower than the ball
 //! diameter, that is an error at `balls.restrict[i].area`. The verdict is
-//! exact up to floating point (a circle that touches within 1 nm fits; a
-//! search that cannot decide within its cell budget reports nothing); only
+//! decided with a 1 µm radius bracket (a ball up to 1 µm wider in radius,
+//! 2 µm in diameter, than the largest circle still fits; a search that
+//! cannot decide within its cell budget reports nothing); only
 //! the size the message reports is approximate, within
 //! [`INSCRIBED_CIRCLE_TOLERANCE_MM`] and never overstated. A feature is checked for a
 //! profile only where the profile may be (layer allowed, reference point
@@ -111,8 +112,8 @@ pub const VUK_EXIT_TOLERANCE_MM: f32 = 0.5;
 /// Tolerance (mm) of the largest-circle size reported for a `[balls]
 /// restrict` area that cannot hold its ball: the reported diameter is never
 /// above the true one and at most this much below it. Whether the ball
-/// fits is decided exactly (up to floating point), not with this
-/// tolerance.
+/// fits is decided with a 1 µm radius bracket (2 µm in diameter), not
+/// with this tolerance.
 pub const INSCRIBED_CIRCLE_TOLERANCE_MM: f32 = 0.5;
 
 /// The kind of feature a [`ClearanceError`] is about.
