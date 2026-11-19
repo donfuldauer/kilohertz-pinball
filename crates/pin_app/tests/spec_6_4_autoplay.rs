@@ -3,7 +3,9 @@
 //!
 //! Each game runs the soak loop (`bot.tick`, `sim.advance(1)`,
 //! `monitor.observe`) on simulated time with the soak's own game and bot
-//! seeds (`game_seed(1, g)`, `bot_seed`) and a per-game tick cap. The test
+//! seeds (`game_seed(1, g)`, `bot_seed`) and a per-game tick cap; a game
+//! stopped at the cap reports its live balls as endless
+//! (`GameMonitor::end_at_cap`, as the soak). The test
 //! asserts: no stuck, endless, escaped, non-finite, script-error or
 //! queue-overflow finding; the bot never pressed `action` yet `mode_sel`
 //! advanced at every ball start; and replaying a game with the same seeds
@@ -21,8 +23,9 @@ use pin_sim::autoplay::{Bot, GameMonitor, SkillLevel, TableInfo, bot_seed, game_
 const SEED: u64 = 1;
 /// Games per skill level.
 const GAMES: u32 = 6;
-/// Per-game tick cap (simulated ms).
-const MAX_GAME_TICKS: u64 = 120_000;
+/// Per-game tick cap (simulated ms): the soak's cap, `SoakConfig::default().max_game_ticks`
+/// in `crates/pin_sim/src/autoplay/soak.rs` (a struct default, not a public constant).
+const MAX_GAME_TICKS: u64 = 600_000;
 /// As the soak's defaults.
 const IDLE_END_TICKS: u64 = 5_000;
 const START_TIMEOUT_TICKS: u64 = 10_000;
@@ -67,6 +70,7 @@ fn play(info: &TableInfo, skill: SkillLevel, game: u32) -> Game {
     let initial_sel = pv(&sim, "mode_sel");
     let mut pending: Option<(i64, u64)> = None;
     let mut ball_starts = Vec::new();
+    let mut at_cap = true;
     while sim.tick() < MAX_GAME_TICKS {
         bot.tick(&mut sim);
         sim.advance(1);
@@ -90,14 +94,22 @@ fn play(info: &TableInfo, skill: SkillLevel, game: u32) -> Game {
             idle = 0;
         }
         if bot.seen_ball() && sim.balls_in_play() == 0 && idle >= IDLE_END_TICKS {
+            at_cap = false;
             break;
         }
         if !bot.seen_ball() && sim.balls_in_play() == 0 && sim.tick() >= START_TIMEOUT_TICKS {
+            at_cap = false;
             break;
         }
         if mon.all_balls_stuck() {
+            at_cap = false;
             break;
         }
+    }
+    // As the soak: a game stopped at the tick cap reports every ball still
+    // in play as endless.
+    if at_cap {
+        mon.end_at_cap(&sim);
     }
     let action_hits = hits(&sim, "action");
     let state_hash = sim.state_hash();

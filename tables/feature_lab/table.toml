@@ -307,17 +307,19 @@ staging = { type = "DedicatedButton", input = "right_flipper" }
 # --- Layer transitions ----------------------------------------------------
 
 # Safety net under the whole backbox (plane u -205..205, v -130..-85, as a
-# table-frame box reaching 100 mm in front of the box): a backbox ball that
-# ever falls below the shelf outside the drain (back through the entry
-# hole, also when it moves towards the player as it falls) returns to the
-# playfield layer just above the floor instead of falling out of the table.
+# table-frame box reaching 100 mm in front of the box and to y 990, about
+# 70 mm behind it): a backbox ball that ever falls below the shelf outside
+# the drain (back through the entry hole, also when it moves towards the
+# player or towards the back as it falls, up to 0.6 m/s either way) returns
+# to the playfield layer just above the floor instead of falling out of the
+# table (docs/decisions/2026-11-19-6.4-cr1.md "bb_catch covers a +y drift").
 # It lies below the generated entry (0 -> 4) and drain (4 -> 0) zones and
 # touches neither; it never affects a layer-0 ball.
 [[layer_transitions]]
 id = "bb_catch"
 from_layer = 4
 to_layer = 0
-zone = { min = [52.0, 780.0, -24.0], max = [462.0, 931.0, 25.0] }
+zone = { min = [52.0, 780.0, -24.0], max = [462.0, 990.0, 25.0] }
 
 # --- Ball dispensers -----------------------------------------------------------
 

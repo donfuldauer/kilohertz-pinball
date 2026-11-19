@@ -147,9 +147,27 @@ pub fn vuk_eject(frame: &BackboxFrame) -> (f32, f32, f32) {
 /// needed). Returns the generator's non-fatal warnings.
 ///
 /// # Errors
-/// A message naming the step and the file or element that failed.
+/// A message naming the step and the file or element that failed; also
+/// when `out_dir` is `src` itself (compared canonically, so a symlink alias
+/// or an unnormalised path is caught), checked before anything is written.
 pub fn build_from(src: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
+    let src_canon = src
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", src.display()))?;
+    // Creating a missing output directory cannot touch `src`; an existing
+    // one (`src` included) is left as it is.
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
+    let out_canon = out_dir
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", out_dir.display()))?;
+    if out_canon == src_canon {
+        return Err(format!(
+            "output directory {} is the source directory {}: the build would overwrite \
+             its own inputs (table.toml); choose another output directory",
+            out_dir.display(),
+            src.display()
+        ));
+    }
     let layout =
         parse_layout(&read(src, "layout.toml")?).map_err(|e| format!("layout.toml: {e}"))?;
     let base = TableManifest::from_toml_str(&read(src, TABLE_FILE)?)

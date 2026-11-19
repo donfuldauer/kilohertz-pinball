@@ -31,6 +31,31 @@ fn drain(s: &mut Simulation, h: pin_sim::BallHandle) {
     assert!(s.ball(h).is_none(), "drained");
 }
 
+/// Advances `n` ticks one at a time, asserting the player's score never
+/// decreases (`last` carries the running value).
+fn step_checked(s: &mut Simulation, last: &mut i64, n: u64) {
+    for _ in 0..n {
+        s.advance(1);
+        let now = s.score(0).unwrap_or(0);
+        assert!(now >= *last, "the score never decreases: {last} -> {now}");
+        *last = now;
+    }
+}
+
+/// `drain`, checking the score tick by tick.
+fn drain_checked(s: &mut Simulation, h: pin_sim::BallHandle, last: &mut i64) {
+    put(s, h, [257.0, 30.0], [0.0, -0.1]);
+    step_checked(s, last, 20);
+    assert!(s.ball(h).is_none(), "drained");
+}
+
+/// `press`, checking the score tick by tick.
+fn press_checked(s: &mut Simulation, name: &str, ticks: u64, last: &mut i64) {
+    s.set_switch(name, true).unwrap();
+    step_checked(s, last, ticks);
+    s.release_switch(name).unwrap();
+}
+
 /// The player's ball (the only one in play).
 fn main_ball(s: &Simulation) -> pin_sim::BallHandle {
     let b = balls(s);
@@ -46,25 +71,29 @@ fn full_game_by_trough_drains() {
         assert_eq!(persist(&s, "game_state"), 0);
         assert_eq!(persist(&s, "ball"), 0);
         let mut states = vec![0];
-        start_game(&mut s);
-        states.push(persist(&s, "game_state"));
         let mut last = s.score(0).unwrap_or(0);
+        // start_game, with the score checked on every tick.
+        press_checked(&mut s, "start", 5, &mut last);
+        step_checked(&mut s, &mut last, 1500);
+        assert_eq!(persist(&s, "game_state"), 1, "game state");
+        assert_eq!(persist(&s, "ball"), 1);
+        assert_eq!(s.balls_in_play(), 1);
+        states.push(persist(&s, "game_state"));
         for ball in 1..=3 {
             assert_eq!(persist(&s, "ball"), ball);
             assert_eq!(persist(&s, "game_state"), 1);
             // Score something: launch round the orbit (shooter lane, orbit
             // top), then drain.
-            press(&mut s, "launch", 30);
-            for _ in 0..1500 {
-                s.advance(1);
-                let now = s.score(0).unwrap_or(0);
-                assert!(now >= last, "the score never decreases");
-                last = now;
-            }
-            assert!(last > 0, "ball {ball} scored");
+            let before = last;
+            press_checked(&mut s, "launch", 30, &mut last);
+            step_checked(&mut s, &mut last, 1500);
+            assert!(
+                last > before,
+                "ball {ball} scored: {before} -> {last} over its scoring window"
+            );
             let h = main_ball(&s);
-            drain(&mut s, h);
-            s.advance(1500);
+            drain_checked(&mut s, h, &mut last);
+            step_checked(&mut s, &mut last, 1500);
         }
         states.push(persist(&s, "game_state"));
         assert_eq!(persist(&s, "ball"), 0);
@@ -156,21 +185,46 @@ fn around_bumper(h: pin_sim::BallHandle, c: [f32; 2]) -> Vec<Try> {
         for speed in [0.8f32, 1.4, 2.0] {
             let p = [c[0] + 60.0 * a.cos(), c[1] + 60.0 * a.sin()];
             let vel = [-speed * a.cos(), -speed * a.sin()];
-            v.push(Box::new(move |s: &mut Simulation| put(s, h, p, vel)));
+            v.push(Box::new(move |s: &mut Simulation, _: &mut Watch| {
+                put(s, h, p, vel)
+            }));
         }
     }
     v
 }
 
+/// Steps the simulation tick by tick and records, on the very tick the
+/// mode counter first increases, the scene list shown on that tick.
+struct Watch {
+    key: String,
+    before: i64,
+    scenes: Option<Vec<u16>>,
+}
+
+impl Watch {
+    /// Advances one tick; notes the displayed scenes when the counter moves.
+    fn step(&mut self, s: &mut Simulation) {
+        s.advance(1);
+        if self.scenes.is_none() && persist(s, &self.key) > self.before {
+            self.scenes = Some(s.display_scenes().iter().map(|x| x.0).collect());
+        }
+    }
+}
+
 /// One start state of a shot attempt.
-type Try = Box<dyn Fn(&mut Simulation)>;
+type Try = Box<dyn Fn(&mut Simulation, &mut Watch)>;
 
 /// Makes mode `i`'s qualifying shot with the player's ball, by physics:
 /// the ball is placed and launched (state injection) or the plunger fired;
-/// the first start state that starts the mode wins.
-fn make_shot(s: &mut Simulation, i: usize) {
+/// the first start state that starts the mode wins. Returns the scene list
+/// shown on the tick the mode counter changed.
+fn make_shot(s: &mut Simulation, i: usize) -> Vec<u16> {
     let key = format!("mode:{}", MODES[i]);
-    let before = persist(s, &key);
+    let mut w = Watch {
+        before: persist(s, &key),
+        key: key.clone(),
+        scenes: None,
+    };
     let h = main_ball(s);
     // Start states: (position mm, velocity m/s) or the plunger / a flip.
     let tries: Vec<Try> = match i {
@@ -178,29 +232,43 @@ fn make_shot(s: &mut Simulation, i: usize) {
             .map(|k| {
                 let f = 0.3 + 0.05 * (k % 12) as f32;
                 let delay = 20 * (k / 12) as u64;
-                Box::new(move |s: &mut Simulation| banana_flip(s, h, f, delay)) as Try
+                Box::new(move |s: &mut Simulation, w: &mut Watch| banana_flip(s, w, h, f, delay))
+                    as Try
             })
             .collect(),
         1 => vec![
-            Box::new(move |s: &mut Simulation| put(s, h, [425.0, 500.0], [0.0, 1.5])),
-            Box::new(move |s: &mut Simulation| put(s, h, [425.0, 470.0], [0.0, 2.0])),
+            Box::new(move |s: &mut Simulation, _: &mut Watch| {
+                put(s, h, [425.0, 500.0], [0.0, 1.5])
+            }),
+            Box::new(move |s: &mut Simulation, _: &mut Watch| {
+                put(s, h, [425.0, 470.0], [0.0, 2.0])
+            }),
         ],
         2 => around_bumper(h, [257.0, 810.0]),
         3 => vec![
-            Box::new(move |s: &mut Simulation| put(s, h, [359.0, 392.0], [0.73, 1.86])),
-            Box::new(move |s: &mut Simulation| put(s, h, [355.0, 380.0], [0.9, 2.3])),
+            Box::new(move |s: &mut Simulation, _: &mut Watch| {
+                put(s, h, [359.0, 392.0], [0.73, 1.86])
+            }),
+            Box::new(move |s: &mut Simulation, _: &mut Watch| {
+                put(s, h, [355.0, 380.0], [0.9, 2.3])
+            }),
         ],
         _ => around_bumper(h, [324.0, 720.0]),
     };
     for t in &tries {
         // Back on the plunger at rest between tries.
         put(s, h, [492.0, 70.0], [0.0, 0.0]);
-        s.advance(50);
-        t(s);
+        for _ in 0..50 {
+            w.step(s);
+        }
+        t(s, &mut w);
         for _ in 0..12_000 {
-            s.advance(1);
-            if persist(s, &key) > before {
-                return;
+            if let Some(scenes) = w.scenes.take() {
+                return scenes;
+            }
+            w.step(s);
+            if let Some(scenes) = w.scenes.take() {
+                return scenes;
             }
             // A missed shot coming back down: rescue it before it drains
             // (it would end the ball and move the selector).
@@ -215,7 +283,8 @@ fn make_shot(s: &mut Simulation, i: usize) {
 
 /// Puts ball `h` at rest just above the Banana's chord at fraction `f`,
 /// lets it touch down, then flips after `delay` ms.
-pub fn banana_flip(s: &mut Simulation, h: pin_sim::BallHandle, f: f32, delay: u64) {
+/// Every tick goes through `w`, so a qualification inside the flip is seen.
+fn banana_flip(s: &mut Simulation, w: &mut Watch, h: pin_sim::BallHandle, f: f32, delay: u64) {
     let a = 210.0f32.to_radians();
     let p = [
         357.0 + f * 76.0 * a.cos(),
@@ -223,13 +292,19 @@ pub fn banana_flip(s: &mut Simulation, h: pin_sim::BallHandle, f: f32, delay: u6
     ];
     put(s, h, p, [0.0, 0.0]);
     for _ in 0..600 {
-        s.advance(1);
+        w.step(s);
         if s.ball(h).unwrap().velocity_m_s[1] > -0.01 {
             break;
         }
     }
-    s.advance(10 + delay);
-    press(s, "right_flipper", 150);
+    for _ in 0..10 + delay {
+        w.step(s);
+    }
+    s.set_switch("right_flipper", true).unwrap();
+    for _ in 0..150 {
+        w.step(s);
+    }
+    s.release_switch("right_flipper").unwrap();
 }
 
 #[test]
@@ -243,18 +318,14 @@ fn every_mode_starts_once_on_its_shot_with_scene_and_points() {
             let key = format!("mode:{m}");
             assert_eq!(persist(&s, &key), 0);
             let score = s.score(0).unwrap_or(0);
-            make_shot(&mut s, i);
-            // make_shot stops on the tick the key changed; the rules show
-            // the scene in the same callback, so that tick's scene list
-            // holds it.
+            // The scene list is recorded on the very tick the mode counter
+            // first changes (the rules show the scene in the same callback).
+            let scenes = make_shot(&mut s, i);
             let scene = s
                 .ids()
                 .get(pin_assets::IdKind::Scene, &format!("scene_{m}"))
                 .expect("scene id");
-            assert!(
-                s.display_scenes().iter().any(|x| x.0 == scene),
-                "{m}: scene_{m} shown"
-            );
+            assert!(scenes.contains(&scene), "{m}: scene_{m} shown");
             assert_eq!(persist(&s, &key), 1, "{m} started once");
             for o in MODES.iter().filter(|o| *o != m) {
                 assert_eq!(persist(&s, &format!("mode:{o}")), 0, "{o}");
