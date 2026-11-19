@@ -43,7 +43,8 @@ pub fn display_files() -> Vec<PathBuf> {
 /// Builds the Sky Deck bundle into `out_dir` (what `tables/sky_deck/build.sh`
 /// does): `pin_tablegen` generates `playfield.glb` and the merged
 /// `table.toml` from `layout.toml` + `table.toml`, the rules, backglass,
-/// layout, glass and display scenes are copied, and the 4.6 placeholder kit
+/// layout, glass and display scenes are copied (plus `rules.wasm` when it is
+/// committed, as build.sh does; `table.toml` still selects `rules.lua`), and the 4.6 placeholder kit
 /// (`pin_assetgen::generate_kit`) adds the sounds, fonts and backglass art.
 pub fn build_sky_deck_bundle(out_dir: &Path) {
     let src = sky_deck_src();
@@ -55,6 +56,10 @@ pub fn build_sky_deck_bundle(out_dir: &Path) {
     write_bundle(&generated, out_dir).expect("write bundle");
     for f in COPIED {
         std::fs::copy(src.join(f), out_dir.join(f)).unwrap_or_else(|e| panic!("copy {f}: {e}"));
+    }
+    if src.join("rules.wasm").is_file() {
+        std::fs::copy(src.join("rules.wasm"), out_dir.join("rules.wasm"))
+            .unwrap_or_else(|e| panic!("copy rules.wasm: {e}"));
     }
     std::fs::create_dir_all(out_dir.join("display")).unwrap();
     for p in display_files() {
