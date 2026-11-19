@@ -94,10 +94,12 @@ impl fmt::Display for QueueOverflow {
 
 impl std::error::Error for QueueOverflow {}
 
-/// Commands a script issues during one callback. The sim applies them in tick
-/// step 3 and clears the queue at the start of the next script step, so after
-/// a tick the queue still holds that tick's commands (`Simulation::last_commands()`).
-/// Capacities are fixed (D5).
+/// Commands issued by every callback in one script step: the switch-edge
+/// callbacks, then `on_tick`, all sharing this queue. `on_init` runs once at
+/// load, and its commands are applied and visible after load. The sim applies
+/// the queue in tick step 3 and clears it at the start of the next script step,
+/// so after a tick the queue holds the commands from all of that tick's
+/// callbacks (`Simulation::last_commands()`). Capacities are fixed (D5).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HostCommandQueue {
     /// `(coil, duration_ms)`.
