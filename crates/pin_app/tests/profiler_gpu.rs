@@ -8,7 +8,12 @@
 //!   device. With `TIMESTAMP_QUERY`, samples reach the profiler once the
 //!   readback ring drains (a bounded poll loop, no sleeps), each above 0 ns
 //!   and below 10 s; without it, no timer, no samples, no panic. The test
-//!   prints which branch ran.
+//!   prints which branch ran. Every submission of a timed frame is
+//!   bracketed by its own start/end pair (3 command buffers); a frame that
+//!   finds the ring full (a slow GPU) is untimed and its submissions go
+//!   alone (1 buffer). Every timed frame ends as exactly one sample or one
+//!   discard. A frame's submissions beyond `MAX_TIMED_SUBMITS` go untimed
+//!   (checked deterministically, independent of GPU speed).
 //! * (d) HUD: the overlay's text is `hud_lines` of the snapshot it was
 //!   given; a HUD-enabled renderer with no text draws the same bytes as a
 //!   HUD-less one (the default, pre-change frame); with text it changes
@@ -121,19 +126,26 @@ fn gpu_frame_time_comes_from_timestamp_queries_or_not_at_all() {
             );
             assert!(supported);
             const FRAMES: usize = 2 * GPU_TIMER_RING;
+            let mut timed_frames = 0u64;
             for k in 0..FRAMES {
                 timer.collect();
                 timer.begin_frame();
+                // Untimed when the readback ring is still full (slow GPU);
+                // the first frame always finds a free entry.
+                let timed = timer.is_timing();
+                assert!(timed || k > 0, "the first frame was not timed");
+                timed_frames += u64::from(timed);
                 // Odd frames are submitted in two parts (two surfaces).
                 let parts = 1 + k % 2;
-                for j in 0..parts {
-                    // Start + frame + end on the first submit, frame + end
-                    // on later ones.
+                for _ in 0..parts {
+                    // Timed: start + frame + end, a pair per submission.
+                    // Untimed: the frame alone.
                     let cbs = timer.bracket(frame(&mut r));
-                    assert_eq!(cbs.len(), if j == 0 { 3 } else { 2 });
+                    assert_eq!(cbs.len(), if timed { 3 } else { 1 }, "frame {k}");
                     ctx.queue().submit(cbs);
                 }
                 timer.end_frame(&mut submit);
+                assert!(!timer.is_timing());
             }
             // Outside a frame, a command buffer goes alone.
             let cbs = timer.bracket(frame(&mut r));
@@ -163,6 +175,12 @@ fn gpu_frame_time_comes_from_timestamp_queries_or_not_at_all() {
                 timer.recorded() + timer.discarded() <= FRAMES as u64,
                 "an untimed frame produced a sample"
             );
+            assert!(timed_frames >= 1);
+            assert_eq!(
+                timer.recorded() + timer.discarded(),
+                timed_frames,
+                "every timed frame is one sample or one discard"
+            );
             assert!(s.gpu_frame.min > 0, "a 0 ns sample was recorded");
             assert!(
                 s.gpu_frame.max < 10_000_000_000,
@@ -184,6 +202,63 @@ fn gpu_frame_time_comes_from_timestamp_queries_or_not_at_all() {
             assert!(hud_lines(&s)[2].ends_with("n 0"), "{}", hud_lines(&s)[2]);
         }
     }
+}
+
+/// A timed frame with more submissions than `MAX_TIMED_SUBMITS`: the first
+/// `MAX_TIMED_SUBMITS` are bracketed (3 buffers each), the rest go alone
+/// (1 buffer), and the frame still yields one sample or one discard.
+/// Deterministic: a fresh timer's first frame always finds a free entry.
+#[test]
+fn submissions_beyond_the_cap_go_untimed() {
+    let ctx = gpu();
+    let p = Profiler::new();
+    let Some(mut timer) = GpuFrameTimer::new(ctx, p.present) else {
+        println!("[profiler_gpu] no TIMESTAMP_QUERY on this device; cap test has nothing to time");
+        assert!(!GpuFrameTimer::supported(ctx));
+        return;
+    };
+    let cap = GpuFrameTimer::MAX_TIMED_SUBMITS;
+    assert!(cap >= 1);
+    // An empty command buffer stands in for one surface's work.
+    let empty = || {
+        ctx.device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None })
+            .finish()
+    };
+    timer.begin_frame();
+    assert!(timer.is_timing(), "a fresh timer's first frame is timed");
+    for j in 0..cap + 2 {
+        let cbs = timer.bracket(empty());
+        let want = if j < cap { 3 } else { 1 };
+        assert_eq!(cbs.len(), want, "submission {j} of a timed frame");
+        ctx.queue().submit(cbs);
+    }
+    assert!(timer.is_timing());
+    let mut submit = |cb: wgpu::CommandBuffer| {
+        ctx.queue().submit([cb]);
+    };
+    timer.end_frame(&mut submit);
+    assert!(!timer.is_timing());
+    // Outside a frame, a command buffer goes alone.
+    assert_eq!(timer.bracket(empty()).len(), 1);
+    let mut polls = 0u64;
+    while timer.in_flight() > 0 && polls < 50_000_000 {
+        timer.collect();
+        polls += 1;
+        std::thread::yield_now();
+    }
+    assert_eq!(timer.in_flight(), 0, "readback ring never drained");
+    println!(
+        "[profiler_gpu] cap {cap}: {} recorded, {} discarded after {polls} polls",
+        timer.recorded(),
+        timer.discarded()
+    );
+    assert_eq!(
+        timer.recorded() + timer.discarded(),
+        1,
+        "one frame, one result"
+    );
+    assert_eq!(p.reader.snapshot().gpu_frame.count, timer.recorded());
 }
 
 /// The pixels of `img` outside `rect` (`[x0, y0, x1, y1]`), and inside.
