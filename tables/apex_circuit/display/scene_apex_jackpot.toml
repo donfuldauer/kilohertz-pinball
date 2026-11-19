@@ -1,0 +1,24 @@
+# Apex Jackpot cashed.
+schema_version = 1
+duration_ms = 2000
+background = "#000000"
+
+[[layers]]
+kind = "text"
+text = "APEX JACKPOT"
+x = 0.5
+y = 0.36
+size = 0.42
+color = "#ff6b35"
+fade_in_ms = 200
+
+[[layers]]
+kind = "text"
+text = "TOTAL {score}"
+x = 0.5
+y = 0.97
+valign = "bottom"
+size = 0.25
+color = "#ffffff"
+start_ms = 300
+blink_ms = 250

@@ -1,0 +1,196 @@
+# Apex Circuit (Subphase 6.1, variant A): pin_tablegen layout.
+# Build the bundle with tables/apex_circuit/build.sh (see README.md).
+# Units mm, x across (0 = left), y up the table (0 = bottom).
+#
+# The lower playfield, the left orbit, the wireform ramp with its upper deck
+# and the glass seal are the grey box's Gate A1 geometry (tables/greybox,
+# docs/DECISIONS.md "6.0 fix — Gate A1 grey-box geometry", "... iteration 3",
+# "a1-glass-height" and the "a1-endless-table" fixes). New here: the right
+# orbit corridor into the shooter-lane top (magnet and Powerball detector),
+# the three skill-shot top lanes, and (table.toml) the left-orbit spinner,
+# the 3-bank of drop targets and the centre lock scoop.
+schema_version = 1
+
+# Walls and posts 90 mm tall under the playfield glass at 112 mm
+# (glass.toml: the 22 mm gap is under one ball diameter, so walls seal).
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 90.0
+
+# Cabinet: closed outer wall.
+[[walls]]
+points = [[0.0, 0.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 0.0]]
+closed = true
+material = "wood"
+
+# Shooter lane wall (lane x = 470..514). Above its top (y 800) the right
+# orbit merges into the lane.
+[[walls]]
+points = [[470.0, 0.0], [470.0, 800.0]]
+material = "wood"
+
+# Top-right corner: turns the launched ball (and a right-orbit shot) along
+# the top wall into the left orbit.
+[[walls]]
+points = [[400.0, 1070.0], [514.0, 956.0]]
+material = "wood"
+
+# Inlane slopes onto the flipper pivots. Each ends on the back of the
+# pivot cap (11 mm radius): no V-pocket between wall end and cap. The
+# pivots sit 3.68 mm further in than the grey box's, so the open tip gap is
+# 48 mm (the PLAN 2.3 Zipper criterion); the wall ends and the funnel tops
+# moved with them.
+[[walls]]
+points = [[0.0, 330.0], [155.68, 172.0]]
+material = "wood"
+
+[[walls]]
+points = [[470.0, 330.0], [358.32, 172.0]]
+material = "wood"
+
+# Drain funnel below the flippers into the trough (the trough switches
+# cover the whole funnel bottom).
+[[walls]]
+points = [[160.68, 150.0], [215.0, 10.0]]
+material = "wood"
+
+[[walls]]
+points = [[353.32, 150.0], [335.0, 0.0]]
+material = "wood"
+
+# Left orbit: from above the upper-left flipper up the left side and round
+# the top (spinner `left_spinner` in the left leg, `orbit_top` at the top).
+# Every plunge rides it backwards and comes out at (85, 615) towards the
+# upper-left flipper.
+[[lanes]]
+kind = "orbit"
+points = [[85.0, 615.0], [55.0, 650.0], [38.0, 700.0], [36.0, 780.0], [45.0, 880.0], [90.0, 1000.0], [170.0, 1040.0], [260.0, 1046.0]]
+width = 40.0
+
+# Upper-right cross-shot jackpot ramp (spline `ramp_wire`, layer 2) up the
+# right side onto the upper deck: the grey box's ramp (entry lane x
+# 405..445, generated 0 -> 2 entry zone, layer-2 floor, covers).
+[[ramps]]
+spline = "ramp_wire"
+entry_width = 40.0
+
+[[walls]]
+points = [[370.0, 485.0], [405.0, 545.0], [405.0, 640.0], [470.0, 660.0]]
+material = "wood"
+
+[[walls]]
+points = [[445.0, 430.0], [445.0, 652.3]]
+material = "wood"
+
+[[decks]]
+layer = 2
+z = 0.1
+outline = [[403.0, 560.0], [447.0, 560.0], [447.0, 692.5], [403.0, 692.5]]
+material = "wood"
+
+[[decks]]
+layer = 2
+z = 60.0
+outline = [[403.0, 800.0], [447.0, 800.0], [447.0, 905.0], [403.0, 905.0]]
+material = "acrylic"
+
+[[decks]]
+layer = 1
+z = 60.0
+outline = [[395.0, 870.0], [455.0, 870.0], [455.0, 960.0], [395.0, 960.0]]
+material = "acrylic"
+
+# Upper deck (layer 1, top right) at the end of the ramp; drains back to
+# the playfield over its lower edge (table.toml `deck_exit`).
+[[decks]]
+layer = 1
+z = 30.0
+outline = [[300.0, 860.0], [460.0, 860.0], [460.0, 1040.0], [300.0, 1040.0]]
+material = "acrylic"
+
+# Right orbit: a corridor from its mouth above the ramp lane's roof
+# (between this wall's lower end and the roof's left end (405, 640)) up
+# into the shooter-lane top. The right side is the ramp roof and the
+# shooter-lane wall (x 470) up to y 800, then the cabinet wall. The last
+# segment ends on the line of the shooter-lane wall, so a ball leaving the
+# corridor runs up the lane's top through the magnet / Powerball detector
+# (table.toml `magnet_eddy`, `magnet_opto`) like a plunged ball. It also
+# takes the place of the grey box's deck-exit guide: a ball dropping off
+# the deck left of it rolls down towards the bumpers.
+[[walls]]
+points = [[318.0, 642.0], [345.0, 690.0], [400.0, 760.0], [440.0, 815.0], [470.0, 880.0]]
+material = "wood"
+
+# Skill-shot top lanes (rollovers `lane_1..3` at x 300, 340, 380): four
+# dividers below the top wall, where a plunge or right-orbit shot runs
+# along the top into the left orbit.
+[[walls]]
+points = [[280.0, 905.0], [280.0, 955.0]]
+material = "wood"
+
+[[walls]]
+points = [[320.0, 905.0], [320.0, 955.0]]
+material = "wood"
+
+[[walls]]
+points = [[360.0, 905.0], [360.0, 955.0]]
+material = "wood"
+
+[[walls]]
+points = [[400.0, 905.0], [400.0, 955.0]]
+material = "wood"
+
+# Closes the alcove between the ramp lane's right wall (x 445, from y 430)
+# and the shooter-lane wall (x 470).
+[[walls]]
+points = [[470.0, 395.0], [445.0, 430.0]]
+material = "wood"
+
+# Fill on the playfield side of the orbit's right rail (grey box
+# "a1-endless-table — loop 2"): no ping-pong between it and bumper_1.
+[[walls]]
+points = [[73.53804, 658.2306], [111.5, 724.0], [55.695015, 752.3393]]
+material = "wood"
+
+# Guard 2 mm behind the back of sling_left (grey box "a1-endless-table —
+# loop 3"): a ball rolling down the left inlane cannot touch the sling's
+# back.
+[[walls]]
+points = [[63.87, 329.40], [124.67, 242.57]]
+material = "wood"
+
+# Ramp on the orbit's lower rail at its right end (grey box
+# "a1-endless-table — orbit top dead spot"): no flat rest spot there.
+[[walls]]
+points = [[221.73027, 1024.4989], [262.0, 1034.0]]
+material = "wood"
+
+# Insert lamps (flat decals; no collision). Lane lamps sit under the
+# skill-shot top lanes, between the dividers at x 280/320/360/400.
+[[inserts]]
+lamp = "lane_1_lamp"
+position = [300.0, 945.0]
+shape = "circle"
+size = 14.0
+
+[[inserts]]
+lamp = "lane_2_lamp"
+position = [340.0, 945.0]
+shape = "circle"
+size = 14.0
+
+[[inserts]]
+lamp = "lane_3_lamp"
+position = [380.0, 945.0]
+shape = "circle"
+size = 14.0
+
+# Overdrive lamp: open mid-left playfield at (150, 520), clear of the lock
+# scoop (257, 600), drop targets (x 244..262, y 425..474), the orbit fill
+# wall (y >= 658) and the left inlane slope.
+[[inserts]]
+lamp = "overdrive_lamp"
+position = [150.0, 520.0]
+shape = "circle"
+size = 18.0
