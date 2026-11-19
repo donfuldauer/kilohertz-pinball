@@ -156,3 +156,13 @@ unchanged):
 - **Affected crates:** `pin_sim` reads it (new code only). None break: no existing struct changes.
 - **Withdrawn first version:** an earlier revision added `Playfield.glass_height` (`Option<f32>`). It was withdrawn because adding a public field is breaking under the protocol (struct literals in `pin_tablegen`), and breaking changes merge only between waves.
 - **Workaround meanwhile:** none.
+
+### CR-008: HostCommandQueue doc: cleared at the start of the next script step
+- **Requested by:** work item w8f-q4 (task executor)
+- **Status:** open (pin_core-only PR; additive)
+- **Kind:** additive
+- **Items:** `crates/pin_core/src/script.rs` doc comments of the module and of `HostCommandQueue`
+- **Change:** wording only, no type, field, signature or behaviour changes. Module doc: the sim applies the queue in tick step 3 and clears it at the start of the next script step (readable until then through `Simulation::last_commands()`). `HostCommandQueue` doc: commands issued by every callback in one script step (switch-edge callbacks, then `on_tick`, sharing the queue; `on_init`'s commands after load); applied in tick step 3, cleared at the start of the next script step, so after a tick the queue still holds the commands from all of that tick's callbacks (`Simulation::last_commands()`); capacities fixed (D5).
+- **Why:** PR #67 made the sim clear the queue at the start of the next script step and added `Simulation::last_commands()`, so the old text ("applied in tick step 3 and then cleared") is wrong.
+- **Affected crates:** none
+- **Workaround meanwhile:** none
