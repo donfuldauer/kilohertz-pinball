@@ -402,8 +402,15 @@ fn policy_follows_the_finding_kinds() {
     ));
     assert!(r.passed());
     assert_eq!(r.findings_of(FindingKind::TickBudget).count(), 1);
+    // LongBall (fix-a2-longball) is reported in the findings and never
+    // fails the soak either.
+    let mut x = r.clone();
+    x.findings
+        .push(finding(FindingKind::LongBall, "newton_sw", 0, 300_075, "d"));
+    assert!(x.passed());
+    assert!(x.failing_findings().next().is_none());
     for k in FindingKind::ALL {
-        if k == FindingKind::TickBudget {
+        if k == FindingKind::TickBudget || k == FindingKind::LongBall {
             continue;
         }
         let mut x = r.clone();
@@ -786,4 +793,57 @@ fn bundles_that_do_not_load_are_errors() {
     std::fs::write(b.join("table.toml"), "schema_version = 1\n").unwrap();
     let e = on_sim_thread(move || run_soak(&b, &cfg(1, 1, 100))).unwrap_err();
     assert!(matches!(e, pin_sim::SimError::Asset(_)), "{e:?}");
+}
+
+/// fix-a2-longball: LongBall is the 11th kind, right after EndlessBall; it
+/// serialises by name, is counted in findings_by_kind and the Markdown, does
+/// not fail the soak and is not a failing Gate A1 check.
+#[test]
+fn long_ball_is_a_reported_kind() {
+    assert_eq!(FindingKind::ALL.len(), 11);
+    assert_eq!(FindingKind::ALL[1], FindingKind::EndlessBall);
+    assert_eq!(FindingKind::ALL[2], FindingKind::LongBall);
+    assert_eq!(FindingKind::LongBall.name(), "LongBall");
+    assert_eq!(
+        FindingKind::from_name("LongBall"),
+        Some(FindingKind::LongBall)
+    );
+    assert!(!FindingKind::LongBall.fails_soak());
+    assert!(!FindingKind::LongBall.is_coverage());
+    let mut r = sample();
+    r.findings.clear();
+    r.timing.findings.clear();
+    r.switches.truncate(1);
+    r.findings.push(finding(
+        FindingKind::LongBall,
+        "sling_right_sw",
+        156,
+        306_732,
+        "ball in slot 0 on the table longer than the 300000 ms limit; drained naturally",
+    ));
+    assert!(r.passed());
+    let json: Value = serde_json::from_str(&r.to_json()).unwrap();
+    assert_eq!(json["summary"]["findings_by_kind"]["LongBall"], 1);
+    assert_eq!(json["summary"]["findings_by_kind"]["EndlessBall"], 0);
+    assert_eq!(json["summary"]["passed"], true);
+    assert_eq!(json["findings"][0]["kind"], "LongBall");
+    assert_eq!(json["findings"][0]["subject"], "sling_right_sw");
+    // findings_by_kind keeps report order: EndlessBall, LongBall, EscapedBall.
+    let text = r.to_json();
+    let e = text.find("\"EndlessBall\": 0").unwrap();
+    let l = text.find("\"LongBall\": 1").unwrap();
+    let x = text.find("\"EscapedBall\": 0").unwrap();
+    assert!(e < l && l < x, "{text}");
+    let md = r.to_markdown();
+    assert!(md.contains("| LongBall findings | 1 |"), "{md}");
+    assert!(md.contains("### LongBall (1)"), "{md}");
+    assert!(md.contains("**PASS**"));
+    // Gate A1: no_endless_balls counts only EndlessBall; LongBall is no check.
+    let v = r.gate_a1(SkillLevel::Standard);
+    assert_eq!(v.check("no_endless_balls").unwrap().value, "0 findings");
+    assert!(
+        v.checks.iter().all(|c| !c.name.contains("long")),
+        "{}",
+        v.lines()
+    );
 }
