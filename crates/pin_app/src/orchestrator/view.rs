@@ -219,9 +219,10 @@ impl TableVisuals {
                 }
             }
             let mat = m.material.and_then(|i| scene.materials.get(i));
-            let kind = mat
-                .and_then(|g| MaterialKind::from_shader_name(&g.name))
-                .unwrap_or(MaterialKind::PlayfieldWood);
+            let kind = match mat {
+                Some(g) => render_kind(&g.name, m.extras.lamp.is_some()),
+                None => MaterialKind::PlayfieldWood,
+            };
             let material = match mat {
                 Some(g) => MaterialParams::from_gltf_factors(
                     kind,
@@ -345,6 +346,27 @@ pub struct TableRenderOptions {
     /// Draw the 1.4 debug lines (collider outlines, balls, flippers) over
     /// the PBR image. Default off.
     pub debug_overlay: bool,
+}
+
+/// The render material of a glTF material.
+///
+/// An exact `pbr_*` shader name wins; otherwise a lamp-tagged mesh (glTF
+/// extras `lamp`, e.g. a generated insert) is a [`MaterialKind::LightInsert`]
+/// so it brightens with its lamp; otherwise the physical material the name
+/// denotes (the lookup `pin_sim` uses for colliders) picks acrylic and steel;
+/// everything else is printed wood. Names are never matched by prefix.
+pub(crate) fn render_kind(gltf_name: &str, lamp_tagged: bool) -> MaterialKind {
+    if let Some(k) = MaterialKind::from_shader_name(gltf_name) {
+        return k;
+    }
+    if lamp_tagged {
+        return MaterialKind::LightInsert;
+    }
+    match pin_core::Material::from_name(gltf_name) {
+        Some(pin_core::Material::Acrylic) => MaterialKind::ClearAcrylic,
+        Some(pin_core::Material::Steel) => MaterialKind::ChromeSteel,
+        _ => MaterialKind::PlayfieldWood,
+    }
 }
 
 /// The perspective camera over a table: looking straight down the table
@@ -1102,6 +1124,30 @@ pub(crate) fn compositor_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_kind_precedence() {
+        for k in MaterialKind::ALL {
+            assert_eq!(render_kind(k.shader_name(), false), k);
+            // an exact pbr_ name wins over the lamp tag
+            assert_eq!(render_kind(k.shader_name(), true), k);
+        }
+        assert_eq!(
+            render_kind("insert #ff0000", true),
+            MaterialKind::LightInsert
+        );
+        assert_eq!(render_kind("anything", true), MaterialKind::LightInsert);
+        // No name-shaped special cases: the prefix alone does nothing.
+        assert_eq!(
+            render_kind("insert #ff0000", false),
+            MaterialKind::PlayfieldWood
+        );
+        assert_eq!(render_kind("acrylic", false), MaterialKind::ClearAcrylic);
+        assert_eq!(render_kind("wood", false), MaterialKind::PlayfieldWood);
+        assert_eq!(render_kind("steel", false), MaterialKind::ChromeSteel);
+        assert_eq!(render_kind("mystery", false), MaterialKind::PlayfieldWood);
+        assert_eq!(render_kind("", false), MaterialKind::PlayfieldWood);
+    }
 
     #[test]
     fn layer_format_pairs() {
