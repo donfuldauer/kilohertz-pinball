@@ -1,0 +1,735 @@
+# Sky Deck (Subphase 6.2, variant B): base table.toml for pin_tablegen.
+# A two-level table on a standard-body playfield (514 x 1070 mm): the main
+# deck (layer 0, z 0), a clear-acrylic upper deck (layer 1, z 65 mm) with
+# its own flipper and a 3-bank of drop targets, a centre VUK that lifts the
+# ball onto the upper deck, a left wireform ramp (layer 2) ending in the Sky
+# Bridge (a diverter that sends the ball onto the upper deck), a captive
+# Newton ball ("Reactor Core" guard) and an upper-left wrap-around loop.
+# Lengths mm, angles degrees. Build: tables/sky_deck/build.sh <out_dir>
+# (README.md). Design notes: docs/decisions/2026-11-18-6.2.md.
+schema_version = 1
+
+[meta]
+id = "sky_deck"
+name = "Sky Deck"
+author = "Kilohertz Pinball"
+version = "1.0.0"
+script_entry = "rules.lua"
+playfield_mesh = "playfield.glb"
+pitch_deg = 6.5
+players_max = 1
+palette = ["#0b1d3a", "#3fa7d6", "#b388ff"]
+
+[balls]
+profiles = ["standard_steel", "uv_globall"]
+
+# Cabinet inputs: switch numbers 1..8.
+[cabinet_switches]
+left_flipper = 1
+right_flipper = 2
+left_upper = 3
+right_upper = 4
+action = 5
+start = 6
+launch = 7
+tilt = 8
+
+# --- Switches (numbers 10..28, all unique) ---------------------------------
+# Switch zones are given at the surface they sit on (z = 0 for layer 0,
+# z = 65 on the upper deck); the loader lifts each zone to ball-centre
+# height.
+
+# The two trough zones overlap and span the drain funnel's bottom: a ball
+# resting in either bottom corner of the funnel (layout.toml) has its
+# centre within 8 mm of a zone centre.
+[[switches]]
+id = "trough_1"
+number = 10
+kind = "trough"
+layer = 0
+position = [225.0, 20.0, 0.0]
+radius = 36.0
+
+[[switches]]
+id = "trough_2"
+number = 11
+kind = "trough"
+layer = 0
+position = [289.0, 20.0, 0.0]
+radius = 36.0
+
+[[switches]]
+id = "lower_left_eos"
+number = 12
+kind = "eos"
+
+[[switches]]
+id = "lower_right_eos"
+number = 13
+kind = "eos"
+
+[[switches]]
+id = "upper_right_eos"
+number = 14
+kind = "eos"
+
+[[switches]]
+id = "sling_left_sw"
+number = 15
+kind = "leaf"
+
+[[switches]]
+id = "sling_right_sw"
+number = 16
+kind = "leaf"
+
+# The centre VUK's scoop switch (closed while it holds a ball).
+[[switches]]
+id = "vuk_sw"
+number = 17
+kind = "leaf"
+
+[[switches]]
+id = "newton_sw"
+number = 18
+kind = "target"
+
+[[switches]]
+id = "drop_1_sw"
+number = 19
+kind = "target"
+
+[[switches]]
+id = "drop_2_sw"
+number = 20
+kind = "target"
+
+[[switches]]
+id = "drop_3_sw"
+number = 21
+kind = "target"
+
+# On the upper deck just below the VUK's exit point (layer 1, surface
+# z = 65).
+[[switches]]
+id = "deck_opto"
+number = 22
+kind = "opto"
+layer = 1
+position = [449.0, 945.0, 65.0]
+radius = 15.0
+
+# In the loop's left leg.
+[[switches]]
+id = "loop_entry"
+number = 23
+kind = "opto"
+layer = 0
+position = [38.0, 700.0, 0.0]
+radius = 15.0
+
+[[switches]]
+id = "loop_top"
+number = 24
+kind = "opto"
+layer = 0
+position = [170.0, 1040.0, 0.0]
+radius = 15.0
+
+# In the ramp's entry lane, below the generated entry zone (y 560..600).
+[[switches]]
+id = "ramp_entry"
+number = 25
+kind = "opto"
+layer = 0
+position = [175.0, 525.0, 0.0]
+radius = 16.0
+
+# On the wire (layer 2) near its top, before the landing (common to both
+# diverter positions): z is the ball-centre height there (rails ~63.7 mm +
+# 11.8 mm) minus the 13.5 mm the loader adds.
+[[switches]]
+id = "ramp_made"
+number = 26
+kind = "opto"
+layer = 2
+position = [175.0, 885.0, 62.0]
+radius = 10.0
+
+# Up the shooter lane: closes as a launched ball passes.
+[[switches]]
+id = "shooter_lane"
+number = 27
+kind = "opto"
+layer = 0
+position = [492.0, 300.0, 0.0]
+radius = 15.0
+
+# The plunger mech's switch: closed while a ball touches the plunger tip.
+[[switches]]
+id = "plunger_tip"
+number = 28
+kind = "leaf"
+
+# --- Coils -------------------------------------------------------------------
+
+[[coils]]
+id = "left_flipper_coil"
+number = 1
+kind = "flipper"
+
+[[coils]]
+id = "right_flipper_coil"
+number = 2
+kind = "flipper"
+
+[[coils]]
+id = "upper_flipper_coil"
+number = 3
+kind = "flipper"
+
+[[coils]]
+id = "sling_left_coil"
+number = 4
+kind = "sling"
+
+[[coils]]
+id = "sling_right_coil"
+number = 5
+kind = "sling"
+
+[[coils]]
+id = "vuk_coil"
+number = 6
+kind = "vuk"
+
+[[coils]]
+id = "plunger_coil"
+number = 7
+kind = "autoplunger"
+
+[[coils]]
+id = "drop_reset_coil"
+number = 8
+kind = "drop_reset"
+
+# Sky Bridge Diverter: drives the diverter mech and its blade.
+[[coils]]
+id = "bridge_coil"
+number = 9
+kind = "diverter"
+
+# --- Lamps -------------------------------------------------------------------
+
+[[lamps]]
+id = "backglass_logo"
+number = 40
+kind = "flasher"
+
+[[lamps]]
+id = "overdrive_lamp"
+number = 41
+kind = "insert"
+color = "#7c4dff"
+response = "led"
+
+[[lamps]]
+id = "bridge_lamp"
+number = 42
+kind = "insert"
+color = "#40c0ff"
+response = "led"
+
+# --- Flippers ----------------------------------------------------------------
+
+# Lower flippers: 76 mm StraightCapsule bats like the grey-box pair, pivots
+# 180 mm apart (x 167 and 347), resting 25 degrees below horizontal and
+# sweeping 45 degrees up to +20 degrees (docs/decisions/2026-11-18-6.2.md
+# "6.2-tuning"): about 29 mm clear between the resting tips (a ball just
+# fits through), 24 mm between the raised tips (a ball rests on two raised
+# bats instead of wedging).
+[[flippers]]
+id = "lower_left"
+coil = "left_flipper_coil"
+eos_switch = "lower_left_eos"
+collision_layer = 0
+base_position = [167.0, 150.0, 0.0]
+surface_normal = [0.0, 0.0, 1.0]
+rest_angle_deg = -25.0
+sweep_angle_deg = 45.0
+eos_angle_fraction = 0.92
+shape = { type = "StraightCapsule", length = 76.0, base_radius = 11.0, tip_radius = 6.5 }
+staging = { type = "DedicatedButton", input = "left_flipper" }
+
+[[flippers]]
+id = "lower_right"
+coil = "right_flipper_coil"
+eos_switch = "lower_right_eos"
+collision_layer = 0
+base_position = [347.0, 150.0, 0.0]
+surface_normal = [0.0, 0.0, 1.0]
+rest_angle_deg = 205.0
+sweep_angle_deg = -45.0
+eos_angle_fraction = 0.92
+shape = { type = "StraightCapsule", length = 76.0, base_radius = 11.0, tip_radius = 6.5 }
+staging = { type = "DedicatedButton", input = "right_flipper" }
+
+# Upper-deck flipper (layer 1, on the deck surface at z 65): a 52 mm right
+# flipper at the deck's lower right, fed by the deck rails, shooting up at
+# the drop-target bank. It rests at 202 degrees (22 below horizontal): from
+# anywhere on the bat its shots leave 80..95 degrees and cross the bank
+# (sky_deck_layers; at the grey-box 210 the tip's shots passed left of it).
+[[flippers]]
+id = "upper_right"
+coil = "upper_flipper_coil"
+eos_switch = "upper_right_eos"
+collision_layer = 1
+base_position = [440.0, 805.0, 65.0]
+surface_normal = [0.0, 0.0, 1.0]
+rest_angle_deg = 202.0
+sweep_angle_deg = -50.0
+eos_angle_fraction = 0.92
+shape = { type = "StraightCapsule", length = 52.0, base_radius = 9.0, tip_radius = 5.5 }
+staging = { type = "DedicatedButton", input = "right_upper" }
+
+# --- Left wireform ramp (layer 2) ----------------------------------------------
+
+# Climbs straight up the left of centre (x = 175) from the entry lane
+# (layout.toml) to the landing at the deck height. Point heights are the
+# rails' height: with the 13 mm gauge a 27 mm ball rides 11.8 mm above them
+# (contact 29 degrees from vertical). The rails start 6 mm below the
+# playfield and rise through the layer-2 floor of the entry lane (they reach
+# a floor-rolling ball's contact height, 1.8 mm, at y ~627). The last two
+# points (66.3, 66.7 mm), level over the landing, put the ball centre at the
+# landing's rest height (65 + 13.5 mm).
+[[splines]]
+id = "ramp_wire"
+kind = "wireform"
+layer = 2
+gauge = 13.0
+points = [[175.0, 560.0, -6.0], [175.0, 615.0, 0.0], [175.0, 670.0, 8.0], [175.0, 725.0, 20.0], [175.0, 780.0, 36.0], [175.0, 835.0, 51.0], [175.0, 870.0, 61.0], [175.0, 900.0, 66.3], [175.0, 925.0, 66.7]]
+
+# Side rails of the wire (layer 2, wall_height walls whose bottom edge runs
+# 6 mm below the rails), in line with the entry lane's walls.
+[[splines]]
+id = "ramp_side_left"
+kind = "guide"
+layer = 2
+points = [[155.0, 530.0, -12.0], [155.0, 555.0, -12.0], [155.0, 580.0, -9.8], [155.0, 605.0, -7.1], [155.0, 630.0, -3.8], [155.0, 655.0, -0.2], [155.0, 680.0, 4.2], [155.0, 705.0, 9.6], [155.0, 730.0, 15.5], [155.0, 755.0, 22.7], [155.0, 780.0, 30.0], [155.0, 805.0, 36.8], [155.0, 830.0, 43.6], [155.0, 855.0, 50.7], [155.0, 880.0, 56.8], [155.0, 905.0, 60.4]]
+
+[[splines]]
+id = "ramp_side_right"
+kind = "guide"
+layer = 2
+points = [[195.0, 530.0, -12.0], [195.0, 555.0, -12.0], [195.0, 580.0, -9.8], [195.0, 605.0, -7.1], [195.0, 630.0, -3.8], [195.0, 655.0, -0.2], [195.0, 680.0, 4.2], [195.0, 705.0, 9.6], [195.0, 730.0, 15.5], [195.0, 755.0, 22.7], [195.0, 780.0, 30.0], [195.0, 805.0, 36.8], [195.0, 830.0, 43.6], [195.0, 855.0, 50.7], [195.0, 880.0, 56.8], [195.0, 905.0, 60.4]]
+
+# Landing rails (layer 2, on the landing surface at z 65). Left side and
+# top closed; the right side opens onto the Sky Bridge above y 930.
+[[splines]]
+id = "landing_left"
+kind = "guide"
+layer = 2
+points = [[155.0, 905.0, 65.0], [155.0, 940.0, 65.0], [155.0, 975.0, 65.0]]
+
+[[splines]]
+id = "landing_top"
+kind = "guide"
+layer = 2
+points = [[158.0, 1000.0, 65.0], [181.0, 1000.0, 65.0], [204.0, 1000.0, 65.0]]
+
+[[splines]]
+id = "landing_right"
+kind = "guide"
+layer = 2
+points = [[195.0, 905.0, 65.0], [195.0, 917.5, 65.0], [195.0, 930.0, 65.0]]
+
+# Sky Bridge rails: the lower one falls 18 mm towards the deck, so a slow
+# ball on the bridge rolls on onto the deck instead of resting on it.
+[[splines]]
+id = "bridge_rail_lower"
+kind = "guide"
+layer = 2
+points = [[195.0, 930.0, 65.0], [234.5, 921.0, 65.0], [274.0, 912.0, 65.0]]
+
+[[splines]]
+id = "bridge_rail_upper"
+kind = "guide"
+layer = 2
+points = [[204.0, 1000.0, 65.0], [239.0, 1000.0, 65.0], [274.0, 1000.0, 65.0]]
+
+# --- Upper-deck rails (layer 1, on the deck surface at z = 65) ---------------
+
+# Left rail, split by the Sky Bridge's opening (y 915..1002).
+[[splines]]
+id = "deck_rail_left_lo"
+kind = "guide"
+layer = 1
+points = [[250.0, 880.0, 65.0], [250.0, 897.5, 65.0], [250.0, 915.0, 65.0]]
+
+[[splines]]
+id = "deck_rail_left_hi"
+kind = "guide"
+layer = 1
+points = [[250.0, 1002.0, 65.0], [250.0, 1021.0, 65.0], [250.0, 1040.0, 65.0]]
+
+[[splines]]
+id = "deck_rail_top"
+kind = "guide"
+layer = 1
+points = [[250.0, 1040.0, 65.0], [357.5, 1040.0, 65.0], [465.0, 1040.0, 65.0]]
+
+[[splines]]
+id = "deck_rail_right"
+kind = "guide"
+layer = 1
+points = [[465.0, 1040.0, 65.0], [465.0, 950.0, 65.0], [465.0, 860.0, 65.0]]
+
+# Deck inlane: from the right rail down onto the back of the upper_right
+# flipper's pivot cap (pivot (440, 805), cap radius 9).
+[[splines]]
+id = "deck_inlane"
+kind = "guide"
+layer = 1
+points = [[465.0, 860.0, 65.0], [456.0, 836.0, 65.0], [447.0, 812.0, 65.0]]
+
+# Deck funnel: from the left rail down to the right, ending 38 mm (more than
+# a ball) left of the resting flipper's tip. A ball that passes the flipper
+# goes through that gap to the deck's lower edge: the acrylic return funnel
+# (transition `deck_return`).
+[[splines]]
+id = "deck_funnel"
+kind = "guide"
+layer = 1
+points = [[250.0, 880.0, 65.0], [302.5, 838.5, 65.0], [355.0, 797.0, 65.0]]
+
+# --- Layer transitions -------------------------------------------------------------
+
+# Sky Bridge onto the upper deck (2 -> 1), inside the deck's outline.
+[[layer_transitions]]
+id = "bridge_exit"
+from_layer = 2
+to_layer = 1
+zone = { min = [253.0, 905.0, 55.0], max = [274.0, 1005.0, 140.0] }
+
+# A layer-2 ball rolling back down the wire past the entry zone returns to
+# layer 0 in the entry lane (below the generated entry zone y 560..600).
+[[layer_transitions]]
+id = "ramp_fallback"
+from_layer = 2
+to_layer = 0
+zone = { min = [140.0, 340.0, -50.0], max = [210.0, 539.0, 150.0] }
+
+# Catch zones beside the wire (from the entry lane to the side rails' end):
+# a layer-2 ball outside the side rails returns to layer 0 at once.
+[[layer_transitions]]
+id = "ramp_catch_left"
+from_layer = 2
+to_layer = 0
+zone = { min = [90.0, 540.0, -50.0], max = [153.0, 880.0, 200.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_right"
+from_layer = 2
+to_layer = 0
+zone = { min = [197.0, 540.0, -50.0], max = [260.0, 880.0, 200.0] }
+
+# Below the floor and the wire (x 153..197, y 540..880, z under 9 mm), in
+# parts around the generated entry zone (x 155..195, y 560..~600, z -6..20),
+# which a 2 -> 0 zone may not overlap: 1 mm clear of it on every side.
+[[layer_transitions]]
+id = "ramp_catch_below_mouth"
+from_layer = 2
+to_layer = 0
+zone = { min = [153.0, 540.0, -50.0], max = [197.0, 559.0, 9.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_below"
+from_layer = 2
+to_layer = 0
+zone = { min = [153.0, 601.0, -50.0], max = [197.0, 880.0, 9.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_below_side_left"
+from_layer = 2
+to_layer = 0
+zone = { min = [153.0, 540.0, -50.0], max = [154.0, 880.0, 9.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_below_side_right"
+from_layer = 2
+to_layer = 0
+zone = { min = [196.0, 540.0, -50.0], max = [197.0, 880.0, 9.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_below_under"
+from_layer = 2
+to_layer = 0
+zone = { min = [153.0, 540.0, -50.0], max = [197.0, 880.0, -7.0] }
+
+# Below the top of the wire, the landing and the bridge: a layer-2 ball that
+# falls off them (ball centre under 40 mm; on the wire there it is above
+# 68 mm) returns to layer 0.
+[[layer_transitions]]
+id = "landing_catch"
+from_layer = 2
+to_layer = 0
+zone = { min = [120.0, 881.0, -50.0], max = [280.0, 1030.0, 40.0] }
+
+# The acrylic return funnel: over the upper deck's lower edge (y 770) back to
+# the main deck. Every ball that leaves the deck flipper's area through the
+# gap beside its tip lands at about (370, 750) on the main deck.
+[[layer_transitions]]
+id = "deck_return"
+from_layer = 1
+to_layer = 0
+zone = { min = [240.0, 690.0, -50.0], max = [475.0, 769.0, 200.0] }
+
+# Safety exits on the railed edges (a ball can only get there over a rail
+# or out of the Sky Bridge's opening).
+[[layer_transitions]]
+id = "deck_exit_left"
+from_layer = 1
+to_layer = 0
+zone = { min = [190.0, 771.0, -50.0], max = [248.0, 1100.0, 200.0] }
+
+[[layer_transitions]]
+id = "deck_exit_right"
+from_layer = 1
+to_layer = 0
+zone = { min = [467.0, 771.0, -50.0], max = [520.0, 1100.0, 200.0] }
+
+[[layer_transitions]]
+id = "deck_exit_top"
+from_layer = 1
+to_layer = 0
+zone = { min = [249.0, 1042.0, -50.0], max = [466.0, 1100.0, 200.0] }
+
+# --- Ball dispensers ---------------------------------------------------------------
+
+# Serves the shooter lane above the plunger tip: one steel ball per ball of
+# the game.
+[[dispensers]]
+id = "feed"
+number = 1
+exit_position = [492.0, 160.0, 13.5]
+exit_velocity = [0.0, -0.2, 0.0]
+contents = ["standard_steel", "standard_steel", "standard_steel"]
+
+# The Glo-Ball feed: drops a UV Glo-Ball into the mouth of the centre VUK's
+# pocket (layer 0, the only layer a script can spawn on), rolling up into
+# the scoop; the VUK lifts it onto the upper deck (layer 1). One per ball of
+# the game (Night Overdrive starts at most once per ball).
+[[dispensers]]
+id = "glo_feed"
+number = 2
+exit_position = [257.0, 668.0, 13.5]
+exit_velocity = [0.0, 0.4, 0.0]
+contents = ["uv_globall", "uv_globall", "uv_globall"]
+
+# --- Mechs -------------------------------------------------------------------
+
+[[mechs]]
+id = "sling_left"
+kind = "sling"
+coil = "sling_left_coil"
+switch = "sling_left_sw"
+position = [100.0, 290.0, 0.0]
+angle_deg = 35.0
+
+[[mechs]]
+id = "sling_right"
+kind = "sling"
+coil = "sling_right_coil"
+switch = "sling_right_sw"
+position = [375.0, 290.0, 0.0]
+angle_deg = 145.0
+
+# Centre VUK at the apex of the V pocket (layout.toml), 15 mm clear of its
+# walls; capture radius 18 mm. Ejects onto the upper deck (layer 1) at
+# (450, 960), beside the right rail just above deck_opto, the ball centre
+# 1.5 mm above its rest height on the deck (65 + 13.5 mm), kicked gently
+# down the deck towards the upper_right flipper.
+[[mechs]]
+id = "vuk"
+kind = "vuk"
+coil = "vuk_coil"
+switch = "vuk_sw"
+position = [257.0, 692.0, 0.0]
+angle_deg = 270.0
+layer = 0
+radius = 18.0
+exit_layer = 1
+exit_offset = [193.0, 268.0, 80.0]
+eject_speed_m_s = 0.2
+kick_speed_m_s = 0.2
+
+[[mechs]]
+id = "plunger"
+kind = "plunger"
+coil = "plunger_coil"
+switch = "plunger_tip"
+position = [492.0, 50.0, 0.0]
+angle_deg = 90.0
+auto_pull = 0.9
+
+# "Reactor Core" guard: the captive Newton ball above the right sling,
+# moving 50 mm up the table. At y 415 it stands across the line from the
+# left sling to the right outlane's mouth, which every plunge followed
+# (loop, left sling, right outlane: 5..9 s balls; docs/decisions/
+# 2026-11-18-6.2.md "6.2-mechs"); flipper shots and sling kicks hit it.
+[[mechs]]
+id = "newton"
+kind = "newton_ball"
+switch = "newton_sw"
+position = [330.0, 415.0, 0.0]
+angle_deg = 90.0
+length = 50.0
+
+# Elevated 3-bank on the upper deck (layer 1, deck surface z 65), above
+# the upper_right flipper (whose shots leave it 70..100 degrees, straight up
+# the deck). The targets face 290 degrees (down, turned 20 degrees right):
+# the bank line rises to the right, so a ball rolling down onto its back
+# rolls off its left end instead of resting there. 20 mm tall (top at 85
+# mm, above a deck ball's centre at 78.5 mm): a ball that lands on a
+# target's top edge has room under the glass (122 mm) and rolls off; its right end is 10 mm
+# from the right rail (no ball gets past). One reset coil for the bank.
+[[mechs]]
+id = "drop_1"
+kind = "drop_target"
+coil = "drop_reset_coil"
+switch = "drop_1_sw"
+position = [392.6, 987.8, 65.0]
+angle_deg = 290.0
+layer = 1
+height = 20.0
+
+[[mechs]]
+id = "drop_2"
+kind = "drop_target"
+coil = "drop_reset_coil"
+switch = "drop_2_sw"
+position = [418.0, 997.0, 65.0]
+angle_deg = 290.0
+layer = 1
+height = 20.0
+
+[[mechs]]
+id = "drop_3"
+kind = "drop_target"
+coil = "drop_reset_coil"
+switch = "drop_3_sw"
+position = [443.4, 1006.2, 65.0]
+angle_deg = 290.0
+layer = 1
+height = 20.0
+
+# Back stop of the drop bank: 20 mm behind the targets' centre line
+# (17.5 mm from their backs, less than a ball), from beyond the bank's left
+# end to the right rail. No ball gets behind the bank (or through a dropped
+# target's slot); the strip above it is closed by `deck_bank_cap`.
+[[splines]]
+id = "deck_bank_back"
+kind = "guide"
+layer = 1
+points = [[374.0, 1002.3, 65.0], [419.5, 1018.85, 65.0], [465.0, 1035.4, 65.0]]
+
+# Cap of the strip between the back stop and the top rail: that strip
+# narrows to the right from 35 mm to nothing, so a ball thrown into it
+# wedged where it is one ball wide (StuckBall at (397, 1026) mm on the deck
+# in a novice soak). The cap closes it from the back stop's left end up to
+# the top rail, sloping down to the right: a ball against its outside
+# rolls down off the bank's left end.
+[[splines]]
+id = "deck_bank_cap"
+kind = "guide"
+layer = 1
+points = [[374.0, 1002.3, 65.0], [364.0, 1021.15, 65.0], [354.0, 1040.0, 65.0]]
+
+# Sky Bridge Diverter (on the landing, layer 2). The engine binds a
+# diverter's colliders by glTF node name (`bridge_diverter` /
+# `bridge_diverter.on` / `.off`), which pin_tablegen cannot name; the
+# physical blade is the kickback `bridge_blade` on the same coil
+# (docs/decisions/2026-11-18-6.2.md "6.2-diverter"). No switch: a diverter
+# has none, and a declared one would be held open by the mech set.
+[[mechs]]
+id = "bridge_diverter"
+kind = "diverter"
+coil = "bridge_coil"
+position = [175.0, 950.0, 65.0]
+layer = 2
+
+# The Sky Bridge Diverter's blade: a 50 mm x 12 mm rubber blade on the
+# landing (layer 2, z 65) that slides 50 mm along 315 degrees. Retracted
+# (coil off) it sits up and left of the ball's path up the landing (x
+# 161.5..188.5); held out (coil on) its face crosses the path at 45 degrees
+# and turns a ball coming up the landing to the right, onto the Sky Bridge.
+# Heavy and slow (500 g, 20 N): it reaches the stop in about 0.05 s and a
+# ball barely moves it.
+[[mechs]]
+id = "bridge_blade"
+kind = "kickback"
+coil = "bridge_coil"
+position = [132.4, 1004.6, 65.0]
+angle_deg = 315.0
+layer = 2
+length = 50.0
+thickness = 12.0
+height = 25.0
+stroke = 50.0
+mass_g = 500.0
+force_n = 20.0
+spring_k_n_m = 20.0
+
+# --- Coverage declarations (2.9 soak harness) ----------------------------------
+
+[[shots]]
+id = "loop"
+sequence = ["loop_entry", "loop_top"]
+window_ms = 3000
+
+[[shots]]
+id = "ramp"
+sequence = ["ramp_entry", "ramp_made"]
+window_ms = 3000
+
+# The VUK holds the ball for 4 s (rules.lua) before it lifts it onto the
+# deck next to deck_opto.
+[[shots]]
+id = "deck"
+sequence = ["vuk_sw", "deck_opto"]
+window_ms = 9000
+
+[[modes]]
+id = "night_overdrive"
+start_scene = "scene_night_overdrive"
+
+# --- Sounds and display scenes -------------------------------------------------
+
+[[sounds]]
+id = "sfx_bumper"
+file = "audio/sfx_bumper.wav"
+bus = "sfx"
+
+[[sounds]]
+id = "sfx_sling"
+file = "audio/sfx_sling.wav"
+bus = "sfx"
+
+[[scenes]]
+id = "scene_attract"
+file = "display/scene_attract.toml"
+
+[[scenes]]
+id = "scene_score"
+file = "display/scene_score.toml"
+
+[[scenes]]
+id = "scene_game_over"
+file = "display/scene_game_over.toml"
+
+[[scenes]]
+id = "scene_night_overdrive"
+file = "display/scene_night_overdrive.toml"
+
+[persist]
+keys = ["games_played", "high_score", "ball", "game_state", "mode:night_overdrive", "bridge_open", "overdrive_ready"]

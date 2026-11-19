@@ -1,0 +1,188 @@
+# Sky Deck (Subphase 6.2, variant B): pin_tablegen layout.
+# Build the bundle with tables/sky_deck/build.sh (see README.md).
+# Units mm, x across (0 = left), y up the table (0 = bottom).
+schema_version = 1
+
+# Standard-body playfield (514 x 1070 mm). Walls and posts are 100 mm tall
+# under the playfield glass at 122 mm (glass.toml): 122 - 100 = 22 mm, less
+# than one ball diameter (27 mm), so every wall seals against the glass
+# (docs/decisions/2026-11-18-6.2.md "6.2-geometry"). The clear-acrylic upper
+# deck is at z 65 mm: a resting deck ball's top is at 92 mm, 20 mm under the
+# glass, and a layer-0 ball (27 mm) passes under it with 38 mm to spare.
+# wall_height is also the height of every guide spline (deck rails, ramp
+# side rails; DECISIONS "2.5 — guide wall height").
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 100.0
+
+# Cabinet: closed outer wall.
+[[walls]]
+points = [[0.0, 0.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 0.0]]
+closed = true
+material = "wood"
+
+# Shooter lane wall (lane x = 470..514). It reaches up to y 940, 60 mm
+# below the top-right corner wall at x 470: the plunged ball, turned left
+# by the corner at y ~985, leaves over it into the top lane, while a ball
+# on the main deck seldom drops back into the lane (no wall top where a
+# ball can wedge against the corner wall; 962 wedged one).
+[[walls]]
+points = [[470.0, 0.0], [470.0, 940.0]]
+material = "wood"
+
+# Top-right corner: turns the launched ball into the loop's top.
+[[walls]]
+points = [[400.0, 1070.0], [514.0, 956.0]]
+material = "wood"
+
+# --- Lower playfield: inlanes, outlanes, drain ---------------------------------
+
+# Inlane slopes onto the flipper pivots (the grey-box lines, ending on the
+# back of the 11 mm pivot caps). Each starts at its inlane/outlane
+# separator, so a 30 mm outlane runs outside it.
+[[walls]]
+points = [[30.0, 298.8], [162.0, 161.6]]
+material = "wood"
+
+[[walls]]
+points = [[440.0, 286.1], [352.0, 157.4]]
+material = "wood"
+
+# Inlane/outlane separators (x 30 and x 440): the outlanes are the 30 mm
+# channels between them and the cabinet / shooter-lane wall. The right one
+# reaches up to y 430 (the left one to 385), so fewer balls crossing the
+# table from the left drop over its top into the right outlane.
+[[walls]]
+points = [[30.0, 298.8], [30.0, 385.0]]
+material = "wood"
+
+[[walls]]
+points = [[440.0, 286.1], [440.0, 430.0]]
+material = "wood"
+
+# Left outlane guard: a ball rolling down along the cabinet wall is turned
+# inwards over the separator onto the inlane. The outlane mouth is the 36 mm
+# gap between the guard's lower end and the separator's top, open to a ball
+# crossing towards the wall. The right outlane has no guard: a ball rolling
+# down along the shooter-lane wall (a loop shot's return, the expert's long
+# rallies) drops straight into it (docs/decisions/2026-11-18-6.2.md
+# "6.2-tuning").
+[[walls]]
+points = [[0.0, 488.0], [44.0, 418.0]]
+material = "wood"
+
+# Outlane floors and drain funnel: from each outlane down under its flipper
+# (35 mm clear of the pivot cap) to the cabinet bottom beside the trough.
+# The two walls are the funnel: a ball resting in either bottom corner has
+# its centre about 7 mm from a trough switch centre (zones of radius 36),
+# so every ball that gets below the flippers drains.
+[[walls]]
+points = [[0.0, 262.0], [90.0, 160.0], [215.0, 0.0]]
+material = "wood"
+
+[[walls]]
+points = [[470.0, 212.0], [424.0, 160.0], [299.0, 0.0]]
+material = "wood"
+
+# Guard 2 mm behind the back of sling_left (grey-box Gate A1 fix
+# "a1-endless-table — loop 3"): a ball rolling down the left inlane never
+# touches the sling's back.
+[[walls]]
+points = [[63.87, 329.40], [124.67, 242.57]]
+material = "wood"
+
+# --- Centre VUK pocket ------------------------------------------------------------
+
+# A V opening down the table (mouth x 202..312 at y 640, apex (257, 725)).
+# A ball shot into it is funnelled to the scoop (vuk mech at (257, 692),
+# capture radius 18 mm); a ball coming down from above glances off its back.
+[[walls]]
+points = [[202.0, 640.0], [257.0, 725.0], [312.0, 640.0]]
+material = "wood"
+
+# --- Left ramp (wireform `ramp_wire`, layer 2) -------------------------------
+
+# Entry lane x 155..195 (the wire on its axis, x 175). The left wall ends on
+# a roof (y 605..620) sloping down to the left: below it no layer-0 ball can
+# enter the generated entry zone (x 155..195, y 560..600) except up the
+# lane. The right wall carries a funnel that turns balls coming up-left from
+# the right flipper into the mouth.
+[[ramps]]
+spline = "ramp_wire"
+entry_width = 40.0
+
+[[walls]]
+points = [[155.0, 515.0], [155.0, 605.0], [195.0, 620.0]]
+material = "wood"
+
+[[walls]]
+points = [[230.0, 460.0], [195.0, 515.0], [195.0, 620.0]]
+material = "wood"
+
+# Layer-2 floor of the entry lane (z 0.1 mm, the playfield height): a ball
+# promoted in the entry zone rolls on it until the rails rise to its
+# contact height (y ~627).
+[[decks]]
+layer = 2
+z = 0.1
+outline = [[153.0, 525.0], [197.0, 525.0], [197.0, 657.5], [153.0, 657.5]]
+material = "wood"
+
+# The ramp's landing and the Sky Bridge (layer 2, z 65 mm, the deck
+# height). The landing starts 1 mm past the wire's level end (y 925), so no
+# rail end sticks up through it (a ball resting against one would stay
+# there); a ball rolling back down rides the rails from their end on, and
+# one beside them drops off the landing's lower edge to the main deck
+# (`landing_catch`). The bridge
+# runs right from it to the upper deck's left edge (x 250), where the
+# transition `bridge_exit` hands the ball to layer 1. The Sky Bridge
+# Diverter's blade (mech `bridge_blade`) turns a ball coming up the landing
+# onto the bridge; without it the ball stops at the landing's top rail and
+# rolls back down the wire to the main deck (table.toml).
+[[decks]]
+layer = 2
+z = 65.0
+outline = [[150.0, 926.0], [186.0, 926.0], [186.0, 910.0], [274.0, 910.0], [274.0, 1002.0], [150.0, 1002.0]]
+material = "acrylic"
+
+# --- Upper deck (layer 1, z 65 mm, clear acrylic) ------------------------------
+
+# Upper right. Fed by the centre VUK (and the Sky Bridge); rails, the
+# upper_right flipper and the drop-target bank are in table.toml. Its lower
+# edge (y 770) is the acrylic return funnel's mouth (transition
+# `deck_return`).
+[[decks]]
+layer = 1
+z = 65.0
+outline = [[250.0, 770.0], [465.0, 770.0], [465.0, 1040.0], [250.0, 1040.0]]
+material = "acrylic"
+
+# --- Upper-left loop (wrap-around orbit) -----------------------------------------
+
+# The grey-box orbit, unchanged (its Gate A1 fixes included): up the left
+# side and over the top (switches loop_entry, loop_top). Every plunge rides
+# the loop's top first and comes out at (85, 615) into mid-field.
+[[lanes]]
+kind = "orbit"
+points = [[85.0, 615.0], [55.0, 650.0], [38.0, 700.0], [36.0, 780.0], [45.0, 880.0], [90.0, 1000.0], [170.0, 1040.0], [260.0, 1046.0]]
+width = 40.0
+
+# Fill outside the loop's right rail (grey-box "a1-endless-table — loop 2"):
+# its lower face sends a ball leaving the rail down and right.
+[[walls]]
+points = [[73.53804, 658.2306], [111.5, 724.0], [55.695015, 752.3393]]
+material = "wood"
+
+# Fill between the cabinet wall and the loop's outer rail, below the point
+# where they are a ball apart: a ball thrown up the left side cannot jam in
+# the narrowing gap between them.
+[[walls]]
+points = [[0.0, 620.0], [44.140556, 630.6047]]
+material = "wood"
+
+# Ramp on the loop's lower rail at its right end (grey-box "a1-endless-table
+# — orbit top dead spot"): no flat ledge where a slow ball can stop.
+[[walls]]
+points = [[221.73027, 1024.4989], [262.0, 1034.0]]
+material = "wood"
