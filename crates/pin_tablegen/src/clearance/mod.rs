@@ -55,6 +55,11 @@
 //! adds its collider nodes as geometry of their own `collision_layer` (the
 //! backbox layer): floors, walls and ceilings of that layer for the VUK
 //! exit, scoop and headroom checks. They never become layer-0 geometry.
+//! As in the engine's loader (`pin_sim::load::backbox_colliders`), every
+//! node must be a collider (`extras.collider` true) naming a backbox layer
+//! (`extras.collision_layer` 4..=7); a node that is not is a
+//! [`Feature::BackboxCollider`] error naming the file and the node, with
+//! the loader's wording, and adds no geometry (there is no default layer).
 //! A VUK exit on a backbox layer is also supported by a walkable backbox
 //! collider of the layer below it within 100 mm in plan (the shelf around
 //! the entry hole the generated VUK kicks the ball up through), the reach
@@ -79,7 +84,7 @@ use geom::Polygon;
 use glam::DVec2;
 use pin_assets::{
     AssetError, BACKBOX_COLLIDERS_FILE, GltfLimits, GltfScene, LoadedTable, MAX_BACKBOX_COLLIDERS,
-    ValidationError, Vfs, load_gltf, load_gltf_with_limits, load_table,
+    MeshData, ValidationError, Vfs, load_gltf, load_gltf_with_limits, load_table,
 };
 use pin_core::profiles::builtin_profile;
 
@@ -103,10 +108,6 @@ pub const VUK_EXIT_TOLERANCE_MM: f32 = 0.5;
 /// area: the computed diameter is never above the true one and at most
 /// this much below it.
 pub const INSCRIBED_CIRCLE_TOLERANCE_MM: f32 = 0.5;
-/// Collision layer of backbox colliders whose node names none and whose
-/// bundle declares no `[backbox] collision_layer` (the generator's and
-/// `backglass.toml`'s convention).
-pub const DEFAULT_BACKBOX_LAYER: u8 = 4;
 
 /// The kind of feature a [`ClearanceError`] is about.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -125,6 +126,8 @@ pub enum Feature {
     DeckHeadroom,
     /// A `[balls] restrict` entry.
     Restriction,
+    /// A node of `backbox_colliders.glb` the engine would refuse.
+    BackboxCollider,
 }
 
 impl Feature {
@@ -139,6 +142,7 @@ impl Feature {
             Feature::VukExit => "vuk exit",
             Feature::DeckHeadroom => "deck headroom",
             Feature::Restriction => "restriction",
+            Feature::BackboxCollider => "backbox collider",
         }
     }
 }
@@ -152,16 +156,19 @@ pub struct ClearanceError {
     /// (`[[flippers]]` ids), mech id, glTF node name, or
     /// `"balls.restrict[i]"`.
     pub name: String,
-    /// Ball profile name.
+    /// Ball profile name (empty for a finding about no particular ball:
+    /// a [`Feature::BackboxCollider`] error).
     pub profile: String,
-    /// Bundle file: `table.toml` or the playfield glTF (`meta.playfield_mesh`).
+    /// Bundle file: `table.toml`, the playfield glTF (`meta.playfield_mesh`)
+    /// or `backbox_colliders.glb`.
     pub file: String,
     /// Key path in `file` (`splines[3]`, `flippers[0]`, `mechs[2]`,
     /// `mechs[2].exit_offset`, `meshes[4]`, `balls.restrict[1].area`,
     /// `layer_transitions[0]`).
     pub path: String,
     /// What the profile needs, mm (0 where no length applies: restriction
-    /// findings and the flipper-build warning).
+    /// shape findings, backbox collider findings and the flipper-build
+    /// warning).
     pub required_mm: f32,
     /// What the geometry offers, mm (0 where no length applies).
     pub actual_mm: f32,
@@ -503,11 +510,12 @@ pub fn validate_clearance(table: &LoadedTable, scene: &GltfScene) -> ClearanceRe
 /// [`validate_clearance`] with the bundle's backbox colliders (its
 /// [`BACKBOX_COLLIDERS_FILE`], as [`load_backbox_colliders`] reads it):
 /// their collider nodes are geometry of their `collision_layer` (the
-/// backbox layer; a node naming none takes [`backbox_layer`]), so they
-/// support VUK exits and count as walls, floors and ceilings of that layer
-/// in every check, exactly like playfield meshes of the layer. Findings on
-/// them name that file and `meshes[i]` within it. With `backbox: None` this
-/// is [`validate_clearance`].
+/// backbox layer), so they support VUK exits and count as walls, floors and
+/// ceilings of that layer in every check, exactly like playfield meshes of
+/// the layer. A node the engine's loader refuses (not a collider, or no
+/// `collision_layer` in 4..=7) is a [`Feature::BackboxCollider`] error and
+/// adds no geometry. Findings on them name that file and `meshes[i]` within
+/// it. With `backbox: None` this is [`validate_clearance`].
 #[must_use]
 pub fn validate_clearance_with_backbox(
     table: &LoadedTable,
@@ -517,15 +525,41 @@ pub fn validate_clearance_with_backbox(
     validate_clearance_for(table, scene, backbox, None)
 }
 
-/// The layer of backbox colliders that name none: `backglass.toml`'s
-/// `[backbox] collision_layer`, else [`DEFAULT_BACKBOX_LAYER`].
-#[must_use]
-pub fn backbox_layer(table: &LoadedTable) -> u8 {
-    table
-        .backglass
-        .backbox
-        .as_ref()
-        .map_or(DEFAULT_BACKBOX_LAYER, |b| b.collision_layer)
+/// The layer of a backbox collider node, or why the engine's loader
+/// (`pin_sim::load::backbox_colliders`) refuses it, in the loader's words.
+fn backbox_node_layer(mesh: &MeshData) -> Result<u8, String> {
+    if !mesh.extras.collider {
+        return Err(format!(
+            "node {:?} is not a collider (extras.collider must be true)",
+            mesh.name
+        ));
+    }
+    match mesh.extras.collision_layer {
+        Some(l @ 4..=7) => Ok(l),
+        other => Err(format!(
+            "node {:?}: extras.collision_layer must be a backbox layer 4..=7, got {other:?}",
+            mesh.name
+        )),
+    }
+}
+
+/// One [`Feature::BackboxCollider`] error per node of `backbox` that
+/// [`backbox_node_layer`] refuses, in node order.
+fn check_backbox_nodes(backbox: &GltfScene, sink: &mut Sink) {
+    for (i, mesh) in backbox.meshes.iter().enumerate() {
+        if let Err(message) = backbox_node_layer(mesh) {
+            sink.error(Finding {
+                feature: Feature::BackboxCollider,
+                name: &mesh.name,
+                ball: "",
+                file: BACKBOX_COLLIDERS_FILE,
+                path: format!("meshes[{i}]"),
+                required_m: 0.0,
+                actual_m: 0.0,
+                message,
+            });
+        }
+    }
 }
 
 /// The bundle's [`BACKBOX_COLLIDERS_FILE`], loaded with the engine's
@@ -579,7 +613,13 @@ fn validate_clearance_for(
     };
     let mut tris = geom::collider_triangles(scene);
     if let Some(bb) = backbox {
-        geom::append_collider_triangles(bb, backbox_layer(table), scene.meshes.len(), &mut tris);
+        check_backbox_nodes(bb, &mut sink);
+        geom::append_collider_triangles(
+            bb,
+            |m| backbox_node_layer(m).ok(),
+            scene.meshes.len(),
+            &mut tris,
+        );
     }
     let grid = geom::TriGrid::new(&tris);
     let world = checks::World {
