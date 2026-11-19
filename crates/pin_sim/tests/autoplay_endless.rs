@@ -8,7 +8,8 @@ mod support;
 
 use pin_core::snapshot::BallState;
 use pin_sim::autoplay::{
-    FindingKind, GameEnd, GameMonitor, SkillLevel, SoakConfig, TableInfo, play_soak_game, run_soak,
+    BotConfig, FindingKind, GameEnd, GameMonitor, ReactionDraw, SkillLevel, SoakConfig, TableInfo,
+    play_soak_game, run_soak,
 };
 use pin_sim::{SimConfig, Simulation};
 use sim_support::{ScratchDir, fixture_table_toml, fixture_variant};
@@ -360,6 +361,12 @@ fn greybox() -> std::path::PathBuf {
 
 /// Plays game `game` of the Gate A1 standard soak (seed 1) on the pre-fix
 /// grey-box with the default detectors, capped at `cap` ticks.
+///
+/// The bot plays with the flip timing these games were recorded with (the
+/// original 2.9 bot: press at the prediction, late-only reaction draw).
+/// fix-2.9-bot-timing changed the shared default timing, which replays a
+/// different game for every seed; the legacy settings keep the pinned trap
+/// games reproducible (docs/decisions/2026-11-18-fix-2.9-bot-timing.md).
 fn greybox_game(
     game: u32,
     cap: u64,
@@ -374,6 +381,11 @@ fn greybox_game(
         threads: 1,
         max_game_ticks: cap,
         check_tick_budget: false,
+        bot: BotConfig {
+            flip_delay_ms: (0, 0),
+            reaction: ReactionDraw::Late,
+            ..BotConfig::default()
+        },
         ..SoakConfig::default()
     };
     let (s, o) = play_soak_game(&greybox(), &c, game).unwrap();

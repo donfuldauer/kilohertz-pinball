@@ -1,0 +1,141 @@
+# Feature Lab (Subphase 6.4): pin_tablegen layout of the main playfield.
+# Build the bundle with tables/feature_lab/build.sh (see README.md); the
+# backbox mini-playfield is in backbox_layout.toml.
+# Units mm, x across (0 = left), y up the table (0 = bottom).
+#
+# The lower half, the shooter lane and the orbit follow the grey-box
+# (tables/greybox/layout.toml), whose Gate A1 lessons apply here too: walls
+# sealed to the glass, inlane walls ending on the back of the flipper pivot
+# caps, trough zones covering the whole drain funnel bottom, a guard behind
+# the left sling, no flat dead spots on rails.
+schema_version = 1
+
+# Walls and posts 90 mm tall under the glass at 112 mm (glass.toml): the
+# 22 mm gap is under one standard ball diameter, so no ball in the air
+# crosses a wall (the grey-box seal rule).
+[playfield]
+width = 514.0
+length = 1070.0
+wall_height = 90.0
+
+# walls[0]: cabinet, closed outer wall.
+[[walls]]
+points = [[0.0, 0.0], [0.0, 1070.0], [514.0, 1070.0], [514.0, 0.0]]
+closed = true
+material = "wood"
+
+# walls[1]: shooter lane wall (lane x = 470..514), up to y 930: the plunged
+# ball leaves the lane through the 70 mm gap between its top and the
+# corner wall (walls[2], at x 470: y 1000). Below that a ball on the
+# playfield cannot drop back into the lane (a 30-game novice soak found
+# balls rolling into the lane over a wall ending at y 800 and re-plunged
+# for ever: EndlessBall).
+[[walls]]
+points = [[470.0, 0.0], [470.0, 930.0]]
+material = "wood"
+
+# walls[2]: top-right corner, turns the plunged ball into the orbit.
+[[walls]]
+points = [[400.0, 1070.0], [514.0, 956.0]]
+material = "wood"
+
+# walls[3], walls[4]: inlane slopes onto the flipper pivots. Each ends on
+# the back of the pivot cap: no V-pocket between wall end and cap. The
+# right one meets the Banana's pivot (tube radius 9 mm).
+[[walls]]
+points = [[0.0, 330.0], [152.0, 172.0]]
+material = "wood"
+
+[[walls]]
+points = [[470.0, 330.0], [362.0, 172.0]]
+material = "wood"
+
+# walls[5], walls[6]: drain funnel below the flippers into the trough
+# (trough_1 / trough_2 cover the whole funnel bottom, table.toml).
+[[walls]]
+points = [[157.0, 150.0], [215.0, 10.0]]
+material = "wood"
+
+[[walls]]
+points = [[357.0, 150.0], [335.0, 0.0]]
+material = "wood"
+
+# Orbit (grey-box geometry): from the left side up and around the top
+# (switches orbit_entry, orbit_top). The lower end bends right and ends at
+# (85, 615) facing the Banana: its shots up the left go round the orbit.
+# Every plunge rides the orbit top first and comes out in mid-field.
+[[lanes]]
+kind = "orbit"
+points = [[85.0, 615.0], [55.0, 650.0], [38.0, 700.0], [36.0, 780.0], [45.0, 880.0], [90.0, 1000.0], [170.0, 1040.0], [260.0, 1046.0]]
+width = 40.0
+
+# walls[7]: VUK lane, left wall with its funnel and the roof. The lane
+# (x 405..445) leads straight up to the backbox VUK scoop at (425, 622)
+# (backbox_layout.toml `[backbox.entry] vuk`); the roof slopes down to
+# the left from the shooter-lane wall, so a ball that misses the scoop
+# rolls back down the lane.
+[[walls]]
+points = [[370.0, 485.0], [405.0, 545.0], [405.0, 640.0], [470.0, 660.0]]
+material = "wood"
+
+# walls[8]: VUK lane, right wall.
+[[walls]]
+points = [[445.0, 430.0], [445.0, 652.3]]
+material = "wood"
+
+# walls[9]: closes the alcove between the VUK lane's right wall and the
+# shooter-lane wall (grey-box Gate A1 fix).
+[[walls]]
+points = [[470.0, 395.0], [445.0, 430.0]]
+material = "wood"
+
+# walls[10]: guide on the upper right, from the shooter-lane side down to
+# the left. A ball dropping out of the backbox drain (x ~417, y ~917) or
+# coming down the right side rolls down it onto bumper_2 instead of
+# straight down the right inlane (grey-box play-length fix).
+[[walls]]
+points = [[468.0, 860.0], [372.0, 800.0]]
+material = "wood"
+
+# walls[11]: fill outside the orbit's right rail (grey-box endless-ball
+# fix "loop 2"): its lower face sends a ball kicked left by bumper_1 down
+# and right instead of back into the bumper.
+[[walls]]
+points = [[73.53804, 658.2306], [111.5, 724.0], [55.695015, 752.3393]]
+material = "wood"
+
+# walls[12]: guard 2 mm behind the back of sling_left (grey-box "loop 3"):
+# a ball rolling down the left inlane cannot touch the sling's back.
+[[walls]]
+points = [[63.87, 329.40], [124.67, 242.57]]
+material = "wood"
+
+# walls[13]: ramp on the orbit's lower rail at its right end (grey-box
+# "orbit top dead spot"): no flat end for a slow ball to stop on.
+[[walls]]
+points = [[221.73027, 1024.4989], [262.0, 1034.0]]
+material = "wood"
+
+# --- XL area (the open lower area cleared for the 79.4 mm XL ball) --------
+#
+# The chamber under the left inlane: cabinet wall x = 0, the left inlane
+# wall (walls[3]) above, walls[14] on the right and the floor walls[15].
+# `[balls] restrict` (table.toml) declares `jumbo_xl_resin` on layer 0
+# inside exactly this outline: [[0, 0], [0, 330], [130, 194.9], [130, 0]].
+# Nothing smaller than the XL ball is inside it, and no other ball can get
+# in (the walls are sealed to the glass). The XL ball is served at
+# (55, 210) (dispenser xl_feed) and rolls down to the only rest point, the
+# V between walls[14] and walls[15], centre (90.3, 96.5), where xl_trough
+# drains it.
+
+# walls[14]: right side of the chamber, from the bottom up to the inlane
+# wall (y at x = 130: 330 - 130 * 158 / 152 = 194.868).
+[[walls]]
+points = [[130.0, 0.0], [130.0, 194.868]]
+material = "wood"
+
+# walls[15]: the chamber floor, sloping down to the right into the V with
+# walls[14] (61.7 degree opening).
+[[walls]]
+points = [[0.0, 100.0], [130.0, 30.0]]
+material = "wood"
