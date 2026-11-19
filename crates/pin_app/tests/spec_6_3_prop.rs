@@ -20,18 +20,34 @@ struct Stream {
     events: Vec<(u64, usize, bool)>,
 }
 
+/// The tick of the injected START press of a `start_first` stream.
+const START_PRESS: u64 = 5;
+/// The tick of its release.
+const START_RELEASE: u64 = 30;
+
+/// Random streams. With `start_first` the prefix through the injected
+/// START release (ticks 1..=[`START_RELEASE`]) is reserved: every random
+/// event comes after it, so none lands before the START press or between
+/// the press and its release. Without it the events are unrestricted.
 fn stream() -> impl Strategy<Value = Stream> {
     (1u64..=3000, any::<u64>(), any::<bool>()).prop_flat_map(|(ticks, seed, start_first)| {
-        proptest::collection::vec((1..=ticks, 0..CabinetInput::COUNT, any::<bool>()), 0..120)
-            .prop_map(move |mut events| {
-                events.sort_by_key(|e| e.0);
-                Stream {
-                    ticks,
-                    seed,
-                    start_first,
-                    events,
-                }
-            })
+        let first = if start_first { START_RELEASE + 1 } else { 1 };
+        // No room after the reserved prefix: no random events.
+        let max_events = if first <= ticks { 120 } else { 1 };
+        let last = ticks.max(first);
+        proptest::collection::vec(
+            (first..=last, 0..CabinetInput::COUNT, any::<bool>()),
+            0..max_events,
+        )
+        .prop_map(move |mut events| {
+            events.sort_by_key(|e| e.0);
+            Stream {
+                ticks,
+                seed,
+                start_first,
+                events,
+            }
+        })
     })
 }
 
@@ -45,14 +61,20 @@ fn check_stream(t: Table, s: Stream) {
         let mut out_l = Box::new(*lua.snapshot());
         let mut out_w = Box::new(*wasm.snapshot());
         let mut ev: Vec<InputEvent> = Vec::new();
+        if s.start_first {
+            assert!(
+                s.events.iter().all(|e| e.0 > START_RELEASE),
+                "{ctx}: a random event inside the reserved START prefix"
+            );
+        }
         let mut next = 0;
         for tick in 1..=s.ticks {
             ev.clear();
             let ts = tick * TICK_NS - TICK_NS / 2;
             if s.start_first {
                 match tick {
-                    5 => ev.push(InputEvent::button(ts, CabinetInput::Start, true)),
-                    30 => ev.push(InputEvent::button(ts, CabinetInput::Start, false)),
+                    START_PRESS => ev.push(InputEvent::button(ts, CabinetInput::Start, true)),
+                    START_RELEASE => ev.push(InputEvent::button(ts, CabinetInput::Start, false)),
                     _ => {}
                 }
             }

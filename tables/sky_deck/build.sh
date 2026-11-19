@@ -25,6 +25,8 @@ cp "$src"/display/*.toml "$out/display/"
 # in-process helper bundle (docs/decisions/2026-11-19-6.3.md).
 if [ "${PIN_BUNDLE_RULES_WASM:-0}" = 1 ] && [ -f "$src/rules.wasm" ]; then
   cp "$src/rules.wasm" "$out/"
+else
+  rm -f "$out/rules.wasm"
 fi
 cargo run -q -p pin_assetgen -- --title "Sky Deck" --palette "#0b1d3a,#3fa7d6,#b388ff" --out "$out"
 cargo run -q -p pin_tablegen -- validate "$out"

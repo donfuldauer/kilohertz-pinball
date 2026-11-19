@@ -15,6 +15,11 @@ on:
       - "tables/*/rules.wasm"
       - "tables/*/rules.lua"
       - "crates/pin_script/guest-sdk/**"
+      - "crates/pin_script/**"
+      - "crates/pin_app/tests/wasm_ports_*"
+      - "crates/pin_app/tests/wasm_ports_support/**"
+      - "crates/pin_app/tests/spec_6_3_*"
+      - "crates/pin_app/tests/spec_6_3_support/**"
       - ".github/workflows/rules-wasm.yml"
   pull_request:
     paths:
@@ -22,6 +27,11 @@ on:
       - "tables/*/rules.wasm"
       - "tables/*/rules.lua"
       - "crates/pin_script/guest-sdk/**"
+      - "crates/pin_script/**"
+      - "crates/pin_app/tests/wasm_ports_*"
+      - "crates/pin_app/tests/wasm_ports_support/**"
+      - "crates/pin_app/tests/spec_6_3_*"
+      - "crates/pin_app/tests/spec_6_3_support/**"
       - ".github/workflows/rules-wasm.yml"
 
 concurrency:
@@ -34,6 +44,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
+  # The rebuild tests must fail, not skip, when the wasm32 target is missing.
+  PIN_REQUIRE_WASM32: "1"
   SDL_AUDIO_DRIVER: dummy
   SDL_VIDEO_DRIVER: dummy
   # Exact toolchain from versions.toml [toolchain], as in ci.yml.
@@ -118,4 +130,6 @@ jobs:
           cargo test --release --locked -p pin_app
           --test wasm_ports_rebuild --test wasm_ports_apex
           --test wasm_ports_sky_deck --test wasm_ports_feature_lab
+          --test spec_6_3_modules --test spec_6_3_parity
+          --test spec_6_3_prop --test spec_6_3_replay
           -- --nocapture

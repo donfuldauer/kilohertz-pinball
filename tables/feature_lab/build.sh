@@ -23,6 +23,8 @@ cargo run -q -p pin_app --example build_feature_lab -- "$out"
 # bundle whose script_entry names rules.wasm.
 if [ -f rules.wasm ]; then
   cp rules.wasm "$out/"
+else
+  rm -f "$out/rules.wasm"
 fi
 cargo run -q -p pin_tablegen -- validate "$out"
 echo "feature_lab bundle: $out"
