@@ -234,7 +234,7 @@ struct FeatureLab {
     cmp_off: i64,
     ids: Ids,
     /// `save_state` output buffer.
-    blob: [u8; 512],
+    blob: [u8; BLOB_LEN],
 }
 
 saved_fields!(FeatureLab;
@@ -243,6 +243,12 @@ saved_fields!(FeatureLab;
     shot_start, banana_on, backbox_on, xl_on, glo_on, xl_end, glo_end,
     glo_launch, cmp_phase, cmp_which, cmp_deadline, cmp_hold_until, cmp_off,
 );
+
+/// Length of the `save_state` output buffer, bytes.
+const BLOB_LEN: usize = 512;
+
+// The state blob (fingerprint slot included) must fit the buffer.
+const _: () = assert!(FeatureLab::SAVED_BYTES <= BLOB_LEN);
 
 impl FeatureLab {
     /// The Lua locals' initial values.
@@ -277,7 +283,7 @@ impl FeatureLab {
         cmp_hold_until: -1,
         cmp_off: -1,
         ids: Ids::NONE,
-        blob: [0; 512],
+        blob: [0; BLOB_LEN],
     };
 
     /// Lua `bind_ids`.
@@ -717,14 +723,15 @@ impl Rules for FeatureLab {
 
     /// Lua `on_save_state`: every rule-state local.
     fn save_state(&mut self) -> &[u8] {
-        let mut buf = [0u8; 512];
+        let mut buf = [0u8; BLOB_LEN];
         let n = self.encode_state(&mut buf);
         self.blob = buf;
         &self.blob[..n]
     }
 
     /// Lua `on_restore_state`: binds the ids, takes every local from the
-    /// blob (a blob of another length is ignored) and redraws the score.
+    /// blob (a blob of another length or layout fingerprint is ignored) and
+    /// redraws the score.
     fn restore_state(&mut self, blob: &[u8]) {
         self.bind_ids();
         if !self.decode_state(blob) {
@@ -761,7 +768,9 @@ mod tests {
         assert_eq!(n, FeatureLab::SAVED_BYTES);
         // 24 scalars plus four arrays of five (the Lua s1..s5, n1..n5,
         // q1..q5, t1..t5).
-        assert_eq!(n, (24 + 4 * 5) * 8);
+        // Plus the layout fingerprint slot.
+        assert_eq!(n, (1 + 24 + 4 * 5) * 8);
+        assert_eq!(buf[..8], FeatureLab::LAYOUT_FINGERPRINT.to_le_bytes());
         let mut b = FeatureLab::INITIAL;
         assert!(b.decode_state(&buf[..n]));
         assert_eq!(b.started, a.started);
@@ -776,6 +785,37 @@ mod tests {
         let mut b = FeatureLab::INITIAL;
         assert!(!b.decode_state(&[9u8; 24]));
         assert_eq!(b.last_spawn, NEVER);
+        // A valid blob one slot short or one slot long, fingerprint intact.
+        let mut a = FeatureLab::INITIAL;
+        a.score = 99;
+        a.last_spawn = 5;
+        let mut buf = [0u8; BLOB_LEN];
+        let n = a.encode_state(&mut buf);
+        assert!(!b.decode_state(&buf[..n - 8]));
+        assert!(!b.decode_state(&buf[..n + 8]));
+        // Arbitrary bytes of exactly the right length: wrong fingerprint.
+        assert!(!b.decode_state(&[1u8; FeatureLab::SAVED_BYTES]));
+        assert_eq!((b.score, b.last_spawn), (0, NEVER));
+    }
+
+    #[test]
+    fn a_blob_with_a_wrong_layout_fingerprint_changes_nothing() {
+        let mut a = FeatureLab::INITIAL;
+        a.score = 99;
+        a.last_spawn = 5;
+        let mut buf = [0u8; BLOB_LEN];
+        let n = a.encode_state(&mut buf);
+        assert_eq!(n, FeatureLab::SAVED_BYTES);
+        let mut b = FeatureLab::INITIAL;
+        for bit in 0..64 {
+            let mut bad = buf;
+            bad[bit / 8] ^= 1 << (bit % 8);
+            assert!(!b.decode_state(&bad[..n]), "fingerprint bit {bit}");
+            assert_eq!((b.score, b.last_spawn), (0, NEVER));
+        }
+        // The untouched blob still restores.
+        assert!(b.decode_state(&buf[..n]));
+        assert_eq!((b.score, b.last_spawn), (a.score, a.last_spawn));
     }
 
     #[test]

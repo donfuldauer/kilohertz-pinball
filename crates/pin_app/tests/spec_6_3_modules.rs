@@ -9,8 +9,7 @@
 //! a scratch directory byte-identical to the committed one; otherwise the
 //! test prints `SKIP:` and skips that part, or fails when
 //! `PIN_REQUIRE_WASM32` is set (the gate shared with `wasm_ports_rebuild`,
-//! `wasm_ports_support::wasm32_gate`). Each table's real `build.sh` (Sky
-//! Deck with `PIN_BUNDLE_RULES_WASM=1`) bundles a `rules.wasm` byte-equal to
+//! `wasm_ports_support::wasm32_gate`). Each table's real `build.sh` bundles a `rules.wasm` byte-equal to
 //! the committed one, and the CI workflow `.github/workflows/rules-wasm.yml`
 //! runs every `rebuild.sh` into a scratch file and compares it with the
 //! committed module in a real (uncommented) `cmp` command.
@@ -237,11 +236,6 @@ fn build_scripts_bundle_the_committed_rules_wasm() {
         cmd.arg(t.src().join("build.sh"))
             .arg(&out)
             .current_dir(repo_root());
-        if t == Table::SkyDeck {
-            // Sky Deck bundles the module only on request (its default
-            // bundle must equal the in-process helper bundle).
-            cmd.env("PIN_BUNDLE_RULES_WASM", "1");
-        }
         let status = cmd
             .status()
             .unwrap_or_else(|e| panic!("{t:?}: run build.sh: {e}"));

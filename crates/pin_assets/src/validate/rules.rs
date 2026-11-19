@@ -1279,7 +1279,7 @@ pub(crate) fn banana_sweep_lint(length_mm: f32, radius_mm: f32, sweep_deg: f32) 
     if !(-1.0..=1.0).contains(&ratio) {
         return None;
     }
-    let implied = (2.0 * ratio.asin()).to_degrees();
+    let implied = (2.0 * libm::asin(ratio)).to_degrees();
     ((s.abs() - implied).abs() > TOLERANCE_DEG).then(|| {
         format!(
             "arc_sweep_deg: authored |sweep| {:.1} deg, but length {l} mm on arc_radius {r} mm \

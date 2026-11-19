@@ -325,6 +325,7 @@ fn build_sh_output_matches_the_helper_bundle() {
         "table.toml",
         "playfield.glb",
         "rules.lua",
+        "rules.wasm",
         "layout.toml",
         "glass.toml",
         "backglass.toml",
