@@ -1,0 +1,13 @@
+# Feature Lab playfield glass. pin_sim reads this optional bundle file
+# (pin_core GlassManifest); height is the glass underside above the
+# playfield surface, mm, and must be at least the playfield geometry's max
+# z (the 90 mm walls; the backbox is on its own layer, which the playfield
+# glass leaves out).
+#
+# Seal rule (grey-box, DECISIONS "a1-glass-height"): a wall seals against
+# the glass only if glass underside minus wall top is under one standard
+# ball diameter (27 mm). Here 112 - 90 (layout.toml wall_height) = 22 mm,
+# so no ball in the air crosses a wall. The XL ball (79.4 mm) clears the
+# glass by 32.6 mm.
+schema_version = 1
+height = 112.0
