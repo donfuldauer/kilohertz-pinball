@@ -492,3 +492,358 @@ fn the_pre_fix_greybox_traps_are_caught_and_named() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// fix-a2-longball: a ball past the endless limit that later drains naturally
+// after broad play in the 60 s window at the limit is a LongBall (reported,
+// not failing); every other case stays EndlessBall.
+// ---------------------------------------------------------------------------
+
+/// Ten positionless leaf switches (credited to every ball on the table) and
+/// a plunger mech whose switch is `launch_sw` (the launch switch counts like
+/// any other switch in the window).
+const LONG_EXTRA: &str = r#"
+[[switches]]
+id = "sw_0"
+number = 30
+kind = "leaf"
+
+[[switches]]
+id = "sw_1"
+number = 31
+kind = "leaf"
+
+[[switches]]
+id = "sw_2"
+number = 32
+kind = "leaf"
+
+[[switches]]
+id = "sw_3"
+number = 33
+kind = "leaf"
+
+[[switches]]
+id = "sw_4"
+number = 34
+kind = "leaf"
+
+[[switches]]
+id = "sw_5"
+number = 35
+kind = "leaf"
+
+[[switches]]
+id = "sw_6"
+number = 36
+kind = "leaf"
+
+[[switches]]
+id = "sw_7"
+number = 37
+kind = "leaf"
+
+[[switches]]
+id = "sw_8"
+number = 38
+kind = "leaf"
+
+[[switches]]
+id = "sw_9"
+number = 39
+kind = "leaf"
+
+[[switches]]
+id = "launch_sw"
+number = 40
+kind = "leaf"
+
+[[coils]]
+id = "plunger_coil"
+number = 10
+kind = "autoplunger"
+
+[[mechs]]
+id = "plunger"
+kind = "plunger"
+coil = "plunger_coil"
+switch = "launch_sw"
+position = [490.0, 60.0, 0.0]
+angle_deg = 90.0
+auto_pull = 0.9
+"#;
+
+/// Rules that do nothing (no ball is launched).
+const QUIET_RULES: &str = r#"
+function on_init()
+  pinball.set_score(1, 0)
+end
+
+function on_switch(id, closed)
+end
+"#;
+
+/// The endless limit of the long-ball scenarios, ticks.
+const LIMIT: u64 = 1_000;
+
+/// Where the scenario ball is held, m.
+const HOLD: [f32; 3] = [0.257, 0.300, R];
+
+/// How a scenario ball's story ends.
+#[derive(Copy, Clone, Debug)]
+enum Fate {
+    /// Removed from the table without an escape (a natural drain).
+    Drain,
+    /// Moved far outside the bounds, so the simulation removes it as
+    /// escaped (balls_escaped rises).
+    Escape,
+    /// Still on the table when the soak stops the game at the cap.
+    Cap,
+    /// Still on the table when the game ends without the cap.
+    Finish,
+}
+
+/// One ball held at [`HOLD`] while the switches of `hits` close one after
+/// the other (one hit each, every 4 ticks from tick 10, all before the
+/// limit), then played on to tick 1 200 and ended by `fate`. Returns all
+/// findings of the game.
+fn long_ball(tag: &str, hits: &[&'static str], fate: Fate) -> Vec<pin_sim::autoplay::Finding> {
+    assert!(
+        10 + 4 * hits.len() as u64 + 2 < LIMIT,
+        "hits must fit before the limit"
+    );
+    let table = fixture_table_toml() + LONG_EXTRA;
+    let dir = fixture_variant(
+        tag,
+        &[
+            ("table.toml", Some(table.as_bytes())),
+            ("rules.lua", Some(QUIET_RULES.as_bytes())),
+        ],
+    );
+    let path = dir.to_path_buf();
+    let hits = hits.to_vec();
+    let out = on_sim_thread(move || {
+        let mut sim = Simulation::load(&path, SimConfig::default()).unwrap();
+        let info = TableInfo::load(&path).unwrap();
+        let h = sim.spawn_ball("standard_steel", HOLD, [0.0; 3]).unwrap();
+        // Stuck detection off: the ball is held still on purpose.
+        let mut mon = GameMonitor::new(&info, &sim, 3, u64::MAX / 2).with_endless_ticks(LIMIT);
+        let hold = BallState {
+            position_m: HOLD,
+            ..BallState::default()
+        };
+        mon.observe(&sim);
+        for t in 0..1_200u64 {
+            if t >= 10 && (t - 10) % 4 == 0 {
+                if let Some(name) = hits.get(((t - 10) / 4) as usize) {
+                    sim.set_switch(name, true).unwrap();
+                }
+            } else if t >= 12
+                && (t - 12) % 4 == 0
+                && let Some(name) = hits.get(((t - 12) / 4) as usize)
+            {
+                sim.set_switch(name, false).unwrap();
+            }
+            assert!(sim.set_ball_state(h, &hold));
+            sim.advance(1);
+            mon.observe(&sim);
+        }
+        assert_eq!(sim.balls_in_play(), 1);
+        let escaped0 = sim.counters().balls_escaped;
+        match fate {
+            Fate::Drain => {
+                assert!(sim.remove_ball(h));
+                for _ in 0..10 {
+                    sim.advance(1);
+                    mon.observe(&sim);
+                }
+                assert_eq!(sim.counters().balls_escaped, escaped0);
+            }
+            Fate::Escape => {
+                let out = BallState {
+                    position_m: [0.257, 0.300, -5.0],
+                    velocity_m_s: [0.0, 0.0, -1.0],
+                    ..BallState::default()
+                };
+                assert!(sim.set_ball_state(h, &out));
+                for _ in 0..10 {
+                    sim.advance(1);
+                    mon.observe(&sim);
+                }
+                assert_eq!(sim.balls_in_play(), 0, "the escaped ball is removed");
+                assert_eq!(sim.counters().balls_escaped, escaped0 + 1);
+            }
+            Fate::Cap => mon.end_at_cap(&sim),
+            Fate::Finish => {}
+        }
+        mon.finish(&sim).findings
+    });
+    drop(dir);
+    out
+}
+
+/// sw_0 x4, sw_1 x3, sw_2..sw_9 x2: 10 switches, 23 hits, top two 7 (30 %).
+fn broad_hits() -> Vec<&'static str> {
+    let mut v = vec!["sw_0"; 4];
+    v.extend(["sw_1"; 3]);
+    for s in [
+        "sw_2", "sw_3", "sw_4", "sw_5", "sw_6", "sw_7", "sw_8", "sw_9",
+    ] {
+        v.extend([s, s]);
+    }
+    v
+}
+
+fn kinds(f: &[pin_sim::autoplay::Finding]) -> Vec<FindingKind> {
+    f.iter().map(|f| f.kind).collect()
+}
+
+/// A soak report holding exactly `findings` (coverage complete).
+fn report_with(findings: Vec<pin_sim::autoplay::Finding>) -> pin_sim::autoplay::SoakReport {
+    let mut r = on_sim_thread(|| run_soak(&fixture("clean"), &cfg(1, 1, 500)).unwrap());
+    r.findings = findings;
+    r.timing.findings.clear();
+    r
+}
+
+/// Test (i): a ball past the limit with broad play in the window, then
+/// drained naturally, is exactly one LongBall with the EndlessBall's tick,
+/// subject and detail (plus the drain suffix); the report passes.
+#[test]
+fn a_broad_long_ball_that_drains_is_a_long_ball() {
+    let f = long_ball("long_broad_drain", &broad_hits(), Fate::Drain);
+    assert_eq!(kinds(&f), [FindingKind::LongBall], "{f:?}");
+    let l = &f[0];
+    assert_eq!(l.tick, LIMIT + 1, "{l:?}");
+    assert_eq!(l.game, 3);
+    assert_eq!(l.subject, "sw_0", "most-hit switch over the ball's life");
+    assert!(
+        l.detail.starts_with(&format!(
+            "ball in slot 0 on the table longer than the {LIMIT} ms limit: {} ms on the table",
+            LIMIT + 1
+        )),
+        "{}",
+        l.detail
+    );
+    assert!(
+        l.detail
+            .contains("switches hit in the last 60 s: sw_0 x4, sw_1 x3, sw_2 x2"),
+        "{}",
+        l.detail
+    );
+    assert!(
+        l.detail
+            .contains("; drained naturally at tick 1201 after 1.201 s on the table"),
+        "{}",
+        l.detail
+    );
+    assert!(!FindingKind::LongBall.fails_soak());
+    let r = report_with(f);
+    assert!(r.passed(), "{:?}", r.findings);
+    let v = r.gate_a1(SkillLevel::Standard);
+    assert_eq!(v.check("no_endless_balls").unwrap().value, "0 findings");
+    assert_eq!(r.findings_of(FindingKind::LongBall).count(), 1);
+}
+
+/// Test (ii): the same ball still on the table at the cap is EndlessBall
+/// (the finding held at the limit, unchanged), and the report fails.
+#[test]
+fn a_broad_long_ball_still_on_the_table_at_the_cap_is_endless() {
+    let f = long_ball("long_broad_cap", &broad_hits(), Fate::Cap);
+    assert_eq!(kinds(&f), [FindingKind::EndlessBall], "{f:?}");
+    assert_eq!(f[0].tick, LIMIT + 1);
+    assert_eq!(f[0].subject, "sw_0");
+    assert!(
+        f[0].detail
+            .contains(&format!("longer than the {LIMIT} ms limit")),
+        "{}",
+        f[0].detail
+    );
+    assert!(!f[0].detail.contains("drained"), "{}", f[0].detail);
+    assert!(!report_with(f).passed());
+}
+
+/// Test (iii): a narrow window then a natural drain is EndlessBall: too few
+/// switches, or the top two holding half the hits or more.
+#[test]
+fn a_narrow_long_ball_that_drains_is_endless() {
+    // Seven switches, evenly hit.
+    let few: Vec<&str> = ["sw_0", "sw_1", "sw_2", "sw_3", "sw_4", "sw_5", "sw_6"]
+        .iter()
+        .flat_map(|&s| [s, s, s])
+        .collect();
+    let f = long_ball("long_few_drain", &few, Fate::Drain);
+    assert_eq!(kinds(&f), [FindingKind::EndlessBall], "{f:?}");
+    assert_eq!(f[0].tick, LIMIT + 1);
+    assert!(!f[0].detail.contains("drained"), "{}", f[0].detail);
+    // Ten switches, but the top two hold 20 of 28 hits (71 %).
+    let mut dominated = vec!["sw_0"; 10];
+    dominated.extend(["sw_1"; 10]);
+    dominated.extend([
+        "sw_2", "sw_3", "sw_4", "sw_5", "sw_6", "sw_7", "sw_8", "sw_9",
+    ]);
+    let f = long_ball("long_dominated_drain", &dominated, Fate::Drain);
+    assert_eq!(kinds(&f), [FindingKind::EndlessBall], "{f:?}");
+    assert_eq!(f[0].subject, "sw_0");
+    assert!(!report_with(f).passed());
+}
+
+/// Test (iv): a broad ball past the limit that then escapes keeps its
+/// EndlessBall, raised before the EscapedBall, and gets no LongBall.
+#[test]
+fn a_broad_long_ball_that_escapes_is_endless_and_escaped() {
+    let f = long_ball("long_broad_escape", &broad_hits(), Fate::Escape);
+    assert_eq!(
+        kinds(&f),
+        [FindingKind::EndlessBall, FindingKind::EscapedBall],
+        "{f:?}"
+    );
+    assert_eq!(f[0].tick, LIMIT + 1);
+}
+
+/// Test (v): the thresholds are strict. Exactly 8 switches with the top
+/// two at exactly 50 % is narrow; 8 switches with the top two just under
+/// 50 % is broad (so 8 switches alone are enough).
+#[test]
+fn the_broad_window_thresholds_are_strict() {
+    // 8 switches, 16 hits: sw_0 x4 and sw_1 x4 (8 of 16 = 50 %); sw_2..sw_7
+    // share the other 8.
+    let mut exact = vec!["sw_0"; 4];
+    exact.extend(["sw_1"; 4]);
+    exact.extend([
+        "sw_2", "sw_2", "sw_3", "sw_3", "sw_4", "sw_5", "sw_6", "sw_7",
+    ]);
+    assert_eq!(exact.len(), 16);
+    let f = long_ball("long_exact_drain", &exact, Fate::Drain);
+    assert_eq!(kinds(&f), [FindingKind::EndlessBall], "{f:?}");
+    // One more hit of a third switch: top two 8 of 17 (47 %) => broad.
+    let mut under = exact.clone();
+    under.push("sw_7");
+    let f = long_ball("long_under_drain", &under, Fate::Drain);
+    assert_eq!(kinds(&f), [FindingKind::LongBall], "{f:?}");
+    // Seven switches, top two well under 50 %: still narrow (fewer than 8).
+    let seven: Vec<&str> = ["sw_0", "sw_1", "sw_2", "sw_3", "sw_4", "sw_5", "sw_6"]
+        .iter()
+        .flat_map(|&s| [s, s])
+        .collect();
+    let f = long_ball("long_seven_drain", &seven, Fate::Drain);
+    assert_eq!(kinds(&f), [FindingKind::EndlessBall], "{f:?}");
+}
+
+/// Test (vi): a game that ends with the held finding unresolved (no cap,
+/// no drain) still reports it, as EndlessBall.
+#[test]
+fn finish_flushes_a_held_long_ball_as_endless() {
+    let f = long_ball("long_broad_finish", &broad_hits(), Fate::Finish);
+    assert_eq!(kinds(&f), [FindingKind::EndlessBall], "{f:?}");
+    assert_eq!(f[0].tick, LIMIT + 1);
+}
+
+/// The held finding is resolved in the order the balls' fates are seen and
+/// keeps its original tick; repeated runs give identical findings.
+#[test]
+fn long_ball_findings_are_deterministic() {
+    let a = long_ball("long_det_a", &broad_hits(), Fate::Drain);
+    let b = long_ball("long_det_b", &broad_hits(), Fate::Drain);
+    assert_eq!(a, b);
+}
