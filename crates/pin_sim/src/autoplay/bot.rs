@@ -634,8 +634,15 @@ impl Bot {
                 u64::from(planned_ms) + u64::from(draw_range(&mut self.rng, (0, j)))
             }
             ReactionDraw::Centred => {
-                let span = j.saturating_mul(2);
-                let err = i64::from(draw_range(&mut self.rng, (0, span))) - i64::from(j);
+                // The span 2*j is computed in u64 so it never saturates. When
+                // it fits a u32 the draw is the single 32-bit draw it always
+                // was; only a wider span takes a 64-bit draw.
+                let span = u64::from(j) * 2;
+                let raw = match u32::try_from(span) {
+                    Ok(s) => u64::from(draw_range(&mut self.rng, (0, s))),
+                    Err(_) => self.rng.next_u64() % (span + 1),
+                };
+                let err = raw as i64 - i64::from(j);
                 u64::try_from(i64::from(planned_ms) + err).unwrap_or(0)
             }
         }
@@ -1128,6 +1135,33 @@ mod tests {
             d.iter().filter(|&&x| x == 0).count() > 1500,
             "early presses clamp to 0"
         );
+    }
+
+    #[test]
+    fn centred_reaction_keeps_full_range_for_huge_jitter() {
+        for j in [u32::MAX, u32::MAX / 2 + 1] {
+            let mut b = timing_bot((0, 0), ReactionDraw::Centred, j);
+            let d: Vec<u64> = (0..2000).map(|_| b.reaction_delay(0)).collect();
+            assert!(d.iter().any(|&x| x > 0), "positive error reachable, j={j}");
+            assert!(d.contains(&0), "negative error clamps, j={j}");
+            assert!(d.iter().all(|&x| x <= u64::from(j)), "j={j}");
+            let above = d.iter().filter(|&&x| x > 0).count();
+            assert!((800..1200).contains(&above), "about half positive: {above}");
+        }
+    }
+
+    #[test]
+    fn centred_reaction_matches_the_old_formula_up_to_half_u32() {
+        for j in [0u32, 1, 35, 120, u32::MAX / 2] {
+            let mut b = timing_bot((0, 0), ReactionDraw::Centred, j);
+            let mut rng = b.rng.clone();
+            for _ in 0..1000 {
+                let span = j.saturating_mul(2);
+                let err = i64::from(draw_range(&mut rng, (0, span))) - i64::from(j);
+                let want = u64::try_from(20i64 + err).unwrap_or(0);
+                assert_eq!(b.reaction_delay(20), want, "j={j}");
+            }
+        }
     }
 
     proptest::proptest! {
