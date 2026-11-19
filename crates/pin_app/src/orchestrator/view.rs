@@ -20,6 +20,7 @@
 //! * [`TableRenderer::render_to_image`]: the same frame offscreen, read
 //!   back (analytic pixel tests, D30).
 
+use super::hud::HudOverlay;
 use super::table::{DisplayCommand, FlipperOutline, ValidatedTable, table_lines};
 use super::threads::FLIPPER_LINE_COLOR;
 use pin_assets::IdKind;
@@ -346,6 +347,11 @@ pub struct TableRenderOptions {
     /// Draw the 1.4 debug lines (collider outlines, balls, flippers) over
     /// the PBR image. Default off.
     pub debug_overlay: bool,
+    /// Draw the profiler HUD ([`HudOverlay`]) over the playfield, with the
+    /// lines given to [`TableRenderer::set_hud_lines`] (`pin_app
+    /// --profiler-hud`). Default off: no HUD is built and frames are
+    /// unchanged.
+    pub profiler_hud: bool,
 }
 
 /// The render material of a glTF material.
@@ -534,6 +540,7 @@ pub struct TableRenderer {
     displays: DisplaySet,
     score: Option<ScoreDisplayModel>,
     overlay: Option<(DebugRenderer, DebugLines, Vec<DebugLine>, Camera)>,
+    hud: Option<HudOverlay>,
     display_commands: u64,
 }
 
@@ -626,6 +633,9 @@ impl TableRenderer {
                 Camera::ortho_top_down_with_margin(plan.0, plan.1, 0.01),
             )
         });
+        let hud = opts
+            .profiler_hud
+            .then(|| HudOverlay::new(ctx.device(), format));
         Ok(TableRenderer {
             format,
             layer_format,
@@ -644,6 +654,7 @@ impl TableRenderer {
             displays,
             score,
             overlay,
+            hud,
             display_commands: 0,
         })
     }
@@ -715,6 +726,33 @@ impl TableRenderer {
         }
     }
 
+    /// Shows `lines` in the profiler HUD from the next playfield frame
+    /// (ignored without [`TableRenderOptions::profiler_hud`]).
+    pub fn set_hud_lines(&mut self, lines: &[String]) {
+        if let Some(h) = &mut self.hud {
+            h.set_lines(lines);
+        }
+    }
+
+    /// The profiler HUD (`Some` with [`TableRenderOptions::profiler_hud`]).
+    pub fn hud(&self) -> Option<&HudOverlay> {
+        self.hud.as_ref()
+    }
+
+    /// Paints the profiler HUD over a playfield frame (`view`, this
+    /// renderer's format), last, over the displays.
+    fn encode_hud(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        playfield: bool,
+    ) {
+        if playfield && let Some(h) = &mut self.hud {
+            h.paint(queue, encoder, view, self.size);
+        }
+    }
+
     /// Display commands applied so far.
     pub fn display_commands(&self) -> u64 {
         self.display_commands
@@ -737,7 +775,8 @@ impl TableRenderer {
     /// [`size`](Self::size) pixels): if `playfield`, the PBR table through
     /// the post chain over the whole target (and the debug overlay when
     /// enabled), then every display of `routes` on `window` into its pixel
-    /// viewport. Returns the displays drawn. The displays are drawn through
+    /// viewport, then (if `playfield`) the profiler HUD when enabled.
+    /// Returns the displays drawn. The displays are drawn through
     /// `view` too, so this is for a renderer whose
     /// [`layer_format`](Self::layer_format) equals its
     /// [`format`](Self::format); otherwise use
@@ -756,7 +795,9 @@ impl TableRenderer {
         if playfield {
             self.encode_playfield(queue, encoder, view, snap);
         }
-        self.encode_displays(queue, encoder, view, window, routes, snap)
+        let drawn = self.encode_displays(queue, encoder, view, window, routes, snap);
+        self.encode_hud(queue, encoder, view, playfield);
+        drawn
     }
 
     /// Records one frame of `snap` into `frame` (a texture of this
@@ -773,8 +814,10 @@ impl TableRenderer {
     /// display-encoded space likewise; on an `*Srgb` target (the last
     /// resort when neither a twin view nor copy usages are available) the
     /// display shaders encode their output and fixed-function blending
-    /// happens in linear space. On the direct path this is exactly
-    /// [`encode`](Self::encode). Returns the displays drawn.
+    /// happens in linear space. Last, if `playfield`, the profiler HUD
+    /// when enabled ([`TableRenderOptions::profiler_hud`]) into `view`. On
+    /// the direct path this is exactly [`encode`](Self::encode). Returns
+    /// the displays drawn.
     ///
     /// # Panics
     /// If `layers`' target formats are not this renderer's
@@ -807,7 +850,9 @@ impl TableRenderer {
         // No display on this window: nothing to composite (an intermediate
         // target would otherwise copy the frame out and back for nothing).
         if !routes.iter().any(|r| r.window == window) {
-            return self.encode_displays(queue, encoder, view, window, routes, snap);
+            let drawn = self.encode_displays(queue, encoder, view, window, routes, snap);
+            self.encode_hud(queue, encoder, view, playfield);
+            return drawn;
         }
         let layer_view = layers.begin(device, encoder, frame);
         let drawn = self.encode_displays(
@@ -819,6 +864,7 @@ impl TableRenderer {
             snap,
         );
         layers.end(encoder, frame);
+        self.encode_hud(queue, encoder, view, playfield);
         drawn
     }
 

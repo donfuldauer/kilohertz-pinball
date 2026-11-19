@@ -50,6 +50,7 @@
 //! display commands reach the renderer of every retained surface, direct
 //! or presenter-thread.
 
+use super::gpu_timer::GpuFrameTimer;
 use super::handoff::{HANDOFF_SLOTS, Handoff, HandoffStats, PresenterThread, TakeFree};
 use super::presenter::{
     CopyPath, PresenterTarget, configure_surface, lock_gpu, offscreen_frame_texture, run_presenter,
@@ -334,6 +335,8 @@ pub struct AppSurfaces {
     slots: Vec<Slot>,
     frames: u64,
     skipped: usize,
+    /// GPU frame timing (7.1 hook 3), when the device supports it.
+    timer: Option<GpuFrameTimer>,
 }
 
 impl AppSurfaces {
@@ -502,6 +505,7 @@ impl AppSurfaces {
             slots,
             frames: 0,
             skipped,
+            timer: None,
         };
         debug_assert!(
             out.drawn_modes()
@@ -649,23 +653,63 @@ impl AppSurfaces {
         }
     }
 
+    /// Times every frame's GPU work with `timer` from now on (7.1 hook 3,
+    /// see [`GpuFrameTimer`]): [`render`](Self::render) brackets each
+    /// frame's submits with its timestamps and collects finished samples
+    /// without waiting.
+    pub fn set_gpu_timer(&mut self, timer: GpuFrameTimer) {
+        self.timer = Some(timer);
+    }
+
+    /// The GPU frame timer, if one was set.
+    pub fn gpu_timer(&self) -> Option<&GpuFrameTimer> {
+        self.timer.as_ref()
+    }
+
+    /// Hands the profiler HUD text to every playfield surface's renderer
+    /// (drawn only by renderers built with
+    /// [`TableRenderOptions::profiler_hud`]).
+    pub fn set_hud_lines(&mut self, lines: &[String]) {
+        for s in &mut self.slots {
+            if s.role == SurfaceRole::Playfield {
+                s.renderer.set_hud_lines(lines);
+            }
+        }
+    }
+
     /// Draws one frame of `snap` for every retained surface: presents it
     /// (direct) or hands it to the presenter thread (never blocking on it).
     /// Returns each surface's status in slot order: for a presenter-thread
     /// surface [`SurfaceStatus::Presented`] means handed off and
-    /// [`SurfaceStatus::Busy`] that no frame slot was free.
+    /// [`SurfaceStatus::Busy`] that no frame slot was free. With a
+    /// [`GpuFrameTimer`], the frame's submits are bracketed by its
+    /// timestamps and earlier frames' samples are collected (no wait).
     pub fn render(&mut self, snap: &FrameStateSnapshot) -> Vec<SurfaceStatus> {
+        let (queue, gpu_lock) = (&self.queue, &self.gpu_lock);
+        let mut submit = |cb: wgpu::CommandBuffer| {
+            let _g = lock_gpu(gpu_lock);
+            queue.submit([cb]);
+        };
+        if let Some(t) = &mut self.timer {
+            t.collect();
+            t.begin_frame();
+        }
         let mut out = Vec::with_capacity(self.slots.len());
         for s in &mut self.slots {
             out.push(Self::render_slot(
                 &self.device,
                 &self.queue,
                 &self.gpu_lock,
+                self.timer.as_mut(),
                 s,
                 snap,
             ));
         }
-        if out.contains(&SurfaceStatus::Presented) {
+        let drew = out.contains(&SurfaceStatus::Presented);
+        if let Some(t) = &mut self.timer {
+            t.end_frame(&mut submit);
+        }
+        if drew {
             self.frames += 1;
         }
         out
@@ -681,6 +725,7 @@ impl AppSurfaces {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         gpu_lock: &Mutex<()>,
+        timer: Option<&mut GpuFrameTimer>,
         s: &mut Slot,
         snap: &FrameStateSnapshot,
     ) -> SurfaceStatus {
@@ -696,11 +741,27 @@ impl AppSurfaces {
             routes: &s.routes,
         };
         match &mut s.kind {
-            SlotKind::Direct(d) => {
-                render_direct(device, queue, gpu_lock, d, &mut s.renderer, target, snap)
-            }
+            SlotKind::Direct(d) => render_direct(
+                device,
+                queue,
+                gpu_lock,
+                timer,
+                d,
+                &mut s.renderer,
+                target,
+                snap,
+            ),
             SlotKind::Threaded(t) => {
-                let st = render_threaded(device, queue, gpu_lock, t, &mut s.renderer, target, snap);
+                let st = render_threaded(
+                    device,
+                    queue,
+                    gpu_lock,
+                    timer,
+                    t,
+                    &mut s.renderer,
+                    target,
+                    snap,
+                );
                 if t.dead {
                     eprintln!(
                         "pin_app: the presenter thread of window {} ({:?}) ended; the window is \
@@ -789,11 +850,33 @@ fn encode_frame(
     );
 }
 
+/// Submits one frame command buffer, between the GPU frame timer's
+/// timestamps when one is timing the frame ([`GpuFrameTimer::bracket`]).
+fn submit_frame(
+    queue: &wgpu::Queue,
+    gpu_lock: &Mutex<()>,
+    timer: Option<&mut GpuFrameTimer>,
+    frame: wgpu::CommandBuffer,
+) {
+    let cbs = match timer {
+        Some(t) => t.bracket(frame),
+        None => {
+            let mut one = arrayvec::ArrayVec::<wgpu::CommandBuffer, 3>::new();
+            one.push(frame);
+            one
+        }
+    };
+    let _g = lock_gpu(gpu_lock);
+    queue.submit(cbs);
+}
+
 /// Acquires, draws and presents a direct surface.
+#[allow(clippy::too_many_arguments)]
 fn render_direct(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     gpu_lock: &Mutex<()>,
+    timer: Option<&mut GpuFrameTimer>,
     d: &mut Direct,
     renderer: &mut TableRenderer,
     target: FrameTarget<'_>,
@@ -832,10 +915,7 @@ fn render_direct(
         target,
         snap,
     );
-    {
-        let _g = lock_gpu(gpu_lock);
-        queue.submit([encoder.finish()]);
-    }
+    submit_frame(queue, gpu_lock, timer, encoder.finish());
     queue.present(frame);
     if suboptimal {
         d.needs_configure = !configure_surface(device, &d.surface, &d.config, gpu_lock);
@@ -848,10 +928,12 @@ fn render_direct(
 /// surface and never waits for the presenter: [`SurfaceStatus::Busy`] when
 /// no slot is free; [`SurfaceStatus::Skipped`] (and `t.dead`) when the
 /// presenter thread ended.
+#[allow(clippy::too_many_arguments)]
 fn render_threaded(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     gpu_lock: &Mutex<()>,
+    timer: Option<&mut GpuFrameTimer>,
     t: &mut Threaded,
     renderer: &mut TableRenderer,
     target: FrameTarget<'_>,
@@ -890,12 +972,9 @@ fn render_threaded(
         target,
         snap,
     );
-    {
-        // Submitted before the post: the presenter's copy, submitted later
-        // on the same queue, sees the finished frame (no CPU wait).
-        let _g = lock_gpu(gpu_lock);
-        queue.submit([encoder.finish()]);
-    }
+    // Submitted before the post: the presenter's copy, submitted later on
+    // the same queue, sees the finished frame (no CPU wait).
+    submit_frame(queue, gpu_lock, timer, encoder.finish());
     if handoff.post(frame) {
         SurfaceStatus::Presented
     } else {

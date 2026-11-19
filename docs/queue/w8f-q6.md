@@ -1,0 +1,3 @@
+# Queue: w8f-q6
+
+- [ ] [w8f-q6-debug-view-fallback] Only the table presenter (`AppSurfaces`) measures GPU frame time and draws the profiler HUD. A table run that falls back to the debug view, because its playfield surface has no 8-bit format, draws through pin_render's `SurfaceSet`, which has no hook for timestamp queries or overlays. That run still profiles ticks, input latency and overflows, but it records no GPU frame time and shows no HUD (its `--profiler-hud` stderr lines are still printed). Covering it needs an additive `SurfaceSet` hook in pin_render (decision "w8f-q6 — profiler wiring", docs/decisions/2026-11-19-w8f-q6.md).

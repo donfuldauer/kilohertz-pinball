@@ -8,10 +8,15 @@
 //! buffer and the atomics in [`OrchestratorStats`].
 
 use super::audio::{AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, NullSink, RegisteredSound};
+use super::gpu_timer::GpuFrameTimer;
+use super::hud::HudFeed;
 use super::present::{AppSurfaces, SurfacePlan, table_set_accepted};
 use super::table::{DisplayCommand, FlipperOutline};
 use super::view::{TableRenderOptions, TableVisuals};
 use super::{HybridTimer, SimClock, SimLoop};
+use crate::profiler::{
+    CommandQueueOverflows, LoopProfiler, PresentProfiler, ProfiledSim, Profiler, ProfilerReader,
+};
 use arrayvec::ArrayVec;
 use pin_audio::mixer::{MixerConfig, SoundReceiver};
 use pin_audio::ssf::{CHANNELS, SsfConfig};
@@ -113,7 +118,22 @@ pub struct RenderConfig {
     /// Display commands (scenes, scores) from the sim thread
     /// ([`TableSim::with_displays`](super::TableSim::with_displays)).
     pub displays: Option<HapticsConsumer<DisplayCommand>>,
+    /// The profiler's GPU frame-time writer (7.1 hook 3). With the table
+    /// presenter on a device with `TIMESTAMP_QUERY`, every presented frame's
+    /// GPU time is measured with timestamp queries ([`GpuFrameTimer`]) and
+    /// recorded here; otherwise nothing is recorded (never host time).
+    /// `None` (default): no GPU timing.
+    pub present_profiler: Option<PresentProfiler>,
+    /// The profiler HUD (`pin_app --profiler-hud`): `Some` draws
+    /// [`hud_lines`](crate::profiler::hud_lines) of this reader's snapshot
+    /// over the playfield, refreshed every [`HUD_REFRESH_NS`]. `None`
+    /// (default): no HUD, frames unchanged.
+    pub hud: Option<ProfilerReader>,
 }
+
+/// How often the render thread refreshes the profiler HUD text (250 ms:
+/// four layouts per second; the snapshot is cheap, the text layout is not).
+pub const HUD_REFRESH_NS: u64 = 250_000_000;
 
 /// Colour of flipper bats in the debug view.
 pub const FLIPPER_LINE_COLOR: [f32; 4] = [0.95, 0.95, 0.3, 1.0];
@@ -192,6 +212,8 @@ impl Default for RenderConfig {
             table: None,
             table_render: TableRenderOptions::default(),
             displays: None,
+            present_profiler: None,
+            hud: None,
         }
     }
 }
@@ -210,6 +232,11 @@ pub struct ThreadsConfig {
     pub render: RenderConfig,
     /// Audio thread configuration.
     pub audio: AudioConfig,
+    /// The profiler's sim-loop writer (7.1 hook 2): after every batch of
+    /// ticks the sim thread publishes
+    /// [`SimLoop::input_overflow_ticks`] into it (one relaxed atomic
+    /// store). `None` (default): not profiled.
+    pub loop_profiler: Option<LoopProfiler>,
 }
 
 impl ThreadsConfig {
@@ -229,7 +256,39 @@ impl ThreadsConfig {
             timer: HybridTimer::default(),
             render: RenderConfig::default(),
             audio: AudioConfig::default(),
+            loop_profiler: None,
         }
+    }
+
+    /// `sim` profiled by `profiler` (the 7.1 hooks): the step is wrapped
+    /// in a [`ProfiledSim`] timed by `now_ns`, which also becomes the sim
+    /// loop's clock ([`now_ns`](Self::now_ns)), so tick times and input
+    /// latencies are read on the clock the input timestamps are on (the
+    /// app passes SDL's `SDL_GetTicksNS`); the loop writer goes to the sim
+    /// thread ([`loop_profiler`](Self::loop_profiler)) and the GPU
+    /// frame-time writer to the render thread
+    /// ([`RenderConfig::present_profiler`]). Returns the config and the
+    /// profiler's reader (clone it for the HUD, [`RenderConfig::hud`]).
+    pub fn with_profiled_sim<S>(
+        sim: S,
+        input: SpscConsumer<InputEvent>,
+        now_ns: fn() -> u64,
+        profiler: Profiler,
+    ) -> (Self, ProfilerReader)
+    where
+        S: SimStep + CommandQueueOverflows + 'static,
+    {
+        let Profiler {
+            sim: sim_profiler,
+            sim_loop,
+            present,
+            reader,
+        } = profiler;
+        let mut cfg = Self::with_sim(Box::new(ProfiledSim::new(sim, sim_profiler, now_ns)), input);
+        cfg.now_ns = now_ns;
+        cfg.loop_profiler = Some(sim_loop);
+        cfg.render.present_profiler = Some(present);
+        (cfg, reader)
     }
 }
 
@@ -559,6 +618,7 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
         timer,
         render,
         audio,
+        loop_profiler,
     } = cfg;
 
     let spawn = |threads: &mut Threads, name: &'static str, f: Box<dyn FnOnce() + Send>| {
@@ -582,7 +642,7 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
     let r = spawn(
         &mut threads,
         "sim",
-        Box::new(move || sim_thread(sim_loop, now_ns, timer, &sd, &st)),
+        Box::new(move || sim_thread(sim_loop, now_ns, timer, loop_profiler, &sd, &st)),
     );
     let (sd, st) = (Arc::clone(&shutdown), Arc::clone(&stats));
     let r = r.and_then(|()| {
@@ -768,13 +828,27 @@ fn park_until(shutdown: &AtomicBool) {
     }
 }
 
+/// Publishes the loop's input-overflow tick total into `profiler` (7.1
+/// hook 2): one relaxed atomic store, no allocation, lock or I/O (D5).
+pub(super) fn publish_input_overflow<S: SimStep>(
+    sim_loop: &SimLoop<S>,
+    profiler: Option<&mut LoopProfiler>,
+) {
+    if let Some(p) = profiler {
+        p.set_input_overflow_ticks(sim_loop.input_overflow_ticks());
+    }
+}
+
 /// The real-time sim loop: accumulator timing with the catch-up cap, dropped
 /// ticks shift simulated time, hybrid sleep + spin until the next tick. No
-/// allocation, lock or I/O per tick (D5).
+/// allocation, lock or I/O per tick (D5). With a `loop_profiler`, the
+/// input-overflow tick total is published after every batch of ticks
+/// ([`publish_input_overflow`]).
 fn sim_thread<S: SimStep>(
     mut sim_loop: SimLoop<S>,
     now_ns: fn() -> u64,
     timer: HybridTimer,
+    mut loop_profiler: Option<LoopProfiler>,
     shutdown: &AtomicBool,
     stats: &OrchestratorStats,
 ) {
@@ -794,6 +868,7 @@ fn sim_thread<S: SimStep>(
         }
         if due > 0 {
             sim_loop.run_ticks(due);
+            publish_input_overflow(&sim_loop, loop_profiler.as_mut());
             stats.sim_ticks.store(sim_loop.tick(), Ordering::Relaxed);
             stats
                 .sim_ticks_due
@@ -916,7 +991,16 @@ fn render_thread(
         table,
         table_render,
         mut displays,
+        mut present_profiler,
+        hud,
     } = cfg;
+    // The HUD is drawn by the playfield's table renderer, only when a
+    // reader is configured (`--profiler-hud`): default frames are unchanged.
+    let table_render = TableRenderOptions {
+        profiler_hud: table_render.profiler_hud || hud.is_some(),
+        ..table_render
+    };
+    let mut hud = hud.map(|r| HudFeed::new(r, HUD_REFRESH_NS));
     // GPU setup on this thread (the device lives here). Without surfaces
     // there is nothing to present, so no adapter is requested.
     let mut presenter = match gpu {
@@ -933,7 +1017,24 @@ fn render_thread(
                 )
             });
             match made {
-                Ok(p) => {
+                Ok(mut p) => {
+                    if let (Presenter::Table(ctx, s), Some(profiler)) =
+                        (&mut p, present_profiler.take())
+                    {
+                        match GpuFrameTimer::new(ctx, profiler) {
+                            Some(timer) => {
+                                eprintln!(
+                                    "pin_app: gpu frame timing: timestamp queries (period {} ns)",
+                                    timer.period_ns()
+                                );
+                                s.set_gpu_timer(timer);
+                            }
+                            None => eprintln!(
+                                "pin_app: gpu frame timing: unavailable (no TIMESTAMP_QUERY on \
+                                 this device); the profiler records no GPU frame time"
+                            ),
+                        }
+                    }
                     let ctx = match &p {
                         Presenter::Debug(c, _) | Presenter::Table(c, _) => c,
                     };
@@ -1017,6 +1118,9 @@ fn render_thread(
                 paced = set.frame_paced(&st);
             }
             Some(Presenter::Table(_, s)) => {
+                if let Some(lines) = hud.as_mut().and_then(|h| h.refresh(monotonic_now_ns())) {
+                    s.set_hud_lines(&lines);
+                }
                 let st = s.render(snap);
                 stats.record_statuses(&st, spawned);
                 paced = s.frame_paced(&st);

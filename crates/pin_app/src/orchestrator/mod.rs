@@ -25,9 +25,17 @@
 //!   directly for the playfield and non-blocking secondary windows, through a
 //!   per-surface presenter thread and a latest-frame hand-off for blocking
 //!   (`Fifo`-only) backglass / score windows, D19).
+//! * Profiler wiring (7.1 hooks): [`ThreadsConfig::with_profiled_sim`]
+//!   wraps the step in a [`ProfiledSim`](crate::profiler::ProfiledSim) on
+//!   the sim loop's clock and hands the loop writer to the sim thread
+//!   (input-overflow ticks) and the GPU frame-time writer to the render
+//!   thread ([`GpuFrameTimer`], timestamp queries only); [`HudFeed`] and
+//!   [`HudOverlay`] draw the opt-in HUD (`--profiler-hud`).
 
 mod audio;
+mod gpu_timer;
 mod handoff;
+mod hud;
 mod present;
 mod presenter;
 mod table;
@@ -38,7 +46,9 @@ pub use audio::{
     AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, DEVICE_QUEUE_BLOCKS, DeviceSink, DeviceStream,
     NullSink, OfflineRecording, OfflineSink, RegisteredSound, ssf_playfield_mm, table_samples,
 };
+pub use gpu_timer::{GPU_TIMER_RING, GpuFrameTimer, gpu_sample_ns};
 pub use handoff::{HANDOFF_SLOTS, HandoffStats};
+pub use hud::{HudFeed, HudOverlay};
 pub use present::{
     AppSurfaces, SlotDecision, SlotInfo, SlotPath, SurfacePlan, is_blocking_mode, plan_surface,
     slot_decision, table_set_accepted,
@@ -50,9 +60,9 @@ pub use table::{
     run_headless_table, table_lines, table_source_positions, validate_snapshot, validate_table,
 };
 pub use threads::{
-    AudioConfig, AudioStats, ClosePolicy, DropMonitor, FLIPPER_LINE_COLOR, OrchestratorStats,
-    RenderConfig, RenderGpu, RunExit, RunLimits, StatsSnapshot, Threads, ThreadsConfig,
-    default_ball_radius, monotonic_now_ns, spawn_threads,
+    AudioConfig, AudioStats, ClosePolicy, DropMonitor, FLIPPER_LINE_COLOR, HUD_REFRESH_NS,
+    OrchestratorStats, RenderConfig, RenderGpu, RunExit, RunLimits, StatsSnapshot, Threads,
+    ThreadsConfig, default_ball_radius, monotonic_now_ns, spawn_threads,
 };
 pub use view::{
     DisplayAssets, MAX_OVERLAY_TABLE_LINES, TableRenderOptions, TableRenderer, TableVisuals,
