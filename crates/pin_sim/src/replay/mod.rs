@@ -34,6 +34,17 @@
 //!
 //! [`Recording::from_bytes`] never panics, and allocates at most one
 //! event vector sized from a count it has checked against the input length.
+//!
+//! # Recorded bot games
+//!
+//! [`game`] holds the separate [`GameRecording`] format: the operations an
+//! autoplay bot applied between ticks (forced cabinet switches and nudges),
+//! replayed without the bot by [`replay_game`] (`pin_sim soak
+//! --record-games`, `pin_sim <bundle> --replay-game FILE`).
+
+pub mod game;
+
+pub use game::{GameOp, GameOpSink, GameRecording, GameReplay, replay_game};
 
 use core::fmt;
 use pin_core::input::{CabinetAxis, CabinetInput, InputEvent, InputEventKind};
