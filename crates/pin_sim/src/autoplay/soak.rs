@@ -14,10 +14,20 @@
 //! A game stopped at `max_game_ticks` with a ball still on the table gets an
 //! [`FindingKind::EndlessBall`] finding for that ball
 //! ([`GameMonitor::end_at_cap`]); a ball older than
-//! [`SoakConfig::endless_ball_ticks`] gets one as soon as it passes the
-//! limit. Balls still on the table when a game ends count in the ball-time
+//! [`SoakConfig::endless_ball_ticks`] gets one too, unless it later drains
+//! naturally after broad play, which makes it a reported, non-failing
+//! [`FindingKind::LongBall`] (see [`monitor`](super::monitor)). Balls still on the table when a game ends count in the ball-time
 //! distribution at their observed age, as censored samples
 //! ([`SoakReport::ball_time_censored`]).
+//!
+//! [`run_soak_recording`] plays the same soak and also records selected
+//! games' effective bot input as [`GameRecording`]s (the forced cabinet
+//! switches and nudges the bot applied between ticks), which
+//! [`replay_game`](crate::replay::replay_game) replays without the bot to
+//! the game's state hash and score. Recording only observes: the bot's
+//! decisions, the tick, the timing measurement (still around `advance(1)`
+//! only) and the report are the same as [`run_soak`]'s, and an unselected
+//! game runs the same code as in [`run_soak`] (the no-op sink `()`).
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -31,6 +41,7 @@ use super::report::{
 };
 use super::table::{MODE_PERSIST_PREFIX, TableInfo};
 use crate::cli::SIM_THREAD_STACK_BYTES;
+use crate::replay::{GameOpSink, GameRecording, MAX_TICKS};
 use crate::{DEFAULT_SEED, SimConfig, SimError, Simulation};
 
 /// Default 99.9th-percentile tick budget, ms (Gate A1).
@@ -236,15 +247,19 @@ struct GameResult {
     outcome: GameOutcome,
     bot: BotStats,
     table_hash: u64,
+    /// The game's bot operations, when it was selected for recording.
+    recording: Option<GameRecording>,
 }
 
-/// Plays game `game` of the soak.
-fn play_game(
+/// Plays game `game` of the soak, reporting the bot's operations to `sink`
+/// (`()` for none).
+fn play_game<S: GameOpSink>(
     bundle: &Path,
     info: &TableInfo,
     cfg: &SoakConfig,
     game: u32,
     hist: &mut TickHistogram,
+    sink: &mut S,
 ) -> Result<GameResult, SimError> {
     let seed = game_seed(cfg.seed, game);
     let mut sim = Simulation::load(bundle, SimConfig { seed, ..cfg.sim })?;
@@ -257,7 +272,7 @@ fn play_game(
     let mut idle = 0u64;
     let mut end = GameEnd::MaxTicks;
     while sim.tick() < cfg.max_game_ticks {
-        bot.tick(&mut sim);
+        bot.tick_recorded(&mut sim, sink);
         if cfg.measure_timing {
             let t0 = Instant::now();
             sim.advance(1);
@@ -301,7 +316,30 @@ fn play_game(
         outcome,
         bot: bot.stats(),
         table_hash: sim.table_hash(),
+        recording: None,
     })
+}
+
+/// Plays game `game`, recording its bot operations when `record` (sorted
+/// ascending) selects it.
+fn play_selected(
+    bundle: &Path,
+    info: &TableInfo,
+    cfg: &SoakConfig,
+    game: u32,
+    hist: &mut TickHistogram,
+    record: &[u32],
+) -> Result<GameResult, SimError> {
+    if record.binary_search(&game).is_err() {
+        return play_game(bundle, info, cfg, game, hist, &mut ());
+    }
+    let mut rec = GameRecording::default();
+    let mut r = play_game(bundle, info, cfg, game, hist, &mut rec)?;
+    rec.seed = r.summary.seed;
+    rec.table_hash = r.table_hash;
+    rec.ticks = r.summary.ticks;
+    r.recording = Some(rec);
+    Ok(r)
 }
 
 /// Plays only game `game` of the soak `cfg` describes, exactly as
@@ -322,8 +360,102 @@ pub fn play_soak_game(
         ..*cfg
     };
     let mut hist = TickHistogram::new();
-    let r = play_game(bundle, &info, &cfg, game, &mut hist)?;
+    let r = play_game(bundle, &info, &cfg, game, &mut hist, &mut ())?;
     Ok((r.summary, r.outcome))
+}
+
+/// A soak with recorded games ([`run_soak_recording`]).
+#[derive(Clone, Debug)]
+pub struct RecordedSoak {
+    /// The soak report, identical to [`run_soak`]'s for the same `cfg`
+    /// (apart from the wall-clock [`Timing`] section).
+    pub report: SoakReport,
+    /// `(game index, recording)` of every selected game, ascending by game.
+    pub recordings: Vec<(u32, GameRecording)>,
+}
+
+/// Why [`run_soak_recording`] failed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecordSoakError {
+    /// The selection or the configuration cannot be recorded (an index not
+    /// below `cfg.games`, indices not strictly ascending, non-default
+    /// script limits, or a tick limit above [`MAX_TICKS`]); nothing ran.
+    Selection(String),
+    /// The soak itself failed ([`run_soak`]'s errors).
+    Sim(SimError),
+}
+
+impl core::fmt::Display for RecordSoakError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            RecordSoakError::Selection(m) => write!(f, "cannot record games: {m}"),
+            RecordSoakError::Sim(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for RecordSoakError {}
+
+impl From<SimError> for RecordSoakError {
+    fn from(e: SimError) -> Self {
+        RecordSoakError::Sim(e)
+    }
+}
+
+/// Checks that the games `record` of the soak `cfg` can be recorded:
+/// `record` strictly ascending with every index below `cfg.games`,
+/// `cfg.sim` with [`SimConfig::default`]'s script limits (a recording
+/// stores only the seed and replays with the defaults) and
+/// `cfg.max_game_ticks` at most [`MAX_TICKS`].
+///
+/// # Errors
+/// [`RecordSoakError::Selection`] naming the problem.
+pub fn check_record_selection(cfg: &SoakConfig, record: &[u32]) -> Result<(), RecordSoakError> {
+    let bad = |m: String| Err(RecordSoakError::Selection(m));
+    if let Some(&g) = record.iter().find(|&&g| g >= cfg.games) {
+        return bad(format!(
+            "game {g} is not below the soak's {} games",
+            cfg.games
+        ));
+    }
+    if record.windows(2).any(|w| w[0] >= w[1]) {
+        return bad("game indices must be strictly ascending".into());
+    }
+    let default = SimConfig::default();
+    if cfg.sim.lua != default.lua || cfg.sim.wasm != default.wasm {
+        return bad(
+            "the soak runs with non-default script limits; a recorded game replays with the \
+             defaults"
+                .into(),
+        );
+    }
+    if cfg.max_game_ticks > MAX_TICKS {
+        return bad(format!(
+            "a game may run {} ticks, more than a recording holds ({MAX_TICKS})",
+            cfg.max_game_ticks
+        ));
+    }
+    Ok(())
+}
+
+/// [`run_soak`], also recording the bot operations of the games `record`
+/// (strictly ascending indices below `cfg.games`) as [`GameRecording`]s.
+/// The report is the one [`run_soak`] gives; the recordings depend only on
+/// the soak seed, skill, bot settings and game index, not on the thread
+/// count. Each recording's `seed`, `table_hash` and `ticks` are the game's
+/// [`GameSummary`] values.
+///
+/// # Errors
+/// [`check_record_selection`]'s errors (before anything runs), and
+/// [`run_soak`]'s as [`RecordSoakError::Sim`].
+pub fn run_soak_recording(
+    bundle: &Path,
+    cfg: &SoakConfig,
+    record: &[u32],
+) -> Result<RecordedSoak, RecordSoakError> {
+    check_record_selection(cfg, record)?;
+    let (report, recordings) = soak(bundle, cfg, record)?;
+    Ok(RecordedSoak { report, recordings })
 }
 
 type WorkerOut = (Vec<(u32, Result<GameResult, SimError>)>, TickHistogram);
@@ -336,6 +468,15 @@ type WorkerOut = (Vec<(u32, Result<GameResult, SimError>)>, TickHistogram);
 /// load, or the table-info load error; a worker thread that cannot start or
 /// panics is [`SimError::Build`].
 pub fn run_soak(bundle: &Path, cfg: &SoakConfig) -> Result<SoakReport, SimError> {
+    soak(bundle, cfg, &[]).map(|(report, _)| report)
+}
+
+/// The soak of [`run_soak`], recording the games in `record` (sorted).
+fn soak(
+    bundle: &Path,
+    cfg: &SoakConfig,
+    record: &[u32],
+) -> Result<(SoakReport, Vec<(u32, GameRecording)>), SimError> {
     let wall = Instant::now();
     let info = TableInfo::load(bundle)?;
     let games = cfg.games;
@@ -357,7 +498,7 @@ pub fn run_soak(bundle: &Path, cfg: &SoakConfig) -> Result<SoakReport, SimError>
                         if g >= games {
                             break;
                         }
-                        let r = play_game(bundle, info, cfg, g, &mut hist);
+                        let r = play_selected(bundle, info, cfg, g, &mut hist, record);
                         let failed = r.is_err();
                         done.push((g, r));
                         if failed {
@@ -389,9 +530,15 @@ pub fn run_soak(bundle: &Path, cfg: &SoakConfig) -> Result<SoakReport, SimError>
         }
     }
     let mut played = Vec::with_capacity(games as usize);
+    let mut recordings = Vec::with_capacity(record.len());
     for r in results {
         match r {
-            Some(Ok(g)) => played.push(g),
+            Some(Ok(mut g)) => {
+                if let Some(rec) = g.recording.take() {
+                    recordings.push((g.summary.game, rec));
+                }
+                played.push(g);
+            }
             Some(Err(e)) => return Err(e),
             // Only after another game's error stopped its worker.
             None => {}
@@ -401,7 +548,10 @@ pub fn run_soak(bundle: &Path, cfg: &SoakConfig) -> Result<SoakReport, SimError>
         return Err(SimError::Build("a soak game did not run".into()));
     }
     let wall_s = wall.elapsed().as_secs_f64();
-    Ok(merge(&info, cfg, threads, played, &hist, wall_s))
+    Ok((
+        merge(&info, cfg, threads, played, &hist, wall_s),
+        recordings,
+    ))
 }
 
 fn merge(

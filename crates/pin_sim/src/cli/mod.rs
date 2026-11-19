@@ -27,7 +27,7 @@
 //! ```
 //!
 //! Plays `N` (default 100) seeded bot games with
-//! [`run_soak`] and writes `DIR/soak_report.json`
+//! [`run_soak`](crate::autoplay::run_soak) and writes `DIR/soak_report.json`
 //! and `DIR/soak_report.md`. stdout gets a summary naming every finding;
 //! exit code 0 when the soak passes, 1 when it fails
 //! ([`SoakReport::passed`]: a StuckBall, EscapedBall, NonFinite,
@@ -41,21 +41,49 @@
 //! default of `--games` is lower), and the exit code is 1 when the soak did
 //! not pass or any check failed (including a soak run with `--no-tick-budget`, whose tick timing is
 //! then not measured). Without the flag nothing changes.
+//!
+//! # Recording and replaying bot games (gate-a2-cr1)
+//!
+//! ```text
+//! pin_sim soak <bundle> [flags above] --record-games SPEC [--record-dir DIR] --out DIR
+//! pin_sim <bundle> --replay-game FILE
+//! ```
+//!
+//! `SPEC` ([`parse_record_spec`]) is comma-separated strictly ascending game
+//! indices below `--games` (`0,49,99`) or `spread:N`, the `N` indices
+//! `floor(i * games / N)` for `i` in `0..N` (`1 <= N <= games`). Anything
+//! else is a usage error (exit 2, no soak run). `--record-dir` (default
+//! `<out>/recordings`), like `--out`, must not lie inside the bundle. Each
+//! selected game's bot operations ([`GameRecording`]) go to
+//! `<record-dir>/game_<index, 6 digits>.khzrec` ([`record_file_name`]),
+//! and after the soak, also when it fails its findings,
+//! `<record-dir>/recorded_games.tsv` ([`RECORDED_GAMES_TSV`],
+//! [`recorded_games_tsv`]) lists `game, file, ticks, state_hash, score`
+//! per recorded game from the soak's own game summaries. The soak's
+//! stdout, reports and exit code do not change.
+//!
+//! `--replay-game` replays such a file on the bundle without the bot
+//! ([`replay_game`]; default [`SimConfig`], the table hash checked first)
+//! and prints `state_hash=<16 hex>` and `score=<i64 or none>`. It takes no
+//! other flag. Exit 0, or 1 with a message on stderr for a missing,
+//! corrupt or tampered file or another table.
 
 use core::fmt;
 use pin_core::input::{CabinetAxis, CabinetInput, InputEvent};
 use pin_core::sim::{SimStep, TICK_NS};
 use std::path::{Path, PathBuf};
 
-use crate::autoplay::{SkillLevel, SoakConfig, SoakReport, run_soak};
-use crate::replay::{Recorder, Recording, replay};
+use crate::autoplay::{
+    RecordSoakError, SkillLevel, SoakConfig, SoakReport, run_soak, run_soak_recording,
+};
+use crate::replay::{GameRecording, GameReplay, Recorder, Recording, replay, replay_game};
 use crate::{SimConfig, Simulation};
 
 /// Stack of the thread the binary runs the simulation on, bytes.
 pub const SIM_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 /// Usage text.
-pub const USAGE: &str = "usage: pin_sim <bundle> --ticks N [--seed S] [--record-inputs FILE] [--idle]\n       pin_sim <bundle> --replay-inputs FILE";
+pub const USAGE: &str = "usage: pin_sim <bundle> --ticks N [--seed S] [--record-inputs FILE] [--idle]\n       pin_sim <bundle> --replay-inputs FILE\n       pin_sim <bundle> --replay-game FILE";
 
 /// Why the command failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -352,7 +380,13 @@ pub fn hash_line(hash: u64) -> String {
 }
 
 /// Usage text of `pin_sim soak`.
-pub const SOAK_USAGE: &str = "usage: pin_sim soak <bundle> [--games N] [--seed S] [--skill novice|standard|expert] [--threads T] [--max-ticks N] [--no-tick-budget] [--gate a1] --out DIR";
+pub const SOAK_USAGE: &str = "usage: pin_sim soak <bundle> [--games N] [--seed S] [--skill novice|standard|expert] [--threads T] [--max-ticks N] [--no-tick-budget] [--gate a1] [--record-games SPEC [--record-dir DIR]] --out DIR\n       SPEC: ascending game indices below N (0,49,99) or spread:K";
+
+/// File name of the recorded-games index in the record folder.
+pub const RECORDED_GAMES_TSV: &str = "recorded_games.tsv";
+
+/// Default record folder name inside `--out`.
+pub const DEFAULT_RECORD_DIR: &str = "recordings";
 
 /// File name of the JSON soak report.
 pub const SOAK_JSON: &str = "soak_report.json";
@@ -371,6 +405,88 @@ pub struct SoakArgs {
     pub cfg: SoakConfig,
     /// `--gate a1`: print and enforce the Gate A1 soak verdict.
     pub gate_a1: bool,
+    /// `--record-games`: the games whose bot input is recorded (strictly
+    /// ascending, below `cfg.games`); empty without the flag.
+    pub record_games: Vec<u32>,
+    /// Where recordings go: `--record-dir`, else `<out>/recordings`; `None`
+    /// without `--record-games`.
+    pub record_dir: Option<PathBuf>,
+}
+
+/// Parses a `--record-games` SPEC for a soak of `games` games: strictly
+/// ascending comma-separated decimal indices, each below `games`, or
+/// `spread:N` (`1 <= N <= games`), the indices `floor(i * games / N)` for
+/// `i` in `0..N`.
+///
+/// # Errors
+/// A message for an empty or malformed spec, an index not below `games`,
+/// descending or repeated indices, or `N` outside `1..=games`.
+pub fn parse_record_spec(spec: &str, games: u32) -> Result<Vec<u32>, String> {
+    let num = |v: &str| -> Result<u64, String> {
+        if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!("--record-games: not a game index: {v:?}"));
+        }
+        v.parse::<u64>()
+            .map_err(|_| format!("--record-games: not a game index: {v:?}"))
+    };
+    if let Some(n) = spec.strip_prefix("spread:") {
+        let n = num(n)?;
+        if n == 0 || n > u64::from(games) {
+            return Err(format!(
+                "--record-games spread:{n}: N must be 1..={games} (the soak's games)"
+            ));
+        }
+        // n <= games, so the indices are distinct, ascending and below games.
+        return Ok((0..n).map(|i| (i * u64::from(games) / n) as u32).collect());
+    }
+    let mut out: Vec<u32> = Vec::new();
+    for part in spec.split(',') {
+        let g = num(part)?;
+        if g >= u64::from(games) {
+            return Err(format!(
+                "--record-games: game {g} is not below --games {games}"
+            ));
+        }
+        let g = g as u32;
+        if out.last().is_some_and(|&last| last >= g) {
+            return Err(format!(
+                "--record-games: indices must be strictly ascending ({spec:?})"
+            ));
+        }
+        out.push(g);
+    }
+    Ok(out)
+}
+
+/// The file name of game `game`'s recording: `game_<6 digits>.khzrec`.
+#[must_use]
+pub fn record_file_name(game: u32) -> String {
+    format!("game_{game:06}.{}", crate::replay::game::GAME_EXTENSION)
+}
+
+/// The `recorded_games.tsv` text for the recorded `games` (ascending): one
+/// line per game, `game<TAB>file<TAB>ticks<TAB>state_hash<TAB>score`, from
+/// that game's entry in `report.game_list` (16 lowercase hex digits for the
+/// hash; the score in decimal or `none`). Games missing from the report are
+/// skipped.
+#[must_use]
+pub fn recorded_games_tsv(report: &SoakReport, games: &[u32]) -> String {
+    let mut s = String::new();
+    for &g in games {
+        let Some(sum) = report.game_list.iter().find(|s| s.game == g) else {
+            continue;
+        };
+        let score = sum
+            .score
+            .map_or_else(|| "none".to_owned(), |v| v.to_string());
+        s.push_str(&format!(
+            "{g}\t{}\t{}\t{:016x}\t{score}\n",
+            record_file_name(g),
+            sum.ticks,
+            sum.state_hash
+        ));
+    }
+    s
 }
 
 fn soak_usage(m: String) -> CliError {
@@ -387,6 +503,8 @@ pub fn parse_soak_args(args: &[String]) -> Result<SoakArgs, CliError> {
     let mut out = None;
     let mut cfg = SoakConfig::default();
     let mut gate_a1 = false;
+    let mut record_spec: Option<String> = None;
+    let mut record_dir: Option<PathBuf> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = |flag: &str| {
@@ -434,6 +552,8 @@ pub fn parse_soak_args(args: &[String]) -> Result<SoakArgs, CliError> {
                 gate_a1 = true;
             }
             "--out" => out = Some(PathBuf::from(value("--out")?)),
+            "--record-games" => record_spec = Some(value("--record-games")?),
+            "--record-dir" => record_dir = Some(PathBuf::from(value("--record-dir")?)),
             s if s.starts_with("--") => return Err(soak_usage(format!("unknown flag {s}"))),
             s => {
                 if bundle.replace(PathBuf::from(s)).is_some() {
@@ -444,11 +564,24 @@ pub fn parse_soak_args(args: &[String]) -> Result<SoakArgs, CliError> {
     }
     let bundle = bundle.ok_or_else(|| soak_usage("no bundle given".into()))?;
     let out = out.ok_or_else(|| soak_usage("give --out DIR".into()))?;
+    let (record_games, record_dir) = match (record_spec, record_dir) {
+        (None, None) => (Vec::new(), None),
+        (None, Some(_)) => {
+            return Err(soak_usage("--record-dir needs --record-games".into()));
+        }
+        (Some(spec), dir) => {
+            let games = parse_record_spec(&spec, cfg.games).map_err(soak_usage)?;
+            let dir = dir.unwrap_or_else(|| out.join(DEFAULT_RECORD_DIR));
+            (games, Some(dir))
+        }
+    };
     Ok(SoakArgs {
         bundle,
         out,
         cfg,
         gate_a1,
+        record_games,
+        record_dir,
     })
 }
 
@@ -512,8 +645,30 @@ pub fn run_soak_command(args: &SoakArgs) -> Result<String, CliError> {
             args.bundle.display()
         )));
     }
-    let report =
-        run_soak(&args.bundle, &args.cfg).map_err(|e| CliError::Failed(format!("soak: {e}")))?;
+    if let Some(dir) = &args.record_dir
+        && record_inside_bundle(&args.bundle, dir)
+    {
+        return Err(soak_usage(format!(
+            "--record-dir {} is inside the bundle {}; recordings there change the table hash",
+            dir.display(),
+            args.bundle.display()
+        )));
+    }
+    let (report, recordings) = if args.record_games.is_empty() {
+        // No recording requested: exactly the plain soak, with none of the
+        // recording-only checks (script limits, tick cap).
+        let report = run_soak(&args.bundle, &args.cfg)
+            .map_err(|e| CliError::Failed(format!("soak: {e}")))?;
+        (report, Vec::new())
+    } else {
+        let r = run_soak_recording(&args.bundle, &args.cfg, &args.record_games).map_err(
+            |e| match e {
+                RecordSoakError::Selection(m) => soak_usage(m),
+                RecordSoakError::Sim(e) => CliError::Failed(format!("soak: {e}")),
+            },
+        )?;
+        (r.report, r.recordings)
+    };
     let write = |name: &str, text: String| {
         std::fs::write(args.out.join(name), text).map_err(|e| {
             CliError::Failed(format!(
@@ -526,6 +681,9 @@ pub fn run_soak_command(args: &SoakArgs) -> Result<String, CliError> {
         .map_err(|e| CliError::Failed(format!("cannot create {}: {e}", args.out.display())))?;
     write(SOAK_JSON, report.to_json())?;
     write(SOAK_MARKDOWN, report.to_markdown())?;
+    if let Some(dir) = &args.record_dir {
+        write_recordings(dir, &report, &args.record_games, &recordings)?;
+    }
     let mut summary = soak_summary(&report, &args.out);
     if args.gate_a1 {
         let verdict = report.gate_a1(report.skill);
@@ -542,15 +700,114 @@ pub fn run_soak_command(args: &SoakArgs) -> Result<String, CliError> {
     }
 }
 
-/// Parses the arguments and runs on a thread with
-/// [`SIM_THREAD_STACK_BYTES`] of stack; returns the stdout line.
+/// Fails when `path` is a symbolic link, so a write there cannot reach a
+/// file outside the record folder. A missing path or a regular file is fine.
+fn refuse_symlink(path: &Path) -> Result<(), CliError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => Err(CliError::Failed(format!(
+            "refusing to write {}: it is a symbolic link",
+            path.display()
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Writes every recording into `dir` (created if missing) and then the
+/// [`RECORDED_GAMES_TSV`] index of `games` from `report`.
+fn write_recordings(
+    dir: &Path,
+    report: &SoakReport,
+    games: &[u32],
+    recordings: &[(u32, GameRecording)],
+) -> Result<(), CliError> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| CliError::Failed(format!("cannot create {}: {e}", dir.display())))?;
+    for (g, rec) in recordings {
+        let path = dir.join(record_file_name(*g));
+        refuse_symlink(&path)?;
+        rec.save(&path)
+            .map_err(|e| CliError::Failed(format!("cannot write a recording: {e}")))?;
+    }
+    let tsv = dir.join(RECORDED_GAMES_TSV);
+    refuse_symlink(&tsv)?;
+    std::fs::write(&tsv, recorded_games_tsv(report, games))
+        .map_err(|e| CliError::Failed(format!("cannot write {}: {e}", tsv.display())))
+}
+
+/// The arguments of `pin_sim <bundle> --replay-game FILE`, or `None` when
+/// `args` does not use `--replay-game`.
 ///
 /// # Errors
-/// As [`parse_args`] and [`run`].
+/// [`CliError::Usage`] for any other flag, a missing value, a missing or
+/// second bundle.
+pub fn parse_replay_game_args(args: &[String]) -> Result<Option<(PathBuf, PathBuf)>, CliError> {
+    if !args.iter().any(|a| a == "--replay-game") {
+        return Ok(None);
+    }
+    let mut bundle = None;
+    let mut file = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--replay-game" => {
+                let v = it
+                    .next()
+                    .ok_or_else(|| CliError::Usage("--replay-game needs a value".into()))?;
+                if file.replace(PathBuf::from(v)).is_some() {
+                    return Err(CliError::Usage("--replay-game given twice".into()));
+                }
+            }
+            s if s.starts_with("--") => {
+                return Err(CliError::Usage(format!(
+                    "--replay-game takes no other flag (got {s})"
+                )));
+            }
+            s => {
+                if bundle.replace(PathBuf::from(s)).is_some() {
+                    return Err(CliError::Usage("more than one bundle given".into()));
+                }
+            }
+        }
+    }
+    let bundle = bundle.ok_or_else(|| CliError::Usage("no bundle given".into()))?;
+    let file = file.ok_or_else(|| CliError::Usage("--replay-game needs a value".into()))?;
+    Ok(Some((bundle, file)))
+}
+
+/// Loads the recorded game `file` and replays it on `bundle` without the
+/// bot ([`replay_game`]).
+///
+/// # Errors
+/// [`CliError::Failed`] for an unreadable, corrupt or tampered file, a
+/// table mismatch or a bundle that does not load.
+pub fn run_replay_game(bundle: &Path, file: &Path) -> Result<GameReplay, CliError> {
+    let rec = GameRecording::load(file)
+        .map_err(|e| CliError::Failed(format!("{}: {e}", file.display())))?;
+    replay_game(bundle, &rec).map_err(|e| CliError::Failed(format!("{}: {e}", file.display())))
+}
+
+/// Parses the arguments and runs on a thread with
+/// [`SIM_THREAD_STACK_BYTES`] of stack; returns the stdout text (one line,
+/// or the two `--replay-game` lines).
+///
+/// # Errors
+/// As [`parse_args`], [`run`], [`parse_soak_args`], [`run_soak_command`],
+/// [`parse_replay_game_args`] and [`run_replay_game`].
 pub fn main_with_args(args: &[String]) -> Result<String, CliError> {
     if args.first().map(String::as_str) == Some("soak") {
         let soak = parse_soak_args(&args[1..])?;
         return run_soak_command(&soak);
+    }
+    if let Some((bundle, file)) = parse_replay_game_args(args)? {
+        let handle = std::thread::Builder::new()
+            .name("pin_sim".into())
+            .stack_size(SIM_THREAD_STACK_BYTES)
+            .spawn(move || run_replay_game(&bundle, &file))
+            .map_err(|e| CliError::Failed(format!("cannot start the sim thread: {e}")))?;
+        let r = handle
+            .join()
+            .map_err(|_| CliError::Failed("the sim thread panicked".into()))??;
+        return Ok(r.to_string());
     }
     let cmd = parse_args(args)?;
     let handle = std::thread::Builder::new()
