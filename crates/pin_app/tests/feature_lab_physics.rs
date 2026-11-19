@@ -169,6 +169,73 @@ fn the_backbox_flipper_flips_a_ball_on_layer_4() {
     });
 }
 
+/// A layer-4 ball released at `q` (backbox plane `[u, depth, v]`, mm) with
+/// velocity `v` (table frame, m/s), as a flipped ball that falls back over
+/// the entry channel's wall, runs `ticks` ticks; returns whether it came
+/// back to layer 0, whether it left the sim through a trough, and the
+/// escape count.
+fn drop_into_entry_channel(dir: &Path, q: [f32; 3], v: [f32; 3], ticks: u32) -> (bool, bool, u32) {
+    let f = frame();
+    let mut s = load_dir(dir);
+    let h = s
+        .spawn_ball_on_layer("standard_steel", 4, to_table(&f, q), v)
+        .unwrap();
+    let mut on_0 = false;
+    for _ in 0..ticks {
+        s.advance(1);
+        match s.ball(h) {
+            Some(b) => on_0 |= b.layer == 0,
+            None => break,
+        }
+    }
+    let troughs = s.switch_hits("trough_1").unwrap() + s.switch_hits("trough_2").unwrap();
+    (on_0, troughs >= 1, s.counters().balls_escaped)
+}
+
+/// `bb_catch` is still needed with the VUK exit on layer 4: a backbox ball
+/// that falls back through the entry hole returns to the playfield and
+/// drains; without the zone it falls out of the table.
+#[test]
+fn a_ball_falling_back_through_the_entry_hole_returns_to_the_playfield() {
+    on_big_stack(|| {
+        let q = [-155.0, 17.5, 80.0];
+        let (on_0, drained, escaped) = drop_into_entry_channel(bundle(), q, [0.0; 3], 20_000);
+        assert!(on_0, "back on layer 0");
+        assert!(drained, "through a trough switch");
+        assert_eq!(escaped, 0);
+        let without = edited("no_bb_catch", |t| {
+            t.layer_transitions.retain(|z| z.id != "bb_catch");
+        });
+        let (on_0, _, escaped) = drop_into_entry_channel(&without, q, [0.0; 3], 20_000);
+        assert!(
+            !on_0 && escaped >= 1,
+            "without bb_catch the ball is lost: on_0 {on_0}, escaped {escaped}"
+        );
+    });
+}
+
+/// No ball rests in the entry channel: one dropped anywhere across it
+/// (against the box's left side included) falls through the hole, and one
+/// that falls through moving towards the player (up to 0.6 m/s) is still
+/// caught by `bb_catch` and drains.
+#[test]
+fn no_ball_rests_or_escapes_in_the_entry_channel() {
+    on_big_stack(|| {
+        for u in [-186.5f32, -182.0, -170.0, -150.0, -130.0] {
+            for toward in [0.0f32, 0.3, 0.6] {
+                let n = frame().normal();
+                let v = [n.x * toward, n.y * toward, n.z * toward];
+                let (on_0, drained, escaped) =
+                    drop_into_entry_channel(bundle(), [u, 17.5, 60.0], v, 20_000);
+                assert!(
+                    on_0 && drained && escaped == 0,
+                    "u {u} toward {toward}: on_0 {on_0}, drained {drained}, escaped {escaped}"
+                );
+            }
+        }
+    });
+}
+
 /// Positions (mm) of a ball spawned at `p` on `layer`, per tick.
 fn path(dir: &Path, balls: &[(u8, [f32; 3])], ticks: u32) -> Vec<Vec<[f32; 3]>> {
     let mut s = load_dir(dir);

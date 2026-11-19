@@ -6,14 +6,15 @@
 
 mod feature_lab_support;
 
-use feature_lab_support::build::{parse_hex, vuk_aim};
+use feature_lab_support::build::{VUK_LATERAL_M_S, VUK_RISE_M_S, parse_hex, vuk_eject};
 use feature_lab_support::*;
 use pin_app::orchestrator::load_validated;
 use pin_assets::{Vfs, load_gltf, load_table};
 use pin_core::schema::table::{FlipperShapeDef, FlipperStagingDef, MechKind, TableManifest};
 use pin_sim::SimConfig;
-use pin_tablegen::backbox::{BackboxFrame, parse_backbox_layout};
+use pin_tablegen::backbox::{BackboxFrame, generate_backbox, parse_backbox_layout};
 use pin_tablegen::clearance::validate_bundle;
+use pin_tablegen::layout::parse_layout;
 use proptest::prelude::*;
 
 fn manifest() -> TableManifest {
@@ -341,30 +342,58 @@ fn glass_clears_the_playfield_geometry() {
     assert!(h - max_z < 27.0, "{h} - {max_z}");
 }
 
+/// C5: the backbox VUK keeps the generator's exit (layer 4, just above the
+/// entry hole, inside the box); only its eject is set.
 #[test]
-fn the_vuk_exit_lies_under_the_entry_hole_on_the_playfield() {
+fn the_vuk_keeps_its_generated_exit_on_layer_4() {
     let t = manifest();
-    let text = std::fs::read_to_string(feature_lab_src().join("backbox_layout.toml")).unwrap();
-    let bb = parse_backbox_layout(&text).unwrap().backbox;
+    let src = feature_lab_src();
+    let read = |f: &str| std::fs::read_to_string(src.join(f)).unwrap();
+    let base = TableManifest::from_toml_str(&read("table.toml")).unwrap();
+    let playfield =
+        pin_tablegen::generate(&parse_layout(&read("layout.toml")).unwrap(), &base).unwrap();
+    let bb = parse_backbox_layout(&read("backbox_layout.toml"))
+        .unwrap()
+        .backbox;
+    let generated = generate_backbox(&bb, &playfield.table).unwrap();
+    let find = |m: &TableManifest| {
+        m.mechs
+            .iter()
+            .find(|x| x.id == "tablegen:backbox.vuk")
+            .cloned()
+            .unwrap()
+    };
+    let (got, gen_vuk) = (find(&t), find(&generated.table));
+    assert_eq!(got.layer.unwrap_or(0), 0);
+    assert_eq!(got.exit_layer, Some(4));
+    assert_eq!(got.exit_layer, gen_vuk.exit_layer);
+    assert_eq!(got.exit_offset, gen_vuk.exit_offset);
+    assert_eq!(got.position, gen_vuk.position);
+    for z in &generated.table.layer_transitions {
+        assert!(t.layer_transitions.contains(z), "generated {} kept", z.id);
+    }
+    // The exit is over the entry hole, inside the box, above the shelf.
     let frame = BackboxFrame::new(bb.origin, t.meta.pitch_deg);
-    let (exit, eject, _, _) = vuk_aim(&frame, bb.entry.at, bb.depth);
-    assert!(
-        (exit[2] - 13.5).abs() < 1.0e-3,
-        "on the playfield: {exit:?}"
-    );
-    assert!((exit[0] - (bb.origin[0] + bb.entry.at)).abs() <= 0.5 * bb.entry.width.max(40.0));
-    assert!(eject > 0.0);
-    let entry = t
-        .layer_transitions
-        .iter()
-        .find(|z| z.id == "tablegen:backbox.entry")
-        .unwrap();
-    assert!(exit[0] > entry.zone.min[0] && exit[0] < entry.zone.max[0]);
-    assert!(exit[1] > entry.zone.min[1] && exit[1] < entry.zone.max[1]);
-    assert!(
-        exit[2] < entry.zone.min[2],
-        "the ball starts below the zone"
-    );
+    let p = got.position.unwrap();
+    let o = got.exit_offset.unwrap();
+    let e = [
+        (p[0] + o[0]) * 1.0e-3 - frame.origin_m.x,
+        (p[1] + o[1]) * 1.0e-3 - frame.origin_m.y,
+        (p[2] + o[2]) * 1.0e-3 - frame.origin_m.z,
+    ];
+    let (n, up) = (frame.normal(), frame.up());
+    let u = e[0] * 1.0e3;
+    let depth = -(e[0] * n.x + e[1] * n.y + e[2] * n.z) * 1.0e3;
+    let v = (e[0] * up.x + e[1] * up.y + e[2] * up.z) * 1.0e3;
+    assert!((u - bb.entry.at).abs() <= 0.5 * bb.entry.width, "u {u}");
+    assert!(depth > 13.0 && depth < bb.depth - 13.0, "depth {depth}");
+    assert!(v > 13.5 && v < 30.0, "v {v}");
+    // The eject is set and points up the box.
+    let (eject, angle, kick) = vuk_eject(&frame);
+    assert_eq!(got.eject_speed_m_s, Some(eject));
+    assert_eq!(got.angle_deg, Some(angle));
+    assert_eq!(got.kick_speed_m_s, Some(kick));
+    assert!(eject > 1.5);
 }
 
 proptest! {
@@ -401,15 +430,18 @@ proptest! {
     /// The VUK's eject velocity lies in the backbox plane (no component
     /// towards the glass) for any entry hole and pitch.
     #[test]
-    fn vuk_aim_stays_in_the_backbox_plane(at in -180.0f32..180.0, pitch in 0.0f32..15.0) {
+    fn vuk_eject_stays_in_the_backbox_plane(pitch in 0.0f32..15.0) {
         let frame = BackboxFrame::new([257.0, 900.0, 110.0], pitch);
-        let (exit, eject, angle, kick) = vuk_aim(&frame, at, 35.0);
+        let (eject, angle, kick) = vuk_eject(&frame);
         let a = angle.to_radians();
         let v = [kick * a.cos(), kick * a.sin(), eject];
         let n = frame.normal();
         let towards_glass = v[0] * n.x + v[1] * n.y + v[2] * n.z;
         prop_assert!(towards_glass.abs() < 1.0e-4, "{}", towards_glass);
-        prop_assert!((exit[2] - 13.5).abs() < 1.0e-3);
+        let up = frame.up();
+        let rise = v[0] * up.x + v[1] * up.y + v[2] * up.z;
+        prop_assert!((rise - VUK_RISE_M_S).abs() < 1.0e-4, "{}", rise);
+        prop_assert!((v[0] - VUK_LATERAL_M_S).abs() < 1.0e-4, "{}", v[0]);
         prop_assert!(eject > 0.0 && kick > 0.0);
     }
 }
