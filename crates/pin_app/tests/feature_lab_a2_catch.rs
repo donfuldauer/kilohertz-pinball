@@ -178,22 +178,28 @@ fn bb_catch_left_is_left_of_the_hole_in_the_orbit_lane() {
         assert!(!overlap, "{id} overlaps bb_catch_left");
     }
     // The zone hands a ball back over the orbit lane: the middle of its
-    // footprint is inside the lane, and no corner is beyond the outer rail
-    // (a ball centre there would at most touch the rail from the lane
-    // side). The sweep above checks no returned ball ends in the pocket.
+    // footprint is inside the lane, and every corner and a few points along
+    // each edge are within the lane's half width of its centre line (no ball
+    // radius added) and outside the closed pocket.
     let mid = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
     let (d, _) = orbit_offset(mid);
     assert!(
         d < ORBIT_HALF_WIDTH,
         "middle {mid:?} is {d} mm off the lane"
     );
-    for x in [min[0], max[0]] {
-        for y in [min[1], max[1]] {
-            let (d, _) = orbit_offset([x, y]);
-            assert!(
-                d < ORBIT_HALF_WIDTH + R * 1.0e3,
-                "corner ({x}, {y}): {d} mm"
-            );
-        }
+    let mut pts = Vec::new();
+    for i in 0..=4 {
+        let f = i as f32 / 4.0;
+        let x = min[0] + (max[0] - min[0]) * f;
+        let y = min[1] + (max[1] - min[1]) * f;
+        pts.extend([[x, min[1]], [x, max[1]], [min[0], y], [max[0], y]]);
+    }
+    for p in pts {
+        let (d, _) = orbit_offset(p);
+        assert!(!in_pocket(p), "{p:?} is in the closed pocket ({d} mm)");
+        assert!(
+            d <= ORBIT_HALF_WIDTH,
+            "{p:?} is {d} mm off the lane centre line"
+        );
     }
 }
