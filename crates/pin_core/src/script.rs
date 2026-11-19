@@ -2,8 +2,10 @@
 //!
 //! Scripts read the world through [`HostView`], draw randomness from the
 //! sim-owned [`Pcg32`], and act only by pushing commands into the fixed-capacity
-//! [`HostCommandQueue`], which the sim applies and clears every tick. Nothing
-//! here allocates after construction.
+//! [`HostCommandQueue`], which the sim applies in tick step 3 and clears at the
+//! start of the next script step (it stays readable until then through
+//! `pin_sim::Simulation::last_commands()`). Nothing here allocates after
+//! construction.
 
 use crate::Pcg32;
 use crate::ids::{
@@ -92,8 +94,10 @@ impl fmt::Display for QueueOverflow {
 
 impl std::error::Error for QueueOverflow {}
 
-/// Commands a script issues during one callback, applied by the sim in tick
-/// step 3 and then cleared. Capacities are fixed (D5).
+/// Commands a script issues during one callback. The sim applies them in tick
+/// step 3 and clears the queue at the start of the next script step, so after
+/// a tick the queue still holds that tick's commands (`Simulation::last_commands()`).
+/// Capacities are fixed (D5).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HostCommandQueue {
     /// `(coil, duration_ms)`.
