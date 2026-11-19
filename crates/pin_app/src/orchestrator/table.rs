@@ -16,7 +16,9 @@ use pin_input::haptics::HapticsProducer;
 use pin_render::debug::DebugLine;
 use pin_sim::load::BundleSnapshot;
 use pin_sim::{SimConfig, Simulation};
-use pin_tablegen::clearance::{ClearanceError, validate_clearance};
+use pin_tablegen::clearance::{
+    ClearanceError, load_backbox_colliders, validate_clearance_with_backbox,
+};
 use std::path::Path;
 
 /// A bundle that passed [`validate_table`].
@@ -69,7 +71,9 @@ pub fn validate_snapshot(name: &str, snapshot: BundleSnapshot) -> Result<Validat
     let table = load_table(vfs).map_err(|e| format!("table {name}: {e}"))?;
     let scene = load_gltf(vfs, &table.manifest.meta.playfield_mesh)
         .map_err(|e| format!("table {name}: {e}"))?;
-    let report = validate_clearance(&table, &scene);
+    // A generated backbox's colliders (layer 4) carry the VUK exit surface.
+    let backbox = load_backbox_colliders(vfs).map_err(|e| format!("table {name}: {e}"))?;
+    let report = validate_clearance_with_backbox(&table, &scene, backbox.as_ref());
     if !report.is_ok() {
         let lines: Vec<String> = report.errors.iter().map(clearance_line).collect();
         return Err(format!(

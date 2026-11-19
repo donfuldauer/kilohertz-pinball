@@ -1,0 +1,20 @@
+# Apex Circuit backglass: the 4.6 placeholder kit's translite art (written
+# into the bundle by pin_assetgen, title "Apex Circuit") and a DMD score
+# display.
+schema_version = 1
+
+[translite]
+layers = [
+  { file = "backglass/base.png", depth = 0 },
+  { file = "backglass/logo.png", depth = 1, lamp_mask = "bg_logo" },
+]
+
+[[lamp_masks]]
+id = "bg_logo"
+lamp = "backglass_logo"
+file = "backglass/logo_mask.png"
+
+[score_display]
+mode = "dmd"
+dmd = { width = 128, height = 32, color = "orange" }
+lcd = { width = 1920, height = 1080 }
