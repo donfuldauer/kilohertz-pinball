@@ -111,6 +111,9 @@ impl Simulation {
         // Rule 4: the Lua VM's arena allocations are exempt from the guard;
         // the scope covers the script calls only, never engine code.
         let lua = matches!(self.script, Script::Lua(_));
+        // The previous tick's queue (kept for `last_commands`) is dropped
+        // here, before the first script call; clearing keeps the capacity.
+        self.cmd.clear();
         let mut ctx = HostCtx {
             view: &self.view,
             rng: &mut self.rng,
@@ -374,5 +377,95 @@ mod tests {
         assert!(!bit(&b, 300));
         set_bit(&mut b, 200, false);
         assert_eq!(b, [0; 4]);
+    }
+
+    /// A copy of the 2.5 replay fixture whose rules emit different commands
+    /// on consecutive ticks; removed on drop.
+    struct Bundle(std::path::PathBuf);
+
+    impl Drop for Bundle {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const RULES: &str = r#"
+local t = 0
+function on_init()
+  pinball.set_score(1, 7)
+end
+function on_switch(id, closed)
+  if closed and id == pinball.sw.bumper_ring then
+    pinball.set_score(1, 1000)
+  end
+end
+function on_tick()
+  t = t + 1
+  if t % 2 == 1 then
+    pinball.set_score(1, t)
+  else
+    pinball.set_lamp(pinball.lamp.blink_lamp, 1)
+  end
+end
+"#;
+
+    fn bundle() -> Bundle {
+        let from =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/replay_table");
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "pin_sim_last_commands_{}_{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let guard = Bundle(dir);
+        for e in std::fs::read_dir(&from).unwrap() {
+            let p = e.unwrap().path();
+            std::fs::copy(&p, guard.0.join(p.file_name().unwrap())).unwrap();
+        }
+        std::fs::write(guard.0.join("rules.lua"), RULES).unwrap();
+        guard
+    }
+
+    #[test]
+    fn last_commands_hold_the_last_tick_queue_only() {
+        let b = bundle();
+        let mut sim = Simulation::load(&b.0, crate::SimConfig::default()).expect("load");
+        let blink = pin_core::ids::LampId(
+            sim.ids()
+                .get(pin_assets::IdKind::Lamp, "blink_lamp")
+                .expect("blink_lamp"),
+        );
+        // After load: on_init's commands (applied, and still visible).
+        assert_eq!(sim.last_commands().scores.as_slice(), &[(0, 7)]);
+        assert!(sim.last_commands().lamps.is_empty());
+        assert_eq!(sim.score(0), Some(7));
+        let mut out = Box::new(FrameStateSnapshot::default());
+        // Tick 1: on_tick's score only (on_init's report is gone).
+        sim.step_1ms(1, &[], &mut out);
+        assert_eq!(sim.last_commands().scores.as_slice(), &[(0, 1)]);
+        assert!(sim.last_commands().lamps.is_empty());
+        // Tick 2: the lamp only; tick 1's score is not carried over.
+        sim.step_1ms(2, &[], &mut out);
+        assert!(sim.last_commands().scores.is_empty());
+        assert_eq!(sim.last_commands().lamps.as_slice(), &[(blink, 1.0)]);
+        // Tick 3: an edge first, then on_tick, in queue order.
+        sim.set_switch("bumper_ring", true).unwrap();
+        sim.step_1ms(3, &[], &mut out);
+        assert_eq!(sim.last_commands().scores.as_slice(), &[(0, 1000), (0, 3)]);
+        assert!(sim.last_commands().lamps.is_empty());
+        assert_eq!(sim.score(0), Some(3), "the queue was applied in order");
+        // Reading the queue changes nothing: a twin run without reads
+        // reaches the same state hash.
+        let mut twin = Simulation::load(&b.0, crate::SimConfig::default()).expect("load");
+        for t in 1..=3 {
+            if t == 3 {
+                twin.set_switch("bumper_ring", true).unwrap();
+            }
+            twin.step_1ms(t, &[], &mut out);
+        }
+        assert_eq!(twin.state_hash(), sim.state_hash());
     }
 }
