@@ -1,7 +1,7 @@
 //! Geometry helpers of the clearance validator (setup-time, `f64`).
 
 use glam::{DVec2, DVec3, Vec3};
-use pin_assets::GltfScene;
+use pin_assets::{GltfScene, MeshData};
 use pin_physics::world::CubicSpline;
 
 /// `|n·z|` at and above which a triangle is walkable (within 45° of level).
@@ -135,25 +135,33 @@ pub(super) fn closest_on_triangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> DVe
 /// applied; default layer 0, as the engine builds them).
 pub(super) fn collider_triangles(scene: &GltfScene) -> Vec<Tri> {
     let mut out = Vec::new();
-    append_collider_triangles(scene, 0, 0, &mut out);
+    append_collider_triangles(
+        scene,
+        |m| {
+            m.extras
+                .collider
+                .then(|| m.extras.collision_layer.unwrap_or(0))
+        },
+        0,
+        &mut out,
+    );
     out
 }
 
-/// Appends the collider triangles of `scene` to `out` as
-/// [`collider_triangles`] builds them, with `default_layer` for nodes that
-/// name no `collision_layer` and `mesh_offset` added to every
-/// [`Tri::mesh`] (so the triangles of a second scene keep distinct mesh
-/// indices).
+/// Appends the triangles of every mesh of `scene` to which `layer_of`
+/// gives a layer (`None` skips the mesh), built as [`collider_triangles`]
+/// builds them, with `mesh_offset` added to every [`Tri::mesh`] (so the
+/// triangles of a second scene keep distinct mesh indices).
 pub(super) fn append_collider_triangles(
     scene: &GltfScene,
-    default_layer: u8,
+    layer_of: impl Fn(&MeshData) -> Option<u8>,
     mesh_offset: usize,
     out: &mut Vec<Tri>,
 ) {
     for (mi, mesh) in scene.meshes.iter().enumerate() {
-        if !mesh.extras.collider {
+        let Some(layer) = layer_of(mesh) else {
             continue;
-        }
+        };
         let m = &mesh.transform;
         let tf = |p: [f32; 3]| -> DVec3 {
             let mut o = [0.0f64; 3];
@@ -165,7 +173,6 @@ pub(super) fn append_collider_triangles(
             }
             DVec3::from_array(o)
         };
-        let layer = mesh.extras.collision_layer.unwrap_or(default_layer);
         for t in mesh.indices.chunks_exact(3) {
             let get = |i: u32| mesh.positions.get(i as usize).copied();
             let (Some(a), Some(b), Some(c)) = (get(t[0]), get(t[1]), get(t[2])) else {
