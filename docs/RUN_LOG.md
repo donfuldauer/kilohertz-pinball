@@ -464,3 +464,13 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 7 | **Wave 7 gate** | Orchestrator | — | CI run 791 (4e0f3ad) | **green** | all CI jobs green on main (https://github.com/donfuldauer/kilohertz-pinball/actions/runs/44534660320); Gate A2 PASS at 106e7e4 (run 2 above); 4e0f3ad differs from 106e7e4 only by the test-only import fix in #66 | Passed: 6.1 (#55), fix-15 (#57), fix-2.8 (#56), 6.4 (#58), fix-2.9 (#59), 6.2 (#60), Gate A2 runner (#61), LongBall (#62), fix-6.4-a2 (#63), fix-6.2-a2 (#64), Windows clippy (#66) |
 
 **Wave 7 gate: green** at 4e0f3ad (CI run 791; Gate A2 PASS at 106e7e4).
+
+| 8 | all | Classifier | Sonnet 5.5 | — | routed | — | Wave 8 batch: 6.3 Implementer, 6.3 Tester, 7.1 Implementer T2 Opus 5.5; 7.1 Tester T1 Sonnet 5.5; FABLE_ALLOWANCE unknown, no Fable (D34); 7.1 soak covers apex_circuit, sky_deck, feature_lab; new workflows rules-wasm.yml (6.3) and soak.yml (7.1) |
+| 8 | 6.3 | Implementer | Opus 5.5 | 1 | done | 3 guest crates + committed rules.wasm (20560/11768/15490 B); rebuild byte-identical; wasm_ports_* 8/8 | wasm32 target added to pinned 1.97.0; sky_deck build.sh copy is opt-in (queue 6.3-sky-deck-build-sh) |
+| 8 | 6.3 | Independent Tester | Opus 5.5 | 1 | done | spec_6_3_* 25 tests (parity, replay, modules, prop) | written before the ports existed; first real run by the verifier |
+| 8 | 6.3 | Verifier | Sonnet 5.5 | 1 | pass (60d68e0) | 31/31 new tests; existing table suites green | spec_6_4_alloc not run (long, unchanged); coverage not measured (no cargo-llvm-cov) |
+| 8 | 6.3 CR r1 | Investigator | Opus 5.5 | 1 | done | E valid-defect (post-tick view fed to standalone backends); C/F valid (gate, not unconditional); P deferred | — |
+| 8 | 6.3 CR r1 | Fixer | Opus 5.5 + Sonnet 5.5 | 1 | done (60d8289) | pin_sim `Simulation::last_commands()`; both replay harnesses compare the sims' own queues; mutant passes old harness, fails new at tick 10; build.sh stale-wasm removal, CDPATH, PIN_REQUIRE_WASM32 gate, workflow test list | T2 via classifier (2 groups); pin_sim path granted (R1); state_hash/replays unchanged |
+| 8 | 6.3 CR r2–r3 | Fixer | Sonnet 5.5 | 2 | done (8cf2a8f, 4623141) | workflow reader: inline comments stripped, `cmp` only in command position; rustc probe failure always fails | triage T1 |
+| 8 | 6.3 | Verifier | Sonnet 5.5 | 4 | pass (4623141) | spec_6_3_modules 7/7, wasm_ports_rebuild 5/5 | — |
+| 8 | **6.3 PR #67** | Orchestrator | — | — | **merged 1f0771b** | CI green (incl. rules-wasm), CodeRabbit approved 4623141, 12/12 threads resolved | CodeRabbit: 15 fixed, 2 deferred (6.3-save-blob-fingerprint, 6.3-ci-path-filters), 0 not-a-defect; 3 follow-up rounds on the cmp check |
