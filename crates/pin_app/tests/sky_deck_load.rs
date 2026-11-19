@@ -12,7 +12,6 @@ use pin_core::schema::table::{FlipperShapeDef, FlipperStagingDef, MechKind, Swit
 use pin_sim::SimConfig;
 use sky_deck_support::{on_big_stack, scratch, sky_deck_bundle, sky_deck_src};
 use std::collections::BTreeSet;
-use std::process::Command;
 
 #[test]
 fn sky_deck_validates_with_no_warnings() {
@@ -305,7 +304,7 @@ fn file_set(dir: &std::path::Path) -> BTreeSet<String> {
 fn build_sh_output_matches_the_helper_bundle() {
     let out = scratch("sky_deck_build_sh");
     let root = sky_deck_src().join("../..");
-    let status = Command::new("sh")
+    let status = std::process::Command::new("sh")
         .arg(sky_deck_src().join("build.sh"))
         .arg(&out)
         .current_dir(&root)
