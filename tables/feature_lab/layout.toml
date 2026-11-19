@@ -105,9 +105,14 @@ points = [[73.53804, 658.2306], [111.5, 724.0], [55.695015, 752.3393]]
 material = "wood"
 
 # walls[12]: guard 2 mm behind the back of sling_left (grey-box "loop 3"):
-# a ball rolling down the left inlane cannot touch the sling's back.
+# a ball rolling down the left inlane cannot touch the sling's back. Guard
+# and sling sit 30 mm further out (along walls[3]'s normal) than on the
+# grey-box: the inlane is 75.6 mm wide at the guard's top (45.6 mm before),
+# so two balls arriving together (the magnet comparison balls) no longer
+# wedge across the mouth (Gate A2 run 1 StuckBall,
+# docs/decisions/2026-11-19-6.4-a2fix.md "6.4-a2-inlane").
 [[walls]]
-points = [[63.87, 329.40], [124.67, 242.57]]
+points = [[85.49, 350.20], [146.29, 263.37]]
 material = "wood"
 
 # walls[13]: ramp on the orbit's lower rail at its right end (grey-box
@@ -138,4 +143,16 @@ material = "wood"
 # walls[14] (61.7 degree opening).
 [[walls]]
 points = [[0.0, 100.0], [130.0, 30.0]]
+material = "wood"
+
+# walls[16]: the shooter-lane gate (6.4-a2fix), closing the 70 mm gap
+# between walls[1]'s top (470, 930) and walls[2] at x 470 (y 1000). It is
+# the collider of the gate mech "walls[16]" on lane_gate_coil (table.toml):
+# solid by default, open while the rules pulse the coil (1.5 s with every
+# plunger pulse), so a plunged ball still leaves the lane through the gap,
+# but a ball kicked up the right by the bumpers can no longer re-enter the
+# lane from the top and be plunged again (Gate A2 run 1: EndlessBall).
+# Appended last so walls[0..15] keep their indices.
+[[walls]]
+points = [[470.0, 930.0], [470.0, 1000.0]]
 material = "wood"
