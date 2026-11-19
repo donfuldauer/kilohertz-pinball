@@ -178,7 +178,7 @@ fn readers_see_writers_on_other_threads() {
     // Reads while writing never fail and stay ordered.
     for _ in 0..20 {
         let s = reader.snapshot();
-        assert!(s.tick.p50 <= s.tick.p99 && s.tick.p99 <= s.tick.max.max(s.tick.p99));
+        assert!(s.tick.p50 <= s.tick.p99 && s.tick.p99 <= s.tick.max);
     }
     t.join().unwrap();
     g.join().unwrap();

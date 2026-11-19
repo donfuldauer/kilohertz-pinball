@@ -6,11 +6,18 @@ use pin_app::profiler::{CommandQueueOverflows, ProfiledSim, Profiler};
 use pin_core::{CabinetAxis, CabinetInput, FrameStateSnapshot, InputEvent, SimStep};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 struct Counting;
-static ALLOCS: AtomicU64 = AtomicU64::new(0);
-thread_local! { static ARMED: Cell<bool> = const { Cell::new(false) }; }
+thread_local! {
+    static ARMED: Cell<bool> = const { Cell::new(false) };
+    static ALLOCS: Cell<u64> = const { Cell::new(0) };
+}
+
+fn bump() {
+    if armed() {
+        let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+    }
+}
 
 fn armed() -> bool {
     ARMED.try_with(Cell::get).unwrap_or(false)
@@ -18,18 +25,14 @@ fn armed() -> bool {
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        if armed() {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
+        bump();
         unsafe { System.alloc(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
         unsafe { System.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
-        if armed() {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
+        bump();
         unsafe { System.realloc(p, l, n) }
     }
 }
@@ -38,11 +41,11 @@ unsafe impl GlobalAlloc for Counting {
 static GLOBAL: Counting = Counting;
 
 fn guarded<R>(f: impl FnOnce() -> R) -> (R, u64) {
-    let before = ALLOCS.load(Ordering::Relaxed);
+    let before = ALLOCS.with(Cell::get);
     ARMED.with(|a| a.set(true));
     let r = f();
     ARMED.with(|a| a.set(false));
-    (r, ALLOCS.load(Ordering::Relaxed) - before)
+    (r, ALLOCS.with(Cell::get) - before)
 }
 
 struct Toy(u64);
@@ -60,7 +63,7 @@ impl CommandQueueOverflows for Toy {
 
 #[test]
 fn recording_a_million_samples_does_not_allocate() {
-    let (_, n) = guarded(|| Box::new(1u8));
+    let (_, n) = guarded(|| std::hint::black_box(Box::new(1u8)));
     assert!(n >= 1, "allocator guard not armed");
 
     let mut p = Profiler::new();
