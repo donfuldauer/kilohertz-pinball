@@ -367,6 +367,45 @@ class VerdictTest(unittest.TestCase):
             {"kind": "StuckBall", "subject": "x", "game": 3, "tick": 9, "detail": "d"})
         self.check_fail("apex_circuit", "A2.1a zero stuck/endless/escaped/non-finite balls [expert]")
 
+    # fix-a2-longball: LongBall is reported, never failing; the ball kinds
+    # still fail A2.1a.
+    def test_long_ball_is_reported_not_failing(self):
+        self.out.reports[("apex_circuit", "expert")]["findings"].append(
+            {"kind": "LongBall", "subject": "newton_sw", "game": 450, "tick": 300075, "detail": "d"})
+        rc, lines, vlines, rows = self.out.run()
+        self.assertEqual(lines[-1], "GATE A2: PASS", "\n".join(lines))
+        self.assertEqual(rc, 0)
+        a21a = [r for r in rows if r[1] == "apex_circuit"
+                and r[2] == "A2.1a zero stuck/endless/escaped/non-finite balls [expert]"]
+        self.assertEqual([r[0] for r in a21a], ["PASS"])
+        lb = [r for r in rows if r[1] == "apex_circuit" and r[2].startswith("A2.1a long balls")]
+        self.assertEqual(len(lb), 3, lb)
+        self.assertTrue(all(r[0] == "REPORT" for r in lb), lb)
+        exp = [r for r in lb if r[2].endswith("[expert]")]
+        self.assertEqual(
+            exp,
+            [("REPORT", "apex_circuit",
+              "A2.1a long balls (>300 s, drained, broad play; reported, not failing) [expert]",
+              "LongBall=1 (newton_sw)")])
+        std = [r for r in lb if r[2].endswith("[standard]")]
+        self.assertEqual(std[0][3], "LongBall=0")
+        # Every table and skill has the row.
+        for t in TABLES:
+            self.assertEqual(len([r for r in rows if r[1] == t and r[2].startswith("A2.1a long balls")]), 3)
+
+    def test_endless_ball_still_fails_with_a_long_ball(self):
+        f = self.out.reports[("apex_circuit", "expert")]["findings"]
+        f.append({"kind": "LongBall", "subject": "x", "game": 1, "tick": 9, "detail": "d"})
+        f.append({"kind": "EndlessBall", "subject": "y", "game": 2, "tick": 9, "detail": "d"})
+        rows = self.check_fail("apex_circuit", "A2.1a zero stuck/endless/escaped/non-finite balls [expert]")
+        fail = [r for r in rows if r[0] == "FAIL"][0]
+        self.assertIn("EndlessBall=1", fail[3])
+
+    def test_endless_ball_alone_fails(self):
+        self.out.reports[("feature_lab", "standard")]["findings"].append(
+            {"kind": "EndlessBall", "subject": "y", "game": 2, "tick": 9, "detail": "d"})
+        self.check_fail("feature_lab", "A2.1a zero stuck/endless/escaped/non-finite balls [standard]")
+
     def test_escaped_counter(self):
         self.out.reports[("sky_deck", "novice")]["counters"]["balls_escaped"] = 1
         self.check_fail("sky_deck", "A2.1a zero stuck/endless/escaped/non-finite balls [novice]")

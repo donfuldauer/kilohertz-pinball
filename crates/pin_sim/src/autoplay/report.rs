@@ -17,7 +17,9 @@
 //! EndlessBall, EscapedBall, NonFinite, ScriptError, QueueOverflow) or the coverage is
 //! incomplete: a declared switch never hit (UnreachableSwitch), a shot never
 //! completed (ShotCoverage) or a mode never observed started
-//! (ModeCoverage). TickBudget is wall-clock and lives in the timing section;
+//! (ModeCoverage). LongBall (a ball past the endless limit that drained
+//! naturally after broad play) is reported but never fails the soak.
+//! TickBudget is wall-clock and lives in the timing section;
 //! it is reported but never fails the soak (it is not reproducible across
 //! machines; Gate A1 checks it separately).
 //!
@@ -59,6 +61,10 @@ pub enum FindingKind {
     /// A ball on the table for longer than the endless-ball limit (default
     /// 300 s), or still in play when its game reached `max_game_ticks`.
     EndlessBall,
+    /// A ball past the endless-ball limit that later drained naturally after
+    /// broad play (many switches in the 60 s window at the limit, none
+    /// dominating). Reported, not failing.
+    LongBall,
     /// A ball left the table's bounds (collider bounds plus a margin, or
     /// below the floor).
     EscapedBall,
@@ -81,9 +87,10 @@ pub enum FindingKind {
 
 impl FindingKind {
     /// Every kind, in report order.
-    pub const ALL: [FindingKind; 10] = [
+    pub const ALL: [FindingKind; 11] = [
         FindingKind::StuckBall,
         FindingKind::EndlessBall,
+        FindingKind::LongBall,
         FindingKind::EscapedBall,
         FindingKind::NonFinite,
         FindingKind::UnreachableSwitch,
@@ -100,6 +107,7 @@ impl FindingKind {
         match self {
             FindingKind::StuckBall => "StuckBall",
             FindingKind::EndlessBall => "EndlessBall",
+            FindingKind::LongBall => "LongBall",
             FindingKind::EscapedBall => "EscapedBall",
             FindingKind::NonFinite => "NonFinite",
             FindingKind::UnreachableSwitch => "UnreachableSwitch",
@@ -1122,6 +1130,8 @@ mod tests {
         assert_eq!(FindingKind::from_name("nope"), None);
         assert!(!FindingKind::TickBudget.fails_soak());
         assert!(!FindingKind::TickBudget.is_coverage());
+        assert!(!FindingKind::LongBall.fails_soak());
+        assert!(!FindingKind::LongBall.is_coverage());
         for e in [
             GameEnd::GameOver,
             GameEnd::MaxTicks,
