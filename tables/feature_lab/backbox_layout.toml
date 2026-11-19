@@ -7,9 +7,10 @@
 # the (vertical) backbox. The box stands over the top of the playfield with
 # its shelf 110 mm above it, so both generated transitions lie under the
 # playfield glass (112 mm): the entry zone (60..20 mm under the entry hole)
-# lifts a ball the VUK kicks straight up from the playfield onto layer 4,
-# and the drain zone (80..30 mm under the drain hole) hands a ball back to
-# layer 0, which drops onto the playfield at about (387, 915).
+# lifts a layer-0 ball that rises through the hole onto layer 4 (the VUK
+# itself puts its ball straight onto layer 4, just above the hole), and the
+# drain zone (80..30 mm under the drain hole) hands a ball back to layer 0,
+# which drops onto the playfield at about (387, 915).
 schema_version = 1
 
 [backbox]
@@ -29,13 +30,17 @@ coil = "bb_flipper_coil"
 eos_switch = "bb_flipper_eos"
 staging = { type = "DedicatedButton", input = "left_upper" }
 
-# Under the left end of the box (a 60 mm hole, table x 77..137, y ~906). The VUK at the
-# top of the main playfield's VUK lane kicks the ball up through it (the
-# build example aims the generated VUK; README "Backbox").
+# Under the left end of the box (a 70 mm hole, u -190..-120, table x
+# 67..137, y ~906). The VUK at the top of the main playfield's VUK lane
+# puts the ball just above it on layer 4 and ejects it up the entry channel
+# (the build example sets the generated VUK's eject; README "Backbox"). The
+# shelf left of the hole is 10 mm wide, less than a ball's radius: a ball
+# against the box's left side (centre u -186.5) is over the hole, so no
+# ball can rest in the channel.
 [backbox.entry]
 vuk = [425.0, 622.0]
-at = -150.0
-width = 60.0
+at = -155.0
+width = 70.0
 coil = "bb_vuk_coil"
 switch = "bb_vuk_sw"
 

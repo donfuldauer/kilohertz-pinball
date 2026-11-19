@@ -55,10 +55,10 @@ generation runs in the `build_feature_lab` example of `pin_app`
 (`cargo run -q -p pin_app --example build_feature_lab -- <out_dir>`), which
 uses the `pin_tablegen` library: `layout.toml` gives `playfield.glb`,
 `backbox_layout.toml` gives `backbox.glb` and `backbox_colliders.glb`, both
-merged into one `table.toml` (the generated backbox VUK is aimed up through
-the generated entry transition, `aim_backbox_vuk` in the example: the 2.8
-validator cannot check a VUK exit on the backbox layer; see the decisions
-file). The example then copies the
+merged into one `table.toml` (the generated backbox VUK keeps its generated
+exit on layer 4 above the entry hole; `aim_backbox_vuk` in the example only
+sets its eject, which the generator leaves unset; see the decisions file).
+The example then copies the
 rules, backglass, layout, glass and scenes and writes the `pin_assetgen`
 placeholder kit (title "Feature Lab", the table's palette, seed 0).
 `build.sh` finally runs `pin_tablegen validate <out_dir>` (ball clearances of
@@ -93,14 +93,15 @@ tilt.
 * **VUK lane** (x 405..445, right of centre): a ball rolling up it reaches
   the VUK scoop at (425, 622); the rules eject it 0.4 s later into the
   backbox.
-* **Backbox** (layer 4): the VUK kicks the ball straight up from the
-  playfield under the backbox's entry hole; the generated entry transition
-  lifts it onto layer 4 and it rises up the entry channel, lands on the
-  vertical flipper (`left_upper`) or the floor, and leaves down the sloping
-  floor through the drain (opto `bb_drain`) back onto the playfield above
-  `bumper_2`. It drains on its own without a flip. A safety transition
-  `bb_catch` returns a ball that ever falls back through the entry hole to
-  the playfield.
+* **Backbox** (layer 4): the VUK puts the ball on layer 4 at its generated
+  exit, just above the backbox's entry hole, and ejects it at 2.1 m/s up the
+  backbox plane plus 0.35 m/s across it; it rises out of the entry channel,
+  lands on the vertical flipper (`left_upper`) or the floor, and leaves down
+  the sloping floor through the drain (opto `bb_drain`) back onto the
+  playfield above `bumper_2`. It drains on its own without a flip. A safety
+  transition `bb_catch` returns a ball that falls back through the entry
+  hole (a flipped ball that drops into the entry channel) to the
+  playfield.
 * **Holding magnet** `hold_magnet` at (370, 420), on the Banana's line below
   the VUK lane; `magnet_feed` serves comparison balls at rest onto its pole.
 * **XL area**: the chamber under the left inlane, closed to every other
@@ -172,19 +173,29 @@ Release `pin_sim`, `pin_sim soak <bundle> --games 100 --seed 1 --skill
 
 | skill | result | stuck / endless / escaped / non-finite / script error / queue overflow | never-hit switches | shots never made | modes never started | median game length | median score |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| novice | PASS | 0 / 0 / 0 / 0 / 0 / 0 | none | none | none | 87.8 s | 145 085 |
-| standard | PASS | 0 / 0 / 0 / 0 / 0 / 0 | none | none | none | 77.1 s | 118 270 |
-| expert | PASS | 0 / 0 / 0 / 0 / 0 / 0 | none | none | none | 71.6 s | 113 980 |
+| novice | PASS | 0 / 0 / 0 / 0 / 0 / 0 | none | none | none | 87.7 s | 143 730 |
+| standard | PASS | 0 / 0 / 0 / 0 / 0 / 0 | none | none | none | 73.9 s | 113 520 |
+| expert | PASS | 0 / 0 / 0 / 0 / 0 / 0 | none | none | none | 73.4 s | 116 680 |
 
-Mode starts per 100 games (banana_shots, backbox_play, xl_ball,
-magnet_compare, glo_ball): novice 36, 45, 27, 33, 38; standard 31, 31, 15,
-30, 35; expert 39, 35, 21, 24, 34. Every declared shot is made at every
-skill (fewest: `magnet_lane`, 234 at standard). The backbox flipper's EOS
-switch is closed by the bot's own `left_upper` presses (8 to 12 times per
-100 games).
+Measured 2026-11-19 (6.4 fix round 1: VUK exit on layer 4, entry hole
+70 mm, `bb_catch` reaching 100 mm in front of the box). Median score is
+the report's `game score` median; median game length is the median of the
+per-game ticks. Mode starts per 100 games (banana_shots, backbox_play,
+xl_ball, magnet_compare, glo_ball): novice 37, 44, 29, 32, 36; standard
+32, 33, 16, 26, 35; expert 35, 38, 22, 26, 28. Every declared shot is made
+at every skill (fewest: `magnet_lane`, 248 at standard). The backbox
+flipper's EOS switch is closed by the bot's own `left_upper` presses (72,
+37 and 44 times per 100 games). The bot models a flipper in plan view, and
+this flipper's pivot is at the back panel, 13.7 mm behind a ball in the
+box. So the bot sees a backbox ball in the bat's sector only when the ball
+is about 120 mm above the pivot, near the top of the VUK's arc.
 
-The standard median game length (77 s) is inside 60..360 s. Scores do
+The standard median game length (74 s) is inside 60..360 s. Scores do
 **not** rise with skill: the heuristic novice bot plays longer games on this
 table and hits more of everything (VUK lane, backbox, pops); re-weighting
 the points towards flipper shots kept the order (DECISIONS file "6.4 —
 scores by skill (R11e not met)", queue `docs/queue/6.4.md`).
+The same inversion occurs on the Apex and grey-box tables: its cause is the
+autoplay bot's flip timing in `pin_sim` (a 30 ms flip lead plus a one-sided
+0..jitter delay), fixed in the separate unit fix-2.9-bot-timing; the rules
+are not changed for it (queue `docs/queue/6.4.md`).
