@@ -125,7 +125,7 @@ fn coil() -> Vec<[f64; 3]> {
             let u = i as f64 / (n - 1) as f64;
             let a = core::f64::consts::TAU * turns * u;
             let r = r0 + pitch * turns * u;
-            [r * a.cos(), r * a.sin(), 0.0]
+            [r * libm::cos(a), r * libm::sin(a), 0.0]
         })
         .collect()
 }
