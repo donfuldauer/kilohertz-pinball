@@ -260,38 +260,42 @@ for t in $TABLES; do
     echo "   [$t] soak $skill: exit $rc, $(($(now) - t0)) s wall"
   done
 
-  echo "== [$t] A2.4c: $REPLAYS sampled standard games replayed from their recorded bot input, without the bot"
-  recdir="$tdir/soak_standard/recordings"
-  rlog="$tlogs/replay_games.log"
-  : >"$rlog"
-  : >"$tdir/replay_games.tsv"
-  t0="$(now)"
-  i=0
-  while [ "$i" -lt "$REPLAYS" ]; do
-    g=$((i * GAMES / REPLAYS))
-    # recorded_games.tsv: game, file, ticks, state_hash, score (pin_sim).
-    row=""
-    if [ -f "$recdir/recorded_games.tsv" ]; then
-      row="$(awk -F '\t' -v g="$g" '$1 == g "" { print; exit }' "$recdir/recorded_games.tsv" || true)"
-    fi
-    file="" ticks="" sh="" sc="" rh="" rs=""
-    if [ -n "$row" ]; then
-      IFS=$'\t' read -r _ file ticks sh sc <<<"$row" || true
-    fi
-    case "$file" in
-      '' | */* | .*) echo "game $g: no recording listed in $recdir/recorded_games.tsv (file '$file')" >>"$rlog" ;;
-      *)
-        replayed="$("$PIN_SIM" "$tdir/bundle" --replay-game "$recdir/$file" 2>>"$rlog")" || \
-          echo "game $g: pin_sim --replay-game exit $?" >>"$rlog"
-        rh="$(printf '%s\n' "$replayed" | sed -n 's/^state_hash=\([0-9a-f]\{16\}\)$/\1/p' | tail -n 1)"
-        rs="$(printf '%s\n' "$replayed" | sed -nE 's/^score=(none|-?[0-9]+)$/\1/p' | tail -n 1)"
-        echo "game $g: soak $sh/$sc replayed '$replayed'" >>"$rlog"
-        ;;
-    esac
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$g" "$sh" "$rh" "$sc" "$rs" "$ticks" >>"$tdir/replay_games.tsv"
-    i=$((i + 1))
-  done
-  echo "   [$t] A2.4c: $(awk -F '\t' '$3 != "" && $2 == $3 && $4 == $5' "$tdir/replay_games.tsv" | wc -l) of $REPLAYS replayed identically, $(($(now) - t0)) s wall"
+  if [ "$RECORD_GAMES" = "1" ]; then
+    echo "== [$t] A2.4c: $REPLAYS sampled standard games replayed from their recorded bot input, without the bot"
+    recdir="$tdir/soak_standard/recordings"
+    rlog="$tlogs/replay_games.log"
+    : >"$rlog"
+    : >"$tdir/replay_games.tsv"
+    t0="$(now)"
+    i=0
+    while [ "$i" -lt "$REPLAYS" ]; do
+      g=$((i * GAMES / REPLAYS))
+      # recorded_games.tsv: game, file, ticks, state_hash, score (pin_sim).
+      row=""
+      if [ -f "$recdir/recorded_games.tsv" ]; then
+        row="$(awk -F '\t' -v g="$g" '$1 == g "" { print; exit }' "$recdir/recorded_games.tsv" || true)"
+      fi
+      file="" ticks="" sh="" sc="" rh="" rs=""
+      if [ -n "$row" ]; then
+        IFS=$'\t' read -r _ file ticks sh sc <<<"$row" || true
+      fi
+      case "$file" in
+        '' | */* | .*) echo "game $g: no recording listed in $recdir/recorded_games.tsv (file '$file')" >>"$rlog" ;;
+        *)
+          replayed="$("$PIN_SIM" "$tdir/bundle" --replay-game "$recdir/$file" 2>>"$rlog")" || \
+            echo "game $g: pin_sim --replay-game exit $?" >>"$rlog"
+          rh="$(printf '%s\n' "$replayed" | sed -n 's/^state_hash=\([0-9a-f]\{16\}\)$/\1/p' | tail -n 1)"
+          rs="$(printf '%s\n' "$replayed" | sed -nE 's/^score=(none|-?[0-9]+)$/\1/p' | tail -n 1)"
+          echo "game $g: soak $sh/$sc replayed '$replayed'" >>"$rlog"
+          ;;
+      esac
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$g" "$sh" "$rh" "$sc" "$rs" "$ticks" >>"$tdir/replay_games.tsv"
+      i=$((i + 1))
+    done
+    echo "   [$t] A2.4c: $(awk -F '\t' '$3 != "" && $2 == $3 && $4 == $5' "$tdir/replay_games.tsv" | wc -l) of $REPLAYS replayed identically, $(($(now) - t0)) s wall"
+  else
+    echo "== [$t] A2.4c: skipped, this pin_sim cannot record games (no replay_games.tsv; the verdict reports it)"
+  fi
 
   echo "== [$t] A2.4a (supplemental): standard soak re-run for $REPLAYS games with $REPLAY_THREADS threads"
   rc=0
