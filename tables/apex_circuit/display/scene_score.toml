@@ -1,0 +1,9 @@
+# The score view (copy of the 5.3 placeholder): player scores, ball and credits. Shown whenever no
+# other scene is active.
+schema_version = 1
+duration_ms = 0
+background = "#000000"
+
+[[layers]]
+kind = "score"
+color = "#ffffff"
