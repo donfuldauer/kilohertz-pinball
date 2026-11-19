@@ -19,9 +19,13 @@
 //! them: each entry allows its `layers`, optionally only with the ball
 //! centre inside its plan-view `area` polygon (mm, even-odd rule; CR-005).
 //! A profile without entries may be anywhere. An entry's area must hold
-//! its profile's ball: when the largest circle inside it (computed within
-//! [`INSCRIBED_CIRCLE_TOLERANCE_MM`], never overstated) is narrower than
-//! the ball diameter, that is an error at `balls.restrict[i].area`. A feature is checked for a
+//! its profile's ball: when the largest circle inside it (the even-odd
+//! region's, so retraced edges do not count) is narrower than the ball
+//! diameter, that is an error at `balls.restrict[i].area`. The verdict is
+//! exact up to floating point (a circle that touches within 1 nm fits; a
+//! search that cannot decide within its cell budget reports nothing); only
+//! the size the message reports is approximate, within
+//! [`INSCRIBED_CIRCLE_TOLERANCE_MM`] and never overstated. A feature is checked for a
 //! profile only where the profile may be (layer allowed, reference point
 //! inside the area). Restrictions are declarations: the table's geometry
 //! and rules keep the ball there; [`Feature::Restriction`] warnings point at
@@ -104,9 +108,11 @@ pub const WIREFORM_MAX_CONTACT_DEG: f32 = 75.0;
 /// Overlap (mm) an ejected VUK ball may have with its exit layer's
 /// geometry (the solver pushes small overlaps out).
 pub const VUK_EXIT_TOLERANCE_MM: f32 = 0.5;
-/// Tolerance (mm) of the largest inscribed circle of a `[balls] restrict`
-/// area: the computed diameter is never above the true one and at most
-/// this much below it.
+/// Tolerance (mm) of the largest-circle size reported for a `[balls]
+/// restrict` area that cannot hold its ball: the reported diameter is never
+/// above the true one and at most this much below it. Whether the ball
+/// fits is decided exactly (up to floating point), not with this
+/// tolerance.
 pub const INSCRIBED_CIRCLE_TOLERANCE_MM: f32 = 0.5;
 
 /// The kind of feature a [`ClearanceError`] is about.
@@ -375,14 +381,16 @@ enum Problem {
     /// Malformed polygon (the text completes "the area ... ").
     Shape(String),
     /// No disc of the profile's diameter `d` (m) fits; the largest that
-    /// does is `fits` (m) across.
+    /// does is `fits` (m) across (a lower bound within
+    /// [`INSCRIBED_CIRCLE_TOLERANCE_MM`]).
     TooSmall { d: f64, fits: f64 },
 }
 
 /// The declared profiles and their restrictions; bad areas are reported
 /// (and the entry then allows its whole layers), and so are areas that
-/// cannot hold their profile's ball (largest inscribed circle, within
-/// [`INSCRIBED_CIRCLE_TOLERANCE_MM`], below the ball diameter).
+/// cannot hold their profile's ball (`inscribed::fits` decides the
+/// largest inscribed circle is below the ball diameter; an undecided
+/// search is not reported).
 fn declared_balls(table: &LoadedTable, sink: &mut Sink) -> Vec<Ball> {
     let t = &table.manifest;
     let mut areas: Vec<Option<Polygon>> = Vec::with_capacity(t.balls.restrict.len());
@@ -414,9 +422,14 @@ fn declared_balls(table: &LoadedTable, sink: &mut Sink) -> Vec<Ball> {
             if !(d.is_finite() && d > 0.0) {
                 return None;
             }
+            if inscribed::fits(&poly, d) != inscribed::Fit::TooSmall {
+                return None;
+            }
+            // Too small for certain; the size reported is a lower bound
+            // within the tolerance (below `d`, since the true one is).
             let tol = f64::from(INSCRIBED_CIRCLE_TOLERANCE_MM) * 1.0e-3;
             let fits = inscribed::largest_inscribed_diameter(&poly, 0.25 * tol);
-            (fits < d).then_some(Problem::TooSmall { d, fits })
+            Some(Problem::TooSmall { d, fits })
         });
         match problem {
             Some(Problem::TooSmall { d, fits }) => {

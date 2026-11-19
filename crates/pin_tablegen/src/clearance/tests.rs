@@ -579,7 +579,7 @@ fn square_sweep_has_one_transition_at_the_ball_diameter() {
 
 mod inscribed_circle {
     use super::super::geom::Polygon;
-    use super::super::inscribed::{Boundary, largest_inscribed_diameter};
+    use super::super::inscribed::{Boundary, Fit, fits, largest_inscribed_diameter};
     use glam::DVec2;
     use proptest::prelude::*;
 
@@ -734,7 +734,70 @@ mod inscribed_circle {
         assert!(d <= want + 1e-12 && d >= want - TOL, "{d} vs {want}");
     }
 
+    /// CodeRabbit 4622606025: the verdict is exact, not a lower bound
+    /// within the tolerance. The right isosceles triangle with 46.1 mm legs
+    /// holds 46.1·(2 − √2) ≈ 27.0048 mm: 27 mm fits, 27.01 mm does not.
+    #[test]
+    fn fits_decides_exactly() {
+        let tri = poly(&[[0.0, 0.0], [0.0461, 0.0], [0.0, 0.0461]]);
+        let want = 0.0461 * (2.0 - core::f64::consts::SQRT_2);
+        assert!((want - 0.027_004_8).abs() < 1e-7, "{want}");
+        assert_eq!(fits(&tri, 0.027), Fit::Fits);
+        assert_eq!(fits(&tri, 0.027_01), Fit::TooSmall);
+        assert_eq!(fits(&tri, want - 1.0e-7), Fit::Fits);
+        assert_eq!(fits(&tri, want + 1.0e-7), Fit::TooSmall);
+        // Clearly too small, and clearly wide enough.
+        let sq = rect(0.0, 0.0, 0.02, 0.02);
+        assert_eq!(fits(&sq, 0.027), Fit::TooSmall);
+        assert_eq!(fits(&sq, 0.015), Fit::Fits);
+        // Exact touching terminates and fits: the square's own side, and a
+        // triangle's incircle computed from its formula (4A / P).
+        assert_eq!(fits(&sq, 0.02), Fit::Fits);
+        assert_eq!(fits(&tri, want), Fit::Fits);
+        // Nothing fits a degenerate polygon; a retraced spike is no wall.
+        assert_eq!(
+            fits(&poly(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]), 0.001),
+            Fit::TooSmall
+        );
+        let spike = poly(&[
+            [0.0, 0.0],
+            [0.02, 0.0],
+            [0.02, 0.04],
+            [0.02, 0.0],
+            [0.04, 0.0],
+            [0.04, 0.04],
+            [0.0, 0.04],
+        ]);
+        assert_eq!(fits(&spike, 0.027), Fit::Fits);
+    }
+
     proptest! {
+        /// Triangles: the incircle diameter `4A / P` decides, 1 µm either
+        /// side.
+        #[test]
+        fn fits_triangles(p in prop::array::uniform3((-0.5f64..0.5, -0.5f64..0.5))) {
+            let pts = p.map(|(x, y)| DVec2::new(x, y));
+            let area = 0.5 * ((pts[1] - pts[0]).perp_dot(pts[2] - pts[0])).abs();
+            prop_assume!(area > 1.0e-4);
+            let per = pts[0].distance(pts[1]) + pts[1].distance(pts[2]) + pts[2].distance(pts[0]);
+            let want = 4.0 * area / per;
+            let tri = Polygon { points: pts.to_vec() };
+            prop_assert_eq!(fits(&tri, want - 1.0e-6), Fit::Fits);
+            prop_assert_eq!(fits(&tri, want + 1.0e-6), Fit::TooSmall);
+        }
+
+        /// Any polygon: the reported lower bound always fits, and nothing
+        /// wider than it plus the tolerance does.
+        #[test]
+        fn fits_agrees_with_the_bracket(p in prop::collection::vec((-0.3f64..0.3, -0.3f64..0.3), 3..9)) {
+            let poly = Polygon { points: p.iter().map(|&(x, y)| DVec2::new(x, y)).collect() };
+            let d = largest_inscribed_diameter(&poly, PREC);
+            if d > 0.0 {
+                prop_assert_eq!(fits(&poly, d), Fit::Fits);
+            }
+            prop_assert_ne!(fits(&poly, d + 2.0 * PREC + 1.0e-6), Fit::Fits);
+        }
+
         /// Axis-aligned rectangles: the shorter side, never above it and at
         /// most the 0.5 mm tolerance below it; deterministic.
         #[test]
@@ -882,4 +945,25 @@ fn retraced_edge_does_not_shrink_a_restrict_area() {
     table.manifest.balls.restrict = vec![restrict("standard_steel", &[0], area)];
     let r = validate_clearance(&table, &scene);
     assert!(restriction_errors(&r).is_empty(), "{:#?}", r.errors);
+}
+
+/// CodeRabbit 4622606025: the right isosceles triangle with 46.1 mm legs
+/// holds a circle of 46.1·(2 − √2) ≈ 27.0047 mm, so the 27 mm ball fits; a
+/// lower bound within the tolerance must not refuse it.
+#[test]
+fn restrict_area_just_wide_enough_is_accepted() {
+    use backbox_bundle::*;
+    let b = bundle(&[MINI], vec![], false);
+    let vfs = b.vfs();
+    let mut table = load_table(&vfs).unwrap();
+    let scene = load_gltf(&vfs, "playfield.glb").unwrap();
+    let tri = vec![[200.0, 300.0], [246.1, 300.0], [200.0, 346.1]];
+    table.manifest.balls.restrict = vec![restrict("standard_steel", &[0], tri)];
+    let r = validate_clearance(&table, &scene);
+    assert!(restriction_errors(&r).is_empty(), "{:#?}", r.errors);
+    // A slightly smaller triangle (45.9 mm legs, 26.9 mm circle) refuses it.
+    let tri = vec![[200.0, 300.0], [245.9, 300.0], [200.0, 345.9]];
+    table.manifest.balls.restrict = vec![restrict("standard_steel", &[0], tri)];
+    let r = validate_clearance(&table, &scene);
+    assert_eq!(restriction_errors(&r).len(), 1, "{:#?}", r.errors);
 }
