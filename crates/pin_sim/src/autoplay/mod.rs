@@ -11,7 +11,9 @@
 //! * [`table`]: [`TableInfo`], what the bot and monitor read from the
 //!   bundle.
 //! * [`monitor`]: [`GameMonitor`], the per-game health checks.
-//! * [`soak`]: [`SoakConfig`], [`run_soak`].
+//! * [`soak`]: [`SoakConfig`], [`run_soak`], [`run_soak_recording`] (the
+//!   soak with selected games' bot input recorded for
+//!   [`replay_game`](crate::replay::replay_game)).
 //! * [`report`]: [`Finding`], [`FindingKind`], [`SoakReport`] and its JSON /
 //!   Markdown forms (and the failure policy).
 //!
@@ -39,5 +41,8 @@ pub use report::{
     CheckStatus, CounterTotals, Distribution, Finding, FindingKind, GATE_A1_GAMES, GameEnd,
     GameSummary, GateA1Verdict, GateCheck, ModeCount, ShotCount, SoakReport, SwitchCount, Timing,
 };
-pub use soak::{SoakConfig, TickHistogram, bot_seed, game_seed, play_soak_game, run_soak};
+pub use soak::{
+    RecordSoakError, RecordedSoak, SoakConfig, TickHistogram, bot_seed, check_record_selection,
+    game_seed, play_soak_game, run_soak, run_soak_recording,
+};
 pub use table::TableInfo;
