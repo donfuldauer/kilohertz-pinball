@@ -192,6 +192,34 @@ fn input_overflow_defers_to_next_tick() {
 }
 
 #[test]
+fn input_overflow_reaches_the_loop_profiler() {
+    // 7.1 hook 2: the sim thread's per-batch publish carries exactly the
+    // loop's input-overflow tick total to the reader.
+    let p = crate::profiler::Profiler::new();
+    let mut lp = p.sim_loop;
+    let n = 3 * INPUT_BUFFER_CAPACITY + 1;
+    let (mut l, mut tx, _r) = setup(Recorder::default(), 4 * INPUT_BUFFER_CAPACITY);
+    for i in 0..n {
+        tx.push(InputEvent::button(i as u64, CabinetInput::Tilt, true))
+            .unwrap();
+    }
+    // Without a profiler nothing is published.
+    l.run_ticks(1);
+    threads::publish_input_overflow(&l, None);
+    assert_eq!(p.reader.snapshot().input_overflow_ticks, 0);
+    threads::publish_input_overflow(&l, Some(&mut lp));
+    assert_eq!(l.input_overflow_ticks(), 1);
+    assert_eq!(p.reader.snapshot().input_overflow_ticks, 1);
+    l.run_ticks(3);
+    threads::publish_input_overflow(&l, Some(&mut lp));
+    assert_eq!(l.input_overflow_ticks(), 3);
+    assert_eq!(
+        p.reader.snapshot().input_overflow_ticks,
+        l.input_overflow_ticks()
+    );
+}
+
+#[test]
 fn replay_is_identical() {
     let run = || {
         let (mut l, mut tx, mut r) = setup(Recorder::default(), 128);
