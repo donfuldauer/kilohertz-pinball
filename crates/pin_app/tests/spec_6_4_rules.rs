@@ -23,25 +23,25 @@ use pin_sim::{BallHandle, Simulation};
 
 /// Steps one tick at a time, asserting the score never decreases.
 struct ScoreWatch {
-    last: i64,
+    last: std::cell::Cell<i64>,
 }
 
 impl ScoreWatch {
     fn new(sim: &Simulation) -> Self {
         Self {
-            last: sim.score(0).unwrap_or(0),
+            last: std::cell::Cell::new(sim.score(0).unwrap_or(0)),
         }
     }
 
-    fn check(&mut self, sim: &Simulation, what: &str) {
-        let s = sim.score(0).unwrap_or(self.last);
+    fn check(&self, sim: &Simulation, what: &str) {
+        let last = self.last.get();
+        let s = sim.score(0).unwrap_or(last);
         assert!(
-            s >= self.last,
-            "{what}: score decreased {} -> {s} at tick {}",
-            self.last,
+            s >= last,
+            "{what}: score decreased {last} -> {s} at tick {}",
             sim.tick()
         );
-        self.last = s;
+        self.last.set(s);
     }
 
     fn advance(&mut self, sim: &mut Simulation, ticks: u64, what: &str) {
@@ -110,7 +110,7 @@ fn drain_until(
     done: impl Fn(&Simulation) -> bool,
 ) {
     for _ in 0..5 {
-        drain_all(sim);
+        drain_all_with(sim, |s| w.check(s, what));
         w.check(sim, what);
         if w.until(sim, 10_000, what, |s| done(s) || s.balls_in_play() > 0) && done(sim) {
             return;
@@ -139,7 +139,7 @@ fn a_full_three_ball_game_by_injection() {
         assert_eq!(sim.balls_in_play(), 0, "no ball before start");
         let games_before = pv(&sim, "games_played");
 
-        pulse(&mut sim, "start", 50);
+        pulse_with(&mut sim, "start", 50, |s| w.check(s, "start pulse"));
         assert!(
             w.until(&mut sim, 10_000, "start", |s| s.balls_in_play() > 0),
             "start serves a ball"
@@ -159,11 +159,11 @@ fn a_full_three_ball_game_by_injection() {
             );
             balls_seen.push(pv(&sim, "ball"));
             assert_eq!(pv(&sim, "game_state"), 1);
-            pulse(&mut sim, "launch", 50);
+            pulse_with(&mut sim, "launch", 50, |s| w.check(s, "launch pulse"));
             w.advance(&mut sim, 1_500, "launch");
             let before = sim.score(0).unwrap_or(0);
             for sw in &scorers {
-                pulse(&mut sim, sw, 20);
+                pulse_with(&mut sim, sw, 20, |s| w.check(s, "scorer pulse"));
                 w.advance(&mut sim, 20, "scorer pulse");
             }
             let after = sim.score(0).unwrap_or(0);
@@ -544,19 +544,41 @@ impl HitTrace {
         }
     }
 
-    /// Whether `order` occurs in the trace as a subsequence (each switch
-    /// closing after the previous one), the last one at tick `<= by`.
-    fn has_in_order(&self, order: &[String], by: u64) -> bool {
-        let mut k = 0;
-        let mut prev_tick = 0;
+    /// Replays the rules' shot tracking (`shot_edge` in rules.lua) over the
+    /// trace for the two-switch shot `order` with its declared `window`
+    /// ticks: the window restarts on every opening hit, a hit more than
+    /// `window` ticks after the latest opening hit has expired it, and the
+    /// finishing hit completes the shot only while it is open. Returns the
+    /// tick of the finishing hit of the latest shot completed this way.
+    fn last_made(&self, order: &[String], window: u64) -> Option<u64> {
+        assert_eq!(order.len(), 2, "two-switch shots: {order:?}");
+        let (mut open, mut start, mut made) = (false, 0u64, None);
         for (t, n) in &self.hits {
-            if k < order.len() && *n == order[k] && *t <= by && (k == 0 || *t > prev_tick) {
-                prev_tick = *t;
-                k += 1;
+            if open && *t - start > window {
+                open = false;
+            }
+            if open && *n == order[1] {
+                open = false;
+                made = Some(*t);
+            } else if *n == order[0] {
+                open = true;
+                start = *t;
             }
         }
-        k == order.len()
+        made
     }
+}
+
+/// The declared window, in ticks (1 ms each), of the `[[shots]]` entry
+/// whose sequence is `order`.
+fn shot_window_ticks(order: &[String]) -> u64 {
+    let shot = table()
+        .manifest
+        .shots
+        .iter()
+        .find(|s| s.sequence == order)
+        .unwrap_or_else(|| panic!("table.toml declares a [[shots]] entry for {order:?}"));
+    u64::from(shot.window_ms)
 }
 
 /// The README's mode start award ("Every mode start scores N").
@@ -657,11 +679,17 @@ fn start_mode_by_physics(mode: &str, first: usize, pre_delay: u64) -> Started {
         }
         tried.push(vi);
         if started {
-            // The README's shot switches closed in order during this
-            // attempt, the last one by the tick the counter changed.
+            // The README's shot, within its declared window, was completed
+            // by a switch edge Lua had received when it changed the
+            // counter. Edges closed by the physics of tick N are queued in
+            // step 5 and reach Lua in step 2 of tick N + 1 (pin_sim
+            // tick/mod.rs `step_tick`, `deliver_edges`), so the finishing
+            // hit must be observed before the tick the counter changed.
+            let window = shot_window_ticks(&shot);
+            let finished = trace.last_made(&shot, window);
             assert!(
-                trace.has_in_order(&shot, sim.tick()),
-                "{mode}: mode:{mode} increased at tick {} (start state {vi} {v:?}) without the README shot {shot:?} in order; switch hits since the attempt began: {:?}",
+                finished.is_some_and(|t| t < sim.tick()),
+                "{mode}: mode:{mode} increased at tick {} (start state {vi} {v:?}) without the README shot {shot:?} completed within {window} ticks by an edge Lua had received (latest completion {finished:?}); switch hits since the attempt began: {:?}",
                 sim.tick(),
                 trace.hits
             );
@@ -871,6 +899,24 @@ fn extra_balls_do_not_end_the_ball(mode: &str) -> usize {
         );
         assert_eq!(pv(sim, "game_state"), 1, "{mode}: the game goes on");
     }
+    // The last trough edge reaches Lua on a later tick than the one that
+    // removed the ball: advance through its delivery and recheck.
+    sim.advance(3);
+    assert!(
+        sim.ball(main).is_some(),
+        "{mode}: the main ball is still live after the last trough edge"
+    );
+    assert_eq!(
+        pv(sim, "ball"),
+        ball,
+        "{mode}: the last trough edge changed the player's ball (tick {})",
+        sim.tick()
+    );
+    assert_eq!(
+        pv(sim, "game_state"),
+        1,
+        "{mode}: the game goes on after the last trough edge"
+    );
     assert!(
         main_gone_at.is_none(),
         "{mode}: the main ball left the table at tick {main_gone_at:?}"
