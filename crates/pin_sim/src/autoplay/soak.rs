@@ -14,8 +14,9 @@
 //! A game stopped at `max_game_ticks` with a ball still on the table gets an
 //! [`FindingKind::EndlessBall`] finding for that ball
 //! ([`GameMonitor::end_at_cap`]); a ball older than
-//! [`SoakConfig::endless_ball_ticks`] gets one as soon as it passes the
-//! limit. Balls still on the table when a game ends count in the ball-time
+//! [`SoakConfig::endless_ball_ticks`] gets one too, unless it later drains
+//! naturally after broad play, which makes it a reported, non-failing
+//! [`FindingKind::LongBall`] (see [`monitor`](super::monitor)). Balls still on the table when a game ends count in the ball-time
 //! distribution at their observed age, as censored samples
 //! ([`SoakReport::ball_time_censored`]).
 //!
