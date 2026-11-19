@@ -26,12 +26,18 @@
 //!   flipper's layer whose ballistic path (current position and velocity,
 //!   table-plane gravity) enters that sector within
 //!   [`BotConfig::lead_ms`] is a *predicted crossing*. The bot then skips
-//!   the flip with the skill's miss rate, or presses the button after a
-//!   PCG-drawn reaction delay in `0..=jitter` and holds it for a PCG-drawn
-//!   time in [`BotConfig::flip_hold_ms`].
+//!   the flip with the skill's miss rate, or plans a press a PCG-drawn
+//!   delay in [`BotConfig::flip_delay_ms`] after the prediction (the shot it
+//!   tries for: when in its stroke the bat meets the ball) and presses the
+//!   button at that plan plus a PCG-drawn reaction error (see
+//!   [`ReactionDraw`]; by default uniform in `-jitter..=+jitter`, never
+//!   before the prediction), holding it for a PCG-drawn time in
+//!   [`BotConfig::flip_hold_ms`].
 //! * **Cradle:** a slow ball (below [`BotConfig::cradle_speed_m_s`]) already
 //!   in a flipper's sector makes the bot hold that flipper up for a
-//!   PCG-drawn time in [`BotConfig::cradle_hold_ms`]; after the release it
+//!   PCG-drawn time in [`BotConfig::cradle_hold_ms`] (pressed after the
+//!   same reaction error around the moment it is seen, without the flip
+//!   delay); after the release it
 //!   flips the ball once it has rolled out past [`CRADLE_FLIP_REACH`] of the
 //!   bat.
 //! * **Nudge:** when a ball has rested away from the flippers for
@@ -145,6 +151,24 @@ impl SkillLevel {
     }
 }
 
+/// How the reaction error around the planned press time is drawn.
+///
+/// The planned press time of a flip is a delay drawn from
+/// [`BotConfig::flip_delay_ms`] after the prediction; of a cradle, the
+/// moment the slow ball is seen. `j` is [`SkillParams::reaction_jitter_ms`].
+/// Either way it is one PCG draw per decision.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ReactionDraw {
+    /// Uniform in `-j..=+j` ms around the planned time, clamped so the press
+    /// is never before the decision tick. A steadier player hits nearer the
+    /// planned time, both early and late.
+    Centred,
+    /// Uniform in `0..=j` ms after the planned time (the original 2.9 bot:
+    /// a reaction can only be late). Kept so pinned historical soaks can be
+    /// replayed.
+    Late,
+}
+
 /// What distinguishes the skill levels, and nothing else.
 ///
 /// | level | `reaction_jitter_ms` | `miss_rate` |
@@ -154,8 +178,8 @@ impl SkillLevel {
 /// | Expert | 3 | 0.01 |
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct SkillParams {
-    /// Reaction delay after a decision is drawn uniformly from
-    /// `0..=reaction_jitter_ms` ticks.
+    /// Reaction error bound, ms (1 ms ticks): the press lands this far at
+    /// most from the planned time, as [`BotConfig::reaction`] draws it.
     pub reaction_jitter_ms: u32,
     /// Probability (0..=1) of skipping a predicted flip.
     pub miss_rate: f32,
@@ -200,6 +224,20 @@ impl Default for NudgeConfig {
 pub struct BotConfig {
     /// Prediction horizon: a crossing within this time triggers a flip, ms.
     pub lead_ms: u32,
+    /// Range (inclusive) of the planned delay from a predicted crossing to
+    /// the flip press, ms, before the reaction error; one PCG draw per flip
+    /// (none when the range is a single value). The draw is the shot the
+    /// bot tries for: pressing at the prediction (0 ms) brings the bat to
+    /// the end of its 20-35 ms stroke (`physics_defaults.toml`) as the ball
+    /// arrives, a dead bounce, while later presses meet the ball mid-stroke
+    /// and send it elsewhere. Shared by every skill, so the skills still
+    /// differ only by reaction error and miss rate: a steady player lands
+    /// the planned shot, a shaky one often lands a different one.
+    /// Calibrated over the grey box, Apex Circuit and Feature Lab
+    /// (`docs/decisions/2026-11-18-fix-2.9-bot-timing.md`).
+    pub flip_delay_ms: (u32, u32),
+    /// How the skill's reaction error is drawn around the planned press.
+    pub reaction: ReactionDraw,
     /// Flip button hold time range (inclusive), ms.
     pub flip_hold_ms: (u32, u32),
     /// Pause after releasing a flipper before the next decision on it, ms.
@@ -235,6 +273,8 @@ impl Default for BotConfig {
     fn default() -> Self {
         Self {
             lead_ms: 30,
+            flip_delay_ms: (0, 35),
+            reaction: ReactionDraw::Centred,
             flip_hold_ms: (100, 180),
             cooldown_ms: 80,
             cradle: true,
@@ -574,11 +614,38 @@ impl Bot {
         u < p
     }
 
-    fn jitter(&mut self) -> u64 {
-        u64::from(draw_range(
-            &mut self.rng,
-            (0, self.params.reaction_jitter_ms),
-        ))
+    /// The planned delay of one flip, ms: drawn from
+    /// [`BotConfig::flip_delay_ms`] (no draw when the range is one value).
+    fn planned_flip_delay(&mut self) -> u32 {
+        let (lo, hi) = self.cfg.flip_delay_ms;
+        if hi <= lo {
+            lo
+        } else {
+            draw_range(&mut self.rng, (lo, hi))
+        }
+    }
+
+    /// Ticks from the decision to the press: `planned_ms` plus one reaction
+    /// error draw ([`ReactionDraw`]), never negative.
+    fn reaction_delay(&mut self, planned_ms: u32) -> u64 {
+        let j = self.params.reaction_jitter_ms;
+        match self.cfg.reaction {
+            ReactionDraw::Late => {
+                u64::from(planned_ms) + u64::from(draw_range(&mut self.rng, (0, j)))
+            }
+            ReactionDraw::Centred => {
+                // The span 2*j is computed in u64 so it never saturates. When
+                // it fits a u32 the draw is the single 32-bit draw it always
+                // was; only a wider span takes a 64-bit draw.
+                let span = u64::from(j) * 2;
+                let raw = match u32::try_from(span) {
+                    Ok(s) => u64::from(draw_range(&mut self.rng, (0, s))),
+                    Err(_) => self.rng.next_u64() % (span + 1),
+                };
+                let err = raw as i64 - i64::from(j);
+                u64::try_from(i64::from(planned_ms) + err).unwrap_or(0)
+            }
+        }
     }
 
     /// Presses a flipper for `action`: counts it and draws the hold time.
@@ -726,7 +793,8 @@ impl Bot {
                             self.stats.misses += 1;
                             brain.ignore_until = now + MISS_LOCKOUT_TICKS;
                         } else {
-                            let at = now + self.jitter();
+                            let planned = self.planned_flip_delay();
+                            let at = now + self.reaction_delay(planned);
                             brain.state = FlipState::Pending {
                                 at,
                                 action: Action::Flip,
@@ -734,7 +802,7 @@ impl Bot {
                         }
                     }
                     Some(Action::Cradle) => {
-                        let at = now + self.jitter();
+                        let at = now + self.reaction_delay(0);
                         brain.state = FlipState::Pending {
                             at,
                             action: Action::Cradle,
@@ -1008,5 +1076,129 @@ mod tests {
         assert_eq!(a.predictions, u64::MAX);
         assert_eq!(a.starts, 7);
         assert_eq!(a.nudges, 6);
+    }
+
+    fn timing_bot(delay: (u32, u32), reaction: ReactionDraw, jitter: u32) -> Bot {
+        Bot::new(11, SkillLevel::Standard)
+            .with_config(BotConfig {
+                flip_delay_ms: delay,
+                reaction,
+                ..BotConfig::default()
+            })
+            .with_skill_params(SkillParams {
+                reaction_jitter_ms: jitter,
+                miss_rate: 0.0,
+            })
+    }
+
+    #[test]
+    fn default_flip_timing_is_the_calibrated_window() {
+        let c = BotConfig::default();
+        assert_eq!(c.flip_delay_ms, (0, 35));
+        assert_eq!(c.reaction, ReactionDraw::Centred);
+        assert_eq!(c.lead_ms, 30);
+    }
+
+    #[test]
+    fn single_value_window_takes_no_draw() {
+        let mut a = timing_bot((12, 12), ReactionDraw::Centred, 5);
+        let mut b = a.clone();
+        assert_eq!(a.planned_flip_delay(), 12);
+        // The generator did not move: both bots draw the same next value.
+        assert_eq!(a.rng.next_u32(), b.rng.next_u32());
+        let mut w = timing_bot((0, 35), ReactionDraw::Centred, 5);
+        let seen: std::collections::BTreeSet<u32> =
+            (0..2000).map(|_| w.planned_flip_delay()).collect();
+        assert_eq!(seen.first(), Some(&0));
+        assert_eq!(seen.last(), Some(&35));
+        assert_eq!(seen.len(), 36, "every value of the window is reachable");
+    }
+
+    #[test]
+    fn centred_reaction_spreads_both_ways_late_only_after() {
+        let mut c = timing_bot((0, 0), ReactionDraw::Centred, 10);
+        let d: Vec<u64> = (0..4000).map(|_| c.reaction_delay(20)).collect();
+        assert_eq!(d.iter().min(), Some(&10));
+        assert_eq!(d.iter().max(), Some(&30));
+        let mean = d.iter().sum::<u64>() as f64 / d.len() as f64;
+        assert!((mean - 20.0).abs() < 0.5, "centred mean {mean}");
+        let mut l = timing_bot((0, 0), ReactionDraw::Late, 10);
+        let d: Vec<u64> = (0..4000).map(|_| l.reaction_delay(20)).collect();
+        assert_eq!(d.iter().min(), Some(&20));
+        assert_eq!(d.iter().max(), Some(&30));
+        // Clamped at the decision tick: never negative.
+        let mut z = timing_bot((0, 0), ReactionDraw::Centred, 40);
+        let d: Vec<u64> = (0..4000).map(|_| z.reaction_delay(0)).collect();
+        assert_eq!(d.iter().min(), Some(&0));
+        assert_eq!(d.iter().max(), Some(&40));
+        assert!(
+            d.iter().filter(|&&x| x == 0).count() > 1500,
+            "early presses clamp to 0"
+        );
+    }
+
+    #[test]
+    fn centred_reaction_keeps_full_range_for_huge_jitter() {
+        for j in [u32::MAX, u32::MAX / 2 + 1] {
+            let mut b = timing_bot((0, 0), ReactionDraw::Centred, j);
+            let d: Vec<u64> = (0..2000).map(|_| b.reaction_delay(0)).collect();
+            assert!(d.iter().any(|&x| x > 0), "positive error reachable, j={j}");
+            assert!(d.contains(&0), "negative error clamps, j={j}");
+            assert!(d.iter().all(|&x| x <= u64::from(j)), "j={j}");
+            let above = d.iter().filter(|&&x| x > 0).count();
+            assert!((800..1200).contains(&above), "about half positive: {above}");
+        }
+    }
+
+    #[test]
+    fn centred_reaction_matches_the_old_formula_up_to_half_u32() {
+        for j in [0u32, 1, 35, 120, u32::MAX / 2] {
+            let mut b = timing_bot((0, 0), ReactionDraw::Centred, j);
+            let mut rng = b.rng.clone();
+            for _ in 0..1000 {
+                let span = j.saturating_mul(2);
+                let err = i64::from(draw_range(&mut rng, (0, span))) - i64::from(j);
+                let want = u64::try_from(20i64 + err).unwrap_or(0);
+                assert_eq!(b.reaction_delay(20), want, "j={j}");
+            }
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn reaction_delay_stays_in_bounds(
+            seed in proptest::prelude::any::<u64>(),
+            planned in 0u32..1000,
+            jitter in 0u32..u32::MAX,
+            late in proptest::prelude::any::<bool>(),
+        ) {
+            let reaction = if late { ReactionDraw::Late } else { ReactionDraw::Centred };
+            let mut b = Bot::new(seed, SkillLevel::Novice)
+                .with_config(BotConfig { reaction, ..BotConfig::default() })
+                .with_skill_params(SkillParams { reaction_jitter_ms: jitter, miss_rate: 0.0 });
+            let d = b.reaction_delay(planned);
+            let (p, j) = (u64::from(planned), u64::from(jitter));
+            if late {
+                proptest::prop_assert!(d >= p && d <= p + j);
+            } else {
+                proptest::prop_assert!(d >= p.saturating_sub(j) && d <= p + j);
+            }
+        }
+
+        #[test]
+        fn planned_flip_delay_stays_in_window(
+            seed in proptest::prelude::any::<u64>(),
+            lo in 0u32..u32::MAX,
+            hi in 0u32..u32::MAX,
+        ) {
+            let mut b = Bot::new(seed, SkillLevel::Expert)
+                .with_config(BotConfig { flip_delay_ms: (lo, hi), ..BotConfig::default() });
+            let d = b.planned_flip_delay();
+            if hi <= lo {
+                proptest::prop_assert_eq!(d, lo);
+            } else {
+                proptest::prop_assert!((lo..=hi).contains(&d));
+            }
+        }
     }
 }
