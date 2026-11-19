@@ -323,7 +323,7 @@ struct Apex {
     /// Lua `written`: the last value written per persist key.
     written: [i64; PERSIST_SLOTS],
     /// `save_state` output buffer.
-    blob: [u8; 512],
+    blob: [u8; BLOB_LEN],
 }
 
 saved_fields!(Apex;
@@ -335,6 +335,12 @@ saved_fields!(Apex;
     zipper_off_at, end_at, over_at, attract_at, pb_starts, chain_starts,
     fw_count, jp_count, skill_count,
 );
+
+/// Length of the `save_state` output buffer, bytes.
+const BLOB_LEN: usize = 512;
+
+// The state blob (fingerprint slot included) must fit the buffer.
+const _: () = assert!(Apex::SAVED_BYTES <= BLOB_LEN);
 
 impl Apex {
     /// The Lua locals' initial values.
@@ -384,7 +390,7 @@ impl Apex {
         skill_count: 0,
         ids: Ids::NONE,
         written: [0; PERSIST_SLOTS],
-        blob: [0; 512],
+        blob: [0; BLOB_LEN],
     };
 
     /// Lua `bind_ids`.
@@ -953,14 +959,15 @@ impl Rules for Apex {
 
     /// Lua `on_save_state`: every rule-state local.
     fn save_state(&mut self) -> &[u8] {
-        let mut buf = [0u8; 512];
+        let mut buf = [0u8; BLOB_LEN];
         let n = self.encode_state(&mut buf);
         self.blob = buf;
         &self.blob[..n]
     }
 
     /// Lua `on_restore_state`: binds the ids, takes every local from the
-    /// blob (a blob of another length is ignored) and redraws the score.
+    /// blob (a blob of another length or layout fingerprint is ignored) and
+    /// redraws the score.
     fn restore_state(&mut self, blob: &[u8]) {
         self.bind_ids();
         if !self.decode_state(blob) {
@@ -995,7 +1002,9 @@ mod tests {
         let mut buf = [0u8; 512];
         let n = a.encode_state(&mut buf);
         assert_eq!(n, Apex::SAVED_BYTES);
-        assert_eq!(n, 42 * 8);
+        // The layout fingerprint slot plus 42 saved slots.
+        assert_eq!(n, (1 + 42) * 8);
+        assert_eq!(buf[..8], Apex::LAYOUT_FINGERPRINT.to_le_bytes());
         let mut b = Apex::INITIAL;
         assert!(b.decode_state(&buf[..n]));
         let mut again = [0u8; 512];
@@ -1015,6 +1024,37 @@ mod tests {
         assert!(!b.decode_state(&[]));
         assert_eq!(b.score, 0);
         assert_eq!(b.combo, 1);
+        // A valid blob one slot short or one slot long, fingerprint intact.
+        let mut a = Apex::INITIAL;
+        a.score = 99;
+        a.combo = 3;
+        let mut buf = [0u8; BLOB_LEN];
+        let n = a.encode_state(&mut buf);
+        assert!(!b.decode_state(&buf[..n - 8]));
+        assert!(!b.decode_state(&buf[..n + 8]));
+        // Arbitrary bytes of exactly the right length: wrong fingerprint.
+        assert!(!b.decode_state(&[1u8; Apex::SAVED_BYTES]));
+        assert_eq!((b.score, b.combo), (0, 1));
+    }
+
+    #[test]
+    fn a_blob_with_a_wrong_layout_fingerprint_changes_nothing() {
+        let mut a = Apex::INITIAL;
+        a.score = 99;
+        a.combo = 3;
+        let mut buf = [0u8; BLOB_LEN];
+        let n = a.encode_state(&mut buf);
+        assert_eq!(n, Apex::SAVED_BYTES);
+        let mut b = Apex::INITIAL;
+        for bit in 0..64 {
+            let mut bad = buf;
+            bad[bit / 8] ^= 1 << (bit % 8);
+            assert!(!b.decode_state(&bad[..n]), "fingerprint bit {bit}");
+            assert_eq!((b.score, b.combo), (0, 1));
+        }
+        // The untouched blob still restores.
+        assert!(b.decode_state(&buf[..n]));
+        assert_eq!((b.score, b.combo), (a.score, a.combo));
     }
 
     #[test]

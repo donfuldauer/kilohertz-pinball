@@ -533,8 +533,8 @@ fn near_closed_guide_is_snapped_closed() {
             let a = f64::from(i) * core::f64::consts::TAU / 12.0;
             format!(
                 "[{}, {}, 0.0]",
-                100.0 + 100.0 * a.cos(),
-                100.0 + 100.0 * a.sin()
+                100.0 + 100.0 * libm::cos(a),
+                100.0 + 100.0 * libm::sin(a)
             )
         })
         .collect();

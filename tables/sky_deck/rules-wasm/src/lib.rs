@@ -199,7 +199,7 @@ struct SkyDeck {
     empty_checks: i64,
     ids: Ids,
     /// `save_state` output buffer.
-    blob: [u8; 512],
+    blob: [u8; BLOB_LEN],
 }
 
 saved_fields!(SkyDeck;
@@ -209,6 +209,12 @@ saved_fields!(SkyDeck;
     od_used, od_starts, glo_at, glo_after_eject, glo_rising, glo_out,
     empty_checks,
 );
+
+/// Length of the `save_state` output buffer, bytes.
+const BLOB_LEN: usize = 512;
+
+// The state blob (fingerprint slot included) must fit the buffer.
+const _: () = assert!(SkyDeck::SAVED_BYTES <= BLOB_LEN);
 
 impl SkyDeck {
     /// The Lua locals' initial values.
@@ -242,7 +248,7 @@ impl SkyDeck {
         glo_out: false,
         empty_checks: 0,
         ids: Ids::NONE,
-        blob: [0; 512],
+        blob: [0; BLOB_LEN],
     };
 
     /// Lua `bind_ids`.
@@ -666,14 +672,15 @@ impl Rules for SkyDeck {
 
     /// Lua `on_save_state`: every rule-state local.
     fn save_state(&mut self) -> &[u8] {
-        let mut buf = [0u8; 512];
+        let mut buf = [0u8; BLOB_LEN];
         let n = self.encode_state(&mut buf);
         self.blob = buf;
         &self.blob[..n]
     }
 
     /// Lua `on_restore_state`: binds the ids, takes every local from the
-    /// blob (a blob of another length is ignored) and redraws the score.
+    /// blob (a blob of another length or layout fingerprint is ignored) and
+    /// redraws the score.
     fn restore_state(&mut self, blob: &[u8]) {
         self.bind_ids();
         if !self.decode_state(blob) {
@@ -707,7 +714,9 @@ mod tests {
         let mut buf = [0u8; 512];
         let n = a.encode_state(&mut buf);
         assert_eq!(n, SkyDeck::SAVED_BYTES);
-        assert_eq!(n, 27 * 8);
+        // The layout fingerprint slot plus 27 saved slots.
+        assert_eq!(n, (1 + 27) * 8);
+        assert_eq!(buf[..8], SkyDeck::LAYOUT_FINGERPRINT.to_le_bytes());
         let mut b = SkyDeck::INITIAL;
         assert!(b.decode_state(&buf[..n]));
         assert_eq!((b.score, b.drops, b.empty_checks), (987_654, 5, 1));
@@ -721,6 +730,37 @@ mod tests {
         assert!(!b.decode_state(&[3u8; 16]));
         assert_eq!(b.score, 0);
         assert_eq!(b.vuk_at, -1);
+        // A valid blob one slot short or one slot long, fingerprint intact.
+        let mut a = SkyDeck::INITIAL;
+        a.score = 99;
+        a.vuk_at = 5;
+        let mut buf = [0u8; BLOB_LEN];
+        let n = a.encode_state(&mut buf);
+        assert!(!b.decode_state(&buf[..n - 8]));
+        assert!(!b.decode_state(&buf[..n + 8]));
+        // Arbitrary bytes of exactly the right length: wrong fingerprint.
+        assert!(!b.decode_state(&[1u8; SkyDeck::SAVED_BYTES]));
+        assert_eq!((b.score, b.vuk_at), (0, -1));
+    }
+
+    #[test]
+    fn a_blob_with_a_wrong_layout_fingerprint_changes_nothing() {
+        let mut a = SkyDeck::INITIAL;
+        a.score = 99;
+        a.vuk_at = 5;
+        let mut buf = [0u8; BLOB_LEN];
+        let n = a.encode_state(&mut buf);
+        assert_eq!(n, SkyDeck::SAVED_BYTES);
+        let mut b = SkyDeck::INITIAL;
+        for bit in 0..64 {
+            let mut bad = buf;
+            bad[bit / 8] ^= 1 << (bit % 8);
+            assert!(!b.decode_state(&bad[..n]), "fingerprint bit {bit}");
+            assert_eq!((b.score, b.vuk_at), (0, -1));
+        }
+        // The untouched blob still restores.
+        assert!(b.decode_state(&buf[..n]));
+        assert_eq!((b.score, b.vuk_at), (a.score, a.vuk_at));
     }
 
     #[test]
