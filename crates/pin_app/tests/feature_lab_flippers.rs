@@ -107,9 +107,30 @@ fn mirrored_flips_leave_the_banana_and_the_straight_bat_on_different_headings() 
     });
 }
 
+/// The declared window, in ticks (1 ms each), of the `banana_vuk`
+/// `[[shots]]` entry (`vuk_lane`, `bb_vuk_sw`) in the bundle's table.toml.
+fn banana_window_ticks() -> u64 {
+    let text = std::fs::read_to_string(bundle().join("table.toml")).expect("table.toml");
+    let t: toml::Table = text.parse().expect("table.toml is TOML");
+    let shot = t["shots"]
+        .as_array()
+        .expect("[[shots]]")
+        .iter()
+        .find(|s| s["id"].as_str() == Some("banana_vuk"))
+        .expect("banana_vuk shot");
+    assert_eq!(
+        shot["sequence"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()),
+        Some(vec!["vuk_lane", "bb_vuk_sw"])
+    );
+    u64::try_from(shot["window_ms"].as_integer().expect("window_ms")).expect("window_ms >= 0")
+}
+
 #[test]
 fn a_banana_flip_makes_the_banana_shot() {
     on_big_stack(|| {
+        let window = banana_window_ticks();
         let mut made = Vec::new();
         for k in 0..12 {
             let f = 0.3 + 0.05 * k as f32;
@@ -117,6 +138,7 @@ fn a_banana_flip_makes_the_banana_shot() {
             // New hits only, sampled from the first flip tick.
             let lane0 = s.switch_hits("vuk_lane").unwrap();
             let scoop0 = s.switch_hits("bb_vuk_sw").unwrap();
+            let mut lane_seen = lane0;
             let mut lane_at: Option<u64> = None;
             let mut scoop_at: Option<u64> = None;
             for t in 0..3150u64 {
@@ -124,7 +146,10 @@ fn a_banana_flip_makes_the_banana_shot() {
                     s.release_switch("right_flipper").unwrap();
                 }
                 s.advance(1);
-                if lane_at.is_none() && s.switch_hits("vuk_lane").unwrap() > lane0 {
+                // The rules restart the shot window on every new lane hit.
+                let lane_now = s.switch_hits("vuk_lane").unwrap();
+                if lane_now > lane_seen {
+                    lane_seen = lane_now;
                     lane_at = Some(t);
                 }
                 if scoop_at.is_none() && s.switch_hits("bb_vuk_sw").unwrap() > scoop0 {
@@ -134,12 +159,12 @@ fn a_banana_flip_makes_the_banana_shot() {
                     break;
                 }
             }
-            if let (Some(l), Some(c)) = (lane_at, scoop_at) {
-                assert!(
-                    l < c,
-                    "f {f}: new vuk_lane hit (tick {l}) precedes new scoop hit (tick {c})"
-                );
-                assert!(c - l <= 3000, "within the shot window");
+            // Made only when the scoop follows the latest lane hit within
+            // the declared window; an expired candidate is skipped.
+            if let (Some(l), Some(c)) = (lane_at, scoop_at)
+                && l < c
+                && c - l <= window
+            {
                 made.push(f);
             }
         }

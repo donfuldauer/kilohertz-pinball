@@ -221,10 +221,21 @@ pub fn finite_ball(b: &BallState) -> bool {
 /// Forces switch `name` closed for `hold` ticks, opens it and hands it back
 /// to its input / the physics.
 pub fn pulse(sim: &mut Simulation, name: &str, hold: u64) {
+    pulse_with(sim, name, hold, |_| {});
+}
+
+/// [`pulse`] calling `each` after every advanced tick.
+pub fn pulse_with(sim: &mut Simulation, name: &str, hold: u64, mut each: impl FnMut(&Simulation)) {
     sim.set_switch(name, true).expect("known switch");
-    sim.advance(hold);
+    for _ in 0..hold {
+        sim.advance(1);
+        each(sim);
+    }
     sim.set_switch(name, false).expect("known switch");
-    sim.advance(5);
+    for _ in 0..5 {
+        sim.advance(1);
+        each(sim);
+    }
     sim.release_switch(name).expect("known switch");
 }
 
@@ -312,6 +323,11 @@ pub fn drain_switch() -> &'static SwitchSi {
 /// Drains every ball through the trough switch zone by state injection
 /// (allowed for drains, brief S3 a): each ball is moved onto the switch.
 pub fn drain_all(sim: &mut Simulation) {
+    drain_all_with(sim, |_| {});
+}
+
+/// [`drain_all`] calling `each` after every advanced tick.
+pub fn drain_all_with(sim: &mut Simulation, mut each: impl FnMut(&Simulation)) {
     let trough = drain_switch();
     let p = trough.position_m.expect("position");
     let handles: Vec<BallHandle> = sim.ball_handles().iter().copied().collect();
@@ -325,7 +341,10 @@ pub fn drain_all(sim: &mut Simulation) {
         b.angular_velocity_rad_s = [0.0; 3];
         b.layer = trough.layer;
         assert!(sim.set_ball_state(h, &b), "move the ball onto the trough");
-        let gone = run_until(sim, 200, |s| s.ball(h).is_none());
+        let gone = run_until(sim, 200, |s| {
+            each(s);
+            s.ball(h).is_none()
+        });
         assert!(gone, "the ball drained through {}", trough.name);
     }
 }
