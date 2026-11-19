@@ -16,8 +16,8 @@ mod sky_deck_support;
 
 use pin_sim::Simulation;
 use sky_deck_support::{
-    DECK_Z_MM, VUK_HOLD_TICKS, at, healthy, key, load, on_big_stack, only_ball, put_in_vuk,
-    start_game,
+    DECK_Z_MM, VUK_HOLD_TICKS, at, bundle_manifest, healthy, key, load, on_big_stack, only_ball,
+    put_in_vuk, start_game,
 };
 
 #[test]
@@ -70,20 +70,44 @@ fn vuk_lifts_the_ball_onto_the_upper_deck() {
             b.position_m
         );
         assert_eq!(s.switch_hits("deck_opto").unwrap(), deck0 + 1, "deck_opto");
-        // It comes back to the main deck through the acrylic return funnel.
-        let mut back = false;
+        // It comes back to the main deck through the acrylic return funnel:
+        // the layer 1 -> 0 change happens inside the `deck_return`
+        // transition zone (not a safety exit such as `deck_exit_left`).
+        let ret = bundle_manifest()
+            .layer_transitions
+            .iter()
+            .find(|z| z.id == "deck_return")
+            .cloned()
+            .expect("deck_return transition");
+        assert_eq!((ret.from_layer, ret.to_layer), (1, 0));
+        // The engine tests the zone at a CCD sub-step end point; the ball
+        // moves on for the rest of the tick after the switch, so the plan
+        // position read at the end of that tick may lie just outside the
+        // zone. Tolerance: one ball radius (13.5 mm), far less than the
+        // distance to any other 1 -> 0 zone's interior.
+        let tol_mm = 13.5f32;
+        let mut back = None;
         for _ in 0..8000 {
             s.advance(1);
             match s.ball(h) {
                 Some(b) if b.layer == 0 => {
-                    back = true;
+                    back = Some(b.position_m);
                     break;
                 }
                 Some(_) => {}
                 None => break,
             }
         }
-        assert!(back, "returned to the main deck");
+        let p = back.expect("returned to the main deck");
+        let (x, y) = (p[0] * 1.0e3, p[1] * 1.0e3);
+        let (lo, hi) = (ret.zone.min, ret.zone.max);
+        assert!(
+            x >= lo[0] - tol_mm
+                && x <= hi[0] + tol_mm
+                && y >= lo[1] - tol_mm
+                && y <= hi[1] + tol_mm,
+            "layer change at ({x}, {y}) mm, outside deck_return {lo:?}..{hi:?}"
+        );
         healthy(&s);
     });
 }
@@ -100,6 +124,32 @@ fn on_bat(d: f32) -> (f32, f32) {
     (440.0 + ux * d + nx * r, 805.0 + uy * d + ny * r)
 }
 
+/// The x (m) at which a ball at `pos` moving with `vel` reaches the line
+/// y = `line_y` (m), projected from that one state. A ball already at or
+/// past the line (t <= 0) has crossed it: its sampled x is returned.
+fn x_at_line(pos: [f32; 3], vel: [f32; 3], line_y: f32) -> f32 {
+    let t = (line_y - pos[1]) / vel[1];
+    if t <= 0.0 {
+        pos[0]
+    } else {
+        pos[0] + vel[0] * t
+    }
+}
+
+#[test]
+fn bank_line_projection_uses_one_state() {
+    // The review's example: pre-stroke y 0.800 m, sample (0.420, 0.880) m,
+    // v (0.5, 2.0) m/s: from the sample the ball reaches y 0.995 at
+    // x 0.420 + 0.5 * 0.0575 = 0.44875 m (the mixed projection from the
+    // pre-stroke y gave 0.4688).
+    let x = x_at_line([0.420, 0.880, 0.0], [0.5, 2.0, 0.0], 0.995);
+    assert!((x - 0.449).abs() < 1.0e-3, "x {x}");
+    assert!((0.360..0.465).contains(&x));
+    // Past the line: the sampled x, not a back-extrapolation.
+    let x = x_at_line([0.430, 1.000, 0.0], [0.5, 2.0, 0.0], 0.995);
+    assert_eq!(x, 0.430);
+}
+
 #[test]
 fn upper_right_flipper_shoots_up_the_deck_towards_the_drop_bank() {
     on_big_stack(|| {
@@ -113,7 +163,6 @@ fn upper_right_flipper_shoots_up_the_deck_towards_the_drop_bank() {
             // Let it settle against the bat for a moment (it rolls slowly
             // towards the tip).
             s.advance(10);
-            let p0 = s.ball(h).unwrap().position_m;
             s.set_switch("right_upper", true).unwrap();
             s.advance(40);
             let b = s.ball(h).unwrap();
@@ -124,9 +173,10 @@ fn upper_right_flipper_shoots_up_the_deck_towards_the_drop_bank() {
             assert!((1.0..8.0).contains(&speed), "d {d}: speed {speed} m/s");
             assert!((60.0..130.0).contains(&ang), "d {d}: direction {ang} deg");
             // Its path crosses the bank's line (y 980..1010) between the
-            // bank's ends (x 372..452).
-            let t = (0.995 - p0[1]) / v[1];
-            let x_at_bank = b.position_m[0] + v[0] * t;
+            // bank's ends (x 372..452). Projected from the sampled state
+            // alone; a sample already at or past the line counts as crossed
+            // at its own x (no back-extrapolation).
+            let x_at_bank = x_at_line(b.position_m, v, 0.995);
             assert!(
                 (0.360..0.465).contains(&x_at_bank),
                 "d {d}: reaches the bank line at x {x_at_bank}"

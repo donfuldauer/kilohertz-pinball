@@ -192,8 +192,8 @@ fn switch_pos(name: &str) -> ([f32; 3], u8) {
 }
 
 /// Searches, in a fixed order, a launch (direction, speed) from 25 mm
-/// before `entry` that makes the physics close `entry` and then `top`
-/// within the shot's window. Directions: the bearing to `top` +-0..60 deg
+/// before `entry` that makes the physics close `entry` and then, on a later
+/// tick, `top` within the shot's window. Directions: the bearing to `top` +-0..60 deg
 /// and up the table (90 deg) +-0..40 deg; speeds 2-5 m/s. Returns the first
 /// that works (attract mode; no switch is forced).
 fn shot_by_contact(shot: &str, entry: &str, top: &str) -> Option<(f32, f32, u64)> {
@@ -233,12 +233,14 @@ fn shot_by_contact(shot: &str, entry: &str, top: &str) -> Option<(f32, f32, u64)
                 if let Some(b) = sim.ball(h) {
                     assert!(finite(&b), "finite");
                 }
-                if entry_tick.is_none() && hits(&sim, entry) > e0 {
-                    entry_tick = Some(sim.tick());
-                }
+                // The completing switch is checked before this tick's entry
+                // hit is recorded: an entry hit in the same tick as the top
+                // hit has an unknown order and does not count; the entry
+                // must have been seen on an earlier tick.
                 if hits(&sim, top) > t0 {
                     if let Some(et) = entry_tick {
                         let dt = sim.tick() - et;
+                        assert!(dt >= 1, "entry strictly before top");
                         if dt <= window_ticks {
                             clear_table(&mut sim);
                             assert_healthy(&sim, shot);
@@ -246,6 +248,9 @@ fn shot_by_contact(shot: &str, entry: &str, top: &str) -> Option<(f32, f32, u64)
                         }
                     }
                     break;
+                }
+                if entry_tick.is_none() && hits(&sim, entry) > e0 {
+                    entry_tick = Some(sim.tick());
                 }
                 if sim.ball(h).is_none() {
                     break;
