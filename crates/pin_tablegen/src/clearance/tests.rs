@@ -14,6 +14,7 @@ fn feature_labels_are_distinct() {
         Feature::VukExit,
         Feature::DeckHeadroom,
         Feature::Restriction,
+        Feature::BackboxCollider,
     ];
     for (i, a) in all.iter().enumerate() {
         for b in &all[i + 1..] {
@@ -315,7 +316,6 @@ fn generated_backbox_vuk_exit_validates() {
         .find(|m| m.id == "tablegen:backbox.vuk")
         .unwrap();
     assert_eq!(vuk.exit_layer, Some(4));
-    assert_eq!(backbox_layer(&table), 4);
     let r = validate_bundle(&vfs).unwrap();
     assert!(r.is_ok(), "{:#?}", r.errors);
     let profiles: Vec<&str> = table
@@ -329,6 +329,12 @@ fn generated_backbox_vuk_exit_validates() {
     // The same through the diameters entry point, 15.88 and 79.4 mm.
     let scene = load_gltf(&vfs, "playfield.glb").unwrap();
     let bb = load_backbox_colliders(&vfs).unwrap().unwrap();
+    // The generator names the backbox layer on every node.
+    assert!(
+        bb.meshes
+            .iter()
+            .all(|m| m.extras.collider && m.extras.collision_layer == Some(4))
+    );
     let r = validate_clearance_for(&table, &scene, Some(&bb), Some(&[0.01588]));
     assert!(r.is_ok(), "{:#?}", r.errors);
     let r = validate_clearance_for(&table, &scene, Some(&bb), Some(&[0.0794]));
@@ -396,7 +402,7 @@ fn backbox_colliders_are_not_playfield_geometry() {
     let bb = load_backbox_colliders(&vfs).unwrap().unwrap();
     let bb_tris = {
         let mut t = Vec::new();
-        geom::append_collider_triangles(&bb, backbox_layer(&table), 0, &mut t);
+        geom::append_collider_triangles(&bb, |m| backbox_node_layer(m).ok(), 0, &mut t);
         t
     };
     assert!(!bb_tris.is_empty() && bb_tris.iter().all(|t| t.layer == 4));
@@ -417,14 +423,19 @@ fn backbox_colliders_are_not_playfield_geometry() {
         "{:#?}",
         r.errors
     );
-    // A node naming no layer takes the declared backbox layer.
-    let mut bare = bb.clone();
-    for m in &mut bare.meshes {
-        m.extras.collision_layer = None;
+    // Each node keeps its own backbox layer, mesh indices offset; a node
+    // naming no layer adds no geometry (no default layer).
+    let mut mixed = bb.clone();
+    for (k, m) in mixed.meshes.iter_mut().enumerate() {
+        m.extras.collision_layer = [Some(6), None][k % 2];
     }
     let mut t = Vec::new();
-    geom::append_collider_triangles(&bare, 6, 3, &mut t);
-    assert!(t.iter().all(|t| t.layer == 6 && t.mesh >= 3));
+    geom::append_collider_triangles(&mixed, |m| backbox_node_layer(m).ok(), 3, &mut t);
+    assert!(!t.is_empty());
+    assert!(
+        t.iter()
+            .all(|t| t.layer == 6 && t.mesh >= 3 && (t.mesh - 3) % 2 == 0)
+    );
 }
 
 /// The backbox support reach is plan distance to a backbox floor below
@@ -716,4 +727,57 @@ mod inscribed_circle {
             prop_assert!(2.0 * deepest <= d + TOL + 1e-12, "grid {} vs {d}", 2.0 * deepest);
         }
     }
+}
+
+/// CodeRabbit 4622606031: a backbox collider node without
+/// `extras.collision_layer`, or with one outside 4..=7, is an error naming
+/// `backbox_colliders.glb`, the node and the loader's condition (as
+/// `pin_sim::load::backbox_colliders` refuses it), never default-layer
+/// geometry.
+#[test]
+fn backbox_node_without_a_backbox_layer_is_an_error() {
+    use backbox_bundle::*;
+    let b = bundle(&[MINI], vec![], true);
+    let vfs = b.vfs();
+    let table = load_table(&vfs).unwrap();
+    let scene = load_gltf(&vfs, "playfield.glb").unwrap();
+    let bb = load_backbox_colliders(&vfs).unwrap().unwrap();
+    assert!(validate_clearance_with_backbox(&table, &scene, Some(&bb)).is_ok());
+    for (k, bad) in [None, Some(3u8), Some(8)].into_iter().enumerate() {
+        let mut broken = bb.clone();
+        let i = k.min(broken.meshes.len() - 1);
+        broken.meshes[i].extras.collision_layer = bad;
+        let node = broken.meshes[i].name.clone();
+        let r = validate_clearance_with_backbox(&table, &scene, Some(&broken));
+        let want = format!(
+            "node {node:?}: extras.collision_layer must be a backbox layer 4..=7, got {bad:?}"
+        );
+        let found: Vec<&ClearanceError> = r
+            .errors
+            .iter()
+            .filter(|e| e.file == pin_assets::BACKBOX_COLLIDERS_FILE && e.message == want)
+            .collect();
+        assert_eq!(found.len(), 1, "{bad:?}: {:#?}", r.errors);
+        let e = found[0];
+        assert_eq!(e.path, format!("meshes[{i}]"));
+        assert_eq!(e.name, node);
+        assert!(e.to_string().starts_with("backbox_colliders.glb: "), "{e}");
+        assert_eq!(e.feature, Feature::BackboxCollider);
+        assert!(!r.is_ok());
+    }
+    // As in the loader, a node that is not a collider is refused too.
+    let mut broken = bb.clone();
+    broken.meshes[0].extras.collider = false;
+    let node = broken.meshes[0].name.clone();
+    let r = validate_clearance_with_backbox(&table, &scene, Some(&broken));
+    let want = format!("node {node:?} is not a collider (extras.collider must be true)");
+    assert!(
+        r.errors
+            .iter()
+            .any(|e| e.file == pin_assets::BACKBOX_COLLIDERS_FILE
+                && e.path == "meshes[0]"
+                && e.message == want),
+        "{:#?}",
+        r.errors
+    );
 }
