@@ -9,8 +9,8 @@ mod support;
 use pin_sim::autoplay::report::SOAK_WIDE;
 use pin_sim::autoplay::{
     BotConfig, BotStats, CounterTotals, Distribution, Finding, FindingKind, GameEnd, GameSummary,
-    ModeCount, NudgeConfig, ShotCount, SkillLevel, SoakConfig, SoakReport, SwitchCount, Timing,
-    run_soak,
+    ModeCount, NudgeConfig, ReactionDraw, ShotCount, SkillLevel, SoakConfig, SoakReport,
+    SwitchCount, Timing, run_soak,
 };
 use pin_sim::cli::{CliError, SOAK_JSON, SOAK_MARKDOWN, main_with_args, parse_soak_args};
 use proptest::prelude::*;
@@ -554,6 +554,9 @@ fn binary_exit_codes() {
     // play is an EndlessBall finding (exit 1), and a Standard bot keeps a
     // ball up on this table for more than the 300 s endless limit, so the
     // full run plays Novice games to game over under the default cap.
+    // fix-2.9-bot-timing: with the calibrated flip timing a Novice keeps a
+    // ball up for more than 300 s in one of six games for each of seeds 1-5,
+    // so the run uses seed 6 (all six games end by game over).
     let o = run(
         "clean",
         &[
@@ -564,7 +567,7 @@ fn binary_exit_codes() {
             "--skill",
             "novice",
             "--seed",
-            "1",
+            "6",
         ],
     );
     let text = String::from_utf8_lossy(&o.stdout);
@@ -625,6 +628,7 @@ fn arb_skill() -> impl Strategy<Value = SkillLevel> {
 prop_compose! {
     fn arb_bot()(
         lead in 0u32..200,
+        timing in ((0u32..200, 0u32..200), any::<bool>()),
         hold in (0u32..300, 0u32..300),
         cooldown in 0u32..300,
         cradle in any::<bool>(),
@@ -642,6 +646,8 @@ prop_compose! {
     ) -> BotConfig {
         BotConfig {
             lead_ms: lead,
+            flip_delay_ms: timing.0,
+            reaction: if timing.1 { ReactionDraw::Centred } else { ReactionDraw::Late },
             flip_hold_ms: hold,
             cooldown_ms: cooldown,
             cradle,
