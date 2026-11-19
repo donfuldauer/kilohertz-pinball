@@ -745,7 +745,9 @@ mod inscribed_circle {
         assert_eq!(fits(&tri, 0.027), Fit::Fits);
         assert_eq!(fits(&tri, 0.027_01), Fit::TooSmall);
         assert_eq!(fits(&tri, want - 1.0e-7), Fit::Fits);
-        assert_eq!(fits(&tri, want + 1.0e-7), Fit::TooSmall);
+        // A circle up to 1 µm wider in radius (2 µm in diameter) may count
+        // as touching; 3 µm wider is too small.
+        assert_eq!(fits(&tri, want + 3.0e-6), Fit::TooSmall);
         // Clearly too small, and clearly wide enough.
         let sq = rect(0.0, 0.0, 0.02, 0.02);
         assert_eq!(fits(&sq, 0.027), Fit::TooSmall);
@@ -771,9 +773,26 @@ mod inscribed_circle {
         assert_eq!(fits(&spike, 0.027), Fit::Fits);
     }
 
+    /// CodeRabbit 4623268524: a ball slightly wider than a restrict strip
+    /// must not exhaust the cell budget (the strip's centre line is a
+    /// plateau at the inscribed radius). 27 mm x 100 mm strip: within the
+    /// 1 µm radius bracket fits, clearly wider is too small.
+    #[test]
+    fn fits_decides_a_strip_the_ball_just_exceeds() {
+        let strip = rect(0.0, 0.0, 0.027, 0.1);
+        for (d, want) in [
+            (0.027, Fit::Fits),
+            (0.027_000_5, Fit::Fits),
+            (0.027_01, Fit::TooSmall),
+        ] {
+            // Undecided (cell budget exhausted) is a failure here.
+            assert_eq!(fits(&strip, d), want, "diameter {d}");
+        }
+    }
+
     proptest! {
-        /// Triangles: the incircle diameter `4A / P` decides, 1 µm either
-        /// side.
+        /// Triangles: the incircle diameter `4A / P` decides, 3 µm above and 1 µm below
+        /// (the decision tolerance is a 1 µm radius bracket).
         #[test]
         fn fits_triangles(p in prop::array::uniform3((-0.5f64..0.5, -0.5f64..0.5))) {
             let pts = p.map(|(x, y)| DVec2::new(x, y));
@@ -783,7 +802,7 @@ mod inscribed_circle {
             let want = 4.0 * area / per;
             let tri = Polygon { points: pts.to_vec() };
             prop_assert_eq!(fits(&tri, want - 1.0e-6), Fit::Fits);
-            prop_assert_eq!(fits(&tri, want + 1.0e-6), Fit::TooSmall);
+            prop_assert_eq!(fits(&tri, want + 3.0e-6), Fit::TooSmall);
         }
 
         /// Any polygon: the reported lower bound always fits, and nothing
