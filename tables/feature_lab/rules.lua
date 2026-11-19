@@ -142,6 +142,7 @@ local function bind_ids()
   coil.b1, coil.b2, coil.b3 = c.bumper_1_coil, c.bumper_2_coil, c.bumper_3_coil
   coil.sl = c.sling_left_coil
   coil.vuk, coil.plunger = c.bb_vuk_coil, c.plunger_coil
+  coil.gate = c.lane_gate_coil
   local sc = pinball.scene
   scene.attract, scene.score, scene.over =
     sc.scene_attract, sc.scene_score, sc.scene_game_over
@@ -414,6 +415,7 @@ function on_switch(id, closed)
     add(FLIP_SHOT_POINTS)
   end
   if id == sw.launch then
+    pinball.pulse_coil(coil.gate, 1500)
     pinball.pulse_coil(coil.plunger, 300)
   elseif id == sw.b1 or id == sw.b2 or id == sw.b3 then
     if id == sw.b1 then
@@ -472,6 +474,7 @@ function on_tick()
   end
   if glo_launch >= 0 and ticks >= glo_launch then
     glo_launch = -1
+    pinball.pulse_coil(coil.gate, 1500)
     pinball.pulse_coil(coil.plunger, 300)
   end
   if glo_end >= 0 and ticks >= glo_end then

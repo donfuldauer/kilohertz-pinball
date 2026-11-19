@@ -238,6 +238,14 @@ id = "plunger_coil"
 number = 10
 kind = "autoplunger"
 
+# The shooter-lane gate (mech "walls[16]" below): kind "kicker" like the
+# 2.5 gate wiring (pin_sim tests/sim_mech_wiring.rs). Pulsed for 1.5 s with
+# every plunger pulse (rules.lua).
+[[coils]]
+id = "lane_gate_coil"
+number = 11
+kind = "kicker"
+
 # --- Lamps -------------------------------------------------------------------
 
 [[lamps]]
@@ -321,6 +329,20 @@ from_layer = 4
 to_layer = 0
 zone = { min = [52.0, 780.0, -24.0], max = [462.0, 990.0, 25.0] }
 
+# Left of bb_catch: a backbox ball thrown left (off the top of the backbox
+# walls[1]) can fall through the entry hole (x 67..137) and cross z 25 at x
+# 39..51, left of bb_catch, and leave the table on layer 4 (Gate A2 run 1
+# EscapedBall). This box returns it to the playfield in the orbit lane's
+# clear band. It stays out of the entry zone (x >= 67, z 46..90) and the
+# drain zone, and spans only y 895..935: at y >= 744 the orbit's outer rail
+# is <= 15.7 mm from the cabinet wall, a closed pocket a ball must never be
+# returned into (docs/decisions/2026-11-19-6.4-a2fix.md "6.4-a2-catch").
+[[layer_transitions]]
+id = "bb_catch_left"
+from_layer = 4
+to_layer = 0
+zone = { min = [44.0, 895.0, 25.0], max = [59.0, 935.0, 96.0] }
+
 # --- Ball dispensers -----------------------------------------------------------
 
 # Serves the shooter lane above the plunger tip (the player's ball).
@@ -365,12 +387,15 @@ contents = ["uv_globall"]
 # One slingshot, on the left. The Banana's curl sends its shots up the
 # right of the table, where a right sling would stop them; the space above
 # the right inlane is open playfield instead.
+# Moved 30 mm out from (100, 290) along the left inlane wall's normal with
+# its guard (layout.toml walls[12]) to widen the left inlane mouth
+# (docs/decisions/2026-11-19-6.4-a2fix.md "6.4-a2-inlane").
 [[mechs]]
 id = "sling_left"
 kind = "sling"
 coil = "sling_left_coil"
 switch = "sling_left_sw"
-position = [100.0, 290.0, 0.0]
+position = [121.62, 310.80, 0.0]
 angle_deg = 35.0
 
 [[mechs]]
@@ -402,6 +427,20 @@ switch = "plunger_tip"
 position = [492.0, 50.0, 0.0]
 angle_deg = 90.0
 auto_pull = 0.9
+
+# The shooter-lane gate: layout.toml walls[16], across the gap between the
+# lane wall's top (470, 930) and the corner wall (470, 1000). Closed (solid)
+# by default; open while lane_gate_coil is energised. The rules pulse the
+# coil for 1.5 s with each plunger pulse, so the plunged ball passes (it
+# crosses y 964..981 within 1.5 s); a ball kicked up the right side by the
+# bumpers cannot re-enter the lane from the top and be relaunched (Gate A2
+# run 1 EndlessBall, docs/decisions/2026-11-19-6.4-a2fix.md
+# "6.4-a2-gate").
+[[mechs]]
+id = "walls[16]"
+kind = "gate"
+coil = "lane_gate_coil"
+position = [470.0, 965.0, 0.0]
 
 # --- Coverage declarations (2.9 soak harness) ----------------------------------
 

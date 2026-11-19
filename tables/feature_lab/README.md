@@ -85,6 +85,15 @@ tilt.
 * **Shooter lane and orbit** (grey-box geometry): the plunger serves every
   ball round the orbit top; the shooter-lane wall runs up to y 930, so a ball
   on the playfield cannot drop back into the lane.
+* **Shooter-lane gate** (`layout.toml` walls[16], mech `walls[16]` of kind
+  `gate` on coil `lane_gate_coil`, number 11): closes the 70 mm gap
+  between the lane wall's top (470, 930) and the corner wall at (470,
+  1000). It is closed (solid) by default and open while its coil is on; the
+  rules pulse it for 1.5 s with every plunger pulse, so a plunged ball
+  leaves the lane through it (plunges cross it at y 964..981 well within
+  1.5 s). Without it, bumper kicks sent balls up the right side into the
+  lane from the top, where the player relaunched the same ball again and
+  again (Gate A2 run 1: endless balls, mostly the light Glo-Ball).
 * **Flippers**: a straight lower-left flipper and the Banana lower right.
   The Banana's curl sends its shots up the right of the table (mirrored
   cradle headings 96..118 degrees against 77..110 for the straight bat),
@@ -102,7 +111,15 @@ tilt.
   transition `bb_catch` returns a ball that falls back through the entry
   hole (a flipped ball that drops into the entry channel) to the
   playfield, also when it drifts towards the player or the back as it
-  falls (the zone spans y 780..990).
+  falls (the zone spans y 780..990). A second zone, `bb_catch_left` (x
+  44..59, y 895..935, z 25..96), catches a ball thrown left off the top of
+  the backbox's walls[1] that falls through the hole left of `bb_catch`,
+  and returns it into the orbit lane (never into the closed strip between
+  the cabinet wall and the orbit's outer rail).
+* **Left inlane**: the sling (`sling_left`, at (121.6, 310.8)) and its
+  guard (walls[12]) sit 30 mm further out than on the grey-box, so the
+  inlane is 75.6 mm wide at the guard's top: two balls arriving together
+  (the magnet comparison balls) cannot wedge across its mouth.
 * **Holding magnet** `hold_magnet` at (370, 420), on the Banana's line below
   the VUK lane; `magnet_feed` serves comparison balls at rest onto its pole.
 * **XL area**: the chamber under the left inlane, closed to every other
@@ -159,6 +176,10 @@ time, ms; 0 until measured).
 
 * START begins a 3-ball game; each ball is served into the shooter lane and
   launched with the launch button (the plunger's auto-plunger coil).
+* Every plunger pulse (the launch button, and the Glo-Ball's automatic
+  plunge in `glo_ball`) also pulses `lane_gate_coil` (11) for 1.5 s: the
+  shooter-lane gate opens for the plunged ball and is closed the rest of
+  the time, so no ball re-enters the lane from the top.
 * A ball ends when the last ball in play has drained through a trough
   switch (`trough_1`, `trough_2`, `xl_trough`); after the third the game is
   over and the attract scene returns 4 s later.
