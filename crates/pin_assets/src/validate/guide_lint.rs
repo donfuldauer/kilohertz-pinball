@@ -69,7 +69,7 @@ fn curvature(spline: &CubicSpline, t: f64) -> f64 {
     let d1 = spline.tangent(t as f32).as_dvec3();
     let d2 = spline.second_derivative(t as f32).as_dvec3();
     let speed = d1.length();
-    let plan_speed = d1.x.hypot(d1.y);
+    let plan_speed = libm::hypot(d1.x, d1.y);
     let space = if speed > 1.0e-12 {
         d1.cross(d2).length() / (speed * speed * speed)
     } else {
@@ -496,7 +496,7 @@ mod tests {
         let mut pts: Vec<Vec3> = (0..n)
             .map(|i| {
                 let a = i as f32 / n as f32 * core::f32::consts::TAU;
-                Vec3::new(r * a.cos(), r * a.sin(), 0.0)
+                Vec3::new(r * libm::cosf(a), r * libm::sinf(a), 0.0)
             })
             .collect();
         pts.push(pts[0]);
@@ -544,7 +544,7 @@ mod tests {
         let pts: Vec<Vec3> = (0..=8)
             .map(|i| {
                 let a = i as f32 / 8.0 * core::f32::consts::FRAC_PI_2;
-                Vec3::new(0.1 * a.cos(), 0.1 * a.sin(), 0.02 * i as f32)
+                Vec3::new(0.1 * libm::cosf(a), 0.1 * libm::sinf(a), 0.02 * i as f32)
             })
             .collect();
         let s = CubicSpline::interpolate(&pts).unwrap();
@@ -656,7 +656,7 @@ mod tests {
         let mut eight: Vec<Vec3> = (0..16)
             .map(|i| {
                 let a = i as f32 / 16.0 * core::f32::consts::TAU;
-                Vec3::new(0.1 * a.sin(), 0.05 * (2.0 * a).sin(), 0.0)
+                Vec3::new(0.1 * libm::sinf(a), 0.05 * libm::sinf(2.0 * a), 0.0)
             })
             .collect();
         eight.push(eight[0]);
@@ -821,7 +821,11 @@ mod tests {
 
     /// Builds a point on the plane at `c + dir(angle) * s`.
     fn along(c: (f32, f32), angle: f32, s: f32) -> Vec3 {
-        Vec3::new(c.0 + angle.cos() * s, c.1 + angle.sin() * s, 0.0)
+        Vec3::new(
+            c.0 + libm::cosf(angle) * s,
+            c.1 + libm::sinf(angle) * s,
+            0.0,
+        )
     }
 
     proptest::proptest! {

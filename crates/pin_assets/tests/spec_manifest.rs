@@ -1215,8 +1215,8 @@ fn arc_points(radius_mm: f64, sweep_deg: f64, n: usize, rise_mm: f64) -> String 
             let a = (sweep_deg * i as f64 / (n - 1) as f64).to_radians();
             format!(
                 "[{:.3}, {:.3}, {:.3}]",
-                radius_mm * a.cos(),
-                radius_mm * a.sin(),
+                radius_mm * libm::cos(a),
+                radius_mm * libm::sin(a),
                 rise_mm * i as f64
             )
         })
@@ -1436,7 +1436,11 @@ fn open_end_touching_its_own_wall_is_a_warning() {
         let mut pts: Vec<String> = (0..10)
             .map(|i| {
                 let a = (30.0 * i as f64).to_radians();
-                format!("[{:.3}, {:.3}, 0.0]", 100.0 * a.cos(), 100.0 * a.sin())
+                format!(
+                    "[{:.3}, {:.3}, 0.0]",
+                    100.0 * libm::cos(a),
+                    100.0 * libm::sin(a)
+                )
             })
             .collect();
         pts.push("[35.0, -65.0, 0.0]".into());
@@ -1444,8 +1448,8 @@ fn open_end_touching_its_own_wall_is_a_warning() {
         let a = 30.0f64.to_radians();
         pts.push(format!(
             "[{:.3}, {:.3}, 0.0]",
-            (100.0 - d) * a.cos(),
-            (100.0 - d) * a.sin()
+            (100.0 - d) * libm::cos(a),
+            (100.0 - d) * libm::sin(a)
         ));
         format!("[{}]", pts.join(", "))
     };
