@@ -138,8 +138,8 @@ pub fn vuk_eject(frame: &BackboxFrame) -> (f32, f32, f32) {
         VUK_RISE_M_S * up.y,
         VUK_RISE_M_S * up.z,
     ];
-    let angle = vel[1].atan2(vel[0]).to_degrees();
-    let kick = vel[0].hypot(vel[1]);
+    let angle = libm::atan2f(vel[1], vel[0]).to_degrees();
+    let kick = libm::hypot(f64::from(vel[0]), f64::from(vel[1])) as f32;
     (vel[2], angle, kick)
 }
 

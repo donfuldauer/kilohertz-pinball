@@ -445,3 +445,19 @@ proptest! {
         prop_assert!(eject > 0.0 && kick > 0.0);
     }
 }
+
+/// The VUK eject angle and kick are pinned to their exact f32 bits: the
+/// builder uses `libm` (not the platform's atan2f/hypotf), so the generated
+/// bundle is the same on every glibc.
+#[test]
+fn vuk_eject_bits_are_platform_independent() {
+    let t = manifest();
+    let read = |f: &str| std::fs::read_to_string(feature_lab_src().join(f)).unwrap();
+    let bb = parse_backbox_layout(&read("backbox_layout.toml"))
+        .unwrap()
+        .backbox;
+    let frame = BackboxFrame::new(bb.origin, t.meta.pitch_deg);
+    let (_, angle, kick) = vuk_eject(&frame);
+    assert_eq!(angle.to_bits(), 0x4208BD8C, "angle {angle}");
+    assert_eq!(kick.to_bits(), 0x3ED8A09F, "kick {kick}");
+}

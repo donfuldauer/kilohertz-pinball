@@ -26,6 +26,8 @@ image.workspace = true
 pin_sim = { path = "../pin_sim" }
 pin_tablegen = { path = "../pin_tablegen" }
 pin_audio = { path = "../pin_audio", default-features = false }
+# Platform-independent atan2/hypot in the Feature Lab bundle builder (PR #68).
+libm.workspace = true
 
 [features]
 # Tests that need a GPU and a native window (the CI `gpu-tests` job):
