@@ -78,7 +78,10 @@ tables and the failures keeps all the evidence on the last line.
 **Alternatives:** FAIL taking precedence over INCOMPLETE. Rejected because it hides the fact
 that the gate is incomplete.
 
-## gate-a2-runner — A2.4 replay: what is compared
+## gate-a2-runner — A2.4 replay: what is compared (SUPERSEDED by A2.4c, see below)
+
+*Superseded by "A2.4c sampled bot-game replay gates" below: pin_sim can now record and replay sampled bot games, so (c) gates and (a)/(b) are supplemental. The text is kept as written.*
+
 
 **Decision:** (a) The standard soak is re-run alone for games 0..REPLAYS-1 with the same seed
 and a different thread count (1, or 2 when THREADS=1). Each game's `seed` and `state_hash`
@@ -127,3 +130,60 @@ line at expert ([6.1-expert-orbits]) is printed for every table.
 **Rationale:** The brief, requirement 4c, and PLAN §2.3 rule 6.
 
 **Alternatives:** None considered.
+
+## gate-a2-runner: A2.4c sampled bot-game replay gates (supersedes the A2.4 section)
+
+**Decision:** PLAN.md's "deterministic replay of 20 sampled games per table" is met by real
+input replay, and it gates. The STANDARD-skill soak (novice and expert are unchanged) runs with
+`--record-games spread:$REPLAYS`, so the bot's effective input is recorded for games
+floor(i*GAMES/REPLAYS), i = 0..REPLAYS-1 (0, 50, ..., 950 for 20 of 1,000), into the default
+`<soak out>/recordings`. Each recording is then replayed with
+`pin_sim <bundle> --replay-game FILE`, with no bot. The runner writes `<t>/replay_games.tsv`, one
+row per expected spread game (game, soak state_hash, replay state_hash, soak score, replay score,
+ticks). A game that has no recording or no parseable replay output keeps empty fields. The
+verdict row `A2.4c sampled bot games replayed from recorded input without the bot: N of REPLAYS
+identical state_hash and score` FAILs unless all of the following hold:
+- the rows are exactly the spread indices, using GAMES from the standard report's `config.games`;
+- each row's soak hash and score equal that game's `state_hash` and `score` in the standard
+  soak_report.json `games` list, where a `null` score is written `none`;
+- each replay hash and score is well-formed, non-empty and equal to the soak value;
+- REPLAYS >= 20 in a full run.
+
+In a dry run, REPLAYS < 20 does not fail A2.4c, but a mismatch does. A dry run with no
+replay file is a REPORT only when the runner recorded `record_games=0` in `gate_a2_run.txt`,
+meaning the binary's `soak` usage text has no `--record-games`. Otherwise it FAILs. A2.4a and
+A2.4b are renamed `A2.4a (supplemental)` and `A2.4b (supplemental)`. They keep their PASS/FAIL
+semantics, so a FAIL in either still blocks PASS. In A2.4a, a seed or state_hash that is missing,
+null or empty in either report is now a mismatch (CodeRabbit finding 2). The old non-gating
+"A2.4c bot-game replay ... repeatability check used" REPORT row is removed.
+
+The numeric env vars GAMES, REPLAYS, SEED, THREADS and PATTERN_TICKS are normalised to decimal
+with `$((10#v))` after digit validation, and values longer than 18 digits are refused with
+exit 2. The normalised values are used everywhere: in the header, in gate_a2_run.txt, in the
+soak flags and in the seed arithmetic. `SEED=08` is 8 and `SEED=010` is 10 (finding 3). The
+verdict fsyncs the OUT directory after both verdict files are closed and before the final line
+is printed, and it tolerates platforms that cannot fsync a directory (finding 4).
+
+**Rationale:** Gate criteria are the owner's (PLAN.md:530, :767), so PLAN.md is not amended to
+accept a repeatability check in place of replay. The pin_sim side exists now
+(docs/decisions/2026-11-19-gate-a2-cr1-pin-sim.md). The spread formula is the one pin_sim
+uses for `spread:N`, so the runner and the verdict compute the same indices independently, and a
+recording of the wrong games fails. The standard skill is enough because PLAN asks for "20
+sampled games per table", not per skill, and the A2.3a median is judged on the standard soak.
+Cross-checking the tsv against soak_report.json catches a recording whose listed soak values are
+not the soak's own. The supplemental checks stay because they cover other risks (thread-count
+independence, the `--record-inputs` path) at little cost. The runner writes one row per
+*expected* game, so a recording that is missing shows up as an empty-field row, and it is named
+in the verdict, instead of the row count silently shrinking.
+
+**Alternatives:**
+- Amend PLAN.md to accept the repeatability check. Rejected by the Orchestrator's decision: the
+  criterion belongs to the owner.
+- Record at every skill, or 20 games per skill. Rejected: this triples the recording I/O, and
+  PLAN asks for 20 per table.
+- Gate A2.4c in DRY on REPLAYS >= 20. Rejected because it conflicts with the dry-run rule that
+  size criteria are REPORTed.
+- Reject leading zeros instead of normalising them. Rejected because `SEED=08` is a reasonable
+  thing to type and the brief asks for the decimal reading.
+- Write replay_games.tsv rows only for the games that were actually recorded. Rejected because a
+  missing recording would then show up only as a row count.

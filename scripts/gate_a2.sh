@@ -16,10 +16,14 @@
 #            outside the repository's target/ is refused)
 # GAMES      games per skill (default 1000; DRY: 20)
 # SEED       soak seed (default 1)
+#            (GAMES, SEED, THREADS, REPLAYS and PATTERN_TICKS are decimal digits,
+#            at most 18; leading zeros are ignored: SEED=08 is 8)
 # THREADS    soak worker threads (default 2)
 # TABLES     space-separated table directory names (default: every tables/*/
 #            with a build.sh except greybox; greybox runs only when named)
-# REPLAYS    sampled replays per table (default 20; DRY: 3)
+# REPLAYS    sampled replays per table (default 20; DRY: 3; at most GAMES): the
+#            standard soak records the bot input of games floor(i*GAMES/REPLAYS),
+#            i = 0..REPLAYS-1, and each is replayed without the bot (A2.4c)
 # PATTERN_TICKS  ticks of each recorded built-in input pattern (default 60000)
 # DRY=1      dry run: smaller defaults, the 1,000-game and 20-replay checks are
 #            REPORTed, the fixed-size readiness soaks are SKIPPED with a reason,
@@ -73,6 +77,14 @@ for v in GAMES REPLAYS SEED THREADS PATTERN_TICKS; do
   case "${!v}" in
     '' | *[!0-9]*) echo "gate_a2.sh: $v must be a non-negative integer, got '${!v}'" >&2; exit 2 ;;
   esac
+  # Decimal, whatever the leading zeros (SEED=08 is 8, 010 is 10; bash would
+  # read them as octal), and short enough that the arithmetic cannot overflow.
+  val="${!v}"
+  if [ "${#val}" -gt 18 ]; then
+    echo "gate_a2.sh: $v has more than 18 digits, got '$val'" >&2
+    exit 2
+  fi
+  printf -v "$v" '%d' "$((10#$val))"
 done
 if [ "$GAMES" -lt 1 ] || [ "$THREADS" -lt 1 ] || [ "$REPLAYS" -lt 1 ]; then
   echo "gate_a2.sh: GAMES, THREADS and REPLAYS must be at least 1" >&2
@@ -147,7 +159,9 @@ mkdir -p "$LOGS"
 rm -f "$OUT/gate_a2_verdict.txt" "$OUT/gate_a2_table.txt" "$OUT/readiness.tsv" "$OUT/gate_a2_run.txt"
 for t in $TABLES; do
   rm -f "$OUT/$t/build.rc" "$OUT/$t/replay_soak.rc" "$OUT/$t/replay_pattern.tsv" \
-    "$OUT/$t/replay_soak/soak_report.json" "$OUT/$t/replay_soak/soak_report.md"
+    "$OUT/$t/replay_soak/soak_report.json" "$OUT/$t/replay_soak/soak_report.md" \
+    "$OUT/$t/replay_games.tsv" "$OUT/$t/soak_standard/recordings/recorded_games.tsv"
+  rm -f "$OUT/$t/soak_standard/recordings/"game_*.khzrec
   for skill in novice standard expert; do
     rm -f "$OUT/$t/soak_$skill.rc" "$OUT/$t/soak_$skill/soak_report.json" "$OUT/$t/soak_$skill/soak_report.md"
   done
@@ -195,6 +209,20 @@ if [ -z "$PIN_SIM" ] || [ ! -x "$PIN_SIM" ]; then
   echo "gate_a2.sh: no pin_sim release binary (see $LOGS/build_release.log); every soak criterion FAILs"
   PIN_SIM=""
 fi
+# A2.4c needs `pin_sim soak --record-games` and `--replay-game`. A binary
+# without them is recorded (record_games=0) so that a dry run can REPORT the
+# missing replay data instead of failing; a full run FAILs A2.4c either way.
+RECORD_GAMES=0
+if [ -n "$PIN_SIM" ]; then
+  soak_usage="$("$PIN_SIM" soak 2>&1 || true)"
+  case "$soak_usage" in
+    *--record-games*) RECORD_GAMES=1 ;;
+  esac
+fi
+echo "record_games=$RECORD_GAMES" >>"$OUT/gate_a2_run.txt"
+if [ "$RECORD_GAMES" = "0" ] && [ -n "$PIN_SIM" ]; then
+  echo "gate_a2.sh: $PIN_SIM has no 'soak --record-games'; A2.4c (sampled bot-game replay) has no data"
+fi
 
 for t in $TABLES; do
   tdir="$OUT/$t"
@@ -221,20 +249,57 @@ for t in $TABLES; do
     log="$tlogs/soak_$skill.log"
     t0="$(now)"
     rc=0
+    rec_args=()
+    if [ "$skill" = "standard" ] && [ "$RECORD_GAMES" = "1" ]; then
+      rec_args=(--record-games "spread:$REPLAYS")
+    fi
     "$PIN_SIM" soak "$tdir/bundle" --games "$GAMES" --seed "$SEED" --skill "$skill" \
-      --threads "$THREADS" --out "$tdir/soak_$skill" >"$log" 2>&1 || rc=$?
+      --threads "$THREADS" ${rec_args[@]+"${rec_args[@]}"} --out "$tdir/soak_$skill" >"$log" 2>&1 || rc=$?
     echo "$rc" >"$tdir/soak_$skill.rc"
     grep -E '^soak ' "$log" || tail -n 3 "$log" || true
     echo "   [$t] soak $skill: exit $rc, $(($(now) - t0)) s wall"
   done
 
-  echo "== [$t] A2.4a: standard soak re-run for $REPLAYS games with $REPLAY_THREADS threads"
+  echo "== [$t] A2.4c: $REPLAYS sampled standard games replayed from their recorded bot input, without the bot"
+  recdir="$tdir/soak_standard/recordings"
+  rlog="$tlogs/replay_games.log"
+  : >"$rlog"
+  : >"$tdir/replay_games.tsv"
+  t0="$(now)"
+  i=0
+  while [ "$i" -lt "$REPLAYS" ]; do
+    g=$((i * GAMES / REPLAYS))
+    # recorded_games.tsv: game, file, ticks, state_hash, score (pin_sim).
+    row=""
+    if [ -f "$recdir/recorded_games.tsv" ]; then
+      row="$(awk -F '\t' -v g="$g" '$1 == g "" { print; exit }' "$recdir/recorded_games.tsv" || true)"
+    fi
+    file="" ticks="" sh="" sc="" rh="" rs=""
+    if [ -n "$row" ]; then
+      IFS=$'\t' read -r _ file ticks sh sc <<<"$row" || true
+    fi
+    case "$file" in
+      '' | */* | .*) echo "game $g: no recording listed in $recdir/recorded_games.tsv (file '$file')" >>"$rlog" ;;
+      *)
+        replayed="$("$PIN_SIM" "$tdir/bundle" --replay-game "$recdir/$file" 2>>"$rlog")" || \
+          echo "game $g: pin_sim --replay-game exit $?" >>"$rlog"
+        rh="$(printf '%s\n' "$replayed" | sed -n 's/^state_hash=\([0-9a-f]\{16\}\)$/\1/p' | tail -n 1)"
+        rs="$(printf '%s\n' "$replayed" | sed -nE 's/^score=(none|-?[0-9]+)$/\1/p' | tail -n 1)"
+        echo "game $g: soak $sh/$sc replayed '$replayed'" >>"$rlog"
+        ;;
+    esac
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$g" "$sh" "$rh" "$sc" "$rs" "$ticks" >>"$tdir/replay_games.tsv"
+    i=$((i + 1))
+  done
+  echo "   [$t] A2.4c: $(awk -F '\t' '$3 != "" && $2 == $3 && $4 == $5' "$tdir/replay_games.tsv" | wc -l) of $REPLAYS replayed identically, $(($(now) - t0)) s wall"
+
+  echo "== [$t] A2.4a (supplemental): standard soak re-run for $REPLAYS games with $REPLAY_THREADS threads"
   rc=0
   "$PIN_SIM" soak "$tdir/bundle" --games "$REPLAYS" --seed "$SEED" --skill standard \
     --threads "$REPLAY_THREADS" --out "$tdir/replay_soak" >"$tlogs/replay_soak.log" 2>&1 || rc=$?
   echo "$rc" >"$tdir/replay_soak.rc"
 
-  echo "== [$t] A2.4b: $REPLAYS built-in pattern recordings of $PATTERN_TICKS ticks, replayed"
+  echo "== [$t] A2.4b (supplemental): $REPLAYS built-in pattern recordings of $PATTERN_TICKS ticks, replayed"
   mkdir -p "$tdir/replay_pattern"
   : >"$tdir/replay_pattern.tsv"
   plog="$tlogs/replay_pattern.log"
