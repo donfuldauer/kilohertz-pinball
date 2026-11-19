@@ -15,7 +15,8 @@ use pin_physics::flipper::FlipperSet;
 use pin_physics::world::CubicSpline;
 
 /// A VUK exit within this plan distance (m) of a guide or wireform of its
-/// layer counts as supported (a ramp or rail catches it).
+/// layer counts as supported (a ramp or rail catches it); so does one
+/// within it of a walkable backbox collider of its layer below it.
 const EXIT_SPLINE_REACH_M: f64 = 0.1;
 
 /// Spacing (m) of the samples along lane rails and wireform centrelines.
@@ -38,9 +39,30 @@ pub(super) struct World<'a> {
     pub grid: &'a TriGrid,
     /// The playfield glTF's file name (findings on meshes).
     pub glb: &'a str,
+    /// The bundle's backbox colliders (`pin_assets::BACKBOX_COLLIDERS_FILE`),
+    /// when it has them: their triangles follow the playfield's in `tris`,
+    /// with mesh indices offset by `scene.meshes.len()`.
+    pub backbox: Option<&'a GltfScene>,
 }
 
 impl World<'_> {
+    /// The file, the mesh index within that file and the node name of
+    /// [`Tri::mesh`] `mesh` (`"?"` when out of range).
+    pub fn mesh_ref(&self, mesh: usize) -> (&str, usize, &str) {
+        let own = self.scene.meshes.len();
+        if mesh < own {
+            return (self.glb, mesh, self.scene.meshes[mesh].name.as_str());
+        }
+        match self.backbox {
+            Some(bb) => (
+                pin_assets::BACKBOX_COLLIDERS_FILE,
+                mesh - own,
+                bb.meshes.get(mesh - own).map_or("?", |m| m.name.as_str()),
+            ),
+            None => (self.glb, mesh, "?"),
+        }
+    }
+
     pub fn guide_walls(&self) -> Vec<GuideWall> {
         let mut out = Vec::new();
         for s in &self.table.splines {
@@ -72,19 +94,33 @@ impl World<'_> {
     /// Whether a ball of radius `r` centred at `e` on `layer` is over a
     /// walkable collider of that layer (whose surface is below the ball's
     /// centre by at least `r` minus a millimetre), or near a guide or
-    /// wireform of the layer.
+    /// wireform of the layer, or within [`EXIT_SPLINE_REACH_M`] (plan) of
+    /// a walkable backbox collider of the layer below it (the shelf around
+    /// the entry hole the generated backbox VUK kicks the ball up through).
     fn supported(&self, layer: u8, e: DVec3, r: f64) -> bool {
         let q = e.truncate();
+        let below = |t: &Tri, p: DVec2| t.z_at(p) <= e.z - r + 1.0e-3;
         let mut idx = Vec::new();
         self.grid.query(self.tris, q, q, &mut idx);
         let floor = idx.iter().any(|&i| {
             let t = &self.tris[i as usize];
-            t.layer == layer
-                && t.nz() >= WALKABLE_NZ
-                && t.contains_plan(q)
-                && t.z_at(q) <= e.z - r + 1.0e-3
+            t.layer == layer && t.nz() >= WALKABLE_NZ && t.contains_plan(q) && below(t, q)
         });
+        let reach = DVec2::splat(EXIT_SPLINE_REACH_M);
+        let backbox_floor = self.backbox.is_some() && {
+            let own = self.scene.meshes.len();
+            self.grid.query(self.tris, q - reach, q + reach, &mut idx);
+            idx.iter().any(|&i| {
+                let t = &self.tris[i as usize];
+                if t.mesh < own || t.layer != layer || t.nz() < WALKABLE_NZ {
+                    return false;
+                }
+                let p = t.plan_closest(q);
+                p.distance(q) <= EXIT_SPLINE_REACH_M && below(t, p)
+            })
+        };
         floor
+            || backbox_floor
             || self.table.splines.iter().any(|s| {
                 s.layer == layer && near_spline(&s.points_m, s.closed, e, EXIT_SPLINE_REACH_M)
             })
