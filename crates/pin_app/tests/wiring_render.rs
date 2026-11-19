@@ -21,7 +21,7 @@ use pin_render::gpu::{GpuContext, wgpu};
 use pin_render::topology::{Rect, SurfaceRole};
 use pin_sim::SimConfig;
 use std::sync::OnceLock;
-use support::{greybox_bundle, on_big_stack};
+use support::{greybox_bundle, greybox_inserts_bundle, on_big_stack};
 
 const W: u32 = 200;
 const H: u32 = 400;
@@ -545,4 +545,82 @@ fn presenter_copy_and_blit_reproduce_the_offscreen_frame() {
             );
         }
     }
+}
+
+/// The grey box with two generated inserts (`support::GREYBOX_INSERTS`).
+fn inserts_table() -> (TableVisuals, FrameStateSnapshot) {
+    let dir = greybox_inserts_bundle().to_path_buf();
+    on_big_stack(move || {
+        let checked = validate_table(&dir).unwrap();
+        let sim = load_checked(&checked, SimConfig::default()).unwrap();
+        (TableVisuals::of(&checked), *sim.snapshot())
+    })
+}
+
+/// The pixel centre of table-frame point `p` (m) as seen by the table camera
+/// (the table fills the whole `W x H` target).
+fn project(r: &TableRenderer, p: [f32; 3]) -> (i32, i32) {
+    let m = pin_render::pbr::model_view_proj(r.camera(), &pin_render::pbr::math::IDENTITY);
+    let c = |row: usize| (0..3).map(|k| m[k][row] * p[k]).sum::<f32>() + m[3][row];
+    let (x, y, w) = (c(0), c(1), c(3));
+    let (nx, ny) = (x / w, y / w);
+    (
+        ((nx * 0.5 + 0.5) * W as f32).round() as i32,
+        ((0.5 - ny * 0.5) * H as f32).round() as i32,
+    )
+}
+
+/// Generated inserts light with their lamp (fix-15): the insert plastic is
+/// `LightInsert`, whose lamp term is `base * lamp_emissive * lamp level`
+/// (DECISIONS 6.0 render), so the region mean over an insert is clearly
+/// brighter at lamp 1 than at lamp 0, on the bare playfield and under the
+/// blended acrylic upper deck, and lighting one lamp leaves the other insert
+/// unchanged.
+#[test]
+fn generated_inserts_brighten_with_their_lamp_bare_and_under_acrylic() {
+    let ctx = gpu();
+    let (v, snap) = inserts_table();
+    assert!(v.warnings.is_empty(), "{:?}", v.warnings);
+    let named = |n: &str| v.meshes.iter().find(|m| m.name == n).expect(n);
+    let (bare, under) = (named("inserts[0]"), named("inserts[1]"));
+    let (lamp_bare, lamp_under) = (bare.lamp.unwrap(), under.lamp.unwrap());
+    assert_ne!(lamp_bare, lamp_under);
+    let mut r = renderer(ctx, &v, false);
+    let region = |p: [f32; 3]| {
+        let (cx, cy) = project(&r, p);
+        Rect::new(cx - 3, cy - 3, 6, 6)
+    };
+    let (rb, ru) = (region([0.2, 0.3, 0.0]), region([0.38, 0.95, 0.0]));
+    let frame = |r: &mut TableRenderer, bare_level: f32, under_level: f32| {
+        let mut s = snap;
+        s.lamps[lamp_bare] = bare_level;
+        s.lamps[lamp_under] = under_level;
+        r.render_to_image(ctx, &[], &s).unwrap()
+    };
+    let off = frame(&mut r, 0.0, 0.0);
+    let bare_on = frame(&mut r, 1.0, 0.0);
+    let under_on = frame(&mut r, 0.0, 1.0);
+    let (off_b, on_b) = (luma(mean(&off, rb)), luma(mean(&bare_on, rb)));
+    let (off_u, on_u) = (luma(mean(&off, ru)), luma(mean(&under_on, ru)));
+    eprintln!("bare {off_b} -> {on_b}; under acrylic {off_u} -> {on_u}");
+    // Without the fix the insert is wood (`lamp_emissive` 0) and the frames
+    // are identical (difference 0). With it the lamp term adds
+    // `base * 4.0 * level` in linear light to a plastic already lit by the
+    // key lights (lamp 0 is ~190 of 255 here), which the display transform
+    // compresses toward white: measured +41 bare and +31 under the acrylic
+    // deck (the blend keeps ~0.98 transmission). Require a clear 20 levels.
+    assert!(on_b > off_b + 20.0, "bare insert: {off_b} -> {on_b}");
+    assert!(
+        on_u > off_u + 20.0,
+        "insert under acrylic: {off_u} -> {on_u}"
+    );
+    // Each lamp drives only its own insert.
+    assert!(
+        diff(&bare_on, &off, ru) < 0.5,
+        "bare lamp lit the other insert"
+    );
+    assert!(
+        diff(&under_on, &off, rb) < 0.5,
+        "deck lamp lit the other insert"
+    );
 }
