@@ -1,0 +1,133 @@
+REPORT	run	parameters	GAMES=1000 REPLAYS=20 SEED=1 THREADS=3 DRY=0 TABLES=apex_circuit feature_lab sky_deck
+PASS	apex_circuit	A2.0 bundle builds and validates	build.sh exit 0
+PASS	apex_circuit	A2.0 games >= 1000 [novice]	1000 games (config.games=1000)
+PASS	apex_circuit	A2.0 soak exit status [novice]	pin_sim soak exit 0
+PASS	apex_circuit	A2.1a zero stuck/endless/escaped/non-finite balls [novice]	StuckBall=0, EndlessBall=0, EscapedBall=0, NonFinite=0, counters.balls_escaped=0
+REPORT	apex_circuit	A2.1a long balls (>300 s, drained, broad play; reported, not failing) [novice]	LongBall=0
+PASS	apex_circuit	A2.1b zero script errors [novice]	ScriptError=0, counters.script_faults=0
+PASS	apex_circuit	A2.1c zero command-queue overflows [novice]	QueueOverflow=0, counters.script_queue_overflows=0
+PASS	apex_circuit	A2.2a 100 % switch coverage [novice]	30/30 switches hit
+PASS	apex_circuit	A2.2b every declared shot made [novice]	5/5 shots made
+PASS	apex_circuit	A2.2c every observable rule mode started [novice]	2/2 observable modes started
+REPORT	apex_circuit	soak wall time [novice]	238.363 s, 3 threads
+PASS	apex_circuit	A2.0 games >= 1000 [standard]	1000 games (config.games=1000)
+PASS	apex_circuit	A2.0 soak exit status [standard]	pin_sim soak exit 0
+PASS	apex_circuit	A2.1a zero stuck/endless/escaped/non-finite balls [standard]	StuckBall=0, EndlessBall=0, EscapedBall=0, NonFinite=0, counters.balls_escaped=0
+REPORT	apex_circuit	A2.1a long balls (>300 s, drained, broad play; reported, not failing) [standard]	LongBall=1 (sling_right_sw)
+PASS	apex_circuit	A2.1b zero script errors [standard]	ScriptError=0, counters.script_faults=0
+PASS	apex_circuit	A2.1c zero command-queue overflows [standard]	QueueOverflow=0, counters.script_queue_overflows=0
+PASS	apex_circuit	A2.2a 100 % switch coverage [standard]	30/30 switches hit
+PASS	apex_circuit	A2.2b every declared shot made [standard]	5/5 shots made
+PASS	apex_circuit	A2.2c every observable rule mode started [standard]	2/2 observable modes started
+REPORT	apex_circuit	soak wall time [standard]	414.314 s, 3 threads
+PASS	apex_circuit	A2.0 games >= 1000 [expert]	1000 games (config.games=1000)
+PASS	apex_circuit	A2.0 soak exit status [expert]	pin_sim soak exit 0
+PASS	apex_circuit	A2.1a zero stuck/endless/escaped/non-finite balls [expert]	StuckBall=0, EndlessBall=0, EscapedBall=0, NonFinite=0, counters.balls_escaped=0
+REPORT	apex_circuit	A2.1a long balls (>300 s, drained, broad play; reported, not failing) [expert]	LongBall=2 (newton_sw, sling_right_sw)
+PASS	apex_circuit	A2.1b zero script errors [expert]	ScriptError=0, counters.script_faults=0
+PASS	apex_circuit	A2.1c zero command-queue overflows [expert]	QueueOverflow=0, counters.script_queue_overflows=0
+PASS	apex_circuit	A2.2a 100 % switch coverage [expert]	30/30 switches hit
+PASS	apex_circuit	A2.2b every declared shot made [expert]	5/5 shots made
+PASS	apex_circuit	A2.2c every observable rule mode started [expert]	2/2 observable modes started
+REPORT	apex_circuit	soak wall time [expert]	466.731 s, 3 threads
+REPORT	apex_circuit	A2.2 modes	not soak-covered (covered by apex_game.rs / spec_6_1_rules.rs): Firewall Save, Apex Jackpot [6.1-a2-modes]
+REPORT	apex_circuit	A2.2b drop_bank count [novice]	456 (may be over-credited across a drain [6.1-drop-bank-soak]; not gating)
+REPORT	apex_circuit	A2.2b drop_bank count [standard]	917 (may be over-credited across a drain [6.1-drop-bank-soak]; not gating)
+REPORT	apex_circuit	A2.2b drop_bank count [expert]	915 (may be over-credited across a drain [6.1-drop-bank-soak]; not gating)
+REPORT	apex_circuit	A2.2b thinnest shot margins at expert [6.1-expert-orbits]	left_orbit=325, right_orbit=331, cross_ramp=340
+PASS	apex_circuit	A2.3a median game length at standard in 60..360 s	121.9 s (121937 ticks, 1000 games)
+REPORT	apex_circuit	A2.3 game length [novice]	median 74.6 s; games not ended by game_over (counted at their capped length): 0
+REPORT	apex_circuit	A2.3 game length [standard]	median 121.9 s; games not ended by game_over (counted at their capped length): 0
+REPORT	apex_circuit	A2.3 game length [expert]	median 140.8 s; games not ended by game_over (counted at their capped length): 0
+PASS	apex_circuit	A2.3b median score novice < standard < expert	medians novice 168750, standard 263980, expert 279380; strictly increasing: yes
+PASS	apex_circuit	A2.4 sampled replays >= 20	REPLAYS=20
+PASS	apex_circuit	A2.4c sampled bot games replayed from recorded input without the bot: N of REPLAYS identical state_hash and score	20 of 20 identical
+PASS	apex_circuit	A2.4a (supplemental) soak games 0..19 re-run alone (other thread count) equal the full standard run (seed + state_hash per game)	20/20 equal, threads 3 vs 1
+PASS	apex_circuit	A2.4b (supplemental) built-in input pattern recorded and replayed: equal state_hash per seed	20/20 seeds equal
+PASS	feature_lab	A2.0 bundle builds and validates	build.sh exit 0
+PASS	feature_lab	A2.0 games >= 1000 [novice]	1000 games (config.games=1000)
+PASS	feature_lab	A2.0 soak exit status [novice]	pin_sim soak exit 0
+PASS	feature_lab	A2.1a zero stuck/endless/escaped/non-finite balls [novice]	StuckBall=0, EndlessBall=0, EscapedBall=0, NonFinite=0, counters.balls_escaped=0
+REPORT	feature_lab	A2.1a long balls (>300 s, drained, broad play; reported, not failing) [novice]	LongBall=0
+PASS	feature_lab	A2.1b zero script errors [novice]	ScriptError=0, counters.script_faults=0
+PASS	feature_lab	A2.1c zero command-queue overflows [novice]	QueueOverflow=0, counters.script_queue_overflows=0
+PASS	feature_lab	A2.2a 100 % switch coverage [novice]	19/19 switches hit
+PASS	feature_lab	A2.2b every declared shot made [novice]	5/5 shots made
+PASS	feature_lab	A2.2c every observable rule mode started [novice]	5/5 observable modes started
+REPORT	feature_lab	soak wall time [novice]	204.611 s, 3 threads
+PASS	feature_lab	A2.0 games >= 1000 [standard]	1000 games (config.games=1000)
+PASS	feature_lab	A2.0 soak exit status [standard]	pin_sim soak exit 0
+PASS	feature_lab	A2.1a zero stuck/endless/escaped/non-finite balls [standard]	StuckBall=0, EndlessBall=0, EscapedBall=0, NonFinite=0, counters.balls_escaped=0
+REPORT	feature_lab	A2.1a long balls (>300 s, drained, broad play; reported, not failing) [standard]	LongBall=0
+PASS	feature_lab	A2.1b zero script errors [standard]	ScriptError=0, counters.script_faults=0
+PASS	feature_lab	A2.1c zero command-queue overflows [standard]	QueueOverflow=0, counters.script_queue_overflows=0
+PASS	feature_lab	A2.2a 100 % switch coverage [standard]	19/19 switches hit
+PASS	feature_lab	A2.2b every declared shot made [standard]	5/5 shots made
+PASS	feature_lab	A2.2c every observable rule mode started [standard]	5/5 observable modes started
+REPORT	feature_lab	soak wall time [standard]	307.464 s, 3 threads
+PASS	feature_lab	A2.0 games >= 1000 [expert]	1000 games (config.games=1000)
+PASS	feature_lab	A2.0 soak exit status [expert]	pin_sim soak exit 0
+PASS	feature_lab	A2.1a zero stuck/endless/escaped/non-finite balls [expert]	StuckBall=0, EndlessBall=0, EscapedBall=0, NonFinite=0, counters.balls_escaped=0
+REPORT	feature_lab	A2.1a long balls (>300 s, drained, broad play; reported, not failing) [expert]	LongBall=0
+PASS	feature_lab	A2.1b zero script errors [expert]	ScriptError=0, counters.script_faults=0
+PASS	feature_lab	A2.1c zero command-queue overflows [expert]	QueueOverflow=0, counters.script_queue_overflows=0
+PASS	feature_lab	A2.2a 100 % switch coverage [expert]	19/19 switches hit
+PASS	feature_lab	A2.2b every declared shot made [expert]	5/5 shots made
+PASS	feature_lab	A2.2c every observable rule mode started [expert]	5/5 observable modes started
+REPORT	feature_lab	soak wall time [expert]	369.232 s, 3 threads
+REPORT	feature_lab	A2.2b thinnest shot margins at expert [6.1-expert-orbits]	magnet_lane=7318, backbox_run=9334, banana_vuk=9623
+PASS	feature_lab	A2.3a median game length at standard in 60..360 s	106.4 s (106366 ticks, 1000 games)
+REPORT	feature_lab	A2.3 game length [novice]	median 70.0 s; games not ended by game_over (counted at their capped length): 0
+REPORT	feature_lab	A2.3 game length [standard]	median 106.4 s; games not ended by game_over (counted at their capped length): 0
+REPORT	feature_lab	A2.3 game length [expert]	median 123.4 s; games not ended by game_over (counted at their capped length): 0
+PASS	feature_lab	A2.3b median score novice < standard < expert	medians novice 121410, standard 197250, expert 237190; strictly increasing: yes
+PASS	feature_lab	A2.4 sampled replays >= 20	REPLAYS=20
+PASS	feature_lab	A2.4c sampled bot games replayed from recorded input without the bot: N of REPLAYS identical state_hash and score	20 of 20 identical
+PASS	feature_lab	A2.4a (supplemental) soak games 0..19 re-run alone (other thread count) equal the full standard run (seed + state_hash per game)	20/20 equal, threads 3 vs 1
+PASS	feature_lab	A2.4b (supplemental) built-in input pattern recorded and replayed: equal state_hash per seed	20/20 seeds equal
+PASS	sky_deck	A2.0 bundle builds and validates	build.sh exit 0
+PASS	sky_deck	A2.0 games >= 1000 [novice]	1000 games (config.games=1000)
+PASS	sky_deck	A2.0 soak exit status [novice]	pin_sim soak exit 0
+PASS	sky_deck	A2.1a zero stuck/endless/escaped/non-finite balls [novice]	StuckBall=0, EndlessBall=0, EscapedBall=0, NonFinite=0, counters.balls_escaped=0
+REPORT	sky_deck	A2.1a long balls (>300 s, drained, broad play; reported, not failing) [novice]	LongBall=0
+PASS	sky_deck	A2.1b zero script errors [novice]	ScriptError=0, counters.script_faults=0
+PASS	sky_deck	A2.1c zero command-queue overflows [novice]	QueueOverflow=0, counters.script_queue_overflows=0
+PASS	sky_deck	A2.2a 100 % switch coverage [novice]	19/19 switches hit
+PASS	sky_deck	A2.2b every declared shot made [novice]	3/3 shots made
+PASS	sky_deck	A2.2c every observable rule mode started [novice]	1/1 observable modes started
+REPORT	sky_deck	soak wall time [novice]	291.763 s, 3 threads
+PASS	sky_deck	A2.0 games >= 1000 [standard]	1000 games (config.games=1000)
+PASS	sky_deck	A2.0 soak exit status [standard]	pin_sim soak exit 0
+PASS	sky_deck	A2.1a zero stuck/endless/escaped/non-finite balls [standard]	StuckBall=0, EndlessBall=0, EscapedBall=0, NonFinite=0, counters.balls_escaped=0
+REPORT	sky_deck	A2.1a long balls (>300 s, drained, broad play; reported, not failing) [standard]	LongBall=0
+PASS	sky_deck	A2.1b zero script errors [standard]	ScriptError=0, counters.script_faults=0
+PASS	sky_deck	A2.1c zero command-queue overflows [standard]	QueueOverflow=0, counters.script_queue_overflows=0
+PASS	sky_deck	A2.2a 100 % switch coverage [standard]	19/19 switches hit
+PASS	sky_deck	A2.2b every declared shot made [standard]	3/3 shots made
+PASS	sky_deck	A2.2c every observable rule mode started [standard]	1/1 observable modes started
+REPORT	sky_deck	soak wall time [standard]	332.308 s, 3 threads
+PASS	sky_deck	A2.0 games >= 1000 [expert]	1000 games (config.games=1000)
+PASS	sky_deck	A2.0 soak exit status [expert]	pin_sim soak exit 0
+PASS	sky_deck	A2.1a zero stuck/endless/escaped/non-finite balls [expert]	StuckBall=0, EndlessBall=0, EscapedBall=0, NonFinite=0, counters.balls_escaped=0
+REPORT	sky_deck	A2.1a long balls (>300 s, drained, broad play; reported, not failing) [expert]	LongBall=0
+PASS	sky_deck	A2.1b zero script errors [expert]	ScriptError=0, counters.script_faults=0
+PASS	sky_deck	A2.1c zero command-queue overflows [expert]	QueueOverflow=0, counters.script_queue_overflows=0
+PASS	sky_deck	A2.2a 100 % switch coverage [expert]	19/19 switches hit
+PASS	sky_deck	A2.2b every declared shot made [expert]	3/3 shots made
+PASS	sky_deck	A2.2c every observable rule mode started [expert]	1/1 observable modes started
+REPORT	sky_deck	soak wall time [expert]	337.605 s, 3 threads
+REPORT	sky_deck	A2.2b thinnest shot margins at expert [6.1-expert-orbits]	loop=189, ramp=258, deck=2627
+PASS	sky_deck	A2.3a median game length at standard in 60..360 s	106.0 s (106008 ticks, 1000 games)
+REPORT	sky_deck	A2.3 game length [novice]	median 91.6 s; games not ended by game_over (counted at their capped length): 0
+REPORT	sky_deck	A2.3 game length [standard]	median 106.0 s; games not ended by game_over (counted at their capped length): 0
+REPORT	sky_deck	A2.3 game length [expert]	median 107.2 s; games not ended by game_over (counted at their capped length): 0
+PASS	sky_deck	A2.3b median score novice < standard < expert	medians novice 71200, standard 89200, expert 91400; strictly increasing: yes
+PASS	sky_deck	A2.4 sampled replays >= 20	REPLAYS=20
+PASS	sky_deck	A2.4c sampled bot games replayed from recorded input without the bot: N of REPLAYS identical state_hash and score	20 of 20 identical
+PASS	sky_deck	A2.4a (supplemental) soak games 0..19 re-run alone (other thread count) equal the full standard run (seed + state_hash per game)	20/20 equal, threads 3 vs 1
+PASS	sky_deck	A2.4b (supplemental) built-in input pattern recorded and replayed: equal state_hash per seed	20/20 seeds equal
+PASS	readiness	R6c sky_deck standard median ball time >= 25 s (25..100 s), novice/expert >= 20 s [sky_deck_soak::r6c_ball_times_200_games_per_skill]	1 passed, 1436 s wall (see /home/user/kp-gate-a2-run2/target/gate_a2_run2/logs/readiness_r6c.log)
+PASS	readiness	C6a 120-game readiness soak incl. score order by skill [spec_6_2_soak::c6a_soak_readiness_40_games_per_skill]	1 passed, 74 s wall (see /home/user/kp-gate-a2-run2/target/gate_a2_run2/logs/readiness_c6a.log)
+PASS	readiness	C6c recorded inputs replay identically 10 times (seed-repeatability check today) [spec_6_2_soak::c6c_recorded_inputs_replay_identically_10_times]	1 passed, 2 s wall (see /home/user/kp-gate-a2-run2/target/gate_a2_run2/logs/readiness_c6c_recorded.log)
+PASS	readiness	C6c sampled bot games replay identically (seed-repeatability check today) [spec_6_2_soak::c6c_sampled_bot_games_replay_identically]	1 passed, 13 s wall (see /home/user/kp-gate-a2-run2/target/gate_a2_run2/logs/readiness_c6c_sampled.log)
+GATE A2: PASS
