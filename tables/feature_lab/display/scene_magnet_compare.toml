@@ -1,0 +1,45 @@
+# Placeholder mode-start scene of the "magnet_compare" mode (5.3 placeholder style):
+# the title slides in, the subtitle flashes, bars blink top and bottom.
+schema_version = 1
+duration_ms = 3000
+background = "#000000"
+
+[[layers]]
+kind = "rect"
+x = 0.0
+y = 0.0
+w = 1.0
+h = 0.07
+color = "#c040ff"
+blink_ms = 100
+
+[[layers]]
+kind = "rect"
+x = 0.0
+y = 1.0
+valign = "bottom"
+w = 1.0
+h = 0.07
+color = "#c040ff"
+blink_ms = 100
+
+[[layers]]
+kind = "text"
+text = "MAGNET"
+x = 0.5
+y = 0.34
+size = 0.45
+color = "#ffffff"
+from = [1.6, 0.34]
+move_ms = 400
+
+[[layers]]
+kind = "text"
+text = "COMPARE"
+x = 0.5
+y = 0.76
+size = 0.3
+color = "#c040ff"
+start_ms = 400
+blink_ms = 150
+fade_out_ms = 400
