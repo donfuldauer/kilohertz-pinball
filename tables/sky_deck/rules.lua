@@ -293,6 +293,8 @@ local function end_ball()
   glo_at, glo_after_eject = -1, false
   glo_rising, glo_out = false, false
   newton_hit, drops_done, od_used, tilted = false, false, false, false
+  -- Shot windows and the ramp debounce do not carry across balls.
+  last_loop_entry, last_ramp_made = -1000000, -1000000
   if drops ~= 0 or drop_at >= 0 then reset_bank() end
   live = 0
   if ball < BALLS_PER_GAME then

@@ -93,6 +93,12 @@ pub fn sky_deck_bundle() -> &'static Path {
     })
 }
 
+/// The merged manifest of the built bundle (`table.toml`).
+pub fn bundle_manifest() -> TableManifest {
+    let text = std::fs::read_to_string(sky_deck_bundle().join("table.toml")).expect("table.toml");
+    TableManifest::from_toml_str(&text).expect("bundle table.toml parses")
+}
+
 /// Runs `f` on a thread with an 8 MiB stack.
 pub fn on_big_stack<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
     std::thread::Builder::new()

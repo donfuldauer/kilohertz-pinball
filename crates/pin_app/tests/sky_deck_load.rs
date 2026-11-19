@@ -277,6 +277,30 @@ fn sky_deck_dispensers_shots_mode_and_persist() {
     }
 }
 
+/// Every file under `dir`, as `/`-separated paths relative to it, sorted.
+#[cfg(unix)]
+fn file_set(dir: &std::path::Path) -> BTreeSet<String> {
+    fn walk(base: &std::path::Path, dir: &std::path::Path, out: &mut BTreeSet<String>) {
+        for e in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let p = e.expect("dir entry").path();
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else {
+                let rel = p.strip_prefix(base).expect("under base");
+                let parts: Vec<String> = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect();
+                out.insert(parts.join("/"));
+            }
+        }
+    }
+    let mut out = BTreeSet::new();
+    walk(dir, dir, &mut out);
+    out
+}
+
+#[cfg(unix)]
 #[test]
 fn build_sh_output_matches_the_helper_bundle() {
     let out = scratch("sky_deck_build_sh");
@@ -289,6 +313,15 @@ fn build_sh_output_matches_the_helper_bundle() {
         .expect("run build.sh");
     assert!(status.success(), "build.sh failed: {status}");
     let helper = sky_deck_bundle();
+    // The complete output: the same file names (none missing, none extra)
+    // and byte-identical contents for every generated asset and every
+    // copied source (table, mesh, rules, layout, glass, backglass, every
+    // display scene, fonts, sounds and the rest of the placeholder kit).
+    let (built, helped) = (file_set(&out), file_set(helper));
+    assert_eq!(
+        built, helped,
+        "file sets differ between build.sh and the helper"
+    );
     for f in [
         "table.toml",
         "playfield.glb",
@@ -296,11 +329,15 @@ fn build_sh_output_matches_the_helper_bundle() {
         "layout.toml",
         "glass.toml",
         "backglass.toml",
+        "display/scene_score.toml",
         "display/scene_night_overdrive.toml",
     ] {
+        assert!(built.contains(f), "{f} missing from the bundle");
+    }
+    for f in &built {
         assert_eq!(
             std::fs::read(out.join(f)).unwrap_or_else(|e| panic!("build.sh {f}: {e}")),
-            std::fs::read(helper.join(f)).unwrap(),
+            std::fs::read(helper.join(f)).unwrap_or_else(|e| panic!("helper {f}: {e}")),
             "{f} differs between build.sh and the helper"
         );
     }

@@ -430,6 +430,21 @@ fn c6b_no_switch_is_a_cabinet_number() {
         t.manifest.switches.len(),
         "every declared switch counts for coverage"
     );
+    // The same (number, name) pairs, each once: no omission, no duplicate.
+    let mut declared: Vec<(u16, String)> = t
+        .manifest
+        .switches
+        .iter()
+        .filter(|s| !cab_numbers.contains(&s.number))
+        .map(|s| (s.number, s.id.clone()))
+        .collect();
+    declared.sort();
+    let mut covered: Vec<(u16, String)> = cov.iter().map(|s| (s.id.0, s.name.clone())).collect();
+    covered.sort();
+    assert_eq!(
+        covered, declared,
+        "coverage switches are exactly the declared non-cabinet switches"
+    );
     for s in cov {
         assert!(!s.cabinet, "{} is a cabinet input", s.name);
         assert!(

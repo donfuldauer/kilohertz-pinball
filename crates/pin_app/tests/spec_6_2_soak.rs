@@ -173,24 +173,35 @@ fn c6a_soak_readiness_40_games_per_skill() {
         (20_000..=120_000).contains(&m),
         "standard median ball time {m} ms outside 20-120 s"
     );
-    let med: Vec<i64> = reports.iter().map(|r| r.game_score.median).collect();
-    assert!(
-        med[0] < med[1] && med[1] < med[2],
-        "median scores do not ascend with skill: {med:?}"
-    );
     // C6c: 5 sampled games of the standard soak replay to the same hash,
-    // twice.
+    // twice. All of them run before the score-order check, so a score-order
+    // failure never hides a replay result; each failure is reported.
+    let mut replay_failures = Vec::new();
     for g in [0u32, 9, 17, 28, 39] {
         let expected = standard.game_list[g as usize].state_hash;
         for run in 0..2 {
             let (s, _) =
                 play_soak_game(bundle(), &cfg(SkillLevel::Standard, GAMES), g).expect("replays");
-            assert_eq!(
-                s.state_hash, expected,
-                "game {g} run {run}: state hash differs"
-            );
+            if s.state_hash != expected {
+                replay_failures.push(format!(
+                    "game {g} run {run}: state hash {:#x} != {expected:#x}",
+                    s.state_hash
+                ));
+            }
         }
     }
+    let med: Vec<i64> = reports.iter().map(|r| r.game_score.median).collect();
+    let ascending = med[0] < med[1] && med[1] < med[2];
+    println!(
+        "replay checks: {} failure(s) {replay_failures:?}; median scores by skill {med:?} \
+         (ascending: {ascending})",
+        replay_failures.len()
+    );
+    assert!(
+        replay_failures.is_empty(),
+        "state hash differs: {replay_failures:?} (score order ascending: {ascending}, {med:?})"
+    );
+    assert!(ascending, "median scores do not ascend with skill: {med:?}");
 }
 
 /// C6a (always run): a 3-game standard soak is sound, and every game

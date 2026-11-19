@@ -28,31 +28,50 @@ static GLOBAL: CountingAlloc = CountingAlloc;
 struct Rig {
     sim_loop: SimLoop<Simulation>,
     input: spsc::SpscProducer<InputEvent>,
+    /// Scheduled button events not queued yet, in tick order (stable).
+    pending: Vec<(u64, CabinetInput, bool)>,
     worst: u64,
     measured: u64,
 }
 
 impl Rig {
-    /// Queues a button event for tick `tick` (timestamp inside the tick).
+    /// Schedules a button event for tick `tick`. The cabinet queue is a FIFO
+    /// that stops at the first event due in the future, so events are only
+    /// queued on the tick before they are due ([`Rig::flippers`]), merged
+    /// in tick order with the flipper edges: none waits behind a later one.
     fn push(&mut self, tick: u64, i: CabinetInput, p: bool) {
+        self.pending.push((tick, i, p));
+        self.pending.sort_by_key(|e| e.0);
+    }
+
+    /// Queues a button event for tick `tick` (timestamp inside the tick).
+    fn enqueue(&mut self, tick: u64, i: CabinetInput, p: bool) {
         self.input
             .push(InputEvent::button(tick * TICK_NS - TICK_NS / 2, i, p))
             .expect("input ring has room");
     }
 
-    /// Queues the lower-flipper presses of the next tick (left and right
-    /// alternately every 250 ticks, held 80) so flips keep flowing.
+    /// Queues the events of the next tick: the scheduled ones due by then,
+    /// then the lower-flipper presses (left and right alternately every 250
+    /// ticks, held 80) so flips keep flowing.
     fn flippers(&mut self) {
         let next = self.sim_loop.tick() + 1;
+        while let Some(&(t, i, p)) = self.pending.first() {
+            if t > next {
+                break;
+            }
+            self.pending.remove(0);
+            self.enqueue(t, i, p);
+        }
         let i = if (next / 250).is_multiple_of(2) {
             CabinetInput::LeftFlipper
         } else {
             CabinetInput::RightFlipper
         };
         if next >= 600 && next.is_multiple_of(250) {
-            self.push(next, i, true);
+            self.enqueue(next, i, true);
         } else if next >= 600 && next % 250 == 80 {
-            self.push(next, i, false);
+            self.enqueue(next, i, false);
         }
     }
 
@@ -115,6 +134,7 @@ fn run() {
     let mut rig = Rig {
         sim_loop: SimLoop::new(sim, consumer, writer),
         input,
+        pending: Vec::new(),
         worst: 0,
         measured: 0,
     };

@@ -39,13 +39,16 @@ fn arm(s: &mut Simulation) {
 }
 
 /// Runs until a ball on layer 1 exists (at most `limit` ticks); returns the
-/// ticks it took.
+/// ticks it took. The state is checked before the first advance and after
+/// every advance up to and including the `limit`-th.
 fn until_layer_1(s: &mut Simulation, limit: u64) -> Option<u64> {
-    for t in 0..limit {
+    for t in 0..=limit {
         if layers(s).contains(&1) {
             return Some(t);
         }
-        s.advance(1);
+        if t < limit {
+            s.advance(1);
+        }
     }
     None
 }
@@ -120,6 +123,47 @@ fn full_three_ball_game_by_injection() {
         }
         assert_eq!(s.persist(key::GAMES), 2);
         assert_eq!(s.persist(key::HIGH), score);
+        healthy(&s);
+    });
+}
+
+#[test]
+fn shot_windows_and_ramp_debounce_do_not_carry_across_balls() {
+    on_big_stack(|| {
+        let mut s = load();
+        s.advance(10);
+        start_game(&mut s);
+        // Ball 1: a ramp pass and a loop entry, then the ball drains at once
+        // (well inside both the 3000-tick loop window and the 1500-tick ramp
+        // debounce).
+        let before = s.score(0).unwrap();
+        hit(&mut s, "ramp_made");
+        assert_eq!(s.score(0).unwrap() - before, 25_000, "ball 1 ramp made");
+        hit(&mut s, "loop_entry");
+        let entry_tick = s.tick();
+        let h = only_ball(&s);
+        drain(&mut s, h);
+        s.advance(5);
+        assert_eq!(s.persist(key::BALL), 2, "ball 2 served");
+        // Ball 2: loop_top alone is the plain 1000 (no loop shot bonus from
+        // ball 1's loop_entry) ...
+        let before = s.score(0).unwrap();
+        hit(&mut s, "loop_top");
+        assert!(s.tick() - entry_tick < 3000, "inside the old loop window");
+        assert_eq!(s.score(0).unwrap() - before, 1000, "no carried loop shot");
+        // ... and the first ramp_made of ball 2 scores 25000 (ball 1's pass
+        // does not debounce it).
+        let before = s.score(0).unwrap();
+        hit(&mut s, "ramp_made");
+        assert_eq!(s.score(0).unwrap() - before, 25_000, "ball 2 ramp made");
+        // In-ball recognition is unchanged: the loop shot within the ball
+        // and the ramp debounce within the ball still apply.
+        let before = s.score(0).unwrap();
+        hit(&mut s, "ramp_made");
+        assert_eq!(s.score(0).unwrap() - before, 0, "same pass debounced");
+        hit(&mut s, "loop_entry");
+        hit(&mut s, "loop_top");
+        assert_eq!(s.score(0).unwrap() - before, 1000 + 1000 + 50_000);
         healthy(&s);
     });
 }
@@ -339,7 +383,7 @@ fn action_starts_night_overdrive_when_armed_instead_of_the_bridge() {
         // the steel ball stays on the plunger below.
         let limit = GLO_LIFT_TICKS;
         let t = until_layer_1(&mut s, limit).expect("a layer-1 ball");
-        assert!(t < limit);
+        assert!(t <= limit, "{t} > {limit}");
         assert_eq!(balls_of(&s, "uv_globall").len(), 1);
         assert_eq!(balls_of(&s, "standard_steel").len(), 1);
         let steel = balls_of(&s, "standard_steel")[0];

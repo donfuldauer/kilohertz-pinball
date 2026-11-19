@@ -95,6 +95,7 @@ fn c3a_vuk_lifts_a_ball_onto_the_deck() {
                 for o in sim.ball_handles() {
                     let b = sim.ball(o).expect("live");
                     assert!(finite(&b), "{what}: non-finite ball {b:?}");
+                    assert_in_box(&sim, &b, &what);
                 }
                 if deck_tick.is_none() && hits(&sim, "deck_opto") > deck0 {
                     deck_tick = Some(sim.tick());
@@ -139,14 +140,27 @@ fn c3a_vuk_lifts_a_ball_onto_the_deck() {
     });
 }
 
+/// C3d: ball `b` is inside the simulation's escape box (the same per-tick
+/// check `run` makes).
+fn assert_in_box(sim: &Simulation, b: &BallState, what: &str) {
+    let (lo, hi) = sim.escape_bounds();
+    for k in 0..3 {
+        assert!(
+            (lo[k]..=hi[k]).contains(&b.position_m[k]),
+            "C3d: {what}: ball left the table box: {b:?}"
+        );
+    }
+}
+
 /// Steps until `cond` (checked after each tick), asserting every ball stays
-/// finite (C3d); `false` after `max` ticks.
+/// finite and inside the table box (C3d); `false` after `max` ticks.
 fn run_watch(sim: &mut Simulation, max: u64, mut cond: impl FnMut(&Simulation) -> bool) -> bool {
     for _ in 0..max {
         sim.advance(1);
         for h in sim.ball_handles() {
             let b = sim.ball(h).expect("live");
             assert!(finite(&b), "non-finite ball {b:?}");
+            assert_in_box(sim, &b, "run_watch");
         }
         if cond(sim) {
             return true;
@@ -233,6 +247,7 @@ fn c3b_upper_right_flipper_shoots_deck_balls() {
                 sim.advance(1);
                 let Some(b) = sim.ball(h) else { break };
                 assert!(finite(&b), "finite");
+                assert_in_box(&sim, &b, &format!("strike at {frac}"));
                 let v = b.velocity_m_s;
                 let sp = v[0].hypot(v[1]);
                 if sp > best.0 {
@@ -424,10 +439,27 @@ fn start(p: [f32; 3], v: [f32; 3]) -> [f32; 3] {
     add(p, scale(v, -T_MEET))
 }
 
+/// Smallest 3-D centre distance of two trajectories, m.
+fn min_3d(a: &[Option<BallState>], b: &[Option<BallState>]) -> f32 {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| {
+            let (x, y) = (
+                x.expect("present").position_m,
+                y.expect("present").position_m,
+            );
+            (0..3).map(|k| (x[k] - y[k]).powi(2)).sum::<f32>().sqrt()
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
 /// Runs crossing `c` at plan point `p` with A on `layer_a` at height `za`
 /// and B on `layer_b` at `zb` (both on different layers), plus the
 /// same-layer control (`control_layer`, both at `zc`), and asserts the
-/// never-collide property and the control's momentum exchange.
+/// never-collide property and the control's momentum exchange. With
+/// `bodies_overlap`, it first asserts that the two balls' solo paths bring
+/// the bodies into 3-D overlap (centre distance below the sum of the radii),
+/// so the pair run really tests layer separation and not a near miss.
 #[allow(clippy::too_many_arguments)]
 fn crossing(
     c: &Crossing,
@@ -438,6 +470,7 @@ fn crossing(
     zb: f32,
     control_layer: u8,
     zc: f32,
+    bodies_overlap: bool,
 ) {
     assert_ne!(layer_a, layer_b);
     let n = [-c.va[1], c.va[0], 0.0];
@@ -462,6 +495,16 @@ fn crossing(
     let solo_b = run(&[b], RUN_TICKS);
     let closest = min_plan(&pair[0], &pair[1]);
     let dia = steel_radius_m() + glo_radius_m();
+    if bodies_overlap {
+        let d3 = min_3d(&solo_a[0], &solo_b[0]);
+        assert!(
+            d3 < dia,
+            "{}: the solo paths overlap in 3-D ({:.2} mm >= {:.2} mm)",
+            c.name,
+            d3 * 1e3,
+            dia * 1e3
+        );
+    }
     let (dpa, dva) = max_diff(&pair[0], &solo_a[0]);
     let (dpb, dvb) = max_diff(&pair[1], &solo_b[0]);
     // Same-layer control on the same plan paths.
@@ -615,7 +658,7 @@ fn c3c_deck_and_floor_balls_never_collide() {
         let z_deck = deck.z * 1e-3 + glo_radius_m();
         let p = pick_point(&cands, 0, z_floor, 1, z_deck);
         for c in &CROSSINGS {
-            crossing(c, p, 0, z_floor, 1, z_deck, 1, z_deck);
+            crossing(c, p, 0, z_floor, 1, z_deck, 1, z_deck, false);
         }
     });
 }
@@ -651,7 +694,7 @@ fn c3c_overlapping_bodies_on_different_layers_never_collide() {
         let z = steel_radius_m() + 0.001;
         let p = pick_point(&cands, 0, z, 1, z);
         for c in &CROSSINGS {
-            crossing(c, p, 0, z, 1, z, 0, z);
+            crossing(c, p, 0, z, 1, z, 0, z, true);
         }
     });
 }

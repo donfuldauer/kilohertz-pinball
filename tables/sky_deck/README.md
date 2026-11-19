@@ -90,7 +90,8 @@ launch, A the action button (Sky Bridge / Night Overdrive), T tilt.
   bonus when it follows `loop_entry` within 3 s, ramp entry 1000, ramp made
   25000 (once per pass), VUK 100, upper deck 100, Newton ball 100, drop
   target 100, drop bank complete 1000 (upper-deck points doubled in Night
-  Overdrive). A tilt voids scoring for the rest of the ball.
+  Overdrive). A tilt voids scoring for the rest of the ball. Shot windows
+  and the ramp debounce do not carry across balls.
 
 ## Names (fixed; tests code against them)
 

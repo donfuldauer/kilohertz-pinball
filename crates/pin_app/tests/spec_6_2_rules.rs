@@ -23,14 +23,13 @@ use pin_sim::{BallHandle, Simulation};
 
 /// Sky Bridge duration, ticks (8.0 s).
 const BRIDGE_TICKS: u64 = 8_000;
-/// Bound for the Glo-Ball to be on the upper deck after the mode starts,
-/// ticks: the dispenser serves it within the start tick's commands; from
-/// there it must reach layer 1 (directly over a layer transition, or
-/// through the VUK, whose capture-hold-eject takes well under a second in
-/// the rules of a playable table). 5 s covers a ball rolling the full
-/// 1.07 m playfield length from rest under 5/7 g sin 6.5 deg (about 1.6 s,
-/// the Gate A1 analytic figure) plus a VUK hold, with margin.
-const GLO_BOUND_TICKS: u64 = 5_000;
+/// Bound for the Glo-Ball to be on the upper deck after the mode starts
+/// (from the tick the mode counter first rises to the tick a `uv_globall`
+/// ball first has `layer == 1`), ticks; exactly this many is accepted, one
+/// more is not. The table's rules lift it within about 2 s of the start
+/// (the VUK holds a ball only 0.5 s until the Glo-Ball is up); 3 s leaves
+/// a 1 s margin.
+const GLO_BOUND_TICKS: u64 = 3_000;
 /// Rule-event latency, ticks: an edge collected in tick N reaches the
 /// script in tick N+1, whose commands apply in that tick (DECISIONS 2.4);
 /// a couple of ticks of slack for scripts that act on the next callback.
@@ -343,57 +342,84 @@ struct Start {
     glo: BallHandle,
 }
 
+impl Start {
+    /// Whether the Glo-Ball is still on the table.
+    fn glo_present(&self, sim: &Simulation) -> bool {
+        sim.ball(self.glo).is_some()
+    }
+}
+
 /// After the trigger at tick `trigger`, watches the start: the mode count
-/// rises by exactly 1 within `LATENCY` ticks, `scene_night_overdrive` is
-/// shown within `LATENCY` ticks of it, the GI is UV from the tick after
-/// the start, and a `uv_globall` ball reaches layer 1 within
-/// `GLO_BOUND_TICKS` while the steel ball is on layer 0.
+/// rises by exactly 1 no later than `trigger + LATENCY` (checked on the
+/// tick it first rises), `scene_night_overdrive` is shown within `LATENCY`
+/// ticks of it, the GI is UV from the tick after the start, and a
+/// `uv_globall` ball reaches layer 1 no later than `GLO_BOUND_TICKS` after
+/// the start, and by then there is a tick with it on layer 1 while the
+/// steel ball `below` is on layer 0 (the ball the rules lift through the
+/// VUK, on that path, has to be back on the main deck).
 fn watch_start(
     sim: &mut Simulation,
     trigger: u64,
     mode0: i64,
-    steel: BallHandle,
+    below: BallHandle,
     what: &str,
 ) -> Start {
-    let mut start = None;
+    let mut start: Option<u64> = None;
     let mut scene = Vec::new();
     let mut glo = None;
-    let deadline = trigger + LATENCY + GLO_BOUND_TICKS;
+    let mut together = None;
     // The first pass observes the trigger tick itself (already run).
     let mut first = true;
-    while sim.tick() < deadline {
+    loop {
         if !first {
             sim.advance(1);
         }
         first = false;
+        let now = sim.tick();
         let m = persist(sim, "mode:night_overdrive");
         assert!(m <= mode0 + 1, "{what}: one start, not {}", m - mode0);
         if m == mode0 + 1 && start.is_none() {
-            start = Some(sim.tick());
+            assert!(
+                start_in_time(trigger, now),
+                "{what}: started at {now}, more than {LATENCY} ticks after the trigger {trigger}"
+            );
+            start = Some(now);
         }
         if scene_shown(sim, "scene_night_overdrive") {
-            scene.push(sim.tick());
+            scene.push(now);
         }
         if let Some(s) = start {
-            if sim.tick() > s {
+            if now > s {
                 let gi = sim.snapshot().gi;
                 assert!(is_uv(gi), "{what}: UV GI while active, got {gi:?}");
             }
             if glo.is_none() {
                 for h in glo_balls(sim) {
                     if sim.ball(h).is_some_and(|b| b.layer == 1) {
-                        let st = sim.ball(steel).expect("steel ball still on the table");
-                        assert_eq!(st.layer, 0, "{what}: the steel ball is below");
-                        assert_eq!(st.profile.0, STEEL_ID);
-                        glo = Some(h);
+                        glo = Some((h, now));
                     }
                 }
             }
-        }
-        if start.is_some() && glo.is_some() && !scene.is_empty() {
-            break;
-        }
-        if start.is_none() && sim.tick() > trigger + LATENCY {
+            // The Glo-Ball on the deck alongside the steel ball `below` on
+            // layer 0 (the VUK may lift the steel ball first; it must be
+            // back below while the Glo-Ball is up).
+            if let Some((g, _)) = glo
+                && together.is_none()
+                && sim.ball(g).is_some_and(|b| b.layer == 1)
+            {
+                let st = sim.ball(below).expect("ball below still on the table");
+                assert_eq!(st.profile.0, STEEL_ID);
+                if st.layer == 0 {
+                    together = Some(now);
+                }
+            }
+            if glo.is_some() && together.is_some() && !scene.is_empty() {
+                break;
+            }
+            if now >= s + GLO_BOUND_TICKS {
+                break;
+            }
+        } else if now > trigger + LATENCY {
             panic!("{what}: no start within {LATENCY} ticks of the trigger");
         }
     }
@@ -402,18 +428,49 @@ fn watch_start(
         scene.iter().any(|&t| t.abs_diff(start) <= LATENCY),
         "{what}: scene_night_overdrive at start {start} (shown at {scene:?})"
     );
-    let glo = glo.unwrap_or_else(|| {
+    let (glo, arrival) = glo.unwrap_or_else(|| {
         panic!("{what}: no Glo-Ball on layer 1 within {GLO_BOUND_TICKS} ticks of the start")
     });
+    assert!(
+        glo_in_time(start, arrival),
+        "{what}: Glo-Ball on layer 1 at {arrival}, more than {GLO_BOUND_TICKS} ticks after the \
+         start {start}"
+    );
+    let together = together.unwrap_or_else(|| {
+        panic!(
+            "{what}: the steel ball was never below (layer 0) while the Glo-Ball was on the \
+             deck within {GLO_BOUND_TICKS} ticks of the start"
+        )
+    });
+    assert!(glo_in_time(start, together));
     let b = sim.ball(glo).expect("glo");
     assert_eq!(b.profile.0, GLO_ID);
     println!(
         "{what}: started at {start} ({} ticks after the trigger), Glo-Ball on layer 1 after {} \
          ticks",
         start - trigger,
-        sim.tick() - start
+        arrival - start
     );
     Start { tick: start, glo }
+}
+
+/// The mode counter rose in time: no later than `trigger + LATENCY`.
+fn start_in_time(trigger: u64, rose_at: u64) -> bool {
+    rose_at <= trigger + LATENCY
+}
+
+/// The Glo-Ball arrived in time: no later than `start + GLO_BOUND_TICKS`.
+fn glo_in_time(start: u64, arrival: u64) -> bool {
+    arrival <= start + GLO_BOUND_TICKS
+}
+
+/// The bounds `watch_start` applies, at their edges.
+#[test]
+fn c5_start_and_glo_bounds() {
+    assert!(start_in_time(100, 100 + LATENCY));
+    assert!(!start_in_time(100, 100 + LATENCY + 1));
+    assert!(glo_in_time(1_000, 1_000 + 3_000));
+    assert!(!glo_in_time(1_000, 1_000 + 3_001));
 }
 
 /// Night Overdrive started by the action button, swept over 8 simulation
@@ -442,16 +499,24 @@ fn c5_night_overdrive_by_action_seed_sweep() {
             cabinet(&mut sim, CabinetInput::Action, true);
             let trigger = sim.tick();
             let st = watch_start(&mut sim, trigger, mode0, steel, &what);
+            // The release runs one tick: UV on it too (no ball has drained).
             cabinet(&mut sim, CabinetInput::Action, false);
+            if st.glo_present(&sim) && sim.ball(steel).is_some() {
+                let gi = sim.snapshot().gi;
+                assert!(is_uv(gi), "{what}: UV after the release, got {gi:?}");
+            }
             assert!(st.tick >= trigger);
             let glo_first = seed % 2 == 1;
-            // UV stays on until the first drain (a natural Glo-Ball drain
-            // counts as the Glo-Ball first).
+            // UV stays on on every tick until the first drain (a natural
+            // Glo-Ball drain counts as the Glo-Ball first).
             let mut glo_gone = false;
             for _ in 0..200 {
                 sim.advance(1);
                 if sim.ball(st.glo).is_none() {
                     glo_gone = true;
+                    break;
+                }
+                if sim.ball(steel).is_none() {
                     break;
                 }
                 let gi = sim.snapshot().gi;
@@ -493,7 +558,9 @@ fn c5_night_overdrive_by_action_seed_sweep() {
                 drain_ball(&mut sim, steel);
             } else {
                 orders[1] += 1;
-                drain_ball(&mut sim, steel);
+                if sim.ball(steel).is_some() {
+                    drain_ball(&mut sim, steel);
+                }
                 let ok = run_until(&mut sim, LATENCY, |s| is_white(s.snapshot().gi));
                 assert!(
                     ok,
@@ -561,14 +628,15 @@ fn c5_night_overdrive_by_vuk() {
             let what = format!("vuk seed {seed}");
             let mut sim = game_seeded(seed);
             sim.advance(300);
-            let steel = steel_ball(&sim);
+            let _served = steel_ball(&sim);
             arm(&mut sim, false);
             let mode0 = persist(&sim, "mode:night_overdrive");
             let v = ball_into_vuk(&mut sim);
             let before = hits(&sim, "vuk_sw");
             let hit = wait_hit(&mut sim, "vuk_sw", 2_000).expect("vuk_sw by contact");
             assert!(hits(&sim, "vuk_sw") > before);
-            let st = watch_start(&mut sim, hit, mode0, steel, &what);
+            // `v` is the ball the rules lift: the "below" check covers it.
+            let st = watch_start(&mut sim, hit, mode0, v, &what);
             assert!(st.tick >= hit);
             let _ = sim.remove_ball(v);
             assert_healthy(&sim, &what);
