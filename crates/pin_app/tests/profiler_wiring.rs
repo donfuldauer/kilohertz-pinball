@@ -9,12 +9,18 @@
 //!   run by the real sim thread (`spawn_threads`): the reader's
 //!   `input_overflow_ticks` equals the loop's count.
 //! * (c) Hook 1 end to end: `ThreadsConfig::with_profiled_sim` around a
-//!   shipped table, a short real-time run with a flipper press: ticks and
-//!   an input-latency sample are recorded.
+//!   shipped table, a short run with a flipper press: ticks and an
+//!   input-latency sample are recorded.
 //!
-//! The threaded tests poll counters with `yield_now` under an iteration
-//! bound (as `wiring_audio.rs` does): no sleep, no clock, and assertions on
-//! counts only, never on durations (rule 5).
+//! The threaded tests drive the sim thread from a test-controlled clock
+//! (one per test, read by the `fn() -> u64` handed to `with_profiled_sim`,
+//! so the sim loop and the profiler share it). The clock moves only when
+//! the test moves it: once the sim thread has read its epoch, one tick
+//! (`TICK_NS`) at a time, and the test waits for the sim thread to publish
+//! that tick before the next advance. Tick, overflow and input-latency
+//! counts are a function of the advances alone, so the tests assert exact
+//! counts. The wait is a bounded `yield_now` loop used as a hang guard
+//! only: no timed wait, no clock read, no assertion on durations (rule 5).
 
 mod apex_support;
 
@@ -28,6 +34,7 @@ use pin_core::spsc::channel;
 use pin_core::{CabinetInput, FrameStateSnapshot, InputEvent, SimStep, TICK_NS, TripleBuffer};
 use pin_sim::alloc_guard::{CountingAlloc, count_allocs, count_allocs_split, is_installed};
 use pin_sim::{SimConfig, Simulation};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
@@ -108,14 +115,16 @@ fn profiled_boxed_table_sim_with_fn_clock_does_not_allocate_per_tick() {
     );
 }
 
-/// Checks of `cond` before [`wait_for`] gives up: generous (the threaded
-/// tests need a few to about 50 real-time ticks), but finite, so a hang
-/// still ends.
+/// Checks of `cond` before [`wait_for`] gives up. A hang guard only: the
+/// awaited condition is reached by the test's own clock advances, not by
+/// elapsed time, so the bound is generous but finite and a hang still ends.
 const SPIN_LIMIT: u64 = 200_000_000;
 
 /// Polls `cond` until it holds, yielding the core between checks
 /// (`yield_now`, so the threads under test run) under an iteration bound of
-/// [`SPIN_LIMIT`]: no sleep, no clock. Returns whether it held.
+/// [`SPIN_LIMIT`]: no timed wait, no clock. A hang guard only: the test's clock
+/// advance has already made `cond` due, the loop just lets the sim thread
+/// get there. Returns whether it held.
 fn wait_for(threads: &Threads, cond: impl Fn(&Threads) -> bool) -> bool {
     for _ in 0..SPIN_LIMIT {
         if cond(threads) {
@@ -124,6 +133,79 @@ fn wait_for(threads: &Threads, cond: impl Fn(&Threads) -> bool) -> bool {
         std::thread::yield_now();
     }
     cond(threads)
+}
+
+/// The controlled clocks' start value (nonzero, so the sim loop's epoch is
+/// not the zero default).
+const CLOCK_BASE_NS: u64 = 1_000_000_000;
+
+/// A test-controlled clock: `now` moves only when the test calls
+/// [`tick_to`]; `reads` counts the clock function's calls. Only the sim
+/// thread calls the clock function (the sim loop, its timer and the
+/// `ProfiledSim`), so `reads > 0` means the sim thread has taken its epoch.
+struct TestClock {
+    now: AtomicU64,
+    reads: AtomicU64,
+}
+
+impl TestClock {
+    /// A clock at [`CLOCK_BASE_NS`], never read.
+    const fn new() -> Self {
+        Self {
+            now: AtomicU64::new(CLOCK_BASE_NS),
+            reads: AtomicU64::new(0),
+        }
+    }
+
+    /// The current time (no advance on read); counts the read.
+    fn read(&self) -> u64 {
+        self.reads.fetch_add(1, Ordering::AcqRel);
+        self.now.load(Ordering::Acquire)
+    }
+}
+
+/// The overflow test's controlled clock (one per test: the tests of this
+/// binary run in parallel).
+static OVERFLOW_CLOCK: TestClock = TestClock::new();
+
+/// Reads [`OVERFLOW_CLOCK`].
+fn overflow_clock() -> u64 {
+    OVERFLOW_CLOCK.read()
+}
+
+/// The table-run test's controlled clock.
+static TABLE_CLOCK: TestClock = TestClock::new();
+
+/// Reads [`TABLE_CLOCK`].
+fn table_clock() -> u64 {
+    TABLE_CLOCK.read()
+}
+
+/// Waits until the sim thread has read `clock` (its epoch,
+/// `CLOCK_BASE_NS`): an advance before that read would move the epoch
+/// instead of running a tick.
+fn await_epoch(threads: &Threads, clock: &TestClock) {
+    assert!(
+        wait_for(threads, |_| clock.reads.load(Ordering::Acquire) > 0),
+        "the sim thread never read its clock: {:?}",
+        threads.stats()
+    );
+}
+
+/// Moves `clock` to the end of tick `k` (`CLOCK_BASE_NS + k · TICK_NS`, one
+/// tick past the previous call) and waits until the sim thread has run and
+/// published tick `k` (`sim_ticks == k`). One tick per advance, so the
+/// catch-up cap never drops a tick, and the clock never moves while a tick
+/// runs.
+fn tick_to(threads: &Threads, clock: &TestClock, k: u64) {
+    clock
+        .now
+        .store(CLOCK_BASE_NS + k * TICK_NS, Ordering::Release);
+    assert!(
+        wait_for(threads, |t| t.stats().sim_ticks == k),
+        "tick {k} never ran: {:?}",
+        threads.stats()
+    );
 }
 
 #[test]
@@ -138,25 +220,21 @@ fn sim_thread_publishes_input_overflow_ticks() {
             .unwrap();
     }
     let (cfg, reader) =
-        ThreadsConfig::with_profiled_sim(IdleSim, rx, monotonic_now_ns, Profiler::new());
+        ThreadsConfig::with_profiled_sim(IdleSim, rx, overflow_clock, Profiler::new());
     assert!(cfg.loop_profiler.is_some() && cfg.render.present_profiler.is_some());
     assert!(cfg.render.hud.is_none(), "the HUD is opt-in");
     let threads = spawn_threads(cfg).expect("spawn");
-    let r = reader.clone();
-    assert!(
-        wait_for(&threads, move |t| {
-            r.snapshot().input_overflow_ticks >= 2 && t.stats().sim_ticks >= 3
-        }),
-        "overflow never published: {:?}",
-        reader.snapshot()
-    );
+    await_epoch(&threads, &OVERFLOW_CLOCK);
+    for k in 1..=3 {
+        tick_to(&threads, &OVERFLOW_CLOCK, k);
+    }
     let fin = threads.shutdown().expect("clean shutdown");
-    assert!(fin.sim_ticks >= 3);
+    assert_eq!(fin.sim_ticks, 3, "{fin:?}");
     let s = reader.snapshot();
-    assert_eq!(s.input_overflow_ticks, 2, "the loop's count");
+    assert_eq!(s.input_overflow_ticks, 2, "the loop's count: {s:?}");
     assert_eq!(s.command_queue_overflows(), 2);
     // IdleSim was profiled too: one tick sample per tick.
-    assert!(s.tick.count >= 3, "{s:?}");
+    assert_eq!(s.tick.count, 3, "{s:?}");
 }
 
 #[test]
@@ -164,27 +242,33 @@ fn profiled_table_run_records_ticks_and_input_latency() {
     let sim = on_big_stack(|| Box::new(TableSim::new(apex(), None)));
     let (mut tx, rx) = channel(64);
     let (cfg, reader): (ThreadsConfig, ProfilerReader) =
-        ThreadsConfig::with_profiled_sim(sim, rx, monotonic_now_ns, Profiler::new());
+        ThreadsConfig::with_profiled_sim(sim, rx, table_clock, Profiler::new());
     assert!(
-        std::ptr::fn_addr_eq(cfg.now_ns, monotonic_now_ns as fn() -> u64),
+        std::ptr::fn_addr_eq(cfg.now_ns, table_clock as fn() -> u64),
         "the sim loop runs on the profiler's clock"
     );
     let threads = spawn_threads(cfg).expect("spawn");
+    await_epoch(&threads, &TABLE_CLOCK);
+    for k in 1..=50 {
+        tick_to(&threads, &TABLE_CLOCK, k);
+    }
     let r = reader.clone();
     assert!(
         wait_for(&threads, move |_| r.snapshot().tick.count >= 50),
-        "no ticks recorded: {:?}",
+        "tick samples not published: {:?}",
         reader.snapshot()
     );
-    // A flipper press stamped now on the shared clock (it lands on the
-    // next tick; a press stamped after that tick's start is clamped to 0
-    // and still counted).
+    assert_eq!(reader.snapshot().tick.count, 50, "{:?}", reader.snapshot());
+    // A flipper press stamped now on the shared clock (the end of tick 50):
+    // tick 51 applies it and starts at the next advance, 1 ms later, so the
+    // press is not after the tick start and is not clamped.
     tx.push(InputEvent::button(
-        monotonic_now_ns(),
+        table_clock(),
         CabinetInput::LeftFlipper,
         true,
     ))
     .unwrap();
+    tick_to(&threads, &TABLE_CLOCK, 51);
     let r = reader.clone();
     assert!(
         wait_for(&threads, move |_| r.snapshot().input.count >= 1),
@@ -193,9 +277,9 @@ fn profiled_table_run_records_ticks_and_input_latency() {
     );
     let fin = threads.shutdown().expect("clean shutdown");
     let s = reader.snapshot();
-    assert!(s.tick.count > 0, "{s:?}");
-    assert_eq!(s.tick.count, fin.sim_ticks, "one tick sample per tick");
+    assert_eq!(fin.sim_ticks, 51, "{fin:?}");
+    assert_eq!(s.tick.count, 51, "one tick sample per tick: {s:?}");
     assert_eq!(s.input.count, 1, "{s:?}");
-    assert!(s.input_clamped <= 1);
+    assert_eq!(s.input_clamped, 0, "{s:?}");
     assert_eq!(s.gpu_frame.count, 0, "no GPU, no GPU samples");
 }
