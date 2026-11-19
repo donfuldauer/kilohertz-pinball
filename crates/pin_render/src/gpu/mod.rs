@@ -384,6 +384,12 @@ pub fn create_instance(backends: Backends) -> wgpu::Instance {
     wgpu::Instance::new(desc)
 }
 
+/// Features [`GpuContext::with_instance`] enables whenever the adapter
+/// offers them (timestamp queries for GPU frame timing); never required.
+fn optional_timestamp_features() -> wgpu::Features {
+    wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+}
+
 impl GpuContext {
     /// A context with no surface (offscreen rendering, tests, CI).
     pub fn new_headless(opts: &GpuOptions) -> Result<GpuContext, GpuError> {
@@ -391,7 +397,10 @@ impl GpuContext {
     }
 
     /// A context on an existing instance whose adapter can present to
-    /// `compatible_surface` (created from the same instance).
+    /// `compatible_surface` (created from the same instance). The device
+    /// enables `TIMESTAMP_QUERY` and `TIMESTAMP_QUERY_INSIDE_ENCODERS` when
+    /// the adapter offers them (check [`wgpu::Device::features`]); nothing
+    /// else beyond the defaults.
     pub fn with_instance(
         instance: wgpu::Instance,
         opts: &GpuOptions,
@@ -417,6 +426,10 @@ impl GpuContext {
         let (device, queue) =
             match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("pin_render"),
+                // GPU timestamp queries (the app's GPU frame-time profiler),
+                // only where the adapter offers them: an optional, additive
+                // request; check `device.features()` before using them.
+                required_features: adapter.features() & optional_timestamp_features(),
                 required_limits:
                     wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
                 ..Default::default()

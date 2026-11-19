@@ -72,4 +72,66 @@ fn windowed_app_opens_windows_and_renders_the_table() {
         !err.contains("still holds a window"),
         "a presenter kept a window at shutdown: {err}"
     );
+    // Without `--profiler-hud`: no HUD and no profiler lines (w8f-q6).
+    assert!(!err.contains("pin_app: profiler: "), "{err}");
+}
+
+/// The `n <count>` at the end of a profiler line (`... | n 12`, `... n 34`).
+fn profiler_count(line: &str, key: &str) -> Option<u64> {
+    let rest = &line[line.find(key)? + key.len()..];
+    rest.split_whitespace().next()?.parse().ok()
+}
+
+/// w8f-q6: `--profiler-hud` on the windowed table run. The HUD is drawn on
+/// the real playfield surface (the run presents its frames without error)
+/// and the profiler wired by the app reports ticks, and GPU frame time
+/// exactly when the device has timestamp queries (the branch is printed).
+#[test]
+fn windowed_app_with_profiler_hud_reports_the_profiler() {
+    let bundle = greybox_bundle().to_str().unwrap().to_owned();
+    let (ok, out, err) = run(&[
+        "--table",
+        &bundle,
+        "--run-frames",
+        "30",
+        "--run-ticks",
+        "200",
+        "--profiler-hud",
+    ]);
+    assert!(
+        ok,
+        "pin_app --profiler-hud failed\n{}\nstdout {out}\nstderr {err}",
+        diagnostics(&err)
+    );
+    println!("[integration_window_gpu] {err}");
+    assert!(err.contains("pin_app: run condition met"), "{err}");
+    assert!(
+        err.contains("PBR table on"),
+        "table renderer not used: {err}"
+    );
+    let frames = count_before(&err, "frames").expect("frames");
+    assert!(frames >= 30, "{}\n{err}", diagnostics(&err));
+    let line = |prefix: &str| {
+        err.lines()
+            .find(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix:?} line: {err}"))
+    };
+    let tick = line("pin_app: profiler: tick ");
+    let ticks = profiler_count(tick, " n ").expect("tick count");
+    assert!(ticks >= 200, "{tick}");
+    line("pin_app: profiler: input ");
+    line("pin_app: profiler: cmd queue overflows ");
+    let gpu = line("pin_app: profiler: gpu frame ");
+    let gpu_n = profiler_count(gpu, "| n ").expect("gpu count");
+    if err.contains("pin_app: gpu frame timing: timestamp queries") {
+        println!("[integration_window_gpu] branch: timestamp queries; {gpu}");
+        assert!(gpu_n > 0, "timestamp queries on but no GPU samples: {gpu}");
+    } else {
+        println!("[integration_window_gpu] branch: no timestamp queries; {gpu}");
+        assert!(
+            err.contains("pin_app: gpu frame timing: unavailable"),
+            "no GPU timing line: {err}"
+        );
+        assert_eq!(gpu_n, 0, "GPU samples without timestamp queries: {gpu}");
+    }
 }
