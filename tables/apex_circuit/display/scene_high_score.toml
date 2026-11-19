@@ -1,0 +1,24 @@
+# High-score entry: the game beat the stored high score (no initials input).
+schema_version = 1
+duration_ms = 3000
+background = "#000000"
+
+[[layers]]
+kind = "text"
+text = "NEW HIGH SCORE"
+x = 0.5
+y = 0.36
+size = 0.42
+color = "#40c0ff"
+fade_in_ms = 200
+
+[[layers]]
+kind = "text"
+text = "{score}"
+x = 0.5
+y = 0.97
+valign = "bottom"
+size = 0.25
+color = "#ffffff"
+start_ms = 300
+blink_ms = 250
