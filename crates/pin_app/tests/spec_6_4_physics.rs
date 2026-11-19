@@ -42,6 +42,13 @@ fn flip_from(sim: &mut Simulation, button: &str, flipper: &str, s: f32) -> [f32;
         .spawn_ball(STEEL, pos, [0.0; 3])
         .expect("spawn on the bat");
     sim.advance(10);
+    // Placed clear of the bat: it touched down without being pushed out of
+    // an overlap (rolling under gravity for 10 ms stays far below this).
+    let settled = len3(sim.ball(h).expect("ball on the bat").velocity_m_s);
+    assert!(
+        settled < 0.2,
+        "{flipper} offset {s}: the ball placed on the bat moves at {settled:.3} m/s before the flip"
+    );
     sim.set_switch(button, true).expect("press");
     let mut prev = sim.ball(h).expect("ball on the bat").velocity_m_s;
     let mut calm = 0;
@@ -83,6 +90,50 @@ fn wrap_deg(a: f32) -> f32 {
         a += 360.0;
     }
     a
+}
+
+/// The Banana placement follows the curved bat: the ball is `gap` clear of
+/// the arc tube (checked inside `on_bat`), whereas the same offset along
+/// the pivot's straight bat direction would overlap the curled bat.
+#[test]
+fn a_banana_placement_clears_the_curved_bat() {
+    big_stack(|| {
+        let sim = load();
+        let f = banana_frame(&sim, "lower_right");
+        let r = radius_m(STEEL);
+        for s in BAT_OFFSETS {
+            let p = on_bat(&sim, "lower_right", s, 0.5, STEEL);
+            let clear = (f.side_clearance(p) - r) * 1e3;
+            assert!(
+                (clear - 0.5).abs() <= 0.05,
+                "offset {s}: {clear:.3} mm clear (want 0.5 mm)"
+            );
+            assert!(
+                (dot3(sub3(p, f.pivot), f.n) - r).abs() < 1e-6,
+                "offset {s}: the ball touches the mounting plane"
+            );
+        }
+        // The straight-centreline placement (the bat direction at the
+        // pivot, `s` of the chord) is inside the curled bat at mid-length.
+        let chord = 2.0 * f.arc_radius * (0.5 * f.phi).sin();
+        let side = if dot3(f.to_centre, up_vector()) < 0.0 {
+            scale3(f.to_centre, -1.0)
+        } else {
+            f.to_centre
+        };
+        let straight = add3(
+            add3(
+                add3(f.pivot, scale3(f.x, 0.5 * chord)),
+                scale3(side, f.tube + r + 0.5e-3),
+            ),
+            scale3(f.n, r),
+        );
+        let clear = (f.side_clearance(straight) - r) * 1e3;
+        assert!(
+            clear < -1.0,
+            "a straight placement would overlap the Banana (clearance {clear:.2} mm)"
+        );
+    });
 }
 
 #[test]
@@ -209,14 +260,15 @@ fn b_xl_ball_stays_in_its_area_until_it_drains() {
                 escaped,
                 "{what}: the ball escaped"
             );
-            if drained {
-                assert!(
-                    trough_hits(&sim) > troughs,
-                    "{what}: the ball left through a trough switch"
-                );
-            } else {
-                sim.remove_ball(h);
-            }
+            assert!(
+                drained,
+                "{what}: the ball drained within 60 s (last seen {:?})",
+                sim.ball(h)
+            );
+            assert!(
+                trough_hits(&sim) > troughs,
+                "{what}: the ball left through a trough switch"
+            );
             sim.advance(200);
         }
     });
@@ -376,18 +428,53 @@ fn c_layers_0_and_4_never_exchange_momentum() {
             })
         };
         let r = radius_m(STEEL);
-        let p = [0.08f32, 0.12, 0.05, 0.16]
+        // Two centres a small, nonzero distance apart in the backbox plane
+        // (the solver skips a pair at zero separation, so coincident balls
+        // would prove nothing): 8 mm across the box, well inside 2 r.
+        let across = norm3(cross3(n, up));
+        let offset = 0.008f32;
+        let (p, q) = [0.08f32, 0.12, 0.05, 0.16]
             .iter()
-            .map(|&h| add3(add3(pivot, scale3(n, r)), scale3(up, h)))
-            .find(|&p| !in_zone(p))
-            .expect("a point in the backbox clear of every layer transition");
+            .map(|&h| {
+                let p = add3(add3(pivot, scale3(n, r)), scale3(up, h));
+                (p, add3(p, scale3(across, offset)))
+            })
+            .find(|&(p, q)| !in_zone(p) && !in_zone(q))
+            .expect("two points in the backbox clear of every layer transition");
         drop(sim);
-        // Same 3-D centre, layers 4 and 0: fully overlapping balls.
+        let sep = len3(sub3(p, q));
+        assert!(
+            sep > 1e-3 && sep < 2.0 * r - 5e-3,
+            "the pair overlaps by a clear margin at a nonzero separation ({:.2} mm, 2 r = {:.2} mm)",
+            sep * 1e3,
+            2.0 * r * 1e3
+        );
         let ticks = 300;
-        let alone4 = trajectories(&[(4, p)], ticks);
-        let alone0 = trajectories(&[(0, p)], ticks);
-        let both = trajectories(&[(4, p), (0, p)], ticks);
-        for (k, (single, pair)) in [(&alone4[0], &both[0]), (&alone0[0], &both[1])]
+        let deviation = |single: &[[f32; 3]], pair: &[[f32; 3]]| -> (usize, f32) {
+            let n = single.len().min(pair.len());
+            let worst = (0..n)
+                .map(|i| len3(sub3(single[i], pair[i])))
+                .fold(0.0f32, f32::max);
+            (n, worst)
+        };
+        // Control: the same offset on one layer makes contact, so each
+        // ball's path measurably differs from its single-ball run.
+        let alone4p = trajectories(&[(4, p)], ticks);
+        let alone4q = trajectories(&[(4, q)], ticks);
+        let same = trajectories(&[(4, p), (4, q)], ticks);
+        let (n0, d0) = deviation(&alone4p[0], &same[0]);
+        let (n1, d1) = deviation(&alone4q[0], &same[1]);
+        assert!(
+            n0 >= 1 && n1 >= 1 && d0.max(d1) >= 1e-3,
+            "control: two layer-4 balls {:.1} mm apart interact (deviations {:.3} / {:.3} mm over {n0} / {n1} ticks)",
+            sep * 1e3,
+            d0 * 1e3,
+            d1 * 1e3
+        );
+        // Layers 4 and 0 at the same offset: no exchange at all.
+        let alone0q = trajectories(&[(0, q)], ticks);
+        let both = trajectories(&[(4, p), (0, q)], ticks);
+        for (k, (single, pair)) in [(&alone4p[0], &both[0]), (&alone0q[0], &both[1])]
             .into_iter()
             .enumerate()
         {
@@ -436,18 +523,19 @@ fn launch(sim: &mut Simulation, profile: &str) -> BallHandle {
     h
 }
 
-/// Runs 1.5 s and returns the last state of the launched ball.
+/// Runs 1.5 s and returns the launched ball's state at that tick (it must
+/// still be on the table).
 fn magnus_run(bundle_path: &std::path::Path, profile: &str) -> (BallState, u64) {
     let mut sim = load_from(bundle_path);
     sim.advance(100);
     let h = launch(&mut sim, profile);
-    let mut last = sim.ball(h).unwrap();
-    for _ in 0..1_500 {
-        sim.advance(1);
-        if let Some(b) = sim.ball(h) {
-            last = b;
-        }
-    }
+    sim.advance(1_500);
+    let last = sim.ball(h).unwrap_or_else(|| {
+        panic!(
+            "{profile} ({}): the launched ball left the table before the 1.5 s sample",
+            bundle_path.display()
+        )
+    });
     (last, sim.state_hash())
 }
 

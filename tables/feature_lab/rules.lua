@@ -21,8 +21,10 @@
 -- `mode:<id>` once, shows the mode's scene and scores MODE_START_POINTS.
 --
 --   0 banana_shots   shot banana_vuk (vuk_lane, bb_vuk_sw), the Banana's
---                    shot up the VUK lane: further VUK lane shots score
---                    25000 for the rest of the ball.
+--                    shot up the VUK lane: every further banana_vuk shot
+--                    (VUK lane into the backbox VUK within 3 s) scores
+--                    25000 for the rest of the ball, paid when it completes
+--                    (bb_vuk_sw); a VUK lane hit alone scores 100.
 --   1 backbox_play   shot backbox_run (bb_vuk_sw, bb_drain), a ball
 --                    through the backbox: the backbox drain (bb_drain)
 --                    scores 5000 instead of 500 and the backbox flipper
@@ -92,9 +94,11 @@ local score, ball, games, high = 0, 0, 0, 0
 local ticks = 0
 local dirty = true
 local mode_sel = 0
-local last_spawn = -1000000
+-- "No such event yet": far enough in the past for every window.
+local NEVER = -1000000
+local last_spawn = NEVER
 local vuk_at, attract_at = -1, -1
-local last_flip, last_entry = -1000000, -1000000
+local last_flip, last_entry = NEVER, NEVER
 -- Per mode (index 1..5 = selector 0..4): started this ball, start counts.
 local started = { false, false, false, false, false }
 local starts = { 0, 0, 0, 0, 0 }
@@ -228,9 +232,13 @@ local function set_sel(v)
 end
 
 -- Ends every running mode (the player's ball has ended). Balls already in
--- play keep playing and drain on their own.
+-- play keep playing and drain on their own. The scoring observations of
+-- the ended ball (orbit entry, flip) are forgotten too, so an orbit_entry
+-- or a flip of one ball never qualifies an orbit or a flipper shot of the
+-- next; within one ball they persist.
 local function end_modes()
   banana_on, backbox_on, xl_on, glo_on = false, false, false, false
+  last_flip, last_entry = NEVER, NEVER
   xl_end, glo_end, glo_launch = -1, -1, -1
   if cmp_phase ~= CMP_IDLE then
     cmp_phase = CMP_IDLE
@@ -331,7 +339,9 @@ local function start_mode(i)
   end
 end
 
--- A qualifying shot `i` was made.
+-- A qualifying shot `i` was made. The Banana bonus is paid on the complete
+-- banana_vuk shot (README "Modes": further Banana shots up the VUK lane),
+-- not on a bare vuk_lane hit.
 local function shot_made(i)
   if i == 1 and banana_on then add(25000) end
   if state == GAME and mode_sel == i - 1 and not started[i] then
@@ -400,7 +410,7 @@ function on_switch(id, closed)
       or id == sw.b1 or id == sw.b2 or id == sw.b3)
       and ticks - last_flip <= FLIP_SHOT_TICKS then
     -- One bonus per flip.
-    last_flip = -1000000
+    last_flip = NEVER
     add(FLIP_SHOT_POINTS)
   end
   if id == sw.launch then

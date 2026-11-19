@@ -101,7 +101,8 @@ tilt.
   playfield above `bumper_2`. It drains on its own without a flip. A safety
   transition `bb_catch` returns a ball that falls back through the entry
   hole (a flipped ball that drops into the entry channel) to the
-  playfield.
+  playfield, also when it drifts towards the player or the back as it
+  falls (the zone spans y 780..990).
 * **Holding magnet** `hold_magnet` at (370, 420), on the Banana's line below
   the VUK lane; `magnet_feed` serves comparison balls at rest onto its pole.
 * **XL area**: the chamber under the left inlane, closed to every other
@@ -125,8 +126,10 @@ each mode starts at most once per ball, and never ends the player's ball.
 | `magnet_compare` | 3 | shot `magnet_lane`: over the magnet into the VUK lane within 2 s | `magnet_opto`, `vuk_lane` | `scene_magnet_compare` |
 | `glo_ball` | 4 | shot `pops`: `bumper_2` then `bumper_3` within 5 s | `bumper_2_ring`, `bumper_3_ring` | `scene_glo_ball` |
 
-* `banana_shots`: further Banana shots up the VUK lane score 25 000 for the
-  rest of the ball.
+* `banana_shots`: further Banana shots up the VUK lane (complete
+  `banana_vuk` shots: `vuk_lane`, then `bb_vuk_sw` within 3 s) score
+  25 000 for the rest of the ball, paid when the backbox VUK captures the
+  ball; a `vuk_lane` hit alone scores its 100.
 * `backbox_play`: the backbox drain scores 5 000 instead of 500 and the
   backbox flipper 1 000 a flip for the rest of the ball.
 * `xl_ball`: the XL ball is served into the XL area; `xl_lane` scores 500;
@@ -164,7 +167,9 @@ time, ms; 0 until measured).
   plunge), a flipper shot (orbit entry, VUK lane, magnet opto or a bumper
   within 1 s of a lower flipper reaching its end of stroke) 5 000, VUK lane
   100, backbox VUK 500, backbox drain 500, magnet opto 100, XL lane 500,
-  mode start 2 000, a comparison measured 10 000.
+  mode start 2 000, a comparison measured 10 000. The orbit entry and the
+  flip that qualify an orbit or a flipper shot count only within the same
+  player's ball.
 
 ## Autoplay soak self-check
 
