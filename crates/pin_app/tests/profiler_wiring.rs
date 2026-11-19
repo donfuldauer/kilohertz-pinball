@@ -12,9 +12,9 @@
 //!   shipped table, a short real-time run with a flipper press: ticks and
 //!   an input-latency sample are recorded.
 //!
-//! The threaded tests poll counters with a bounded wait (as
-//! `orchestrator_threads.rs` does) and assert on counts only, never on
-//! durations (rule 5).
+//! The threaded tests poll counters with `yield_now` under an iteration
+//! bound (as `wiring_audio.rs` does): no sleep, no clock, and assertions on
+//! counts only, never on durations (rule 5).
 
 mod apex_support;
 
@@ -28,7 +28,6 @@ use pin_core::spsc::channel;
 use pin_core::{CabinetInput, FrameStateSnapshot, InputEvent, SimStep, TICK_NS, TripleBuffer};
 use pin_sim::alloc_guard::{CountingAlloc, count_allocs, count_allocs_split, is_installed};
 use pin_sim::{SimConfig, Simulation};
-use std::time::{Duration, Instant};
 
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
@@ -109,15 +108,20 @@ fn profiled_boxed_table_sim_with_fn_clock_does_not_allocate_per_tick() {
     );
 }
 
-/// Waits (sleeping 1 ms between checks, so the threads under test get the
-/// cores) until `cond` holds; gives up after `limit`.
-fn wait_for(threads: &Threads, limit: Duration, cond: impl Fn(&Threads) -> bool) -> bool {
-    let t0 = Instant::now();
-    while t0.elapsed() < limit {
+/// Checks of `cond` before [`wait_for`] gives up: generous (the threaded
+/// tests need a few to about 50 real-time ticks), but finite, so a hang
+/// still ends.
+const SPIN_LIMIT: u64 = 200_000_000;
+
+/// Polls `cond` until it holds, yielding the core between checks
+/// (`yield_now`, so the threads under test run) under an iteration bound of
+/// [`SPIN_LIMIT`]: no sleep, no clock. Returns whether it held.
+fn wait_for(threads: &Threads, cond: impl Fn(&Threads) -> bool) -> bool {
+    for _ in 0..SPIN_LIMIT {
         if cond(threads) {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::yield_now();
     }
     cond(threads)
 }
@@ -140,7 +144,7 @@ fn sim_thread_publishes_input_overflow_ticks() {
     let threads = spawn_threads(cfg).expect("spawn");
     let r = reader.clone();
     assert!(
-        wait_for(&threads, Duration::from_secs(30), move |t| {
+        wait_for(&threads, move |t| {
             r.snapshot().input_overflow_ticks >= 2 && t.stats().sim_ticks >= 3
         }),
         "overflow never published: {:?}",
@@ -168,11 +172,7 @@ fn profiled_table_run_records_ticks_and_input_latency() {
     let threads = spawn_threads(cfg).expect("spawn");
     let r = reader.clone();
     assert!(
-        wait_for(&threads, Duration::from_secs(60), move |_| r
-            .snapshot()
-            .tick
-            .count
-            >= 50),
+        wait_for(&threads, move |_| r.snapshot().tick.count >= 50),
         "no ticks recorded: {:?}",
         reader.snapshot()
     );
@@ -187,11 +187,7 @@ fn profiled_table_run_records_ticks_and_input_latency() {
     .unwrap();
     let r = reader.clone();
     assert!(
-        wait_for(&threads, Duration::from_secs(60), move |_| r
-            .snapshot()
-            .input
-            .count
-            >= 1),
+        wait_for(&threads, move |_| r.snapshot().input.count >= 1),
         "flipper press not recorded: {:?}",
         reader.snapshot()
     );
