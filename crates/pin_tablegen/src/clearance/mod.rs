@@ -8,8 +8,8 @@
 //! gaps, wireform gauges, scoop openings and VUK exits, and headroom under
 //! upper decks. Each violation is a [`ClearanceError`] naming the offending
 //! feature by file and key path, like `pin_assets::ValidationError`.
-//! [`validate_bundle`] loads a bundle (`pin_assets::load_table` and the
-//! playfield glTF) and runs it; `pin_tablegen validate <bundle>` is its
+//! [`validate_bundle`] loads a bundle (`pin_assets::load_table`, the
+//! playfield glTF and, when present, the backbox colliders) and runs it; `pin_tablegen validate <bundle>` is its
 //! command line ([`run_validate_cli`]). Wiring it into the engine's load
 //! path is Subphase 6.0's.
 //!
@@ -18,7 +18,15 @@
 //! A profile with `[balls] restrict` entries may only be on the union of
 //! them: each entry allows its `layers`, optionally only with the ball
 //! centre inside its plan-view `area` polygon (mm, even-odd rule; CR-005).
-//! A profile without entries may be anywhere. A feature is checked for a
+//! A profile without entries may be anywhere. An entry's area must hold
+//! its profile's ball: when the largest circle inside it (the even-odd
+//! region's, so retraced edges do not count) is narrower than the ball
+//! diameter, that is an error at `balls.restrict[i].area`. The verdict is
+//! decided with a 1 µm radius bracket (a ball up to 1 µm wider in radius,
+//! 2 µm in diameter, than the largest circle still fits; a search that
+//! cannot decide within its cell budget reports nothing); only
+//! the size the message reports is approximate, within
+//! [`INSCRIBED_CIRCLE_TOLERANCE_MM`] and never overstated. A feature is checked for a
 //! profile only where the profile may be (layer allowed, reference point
 //! inside the area). Restrictions are declarations: the table's geometry
 //! and rules keep the ball there; [`Feature::Restriction`] warnings point at
@@ -46,13 +54,31 @@
 //!   surface, a non-steep collider of another layer above it (an upper
 //!   deck) must leave at least `d + 1 mm`.
 //!
-//! See DECISIONS.md "2.8 — Clearance validator public API" for the exact
+//! # Backbox
+//!
+//! A bundle's `backbox_colliders.glb` ([`validate_clearance_with_backbox`])
+//! adds its collider nodes as geometry of their own `collision_layer` (the
+//! backbox layer): floors, walls and ceilings of that layer for the VUK
+//! exit, scoop and headroom checks. They never become layer-0 geometry.
+//! As in the engine's loader (`pin_sim::load::backbox_colliders`), every
+//! node must be a collider (`extras.collider` true) naming a backbox layer
+//! (`extras.collision_layer` 4..=7); a node that is not is a
+//! [`Feature::BackboxCollider`] error naming the file and the node, with
+//! the loader's wording, and adds no geometry (there is no default layer).
+//! A VUK exit on a backbox layer is also supported by a walkable backbox
+//! collider of the layer below it within 100 mm in plan (the shelf around
+//! the entry hole the generated VUK kicks the ball up through), the reach
+//! guides and wireforms already have.
+//!
+//! See DECISIONS.md "2.8 — Clearance validator public API" and
+//! `docs/decisions/2026-11-18-fix-2.8-backbox-clearance.md` for the exact
 //! rules.
 
 mod checks;
 mod cli;
 mod geom;
 mod headroom;
+mod inscribed;
 #[cfg(test)]
 mod tests;
 
@@ -61,7 +87,10 @@ pub use cli::{VALIDATE_USAGE, run_validate_cli, validate_cli_output};
 use core::fmt;
 use geom::Polygon;
 use glam::DVec2;
-use pin_assets::{AssetError, GltfScene, LoadedTable, ValidationError, Vfs, load_gltf, load_table};
+use pin_assets::{
+    AssetError, BACKBOX_COLLIDERS_FILE, GltfLimits, GltfScene, LoadedTable, MAX_BACKBOX_COLLIDERS,
+    MeshData, ValidationError, Vfs, load_gltf, load_gltf_with_limits, load_table,
+};
 use pin_core::profiles::builtin_profile;
 
 /// Clearance (mm) every width check adds to the ball diameter.
@@ -80,6 +109,12 @@ pub const WIREFORM_MAX_CONTACT_DEG: f32 = 75.0;
 /// Overlap (mm) an ejected VUK ball may have with its exit layer's
 /// geometry (the solver pushes small overlaps out).
 pub const VUK_EXIT_TOLERANCE_MM: f32 = 0.5;
+/// Tolerance (mm) of the largest-circle size reported for a `[balls]
+/// restrict` area that cannot hold its ball: the reported diameter is never
+/// above the true one and at most this much below it. Whether the ball
+/// fits is decided with a 1 µm radius bracket (2 µm in diameter), not
+/// with this tolerance.
+pub const INSCRIBED_CIRCLE_TOLERANCE_MM: f32 = 0.5;
 
 /// The kind of feature a [`ClearanceError`] is about.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -98,6 +133,8 @@ pub enum Feature {
     DeckHeadroom,
     /// A `[balls] restrict` entry.
     Restriction,
+    /// A node of `backbox_colliders.glb` the engine would refuse.
+    BackboxCollider,
 }
 
 impl Feature {
@@ -112,6 +149,7 @@ impl Feature {
             Feature::VukExit => "vuk exit",
             Feature::DeckHeadroom => "deck headroom",
             Feature::Restriction => "restriction",
+            Feature::BackboxCollider => "backbox collider",
         }
     }
 }
@@ -125,16 +163,19 @@ pub struct ClearanceError {
     /// (`[[flippers]]` ids), mech id, glTF node name, or
     /// `"balls.restrict[i]"`.
     pub name: String,
-    /// Ball profile name.
+    /// Ball profile name (empty for a finding about no particular ball:
+    /// a [`Feature::BackboxCollider`] error).
     pub profile: String,
-    /// Bundle file: `table.toml` or the playfield glTF (`meta.playfield_mesh`).
+    /// Bundle file: `table.toml`, the playfield glTF (`meta.playfield_mesh`)
+    /// or `backbox_colliders.glb`.
     pub file: String,
     /// Key path in `file` (`splines[3]`, `flippers[0]`, `mechs[2]`,
     /// `mechs[2].exit_offset`, `meshes[4]`, `balls.restrict[1].area`,
     /// `layer_transitions[0]`).
     pub path: String,
     /// What the profile needs, mm (0 where no length applies: restriction
-    /// findings and the flipper-build warning).
+    /// shape findings, backbox collider findings and the flipper-build
+    /// warning).
     pub required_mm: f32,
     /// What the geometry offers, mm (0 where no length applies).
     pub actual_mm: f32,
@@ -336,8 +377,21 @@ fn mm(m: f64) -> String {
     format!("{:.1} mm", m * 1.0e3)
 }
 
+/// What is wrong with a restriction's area.
+enum Problem {
+    /// Malformed polygon (the text completes "the area ... ").
+    Shape(String),
+    /// No disc of the profile's diameter `d` (m) fits; the largest that
+    /// does is `fits` (m) across (a lower bound within
+    /// [`INSCRIBED_CIRCLE_TOLERANCE_MM`]).
+    TooSmall { d: f64, fits: f64 },
+}
+
 /// The declared profiles and their restrictions; bad areas are reported
-/// (and the entry then allows its whole layers).
+/// (and the entry then allows its whole layers), and so are areas that
+/// cannot hold their profile's ball (`inscribed::fits` decides the
+/// largest inscribed circle is below the ball diameter; an undecided
+/// search is not reported).
 fn declared_balls(table: &LoadedTable, sink: &mut Sink) -> Vec<Ball> {
     let t = &table.manifest;
     let mut areas: Vec<Option<Polygon>> = Vec::with_capacity(t.balls.restrict.len());
@@ -364,8 +418,43 @@ fn declared_balls(table: &LoadedTable, sink: &mut Sink) -> Vec<Ball> {
         } else {
             None
         };
+        let problem = problem.map(Problem::Shape).or_else(|| {
+            let d = builtin_profile(&r.profile).map(|p| f64::from(p.diameter_m))?;
+            if !(d.is_finite() && d > 0.0) {
+                return None;
+            }
+            if inscribed::fits(&poly, d) != inscribed::Fit::TooSmall {
+                return None;
+            }
+            // Too small for certain; the size reported is a lower bound
+            // within the tolerance (below `d`, since the true one is).
+            let tol = f64::from(INSCRIBED_CIRCLE_TOLERANCE_MM) * 1.0e-3;
+            let fits = inscribed::largest_inscribed_diameter(&poly, 0.25 * tol);
+            Some(Problem::TooSmall { d, fits })
+        });
         match problem {
-            Some(m) => {
+            Some(Problem::TooSmall { d, fits }) => {
+                let name = format!("balls.restrict[{i}]");
+                sink.error(Finding {
+                    feature: Feature::Restriction,
+                    name: &name,
+                    ball: &r.profile,
+                    file: TABLE,
+                    path: format!("balls.restrict[{i}].area"),
+                    required_m: d,
+                    actual_m: fits,
+                    message: format!(
+                        "the area of the {:?} restriction cannot hold the ball: the largest circle that fits inside it is {} across; ball {:?} is {}",
+                        r.profile,
+                        mm(fits),
+                        r.profile,
+                        mm(d)
+                    ),
+                });
+                // The declaration stands (the error fails validation).
+                areas.push(Some(poly));
+            }
+            Some(Problem::Shape(m)) => {
                 let name = format!("balls.restrict[{i}]");
                 sink.error(Finding {
                     feature: Feature::Restriction,
@@ -429,7 +518,80 @@ fn declared_balls(table: &LoadedTable, sink: &mut Sink) -> Vec<Ball> {
 /// (and tolerates inconsistent hand-built `LoadedTable`s).
 #[must_use]
 pub fn validate_clearance(table: &LoadedTable, scene: &GltfScene) -> ClearanceReport {
-    validate_clearance_for(table, scene, None)
+    validate_clearance_for(table, scene, None, None)
+}
+
+/// [`validate_clearance`] with the bundle's backbox colliders (its
+/// [`BACKBOX_COLLIDERS_FILE`], as [`load_backbox_colliders`] reads it):
+/// their collider nodes are geometry of their `collision_layer` (the
+/// backbox layer), so they support VUK exits and count as walls, floors and
+/// ceilings of that layer in every check, exactly like playfield meshes of
+/// the layer. A node the engine's loader refuses (not a collider, or no
+/// `collision_layer` in 4..=7) is a [`Feature::BackboxCollider`] error and
+/// adds no geometry. Findings on them name that file and `meshes[i]` within
+/// it. With `backbox: None` this is [`validate_clearance`].
+#[must_use]
+pub fn validate_clearance_with_backbox(
+    table: &LoadedTable,
+    scene: &GltfScene,
+    backbox: Option<&GltfScene>,
+) -> ClearanceReport {
+    validate_clearance_for(table, scene, backbox, None)
+}
+
+/// The layer of a backbox collider node, or why the engine's loader
+/// (`pin_sim::load::backbox_colliders`) refuses it, in the loader's words.
+fn backbox_node_layer(mesh: &MeshData) -> Result<u8, String> {
+    if !mesh.extras.collider {
+        return Err(format!(
+            "node {:?} is not a collider (extras.collider must be true)",
+            mesh.name
+        ));
+    }
+    match mesh.extras.collision_layer {
+        Some(l @ 4..=7) => Ok(l),
+        other => Err(format!(
+            "node {:?}: extras.collision_layer must be a backbox layer 4..=7, got {other:?}",
+            mesh.name
+        )),
+    }
+}
+
+/// One [`Feature::BackboxCollider`] error per node of `backbox` that
+/// [`backbox_node_layer`] refuses, in node order.
+fn check_backbox_nodes(backbox: &GltfScene, sink: &mut Sink) {
+    for (i, mesh) in backbox.meshes.iter().enumerate() {
+        if let Err(message) = backbox_node_layer(mesh) {
+            sink.error(Finding {
+                feature: Feature::BackboxCollider,
+                name: &mesh.name,
+                ball: "",
+                file: BACKBOX_COLLIDERS_FILE,
+                path: format!("meshes[{i}]"),
+                required_m: 0.0,
+                actual_m: 0.0,
+                message,
+            });
+        }
+    }
+}
+
+/// The bundle's [`BACKBOX_COLLIDERS_FILE`], loaded with the engine's
+/// budgets (at most [`MAX_BACKBOX_COLLIDERS`] nodes and meshes), or `None`
+/// when the bundle has no such file.
+///
+/// # Errors
+/// Whatever `load_gltf_with_limits` reports for the file.
+pub fn load_backbox_colliders(vfs: &Vfs) -> Result<Option<GltfScene>, AssetError> {
+    if !vfs.exists(BACKBOX_COLLIDERS_FILE) {
+        return Ok(None);
+    }
+    let limits = GltfLimits {
+        max_nodes: MAX_BACKBOX_COLLIDERS,
+        max_meshes: MAX_BACKBOX_COLLIDERS,
+        ..GltfLimits::default()
+    };
+    load_gltf_with_limits(vfs, BACKBOX_COLLIDERS_FILE, &limits).map(Some)
 }
 
 /// [`validate_clearance`] for ball diameters given directly (metres)
@@ -441,12 +603,13 @@ pub fn validate_clearance_diameters(
     scene: &GltfScene,
     diameters_m: &[f32],
 ) -> ClearanceReport {
-    validate_clearance_for(table, scene, Some(diameters_m))
+    validate_clearance_for(table, scene, None, Some(diameters_m))
 }
 
 fn validate_clearance_for(
     table: &LoadedTable,
     scene: &GltfScene,
+    backbox: Option<&GltfScene>,
     diameters: Option<&[f32]>,
 ) -> ClearanceReport {
     let mut sink = Sink::default();
@@ -462,7 +625,16 @@ fn validate_clearance_for(
             })
             .collect(),
     };
-    let tris = geom::collider_triangles(scene);
+    let mut tris = geom::collider_triangles(scene);
+    if let Some(bb) = backbox {
+        check_backbox_nodes(bb, &mut sink);
+        geom::append_collider_triangles(
+            bb,
+            |m| backbox_node_layer(m).ok(),
+            scene.meshes.len(),
+            &mut tris,
+        );
+    }
     let grid = geom::TriGrid::new(&tris);
     let world = checks::World {
         table,
@@ -470,6 +642,7 @@ fn validate_clearance_for(
         tris: &tris,
         grid: &grid,
         glb: table.manifest.meta.playfield_mesh.as_str(),
+        backbox,
     };
     checks::lanes(&world, &balls, &mut sink);
     checks::flippers(&world, &balls, &mut sink);
@@ -493,14 +666,20 @@ fn validate_clearance_for(
     }
 }
 
-/// Loads a bundle (`load_table`, then `load_gltf` of `meta.playfield_mesh`)
-/// and runs [`validate_clearance`] on it.
+/// Loads a bundle (`load_table`, `load_gltf` of `meta.playfield_mesh` and,
+/// when present, [`load_backbox_colliders`]) and runs
+/// [`validate_clearance_with_backbox`] on it.
 ///
 /// # Errors
-/// Whatever `load_table` / `load_gltf` report (manifest validation errors
-/// come as [`AssetError::Invalid`]).
+/// Whatever `load_table` / `load_gltf` / [`load_backbox_colliders`] report
+/// (manifest validation errors come as [`AssetError::Invalid`]).
 pub fn validate_bundle(vfs: &Vfs) -> Result<ClearanceReport, AssetError> {
     let table = load_table(vfs)?;
     let scene = load_gltf(vfs, &table.manifest.meta.playfield_mesh)?;
-    Ok(validate_clearance(&table, &scene))
+    let backbox = load_backbox_colliders(vfs)?;
+    Ok(validate_clearance_with_backbox(
+        &table,
+        &scene,
+        backbox.as_ref(),
+    ))
 }
