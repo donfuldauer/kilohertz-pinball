@@ -1,0 +1,808 @@
+# Apex Circuit (Subphase 6.1, variant A): base table.toml for pin_tablegen.
+# Standard-body playfield (514 x 1070 mm, as the grey box). Lengths mm,
+# angles degrees. Build: tables/apex_circuit/build.sh <out_dir> (README.md).
+# Rules: rules.lua (README.md "Rules").
+schema_version = 1
+
+[meta]
+id = "apex_circuit"
+name = "Apex Circuit"
+author = "Kilohertz Pinball"
+version = "1.0.0"
+script_entry = "rules.lua"
+playfield_mesh = "playfield.glb"
+pitch_deg = 6.5
+players_max = 1
+palette = ["#0b132b", "#1c2541", "#ff6b35"]
+
+[balls]
+profiles = ["standard_steel", "ceramic_powerball"]
+
+# Cabinet inputs: switch numbers 1..8.
+[cabinet_switches]
+left_flipper = 1
+right_flipper = 2
+left_upper = 3
+right_upper = 4
+action = 5
+start = 6
+launch = 7
+tilt = 8
+
+# --- Switches (numbers 10..39, all unique) ---------------------------------
+# Switch zones are given at the playfield surface (z = 0 for layer 0); the
+# loader lifts each zone to ball-centre height.
+
+# Trough: two overlapping zones over the drain funnel's bottom (grey box).
+[[switches]]
+id = "trough_1"
+number = 10
+kind = "trough"
+layer = 0
+position = [225.0, 20.0, 0.0]
+radius = 36.0
+
+[[switches]]
+id = "trough_2"
+number = 11
+kind = "trough"
+layer = 0
+position = [289.0, 20.0, 0.0]
+radius = 36.0
+
+[[switches]]
+id = "left_flipper_eos"
+number = 12
+kind = "eos"
+
+[[switches]]
+id = "right_flipper_eos"
+number = 13
+kind = "eos"
+
+[[switches]]
+id = "left_upper_eos"
+number = 14
+kind = "eos"
+
+[[switches]]
+id = "sling_left_sw"
+number = 15
+kind = "leaf"
+
+[[switches]]
+id = "sling_right_sw"
+number = 16
+kind = "leaf"
+
+[[switches]]
+id = "bumper_1_ring"
+number = 17
+kind = "ring"
+
+[[switches]]
+id = "bumper_2_ring"
+number = 18
+kind = "ring"
+
+[[switches]]
+id = "bumper_3_ring"
+number = 19
+kind = "ring"
+
+# The left-orbit spinner's switch (one pulse per half turn of the flap).
+[[switches]]
+id = "left_spinner"
+number = 20
+kind = "spinner"
+
+[[switches]]
+id = "orbit_top"
+number = 21
+kind = "opto"
+layer = 0
+position = [170.0, 1040.0, 0.0]
+radius = 15.0
+
+[[switches]]
+id = "ramp_entry"
+number = 22
+kind = "opto"
+layer = 0
+position = [425.0, 560.0, 0.0]
+radius = 16.0
+
+# On the wire (layer 2), near its top: z is the ball-centre height there
+# (rails ~50 mm + 11.8 mm) minus the 13.5 mm the loader adds.
+[[switches]]
+id = "ramp_made"
+number = 23
+kind = "opto"
+layer = 2
+position = [425.0, 868.0, 28.6]
+radius = 10.0
+
+# The centre lock scoop's switch (closed while it holds a ball).
+[[switches]]
+id = "lock_scoop_sw"
+number = 24
+kind = "leaf"
+
+# Powerball detector in the shooter-lane top, where every plunge and every
+# right-orbit shot passes the magnet: the eddy sensor sees only conductive
+# balls (steel), the opto sees every ball. Opto without eddy = the ceramic
+# Powerball.
+[[switches]]
+id = "magnet_eddy"
+number = 25
+kind = "eddy"
+layer = 0
+position = [492.0, 910.0, 0.0]
+radius = 22.0
+
+[[switches]]
+id = "magnet_opto"
+number = 26
+kind = "opto"
+layer = 0
+position = [492.0, 910.0, 0.0]
+radius = 22.0
+
+# Scoop approach opto: a ring 28 mm round the lock scoop (whose capture
+# radius is 14 mm), so a ball closes it on its way into the scoop from any
+# side.
+[[switches]]
+id = "lock_lane"
+number = 27
+kind = "opto"
+layer = 0
+position = [257.0, 600.0, 0.0]
+radius = 28.0
+
+# The 3-bank of drop targets.
+[[switches]]
+id = "drop_1_sw"
+number = 28
+kind = "target"
+
+[[switches]]
+id = "drop_2_sw"
+number = 29
+kind = "target"
+
+[[switches]]
+id = "drop_3_sw"
+number = 30
+kind = "target"
+
+# Up the shooter lane: closes as a launched ball passes.
+[[switches]]
+id = "shooter_lane"
+number = 31
+kind = "opto"
+layer = 0
+position = [492.0, 300.0, 0.0]
+radius = 15.0
+
+# The plunger mech's switch: closed while a ball touches the plunger tip.
+[[switches]]
+id = "plunger_tip"
+number = 32
+kind = "leaf"
+
+# In the right-orbit corridor where it is 36 mm wide (layout.toml): every
+# ball running up or down the right orbit passes it.
+[[switches]]
+id = "right_orbit_entry"
+number = 33
+kind = "opto"
+layer = 0
+position = [452.0, 790.0, 0.0]
+radius = 15.0
+
+# Skill-shot top lanes (layout.toml dividers at x 280, 320, 360, 400).
+[[switches]]
+id = "lane_1"
+number = 34
+kind = "rollover"
+layer = 0
+position = [300.0, 930.0, 0.0]
+radius = 15.0
+
+[[switches]]
+id = "lane_2"
+number = 35
+kind = "rollover"
+layer = 0
+position = [340.0, 930.0, 0.0]
+radius = 15.0
+
+[[switches]]
+id = "lane_3"
+number = 36
+kind = "rollover"
+layer = 0
+position = [380.0, 930.0, 0.0]
+radius = 15.0
+
+# Inlane rollovers, 20 mm out from the inlane walls (a ball rolling down
+# an inlane towards its flipper closes one). The rules use them for the
+# Overdrive selection (Firewall Save when one closed in the last 3 s).
+[[switches]]
+id = "left_inlane"
+number = 37
+kind = "rollover"
+layer = 0
+position = [84.4, 271.1, 0.0]
+radius = 15.0
+
+[[switches]]
+id = "right_inlane"
+number = 38
+kind = "rollover"
+layer = 0
+position = [403.5, 268.2, 0.0]
+radius = 15.0
+
+# Newton ball (captive), the grey box's: a target that keeps balls in play
+# in the lower right (Gate A1 play length).
+[[switches]]
+id = "newton_sw"
+number = 39
+kind = "target"
+
+# --- Coils -------------------------------------------------------------------
+
+[[coils]]
+id = "left_flipper_coil"
+number = 1
+kind = "flipper"
+
+[[coils]]
+id = "right_flipper_coil"
+number = 2
+kind = "flipper"
+
+[[coils]]
+id = "left_upper_coil"
+number = 3
+kind = "flipper"
+
+[[coils]]
+id = "sling_left_coil"
+number = 4
+kind = "sling"
+
+[[coils]]
+id = "sling_right_coil"
+number = 5
+kind = "sling"
+
+[[coils]]
+id = "bumper_1_coil"
+number = 6
+kind = "bumper"
+
+[[coils]]
+id = "bumper_2_coil"
+number = 7
+kind = "bumper"
+
+[[coils]]
+id = "bumper_3_coil"
+number = 8
+kind = "bumper"
+
+[[coils]]
+id = "lock_scoop_coil"
+number = 9
+kind = "vuk"
+
+[[coils]]
+id = "plunger_coil"
+number = 10
+kind = "autoplunger"
+
+[[coils]]
+id = "drop_reset_coil"
+number = 11
+kind = "drop_reset"
+
+# --- Lamps -------------------------------------------------------------------
+
+[[lamps]]
+id = "backglass_logo"
+number = 40
+kind = "flasher"
+
+[[lamps]]
+id = "powerball_lamp"
+number = 41
+kind = "insert"
+color = "#40c0ff"
+response = "led"
+
+[[lamps]]
+id = "overdrive_lamp"
+number = 42
+kind = "insert"
+color = "#ff6b35"
+response = "led"
+
+[[lamps]]
+id = "lane_1_lamp"
+number = 43
+kind = "insert"
+color = "#ffd040"
+response = "led"
+
+[[lamps]]
+id = "lane_2_lamp"
+number = 44
+kind = "insert"
+color = "#ffd040"
+response = "led"
+
+[[lamps]]
+id = "lane_3_lamp"
+number = 45
+kind = "insert"
+color = "#ffd040"
+response = "led"
+
+[[lamps]]
+id = "combo_lamp"
+number = 46
+kind = "insert"
+color = "#40ff80"
+response = "led"
+
+# --- Magnet ------------------------------------------------------------------
+
+# Under the Powerball detector in the shooter-lane top (the right orbit's
+# exit). The rules pulse it when the eddy sensor closes (a steel ball).
+[[magnets]]
+id = "apex_magnet"
+number = 1
+position = [492.0, 910.0, 0.0]
+k_coil = 2.0e-6
+d_min = 8.0
+range = 60.0
+tau_ms = 60.0
+
+# --- Flippers ----------------------------------------------------------------
+
+# Lower flippers: the grey box's 76 mm bats, pivots 3.68 mm further in so
+# the open tip gap is 48 mm. Zipper mode ("Firewall Save", rules.lua): each
+# pivot slides 12 mm inward along x (in 50 ms), closing the gap to 24 mm,
+# under the 27 mm ball (the PLAN 2.3 Zipper criterion).
+[[flippers]]
+id = "left_flipper"
+coil = "left_flipper_coil"
+eos_switch = "left_flipper_eos"
+collision_layer = 0
+base_position = [160.68, 150.0, 0.0]
+surface_normal = [0.0, 0.0, 1.0]
+rest_angle_deg = -30.0
+sweep_angle_deg = 50.0
+eos_angle_fraction = 0.92
+shape = { type = "StraightCapsule", length = 76.0, base_radius = 11.0, tip_radius = 6.5 }
+staging = { type = "DedicatedButton", input = "left_flipper" }
+zipper_slide_axis = [12.0, 0.0, 0.0]
+zipper_slide_speed = 240.0
+
+[[flippers]]
+id = "right_flipper"
+coil = "right_flipper_coil"
+eos_switch = "right_flipper_eos"
+collision_layer = 0
+base_position = [353.32, 150.0, 0.0]
+surface_normal = [0.0, 0.0, 1.0]
+rest_angle_deg = 210.0
+sweep_angle_deg = -50.0
+eos_angle_fraction = 0.92
+shape = { type = "StraightCapsule", length = 76.0, base_radius = 11.0, tip_radius = 6.5 }
+staging = { type = "DedicatedButton", input = "right_flipper" }
+zipper_slide_axis = [-12.0, 0.0, 0.0]
+zipper_slide_speed = 240.0
+
+# Upper-left flipper (55 mm) at 10 o'clock, fed by the left orbit's lower
+# end (every plunge and every left-orbit shot comes out above it).
+[[flippers]]
+id = "left_upper"
+coil = "left_upper_coil"
+eos_switch = "left_upper_eos"
+collision_layer = 0
+base_position = [118.0, 552.0, 0.0]
+surface_normal = [0.0, 0.0, 1.0]
+rest_angle_deg = -35.0
+sweep_angle_deg = 50.0
+eos_angle_fraction = 0.92
+shape = { type = "StraightCapsule", length = 55.0, base_radius = 9.0, tip_radius = 5.5 }
+staging = { type = "DedicatedButton", input = "left_upper" }
+
+# --- Wireform ramp and layer transitions -------------------------------------
+
+# Climbs straight up the right side (x = 425) from the entry lane
+# (layout.toml) onto the upper deck. Point heights are the rails' height:
+# with the 13 mm gauge a 27 mm ball rides 11.8 mm above them (contact 29
+# degrees from vertical). The rails start 6 mm below the playfield and rise
+# through the layer-2 floor of the entry lane; they reach the contact height
+# of a ball rolling on that floor (13.6 - 11.8 = 1.8 mm) at y ~662, so the
+# ball rolls onto the rails from below and never strikes a rail end. The
+# last two points (51.5, 51.8 mm), level over the deck, put the ball centre
+# at the deck's rest height (50 + 13.5 mm): it rolls onto the deck instead
+# of being thrown over it.
+[[splines]]
+id = "ramp_wire"
+kind = "wireform"
+layer = 2
+gauge = 13.0
+points = [[425.0, 595.0, -6.0], [425.0, 650.0, 0.0], [425.0, 705.0, 5.0], [425.0, 760.0, 12.0], [425.0, 815.0, 21.0], [425.0, 850.0, 27.5], [425.0, 880.0, 31.5], [425.0, 905.0, 31.8]]
+
+# Side rails of the wire (layer 2, wall_height walls whose bottom edge runs
+# 6 mm below the rails), in line with the entry lane's walls: they keep the
+# ball over the rails from the entry zone to the top.
+[[splines]]
+id = "ramp_side_left"
+kind = "guide"
+layer = 2
+points = [[405.0, 565.0, -12.0], [405.0, 590.0, -12.0], [405.0, 615.0, -9.7], [405.0, 640.0, -7.0], [405.0, 665.0, -4.6], [405.0, 690.0, -2.4], [405.0, 715.0, 0.1], [405.0, 740.0, 3.2], [405.0, 765.0, 6.7], [405.0, 790.0, 10.7], [405.0, 815.0, 15.0], [405.0, 840.0, 19.7], [405.0, 865.0, 23.9], [405.0, 890.0, 25.9]]
+
+[[splines]]
+id = "ramp_side_right"
+kind = "guide"
+layer = 2
+points = [[445.0, 565.0, -12.0], [445.0, 590.0, -12.0], [445.0, 615.0, -9.7], [445.0, 640.0, -7.0], [445.0, 665.0, -4.6], [445.0, 690.0, -2.4], [445.0, 715.0, 0.1], [445.0, 740.0, 3.2], [445.0, 765.0, 6.7], [445.0, 790.0, 10.7], [445.0, 815.0, 15.0], [445.0, 840.0, 19.7], [445.0, 865.0, 23.9], [445.0, 890.0, 25.9]]
+
+# Deck rails (layer 1, on the deck surface at z = 50): left, top and right
+# edges. The lower edge is open.
+[[splines]]
+id = "deck_rail_left"
+kind = "guide"
+layer = 1
+points = [[300.0, 870.0, 30.0], [300.0, 950.0, 30.0], [300.0, 1040.0, 30.0]]
+
+[[splines]]
+id = "deck_rail_top"
+kind = "guide"
+layer = 1
+points = [[300.0, 1040.0, 30.0], [380.0, 1040.0, 30.0], [460.0, 1040.0, 30.0]]
+
+[[splines]]
+id = "deck_rail_right"
+kind = "guide"
+layer = 1
+points = [[460.0, 1040.0, 30.0], [460.0, 950.0, 30.0], [460.0, 870.0, 30.0]]
+
+# The end of the wire: the ball (centre at the deck's rest height there)
+# rolls onto the deck.
+[[layer_transitions]]
+id = "ramp_exit"
+from_layer = 2
+to_layer = 1
+zone = { min = [395.0, 875.0, 30.0], max = [455.0, 950.0, 140.0] }
+
+# A layer-2 ball leaving the entry zone downwards (rolled back down the
+# wire) returns to layer 0 in the entry lane. The zone ends 21 mm below the
+# generated entry zone (y 595..635, from the rails' start along the wire;
+# pin_tablegen refuses an entry zone that overlaps a 2 -> 0 zone), so it
+# never contains a ball that has just been promoted.
+[[layer_transitions]]
+id = "ramp_fallback"
+from_layer = 2
+to_layer = 0
+zone = { min = [375.0, 350.0, -50.0], max = [465.0, 574.0, 150.0] }
+
+# Catch zones beside and below the wire (from the entry zone to the wire's
+# end): a layer-2 ball that gets outside the side rails or sinks below the
+# floor returns to layer 0 at once, so it never falls through the
+# playfield or passes through a wall.
+[[layer_transitions]]
+id = "ramp_catch_left"
+from_layer = 2
+to_layer = 0
+zone = { min = [325.0, 575.0, -50.0], max = [403.0, 890.0, 200.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_right"
+from_layer = 2
+to_layer = 0
+zone = { min = [447.0, 575.0, -50.0], max = [525.0, 890.0, 200.0] }
+
+# Below the floor (x 403..447, y 575..890, z -50..9), in five parts around
+# the generated entry zone (x 405..445, y 595..634.7894, z -6..20), which a
+# 2 -> 0 zone may neither overlap nor touch (pin_tablegen's bounds are
+# inclusive). Each face towards the entry zone is the adjacent f32 just
+# outside it (594.99994 below 595, 634.7895 above 634.7894, 404.99997 below
+# 405, 445.00003 above 445, -6.0000005 below -6), so only a one-ulp sliver
+# with no representable f32 inside is left between them. 634.7895 follows
+# the entry zone's generated y max (from layout.toml): if the layout moves
+# the rails' start, update it (greybox_below_deck_catch_has_no_gaps in
+# pin_tablegen's ramp_entry tests fails until it is). The catches may touch
+# one another.
+[[layer_transitions]]
+id = "ramp_catch_below_mouth"
+from_layer = 2
+to_layer = 0
+zone = { min = [403.0, 575.0, -50.0], max = [447.0, 594.99994, 9.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_below"
+from_layer = 2
+to_layer = 0
+zone = { min = [403.0, 634.7895, -50.0], max = [447.0, 890.0, 9.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_below_side_left"
+from_layer = 2
+to_layer = 0
+zone = { min = [403.0, 575.0, -50.0], max = [404.99997, 890.0, 9.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_below_side_right"
+from_layer = 2
+to_layer = 0
+zone = { min = [445.00003, 575.0, -50.0], max = [447.0, 890.0, 9.0] }
+
+[[layer_transitions]]
+id = "ramp_catch_below_under"
+from_layer = 2
+to_layer = 0
+zone = { min = [403.0, 575.0, -50.0], max = [447.0, 890.0, -6.0000005] }
+
+# Over the deck's lower edge back to the playfield.
+[[layer_transitions]]
+id = "deck_exit"
+from_layer = 1
+to_layer = 0
+zone = { min = [290.0, 800.0, -50.0], max = [470.0, 858.0, 200.0] }
+
+# Safety exits on the railed edges (a ball can only get there over a rail).
+[[layer_transitions]]
+id = "deck_exit_left"
+from_layer = 1
+to_layer = 0
+zone = { min = [240.0, 859.0, -50.0], max = [298.0, 1100.0, 200.0] }
+
+[[layer_transitions]]
+id = "deck_exit_right"
+from_layer = 1
+to_layer = 0
+zone = { min = [462.0, 859.0, -50.0], max = [520.0, 1100.0, 200.0] }
+
+[[layer_transitions]]
+id = "deck_exit_top"
+from_layer = 1
+to_layer = 0
+zone = { min = [299.0, 1042.0, -50.0], max = [461.0, 1100.0, 200.0] }
+
+# --- Ball dispenser ------------------------------------------------------------
+
+# Serves the shooter lane above the plunger tip: four steel balls and the
+# ceramic Powerball (the rules serve the Powerball as ball 2).
+[[dispensers]]
+id = "feed"
+number = 1
+exit_position = [492.0, 160.0, 13.5]
+exit_velocity = [0.0, -0.2, 0.0]
+contents = ["standard_steel", "standard_steel", "standard_steel", "standard_steel", "ceramic_powerball"]
+
+# --- Mechs -------------------------------------------------------------------
+
+[[mechs]]
+id = "sling_left"
+kind = "sling"
+coil = "sling_left_coil"
+switch = "sling_left_sw"
+position = [100.0, 290.0, 0.0]
+angle_deg = 35.0
+
+[[mechs]]
+id = "sling_right"
+kind = "sling"
+coil = "sling_right_coil"
+switch = "sling_right_sw"
+position = [375.0, 290.0, 0.0]
+angle_deg = 145.0
+
+# 3-bumper cluster.
+[[mechs]]
+id = "bumper_1"
+kind = "bumper"
+coil = "bumper_1_coil"
+switch = "bumper_1_ring"
+position = [190.0, 720.0, 0.0]
+
+[[mechs]]
+id = "bumper_2"
+kind = "bumper"
+coil = "bumper_2_coil"
+switch = "bumper_2_ring"
+position = [324.0, 720.0, 0.0]
+
+[[mechs]]
+id = "bumper_3"
+kind = "bumper"
+coil = "bumper_3_coil"
+switch = "bumper_3_ring"
+position = [257.0, 810.0, 0.0]
+
+# Left-orbit spinner in the orbit's left leg (lane centre x ~37, running
+# straight up): flap 34 mm wide across the 40 mm lane.
+[[mechs]]
+id = "spinner"
+kind = "spinner"
+switch = "left_spinner"
+position = [37.0, 745.0, 0.0]
+angle_deg = 90.0
+length = 34.0
+
+# 3-bank of drop targets on the grey box's drop-target spot, in a row
+# along 20 degrees, each facing 290 degrees (a ball rolling down onto
+# their backs rolls off). One reset coil for the bank.
+[[mechs]]
+id = "drop_1"
+kind = "drop_target"
+coil = "drop_reset_coil"
+switch = "drop_1_sw"
+position = [262.0, 425.0, 0.0]
+angle_deg = 290.0
+
+[[mechs]]
+id = "drop_2"
+kind = "drop_target"
+coil = "drop_reset_coil"
+switch = "drop_2_sw"
+position = [253.1, 449.4, 0.0]
+angle_deg = 290.0
+
+[[mechs]]
+id = "drop_3"
+kind = "drop_target"
+coil = "drop_reset_coil"
+switch = "drop_3_sw"
+position = [244.2, 473.9, 0.0]
+angle_deg = 290.0
+
+# Centre lock scoop: captures a ball rolling over (257, 600) on the
+# playfield; the rules hold it 1 s and eject it back into play on layer 0,
+# up the table into the bumper cluster.
+[[mechs]]
+id = "lock_scoop"
+kind = "vuk"
+coil = "lock_scoop_coil"
+switch = "lock_scoop_sw"
+position = [257.0, 600.0, 0.0]
+angle_deg = 135.0
+layer = 0
+radius = 14.0
+exit_layer = 0
+exit_offset = [-30.0, 30.0, 15.0]
+eject_speed_m_s = 0.3
+kick_speed_m_s = 0.9
+
+# Captive Newton ball above the left flipper's ramp shot line (the grey
+# box's, Gate A1 play length).
+[[mechs]]
+id = "newton"
+kind = "newton_ball"
+switch = "newton_sw"
+position = [330.0, 450.0, 0.0]
+angle_deg = 90.0
+length = 50.0
+
+[[mechs]]
+id = "plunger"
+kind = "plunger"
+coil = "plunger_coil"
+switch = "plunger_tip"
+position = [492.0, 50.0, 0.0]
+angle_deg = 90.0
+auto_pull = 0.9
+
+# --- Coverage declarations (2.9 soak harness, Gate A2) ---------------------------
+
+# Up the left orbit through the spinner and round the top.
+[[shots]]
+id = "left_orbit"
+sequence = ["left_spinner", "orbit_top"]
+window_ms = 3000
+
+# Up the right orbit and through the magnet pair in the shooter-lane top.
+[[shots]]
+id = "right_orbit"
+sequence = ["right_orbit_entry", "magnet_opto"]
+window_ms = 2000
+
+# The upper-right cross-shot jackpot ramp.
+[[shots]]
+id = "cross_ramp"
+sequence = ["ramp_entry", "ramp_made"]
+window_ms = 3000
+
+# All three drop targets (a bank stays down until the rules reset it, so
+# the window spans a ball's worth of play).
+# Known limitation: the pin_sim monitor currently keeps sequence progress
+# across a ball drain, so a bank split over two balls inside the window can
+# be credited. Clearing progress on drain/reset is deferred to the Gate A2
+# harness work (queue: docs/queue/6.1.md).
+[[shots]]
+id = "drop_bank"
+sequence = ["drop_1_sw", "drop_2_sw", "drop_3_sw"]
+window_ms = 60000
+
+[[shots]]
+id = "lock_scoop"
+sequence = ["lock_lane", "lock_scoop_sw"]
+window_ms = 1500
+
+[[modes]]
+id = "powerball_mania"
+start_scene = "scene_powerball_mania"
+
+[[modes]]
+id = "combo_chain"
+start_scene = "scene_combo_chain"
+
+# --- Sounds and display scenes -------------------------------------------------
+
+[[sounds]]
+id = "sfx_bumper"
+file = "audio/sfx_bumper.wav"
+bus = "sfx"
+
+[[sounds]]
+id = "sfx_sling"
+file = "audio/sfx_sling.wav"
+bus = "sfx"
+
+[[scenes]]
+id = "scene_attract"
+file = "display/scene_attract.toml"
+
+[[scenes]]
+id = "scene_score"
+file = "display/scene_score.toml"
+
+[[scenes]]
+id = "scene_game_over"
+file = "display/scene_game_over.toml"
+
+[[scenes]]
+id = "scene_powerball_mania"
+file = "display/scene_powerball_mania.toml"
+
+[[scenes]]
+id = "scene_combo_chain"
+file = "display/scene_combo_chain.toml"
+
+[[scenes]]
+id = "scene_overdrive"
+file = "display/scene_overdrive.toml"
+
+[[scenes]]
+id = "scene_bonus"
+file = "display/scene_bonus.toml"
+
+[[scenes]]
+id = "scene_high_score"
+file = "display/scene_high_score.toml"
+
+[[scenes]]
+id = "scene_skill_shot"
+file = "display/scene_skill_shot.toml"
+
+[[scenes]]
+id = "scene_firewall_save"
+file = "display/scene_firewall_save.toml"
+
+[[scenes]]
+id = "scene_apex_jackpot"
+file = "display/scene_apex_jackpot.toml"
+
+# Rule state the host can read (persist_get / Simulation::persist). The
+# `mode:<id>` keys are the soak's mode-start signal (DECISIONS "2.9 —
+# mode-start signal"): rules.lua adds 1 each time the mode starts.
+[persist]
+keys = ["ball", "game_state", "high_score", "games_played", "firewall_save_count", "apex_jackpot_count", "skill_shot_count", "mode:powerball_mania", "mode:combo_chain", "combo_level", "overdrive_ready", "last_bonus"]
