@@ -131,7 +131,7 @@ line at expert ([6.1-expert-orbits]) is printed for every table.
 
 **Alternatives:** None considered.
 
-## gate-a2-runner: A2.4c sampled bot-game replay gates (supersedes the A2.4 section)
+## gate-a2-runner — A2.4c sampled bot-game replay gates (supersedes the A2.4 section)
 
 **Decision:** PLAN.md's "deterministic replay of 20 sampled games per table" is met by real
 input replay, and it gates. The STANDARD-skill soak (novice and expert are unchanged) runs with
