@@ -7,9 +7,9 @@ did not amend PLAN.md, so pin_sim now records the effective input of
 selected soak games and replays them without the bot. Brief B gates the
 runner on it.
 
-## gate-a2-cr1: bot-game recording format and hook point
+## gate-a2-cr1 — bot-game recording format and hook point
 
-**Decision.** A new file format and type, `pin_sim::replay::GameRecording`
+**Decision:** A new file format and type, `pin_sim::replay::GameRecording`
 (`crates/pin_sim/src/replay/game.rs`), holds what the bot *applied*, not
 input events: a stream of `(tick, GameOp)` where `GameOp` is
 `SetSwitch { input: CabinetInput, closed }`, `ReleaseSwitch { input }` or
@@ -48,7 +48,7 @@ contract does not define it; refusing is the conservative reading).
 Recordings and `recorded_games.tsv` are written after the reports, before
 the pass/fail and `--gate a1` verdicts, so they exist when the soak fails.
 
-**Rationale.** The fact the brief flags holds: the bot does not feed
+**Rationale:** The fact the brief flags holds: the bot does not feed
 `InputEvent`s. `set_switch` sets `forced_mask`/`forced_val` and calls
 `update_switches(self.tick)` immediately, between ticks; the override
 persists until `release_switch` and takes precedence over the cabinet
@@ -68,7 +68,7 @@ equality of state hash, score and ticks for all three skills, two seeds
 and 1/2 threads, through the library and the CLI, and that dropping or
 shifting one operation changes the hash.
 
-**Alternatives.** (1) Reuse `Recording` with button/axis events: not exact
+**Alternatives:** (1) Reuse `Recording` with button/axis events: not exact
 (above). (2) Make the bot feed `InputEvent`s: changes bot behaviour, every
 soak hash and Gate A1 evidence; out of scope. (3) A `record: Option<Vec<_>>`
 field inside `Bot`: a per-tick branch in every soak and a `Bot` that owns
