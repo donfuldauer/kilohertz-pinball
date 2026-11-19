@@ -410,7 +410,7 @@ fn segment_closest(q: DVec2, a: DVec2, b: DVec2) -> DVec2 {
 }
 
 /// Distance from `q` to the segment `a`–`b`.
-fn segment_distance(q: DVec2, a: DVec2, b: DVec2) -> f64 {
+pub(super) fn segment_distance(q: DVec2, a: DVec2, b: DVec2) -> f64 {
     q.distance(segment_closest(q, a, b))
 }
 

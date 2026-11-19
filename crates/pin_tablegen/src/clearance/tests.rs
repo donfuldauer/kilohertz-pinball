@@ -579,7 +579,7 @@ fn square_sweep_has_one_transition_at_the_ball_diameter() {
 
 mod inscribed_circle {
     use super::super::geom::Polygon;
-    use super::super::inscribed::largest_inscribed_diameter;
+    use super::super::inscribed::{Boundary, largest_inscribed_diameter};
     use glam::DVec2;
     use proptest::prelude::*;
 
@@ -657,6 +657,81 @@ mod inscribed_circle {
         // A needle 1 µm thin and a metre long starts from bounded cells.
         let d = largest_inscribed_diameter(&rect(0.0, 0.0, 1.0, 1.0e-6), PREC);
         assert!((0.0..=1.0e-6).contains(&d), "{d}");
+    }
+
+    /// CodeRabbit 4622606015: the inscribed circle sees the even-odd
+    /// region's boundary. A 40 mm square whose outline runs up its middle
+    /// and back (a retraced edge) holds a 40 mm circle, not 20 mm.
+    #[test]
+    fn retraced_edges_are_no_boundary() {
+        let spike = poly(&[
+            [0.0, 0.0],
+            [0.02, 0.0],
+            [0.02, 0.04],
+            [0.02, 0.0],
+            [0.04, 0.0],
+            [0.04, 0.04],
+            [0.0, 0.04],
+        ]);
+        let d = largest_inscribed_diameter(&spike, PREC);
+        assert!((0.04 - TOL..=0.04 + 1e-12).contains(&d), "{d}");
+        // Partial overlaps: up 30 mm, down 20 mm, down the last 10 mm; the
+        // first edge is split at 10 mm and every piece is covered twice.
+        let partial = poly(&[
+            [0.0, 0.0],
+            [0.02, 0.0],
+            [0.02, 0.03],
+            [0.02, 0.01],
+            [0.02, 0.0],
+            [0.04, 0.0],
+            [0.04, 0.04],
+            [0.0, 0.04],
+        ]);
+        let d = largest_inscribed_diameter(&partial, PREC);
+        assert!((0.04 - TOL..=0.04 + 1e-12).contains(&d), "{d}");
+        // The retraced pieces are gone, the square's sides stay.
+        let b = Boundary::new(&partial);
+        assert!(
+            b.segments()
+                .iter()
+                .all(|(a, b)| (a.x - 0.02).abs() > 1e-12 || (b.x - 0.02).abs() > 1e-12),
+            "{:?}",
+            b.segments()
+        );
+    }
+
+    /// Odd multiplicity stays: a triangle whose base is traced three times
+    /// keeps one base, and the hole of a frame (a real boundary, reached
+    /// over a retraced bridge) still limits the circle.
+    #[test]
+    fn odd_multiplicity_and_holes_stay_boundary() {
+        let tri = poly(&[[0.0, 0.0], [1.0, 0.0], [0.0, 0.0], [1.0, 0.0], [0.5, 1.0]]);
+        assert_eq!(Boundary::new(&tri).segments().len(), 3);
+        let once = poly(&[[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]]);
+        let (a, b) = (
+            largest_inscribed_diameter(&tri, PREC),
+            largest_inscribed_diameter(&once, PREC),
+        );
+        assert!((a - b).abs() <= TOL, "{a} vs {b}");
+        // 100 mm square, 60 mm square hole, bridge (0,0)-(20,20) mm traced
+        // there and back: the 20 mm wide frame, not the 100 mm square.
+        let frame = poly(&[
+            [0.0, 0.0],
+            [0.1, 0.0],
+            [0.1, 0.1],
+            [0.0, 0.1],
+            [0.0, 0.0],
+            [0.02, 0.02],
+            [0.02, 0.08],
+            [0.08, 0.08],
+            [0.08, 0.02],
+            [0.02, 0.02],
+        ]);
+        let segs = Boundary::new(&frame).segments().len();
+        assert_eq!(segs, 8, "outer 4 + hole 4, bridge cancelled");
+        let d = largest_inscribed_diameter(&frame, PREC);
+        let want = 0.02 * core::f64::consts::SQRT_2 / (1.0 + core::f64::consts::SQRT_2) * 2.0;
+        assert!(d <= want + 1e-12 && d >= want - TOL, "{d} vs {want}");
     }
 
     proptest! {
@@ -780,4 +855,31 @@ fn backbox_node_without_a_backbox_layer_is_an_error() {
         "{:#?}",
         r.errors
     );
+}
+
+/// CodeRabbit 4622606015: a retraced edge (covered twice, so it cancels
+/// under the even-odd rule) is no boundary. The outline is a 40 mm square
+/// with its middle vertical traced down and back up; a 27 mm ball fits.
+#[test]
+fn retraced_edge_does_not_shrink_a_restrict_area() {
+    use backbox_bundle::*;
+    let b = bundle(&[MINI], vec![], false);
+    let vfs = b.vfs();
+    let mut table = load_table(&vfs).unwrap();
+    let scene = load_gltf(&vfs, "playfield.glb").unwrap();
+    let area: Vec<[f32; 2]> = [
+        [0.0, 0.0],
+        [20.0, 0.0],
+        [20.0, 40.0],
+        [20.0, 0.0],
+        [40.0, 0.0],
+        [40.0, 40.0],
+        [0.0, 40.0],
+    ]
+    .iter()
+    .map(|&[x, y]| [200.0 + x, 300.0 + y])
+    .collect();
+    table.manifest.balls.restrict = vec![restrict("standard_steel", &[0], area)];
+    let r = validate_clearance(&table, &scene);
+    assert!(restriction_errors(&r).is_empty(), "{:#?}", r.errors);
 }
