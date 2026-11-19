@@ -36,6 +36,21 @@
 //!   it hit in the last 60 s with their counts (most hits first, ties to the
 //!   lowest id). A switch closing is credited to the nearest ball when the
 //!   switch has a position, else to every ball on the table.
+//! * **Long ball:** a ball past the age limit is not reported at once. The
+//!   finding it would raise (same tick, subject and detail) is held for its
+//!   ball slot together with a verdict on the 60 s window at that tick:
+//!   *broad* when at least [`LONG_BALL_MIN_SWITCHES`] distinct coverage
+//!   switches were credited and the two most-hit of them hold under
+//!   [`LONG_BALL_TOP2_MAX_PERCENT`] % of the window's hits. When the ball
+//!   later drains naturally (it vanished and
+//!   [`SimCounters::balls_escaped`] did not rise for it) after a broad
+//!   window, the held finding is raised as [`FindingKind::LongBall`]
+//!   (reported, not failing) with its original tick and a drain suffix on
+//!   the detail. In every other case (narrow window, still on the table at
+//!   the cap or at [`finish`](GameMonitor::finish), escaped, non-finite or
+//!   reported stuck) it is raised as [`FindingKind::EndlessBall`] unchanged,
+//!   at the moment that case is seen. Findings are appended in resolution
+//!   order and keep their original tick.
 //! * **Escaped:** a ball outside the simulation's bounds (the collider
 //!   bounds plus [`BOUNDS_MARGIN_M`](crate::load::BOUNDS_MARGIN_M), which
 //!   includes "below the floor"), seen directly, or removed by the
@@ -53,6 +68,8 @@
 //! finding or the time of a ball that left the table.
 //!
 //! [`SimCounters::balls_escaped`]: crate::SimCounters::balls_escaped
+
+use core::fmt::Write as _;
 
 use arrayvec::ArrayVec;
 use glam::Vec3;
@@ -90,6 +107,16 @@ pub const HIT_BUCKET_TICKS: u64 = 1_000;
 /// Buckets in the endless-ball window: the current second and the 59 before
 /// it, so the window covers the last 59 to 60 s.
 pub const HIT_BUCKETS: usize = 60;
+
+/// Fewest distinct coverage switches credited in the 60 s window at the age
+/// limit for a ball's play to count as broad (see the module docs,
+/// "Long ball"). At exactly this many the window may still be broad.
+pub const LONG_BALL_MIN_SWITCHES: usize = 8;
+
+/// The two most-hit switches of a broad window hold strictly less than this
+/// share of the window's hits, percent (compared in integers:
+/// `100 * top_two < LONG_BALL_TOP2_MAX_PERCENT * total`).
+pub const LONG_BALL_TOP2_MAX_PERCENT: u64 = 50;
 
 /// Whether every component of `b` is finite.
 #[must_use]
@@ -134,6 +161,19 @@ struct Track {
     endless: bool,
     reported_escape: bool,
     reported_nonfinite: bool,
+}
+
+/// An endless-ball finding held until the ball's fate is known (see the
+/// module docs, "Long ball").
+#[derive(Clone, Debug)]
+struct Pending {
+    /// The finding as raised at the age limit (kind EndlessBall).
+    finding: Finding,
+    /// The 60 s window verdict at the limit.
+    broad: bool,
+    /// The window's hit statistics at the limit: distinct switches, hits
+    /// of the two most-hit switches, all hits.
+    stats: (usize, u64, u64),
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -194,6 +234,8 @@ pub struct GameMonitor<'t> {
     /// The second (tick / [`HIT_BUCKET_TICKS`]) each slot's window was last
     /// advanced to.
     window_sec: [u64; MAX_BALLS],
+    /// Held endless-ball findings per ball slot.
+    pending: [Option<Pending>; MAX_BALLS],
 }
 
 fn bit(bits: &[u64; 4], n: usize) -> bool {
@@ -248,6 +290,7 @@ impl<'t> GameMonitor<'t> {
             hits: vec![0; MAX_BALLS * hit_row],
             window: vec![0; MAX_BALLS * HIT_BUCKETS * hit_row],
             window_sec: [0; MAX_BALLS],
+            pending: std::array::from_fn(|_| None),
         }
     }
 
@@ -260,7 +303,8 @@ impl<'t> GameMonitor<'t> {
         self
     }
 
-    /// Findings so far.
+    /// Findings so far. An endless-ball finding held until its ball's fate
+    /// is known (see the module docs, "Long ball") is not among them yet.
     #[must_use]
     pub fn findings(&self) -> &[Finding] {
         &self.findings
@@ -326,11 +370,11 @@ impl<'t> GameMonitor<'t> {
             b.0.total_cmp(&a.0)
                 .then(a.1.handle.slot().cmp(&b.1.handle.slot()))
         });
-        for (_, t) in vanished {
-            if new_escapes == 0 {
-                break;
-            }
+        // The first `new_escapes` vanished balls escaped; the rest drained.
+        let escaped_n = new_escapes.min(vanished.len());
+        for &(_, t) in &vanished[..escaped_n] {
             new_escapes -= 1;
+            self.flush_pending(usize::from(t.handle.slot()));
             if t.reported_escape {
                 continue;
             }
@@ -358,6 +402,9 @@ impl<'t> GameMonitor<'t> {
                 "a ball escaped the table bounds but was never tracked (it left between monitor observations)".to_string(),
             );
         }
+        for &(_, t) in &vanished[escaped_n..] {
+            self.resolve_drained(usize::from(t.handle.slot()), tick, t.first_tick);
+        }
 
         for h in handles {
             let Some(b) = sim.ball(h) else { continue };
@@ -365,6 +412,7 @@ impl<'t> GameMonitor<'t> {
             let mut t = match self.tracks[slot] {
                 Some(t) if t.handle == h => t,
                 _ => {
+                    self.flush_pending(slot);
                     self.reset_hits(slot, tick);
                     Track {
                         handle: h,
@@ -385,6 +433,7 @@ impl<'t> GameMonitor<'t> {
             if !ball_is_finite(&b) {
                 if !t.reported_nonfinite {
                     t.reported_nonfinite = true;
+                    self.flush_pending(slot);
                     self.push(
                         FindingKind::NonFinite,
                         format!("ball slot {}", h.slot()),
@@ -394,6 +443,7 @@ impl<'t> GameMonitor<'t> {
                 }
             } else if outside_distance(bounds, p) > 0.0 && !t.reported_escape {
                 t.reported_escape = true;
+                self.flush_pending(slot);
                 let subject = self.info.subject_at(p);
                 self.push(
                     FindingKind::EscapedBall,
@@ -444,6 +494,7 @@ impl<'t> GameMonitor<'t> {
                         speed
                     )
                 };
+                self.flush_pending(slot);
                 self.push(FindingKind::StuckBall, subject, tick, detail);
             }
             self.tracks[slot] = Some(t);
@@ -630,8 +681,9 @@ impl<'t> GameMonitor<'t> {
         }
     }
 
-    /// Raises [`FindingKind::EndlessBall`] for every ball older than the
-    /// endless limit.
+    /// Holds an endless-ball finding for every ball older than the endless
+    /// limit (see the module docs, "Long ball"); a ball already reported
+    /// escaped or non-finite gets its EndlessBall at once.
     fn observe_endless(&mut self, tick: u64) {
         for slot in 0..MAX_BALLS {
             if let Some(t) = self.tracks[slot]
@@ -643,26 +695,67 @@ impl<'t> GameMonitor<'t> {
                     "on the table longer than the {} ms limit",
                     self.endless_ticks
                 );
-                self.raise_endless(slot, tick, &why);
+                if let Some(p) = self.endless_finding(slot, tick, &why) {
+                    if t.reported_escape || t.reported_nonfinite {
+                        self.findings.push(p.finding);
+                    } else {
+                        self.pending[slot] = Some(p);
+                    }
+                }
             }
         }
     }
 
+    /// Raises the held finding of slot `slot`, if any, as
+    /// [`FindingKind::EndlessBall`] unchanged.
+    fn flush_pending(&mut self, slot: usize) {
+        if let Some(p) = self.pending[slot].take() {
+            self.findings.push(p.finding);
+        }
+    }
+
+    /// Resolves the held finding of slot `slot`, whose ball (on the table
+    /// since `first_tick`) drained naturally at `tick`: a
+    /// [`FindingKind::LongBall`] after a broad window, else
+    /// [`FindingKind::EndlessBall`] unchanged.
+    fn resolve_drained(&mut self, slot: usize, tick: u64, first_tick: u64) {
+        let Some(p) = self.pending[slot].take() else {
+            return;
+        };
+        let mut f = p.finding;
+        if p.broad {
+            let (distinct, top2, total) = p.stats;
+            let age = tick.saturating_sub(first_tick);
+            f.kind = FindingKind::LongBall;
+            let _ = write!(
+                f.detail,
+                "; drained naturally at tick {tick} after {}.{:03} s on the table (broad play at the limit: {distinct} switches, the top two {top2} of {total} hits)",
+                age / 1000,
+                age % 1000
+            );
+        }
+        self.findings.push(f);
+    }
+
     /// Raises [`FindingKind::EndlessBall`] for every ball still on the
-    /// table that has none yet and is not reported stuck. The soak calls
-    /// this when it stops a game at `max_game_ticks`.
+    /// table that has none yet and is not reported stuck, and raises every
+    /// held finding as EndlessBall unchanged. The soak calls this when it
+    /// stops a game at `max_game_ticks`.
     pub fn end_at_cap(&mut self, sim: &Simulation) {
         let tick = sim.tick();
         for slot in 0..MAX_BALLS {
-            if let Some(t) = self.tracks[slot]
+            if self.pending[slot].is_some() {
+                self.flush_pending(slot);
+            } else if let Some(t) = self.tracks[slot]
                 && !t.endless
                 && !t.stuck
-            {
-                self.raise_endless(
+                && let Some(p) = self.endless_finding(
                     slot,
                     tick,
                     "still in play when the game reached max_game_ticks",
-                );
+                )
+            {
+                self.findings.push(p.finding);
             }
         }
     }
@@ -689,10 +782,21 @@ impl<'t> GameMonitor<'t> {
             .map_or_else(|| format!("switch {sw}"), |s| s.name.clone())
     }
 
-    fn raise_endless(&mut self, slot: usize, tick: u64, why: &str) {
-        let Some(mut t) = self.tracks[slot] else {
-            return;
-        };
+    /// Whether a window with hits `recent` (one hit row) is broad, with its
+    /// statistics: distinct switches, hits of the two most-hit, all hits.
+    fn window_verdict(recent: &[(usize, u64)]) -> (bool, (usize, u64, u64)) {
+        let distinct = recent.len();
+        let top2: u64 = recent.iter().take(2).map(|&(_, n)| n).sum();
+        let total: u64 = recent.iter().map(|&(_, n)| n).sum();
+        let broad =
+            distinct >= LONG_BALL_MIN_SWITCHES && 100 * top2 < LONG_BALL_TOP2_MAX_PERCENT * total;
+        (broad, (distinct, top2, total))
+    }
+
+    /// Marks slot `slot`'s ball endless and builds its EndlessBall finding
+    /// with the window verdict at `tick`.
+    fn endless_finding(&mut self, slot: usize, tick: u64, why: &str) -> Option<Pending> {
+        let mut t = self.tracks[slot]?;
         t.endless = true;
         self.tracks[slot] = Some(t);
         self.advance_window(slot, tick / HIT_BUCKET_TICKS);
@@ -714,6 +818,7 @@ impl<'t> GameMonitor<'t> {
             .first()
             .map_or_else(|| self.info.subject_at(p), |&(sw, _)| self.switch_label(sw));
         let recent = self.ranked(&recent);
+        let (broad, stats) = Self::window_verdict(&recent);
         let list = if recent.is_empty() {
             "none".to_owned()
         } else {
@@ -724,16 +829,21 @@ impl<'t> GameMonitor<'t> {
                 .join(", ")
         };
         let age = tick.saturating_sub(t.first_tick);
-        self.push(
-            FindingKind::EndlessBall,
-            subject,
-            tick,
-            format!(
-                "ball in slot {} {why}: {age} ms on the table, last at {}; switches hit in the last 60 s: {list}",
-                t.handle.slot(),
-                fmt_mm(p)
-            ),
-        );
+        Some(Pending {
+            finding: Finding {
+                kind: FindingKind::EndlessBall,
+                subject,
+                game: self.game,
+                tick,
+                detail: format!(
+                    "ball in slot {} {why}: {age} ms on the table, last at {}; switches hit in the last 60 s: {list}",
+                    t.handle.slot(),
+                    fmt_mm(p)
+                ),
+            },
+            broad,
+            stats,
+        })
     }
 
     fn observe_modes(&mut self, sim: &Simulation) {
@@ -771,12 +881,16 @@ impl<'t> GameMonitor<'t> {
         );
     }
 
-    /// Ends the game: queue-overflow findings, switch hits, counters, and
-    /// the observed ages of the balls still on the table (censored ball
-    /// times).
+    /// Ends the game: every held endless-ball finding raised as
+    /// [`FindingKind::EndlessBall`] (no game ends with one unresolved),
+    /// queue-overflow findings, switch hits, counters, and the observed ages
+    /// of the balls still on the table (censored ball times).
     #[must_use]
     pub fn finish(mut self, sim: &Simulation) -> GameOutcome {
         let tick = sim.tick();
+        for slot in 0..MAX_BALLS {
+            self.flush_pending(slot);
+        }
         let c = sim.counters();
         let overflows = sim.script_queue_overflows();
         for (subject, n) in [
@@ -914,6 +1028,39 @@ mod tests {
         assert!(flipper_is_finite(&f));
         f.zipper_offset_m = f32::NAN;
         assert!(!flipper_is_finite(&f));
+    }
+
+    proptest::proptest! {
+        /// The broad-window verdict is exactly "at least 8 distinct
+        /// switches and the top two strictly under half of all hits".
+        #[test]
+        fn window_verdict_matches_the_rule(
+            mut counts in proptest::collection::vec(1u64..5_000, 0..40)
+        ) {
+            counts.sort_unstable_by(|a, b| b.cmp(a));
+            let recent: Vec<(usize, u64)> = counts.iter().copied().enumerate().collect();
+            let (broad, (distinct, top2, total)) = GameMonitor::window_verdict(&recent);
+            let t: u64 = counts.iter().sum();
+            let t2: u64 = counts.iter().take(2).sum();
+            proptest::prop_assert_eq!((distinct, top2, total), (counts.len(), t2, t));
+            let share = if t == 0 { 1.0 } else { t2 as f64 / t as f64 };
+            proptest::prop_assert_eq!(broad, counts.len() >= 8 && share < 0.5);
+        }
+    }
+
+    #[test]
+    fn window_verdict_boundaries() {
+        // 8 switches, top two exactly 50 %: narrow; one more hit: broad.
+        let exact = [4u64, 4, 2, 2, 1, 1, 1, 1];
+        let r: Vec<(usize, u64)> = exact.iter().copied().enumerate().collect();
+        assert!(!GameMonitor::window_verdict(&r).0);
+        let mut more = r.clone();
+        more[7].1 = 2;
+        assert!(GameMonitor::window_verdict(&more).0);
+        // 7 switches, evenly hit: narrow.
+        let seven: Vec<(usize, u64)> = (0..7).map(|i| (i, 5)).collect();
+        assert!(!GameMonitor::window_verdict(&seven).0);
+        assert!(!GameMonitor::window_verdict(&[]).0);
     }
 
     #[test]

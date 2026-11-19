@@ -53,6 +53,10 @@ MEDIAN_MAX_TICKS = 360_000
 TICKS_PER_S = 1000.0
 # FindingKind::fails_soak, grouped by criterion.
 BALL_KINDS = ("StuckBall", "EndlessBall", "EscapedBall", "NonFinite")
+# FindingKind::LongBall: a ball past the 300 s endless limit that later
+# drained naturally after broad play. Reported, never failing
+# (docs/decisions/2026-11-19-fix-a2-longball.md).
+LONG_BALL_KINDS = ("LongBall",)
 SCRIPT_KINDS = ("ScriptError",)
 QUEUE_KINDS = ("QueueOverflow",)
 THIN_SHOTS = 3
@@ -157,6 +161,10 @@ def judge_soundness(v, t, skill, r):
     ok = all(n == 0 for n in ball.values()) and esc == 0
     v.add("PASS" if ok else "FAIL", t, "A2.1a zero stuck/endless/escaped/non-finite balls [%s]" % skill,
           "%s, counters.balls_escaped=%d" % (fmt_counts(ball), esc))
+    lb = kind_count(r, LONG_BALL_KINDS)
+    lb_subjects = subjects(r, "LongBall")
+    v.add("REPORT", t, "A2.1a long balls (>300 s, drained, broad play; reported, not failing) [%s]" % skill,
+          fmt_counts(lb) + ((" (%s)" % ", ".join(lb_subjects)) if lb_subjects else ""))
     se = kind_count(r, SCRIPT_KINDS)
     faults = as_int(c.get("script_faults"), -1)
     ok = se["ScriptError"] == 0 and faults == 0
