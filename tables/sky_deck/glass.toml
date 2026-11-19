@@ -1,0 +1,13 @@
+# Sky Deck playfield glass. pin_sim reads this optional bundle file
+# (pin_core GlassManifest, CR-007); height is the glass underside above the
+# playfield surface, mm, and must be at least the table geometry's max z
+# (here the upper deck, the Sky Bridge and the flipper on it, z 65 mm).
+#
+# Seal rule: a wall seals against the glass only if glass underside minus
+# wall top is under one ball diameter (27 mm). Here 122 - 100 (layout.toml
+# wall_height) = 22 mm, so a ball in the air cannot cross a wall or post.
+# A ball resting on the upper deck (z 65) has its top at 92 mm, 30 mm under
+# the glass, so it moves freely; it cannot leave the deck over a deck rail
+# (guides are wall_height tall from the deck surface, through the glass).
+schema_version = 1
+height = 122.0

@@ -1,0 +1,46 @@
+# Mode-start scene of the Sky Deck "night_overdrive" mode (5.3 placeholder
+# format, like the grey-box scene_powerball_mania.toml). UV bars blink top
+# and bottom, "NIGHT" slides in, "OVERDRIVE" flashes.
+schema_version = 1
+duration_ms = 3000
+background = "#05001a"
+
+[[layers]]
+kind = "rect"
+x = 0.0
+y = 0.0
+w = 1.0
+h = 0.07
+color = "#7c4dff"
+blink_ms = 100
+
+[[layers]]
+kind = "rect"
+x = 0.0
+y = 1.0
+valign = "bottom"
+w = 1.0
+h = 0.07
+color = "#7c4dff"
+blink_ms = 100
+
+[[layers]]
+kind = "text"
+text = "NIGHT"
+x = 0.5
+y = 0.34
+size = 0.5
+color = "#b388ff"
+from = [1.6, 0.34]
+move_ms = 400
+
+[[layers]]
+kind = "text"
+text = "OVERDRIVE"
+x = 0.5
+y = 0.76
+size = 0.3
+color = "#40ffff"
+start_ms = 400
+blink_ms = 150
+fade_out_ms = 400
