@@ -25,3 +25,4 @@ config.toml.local
 tools/dof_bridge/**/bin/
 tools/dof_bridge/**/obj/
 tools/dof_bridge/**/TestResults/
+__pycache__/
