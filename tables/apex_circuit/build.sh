@@ -21,6 +21,14 @@ cargo run -q -p pin_tablegen -- "$src/layout.toml" --table "$src/table.toml" --o
 mkdir -p "$out/display"
 cp "$src/rules.lua" "$src/backglass.toml" "$src/layout.toml" "$src/glass.toml" "$out/"
 cp "$src"/display/*.toml "$out/display/"
+# The Wasm port of the rules (Subphase 6.3) rides along when it is
+# committed; table.toml still selects rules.lua, so it is used only by a
+# bundle whose script_entry names rules.wasm.
+if [ -f "$src/rules.wasm" ]; then
+  cp "$src/rules.wasm" "$out/"
+else
+  rm -f "$out/rules.wasm"
+fi
 cargo run -q -p pin_assetgen -- --title "Apex Circuit" --palette "#0b132b,#1c2541,#ff6b35" --out "$out"
 cargo run -q -p pin_tablegen -- validate "$out"
 echo "apex_circuit bundle: $out"
