@@ -74,7 +74,7 @@ fn arc(cx: f64, cy: f64, r: f64, a0: f64, a1: f64, n: usize, rise: f64) -> Vec<[
         .map(|i| {
             let f = i as f64 / n as f64;
             let a = a0 + (a1 - a0) * f;
-            [cx + r * a.cos(), cy + r * a.sin(), rise * f]
+            [cx + r * libm::cos(a), cy + r * libm::sin(a), rise * f]
         })
         .collect()
 }
