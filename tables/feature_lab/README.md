@@ -112,7 +112,7 @@ tilt.
   hole (a flipped ball that drops into the entry channel) to the
   playfield, also when it drifts towards the player or the back as it
   falls (the zone spans y 780..990). A second zone, `bb_catch_left` (x
-  44..59, y 895..935, z 25..96), catches a ball thrown left off the top of
+  45..59, y 895..935, z 25..96), catches a ball thrown left off the top of
   the backbox's walls[1] that falls through the hole left of `bb_catch`,
   and returns it into the orbit lane (never into the closed strip between
   the cabinet wall and the orbit's outer rail).
