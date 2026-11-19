@@ -224,18 +224,14 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
             }
         }
         for (mesh, e) in worst {
-            let node = w.scene.meshes.get(mesh).map_or("?", |m| m.name.as_str());
-            let under = w
-                .scene
-                .meshes
-                .get(e.support_mesh)
-                .map_or("?", |m| m.name.as_str());
+            let (file, local, node) = w.mesh_ref(mesh);
+            let (_, _, under) = w.mesh_ref(e.support_mesh);
             sink.error(Finding {
                 feature: Feature::DeckHeadroom,
                 name: node,
                 ball: &ball.name,
-                file: w.glb,
-                path: format!("meshes[{mesh}]"),
+                file,
+                path: format!("meshes[{local}]"),
                 required_m: need,
                 actual_m: e.gap,
                 message: format!(
