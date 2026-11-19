@@ -31,7 +31,9 @@ pub mod report;
 pub mod soak;
 pub mod table;
 
-pub use bot::{Bot, BotConfig, BotStats, FlipperModel, NudgeConfig, SkillLevel, SkillParams};
+pub use bot::{
+    Bot, BotConfig, BotStats, FlipperModel, NudgeConfig, ReactionDraw, SkillLevel, SkillParams,
+};
 pub use monitor::{GameMonitor, GameOutcome};
 pub use report::{
     CheckStatus, CounterTotals, Distribution, Finding, FindingKind, GATE_A1_GAMES, GameEnd,
