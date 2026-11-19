@@ -140,12 +140,20 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           if [ ${#files[@]} -eq 0 ]; then
             echo "::warning title=soak cross-OS::no SOAK_HASH lines were collected"
-            exit 0
           fi
+          # An artifact is created even when a platform printed no SOAK_HASH line.
+          for f in "${files[@]}"; do
+            if ! grep -qE '^SOAK_HASH ' "$f"; then
+              echo "::warning title=soak cross-OS empty artifact::$(basename "$f") has no SOAK_HASH lines"
+              echo "Empty artifact: $(basename "$f")" >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
           # One hash per table and OS (every run on one OS already matched there).
-          cat "${files[@]}" \
+          cat /dev/null "${files[@]}" \
             | sed -E 's/^SOAK_HASH table=([^ ]+) os=([^ ]+) arch=([^ ]+) ticks=[0-9]+ hash=([0-9a-f]+).*/\1 \2 \3 \4/' \
             | sort -u > uniq.txt
+          touch uniq.txt
           while read -r table os arch hash; do
             echo "| $table | $os | $arch | \`$hash\` |" >> "$GITHUB_STEP_SUMMARY"
           done < uniq.txt
@@ -158,4 +166,20 @@ jobs:
               echo "Divergence on $table: $detail" >> "$GITHUB_STEP_SUMMARY"
             fi
           done
+          # Every expected (table, os) pair (os = Rust std::env::consts::OS of each matrix leg).
+          missing=""
+          for table in apex_circuit sky_deck feature_lab; do
+            for os in linux windows macos; do
+              if ! awk -v t="$table" -v o="$os" '$1 == t && $2 == o {f=1} END {exit !f}' uniq.txt; then
+                echo "::warning title=soak cross-OS missing record::no SOAK_HASH for table=$table os=$os"
+                missing="$missing $table/$os"
+              fi
+            done
+          done
+          if [ -n "$missing" ]; then
+            {
+              echo ""
+              echo "Missing records (table/os):$missing"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           exit 0
