@@ -394,6 +394,15 @@ impl CommandQueueOverflows for IdleSim {
     }
 }
 
+/// A boxed step publishes its contents' count, so the app can profile the
+/// `Box<TableSim>` it loads on a big stack without moving the simulation
+/// out of the box.
+impl<T: CommandQueueOverflows + ?Sized> CommandQueueOverflows for Box<T> {
+    fn command_queue_overflows(&self) -> u64 {
+        (**self).command_queue_overflows()
+    }
+}
+
 /// A [`SimStep`] wrapper that profiles every tick: it reads `clock` (ns, the
 /// SDL event timestamp clock, see [`input_latency`]) before and after the
 /// inner step, records the tick time and the latency of the tick's

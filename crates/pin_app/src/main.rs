@@ -18,6 +18,13 @@
 //!   created then, audio goes to the null sink), `--vrr` requests
 //!   `FifoRelaxed` for the playfield, `--debug-overlay` draws the debug
 //!   lines over the PBR table.
+//! * Profiler (7.1): a table run is always profiled (tick time and input
+//!   latency on SDL's event clock, input-overflow ticks, GPU frame time
+//!   from timestamp queries where the device has them; nothing is
+//!   recorded otherwise). `--profiler-hud` draws the four HUD lines over
+//!   the playfield (refreshed four times per second) and prints them as
+//!   `pin_app: profiler: ...` after the shutdown line; without it frames
+//!   are unchanged.
 //! * Run conditions (`orchestrator::RunLimits`): `--run-frames N` quits
 //!   once N frames were presented, `--run-ticks M` once the sim computed M
 //!   ticks; with both, once both hold. They work without `--run-ms` (a hung
@@ -55,6 +62,7 @@ use pin_app::platform::{
     DisplayTopologyManager, EventForwarder, INPUT_RING_CAPACITY, InputRouter, PUMP_TIMEOUT,
     Platform, PlatformConfig, WINDOW_RING_CAPACITY, WindowGuard,
 };
+use pin_app::profiler::{Profiler, hud_lines};
 use pin_audio::mixer::{MixerConfig, trigger_ring};
 use pin_audio::ssf::SsfConfig;
 use pin_input::haptics::{DEFAULT_HAPTICS_RING_CAPACITY, haptics_ring};
@@ -267,6 +275,7 @@ fn run_app(args: &[String]) -> Result<(), String> {
     let limits = RunLimits::from_args(args)?;
     let vrr = args.iter().any(|a| a == "--vrr");
     let debug_overlay = args.iter().any(|a| a == "--debug-overlay");
+    let profiler_hud = args.iter().any(|a| a == "--profiler-hud");
     let mixer = MixerConfig::default();
     // Load the table before opening windows: a bad table fails fast.
     let table = path_of(args, "--table")
@@ -353,9 +362,18 @@ fn run_app(args: &[String]) -> Result<(), String> {
         },
         ..RenderConfig::default()
     };
+    // The profiler's reader (table runs only; the idle path is not
+    // profiled).
+    let mut profiler = None;
     let mut cfg = match table {
         Some(t) => {
-            let mut cfg = ThreadsConfig::with_sim(t.sim, input_rx);
+            // The ProfiledSim's clock is the sim loop's: SDL's event
+            // timestamp clock, which the input latencies are measured on.
+            let (mut cfg, reader) =
+                ThreadsConfig::with_profiled_sim(t.sim, input_rx, sdl_now_ns, Profiler::new());
+            render.present_profiler = cfg.render.present_profiler.take();
+            render.hud = profiler_hud.then(|| reader.clone());
+            profiler = Some(reader);
             cfg.audio = AudioConfig {
                 haptics: Some(t.haptics),
                 ssf: SsfConfig {
@@ -453,6 +471,11 @@ fn run_app(args: &[String]) -> Result<(), String> {
             audio.haptic_events
         );
         eprintln!("{}", stats.render_diagnostics());
+        if let Some(reader) = profiler.as_ref().filter(|_| profiler_hud) {
+            for line in hud_lines(&reader.snapshot()) {
+                eprintln!("pin_app: profiler: {line}");
+            }
+        }
     }
     // 2. Destroy the released windows here, on the main thread, and wait for
     //    a detached presenter to release its window.
