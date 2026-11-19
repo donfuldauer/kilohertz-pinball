@@ -453,8 +453,14 @@ pub fn up_vector() -> [f32; 3] {
 }
 
 /// A ball centre resting on the up-side face of flipper `name` at its
-/// current pose, at fraction `s` of the bat, with `gap_mm` of air, `lateral`
-/// unused. Returns (centre, side normal of the bat face, mounting normal).
+/// current pose, at fraction `s` of the bat, with `gap_mm` of air between
+/// the ball and the bat face, the ball touching the mounting plane.
+///
+/// * Straight bat: `s` is a fraction of the length along the pivot's bat
+///   direction and the ball sits beside the tapered capsule.
+/// * `CurvedBanana`: `s` is a fraction of the centreline arc's length and
+///   the ball sits on the up-side face along that face's local normal (see
+///   [`banana_frame`]); the surface clearance is checked to be `gap_mm`.
 pub fn on_bat(sim: &Simulation, name: &str, s: f32, gap_mm: f32, profile: &str) -> [f32; 3] {
     let def = table()
         .manifest
@@ -462,6 +468,9 @@ pub fn on_bat(sim: &Simulation, name: &str, s: f32, gap_mm: f32, profile: &str) 
         .iter()
         .find(|f| f.id == name)
         .unwrap_or_else(|| panic!("flipper {name}"));
+    if matches!(def.shape, FlipperShapeDef::CurvedBanana { .. }) {
+        return on_banana(sim, name, s, gap_mm, profile);
+    }
     let id = sim.ids().flipper(name).expect("flipper id");
     let pivot = sim.flipper_set().pivot_m(id).expect("pivot").to_array();
     let d = sim
@@ -480,6 +489,136 @@ pub fn on_bat(sim: &Simulation, name: &str, s: f32, gap_mm: f32, profile: &str) 
     let along = scale3(d, s * len);
     let off = scale3(side, rb + r + gap_mm * 1e-3);
     add3(add3(add3(pivot, along), off), scale3(n, r))
+}
+
+/// The world-frame centreline of a `CurvedBanana` flipper at its current
+/// pose (contract of `FlipperShape::CurvedBanana`: the pivot is the start
+/// of a circular arc that leaves it along the bat direction and curls
+/// toward its concave side; `length` is the chord to the tip-cap centre;
+/// the concave side is the swing's leading face for `arc_sweep_deg >= 0`,
+/// the trailing one otherwise).
+#[derive(Clone, Copy, Debug)]
+pub struct BananaFrame {
+    /// Pivot, m.
+    pub pivot: [f32; 3],
+    /// Bat direction at the pivot (arc tangent there).
+    pub x: [f32; 3],
+    /// Unit vector from the pivot toward the centre of curvature.
+    pub to_centre: [f32; 3],
+    /// Mounting normal (rotation axis).
+    pub n: [f32; 3],
+    /// Centreline radius, m.
+    pub arc_radius: f32,
+    /// Arc angle `2·asin(length / (2·arc_radius))`, rad.
+    pub phi: f32,
+    /// Tube radius, m.
+    pub tube: f32,
+}
+
+impl BananaFrame {
+    /// Centreline point at fraction `s` of the arc length.
+    pub fn point(&self, s: f32) -> [f32; 3] {
+        let a = s.clamp(0.0, 1.0) * self.phi;
+        add3(
+            add3(self.pivot, scale3(self.x, self.arc_radius * a.sin())),
+            scale3(self.to_centre, self.arc_radius * (1.0 - a.cos())),
+        )
+    }
+
+    /// Unit normal of the concave face at fraction `s` (toward the centre
+    /// of curvature).
+    pub fn concave_normal(&self, s: f32) -> [f32; 3] {
+        let a = s.clamp(0.0, 1.0) * self.phi;
+        norm3(add3(
+            scale3(self.x, -a.sin()),
+            scale3(self.to_centre, a.cos()),
+        ))
+    }
+
+    /// Plan distance (in the mounting plane) from `p` to the tube's side
+    /// surface, m, by dense sampling of the centreline arc (positive
+    /// outside the bat).
+    pub fn side_clearance(&self, p: [f32; 3]) -> f32 {
+        const N: u32 = 4_000;
+        let mut best = f32::INFINITY;
+        for i in 0..=N {
+            let c = self.point(i as f32 / N as f32);
+            let v = sub3(p, c);
+            let in_plane = sub3(v, scale3(self.n, dot3(v, self.n)));
+            best = best.min(len3(in_plane));
+        }
+        best - self.tube
+    }
+}
+
+/// The [`BananaFrame`] of `CurvedBanana` flipper `name` at its current pose.
+pub fn banana_frame(sim: &Simulation, name: &str) -> BananaFrame {
+    let def = table()
+        .manifest
+        .flippers
+        .iter()
+        .find(|f| f.id == name)
+        .unwrap_or_else(|| panic!("flipper {name}"));
+    let FlipperShapeDef::CurvedBanana {
+        length,
+        arc_radius,
+        arc_sweep_deg,
+        tube_radius,
+    } = def.shape
+    else {
+        panic!("flipper {name} is a CurvedBanana");
+    };
+    let id = sim.ids().flipper(name).expect("flipper id");
+    let pivot = sim.flipper_set().pivot_m(id).expect("pivot").to_array();
+    let x = norm3(
+        sim.flipper_set()
+            .bat_direction(id)
+            .expect("bat dir")
+            .to_array(),
+    );
+    let n = norm3(def.surface_normal);
+    // Bat-frame +y = axis × x: the direction a bat point moves for a
+    // positive (counter-clockwise) swing. The concave side is the leading
+    // face (sign of the sweep) for arc_sweep >= 0, else the trailing face.
+    let y = norm3(cross3(n, x));
+    let leading = if def.sweep_angle_deg < 0.0 { -1.0 } else { 1.0 };
+    let concave = if arc_sweep_deg < 0.0 {
+        -leading
+    } else {
+        leading
+    };
+    let arc_radius = arc_radius * 1e-3;
+    let length = length * 1e-3;
+    BananaFrame {
+        pivot,
+        x,
+        to_centre: scale3(y, concave),
+        n,
+        arc_radius,
+        phi: 2.0 * (0.5 * length / arc_radius).min(1.0).asin(),
+        tube: tube_radius * 1e-3,
+    }
+}
+
+/// A ball centre on the up-side face of `CurvedBanana` flipper `name` at
+/// fraction `s` of its centreline arc, `gap_mm` clear of the tube along the
+/// face's local normal, the ball touching the mounting plane. Asserts that
+/// the ball's surface clearance to the curved bat is `gap_mm` (±0.05 mm).
+pub fn on_banana(sim: &Simulation, name: &str, s: f32, gap_mm: f32, profile: &str) -> [f32; 3] {
+    let f = banana_frame(sim, name);
+    let mut normal = f.concave_normal(s);
+    if dot3(normal, up_vector()) < 0.0 {
+        normal = scale3(normal, -1.0);
+    }
+    let r = radius_m(profile);
+    let off = scale3(normal, f.tube + r + gap_mm * 1e-3);
+    let centre = add3(add3(f.point(s), off), scale3(f.n, r));
+    let clearance_mm = (f.side_clearance(centre) - r) * 1e3;
+    assert!(
+        (clearance_mm - gap_mm).abs() <= 0.05,
+        "{name} offset {s}: ball placed {clearance_mm:.3} mm clear of the curved bat (want {gap_mm} mm)"
+    );
+    centre
 }
 
 /// `tables/feature_lab/README.md` (the brief allows reading it).

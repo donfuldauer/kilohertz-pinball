@@ -114,21 +114,33 @@ fn a_banana_flip_makes_the_banana_shot() {
         for k in 0..12 {
             let f = 0.3 + 0.05 * k as f32;
             let (mut s, _) = flip(RIGHT, f, 0);
-            s.advance(150);
-            s.release_switch("right_flipper").unwrap();
-            let mut lane_at = None;
-            for t in 0..3000u64 {
+            // New hits only, sampled from the first flip tick.
+            let lane0 = s.switch_hits("vuk_lane").unwrap();
+            let scoop0 = s.switch_hits("bb_vuk_sw").unwrap();
+            let mut lane_at: Option<u64> = None;
+            let mut scoop_at: Option<u64> = None;
+            for t in 0..3150u64 {
+                if t == 150 {
+                    s.release_switch("right_flipper").unwrap();
+                }
                 s.advance(1);
-                if lane_at.is_none() && s.switch_hits("vuk_lane").unwrap() > 0 {
+                if lane_at.is_none() && s.switch_hits("vuk_lane").unwrap() > lane0 {
                     lane_at = Some(t);
                 }
-                if let Some(t0) = lane_at
-                    && s.switch_hits("bb_vuk_sw").unwrap() > 0
-                {
-                    assert!(t - t0 <= 3000, "within the shot window");
-                    made.push(f);
+                if scoop_at.is_none() && s.switch_hits("bb_vuk_sw").unwrap() > scoop0 {
+                    scoop_at = Some(t);
+                }
+                if scoop_at.is_some() {
                     break;
                 }
+            }
+            if let (Some(l), Some(c)) = (lane_at, scoop_at) {
+                assert!(
+                    l < c,
+                    "f {f}: new vuk_lane hit (tick {l}) precedes new scoop hit (tick {c})"
+                );
+                assert!(c - l <= 3000, "within the shot window");
+                made.push(f);
             }
         }
         println!("Banana shot made from offsets {made:?}");

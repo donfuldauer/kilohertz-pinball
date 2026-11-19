@@ -509,7 +509,70 @@ struct Started {
     main: Main,
     variant: usize,
     count_before: i64,
-    score_before: i64,
+    /// Score change over the single tick in which `mode:<id>` increased.
+    start_tick_points: i64,
+}
+
+/// New closing edges of the declared switches, observed tick by tick.
+struct HitTrace {
+    names: Vec<String>,
+    counts: Vec<u32>,
+    /// (tick, switch) in order of observation.
+    hits: Vec<(u64, String)>,
+}
+
+impl HitTrace {
+    fn new(sim: &Simulation) -> Self {
+        let names: Vec<String> = table().switches.iter().map(|s| s.name.clone()).collect();
+        let counts = names.iter().map(|n| hits(sim, n)).collect();
+        Self {
+            names,
+            counts,
+            hits: Vec::new(),
+        }
+    }
+
+    /// Records the switches that closed since the last call (several in one
+    /// tick in declaration order).
+    fn observe(&mut self, sim: &Simulation) {
+        for (i, n) in self.names.iter().enumerate() {
+            let c = hits(sim, n);
+            for _ in self.counts[i]..c {
+                self.hits.push((sim.tick(), n.clone()));
+            }
+            self.counts[i] = c;
+        }
+    }
+
+    /// Whether `order` occurs in the trace as a subsequence (each switch
+    /// closing after the previous one), the last one at tick `<= by`.
+    fn has_in_order(&self, order: &[String], by: u64) -> bool {
+        let mut k = 0;
+        let mut prev_tick = 0;
+        for (t, n) in &self.hits {
+            if k < order.len() && *n == order[k] && *t <= by && (k == 0 || *t > prev_tick) {
+                prev_tick = *t;
+                k += 1;
+            }
+        }
+        k == order.len()
+    }
+}
+
+/// The README's mode start award ("Every mode start scores N").
+fn readme_mode_start_award() -> i64 {
+    let text = readme_text();
+    let key = "Every mode start scores";
+    let at = text
+        .find(key)
+        .unwrap_or_else(|| panic!("README states {key:?}"));
+    let digits: String = text[at + key.len()..]
+        .chars()
+        .skip_while(|c| c.is_whitespace())
+        .take_while(|c| c.is_ascii_digit() || *c == ' ' || *c == ',')
+        .filter(char::is_ascii_digit)
+        .collect();
+    digits.parse().expect("the award is a number")
 }
 
 /// Starts `mode` by moving the main ball onto the shot's lane with a
@@ -520,6 +583,7 @@ fn start_mode_by_physics(mode: &str, first: usize, pre_delay: u64) -> Started {
     let key_name = format!("mode:{mode}");
     let variants = shot_variants(mode);
     assert!(variants.len() >= 6, "at least 6 start offsets");
+    let shot = switches_in(&readme_row(mode).shot_switches);
     let mut sim = load();
     sim.advance(pre_delay);
     let mut tried = Vec::new();
@@ -547,7 +611,7 @@ fn start_mode_by_physics(mode: &str, first: usize, pre_delay: u64) -> Started {
         let (handle, park) = (m.handle, m.park);
         main = Some(m);
         let count_before = pv(&sim, &key_name);
-        let score_before = sim.score(0).unwrap_or(0);
+        let mut trace = HitTrace::new(&sim);
         let mut flipped = None;
         match &v {
             Variant::Roll { layer, pos, vel } => {
@@ -571,10 +635,16 @@ fn start_mode_by_physics(mode: &str, first: usize, pre_delay: u64) -> Started {
             }
         }
         let mut last = None;
+        let mut score_prev = sim.score(0).unwrap_or(0);
+        let mut tick_points = 0;
         let started = run_until(&mut sim, 3_000, |s| {
+            trace.observe(s);
             if let Some(b) = s.ball(handle) {
                 last = Some((s.tick(), b.position_m, b.velocity_m_s, b.layer));
             }
+            let score = s.score(0).unwrap_or(0);
+            tick_points = score - score_prev;
+            score_prev = score;
             pv(s, &key_name) > count_before
         });
         if sim.counters().balls_escaped > 0 {
@@ -587,13 +657,24 @@ fn start_mode_by_physics(mode: &str, first: usize, pre_delay: u64) -> Started {
         }
         tried.push(vi);
         if started {
-            eprintln!("{mode}: started by start state {vi} {v:?} (tried {tried:?})");
+            // The README's shot switches closed in order during this
+            // attempt, the last one by the tick the counter changed.
+            assert!(
+                trace.has_in_order(&shot, sim.tick()),
+                "{mode}: mode:{mode} increased at tick {} (start state {vi} {v:?}) without the README shot {shot:?} in order; switch hits since the attempt began: {:?}",
+                sim.tick(),
+                trace.hits
+            );
+            eprintln!(
+                "{mode}: started by start state {vi} {v:?} (tried {tried:?}); hits {:?}",
+                trace.hits
+            );
             return Started {
                 sim,
                 main: main.expect("main ball"),
                 variant: vi,
                 count_before,
-                score_before,
+                start_tick_points: tick_points,
             };
         }
         assert_healthy(&sim, mode);
@@ -607,15 +688,62 @@ fn mode_starts_by_physics(mode: &str) {
     let key_name = format!("mode:{mode}");
     let mut st = start_mode_by_physics(mode, 0, 0);
     let sim = &mut st.sim;
-    sim.advance(200);
-    assert_eq!(
-        pv(sim, &key_name),
-        st.count_before + 1,
-        "{mode}: mode:{mode} increased by exactly 1 (variant {})",
-        st.variant
+    let ball = pv(sim, "ball");
+    let main = st.main.handle;
+    assert!(
+        sim.ball(main).is_some(),
+        "{mode}: the shot ball is on the table at the start tick"
     );
-    let points = sim.score(0).unwrap_or(0) - st.score_before;
-    assert!(points > 0, "{mode}: points awarded {points}");
+    // The start award alone: the start tick's score change less what the
+    // qualifying shot's last switch scores by itself, measured on the same
+    // player's ball with the mode running. Meanwhile the main ball rests on
+    // the plunger and every other ball leaves the table, so no switch
+    // closes until every shot window (<= 10 s) and the flip-shot window
+    // have expired.
+    let last = switches_in(&readme_row(mode).shot_switches)
+        .pop()
+        .expect("README shot switches");
+    for t in 0..10_500u64 {
+        assert!(
+            sim.set_ball_state(main, &st.main.park),
+            "{mode}: park the main ball"
+        );
+        for h in sim.ball_handles() {
+            if h != main {
+                sim.remove_ball(h);
+            }
+        }
+        sim.advance(1);
+        if t == 200 {
+            assert_eq!(
+                pv(sim, &key_name),
+                st.count_before + 1,
+                "{mode}: mode:{mode} increased by exactly 1 (variant {})",
+                st.variant
+            );
+        }
+        assert_eq!(pv(sim, "ball"), ball, "{mode}: the same player's ball");
+        assert_eq!(pv(sim, "game_state"), 1, "{mode}: the game goes on");
+    }
+    for h in sim.ball_handles() {
+        if h != main {
+            sim.remove_ball(h);
+        }
+    }
+    let before = sim.score(0).unwrap_or(0);
+    sim.set_switch(&last, true).expect("shot switch");
+    sim.advance(1);
+    let alone = sim.score(0).unwrap_or(0) - before;
+    sim.set_switch(&last, false).expect("shot switch");
+    sim.advance(5);
+    sim.release_switch(&last).expect("shot switch");
+    let award = readme_mode_start_award();
+    assert_eq!(
+        st.start_tick_points - alone,
+        award,
+        "{mode}: the start tick scored {} and {last} alone {alone}: the start award is {award} (README)",
+        st.start_tick_points
+    );
     // Still exactly one start a while later.
     sim.advance(2_000);
     assert_eq!(pv(sim, &key_name), st.count_before + 1, "{mode}: one start");
@@ -651,9 +779,14 @@ fn c_mode_glo_ball_by_physics() {
 // (d) extra balls
 // ---------------------------------------------------------------------------
 
+/// Simulated ticks an injected ball may take to leave through the trough.
+const DRAIN_WAIT_TICKS: u64 = 500;
+
 /// After `mode` starts: parks the main ball back on the plunger, waits for
-/// extra balls, drains each (by injection, after it lived 2 s), and runs
-/// 30 s: the player's ball and the game go on. Returns how many extra balls
+/// extra balls, drains each (moved onto the trough switch after it lived
+/// 2 s, counted once the simulation has removed it, within
+/// `DRAIN_WAIT_TICKS`), and runs 30 s: the player's ball and the game go
+/// on, also while the injected balls drain. Returns how many extra balls
 /// were drained.
 fn extra_balls_do_not_end_the_ball(mode: &str) -> usize {
     let mut st = start_mode_by_physics(mode, 0, 0);
@@ -662,11 +795,18 @@ fn extra_balls_do_not_end_the_ball(mode: &str) -> usize {
     let ball = pv(sim, "ball");
     let mut drained = 0usize;
     let mut born: Vec<(BallHandle, u64)> = Vec::new();
+    // Balls moved onto the trough, with the tick they were moved.
+    let mut injected: Vec<(BallHandle, u64)> = Vec::new();
     let trough = drain_switch();
     let tp = trough.position_m.expect("trough position");
     let end = sim.tick() + 30_000;
     let mut main_gone_at = None;
-    while sim.tick() < end {
+    while sim.tick() < end || !injected.is_empty() {
+        assert!(
+            sim.tick() < end + DRAIN_WAIT_TICKS + 1,
+            "{mode}: injected balls still on the table at tick {}: {injected:?}",
+            sim.tick()
+        );
         // Keep the main ball in play, at rest on the plunger.
         if sim.ball(main).is_some() {
             let b = sim.ball(main).unwrap();
@@ -676,14 +816,19 @@ fn extra_balls_do_not_end_the_ball(mode: &str) -> usize {
         } else if main_gone_at.is_none() {
             main_gone_at = Some(sim.tick());
         }
-        for h in sim.ball_handles() {
-            if h != main && !born.iter().any(|(x, _)| *x == h) {
-                born.push((h, sim.tick()));
+        // Forget balls that left on their own (their handles may be reused).
+        born.retain(|(x, _)| sim.ball(*x).is_some());
+        if sim.tick() < end {
+            for h in sim.ball_handles() {
+                if h != main && !born.iter().any(|(x, _)| *x == h) {
+                    born.push((h, sim.tick()));
+                }
             }
         }
         let now = sim.tick();
         for (h, t0) in &mut born {
             if now >= *t0 + 2_000
+                && !injected.iter().any(|(x, _)| x == h)
                 && let Some(mut b) = sim.ball(*h)
             {
                 let r = pin_core::profiles::BUILTIN_PROFILE_NAMES
@@ -694,12 +839,30 @@ fn extra_balls_do_not_end_the_ball(mode: &str) -> usize {
                 b.angular_velocity_rad_s = [0.0; 3];
                 b.layer = trough.layer;
                 assert!(sim.set_ball_state(*h, &b));
-                drained += 1;
-                // Counted once; it drains within a few ticks.
-                *t0 = u64::MAX / 2;
+                injected.push((*h, now));
             }
         }
         sim.advance(1);
+        // An injected ball counts once the simulation has removed it.
+        let now = sim.tick();
+        let mut i = 0;
+        while i < injected.len() {
+            let (h, t) = injected[i];
+            if sim.ball(h).is_none() {
+                drained += 1;
+                injected.swap_remove(i);
+                // The handle may be reused by a later ball.
+                born.retain(|(x, _)| *x != h);
+            } else {
+                assert!(
+                    now - t <= DRAIN_WAIT_TICKS,
+                    "{mode}: the extra ball {h:?} moved onto {} at tick {t} is still on the table at tick {now}: {:?}",
+                    trough.name,
+                    sim.ball(h)
+                );
+                i += 1;
+            }
+        }
         assert_eq!(
             pv(sim, "ball"),
             ball,

@@ -105,7 +105,7 @@ fn vuk_feeds_the_backbox_and_the_ball_drains_back_to_a_trough() {
                         q[1] > 12.0 && q[1] < 23.0 && q[0] > -200.0 && q[0] < 200.0,
                         "seed {seed} tick {t}: inside the box: {q:?}"
                     );
-                } else if !back_on_0 {
+                } else if !back_on_0 && b.layer == 0 {
                     back_on_0 = true;
                     drained_bb = s.switch_hits("bb_drain").unwrap() >= 1;
                 }
@@ -172,8 +172,8 @@ fn the_backbox_flipper_flips_a_ball_on_layer_4() {
 /// A layer-4 ball released at `q` (backbox plane `[u, depth, v]`, mm) with
 /// velocity `v` (table frame, m/s), as a flipped ball that falls back over
 /// the entry channel's wall, runs `ticks` ticks; returns whether it came
-/// back to layer 0, whether it left the sim through a trough, and the
-/// escape count.
+/// back to layer 0, whether it left the sim through a trough (a
+/// trough hit and the ball removed), and the escape count.
 fn drop_into_entry_channel(dir: &Path, q: [f32; 3], v: [f32; 3], ticks: u32) -> (bool, bool, u32) {
     let f = frame();
     let mut s = load_dir(dir);
@@ -189,7 +189,9 @@ fn drop_into_entry_channel(dir: &Path, q: [f32; 3], v: [f32; 3], ticks: u32) -> 
         }
     }
     let troughs = s.switch_hits("trough_1").unwrap() + s.switch_hits("trough_2").unwrap();
-    (on_0, troughs >= 1, s.counters().balls_escaped)
+    // Drained means a trough hit and the ball gone from the sim.
+    let drained = troughs >= 1 && s.ball(h).is_none();
+    (on_0, drained, s.counters().balls_escaped)
 }
 
 /// `bb_catch` is still needed with the VUK exit on layer 4: a backbox ball
@@ -378,6 +380,8 @@ fn standard_steel_releases_later_than_low_rem_steel() {
             let mut s = start_magnet_compare(seed);
             let main = balls(&s)[0];
             let mut seen = Vec::new();
+            // Profile of each comparison ball, read when first observed.
+            let mut profiles: Vec<u16> = Vec::new();
             let mut held_ticks = [0u32; 2];
             for _ in 0..10_000 {
                 s.advance(1);
@@ -385,6 +389,7 @@ fn standard_steel_releases_later_than_low_rem_steel() {
                     if h != main && !seen.contains(&h) {
                         seen.push(h);
                         let mut b = s.ball(h).unwrap();
+                        profiles.push(b.profile.0);
                         b.velocity_m_s = [kick[0], kick[1], 0.0];
                         s.set_ball_state(h, &b);
                     }
@@ -407,6 +412,18 @@ fn standard_steel_releases_later_than_low_rem_steel() {
             }
             healthy(&s);
             assert_eq!(seen.len(), 2, "seed {seed}: two comparison balls served");
+            let idx = |n: &str| {
+                let i = pin_core::profiles::BUILTIN_PROFILE_NAMES
+                    .iter()
+                    .position(|&x| x == n)
+                    .expect("built-in profile name");
+                u16::try_from(i).expect("fits")
+            };
+            assert_eq!(
+                profiles,
+                [idx("standard_steel"), idx("low_rem_steel")],
+                "seed {seed}: the comparison balls are standard_steel then low_rem_steel"
+            );
             assert!(
                 held_ticks[0] >= 1000 && held_ticks[1] >= 1000,
                 "{held_ticks:?}"
