@@ -6,8 +6,10 @@ no simulation; each case builds a temp OUT and runs
 ``scripts/gate_a2.sh --verdict-only OUT``).
 """
 
+import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -52,6 +54,23 @@ def report(skill, games=1000, ticks=120_000):
     }
 
 
+def spread(games, n):
+    return [i * games // n for i in range(n)]
+
+
+def replay_rows(rep, replays):
+    """replay_games.tsv rows consistent with a standard report: the spread
+    games, each replayed to the soak's own state_hash and score."""
+    games = rep["config"]["games"]
+    by = {g["game"]: g for g in rep["games"]}
+    rows = []
+    for g in spread(games, replays):
+        e = by[g]
+        sc = "none" if e["score"] is None else str(e["score"])
+        rows.append([str(g), e["state_hash"], e["state_hash"], sc, sc, str(e["ticks"])])
+    return rows
+
+
 def write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -70,6 +89,9 @@ class Out:
               "dry=%d\ngames=%d\nreplays=%d\nseed=1\nthreads=2\nreadiness=1\ntables=%s\n"
               % (dry, games, replays, " ".join(tables)))
         self.reports = {}
+        # A2.4c: per table, replay_games.tsv rows (lists of 6 strings);
+        # None means "do not write the file".
+        self.replay_games = {}
         for t in tables:
             write(os.path.join(self.dir, t, "build.rc"), "0\n")
             for s in SKILLS:
@@ -78,6 +100,7 @@ class Out:
             rep = report("standard", replays)
             rep["timing"]["threads"] = 1
             self.reports[(t, "replay")] = rep
+            self.replay_games[t] = replay_rows(self.reports[(t, "standard")], replays)
             write(os.path.join(self.dir, t, "replay_soak.rc"), "0\n")
             write(os.path.join(self.dir, t, "replay_pattern.tsv"),
                   "".join("%d\t%016x\t%016x\n" % (i, i * 77, i * 77) for i in range(1, replays + 1)))
@@ -88,6 +111,13 @@ class Out:
         for (t, s), r in self.reports.items():
             sub = "replay_soak" if s == "replay" else "soak_%s" % s
             write(os.path.join(self.dir, t, sub, "soak_report.json"), json.dumps(r, indent=1))
+        for t, rows in self.replay_games.items():
+            path = os.path.join(self.dir, t, "replay_games.tsv")
+            if rows is None:
+                if os.path.exists(path):
+                    os.remove(path)
+            else:
+                write(path, "".join("\t".join(r) + "\n" for r in rows))
 
     def run(self):
         self.flush()
@@ -136,9 +166,14 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual([r for r in rows if r[0] == "FAIL"], [])
         for t in TABLES:
             for crit in ("A2.0 games", "A2.1a", "A2.1b", "A2.1c", "A2.2a", "A2.2b", "A2.2c",
-                         "A2.3a", "A2.3b", "A2.4 sampled", "A2.4a", "A2.4b"):
+                         "A2.3a", "A2.3b", "A2.4 sampled", "A2.4a (supplemental)",
+                         "A2.4b (supplemental)"):
                 self.assertIn("PASS", status_of(rows, t, crit))
-            self.assertEqual(status_of(rows, t, "A2.4c"), ["REPORT"])
+            self.assertEqual(status_of(rows, t, "A2.4c"), ["PASS"])
+            c = [r for r in rows if r[1] == t and r[2].startswith("A2.4c")][0]
+            self.assertEqual(c[3], "20 of 20 identical")
+        # The old non-gating bot-replay REPORT row is gone.
+        self.assertFalse(any("repeatability check used" in r[3] for r in rows))
         self.assertEqual(len([r for r in rows if r[1] == "readiness" and r[0] == "PASS"]), 4)
         # Context REPORT lines.
         apex = [r for r in rows if r[1] == "apex_circuit" and r[0] == "REPORT"]
@@ -172,8 +207,159 @@ class VerdictTest(unittest.TestCase):
         rc, lines, _, rows = self.out.run()
         self.assertEqual(rc, 1)
         self.assertTrue(lines[-1].startswith("GATE A2: FAIL"), lines[-1])
-        fails = sorted((r[1], r[2]) for r in rows if r[0] == "FAIL")
-        self.assertEqual(fails, sorted((t, "A2.4 sampled replays >= 20") for t in TABLES))
+        fails = sorted((r[1], r[2][:5] if r[2].startswith("A2.4c") else r[2]) for r in rows if r[0] == "FAIL")
+        self.assertEqual(fails, sorted([(t, "A2.4 sampled replays >= 20") for t in TABLES]
+                                       + [(t, "A2.4c") for t in TABLES]))
+        for r in rows:
+            if r[0] == "FAIL" and r[2].startswith("A2.4c"):
+                self.assertIn("REPLAYS=19 < 20", r[3])
+
+    # A2.4c: sampled bot games replayed from recorded input (finding 1)
+    def check_a24c(self, table, needle):
+        rows = self.check_fail(table, "A2.4c")
+        val = [r[3] for r in rows if r[0] == "FAIL"][0]
+        self.assertIn(needle, val)
+        return val
+
+    def test_a24c_file_missing(self):
+        self.out.replay_games["feature_lab"] = None
+        self.check_a24c("feature_lab", "no ")
+
+    def test_a24c_fewer_rows(self):
+        del self.out.replay_games["apex_circuit"][-1]
+        self.check_a24c("apex_circuit", "19 rows")
+
+    def test_a24c_first_games_not_spread(self):
+        rep = self.out.reports[("sky_deck", "standard")]
+        rows = replay_rows(rep, 1000)[:20]  # games 0..19, not the spread
+        self.out.replay_games["sky_deck"] = rows
+        val = self.check_a24c("sky_deck", "expected 20 (spread")
+        self.assertIn("missing 50,100,150", val)
+
+    def test_a24c_replay_hash_differs(self):
+        self.out.replay_games["feature_lab"][4][2] = "deadbeefdeadbeef"
+        val = self.check_a24c("feature_lab", "game 200: replay state_hash deadbeefdeadbeef")
+        self.assertTrue(val.startswith("19 of 20 identical"), val)
+
+    def test_a24c_empty_replay_hash(self):
+        self.out.replay_games["apex_circuit"][0][2] = ""
+        self.check_a24c("apex_circuit", "game 0: no replay state_hash")
+
+    def test_a24c_empty_replay_score(self):
+        self.out.replay_games["apex_circuit"][3][4] = ""
+        self.check_a24c("apex_circuit", "game 150: no replay score")
+
+    def test_a24c_score_differs(self):
+        self.out.replay_games["sky_deck"][19][4] = "1"
+        self.check_a24c("sky_deck", "game 950: replay score 1 != soak 2000")
+
+    def test_a24c_soak_hash_not_the_report(self):
+        # Replay equals the tsv's soak value, but that is not the report's.
+        row = self.out.replay_games["feature_lab"][7]
+        row[1] = row[2] = "0123456789abcdef"
+        self.check_a24c("feature_lab", "game 350: recorded soak state_hash")
+
+    def test_a24c_soak_score_not_the_report(self):
+        row = self.out.replay_games["feature_lab"][2]
+        row[3] = row[4] = "7"
+        self.check_a24c("feature_lab", "game 100: recorded soak score")
+
+    def test_a24c_game_missing_from_report(self):
+        r = self.out.reports[("apex_circuit", "standard")]
+        r["games"] = [g for g in r["games"] if g["game"] != 500]
+        rc, lines, _, rows = self.out.run()
+        self.assertEqual(rc, 1)
+        self.assertIn("FAIL", status_of(rows, "apex_circuit", "A2.4c"))
+        val = [x[3] for x in rows if x[1] == "apex_circuit" and x[2].startswith("A2.4c")][0]
+        self.assertIn("game 500: not in the standard soak report", val)
+
+    def test_a24c_none_score(self):
+        r = self.out.reports[("apex_circuit", "standard")]
+        for g in r["games"]:
+            if g["game"] == 50:
+                g["score"] = None
+        self.out.replay_games["apex_circuit"] = replay_rows(r, 20)
+        self.assertEqual(self.out.replay_games["apex_circuit"][1][3], "none")
+        rc, lines, _, rows = self.out.run()
+        self.assertEqual((rc, lines[-1]), (0, "GATE A2: PASS"))
+
+    def test_a24c_unparseable_line(self):
+        with_bad = self.out.replay_games["sky_deck"]
+        with_bad.append(["x", "", "", "", "", ""])
+        self.check_a24c("sky_deck", "line 21 unparseable")
+
+    def test_a24c_missing_file_fails_in_dry_run_with_feature(self):
+        o = Out(games=12, replays=3, dry=1)
+        try:
+            o.replay_games["apex_circuit"] = None
+            rc, lines, _, rows = o.run()
+            self.assertEqual(rc, 1)
+            self.assertEqual(status_of(rows, "apex_circuit", "A2.4c"), ["FAIL"])
+        finally:
+            o.close()
+
+    def test_a24c_missing_file_reported_in_dry_run_without_feature(self):
+        o = Out(games=12, replays=3, dry=1)
+        try:
+            with open(os.path.join(o.dir, "gate_a2_run.txt"), "a", encoding="utf-8") as f:
+                f.write("record_games=0\n")
+            for t in TABLES:
+                o.replay_games[t] = None
+            rc, lines, _, rows = o.run()
+            self.assertEqual(rc, 0, lines[-1])
+            self.assertEqual(status_of(rows, "apex_circuit", "A2.4c"), ["REPORT"])
+        finally:
+            o.close()
+
+    def test_a24c_missing_file_fails_in_full_run_without_feature(self):
+        with open(os.path.join(self.out.dir, "gate_a2_run.txt"), "a", encoding="utf-8") as f:
+            f.write("record_games=0\n")
+        self.out.replay_games["sky_deck"] = None
+        self.check_a24c("sky_deck", "no ")
+
+    def test_a24c_dry_run_3_replays_consistent(self):
+        o = Out(games=12, replays=3, dry=1)
+        try:
+            self.assertEqual([r[0] for r in o.replay_games["apex_circuit"]], ["0", "4", "8"])
+            rc, lines, _, rows = o.run()
+            self.assertEqual(rc, 0, lines[-1])
+            self.assertTrue(lines[-1].startswith("GATE A2 (DRY RUN): no FAIL"), lines[-1])
+            for t in TABLES:
+                self.assertEqual(status_of(rows, t, "A2.4c"), ["PASS"])
+            self.assertEqual(status_of(rows, "apex_circuit", "A2.4 sampled"), ["REPORT"])
+        finally:
+            o.close()
+
+    def test_a24c_dry_run_mismatch_still_fails(self):
+        o = Out(games=12, replays=3, dry=1)
+        try:
+            o.replay_games["feature_lab"][1][2] = "ffffffffffffffff"
+            rc, lines, _, rows = o.run()
+            self.assertEqual(rc, 1)
+            self.assertEqual(status_of(rows, "feature_lab", "A2.4c"), ["FAIL"])
+            self.assertTrue(lines[-1].startswith("GATE A2 (DRY RUN): 1 criteria failed"), lines[-1])
+        finally:
+            o.close()
+
+    # A2.4a missing fields (finding 2)
+    def test_a24a_missing_state_hash_in_both(self):
+        for k in ("standard", "replay"):
+            del self.out.reports[("apex_circuit", k)]["games"][5]["state_hash"]
+        rows = self.check_fail("apex_circuit", "A2.4a (supplemental)")
+        val = [r[3] for r in rows if r[0] == "FAIL"][0]
+        self.assertIn("game 5: state_hash missing in full run, state_hash missing in re-run", val)
+
+    def test_a24a_missing_seed_in_both(self):
+        for k in ("standard", "replay"):
+            self.out.reports[("feature_lab", k)]["games"][11]["seed"] = None
+        rows = self.check_fail("feature_lab", "A2.4a (supplemental)")
+        val = [r[3] for r in rows if r[0] == "FAIL"][0]
+        self.assertIn("game 11: seed missing in full run, seed missing in re-run", val)
+
+    def test_a24a_empty_state_hash_in_one(self):
+        self.out.reports[("sky_deck", "replay")]["games"][0]["state_hash"] = ""
+        rows = self.check_fail("sky_deck", "A2.4a (supplemental)")
+        self.assertIn("game 0: state_hash missing in re-run", [r[3] for r in rows if r[0] == "FAIL"][0])
 
     # (b) each single criterion failing
     def test_stuck_ball(self):
@@ -271,6 +457,8 @@ class VerdictTest(unittest.TestCase):
         r = self.out.reports[("sky_deck", "standard")]
         r["games"] = r["games"][:999]
         r["config"]["games"] = 999
+        # Recordings consistent with the 999-game soak (spread over 999).
+        self.out.replay_games["sky_deck"] = replay_rows(r, 20)
         self.check_fail("sky_deck", "A2.0 games >= 1000 [standard]")
 
     def test_soak_exit_status(self):
@@ -345,6 +533,87 @@ class VerdictTest(unittest.TestCase):
             rc, lines, _, _ = o.run()
             self.assertEqual(rc, 1)
             self.assertTrue(lines[-1].startswith("GATE A2: FAIL"), lines[-1])
+        finally:
+            o.close()
+
+
+def load_verdict_module():
+    """The verdict script as a module, without writing bytecode."""
+    sys.dont_write_bytecode = True
+    path = os.path.join(REPO, "scripts", "gate_a2_verdict.py")
+    spec = importlib.util.spec_from_file_location("gate_a2_verdict_under_test", path)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class DirFsyncTest(unittest.TestCase):
+    """Finding 4: OUT is fsynced after the verdict files; a failure there is tolerated."""
+
+    def test_verdict_tolerates_directory_fsync_failure(self):
+        mod = load_verdict_module()
+        if mod is None:
+            self.skipTest("scripts/gate_a2_verdict.py is not importable")
+        o = Out()
+        real = os.fsync
+        calls = {"dir": 0, "file": 0}
+
+        def fake(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                calls["dir"] += 1
+                raise OSError(22, "directory fsync not supported (test)")
+            calls["file"] += 1
+            return real(fd)
+
+        devnull = open(os.devnull, "w", encoding="utf-8")
+        saved = sys.stdout
+        try:
+            o.flush()
+            os.fsync = fake
+            sys.stdout = devnull
+            rc = mod.main(["gate_a2_verdict.py", o.dir])
+        finally:
+            sys.stdout = saved
+            os.fsync = real
+            devnull.close()
+        try:
+            self.assertEqual(rc, 0)
+            self.assertEqual(calls, {"dir": 1, "file": 2})
+            for name in ("gate_a2_verdict.txt", "gate_a2_table.txt"):
+                with open(os.path.join(o.dir, name), encoding="utf-8") as f:
+                    self.assertEqual(f.read().rstrip("\n").split("\n")[-1], "GATE A2: PASS")
+        finally:
+            o.close()
+
+    def test_verdict_fsyncs_the_directory(self):
+        mod = load_verdict_module()
+        if mod is None:
+            self.skipTest("scripts/gate_a2_verdict.py is not importable")
+        o = Out(tables=("apex_circuit",), games=12, replays=3, dry=1)
+        real = os.fsync
+        dirs = []
+
+        def spy(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                dirs.append(os.fstat(fd).st_ino)
+            return real(fd)
+
+        devnull = open(os.devnull, "w", encoding="utf-8")
+        saved = sys.stdout
+        try:
+            o.flush()
+            os.fsync = spy
+            sys.stdout = devnull
+            rc = mod.main(["gate_a2_verdict.py", o.dir])
+        finally:
+            sys.stdout = saved
+            os.fsync = real
+            devnull.close()
+        try:
+            self.assertEqual(rc, 0)
+            self.assertEqual(dirs, [os.stat(o.dir).st_ino])
         finally:
             o.close()
 

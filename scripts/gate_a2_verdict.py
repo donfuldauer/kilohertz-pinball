@@ -9,12 +9,19 @@ verdict can be rebuilt from the artifacts at any time
 Inputs under OUT (all written by gate_a2.sh):
 
 * ``gate_a2_run.txt``: ``key=value`` lines: dry, games, replays, seed,
-  threads, tables (space separated), readiness, sky_deck_present.
+  threads, tables (space separated), readiness, record_games (1 when the
+  pin_sim binary has ``soak --record-games``; 0 when it does not).
 * ``<t>/build.rc``: exit status of ``tables/<t>/build.sh``.
 * ``<t>/soak_<skill>.rc`` and ``<t>/soak_<skill>/soak_report.json`` for
   skill in novice, standard, expert (``pin_sim soak``).
+* ``<t>/replay_games.tsv``: ``game<TAB>soak_state_hash<TAB>replay_state_hash
+  <TAB>soak_score<TAB>replay_score<TAB>ticks`` per sampled standard game
+  (``pin_sim soak --record-games spread:REPLAYS``, then ``pin_sim <bundle>
+  --replay-game FILE``, which replays the recorded bot input without the bot).
+  This is A2.4c, the gating sampled-game replay.
 * ``<t>/replay_soak.rc`` and ``<t>/replay_soak/soak_report.json``: the
-  standard soak re-run for the first REPLAYS games with another thread count.
+  standard soak re-run for the first REPLAYS games with another thread count
+  (A2.4a, supplemental).
 * ``<t>/replay_pattern.tsv``: ``seed<TAB>recorded<TAB>replayed`` per seed
   (``pin_sim --record-inputs`` / ``--replay-inputs`` state hashes).
 * ``readiness.tsv``: ``id<TAB>status<TAB>detail`` per readiness test.
@@ -49,6 +56,7 @@ BALL_KINDS = ("StuckBall", "EndlessBall", "EscapedBall", "NonFinite")
 SCRIPT_KINDS = ("ScriptError",)
 QUEUE_KINDS = ("QueueOverflow",)
 THIN_SHOTS = 3
+HEX16 = frozenset("0123456789abcdef")
 # Context REPORT lines the brief names (docs/queue/6.1.md).
 APEX_NOT_SOAK_COVERED = (
     "not soak-covered (covered by apex_game.rs / spec_6_1_rules.rs): "
@@ -191,6 +199,105 @@ def judge_coverage(v, t, skill, r):
               ", ".join(unobservable))
 
 
+def is_hash(s):
+    return len(s) == 16 and set(s) <= HEX16
+
+
+def is_score(s):
+    if s == "none":
+        return True
+    t = s[1:] if s.startswith("-") else s
+    return t.isdigit() and t.isascii()
+
+
+def report_score(g):
+    """A game_list score as the tsv/stdout writes it: decimal, or none."""
+    sc = g.get("score")
+    if sc is None:
+        return "none"
+    if isinstance(sc, bool) or not isinstance(sc, int):
+        return None
+    return str(sc)
+
+
+def spread(games, n):
+    """pin_sim --record-games spread:N: floor(i*GAMES/N) for i = 0..N-1."""
+    return [i * games // n for i in range(n)]
+
+
+def judge_sampled_replay(v, t, tdir, st, run, replays):
+    """A2.4c: sampled standard games replayed from recorded input, no bot."""
+    path = os.path.join(tdir, "replay_games.tsv")
+    text = read_text(path)
+    rows, bad = [], []
+    for n, line in enumerate((text or "").splitlines(), 1):
+        parts = line.split("\t")
+        if len(parts) != 6 or not parts[0].isdigit() or not parts[0].isascii():
+            bad.append("line %d unparseable" % n)
+            continue
+        rows.append(parts)
+    if text is None and v.dry and run.get("record_games") == "0":
+        v.add("REPORT", t, "A2.4c sampled bot games replayed from recorded input without the bot",
+              "REPORT (dry run): the pin_sim binary has no soak --record-games, no replay data")
+        return
+    ok_n = 0
+    if text is None:
+        bad.insert(0, "no %s" % path)
+    elif st is None:
+        bad.insert(0, "no standard soak report")
+    if st is not None and text is not None:
+        games = as_int(st.get("config", {}).get("games"), len(st.get("games", [])))
+        want = spread(games, replays) if 1 <= replays <= games else None
+        got = [int(p[0]) for p in rows]
+        if want is None:
+            bad.insert(0, "REPLAYS=%d not in 1..GAMES=%d" % (replays, games))
+        elif got != want:
+            extra = [g for g in got if g not in want]
+            missing = [g for g in want if g not in got]
+            bad.insert(0, "%d rows, games %s; expected %d (spread floor(i*%d/%d))%s%s" % (
+                len(got), "none" if not got else ",".join(str(g) for g in got[:5]) + (",..." if len(got) > 5 else ""),
+                replays, games, replays,
+                "; missing " + ",".join(str(g) for g in missing[:3]) if missing else "",
+                "; unexpected " + ",".join(str(g) for g in extra[:3]) if extra else ""))
+        listed = {}
+        for g in st.get("games", []):
+            listed.setdefault(as_int(g.get("game"), -1), g)
+        for p in rows:
+            gi, sh, rh, sc, rs = int(p[0]), p[1], p[2], p[3], p[4]
+            g = listed.get(gi)
+            why = []
+            if g is None:
+                why.append("not in the standard soak report")
+            else:
+                rep_sh, rep_sc = g.get("state_hash"), report_score(g)
+                if not isinstance(rep_sh, str) or not is_hash(rep_sh):
+                    why.append("report state_hash %r unusable" % (rep_sh,))
+                elif sh != rep_sh:
+                    why.append("recorded soak state_hash %r != report %s" % (sh, rep_sh))
+                if rep_sc is None:
+                    why.append("report score %r unusable" % (g.get("score"),))
+                elif sc != rep_sc:
+                    why.append("recorded soak score %r != report %s" % (sc, rep_sc))
+            if not is_hash(rh):
+                why.append("replay state_hash %r" % rh if rh else "no replay state_hash")
+            elif rh != sh:
+                why.append("replay state_hash %s != soak %s" % (rh, sh or "''"))
+            if not is_score(rs):
+                why.append("replay score %r" % rs if rs else "no replay score")
+            elif rs != sc:
+                why.append("replay score %s != soak %s" % (rs, sc or "''"))
+            if why:
+                bad.append("game %d: %s" % (gi, ", ".join(why)))
+            else:
+                ok_n += 1
+    if replays < GATE_REPLAYS and not v.dry:
+        bad.insert(0, "REPLAYS=%d < %d" % (replays, GATE_REPLAYS))
+    v.add("FAIL" if bad else "PASS", t,
+          "A2.4c sampled bot games replayed from recorded input without the bot: "
+          "N of REPLAYS identical state_hash and score",
+          "%d of %d identical%s" % (ok_n, replays, "; " + "; ".join(bad[:3]) if bad else ""))
+
+
 def game_ticks(r):
     return [as_int(g.get("ticks"), 0) for g in r.get("games", [])]
 
@@ -299,7 +406,8 @@ def judge_table(v, out, t, run):
               "REPLAYS=%d%s" % (replays, " (dry run)" if v.dry else ""))
     else:
         v.add("PASS", t, "A2.4 sampled replays >= %d" % GATE_REPLAYS, "REPLAYS=%d" % replays)
-    crit = ("A2.4a soak games 0..%d re-run alone (other thread count) equal the full standard run "
+    judge_sampled_replay(v, t, tdir, st, run, replays)
+    crit = ("A2.4a (supplemental) soak games 0..%d re-run alone (other thread count) equal the full standard run "
             "(seed + state_hash per game)" % (replays - 1))
     rep, err = read_json(os.path.join(tdir, "replay_soak", "soak_report.json"))
     if st is None or rep is None:
@@ -312,13 +420,20 @@ def judge_table(v, out, t, run):
             a, b = full.get(i), again.get(i)
             if a is None or b is None:
                 bad.append("game %d missing (%s)" % (i, "full run" if a is None else "re-run"))
-            elif (a.get("seed"), a.get("state_hash")) != (b.get("seed"), b.get("state_hash")):
-                bad.append("game %d: %s/%s vs %s/%s" % (i, a.get("seed"), a.get("state_hash"),
-                                                         b.get("seed"), b.get("state_hash")))
+            else:
+                # A field missing, None or empty in either report is a
+                # mismatch, never "equal" (None == None).
+                absent = ["%s missing in %s" % (k, w) for k in ("seed", "state_hash")
+                          for w, g in (("full run", a), ("re-run", b)) if g.get(k) in (None, "")]
+                if absent:
+                    bad.append("game %d: %s" % (i, ", ".join(absent)))
+                elif (a["seed"], a["state_hash"]) != (b["seed"], b["state_hash"]):
+                    bad.append("game %d: %s/%s vs %s/%s" % (i, a["seed"], a["state_hash"],
+                                                             b["seed"], b["state_hash"]))
         threads = "threads %s vs %s" % (st.get("timing", {}).get("threads"), rep.get("timing", {}).get("threads"))
         v.add("PASS" if not bad and replays > 0 else "FAIL", t, crit,
               ("%d/%d equal, %s" % (replays - len(bad), replays, threads)) + ("; " + "; ".join(bad[:3]) if bad else ""))
-    crit = "A2.4b built-in input pattern recorded and replayed: equal state_hash per seed"
+    crit = "A2.4b (supplemental) built-in input pattern recorded and replayed: equal state_hash per seed"
     text = read_text(os.path.join(tdir, "replay_pattern.tsv"))
     rows = []
     for line in (text or "").splitlines():
@@ -332,9 +447,6 @@ def judge_table(v, out, t, run):
         v.add("PASS" if not bad else "FAIL", t, crit,
               "%d/%d seeds equal%s" % (len(rows) - len(bad), len(rows),
                                        "; " + "; ".join("seed %s: %s vs %s" % tuple(p) for p in bad[:3]) if bad else ""))
-    v.add("REPORT", t, "A2.4c bot-game replay",
-          "REPORT: bot-input record/playback not available; repeatability check used "
-          "(first %d games, not spread over the run: pin_sim soak cannot select game indices)" % replays)
 
 
 READINESS = (
@@ -382,6 +494,25 @@ def human_table(v):
         lines.append("%-7s %s  %s" % (status, crit, value))
     lines.append("=========================================")
     return lines
+
+
+def fsync_dir(path):
+    """fsync a directory so the new verdict files' entries are durable.
+
+    Platforms that cannot open or fsync a directory (OSError, or no
+    os.O_RDONLY/os.fsync: AttributeError) are tolerated: the files themselves
+    were already fsynced, and the verdict must not fail for this.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except (OSError, AttributeError):
+        return
+    try:
+        os.fsync(fd)
+    except (OSError, AttributeError):
+        pass
+    finally:
+        os.close(fd)
 
 
 def main(argv):
@@ -447,6 +578,7 @@ def main(argv):
         f.write("\n".join(table) + "\n" + final + "\n")
         f.flush()
         os.fsync(f.fileno())
+    fsync_dir(out)
     sys.stdout.write("\n".join(table) + "\n")
     sys.stdout.flush()
     sys.stdout.write(final + "\n")
