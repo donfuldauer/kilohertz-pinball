@@ -449,6 +449,53 @@ fn assignment(word: &str) -> Option<(&str, &str)> {
     ok.then_some((name, value))
 }
 
+/// Splits a line into simple commands at `;`, `&`, `|` outside quotes
+/// and `$( … )`.
+fn split_commands(line: &str) -> Vec<&str> {
+    let (mut out, mut start) = (Vec::new(), 0);
+    let (mut depth, mut dq, mut sq, mut prev) = (0usize, false, false, '\0');
+    for (i, c) in line.char_indices() {
+        match c {
+            '\'' if !dq => sq = !sq,
+            '"' if !sq => dq = !dq,
+            '(' if !sq && prev == '$' => depth += 1,
+            ')' if !sq && depth > 0 => depth -= 1,
+            ';' | '&' | '|' if !sq && !dq && depth == 0 => {
+                out.push(&line[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+        prev = c;
+    }
+    out.push(&line[start..]);
+    out
+}
+
+/// The words after every `cmp` that is a command of `line` (first word of
+/// a simple command, after shell keywords, `!`, `{`, `(` and `VAR=value`
+/// assignments), not an argument of another command.
+fn cmp_calls(line: &str) -> Vec<Vec<String>> {
+    const LEAD: [&str; 9] = [
+        "if", "then", "elif", "else", "do", "while", "until", "!", "{",
+    ];
+    let mut calls = Vec::new();
+    for cmd in split_commands(line) {
+        let w = words(cmd.trim_start_matches(|c: char| c.is_whitespace() || c == '('));
+        let mut k = 0;
+        while k < w.len() && LEAD.contains(&w[k].as_str()) {
+            k += 1;
+        }
+        while k < w.len() && assignment(&w[k]).is_some() {
+            k += 1;
+        }
+        if w.get(k).is_some_and(|x| x == "cmp") {
+            calls.push(w[k + 1..].to_vec());
+        }
+    }
+    calls
+}
+
 /// Checks that the workflow, read as shell with table `table` substituted
 /// for the `*` of every `for … in <glob>` loop, runs
 /// `tables/<table>/rules-wasm/rebuild.sh <scratch>` and then a real `cmp`
@@ -477,22 +524,20 @@ fn compares_rebuild(text: &str, table: &str) -> Result<(), String> {
             if (word == script || word.ends_with(&format!("/{script}"))) && i + 1 < w.len() {
                 rebuilt.push(expand(&w[i + 1], &vars));
             }
-            if w[i] == "cmp" {
-                let ops: Vec<String> = w[i + 1..]
-                    .iter()
-                    .filter(|o| !o.starts_with('-'))
-                    .take(2)
-                    .map(|o| expand(o, &vars))
-                    .collect();
-                if ops.len() == 2 {
-                    let pair = |a: &str, b: &str| {
-                        b == committed
-                            && !a.starts_with("tables/")
-                            && rebuilt.iter().any(|r| r == a)
-                    };
-                    if pair(&ops[0], &ops[1]) || pair(&ops[1], &ops[0]) {
-                        return Ok(());
-                    }
+        }
+        for call in cmp_calls(line) {
+            let ops: Vec<String> = call
+                .iter()
+                .filter(|o| !o.starts_with('-'))
+                .take(2)
+                .map(|o| expand(o, &vars))
+                .collect();
+            if ops.len() == 2 {
+                let pair = |a: &str, b: &str| {
+                    b == committed && !a.starts_with("tables/") && rebuilt.iter().any(|r| r == a)
+                };
+                if pair(&ops[0], &ops[1]) || pair(&ops[1], &ops[0]) {
+                    return Ok(());
                 }
             }
         }
@@ -547,6 +592,23 @@ fn the_workflow_reader_needs_a_real_cmp_of_the_rebuilt_file() {
         "echo \"a # b\" 'c # d' $# ${#x}"
     );
     assert_eq!(strip_comment("a; # b"), "a; ");
+    let cmp_line = "if ! cmp \"$out\" \"$committed\"; then exit 1; fi";
+    for bad in [
+        "echo cmp \"$out\" \"$committed\"",
+        "printf '%s' cmp \"$out\" \"$committed\"",
+        "true && echo cmp \"$out\" \"$committed\"",
+    ] {
+        let t = good.replace(cmp_line, bad);
+        assert!(compares_rebuild(&t, "apex_circuit").is_err(), "{bad}");
+    }
+    for ok in [
+        "if ! cmp -s \"$out\" \"$committed\"; then",
+        "cmp \"$out\" \"$committed\" || exit 1",
+        "true && cmp \"$out\" \"$committed\"",
+    ] {
+        let t = good.replace(cmp_line, ok);
+        assert_eq!(compares_rebuild(&t, "apex_circuit"), Ok(()), "{ok}");
+    }
     let echoed = good.replace(
         "if ! cmp \"$out\" \"$committed\"; then exit 1; fi",
         "echo \"cmp $out $committed\"",
