@@ -73,7 +73,9 @@ use pin_core::input::{CabinetAxis, CabinetInput, InputEvent};
 use pin_core::sim::{SimStep, TICK_NS};
 use std::path::{Path, PathBuf};
 
-use crate::autoplay::{RecordSoakError, SkillLevel, SoakConfig, SoakReport, run_soak_recording};
+use crate::autoplay::{
+    RecordSoakError, SkillLevel, SoakConfig, SoakReport, run_soak, run_soak_recording,
+};
 use crate::replay::{GameRecording, GameReplay, Recorder, Recording, replay, replay_game};
 use crate::{SimConfig, Simulation};
 
@@ -652,12 +654,21 @@ pub fn run_soak_command(args: &SoakArgs) -> Result<String, CliError> {
             args.bundle.display()
         )));
     }
-    let recorded =
-        run_soak_recording(&args.bundle, &args.cfg, &args.record_games).map_err(|e| match e {
-            RecordSoakError::Selection(m) => soak_usage(m),
-            RecordSoakError::Sim(e) => CliError::Failed(format!("soak: {e}")),
-        })?;
-    let report = recorded.report;
+    let (report, recordings) = if args.record_games.is_empty() {
+        // No recording requested: exactly the plain soak, with none of the
+        // recording-only checks (script limits, tick cap).
+        let report = run_soak(&args.bundle, &args.cfg)
+            .map_err(|e| CliError::Failed(format!("soak: {e}")))?;
+        (report, Vec::new())
+    } else {
+        let r = run_soak_recording(&args.bundle, &args.cfg, &args.record_games).map_err(
+            |e| match e {
+                RecordSoakError::Selection(m) => soak_usage(m),
+                RecordSoakError::Sim(e) => CliError::Failed(format!("soak: {e}")),
+            },
+        )?;
+        (r.report, r.recordings)
+    };
     let write = |name: &str, text: String| {
         std::fs::write(args.out.join(name), text).map_err(|e| {
             CliError::Failed(format!(
@@ -671,7 +682,7 @@ pub fn run_soak_command(args: &SoakArgs) -> Result<String, CliError> {
     write(SOAK_JSON, report.to_json())?;
     write(SOAK_MARKDOWN, report.to_markdown())?;
     if let Some(dir) = &args.record_dir {
-        write_recordings(dir, &report, &args.record_games, &recorded.recordings)?;
+        write_recordings(dir, &report, &args.record_games, &recordings)?;
     }
     let mut summary = soak_summary(&report, &args.out);
     if args.gate_a1 {
@@ -689,6 +700,18 @@ pub fn run_soak_command(args: &SoakArgs) -> Result<String, CliError> {
     }
 }
 
+/// Fails when `path` is a symbolic link, so a write there cannot reach a
+/// file outside the record folder. A missing path or a regular file is fine.
+fn refuse_symlink(path: &Path) -> Result<(), CliError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => Err(CliError::Failed(format!(
+            "refusing to write {}: it is a symbolic link",
+            path.display()
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// Writes every recording into `dir` (created if missing) and then the
 /// [`RECORDED_GAMES_TSV`] index of `games` from `report`.
 fn write_recordings(
@@ -700,10 +723,13 @@ fn write_recordings(
     std::fs::create_dir_all(dir)
         .map_err(|e| CliError::Failed(format!("cannot create {}: {e}", dir.display())))?;
     for (g, rec) in recordings {
-        rec.save(&dir.join(record_file_name(*g)))
+        let path = dir.join(record_file_name(*g));
+        refuse_symlink(&path)?;
+        rec.save(&path)
             .map_err(|e| CliError::Failed(format!("cannot write a recording: {e}")))?;
     }
     let tsv = dir.join(RECORDED_GAMES_TSV);
+    refuse_symlink(&tsv)?;
     std::fs::write(&tsv, recorded_games_tsv(report, games))
         .map_err(|e| CliError::Failed(format!("cannot write {}: {e}", tsv.display())))
 }

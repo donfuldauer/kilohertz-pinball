@@ -25,6 +25,28 @@ use support::*;
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
 
+/// A scratch folder removed when dropped, also when the test panics.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        Self(scratch(name))
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = PathBuf;
+    fn deref(&self) -> &PathBuf {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn args(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| (*s).to_owned()).collect()
 }
@@ -177,7 +199,7 @@ fn soak_args(bundle: &Path, out: &Path, extra: &[&str]) -> Vec<String> {
 #[test]
 fn t1_cli_recordings_replay_to_the_tsv_and_report_values() {
     let bundle = fixture("clean");
-    let root = scratch("record_cli");
+    let root = Scratch::new("record_cli");
     on_sim_thread(move || {
         for (skill, seed) in [("novice", "3"), ("standard", "1"), ("expert", "0x2a")] {
             for threads in ["1", "2"] {
@@ -378,7 +400,7 @@ fn t2a_operation_level_tampering_changes_the_hash() {
 #[test]
 fn t2b_corrupt_files_are_errors_not_panics() {
     let (_, _, rec) = recorded_game(2, 2_000);
-    let dir = scratch("record_corrupt");
+    let dir = Scratch::new("record_corrupt");
     let bundle = fixture("clean");
     let good = rec.to_bytes();
     let n = good.len();
@@ -437,13 +459,13 @@ fn t2c_another_table_is_refused_before_building() {
     );
     // A "bundle" that could never build: the mismatch is reported, so the
     // hash check comes first.
-    let junk = scratch("record_junk");
+    let junk = Scratch::new("record_junk");
     std::fs::write(junk.join("table.toml"), "this is not a table").unwrap();
     let (j2, r3) = (junk.clone(), rec.clone());
     let err = on_sim_thread(move || replay_game(&j2, &r3)).unwrap_err();
     assert!(matches!(err, ReplayError::TableMismatch { .. }), "{err:?}");
     // Through the binary: non-zero exit, message on stderr, nothing on stdout.
-    let dir = scratch("record_mismatch");
+    let dir = Scratch::new("record_mismatch");
     let file = dir.join("g.khzrec");
     rec.save(&file).unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_pin_sim"))
@@ -527,7 +549,7 @@ fn reports(out: &Path) -> (serde_json::Value, String, String) {
 #[test]
 fn t3_soak_outputs_are_identical_with_and_without_recording() {
     let bundle = fixture("clean");
-    let root = scratch("record_noninterference");
+    let root = Scratch::new("record_noninterference");
     let out = root.join("out");
     for extra in [
         &["--games", "3", "--seed", "7", "--max-ticks", "4000"][..],
@@ -665,7 +687,7 @@ fn t4_soak_arguments_with_recording() {
 #[test]
 fn t4_record_dir_inside_the_bundle_is_refused() {
     // A copy of the fixture, so nothing is ever written into the real one.
-    let root = scratch("record_inside");
+    let root = Scratch::new("record_inside");
     let bundle = root.join("clean");
     std::fs::create_dir_all(&bundle).unwrap();
     for e in std::fs::read_dir(fixture("clean")).unwrap() {
@@ -715,4 +737,107 @@ fn t4_replay_game_arguments() {
     assert!(pin_sim::cli::USAGE.contains("--replay-game FILE"));
     assert!(pin_sim::cli::SOAK_USAGE.contains("--record-games SPEC"));
     assert!(pin_sim::cli::SOAK_USAGE.contains("--record-dir DIR"));
+}
+
+#[test]
+fn t4_no_recording_means_no_recording_checks() {
+    // The bundle does not exist, so a soak that gets past argument checks
+    // fails with a run error (exit 1); the recording checks are usage errors
+    // (exit 2). A tick limit above what a recording holds is fine for a
+    // plain soak and refused only when games are recorded.
+    let missing = "/nonexistent/bundle";
+    let out = Scratch::new("record_nochecks");
+    let out_s = out.to_str().unwrap();
+    let plain = parse_soak_args(&args(&[
+        missing,
+        "--games",
+        "1",
+        "--max-ticks",
+        "4294967297",
+        "--out",
+        out_s,
+    ]))
+    .unwrap();
+    let e = run_soak_command(&plain).unwrap_err();
+    assert_eq!(e.exit_code(), 1, "{e}");
+    assert!(e.to_string().contains("soak:"), "{e}");
+    let rec = parse_soak_args(&args(&[
+        missing,
+        "--games",
+        "1",
+        "--max-ticks",
+        "4294967297",
+        "--record-games",
+        "0",
+        "--out",
+        out_s,
+    ]))
+    .unwrap();
+    let e = run_soak_command(&rec).unwrap_err();
+    assert_eq!(e.exit_code(), 2, "{e}");
+    // Same for non-default script limits.
+    let mut lua = plain;
+    lua.cfg.sim.lua.instruction_budget = lua.cfg.sim.lua.instruction_budget.wrapping_add(1);
+    lua.cfg.max_game_ticks = 10;
+    assert_eq!(run_soak_command(&lua).unwrap_err().exit_code(), 1);
+    lua.record_games = vec![0];
+    assert_eq!(run_soak_command(&lua).unwrap_err().exit_code(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn t4_recording_never_writes_through_a_symlink() {
+    use std::os::unix::fs::symlink;
+    let bundle = fixture("clean");
+    let root = Scratch::new("record_symlink");
+    for name in [record_file_name(0), RECORDED_GAMES_TSV.to_owned()] {
+        let case = root.join(name.replace('.', "_"));
+        let rec_dir = case.join("rec");
+        std::fs::create_dir_all(&rec_dir).unwrap();
+        let victim = case.join("victim.txt");
+        std::fs::write(&victim, "precious").unwrap();
+        symlink(&victim, rec_dir.join(&name)).unwrap();
+        let a = soak_args(
+            &bundle,
+            &case.join("out"),
+            &[
+                "--games",
+                "1",
+                "--max-ticks",
+                "300",
+                "--record-games",
+                "0",
+                "--record-dir",
+                rec_dir.to_str().unwrap(),
+            ],
+        );
+        let res = main_with_args(&a);
+        let Err(CliError::Failed(m)) = res else {
+            panic!("{name}: {res:?}")
+        };
+        assert!(m.contains("symbolic link"), "{m}");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
+    }
+    // Reruns over regular files still replace them.
+    let rec_dir = root.join("rerun");
+    let a = soak_args(
+        &bundle,
+        &root.join("rerun_out"),
+        &[
+            "--games",
+            "1",
+            "--max-ticks",
+            "300",
+            "--record-games",
+            "0",
+            "--record-dir",
+            rec_dir.to_str().unwrap(),
+        ],
+    );
+    for _ in 0..2 {
+        let res = main_with_args(&a);
+        assert!(matches!(res, Err(CliError::Failed(m)) if !m.contains("symbolic")));
+        assert!(rec_dir.join(record_file_name(0)).is_file());
+        assert!(rec_dir.join(RECORDED_GAMES_TSV).is_file());
+    }
 }
