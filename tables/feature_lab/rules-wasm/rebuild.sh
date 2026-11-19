@@ -8,8 +8,8 @@
 #   rebuild.sh             writes ../rules.wasm
 #   rebuild.sh <out.wasm>  writes <out.wasm> instead
 set -eu
-here=$(cd "$(dirname "$0")" && pwd)
-sdk=$(cd "$here/../../../crates/pin_script/guest-sdk" && pwd)
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+sdk=$(CDPATH= cd -- "$here/../../../crates/pin_script/guest-sdk" && pwd)
 out="${1:-$here/../rules.wasm}"
 target="${CARGO_TARGET_DIR:-$here/target}"
 # Flags separated by 0x1f, so checkout paths with spaces stay one argument.

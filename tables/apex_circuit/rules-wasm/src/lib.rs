@@ -1024,7 +1024,8 @@ mod tests {
         assert_eq!(a.multiplier(), 3);
         a.pb_mode = true;
         assert_eq!(a.multiplier(), 6);
-        a.combo = 5;
+        // Uncapped this is 12, so only the cap brings it down to 10.
+        a.combo = 6;
         assert_eq!(a.multiplier(), MULT_CAP);
     }
 

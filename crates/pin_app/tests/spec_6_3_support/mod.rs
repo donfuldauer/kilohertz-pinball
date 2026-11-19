@@ -9,16 +9,22 @@
 //!   Wasm bundle receive the same input events and the same switch stimuli;
 //!   their state hash, display scenes, sounds, score reports, haptics,
 //!   lamps, GI, flippers, mech transforms, persist values, counters and
-//!   script health must agree after every tick.
-//! * **Command layer.** `Simulation` does not expose the drained
-//!   `HostCommandQueue`, so a [`ScriptPair`] drives a standalone
-//!   `LuaScriptBackend` and `WasmScriptBackend` (built from the same bundle
-//!   files and the simulation's own name tables) with identical host views:
-//!   the switch bits and ball count of the Lua simulation after each tick,
-//!   the switch edges between consecutive ticks, the persist values their
-//!   own commands wrote, and one seeded `Pcg32` each. After every tick the
-//!   two drained queues must be identical (same commands, same order, float
-//!   payloads bit-for-bit) and the two RNGs must be in the same state.
+//!   script health must agree after every tick, and so must the command
+//!   queue each simulation's script filled and applied in the tick
+//!   (`Simulation::last_commands`, after load `on_init`'s): same commands,
+//!   same order, float payloads bit-for-bit ([`same_queue`]). Each script
+//!   is called by its own simulation with that simulation's pre-tick view,
+//!   so this is the per-tick queue comparison.
+//! * **Command layer (synthetic stream).** A [`ScriptPair`] drives a
+//!   standalone `LuaScriptBackend` and `WasmScriptBackend` (built from the
+//!   same bundle files and the simulation's own name tables) with one
+//!   shared synthetic stream: the switch bits and ball count of the Lua
+//!   simulation *after* each tick, the switch edges between consecutive
+//!   post-tick states, the persist values their own commands wrote, and one
+//!   seeded `Pcg32` each. That is not the view the simulation's script saw
+//!   (ball counts after spawns and drains, physics edges a tick early,
+//!   edges merged in ascending order), so it checks that both backends
+//!   answer one shifted stream identically, not the sim's own queues.
 #![allow(dead_code)]
 
 /// The Feature Lab build (`crates/pin_app/examples/build_feature_lab.rs`,
@@ -135,10 +141,42 @@ pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Removes the scratch directories of earlier test processes that have
+/// exited (`pin_app_spec63_<tag>_<pid>_<n>` with no `/proc/<pid>`). The
+/// bundles are cached in statics for the whole process, so they cannot be
+/// removed on drop; this keeps at most the live processes' copies. Does
+/// nothing where `/proc` is not available.
+fn prune_dead_scratch(base: &Path) {
+    if !Path::new("/proc/self").is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix("pin_app_spec63_") else {
+            continue;
+        };
+        let mut parts = rest.rsplitn(3, '_');
+        let (Some(_n), Some(pid), Some(_tag)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        if pid != std::process::id() && !Path::new(&format!("/proc/{pid}")).exists() {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 /// A fresh scratch directory under the target dir (tests never share one).
 pub fn scratch(tag: &str) -> PathBuf {
     static N: AtomicU64 = AtomicU64::new(0);
+    static PRUNE: std::sync::Once = std::sync::Once::new();
     let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    PRUNE.call_once(|| prune_dead_scratch(&base));
     let p = base.join(format!(
         "pin_app_spec63_{tag}_{}_{}",
         std::process::id(),
@@ -563,8 +601,8 @@ pub fn same_queue(a: &HostCommandQueue, b: &HostCommandQueue) -> bool {
         && a.persist_writes == b.persist_writes
 }
 
-/// A standalone Lua and Wasm backend of one table fed identical host
-/// views; see the module docs.
+/// A standalone Lua and Wasm backend of one table fed one shifted synthetic
+/// stream (post-tick views of the Lua simulation); see the module docs.
 pub struct ScriptPair {
     lua: LuaScriptBackend,
     wasm: WasmScriptBackend,
@@ -763,12 +801,20 @@ fn bits(v: &[f32]) -> impl Iterator<Item = u32> + '_ {
     v.iter().map(|x| x.to_bits())
 }
 
-/// Asserts that the Lua and the Wasm simulation published the same tick.
+/// Asserts that the Lua and the Wasm simulation published the same tick,
+/// starting with the command queue each script filled and the simulation
+/// applied (`Simulation::last_commands`).
 pub fn assert_same_tick(l: &Simulation, w: &Simulation, ctx: &str) {
     let t = l.tick();
     assert_eq!(t, w.tick(), "{ctx}: tick");
     assert_script_healthy(l, &format!("{ctx} lua tick {t}"));
     assert_script_healthy(w, &format!("{ctx} wasm tick {t}"));
+    assert!(
+        same_queue(l.last_commands(), w.last_commands()),
+        "{ctx}: the simulations' command queues differ at tick {t}\n lua:  {:?}\n wasm: {:?}",
+        l.last_commands(),
+        w.last_commands()
+    );
     assert_eq!(
         l.state_hash(),
         w.state_hash(),

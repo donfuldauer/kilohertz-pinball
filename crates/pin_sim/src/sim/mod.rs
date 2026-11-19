@@ -616,6 +616,17 @@ impl Simulation {
         &self.out_scores
     }
 
+    /// The queue the script filled in the last tick (edges, then
+    /// `on_tick`) and step 3 applied; after load, `on_init`'s. Read-only
+    /// and output only: the queue is cleared at the start of the next
+    /// tick's step 2, so reading it changes neither
+    /// [`state_hash`](Self::state_hash) nor replays. Returns a reference: no
+    /// allocation, lock or copy (D5).
+    #[must_use]
+    pub fn last_commands(&self) -> &HostCommandQueue {
+        &self.cmd
+    }
+
     /// Drop and removal counters.
     #[must_use]
     pub fn counters(&self) -> SimCounters {

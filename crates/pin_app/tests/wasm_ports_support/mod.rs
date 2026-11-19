@@ -6,17 +6,24 @@
 //! * **Simulation level** ([`replay_pair`]): two bundles built from the same
 //!   sources, one with the Lua rules and one whose `table.toml` (in the
 //!   bundle copy only) names `rules.wasm`, are stepped tick by tick with the
-//!   same recorded input events. After every tick everything the
-//!   simulation exposes of the drained command queue (display scenes,
-//!   sounds and score reports in queue order, lamp intensities, the GI
+//!   same recorded input events. After load (`on_init`) and after every
+//!   tick the command queue each simulation's script filled and applied
+//!   ([`Simulation::last_commands`]) must be byte-identical
+//!   ([`queue_bytes`]): each script was called by its own simulation with
+//!   that simulation's own pre-tick view, edges and RNG, so this is the
+//!   per-tick queue comparison. Everything else the simulation exposes
+//!   (display scenes, sounds and score reports, lamp intensities, the GI
 //!   tint, every persist slot, fault and overflow state) and the full
-//!   `state_hash` (balls, switches, scores, flippers, RNG) must be equal.
-//! * **Queue level** ([`Lockstep`]): a Lua and a Wasm backend of the same
-//!   table are fed identical switch edges and host views, each with its own
-//!   copy of the seeded PCG, and the `HostCommandQueue` each produces per
-//!   tick is compared byte for byte ([`queue_bytes`]), together with the
-//!   PCG state (the order of `random` draws). `pin_sim` does not expose its
-//!   drained queue, so this is where the exact per-tick queues are compared.
+//!   `state_hash` (balls, switches, scores, flippers, RNG) must be equal
+//!   too.
+//! * **Synthetic traffic** ([`Lockstep`] with [`RandomEdges`]): a Lua and a
+//!   Wasm backend of the same table, outside any simulation, are fed the
+//!   same synthetic switch edges and host views, each with its own copy of
+//!   the seeded PCG, and the `HostCommandQueue` each produces per tick is
+//!   compared byte for byte, together with the PCG state (the order of
+//!   `random` draws). The views are made up by the harness (not what a
+//!   simulation would show), which lets the traffic reach paths a played
+//!   game rarely does.
 #![allow(dead_code)]
 
 use pin_core::ids::SwitchId;
@@ -226,20 +233,44 @@ pub struct PairReport {
     /// Ticks on which the drained queue produced a display scene, a sound
     /// or a score report in the Wasm run (non-vacuity).
     pub ticks_with_output: u64,
+    /// Ticks on which the Wasm simulation's command queue held at least one
+    /// command (non-vacuity of the queue comparison).
+    pub queue_busy_ticks: u64,
+    /// Commands in the Wasm simulation's per-tick queues, summed over the
+    /// ticks (all lists).
+    pub queue_commands: u64,
     /// Highest persist value of each of `mode_keys` seen in the Wasm run.
     pub modes: Vec<(String, i64)>,
 }
 
+/// Asserts that the command queues the Lua and the Wasm simulation applied
+/// last ([`Simulation::last_commands`]) are byte-identical; `bytes` is
+/// scratch space.
+pub fn assert_same_last_commands(
+    lua: &Simulation,
+    wasm: &Simulation,
+    at: &str,
+    bytes: &mut (Vec<u8>, Vec<u8>),
+) {
+    queue_bytes(lua.last_commands(), &mut bytes.0);
+    queue_bytes(wasm.last_commands(), &mut bytes.1);
+    assert!(
+        bytes.0 == bytes.1,
+        "{at}: the simulations' command queues differ\n lua {:?}\nwasm {:?}",
+        lua.last_commands(),
+        wasm.last_commands()
+    );
+}
+
 /// Steps the Lua and the Wasm bundle with the recorded events of
-/// `recording` and asserts, after every tick, identical simulation output
-/// ([`sim_tick_bytes`]); `on_tick` also sees the Lua sim after each tick
-/// (for [`Lockstep::follow`]).
+/// `recording` and asserts, after load and after every tick, byte-identical
+/// command queues ([`assert_same_last_commands`]) and identical simulation
+/// output ([`sim_tick_bytes`]).
 pub fn replay_pair(
     lua_dir: &Path,
     wasm_dir: &Path,
     recording: &Recording,
     mode_keys: &[&str],
-    mut on_tick: impl FnMut(&Simulation),
 ) -> PairReport {
     let cfg = SimConfig {
         seed: recording.seed,
@@ -248,9 +279,13 @@ pub fn replay_pair(
     let mut lua = Simulation::load(lua_dir, cfg).expect("load the Lua bundle");
     let mut wasm = Simulation::load(wasm_dir, cfg).expect("load the Wasm bundle");
     let (mut a, mut b) = (Vec::new(), Vec::new());
+    let mut qbytes = (Vec::new(), Vec::new());
+    assert_same_last_commands(&lua, &wasm, "on_init", &mut qbytes);
     sim_tick_bytes(&lua, &mut a);
     sim_tick_bytes(&wasm, &mut b);
     assert!(a == b, "on_init output differs");
+    let mut queue_busy_ticks = 0;
+    let mut queue_commands = 0;
     let k_ball = key(&wasm, "ball");
     let k_games = key(&wasm, "games_played");
     let mode_ids: Vec<u16> = mode_keys.iter().map(|m| key(&wasm, m)).collect();
@@ -265,6 +300,12 @@ pub fn replay_pair(
         events.extend(recording.events_on(tick).iter().map(|(_, e)| *e));
         lua.step_1ms(tick, &events, &mut out_l);
         wasm.step_1ms(tick, &events, &mut out_w);
+        assert_same_last_commands(&lua, &wasm, &format!("tick {tick}"), &mut qbytes);
+        let n = queue_len(wasm.last_commands());
+        queue_commands += n;
+        if n > 0 {
+            queue_busy_ticks += 1;
+        }
         sim_tick_bytes(&lua, &mut a);
         sim_tick_bytes(&wasm, &mut b);
         if a != b {
@@ -294,7 +335,6 @@ pub fn replay_pair(
         for (m, &k) in mode_max.iter_mut().zip(&mode_ids) {
             *m = (*m).max(wasm.persist(k));
         }
-        on_tick(&lua);
     }
     assert!(!lua.script_faulted(), "{:?}", lua.script_error());
     assert!(!wasm.script_faulted(), "{:?}", wasm.script_error());
@@ -312,12 +352,16 @@ pub fn replay_pair(
         max_ball,
         games: wasm.persist(k_games),
         ticks_with_output,
+        queue_busy_ticks,
+        queue_commands,
         modes,
     }
 }
 
 /// A Lua and a Wasm backend of one table driven in lockstep with identical
-/// inputs; every tick's queues must be byte-identical.
+/// synthetic inputs (see [`RandomEdges`]); every tick's queues must be
+/// byte-identical. Not a replay check: the views are the harness's, not a
+/// simulation's (the replay compares [`Simulation::last_commands`]).
 pub struct Lockstep {
     lua: LuaScriptBackend,
     wasm: WasmScriptBackend,
@@ -453,24 +497,6 @@ impl Lockstep {
         self.ticks += 1;
     }
 
-    /// Follows the (Lua) simulation `sim` after one of its ticks: the
-    /// switch changes since the last call are this tick's edges (ascending
-    /// switch number, as the sim delivers them).
-    pub fn follow(&mut self, sim: &Simulation) {
-        let now = sim.switch_bits();
-        let mut edges = Vec::new();
-        for (w, &word) in now.iter().enumerate() {
-            let mut diff = word ^ self.prev_switches[w];
-            while diff != 0 {
-                let b = diff.trailing_zeros() as usize;
-                diff &= diff - 1;
-                edges.push(((w * 64 + b) as u16, word & (1u64 << b) != 0));
-            }
-        }
-        self.prev_switches = now;
-        self.tick(sim.tick(), now, sim.balls_in_play().min(255) as u8, &edges);
-    }
-
     fn compare_and_apply(&mut self, at: &str) {
         assert!(
             !self.lua.is_faulted(),
@@ -515,18 +541,19 @@ impl Lockstep {
 }
 
 /// Runs `rebuild.sh` of `table` into a scratch file and compares it with
-/// the committed `rules.wasm` (as CI does). Skips with a printed note
-/// where the `wasm32-unknown-unknown` target is not installed.
+/// the committed `rules.wasm` (as CI does). Where the
+/// `wasm32-unknown-unknown` target is not installed it skips with a printed
+/// note, or fails when [`REQUIRE_WASM32_ENV`] is set (see
+/// [`wasm32_gate`]).
 pub fn check_rebuild(table: &str) {
-    if !wasm_target_installed() {
-        println!("SKIP: wasm32-unknown-unknown is not installed; {table}/rules.wasm not rebuilt");
+    if !wasm32_gate(&format!("tables/{table}/rules.wasm not rebuilt")) {
         return;
     }
     let script = table_src(table).join("rules-wasm/rebuild.sh");
-    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "wasm_ports_rebuild_{table}_{}.wasm",
-        std::process::id()
-    ));
+    let scratch = TempDir::new(&format!("wasm_ports_rebuild_{table}"));
+    let out = scratch.path().join("rules.wasm");
+    // The guest build cache is kept (a fixed path, reused across runs):
+    // it is a cargo target dir, not a per-run scratch file.
     let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("rules_wasm_{table}"));
     let status = Command::new("sh")
         .arg(&script)
@@ -540,11 +567,97 @@ pub fn check_rebuild(table: &str) {
         .expect("run rebuild.sh");
     assert!(status.success(), "{table}: rebuild.sh failed");
     let built = std::fs::read(&out).expect("read the rebuilt module");
-    let _ = std::fs::remove_file(&out);
     assert!(
         built == committed_wasm(table),
         "tables/{table}/rules.wasm is stale: run tables/{table}/rules-wasm/rebuild.sh"
     );
+}
+
+/// The environment variable that turns a missing `wasm32-unknown-unknown`
+/// target from a skip into a failure (set by `.github/workflows/rules-wasm.yml`).
+pub const REQUIRE_WASM32_ENV: &str = "PIN_REQUIRE_WASM32";
+
+/// What a test that needs the `wasm32-unknown-unknown` target does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wasm32Gate {
+    /// The target is installed: run the check.
+    Run,
+    /// The target is missing and not required: skip with a note.
+    Skip,
+    /// The target is missing and [`REQUIRE_WASM32_ENV`] requires it: fail.
+    Fail,
+}
+
+/// The gate decision for `target_installed` and the value of
+/// [`REQUIRE_WASM32_ENV`] (`None` when unset). The target is required when
+/// the value is non-empty and not `"0"`.
+pub fn wasm32_gate_decision(target_installed: bool, require: Option<&str>) -> Wasm32Gate {
+    let required = require.is_some_and(|v| !v.is_empty() && v != "0");
+    match (target_installed, required) {
+        (true, _) => Wasm32Gate::Run,
+        (false, false) => Wasm32Gate::Skip,
+        (false, true) => Wasm32Gate::Fail,
+    }
+}
+
+/// Acts on a gate decision for a check described by `skipped` (what is
+/// not done when it skips): `true` to run, `false` after printing
+/// `SKIP: <reason>`; panics on [`Wasm32Gate::Fail`].
+pub fn apply_wasm32_gate(decision: Wasm32Gate, skipped: &str) -> bool {
+    match decision {
+        Wasm32Gate::Run => true,
+        Wasm32Gate::Skip => {
+            println!("SKIP: wasm32-unknown-unknown is not installed; {skipped}");
+            false
+        }
+        Wasm32Gate::Fail => panic!(
+            "wasm32-unknown-unknown is not installed but {REQUIRE_WASM32_ENV} is set: {skipped} \
+             (install it with `rustup target add wasm32-unknown-unknown`)"
+        ),
+    }
+}
+
+/// The shared gate of the rebuild checks: whether to run (the target is
+/// installed), or skip with a printed note, or panic when
+/// [`REQUIRE_WASM32_ENV`] requires the target.
+pub fn wasm32_gate(skipped: &str) -> bool {
+    let require = std::env::var(REQUIRE_WASM32_ENV).ok();
+    apply_wasm32_gate(
+        wasm32_gate_decision(wasm_target_installed(), require.as_deref()),
+        skipped,
+    )
+}
+
+/// A fresh directory under the target's test temp dir, removed (with its
+/// contents) when dropped.
+#[derive(Debug)]
+pub struct TempDir(PathBuf);
+
+impl TempDir {
+    /// Creates `pin_app_<tag>_<pid>_<n>` (emptied first if it exists).
+    pub fn new(tag: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let p = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+            "pin_app_{tag}_{}_{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap_or_else(|e| panic!("create {}: {e}", p.display()));
+        Self(p)
+    }
+
+    /// The directory.
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// Whether the current toolchain has the `wasm32-unknown-unknown` target.
@@ -694,25 +807,21 @@ pub fn played_inputs(t: u64, action_period: u64, out: &mut Vec<InputEvent>) {
 }
 
 /// The full check of one table: records `ticks` ticks of played games on
-/// the Lua bundle ([`played_inputs`]), replays them on the Lua
-/// and the Wasm bundle in lockstep (tick-for-tick equal output, see
-/// [`replay_pair`]) while a [`Lockstep`] pair follows the Lua sim's switch
-/// edges (byte-identical queues), and returns the report.
+/// the Lua bundle ([`played_inputs`]), replays them on the Lua and the Wasm
+/// bundle in lockstep (byte-identical per-tick command queues and
+/// tick-for-tick equal output, see [`replay_pair`]), and returns the report.
 pub fn played_game_parity(
-    table: &str,
     lua_dir: &Path,
     wasm_dir: &Path,
     action_period: u64,
     ticks: u64,
     mode_keys: &[&str],
-) -> (PairReport, u64, u64) {
+) -> PairReport {
     let seed = SimConfig::default().seed;
     let recording = record(lua_dir, seed, ticks, |t, out| {
         played_inputs(t, action_period, out)
     });
-    let names_sim = Simulation::load(lua_dir, SimConfig::default()).expect("load");
-    let mut ls = Lockstep::new(&names_sim, lua_dir, table, seed);
-    let report = replay_pair(lua_dir, wasm_dir, &recording, mode_keys, |s| ls.follow(s));
-    assert_eq!(ls.ticks, recording.ticks);
-    (report, ls.busy_ticks, ls.commands)
+    let report = replay_pair(lua_dir, wasm_dir, &recording, mode_keys);
+    assert_eq!(report.ticks, recording.ticks);
+    report
 }
