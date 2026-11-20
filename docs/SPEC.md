@@ -631,7 +631,7 @@ Each subphase lists target, dependencies, deliverables and verification, as the 
 3. Median game length at the middle skill level between 1 and 6 minutes; scores increase with skill level.
 4. Deterministic replay of 20 sampled games per table.
 
-Rules are frozen after A2. Later tuning is data-only (`physics_defaults.toml` and table TOML), and the Lua/Wasm parity test stays in CI so any later rule change is caught.
+Rules are frozen after A2. Later tuning is data-only (`physics_defaults.toml` and table TOML), and the Lua/Wasm parity test stays in CI so any later rule change is caught. For the reference tables the freeze is lifted until Gate A3 passes (§7, REQ-TBL-003).
 
 #### Subphase 6.3: Wasm Ports of Table Rules *(restored)*
 * **Target:** `tables/*/rules-wasm/` · **Dependencies:** 4.5, 6.1, 6.2, 6.4, Gate A2
@@ -665,7 +665,7 @@ Rules are frozen after A2. Later tuning is data-only (`physics_defaults.toml` an
 ### Phase 8: Final Human Acceptance (the only human step after setup)
 
 Work through `docs/HUMAN_ACCEPTANCE.md`:
-1. **Review the run.** Read `docs/queue/` and `docs/decisions/` (and the frozen `docs/HUMAN_QUEUE.md` and `docs/DECISIONS.md`); reverse any decision you disagree with as a follow-up task.
+1. **Review the run.** Read the open P8 items in `docs/HUMAN_QUEUE.md` and the decisions in `docs/DECISIONS.md`; reverse any decision you disagree with by asking for a new work-unit issue (`docs/PROCESS.md` P1).
 2. **Play each table.** Judge flipper feel, ball speed, catches and nudge. Tune only data (`physics_defaults.toml`, table TOML), then rerun CI; gates A1 and A2 revalidate automatically.
 3. **Check hardware.** X-Arcade in each mode, analog plunger, accelerometer nudge, rumble, SSF channels, multi-monitor layout, DOF devices.
 4. **Check visuals.** Reflections, bloom, DMD and backglass on a real display; ray-query reflections on a capable GPU, then decide whether to enable them by default.
@@ -826,7 +826,7 @@ Appendix F the table-design and visual rules these requirements point to.
   about the cabinet is hard-coded in the generator or the renderer.
 - **REQ-CAB-004** `cabinet.toml` may start from a named preset (`preset = "<id>"`) and override any
   field. The engine ships presets whose dimensions match common real machine body styles
-  (Appendix E), at least the four listed there. Preset names are generic. Without a
+  (Appendix E), the three listed there. Preset names are generic. Without a
   `cabinet.toml` the table gets the `classic_standard` preset.
 - **REQ-CAB-005** Validation: the cabinet must contain the table (playfield outline, glass height,
   ramps and toys below the glass, the backbox clear of the playfield); a violation is a

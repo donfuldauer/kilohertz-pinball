@@ -692,7 +692,7 @@ class WorkflowTextTest(unittest.TestCase):
         self.assertNotIn("branches", on)
         for path in ("scripts/package.py", "scripts/human_acceptance.py", "scripts/tests/**", "tables/**",
                      "tools/dof_bridge/**", "crates/pin_app/**", ".github/workflows/release.yml",
-                     "docs/HUMAN_ACCEPTANCE.md", "docs/queue/**", "docs/decisions/**", "docs/RUN_LOG.md"):
+                     "docs/HUMAN_ACCEPTANCE.md", "docs/HUMAN_QUEUE.md", "docs/DECISIONS.md", "docs/RUN_LOG.md"):
             self.assertIn(f'      - "{path}"', on)
         self.assertRegex(on, r"(?m)^      version:$")
         self.assertIn("group: ${{ github.workflow }}-${{ github.ref }}\n", text)

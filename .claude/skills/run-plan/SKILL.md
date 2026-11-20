@@ -68,7 +68,7 @@ Merges make new issues ready (`work-issue` §7 step 3): go back to §1.
 ## 5. Phase gate
 
 When every issue with a phase's `phase:` label is complete under the merged-PR rule (closed by a
-merged PR, or replaced as `work-issue` §1 step 2 describes; or optional and blocked under P7),
+merged PR, checked via `issue_read` `closed_by_pull_requests` and `pull_request_read` with the gh search fallback in `work-issue` §1 step 2, or replaced as `work-issue` §1 step 2 describes; or optional and blocked under P7),
 run the phase gate from PROCESS.md P5 on `main`: the full three-OS CI matrix of the last push to
 `main`, replay hashes, earlier phases' tests, the tick-time benchmark (method in
 `docs/DEVELOPMENT.md`), and any automated gate the phase owns (A1, A2, A3). Green: record a

@@ -43,9 +43,10 @@ may be unavailable; the MCP tools and the session's REST routes cover every step
    the next one under step 0.
 2. **Dependencies.** The body's "Depends on" section lists `#numbers`; it is the only dependency
    record. Every one must be **satisfied** under the merged-PR rule (PROCESS.md P6 step 5): closed
-   as completed, and closed by a merged PR (a merged PR whose body contains `Closes #<n>`: search
-   with `search_pull_requests`, query `repo:donfuldauer/kilohertz-pinball is:pr is:merged "Closes #<n>"`,
-   and confirm with `pull_request_read`). A blocker closed without a merged PR counts only if a
+   as completed, and closed by a merged PR (read the blocker with `issue_read`, method `get`: its
+   `closed_by_pull_requests.references` lists the PRs that closed it; confirm each candidate with
+   `pull_request_read`, method `get`, `merged` true. Fallback for a PR body that says `Closes #<n>`
+   but is not linked: `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged "Closes #<n>"'`). A blocker closed without a merged PR counts only if a
    comment on it names the replacement issue(s) that delivered the work and those replacements
    pass the same test. A "None" entry is satisfied once any condition it states in words holds on
    `origin/main` (for example "once the process migration (docs/PROCESS.md) is on `main`": the

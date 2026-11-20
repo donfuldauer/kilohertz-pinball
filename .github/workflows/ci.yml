@@ -42,7 +42,7 @@ jobs:
   # Docs-only PRs skip the heavy jobs below. Skipping is done with a job-level `if:` (a skipped
   # job reports success, so required checks stay satisfied), not `paths-ignore` on the triggers
   # (which would leave required checks pending). Docs files are `**/*.md` and `.coderabbit.yaml`;
-  # docs/PLAN.md counts as code because crates/pin_core/tests/schema_fixtures.rs include_str!s it.
+  # docs/SPEC.md counts as code because crates/pin_core/tests/schema_fixtures.rs include_str!s it.
   # Pushes and workflow_dispatch always run everything (gpu and dof default to true). The diff is from the merge base
   # (three dots), so later changes on the base branch are not counted, and --no-renames lists
   # both the old and new path of a rename, so renaming a .rs file to .md still counts as code.
