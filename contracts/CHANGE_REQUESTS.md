@@ -11,7 +11,7 @@ Subphase 1.1 wrote it freely. From then on, a change to anything in
    the template. One request per logical change.
 2. **Classify.** The request says whether the change is **additive** or
    **breaking** (definitions below). If unsure, call it breaking.
-3. **Separate PR.** The change is made in its own `pin_core`-only commit or PR
+3. **Separate PR.** The change is made in its own `pin_core`-only PR
    (prefix `[cr NNN]`), never mixed with the requesting subphase's own work.
    The PR updates `pin_core` tests and, if the on-disk schema changes, the
    fixtures and `docs/SPEC.md` Appendix A/B/C reference in the request.
@@ -19,9 +19,10 @@ Subphase 1.1 wrote it freely. From then on, a change to anything in
    - Additive changes merge **immediately**, once `cargo test --workspace`,
      `cargo clippy --workspace --all-targets -- -D warnings` and
      `cargo fmt --check` pass.
-   - Breaking changes merge **only between waves** (after the current wave gate,
-     before the next wave starts), so no in-flight subphase has its contract
-     changed underneath it. Every crate that uses the changed item is fixed in
+   - Breaking changes merge **only between phases** (after the current phase's
+     gate is recorded in `docs/RUN_LOG.md`, before the next phase's first work
+     unit starts), so no in-flight work unit has its contract changed
+     underneath it. Every crate that uses the changed item is fixed in
      the same PR.
 5. **Record.** The merger sets the request's status to `merged (<commit>)` or
    `rejected (<reason>)`, and logs any interpretation in `docs/DECISIONS.md`.

@@ -145,8 +145,9 @@ note that in the PR body.
 1. Set `FABLE_ALLOWANCE` (PROCESS.md P4): `insufficient` if the session reports a current rate
    limit, throttling or fallback on Fable; otherwise `unknown`. It becomes `sufficient` only
    through an owner `yes` in a Fable ask.
-2. Spawn `work-classifier` with: the full issue body, its number and URL, the tracking issue, the
-   branch, and `FABLE_ALLOWANCE`. For a `type:feature` or `type:fix` issue whose deliverables
+2. Spawn `work-classifier` with: the full issue body, its number and URL, the full bodies of the
+   issues it depends on (read with `mcp__github__issue_read`; the classifier has no GitHub tool),
+   the tracking issue, the branch, and `FABLE_ALLOWANCE`. For a `type:feature` or `type:fix` issue whose deliverables
    include code, ask for **two** briefs: Implementer and Independent Tester (owned paths
    disjoint). For `type:infra`, `type:docs` and `type:content`, ask for one Implementer brief
    whose TESTS REQUIRED include the issue's acceptance tests.
@@ -224,9 +225,11 @@ last work-verifier result `pass` for the head):
 2. Check the branch was deleted; delete it if not (`git push origin --delete <branch>`). If the
    session's proxy refuses, append a `[P8 setting]` line for it.
 3. **Unblock dependents.** List the open issues labelled `work-unit` and `blocked` (label search,
-   explicit paging) and read each one's "Depends on" list. For each that names `#<N>`, if all of
-   its dependencies are now satisfied (§1 step 2), replace its `blocked` label with `ready`
-   (`issue_write`, full label list) and comment "Unblocked by #<N> (PR #<P>)".
+   explicit paging) and re-check each one's "Depends on" list, whether or not it names `#<N>`
+   (a dependency on a cancelled issue can be covered by a replacement issue). For each whose
+   dependencies are now all satisfied (§1 step 2, replacements included), replace its `blocked`
+   label with `ready` (`issue_write`, full label list) and comment "Unblocked (PR #<P>)", naming
+   `#<N>` ("Unblocked by #<N> (PR #<P>)") only when it was one of the dependencies.
 4. Remove `in-progress` from the issue if it is still present (it closes through `Closes #<N>`),
    and release this session's claim (`Released: merged in PR #<P>`).
 5. Remove the issue's worktree from the main checkout: `git worktree remove
