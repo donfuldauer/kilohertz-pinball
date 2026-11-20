@@ -7007,12 +7007,11 @@ lines (251 from the frozen file, 90 from the 35 files of `docs/queue/`) are kept
 their original order, each per-unit file under a heading naming it, and the folder is deleted.
 Every line got the disposition of the queue triage: 10 P8 (struck with "Kept open as the P8 line
 below." and followed by its `- [P8 <kind>] [<id>]` restatement, the only open lines), 106 DECIDED
-(struck, `Decided: DECISIONS.md "<section>"`), 143 RESOLVED and 8 OBSOLETE (struck with
+(struck, `Decided: DECISIONS.md "<section>"`), 144 RESOLVED and 8 OBSOLETE (struck with
 `Resolved:` or `Superseded:` and the evidence; the 12 lines that were already struck stay as they
-were, and the 39 `- [x]` lines of the per-unit files are struck like the others), 23 M1 (struck,
+were, and the 39 `- [x]` lines of the per-unit files are struck like the others), 22 M1 (struck,
 `Moved to #<n> (KP-NNN)`: 16 flipper and mechanism feel lines to #87 KP-007, 5 rendering-look
-lines to #95 KP-015 and #96 KP-016, 1 machine-view line to #114 KP-033, 1 Feature Lab
-pocket-check line to #122 KP-041) and 51 BACKLOG (struck,
+lines to #95 KP-015 and #96 KP-016, 1 machine-view line to #114 KP-033) and 51 BACKLOG (struck,
 `Moved to #<n> (KP-NNN)`, the M2 issue of the line's group). The shared append-only files
 (`docs/DECISIONS.md`, `docs/HUMAN_QUEUE.md`, `docs/RUN_LOG.md`, `contracts/CHANGE_REQUESTS.md`)
 take appended entries from any issue, and the unit gate's owned-path check allows them.
@@ -7287,3 +7286,103 @@ unreadable to sandboxed commands as before.
 - Keep the full ask list: rejected, it blocks unattended runs.
 - Move commit/push/merge to `allow`: not done, it would also let them run unsandboxed without a prompt on the owner's machine, which goes further than needed.
 - Drop the ask list entirely: rejected, destructive and release commands should keep a person in the loop.
+
+## PR #142 — Feature Lab bb_catch no longer returns a ball into the closed pocket
+
+**Decision:** Option B of the issue-investigator's report on the PR #142 review thread
+r4646742192 (a verified correctness defect, PROCESS.md P6). In `tables/feature_lab/table.toml`
+the single 4 -> 0 zone `bb_catch` (x 52..462, y 780..990, z -24..25 mm) becomes two: `bb_catch`
+(x 52..462, y 780..955, z -24..25) and `bb_catch_back` (x 66..462, y 955..990, z -24..25), which
+keeps the 6.4-cr1 +y drift cover up to y 990 right of the pocket. Five more 4 -> 0 zones, the
+cups, surround the generated entry zone `tablegen:backbox.entry` (x 67..137, y 893.2..932.5,
+z 46.4..90.1) on its four sides and under it: `bb_cup_left` (x 48..66.5, y 880..944, z 25..96),
+`bb_cup_front` (x 48..150, y 870..892.8, z 46..96), `bb_cup_back` (x 48..150, y 933..944,
+z 46..96), `bb_cup_right` (x 137.5..150, y 870..944, z 46..96) and `bb_cup_floor` (x 48..150,
+y 870..944, z 25..46). The numbers are the investigator's prototype, unchanged (the final sweeps
+below found nothing to move); the ids carry the `bb_` prefix of the other backbox catches.
+`bb_catch_left` (x 45..59, y 895..935, z 25..96) is unchanged. Tests in `crates/pin_app/tests`:
+- `feature_lab_a2_catch`: `no_layer_4_to_0_zone_footprint_contains_a_pocket_point` walks the x/y
+  footprint of every 4 -> 0 zone of the built bundle on a 0.5 mm grid and fails on any point the
+  `in_pocket` predicate accepts (936 points in the old `bb_catch`, first (52, 956));
+  `layer_4_ball_nudged_toward_the_back_is_not_returned_into_the_pocket` (the stuck case: gamepad
+  NudgeX +0.15 and NudgeY -0.75 from tick 41 through 140, as `InputEvent::axis` through
+  `step_1ms`); `layer_4_ball_after_a_keyboard_forward_nudge_does_not_escape` (the escape case: one
+  forward press through the app's `InputRouter` with the X-Arcade keyboard profile, scancode 82,
+  NudgeY 0.6 for 60 ms from 20 ms). Both drop tests check the pocket only at the return point and
+  at the final rest point. The pocket predicate moved unchanged into `feature_lab_support`, so
+  that `feature_lab_cr1` uses the same definition.
+- `feature_lab_cr1`: `bb_catch_stays_clear_of_the_generated_transitions` checks `bb_catch` and
+  `bb_catch_back` as before (top under both generated zones, inside the cabinet, max y < 1000),
+  and every table-defined 4 -> 0 zone for lying inside the cabinet and sharing no point with the
+  generated entry and drain zones. Transition bounds are inclusive, so boxes that only touch count
+  as overlapping (stricter than the open-box check of
+  `bb_catch_left_is_left_of_the_hole_in_the_orbit_lane`; every cup is 0.4..0.5 mm clear). It also
+  checks the VUK's exit zone as the sim builds it from the generated mech `tablegen:backbox.vuk`
+  (the rules fire it through `bb_vuk_coil` 400 ms after `bb_vuk_sw` closes): one 0 -> 4 zone
+  centred on the exit (102, 923.1, 123.0) mm, floor z 103.0 mm, so above z 96 and above and clear
+  of every table-defined 4 -> 0 zone. The +y drift sweep
+  (`a_ball_dropping_out_of_the_entry_hole_towards_the_back_returns_to_the_playfield`) now accepts
+  a ball that comes back to layer 0 outside the pocket, never escapes, and drains or rests on the
+  playfield outside the pocket; the reported drop keeps its "drains" assertion.
+- `feature_lab_physics`: `a_ball_falling_back_through_the_entry_hole_returns_to_the_playfield`
+  removes every 4 -> 0 zone the table defines (ids without the `tablegen:` prefix; the generated
+  drain zone stays, it is the backbox's own exit and not a safety catch) instead of `bb_catch`
+  alone, and asserts as before that the ball is then lost.
+
+Results on the final table (the investigator's release harness on the rebuilt bundle; the pocket
+is checked where a ball comes back to layer 0 and where a layer-0 ball comes to rest): the
+4,960-drop nudge set 0 returned into the pocket, 0 stuck, 0 escaped (main: 1 pocket return and 49
+escapes); the 53,300-drop targeted nudge set 0, 0 and 0 (main: 126, 32 and 1,807); the 7,776-drop
+backbox-frame sweep 0 returned into the pocket, 0 stuck, 0 escaped (main: 419 failures). In that
+sweep the harness's every-tick pocket check also flags 25 balls (vby 0.8..1.0 m/s) that run the
+orbit: each first meets the predicate at x 279.5..280.0, y 1047.4..1050.5, past the lane's end,
+and all drain. The 756 extended cr1 drops: 0 failures (main: 46). The 145 a2, 16 entry-channel and
+43 cr1 drops pass (cr1 with the corrected assertion; under the old "drains" rule 42 of 43: the
+drop at (80, 918, 85) mm with (0, 0.4, 0) m/s is returned by `bb_cup_back` at (80.0, 933.1, 77.0)
+and rests at the Banana, (298.6, 156.4)). Both reproductions drain: the stuck case through
+`bb_cup_back` at (74.2, 933.5, 81.4), the keyboard escape through `bb_cup_left` at
+(66.4, 898.2, 62.1). Soaks on the bundle `tables/feature_lab/build.sh` builds (`pin_sim soak`,
+release, `--games 1000 --seed 1 --threads 2`, the games Gate A2 plays): novice, standard and
+expert 0 findings each, coverage complete; standard median game 106.9 s; median scores
+122,085 < 197,405 < 237,965.
+
+**Rationale:** The issue-investigator verified two defects at 3c8e3be, both on main since 321bc00.
+(1) A 4 -> 0 transition only changes the ball's layer where its centre crossed the zone face
+(`TransitionSet::update`, then the `pin_sim` tick's layer-transition step). Inside `bb_catch`'s
+footprint the `in_pocket` predicate held on a triangle x 52..64.75, y 955.75..990; the generated
+outer rail (`tablegen:lanes[0].left`) runs 5..7 mm outside it there. A layer-4 ball at rest in the
+entry channel at (87.0, 920.8, 137.8) mm, nudged by a gamepad's right stick (NudgeX +0.15, NudgeY
+-0.75, ticks 41..140), was returned at (55.1, 983.7, 25.0) and was still stuck at (13.5, 893.2,
+13.5) after 20 s (the targeted nudge set on main: 126 returns into the pocket and 32 stuck balls in
+53,300 drops). The triangle appeared when 321bc00 raised the zone's max y from 931 to 990 (no pocket
+point at 931). (2) Every tick the sim changes every ball's velocity by the nudge, the falling
+layer-4 ball's too. From the Gate A2 run-1 state (128, 927, 165) mm, (-0.324, -0.217, -1.90) m/s,
+one keyboard forward nudge 20 ms later made the ball miss every catch and leave the table at (16.2,
+832.9, -49.3) mm. Bot play cannot see either: the bot nudges along x only, and the corner needs
+0.5..1.2 m/s towards the back, so 3,000 Gate A2-seeded games and Gate A2 run 2 had 0 pocket returns
+and 0 escapes. A verified correctness defect found in review is fixed before the PR merges
+(PROCESS.md P6 step 3, "Never resolved"). The cups catch the nudged ball next to the entry channel,
+before any drift reaches the pocket corner or the cabinet's left side, and `bb_catch_back` keeps the
+drift cover behind the box with x >= 66 (pocket points need x <= 64.75 at y <= 990). Gate A2 is run
+for Feature Lab although P5 only re-runs it when table rules change (zones are table data, the rules
+are untouched), because the change alters the table's simulated behaviour and the defect class is a
+Gate A2 EscapedBall/StuckBall; the soaks above are its games, and the gate run itself is recorded in
+`docs/RUN_LOG.md`. No R12 windowed evidence: no input, timing or presentation code changed, the
+zones are invisible, and the nudge is reproduced at the sim's input layer. Earlier decisions:
+"6.4-a2-catch — bb_catch_left zone closes the layer-4 escape" (kept: `bb_catch_left` and its
+meaning) and "6.4-cr1 — bb_catch covers a +y drift" (kept: the y 990 cover, now `bb_catch_back`),
+both in this file.
+
+**Alternatives:**
+- Option A, the split alone: rejected. It turns the stuck case into an escape (escapes 49 -> 54
+  in the 4,960-drop nudge set, pocket returns 1 -> 0).
+- Back to max y 931: rejected, it loses the 6.4-cr1 +y drift cover.
+- An engine change so that a transition re-places the ball (for example at a safe point):
+  rejected, out of scope for table data and of very high blast radius (every table's
+  transitions).
+- Leave it: rejected, it is a verified correctness defect.
+- The physics test's edit as `retain(|z| !(z.from_layer == 4 && z.to_layer == 0))`: not taken, it
+  also removes the generated drain zone, which is not a safety catch; the dropped ball never
+  reaches the drain, so the outcome is the same.
+- A copy of the pocket predicate in `feature_lab_cr1.rs`: rejected, one definition in the shared
+  test support.

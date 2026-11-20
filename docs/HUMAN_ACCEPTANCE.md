@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 10
 - Resolved queue lines: 322
-- Decision entries: 468
-- Run-log rows: 493
+- Decision entries: 469
+- Run-log rows: 494
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -512,6 +512,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - Planning: M1 Play experience (docs/DECISIONS.md)
 - Planning: REQ-LAT-004 bounds inputs that arrive during a stall separately (docs/DECISIONS.md)
 - Process: Claude Code ask rules keep only destructive commands (docs/DECISIONS.md)
+- PR #142: Feature Lab bb_catch no longer returns a ball into the closed pocket (docs/DECISIONS.md)
 
 ## 4. D33 flags
 
@@ -624,6 +625,8 @@ Mentions of D33 in the run log, queue and decisions:
 | 9 | **Wave 9 gate** | Orchestrator | — | CI run 830 (6bdbd99) | **green** | full 3-OS ci matrix green (https://github.com/donfuldauer/kilohertz-pinball/actions/runs/44752191000): core-tests, gpu-tests (lavapipe/WARP/Metal), replay-hash, clippy on linux/windows/macos, dof-bridge; spikes #222 green | Passed: 7.2 (#77). release.yml verify/package/draft-release not yet run (dispatch/tag only; queue 7.2) |
 
 **Wave 9 gate: green** at 6bdbd99 (CI run 830). All 10 waves complete; next is Phase 8 Final Human Acceptance (`docs/HUMAN_ACCEPTANCE.md`).
+
+| — | PR #142 bb_catch | Fixer | Opus 5.5 | 1 | done | fmt clean; clippy -p pin_app --all-targets -D warnings clean; pin_app tests pass: feature_lab_a2_catch 5, cr1 7, physics 8, a2_gate 3 (+1 ignored as before), a2_inlane 2, autoplay 1, build 17, flippers 3, modes 4, replay 2, wasm_ports_feature_lab 2, load_validated_backbox 1, sky_deck_layers 5; spec_6_4 structure 9, validate 5, physics 8, rules 13, autoplay 3, alloc 1 (built with --profile dev and no debug info so that build.sh shares their dependencies: disk); the 3 new tests fail on the unmodified table (936 pocket points, first (52, 956); stuck at (13.5, 893.2, 13.5); escape at (16.2, 832.9, -49.3)); build.sh clearance ok; sweeps on the final table, 0 returned into the pocket, 0 stuck, 0 escaped in each: nudge 4,960 (main 1 / 0 / 49), targeted nudge 53,300 (main 126 / 32 / 1,807), backbox frame 7,776 (main 419 failures), extended cr1 756 (main 46 failures), a2 145, entry channel 16, cr1 43; soak 1,000 games each, seed 1, 2 threads: novice 281 s, standard 421 s, expert 483 s, 0 findings, coverage complete, standard median game 106.9 s, median scores 122,085 < 197,405 < 237,965; spikes/spec_0_1 all pass; scripts/tests 128/134 (the 6 others stop at gate_a2.sh's 4 GB free-disk guard); human_acceptance.py --check up to date, P8 lines 10; queue recount 10 P8 + 106 DECIDED + 144 RESOLVED + 8 OBSOLETE + 22 M1 + 51 BACKLOG = 341; Gate A2 for Feature Lab NOT RUN: gate_a2.sh refuses to start under 4 GB free and the disk allowance left at most 3.4 GB (projected ~50 min cold, ~23 min with built binaries) | T2 via work-classifier: Option B, review thread r4646742192 (P6 investigator finding): bb_catch split at y 955 with bb_catch_back (x 66..462, y 955..990) and five bb_cup_* zones around the generated entry zone; static pocket test and two nudge reproductions; R10 corrections: cr1 +y drift sweep accepts a ball resting on the playfield (x 80, vy 0.4 rests at the Banana), physics no-catch edit removes every table-defined 4 -> 0 zone; queue line 6.4-a2fix pocket check Resolved; DECISIONS "PR #142 — Feature Lab bb_catch no longer returns a ball into the closed pocket" |
 
 ## 6. Phase 8 checklist
 
