@@ -419,6 +419,10 @@ The file's header read: “Frozen history as of 2026-11-18 (D41). New entries go
 - [P8 release] [7.2] After the first `v*` tag push, check that the GitHub Release is a draft prerelease with the three archives, SHA256SUMS and the three PACKAGE_MANIFEST-<platform>.json files, and delete the draft if it was only a test (D39).
 - ~~[ ] [7.2] On the first dispatch or tag run, confirm the `verify (x86_64-apple-darwin)` leg passes: Rosetta 2 is available on the arm64 macos-latest runner and the SDL3 cmake cross-build for x86_64 works. The Intel slice is tested under Rosetta 2, not on native Intel hardware.~~ Moved to #141 (KP-060)
 
+### docs/queue/claude-project-settings.md
+
+- ~~[ ] [claude-project-settings] Owner: skim .claude/settings.json (sandbox write paths, network domains, deny rules) and confirm they fit your machine; .claude/settings.local.json is the place for personal overrides.~~ Decided: DECISIONS.md "claude-project-settings — Claude project settings"
+
 ### docs/queue/fix-10-srgb-blend.md
 
 - ~~[x] [fix-10-srgb-blend] pin_app wiring done: `present.rs` and `view.rs` use `pin_render::gpu::LayerTarget` / `LayerCompositor` (display renderers built for `layer_format()`, displays drawn between `LayerCompositor::begin`/`end`), and presenter-thread frames use a twin-format offscreen (decision "fix-10-srgb-blend (part 2) — pin_app wiring"). Remaining limitation: a direct `*Srgb` surface that supports neither a twin view nor both copy usages still blends display layers in linear space (as recorded in docs/decisions/2026-11-18-fix-10-srgb-blend.md).~~ Resolved: DECISIONS.md "fix-10-srgb-blend (part 2) — pin_app wiring"
@@ -450,6 +454,10 @@ The file's header read: “Frozen history as of 2026-11-18 (D41). New entries go
 
 - ~~[x] [fix-a2-longball] resolved: Orchestrator ruling a2-longball-orch (docs/decisions/2026-11-19-a2-longball-orchestrator.md) — LongBall stays; 6.4-a2fix's shooter-lane gate removes the loops; run-2 per-table LongBall rate is checked. Original note: Feature Lab's plunger_tip EndlessBalls (std 283, 360; exp 23, 110, 124, 369, 417, 695, 793, 967, 984) are shooter-lane re-entry loops owned by 6.4-a2fix; LongBall reasoning must not be applied to them without their own investigation. Requirement 8 result on the current main bundle (target/gate_a2/feature_lab/bundle, no table or generator change since its build): all 11 now resolve to LongBall (each drained naturally after a broad window: 13-15 switches, top two 24-43 %, plunger_tip x7-x28, shooter_lane x2-x16), so with this change Feature Lab's A2.1a no longer FAILs on them. No generic discriminator from the monitor's window data separates them from Apex Circuit's long balls (Apex exp 450 and Feature Lab exp 793 both plunger_tip x7 / shooter_lane x2). Orchestrator: decide whether Gate A2 may rely on 6.4-a2fix's own gate (0 balls over 300 s in its expert soak) for these, and re-check Feature Lab expert game 23 etc. after 6.4-a2fix lands.~~ Resolved: DECISIONS.md "a2-longball-orch — LongBall stays as specified; Feature Lab's re-entry loops are removed at the table"
 - ~~[ ] [fix-a2-longball] Compare the LongBall rate per table and skill at Gate A2 run 2 (the "A2.1a long balls" REPORT rows) with the tail estimate of about 0.1-0.2 % of games; a rate far above it deserves an investigation.~~ Resolved: RUN_LOG.md row "Gate A2 run 2 (106e7e4)" (Wave 7, Orchestrator); Apex 3/3,000 (0.1 %), others 0: inside the 0.1–0.2 % band
+
+### docs/queue/fix-sdl3-space-path.md
+
+- ~~[ ] [fix-sdl3-space-path] Report the .pc space-path truncation upstream to the sdl3-sys maintainers (rust-sdl3) and drop third_party/sdl3-sys once a release fixes it. Optional, no blocker.~~ Decided: DECISIONS.md "queue-triage — sdl3-sys space-path patch stays vendored until an upstream release fixes it"
 
 ### docs/queue/fix-wireform-flake.md
 

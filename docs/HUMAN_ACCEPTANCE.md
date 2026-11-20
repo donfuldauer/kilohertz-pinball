@@ -15,9 +15,9 @@ Inputs:
 Counts:
 
 - Open queue lines: 10
-- Resolved queue lines: 320
-- Decision entries: 460
-- Run-log rows: 488
+- Resolved queue lines: 322
+- Decision entries: 466
+- Run-log rows: 489
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -482,6 +482,11 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - 7.2: HUMAN_ACCEPTANCE.md: stale is a warning; final regeneration by the Orchestrator (docs/DECISIONS.md)
 - 7.2: HUMAN_ACCEPTANCE parsing rules (docs/DECISIONS.md)
 - 7.2: Intel macOS slice is gated in verify (Rosetta 2 on macos-latest) (docs/DECISIONS.md)
+- Imported: docs/decisions/2026-11-20-claude-project-settings.md (docs/DECISIONS.md)
+- claude-project-settings: Claude project settings (docs/DECISIONS.md)
+- Imported: docs/decisions/2026-11-20-fix-sdl3-space-path.md (docs/DECISIONS.md)
+- fix-sdl3-space-path: vendor patched sdl3-sys for spaced checkout paths (docs/DECISIONS.md)
+- fix-sdl3-space-path: escape path variables before .pc tokenization (CodeRabbit r1) (docs/DECISIONS.md)
 - Imported: docs/decisions/2026-11-20-w8h-cr-status.md (docs/DECISIONS.md)
 - w8h-cr-status: Final statuses of CR-005 to CR-009 (docs/DECISIONS.md)
 - Imported: docs/decisions/2026-11-20-w8h-libtest-args.md (docs/DECISIONS.md)
@@ -494,6 +499,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - queue-triage: table soak figures are re-measured after M1 (docs/DECISIONS.md)
 - queue-triage: no `[[walls]] name` in layout.toml for now (docs/DECISIONS.md)
 - queue-triage: no ball-specific magnet exit signal for now (docs/DECISIONS.md)
+- queue-triage: sdl3-sys space-path patch stays vendored until an upstream release fixes it (docs/DECISIONS.md)
 - Repository: The plan is GitHub issues (docs/DECISIONS.md)
 - Repository: PLAN.md becomes SPEC.md; process and layout move out (docs/DECISIONS.md)
 - Process: One decision log and a P8-only queue (D41 superseded) (docs/DECISIONS.md)
