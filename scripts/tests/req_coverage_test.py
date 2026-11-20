@@ -55,23 +55,34 @@ class PlanFileMilestoneTest(unittest.TestCase):
         self.tests.mkdir()
         (self.tests / "a_test.py").write_text("# REQ-AAA-001\n", encoding="utf-8")
 
-    def run_main(self, *extra):
+    def run_main(self, *extra, milestone="M1"):
         out = io.StringIO()
+        ms = ["--milestone", milestone] if milestone else []
         with contextlib.redirect_stdout(out):
             code = rc.main(["--spec", str(self.spec), "--plan-file", str(self.plan),
-                            "--milestone", "M1", *extra])
+                            *ms, *extra])
         return code, out.getvalue()
 
     def test_plan_file_with_milestone_still_reports_missing_plan_ids(self):
         code, out = self.run_main()
         self.assertEqual(code, 1, out)
         self.assertIn("MISSING in plan: REQ-AAA-002", out)
+        self.assertIn(f"{self.plan} (milestone 'M1'): 1/2 traced", out)
 
     def test_plan_file_with_milestone_still_reports_missing_test_ids(self):
         code, out = self.run_main("--tests", str(self.tests))
         self.assertEqual(code, 1, out)
         self.assertIn("MISSING in plan: REQ-AAA-002", out)
         self.assertIn("MISSING in tests: REQ-AAA-002", out)
+        self.assertIn(f"{self.plan} (milestone 'M1'): 1/2 traced", out)
+        self.assertIn("tests (milestone 'M1'): 1/2 referenced", out)
+
+    def test_plan_file_without_milestone_has_no_label(self):
+        code, out = self.run_main("--tests", str(self.tests), milestone=None)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"{self.plan}: 1/2 traced", out)
+        self.assertIn("tests: 1/2 referenced", out)
+        self.assertNotIn("milestone", out)
 
 
 if __name__ == "__main__":
