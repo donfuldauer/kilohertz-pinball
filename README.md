@@ -156,6 +156,7 @@ The project is built by AI coding agents under the rules in PLAN sections 2.3 an
 - **Model routing (section 2.5):** every unit of work goes through the `work-classifier` agent, which picks a model tier; a triage fast path handles trivial items.
 - **Agents (section 2.6):** `.claude/agents/` defines `work-classifier`, `task-executor` (Implementer, Independent Tester and Fixer roles), `work-verifier` and `issue-investigator`. Agent-written decisions go to one file per unit in `docs/decisions/`, items for a person go to `docs/queue/`.
 - **Pull requests (section 2.7):** every change is a PR against `main`; CodeRabbit reviews it, every finding is answered and resolved, and the PR merges once CI is green and the merge conditions hold. Agents do not review their own code.
+- **Claude Code settings:** `.claude/settings.json` holds the shared sandbox and permission defaults; put personal overrides in `.claude/settings.local.json`, which is git-ignored.
 - **Contracts:** `pin_core` changes only through [`contracts/CHANGE_REQUESTS.md`](contracts/CHANGE_REQUESTS.md).
 
 | Document | Contents |
