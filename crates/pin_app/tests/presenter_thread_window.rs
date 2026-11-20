@@ -17,6 +17,7 @@
 //! GPU job only (`--features gpu-tests`): without a native SDL video driver
 //! or a GPU adapter it FAILS, it never skips. SDL needs the main thread,
 //! so this is a plain `main` (harness = false).
+//! The target accepts libtest filters and `--list` through `pin_testmain`.
 
 mod support;
 
@@ -89,6 +90,10 @@ fn table() -> (TableVisuals, FrameStateSnapshot, [pin_core::SceneId; 2]) {
 }
 
 fn main() {
+    pin_testmain::libtest_main("presenter_thread_window", run)
+}
+
+fn run() {
     let sdl = sdl3::init().expect("SDL_Init (a missing display is a failure here)");
     let video = sdl.video().expect("SDL video");
     let driver = video.current_video_driver();
