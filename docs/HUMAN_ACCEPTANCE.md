@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 10
 - Resolved queue lines: 322
-- Decision entries: 467
-- Run-log rows: 490
+- Decision entries: 468
+- Run-log rows: 491
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -511,6 +511,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - Planning: No third-party names in planning text (docs/DECISIONS.md)
 - Planning: M1 Play experience (docs/DECISIONS.md)
 - Planning: REQ-LAT-004 bounds inputs that arrive during a stall separately (docs/DECISIONS.md)
+- Process: Claude Code ask rules keep only destructive commands (docs/DECISIONS.md)
 
 ## 4. D33 flags
 
