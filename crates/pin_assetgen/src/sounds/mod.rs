@@ -134,7 +134,7 @@ mod tests {
     }
 
     fn db(x: f64) -> f64 {
-        20.0 * x.log10()
+        20.0 * libm::log10(x)
     }
 
     #[test]

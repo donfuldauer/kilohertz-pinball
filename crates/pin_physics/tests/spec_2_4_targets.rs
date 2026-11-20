@@ -387,9 +387,9 @@ fn reference(d: f64, omega0: f64, length: f64, friction: f64, g: f64) -> (u64, f
     let mut cell = half_turns(phi);
     let mut pulses = 0u64;
     for _ in 0..(120.0 / h) as u64 {
-        let gamma = -k * phi.sin();
+        let gamma = -k * libm::sin(phi);
         if w == 0.0 {
-            if gamma.abs() <= friction && phi.cos() > 0.0 {
+            if gamma.abs() <= friction && libm::cos(phi) > 0.0 {
                 break; // held by static friction
             }
             if gamma == 0.0 {
@@ -397,7 +397,7 @@ fn reference(d: f64, omega0: f64, length: f64, friction: f64, g: f64) -> (u64, f
             }
         }
         let s = if w != 0.0 { w.signum() } else { gamma.signum() };
-        let acc = |phi: f64, w: f64| -d * w - k * phi.sin() - friction * s;
+        let acc = |phi: f64, w: f64| -d * w - k * libm::sin(phi) - friction * s;
         let (k1p, k1w) = (w, acc(phi, w));
         let (k2p, k2w) = (
             w + 0.5 * h * k1w,
@@ -438,7 +438,7 @@ fn from_hanging(angle: f32) -> f32 {
 /// Half-width of the stiction band, asin(c·2L/(3g)).
 fn hold_angle() -> f32 {
     let sp = defaults().mechs.spinner;
-    (sp.friction * 2.0 * sp.radius / (3.0 * G)).asin()
+    libm::asinf(sp.friction * 2.0 * sp.radius / (3.0 * G))
 }
 
 #[test]
@@ -476,7 +476,7 @@ fn free_spin_down_is_exponential() {
     for k in 1..=4 {
         rig.run(500);
         let (_, w) = rig.mechs.spinner_state(0).unwrap();
-        let expected = 40.0 * (-d * 0.5 * k as f32).exp();
+        let expected = 40.0 * libm::expf(-d * 0.5 * k as f32);
         assert!(
             (w - expected).abs() < 0.01 * expected,
             "after {} s: ω = {w}, expected {expected}",
@@ -538,7 +538,7 @@ fn fast_spin_approaches_omega0_over_d() {
     let omega_c = (4.0 * 1.5 * G / sp.radius).sqrt();
     for omega0 in [200.0f32, 300.0] {
         let s = spin_down(spinner_rig(Some(d)), omega0, 60.0);
-        let upper = omega0 / d - c / (d * d) * (1.0 + d * omega0 / c).ln();
+        let upper = omega0 / d - c / (d * d) * libm::logf(1.0 + d * omega0 / c);
         assert!(
             s.total_angle <= upper * 1.02 + 0.5 && s.total_angle >= upper - 1.5 * omega_c / d,
             "ω0 {omega0}: total {} rad, expected within [{}, {}]",

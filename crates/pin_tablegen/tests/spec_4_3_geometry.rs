@@ -92,7 +92,7 @@ fn check_posts(s: &Scene) -> Result<(), String> {
                         continue;
                     }
                     if ra >= r - TOL {
-                        shell_angles.push((a[1] - c[1]).atan2(a[0] - c[0]));
+                        shell_angles.push(libm::atan2(a[1] - c[1], a[0] - c[0]));
                         z_hi = z_hi.max(a[2]);
                         z_lo = z_lo.min(a[2]);
                     }
@@ -122,7 +122,7 @@ fn check_posts(s: &Scene) -> Result<(), String> {
         for w in shell_angles.windows(2) {
             gap = gap.max(w[1] - w[0]);
         }
-        if r * (1.0 - (gap / 2.0).cos()) > TOL || gap >= std::f64::consts::PI {
+        if r * (1.0 - libm::cos(gap / 2.0)) > TOL || gap >= std::f64::consts::PI {
             return Err(format!(
                 "posts[{i}]: the collider shell leaves an angular gap of {:.1} degrees",
                 gap.to_degrees()

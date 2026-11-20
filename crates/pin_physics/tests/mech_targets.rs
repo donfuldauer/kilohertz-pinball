@@ -167,7 +167,7 @@ fn spinner_pulse_count_matches_the_documented_spin_down() {
         // the flap ω0/d − (c/d²)·ln(1 + d·ω0/c) (→ ω0/d relatively as ω0
         // grows); gravity only ends the spin about ω_c early.
         let (w, dd, c) = (f64::from(w0), f64::from(d), 60.0f64);
-        let no_gravity = w / dd - c / (dd * dd) * (1.0 + dd * w / c).ln();
+        let no_gravity = w / dd - c / (dd * dd) * libm::log(1.0 + dd * w / c);
         let total = f64::from(angle);
         assert!(total <= w / dd + 0.1);
         if w > 2.0 * w_c {

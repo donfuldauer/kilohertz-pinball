@@ -402,7 +402,7 @@ fn oracle(poly: &[[f32; 2]], pos: [f32; 2], len: f32, angles: &[f32]) -> f64 {
 /// of this length (tip radius 8.5 mm, step at most STROKE_STEP_DEG), plus a
 /// little for f32 rounding.
 fn swept_margin(len: f32) -> f64 {
-    2.0 * (f64::from(len) + 8.5) * (f64::from(STROKE_STEP_DEG).to_radians() / 4.0).sin() + 1e-3
+    2.0 * (f64::from(len) + 8.5) * libm::sin(f64::from(STROKE_STEP_DEG).to_radians() / 4.0) + 1e-3
 }
 
 fn rest_sweep(side: &str) -> (f32, f32) {

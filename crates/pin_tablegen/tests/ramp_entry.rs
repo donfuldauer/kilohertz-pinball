@@ -189,7 +189,7 @@ fn check_case(points: &[[f32; 3]], width: f32) -> Result<(), String> {
 /// Straight ramps along a plan heading `deg`, rising by `rise` mm over
 /// 200 mm, from (500, 500, z0).
 fn straight(deg: f64, z0: f32, rise: f32) -> Vec<[f32; 3]> {
-    let (s, c) = deg.to_radians().sin_cos();
+    let (s, c) = libm::sincos(deg.to_radians());
     let p = |d: f64, z: f32| [(500.0 + d * c) as f32, (500.0 + d * s) as f32, z];
     vec![p(0.0, z0), p(100.0, z0 + 0.5 * rise), p(200.0, z0 + rise)]
 }
@@ -255,7 +255,7 @@ proptest! {
     ) {
         let mut s = straight(deg, z0, rise);
         // Bend the end sideways.
-        let (sn, c) = deg.to_radians().sin_cos();
+        let (sn, c) = libm::sincos(deg.to_radians());
         s[2][0] += (-sn * f64::from(bend)) as f32;
         s[2][1] += (c * f64::from(bend)) as f32;
         prop_assert!(check_case(&s, width).is_ok(), "{:?}", check_case(&s, width));

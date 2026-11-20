@@ -536,7 +536,7 @@ fn snap_trace(
     for k in 1..=return_ms {
         let u = k as f32 / return_ms as f32;
         let x = if cosine {
-            depth * (1.0 + (std::f32::consts::PI * u).cos()) / 2.0
+            depth * (1.0 + libm::cosf(std::f32::consts::PI * u)) / 2.0
         } else {
             depth * (1.0 - u)
         };

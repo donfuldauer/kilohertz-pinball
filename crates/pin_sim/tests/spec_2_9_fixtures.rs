@@ -192,7 +192,7 @@ fn trap_pocket_holds_the_served_ball_at_rest() {
                 sim.tick()
             );
             let p = b.position_m;
-            let d = (p[0] * 1e3 - POCKET_MM[0]).hypot(p[1] * 1e3 - POCKET_MM[1]);
+            let d = libm::hypotf(p[0] * 1e3 - POCKET_MM[0], p[1] * 1e3 - POCKET_MM[1]);
             assert!(d < 40.0, "ball at {p:?} is not in the pocket");
         }
         assert!(names_pocket("ball at (255.0, 894.0) mm"));
@@ -262,7 +262,7 @@ fn rest_ball_settles_in_the_pocket_within_800_ms() {
         assert!(last_moving <= 800, "last motion at tick {last_moving}");
         assert_eq!(sim.balls_in_play(), 1);
         let p = sim.ball(sim.ball_handles()[0]).unwrap().position_m;
-        let d = (p[0] * 1e3 - POCKET_MM[0]).hypot(p[1] * 1e3 - POCKET_MM[1]);
+        let d = libm::hypotf(p[0] * 1e3 - POCKET_MM[0], p[1] * 1e3 - POCKET_MM[1]);
         assert!(d < 10.0, "rest ball at {p:?}");
     });
 }
