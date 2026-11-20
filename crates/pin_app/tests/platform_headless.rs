@@ -85,7 +85,7 @@ fn main() {
     pin_testmain::libtest_main("platform_headless", run)
 }
 
-fn run() {
+fn run() -> pin_testmain::Outcome {
     let mut platform = Platform::init(PlatformConfig { headless: true }).expect("SDL init");
     println!(
         "[platform_headless] video driver: {}",
@@ -381,4 +381,5 @@ fn run() {
 
     drop(windows);
     println!("[platform_headless] RESULT: all checks passed");
+    pin_testmain::Outcome::Passed
 }

@@ -13,7 +13,8 @@
 //! This is a `harness = false` target (pattern of `gpu_window.rs`): `main`
 //! runs on the process main thread, which owns SDL (required on macOS), and
 //! SDL is initialised once per process. Without a native video driver it
-//! prints SKIP, or fails when `PIN_REQUIRE_GPU=1`; the dummy driver is never
+//! reports the target as skipped in libtest's `ignored` form, or fails when
+//! `PIN_REQUIRE_GPU=1`; the dummy driver is never
 //! used (sdl3's raw-window-handle impl panics on it, DECISIONS 0.1 Q4).
 //! The target accepts libtest filters and `--list` through `pin_testmain`.
 #![cfg(feature = "gpu-tests")]
@@ -37,11 +38,11 @@ const MAX_UNPACED_ATTEMPTS: u32 = 200_000;
 
 const NATIVE: [&str; 4] = ["windows", "cocoa", "x11", "wayland"];
 
-fn skip(msg: &str) {
+fn skip(msg: &str) -> pin_testmain::Outcome {
     if require_gpu() {
         panic!("[gpu_surface_hooks_window] PIN_REQUIRE_GPU=1 but {msg}");
     }
-    println!("[gpu_surface_hooks_window] SKIP: {msg}");
+    pin_testmain::Outcome::Skipped(format!("[gpu_surface_hooks_window] {msg}"))
 }
 
 /// One hook event, in call order.
@@ -200,7 +201,7 @@ fn main() {
     pin_testmain::libtest_main("gpu_surface_hooks_window", run)
 }
 
-fn run() {
+fn run() -> pin_testmain::Outcome {
     let sdl = match sdl3::init() {
         Ok(s) => s,
         Err(e) => return skip(&format!("SDL_Init: {e}")),
@@ -351,4 +352,5 @@ fn run() {
     drop(backglass);
     drop(playfield);
     println!("[gpu_surface_hooks_window] ok");
+    pin_testmain::Outcome::Passed
 }

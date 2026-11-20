@@ -93,7 +93,7 @@ fn main() {
     pin_testmain::libtest_main("presenter_thread_window", run)
 }
 
-fn run() {
+fn run() -> pin_testmain::Outcome {
     let sdl = sdl3::init().expect("SDL_Init (a missing display is a failure here)");
     let video = sdl.video().expect("SDL video");
     let driver = video.current_video_driver();
@@ -324,4 +324,5 @@ fn run() {
     keeper.drain();
     assert!(keeper.is_empty(), "windows not destroyed after the guards");
     println!("[presenter_thread_window] ok");
+    pin_testmain::Outcome::Passed
 }

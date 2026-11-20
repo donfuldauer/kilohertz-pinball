@@ -16,7 +16,7 @@ fn main() {
     pin_testmain::libtest_main("mixer_sdl_smoke", run)
 }
 
-fn run() {
+fn run() -> pin_testmain::Outcome {
     // SAFETY: set before any SDL call or other thread exists.
     unsafe { std::env::set_var("SDL_AUDIO_DRIVER", "dummy") };
     let sdl = sdl3::init().expect("SDL init");
@@ -54,4 +54,5 @@ fn run() {
         "[mixer_sdl_smoke] ok: {calls} callbacks, {} frames",
         mixer.frames_rendered()
     );
+    pin_testmain::Outcome::Passed
 }
