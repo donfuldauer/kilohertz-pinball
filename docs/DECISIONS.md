@@ -7254,3 +7254,24 @@ spent catching up, and the drop is what restores the clock.
 - Remove the dropped-ticks clause: loses the guarantee #81 exists to deliver, that earlier drops
   never delay later inputs.
 - A raised cap: only moves the problem.
+
+## Process — Claude Code ask rules keep only destructive commands
+
+**Decision:** `.claude/settings.json` `permissions.ask` keeps `git reset`, `git rebase`, `git tag`,
+`git branch -D`, `git clean`, `gh pr close`, `gh release` and adds force pushes (`git push --force…`,
+`-f`, a `+` refspec, `--mirror`) and remote branch or tag deletion (`git push --delete`, `-d`, a
+`:<ref>` refspec). `git commit`, `git push`, `git merge`, `gh pr create`, `gh pr merge` and `gh api` are removed
+from it. This supersedes part of the imported decision "claude-project-settings — Claude project
+settings" (its ask list). Its sandbox, allow, deny and write-path choices stand. Made at the
+owner's request in the PR #142 session.
+**Rationale:** Explicit ask rules prompt in every permission mode, Auto included. After main's
+settings reached this branch, every commit, push and `gh api` search in the session stopped for the
+owner. The `work-issue` and `run-plan` skills (PROCESS.md P5–P6) commit, push, merge and search on
+their own, so those prompts would stall every unattended run. The commands that rewrite history,
+delete branches or tags, or publish releases still ask. Locally, `gh` and git over ssh still run
+outside the sandbox and still prompt unless they match an allow rule, so credentials stay
+unreadable to sandboxed commands as before.
+**Alternatives:**
+- Keep the full ask list: rejected, it blocks unattended runs.
+- Move commit/push/merge to `allow`: not done, it would also let them run unsandboxed without a prompt on the owner's machine, which goes further than needed.
+- Drop the ask list entirely: rejected, destructive and release commands should keep a person in the loop.
