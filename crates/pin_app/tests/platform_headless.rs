@@ -6,6 +6,7 @@
 //! SDL may only be initialised once per process and must run on the main
 //! thread (macOS), so this is a `harness = false` binary. No sleeps: every
 //! check uses SDL's own clock for ordering only (PLAN §2.3 rule 5).
+//! The target accepts libtest filters and `--list` through `pin_testmain`.
 
 use core::time::Duration;
 use pin_app::platform::{
@@ -81,6 +82,10 @@ fn check(name: &str, ok: bool) {
 }
 
 fn main() {
+    pin_testmain::libtest_main("platform_headless", run)
+}
+
+fn run() -> pin_testmain::Outcome {
     let mut platform = Platform::init(PlatformConfig { headless: true }).expect("SDL init");
     println!(
         "[platform_headless] video driver: {}",
@@ -376,4 +381,5 @@ fn main() {
 
     drop(windows);
     println!("[platform_headless] RESULT: all checks passed");
+    pin_testmain::Outcome::Passed
 }

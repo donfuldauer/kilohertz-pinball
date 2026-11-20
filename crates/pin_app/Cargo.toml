@@ -41,6 +41,8 @@ proptest.workspace = true
 # greybox bundle with the 4.6 placeholder kit.
 pin_script = { path = "../pin_script" }
 pin_assetgen = { path = "../pin_assetgen" }
+# Wave 8 additions (w8h-h): shared libtest args for the harness = false targets.
+pin_testmain.workspace = true
 
 # SDL must run on the main thread (Cocoa on macOS) and may only be initialised
 # once per process, so SDL tests are plain `main` binaries instead of libtest.
