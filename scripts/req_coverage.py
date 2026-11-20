@@ -20,14 +20,15 @@ Usage (from the repository root):
 (or, when the API gives none, the "tracking issue #N" in its Plan ID line), or a milestone title,
 matched against the **Milestone:** field of the Plan ID line. A milestone covers a subset of
 SPEC, so only the IDs it traces are reported (and, with `--tests`, checked in tests). With
-`--plan-file`, `--milestone` only labels the output.
+`--plan-file`, `--milestone` only labels the output: every SPEC ID is still required in the
+draft and, with `--tests`, in tests.
 
 What `--tests` counts (only test code, never production source); with no roots it scans
 `crates`, `tests` and `scripts/tests`:
   a. a file with a path component named tests, test, spec, e2e or __tests__, or whose name
      matches *_test.*, *.test.*, *.spec.*, test_*.py or *Tests.cs, counts in full;
   b. any other .rs file counts only its inline test modules: from each `#[cfg(test)]` line to
-     the end of the annotated item (brace depth from the first `{` back to zero; an attribute
+     the closing brace of the annotated item (text after it on that line is excluded; brace depth from the first `{` back to zero; an attribute
      with no following `{` is ignored). The scan is lexically aware: braces and semicolons
      inside comments, strings, raw strings and char literals are ignored, and an attribute
      inside a comment or string is not an attribute;
@@ -224,7 +225,7 @@ def code_mask(text: str) -> list:
 
 
 def cfg_test_text(text: str) -> str:
-    """Rule (b): the text of inline `#[cfg(test)]` items, attribute line to closing brace.
+    """Rule (b): the text of inline `#[cfg(test)]` items, attribute to closing brace.
 
     The annotated item ends at the first `;` before any `{` (a brace-less item contributes
     nothing), else where brace depth returns to zero. Braces and semicolons inside comments,
@@ -245,6 +246,8 @@ def cfg_test_text(text: str) -> str:
             i += 1
             continue
         start, depth, opened, ended, j = i, 0, False, False, i
+        attr_col = m.end() - len(m.group(0).lstrip())  # the attribute's column on its line
+        end_col = 0
         col = m.end()  # scan after the attribute itself; later lines scan from column 0
         while j < len(lines) and not ended:
             for k in range(col, len(lines[j])):
@@ -257,7 +260,7 @@ def cfg_test_text(text: str) -> str:
                 elif ch == "}":
                     depth -= 1
                     if opened and depth <= 0:
-                        ended = True
+                        ended, end_col = True, k + 1
                         break
                 elif ch == ";" and not opened:
                     ended = True  # brace-less item: ignore the attribute
@@ -267,7 +270,10 @@ def cfg_test_text(text: str) -> str:
             col = 0
             j += 1
         if ended and opened:
-            out.extend(lines[start:j + 1])
+            item = lines[start:j + 1]
+            item[-1] = item[-1][:end_col]  # nothing after the closing brace
+            item[0] = item[0][attr_col:]  # nothing before the attribute
+            out.extend(item)
         i = start + 1 if not (ended and opened) else j + 1
     return "\n".join(out)
 
@@ -321,7 +327,8 @@ def run(args) -> int:
         source = f"work-unit issues ({n_issues})"
     # Unknown IDs are an error in every mode, including a milestone-scoped run.
     unknown = sorted(planned - defined)
-    if args.milestone:
+    scoped = bool(args.milestone) and plan is None  # a local draft always gets full validation
+    if scoped:
         # A milestone covers a subset; only report what it does trace.
         print(f"{source} in {args.milestone!r}: {len(planned & required)} IDs traced")
     else:
@@ -336,9 +343,9 @@ def run(args) -> int:
 
     if args.tests is not None:
         tested = ids_in_tree(args.tests or DEFAULT_TEST_ROOTS)
-        # With --milestone, compare only the IDs that milestone traces.
-        scope = (planned & required) if args.milestone else required
-        label = f"tests (milestone {args.milestone!r})" if args.milestone else "tests"
+        # With issues and --milestone, compare only the IDs that milestone traces.
+        scope = (planned & required) if scoped else required
+        label = f"tests (milestone {args.milestone!r})" if scoped else "tests"
         missing = sorted(scope - tested)
         print(f"{label}: {len(scope) - len(missing)}/{len(scope)} referenced")
         for rid in missing:
