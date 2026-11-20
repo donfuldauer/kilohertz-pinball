@@ -329,27 +329,39 @@ fn build(
             let out_dir = build_config.build();
             println!("cargo::metadata=OUT_DIR={}", out_dir.display());
 
-            // KHZ: always add the CMake install dir's `lib` and `lib64` (when they exist) as
-            // link search paths. SDL's CMake writes the generated `.pc` file's `prefix=` without
-            // escaping spaces, and rpkg_config splits `Libs: -L${libdir}` on whitespace, so the
-            // search path taken from the `.pc` below is truncated at the first space of OUT_DIR
-            // (e.g. a checkout under "Software Projects") and the static SDL3 library is not
-            // found. `Path::display()` keeps the whole path, and cargo's
-            // `rustc-link-search=native=<path>` directive is line-based, so spaces are fine.
-            // On paths without spaces this only repeats a search path the `.pc` already gives.
-            // See third_party/sdl3-sys/KHZ_PATCHES.md.
-            for khz_lib_dir in [out_dir.join("lib"), out_dir.join("lib64")] {
-                if khz_lib_dir.is_dir() {
-                    link_flags.search_lib(khz_lib_dir.display());
-                }
-            }
-
-            if let Ok(cfg) = PkgConfig::open(
+            if let Ok(mut cfg) = PkgConfig::open(
                 &out_dir.join(format!("lib/pkgconfig/{package_name}.pc")),
             )
             .or_else(|_| {
                 PkgConfig::open(&out_dir.join(format!("lib64/pkgconfig/{package_name}.pc")))
             }) {
+                // KHZ: escape the install-path variables before the link flags are tokenized.
+                // SDL's CMake writes `prefix=<OUT_DIR>` into the generated `.pc` without escaping
+                // spaces; `libdir`, `includedir` and `exec_prefix` are `${prefix}/...`.
+                // rpkg_config expands `${...}` textually and then splits `Libs:` on unescaped
+                // whitespace, so with OUT_DIR under e.g. "/tmp/SDL -local/project",
+                // `-L${libdir}` became `-L/tmp/SDL` plus `-local/project/.../lib`, which
+                // rpkg_config reads as `-l` + `ocal/project/...` (a bogus `rustc-link-lib`), and
+                // the real search path was truncated at the space. Re-setting each variable with
+                // `set_variable_escaped` (backslash before space, `"` and `\`) makes the split
+                // honour the escapes, so `-L`, `-Wl,-rpath,` and `-I` get whole paths.
+                // Only literal values are re-set: a value that references another variable
+                // (`${prefix}/lib`) inherits the escape from it. Double-escape guard: a value
+                // that already contains a backslash or a quote is left alone, so a future
+                // upstream `.pc` that escapes (or quotes) its own paths is not escaped twice.
+                // See third_party/sdl3-sys/KHZ_PATCHES.md.
+                for khz_var in ["prefix", "exec_prefix", "libdir", "includedir"] {
+                    let khz_raw = match cfg.variable(khz_var) {
+                        Some(raw) => raw.to_vec(),
+                        None => continue,
+                    };
+                    let khz_is_literal = !khz_raw.windows(2).any(|w| w == b"${");
+                    let khz_is_escaped = khz_raw.iter().any(|&b| b == b'\\' || b == b'"');
+                    if khz_is_literal && !khz_is_escaped {
+                        cfg.set_variable_escaped(khz_var, &khz_raw, true);
+                    }
+                }
+
                 for link in cfg.libs_with_private(cfg!(feature = "link-static"))? {
                     match link {
                         Link::SearchLib(path) => {

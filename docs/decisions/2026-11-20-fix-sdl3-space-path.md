@@ -22,3 +22,38 @@ docs/DECISIONS.md "Orchestrator — 4.2 review: patched vendored Lua". On paths 
 against changes in SDL's CMake output. (b) Document the `CARGO_TARGET_DIR` workaround only:
 leaves release builds and `scripts/package.py` broken by default. (c) Report upstream only:
 cannot ship now (queued as a follow-up in `docs/queue/fix-sdl3-space-path.md`).
+
+Note (CodeRabbit r1): the search-path patch described above was replaced; see the next section.
+
+## fix-sdl3-space-path — escape path variables before .pc tokenization (CodeRabbit r1)
+
+**Decision:** In `third_party/sdl3-sys/build-common.rs` (build-from-source branch), open the
+generated `.pc` as `mut cfg` and, before `libs_with_private`, re-set `prefix`, `exec_prefix`,
+`libdir` and `includedir` with `rpkg_config`'s `set_variable_escaped(var, raw, true)`, using the
+raw value read with `cfg.variable(var)`. A variable is re-set only when its value is literal (no
+`${`) and contains no backslash and no `"` (double-escape guard). With SDL 3.4.20's `.pc` only
+`prefix` is literal; the other three are `${prefix}/...` and inherit the escape. The earlier
+unconditional `rustc-link-search` loop over `OUT_DIR/lib` and `lib64` is removed. All edits are
+marked `KHZ`; `third_party/sdl3-sys/KHZ_PATCHES.md` is updated.
+
+**Rationale:** CodeRabbit (PR #105, thread r4645815514) pointed out that the search-path loop
+does not cover a checkout path with a space followed by `-l`. I checked the diagnosis against the
+rpkg-config 0.1.2 source: `${...}` expansion is textual, `UnescapeAndSplit` splits on unescaped
+whitespace and honours `\ `, and `Links::next` maps any token starting with `-l` to
+`Link::Lib`. The build script's `else` arm then emits it as `rustc-link-lib`. Reproduced from
+`/private/tmp/claude-501/khz -local/kh`: the old script emitted
+`cargo::rustc-link-lib=ocal/kh/target/release/build/sdl3-sys-.../out/lib` twice (from
+`-L${libdir}` and `-Wl,-rpath,${libdir}`) and the `pin_app` link failed. After the fix the same
+build emits one full-path `rustc-link-search=native=.../khz -local/kh/.../out/lib`, no bogus
+`-l`, and links (exit 0). The root fix is escaping `prefix`. The guard means a future upstream
+`.pc` that escapes or quotes its own paths is used unchanged. The search-path loop was removed
+because the `-local` build links without it, and it only duplicated the search path the `.pc` now
+gives correctly. Keeping it would leave two mechanisms for one bug.
+
+**Alternatives:** (a) Rewrite the `.pc` text (quote or escape `prefix=`) before parsing: needs a
+temp file or a `from_bytes` re-parse that loses `pcfiledir`, and depends on the `.pc` text layout.
+`set_variable_escaped` is the API rpkg-config provides for this, and `PkgConfig::open` already uses
+it for `pcfiledir`. (b) Keep only the search-path loop (the previous patch): it does not prevent
+the bogus `-l` library, so the link still fails. (c) Keep the loop as well as the escaping: harmless,
+but redundant once the `.pc` parses correctly. (d) Filter `Link::Lib` entries that contain `/`:
+treats the symptom, and the search path would still be truncated.
