@@ -15,6 +15,7 @@
 //! SDL is initialised once per process. Without a native video driver it
 //! prints SKIP, or fails when `PIN_REQUIRE_GPU=1`; the dummy driver is never
 //! used (sdl3's raw-window-handle impl panics on it, DECISIONS 0.1 Q4).
+//! The target accepts libtest filters and `--list` through `pin_testmain`.
 #![cfg(feature = "gpu-tests")]
 
 use arrayvec::ArrayVec;
@@ -196,6 +197,10 @@ fn check_frame(ev: &[Ev], st: &[SurfaceStatus], playfield_px: (u32, u32), thread
 }
 
 fn main() {
+    pin_testmain::libtest_main("gpu_surface_hooks_window", run)
+}
+
+fn run() {
     let sdl = match sdl3::init() {
         Ok(s) => s,
         Err(e) => return skip(&format!("SDL_Init: {e}")),

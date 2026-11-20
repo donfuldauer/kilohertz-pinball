@@ -17,6 +17,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 # Internal crates.
 pin_core = { path = "crates/pin_core" }
+pin_testmain = { path = "crates/pin_testmain" }
 
 # Platform.
 sdl3 = { version = "=0.22.1", features = ["build-from-source-static", "raw-window-handle"] }

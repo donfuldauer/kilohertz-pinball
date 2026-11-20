@@ -4,6 +4,7 @@
 //! SDL may only be initialised once per process and on the main thread
 //! (macOS), so this is a `harness = false` binary. The only wait is a bounded
 //! poll on the callback counter (not a timing assertion).
+//! The target accepts libtest filters and `--list` through `pin_testmain`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,6 +13,10 @@ use pin_audio::mixer::{Bus, Mixer, MixerConfig, Sample, SdlOutput, SoundTrigger,
 use pin_core::SoundId;
 
 fn main() {
+    pin_testmain::libtest_main("mixer_sdl_smoke", run)
+}
+
+fn run() {
     // SAFETY: set before any SDL call or other thread exists.
     unsafe { std::env::set_var("SDL_AUDIO_DRIVER", "dummy") };
     let sdl = sdl3::init().expect("SDL init");
