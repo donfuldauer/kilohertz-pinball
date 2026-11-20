@@ -1,3 +1,0 @@
-- [ ] [fix-15-a] Steel-named generated materials now render as `ChromeSteel` (was the wood fallback); revisit if a table wants brushed or painted steel, and look at Sky Deck (6.2) acrylic against the new blended path.
-- [ ] [fix-15-b] Greybox region means in `wiring_render.rs` did not shift (all existing assertions pass unchanged); no expectation was edited.
-- [ ] [fix-15-c] glTF alpha (tablegen acrylic alpha 0.3) is still ignored by the renderer; transparency comes from `ClearAcrylic` only.

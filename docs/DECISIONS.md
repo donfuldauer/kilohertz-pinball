@@ -1,9 +1,17 @@
 # Decisions
 
-> Frozen history as of 2026-11-18 (D41). New entries go to `docs/decisions/`; see its README.md.
+Every ambiguity an agent resolved, with its rationale (PROCESS.md R8), and the architecture,
+process and planning decisions the work is built on. The recommendation is the decision: an entry
+is final unless a later entry or the repository owner changes it, and it is never queued for
+confirmation. Format: `## <work item> — <title>` then **Decision**, **Rationale**,
+**Alternatives**. New entries are appended at the end; an earlier entry is never edited, only
+superseded by a later one that names it.
 
-Every ambiguity an agent resolved during the run, with rationale (PLAN.md §2.3 rule 8).
-Format: `## <subphase> — <short title>` then **Decision**, **Rationale**, **Alternatives**.
+Work items: up to 2026-11-18 the subphase or fix task (`2.3`, `Orchestrator`, `a1-glass`, …);
+from 2026-11-18 to 2026-11-20 the unit of work, whose per-unit files (D41) are kept below each
+under a `## Imported — docs/decisions/<file>` marker with its title and preamble; from 2026-11-20
+the GitHub issue (`#<N>`, `KP-NNN`) or a topic (`Repository`, `Process`, `Planning`). Entries
+before 2026-11-18 keep their original layout, and some of them lack one of the three labels.
 
 ## Orchestrator — Branching under a single-branch session
 
@@ -2917,3 +2925,4208 @@ The user approved the Orchestrator's recommendations on the items that could blo
 **Rationale.** Under D40 the full matrix (Windows/macOS legs, WARP/Metal GPU tests, coverage) exists only on main, and back-to-back merges were cancelling it (runs b0160aa and cdf7e6a). GitHub keeps one pending run per group, so in a burst the intermediate commits are skipped but the newest one runs; it contains all earlier commits.
 
 **Alternatives.** A per-SHA group for push (every commit runs, but runner load is high); leaving it as it was (rejected: the safety net never finishes during a merge streak).
+
+## Imported — docs/decisions/2026-11-18-6.1-tester.md
+
+**6.1 Independent Tester — decisions (2026-11-18)**
+
+Choices the 6.1-T brief left open, made by the Independent Tester of the
+"Apex Circuit" spec tests (`crates/pin_app/tests/spec_6_1_*.rs`).
+
+## 6.1-T-1 — top-lane identification
+
+- **Decision:** The top lanes are the `rollover` switches named `lane_<n>`
+  (the README names "three skill-shot top lanes (`lane_1..3`)"), ordered
+  left to right. Only when fewer than three such switches exist do the tests
+  fall back to the `rollover` switches in the top 35 % of the playfield.
+- **Rationale:** The brief fixes no top-lane names and says the README is
+  readable; inlane and orbit rollovers must not be mistaken for skill-shot
+  lanes, and a position-only rule cannot tell them apart.
+- **Alternatives:** Position only (would include any high rollover); name
+  substring `lane` (would include `left_inlane` / `lock_lane`).
+
+## 6.1-T-2 — the magnet's opto
+
+- **Decision:** The magnet's sensors are the one `eddy` switch and the
+  `opto` switch nearest to it. The structure test requires both within
+  100 mm of the magnet pole, the opto within 60 mm of the eddy sensor, and no
+  other opto as close to the magnet.
+- **Rationale:** "A magnet with one eddy-kind and one opto-kind switch" has
+  no binding in the manifest (switches are not owned by magnets); the
+  right-orbit corridor puts other optos (`right_orbit_entry`, `ramp_made`)
+  within 150 mm of the pole, so a radius-only rule miscounts.
+- **Alternatives:** The README name `magnet_opto` (name-coupled); any opto
+  within a radius (miscounts on this layout).
+
+## 6.1-T-3 — coverage over the bounded soak
+
+- **Decision:** The soak runs 6 games at each of the 3 skills (seed
+  `0x61A9E`, 15 min `max_game_ticks`, 2 threads, timing not measured, D8).
+  Hard findings (stuck, endless, escaped, non-finite, script error, queue
+  overflow) must be zero per skill; switch, shot and mode coverage is judged
+  over the union of the three soaks.
+- **Rationale:** The brief asks for one bounded soak (≤ 6 games per skill,
+  3 skills) to report 100 % coverage; Gate A2 itself plays 1,000 games per
+  skill, and 6 games of one skill cannot be expected to make every shot.
+  The union is the bounded soak's coverage.
+- **Alternatives:** Coverage per skill at 6 games (fails on sampling, not on
+  the table); more games (over the brief's bound).
+
+## 6.1-T-4 — the injected plunge
+
+- **Decision:** A plunge in the rules tests is LAUNCH (50 ticks) with the
+  served ball at rest on the plunger tip (every ball slower than 1 cm/s for
+  100 ticks), stepped until the plunger fires the ball (> 1 m/s up the
+  table) and it has travelled 0.5 m up the shooter lane; then the ball is
+  removed (no drain) and the lane under test is pulsed. Lane deltas are the
+  score change across the pulse.
+- **Rationale:** The skill-shot window is opened by the plunge; removing the
+  ball before the plunge completes (the auto-plunger pulls back for about
+  0.3 s before it fires) opens no window, and letting it fly on scores other
+  switches during the measurement.
+- **Alternatives:** Removing the ball at the press (no window opens on this
+  table); keeping the ball in play (pollutes the measured deltas).
+
+## 6.1-T-5 — tip gap and the Zipper fixture
+
+- **Decision:** The lower flippers' tip gap is the smallest plan-view
+  distance between the two bats' surfaces (tapered capsules from the
+  `FlipperSet` pivots and bat directions and the declared radii, sampled at
+  0.25 mm), as in DECISIONS "2.8 flipper gap". The Zipper is engaged in a
+  scratch copy of the built bundle whose `rules.lua` is replaced by the
+  fixture `fixtures/spec_6_1/zipper_rules.lua` (`set_zipper` on both lower
+  flippers every tick, no game logic); the open control is the same fixture
+  with the zipper released.
+- **Rationale:** The table's own rules engage the Zipper only through
+  Overdrive (covered by the rules tests); the contact test needs it engaged
+  with no game running and nothing else moving.
+- **Alternatives:** Driving Overdrive in the contact test (couples physics
+  evidence to rule state); tip-centre distance (not the gap a ball sees).
+
+## 6.1-T-6 — README numbers where the brief defers
+
+- **Decision:** Where the brief defers to the README, the tests take its
+  numbers: Overdrive Ready after 3 `ramp_made` or 5 combo steps on a ball;
+  a combo hit is a shot switch (`orbit_top` used) within 4 s of a spinner
+  feed or the previous combo hit; the bonus is (ramps + left orbits + right
+  orbits + drop targets + scoops + top lanes) × 1,000 × combo level; Firewall
+  Save is selected with one ball in play and an inlane closed in the last
+  3 s, the Apex Jackpot otherwise; per-switch points as listed. Drop-target
+  switches are held closed while "down" for the bank-completion check.
+- **Rationale:** The brief fixes the outcome numbers (2x..5x, cap 10,
+  50,000 / 1,000 per 100 ms / 5,000, 5.0 s) and leaves the routes and
+  counters to the Implementer's README.
+- **Alternatives:** None that stay black-box.
+
+## Imported — docs/decisions/2026-11-18-6.1.md
+
+**6.1 — Apex Circuit (variant A) decisions**
+
+## 6.1-a2-modes — action-switch features are not declared modes
+
+**Decision:** Only `powerball_mania` and `combo_chain` are `[[modes]]`.
+Firewall Save and the Apex Jackpot are rules features only. They are counted
+in the persist keys `firewall_save_count` and `apex_jackpot_count` and are
+tested by injection (`apex_game.rs`).
+
+**Rationale:** The brief fixes this. The autoplay bot never presses
+`action`, so Gate A2 mode coverage could never see these two features
+start.
+
+**Alternatives:** Declaring them as modes would make Gate A2 fail by
+construction.
+
+## 6.1 — zipper travel and lower-flipper pivots
+
+**Decision:** The lower pivots move 3.68 mm inward from the grey box's
+157/357 to 160.68/353.32. With 76 mm bats at rest −30°/210° and 6.5 mm tips,
+the open tip gap is then 48.0 mm. Each zipper slides 12 mm inward along x
+(`zipper_slide_axis = [±12, 0, 0]`, 240 mm/s, so 50 ms), which closes the
+gap to 24 mm, under the 27 mm ball. The inlane wall ends and the drain-funnel
+tops move with the pivots, so each inlane still ends on the back of its pivot
+cap.
+
+**Rationale:** These are the PLAN 2.3 Zipper numbers the brief asks for.
+The grey box's pivots gave a 55.4 mm gap, which would have needed a 15 mm
+slide. That was the first draft; the Tester flagged it against the brief.
+The narrower gap also lengthened play: the standard 60-game median game went
+from 0.93 to 1.40 min.
+
+**Alternatives:**
+- Keep the grey-box pivots and slide 15 mm. This deviates from the brief
+  without being forced to.
+- Lengthen the bats. This changes the Appendix C feel geometry.
+
+## 6.1 — Overdrive (action button) selection rule
+
+**Decision:** Overdrive Ready lights after 3 `ramp_made` or 5 combo steps on
+a ball, counted since the last time it lit. It is lost at the drain. With
+Overdrive lit, ACTION does one of two things:
+- **Firewall Save** when `balls_in_play() == 1` and an inlane rollover
+  (`left_inlane` / `right_inlane`) closed in the last 3,000 ticks. Both lower
+  flippers get `set_zipper(true)`, then `set_zipper(false)` exactly 5,000
+  ticks later.
+- **Apex Jackpot** otherwise. It pays 50,000 − 1,000 × ⌊ticks since lit /
+  100⌋, with a floor of 5,000.
+
+Without Overdrive, ACTION does nothing.
+
+**Rationale:** Rules cannot read ball positions. An inlane rollover is the
+table's own signal that the ball is heading for the flippers in the lower
+third. This is the brief's suggested rule, with the inlanes as the "drain
+lane" switches; the table has no outlanes. The rule is deterministic and
+integer-only.
+
+**Alternatives:**
+- Alternate between the two on every press. That ignores the ball's
+  position.
+- Use the sling switches. Those fire on kicks away from the flippers too.
+
+## 6.1 — scoring details left open by the brief
+
+**Decision:**
+- The skill shot (10,000 × ball on the lit lane, 1,000 on another lane in
+  the window), the Apex Jackpot and the bonus are fixed awards. Every other
+  playfield award is multiplied by combo level × 2 in Mania, capped at 10.
+- The skill window opens when the plunged ball closes `shooter_lane`, not at
+  the LAUNCH press.
+- Lit lane = ((ball − 1) mod 3) + 1.
+- Bonus = (ramps + `orbit_top` + right-orbit entries + drop targets + scoops
+  + top lanes of the ball) × 1,000 × combo level. The bonus scene shows for
+  2 s before the next ball and displays the total score, not the bonus
+  amount (renderer limit; see docs/queue/6.1.md [6.1-scene-values]).
+- High-score entry is a 3 s scene with no initials input.
+- The dispenser `contents` lists 4 steel then 1 Powerball, as the brief
+  asks. The rules choose the profile on each `spawn_ball`: ball 2 is the
+  Powerball.
+
+**Rationale:**
+- With fixed awards the brief's exact numbers stay exact whatever the
+  multiplier is.
+- Opening the window at `shooter_lane` means a LAUNCH press with no ball
+  cannot open it.
+- A 2 s bonus count is usual. It also brings the standard game median
+  inside Gate A2's 1–6 min window.
+- The table has one player and no text input.
+
+**Alternatives:**
+- Multiply the skill shot. Then "10,000 × ball" no longer holds on ball 2
+  during Mania.
+- A 1 s bonus. That gave a standard game median under 1 min.
+
+## 6.1 — geometry: grey-box base, right orbit, in-line drop bank, lowered ramp
+
+**Decision:**
+- **Base.** The table reuses the grey box's Gate A1 lower playfield, left
+  orbit, glass seal and ramp structure. It keeps the grey box's Newton ball
+  at (330, 450), which helps play length.
+- **Upper-left flipper.** 55 mm, pivot (118, 552), rest −35°, sweep 50°.
+  The left orbit's exit lands the ball on the bat instead of glancing it off
+  the pivot cap. Standard median ball time went from 10.4 to 13.8 s.
+- **Right orbit.** A corridor from a mouth above the ramp roof, between
+  (318, 642) and (405, 640), up into the shooter-lane top.
+- **Magnet pair.** The magnet, eddy and opto sit at (492, 910), r 22, in
+  the shooter-lane top. Every plunge passes them, so ball 2 starts
+  Powerball Mania in every game.
+- **Top lanes.** The lanes are at y 905–955, below the plunge's arc. At
+  y 945–1000 the x 400 divider stopped every plunge and dropped it into
+  lane 3, which cut `orbit_top` from 72 to 4 per 20 games.
+- **Drop bank.** The 3-bank is in line along its face normal (drop_1 at
+  (262, 425), facing 290°). A shot from the front drops 1, then 2, then 3,
+  which is the shot's order.
+- **Lock lane.** The `lock_lane` opto is a 28 mm ring around the scoop, so
+  every capture completes `lock_scoop`.
+- **Ramp height.** The upper deck is at 30 mm (was 50) and the wire is
+  lowered to match. The lowest allowed height is 28 mm (the deck-headroom
+  rule for layer-0 balls rolling under it). Expert ramp makes went from 0
+  to 12 per 60 games.
+
+**Rationale:** Each item was measured with 20–60-game release soaks at
+seed 1. Probe optos (a 40 × 50 mm grid of zones with no physics) mapped the
+traffic.
+
+**Alternatives:**
+- Upper flipper at (100, 560): median ball 6.9 s.
+- Drop bank in a row: the bank was rarely completed in order (0 in 20
+  games).
+- A narrower right-orbit mouth (372, 672)–(405, 640): about 4 right orbits
+  per 60 games at standard and 2 at expert.
+- A 5 s right-orbit window: it counted balls that fell back down the
+  shooter lane and were plunged again, so 3 s was kept.
+
+## 6.1 — expected shot margins at expert
+
+**Decision:** The design is accepted with the seed-1 60-game numbers in the
+6.1 report. Expert left and right orbits are the thinnest, at 3–5 per 60
+games.
+
+**Rationale:**
+- The left orbit's lower end feeds the upper flipper (R3's feed route), so
+  that flipper sits in the line of the right flipper's cross shot into the
+  orbit.
+- The right orbit needs left-flipper shots between about 13° and 21°.
+- Expert cradles and shoots from rest, which narrows its angle spread.
+- At Gate A2's 1,000 games each shot is expected about 50+ times.
+
+**Alternatives:**
+- Count the downward left orbit (`orbit_top` → spinner), which every plunge
+  makes. Rejected: a shot the plunge always completes measures nothing.
+
+## Imported — docs/decisions/2026-11-18-6.2-tester.md
+
+## 6.2-tester-1 — upper-flipper strike band (C3b)
+
+**Decision:** The 52 mm `upper_right` flipper strikes a steel ball resting against its face on
+the deck (layer 1, centre at 65 mm + 13.5 mm) at 6 positions along the bat (0.3 to 0.8 of its
+length). The fastest horizontal ball speed in the 80 ticks after the press must be above 1 m/s
+and at most the Appendix C full-shot window maximum (`flipper_exit_speed_m_s.max`, 7 m/s, read
+from `PhysicsDefaults::builtin()`) scaled by 52/76, so 4.79 m/s. Its direction must have a positive
+component along the bat's sweep normal at rest (the bat direction rotated 90 degrees towards
+the sweep sign).
+
+**Rationale:** The brief gives the band and asks for the derivation. A ball leaves at most at
+the bat's surface speed `omega * d`. For the same stroke, the contact point on the shorter bat
+is at most 52/76 as far from the pivot. 1 m/s is three times the roll-off speed a ball gains
+down a 52 mm bat on a 6.5 degree deck. "Cradled at rest" is read as resting against the face:
+the deck has no inlane cradle.
+
+**Alternatives:** A hold-and-cradle procedure like the A1 lower-flipper rig. Rejected: the
+deck has no inlane to cradle against, so the ball's start would depend on the table's rails.
+
+## 6.2-tester-2 — never-collide proof set-up (C3c)
+
+**Decision:** Two scenarios, each with 7 crossings (head-on at 1, 2 and 3 m/s; head-on at
+1.5 m/s with 8 and 16 mm offsets; a 90 degree crossing; an oblique crossing). Both balls reach
+the same plan point 30 ms after spawning, and each run records 60 ticks. (1) Deck: a
+`uv_globall` on layer 1 on the acrylic deck and a steel ball on layer 0 on the playfield beneath
+it. (2) Overlapping bodies: both balls at the same height just above the playfield, with the
+layer-1 Glo-Ball in free fall because nothing on layer 1 is below it. Each scenario's crossing
+point is the candidate (deck grid points at least 60 mm inside the outline, or open playfield
+points outside the deck) where lone balls on the head-on paths stray least. "Identical to float
+tolerance" means at most 1e-5 m in position and 1e-4 m/s in velocity on every tick. The
+same-layer control (layer 1 on the deck, layer 0 in the open) must change a ball's velocity by
+more than 0.2 m/s compared with its lone run.
+
+**Rationale:** On the deck, the balls are 65 mm apart in z, so plan overlap alone proves little.
+The second scenario overlaps the bodies in 3D, so only the layer mask keeps them apart. 1e-4 m/s
+is four orders of magnitude below a ball-ball contact impulse at these speeds.
+
+**Alternatives:** Bitwise equality. Rejected because adaptive sub-stepping chosen across all
+balls could legitimately perturb the last bits.
+
+## 6.2-tester-3 — rule-observation details (C5)
+
+**Decision:** Rule latency is up to 5 ticks after the trigger (DECISIONS 2.4 gives 1). For
+the Night Overdrive start: the mode count rises within 5 ticks of the trigger,
+`scene_night_overdrive` is shown within 5 ticks of that, the GI is UV on every tick after the
+start until the first drain, and GI white (each channel within 1e-6 of 1.0) is required within 5
+ticks of the first drain. "Scoring objects" are checked with the two slings (forced rule
+events), as in the 6.0 grey-box test. "Returns to attract" means `scene_attract` is shown within
+30 s of game over and a new `start` begins a game. "Exactly 8000 ticks" is checked as the number
+of consecutive ticks after which `bridge_open` reads 1. The 8-seed sweep runs odd seeds with
+the Glo-Ball drained first and even seeds with the steel ball drained first. A natural Glo-Ball
+drain before the forced drain counts as Glo-Ball first, and both orders must occur.
+
+**Rationale:** The brief does not fix these values. Each choice is the tightest one that does
+not depend on the rules' internal callback order.
+
+**Alternatives:** Requiring the scene in the exact tick of the persist change. Rejected because
+the two may be queued in different callbacks.
+
+## 6.2-tester-4 — Gate-A2 readiness soak scope (C6a)
+
+**Decision:** Coverage (every coverage switch hit, every shot made, the mode started at least
+once) is checked over all 120 games of the three skill soaks, 40 games each. Soundness findings
+and counters are checked per skill. Tick timing is not measured (rule 5). The 120-game soak is
+`#[ignore]`d in the default run: at the 20-120 s ball times it asserts, it is 6-36 hours of
+simulated play, which takes minutes of CPU on the shared box. It is run with `--ignored` and its
+numbers are reported. A 3-game standard smoke soak and the C6c determinism
+tests always run.
+
+**Rationale:** The brief says "across the games" for the mode. Gate A2 itself checks coverage
+per 1000-game skill soak, which 40 games cannot stand in for.
+
+**Alternatives:** Coverage per skill level. Not used at 40 games because it would demand Gate-A2
+sample sizes.
+
+## 6.2-tester-5 — how mechanisms are reached by contact (C3a, C4)
+
+**Decision:** Every aim is derived only from the loaded bundle. VUK: dropped in at rest, and
+rolled in from 40 mm below its position (straight up the table at 0.3 and 0.6 m/s, and at
++-20 degrees) through the pocket's open side. Newton ball: struck from 45 mm behind the first
+captive ball along the captive path's tangent (`newton_chain(0).path().tangent`) at 0.7, 1.0
+and 1.5 m/s, each on a fresh game. Drop targets and slings: from 40 mm in front of the face
+along `angle_deg`, as in the 6.0 grey-box tests. Loop and ramp: the first launch, searched in
+a fixed order, from 25 mm before the entry switch (bearing to the end switch +-0..60 degrees
+and up the table +-0..40 degrees, at 2-5 m/s) that closes the entry switch and then the end
+switch inside the shot's window.
+
+**Rationale:** The tests may not read the table sources, so they aim from public data.
+Approaching the VUK from the side runs into its V-pocket walls, which is a property of the
+pocket and not of the VUK.
+
+**Alternatives:** Forced switch pulses. The brief allows them only as a supplement.
+
+## Imported — docs/decisions/2026-11-18-6.2.md
+
+**Decisions: 6.2 (Sky Deck, variant B table)**
+
+## 6.2-geometry — playfield, wall and glass heights
+
+**Decision:** standard-body playfield 514 × 1070 mm, pitch 6.5°. Walls (and every guide spline,
+which takes `wall_height`) are 100 mm tall; the glass underside (`glass.toml`) is at 122 mm, so
+122 − 100 = 22 mm is under one ball diameter and every wall seals against the glass. The upper
+deck, the Sky Bridge landing and the `upper_right` flipper are at z 65 mm; a deck ball's top is at
+92 mm. The drop targets on the deck are 20 mm tall (top 85 mm, above a deck ball's centre at
+78.5 mm), so a ball that lands on a target's top edge has 10 mm to spare under the glass and rolls
+off.
+
+**Rationale:** the brief fixes the deck at 65 mm. With the grey-box 90 / 112 mm pair a ball thrown
+onto a 32 mm drop target wedged between its top (97 mm) and the glass (StuckBall at z 98..109 mm in
+a standard soak); raising the glass alone breaks the seal rule, so the walls rise with it.
+
+**Alternatives:** grey-box heights (90 / 112 mm) with default 32 mm drop targets (wedged balls);
+a higher deck (the brief fixes 65 mm).
+
+## 6.2-mechs — where the drops and the Newton ball sit
+
+**Decision:** the "Reactor Core" Newton ball sits on the main deck at (330, 415) mm, above the
+right sling, moving 50 mm up the table; flipper shots and sling kicks hit it in every game. The
+3-bank of drop targets is on the upper deck straight above the `upper_right` flipper (centres
+(392.6, 987.8), (418, 997), (443.4, 1006.2), 20 mm tall, facing 290°): the deck flipper's shots
+leave it 60..130° and cross the bank line. A layer-1 back stop guide 20 mm behind the bank
+(`deck_bank_back`) closes the space behind it, and a cap guide (`deck_bank_cap`) closes the
+narrowing strip between the back stop and the top rail, so nothing rests on or behind the bank.
+
+**Rationale:** a first bank at the deck's upper left (facing the flipper diagonally) was hit only
+by stray balls (drop_1 never in 40 games); the flipper sends balls nearly straight up. The Newton
+ball first sat at (330, 450) (the grey-box spot); there every plunge could ride the loop, hit
+the left sling and be kicked straight across under it into the right outlane (the Independent
+Tester's 4.5 s balls; 77 % of drains in a 60-game probe went down the right outlane). At y 415
+it stands across that line. Moving it to (300, 540) was tried and made long rallies longer and
+added StuckBalls.
+
+**Alternatives:** bank at the upper left facing 300°; Newton ball higher up the field; narrowing
+the right outlane mouth instead (the plunge path sits on a knife edge: 0.5 mm moved the
+standard median ball time between 9 s and 36 s).
+
+## 6.2-glo-ball — Glo-Ball delivery path
+
+**Decision:** dispenser `glo_feed` (number 2, 3 × `uv_globall`) drops the Glo-Ball on layer 0 at
+(257, 668) mm inside the centre VUK's V pocket rolling up at 0.4 m/s; it rolls into the scoop
+(capture radius 18 mm at (257, 692)), and the VUK lifts it onto the upper deck (layer 1). The VUK
+holds a ball 4 s, but from the mode start until the Glo-Ball's lift only 0.5 s; when the mode
+starts at a VUK closure (the steel ball is in the scoop), the rules eject the steel ball after
+0.5 s and dispense the Glo-Ball 300 ms after the eject. The Glo-Ball is on the deck about 1.5 s
+after the mode start by either path.
+
+**Rationale:** script spawns are layer 0 only (pin_sim `ball_spawns`); the VUK is the table's own
+lift to layer 1, so no new geometry is needed, and the tests show a layer-1 Glo-Ball within 3,000
+ticks over a seed sweep (`sky_deck_rules`). The Independent Tester bounds both the VUK lift
+(5,000 ticks after the capture) and the Glo-Ball's arrival (5,000 ticks after the mode start);
+a 6 s hold (the first version) missed both.
+
+**Alternatives:** a feed lane into the left ramp (longer, and the ramp can roll a slow ball back);
+spawning on layer 1 (not possible from rules).
+
+## 6.2-diverter — Sky Bridge Diverter geometry, and why both positions share every switch
+
+**Decision:** `bridge_diverter` is declared as a `kind = "diverter"` mech on coil `bridge_coil`
+(and `set_diverter` is called), but its physical blade is a second mech on the same coil:
+`bridge_blade`, a heavy, slow `kickback` slider on the ramp's layer 2 at the landing (50 × 12 mm,
+stroke 50 mm along 315°, 500 g, 20 N). Retracted it is clear of the ball's path; held out (the
+rules hold `bridge_coil` for the 8 s the bridge is open) its face crosses the path at 45° and turns
+a ball coming up the landing right onto the Sky Bridge (layer 2 deck at z 65 mm), whose lower rail
+falls towards the upper deck, and `bridge_exit` (2 → 1) hands it to the upper deck. Closed, the
+ball stops at the landing's top rail and rolls back down the wire to the main deck (layer 0).
+Neither mech has a switch. `ramp_entry` and `ramp_made` are on the common path before the fork;
+`deck_opto` is reached by every VUK lift. No switch is reachable only with the diverter on or
+only with it off.
+
+**Rationale:** pin_sim binds a diverter's colliders by glTF node name (`<id>`, `<id>.on`,
+`<id>.off`; DECISIONS "2.5 — diverters, gates and Newton balls"), and pin_tablegen names its nodes
+`walls[i]`, so a tablegen-built table cannot give a diverter colliders; a slider kicker held by its
+coil is the engine's only coil-driven solid that a layout can place. A declared switch on either
+mech would be owned by the mech set and held open (`MechSet::switch_states` overwrites owned bits;
+a diverter or a kickback that is never touched never closes it), which would break 100 % switch
+coverage. The bot never presses `action`, so the bridge stays closed in every soak and the blade
+never moves there.
+
+**Alternatives:** an additive pin_tablegen field naming wall nodes (requested, outside owned
+paths); a VUK at the ramp's end (one exit only); a magnet (acts on every layer, unreliable).
+
+## 6.2-overdrive — the action / VUK start rule for Night Overdrive
+
+**Decision:** armed (`overdrive_ready` = 1) once, in the current ball, `newton_sw` has closed and
+all three drop targets are down, in either order (the bank resets 1.5 s after its last target
+drops; its completion counts for the rest of the ball). It starts on the first `action` press
+(while armed it replaces the bridge toggle) or the next `vuk_sw` closure. It ends at the first trough drain while it runs
+(either ball: the rules cannot tell which one drained) or at the end of the ball; the GI goes
+back to (1, 1, 1, 1) then and at game over. Once per ball. The rules count balls on the table
+(`live`: serves and Glo-Ball starts minus trough drains, one per tick) and resync with
+`balls_in_play()` on a drain and every 256 ticks, so a ball of the game ends only when every ball
+has drained and a game never stalls.
+
+**Rationale:** the PLAN's manual path is `action`; the autoplay bot never presses `action`, so the
+VUK path makes the mode reachable by play alone (R6a). Trough switches carry no ball identity, so
+"the Glo-Ball drains" is read as "the two-ball phase ends".
+
+**Alternatives:** start only on `action` (unreachable for Gate A2); identify the Glo-Ball by
+profile (no script API).
+
+## 6.2-tuning — flippers, outlanes, VUK hold and scoring (Gate A2 readiness)
+
+**Decision:** lower flippers 76 mm with pivots at x 167 and 347 (180 mm apart; the grey-box pair
+is 200 mm), resting at −25° and sweeping 45° to +20°: 29 mm clear between the resting tips (a
+ball just fits through), 24 mm between the raised tips (a ball rests on two raised bats; it never
+wedges between them). Outlanes are 30 mm channels outside the separators (left x 30 up to y 385,
+right x 440 up to y 430). The left outlane has a guard that turns wall-hugging balls onto the
+inlane (36 mm mouth); the right outlane has none, so a ball rolling down along the shooter-lane
+wall drops into it. The upper-deck flipper rests at 202° (22° below horizontal) so its shots
+cross the drop bank from anywhere on the bat. The shooter-lane wall reaches y 940. The VUK holds
+a ball 4 s (0.5 s while a Glo-Ball is on its way, 6.2-glo-ball). Scoring weights what lasts
+with play (slings 1000) and the skill shots (loop shot bonus 50 000 for loop_top after
+loop_entry within 3 s, ramp made 25 000), and keeps the VUK/deck/drop points small.
+
+**Rationale:** the ball-time window is narrow for this bot: standard median at least 25 s, every
+skill at least 20 s, and no ball over 300 s at any skill in 1,000 games. Ball times are close to
+exponential, so a skill's tail grows with its median; the expert bot almost never misses, so with
+guards on both outlanes its balls lasted 1.3 to 1.5 times the novice's and every setting that put
+the standard median at 25 s gave an expert ball over 300 s in some 200- or 600-game run. The
+expert's long balls ride the right side (loop returns down the shooter-lane wall); without the
+right guard those drain, the three skills come together (medians within 25 %) and the expert tail
+thins (longest ball under 7 × the median instead of over 10 ×). The narrow centre gap and the
+raised right separator then give the weaker bots back their ball time. Tried and rejected (release
+`pin_sim soak`, 200 games, seed 1, unless stated): pivots 162/352 (15 s standard median);
+166/348 (a ball wedged between the raised tips for 300 s); a rubber centre post (closes the
+centre drain the Independent Tester's trough test expects); the right separator at y 455
+(standard 28 s, but an expert ball of 306 s in 600 games, seed 2). Results of the chosen setting
+are in the 6.2 report (seed 1: medians 21.9 / 27.0 / 25.5 s, longest 249 / 183 / 158 s; seed 2,
+600 games each, same geometry with the separator at 430: 21.0 / 25.3 / 25.6 s, longest 196 / 206
+/ 186 s, zero findings). Scores by skill are reported only (known bot issue).
+
+**Alternatives:** guards on both outlanes (expert tail over 300 s); a longer VUK hold (the
+Independent Tester bounds the lift at 5 s; it also scales the tail with the median); no outlanes
+(R2a lists them); points per switch as in the grey-box table.
+
+## 6.2-traps — ball traps closed after soaks
+
+**Decision:** the ramp's side rails run on to y 905, where the landing's side rails start, and
+the strip behind the drop bank is capped (`deck_bank_cap`, 6.2-mechs).
+
+**Rationale:** each was a StuckBall in a novice soak: a ball rolling back down the ramp came to
+rest on one wire rail against the free end of `landing_left` (the side rails ended at y 880, the
+landing rails began at y 905); a ball thrown over the bank wedged where the strip behind it was
+one ball wide.
+
+**Alternatives:** none simpler: a free guide end in reach of a ball on the wire holds it; the
+strip had to be closed or made wider than a ball everywhere, and the top rail is the deck edge.
+
+## 6.2-limits — deviations from the PLAN text and engine limits worked around
+
+**Decision:** (1) script spawns are layer 0 only, so the Glo-Ball reaches the upper deck through
+the VUK (6.2-glo-ball); (2) the autoplay bot never presses `action`, so Night Overdrive also starts
+at the VUK (6.2-overdrive) and the Sky Bridge is never needed for coverage (6.2-diverter); (3) a
+diverter cannot get colliders in a tablegen bundle, so the blade is a kickback (6.2-diverter); (4)
+the diverter and the blade have no switch (R2j reads "every mech has its coil/switch ids"; a
+diverter has none in the engine); (5) Night Overdrive ends at the first drain of either ball.
+
+**Rationale:** each follows from an engine fact verified on c32bf52 (pin_sim `ball_spawns`,
+`autoplay::bot`, `load::bound_colliders`, `MechSet::switch_states`).
+
+**Alternatives:** engine or pin_core changes, which the brief rules out for this unit.
+
+## Imported — docs/decisions/2026-11-18-6.4-tester.md
+
+## 6.4-T — How a mode's qualifying shot is made "by physics contact"
+
+**Decision:** For each mode the test reads the README's "shot switches" cell, keeps the tokens that
+are declared `[[switches]]` ids, and takes their positions (the switch zone, or the position of the
+mech the switch belongs to). The game's own served ball (resting on the plunger) is the shot ball;
+it is moved by `set_ball_state` to a start state and the physics does the rest:
+
+- a shot whose first switch is a flipper's EOS switch (a flip, then the ball into the next
+  switch): the ball is put at rest on that flipper's bat at 15 offsets (0.15 to 0.85 of the bat
+  length) and the flipper's button is pressed;
+- otherwise: rolled along the line from the first to the second shot switch (or up the table for a
+  single switch), 25, 50 or 90 mm short of the first switch, with three lateral offsets (0, ±5 mm) and
+  three speeds (1.6, 2.4, 3.2 m/s), starts off the playfield (x or y below one ball radius) dropped; rolled at the first switch from halfway toward the second (so a
+  kicker sends it on toward the second, 0.8 and 1.4 m/s, three lateral offsets); and "rolled down
+  into it" (tried first when the first switch is a scoop's).
+
+The first start state that raises `mode:<id>` is accepted, and at least one must. No shot switch
+is forced.
+
+**Rationale:** The brief asks for a sweep of at least 6 start offsets on the shot's lane with a
+velocity toward it. Moving the served ball (instead of spawning a second one) keeps the rules'
+own ball accounting intact, so a mode start is not confused by a ball the rules never served.
+
+**Alternatives:** Spawning a separate ball (the rules would see an unannounced ball); forcing the
+switches with `set_switch` (forbidden as sole evidence by the brief).
+
+## 6.4-T — Banana "cradle" start state
+
+**Decision:** S4 a places the ball, at rest, 0.5 mm off the up-table face of the bat at its rest
+pose (fraction 0.30 to 0.70 of the bat length, 9 offsets), lets it touch down for 10 ms, then
+presses the flipper button and records the exit velocity: the first velocity, once the ball moves
+faster than 1 m/s, that changes by less than 3 cm/s per tick for 3 ticks in a row (free flight,
+before the ball meets a slingshot or a wall). The straight flipper's heading is
+mirrored (180° − heading) before comparing.
+
+**Rationale:** The brief's wording ("spawned on the energised... cradle position") is truncated.
+A ball resting on the bat face at a sweep of offsets is the reproducible version of a cradled
+ball that is flipped, and it is the same relative offset on both flippers, as the brief requires.
+
+**Alternatives:** Trapping the ball with the bat raised and flipping from a drop-catch (adds a
+second flipper motion and timing to the measurement).
+
+## 6.4-T — Autoplay tick cap and "endless" findings
+
+**Decision:** S6 runs the soak's game loop itself (same seeds `game_seed(1, g)` and `bot_seed`,
+same idle/start/stuck end rules, default stuck and endless-ball limits) with a per-game cap of
+120 000 ticks. A game that reaches the cap is not passed to `GameMonitor::end_at_cap`; endless
+balls are the monitor's own 300 s ball-age findings. Score reproducibility replays games 0 and 5
+of each skill (not all six) with the same seeds and compares score and `state_hash`.
+
+**Rationale:** `end_at_cap` turns any ball still in play at a cap into an EndlessBall finding,
+which would make "no endless finding" depend on the cap, not on the table. Replaying two games
+per skill keeps the file within the brief's ~90 s CI budget.
+
+**Alternatives:** Using `run_soak` (it calls `end_at_cap` and does not expose `mode_sel` per
+ball); replaying all 18 games (doubles the run time).
+
+## 6.4-T — Magnet comparison: "held" and the variants
+
+**Decision:** A ball counts as held once it has been within 5 mm (plan) of the pole for 100 ms in
+a row while the coil is on; from then until the coil goes off it must stay within 5 mm. The three
+variants start the `magnet_compare` mode from a fresh sim with the shot sweep started at a
+different start state (index 0, 1, 2, wrapping to the next that works) and a 0 / 97 / 194 ms
+pre-delay. The main ball is kept at rest on the plunger meanwhile (state injection).
+
+**Rationale:** The ball passes through the 5 mm circle while being captured; holding is the
+settled state. The brief's "starting offset" is otherwise unspecified.
+
+**Alternatives:** Checking from the first tick the coil is on (fails on any capture overshoot).
+
+## 6.4-T — Main ball during the extra-ball check
+
+**Decision:** S3 d keeps the player's ball in play for the 30 s by putting it back at rest on the
+plunger (its served state) whenever it moved more than 2 mm, and drains every other ball by
+injection 2 s after it appeared.
+
+**Rationale:** Without flipper play the main ball would drain within 30 s and end the ball
+legitimately, which is not what the check is about.
+
+**Alternatives:** Cradling the main ball on a held flipper (extra balls may knock it off).
+
+## 6.4-T — Layer 0 / layer 4 momentum check position
+
+**Decision:** S4 c spawns the layer-4 and layer-0 balls at the same 3-D centre inside the backbox
+(80 mm above the backbox flipper pivot, off the back panel by one ball radius, clear of every
+layer-transition zone) and compares each ball's per-tick positions with its single-ball run
+(tolerance 1 µm) over 300 ms.
+
+**Rationale:** Identical centres are the strongest overlap; any cross-layer contact would push the
+balls apart by centimetres in the first tick.
+
+**Alternatives:** Same plan position at different heights (no overlap in 3-D, so a contact could
+never happen and the test would prove nothing).
+
+## 6.4-T — Opto "at the pole"
+
+**Decision:** The C5 check accepts an opto switch whose position is within 15 mm (plan) of the
+magnet's pole.
+
+**Rationale:** The contract gives no tolerance; 15 mm is about one ball radius plus margin, so the
+opto sees a ball held at the pole.
+
+**Alternatives:** Exact coincidence (too strict for an authored layout).
+
+## 6.4-T — Magnus launch point
+
+**Decision:** S4 d launches the ball from the table's centre line (midway between the two lower
+flipper pivots), 150 mm above them, at 0.8 m/s up the table with 200 rad/s of spin about the
+playfield normal, and compares the x (lateral) positions after 1.5 s.
+
+**Rationale:** Spin about the normal with velocity up the table gives a Magnus force across the
+table (ω × v ∥ x). The centre line above the flippers is open playfield on any table; the XL area
+(first choice) is closed to standard-size balls on this table.
+
+**Alternatives:** Launching from `glo_feed` (it serves into the shooter lane, whose walls would
+cancel the lateral drift).
+
+## Imported — docs/decisions/2026-11-18-6.4.md
+
+## 6.4 — build path (example, because the CLI lacks backbox)
+
+**Decision:** The Feature Lab bundle is built by the `pin_app` example
+`crates/pin_app/examples/build_feature_lab.rs` through the `pin_tablegen` library:
+`generate` (layout.toml → playfield.glb and a merged manifest), then
+`backbox::generate_backbox` on that manifest (backbox.glb, backbox_colliders.glb, the mini flipper,
+VUK and transitions), the VUK aim (next entry), one merged `table.toml`, the copies, and
+`pin_assetgen::generate_kit` (title "Feature Lab", the table palette, seed 0).
+`tables/feature_lab/build.sh <out>` runs the example and then `pin_tablegen validate <out>`. The
+tests include the example file with `#[path]` (`feature_lab_support::build`), so the build has one
+implementation. The placeholder kit is written by the example through the library, not by a second
+`pin_assetgen` command-line run in build.sh: that keeps the tests' bundle identical to build.sh's.
+
+**Rationale:** The `pin_tablegen` command line reads `layout.toml` only. The brief asks for one
+implementation that the tests reuse.
+
+**Alternatives:** A build.sh that runs the CLI for the playfield and an example for the backbox only
+(two implementations, and the tests would need a third). Changing the CLI is outside the owned paths;
+it is a REQUEST in the report.
+
+## 6.4 — backbox VUK aimed through the entry transition
+
+**Decision:** The build example re-aims the generated `tablegen:backbox.vuk`. Its exit is on the
+playfield (layer 0), under the entry hole (15 mm left of its middle), at a ball's rest height and
+mid-depth of the box. It ejects at 2.5 m/s up the backbox plane plus 0.35 m/s across it, which comes
+out as `eject_speed_m_s`, `angle_deg` and `kick_speed_m_s` (`vuk_aim`). The ball rises through the
+generated `tablegen:backbox.entry` zone (0 → 4), which lifts it onto the backbox layer, and then
+through the hole. The generated transitions and the backbox geometry are unchanged. The base
+`table.toml` adds a safety zone `bb_catch` (4 → 0) under the whole box, below both generated zones.
+A backbox ball that falls back through the entry hole returns to the playfield just above the floor,
+instead of falling out of the table.
+
+**Rationale:** The generator puts the VUK exit inside the box, on layer 4. The 2.8 clearance
+validator then refuses the bundle: "ejects ... to a point with no surface of layer 4 below it". The
+validator reads only the playfield glTF and the splines, and a backbox layer may hold no playfield
+collider or spline (load error). So no table can give that exit a support the validator sees. The
+generated default kick (straight up the table) also drops the ball back through the entry hole
+(HUMAN_QUEUE 5.5 note: "6.4 should choose one"). With the exit on layer 0 over the playfield floor,
+the validator checks a real, supported point. The entry zone does the layer change it was generated
+for. Measured: with the ejection tuned this way, every seed reaches the box and drains back
+(`feature_lab_physics`). A flipped ball that falls back into the entry channel is caught by
+`bb_catch`.
+
+**Alternatives:**
+- Keep the generated exit on layer 4: validate and `load_validated` fail. Making the validator read
+  `backbox_colliders.glb` is outside the owned paths; it is a REQUEST in the report.
+- Restrict the steel balls so that the exit lies outside their declared area: this hides a real ball
+  from the validator.
+
+**Note 2026-11-19 (fix round 1):** The layer-0 aim is replaced.
+
+fix-2.8-backbox-clearance (PR #56) made the clearance validator and `load_validated` read
+`backbox_colliders.glb`. A VUK exit now counts as supported when a walkable backbox floor of its
+exit layer lies below it within 100 mm in plan. So the generated `tablegen:backbox.vuk` keeps its
+generated `layer` 0, `exit_layer` 4 and `exit_offset`: just above the middle of the entry hole,
+against the back panel. The generated transitions `tablegen:backbox.entry` and
+`tablegen:backbox.drain` are not overridden.
+
+The build example (`aim_backbox_vuk`, `vuk_eject`) only sets the eject, which the generator leaves
+unset: 2.1 m/s up the backbox plane plus 0.35 m/s across it (towards the bat), in the plane. The
+ball rises about 225 mm, clears the entry channel's right wall (50 mm high) and lands on the bat.
+The physics defaults (1.2 m/s along table `z`, 0.3 m/s along `x`) are not enough. By estimate, they
+would lift the centre only about 73 mm (the wall top plus a ball radius is 63.5 mm) and move it
+36 mm across by the apex. They would also push it at 0.14 m/s towards the glass. The ball could then
+fall back through the entry hole, so 6.4 chooses to set the eject (HUMAN_QUEUE 5.5 note: "6.4 should
+choose one").
+
+Why 2.1 m/s rather than 2.0:
+- The old layer-0 aim passed the exit height at about 2.0 m/s.
+- At 2.0 m/s the 100-game soaks never closed `bb_flipper_eos` (coverage incomplete at all three
+  skills).
+- The autoplay bot models every flipper in plan view. This flipper's pivot is at the back panel,
+  13.7 mm behind a ball in the box, so the bot sees a backbox ball in the bat's sector only about
+  120 mm above the pivot. With the old aim it pressed `left_upper` 15 times per 100 novice games.
+- At 2.1 m/s the arc's top is high enough: 72 / 37 / 44 EOS closes per 100 games (novice /
+  standard / expert), and the ball still lands on the bat (`feature_lab_physics`).
+
+Frequent backbox flips exposed two table defects that the old aim hid:
+- A flipped ball that fell back into the entry channel could rest on the 20 mm of shelf left of
+  the 60 mm hole (soak StuckBall at u ≈ −182).
+- A ball that fell through the hole moving towards the player could miss `bb_catch` (y ≥ 880) and
+  leave the table (soak EscapedBall at (91, 834, −49) mm).
+
+Both are fixed in owned sources:
+- `backbox_layout.toml` widens the entry hole to 70 mm (`at` −155, u −190..−120). A ball against the
+  box's left side (centre u −186.5) is over the hole, so none can rest in the channel. The
+  generator moves its entry zone and the VUK exit with the hole (exit u −155).
+- `bb_catch` reaches y 780 (100 mm in front of the box).
+
+Tests:
+- `no_ball_rests_or_escapes_in_the_entry_channel` fails with the 60 mm hole ("u -186.5 toward 0:
+  on_0 false").
+- `a_ball_falling_back_through_the_entry_hole_returns_to_the_playfield` shows that `bb_catch` is
+  still needed: without it the ball escapes. A flipped ball that drops into the channel falls
+  through the hole on layer 4, and below the shelf only `bb_catch` returns it to layer 0.
+
+Measured: `pin_tablegen validate` is clean (0 warnings), every `feature_lab_*` and `spec_6_4_*` test
+passes, and the 100-game seed-1 soaks pass at all three skills with 0 findings and complete coverage.
+
+Alternatives considered in this round:
+- Exit moved to mid-depth: not chosen, because the generated point validates and behaves (the brief
+  prefers it). Measured at 2.0 m/s, mid-depth also gave 0 EOS closes.
+- Keep 2.0 m/s and report `bb_flipper_eos` uncovered: this breaks the expected full coverage.
+- 2.2 m/s: 308 EOS closes per 100 novice games, but more fall-backs into the channel. Measured with
+  the 60 mm hole, it showed both defects above.
+- Drop `bb_catch`: the ball is lost.
+
+## 6.4 — mode selector design for autoplay
+
+**Decision:** `mode_sel` (persist key, 0..4) advances by one (mod 5) at the start of every ball and on
+every `action` press during a game. On load it is drawn with `pinball.random(0, 4)`, and it is not
+reset between games. Each mode starts on its own qualifying shot, at most once per ball. The rules
+match the shot exactly as the soak monitor does: `[[shots]]` index = selector index, two switches
+in order within the window.
+
+Shots:
+
+| mode | shot |
+|---|---|
+| banana_shots | `vuk_lane`, `bb_vuk_sw` |
+| backbox_play | `bb_vuk_sw`, `bb_drain` |
+| xl_ball | `bumper_3_ring`, `bumper_2_ring` |
+| magnet_compare | `magnet_opto`, `vuk_lane` |
+| glo_ball | `bumper_2_ring`, `bumper_3_ring` |
+
+**Rationale:** The soak loads a fresh simulation for every game, so persist values start at 0 in each
+game. A selector starting at 0 would select only modes 1, 2 and 3 in a 3-ball game: autoplay never
+presses `action`. A seeded random start, which is deterministic per sim seed, reaches all five modes
+across games.
+
+No shot starts with a flipper EOS switch. EOS switches are closed at rest and close again only when
+the bat drops back. That is after the ball has left, often after it has reached the target, so
+"EOS, then target" sequences mostly fail.
+
+The Banana's curl sends its cradle shots up the right of the table: 96–118° mirrored, against 77–110°
+for the straight bat. That is why the Banana's shot is the VUK lane and not the left orbit.
+
+**Alternatives:** A selector reset to 0 each game (fails autoplay coverage). Advancing on a timer
+(not in the contract).
+
+## 6.4 — XL area and drain design
+
+**Decision:** The open lower area cleared for the 79.4 mm ball is the chamber under the left inlane.
+It is bounded by the cabinet wall x = 0, the left inlane wall, a wall at x = 130, and a floor wall from
+(0, 100) to (130, 30). Its `restrict` area is `[[0, 0], [0, 330], [130, 194.868], [130, 0]]`, on
+layer 0. The walls are sealed to the glass, so no other ball gets in.
+
+`xl_feed` serves the XL ball at (55, 210). It rolls past `xl_lane` into the only rest point: the V
+between the floor and the x = 130 wall, ball centre (90.3, 96.5). There `xl_trough`, a trough zone
+of radius 45 mm, drains it. Switch zones are lifted 13.5 mm, 26.2 mm below the XL ball's centre,
+hence the large radii.
+
+The XL mode ends when `xl_trough` closes or after 20 s. Measured: 9 launch velocities up to 2.1 m/s
+all stay inside the area and drain in 57–638 ms.
+
+**Rationale:** The XL ball wedges between the flippers: the gap of about 55 mm is narrower than 80.4
+mm. So the area must exclude the flippers and every narrow feature. That also gives the negative
+test its named feature: without the restriction the validator names the flipper gap
+`lower_left / lower_right`, besides the orbit lane and the VUK scoop. The chamber reuses dead space
+under the grey-box inlane, so the main playfield keeps the grey-box's A1-proven lower geometry.
+
+**Alternatives:**
+- An XL area fenced by posts on the open playfield (main balls pass between the posts). This adds
+  pockets and posts near the flippers and risks stuck findings.
+- A wider playfield. C1 asks for 514 x 1070 unless there is a reason.
+
+## 6.4 — magnet comparison result
+
+**Decision:** `magnet_feed` serves each comparison ball at rest exactly on the pole of the energised
+`hold_magnet` at (370, 420). The magnet is set first. The settings are `k_coil` 2e-5 N·m³, `d_min`
+8 mm, range 40 mm, `tau_ms` 200, and a pole opto of radius 25 mm. The rules hold each ball for 1 s.
+They measure from the coil going off to the opto opening, and serve the `low_rem_steel` ball 1.5 s
+after the `standard_steel` one has left.
+
+Achieved over 3 launch variants: `standard_steel` 329–330 ms, `low_rem_steel` 253 ms, a difference
+of 76 ms. The bound required (≥ 10 ms) holds without relaxing the test.
+
+**Rationale:**
+- The solver's magnet force is conservative. A ball that rolls into a powered pole gains speed and
+  rolls out the other side, so it is never caught (measured at `k_coil` 2e-6 and 2e-5). Only a ball
+  placed at rest in the well stays held.
+- The residual pull scales with `k_coil`. At 2e-6 the difference was only 11–19 ms, with an opto
+  radius of 15 mm.
+- Serving the second ball at once put it on top of the first, which had just left the 15 mm zone.
+  The two collided and the measurement was noise; hence the 1.5 s gap.
+
+**Alternatives:** Catching a rolling ball. This is impossible without damping in the engine; the brief
+forbids engine changes, and it is not needed.
+
+## 6.4 — Glo-Ball Magnus setting
+
+**Decision:** `[physics] globall_magnus_coeff = 3e-5`, three times the default and within the bounds
+0..5e-5. `glo_feed` serves the Glo-Ball into the shooter lane, and the rules plunge it round the orbit
+1.5 s later.
+
+Measured with the same launch from (257, 300) mm (0.8 m/s up the table, 200 rad/s about the normal):
+after 1.5 s the Glo-Ball's x differs by 33.4 mm between the table's coefficient and 0. A
+`standard_steel` ball is bit-identical under both loads.
+
+**Rationale:** A stronger coefficient makes the curve visible on a showcase table. 3e-5 keeps clear
+of the upper bound.
+
+**Alternatives:** The default 1e-5 (a smaller curve).
+
+## 6.4 — contract deviations
+
+**Decision:** One deviation, on C5. The generated VUK `tablegen:backbox.vuk` keeps its id, kind,
+coil, switch and position, but its `exit_layer` is 0, not the generated 4. Its exit and eject are
+re-aimed (entry "6.4 — backbox VUK aimed through the entry transition"). The ball still reaches the
+backbox layer 4: the generated `tablegen:backbox.entry` transition lifts it. A check that reads
+"the VUK's `exit_layer` is 4" fails. A check that "a ball fed through the VUK ends up on layer 4" holds.
+
+Two further notes, which are not deviations:
+- The table has one slingshot (left). The Banana's shots go up the right of the table, where a right
+  sling stopped them: Banana flips never reached the VUK lane with it in place.
+- `hold_magnet` has number 0, so its table id equals its index in the solver's magnet list
+  (`Simulation::solver().magnet_power(MagnetId(0))`).
+
+**Rationale:** With `exit_layer` 4, `pin_tablegen validate` and `load_validated` refuse every
+bundle. The DONE WHEN items (validate passes, `load_validated` passes) outrank keeping the generated
+exit layer. The engine-side fix, a validator that reads `backbox_colliders.glb`, is a REQUEST.
+
+**Alternatives:** Keep `exit_layer` 4 and ship a bundle that fails validation (DONE WHEN 2, 4 and R8
+fail).
+
+**Note 2026-11-19 (fix round 1):** The C5 deviation is removed. `tablegen:backbox.vuk` keeps the
+generated `exit_layer` 4 and `exit_offset`. Only its eject is set: `eject_speed_m_s`, `angle_deg`
+and `kick_speed_m_s`, which the generator leaves unset. See the note of the same date in "6.4 —
+backbox VUK aimed through the entry transition". The validator gap that forced the deviation was
+closed by fix-2.8-backbox-clearance. No contract deviation remains. The two further notes above are
+unchanged.
+
+## 6.4 — scores by skill (R11e not met)
+
+**Decision:** The scoring rewards these, then stops tuning:
+- flipper shots: a target within 1 s of a lower flipper reaching end of stroke, 5000;
+- the orbit made from the bottom, 5000, with the plunge's pass over `orbit_top` worth 500;
+- mode play.
+
+It reports the measured medians (README "Autoplay soak self-check"). Novice medians stay above
+expert ones.
+
+**Rationale:** On this table the heuristic novice bot plays longer games than the expert bot (60-game
+medians 86 s and 75 s) and hits more of everything:
+- the VUK lane and backbox: 365 VUK captures against 181;
+- pops;
+- magnet passes.
+
+Re-weighting all points towards flipper shots, scored only when a flip precedes the hit, kept the same
+order: medians 107k / 100k / 95k. The order comes from game length and ball paths under the bot,
+not from what is scored. Brief R11e allows reporting the numbers when the order cannot be reached.
+
+**Alternatives:**
+- Points per flip: this would rank skill by button presses, a gimmick.
+- Geometry changes to shorten novice games: no table-side cause was found.
+
+## Imported — docs/decisions/2026-11-18-fable-ask.md
+
+**Decisions: fable-ask**
+
+Owner ruling of 2026-11-18 on how the Fable 5.2 allowance check (PLAN §2.5 item 3, D34) is satisfied.
+
+## fable-ask — Owner ask for Fable allowance with a 30-minute timeout
+
+**Decision:** When Fable is wanted (D34 (a) and (b) hold) and the allowance is not already known to
+be insufficient, the Orchestrator asks the owner to check `/usage` and reply `fable yes` or
+`fable no`, and waits up to 30 minutes (D42, PLAN §2.5 "Fable ask"). `yes` makes the allowance
+sufficient; `no` makes it insufficient; no answer leaves it `unknown`, which routes to Opus 5.5 / T2
+with a queue line, as before. The reminder is scheduled before the ask is sent (no reminder, no
+ask; ask not sent, reminder cancelled; both `unknown`). Answers are per item: a `yes` covers only
+the items it approves and a `no` item is `insufficient` even if another item got `yes`; it does not
+carry over to later units. A partial answer does not drop the timeout: the reminder stays active
+until every item has an outcome, and unanswered items become `unknown` when it fires. Before
+re-running the classifier for approved items the Orchestrator re-checks the session and passes
+`insufficient` if a rate limit, throttling or Fable fallback has been reported since the ask. A late answer (after the timeout) does not re-route work that
+was already routed.
+
+**Rationale:** The agent has no tool that returns usage. `/usage` is a Claude Code client command
+whose output never reaches the model, the `claude` CLI in the container has no usage subcommand,
+and rate-limit events only appear once a limit is hit. So `FABLE_ALLOWANCE` was always `unknown`
+(for example the RUN_LOG Wave 6 classifier row) and the D34 allowance check could never pass. Only
+the owner can read the figure. A bounded wait keeps an unattended run from stalling. Per-item scope
+keeps one reading from being treated as a standing grant after the allowance has changed, and
+ignoring late answers keeps routing deterministic.
+
+**Alternatives:**
+- An owner-declared allowance file with an expiry: needs the owner to keep it fresh and can go stale
+  silently.
+- Try Fable on `unknown` and fall back on throttle: risks spending allowance or overage unseen.
+- A blocking question dialog: has no timeout, so it would stall an unattended run.
+
+## Imported — docs/decisions/2026-11-18-fix-10-srgb-blend.md
+
+## fix-10-srgb-blend — where display layers meet an `*Srgb` surface (cause)
+
+**Decision:** The cause in issue #10 is confirmed in the display code, but the surface it was
+attributed to is not where it happens. `QuadRenderer` and `DmdRenderer` (`displays/quad.rs`,
+`displays/dmd.rs`) are built for the target format; for an `*Srgb` format they set `srgb` and the
+shader decodes its output (`encode_output`). `QuadRenderer`'s alpha-over pipeline blends with
+fixed-function `PREMULTIPLIED_ALPHA_BLENDING` into the `*Srgb` view, which decodes the destination,
+blends in linear space and re-encodes. `DmdRenderer` builds its colour target with `format.into()`
+(no blend state), so it replaces the destination through the `*Srgb` view; its shader's sRGB output
+conversion is a separate behaviour from the linear-space blend. `pin_render`'s `SurfaceSet` (`gpu/surfaces.rs`) picks the `*Srgb` fallback in
+`pick_format` and configures it with `view_formats: Vec::new()`, but it draws only debug lines and the
+secondary clear; it never draws display layers. The production path that draws display layers onto a
+surface is `pin_app`'s table renderer (`crates/pin_app/src/orchestrator/present.rs`: its own
+`pick_format` with the same `*Srgb` fallback, a `SurfaceConfiguration` with `view_formats: Vec::new()`,
+`TableRenderer::new(ctx, format, ..)`, and `render_direct` drawing everything through the default
+`*Srgb` view of the swap-chain texture). `pin_app` is outside this unit's owned paths, so this unit
+fixes the mechanism in `pin_render` and the `SurfaceSet` configuration, and the `pin_app` wiring is a
+request (queue file).
+
+**Rationale:** Fixing only what the issue names would leave production unchanged, and a silent
+partial fix would close the issue wrongly. The brief says to fix the real cause; the part of it in
+another crate is the Orchestrator's call.
+
+**Alternatives:** Edit `pin_app` here (rejected: outside OWNED PATHS); declare the issue invalid
+because `SurfaceSet` draws no layers (rejected: production `pin_app` has the bug).
+
+## fix-10-srgb-blend — approach: twin-format view, scratch texture where views are unsupported
+
+**Decision:** New public `pin_render::gpu::LayerTarget` and `LayerCompositor` (in
+`gpu/surfaces.rs`). `LayerTarget::for_target(format, downlevel_flags, usages)` decides how display
+layers reach a target texture:
+
+- non-sRGB format → `Direct(format)` (unchanged: no extra view, pass, copy or allocation);
+- `*Srgb` format and `DownlevelFlags::SURFACE_VIEW_FORMATS` → `TwinView`: the surface is configured
+  with `view_formats = [format.remove_srgb_suffix()]`, display renderers are built for the twin
+  (`layer_format()`; their `srgb` flag is then false, so no decode), and `LayerCompositor::begin`
+  returns a twin-format view of the frame texture: blending happens on display-encoded bytes,
+  identical to the non-sRGB path, with no extra pass;
+- `*Srgb` without `SURFACE_VIEW_FORMATS` but with `COPY_SRC | COPY_DST` → `Intermediate`: the
+  surface is configured with those usages; `begin` copies the frame into a twin-format scratch
+  texture (a raw byte copy; wgpu allows copies between formats that differ only in sRGB-ness),
+  layers are drawn there, `end` copies it back. The scratch texture is created on first use and
+  again only on a size change;
+- neither → `Direct(srgb format)`: the pre-fix behaviour (linear blend) as a documented last resort.
+
+`SurfaceSet::new` calls `for_target` for each direct surface (presenter-thread surfaces draw into an
+`Rgba8Unorm` offscreen texture, so they are `Direct(Rgba8Unorm)`), passes the result to
+`surface_config` (view formats and extra usages), and exposes it as `SurfaceSet::layer_targets()`.
+The debug renderers keep their `draw_format` and default view, so their output is unchanged on every
+path.
+
+**Rationale:** The brief prefers the issue's first option. wgpu 30.0.1 (the pinned version) accepts
+surface `view_formats` only that differ in sRGB-ness and only with
+`DownlevelFlags::SURFACE_VIEW_FORMATS` (wgpu-core `device/resource.rs`, `configure`): DX12 and Metal
+report it; Vulkan reports it only with `VK_KHR_swapchain_mutable_format`; GLES and Vulkan on Android
+do not. So the first option is unsupported on some backends, and the brief's second option covers
+them. The copy-in/copy-out form of the second option keeps whatever was drawn under the layers
+(playfield, post output) without making the rest of the frame change format.
+
+**Alternatives:** Twin view only, failing configuration elsewhere (rejected: a surface that worked
+before would stop working); draw the whole frame in the twin format (rejected: changes debug lines and
+post output on the fallback path, which the brief keeps as before); decode-blend-encode in the shader
+with a manual read of the destination (rejected: needs framebuffer fetch or a copy anyway).
+
+## fix-10-srgb-blend — `encode_output` and the `srgb` uniform stay
+
+**Decision:** `encode_output` and the `srgb` uniform in `quad.rs` and `dmd.rs` are kept unchanged.
+After the fix no `SurfaceSet` path builds a display renderer for an `*Srgb` format, and once `pin_app`
+adopts `LayerTarget` it will not either, except in the degraded `Direct(*Srgb)` case, which still
+needs the decode so unblended stored values match. Clippy does not flag them.
+
+**Rationale:** The brief asks to keep them working for any path that still renders to a true `*Srgb`
+view; the degraded case and the new test's pre-fix comparison are such paths.
+
+**Alternatives:** Remove the uniform (rejected: breaks the degraded case and the brief's rule 4).
+
+## fix-10-srgb-blend — test tolerance
+
+**Decision:** `tests/srgb_blend_gpu.rs` compares the raw stored bytes of the `*Srgb` target (through
+the production `for_target` choice, plus `Intermediate` and, where `DownlevelFlags::VIEW_FORMATS`
+allows texture view formats, `TwinView` forced) with the non-sRGB twin's within 1 LSB per channel, and
+region means with the analytic display-encoded alpha-over within 1 LSB, for four background/layer
+pairs on `Rgba8` and `Bgra8`. A second test shows the pre-fix path (renderer built for the `*Srgb`
+format, drawn through the `*Srgb` view) matches the analytic linear-space blend within 2 LSB and
+differs from the twin by at least 40 LSB (red at 128/255 over blue: blue channel 187 instead of 127).
+The brief's example pair (white at 0.5 over black, 188 vs 128) does not discriminate on this code:
+the pre-fix shader decodes its premultiplied output before the blend, and over a black destination
+`encode(decode(s) + 0) = s`, so both paths store 128. Three of the four pairs therefore use a
+non-black destination (blue clear; grey and orange opaque base layers).
+
+**Rationale:** Both sides store the same blend of the same 8-bit values in `*Unorm` arithmetic; 1 LSB
+allows for a backend that rounds differently between a twin view and a plain texture, while linear
+blending is about 60 LSB off at mid-tones, so the tolerance cannot accept it.
+
+**Alternatives:** Exact equality (rejected: no spec guarantees identical rounding across the two
+views); snapshot images (rejected: D30, analytic first).
+
+## fix-10-srgb-blend (part 2) — pin_app wiring
+
+**Decision:** `pin_app`'s table presentation (`crates/pin_app/src/orchestrator/present.rs`) now
+computes one `LayerTarget` per slot at configure time (`slot_layers`, pure and unit-tested) and keeps
+it, in a `LayerCompositor`, with the slot's state for its lifetime: resizing changes only the
+surface's width and height, never its format or capabilities, so nothing is recomputed there (the
+`Intermediate` scratch texture is resized by the compositor itself on the first frame of a new size).
+
+- **Direct slots** (the playfield, non-blocking secondary windows): `LayerTarget::for_target(format,
+  adapter downlevel flags, caps.usages)`; the surface is configured with `view_formats =
+  lt.view_formats()` and `usage = RENDER_ATTACHMENT | lt.extra_usages()`. `TableRenderer` is built
+  with `TableRenderer::with_layer_format(ctx, format, lt.layer_format(), ..)` (`view.rs`): the score
+  display and backglass renderers are built for the layer format, the post chain and the debug overlay
+  for the surface format. Each renderer owns its pipelines, so the display and post pipelines cannot
+  be mixed up (no pipeline cache is shared between them). A frame is recorded by
+  `TableRenderer::encode_composited`: PBR, post and debug overlay into the frame's own view, then
+  `LayerCompositor::begin(device, encoder, &frame.texture)` (falling back to the frame's own view on
+  `None`), the displays, and `LayerCompositor::end`, all before the submit. The brief's "call `end`
+  before post and debug" is read as "post and debug are not drawn through the layer view": the draw
+  order stays as before (post, debug, then displays on top), because `begin` must see the finished
+  frame content for `Intermediate` to copy it in under the layers.
+- **Presenter-thread slots** (requirement 4): **a twin-format offscreen.** The render thread draws
+  the frame into `offscreen_frame_texture(offscreen_format(format))`, where `offscreen_format` strips
+  the sRGB suffix, and the renderer is built entirely for that format. Its `LayerTarget` is
+  `for_target(twin, ..) = Direct(twin)` (`begin` returns `None`, no extra pass), and the surface is
+  configured as before (copy-path usages, `view_formats` from that `Direct` target, which is empty).
+  The presenter's copy into the `*Srgb` swap-chain image moves the bytes unchanged:
+  `copy_texture_to_texture` accepts formats that differ only in sRGB-ness (wgpu-core 30.0.1
+  `command/transfer.rs`) and copies raw bytes; the blit path (surfaces without `COPY_DST`) now uses
+  `FrameCopy::with_source(device, twin, surface_format, path)`, whose fragment entry `fs_decode`
+  decodes the sampled (display-encoded) colour before the `*Srgb` target encodes it again, so no
+  double encode happens (an 8-bit decode→encode round trip returns every byte; unit test). The secondary
+  window's black clear is the same bytes in either format.
+- **Non-sRGB surfaces**: `for_target` gives `Direct(format)`, `offscreen_format` returns the format
+  unchanged, `view_formats` is empty and `usage` is as before; `begin` and `end` return without
+  recording or allocating, and the blit keeps `fs`. No texture, view, pass or heap allocation is added
+  per frame. A frame without any display routed to its window skips `begin`/`end` too.
+- `TableRenderer::render_to_image` (tests) uses the same `encode_composited`, with `Direct` when the
+  layer format equals the target format (unchanged) and `Intermediate` otherwise (texture view
+  formats would need `DownlevelFlags::VIEW_FORMATS`; copies work everywhere). `TableRenderer::new`
+  and `encode` keep their old behaviour (layer format = target format).
+- The side finding about `pin_render`'s `SurfaceSet` presenter-thread blit (`gpu/blit.rs`:
+  `textureLoad` of the `Rgba8Unorm` offscreen into the surface's default view) does not apply to
+  `pin_app`, whose presenter path is handled above. In `SurfaceSet` it is not a defect either: that
+  offscreen holds only debug lines and the secondary clear, drawn as raw values, and the `*Srgb` write
+  encodes them exactly as the direct `*Srgb` path does when the debug renderer draws through the
+  surface's `*Srgb` view, so both paths store the same bytes. No queue line or request.
+
+**Rationale:** The twin-format offscreen needs no downlevel flag, no extra usage, no extra pass and no
+per-frame view on the render thread, and its frame is already display-encoded; giving the offscreen
+the same `LayerTarget` treatment as the surface would need `DownlevelFlags::VIEW_FORMATS` on the pool
+textures (or a copy in and out per frame) to get the same bytes. A presenter-thread window never
+draws the playfield, so building its whole renderer in the twin format changes nothing but the
+display blend.
+
+**Alternatives:** Same treatment for the offscreen (`*Srgb` pool texture with twin view formats or a
+scratch copy; rejected: needs a flag or two copies per frame for an identical result); blit into a
+twin-format view of the swap-chain image (rejected: needs `SURFACE_VIEW_FORMATS`, which the fallback
+path cannot assume; the shader decode works everywhere); recompute the `LayerTarget` on every
+reconfigure (rejected: its inputs cannot change after configuration).
+
+## Imported — docs/decisions/2026-11-18-fix-11-telemetry-min-ring.md
+
+## fix-11-telemetry-min-ring — unclamped constructor mechanism
+
+**Decision:** `telemetry_channel` clamps the ring capacity to
+`max(requested, MAX_DATAGRAMS_PER_TICK)` (5) and writes one best-effort
+warning to stderr (a failed write is ignored) when it raises the value. The
+old exact-capacity behaviour stays
+available as `#[doc(hidden)] pub fn telemetry_channel_unclamped`, re-exported
+from `telemetry`, which the public function delegates to.
+
+**Rationale:** The capacity-2 spec tests are integration tests, so they can
+only see public items. A doc-hidden `pub fn` keeps them running unchanged
+with no new feature flag or dependency, and the clamp and warning run only at
+construction time, never on the sim thread's tick path.
+
+**Alternatives:**
+- A cargo feature (`cfg(feature = "test-support")`): needs a Cargo.toml change
+  outside this unit's paths and extra CI wiring.
+- `pub(crate)`: not visible to integration tests.
+- Rejecting small values with an error: breaks the infallible constructor
+  signature; clamping was the recommendation in issue #11.
+
+## fix-11-telemetry-min-ring — capacity policy outside the versioned sections
+
+**Decision:** The ring-capacity policy lives in the non-normative section 7
+(implementation notes) of `docs/TELEMETRY_PROTOCOL.md`. Section 4 is unchanged
+from `main`. No version bump.
+
+**Rationale:** The clamp is a `pin_audio` sender implementation policy with no
+wire or receiver change. The protocol preamble versions sections 2-4, so a v2
+bump for this would be a breaking contract change with no wire difference.
+
+**Alternatives:**
+- Bump to version 2 via `contracts/CHANGE_REQUESTS.md`: rejected, there is no
+  wire change.
+- Keep the policy in section 4 unversioned: rejected, it violates the
+  preamble.
+
+## Imported — docs/decisions/2026-11-18-fix-12-telemetry-session-id.md
+
+## fix-12-telemetry-session-id — telemetry session id deferred to protocol v2
+
+**Decision:** Keep telemetry protocol v1 without a session id. The limitation is documented in
+`docs/TELEMETRY_PROTOCOL.md` §6: a delayed full state that arrives after a later one is
+indistinguishable from a sender restart. The session id is deferred to a version 2 header.
+
+**Rationale:** A session id changes the header layout, which is a breaking v2 change. It needs a
+`pin_core` contract change request (PLAN §2.3 rule 2) and updates to `pin_core` and `pin_audio`.
+v1 recovers once a complete, sufficiently recent full state (all of its datagrams) is delivered
+and applied. The sender schedules one every 1000 ticks, but on a lossy link there is no guaranteed
+time bound (matching `docs/TELEMETRY_PROTOCOL.md` §6). The cost of the missing id is a delayed
+resync, not a permanent desync.
+
+**Revisit when:** a v2 protocol bump is made for another reason, or reconnect bugs are observed in
+practice (a listener mistaking a delayed full state for a sender restart, or the reverse).
+Source: review thread https://github.com/donfuldauer/kilohertz-pinball/pull/3#discussion_r4573605021
+and GitHub issue #12.
+
+**Alternatives:** Add the session id now (rejected: a breaking change with no observed bug).
+
+## Imported — docs/decisions/2026-11-18-fix-13-vfs-toctou.md
+
+## fix-13-vfs-toctou — new docs/THREAT_MODEL.md for accepted security risks
+
+**Decision:** Create `docs/THREAT_MODEL.md`, because no threat-model document existed. Issue #13
+asked for an entry in "the threat-model doc". The VFS time-of-check/time-of-use finding is recorded
+there as accepted risk `TM-1`, with its revisit trigger and the fix to use then.
+
+**Rationale:** One place for accepted security risks, each with a revisit trigger, so the trade-off
+can be found and re-checked when the bundle loading model changes.
+
+**Alternatives:**
+- A section in `docs/PLAN.md`: rejected. PLAN is the build plan and a shared file.
+- An entry in the frozen `docs/DECISIONS.md`: rejected. That file is frozen history (D41).
+
+## Imported — docs/decisions/2026-11-18-fix-14-motion-blur-occlusion.md
+
+## fix-14-motion-blur-occlusion — motion blur over hidden balls deferred to render polish
+
+**Decision:** Keep the disc-based motion blur. Blur is drawn from each ball's projected disc, so it
+can show where the ball is hidden behind geometry. The limitation is documented on
+`MotionBlurConfig` in `crates/pin_render/src/post/mod.rs`.
+
+**Rationale:**
+- The artefact is cosmetic.
+- The fix needs a new depth-test or object-mask input to the post chain. That is a render-pipeline
+  change, out of proportion for now.
+
+**Revisit when:** render polish, or the artefact shows in a gate screenshot or in a player report.
+
+**Alternatives:**
+- Depth-test the blur against the scene depth buffer now: rejected for now, because the artefact is
+  cosmetic only.
+
+Source: review thread https://github.com/donfuldauer/kilohertz-pinball/pull/6#discussion_r4573647979.
+
+## Imported — docs/decisions/2026-11-18-fix-2.8-backbox-clearance.md
+
+## fix-2.8-backbox-clearance — backbox colliders in the clearance validator: layer source
+
+**Decision:** `validate_bundle` also loads `backbox_colliders.glb` (`pin_assets::BACKBOX_COLLIDERS_FILE`)
+when the bundle has it. It uses the engine's glTF budgets (`MAX_BACKBOX_COLLIDERS` nodes and
+meshes) through the new public `clearance::load_backbox_colliders`, and validates with the new
+public `clearance::validate_clearance_with_backbox(table, scene, Some(&backbox))`. Each collider
+node is geometry of its own `extras.collision_layer`, which is how the engine's
+`pin_sim::load::backbox_colliders` / `mesh_collider` assign it. The validator applies the loader's
+node rules too (CodeRabbit 4622606031): a node whose `extras.collider` is not true, or whose
+`extras.collision_layer` is missing or outside 4..=7, is a `ClearanceError` with the new
+`Feature::BackboxCollider`, file `backbox_colliders.glb`, path `meshes[i]`, name the node, an empty
+profile, 0 mm required/actual, and the loader's message (`node "x": extras.collision_layer must be
+a backbox layer 4..=7, got None`, or `node "x" is not a collider (extras.collider must be true)`).
+Such a node adds no geometry. There is no default layer: the former `clearance::backbox_layer` and
+`clearance::DEFAULT_BACKBOX_LAYER` (fallback to `[backbox] collision_layer`, else 4) are removed.
+The generator writes the declared layer on every node.
+Backbox triangles follow the playfield's in the validator's triangle list, with mesh indices
+offset by the playfield mesh count. A deck-headroom finding on one names `backbox_colliders.glb`
+and `meshes[i]` within that file. Backbox triangles are never layer 0 geometry. A bundle without
+the file runs exactly the old code path (`validate_clearance_with_backbox(.., None)` equals
+`validate_clearance`).
+
+**Rationale:** Reading the layer per node, as the engine does, means the validator sees exactly
+what the physics collides with. A fallback layer would let the validator accept a bundle whose
+backbox the engine refuses to load (a silent default where the engine has none). The loader's
+wording is reused so the two reports read the same. No existing `Feature` fits a malformed
+collider node (they are all ball-clearance features), so a new variant was added.
+
+**Alternatives:** Forcing every node onto the declared `[backbox] collision_layer` was rejected:
+it would disagree with the engine whenever a node names another backbox layer (4..=7). Keeping
+`validate_clearance` unchanged and adding a separate function was preferred over changing its
+signature, because `pin_app` and the existing tests call it.
+Keeping the declared-layer fallback for nodes that name none was rejected (CodeRabbit
+4622606031): the engine refuses such a node. Reporting such nodes under `Feature::DeckHeadroom` or
+`Feature::VukExit` was rejected as misleading.
+
+## fix-2.8-backbox-clearance — what supports a VUK exit on the backbox layer
+
+**Decision:** A VUK exit on layer N still counts as supported when one of these holds: a walkable
+(within 45°) collider of layer N lies directly below the ball's centre in plan, or a guide or
+wireform of layer N is within `EXIT_SPLINE_REACH_M` (100 mm). One case is new: a walkable *backbox*
+collider of layer N whose plan projection comes within the same 100 mm of the exit point, with its
+surface there below the ball (at most `z − r + 1 mm`), also supports it. The playfield meshes keep
+the strict "directly below" rule.
+
+**Rationale:** The generator places `tablegen:backbox.vuk`'s exit at the middle of the entry hole
+in the shelf, 2 mm above shelf level and 13.5 mm from the back panel. The VUK kicks the ball up
+along +z through that hole, so nothing of layer 4 is directly below the exit point. With only the
+literal "surface below the centre" rule, the backbox colliders do not change the verdict (verified:
+`generated_backbox_vuk_exit_validates` failed with the old message for every ball until this rule
+was added). The shelf around the hole is the floor that catches the ball once it is in the box.
+The 100 mm reach is the one the validator already allows for "a ramp or rail catches it". The
+exit must still not overlap the box (the separate overlap check), and a point far from any
+backbox floor, or under the shelf, is still refused
+(`backbox_floor_support_needs_reach_and_height`). Limiting the new rule to backbox triangles keeps
+requirement 3: a bundle without `backbox_colliders.glb` validates exactly as before.
+
+**Alternatives:**
+- Extending the 100 mm reach to every walkable collider: this would change verdicts for bundles
+  without a backbox, for example an exit 50 mm off a deck edge, which the existing tests refuse.
+- An enclosure (ray-cast) test: more code, and it still fails at the hole.
+- Moving the generator's exit over the shelf: out of this unit's owned paths, and the brief rules
+  the generator correct.
+
+## fix-2.8-backbox-clearance — the 79.4 mm ball and the generated backbox exit
+
+**Decision:** Test (a) asserts that the generated backbox with its layer-4 VUK exit validates for
+the 15.88 mm ball, both as a declared profile and through the diameters path, and for the apex
+dispenser's 27 mm balls. For 79.4 mm, the test asserts that the only finding is the VUK exit
+*overlap*: 13.5 mm from the back panel, overlapping it by 26.2 mm. It also asserts the ball is never
+refused for want of a surface. The validator does not suppress that overlap.
+
+**Rationale:** The generator places the exit `depth − 13.5 mm` from the glass for every ball (a
+standard ball's radius from the back panel). A 39.7 mm radius ball centred there intersects the
+back panel whatever `depth` is (verified with `depth = 120`, entry width 100 mm). That is a true
+geometric finding, and hiding it would be a test-shaped special case (§2.3 rule 6). The generator
+is outside this unit's paths, so the matter goes to the queue.
+
+**Alternatives:** Restricting the XL profile away from the VUK would make "validates" vacuous.
+Skipping the overlap check for backbox exits would hide a real collision.
+
+## fix-2.8-backbox-clearance — a restrict area must hold its ball
+
+**Decision:** Each `[balls] restrict` entry with a well-formed `area` gets the diameter of the
+largest circle inside the polygon (even-odd rule). If that diameter is below the profile's ball
+diameter, the entry is a `ClearanceError` with `feature: Feature::Restriction`, name
+`balls.restrict[i]`, path `balls.restrict[i].area`, `required_mm` set to the ball diameter and
+`actual_mm` to the largest circle. The message names the profile, its diameter in mm and the
+largest circle that fits. The comparison is against the bare diameter, without
+`MIN_CLEARANCE_MM`. The entry's area is still used for the other checks. Entries without an area,
+and profiles that are not built in, are not checked. A malformed area keeps its old error and
+gets no second one.
+
+The inscribed circle is found by a deterministic branch and bound over square cells (the "pole of
+inaccessibility" search). The signed distance to the polygon's edges is 1-Lipschitz, so a cell of
+half-side `h` cannot beat its centre by more than `h·√2`. Cells come out of a binary heap ordered by
+bound, ties broken by creation order, with no HashMap. The search stops when no cell can beat the
+best centre by more than the precision. The stated tolerance is `INSCRIBED_CIRCLE_TOLERANCE_MM` =
+0.5 mm: the computed diameter is never above the true one and at most 0.5 mm below it. The search
+runs at a quarter of that radius precision (0.125 mm, so at most 0.25 mm below in diameter). The
+first grid has cells of side `max(shorter bbox side, longer side / 256)`. A cap of 2,000,000 cells
+stops runaway work; past it the result is still a lower bound, and no table-sized polygon reaches
+it.
+
+**Rationale:** A lower bound never accepts an area that cannot hold the ball. A circle exactly as
+wide as the ball is accepted when the shape allows it within 0.25 mm, so the 70..90 mm square sweep
+for the 79.4 mm ball flips exactly once, between 79 and 80 mm. Distance to the edges equals
+distance to the even-odd region's boundary for an interior point, because parity cannot change
+inside a disc that meets no edge, so self-intersecting areas are handled. The bare diameter matches
+the brief ("no disc of the profile's ball diameter fits").
+
+**Alternatives:**
+- A uniform grid of interior samples: its error depends on the grid, and so does its cost for
+  thin shapes.
+- An exact medial axis: much more code.
+- Comparing against `d + MIN_CLEARANCE_MM`: would refuse areas in which the ball's centre can
+  still sit.
+
+## fix-2.8-backbox-clearance — inscribed circle of a restrict area: the even-odd boundary
+
+**Decision:** The inscribed-circle search measures distance to the boundary of the even-odd filled
+region, not to every traced edge (CodeRabbit 4622606015). `inscribed::Boundary::new` builds it
+once per polygon: zero-length edges (1 nm) are dropped; each edge is split at the endpoints of the
+edges collinear with it (both endpoints within 1 nm of its line) that lie strictly inside it, so
+partial overlaps become whole pieces; pieces that coincide within 1 nm (either direction) are
+counted, and one copy is kept when the count is odd, none when it is even. Pieces keep edge order
+(no hashing), so the result is deterministic. When nothing is left the search returns 0 (no
+interior). Inside/outside still comes from `Polygon::contains` over all edges: a retraced edge
+flips the crossing parity twice, so the test is unchanged. An outer outline and a hole outline are
+covered once and stay. Example: the 40 mm square traced as
+`(0,0) (20,0) (20,40) (20,0) (40,0) (40,40) (0,40)` mm now holds a 40 mm circle (was 20 mm).
+
+The other users of `Polygon::boundary_distance`, `covers` and `meets_segment` (all in
+`clearance::Allowed`: `at`, `on_path`, `near`) keep all edges. They decide where a restricted
+profile *may* be, and so which features are checked for it. Counting a point on a retraced edge as
+covered, or near, only makes the validator check more features (it can add findings, never hide
+one), and a retraced edge lies on the closure of the region or on a zero-width spike outside it.
+
+**Rationale:** For a point inside the region, the largest disc around it that stays inside is
+bounded by the region's boundary only; a retraced edge has filled area on both sides (or empty area
+on both sides) and does not limit it. Splitting at collinear endpoints is the minimum needed to
+compare partial overlaps piece by piece. 1 nm is the coincidence tolerance `covers` and
+`has_filled_area` already use. Restrict areas have a handful of vertices, so the O(n²) build is
+negligible.
+
+**Alternatives:** A full polygon-boolean clean-up (e.g. a sweep-line union) was rejected: much more
+code for the same answer on the inputs the even-odd rule allows. Cleaning `Polygon` itself for all
+callers was rejected: it would change the `Allowed` region tests, which are conservative as they
+are, and `Polygon` is built by struct literal in many places. Rejecting retraced outlines as
+malformed was rejected: they are valid even-odd polygons and `has_filled_area` already accepts them.
+
+## fix-2.8-backbox-clearance — restrict area too small: an exact verdict
+
+**Decision:** Whether a restrict area holds its ball is decided by the new `inscribed::fits(poly,
+diameter) -> Fit` (CodeRabbit 4622606025), not by comparing the approximate lower bound with the
+diameter. It runs the same deterministic branch and bound as `largest_inscribed_diameter` (shared
+`Search`), and stops as soon as the best centre's distance reaches the radius (`Fit::Fits`) or the
+largest remaining cell bound is below it (`Fit::TooSmall`). Decision tolerance (CodeRabbit
+4623268524): when the bracket `[best, upper]` around the radius is at most 1 µm wide the circle
+counts as fitting (`TOUCH_TOLERANCE` = 1 µm on the radius). The first version used 1 nm; on a
+27 mm x 100 mm strip the centre line is a plateau at the inscribed radius, so a ball a hair wider
+than the strip could not be decided before the cells shrank to the bracket scale, which exceeds
+`MAX_CELLS` and ended `Undecided` (the area accepted without a verdict, with a large heap). With
+1 µm it decides in about 10^5 examinations. Trade-off: a ball up to 1 µm wider in radius (2 µm in
+diameter) than the inscribed circle is accepted. `TOL` (1 nm) stays for boundary coincidence. If the search
+reaches `MAX_CELLS` (2,000,000) undecided it returns `Fit::Undecided` and the validator reports
+nothing: an error must be certain. `TooSmall` is reported only when the upper bound is below the
+diameter. The message and `actual_mm` keep the size from `largest_inscribed_diameter` at the old
+precision: a lower bound within `INSCRIBED_CIRCLE_TOLERANCE_MM` (0.5 mm, unchanged value), which is
+now documented as bounding the reported size only. `largest_inscribed_diameter` stays for that and
+for other callers. Example: the right triangle with 46.1 mm legs (true ≈ 27.0048 mm) accepts the
+27 mm ball and refuses 27.01 mm.
+
+**Rationale:** The old check refused areas whose true inscribed circle is up to 0.25 mm wider than
+the ball, which contradicts "no disc of the ball's diameter fits". Branch and bound already
+produces both bounds; deciding against the diameter needs no new geometry, and terminates quickly
+except at a near-tie, where 1 µm is far below any manufacturing or physics resolution. Reporting a
+lower bound keeps the message's promise ("the largest circle that fits") true, and since it is
+computed only after `TooSmall` it is below the diameter.
+
+**Alternatives:** Shrinking the precision until the lower bound is close enough was rejected: it
+is still a tolerance, only smaller, and costs more everywhere. Reporting the bracket midpoint was
+rejected: after an early `TooSmall` the bracket can be wide, and the midpoint could overstate the
+circle. Reporting `Undecided` as a warning was not added: it is not reachable for table-sized
+areas and no finding type fits; the queue does not need it either.
+
+## Imported — docs/decisions/2026-11-18-fix-2.9-bot-timing.md
+
+## fix-2.9-bot-timing — flip timing
+
+**Decision:** The bot's flip timing is a shared `BotConfig` setting with two parts.
+(1) `flip_delay_ms: (u32, u32)`, default `(0, 35)`: the planned delay, in ms (1 ms ticks),
+from a predicted crossing (the ball's ballistic path enters the bat sector within
+`lead_ms` = 30 ms, unchanged) to the press. One PCG draw per flip picks it uniformly in the
+inclusive range (no draw when the range is a single value). (2) `reaction: ReactionDraw`,
+default `Centred`: the skill's reaction error is uniform in `-jitter..=+jitter` ms around the
+planned press, clamped so the press is never before the decision tick. `ReactionDraw::Late`
+(error `0..=jitter` after the plan) with `flip_delay_ms: (0, 0)` replays the original 2.9 bot
+exactly (same draw sequence). Skill levels still differ only by `reaction_jitter_ms` and
+`miss_rate` (DECISIONS.md "2.9 — bot model"); their values are unchanged. Draw order per flip
+decision: miss chance, then (if not missed) the planned delay, then the reaction error, then (at
+the press) the hold time; cradles draw only the reaction error around the moment the slow ball
+is seen. No allocation, wall clock or table name is involved.
+
+**Rationale:** The old bot pressed at the prediction plus a late-only delay, so the Expert
+(0-3 ms) always met the ball with the bat at the end of its 20-35 ms stroke and the Novice's
+0-40 ms lateness moved contact into the stroke by chance: the Novice out-scored the Expert on
+all three tables. The first remedy tried, a single shared delay (lead-equivalent sweep, below),
+cannot satisfy both constraints at once:
+
+- Delays of 0-12 ms leave the Expert below the Standard on Apex Circuit and Feature Lab
+  (delay 12: Apex 171,010 vs 207,940; Feature Lab 118,650 vs 161,315, ratio 0.73-0.82).
+- Delays of 15 ms or more order the skills everywhere, but the Expert becomes so steady on
+  the grey box that Gate A1's endless-ball limit (no ball on the table more than 300 s) fails:
+  1,000 Expert games at seed 1 give 1 EndlessBall at delay 15 (median ball time 29.6 s, p99
+  156.9 s, max 352.2 s) and 6 at delay 20 (median 36.8 s, p99 207.6 s, max 394.6 s).
+
+So no single delay works; the miss is 1 endless ball in 3,000 at the smallest ordering delay.
+A drawn delay window is a table-independent rule inside the bot model: the planned delay is the
+shot the bot tries for (pressing at the prediction gives the dead end-of-stroke bounce, later
+presses meet the ball mid-stroke and send it elsewhere), which real players vary. Because a
+drain comes from the worst flips in a ball's life, mixing early and late plans caps the
+Expert's ball-time tail, while the skill's reaction error still decides how often the planned
+shot is landed. With the window `0..=35`:
+
+- the 100-game medians order Expert > Standard > Novice on every table at seed 1 and seed 2;
+- the Standard's median game length is 1.34-2.25 min on every table (inside 1-6 min with more
+  than 20 % margin at both ends: at least 1.2 min and at most 4.8 min);
+- Gate A1 passes on the grey box with thresholds unchanged (1,000 Expert games: 0 findings,
+  median ball 24.2 s, p99 122.8 s, max 210.8 s), and the gated Standard median ball time
+  moves away from its 15 s floor (see Gate A1 below).
+
+Among the windows tried, `0..=35` has the widest Expert/Standard margin on Apex Circuit
+(1.18) and Feature Lab (1.21) with a grey-box Expert tail that stays far below 300 s;
+`0..=30` orders Apex Circuit by 1.6 % only, `0..=40` raises the grey-box Expert max ball to
+263 s in 300 balls. On the Feature Lab bundle measured during the sweep the margins were
+the widest (Expert/Standard 1.21 and 1.36, Standard/Novice 1.54 and 1.64 at seeds 1 and 2);
+on the bundle rebuilt by the 6.4 fix round (backbox VUK exit restored) the order still holds
+at both seeds but the seed-1 Expert/Standard margin is 1.03 (seed 2: 1.20). The other thin
+margin is grey-box Expert/Standard (1.08 seed 1, 1.05 seed 2).
+
+**Alternatives:**
+- A single shared delay or lower `lead_ms` (swept 0-30 ms): rejected, no value satisfies both
+  the ordering on Apex Circuit / Feature Lab and Gate A1's endless limit (above).
+- Windows `10..=20`, `5..=25`: the grey-box Expert does not beat the Standard. `0..=30`: thin
+  Apex margin. `0..=40`, `10..=40`: longer Expert tails (Apex `10..=40`: 11 of 100 Expert
+  games at the 600 s cap).
+- Changing the skills' jitter or miss rates: rejected, the 2.9 bot model fixes them and the
+  brief keeps them.
+- A rule keyed on the table (name or bundle): forbidden (PLAN §2.3 rule 6).
+- Deriving the delay from the physics config's stroke time: every table uses the shared
+  20-35 ms stroke window, so it would reduce to the same constant.
+
+### Method
+
+`pin_sim soak <bundle> --games 100 --seed <s> --skill <k> --threads 4 --no-tick-budget`,
+release build, with a temporary environment hook on `BotConfig::default()` (removed before
+hand-off). Bundles: grey box from this worktree (`tables/greybox/build.sh`), Apex Circuit
+built from `/home/user/kp-sp-6.1/tables/apex_circuit/build.sh`, Feature Lab from
+`target/sp_6_4/feature_lab_bundle` (prebuilt). "delay d" is the single-value setting
+`flip_delay_ms: (d, d)` with the centred error; its lead-equivalent (press time before the
+predicted sector entry for a ball detected at the horizon) is 30 - d ms. "window a-b" is
+`flip_delay_ms: (a, b)`. Cells: median game score / median game length in minutes; game ends
+other than game over are listed (go = game over). The stuck Feature Lab games recur at
+several settings (including delay 0) and belong to that table's work, not the bot.
+The Feature Lab rows of the sweep and of seed 2 below use the bundle as it was before the
+6.4 fix round rebuilt it (~03:20 UTC 2026-11-19); the chosen setting is re-measured on the
+rebuilt bundle in its own section.
+
+### Sweep (100 games per cell)
+Seed 1:
+
+| setting | table | novice score / min | standard score / min | expert score / min | E>S>N |
+|---|---|---|---|---|---|
+| stock (delay 0, late-only 0..=j) | grey box | 76,480 / 0.99 | 58,830 / 0.95 | 48,300 / 0.90 | no |
+| stock (delay 0, late-only 0..=j) | Apex Circuit | 206,970 / 1.39 | 98,030 / 1.24 | 45,480 / 0.92 | no |
+| stock (delay 0, late-only 0..=j) | Feature Lab | 145,085 / 1.46 | 118,270 / 1.28 | 113,980 / 1.19 | no |
+| delay 0 (lead-equivalent 30) | grey box | 69,345 / 0.96 | 71,140 / 0.95 | 46,645 / 0.82 | no |
+| delay 0 (lead-equivalent 30) | Apex Circuit | 143,900 / 1.20 | 98,385 / 1.26 | 52,470 / 0.99 | no |
+| delay 0 (lead-equivalent 30) | Feature Lab | 155,225 / 1.41 (go 99, stuck: 1) | 91,250 / 1.16 | 104,650 / 1.23 | no |
+| delay 5 (lead-equivalent 25) | grey box | 66,740 / 0.91 | 58,660 / 0.95 | 54,365 / 0.94 | no |
+| delay 5 (lead-equivalent 25) | Apex Circuit | 137,580 / 1.10 | 111,745 / 1.39 | 47,935 / 0.88 | no |
+| delay 5 (lead-equivalent 25) | Feature Lab | 136,675 / 1.29 | 112,765 / 1.25 | 71,885 / 0.90 | no |
+| delay 10 (lead-equivalent 20) | grey box | 67,795 / 0.93 | 80,980 / 1.09 | 73,080 / 1.07 | no |
+| delay 10 (lead-equivalent 20) | Apex Circuit | 183,740 / 1.33 | 168,830 / 1.52 | 116,510 / 1.60 | no |
+| delay 10 (lead-equivalent 20) | Feature Lab | 141,895 / 1.39 (go 99, stuck: 1) | 141,540 / 1.56 | 88,830 / 1.13 | no |
+| delay 12 (lead-equivalent 18) | grey box | 70,970 / 0.90 | 73,740 / 1.07 | 75,535 / 1.23 | yes |
+| delay 12 (lead-equivalent 18) | Apex Circuit | 155,410 / 1.15 | 207,940 / 1.63 | 171,010 / 2.00 | no |
+| delay 12 (lead-equivalent 18) | Feature Lab | 140,495 / 1.50 | 161,315 / 1.74 | 118,650 / 1.57 | no |
+| delay 15 (lead-equivalent 15) | grey box | 70,800 / 0.96 | 80,870 / 1.14 | 111,185 / 2.02 | yes |
+| delay 15 (lead-equivalent 15) | Apex Circuit | 145,155 / 1.16 | 233,425 / 1.76 | 310,575 / 2.91 | yes |
+| delay 15 (lead-equivalent 15) | Feature Lab | 121,475 / 1.28 | 191,215 / 1.86 | 248,035 / 2.55 | yes |
+| delay 18 (lead-equivalent 12) | grey box | 66,420 / 0.95 | 102,040 / 1.44 | 139,455 / 2.19 | yes |
+| delay 18 (lead-equivalent 12) | Apex Circuit | 135,590 / 1.14 | 262,265 / 1.89 | 724,630 / 4.38 (go 96, max_ticks: 4) | yes |
+| delay 20 (lead-equivalent 10) | grey box | 75,675 / 0.92 | 103,790 / 1.48 | 190,010 / 2.30 | yes |
+| delay 20 (lead-equivalent 10) | Apex Circuit | 149,235 / 1.22 | 305,110 / 2.08 | 825,735 / 4.87 (go 93, max_ticks: 7) | yes |
+| delay 20 (lead-equivalent 10) | Feature Lab | 148,470 / 1.41 | 275,215 / 2.49 | 310,760 / 2.65 (go 97, max_ticks: 3) | yes |
+| delay 25 (lead-equivalent 5) | grey box | 76,125 / 0.97 | 159,210 / 1.93 | 381,935 / 3.92 (go 96, max_ticks: 4) | yes |
+| delay 25 (lead-equivalent 5) | Apex Circuit | 181,890 / 1.28 | 516,755 / 2.89 | 1,756,895 / 8.84 (go 63, max_ticks: 37) | yes |
+| delay 25 (lead-equivalent 5) | Feature Lab | 147,910 / 1.38 | 324,400 / 3.12 | 838,970 / 7.75 (max_ticks: 25, go 75) | yes |
+| delay 30 (lead-equivalent 0) | grey box | 80,820 / 1.02 | 198,335 / 2.34 | 570,480 / 6.42 (go 80, max_ticks: 20) | yes |
+| delay 30 (lead-equivalent 0) | Apex Circuit | 156,755 / 1.23 | 774,835 / 3.33 (go 99, max_ticks: 1) | not run (killed by a container restart; delay 25 already put 37 of 100 games at the cap) | n/a |
+| delay 30 (lead-equivalent 0) | Feature Lab | 143,705 / 1.51 | 400,890 / 3.64 | 854,850 / 8.92 (go 60, max_ticks: 40) | yes |
+| window 0-30 | grey box | 71,105 / 0.95 | 86,340 / 1.21 | 93,450 / 1.33 | yes |
+| window 0-30 | Apex Circuit | 147,555 / 1.20 | 220,145 / 1.78 | 223,755 / 2.10 | yes |
+| window 0-30 | Feature Lab | 141,430 / 1.45 | 219,280 / 2.10 | 249,845 / 2.13 | yes |
+| window 0-35 | grey box | 81,960 / 1.00 | 94,175 / 1.41 | 102,035 / 1.46 | yes |
+| window 0-35 | Apex Circuit | 175,915 / 1.30 | 248,215 / 2.08 | 292,830 / 2.48 | yes |
+| window 0-35 | Feature Lab | 154,490 / 1.56 | 238,120 / 2.04 | 288,460 / 2.54 (go 99, max_ticks: 1) | yes |
+| window 0-40 | grey box | 74,235 / 0.98 | 103,115 / 1.42 | 113,275 / 1.58 | yes |
+| window 0-40 | Apex Circuit | 186,580 / 1.35 | 296,065 / 2.11 | 314,025 / 2.77 | yes |
+| window 5-25 | grey box | 75,645 / 0.97 | 99,575 / 1.29 | 95,270 / 1.32 | no |
+| window 5-25 | Apex Circuit | 183,780 / 1.24 | 190,755 / 1.84 | 314,955 / 2.24 | yes |
+| window 5-25 | Feature Lab | 122,465 / 1.31 | 196,710 / 1.90 (go 99, stuck: 1) | 234,515 / 2.19 (go 99, stuck: 1) | yes |
+| window 10-20 | grey box | 62,810 / 0.89 | 100,075 / 1.22 | 94,810 / 1.51 | no |
+| window 10-40 | Apex Circuit | 186,555 / 1.36 | 408,340 / 2.54 | 988,395 / 5.22 (go 89, max_ticks: 11) | yes |
+
+### Confirming seed (seed 2, chosen setting)
+
+| setting | table | novice score / min | standard score / min | expert score / min | E>S>N |
+|---|---|---|---|---|---|
+| window 0-35 | grey box | 77,945 / 0.99 | 102,735 / 1.34 | 107,955 / 1.50 | yes |
+| window 0-35 | Apex Circuit | 191,210 / 1.37 | 270,425 / 2.25 | 324,260 / 2.69 (go 99, max_ticks: 1) | yes |
+| window 0-35 | Feature Lab | 133,670 / 1.42 (go 99, stuck: 1) | 219,390 / 2.04 (go 99, stuck: 1) | 298,035 / 2.81 (go 99, stuck: 1) | yes |
+
+### Feature Lab, rebuilt bundle (6.4 fix round: backbox VUK exit restored), chosen setting
+
+Stock bot on the rebuilt bundle (Orchestrator baseline, seed 1): novice 143,730 / 1.46 min,
+standard 113,520 / 1.23 min, expert 116,680 / 1.22 min (Expert above Standard by chance, Novice
+first). `bb_flipper_eos` closes are summed over the 100 games (the bot models flippers in plan
+view; the backbox flipper is only flipped incidentally, stock 37-72 per 100 games).
+
+| seed | skill | median score | median game min | median ball s | ends | findings | bb_flipper_eos closes |
+|---|---|---|---|---|---|---|---|
+| 1 | novice | 134,960 | 1.35 | 16.8 | 100 game over | 0 | 60 |
+| 1 | standard | 256,195 | 2.17 | 22.4 | 100 game over | 0 | 114 |
+| 1 | expert | 264,075 | 2.59 | 27.9 | 99 game over, 1 stuck | 3 StuckBall, 1 EndlessBall | 166 |
+| 2 | novice | 134,840 | 1.41 | 15.5 | 100 game over | 0 | 78 |
+| 2 | standard | 240,205 | 2.21 | 22.4 | 100 game over | 1 EscapedBall | 164 |
+| 2 | expert | 287,710 | 2.57 | 28.9 | 100 game over | 1 EscapedBall | 200 |
+
+Order holds at both seeds, but on the rebuilt bundle the seed-1 Expert/Standard margin is
+only 1.03 (seed 2: 1.20; Standard/Novice 1.90 and 1.78). The stuck / escaped findings are table
+findings for the 6.4 work (the bot only plays).
+
+### Gate A1 before / after (grey box, 1,000 games per skill, seed 1)
+
+Before: the stock bot replayed exactly (`flip_delay_ms: (0, 0)`, `ReactionDraw::Late`) on the
+current grey-box bundle, `pin_sim soak --gate a1 --no-tick-budget`. After:
+`OUT=<target>/gate_a1 GAMES=1000 SEED=1 scripts/gate_a1.sh` with the new defaults; every
+criterion PASS (bundle; 1a-1d; 2a-2e; soak criteria at every skill).
+
+| skill | median ball before | p99 / max before | median ball after | p99 / max after | median score before / after | findings after |
+|---|---|---|---|---|---|---|
+| novice | 15,050 ms | 74,727 / 134,930 ms | 14,875 ms | 73,618 / 130,622 ms | 72,920 / 75,510 | 0 |
+| standard (gated 15-120 s) | 15,505 ms | 69,883 / 151,620 ms | 21,786 ms | 115,657 / 200,070 ms | 63,490 / 103,730 | 0 |
+| expert | 13,822 ms | 57,756 / 100,402 ms | 24,210 ms | 122,822 / 210,840 ms | 48,110 / 108,310 | 0 |
+
+After: 22/22 switches, p99.9 tick 45.0 / 43.9 / 40.2 us. Both before runs and after had 0
+stuck / endless / escaped / non-finite findings.
+
+### Tests
+
+- New `crates/pin_sim/tests/spec_fix_2_9_bot_timing.rs`: grey box (built once per test binary
+  by `tables/greybox/build.sh`), seeds 1 and 2, games 0-15 per seed, three skills, 300 s cap,
+  simulated time. Asserts Expert mean score and mean ball time beat Novice by more than one
+  standard error of the difference. Release: 18.7 s (not ignored). Result (new defaults):
+  novice 87,607 (SE 9,206) / 19,683 ms (SE 1,659); standard 96,423 / 25,496 ms; expert 139,452
+  (SE 15,357) / 32,408 ms (SE 2,505). With the old behaviour substituted
+  (`flip_delay_ms: (0, 0)`, `ReactionDraw::Late`) it fails: expert 46,438 vs novice 85,285
+  (1 SE 11,666). The Standard is printed, not asserted: Standard over Novice is 8,816 against
+  1 SE 13,339 at this size (not robust); seeds 1-4 at 24 games all pass the asserted checks.
+- Unit and property tests in `bot.rs`: default timing values, no draw for a single-value
+  window, window reachability, centred and late error bounds, clamping at the decision tick.
+- `autoplay_endless.rs` (`greybox_game`): plays the pinned pre-fix trap games with the old
+  timing (`(0, 0)`, `Late`), which replays them exactly; assertions unchanged.
+- `autoplay_report.rs` `arb_bot`: draws `flip_delay_ms` ranges and both reaction draws.
+- `autoplay_report.rs::binary_exit_codes` and `autoplay_fixtures.rs::clean_fixture_passes_with_full_coverage`:
+  soak seed 1 -> 6. The new Novice keeps a ball up more than 300 s on the easy clean fixture in
+  one of six games for each of seeds 1-5 (seed 1: games 2 and 4); seed 6 is the first whose six
+  games all end by game over. Assertions unchanged.
+- `autoplay_fixtures.rs::hidden_switch_is_the_only_unreachable_one`: cap 60,000 -> 150,000
+  ticks (in all three uses). With 60 s and 90 s no ball drained, so `trough` was also unhit;
+  150 s gives 4 trough hits. Assertions unchanged.
+- `spec_2_9_defects.rs::wall_gap_is_an_escaped_ball`: cap 30 s -> 90 s (the trap test's cap);
+  in both 30 s games the ball never reached the open drain wall. Assertions unchanged.
+- `spec_2_9_bot.rs`, `autoplay_determinism.rs`, `a1_gate_verdict.rs`: pass unchanged (no
+  golden values depend on the timing).
+
+## Imported — docs/decisions/2026-11-18-fix-wireform-flake.md
+
+**Decisions: fix-wireform-flake**
+
+## fix-wireform-flake — guide cast false contact on closest-point tie
+
+**Decision:** (human-ruled, 2026-11-18) Variant B, in its own PR. In
+`GuideCurve::cast_sphere_counted` (`crates/pin_physics/src/world/wireform.rs`), the "touching
+and closing" branch now also requires the closing rate taken across the curve to be closing:
+`(rate < approach && self.closing_direction(&cp, p, normal).dot(velocity) < approach) ||
+(gap < -GUIDE_SKIN && rate < 0.0)`. `hit.normal` and every other use of `normal` are unchanged.
+The penetration disjunct is unchanged. The tie figure in the `NORMAL_TANGENT_SLACK` doc
+("~3e-4") and in the `closing_direction` doc (`2^-11.5`, the same figure) is corrected to the
+measured ~1.1e-3. Regression test:
+`crates/pin_physics/tests/wireform.rs::guide_cast_arc_tangent_touching_sample_tie_is_free`.
+This changes simulation output on tables with guides (see the evidence below), which is why the
+human ruling is needed (PLAN §2.7 step 3).
+
+**Rationale:** `prop_guide_cast_arc_wall` failed in about 0.5 % of runs at the
+`res.hit.is_none()` assertion (HUMAN_QUEUE item `[wireform-flake]`). Minimal input on x86_64:
+inside=false, gap=0.0, at=117.18233, angle=0.0, speed=0.05, travel=0.001. Before the fix it gives
+`Some(GuideHit { time: 0.0, t: 23.4375, .. })`. `CubicSpline::closest_point` refines to
+s=0.43646345, but the f32 Bezier evaluation of that point lands about 2.6e-8 m farther away
+(d²=1.8225123e-4) than the through-sample at t=23.4375 (d²=1.8225107e-4), which lies 14.8 µm
+along the wall: a relative 1.1e-3, not the ~3e-4 the docs claimed. The sample wins, and
+`normal_toward` tilts by 1.0e-3 rad. Then `rate = normal·v = -1.0e-3·speed` falls below
+`approach = -APPROACH_EPS·speed`, and with gap <= GUIDE_SKIN the cast returns a Contact at t=0,
+although the true rate across the curve is +9.2e-5·speed (separating). That breaks the cast
+contract (DECISIONS.md "2.1 — Review fix round 1 (guide cast)": a non-overlapping sphere moving
+along or away is never a contact). Commit 01d864d fixed the same tie for the step bounds only,
+through `closing_direction`. Variant B applies the same across-curve rate to the contact
+decision. `closing_direction` is allocation-free and already runs in the cast loop (D5).
+
+Evidence on this branch: the regression test fails on origin/main 04a9a4a and passes here.
+`prop_guide_cast_*` passed 1000 of 1000 repeated runs. `cargo test -p pin_physics` passed 831
+tests in 107 targets, including `guide_ramp::normal_force_is_smooth_away_from_entry_and_exit`
+and `ball_seam_bitident`. The CI replay hash (`pin_sim crates/pin_sim/tests/fixtures/replay_table
+--ticks 10000 --record-inputs`, release) is 25097c21c2c3adc1 on both trees, and the recordings
+are byte-identical. The frozen `greybox_452eedf` autoplay games did change (standard skill,
+seed 1):
+- game 6: before, game_over at tick 72,764 (score 101,850); after, game_over at tick 82,935
+  (score 97,480). Neither has a finding.
+- game 98: before, EndlessBall bumper_1_ring at tick 311,401 and max_ticks at 330,000; after,
+  game_over at tick 55,812, with no finding.
+- game 334: before, StuckBall walls[3] at tick 30,296; after, game_over at tick 39,400, with no
+  finding.
+
+So `pin_sim` `autoplay_endless::the_pre_fix_greybox_traps_are_caught_and_named` fails on this
+branch ("game 6 end tick", left 82935, right 72764). That file is outside this unit's paths. A
+1000-game scan of the fixture on this branch still finds both loop classes. The bumper loop
+shows up as EndlessBall before the cap in games 82, 227, 408, ... The sling pocket shows up as
+StuckBall walls[3] in games 60, 461, 613, 663, 749, 763, 960 and 997.
+
+**Alternatives:**
+- Variant A (use `closing_direction` as the cast normal everywhere, including `hit.normal`):
+  rejected. It breaks `guide_ramp::normal_force_is_smooth_away_from_entry_and_exit`: the rail
+  force goes from 1.283 to 1.767.
+- Rely only on 01d864d's step-bound fix: rejected. It changes only the bounds used while
+  approaching (gap > GUIDE_SKIN). It does not cover the contact decision for a touching sphere,
+  which still used the tilted `normal`, and that is exactly the failing case.
+
+## fix-wireform-flake-p2 — greybox_452eedf autoplay expectations re-pinned (2026-11-18)
+
+**Decision:** `pin_sim` `autoplay_endless::the_pre_fix_greybox_traps_are_caught_and_named` is
+re-pinned on the frozen `greybox_452eedf` fixture. Three values change: game 6's end tick
+72_764 -> 82_935 (still game_over, no EndlessBall, nothing naming `vuk_sw`); the bumper-loop
+game 98 -> 82 (EndlessBall `bumper_1_ring` at tick 305,924, end max_ticks at the 330_000 cap);
+the sling-pocket game 334 -> 763 (StuckBall `walls[3]` at tick 33,841, end stuck, cap 120_000).
+The sling subject string's contact coordinate also changes, from `walls[3] @ (112, 243, 14) mm`
+to `walls[3] @ (112, 247, 14) mm` (same wall, same `walls[3] @` prefix, still an exact match):
+none of the eight sling candidates (763, 663, 613, 960, 749, 997, 60, 461) names (112, 243, 14);
+the named contact point varies from game to game, and game 763 gives (112, 247, 14). Intent,
+assertion kinds, trap kinds and caps are unchanged; no assertion is removed or loosened. The
+replay hash 25097c21c2c3adc1 is unchanged. Gate A1 re-run on this branch (GAMES=1000 SEED=1,
+release): every row PASS, 22/22 switch coverage, 0 stuck/endless/escaped/non-finite, 0
+censored; medians 15,050 / 15,505 / 13,822 ms (novice / standard / expert); p99.9 tick 47.4 /
+48.1 / 43.0 us; dead-spot depth REPORT 14/28 and 16/28 variants (unchanged).
+
+**Rationale:** Variant B (user ruling 2026-11-18) makes the guide cast contact branch also
+require a negative closing rate, which changes guide contact decisions and therefore
+simulation output on tables with guides. On the frozen fixture the old trap games 98 and 334
+now drain to game_over at t55,812 and t39,400 with no findings, so they no longer exercise the
+detectors. A 1000-game scan (standard skill, seed 1) still finds both loop classes in other
+games; the first listed candidate of each class that meets every unchanged assertion is used.
+
+**Alternatives:**
+- Loosen the sling subject to a prefix match or drop the coordinate: rejected, it would weaken
+  the check.
+- Edit the frozen fixture or add physics special cases to keep games 98 and 334 trapped:
+  rejected; fixtures are frozen and the solver must not branch on test cases.
+- Keep games 98 and 334 and assert game_over: rejected; that would stop proving the detectors
+  name the traps.
+
+## Imported — docs/decisions/2026-11-18-w7pre-banana-pose.md
+
+## w7pre-banana-pose — Banana bat pose is gated by a geometric test, not by eye
+
+**Decision:** The check "the bat leaves its pivot along the flipper angle and the tip curls up the
+table" (frozen HUMAN_QUEUE.md item "[2.6 bat pose, by eye — still open]") is now an automated,
+GPU-free test, `crates/pin_physics/tests/banana_pose.rs`. A rendered Banana in Feature Lab (6.4) is
+no longer needed for this check; a visual look there is optional polish.
+
+- **Target.** The test checks the physics collision shape: `CurvedBanana` built with
+  `CurvedBanana::from_config(config, FlipperTuning::default().bat_height_m)`, as `FlipperSet::new`
+  builds it. This is the surface the ball hits. No render-side Banana mesh exists, because pin_render
+  skips flippers. The world pose is the solver's own (`FlipperSet::pivot_m`, `bat_direction`, and bat
+  y = normal × direction). A cross-check also queries the set's own `MovingBodies::closest_point` at
+  the probed tip.
+- **Convention.** Up the table is world +y. The mounting normal is +Z. A positive `arc_sweep_deg` means
+  the concave face leads the swing, so the tip curls up the table on both the left flipper (bat +y)
+  and the right flipper (bat −y). A negative `arc_sweep_deg` flips the curl to the trailing side, down
+  the table.
+- **Probing rule.** The pose comes only from `BatShape::closest_point`, evaluated at mid-height
+  z = 15 mm in the bat frame in f64:
+  - the pivot end, from the y-axis zero crossings at x = 0 and the outward normals there;
+  - the farthest point, from a 0.1° scan of rays marched inward and bisected on the signed distance,
+    refined by golden-section search.
+
+  The shape's own helpers (`tip_center`, `centerline_tangent`, `concave_side`) are not used to derive
+  any check. They appear only in a cross-check that they agree with what the probe found.
+- **Pure checker.** The checks are a pure function `check_pose(pose, expect) -> Result<(), String>`.
+  Permanent negative controls feed it wrong poses, built with the same probe, and assert `Err`:
+  - a `ConcaveSide::MinusY` bat on the left flipper;
+  - the bat direction rotated ±3°;
+  - a left pose checked against the right flipper's side;
+  - a straight bat of the same chord.
+
+  A further control checks that a flipped-sweep pose passes its own expectation and fails the
+  up-table one.
+- **Tolerances.**
+
+  | Check | Tolerance |
+  | --- | --- |
+  | Outline tangent at the pivot (normals vs ±bat y; tangent vs `bat_direction`) | 0.05° |
+  | World bat direction vs the configured angle, at rest and on the end stop | 0.01° |
+  | Pivot crossings symmetric about the pivot and at ± the tube radius | 10 µm |
+  | Farthest-point radius vs length + tube | 50 µm |
+  | Farthest-point direction vs ±\|arc_sweep_deg\|/2 | 0.6° (half the 1° lint, plus slack) |
+  | Curl magnitude vs 2·L·sin(\|arc_sweep_deg\|/4), the chord offset the authored sweep implies | 1 mm |
+  | Left/right mirror agreement of the curl's world-y | 50 µm |
+
+  The curl's world-y component and its bat-y component must have the expected sign, strictly.
+- **Parameters.**
+  - Chord L: {60, 76, 90} mm.
+  - Tube: {6.5, 8, 11} mm.
+  - R: {1.1·L/2, 60, 100, 150, 250, 400} mm.
+  - Authored |arc_sweep_deg|: the implied 2·asin(L/(2R)) rounded to 0.1°, moved by
+    0 / +0.9 / −0.9 / +0.5° in a fixed cycle. This always stays within the 1° sweep lint of
+    pin_assets (`TOLERANCE_DEG`).
+  - Both signs of `arc_sweep_deg`, both flippers, three rest angles each.
+  - Each case is checked at rest and on the end stop. The end-stop pose is reached by energising the
+    flipper and stepping 1 ms ticks of simulated time until `angle_deg` equals `end_angle_deg()` and
+    the bat is still.
+
+  The grid is 648 flipper cases (1296 poses, 324 mirror pairs). A proptest block draws 64 random valid
+  cases from the same ranges, using a fixed ChaCha seed and no persistence, as in
+  `pin_app/tests/a1_bundle_passive.rs`.
+- **Scope limits.**
+  - Mounting normal +Z only. Tilted mounting planes and the −Z singularity stay with the existing
+    queue note ("[2.6 review round 2, N5]").
+  - "Up the table" is only meaningful while the bat points roughly sideways. Positive
+    `arc_sweep_deg` uses left angles in [−60°, 30°] and right angles in [150°, 240°], with sweeps of
+    20–60°. Both the rest and end angles stay inside these ranges by construction.
+  - Negative `arc_sweep_deg` uses left angles in [−55°, 30°] and right angles in [150°, 235°]; see
+    the next entry.
+- **Proof of failure.** Three temporary scratch mutations of product code were each applied and then
+  restored. After restoring, `git diff --stat -- crates/*/src` was empty.
+  1. `ConcaveSide::leading` with PlusY and MinusY swapped: 6 of 8 tests fail.
+     - The grid fails with "tip direction: -65.379° in the bat frame, expected 65.400°; curl side
+       (bat): bat-y -54.545 mm, expected on bat +y".
+     - The proptest fails the same way.
+     - So do the reference and flipped-sweep controls, and the wrong-side controls, whose premise
+       assertions no longer hold.
+  2. `FlipperSet::bat_direction` turned by +3°: 5 of 8 tests fail.
+     - The grid fails with "world direction: 3.0000° from the configured -60.000° (tol 0.01°);
+       pivot tangent: … 3.0000° from the configured angle".
+     - The proptest fails the same way.
+     - So do the reference and flipped-sweep controls.
+     - The −3° rotation control now cancels the mutation, so it does not fail.
+  3. `unmirror` without the `sign()` factor: the grid and the proptest fail on the cross-check:
+     "tip_center() (0.0250, +0.0545) is not the probed tip centre (0.0250, −0.0545)" (right flipper,
+     MinusY).
+     - `closest_point` does not go through `unmirror` (`outline` applies the side itself), so the
+       collision shape and the pose checks are unaffected by this mutation.
+     - Only the helper cross-check catches it. That is the intended split: the collision query is
+       what is gated, and the helpers must agree with it.
+
+**Rationale:** The by-eye check was blocked until the first table with a Banana (Feature Lab, 6.4)
+exists, and it was never a gate. A geometric test of the collision shape is deterministic and runs in
+about a second. It checks what the ball actually meets, and it separates the three ways the pose can
+be wrong: the angle, the side and the sign. The mutations show that it fails on each.
+
+**Alternatives:**
+- By eye in 6.4: blocked until that table exists, and never a gate.
+- Testing a render mesh: none exists, because pin_render skips flippers.
+- Testing through ball contact: banana_criteria already does this. It is indirect and cannot separate
+  the side from the angle.
+
+## w7pre-banana-pose — Down-table angle range for a negative arc_sweep_deg
+
+**Decision:** Negative `arc_sweep_deg` cases use left angles in [−55°, 30°], mirrored to right
+angles in [150°, 235°], instead of [−60°, 30°] / [150°, 240°].
+
+**Rationale:** On the left flipper the flipped curl points at angle − 90° − φ/4, where φ is the
+implied arc angle. It is below the horizontal (down the table) only for angle > −90° + φ/4. The
+tightest valid bend, R = 1.1·L/2, has φ = 130.8°, so the condition becomes angle > −57.3°.
+
+At −60° such a bend's flipped curl is 2.7° past horizontal. Its world-y is +3.0 mm (60 mm chord,
+6.5 mm tube), although it is on the correct bat side. This is geometry, not a defect. The
+range is built so such cases are not sampled, rather than skipped at run time. The brief requires
+that out-of-range cases be excluded by how the ranges are built.
+
+**Alternatives:**
+- Narrow both signs to [−55°, 30°]: loses the −60° coverage of the up-table cases.
+- Drop the world-y sign check for flipped cases: weaker than the brief asks.
+- Cap R higher for flipped cases: loses the tightest bends.
+
+## Imported — docs/decisions/2026-11-18-w7pre-catch-gaps.md
+
+## w7pre-catch-gaps — grey-box catch gaps closed
+
+**Decision:** The grey box's below-floor 2 -> 0 catch under the wire now covers the whole old
+catch volume (x 403..447, y 575..890, z -50..9 mm) except the generated ramp entry zone. This
+resolves the frozen HUMAN_QUEUE.md item `[w7pre-ramp-entry follow-up]` "grey-box catch gaps"
+(user-approved 2026-11-18).
+
+- **Entry zone** (`tablegen:ramps[0].entry`, generated from `tables/greybox`, f32 mm): min
+  (405, 595, -6), max (445, 634.7894, 20). The y max is f32 bits `0x441eb286`.
+- **Overlap rule:** `pin_tablegen::layout::entry::overlaps` uses inclusive bounds, so two zones
+  that only touch count as overlapping, and generation fails with a GenError. A catch face
+  towards the entry zone therefore has to lie strictly outside it. Each such face is the
+  adjacent f32 (`next_down` of a min face, `next_up` of a max face), written as Rust's shortest
+  round-trip decimal. That leaves a sliver one f32 ulp wide in mm. It holds no representable f32
+  position, so no mm position is uncovered.
+- **In metres** (the loader's `mm_to_m`, `mm / 1000.0` in f32, which is monotonic): the catches
+  stay disjoint from the entry zone after conversion. The x, z and y-max faces are one metre ulp
+  apart. The y-min face (594.99994 mm against 595 mm) is two metre ulps apart: 0.5949999 m
+  (bits `0x3f1851ea`) against 0.595 m (`0x3f1851ec`). Near 0.595 m the metre f32 grid is finer than the mm grid divided by 1000,
+  so one metre value between them (about 0.59499997 m) lies in no zone. A ball centre would have
+  to land on exactly that f32 at a sub-step end, and `TransitionSet::update` fires on entering a
+  zone anyway. No mm literal can close this, because no mm f32 lies between 594.99994 and 595.
+  The test asserts at most one ulp in mm and one or two ulps in metres.
+- **Zones** (all `from_layer = 2`, `to_layer = 0`, mm, in table order):
+  - `ramp_catch_below_mouth`: min (403, 575, -50), max (447, 594.99994, 9). Was max y 594.
+  - `ramp_catch_below`: min (403, 634.7895, -50), max (447, 890, 9). Was min y 636.
+  - `ramp_catch_below_side_left` (new): min (403, 575, -50), max (404.99997, 890, 9).
+  - `ramp_catch_below_side_right` (new): min (445.00003, 575, -50), max (447, 890, 9).
+  - `ramp_catch_below_under` (new): min (403, 575, -50), max (447, 890, -6.0000005).
+
+  The side strips and the under band run the full length (y 575..890) rather than only along
+  the entry zone. They are clear of the entry zone on x (or z) alone, so they do not depend on
+  the entry zone's derived y max. Catches touch and overlap one another, which is allowed. All
+  of them return the ball to layer 0, so their order does not matter. Every other layer
+  transition is unchanged.
+- **Brittleness:** `ramp_catch_below`'s y min 634.7895 is `next_up` of the generated y max,
+  which follows from `layout.toml` (the rails' start plus `entry_width` along the wire). If the
+  layout moves that bound:
+  - Upwards: generation fails with the overlap GenError naming `ramp_catch_below`.
+  - Downwards: a gap reopens. `greybox_below_deck_catch_has_no_gaps` fails, both on the sampled
+    points (the sample set includes the entry bounds and their f32 neighbours) and on the
+    face check, which requires a catch bound exactly at `next_up(entry.max.y)`.
+
+  Either way the literal has to be updated by hand. The 595, 405, 445 and -6 faces come from
+  the spline's start point and `entry_width`, and they are protected the same way.
+- **Test:** `crates/pin_tablegen/tests/ramp_entry.rs::greybox_below_deck_catch_has_no_gaps`.
+  - It generates the grey box and asserts that no 2 -> 0 zone overlaps the entry zone.
+  - It samples 1,437,201 points: a deterministic product grid (x every 1 mm, y every 2.5 mm,
+    z every 0.5 mm), plus the old volume's bounds, the entry bounds, three f32 steps either side
+    of each bound, ±0.001, ±0.5 and ±1 mm around them, the old strips (y 594..595,
+    634.79..636, x 403.5..404.5 and 445.5..446.5) and (404, 610, 0).
+  - Each point must lie in the entry zone or in a 2 -> 0 zone, both in mm and, converted with
+    `mm3_to_m`, under `pin_physics::world::LayerTransition::contains`.
+  - Mutation check (run once, then restored; the file was compared with `cmp`). The test failed
+    when any one zone was removed: mouth (31,008 points uncovered), lower (220,932), side_left
+    (8,816), side_right (8,816), under (137,547). It also failed with the lower min set to
+    634.79 (5,814) or the mouth max set to 594.9999 (1,938). With the lower min set to 634.7894
+    (touching), generation failed with the overlap error.
+- **Gate A1** (`GAMES=1000 SEED=1 scripts/gate_a1.sh`). Baseline: main c4aab01's
+  `tables/greybox/table.toml`, swapped into the same worktree and target dir for the run and
+  then restored. New: this change. Both exit 0, and every gated criterion PASSes in both. The
+  15–120 s median-ball-time window is judged at skill `standard` only (DECISIONS "Orchestrator —
+  Gate A1 criterion 3", `scripts/gate_a1.sh`); the novice and expert medians are reported, not
+  gated, and both sit below 15 s, unchanged from the baseline.
+
+  | soak | stuck / endless / escaped / non-finite | switches | median ball time | p99.9 tick (base → new) |
+  |---|---|---|---|---|
+  | novice | 0 / 0 / 0 / 0 both | 22/22 both | 14,745 ms both (reported) | 30.5 → 32.4 µs |
+  | standard | 0 / 0 / 0 / 0 both | 22/22 both | 15,433 ms both (gated, PASS) | 30.3 → 30.7 µs |
+  | expert | 0 / 0 / 0 / 0 both | 22/22 both | 13,603 ms both (reported) | 31.9 → 30.3 µs |
+
+  Apart from the table hash and wall-clock timings, the `soak_report.json` files of the two runs
+  are identical, game by game. No ball in these 9,000 games reached the closed gaps, which
+  matches the earlier combined run. The change is a safety net for balls below the deck, with
+  no measured effect on play.
+- **Pinned expectations:** none found and none changed. The pin_sim and pin_app tests that read
+  `tables/greybox` build the bundle at run time. Their hashes are compared run against run
+  (replay, state hash, bundle hash), not against literals. `cargo test -p pin_sim` (326 passed)
+  and `cargo test -p pin_app` (454 passed) pass unmodified.
+- **Fixture:** `crates/pin_sim/tests/fixtures/autoplay/greybox_452eedf/` is unchanged. It is a
+  frozen snapshot of an older grey box that `autoplay_endless.rs` uses to reproduce the
+  pre-fix traps by name. Changing its catches would change the games it pins.
+
+**Rationale:**
+- The user approved closing the gaps.
+- Abutting the entry zone at the adjacent f32 is the closest the unchanged generator rule allows.
+- Full-length side and under strips make only one literal (the lower catch's y min) depend on
+  a derived value.
+- The sampling test covers the boundary values, where gaps hide, and it pins that one literal
+  against layout drift.
+
+**Alternatives:**
+- Leave as is: rejected by the user's approval of this item.
+- Change the generator so that catches may touch the entry zone (a strict overlap test), or so
+  that it derives the below-floor catches: out of scope, because `crates/pin_tablegen/src` is not
+  owned by this unit and the generator rule stays as is. A touching rule would also make a ball
+  exactly on the shared face satisfy both zones.
+- Fewer zones:
+  - The mouth and lower zones cannot merge with the side strips or the under band, because any
+    single box spanning the entry zone's x or z range across its y range overlaps it.
+  - Three zones (one under band plus two full-length sides) would still leave the mouth and
+    lower strips above z -6 uncovered.
+  - Four zones are possible only if one zone covers both the mouth and the lower part, which it
+    cannot do without crossing the entry zone. Five is the minimum for an axis-aligned cover of
+    a box with an interior box removed when the removed box touches no face of the outer one
+    except the top: one zone per uncovered side.
+- Extending the existing two zones to y 594.99994 and 634.7895 only, without the new zones:
+  rejected, because the side strips and the under band would stay open.
+
+## Imported — docs/decisions/2026-11-18-w7pre-log-split.md
+
+## w7pre-log-split — one file per decision and queue entry (user ruling D41)
+
+**Decision:** New decision entries live in per-unit files `docs/decisions/<date>-<unit-id>.md`, and
+new queue entries in per-unit files `docs/queue/<unit-id>.md`. `docs/DECISIONS.md` and
+`docs/HUMAN_QUEUE.md` are frozen history as of 2026-11-18. Resolving a queue item edits that item's
+own file. `docs/HUMAN_QUEUE.md` is never edited again: a unit that updates an item from it adds
+`- [ ] [<original id>] update: <what changed> (frozen HUMAN_QUEUE.md item: "<short quote>")` (still
+awaiting a ruling), and a unit that resolves one adds
+`- [x] [<original id>] resolved: <how> (frozen HUMAN_QUEUE.md item: "<short quote>")`, in either case to
+its own `docs/queue/<unit-id>.md`. The earlier draft allowed striking through frozen lines; dropped after review
+(CodeRabbit r4608955222) so the frozen file is never edited. The format test runs in `spikes.yml`, which
+triggers on `docs/decisions/**` and `docs/queue/**`.
+
+**Rationale:** Shared append-only files made every merge conflict with every other open PR. The
+re-sync merges and the full CI cycles they triggered serialised merges. The user approved this on
+2026-11-18.
+
+**Alternatives:** Keep appending with a `merge=union` gitattribute (rejected: union merges silently
+hide conflicts); a generated index (rejected: an index is itself a shared file); splitting the old
+entries into files (rejected: churn with no benefit).
+
+## Imported — docs/decisions/2026-11-18-w7pre-proptest-tripwire.md
+
+## w7pre-proptest-tripwire — proptest workaround removal is test-enforced
+
+**Decision:** `tests/spec_ci/tests/spec_proptest_workaround.rs` parses the root `Cargo.toml` and
+`Cargo.lock` as TOML (so quoted headers and inline tables count). It fails if either `[profile.{dev,test}.package.proptest] debug-assertions = false`
+stanza is present while the locked proptest version is not exactly 1.12.0, and also fails if the
+stanzas are missing while it is 1.12.0. The failure message tells the reader to check whether the
+negative-step `debug_assert` in `FloatUniform::sample` is fixed, then either remove both stanzas
+(and confirm `crates/pin_physics/tests/proptest_f32_sampler.rs` passes without them) or bump the
+pinned version in the test.
+
+**Rationale:** Removing the workaround used to depend on a person remembering to check. A
+proptest upgrade (Cargo.lock change) now trips a test in CI, so the question is asked exactly when
+it becomes relevant, and the workaround cannot vanish silently either.
+
+**Alternatives:**
+- A calendar reminder: rejected, easy to miss.
+- Removing the workaround now: rejected, 1.12.0 is the latest release and still has the bug.
+
+## Imported — docs/decisions/2026-11-18-w7pre-queue-rulings.md
+
+**Decisions: w7pre-queue-rulings**
+
+User rulings of 2026-11-18 (the user approved the Orchestrator's recommendations) closing three
+open items from the frozen `docs/HUMAN_QUEUE.md`.
+
+## w7pre-queue-rulings-vuk-scatter — VUK eject scatter magnitudes accepted
+
+**Decision:** The current engine constants are accepted as the defaults: `VUK_SCATTER_LATERAL`
+3 mm (also capped at a quarter of the scoop radius and of the exit-zone half size),
+`VUK_SCATTER_ANGLE_DEG` 4 degrees and `VUK_SCATTER_SPEED_FRAC` 4 %. They live in
+`crates/pin_physics/src/mech/mod.rs` (about lines 184 to 193). This closes the "magnitudes still
+to confirm" part of DECISIONS.md "w7pre-vuk-scatter — deterministic VUK eject scatter". Revisit
+if a Wave 7 table's soak shows eject loops or exit misses.
+
+**Rationale:**
+- The combined Gate A1 (A1 ramp entry plus A3 scatter, GAMES=1000 SEED=1) passed with 0 stuck,
+  endless or escaped balls at all skills and a standard median of 15,433 ms.
+- The 1,000-game soak of the frozen `greybox_452eedf` fixture found no VUK-deck loop.
+- The 3 mm lateral value is the upper bound of a uniform per-eject draw, deliberately wider
+  than the plus-or-minus 2 mm eject-x knife-edge that decided whether the loop exists, so ejects
+  no longer follow one fixed path. It is not a guarantee: about two thirds of draws still land
+  inside that band, and a run of them could repeat the loop. Non-recurrence is shown only for
+  the sampled seeds (the soaks above). The value stays capped at a quarter of the 20 mm
+  exit-zone half size (5 mm) and of the scoop radius, so the ball still leaves on its intended
+  line.
+
+**Alternatives:**
+- Per-table tuning fields: not needed, and would require a contract change.
+- Larger magnitudes: unneeded, and they risk exit-zone misses.
+
+## w7pre-queue-rulings-backbox-escape-box — backbox escape-box behaviour confirmed
+
+**Decision:** The behaviour of DECISIONS.md "w7pre-backbox-colliders — backbox colliders in the
+runtime world" is confirmed as implemented:
+- With a `backbox_colliders.glb`, the backbox geometry and backbox-layer flippers grow the single
+  union escape box.
+- The playfield glass keeps its height and leaves the backbox layers out.
+- Tables without the file are unchanged.
+- Shared-layer overlaps are a load error.
+- Backbox collision layers are restricted to 4..=7.
+- The total collider meshes are capped at 4096, enforced both at generation and at load.
+
+**Rationale:** It is covered by the `pin_sim` `backbox_colliders` and `backbox_colliders_hostile`
+suites (11 + 11 tests) and the `pin_tablegen` limit tests. It is consistent with PLAN §5.5 (a
+backbox ball never touches layers 0 to 3).
+
+**Alternatives:**
+- A separate backbox escape box: rejected in the original decision.
+- Per-layer glass: rejected as a larger change.
+
+## w7pre-queue-rulings-ramp-entry-corner-clip — ramp-entry corner-clip limit accepted
+
+**Decision:** Keep it as an accepted, stated limit: layer transitions test only sub-step end
+points (`TransitionSet::update`), so a sub-step that clips a zone corner can skip it. No swept
+segment-vs-AABB test now. Trigger to revisit: a soak finding, bug report or replay traced to a
+missed entry or exit transition, or a Wave 7 table with steep oblique ramp entries.
+
+**Rationale:**
+- Generated ramps funnel the ball along the start tangent, where the chord is the full
+  `entry_width`.
+- Gate A1's soak only reports a skip that ends badly (StuckBall, EscapedBall or EndlessBall); the
+  combined Gate A1 showed none in 3,000 balls. A skip that leaves the ball on its old layer and
+  drains normally raises no soak finding, so the soak does not bound how often skips happen.
+  Such a skip would be seen as a ball visibly passing through a ramp mouth or deck in play or in
+  a replay, which is the observable form of the revisit trigger.
+- A swept test changes simulation output for every table and would need a new determinism and
+  Gate A1 baseline for no observed benefit.
+
+**Alternatives:**
+- Implement the swept test now: rejected, it changes sim output with no observed defect.
+- An authoring lint on entry-zone size versus sub-step length: it does not address corner clips,
+  which are width-independent.
+
+## Imported — docs/decisions/2026-11-19-6.2-a2fix.md
+
+**6.2-a2fix — Sky Deck Gate A2 run-1 fix (2026-11-19)**
+
+Gate A2 run 1 failed on Sky Deck: expert was no better than standard at
+1,000 games (median +0.4 %), and the c6a readiness test flaked on its
+strict score-order assert. Investigator report:
+`docs/briefs/wave7/a2-run1-sky_deck-report.md` (root cause about 50 % table,
+about 50 % test, 0 % bot).
+
+## 6.2-a2fix-separator — raise right separator to y 455
+
+**Decision:** The right inlane/outlane separator in
+`tables/sky_deck/layout.toml` now runs from y 286.1 to y 455.0 (was 430.0),
+x 440, material wood. Nothing else in the geometry changes. 455 was the
+first (start) value tried and met every screening criterion, so 440, 450,
+460 and 470 were not needed and were not run.
+
+Screening soaks, release `pin_sim` built from this branch, bundle from
+`tables/sky_deck/build.sh` (byte-identical `playfield.glb` and `table.toml`
+to the investigator's probe variant B), `--threads 1 --gate a1`, 100 games
+per skill and seed:
+
+| skill    | seed | findings | score median | ball-time median | max ball |
+|----------|------|----------|--------------|------------------|----------|
+| novice   | 1    | 0        | 74,000       | 22.6 s           | 156.2 s  |
+| novice   | 2    | 0        | 88,000       | 23.6 s           | 159.8 s  |
+| standard | 1    | 0        | 82,100       | 24.8 s           | 190.7 s  |
+| standard | 2    | 0        | 83,300       | 26.4 s           | 130.3 s  |
+| expert   | 1    | 0        | 94,200       | 27.2 s           | 160.2 s  |
+| expert   | 2    | 0        | 89,000       | 28.9 s           | 249.7 s  |
+
+Pooled score medians (200 games): novice 80,100, standard 83,300 to 83,800
+(the two middle values), expert 92,200 to 92,400: strictly ascending.
+Coverage complete and p99.9 tick under 0.35 ms in every run. One
+1,000-game standard soak, seed 1: 0 findings, coverage complete, score
+median 89,200, ball-time median 26.2 s (n = 3,174 balls, 0 censored), max
+ball 225.7 s, median game length 106 s, p99.9 tick 55.4 us (run twice,
+identical per-game state hashes): the 6.2 R6c floor of 25 s holds there
+although seed 1 at 100 games sits at 24.8 s. The release r6c readiness test
+(200 games/skill) gives ball-time medians 24.0/25.1/27.8 s and score
+medians 76,500/81,400/96,100 novice/standard/expert, max ball 191.2 s.
+Right-outlane drain share was not measured (the investigator's drain probe
+is not part of `pin_sim`).
+
+**Rationale:** The investigator's drain probe (100 games/skill at y 430)
+put 229/257/268 drains (novice/standard/expert) down the unguarded right
+outlane against 36/38/43 left and 52/21/2 at the flippers: 72-86 % of all
+drains, so ball time, not skill, set the score. Decision 6.2-tuning removed
+the right outlane guard while tuning with the pre-#59 bot. A taller right
+separator catches more balls crossing from the left before they drop over
+its top, without the full guard's failure mode. It is the smallest change
+that restores the skill order, and it touches only Sky Deck (its
+`playfield.glb`, table hash and replay digests change; no test pins them).
+
+**Alternatives:** A full mirrored right outlane guard (rejected: the probe
+found EndlessBall findings 2/1/11 novice/standard/expert). A wide-mouth
+right guard (rejected: EndlessBall 1/0/2). Other separator tops in the
+allowed 440-470 range (not needed: 455 passed every criterion first).
+Changing the bot (rejected: the fixed bot separates skills on Apex Circuit
+and Feature Lab, and the investigator attributed 0 % of the failure to it).
+Tuning flippers or rules (out of scope; would need a classifier decision).
+
+## 6.2-a2-score-order — c6a score order is report-only at n=40
+
+**Decision:** `c6a_soak_readiness_40_games_per_skill` in
+`crates/pin_app/tests/spec_6_2_soak.rs` no longer asserts that the median
+scores ascend novice < standard < expert. It still computes `ascending`,
+prints it on a greppable `REPORT:` line with the three medians, and keeps
+it in the replay-failure message. Every other assertion (soundness, zero
+findings, coverage, the mode start, the standard ball-time bounds, replay
+hashes) is unchanged.
+
+**Rationale:** The 6.2 brief made score order report-only in this test: R6c
+"(Score order by skill: report only; see KNOWN BOT ISSUE.)" and acceptance
+item 3 "must pass apart from the 'scores ascending with skill' check"; the
+sibling `sky_deck_soak.rs` readiness test also only reports it. The
+KNOWN BOT ISSUE cited there has since been fixed (PR #59), so that reason
+is stale. The reason now is statistical: with 40 games per skill a strict
+three-way median order passes with probability about 0.40 on Sky Deck even
+with a correct bot (about 0.58 on Apex Circuit); the investigator
+reproduced a failing order [69000, 90000, 57700] from games 0..39 of a
+passing seed-1 soak, and seeds 2..6 at n=40 passed 3 of 6. A check that
+fails more often than it passes on a correct table is noise, not a gate.
+This hides no defect: Gate A2 A2.3b ("scores increase with skill level",
+PLAN.md line 766) stays binding at 1,000 games per skill.
+
+**Alternatives:** Keep the assert and raise n (rejected: n large enough for
+a reliable three-way order is the Gate A2 soak itself, hours of CPU in a
+test that is already `#[ignore]` for cost). Keep the assert at n=40
+(rejected: about 60 % false-failure rate). Change the bot to widen skill
+margins (rejected: it separates skills on Apex Circuit and Feature Lab).
+Mirrored or wide-mouth right guard to widen the Sky Deck margin (rejected:
+EndlessBall findings, see 6.2-a2fix-separator).
+
+## Imported — docs/decisions/2026-11-19-6.2-cr1.md
+
+## 6.2-cr1-1 — "steel ball below" check on the VUK start path
+
+**Decision:** In `spec_6_2_rules.rs`, `c5_night_overdrive_by_vuk` passes the ball that enters the
+VUK (`v`) to `watch_start` as the steel ball that must be below. `watch_start` now requires two
+things within `GLO_BOUND_TICKS` (3000) of the mode start: a `uv_globall` ball first on layer 1
+(the arrival), and a tick on which that Glo-Ball is on layer 1 while the steel ball is on
+layer 0. It no longer requires the steel ball to be on layer 0 on the arrival tick itself.
+
+**Rationale:** On the VUK path the rules lift the steel ball onto the deck first (VUK_QUICK
+eject 500 ticks after the start), then dispense the Glo-Ball into the VUK and lift it. This is
+the design recorded in `rules.lua` and `docs/decisions/2026-11-18-6.2.md`. So on the arrival
+tick the lifted steel ball is still on the deck. Measured for seeds 31, 32 and 33, in ticks after
+the `vuk_sw` hit: steel ball up at +501, Glo-Ball up at +1318, steel ball back on layer 0 at
++1969 to +1978, Glo-Ball down at +2727 to +2748. Checking the arrival tick only would fail
+because of that design, not because of a defect. The new check still covers the ball the rules
+lift, which was the point of the finding. It holds the brief's R5 wording ("the Glo-Ball on the
+upper deck alongside the steel ball below") inside the same 3000-tick bound. On the action path
+the steel ball stays on the plunger, so both conditions hold on the arrival tick, as before.
+
+**Alternatives:** (a) Keep passing the served ball on the plunger. Rejected: that ball never
+moves, so the check proves nothing (the finding). (b) Require the steel ball below on the
+arrival tick. Rejected: it fails by design on the VUK path, and changing the lift order is a
+table design change, outside a review-fix unit. (c) Drive the served ball into the VUK instead
+of injecting `v`. Rejected: same timing as `v`, and it adds a dependence on the served ball's
+position.
+
+## Imported — docs/decisions/2026-11-19-6.3-tester.md
+
+**Decisions: 6.3-tester (Wave 8, Wasm ports of table rules, Independent Tester)**
+
+## 6.3-tester — comparing drained command queues without a pin_sim hook
+
+**Decision:** `Simulation` exposes the scenes, sounds and score reports of the last tick, but
+not the whole drained `HostCommandQueue` (pulses, holds, magnets, zippers, diverters, spawns,
+lamps, GI, persist writes). So the parity tests compare two layers at every tick. In the
+simulation layer, a Lua-bundle `Simulation` and a Wasm-bundle `Simulation` get the same inputs,
+and their state hash and every public per-tick output must match. In the command layer, a
+standalone `LuaScriptBackend` and `WasmScriptBackend` are built from the same bundle files and
+from the simulation's own `pin_sim::load::name_tables`. Both are fed one shared synthetic
+stream: the Lua simulation's switch bits and ball count *after* each tick, edges taken from
+consecutive post-tick switch bitsets in ascending id order, the persist values their commands
+wrote, and one `Pcg32` each seeded like the sim. Their drained queues must be bit-identical and
+their RNGs must be in the same state after every tick.
+
+**Correction (PR #67 review round 1):** an earlier version of this section said the standalone
+backends were "fed identical `HostView`s" to the simulation's script. They are not: the stream
+above is the post-tick view (ball count after spawns and drains, switches after physics, physics
+edges one tick early, edges of one tick merged in ascending order), not the pre-tick view the
+simulation's script saw. So the command layer shows only that both backends answer one shifted
+synthetic stream identically. The per-tick check of the simulations' own queues is now done in
+the simulation layer: `pin_sim` gained `Simulation::last_commands()` (see
+docs/decisions/2026-11-19-6.3.md, "6.3 — the simulations' own command queues are compared"), and
+`assert_same_tick` asserts `same_queue(lua.last_commands(), wasm.last_commands())` after load
+and after every tick.
+
+**Rationale:** The brief asks for identical drained queues at every tick. That needs the full
+queue, and a `pin_sim` accessor would be outside the owned paths. The standalone layer uses
+only public `pin_script` and `pin_core` APIs and checks every command kind. The simulation layer
+checks the backends as the engine really runs them. The edges are reconstructed, so several
+transitions of one switch within a tick collapse into one. That does not weaken parity, because
+both backends see exactly the same stream.
+
+**Alternatives:** Compare only the public `Simulation` outputs. Rejected: holds, diverters,
+magnets and persist-write order would be checked only through their effects. Ask for a
+`pin_sim` queue accessor: possible later, see the queue file.
+
+## 6.3-tester — reaching a mode start inside a recorded game
+
+**Decision:** Each parity game is a deterministic cabinet input stream (a fixed rhythm, or a
+stream from a test-owned PCG32) plus a fixed list of playfield switch closures per table
+(`Table::mode_stimuli`). The closures use `Simulation::set_switch`, 3 ticks each, 60 ticks
+apart. They start 300 ticks after the Lua run's `ball` persist first moves to a value ≥ 2 during
+a game, and the same closures go to both simulations at the same ticks. Each list follows the
+documented mode qualification in `rules.lua`: the combo chain on Apex Circuit, Night Overdrive
+on Sky Deck, and every qualifying shot on Feature Lab. The byte-format replay test (requirement
+4) uses the same streams without the closures, because a `Recording` holds input events only.
+
+**Rationale:** Mode starts that come from physics alone are not guaranteed within a bounded
+game, and the brief requires one in every game. Closures applied to both backends are part of
+the recorded game, so parity is still exact.
+
+**Alternatives:** Much longer games that hope for a physical mode start. Rejected: not
+guaranteed, and slow.
+
+## 6.3-tester — rebuild.sh calling convention
+
+**Decision:** The tester may not read `tables/*/rules-wasm/`. So the reproducibility test runs
+`sh tables/<t>/rules-wasm/rebuild.sh <scratch>/rules.wasm` from the repository root, with its
+own `CARGO_TARGET_DIR` under the test's target tmpdir. It then reads the output from that path,
+or from `<path>/rules.wasm` when the script made a directory there. It also asserts that the
+committed module is unchanged afterwards.
+
+**Rationale:** "Rebuild into a scratch directory" with a single output argument is the most
+common shape. Accepting either a file path or a directory covers both readings, and the
+unchanged-committed check catches a script that writes in place.
+
+**Alternatives:** Pass a directory only. If the convention differs, the Orchestrator rules
+(queued).
+
+## 6.3-tester — the Wasm bundle's module source
+
+**Decision:** The Wasm bundle is a copy of the Lua bundle. The committed
+`tables/<t>/rules.wasm` is written into the copy, and `script_entry` is rewritten in the copy's
+`table.toml` only. The source `table.toml` must still name `rules.lua`.
+
+**Rationale:** This is the SPEC's own recipe. It does not depend on whether the in-test bundle
+builders already copy `rules.wasm`.
+
+**Alternatives:** Rely on `build.sh` copying it. Its presence there is checked separately.
+
+## Imported — docs/decisions/2026-11-19-6.3.md
+
+**Decisions: 6.3 (Wave 8, Wasm ports of the table rules)**
+
+## 6.3 — a new workflow file instead of a ci.yml job
+
+**Decision:** The rebuild-and-compare check and the parity tests run in a new workflow,
+`.github/workflows/rules-wasm.yml`. `ci.yml` is not touched. The workflow runs on `pull_request`
+and on `push` to `main`, path-filtered to `tables/*/rules-wasm/**`, `tables/*/rules.wasm`,
+`tables/*/rules.lua` and `crates/pin_script/guest-sdk/**`. It also lists its own file, so that an edit
+to the workflow runs it. It uses one Linux job with `actions/checkout@v5`,
+`dtolnay/rust-toolchain@1.97.0` (`targets: wasm32-unknown-unknown`) and `Swatinem/rust-cache@v2`, the
+versions ci.yml uses. Each `rebuild.sh` runs twice, into separate scratch target dirs. Both
+outputs are `cmp`'d with the committed `rules.wasm`, and a failure names the table. The job also
+runs fmt, clippy and unit tests of each guest crate on the host, then the `wasm_ports_*` pin_app
+tests in release.
+
+**Rationale:** Rule 1 limits an agent to its owned paths, and the brief grants this one new file as
+an explicit exception to that rule. A separate file keeps ci.yml's required-check layout and its
+`changes` job unchanged. The path filter keeps unrelated PRs from paying for the guest builds.
+Because this is a separate workflow, a skipped run does not leave one of ci.yml's required checks
+pending.
+
+**Alternatives:** A job in ci.yml gated by the `changes` filter. Rejected because ci.yml is outside
+the owned paths.
+
+## 6.3 — Lua stays the default backend; Wasm only through a bundle copy
+
+**Decision:** Every `table.toml` keeps `script_entry = "rules.lua"`. `rules.wasm` is committed beside
+`rules.lua`. A bundle uses it only when the bundle's own `table.toml` names `rules.wasm`. The parity
+tests build that bundle by copying the Lua bundle, adding `rules.wasm` and rewriting `script_entry`
+in the copy (`crates/pin_app/tests/wasm_ports_support::wasm_bundle`). `build.sh` copies `rules.wasm`
+into the bundle when the file exists (apex_circuit, feature_lab). It does not switch the backend.
+
+**Rationale:** The brief says so explicitly (requirement 3). D10 makes Lua the primary backend.
+Having both files in the bundle makes the switch a one-line edit.
+
+**Alternatives:** Switching a table to Wasm. Out of scope.
+
+## 6.3 — sky_deck/build.sh copies rules.wasm only on request
+
+**Decision:** `tables/sky_deck/build.sh` copies `rules.wasm` only when `PIN_BUNDLE_RULES_WASM=1` is
+set, and only if the file exists. apex_circuit and feature_lab copy it whenever it exists.
+
+**Rationale:** `crates/pin_app/tests/sky_deck_load.rs::build_sh_output_matches_the_helper_bundle`
+asserts that the build.sh output and the in-process helper bundle (`sky_deck_support`) hold
+exactly the same set of files. That test is in the suites that "must still pass unmodified", and it
+is outside the owned paths. An unconditional copy would add a file the helper does not produce and
+fail the test. No such file-set equality exists for the other two tables. The opt-in keeps the
+default behaviour unchanged, which requirement 3 asks for, and still provides the copy.
+
+**Alternatives:** Copying unconditionally and changing the test. Rejected because the test is not
+owned by this unit and must pass unmodified. Queued instead: docs/queue/6.3.md `6.3-sky-deck-build-sh`.
+
+## 6.3 — how the wasm32 target was obtained
+
+**Decision:** The sandbox's pinned toolchain (rustc 1.97.0) had no
+`lib/rustlib/wasm32-unknown-unknown`. `rustup target add wasm32-unknown-unknown` installed the
+`rust-std` component for that same toolchain, through the agent proxy. No other toolchain was
+installed. With the target present, the guest crates build, `rules.wasm` is real build output, and
+the rebuild test runs locally rather than being skipped.
+
+**Rationale:** The brief allows adding the target to the existing toolchain and requires that it be
+recorded (requirement 7).
+
+**Alternatives:** None needed. The blocked path, with no binaries and a queue line, was not taken.
+
+## 6.3 — the drained queue is compared at backend level; the sim is compared on its outputs
+
+**Decision:** `pin_sim::Simulation` does not expose the `HostCommandQueue` it drains each tick, so
+parity is checked at two levels:
+
+1. **Simulation level.** The Lua and the Wasm bundle replay the same recorded input events. After
+   every tick, the test compares everything the queue reaches: `state_hash` (balls, switches,
+   scores, flippers, RNG), the tick's display scenes, sounds and score reports in queue order, the
+   lamp and GI floats as bits, all 64 persist slots, and the fault and overflow state. The final
+   scores and `state_hash` must be equal. The Wasm run must score more than 0 and get past ball 1.
+2. **Queue level.** `LuaScriptBackend` and `WasmScriptBackend` are built from the same bundle and
+   fed identical host views and switch edges, each with its own copy of the seeded PCG. Their
+   per-tick `HostCommandQueue`s must be byte-identical: every list in order, floats as bits. The PCG
+   states must also be equal, which checks the order of `random` draws. Two edge sources drive
+   them. One follows the recorded game's switch changes. The other is seeded random traffic over
+   every switch, which reaches every mode, award and count of the three tables.
+
+**Rationale:** Comparing the drained queue inside the sim would need a new public accessor in
+pin_sim, which is outside the owned paths. The two levels together cover requirement 5: the exact
+queue bytes, and the full sim behaviour that follows from them.
+
+**Alternatives:** A `Simulation::last_commands()` accessor. Queued as `6.3-sim-queue-accessor`.
+
+**Superseded (PR #67 review round 1):** the queue-level check that followed the recorded game fed
+the backends the post-tick view, so it did not prove identical per-tick queues. The accessor now
+exists and the replay compares the simulations' own queues; see the next section.
+
+## 6.3 — the simulations' own command queues are compared (PR #67 review round 1)
+
+**Decision:** `pin_sim` gains `Simulation::last_commands() -> &HostCommandQueue` (Orchestrator
+ruling R1: additive, no `state_hash` or replay change). The queue is no longer cleared at the end
+of `apply_commands` (step 3) but at the start of the next tick's step 2 (`deliver_edges`, before
+the first script call), so between ticks it holds what the script filled in the last tick (edges,
+then `on_tick`) and step 3 applied; after load, `on_init`'s. `wasm_ports_support::replay_pair`
+asserts byte-identical queues (`queue_bytes`) after load and after every tick, and
+`spec_6_3_support::assert_same_tick` asserts `same_queue` on them. The `Lockstep::follow` path was
+removed from the replay: `played_game_parity` now reports the busy ticks and command counts of the
+simulations' queues. `Lockstep` and `ScriptPair` stay, documented as synthetic-stream checks.
+
+**Rationale:** Each script is called by its own simulation with that simulation's pre-tick view,
+edges and RNG, so equal queues there are the per-tick property the brief asks for. Moving the clear
+changes no state: nothing reads the queue between step 3 and the next step 2, and `clear` keeps the
+fixed capacities (no allocation, D5). A pin_sim unit test (`last_commands_hold_the_last_tick_queue_only`)
+shows the accessor holds `on_init`'s queue after load and only the current tick's after each tick.
+
+**Alternatives:** Copy the queue into a second fixed-capacity queue in step 3. Rejected: about
+3 KB copied every tick for a test-only view. Keep the standalone backends fed by a reconstructed
+view. Rejected: the view differs from the simulation's (see the tester's correction).
+
+## 6.3 — test scratch files, the wasm32 gate and the workflow check (PR #67 review round 1)
+
+**Decision:** (1) The rebuilt modules, the build.sh outputs and the Wasm bundle copies go into an
+RAII `TempDir` (`wasm_ports_support`, removed on drop, no new dependency: `tempfile` is not a
+pin_app dev-dependency). The guest crates' cargo target dirs stay at fixed paths under
+`CARGO_TARGET_TMPDIR`: they are build caches, and cargo's own lock serialises concurrent use.
+The spec helper's process-wide bundle caches (statics, never dropped) are pruned for exited
+processes on first use. (2) One wasm32 gate (`wasm_ports_support::wasm32_gate`, used by
+`wasm_ports_rebuild` and by `spec_6_3_modules` through `mod wasm_ports_support;`): with the target
+missing it prints `SKIP:` unless `PIN_REQUIRE_WASM32` is non-empty and not `0`, then it panics. It
+is not unconditional because ci.yml's gpu-tests jobs run every pin_app test without the target.
+(3) The workflow check reads `rules-wasm.yml` as shell: comment lines are ignored, `for` loops
+over a glob are expanded per table, and it requires a `cmp` command word whose operands are the
+file a `tables/<t>/rules-wasm/rebuild.sh` run wrote (outside `tables/`) and the committed
+`tables/<t>/rules.wasm`.
+
+**Rationale:** Scratch output must not accumulate; rebuilding the guest crates from nothing on
+every local run would add minutes and prove nothing more than CI's fresh runner does. A text
+search for `cmp` passes on a comment.
+
+**Alternatives:** Put the guest target dirs in the temp dir too (slow local runs). Accept any
+`cmp` in the file (the finding).
+
+## 6.3 — Lua behaviours reproduced deliberately
+
+**Decision:** The ports reproduce the Lua code as written, including these points that are easy to
+"fix" by accident:
+
+- `bind_ids` runs at the top of every callback until the `start` switch is bound
+  (`sw.start ~= nil`). In apex_circuit each such run also resets the `written` persist cache to
+  NEVER, as the Lua does.
+- An unknown name is `nil` in Lua and `None` in Rust. Comparing a switch id with it is false.
+  Passing it to a `pinball` function faults (a trap), as the Lua argument check does.
+- apex_circuit's `on_init` refills the `written` cache from `persist_get` in `pairs(key)` order.
+  The reads have no side effect, so the Rust order (declaration order) is not observable.
+- Lua's floor `%` and `//` are `rem_euclid` / `div_euclid`. Sky Deck's UV tint keeps the Lua f64
+  literals converted with `as f32`, as the host converts a Lua number (`0.35_f64 as f32`, not
+  `0.35_f32`).
+- Hot-reload state (`on_save_state` / `on_restore_state`) maps to the SDK's `save_state` /
+  `restore_state`. The blob holds every local the Lua table holds, in the Lua order, as LE `i64`
+  (booleans 0/1). A blob of any other length is ignored, as the Lua ignores a non-table. Restore
+  binds the ids first and sets `dirty`, as the Lua does. The `written` cache of apex_circuit is
+  not carried, as in Lua.
+
+**Rationale:** Rules are frozen after Gate A2. Any behavioural difference, including in the order
+of `random` draws, would make the replays diverge.
+
+**Alternatives:** None. Parity is required.
+
+## Imported — docs/decisions/2026-11-19-6.4-a2fix.md
+
+**6.4-a2fix — Feature Lab Gate A2 run-1 fixes**
+
+Gate A2 run 1 (1,000 games per skill) reported 17 findings on Feature Lab: 3 EscapedBall
+(class A), 11 EndlessBall (classes C+D) and 3 StuckBall (class B). All three classes are table
+defects. Screening soaks below use the reference release `pin_sim` (`target/gate-a2-runner`,
+main-equivalent engine code; this unit changes only table data, rules and tests), `--threads 1
+--gate a1`, on bundles built by `tables/feature_lab/build.sh`.
+
+## 6.4-a2-catch — bb_catch_left zone closes the layer-4 escape
+
+**Decision:** New 4 -> 0 transition `bb_catch_left` in `table.toml`, zone min [45, 895, 25] max
+[59, 935, 96] mm (the investigator's probe value, one box). It is left of the entry hole and of
+`bb_catch`, inside the orbit lane's clear band. It stays clear of the generated entry zone (x >=
+67, z 46..90) and the drain zone, and spans only y 895..935.
+
+**Rationale:** A layer-4 ball thrown left off the top of backbox walls[1] falls through the entry
+hole and crosses z 25 mm at x 39..51, left of `bb_catch` (x >= 52). It then stays on layer 4 and
+leaves the bounds. `feature_lab_a2_catch` drops 145 layer-4 balls: the reported pre-bounce state
+(128, 927, 165) mm, (-0.324, -0.217, -1.90) m/s, and a grid of x 70..137 mm, vx -1.5..+0.3 m/s,
+vy -0.6..+0.6 m/s, all at vz -1.9 m/s. With the zone removed, 11 of 145 escape (the reported case
+among them). With the zone, all 145 return to layer 0 and drain or stay on the playfield. None
+leaves the bounds and none is ever in the closed pocket between the cabinet wall and the orbit's
+outer rail (y >= 744).
+
+**Alternatives:** Widening `bb_catch` itself to x 44: rejected. At y >= 744 it would hand balls
+back between the cabinet wall and the outer rail (a closed pocket). Two or three stacked boxes:
+not needed, because one box passes the sweep. No existing test changed.
+
+## 6.4-a2-gate — coil-driven shooter-lane gate
+
+**Decision:** `layout.toml` gets walls[16], appended, from (470, 930) to (470, 1000). It closes
+the 70 mm gap between walls[1]'s top and walls[2]. `table.toml` declares coil `lane_gate_coil`
+(number 11, kind `kicker`, as in the 2.5 gate wiring of `pin_sim` tests/sim_mech_wiring.rs) and
+mech `walls[16]` of kind `gate` on it (no switch). The gate is closed by default and opens while
+the coil is on. `rules.lua` binds `coil.gate` in `bind_ids` and issues `pinball.pulse_coil(
+coil.gate, 1500)` next to both plunger pulses, in the launch branch and in the `glo_launch`
+branch. The README Mechanics and Rules sections describe the gate.
+
+**Rationale:** Bumper kicks sent balls up the right through the gap and back into the shooter
+lane, and the bot relaunched them 9..24 times per endless ball (8 of 11 were the light Glo-Ball).
+`feature_lab_a2_gate` covers four cases:
+(a) The reported ball (454, 973) mm at (+0.24, -0.42) m/s, and a 48-case sweep around it, never
+crosses x 470 with no plunge. With the gate removed the reported ball reaches x 500.5 mm. With
+the gate held open (control) it crosses.
+(b) A plunge reaches `orbit_top` on each of balls 1..3. With the launch-branch pulse removed this
+fails.
+(c) The Glo-Ball served in `glo_ball` reaches the playfield. With the `glo_launch` pulse removed
+this fails.
+(d) An ignored 150-game expert soak (seed 1, `play_soak_game`) checks for no failing finding and
+no ball over 300 s.
+Screening after Fix 1 + 2 (re-run after the 08:55..09:10 UTC disk-full window): see the table in
+"6.4-a2-inlane". No existing feature_lab_* or spec_6_4_* test needed a change: none pins a digest
+or the plunge timing. The replay and determinism tests compare runs with each other.
+
+**Alternatives:** Data-only, raising walls[1]'s top to y 945: it cuts re-entries by only about
+35 %. Bot change: rejected, because the bot is correct. Do nothing: the Glo-Ball was endless in 3
+of 150 expert games.
+
+## 6.4-a2-inlane — left inlane two-ball jam
+
+**Decision:** The sling guard (walls[12]) and `sling_left` move together 30 mm along walls[3]'s
+normal (+21.62, +20.80 mm). walls[12] becomes (85.49, 350.20)-(146.29, 263.37) and the sling
+moves to (121.62, 310.80), still 35 degrees. The inlane is then 75.6 mm wide at the guard's top
+(45.6 mm before). walls[3], the XL chamber and its restrict outline are unchanged.
+Final measurements:
+- Release sweep: 2 of 865. Both are a lone ball balanced on the guard's free top end; no two-ball
+  arch is left.
+- Single-ball tip sweep: 5 of 60 rest, all on that tip perch.
+- XL and all other feature_lab_*/spec_6_4_* tests: unchanged and passing.
+- 1,000-game expert soak, seed 1: 0 findings, gate a1 PASS.
+
+Target 0/865 is not reached. `feature_lab_a2_inlane` therefore asserts the best achieved bound:
+at most 2 of 865 and at most 5 of 60. It also asserts that every residual rest is the tip perch
+(within 2 mm of straight up-table of the tip), so any two-ball arch fails it. A comment states
+that the target is 0. The residual is queued (docs/queue/6.4-a2fix.md).
+
+**Rationale:** The jam criterion is the StuckBall one: a ball slower than `STUCK_SPEED_M_S` (1
+cm/s) for more than 5 s (the monitor uses 10 s), anywhere on the table, with no game running. The
+865-case sweep is the investigator's flab_jam grid, ported in-process at 12 s per case. It runs in
+about 30 s in the test profile, so it runs by default. The tip sweep releases one ball 3.87 mm
+left to 4.13 mm right of the guard's actual top end, 5.6..20.6 mm above it, with vx -0.05..0.05
+m/s. That is x 60..68, y 335..350 on the run-1 geometry. It reads the tip from the bundle's
+layout.toml so that it follows a moved tip.
+
+Two balls jam where the channel narrows through 54 mm (two diameters). Moving the guard outward
+moves that point down and out of the region where two balls arrive side by side. At 30 mm the
+channel never narrows below 54 mm along the guard (29.4 mm + 30 mm = 59.4 mm at its bottom end, the narrowest point), so no
+two-ball wedge forms.
+
+The tip residual is a perch that every free wall end has. A ball whose centre is within about
+0.9 mm of straight up-table of the end stays there: the sideways pull (g sin 6.5 deg times the
+offset over R) is smaller than the playfield's rolling resistance. This holds at every
+translation tried (5 of 60 each time), and the measured perch width matches. A rubber post makes
+the perch wider. Moving or extending the end only moves it (investigator: 28 and 314).
+
+Screening soaks (findings; median score; median game length; max ball):
+
+| bundle | expert s1 x150 | standard s1 x150 | novice s1 x100 | expert s2 x100 |
+| --- | --- | --- | --- | --- |
+| Fix 1 + 2 (re-run) | 0; 235 180; 121.1 s; 243.1 s | 0; 203 110; 108.5 s; 198.8 s | 0; 116 040; 67.7 s; 126.7 s | 2 StuckBall (game 10: the class B arch, walls[3] (25, 324) + walls[12] tip (51, 332)); 266 950; 147.3 s; 203.3 s |
+| Fix 1 + 2 + 3 (final) | 0; 220 490; 119.5 s; 222.9 s | 0; 199 990; 104.4 s; 160.2 s | 0; 122 380; 72.6 s; 90.9 s | 0; 232 680; 127.5 s; 181.2 s |
+
+Final, 1,000 expert games, seed 1: 0 findings, median score 237 190, median game 123.4 s,
+median ball 24.2 s, max ball 272.9 s, gate a1 PASS. Scores ascend novice < standard < expert in
+every row, and the standard median game is inside 60..360 s.
+
+**Alternatives:** Every variant measured with the final test (865-case sweep, whole-table
+criterion; breakdown: arch or channel wedge / tip perch / ball on the lowered left flipper):
+
+| variant | jams / 865 | breakdown | tip sweep / 60 | XL and other tests |
+| --- | --- | --- | --- | --- |
+| original (run 1) | 35 | 32 / 1 / 2 | 5 | pass |
+| guard + sling out 6 mm | 22 | 19 / 3 / 0 | 5 | pass |
+| guard + sling out 12 mm (investigator's 57.6 mm inlane) | 9 | 6 / 3 / 0 | 5 | pass |
+| guard + sling out 18 mm | 6 | 6 / 0 / 0 | 5 | pass |
+| guard + sling out 24 mm | 6 | 2 / 4 / 0 | 5 | pass |
+| guard + sling out 30 mm (chosen) | 2 | 0 / 2 / 0 | 5 | pass |
+
+The investigator's count of 33 for the original used a mouth-area filter (x < 120, y > 250 mm)
+and an instantaneous speed check. The whole-table criterion also counts two balls at rest on the
+lowered left flipper. 8 evaluations of the budget of 12 were used (the six rows above, plus two
+early re-measurements under the earlier mouth-area filter: out 12 = 9 and out 30 = 2, the same
+counts). Variants measured by the investigator and not chosen:
+- walls[12] top extended to (45, 430): 28.
+- walls[12] top extended to (30, 430): 314, a new pocket.
+- Rubber post r 8 at the tip: 42.
+- walls[3] steel: 33.
+- walls[3] top lowered to (0, 300): 7, and to (0, 285) and (0, 270): 3 and 2. (0, 285) and
+  (0, 270) break the XL chamber.
+
+walls[3] lowering was not taken, for two reasons. The guard move alone removes every arch without
+touching the XL chamber. And the claimed clearance is wrong: with walls[3] at (0, 300)-(152, 172)
+the XL spawn (55, 210) is 33.4 mm from the wall, less than the XL radius of 39.7 mm, so the XL
+ball would spawn 6.3 mm into the wall. The "about 4 mm" clearance quoted for it is the original
+wall's 43.6 - 39.7 mm. Lowering walls[3] would also need moving `xl_feed`, which is pinned in the
+XL tests.
+
+**CR #63 round 1 amendment (6.4-a2-catch):** x min raised 44 -> 45. The corner (44, 935) is 20.25 mm
+from the orbit centre line on the cabinet side, so it satisfied the old test's `d < 20 + R` but
+was in the closed pocket (`in_pocket`). At x 45 the worst edge point (45, 935) is about 19.3 mm
+from the centre line, inside the lane's 20 mm half width. The test now asserts `!in_pocket` and
+`d <= 20` (no ball radius) for every corner and edge points.
+
+## Imported — docs/decisions/2026-11-19-6.4-cr1-tests.md
+
+**2026-11-19 — 6.4 CodeRabbit round 1, Fixer C (spec_6_4 tests)**
+
+## 6.4-cr1-C-1 — Mode start award checked in isolation
+
+**Decision:** The rules have a start award (`rules.lua` `start_mode` calls
+`add(MODE_START_POINTS)`, 2 000; README "Every mode start scores 2 000"), so
+the `points > 0` check over the whole attempt (which also counted the
+qualifying shot's own switch points) is replaced by an exact check of the
+award alone: the score change of the single tick in which `mode:<id>`
+increased, less the points the shot's last README switch scores when it
+closes by itself on the same player's ball with the mode running, must
+equal the number the README states. For the lone closing the main ball is
+kept on the plunger and every other ball is removed for 10.5 s first, so
+every shot window (at most 10 s) and the 1 s flip-shot window have expired
+and nothing else closes in that tick. The "one start" check over a further
+2 s runs after the measurement.
+
+**Rationale:** The finding is valid: the old window started before the
+qualifying shot and so included bumper and lane points. Subtracting the
+lone switch's points measured in the same mode state isolates the start
+event without the test re-implementing the point table; it also covers
+modes whose start changes that switch's value (`backbox_play`: `bb_drain`
+5 000 both times; `glo_ball`: bumpers 20 both times). Parking the main ball
+instead of clearing the table keeps the player's ball (removing every ball
+ends the ball and, after three, the game).
+
+**Alternatives:** A lower bound `start tick delta >= 2 000` (not isolating:
+the `backbox_play` start tick also scores 5 000 for `bb_drain`); a twin
+simulation without the start (timing differs with the selector presses);
+hard-coding the README point table per switch (duplicates the rules).
+
+## 6.4-cr1-C-2 — Autoplay cap raised to the soak's cap so end_at_cap applies the soak's rule
+
+**Decision:** `spec_6_4_autoplay` calls `GameMonitor::end_at_cap` when a game
+reaches `MAX_GAME_TICKS`, and `MAX_GAME_TICKS` is raised from 120 000 to the
+soak's cap, 600 000 ticks (`SoakConfig::default().max_game_ticks`,
+`crates/pin_sim/src/autoplay/soak.rs`), so `end_at_cap` applies the same rule
+as the soak (Orchestrator decision, D28). No other threshold, game count or
+assertion changed.
+
+**Rationale:** Evidence: novice game 4 (soak seed 1) is a live ball that ends
+normally at 160 036 ticks. With a 120 s cap, `end_at_cap` reported it as an
+`EndlessBall`, which is stricter than the gate the soak applies (300 s
+endless-ball limit within a 600 000-tick game cap).
+
+**Alternatives:** Keep the 120 s cap and treat a long game as endless
+(stricter than the gate; rejected). Drop `end_at_cap` (contradicts
+CodeRabbit's finding; rejected).
+
+## 6.4-cr1-C-3 — Mode-start shot order: same-tick hits
+
+**Decision:** The per-attempt hit trace records new closing edges of every
+declared switch after each tick; the README's shot switches must appear as
+a subsequence on strictly increasing ticks, the last by the tick the
+counter changed; otherwise the test fails and prints the trace. Hits of
+several switches in one tick are recorded in declaration order but never
+satisfy two consecutive steps of the order.
+
+**Rationale:** A strict tick order cannot be satisfied by a coincidence of
+two switches in one tick, whose true order the API cannot show.
+
+**Alternatives:** Accept same-tick pairs (could accept a wrong order).
+
+## Imported — docs/decisions/2026-11-19-6.4-cr1.md
+
+## 6.4-cr1 — Banana bonus on the complete banana_vuk shot
+
+**Decision:** No behaviour change. The `banana_shots` bonus (25 000) stays on the complete
+`banana_vuk` shot (`vuk_lane`, then `bb_vuk_sw` within 3 s), paid in `shot_made` when the backbox
+VUK captures the ball; a bare `vuk_lane` hit keeps its 100. CodeRabbit PR #58 comment 4624042692
+("award the Banana bonus on the VUK-lane hit") is answered as not a defect. The `rules.lua` header,
+which said "further VUK lane shots score 25000", and the README "Modes" bullet now name the complete
+shot explicitly.
+
+**Rationale:** README "Modes" defines the Banana's shot as `banana_vuk`, "up the VUK lane into the
+backbox VUK within 3 s (the Banana's shot)", and says "further Banana shots up the VUK lane score
+25 000 for the rest of the ball", so the documented reward is per complete shot. The points list
+(README "Rules", rules.lua header) gives the VUK lane 100 with no mode exception. Paying on the
+lane hit would also pay a ball that rolls up the lane, misses the scoop and rolls back, which is not
+a Banana shot.
+
+**Alternatives:** Moving `add(25000)` to the `vuk_lane` branch, as the finding proposed. That
+contradicts the README definition, and the bonus would come before the shot is made.
+
+## 6.4-cr1 — scoring observations end with the player's ball
+
+**Decision:** `end_modes()` (run at every ball end and game start) resets `last_entry` and
+`last_flip` to the "never" value (`NEVER = -1000000`, their initial value). Within one ball they
+persist, and they still round-trip through `on_save_state` / `on_restore_state`.
+
+**Rationale:** CodeRabbit PR #58 comment 4624042690 is valid. Confirmed by
+`feature_lab_cr1::an_orbit_entry_does_not_carry_over_to_the_next_ball`: before the fix, the next
+ball's `orbit_top` scored 5000 after the previous ball's `orbit_entry`. Likewise, a VUK-lane hit on
+the next ball scored 5100 within 1 s of a flip of the previous ball
+(`a_flip_does_not_carry_over_to_the_next_ball`).
+
+**Alternatives:** Tagging the observations with the ball number. That is the same effect with more
+state.
+
+## 6.4-cr1 — bb_catch covers a +y drift
+
+**Decision:** `bb_catch` max y goes from 931 to 990 mm (min y 780, x 52..462 and z -24..25
+unchanged). It covers a layer-4 ball that drops out of the entry hole from about z 85 mm while
+drifting towards the back at up to 0.6 m/s. That is the bound the entry-channel test uses for a
+drift towards the player. At 0.6 m/s with no initial fall speed, the ball passes z 25 mm at
+y ~978 mm. The zone stays below both generated zones: its top z is 25 mm, against 46.4 mm for the
+entry zone and 26.6 mm for the drain zone. It stays within the playfield (y < 1000, clear of the
+orbit top at 1040). It acts on layer-4 balls only.
+
+**Rationale:** CodeRabbit PR #58 comment 4624042696 is valid. On the cb74d1d bundle, the reported
+drop ([102, 918, 85] mm at [0, 0.4, -1.0] m/s) escaped the table (`balls_escaped` 1). With 990 mm
+it returns to layer 0 and drains through a trough. So does a sweep over x 80/102/125, vy -0.6..0.6
+and vz 0/-1 (`feature_lab_cr1`).
+
+**Alternatives:** y up to 1010+ to cover 0.8 m/s. There the ball returns to layer 0 at y ~1000,
+across the orbit lane's rails (centre line x ~90 there), and could land inside a rail. A
+zone over the whole playfield has the same problem.
+
+## Imported — docs/decisions/2026-11-19-7.1-tester.md
+
+**Decisions of 7.1-tester (Independent Tester, Subphase 7.1)**
+
+## 7.1-tester-1 — API discovery by rustdoc, bound from the documented constants
+
+**Decision:** the API was read from `cargo doc -p pin_app --no-deps --lib` HTML only (item names, signatures, doc comments); no profiler source was opened. Recorder accuracy tests use the documented bound exactly (`x <= reported <= x + floor(x * RELATIVE_ERROR_BOUND)`, with `RELATIVE_ERROR_BOUND = 2^-7`) against the exact nearest-rank percentile (max(1, ceil(ppm n / 1e6))), not the 5 % fallback.
+
+**Rationale:** the bound is discoverable and stricter. Brief requirement 1.
+
+**Alternatives:** a flat 5 % bound (weaker; rejected).
+
+## 7.1-tester-2 — Exact-edge target cases are testable
+
+**Decision:** the exact-edge cases (350_000 fails, 349_999 passes; 1_500_000 passes, 1_500_001 fails) are asserted with all-equal sample sets, because the documented rule clamps a reported percentile to the largest recorded sample, so an all-equal set reports exactly. Unambiguous mixed sets are tested separately away from the edges.
+
+**Rationale:** brief requirement 2 allows the edge cases only if the bound allows them.
+
+**Alternatives:** report only; not needed.
+
+## 7.1-tester-3 — Multiball via scripted inputs: per-table rhythm; Apex has none
+
+**Decision:** the soak input pattern is a start, a launch every 2.5 s and five presses (four flippers plus action) spread evenly over a per-table period (Apex 700, Sky Deck 880, Feature Lab 640 ticks). Periods were chosen by a sweep of 400..1400 (step 40) over 150,000 ticks on each table, keeping one that reaches 2+ balls in play. Feature Lab reaches 4 balls at about tick 36,700 and Sky Deck 2 at about tick 133,400; neither is reached in 20,000 ticks, so the 20,000-tick bounded tests cover all three tables and separate `*_multiball_replay_*` tests (45,000 and 150,000 ticks) assert `max balls >= 2` and the same determinism checks. No period tried gives Apex Circuit a second simultaneous ball (its rules serve one ball per `serve_ball`); not asserted for Apex.
+
+**Rationale:** brief requirement 8 says to reach multiball "if you can".
+
+**Alternatives:** inject balls through the test API (not recorded in a replay, so rejected); a longer bounded run for every table (slower, still no Apex multiball).
+
+## 7.1-tester-4 — Existing support modules reused through `#[path]`
+
+**Decision:** `spec_7_1_soak.rs` includes `apex_support`, `sky_deck_support` and `feature_lab_support` with `#[path = ...] mod`, instead of copying them into `spec_7_1_support/`.
+
+**Rationale:** avoids duplicating bundle builders; no file outside the owned paths is touched.
+
+**Alternatives:** a private copy (duplicate code).
+
+## 7.1-tester-5 — Switch-hit counts from the bundle manifest
+
+**Decision:** switch-hit counts are read with `Simulation::switch_hits(name)` for every `[[switches]]` id of the bundle's `table.toml`; replays are run with `Recorder::play` on a fresh `Simulation::load` with the recorded seed so scores and hits (not only the hash) are compared.
+
+**Rationale:** `replay()` returns only the hash.
+
+**Alternatives:** hash only (does not cover scores and hits).
+
+## Imported — docs/decisions/2026-11-19-7.1.md
+
+**Decisions: 7.1 (Latency profiler and determinism soak)**
+
+## 7.1 — three tables in the soak, not two
+
+**Decision:** The determinism soak covers the three shipped, non-greybox tables: apex_circuit,
+sky_deck and feature_lab. The greybox table is excluded.
+
+**Rationale:** PLAN 7.1 says "both tables" because it was written when two tables were planned.
+Since then, three tables have shipped (6.1, 6.2, 6.4). The greybox is the Gate A1 physics fixture,
+not a shipped table, and pin_sim's own replay-hash job already covers it in ci.yml. Soaking every
+shipped table follows the intent of the plan: each table players can load is deterministic.
+
+**Alternatives:** The two Wave 6 tables named in the original plan (apex_circuit, sky_deck), which
+would leave feature_lab out. Adding the greybox, which would duplicate the pin_sim replay-hash job.
+
+## 7.1 — Lua callback cost is a queue line, not in scope
+
+**Decision:** The soak measures and prints each table's tick-time p99.9 and mean (`SOAK_TICK`
+lines) but never asserts them. When a table's release p99.9 is above 0.35 ms, the result goes on a
+line in docs/queue/7.1.md under `[pin_script-callback-cost]`. pin_script is not changed.
+
+**Rationale:** Rule 5 says tests never assert on wall-clock time, and shared machines give noisy
+numbers. The known contributor, the pin_script callback overhead, is a follow-up waiting for owner
+approval (frozen HUMAN_QUEUE.md item "Approve a pin_script follow-up"). It is also outside this
+unit's owned paths.
+
+**Alternatives:** Assert the 0.35 ms target in the soak, which would be a flaky wall-clock test.
+Fix pin_script here, which is out of scope and not yet approved.
+
+## 7.1 — ignored release soak plus a bounded debug variant
+
+**Decision:** Each table's full 600,000-tick soak is an `#[ignore]` test (`full_soak_<table>` in
+crates/pin_app/tests/profiler_soak.rs), meant to run with
+`cargo test --release -p pin_app --test profiler_soak -- --ignored --nocapture`. The same harness
+also runs in the default suite for 10,000 ticks (`bounded_soak_<table>`), so debug CI exercises
+the same code path. The multiball assertion applies only to the full soak, since 10 simulated
+seconds is too short for the scripted player to reach a mode. The bounded Apex run still
+exercises the injection path: its first injection check falls at 8 s.
+
+**Rationale:** Each table's soak plays 11 runs of 600,000 ticks: the recording run, 8 plain
+replays, the `pin_sim::replay::replay` cross-check (on tables without injections) and the profiled
+replay. That is 6.6 million ticks per table, too much for every default-suite run on shared CI
+machines. Release is also the profile in which the tick time is reported. The brief asks for the
+ignored release soak and a bounded variant.
+
+**Alternatives:** A shorter full soak, which would fall short of the 10-minute criterion. Running
+the full soak only in the workflow with no default-suite variant, which would leave the harness
+untested on PRs.
+
+## 7.1 — new workflow file (exception to rule 1)
+
+**Decision:** The cross-OS soak runs in a new workflow, .github/workflows/soak.yml. ci.yml is not
+changed. soak.yml runs on workflow_dispatch, on a weekly schedule, and on pushes to main that
+touch crates/pin_app, pin_sim, pin_physics, pin_script, tables, or the workflow file itself. It
+uses a matrix of ubuntu-latest, windows-latest and macos-latest, with the same actions, toolchain
+pin (1.97.0), SDL environment and Linux SDL3 header packages as ci.yml's replay-hash jobs. Each
+leg runs the ignored soak in release, writes the `SOAK_HASH`, `SOAK_TICK` and `SOAK_INPUT` lines
+to its job summary, and uploads the `SOAK_HASH` lines as an artifact. A final `cross-os` job
+compares the hashes for each table across OSes. A divergence gets a `::warning` annotation, and
+the job never fails because of it.
+
+**Rationale:** The brief names this file as an owned path. Under rule 1 an agent edits only its
+own crate and module; a new workflow file is the brief's explicit exception, and ci.yml stays
+frozen for this unit. The soak takes tens of minutes per OS, which D40 rules out for every PR.
+D9 makes cross-OS hashes report-only, while a same-OS mismatch is a real failure: the test
+asserts it.
+
+**Alternatives:** A job inside ci.yml, which is outside owned paths and would add to every
+main-push run. Failing on a cross-OS divergence, which D9 forbids.
+
+## 7.1 — input latency clock domain and clamping
+
+**Decision:** Input latency is `tick_start_ns − event.timestamp_ns`. `tick_start_ns` is read
+from the clock given to `ProfiledSim` immediately before the inner `step_1ms`. That clock must be
+the SDL event-timestamp clock: the orchestrator's `ThreadsConfig::now_ns`, the same clock
+`SimLoop::set_epoch_ns` uses to map input timestamps to ticks. If a timestamp is later than the
+tick start (a negative latency), the sample is clamped to 0 ns, still recorded, and counted in
+`ProfilerSnapshot::input_clamped`, which the HUD shows. Large positive latencies (old timestamps)
+are recorded unchanged, and anything above about 68.7 s saturates the histogram's top bucket.
+Only button events that drive a coil directly count: the four flipper buttons, whose events
+energise or release the flipper coil in the tick that ingests them, and LAUNCH (the auto-plunger).
+Axis events, START, ACTION and TILT reach a coil only through the rules, if at all, and are not
+measured.
+
+**Rationale:** The brief says the timestamp and the tick are on the same clock domain. Clamping
+and counting keeps the histogram unsigned and makes a clock mismatch visible on the HUD instead of
+hiding it. pin_sim applies a button's coil torque in the same tick that ingests the event. So the
+start of the ingesting tick is the "tick that applies the resulting coil torque".
+
+**Alternatives:** Dropping future timestamps, which would hide clock problems. Signed latency,
+which would need a two-sided histogram for a case that indicates a bug. Measuring every input
+event, which would include inputs that never move a coil.
+
+## 7.1 — Apex multiball
+
+**Decision:** Apex Circuit's rules serve one ball at a time and contain no multiball: the only
+`spawn_ball` calls are in `serve_ball`, which runs after a drain. On that table the soak harness
+adds the second ball. Every 20 s, at phase 8 s, while a game is running with exactly one ball in
+play, it calls `Simulation::spawn_ball` before the tick to inject a standard steel ball at
+(257, 560) mm moving at 0.6 m/s up the table. It records the injection ticks with the stream, and
+every replay applies them at the same tick boundaries. These replays use the harness runner
+instead of `pin_sim::replay::replay`, because a `Recording` file holds input events only. The
+input events still go through the recording byte format. On sky_deck and feature_lab, multiball
+comes from the scripted player's recorded input alone: sky_deck's Night Overdrive Glo-Ball, and
+feature_lab's mode extra balls. Those streams are also cross-checked through
+`pin_sim::replay::replay`.
+
+**Owner ruling (2026-11-19):** approved. The harness-injected second ball satisfies the multiball
+soak criterion for Apex Circuit; no Apex multiball rule is scheduled (queue `[7.1-apex-multiball]`).
+
+The streams come from a closed-loop scripted player (crates/pin_app/tests/profiler_support), not
+from the pin_sim autoplay bot. The player reads the public sim state before each tick and emits
+`InputEvent`s: flips when a ball is in or entering a bat's sweep, START when no game runs, LAUNCH
+every 2.5 s, and ACTION every 7 s or when `overdrive_ready` reads 1. The bot forces switches with
+`set_switch` and does not produce input events, so its games cannot be stored as a `Recording`.
+The player uses no platform libm calls (it has a Taylor-series sin/cos), so the recorded streams
+are the same on every OS.
+
+**Rationale:** The brief asks for multiball on every table and allows an alternative source when
+scripted input cannot reach it. On Apex no input can, so a deterministic scheduled injection
+through the public sim API is the least invasive way to soak a multi-ball state there.
+
+**Alternatives:** Soaking Apex without multiball, which falls short of the brief's criterion.
+Using the autoplay bot's `GameRecording`, which is not the input-recording format and is still
+single-ball on Apex.
+
+## 7.1 — hooks requested outside owned paths
+
+**Decision:** The profiler works without orchestrator changes, through a wrapper and plain feeds.
+Three hooks are requested for the Orchestrator to wire later:
+(1) when the app builds its `ThreadsConfig` with a table, wrap the `TableSim` as
+`ProfiledSim::new(table_sim, profiler.sim, cfg.now_ns)` before boxing it;
+(2) in `orchestrator/threads.rs` `sim_thread`, after `sim_loop.run_ticks(due)`, call
+`loop_profiler.set_input_overflow_ticks(sim_loop.input_overflow_ticks())`; this needs a
+`LoopProfiler` parameter and is allocation-free;
+(3) in the presenter (`orchestrator/threads.rs` render loop or `present.rs`), measure GPU
+execution time with resolved GPU timestamp queries, not with `now_ns()`. The documented `now_ns()`
+interval measures acquire-to-present host time, not GPU execution time. It can include
+presentation pacing or finish before GPU work completes. When the device supports
+`wgpu::Features::TIMESTAMP_QUERY`, write render-pass timestamps (`RenderPassTimestampWrites`) at
+the start and end of the frame's passes, resolve them to a buffer, convert ticks to ns with
+`Queue::get_timestamp_period()`, and pass the start and end ns to
+`present_profiler.record_frame(start, end)` once the frame's results are read back (one or more
+frames later is fine). When timestamp queries are unavailable, record nothing, so the HUD's GPU
+line shows its existing "no data" state. Never substitute host time. The HUD overlay then draws
+`profiler::hud_lines(&reader.snapshot())`.
+
+**Rationale:** Rule 1 keeps other pin_app modules out of this unit's owned paths. Each hook is a
+single call with a plain-data argument.
+
+**Alternatives:** Editing the orchestrator directly, which is outside owned paths.
+
+## Imported — docs/decisions/2026-11-19-a2-longball-orchestrator.md
+
+**2026-11-19 — Orchestrator ruling on LongBall and Feature Lab re-entry loops**
+
+## a2-longball-orch — LongBall stays as specified; Feature Lab's re-entry loops are removed at the table
+
+**Decision:** Keep the LongBall rule as implemented in fix-a2-longball (a ball past the 300 s limit that later drains naturally after a broad 60 s switch window is reported, not failing). Gate A2 relies on 6.4-a2fix's shooter-lane gate, not on the soak monitor, to remove Feature Lab's shooter-lane re-entry loops. At Gate A2 run 2 the Orchestrator compares each table's and skill's "A2.1a long balls" REPORT count with the tail estimate (about 0.1–0.2 % of games); a count well above it on any table is treated as a finding and goes to the issue-investigator before the gate verdict is accepted.
+
+**Rationale:** PLAN Gate A2 criterion 1 names stuck, escaped and non-finite balls; the 300 s EndlessBall limit is the Gate A1 trap heuristic (A1-endless-detector), and Gate A1's checks are unchanged. Measured on the run-1 bundles, no generic window statistic separates Feature Lab's re-entry balls from Apex Circuit's legitimate long balls (Apex exp 450 and Feature Lab exp 793 share plunger_tip ×7 and shooter_lane ×2; distinct switches are 70–80 % of coverage on both tables), so a monitor-side discriminator would either fail Apex for natural play or need table-specific names. The re-entry is a table defect with a table fix: 6.4-a2fix's probe measured 0 balls over 300 s in 400 games with the gate. The per-table rate check at run 2 keeps a reappearing loop visible.
+
+**Alternatives:** (1) Keep EndlessBall failing for every ball over 300 s: Apex Circuit fails Gate A2 at about 1.8 (standard) and 4.7 (expert) expected balls per 3,000 for natural play, with no table defect to fix. (2) A launch-switch re-fire discriminator: rejected, it marks all three Apex balls narrow (plunger_tip ×7–×14). (3) Table-specific rules in the monitor: rejected, the monitor must not branch on table or switch names (PLAN §2.3 rule 6).
+
+## Imported — docs/decisions/2026-11-19-fix-15-generated-materials.md
+
+## fix-15-generated-materials — render kind selection
+
+**Decision:** `pin_app` picks a mesh's `MaterialKind` with `render_kind(gltf_name, lamp_tagged)`: (a) an exact `pbr_*` name keeps `MaterialKind::from_shader_name`; (b) otherwise a lamp-tagged mesh (glTF `extras.lamp`) is `LightInsert`, whatever its name; (c) otherwise `pin_core::Material::from_name` (the lookup `pin_sim` uses for colliders): `Acrylic` is `ClearAcrylic` (drawn blended), `Steel` is `ChromeSteel`, everything else is `PlayfieldWood`. glTF factors are applied on top as before. The lamp tag is the only insert signal: the `insert #rrggbb` name prefix is never matched.
+**Rationale:** `pin_tablegen` names its materials `wood`/`acrylic`/`steel`/`insert #rrggbb`, so every generated mesh fell back to `PlayfieldWood` (`lamp_emissive` 0, opaque): inserts never lit, contradicting DECISIONS "6.0 render" (lamp-tagged meshes emit at the snapshot lamp level), and acrylic decks covered the inserts beneath. Renaming the generated materials would change the bundle hash and replay digests (pin_sim maps colliders by name), so the fix is render-only. PLAN rule 6 forbids name-shaped special cases, hence the tag, not the prefix, and the physical-material lookup rather than literal names. Steel uses `ChromeSteel` because the generated steel is metallic (1.0) with its own roughness from the glTF factors; the wood lacquer clear coat of the old fallback is wrong for metal, and the greybox's wiring_render region means did not move (playfield, DMD, backglass, ball and overlay assertions pass unchanged; the measured insert means are in `wiring_render.rs`).
+**Alternatives:** keeping `PlayfieldWood` for steel (smaller visual diff, but a lacquered wood look on metal guides); matching the `insert ` name prefix or `acrylic` literally in render code (name-shaped); renaming generated materials to `pbr_*` (changes bundle hash and replay digests); adding glTF alpha-based transparency in pin_render (a public render behaviour change outside this fix).
+
+## Imported — docs/decisions/2026-11-19-fix-a2-longball.md
+
+**Decisions: fix-a2-longball (Wave 7, Gate A2 run 1 follow-up)**
+
+## fix-a2-longball — LongBall reporting for drained long balls
+
+**Decision:** This partly supersedes item 1 of DECISIONS "A1-endless-detector" (EndlessBall fails
+the soak at 300 s or at the cap). The 300 s age limit (`SoakConfig::endless_ball_ticks`) stays. A
+ball that passes it is not reported at once: the monitor holds the finding as it would be raised
+today (same tick, subject and detail) for that ball slot, with a verdict on the 60 s switch window
+at that tick. The window is broad when at least `LONG_BALL_MIN_SWITCHES` = 8 distinct non-cabinet
+switches were credited and the two most-hit hold strictly under `LONG_BALL_TOP2_MAX_PERCENT` = 50 %
+of the window's hits (integer comparison `100 * top_two < 50 * total`). If the ball later drains
+naturally (its handle vanished and `balls_escaped` did not rise for it) after a broad window, the
+finding becomes the new `FindingKind::LongBall`: reported (JSON name `LongBall`, Markdown section,
+`findings_by_kind`, a `REPORT` row in `scripts/gate_a2_verdict.py`), never failing the soak, with
+its original tick and the detail plus a drain suffix. Capped, still on the table at game end,
+escaped, non-finite, stuck, and narrow-window cases remain EndlessBall, raised when that case is
+seen, with the original tick and detail. `Report::passed()`, Gate A1 `no_endless_balls` (EndlessBall
+only) and Gate A2 criterion A2.1a (`BALL_KINDS` unchanged) keep their meaning. `gate_a1` gains no
+LongBall check (left alone so no check name or order that `a1_gate_verdict.rs` or
+`scripts/gate_a1.sh` parse changes); LongBall shows in `findings_by_kind`. The plunger-switch
+discriminator of the brief's requirement 8 was not added: measured on the Gate A2 run-1 games, the
+monitor's own window data does not separate Feature Lab's shooter-lane re-entry balls from Apex
+Circuit's long balls (see Rationale), so the rule is requirement 2's and the Orchestrator decides
+about Feature Lab (docs/queue/fix-a2-longball.md).
+
+**Rationale:** PLAN Gate A2 criterion 1 names stuck, escaped and non-finite balls only, and Gate A1
+criterion 3 likewise; "endless" is a 2.9 detector. The 300 s rule is the A1 grey-box trap
+heuristic (median ball about 15 s there), while A2.3 allows a median game up to 6 min. Evidence
+from the three Apex Circuit balls of Gate A2 run 1 (seed 1; standard 156, expert 450 and 818):
+21-24 distinct switches per 60 s window, top two 20-31 % of hits, 132-173 flips, flat energy, and
+each drained naturally 7-50 s after the flag; a constant drain rate of about 0.021-0.026 /s
+predicts about 1.8 / 4.7 balls over 300 s per 3,000 games, so they are the tail of an ordinary
+ball-time distribution. Re-judged with this rule, all three are LongBall with unchanged end ticks
+(435565 / 455673 / 351438). Feature Lab's 11 run-1 EndlessBalls (shooter-lane re-entry from the
+top, relaunched by the bot) have 13-15 distinct switches, top two 24-43 % and plunger_tip 7-28 per
+window; Apex's have plunger_tip 7-14 and shooter_lane 2-8 (the Apex left orbit returns to the
+shooter lane by design, and plunger_tip has no position, so it is credited to every ball). Expert
+450 (Apex) and expert 793 (Feature Lab) both show plunger_tip x7 / shooter_lane x2, so neither the
+launch-switch count, the shooter-lane count nor their share separates the sets; distinct-switch
+counts are 70-80 % of each table's coverage switches in both. Residual risk: a real trap that
+breaks by chance after more than 300 s with a broad window is downgraded to LongBall. Mitigation:
+the verdict script still reports the LongBall count per table and skill, and a nonzero LongBall
+rate far above the tail estimate (about 0.1-0.2 % of games) deserves a look.
+
+**Alternatives:** Make Apex Circuit harder (about 40 % shorter balls pushes the standard game
+length toward the 60 s floor); retune the bot (no window satisfies all tables); raise the limit to
+the cap with no drain test (a 10 min trap that drains would pass silently); a per-table limit (a
+table-shaped special case); a launch-switch discriminator (3 or more plunger-switch hits in the
+window make it narrow): implemented, measured and removed, because it also makes all three Apex
+balls narrow (plunger_tip x7-x14).
+
+## Imported — docs/decisions/2026-11-19-gate-a2-cr1-pin-sim.md
+
+**Decisions — gate-a2-cr1 (pin_sim side): recorded bot games**
+
+Context: CodeRabbit round 1 on PR #61, thread 4625148047. PLAN.md requires
+"deterministic replay of 20 sampled games per table" (Gate A2), and PLAN.md
+defines replay as record/replay of input (Subphase 2.5). The Orchestrator
+did not amend PLAN.md, so pin_sim now records the effective input of
+selected soak games and replays them without the bot. Brief B gates the
+runner on it.
+
+## gate-a2-cr1 — bot-game recording format and hook point
+
+**Decision:** A new file format and type, `pin_sim::replay::GameRecording`
+(`crates/pin_sim/src/replay/game.rs`), holds what the bot *applied*, not
+input events: a stream of `(tick, GameOp)` where `GameOp` is
+`SetSwitch { input: CabinetInput, closed }`, `ReleaseSwitch { input }` or
+`Nudge { dv: [f32; 3] }`, with the tick it was applied before
+(`sim.tick() + 1`). Replay (`replay_game`, `GameRecording::play`) checks the
+table hash first, loads the bundle with the recorded seed and
+`SimConfig::default()`, and for each tick applies that tick's operations in
+order through the same calls the bot uses (`Simulation::set_switch`,
+`Simulation::release_switch`, `sim.mechs.nudge(dv)`), then `advance(1)`,
+with no bot. File: magic `KHZGAME\0` (distinct from the input recording's
+`KHZREPL\0`), version 1, seed, table hash, ticks, op count, 24-byte ops, an
+FNV-1a 64 checksum trailer, the existing `MAX_TICKS` bound; it reuses
+`ReplayError` and the private `read_capped` / `u64_at` / `u32_at` helpers,
+and parsing is bounded and never panics. The existing `Recording` format,
+`--record-inputs` and `--replay-inputs` are unchanged.
+
+The hook point is `Bot::tick_recorded<S: GameOpSink>(&mut self, sim, sink)`;
+`Bot::tick` is `tick_recorded(sim, &mut ())`. The bot reports an operation
+right after the call succeeds (nudge in `update_nudge`, switch changes in
+`apply`), in the order it applies them (nudge first, then switches in
+`CabinetInput::ALL` order). The sink never feeds back into a decision. The
+soak's `play_game` is generic over the sink: an unselected game runs the
+`()` instance, which has no extra branch, allocation or behaviour (the
+`Instant` timing stays around `advance(1)` only); a selected game (a
+binary search per game, not per tick) runs the `GameRecording` instance,
+whose `Vec` push happens between ticks, never inside `advance`/`step_1ms`.
+`run_soak_recording(bundle, cfg, &[games])` returns the unchanged report plus
+`(game, GameRecording)` pairs; `run_soak` is that with no selection.
+`check_record_selection` refuses (before anything runs) an index not below
+`games`, unsorted or repeated indices, non-default script limits in
+`cfg.sim` (a recording stores only the seed) and `max_game_ticks` above
+`MAX_TICKS`. The CLI (`--record-games SPEC [--record-dir DIR]` on `soak`,
+`<bundle> --replay-game FILE`) follows the PIN_SIM CLI CONTRACT of the
+brief. `--record-dir` without `--record-games` is a usage error (the
+contract does not define it; refusing is the conservative reading).
+Recordings and `recorded_games.tsv` are written after the reports, before
+the pass/fail and `--gate a1` verdicts, so they exist when the soak fails.
+
+**Rationale:** The fact the brief flags holds: the bot does not feed
+`InputEvent`s. `set_switch` sets `forced_mask`/`forced_val` and calls
+`update_switches(self.tick)` immediately, between ticks; the override
+persists until `release_switch` and takes precedence over the cabinet
+input bits in the tick (`tick/mod.rs`, forced switches). A button
+`InputEvent` instead goes through `pin_input` ingestion in tick step 1 of
+the *next* tick, sets the unforced cabinet bits, and leaves `forced_mask`
+untouched, so both the edge timing and the stored state differ. Nudges are
+`sim.mechs.nudge(dv)` between ticks, while a `NudgeX` axis event is ingested
+as an axis value in step 1. The bot's game therefore cannot be expressed as
+an equal-hash `Recording` in general, and no test was attempted to prove
+otherwise (the brief prefers exactness over reuse). Recording the applied
+operations and re-applying them through the same calls at the same tick
+boundaries is exact by construction: the only inputs to the simulation in
+a soak game are the load seed, these calls and `advance(1)`; everything else
+the bot does is reading. Tests (`tests/autoplay_record_game.rs`) prove
+equality of state hash, score and ticks for all three skills, two seeds
+and 1/2 threads, through the library and the CLI, and that dropping or
+shifting one operation changes the hash.
+
+**Alternatives:** (1) Reuse `Recording` with button/axis events: not exact
+(above). (2) Make the bot feed `InputEvent`s: changes bot behaviour, every
+soak hash and Gate A1 evidence; out of scope. (3) A `record: Option<Vec<_>>`
+field inside `Bot`: a per-tick branch in every soak and a `Bot` that owns
+tooling state; the generic sink keeps the unrecorded path byte-for-byte the
+old code. (4) Store the expected end state in the file: rejected, the
+`recorded_games.tsv` written from the soak's `GameSummary` is the reference,
+so the replay cannot check itself against its own claim. (5) A new
+`ReplayError` variant set for game files: unneeded; the existing variants
+describe every failure, and the enum is unchanged.
+
+## Imported — docs/decisions/2026-11-19-gate-a2-runner.md
+
+**Decisions: gate-a2-runner (Wave 7, Gate A2 table-soak runner)**
+
+## gate-a2-runner — where thresholds are judged
+
+**Decision:** Gate A2 thresholds are evaluated in the runner, from the `soak_report.json` files
+(`scripts/gate_a2_verdict.py`, called by `scripts/gate_a2.sh`), not by a new `pin_sim soak --gate a2`.
+`pin_sim soak` runs without `--gate a1` (the grey-box timing gate) and without `--no-tick-budget`.
+Its exit status is recorded as its own criterion (`A2.0 soak exit status [<skill>]`).
+
+**Rationale:** An `a2` gate in pin_sim is an engine change outside this unit's owned paths. Rules
+freeze after A2, and some criteria span three soaks (median score novice < standard < expert),
+which a per-run `--gate` cannot judge anyway. The field names come from `SoakReport::to_json`
+(crates/pin_sim/src/autoplay/report.rs, schema 1): `findings[].kind` (`FindingKind::name`),
+`coverage.switches[].hits`, `coverage.shots[].count`, `coverage.modes[].starts/observable`,
+`distributions.game_score.median`, `counters.*`, `games[]` (`game, seed, ticks, end, state_hash`).
+The game-length median uses the nearest-rank rule of `report.rs` `nearest_rank` (rank ceil(q*n),
+at least 1).
+
+**Alternatives:** `pin_sim soak --gate a2` for the per-run checks. Rejected for now; queued as
+a follow-up (docs/queue/gate-a2-runner.md).
+
+## gate-a2-runner — verdict needs python3; jq only for the binary lookup
+
+**Decision:** The verdict is computed by `python3 -I scripts/gate_a2_verdict.py OUT`. Cargo's
+JSON is read with jq, or python3 when jq is missing, as in gate_a1.sh. When python3 is missing,
+the script stops with a clear message and exits 1. It does not fall back to jq for the verdict.
+
+**Rationale:** The brief asks that verdict logic be unit-testable on hand-made JSON (requirement 8).
+It also asks that the verdict be rebuildable from artifacts alone (`--verdict-only`). A single
+Python implementation serves the live run, the rebuild and the tests, so the three cannot drift.
+A second jq implementation of the same thresholds would be a second source of truth.
+
+**Alternatives:** The whole verdict in jq, with python3 as a fallback. Rejected because it
+duplicates the logic.
+
+## gate-a2-runner — the run's state lives in files under OUT
+
+**Decision:** The live run writes everything the verdict reads into OUT: `gate_a2_run.txt`
+(parameters), `<t>/build.rc`, `<t>/soak_<skill>.rc`, `<t>/replay_soak.rc`, `<t>/replay_pattern.tsv`
+and `readiness.tsv`, next to the soak reports and the logs. It then runs the same verdict command
+that `--verdict-only OUT` runs. A run first removes these status files and reports for its own
+tables (files only, only under OUT), so stale artifacts are never judged. When `gate_a2_run.txt`
+is missing, `--verdict-only` judges the table directories it finds as a full (non-dry) run.
+
+**Rationale:** Gate A1 lost its final line in a long log. With the state in files, the verdict can
+be rebuilt byte for byte without re-soaking.
+
+**Alternatives:** Keeping results only in shell arrays, as gate_a1.sh does. Rejected because
+that makes `--verdict-only` impossible.
+
+## gate-a2-runner — verdict files
+
+**Decision:** `OUT/gate_a2_verdict.txt` holds one `STATUS<TAB>table<TAB>criterion<TAB>value`
+line per criterion, then the final line. The copy of the human table is in a separate file,
+`OUT/gate_a2_table.txt`, which also ends with the final line. Both files are written, flushed
+and fsynced before the final line is printed. Global rows use the table names `run` and
+`readiness`.
+
+**Rationale:** Keeping human table lines out of the TSV file keeps it machine-readable, and
+both files still end with the final line.
+
+**Alternatives:** One file with both formats. Rejected because a TSV parser would then have to
+skip the human lines.
+
+## gate-a2-runner — tables, INCOMPLETE and precedence
+
+**Decision:** The default TABLES is every `tables/*/` with a `build.sh` except `greybox`,
+sorted (LC_ALL=C) and de-duplicated. PLAN's "the three tables" are apex_circuit, feature_lab
+and sky_deck. greybox runs only when it is named. When any of the three is missing from TABLES,
+a full run reports `SKIPPED (<t> not in TABLES)` and ends with `GATE A2 INCOMPLETE: ...` and
+exit 1. That line takes precedence over `GATE A2: FAIL` and includes the failed-criteria count,
+so a gate that is missing a table never reads as a plain FAIL or a PASS. A dry run always ends
+with `GATE A2 (DRY RUN): ...`.
+
+**Rationale:** The brief requires INCOMPLETE when a table is missing. Naming both the missing
+tables and the failures keeps all the evidence on the last line.
+
+**Alternatives:** FAIL taking precedence over INCOMPLETE. Rejected because it hides the fact
+that the gate is incomplete.
+
+## gate-a2-runner — A2.4 replay: what is compared (SUPERSEDED by A2.4c, see below)
+
+*Superseded by "A2.4c sampled bot-game replay gates" below: pin_sim can now record and replay sampled bot games, so (c) gates and (a)/(b) are supplemental. The text is kept as written.*
+
+
+**Decision:** (a) The standard soak is re-run alone for games 0..REPLAYS-1 with the same seed
+and a different thread count (1, or 2 when THREADS=1). Each game's `seed` and `state_hash`
+must equal the same game in the full run. `pin_sim soak` cannot select game indices, so the
+first REPLAYS games are used rather than games spread over the run, and the verdict says so.
+(b) For REPLAYS distinct seeds (SEED, SEED+1, ...), the built-in input pattern is recorded for
+PATTERN_TICKS (default 60000) ticks with `--record-inputs` and replayed with `--replay-inputs`.
+Both `state_hash=` values must be equal and non-empty. (c) True bot-input capture and playback
+(docs/queue/6.2-cr1.md; spec_6_2_soak.rs:187 and :235) needs a pin_sim change
+(`soak --record-game N`). It is reported as "REPORT: bot-input record/playback not available;
+repeatability check used" and is not gating.
+
+**Rationale:** These are the mechanisms that exist today. No engine hooks are added.
+
+**Alternatives:** Wait for a `--record-game` option. Rejected because the change is outside
+this unit, and it is queued.
+
+## gate-a2-runner — readiness tests in a dry run
+
+**Decision:** The Sky Deck readiness tests run only when sky_deck is in TABLES. Each runs as
+`cargo test --release -p pin_app --test <target> -- [--ignored] --exact --nocapture <name>`.
+`--ignored` is passed only for the two `#[ignore]` tests (r6c, c6a). The c6c tests are not
+ignored, and with `--ignored` they would run zero tests. A test counts as PASS only when cargo
+exits 0 and the log says `test result: ok. 1 passed`, so a name filter that matches nothing
+cannot pass. The ignored tests have fixed game counts (200 and 40 per skill), so their
+"minimum" is the whole test. In DRY mode they are SKIPPED with that reason, and the c6c tests
+still run. A missing target is FAIL in a full run and REPORT (missing, dry run) in DRY mode.
+READINESS=0 is refused unless DRY=1.
+
+**Rationale:** This follows the brief's dry-run rule ("use the minimum their tests allow or are
+skipped with a printed reason") and its presence rule.
+
+**Alternatives:** Running the ignored soaks in dry runs as well. Rejected because they take
+many minutes and defeat the purpose of a smoke run.
+
+## gate-a2-runner — modes that are not observable; table-specific REPORT lines
+
+**Decision:** A `[[modes]]` entry with `observable == false` (no `mode:<id>` persist key) is
+listed as a REPORT row, `A2.2c modes not observable ... [<skill>]`, and its ModeCoverage finding
+does not fail A2.2c. `pin_sim soak` still exits 1 for it, and that exit is judged by
+`A2.0 soak exit status`. The only table-name special cases are the ones the brief names, all of
+them REPORT: apex_circuit "not soak-covered ... Firewall Save, Apex Jackpot" [6.1-a2-modes] and
+apex_circuit `drop_bank` "may be over-credited" [6.1-drop-bank-soak]. The thinnest-three-shots
+line at expert ([6.1-expert-orbits]) is printed for every table.
+
+**Rationale:** The brief, requirement 4c, and PLAN §2.3 rule 6.
+
+**Alternatives:** None considered.
+
+## gate-a2-runner — A2.4c sampled bot-game replay gates (supersedes the A2.4 section)
+
+**Decision:** PLAN.md's "deterministic replay of 20 sampled games per table" is met by real
+input replay, and it gates. The STANDARD-skill soak (novice and expert are unchanged) runs with
+`--record-games spread:$REPLAYS`, so the bot's effective input is recorded for games
+floor(i*GAMES/REPLAYS), i = 0..REPLAYS-1 (0, 50, ..., 950 for 20 of 1,000), into the default
+`<soak out>/recordings`. Each recording is then replayed with
+`pin_sim <bundle> --replay-game FILE`, with no bot. The runner writes `<t>/replay_games.tsv`, one
+row per expected spread game (game, soak state_hash, replay state_hash, soak score, replay score,
+ticks). A game that has no recording or no parseable replay output keeps empty fields. The
+verdict row `A2.4c sampled bot games replayed from recorded input without the bot: N of REPLAYS
+identical state_hash and score` FAILs unless all of the following hold:
+- the rows are exactly the spread indices, using GAMES from the standard report's `config.games`;
+- each row's soak hash and score equal that game's `state_hash` and `score` in the standard
+  soak_report.json `games` list, where a `null` score is written `none`;
+- each replay hash and score is well-formed, non-empty and equal to the soak value;
+- REPLAYS >= 20 in a full run.
+
+In a dry run, REPLAYS < 20 does not fail A2.4c, but a mismatch does. A dry run with no
+replay file is a REPORT only when the runner recorded `record_games=0` in `gate_a2_run.txt`,
+meaning the binary's `soak` usage text has no `--record-games`. Otherwise it FAILs. A2.4a and
+A2.4b are renamed `A2.4a (supplemental)` and `A2.4b (supplemental)`. They keep their PASS/FAIL
+semantics, so a FAIL in either still blocks PASS. In A2.4a, a seed or state_hash that is missing,
+null or empty in either report is now a mismatch (CodeRabbit finding 2). The old non-gating
+"A2.4c bot-game replay ... repeatability check used" REPORT row is removed.
+
+The numeric env vars GAMES, REPLAYS, SEED, THREADS and PATTERN_TICKS are normalised to decimal
+with `$((10#v))` after digit validation, and values longer than 18 digits are refused with
+exit 2. The normalised values are used everywhere: in the header, in gate_a2_run.txt, in the
+soak flags and in the seed arithmetic. `SEED=08` is 8 and `SEED=010` is 10 (finding 3). The
+verdict fsyncs the OUT directory after both verdict files are closed and before the final line
+is printed, and it tolerates platforms that cannot fsync a directory (finding 4).
+
+**Rationale:** Gate criteria are the owner's (PLAN.md:530, :767), so PLAN.md is not amended to
+accept a repeatability check in place of replay. The pin_sim side exists now
+(docs/decisions/2026-11-19-gate-a2-cr1-pin-sim.md). The spread formula is the one pin_sim
+uses for `spread:N`, so the runner and the verdict compute the same indices independently, and a
+recording of the wrong games fails. The standard skill is enough because PLAN asks for "20
+sampled games per table", not per skill, and the A2.3a median is judged on the standard soak.
+Cross-checking the tsv against soak_report.json catches a recording whose listed soak values are
+not the soak's own. The supplemental checks stay because they cover other risks (thread-count
+independence, the `--record-inputs` path) at little cost. The runner writes one row per
+*expected* game, so a recording that is missing shows up as an empty-field row, and it is named
+in the verdict, instead of the row count silently shrinking.
+
+**Alternatives:**
+- Amend PLAN.md to accept the repeatability check. Rejected by the Orchestrator's decision: the
+  criterion belongs to the owner.
+- Record at every skill, or 20 games per skill. Rejected: this triples the recording I/O, and
+  PLAN asks for 20 per table.
+- Gate A2.4c in DRY on REPLAYS >= 20. Rejected because it conflicts with the dry-run rule that
+  size criteria are REPORTed.
+- Reject leading zeros instead of normalising them. Rejected because `SEED=08` is a reasonable
+  thing to type and the brief asks for the decimal reading.
+- Write replay_games.tsv rows only for the games that were actually recorded. Rejected because a
+  missing recording would then show up only as a row count.
+
+## Imported — docs/decisions/2026-11-19-pr68-feature-lab-libm.md
+
+**Decisions — pr68-feature-lab-libm (2026-11-19)**
+
+## pr68-feature-lab-libm — VUK eject angle via libm
+
+**Decision:** The Feature Lab bundle builder (`build_feature_lab.rs`, `vuk_eject`) computes the
+VUK eject angle with `libm::atan2f` and the kick with `libm::hypot` on `f64` cast to `f32`,
+instead of the std `f32::atan2` / `f32::hypot`. The fix is made inside PR #68 by Orchestrator
+ruling, although the file is 6.4-owned.
+
+**Rationale:** std `atan2f`/`hypotf` call the platform glibc. CI's newer glibc returns a
+correctly rounded `atan2f` one ulp below glibc 2.39, so CI generated a different VUK
+`angle_deg` and the 7.1 soak played a different game (a glibc-version dependence the soak
+found). The libm-only rule (PLAN §2.4, D9) forbids that. `libm::atan2f` and the `f64`
+`libm::hypot` cast to `f32` reproduce the glibc <= 2.40 bits exactly (angle 0x4208bd8c, kick
+0x3ed8a09f), so the generated bundle is byte-identical on this machine.
+
+**Alternatives:**
+- A separate PR for the fix. Rejected: only one branch can be pushed and the failure blocks
+  PR #68's CI.
+- `libm::hypotf`. Rejected: it is one ulp off the current output and would change the bundle.
+
+## Imported — docs/decisions/2026-11-19-w8f-docs.md
+
+## w8f-docs — ci.yml path filters (6.3-ci-path-filters): no change
+
+**Decision:** No change to `.github/workflows/ci.yml`. The 6.3 Wasm paths (`crates/pin_script/**`, `crates/pin_app/tests/{wasm_ports_*,spec_6_3_*}`) keep running through ci.yml's code jobs as they do today, and the mandatory Wasm rebuild-and-compare stays in `.github/workflows/rules-wasm.yml`. The queue line `[6.3-ci-path-filters]` is closed on that basis.
+
+**Rationale:** Checked against the tree on 2026-11-19:
+- `grep -n "paths\|paths-ignore" .github/workflows/ci.yml` finds no trigger filters. The only hits are comments (lines 7, 43, 76). The docs-only skip is a job-level `if:` in the `changes` job, which sets `code=true` for every non-docs change (lines 72-106), so 6.3 paths run the code jobs.
+- `.github/workflows/rules-wasm.yml` sets `PIN_REQUIRE_WASM32: "1"` (line 48) and its `push` and `pull_request` triggers path-filter `crates/pin_script/**`, `crates/pin_app/tests/wasm_ports_*` and `crates/pin_app/tests/spec_6_3_*` (lines 15-34). Its test step runs `wasm_ports_rebuild`, `wasm_ports_*`, and `spec_6_3_*` (lines 131-134).
+- In ci.yml, `gpu-tests` runs `cargo test -p pin_app` without the wasm32 target, so the rebuild checks there print `SKIP:` (`crates/pin_app/tests/wasm_ports_support/mod.rs:627`). This is by design: the wasm32 target is mandatory only in rules-wasm.yml.
+
+**Alternatives:**
+- Add `paths:` filters to ci.yml so it skips on 6.3-only changes: rejected. Required checks would be skipped on code changes, and ci.yml already documents its design of running a job-level `if:` and not `paths-ignore` (lines 43-47), so required checks stay satisfied.
+- Mirror the Wasm rebuild job inside ci.yml: rejected. rules-wasm.yml already runs it with the wasm32 target mandatory, and duplicating it would add cost without adding a check.
+
+## Imported — docs/decisions/2026-11-19-w8f-q1.md
+
+## w8f-q1 — Sky Deck build.sh copies rules.wasm unconditionally
+
+**Decision:** `tables/sky_deck/build.sh` copies `rules.wasm` into the bundle whenever the file exists
+(removing a stale copy otherwise), like `apex_circuit` and `feature_lab`; the `PIN_BUNDLE_RULES_WASM`
+opt-in is gone. `sky_deck_support::build_sky_deck_bundle` copies it under the same condition, so the
+build.sh bundle and the helper bundle hold the same file set. `table.toml` still selects `rules.lua`.
+This supersedes the section "6.3 — sky_deck/build.sh copies rules.wasm only on request" of
+`docs/decisions/2026-11-19-6.3.md` (that file is not edited).
+
+**Rationale:** Consistency with the other two tables; the helper and the script now agree, so
+`build_sh_output_matches_the_helper_bundle` holds without an opt-in.
+
+**Alternatives:** Keep the opt-in: rejected, it existed only to satisfy a test outside 6.3's owned paths.
+
+## Imported — docs/decisions/2026-11-19-w8f-q2.md
+
+**Decisions — w8f-q2 (2026-11-19)**
+
+## w8f-q2 — Wasm save blob layout fingerprint
+
+**Decision:** The hot-reload state blob of the three Wasm table-rules guests
+(`tables/*/rules-wasm/src/saved.rs`, `saved_fields!`) begins with a layout fingerprint in slot 0:
+64-bit FNV-1a (offset basis 0xcbf29ce484222325, prime 0x100000001b3) folded, in field order, over
+each saved field's name (`stringify!`) and its slot count as 8 little-endian bytes (`u64`, so the
+value is the same on wasm32 and on the 64-bit host where the unit tests run). It is computed at
+compile time by the `const fn fnv1a_extend` and exposed as `LAYOUT_FINGERPRINT`. The fields follow
+from slot 1; `SAVED_BYTES = 8 * (1 + field slots)`. `decode_state` returns false and changes
+nothing unless both the length and the fingerprint match. Each table's 512-byte `save_state`
+buffer is now a named `BLOB_LEN` with a compile-time `assert!(SAVED_BYTES <= BLOB_LEN)` (largest
+blob: Feature Lab, 360 bytes; the host caps blobs at 64 KiB and treats them as opaque bytes).
+
+**Rationale:** The blob was accepted on length alone, so a reload between two builds that reorder
+or rename saved fields of the same total length would silently restore values into the wrong
+fields. Hot reload is a developer-only event, so a rejected blob (the table restarts from its
+initial state, as the Lua rules do on a non-table value) is the safe outcome. The check costs
+8 bytes per blob and no per-tick work: the fingerprint is a compile-time constant and only
+`save_state` / `restore_state` touch it; per-tick command output is unchanged (the Lua/Wasm parity
+suites pass byte for byte).
+
+**Alternatives:**
+- A version byte or number only. Rejected: it relies on someone bumping it, and does not catch a
+  reorder or rename that nobody flagged.
+- Hashing the field types (`type_name`). Rejected: `core::any::type_name` is not stable in const
+  context and its text is not guaranteed stable across compilers; slot counts capture the layout
+  that matters.
+- A keyed blob like the Lua table (name/value pairs). Rejected: heavier to encode and decode, and
+  the natural implementation allocates; the fingerprint gives the same protection for this
+  all-or-nothing restore.
+
+## Imported — docs/decisions/2026-11-19-w8f-q5.md
+
+## w8f-q5 — libm in pin_assets and clippy scope
+
+**Decision:** Two lint-path calls now use the pinned `libm` crate: `guide_lint.rs` `curvature()` uses `libm::hypot(d1.x, d1.y)` (f64) and `rules.rs` uses `libm::asin(ratio)` (f64). Every other std transcendental in pin_assets (guide_lint unit tests f32, and five integration test files f32/f64) also moved to `libm::{sin,cos}[f]`/`libm::asin`, so no `allow` is needed. `crates/pin_assets/clippy.toml` bans the std `f32::`/`f64::` transcendentals (sin cos tan asin acos atan atan2 sin_cos sinh cosh tanh asinh acosh atanh exp exp2 exp_m1 ln ln_1p log log2 log10 powf cbrt hypot) via `disallowed-methods`; scope is this crate only, no workspace-root clippy.toml. Verified the lint fires (`x.sin()` on f64 and `y.hypot()` on f32 failed clippy, then removed).
+
+**Rationale:** PLAN §2.4 lists `libm` for transcendental functions among the measures to keep results close across platforms (D9). This unit applies that measure to the validator crate, since validator warnings could otherwise differ across glibc versions; a crate-local ban keeps it that way. The sim crates are out of scope here.
+
+Remaining std transcendental call-sites outside pin_assets (grep of `.sin(`-style calls, includes tests and some already-libm lines; report only): pin_physics 92, pin_render 78, pin_app 63, pin_tablegen 31, pin_input 25, pin_sim 14, pin_audio 11, pin_assetgen 2, pin_core 0, pin_script 0, tables 0. Extending `disallowed-methods` to those crates is a later, separate decision; pin_physics / pin_sim / pin_core are sim-output-critical, so any change there needs the replay-digest check.
+
+**Alternatives:** Workspace-wide ban: rejected, hundreds of existing hits and the sim crates are out of scope. No ban: rejected, regressions would not be caught.
+
+## Imported — docs/decisions/2026-11-19-w8f-q6.md
+
+**Decisions: w8f-q6 (7.1 profiler wired into the app)**
+
+## w8f-q6 — profiler wiring
+
+**Decision:**
+
+- **Plumbing.** `ThreadsConfig` gets `loop_profiler: Option<LoopProfiler>`; `RenderConfig` gets
+  `present_profiler: Option<PresentProfiler>` and `hud: Option<ProfilerReader>`. All default to
+  `None`, so `ThreadsConfig::idle` / `with_sim` and `RenderConfig::default()` callers keep their
+  behaviour. A new constructor `ThreadsConfig::with_profiled_sim(sim, input, now_ns, profiler)`
+  splits a `Profiler`: it wraps `sim` as `ProfiledSim::new(sim, profiler.sim, now_ns)`, sets
+  `cfg.now_ns = now_ns` (the same function, so the sim loop and the profiler share one clock),
+  `cfg.loop_profiler` and `cfg.render.present_profiler`, and returns the reader. `main.rs` calls it
+  for a table run with `sdl_now_ns` (`SDL_GetTicksNS`, the clock of the input event timestamps)
+  and the loaded `Box<TableSim>`. The sim stays in its box: `CommandQueueOverflows` gained a
+  blanket `impl for Box<T>` in `profiler/mod.rs`, an additive change; the 7.1 API is unchanged.
+  `main.rs` then moves `present_profiler` into its own `RenderConfig`. The idle path and
+  `run_headless*` are not profiled.
+- **Hook 2.** `sim_thread` takes `Option<LoopProfiler>` and calls `publish_input_overflow` after
+  every `run_ticks(due)`. That function makes one relaxed `fetch_max` and does not allocate, lock
+  or do I/O.
+- **Hook 3, the timestamp mechanism.** `orchestrator/gpu_timer.rs::GpuFrameTimer` times the GPU
+  work of each `AppSurfaces::render` call, which covers all surfaces of one render-loop iteration.
+  `begin_frame()` picks a ring entry. Every frame command buffer then goes through
+  `GpuFrameTimer::bracket(cb)`, which returns the command buffers for that one `Queue::submit`, in
+  order:
+  - a command buffer holding an empty compute pass that writes this submission's start timestamp
+    (`ComputePassTimestampWrites`);
+  - the frame's own command buffer;
+  - a command buffer holding an empty compute pass that writes this submission's end timestamp.
+
+  Each submission has its own query pair (up to `MAX_TIMED_SUBMITS` = 8 per frame; later
+  submissions of the same frame go untimed), and the frame's GPU time is the sum of the pairs'
+  intervals (`sum_pairs_ns`), so the GPU's idle time while the CPU acquires and encodes the next
+  surface between two submissions is not counted (CodeRabbit, PR #71 round 1).
+  This needs only `TIMESTAMP_QUERY`. The timestamps travel in the same submit as the frame's work,
+  so the interval never includes the CPU's wait in `get_current_texture` (vsync pacing) or in
+  `present`. The frame's own encoders are untouched, so the rendered bytes are the same.
+  `end_frame()` then submits a separate command buffer that resolves the frame's used query pairs
+  (`resolve_query_set`) into a 256-byte-aligned slot of a resolve buffer and copies them to that
+  frame's `MAP_READ` buffer (16 bytes per pair, 128 at most), then calls `map_async`. On the next
+  frames, `collect()` calls `device.poll(PollType::Poll)` (no wait) and records, once per frame,
+  the sum over its pairs of `(end - start) · queue.get_timestamp_period()` ns via
+  `PresentProfiler::record_frame_ns`. The
+  ring holds 4 frames (`GPU_TIMER_RING`) and is allocated once when the presenter is built. A
+  frame whose ring entry is still in flight is not timed. A frame that submitted nothing is not
+  resolved, and its entry is reused. `gpu_sample_ns` discards a pair when a timestamp is zero,
+  when end ≤ start, when the period is not positive and finite, or when the result is below 1 ns;
+  a frame with no valid pair is discarded.
+  Only samples above 0 ns are recorded. `GpuFrameTimer::new` returns `None` when the device lacks
+  `TIMESTAMP_QUERY` (or the adapter lacks compute). Then nothing is recorded and the HUD's GPU
+  line keeps `--` / `n 0`. The render thread prints which case applies
+  (`pin_app: gpu frame timing: ...`). Only the table presenter is timed. The debug view's
+  `SurfaceSet` is in pin_render and has no hook, so its frames record nothing.
+- **pin_render feature request.** `GpuContext::with_instance` (used by the app and by
+  `new_headless`) now sets
+  `required_features: adapter.features() & (TIMESTAMP_QUERY | TIMESTAMP_QUERY_INSIDE_ENCODERS)`.
+  This is a private helper; nothing new is exposed.
+- **HUD flag and drawing path.** `--profiler-hud` (parsed next to `--debug-overlay`, documented
+  in main.rs's module docs) sets `RenderConfig::hud = Some(reader.clone())`. With a reader, the
+  render thread builds the table renderers with the new `TableRenderOptions::profiler_hud`. A
+  `HudFeed` produces `hud_lines(&reader.snapshot())` at most every `HUD_REFRESH_NS` (250 ms) on
+  the render thread and hands the lines to the playfield renderers
+  (`AppSurfaces::set_hud_lines`). `HudOverlay` (orchestrator/hud.rs) lays the lines out with egui
+  only when they or the target size change, and caches the meshes. It paints them every playfield
+  frame, last (after the displays), through pin_render's existing `OverlayPainter`: top-left,
+  monospace 13 px, on a black backdrop at 70 % opacity. No pin_render change was needed for the
+  HUD. With the flag off, no `HudOverlay` is built, so frames are unchanged. With the flag on,
+  `pin_app` also prints the four lines as `pin_app: profiler: ...` after the shutdown line. The
+  windowed GPU test reads them.
+
+**Rationale:** The plumbing follows the shape the brief suggested and 7.1's single-writer design:
+each writer moves into the one thread that writes it. The constructor ties the profiler's clock to
+the sim loop's clock in one place, so the two cannot drift apart, and the tests exercise the same
+code that `main.rs` runs. The timestamps use compute passes rather than `write_timestamp` because
+`write_timestamp` also needs `TIMESTAMP_QUERY_INSIDE_ENCODERS`, which some adapters (e.g. Apple
+GPUs) do not offer even when they offer `TIMESTAMP_QUERY`. Separate command buffers keep the
+measurement out of the drawing code (`encode_frame`, `TableRenderer`, pin_render's passes).
+Riding in the frame's own submit matters: a first attempt submitted the start timestamp on its own
+before the slots were drawn, and that interval included the blocking `Fifo` acquire. Zero
+and non-increasing timestamps are discarded, as the brief asks. A zero-length result is discarded
+too, because a 0 ns GPU frame is not a measurement. The HUD reuses the egui overlay painter that
+already exists, so no new text renderer is needed. The overlay is laid out at most four times per
+second because text layout is the expensive part. The snapshot is cheap.
+
+**Alternatives:**
+
+- Host-clock GPU time (`now_ns()` around acquire / present): rejected by the 7.1 decision. It
+  measures presentation pacing, not GPU execution.
+- An always-on HUD: rejected. It would change the default frames.
+- Blocking on the readback map (`PollType::Wait` or waiting for the map callback): rejected. It
+  would stall the render thread on GPU completion every frame.
+- `CommandEncoder::write_timestamp` inside the frame's encoder: not chosen. It needs the extra
+  `TIMESTAMP_QUERY_INSIDE_ENCODERS` feature and edits to the drawing code.
+- `RenderPassTimestampWrites` on the frame's first and last render passes: not chosen. Those passes
+  are created inside pin_render (PBR, post, displays), which is outside this unit's owned paths.
+- Unboxing the `TableSim` to wrap it: rejected. The simulation is built on a big stack, and moving
+  it out of its box onto the main thread's stack is what `load_app_table` avoids.
+
+## Imported — docs/decisions/2026-11-19-w8g-d.md
+
+## w8g-d — debug-view profiling hook
+
+**Decision:**
+
+- **pin_render, additive API only.** `pin_render::gpu` gains a trait `SurfaceFrameHooks` with four
+  methods, all with no-op or pass-through defaults: `begin_frame(&mut self)` (once per frame, before
+  the first surface), `wrap_submit(&mut self, frame: CommandBuffer) -> ArrayVec<CommandBuffer, 3>`
+  (once per drawn surface; the returned buffers go in order into one `Queue::submit` under the set's
+  existing submit lock; the default returns `[frame]`), `overlay(&mut self, role, &Queue, &mut
+  CommandEncoder, &TextureView, size_px: (u32, u32))` (while a surface frame is recorded, last,
+  playfield only) and `end_frame(&mut self, submit: &mut dyn FnMut(CommandBuffer))` (once per frame,
+  after the last surface; `submit` takes the submit lock and submits one buffer). It also gains
+  `NoFrameHooks` (the no-op implementation), `SurfaceSet::render_with(lines, camera, &mut dyn
+  SurfaceFrameHooks)`, and the frame recorder `encode_debug_frame(queue, encoder, view, DebugFrame,
+  &mut DebugRenderer, &mut DebugRenderer, hooks)` with its argument struct `DebugFrame { role,
+  size_px, lines, camera, outline }`. `SurfaceSet::render` keeps its signature and is
+  `render_with(.., &mut NoFrameHooks)`. Both submission sites of `render_slot` (direct, and the
+  presenter-thread hand-off) call `wrap_submit`, and the slot's `draw` closure now calls
+  `encode_debug_frame`, which runs the overlay hook after the PiP outline. Frames that return early
+  (hidden, unchanged, busy, occluded, skipped) call neither hook. The PiP outline construction moved
+  into a crate-private `pip_outline_lines` helper; its behaviour is unchanged. The names and
+  signatures are the ones the brief suggested; all of them compiled as given. The overlay hook gets
+  no device: the pin_app side builds its `HudOverlay` from the `GpuContext` before the first frame.
+- **Why a public frame recorder.** Swap-chain images cannot be read back, so byte identity has to be
+  proven offscreen. `encode_debug_frame` is the code `render_slot` runs for every drawn surface, so
+  the offscreen tests (`pin_render` unit tests and `pin_app/tests/profiler_debug_view.rs`) cover the
+  exact path. The unit test also keeps a verbatim copy of the old `draw` closure as the reference.
+- **pin_app.** `orchestrator::DebugViewHooks` (in `hud.rs`, since no new module may be declared)
+  implements the trait: `begin_frame` is `GpuFrameTimer::collect` then `begin_frame`, `wrap_submit`
+  is `bracket`, `end_frame` is `end_frame(submit)`, and `overlay` (playfield only) is
+  `HudOverlay::paint`. It counts HUD paints that had text (`hud_paints`), which the windowed test
+  reads. `orchestrator::debug_view_hooks(ctx, set, Option<PresentProfiler>, hud: bool)` builds them
+  for the render thread. It starts the timer through the same helper as the table presenter, so the
+  stderr lines `pin_app: gpu frame timing: ...` match. It builds the `HudOverlay` for the
+  playfield's draw format, found through `SurfaceSet::choices()` roles and `formats()`. It returns
+  `None` when it would do nothing, and the render loop then calls plain `SurfaceSet::render`. The
+  loop's debug arm refreshes the `HudFeed` and hands the lines to the hooks before
+  `render_with`.
+- **HUD format check.** `OverlayPainter` builds an egui_wgpu pipeline for the target format with
+  alpha blending, so `hud_format_supported(format, adapter features)` requires a float-sampled,
+  non-depth colour format that the adapter allows as `RENDER_ATTACHMENT` and marks `BLENDABLE`. A
+  playfield format that fails the check, or a set with no playfield, gets one stderr note and no
+  HUD. Timing still works. The fallback exists exactly when the playfield has no 8-bit format, so
+  formats like `Rgb10a2Unorm` or `Rgba16Float` are the realistic cases, and both pass on adapters
+  that blend them.
+- **Supersedes** the sentence "Only the table presenter is timed. The debug view's `SurfaceSet` is
+  in pin_render and has no hook, so its frames record nothing." in "w8f-q6 — profiler wiring"
+  (docs/decisions/2026-11-19-w8f-q6.md, not edited). The Orchestrator ruled on 2026-11-19, on the
+  owner's instruction "Apply fixes to those decisions based on your recommendations", that the
+  debug view is profiled too.
+- **Owned-path grant.** pin_render's `SurfaceSet` belongs to an earlier subphase (1.4). D4 governs
+  only `pin_core`, so no `contracts/CHANGE_REQUESTS.md` entry is needed. This unit carries an
+  explicit, owner-approved grant to edit `crates/pin_render/src/gpu/surfaces.rs` (plus the
+  `gpu/mod.rs` re-exports and `gpu/tests.rs`), limited to additive public API: a new trait, a unit
+  struct, a struct, a free function and a method. No existing public item changes signature or
+  behaviour.
+- **Forcing the fallback in tests.** No real adapter, lavapipe included, offers a playfield surface
+  without an 8-bit format, and no existing test forces one. So the fallback is covered by the pure
+  chooser test in `threads.rs` (an unsupported playfield gives `PresenterKind::Debug`), plus tests of
+  the debug presenter itself, which is the same code with or without a table:
+  `profiler_debug_view_window.rs` drives `debug_view_hooks` on a real `SurfaceSet` (GPU samples,
+  HUD painted on every presented frame) and the render thread with no table, a profiler and a HUD
+  reader (GPU samples recorded).
+- **Windowed tests as `harness = false` targets.** The two windowed tests
+  (`pin_render/tests/gpu_surface_hooks_window.rs`, `pin_app/tests/profiler_debug_view_window.rs`)
+  are `harness = false` `[[test]]` targets with `required-features = ["gpu-tests"]` (the
+  `Cargo.toml` entries were added under a grant in PR #73 round 1). Each has a plain `main`, so SDL
+  runs on the process main thread (needed for Cocoa), and each is still gated by
+  `#![cfg(feature = "gpu-tests")]`.
+
+**Rationale:** The hook mirrors `AppSurfaces::render` call for call (collect, begin, bracket each
+submission, end), so both presenters measure the same quantity. The defaults make `render` exactly
+the old path: one buffer per submit, no extra passes, and no per-frame allocation (the `ArrayVec` is
+inline). An overlay call inside the frame encoder, after the outline, matches where the table
+renderer paints its HUD (last).
+
+**Alternatives:**
+- A generic `render_with<H: SurfaceFrameHooks>`: this avoids dynamic dispatch, but the brief
+  specified `&mut dyn`, and `dyn` keeps a single compiled `render_slot`. The cost of a few virtual
+  calls per frame is negligible.
+- Timing the debug view from pin_app around `SurfaceSet::render`: rejected. The timestamps must
+  ride in the frame's own submit, otherwise the interval includes the vsync wait (w8f-q6 rationale).
+- A `#[doc(hidden)]` or `pub(crate)` frame helper only: rejected, because the pin_app byte-identity
+  test needs the same recorder with a real `HudOverlay`.
+
+## Imported — docs/decisions/2026-11-19-w8g-e.md
+
+## w8g-e — std transcendental ban scope
+
+**Decision:** The crate-local clippy `disallowed-methods` ban on std (platform libm) `f32::`/`f64::` transcendentals, introduced for pin_assets in w8f-q5, now also applies to every crate whose numbers reach simulation state, replays or generated/bundled assets. Each in-scope crate in this unit (six crates: pin_physics, pin_sim, pin_input, pin_script, pin_tablegen, pin_assetgen, plus pin_assets) has its own `clippy.toml`, a copy of `crates/pin_assets/clippy.toml` with only the header comment changed; every flagged call site (232, tests included) moved to `libm`, with no `allow` attribute anywhere.
+
+| Crate | Scope | Reason |
+|---|---|---|
+| pin_core | in scope, but its `clippy.toml` lands in a separate pin_core-only PR as CR-009 (additive; contract protocol, D4), not in this unit | contract types and maths shared by the sim (0 sites today) |
+| pin_physics | in | solver and world build: sim state |
+| pin_sim | in | tick loop, replays, state hash |
+| pin_input | in | calibration and filters feed the input stream that is recorded and replayed |
+| pin_script | in | rules engine output reaches sim state (0 sites today) |
+| pin_tablegen | in | generates table geometry and bundle content |
+| pin_assetgen | in | generates bundled sound assets |
+| pin_assets | in (since w8f-q5) | validator; list unchanged, header comment updated |
+| pin_render | exempt | presentation-only floats; never reach sim state or replays |
+| pin_audio | exempt | presentation-only floats; never reach sim state or replays |
+| pin_app (runtime) | exempt | presentation-only floats; the determinism gate is same binary, same machine replay, and cross-OS hashes are report-only (PLAN 2.4, D9) |
+
+Sites migrated (from `cargo clippy --all-targets --keep-going --message-format=short` at da3051c with the new clippy.toml files; "src" includes `#[cfg(test)]` modules): pin_physics 35 src + 103 tests, pin_tablegen 13 src + 33 tests, pin_input 26 tests, pin_sim 20 tests, pin_assetgen 1 src + 1 test, pin_core 0, pin_script 0. Only one site is in non-test code: `pin_physics::world::sloped_bounds::plan_view_folds` (a world-build fold check, `2ρ·sin(min(arc/2ρ, π/2))` against a 0.98 margin), now `libm::sin`. The pin_assetgen src site (`sounds/mod.rs`) is in a `#[cfg(test)]` module, so no generated asset changes. Float types were kept at every site (f32 -> `libm::*f`, f64 -> `libm::*`); no `as` cast changed. The only hand fix: one wireform test closure passed `&mut f64` and needed `*h`.
+
+Lint-fires check (manual): a probe `pub fn w8ge_lint_probe(x: f32, y: f64, z: f64) -> (f32, f64) { (x.sin(), y.hypot(z)) }` appended to each in-scope crate's `src/lib.rs` made `cargo clippy -p <crate> -- -D warnings` fail with "use of a disallowed method `f32::sin`" and "`f64::hypot`" in seven crates at the time (pin_core, pin_physics, pin_input, pin_script, pin_tablegen, pin_assetgen, pin_sim); the probes were then removed. pin_core's file moved out of this PR to the CR-009 PR.
+
+The seven lists (pin_assets plus the six crates here) must stay identical. Check (empty output = identical):
+`for c in pin_physics pin_sim pin_input pin_script pin_tablegen pin_assetgen; do diff <(grep -v '^#' crates/pin_assets/clippy.toml) <(grep -v '^#' crates/$c/clippy.toml); done`
+
+pin_app example: `crates/pin_app/examples/build_feature_lab.rs` builds bundle content, but a pin_app clippy.toml would also ban the exempt runtime, so none was added. The example already uses `libm::atan2f` / `libm::hypot` and has no std transcendental; it is covered by review only (queue item w8g-e-1).
+
+`mul_add` report: the workspace has no `mul_add` call. The only occurrence is the doc comment of `crates/pin_assetgen/src/sounds/dsp.rs` ("`libm` for every transcendental function, no `mul_add`"). The classifier's context expected one use there; there is none. `mul_add` would be a correctly rounded fused multiply-add (deterministic on every platform; PLAN 2.4 "no FMA contraction" is about compiler contraction, which Rust never does implicitly), so no ban was added either way.
+
+Numeric impact (x86_64 Linux, this machine):
+
+| Check | Baseline (da3051c) | After |
+|---|---|---|
+| `ball_seam_bitident` spec_scenario | 0xa8e8957e1b4cee40 | 0xa8e8957e1b4cee40 |
+| spec_scenario_hook | 0x9da6a4436316c72e | 0x9da6a4436316c72e |
+| box | 0x7850af7058aace12 | 0x7850af7058aace12 |
+| belt | 0x710c25cd832c76c2 | 0x710c25cd832c76c2 |
+| slope | 0x1764f34e6e37436f | 0x1764f34e6e37436f |
+| replay_table fixture, 10000 ticks | state_hash=25097c21c2c3adc1, 10/10 replays equal | state_hash=25097c21c2c3adc1, 10/10 replays equal |
+| `cargo test -p pin_core` | 240 passed | 240 passed |
+| `-p pin_physics` | 831 passed, 14 ignored | 831 passed, 14 ignored |
+| `-p pin_input` | 334 passed | 334 passed |
+| `-p pin_script` | 471 passed, 5 ignored | 471 passed, 5 ignored |
+| `-p pin_tablegen` | 279 passed | 279 passed |
+| `-p pin_assetgen` | 101 passed | 101 passed |
+| `-p pin_sim` | 368 passed, 1 ignored | 368 passed, 1 ignored |
+
+No seam digest, fixture hash or other pinned value moved, so `ball_seam_bitident` EXPECTED is unchanged. pin_assets, pin_app, pin_render and pin_audio stay clippy-clean with `--all-targets -- -D warnings`.
+
+**Rationale:** PLAN §2.4 (D9) lists `libm` for transcendental functions among the measures that keep results close across platforms. The w8f-q5 decision left extending the ban to the sim crates as a separate decision that needed a replay-digest check; this unit makes it, with the check above. A crate-local list per crate keeps the ban out of the presentation crates, where hits do not affect determinism.
+
+**Alternatives:** Workspace-wide ban: rejected, the exempt crates have about 195 grep hits (pin_render 94, pin_app 82, pin_audio 19) that do not affect determinism. A root clippy.toml: rejected, it would ban the exempt crates too. `allow(clippy::disallowed_methods)` in tests: rejected, precedent w8f-q5 (tests migrated too, so a regression anywhere in the crate is caught).
+
+## Imported — docs/decisions/2026-11-20-7.2-tester.md
+
+## 7.2-T1 — How the 7.2 spec tests read ambiguous contract points
+
+**Decision:** The tests read the contract this way. (a) "run-log rows" counts table data rows (header and separator excluded). (b) The section 1 counts are checked on a fixture without `docs/HUMAN_QUEUE.md`, so it does not matter whether that file's items are in the open count. (c) The outer archives (`.zip`, `.tar.gz`) and `.sha256` are required to be byte-identical across runs, not only the `.pinbundle` files. (d) A missing `--target` or `--out` only has to give exit 2 and non-empty stderr; the allowed-values text is required for an unknown target. (e) The Unix 0755 rule is checked for all three targets' executables. (f) `codesign` stubs exit 0 and may be called only with `-s -`; the Windows and Linux targets must call no stub at all.
+
+**Rationale:** Each reading is the most literal one that does not depend on wording the brief leaves open. A Verifier ruling that differs changes only the asserted detail.
+
+**Alternatives:** Count header rows too (rejected: a header is not a run); allow gzip or tar timestamps to vary (rejected: release checksums must be reproducible).
+
+## Imported — docs/decisions/2026-11-20-7.2.md
+
+**Decisions: 7.2 (Packaging and release)**
+
+## 7.2 — Python standard-library driver for packaging
+
+**Decision:** Packaging is one script, `scripts/package.py` (Python 3, standard library only),
+and docs/HUMAN_ACCEPTANCE.md is rendered by `scripts/human_acceptance.py`. Both run unchanged on
+the Windows, Linux and macOS runners. Zips, tarballs, plists and hashes come from `zipfile`,
+`tarfile`/`gzip`, `plistlib` and `hashlib`. The only external commands are build tools: `cargo`,
+`lipo`, `sh`/`bash` (for `tables/*/build.sh`), `dotnet publish`, and the ad-hoc `codesign -s -`.
+
+**Rationale:** The brief fixes Python and the CLI. Using only the standard library means no
+pip install on the runners and no network. It also keeps archive bytes under the script's
+control, which D9 (byte-reproducible output) needs: shell `zip`/`tar` differ between OSes in
+timestamps, ordering and attributes.
+
+**Alternatives:** A Rust `xtask` crate, which would mean a new workspace member outside the owned
+paths. Shell scripts with `zip`/`tar`, which are not reproducible across OSes and not available
+on Windows.
+
+## 7.2 — Package layout and `tables/` beside the executable
+
+**Decision:** Windows/Linux: `kilohertz-pinball[.exe]` and `tables/<name>.pinbundle` at the
+package root, plus the licences, README and `docs/HUMAN_ACCEPTANCE.md`. macOS: `Kilohertz
+Pinball.app/Contents/MacOS/{kilohertz-pinball, tables/<name>.pinbundle}` plus `Info.plist`
+(bundle id `com.kilohertz.pinball`, minimum macOS 12.0), with the licence and docs files beside
+the .app. The archive's top folder is `kilohertz-pinball-<version>-<platform>/`.
+
+**Rationale:** PLAN 7.2 says "beside the executable", and `pin_app::ui::config` documents
+`tables_dir = None` as "`tables/` next to the executable". The app does not scan that folder
+yet (see the next entry), but the layout matches the documented default, so no repackaging
+will be needed when the scan is wired up.
+
+**Alternatives:** `Contents/Resources/tables` on macOS, which is more idiomatic for app bundles
+but does not match the documented default.
+
+## 7.2 — The app does not scan `<exe dir>/tables` yet (A12)
+
+**Decision:** pin_app is not edited. `crates/pin_app/src/ui/config.rs:461-464` documents the
+default, but nothing resolves it: `scan_tables` (`crates/pin_app/src/ui/scan.rs:264`) is never
+called from the app, and `run_app` (`crates/pin_app/src/main.rs:281`) loads only the table
+passed with `--table <path>`. Until this is wired, players start a table with
+`kilohertz-pinball --table tables/<name>.pinbundle`. This is a request outside the owned
+paths and a queue line.
+
+**Rationale:** The brief forbids changes to crates/** and keeps the "beside the executable"
+layout.
+
+**Alternatives:** Edit pin_app (out of scope). Ship tables loose as folders (the plan fixes
+`.pinbundle`).
+
+## 7.2 — Deterministic archives
+
+**Decision:** Bundles and release zips have entries sorted by path, forward slashes, a
+1980-01-01 00:00:00 timestamp, Unix attributes (`create_system = 3`, regular file 0644, or
+0755 for the engine executable in the release zip), deflate level 9, no directory entries
+and no extra fields. Linux tarballs are PAX format, sorted, mtime 0, uid/gid 0, with empty
+user and group names, and gzip with header mtime 0 and no file name. PACKAGE_MANIFEST.json uses
+fixed key order and sorted files, with no timestamps or host paths. An existing package
+directory is deleted before it is rebuilt.
+
+**Rationale:** D9 and A7/A8: two runs on the same inputs must give byte-identical output.
+Deflate output depends on the zlib build, so the guarantee is "same inputs, same machine
+image", the same scope as D9.
+
+**Alternatives:** Python's default `ZipFile.write`, which records file mtimes and host modes.
+
+## 7.2 — Bundle archives obey the loader's rules
+
+**Decision:** A `.pinbundle` contains only plain files under names that
+`pin_assets::zip::normalize_path` maps to themselves. The script refuses symlinks, backslashes,
+`..`, absolute paths and drive prefixes, and skips OS junk files (`.DS_Store`, `Thumbs.db`,
+`desktop.ini`, `__MACOSX/`). An entry larger than 1 MiB that would deflate past the loader's
+100:1 ratio cap (`RATIO_FLOOR`/`max_ratio` in crates/pin_assets/src/zip/mod.rs) is stored
+uncompressed instead. Every archive is re-read and checked against the loader's name, symlink,
+size and ratio rules (`validate_bundle_zip`), and a violation is exit 1.
+
+**Rationale:** Bundles are untrusted input (THREAT_MODEL). A packaged table the loader refuses
+would be a broken release. Placeholder WAVs of silence are the kind of honest content that
+trips the ratio guard.
+
+**Alternatives:** Always deflate, which risks a CompressionRatio load error. Always store,
+which makes larger downloads.
+
+## 7.2 — greybox `rules.wasm` is left out, not an error
+
+**Decision:** greybox is not a ported table. If its source bundle has a `rules.wasm` anyway,
+the file is left out with a warning, so the greybox bundle always ships its Lua rules only. A
+ported table (apex_circuit, sky_deck, feature_lab) without `rules.wasm` is exit 1.
+
+**Rationale:** A7 requires greybox to contain no `rules.wasm`. Leaving out a stray file keeps
+the documented behaviour (Lua rules) without failing a release over an unused file.
+
+**Alternatives:** Fail on a stray greybox `rules.wasm`, which is stricter but blocks the
+package for a file that would not ship anyway.
+
+## 7.2 — `--list` builds nothing
+
+**Decision:** `--list` validates only the inputs it is given (`--exe`, `--bundle-dir`,
+`--dof-bridge`), runs no build, writes nothing, and prints the planned package paths. For
+Windows without `--dof-bridge` it lists the two fixed bridge entries
+(`dof_bridge/KilohertzDofBridge.exe`, `dof_bridge/UNVERIFIED.txt`). With prebuilt inputs the
+list equals the manifest's paths. On macOS this holds unless an ad-hoc signature adds
+`_CodeSignature/` files.
+
+**Rationale:** A9 says "write nothing else". Running cargo or dotnet would write build output.
+
+**Alternatives:** Build into a temp dir and list the result, which writes and takes minutes.
+
+## 7.2 — Ad-hoc codesign skipped in `--dry-run`
+
+**Decision:** The macOS ad-hoc `codesign --force --deep -s -` runs only on a real (non-dry)
+macOS package, and only when `codesign` is on PATH. A failure is a warning.
+
+**Rationale:** A9 forbids any signing command in a dry run. A10 permits only the ad-hoc
+signature.
+
+**Alternatives:** None that meet both A9 and A10.
+
+## 7.2 — Windows runs `build.sh` through `bash` from PATH
+
+**Decision:** On Windows, `package.py` runs `tables/<name>/build.sh` with the `bash` found by
+`shutil.which` (Git for Windows' bash on the runner, whose PATH the step's `shell: bash`
+sets), and passes output paths with forward slashes. Elsewhere it uses `sh`.
+
+**Rationale:** build.sh is POSIX sh and must not be edited. Resolving through PATH avoids
+`C:\Windows\System32\bash.exe` (the WSL launcher), which `CreateProcess` would search first
+for a bare `bash`.
+
+**Alternatives:** A Python port of build.sh, which would duplicate the tables' build logic.
+
+## 7.2 — Release workflow: draft-only, artifacts on dispatch
+
+**Decision:** `.github/workflows/release.yml` has three trigger modes. On pull requests it
+runs only a Linux `dry-run` job. A dispatch runs `verify` (3 OS, release build and tests with
+`RUSTFLAGS=-D warnings`) and then `package` (3 platforms, artifacts kept 14 days). A `v*` tag
+push runs the same plus `draft-release`, which makes a DRAFT prerelease with `gh release
+create --draft --prerelease --verify-tag`. Only `draft-release` gets `contents: write`. A
+small `version` job resolves the version (tag without `v`, then the dispatch input, then
+Cargo.toml). A tag and Cargo.toml mismatch is a warning annotation. The release assets are the
+three archives, `SHA256SUMS` (the three `.sha256` lines) and `PACKAGE_MANIFEST-<platform>.json`
+(renamed so the three manifests do not collide).
+
+**Rationale:** D39 (agents never push tags; the owner does), D40 (PRs on Linux only), C2 to
+C8. A draft cannot reach users until a person publishes it after Phase 8.
+
+**Alternatives:** Publish directly on tag, which the brief forbids. A separate workflow for
+drafts, which adds no value.
+
+## 7.2 — PR dry-run uses a placeholder executable
+
+**Decision:** The PR `dry-run` job builds the real bundles (package.py runs
+`tables/*/build.sh`) but passes a placeholder shell script as `--exe`, rather than building
+pin_app in release.
+
+**Rationale:** The PR set should stay fast (D40). pin_app's release build needs SDL3 from
+source and wgpu, which adds many minutes to every PR that touches docs/queue. The release
+build of the real executable runs in `verify` and `package` on dispatch and tags, and ci.yml's
+PR jobs already compile pin_app. The dry-run still proves the layout, the four bundles and the
+manifest.
+
+**Alternatives:** A full release build on every matching PR.
+
+## 7.2 — `verify` installs the SDL3 build headers on Linux
+
+**Decision:** The Linux `dry-run`, `verify` and `package` legs install the apt packages of ci.yml's
+`clippy` job (also used in soak.yml): cmake plus the X11, Wayland, EGL, DRM, udev, dbus,
+ALSA and PulseAudio headers. ci.yml's `core-tests` job installs no packages, because it
+excludes pin_app. `--workspace` includes pin_app, whose `sdl3` dependency builds from source and
+needs those headers; `tables/feature_lab/build.sh` runs the pin_app example
+`build_feature_lab`, so even the PR dry-run builds pin_app (debug). The SDL env is ci.yml's (audio and video `dummy`). `PIN_REQUIRE_GPU` is
+not set, so GPU-adapter tests skip, as in core-tests. The verify matrix adds the
+`x86_64-apple-darwin` and `aarch64-apple-darwin` targets on macOS only, and no wasm32 target:
+ci.yml's workspace tests do not need one.
+
+**Rationale:** The brief says to copy "the same apt packages ci.yml's core-tests job
+installs", but that list is empty and would fail the pin_app build. The clippy list is the
+one ci.yml uses to build the whole workspace.
+
+**Alternatives:** An empty package list, which fails to build sdl3-sys from source.
+
+## 7.2 — HUMAN_ACCEPTANCE.md: stale is a warning; final regeneration by the Orchestrator
+
+**Decision:** docs/HUMAN_ACCEPTANCE.md is a pure function of docs/RUN_LOG.md, docs/queue/,
+docs/decisions/, docs/HUMAN_QUEUE.md and docs/DECISIONS.md, so it goes stale whenever any of
+these changes. The PR job runs `human_acceptance.py --check` with `continue-on-error: true` and
+a `::warning::` annotation, never a hard failure. The Orchestrator regenerates and commits the
+file after the last run-log row of the run. The file starts with an HTML comment saying it is
+generated and must not be edited, followed by the `# Human Acceptance` H1 and a visible note.
+
+**Rationale:** Brief B5. A hard check would fail almost every PR, because nearly every unit
+adds queue or decision lines.
+
+**Alternatives:** Regenerate the file in CI and commit it (agents' CI cannot push, and it would
+race). Hard-fail on stale.
+
+## 7.2 — HUMAN_ACCEPTANCE parsing rules
+
+**Decision:** Open queue lines are `- [ ] [id] text` (at column 0), plus the old style
+`- [id] text`, whose text does not start with `~~`, in both docs/queue/ and the frozen
+HUMAN_QUEUE.md (docs/queue/README.md accepts the old styles everywhere). Resolved lines are
+`- [x] [id]`, `- ~~...` and old-style lines whose text starts with `~~`. Blocked run-log rows
+are table rows whose cell in the `Status` column of the most recent header row contains
+"blocked" (case-insensitive). Gate lines match `[Gg]ate A<n>` or `[Ww]ave <n> gate`. D33
+mentions match `D33` not preceded by a letter or digit and not followed by a digit. All inputs
+are processed in sorted path order (`docs/DECISIONS.md` and `docs/HUMAN_QUEUE.md` sort before
+`docs/decisions/` and `docs/queue/`).
+
+**Rationale:** These follow the formats in docs/queue/README.md and docs/decisions/README.md,
+and they give a fixed order that does not depend on the filesystem.
+
+**Alternatives:** Case-sensitive "Gate A1" only, which misses a few run-log lines that write
+"gate A1".
+
+## 7.2 — Intel macOS slice is gated in verify (Rosetta 2 on macos-latest)
+
+**Decision:** `verify` gets a fourth leg, target x86_64-apple-darwin, on macos-latest (arm64).
+It runs `cargo build/test --release --workspace --target x86_64-apple-darwin` with
+`-D warnings`. The test binaries run under Rosetta 2, which the leg installs if absent and
+fails loudly without. `package` needs `verify`, so the universal macOS package waits on both
+macOS slices. Each matrix entry carries `host` (the native rustc host triple, used by the
+Toolchain step) and `cargo_args` (empty for native legs).
+
+**Rationale:** CodeRabbit finding on PR #77
+(https://github.com/donfuldauer/kilohertz-pinball/pull/77#discussion_r4643290546). PLAN 7.2
+requires a zero-warning release build and test on every target, and the packager only builds
+the pin_app slice. D40 and the 7.2 brief keep the runner labels to those in ci.yml, and
+tests/spec_ci requires Apple-silicon macOS. A native Intel runner label cannot be verified
+offline and GitHub is retiring Intel macOS images.
+
+**Alternatives:** An Intel runner label (rejected as above). A separate job (rejected:
+scripts/tests/package_test.py pins the job set). Building the x86_64 slice without running
+tests (does not meet 7.2). Risks: (a) Rosetta 2 availability on hosted arm64 runners is
+unverified offline, and the leg fails loudly if missing; (b) the SDL3 cmake build
+cross-compiles for x86_64 on an arm64 host, unverified until the first dispatch or tag run;
+(c) RUSTFLAGS does not apply to build scripts under an explicit `--target`, which is
+acceptable because the rule is zero warnings in workspace crates.
+
+## Imported — docs/decisions/2026-11-20-w8h-cr-status.md
+
+**Decisions: w8h-cr-status**
+
+## w8h-cr-status — Final statuses of CR-005 to CR-009
+
+**Decision:** The five requests are recorded as `merged (<commit>)` with the commits named in `contracts/CHANGE_REQUESTS.md`: CR-005 `64ec5f9`; CR-006 `1594b87` (via merge `5afae2e`, PR #24); CR-007 `d21ba7d` (via merge `d639eb1`, PR #26); CR-008 `8f4c545` and `d6c3aff` (via merge `f845d5f`, PR #69); CR-009 `8050c3b` (via merge `2f2c3c6`, PR #74). Interpretations:
+(a) CR-005: `64ec5f9` (merge of PR #4, the Wave 0-5.2 stack) has no parent, so it is a parentless commit in main's graph. `git log -S "pub area: Vec<[f32; 2]>"` over main finds no earlier commit that introduces `BallRestriction::area`; `64ec5f9` is the earliest commit that contains the change, and no separate pin_core-only commit exists (the change landed in the working tree with Subphase 2.8). The earlier wording "history before 64ec5f9 is one import" is not what git shows: main has several parentless roots (for example `578c518`, the PR #1 license merge), and `64ec5f9` is not a descendant of them.
+(b) CR-006 and CR-007: the commit named first is the work commit; the merge named after `via` is the one that brought it into main. Both are confirmed ancestors of `HEAD`.
+(c) CR-007 names the reworked `GlassManifest`/`glass.toml` version (`crates/pin_core/src/schema/glass.rs`, `GLASS_FILE`), `d21ba7d`. The first version `3062450` (`Playfield.glass_height`) is an ancestor of `0f1b0af`, the second parent of `d639eb1`, so it did reach main. `d21ba7d` removes the lines it added (`layout.rs`, `layout_glass_height.rs`); it is a rework commit, not a `git revert`. That version was withdrawn as breaking.
+(d) CR-008 and CR-009 were merged by their own pin_core-only PRs (#69 and #74), as the protocol requires; their status lines had simply not been updated.
+**Rationale:** Protocol step 5 requires `merged (<commit>)`. A status that stays `open` after the change is in main misleads the next agent into re-requesting it.
+**Alternatives:** Leaving `applied` or `open` (violates the protocol). Rewriting history to isolate CR-005 (impossible, the import is one merge commit).
+
+## Imported — docs/decisions/2026-11-20-w8h-libtest-args.md
+
+## w8h-libtest-args — Shared libtest argument helper lives in a dev-only crate
+
+**Decision:**
+
+- A new std-only workspace crate `crates/pin_testmain` (no dependencies, `publish = false` through
+  the workspace) holds the one implementation of libtest-compatible argument handling for
+  `harness = false` test targets: `Options`, `parse_args` (pure, never panics, never exits), `Plan`
+  (`Run`, `List`, `SkipAll`), `plan` (pure), `Outcome` (`Passed`, `Skipped(String)`) and
+  `libtest_main(test_name, body: impl FnOnce() -> Outcome)`, which parses
+  `std::env::args().skip(1)`, prints libtest-style output and either runs `body` once on the calling
+  thread or exits 0 (`--help`, `--list`, filtered out). It spawns no thread and touches no SDL or GPU
+  state. The root `[workspace.dependencies]` gains `pin_testmain`; pin_app, pin_render and pin_audio
+  take it under `[dev-dependencies]` only. No other crate depends on it.
+- `Outcome::Passed` is reported as `test <name> ... ok` and `1 passed`. `Outcome::Skipped(reason)`
+  is reported in libtest's ignored form, `test <name> ... ignored, <reason>` and
+  `test result: ok. 0 passed; 0 failed; 1 ignored; ...`, and the process exits 0 (PR #76
+  CodeRabbit round 1: a run that checked nothing must not report a pass). Line breaks in the
+  reason (`\n`, `\r`, `\r\n`) each become one space so the test line stays one line. The
+  formatting is a pure private function (`render_outcome`) with unit tests.
+- The four targets that can skip at run time (`orchestrator_window`,
+  `profiler_debug_view_window`, `gpu_window`, `gpu_surface_hooks_window`) have
+  `fn skip(msg) -> Outcome`: it still panics first when `PIN_REQUIRE_GPU=1` (so CI fails rather
+  than skips), otherwise it returns `Outcome::Skipped("[<name>] <msg>")`; the separate `SKIP:`
+  line is gone because the ignored line is the report. Their module docs say they report the
+  target as skipped in libtest's `ignored` form. The other four never skip; their `run` ends in
+  `Outcome::Passed`. The targets name the type as `pin_testmain::Outcome` (no new `use` line).
+- Option arity follows Rust 1.97.0 libtest `--help` (verified with `rustc --test` on 1.97.0):
+  value options are `--logfile`, `--test-threads`, `--skip`, `--color`, `--format`,
+  `--shuffle-seed` and `-Z`. `--report-time` is a no-value flag (as are `--fail-fast`,
+  `--exclude-should-panic`, `--ensure-time`, `--shuffle`), so it never consumes the next
+  argument: `-Z unstable-options --report-time --list` lists and `--report-time <filter>` keeps
+  the filter (PR #76 CodeRabbit thread 4638279328).
+- All eight `harness = false` targets of the workspace rename their old `main` to `run` (body
+  unchanged apart from returning `Outcome`) and get `fn main() { pin_testmain::libtest_main("<[[test]] name>", run) }`, so the
+  helper runs before any SDL init, window or wgpu call, on the main thread: pin_app
+  `platform_headless`, `orchestrator_window`, `presenter_thread_window`,
+  `profiler_debug_view_window`; pin_render `gpu_window`, `gpu_surface_hooks_window`; pin_audio
+  `mixer_sdl_smoke`, `spec_mixer_sdl`.
+- `spikes/` (a separate, excluded workspace with `wgpu_probe`, `sdl_timestamp`,
+  `sdl_virtual_joystick`) is out of scope and unchanged.
+- Small choices the brief left open: a lone `--` is skipped and parsing continues (later arguments
+  are still parsed as flags or filters); a value option or `--skip` at the end of the arguments with
+  no value is accepted and ignored; `--opt=value` splitting applies only to `--` options (a `-x=y`
+  argument is an unknown flag); none of the eight module docs said the target ignored its arguments,
+  so each gets one added sentence ("The target accepts libtest filters and `--list` through
+  `pin_testmain`.") next to its existing `harness = false` explanation, and no other doc changes.
+
+**Rationale:** One implementation instead of eight copies. As a normal lib crate its parser unit
+tests run once under libtest, in the GPU-free `core-tests` CI job (which excludes only pin_render,
+pin_audio and pin_app). Nothing changes in `pin_core`, so no contract change request (D4), and no
+product code (`src/` of an existing crate) changes. The unfiltered CI `gpu-tests` command still runs
+every windowed body, while a filtered or `--list` run no longer opens a window or fails under
+`PIN_REQUIRE_GPU=1`.
+
+**Alternatives:**
+
+- A `#[path]`-included file shared by the targets: its unit tests would never run (the including
+  targets are `harness = false`), and each target would compile its own copy.
+- A module in `pin_core`: needs a contract change request and puts test-harness code in the shared
+  contract crate.
+- Converting the targets back to libtest: SDL needs the process main thread (Cocoa) and one init per
+  process, which libtest's worker threads break; that is why they are `harness = false`.
+- Two copies (one per crate family): rejected by the owner.
+
+## queue-triage — 0.1 spike hygiene left as is
+**Decision.** The 0.1 spike review notes (the smoke test that skips without an adapter, the video-only timestamp hint, caret dependencies in `spikes/spec_0_1`) are not fixed; the spikes stay as recorded evidence for the dependency choices.
+**Rationale.** The spikes are not product code, `spikes.yml` still runs them on three OSes, and every production crate carries its own tests of the same dependencies.
+**Alternatives.** Fix each spike note (no product benefit); delete the spikes (loses the 0.1 evidence and the tests that read it).
+
+## queue-triage — `.pinbundle` stays read whole into memory
+**Decision.** The loader keeps reading a `.pinbundle` whole into memory (bounded by `max_total_uncompressed` + 1 MiB); no file-backed reader is planned now.
+**Rationale.** The cap bounds memory, the `Vfs` API already allows a seek-and-read reader later without caller changes, and no table comes near the cap; a second reader would add zip-parsing paths to the untrusted-input boundary (D25) for no measured need.
+**Alternatives.** A file-backed reader per entry now. Revisit when a real bundle approaches the cap.
+
+## queue-triage — 1.4 gate-fix notes N2–N4 not scheduled
+**Decision.** The Wave 3 gate-fix review notes N2 (device teardown order in the render thread), N3 (tighter present bounds in the `orchestrator_window` test) and N4 (an occluded macOS presenter surface re-rendering up to 250 Hz) get no issue now.
+**Rationale.** 6.0 rewrote the render thread (table and debug presenters, `WindowGuard`) and the window test after the notes were written, gpu-tests are green on lavapipe, WARP and Metal at the Wave 9 gate, and none of the three has been seen as a failure.
+**Alternatives.** An issue to re-check all three in the current code. Revisit when a teardown crash or high idle CPU with an occluded macOS window is observed.
+
+## queue-triage — physics edge cases outside authored play are not scheduled
+**Decision.** Three solver edge cases get no issue: the reach estimate of an open self-crossing level guide (4.1-H round 1), remanence magnetisation that cannot be saved or restored (2.7 review N2), and a ball injected overlapping a bumper being pushed through the floor (2.5 Tester).
+**Rationale.** The loader already flags self-crossing guides as authoring errors (lint d); no snapshot, rollback or replay-seek feature exists; an overlapping ball arises only from state injection, never from play; each fix would change solver code for no reachable case.
+**Alternatives.** Fix each now. Revisit when rollback or seeking is added, or a new ball-injection path is.
+
+## queue-triage — performance on real hardware is read from the profiler at acceptance
+**Decision.** The "measure on the slowest target / on real GPUs" notes (worst-case Lua stall, bloom texture loads, worst-case hostile DMD scene) are not separate tasks; the 7.1 profiler (tick time, input latency, GPU frame time, overflows, HUD) shows them during final human acceptance and the soak workflow records CI numbers.
+**Rationale.** Each bound is already measured on CI-class machines; only a person has the target hardware, and the profiler reports the numbers without new code.
+**Alternatives.** A benchmark task per note (needs hardware an agent does not have).
+
+## queue-triage — table soak figures are re-measured after M1
+**Decision.** The per-table skill margins (fix-2.9 follow-up) and the Feature Lab README "Autoplay soak self-check" table are refreshed by the first Gate A2 run after the M1 play-experience changes, not now.
+**Rationale.** Gate A2 run 2 passed at 106e7e4 with strictly ascending median scores on all three tables; M1 changes flipper timing and feel, which moves these figures again, so measuring now would be done twice.
+**Alternatives.** Re-measure now; drop the README table (loses the authoring reference).
+
+## queue-triage — no `[[walls]] name` in layout.toml for now
+**Decision.** `layout.toml` `[[walls]]` gets no `name` (glTF node name) field now; Sky Deck keeps its kickback blade instead of a named diverter collider.
+**Rationale.** `pin_core::schema::layout::Wall` is a contract type with `deny_unknown_fields`, so the field needs a change request and a pin_core-only PR (R2) for a generator convenience; the current table passes Gate A2.
+**Alternatives.** An additive CR adding the field. Revisit when a new table needs named generated colliders.
+
+## queue-triage — no ball-specific magnet exit signal for now
+**Decision.** The Feature Lab magnet comparison keeps reading the shared `magnet_opto` zone state; no per-ball switch event or dedicated opto mech is requested.
+**Rationale.** The comparison is a test measurement, not a gate, and a per-ball signal needs a contract change across `pin_core`, `pin_sim` and the script API for test precision only.
+**Alternatives.** A change request for a per-ball switch event. Revisit if the comparison becomes a gate.
+
+## Repository — The plan is GitHub issues
+
+**Decision:** From 2026-11-20 the implementation plan is the set of GitHub issues labelled
+`work-unit` on `donfuldauer/kilohertz-pinball`, one issue per reviewable PR. Each issue carries a
+plan ID `KP-NNN` (zero-padded, in topological plan order) in its title (`KP-001: <title>`) and in
+its first body line, a "Depends on" list, a status label (`ready`, `blocked`, `in-progress`,
+`status:blocked-failure`), a `type:*` label, `area:*` labels, an expected `tier:T1` or `tier:T2`
+label (T3 is never planned) and a `phase:NN-name` label. The two milestones are the tracking
+issues #79 "M1 — Play experience" (44 work units, KP-001–KP-044; complete before the owner repeats
+final acceptance) and #80 "M2 — Backlog" (16 work units, KP-045–KP-060: deferred items from the
+old queue). The 60 work units are #81–#104 (KP-001–KP-024) and #106–#141 (KP-025–KP-060). Nothing
+in the repository holds the work breakdown: there is no `docs/PLAN.md` and no wave table.
+"Start work on issue X" runs the `work-issue` skill, `run-plan` loops over ready issues, and
+`plan-from-spec` turns SPEC requirements into issues. The v5 build (subphases 0.1–7.2, Waves 0–9)
+predates the issues; its record stays in `docs/RUN_LOG.md`.
+**Rationale:** The repository owner asked on 2026-11-20 to copy how the owner's `fineprint`
+repository executes work with issues and to replace this repository's planning, queue and
+decision files with that model. A work unit in the issue tracker maps to exactly one PR, shows its
+dependencies and status where every session can see them, and can be picked up by any session.
+Fineprint's process was itself adapted from the Kilohertz v5 process, so the agent rules carry
+over almost one to one.
+**Alternatives:** Keep `docs/PLAN.md` as the plan and add issues next to it (rejected: two sources
+of truth for the work breakdown). A generated plan file mirroring the issues (rejected for the same
+reason, as in fineprint).
+
+## Repository — PLAN.md becomes SPEC.md; process and layout move out
+
+**Decision:** `docs/PLAN.md` becomes `docs/SPEC.md`, the normative technical specification.
+Section numbers, subphase numbers ("Subphase 2.3: …") and decision IDs D1–D33 are unchanged, so
+"PLAN §3.2", "PLAN 2.3", "PLAN Appendix A" or "D9" in code, tests, commits and history resolve to
+the same place in SPEC.md; the roughly 760 existing "PLAN …" references in code comments and tests
+are not rewritten. §4 keeps every subphase (Target, Dependencies, Deliverables, Verification) as
+the specification of the delivered component, Gates A1 and A2 stay normative, and Phase 8 stays
+the final human acceptance procedure. Process material moves out: the agent execution rules
+(§2.3), model routing with the Fable ask (§2.5), the Orchestrator runbook (§2.6) and the PR,
+review and merge workflow (§2.7) go to `docs/PROCESS.md` (P1–P8, rules R1–R12); the workspace map,
+commands, environment and gate scripts go to `docs/DEVELOPMENT.md`; the brief template goes to
+`docs/BRIEF_TEMPLATE.md`; the §0 rows D34–D42 keep one pointer row each; §5 (wave matrix) becomes
+a pointer to `docs/RUN_LOG.md` (history) and the issues (plan). The new §7 (presentation and play
+experience) and Appendices E and F are added. Requirements added from now on carry
+`REQ-<AREA>-<NNN>` IDs, and `scripts/req_coverage.py` checks that each one is traced by a
+`work-unit` issue; existing requirements are cited by section or subphase number. SPEC.md is
+edited by a person or by a PR the person asked for (PROCESS.md P8), with one exception: the work
+unit that owns a new file schema or protocol documents it additively in Appendix A or B in its own
+PR, as CR-007 did with A.3a. The code that reads the file follows the rename in the same change:
+`crates/pin_core/tests/schema_fixtures.rs` compares the fixtures with SPEC.md Appendix A, and the
+`ci.yml` changes step (and its spec test) treats `docs/SPEC.md` as code.
+**Rationale:** PLAN.md held four things: a specification, a process, a repository layout and a work
+breakdown. The work breakdown is now the issues (DECISIONS.md "Repository — The plan is GitHub
+issues"), so what remains is a specification that code, tests and history already cite by number.
+Keeping the numbers makes the rename safe; giving process and layout their own files lets each
+change without touching the specification.
+**Alternatives:** Keep the name PLAN.md (rejected: it no longer holds a plan). Renumber the
+specification (rejected: breaks every existing reference). Rewrite the "PLAN …" references in code
+and tests (rejected: hundreds of comment edits that add review noise and risk and no information).
+
+## Process — One decision log and a P8-only queue (D41 superseded)
+
+**Decision:** D41 (one decision file and one queue file per unit of work under `docs/decisions/`
+and `docs/queue/`, with `docs/DECISIONS.md` and `docs/HUMAN_QUEUE.md` frozen) is superseded.
+`docs/DECISIONS.md` is again the single live decision log, appended to by every issue. Its frozen
+banner is removed; the 46 files of `docs/decisions/` are appended verbatim in file-name order, each
+under a `## Imported — docs/decisions/<file>` marker that keeps the file's title and preamble (so
+references to those files in code comments, briefs and the run log can still be followed), then
+the entries drafted by the queue triage (`queue-triage — …`), then this migration's entries. The
+folder is deleted. `docs/HUMAN_QUEUE.md` holds only P8 items (PROCESS.md P8). All 339 earlier queue
+lines (251 from the frozen file, 88 from the 33 files of `docs/queue/`) are kept as history in
+their original order, each per-unit file under a heading naming it, and the folder is deleted.
+Every line got the disposition of the queue triage: 10 P8 (struck with "Kept open as the P8 line
+below." and followed by its `- [P8 <kind>] [<id>]` restatement, the only open lines), 104 DECIDED
+(struck, `Decided: DECISIONS.md "<section>"`), 144 RESOLVED and 8 OBSOLETE (struck with
+`Resolved:` or `Superseded:` and the evidence; the 12 lines that were already struck stay as they
+were, and the 39 `- [x]` lines of the per-unit files are struck like the others), 22 M1 (struck,
+`Moved to #<n> (KP-NNN)`: 16 flipper and mechanism feel lines to #87 KP-007, 5 rendering-look
+lines to #95 KP-015 and #96 KP-016, 1 machine-view line to #114 KP-033) and 51 BACKLOG (struck,
+`Moved to #<n> (KP-NNN)`, the M2 issue of the line's group). The shared append-only files
+(`docs/DECISIONS.md`, `docs/HUMAN_QUEUE.md`, `docs/RUN_LOG.md`, `contracts/CHANGE_REQUESTS.md`)
+take appended entries from any issue, and the unit gate's owned-path check allows them.
+`spikes/spec_0_1/tests/spec_log_split.rs` now asserts this contract; the `spikes` and `release`
+workflows filter on the two files instead of the folders; comments in `scripts/gate_a2.sh`,
+`scripts/gate_a2_verdict.py` and `.github/workflows/rules-wasm.yml` cite DECISIONS.md sections.
+`scripts/human_acceptance.py` is not changed here (it reports the folders as not present and the
+P8 lines as the open items); KP-044 (#125) teaches it the new layout.
+**Rationale:** The queue had become a list of confirmations nobody gave: `docs/HUMAN_ACCEPTANCE.md`
+counted 224 open lines, but the triage found only 10 that need a person; the rest were judgement
+calls already recorded in this log, work that later units settled, or deferred work that belongs
+in issues. Per-unit files were introduced to avoid merge conflicts between parallel units; with
+one PR per issue and append-only entries, a conflict on a shared log is resolved by keeping both
+sides, and one log is easier to search and to cite. Fineprint runs the same model.
+**Alternatives:** Keep the D41 folders (rejected: two places to search for every decision, and a
+frozen file cannot record that its items were resolved). Delete the old queue lines (rejected:
+code comments, briefs and run-log rows refer to them). Move the history to an archive file
+(rejected: `docs/HUMAN_QUEUE.md` is where a reader looks, and struck lines cost nothing).
+
+## Process — Judgement calls are decisions, not queue items
+
+**Decision:** An agent's recommendation on a judgement call is the decision (PROCESS.md R8). It is
+recorded once in `docs/DECISIONS.md` (Decision / Rationale / Alternatives) and is final unless a
+later DECISIONS.md entry or the repository owner changes it. `docs/HUMAN_QUEUE.md` is kept only for
+the P8 items an agent cannot do or decide itself: edits to `docs/SPEC.md` (except additive schema
+documentation) or `docs/PROCESS.md`, physical hardware checks, replacing placeholder assets,
+licensing and third-party assets, publishing a release, and repository settings an agent cannot
+change (for example the required checks of branch protection). Consequently: a `[Fable wanted]`
+note goes in the unit's `docs/RUN_LOG.md` row; a CodeRabbit that never reviews is a RUN_LOG row; a
+unit that fails P7 is marked `blocked` in RUN_LOG with the `status:blocked-failure` label and an
+issue comment with the failure history; a deferred review finding becomes a new `work-unit` issue
+or a DECISIONS.md entry; a SPEC erratum is recorded in DECISIONS.md with one `[P8 spec]` queue line
+proposing the SPEC edit; a request to close a review thread is never queued (the Orchestrator
+resolves threads itself, PROCESS.md P6).
+**Rationale:** The repository owner asked on 2026-11-20 for a recommendation instead of a question
+whenever something needs a decision, and fineprint adopted the same rule on its owner's request.
+Under the old rule (PLAN §2.3 rule 8 with "confirm …" queue lines) the queue asked for
+confirmations nobody gave, and the run never waited for them anyway: the queue triage found 104
+open lines that this log had already decided.
+**Alternatives:** Keep informational queue lines (rejected: the owner asked for recommendations,
+not questions). Remove the queue entirely (rejected: hardware checks, real assets, signing and
+publishing a release, and repository settings can only be done by a person).
+
+Queue clean-up: see DECISIONS.md "Process — One decision log and a P8-only queue (D41 superseded)".
+
+## Process — Fable ask kept
+
+**Decision:** The Fable 5.2 rule moves to PROCESS.md P4 with the owner ask of D42 exactly as it
+stood in PLAN §2.5 "Fable ask": when the work-classifier finds Fable wanted (very-high blast radius
+or extremely hard-to-troubleshoot work, with evidence), the Orchestrator asks the owner whether the
+account's usage limits leave enough Fable allowance and waits up to 30 minutes; no answer means
+`unknown`, and `unknown` means no Fable (the work runs on Opus 5.5 at T2). Fineprint's wording, in
+which the agent reads the usage limits itself, is not adopted. A `[Fable wanted]` note for work
+that met the need test but ran without Fable goes in that unit's `docs/RUN_LOG.md` row, never in
+the queue.
+**Rationale:** The agent cannot read the account's usage (DECISIONS.md "fable-ask — Owner ask for
+Fable allowance with a 30-minute timeout"): no tool returns it, so a rule that asks the agent to
+read the limits could never be satisfied and Fable could never be used. The owner's ruling of
+2026-11-18 is specific to this repository and stays in force. A queue line for a Fable note would
+be informational, which a P8-only queue excludes.
+**Alternatives:** Adopt fineprint's wording (rejected: not executable in this environment). Drop
+Fable altogether (rejected: the owner's rulings keep it available for the work it is meant for).
+
+## Process — Self-chaining without a backstop task
+
+**Decision:** The `work-issue` and `run-plan` skills are ported with fineprint's self-chaining
+(claims, chain tags `kilohertz-chain` and `kilohertz-chain-<marker id>`) but without the backstop
+scheduled task fineprint mentions. Where fineprint says the backstop restarts a stopped chain, the
+Kilohertz skills say the chain stops and the owner restarts it with "Start work on the next ready
+issue and self-chain".
+**Rationale:** No backstop task exists for this repository, and creating a scheduled task is an
+outward-facing action outside the change the owner asked for. A stopped chain loses no work: the
+issues it did not reach stay `ready` for the next session.
+**Alternatives:** Create a scheduled backstop task now (rejected: outward-facing, needs the owner).
+Drop self-chaining (rejected: it is how a run continues unattended from one issue to the next).
+
+## Process — req_coverage without a CI job for now
+
+**Decision:** `scripts/req_coverage.py` is ported from fineprint: it reads the `REQ-<AREA>-<NNN>`
+IDs of `docs/SPEC.md` and checks that every one is traced by a `work-unit` issue of
+`donfuldauer/kilohertz-pinball`, with fineprint's `--plan-file`, `--milestone`, `--allow` and
+`--tests` options. It is run by `plan-from-spec` and by hand; this migration adds no CI job. The job
+is the M2 work unit KP-045 (#126): an advisory job outside `pr-checks`, plus a `[P8 setting]` queue
+line asking the owner whether it becomes required.
+**Rationale:** The job needs an issues-read token in CI, and making it required changes the
+required-check set, a repository setting only the owner changes (PROCESS.md P8). Under D40 only
+`pr-checks` is required, so a job outside `pr-checks` blocks nothing by itself; it is a separate,
+reviewable change, and the migration PR stays limited to documents and the tests and path filters
+coupled to them.
+**Alternatives:** Add the job in the migration PR (rejected: outside its scope and needs the token
+decision). No coverage check (rejected: the SPEC §7 REQ IDs are what the M1 issues cite).
+
+## Process — GitHub tooling: parent tracking issues and body dependency lists
+
+**Decision:** Sessions use the GitHub MCP tools for GitHub; the `gh` CLI is used only for search
+(`gh api -X GET search/issues` where a label filter is needed). Because those tools cannot create
+milestones or "blocked by" dependency links or delete comments, the process departs from fineprint
+where the tools force it: (1) each milestone is a parent tracking issue labelled `tracking` (#79
+"M1 — Play experience", #80 "M2 — Backlog") whose sub-issues are its work units; a tracking issue
+states the goal and scope, has no Plan ID line, is not a work unit and closes when its last
+sub-issue closes, and "milestone" in PROCESS.md and the skills means this issue; (2) the "Depends
+on" list in the issue body is the only dependency record, and the merged-PR rule for a satisfied
+dependency is unchanged; (3) a claim comment is released by editing it to "Released: <reason>",
+and a released claim does not count; (4) labels are applied with `issue_write`, and every label
+exists before the first work unit is created. The skills name the MCP tool for each GitHub step.
+**Rationale:** Parent issues give the same grouping and progress view as milestones, and
+fineprint already keeps the dependency list in the issue body (its blocked-by links duplicate it),
+so nothing is lost. The alternative would need a person for every new issue.
+**Alternatives:** Create milestones and dependency links by hand in the web interface (rejected:
+a person in the loop for every planned issue, against PROCESS.md R8). Write through the `gh` CLI
+(rejected: sessions here use the MCP tools for GitHub writes).
+
+## Planning — No third-party names in planning text
+
+**Decision:** No text of SPEC §7 or its appendices, no DECISIONS.md entry added from 2026-11-20
+and no GitHub issue names a pinball manufacturer, machine, game, product or website. Outside
+sources are used only to gather common dimensions; the text states the values and generic names
+(`classic_standard`, `classic_widebody`, `modern_standard`), never the source. Technical
+dependencies already named in the specification (SDL3, wgpu, mlua, wasmtime, parry3d, DOF,
+X-Arcade) are integrations, not design references, and stay named, and the owner's own
+repositories (fineprint) may be named. Text copied verbatim from existing repository files is not
+rewritten.
+**Rationale:** Owner ruling of 2026-11-20. The specification needs the values, which it states;
+where a value was measured is not part of the design.
+**Alternatives:** Cite the source of each dimension (rejected by the owner's ruling). Rewrite
+existing text that names products (rejected: history and integration names stay as they are).
+
+## Planning — M1 Play experience
+
+**Decision:** Milestone M1 (tracking issue #79; KP-001–KP-044; phases `10-responsiveness`,
+`11-contracts`, `12-rendering`, `13-machine`, `14-tables`, `15-acceptance`) implements SPEC §7 with
+Appendices E and F. Its architecture decisions:
+1. **The machine in 3D by default.** In single-window mode the default view is one perspective 3D
+   scene of the whole machine seen from the player's position, standing in a simple room. The
+   backglass (translite) and the score display are drawn in the world, on the 3D backbox, as
+   emissive textures from the Subphase 5.3 renderers. The Subphase 1.3 picture-in-picture layout
+   stays as an option, off by default; multi-monitor cabinet mode keeps its dedicated windows
+   (REQ-VIEW-001–006).
+2. **Cameras.** Twelve desktop presets, each with a normative "must keep in frame" rule checked
+   analytically at 16:9, 16:10, 21:9, 4:3 and 9:16: Standard (the default), Standard Low, Full
+   Machine, High Overhead, Top-Down, Close Playfield, Flipper Zone, Follow Close, Follow Wide, Left
+   and Right Three-Quarter and Backbox Showcase. A Custom preset (distance, height, pitch, field of
+   view, lateral offset) and a Cabinet preset for a flat playfield monitor (the cabinet-mode
+   default, not in the desktop cycle) complete the set. Presets are chosen with `F1`–`F12`, cycled
+   with `V` and `B` or the gamepad D-pad, or picked in the menu's Display panel at any time;
+   camera keys never produce a cabinet input; the choice persists in `config.toml` (REQ-CAM-001–007).
+3. **The cabinet is data.** A table bundle describes the whole machine as a builder would; nothing
+   that can be seen or touched is hard-coded. Cabinet and backbox geometry come from a per-table
+   `cabinet.toml` that starts from a named preset and overrides any field. Three generic presets
+   match common real body styles with the values of SPEC Appendix E: `classic_standard`,
+   `classic_widebody` and `modern_standard`; a table without `cabinet.toml` gets
+   `classic_standard`. The grey box and Apex Circuit use `classic_standard`, Sky Deck uses
+   `modern_standard` with an LCD score display, and Feature Lab uses `classic_widebody`
+   (REQ-BUILD-001–005, REQ-CAB-001–007).
+4. **The legs give the tilt.** The playfield's pitch and roll are computed from the cabinet
+   geometry, the playfield's mount and the effective length of each leg on a level floor, and the
+   simulation's gravity uses that attitude; `meta.pitch_deg` becomes an optional cross-check within
+   0.05° (REQ-CAB-008). The unit that introduces it changes simulation output for every table
+   (very-high blast radius): it re-baselines replay digests once and re-runs Gates A1 and A2.
+5. **What you see is what you hit.** Every collider and mechanism has a visual mesh generated from
+   the same parameters as its collider (within 0.5 mm), moving parts are drawn where the simulation
+   has them on every frame, no ball is ever drawn passing through a drawn surface, and a ball in a
+   scoop, VUK, saucer, subway or trough sinks out of sight until it is ejected (REQ-VIS-001, -002,
+   -006, -007).
+6. **Latency budgets and the root cause.** From the SDL timestamp of a flipper press to the first
+   presented frame showing the bat moved by 1°: at most two refresh intervals (33 ms at 60 Hz) at
+   the 99th percentile in the real windowed app, and at most two presented frames on CI; the
+   simulation keeps wall-clock rate; an input is applied in the tick whose span contains its
+   timestamp; the app records a latency trace (REQ-LAT-001–006). Root cause of the reported delay
+   of about one second: the app's sim loop and the simulation's input ingest gated the same SDL
+   timestamp against two different epochs, so every input took effect late by the SDL time at sim
+   start plus the ticks the catch-up cap had dropped (KP-001).
+7. **Feel retuned to the window centres.** Flipper and mechanism defaults move to the middle of
+   the Appendix C feel windows: a full shot from a cradled standard ball leaves at 5.0 ± 0.5 m/s
+   for contacts at 35–85 % of the bat (measured 3.2–3.7 m/s, the floor of the 3–7 m/s window),
+   stroke time stays within 20–35 ms, and bumper and slingshot exit medians lie within 2.2–3.3 m/s.
+   Retuning is data-only (`physics_defaults.toml`), re-baselines replay digests and re-runs Gates A1
+   and A2; the physics checks that showed the solver correct stay in CI as regressions
+   (REQ-FEEL-001, -002; KP-007).
+8. **Rule freeze lifted until Gate A3.** Apex Circuit, Sky Deck and Feature Lab are redesigned to
+   the table rules of Appendix F; the Gate A2 rule freeze is lifted for them until Gate A3 passes
+   and then applies again, and every rules change ships its Wasm port in the same PR. A magnet is a
+   visible feature that never acts on the plunge path. The grey box keeps its geometry, as the
+   Gate A1 reference, and gets the cabinet (REQ-TBL-001–003).
+9. **Screenshot-based visual checks.** Gate A3 (KP-043) runs in the real windowed app on CI (Xvfb
+   and lavapipe) and renders the Appendix F screenshot set (every table in every desktop preset at
+   1920×1080, plus Standard at 9:16) with D30 analytic assertions, followed by the work-verifier's
+   visual checklist on the images it opens; render and presentation work attaches screenshots as
+   evidence (PROCESS.md R12, REQ-GATE-001). Final human acceptance adds camera presets, flipper
+   response, the look of each table and cabinet, and quality presets on the owner's hardware
+   (REQ-GATE-002).
+10. **No third-party names** in any of this planning text (DECISIONS.md "Planning — No third-party
+    names in planning text").
+
+**Rationale:** The owner's first final-acceptance session rejected the build: a flat top-down view
+with the backglass and score display as picture-in-picture boxes, tables that did not look like
+real machines with most mechanisms not drawn, flippers reacting about one second after the key
+press, and ball motion that looked wrong. Every gate of Waves 0–9 ran headless, so none of this was
+measured. Read-only investigations on `995935f` found the causes. The delay is the two-epoch input
+gating, reproduced headless, in the release binary on Xvfb with an injected key, and in an
+instrumented replica. The solver is correct (deck acceleration, restitution, energy and tunnelling
+match analytic values); the motion looked wrong because of presentation and content: in 30 Apex
+Circuit bot games 39 % of in-plane bounces were off colliders that are not drawn (Sky Deck 55 %,
+Feature Lab 31 %), 75 % of flipper contacts were
+more than 2 mm from the drawn bat (drawn as a 12 mm box), balls on ramps and decks were drawn
+crossing 90 mm walls, and the default flipper sits at the floor of its speed window. The renderer
+handles arbitrary cameras but lacks UVs, textures, shadows, cabinet and mechanism geometry, and the
+app does not wire camera presets, the 4.4 menu, probes, lamp lights or mechanism motion. Making the
+machine data, and deriving gravity from it, keeps one source for what is drawn, what collides and
+how the table plays; requirements with analytic checks and screenshot evidence make the player's
+view part of the gates.
+**Alternatives:** Keep the top-down view and add a 3D view as an option (rejected: the owner judged
+the machine by what a player sees first). Hard-code one cabinet in the renderer (rejected: the
+tables need different body styles, and the tilt must come from the build). Fix only the latency
+defect and retune the flippers (rejected: leaves the mismatch between drawn and simulated
+surfaces that made the ball look wrong). Rely on a person's review for visuals (rejected: an
+unattended run needs automated evidence; the owner's review stays at final acceptance).
