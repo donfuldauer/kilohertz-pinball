@@ -1,4 +1,0 @@
-# Queue: fix-wireform-flake
-
-- [x] [wireform-flake] resolved: cast contact branch now also requires closing_direction(...).dot(velocity) < approach; regression test guide_cast_arc_tangent_touching_sample_tie_is_free (docs/decisions/2026-11-18-fix-wireform-flake.md) (frozen HUMAN_QUEUE.md item: "`crates/pin_physics/tests/wireform.rs::prop_guide_cast_arc_wall` failed once")
-- [x] [fix-wireform-flake] resolved: `autoplay_endless::the_pre_fix_greybox_traps_are_caught_and_named` re-pinned on greybox_452eedf after variant B: game 6 end tick 82_935, bumper loop game 82 (EndlessBall bumper_1_ring @305,924, cap 330_000), sling pocket game 763 (StuckBall `walls[3] @ (112, 247, 14) mm` @33,841, cap 120_000; coordinate string updated, same wall). Replay hash 25097c21c2c3adc1 unchanged. Gate A1 re-run (1000 games, seed 1): all rows PASS (docs/decisions/2026-11-18-fix-wireform-flake.md, section fix-wireform-flake-p2).
