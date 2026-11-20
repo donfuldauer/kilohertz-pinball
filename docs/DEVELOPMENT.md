@@ -242,7 +242,7 @@ dotnet test tools/dof_bridge/tests/<project>/<project>.csproj -c Release
 **Tick-time benchmark** (phase gate): callgrind instructions per tick (Ir) of `pin_sim` in release
 on the replay-hash fixture, 10 000 and 100 000 ticks minus a 100-tick run, compared with the
 previous phase gate's commit on `main`'s first-parent line. Wall-clock medians move 5–9 % between
-sessions on the agent VM and cannot resolve the 10 % limit (DECISIONS.md "wave6-gate-benchmark").
+sessions on the agent VM and cannot resolve the 10 % limit (DECISIONS.md "wave6-gate-benchmark — tick benchmark baseline and method (2026-11-16)").
 
 `scripts/req_coverage.py` (standard library plus the `gh` CLI): reads every
 `REQ-<AREA>-<NNN>` ID in `docs/SPEC.md` (lines marked `WITHDRAWN` excepted) and checks each is
