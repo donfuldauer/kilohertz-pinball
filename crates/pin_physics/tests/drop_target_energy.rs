@@ -146,7 +146,7 @@ fn energy(b: &Ball, r: f32) -> f32 {
 /// The curb bound on `vz` after one contact with a box rising at `v_rise`
 /// for a ball arriving with velocity `v` (see the module docs).
 fn curb_bound(v: Vec3, v_rise: f32, e: f32, mu: f32) -> f64 {
-    let (vz, vh) = (f64::from(v.z), f64::from(v.x.hypot(v.y)));
+    let (vz, vh) = (f64::from(v.z), f64::from(libm::hypotf(v.x, v.y)));
     let (v_rise, e, mu) = (f64::from(v_rise), f64::from(e), f64::from(mu));
     let mut best = vz;
     let n = 4000;
@@ -193,7 +193,7 @@ fn trial(speed: f32, angle_deg: f32, phase: i32, off: f32, e: f32, mu: f32) -> W
     let mut t = Table::new();
     t.knock_down();
     let a = angle_deg.to_radians();
-    let dir = Vec3::new(a.cos(), a.sin(), 0.0);
+    let dir = Vec3::new(libm::cosf(a), libm::sinf(a), 0.0);
     let side = Vec3::new(-dir.y, dir.x, 0.0);
     // A ball at rest is placed at its offset before the rise (a ball
     // placed inside the rising box would be pushed out by depenetration,

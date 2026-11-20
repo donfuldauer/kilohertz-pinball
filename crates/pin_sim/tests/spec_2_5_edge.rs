@@ -145,7 +145,7 @@ fn fast_balls_do_not_tunnel_through_the_perimeter() {
                     .spawn_ball(
                         "standard_steel",
                         [0.10, 0.80, R],
-                        [speed * a.cos(), speed * a.sin(), 0.0],
+                        [speed * libm::cosf(a), speed * libm::sinf(a), 0.0],
                     )
                     .unwrap();
                 for t in 0..400 {
@@ -345,7 +345,7 @@ proptest! {
     ) {
         // A ball injected inside a solid (bumper body, post) is not a
         // meaningful state: keep clear of them and of the flipper bats.
-        let near = |cx: f32, cy: f32, r: f32| (x - cx).hypot(y - cy) < r;
+        let near = |cx: f32, cy: f32, r: f32| libm::hypotf(x - cx, y - cy) < r;
         prop_assume!(!near(0.257, 0.640, 0.060));
         prop_assume!(!near(0.120, 0.520, 0.025) && !near(0.394, 0.520, 0.025));
         let r: Result<(), TestCaseError> = on_sim_thread(move || {

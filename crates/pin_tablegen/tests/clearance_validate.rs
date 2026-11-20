@@ -499,7 +499,7 @@ staging = {{ type = "DedicatedButton", input = "right_flipper" }}
 #[test]
 fn flipper_gap_between_resting_tips() {
     // Tips 2 × 76 cos 30° apart from the pivots, radius 6.5 each.
-    let tips = 2.0 * 76.0 * 30.0f32.to_radians().cos() + 13.0;
+    let tips = 2.0 * 76.0 * libm::cosf(30.0f32.to_radians()) + 13.0;
     let layout = layout_with("");
     for (gap, xl_fits) in [(50.0f32, false), (85.0, true)] {
         let r = check(
@@ -576,7 +576,7 @@ fn wireform_gauge_holds_the_ball_between_20_and_75_degrees() {
     );
     assert!(near(
         mini[0].required_mm,
-        15.88 * 75.0f32.to_radians().sin(),
+        15.88 * libm::sinf(75.0f32.to_radians()),
         0.01
     ));
     let xl = of(&r, Feature::Wireform, XL);
@@ -588,7 +588,7 @@ fn wireform_gauge_holds_the_ball_between_20_and_75_degrees() {
     assert!(near(xl[0].actual_mm, 19.0, 1e-3));
     assert!(near(
         xl[0].required_mm,
-        79.4 * 20.0f32.to_radians().sin(),
+        79.4 * libm::sinf(20.0f32.to_radians()),
         0.01
     ));
     // 60 mm carries the XL ball only.

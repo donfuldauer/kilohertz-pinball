@@ -57,7 +57,10 @@ fn b1_lanes_longer_than_65_m_are_refused() {
             let arc_n = (core::f32::consts::PI * 500.0 / step) as usize;
             for k in 0..arc_n {
                 let a = core::f32::consts::PI * (1.0 - k as f32 / arc_n as f32);
-                pts.push([x + 500.0 + 500.0 * a.cos(), cy + sign * 500.0 * a.sin()]);
+                pts.push([
+                    x + 500.0 + 500.0 * libm::cosf(a),
+                    cy + sign * 500.0 * libm::sinf(a),
+                ]);
             }
         }
     }

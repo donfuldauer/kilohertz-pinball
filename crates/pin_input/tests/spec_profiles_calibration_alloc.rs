@@ -204,7 +204,7 @@ fn nudge_filters_do_not_allocate() {
     let before = allocs();
     let mut energy = 0.0f32;
     for k in 0..20_000u64 {
-        let x = 0.8 * (k as f32 * 0.11).sin();
+        let x = 0.8 * libm::sinf(k as f32 * 0.11);
         let input = if k % 997 == 0 { [f32::NAN, x] } else { [x, -x] };
         let o = black_box(f.update(black_box(input), 0.001));
         energy += o[0].abs() + o[1].abs();

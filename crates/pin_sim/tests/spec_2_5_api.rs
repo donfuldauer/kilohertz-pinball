@@ -226,8 +226,8 @@ fn free_fall_matches_gravity_at_one_millisecond_ticks() {
         let pitch = 6.5f32.to_radians();
         let dz = 0.055 - b.position_m[2];
         let dy = 0.5 - b.position_m[1];
-        let want_z = 0.5 * 9.81 * pitch.cos() * 0.0036;
-        let want_y = 0.5 * 9.81 * pitch.sin() * 0.0036;
+        let want_z = 0.5 * 9.81 * libm::cosf(pitch) * 0.0036;
+        let want_y = 0.5 * 9.81 * libm::sinf(pitch) * 0.0036;
         assert!(
             (dz - want_z).abs() < 0.05 * want_z,
             "fell {dz} m along -z in 60 ticks, expected about {want_z}"

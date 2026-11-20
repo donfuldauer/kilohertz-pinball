@@ -109,7 +109,7 @@ impl Table {
 /// the horizontal crossings (pulses) and the final angle.
 pub fn spinner_reference(w0: f64, d: f64, c: f64, l: f64, g: f64, t_end: f64) -> (u64, f64) {
     let k = 1.5 * g / l;
-    let f = |phi: f64, w: f64| (w, -d * w - k * phi.sin() - c * w.signum());
+    let f = |phi: f64, w: f64| (w, -d * w - k * libm::sin(phi) - c * w.signum());
     let h = 1.0e-5;
     let (mut phi, mut w) = (0.0f64, w0);
     let cell = |a: f64| ((a - core::f64::consts::FRAC_PI_2) / core::f64::consts::PI).floor();
@@ -124,8 +124,8 @@ pub fn spinner_reference(w0: f64, d: f64, c: f64, l: f64, g: f64, t_end: f64) ->
         let w_next = w + h / 6.0 * (b1 + 2.0 * b2 + 2.0 * b3 + b4);
         // Stiction: a stopping flap whose gravity torque friction balances.
         w = if (w_next == 0.0 || w_next.signum() != w.signum())
-            && (k * next.sin()).abs() <= c
-            && next.cos() > 0.0
+            && (k * libm::sin(next)).abs() <= c
+            && libm::cos(next) > 0.0
         {
             0.0
         } else {

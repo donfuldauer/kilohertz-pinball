@@ -109,7 +109,7 @@ fn bisect(f: impl Fn(f64) -> f64, mut inside: f64, mut outside: f64) -> f64 {
 /// (exact, outside) distance, then bisected. The pivot itself is inside, so
 /// every ray has one.
 fn ray_outer<S: BatShape + ?Sized>(shape: &S, theta: f64) -> f64 {
-    let (s, c) = theta.sin_cos();
+    let (s, c) = libm::sincos(theta);
     let f = |r: f64| dist(shape, r * c, r * s);
     let mut outside = RAY_START_M;
     let mut r = RAY_START_M;
@@ -223,7 +223,8 @@ fn place(local: &LocalProbe, pivot: Vec3, dir: Vec3, normal: Vec3, length: f64) 
     let y = normal.as_dvec3().cross(x);
     let pivot = pivot.as_dvec3();
     let to_world = |v: DVec3| x * v.x + y * v.y;
-    let tip_local = DVec3::new(local.tip_theta.cos(), local.tip_theta.sin(), 0.0) * length;
+    let tip_local =
+        DVec3::new(libm::cos(local.tip_theta), libm::sin(local.tip_theta), 0.0) * length;
     let curl_local = tip_local - DVec3::new(length, 0.0, 0.0);
     Pose {
         dir: x,
@@ -283,8 +284,8 @@ struct Errors {
 
 fn errors(pose: &Pose, e: &Expect) -> Errors {
     let cfg = DVec3::new(
-        e.angle_deg.to_radians().cos(),
-        e.angle_deg.to_radians().sin(),
+        libm::cos(e.angle_deg.to_radians()),
+        libm::sin(e.angle_deg.to_radians()),
         0.0,
     );
     let l = &pose.local;
@@ -313,8 +314,8 @@ fn on_side(sign: f64, value: f64) -> bool {
 fn check_pose(pose: &Pose, e: &Expect) -> Result<(), String> {
     let mut fails = Vec::new();
     let cfg = DVec3::new(
-        e.angle_deg.to_radians().cos(),
-        e.angle_deg.to_radians().sin(),
+        libm::cos(e.angle_deg.to_radians()),
+        libm::sin(e.angle_deg.to_radians()),
         0.0,
     );
     let l = &pose.local;
@@ -374,7 +375,7 @@ fn check_pose(pose: &Pose, e: &Expect) -> Result<(), String> {
             "tip direction: {theta:.3}° in the bat frame, expected {expected_theta:.3}° (tol {TOL_TIP_DIR_DEG}°)"
         ));
     }
-    let offset = 2.0 * e.length * (0.25 * e.arc_sweep_deg.abs().to_radians()).sin();
+    let offset = 2.0 * e.length * libm::sin(0.25 * e.arc_sweep_deg.abs().to_radians());
     let mag = pose.curl.length();
     if (mag - offset).abs() > TOL_CURL_MAG_M {
         fails.push(format!(
@@ -434,7 +435,7 @@ impl Case {
 
 /// The arc sweep a chord and radius imply, degrees.
 fn implied_sweep_deg(length_mm: f64, radius_mm: f64) -> f64 {
-    2.0 * (length_mm / (2.0 * radius_mm)).asin().to_degrees()
+    2.0 * libm::asin(length_mm / (2.0 * radius_mm)).to_degrees()
 }
 
 /// Authored `|arc_sweep_deg|`: the implied value rounded to 0.1°, moved by
@@ -515,7 +516,7 @@ fn cross_check(
     e: &Expect,
 ) -> Result<(), String> {
     let mut fails = Vec::new();
-    let probed = DVec3::new(local.tip_theta.cos(), local.tip_theta.sin(), 0.0) * e.length;
+    let probed = DVec3::new(libm::cos(local.tip_theta), libm::sin(local.tip_theta), 0.0) * e.length;
     let helper = shape.tip_center().as_dvec3();
     if (probed - helper).length() > TOL_TIP_RADIUS_M {
         fails.push(format!(
