@@ -253,20 +253,54 @@ def write_zip(dest, entries, ratio_guard=False):
     written sorted by name with a fixed 1980-01-01 timestamp, Unix attributes
     of a regular file with ``mode``, no directory entries and no extra fields.
     With ``ratio_guard`` an entry over 1 MiB that would deflate past the
-    loader's 100:1 ratio cap is stored instead.
+    loader's 100:1 ratio cap is stored instead, and so are further entries
+    (most compressible first) when the whole archive would exceed the
+    loader's whole-archive ratio cap.
     """
     entries = sorted(entries, key=lambda e: e[0])
-    with open(dest, "wb") as raw, zipfile.ZipFile(raw, "w", allowZip64=True) as zf:
+    stored = set()
+    if ratio_guard:
+        stored = _guard_stored_names(entries)
+    with open(dest, "wb") as raw:
+        _write_zip_to(raw, entries, stored)
+
+
+def _write_zip_to(fileobj, entries, stored):
+    with zipfile.ZipFile(fileobj, "w", allowZip64=True) as zf:
         for name, data, mode in entries:
             zi = zipfile.ZipInfo(name, date_time=ZIP_TIME)
             zi.create_system = 3
             zi.external_attr = (stat.S_IFREG | mode) << 16
-            method = zipfile.ZIP_DEFLATED
-            if ratio_guard and len(data) > RATIO_FLOOR:
-                if len(data) // max(_deflated_size(data), 1) > LIMIT_RATIO:
-                    method = zipfile.ZIP_STORED
+            method = zipfile.ZIP_STORED if name in stored else zipfile.ZIP_DEFLATED
             zi.compress_type = method
             zf.writestr(zi, data, compress_type=method, compresslevel=ZIP_LEVEL)
+
+
+def _guard_stored_names(entries):
+    """Names to store so the archive passes ``validate_bundle_zip``: first
+    each entry over RATIO_FLOOR whose own ratio is over the cap, then, if the
+    whole archive would still break the whole-archive cap, more entries
+    (highest ratio first, then name) until it is within it."""
+    sizes = {name: _deflated_size(data) for name, data, _ in entries}
+    lens = {name: len(data) for name, data, _ in entries}
+    ratio = {name: lens[name] // max(sizes[name], 1) for name in sizes}
+    stored = {n for n in sizes if lens[n] > RATIO_FLOOR and ratio[n] > LIMIT_RATIO}
+    total = sum(lens.values())
+    if total <= ARCHIVE_RATIO_FLOOR:
+        return stored
+    buf = io.BytesIO()
+    _write_zip_to(buf, entries, stored)
+    archive = len(buf.getvalue())
+    if total // max(archive, 1) <= LIMIT_RATIO:
+        return stored
+    # Headers are the same size for either method, so storing an entry grows
+    # the archive by exactly its uncompressed minus deflated size.
+    for name in sorted((n for n in sizes if n not in stored), key=lambda n: (-ratio[n], n)):
+        stored.add(name)
+        archive += lens[name] - sizes[name]
+        if total // max(archive, 1) <= LIMIT_RATIO:
+            break
+    return stored
 
 
 def write_tar_gz(dest, root, prefix, exec_paths):

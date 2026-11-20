@@ -7,7 +7,9 @@ name: release
 #     the last run-log row), and runs scripts/package.py --dry-run for Linux with real
 #     bundles from tables/*/build.sh. Nothing is uploaded.
 #   * workflow_dispatch (optional `version` input): `verify` builds and tests the whole
-#     workspace in release with zero warnings on Windows, Linux and macOS, then `package`
+#     workspace in release with zero warnings on Windows x64, Linux x64, macOS arm64 and
+#     macOS x86_64 (the Intel slice is cross-built and tested under Rosetta 2 on the arm64
+#     macos-latest runner), then `package`
 #     builds the three platform packages and keeps them as workflow artifacts (14 days).
 #     That is the end of the pipeline: artifacts only.
 #   * push of a `v*` tag (the owner pushes tags; agents never do, D39): the same as
@@ -133,7 +135,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Plan verification for 7.2 (criterion 5): release build and tests of the whole workspace
-  # with zero warnings on every target. Not on pull requests (D40).
+  # with zero warnings on every target: Windows x64, Linux x64, macOS arm64 and macOS x86_64
+  # (the Intel slice is cross-built and tested under Rosetta 2 on the arm64 macos-latest
+  # runner). Not on pull requests (D40).
   verify:
     name: verify (${{ matrix.target }})
     if: github.event_name != 'pull_request'
@@ -145,10 +149,20 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            host: x86_64-unknown-linux-gnu
+            cargo_args: ""
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            host: x86_64-pc-windows-msvc
+            cargo_args: ""
           - os: macos-latest
             target: aarch64-apple-darwin
+            host: aarch64-apple-darwin
+            cargo_args: ""
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            host: aarch64-apple-darwin
+            cargo_args: "--target x86_64-apple-darwin"
     env:
       SDL_VIDEO_DRIVER: dummy
       RUSTFLAGS: "-D warnings"
@@ -174,8 +188,8 @@ jobs:
             echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
           fi
           host=$(rustc -vV | sed -n 's/^host: //p')
-          if [ "$host" != "${{ matrix.target }}" ]; then
-            echo "::error::host $host, expected ${{ matrix.target }}"; exit 1
+          if [ "$host" != "${{ matrix.host }}" ]; then
+            echo "::error::host $host, expected ${{ matrix.host }}"; exit 1
           fi
 
       - name: Install Linux packages (SDL3 build headers)
@@ -189,13 +203,27 @@ jobs:
             libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
             libasound2-dev libpulse-dev
 
+      # The Intel slice is cross-built on the arm64 runner and its tests run under Rosetta 2.
+      # Fail loudly if x86_64 binaries cannot run; never skip the tests silently.
+      - name: Ensure x86_64 binaries can run (Rosetta 2)
+        if: matrix.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          if ! /usr/bin/arch -x86_64 /usr/bin/true; then
+            sudo softwareupdate --install-rosetta --agree-to-license || true
+            if ! /usr/bin/arch -x86_64 /usr/bin/true; then
+              echo "::error::Rosetta 2 unavailable; cannot run x86_64-apple-darwin tests"
+              exit 1
+            fi
+          fi
+
       - name: cargo build --release --workspace (-D warnings)
         shell: bash
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace ${{ matrix.cargo_args }}
 
       - name: cargo test --release --workspace (-D warnings)
         shell: bash
-        run: cargo test --release --workspace
+        run: cargo test --release --workspace ${{ matrix.cargo_args }}
 
   # Resolves the package version once: the tag without its leading `v` on a tag push, the
   # dispatch input or Cargo.toml otherwise. A tag/Cargo.toml mismatch is only a warning.

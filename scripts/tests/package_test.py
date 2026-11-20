@@ -437,6 +437,19 @@ class BundleTest(PackageCase):
             self.assertEqual(zf.read("silence.wav"), big)
             self.assertEqual(zf.getinfo("rules.lua").compress_type, zipfile.ZIP_DEFLATED)
 
+    def test_whole_archive_ratio_is_kept_under_the_cap(self):
+        # Nine 1 MiB zero entries: each is at the per-entry floor (never
+        # stored alone) but together they break the whole-archive ratio.
+        for i in range(9):
+            (self.bundles / "greybox" / f"z{i}.bin").write_bytes(b"\0" * (1 << 20))
+        self.package(LINUX)
+        path = self.pkgdir(LINUX) / "tables" / "greybox.pinbundle"
+        pkgmod.validate_bundle_zip(path)
+        out2 = self.tmp / "out2"
+        self.package(LINUX, out=out2)
+        self.assertEqual(path.read_bytes(),
+                         (self.pkgdir(LINUX, out2) / "tables" / "greybox.pinbundle").read_bytes())
+
 
 class LoaderRulesTest(unittest.TestCase):
     """The Python port of pin_assets::zip::normalize_path and the archive checks."""

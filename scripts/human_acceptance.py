@@ -150,6 +150,17 @@ def decisions(inputs):
     return out
 
 
+def _split_row(line):
+    """Cells of a GFM table row, splitting only on unescaped ``|`` (``\\|``
+    stays inside its cell)."""
+    body = line.strip()
+    if body.startswith("|"):
+        body = body[1:]
+    if body.endswith("|") and not body.endswith("\\|"):
+        body = body[:-1]
+    return re.split(r"(?<!\\)\|", body)
+
+
 def run_log_rows(lines):
     """Data rows of every table in the run log as ``(line, status_cell)``;
     header and separator rows are skipped. The status cell comes from the
@@ -163,7 +174,7 @@ def run_log_rows(lines):
         if SEPARATOR_RE.match(line):
             continue
         nxt = lines[i + 1] if i + 1 < len(lines) else ""
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        cells = [c.strip() for c in _split_row(line)]
         if SEPARATOR_RE.match(nxt):
             lowered = [c.lower() for c in cells]
             status_col = lowered.index("status") if "status" in lowered else None
