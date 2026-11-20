@@ -214,3 +214,68 @@ pub fn select_mode(s: &mut Simulation, i: i64) {
     }
     assert_eq!(persist(s, "mode_sel"), i, "selector");
 }
+
+// --- the closed pocket beside the orbit (feature_lab_a2_catch, feature_lab_cr1)
+
+/// The orbit lane's centre line and width (layout.toml `[[lanes]]`), mm.
+pub const ORBIT: [[f32; 2]; 8] = [
+    [85.0, 615.0],
+    [55.0, 650.0],
+    [38.0, 700.0],
+    [36.0, 780.0],
+    [45.0, 880.0],
+    [90.0, 1000.0],
+    [170.0, 1040.0],
+    [260.0, 1046.0],
+];
+/// Half the orbit lane's width, mm.
+pub const ORBIT_HALF_WIDTH: f32 = 20.0;
+
+/// From this height up the orbit's outer rail is within 15.7 mm of the
+/// cabinet wall: the strip between them is a closed pocket, mm.
+pub const POCKET_Y_MIN: f32 = 744.0;
+
+/// Whether a layer-0 ball centre `p` (mm) is in the closed pocket: up the
+/// table from `POCKET_Y_MIN`, outside the orbit lane on its cabinet side
+/// (left of the centre line, beyond the lane's half width).
+///
+/// Use it on a static zone footprint, on the point where a ball comes back
+/// to layer 0 and on a layer-0 ball's final rest point. Not on every tick
+/// of a ball that runs the orbit: past the lane's end (260, 1046) it is
+/// also true for points that are not in the pocket, e.g. (279.7, 1050.4).
+pub fn in_pocket(p: [f32; 2]) -> bool {
+    let (d, side) = orbit_offset(p);
+    p[1] >= POCKET_Y_MIN && d > ORBIT_HALF_WIDTH && side > 0.0
+}
+
+/// Distance (mm) of `p` from the orbit's centre line, and its side
+/// (positive on the left of the lane's travel direction: the cabinet side
+/// of its up-going left leg).
+pub fn orbit_offset(p: [f32; 2]) -> (f32, f32) {
+    let (mut best_d, mut best_side) = (f32::INFINITY, 0.0f32);
+    for w in ORBIT.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let ab = [b[0] - a[0], b[1] - a[1]];
+        let ap = [p[0] - a[0], p[1] - a[1]];
+        let t = ((ap[0] * ab[0] + ap[1] * ab[1]) / (ab[0] * ab[0] + ab[1] * ab[1])).clamp(0.0, 1.0);
+        let d = (ap[0] - ab[0] * t).hypot(ap[1] - ab[1] * t);
+        if d < best_d {
+            best_d = d;
+            best_side = ab[0] * ap[1] - ab[1] * ap[0];
+        }
+    }
+    (best_d, best_side)
+}
+
+/// Whether `p` (m) is outside the simulation's escape bounds (the box the
+/// EscapedBall check uses).
+pub fn outside(bounds: ([f32; 3], [f32; 3]), p: [f32; 3]) -> bool {
+    (0..3).any(|k| !(p[k] >= bounds.0[k] && p[k] <= bounds.1[k]))
+}
+
+/// Whether the closed boxes `a` and `b` (`(min, max)`, any unit) share a
+/// point. Layer-transition bounds are inclusive, so boxes that only touch
+/// on a face share points and count as overlapping.
+pub fn boxes_touch_or_overlap(a: ([f32; 3], [f32; 3]), b: ([f32; 3], [f32; 3])) -> bool {
+    (0..3).all(|k| a.0[k] <= b.1[k] && b.0[k] <= a.1[k])
+}

@@ -1,6 +1,6 @@
 //! Black-box spec tests for `pin_core::schema` (PLAN.md Appendix A, Subphase 1.1 brief).
 //!
-//! The Appendix A examples are inlined verbatim from docs/PLAN.md. Because the
+//! The Appendix A examples are inlined verbatim from docs/SPEC.md. Because the
 //! field names of the Rust types are the implementer's choice, content checks are
 //! done black-box: by mutating the TOML text and comparing parsed values.
 

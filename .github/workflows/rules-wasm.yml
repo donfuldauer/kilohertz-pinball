@@ -5,8 +5,8 @@ name: rules-wasm
 # builds from the Rust port (pinned toolchain, --offline --locked, remapped
 # paths), and the ports must behave exactly as the frozen rules.lua (the
 # pin_app wasm_ports_* parity tests). A separate workflow file (not ci.yml),
-# path-filtered so unrelated changes do not pay for it; see
-# docs/decisions/2026-11-19-6.3.md.
+# path-filtered so unrelated changes do not pay for it; see docs/DECISIONS.md
+# "6.3 — a new workflow file instead of a ci.yml job".
 on:
   push:
     branches: [main]
