@@ -172,6 +172,21 @@ class HumanAcceptanceTest(unittest.TestCase):
         self.assertIn("| 8 | Gate A2 | Verifier | Sonnet | 1 | blocked | stuck | needs a person |", s2)
         self.assertNotIn("| 0 | 0.1 |", s2)
 
+    def test_escaped_pipe_stays_in_its_cell(self):
+        fixture(self.root)
+        write(self.root / "docs" / "RUN_LOG.md",
+              "| Unit | Status | Notes |\n|---|---|---|\n"
+              "| Lua \\| Wasm | blocked | waiting |\n"
+              "| plain | done | ok |\n"
+              "| other | done | trailing escaped pipe \\|\n")
+        self.assertEqual(self.run_ha().returncode, 0)
+        text = (self.root / "docs" / "HUMAN_ACCEPTANCE.md").read_bytes().decode("utf-8")
+        s2 = self.section(text, 2)
+        self.assertIn("| Lua \\| Wasm | blocked | waiting |", s2)
+        self.assertNotIn("| plain |", s2)
+        self.assertNotIn("| other |", s2)
+        self.assertIn("- Run-log rows: 3", self.section(text, 1))
+
     def test_decision_headings(self):
         s3 = self.section(self.render(), 3)
         items = [l for l in s3.splitlines() if l.startswith("- ")]
