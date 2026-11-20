@@ -83,7 +83,7 @@ jobs:
               dof=false
               while IFS= read -r -d '' f; do
                 case "$f" in
-                  docs/PLAN.md) code=true ;;
+                  docs/SPEC.md) code=true ;;
                   *.md | .coderabbit.yaml) ;;
                   *) code=true ;;
                 esac

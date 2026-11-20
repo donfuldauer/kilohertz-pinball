@@ -1,16 +1,13 @@
-# Kilohertz Pinball: Technical Architecture & Agent Execution Plan (v5)
+# Kilohertz Pinball: Technical Specification
 
-> **Run mode: unattended.** One human setup step before the run (§2.6, "Prerequisites"), one human acceptance step after it (Phase 8). Nothing in between waits on a person. Every subphase validates itself through the subphase gate in §2.6.
+This is the normative technical specification of Kilohertz Pinball: architecture decisions, thread model, contracts, component specifications, library findings, presentation requirements and file schemas. It was `docs/PLAN.md` until 2026-11-20. Section numbers, subphase numbers and decision IDs D1–D33 are unchanged, so references such as "PLAN §3.2", "PLAN 2.3", "PLAN Appendix A" or "D9" in code, tests, commits and history resolve to the same place here. The plan is the set of GitHub issues (`work-unit` issues; tracking issues #79 "M1" and #80 "M2"). The process is in `docs/PROCESS.md`. The repository layout and commands are in `docs/DEVELOPMENT.md`.
+
+**History.** v1 to v5 were written as an agent execution plan for an unattended build (subphases 0.1–7.2 in Waves 0–9). v2 settled the v1 audit choices; v3 restored every feature v2 deferred and checked the libraries against current releases (§6); v4 added the written-out schemas and defaults (Appendices A–C), the dependency-spike subphase (0.1), the autoplay soak harness (2.9), the placeholder asset kit (4.6) and automated gates A1 and A2; v5 (from Wave 6) made Fable 5.2 an exception only and added the process decisions D34–D42. That build is recorded in `docs/RUN_LOG.md`. Process material now lives in `docs/PROCESS.md`, `docs/DEVELOPMENT.md` and `docs/BRIEF_TEMPLATE.md`; the D34–D42 rows in §0 point there.
+
 
 ## 0. What Changed From v1 (Decision Log)
 
 Every open choice from the v1 audit is settled here. Agents treat this table as binding.
-
-**v3 changes over v2:** every feature v2 deferred is back in scope with its own subphase (see "Restored features" below), and the library assumptions have been checked against current releases (§6).
-
-**v4 changes over v3:** built for unattended execution. Adds the orchestrator runbook (§2.6), written-out schemas and defaults (Appendices A–C), a self-contained brief template (Appendix D), a dependency-spike subphase (0.1), an autoplay soak harness (2.9), a placeholder asset kit (4.6), automated gates A1 and A2 in place of the mid-run human gates, and a single human acceptance step at the end (Phase 8).
-
-**v5 changes over v4 (from Wave 6 on):** Fable 5.2 is no longer a default model. Every unit of work is classified and routed to the cheapest tier that can do it (Haiku 5.5, Sonnet 5.5 or Opus 5.5), and Fable 5.2 is used only for very-high-blast-radius or extremely hard-to-troubleshoot work **and** only when the account's current usage limits leave enough Fable allowance (D34, §2.5). The Implementer / Independent Tester / Reviewer trio becomes four agents defined in `.claude/agents/`: Work Classifier, Task Executor, Work Verifier and Issue Investigator (D35, §2.6). Agents no longer review their own code: each unit of work becomes a pull request against `main`, CodeRabbit reviews it, findings are fixed automatically, and the Orchestrator merges once every finding is accounted for and every thread is resolved (D36, §2.7). Rows for Waves 0–5 in the run log and DECISIONS.md describe the v4 process and stay as they are.
 
 | # | Topic | Decision | Why |
 |---|---|---|---|
@@ -47,15 +44,15 @@ Every open choice from the v1 audit is settled here. Agents treat this table as 
 | D31 | Hardware | Simulated in CI (virtual joysticks, recorded sensor traces, mock displays, loopback UDP). Physical checks are listed for final acceptance, never gated | No cabinet is attached to CI |
 | D32 | Assets | A code-generated, licence-clean placeholder kit (sounds, fonts, art) with stable IDs | Tables must be complete without sourcing third-party assets; real assets drop in later by ID |
 | D33 | Unverifiable features | Ray-query reflections ship **off by default** unless a ray-tracing-capable runner validated them; the DOF bridge ships marked "unverified on hardware" | Honest defaults for anything CI could not exercise |
-| D34 | Fable 5.2 use | **Exception only.** Work is classified into tiers T0 Haiku 5.5, T1 Sonnet 5.5, T2 Opus 5.5 and T3 Fable 5.2. T3 needs (a) a very-high blast radius or an extremely hard-to-troubleshoot issue, with evidence; (b) a reason T2 is not enough; and (c) enough Fable allowance under the account's current usage limits. Unknown allowance (including an owner ask that timed out, D42) counts as not enough; the work then runs on Opus 5.5 and a line goes to `docs/queue/<unit-id>.md` | Fable allowance is scarce and Opus 5.5 handled most of Waves 0–5's hard numerics; the run must not stall or exhaust limits waiting for Fable |
-| D35 | Agent roles | Four agents in `.claude/agents/`: **work-classifier** (classifies, picks the tier, writes the delegation brief), **task-executor** (implements, writes spec tests, fixes), **work-verifier** (requirements traced, coverage, passing tests; no style review) and **issue-investigator** (reproduces and root-causes reported issues, judges review findings) | Clear hand-offs with full briefs; cheap models do cheap work |
-| D36 | Code review | **No agent reviews its own or a sibling's code.** Every unit of work is a PR against `main`; CodeRabbit reviews it; auto-fix is on from the moment the PR opens; the Orchestrator merges, without waiting for a person, once CI is green and every finding is accounted for with its thread resolved (§2.7) | An external reviewer finds different defects than the model that wrote the code, and the run stays unattended |
-| D37 | Review threads | **The Orchestrator resolves review threads itself, on its own judgment**, once a reply gives the reason and evidence (fix verified, not a defect, deferred, or declined by repo convention); it does not wait for CodeRabbit to accept, and may post `@coderabbitai approve` when every other merge condition holds. Unfixed security issues and verified unfixed correctness defects are never resolved. No person is asked to close a thread (§2.7) | PR #16 stalled with "Automatic approval withheld" because a justified thread waited on the bot's acceptance; leaving it for a person breaks D28 and D36 |
-| D38 | Triage fast path and per-push batching | The Orchestrator classifies obviously small items (T0/T1 fixes, CodeRabbit nits, docs/run-log/queue edits, CI tweaks) inline through the `triage` skill (`.claude/skills/triage/SKILL.md`) instead of spawning a work-classifier; each CodeRabbit review round or push is one batch (§2.6 "Batching"): unclear findings go to the issue-investigator first and are handled by its verdict (security and correctness exceptions per §2.7 step 3), one batched classifier call for the rest, one Fixer brief per (tier, module directory) group, and one work-verifier run whenever the head changes (queue-only case included). The classifier still handles every subphase, Independent Tester task, investigation, gate failure and anything failing the eligibility checks; the fast path never routes T2 or T3. D36, D37 and the step 6 never-list are unchanged | Each nit cost a classifier, an executor and a verifier spawn, each re-reading this plan cold; review loops such as PR #16's rounds dominated the spawn count |
-| D39 | Wave completion record | A green wave is recorded by its wave-gate row in `docs/RUN_LOG.md` (commit SHA and CI run); no `wave-N-green` git tags are created (§2.6 "Branches") | The session's git proxy refuses tag pushes, so tags existed only in throwaway clones; the run log already carries the commit and CI run |
-| D40 | CI split | Pull requests run the Linux CI set (fmt, Linux clippy, core-tests, replay-hash; lavapipe GPU tests and the DOF bridge only when their paths change); pushes to main run the full three-OS matrix, all GPU adapters and coverage. A red main stops merges until a fix or revert lands | macOS and Windows runners were the bottleneck: every PR push ran ~30 jobs twice (push and pull_request) and each merge forced the other open PRs to re-run them |
-| D41 | Decision and queue entries are one file per unit | New entries go in `docs/decisions/<date>-<unit>.md` and `docs/queue/<unit>.md`; `docs/DECISIONS.md` and `docs/HUMAN_QUEUE.md` are frozen history | Shared append-only files made every merge conflict, forcing re-syncs and full CI reruns that serialised merges (user ruling, 2026-11-18) |
-| D42 | Fable allowance ask | The agent cannot read the account's usage (`/usage` is a client command; rate-limit signals appear only once a limit is hit), so when D34 (a) and (b) hold and the allowance is not already known to be insufficient, the Orchestrator asks the owner and waits up to 30 minutes (§2.5 "Fable ask"). Owner `yes` within the window makes the allowance sufficient for the items it approves only, unless the session reports a rate limit, throttling or fallback since the ask (then `insufficient`); `no` makes it insufficient for that item; the timeout stays active until every item is answered, and unanswered items are `unknown`, which routes to Opus 5.5 with a queue line as before | Without an owner reading, the D34 allowance check could never pass and Fable was never used even when warranted; a bounded wait keeps the run from stalling (owner ruling, 2026-11-18) |
+| D34 | Fable 5.2 use | Process: moved to PROCESS.md P4 | |
+| D35 | Agent roles | Process: moved to PROCESS.md P5 | |
+| D36 | Code review | Process: moved to PROCESS.md P6 | |
+| D37 | Review threads | Process: moved to PROCESS.md P6 | |
+| D38 | Triage fast path and per-push batching | Process: moved to PROCESS.md P4 and P5 | |
+| D39 | Wave completion record | Process: moved to PROCESS.md P5 | |
+| D40 | CI split | Process: moved to PROCESS.md P6 | |
+| D41 | Decision and queue entries are one file per unit | Superseded; see `docs/DECISIONS.md`, "Process — One decision log and a P8-only queue (D41 superseded)" | |
+| D42 | Fable allowance ask | Process: moved to PROCESS.md P4 | |
 
 ### Restored features (each isolated in its own subphase)
 
@@ -86,8 +83,8 @@ The core path (Lua, straight flippers, probes, UDP telemetry) never depends on a
 * **Balls:** Data-driven `BallProfile`: standard and low-remanence steel (80 g), ceramic Powerball (65 g), UV Glo-Ball (24 g), mini (15.88 mm), jumbo (31.75 mm to 79.4 mm), captive Newton balls.
 * **Flippers:** Any count on any 3D plane, including vertical backbox playfields; straight-capsule and Curved "Banana" bats; Zipper slides; automated "Thing Flips."
 * **Tables:** Bundle (`.pinbundle` zip or folder) of `glTF 2.0`, `TOML` manifests and sandboxed rules in **Lua 5.4** (hot reload) or **WebAssembly** (`wasmtime`).
-* **Rendering:** PBR with per-ball reflection probes, plus hardware ray-query reflections where the GPU supports them.
-* **Cabinet:** Single-window PiP or up to three monitors (playfield, backglass, DMD/LCD); X-Arcade profiles; rumble; 7.1 SSF; UDP telemetry; DOF bridge on Windows.
+* **Rendering:** PBR with per-ball reflection probes, plus hardware ray-query reflections where the GPU supports them. The presentation requirements are in §7.
+* **Cabinet:** Single-window PiP or up to three monitors (playfield, backglass, DMD/LCD); X-Arcade profiles; rumble; 7.1 SSF; UDP telemetry; DOF bridge on Windows. Cabinet presets and display layouts are specified in §7 and Appendix E.
 
 ---
 
@@ -95,39 +92,7 @@ The core path (Lua, straight flippers, probes, UDP telemetry) never depends on a
 
 ### 2.1 Cargo Workspace
 
-```text
-kilohertz-pinball/
-├── Cargo.toml
-├── contracts/CHANGE_REQUESTS.md   # Contract-change queue (§2.3)
-├── physics_defaults.toml          # Global tunables (Appendix C); data-only tuning happens here
-├── docs/
-│   ├── RUN_LOG.md                 # Per-subphase status, attempts, gate results
-│   ├── decisions/                 # One file per unit: every ambiguity an agent resolved (D41)
-│   ├── queue/                     # One file per unit: items for a person to look at (D41)
-│   ├── DECISIONS.md               # Frozen history (D41): older ambiguity decisions
-│   ├── HUMAN_QUEUE.md             # Frozen history (D41): older items for a person
-│   └── HUMAN_ACCEPTANCE.md        # Final checklist, generated by Subphase 7.2
-├── spikes/                        # Subphase 0.1 dependency probes
-├── crates/
-│   ├── pin_core/       # ALL shared contracts: IDs, schemas, snapshot, triple buffer, traits
-│   ├── pin_physics/    # world/ · ball/ · ball_ext/ (Magnus, remanence) · flipper/ · flipper_banana/ · mech/ · debug/
-│   ├── pin_input/      # events/ · staging/ · profiles/ · calibration/ · haptics/
-│   ├── pin_script/     # lua/ (Lua 5.4, sandbox, hot reload) · wasm/ (wasmtime) · guest-sdk/
-│   ├── pin_assets/     # VFS, zip hardening, glTF loader, TOML validation
-│   ├── pin_tablegen/   # layout/ → .glb · clearance/ · backbox/
-│   ├── pin_assetgen/   # Code-generated placeholder sounds, fonts and art
-│   ├── pin_sim/        # Headless Simulation: tick order, command application, record/replay · autoplay/
-│   ├── pin_render/     # topology/ · gpu/ · debug/ · pbr/ · reflections/ · raytrace/ · post/ · displays/ · backbox/ · ui/
-│   ├── pin_audio/      # mixer/ · ssf/ · telemetry/
-│   └── pin_app/        # Binary: platform/ · orchestrator/ · ui/ · profiler/
-├── tools/
-│   └── dof_bridge/     # Windows-only .NET companion: UDP telemetry → DirectOutput Framework
-└── tables/
-    ├── greybox/        # Milestone M1: untextured test table
-    ├── apex_circuit/   # Variant A
-    ├── sky_deck/       # Variant B
-    └── feature_lab/    # Showcase for Banana flipper, backbox playfield, XL ball, Magnus, remanence
-```
+The workspace layout and crate map are in `docs/DEVELOPMENT.md`, "Workspace and crate map".
 
 ### 2.2 Thread Model (D6, D7, D19)
 
@@ -149,15 +114,7 @@ kilohertz-pinball/
 
 ### 2.3 Agent Execution Rules
 
-1. **Crate and module boundaries.** An agent edits only its target crate and module directory. Where two subphases share a crate in one wave, each owns a module directory and the earlier subphase pre-stubs the `mod` declarations.
-2. **Contract-change protocol (D4).** Only Subphase 1.1 writes `pin_core` freely. Any later agent that needs a contract change appends a request to `contracts/CHANGE_REQUESTS.md` and submits it as a separate `pin_core`-only PR. Additive changes merge immediately; breaking changes merge only between waves.
-3. **GPU-free core tests.** `pin_core`, `pin_physics`, `pin_input`, `pin_script`, `pin_assets`, `pin_tablegen` and `pin_sim` pass `cargo test` with no display server and no GPU. Render tests live behind the `gpu-tests` feature and run in their own CI job (D20).
-4. **No blocking on the sim thread (D5).** No heap allocation, mutex, or file I/O in `step_1ms()` in Rust engine code. Tests wrap the tick in a panicking-allocator guard (e.g. `assert_no_alloc`). Two explicit exemptions: the Lua VM allocates from its own capped, pre-reserved arena; and a hot-reload swap tick may allocate and overrun (developer-only event).
-5. **Simulated time in tests (D8).** Headless tests never sleep and never assert on wall-clock time.
-6. **No test-shaped special cases.** Solver code must not branch on named behaviours ("live catch", "powerball"). Tests assert emergent results across parameter sweeps.
-7. **Agent roles (D34, D35).** Every unit of work is classified by the work-classifier (or, for items that pass the triage checks in §2.5, by the `triage` skill, D38), done by a task-executor (as Implementer, Independent Tester or Fixer), checked by the work-verifier, and diagnosed by the issue-investigator when something fails for a reason that is not obvious (§2.6). The model is whatever the classifier picked (§2.5).
-8. **Never wait on a person (D28).** When the brief is ambiguous, choose the option most consistent with the decision log, record it in a new file `docs/decisions/<YYYY-MM-DD>-<unit-id>.md` (a `## <id> — <topic>` section with Decision / Rationale / Alternatives), add the human-queue line in `docs/queue/<unit-id>.md`, and continue. Never edit another unit's file (D41).
-9. **No self-review (D36, D37).** No agent reviews code for style or design, its own or another agent's. The work-verifier checks objective facts only; code review happens on the pull request by CodeRabbit (§2.7). The Orchestrator resolves every review thread itself when justified and never leaves one for a person (§2.7 step 3).
+These rules are now `docs/PROCESS.md` P2 (R1–R12). The nine rules that stood here (crate boundaries, the contract-change protocol D4, GPU-free core tests, no blocking on the sim thread D5, simulated time D8, no test-shaped special cases, agent roles D34/D35, never waiting on a person D28, no self-review D36/D37) are carried there.
 
 ### 2.4 Determinism Scope (D9)
 
@@ -167,107 +124,15 @@ kilohertz-pinball/
 
 ### 2.5 Model Routing (D34)
 
-Every unit of work (a subphase, an Independent Tester task, a fix task, a CodeRabbit finding, a CI or gate failure) goes through the **work-classifier** before anyone works on it, except items that take the fast path below. The classifier rates blast radius and difficulty and picks the lowest tier that can do the job:
-
-| Tier | Model | Typical work |
-|---|---|---|
-| T0 | Haiku 5.5 | Docs-only edits, run-log and queue lines, formatting, renames, a review nit whose fix the comment spells out exactly |
-| T1 | Sonnet 5.5 | Well-specified changes in one module, adding tests, CI and workflow tweaks, most review findings, verification runs |
-| T2 | Opus 5.5 | New subphase implementations, numerics, solvers, render pipelines, concurrency, cross-module changes, ambiguous work, every investigation |
-| T3 | Fable 5.2 | Only under the Fable rule below |
-
-The **Model** column in Phase 4 and §5 is the expected tier for the Implementer; the classifier may route lower, and each fix or finding is classified on its own.
-
-**Fable rule.** Fable 5.2 is used only when all three hold:
-1. **Need.** The work has a *very-high blast radius* (a breaking `pin_core` contract change used by three or more crates; a change to simulation output for every table, such as solver numerics in `pin_physics` world/ball/flipper, the sim tick or the triple buffer; a change to the untrusted-table security boundary, such as the Lua/Wasm sandbox, budgets, memory caps, zip extraction or the vendored Lua patches; or a change one revert cannot undo), **or** it is *extremely hard to troubleshoot* (two full issue-investigator passes on Opus 5.5 found no reproducible root cause, or Opus 5.5 used up the D29 fix attempts, or the failure is non-deterministic below the code's control and two Opus passes did not isolate it).
-2. **Opus is not enough.** The classifier names the T2 attempt that failed, or says exactly why one would.
-3. **Allowance.** Just before routing, the Orchestrator sets `FABLE_ALLOWANCE`. It is `insufficient` if the session reports a current rate limit, throttling or fallback on Fable; otherwise the Orchestrator cannot read it (the agent has no access to the `/usage` readout), so it runs the Fable ask below (D42). Only an owner `yes` within the ask's 30-minute window makes it `sufficient`. Without that, it is `unknown`, which counts as not enough.
-
-If 1 and 2 hold but 3 does not, the work runs on Opus 5.5 and a line goes to `docs/queue/<unit-id>.md`; apart from the Fable ask's bounded wait, the run never waits for allowance to return. If a Fable session is throttled or falls back mid-task, the work continues on Opus 5.5. Every Fable use is logged in `docs/RUN_LOG.md` with the classifier's evidence for 1–3.
-
-**Fable ask (D42).** When the classifier returns `fable check: wanted, allowance unknown, owner ask` for one or more items:
-1. The Orchestrator first schedules a reminder into its own session 30 minutes later (`send_later` with `delay_minutes: 30`, or the session's equivalent) saying the ask for those items timed out. If the session cannot schedule one, it skips the ask and treats the allowance as `unknown`.
-2. It then asks once per batch, as a chat message to the owner (plus a push notification when the session has a notification tool), naming each item with its unit id, the classifier's evidence for 1 and 2, and a rough size (agent runs, hours), and asking the owner to check `/usage` and reply `fable yes` or `fable no`, for all items or per item. It does not use a blocking question dialog, because that has no timeout. If the ask cannot be sent, it cancels the reminder and treats the allowance as `unknown`.
-3. While waiting it continues any work that does not depend on those items; if there is none, it ends its turn.
-4. Answers are per item. On `fable yes`, the Orchestrator re-checks the session first: if a rate limit, throttling or Fable fallback has been reported since the ask, it passes `FABLE_ALLOWANCE: insufficient`; otherwise it re-runs the work-classifier for the items that answer approves (all items if the owner answered for all, otherwise only those named as yes) with `FABLE_ALLOWANCE: sufficient (owner, <UTC time>)`, which may route them to T3. On `fable no` an item is `insufficient` (even if another item in the same ask got `yes`): the T2 brief already returned is used and the queue line is written. A partial answer does not drop the timeout: the reminder stays active until every item in the ask has an outcome, and is cancelled only then. When it fires, every item still without an answer is `unknown` (T2 brief, queue line).
-5. A `yes` covers only the items it approves in that ask and does not carry over to later units; an answer after the timeout does not re-route work already routed. The ask, the answer or the timeout, and the outcome go in `docs/RUN_LOG.md`.
-
-**Fast path (D38).** The Orchestrator classifies an obviously small item inline with the `triage` skill (`.claude/skills/triage/SKILL.md`) instead of spawning a work-classifier. The skill applies only when all of these hold: the item is a fix, CodeRabbit finding, docs/run-log/queue edit or CI tweak; its tier is clearly T0 or T1; it touches one module or docs only; it needs no `pin_core` contract change, no change to simulation output and no change at a security boundary; its validity and cause are clear; and the fix is spelled out or obvious. If its validity or cause is unclear, the item goes to the issue-investigator first; by its verdict, `valid-defect` is re-triaged from its report, `valid-but-deferred` or `pre-existing` takes the "Deferred" disposition (unless it is an unfixed security issue or verified unfixed correctness defect: then it goes to the classifier and the thread stays unresolved, §2.7 step 3) and `not-a-defect` takes "Not a defect" (§2.7 step 3), with no Fixer for either; if any other check fails, or the Orchestrator is unsure, it goes to the work-classifier. The fast path never routes T2 or T3, and the classifier still handles every subphase, every Independent Tester task, every investigation, every gate failure and anything else outside the fast path. A review round or push is handled as one batch (§2.6, §2.7 step 3). Fast-path rows in `docs/RUN_LOG.md` start the Notes column with `triage`, followed by the tier and a one-line reason.
-
-**Verification and investigation** run on Sonnet 5.5 and Opus 5.5 respectively, by default. Neither needs to differ from the implementing model.
+Moved to `docs/PROCESS.md` P4 (tiers, the Fable ask D34/D42 and the fast path D38).
 
 ### 2.6 Orchestrator Runbook
 
-A single long-running **Orchestrator** agent (the main session) owns the wave table (§5), routes every unit of work through the work-classifier (or the `triage` fast path, §2.5, D38), spawns the agents the classifier names with the model it picks, opens and drives the pull requests (§2.7), merges, and keeps `docs/RUN_LOG.md` current. It writes no product code and does not review code.
-
-**Prerequisites (the only human step before the run).**
-1. A GitHub repository with Actions enabled on Windows, Linux and macOS hosted runners.
-2. Branch protection on `main`, and agent credentials with write access to branches and pull requests, including merging.
-3. The CodeRabbit GitHub app installed on the repository, configured by `.coderabbit.yaml`. Its `path_filters` keep binary, generated, vendored-build and recorded-data files (images, audio, fonts, models, compiled Wasm, lockfiles, recorded traces and expected-output dumps) out of review; source, shaders, table rules, manifests, CI and docs are reviewed.
-4. Optional: a self-hosted runner with a ray-tracing-capable GPU. Without it, D33 applies.
-
-**Agents (D35).** Defined in `.claude/agents/`. Subagents cannot start subagents, so the Orchestrator does every spawn, passing the classifier's brief verbatim and its model as the `model` override.
-* **work-classifier** (`work-classifier.md`, Sonnet 5.5): rates blast radius and difficulty, picks the tier (§2.5), names the agent, and writes the complete delegation brief (Appendix D). Runs before every delegation that does not take the fast path (§2.5, D38). It may receive a batch (one review round or push) and then returns one routing block per item and one brief per executor group (same tier, non-overlapping paths grouped).
-* **task-executor** (`task-executor.md`, model from the classifier): does the work as one of three variants. *Implementer* builds the deliverables and their unit tests. *Independent Tester* receives only the brief, never the implementation, and writes black-box tests against the public contract under `tests/spec_*`, including property tests for stated invariants; it runs in parallel with the Implementer. *Fixer* applies one CodeRabbit finding, verifier failure or investigator plan.
-* **work-verifier** (`work-verifier.md`, Sonnet 5.5): confirms each requirement has a passing test, re-runs fmt, clippy, every applicable test suite and coverage, checks owned paths, the sim-thread rules and, for render work, the visual checklist. It gives no opinion on style or design.
-* **issue-investigator** (`issue-investigator.md`, Opus 5.5): reproduces and root-causes any failure whose cause is not obvious (CI, verifier, flaky tests, wrong output) and judges CodeRabbit findings of unclear validity. It returns a fix plan and a thread reply; it does not fix.
-
-**Flow per unit of work.** classify (inline via `triage` for eligible small items, D38) → execute (Implementer and Independent Tester in parallel for a subphase) → verify → on `fail`, investigate if the cause is unclear, then classify and execute the fix → verify again → open the PR (§2.7) → CodeRabbit findings go through the same loop until the merge conditions hold. **Batching (D38):** one review round or push is one batch: the Orchestrator triages every new finding, sends findings of unclear validity or cause to the issue-investigator first (then re-triages `valid-defect` ones; `valid-but-deferred`/`pre-existing` ones are deferred (except unfixed security or verified correctness defects, which go to the classifier) and `not-a-defect` ones answered as such, with no Fixer), moves any fast-path item that shares a file with a classifier-bound item into the classifier batch, sends all classifier-bound items to one batched classifier call, runs one Fixer brief per (tier, module directory) group, with docs-only items as one docs group (items of different tiers that touch the same file go in one brief at the higher tier), and runs one work-verifier on the resulting head commit covering every item (run it whenever the round changed the head, including a queue-line commit; skip it only when the head is unchanged, where the previous pass stands, §2.7 step 5).
-
-**Briefs.** The work-classifier writes each brief from Appendix D so it is self-contained: the subphase section, §2.3, the relevant parts of §3 and the appendices, and the owned paths. Role agents never need this whole document.
-
-**Branches.** `main` is protected. Each unit of work runs on its own branch from the latest `main` (`sp/<id>`, `fix/<id>`, or the branch the harness assigns) and reaches `main` only through its own pull request (§2.7). A wave is complete when all its PRs are merged and the wave gate passes on `main`; the wave-gate row in `docs/RUN_LOG.md` records that commit and its CI run. Git tags are not used (D39). Wave branches are no longer used.
-
-**Subphase gate (definition of done).** All must hold:
-1. `cargo fmt --check` and `clippy -D warnings` are clean.
-2. Implementer tests and every listed verification criterion pass.
-3. Independent Tester's spec tests pass. A disagreement between spec tests and implementation is resolved against the brief, not by deleting the test.
-4. Line coverage (`cargo-llvm-cov`): at least 85 % for `pin_core`, `pin_physics`, `pin_input`, `pin_script`, `pin_assets`, `pin_tablegen`, `pin_sim`; at least 60 % for `pin_render`, `pin_audio`, `pin_app`.
-5. Property tests (`proptest`) cover every solver invariant and numeric helper; every parser (TOML manifests, zip, glTF extras, UDP packets, replay files) survives a bounded random-bytes run without panicking.
-6. For anything on the sim thread: allocation guard passes and a replay hash is stable over 10 runs.
-7. An automated path check confirms the diff touches only owned paths.
-8. The work-verifier reports `pass`. The subphase is then *done* only when its PR is merged under §2.7.
-
-**Wave gate.** Full workspace tests on all three operating systems; replay hashes stable; every earlier wave's tests still pass; tick-time benchmark has not regressed by more than 10 %. The full matrix runs on every push to `main` (D40); the wave gate reads it there.
-
-**Failure policy (D29).**
-1. The executor gets up to three fix attempts, each from a classifier brief built on the verifier's failures, the investigator's report or the CodeRabbit findings.
-2. Then the issue-investigator makes a fresh pass, and the classifier routes one more attempt one tier up from a fresh brief plus the failure history. This can reach Fable 5.2 only if D34 holds, including the allowance check; otherwise it stays on Opus 5.5.
-3. Then the subphase is marked `blocked` in the run log and added to `docs/queue/<unit-id>.md`.
-4. A blocked *restored* subphase (2.6, 2.7, 2.8, 3.5, 4.5, 5.4, 5.5, 6.3, 6.4) is skipped along with its dependents; the run continues.
-5. A blocked *core* subphase halts only its dependents. All independent work continues, and the run ends with a partial result and a precise account of what is missing.
-
-**Image test policy (D30).** Every render test uses, in order: (a) analytic assertions on pixels, such as region mean colour, luminance ratios, symmetry and energy conservation; (b) a regression snapshot, stored only after (a) passes, with per-backend tolerance; (c) the work-verifier's visual checklist, logged. A snapshot is never the sole evidence.
-
-**Hardware simulation policy (D31).** Gamepad-mode devices are SDL virtual joysticks; keyboard-encoder devices are synthetic key events; plunger and accelerometer inputs are recorded traces stored as fixtures; displays are mocked; audio renders offline to buffers; telemetry uses loopback UDP. Anything that needs a physical device goes into `docs/HUMAN_ACCEPTANCE.md`.
-
-**Automated gates.** Gate A1 (after Wave 6) and Gate A2 (after Wave 7) are defined in Phase 6. A failing gate opens fix tasks against the owning subphases under the failure policy; it never pauses for a person.
+Moved to `docs/PROCESS.md` P5 and P7 (flow, batching, branches, subphase and wave gates, failure policy, image-test and hardware-simulation policies D30/D31). Gate commands are in `docs/DEVELOPMENT.md`. Gates A1 and A2 stay normative in Phase 6 of §4.
 
 ### 2.7 Pull Request, Review & Merge Workflow (D36, D37)
 
-Agents do not review their own code. Review comes from CodeRabbit on a pull request, and the Orchestrator resolves it without a person.
-
-1. **Open.** When the work-verifier passes, the Orchestrator pushes the branch and opens a PR against `main`. The body follows the repository's PR template if there is one, and otherwise lists: deliverables with the test that proves each one, gate results with numbers, decisions logged, contract-change requests, and every Fable use with its D34 evidence. Bot names in the body go in backticks so nobody is notified by accident.
-2. **Auto-fix on.** Right after opening, the Orchestrator subscribes to the PR's activity (comments, reviews, CI). From then on every CodeRabbit comment and every CI failure is handled as it arrives; nobody polls or sleeps waiting for them.
-3. **Every finding is accounted for.** For each CodeRabbit comment (inline, nitpick, outside-diff or summary item), the Orchestrator handles each review round or push as one batch (D38, procedure in §2.6 "Batching"): it lists every new finding; sends findings whose validity or cause is unclear to the issue-investigator first and handles each by its verdict (including the security and correctness exceptions); takes the obviously small ones through the `triage` fast path (§2.5); sends all the rest to one batched work-classifier call; groups the fixes into one Fixer brief per (tier, module directory) group; and runs one work-verifier on the resulting head commit covering every item whenever the head changed (queue-only case per `work-verifier.md`). Each one ends in exactly one disposition, recorded as a reply on its thread:
-   * **Fixed:** an executor commit addresses it, the verifier re-runs the affected checks, and the reply names the commit. The thread is then resolved.
-   * **Not a defect:** the reply gives the evidence that the finding is not reproducible in the reported environment, already handled, out of scope, a documented accepted bound, or declined by repo convention (test output, commit SHA, the decisions section, the PLAN rule or `.coderabbit.yaml` setting, the doc line). A result from a different environment goes to the issue-investigator and the thread stays unresolved until it returns a verdict. The thread is then resolved; if CodeRabbit argues back with new technical information, the finding goes round again.
-   * **Deferred:** real but out of scope, or it changes simulation output and needs a human ruling. The reply links the `docs/queue/<unit-id>.md` line (committed on the PR), then the thread is resolved.
-
-   No thread is resolved without a reply. Nitpicks are fixed when cheap (T0/T1), otherwise answered as above.
-
-   **Resolving (D37).** The Orchestrator resolves threads itself, on its own judgment, with the thread resolve action (`mcp__github__resolve_review_thread`), when a fix landed and the verifier passed on it, when the reply gives evidence that the finding is not reproducible in the reported environment, already handled, out of scope or a documented accepted bound, or when the finding is declined by repo convention (a `docs/decisions/` entry, a PLAN rule or a `.coderabbit.yaml` setting), or when it was deferred and the reply links the queue line. Every reply states the reason and the evidence first (test output, commit SHA, decisions section, doc line), then anything else. It does not wait for CodeRabbit to accept, agree or mark the finding addressed. A person is never asked to resolve a thread: `docs/queue/` lines are only for judgement calls a person should see, never for closing a thread. Exceptions: a thread that reports an unfixed security issue, or a verified correctness defect not yet fixed, is never resolved; it blocks the merge and goes through classify, fix, verify. A thread whose validity is unclear goes to the issue-investigator first; a failed reproduction in a different environment makes validity unclear. Where the thread type cannot be resolved (summary or outside-diff items), the reply alone is the disposition. When every thread is resolved or meets one of the resolve conditions above (never an exception), every other merge condition in step 5 holds, and CodeRabbit's approval is what is needed to clear "Automatic approval withheld", the Orchestrator posts a plain PR comment `@coderabbitai approve`.
-4. **Re-review.** Each push triggers CodeRabbit's incremental review; new findings go through step 3. If CodeRabbit has not reviewed the head commit (for example it is rate-limited), the Orchestrator asks it once with a PR comment `@coderabbitai review`, waits as long as it says, and asks again at most twice. If it still has not reviewed, the PR stays open, a line goes to `docs/queue/<unit-id>.md`, and the run continues with work that does not depend on this PR.
-5. **Merge conditions.** The Orchestrator merges, without waiting for a person, when all of these hold on the current head commit:
-   * every PR check is green (D40: the Linux set), i.e. the single required status check `pr-checks`, which aggregates the Linux set and fails if any of them failed or was cancelled, or if `changes` did not succeed;
-   * CodeRabbit has finished reviewing the head commit, with no actionable comments left unanswered and no outstanding change request;
-   * every review conversation has a disposition reply and has been resolved by the Orchestrator (step 3), except thread types that cannot be resolved, where the reply is the disposition;
-   * the branch is up to date with `main` whenever merging `main` in would touch a file the PR also changes or conflicts; a clean merge that touches none of the PR's files does not require a re-sync;
-   * `main`'s last push CI is green; if it is red, only a PR that fixes or reverts the failing `main` run may merge (it must still meet every other condition here: PR checks, CodeRabbit review with no open threads, verifier pass), and all other merges stay blocked until `main` is green;
-   * the work-verifier's last result is `pass` for the head commit.
-
-   Then the Orchestrator merges with a merge commit, deletes the branch, unsubscribes from the PR, and adds a row to `docs/RUN_LOG.md` with the PR number and the merge commit.
-6. **Never** to get green: skip, ignore, delete or weaken a test; force-push or rewrite history on a branch it did not create; push an empty commit; close and reopen a PR to restart CI; or merge with a failing required check.
+Moved to `docs/PROCESS.md` P6.
 
 ---
 
@@ -412,14 +277,14 @@ pub trait TableScriptBackend: Send {
 
 ---
 
-## 4. Phased Implementation Plan
+## 4. Component Specifications
 
-Each subphase lists model, target, dependencies, deliverables and verification. Performance budget for the whole tick, script included: $99.9\text{th}$ percentile $< 0.35\text{ ms}$.
+Each subphase lists target, dependencies, deliverables and verification, as the specification of the delivered component. Performance budget for the whole tick, script included: $99.9\text{th}$ percentile $< 0.35\text{ ms}$.
 
 ### Phase 0: Dependency Spikes
 
 #### Subphase 0.1: Dependency Spikes & Version Pinning
-* **Model:** Opus 5.5 · **Target:** `spikes/`, `docs/DECISIONS.md`, `versions.toml`, `.github/workflows/spikes.yml` · **Dependencies:** none
+* **Target:** `spikes/`, `docs/DECISIONS.md`, `versions.toml`, `.github/workflows/spikes.yml` · **Dependencies:** none
 * **Deliverables:** One small standalone program per question, each run on all three CI operating systems, with the answer recorded in `docs/DECISIONS.md`:
   1. Does the `sdl3` crate's `Event` expose SDL's nanosecond timestamp? If not, a thin wrapper over the `sys` re-export that does.
   2. Can SDL virtual joysticks be created headless on each OS (needed for D31)?
@@ -435,7 +300,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 ### Phase 1: Foundation, CI & Platform Shell
 
 #### Subphase 1.1: Workspace, Contracts & Triple Buffer
-* **Model:** Opus 5.5 · **Target:** `pin_core`, root `Cargo.toml`, `physics_defaults.toml` · **Dependencies:** 0.1
+* **Target:** `pin_core`, root `Cargo.toml`, `physics_defaults.toml` · **Dependencies:** 0.1
 * **Deliverables:**
   1. Workspace with all 10 crates, each with stubbed module directories per §2.1.
   2. Every contract in §3, plus `InputEvent`, `CabinetInput`, `CabinetAxis`, `HapticsTelemetryEvent`, `MaterialPair` and unit-conversion helpers.
@@ -446,7 +311,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** `cargo test -p pin_core`. Stress test with a writer and a reader thread over 100,000 publishes: zero torn reads, monotonic tick numbers. TOML round-trip tests for every schema.
 
 #### Subphase 1.2: CI Matrix Skeleton
-* **Model:** Opus 5.5 · **Target:** `.github/workflows/ci.yml` · **Dependencies:** 1.1
+* **Target:** `.github/workflows/ci.yml` · **Dependencies:** 1.1
 * **Deliverables:**
   1. Build + test on `x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`.
   2. Jobs: `core-tests` (GPU-free), `gpu-tests` (lavapipe on Linux, WARP on Windows, Metal on macOS), `clippy -D warnings`, `fmt`.
@@ -454,7 +319,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** All jobs green on the empty scaffold.
 
 #### Subphase 1.3: SDL3 Windows & Display Topology
-* **Model:** Opus 5.5 · **Target:** `pin_app/platform/`, `pin_render/topology/` · **Dependencies:** 1.1
+* **Target:** `pin_app/platform/`, `pin_render/topology/` · **Dependencies:** 1.1
 * **Deliverables:**
   1. SDL3 init for video, audio, gamepad and sensor subsystems.
   2. `DisplayTopologyManager`: single-monitor mode (one window with PiP rectangles for backglass and score display) and cabinet mode (up to three borderless fullscreen windows).
@@ -462,7 +327,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** Mock-display tests for viewport math in 1-, 2- and 3-screen topologies. Ring test proving events arrive in order with timestamps intact.
 
 #### Subphase 1.4: `wgpu` Multi-Surface Context, Thread Orchestrator & Debug Renderer
-* **Model:** Opus 5.5 · **Target:** `pin_render/gpu/`, `pin_render/debug/`, `pin_app/orchestrator/` · **Dependencies:** 1.3
+* **Target:** `pin_render/gpu/`, `pin_render/debug/`, `pin_app/orchestrator/` · **Dependencies:** 1.3
 * **Deliverables:**
   1. One `wgpu` instance/adapter/device/queue on the render thread, presenting to 1–3 surfaces with the present modes from §2.2.
   2. Thread orchestrator: spawns sim, render, audio and I/O threads; sim thread drives a `SimStep` trait object (stub until 6.0) with accumulator timing and catch-up cap.
@@ -474,7 +339,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 ### Phase 2: Physics & Headless Simulation
 
 #### Subphase 2.1: BVH, Collision Layers & C² Spline Colliders
-* **Model:** Fable 5.2 (complete, v4) · **Target:** `pin_physics/world/` · **Dependencies:** 1.1
+* **Target:** `pin_physics/world/` · **Dependencies:** 1.1
 * **Deliverables:**
   1. `parry3d` static BVH for walls, posts, targets and toy meshes with an 8-bit `collision_layer` mask (bit 0 main deck, 1 upper deck, 2 wireform, 3 subway, 4 backbox). Per-collider enable flags for drop targets, gates and diverters.
   2. C² interpolating cubic splines (D13): authored as through-points, stored as cubic Bézier segments. Closest-point by Newton iteration, seeded from the ball's previous parameter with a coarse sample table as fallback.
@@ -484,7 +349,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** A ball at $8.0\text{ m/s}$ through a $180^\circ$ guide of radius 150 mm, then up a ramp from $Z = 0$ to $65\text{ mm}$: kinetic + potential energy never increases; normal force changes by less than 5 % between consecutive ticks away from entry and exit; no tunnelling; layer mask switches exactly once per transition.
 
 #### Subphase 2.2: CCD, Spin, Friction, Magnets & Newton Balls
-* **Model:** Fable 5.2 (complete, v4) · **Target:** `pin_physics/ball/` · **Dependencies:** 2.1
+* **Target:** `pin_physics/ball/` · **Dependencies:** 2.1
 * **Deliverables:**
   1. Swept-sphere CCD by conservative advancement, using `parry3d` shape-casts for static geometry and analytic tests for splines and ball-ball pairs.
   2. Angular velocity, Coulomb friction with sliding-to-rolling transition, material-pair restitution and friction tables.
@@ -499,7 +364,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
   5. A spinning ball dropped on a flat surface converges to rolling without slipping.
 
 #### Subphase 2.3: Flipper Solver (Standard, Upper, Zipper, Thing Flip)
-* **Model:** Fable 5.2 (complete, v4) · **Target:** `pin_physics/flipper/` · **Dependencies:** 2.2
+* **Target:** `pin_physics/flipper/` · **Dependencies:** 2.2
 * **Deliverables:**
   1. Flipper kinematics on arbitrary mounting planes from `surface_normal`.
   2. Dual-wound coil: power torque until the EOS switch opens at `eos_angle_fraction`, then hold torque; return spring; end-stop restitution.
@@ -515,7 +380,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
   5. Solver source contains no branch keyed to a named technique (reviewer check).
 
 #### Subphase 2.4: Bumpers, Slingshots, Targets, Plunger & Tilt Bob
-* **Model:** Opus 5.5 · **Target:** `pin_physics/mech/` · **Dependencies:** 2.2
+* **Target:** `pin_physics/mech/` · **Dependencies:** 2.2
 * **Deliverables:**
   1. Pop bumpers, slingshots, drop-target banks, kickbacks, spinners (one switch pulse per $180^\circ$), VUK scoops.
   2. Spring plunger ($F = -kx$) with analog position input.
@@ -523,7 +388,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** Bumper ring response, spinner pulse counts against known spin-down, VUK transfer from layer 0 to layer 1, tilt closure above a nudge threshold and none below it.
 
 #### Subphase 2.5: Headless Simulation, State Injection & Replay Harness
-* **Model:** Opus 5.5 · **Target:** `pin_sim`, `pin_physics/debug/` · **Dependencies:** 2.3, 2.4, 3.1, 4.1, 4.2
+* **Target:** `pin_sim`, `pin_physics/debug/` · **Dependencies:** 2.3, 2.4, 3.1, 4.1, 4.2
 * **Deliverables:**
   1. `Simulation` implementing the tick order in §2.2 and the `SimStep` trait.
   2. Test API: spawn a ball at a position and velocity, set switch states, advance N ticks, query ball and score state.
@@ -532,7 +397,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** A 10,000-tick recording replays to an identical state hash 10 times in a row. The allocation guard passes over 60,000 ticks with a script loaded.
 
 #### Subphase 2.6: Curved "Banana" Flipper *(restored)*
-* **Model:** Fable 5.2 (complete, v4) · **Target:** `pin_physics/flipper_banana/` · **Dependencies:** 2.3
+* **Target:** `pin_physics/flipper_banana/` · **Dependencies:** 2.3
 * **Deliverables:**
   1. `CurvedBanana` as a circular-arc tube implementing `BatShape`: analytic closest point (point-to-arc in the bat plane, then tube radius) and surface velocity $\vec{v}_{\text{bat}} = \vec{\omega}_{\text{bat}} \times \vec{r}_{\text{contact}}$.
   2. Rotating-arc vs. sphere CCD by conservative advancement in the flipper's local frame. `parry3d`'s nonlinear cast is not relied on here because it can report a shape pair as unsupported (§6).
@@ -544,7 +409,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
   4. The 2.3 timing sweep passes on the curved bat with no discontinuity.
 
 #### Subphase 2.7: Magnus Effect & Magnetic Remanence *(restored)*
-* **Model:** Opus 5.5 · **Target:** `pin_physics/ball_ext/` · **Dependencies:** 2.2
+* **Target:** `pin_physics/ball_ext/` · **Dependencies:** 2.2
 * **Deliverables:**
   1. Magnus force and remanence per §3.2, registered through the `ExternalForce` hooks.
   2. Per-ball magnetisation state added to the ball arena (via a contract-change request).
@@ -555,7 +420,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
   3. After a holding magnet switches off, `standard_steel` leaves measurably later than `low_rem_steel`, and `low_rem_steel` matches the zero-remanence baseline exactly.
 
 #### Subphase 2.8: Large-Ball Support & Clearance Validation *(restored)*
-* **Model:** Opus 5.5 · **Target:** `pin_tablegen/clearance/`, `pin_physics/tests/` · **Dependencies:** 2.3, 4.3
+* **Target:** `pin_tablegen/clearance/`, `pin_physics/tests/` · **Dependencies:** 2.3, 4.3
 * **Deliverables:**
   1. `jumbo_xl_resin` profile (79.4 mm) and support for any diameter between 15.88 mm and 79.4 mm.
   2. Clearance validator: for every ball profile a table declares, check lane widths, flipper gaps, wireform gauge, scoop and VUK diameters, and headroom under upper decks. Violations are bundle-validation errors naming the offending feature. A profile can be restricted to listed layers.
@@ -566,7 +431,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
   3. No tunnelling for the XL ball against a flipper at maximum angular velocity.
 
 #### Subphase 2.9: Autoplay Bot & Table Soak Harness
-* **Model:** Opus 5.5 · **Target:** `pin_sim/autoplay/` · **Dependencies:** 2.5
+* **Target:** `pin_sim/autoplay/` · **Dependencies:** 2.5
 * **Purpose:** Stand in for human playtesting during the run. It cannot judge feel; it can prove a table is mechanically sound and fully reachable.
 * **Deliverables:**
   1. A seeded heuristic bot that reads sim state and presses cabinet switches: plunges, flips when a ball is predicted to cross a flipper's sweep, holds to cradle, nudges occasionally. Three skill levels set by reaction jitter and miss rate.
@@ -580,14 +445,14 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 ### Phase 3: Input, Audio & Cabinet Output
 
 #### Subphase 3.1: Input Ingestion & Flipper Staging
-* **Model:** Opus 5.5 · **Target:** `pin_input/events/`, `pin_input/staging/` · **Dependencies:** 1.1
+* **Target:** `pin_input/events/`, `pin_input/staging/` · **Dependencies:** 1.1
 * **Deliverables:**
   1. Consume timestamped `InputEvent`s; map to cabinet switches and axes; debounce.
   2. `FlipperStagingRouter`: dedicated buttons, parallel linked, dual-stage threshold (30 % lower, 85 % upper by default).
 * **Verification:** Synthetic analog ramps and button sequences produce actuation on the exact expected tick in all three modes.
 
 #### Subphase 3.2: X-Arcade Profiles, Plunger & Nudge Calibration
-* **Model:** Opus 5.5 · **Target:** `pin_input/profiles/`, `pin_input/calibration/` · **Dependencies:** 3.1
+* **Target:** `pin_input/profiles/`, `pin_input/calibration/` · **Dependencies:** 3.1
 * **Deliverables:**
   1. Auto-detected X-Arcade presets: keyboard-encoder scancodes and gamepad modes matched by SDL GUID.
   2. Analog plunger filters: deadzone, rest tracking, release-velocity peak detection.
@@ -595,7 +460,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** Profile parser and mapping tests for each mode translate to canonical cabinet switches.
 
 #### Subphase 3.3: Audio Mixer
-* **Model:** Opus 5.5 · **Target:** `pin_audio/mixer/` · **Dependencies:** 1.1
+* **Target:** `pin_audio/mixer/` · **Dependencies:** 1.1
 * **Deliverables:**
   1. SDL3 audio-stream mixer on the audio thread with music, callout and effects buses, voice limiting and callout ducking.
   2. WAV and Ogg Vorbis decoding; samples supplied as byte buffers by the I/O worker.
@@ -603,7 +468,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** Offline render tests: trigger-to-first-sample latency within one audio buffer; ducking curve and voice-limit behaviour match expected output.
 
 #### Subphase 3.4: Haptics Bus, SSF Mixer & UDP Telemetry
-* **Model:** Opus 5.5 · **Target:** `pin_audio/ssf/`, `pin_audio/telemetry/`, `pin_input/haptics/` · **Dependencies:** 3.2, 3.3
+* **Target:** `pin_audio/ssf/`, `pin_audio/telemetry/`, `pin_input/haptics/` · **Dependencies:** 3.2, 3.3
 * **Deliverables:**
   1. Lock-free `HapticsTelemetryEvent` ring fed by the sim thread (coil fire, EOS hit, bumper, ball drop, ball roll with position, mass and speed).
   2. Gamepad rumble output for flippers, slings and bumpers.
@@ -612,7 +477,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** Panner gains for a ball moving from $(-150, 100)$ to $(150, 800)$ mm; packet emitted on the same tick as a simulated flipper pulse.
 
 #### Subphase 3.5: DirectOutput Framework (DOF) Bridge *(restored)*
-* **Model:** Opus 5.5 · **Target:** `tools/dof_bridge/` (C#/.NET, Windows only), `[dof]` schema via contract-change request · **Dependencies:** 3.4
+* **Target:** `tools/dof_bridge/` (C#/.NET, Windows only), `[dof]` schema via contract-change request · **Dependencies:** 3.4
 * **Deliverables:**
   1. `[dof]` section in `table.toml`: the ROM-style table name DOF configs key on, and a map from engine coils, lamps and switches to DOF table-element type and number.
   2. Bridge process: listens to the UDP telemetry stream, hosts the user's installed DOF, and forwards each change as a (type, number, value) table-element update, which is the form DOF accepts from its host.
@@ -624,7 +489,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 ### Phase 4: Assets, Scripting, Table Generator & Menu
 
 #### Subphase 4.1: Bundle VFS, glTF Loader & Manifest Validation
-* **Model:** Opus 5.5 · **Target:** `pin_assets` · **Dependencies:** 1.1, 2.1
+* **Target:** `pin_assets` · **Dependencies:** 1.1, 2.1
 * **Deliverables:**
   1. VFS over a directory or a `.pinbundle` / `.zip`, with the hardening in §3.5.
   2. `table.toml` / `backglass.toml` parsing, name-to-ID interning, unit conversion, validation with precise error messages.
@@ -632,7 +497,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** A mock bundle loads identically from folder and zip. Malicious archives (path traversal, symlink, oversize) are rejected.
 
 #### Subphase 4.2: Lua 5.4 Backend, Sandbox & Hot Reload
-* **Model:** Opus 5.5 · **Target:** `pin_script/lua/` (plus `load_backend()` and a pre-stubbed `wasm/` module) · **Dependencies:** 1.1
+* **Target:** `pin_script/lua/` (plus `load_backend()` and a pre-stubbed `wasm/` module) · **Dependencies:** 1.1
 * **Deliverables:**
   1. `LuaScriptBackend` on `mlua` (vendored Lua 5.4) exposing a `pinball` module: `pulse_coil`, `hold_coil`, `set_magnet`, `set_lamp`, `set_gi_tint`, `set_score`, `spawn_ball`, `set_diverter`, `set_zipper`, `show_scene`, `play_sound`, `switch`, `tick`, `balls_in_play`, `random`, `persist_get`, `persist_set`.
   2. Sandbox, memory cap and instruction budget per §3.4. Incremental GC stepped with a fixed budget each tick.
@@ -640,14 +505,14 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** Scripted switch sequences produce expected command queues. Sandbox escape attempts fail. An infinite loop is aborted within budget. Reload preserves state through the hooks.
 
 #### Subphase 4.3: Procedural Table Generator
-* **Model:** Opus 5.5 · **Target:** `pin_tablegen` · **Dependencies:** 4.1
+* **Target:** `pin_tablegen` · **Dependencies:** 4.1
 * **Deliverables:**
   1. CLI turning a declarative `layout.toml` (playfield outline, walls, posts, lanes, ramps as spline through-points, decks, inserts) into `playfield.glb` with correct `extras` tags and flat-colour materials.
   2. Matching collider and spline declarations emitted into `table.toml`.
 * **Verification:** Generated bundles pass 4.1 validation; visual mesh and collision geometry agree within 0.1 mm.
 
 #### Subphase 4.4: Table Browser, Display Setup & Input Menu
-* **Model:** Opus 5.5 · **Target:** `pin_app/ui/`, `pin_render/ui/` · **Dependencies:** 1.4, 3.2, 4.1
+* **Target:** `pin_app/ui/`, `pin_render/ui/` · **Dependencies:** 1.4, 3.2, 4.1
 * **Deliverables:**
   1. `egui-wgpu` overlay toggled by `Esc` or the controller Menu button.
   2. Table browser (preview art, metadata, feature badges, one-click load).
@@ -656,7 +521,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** Headless UI state-machine test for directory scanning, table switch lifecycle and `config.toml` persistence.
 
 #### Subphase 4.5: WebAssembly Scripting Backend *(restored)*
-* **Model:** Opus 5.5 · **Target:** `pin_script/wasm/`, `pin_script/guest-sdk/` · **Dependencies:** 4.2
+* **Target:** `pin_script/wasm/`, `pin_script/guest-sdk/` · **Dependencies:** 4.2
 * **Deliverables:**
   1. `WasmScriptBackend` on `wasmtime` implementing `TableScriptBackend`.
   2. Host interface as plain core-Wasm imports under a `pinball` module, mirroring the Lua API one-to-one with integer and `f32` arguments only. Guest exports: `on_init`, `on_tick`, `on_switch_edge`, and optional `save_state` / `restore_state`.
@@ -667,7 +532,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** An integer-only fixture ruleset in `rules.lua` and `rules.wasm` receives the same switch sequence and yields identical `HostCommandQueue` contents on every tick. Fuel exhaustion and memory growth past the cap are contained. The allocation guard passes on the host side of guest calls.
 
 #### Subphase 4.6: Placeholder Asset Kit
-* **Model:** Opus 5.5 · **Target:** `crates/pin_assetgen` · **Dependencies:** 4.1
+* **Target:** `crates/pin_assetgen` · **Dependencies:** 4.1
 * **Deliverables:** Deterministic, code-generated, licence-clean assets, so no table depends on third-party files (D32):
   1. Synthesised sound effects: flipper, bumper, slingshot, drop target, spinner tick, ball-roll loop, knocker, drain, launch.
   2. A short generated music loop per table, and distinct tone motifs in place of spoken callouts.
@@ -681,21 +546,21 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 ### Phase 5: Rendering
 
 #### Subphase 5.1: PBR Pipeline & Pinball Materials
-* **Model:** Opus 5.5 · **Target:** `pin_render/pbr/` · **Dependencies:** 1.4, 4.1
+* **Target:** `pin_render/pbr/` · **Dependencies:** 1.4, 4.1
 * **Deliverables:**
   1. Clustered forward PBR in WGSL with up to 128 dynamic lights.
   2. Materials: `pbr_chrome_steel`, `pbr_ceramic_pearl`, `pbr_uv_emissive` (responds to GI tint), clear-coated playfield wood, subsurface light inserts with warm-up curves (15 ms incandescent, 1 ms LED), `pbr_clear_acrylic`.
 * **Verification:** `naga` validates every module and translates it to SPIR-V, MSL and HLSL without warnings. `gpu-tests` golden image per material.
 
 #### Subphase 5.2: Ball Reflection Probes & HDR Post-Processing
-* **Model:** Opus 5.5 · **Target:** `pin_render/reflections/`, `pin_render/post/` · **Dependencies:** 5.1
+* **Target:** `pin_render/reflections/`, `pin_render/post/` · **Dependencies:** 5.1
 * **Deliverables:**
   1. Octahedral reflection probes behind a `ReflectionSource` trait. Budget: at most 2 probe updates per frame at $128^2$, round-robin across balls; balls without a fresh probe reuse the nearest.
   2. HDR chain: physically based bloom, ACES tone mapping, velocity-based motion blur on balls, MSAA or SMAA.
 * **Verification:** `gpu-tests`: a chrome ball beside a lit red insert shows red in the expected reflection region; bloom energy matches the golden image; with 6 balls the per-frame probe count never exceeds the budget.
 
 #### Subphase 5.3: Backglass & Dual-Mode Score Display
-* **Model:** Opus 5.5 · **Target:** `pin_render/displays/` · **Dependencies:** 5.1
+* **Target:** `pin_render/displays/` · **Dependencies:** 5.1
 * **Deliverables:**
   1. Backglass: layered translite art with lamp-matrix masks and flasher overlays.
   2. DMD mode: $128 \times 32$ or $192 \times 64$ procedural dot grid with orange, red or RGB dots.
@@ -704,7 +569,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** `gpu-tests` goldens for DMD text, score formatting and lamp-mask blending.
 
 #### Subphase 5.4: Hardware Ray-Query Reflections *(restored)*
-* **Model:** Opus 5.5 (Fable 5.2 only under D34) · **Target:** `pin_render/raytrace/` · **Dependencies:** 5.2
+* **Target:** `pin_render/raytrace/` · **Dependencies:** 5.2
 * **Deliverables:**
   1. First task: confirm on the pinned `wgpu` which backends report `Features::EXPERIMENTAL_RAY_QUERY` (§6) and record the result in the crate docs.
   2. `RayQueryReflections` implementing `ReflectionSource`, created only when the adapter reports the feature. Bottom-level structures per static mesh; a top-level structure refit each frame for balls, flippers and dynamic meshes.
@@ -713,7 +578,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** With the feature absent, output is identical to the probe path. On a ray-tracing-capable runner, a two-ball scene shows each ball reflected in the other (which probes cannot do) and matches a golden image. Non-gating benchmark: added GPU time recorded per quality setting.
 
 #### Subphase 5.5: Backbox Mini-Playfield, Vertical Flippers & 3D Toys *(restored)*
-* **Model:** Opus 5.5 · **Target:** `pin_render/backbox/`, `pin_tablegen/backbox/`, `pin_physics/tests/` · **Dependencies:** 2.3, 4.3, 5.3
+* **Target:** `pin_render/backbox/`, `pin_tablegen/backbox/`, `pin_physics/tests/` · **Dependencies:** 2.3, 4.3, 5.3
 * **Deliverables:**
   1. `[backbox]` section in `backglass.toml`: a 3D scene composited with depth between translite layers on the backglass surface, with its own camera.
   2. Mechanical toys driven by dynamic mesh transforms: score reels and animated mechanisms.
@@ -726,7 +591,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 ### Phase 6: Integration & Tables
 
 #### Subphase 6.0: Integration & Grey-Box Table (Milestone M1)
-* **Model:** Opus 5.5 · **Target:** `pin_app/orchestrator/`, `tables/greybox/` · **Dependencies:** 2.5, 3.4, 4.3, 4.4, 4.6, 5.1
+* **Target:** `pin_app/orchestrator/`, `tables/greybox/` · **Dependencies:** 2.5, 3.4, 4.3, 4.4, 4.6, 5.1
 * **Deliverables:**
   1. Wire `pin_sim`, input, audio, haptics and rendering into `pin_app`.
   2. `tables/greybox`: two lower flippers, one upper flipper, slings, three bumpers, an orbit, a wireform ramp, a VUK to an upper deck, a magnet with eddy sensor, a Newton ball, a Powerball dispenser. Minimal rules: start, score, drain, ball count.
@@ -739,7 +604,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 4. If a feel window is missed, the Orchestrator may run an automated parameter search over `physics_defaults.toml` within the Appendix C bounds before opening fix tasks.
 
 #### Subphase 6.1: Variant A — "Apex Circuit"
-* **Model:** Opus 5.5 · **Target:** `tables/apex_circuit/` · **Dependencies:** Gate A1
+* **Target:** `tables/apex_circuit/` · **Dependencies:** Gate A1
 * **Deliverables:**
   1. Geometry via `layout.toml`: $6.5^\circ$ playfield, dual 76 mm lower flippers with Zipper mode ("Firewall Save"), 55 mm upper-left flipper at 10 o'clock fed by a wireform return or left-orbit pass, dispenser holding 4 steel balls and 1 Powerball, right-orbit magnet with eddy sensor and opto, 3-bumper cluster, left-orbit spinner, 3-bank drops, centre lock scoop, upper-right cross-shot jackpot ramp.
   2. `rules.lua`: attract → 3-ball game → skill shot → upper-flipper combo multipliers (2×–5×) → Powerball Mania (2× scoring; Powerball detected by opto closing while the eddy sensor stays open) → bonus and high-score entry.
@@ -747,14 +612,14 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 * **Verification:** Headless scripted game with state injection: skill shot, cross-shot ramp, Powerball dispense, magnet bypass, action switch; assert scores and display scenes.
 
 #### Subphase 6.2: Variant B — "Sky Deck"
-* **Model:** Opus 5.5 · **Target:** `tables/sky_deck/` · **Dependencies:** Gate A1
+* **Target:** `tables/sky_deck/` · **Dependencies:** Gate A1
 * **Deliverables:**
   1. Geometry: main deck at $Z = 0$ with lower flippers, slings, lanes, centre VUK and a left ramp with diverter; clear-acrylic upper deck at $Z = 65\text{ mm}$; 52 mm upper-right flipper on the upper deck (`collision_layer = 1`); captive Newton ball guarding "Reactor Core"; elevated 3-bank drops; upper-left wrap-around loop; acrylic return funnel.
   2. `rules.lua`: action switch toggles the "Sky Bridge Diverter" for 8.0 s in normal play; after the Newton ball and drop bank are complete, it starts "Night Overdrive": UV GI tint plus a Glo-Ball on the upper deck alongside a steel ball below.
 * **Verification:** Headless scripted run: VUK transition to layer 1, upper-flipper shots, Newton ball strike, drop bank, Glo-Ball launch, and proof that balls on different layers never collide.
 
 #### Subphase 6.4: "Feature Lab" Showcase Table *(restored features, playable)*
-* **Model:** Opus 5.5 · **Target:** `tables/feature_lab/` · **Dependencies:** Gate A1, 2.6, 2.7, 2.8, 5.5
+* **Target:** `tables/feature_lab/` · **Dependencies:** Gate A1, 2.6, 2.7, 2.8, 5.5
 * **Deliverables:**
   1. Geometry: a Banana lower-right flipper opposite a straight lower-left; a backbox mini-playfield with one vertical flipper, fed by a VUK; an open lower area cleared for the 79.4 mm ball; a holding magnet with a dispenser that can serve `standard_steel` or `low_rem_steel`.
   2. `rules.lua`: a mode selector on the action switch cycling through Banana shots, backbox play, XL-ball mode, magnet release comparison, and Glo-Ball mode with Magnus enabled.
@@ -769,7 +634,7 @@ Each subphase lists model, target, dependencies, deliverables and verification. 
 Rules are frozen after A2. Later tuning is data-only (`physics_defaults.toml` and table TOML), and the Lua/Wasm parity test stays in CI so any later rule change is caught.
 
 #### Subphase 6.3: Wasm Ports of Table Rules *(restored)*
-* **Model:** Opus 5.5 · **Target:** `tables/*/rules-wasm/` · **Dependencies:** 4.5, 6.1, 6.2, 6.4, Gate A2
+* **Target:** `tables/*/rules-wasm/` · **Dependencies:** 4.5, 6.1, 6.2, 6.4, Gate A2
 * **Deliverables:**
   1. Rust ports of the three tables' rules on the guest SDK, each built to `rules.wasm` and shipped beside `rules.lua`.
   2. CI step that rebuilds each `rules.wasm` and compares it with the committed binary.
@@ -780,14 +645,14 @@ Rules are frozen after A2. Later tuning is data-only (`physics_defaults.toml` an
 ### Phase 7: Profiling & Release
 
 #### Subphase 7.1: Latency Profiler & Determinism Soak
-* **Model:** Opus 5.5 · **Target:** `pin_app/profiler/` · **Dependencies:** 6.1, 6.2
+* **Target:** `pin_app/profiler/` · **Dependencies:** 6.1, 6.2
 * **Deliverables:**
   1. HUD: $99.9\text{th}$-percentile tick time (target $< 0.35\text{ ms}$), input latency from SDL event timestamp to the tick that applies coil torque (target $\le 1.5\text{ ms}$ at the 99th percentile), GPU frame time, command-queue overflow count.
   2. Soak test: 10-minute recorded multiball replays on both tables.
 * **Verification:** Soak replays are deterministic on each platform; cross-OS hashes are reported.
 
 #### Subphase 7.2: Packaging & Release
-* **Model:** Opus 5.5 · **Target:** `scripts/package.*`, `.github/workflows/release.yml` · **Dependencies:** 6.3, 7.1
+* **Target:** `scripts/package.*`, `.github/workflows/release.yml` · **Dependencies:** 6.3, 7.1
 * **Deliverables:**
   1. Release builds for Windows, Linux and macOS (universal `.app`, adding `x86_64-apple-darwin`).
   2. `greybox`, `apex_circuit`, `sky_deck` and `feature_lab` as `.pinbundle` archives beside the executable, each with `rules.lua` and, where ported, `rules.wasm`.
@@ -810,53 +675,7 @@ Work through `docs/HUMAN_ACCEPTANCE.md`:
 
 ## 5. Wave & Dependency Matrix
 
-A subphase never shares a wave with one of its dependencies. Where a crate appears twice in a wave, the module column shows the split. The **Model** column records who ran Waves 0–5 and the expected Implementer tier from Wave 6 on; the work-classifier makes the final choice (§2.5, D34).
-
-| Wave | Subphase | Model | Depends on | Crate / module |
-|---|---|---|---|---|
-| **0** | 0.1 Dependency spikes & pinning | Opus 5.5 | — | `spikes`, `versions.toml` |
-| **1** | 1.1 Contracts & triple buffer | Opus 5.5 | 0.1 | `pin_core` |
-| **2** | 1.2 CI skeleton | Opus 5.5 | 1.1 | `.github/workflows` |
-| **2** | 1.3 SDL3 windows & topology | Opus 5.5 | 1.1 | `pin_app/platform`, `pin_render/topology` |
-| **2** | 2.1 BVH, layers, C² splines | **Fable 5.2** | 1.1 | `pin_physics/world` |
-| **2** | 3.1 Input ingestion & staging | Opus 5.5 | 1.1 | `pin_input/events`, `staging` |
-| **2** | 4.2 Lua backend & hot reload | Opus 5.5 | 1.1 | `pin_script` |
-| **3** | 1.4 wgpu, orchestrator, debug render | Opus 5.5 | 1.3 | `pin_render/gpu`, `debug`; `pin_app/orchestrator` |
-| **3** | 2.2 CCD, spin, magnets, Newton | **Fable 5.2** | 2.1 | `pin_physics/ball` |
-| **3** | 3.2 X-Arcade, plunger, nudge | Opus 5.5 | 3.1 | `pin_input/profiles`, `calibration` |
-| **3** | 3.3 Audio mixer | Opus 5.5 | 1.1 | `pin_audio/mixer` |
-| **3** | 4.1 VFS, glTF, validation | Opus 5.5 | 1.1, 2.1 | `pin_assets` |
-| **3** | 4.5 Wasm backend *(restored)* | Opus 5.5 | 4.2 | `pin_script/wasm`, `guest-sdk` |
-| **4** | 2.3 Flipper solver | **Fable 5.2** | 2.2 | `pin_physics/flipper` |
-| **4** | 2.4 Bumpers, plunger, tilt | Opus 5.5 | 2.2 | `pin_physics/mech` |
-| **4** | 3.4 Haptics, SSF, telemetry | Opus 5.5 | 3.2, 3.3 | `pin_audio/ssf`, `telemetry`; `pin_input/haptics` |
-| **4** | 4.3 Table generator | Opus 5.5 | 4.1 | `pin_tablegen` |
-| **4** | 5.1 PBR & materials | Opus 5.5 | 1.4, 4.1 | `pin_render/pbr` |
-| **4** | 2.7 Magnus & remanence *(restored)* | Opus 5.5 | 2.2 | `pin_physics/ball_ext` |
-| **4** | 4.6 Placeholder asset kit | Opus 5.5 | 4.1 | `pin_assetgen` |
-| **5** | 2.5 Headless sim & replay | Opus 5.5 | 2.3, 2.4, 3.1, 4.1, 4.2 | `pin_sim`, `pin_physics/debug` |
-| **5** | 4.4 Menu UI | Opus 5.5 | 1.4, 3.2, 4.1 | `pin_app/ui`, `pin_render/ui` |
-| **5** | 5.2 Probes & HDR post | Opus 5.5 | 5.1 | `pin_render/reflections`, `post` |
-| **5** | 5.3 Backglass & DMD/LCD | Opus 5.5 | 5.1 | `pin_render/displays` |
-| **5** | 2.6 Banana flipper *(restored)* | **Fable 5.2** | 2.3 | `pin_physics/flipper_banana` |
-| **5** | 2.8 Large balls & clearance *(restored)* | Opus 5.5 | 2.3, 4.3 | `pin_tablegen/clearance`, `pin_physics/tests` |
-| **5** | 3.5 DOF bridge *(restored)* | Opus 5.5 | 3.4 | `tools/dof_bridge` |
-| **6** | 6.0 Integration & grey-box (M1) | Opus 5.5 | 2.5, 3.4, 4.3, 4.4, 4.6, 5.1 | `pin_app/orchestrator`, `tables/greybox` |
-| **6** | 5.4 Ray-query reflections *(restored)* | Opus 5.5 | 5.2 | `pin_render/raytrace` |
-| **6** | 5.5 Backbox playfield & toys *(restored)* | Opus 5.5 | 2.3, 4.3, 5.3 | `pin_render/backbox`, `pin_tablegen/backbox` |
-| **6** | 2.9 Autoplay bot & soak harness | Opus 5.5 | 2.5 | `pin_sim/autoplay` |
-| — | **Gate A1** (automated) | Orchestrator | 6.0, 2.9 | Physics reference suite + grey-box soak |
-| **7** | 6.1 Apex Circuit | Opus 5.5 | Gate A1 | `tables/apex_circuit` |
-| **7** | 6.2 Sky Deck | Opus 5.5 | Gate A1 | `tables/sky_deck` |
-| **7** | 6.4 Feature Lab *(restored)* | Opus 5.5 | Gate A1, 2.6, 2.7, 2.8, 5.5 | `tables/feature_lab` |
-| — | **Gate A2** (automated) | Orchestrator | 6.1, 6.2, 6.4 | Table soak; rules frozen |
-| **8** | 6.3 Wasm rule ports *(restored)* | Opus 5.5 | 4.5, 6.1, 6.2, 6.4, Gate A2 | `tables/*/rules-wasm` |
-| **8** | 7.1 Profiler & soak | Opus 5.5 | 6.1, 6.2 | `pin_app/profiler` |
-| **9** | 7.2 Packaging & release | Opus 5.5 | 6.3, 7.1 | `scripts`, `.github/workflows/release.yml` |
-
-| — | **Final Human Acceptance** (Phase 8) | Human | 7.2 | Feel, hardware, visuals, real assets |
-
-**Totals:** 37 subphases · 10 waves (0–9) · Waves 0–5: Opus 5.5 × 23, Fable 5.2 × 4 · Waves 6–9: routed per D34, expected Opus 5.5 or lower for all 10 remaining subphases plus fix work, Fable 5.2 only by exception · 2 automated gates · 1 human step at the end.
+The build history is recorded in `docs/RUN_LOG.md`; the plan is the set of GitHub issues.
 
 ---
 
@@ -874,6 +693,269 @@ Subphase 0.1 re-runs these checks as executable spikes and pins the versions in 
 | 6 | How DOF receives events | **Confirmed.** DOF runs as a plugin of B2S.Server and is fed table-element updates (type, number, value) by its host | Shapes the bridge design in 3.5 |
 
 Sources: docs.rs/sdl3 · docs.rs/crate/parry3d/latest · docs.rs/crate/mlua (tests/hooks.rs, tests/memory.rs) · docs.rs/wgpu-types `PresentMode` · docs.rs/wgpu `Features` · github.com/gfx-rs/wgpu/issues/6762 · directoutput.github.io/DirectOutput
+
+---
+## 7. Presentation and Play Experience
+
+Added 2026-11-20 after the owner's first final-acceptance session (Phase 8) rejected the build:
+the window showed a flat top-down view with the backglass and score display as picture-in-picture
+boxes; the tables did not look like real machines and most mechanisms were not drawn; the
+flippers reacted about one second after the key press; and the ball's motion looked wrong. Every
+gate in Waves 0–9 ran headless, so none of this was measured. This section states what the
+player-facing build must do. Requirements carry IDs (`REQ-<AREA>-<NNN>`); work-unit issues in
+milestone `M1 — Play experience` cite them. Appendix E gives the real-machine reference and
+Appendix F the table-design and visual rules these requirements point to.
+
+### 7.0 The machine is a build, described in data (`BUILD`)
+
+- **REQ-BUILD-001** A table bundle describes a complete physical machine the way a builder would
+  specify a real one from scratch. Every part (cabinet, legs and levelers, backbox, glass,
+  lockdown bar, rails, buttons, coin door, plunger, speakers, score display, playfield and its
+  art, every playfield part, every lamp, GI bulb and flasher, every plastic, ramp, toy and
+  decoration) is defined by its type, dimensions, shape, material and finish, and placement.
+  Nothing that can be seen or touched is hard-coded in the generator, the simulation or the
+  renderer: they read it all from the bundle.
+- **REQ-BUILD-002** Placement uses two documented frames: the playfield frame of Appendix A (mm,
+  x across, y up the table, z up from the playfield surface) for everything mounted on or above
+  the playfield, and a cabinet frame for the cabinet, legs and backbox and what is mounted on
+  them. The playfield's mount in the cabinet (its position and angle relative to the cabinet
+  body) is itself data.
+- **REQ-BUILD-003** Named presets supply defaults so a table states only what differs: cabinet
+  families (REQ-CAB-004), leg styles, and part styles (post, star post, rubber ring sizes and
+  colours, pop bumper, slingshot, flipper bat and rubber, drop and stand-up target, spinner, gate,
+  lane guide, wireform, plastic ramp, plastic, GI bulb, flasher dome, insert). Any preset field
+  can be overridden per table and per part instance.
+- **REQ-BUILD-004** Materials: a library of named materials (render parameters, Subphase 5.1)
+  that any part can reference and any table can extend. For a part the ball can touch, the same
+  entry names its physical material in the material-pair table (Appendix C), so a part that looks
+  like rubber also plays like rubber.
+- **REQ-BUILD-005** Units are mm, g and degrees in files (D17) and unknown keys are validation
+  errors (Appendix A). New schemas and fields are documented in Appendix A by the work unit that
+  adds them. Defaults reproduce today's tables where a field is not given.
+
+### 7.1 The machine in 3D (`VIEW`)
+
+- **REQ-VIEW-001** In single-window mode the default presentation is one perspective 3D scene of
+  the whole pinball machine, seen from the player's position: the cabinet on its legs, the
+  playfield inside the cabinet at the attitude its legs give it (REQ-CAB-008) under the glass, and
+  the backbox standing on the rear of the cabinet with the backglass (translite) in its upper part
+  and the score display (DMD or LCD, §4 Subphase 5.3) in the speaker panel below it. Its size and
+  shape come from the table's cabinet geometry (REQ-CAB-003).
+- **REQ-VIEW-002** The backglass and the score display are drawn on the 3D backbox from the
+  output of the Subphase 5.3 renderers, as textures sampled in the scene (emissive, behind
+  glass). The picture-in-picture layout of Subphase 1.3 stays available as an option and is off
+  by default.
+- **REQ-VIEW-003** Multi-monitor cabinet mode (Subphase 1.3) keeps dedicated windows for the
+  backglass and the score display; the playfield window uses the Cabinet camera (REQ-CAM-004) and
+  draws no backbox.
+- **REQ-VIEW-004** The machine stands in a simple room (floor, back wall, soft ambient light and
+  one key light) so no camera shows an empty black void around it.
+- **REQ-VIEW-006** The in-game menu of Subphase 4.4 (`Esc` or the controller Menu button) and its
+  `config.toml` are live in the app: the overlay opens over the running game, and settings
+  (display, camera, quality, input) apply and persist.
+- **REQ-VIEW-005** Moving cabinet parts follow the inputs: the flipper buttons press in with the
+  flipper switches, the plunger rod pulls back and releases with the launch input or analog
+  plunger, and the start and action buttons light and press.
+
+### 7.2 Cameras (`CAM`)
+
+- **REQ-CAM-001** At least ten desktop camera presets, each a distinct view of the machine
+  (different eye position, target, field of view, or framing rule), covering: views that show the
+  whole playfield with the backbox above it, views zoomed in on the playfield with no backbox in
+  frame, far views that show the whole machine, angled views that show the cabinet sides, and
+  ball-following views. The required set is:
+
+  | # | Preset | Kind | Must keep in frame |
+  |---|---|---|---|
+  | 1 | Standard (default) | static | whole playfield, whole backbox |
+  | 2 | Standard Low | static | whole playfield, score display; translite may be cropped |
+  | 3 | Full Machine | static | the whole machine including legs and floor contact |
+  | 4 | High Overhead | static | whole playfield; backbox out of frame |
+  | 5 | Top-Down | static | whole playfield seen along the playfield normal; backbox out of frame |
+  | 6 | Close Playfield | static | whole playfield filling the window height; backbox out of frame |
+  | 7 | Flipper Zone | ball-following | flippers, slings and inlanes always; follows the ball up the table |
+  | 8 | Follow Close | ball-following | the ball and a 300 mm radius around it; backbox out of frame |
+  | 9 | Follow Wide | ball-following | the ball and half the playfield; backbox enters when the ball is in the top third |
+  | 10 | Left Three-Quarter | static | whole playfield and the left cabinet side art |
+  | 11 | Right Three-Quarter | static | whole playfield and the right cabinet side art |
+  | 12 | Backbox Showcase | static | whole backbox and the top third of the playfield |
+
+  Exact eye, target and field-of-view values are set by the camera work unit and tuned at final
+  acceptance; the "must keep in frame" rule is normative.
+- **REQ-CAM-002** Presets are selected in the menu's Display panel (by name, in the order above),
+  directly with `F1`–`F12` (presets 1–12), cycled with `V` (next) and `B` (previous), and with
+  D-pad right/left on a gamepad, at any time including during play. Camera keys never produce a
+  cabinet input and no cabinet input in a shipped input profile uses them. The choice persists in
+  `config.toml` globally, with an optional per-table override.
+- **REQ-CAM-003** A Custom preset lets the player adjust distance, height, pitch, field of view and
+  lateral offset from the menu; it is saved like REQ-CAM-002.
+- **REQ-CAM-004** A Cabinet preset for a physical cabinet whose playfield monitor lies flat: the
+  playfield only, projected for a horizontal screen viewed from the player's eye point, with
+  rotation for portrait-mounted monitors. It is the default in cabinet mode and is not in the
+  desktop cycle.
+- **REQ-CAM-005** Ball-following presets track the lowest live ball (the one nearest the flippers)
+  with critically damped smoothing whose result does not depend on frame rate, never let the
+  tracked ball leave the frame, and never move by more than 3 % of the frame height per frame at
+  60 Hz.
+- **REQ-CAM-006** Switching presets blends eye, target and field of view over at most 300 ms.
+- **REQ-CAM-007** Every preset meets its "must keep in frame" rule, with at least a 2 % margin, at
+  aspect ratios 16:9, 16:10, 21:9, 4:3 and 9:16 (a rotated monitor), checked analytically by
+  projecting the relevant corners.
+
+### 7.3 Cabinet, backbox and art (`CAB`)
+
+- **REQ-CAB-001** A cabinet model generated from the table's cabinet geometry (REQ-CAB-003) with: cabinet body, legs with
+  levelers and leg brackets, lockdown bar, side rails, playfield glass, coin door with coin slots
+  and lit buttons, start button, flipper buttons on both sides, action button, plunger with knob,
+  rod and housing, backbox with its hinge/bracket, translite frame and speaker panel with two
+  speaker grilles and the score-display window.
+- **REQ-CAB-002** Art on every visible surface, generated from the table's theme (title, palette,
+  motif; Subphase 4.6 placeholder kit): cabinet side art (both sides), front art, backbox side
+  art, inside art blades on the cabinet walls above the playfield, apron with score and
+  instruction cards, and the translite. Every art surface has a stable asset ID so real art
+  replaces it without code or schema changes (D32).
+- **REQ-CAB-003** Cabinet and backbox geometry is data, like the rest of a table: a per-table
+  `cabinet.toml` (schema documented in Appendix A by the owning work unit, units mm and degrees
+  per D17) sets every dimension and shape parameter the generator uses: cabinet width, length,
+  front and rear body height, leg length and leveler extension (which together with the body
+  heights give the playfield pitch's consistency check), lockdown bar profile and height, side
+  rail profile, wall thickness, playfield inset and glass channel; backbox width, height, depth,
+  front profile (flat or angled), top profile (flat, angled or arched), translite opening, speaker
+  panel height, grille positions and score-display window; button, coin door and plunger
+  positions; colours and trim (metal finish, leg and rail colour); and art asset overrides. Nothing
+  about the cabinet is hard-coded in the generator or the renderer.
+- **REQ-CAB-004** `cabinet.toml` may start from a named preset (`preset = "<id>"`) and override any
+  field. The engine ships presets whose dimensions match common real machine body styles
+  (Appendix E), at least the four listed there. Preset names are generic. Without a
+  `cabinet.toml` the table gets the `classic_standard` preset.
+- **REQ-CAB-005** Validation: the cabinet must contain the table (playfield outline, glass height,
+  ramps and toys below the glass, the backbox clear of the playfield); a violation is a
+  bundle-validation error naming the field.
+- **REQ-CAB-007** Legs are parts like any other: per leg, length, cross-section (square, round or
+  tapered, with its dimensions), material and finish (for example chrome, brushed steel,
+  powder-coated colour), leg bracket and bolt style, and leveler (thread length, extension, foot
+  shape). Front and rear legs, and left and right levelers, are set independently; a leg-style
+  preset (REQ-BUILD-003) supplies defaults.
+- **REQ-CAB-008** The tilt comes from the build. The playfield's attitude (pitch along the table and
+  roll across it) is computed from the cabinet geometry, the playfield's mount in the cabinet and
+  the effective length of each leg (leg plus leveler extension), standing on a level floor. The
+  simulation's gravity direction is this derived attitude, so lengthening the rear levelers
+  steepens the game and an unlevel cabinet pulls the ball to one side, as on a real machine.
+  `meta.pitch_deg` becomes optional; when given it must agree with the derived pitch within 0.05°
+  (validation error otherwise) and documents the intended pitch. Every preset is level side to
+  side and gives its family's usual pitch with default levelers. The work unit that introduces the
+  derived gravity changes simulation output for every table (very-high blast radius, PROCESS.md
+  P3): it re-baselines replay digests once and re-runs Gates A1 and A2, whose analytic checks use
+  the derived pitch.
+- **REQ-CAB-006** The example tables each use one of the shipped presets (Appendix E) and keep that
+  body style's playfield size; the assignment is in Appendix E.
+
+### 7.4 What you see is what you hit (`VIS`)
+
+- **REQ-VIS-001** Every collider and mechanism the simulation uses (walls, posts, rubbers, guides,
+  lanes, ramps, wireforms, decks, bumpers, slingshots, drop and stand-up targets, spinners,
+  rollovers, scoops, VUKs, kickbacks, gates, diverters, magnets, Newton balls, plungers,
+  flippers, troughs and the apron) has a visual mesh generated from the same parameters as its
+  collider. Visual and collision surfaces agree within 0.5 mm. A bundle with a collider that has
+  no visual is a validation error.
+- **REQ-VIS-002** Moving parts are drawn where the simulation has them on every frame: flipper
+  bats (true `FlipperShape`, with rubber), bumper rings and skirts, slingshot arms, drop targets,
+  spinner flags, gates, diverters, plunger, kickbacks, toys and balls.
+- **REQ-VIS-003** The playfield carries its generated artwork (Appendix F) as a texture under a
+  clear coat, with inserts set into it and lit from below.
+- **REQ-VIS-004** Lighting and materials: shadows from the room key light and the GI onto the
+  playfield (the ball casts a visible contact shadow), GI lamps along the playfield edges and
+  under plastics, flashers that light their surroundings and bloom, inserts that light the ball,
+  and distinct materials for chrome and brushed steel, white and black rubber, clear and
+  coloured plastic with printed art, wireform, wood, glass and translite.
+- **REQ-VIS-005** Quality presets (Low, Medium, High) so that the Standard camera renders at the
+  display refresh rate (60 Hz minimum) at 1920×1080 on the reference integrated GPU class named by
+  the render work unit with Low, and on a mid-range discrete GPU with High.
+
+- **REQ-VIS-006** No ball is ever drawn passing through a drawn surface. Walls and guides inside
+  the cabinet are as tall as their part style says (default 35 mm, at least 1.2 ball diameters for
+  a guide that must contain a rolling ball) and are drawn and collided at that height; only the
+  cabinet's inner walls rise to the glass. Ramps, wireforms and decks clear every layer-0 wall
+  they pass over by at least one ball diameter, checked by the bundle validator.
+- **REQ-VIS-007** A ball inside a scoop, VUK, saucer, subway or trough is drawn sinking into the
+  hole and is hidden below the playfield until it is ejected at the exit; it is never drawn
+  jumping across the table.
+
+### 7.4a Feel (`FEEL`)
+
+- **REQ-FEEL-001** Flipper and mechanism defaults sit in the middle of the Appendix C feel windows,
+  not at their edges: a full shot from a cradled standard ball leaves at 5.0 ± 0.5 m/s for
+  contacts between 35 % and 85 % of the bat (it measured 3.2–3.7 m/s at 35–85 % in Wave 4, at the
+  floor of the 3–7 m/s window); stroke time stays inside 20–35 ms; bumper and slingshot exit
+  medians in play lie between 2.2 and 3.3 m/s. The coil rise and fall time constants become
+  Appendix C tunables with bounds. Retuning is data-only (`physics_defaults.toml`) and changes
+  simulation output for every table (very-high blast radius): the unit re-baselines replay
+  digests and re-runs Gates A1 and A2. Final acceptance may retune within the bounds.
+- **REQ-FEEL-002** The physics checks that showed the solver correct stay in CI as regressions:
+  deck acceleration within 0.1 % of 5/7·g·(sin θ − c cos θ); slide-to-roll time within 5 % of
+  2v/(7 μ g cos θ); normal restitution within ±0.005 of the material-pair table for approaches of
+  0.1 m/s or more; no passive energy gain; free-flight energy drift at most 0.1 %; no tunnelling up
+  to 20 m/s.
+
+### 7.5 Responsiveness (`LAT`)
+
+- **REQ-LAT-001** Flipper response: from the SDL timestamp of a flipper key or button press to the
+  first presented frame in which that bat has moved at least 1°, at most two display refresh
+  intervals (33 ms at 60 Hz) at the 99th percentile, in the real windowed app.
+  On CI (software renderer) the same path is checked in frames: at most two presented frames
+  from the event to the first frame showing the bat moved.
+- **REQ-LAT-002** Real time: the simulation advances at wall-clock rate. Over 60 s of play in the
+  windowed app on the acceptance machine the ratio of simulated to wall time is at least 0.999
+  and no ticks are dropped. On CI under the software renderer, with the Low quality preset and
+  the renderer's worker threads capped to leave one core for the simulation, at most 0.1 % of
+  ticks are dropped.
+- **REQ-LAT-003** The app can record a latency trace (`--latency-trace <file>`): per input event,
+  the SDL timestamp, the tick that applied it, the tick the bat first moved, the frame that drew
+  it and that frame's present time. The profiler HUD (Subphase 7.1) shows key-to-coil and
+  key-to-photon p50/p99, presented frames per second and dropped ticks.
+- **REQ-LAT-004** An input is applied in the tick whose time span contains its timestamp, whatever
+  the time between process start and simulation start and however many ticks the catch-up cap
+  has dropped: from the SDL timestamp to the tick that applies it is at most 1 ms plus the sim
+  thread's wake-up latency, at every point in a session. (Root cause of the owner's report: the
+  app's sim loop and the simulation's input ingest gate the same timestamp against two different
+  epochs, delaying every input by the startup time plus the dropped ticks.)
+- **REQ-LAT-005** The input-latency metric of the profiler measures from the SDL timestamp to the
+  tick in which the input took effect (for a flipper, the tick its coil is energised), not to the
+  tick the sim loop received it.
+- **REQ-LAT-006** The playfield surface queues at most one frame ahead of the display
+  (`desired_maximum_frame_latency` 1). On a CPU (software) graphics adapter the app warns once
+  and starts with the Low quality preset.
+
+### 7.6 Reference tables (`TBL`)
+
+- **REQ-TBL-001** Apex Circuit, Sky Deck and Feature Lab are redesigned to the table-design rules
+  of Appendix F and look like finished machines under REQ-VIEW, REQ-CAB and REQ-VIS. Each keeps
+  the features its §4 subphase (6.1, 6.2, 6.4) requires. The grey box keeps its geometry (it is
+  the Gate A1 reference) and gets the cabinet.
+- **REQ-TBL-002** A magnet is a visible, deliberate feature: it sits under a marked insert or a
+  visible magnet cap, fires only when the rules arm it for a feature the player can see lit, and
+  never acts on the plunge path. Powerball detection uses the eddy sensor and opto pair alone.
+  (Measured: Apex Circuit's shooter-lane magnet changes a plunged ball's speed by under 0.7 %, so
+  it is not why the ball looked wrong; it moves because a magnet on the plunge path is not a
+  feature a player can see or use.)
+- **REQ-TBL-003** The rule freeze of Gate A2 is lifted for these tables until Gate A3 passes; then
+  it applies again. Every rules change ships its Wasm port (Subphase 6.3) in the same PR.
+
+### 7.7 Gate A3: play experience (`GATE`)
+
+- **REQ-GATE-001** Gate A3 (automated) runs on `main` after the M1 table work and before final
+  acceptance, and passes only when all hold, in the real windowed app on CI's Linux runner (Xvfb
+  and lavapipe) unless stated:
+  1. REQ-LAT-001 measured with injected key events (frame counts; at most two presented frames
+     between the event and the first frame showing the bat moved), and REQ-LAT-002;
+  2. REQ-VIS-001 and REQ-VIS-006 validators clean for every shipped table, and the REQ-FEEL-001
+     and REQ-FEEL-002 checks passing;
+  3. REQ-CAM-007 framing checks for every preset and aspect;
+  4. the Appendix F screenshot set (every table × every preset) rendered, with its D30 analytic
+     assertions passing and the images attached to the gate run;
+  5. Gate A2 re-run on the redesigned tables, passing.
+- **REQ-GATE-002** Final human acceptance (Phase 8) adds: camera presets, flipper response, the
+  look of each table and cabinet, and quality presets on the owner's hardware.
 
 ---
 
@@ -1147,71 +1229,98 @@ These populate `physics_defaults.toml`. They are engineering starting points, no
 | Bumper kick exit speed | 1.5–4 m/s |
 | Slingshot kick exit speed | 1.5–4 m/s |
 
----
-
 ## Appendix D: Subphase Brief Template
 
-The work-classifier fills this in for each delegation (§2.5, §2.6), and the Orchestrator passes it verbatim to the named agent. A brief must be usable without access to this document.
+Moved to `docs/BRIEF_TEMPLATE.md`.
 
-```text
-WORK ITEM <id>: <title>          AGENT: task-executor | work-verifier | issue-investigator
-ROLE: Implementer | Independent Tester | Fixer | Verifier | Investigator
-MODEL: <Haiku 5.5 | Sonnet 5.5 | Opus 5.5 | Fable 5.2>   TIER: T0–T3 (+ D34 evidence if T3)
-BRANCH: <branch>   BASE: main   PR: <number or "not yet open">
+---
 
-OWNED PATHS (you may modify only these):
-  <paths>
-READ-ONLY CONTEXT:
-  <public APIs of dependency subphases, with signatures>
+## Appendix E: Cabinet Presets and Real-Machine Reference (normative)
 
-GOAL
-  <one paragraph>
+Presets reproduce three common real body styles (REQ-CAB-004). Values marked † are design values
+chosen to be consistent with the measured ones where no measurement was available; every value
+can be overridden in `cabinet.toml` and may be retuned at final acceptance. Heights are with the
+levelers fully in unless stated.
 
-REQUIREMENTS / DELIVERABLES
-  <numbered, each testable; for a CodeRabbit finding: the quoted comment, thread URL,
-   file:lines, and what "fixed" means>
+| Field | `classic_standard` | `classic_widebody` | `modern_standard` |
+|---|---|---|---|
+| Cabinet width | 560 mm | 630 mm | 559 mm |
+| Cabinet body length (plunger excluded) | 1315 mm | 1315 mm | 1308 mm |
+| Body height, front / rear | 400 / 605 mm | 400 / 605 mm | 413 / 603 mm |
+| Legs (all four, same length) | 724 mm, chrome, ribbed | 724 mm, black | 778 mm, wrinkle black |
+| Leveler | 3 in (76 mm) bolt; extension 0–44 mm† | as standard | 3/8-16 × 3 in bolt; fully in adds 25 mm, fully out adds a further 44 mm |
+| Floor to lockdown bar top | 910 mm | 910 mm | 914 mm |
+| Flipper button centres above floor | 860 mm | 860 mm | 864 mm† |
+| Backbox width × height × depth | 730 × 730 × 250 mm | 730 × 730 × 250 mm | 705 × 711 × 250† mm |
+| Floor to top of backbox | 1930 mm | 1930 mm | 1911 mm |
+| Backglass (glass) | 686 × 479 mm | 686 × 479 mm | 658 × 487 × 3.2 mm |
+| Translite visible opening | 656 × 449 mm† | 656 × 449 mm† | 628 × 457 mm† |
+| Score display window | DMD 128×32, 320 × 80 mm† | DMD 128×32, 320 × 80 mm† | LCD 16:9, 15.6 in diagonal (345 × 194 mm) |
+| Playfield glass | 533 × 1092 × 4.8 mm | 603 × 1092 × 4.8 mm | 533 × 1092 × 4.8 mm |
+| Playfield (width × length) | 514 × 1070 mm† | 584 × 1070 mm† | 514 × 1070 mm† |
+| Pitch with default levelers | 6.5° | 6.5° | 6.5° |
+| Side-to-side | level | level | level |
 
-CONTRACTS YOU MUST HONOUR
-  <relevant excerpts of §3 and Appendices A–C, inlined in full>
+Notes. The playfield size matches the glass less the 19 mm overhang of the standard body
+(514 mm is the Appendix A.3 default). The speaker panel fills the backbox front below the
+translite opening, with two round grilles left and right of the score-display window†. Legs bolt
+to the cabinet corners; the playfield's mount angle in the cabinet is whatever gives the listed
+pitch with level legs.
 
-RULES
-  <§2.3 rules 1–9, inlined in full>
+**Example tables (REQ-CAB-006):** grey box and Apex Circuit use `classic_standard`; Sky Deck uses
+`modern_standard` and an LCD score display (Subphase 5.3 LCD mode); Feature Lab uses
+`classic_widebody`, whose wider playfield gives the 79.4 mm ball and the backbox mini-playfield
+room.
 
-TESTS REQUIRED
-  <tests to add or update; existing suites that must still pass>
+Inventory of a real machine that the generated machine reproduces (REQ-CAB-001, REQ-VIS-001):
+cabinet body, side art, front art, legs with levelers, leg brackets, lockdown bar, side rails,
+glass, coin door, start button, flipper buttons, action button, plunger, backbox, translite,
+speaker panel, score display, inside art blades, apron with cards, shooter lane, trough cover,
+playfield with art and clear coat, inserts, GI bulbs, flashers, posts with rubber rings, star
+posts, metal and plastic guides, lane guides, rollover switches, stand-up and drop targets,
+spinners, pop bumpers (base, body, ring, skirt, cap), slingshots (rubber, kicker arm, plastic
+cover), scoops and saucers, VUKs, kickbacks, one-way gates, diverters, wireform and plastic ramps
+with flaps and supports, plastics (printed acrylic on posts), magnets under caps or inserts,
+flippers (bat, rubber, shaft).
 
-COMMANDS
-  <exact cargo commands with the environment variables for this run>
+## Appendix F: Table Design Rules and Visual Checks (normative)
 
-VERIFICATION CRITERIA
-  <numbered list copied from the plan, with tolerances>
+**F.1 Layout and flow** (REQ-TBL-001)
+1. Two 76 mm lower flippers with the Subphase 2.3 geometry; a slingshot directly above each
+   flipper; an inlane and an outlane on each side separated by a post.
+2. Every shot (orbit, ramp, scoop, target bank, spinner lane, top lanes) is in view from the
+   Standard camera and makeable from at least one flipper. Every ramp and orbit returns the ball
+   to an inlane or a flipper; no shot drops the ball straight down the centre.
+3. Shot entrances are at least 40 mm wide for the 27 mm ball (wider where a profile needs it,
+   Subphase 2.8).
+4. The plunge feeds a skill shot (top lanes or a lit target) and never passes an armed magnet
+   (REQ-TBL-002).
+5. Lit arrow inserts in front of each shot show what to shoot; GI frames the playfield.
+6. No resting places outside holes, locks and cradled flippers (Gate A2 stuck-ball check).
 
-VISUAL CHECKLIST (render subphases only)
-  <what a correct image must show>
+**F.2 Rules and feedback**
+1. Attract mode with a lamp show; game start, ball save after an early drain, extra ball, match,
+   bonus count and high-score entry.
+2. Every mode has a start (score-display scene and sound), a goal shown with lit inserts, and an
+   end.
+3. Every scoring switch has a sound and a lamp or display response.
 
-GATE / DONE WHEN
-  <the subphase gate from §2.6, inlined, or the checks the work-verifier will run>
+**F.3 Art**
+1. Playfield art: a theme background, outlined shot lanes, insert shapes with labels, the table
+   logo, and apron cards with the rules summary and scoring.
+2. Cabinet, backbox and translite art share the playfield's theme (title, palette, motif).
 
-WHEN SOMETHING IS UNCLEAR
-  Choose the option most consistent with the decision log excerpts below, record it in
-  a new docs/decisions/<YYYY-MM-DD>-<unit-id>.md, add a line in docs/queue/<unit-id>.md, and
-  continue. Do not wait.
-  <relevant decision-log rows>
-
-ROLE-SPECIFIC
-  Implementer:        deliver code + unit tests; do not read tests/spec_*.
-  Independent Tester: you have NOT seen the implementation and must not ask for it.
-                      Write black-box and property tests under tests/spec_* from this brief alone.
-  Fixer:              smallest change that meets "fixed"; regression test; name the thread(s).
-                      Do not reply to or resolve threads unless told to; the Orchestrator does (D37).
-  Verifier:           re-run every gate step; trace each requirement to a passing test;
-                      no style or design opinions (CodeRabbit reviews the PR).
-  Investigator:       reproduce, root-cause, verdict, fix plan; change no repository files.
-
-REPORT FORMAT
-  status: done | pass | fail | blocked | root-caused | not-found
-  requirements: <each → met (test) | not met>
-  gate results: <per step>
-  decisions logged: <list>
-  contract-change requests: <list>
-```
+**F.4 Screenshot set and checks** (REQ-GATE-001 item 4)
+- Set: for each shipped table, every desktop preset at 1920×1080, plus Standard at 1080×1920
+  (9:16), rendered on CI (lavapipe) from a fixed replay frame with one ball in play.
+- Analytic assertions (D30a) per image: the playfield region is not flat (luminance standard
+  deviation above a threshold set by the gate work unit); the ball's contact-shadow region is at
+  least 20 % darker than the surrounding playfield; in presets with the backbox in frame the
+  score-display region's mean colour matches the display texture within tolerance and the
+  translite region is non-uniform; no pixel region at the playfield or cabinet location is the
+  clear colour.
+- Visual checklist (D30c), checked by the work-verifier opening the images: the machine reads as a
+  real pinball machine (legs, cabinet, glass, backbox with translite and lit display below it,
+  where in frame); every mechanism is drawn; the playfield has art; no z-fighting, missing faces,
+  geometry poking through the glass or cabinet, or stretched textures; display text is readable
+  in Standard at 1080p.
