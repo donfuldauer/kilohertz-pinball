@@ -74,3 +74,8 @@ required-features = ["gpu-tests"]
 name = "presenter_thread_window"
 harness = false
 required-features = ["gpu-tests"]
+
+[[test]]
+name = "profiler_debug_view_window"
+harness = false
+required-features = ["gpu-tests"]
