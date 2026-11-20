@@ -289,7 +289,7 @@ fn a_ball_in_fast_play_is_not_stuck() {
     let f = driven("clean", 400, 40, |t| {
         // A 100 mm circle at 1 m/s (one lap per ~628 ms).
         let a = t as f32 * 1.0e-3 / 0.1;
-        let (s, c) = a.sin_cos();
+        let (s, c) = libm::sincosf(a);
         ([0.257 + 0.1 * c, 0.450 + 0.1 * s, R], [-s, c, 0.0])
     });
     assert!(f.is_empty(), "{f:?}");

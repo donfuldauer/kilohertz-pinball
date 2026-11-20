@@ -311,7 +311,7 @@ fn noisy_cosine_snaps_report_the_peak() {
                 r.hold(0.8, 100);
                 for k in 1..=snap_ms {
                     let u = k as f32 / snap_ms as f32;
-                    r.feed(0.4 * (1.0 + (std::f32::consts::PI * u).cos()));
+                    r.feed(0.4 * (1.0 + libm::cosf(std::f32::consts::PI * u)));
                 }
                 r.hold(0.0, 300);
                 let rel = r.take();

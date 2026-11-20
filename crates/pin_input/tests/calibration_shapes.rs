@@ -25,14 +25,14 @@ impl Shape {
     fn at(self, u: f32, depth: f32) -> f32 {
         match self {
             Shape::Linear => 1.0 - u,
-            Shape::QuarterSine => (PI / 2.0 * u).cos(),
+            Shape::QuarterSine => libm::cosf(PI / 2.0 * u),
             Shape::Preloaded(p) => {
                 let p = p / depth;
-                let w = (p / (1.0 + p)).acos();
-                (1.0 + p) * (w * u).cos() - p
+                let w = libm::acosf(p / (1.0 + p));
+                (1.0 + p) * libm::cosf(w * u) - p
             }
             Shape::ConstAccel => 1.0 - u * u,
-            Shape::HalfCosine => 0.5 * (1.0 + (PI * u).cos()),
+            Shape::HalfCosine => 0.5 * (1.0 + libm::cosf(PI * u)),
             Shape::Decelerating => (1.0 - u) * (1.0 - u),
         }
     }

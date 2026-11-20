@@ -83,7 +83,7 @@ fn tilt_bob_is_deterministic() {
         for t in 0..20_000u32 {
             if t % 1700 == 3 {
                 let a = t as f32 * 0.01;
-                bob.nudge(Vec3::new(0.4 * a.cos(), 0.4 * a.sin(), 0.1));
+                bob.nudge(Vec3::new(0.4 * libm::cosf(a), 0.4 * libm::sinf(a), 0.1));
             }
             bob.step(DT);
             h.vec3(bob.offset());

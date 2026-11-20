@@ -947,7 +947,11 @@ mod tests {
         let rho = 0.5 * w;
         for j in 1..3 {
             let a = -core::f32::consts::FRAC_PI_2 + core::f32::consts::PI * j as f32 / 3.0;
-            pts.push(Vec3::new(0.2 + rho * a.cos(), rho + rho * a.sin(), R));
+            pts.push(Vec3::new(
+                0.2 + rho * libm::cosf(a),
+                rho + rho * libm::sinf(a),
+                R,
+            ));
         }
         pts.extend((0..=20).map(|i| Vec3::new(0.2 - 0.01 * i as f32, w, R)));
         CubicSpline::interpolate(&pts).unwrap()
