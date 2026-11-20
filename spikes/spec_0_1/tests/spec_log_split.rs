@@ -25,7 +25,7 @@ const IMPORTED: &str = "Imported — docs/decisions/";
 /// The kinds of `[P8 <kind>]` queue items (PROCESS.md P8).
 const P8_KINDS: [&str; 6] = ["spec", "hardware", "assets", "release", "legal", "setting"];
 
-static FENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^ {0,3}(```|~~~)").unwrap());
+static FENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^ {0,3}(`{3,}|~{3,})(.*)$").unwrap());
 static ENTRY_HEADING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(\S.*?) — (\S.*)$").unwrap());
 static IMPORTED_NAME: LazyLock<Regex> =
@@ -34,16 +34,33 @@ static LIST_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*- (.*)$").
 static P8_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\[P8 ([a-z]+)\] \[[^\]\s][^\]]*\] \S").unwrap());
 
-/// Lines outside fenced code blocks.
+/// Lines outside fenced code blocks. A block closes only on a fence of the
+/// opening character, at least as long as the opening run, with nothing but
+/// whitespace after it (CommonMark).
 fn unfenced(text: &str) -> Vec<&str> {
-    let mut fence = false;
+    // Opening fence character and run length while inside a block.
+    let mut open: Option<(char, usize)> = None;
     let mut out = Vec::new();
     for l in text.lines() {
-        if FENCE.is_match(l) {
-            fence = !fence;
-            continue;
+        let fence = FENCE.captures(l).map(|c| {
+            let run = c.get(1).map_or("", |m| m.as_str());
+            let rest = c.get(2).map_or("", |m| m.as_str());
+            (run.chars().next().unwrap_or('`'), run.len(), rest)
+        });
+        match (open, fence) {
+            (None, Some((ch, len, _))) => {
+                open = Some((ch, len));
+                continue;
+            }
+            (Some((och, olen)), Some((ch, len, rest)))
+                if ch == och && len >= olen && rest.trim().is_empty() =>
+            {
+                open = None;
+                continue;
+            }
+            _ => {}
         }
-        if !fence {
+        if open.is_none() {
             out.push(l);
         }
     }
@@ -245,6 +262,23 @@ fn log_check_rejects_duplicate_headings_but_not_fenced_ones() {
     assert!(e.contains("duplicate") && e.contains("a-1"), "{e}");
     let fenced = log_with(&format!("{ENTRY}\n```\n## a-1 — first topic\n```\n"));
     assert_eq!(check_log(&fenced), Ok(()));
+}
+
+#[test]
+fn unfenced_closes_a_block_only_on_a_matching_fence() {
+    // A four-backtick block holding a three-backtick example: the inner fence
+    // must not end the block (CommonMark closing-fence rule).
+    let text = "before\n````md\n```\n## inner — heading\n```\nstill inside\n````\nafter\n\
+                ~~~\n```\n## tilde inner\n~~~\nlast\n";
+    assert_eq!(unfenced(text), vec!["before", "after", "last"]);
+    // A longer closing fence closes; a closing fence with an info string does not.
+    let text = "```\n```x\n## still inside\n`````\nout\n";
+    assert_eq!(unfenced(text), vec!["out"]);
+    // The documentation check sees no duplicate from the nested example.
+    let nested = log_with(&format!(
+        "{ENTRY}\n````\n```\n## a-1 — first topic\n```\n````\n"
+    ));
+    assert_eq!(check_log(&nested), Ok(()));
 }
 
 #[test]
