@@ -25,6 +25,8 @@ sdl = ["dep:sdl3"]
 
 [dev-dependencies]
 proptest.workspace = true
+# Wave 8 additions (w8h-h): shared libtest args for the harness = false targets.
+pin_testmain.workspace = true
 
 # SDL must run on the main thread (Cocoa on macOS) and may only be initialised
 # once per process, so SDL tests are plain `main` binaries instead of libtest.

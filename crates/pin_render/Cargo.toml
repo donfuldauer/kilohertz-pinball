@@ -44,6 +44,8 @@ sdl3.workspace = true
 # Wave 6 additions (5.5): the backbox GPU tests render the generated
 # mini-playfield (`pin_tablegen::backbox`). Internal crate.
 pin_tablegen = { path = "../pin_tablegen" }
+# Wave 8 additions (w8h-h): shared libtest args for the harness = false targets.
+pin_testmain.workspace = true
 
 # Real SDL windows + surfaces (gpu-tests only). SDL video must run on the main
 # thread (Cocoa), so a plain `main`. Skips without a native video driver unless
