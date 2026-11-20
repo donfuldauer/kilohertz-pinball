@@ -2,8 +2,12 @@
 //! wiring).
 //!
 //! The 1.4 [`SurfaceSet`](pin_render::gpu::SurfaceSet) only draws debug
-//! lines and has no hook for other content, and `pin_render` internals are
-//! not changed in this round. So when a table is loaded, the render thread
+//! lines; its only hooks (w8g-d,
+//! [`SurfaceFrameHooks`](pin_render::gpu::SurfaceFrameHooks) through
+//! `SurfaceSet::render_with`) time its frames' submissions and paint an
+//! overlay over the playfield, which is how the debug view gets the GPU
+//! frame timer and the profiler HUD ([`DebugViewHooks`](super::DebugViewHooks)).
+//! It cannot draw the table. So when a table is loaded, the render thread
 //! draws its own frames here: each window's surface gets a
 //! [`TableRenderer`] that draws the PBR playfield and the displays routed
 //! to that window.
@@ -32,7 +36,9 @@
 //!   surface planned so is skipped (one stderr note); only an unsupported
 //!   **playfield** rejects the set ([`table_set_accepted`]), and the render
 //!   thread then falls back to the `SurfaceSet` debug view (DECISIONS
-//!   "6.0 — wiring completed").
+//!   "6.0 — wiring completed"), which is profiled like the table (GPU frame
+//!   time, `--profiler-hud`) through [`DebugViewHooks`](super::DebugViewHooks)
+//!   (w8g-d).
 //!
 //! Display layers (score display, backglass) blend in display-encoded
 //! space on every surface (issue #10). Each slot gets a

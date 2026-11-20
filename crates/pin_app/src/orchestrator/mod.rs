@@ -30,7 +30,8 @@
 //!   the sim loop's clock and hands the loop writer to the sim thread
 //!   (input-overflow ticks) and the GPU frame-time writer to the render
 //!   thread ([`GpuFrameTimer`], timestamp queries only); [`HudFeed`] and
-//!   [`HudOverlay`] draw the opt-in HUD (`--profiler-hud`).
+//!   [`HudOverlay`] draw the opt-in HUD (`--profiler-hud`). The debug view
+//!   gets the same timing and HUD through [`DebugViewHooks`] (w8g-d).
 
 mod audio;
 mod gpu_timer;
@@ -48,7 +49,7 @@ pub use audio::{
 };
 pub use gpu_timer::{GPU_TIMER_RING, GpuFrameTimer, gpu_sample_ns};
 pub use handoff::{HANDOFF_SLOTS, HandoffStats};
-pub use hud::{HudFeed, HudOverlay};
+pub use hud::{DebugViewHooks, HudFeed, HudOverlay, hud_format_supported};
 pub use present::{
     AppSurfaces, SlotDecision, SlotInfo, SlotPath, SurfacePlan, is_blocking_mode, plan_surface,
     slot_decision, table_set_accepted,
@@ -62,7 +63,7 @@ pub use table::{
 pub use threads::{
     AudioConfig, AudioStats, ClosePolicy, DropMonitor, FLIPPER_LINE_COLOR, HUD_REFRESH_NS,
     OrchestratorStats, RenderConfig, RenderGpu, RunExit, RunLimits, StatsSnapshot, Threads,
-    ThreadsConfig, default_ball_radius, monotonic_now_ns, spawn_threads,
+    ThreadsConfig, debug_view_hooks, default_ball_radius, monotonic_now_ns, spawn_threads,
 };
 pub use view::{
     DisplayAssets, MAX_OVERLAY_TABLE_LINES, TableRenderOptions, TableRenderer, TableVisuals,
