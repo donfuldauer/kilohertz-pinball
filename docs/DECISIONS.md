@@ -7237,9 +7237,11 @@ unattended run needs automated evidence; the owner's review stays at final accep
 
 **Decision:** REQ-LAT-004 keeps §2.2 tick step 1 as the only rule for which tick applies an input,
 and keeps the promise that neither startup time nor ticks dropped before an input delays it. The
-≤ 1 ms plus wake-up bound applies while the sim thread keeps up. An input stamped inside a stall
-or inside dropped time is applied in the first tick executed after it, never later, with latency
-at most the stall plus 1 ms plus wake-up. The 8-tick catch-up cap and its time drop are unchanged.
+≤ 1 ms plus forwarding plus wake-up bound applies while the sim thread keeps up. An input stamped
+inside a stall or inside dropped time follows the same rule, and its latency bound adds the stall.
+An event that reaches the ring after its own tick has run is applied in the next executed tick, and
+the main thread's forwarding delay is part of the budget (1 ms plus forwarding plus wake-up while
+the sim thread keeps up). The 8-tick catch-up cap and its time drop are unchanged.
 Issue #81 (KP-001) gains a headless test for the stall case. #82 (KP-002)'s key-to-coil criterion
 uses the two bounds.
 **Rationale:** CodeRabbit (PR #142, review of d4bf77d) noted that the earlier wording ("however
@@ -7248,7 +7250,11 @@ that arrive while the sim thread is not running, which nothing can meet. The inv
 a 20 ms stall: 8 ticks run back to back, 12 ms are dropped, and the epoch absorbs the drop. A
 press 5 ms into the stall is applied in the first executed tick, about 15 ms after it was made.
 After that, sim time equals wall time again, so there is no lasting offset. The cap bounds the CPU
-spent catching up, and the drop is what restores the clock.
+spent catching up, and the drop is what restores the clock. A second CodeRabbit review (of
+43675ec) noted that the first wording's stall sentence could pick a tick that step 1 excludes (a
+press 19 ms into the stall is applied in the tick ending at 19 ms, not the first catch-up tick)
+and that an event forwarded after its own tick had no rule. Both are folded into the one rule
+above.
 **Alternatives:**
 - Never drop time: after a stall, sim time would lag wall time for good, against REQ-LAT-002.
 - Remove the dropped-ticks clause: loses the guarantee #81 exists to deliver, that earlier drops
