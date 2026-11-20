@@ -26,3 +26,8 @@ tools/dof_bridge/**/bin/
 tools/dof_bridge/**/obj/
 tools/dof_bridge/**/TestResults/
 __pycache__/
+
+# Claude Code per-user files
+.claude/settings.local.json
+.claude/worktrees/
+.claude/.cc-writes/
