@@ -5,12 +5,16 @@
 //! `--skip`, `--nocapture`, ...) to every test executable, including the
 //! `harness = false` ones whose plain `main` would otherwise ignore them and
 //! open SDL windows on an unrelated filtered run. Each such target names its
-//! single test after its `[[test]] name`, renames its body to `run` and calls
-//! [`libtest_main`] from `main`:
+//! single test after its `[[test]] name`, renames its body to `run` (which
+//! returns an [`Outcome`]) and calls [`libtest_main`] from `main`:
 //!
 //! ```no_run
-//! fn run() {
-//!     // SDL / GPU work, on the process main thread.
+//! use pin_testmain::Outcome;
+//!
+//! fn run() -> Outcome {
+//!     // SDL / GPU work, on the process main thread. A target that cannot
+//!     // run here (no video driver, no GPU) returns `Outcome::Skipped(reason)`.
+//!     Outcome::Passed
 //! }
 //!
 //! fn main() {
@@ -19,7 +23,8 @@
 //! ```
 //!
 //! [`parse_args`] and [`plan`] are pure; [`libtest_main`] only formats libtest's
-//! output and dispatches on the [`Plan`]. The helper spawns no thread and
+//! output and dispatches on the [`Plan`]; a skipped body is reported in
+//! libtest's `ignored` form (0 passed, 1 ignored). The helper spawns no thread and
 //! touches no SDL or GPU state, and it calls `body` on the calling thread.
 
 use std::io::Write as _;
@@ -57,13 +62,24 @@ pub enum Plan {
     SkipAll,
 }
 
+/// What the body of a `harness = false` target reports to [`libtest_main`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// Every check ran and passed: reported as `test <name> ... ok`, 1 passed.
+    Passed,
+    /// The checks could not run here (for example no native SDL video driver
+    /// or no GPU adapter): reported in libtest's ignored form,
+    /// `test <name> ... ignored, <reason>`, 0 passed and 1 ignored, exit 0.
+    Skipped(String),
+}
+
 /// libtest options whose value is consumed and ignored (`--opt value` or `--opt=value`).
-const VALUE_OPTIONS: [&str; 6] = [
+/// No-value flags such as `--report-time` are not listed here.
+const VALUE_OPTIONS: [&str; 5] = [
     "--test-threads",
     "--format",
     "--color",
     "--logfile",
-    "--report-time",
     "--shuffle-seed",
 ];
 
@@ -110,7 +126,8 @@ pub fn parse_args<I: IntoIterator<Item = S>, S: AsRef<str>>(args: I) -> Options 
                 let _ = iter.next();
             }
             // --opt=value of a value option, --nocapture, --no-capture, --show-output, --quiet, -q, --test,
-            // --bench, --force-run-in-process, --ensure-time, --shuffle, -Zflag
+            // --bench, --force-run-in-process, --report-time, --ensure-time, --fail-fast,
+            // --exclude-should-panic, --shuffle (no-value flags), -Zflag
             // and any unknown flag: accepted and ignored.
             _ => {}
         }
@@ -166,14 +183,34 @@ fn exit_ok() -> ! {
     std::process::exit(0)
 }
 
+/// The libtest result lines for a run of `test_name` that ended with
+/// `outcome` after `elapsed` seconds (the text after `running 1 test`).
+/// Newlines in a skip reason become spaces so the test line stays one line.
+fn render_outcome(test_name: &str, outcome: &Outcome, elapsed: f64) -> String {
+    match outcome {
+        Outcome::Passed => format!(
+            "test {test_name} ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in {elapsed:.2}s\n"
+        ),
+        Outcome::Skipped(reason) => {
+            let reason = reason.replace("\r\n", " ").replace(['\n', '\r'], " ");
+            format!(
+                "test {test_name} ... ignored, {reason}\n\ntest result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in {elapsed:.2}s\n"
+            )
+        }
+    }
+}
+
 /// The `main` of a `harness = false` target with one test named `test_name`.
 ///
 /// Reads `std::env::args().skip(1)`, prints libtest-style output to stdout
 /// and either runs `body` once on the calling thread (then returns) or exits
 /// the process with status 0 without running it (`--help`, `--list`, or the
-/// test filtered out). A panic in `body` propagates unchanged. Call it before
+/// test filtered out). `body` returns an [`Outcome`]: [`Outcome::Passed`] is
+/// reported as `ok` (1 passed), [`Outcome::Skipped`] in libtest's ignored form
+/// (`... ignored, <reason>`, 0 passed, 1 ignored); both return normally, so
+/// the process exits 0. A panic in `body` propagates unchanged. Call it before
 /// any SDL or GPU initialisation; it spawns no thread.
-pub fn libtest_main(test_name: &str, body: impl FnOnce()) {
+pub fn libtest_main(test_name: &str, body: impl FnOnce() -> Outcome) {
     let opts = parse_args(std::env::args().skip(1));
     if opts.help {
         println!(
@@ -201,11 +238,9 @@ pub fn libtest_main(test_name: &str, body: impl FnOnce()) {
             print!("\nrunning 1 test\n");
             let _ = std::io::stdout().flush();
             let start = Instant::now();
-            body();
+            let outcome = body();
             let elapsed = start.elapsed().as_secs_f64();
-            print!(
-                "test {test_name} ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in {elapsed:.2}s\n"
-            );
+            print!("{}", render_outcome(test_name, &outcome, elapsed));
             let _ = std::io::stdout().flush();
         }
     }
@@ -320,7 +355,6 @@ mod tests {
             &["--format=terse"],
             &["--format", "json"],
             &["--logfile", "out.txt"],
-            &["--report-time", "plain"],
             &["--shuffle-seed", "42"],
             &["--shuffle-seed=42"],
             &["-Z", "unstable-options"],
@@ -337,6 +371,73 @@ mod tests {
     }
 
     #[test]
+    fn report_time_is_a_flag_without_value() {
+        // CodeRabbit thread 4638279328: `--report-time` must not consume `--list`.
+        let o = p(&["-Z", "unstable-options", "--report-time", "--list"]);
+        assert!(o.list);
+        assert!(o.filters.is_empty());
+        assert_eq!(plan(&o, NAME), Plan::List);
+        // ... nor a filter that deselects this test.
+        let o = p(&["--report-time", "unrelated"]);
+        assert_eq!(o.filters, vec!["unrelated".to_owned()]);
+        assert_eq!(plan(&o, NAME), Plan::SkipAll);
+        // ... nor a filter that selects it.
+        let o = p(&["--report-time", "orchestrator"]);
+        assert_eq!(o.filters, vec!["orchestrator".to_owned()]);
+        assert_eq!(plan(&o, NAME), Plan::Run);
+        // An unfiltered `--report-time` still runs.
+        let o = p(&["--report-time"]);
+        assert_eq!(o, Options::default());
+        assert_eq!(plan(&o, NAME), Plan::Run);
+        assert!(!VALUE_OPTIONS.contains(&"--report-time"));
+    }
+
+    #[test]
+    fn render_passed() {
+        let s = render_outcome(NAME, &Outcome::Passed, 1.234);
+        assert!(s.contains("test orchestrator_window ... ok\n"), "{s}");
+        assert!(s.contains("1 passed"), "{s}");
+        assert!(s.contains("0 ignored"), "{s}");
+        assert!(s.starts_with("test ") && s.ends_with("s\n"), "{s}");
+    }
+
+    #[test]
+    fn render_skipped() {
+        let s = render_outcome(
+            NAME,
+            &Outcome::Skipped("[orchestrator_window] SDL video: no driver".to_owned()),
+            0.0,
+        );
+        assert!(
+            s.contains(
+                "test orchestrator_window ... ignored, [orchestrator_window] SDL video: no driver\n"
+            ),
+            "{s}"
+        );
+        assert!(
+            s.contains("test result: ok. 0 passed; 0 failed; 1 ignored;"),
+            "{s}"
+        );
+        assert!(!s.contains("... ok"), "{s}");
+        assert!(!s.contains("1 passed"), "{s}");
+    }
+
+    #[test]
+    fn render_skipped_multiline_reason_is_one_line() {
+        let s = render_outcome(
+            NAME,
+            &Outcome::Skipped("first\nsecond\r\nthird\rfourth".to_owned()),
+            0.0,
+        );
+        let first = s.lines().next().expect("a test line");
+        assert_eq!(
+            first,
+            "test orchestrator_window ... ignored, first second third fourth"
+        );
+        assert!(s.contains("1 ignored") && s.contains("0 passed"), "{s}");
+    }
+
+    #[test]
     fn ignored_flags_are_accepted() {
         for flag in [
             "--nocapture",
@@ -348,6 +449,9 @@ mod tests {
             "--bench",
             "--force-run-in-process",
             "--ensure-time",
+            "--report-time",
+            "--fail-fast",
+            "--exclude-should-panic",
             "--shuffle",
             "--frobnicate",
             "--frobnicate=3",
