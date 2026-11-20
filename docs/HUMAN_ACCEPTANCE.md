@@ -17,7 +17,7 @@ Counts:
 - Open queue lines: 224
 - Resolved queue lines: 51
 - Decision entries: 396
-- Run-log rows: 467
+- Run-log rows: 472
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -821,6 +821,10 @@ Mentions of D33 in the run log, queue and decisions:
 | 8 | **Wave 8 gate** | Orchestrator | — | CI run 803 (cb1a26f) | **green** | full 3-OS ci matrix green (https://github.com/donfuldauer/kilohertz-pinball/actions/runs/44608856945): core-tests, gpu-tests (lavapipe/WARP/Metal), replay-hash, clippy on linux/windows/macos; soak #1 green (first 3-OS run of the 10-minute soaks); spikes #183 green | Passed: 6.3 (#67), 7.1 (#68) |
 
 **Wave 8 gate: green** at cb1a26f (CI run 803).
+
+| 9 | **Wave 9 gate** | Orchestrator | — | CI run 830 (6bdbd99) | **green** | full 3-OS ci matrix green (https://github.com/donfuldauer/kilohertz-pinball/actions/runs/44752191000): core-tests, gpu-tests (lavapipe/WARP/Metal), replay-hash, clippy on linux/windows/macos, dof-bridge; spikes #222 green | Passed: 7.2 (#77). release.yml verify/package/draft-release not yet run (dispatch/tag only; queue 7.2) |
+
+**Wave 9 gate: green** at 6bdbd99 (CI run 830). All 10 waves complete; next is Phase 8 Final Human Acceptance (`docs/HUMAN_ACCEPTANCE.md`).
 
 ## 6. Phase 8 checklist
 
