@@ -91,7 +91,7 @@ struct Outcome {
 }
 
 fn run_case(c: &Case) -> Outcome {
-    let gravity = 9.81 * v(c.pitch.sin(), 0.0, -c.pitch.cos());
+    let gravity = 9.81 * v(libm::sinf(c.pitch), 0.0, -libm::cosf(c.pitch));
     let world = empty_world();
     let geo = Geometry::new(&world);
     // Twin without the free ball: where the captive is at the end of the
@@ -143,7 +143,11 @@ fn normals(behind: bool) -> Vec<Vec3> {
     let mut out = Vec::new();
     for a in [0.0f32, 0.35, 0.7, 1.0] {
         for b in [0.0f32, 0.25] {
-            out.push(v(sx * a.cos() * b.cos(), a.sin() * b.cos(), b.sin()));
+            out.push(v(
+                sx * libm::cosf(a) * libm::cosf(b),
+                libm::sinf(a) * libm::cosf(b),
+                libm::sinf(b),
+            ));
         }
     }
     out
@@ -279,7 +283,7 @@ fn ball_pushing_a_captive_at_rest_gains_no_energy_while_it_waits() {
         for speed in [0.3f32, 1.0, 2.0] {
             for closing in [0.004f32, 0.01, 0.03] {
                 for a in [0.0f32, 0.3] {
-                    let n = v(-a.cos(), 0.0, a.sin());
+                    let n = v(-libm::cosf(a), 0.0, libm::sinf(a));
                     let mut s = chain_solver(gravity, 0.0);
                     let q0 = s.newton_chain(0).ball_position(0);
                     let h = s

@@ -121,7 +121,7 @@ fn every_file_decodes_through_the_engine_loaders() {
                     / data.len() as f64)
                     .sqrt();
                 let peak = data.iter().fold(0.0f64, |m, &v| m.max(f64::from(v).abs()));
-                assert!(20.0 * rms.log10() > -40.0, "{}: rms {rms}", e.id);
+                assert!(20.0 * libm::log10(rms) > -40.0, "{}: rms {rms}", e.id);
                 assert!(peak <= 0.989, "{}: peak {peak}", e.id);
                 sounds += 1;
             }

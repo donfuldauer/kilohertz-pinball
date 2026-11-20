@@ -329,7 +329,7 @@ mod tests {
         let mut pts: Vec<[f32; 2]> = (0..n)
             .map(|i| {
                 let a = i as f32 / n as f32 * core::f32::consts::TAU;
-                [200.0 + 100.0 * a.cos(), 300.0 + 100.0 * a.sin()]
+                [200.0 + 100.0 * libm::cosf(a), 300.0 + 100.0 * libm::sinf(a)]
             })
             .collect();
         pts.push(pts[0]);
