@@ -333,7 +333,8 @@ def run(args) -> int:
         print(f"{source} in {args.milestone!r}: {len(planned & required)} IDs traced")
     else:
         missing = sorted(required - planned)
-        print(f"{source}: {len(required) - len(missing)}/{len(required)} traced")
+        tag = f" (milestone {args.milestone!r})" if args.milestone else ""
+        print(f"{source}{tag}: {len(required) - len(missing)}/{len(required)} traced")
         for rid in missing:
             print(f"  MISSING in plan: {rid}")
         failed |= bool(missing)
@@ -345,7 +346,7 @@ def run(args) -> int:
         tested = ids_in_tree(args.tests or DEFAULT_TEST_ROOTS)
         # With issues and --milestone, compare only the IDs that milestone traces.
         scope = (planned & required) if scoped else required
-        label = f"tests (milestone {args.milestone!r})" if scoped else "tests"
+        label = f"tests (milestone {args.milestone!r})" if args.milestone else "tests"
         missing = sorted(scope - tested)
         print(f"{label}: {len(scope) - len(missing)}/{len(scope)} referenced")
         for rid in missing:
