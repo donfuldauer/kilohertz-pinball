@@ -5,9 +5,11 @@
 //! the set joins the presenter thread).
 //!
 //! Needs a native SDL video driver (x11/wayland/windows/cocoa; Xvfb on Linux
-//! CI). Without one it prints SKIP, or fails when `PIN_REQUIRE_GPU=1`.
+//! CI). Without one it reports the target as skipped in libtest's `ignored`
+//! form, or fails when `PIN_REQUIRE_GPU=1`.
 //! sdl3's raw-window-handle impl panics on the dummy driver (DECISIONS 0.1
 //! Q4), so the dummy driver is never used here.
+//! The target accepts libtest filters and `--list` through `pin_testmain`.
 //!
 //! The main thread pumps SDL events between frames, as the app does. On
 //! macOS this is what makes a new window visible to the swap chain: wgpu
@@ -68,11 +70,11 @@ fn warm_up(set: &mut SurfaceSet, pump: &mut sdl3::EventPump, lines: &DebugLines,
 
 const NATIVE: [&str; 4] = ["windows", "cocoa", "x11", "wayland"];
 
-fn skip(msg: &str) {
+fn skip(msg: &str) -> pin_testmain::Outcome {
     if require_gpu() {
         panic!("[gpu_window] PIN_REQUIRE_GPU=1 but {msg}");
     }
-    println!("[gpu_window] SKIP: {msg}");
+    pin_testmain::Outcome::Skipped(format!("[gpu_window] {msg}"))
 }
 
 fn source(
@@ -110,6 +112,10 @@ fn ev(window: usize, kind: WindowEventKind) -> WindowEvent {
 }
 
 fn main() {
+    pin_testmain::libtest_main("gpu_window", run)
+}
+
+fn run() -> pin_testmain::Outcome {
     let sdl = match sdl3::init() {
         Ok(s) => s,
         Err(e) => return skip(&format!("SDL_Init: {e}")),
@@ -292,4 +298,5 @@ fn main() {
     drop(backglass);
     drop(playfield);
     println!("[gpu_window] ok");
+    pin_testmain::Outcome::Passed
 }

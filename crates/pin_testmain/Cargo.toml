@@ -1,0 +1,12 @@
+[package]
+name = "pin_testmain"
+description = "Libtest-compatible argument handling for harness = false test targets (dev-only)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# std only: no dependencies. Used only as a dev-dependency of pin_app,
+# pin_render and pin_audio (their `harness = false` test targets).
+[dependencies]

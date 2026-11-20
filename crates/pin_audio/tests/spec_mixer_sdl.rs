@@ -4,6 +4,7 @@
 //! main thread (macOS). Uses SDL's dummy audio driver, opens `SdlOutput`,
 //! waits (bounded) until the audio callback has provably run, closes, and
 //! checks the returned `Mixer`.
+//! The target accepts libtest filters and `--list` through `pin_testmain`.
 //!
 //! "The callback ran" is observed through the fixed API only: `Mixer::render`
 //! drains the trigger ring, so once more triggers have been accepted than the
@@ -27,6 +28,10 @@ fn check(name: &str, ok: bool) {
 }
 
 fn main() {
+    pin_testmain::libtest_main("spec_mixer_sdl", run)
+}
+
+fn run() -> pin_testmain::Outcome {
     sdl3::hint::set("SDL_AUDIO_DRIVER", "dummy");
     let sdl = sdl3::init().expect("SDL init");
     let audio = sdl.audio().expect("SDL audio subsystem (dummy driver)");
@@ -121,4 +126,5 @@ fn main() {
         mixer.active_voices(Bus::Music) == 1,
     );
     println!("[spec_mixer_sdl] all checks passed");
+    pin_testmain::Outcome::Passed
 }
