@@ -1935,6 +1935,7 @@ dependencies = [
  "pin_script",
  "pin_sim",
  "pin_tablegen",
+ "pin_testmain",
  "proptest",
  "sdl3",
  "serde",
@@ -1986,6 +1987,7 @@ dependencies = [
  "libm",
  "ogg",
  "pin_core",
+ "pin_testmain",
  "proptest",
  "sdl3",
 ]
@@ -2044,6 +2046,7 @@ dependencies = [
  "pin_assets",
  "pin_core",
  "pin_tablegen",
+ "pin_testmain",
  "pollster",
  "proptest",
  "sdl3",
@@ -2096,6 +2099,10 @@ dependencies = [
  "serde",
  "toml",
 ]
+
+[[package]]
+name = "pin_testmain"
+version = "0.1.0"
 
 [[package]]
 name = "pkg-config"

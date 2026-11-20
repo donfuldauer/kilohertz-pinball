@@ -23,6 +23,7 @@
 //! `main` runs on the process main thread, so SDL (init, windows, event
 //! pump) stays on the main thread. Without a native video driver it prints
 //! SKIP, or fails when `PIN_REQUIRE_GPU=1`.
+//! The target accepts libtest filters and `--list` through `pin_testmain`.
 #![cfg(feature = "gpu-tests")]
 
 use arrayvec::ArrayVec;
@@ -76,6 +77,10 @@ fn source(
 }
 
 fn main() {
+    pin_testmain::libtest_main("profiler_debug_view_window", run)
+}
+
+fn run() {
     let sdl = match sdl3::init() {
         Ok(s) => s,
         Err(e) => return skip(&format!("SDL_Init: {e}")),

@@ -8,6 +8,7 @@
 //! `xvfb-run` on Linux CI. Without one it prints SKIP, or fails when
 //! `PIN_REQUIRE_GPU=1`. sdl3's raw-window-handle impl panics on the dummy
 //! driver (DECISIONS 0.1 Q4), so the dummy driver is never used here.
+//! The target accepts libtest filters and `--list` through `pin_testmain`.
 //!
 //! The main thread pumps SDL events between frames, as the app does. On
 //! macOS this is what makes a new window visible to the swap chain: wgpu
@@ -104,6 +105,10 @@ fn source(
 }
 
 fn main() {
+    pin_testmain::libtest_main("orchestrator_window", run)
+}
+
+fn run() {
     let sdl = match sdl3::init() {
         Ok(s) => s,
         Err(e) => return skip(&format!("SDL_Init: {e}")),
