@@ -128,7 +128,7 @@ unchanged):
 
 ### CR-005: optional `area` of a `[balls] restrict` entry
 - **Requested by:** Subphase 2.8 (Implementer)
-- **Status:** applied (in the working tree with Subphase 2.8, snapshotted by the Orchestrator; additive, confirmed by the 2.8 Reviewer)
+- **Status:** merged (64ec5f9, PR #4, the Wave 0-5.2 stack merge that first carries `BallRestriction::area` in main; it landed in the working tree with Subphase 2.8 and could not be a separate pin_core-only commit; additive, confirmed by the 2.8 Reviewer)
 - **Kind:** additive
 - **Items:** `crates/pin_core/src/schema/table.rs` (`BallRestriction`), TOML key `balls.restrict[*].area`.
 - **Change:** `BallRestriction` gains `#[serde(default, skip_serializing_if = "Vec::is_empty")] pub area: Vec<[f32; 2]>` — a plan-view polygon in mm (≥ 3 points, even-odd rule) the ball centre stays inside on the listed layers; empty / omitted = the whole layer (the old meaning). Existing TOML parses and serialises unchanged.
@@ -138,7 +138,7 @@ unchanged):
 
 ### CR-006: steel–acrylic material pair (playfield glass)
 - **Requested by:** Wave 6 work item a1-glass (task executor)
-- **Status:** open (PR-A of a1-glass; additive)
+- **Status:** merged (1594b87, via merge 5afae2e, PR #24; additive)
 - **Kind:** additive
 - **Items:** `physics_defaults.toml` (one new `[[material_pairs]]` row); tests in `crates/pin_core/src/schema/physics.rs` (pair count 9 → 10, new `steel_acrylic_pair_is_symmetric`).
 - **Change:** new row `materials = ["steel", "acrylic"]`, `restitution = 0.45`, `friction = 0.15` (provisional glass/acrylic values, engineering starting points). No Rust type, field or key changes; the file still parses with `deny_unknown_fields` and passes duplicate-pair detection.
@@ -148,7 +148,7 @@ unchanged):
 
 ### CR-007: optional `glass.toml` (`GlassManifest`)
 - **Requested by:** Wave 6 work item a1-glass-height (task executor)
-- **Status:** open (pin_core-only PR; additive)
+- **Status:** merged (d21ba7d, via merge d639eb1, PR #26; additive. The withdrawn first version 3062450 `Playfield.glass_height` reached main through the second parent 0f1b0af of d639eb1; d21ba7d removes its lines and it is not in the final contract)
 - **Kind:** additive
 - **Items:** new module `crates/pin_core/src/schema/glass.rs` with `GlassManifest { schema_version: u32, height: f32 }` and `pub const GLASS_FILE: &str = "glass.toml"`, re-exported from `pin_core::schema`; tests in `crates/pin_core/tests/glass_manifest.rs` and in `glass.rs`; PLAN.md Appendix A.3a documents the file.
 - **Change:** a new optional bundle file `glass.toml` (`schema_version = 1`, `height` in mm: the height of the glass underside above the playfield surface). Absent: the simulator derives the glass from the table geometry (max z + 50 mm, unchanged behaviour). Present: `height` must be finite and > 0 (checked on parse and serialise); the simulator additionally requires it to be at least the geometry's maximum z. No existing type, field or file changes.
@@ -159,7 +159,7 @@ unchanged):
 
 ### CR-008: HostCommandQueue doc: cleared at the start of the next script step
 - **Requested by:** work item w8f-q4 (task executor)
-- **Status:** open (pin_core-only PR; additive)
+- **Status:** merged (8f4c545 and d6c3aff, via merge f845d5f, PR #69; additive, docs only)
 - **Kind:** additive
 - **Items:** `crates/pin_core/src/script.rs` doc comments of the module and of `HostCommandQueue`
 - **Change:** wording only, no type, field, signature or behaviour changes. Module doc: the sim applies the queue in tick step 3 and clears it at the start of the next script step (readable until then through `Simulation::last_commands()`). `HostCommandQueue` doc: commands issued by every callback in one script step (switch-edge callbacks, then `on_tick`, sharing the queue; `on_init`'s commands after load); applied in tick step 3, cleared at the start of the next script step, so after a tick the queue still holds the commands from all of that tick's callbacks (`Simulation::last_commands()`); capacities fixed (D5).
@@ -169,7 +169,7 @@ unchanged):
 
 ### CR-009: pin_core clippy ban on std transcendentals
 - **Requested by:** work item w8g-e (task executor); split out of PR #72 after review (contract protocol step 3)
-- **Status:** open (pin_core-only PR; additive)
+- **Status:** merged (8050c3b, via merge 2f2c3c6, PR #74; additive, lint configuration only)
 - **Kind:** additive
 - **Items:** new file `crates/pin_core/clippy.toml` (crate-local `disallowed-methods` list, identical to `crates/pin_assets/clippy.toml` apart from the header comment)
 - **Change:** lint configuration only; no type, field, signature, behaviour or on-disk schema change. Clippy now rejects std `f32`/`f64` transcendental methods in pin_core (0 call sites today), so future pin_core code must use `libm` (PLAN §2.4, D9).
