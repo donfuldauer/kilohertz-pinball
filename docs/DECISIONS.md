@@ -7007,11 +7007,12 @@ lines (251 from the frozen file, 90 from the 35 files of `docs/queue/`) are kept
 their original order, each per-unit file under a heading naming it, and the folder is deleted.
 Every line got the disposition of the queue triage: 10 P8 (struck with "Kept open as the P8 line
 below." and followed by its `- [P8 <kind>] [<id>]` restatement, the only open lines), 106 DECIDED
-(struck, `Decided: DECISIONS.md "<section>"`), 144 RESOLVED and 8 OBSOLETE (struck with
+(struck, `Decided: DECISIONS.md "<section>"`), 143 RESOLVED and 8 OBSOLETE (struck with
 `Resolved:` or `Superseded:` and the evidence; the 12 lines that were already struck stay as they
-were, and the 39 `- [x]` lines of the per-unit files are struck like the others), 22 M1 (struck,
+were, and the 39 `- [x]` lines of the per-unit files are struck like the others), 23 M1 (struck,
 `Moved to #<n> (KP-NNN)`: 16 flipper and mechanism feel lines to #87 KP-007, 5 rendering-look
-lines to #95 KP-015 and #96 KP-016, 1 machine-view line to #114 KP-033) and 51 BACKLOG (struck,
+lines to #95 KP-015 and #96 KP-016, 1 machine-view line to #114 KP-033, 1 Feature Lab
+pocket-check line to #122 KP-041) and 51 BACKLOG (struck,
 `Moved to #<n> (KP-NNN)`, the M2 issue of the line's group). The shared append-only files
 (`docs/DECISIONS.md`, `docs/HUMAN_QUEUE.md`, `docs/RUN_LOG.md`, `contracts/CHANGE_REQUESTS.md`)
 take appended entries from any issue, and the unit gate's owned-path check allows them.
@@ -7231,3 +7232,25 @@ tables need different body styles, and the tilt must come from the build). Fix o
 defect and retune the flippers (rejected: leaves the mismatch between drawn and simulated
 surfaces that made the ball look wrong). Rely on a person's review for visuals (rejected: an
 unattended run needs automated evidence; the owner's review stays at final acceptance).
+
+## Planning — REQ-LAT-004 bounds inputs that arrive during a stall separately
+
+**Decision:** REQ-LAT-004 keeps §2.2 tick step 1 as the only rule for which tick applies an input,
+and keeps the promise that neither startup time nor ticks dropped before an input delays it. The
+≤ 1 ms plus wake-up bound applies while the sim thread keeps up. An input stamped inside a stall
+or inside dropped time is applied in the first tick executed after it, never later, with latency
+at most the stall plus 1 ms plus wake-up. The 8-tick catch-up cap and its time drop are unchanged.
+Issue #81 (KP-001) gains a headless test for the stall case. #82 (KP-002)'s key-to-coil criterion
+uses the two bounds.
+**Rationale:** CodeRabbit (PR #142, review of d4bf77d) noted that the earlier wording ("however
+many ticks the catch-up cap has dropped … at every point in a session") promised 1 ms for inputs
+that arrive while the sim thread is not running, which nothing can meet. The investigation traced
+a 20 ms stall: 8 ticks run back to back, 12 ms are dropped, and the epoch absorbs the drop. A
+press 5 ms into the stall is applied in the first executed tick, about 15 ms after it was made.
+After that, sim time equals wall time again, so there is no lasting offset. The cap bounds the CPU
+spent catching up, and the drop is what restores the clock.
+**Alternatives:**
+- Never drop time: after a stall, sim time would lag wall time for good, against REQ-LAT-002.
+- Remove the dropped-ticks clause: loses the guarantee #81 exists to deliver, that earlier drops
+  never delay later inputs.
+- A raised cap: only moves the problem.
