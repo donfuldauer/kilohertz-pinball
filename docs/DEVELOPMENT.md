@@ -201,11 +201,14 @@ cargo llvm-cov --summary-only -p pin_core -p pin_physics -p pin_input -p pin_scr
 
 # Replay hash x10 (unit gate item 6; the CI replay-hash job)
 cargo build --release -p pin_sim --bin pin_sim
-rec=target/replay_fixture.khzrec
-h=$(target/release/pin_sim crates/pin_sim/tests/fixtures/replay_table --ticks 10000 --record-inputs "$rec")
+bin="${CARGO_TARGET_DIR:-target}/release/pin_sim"
+rec="${CARGO_TARGET_DIR:-target}/replay_fixture.khzrec"
+fail=0
+h=$("$bin" crates/pin_sim/tests/fixtures/replay_table --ticks 10000 --record-inputs "$rec")
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  [ "$(target/release/pin_sim crates/pin_sim/tests/fixtures/replay_table --replay-inputs "$rec")" = "$h" ] || echo "replay $i differs"
+  [ "$("$bin" crates/pin_sim/tests/fixtures/replay_table --replay-inputs "$rec")" = "$h" ] || { echo "replay $i differs"; fail=1; }
 done
+[ "$fail" = 0 ]   # nonzero status if any replay differed
 
 # Table bundles (each runs pin_tablegen, pin_assetgen and validation)
 tables/greybox/build.sh target/greybox

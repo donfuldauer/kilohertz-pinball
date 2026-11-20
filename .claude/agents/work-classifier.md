@@ -18,7 +18,8 @@ conversation, `docs/SPEC.md` as a whole, the issue tracker, or a follow-up quest
 
 - The work item: a GitHub `work-unit` issue (number, URL and full body: plan ID `KP-NNN`, phase,
   tracking issue, Depends on, Requirements (SPEC sections and REQ IDs), Deliverables, Acceptance
-  criteria, Owned paths, expected tier) and the role wanted (Implementer, Independent Tester), a
+  criteria, Owned paths, expected tier), the full bodies of the issues it depends on (passed by the
+  Orchestrator), and the role wanted (Implementer, Independent Tester), a
   fix task, a CodeRabbit comment (with its URL and the file and lines it is on), a CI failure, a
   verifier failure, or an investigator report.
 - `FABLE_ALLOWANCE`: `sufficient`, `insufficient` or `unknown`, set by the Orchestrator under
@@ -34,8 +35,9 @@ conversation, `docs/SPEC.md` as a whole, the issue tracker, or a follow-up quest
 
 If the work item itself is missing, return `status: needs-input` and name what is missing. Any
 other gap you fill from the repository yourself: `docs/SPEC.md`, `docs/DEVELOPMENT.md`,
-`docs/DECISIONS.md`, the code, and the issues the item depends on (read-only
-`gh api repos/donfuldauer/kilohertz-pinball/issues/<n>` when the Orchestrator did not pass them).
+`docs/DECISIONS.md` and the code. You never fetch issues yourself (you have no GitHub tool, and
+`gh` is for searches only, PROCESS.md P1). If a dependency's body is needed and was not passed,
+return `status: needs-input` naming the missing issue.
 
 ## Step 1: classify
 
