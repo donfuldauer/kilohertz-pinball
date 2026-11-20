@@ -31,7 +31,7 @@ fn main() {
     pin_testmain::libtest_main("spec_mixer_sdl", run)
 }
 
-fn run() {
+fn run() -> pin_testmain::Outcome {
     sdl3::hint::set("SDL_AUDIO_DRIVER", "dummy");
     let sdl = sdl3::init().expect("SDL init");
     let audio = sdl.audio().expect("SDL audio subsystem (dummy driver)");
@@ -126,4 +126,5 @@ fn run() {
         mixer.active_voices(Bus::Music) == 1,
     );
     println!("[spec_mixer_sdl] all checks passed");
+    pin_testmain::Outcome::Passed
 }
