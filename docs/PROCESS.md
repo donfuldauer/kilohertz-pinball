@@ -482,7 +482,9 @@ Orchestrator drives it to a merge without a person.
    dependents**: every open `work-unit` issue whose **Depends on** entries are now all satisfied
    swaps its `blocked` label for `ready`, with a comment "Unblocked by #<N> (PR #<P>)". The
    **merged-PR rule:** a dependency is satisfied only if it is closed as completed by a merged PR
-   (a merged PR whose body contains `Closes #<n>`), or a comment on it names the replacement
+   (read the blocker with `issue_read`, method `get`: `closed_by_pull_requests.references` lists the
+   PRs that closed it; confirm each with `pull_request_read`, method `get`, `merged` true; fallback for
+   an unlinked PR body saying `Closes #<n>`: `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged "Closes #<n>"'`), or a comment on it names the replacement
    issue(s) that delivered the work and those pass the same test. The run-log rows were committed
    in the PR itself; the merge commit is recorded in the RUN_LOG row of the next PR. Nothing is
    pushed to `main` directly.
