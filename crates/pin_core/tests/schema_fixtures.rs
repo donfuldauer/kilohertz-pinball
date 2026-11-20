@@ -29,9 +29,9 @@ fn parse_all(s: &str) -> [bool; 4] {
 
 #[test]
 fn fixtures_are_the_appendix_examples_verbatim() {
-    let plan = include_str!("../../../docs/PLAN.md");
+    let plan = include_str!("../../../docs/SPEC.md");
     for f in [TABLE, BACKGLASS, LAYOUT] {
-        assert!(plan.contains(f), "fixture differs from PLAN.md Appendix A");
+        assert!(plan.contains(f), "fixture differs from SPEC.md Appendix A");
     }
 }
 
