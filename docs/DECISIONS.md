@@ -7006,7 +7006,7 @@ folder is deleted. `docs/HUMAN_QUEUE.md` holds only P8 items (PROCESS.md P8). Al
 lines (251 from the frozen file, 90 from the 35 files of `docs/queue/`) are kept as history in
 their original order, each per-unit file under a heading naming it, and the folder is deleted.
 Every line got the disposition of the queue triage: 10 P8 (struck with "Kept open as the P8 line
-below." and followed by its `- [P8 <kind>] [<id>]` restatement, the only open lines), 104 DECIDED
+below." and followed by its `- [P8 <kind>] [<id>]` restatement, the only open lines), 106 DECIDED
 (struck, `Decided: DECISIONS.md "<section>"`), 144 RESOLVED and 8 OBSOLETE (struck with
 `Resolved:` or `Superseded:` and the evidence; the 12 lines that were already struck stay as they
 were, and the 39 `- [x]` lines of the per-unit files are struck like the others), 22 M1 (struck,
