@@ -1,6 +1,8 @@
+# Decisions: claude-project-settings (checked-in Claude Code settings)
+
 ## claude-project-settings — Claude project settings
 
-**Decision.** Ship `.claude/settings.json` with the sandbox on and `autoAllowBashIfSandboxed`, a narrow write allowlist, a narrow network allowlist, read-only and CI commands pre-approved, and secrets denied. Per-user Claude files are git-ignored.
+**Decision:** Ship `.claude/settings.json` with the sandbox on and `autoAllowBashIfSandboxed`, a narrow write allowlist, a narrow network allowlist, read-only and CI commands pre-approved, and secrets denied. Per-user Claude files are git-ignored.
 
 - Write paths (outside the repo and `$TMPDIR`, which are already writable): `~/.cargo/registry`, `~/.cargo/git` (crate cache and git dependencies), `~/.cargo/.package-cache` and `~/.cargo/.global-cache` (cargo lock and cache files), `~/.rustup` (toolchains and rustup metadata). The macOS `lipo`/xcrun cache lives under `$TMPDIR`, so nothing is added for it.
 - Domains: `crates.io`, `index.crates.io`, `static.crates.io` (crate index and downloads), `static.rust-lang.org` (rustup toolchains), `github.com`, `codeload.github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com` (git dependencies and source archives), `api.github.com` (the `gh` PR workflow). `api.nuget.org` is only for `tools/dof_bridge` (the Windows .NET build); it is harmless on other machines.
@@ -9,7 +11,7 @@
 - `allowUnsandboxedCommands`, `defaultMode`, `excludedCommands`, `network.allowLocalBinding`, `strictAllowlist`, `filesystem.disabled`, `allowAppleEvents` and `allowNestedUserNamespaces` are left unset.
 - `.gitignore` gains `.claude/settings.local.json`, `.claude/worktrees/` and `.claude/.cc-writes/`.
 
-**Rationale.**
+**Rationale:**
 - `~/.cargo` is not allowed wholesale because it holds `credentials.toml` (registry tokens) and `bin` (executables a sandboxed process could replace); the four subpaths are all cargo needs to build.
 - `allowUnsandboxedCommands` is unset so the default applies; the owner may need an unsandboxed escape for installs into `/Applications`, and a shared file should not forbid or grant that for everyone.
 - `defaultMode` is unset so each person keeps their own permission mode; the shared file carries only safe defaults.
@@ -17,7 +19,7 @@
 - `allowWrite` and `allowedDomains` merge across settings sources (user, project, local), so a personal file adds to these lists rather than replacing them.
 - Project settings cannot weaken the sandbox anyway, and the brief's list of unset keys keeps it that way.
 
-**Alternatives.**
+**Alternatives:**
 - Allow all of `~/.cargo`: rejected (credentials and `bin`).
 - Set `excludedCommands` for cargo: rejected; it would run cargo outside the sandbox.
 - Deny `~/.ssh` and `~/.config/gh` in the sandbox: rejected for this ssh-remote setup; a user on an https remote may add them in `.claude/settings.local.json`.
