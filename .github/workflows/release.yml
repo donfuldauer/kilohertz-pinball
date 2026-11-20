@@ -1,0 +1,382 @@
+name: release
+
+# Subphase 7.2: release packaging (PLAN 7.2). Three trigger modes:
+#   * pull_request (paths below): the `dry-run` job only, on Linux (D40). It runs the
+#     scripts/tests Python suites, checks docs/HUMAN_ACCEPTANCE.md is current (a stale
+#     file is a warning annotation, never a failure; the Orchestrator regenerates it after
+#     the last run-log row), and runs scripts/package.py --dry-run for Linux with real
+#     bundles from tables/*/build.sh. Nothing is uploaded.
+#   * workflow_dispatch (optional `version` input): `verify` builds and tests the whole
+#     workspace in release with zero warnings on Windows x64, Linux x64, macOS arm64 and
+#     macOS x86_64 (the Intel slice is cross-built and tested under Rosetta 2 on the arm64
+#     macos-latest runner), then `package`
+#     builds the three platform packages and keeps them as workflow artifacts (14 days).
+#     That is the end of the pipeline: artifacts only.
+#   * push of a `v*` tag (the owner pushes tags; agents never do, D39): the same as
+#     dispatch, then `draft-release` attaches the artifacts and SHA256SUMS to a DRAFT
+#     prerelease for that tag. A person reviews and publishes it by hand after Phase 8.
+# Nothing here publishes a release, signs with a real identity, notarizes, or pushes
+# commits or tags. The artifacts are unsigned (macOS gets only an ad-hoc signature,
+# made by scripts/package.py) and the Windows DOF bridge is unverified on hardware (D33).
+on:
+  pull_request:
+    paths:
+      - "scripts/package.py"
+      - "scripts/human_acceptance.py"
+      - "scripts/tests/**"
+      - "tables/**"
+      - "tools/dof_bridge/**"
+      - "crates/pin_app/**"
+      - ".github/workflows/release.yml"
+      - "docs/HUMAN_ACCEPTANCE.md"
+      - "docs/queue/**"
+      - "docs/decisions/**"
+      - "docs/RUN_LOG.md"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version (default: [workspace.package] version in Cargo.toml)"
+        required: false
+        type: string
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  SDL_AUDIO_DRIVER: dummy
+  SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS: "1"
+  # Exact toolchain from versions.toml [toolchain] (as ci.yml).
+  RUST_VERSION: "1.97.0"
+
+jobs:
+  dry-run:
+    name: package dry-run (x86_64-unknown-linux-gnu)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SDL_VIDEO_DRIVER: dummy
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host x86_64-unknown-linux-gnu)
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+
+      # tables/feature_lab/build.sh runs a pin_app example, so the bundles need the same
+      # SDL3 build headers as ci.yml's clippy job.
+      - name: Install Linux packages (SDL3 build headers)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
+      - name: Python script tests (scripts/tests)
+        shell: bash
+        run: python3 -m unittest discover -s scripts/tests -p '*_test.py'
+
+      # Stale is a warning, never a failure (decision 2026-11-20-7.2): every PR that adds a
+      # queue or decision line changes the rendering; the Orchestrator regenerates the file.
+      - name: docs/HUMAN_ACCEPTANCE.md is current (warning only)
+        continue-on-error: true
+        shell: bash
+        run: |
+          if ! python3 scripts/human_acceptance.py --check; then
+            echo "::warning title=HUMAN_ACCEPTANCE.md stale::run python3 scripts/human_acceptance.py and commit docs/HUMAN_ACCEPTANCE.md (the Orchestrator regenerates it after the last run-log row)"
+            exit 1
+          fi
+
+      # Real bundles from tables/*/build.sh (run by package.py); the engine executable is a
+      # placeholder here, since the release build of pin_app runs in `verify` and `package`
+      # (decision 2026-11-20-7.2, "PR dry-run uses a placeholder executable").
+      - name: package.py --dry-run (Linux layout, real bundles)
+        shell: bash
+        run: |
+          set -euo pipefail
+          stub="$RUNNER_TEMP/stub-exe/pin_app"
+          mkdir -p "$(dirname "$stub")"
+          printf '#!/bin/sh\necho "placeholder engine (release dry-run)"\n' > "$stub"
+          out="$RUNNER_TEMP/package"
+          python3 scripts/package.py --target x86_64-unknown-linux-gnu --out "$out" --exe "$stub" --dry-run | tee dry-run.log
+          grep -qx 'DRY RUN OK' dry-run.log
+          pkg=$(find "$out" -mindepth 1 -maxdepth 1 -type d -name 'kilohertz-pinball-*-linux-x64')
+          n=$(find "$pkg/tables" -name '*.pinbundle' | wc -l)
+          if [ "$n" -ne 4 ]; then echo "::error::expected 4 .pinbundle files, found $n"; exit 1; fi
+          if find "$pkg" -path '*dof_bridge*' | grep -q .; then echo "::error::dof_bridge in the Linux package"; exit 1; fi
+          if ls "$out"/*.tar.gz "$out"/*.sha256 >/dev/null 2>&1; then echo "::error::dry-run left an archive"; exit 1; fi
+          {
+            echo "### Linux package dry-run"
+            echo
+            echo '```'
+            python3 -c 'import json, sys; print("\n".join(f["path"] for f in json.load(open(sys.argv[1]))["files"]))' "$out/PACKAGE_MANIFEST.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Plan verification for 7.2 (criterion 5): release build and tests of the whole workspace
+  # with zero warnings on every target: Windows x64, Linux x64, macOS arm64 and macOS x86_64
+  # (the Intel slice is cross-built and tested under Rosetta 2 on the arm64 macos-latest
+  # runner). Not on pull requests (D40).
+  verify:
+    name: verify (${{ matrix.target }})
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            host: x86_64-unknown-linux-gnu
+            cargo_args: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            host: x86_64-pc-windows-msvc
+            cargo_args: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            host: aarch64-apple-darwin
+            cargo_args: ""
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            host: aarch64-apple-darwin
+            cargo_args: "--target x86_64-apple-darwin"
+    env:
+      SDL_VIDEO_DRIVER: dummy
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        if: runner.os != 'macOS'
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        if: runner.os == 'macOS'
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }}, host ${{ matrix.target }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "${{ matrix.host }}" ]; then
+            echo "::error::host $host, expected ${{ matrix.host }}"; exit 1
+          fi
+
+      - name: Install Linux packages (SDL3 build headers)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
+      # The Intel slice is cross-built on the arm64 runner and its tests run under Rosetta 2.
+      # Fail loudly if x86_64 binaries cannot run; never skip the tests silently.
+      - name: Ensure x86_64 binaries can run (Rosetta 2)
+        if: matrix.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          if ! /usr/bin/arch -x86_64 /usr/bin/true; then
+            sudo softwareupdate --install-rosetta --agree-to-license || true
+            if ! /usr/bin/arch -x86_64 /usr/bin/true; then
+              echo "::error::Rosetta 2 unavailable; cannot run x86_64-apple-darwin tests"
+              exit 1
+            fi
+          fi
+
+      - name: cargo build --release --workspace (-D warnings)
+        shell: bash
+        run: cargo build --release --workspace ${{ matrix.cargo_args }}
+
+      - name: cargo test --release --workspace (-D warnings)
+        shell: bash
+        run: cargo test --release --workspace ${{ matrix.cargo_args }}
+
+  # Resolves the package version once: the tag without its leading `v` on a tag push, the
+  # dispatch input or Cargo.toml otherwise. A tag/Cargo.toml mismatch is only a warning.
+  version:
+    name: resolve version
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve the version
+        id: v
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          cargo_version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version *= *"\([^"]*\)".*/\1/p}' Cargo.toml | head -n 1)
+          if [ -z "$cargo_version" ]; then echo "::error::no [workspace.package] version in Cargo.toml"; exit 1; fi
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [ "$version" != "$cargo_version" ]; then
+              echo "::warning title=version mismatch::tag $GITHUB_REF_NAME vs Cargo.toml $cargo_version; packaging as $version"
+            fi
+          elif [ -n "${INPUT_VERSION:-}" ]; then
+            version="$INPUT_VERSION"
+          else
+            version="$cargo_version"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9A-Za-z][0-9A-Za-z.+_-]*$'; then
+            echo "::error::invalid version '$version'"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Package version: $version" >> "$GITHUB_STEP_SUMMARY"
+
+  package:
+    name: package (${{ matrix.target }})
+    if: github.event_name != 'pull_request'
+    needs: [verify, version]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x64
+            python: python3
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x64
+            python: python
+          - os: macos-latest
+            target: universal-apple-darwin
+            platform: macos-universal
+            python: python3
+    env:
+      SDL_VIDEO_DRIVER: dummy
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        if: runner.os != 'macOS'
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        if: runner.os == 'macOS'
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-dotnet@v4
+        if: runner.os == 'Windows'
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Install Linux packages (SDL3 build headers)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev
+
+      # Builds the engine (cargo; lipo on macOS), the four bundles (tables/*/build.sh) and,
+      # on Windows, the DOF bridge (dotnet publish); then assembles and archives.
+      - name: scripts/package.py --target ${{ matrix.target }}
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          ${{ matrix.python }} scripts/package.py --target ${{ matrix.target }} --version "$VERSION" --out "$RUNNER_TEMP/dist"
+          ls -l "$RUNNER_TEMP/dist"
+          cat "$RUNNER_TEMP/dist"/*.sha256 >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kilohertz-pinball-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/dist/kilohertz-pinball-*.zip
+            ${{ runner.temp }}/dist/kilohertz-pinball-*.tar.gz
+            ${{ runner.temp }}/dist/kilohertz-pinball-*.sha256
+            ${{ runner.temp }}/dist/PACKAGE_MANIFEST.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # Tag pushes only: a DRAFT prerelease with the three archives, SHA256SUMS and the
+  # manifests. It never publishes, never marks a release as the newest, and never creates
+  # or moves a tag (--verify-tag requires the owner-pushed tag to exist).
+  draft-release:
+    name: draft release (tag ${{ github.ref_name }})
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [package, version]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: kilohertz-pinball-*
+          path: dist
+
+      - name: Create the draft prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p assets
+          for dir in dist/kilohertz-pinball-*/; do
+            platform=$(basename "$dir"); platform=${platform#kilohertz-pinball-}
+            cp "$dir"/kilohertz-pinball-* assets/
+            cp "$dir"/PACKAGE_MANIFEST.json "assets/PACKAGE_MANIFEST-$platform.json"
+          done
+          sums=(dist/*/*.sha256)
+          if [ ${#sums[@]} -ne 3 ]; then echo "::error::expected 3 .sha256 files, found ${#sums[@]}"; exit 1; fi
+          cat "${sums[@]}" | sort -k 2 > assets/SHA256SUMS
+          rm -f assets/*.sha256
+          cat assets/SHA256SUMS
+          notes="Kilohertz Pinball $VERSION (draft prerelease built by the release workflow).
+
+          These artifacts are unsigned: no Authenticode, no macOS Developer ID and no notarization (the macOS app has an ad-hoc signature only). The Windows DOF bridge is unverified on hardware (D33). Ray-query reflections are off by default. Verify downloads against SHA256SUMS. Publish this draft by hand after Phase 8 acceptance (docs/HUMAN_ACCEPTANCE.md)."
+          gh release create "$GITHUB_REF_NAME" --draft --prerelease --verify-tag --repo "$GITHUB_REPOSITORY" --title "Kilohertz Pinball $VERSION (draft, unsigned)" --notes "$notes" assets/*
