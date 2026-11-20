@@ -49,7 +49,7 @@ fn closed_wall() -> impl Strategy<Value = Wall> {
             points: (0..k)
                 .map(|i| {
                     let a = rot + i as f32 / k as f32 * core::f32::consts::TAU;
-                    [cx + r * a.cos(), cy + r * a.sin()]
+                    [cx + r * libm::cosf(a), cy + r * libm::sinf(a)]
                 })
                 .collect(),
             closed: true,
@@ -85,7 +85,7 @@ fn lane() -> impl Strategy<Value = Lane> {
     )
         .prop_map(|(p, a, len, width, kind)| Lane {
             kind,
-            points: vec![p, [p[0] + len * a.cos(), p[1] + len * a.sin()]],
+            points: vec![p, [p[0] + len * libm::cosf(a), p[1] + len * libm::sinf(a)]],
             width,
         });
     let arc = (
@@ -106,7 +106,7 @@ fn lane() -> impl Strategy<Value = Lane> {
                 points: (0..k)
                     .map(|i| {
                         let a = start + dir * sweep * i as f32 / (k - 1) as f32;
-                        [c[0] + r * a.cos(), c[1] + r * a.sin()]
+                        [c[0] + r * libm::cosf(a), c[1] + r * libm::sinf(a)]
                     })
                     .collect(),
                 width,
@@ -228,7 +228,7 @@ fn straight_lanes_near_diagonals_generate() {
             for j in 0..20 {
                 let len = 60.0 + 23.0 * j as f32;
                 let from = [200.0 + 1.37 * j as f32, 400.0 + 0.91 * i as f32];
-                let to = [from[0] + len * a.cos(), from[1] + len * a.sin()];
+                let to = [from[0] + len * libm::cosf(a), from[1] + len * libm::sinf(a)];
                 let layout = one_lane(from, to, 15.0 + 1.7 * (j % 7) as f32);
                 generate(&layout, &base).unwrap_or_else(|e| panic!("{e}\n{layout:#?}"));
                 cases += 1;

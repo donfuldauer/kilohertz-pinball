@@ -821,7 +821,10 @@ pub fn build_layout(
                     .enumerate()
                     .map(|(i, j)| {
                         let a = (base_deg + 360.0 * i as f32 / n as f32 + j).to_radians();
-                        [r2(cx + radius * a.cos()), r2(cy + radius * a.sin())]
+                        [
+                            r2(cx + radius * libm::cosf(a)),
+                            r2(cy + radius * libm::sinf(a)),
+                        ]
                     })
                     .collect();
                 layout.walls.push(Wall {
@@ -851,11 +854,17 @@ pub fn build_layout(
                 let a = theta_deg.to_radians();
                 let b = (theta_deg + bend_deg).to_radians();
                 let mut points = vec![
-                    [r2(cx - spacing * a.cos()), r2(cy - spacing * a.sin())],
+                    [
+                        r2(cx - spacing * libm::cosf(a)),
+                        r2(cy - spacing * libm::sinf(a)),
+                    ],
                     [r2(cx), r2(cy)],
                 ];
                 if *three {
-                    points.push([r2(cx + spacing * b.cos()), r2(cy + spacing * b.sin())]);
+                    points.push([
+                        r2(cx + spacing * libm::cosf(b)),
+                        r2(cy + spacing * libm::sinf(b)),
+                    ]);
                 }
                 layout.lanes.push(Lane {
                     kind: [

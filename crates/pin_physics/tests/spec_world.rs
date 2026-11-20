@@ -494,7 +494,7 @@ fn many_overlaps_do_not_overflow() {
     let mut b = StaticWorldBuilder::new();
     for i in 0..24 {
         let a = std::f32::consts::TAU * i as f32 / 24.0;
-        let d = Vec3::new(a.cos(), a.sin(), 0.0);
+        let d = Vec3::new(libm::cosf(a), libm::sinf(a), 0.0);
         b.add_collider(
             StaticShape::Cylinder {
                 base: d * (R + 0.004) - Vec3::Z * 0.05,

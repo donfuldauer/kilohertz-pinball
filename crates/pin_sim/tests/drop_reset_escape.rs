@@ -206,7 +206,7 @@ fn run(bundle: &Path, t: Trial, t_rise: u64) -> Outcome {
     let (mut s, _) = dropped(bundle);
     let underside = s.escape_bounds().1[2] - GLASS_THICKNESS_M - BOUNDS_MARGIN_M;
     let a = (t.angle_deg as f32).to_radians();
-    let d = [a.cos(), a.sin()];
+    let d = [libm::cosf(a), libm::sinf(a)];
     let dist = t.speed * LEAD as f32 * 1.0e-3;
     let off = t.offset_mm * 1.0e-3;
     let p = [

@@ -114,7 +114,7 @@ fn resting_centre_on_an_inclined_support() {
         }
     };
     // 30° slope rising along +x; ceiling parallel, `gap` above along the normal.
-    let slope = 30f64.to_radians().tan();
+    let slope = libm::tan(30f64.to_radians());
     let plane = |dz: f64| {
         tri([
             DVec3::new(-1.0, -1.0, -slope + dz),
@@ -843,7 +843,7 @@ mod inscribed_circle {
         /// Rotated squares: the side, whatever the rotation.
         #[test]
         fn rotated_squares(a in 0.0f64..core::f64::consts::TAU, s in 0.01f64..0.5) {
-            let (sn, cs) = a.sin_cos();
+            let (sn, cs) = libm::sincos(a);
             let pts: Vec<DVec2> = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]
                 .iter()
                 .map(|&[x, y]| {

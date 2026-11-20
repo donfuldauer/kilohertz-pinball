@@ -165,7 +165,7 @@ proptest! {
         let world = wb.build();
         let geo = Geometry::new(&world);
         let p = pitch_deg.to_radians();
-        let mut s = sized_solver(&[d], v(0.0, -9.81 * p.sin(), -9.81 * p.cos()));
+        let mut s = sized_solver(&[d], v(0.0, -9.81 * libm::sinf(p), -9.81 * libm::cosf(p)));
         let h = s.add_ball(ball(0, v(x, r + 0.002, r), Vec3::ZERO)).unwrap();
         for _ in 0..2500 {
             s.step(&geo, DT, &mut ev);

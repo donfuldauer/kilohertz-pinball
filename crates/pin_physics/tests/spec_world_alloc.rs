@@ -64,7 +64,7 @@ fn per_tick_queries_do_not_allocate() {
     let pts: Vec<Vec3> = (0..9)
         .map(|i| {
             let a = std::f32::consts::PI * i as f32 / 8.0;
-            Vec3::new(0.15 * a.cos(), 0.15 * a.sin(), 0.008 * i as f32)
+            Vec3::new(0.15 * libm::cosf(a), 0.15 * libm::sinf(a), 0.008 * i as f32)
         })
         .collect();
     let spline = CubicSpline::interpolate(&pts).unwrap();
@@ -130,7 +130,7 @@ fn per_tick_queries_do_not_allocate() {
     for tick in 0..2000u32 {
         let s = tick as f32 / 2000.0;
         let a = std::f32::consts::PI * s;
-        let q = Vec3::new(0.14 * a.cos(), 0.14 * a.sin(), 0.03);
+        let q = Vec3::new(0.14 * libm::cosf(a), 0.14 * libm::sinf(a), 0.03);
         let cp = spline.closest_point(black_box(q), seed);
         seed = Some(cp.t);
         black_box(spline.closest_point(q, None));

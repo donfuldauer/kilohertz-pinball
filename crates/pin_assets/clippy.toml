@@ -1,5 +1,7 @@
 # Crate-local ban on std (platform libm) transcendentals: PLAN 2.4 / D9.
-# Scope is pin_assets only; extending it to other crates is a separate decision.
+# Scope: pin_assets, pin_core, pin_physics, pin_sim, pin_input, pin_script, pin_tablegen,
+# pin_assetgen (each has an identical copy of this list); presentation-only crates are exempt.
+# See docs/decisions/2026-11-19-w8f-q5.md and docs/decisions/2026-11-19-w8g-e.md.
 disallowed-methods = [
     { path = "f32::sin", reason = "use libm::sinf (PLAN 2.4, D9)" },
     { path = "f32::cos", reason = "use libm::cosf (PLAN 2.4, D9)" },

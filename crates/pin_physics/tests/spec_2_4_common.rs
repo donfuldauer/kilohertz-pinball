@@ -61,7 +61,7 @@ pub fn solver_with_gravity(gravity: Vec3) -> BallSolver {
 /// playfield normal, +y up the table).
 pub fn pitched_gravity(deg: f32) -> Vec3 {
     let a = deg.to_radians();
-    Vec3::new(0.0, -9.81 * a.sin(), -9.81 * a.cos())
+    Vec3::new(0.0, -9.81 * libm::sinf(a), -9.81 * libm::cosf(a))
 }
 
 /// A 4 m × 4 m slab whose top face is the plane z = `top`, on `layer_mask`.
@@ -193,7 +193,7 @@ pub fn horiz(v: Vec3) -> Vec3 {
 /// Unit vector in the playfield plane at `deg` from +x.
 pub fn dir_deg(deg: f32) -> Vec3 {
     let a = deg.to_radians();
-    Vec3::new(a.cos(), a.sin(), 0.0)
+    Vec3::new(libm::cosf(a), libm::sinf(a), 0.0)
 }
 
 pub fn is_finite_ball(b: &Ball) -> bool {
@@ -443,7 +443,7 @@ pub fn busy_drive(rig: &mut Rig, t: u32) {
     if t % 400 == 123 {
         let a = t as f32 * 0.37;
         rig.mechs
-            .nudge(Vec3::new(0.25 * a.cos(), 0.25 * a.sin(), 0.0));
+            .nudge(Vec3::new(0.25 * libm::cosf(a), 0.25 * libm::sinf(a), 0.0));
     }
     if t == 777 {
         rig.mechs.set_spinner_speed(ix::SPINNER, 60.0);

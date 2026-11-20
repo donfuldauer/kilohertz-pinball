@@ -450,7 +450,7 @@ fn gap_to_bat(frame: &BackboxFrame, def: &pin_core::schema::table::FlipperDef, p
     };
     let pivot = local(frame, (Vec3::from(def.base_position) * 1.0e-3).to_array());
     let a = def.rest_angle_deg.to_radians();
-    let dir = Vec3::new(a.cos(), 0.0, a.sin());
+    let dir = Vec3::new(libm::cosf(a), 0.0, libm::sinf(a));
     let d = Vec3::new(p.x - pivot.x, 0.0, p.z - pivot.z);
     let s = d.dot(dir).clamp(0.0, length);
     let radius = base_radius + (tip_radius - base_radius) * s / length;

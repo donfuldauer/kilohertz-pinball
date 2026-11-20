@@ -406,7 +406,7 @@ fn magnus_turns_velocity_on_a_circle() {
     let wc = f64::from(p.magnus_coeff) * 400.0 / f64::from(p.mass_kg);
     let t = ticks as f64 * f64::from(DT);
     let end = run[ticks - 1];
-    let angle = f64::from(end.velocity.y).atan2(f64::from(end.velocity.x));
+    let angle = libm::atan2(f64::from(end.velocity.y), f64::from(end.velocity.x));
     assert!(
         (angle - wc * t).abs() <= 0.01 * wc * t,
         "turned {angle} rad, expected {}",
