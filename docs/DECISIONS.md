@@ -7266,8 +7266,14 @@ above.
 **Decision:** `.claude/settings.json` `permissions.ask` keeps `git reset`, `git rebase`, `git tag`,
 `git branch -D`, `git clean`, `gh pr close`, `gh release` and adds force pushes (`git push --force…`,
 `-f`, a `+` refspec, `--mirror`) and remote branch or tag deletion (`git push --delete`, `-d`, a
-`:<ref>` refspec). `git commit`, `git push`, `git merge`, `gh pr create`, `gh pr merge` and `gh api` are removed
-from it. This supersedes part of the imported decision "claude-project-settings — Claude project
+`:<ref>` refspec). Every git rule also matches when git global options come before the
+subcommand (`git -C <dir> push --force …`, `git -c <key>=<value> reset …`). The rules are text
+patterns, so a force or delete spelled another way is not caught, for example a short flag
+combined after another (`-uf`), a force set in configuration (a `+` refspec in
+`remote.<name>.push`), a git alias, or git started another way (`env git`, `/usr/bin/git`). In
+the other direction, a `git -C …` command whose message or arguments contain ` reset ` or ` tag `
+can prompt although it is harmless. `git commit`, `git push`, `git merge`, `gh pr create`, `gh pr merge` and `gh api` are
+removed from it. This supersedes part of the imported decision "claude-project-settings — Claude project
 settings" (its ask list). Its sandbox, allow, deny and write-path choices stand. Made at the
 owner's request in the PR #142 session.
 **Rationale:** Explicit ask rules prompt in every permission mode, Auto included. After main's
