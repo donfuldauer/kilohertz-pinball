@@ -95,7 +95,7 @@ fn rolling_107m_literal_formula_with_zero_rolling_resistance() {
     cfg.rolling_resistance = 0.0;
     let g = f64::from(cfg.gravity.length());
     let theta = f64::from(PITCH_DEG.to_radians());
-    let a_literal = 5.0 / 7.0 * g * theta.sin();
+    let a_literal = 5.0 / 7.0 * g * libm::sin(theta);
     let run = roll_run(cfg);
     check_roll(&run, a_literal, "c = 0, literal 5/7 g sin(theta)");
     // "1.07 m in about 1.64 s" of the plan.
@@ -109,7 +109,7 @@ fn rolling_107m_default_parameters_match_the_resistance_model() {
     assert!(c > 0.0);
     let g = f64::from(cfg.gravity.length());
     let theta = f64::from(PITCH_DEG.to_radians());
-    let a_model = 5.0 / 7.0 * g * (theta.sin() - c * theta.cos());
+    let a_model = 5.0 / 7.0 * g * (libm::sin(theta) - c * libm::cos(theta));
     let run = roll_run(cfg);
     check_roll(&run, a_model, "default c, 5/7 g (sin - c cos)");
 }
@@ -141,7 +141,7 @@ fn bounce(profile: pin_core::ids::ProfileId, material: Material, pitch: f32, dro
     if material != Material::Wood {
         s.set_collider_material(c, material);
     }
-    let gn = 9.81f64 * f64::from(pitch.cos());
+    let gn = 9.81f64 * f64::from(libm::cosf(pitch));
     let dt = f64::from(DT);
     let h = s
         .add_ball(Ball::new(profile, rot * v(0.0, 0.0, r + drop)))
@@ -210,7 +210,7 @@ fn mean_height_ratio(
     e: f64,
 ) -> f64 {
     const N: usize = 20;
-    let v_impact = (2.0 * 9.81f64 * f64::from(pitch.cos()) * f64::from(drop)).sqrt();
+    let v_impact = (2.0 * 9.81f64 * f64::from(libm::cosf(pitch)) * f64::from(drop)).sqrt();
     let step = v_impact * f64::from(DT) / N as f64;
     // Fall distance of one tick at v_impact is v dt; spread phase over it.
     let mut sum = 0.0;

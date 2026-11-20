@@ -1928,7 +1928,7 @@ mod tests {
                 let u = i as f64 / (n - 1) as f64;
                 let a = core::f64::consts::TAU * turns * u;
                 let r = 0.1 + pitch * turns * u;
-                Vec3::new((r * a.cos()) as f32, (r * a.sin()) as f32, 0.0)
+                Vec3::new((r * libm::cos(a)) as f32, (r * libm::sin(a)) as f32, 0.0)
             })
             .collect()
     }

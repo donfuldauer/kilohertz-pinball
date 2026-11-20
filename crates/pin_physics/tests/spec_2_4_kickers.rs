@@ -370,7 +370,7 @@ fn spring_force_is_minus_k_x() {
             let m = mass_g * 1.0e-3;
             let omega = (k / m).sqrt();
             // Exact SHM velocity after one tick; equals k|x|/m·dt to 1st order.
-            let expected = -x0 * omega * (omega * DT).sin();
+            let expected = -x0 * omega * libm::sinf(omega * DT);
             let linear = k * -x0 / m * DT;
             let v1 = pl.v();
             assert!(

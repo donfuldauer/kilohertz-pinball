@@ -56,7 +56,7 @@ fn chain_solver(gravity: Vec3, u: f32) -> BallSolver {
 }
 
 fn gravity_at(pitch: f32) -> Vec3 {
-    9.81 * v(pitch.sin(), 0.0, -pitch.cos())
+    9.81 * v(libm::sinf(pitch), 0.0, -libm::cosf(pitch))
 }
 
 /// Captive position and path speed at the end of the tick, without free balls.
@@ -164,7 +164,11 @@ fn normals() -> Vec<Vec3> {
     let mut out = Vec::new();
     for a in [0.0f32, 0.35, 0.7] {
         for b in [0.0f32, 0.25] {
-            out.push(v(-a.cos() * b.cos(), a.sin() * b.cos(), b.sin()));
+            out.push(v(
+                -libm::cosf(a) * libm::cosf(b),
+                libm::sinf(a) * libm::cosf(b),
+                libm::sinf(b),
+            ));
         }
     }
     out
@@ -231,7 +235,7 @@ fn ball_knocked_toward_a_passed_captive_hits_it() {
                     controls += 1;
                     for beta in [0.0f32, 0.4, 0.8] {
                         // B comes from beyond A, at angle `beta` to `n`.
-                        let m = n * beta.cos() + perp(n) * beta.sin();
+                        let m = n * libm::cosf(beta) + perp(n) * libm::sinf(beta);
                         for vb in [1.5f32, 3.0, 5.0] {
                             let b = Some(ball_b(m, vb, va));
                             let pa = q_end + n * 2.0 * radius(STEEL);
@@ -449,7 +453,11 @@ fn captive_turned_toward_a_passing_ball_hits_it() {
                     for t_b in [0.2e-3f32, 0.3e-3, 0.5e-3] {
                         // B comes from the far (+x) side of the captive.
                         for (g, h) in [(0.0f32, 0.0f32), (0.4, 0.0), (-0.5, 0.0), (0.2, 0.3)] {
-                            let m = v(g.cos() * h.cos(), g.sin() * h.cos(), h.sin());
+                            let m = v(
+                                libm::cosf(g) * libm::cosf(h),
+                                libm::sinf(g) * libm::cosf(h),
+                                libm::sinf(h),
+                            );
                             for vb in [1.0f32, 2.5] {
                                 let b = Some((q_end + m * (rsum + vb * t_b), -m * vb));
                                 let label = format!("{label} t_b {t_b} m {m:?} vb {vb}");

@@ -283,7 +283,7 @@ fn magnetisation_rises_saturates_and_decays() {
     }
     // First-order rise: 1 − e^(−0.2/0.03) of the way.
     assert!(
-        (last - 0.6 * (1.0 - (-0.2f32 / tau).exp())).abs() < 1e-3,
+        (last - 0.6 * (1.0 - libm::expf(-0.2f32 / tau))).abs() < 1e-3,
         "{last}"
     );
     // Raise P to 1: M follows above 0.6.
@@ -302,7 +302,7 @@ fn magnetisation_rises_saturates_and_decays() {
     }
     let m5 = magnetisation(&rem, held);
     assert!(m5 < 0.01 * m_full, "{m5}");
-    assert!((m5 - m_full * (-5.0f32).exp()).abs() < 1e-4);
+    assert!((m5 - m_full * libm::expf(-5.0f32)).abs() < 1e-4);
     // Unknown handle: zero.
     assert_eq!(magnetisation(&rem, BallHandle(MAX_BALLS as u8)), 0.0);
     assert_eq!(rem.magnetisation(BallHandle(200)), 0.0);
@@ -346,7 +346,7 @@ fn magnetisation_decays_out_of_range_with_the_source_tau() {
         s.step(&geo, DT, &mut ev);
     }
     let m1 = magnetisation(&rem, h);
-    assert!((m1 / m0 - (-1.0f32).exp()).abs() < 1e-3, "{m0} → {m1}");
+    assert!((m1 / m0 - libm::expf(-1.0f32)).abs() < 1e-3, "{m0} → {m1}");
 }
 
 #[test]
@@ -386,7 +386,7 @@ fn remanence_helpers() {
     assert_eq!(remanence_decay(0.001, 0.0), 0.0);
     assert_eq!(remanence_decay(0.001, f32::INFINITY), 1.0);
     assert_eq!(remanence_decay(0.001, f32::NAN), 0.0);
-    assert!((remanence_decay(0.001, 0.06) - (-1.0f32 / 60.0).exp()).abs() < 1e-7);
+    assert!((remanence_decay(0.001, 0.06) - libm::expf(-1.0f32 / 60.0)).abs() < 1e-7);
     assert_eq!(magnetisation_step(0.5, 1.0, 0.001, 0.0), 1.0);
     assert_eq!(magnetisation_step(f32::NAN, 1.0, 0.001, 0.06), 0.0);
     assert_eq!(magnetisation_step(0.5, f32::NAN, 0.001, 0.0), 0.0);
@@ -658,7 +658,7 @@ fn overlapping_idle_magnet_does_not_take_over_the_decay_tau() {
     let a = run(true);
     let b = run(false);
     assert_eq!(a.to_bits(), b.to_bits(), "{a} vs {b}");
-    assert!((a - (-0.5f32).exp()).abs() < 2e-3, "{a}");
+    assert!((a - libm::expf(-0.5f32)).abs() < 2e-3, "{a}");
 }
 
 /// Two clones of one `Remanence` registered: only the first to be called
@@ -691,7 +691,7 @@ fn a_second_registered_clone_is_inert() {
     let twice = run(true);
     assert_eq!(once, twice);
     let m60 = f32::from_bits(once.last().unwrap().0);
-    assert!((m60 - (1.0 - (-1.0f32).exp())).abs() < 2e-3, "{m60}");
+    assert!((m60 - (1.0 - libm::expf(-1.0f32))).abs() < 2e-3, "{m60}");
     // A clone registered with a second solver is inert too.
     let rem = Remanence::new();
     let mut s1 = solver();

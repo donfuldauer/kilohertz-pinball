@@ -208,7 +208,7 @@ fn axis_events_replay_deterministically() {
         for (i, t) in (100..900u64).step_by(40).enumerate() {
             let ts = tick_end_ns(0, t) - 1;
             let axis = CabinetAxis::ALL[i % CabinetAxis::ALL.len()];
-            let value = ((i as f32) * 0.37).sin();
+            let value = libm::sinf((i as f32) * 0.37);
             let value = match axis {
                 CabinetAxis::NudgeX | CabinetAxis::NudgeY => value,
                 _ => value.abs(),
