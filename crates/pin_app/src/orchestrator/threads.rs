@@ -9,7 +9,7 @@
 
 use super::audio::{AUDIO_BLOCK_FRAMES, AudioEngine, AudioSink, NullSink, RegisteredSound};
 use super::gpu_timer::GpuFrameTimer;
-use super::hud::HudFeed;
+use super::hud::{DebugViewHooks, HudFeed, HudOverlay, hud_format_supported};
 use super::present::{AppSurfaces, SurfacePlan, table_set_accepted};
 use super::table::{DisplayCommand, FlipperOutline};
 use super::view::{TableRenderOptions, TableVisuals};
@@ -118,16 +118,17 @@ pub struct RenderConfig {
     /// Display commands (scenes, scores) from the sim thread
     /// ([`TableSim::with_displays`](super::TableSim::with_displays)).
     pub displays: Option<HapticsConsumer<DisplayCommand>>,
-    /// The profiler's GPU frame-time writer (7.1 hook 3). With the table
-    /// presenter on a device with `TIMESTAMP_QUERY`, every presented frame's
-    /// GPU time is measured with timestamp queries ([`GpuFrameTimer`]) and
-    /// recorded here; otherwise nothing is recorded (never host time).
-    /// `None` (default): no GPU timing.
+    /// The profiler's GPU frame-time writer (7.1 hook 3). On a device with
+    /// `TIMESTAMP_QUERY`, every presented frame's GPU time is measured with
+    /// timestamp queries ([`GpuFrameTimer`]) and recorded here, with the
+    /// table presenter and with the debug view alike (w8g-d,
+    /// [`DebugViewHooks`]); otherwise nothing is recorded (never host
+    /// time). `None` (default): no GPU timing.
     pub present_profiler: Option<PresentProfiler>,
     /// The profiler HUD (`pin_app --profiler-hud`): `Some` draws
     /// [`hud_lines`](crate::profiler::hud_lines) of this reader's snapshot
-    /// over the playfield, refreshed every [`HUD_REFRESH_NS`]. `None`
-    /// (default): no HUD, frames unchanged.
+    /// over the playfield (table or debug view), refreshed every
+    /// [`HUD_REFRESH_NS`]. `None` (default): no HUD, frames unchanged.
     pub hud: Option<ProfilerReader>,
 }
 
@@ -973,6 +974,67 @@ fn build_presenter(
     }
 }
 
+/// The GPU frame timer for the render thread's presenter on `ctx`, writing
+/// to `profiler`, with one stderr line saying whether frames are timed.
+fn start_gpu_timer(ctx: &GpuContext, profiler: PresentProfiler) -> Option<GpuFrameTimer> {
+    let timer = GpuFrameTimer::new(ctx, profiler);
+    match &timer {
+        Some(t) => eprintln!(
+            "pin_app: gpu frame timing: timestamp queries (period {} ns)",
+            t.period_ns()
+        ),
+        None => eprintln!(
+            "pin_app: gpu frame timing: unavailable (no TIMESTAMP_QUERY on this device); the \
+             profiler records no GPU frame time"
+        ),
+    }
+    timer
+}
+
+/// The profiler hooks of a debug-view presenter (`set` on `ctx`, w8g-d):
+/// a [`GpuFrameTimer`] writing to `profiler` (when given; with the same
+/// `pin_app: gpu frame timing: ...` stderr line as the table presenter)
+/// and, with `hud`, a [`HudOverlay`] for the playfield surface's draw
+/// format. A playfield format the HUD cannot draw onto
+/// ([`hud_format_supported`]), or no playfield surface, gets one stderr
+/// note and no HUD; timing is unaffected. `None` when the hooks would do
+/// nothing (no profiler, no usable HUD): the render thread then draws with
+/// plain [`SurfaceSet::render`], so default frames are unchanged.
+pub fn debug_view_hooks(
+    ctx: &GpuContext,
+    set: &SurfaceSet,
+    profiler: Option<PresentProfiler>,
+    hud: bool,
+) -> Option<DebugViewHooks> {
+    let timer = profiler.and_then(|p| start_gpu_timer(ctx, p));
+    let overlay = if hud {
+        let playfield = set
+            .choices()
+            .position(|(_, role, _)| role == SurfaceRole::Playfield)
+            .and_then(|i| set.formats().nth(i));
+        match playfield {
+            Some(f) if hud_format_supported(f, ctx.adapter().get_texture_format_features(f)) => {
+                Some(HudOverlay::new(ctx.device(), f))
+            }
+            Some(f) => {
+                eprintln!(
+                    "pin_app: profiler HUD: the debug view's playfield format {f:?} cannot take \
+                     the overlay; no HUD (GPU frame timing is unaffected)"
+                );
+                None
+            }
+            None => {
+                eprintln!("pin_app: profiler HUD: the debug view has no playfield surface; no HUD");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let hooks = DebugViewHooks::new(timer, overlay);
+    (!hooks.is_empty()).then_some(hooks)
+}
+
 fn render_thread(
     cfg: RenderConfig,
     mut reader: TripleReader<FrameStateSnapshot>,
@@ -994,13 +1056,16 @@ fn render_thread(
         mut present_profiler,
         hud,
     } = cfg;
-    // The HUD is drawn by the playfield's table renderer, only when a
-    // reader is configured (`--profiler-hud`): default frames are unchanged.
+    // The HUD is drawn by the playfield's table renderer (or, in the debug
+    // view, by `DebugViewHooks`), only when a reader is configured
+    // (`--profiler-hud`): default frames are unchanged.
     let table_render = TableRenderOptions {
         profiler_hud: table_render.profiler_hud || hud.is_some(),
         ..table_render
     };
     let mut hud = hud.map(|r| HudFeed::new(r, HUD_REFRESH_NS));
+    // The debug view's profiler hooks (`None`: plain `SurfaceSet::render`).
+    let mut debug_hooks: Option<DebugViewHooks> = None;
     // GPU setup on this thread (the device lives here). Without surfaces
     // there is nothing to present, so no adapter is requested.
     let mut presenter = match gpu {
@@ -1018,21 +1083,21 @@ fn render_thread(
             });
             match made {
                 Ok(mut p) => {
-                    if let (Presenter::Table(ctx, s), Some(profiler)) =
-                        (&mut p, present_profiler.take())
-                    {
-                        match GpuFrameTimer::new(ctx, profiler) {
-                            Some(timer) => {
-                                eprintln!(
-                                    "pin_app: gpu frame timing: timestamp queries (period {} ns)",
-                                    timer.period_ns()
-                                );
+                    // GPU frame timing and the HUD for either presenter: the
+                    // table presenter times itself and draws the HUD in its
+                    // renderers; the debug view gets both through hooks.
+                    match &mut p {
+                        Presenter::Table(ctx, s) => {
+                            if let Some(timer) = present_profiler
+                                .take()
+                                .and_then(|pp| start_gpu_timer(ctx, pp))
+                            {
                                 s.set_gpu_timer(timer);
                             }
-                            None => eprintln!(
-                                "pin_app: gpu frame timing: unavailable (no TIMESTAMP_QUERY on \
-                                 this device); the profiler records no GPU frame time"
-                            ),
+                        }
+                        Presenter::Debug(ctx, set) => {
+                            debug_hooks =
+                                debug_view_hooks(ctx, set, present_profiler.take(), hud.is_some());
                         }
                     }
                     let ctx = match &p {
@@ -1113,7 +1178,17 @@ fn render_thread(
                     }
                 }
                 snapshot_lines(snap, &default_ball_radius, &mut lines);
-                let st = set.render(&lines, &camera);
+                let st = match debug_hooks.as_mut() {
+                    Some(h) => {
+                        if let Some(text) = hud.as_mut().and_then(|f| f.refresh(monotonic_now_ns()))
+                        {
+                            h.set_hud_lines(&text);
+                        }
+                        set.render_with(&lines, &camera, h)
+                    }
+                    // No profiler, no HUD: the default frames, unchanged.
+                    None => set.render(&lines, &camera),
+                };
                 stats.record_statuses(&st, spawned);
                 paced = set.frame_paced(&st);
             }
