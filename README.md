@@ -2,11 +2,11 @@
 
 A cross-platform pinball simulation engine for Windows, Linux and macOS, written in Rust. The name comes from its 1,000 Hz fixed-timestep simulation loop.
 
-**Status:** Waves 0 to 6 of the plan are implemented and merged, including Milestone M1 (the playable grey-box table) and Gate A1 (automated physics and soak gate). Wave 7 (the three production tables) has not started. See [Implemented](#implemented) and [Remaining work](#remaining-work).
+**Status:** the v5 build (Waves 0 to 9: subphases 0.1 to 7.2, Gates A1 and A2, the three production tables and the release pipeline) is implemented and merged. The owner's first final-acceptance session found the play experience not yet acceptable; that work is the plan's current milestone, [M1 — Play experience (#79)](https://github.com/donfuldauer/kilohertz-pinball/issues/79). See [Implemented](#implemented) and [Plan and open work](#plan-and-open-work).
 
 ## Overview
 
-The engine is designed in [`docs/PLAN.md`](docs/PLAN.md) and built by autonomous coding agents in 10 waves (0 to 9), with one human setup step before the run and one acceptance step after it. Key design points (PLAN sections 1, 2.2 and 2.4):
+The engine is specified in [`docs/SPEC.md`](docs/SPEC.md) (formerly `docs/PLAN.md`; its section, subphase and decision numbers are unchanged) and was built by autonomous coding agents in 10 waves (0 to 9), with one human setup step before the run and one acceptance step after it. Further work is planned as GitHub issues (see [Development process](#development-process)). Key design points (SPEC sections 1, 2.2 and 2.4):
 
 - **Language and platform layer:** Rust 2024 workspace (toolchain pinned to 1.97.0); SDL3 for windows, display enumeration, input events and audio output.
 - **Simulation:** 1,000 Hz fixed timestep (1 ms) on a dedicated sim thread with an accumulator that catches up at most 8 ticks. The render thread reads the latest snapshot through a lock-free triple buffer. Fixed tick order: drain input, scripts, host commands, physics, switch and haptic edges, publish snapshot. No allocation, locks or file I/O inside `step_1ms()`.
@@ -36,16 +36,16 @@ The engine is designed in [`docs/PLAN.md`](docs/PLAN.md) and built by autonomous
 | `tables/greybox/` | Milestone M1 grey-box table: `table.toml`, `layout.toml`, `rules.lua`, backglass and display scenes, `build.sh` to assemble a bundle. See [`tables/greybox/README.md`](tables/greybox/README.md). |
 | `tests/spec_ci/` | Standalone crate that checks `.github/workflows/*.yml` conform to the CI spec and guards the proptest workaround. |
 | `tools/dof_bridge/` | Windows-only .NET 8 companion that turns UDP telemetry into DirectOutput Framework updates. |
-| `scripts/` | [`gate_a1.sh`](scripts/gate_a1.sh), the Gate A1 runner (physics reference suite plus grey-box soak). |
+| `scripts/` | Gate runners [`gate_a1.sh`](scripts/gate_a1.sh) and [`gate_a2.sh`](scripts/gate_a2.sh), release packaging (`package.py`), the acceptance-checklist generator (`human_acceptance.py`) and the plan traceability check (`req_coverage.py`). See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md). |
 | `third_party/` | Vendored `lua-src` (Lua 5.4.9) and `lewton` (Ogg Vorbis) with Kilohertz hardening patches (`KHZ_PATCHES.md` in each). |
-| `physics_defaults.toml` | Global physics tunables (PLAN Appendix C); data-only tuning happens here. |
+| `physics_defaults.toml` | Global physics tunables (SPEC Appendix C); data-only tuning happens here. |
 | `versions.toml` | Dependency pins and toolchain version produced by the Subphase 0.1 spikes. |
-| `docs/` | Plan, decision and run logs, authoring guide, protocol and threat model (see [Development process](#development-process)). |
-| `.github/workflows/` | `ci.yml` (the CI matrix) and `spikes.yml`. |
+| `docs/` | Specification, process, development guide, decision and run logs, authoring guide, protocol and threat model (see [Development process](#development-process)). |
+| `.github/` | Workflows (`ci.yml`, `release.yml`, `rules-wasm.yml`, `soak.yml`, `spikes.yml`; see [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) "CI"), the `work-unit` issue template and the pull request template. |
 
 ## Implemented
 
-Source: [`docs/RUN_LOG.md`](docs/RUN_LOG.md) (reviewer and verifier pass rows, wave gate rows), the git history and the code in `crates/`. Subphase IDs and names follow PLAN section 4 and the wave matrix in section 5.
+Source: [`docs/RUN_LOG.md`](docs/RUN_LOG.md) (reviewer and verifier pass rows, wave gate rows), the git history and the code in `crates/`. Subphase IDs and names follow SPEC section 4; the wave-by-wave record is the run log.
 
 | Wave | Subphases | Status |
 |---|---|---|
@@ -55,42 +55,30 @@ Source: [`docs/RUN_LOG.md`](docs/RUN_LOG.md) (reviewer and verifier pass rows, w
 | 3 | 1.4 `wgpu` multi-surface context, thread orchestrator and debug renderer; 2.2 CCD, spin, friction, magnets and Newton balls; 3.2 X-Arcade profiles, plunger and nudge calibration; 3.3 Audio mixer; 4.1 Bundle VFS, glTF loader and manifest validation; 4.5 WebAssembly backend | All passed after review fix rounds; wave gate green (CI run 115). Hardening follow-ups 2.1-B1, 3.3-H and 4.1-H also passed. 3.2 passed by Orchestrator ruling (noisy curved-stroke accuracy ruled non-gating). |
 | 4 | 2.3 Flipper solver; 2.4 Bumpers, slingshots, targets, plunger and tilt bob; 2.7 Magnus effect and magnetic remanence; 3.4 Haptics bus, SSF mixer and UDP telemetry; 4.3 Procedural table generator; 4.6 Placeholder asset kit; 5.1 PBR pipeline and pinball materials; seam task 2.2-S (moving-body and force-hook seams) | All passed; wave gate green (CI run 215). |
 | 5 | 2.5 Headless simulation, state injection and replay; 2.6 Curved "Banana" flipper; 2.8 Large balls and clearance validation; 3.5 DOF bridge; 4.4 Table browser, display setup and input menu; 5.2 Ball reflection probes and HDR post-processing; 5.3 Backglass and dual-mode score display | All passed; wave gate green (CI run 301; replay hash reproducible 10x per machine on all three OSes). |
-| 6 | 6.0 Integration and grey-box table (Milestone M1, PR #21); 5.4 Hardware ray-query reflections (PR #22); 5.5 Backbox mini-playfield, vertical flippers and 3D toys (PR #20); 2.9 Autoplay bot and soak harness (PR #19) | All merged; wave gate green (CI run 610). |
+| 6 | 6.0 Integration and grey-box table (the v5 Milestone M1, PR #21); 5.4 Hardware ray-query reflections (PR #22); 5.5 Backbox mini-playfield, vertical flippers and 3D toys (PR #20); 2.9 Autoplay bot and soak harness (PR #19) | All merged; wave gate green (CI run 610). |
 | Gate A1 | Physics reference suite and grey-box soak (`scripts/gate_a1.sh`) | Passed (PR #28 plus ball-solver fixes): zero stuck, endless, escaped or non-finite balls at three skill levels, 100 % switch coverage, p99.9 tick time below 0.35 ms. |
+| 7 | 6.1 "Apex Circuit" (PR #55); 6.2 "Sky Deck" (PR #60); 6.4 "Feature Lab" (PR #58); Gate A2 runner (PR #61) | All merged; wave gate green (CI run 791). |
+| Gate A2 | Table soak and rules freeze (`scripts/gate_a2.sh`) | Passed at 106e7e4: 1,000 games at three skill levels on each table, zero stuck, endless, escaped or non-finite balls, 100 % switch, shot and mode coverage, 20 of 20 sampled replays identical per table. |
+| 8 | 6.3 WebAssembly ports of the table rules (PR #67); 7.1 Latency profiler and determinism soak (PR #68) | All merged; wave gate green (CI run 803). |
+| 9 | 7.2 Packaging and release (PR #77) | Merged; wave gate green (CI run 830). The release workflow's dispatch and tag paths have not run yet. |
 
 Post-wave fixes recorded in the run log (all merged to `main`):
 
-- **w7pre process and docs:** decision and queue entries become one file per unit under `docs/decisions/` and `docs/queue/` (D41); main-branch CI runs are no longer cancelled; the Fable-allowance ask rule (D42); [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) with accepted risk TM-1 (fix-13, PR #47); telemetry session-id deferral in [`docs/TELEMETRY_PROTOCOL.md`](docs/TELEMETRY_PROTOCOL.md) (fix-12, PR #46).
+- **w7pre process and docs:** decision and queue entries become one file per unit under `docs/decisions/` and `docs/queue/` (D41, superseded on 2026-11-20 by one decision log and a P8-only human queue, `docs/PROCESS.md` P1); main-branch CI runs are no longer cancelled; the Fable-allowance ask rule (D42); [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) with accepted risk TM-1 (fix-13, PR #47); telemetry session-id deferral in [`docs/TELEMETRY_PROTOCOL.md`](docs/TELEMETRY_PROTOCOL.md) (fix-12, PR #46).
 - **w7pre tests and tables:** proptest/f32 workaround tripwire in `tests/spec_ci`; geometric Banana bat-pose test; grey-box below-deck catch gaps closed; queue rulings on VUK scatter, backbox escape box and ramp corner-clip limit.
 - **fix-10 (PR #50):** sRGB-correct display-layer blending through `LayerTarget` / `LayerCompositor` in `pin_render`, wired into the `pin_app` presenter.
 - **fix-11 (PR #49):** telemetry ring capacity clamped to a safe minimum with a best-effort warning.
 - **fix-14 (PR #48):** motion-blur occlusion limit documented.
 - **fix-wireform-flake (PR #52):** guide cast ignores a touching contact when the true closing rate is non-negative, removing a rare property-test flake; grey-box autoplay expectations re-pinned; Gate A1 still passes.
 
-## Remaining work
+## Plan and open work
 
-**Not started (PLAN sections 4 and 5):**
+The plan is the set of GitHub issues labelled `work-unit`, one issue per pull request, grouped under two tracking issues:
 
-| Wave | Subphase | Notes |
-|---|---|---|
-| 7 | 6.1 Variant A, "Apex Circuit" (`tables/apex_circuit`) | Depends on Gate A1 (passed). |
-| 7 | 6.2 Variant B, "Sky Deck" (`tables/sky_deck`) | Depends on Gate A1 (passed). |
-| 7 | 6.4 "Feature Lab" showcase table (`tables/feature_lab`) | Banana flipper, backbox playfield, XL ball, Magnus, remanence. |
-| Gate A2 | Table soak and rules freeze | Automated; needs 6.1, 6.2 and 6.4. |
-| 8 | 6.3 WebAssembly ports of table rules | Needs 4.5 (done), the three tables and Gate A2. |
-| 8 | 7.1 Latency profiler and determinism soak | `crates/pin_app/src/profiler` is currently a stub. |
-| 9 | 7.2 Packaging and release | `scripts/`, `.github/workflows/release.yml` (does not exist yet); also generates `docs/HUMAN_ACCEPTANCE.md`. |
-| Phase 8 | Final human acceptance | Play each table and judge feel, check hardware (X-Arcade, analog plunger, accelerometer nudge, rumble, SSF, multi-monitor, DOF), check visuals on real displays, decide whether ray-query reflections default on, replace placeholder assets by asset ID. |
+- [**M1 — Play experience (#79)**](https://github.com/donfuldauer/kilohertz-pinball/issues/79): what the owner's first final-acceptance session found (SPEC section 7): a perspective 3D view of a whole machine with its cabinet and backbox, camera presets, every part drawn where the simulation has it, flipper response within two display frames, feel defaults in the middle of their windows, the three tables redesigned, and Gate A3 (the play-experience gate in the real windowed app). Final human acceptance is repeated after M1.
+- [**M2 — Backlog (#80)**](https://github.com/donfuldauer/kilohertz-pinball/issues/80): deferred work carried over from the old human queue.
 
-**Current milestone:** Milestone M1 (Subphase 6.0) and Gate A1 are complete; the next step is Wave 7.
-
-**Open items for a person** (summarised from the frozen [`docs/HUMAN_QUEUE.md`](docs/HUMAN_QUEUE.md) and the open lines in [`docs/queue/`](docs/queue/)):
-
-- Hardware acceptance of a Fifo-only secondary display (D31) and other real-device checks that CI cannot do.
-- Gate A1 feel tuning notes: flipper stop and dead-flip behaviour, mech feel defaults, residual single-tick ball-bat overlaps for large balls.
-- Known limits accepted for now: wireform cast corner-clip gap, motion-blur occlusion (issue #14) and telemetry v2 session id (issue #12) kept open by design, VFS TOCTOU (TM-1, see the threat model), noisy curved-stroke plunger accuracy.
-- Open queue lines: `w7pre-banana-pose` (flipped bend range for down-table arcs), `w7pre-catch-gaps` (a hand-maintained literal in the grey-box catch zone), `w7pre-proptest-f32` (remove the proptest workaround when the tripwire trips), `fix-11-telemetry-min-ring` (revisit the `#[doc(hidden)]` unclamped constructor).
-- Wave 7 will need integration notes carried over from earlier waves (see the end-of-wave summaries in `docs/HUMAN_QUEUE.md`).
+Each issue lists its dependencies, SPEC requirements, deliverables, acceptance criteria and owned paths. Items only a person can do (repository settings, hardware checks, real assets, publishing a release, licensing, SPEC edits) are the open `P8` lines in [`docs/HUMAN_QUEUE.md`](docs/HUMAN_QUEUE.md).
 
 ## Building and testing
 
@@ -147,23 +135,28 @@ cargo run --release -p pin_app -- --table target/greybox
 # or without SDL windows or GPU:  cargo run -p pin_app -- --headless-ticks 1000 --table target/greybox
 ```
 
-`pin_tablegen` (`<layout.toml> --table <table.toml> --out <bundle_dir>`) and `pin_assetgen` (`--title <t> --out <dir>`) can also be run directly; see [`docs/AUTHORING.md`](docs/AUTHORING.md) for table authoring.
+`pin_tablegen` (`<layout.toml> --table <table.toml> --out <bundle_dir>`) and `pin_assetgen` (`--title <t> --out <dir>`) can also be run directly; see [`docs/AUTHORING.md`](docs/AUTHORING.md) for table authoring. The full command list, the agent environment and the gate scripts are in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ## Development process
 
-The project is built by AI coding agents under the rules in PLAN sections 2.3 and 2.5 to 2.7:
+The project is built by AI coding agents under [`docs/PROCESS.md`](docs/PROCESS.md) (sections P1 to P8, rules R1 to R12):
 
-- **Model routing (section 2.5):** every unit of work goes through the `work-classifier` agent, which picks a model tier; a triage fast path handles trivial items.
-- **Agents (section 2.6):** `.claude/agents/` defines `work-classifier`, `task-executor` (Implementer, Independent Tester and Fixer roles), `work-verifier` and `issue-investigator`. Agent-written decisions go to one file per unit in `docs/decisions/`, items for a person go to `docs/queue/`.
-- **Pull requests (section 2.7):** every change is a PR against `main`; CodeRabbit reviews it, every finding is answered and resolved, and the PR merges once CI is green and the merge conditions hold. Agents do not review their own code.
+- **Starting work:** open a Claude Code session on this repository and say "Start work on issue #N" (the `work-issue` skill: it checks the issue's dependencies are merged, routes the work through the agents, opens a pull request that closes the issue, drives the review and merges). "Start work on the next ready issue" picks the next one in plan order; the `run-plan` skill works through every ready issue.
+- **Model routing (P4):** every unit of work goes through the `work-classifier` agent, which picks a model tier; a triage fast path handles trivial items.
+- **Agents (P5):** `.claude/agents/` defines `work-classifier`, `task-executor` (Implementer, Independent Tester and Fixer roles), `work-verifier` and `issue-investigator`. Agents record their judgement calls in `docs/DECISIONS.md`; only items a person must do go to `docs/HUMAN_QUEUE.md`.
+- **Pull requests (P6):** every change is a PR against `main`; CodeRabbit reviews it, every finding is answered and resolved, and the PR merges once the required `pr-checks` check is green and the merge conditions hold. Agents do not review their own code.
 - **Contracts:** `pin_core` changes only through [`contracts/CHANGE_REQUESTS.md`](contracts/CHANGE_REQUESTS.md).
 
 | Document | Contents |
 |---|---|
-| [`docs/PLAN.md`](docs/PLAN.md) | Architecture, specifications, phased plan, wave matrix, appendices (v5). |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Frozen history of ambiguity decisions; newer ones are in `docs/decisions/`. |
-| [`docs/RUN_LOG.md`](docs/RUN_LOG.md) | Per-subphase attempts, reviews, gate results and merged PRs. |
-| [`docs/HUMAN_QUEUE.md`](docs/HUMAN_QUEUE.md) | Frozen history of items for a person; newer ones are in [`docs/queue/`](docs/queue/README.md). |
+| [`docs/SPEC.md`](docs/SPEC.md) | The normative specification: architecture decisions, thread model, contracts, component specifications, presentation requirements, appendices. |
+| [`docs/PROCESS.md`](docs/PROCESS.md) | How work is done: sources of truth, rules, model routing, agents, review and merge, failure policy. |
+| [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Toolchain, agent environment, workspace map, commands, CI, coverage floors, gate scripts, contract owners. |
+| [`docs/BRIEF_TEMPLATE.md`](docs/BRIEF_TEMPLATE.md) | The delegation brief every agent receives. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Every decision an agent or the owner made, with rationale. |
+| [`docs/RUN_LOG.md`](docs/RUN_LOG.md) | Every work attempt, review round, gate result and merge. |
+| [`docs/HUMAN_QUEUE.md`](docs/HUMAN_QUEUE.md) | Items only a person can do or decide. |
+| [`docs/HUMAN_ACCEPTANCE.md`](docs/HUMAN_ACCEPTANCE.md) | The final human acceptance checklist (generated). |
 | [`docs/AUTHORING.md`](docs/AUTHORING.md) | How to author tables with `layout.toml` and `pin_tablegen`. |
 | [`docs/TELEMETRY_PROTOCOL.md`](docs/TELEMETRY_PROTOCOL.md) | UDP telemetry wire protocol. |
 | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | Threat model for untrusted bundles and accepted risks. |

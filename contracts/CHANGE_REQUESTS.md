@@ -1,9 +1,9 @@
 # Contract Change Requests
 
-`pin_core` holds every cross-crate contract (PLAN.md §3, decision D4). Only
+`pin_core` holds every cross-crate contract (`docs/SPEC.md` §3, decision D4). Only
 Subphase 1.1 wrote it freely. From then on, a change to anything in
 `crates/pin_core/`, `physics_defaults.toml` or the fixtures in
-`crates/pin_core/fixtures/` goes through this file (PLAN.md §2.3 rule 2).
+`crates/pin_core/fixtures/` goes through this file (`docs/PROCESS.md` R2).
 
 ## Protocol
 
@@ -14,7 +14,7 @@ Subphase 1.1 wrote it freely. From then on, a change to anything in
 3. **Separate PR.** The change is made in its own `pin_core`-only commit or PR
    (prefix `[cr NNN]`), never mixed with the requesting subphase's own work.
    The PR updates `pin_core` tests and, if the on-disk schema changes, the
-   fixtures and PLAN.md Appendix A/B/C reference in the request.
+   fixtures and `docs/SPEC.md` Appendix A/B/C reference in the request.
 4. **Merge timing.**
    - Additive changes merge **immediately**, once `cargo test --workspace`,
      `cargo clippy --workspace --all-targets -- -D warnings` and
@@ -26,7 +26,7 @@ Subphase 1.1 wrote it freely. From then on, a change to anything in
 5. **Record.** The merger sets the request's status to `merged (<commit>)` or
    `rejected (<reason>)`, and logs any interpretation in `docs/DECISIONS.md`.
 6. **Never wait.** While a request is pending, the requesting agent continues
-   with a local workaround that does not edit `pin_core` (PLAN.md §2.3 rule 8).
+   with a local workaround that does not edit `pin_core` (`docs/PROCESS.md` R8).
 
 ## Additive vs breaking
 

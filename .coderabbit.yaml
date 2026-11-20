@@ -1,14 +1,14 @@
-# CodeRabbit is the only code reviewer in the run (PLAN.md §2.7, D36).
+# CodeRabbit is the only code reviewer (docs/PROCESS.md R9 and P6, D36).
 language: en-US
 reviews:
   profile: chill
-  # Approve once every comment is resolved, so the merge conditions in §2.7 can be checked.
+  # Approve once every comment is resolved, so the merge conditions of PROCESS.md P6 step 5 can be checked.
   request_changes_workflow: true
   high_level_summary: true
   auto_review:
     enabled: true
     drafts: false
-    # Keep reviewing every push; §2.7 needs an incremental review of each fix.
+    # Keep reviewing every push; PROCESS.md P6 step 4 needs an incremental review of each fix.
     auto_pause_after_reviewed_commits: 0
     base_branches:
       - main
@@ -66,15 +66,22 @@ reviews:
   path_instructions:
     - path: "crates/**/src/**"
       instructions: >-
-        Check PLAN.md §2.3: no heap allocation, mutex or file I/O inside step_1ms();
-        fixed iteration order (no HashMap iteration); SI units internally; no branches on
-        named behaviours in solver code; pin_core changes only through contracts/CHANGE_REQUESTS.md.
+        Check the rules of docs/PROCESS.md. R4: no heap allocation, mutex or file I/O inside
+        step_1ms() (the two exemptions are the Lua VM's capped arena and a hot-reload swap tick).
+        R3: fixed iteration order (no HashMap/HashSet iteration that can affect a result), no
+        fast-math or FMA, libm for transcendentals, randomness only from the sim-owned seeded PCG,
+        integer-only table rules logic. R7: no branches on named behaviours in solver code.
+        R2: pin_core changes only through contracts/CHANGE_REQUESTS.md. SI units internally
+        (docs/SPEC.md §3.1, D17). R11: table bundles are untrusted; parsers must not panic on
+        hostile input, and the Lua/Wasm sandbox, budgets, memory caps and zip limits stay intact.
     - path: "crates/**/tests/**"
       instructions: >-
-        Tests must not sleep or assert on wall-clock time. Flag skipped, ignored or weakened
-        assertions.
+        Tests must not sleep or assert on wall-clock time (PROCESS.md R6). Flag skipped, ignored
+        or weakened assertions (R10). Core crates' tests need no display server or GPU; render
+        tests sit behind the gpu-tests feature (R5). Image tests follow R12: analytic pixel
+        assertions first, a regression snapshot only after them, never a snapshot alone.
     - path: "docs/**"
       instructions: >-
-        Planning and decision records. Check consistency with PLAN.md decision rows D1–D36.
+        Planning and decision records; check consistency with docs/SPEC.md and docs/PROCESS.md.
 chat:
   auto_reply: true
