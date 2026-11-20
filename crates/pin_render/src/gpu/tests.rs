@@ -422,3 +422,319 @@ fn oversized_readback_is_an_error() {
     assert!(super::checked_readback_size(1024, 256, 5).is_err());
     assert!(super::checked_readback_size(u64::MAX, usize::MAX, u32::MAX).is_err());
 }
+
+/// w8g-d: the PiP outline helper draws one closed 4-segment loop per PiP
+/// viewport (the window's own viewport, the first, gets none), scaled from
+/// logical to physical pixels on pixel centres.
+#[test]
+fn pip_outline_is_one_loop_per_pip() {
+    use crate::debug::DebugLines;
+    use crate::topology::Rect;
+    let mut out = DebugLines::new(64);
+    let vps = [
+        (SurfaceRole::Playfield, Rect::new(0, 0, 100, 200)),
+        (SurfaceRole::Backglass, Rect::new(10, 20, 30, 40)),
+        (SurfaceRole::Score, Rect::new(50, 60, 20, 10)),
+    ];
+    surfaces::pip_outline_lines(&vps, (100, 200), (200, 400), &mut out);
+    assert_eq!(out.len(), 8);
+    let l = out.as_slice();
+    // First PiP at 2x: x 20.5..79.5, y 40.5..119.5, closed.
+    assert_eq!(l[0].a[..2], [20.5, 40.5]);
+    assert_eq!(l[0].b[..2], [79.5, 40.5]);
+    assert_eq!(l[2].b[..2], [20.5, 119.5]);
+    assert_eq!(l[3].b, l[0].a);
+    // The window's own viewport alone: no outline; the buffer is cleared.
+    surfaces::pip_outline_lines(&vps[..1], (100, 200), (200, 400), &mut out);
+    assert!(out.is_empty());
+    // A zero logical size scales by 1 (no division by zero).
+    surfaces::pip_outline_lines(&vps[..2], (0, 0), (200, 400), &mut out);
+    assert_eq!(out.as_slice()[0].a[..2], [10.5, 20.5]);
+}
+
+/// The default hooks pass a frame command buffer through alone and do
+/// nothing else (`SurfaceSet::render` is `render_with(NoFrameHooks)`).
+#[cfg(feature = "gpu-tests")]
+#[test]
+fn no_frame_hooks_pass_one_buffer_through() {
+    let Some(ctx) = crate::gpu::shared_context_for_tests("no_frame_hooks") else {
+        return;
+    };
+    let mut h = NoFrameHooks;
+    h.begin_frame();
+    let cb = ctx
+        .device()
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None })
+        .finish();
+    let cbs = h.wrap_submit(cb);
+    assert_eq!(cbs.len(), 1);
+    let mut submitted = 0;
+    h.end_frame(&mut |_cb| submitted += 1);
+    assert_eq!(submitted, 0, "the default end_frame submits nothing");
+    ctx.queue().submit(cbs);
+}
+
+#[cfg(feature = "gpu-tests")]
+mod debug_frame_gpu {
+    use super::*;
+    use crate::debug::{Camera, DebugLine, DebugLines, DebugRenderer, box_lines};
+    use crate::topology::Rect;
+
+    const SIZE: (u32, u32) = (96, 64);
+    const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+    /// The frame drawing of `SurfaceSet::render_slot` before w8g-d (its
+    /// `draw` closure, verbatim but for the slot fields passed in): the
+    /// reference the hooked drawing must reproduce byte for byte.
+    #[allow(clippy::too_many_arguments)]
+    fn pre_change_draw(
+        role: SurfaceRole,
+        lines_r: &mut DebugRenderer,
+        overlay_r: &mut DebugRenderer,
+        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        camera: &Camera,
+        lines: &DebugLines,
+        overlay_lines: &DebugLines,
+        (pw, ph): (u32, u32),
+    ) {
+        let pixel_camera = Camera::ortho_top_down([0.0, ph as f32], [pw as f32, 0.0]);
+        let clear = role_clear_color(role);
+        if role == SurfaceRole::Playfield {
+            lines_r.draw_with(encoder, queue, view, camera, lines, Some(clear), None);
+        } else {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("secondary clear"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: f64::from(clear[0]),
+                            g: f64::from(clear[1]),
+                            b: f64::from(clear[2]),
+                            a: f64::from(clear[3]),
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+        if !overlay_lines.is_empty() {
+            overlay_r.draw(encoder, queue, view, &pixel_camera, overlay_lines);
+        }
+    }
+
+    fn target(ctx: &GpuContext) -> wgpu::Texture {
+        ctx.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("debug frame"),
+            size: wgpu::Extent3d {
+                width: SIZE.0,
+                height: SIZE.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        })
+    }
+
+    fn scene() -> (DebugLines, Camera, DebugLines) {
+        let mut lines = DebugLines::new(64);
+        box_lines(
+            [0.1, 0.1, 0.0],
+            [0.9, 0.9, 0.0],
+            [0.0, 1.0, 0.0, 1.0],
+            &mut lines,
+        );
+        lines.push(DebugLine::new(
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 0.2, 0.1, 1.0],
+        ));
+        let camera = Camera::ortho_top_down([0.0, 0.0], [1.0, 1.0]);
+        let mut outline = DebugLines::new(64);
+        surfaces::pip_outline_lines(
+            &[
+                (SurfaceRole::Playfield, Rect::new(0, 0, 48, 32)),
+                (SurfaceRole::Score, Rect::new(4, 4, 20, 8)),
+            ],
+            (48, 32),
+            SIZE,
+            &mut outline,
+        );
+        assert!(!outline.is_empty());
+        (lines, camera, outline)
+    }
+
+    /// Records a frame through the pre-change closure (`hooks: None`) or
+    /// `encode_debug_frame` with `hooks`, submits it (through
+    /// `wrap_submit` for the hooked path, as `render_slot` does) and reads
+    /// it back.
+    fn frame(
+        ctx: &GpuContext,
+        role: SurfaceRole,
+        with_outline: bool,
+        hooks: Option<&mut dyn SurfaceFrameHooks>,
+    ) -> Vec<u8> {
+        let (lines, camera, outline) = scene();
+        let empty = DebugLines::new(1);
+        let outline = if with_outline { &outline } else { &empty };
+        let mut lines_r = DebugRenderer::new(ctx.device(), FORMAT);
+        let mut overlay_r = DebugRenderer::new(ctx.device(), FORMAT);
+        let tex = target(ctx);
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut enc = ctx
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("surface frame"),
+            });
+        match hooks {
+            None => pre_change_draw(
+                role,
+                &mut lines_r,
+                &mut overlay_r,
+                &mut enc,
+                ctx.queue(),
+                &view,
+                &camera,
+                &lines,
+                outline,
+                SIZE,
+            ),
+            Some(h) => {
+                encode_debug_frame(
+                    ctx.queue(),
+                    &mut enc,
+                    &view,
+                    DebugFrame {
+                        role,
+                        size_px: SIZE,
+                        lines: &lines,
+                        camera: &camera,
+                        outline,
+                    },
+                    &mut lines_r,
+                    &mut overlay_r,
+                    h,
+                );
+                let cbs = h.wrap_submit(enc.finish());
+                assert_eq!(cbs.len(), 1);
+                ctx.queue().submit(cbs);
+                enc = ctx
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            }
+        }
+        crate::debug::read_texture(ctx, enc, &tex).expect("readback")
+    }
+
+    /// A hook that clears the whole target to magenta in its overlay and
+    /// counts its calls.
+    #[derive(Default)]
+    struct Paint {
+        overlays: Vec<SurfaceRole>,
+        sizes: Vec<(u32, u32)>,
+    }
+
+    impl SurfaceFrameHooks for Paint {
+        fn overlay(
+            &mut self,
+            role: SurfaceRole,
+            _queue: &wgpu::Queue,
+            encoder: &mut wgpu::CommandEncoder,
+            view: &wgpu::TextureView,
+            size_px: (u32, u32),
+        ) {
+            self.overlays.push(role);
+            self.sizes.push(size_px);
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("test overlay"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 1.0,
+                            g: 0.0,
+                            b: 1.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+    }
+
+    /// Byte identity: with no hook (`NoFrameHooks`) the factored frame
+    /// drawing is the pre-change closure's, for a playfield and a
+    /// secondary surface, with and without PiP outlines.
+    #[test]
+    fn hooked_debug_frame_without_hooks_matches_the_pre_change_drawing() {
+        let Some(ctx) = crate::gpu::shared_context_for_tests("debug_frame_identity") else {
+            return;
+        };
+        for role in [
+            SurfaceRole::Playfield,
+            SurfaceRole::Backglass,
+            SurfaceRole::Score,
+        ] {
+            for with_outline in [false, true] {
+                let before = frame(ctx, role, with_outline, None);
+                let after = frame(ctx, role, with_outline, Some(&mut NoFrameHooks));
+                assert!(
+                    before == after,
+                    "{role:?} outline {with_outline}: the hooked frame differs"
+                );
+                // Something was drawn (not an all-zero readback).
+                assert!(before.chunks_exact(4).any(|p| p[3] == 255), "{role:?}");
+            }
+        }
+        // The lines and outline show on the playfield (not just a clear).
+        let pf = frame(ctx, SurfaceRole::Playfield, true, None);
+        assert!(pf.chunks_exact(4).any(|p| p[1] > 200), "no green line");
+        assert!(
+            pf.chunks_exact(4)
+                .any(|p| p[0] > 100 && p[0] < 160 && p[0] == p[1] && p[1] == p[2]),
+            "no grey PiP outline"
+        );
+    }
+
+    /// The overlay hook runs last (after the lines and the PiP outline: a
+    /// full clear in it leaves only its colour) and only for the playfield.
+    #[test]
+    fn overlay_hook_runs_last_and_only_on_the_playfield() {
+        let Some(ctx) = crate::gpu::shared_context_for_tests("debug_frame_overlay") else {
+            return;
+        };
+        let mut h = Paint::default();
+        let pf = frame(ctx, SurfaceRole::Playfield, true, Some(&mut h));
+        assert_eq!(h.overlays, [SurfaceRole::Playfield]);
+        assert_eq!(h.sizes, [SIZE]);
+        assert!(
+            pf.chunks_exact(4).all(|p| p == [255, 0, 255, 255]),
+            "something was drawn after the overlay"
+        );
+        for role in [SurfaceRole::Backglass, SurfaceRole::Score] {
+            let mut h = Paint::default();
+            let got = frame(ctx, role, true, Some(&mut h));
+            assert!(h.overlays.is_empty(), "{role:?} got an overlay call");
+            assert!(got == frame(ctx, role, true, None), "{role:?}");
+        }
+    }
+}

@@ -26,6 +26,9 @@ pub use surfaces::{PRESENTER_JOIN_TIMEOUT, WindowGuard, spawn_guarded};
 // Issue #10: display layers composite in display-encoded space on `*Srgb`
 // (fallback) surfaces too.
 pub use surfaces::{LayerCompositor, LayerTarget};
+// w8g-d: per-frame hooks (GPU timing, overlay) into `SurfaceSet::render_with`
+// and the debug-view frame recorder they wrap.
+pub use surfaces::{DebugFrame, NoFrameHooks, SurfaceFrameHooks, encode_debug_frame};
 
 /// The wgpu crate as used by `pin_render` (so dependants need no own pin).
 pub use wgpu;
