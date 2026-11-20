@@ -166,3 +166,13 @@ unchanged):
 - **Why:** PR #67 made the sim clear the queue at the start of the next script step and added `Simulation::last_commands()`, so the old text ("applied in tick step 3 and then cleared") is wrong.
 - **Affected crates:** none
 - **Workaround meanwhile:** none
+
+### CR-009: pin_core clippy ban on std transcendentals
+- **Requested by:** work item w8g-e (task executor); split out of PR #72 after review (contract protocol step 3)
+- **Status:** open (pin_core-only PR; additive)
+- **Kind:** additive
+- **Items:** new file `crates/pin_core/clippy.toml` (crate-local `disallowed-methods` list, identical to `crates/pin_assets/clippy.toml` apart from the header comment)
+- **Change:** lint configuration only; no type, field, signature, behaviour or on-disk schema change. Clippy now rejects std `f32`/`f64` transcendental methods in pin_core (0 call sites today), so future pin_core code must use `libm` (PLAN §2.4, D9).
+- **Why:** decision w8g-e scoped the ban to every crate whose numbers reach sim state, replays or bundled assets; pin_core holds the shared contract maths. PR #72 added the other six crates; pin_core's file must come through this protocol.
+- **Affected crates:** none (pin_core has no std transcendental call; no API change)
+- **Workaround meanwhile:** none
