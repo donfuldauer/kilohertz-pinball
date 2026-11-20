@@ -1,1 +1,0 @@
-- [ ] [fix-11-telemetry-min-ring] low-capacity path kept via #[doc(hidden)] pub telemetry_channel_unclamped (integration tests need it); revisit if a test-support feature is introduced.
