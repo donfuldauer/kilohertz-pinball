@@ -147,7 +147,7 @@ fn semicircle(radius: f32, n: usize) -> Vec<Vec3> {
     (0..n)
         .map(|i| {
             let a = std::f32::consts::PI * i as f32 / (n - 1) as f32;
-            Vec3::new(radius * a.cos(), radius * a.sin(), 0.0)
+            Vec3::new(radius * libm::cosf(a), radius * libm::sinf(a), 0.0)
         })
         .collect()
 }
@@ -399,7 +399,7 @@ fn closest_point_on_semicircle_matches_brute_force() {
         let a = -0.3 + 3.6 * i as f32 / 59.0; // includes points beyond both ends
         for &r in &[0.0f32, 0.05, 0.12, 0.149, 0.151, 0.2, 0.3] {
             for &z in &[-0.05f32, 0.0, 0.03] {
-                let p = Vec3::new(r * a.cos(), r * a.sin(), z);
+                let p = Vec3::new(r * libm::cosf(a), r * libm::sinf(a), z);
                 // Every query is checked (the brute-force reference in
                 // `check_closest` is independent of the value under test).
                 let cp = s.closest_point(p, None);
@@ -432,7 +432,7 @@ fn seeded_tracking_follows_a_moving_ball() {
     let steps = (std::f32::consts::PI * 0.140 / 0.008) as usize;
     for k in 0..=steps {
         let a = k as f32 * 0.008 / 0.140;
-        let p = Vec3::new(0.140 * a.cos(), 0.140 * a.sin(), 0.0);
+        let p = Vec3::new(0.140 * libm::cosf(a), 0.140 * libm::sinf(a), 0.0);
         let seeded = s.closest_point(p, seed);
         let fresh = s.closest_point(p, None);
         assert!(

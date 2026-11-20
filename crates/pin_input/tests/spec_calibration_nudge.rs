@@ -120,8 +120,8 @@ fn axes_are_filtered_independently() {
     let mut only_x = primed(linear(2.0), DT);
     let mut only_y = primed(linear(2.0), DT);
     for k in 0..500 {
-        let x = 0.4 * (k as f32 * 0.05).sin();
-        let y = -0.3 * (k as f32 * 0.021).cos();
+        let x = 0.4 * libm::sinf(k as f32 * 0.05);
+        let y = -0.3 * libm::cosf(k as f32 * 0.021);
         let b = both.update([x, y], DT);
         let ox = only_x.update([x, 0.0], DT);
         let oy = only_y.update([0.0, y], DT);
@@ -151,7 +151,7 @@ fn response_is_odd() {
     };
     let mut b = primed(cfg, DT);
     for k in 0..400 {
-        let x = 0.8 * (k as f32 * 0.09).sin();
+        let x = 0.8 * libm::sinf(k as f32 * 0.09);
         let p = a.update([x, -x], DT);
         let n = b.update([-x, x], DT);
         assert!((p[0] + n[0]).abs() < 1e-6 && (p[1] + n[1]).abs() < 1e-6);
@@ -165,7 +165,7 @@ fn sine_gain(hz: f32, freq: f32, amp: f32) -> f32 {
     let total = (4.0 / hz.min(freq) / DT) as usize + 2000;
     let mut peak = 0.0f32;
     for k in 0..total {
-        let x = amp * (2.0 * PI * freq * k as f32 * DT).sin();
+        let x = amp * libm::sinf(2.0 * PI * freq * k as f32 * DT);
         let o = f.update([x, 0.0], DT);
         if k >= total / 2 {
             peak = peak.max(o[0].abs());
@@ -262,7 +262,7 @@ fn gain_curve_matches_the_formula_at_landmarks() {
         f.update([x, -x], DT)
     };
     let check = |gain: f32, exp: f32, max: f32, x: f32| {
-        let want = x.signum() * (gain * x.abs().powf(exp)).min(max);
+        let want = x.signum() * (gain * libm::powf(x.abs(), exp)).min(max);
         let o = run(gain, exp, max, x);
         assert!(
             (o[0] - want).abs() < 2e-3 && (o[1] + want).abs() < 2e-3,
@@ -293,8 +293,8 @@ fn reset_restores_the_initial_state() {
     let stimulus: Vec<[f32; 2]> = (0..300)
         .map(|k| {
             [
-                0.6 * (k as f32 * 0.11).sin() + 0.2,
-                0.5 * (k as f32 * 0.07).cos(),
+                0.6 * libm::sinf(k as f32 * 0.11) + 0.2,
+                0.5 * libm::cosf(k as f32 * 0.07),
             ]
         })
         .collect();
@@ -303,7 +303,7 @@ fn reset_restores_the_initial_state() {
 
     let mut used = NudgeFilter::new(cfg());
     for k in 0..777 {
-        used.update([0.9 * (k as f32 * 0.3).sin() - 0.4, 0.7], DT);
+        used.update([0.9 * libm::sinf(k as f32 * 0.3) - 0.4, 0.7], DT);
     }
     used.update([f32::NAN, f32::NAN], DT);
     used.reset();
@@ -315,7 +315,7 @@ fn reset_restores_the_initial_state() {
 fn nan_input_never_propagates() {
     let mut f = primed(linear(2.0), DT);
     for k in 0..2000 {
-        let x = 0.5 * (k as f32 * 0.13).sin();
+        let x = 0.5 * libm::sinf(k as f32 * 0.13);
         let input = match k % 53 {
             7 => [f32::NAN, x],
             19 => [x, f32::NAN],
@@ -432,7 +432,7 @@ proptest! {
         );
         let o = f.update([x, y], DT);
         for (got, input) in [(o[0], x), (o[1], y)] {
-            let want = input.signum() * (gain * input.abs().powf(exp)).min(max);
+            let want = input.signum() * (gain * libm::powf(input.abs(), exp)).min(max);
             prop_assert!(
                 (got - want).abs() <= 2e-3 + 2e-3 * want.abs(),
                 "input {} -> {}, expected {}", input, got, want

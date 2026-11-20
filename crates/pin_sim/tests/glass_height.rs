@@ -188,7 +188,11 @@ fn sweep(dir: &Path) -> Sweep {
                 let mut s = load(dir).expect("load");
                 let (lo, hi) = s.escape_bounds();
                 let h = s
-                    .spawn_ball("standard_steel", SPAWN, [vh * a.cos(), vh * a.sin(), vz])
+                    .spawn_ball(
+                        "standard_steel",
+                        SPAWN,
+                        [vh * libm::cosf(a), vh * libm::sinf(a), vz],
+                    )
                     .expect("spawn");
                 let mut last = SPAWN;
                 for _ in 0..TICKS {

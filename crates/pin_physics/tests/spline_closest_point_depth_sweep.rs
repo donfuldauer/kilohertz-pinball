@@ -94,7 +94,7 @@ fn random_spline(r: &mut Rng) -> CubicSpline {
                 let mut v = Vec::with_capacity(n);
                 for _ in 0..n {
                     v.push(p);
-                    let step = scale * 10f32.powf(r.range(-3.0, 0.0));
+                    let step = scale * libm::powf(10f32, r.range(-3.0, 0.0));
                     p += Vec3::new(r.range(-1.0, 1.0), r.range(-1.0, 1.0), r.range(-0.2, 0.2))
                         * step;
                 }

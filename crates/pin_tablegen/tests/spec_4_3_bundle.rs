@@ -304,7 +304,7 @@ fn long_lane_respects_the_point_cap() {
     let points: Vec<[f32; 2]> = (0..=900)
         .map(|i| {
             let y = 100.0 + i as f32;
-            let x = 260.0 + 60.0 * (i as f32 / 900.0 * std::f32::consts::TAU).sin();
+            let x = 260.0 + 60.0 * libm::sinf(i as f32 / 900.0 * std::f32::consts::TAU);
             [x, y]
         })
         .collect();
