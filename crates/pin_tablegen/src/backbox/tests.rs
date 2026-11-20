@@ -123,12 +123,12 @@ fn collider_mesh_count_is_limited_to_the_loaders_budget() {
 fn frame_axes_follow_the_pitch() {
     let f = BackboxFrame::new([0.0, 1000.0, 200.0], 6.5);
     let p = 6.5f32.to_radians();
-    assert!((f.normal() - Vec3::new(0.0, -p.cos(), p.sin())).length() < 1e-6);
-    assert!((f.up() - Vec3::new(0.0, p.sin(), p.cos())).length() < 1e-6);
+    assert!((f.normal() - Vec3::new(0.0, -libm::cosf(p), libm::sinf(p))).length() < 1e-6);
+    assert!((f.up() - Vec3::new(0.0, libm::sinf(p), libm::cosf(p))).length() < 1e-6);
     assert!((f.to_table(Vec3::ZERO) - Vec3::new(0.0, 1.0, 0.2)).length() < 1e-6);
     // World-up along the plane: gravity in the table frame is
     // (0, −g sin p, −g cos p) = −g · up, all of it along the plane.
-    let g = Vec3::new(0.0, -9.81 * p.sin(), -9.81 * p.cos());
+    let g = Vec3::new(0.0, -9.81 * libm::sinf(p), -9.81 * libm::cosf(p));
     assert!(g.dot(f.normal()).abs() < 1e-5);
     assert!((g.dot(f.up()) + 9.81).abs() < 1e-5);
 }

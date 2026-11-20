@@ -201,7 +201,7 @@ fn sweep(dirs: core::ops::Range<u32>) {
             for vh in horizontal_speeds() {
                 for k in dirs.clone() {
                     let a = 2.0 * core::f32::consts::PI * k as f32 / DIRECTIONS as f32;
-                    let v = [vh * a.cos(), vh * a.sin(), vz];
+                    let v = [vh * libm::cosf(a), vh * libm::sinf(a), vz];
                     let what = format!("vz {vz} m/s, vh {vh:.3} m/s, direction {k}/16");
                     let with = run(&lid, v, TICKS);
                     let base = run(&raised, v, TICKS);

@@ -233,7 +233,7 @@ mod tests {
         for r in [1.0e-3, 5.0e-3, 0.02, 0.1, 1.0] {
             let n = circle_sides(r);
             assert_eq!(n % 4, 0);
-            let sag = r * (1.0 - (core::f64::consts::PI / n as f64).cos());
+            let sag = r * (1.0 - libm::cos(core::f64::consts::PI / n as f64));
             assert!(
                 sag <= FACET_TOLERANCE_M * 1.0001 || n == 1024,
                 "{r} {n} {sag}"
@@ -265,7 +265,7 @@ mod tests {
         let pts: Vec<Vec3> = (0..9)
             .map(|i| {
                 let a = i as f32 * 0.4;
-                Vec3::new(0.1 * a.cos(), 0.1 * a.sin(), 0.0)
+                Vec3::new(0.1 * libm::cosf(a), 0.1 * libm::sinf(a), 0.0)
             })
             .collect();
         let s = CubicSpline::interpolate(&pts).unwrap();

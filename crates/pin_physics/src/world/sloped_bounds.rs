@@ -161,11 +161,8 @@ pub(super) fn plan_view_folds(flat: &CubicSpline, closed: bool) -> bool {
             for b in first..end {
                 let arc = chord[index(b)] - chord[index(a)];
                 let along = if closed { arc.min(total - arc) } else { arc };
-                let keep = 2.0
-                    * rho
-                    * (along / (2.0 * rho))
-                        .min(core::f64::consts::FRAC_PI_2)
-                        .sin();
+                let keep =
+                    2.0 * rho * libm::sin((along / (2.0 * rho)).min(core::f64::consts::FRAC_PI_2));
                 if tree.points[b].distance(x) < 0.98 * keep {
                     return true;
                 }

@@ -220,7 +220,7 @@ pub fn names_pocket(subject: &str) -> bool {
         let near = |scale: f64| {
             let dx = w[0] * scale - f64::from(POCKET_MM[0]);
             let dy = w[1] * scale - f64::from(POCKET_MM[1]);
-            dx.hypot(dy) <= 40.0
+            libm::hypot(dx, dy) <= 40.0
         };
         near(1.0) || near(1000.0)
     })

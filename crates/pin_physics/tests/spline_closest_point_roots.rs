@@ -68,7 +68,7 @@ fn tight_splines() -> Vec<(&'static str, CubicSpline)> {
         let pts: Vec<Vec3> = (0..=10)
             .map(|i| {
                 let a = i as f32 * step;
-                Vec3::new(r * a.cos(), r * a.sin(), 0.0)
+                Vec3::new(r * libm::cosf(a), r * libm::sinf(a), 0.0)
             })
             .collect();
         out.push((name, CubicSpline::interpolate(&pts).unwrap()));

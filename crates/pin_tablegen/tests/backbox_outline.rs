@@ -341,7 +341,10 @@ fn ngon(n: usize, cx: f64, cy: f64, rx: f64, ry: f64) -> (String, f32, f32, f32,
     let mut pts = Vec::new();
     for i in 0..n {
         let a = i as f64 * std::f64::consts::TAU / n as f64;
-        let p = [(cx + rx * a.cos()) as f32, (cy + ry * a.sin()) as f32];
+        let p = [
+            (cx + rx * libm::cos(a)) as f32,
+            (cy + ry * libm::sin(a)) as f32,
+        ];
         let _ = write!(s, "[{:?}, {:?}],", p[0], p[1]);
         pts.push(p);
     }

@@ -68,7 +68,7 @@ fn pull_and_snap(depth: f32, snap_ms: f32) -> (Vec<f32>, f32) {
     let w = PI / 2.0 / (snap_ms / 1000.0);
     let mut ms = 1.0f32;
     loop {
-        let x = depth * (w * ms / 1000.0).cos();
+        let x = depth * libm::cosf(w * ms / 1000.0);
         t.push(x);
         if x < 0.0 {
             break;
@@ -78,7 +78,7 @@ fn pull_and_snap(depth: f32, snap_ms: f32) -> (Vec<f32>, f32) {
     // Damped bounce around rest, peaking above the deadzone.
     for i in 0..200 {
         let s = i as f32 / 1000.0;
-        t.push(-0.08 * (-s * 25.0).exp() * (s * 60.0).cos());
+        t.push(-0.08 * libm::expf(-s * 25.0) * libm::cosf(s * 60.0));
     }
     t.extend(vec![0.0; 300]);
     (t, depth * w)
@@ -572,7 +572,7 @@ fn nudge_step_response_follows_cutoff() {
             out = f.update([0.8, -0.4], dt);
             t += dt;
             // Never decays slower than the analog exponential (+0.5 % slack).
-            let env = (-t / tau).exp() * 1.005 + 1e-6;
+            let env = libm::expf(-t / tau) * 1.005 + 1e-6;
             assert!(out[0] <= 0.8 * env && out[0] >= 0.0, "{hz} {t} {out:?}");
         }
         assert!(out[0].abs() < 0.008 && out[1].abs() < 0.004, "{out:?}");
@@ -586,7 +586,7 @@ fn nudge_step_response_follows_cutoff() {
         for _ in 0..=n {
             o = g.update([0.8, 0.0], dt);
         }
-        assert!((o[0] / 0.8 - (-1.0f32).exp()).abs() < 0.01, "{o:?}");
+        assert!((o[0] / 0.8 - libm::expf(-1.0f32)).abs() < 0.01, "{o:?}");
     }
 }
 
@@ -600,7 +600,7 @@ fn nudge_passes_ten_times_cutoff() {
         let mut peak = 0.0f32;
         for i in 0..n {
             let t = i as f32 * dt;
-            let o = f.update([amp * (2.0 * PI * freq * t).sin(), 0.0], dt);
+            let o = f.update([amp * libm::sinf(2.0 * PI * freq * t), 0.0], dt);
             if t > 2.0 {
                 peak = peak.max(f.high_passed()[0].abs());
                 assert!(o[0].abs() <= 1.0);
@@ -626,7 +626,7 @@ fn nudge_curve_formula() {
         let want = if x.abs() <= 0.05 {
             0.0
         } else {
-            x.signum() * (1.5 * x.abs().powf(1.7)).min(0.8)
+            x.signum() * (1.5 * libm::powf(x.abs(), 1.7)).min(0.8)
         };
         assert!((o[0] - want).abs() < 1e-5, "{x}: {o:?} vs {want}");
         assert!((o[1] + want).abs() < 1e-5);
@@ -740,7 +740,7 @@ fn filters_do_not_allocate() {
         let raw = snap[(tick as usize) % snap.len()];
         let o = p.update(if tick % 997 == 0 { f32::NAN } else { raw }, tick);
         acc += o.position + o.release.unwrap_or(0.0);
-        let s = (tick as f32 * 0.05).sin();
+        let s = libm::sinf(tick as f32 * 0.05);
         let v = n.update([s, -s], 0.001);
         if tick % 300 == 0 {
             d.press(NudgeDirection::ALL[(tick / 300 % 3) as usize], tick);
@@ -776,7 +776,7 @@ fn filter_output_hash_is_stable_over_10_runs() {
             let o = p.update(x, i as u64);
             mix(o.position);
             mix(o.release.unwrap_or(-1.0));
-            let s = (i as f32 * 0.07).sin() * 0.5;
+            let s = libm::sinf(i as f32 * 0.07) * 0.5;
             let v = n.update([s, x], 0.001);
             mix(v[0]);
             mix(v[1]);
