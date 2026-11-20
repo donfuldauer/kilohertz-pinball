@@ -913,12 +913,17 @@ Appendix F the table-design and visual rules these requirements point to.
   the SDL timestamp, the tick that applied it, the tick the bat first moved, the frame that drew
   it and that frame's present time. The profiler HUD (Subphase 7.1) shows key-to-coil and
   key-to-photon p50/p99, presented frames per second and dropped ticks.
-- **REQ-LAT-004** An input is applied in the tick whose time span contains its timestamp, whatever
-  the time between process start and simulation start and however many ticks the catch-up cap
-  has dropped: from the SDL timestamp to the tick that applies it is at most 1 ms plus the sim
-  thread's wake-up latency, at every point in a session. (Root cause of the owner's report: the
-  app's sim loop and the simulation's input ingest gate the same timestamp against two different
-  epochs, delaying every input by the startup time plus the dropped ticks.)
+- **REQ-LAT-004** An input is applied in the first executed tick whose end is not before its
+  timestamp (§2.2 tick step 1), whatever the time between process start and simulation start and
+  however many ticks the catch-up cap has dropped before the input: neither the startup time nor
+  earlier dropped ticks delays later inputs. While the sim thread keeps up, the time from the SDL
+  timestamp to the tick that applies it is at most 1 ms plus the sim thread's wake-up latency. An
+  input whose timestamp falls while the sim thread is behind (inside a stall, or inside time the
+  catch-up cap dropped) is applied in the first tick executed after it, never later, and its
+  latency is at most the stall plus 1 ms plus the wake-up latency; the 1 ms bound holds again from
+  the first tick after the catch-up ends. (Root cause of the owner's report: the app's sim loop
+  and the simulation's input ingest gate the same timestamp against two different epochs,
+  delaying every input by the startup time plus the dropped ticks.)
 - **REQ-LAT-005** The input-latency metric of the profiler measures from the SDL timestamp to the
   tick in which the input took effect (for a flipper, the tick its coil is energised), not to the
   tick the sim loop received it.
