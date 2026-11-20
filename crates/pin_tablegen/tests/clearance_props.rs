@@ -60,7 +60,7 @@ fn lane() -> impl Strategy<Value = Lane> {
     )
         .prop_map(|(p, a, len, width)| Lane {
             kind: LaneKind::Orbit,
-            points: vec![p, [p[0] + len * a.cos(), p[1] + len * a.sin()]],
+            points: vec![p, [p[0] + len * libm::cosf(a), p[1] + len * libm::sinf(a)]],
             width,
         })
 }

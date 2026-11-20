@@ -30,15 +30,15 @@ fn v(x: f32, y: f32, z: f32) -> Vec3 {
 /// Through-points of a C ring: radius `r`, opening chord `opening` centred
 /// on +X, points about `spacing` apart, at Z = 0.
 fn c_ring_points(r: f32, opening: f32, spacing: f32) -> Vec<Vec3> {
-    let half = f64::from(opening / (2.0 * r)).asin();
+    let half = libm::asin(f64::from(opening / (2.0 * r)));
     let sweep = 2.0 * core::f64::consts::PI - 2.0 * half;
     let n = ((sweep * f64::from(r) / f64::from(spacing)).round() as usize).max(8);
     (0..=n)
         .map(|i| {
             let a = half + sweep * i as f64 / n as f64;
             v(
-                (f64::from(r) * a.cos()) as f32,
-                (f64::from(r) * a.sin()) as f32,
+                (f64::from(r) * libm::cos(a)) as f32,
+                (f64::from(r) * libm::sin(a)) as f32,
                 0.0,
             )
         })
@@ -932,21 +932,21 @@ fn j_points(gap: f64, s: f64, tilt: f64, shift: f64) -> Vec<Vec3> {
         fn line(&mut self, length: f64) {
             let n = ((length / self.s).round() as usize).max(1);
             for _ in 0..n {
-                self.x += length / n as f64 * self.heading.cos();
-                self.y += length / n as f64 * self.heading.sin();
+                self.x += length / n as f64 * libm::cos(self.heading);
+                self.y += length / n as f64 * libm::sin(self.heading);
                 self.pts.push((self.x, self.y));
             }
         }
         fn arc(&mut self, radius: f64, turn: f64) {
             let n = ((radius * turn.abs() / self.s).round() as usize).max(2);
             let sign = turn.signum();
-            let cx = self.x - sign * radius * self.heading.sin();
-            let cy = self.y + sign * radius * self.heading.cos();
+            let cx = self.x - sign * radius * libm::sin(self.heading);
+            let cy = self.y + sign * radius * libm::cos(self.heading);
             let a0 = self.heading - sign * core::f64::consts::FRAC_PI_2;
             for i in 1..=n {
                 let a = a0 + turn * i as f64 / n as f64;
-                self.x = cx + radius * a.cos();
-                self.y = cy + radius * a.sin();
+                self.x = cx + radius * libm::cos(a);
+                self.y = cy + radius * libm::sin(a);
                 self.pts.push((self.x, self.y));
             }
             self.heading += turn;
@@ -964,7 +964,7 @@ fn j_points(gap: f64, s: f64, tilt: f64, shift: f64) -> Vec<Vec3> {
     p.arc(0.3, core::f64::consts::PI);
     p.line(0.6);
     p.arc(0.25, core::f64::consts::FRAC_PI_2 + tilt);
-    let length = (p.y - gap) / p.heading.sin().abs().max(0.2);
+    let length = (p.y - gap) / libm::sin(p.heading).abs().max(0.2);
     p.line(length);
     p.pts
         .iter()
@@ -1329,7 +1329,7 @@ fn spiral_points(r0: f64, pitch: f64, turns: f64, n: usize) -> Vec<Vec3> {
             let u = i as f64 / (n - 1) as f64;
             let a = core::f64::consts::TAU * turns * u;
             let r = r0 + pitch * turns * u;
-            v((r * a.cos()) as f32, (r * a.sin()) as f32, 0.0)
+            v((r * libm::cos(a)) as f32, (r * libm::sin(a)) as f32, 0.0)
         })
         .collect()
 }
@@ -1359,7 +1359,7 @@ fn slide_in_spiral_lane(
     let turn = 0.5 * turns;
     let a = core::f64::consts::TAU * turn;
     let wall = (0.1 + pitch * turn) as f32;
-    let radial = v(a.cos() as f32, a.sin() as f32, 0.0);
+    let radial = v(libm::cos(a) as f32, libm::sin(a) as f32, 0.0);
     let start = radial * (wall - ball - 1.0e-3) + Vec3::Z * 0.0135;
     let mut solver = util::solver_no_gravity();
     let handle = solver

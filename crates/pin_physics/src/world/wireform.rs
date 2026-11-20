@@ -868,11 +868,8 @@ fn plan_view_folds_pairwise(flat: &CubicSpline, closed: bool) -> bool {
             }
             // Around a closed curve the shorter way counts.
             let along = if closed { arc.min(total - arc) } else { arc };
-            let keep = 2.0
-                * rho
-                * (along / (2.0 * rho))
-                    .min(core::f64::consts::FRAC_PI_2)
-                    .sin();
+            let keep =
+                2.0 * rho * libm::sin((along / (2.0 * rho)).min(core::f64::consts::FRAC_PI_2));
             if at(b).distance(x) < 0.98 * keep {
                 return true;
             }
@@ -1927,14 +1924,18 @@ mod tests {
         (0..=n)
             .map(|i| {
                 let a = from + (to - from) * i as f64 / n as f64;
-                Vec3::new((radius * a.cos()) as f32, (radius * a.sin()) as f32, 0.0)
+                Vec3::new(
+                    (radius * libm::cos(a)) as f32,
+                    (radius * libm::sin(a)) as f32,
+                    0.0,
+                )
             })
             .collect()
     }
 
     /// A ring of radius `r` with an opening of chord `opening` on +X.
     fn c_ring(r: f64, opening: f64, spacing: f64) -> Vec<Vec3> {
-        let half = (opening / (2.0 * r)).asin();
+        let half = libm::asin(opening / (2.0 * r));
         arc(r, half, core::f64::consts::TAU - half, spacing)
     }
 
@@ -1951,7 +1952,7 @@ mod tests {
         let quarter = (core::f64::consts::FRAC_PI_2 * bend / spacing).round() as usize;
         for i in 1..=quarter {
             let a = core::f64::consts::FRAC_PI_2 * i as f64 / quarter as f64;
-            let p = centre - left * bend * a.cos() + dir * bend * a.sin();
+            let p = centre - left * bend * libm::cos(a) + dir * bend * libm::sin(a);
             pts.push(p.as_vec3());
         }
         let tip = pts[pts.len() - 1].as_dvec3();
@@ -2102,8 +2103,8 @@ mod tests {
         let line = |pts: &mut Vec<(f64, f64)>, x: &mut f64, y: &mut f64, h: f64, len: f64| {
             let n = ((len / spacing).round() as usize).max(1);
             for _ in 0..n {
-                *x += len / n as f64 * h.cos();
-                *y += len / n as f64 * h.sin();
+                *x += len / n as f64 * libm::cos(h);
+                *y += len / n as f64 * libm::sin(h);
                 pts.push((*x, *y));
             }
         };
@@ -2114,12 +2115,12 @@ mod tests {
                    r: f64,
                    turn: f64| {
             let n = ((r * turn.abs() / spacing).round() as usize).max(2);
-            let (cx, cy) = (*x - r * h.sin(), *y + r * h.cos());
+            let (cx, cy) = (*x - r * libm::sin(*h), *y + r * libm::cos(*h));
             let a0 = *h - core::f64::consts::FRAC_PI_2;
             for i in 1..=n {
                 let a = a0 + turn * i as f64 / n as f64;
-                *x = cx + r * a.cos();
-                *y = cy + r * a.sin();
+                *x = cx + r * libm::cos(a);
+                *y = cy + r * libm::sin(a);
                 pts.push((*x, *y));
             }
             *h += turn;
@@ -2136,7 +2137,7 @@ mod tests {
         line(&mut pts, &mut x, &mut y, heading, 0.12);
         let turn = core::f64::consts::FRAC_PI_2 + tilt;
         arc(&mut pts, &mut x, &mut y, &mut heading, 0.036, turn);
-        let down = (y - gap).max(spacing) / heading.sin().abs().max(0.2);
+        let down = (y - gap).max(spacing) / libm::sin(heading).abs().max(0.2);
         line(&mut pts, &mut x, &mut y, heading, down);
         pts.iter()
             .map(|&(x, y)| Vec3::new(x as f32, y as f32, 0.0))
@@ -2228,7 +2229,7 @@ mod tests {
                 let u = i as f64 / (n - 1) as f64;
                 let a = core::f64::consts::TAU * turns * u;
                 let r = r0 + pitch * turns * u;
-                Vec3::new((r * a.cos()) as f32, (r * a.sin()) as f32, 0.0)
+                Vec3::new((r * libm::cos(a)) as f32, (r * libm::sin(a)) as f32, 0.0)
             })
             .collect()
     }
@@ -2688,28 +2689,28 @@ mod tests {
                 "arc r 5 m, 230°, 1:20",
                 line(&|i| {
                     let a = 4.0 * i / 2000.0;
-                    (5.0 * a.cos(), 5.0 * a.sin(), 0.0005 * i)
+                    (5.0 * libm::cos(a), 5.0 * libm::sin(a), 0.0005 * i)
                 }),
             ),
             (
                 "wavy 2000 x 10 mm",
                 line(&|i| {
                     let x = 0.01 * i;
-                    (x, 0.05 * (x * 2.0).sin(), 0.03 * (x * 3.0).sin())
+                    (x, 0.05 * libm::sin(x * 2.0), 0.03 * libm::sin(x * 3.0))
                 }),
             ),
             (
                 "arc r 50 m, half turn, 1:100",
                 line(&|i| {
                     let a = pi * i / 2000.0;
-                    (50.0 * a.cos(), 50.0 * a.sin(), 0.0008 * i)
+                    (50.0 * libm::cos(a), 50.0 * libm::sin(a), 0.0008 * i)
                 }),
             ),
             (
                 "S-curve 2000 x 5 mm, falling",
                 line(&|i| {
                     let u = 0.005 * i;
-                    (u, 0.3 * (2.0 * u).sin(), -0.02 * u)
+                    (u, 0.3 * libm::sin(2.0 * u), -0.02 * u)
                 }),
             ),
             (
@@ -2717,21 +2718,21 @@ mod tests {
                 line(&|i| {
                     let a = 0.0125 * i;
                     let r = 1.0 - 0.0954 * a / core::f64::consts::TAU;
-                    (r * a.cos(), r * a.sin(), 0.0002 * i)
+                    (r * libm::cos(a), r * libm::sin(a), 0.0002 * i)
                 }),
             ),
             (
                 "zigzag 2000 x 10 mm, 30 mm bends, rising",
                 line(&|i| {
                     let u = 0.01 * i;
-                    (u, 0.004 * (u * 30.0).sin(), 0.0005 * i)
+                    (u, 0.004 * libm::sin(u * 30.0), 0.0005 * i)
                 }),
             ),
             (
                 "helix r 0.3 m, 3 turns (rejected)",
                 line(&|i| {
                     let a = 3.0 * core::f64::consts::TAU * i / 2000.0;
-                    (0.3 * a.cos(), 0.3 * a.sin(), 0.00005 * i)
+                    (0.3 * libm::cos(a), 0.3 * libm::sin(a), 0.00005 * i)
                 }),
             ),
             (
@@ -2787,13 +2788,13 @@ mod tests {
         };
         // Uneven spacing: every other point pulled toward its neighbour.
         let uneven = |r: f64, opening: f64, segments: usize| {
-            let half = (opening / (2.0 * r)).asin();
+            let half = libm::asin(opening / (2.0 * r));
             let sweep = core::f64::consts::TAU - 2.0 * half;
             (0..=segments)
                 .map(|i| {
                     let shift = if i % 2 == 1 && i < segments { 0.3 } else { 0.0 };
                     let a = half + sweep * (i as f64 + shift) / segments as f64;
-                    Vec3::new((r * a.cos()) as f32, (r * a.sin()) as f32, 0.0)
+                    Vec3::new((r * libm::cos(a)) as f32, (r * libm::sin(a)) as f32, 0.0)
                 })
                 .collect::<Vec<_>>()
         };

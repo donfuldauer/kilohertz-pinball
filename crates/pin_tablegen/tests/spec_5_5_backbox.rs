@@ -140,8 +140,8 @@ fn more_than_1024_outline_points_are_named() {
         let _ = write!(
             s,
             "[{:.4}, {:.4}],",
-            200.0 + 150.0 * a.cos(),
-            150.0 + 140.0 * a.sin()
+            200.0 + 150.0 * libm::cos(a),
+            150.0 + 140.0 * libm::sin(a)
         );
     }
     s.push(']');
@@ -154,8 +154,8 @@ fn more_than_1024_outline_points_are_named() {
         let _ = write!(
             s,
             "[{:.4}, {:.4}],",
-            200.0 + 150.0 * a.cos(),
-            150.0 + 140.0 * a.sin()
+            200.0 + 150.0 * libm::cos(a),
+            150.0 + 140.0 * libm::sin(a)
         );
     }
     s.push(']');

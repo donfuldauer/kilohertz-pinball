@@ -83,7 +83,11 @@ fn a_ball_cradled_on_a_held_flipper_is_not_stuck() {
     // 4 cm from the pivot, 80 deg up: within the bat's reach but clear of
     // the bat both at rest (-30 deg) and raised (+20 deg).
     let a = 80f32.to_radians();
-    let p = [pivot.x + 0.04 * a.cos(), pivot.y + 0.04 * a.sin(), BALL_Z];
+    let p = [
+        pivot.x + 0.04 * libm::cosf(a),
+        pivot.y + 0.04 * libm::sinf(a),
+        BALL_Z,
+    ];
     sim.set_switch("left_flipper", true).unwrap();
     sim.advance(50);
     let held = pinned(&mut sim, &info, p, 80, 40);

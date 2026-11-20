@@ -54,7 +54,7 @@ fn assert_frame_valid(f: &Frame, what: &str) {
 }
 
 fn angle_between(a: Vec3, b: Vec3) -> f32 {
-    a.normalize().dot(b.normalize()).clamp(-1.0, 1.0).acos()
+    libm::acosf(a.normalize().dot(b.normalize()).clamp(-1.0, 1.0))
 }
 
 /// Reference rotation-minimizing frame normal by fine-step double reflection
@@ -121,8 +121,8 @@ fn helix(turns: f32, radius: f32, pitch: f32, n: usize) -> Vec<Vec3> {
         .map(|i| {
             let a = std::f32::consts::TAU * turns * i as f32 / (n - 1) as f32;
             Vec3::new(
-                radius * a.cos(),
-                radius * a.sin(),
+                radius * libm::cosf(a),
+                radius * libm::sinf(a),
                 pitch * a / std::f32::consts::TAU,
             )
         })
@@ -226,7 +226,7 @@ fn constant_roll_tilts_rails_out_of_plane() {
     let pts = planar_s_curve();
     for &deg in &[30.0f32, -30.0, 90.0, -90.0] {
         let w = Wireform::new(mk(&pts), &vec![deg; pts.len()], GAUGE, Vec3::Z).unwrap();
-        let expect = 0.5 * GAUGE * deg.to_radians().sin().abs();
+        let expect = 0.5 * GAUGE * libm::sinf(deg.to_radians()).abs();
         for k in 0..=100 {
             let t = 5.0 * k as f32 / 100.0;
             let (a, b) = w.rail_points(t);
