@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "filesystem": {
+      "allowWrite": [
+        "~/.cargo/registry",
+        "~/.cargo/git",
+        "~/.cargo/.package-cache",
+        "~/.cargo/.global-cache",
+        "~/.rustup"
+      ],
+      "denyRead": [
+        "~/.aws",
+        "~/.gnupg",
+        "~/.cargo/credentials.toml"
+      ]
+    },
+    "network": {
+      "allowedDomains": [
+        "crates.io",
+        "index.crates.io",
+        "static.crates.io",
+        "static.rust-lang.org",
+        "github.com",
+        "api.github.com",
+        "codeload.github.com",
+        "objects.githubusercontent.com",
+        "raw.githubusercontent.com",
+        "api.nuget.org"
+      ]
+    }
+  },
+  "permissions": {
+    "allow": [
+      "Bash(cargo fmt *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo test *)",
+      "Bash(cargo build *)",
+      "Bash(cargo check *)",
+      "Bash(cargo metadata *)",
+      "Bash(python3 scripts/package.py *)",
+      "Bash(python3 scripts/human_acceptance.py *)",
+      "Bash(python3 scripts/gate_a2_verdict.py *)",
+      "Bash(./scripts/gate_a1.sh *)",
+      "Bash(./scripts/gate_a2.sh *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git remote -v)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh pr list *)",
+      "Bash(gh run list *)",
+      "Bash(gh run view *)"
+    ],
+    "ask": [
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git reset *)",
+      "Bash(git rebase *)",
+      "Bash(git merge *)",
+      "Bash(git tag *)",
+      "Bash(git branch -D *)",
+      "Bash(git clean *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh pr close *)",
+      "Bash(gh pr create *)",
+      "Bash(gh release *)",
+      "Bash(gh api *)"
+    ],
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.cargo/credentials.toml)",
+      "Read(~/.config/gh/**)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)"
+    ]
+  }
+}
