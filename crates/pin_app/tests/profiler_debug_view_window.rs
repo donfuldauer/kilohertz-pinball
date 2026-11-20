@@ -19,10 +19,10 @@
 //!   (`present_profiler`) and `--profiler-hud` (`hud`): its debug view
 //!   records GPU frame time.
 //!
-//! This file has no `[[test]]` entry, so it runs under the libtest harness
-//! with one `#[test]`: its thread is the only one that touches SDL, which
-//! the X11 / Wayland drivers allow. Without a native video driver it
-//! prints SKIP, or fails when `PIN_REQUIRE_GPU=1`.
+//! This is a `harness = false` target (pattern of `presenter_thread_window.rs`):
+//! `main` runs on the process main thread, so SDL (init, windows, event
+//! pump) stays on the main thread. Without a native video driver it prints
+//! SKIP, or fails when `PIN_REQUIRE_GPU=1`.
 #![cfg(feature = "gpu-tests")]
 
 use arrayvec::ArrayVec;
@@ -75,8 +75,7 @@ fn source(
     }
 }
 
-#[test]
-fn debug_view_records_gpu_frame_time_and_paints_the_hud() {
+fn main() {
     let sdl = match sdl3::init() {
         Ok(s) => s,
         Err(e) => return skip(&format!("SDL_Init: {e}")),

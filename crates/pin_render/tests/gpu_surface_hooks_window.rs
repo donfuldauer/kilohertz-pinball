@@ -10,13 +10,11 @@
 //! drawn (unchanged, hidden, busy, occluded, skipped) get neither. And
 //! `render_with(NoFrameHooks)` behaves like `render`.
 //!
-//! This file has no `[[test]]` entry of its own, so it runs under the
-//! libtest harness: SDL is initialised on the one test thread of this
-//! binary (a single `#[test]`), which is the only thread that touches SDL.
-//! That is fine for the X11 / Wayland drivers used by CI. Without a native
-//! video driver it prints SKIP, or fails when `PIN_REQUIRE_GPU=1`; the
-//! dummy driver is never used (sdl3's raw-window-handle impl panics on it,
-//! DECISIONS 0.1 Q4).
+//! This is a `harness = false` target (pattern of `gpu_window.rs`): `main`
+//! runs on the process main thread, which owns SDL (required on macOS), and
+//! SDL is initialised once per process. Without a native video driver it
+//! prints SKIP, or fails when `PIN_REQUIRE_GPU=1`; the dummy driver is never
+//! used (sdl3's raw-window-handle impl panics on it, DECISIONS 0.1 Q4).
 #![cfg(feature = "gpu-tests")]
 
 use arrayvec::ArrayVec;
@@ -27,9 +25,14 @@ use pin_render::gpu::{
 };
 use pin_render::topology::{Rect, SurfaceRole, WindowEvent, WindowEventKind};
 
-/// Render iterations a new window may take to become presentable (a
-/// count, not a duration; unpaced iterations yield).
-const WARM_UP_ITERS: u64 = 5_000_000;
+/// Paced (vsync-limited) playfield frames a new window may take to become
+/// presentable. Counts, not durations (D8): a presenting playfield that
+/// never lets the secondary acquire fails after this many paced frames
+/// instead of looping for hours.
+const MAX_PACED_FRAMES: u32 = 600;
+/// Unpaced render attempts (those that `yield_now`) allowed on top of the
+/// paced frames while waiting for the windows to become presentable.
+const MAX_UNPACED_ATTEMPTS: u32 = 200_000;
 
 const NATIVE: [&str; 4] = ["windows", "cocoa", "x11", "wayland"];
 
@@ -121,7 +124,8 @@ fn source(
 fn warm_up(set: &mut SurfaceSet, pump: &mut sdl3::EventPump, lines: &DebugLines, camera: &Camera) {
     let presenter = set.choices().any(|c| c.2.needs_presenter_thread());
     let (mut playfield, mut secondary) = (false, false);
-    for _ in 0..WARM_UP_ITERS {
+    let (mut paced, mut unpaced) = (0u32, 0u32);
+    while paced < MAX_PACED_FRAMES && unpaced < MAX_UNPACED_ATTEMPTS {
         while pump.poll_event().is_some() {}
         let st = set.render(lines, camera);
         playfield |= st[0] == SurfaceStatus::Presented;
@@ -133,11 +137,17 @@ fn warm_up(set: &mut SurfaceSet, pump: &mut sdl3::EventPump, lines: &DebugLines,
         if playfield && secondary {
             return;
         }
-        if !set.frame_paced(&st) {
+        if set.frame_paced(&st) {
+            paced += 1;
+        } else {
+            unpaced += 1;
             std::thread::yield_now();
         }
     }
-    panic!("windows not presentable: playfield {playfield}, secondary {secondary}");
+    panic!(
+        "windows not presentable: playfield {playfield}, secondary {secondary} \
+         (after {paced} paced frames, {unpaced} unpaced attempts)"
+    );
 }
 
 /// Checks one `render_with` call's events against its statuses.
@@ -185,8 +195,7 @@ fn check_frame(ev: &[Ev], st: &[SurfaceStatus], playfield_px: (u32, u32), thread
     }
 }
 
-#[test]
-fn render_with_calls_the_hooks_once_per_frame_and_per_drawn_surface() {
+fn main() {
     let sdl = match sdl3::init() {
         Ok(s) => s,
         Err(e) => return skip(&format!("SDL_Init: {e}")),
