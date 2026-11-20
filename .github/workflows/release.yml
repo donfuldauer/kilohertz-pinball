@@ -29,8 +29,8 @@ on:
       - "crates/pin_app/**"
       - ".github/workflows/release.yml"
       - "docs/HUMAN_ACCEPTANCE.md"
-      - "docs/queue/**"
-      - "docs/decisions/**"
+      - "docs/HUMAN_QUEUE.md"
+      - "docs/DECISIONS.md"
       - "docs/RUN_LOG.md"
   workflow_dispatch:
     inputs:

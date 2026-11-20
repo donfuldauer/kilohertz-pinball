@@ -1,1 +1,0 @@
-- [ ] [fix-sdl3-space-path] Report the .pc space-path truncation upstream to the sdl3-sys maintainers (rust-sdl3) and drop third_party/sdl3-sys once a release fixes it. Optional, no blocker.

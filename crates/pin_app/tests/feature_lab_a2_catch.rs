@@ -11,63 +11,25 @@
 //! must come back to layer 0 and either drain through a trough or stay on
 //! the playfield, never leave the bounds, and never be in the closed
 //! pocket between the cabinet wall and the orbit's outer rail.
+//!
+//! PR #142 (Gate A2, SPEC §4 Phase 6: no stuck and no escaped balls): no
+//! 4 -> 0 zone's footprint contains a point of that pocket (`bb_catch`
+//! used to, x 52..64.75 at y 955.75..990), and the two verified
+//! reproductions come back to the playfield outside the pocket without
+//! leaving the table: a layer-4 ball nudged towards the back with a
+//! gamepad's right stick, and a falling one after a keyboard forward nudge.
+//! The pocket predicate (`in_pocket`) is in `feature_lab_support`.
 
 mod feature_lab_support;
 
 use feature_lab_support::*;
+use pin_app::platform::InputRouter;
+use pin_core::input::{CabinetAxis, InputEvent, InputEventKind};
 use pin_core::schema::table::TableManifest;
+use pin_core::sim::{SimStep, TICK_NS};
+use pin_core::snapshot::FrameStateSnapshot;
 use pin_sim::{SimConfig, Simulation};
 use std::path::Path;
-
-/// The orbit lane's centre line and width (layout.toml `[[lanes]]`), mm.
-const ORBIT: [[f32; 2]; 8] = [
-    [85.0, 615.0],
-    [55.0, 650.0],
-    [38.0, 700.0],
-    [36.0, 780.0],
-    [45.0, 880.0],
-    [90.0, 1000.0],
-    [170.0, 1040.0],
-    [260.0, 1046.0],
-];
-const ORBIT_HALF_WIDTH: f32 = 20.0;
-
-/// From this height up the orbit's outer rail is within 15.7 mm of the
-/// cabinet wall: the strip between them is a closed pocket, mm.
-const POCKET_Y_MIN: f32 = 744.0;
-
-/// Whether a layer-0 ball centre `p` (mm) is in the closed pocket: up the
-/// table from `POCKET_Y_MIN`, outside the orbit lane on its cabinet side
-/// (left of the centre line, beyond the lane's half width).
-fn in_pocket(p: [f32; 2]) -> bool {
-    let (d, side) = orbit_offset(p);
-    p[1] >= POCKET_Y_MIN && d > ORBIT_HALF_WIDTH && side > 0.0
-}
-
-/// Distance (mm) of `p` from the orbit's centre line, and its side
-/// (positive on the left of the lane's travel direction: the cabinet side
-/// of its up-going left leg).
-fn orbit_offset(p: [f32; 2]) -> (f32, f32) {
-    let (mut best_d, mut best_side) = (f32::INFINITY, 0.0f32);
-    for w in ORBIT.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        let ab = [b[0] - a[0], b[1] - a[1]];
-        let ap = [p[0] - a[0], p[1] - a[1]];
-        let t = ((ap[0] * ab[0] + ap[1] * ab[1]) / (ab[0] * ab[0] + ab[1] * ab[1])).clamp(0.0, 1.0);
-        let d = (ap[0] - ab[0] * t).hypot(ap[1] - ab[1] * t);
-        if d < best_d {
-            best_d = d;
-            best_side = ab[0] * ap[1] - ab[1] * ap[0];
-        }
-    }
-    (best_d, best_side)
-}
-
-/// Whether `p` (m) is outside the simulation's escape bounds (the box the
-/// EscapedBall check uses).
-fn outside(bounds: ([f32; 3], [f32; 3]), p: [f32; 3]) -> bool {
-    (0..3).any(|k| !(p[k] >= bounds.0[k] && p[k] <= bounds.1[k]))
-}
 
 /// What happened to one dropped ball.
 #[derive(Debug, Default)]
@@ -202,4 +164,185 @@ fn bb_catch_left_is_left_of_the_hole_in_the_orbit_lane() {
             "{p:?} is {d} mm off the lane centre line"
         );
     }
+}
+
+// --- PR #142: no 4 -> 0 zone returns a ball into the closed pocket -------------
+
+/// The points `min, min + 0.5, ..., max` (mm; `max` included).
+fn half_mm_grid(min: f32, max: f32) -> impl Iterator<Item = f32> {
+    let steps = ((max - min) / 0.5).ceil() as u32;
+    (0..=steps).map(move |i| (min + 0.5 * i as f32).min(max))
+}
+
+/// Gate A2 (SPEC §4 Phase 6, zero stuck balls): a 4 -> 0 transition puts
+/// the ball on layer 0 where its centre entered the zone, so no point of a
+/// 4 -> 0 zone's x/y footprint may be in the closed pocket between the
+/// cabinet wall and the orbit's outer rail (a ball returned there stays
+/// stuck). Walks every footprint on a 0.5 mm grid, edges included.
+#[test]
+fn no_layer_4_to_0_zone_footprint_contains_a_pocket_point() {
+    let text = std::fs::read_to_string(bundle().join("table.toml")).unwrap();
+    let t = TableManifest::from_toml_str(&text).unwrap();
+    let mut ids = Vec::new();
+    let mut hits = Vec::new();
+    for z in t
+        .layer_transitions
+        .iter()
+        .filter(|z| z.from_layer == 4 && z.to_layer == 0)
+    {
+        ids.push(z.id.as_str());
+        let (min, max) = (z.zone.min, z.zone.max);
+        for x in half_mm_grid(min[0], max[0]) {
+            for y in half_mm_grid(min[1], max[1]) {
+                if in_pocket([x, y]) {
+                    hits.push(format!("{} ({x}, {y})", z.id));
+                }
+            }
+        }
+    }
+    assert!(
+        ids.contains(&"bb_catch") && ids.contains(&"bb_catch_left"),
+        "4 -> 0 zones: {ids:?}"
+    );
+    assert!(
+        hits.is_empty(),
+        "{} footprint points in the closed pocket, first {:?}",
+        hits.len(),
+        &hits[..hits.len().min(5)]
+    );
+}
+
+/// Where one layer-4 ball came back to layer 0 and how it ended.
+#[derive(Debug, Default)]
+struct Run {
+    /// Centre (mm) on the first tick the ball was on layer 0.
+    returned_at: Option<[f32; 3]>,
+    /// The ball centre was outside the escape bounds on some tick.
+    left_bounds: bool,
+    escaped: u32,
+    /// A main trough switch closed and the ball left the sim.
+    drained: bool,
+    /// Still in play on layer 0 at the end.
+    alive_on_0: bool,
+    /// Last centre (mm).
+    final_at: [f32; 3],
+}
+
+impl Run {
+    /// Back on layer 0 outside the closed pocket, never out of the table,
+    /// and either drained or alive on the playfield at a rest point
+    /// outside the pocket (the return and final points only: the pocket
+    /// predicate is not valid on every tick of a ball that runs the orbit).
+    fn ok(&self) -> bool {
+        self.returned_at.is_some_and(|p| !in_pocket([p[0], p[1]]))
+            && !self.left_bounds
+            && self.escaped == 0
+            && (self.drained
+                || (self.alive_on_0 && !in_pocket([self.final_at[0], self.final_at[1]])))
+    }
+}
+
+/// A standard ball on layer 4 at `p` (mm) with velocity `v` (m/s), run for
+/// 20 s of simulated time through `step_1ms`. Before tick `k` (1-based from
+/// the spawn) `inputs(k, stamp_ns, out)` may push input events stamped
+/// within that tick (`stamp_ns` is 1 ns before the tick's end).
+fn run_layer_4(
+    dir: &Path,
+    p: [f32; 3],
+    v: [f32; 3],
+    mut inputs: impl FnMut(u64, u64, &mut Vec<InputEvent>),
+) -> Run {
+    let mut s = Simulation::load(dir, SimConfig::default()).expect("load");
+    let h = s
+        .spawn_ball_on_layer(
+            "standard_steel",
+            4,
+            [p[0] * 1.0e-3, p[1] * 1.0e-3, p[2] * 1.0e-3],
+            v,
+        )
+        .expect("spawn on layer 4");
+    let mut snap = Box::new(FrameStateSnapshot::default());
+    let mut ev = Vec::new();
+    let start = s.tick();
+    let mut r = Run::default();
+    for k in 1..=20_000u64 {
+        let tick = start + k;
+        ev.clear();
+        inputs(k, tick * TICK_NS - 1, &mut ev);
+        s.step_1ms(tick, &ev, &mut snap);
+        let Some(b) = s.ball(h) else { break };
+        let q = b.position_m;
+        r.final_at = [q[0] * 1.0e3, q[1] * 1.0e3, q[2] * 1.0e3];
+        r.left_bounds |= outside(s.escape_bounds(), q);
+        if b.layer == 0 && r.returned_at.is_none() {
+            r.returned_at = Some(r.final_at);
+        }
+    }
+    r.alive_on_0 = s.ball(h).is_some_and(|b| b.layer == 0);
+    let troughs = s.switch_hits("trough_1").unwrap() + s.switch_hits("trough_2").unwrap();
+    r.drained = troughs >= 1 && s.ball(h).is_none();
+    r.escaped = s.counters().balls_escaped;
+    r
+}
+
+/// The verified stuck ball (PR #142): a layer-4 ball at rest in the entry
+/// channel, 30 mm above the shelf, while a gamepad's right stick nudges
+/// (NudgeX +0.15, NudgeY -0.75 from tick 41 through tick 140: the ball
+/// gains up to 2.25 m/s towards the back). `bb_catch` used to return it at
+/// (55.1, 983.7, 25.0) mm, in the pocket, where it stayed for good.
+#[test]
+fn layer_4_ball_nudged_toward_the_back_is_not_returned_into_the_pocket() {
+    on_big_stack(|| {
+        let r = run_layer_4(bundle(), [87.0, 920.8, 137.8], [0.0; 3], |k, ns, out| {
+            let (x, y) = match k {
+                41 => (0.15, -0.75),
+                141 => (0.0, 0.0),
+                _ => return,
+            };
+            out.push(InputEvent::axis(ns, CabinetAxis::NudgeX, x));
+            out.push(InputEvent::axis(ns, CabinetAxis::NudgeY, y));
+        });
+        assert!(r.ok(), "{r:?}");
+    });
+}
+
+/// The verified escape (PR #142): the Gate A2 run-1 state just before the
+/// bounce off backbox walls[1], position (128, 927, 165) mm, velocity
+/// (-0.324, -0.217, -1.90) m/s, and one keyboard forward nudge 20 ms
+/// later, through the app's input router (the X-Arcade keyboard profile's
+/// Up arrow, scancode 82: NudgeY 0.6 for 60 ms). No zone used to fire and
+/// the ball left the table at (16.2, 832.9, -49.3) mm.
+#[test]
+fn layer_4_ball_after_a_keyboard_forward_nudge_does_not_escape() {
+    on_big_stack(|| {
+        let profile = pin_input::profiles::builtin_profile("xarcade_keyboard")
+            .expect("xarcade_keyboard profile");
+        let mut router = InputRouter::with_keyboard_profile(profile);
+        let mut nudged = false;
+        let r = run_layer_4(
+            bundle(),
+            [128.0, 927.0, 165.0],
+            [-0.324, -0.217, -1.90],
+            |k, ns, out| {
+                let mut push = |e: InputEvent| {
+                    nudged |= matches!(
+                        e.kind,
+                        InputEventKind::Axis {
+                            axis: CabinetAxis::NudgeY,
+                            value
+                        } if value > 0.0
+                    );
+                    out.push(e);
+                };
+                match k {
+                    21 => router.key(ns, 82, true, &mut push),
+                    121 => router.key(ns, 82, false, &mut push),
+                    _ => {}
+                }
+                router.poll(ns, &mut push);
+            },
+        );
+        assert!(nudged, "the router sent the forward nudge");
+        assert!(r.ok(), "{r:?}");
+    });
 }

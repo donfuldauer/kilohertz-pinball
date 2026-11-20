@@ -33,16 +33,26 @@ fn parses_and_still_triggers_on_push() {
     assert!(t.iter().any(|e| e == "push"), "push trigger missing: {t:?}");
 }
 
+/// spec_0_1 checks the decision log and the queue (spec_decisions_md.rs,
+/// spec_log_split.rs), so edits to either file must run the workflow. The
+/// per-unit folders of D41 were merged into them and are gone (DECISIONS.md
+/// "Process — One decision log and a P8-only queue (D41 superseded)").
 #[test]
-fn push_and_pr_paths_include_the_log_split_dirs() {
+fn push_and_pr_paths_include_the_decision_log_and_queue() {
     for event in ["push", "pull_request"] {
         let paths = spikes()
             .trigger_paths(event)
             .unwrap_or_else(|| panic!("{event}: no paths filter"));
-        for want in ["docs/decisions/**", "docs/queue/**"] {
+        for want in ["docs/DECISIONS.md", "docs/HUMAN_QUEUE.md"] {
             assert!(
                 paths.iter().any(|p| p == want),
                 "{event} paths lack {want}: {paths:?}"
+            );
+        }
+        for gone in ["docs/decisions/**", "docs/queue/**"] {
+            assert!(
+                !paths.iter().any(|p| p == gone),
+                "{event} paths still list the removed folder {gone}: {paths:?}"
             );
         }
     }

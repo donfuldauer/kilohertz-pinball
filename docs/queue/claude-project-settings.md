@@ -1,1 +1,0 @@
-- [ ] [claude-project-settings] Owner: skim .claude/settings.json (sandbox write paths, network domains, deny rules) and confirm they fit your machine; .claude/settings.local.json is the place for personal overrides.

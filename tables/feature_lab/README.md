@@ -107,15 +107,23 @@ tilt.
   backbox plane plus 0.35 m/s across it; it rises out of the entry channel,
   lands on the vertical flipper (`left_upper`) or the floor, and leaves down
   the sloping floor through the drain (opto `bb_drain`) back onto the
-  playfield above `bumper_2`. It drains on its own without a flip. A safety
-  transition `bb_catch` returns a ball that falls back through the entry
+  playfield above `bumper_2`. It drains on its own without a flip. Safety
+  transitions (4 -> 0) return a ball that falls back through the entry
   hole (a flipped ball that drops into the entry channel) to the
   playfield, also when it drifts towards the player or the back as it
-  falls (the zone spans y 780..990). A second zone, `bb_catch_left` (x
-  45..59, y 895..935, z 25..96), catches a ball thrown left off the top of
-  the backbox's walls[1] that falls through the hole left of `bb_catch`,
-  and returns it into the orbit lane (never into the closed strip between
-  the cabinet wall and the orbit's outer rail).
+  falls: `bb_catch` under the backbox (x 52..462, y 780..955, z -24..25)
+  and `bb_catch_back` behind it (x 66..462, y 955..990, same height). Five
+  cup zones around the entry channel, below and beside the generated entry
+  zone (`bb_cup_left`, `bb_cup_front`, `bb_cup_back`, `bb_cup_right`,
+  `bb_cup_floor`; x 48..150, y 870..944, z 25..96), return a ball that a
+  keyboard or gamepad nudge pushes sideways or towards the back as it
+  falls, before it can drift past the other zones. A further zone,
+  `bb_catch_left` (x 45..59, y 895..935, z 25..96), catches a ball thrown
+  left off the top of the backbox's walls[1] that falls through the hole
+  left of `bb_catch`, and returns it into the orbit lane. A catch never
+  returns a ball into the closed strip between the cabinet wall and the
+  orbit's outer rail: from y 955 to 990 that strip reaches x 64.75, which
+  is why `bb_catch_back` starts at x 66.
 * **Left inlane**: the sling (`sling_left`, at (121.6, 310.8)) and its
   guard (walls[12]) sit 30 mm further out than on the grey-box, so the
   inlane is 75.6 mm wide at the guard's top: two balls arriving together

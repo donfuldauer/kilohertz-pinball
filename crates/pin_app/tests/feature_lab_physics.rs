@@ -194,9 +194,11 @@ fn drop_into_entry_channel(dir: &Path, q: [f32; 3], v: [f32; 3], ticks: u32) -> 
     (on_0, drained, s.counters().balls_escaped)
 }
 
-/// `bb_catch` is still needed with the VUK exit on layer 4: a backbox ball
-/// that falls back through the entry hole returns to the playfield and
-/// drains; without the zone it falls out of the table.
+/// The safety catches are still needed with the VUK exit on layer 4: a
+/// backbox ball that falls back through the entry hole returns to the
+/// playfield and drains; without the table's 4 -> 0 zones (`bb_catch`,
+/// `bb_catch_back`, `bb_catch_left` and the cups around the entry zone; the
+/// generated drain zone stays) it falls out of the table.
 #[test]
 fn a_ball_falling_back_through_the_entry_hole_returns_to_the_playfield() {
     on_big_stack(|| {
@@ -205,13 +207,15 @@ fn a_ball_falling_back_through_the_entry_hole_returns_to_the_playfield() {
         assert!(on_0, "back on layer 0");
         assert!(drained, "through a trough switch");
         assert_eq!(escaped, 0);
-        let without = edited("no_bb_catch", |t| {
-            t.layer_transitions.retain(|z| z.id != "bb_catch");
+        let without = edited("no_catches", |t| {
+            t.layer_transitions.retain(|z| {
+                !(z.from_layer == 4 && z.to_layer == 0 && !z.id.starts_with("tablegen:"))
+            });
         });
         let (on_0, _, escaped) = drop_into_entry_channel(&without, q, [0.0; 3], 20_000);
         assert!(
             !on_0 && escaped >= 1,
-            "without bb_catch the ball is lost: on_0 {on_0}, escaped {escaped}"
+            "without the safety catches the ball is lost: on_0 {on_0}, escaped {escaped}"
         );
     });
 }
