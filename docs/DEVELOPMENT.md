@@ -22,8 +22,9 @@ Any issue whose change makes a section here stale updates it in its own PR.
   with their feature sets; later pins are exact (`=x.y.z`), one line per crate, under a comment
   naming the work item that added them (for example `# Wave 3 additions …`; from now on
   `# #<N> KP-NNN additions`). Crates use `<name>.workspace = true`.
-- Vendored and patched: `third_party/lua-src` (Lua 5.4.9 build crate) and `third_party/lewton`
-  (Ogg Vorbis), each with its hardening patches in `KHZ_PATCHES.md`, wired through
+- Vendored and patched: `third_party/lua-src` (Lua 5.4.9 build crate), `third_party/lewton`
+  (Ogg Vorbis) and `third_party/sdl3-sys` (SDL3 bindings; the patch lets SDL3 build from checkout
+  paths with spaces), each with its patches in `KHZ_PATCHES.md`, wired through
   `[patch.crates-io]`. They are part of the untrusted-table boundary (PROCESS.md R11).
 - Native build: SDL3 3.4.20 is built from vendored source and linked statically (CMake and a C
   compiler on every OS). On Linux the native video, audio and input backends are compiled in only
@@ -123,7 +124,8 @@ kilohertz-pinball/
 │   └── spec_7_2/       # Python spec tests: packaging, release workflow, acceptance generator
 ├── third_party/
 │   ├── lua-src/        # Vendored Lua 5.4.9 build crate with hardening patches (KHZ_PATCHES.md)
-│   └── lewton/         # Vendored Ogg Vorbis decoder with hardening patches (KHZ_PATCHES.md)
+│   ├── lewton/         # Vendored Ogg Vorbis decoder with hardening patches (KHZ_PATCHES.md)
+│   └── sdl3-sys/       # Vendored SDL3 bindings; builds SDL3 from checkout paths with spaces (KHZ_PATCHES.md)
 ├── tools/
 │   └── dof_bridge/     # Windows-only .NET 8 companion: UDP telemetry → DirectOutput Framework
 └── tables/

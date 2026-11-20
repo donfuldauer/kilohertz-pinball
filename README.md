@@ -145,6 +145,7 @@ The project is built by AI coding agents under [`docs/PROCESS.md`](docs/PROCESS.
 - **Model routing (P4):** every unit of work goes through the `work-classifier` agent, which picks a model tier; a triage fast path handles trivial items.
 - **Agents (P5):** `.claude/agents/` defines `work-classifier`, `task-executor` (Implementer, Independent Tester and Fixer roles), `work-verifier` and `issue-investigator`. Agents record their judgement calls in `docs/DECISIONS.md`; only items a person must do go to `docs/HUMAN_QUEUE.md`.
 - **Pull requests (P6):** every change is a PR against `main`; CodeRabbit reviews it, every finding is answered and resolved, and the PR merges once the required `pr-checks` check is green and the merge conditions hold. Agents do not review their own code.
+- **Claude Code settings:** `.claude/settings.json` holds the shared sandbox and permission defaults; put personal overrides in `.claude/settings.local.json`, which is git-ignored. `gh` and git over ssh run outside the sandbox (read-only `gh` commands in the allow list run without a prompt; anything else asks) because `~/.ssh` and `~/.config/gh` are deliberately unreadable inside it.
 - **Contracts:** `pin_core` changes only through [`contracts/CHANGE_REQUESTS.md`](contracts/CHANGE_REQUESTS.md).
 
 | Document | Contents |
