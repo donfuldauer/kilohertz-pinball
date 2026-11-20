@@ -484,3 +484,9 @@ Maintained by the Orchestrator (PLAN.md §2.6). One row per subphase attempt.
 | 8+ | w8f-q4 CR-008 | Implementer | Haiku 5.5 | 1 | done | pin_core HostCommandQueue lifecycle docs; CR r1 "every callback in a script step" | **PR #69 merged f845d5f**; T0 via classifier |
 
 **Wave 8 gate: green** at cb1a26f (CI run 803).
+
+| 9 | 7.2 | Classifier | Sonnet 5.5 | — | routed | — | Implementer T2 Opus 5.5 (blast radius crate: no publish/sign steps); Independent Tester T1 Sonnet 5.5; FABLE_ALLOWANCE unknown, Fable not considered (D34) |
+| 9 | 7.2 | Implementer | Opus 5.5 | 1 | done (361b05e) | scripts/package.py (3 targets, deterministic .pinbundle/archives, DOF bridge Windows only), scripts/human_acceptance.py, release.yml (PR dry-run; dispatch artifacts only; v* tag → draft prerelease), scripts/tests 127/127 | A12: pin_app does not scan `<exe dir>/tables` (queue 7.2); feature_lab build.sh needs SDL3 headers locally |
+| 9 | 7.2 | Independent Tester | Sonnet 5.5 | 1 | done (c638eb1) | spec_7_2 77 tests (CLI, bundles, stub-PATH safety, generator, fuzz, workflow text) | first run against implementation: 3 failures |
+| 9 | 7.2 fix | Fixer | Haiku 5.5 ×2 | 1 | done (3e3f59e, 3bc2be7) | macOS toolchain step with literal targets; HUMAN_ACCEPTANCE begins with H1 | triage T0; spec/impl disagreement resolved against the brief, no test weakened |
+| 9 | 7.2 | Verifier | Sonnet 5.5 | 1 | pass (3bc2be7) | scripts/tests 127/127, spec_7_2 77/77, spec_ci green, --check 0, 3-target dry runs, workflow text checks, owned paths clean | 3-OS release build/test runs only on dispatch/tag (not on PRs) |
