@@ -253,19 +253,6 @@ struct Fall {
     escaped: u32,
 }
 
-impl Fall {
-    /// Back on layer 0 outside the closed pocket, never escaped, and either
-    /// drained or alive on the playfield at a rest point outside the pocket
-    /// (the pocket predicate is checked at the return and final points
-    /// only: it is not valid on every tick of a ball that runs the orbit).
-    fn back_in_play(&self) -> bool {
-        self.on_0
-            && self.escaped == 0
-            && !self.returned_at.is_some_and(in_pocket)
-            && (self.drained || (self.alive_on_0 && !in_pocket(self.final_at)))
-    }
-}
-
 fn drop_layer_4(dir: &Path, p: [f32; 3], v: [f32; 3]) -> Fall {
     let mut s = Simulation::load(dir, pin_sim::SimConfig::default()).expect("load");
     let h = s
@@ -299,6 +286,12 @@ fn drop_layer_4(dir: &Path, p: [f32; 3], v: [f32; 3]) -> Fall {
     }
 }
 
+/// Where the one non-draining sweep case (x 80, vy 0.4, vz 0) rests after
+/// 20 s: by the Banana (mm).
+const X80_VY04_REST_BY_BANANA_MM: [f32; 2] = [298.6, 156.4];
+/// Distance (mm) from the rest point that still counts as that outcome.
+const REST_TOLERANCE_MM: f32 = 3.0;
+
 #[test]
 fn a_ball_dropping_out_of_the_entry_hole_towards_the_back_returns_to_the_playfield() {
     on_big_stack(|| {
@@ -312,14 +305,32 @@ fn a_ball_dropping_out_of_the_entry_hole_towards_the_back_returns_to_the_playfie
         for x in [80.0f32, 102.0, 125.0] {
             // Up to 0.6 m/s either way (the entry-channel test's bound in
             // feature_lab_physics.rs): from 85 mm with no fall speed a
-            // 0.6 m/s drift reaches y ~978 mm when z passes 25 mm. A ball
-            // that a cup returns next to the entry channel may come to rest
-            // on the playfield instead of draining within the 20 s (PR #142:
-            // x 80, vy 0.4, vz 0 rests at the Banana).
+            // 0.6 m/s drift reaches y ~978 mm when z passes 25 mm.
+            // Every case drains, except x 80, vy 0.4, vz 0: `bb_cup_back`
+            // catches it (back on layer 0 at about (80.0, 933.1)) and it
+            // rests by the Banana instead (DECISIONS.md "PR #142 — Feature
+            // Lab bb_catch no longer returns a ball into the closed pocket").
             for vy in [-0.6f32, -0.3, 0.0, 0.2, 0.4, 0.5, 0.6] {
                 for vz in [0.0f32, -1.0] {
                     let f = drop_layer_4(bundle(), [x, 918.0, 85.0], [0.0, vy, vz]);
-                    assert!(f.back_in_play(), "x {x} vy {vy} vz {vz}: {f:?}");
+                    let exception = x == 80.0 && vy == 0.4 && vz == 0.0;
+                    assert!(
+                        f.on_0 && f.escaped == 0 && !f.returned_at.is_some_and(in_pocket),
+                        "x {x} vy {vy} vz {vz}: {f:?}"
+                    );
+                    if exception {
+                        let d = ((f.final_at[0] - X80_VY04_REST_BY_BANANA_MM[0]).powi(2)
+                            + (f.final_at[1] - X80_VY04_REST_BY_BANANA_MM[1]).powi(2))
+                        .sqrt();
+                        assert!(
+                            !f.drained && f.alive_on_0 && d <= REST_TOLERANCE_MM,
+                            "x 80 vy 0.4 vz 0 must rest by the Banana at \
+                             {X80_VY04_REST_BY_BANANA_MM:?} mm (within {REST_TOLERANCE_MM} mm), \
+                             not drain: {f:?}"
+                        );
+                    } else {
+                        assert!(f.drained, "x {x} vy {vy} vz {vz} must drain: {f:?}");
+                    }
                 }
             }
         }
