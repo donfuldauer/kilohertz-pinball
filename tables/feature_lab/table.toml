@@ -314,20 +314,75 @@ staging = { type = "DedicatedButton", input = "right_flipper" }
 
 # --- Layer transitions ----------------------------------------------------
 
-# Safety net under the whole backbox (plane u -205..205, v -130..-85, as a
-# table-frame box reaching 100 mm in front of the box and to y 990, about
-# 70 mm behind it): a backbox ball that ever falls below the shelf outside
-# the drain (back through the entry hole, also when it moves towards the
-# player or towards the back as it falls, up to 0.6 m/s either way) returns
-# to the playfield layer just above the floor instead of falling out of the
-# table (docs/decisions/2026-11-19-6.4-cr1.md "bb_catch covers a +y drift").
-# It lies below the generated entry (0 -> 4) and drain (4 -> 0) zones and
-# touches neither; it never affects a layer-0 ball.
+# Safety nets for a backbox ball (layer 4) that falls back out of the box.
+# A 4 -> 0 transition puts the ball on layer 0 where its centre entered the
+# zone, with its velocity, so no such zone may reach into the closed pocket:
+# from y 744 up, the strip between the cabinet wall and the orbit's outer
+# rail (<= 15.7 mm from the wall) is closed, and a ball returned there stays
+# stuck (docs/DECISIONS.md "PR #142 — Feature Lab bb_catch no longer returns
+# a ball into the closed pocket"). Under the backbox that strip reaches x 52
+# from y 955.75 and x 64.75 at y 990, so the zones at y >= 955 start at x 66.
+# None of them affects a layer-0 ball.
+#
+# bb_catch, under the whole backbox (plane u -205..205, v -130..-85, as a
+# table-frame box reaching 100 mm in front of the box), and bb_catch_back
+# behind it up to y 990 (about 70 mm behind the box): a backbox ball that
+# falls below the shelf outside the drain (back through the entry hole,
+# also when it moves towards the player or towards the back as it falls, up
+# to 0.6 m/s either way) returns to the playfield layer just above the
+# floor instead of falling out of the table (docs/DECISIONS.md "6.4-cr1 —
+# bb_catch covers a +y drift"). Both lie below the generated entry
+# (0 -> 4) and drain (4 -> 0) zones and touch neither.
 [[layer_transitions]]
 id = "bb_catch"
 from_layer = 4
 to_layer = 0
-zone = { min = [52.0, 780.0, -24.0], max = [462.0, 990.0, 25.0] }
+zone = { min = [52.0, 780.0, -24.0], max = [462.0, 955.0, 25.0] }
+
+[[layer_transitions]]
+id = "bb_catch_back"
+from_layer = 4
+to_layer = 0
+zone = { min = [66.0, 955.0, -24.0], max = [462.0, 990.0, 25.0] }
+
+# The cups: five boxes around the generated entry zone (x 67..137,
+# y 893.2..932.5, z 46.4..90.1), on its four sides and under it, from z 25
+# (the top of bb_catch) to z 96, each 0.4..0.5 mm clear of it. A keyboard
+# or gamepad nudge pushes every ball, the one falling back through the
+# entry channel too: nudged, it can fall around the channel sideways or
+# towards the back fast enough to pass left of bb_catch and bb_catch_left
+# and leave the table, or to reach the pocket corner. The cups return it to
+# the playfield next to the channel, over the orbit lane and the open
+# playfield beside it, before it drifts that far.
+[[layer_transitions]]
+id = "bb_cup_left"
+from_layer = 4
+to_layer = 0
+zone = { min = [48.0, 880.0, 25.0], max = [66.5, 944.0, 96.0] }
+
+[[layer_transitions]]
+id = "bb_cup_front"
+from_layer = 4
+to_layer = 0
+zone = { min = [48.0, 870.0, 46.0], max = [150.0, 892.8, 96.0] }
+
+[[layer_transitions]]
+id = "bb_cup_back"
+from_layer = 4
+to_layer = 0
+zone = { min = [48.0, 933.0, 46.0], max = [150.0, 944.0, 96.0] }
+
+[[layer_transitions]]
+id = "bb_cup_right"
+from_layer = 4
+to_layer = 0
+zone = { min = [137.5, 870.0, 46.0], max = [150.0, 944.0, 96.0] }
+
+[[layer_transitions]]
+id = "bb_cup_floor"
+from_layer = 4
+to_layer = 0
+zone = { min = [48.0, 870.0, 25.0], max = [150.0, 944.0, 46.0] }
 
 # Left of bb_catch: a backbox ball thrown left (off the top of the backbox
 # walls[1]) can fall through the entry hole (x 67..137) and cross z 25 at x

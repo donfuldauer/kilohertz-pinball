@@ -55,13 +55,14 @@ TICKS_PER_S = 1000.0
 BALL_KINDS = ("StuckBall", "EndlessBall", "EscapedBall", "NonFinite")
 # FindingKind::LongBall: a ball past the 300 s endless limit that later
 # drained naturally after broad play. Reported, never failing
-# (docs/decisions/2026-11-19-fix-a2-longball.md).
+# (docs/DECISIONS.md "fix-a2-longball — LongBall reporting for drained long balls").
 LONG_BALL_KINDS = ("LongBall",)
 SCRIPT_KINDS = ("ScriptError",)
 QUEUE_KINDS = ("QueueOverflow",)
 THIN_SHOTS = 3
 HEX16 = frozenset("0123456789abcdef")
-# Context REPORT lines the brief names (docs/queue/6.1.md).
+# Context REPORT lines the brief names (docs/DECISIONS.md "gate-a2-runner — modes that
+# are not observable; table-specific REPORT lines").
 APEX_NOT_SOAK_COVERED = (
     "not soak-covered (covered by apex_game.rs / spec_6_1_rules.rs): "
     "Firewall Save, Apex Jackpot [6.1-a2-modes]"
@@ -352,7 +353,9 @@ def judge_table(v, out, t, run):
         if wall is not None:
             v.add("REPORT", t, "soak wall time [%s]" % skill, "%s s, %s threads" % (wall, r.get("timing", {}).get("threads")))
 
-    # Context lines from docs/queue/6.1.md (the brief's only table-specific lines).
+    # Context lines from the 6.1 queue items (the brief's only table-specific lines;
+    # docs/DECISIONS.md "gate-a2-runner — modes that are not observable; table-specific
+    # REPORT lines").
     if t == "apex_circuit":
         v.add("REPORT", t, "A2.2 modes", APEX_NOT_SOAK_COVERED)
         for skill in SKILLS:

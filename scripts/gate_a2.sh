@@ -33,7 +33,8 @@
 # are defaulted; CARGO_TARGET_DIR comes from the caller.
 #
 # Only a run with GAMES>=1000, REPLAYS>=20 and no DRY can print "GATE A2: PASS".
-# Decisions: docs/decisions/2026-11-19-gate-a2-runner.md.
+# Decisions: docs/DECISIONS.md "gate-a2-runner — where thresholds are judged" and the
+# other "gate-a2-runner — …" sections after it.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

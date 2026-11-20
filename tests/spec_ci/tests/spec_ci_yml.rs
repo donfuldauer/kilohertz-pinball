@@ -200,7 +200,7 @@ fn path_gated_jobs_follow_the_changes_outputs() {
         "changes step must read NUL-separated paths (git diff -z) so quoted paths cannot miss globs"
     );
     assert!(
-        text.contains("docs/PLAN.md) code=true"),
+        text.contains("docs/SPEC.md) code=true"),
         "docs-only skip must stay"
     );
 }
