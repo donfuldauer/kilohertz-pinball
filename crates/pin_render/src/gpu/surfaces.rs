@@ -268,6 +268,171 @@ pub const fn role_clear_color(role: SurfaceRole) -> [f32; 4] {
 /// Outline colour of PiP placeholders.
 const PIP_OUTLINE: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 
+/// Per-frame hooks into [`SurfaceSet::render_with`] (w8g-d): GPU timing of
+/// the frame's submissions and an overlay drawn over the playfield.
+///
+/// Every method has a no-op (or pass-through) default, so an implementation
+/// overrides only what it needs; with the defaults ([`NoFrameHooks`]) a
+/// frame records and submits exactly what [`SurfaceSet::render`] does.
+///
+/// Call order within one [`render_with`](SurfaceSet::render_with):
+/// [`begin_frame`](Self::begin_frame) once, before the first surface; then,
+/// for every surface that is drawn, [`overlay`](Self::overlay) while its
+/// frame is recorded (playfield surfaces only) and
+/// [`wrap_submit`](Self::wrap_submit) once for its frame command buffer;
+/// finally [`end_frame`](Self::end_frame) once, after the last surface.
+/// Surfaces that are not drawn this frame (hidden, unchanged, busy,
+/// occluded, skipped) get neither `overlay` nor `wrap_submit`.
+pub trait SurfaceFrameHooks {
+    /// Called once per frame, before the first surface is drawn.
+    fn begin_frame(&mut self) {}
+
+    /// Called with each surface's finished frame command buffer before it is
+    /// submitted. The returned buffers are submitted in order by one
+    /// `Queue::submit`, under the set's submit lock. The default returns
+    /// just `frame`.
+    fn wrap_submit(&mut self, frame: wgpu::CommandBuffer) -> ArrayVec<wgpu::CommandBuffer, 3> {
+        let mut one = ArrayVec::new();
+        one.push(frame);
+        one
+    }
+
+    /// Called while a frame of a `role` surface is recorded into `encoder`,
+    /// after everything else (the debug lines and the PiP outlines) has
+    /// been drawn into `view` (`size_px` pixels, the surface's draw format,
+    /// [`SurfaceSet::formats`]). Only playfield surfaces get this call.
+    /// The default draws nothing.
+    fn overlay(
+        &mut self,
+        role: SurfaceRole,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        size_px: (u32, u32),
+    ) {
+        let _ = (role, queue, encoder, view, size_px);
+    }
+
+    /// Called once per frame, after the last surface. `submit` takes the
+    /// set's submit lock and submits one command buffer. The default does
+    /// nothing.
+    fn end_frame(&mut self, submit: &mut dyn FnMut(wgpu::CommandBuffer)) {
+        let _ = submit;
+    }
+}
+
+/// The hooks that do nothing: [`SurfaceSet::render`] is
+/// [`render_with`](SurfaceSet::render_with) with these.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct NoFrameHooks;
+
+impl SurfaceFrameHooks for NoFrameHooks {}
+
+/// What one surface frame of the debug view shows (see
+/// [`encode_debug_frame`]).
+#[derive(Copy, Clone, Debug)]
+pub struct DebugFrame<'a> {
+    /// The surface's role: a playfield draws `lines`, other roles a clear in
+    /// [`role_clear_color`].
+    pub role: SurfaceRole,
+    /// Target size in pixels (the outline's pixel camera spans it).
+    pub size_px: (u32, u32),
+    /// The playfield's debug lines.
+    pub lines: &'a DebugLines,
+    /// The camera `lines` are seen through.
+    pub camera: &'a Camera,
+    /// PiP placeholder outlines in pixels (y down); nothing is drawn for
+    /// them when empty.
+    pub outline: &'a DebugLines,
+}
+
+/// Records one debug-view surface frame into `encoder`, drawing into `view`
+/// (`frame.size_px`, the renderers' format): for a playfield the debug lines
+/// over a cleared [`role_clear_color`] background, for other roles the
+/// clear alone; then the PiP outlines; then, for a playfield only,
+/// `hooks.overlay`. This is what [`SurfaceSet`] records for every drawn
+/// surface; it is public so the frame can be drawn offscreen and read back
+/// (the swap-chain images of a [`SurfaceSet`] cannot be).
+pub fn encode_debug_frame(
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    frame: DebugFrame<'_>,
+    lines_renderer: &mut DebugRenderer,
+    outline_renderer: &mut DebugRenderer,
+    hooks: &mut dyn SurfaceFrameHooks,
+) {
+    let clear = role_clear_color(frame.role);
+    if frame.role == SurfaceRole::Playfield {
+        lines_renderer.draw_with(
+            encoder,
+            queue,
+            view,
+            frame.camera,
+            frame.lines,
+            Some(clear),
+            None,
+        );
+    } else {
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("secondary clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(rgba(clear)),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+    }
+    if !frame.outline.is_empty() {
+        let (pw, ph) = frame.size_px;
+        let pixel_camera = Camera::ortho_top_down([0.0, ph as f32], [pw as f32, 0.0]);
+        outline_renderer.draw(encoder, queue, view, &pixel_camera, frame.outline);
+    }
+    if frame.role == SurfaceRole::Playfield {
+        hooks.overlay(frame.role, queue, encoder, view, frame.size_px);
+    }
+}
+
+/// The PiP placeholder outlines of a window with `viewports` (the first is
+/// the window's own, the rest PiPs), `logical` size and `pixel` size, as
+/// pixel-centre line loops in physical pixels (y down), into `out`
+/// (cleared first).
+pub(crate) fn pip_outline_lines(
+    viewports: &[(SurfaceRole, Rect)],
+    logical: (u32, u32),
+    pixel: (u32, u32),
+    out: &mut DebugLines,
+) {
+    out.clear();
+    let (lw, lh) = logical;
+    let (pw, ph) = pixel;
+    let sx = if lw > 0 { pw as f32 / lw as f32 } else { 1.0 };
+    let sy = if lh > 0 { ph as f32 / lh as f32 } else { 1.0 };
+    for (_, r) in viewports.iter().skip(1) {
+        // Pixel-centre outline in physical pixels (y down).
+        let x0 = r.x as f32 * sx + 0.5;
+        let y0 = r.y as f32 * sy + 0.5;
+        let x1 = (r.x as f32 + r.w as f32) * sx - 0.5;
+        let y1 = (r.y as f32 + r.h as f32) * sy - 0.5;
+        let pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]];
+        for w in pts.windows(2) {
+            out.push(DebugLine::new(
+                [w[0][0], w[0][1], 0.0],
+                [w[1][0], w[1][1], 0.0],
+                PIP_OUTLINE,
+            ));
+        }
+    }
+}
+
 struct Presenter {
     tx: Option<SyncSender<PresentJob>>,
     busy: Arc<AtomicBool>,
@@ -997,43 +1162,57 @@ impl SurfaceSet {
     /// Draws one frame: the playfield surface(s) every call with `lines`
     /// seen through `camera`; secondary surfaces only when marked dirty. PiP
     /// viewports get a placeholder outline. Returns each surface's status in
-    /// source order.
+    /// source order. The same as [`render_with`](Self::render_with) with
+    /// [`NoFrameHooks`].
     pub fn render(&mut self, lines: &DebugLines, camera: &Camera) -> ArrayVec<SurfaceStatus, 3> {
+        self.render_with(lines, camera, &mut NoFrameHooks)
+    }
+
+    /// [`render`](Self::render) with `hooks` called around the frame (see
+    /// [`SurfaceFrameHooks`] for the order): `begin_frame` first, then for
+    /// each drawn surface `overlay` (playfield only, last in its frame) and
+    /// `wrap_submit` (its frame command buffer, the returned buffers going
+    /// in one submit), then `end_frame`. Returns each surface's status in
+    /// source order.
+    pub fn render_with(
+        &mut self,
+        lines: &DebugLines,
+        camera: &Camera,
+        hooks: &mut dyn SurfaceFrameHooks,
+    ) -> ArrayVec<SurfaceStatus, 3> {
+        hooks.begin_frame();
         let mut out = ArrayVec::new();
         for i in 0..self.slots.len() {
-            let st = self.render_slot(i, lines, camera);
+            let st = self.render_slot(i, lines, camera, hooks);
             if !out.is_full() {
                 out.push(st);
             }
         }
+        let (queue, gpu_lock) = (&self.queue, &self.gpu_lock);
+        hooks.end_frame(&mut |cb: wgpu::CommandBuffer| {
+            let _g = lock(gpu_lock);
+            queue.submit([cb]);
+        });
         out
     }
 
     fn pip_overlay(&mut self, i: usize) {
         let s = &self.slots[i];
-        self.overlay_lines.clear();
-        let (lw, lh) = s.logical_size;
-        let (pw, ph) = s.pixel_size;
-        let sx = if lw > 0 { pw as f32 / lw as f32 } else { 1.0 };
-        let sy = if lh > 0 { ph as f32 / lh as f32 } else { 1.0 };
-        for (_, r) in s.viewports.iter().skip(1) {
-            // Pixel-centre outline in physical pixels (y down).
-            let x0 = r.x as f32 * sx + 0.5;
-            let y0 = r.y as f32 * sy + 0.5;
-            let x1 = (r.x as f32 + r.w as f32) * sx - 0.5;
-            let y1 = (r.y as f32 + r.h as f32) * sy - 0.5;
-            let pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]];
-            for w in pts.windows(2) {
-                self.overlay_lines.push(DebugLine::new(
-                    [w[0][0], w[0][1], 0.0],
-                    [w[1][0], w[1][1], 0.0],
-                    PIP_OUTLINE,
-                ));
-            }
-        }
+        pip_outline_lines(
+            &s.viewports,
+            s.logical_size,
+            s.pixel_size,
+            &mut self.overlay_lines,
+        );
     }
 
-    fn render_slot(&mut self, i: usize, lines: &DebugLines, camera: &Camera) -> SurfaceStatus {
+    fn render_slot(
+        &mut self,
+        i: usize,
+        lines: &DebugLines,
+        camera: &Camera,
+        hooks: &mut dyn SurfaceFrameHooks,
+    ) -> SurfaceStatus {
         {
             let s = &mut self.slots[i];
             if let Present::Thread(p) = &s.present
@@ -1060,37 +1239,31 @@ impl SurfaceSet {
         let overlay_lines = &self.overlay_lines;
         let s = &mut self.slots[i];
         let (pw, ph) = s.pixel_size;
-        let pixel_camera = Camera::ortho_top_down([0.0, ph as f32], [pw as f32, 0.0]);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("surface frame"),
         });
-        let clear = role_clear_color(s.role);
-        let draw = |s: &mut Slot, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
-            if s.role == SurfaceRole::Playfield {
-                s.lines
-                    .draw_with(encoder, &queue, view, camera, lines, Some(clear), None);
-            } else {
-                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("secondary clear"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(rgba(clear)),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-            }
-            if !overlay_lines.is_empty() {
-                s.overlay
-                    .draw(encoder, &queue, view, &pixel_camera, overlay_lines);
-            }
+        // The frame's content (`encode_debug_frame`): lines or a clear, the
+        // PiP outlines, then the hooks' overlay (playfield only).
+        let draw = |s: &mut Slot,
+                    encoder: &mut wgpu::CommandEncoder,
+                    view: &wgpu::TextureView,
+                    hooks: &mut dyn SurfaceFrameHooks| {
+            let frame = DebugFrame {
+                role: s.role,
+                size_px: (pw, ph),
+                lines,
+                camera,
+                outline: overlay_lines,
+            };
+            encode_debug_frame(
+                &queue,
+                encoder,
+                view,
+                frame,
+                &mut s.lines,
+                &mut s.overlay,
+                hooks,
+            );
         };
         if matches!(s.present, Present::Direct { .. }) {
             if s.needs_configure {
@@ -1119,10 +1292,11 @@ impl SurfaceSet {
             let view = frame
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
-            draw(s, &mut encoder, &view);
+            draw(s, &mut encoder, &view, hooks);
+            let cbs = hooks.wrap_submit(encoder.finish());
             {
                 let _g = lock(&gpu_lock);
-                queue.submit([encoder.finish()]);
+                queue.submit(cbs);
             }
             queue.present(frame);
             if suboptimal && let Present::Direct { surface, config } = &s.present {
@@ -1158,10 +1332,11 @@ impl SurfaceSet {
                 p.source.clone().expect("source texture")
             };
             let view = source.create_view(&wgpu::TextureViewDescriptor::default());
-            draw(s, &mut encoder, &view);
+            draw(s, &mut encoder, &view, hooks);
+            let cbs = hooks.wrap_submit(encoder.finish());
             {
                 let _g = lock(&gpu_lock);
-                queue.submit([encoder.finish()]);
+                queue.submit(cbs);
             }
             let Present::Thread(p) = &mut s.present else {
                 unreachable!()

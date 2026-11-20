@@ -54,5 +54,10 @@ harness = false
 required-features = ["gpu-tests"]
 
 [[test]]
+name = "gpu_surface_hooks_window"
+harness = false
+required-features = ["gpu-tests"]
+
+[[test]]
 name = "gpu_context_concurrency"
 required-features = ["gpu-tests"]
