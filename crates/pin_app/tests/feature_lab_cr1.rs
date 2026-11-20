@@ -10,7 +10,12 @@
 //!   on a bare VUK-lane hit;
 //! * `bb_catch` returns a layer-4 ball that drops through the entry hole
 //!   while drifting towards the back (+y) to the playfield, as it does one
-//!   drifting towards the player.
+//!   drifting towards the player (since PR #142 the cups around the entry
+//!   zone catch some of these balls first, and one of them stays in play
+//!   instead of draining: back on layer 0, outside the closed pocket, never
+//!   out of the table);
+//! * every 4 -> 0 zone the table defines stays clear of the generated
+//!   transitions and of the VUK's exit zone.
 
 mod feature_lab_support;
 
@@ -231,10 +236,37 @@ fn zone(t: &TableManifest, id: &str) -> ([f32; 3], [f32; 3]) {
     (z.zone.min, z.zone.max)
 }
 
-/// A layer-4 standard ball released at `p` (mm) with velocity `v` (m/s):
-/// whether it came back to layer 0, whether a main trough switch drained
-/// it, and the escape count.
-fn drop_layer_4(dir: &Path, p: [f32; 3], v: [f32; 3]) -> (bool, bool, u32) {
+/// What happened to a layer-4 standard ball released at `p` (mm) with
+/// velocity `v` (m/s) over 20 s of simulated time.
+#[derive(Debug)]
+struct Fall {
+    /// It was on layer 0 on some tick.
+    on_0: bool,
+    /// Centre (mm) on the first tick it was on layer 0.
+    returned_at: Option<[f32; 2]>,
+    /// A main trough switch closed.
+    drained: bool,
+    /// Still in play on layer 0 at the end.
+    alive_on_0: bool,
+    /// Last centre (mm).
+    final_at: [f32; 2],
+    escaped: u32,
+}
+
+impl Fall {
+    /// Back on layer 0 outside the closed pocket, never escaped, and either
+    /// drained or alive on the playfield at a rest point outside the pocket
+    /// (the pocket predicate is checked at the return and final points
+    /// only: it is not valid on every tick of a ball that runs the orbit).
+    fn back_in_play(&self) -> bool {
+        self.on_0
+            && self.escaped == 0
+            && !self.returned_at.is_some_and(in_pocket)
+            && (self.drained || (self.alive_on_0 && !in_pocket(self.final_at)))
+    }
+}
+
+fn drop_layer_4(dir: &Path, p: [f32; 3], v: [f32; 3]) -> Fall {
     let mut s = Simulation::load(dir, pin_sim::SimConfig::default()).expect("load");
     let h = s
         .spawn_ball_on_layer(
@@ -245,15 +277,26 @@ fn drop_layer_4(dir: &Path, p: [f32; 3], v: [f32; 3]) -> (bool, bool, u32) {
         )
         .unwrap();
     let mut on_0 = false;
+    let mut returned_at = None;
+    let mut final_at = [0.0; 2];
     for _ in 0..20_000 {
         s.advance(1);
-        match s.ball(h) {
-            Some(b) => on_0 |= b.layer == 0,
-            None => break,
+        let Some(b) = s.ball(h) else { break };
+        final_at = [b.position_m[0] * 1.0e3, b.position_m[1] * 1.0e3];
+        if b.layer == 0 {
+            on_0 = true;
+            returned_at.get_or_insert(final_at);
         }
     }
     let troughs = s.switch_hits("trough_1").unwrap() + s.switch_hits("trough_2").unwrap();
-    (on_0, troughs >= 1, s.counters().balls_escaped)
+    Fall {
+        on_0,
+        returned_at,
+        drained: troughs >= 1,
+        alive_on_0: s.ball(h).is_some_and(|b| b.layer == 0),
+        final_at,
+        escaped: s.counters().balls_escaped,
+    }
 }
 
 #[test]
@@ -261,56 +304,148 @@ fn a_ball_dropping_out_of_the_entry_hole_towards_the_back_returns_to_the_playfie
     on_big_stack(|| {
         // The reported drop, then a sweep across the hole (x 67..137) and
         // over drifts towards the back (+y) and towards the player (-y).
-        let (on_0, drained, escaped) =
-            drop_layer_4(bundle(), [102.0, 918.0, 85.0], [0.0, 0.4, -1.0]);
+        let f = drop_layer_4(bundle(), [102.0, 918.0, 85.0], [0.0, 0.4, -1.0]);
         assert!(
-            on_0 && drained && escaped == 0,
-            "reported drop: on_0 {on_0}, drained {drained}, escaped {escaped}"
+            f.on_0 && f.drained && f.escaped == 0,
+            "reported drop: {f:?}"
         );
         for x in [80.0f32, 102.0, 125.0] {
             // Up to 0.6 m/s either way (the entry-channel test's bound in
             // feature_lab_physics.rs): from 85 mm with no fall speed a
-            // 0.6 m/s drift reaches y ~978 mm when z passes 25 mm.
+            // 0.6 m/s drift reaches y ~978 mm when z passes 25 mm. A ball
+            // that a cup returns next to the entry channel may come to rest
+            // on the playfield instead of draining within the 20 s (PR #142:
+            // x 80, vy 0.4, vz 0 rests at the Banana).
             for vy in [-0.6f32, -0.3, 0.0, 0.2, 0.4, 0.5, 0.6] {
                 for vz in [0.0f32, -1.0] {
-                    let (on_0, drained, escaped) =
-                        drop_layer_4(bundle(), [x, 918.0, 85.0], [0.0, vy, vz]);
-                    assert!(
-                        on_0 && drained && escaped == 0,
-                        "x {x} vy {vy} vz {vz}: on_0 {on_0}, drained {drained}, escaped {escaped}"
-                    );
+                    let f = drop_layer_4(bundle(), [x, 918.0, 85.0], [0.0, vy, vz]);
+                    assert!(f.back_in_play(), "x {x} vy {vy} vz {vz}: {f:?}");
                 }
             }
         }
     });
 }
 
-/// The extended zone stays below the generated entry (0 -> 4) and drain
-/// (4 -> 0) zones, so it never overlaps them, and inside the playfield.
+/// The 4 -> 0 zones `table.toml` defines (PR #142: `bb_catch` split at
+/// y 955 into `bb_catch` and `bb_catch_back`, and the five cups around the
+/// generated entry zone).
+const CATCHES: [&str; 8] = [
+    "bb_catch",
+    "bb_catch_back",
+    "bb_cup_left",
+    "bb_cup_front",
+    "bb_cup_back",
+    "bb_cup_right",
+    "bb_cup_floor",
+    "bb_catch_left",
+];
+
+/// The catch zones stay clear of the generated transitions and inside the
+/// cabinet (514 x 1070 mm).
+///
+/// * `bb_catch` and `bb_catch_back` lie below the generated entry (0 -> 4)
+///   and drain (4 -> 0) zones and end before the orbit top (y < 1000).
+/// * Every table-defined 4 -> 0 zone (the cups around the entry zone,
+///   which are beside it, not below it, included) shares no point with
+///   either generated zone. Transition bounds are inclusive, so boxes that
+///   only touch on a face count as overlapping.
+/// * The VUK's exit zone (0 -> 4, built from the generated mech
+///   `tablegen:backbox.vuk`, which the rules fire through `bb_vuk_coil`
+///   after `bb_vuk_sw` closes) stays above z 96 mm, above every
+///   table-defined 4 -> 0 zone and clear of them.
 #[test]
 fn bb_catch_stays_clear_of_the_generated_transitions() {
     let text = std::fs::read_to_string(bundle().join("table.toml")).unwrap();
     let t = TableManifest::from_toml_str(&text).unwrap();
-    let catch = t
+    let generated = [
+        ("tablegen:backbox.entry", zone(&t, "tablegen:backbox.entry")),
+        ("tablegen:backbox.drain", zone(&t, "tablegen:backbox.drain")),
+    ];
+    for id in ["bb_catch", "bb_catch_back"] {
+        let catch = t
+            .layer_transitions
+            .iter()
+            .find(|z| z.id == id)
+            .unwrap_or_else(|| panic!("layer transition {id}"));
+        assert_eq!((catch.from_layer, catch.to_layer), (4, 0), "{id}");
+        let (min, max) = (catch.zone.min, catch.zone.max);
+        for (gid, (zmin, _)) in generated {
+            assert!(
+                max[2] < zmin[2],
+                "{gid}: {id} top {} under {}",
+                max[2],
+                zmin[2]
+            );
+        }
+        // Inside the cabinet (514 x 1070 mm), clear of the orbit top (y 1040).
+        assert!(
+            min[0] >= 0.0 && max[0] <= 514.0 && min[1] >= 0.0,
+            "{id}: {min:?} {max:?}"
+        );
+        assert!(max[1] < 1000.0, "{id}: {max:?}");
+    }
+    let catches: Vec<_> = t
         .layer_transitions
         .iter()
-        .find(|z| z.id == "bb_catch")
-        .unwrap();
-    assert_eq!((catch.from_layer, catch.to_layer), (4, 0));
-    let (min, max) = (catch.zone.min, catch.zone.max);
-    for id in ["tablegen:backbox.entry", "tablegen:backbox.drain"] {
-        let (zmin, _) = zone(&t, id);
+        .filter(|z| z.from_layer == 4 && z.to_layer == 0 && !z.id.starts_with("tablegen:"))
+        .collect();
+    let ids: Vec<&str> = catches.iter().map(|z| z.id.as_str()).collect();
+    for id in CATCHES {
+        assert!(ids.contains(&id), "{id} among the 4 -> 0 zones {ids:?}");
+    }
+    for z in &catches {
+        let b = (z.zone.min, z.zone.max);
+        for (gid, g) in generated {
+            assert!(
+                !boxes_touch_or_overlap(b, g),
+                "{} {b:?} touches or overlaps {gid} {g:?}",
+                z.id
+            );
+        }
         assert!(
-            max[2] < zmin[2],
-            "{id}: bb_catch top {} under {}",
-            max[2],
-            zmin[2]
+            b.0[0] >= 0.0 && b.1[0] <= 514.0 && b.0[1] >= 0.0 && b.1[1] <= 1070.0,
+            "{} inside the cabinet: {b:?}",
+            z.id
         );
     }
-    // Inside the cabinet (514 x 1070 mm), clear of the orbit top (y 1040).
-    assert!(
-        min[0] >= 0.0 && max[0] <= 514.0 && min[1] >= 0.0,
-        "{min:?} {max:?}"
-    );
-    assert!(max[1] < 1000.0, "{max:?}");
+    // The VUK's exit zone, as the sim builds it (mm).
+    let vuk = t
+        .mechs
+        .iter()
+        .find(|m| m.id == "tablegen:backbox.vuk")
+        .expect("tablegen:backbox.vuk");
+    let (pos, off) = (vuk.position.unwrap(), vuk.exit_offset.unwrap());
+    let exit = [pos[0] + off[0], pos[1] + off[1], pos[2] + off[2]];
+    let s = load();
+    let vuk_zones: Vec<([f32; 3], [f32; 3])> = s
+        .mech_set()
+        .transitions()
+        .zones()
+        .iter()
+        .filter(|z| z.from_layer == 0 && z.to_layer == 4)
+        .map(|z| {
+            (
+                z.min.to_array().map(|c| c * 1.0e3),
+                z.max.to_array().map(|c| c * 1.0e3),
+            )
+        })
+        .collect();
+    assert_eq!(vuk_zones.len(), 1, "one VUK exit zone: {vuk_zones:?}");
+    let v = vuk_zones[0];
+    for k in 0..3 {
+        let mid = (v.0[k] + v.1[k]) / 2.0;
+        assert!(
+            (mid - exit[k]).abs() < 0.01,
+            "centred on the exit {exit:?}: {v:?}"
+        );
+    }
+    assert!(v.0[2] > 96.0, "VUK exit zone floor {} above z 96", v.0[2]);
+    for z in &catches {
+        let b = (z.zone.min, z.zone.max);
+        assert!(
+            v.0[2] > b.1[2] && !boxes_touch_or_overlap(b, v),
+            "VUK exit zone {v:?} above and clear of {} {b:?}",
+            z.id
+        );
+    }
 }
