@@ -9,9 +9,16 @@
 //!   top-left on a dark backdrop. Built only when the HUD is enabled
 //!   ([`TableRenderOptions::profiler_hud`](super::TableRenderOptions::profiler_hud)),
 //!   so frames without it are unchanged.
+//! * [`DebugViewHooks`] (w8g-d): the same GPU frame timing
+//!   ([`GpuFrameTimer`]) and HUD for a run that draws pin_render's
+//!   `SurfaceSet` debug view (no table, or a playfield surface without an
+//!   8-bit format), through `SurfaceSet::render_with`.
 
+use super::gpu_timer::GpuFrameTimer;
 use crate::profiler::{ProfilerReader, hud_lines};
-use pin_render::gpu::wgpu;
+use arrayvec::ArrayVec;
+use pin_render::gpu::{SurfaceFrameHooks, wgpu};
+use pin_render::topology::SurfaceRole;
 use pin_render::ui::{OverlayFrame, OverlayPainter, egui, raw_input};
 
 /// The HUD text of `reader`, refreshed at most once per `period_ns`.
@@ -207,10 +214,217 @@ impl Drop for HudOverlay {
     }
 }
 
+/// `true` when the HUD's [`OverlayPainter`] can draw onto a target of a
+/// format with these adapter `features` (pure): its egui pipeline renders
+/// into the target and alpha-blends over it, so the format must be a float
+/// (normalised or floating-point) colour format allowing
+/// `RENDER_ATTACHMENT` and blending. Every 8-bit colour format qualifies;
+/// so do e.g. `Rgb10a2Unorm` and `Rgba16Float` where the adapter blends
+/// them. Depth / stencil and integer formats never do.
+#[must_use]
+pub fn hud_format_supported(
+    format: wgpu::TextureFormat,
+    features: wgpu::TextureFormatFeatures,
+) -> bool {
+    !format.is_depth_stencil_format()
+        && matches!(
+            format.sample_type(None, None),
+            Some(wgpu::TextureSampleType::Float { .. })
+        )
+        && features
+            .allowed_usages
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+        && features
+            .flags
+            .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
+}
+
+/// The profiler's hooks into the debug view (w8g-d): pin_render's
+/// [`SurfaceSet::render_with`](pin_render::gpu::SurfaceSet::render_with)
+/// calls them around every debug-view frame, exactly as
+/// [`AppSurfaces::render`](super::AppSurfaces::render) times and overlays
+/// the table frame:
+///
+/// * `begin_frame`: [`GpuFrameTimer::collect`] (finished samples, no wait),
+///   then [`GpuFrameTimer::begin_frame`];
+/// * `wrap_submit`: [`GpuFrameTimer::bracket`] (the surface's frame between
+///   its start / end timestamps, in one submit);
+/// * `overlay` (playfield only, last in its frame): [`HudOverlay::paint`];
+/// * `end_frame`: [`GpuFrameTimer::end_frame`] (resolve and read back).
+///
+/// Without a timer the submissions go alone; without a HUD nothing is
+/// painted. The render thread uses plain `SurfaceSet::render` when it has
+/// neither, so default debug frames are unchanged.
+#[derive(Default)]
+pub struct DebugViewHooks {
+    timer: Option<GpuFrameTimer>,
+    hud: Option<HudOverlay>,
+    hud_paints: u64,
+}
+
+impl std::fmt::Debug for DebugViewHooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DebugViewHooks")
+            .field("timer", &self.timer.is_some())
+            .field("hud", &self.hud)
+            .field("hud_paints", &self.hud_paints)
+            .finish()
+    }
+}
+
+impl DebugViewHooks {
+    /// Hooks timing frames with `timer` (if any) and painting `hud` (if
+    /// any; build it for the playfield surface's draw format).
+    #[must_use]
+    pub fn new(timer: Option<GpuFrameTimer>, hud: Option<HudOverlay>) -> DebugViewHooks {
+        DebugViewHooks {
+            timer,
+            hud,
+            hud_paints: 0,
+        }
+    }
+
+    /// `true` with neither a timer nor a HUD (the hooks would do nothing).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.timer.is_none() && self.hud.is_none()
+    }
+
+    /// The GPU frame timer, if any.
+    #[must_use]
+    pub fn gpu_timer(&self) -> Option<&GpuFrameTimer> {
+        self.timer.as_ref()
+    }
+
+    /// The HUD, if any.
+    #[must_use]
+    pub fn hud(&self) -> Option<&HudOverlay> {
+        self.hud.as_ref()
+    }
+
+    /// Shows `lines` in the HUD from the next frame (ignored without one).
+    pub fn set_hud_lines(&mut self, lines: &[String]) {
+        if let Some(h) = &mut self.hud {
+            h.set_lines(lines);
+        }
+    }
+
+    /// Playfield frames the HUD was painted on (with text) so far.
+    #[must_use]
+    pub fn hud_paints(&self) -> u64 {
+        self.hud_paints
+    }
+}
+
+impl SurfaceFrameHooks for DebugViewHooks {
+    fn begin_frame(&mut self) {
+        if let Some(t) = &mut self.timer {
+            t.collect();
+            t.begin_frame();
+        }
+    }
+
+    fn wrap_submit(&mut self, frame: wgpu::CommandBuffer) -> ArrayVec<wgpu::CommandBuffer, 3> {
+        match &mut self.timer {
+            Some(t) => t.bracket(frame),
+            None => {
+                let mut one = ArrayVec::new();
+                one.push(frame);
+                one
+            }
+        }
+    }
+
+    fn overlay(
+        &mut self,
+        role: SurfaceRole,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        size_px: (u32, u32),
+    ) {
+        if role != SurfaceRole::Playfield {
+            return;
+        }
+        if let Some(h) = &mut self.hud {
+            if !h.lines().is_empty() && size_px.0 > 0 && size_px.1 > 0 {
+                self.hud_paints += 1;
+            }
+            h.paint(queue, encoder, view, size_px);
+        }
+    }
+
+    fn end_frame(&mut self, submit: &mut dyn FnMut(wgpu::CommandBuffer)) {
+        if let Some(t) = &mut self.timer {
+            t.end_frame(submit);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::profiler::Profiler;
+
+    fn features(
+        usages: wgpu::TextureUsages,
+        flags: wgpu::TextureFormatFeatureFlags,
+    ) -> wgpu::TextureFormatFeatures {
+        wgpu::TextureFormatFeatures {
+            allowed_usages: usages,
+            flags,
+        }
+    }
+
+    #[test]
+    fn hud_formats_need_a_blendable_float_render_target() {
+        use wgpu::TextureFormat as F;
+        use wgpu::TextureFormatFeatureFlags as Fl;
+        use wgpu::TextureUsages as U;
+        let good = features(U::RENDER_ATTACHMENT | U::TEXTURE_BINDING, Fl::BLENDABLE);
+        for f in [
+            F::Rgba8Unorm,
+            F::Bgra8Unorm,
+            F::Rgba8UnormSrgb,
+            F::Bgra8UnormSrgb,
+            F::Rgb10a2Unorm,
+            F::Rgba16Float,
+        ] {
+            assert!(hud_format_supported(f, good), "{f:?}");
+            // Not blendable or not renderable on this adapter: no HUD.
+            assert!(
+                !hud_format_supported(f, features(U::RENDER_ATTACHMENT, Fl::empty())),
+                "{f:?}"
+            );
+            assert!(
+                !hud_format_supported(f, features(U::TEXTURE_BINDING, Fl::BLENDABLE)),
+                "{f:?}"
+            );
+        }
+        // Integer and depth formats never take the HUD.
+        for f in [
+            F::Rgba8Uint,
+            F::R32Sint,
+            F::Depth32Float,
+            F::Depth24PlusStencil8,
+        ] {
+            assert!(!hud_format_supported(f, good), "{f:?}");
+        }
+    }
+
+    #[test]
+    fn empty_debug_view_hooks_pass_through() {
+        let h = DebugViewHooks::new(None, None);
+        assert!(h.is_empty());
+        assert!(h.gpu_timer().is_none() && h.hud().is_none());
+        assert_eq!(h.hud_paints(), 0);
+        let mut h = DebugViewHooks::default();
+        h.set_hud_lines(&["x".to_owned()]);
+        h.begin_frame();
+        let mut n = 0;
+        h.end_frame(&mut |_| n += 1);
+        assert_eq!(n, 0);
+    }
 
     #[test]
     fn feed_shows_hud_lines_of_the_snapshot_and_throttles() {
