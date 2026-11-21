@@ -7395,8 +7395,11 @@ requests merged into `main` from branches prefixed `issue/` starts a fresh sessi
 session reaches §7 step 3, §1 step 0 first runs the unblocking sweep over every open `work-unit`
 issue labelled `blocked`. §7 step 3 keeps the sweep with exceptions: skip an issue that no longer
 carries `blocked`, skip one that carries `status:blocked-failure`, leave `blocked` on an issue
-whose "Depends on" lists no issue, and post no second "Unblocked" comment. The `SELF_CHAIN` flag,
-the `kilohertz-chain` tags and the depth limit are removed; a session on a non-`issue/` branch
+whose "Depends on" section has no entries at all (also on an explicit request, §1 step 1), and
+post only the P6 comment "Unblocked by #<N> (PR #<P>)", once, or none when no dependency PR can be
+identified; re-read the labels just before the single `issue_write`, skip it if
+`status:blocked-failure` is present or `blocked` is gone. The `SELF_CHAIN` flag, the
+`kilohertz-chain` tags and the depth limit are removed; a session on a non-`issue/` branch
 says in its PR that the chain will not continue. This supersedes "Process — Self-chaining without
 a backstop task". Made at the owner's request, matching fineprint. The agent cannot create a
 GitHub-triggered scheduled task (its tool creates only time-based ones), hence the P8 line in
@@ -7408,3 +7411,9 @@ sweep covers a next session that starts before the merging session finishes unbl
 - Keep `create_session` chaining: rejected, for the prompts.
 - A cron backstop that fires the next run: rejected, same prompting plus a scheduling lag.
 - No chaining: rejected, the owner wants unattended runs.
+- Label-specific add/remove calls instead of the full-list `issue_write`, to close the remaining
+  race in which `status:blocked-failure` is added between the re-read and the write: rejected for
+  now. The GitHub MCP tools offer only the full-list replace, and P1 limits `gh` to searches. The
+  window is seconds long and needs a person to act inside it: P7 sets `status:blocked-failure`
+  only on a unit a session was working (`in-progress`), never on a `blocked` issue the sweep
+  reads. Revisit if a label-level tool becomes available.
