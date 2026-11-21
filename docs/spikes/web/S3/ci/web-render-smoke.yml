@@ -1,0 +1,40 @@
+# S3 proposal (NOT applied; needs a CI trial, A23): headless Chromium with a
+# software WebGPU adapter (SwiftShader, bundled with Playwright's Chromium)
+# and WebGL2 (ANGLE on SwiftShader) on a GitHub-hosted ubuntu runner.
+name: web-render-smoke
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ["crates/pin_render/**", "crates/pin_web/**", "**/*.wgsl", ".github/workflows/web-render-smoke.yml"]
+permissions:
+  contents: read
+jobs:
+  browser-render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Tools (wasm-bindgen CLI = the crate's version in Cargo.lock; binaryen)
+        run: |
+          set -eu
+          v=$(awk '/^name = "wasm-bindgen"$/{getline; print $3}' Cargo.lock | tr -d '"')
+          cargo install --locked wasm-bindgen-cli --version "=$v"
+          npm install --no-save --ignore-scripts binaryen@132.0.0 playwright@1.63.0
+          npx playwright install --with-deps chromium chromium-headless-shell
+      - name: Build the web render probe (WebGPU + WebGL2 in one module)
+        run: |
+          cargo build --release --target wasm32-unknown-unknown -p pin_web --features webgpu,webgl
+          wasm-bindgen --target web --out-dir web/pkg target/wasm32-unknown-unknown/release/pin_web.wasm
+      - name: Headless Chromium, software WebGPU (SwiftShader) and WebGL2
+        run: node scripts/web/run_render_smoke.js --flags=--enable-unsafe-webgpu
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-render-shots
+          path: web/shots/

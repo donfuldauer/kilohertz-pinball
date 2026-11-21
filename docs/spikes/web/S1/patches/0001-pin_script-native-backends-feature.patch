@@ -1,0 +1,266 @@
+# pin_script: mlua/notify/wasmtime/wat optional behind default feature native-backends; LuaConfig/WasmConfig always built (so the sim crates build for wasm32 without C Lua or wasmtime)
+--- a/crates/pin_script/Cargo.toml
++++ b/crates/pin_script/Cargo.toml
+@@ -9,15 +9,24 @@
+ 
+ [dependencies]
+ pin_core.workspace = true
+-mlua.workspace = true
+-notify.workspace = true
++# web-spike-sim: the native backends are optional (default on) so the sim
++# crates build for wasm32 without the vendored C Lua or wasmtime.
++mlua = { workspace = true, optional = true }
++notify = { workspace = true, optional = true }
+ # 4.5 fix B1: wasmtime::wasmparser (the exact version wasmtime uses) for the
+ # pre-compile size scan.
+-wasmtime = { workspace = true, features = ["reexport-wasmparser"] }
++wasmtime = { workspace = true, features = ["reexport-wasmparser"], optional = true }
+ # 4.5 fix B1: WAT text -> binary before the size pre-scan. The exact version
+ # wasmtime 50 already pulls in (Cargo.lock); Orchestrator may move the pin to
+ # the root.
+-wat.workspace = true
++wat = { workspace = true, optional = true }
++
++[features]
++default = ["native-backends"]
++# The Lua 5.4 (mlua + vendored C Lua) and wasmtime backends. Off: only the
++# name tables and the backend limit types are built (web builds supply their
++# own backend through pin_sim's `ExternalScript`).
++native-backends = ["dep:mlua", "dep:notify", "dep:wasmtime", "dep:wat"]
+ 
+ [dev-dependencies]
+ proptest.workspace = true
+--- a/crates/pin_script/src/lib.rs
++++ b/crates/pin_script/src/lib.rs
+@@ -11,7 +11,17 @@
+ //! * [`NameTables`]: the name → id tables scripts see as `pinball.sw`, `pinball.coil`, …
+ 
+ pub mod guest_sdk;
++#[cfg(feature = "native-backends")]
+ pub mod lua;
++/// Lua backend limits only (the `native-backends` feature is off).
++#[cfg(not(feature = "native-backends"))]
++#[path = "lua/config.rs"]
++pub mod lua;
++#[cfg(feature = "native-backends")]
++pub mod wasm;
++/// Wasm backend limits only (the `native-backends` feature is off).
++#[cfg(not(feature = "native-backends"))]
++#[path = "wasm/config.rs"]
+ pub mod wasm;
+ 
+ use pin_core::ids::{
+@@ -55,6 +65,7 @@
+ 
+ impl NameTables {
+     /// Every table as `(lua field name, [(name, id)])`, in a fixed order.
++    #[cfg(feature = "native-backends")]
+     pub(crate) fn lua_tables(&self) -> [(&'static str, Vec<(&str, u16)>); 11] {
+         fn conv<I: Copy>(v: &[(String, I)], id: impl Fn(I) -> u16) -> Vec<(&str, u16)> {
+             v.iter().map(|(n, i)| (n.as_str(), id(*i))).collect()
+@@ -108,8 +119,18 @@
+         .and_then(|e| e.to_str())
+         .map(str::to_ascii_lowercase);
+     match ext.as_deref() {
++        #[cfg(feature = "native-backends")]
+         Some("lua") => Ok(Box::new(lua::LuaScriptBackend::new(source, names, lua)?)),
++        #[cfg(feature = "native-backends")]
+         Some("wasm") => Ok(Box::new(wasm::WasmScriptBackend::new(source, names, wasm)?)),
++        #[cfg(not(feature = "native-backends"))]
++        Some(known @ ("lua" | "wasm")) => {
++            let _ = (source, names, lua, wasm);
++            Err(ScriptError::UnsupportedBackend(format!(
++                "{script_entry}: the .{known} backend is not built in (pin_script feature \
++                 `native-backends` is off)"
++            )))
++        }
+         Some(other) => Err(ScriptError::UnsupportedBackend(format!(
+             "{script_entry}: unknown script extension .{other} (expected .lua or .wasm)"
+         ))),
+--- a/crates/pin_script/src/lua/mod.rs
++++ b/crates/pin_script/src/lua/mod.rs
+@@ -45,6 +45,7 @@
+ 
+ pub(crate) mod api;
+ mod bridge;
++mod config;
+ pub mod reload;
+ mod sandbox;
+ mod saved;
+@@ -59,6 +60,8 @@
+ 
+ use crate::NameTables;
+ 
++pub use config::LuaConfig;
++
+ /// Instructions between two budget-hook calls; the budget's granularity.
+ pub const HOOK_INTERVAL: u32 = 1000;
+ 
+@@ -67,39 +70,6 @@
+ /// on as well, so allocation-heavy scripts are still paced by allocation.
+ pub const GC_STEP_KBYTES: i32 = 16;
+ 
+-/// Limits of one Lua backend (§3.4, D25).
+-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+-pub struct LuaConfig {
+-    /// Hard cap on the Lua heap, bytes.
+-    pub memory_limit_bytes: usize,
+-    /// VM instructions allowed per callback (granularity [`HOOK_INTERVAL`]).
+-    pub instruction_budget: u32,
+-}
+-
+-impl LuaConfig {
+-    /// The configuration the engine runs table rules with (DECISIONS.md
+-    /// "Orchestrator — 4.2 re-review round 3"): 100 000 instructions per
+-    /// callback and a 2 MiB heap. Under it no script can make a single tick
+-    /// take more than 8 ms (release build; measured in DECISIONS.md "4.2 — fix
+-    /// round 3"). [`LuaConfig::default`] keeps the brief's larger limits for
+-    /// tools and tests.
+-    pub const fn engine() -> Self {
+-        Self {
+-            memory_limit_bytes: 2 * 1024 * 1024,
+-            instruction_budget: 100_000,
+-        }
+-    }
+-}
+-
+-impl Default for LuaConfig {
+-    fn default() -> Self {
+-        Self {
+-            memory_limit_bytes: 16 * 1024 * 1024,
+-            instruction_budget: 1_000_000,
+-        }
+-    }
+-}
+-
+ /// The Lua 5.4 [`TableScriptBackend`]. See the module docs.
+ ///
+ /// The `pinball` module (all ids are integers):
+--- a/crates/pin_script/src/lua/config.rs
++++ b/crates/pin_script/src/lua/config.rs
+@@ -0,0 +1,36 @@
++//! [`LuaConfig`]: the Lua backend's limits. Built with or without the
++//! backend itself (pin_script feature `native-backends`), so `pin_sim`'s
++//! `SimConfig` keeps its shape on every target.
++
++/// Limits of one Lua backend (§3.4, D25).
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++pub struct LuaConfig {
++    /// Hard cap on the Lua heap, bytes.
++    pub memory_limit_bytes: usize,
++    /// VM instructions allowed per callback (granularity `HOOK_INTERVAL`).
++    pub instruction_budget: u32,
++}
++
++impl LuaConfig {
++    /// The configuration the engine runs table rules with (DECISIONS.md
++    /// "Orchestrator — 4.2 re-review round 3"): 100 000 instructions per
++    /// callback and a 2 MiB heap. Under it no script can make a single tick
++    /// take more than 8 ms (release build; measured in DECISIONS.md "4.2 — fix
++    /// round 3"). [`LuaConfig::default`] keeps the brief's larger limits for
++    /// tools and tests.
++    pub const fn engine() -> Self {
++        Self {
++            memory_limit_bytes: 2 * 1024 * 1024,
++            instruction_budget: 100_000,
++        }
++    }
++}
++
++impl Default for LuaConfig {
++    fn default() -> Self {
++        Self {
++            memory_limit_bytes: 16 * 1024 * 1024,
++            instruction_budget: 1_000_000,
++        }
++    }
++}
+--- a/crates/pin_script/src/wasm/mod.rs
++++ b/crates/pin_script/src/wasm/mod.rs
+@@ -162,9 +162,11 @@
+ //! lookups are binary searches over guest memory, and only error paths
+ //! (which fault the script) format messages. Verified by `tests/wasm_alloc.rs`.
+ 
++mod config;
+ mod host;
+ mod limits;
+ 
++pub use config::WasmConfig;
+ pub use limits::*;
+ 
+ use host::{HostState, IdTables, V};
+@@ -199,37 +201,6 @@
+ /// Bytes per Wasm page.
+ const PAGE: u64 = 65_536;
+ 
+-/// Limits of one Wasm backend (§3.4, D25).
+-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+-pub struct WasmConfig {
+-    /// Hard cap on the guest's linear memory, bytes.
+-    pub memory_limit_bytes: usize,
+-    /// Fuel (≈ Wasm operators) allowed per callback.
+-    pub fuel_per_callback: u64,
+-}
+-
+-impl WasmConfig {
+-    /// The configuration the engine runs table rules with, matching
+-    /// [`crate::lua::LuaConfig::engine`]: a 2 MiB memory cap and 100 000 fuel
+-    /// per callback. [`WasmConfig::default`] keeps the larger tool/test
+-    /// limits.
+-    pub const fn engine() -> Self {
+-        Self {
+-            memory_limit_bytes: 2 * 1024 * 1024,
+-            fuel_per_callback: 100_000,
+-        }
+-    }
+-}
+-
+-impl Default for WasmConfig {
+-    fn default() -> Self {
+-        Self {
+-            memory_limit_bytes: 16 * 1024 * 1024,
+-            fuel_per_callback: 1_000_000,
+-        }
+-    }
+-}
+-
+ /// The process-wide engine (one `Config` for every backend, so modules
+ /// compiled on any thread can be instantiated by any backend).
+ fn engine() -> Result<&'static Engine, ScriptError> {
+--- a/crates/pin_script/src/wasm/config.rs
++++ b/crates/pin_script/src/wasm/config.rs
+@@ -0,0 +1,34 @@
++//! [`WasmConfig`]: the Wasm backend's limits. Built with or without the
++//! backend itself (pin_script feature `native-backends`), so `pin_sim`'s
++//! `SimConfig` keeps its shape on every target.
++
++/// Limits of one Wasm backend (§3.4, D25).
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++pub struct WasmConfig {
++    /// Hard cap on the guest's linear memory, bytes.
++    pub memory_limit_bytes: usize,
++    /// Fuel (≈ Wasm operators) allowed per callback.
++    pub fuel_per_callback: u64,
++}
++
++impl WasmConfig {
++    /// The configuration the engine runs table rules with, matching
++    /// `LuaConfig::engine`: a 2 MiB memory cap and 100 000 fuel
++    /// per callback. [`WasmConfig::default`] keeps the larger tool/test
++    /// limits.
++    pub const fn engine() -> Self {
++        Self {
++            memory_limit_bytes: 2 * 1024 * 1024,
++            fuel_per_callback: 100_000,
++        }
++    }
++}
++
++impl Default for WasmConfig {
++    fn default() -> Self {
++        Self {
++            memory_limit_bytes: 16 * 1024 * 1024,
++            fuel_per_callback: 1_000_000,
++        }
++    }
++}

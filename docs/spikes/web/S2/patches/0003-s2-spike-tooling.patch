@@ -1,0 +1,2002 @@
+# spike tooling only (not for main): s2_harness (parity/sandbox/floats/probes/remote) and s2_lua_module (route f).
+--- /dev/null
++++ b/crates/s2_harness/Cargo.toml
+@@ -0,0 +1,28 @@
++[package]
++name = "s2_harness"
++description = "web-spike-lua (S2) harness: the real Lua backend (pin_script + patched vendored Lua 5.4.9) natively and on wasm32-unknown-unknown; command-stream parity against S1's native recordings, sandbox cases, float/libm parity probes and per-callback timing. Spike tooling, not a product crate."
++version = "0.1.0"
++edition.workspace = true
++rust-version.workspace = true
++publish = false
++license.workspace = true
++
++[lib]
++crate-type = ["rlib", "cdylib"]
++
++[[bin]]
++name = "s2"
++path = "src/bin/s2.rs"
++
++[dependencies]
++pin_core.workspace = true
++pin_sim = { path = "../pin_sim", default-features = false }
++pin_script = { path = "../pin_script", default-features = false, features = ["lua"] }
++pin_assets = { path = "../pin_assets" }
++s1_harness = { path = "../s1_harness" }
++s2_lua_module = { path = "../s2_lua_module" }
++mlua.workspace = true
++libm.workspace = true
++
++[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
++wasm-bindgen = "=0.2.130"
+--- /dev/null
++++ b/crates/s2_harness/src/bin/s2.rs
+@@ -0,0 +1,63 @@
++//! Native S2 driver (same entry points as the wasm-bindgen exports).
++use std::time::Instant;
++
++fn rd(p: &str) -> Vec<u8> {
++    std::fs::read(p).unwrap_or_else(|e| panic!("{p}: {e}"))
++}
++
++static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
++
++fn now_ns() -> f64 {
++    START.get_or_init(Instant::now).elapsed().as_nanos() as f64
++}
++
++fn main() {
++    let a: Vec<String> = std::env::args().collect();
++    let arg = |i: usize| a.get(i).cloned().unwrap_or_default();
++    let num = |i: usize, d: u32| a.get(i).and_then(|s| s.parse().ok()).unwrap_or(d);
++    match arg(1).as_str() {
++        "smoke" => println!("{}", s2_harness::smoke::smoke(&arg(2), num(3, 1))),
++        "play" | "play-timed" => {
++            let hashes = if arg(5).is_empty() || arg(5) == "-" { Vec::new() } else { rd(&arg(5)) };
++            let clock = (arg(1) == "play-timed").then_some(now_ns as fn() -> f64);
++            match s2_harness::parity::lua_play(&rd(&arg(2)), &rd(&arg(3)), rd(&arg(4)), &hashes, clock) {
++                Ok((p, mut c)) => println!("{}", s2_harness::parity::summary(&p, &mut c)),
++                Err(e) => {
++                    println!("ERROR {e}");
++                    std::process::exit(1);
++                }
++            }
++        }
++        "play-inject" => {
++            // play-inject <bundle> <scn> <scr> <inject.lua> <out_hashes>
++            let inject = String::from_utf8(rd(&arg(5))).expect("utf8");
++            let mut dump = Vec::new();
++            match s2_harness::parity::lua_play_with(&rd(&arg(2)), &rd(&arg(3)), rd(&arg(4)), &[], None, &inject, Some(&mut dump)) {
++                Ok((p, mut c)) => {
++                    std::fs::write(arg(6), &dump).expect("write hashes");
++                    println!("{}", s2_harness::parity::summary(&p, &mut c));
++                }
++                Err(e) => {
++                    println!("ERROR {e}");
++                    std::process::exit(1);
++                }
++            }
++        }
++        "sandbox" => print!("{}", s2_harness::sandbox::run_all(&arg(2))),
++        "budget-edge" => print!("{}", s2_harness::sandbox::budget_edge()),
++        "sandbox-describe" => print!("{}", s2_harness::sandbox::describe()),
++        "format" => println!("{}", s2_harness::floats::format_dump(num(2, 10_000) as usize)),
++        "parse" => println!("{}", s2_harness::floats::parse_dump(num(2, 10_000) as usize)),
++        "libm" => println!("{}", s2_harness::floats::libm_dump(&arg(2), num(3, 100_000) as usize)),
++        "rust-libm" => print!("{}", s2_harness::floats::rust_libm_dump(&arg(2), num(3, 100_000) as usize)),
++        "parse-samples" => {
++            for x in s2_harness::floats::sample_strings(num(2, 10_000) as usize, 0x5eed_57d0) {
++                println!("{x}");
++            }
++        }
++        "ctype" => println!("{}", s2_harness::floats::ctype_dump()),
++        "sp-after-errors" => println!("{}", s2_harness::probes::sp_after_errors(num(2, 100))),
++        "case-stack" => print!("{}", s2_harness::probes::case_stack()),
++        _ => eprintln!("usage: s2 smoke|play|play-timed|sandbox|sandbox-describe|format|parse|libm|rust-libm|ctype|sp-after-errors|case-stack ..."),
++    }
++}
+--- /dev/null
++++ b/crates/s2_harness/src/floats.rs
+@@ -0,0 +1,317 @@
++//! Number formatting, parsing and libm parity probes. These run in a plain
++//! mlua state over the same patched Lua library (base, string, table, math,
++//! utf8; `string.pack` kept so results can be printed as exact bits), so
++//! they test the C library underneath Lua: glibc natively, wasi-libc (musl)
++//! on wasm. Inputs come from a fixed PCG seed, identical on every target.
++
++use mlua::{Lua, LuaOptions, StdLib, Table};
++use pin_core::{Pcg32, Rng, SeedableRng};
++use std::fmt::Write as _;
++
++fn lua() -> Lua {
++    let libs = StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8;
++    Lua::new_with(libs, LuaOptions::new()).expect("lua state")
++}
++
++/// `n` doubles: random bit patterns (every exponent, subnormals, inf/NaN),
++/// random short decimals, integers, halves and a fixed edge list.
++#[must_use]
++pub fn sample_floats(n: usize, seed: u64) -> Vec<f64> {
++    let mut v = vec![
++        0.0,
++        -0.0,
++        0.1,
++        0.5,
++        1.5,
++        2.5,
++        1e23,
++        5e-324,
++        2.225_073_858_507_201e-308,
++        2.225_073_858_507_201_4e-308,
++        f64::MAX,
++        f64::MIN_POSITIVE,
++        f64::EPSILON,
++        1e15,
++        1e16,
++        123_456_789_012_345.67,
++        9_007_199_254_740_993.0,
++        0.30000000000000004,
++        f64::INFINITY,
++        f64::NEG_INFINITY,
++        1.0 / 3.0,
++        2.0f64.powi(63),
++        -2.0f64.powi(63),
++        4.35,
++        0.125,
++        1e-5,
++        1e-4,
++        123_456.5,
++        0.000_123_45,
++    ];
++    let mut r = Pcg32::seed_from_u64(seed);
++    while v.len() < n {
++        let x = match r.next_u32() % 7 {
++            6 => {
++                // Subnormal (exponent field 0), either sign.
++                let b = (r.next_u64() & 0x000f_ffff_ffff_ffff) | (u64::from(r.next_u32() & 1) << 63);
++                f64::from_bits(b)
++            }
++            0 | 1 => f64::from_bits(r.next_u64()),
++            2 => {
++                let m = f64::from(r.next_u32() % 2_000_000) - 1_000_000.0;
++                let e = r.next_u32() % 12;
++                m / 10f64.powi(e as i32)
++            }
++            3 => (r.next_u64() >> (r.next_u32() % 64)) as f64 * if r.next_u32() & 1 == 0 { 1.0 } else { -1.0 },
++            4 => f64::from(r.next_u32() % 100_000) + 0.5,
++            _ => {
++                let m = f64::from_bits((r.next_u64() & 0x000f_ffff_ffff_ffff) | 0x3ff0_0000_0000_0000);
++                m * 2f64.powi((r.next_u32() % 200) as i32 - 100)
++            }
++        };
++        if !x.is_nan() {
++            v.push(x);
++        }
++    }
++    v
++}
++
++const FORMAT_SCRIPT: &str = r#"
++local xs = ...
++local out = {}
++local fmts = {'%.14g','%.17g','%a','%.3a','%.0a','%A','%e','%.3e','%.0e','%f','%.3f','%.0f','%g','%.3g','%.0g','%#g','%10.4f','%-24.10e','%+.5g','% .2e','%.20g','%.40e','%.60f'}
++for i = 1, #xs do
++  local x = xs[i]
++  local parts = { tostring(x) }
++  for _, f in ipairs(fmts) do parts[#parts + 1] = string.format(f, x) end
++  if math.type(x) == 'float' and x == x then parts[#parts + 1] = string.format('%q', x) end
++  local back = tonumber(tostring(x))
++  parts[#parts + 1] = back and string.format('%016x', string.unpack('<i8', string.pack('<d', back))) or 'nil'
++  local s17 = string.format('%.17g', x)
++  local b17 = tonumber(s17)
++  parts[#parts + 1] = b17 and string.format('%016x', string.unpack('<i8', string.pack('<d', b17))) or 'nil'
++  out[#out + 1] = table.concat(parts, ' ')
++end
++return out
++"#;
++
++/// Formats `n` sample floats with tostring and 23 `string.format`
++/// conversions, plus `%q`, and parses `tostring` / `%.17g` back with
++/// `tonumber`. Returns the text (one line per float).
++#[must_use]
++pub fn format_dump(n: usize) -> String {
++    let lua = lua();
++    let xs = sample_floats(n, 0x5eed_f10a);
++    let t: Table = lua.create_sequence_from(xs).expect("table");
++    lua.load(FORMAT_SCRIPT)
++        .call::<Vec<String>>(t)
++        .map_or_else(|e| format!("ERROR {e}"), |v| v.join("\n"))
++}
++
++/// Random numeric strings: decimal (up to 200 characters, the patch 11 cap),
++/// hexadecimal floats, exponent extremes and near-halfway mantissas.
++#[must_use]
++pub fn sample_strings(n: usize, seed: u64) -> Vec<String> {
++    let mut v: Vec<String> = [
++        "0x1p-1074", "0x1p-1075", "0x1.8p-1074", "2.2250738585072011e-308", "2.2250738585072012e-308",
++        "9007199254740993", "9007199254740992.5", "9007199254740993.0000000001", "1e400", "-1e400",
++        "1e-400", "4.9406564584124654e-324", "2.4703282292062327e-324", "2.4703282292062328e-324",
++        "0x1.fffffffffffff8p1023", "0x1.fffffffffffff7p1023", "1.7976931348623158e308",
++        "1.7976931348623157e308", "0x.8p1", ".5", "5.", "0x10", "0xA.8p0", "  42  ", "1e", "0x", "0x1p",
++        "1e+", "+.e1", "0.1e-0", "1E5", "0X1P4", "00000000000000000000000000001", "-0", "-0x0p0",
++        "123456789012345678901234567890", "0.000000000000000000000000000000000001",
++    ]
++    .iter()
++    .map(|s| (*s).to_string())
++    .collect();
++    let mut r = Pcg32::seed_from_u64(seed);
++    while v.len() < n {
++        let mut s = String::new();
++        match r.next_u32() % 5 {
++            0 | 1 => {
++                if r.next_u32() % 4 == 0 {
++                    s.push('-');
++                }
++                let digits = 1 + r.next_u32() % 40;
++                for i in 0..digits {
++                    s.push(char::from(b'0' + (r.next_u32() % 10) as u8));
++                    if i == r.next_u32() % 20 {
++                        s.push('.');
++                    }
++                }
++                if r.next_u32() % 2 == 0 {
++                    let _ = write!(s, "e{}", (r.next_u32() % 700) as i32 - 350);
++                }
++            }
++            2 => {
++                // Near halfway between two doubles: 17-19 significant digits.
++                let x = f64::from_bits(r.next_u64() & 0x7fef_ffff_ffff_ffff);
++                let y = f64::from_bits(x.to_bits() + 1);
++                let _ = write!(s, "{:.25e}", (x / 2.0) + (y / 2.0));
++            }
++            3 => {
++                let _ = write!(s, "0x{:x}.{:x}p{}", r.next_u32() % 0x1f, r.next_u64(), (r.next_u32() % 2200) as i32 - 1100);
++            }
++            _ => {
++                // Long decimal (up to 200 bytes).
++                let len = 50 + r.next_u32() % 150;
++                s.push_str("0.");
++                for _ in 0..len {
++                    s.push(char::from(b'0' + (r.next_u32() % 10) as u8));
++                }
++            }
++        }
++        if s.len() <= 200 {
++            v.push(s);
++        }
++    }
++    v
++}
++
++const PARSE_SCRIPT: &str = r#"
++local ss = ...
++local out = {}
++for i = 1, #ss do
++  local x = tonumber(ss[i])
++  if x == nil then out[#out + 1] = 'nil'
++  elseif math.type(x) == 'integer' then out[#out + 1] = 'i' .. string.format('%d', x)
++  else out[#out + 1] = string.format('%016x', string.unpack('<i8', string.pack('<d', x))) end
++end
++return out
++"#;
++
++/// Parses `n` sample strings with `tonumber`; one line per string (exact
++/// bits, an integer, or nil).
++#[must_use]
++pub fn parse_dump(n: usize) -> String {
++    let lua = lua();
++    let ss = sample_strings(n, 0x5eed_57d0);
++    let t: Table = lua.create_sequence_from(ss).expect("table");
++    lua.load(PARSE_SCRIPT)
++        .call::<Vec<String>>(t)
++        .map_or_else(|e| format!("ERROR {e}"), |v| v.join("\n"))
++}
++
++const LIBM_SCRIPT: &str = r#"
++local name, xs, ys = ...
++local m = math
++local f = ({
++  sin = m.sin, cos = m.cos, tan = m.tan, asin = m.asin, acos = m.acos,
++  atan = function(x) return m.atan(x) end, atan2 = function(x, y) return m.atan(x, y) end,
++  exp = m.exp, log = function(x) return m.log(x) end, log2 = function(x) return m.log(x, 2) end,
++  log10 = function(x) return m.log(x, 10) end, logb = function(x, y) return m.log(x, y) end,
++  pow = function(x, y) return x ^ y end, sqrt = m.sqrt, fmod = m.fmod,
++  floor = function(x) return m.floor(x) end, cosh = m.cosh, sinh = m.sinh, tanh = m.tanh,
++  frexp = function(x) local a, b = m.frexp(x) return a * 2.0 ^ 0 + b end,
++  ldexp = function(x, y) return m.ldexp(x, m.floor(y) % 2100 - 1050) end,
++  fmodint = function(x, y) return x % y end,
++})[name]
++local out = {}
++for i = 1, #xs do
++  local r = f(xs[i], ys[i])
++  out[#out + 1] = string.format('%016x', string.unpack('<i8', string.pack('<d', r + 0.0)))
++end
++return out
++"#;
++
++/// Libm functions probed, with their input generator.
++pub const LIBM_FUNCS: &[&str] = &[
++    "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "exp", "log", "log2", "log10", "logb",
++    "pow", "sqrt", "fmod", "floor", "cosh", "sinh", "tanh", "frexp", "ldexp", "fmodint",
++];
++
++fn libm_inputs(name: &str, n: usize) -> (Vec<f64>, Vec<f64>) {
++    let mut r = Pcg32::seed_from_u64(0x5eed_11b0 ^ name.len() as u64 ^ (u64::from(name.as_bytes()[0]) << 8));
++    let mut uni = |lo: f64, hi: f64| lo + (hi - lo) * ((r.next_u64() >> 11) as f64 / (1u64 << 53) as f64);
++    let mut xs = Vec::with_capacity(n);
++    let mut ys = Vec::with_capacity(n);
++    for i in 0..n {
++        let (x, y) = match name {
++            "asin" | "acos" => (uni(-1.0, 1.0), 0.0),
++            "exp" => (uni(-700.0, 700.0), 0.0),
++            "log" | "log2" | "log10" | "sqrt" => {
++                if i % 2 == 0 { (uni(0.0, 10.0), 0.0) } else { (uni(0.0, 1e300), 0.0) }
++            }
++            "logb" => (uni(0.0, 1e6), uni(0.01, 100.0)),
++            "pow" => (uni(0.0, 100.0), uni(-30.0, 30.0)),
++            "cosh" | "sinh" | "tanh" => (uni(-700.0, 700.0), 0.0),
++            "atan2" => (uni(-1e3, 1e3), uni(-1e3, 1e3)),
++            "fmod" | "fmodint" => (uni(-1e6, 1e6), uni(-1e3, 1e3)),
++            "ldexp" => (uni(-1e3, 1e3), uni(0.0, 4200.0)),
++            _ => {
++                if i % 3 == 0 { (uni(-10.0, 10.0), 0.0) } else if i % 3 == 1 { (uni(-1e6, 1e6), 0.0) } else { (uni(-1e18, 1e18), 0.0) }
++            }
++        };
++        xs.push(x);
++        ys.push(y);
++    }
++    (xs, ys)
++}
++
++/// Results of math function `name` over `n` inputs, as exact bits (one line
++/// per input).
++#[must_use]
++pub fn libm_dump(name: &str, n: usize) -> String {
++    let lua = lua();
++    let (xs, ys) = libm_inputs(name, n);
++    let tx: Table = lua.create_sequence_from(xs).expect("table");
++    let ty: Table = lua.create_sequence_from(ys).expect("table");
++    lua.load(LIBM_SCRIPT)
++        .call::<Vec<String>>((name, tx, ty))
++        .map_or_else(|e| format!("ERROR {e}"), |v| v.join("\n"))
++}
++
++/// The same inputs through the Rust `libm` crate (the engine's D9 libm),
++/// for the "one implementation everywhere" comparison.
++#[must_use]
++pub fn rust_libm_dump(name: &str, n: usize) -> String {
++    let (xs, ys) = libm_inputs(name, n);
++    let mut s = String::with_capacity(n * 17);
++    for (x, y) in xs.into_iter().zip(ys) {
++        let r = match name {
++            "sin" => libm::sin(x),
++            "cos" => libm::cos(x),
++            "tan" => libm::tan(x),
++            "asin" => libm::asin(x),
++            "acos" => libm::acos(x),
++            "atan" => libm::atan(x),
++            "atan2" => libm::atan2(x, y),
++            "exp" => libm::exp(x),
++            "log" => libm::log(x),
++            "log2" => libm::log2(x),
++            "log10" => libm::log10(x),
++            "pow" => libm::pow(x, y),
++            "sqrt" => libm::sqrt(x),
++            "fmod" => libm::fmod(x, y),
++            "cosh" => libm::cosh(x),
++            "sinh" => libm::sinh(x),
++            "tanh" => libm::tanh(x),
++            _ => f64::NAN,
++        };
++        let _ = writeln!(s, "{:016x}", r.to_bits());
++    }
++    s
++}
++
++/// Each of the 256 bytes through the pattern classes and case functions
++/// (C-locale `<ctype.h>` parity).
++#[must_use]
++pub fn ctype_dump() -> String {
++    let lua = lua();
++    lua.load(
++        r#"
++local out = {}
++for b = 0, 255 do
++  local c = string.char(b)
++  local bits = {}
++  for _, cl in ipairs({'%a','%c','%d','%g','%l','%p','%s','%u','%w','%x'}) do
++    bits[#bits + 1] = c:find(cl) and '1' or '0'
++  end
++  out[#out + 1] = b .. ' ' .. table.concat(bits) .. ' ' .. string.byte(c:upper()) .. ' ' .. string.byte(c:lower())
++end
++return out
++"#,
++    )
++    .call::<Vec<String>>(())
++    .map_or_else(|e| format!("ERROR {e}"), |v| v.join("\n"))
++}
+--- /dev/null
++++ b/crates/s2_harness/src/lib.rs
+@@ -0,0 +1,17 @@
++//! web-spike-lua (S2) harness. Spike tooling, not a product crate.
++//!
++//! * [`parity`]: the real Lua rules in the sim against S1's native
++//!   recordings (command stream + state hashes), with per-callback timing.
++//! * [`sandbox`]: adversarial cases through the engine's `LuaScriptBackend`.
++//! * [`floats`]: number formatting/parsing, libm and ctype parity probes.
++//! * [`probes`]: stack and trap probes.
++
++pub mod floats;
++pub mod parity;
++pub mod probes;
++#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++pub mod remote;
++pub mod sandbox;
++pub mod smoke;
++#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++pub mod web;
+--- /dev/null
++++ b/crates/s2_harness/src/parity.rs
+@@ -0,0 +1,443 @@
++//! Command-stream parity: the real Lua rules run inside the sim (the engine's
++//! own `LuaScriptBackend`, built with the arguments `pin_sim`'s loader uses),
++//! and every script step is compared with S1's native-recorded script-output
++//! stream (`.scr`): tick, RNG draws, digest of the switch edges and
++//! `HostView` the script saw, and the encoded command queue. Per-tick state
++//! hashes are compared with S1's native hash file. Optional per-callback
++//! timing with a caller-supplied clock.
++
++use pin_core::ids::SwitchId;
++use pin_core::{HostCtx, Pcg32, Rng, ScriptError, SwitchEdge, TableScriptBackend};
++use pin_script::lua::LuaScriptBackend;
++use pin_sim::hash::Fnv64;
++use pin_sim::{ExternalScript, SimConfig, Simulation};
++use s1_harness::driver::Driver;
++use s1_harness::hashes::ext_hash;
++use s1_harness::io::{Reader, Scenario, check_script_stream, digest_view, encode_queue};
++use s1_harness::run::{Stats, open_bundle};
++use std::fmt::Write as _;
++use std::sync::{Arc, Mutex};
++
++/// Largest number of `next_u32` draws one script step may make.
++const MAX_DRAWS: u32 = 1 << 24;
++
++fn count_draws(pre: &Pcg32, post: &Pcg32) -> Option<u32> {
++    let mut r = pre.clone();
++    for n in 0..MAX_DRAWS {
++        if r == *post {
++            return Some(n);
++        }
++        let _ = r.next_u32();
++    }
++    None
++}
++
++/// What the checker found (shared with the driver).
++#[derive(Debug, Default)]
++pub struct Check {
++    /// Steps compared.
++    pub steps: u64,
++    /// Steps whose tick differed.
++    pub tick_mismatch: u64,
++    /// Steps whose RNG draw count differed.
++    pub draw_mismatch: u64,
++    /// Steps whose input digest differed.
++    pub digest_mismatch: u64,
++    /// Steps whose command-queue bytes differed.
++    pub queue_mismatch: u64,
++    /// First tick with any mismatch.
++    pub first_mismatch: Option<u64>,
++    /// Steps after the recorded stream ended.
++    pub exhausted: u64,
++    /// Command bytes compared.
++    pub queue_bytes: u64,
++    /// Per-callback durations (ns): on_init, on_tick, on_switch.
++    pub t_init: Vec<f64>,
++    /// on_tick durations (ns).
++    pub t_tick: Vec<f64>,
++    /// on_switch_edge durations (ns).
++    pub t_switch: Vec<f64>,
++}
++
++/// What the checker needs from the backend it wraps.
++pub trait Introspect: TableScriptBackend {
++    /// Commands dropped (queue full).
++    fn overflow(&self) -> u32;
++    /// In the tilt state.
++    fn faulted(&self) -> bool;
++    /// Faults so far.
++    fn faults(&self) -> u32;
++    /// Last error.
++    fn error(&self) -> Option<&ScriptError>;
++}
++
++impl Introspect for LuaScriptBackend {
++    fn overflow(&self) -> u32 {
++        self.overflow_count()
++    }
++    fn faulted(&self) -> bool {
++        self.is_faulted()
++    }
++    fn faults(&self) -> u32 {
++        self.fault_count()
++    }
++    fn error(&self) -> Option<&ScriptError> {
++        self.last_error()
++    }
++}
++
++/// A rules backend plus the stream checker.
++pub struct CheckingScript<B: Introspect = LuaScriptBackend> {
++    inner: Box<B>,
++    scr: Vec<u8>,
++    pos: usize,
++    end: usize,
++    left: u64,
++    pre: Option<Pcg32>,
++    digest: Fnv64,
++    fresh: bool,
++    scratch: Vec<u8>,
++    clock: Option<fn() -> f64>,
++    check: Arc<Mutex<Check>>,
++}
++
++impl<B: Introspect> CheckingScript<B> {
++    fn begin(&mut self, ctx: &HostCtx) {
++        if self.fresh {
++            self.pre = Some(ctx.rng.clone());
++            self.digest = Fnv64::new();
++            self.fresh = false;
++        }
++    }
++
++    fn end(&mut self, ctx: &HostCtx) {
++        digest_view(&mut self.digest, ctx.view);
++        let pre = self.pre.take().expect("begin ran");
++        let draws = count_draws(&pre, ctx.rng).unwrap_or(u32::MAX);
++        let digest = self.digest.finish();
++        self.scratch.clear();
++        if !ctx.cmd.is_empty() {
++            encode_queue(ctx.cmd, &mut self.scratch);
++        }
++        self.fresh = true;
++        let mut c = self.check.lock().expect("check lock");
++        if self.left == 0 {
++            c.exhausted += 1;
++            return;
++        }
++        let mut r = Reader::new(&self.scr[..self.end], self.pos);
++        let rec = (|| {
++            let tick = r.u64()?;
++            let draws = r.u32()?;
++            let digest = r.u64()?;
++            let len = r.u32()? as usize;
++            let q = r.pos();
++            Some((tick, draws, digest, q, len))
++        })();
++        let Some((rtick, rdraws, rdigest, q, len)) = rec else {
++            c.exhausted += 1;
++            self.left = 0;
++            return;
++        };
++        self.pos = q + len;
++        self.left -= 1;
++        c.steps += 1;
++        c.queue_bytes += len as u64;
++        let tick = ctx.view.tick;
++        let mut bad = false;
++        if rtick != tick {
++            c.tick_mismatch += 1;
++            bad = true;
++        }
++        if rdraws != draws {
++            c.draw_mismatch += 1;
++            bad = true;
++        }
++        if rdigest != digest {
++            c.digest_mismatch += 1;
++            bad = true;
++        }
++        if self.scr.get(q..q + len) != Some(&self.scratch[..]) {
++            c.queue_mismatch += 1;
++            bad = true;
++        }
++        if bad && c.first_mismatch.is_none() {
++            c.first_mismatch = Some(tick);
++        }
++    }
++
++    fn timed<R>(&mut self, which: u8, f: impl FnOnce(&mut B) -> R) -> R {
++        match self.clock {
++            None => f(&mut self.inner),
++            Some(now) => {
++                let t0 = now();
++                let r = f(&mut self.inner);
++                let dt = now() - t0;
++                let mut c = self.check.lock().expect("check lock");
++                match which {
++                    0 => c.t_init.push(dt),
++                    1 => c.t_tick.push(dt),
++                    _ => c.t_switch.push(dt),
++                }
++                r
++            }
++        }
++    }
++}
++
++impl<B: Introspect> TableScriptBackend for CheckingScript<B> {
++    fn on_init(&mut self, ctx: &mut HostCtx) {
++        self.begin(ctx);
++        self.timed(0, |b| b.on_init(ctx));
++        self.end(ctx);
++    }
++
++    fn on_tick(&mut self, ctx: &mut HostCtx) {
++        self.begin(ctx);
++        self.timed(1, |b| b.on_tick(ctx));
++        self.end(ctx);
++    }
++
++    fn on_switch_edge(&mut self, switch: SwitchId, edge: SwitchEdge, ctx: &mut HostCtx) {
++        self.begin(ctx);
++        self.digest.write_u32(u32::from(switch.0));
++        self.digest.write_u8(u8::from(edge == SwitchEdge::Closed));
++        self.timed(2, |b| b.on_switch_edge(switch, edge, ctx));
++    }
++
++    fn apply_reload(&mut self, source: &[u8]) -> Result<(), ScriptError> {
++        self.inner.apply_reload(source)
++    }
++}
++
++impl<B: Introspect> ExternalScript for CheckingScript<B> {
++    fn overflow_count(&self) -> u32 {
++        self.inner.overflow()
++    }
++    fn is_faulted(&self) -> bool {
++        self.inner.faulted()
++    }
++    fn fault_count(&self) -> u32 {
++        self.inner.faults()
++    }
++    fn last_error(&self) -> Option<&ScriptError> {
++        self.inner.error()
++    }
++    fn alloc_exempt(&self) -> bool {
++        true
++    }
++}
++
++/// Result of [`lua_play`].
++#[derive(Debug, Default)]
++pub struct LuaPlay {
++    /// Ticks run.
++    pub ticks: u64,
++    /// Hash lines compared with the native file.
++    pub hash_lines: u64,
++    /// First tick whose `state_hash`/`ext_hash` line differed.
++    pub first_hash_mismatch: Option<u64>,
++    /// Hash lines that differed.
++    pub hash_mismatches: u64,
++    /// Final state hash.
++    pub final_state: u64,
++    /// Final supplementary hash.
++    pub final_ext: u64,
++    /// Script faults during the run.
++    pub faults: u32,
++    /// Lua heap bytes at the end (platform-specific).
++    pub lua_mem: usize,
++    /// Wall time of the whole run (ns, caller's clock; 0 without one).
++    pub wall_ns: f64,
++}
++
++/// Plays scenario `scn` on `bundle_zip` with the real Lua rules, checking
++/// every script step against `scr` and every tick's hash line against
++/// `native_hashes` (`tick state ext` lines; empty: no hash check).
++///
++/// # Errors
++/// Load and scenario failures.
++pub fn lua_play(
++    bundle_zip: &[u8],
++    scn_bytes: &[u8],
++    scr: Vec<u8>,
++    native_hashes: &[u8],
++    clock: Option<fn() -> f64>,
++) -> Result<(LuaPlay, Check), String> {
++    lua_play_with(bundle_zip, scn_bytes, scr, native_hashes, clock, "", None)
++}
++
++/// [`lua_play`] with `inject` appended to the table's `rules.lua` (fault
++/// injection; empty: none) and, with `dump`, every hash line appended to it.
++///
++/// # Errors
++/// Load and scenario failures.
++pub fn lua_play_with(
++    bundle_zip: &[u8],
++    scn_bytes: &[u8],
++    scr: Vec<u8>,
++    native_hashes: &[u8],
++    clock: Option<fn() -> f64>,
++    inject: &str,
++    dump: Option<&mut Vec<u8>>,
++) -> Result<(LuaPlay, Check), String> {
++    let lua = SimConfig::default().lua;
++    play_generic(bundle_zip, scn_bytes, scr, native_hashes, clock, dump, &mut |src, names| {
++        let mut source = src.to_vec();
++        if !inject.is_empty() {
++            source.push(b'\n');
++            source.extend_from_slice(inject.as_bytes());
++        }
++        LuaScriptBackend::new(&source, names, lua)
++    })
++}
++
++/// [`lua_play_with`] over any backend built by `make`.
++///
++/// # Errors
++/// Load and scenario failures.
++pub fn play_generic<B: Introspect + 'static>(
++    bundle_zip: &[u8],
++    scn_bytes: &[u8],
++    scr: Vec<u8>,
++    native_hashes: &[u8],
++    clock: Option<fn() -> f64>,
++    mut dump: Option<&mut Vec<u8>>,
++    make: &mut dyn FnMut(&[u8], &pin_script::NameTables) -> Result<B, ScriptError>,
++) -> Result<(LuaPlay, Check), String> {
++    let scn = Scenario::from_bytes(scn_bytes)?;
++    let (steps, pos, end) = check_script_stream(&scr)?;
++    let vfs = open_bundle(bundle_zip)?;
++    let check = Arc::new(Mutex::new(Check::default()));
++    if clock.is_some() {
++        let mut c = check.lock().expect("check lock");
++        c.t_tick.reserve(scn.ticks as usize + 1);
++        c.t_switch.reserve(1 << 16);
++    }
++    let cfg = SimConfig {
++        seed: scn.seed,
++        ..SimConfig::default()
++    };
++    let mut scr = Some(scr);
++    let c2 = Arc::clone(&check);
++    let mut sim = Simulation::load_from_vfs_with_script(&vfs, cfg, &mut |entry, src, names| {
++        if !entry.ends_with(".lua") {
++            return Err(ScriptError::UnsupportedBackend(entry.to_owned()));
++        }
++        Ok(Box::new(CheckingScript {
++            inner: Box::new(make(src, names)?),
++            scr: scr.take().expect("factory called once"),
++            pos,
++            end,
++            left: steps,
++            pre: None,
++            digest: Fnv64::new(),
++            fresh: true,
++            scratch: Vec::with_capacity(1 << 16),
++            clock,
++            check: Arc::clone(&c2),
++        }) as Box<dyn ExternalScript>)
++    })
++    .map_err(|e| e.to_string())?;
++    if sim.table_hash() != scn.table_hash {
++        return Err(format!(
++            "table hash {:016x} is not the scenario's {:016x}",
++            sim.table_hash(),
++            scn.table_hash
++        ));
++    }
++    let mut expect = native_hashes.split(|&b| b == b'\n').filter(|l| !l.is_empty());
++    let mut out = LuaPlay::default();
++    let mut line = String::with_capacity(48);
++    let mut cmp_line = |sim: &Simulation, out: &mut LuaPlay| {
++        if native_hashes.is_empty() && dump.is_none() {
++            return;
++        }
++        line.clear();
++        let _ = write!(
++            line,
++            "{} {:016x} {:016x}",
++            sim.tick(),
++            sim.state_hash(),
++            ext_hash(sim)
++        );
++        if let Some(d) = dump.as_deref_mut() {
++            d.extend_from_slice(line.as_bytes());
++            d.push(b'\n');
++        }
++        if native_hashes.is_empty() {
++            return;
++        }
++        out.hash_lines += 1;
++        if expect.next() != Some(line.as_bytes()) {
++            out.hash_mismatches += 1;
++            if out.first_hash_mismatch.is_none() {
++                out.first_hash_mismatch = Some(sim.tick());
++            }
++        }
++    };
++    cmp_line(&sim, &mut out);
++    let mut drv = Driver::new(&scn);
++    let t0 = clock.map_or(0.0, |c| c());
++    while sim.tick() < scn.ticks {
++        drv.advance(&mut sim)?;
++        cmp_line(&sim, &mut out);
++    }
++    out.wall_ns = clock.map_or(0.0, |c| c() - t0);
++    out.ticks = sim.tick();
++    out.final_state = sim.state_hash();
++    out.final_ext = ext_hash(&sim);
++    out.faults = sim.script_fault_count();
++    drop(sim);
++    let c = std::mem::take(&mut *check.lock().expect("check lock"));
++    Ok((out, c))
++}
++
++fn stats_json(v: &mut [f64]) -> String {
++    let s = Stats::of(v);
++    format!(
++        "{{\"n\":{},\"mean_us\":{:.3},\"p50_us\":{:.3},\"p99_us\":{:.3},\"p999_us\":{:.3},\"max_us\":{:.3}}}",
++        s.n,
++        s.mean / 1e3,
++        s.p50 / 1e3,
++        s.p99 / 1e3,
++        s.p999 / 1e3,
++        s.max / 1e3
++    )
++}
++
++/// One summary line (and, with timing, a JSON object of per-callback stats).
++#[must_use]
++pub fn summary(p: &LuaPlay, c: &mut Check) -> String {
++    let opt = |o: Option<u64>| o.map_or_else(|| "none".to_owned(), |t| t.to_string());
++    let mut s = format!(
++        "ticks={} steps={} tick_mm={} draw_mm={} digest_mm={} queue_mm={} first_step_mm={} exhausted={} queue_bytes={} hash_lines={} hash_mm={} first_hash_mm={} state_hash={:016x} ext_hash={:016x} faults={} lua_mem={}",
++        p.ticks,
++        c.steps,
++        c.tick_mismatch,
++        c.draw_mismatch,
++        c.digest_mismatch,
++        c.queue_mismatch,
++        opt(c.first_mismatch),
++        c.exhausted,
++        c.queue_bytes,
++        p.hash_lines,
++        p.hash_mismatches,
++        opt(p.first_hash_mismatch),
++        p.final_state,
++        p.final_ext,
++        p.faults,
++        p.lua_mem
++    );
++    if !c.t_tick.is_empty() {
++        let _ = write!(
++            s,
++            "\nTIMING {{\"wall_ms\":{:.1},\"on_init\":{},\"on_tick\":{},\"on_switch\":{}}}",
++            p.wall_ns / 1e6,
++            stats_json(&mut c.t_init),
++            stats_json(&mut c.t_tick),
++            stats_json(&mut c.t_switch)
++        );
++    }
++    s
++}
+--- /dev/null
++++ b/crates/s2_harness/src/probes.rs
+@@ -0,0 +1,75 @@
++//! Trap and stack probes (req. 6): shadow-stack use of the sandbox cases,
++//! stack-pointer restoration after Lua errors unwind through C and Rust
++//! frames, and the per-case instance health check.
++
++use crate::sandbox::{CASES, run_case};
++use pin_core::{HostCommandQueue, HostCtx, HostView, Pcg32, SeedableRng, TableScriptBackend};
++use pin_script::NameTables;
++use pin_script::lua::{LuaConfig, LuaScriptBackend};
++use s1_harness::probes::approx_sp;
++use std::fmt::Write as _;
++
++/// Runs `n` faulting callbacks of each kind (runtime error through a Rust
++/// API function, budget, memory, error caught by pcall in Lua) and reports
++/// the approximate stack pointer before and after: a Lua error is a
++/// `longjmp` (a Wasm exception on the web) through C and Rust frames, which
++/// must leave the shadow stack pointer where it was.
++#[must_use]
++pub fn sp_after_errors(n: u32) -> String {
++    let before = approx_sp();
++    let srcs = [
++        "function on_tick() local ok = pcall(pinball.pulse_coil, 'x', 1) pinball.pulse_coil('x', 1) end",
++        "function on_tick() while true do end end",
++        "function on_tick() local t={} for i=1,1000 do t[i]=string.rep('a',60000)..i end end",
++        "function on_tick() for i=1,50 do pcall(error, 'e') end error('x') end",
++    ];
++    let mut faults = 0;
++    let view = HostView::default();
++    let mut rng = Pcg32::seed_from_u64(1);
++    for _ in 0..n {
++        for s in srcs {
++            let mut b = LuaScriptBackend::new(s.as_bytes(), &NameTables::default(), LuaConfig::engine())
++                .expect("load");
++            let mut cmd = HostCommandQueue::default();
++            b.on_tick(&mut HostCtx { view: &view, rng: &mut rng, cmd: &mut cmd });
++            faults += b.fault_count();
++        }
++    }
++    // One backend, many pcall'd errors inside a single callback.
++    let mut b = LuaScriptBackend::new(
++        b"function on_tick() for i=1,2000 do pcall(error, i) end end",
++        &NameTables::default(),
++        LuaConfig::default(),
++    )
++    .expect("load");
++    for _ in 0..n {
++        let mut cmd = HostCommandQueue::default();
++        b.on_tick(&mut HostCtx { view: &view, rng: &mut rng, cmd: &mut cmd });
++    }
++    let after = approx_sp();
++    format!(
++        "sp_before={before:#x} sp_after={after:#x} delta={} faults={faults} pcall_errors={}",
++        before as i64 - after as i64,
++        u64::from(n) * 2000
++    )
++}
++
++/// Shadow-stack bytes each sandbox case uses below the caller (wasm only).
++#[must_use]
++pub fn case_stack() -> String {
++    let mut s = String::new();
++    for c in CASES {
++        #[cfg(target_arch = "wasm32")]
++        {
++            let ((line, _), used, painted) =
++                s1_harness::probes::stack_highwater(900 * 1024, || run_case(c));
++            let _ = writeln!(s, "{} stack_used={used} painted={painted} ok={}", c.name, !line.is_empty());
++        }
++        #[cfg(not(target_arch = "wasm32"))]
++        {
++            let (line, _) = run_case(c);
++            let _ = writeln!(s, "{} stack_used=n/a ok={}", c.name, !line.is_empty());
++        }
++    }
++    s
++}
+--- /dev/null
++++ b/crates/s2_harness/src/remote.rs
+@@ -0,0 +1,97 @@
++//! Route (f), engine side: a rules backend whose Lua VM lives in a separate
++//! wasm instance (`s2_lua_module`). Per callback the `HostView`, the RNG
++//! state and the current command queue are written to a buffer, JS copies it
++//! into the Lua instance, calls `l_call`, and copies the result back.
++
++use crate::parity::Introspect;
++use pin_core::ids::SwitchId;
++use pin_core::{HostCtx, ScriptError, SwitchEdge, TableScriptBackend};
++use pin_script::NameTables;
++use s2_lua_module::wire;
++use wasm_bindgen::prelude::*;
++
++#[wasm_bindgen]
++extern "C" {
++    #[wasm_bindgen(js_namespace = globalThis, js_name = s2_remote_new)]
++    fn remote_new(ptr: *const u8, src_len: u32, names_len: u32) -> u32;
++    #[wasm_bindgen(js_namespace = globalThis, js_name = s2_remote_call)]
++    fn remote_call(kind: u32, switch: u32, closed: u32, ptr: *mut u8, len: u32) -> u32;
++}
++
++/// See the module docs.
++pub struct RemoteLua {
++    buf: Vec<u8>,
++    scratch: Vec<u8>,
++    faulted: bool,
++    faults: u32,
++    err: Option<ScriptError>,
++}
++
++// SAFETY-free: plain data; the JS side is single-threaded.
++impl RemoteLua {
++    /// Loads `src` into the Lua instance.
++    ///
++    /// # Errors
++    /// The instance's load error class.
++    pub fn new(src: &[u8], names: &NameTables) -> Result<Self, ScriptError> {
++        let mut buf = vec![0u8; 1 << 18];
++        let n = wire::encode_names(names);
++        buf[..src.len()].copy_from_slice(src);
++        buf[src.len()..src.len() + n.len()].copy_from_slice(&n);
++        match remote_new(buf.as_ptr(), src.len() as u32, n.len() as u32) {
++            0 => Ok(Self { buf, scratch: Vec::with_capacity(1 << 16), faulted: false, faults: 0, err: None }),
++            2 => Err(ScriptError::BudgetExceeded),
++            3 => Err(ScriptError::MemoryLimit),
++            c => Err(ScriptError::Load(format!("remote load error class {c}"))),
++        }
++    }
++
++    fn call(&mut self, kind: u32, switch: u32, closed: u32, ctx: &mut HostCtx) {
++        let len = wire::write_input(&mut self.buf, ctx.view, ctx.rng, ctx.cmd, &mut self.scratch);
++        let out = remote_call(kind, switch, closed, self.buf.as_mut_ptr(), len as u32);
++        if out == 0 {
++            // The Lua instance trapped (JS caught it): treat as a fault.
++            self.faulted = true;
++            self.faults += 1;
++            self.err = Some(ScriptError::Runtime("lua instance trapped".into()));
++            return;
++        }
++        let (rng, faulted, faults) = wire::read_output(&self.buf, ctx.cmd);
++        *ctx.rng = rng;
++        if faults != self.faults {
++            self.err = Some(ScriptError::Runtime("remote fault".into()));
++        }
++        self.faulted = faulted;
++        self.faults = faults;
++    }
++}
++
++impl TableScriptBackend for RemoteLua {
++    fn on_init(&mut self, ctx: &mut HostCtx) {
++        self.call(0, 0, 0, ctx);
++    }
++    fn on_tick(&mut self, ctx: &mut HostCtx) {
++        self.call(1, 0, 0, ctx);
++    }
++    fn on_switch_edge(&mut self, switch: SwitchId, edge: SwitchEdge, ctx: &mut HostCtx) {
++        self.call(2, u32::from(switch.0), u32::from(edge == SwitchEdge::Closed), ctx);
++    }
++    fn apply_reload(&mut self, _source: &[u8]) -> Result<(), ScriptError> {
++        Err(ScriptError::Load("remote backend: reload not prototyped".into()))
++    }
++}
++
++impl Introspect for RemoteLua {
++    fn overflow(&self) -> u32 {
++        0
++    }
++    fn faulted(&self) -> bool {
++        self.faulted
++    }
++    fn faults(&self) -> u32 {
++        self.faults
++    }
++    fn error(&self) -> Option<&ScriptError> {
++        self.err.as_ref()
++    }
++}
+--- /dev/null
++++ b/crates/s2_harness/src/sandbox.rs
+@@ -0,0 +1,420 @@
++//! Adversarial sandbox cases, run through the engine's own
++//! `LuaScriptBackend` with the engine limits (`LuaConfig::engine()`:
++//! 100 000 instructions per callback, 2 MiB heap). Each case prints one line:
++//! the outcome of every callback (ok / R:<message digest> / B / M / load
++//! error), a digest of every command queue, the fault count and the first
++//! error message. Native and wasm lines must be identical apart from the
++//! trailing `mem=` field (Lua heap bytes are pointer-size dependent).
++
++use pin_core::ids::SwitchId;
++use pin_core::{
++    HostCommandQueue, HostCtx, HostView, Pcg32, ScriptError, SeedableRng, SwitchEdge,
++    TableScriptBackend,
++};
++use pin_script::NameTables;
++use pin_script::lua::{LuaConfig, LuaScriptBackend};
++use pin_sim::hash::Fnv64;
++use s1_harness::io::encode_queue;
++use std::fmt::Write as _;
++
++/// One plan step.
++#[derive(Clone, Copy)]
++pub enum Step {
++    /// `on_init`.
++    Init,
++    /// `n` × `on_tick`.
++    Tick(u32),
++    /// A switch edge.
++    Sw(u16, bool),
++    /// `apply_reload(source)`.
++    Reload(&'static str),
++}
++
++/// A case: name, source, plan.
++pub struct Case {
++    /// Case name.
++    pub name: &'static str,
++    /// What it checks (printed in the table).
++    pub what: &'static str,
++    /// Lua source.
++    pub src: &'static str,
++    /// Callbacks to run.
++    pub plan: &'static [Step],
++}
++
++use Step::{Init, Reload, Sw, Tick};
++
++const T1: &[Step] = &[Init, Tick(1)];
++const T3: &[Step] = &[Init, Tick(3)];
++
++/// Every case. Order is fixed (output order).
++pub const CASES: &[Case] = &[
++    Case { name: "baseline", what: "plain API use", plan: &[Init, Tick(3), Sw(7, true), Tick(1)],
++        src: "n=0 function on_init() pinball.set_lamp(1, 0.5) end function on_tick() n=n+1 pinball.pulse_coil(n, 20) pinball.set_score(1, n*1000) end function on_switch(id, c) pinball.hold_coil(id, c) end" },
++    Case { name: "inf_loop", what: "while true: budget fires", plan: T3,
++        src: "function on_tick() while true do end end" },
++    Case { name: "inf_loop_pcall", what: "budget not swallowed by pcall", plan: T3,
++        src: "function on_tick() while true do pcall(function() while true do end end) end end" },
++    Case { name: "inf_loop_xpcall_handler", what: "looping xpcall handler", plan: T1,
++        src: "function on_tick() xpcall(function() error('a') end, function() while true do end end) end" },
++    Case { name: "inf_loop_in_init", what: "budget in top level", plan: T1,
++        src: "while true do end" },
++    Case { name: "inf_loop_sort_cmp", what: "budget inside table.sort comparator", plan: T1,
++        src: "function on_tick() local t={} for i=1,200 do t[i]=i end table.sort(t, function(a,b) while true do end end) end" },
++    Case { name: "inf_loop_gsub_cb", what: "budget inside gsub callback", plan: T1,
++        src: "function on_tick() string.gsub('abc', '.', function() while true do end end) end" },
++    Case { name: "budget_recover_reload", what: "fault, tilt release, reload, resume", plan: &[Init, Tick(2), Reload("function on_tick() pinball.pulse_coil(9, 9) end"), Tick(2)],
++        src: "n=0 function on_tick() n=n+1 pinball.hold_coil(3, true) if n==2 then while true do end end end" },
++    Case { name: "mem_string_rep", what: "string.rep over 64 KiB", plan: T1,
++        src: "function on_tick() local s = string.rep('x', 1<<20) end" },
++    Case { name: "mem_concat_doubling", what: "concat doubling hits 64 KiB cap", plan: T1,
++        src: "function on_tick() local s='x' for i=1,40 do s=s..s end end" },
++    Case { name: "mem_big_strings", what: "60 KB strings until the 2 MiB cap", plan: T1,
++        src: "function on_tick() local t={} for i=1,1000 do t[i]=string.rep('a',60000)..i end end" },
++    Case { name: "mem_big_strings_fast", what: "65 000-byte strings: memory cap before the budget", plan: T1,
++        src: "function on_tick() local t={} for i=1,1000 do t[i]=string.rep('a',65000) end end" },
++    Case { name: "mem_pcall_swallow_fast", what: "memory error not swallowed by pcall (cap first)", plan: T1,
++        src: "function on_tick() local ok = pcall(function() local t={} for i=1,1000 do t[i]=string.rep('a',65000) end end) pinball.set_score(1, ok and 1 or 2) end" },
++    Case { name: "mem_pcall_swallow", what: "memory error not swallowed by pcall", plan: T1,
++        src: "function on_tick() local ok = pcall(function() local t={} for i=1,1000 do t[i]=string.rep('a',60000)..i end end) pinball.set_score(1, ok and 1 or 2) end" },
++    Case { name: "mem_table_growth", what: "array growth (budget first)", plan: T1,
++        src: "function on_tick() local t={} for i=1,1e8 do t[i]=i end end" },
++    Case { name: "mem_tables_of_tables", what: "many small tables", plan: T1,
++        src: "function on_tick() local t={} for i=1,1e6 do t[i]={i,i,i,i,i,i,i,i} end end" },
++    Case { name: "mem_gradual_keep", what: "1 KB kept per tick until the cap (fault tick is pointer-size dependent)", plan: &[Init, Tick(2600)],
++        src: "keep={} n=0 function on_tick() n=n+1 keep[n]=string.rep('k',1000)..n pinball.set_score(1,n) end" },
++    Case { name: "deep_recursion", what: "Lua recursion: memory cap", plan: T1,
++        src: "function on_tick() local function f(n) return f(n+1)+1 end f(1) end" },
++    Case { name: "deep_recursion_pcall", what: "recursion under pcall", plan: T1,
++        src: "function on_tick() local function f(n) return 1+f(n+1) end local ok,e = pcall(f,1) pinball.set_score(1, ok and 1 or 2) end" },
++    Case { name: "deep_recursion_shallow_ok", what: "10 000 deep recursion is fine", plan: T1,
++        src: "function on_tick() local function f(n) if n==0 then return 0 end return 1+f(n-1) end pinball.set_score(1, f(10000)) end" },
++    Case { name: "cstack_index", what: "__index function recursion (C stack)", plan: T1,
++        src: "function on_tick() local t=setmetatable({}, {}) getmetatable(t).__index=function(s,k) return s[k] end local x=t.x end" },
++    Case { name: "cstack_tostring", what: "__tostring recursion", plan: T1,
++        src: "function on_tick() local t t=setmetatable({}, {__tostring=function(s) return tostring(s) end}) local x=tostring(t) end" },
++    Case { name: "cstack_gsub", what: "gsub callback recursion", plan: T1,
++        src: "function on_tick() local function g(s) return (string.gsub(s, '.', g)) end g('abc') end" },
++    Case { name: "cstack_sort", what: "sort comparator recursion", plan: T1,
++        src: "function on_tick() local function c(a,b) table.sort({3,2,1}, c) return a<b end table.sort({3,2,1}, c) end" },
++    Case { name: "cstack_lt_meta", what: "__lt metamethod recursion", plan: T1,
++        src: "function on_tick() local mt={} mt.__lt=function(a,b) return a<b end local a,b=setmetatable({},mt),setmetatable({},mt) local x=a<b end" },
++    Case { name: "cstack_concat_meta", what: "__concat recursion", plan: T1,
++        src: "function on_tick() local mt={} mt.__concat=function(a,b) return a..b end local a=setmetatable({},mt) local x=a..'x' end" },
++    Case { name: "cstack_pcall_nest", what: "nested pcall depth", plan: T1,
++        src: "function on_tick() local function f(n) return pcall(f, n+1) end local ok = f(1) pinball.set_score(1, ok and 1 or 2) end" },
++    Case { name: "cstack_pcall_nest_err", what: "nested pcall then error", plan: T1,
++        src: "function on_tick() local d=0 local function f(n) d=n local ok,e=pcall(f, n+1) if not ok then error(e,0) end end f(1) end" },
++    Case { name: "error_unprotected", what: "error() unprotected", plan: T3,
++        src: "function on_tick() error('boom') end" },
++    Case { name: "error_table_value", what: "error with a table value", plan: T1,
++        src: "function on_tick() error({code=1}) end" },
++    Case { name: "error_tostring_obj", what: "error object with __tostring", plan: T1,
++        src: "function on_tick() error(setmetatable({}, {__tostring=function() return 'custom' end})) end" },
++    Case { name: "error_pcall_caught", what: "error caught by pcall, message length used", plan: T1,
++        src: "function on_tick() local ok,e=pcall(error,'xyz') pinball.set_score(1, #e) local ok2,e2=pcall(function() local x=nil; return x.y end) pinball.set_score(2, #e2) end" },
++    Case { name: "error_api_arg", what: "bad API argument, message seen by pcall", plan: T1,
++        src: "function on_tick() local ok,e=pcall(pinball.pulse_coil, 'a', 1) error(tostring(e), 0) end" },
++    Case { name: "error_in_metamethod", what: "error in __add", plan: T1,
++        src: "function on_tick() local x = setmetatable({}, {__add=function() error('meta') end}) + 1 end" },
++    Case { name: "error_in_gsub_cb", what: "error in gsub callback", plan: T1,
++        src: "function on_tick() string.gsub('abc', '%w', function(c) error('cb '..c) end) end" },
++    Case { name: "error_in_sort_cmp", what: "error in sort comparator", plan: T1,
++        src: "function on_tick() table.sort({3,2,1}, function(a,b) error('cmp') end) end" },
++    Case { name: "error_invalid_sort", what: "invalid order function", plan: T1,
++        src: "function on_tick() local t={} for i=1,100 do t[i]=(i*7919)%101 end table.sort(t, function(a,b) return true end) end" },
++    Case { name: "error_in_init", what: "runtime error at top level", plan: T1,
++        src: "error('top')" },
++    Case { name: "error_syntax", what: "syntax error", plan: T1,
++        src: "x = = 1" },
++    Case { name: "error_close_attr", what: "<close> refused (patch 9)", plan: T1,
++        src: "function on_tick() local x <close> = nil end" },
++    Case { name: "error_binary_chunk", what: "binary chunk refused", plan: T1,
++        src: "\x1bLua" },
++    Case { name: "gc_meta_refused", what: "__gc refused", plan: T1,
++        src: "function on_tick() setmetatable({}, {__gc=function() end}) end" },
++    Case { name: "mode_meta_refused", what: "__mode refused", plan: T1,
++        src: "function on_tick() setmetatable({}, {__mode='k'}) end" },
++    Case { name: "coroutine_absent", what: "coroutine library absent", plan: T1,
++        src: "function on_tick() local co = coroutine.create(function() end) end" },
++    Case { name: "forbidden_libs", what: "io/os/debug/package/load/require/... are nil", plan: T1,
++        src: "function on_tick() local names={'io','os','debug','package','load','loadstring','dofile','loadfile','require','module','coroutine','jit','ffi','warn'} local m=0 for i,n in ipairs(names) do if _G[n]==nil then m=m|(1<<i) end end if string.dump==nil then m=m|(1<<20) end if string.pack==nil then m=m|(1<<21) end pinball.set_score(1, m) local ok=pcall(collectgarbage,'collect') pinball.set_score(2, ok and 1 or 0) end" },
++    Case { name: "os_time_absent", what: "os.time / os.clock", plan: T1,
++        src: "function on_tick() local t = os.time() end" },
++    Case { name: "pinball_readonly", what: "pinball tables read-only (rawset too)", plan: T1,
++        src: "function on_tick() local ok1=pcall(function() pinball.x=1 end) local ok2=pcall(rawset, pinball, 'x', 1) local ok3=pcall(function() pinball.sw.x=1 end) pinball.set_score(1, (ok1 and 1 or 0)+(ok2 and 2 or 0)+(ok3 and 4 or 0)) end" },
++    Case { name: "string_mt_locked", what: "string metatable locked", plan: T1,
++        src: "function on_tick() local ok=pcall(setmetatable, '', {}) pinball.set_score(1, ok and 1 or 0) error(tostring(getmetatable(''))) end" },
++    Case { name: "pattern_backtrack", what: "pattern step limit", plan: T1,
++        src: "function on_tick() local s=string.rep('a', 60000) string.find(s, '.-.-.-.-.-b') end" },
++    Case { name: "pattern_backtrack_pcall", what: "pattern error caught, message", plan: T1,
++        src: "function on_tick() local s=string.rep('a', 30000) local ok,e=pcall(string.find, s, '(.-)(.-)(.-)(.-)b') error(tostring(ok)..' '..tostring(e), 0) end" },
++    Case { name: "pattern_depth", what: "pattern recursion depth (MAXCCALLS)", plan: T1,
++        src: "function on_tick() local ok,e=pcall(string.match, string.rep('a', 500), string.rep('a?', 500)..string.rep('a', 500)) error(tostring(ok)..' '..tostring(e), 0) end" },
++    Case { name: "pattern_captures", what: "too many captures", plan: T1,
++        src: "function on_tick() local ok,e=pcall(string.match, string.rep('a',40), string.rep('(a)',40)) error(tostring(e), 0) end" },
++    Case { name: "pattern_balance", what: "%b and %f scans charged", plan: T1,
++        src: "function on_tick() local s=string.rep('(', 30000)..string.rep(')', 30000) for i=1,50 do string.find(s, '%b()') end end" },
++    Case { name: "format_huge", what: "format width/precision limits", plan: T1,
++        src: "function on_tick() local ok1,e1=pcall(string.format, '%5000d', 1) local ok2,e2=pcall(string.format, '%.99f', 1e308) error(tostring(ok1)..'|'..tostring(e1)..'|'..tostring(ok2)..'|'..#tostring(e2), 0) end" },
++    Case { name: "format_p", what: "%p refused (patch 5)", plan: T1,
++        src: "function on_tick() string.format('%p', {}) end" },
++    Case { name: "tostring_no_addr", what: "tostring of table/function prints no address (patch 10)", plan: T1,
++        src: "function on_tick() error(tostring({})..' '..tostring(print)..' '..tostring(on_tick), 0) end" },
++    Case { name: "unpack_huge", what: "table.unpack too many results", plan: T1,
++        src: "function on_tick() local ok,e=pcall(table.unpack, {}, 1, 1e7) error(tostring(e), 0) end" },
++    Case { name: "concat_huge", what: "table.concat over 64 KiB", plan: T1,
++        src: "function on_tick() local t={} for i=1,10000 do t[i]='0123456789' end local s=table.concat(t) end" },
++    Case { name: "byte_huge", what: "string.byte of a 64 KiB slice", plan: T1,
++        src: "function on_tick() local s=string.rep('a', 65536) local ok,e=pcall(string.byte, s, 1, -1) error(tostring(ok)..' '..tostring(e), 0) end" },
++    Case { name: "utf8_invalid", what: "utf8 on invalid input", plan: T1,
++        src: "function on_tick() local a,b=utf8.len('\\xff\\xfe') local ok,e=pcall(utf8.codepoint, '\\xff') error(tostring(a)..' '..tostring(b)..' '..tostring(e), 0) end" },
++    Case { name: "hash_collisions", what: "integer-key hash chain (patch 25)", plan: T3,
++        src: "t={} function on_tick() for i=1,4000 do t[i*1024]=i end local s=0 for i=1,4000 do s=s+t[i*1024] end pinball.set_score(1,s) end" },
++    Case { name: "random_policy", what: "math.random = host PCG; randomseed no-op", plan: &[Init, Tick(5)],
++        src: "function on_tick() math.randomseed(42) pinball.set_score(1, math.random(1,1000000)) pinball.set_score(2, pinball.random(1,6)) pinball.set_score(3, math.floor(math.random()*1e9)) pinball.set_score(4, math.random(0) & 0xffff) end" },
++    Case { name: "int_float_semantics", what: "integer/float split, //, %, goto, coercion", plan: T1,
++        src: "function on_tick() local r={} r[1]=7//2 r[2]=7.0//2 r[3]=-7//2 r[4]=-7%3 r[5]=7.5%2 r[6]=math.type(1) r[7]=math.type(1.0) r[8]=1e15 r[9]=2^53 r[10]=math.tointeger(3.0) r[11]=math.maxinteger+1 r[12]=math.mininteger//-1 r[13]='10'+1 r[14]=10 .. '' r[15]=-0.0 r[16]=1/0 r[17]=-1/0 r[18]=3%-2 r[19]=5.3//0 r[20]=-5.3%0 local i=0 ::top:: i=i+1 if i<5 then goto top end r[21]=i local s='' for k=1,21 do s=s..tostring(r[k])..',' end error(s, 0) end" },
++    Case { name: "int_div_zero", what: "integer division by zero", plan: T1,
++        src: "function on_tick() local ok1,e1=pcall(function() return 1//0 end) local ok2,e2=pcall(function() return 1%0 end) error(tostring(e1)..'|'..tostring(e2), 0) end" },
++    Case { name: "float_format", what: "tostring/%.14g/%a/%q/%e of edge floats", plan: T1,
++        src: "function on_tick() local v={0.1, 1/3, -0.0, 1e300*1e10, 2^-1074, 2^-1022, 1e23, 123456789012345678, 0.5, 2.5, 5e-324, 1.7976931348623157e308} local s='' for _,x in ipairs(v) do s=s..tostring(x)..' '..string.format('%.14g %.17g %a %.3a %e %.3f %q', x, x, x, x, x, x, x)..';' end error(s, 0) end" },
++    Case { name: "float_nan_format", what: "NaN sign in tostring/format (hardware NaN)", plan: T1,
++        src: "function on_tick() local z=0 local n=z/z error(tostring(n)..' '..tostring(-n)..' '..string.format('%f %a %g', n, n, -n), 0) end" },
++    Case { name: "tonumber_parity", what: "tonumber/strtod edge strings", plan: T1,
++        src: "function on_tick() local v={'0x1p-1074','2.2250738585072011e-308','9007199254740993','1e400','-1e-400','0x1.fffffffffffff8p1023','  12  ','1e','0x','.5','5.','0x.8p1','1'..string.rep('0',150)..'e-150'} local s='' for _,x in ipairs(v) do s=s..string.format('%.17g', tonumber(x) or -1)..';' end error(s, 0) end" },
++    Case { name: "math_transcendental", what: "math.sin/exp/log/pow results (libm)", plan: T1,
++        src: "function on_tick() local s='' for i=1,30 do local x=i*3.731-50 s=s..string.format('%.17g %.17g %.17g %.17g %.17g %.17g;', math.sin(x), math.cos(x), math.exp(x/10), math.log(math.abs(x)+1), (math.abs(x)+0.5)^1.37, math.atan(x, 3)) end error(s, 0) end" },
++    Case { name: "collectgarbage_count", what: "collectgarbage('count') is the platform's heap size", plan: T1,
++        src: "function on_tick() pinball.set_score(1, math.floor(collectgarbage('count')*1024)) end" },
++    Case { name: "deep_nesting_load", what: "deeply nested source (parser C stack)", plan: T1,
++        src: "return ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))" },
++    Case { name: "long_source_constants", what: "many constants at load (compile under cap)", plan: T1,
++        src: "local t = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20} function on_tick() pinball.set_score(1, #t) end" },
++    Case { name: "save_restore_reload", what: "on_save_state carried over a reload", plan: &[Init, Tick(3), Reload("function on_restore_state(v) n=v.n*10 end function on_tick() pinball.set_score(1, n) end"), Tick(1)],
++        src: "n=0 function on_tick() n=n+1 end function on_save_state() return {n=n} end" },
++    Case { name: "reload_bad_keeps_old", what: "failed reload keeps the old script", plan: &[Init, Tick(1), Reload("x = = 1"), Tick(1)],
++        src: "function on_tick() pinball.pulse_coil(4, 4) end" },
++    Case { name: "fault_hold_release", what: "fault releases every held coil", plan: &[Init, Tick(1), Sw(2, true), Tick(2)],
++        src: "function on_tick() for c=1,40 do pinball.hold_coil(c, true) end end function on_switch() error('sw') end" },
++    Case { name: "api_outside_callback", what: "pinball API at top level refused", plan: T1,
++        src: "pinball.pulse_coil(1, 1)" },
++    Case { name: "string_coercion_limit", what: "string arithmetic over 200 bytes refused (patch 5/8)", plan: T1,
++        src: "function on_tick() local s=string.rep('1', 300) local ok,e=pcall(function() return s+1 end) error(tostring(e), 0) end" },
++    Case { name: "vararg_huge", what: "select/... expansion charged (patch 13)", plan: T1,
++        src: "function on_tick() local t={} for i=1,200 do t[i]=i end local function f(...) return select('#', ...) end local s=0 for i=1,2000 do s=s+f(table.unpack(t)) end pinball.set_score(1, s) end" },
++    Case { name: "call_meta_cycle", what: "cyclic __call (patch 23)", plan: T1,
++        src: "function on_tick() local a=setmetatable({}, {}) getmetatable(a).__call=a a() end" },
++    Case { name: "weak_mode_after", what: "__mode added after setmetatable is ignored (patch 27)", plan: T3,
++        src: "function on_tick() local mt={} local t=setmetatable({}, mt) mt.__mode='k' for i=1,100 do t[{}]=i end local n=0 for k in pairs(t) do n=n+1 end pinball.set_score(1,n) end" },
++];
++
++fn class(e: &ScriptError) -> String {
++    match e {
++        ScriptError::BudgetExceeded => "B".into(),
++        ScriptError::MemoryLimit => "M".into(),
++        ScriptError::Runtime(m) => format!("R:{:016x}", fnv(m.as_bytes())),
++        ScriptError::Load(m) => format!("L:{:016x}", fnv(m.as_bytes())),
++        other => format!("X:{other:?}"),
++    }
++}
++
++fn fnv(b: &[u8]) -> u64 {
++    let mut h = Fnv64::new();
++    for &x in b {
++        h.write_u8(x);
++    }
++    h.finish()
++}
++
++fn msg(e: &ScriptError) -> String {
++    match e {
++        ScriptError::Runtime(m) | ScriptError::Load(m) => m.clone(),
++        other => format!("{other:?}"),
++    }
++}
++
++/// Runs one case; returns its line and, separately, the platform-dependent
++/// heap size.
++#[must_use]
++pub fn run_case(c: &Case) -> (String, usize) {
++    let cfg = LuaConfig::engine();
++    let names = NameTables::default();
++    let mut out = format!("{} |", c.name);
++    let mut b = match LuaScriptBackend::new(c.src.as_bytes(), &names, cfg) {
++        Ok(b) => b,
++        Err(e) => {
++            let _ = write!(out, " new={} | first_msg={:?}", class(&e), msg(&e));
++            return (out, 0);
++        }
++    };
++    let mut view = HostView::default();
++    let mut rng = Pcg32::seed_from_u64(0x5eed_0002);
++    let mut digest = Fnv64::new();
++    let mut scratch = Vec::with_capacity(4096);
++    let mut events = String::new();
++    let mut first_msg: Option<String> = None;
++    let mut last_faults = 0;
++    let mut run_one = |b: &mut LuaScriptBackend,
++                       view: &HostView,
++                       rng: &mut Pcg32,
++                       f: &mut dyn FnMut(&mut LuaScriptBackend, &mut HostCtx)|
++     -> String {
++        let mut cmd = HostCommandQueue::default();
++        f(b, &mut HostCtx {
++            view,
++            rng,
++            cmd: &mut cmd,
++        });
++        scratch.clear();
++        encode_queue(&cmd, &mut scratch);
++        for &x in &scratch {
++            digest.write_u8(x);
++        }
++        let ev = if b.fault_count() != last_faults {
++            last_faults = b.fault_count();
++            let e = b.last_error().cloned().unwrap_or(ScriptError::Runtime("?".into()));
++            if first_msg.is_none() {
++                first_msg = Some(msg(&e));
++            }
++            class(&e)
++        } else if b.is_faulted() {
++            "f".into()
++        } else {
++            "ok".into()
++        };
++        ev + ","
++    };
++    for step in c.plan {
++        match *step {
++            Init => events.push_str(&run_one(&mut b, &view, &mut rng, &mut |b, ctx| b.on_init(ctx))),
++            Tick(n) => {
++                for _ in 0..n {
++                    view.tick += 1;
++                    events.push_str(&run_one(&mut b, &view, &mut rng, &mut |b, ctx| b.on_tick(ctx)));
++                }
++            }
++            Sw(id, closed) => {
++                let edge = if closed {
++                    SwitchEdge::Closed
++                } else {
++                    SwitchEdge::Opened
++                };
++                events.push_str(&run_one(&mut b, &view, &mut rng, &mut |b, ctx| {
++                    b.on_switch_edge(SwitchId(id), edge, ctx);
++                }));
++            }
++            Reload(src) => {
++                let r = b.apply_reload(src.as_bytes());
++                let _ = write!(
++                    events,
++                    "reload:{},",
++                    r.as_ref().map_or_else(class, |()| "ok".into())
++                );
++            }
++        }
++    }
++    // Compress long runs of identical events ("ok,ok,ok" -> "ok*3").
++    let mut ev = String::new();
++    let parts: Vec<&str> = events.trim_end_matches(',').split(',').collect();
++    let mut i = 0;
++    while i < parts.len() {
++        let mut j = i;
++        while j < parts.len() && parts[j] == parts[i] {
++            j += 1;
++        }
++        let _ = write!(
++            ev,
++            "{}{}{}",
++            if ev.is_empty() { "" } else { "," },
++            parts[i],
++            if j - i > 1 { format!("*{}", j - i) } else { String::new() }
++        );
++        i = j;
++    }
++    let _ = write!(
++        out,
++        " events={ev} | cmd={:016x} | faults={} faulted={} rng={:016x} | first_msg={:?}",
++        digest.finish(),
++        b.fault_count(),
++        b.is_faulted(),
++        rng_state(&rng),
++        first_msg.unwrap_or_default()
++    );
++    (out, b.used_memory())
++}
++
++fn rng_state(r: &Pcg32) -> u64 {
++    let mut r = r.clone();
++    pin_core::Rng::next_u64(&mut r)
++}
++
++/// Runs every case (or those whose name contains `filter`); one line per case
++/// with ` | mem=<bytes>` appended.
++#[must_use]
++pub fn run_all(filter: &str) -> String {
++    let mut s = String::new();
++    for c in CASES.iter().filter(|c| c.name.contains(filter)) {
++        let (line, mem) = run_case(c);
++        let _ = writeln!(s, "{line} | mem={mem}");
++    }
++    s
++}
++
++/// Case names and descriptions (`name\twhat` lines).
++#[must_use]
++pub fn describe() -> String {
++    let mut s = String::new();
++    for c in CASES {
++        let _ = writeln!(s, "{}\t{}", c.name, c.what);
++    }
++    s
++}
++
++/// Budget-edge probe: for each operation, the largest iteration count `n`
++/// whose callback still fits the engine budget (binary search). Equal
++/// numbers native and wasm mean the budget charges the same; a difference
++/// shows a platform-dependent charge.
++#[must_use]
++pub fn budget_edge() -> String {
++    const OPS: &[(&str, &str)] = &[
++        ("concat_700", "local s=string.rep('x',700) local t={s} for i=1,N do local r=table.concat(t) end"),
++        ("format_700", "local s=string.rep('x',700) for i=1,N do local r=string.format('%s', s) end"),
++        ("format_400", "local s=string.rep('x',400) for i=1,N do local r=string.format('%s', s) end"),
++        ("gsub_600", "local s=string.rep('ab',300) for i=1,N do local r=string.gsub(s, 'a', 'c') end"),
++        ("rep_900", "for i=1,N do local r=string.rep('y', 900) end"),
++        ("concat_op", "local a=string.rep('q',300) for i=1,N do local r=a..a..a end"),
++        ("arith", "local x=0 for i=1,N do x=x+i*2 end"),
++        ("tables", "for i=1,N do local t={i,i,i} end"),
++    ];
++    let mut s = String::new();
++    for (name, body) in OPS {
++        let fits = |n: u32| {
++            let src = format!("function on_tick() local N={n} {body} end");
++            let mut b = match LuaScriptBackend::new(src.as_bytes(), &NameTables::default(), LuaConfig::engine()) {
++                Ok(b) => b,
++                Err(_) => return false,
++            };
++            let view = HostView::default();
++            let mut rng = Pcg32::seed_from_u64(1);
++            let mut cmd = HostCommandQueue::default();
++            b.on_tick(&mut HostCtx { view: &view, rng: &mut rng, cmd: &mut cmd });
++            !b.is_faulted()
++        };
++        let (mut lo, mut hi) = (0u32, 1u32);
++        while fits(hi) && hi < 1 << 24 {
++            lo = hi;
++            hi *= 2;
++        }
++        while hi - lo > 1 {
++            let mid = lo + (hi - lo) / 2;
++            if fits(mid) {
++                lo = mid;
++            } else {
++                hi = mid;
++            }
++        }
++        let _ = writeln!(s, "{name} n_max={lo}");
++    }
++    s
++}
+--- /dev/null
++++ b/crates/s2_harness/src/smoke.rs
+@@ -0,0 +1,30 @@
++//! A first end-to-end check: the real `LuaScriptBackend` runs a script.
++
++use pin_core::{HostCommandQueue, HostCtx, HostView, Pcg32, SeedableRng, TableScriptBackend};
++use pin_script::NameTables;
++use pin_script::lua::{LuaConfig, LuaScriptBackend};
++
++/// Runs `src` for `ticks` ticks; returns a summary line.
++#[must_use]
++pub fn smoke(src: &str, ticks: u32) -> String {
++    let mut b = match LuaScriptBackend::new(src.as_bytes(), &NameTables::default(), LuaConfig::engine()) {
++        Ok(b) => b,
++        Err(e) => return format!("load error: {e:?}"),
++    };
++    let view = HostView::default();
++    let mut rng = Pcg32::seed_from_u64(1);
++    let mut pulses = 0usize;
++    for _ in 0..ticks {
++        let mut cmd = HostCommandQueue::default();
++        b.on_tick(&mut HostCtx { view: &view, rng: &mut rng, cmd: &mut cmd });
++        pulses += cmd.coil_pulses.len();
++    }
++    format!(
++        "faulted={} faults={} last_error={:?} pulses={} mem={}",
++        b.is_faulted(),
++        b.fault_count(),
++        b.last_error(),
++        pulses,
++        b.used_memory()
++    )
++}
+--- /dev/null
++++ b/crates/s2_harness/src/web.rs
+@@ -0,0 +1,130 @@
++//! wasm-bindgen exports (wasm32-unknown-unknown).
++
++use wasm_bindgen::prelude::*;
++
++#[wasm_bindgen]
++extern "C" {
++    #[wasm_bindgen(js_namespace = performance, js_name = now)]
++    fn perf_now() -> f64;
++    #[wasm_bindgen(js_namespace = console, js_name = error)]
++    fn console_error(s: &str);
++}
++
++fn now_ns() -> f64 {
++    perf_now() * 1e6
++}
++
++/// See [`crate::smoke::smoke`].
++#[wasm_bindgen]
++pub fn lua_smoke(src: &str, ticks: u32) -> String {
++    crate::smoke::smoke(src, ticks)
++}
++
++/// Real-Lua play checked against the native stream and hashes; `timing`
++/// adds per-callback statistics. Returns the summary text.
++#[wasm_bindgen]
++pub fn lua_play(bundle: &[u8], scn: &[u8], scr: &[u8], hashes: &[u8], timing: bool) -> Result<String, JsValue> {
++    let clock = if timing { Some(now_ns as fn() -> f64) } else { None };
++    crate::parity::lua_play(bundle, scn, scr.to_vec(), hashes, clock)
++        .map(|(p, mut c)| crate::parity::summary(&p, &mut c))
++        .map_err(|e| JsValue::from_str(&e))
++}
++
++/// Real-Lua play with `inject` appended to rules.lua; compares hash lines
++/// with `hashes` (the native run of the same injection).
++#[wasm_bindgen]
++pub fn lua_play_inject(bundle: &[u8], scn: &[u8], scr: &[u8], hashes: &[u8], inject: &str) -> Result<String, JsValue> {
++    crate::parity::lua_play_with(bundle, scn, scr.to_vec(), hashes, None, inject, None)
++        .map(|(p, mut c)| crate::parity::summary(&p, &mut c))
++        .map_err(|e| JsValue::from_str(&e))
++}
++
++/// Route (f): real-Lua play with the Lua VM in a separate instance
++/// (`globalThis.s2_remote_new` / `s2_remote_call` provided by the caller).
++#[wasm_bindgen]
++pub fn lua_play_remote(bundle: &[u8], scn: &[u8], scr: &[u8], hashes: &[u8], timing: bool) -> Result<String, JsValue> {
++    let clock = if timing { Some(now_ns as fn() -> f64) } else { None };
++    crate::parity::play_generic(bundle, scn, scr.to_vec(), hashes, clock, None, &mut |src, names| {
++        crate::remote::RemoteLua::new(src, names)
++    })
++    .map(|(p, mut c)| crate::parity::summary(&p, &mut c))
++    .map_err(|e| JsValue::from_str(&e))
++}
++
++/// This instance's linear memory (for the route (f) JS glue).
++#[wasm_bindgen]
++pub fn s2_memory() -> JsValue {
++    wasm_bindgen::memory()
++}
++
++/// All sandbox cases whose name contains `filter`.
++#[wasm_bindgen]
++pub fn sandbox(filter: &str) -> String {
++    crate::sandbox::run_all(filter)
++}
++
++/// Budget-edge probe.
++#[wasm_bindgen]
++pub fn budget_edge() -> String {
++    crate::sandbox::budget_edge()
++}
++
++/// Case descriptions.
++#[wasm_bindgen]
++pub fn sandbox_describe() -> String {
++    crate::sandbox::describe()
++}
++
++/// Float formatting dump.
++#[wasm_bindgen]
++pub fn format_dump(n: u32) -> String {
++    crate::floats::format_dump(n as usize)
++}
++
++/// tonumber dump.
++#[wasm_bindgen]
++pub fn parse_dump(n: u32) -> String {
++    crate::floats::parse_dump(n as usize)
++}
++
++/// Lua math function dump.
++#[wasm_bindgen]
++pub fn libm_dump(name: &str, n: u32) -> String {
++    crate::floats::libm_dump(name, n as usize)
++}
++
++/// Rust libm crate dump.
++#[wasm_bindgen]
++pub fn rust_libm_dump(name: &str, n: u32) -> String {
++    crate::floats::rust_libm_dump(name, n as usize)
++}
++
++/// ctype dump.
++#[wasm_bindgen]
++pub fn ctype_dump() -> String {
++    crate::floats::ctype_dump()
++}
++
++/// Stack pointer after many errors.
++#[wasm_bindgen]
++pub fn sp_after_errors(n: u32) -> String {
++    crate::probes::sp_after_errors(n)
++}
++
++/// Shadow-stack use per sandbox case.
++#[wasm_bindgen]
++pub fn case_stack() -> String {
++    crate::probes::case_stack()
++}
++
++/// Layout of linear memory.
++#[wasm_bindgen]
++pub fn s2_stack_layout() -> String {
++    s1_harness::probes::stack_layout()
++}
++
++/// Forwards Rust panics to `console.error`.
++#[wasm_bindgen]
++pub fn s2_panic_hook() {
++    std::panic::set_hook(Box::new(|info| console_error(&format!("s2 panic: {info}"))));
++}
+--- /dev/null
++++ b/crates/s2_lua_module/Cargo.toml
+@@ -0,0 +1,15 @@
++[package]
++name = "s2_lua_module"
++description = "web-spike-lua (S2) route (f): pin_script's Lua backend as a standalone wasm module (own instance and linear memory), driven per callback through a byte buffer. Spike tooling."
++version = "0.1.0"
++edition.workspace = true
++rust-version.workspace = true
++publish = false
++license.workspace = true
++
++[lib]
++crate-type = ["cdylib", "rlib"]
++
++[dependencies]
++pin_core.workspace = true
++pin_script = { path = "../pin_script", default-features = false, features = ["lua"] }
+--- /dev/null
++++ b/crates/s2_lua_module/src/lib.rs
+@@ -0,0 +1,71 @@
++//! Route (f): the Lua rules in their own wasm instance.
++//!
++//! Protocol (all little-endian, in the module's static buffer [`l_buf`]):
++//! * `l_new(src_len, names_len)`: buffer = rules.lua bytes then the name
++//!   tables (see [`wire::decode_names`]); returns 0 or an error class.
++//! * `l_call(kind, switch, closed)`: buffer in = `HostView` (553 bytes),
++//!   RNG state (16), queue length u32 + encoded `HostCommandQueue`;
++//!   out = RNG state (16), queue length u32 + queue, faulted u8,
++//!   fault count u32. Returns the output length.
++
++pub mod wire;
++
++use pin_core::ids::SwitchId;
++use pin_core::{HostCommandQueue, HostCtx, SwitchEdge, TableScriptBackend};
++use pin_script::lua::{LuaConfig, LuaScriptBackend};
++use std::cell::RefCell;
++
++const BUF_LEN: usize = 1 << 18;
++
++thread_local! {
++    static STATE: RefCell<(Vec<u8>, Option<LuaScriptBackend>, HostCommandQueue)> =
++        RefCell::new((vec![0; BUF_LEN], None, HostCommandQueue::default()));
++}
++
++/// The shared I/O buffer.
++#[unsafe(no_mangle)]
++pub extern "C" fn l_buf() -> *mut u8 {
++    STATE.with(|s| s.borrow_mut().0.as_mut_ptr())
++}
++
++/// Loads a script: 0 ok, 1 load error, 2 budget, 3 memory, 4 other.
++#[unsafe(no_mangle)]
++pub extern "C" fn l_new(src_len: u32, names_len: u32) -> u32 {
++    STATE.with(|s| {
++        let mut s = s.borrow_mut();
++        let (buf, slot, _) = &mut *s;
++        let src = buf[..src_len as usize].to_vec();
++        let names = wire::decode_names(&buf[src_len as usize..(src_len + names_len) as usize]);
++        match LuaScriptBackend::new(&src, &names, LuaConfig::engine()) {
++            Ok(b) => {
++                *slot = Some(b);
++                0
++            }
++            Err(e) => wire::err_class(&e),
++        }
++    })
++}
++
++/// Runs one callback (0 init, 1 tick, 2 switch edge); returns the output
++/// length in the buffer.
++#[unsafe(no_mangle)]
++pub extern "C" fn l_call(kind: u32, switch: u32, closed: u32) -> u32 {
++    STATE.with(|s| {
++        let mut s = s.borrow_mut();
++        let (buf, slot, q) = &mut *s;
++        let Some(b) = slot.as_mut() else { return 0 };
++        let (view, mut rng) = wire::read_input(buf, q);
++        {
++            let mut ctx = HostCtx { view: &view, rng: &mut rng, cmd: q };
++            match kind {
++                0 => b.on_init(&mut ctx),
++                1 => b.on_tick(&mut ctx),
++                _ => {
++                    let edge = if closed != 0 { SwitchEdge::Closed } else { SwitchEdge::Opened };
++                    b.on_switch_edge(SwitchId(switch as u16), edge, &mut ctx);
++                }
++            }
++        }
++        wire::write_output(buf, &rng, q, b.is_faulted(), b.fault_count()) as u32
++    })
++}
+--- /dev/null
++++ b/crates/s2_lua_module/src/wire.rs
+@@ -0,0 +1,256 @@
++//! Byte encodings shared by the engine side (s2_harness `remote`) and the
++//! Lua module.
++
++use pin_core::ids::{
++    CoilId, DispenserId, DiverterId, FlipperId, LampId, MagnetId, PersistKey, ProfileId, SceneId,
++    SoundId,
++};
++use pin_core::script::MAX_PERSIST;
++use pin_core::{HostCommandQueue, HostView, Pcg32, ScriptError};
++use pin_script::NameTables;
++
++/// Bytes of an encoded `HostView`.
++pub const VIEW_BYTES: usize = 8 + 32 + 1 + 8 * MAX_PERSIST;
++
++/// The RNG state as two words (same compiler and target on both sides).
++#[must_use]
++pub fn rng_words(r: &Pcg32) -> [u64; 2] {
++    // SAFETY: Pcg32 is two u64 fields (rand_pcg 0.10.2 Lcg64Xsh32); size
++    // checked by transmute; both modules come from the same rustc/target.
++    unsafe { std::mem::transmute::<Pcg32, [u64; 2]>(r.clone()) }
++}
++
++/// The RNG from [`rng_words`].
++#[must_use]
++pub fn rng_from(w: [u64; 2]) -> Pcg32 {
++    // SAFETY: inverse of `rng_words`.
++    unsafe { std::mem::transmute::<[u64; 2], Pcg32>(w) }
++}
++
++fn u64_at(b: &[u8], o: usize) -> u64 {
++    u64::from_le_bytes(b[o..o + 8].try_into().expect("8 bytes"))
++}
++
++/// Writes the callback input; returns its length.
++pub fn write_input(buf: &mut [u8], v: &HostView, rng: &Pcg32, q: &HostCommandQueue, scratch: &mut Vec<u8>) -> usize {
++    let mut o = 0;
++    buf[o..o + 8].copy_from_slice(&v.tick.to_le_bytes());
++    o += 8;
++    for w in v.switches {
++        buf[o..o + 8].copy_from_slice(&w.to_le_bytes());
++        o += 8;
++    }
++    buf[o] = v.balls_in_play;
++    o += 1;
++    for p in v.persist {
++        buf[o..o + 8].copy_from_slice(&p.to_le_bytes());
++        o += 8;
++    }
++    for w in rng_words(rng) {
++        buf[o..o + 8].copy_from_slice(&w.to_le_bytes());
++        o += 8;
++    }
++    scratch.clear();
++    encode_queue(q, scratch);
++    buf[o..o + 4].copy_from_slice(&(scratch.len() as u32).to_le_bytes());
++    o += 4;
++    buf[o..o + scratch.len()].copy_from_slice(scratch);
++    o + scratch.len()
++}
++
++/// Reads the callback input (queue decoded into `q`).
++pub fn read_input(buf: &[u8], q: &mut HostCommandQueue) -> (HostView, Pcg32) {
++    let mut v = HostView { tick: u64_at(buf, 0), ..HostView::default() };
++    for i in 0..4 {
++        v.switches[i] = u64_at(buf, 8 + 8 * i);
++    }
++    v.balls_in_play = buf[40];
++    for i in 0..MAX_PERSIST {
++        v.persist[i] = u64_at(buf, 41 + 8 * i) as i64;
++    }
++    let o = VIEW_BYTES;
++    let rng = rng_from([u64_at(buf, o), u64_at(buf, o + 8)]);
++    let len = u32::from_le_bytes(buf[o + 16..o + 20].try_into().expect("4")) as usize;
++    let mut r = Reader { b: &buf[o + 20..o + 20 + len], pos: 0 };
++    decode_queue(&mut r, q);
++    (v, rng)
++}
++
++/// Writes the callback output; returns its length.
++pub fn write_output(buf: &mut [u8], rng: &Pcg32, q: &HostCommandQueue, faulted: bool, faults: u32) -> usize {
++    let mut scratch = Vec::with_capacity(4096);
++    encode_queue(q, &mut scratch);
++    let mut o = 0;
++    for w in rng_words(rng) {
++        buf[o..o + 8].copy_from_slice(&w.to_le_bytes());
++        o += 8;
++    }
++    buf[o..o + 4].copy_from_slice(&(scratch.len() as u32).to_le_bytes());
++    o += 4;
++    buf[o..o + scratch.len()].copy_from_slice(&scratch);
++    o += scratch.len();
++    buf[o] = u8::from(faulted);
++    buf[o + 1..o + 5].copy_from_slice(&faults.to_le_bytes());
++    o + 5
++}
++
++/// Reads the callback output: new RNG, queue (into `q`), faulted, faults.
++pub fn read_output(buf: &[u8], q: &mut HostCommandQueue) -> (Pcg32, bool, u32) {
++    let rng = rng_from([u64_at(buf, 0), u64_at(buf, 8)]);
++    let len = u32::from_le_bytes(buf[16..20].try_into().expect("4")) as usize;
++    let mut r = Reader { b: &buf[20..20 + len], pos: 0 };
++    decode_queue(&mut r, q);
++    let o = 20 + len;
++    (rng, buf[o] != 0, u32::from_le_bytes(buf[o + 1..o + 5].try_into().expect("4")))
++}
++
++/// Error class of a load failure.
++#[must_use]
++pub fn err_class(e: &ScriptError) -> u32 {
++    match e {
++        ScriptError::Load(_) => 1,
++        ScriptError::BudgetExceeded => 2,
++        ScriptError::MemoryLimit => 3,
++        _ => 4,
++    }
++}
++
++/// Encodes name tables: per list, count u16 then (len u16, bytes, id u16).
++#[must_use]
++pub fn encode_names(n: &NameTables) -> Vec<u8> {
++    let mut out = Vec::new();
++    fn list<I: Copy>(out: &mut Vec<u8>, v: &[(String, I)], id: impl Fn(I) -> u16) {
++        out.extend_from_slice(&(v.len() as u16).to_le_bytes());
++        for (name, i) in v {
++            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
++            out.extend_from_slice(name.as_bytes());
++            out.extend_from_slice(&id(*i).to_le_bytes());
++        }
++    }
++    list(&mut out, &n.switches, |i| i.0);
++    list(&mut out, &n.coils, |i| i.0);
++    list(&mut out, &n.lamps, |i| i.0);
++    list(&mut out, &n.magnets, |i| i.0);
++    list(&mut out, &n.diverters, |i| i.0);
++    list(&mut out, &n.flippers, |i| i.0);
++    list(&mut out, &n.dispensers, |i| i.0);
++    list(&mut out, &n.profiles, |i| i.0);
++    list(&mut out, &n.sounds, |i| i.0);
++    list(&mut out, &n.scenes, |i| i.0);
++    list(&mut out, &n.persist, |i| i.0);
++    out
++}
++
++/// Inverse of [`encode_names`].
++#[must_use]
++pub fn decode_names(b: &[u8]) -> NameTables {
++    let mut r = Reader { b, pos: 0 };
++    fn list<I>(r: &mut Reader<'_>, mk: impl Fn(u16) -> I) -> Vec<(String, I)> {
++        let n = r.u16().unwrap_or(0);
++        (0..n)
++            .filter_map(|_| {
++                let len = usize::from(r.u16()?);
++                let s = String::from_utf8(r.take(len)?.to_vec()).ok()?;
++                Some((s, mk(r.u16()?)))
++            })
++            .collect()
++    }
++    NameTables {
++        switches: list(&mut r, pin_core::ids::SwitchId),
++        coils: list(&mut r, CoilId),
++        lamps: list(&mut r, LampId),
++        magnets: list(&mut r, MagnetId),
++        diverters: list(&mut r, DiverterId),
++        flippers: list(&mut r, FlipperId),
++        dispensers: list(&mut r, DispenserId),
++        profiles: list(&mut r, ProfileId),
++        sounds: list(&mut r, SoundId),
++        scenes: list(&mut r, SceneId),
++        persist: list(&mut r, PersistKey),
++    }
++}
++
++struct Reader<'a> {
++    b: &'a [u8],
++    pos: usize,
++}
++
++impl<'a> Reader<'a> {
++    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
++        let s = self.b.get(self.pos..self.pos + n)?;
++        self.pos += n;
++        Some(s)
++    }
++    fn u8(&mut self) -> Option<u8> {
++        self.take(1).map(|s| s[0])
++    }
++    fn u16(&mut self) -> Option<u16> {
++        self.take(2).map(|s| u16::from_le_bytes([s[0], s[1]]))
++    }
++    fn u32(&mut self) -> Option<u32> {
++        self.take(4).map(|s| u32::from_le_bytes(s.try_into().expect("4")))
++    }
++    fn u64(&mut self) -> Option<u64> {
++        self.take(8).map(|s| u64::from_le_bytes(s.try_into().expect("8")))
++    }
++    fn f32(&mut self) -> Option<f32> {
++        self.u32().map(f32::from_bits)
++    }
++}
++
++/// The S1 queue encoding (`s1_harness::io::encode_queue`), copied so the
++/// module needs no wasm-bindgen crate.
++pub fn encode_queue(q: &HostCommandQueue, out: &mut Vec<u8>) {
++    fn n(out: &mut Vec<u8>, len: usize) {
++        out.extend_from_slice(&(len as u16).to_le_bytes());
++    }
++    fn u16v(out: &mut Vec<u8>, v: u16) {
++        out.extend_from_slice(&v.to_le_bytes());
++    }
++    fn f(out: &mut Vec<u8>, v: f32) {
++        out.extend_from_slice(&v.to_bits().to_le_bytes());
++    }
++    n(out, q.coil_pulses.len());
++    for &(c, ms) in &q.coil_pulses { u16v(out, c.0); u16v(out, ms); }
++    n(out, q.coil_holds.len());
++    for &(c, on) in &q.coil_holds { u16v(out, c.0); out.push(u8::from(on)); }
++    n(out, q.magnets.len());
++    for &(m, p) in &q.magnets { u16v(out, m.0); f(out, p); }
++    n(out, q.zippers.len());
++    for &(z, on) in &q.zippers { u16v(out, z.0); out.push(u8::from(on)); }
++    n(out, q.diverters.len());
++    for &(d, on) in &q.diverters { u16v(out, d.0); out.push(u8::from(on)); }
++    n(out, q.ball_spawns.len());
++    for &(d, p) in &q.ball_spawns { u16v(out, d.0); u16v(out, p.0); }
++    n(out, q.lamps.len());
++    for &(l, i) in &q.lamps { u16v(out, l.0); f(out, i); }
++    match q.gi_tint {
++        Some(t) => { out.push(1); for v in t { f(out, v); } }
++        None => out.push(0),
++    }
++    n(out, q.scores.len());
++    for &(p, s) in &q.scores { out.push(p); out.extend_from_slice(&s.to_le_bytes()); }
++    n(out, q.display_scenes.len());
++    for s in &q.display_scenes { u16v(out, s.0); }
++    n(out, q.sounds.len());
++    for &(s, g) in &q.sounds { u16v(out, s.0); f(out, g); }
++    n(out, q.persist_writes.len());
++    for &(k, v) in &q.persist_writes { u16v(out, k.0); out.extend_from_slice(&v.to_le_bytes()); }
++}
++
++fn decode_queue(r: &mut Reader<'_>, q: &mut HostCommandQueue) -> Option<()> {
++    q.clear();
++    for _ in 0..r.u16()? { q.pulse_coil(CoilId(r.u16()?), r.u16()?).ok()?; }
++    for _ in 0..r.u16()? { q.hold_coil(CoilId(r.u16()?), r.u8()? != 0).ok()?; }
++    for _ in 0..r.u16()? { q.set_magnet(MagnetId(r.u16()?), r.f32()?).ok()?; }
++    for _ in 0..r.u16()? { q.set_zipper(FlipperId(r.u16()?), r.u8()? != 0).ok()?; }
++    for _ in 0..r.u16()? { q.set_diverter(DiverterId(r.u16()?), r.u8()? != 0).ok()?; }
++    for _ in 0..r.u16()? { q.spawn_ball(DispenserId(r.u16()?), ProfileId(r.u16()?)).ok()?; }
++    for _ in 0..r.u16()? { q.set_lamp(LampId(r.u16()?), r.f32()?).ok()?; }
++    if r.u8()? == 1 { q.set_gi_tint([r.f32()?, r.f32()?, r.f32()?, r.f32()?]); }
++    for _ in 0..r.u16()? { let p = r.u8()?; q.set_score(p, r.u64()? as i64).ok()?; }
++    for _ in 0..r.u16()? { q.show_scene(SceneId(r.u16()?)).ok()?; }
++    for _ in 0..r.u16()? { q.play_sound(SoundId(r.u16()?), r.f32()?).ok()?; }
++    for _ in 0..r.u16()? { let k = PersistKey(r.u16()?); q.write_persist(k, r.u64()? as i64).ok()?; }
++    Some(())
++}

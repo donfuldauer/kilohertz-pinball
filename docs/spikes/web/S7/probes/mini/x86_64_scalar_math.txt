@@ -1,0 +1,34 @@
+target_arch=x86_64 N=1000000
+quat_mul=b9331288cdd261d5
+quat_dot=ddee790dfe4f2ec0
+quat_length_squared=c6986d27d5397d26
+quat_normalize=6444f3a8abc6064a
+quat_mul_vec3=52d82be9770ec305
+quat_conj_mul_vec3=87d77d3413d32238
+quat_from_rotation_arc=2b4c4b83df3e1173
+integrate_orientation=10158046ad021bc7
+vec4_dot=ddee790dfe4f2ec0
+vec4_length=432656abdf25bd78
+vec4_normalize=6444f3a8abc6064a
+vec4_min_max=3e6354810519a1fd
+vec3a_cross=8882196def08d665
+vec3a_dot=5fd12025655bc595
+vec3a_length=75dc1c007bb0847d
+vec3_ops=04239e53062882e6
+vec3_min_max=9870a183f847c9b5
+f32_min_max=df2b049e9a01bdd2
+mat4_mul_mat4=63269b2005ab539f
+mat4_transform_point3=b8faa289897943e4
+mat4_inverse=e1ef5ba0b302d57d
+libm=33d86b04d07b329b
+f32_mul_add=be49639ee2bb30b6
+quat_lerp_slerp=d11cf7d083c02805
+vec3a_lerp=b1b779905c3f0aa3
+P:quat_mul=cd0e1be9a5f4cf69
+P:quat_length_squared=aaf6bcb8a9eb3aa0
+P:quat_normalize=8793607424c40861
+P:quat_mul_vec3=52d82be9770ec305
+P:quat_conj_mul_vec3=87d77d3413d32238
+P:quat_from_rotation_arc=dc4f3500443578dc
+P:integrate_orientation=ecb9ec63aa3e0a63
+portable_vs_glam_mismatches(of 1000000) quat_mul:740854 quat_length_squared:295608 quat_normalize:651995 quat_mul_vec3:0 quat_conj_mul_vec3:0 quat_from_rotation_arc:623018 integrate_orientation:784499

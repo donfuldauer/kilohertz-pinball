@@ -1,0 +1,1 @@
+- web-spike-lua (S2): owner/Orchestrator to confirm S2-4 (remove `collectgarbage` from the Lua sandbox on every target for native=web parity) and S2-5 (Lua transcendental math via Rust libm on every target) before 9.10 implements KHZ patches 29-32; S5 to confirm legacy-EH (and exnref) support in Safari/Firefox/mobile minimum versions.

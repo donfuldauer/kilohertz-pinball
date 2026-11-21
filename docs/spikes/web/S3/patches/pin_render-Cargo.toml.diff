@@ -1,0 +1,30 @@
+--- pin_render.Cargo.toml.orig	2026-11-20 16:48:46.986310805 +0000
++++ repo/crates/pin_render/Cargo.toml	2026-11-20 16:48:47.017496688 +0000
+@@ -11,6 +11,12 @@
+ # Enables the tests that need a GPU adapter (PLAN §2.3 rule 3, D20). Without an
+ # adapter they skip with a printed note unless PIN_REQUIRE_GPU=1.
+ gpu-tests = []
++# S3 spike: web backends (wasm32 only; no effect on native targets).
++webgpu = ["wgpu/webgpu"]
++webgl = ["wgpu/webgl"]
++# S3 spike: wgpu types are !Send/!Sync on wasm32 without this (egui-wgpu's
++# default features used to turn it on).
++fragile-send-sync = ["wgpu/fragile-send-sync-non-atomic-wasm"]
+ 
+ [dependencies]
+ pin_core.workspace = true
+@@ -33,6 +39,14 @@
+ # Internal crate; no new external pin.
+ pin_assets = { path = "../pin_assets" }
+ 
++# S3 spike: the native backends (wgpu's former default set).
++[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
++wgpu = { workspace = true, features = ["dx12", "metal", "vulkan", "gles", "parking_lot"] }
++
++# S3 spike: deferred error-scope pops on the web.
++[target.'cfg(target_arch = "wasm32")'.dependencies]
++wasm-bindgen-futures = "=0.4.80"
++
+ [dev-dependencies]
+ proptest.workspace = true
+ # WGSL validation and SPIR-V / MSL / HLSL translation of the PBR shaders (5.1).

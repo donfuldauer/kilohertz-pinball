@@ -1,0 +1,529 @@
+diff -ruN S2/repo/crates/s2_harness/src/bin/s2.rs S8/repo/crates/s2_harness/src/bin/s2.rs
+--- S2/repo/crates/s2_harness/src/bin/s2.rs	2026-11-20 19:58:35.660223327 +0000
++++ S8/repo/crates/s2_harness/src/bin/s2.rs	2026-11-20 21:05:25.339619334 +0000
+@@ -43,6 +43,15 @@
+                 }
+             }
+         }
++        "s8" => {
++            // s8 <cmd> <args...>: arguments starting with '@' are files.
++            let args: Vec<Vec<u8>> = a.iter().skip(3).map(|x| match x.strip_prefix('@') {
++                Some(p) => rd(p),
++                None => x.as_bytes().to_vec(),
++            }).collect();
++            let refs: Vec<&[u8]> = args.iter().map(Vec::as_slice).collect();
++            print!("{}", s2_harness::s8::dispatch(&arg(2), &refs, Some(now_ns as fn() -> f64)));
++        }
+         "sandbox" => print!("{}", s2_harness::sandbox::run_all(&arg(2))),
+         "budget-edge" => print!("{}", s2_harness::sandbox::budget_edge()),
+         "sandbox-describe" => print!("{}", s2_harness::sandbox::describe()),
+diff -ruN S2/repo/crates/s2_harness/src/lib.rs S8/repo/crates/s2_harness/src/lib.rs
+--- S2/repo/crates/s2_harness/src/lib.rs	2026-11-20 19:47:23.510558617 +0000
++++ S8/repo/crates/s2_harness/src/lib.rs	2026-11-20 21:05:25.327134816 +0000
+@@ -11,6 +11,7 @@
+ pub mod probes;
+ #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+ pub mod remote;
++pub mod s8;
+ pub mod sandbox;
+ pub mod smoke;
+ #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+diff -ruN S2/repo/crates/s2_harness/src/s8.rs S8/repo/crates/s2_harness/src/s8.rs
+--- S2/repo/crates/s2_harness/src/s8.rs	1970-01-01 00:00:00.000000000 +0000
++++ S8/repo/crates/s2_harness/src/s8.rs	2026-11-20 21:35:33.301476475 +0000
+@@ -0,0 +1,479 @@
++//! Web spike S8 (Lua 32/64-bit audit, logical memory, address-free keys,
++//! per-tick aggregate budget). Spike tooling, not a product crate.
++//!
++//! One dispatcher, [`dispatch`], serves the native binary (`s2 s8 <cmd>
++//! <files...>`), Node and Chromium (`s8_call`), so every platform runs the
++//! same code on the same bytes and the outputs can be compared byte for
++//! byte.
++
++use crate::parity::{Check, Introspect, LuaPlay, play_generic};
++use pin_core::ids::SwitchId;
++use pin_core::{
++    HostCommandQueue, HostCtx, HostView, Pcg32, ScriptError, SeedableRng, SwitchEdge,
++    TableScriptBackend,
++};
++use pin_script::NameTables;
++use pin_script::lua::{LuaConfig, LuaScriptBackend};
++use pin_sim::SimConfig;
++use pin_sim::hash::Fnv64;
++use s1_harness::io::encode_queue;
++use std::fmt::Write as _;
++use std::sync::{Arc, Mutex};
++
++/// A clock in nanoseconds (native `Instant`, web `performance.now`).
++pub type Clock = fn() -> f64;
++
++fn fnv(b: &[u8]) -> u64 {
++    let mut h = Fnv64::new();
++    for &x in b {
++        h.write_u8(x);
++    }
++    h.finish()
++}
++
++fn class(e: &ScriptError) -> String {
++    match e {
++        ScriptError::BudgetExceeded => "B".into(),
++        ScriptError::MemoryLimit => "M".into(),
++        ScriptError::Runtime(m) => format!("R:{m}"),
++        ScriptError::Load(m) => format!("L:{m}"),
++        other => format!("X:{other:?}"),
++    }
++}
++
++fn cfg_named(name: &str) -> LuaConfig {
++    match name {
++        "engine" => LuaConfig::engine(),
++        // Probes that print a lot: the engine cap, a large budget.
++        "engine-bigbudget" => LuaConfig {
++            memory_limit_bytes: LuaConfig::engine().memory_limit_bytes,
++            instruction_budget: 400_000_000,
++        },
++        _ => LuaConfig {
++            memory_limit_bytes: 16 << 20,
++            instruction_budget: 400_000_000,
++        },
++    }
++}
++
++fn arg_str(a: &[&[u8]], i: usize) -> String {
++    a.get(i).map(|b| String::from_utf8_lossy(b).into_owned()).unwrap_or_default()
++}
++
++fn arg_num(a: &[&[u8]], i: usize, d: u64) -> u64 {
++    arg_str(a, i).trim().parse().unwrap_or(d)
++}
++
++/// The build's KHZ knobs and memory mode.
++#[must_use]
++pub fn features() -> String {
++    let f = pin_script::lua::s8_features();
++    format!(
++        "khz_features={f} logical_mem={} key_order={} s8_fixes={} ptr_bits={}",
++        f & 1 != 0,
++        f & 2 != 0,
++        f & 4 != 0,
++        usize::BITS
++    )
++}
++
++/// Runs a probe script: `on_init`, then `ticks` × `on_tick` (and a switch
++/// edge on switch 1 every tick if the script defines `on_switch`); prints
++/// every line the script appended to the global `S8_OUT`, then one outcome
++/// per callback, the accounted heap after every callback (`mem` lines, only
++/// with `trace`) and the KHZ counters.
++#[must_use]
++pub fn probe(src: &[u8], cfg: &str, ticks: u64, trace: bool) -> String {
++    let names = NameTables::default();
++    let mut out = String::new();
++    let mut b = match LuaScriptBackend::new(src, &names, cfg_named(cfg)) {
++        Ok(b) => b,
++        Err(e) => return format!("LOAD {}\n", class(&e)),
++    };
++    let mut view = HostView::default();
++    let mut rng = Pcg32::seed_from_u64(0x5eed_0008);
++    let mut digest = Fnv64::new();
++    let mut scratch = Vec::with_capacity(4096);
++    let mut events = Vec::new();
++    let mut mem = String::new();
++    let mut step = |b: &mut LuaScriptBackend, view: &HostView, rng: &mut Pcg32, k: u8, events: &mut Vec<String>, mem: &mut String| {
++        let mut cmd = HostCommandQueue::default();
++        let before = b.fault_count();
++        {
++            let mut ctx = HostCtx { view, rng, cmd: &mut cmd };
++            match k {
++                0 => b.on_init(&mut ctx),
++                1 => b.on_tick(&mut ctx),
++                _ => b.on_switch_edge(SwitchId(1), SwitchEdge::Closed, &mut ctx),
++            }
++        }
++        scratch.clear();
++        encode_queue(&cmd, &mut scratch);
++        for &x in &scratch {
++            digest.write_u8(x);
++        }
++        let (charged, units, ran) = b.s8_last_units();
++        let ev = if b.fault_count() != before {
++            b.last_error().map_or_else(|| "?".into(), class)
++        } else if b.is_faulted() {
++            "f".into()
++        } else {
++            "ok".into()
++        };
++        events.push(format!("{ev}/{charged}/{units}/{}", u8::from(ran)));
++        if trace {
++            let st = b.s8_stats();
++            let _ = writeln!(mem, "mem tick={} accounted={} debt={}", view.tick, st[13], st[14]);
++        }
++    };
++    step(&mut b, &view, &mut rng, 0, &mut events, &mut mem);
++    for _ in 0..ticks {
++        view.tick += 1;
++        if b.is_faulted() {
++            break;
++        }
++        step(&mut b, &view, &mut rng, 2, &mut events, &mut mem);
++        step(&mut b, &view, &mut rng, 1, &mut events, &mut mem);
++    }
++    out.push_str(&b.s8_out());
++    // Compress runs of identical events.
++    let mut i = 0;
++    let mut ev = String::new();
++    while i < events.len() {
++        let mut j = i;
++        while j < events.len() && events[j] == events[i] {
++            j += 1;
++        }
++        let _ = write!(ev, "{}{}{}", if ev.is_empty() { "" } else { "," }, events[i], if j - i > 1 { format!("*{}", j - i) } else { String::new() });
++        i = j;
++    }
++    let st = b.s8_stats();
++    let _ = writeln!(out, "EVENTS {ev}");
++    let _ = writeln!(out, "CMD {:016x} faults={} rng={:016x}", digest.finish(), b.fault_count(), {
++        let mut r = rng.clone();
++        pin_core::Rng::next_u64(&mut r)
++    });
++    let _ = writeln!(
++        out,
++        "HEAP accounted={} peak_accounted={} emergency_gcs={} cap_refusals={}",
++        st[13], st[2], st[3], st[4]
++    );
++    // Harness-only, platform dependent by nature: real bytes and the real
++    // payload sizes of the full userdata created (first 8 distinct).
++    let ud: Vec<String> = st[5..13].iter().filter(|&&x| x > 0).map(|x| (x - 1).to_string()).collect();
++    let _ = writeln!(out, "REAL peak_real_bytes={} userdata_payload_sizes=[{}] ptr_bits={}", st[1], ud.join(","), usize::BITS);
++    out.push_str(&mem);
++    out
++}
++
++/// Per-tick totals of one play (callbacks, hook-charged units, exact units).
++#[derive(Clone, Copy, Default)]
++struct TickTot {
++    callbacks: u32,
++    charged: u64,
++    units: u64,
++}
++
++/// Wraps the real backend: records per-tick totals and (optionally) runs
++/// the per-tick aggregate cap prototype.
++pub struct UnitsScript {
++    inner: LuaScriptBackend,
++    per_tick: Arc<Mutex<Vec<TickTot>>>,
++    gc_peak: Arc<Mutex<[i64; 16]>>,
++}
++
++impl UnitsScript {
++    fn note(&mut self, tick: u64) {
++        let (charged, units, ran) = self.inner.s8_last_units();
++        if !ran {
++            return;
++        }
++        let mut v = self.per_tick.lock().expect("lock");
++        let i = tick as usize;
++        if v.len() <= i {
++            v.resize(i + 1, TickTot::default());
++        }
++        v[i].callbacks += 1;
++        v[i].charged += charged;
++        v[i].units += units;
++    }
++}
++
++impl Drop for UnitsScript {
++    fn drop(&mut self) {
++        *self.gc_peak.lock().expect("lock") = self.inner.s8_stats();
++    }
++}
++
++impl TableScriptBackend for UnitsScript {
++    fn on_init(&mut self, ctx: &mut HostCtx) {
++        self.inner.on_init(ctx);
++    }
++    fn on_tick(&mut self, ctx: &mut HostCtx) {
++        self.inner.on_tick(ctx);
++        self.note(ctx.view.tick);
++    }
++    fn on_switch_edge(&mut self, s: SwitchId, e: SwitchEdge, ctx: &mut HostCtx) {
++        self.inner.on_switch_edge(s, e, ctx);
++        self.note(ctx.view.tick);
++    }
++    fn apply_reload(&mut self, src: &[u8]) -> Result<(), ScriptError> {
++        self.inner.apply_reload(src)
++    }
++}
++
++impl Introspect for UnitsScript {
++    fn overflow(&self) -> u32 {
++        self.inner.overflow_count()
++    }
++    fn faulted(&self) -> bool {
++        self.inner.is_faulted()
++    }
++    fn faults(&self) -> u32 {
++        self.inner.fault_count()
++    }
++    fn error(&self) -> Option<&ScriptError> {
++        self.inner.last_error()
++    }
++}
++
++fn pct(v: &mut [u64], p: f64) -> u64 {
++    if v.is_empty() {
++        return 0;
++    }
++    v.sort_unstable();
++    v[((v.len() - 1) as f64 * p).round() as usize]
++}
++
++/// Plays a recording with the real Lua rules (command stream + per-tick
++/// hashes checked against S1's native files) and reports per-tick script
++/// totals; `cap` turns on the per-tick aggregate prototype.
++#[must_use]
++pub fn tickstats(bundle: &[u8], scn: &[u8], scr: &[u8], hashes: &[u8], cap: Option<u64>) -> String {
++    let per_tick = Arc::new(Mutex::new(Vec::<TickTot>::new()));
++    let gc_peak = Arc::new(Mutex::new([0i64; 16]));
++    let lua = SimConfig::default().lua;
++    let (pt, gp) = (Arc::clone(&per_tick), Arc::clone(&gc_peak));
++    let r = play_generic(bundle, scn, scr.to_vec(), hashes, None, None, &mut |src, names| {
++        let mut inner = LuaScriptBackend::new(src, names, lua)?;
++        inner.s8_set_tick_cap(cap);
++        Ok(UnitsScript { inner, per_tick: Arc::clone(&pt), gc_peak: Arc::clone(&gp) })
++    });
++    let (p, c): (LuaPlay, Check) = match r {
++        Ok(x) => x,
++        Err(e) => return format!("ERROR {e}\n"),
++    };
++    let v = per_tick.lock().expect("lock").clone();
++    let st = *gc_peak.lock().expect("lock");
++    let ticks: Vec<&TickTot> = v.iter().skip(1).collect();
++    let mut cb: Vec<u64> = ticks.iter().map(|t| u64::from(t.callbacks)).collect();
++    let mut ch: Vec<u64> = ticks.iter().map(|t| t.charged).collect();
++    let mut un: Vec<u64> = ticks.iter().map(|t| t.units).collect();
++    let argmax = |f: &dyn Fn(&TickTot) -> u64| -> (u64, usize) {
++        let mut best = (0u64, 0usize);
++        for (i, t) in v.iter().enumerate().skip(1) {
++            if f(t) > best.0 {
++                best = (f(t), i);
++            }
++        }
++        best
++    };
++    let (mcb, tcb) = argmax(&|t| u64::from(t.callbacks));
++    let (mch, tch) = argmax(&|t| t.charged);
++    let (mun, tun) = argmax(&|t| t.units);
++    let total_units: u64 = un.iter().sum();
++    format!(
++        "ticks={} steps={} queue_mm={} digest_mm={} draw_mm={} hash_lines={} hash_mm={} first_hash_mm={:?} state_hash={:016x} faults={} \
++cap={} callbacks_per_tick max={} (tick {}) p99={} p50={} | charged_per_tick max={} (tick {}) p99={} p50={} | units_per_tick max={} (tick {}) p99={} p50={} total={} | peak_accounted_heap={} emergency_gcs={} cap_refusals={}\n",
++        p.ticks,
++        c.steps,
++        c.queue_mismatch,
++        c.digest_mismatch,
++        c.draw_mismatch,
++        p.hash_lines,
++        p.hash_mismatches,
++        p.first_hash_mismatch,
++        p.final_state,
++        p.faults,
++        cap.map_or_else(|| "off".to_owned(), |c| c.to_string()),
++        mcb,
++        tcb,
++        pct(&mut cb, 0.99),
++        pct(&mut cb, 0.5),
++        mch,
++        tch,
++        pct(&mut ch, 0.99),
++        pct(&mut ch, 0.5),
++        mun,
++        tun,
++        pct(&mut un, 0.99),
++        pct(&mut un, 0.5),
++        total_units,
++        st[2],
++        st[3],
++        st[4],
++    )
++}
++
++/// Body of one adversarial callback mix; `N` is calibrated so one callback
++/// uses just under the per-callback budget without faulting.
++fn adv_body(mix: &str) -> &'static str {
++    match mix {
++        // plain VM loop
++        "loop" => "local x=0 for i=1,N do x=x+i end",
++        // table allocation (GC work is not charged)
++        "alloc" => "for i=1,N do local t={i,i,i,i} end",
++        // string building (charged by length) and interning
++        "strings" => "for i=1,N do local s=('k'..i)..'x' end",
++        // C calls (32 each)
++        "ccalls" => "local f=math.abs for i=1,N do f(-i) end",
++        // protected calls raising errors (1024 each)
++        "errors" => "for i=1,N do pcall(error, 'e') end",
++        // pattern matching (2 per step)
++        "pattern" => "for i=1,N do local r=string.gsub('abcabcabcabc', 'b', 'x') end",
++        _ => "",
++    }
++}
++
++fn adv_script(mix: &str, n: u64, in_switch: bool) -> String {
++    let body = adv_body(mix);
++    if in_switch {
++        format!("local N={n} function on_switch() {body} end function on_tick() {body} end")
++    } else {
++        format!("local N={n} function on_tick() {body} end")
++    }
++}
++
++/// Largest `N` for which one `on_tick` of `mix` still fits the engine budget.
++fn calibrate(mix: &str) -> u64 {
++    let fits = |n: u64| {
++        let src = adv_script(mix, n, false);
++        let Ok(mut b) = LuaScriptBackend::new(src.as_bytes(), &NameTables::default(), LuaConfig::engine()) else {
++            return false;
++        };
++        let view = HostView { tick: 1, ..HostView::default() };
++        let mut rng = Pcg32::seed_from_u64(1);
++        let mut cmd = HostCommandQueue::default();
++        b.on_tick(&mut HostCtx { view: &view, rng: &mut rng, cmd: &mut cmd });
++        !b.is_faulted()
++    };
++    let (mut lo, mut hi) = (0u64, 1u64);
++    while fits(hi) && hi < 1 << 26 {
++        lo = hi;
++        hi *= 2;
++    }
++    while hi - lo > 1 {
++        let mid = lo + (hi - lo) / 2;
++        if fits(mid) {
++            lo = mid;
++        } else {
++            hi = mid;
++        }
++    }
++    lo
++}
++
++/// The worst-case adversarial tick: `edges` switch edges plus `on_tick`,
++/// every callback running `mix` just under the per-callback budget. Runs
++/// `reps` such ticks (each on a fresh backend) and reports outcome, units
++/// and wall time per tick (`clock`), with or without the aggregate cap.
++#[must_use]
++pub fn advtick(mix: &str, edges: u64, cap: Option<u64>, reps: u64, clock: Option<Clock>) -> String {
++    // 98 % of the largest count that fits, so every callback (switch edges
++    // receive two arguments) stays under the budget.
++    let n = calibrate(mix) * 98 / 100;
++    let src = adv_script(mix, n, true);
++    let mut out = String::new();
++    let mut walls = Vec::new();
++    let mut summary = String::new();
++    for rep in 0..reps.max(1) {
++        let mut b = match LuaScriptBackend::new(src.as_bytes(), &NameTables::default(), LuaConfig::engine()) {
++            Ok(b) => b,
++            Err(e) => return format!("LOAD {}\n", class(&e)),
++        };
++        b.s8_set_tick_cap(cap);
++        let view = HostView { tick: 1, ..HostView::default() };
++        let mut rng = Pcg32::seed_from_u64(7);
++        let mut cmd = HostCommandQueue::default();
++        let mut units = 0u64;
++        let mut ran = 0u32;
++        let t0 = clock.map(|c| c());
++        for e in 0..edges {
++            let mut ctx = HostCtx { view: &view, rng: &mut rng, cmd: &mut cmd };
++            b.on_switch_edge(SwitchId((e % 64) as u16), SwitchEdge::Closed, &mut ctx);
++            let (_, u, r) = b.s8_last_units();
++            units += u;
++            ran += u32::from(r);
++        }
++        {
++            let mut ctx = HostCtx { view: &view, rng: &mut rng, cmd: &mut cmd };
++            b.on_tick(&mut ctx);
++            let (_, u, r) = b.s8_last_units();
++            units += u;
++            ran += u32::from(r);
++        }
++        let wall = clock.map_or(0.0, |c| c() - t0.unwrap_or(0.0));
++        walls.push(wall);
++        if rep == 0 {
++            summary = format!(
++                "mix={mix} n_per_callback={n} edges={edges} cap={} callbacks_run={ran} units={units} faulted={} faults={} last_error={:?} tick_cap_refusals={}",
++                cap.map_or_else(|| "off".to_owned(), |c| c.to_string()),
++                b.is_faulted(),
++                b.fault_count(),
++                b.last_error().map(class),
++                b.s8_tick_cap_faults()
++            );
++        }
++    }
++    let _ = writeln!(out, "{summary}");
++    if clock.is_some() {
++        walls.sort_by(f64::total_cmp);
++        let _ = writeln!(
++            out,
++            "TIMING mix={mix} edges={edges} cap={} reps={} wall_ms min={:.3} median={:.3} max={:.3}",
++            cap.map_or_else(|| "off".to_owned(), |c| c.to_string()),
++            walls.len(),
++            walls[0] / 1e6,
++            walls[walls.len() / 2] / 1e6,
++            walls[walls.len() - 1] / 1e6
++        );
++    }
++    out
++}
++
++/// Pairs-order probe for address-keyed tables: runs `src` (which fills
++/// `S8_OUT`) for `ticks` ticks and returns its output plus a digest.
++#[must_use]
++pub fn pairs_order(src: &[u8], ticks: u64) -> String {
++    let o = probe(src, "big", ticks, false);
++    let body: String = o.lines().filter(|l| l.starts_with("ORDER ")).map(|l| format!("{l}\n")).collect();
++    format!("{body}DIGEST {:016x}\n", fnv(body.as_bytes()))
++}
++
++/// Dispatches one S8 command (native CLI, Node, Chromium).
++#[must_use]
++pub fn dispatch(cmd: &str, a: &[&[u8]], clock: Option<Clock>) -> String {
++    match cmd {
++        "features" => features() + "\n",
++        "probe" => probe(a.first().copied().unwrap_or_default(), &arg_str(a, 1), arg_num(a, 2, 1), false),
++        "memtrace" => probe(a.first().copied().unwrap_or_default(), &arg_str(a, 1), arg_num(a, 2, 1), true),
++        "tickstats" => {
++            let cap = match arg_str(a, 4).trim() {
++                "" | "off" => None,
++                s => s.parse().ok(),
++            };
++            tickstats(a[0], a[1], a[2], a.get(3).copied().unwrap_or_default(), cap)
++        }
++        "advtick" => {
++            let cap = match arg_str(a, 2).trim() {
++                "" | "off" => None,
++                s => s.parse().ok(),
++            };
++            advtick(&arg_str(a, 0), arg_num(a, 1, 512), cap, arg_num(a, 3, 1), clock)
++        }
++        "pairs" => pairs_order(a.first().copied().unwrap_or_default(), arg_num(a, 1, 3)),
++        "sandbox" => crate::sandbox::run_all(&arg_str(a, 0)),
++        "budget-edge" => crate::sandbox::budget_edge(),
++        _ => format!("unknown s8 command {cmd}\n"),
++    }
++}
+diff -ruN S2/repo/crates/s2_harness/src/web.rs S8/repo/crates/s2_harness/src/web.rs
+--- S2/repo/crates/s2_harness/src/web.rs	2026-11-20 19:58:35.656270270 +0000
++++ S8/repo/crates/s2_harness/src/web.rs	2026-11-20 21:05:25.340057796 +0000
+@@ -128,3 +128,12 @@
+ pub fn s2_panic_hook() {
+     std::panic::set_hook(Box::new(|info| console_error(&format!("s2 panic: {info}"))));
+ }
++
++/// S8: one command of [`crate::s8::dispatch`] with up to six arguments
++/// (bytes; empty = absent), timed with `performance.now`.
++#[wasm_bindgen]
++pub fn s8_call(cmd: &str, a0: &[u8], a1: &[u8], a2: &[u8], a3: &[u8], a4: &[u8], a5: &[u8]) -> String {
++    let all = [a0, a1, a2, a3, a4, a5];
++    let n = all.iter().rposition(|x| !x.is_empty()).map_or(0, |i| i + 1);
++    crate::s8::dispatch(cmd, &all[..n], Some(now_ns as fn() -> f64))
++}

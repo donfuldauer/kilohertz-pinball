@@ -1,0 +1,144 @@
+# pin_script: feature 'lua' (mlua only) apart from 'native-backends' (wasmtime + notify hot reload); Rust-libm ABI for KHZ_LUA_MATH (lua/libm_abi.rs); feature 'web-parity' drops collectgarbage. Apply after S1 patches 0001-0003.
+--- a/crates/pin_script/Cargo.toml
++++ b/crates/pin_script/Cargo.toml
+@@ -12,6 +12,8 @@
+ # web-spike-sim: the native backends are optional (default on) so the sim
+ # crates build for wasm32 without the vendored C Lua or wasmtime.
+ mlua = { workspace = true, optional = true }
++# web-spike-lua (S2): Lua's transcendental math through the engine's libm.
++libm = { workspace = true, optional = true }
+ notify = { workspace = true, optional = true }
+ # 4.5 fix B1: wasmtime::wasmparser (the exact version wasmtime uses) for the
+ # pre-compile size scan.
+@@ -26,7 +28,14 @@
+ # The Lua 5.4 (mlua + vendored C Lua) and wasmtime backends. Off: only the
+ # name tables and the backend limit types are built (web builds supply their
+ # own backend through pin_sim's `ExternalScript`).
+-native-backends = ["dep:mlua", "dep:notify", "dep:wasmtime", "dep:wat"]
++native-backends = ["lua", "dep:notify", "dep:wasmtime", "dep:wat"]
++# web-spike-lua (S2): the Lua 5.4 backend alone (mlua + vendored C Lua), without
++# hot reload (notify) or wasmtime, so it builds for wasm32-unknown-unknown.
++lua = ["dep:mlua", "dep:libm"]
++# web-spike-lua (S2) proposal: drop `collectgarbage` from the sandbox; its
++# only answer ("count", the Lua heap in KiB) depends on pointer size, so a
++# script could make native and web replays diverge with it.
++web-parity = ["lua"]
+ 
+ [dev-dependencies]
+ proptest.workspace = true
+--- a/crates/pin_script/src/lib.rs
++++ b/crates/pin_script/src/lib.rs
+@@ -11,10 +11,10 @@
+ //! * [`NameTables`]: the name → id tables scripts see as `pinball.sw`, `pinball.coil`, …
+ 
+ pub mod guest_sdk;
+-#[cfg(feature = "native-backends")]
++#[cfg(feature = "lua")]
+ pub mod lua;
+-/// Lua backend limits only (the `native-backends` feature is off).
+-#[cfg(not(feature = "native-backends"))]
++/// Lua backend limits only (the `lua` feature is off).
++#[cfg(not(feature = "lua"))]
+ #[path = "lua/config.rs"]
+ pub mod lua;
+ #[cfg(feature = "native-backends")]
+@@ -65,7 +65,7 @@
+ 
+ impl NameTables {
+     /// Every table as `(lua field name, [(name, id)])`, in a fixed order.
+-    #[cfg(feature = "native-backends")]
++    #[cfg(feature = "lua")]
+     pub(crate) fn lua_tables(&self) -> [(&'static str, Vec<(&str, u16)>); 11] {
+         fn conv<I: Copy>(v: &[(String, I)], id: impl Fn(I) -> u16) -> Vec<(&str, u16)> {
+             v.iter().map(|(n, i)| (n.as_str(), id(*i))).collect()
+@@ -119,12 +119,20 @@
+         .and_then(|e| e.to_str())
+         .map(str::to_ascii_lowercase);
+     match ext.as_deref() {
+-        #[cfg(feature = "native-backends")]
++        #[cfg(feature = "lua")]
+         Some("lua") => Ok(Box::new(lua::LuaScriptBackend::new(source, names, lua)?)),
+         #[cfg(feature = "native-backends")]
+         Some("wasm") => Ok(Box::new(wasm::WasmScriptBackend::new(source, names, wasm)?)),
++        #[cfg(not(feature = "lua"))]
++        Some(known @ "lua") => {
++            let _ = (source, names, lua);
++            Err(ScriptError::UnsupportedBackend(format!(
++                "{script_entry}: the .{known} backend is not built in (pin_script feature \
++                 `lua` is off)"
++            )))
++        }
+         #[cfg(not(feature = "native-backends"))]
+-        Some(known @ ("lua" | "wasm")) => {
++        Some(known @ "wasm") => {
+             let _ = (source, names, lua, wasm);
+             Err(ScriptError::UnsupportedBackend(format!(
+                 "{script_entry}: the .{known} backend is not built in (pin_script feature \
+--- a/crates/pin_script/src/lua/mod.rs
++++ b/crates/pin_script/src/lua/mod.rs
+@@ -46,6 +46,8 @@
+ pub(crate) mod api;
+ mod bridge;
+ mod config;
++pub mod libm_abi;
++#[cfg(feature = "native-backends")]
+ pub mod reload;
+ mod sandbox;
+ mod saved;
+--- a/crates/pin_script/src/lua/sandbox.rs
++++ b/crates/pin_script/src/lua/sandbox.rs
+@@ -184,6 +184,7 @@
+ /// ([`LuaConfig::engine`]`.memory_limit_bytes`), so the parser's allocations
+ /// are bounded no matter how large the file is; a source whose compiled form
+ /// does not fit is a [`ScriptError::MemoryLimit`].
++#[cfg_attr(not(feature = "native-backends"), allow(dead_code))]
+ pub(crate) fn syntax_check(source: &[u8]) -> Result<(), ScriptError> {
+     let lua = Lua::new_with(StdLib::NONE, LuaOptions::new()).map_err(|e| load_err(&e))?;
+     lua.set_memory_limit(LuaConfig::engine().memory_limit_bytes)
+@@ -329,6 +330,9 @@
+             "print",
+             lua.create_function(|_, _: mlua::MultiValue| Ok(()))?,
+         )?;
++        #[cfg(feature = "web-parity")]
++        g.raw_set("collectgarbage", Value::Nil)?;
++        #[cfg(not(feature = "web-parity"))]
+         g.raw_set(
+             "collectgarbage",
+             lua.create_function(
+--- /dev/null
++++ b/crates/pin_script/src/lua/libm_abi.rs
+@@ -0,0 +1,34 @@
++//! KHZ (web spike S2): the transcendental functions the patched Lua calls
++//! when built with `KHZ_LUA_MATH` (third_party/lua-src: `KHZ_MATHOP`), so
++//! `math.sin`, `^` and friends give the same bits on every target (the
++//! engine's Rust `libm`, D9) instead of the platform C library's.
++#![allow(unsafe_code)]
++
++macro_rules! khz1 {
++    ($($name:ident => $f:path),* $(,)?) => {$(
++        #[doc = concat!("`", stringify!($name), "` for the patched Lua (Rust libm).")]
++        #[unsafe(no_mangle)]
++        pub extern "C" fn $name(x: f64) -> f64 {
++            $f(x)
++        }
++    )*};
++}
++
++khz1! {
++    khz_sin => libm::sin, khz_cos => libm::cos, khz_tan => libm::tan,
++    khz_asin => libm::asin, khz_acos => libm::acos, khz_exp => libm::exp,
++    khz_log => libm::log, khz_log2 => libm::log2, khz_log10 => libm::log10,
++    khz_sinh => libm::sinh, khz_cosh => libm::cosh, khz_tanh => libm::tanh,
++}
++
++/// `atan2` for the patched Lua (Rust libm).
++#[unsafe(no_mangle)]
++pub extern "C" fn khz_atan2(y: f64, x: f64) -> f64 {
++    libm::atan2(y, x)
++}
++
++/// `pow` for the patched Lua (Rust libm).
++#[unsafe(no_mangle)]
++pub extern "C" fn khz_pow(x: f64, y: f64) -> f64 {
++    libm::pow(x, y)
++}

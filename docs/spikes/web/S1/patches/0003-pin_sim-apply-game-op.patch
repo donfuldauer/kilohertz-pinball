@@ -1,0 +1,31 @@
+# pin_sim: public apply_game_op so a driver that steps the sim itself (per-tick hashes, a web frame loop) replays recorded bot games exactly like GameRecording::play
+--- a/crates/pin_sim/src/replay/game.rs
++++ b/crates/pin_sim/src/replay/game.rs
+@@ -361,6 +361,16 @@
+ }
+ 
+ /// Applies one operation exactly as the bot does.
++/// Applies one recorded bot operation to `sim` exactly as
++/// [`GameRecording::play`] does (for drivers that step the simulation
++/// themselves, e.g. a per-tick hash dump or a web frame loop).
++///
++/// # Errors
++/// [`SimError::UnknownSwitch`] when the table lacks the cabinet switch.
++pub fn apply_game_op(sim: &mut Simulation, op: GameOp) -> Result<(), SimError> {
++    apply(sim, op)
++}
++
+ fn apply(sim: &mut Simulation, op: GameOp) -> Result<(), SimError> {
+     match op {
+         GameOp::SetSwitch { input, closed } => sim.set_switch(input.name(), closed),
+--- a/crates/pin_sim/src/replay/mod.rs
++++ b/crates/pin_sim/src/replay/mod.rs
+@@ -44,7 +44,7 @@
+ 
+ pub mod game;
+ 
+-pub use game::{GameOp, GameOpSink, GameRecording, GameReplay, replay_game};
++pub use game::{GameOp, GameOpSink, GameRecording, GameReplay, apply_game_op, replay_game};
+ 
+ use core::fmt;
+ use pin_core::input::{CabinetAxis, CabinetInput, InputEvent, InputEventKind};

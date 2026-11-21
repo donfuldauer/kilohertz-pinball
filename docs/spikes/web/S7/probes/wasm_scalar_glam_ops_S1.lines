@@ -1,0 +1,15 @@
+wasm32 default (scalar glam):
+glam_ops:
+quat_mul=327c5e91c312e3b2
+quat_normalize=c76908f4fb9b8067
+quat_mul_vec3=feeb7ee508a2690c
+quat_conj_mul_vec3=60a0224dc275a5b5
+quat_from_rotation_arc=82d114e762547e28
+integrate_orientation=a77f56be170ad808
+vec4_dot=5a3d0724a597ff38
+vec4_length=c4f220b44271ff9c
+vec4_normalize=c76908f4fb9b8067
+vec4_min_max=2865c280c17f7e51
+mat4_mul_mat4=ec0c0b84aa172723
+mat4_transform_point3=cb13ea8053ed570a
+mat4_inverse=c4e8655e86847e8c

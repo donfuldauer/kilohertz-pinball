@@ -1,0 +1,26 @@
+<!doctype html><html><body><canvas id="c" width="64" height="64"></canvas><script>
+window.check = async () => {
+  const out = { ua: navigator.userAgent, hasGpu: !!navigator.gpu, isolated: self.crossOriginIsolated };
+  try {
+    if (navigator.gpu) {
+      const a = await navigator.gpu.requestAdapter();
+      out.adapter = !!a;
+      if (a) {
+        out.info = a.info ? { vendor: a.info.vendor, architecture: a.info.architecture, device: a.info.device, description: a.info.description, isFallbackAdapter: a.info.isFallbackAdapter } : null;
+        out.features = [...a.features];
+        const d = await a.requestDevice();
+        out.device = !!d;
+        out.preferred = navigator.gpu.getPreferredCanvasFormat();
+      }
+    }
+  } catch (e) { out.err = String(e); }
+  const gl = document.createElement('canvas').getContext('webgl2');
+  out.webgl2 = !!gl;
+  if (gl) {
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    out.glRenderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    out.glExt = gl.getSupportedExtensions();
+  }
+  return out;
+};
+</script></body></html>

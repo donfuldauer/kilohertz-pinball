@@ -1,0 +1,34 @@
+target_arch=aarch64 N=1000000
+quat_mul=cd0e1be9a5f4cf69
+quat_dot=55e93414c8d892d5
+quat_length_squared=8cec479f58a7c117
+quat_normalize=18c764b84c6e16a3
+quat_mul_vec3=71409e9042bf9701
+quat_conj_mul_vec3=4d4a7093d5bd6bb9
+quat_from_rotation_arc=2b4c4b83df3e1173
+integrate_orientation=7c0ffd3dc6560960
+vec4_dot=55e93414c8d892d5
+vec4_length=c0e74f8c6ad2f0d5
+vec4_normalize=18c764b84c6e16a3
+vec4_min_max=36be27432c1d397d
+vec3a_cross=84b6ee5e42c757ed
+vec3a_dot=5fd12025655bc595
+vec3a_length=75dc1c007bb0847d
+vec3_ops=04239e53062882e6
+vec3_min_max=9870a183f847c9b5
+f32_min_max=24782a8db3b842d2
+mat4_mul_mat4=63269b2005ab539f
+mat4_transform_point3=b8faa289897943e4
+mat4_inverse=e1ef5ba0b302d57d
+libm=33d86b04d07b329b
+f32_mul_add=be49639ee2bb30b6
+quat_lerp_slerp=ac657034465c87a9
+vec3a_lerp=b1b779905c3f0aa3
+P:quat_mul=cd0e1be9a5f4cf69
+P:quat_length_squared=aaf6bcb8a9eb3aa0
+P:quat_normalize=8793607424c40861
+P:quat_mul_vec3=52d82be9770ec305
+P:quat_conj_mul_vec3=87d77d3413d32238
+P:quat_from_rotation_arc=dc4f3500443578dc
+P:integrate_orientation=ecb9ec63aa3e0a63
+portable_vs_glam_mismatches(of 1000000) quat_mul:0 quat_length_squared:267992 quat_normalize:646011 quat_mul_vec3:287323 quat_conj_mul_vec3:287588 quat_from_rotation_arc:623018 integrate_orientation:323538

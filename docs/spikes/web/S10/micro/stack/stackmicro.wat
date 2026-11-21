@@ -1,0 +1,29 @@
+(module
+  ;; rec0: no locals; rec16: 16 live i64 locals; both return the depth reached.
+  (func $rec0 (export "rec0") (param $n i32) (result i32)
+    (if (result i32) (i32.eqz (local.get $n)) (then (i32.const 0))
+      (else (i32.add (i32.const 1) (call $rec0 (i32.sub (local.get $n) (i32.const 1)))))))
+  (func $rec16 (export "rec16") (param $n i32) (result i32)
+    (local i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64)
+    (local.set 1 (i64.extend_i32_u (local.get $n))) (local.set 2 (i64.add (local.get 1) (i64.const 1)))
+    (local.set 3 (i64.add (local.get 2) (i64.const 1))) (local.set 4 (i64.add (local.get 3) (i64.const 1)))
+    (local.set 5 (i64.add (local.get 4) (i64.const 1))) (local.set 6 (i64.add (local.get 5) (i64.const 1)))
+    (local.set 7 (i64.add (local.get 6) (i64.const 1))) (local.set 8 (i64.add (local.get 7) (i64.const 1)))
+    (local.set 9 (i64.add (local.get 8) (i64.const 1))) (local.set 10 (i64.add (local.get 9) (i64.const 1)))
+    (local.set 11 (i64.add (local.get 10) (i64.const 1))) (local.set 12 (i64.add (local.get 11) (i64.const 1)))
+    (local.set 13 (i64.add (local.get 12) (i64.const 1))) (local.set 14 (i64.add (local.get 13) (i64.const 1)))
+    (local.set 15 (i64.add (local.get 14) (i64.const 1))) (local.set 16 (i64.add (local.get 15) (i64.const 1)))
+    (if (result i32) (i32.eqz (local.get $n)) (then (i32.const 0))
+      (else (i32.add
+        (i32.add (call $rec16 (i32.sub (local.get $n) (i32.const 1)))
+                 (i32.wrap_i64 (i64.sub (local.get 16) (local.get 1))))
+        (i32.const -14)))))
+  ;; overflow inside a legacy try/catch_all: does the wasm handler see the engine's stack overflow?
+  (func (export "caught_legacy") (param $n i32) (result i32)
+    try (result i32)
+      local.get $n
+      call $rec0
+    catch_all
+      i32.const -1
+    end)
+)

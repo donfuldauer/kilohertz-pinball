@@ -1,0 +1,23 @@
+--- Cargo.toml.orig	2026-11-20 16:48:46.984974162 +0000
++++ repo/Cargo.toml	2026-11-20 16:48:47.017084863 +0000
+@@ -25,7 +25,9 @@
+ raw-window-handle = "=0.6.2"
+ 
+ # Graphics.
+-wgpu = "=30.0.1"
++# S3 spike: default features off; pin_render picks native backends per target and web
++# backends through its `webgpu` / `webgl` features.
++wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl"] }
+ pollster = "=1.0.1"
+ 
+ # Physics.
+@@ -49,7 +51,8 @@
+ # Default features off (4.1): `import` reads the real filesystem; bundles go through pin_assets' VFS.
+ gltf = { version = "=1.4.1", default-features = false, features = ["names", "extras", "utils"] }
+ egui = { version = "=0.37.0", features = ["default_fonts"] }  # 4.4 review B1: menu text needs the bundled fonts
+-egui-wgpu = "=0.37.0"
++# S3 spike: egui-wgpu's default features turn on wgpu/webgl + fragile-send-sync (and wgpu/default).
++egui-wgpu = { version = "=0.37.0", default-features = false }
+ libm = "=0.2.16"
+ 
+ # Wave 3 additions (Orchestrator; DECISIONS.md "Orchestrator — Wave 3 brief decisions").

@@ -1,0 +1,315 @@
+diff -ruN S2/repo/crates/pin_script/src/lua/mod.rs S8/repo/crates/pin_script/src/lua/mod.rs
+--- S2/repo/crates/pin_script/src/lua/mod.rs	2026-11-20 20:28:01.667395284 +0000
++++ S8/repo/crates/pin_script/src/lua/mod.rs	2026-11-20 21:37:49.149972256 +0000
+@@ -63,6 +63,7 @@
+ use crate::NameTables;
+ 
+ pub use config::LuaConfig;
++pub use sandbox::s8_features;
+ 
+ /// Instructions between two budget-hook calls; the budget's granularity.
+ pub const HOOK_INTERVAL: u32 = 1000;
+@@ -92,6 +93,28 @@
+     faulted: bool,
+     fault_count: u32,
+     last_error: Option<ScriptError>,
++    s8: S8State,
++}
++
++/// Web spike S8 instrumentation and the per-tick aggregate budget prototype
++/// (scratch only, not product code).
++#[derive(Clone, Copy, Debug, Default)]
++struct S8State {
++    /// Aggregate budget per tick for `on_switch_edge` + `on_tick` (None: off).
++    tick_cap: Option<u64>,
++    /// Tick the aggregate below belongs to.
++    agg_tick: Option<u64>,
++    /// Units left in this tick's aggregate.
++    agg_left: u64,
++    /// Callbacks refused because the tick's aggregate was used up.
++    tick_cap_faults: u32,
++    /// Hook-charged units of the last callback (budget - left).
++    last_charged: u64,
++    /// Exact units of the last callback (charged + the final partial hook
++    /// interval's instructions).
++    last_units: u64,
++    /// Whether the last callback entry ran Lua at all.
++    last_ran: bool,
+ }
+ 
+ // SAFETY: `LuaScriptBackend` is `!Send` only because of the `Rc`s inside it
+@@ -196,6 +219,7 @@
+             faulted: false,
+             fault_count: 0,
+             last_error: None,
++            s8: S8State::default(),
+         })
+     }
+ 
+@@ -230,6 +254,47 @@
+         self.vm.lua.used_memory()
+     }
+ 
++    /// S8 (spike): global `S8_OUT` (a sequence of strings), one per line.
++    #[doc(hidden)]
++    pub fn s8_out(&self) -> String {
++        let mut s = String::new();
++        if let Ok(t) = self.vm.globals.raw_get::<mlua::Table>("S8_OUT") {
++            for v in t.sequence_values::<mlua::LuaString>().flatten() {
++                s.push_str(&v.to_string_lossy());
++                s.push('\n');
++            }
++        }
++        s
++    }
++
++    /// S8 (spike): hook-charged units, exact units and whether Lua ran, for
++    /// the last callback.
++    #[doc(hidden)]
++    pub fn s8_last_units(&self) -> (u64, u64, bool) {
++        (self.s8.last_charged, self.s8.last_units, self.s8.last_ran)
++    }
++
++    /// S8 (spike): turns the per-tick aggregate budget on (`Some(units)`) or off.
++    #[doc(hidden)]
++    pub fn s8_set_tick_cap(&mut self, cap: Option<u64>) {
++        self.s8.tick_cap = cap;
++        self.s8.agg_tick = None;
++    }
++
++    /// S8 (spike): callbacks refused by the per-tick aggregate.
++    #[doc(hidden)]
++    pub fn s8_tick_cap_faults(&self) -> u32 {
++        self.s8.tick_cap_faults
++    }
++
++    /// S8 (spike): KHZ counters (real bytes, real peak, logical peak,
++    /// emergency GCs, cap refusals, userdata payload sizes + 1, ...), then
++    /// the accounted heap (logical with KHZ 33) and the GC debt.
++    #[doc(hidden)]
++    pub fn s8_stats(&self) -> [i64; 16] {
++        self.vm.s8_stats()
++    }
++
+     fn fault(&mut self, err: ScriptError, ctx: &mut HostCtx) {
+         self.faulted = true;
+         self.fault_count = self.fault_count.saturating_add(1);
+@@ -238,6 +303,7 @@
+     }
+ 
+     /// Calls `f(args)` with `ctx` visible to the API, under a fresh budget.
++    /// Returns the result and (S8) the hook-charged and exact units used.
+     fn call_with_ctx(
+         vm: &Vm,
+         bridge: &Bridge,
+@@ -245,13 +311,29 @@
+         f: &Function,
+         args: impl IntoLuaMulti,
+         ctx: &mut HostCtx,
+-    ) -> Result<(), ScriptError> {
++    ) -> (Result<(), ScriptError>, u64, u64) {
+         vm.reset_budget(bridge, budget);
++        // S8: a budget below the hook interval must still be enforced.
++        let base = bridge.hook_interval.min(budget.max(1));
++        if base < bridge.hook_interval {
++            vm.s8_set_hook_count(base);
++        }
+         let r = {
+             let _guard = bridge.enter(ctx);
+             f.call::<()>(args)
+         };
+-        vm.check(bridge, r).map_or(Ok(()), Err)
++        let left = vm.s8_budget_left();
++        let charged = (i64::from(budget) - left).max(0) as u64;
++        let partial = if left < 0 || bridge.budget_hit() {
++            0
++        } else {
++            (i64::from(base) - vm.s8_hook_left()).clamp(0, i64::from(base)) as u64
++        };
++        (
++            vm.check(bridge, r).map_or(Ok(()), Err),
++            charged,
++            charged + partial,
++        )
+     }
+ 
+     fn run(&mut self, entry: Entry, switch: SwitchId, closed: bool, ctx: &mut HostCtx) {
+@@ -261,6 +343,9 @@
+         if self.bridge.releases_pending() {
+             self.bridge.drain_releases(ctx.cmd);
+         }
++        self.s8.last_charged = 0;
++        self.s8.last_units = 0;
++        self.s8.last_ran = false;
+         if self.faulted {
+             return;
+         }
+@@ -270,19 +355,53 @@
+             Entry::Tick => &keys.on_tick,
+             Entry::Switch => &keys.on_switch,
+         };
+-        let budget = self.cfg.instruction_budget;
++        let mut budget = self.cfg.instruction_budget;
++        // S8 prototype: per-tick aggregate budget over every callback of one
++        // tick (switch edges, then on_tick); a callback runs with
++        // min(per-callback budget, units left this tick). A callback that
++        // finds nothing left is not run and faults like a budget kill.
++        let capped = self.s8.tick_cap.is_some() && !matches!(entry, Entry::Init);
++        if let (Some(cap), true) = (self.s8.tick_cap, capped) {
++            if self.s8.agg_tick != Some(ctx.view.tick) {
++                self.s8.agg_tick = Some(ctx.view.tick);
++                self.s8.agg_left = cap;
++            }
++            if self.s8.agg_left == 0 {
++                self.s8.tick_cap_faults = self.s8.tick_cap_faults.saturating_add(1);
++                self.s8.last_ran = false;
++                self.fault(ScriptError::BudgetExceeded, ctx);
++                return;
++            }
++            budget = budget.min(u32::try_from(self.s8.agg_left).unwrap_or(u32::MAX));
++        }
+         let mark = QueueMark::new(ctx.cmd, &self.bridge);
+         let (vm, bridge) = (&self.vm, &*self.bridge);
+-        let result = match vm.entry(key) {
+-            Err(e) => Err(ScriptError::Runtime(e.to_string())),
+-            Ok(None) => Ok(()),
+-            Ok(Some(f)) => match entry {
+-                Entry::Switch => {
+-                    Self::call_with_ctx(vm, bridge, budget, &f, (i64::from(switch.0), closed), ctx)
+-                }
+-                Entry::Init | Entry::Tick => Self::call_with_ctx(vm, bridge, budget, &f, (), ctx),
+-            },
++        let (result, charged, units, ran) = match vm.entry(key) {
++            Err(e) => (Err(ScriptError::Runtime(e.to_string())), 0, 0, false),
++            Ok(None) => (Ok(()), 0, 0, false),
++            Ok(Some(f)) => {
++                let (r, c, u) = match entry {
++                    Entry::Switch => Self::call_with_ctx(
++                        vm,
++                        bridge,
++                        budget,
++                        &f,
++                        (i64::from(switch.0), closed),
++                        ctx,
++                    ),
++                    Entry::Init | Entry::Tick => {
++                        Self::call_with_ctx(vm, bridge, budget, &f, (), ctx)
++                    }
++                };
++                (r, c, u, true)
++            }
+         };
++        self.s8.last_charged = charged;
++        self.s8.last_units = units;
++        self.s8.last_ran = ran;
++        if capped {
++            self.s8.agg_left = self.s8.agg_left.saturating_sub(units);
++        }
+         if let Err(e) = result {
+             // An aborted callback is all-or-nothing: drop what it queued.
+             mark.rollback(ctx.cmd, &self.bridge);
+diff -ruN S2/repo/crates/pin_script/src/lua/sandbox.rs S8/repo/crates/pin_script/src/lua/sandbox.rs
+--- S2/repo/crates/pin_script/src/lua/sandbox.rs	2026-11-20 20:01:08.620308418 +0000
++++ S8/repo/crates/pin_script/src/lua/sandbox.rs	2026-11-20 21:37:49.157972257 +0000
+@@ -140,6 +140,48 @@
+ unsafe extern "C-unwind" {
+     fn lua_khzsetbudget(state: *mut mlua::ffi::lua_State, n: i64);
+     fn lua_khzspend(state: *mut mlua::ffi::lua_State, n: i64) -> i64;
++    // web spike S8 (KHZ 33 and spike instrumentation, third_party/lua-src)
++    fn lua_khzsetmemcap(state: *mut mlua::ffi::lua_State, cap: usize);
++    fn lua_khzfeatures() -> std::os::raw::c_int;
++    fn lua_khzstats(
++        state: *mut mlua::ffi::lua_State,
++        out: *mut i64,
++        n: std::os::raw::c_int,
++    ) -> std::os::raw::c_int;
++    fn lua_khzhookleft(state: *mut mlua::ffi::lua_State) -> std::os::raw::c_int;
++}
++
++/// S8: the vendored Lua was built with KHZ 33 (logical memory accounting).
++pub(crate) fn s8_logical_mem() -> bool {
++    // SAFETY: a pure function of the build.
++    unsafe { lua_khzfeatures() & 1 != 0 }
++}
++
++/// S8: compiled-in KHZ knobs (1 logical memory, 2 key order, 4 audit fixes).
++pub fn s8_features() -> i32 {
++    // SAFETY: a pure function of the build.
++    unsafe { lua_khzfeatures() }
++}
++
++/// S8: real-byte backstop for the host allocator when the cap is logical
++/// (KHZ 33): the logical cap trips first on every target (LP64 real sizes
++/// equal the logical ones; 32-bit real sizes are smaller), the backstop only
++/// bounds what the logical accounting cannot see.
++pub(crate) const S8_BACKSTOP_FACTOR: usize = 2;
++
++/// Applies the memory cap to a fresh state: the host allocator's real-byte
++/// limit, or (KHZ 33) the logical cap plus a real-byte backstop.
++pub(crate) fn apply_memory_cap(lua: &Lua, cap: usize) -> mlua::Result<()> {
++    if s8_logical_mem() {
++        lua.set_memory_limit(cap.saturating_mul(S8_BACKSTOP_FACTOR))?;
++        // SAFETY: plain setter on the live main state.
++        unsafe {
++            lua.exec_raw::<()>((), |state| lua_khzsetmemcap(state, cap))?;
++        }
++        Ok(())
++    } else {
++        lua.set_memory_limit(cap).map(drop)
++    }
+ }
+ 
+ /// Maps an mlua error raised while the budget/memory flags were live.
+@@ -187,8 +229,7 @@
+ #[cfg_attr(not(feature = "native-backends"), allow(dead_code))]
+ pub(crate) fn syntax_check(source: &[u8]) -> Result<(), ScriptError> {
+     let lua = Lua::new_with(StdLib::NONE, LuaOptions::new()).map_err(|e| load_err(&e))?;
+-    lua.set_memory_limit(LuaConfig::engine().memory_limit_bytes)
+-        .map_err(|e| load_err(&e))?;
++    apply_memory_cap(&lua, LuaConfig::engine().memory_limit_bytes).map_err(|e| load_err(&e))?;
+     lua.load(source)
+         .set_name(CHUNK_NAME)
+         .set_mode(ChunkMode::Text)
+@@ -219,9 +260,7 @@
+         // The cap applies from compilation on: the compiled chunk's constants
+         // live in the heap too, so a source whose compiled form does not fit
+         // is a `MemoryLimit`, never a reason to raise the cap.
+-        vm.lua
+-            .set_memory_limit(cfg.memory_limit_bytes)
+-            .map_err(|e| load_err(&e))?;
++        apply_memory_cap(&vm.lua, cfg.memory_limit_bytes).map_err(|e| load_err(&e))?;
+         let chunk = vm
+             .lua
+             .load(source)
+@@ -284,6 +323,31 @@
+         unsafe { lua_khzsetbudget(self.raw, i64::from(instructions)) };
+     }
+ 
++    /// S8: budget left (spends nothing; drains the pending cost).
++    pub(crate) fn s8_budget_left(&self) -> i64 {
++        // SAFETY: `raw` is the live main state of `self.lua`.
++        unsafe { lua_khzspend(self.raw, 0) }
++    }
++
++    /// S8: instructions left before the count hook fires next.
++    pub(crate) fn s8_hook_left(&self) -> i64 {
++        // SAFETY: as above.
++        i64::from(unsafe { lua_khzhookleft(self.raw) })
++    }
++
++    /// S8: sets the count-hook interval (kills at a sub-interval budget).
++    pub(crate) fn s8_set_hook_count(&self, count: u32) {
++        let _ = set_hook_count(&self.lua, count);
++    }
++
++    /// S8: KHZ instrumentation counters plus the accounted heap and GC debt.
++    pub(crate) fn s8_stats(&self) -> [i64; 16] {
++        let mut out = [0i64; 16];
++        // SAFETY: writes at most 16 entries into `out`.
++        unsafe { lua_khzstats(self.raw, out.as_mut_ptr(), 16) };
++        out
++    }
++
+     /// True once the budget of the current call is used up.
+     pub(crate) fn exhausted(&self, bridge: &Bridge) -> bool {
+         // SAFETY: as above; spending 0 only reads the counter.

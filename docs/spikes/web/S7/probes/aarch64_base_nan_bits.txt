@@ -1,0 +1,1 @@
+nan_bits: 0/0=7fc00000 inf-inf=7fc00000 0*inf=7fc00000 sqrt(-1)=7fc00000 snan+1=7fe00001 qnan_payload+1=7fc01234 neg_qnan_payload*1=ffc01234 min(qnan,1)=3f800000 libm::sqrtf(-1)=7fc00000
