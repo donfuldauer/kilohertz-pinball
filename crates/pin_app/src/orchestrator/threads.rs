@@ -12,6 +12,7 @@ use super::gpu_timer::GpuFrameTimer;
 use super::hud::{DebugViewHooks, HudFeed, HudOverlay, hud_format_supported};
 use super::present::{AppSurfaces, SurfacePlan, table_set_accepted};
 use super::table::{DisplayCommand, FlipperOutline};
+use super::trace::{FrameTraceWriter, SimTraceWriter};
 use super::view::{TableRenderOptions, TableVisuals};
 use super::{HybridTimer, SimClock, SimLoop};
 use crate::profiler::{
@@ -131,6 +132,10 @@ pub struct RenderConfig {
     /// over the playfield (table or debug view), refreshed every
     /// [`HUD_REFRESH_NS`]. `None` (default): no HUD, frames unchanged.
     pub hud: Option<ProfilerReader>,
+    /// The latency trace's frame writer (`--latency-trace`, REQ-LAT-003):
+    /// every presented frame's snapshot tick and present time are recorded
+    /// ([`FrameTraceWriter::presented`]). `None` (default): nothing.
+    pub latency_trace: Option<FrameTraceWriter>,
 }
 
 /// How often the render thread refreshes the profiler HUD text (250 ms:
@@ -216,6 +221,7 @@ impl Default for RenderConfig {
             displays: None,
             present_profiler: None,
             hud: None,
+            latency_trace: None,
         }
     }
 }
@@ -245,6 +251,10 @@ pub struct ThreadsConfig {
     /// [`with_profiled_sim`](Self::with_profiled_sim) does). `None`
     /// (default): not profiled.
     pub loop_profiler: Option<LoopProfiler>,
+    /// The latency trace's sim writer (`--latency-trace`, REQ-LAT-003),
+    /// installed on the sim loop ([`SimLoop::set_latency_trace`]).
+    /// `None` (default): nothing is recorded.
+    pub latency_trace: Option<SimTraceWriter>,
 }
 
 impl ThreadsConfig {
@@ -265,6 +275,7 @@ impl ThreadsConfig {
             render: RenderConfig::default(),
             audio: AudioConfig::default(),
             loop_profiler: None,
+            latency_trace: None,
         }
     }
 
@@ -631,6 +642,7 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
         render,
         audio,
         loop_profiler,
+        latency_trace,
     } = cfg;
 
     let spawn = |threads: &mut Threads, name: &'static str, f: Box<dyn FnOnce() + Send>| {
@@ -649,7 +661,10 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
         }
     };
 
-    let sim_loop = SimLoop::new(sim, input, writer);
+    let mut sim_loop = SimLoop::new(sim, input, writer);
+    if let Some(t) = latency_trace {
+        sim_loop.set_latency_trace(t);
+    }
     let (sd, st) = (Arc::clone(&shutdown), Arc::clone(&stats));
     let r = spawn(
         &mut threads,
@@ -1097,6 +1112,7 @@ fn render_thread(
         mut displays,
         mut present_profiler,
         hud,
+        mut latency_trace,
     } = cfg;
     // The HUD is drawn by the playfield's table renderer (or, in the debug
     // view, by `DebugViewHooks`), only when a reader is configured
@@ -1232,6 +1248,9 @@ fn render_thread(
                     // No profiler, no HUD: the default frames, unchanged.
                     None => set.render(&lines, &camera),
                 };
+                if let Some(t) = latency_trace.as_mut() {
+                    t.presented(&st, last_tick);
+                }
                 stats.record_statuses(&st, spawned);
                 paced = set.frame_paced(&st);
             }
@@ -1240,6 +1259,9 @@ fn render_thread(
                     s.set_hud_lines(&lines);
                 }
                 let st = s.render(snap);
+                if let Some(t) = latency_trace.as_mut() {
+                    t.presented(&st, last_tick);
+                }
                 stats.record_statuses(&st, spawned);
                 paced = s.frame_paced(&st);
             }

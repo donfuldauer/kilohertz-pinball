@@ -38,6 +38,18 @@
 //!   After the shutdown line (`pin_app: N sim ticks (D dropped), F frames,
 //!   ...`) a render diagnostics line follows (`pin_app: render: gpu ready
 //!   after X ms, first frame after Y ms, ...`).
+//! * `--latency-trace <file>` (REQ-LAT-003): records every delivered button
+//!   event's SDL timestamp, applying tick, first bat-move tick, the first
+//!   frame that drew it and that frame's present time, plus the presented
+//!   frame table, into preallocated rings
+//!   (`orchestrator::trace`, which documents the CSV format). The file is
+//!   created before anything starts (an unwritable path fails the run with
+//!   `pin_app: --latency-trace: <error>`), written on the main thread after
+//!   the threads were joined, and summarised after the shutdown lines as
+//!   `pin_app: latency trace: <path>, <n> events, <m> frames, <k>
+//!   overflows`. While tracing, the main thread prints `pin_app: latency
+//!   trace: first frame presented` once the first frame was presented (the
+//!   windowed harness waits for it). Without the flag nothing changes.
 //!
 //! The table is loaded (validated and simulated from one in-memory bundle
 //! snapshot) and the headless table run happens on a thread with a
@@ -51,6 +63,7 @@
 //! thread, wait (bounded) for a detached presenter to release its window,
 //! and if one never does, exit without destroying it.
 
+use pin_app::orchestrator::trace::{CollectedTrace, FlipperBindings, latency_trace, summary_line};
 use pin_app::orchestrator::{
     AudioConfig, AudioSink, ClosePolicy, DISPLAY_RING_CAPACITY, DeviceStream, DropMonitor,
     FlipperOutline, NullSink, RegisteredSound, RenderConfig, RenderGpu, RunExit, RunLimits,
@@ -72,6 +85,7 @@ use pin_render::gpu::{
 };
 use pin_render::topology::{DEFAULT_BACKGLASS_PIP, DEFAULT_SCORE_PIP, TopologyMode};
 use pin_sim::SimConfig;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -159,6 +173,7 @@ struct LoadedApp {
     haptics: pin_input::haptics::HapticsConsumer<pin_core::input::HapticsTelemetryEvent>,
     sounds: pin_audio::mixer::SoundReceiver,
     displays: pin_input::haptics::HapticsConsumer<pin_app::orchestrator::DisplayCommand>,
+    bindings: FlipperBindings,
 }
 
 /// Validates and loads the table on a big-stack thread (the simulation is
@@ -198,6 +213,7 @@ fn load_app_table(path: &Path, mixer: MixerConfig) -> Result<LoadedApp, String> 
             sim,
             table_lines: table_lines(&checked.scene, MAX_TABLE_LINES),
             flippers: FlipperOutline::of(&checked.table),
+            bindings: FlipperBindings::of_flippers(&checked.table.flippers),
             source_positions: table_source_positions(&checked.table),
             visuals,
             samples,
@@ -270,9 +286,29 @@ fn merge_failure(earlier: Option<String>, join_error: Option<String>) -> Option<
     }
 }
 
+/// `--latency-trace <file>`: the path and the file, created (truncated)
+/// now so an unwritable path fails before the app starts.
+fn open_latency_trace(args: &[String]) -> Result<Option<(PathBuf, std::fs::File)>, String> {
+    let Some(path) = path_of(args, "--latency-trace") else {
+        return Ok(None);
+    };
+    let path = path.map_err(|e| format!("--latency-trace: {e}"))?;
+    let file = std::fs::File::create(&path)
+        .map_err(|e| format!("--latency-trace: {}: {e}", path.display()))?;
+    Ok(Some((path, file)))
+}
+
+/// Writes the collected trace to `file`.
+fn write_latency_trace(file: &mut std::fs::File, trace: &CollectedTrace) -> Result<(), String> {
+    file.write_all(trace.to_csv().as_bytes())
+        .and_then(|()| file.flush())
+        .map_err(|e| format!("--latency-trace: writing the trace: {e}"))
+}
+
 fn run_app(args: &[String]) -> Result<(), String> {
     let headless = args.iter().any(|a| a == "--headless");
     let limits = RunLimits::from_args(args)?;
+    let mut trace_file = open_latency_trace(args)?;
     let vrr = args.iter().any(|a| a == "--vrr");
     let debug_overlay = args.iter().any(|a| a == "--debug-overlay");
     let profiler_hud = args.iter().any(|a| a == "--profiler-hud");
@@ -365,6 +401,10 @@ fn run_app(args: &[String]) -> Result<(), String> {
     // The profiler's reader (table runs only; the idle path is not
     // profiled).
     let mut profiler = None;
+    let bindings = table
+        .as_ref()
+        .map_or_else(FlipperBindings::new, |t| t.bindings);
+    let mut trace = None;
     let mut cfg = match table {
         Some(t) => {
             // The ProfiledSim's clock is the sim loop's: SDL's event
@@ -400,6 +440,13 @@ fn run_app(args: &[String]) -> Result<(), String> {
         }
     };
     cfg.now_ns = sdl_now_ns;
+    if trace_file.is_some() {
+        // Every trace buffer is allocated here, before the threads start.
+        let (collector, sim_writer, frame_writer) = latency_trace(bindings, sdl_now_ns);
+        cfg.latency_trace = Some(sim_writer);
+        render.latency_trace = Some(frame_writer);
+        trace = Some(collector);
+    }
     let rendering = render.gpu.is_some();
     cfg.render = render;
     let threads = spawn_threads(cfg)?;
@@ -407,6 +454,7 @@ fn run_app(args: &[String]) -> Result<(), String> {
     let started = Instant::now();
     let mut input_drops = DropMonitor::default();
     let mut failure = None;
+    let mut first_frame_announced = false;
     loop {
         let outcome = platform.pump(&mut forwarder, PUMP_TIMEOUT);
         if let Some(n) = input_drops.check(forwarder.stats().input_dropped) {
@@ -419,6 +467,10 @@ fn run_app(args: &[String]) -> Result<(), String> {
             break;
         }
         let live = threads.stats();
+        if trace.is_some() && !first_frame_announced && live.render_frames > 0 {
+            first_frame_announced = true;
+            eprintln!("pin_app: latency trace: first frame presented");
+        }
         if limits.frames.is_some() && (!rendering || live.gpu_error) {
             eprintln!("pin_app: run condition unreachable: --run-frames but nothing renders");
             failure = Some("--run-frames cannot be met: nothing renders".to_owned());
@@ -456,6 +508,22 @@ fn run_app(args: &[String]) -> Result<(), String> {
         }
     };
     failure = merge_failure(failure, join_error);
+    // Every thread is joined: drain the trace rings and write the file here,
+    // on the main thread.
+    let trace_summary = match (trace, trace_file.as_mut()) {
+        (Some(collector), Some((path, file))) => {
+            let collected = collector.collect();
+            match write_latency_trace(file, &collected) {
+                Ok(()) => Some(summary_line(path, &collected)),
+                Err(e) => {
+                    eprintln!("pin_app: {e}");
+                    failure = merge_failure(failure, Some(e));
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
     // The audio thread is joined: the device stream can go.
     drop(audio_device);
     // The main thread's own guards: from here only a detached presenter can
@@ -476,6 +544,9 @@ fn run_app(args: &[String]) -> Result<(), String> {
                 eprintln!("pin_app: profiler: {line}");
             }
         }
+    }
+    if let Some(line) = trace_summary {
+        eprintln!("{line}");
     }
     // 2. Destroy the released windows here, on the main thread, and wait for
     //    a detached presenter to release its window.
@@ -502,7 +573,41 @@ fn run_app(args: &[String]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_failure, teardown_exit_code};
+    use super::{merge_failure, open_latency_trace, teardown_exit_code};
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// REQ-LAT-003: `--latency-trace` creates its file up front; an
+    /// unwritable path or a missing value is an error naming the flag;
+    /// without the flag nothing is opened.
+    #[test]
+    fn req_lat_003_latency_trace_flag_opens_the_file_up_front() {
+        assert!(
+            open_latency_trace(&args(&["--table", "x"]))
+                .unwrap()
+                .is_none()
+        );
+        let e = open_latency_trace(&args(&["--latency-trace"])).unwrap_err();
+        assert!(e.starts_with("--latency-trace: "), "{e}");
+        let e = open_latency_trace(&args(&["--latency-trace", "/nonexistent-dir/x/t.csv"]))
+            .unwrap_err();
+        assert!(
+            e.starts_with("--latency-trace: /nonexistent-dir/x/t.csv: "),
+            "{e}"
+        );
+        let dir = std::env::temp_dir().join(format!("kp_trace_flag_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("t.csv");
+        std::fs::write(&p, "old").unwrap();
+        let (path, _file) = open_latency_trace(&args(&["--latency-trace", p.to_str().unwrap()]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(path, p);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "", "truncated");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn merge_failure_keeps_every_recorded_message() {
