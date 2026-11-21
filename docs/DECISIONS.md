@@ -7546,3 +7546,58 @@ stamp, keeps the metric correct for every stamp.
 **Risk:** a hand-built `ThreadsConfig` that sets `loop_profiler` and also wraps the step in a
 recording `ProfiledSim::new` would record each input twice; this is documented on
 `ThreadsConfig::loop_profiler`.
+
+## Process — Dual-harness agent documentation (Claude Code and Gemini/Antigravity)
+
+**Decision:** Support both Claude Code and Gemini / Antigravity across the repository's agent
+instructions, subagents, skills and process documents, using a single-source-of-truth layout with
+no git symlinks:
+- `AGENTS.md` is the canonical root instruction file. `CLAUDE.md` imports `@AGENTS.md` with brief
+  Claude Code notes; `GEMINI.md` imports `@./AGENTS.md` with brief Gemini / Antigravity notes
+  (Gemini CLI inlines `@./AGENTS.md`; Antigravity loads `AGENTS.md` directly and treats
+  `@./AGENTS.md` as a path reference without duplicating context).
+- `.claude/agents/` and `.claude/skills/` remain the canonical Markdown prompts and skill
+  procedures, updated to be dual-platform (Claude Code and Gemini / Antigravity model tiers,
+  GitHub MCP or `gh` CLI, and harness-neutral paths).
+- `.agents/agents/` provides Antigravity custom subagent definitions (with Antigravity YAML
+  frontmatter and safe cross-surface tool lists: `view_file` and `run_command` for read-only roles,
+  plus `replace_file_content` and `write_to_file` for `task-executor`) that forward to
+  `.claude/agents/`. Standalone Gemini CLI does not load `.agents/agents/`; its main session does
+  not run executor or verifier roles directly and uses `.claude/agents/` only through custom
+  subagents mirrored locally under `.gemini/agents/`, as documented in `GEMINI.md`.
+- `.agents/skills/` provides Gemini / Antigravity skill adapters forwarding to `.claude/skills/`,
+  plus the Gemini / Antigravity-specific `pr-watch` skill (`.agents/skills/pr-watch/SKILL.md`),
+  which stands in for Claude Code's `subscribe_pr_activity` / auto-fix loop by scheduling
+  non-blocking check-ins (`/schedule` or a single async background check-in), addressing CodeRabbit
+  findings, resolving threads itself, and driving PRs to CodeRabbit approval and green CI.
+- `docs/PROCESS.md` P1, P4, P5, P6 and P7, `docs/DEVELOPMENT.md`, `docs/BRIEF_TEMPLATE.md`,
+  `README.md`, `.github/ISSUE_TEMPLATE/work-unit.md`, `.github/pull_request_template.md` and
+  `.gitignore` (ignoring `.gemini/settings.json` for personal project-specific Gemini CLI settings)
+  are updated for both harnesses (including T0–T3 mappings for Flash-Lite / Flash / Pro /
+  maximum-reasoning Pro alongside Haiku 5.5 / Sonnet 5.5 / Opus 5.5 / Fable 5.2, and `gh` CLI
+  equivalents alongside GitHub MCP tools).
+
+**Rationale:** The repository previously assumed Claude Code exclusively (`CLAUDE.md`,
+`.claude/agents/`, `.claude/skills/`, Claude-only model names, MCP-only GitHub steps and a
+hardcoded `/home/user/kilohertz-pinball` path). Antigravity discovers `AGENTS.md`,
+`.agents/agents/*.md` and `.agents/skills/<name>/SKILL.md` natively, while Gemini CLI discovers
+`GEMINI.md` and `.agents/skills/<name>/SKILL.md`. Forwarding from thin `.agents/` adapters to the
+canonical `.claude/` files avoids duplicating long prompt bodies and avoids git symlinks, which
+require elevated privileges or Developer Mode on Windows (a first-class target OS). Antigravity
+custom subagent frontmatter requires exact Antigravity tool names (unmapped tool names can hang
+subagent startup), so `.agents/agents/*.md` declares its own frontmatter rather than sharing
+`.claude/agents/*.md` directly. Because Antigravity has no built-in PR auto-fix or GitHub-webhook
+subscription, a dedicated `pr-watch` skill gives Antigravity sessions a repeatable, non-blocking
+check-in and thread-resolution procedure without touching Claude Code's native PR subscription.
+
+**Alternatives:**
+- Duplicate full skill and agent Markdown bodies in `.agents/` and `.claude/`: rejected because
+  every process edit would risk drift between the two copies.
+- Symlink `CLAUDE.md`, `GEMINI.md`, `.agents/skills/` and `.claude/skills/`: rejected because git
+  symlinks break or check out as plain text files on Windows without Developer Mode.
+- Use `.agents/skills.json` pointing to `.claude/skills/` instead of `.agents/skills/<name>/SKILL.md`:
+  rejected because Gemini CLI reads `.agents/skills/` directly and does not read Antigravity's
+  `skills.json` discovery manifest.
+- Mirror `.gemini/agents/` in the repository for Gemini CLI: deferred in favor of scoping
+  `.agents/agents/` to Antigravity and documenting the standalone Gemini CLI workflow in
+  `GEMINI.md`, avoiding unverified version-specific Gemini CLI frontmatter.

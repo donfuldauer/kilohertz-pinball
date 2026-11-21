@@ -13,7 +13,7 @@ task-executor and checked by the work-verifier. The fast path never routes T2 or
 
 - The item is a fix, a CodeRabbit finding, a docs or run-log edit or a CI tweak (never an issue
   implementation, an Independent Tester task, an investigation, or a gate failure).
-- The tier is clearly T0 (Haiku 5.5) or T1 (Sonnet 5.5).
+- The tier is clearly T0 (Haiku 5.5 / Flash-Lite) or T1 (Sonnet 5.5 / Flash).
 - It touches one module or docs only.
 - No `pin_core` contract change and no change to another contract (PROCESS.md P3).
 - No change to simulation output (`pin_physics` world/ball/flipper numerics, the sim tick, the
@@ -49,9 +49,9 @@ sends the item to the work-classifier.
    into one brief at the higher tier. Send all classifier-bound items to ONE work-classifier
    call as a batch.
 5. Group the remaining fast-path items by tier and module directory: one Fixer brief per
-   (tier, module) group, with all docs-only items (`docs/`, `.claude/`, `CLAUDE.md`, `README.md`)
-   counting as one docs group (R1). When items of different tiers touch the same file, put them
-   in one brief at the higher tier.
+   (tier, module) group, with all docs-only items (`docs/`, `.claude/`, `.agents/`, `AGENTS.md`,
+   `CLAUDE.md`, `GEMINI.md`, `README.md`) counting as one docs group (R1). When items of different
+   tiers touch the same file, put them in one brief at the higher tier.
 6. Spawn executors, in parallel when owned paths do not overlap.
 7. Run ONE work-verifier on the resulting head commit covering every item in the round whenever
    the round changed the head (executor fixes, or a commit such as a `docs/DECISIONS.md` entry
@@ -64,12 +64,12 @@ sends the item to the work-classifier.
 ## 3. Fixer brief template
 
 A valid subset of `docs/BRIEF_TEMPLATE.md`; field names match it. Fill it in and pass it to the
-task-executor with the tier's model as the `model` override.
+task-executor with the tier's model override.
 
 ```text
 WORK ITEM <#issue / PR finding id>: <title>          AGENT: task-executor
 ROLE: Fixer
-MODEL: <Haiku 5.5 | Sonnet 5.5>   TIER: T0 | T1
+MODEL: <Haiku 5.5 | Sonnet 5.5 | Flash-Lite | Flash>   TIER: T0 | T1
 BRANCH: <branch>   PR: <number>
 ISSUE: #<n>   PLAN ID: KP-<NNN>   REQUIREMENTS: <SPEC sections / REQ IDs touched, or none>
 
@@ -98,7 +98,7 @@ RULES
 
 COMMANDS
   <the "Agent environment" block from docs/DEVELOPMENT.md (CARGO_BUILD_JOBS=2,
-   CARGO_TARGET_DIR=/home/user/kilohertz-pinball/target/<issue number>, CARGO_INCREMENTAL=0,
+   CARGO_TARGET_DIR=<repo-root>/target/<issue number>, CARGO_INCREMENTAL=0,
    CARGO_PROFILE_DEV_DEBUG=line-tables-only, CARGO_PROFILE_TEST_DEBUG=line-tables-only, the disk
    check), then the exact commands, e.g. cargo fmt --all --check;
    cargo clippy -p <crate> --all-targets -- -D warnings; cargo test -p <crate>>

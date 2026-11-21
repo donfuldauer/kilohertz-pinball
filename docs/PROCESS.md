@@ -48,24 +48,31 @@ a merge conflict in one of them is resolved by keeping both sides, in order.
 
 ### Working with GitHub
 
-Sessions use the GitHub MCP tools (`mcp__github__*`) for issues, comments, labels and pull
-requests. The `gh` CLI is used only for searches that filter by label:
+Claude Code sessions (and Gemini / Antigravity sessions with a GitHub MCP server) use the GitHub
+MCP tools (`mcp__github__*`) for issues, comments, labels and pull requests, and use the `gh` CLI
+for searches that filter by label:
 `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:issue label:<label> …' -F per_page=100 -F page=<N>`,
-paged explicitly until a page returns fewer than 100 items (never `gh api --paginate`: the
-session's proxy blocks the numeric-ID links it follows). The MCP tools cannot create milestones
-or "blocked by" links or delete comments, so (DECISIONS.md "Process — GitHub tooling: parent
+paged explicitly until a page returns fewer than 100 items (never `gh api --paginate`: a session
+proxy can block the numeric-ID links it follows). Gemini / Antigravity sessions without GitHub MCP
+tools use the official `gh` CLI (`gh issue`, `gh pr`, `gh run`, `gh api`) for all GitHub
+operations, keeping the same explicit paging for `search/issues` when `--paginate` is blocked. The
+same repository conventions apply in both harnesses (DECISIONS.md "Process — GitHub tooling: parent
 tracking issues and body dependency lists"):
 
 - **Grouping.** A milestone is a parent tracking issue (label `tracking`). A new work unit is
-  attached to its tracking issue as a sub-issue (`sub_issue_write`, method `add`, with the new
-  issue's numeric `id`, not its number).
+  attached to its tracking issue as a sub-issue (`sub_issue_write`, method `add`, or
+  `gh api -X POST repos/donfuldauer/kilohertz-pinball/issues/<tracking>/sub_issues -F sub_issue_id=<id>`,
+  with the new issue's numeric `id`, not its number).
 - **Dependencies.** The issue body's **Depends on** list is the only dependency record. A
   dependency is satisfied only under the merged-PR rule (P6 step 5).
 - **Claims.** A session claims an issue with a comment naming its branch and session ID. A claim
-  is released by editing that comment (`update_issue_comment`) to `Released: <reason>`; a
-  released claim does not count. Claim ordering is in the `work-issue` skill §1 step 4.
-- **Labels.** Applied with `issue_write` (`labels` sets the whole list, so read the current list
-  first). Every label exists before the first issue that uses it is created.
+  is released by editing that comment (`update_issue_comment` or
+  `gh api -X PATCH repos/donfuldauer/kilohertz-pinball/issues/comments/<comment_id> -f body='Released: <reason>'`)
+  to `Released: <reason>`; a released claim does not count. Claim ordering is in the `work-issue`
+  skill §1 step 4.
+- **Labels.** Applied with `issue_write` (MCP `labels` sets the whole list, so read the current list
+  first) or `gh issue edit --add-label ... --remove-label ...` / `gh api -X PUT .../labels`. Every
+  label exists before the first issue that uses it is created.
 
 ## P2. Execution rules (R1–R12)
 
@@ -220,40 +227,47 @@ picks the lowest tier that can do the job.
 
 ### Tiers
 
-| Tier | Model (`model` override) | Typical work |
-|---|---|---|
-| T0 | Haiku 5.5 (`haiku`) | Docs-only edits, run-log lines, formatting, renames, a review nit whose fix the comment spells out exactly |
-| T1 | Sonnet 5.5 (`sonnet`) | Well-specified changes in one module, adding tests, CI and workflow tweaks, most review findings, verification runs |
-| T2 | Opus 5.5 (`opus`) | New feature implementations, numerics, solvers, render pipelines, concurrency, cross-module changes, ambiguous work, every investigation |
-| T3 | Fable 5.2 (`fable`) | Only under the Fable rule below |
+| Tier | Claude Code (`model` override) | Gemini / Antigravity (`Model` override) | Typical work |
+|---|---|---|---|
+| T0 | Haiku 5.5 (`haiku`) | Flash-Lite (`flash_lite`) | Docs-only edits, run-log lines, formatting, renames, a review nit whose fix the comment spells out exactly |
+| T1 | Sonnet 5.5 (`sonnet`) | Flash (`flash`) | Well-specified changes in one module, adding tests, CI and workflow tweaks, most review findings, verification runs |
+| T2 | Opus 5.5 (`opus`) | Pro (`pro`, or `inherit` on a Pro/reasoning session) | New feature implementations, numerics, solvers, render pipelines, concurrency, cross-module changes, ambiguous work, every investigation |
+| T3 | Fable 5.2 (`fable`) | High-tier escalation (`pro` at maximum reasoning) | Only under the T3 / Fable rule below |
 
 An issue's `tier:` label is the expected tier for its Implementer; the classifier may route lower,
-and each fix or finding is classified on its own. Verification and investigation run on Sonnet
-5.5 and Opus 5.5 respectively, by default; neither needs to differ from the implementing model.
+and each fix or finding is classified on its own. Verification runs on T1 (`Sonnet 5.5` / `Flash`)
+and investigation runs on T2 (`Opus 5.5` / `Pro`) by default; neither needs to differ from the
+implementing model. In Antigravity sessions where the user has not requested switching model tiers,
+`invoke_subagent` may keep `inherit` when the harness policy requires it.
 
-### Fable rule (D34)
-Fable 5.2 is an exception. It is used only when all three hold:
+### Fable / T3 escalation rule (D34)
+T3 (Fable 5.2 on Claude Code; maximum-reasoning `pro` on Gemini / Antigravity) is an exception. It
+is used only when all three hold:
 1. **Need.** The work has a *very-high blast radius* (P3), **or** it is *extremely hard to
-   troubleshoot*: two full issue-investigator passes on Opus 5.5 found no reproducible root cause,
-   or Opus 5.5 used up the P7 fix attempts, or the failure is non-deterministic below the code's
-   control (driver, compiler, platform) and two Opus passes did not isolate it.
-2. **Opus is not enough.** The classifier names the T2 attempt that failed, or says exactly why one
+   troubleshoot*: two full issue-investigator passes at T2 (`Opus 5.5` / `Pro`) found no
+   reproducible root cause, or T2 used up the P7 fix attempts, or the failure is non-deterministic
+   below the code's control (driver, compiler, platform) and two T2 passes did not isolate it.
+2. **T2 is not enough.** The classifier names the T2 attempt that failed, or says exactly why one
    would.
-3. **Allowance.** Just before routing, the Orchestrator sets `FABLE_ALLOWANCE`. It is
-   `insufficient` if the session reports a current rate limit, throttling or fallback on Fable;
-   otherwise the Orchestrator cannot read it (the agent has no access to the `/usage` readout), so
-   it runs the Fable ask below (D42). Only an owner `yes` within the ask's 30-minute window makes
-   it `sufficient`. Without that, it is `unknown`, which counts as not enough.
+3. **Allowance / quota.**
+   - **Claude Code:** Just before routing, the Orchestrator sets `FABLE_ALLOWANCE`. It is
+     `insufficient` if the session reports a current rate limit, throttling or fallback on Fable;
+     otherwise the Orchestrator cannot read it (the agent has no access to the `/usage` readout),
+     so it runs the Fable ask below (D42). Only an owner `yes` within the ask's 30-minute window
+     makes it `sufficient`. Without that, it is `unknown`, which counts as not enough.
+   - **Gemini / Antigravity:** T3 escalation requires the active plan and quota to support it (no
+     rate limit, throttling or fallback). If unavailable or unconfirmed, run at T2.
 
-If 1 and 2 hold but 3 does not, the work runs on Opus 5.5 and a `[Fable wanted]` note (what Fable
-would have been used for) goes in that unit's `docs/RUN_LOG.md` row; no queue line is written.
-Apart from the Fable ask's bounded wait, the run never waits for allowance to return. If a Fable
-session is throttled or falls back mid-task, the work continues on Opus 5.5. Every Fable use is
-logged in `docs/RUN_LOG.md` with the classifier's evidence for 1–3. When torn between two tiers,
-take the higher one, but never move up into T3 that way.
+If 1 and 2 hold but 3 does not, the work runs at T2 (`Opus 5.5` / `Pro`) and a `[Fable wanted]`
+(Claude Code) or `[T3 wanted]` (Gemini / Antigravity) note saying what T3 would have been used for
+goes in that unit's `docs/RUN_LOG.md` row; no queue line is written. Apart from the Fable ask's
+bounded wait, the run never waits for allowance to return. If a T3 session is throttled or falls
+back mid-task, the work continues at T2. Every T3 use is logged in `docs/RUN_LOG.md` with the
+classifier's evidence for 1–3. When torn between two tiers, take the higher one, but never move up
+into T3 that way.
 
-### Fable ask (D42)
-The agent cannot read the account's usage, so when the classifier returns
+### Fable ask (D42, Claude Code)
+In Claude Code, the agent cannot read the account's usage, so when the classifier returns
 `fable check: wanted, allowance unknown, owner ask` for one or more items (DECISIONS.md
 "Process — Fable ask kept"):
 1. The Orchestrator first schedules a reminder into its own session 30 minutes later
@@ -284,34 +298,40 @@ The agent cannot read the account's usage, so when the classifier returns
 
 ### Fast path (D38)
 The Orchestrator classifies an obviously small item inline with the `triage` skill
-(`.claude/skills/triage/SKILL.md`) instead of spawning a work-classifier. The skill applies only
-when all of these hold: the item is a fix, a CodeRabbit finding, a docs or run-log edit or a CI
-tweak; its tier is clearly T0 or T1; it touches one module or docs only; it needs no `pin_core`
-contract change, no change to simulation output and no change at a security boundary; its
-validity and cause are clear; and the fix is spelled out or obvious. If its validity or cause is
-unclear, the item goes to the issue-investigator first; by its verdict, `valid-defect` is
-re-triaged from its report, `valid-but-deferred` or `pre-existing` takes the "Deferred"
-disposition (unless it is an unfixed security issue or a verified unfixed correctness defect:
-then it goes to the classifier and the thread stays unresolved, P6 step 3) and `not-a-defect`
-takes "Not a defect" (P6 step 3), with no Fixer for either; if any other check fails, or the
-Orchestrator is unsure, it goes to the work-classifier. The fast path never routes T2 or T3, and
-the classifier still handles every issue implementation, every Independent Tester task, every
+(`.claude/skills/triage/SKILL.md`, forwarded by `.agents/skills/triage/SKILL.md`) instead of
+spawning a work-classifier. The skill applies only when all of these hold: the item is a fix, a
+CodeRabbit finding, a docs or run-log edit or a CI tweak; its tier is clearly T0 or T1; it touches
+one module or docs only; it needs no `pin_core` contract change, no change to simulation output and
+no change at a security boundary; its validity and cause are clear; and the fix is spelled out or
+obvious. If its validity or cause is unclear, the item goes to the issue-investigator first; by its
+verdict, `valid-defect` is re-triaged from its report, `valid-but-deferred` or `pre-existing` takes
+the "Deferred" disposition (unless it is an unfixed security issue or a verified unfixed correctness
+defect: then it goes to the classifier and the thread stays unresolved, P6 step 3) and
+`not-a-defect` takes "Not a defect" (P6 step 3), with no Fixer for either; if any other check fails,
+or the Orchestrator is unsure, it goes to the work-classifier. The fast path never routes T2 or T3,
+and the classifier still handles every issue implementation, every Independent Tester task, every
 investigation, every gate failure and anything else outside the fast path. Fast-path rows in
 `docs/RUN_LOG.md` start the Notes column with `triage`, followed by the tier and a one-line reason.
 
 ## P5. Agents and the flow of one unit of work (D35, D38, D39)
 
 ### Agents (D35)
-Agents live in `.claude/agents/`. Subagents cannot start subagents, so the Orchestrator (the main
-session) does every spawn, passing the classifier's brief **verbatim** and the classifier's model
-as the `model` override. The Orchestrator writes no product code and reviews no code.
+Canonical agent prompts live in `.claude/agents/` (loaded directly by Claude Code); Antigravity
+custom subagents live in `.agents/agents/` and forward to them so role instructions stay in one
+place. In Antigravity environments that do not auto-load `.agents/agents/`, the Orchestrator
+registers each role with `define_subagent` (using the prompt from `.claude/agents/<name>.md`, with
+write tools enabled only for `task-executor`) and launches it with `invoke_subagent`. (Standalone
+Gemini CLI does not discover `.agents/agents/`; see `GEMINI.md`.) Subagents never spawn subagents
+(enforced by Claude Code and by policy in Gemini / Antigravity), so the Orchestrator (the main
+session) does every spawn, passing the classifier's brief **verbatim** and its model tier override.
+The Orchestrator writes no product code and reviews no code.
 
-| Agent | Default model | Does | Never does |
+| Agent | Default tier (model) | Does | Never does |
 |---|---|---|---|
-| `work-classifier` | Sonnet 5.5 | Rates blast radius and difficulty, picks the tier (P4), names the agent, writes the self-contained brief (`docs/BRIEF_TEMPLATE.md`); may take a batch and return one routing block per item and one brief per executor group | Edit files, implement, review |
+| `work-classifier` | T1 (`Sonnet 5.5` / `Flash`) | Rates blast radius and difficulty, picks the tier (P4), names the agent, writes the self-contained brief (`docs/BRIEF_TEMPLATE.md`); may take a batch and return one routing block per item and one brief per executor group | Edit files, implement, review |
 | `task-executor` | from the classifier | *Implementer* (deliverables and unit tests), *Independent Tester* (black-box and property tests from the brief alone, in parallel with the Implementer, never seeing the implementation) or *Fixer* (one CodeRabbit finding, verifier failure or investigator plan), strictly from the brief | Leave its owned paths, review code |
-| `work-verifier` | Sonnet 5.5 | Re-runs every gate step; traces each requirement and REQ ID to a passing test; checks owned paths, the sim-thread rules and the R12 evidence, opening the rendered images itself | Give style or design opinions, edit code |
-| `issue-investigator` | Opus 5.5 | Reproduces and root-causes any failure whose cause is not obvious; judges CodeRabbit findings of unclear validity; returns a fix plan and a thread reply | Change repository files, fix |
+| `work-verifier` | T1 (`Sonnet 5.5` / `Flash`) | Re-runs every gate step; traces each requirement and REQ ID to a passing test; checks owned paths, the sim-thread rules and the R12 evidence, opening the rendered images itself | Give style or design opinions, edit code |
+| `issue-investigator` | T2 (`Opus 5.5` / `Pro`) | Reproduces and root-causes any failure whose cause is not obvious; judges CodeRabbit findings of unclear validity; returns a fix plan and a thread reply | Change repository files, fix |
 
 ### Flow
 classify (inline via `triage` for eligible small items) → execute (Implementer and Independent
@@ -341,16 +361,18 @@ paths. Role agents never need SPEC as a whole, the issue tracker or this file.
 
 ### Branches and claims (D39)
 `main` is protected. Each unit of work is one GitHub issue and runs on its own branch from the
-latest `main` (`issue/<N>-<slug>` in its own worktree `../kilohertz-issue-<N>`) and reaches `main` only through its own PR, which closes the issue
-(`Closes #<N>`). One issue, one branch, one PR. Work found along the way that the issue cannot
-absorb becomes a new `work-unit` issue with its dependencies filled in, attached to its tracking
-issue. The `issue/` prefix is required for the chain to continue: merging an `issue/` branch starts
-the next session (work-issue §8). If the session can push only to one assigned branch, the PR
-body says so and that the chain will not continue from this merge, and commit subjects carry
-the work item (`[#<N>] …`). A session claims an issue before working it and
-releases the claim by editing it (P1 "Working with GitHub"). Git tags are not used (D39): the
-session's git proxy refuses tag pushes, and the phase-gate row in `docs/RUN_LOG.md` (commit SHA
-and CI run) is the record. Release tags `v*` are pushed by the owner only (P8).
+latest `main` (`issue/<N>-<slug>` in its own worktree `../kilohertz-issue-<N>`, or directly in the
+checkout when a sandbox restricts sibling directories and only one issue runs in the VM) and
+reaches `main` only through its own PR, which closes the issue (`Closes #<N>`). One issue, one
+branch, one PR. Work found along the way that the issue cannot absorb becomes a new `work-unit`
+issue with its dependencies filled in, attached to its tracking issue. The `issue/` prefix is
+required when GitHub-triggered session chaining is enabled: merging an `issue/` branch starts the
+next session (`work-issue` §8). If the session can push only to one assigned branch, the PR body
+says so and that the chain will not continue from this merge, and commit subjects carry the work
+item (`[#<N>] …`). A session claims an issue before working it and releases the claim by editing it
+(P1 "Working with GitHub"). Git tags are not used (D39): a session git proxy may refuse tag pushes,
+and the phase-gate row in `docs/RUN_LOG.md` (commit SHA and CI run) is the record. Release tags
+`v*` are pushed by the owner only (P8).
 
 ### Unit gate (definition of done)
 All must hold:
@@ -405,19 +427,28 @@ Orchestrator drives it to a merge without a person.
 
 1. **Open.** The Orchestrator commits the unit's `docs/RUN_LOG.md` row(s) before the
    work-verifier's final run, so the verified commit is the PR head. When the verifier passes, it
-   pushes the branch and opens a PR against `main` (`create_pull_request`) with a body from
-   `.github/pull_request_template.md` that starts with `Closes #<issue>` and fills every section
-   (write "not applicable" with a reason rather than leaving one empty): requirements with the test
-   that proves each one, gate results with numbers, visual and windowed evidence, decisions
-   logged, contract-change requests, and every Fable use with its P4 evidence. Bot names in the
+   pushes the branch and opens a PR against `main` (`create_pull_request` or `gh pr create`) with a
+   body from `.github/pull_request_template.md` that starts with `Closes #<issue>` and fills every
+   section (write "not applicable" with a reason rather than leaving one empty): requirements with
+   the test that proves each one, gate results with numbers, visual and windowed evidence, decisions
+   logged, contract-change requests, and every T3 / Fable use with its P4 evidence. Bot names in the
    body go in backticks so nobody is notified by accident.
-2. **Auto-fix on.** Right after opening, the Orchestrator subscribes to the PR's activity
-   (`subscribe_pr_activity`: comments, reviews, CI). If the session cannot subscribe, it schedules
-   `send_later` check-ins about every 10 minutes until the PR merges. Every CodeRabbit comment and
-   CI failure is handled as it arrives; nobody sleep-polls in a loop.
+2. **PR watch / auto-fix.** Right after opening:
+   - **Claude Code:** subscribe to the PR's activity (`subscribe_pr_activity`: comments, reviews,
+     CI). If the session cannot subscribe, schedule `send_later` check-ins about every 10 minutes
+     until the PR merges.
+   - **Gemini / Antigravity:** Antigravity has no built-in PR auto-fix or GitHub-webhook
+     subscription. Run the `pr-watch` skill (`.agents/skills/pr-watch/SKILL.md`), which schedules
+     non-blocking check-ins (`/schedule` or a single async background check-in, or a persistent
+     `/automation` job across sessions), addresses CodeRabbit findings, resolves review threads
+     itself, and repeats until CodeRabbit approves and PR checks are green.
+
+   Every CodeRabbit comment and CI failure is handled as it arrives or on check-in; nobody
+   sleep-polls in a foreground loop.
 3. **Every finding is accounted for**, batch by batch (P5 "Batching"), for every CodeRabbit
    comment (inline, nitpick, outside-diff or summary item). Each ends in exactly one disposition,
-   recorded as a reply on its thread (`add_reply_to_pull_request_comment`):
+   recorded as a reply on its thread (`add_reply_to_pull_request_comment` or
+   `gh api -X POST repos/{owner}/{repo}/pulls/{n}/comments/{comment_id}/replies -f body='<reply text>'`):
    - **Fixed:** an executor commit addresses it, the verifier re-runs the affected checks, and the
      reply names the commit. The thread is then resolved.
    - **Not a defect:** the reply gives the evidence that the finding is not reproducible in the
@@ -436,7 +467,8 @@ Orchestrator drives it to a merge without a person.
    answered as above.
 
    **Resolving (D37).** The Orchestrator resolves threads itself, on its own judgment, with the
-   thread resolve action (`resolve_review_thread`; in a session without it, the REST route
+   thread resolve action (`resolve_review_thread`, GraphQL `resolveReviewThread` via
+   `gh api graphql`, or the REST route
    `POST /repos/{owner}/{repo}/pulls/{n}/ccr/comments/{comment_id}/resolve`, threads listed with
    `GET …/pulls/{n}/ccr/review_threads`), when a fix landed and the verifier passed on it, when the
    reply gives evidence that the finding is not reproducible in the reported environment, already
@@ -478,14 +510,17 @@ Orchestrator drives it to a merge without a person.
      stay blocked until `main` is green;
    - the work-verifier's last result is `pass` for the head commit.
 
-   Then the Orchestrator merges with a merge commit (`merge_pull_request`, method `merge`),
-   checks the branch is deleted (deleting it if not), unsubscribes from the PR, and **unblocks
-   dependents**: every open `work-unit` issue whose **Depends on** entries are now all satisfied
-   swaps its `blocked` label for `ready`, with a comment "Unblocked by #<N> (PR #<P>)". The
-   **merged-PR rule:** a dependency is satisfied only if it is closed as completed by a merged PR
-   (read the blocker with `issue_read`, method `get`: `closed_by_pull_requests.references` lists the
-   PRs that closed it; confirm each with `pull_request_read`, method `get`, `merged` true; fallback for
-   an unlinked PR body saying `Closes #<n>`: `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged "Closes #<n>"'`), or a comment on it names the replacement
+   Then the Orchestrator merges with a merge commit (`merge_pull_request`, method `merge`, or
+   `gh pr merge <P> --merge --match-head-commit <sha>`), checks the branch is deleted (deleting it
+   if not), unsubscribes from the PR if subscribed, and **unblocks dependents**: every open
+   `work-unit` issue whose **Depends on** entries are now all satisfied swaps its `blocked` label
+   for `ready`, with a comment "Unblocked by #<N> (PR #<P>)". The **merged-PR rule:** a dependency
+   is satisfied only if it is closed as completed by a merged PR (via MCP: `issue_read`
+   `closed_by_pull_requests.references` + `pull_request_read` `merged` true; via `gh` CLI:
+   `gh issue view <n> --json state,stateReason,closedByPullRequestsReferences` + `gh pr view <p> --json mergedAt`
+   (`mergedAt` non-null); fallback for an unlinked PR body saying `Closes #<n>` or `Fixes #<n>`:
+   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged in:body "Closes #<n>"'`
+   and, if empty, the same query with `"Fixes #<n>"`), or a comment on it names the replacement
    issue(s) that delivered the work and those pass the same test. The run-log rows were committed
    in the PR itself; the merge commit is recorded in the RUN_LOG row of the next PR. Nothing is
    pushed to `main` directly.
@@ -498,8 +533,9 @@ Orchestrator drives it to a merge without a person.
 1. The executor gets up to three fix attempts, each from a classifier brief built on the
    verifier's failures, the investigator's report or the CodeRabbit findings.
 2. Then the issue-investigator makes a fresh pass, and the classifier routes one more attempt one
-   tier up from a fresh brief plus the failure history. This can reach Fable 5.2 only if the P4
-   Fable rule holds, including the allowance; otherwise it stays on Opus 5.5.
+   tier up from a fresh brief plus the failure history. This can reach T3 (Fable 5.2 on Claude Code
+   or high-tier escalation on Gemini / Antigravity) only if the P4 T3 / Fable rule holds, including
+   allowance/quota; otherwise it stays at T2 (`Opus 5.5` / `Pro`).
 3. Then the unit is marked `blocked` in `docs/RUN_LOG.md`; the issue gets the
    `status:blocked-failure` label (and loses `in-progress`) and a comment with the failure
    history; the session releases its claim. A person clears the label by replacing it with
