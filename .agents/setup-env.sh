@@ -132,7 +132,7 @@ else
   if [ ! -d "$SYSROOT/lib/rustlib/wasm32-unknown-unknown" ]; then
     NEEDS_TOOLCHAIN=1
   fi
-  INSTALLED_COMPONENTS=$(rustup component list --toolchain "$RUST_VERSION" --installed 2>/dev/null || true)
+  INSTALLED_COMPONENTS=$(rustup component list --installed 2>/dev/null || true)
   for comp in rustfmt clippy llvm-tools; do
     if ! grep -q "^${comp}" <<<"$INSTALLED_COMPONENTS"; then
       NEEDS_TOOLCHAIN=1
