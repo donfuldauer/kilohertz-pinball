@@ -32,6 +32,5 @@ __pycache__/
 .claude/worktrees/
 .claude/.cc-writes/
 
-# Gemini / Antigravity per-user files
-.gemini/settings.local.json
-.agents/settings.local.json
+# Gemini CLI per-project personal settings (user settings live in ~/.gemini/settings.json)
+.gemini/settings.json

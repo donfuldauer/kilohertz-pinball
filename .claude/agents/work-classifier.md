@@ -70,7 +70,7 @@ Set each of these:
 | T0 | Haiku 5.5 (`haiku`) | Flash-Lite (`flash_lite`) | Mechanical: docs-only edits, run-log lines, formatting, renames, a CodeRabbit nit whose fix the comment spells out exactly |
 | T1 | Sonnet 5.5 (`sonnet`) | Flash (`flash`) | Standard: a well-specified change in one module with clear tests; adding tests; CI/workflow tweaks; most CodeRabbit findings; verification runs |
 | T2 | Opus 5.5 (`opus`) | Pro (`pro` / `inherit`) | Complex: new feature implementations; numerics, solvers, render pipelines, concurrency; changes across modules; anything ambiguous; every investigation |
-| T3 | Fable 5.2 (`fable`) | High-tier escalation (`pro` max reasoning / `/boost`) | Only under the T3 / Fable rule below |
+| T3 | Fable 5.2 (`fable`) | High-tier escalation (`pro` at maximum reasoning) | Only under the T3 / Fable rule below |
 
 The issue's `tier:` label is the expected tier for its Implementer; you may route lower.
 

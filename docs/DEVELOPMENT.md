@@ -88,7 +88,7 @@ kilohertz-pinball/
 ├── GEMINI.md                      # Gemini / Antigravity entry point (imports AGENTS.md)
 ├── .agents/
 │   ├── agents/                    # Antigravity custom subagent definitions (forward to .claude/agents/)
-│   └── skills/                    # Gemini / Antigravity skills (forward to .claude/skills/)
+│   └── skills/                    # Gemini / Antigravity skills (forward to .claude/skills/, plus pr-watch)
 ├── .claude/
 │   ├── settings.json              # Shared Claude Code sandbox and permission defaults
 │   ├── agents/                    # Canonical subagent prompts (work-classifier, task-executor, work-verifier, issue-investigator)

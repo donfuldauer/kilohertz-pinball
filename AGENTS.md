@@ -31,25 +31,26 @@ by a polling `/automation` job. The `run-plan` skill loops over every ready issu
     unknown means no Fable (log `[Fable wanted]` in `docs/RUN_LOG.md`).
   - **Gemini / Antigravity:** T0 Flash-Lite (`flash_lite`), T1 Flash (`flash`), T2 Pro (`pro`, or
     `inherit` when the session already runs on a Pro/reasoning model), and **T3 escalation**
-    (`pro` at maximum reasoning or `/boost`) only under the same P4 need and T2-exhaustion rules
-    when plan and quota allow (otherwise run at T2 and log `[T3 wanted]` in `docs/RUN_LOG.md`).
-    Keep `inherit` on Antigravity subagent calls unless a tier override is requested or needed by
-    the harness policy.
+    (`pro` at maximum reasoning) only under the same P4 need and T2-exhaustion rules when plan and
+    quota allow (otherwise run at T2 and log `[T3 wanted]` in `docs/RUN_LOG.md`). Keep `inherit`
+    on Antigravity subagent calls unless a tier override is requested or needed by the harness
+    policy.
 - **Agents (P5).** Four subagent roles: `work-classifier`, `task-executor`, `work-verifier`,
   `issue-investigator`. Canonical role prompts live in `.claude/agents/` (loaded directly by Claude
   Code); Antigravity custom subagent definitions live in `.agents/agents/` and forward to them. In
   Antigravity environments that do not auto-load `.agents/agents/`, register each role with
-  `define_subagent` and run it with `invoke_subagent`. Pass the classifier's brief verbatim and its
-  model tier override. Subagents never spawn subagents; the Orchestrator (main session) does every
-  spawn.
+  `define_subagent` and run it with `invoke_subagent`. (Standalone Gemini CLI does not load
+  `.agents/agents/`; see `GEMINI.md`.) Pass the classifier's brief verbatim and its model tier
+  override. Subagents never spawn subagents; the Orchestrator (main session) does every spawn.
 - **No self-review (R9).** Do not review code yourself or with a sibling agent. Open a PR against
   `main` (body from `.github/pull_request_template.md`, starting `Closes #<N>`), watch its activity
-  (Claude Code: `subscribe_pr_activity` or `send_later`; Gemini / Antigravity has no built-in PR
-  auto-fix or webhook subscription, so use `/schedule`, a polling `/automation` job, or a manual
-  follow-up prompt; never sleep-poll in a loop), give every CodeRabbit finding a disposition reply,
-  resolve every thread yourself when justified (never leave one for a person; never resolve an
-  unfixed security issue or a verified unfixed correctness defect), and merge without waiting for a
-  person once the P6 merge conditions hold (`pr-checks` green, `main` green, verifier `pass`).
+  (Claude Code: `subscribe_pr_activity` or `send_later`; Gemini / Antigravity: run the `pr-watch`
+  skill in `.agents/skills/pr-watch/SKILL.md` to schedule non-blocking check-ins and drive
+  CodeRabbit to approval; never sleep-poll in a foreground loop), give every CodeRabbit finding a
+  disposition reply, resolve every thread yourself when justified (never leave one for a person;
+  never resolve an unfixed security issue or a verified unfixed correctness defect), and merge
+  without waiting for a person once the P6 merge conditions hold (`pr-checks` green, `main` green,
+  verifier `pass`).
 - **GitHub (P1).** In Claude Code (and Gemini/Antigravity sessions with a GitHub MCP server), use
   the GitHub MCP tools (`mcp__github__*`) for issues, comments, labels and PRs, and
   `gh api -X GET search/issues` (explicit paging) for searches by label. In Gemini / Antigravity
