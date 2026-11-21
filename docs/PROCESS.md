@@ -138,7 +138,9 @@ SPEC edit (DECISIONS.md "Process — Judgement calls are decisions, not queue it
 
 ### R9. No self-review (D36, D37)
 No agent reviews code for style or design, its own or another agent's. The work-verifier checks
-objective facts only. Code review happens on the pull request, by CodeRabbit (P6). The
+objective facts only. Code review is CodeRabbit's alone: once on the branch before the pull
+request opens (P6 step 1, the pre-PR pass with the CodeRabbit CLI), then on the pull request
+(P6). The
 Orchestrator resolves every review thread itself when justified and never leaves one for a person
 (P6 step 3).
 
@@ -403,7 +405,17 @@ area under P7; it never pauses for a person.
 Agents do not review their own code. Review comes from CodeRabbit on a pull request, and the
 Orchestrator drives it to a merge without a person.
 
-1. **Open.** The Orchestrator commits the unit's `docs/RUN_LOG.md` row(s) before the
+1. **Pre-PR pass, then open.** Before the work-verifier's final run, the Orchestrator runs the
+   CodeRabbit CLI on the branch against `origin/main` (command in `docs/DEVELOPMENT.md` "Agent
+   environment"; the same `.coderabbit.yaml` applies). Its findings are one batch (P5
+   "Batching"): Fixed, Not a defect or Deferred as in step 3, but with no threads; the
+   dispositions go in the unit's `docs/RUN_LOG.md` Notes (`pre-PR: N findings, F fixed, D
+   declined`). After a round with fixes the CLI runs once more on the new head; it never runs
+   more than twice per unit, and findings of the second run that are not fixed are left for the
+   PR review. If the CLI is not installed, not authenticated, rate-limited or takes over 30
+   minutes, the pass is skipped and the Notes say why; it never blocks a unit. The pass adds no
+   reviewer agent (R9).
+   The Orchestrator commits the unit's `docs/RUN_LOG.md` row(s) before the
    work-verifier's final run, so the verified commit is the PR head. When the verifier passes, it
    pushes the branch and opens a PR against `main` (`create_pull_request`) with a body from
    `.github/pull_request_template.md` that starts with `Closes #<issue>` and fills every section
@@ -455,7 +467,10 @@ Orchestrator drives it to a merge without a person.
    approval is what is needed to clear "Automatic approval withheld", the Orchestrator posts a
    plain PR comment `@coderabbitai approve`.
 4. **Re-review.** Each push triggers CodeRabbit's incremental review; new findings go through
-   step 3. If CodeRabbit has not reviewed the head commit (for example it is rate-limited), the
+   step 3. An open PR's scope does not grow: no merge of `main` unless the PR conflicts or a
+   required check needs it, and no commit unrelated to the issue or its findings (those go on
+   their own branch). A fix that changes a rule, contract or spec statement first searches the
+   repository for every other place that states it and updates them in the same commit. If CodeRabbit has not reviewed the head commit (for example it is rate-limited), the
    Orchestrator asks once with a PR comment `@coderabbitai review`, waits as long as it says, and
    asks again at most twice. If it still has not reviewed, the PR stays open, a `docs/RUN_LOG.md`
    row records it, and the run continues with work that does not depend on this PR.

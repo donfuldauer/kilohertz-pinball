@@ -182,6 +182,12 @@ First add the run-log row(s) for this issue to `docs/RUN_LOG.md` (phase = the is
 label, work item = `#<N>`, Fable notes in Notes) and commit, so the verified commit is the one the
 PR opens on. Any later fix commit updates the row and is verified again.
 
+Before the verifier's final run, do the pre-PR CodeRabbit pass (PROCESS.md P6 step 1): run the
+CLI command from `docs/DEVELOPMENT.md` "Agent environment" in the issue's worktree, handle its
+findings as one `triage` §2 batch (no threads; dispositions in the RUN_LOG row's Notes), and run
+it once more only if that batch changed the head. Skip it with a Notes reason if the CLI is
+missing, unauthenticated, rate-limited or over 30 minutes; never let it block the unit.
+
 Then spawn `work-verifier` with every brief and report, the branch and the base `origin/main`. On
 `fail`: investigator if the cause is unclear, then classifier → Fixer → verify again, under the
 P7 failure policy. Three failed attempts plus one tier-up attempt → mark the issue blocked

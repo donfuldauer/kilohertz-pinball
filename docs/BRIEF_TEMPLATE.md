@@ -40,6 +40,23 @@ CONTRACTS YOU MUST HONOUR
 RULES
   <PROCESS.md P2 rules R1–R12, inlined in full>
 
+FINDINGS REVIEW KEEPS RAISING (check your work against each before you report)
+  - Tests (R6, R10): no assertion that is true by construction or merely restates a comment; no
+    test that skips silently or reports a skip as a pass; a cap or limit test actually exceeds
+    the cap; tolerances tight enough to fail on the defect they guard; no sleeps or wall-clock
+    assertions, no races on shared test clocks or state.
+  - Edge cases: every loop and retry is bounded; full and empty buffers, rings and queues;
+    argument parsing never swallows the next argument; behaviour across gaps, wrap-around and
+    first or last item.
+  - Repeated statements: when you change a rule, constant, flag or behaviour, search the
+    repository for every other place that states it (docs, comments, skills, briefs, scripts,
+    other tables' copies) and update them all; a fix applied to one copy of duplicated code is
+    applied to every copy.
+  - Scripts and CI: `CDPATH=` before `cd` in scripts, no stale build products shipped, probes
+    that fail are reported as failures, not as passes.
+  - Platform rules: SDL calls stay on the main thread (D6); `pin_core` changes only through a
+    change request (R2).
+
 TESTS REQUIRED
   <tests to add or update, each naming the SPEC section or REQ ID it covers; property tests for
    stated invariants; bounded random-bytes runs for touched parsers; existing suites that must

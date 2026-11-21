@@ -14,10 +14,10 @@ Inputs:
 
 Counts:
 
-- Open queue lines: 10
+- Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 470
-- Run-log rows: 498
+- Decision entries: 475
+- Run-log rows: 502
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -37,6 +37,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - [ ] [P8 hardware] [5.4 CR round 1] Run the ray-query reflections on real DX12 and Metal GPUs, record whether the device reports the ray-query feature, then decide whether to enable ray-query reflections by default (D33; DECISIONS.md "5.4 — ray-query support on wgpu 30.0.1"). (docs/HUMAN_QUEUE.md)
 - [ ] [P8 release] [7.2] Add Windows code signing and macOS signing and notarization (certificates as repository secrets, plus release steps), or accept unsigned archives (D33); after final acceptance, push the first `v*` tag and publish the draft release by hand (D39; DECISIONS.md "7.2 — Release workflow: draft-only, artifacts on dispatch"). (docs/HUMAN_QUEUE.md)
 - [ ] [P8 release] [7.2] After the first `v*` tag push, check that the GitHub Release is a draft prerelease with the three archives, SHA256SUMS and the three PACKAGE_MANIFEST-<platform>.json files, and delete the draft if it was only a test (D39). (docs/HUMAN_QUEUE.md)
+- [ ] [P8 setting] [PROCESS P6] Set up the CodeRabbit CLI for the pre-PR pass (DECISIONS.md "Process — Pre-PR CodeRabbit pass, brief checklist and fixed PR scope"): install the CLI in the cloud environment's setup script, add a CodeRabbit API key as a network secret for its API host, and allow that host; then confirm `coderabbit review --plain --base main` works in a session. Until then every unit skips the pass with a Notes reason. (docs/HUMAN_QUEUE.md)
 
 ### Blocked run-log rows
 
@@ -514,6 +515,11 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - Process: Claude Code ask rules keep only destructive commands (docs/DECISIONS.md)
 - PR #142: Feature Lab bb_catch no longer returns a ball into the closed pocket (docs/DECISIONS.md)
 - Process: Next session starts from a merged issue/ PR (self-chaining superseded) (docs/DECISIONS.md)
+- #81: Input epoch: events re-stamped onto the tick clock (docs/DECISIONS.md)
+- #81: HUD rate lines stay outside `hud_lines` (docs/DECISIONS.md)
+- #81 tester: Input-epoch acceptance: full sweep, haptics observation, thread-test isolation (docs/DECISIONS.md)
+- #81-review-1: Profiler latency from the raw SDL stamp (docs/DECISIONS.md)
+- Process: Pre-PR CodeRabbit pass, brief checklist and fixed PR scope (2026-11-21) (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

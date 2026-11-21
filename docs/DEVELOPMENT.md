@@ -69,6 +69,12 @@ the target directory per issue).
   Anything that opens a window runs under `xvfb-run -a` (the windowed-app evidence of
   PROCESS.md R12).
 
+* Pre-PR CodeRabbit pass (Orchestrator only, PROCESS.md P6 step 1): in the issue's worktree,
+  with every change committed, `timeout 30m coderabbit review --plain --base main`. It needs the
+  CodeRabbit CLI on `PATH` and its API key (the environment's network secret for CodeRabbit's
+  API host); without them the pass is skipped. Confirm the flags with `coderabbit review --help`
+  when the CLI version changes.
+
 Each issue works in its own git worktree `../kilohertz-issue-<N>` (`work-issue` skill §2); the
 absolute `CARGO_TARGET_DIR` keeps every build under one `target/` for disk checks and cleanup.
 

@@ -7546,3 +7546,58 @@ stamp, keeps the metric correct for every stamp.
 **Risk:** a hand-built `ThreadsConfig` that sets `loop_profiler` and also wraps the step in a
 recording `ProfiledSim::new` would record each input twice; this is documented on
 `ThreadsConfig::loop_profiler`.
+
+## Process — Pre-PR CodeRabbit pass, brief checklist and fixed PR scope (2026-11-21)
+
+**Decision:** Three changes cut the number of CodeRabbit rounds on a PR:
+1. Before the PR opens, the Orchestrator runs the CodeRabbit CLI on the branch against `main`
+   and handles its findings as one batch, rerunning the CLI at most once (PROCESS.md P6 step 1,
+   work-issue §4). The pass is skipped, with a reason in the RUN_LOG Notes, when the CLI is not
+   available, so it never blocks a unit.
+2. `docs/BRIEF_TEMPLATE.md` gains "Findings review keeps raising", a checklist built from the
+   recurring categories below.
+3. An open PR's scope does not grow (no merge of `main` without a conflict or a check that needs
+   it, no unrelated commits). A fix to a rule or spec statement updates every place that restates
+   it in the same commit (P6 step 4).
+
+R9 still holds: CodeRabbit is the only reviewer, now run once locally and then on the PR.
+
+**Rationale:** CodeRabbit threads on 15 merged PRs (#63, #64, #67, #68, #70–#74, #76, #77,
+#105, #142, #143, #145) were read and each finding was tagged by when it was raised:
+- **Reviews:** 48 CodeRabbit reviews. 23 raised findings; 25 were approval-only re-reviews of
+  fix pushes, which took 2–10 minutes each.
+- **Findings by origin:** 79 findings. 62 (78 %) were in the PR's first reviewed commit, 13
+  (16 %) flagged code added by a fix commit, and 4 were raised late. About 6 extra rounds came
+  from CodeRabbit arguing back that a fix was incomplete.
+- **Recurring categories:**
+  - tests: tautological assertions, silent skips, cap tests that never exceed the cap, loose
+    tolerances, races and wall-clock checks (about 19);
+  - CI and scripts (17, including one defect copied across three tables);
+  - edge-case logic (16: unbounded loops, argument parsing, full rings);
+  - docs drifting from code or rules (15).
+- **Where the time went:** most wall-clock time was fix work, not waiting for review. #142's 10
+  rounds came mainly from scope growth: a merge from `main`, unrelated settings commits and a
+  pre-existing defect.
+
+Since most findings are already in CodeRabbit's first pass, running that pass before the PR
+moves those fixes into the unit's own verify cycle. That replaces several PR rounds, each with
+its classify, fix, verify, push and reply steps. The fix-induced and argue-back rounds are
+reduced by the scope rule and by searching for every restatement before a fix lands.
+
+The analysts' "a careful pre-PR review would have caught it" verdicts (44 yes, 34 maybe, 1 no)
+are hindsight and optimistic. Measure the real effect from the RUN_LOG pre-PR Notes and PR round
+counts after about 10 units.
+
+**Alternatives:**
+- A reviewer agent (Opus 5.5, one pass, before the PR): rejected for now. It reverses D36, whose
+  rationale was that cross-model review rounds were the largest cost, and it would not predict
+  what CodeRabbit flags as well as CodeRabbit itself. Reconsider if the CLI cannot be set up.
+- Checklist only: free, but most findings were edge cases specific to a unit that a generic
+  checklist does not reach.
+- A stricter `.coderabbit.yaml` profile: would add findings, not remove rounds.
+
+**Risks:**
+- Local CLI reviews may count against the same CodeRabbit rate limit as PR reviews (10 per hour;
+  only 3–5 were left during #67/#68). If they do, the pass is skipped when the limit is low.
+- A CLI review can take up to 30 minutes, which the timeout bounds.
+- The CLI flags are confirmed at install (`docs/DEVELOPMENT.md`).

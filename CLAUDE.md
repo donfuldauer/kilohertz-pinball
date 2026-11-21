@@ -28,7 +28,9 @@ issues.
 - **Agents (P5).** `.claude/agents/`: `work-classifier`, `task-executor`, `work-verifier`,
   `issue-investigator`. Pass the classifier's brief verbatim and its model as the `model`
   override. Subagents cannot spawn subagents; you do every spawn.
-- **No self-review (R9).** Do not review code yourself or with a sibling agent. Open a PR against
+- **No self-review (R9).** Do not review code yourself or with a sibling agent. Before the PR,
+  run the CodeRabbit CLI on the branch once (at most twice) and fix its findings (P6 step 1;
+  skipped if the CLI is unavailable). Open a PR against
   `main` (body from `.github/pull_request_template.md`, starting `Closes #<N>`), subscribe to its
   activity, give every CodeRabbit finding a disposition reply, resolve every thread yourself when
   justified (never leave one for a person; never resolve an unfixed security issue or a verified
