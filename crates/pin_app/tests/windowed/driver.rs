@@ -1,9 +1,15 @@
 //! The windowed driver (KP-002): starts the release `pin_app` with the
-//! grey-box table under Xvfb on lavapipe, waits for the first presented
-//! frame, injects flipper presses through XTest (`xdotool keydown/keyup`
-//! with the X keycodes of Shift_L and Shift_R), takes a few screenshots of
-//! the root window, and returns the app's stderr and its latency trace.
-//! Every wait is bounded; a hung app is killed and reported.
+//! grey-box table under Xvfb on lavapipe (`PIN_FORCE_FALLBACK_ADAPTER=1`:
+//! the software adapter or nothing), waits for the first presented frame,
+//! injects flipper presses through XTest (`xdotool keydown/keyup` with the X
+//! keycodes of Shift_L and Shift_R) on a seeded plan ([`press_plan`]), takes
+//! screenshots of the root window, and returns the app's stderr and its
+//! latency trace. Every helper process runs bounded ([`run_bounded`]: killed
+//! and reaped at its deadline) and shell-free; a hung app is killed and
+//! reported. Every exit path after the app started writes a fresh
+//! `pin_app_stderr.log`, and every failure a `summary.txt`
+//! ([`failure_summary`]); a run starts by removing the previous run's
+//! artifacts ([`ARTIFACTS`]).
 //!
 //! Environment (all optional):
 //! * `KP_PIN_APP`: the app binary (default: this build's `pin_app`;
@@ -14,15 +20,19 @@
 //!   `<target>/windowed`);
 //! * `KP_WINDOWED_RUN_MS`: the run length (default 60 000 ms);
 //! * `KP_WINDOWED_SEED`: the press schedule's seed;
+//! * `KP_WINDOWED_FRAME_MS`: the frame interval the press holds are sized
+//!   for (default [`DEFAULT_FRAME_INTERVAL_MS`]);
 //! * `LP_NUM_THREADS`: lavapipe's worker threads (default
 //!   [`DEFAULT_LP_NUM_THREADS`]);
 //! * `DISPLAY`: an X server to use; without it the driver starts its own
-//!   Xvfb (1280x720x24).
+//!   Xvfb (1280x720x24, `-displayfd`: Xvfb picks the display and reports it
+//!   when it accepts connections).
 
-use std::io::{BufRead, BufReader};
+use std::ffi::OsString;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 /// lavapipe worker threads when `LP_NUM_THREADS` is not set (DECISIONS
@@ -41,6 +51,22 @@ pub const PRESS_END_MARGIN: Duration = Duration::from_millis(1500);
 pub const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(90);
 /// Grace after the run time before a still-running app is killed.
 pub const EXIT_MARGIN: Duration = Duration::from_secs(60);
+/// Deadline of one helper process (xdotool, xwd, convert).
+pub const HELPER_TIMEOUT: Duration = Duration::from_secs(5);
+/// Longest wait for Xvfb to report its display.
+pub const XVFB_TIMEOUT: Duration = Duration::from_secs(10);
+/// The frame interval press holds are sized for when
+/// `KP_WINDOWED_FRAME_MS` is not set: a conservative 8 frames per second
+/// (lavapipe draws the grey-box table at about 8.8 with `LP_NUM_THREADS=2`).
+pub const DEFAULT_FRAME_INTERVAL_MS: u64 = 125;
+/// The environment variable that restricts wgpu to the fallback (software)
+/// adapter (`pin_render::gpu::FORCE_FALLBACK_ENV`).
+pub const FORCE_FALLBACK_ENV: &str = "PIN_FORCE_FALLBACK_ADAPTER";
+/// Files of a previous run removed from the artifact directory first
+/// (plus every `frame_*.png`).
+pub const ARTIFACTS: [&str; 3] = ["latency_trace.csv", "pin_app_stderr.log", "summary.txt"];
+/// How long a screenshot hold keeps its key down before the capture.
+pub const SHOT_HOLD: Duration = Duration::from_millis(800);
 
 /// What to run.
 #[derive(Clone, Debug)]
@@ -51,6 +77,7 @@ pub struct DriverConfig {
     pub run_ms: u64,
     pub lp_num_threads: String,
     pub seed: u64,
+    pub frame_interval_ms: u64,
 }
 
 fn target_dir() -> PathBuf {
@@ -81,6 +108,10 @@ impl DriverConfig {
             seed: var("KP_WINDOWED_SEED")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(DEFAULT_SEED),
+            frame_interval_ms: var("KP_WINDOWED_FRAME_MS")
+                .and_then(|v| v.parse().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(DEFAULT_FRAME_INTERVAL_MS),
         }
     }
 
@@ -125,15 +156,146 @@ impl Schedule {
         let span_us = (hi_ms - lo_ms) * 1000;
         Duration::from_micros(lo_ms * 1000 + self.next_u64() % span_us)
     }
+}
 
-    /// Left (`true`) or right.
-    pub fn left(&mut self) -> bool {
-        self.next_u64() >> 63 == 0
+/// A flipper key.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Key {
+    Left,
+    Right,
+}
+
+impl Key {
+    /// The X keycode xdotool sends.
+    pub fn keycode(self) -> &'static str {
+        match self {
+            Key::Left => KEY_LEFT,
+            Key::Right => KEY_RIGHT,
+        }
     }
 }
 
+/// One step of the press plan.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    Down(Key),
+    Up(Key),
+    /// A screenshot into the named file.
+    Shot(&'static str),
+}
+
+/// A step at `at_us` microseconds after the plan's start.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Action {
+    pub at_us: u64,
+    pub step: Step,
+}
+
+/// The base hold of every press: three frame intervals, capped at 1 s, so a
+/// presented frame reads its snapshot while the bat is still raised
+/// (check b counts only frames that showed the bat raised while held).
+pub fn base_hold_us(frame_interval_ms: u64) -> u64 {
+    (3 * frame_interval_ms).min(1000) * 1000
+}
+
+/// The press plan over `span_us` microseconds (DECISIONS "#82 — Windowed
+/// press schedule"): the left and right keys each press on their own
+/// timeline (hold [`base_hold_us`] plus 0 to 170 ms of jitter, gap 100 to
+/// 250 ms, both in microseconds so never aligned to ticks), the right one
+/// phase-shifted, so the keys alternate and overlap. A rest screenshot
+/// comes first; after 10 presses the plan waits for both keys to be up and
+/// holds the left key alone for [`SHOT_HOLD`] with a screenshot, after 20
+/// the right key, after 30 a rest screenshot after [`SHOT_HOLD`] of quiet.
+/// Seeded and deterministic; every down has its up before the plan ends.
+pub fn press_plan(seed: u64, span_us: u64, frame_interval_ms: u64) -> Vec<Action> {
+    let mut rng = Schedule::new(seed);
+    let base = base_hold_us(frame_interval_ms);
+    let shot_us = SHOT_HOLD.as_micros() as u64;
+    let mut out = vec![Action {
+        at_us: 0,
+        step: Step::Shot("frame_0_rest.png"),
+    }];
+    let mut presses = 0usize;
+    // (presses before it, the key held alone with its screenshot, or a
+    // rest screenshot).
+    let barriers = [
+        (10usize, Some((Key::Left, "frame_1_left_held.png"))),
+        (20, Some((Key::Right, "frame_2_right_held.png"))),
+        (30, None),
+    ];
+    let mut barrier = 0;
+    let phase = base / 2 + 60_000;
+    // Next down time of each key.
+    let mut next = [500_137u64, 500_137 + phase];
+    let keys = [Key::Left, Key::Right];
+    loop {
+        if let Some(&(at, solo)) = barriers.get(barrier)
+            && presses >= at
+        {
+            barrier += 1;
+            // Both keys are up once every planned step has happened.
+            let quiet = out.iter().map(|a| a.at_us).max().unwrap_or(0) + 150_000;
+            if quiet + shot_us + 1_000_000 > span_us {
+                break;
+            }
+            match solo {
+                Some((key, name)) => {
+                    out.push(Action {
+                        at_us: quiet,
+                        step: Step::Down(key),
+                    });
+                    out.push(Action {
+                        at_us: quiet + shot_us,
+                        step: Step::Shot(name),
+                    });
+                    // After the capture (a slow capture delays it).
+                    out.push(Action {
+                        at_us: quiet + shot_us + 1,
+                        step: Step::Up(key),
+                    });
+                    presses += 1;
+                }
+                None => out.push(Action {
+                    at_us: quiet + shot_us,
+                    step: Step::Shot("frame_3_rest.png"),
+                }),
+            }
+            let resume = quiet + shot_us + 200_137;
+            next = [resume, resume + phase];
+            continue;
+        }
+        // The key whose next press comes first.
+        let k = usize::from(next[1] < next[0]);
+        let down = next[k];
+        let hold = base + rng.duration(0, 170).as_micros() as u64;
+        let gap = rng.duration(100, 250).as_micros() as u64;
+        if down + hold + 100_000 > span_us {
+            break;
+        }
+        out.push(Action {
+            at_us: down,
+            step: Step::Down(keys[k]),
+        });
+        out.push(Action {
+            at_us: down + hold,
+            step: Step::Up(keys[k]),
+        });
+        presses += 1;
+        next[k] = down + hold + gap;
+    }
+    out.sort_by_key(|a| a.at_us);
+    out
+}
+
+/// Presses (downs) in a plan.
+pub fn planned_presses(plan: &[Action]) -> usize {
+    plan.iter()
+        .filter(|a| matches!(a.step, Step::Down(_)))
+        .count()
+}
+
 /// Kills and reaps a child on drop.
-struct Reaper(Option<Child>);
+pub struct Reaper(pub Option<Child>);
 
 impl Drop for Reaper {
     fn drop(&mut self) {
@@ -149,81 +311,213 @@ fn have(tool: &str) -> bool {
         .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(tool).is_file()))
 }
 
-/// Our own Xvfb on a free display number; returns the display name.
-fn start_xvfb() -> Result<(String, Reaper), String> {
-    for n in 90..200u32 {
-        let sock = PathBuf::from(format!("/tmp/.X11-unix/X{n}"));
-        let lock = PathBuf::from(format!("/tmp/.X{n}-lock"));
-        if sock.exists() || lock.exists() {
-            continue;
-        }
-        // Niced (`nice` execs Xvfb, so the pid is Xvfb's): the display server
-        // yields to the app under test on a busy runner.
-        let child = Command::new("nice")
-            .args([
-                "-n",
-                "10",
-                "Xvfb",
-                &format!(":{n}"),
-                "-screen",
-                "0",
-                "1280x720x24",
-                "-nolisten",
-                "tcp",
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("starting Xvfb: {e}"))?;
-        let mut reaper = Reaper(Some(child));
-        for _ in 0..100 {
-            if sock.exists() {
-                return Ok((format!(":{n}"), reaper));
+/// Reads `r` to its end on a thread; the bytes arrive on the receiver.
+fn read_all_async(mut r: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = r.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    rx
+}
+
+/// Polls `child` until it exits or `deadline`; at the deadline kills and
+/// reaps it and returns an error naming `what`.
+fn wait_bounded(child: &mut Child, deadline: Instant, what: &str) -> Result<ExitStatus, String> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return Ok(st),
+            Ok(None) => {}
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{what}: {e}"));
             }
-            if let Some(c) = reaper.0.as_mut()
-                && let Ok(Some(_)) = c.try_wait()
-            {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
         }
-        drop(reaper);
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{what}: no exit within its deadline; killed"));
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
-    Err("no Xvfb display could be started".into())
+}
+
+/// What a bounded helper printed.
+#[derive(Debug)]
+pub struct HelperOutput {
+    pub status: ExitStatus,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Runs `cmd` (stdin null, stdout and stderr captured) with a deadline of
+/// `timeout`: polled with `try_wait`; at the deadline the child is killed
+/// and reaped and an error returned. Never blocks on an unbounded child.
+///
+/// # Errors
+/// The spawn failed, or the deadline passed.
+pub fn run_bounded(cmd: &mut Command, timeout: Duration) -> Result<HelperOutput, String> {
+    let what = format!("{:?}", cmd.get_program());
+    let deadline = Instant::now() + timeout;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{what}: {e}"))?;
+    let out = child.stdout.take().map(read_all_async);
+    let err = child.stderr.take().map(read_all_async);
+    let status = wait_bounded(&mut child, deadline, &what)?;
+    // The pipes close with the child; a grandchild holding them open is
+    // not waited for beyond the deadline.
+    let left = deadline
+        .saturating_duration_since(Instant::now())
+        .max(Duration::from_millis(100));
+    let text = |rx: Option<mpsc::Receiver<Vec<u8>>>| {
+        rx.and_then(|rx| rx.recv_timeout(left).ok())
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default()
+    };
+    Ok(HelperOutput {
+        status,
+        stdout: text(out),
+        stderr: text(err),
+    })
+}
+
+/// Our own Xvfb (niced; `nice` execs Xvfb, so the pid is Xvfb's): Xvfb
+/// chooses a free display and writes its number to its stdout
+/// (`-displayfd 1`) once it accepts connections; the number is read with a
+/// bounded wait. Returns the display name (`:N`) and the reaper.
+fn start_xvfb() -> Result<(String, Reaper), String> {
+    let child = Command::new("nice")
+        .args(xvfb_args())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("starting Xvfb: {e}"))?;
+    let mut reaper = Reaper(Some(child));
+    let stdout = reaper
+        .0
+        .as_mut()
+        .and_then(|c| c.stdout.take())
+        .ok_or("Xvfb: no stdout pipe")?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let line = rx
+        .recv_timeout(XVFB_TIMEOUT)
+        .map_err(|_| format!("Xvfb reported no display within {XVFB_TIMEOUT:?}"))?;
+    let n: u32 = line
+        .trim()
+        .parse()
+        .map_err(|_| format!("Xvfb -displayfd wrote {line:?}, not a display number"))?;
+    if let Some(c) = reaper.0.as_mut()
+        && let Ok(Some(st)) = c.try_wait()
+    {
+        return Err(format!("Xvfb exited ({st}) after reporting display {n}"));
+    }
+    Ok((format!(":{n}"), reaper))
+}
+
+/// `nice`'s arguments that start Xvfb with `-displayfd 1`.
+pub fn xvfb_args() -> Vec<&'static str> {
+    vec![
+        "-n",
+        "10",
+        "Xvfb",
+        "-displayfd",
+        "1",
+        "-screen",
+        "0",
+        "1280x720x24",
+        "-nolisten",
+        "tcp",
+    ]
 }
 
 fn xdotool(display: &str, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("xdotool")
-        .args(args)
-        .env("DISPLAY", display)
-        .output()
-        .map_err(|e| format!("xdotool {args:?}: {e}"))?;
+    let out = run_bounded(
+        Command::new("xdotool").args(args).env("DISPLAY", display),
+        HELPER_TIMEOUT,
+    )
+    .map_err(|e| format!("xdotool {args:?}: {e}"))?;
     if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        Ok(out.stdout)
     } else {
-        Err(format!(
-            "xdotool {args:?}: {} {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr)
-        ))
+        Err(format!("xdotool {args:?}: {} {}", out.status, out.stderr))
     }
 }
 
+/// The screenshot's two processes, shell-free: `nice -n 10 xwd -root
+/// -silent -display <display>` piped into `nice -n 10 convert xwd:-
+/// png:<path>` (the display and the path are arguments, never shell
+/// source). Returns both argument vectors (program `nice`).
+pub fn screenshot_argv(display: &str, path: &Path) -> [Vec<OsString>; 2] {
+    let mut png = OsString::from("png:");
+    png.push(path.as_os_str());
+    [
+        ["-n", "10", "xwd", "-root", "-silent", "-display", display]
+            .map(OsString::from)
+            .to_vec(),
+        vec![
+            "-n".into(),
+            "10".into(),
+            "convert".into(),
+            "xwd:-".into(),
+            png,
+        ],
+    ]
+}
+
 fn screenshot(display: &str, path: &Path) -> Result<(), String> {
-    let cmd = format!(
-        "xwd -root -silent -display '{display}' | convert xwd:- png:'{}'",
-        path.display()
-    );
+    let [xwd_args, convert_args] = screenshot_argv(display, path);
+    let deadline = Instant::now() + HELPER_TIMEOUT;
     // Niced and single-threaded, so a capture does not take the sim's core.
-    let st = Command::new("nice")
-        .args(["-n", "10", "sh", "-c", &cmd])
-        .env("MAGICK_THREAD_LIMIT", "1")
-        .status()
-        .map_err(|e| format!("screenshot: {e}"))?;
-    if st.success() && path.is_file() {
+    let mut xwd = Command::new("nice")
+        .args(&xwd_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("screenshot: xwd: {e}"))?;
+    let pipe = xwd.stdout.take().ok_or("screenshot: no xwd pipe")?;
+    let mut xwd = Reaper(Some(xwd));
+    let mut convert = Reaper(Some(
+        Command::new("nice")
+            .args(&convert_args)
+            .env("MAGICK_THREAD_LIMIT", "1")
+            .stdin(Stdio::from(pipe))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("screenshot: convert: {e}"))?,
+    ));
+    let a = xwd
+        .0
+        .as_mut()
+        .map(|c| wait_bounded(c, deadline, "xwd"))
+        .ok_or("xwd")??;
+    xwd.0 = None;
+    let b = convert
+        .0
+        .as_mut()
+        .map(|c| wait_bounded(c, deadline, "convert"))
+        .ok_or("convert")??;
+    convert.0 = None;
+    if a.success() && b.success() && path.is_file() {
         Ok(())
     } else {
-        Err(format!("screenshot {} failed ({st})", path.display()))
+        Err(format!(
+            "screenshot {} failed (xwd {a}, convert {b})",
+            path.display()
+        ))
     }
 }
 
@@ -233,12 +527,206 @@ pub fn tail(text: &str, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
+/// The `summary.txt` of a failed run: what failed and the app's stderr
+/// tail.
+pub fn failure_summary(what: &str, stderr: &str) -> String {
+    format!(
+        "verdict: FAIL (windowed driver: {what})\n--- pin_app stderr (tail) ---\n{}\n",
+        tail(stderr, 40)
+    )
+}
+
+/// Why the screenshots are not enough (at least 3, one with a flipper
+/// held), or `None`.
+pub fn missing_captures(shots: &[PathBuf]) -> Option<String> {
+    let names: Vec<String> = shots
+        .iter()
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    let held = names.iter().any(|n| n.contains("_held"));
+    if names.len() >= 3 && held {
+        return None;
+    }
+    let all = [
+        "frame_0_rest.png",
+        "frame_1_left_held.png",
+        "frame_2_right_held.png",
+        "frame_3_rest.png",
+    ];
+    let missing: Vec<&str> = all
+        .iter()
+        .copied()
+        .filter(|a| !names.iter().any(|n| n == a))
+        .collect();
+    Some(format!(
+        "{} screenshots captured (at least 3 needed, one with a flipper held{}); missing: {}",
+        names.len(),
+        if held { "" } else { ": none" },
+        missing.join(", ")
+    ))
+}
+
+/// Removes a previous run's artifacts from `dir`.
+fn clean_artifacts(dir: &Path) {
+    for f in ARTIFACTS {
+        let _ = std::fs::remove_file(dir.join(f));
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with("frame_") && n.ends_with(".png") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+/// What [`drive`] did before the app exited.
+struct Driven {
+    injected: usize,
+    shots: Vec<PathBuf>,
+    exit: ExitStatus,
+}
+
+/// Steps 1 to 4 of a run, after the app started: first frame, window,
+/// presses, exit. Errors leave the app to the caller (killed there).
+fn drive(
+    cfg: &DriverConfig,
+    display: &str,
+    pid: u32,
+    started: Instant,
+    app: &mut Reaper,
+    stderr_now: &dyn Fn() -> String,
+) -> Result<Driven, String> {
+    // 1. The first presented frame (polled from stderr, bounded).
+    let t0 = Instant::now();
+    loop {
+        if stderr_now().contains("pin_app: latency trace: first frame presented") {
+            break;
+        }
+        if let Some(st) = app.0.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
+            return Err(format!("pin_app exited before its first frame ({st})"));
+        }
+        if t0.elapsed() > FIRST_FRAME_TIMEOUT {
+            return Err(format!("no frame presented within {FIRST_FRAME_TIMEOUT:?}"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    eprintln!(
+        "windowed: first frame after {} ms",
+        started.elapsed().as_millis()
+    );
+
+    // 2. The window: pointer over it, keyboard focus on it.
+    let pid_s = pid.to_string();
+    let mut window = None;
+    let search_deadline = Instant::now() + Duration::from_secs(10);
+    while window.is_none() && Instant::now() < search_deadline {
+        if let Ok(out) = xdotool(display, &["search", "--pid", &pid_s]) {
+            window = out
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_owned);
+        }
+        if window.is_none() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let window = window.ok_or("no X window found for pin_app (window focus)")?;
+    for args in [
+        &["mousemove", "--window", &window, "200", "200"][..],
+        &["windowraise", &window],
+        &["windowfocus", &window],
+    ] {
+        xdotool(display, args).map_err(|e| format!("window focus: {e}"))?;
+    }
+
+    // 3. The press plan until shortly before the run ends.
+    let press_end = started + Duration::from_millis(cfg.run_ms) - PRESS_END_MARGIN;
+    let span = press_end.saturating_duration_since(Instant::now());
+    let plan = press_plan(cfg.seed, span.as_micros() as u64, cfg.frame_interval_ms);
+    eprintln!(
+        "windowed: plan of {} presses over {} ms (holds from {} ms)",
+        planned_presses(&plan),
+        span.as_millis(),
+        base_hold_us(cfg.frame_interval_ms) / 1000
+    );
+    let mut shots = Vec::new();
+    let mut injected = 0usize;
+    let mut held = [false; 2];
+    let plan_start = Instant::now();
+    // A late step (a slow capture) shifts every later step by its delay,
+    // so holds and gaps keep their planned lengths.
+    let mut slip = Duration::ZERO;
+    for a in &plan {
+        let due = plan_start + Duration::from_micros(a.at_us) + slip;
+        let now = Instant::now();
+        if now < due {
+            std::thread::sleep(due - now);
+        } else {
+            slip += now - due;
+        }
+        let idx = |k: Key| usize::from(k == Key::Right);
+        match a.step {
+            Step::Down(k) => {
+                if Instant::now() >= press_end {
+                    break;
+                }
+                xdotool(display, &["keydown", k.keycode()])
+                    .map_err(|e| format!("key injection: {e}"))?;
+                held[idx(k)] = true;
+                injected += 1;
+            }
+            Step::Up(k) => {
+                xdotool(display, &["keyup", k.keycode()])
+                    .map_err(|e| format!("key injection: {e}"))?;
+                held[idx(k)] = false;
+            }
+            Step::Shot(name) => {
+                let p = cfg.out_dir.join(name);
+                match screenshot(display, &p) {
+                    Ok(()) => shots.push(p),
+                    Err(e) => eprintln!("windowed: {e}"),
+                }
+            }
+        }
+    }
+    for (i, k) in [Key::Left, Key::Right].into_iter().enumerate() {
+        if held[i] {
+            xdotool(display, &["keyup", k.keycode()]).map_err(|e| format!("key injection: {e}"))?;
+        }
+    }
+    eprintln!("windowed: injected {injected} presses");
+
+    // 4. The app ends by itself (`--run-ms`); bounded.
+    let deadline = started + Duration::from_millis(cfg.run_ms) + EXIT_MARGIN;
+    loop {
+        if let Some(st) = app.0.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
+            app.0 = None;
+            return Ok(Driven {
+                injected,
+                shots,
+                exit: st,
+            });
+        }
+        if Instant::now() > deadline {
+            return Err(format!(
+                "pin_app still running {EXIT_MARGIN:?} after its run time (hang); killed"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Runs the app once (see the module docs).
 ///
 /// # Errors
 /// A missing tool, bundle or binary, no first frame, no window, a failed
-/// key injection, or an app that did not exit in time (killed; the error
-/// carries the stderr tail).
+/// key injection, an app that did not exit in time (killed), or too few
+/// screenshots. Every error after the app started has written
+/// `pin_app_stderr.log` and a failure `summary.txt`, and carries the stderr
+/// tail.
 pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
     for tool in ["Xvfb", "xdotool", "xwd", "convert", "nice"] {
         if !have(tool) {
@@ -258,6 +746,7 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
         ));
     }
     std::fs::create_dir_all(&cfg.out_dir).map_err(|e| format!("{}: {e}", cfg.out_dir.display()))?;
+    clean_artifacts(&cfg.out_dir);
     let (display, _xvfb) = match std::env::var("DISPLAY").ok().filter(|d| !d.is_empty()) {
         Some(d) => (d, Reaper(None)),
         None => start_xvfb()?,
@@ -269,7 +758,6 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
         cfg.run_ms
     );
     let trace_path = cfg.trace_path();
-    let _ = std::fs::remove_file(&trace_path);
     let started = Instant::now();
     let mut child = Command::new(&cfg.app)
         .arg("--table")
@@ -280,7 +768,9 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
         .env("DISPLAY", &display)
         .env("LP_NUM_THREADS", &cfg.lp_num_threads)
         .env("WGPU_BACKEND", "vulkan")
+        .env(FORCE_FALLBACK_ENV, "1")
         .env("SDL_VIDEODRIVER", "x11")
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -304,156 +794,43 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
             }
         })
     };
-    let stderr_now = || log.lock().map(|l| l.clone()).unwrap_or_default();
-    let fail = |msg: String, app: &mut Reaper| -> String {
-        if let Some(c) = app.0.as_mut() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-        app.0 = None;
-        format!(
-            "{msg}\n--- pin_app stderr (tail) ---\n{}",
-            tail(&stderr_now(), 40)
-        )
+    let stderr_now = || {
+        log.lock()
+            .map(|l| l.clone())
+            .unwrap_or_else(|p| p.into_inner().clone())
     };
-
-    // 1. The first presented frame (polled from stderr, bounded).
-    let t0 = Instant::now();
-    loop {
-        if stderr_now().contains("pin_app: latency trace: first frame presented") {
-            break;
-        }
-        let exited = app.0.as_mut().and_then(|c| c.try_wait().ok().flatten());
-        if let Some(st) = exited {
-            return Err(fail(
-                format!("pin_app exited before its first frame ({st})"),
-                &mut app,
-            ));
-        }
-        if t0.elapsed() > FIRST_FRAME_TIMEOUT {
-            return Err(fail(
-                format!("no frame presented within {FIRST_FRAME_TIMEOUT:?}"),
-                &mut app,
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    let driven = drive(cfg, &display, pid, started, &mut app, &stderr_now);
+    // Every path: the app is gone (killed if still running), the stderr
+    // capture is complete, and the log is written fresh.
+    if let Some(c) = app.0.as_mut() {
+        let _ = c.kill();
+        let _ = c.wait();
     }
-    eprintln!(
-        "windowed: first frame after {} ms",
-        started.elapsed().as_millis()
-    );
-
-    // 2. The window: pointer over it, keyboard focus on it.
-    let pid_s = pid.to_string();
-    let mut window = None;
-    for _ in 0..100 {
-        if let Ok(out) = xdotool(&display, &["search", "--pid", &pid_s]) {
-            window = out
-                .lines()
-                .map(str::trim)
-                .find(|l| !l.is_empty())
-                .map(str::to_owned);
-            if window.is_some() {
-                break;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let Some(window) = window else {
-        return Err(fail("no X window found for pin_app".into(), &mut app));
-    };
-    for args in [
-        &["mousemove", "--window", &window, "200", "200"][..],
-        &["windowraise", &window],
-        &["windowfocus", &window],
-    ] {
-        if let Err(e) = xdotool(&display, args) {
-            return Err(fail(e, &mut app));
-        }
-    }
-
-    // 3. Presses until shortly before the run ends, with screenshots.
-    let press_end = started + Duration::from_millis(cfg.run_ms) - PRESS_END_MARGIN;
-    let mut rng = Schedule::new(cfg.seed);
-    let mut shots = Vec::new();
-    let shot = |name: &str, shots: &mut Vec<PathBuf>| {
-        let p = cfg.out_dir.join(name);
-        match screenshot(&display, &p) {
-            Ok(()) => shots.push(p),
-            Err(e) => eprintln!("windowed: {e}"),
-        }
-    };
-    shot("frame_0_rest.png", &mut shots);
-    let mut injected = 0usize;
-    while Instant::now() + Duration::from_millis(1000) < press_end {
-        let left = rng.left();
-        // Two long holds with a screenshot each: left at press 10, right at 20.
-        let held_shot = match injected {
-            10 => Some((true, "frame_1_left_held.png")),
-            20 => Some((false, "frame_2_right_held.png")),
-            _ => None,
-        };
-        let left = held_shot.map_or(left, |(l, _)| l);
-        let key = if left { KEY_LEFT } else { KEY_RIGHT };
-        let hold = rng.duration(30, 200);
-        let gap = rng.duration(100, 350);
-        if let Err(e) = xdotool(&display, &["keydown", key]) {
-            return Err(fail(e, &mut app));
-        }
-        injected += 1;
-        match held_shot {
-            Some((_, name)) => {
-                // Let a few frames show the raised bat, then capture.
-                std::thread::sleep(Duration::from_millis(800));
-                shot(name, &mut shots);
-            }
-            None => std::thread::sleep(hold),
-        }
-        if let Err(e) = xdotool(&display, &["keyup", key]) {
-            return Err(fail(e, &mut app));
-        }
-        std::thread::sleep(gap);
-        if injected == 30 {
-            std::thread::sleep(Duration::from_millis(800));
-            shot("frame_3_rest.png", &mut shots);
-        }
-    }
-    eprintln!("windowed: injected {injected} presses");
-
-    // 4. The app ends by itself (`--run-ms`); bounded.
-    let deadline = started + Duration::from_millis(cfg.run_ms) + EXIT_MARGIN;
-    let exit = loop {
-        let st = app.0.as_mut().and_then(|c| c.try_wait().ok().flatten());
-        if let Some(st) = st {
-            app.0 = None;
-            break st;
-        }
-        if Instant::now() > deadline {
-            return Err(fail(
-                format!(
-                    "pin_app still running {:?} after its run time; killed",
-                    EXIT_MARGIN
-                ),
-                &mut app,
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
+    app.0 = None;
     let _ = reader.join();
     let stderr = stderr_now();
     let _ = std::fs::write(cfg.out_dir.join("pin_app_stderr.log"), &stderr);
-    let trace = std::fs::read_to_string(&trace_path).map_err(|e| {
+    let failed = |what: String| -> String {
+        let _ = std::fs::write(
+            cfg.out_dir.join("summary.txt"),
+            failure_summary(&what, &stderr),
+        );
         format!(
-            "reading {}: {e}\n--- pin_app stderr (tail) ---\n{}",
-            trace_path.display(),
+            "{what}\n--- pin_app stderr (tail) ---\n{}",
             tail(&stderr, 40)
         )
-    })?;
+    };
+    let d = driven.map_err(&failed)?;
+    let trace = std::fs::read_to_string(&trace_path)
+        .map_err(|e| failed(format!("reading {}: {e}", trace_path.display())))?;
+    if let Some(why) = missing_captures(&d.shots) {
+        return Err(failed(why));
+    }
     Ok(RunOutput {
         stderr,
         trace,
-        injected_presses: injected,
-        exit,
-        screenshots: shots,
+        injected_presses: d.injected,
+        exit: d.exit,
+        screenshots: d.shots,
     })
 }

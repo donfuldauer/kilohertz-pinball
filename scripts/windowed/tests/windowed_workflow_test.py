@@ -4,17 +4,23 @@ Run: python3 -I -m unittest discover -s scripts/windowed/tests -p '*_test.py'
 
 The workflow is read as text (no YAML module: standard library only). The
 checks: the triggers and their paths, read-only permissions, the exact Rust
-version check, the LP_NUM_THREADS cap, the artifact upload on every outcome,
-and that ci.yml's pr-checks job does not depend on it.
+version check, the LP_NUM_THREADS cap, the forced fallback adapter, the
+artifact upload on every outcome, and that ci.yml's pr-checks job does not
+depend on it. RunShPathsTest runs scripts/windowed/run.sh --print-paths
+(nothing is built) to check its path resolution.
 """
 
+import os
 import pathlib
 import re
+import subprocess
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github" / "workflows" / "windowed.yml"
 CI = ROOT / ".github" / "workflows" / "ci.yml"
+RUN_SH = ROOT / "scripts" / "windowed" / "run.sh"
 
 
 def block(text, key, indent):
@@ -113,6 +119,12 @@ class WindowedWorkflowTest(unittest.TestCase):
         self.assertIn("scripts/windowed/run.sh", self.text)
         self.assertIn("cargo build --release -p pin_app", self.text)
 
+    def test_run_step_forces_the_fallback_adapter(self):
+        runs = [s for s in steps(self.text) if any("scripts/windowed/run.sh" in l for l in s)]
+        self.assertEqual(len(runs), 1)
+        self.assertIn('PIN_FORCE_FALLBACK_ADAPTER: "1"', "\n".join(runs[0]))
+        self.assertIn("export PIN_FORCE_FALLBACK_ADAPTER=1", RUN_SH.read_text(encoding="utf-8"))
+
     def test_upload_artifact_always(self):
         uploads = [s for s in steps(self.text) if any("actions/upload-artifact@v4" in l for l in s)]
         self.assertEqual(len(uploads), 1)
@@ -127,6 +139,48 @@ class WindowedWorkflowTest(unittest.TestCase):
         needs = "\n".join(block("\n".join(block(ci, "pr-checks", 2)), "needs", 4))
         self.assertNotIn("windowed", needs)
         self.assertNotIn("windowed", "\n".join(block(ci, "pr-checks", 2)))
+
+
+class RunShPathsTest(unittest.TestCase):
+    """run.sh resolves a relative CARGO_TARGET_DIR and out_dir against the
+    repository root before Cargo runs (--print-paths stops before building)."""
+
+    def paths(self, env_target, *args):
+        env = {k: v for k, v in os.environ.items() if k != "CARGO_TARGET_DIR"}
+        if env_target is not None:
+            env["CARGO_TARGET_DIR"] = env_target
+        with tempfile.TemporaryDirectory() as cwd:
+            out = subprocess.run(
+                ["sh", str(RUN_SH), "--print-paths", *args],
+                cwd=cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            ).stdout
+        return dict(line.split("=", 1) for line in out.splitlines())
+
+    def test_relative_paths_resolve_under_the_root(self):
+        p = self.paths("target/rel", "target/out_rel")
+        root = str(ROOT)
+        self.assertEqual(p["target"], root + "/target/rel")
+        self.assertEqual(p["out"], root + "/target/out_rel")
+        self.assertEqual(p["bundle"], root + "/target/rel/greybox")
+        self.assertEqual(p["app"], root + "/target/rel/release/pin_app")
+
+    def test_absolute_paths_unchanged_and_defaults(self):
+        p = self.paths("/abs/t", "/abs/o")
+        self.assertEqual((p["target"], p["out"]), ("/abs/t", "/abs/o"))
+        p = self.paths(None)
+        self.assertEqual(p["target"], str(ROOT) + "/target")
+        self.assertEqual(p["out"], str(ROOT) + "/target/windowed")
+
+    def test_exports_the_absolute_target_before_cargo(self):
+        text = RUN_SH.read_text(encoding="utf-8")
+        export = text.index('export CARGO_TARGET_DIR="$target"')
+        self.assertLess(export, text.index("cargo build --release -p pin_app"))
+        self.assertLess(text.index("*) target=$root/$target ;;"), export)
 
 
 if __name__ == "__main__":

@@ -22,7 +22,6 @@ use pin_core::{
     CabinetInput, FlipperId, FrameStateSnapshot, InputEvent, InputEventKind, SimStep, TICK_NS,
     TripleBuffer,
 };
-use pin_render::gpu::SurfaceStatus;
 use proptest::prelude::*;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -176,11 +175,19 @@ fn frames(n: u64) -> Vec<Frame> {
 }
 
 /// Fills `frame` / `frames_to_photon` of the rows from the frame table the
-/// way the app joins them.
-fn joined(mut rows: Vec<Row>, frames: Vec<Frame>) -> Trace {
-    for r in &mut rows {
+/// way the app joins them (the first frame with a snapshot tick in
+/// `[move_tick, release_tick]`); the run ends at the last frame's present.
+fn joined(rows: Vec<Row>, frames: Vec<Frame>) -> Trace {
+    let run_end_ns = frames.last().map_or(T0, |f| f.present_ns);
+    joined_until(rows, frames, run_end_ns)
+}
+
+/// [`joined`] with an explicit `run_end_ns`.
+fn joined_until(mut rows: Vec<Row>, frames: Vec<Frame>, run_end_ns: u64) -> Trace {
+    let releases = verdict::release_ticks(&rows);
+    for (r, release) in rows.iter_mut().zip(releases) {
         if let Some(m) = r.move_tick
-            && let Some(f) = frames.iter().find(|f| f.snap_tick >= m)
+            && let Some(f) = verdict::frame_showing(&frames, m, release)
         {
             r.frame = Some(f.frame);
             r.frame_snap_tick = Some(f.snap_tick);
@@ -193,6 +200,7 @@ fn joined(mut rows: Vec<Row>, frames: Vec<Frame>) -> Trace {
         rows,
         frames,
         overflows: 0,
+        run_end_ns,
     }
 }
 
@@ -294,12 +302,14 @@ fn req_lat_004_stall_flag_is_not_inferred_from_lateness() {
 }
 
 /// REQ-LAT-004 / REQ-LAT-005: the press must take effect in the applying
-/// tick: a bat that moves long after the delivering tick fails check a
-/// (the pre-#81 re-stamp bug delivered on time but energised late).
+/// tick: a bat raised 1 degree more than `coil_ticks` after the delivering
+/// tick fails check a (the pre-#81 re-stamp bug delivered on time but
+/// energised hundreds of ms late).
 #[test]
 fn req_lat_004_check_a_coil_takes_effect_in_the_applying_tick() {
     let ts = T0 + 4_000_000_000;
-    for (delay, ok) in [(0u64, true), (2, true), (3, false), (450, false)] {
+    // The bound is `Params::coil_ticks` (8: 1 degree needs about 4 ticks).
+    for (delay, ok) in [(0u64, true), (4, true), (8, true), (9, false), (450, false)] {
         let mut r = press(0, ts, 500_000);
         r.move_tick = Some(r.apply_tick + delay);
         let v = evaluate(&joined(vec![r], frames(600)), &OK_SHUTDOWN, &params());
@@ -318,7 +328,7 @@ fn req_lat_001_check_b_frame_counts() {
         r.move_tick = Some(move_ms);
         r.apply_tick = move_ms;
         let v = evaluate(&joined(vec![r], frames(600)), &OK_SHUTDOWN, &params());
-        assert_eq!(v.summary.max_frames_checked, want, "move {move_ms}");
+        assert_eq!(v.summary.max_frames_adjusted, want, "move {move_ms}");
         assert_eq!(v.b.passed(), want <= 2, "move {move_ms}: {:?}", v.b);
     }
     // One frame: a frame that read its snapshot after the move. Frames
@@ -334,16 +344,15 @@ fn req_lat_001_check_b_frame_counts() {
     let mut r = press(0, ts, 300_000);
     r.move_tick = Some(951);
     let v = evaluate(&joined(vec![r], fr), &OK_SHUTDOWN, &params());
-    assert_eq!(v.summary.max_frames_checked, 1);
+    assert_eq!(v.summary.max_frames_adjusted, 1);
     assert!(v.b.passed(), "{:?}", v.b);
 }
 
-/// REQ-LAT-001 check b: F0 is taken when REQ-LAT-004 lets the bat move
-/// (timestamp + check-a bound + coil ticks), so a frame presented within
-/// that window of the press does not count against the renderer; the raw
-/// column (F0 at the timestamp) is reported, not checked.
+/// REQ-LAT-001 check b: a raw count of 3 passes only through the one-frame
+/// in-flight allowance (frame 10 presents 0.5 ms after the press, before
+/// the coil deadline); the raw count is gated, the allowance counted.
 #[test]
-fn req_lat_001_check_b_counts_from_the_coil_deadline() {
+fn req_lat_001_check_b_in_flight_frame_before_the_deadline() {
     // Frame 10 presents 0.5 ms after the press; the bat moves 1 ms after.
     let ts = T0 + 1_000_000_000 - 500_000;
     let mut r = press(0, ts, 800_000);
@@ -351,8 +360,216 @@ fn req_lat_001_check_b_counts_from_the_coil_deadline() {
     r.apply_tick = 1000;
     let v = evaluate(&joined(vec![r], frames(600)), &OK_SHUTDOWN, &params());
     assert!(v.b.passed(), "{}", v.report());
-    assert_eq!(v.summary.max_frames_checked, 2);
+    assert_eq!(v.summary.max_frames_adjusted, 2);
     assert_eq!(v.summary.max_frames_raw, 3);
+    assert_eq!(v.summary.in_flight_shifted, 1);
+    assert!(v.b.info.contains("in-flight shifted 1"), "{}", v.b.info);
+}
+
+/// Frames for the in-flight table: frame k presented at `present_ms[k]`
+/// (ms after T0) drawing tick `snap[k]`.
+fn frames_at(present_ms: &[u64], snap: &[u64]) -> Vec<Frame> {
+    present_ms
+        .iter()
+        .zip(snap)
+        .enumerate()
+        .map(|(k, (&p, &t))| Frame {
+            frame: k as u64,
+            snap_tick: t,
+            present_ns: T0 + p * TICK_NS,
+        })
+        .collect()
+}
+
+/// REQ-LAT-001 check b (table-driven): the raw count from the press is
+/// gated (`n_raw <= 2`), with exactly one allowance: when the frame in
+/// flight at the press presented within `(ts, ts + bound_a + coil_ticks]`
+/// the count may start after it (`n_adj <= 2`). Raw 1 and 2 pass; raw 3
+/// with the in-flight frame inside that window passes (the review's case:
+/// press at 100 ms, frames at 101, 220 and 340 ms, the bat first visible
+/// at 340 ms); raw 3 with it outside fails; raw 4 fails even shifted; a
+/// press 700 ms late fails check a and gets no allowance.
+#[test]
+fn req_lat_001_check_b_raw_count_with_one_in_flight_frame() {
+    let p = Params {
+        coil_ticks: 2,
+        ..params()
+    };
+    let ts = T0 + 100 * TICK_NS;
+    // A press at 100 ms applied in tick 101 (1 ms late; bound_a 3 ms).
+    let deadline_ms = 100 + 3 + p.coil_ticks;
+    // (in-flight present ms, in-flight snap, move tick, raw, adjusted,
+    // shifted, pass)
+    for (inflight_ms, inflight_snap, mv, raw, adj, shifted, pass) in [
+        (101u64, 101u64, 101u64, 1u64, 1u64, false, true), // raw 1
+        (101, 90, 101, 2, 2, false, true),                 // raw 2
+        (101, 90, 102, 3, 2, true, true),                  // the review's case
+        (deadline_ms, 90, 102, 3, 2, true, true),          // window edge
+        (deadline_ms + 1, 90, 102, 3, 3, false, false),    // outside the window
+    ] {
+        let fr = frames_at(
+            &[90, inflight_ms, 220, 340, 460, 59_900],
+            &[80, inflight_snap, 101, 220, 340, 59_000],
+        );
+        let mut r = press(0, ts, TICK_NS);
+        r.move_tick = Some(mv);
+        let v = evaluate(&joined(vec![r], fr), &OK_SHUTDOWN, &p);
+        let case = format!("in-flight {inflight_ms} ms, move {mv}: {}", v.report());
+        assert!(v.a.passed(), "{case}");
+        assert_eq!(v.summary.max_frames_raw, raw, "{case}");
+        assert_eq!(v.summary.max_frames_adjusted, adj, "{case}");
+        assert_eq!(v.summary.in_flight_shifted, usize::from(shifted), "{case}");
+        assert_eq!(v.b.passed(), pass, "{case}");
+    }
+    // Raw 4 (3 after the in-flight frame): fails even with the shift.
+    let fr = frames_at(
+        &[90, 101, 150, 220, 340, 59_900],
+        &[80, 90, 95, 101, 220, 59_000],
+    );
+    let mut r = press(0, ts, TICK_NS);
+    r.move_tick = Some(102);
+    let v = evaluate(&joined(vec![r], fr), &OK_SHUTDOWN, &p);
+    assert!(v.a.passed(), "{}", v.report());
+    assert!(!v.b.passed(), "{}", v.report());
+    assert_eq!(v.summary.max_frames_raw, 4);
+    assert_eq!(v.summary.in_flight_shifted, 0);
+    // 700 ms late: fails check a, and its raw 3 gets no allowance.
+    let fr = frames_at(&[90, 101, 220, 900, 59_900], &[80, 90, 101, 800, 59_000]);
+    let mut late = press(0, ts, 700 * TICK_NS);
+    late.move_tick = Some(late.apply_tick);
+    let v = evaluate(&joined(vec![late], fr), &OK_SHUTDOWN, &p);
+    assert!(!v.a.passed(), "{}", v.report());
+    assert!(!v.b.passed(), "{}", v.report());
+    assert_eq!(v.summary.max_frames_raw, 3);
+    assert_eq!(v.summary.in_flight_shifted, 0);
+    assert!(
+        v.b.failures[0].contains("no in-flight allowance"),
+        "{:?}",
+        v.b
+    );
+}
+
+/// REQ-LAT-004, REQ-LAT-005 check a: a press whose bat never moved fails,
+/// unless its applying tick ended within `coil_ticks + 2` ticks of the
+/// run's end.
+#[test]
+fn req_lat_004_check_a_press_that_never_moved() {
+    let p = params();
+    let mut r = press(0, T0 + 30_000_000_000, 500_000);
+    r.move_tick = None;
+    let v = evaluate(&joined(vec![r.clone()], frames(600)), &OK_SHUTDOWN, &p);
+    assert!(!v.a.passed());
+    assert!(
+        v.a.failures[0].contains("the bat never moved after the press was applied"),
+        "{:?}",
+        v.a
+    );
+    // Applied right before the run ended: no time to move.
+    let tail = (p.coil_ticks + 2) * TICK_NS;
+    let end = r.apply_tick_end_sdl_ns + tail;
+    let v = evaluate(
+        &joined_until(vec![r.clone()], frames(600), end),
+        &OK_SHUTDOWN,
+        &p,
+    );
+    assert!(v.a.passed(), "{:?}", v.a);
+    let v = evaluate(
+        &joined_until(vec![r], frames(600), end + 1),
+        &OK_SHUTDOWN,
+        &p,
+    );
+    assert!(!v.a.passed(), "{:?}", v.a);
+}
+
+/// REQ-LAT-001 (F4): the final-500 ms exclusion counts from the trace's
+/// `run_end_ns`, not the last frame: a render freeze (no frames in the
+/// last 5 s) still checks the presses made during it and fails them; a
+/// marker earlier than a press is handled without underflow.
+#[test]
+fn req_lat_001_render_freeze_cannot_hide_presses() {
+    let frozen: Vec<Frame> = frames(550); // last present at T0 + 54.9 s
+    let run_end = T0 + 60_000_000_000;
+    let rows = vec![
+        press(0, T0 + 30_000_000_000, 500_000),
+        press(1, T0 + 57_000_000_000, 500_000),
+        press(2, T0 + 58_000_000_000, 500_000),
+    ];
+    let v = evaluate(
+        &joined_until(rows.clone(), frozen.clone(), run_end),
+        &OK_SHUTDOWN,
+        &params(),
+    );
+    assert!(!v.b.passed(), "{}", v.report());
+    assert_eq!(v.summary.excluded_presses, 0);
+    assert_eq!(
+        v.b.failures
+            .iter()
+            .filter(|f| f.contains("no presented frame showed the bat raised while held"))
+            .count(),
+        2,
+        "{:?}",
+        v.b
+    );
+    // A marker before a press: excluded, no underflow, no panic.
+    let v = evaluate(
+        &joined_until(rows, frozen, T0 + 40_000_000_000),
+        &OK_SHUTDOWN,
+        &params(),
+    );
+    assert_eq!(v.summary.excluded_presses, 2);
+    assert!(v.a.passed(), "{:?}", v.a);
+}
+
+/// REQ-LAT-003 (F10): the parser wants the frame header right after the
+/// event table, each overflow counter exactly once, and the run-end line;
+/// an empty frame table stays valid.
+#[test]
+fn req_lat_003_parser_is_strict_about_headers_and_trailer() {
+    let (c, mut sim, mut fw) = latency_trace(bindings(), now);
+    set_now(T0);
+    sim.start(T0);
+    let snap = FrameStateSnapshot::default();
+    sim.begin_tick(T0 + TICK_NS, &snap);
+    sim.delivered(
+        1,
+        &InputEvent::button(T0 + 300_000, CabinetInput::LeftFlipper, true),
+    );
+    sim.end_tick(1, &snap);
+    fw.presented(true, 1);
+    let text = c.collect(T0 + 5).to_csv();
+    let t = parse_trace(&text).unwrap();
+    assert_eq!(t.run_end_ns, T0 + 5);
+    assert_eq!(t.frames.len(), 1);
+    let header = format!("{}\n", verdict::FRAME_HEADER);
+    for (bad, why) in [
+        (text.replacen(&header, "", 1), "frame header missing"),
+        (
+            text.replace("input=0 move=0 frame=0 pending=0", "input=0"),
+            "trailer needs",
+        ),
+        (text.replace("move=0", "input=0"), "twice"),
+        (
+            text.replace("pending=0", "pending=0 extra=1"),
+            "unknown trailer counter",
+        ),
+        (
+            text.replace(&format!("# run_end_ns={}\n", T0 + 5), ""),
+            "run_end_ns",
+        ),
+    ] {
+        let e = parse_trace(&bad).unwrap_err();
+        assert!(e.contains(why), "{e} / {bad}");
+    }
+    // The trailer before the frame header is an error too.
+    let swapped =
+        text.replacen(&header, "", 1)
+            .replacen("# run_end_ns", &format!("{header}# run_end_ns"), 1);
+    assert!(parse_trace(&swapped).is_err());
+    // Header with no rows: valid.
+    let (c, ..) = latency_trace(bindings(), now);
+    let empty = c.collect(1).to_csv();
+    let t = parse_trace(&empty).unwrap();
+    assert!(t.rows.is_empty() && t.frames.is_empty());
 }
 
 /// REQ-LAT-001 check b: a press whose bat never moved, or that no frame
@@ -476,8 +693,8 @@ fn req_lat_003_text_round_trip_and_report() {
         &InputEvent::button(T0 + 300_000, CabinetInput::LeftFlipper, true),
     );
     sim.end_tick(1, &snap);
-    fw.presented(&[SurfaceStatus::Presented], 1);
-    let text = c.collect().to_csv();
+    fw.presented(true, 1);
+    let text = c.collect(T0 + 1_000_000_000).to_csv();
     let t = parse_trace(&text).unwrap();
     assert_eq!(t.rows.len(), 1);
     assert_eq!(t.rows[0].input, "left_flipper");
@@ -503,7 +720,12 @@ fn req_lat_003_text_round_trip_and_report() {
         report.contains("check b key to photon in frames (REQ-LAT-001): FAIL"),
         "{report}"
     );
-    assert!(report.contains("verdict: FAIL (checks b, d)"), "{report}");
+    // The press never moved its bat, 1 s before the run's end: checks a
+    // (never moved, REQ-LAT-005) and b fail; d wants 100 presses.
+    assert!(
+        report.contains("verdict: FAIL (checks a, b, d)"),
+        "{report}"
+    );
     assert!(report.contains("| dropped ratio |"), "{report}");
     assert_eq!(verdict::percentile(&[1, 2, 3], 50), 2);
     assert_eq!(verdict::percentile(&[], 99), 0);
@@ -525,7 +747,7 @@ fn parsers_survive_random_bytes() {
     }
     let t = joined(vec![press(0, T0 + 5_000_000_000, 500_000)], frames(4));
     let (c, ..) = latency_trace(bindings(), now);
-    let mut text = c.collect().to_csv();
+    let mut text = c.collect(T0).to_csv();
     // Splice a valid row in.
     text = text.replacen(
         "\n\n",
@@ -636,7 +858,7 @@ fn run_scenario(s: &Scenario) -> (String, Vec<Executed>, Vec<(u64, u64)>) {
         // Frames presented while the sim slept.
         while next_frame <= t {
             set_now(next_frame);
-            fw.presented(&[SurfaceStatus::Presented], l.tick());
+            fw.presented(true, l.tick());
             next_frame += s.frame_period_us * 1000;
         }
         while next_ev < evs.len() && evs[next_ev].1 <= t {
@@ -659,7 +881,7 @@ fn run_scenario(s: &Scenario) -> (String, Vec<Executed>, Vec<(u64, u64)>) {
             });
         }
     }
-    let text = c.collect().to_csv();
+    let text = c.collect(end_time).to_csv();
     (
         text,
         executed,
@@ -681,7 +903,8 @@ proptest! {
         let t = parse_trace(&text).unwrap();
         prop_assert_eq!(t.rows.len(), evs.len());
         prop_assert_eq!(t.overflows, 0);
-        for (r, (ts, arrival)) in t.rows.iter().zip(&evs) {
+        let releases = verdict::release_ticks(&t.rows);
+        for ((r, (ts, arrival)), release) in t.rows.iter().zip(&evs).zip(&releases) {
             prop_assert_eq!(r.sdl_ts_ns, *ts);
             prop_assert!(r.apply_tick_end_sdl_ns >= r.sdl_ts_ns);
             let first = executed
@@ -691,12 +914,23 @@ proptest! {
             prop_assert_eq!(r.apply_tick, first.tick, "row {:?}", r);
             prop_assert_eq!(r.apply_tick_end_sdl_ns, first.end);
             prop_assert_eq!(r.drain_sdl_ns, first.drain);
-            if let (Some(f), Some(n)) = (r.frame, r.frames_to_photon) {
-                let f0 = verdict::last_frame_at_or_before(&t.frames, r.sdl_ts_ns);
-                prop_assert_eq!(n, f - f0);
-                let m = r.move_tick.unwrap();
-                let first_frame = t.frames.iter().find(|fr| fr.snap_tick >= m).unwrap();
-                prop_assert_eq!(f, first_frame.frame);
+            // The join: derived from move_tick and the frame table first,
+            // then compared with the row (both present or both absent).
+            let expected = r
+                .move_tick
+                .and_then(|m| verdict::frame_showing(&t.frames, m, *release));
+            match expected {
+                Some(fr) => {
+                    let f0 = verdict::last_frame_at_or_before(&t.frames, r.sdl_ts_ns);
+                    prop_assert_eq!(r.frame, Some(fr.frame), "row {:?}", r);
+                    prop_assert_eq!(r.frames_to_photon, Some(fr.frame - f0), "row {:?}", r);
+                    prop_assert_eq!(r.frame_snap_tick, Some(fr.snap_tick));
+                    prop_assert_eq!(r.present_ns, Some(fr.present_ns));
+                }
+                None => {
+                    prop_assert_eq!(r.frame, None, "row {:?}", r);
+                    prop_assert_eq!(r.frames_to_photon, None, "row {:?}", r);
+                }
             }
             if r.down && r.move_tick.is_some() {
                 prop_assert!(r.move_tick.unwrap() >= r.apply_tick);
@@ -713,7 +947,7 @@ proptest! {
 /// allocate.
 #[test]
 fn req_lat_003_trace_record_paths_do_not_allocate() {
-    let (_, n) = guarded(|| Box::new(1u8));
+    let (_, n) = guarded(|| std::hint::black_box(Box::new(1u8)));
     assert!(n >= 1, "allocator guard not armed");
     let (mut tx, rx) = channel::<InputEvent>(4096);
     let (w, _r) = TripleBuffer::new(FrameStateSnapshot::default());
@@ -739,20 +973,18 @@ fn req_lat_003_trace_record_paths_do_not_allocate() {
             set_now(T0 + k * TICK_NS);
             l.run_ticks(1);
             if k % 7 == 0 {
-                fw.presented(&[SurfaceStatus::Presented], l.tick());
+                fw.presented(true, l.tick());
             }
             if k % 300 == 0 {
                 l.skip_ticks(5);
             }
         }
         l.run_ticks(8);
-        fw.presented(
-            &[SurfaceStatus::Skipped, SurfaceStatus::Presented],
-            l.tick(),
-        );
+        fw.presented(false, l.tick());
+        fw.presented(true, l.tick());
     });
     assert_eq!(allocs, 0, "the traced tick and frame paths allocated");
-    let t = c.collect();
+    let t = c.collect(0);
     assert!(t.rows.len() > 500, "{}", t.rows.len());
     assert!(t.rows.iter().any(|r| r.move_tick.is_some()));
 }
@@ -790,7 +1022,7 @@ fn req_lat_003_tracing_leaves_the_simulation_unchanged() {
             l.run_ticks(1);
             out.push(*r.read());
         }
-        let rows = collector.map_or(0, |c| c.collect().rows.len());
+        let rows = collector.map_or(0, |c| c.collect(0).rows.len());
         (out, l.inputs_delivered(), rows)
     };
     let (plain, n_plain, _) = run(false);
@@ -856,6 +1088,173 @@ fn req_lat_003_headless_run_is_unaffected() {
 }
 
 // ---------------------------------------------------------------------------
+// The driver's pure parts (no display needed).
+
+/// REQ-LAT-001 (F8g): the press plan holds every press at least three
+/// frame intervals (capped at 1 s) plus jitter, gaps 100 to 250 ms per key,
+/// never a whole number of ticks, keys alternating and overlapping, the
+/// two solo screenshot holds and the two rest shots, every down released,
+/// and at least 100 presses in a 55 s span; same seed, same plan.
+#[test]
+fn req_lat_001_press_plan_bounds() {
+    use driver::{Action, Key, Step};
+    let span = 55_000_000u64;
+    let plan = driver::press_plan(driver::DEFAULT_SEED, span, 125);
+    assert_eq!(plan, driver::press_plan(driver::DEFAULT_SEED, span, 125));
+    assert!(
+        driver::planned_presses(&plan) >= 100,
+        "{}",
+        driver::planned_presses(&plan)
+    );
+    assert_eq!(driver::base_hold_us(125), 375_000);
+    assert_eq!(driver::base_hold_us(400), 1_000_000, "capped at 1 s");
+    let mut down_at: [Option<u64>; 2] = [None, None];
+    let mut last_up: [Option<u64>; 2] = [None, None];
+    let mut overlaps = 0;
+    let mut gaps = Vec::new();
+    let mut shots = Vec::new();
+    let solo_us = driver::SHOT_HOLD.as_micros() as u64;
+    for &Action { at_us, step } in &plan {
+        assert!(at_us < span);
+        match step {
+            Step::Down(k) => {
+                let i = usize::from(k == Key::Right);
+                assert!(down_at[i].is_none(), "{k:?} pressed twice");
+                if down_at[1 - i].is_some() {
+                    overlaps += 1;
+                }
+                if let Some(up) = last_up[i] {
+                    let gap = at_us - up;
+                    assert!(gap >= 100_000, "gap {gap}");
+                    gaps.push(gap);
+                }
+                assert_ne!(at_us % 1000, 0, "a down at a whole ms: {at_us}");
+                down_at[i] = Some(at_us);
+            }
+            Step::Up(k) => {
+                let i = usize::from(k == Key::Right);
+                let hold = at_us - down_at[i].take().expect("up without down");
+                assert!(
+                    (375_000..545_000).contains(&hold) || hold == solo_us + 1,
+                    "hold {hold}"
+                );
+                last_up[i] = Some(at_us);
+            }
+            Step::Shot(n) => shots.push((n, down_at)),
+        }
+    }
+    assert_eq!(down_at, [None, None], "every press released");
+    // Gaps are 100 to 250 ms, except the waits around the solo holds.
+    let long = gaps.iter().filter(|g| **g >= 250_000).count();
+    assert!(long <= 9, "{long} long gaps of {}", gaps.len());
+    assert!(overlaps > 20, "keys overlap: {overlaps}");
+    let names: Vec<&str> = shots.iter().map(|(n, _)| *n).collect();
+    assert_eq!(
+        names,
+        [
+            "frame_0_rest.png",
+            "frame_1_left_held.png",
+            "frame_2_right_held.png",
+            "frame_3_rest.png"
+        ]
+    );
+    // Held shots: only their key is down; rest shots: none.
+    assert_eq!(
+        shots[1].1[0].is_some() as u8 + shots[1].1[1].is_some() as u8,
+        1
+    );
+    assert!(shots[1].1[0].is_some());
+    assert!(shots[2].1[1].is_some() && shots[2].1[0].is_none());
+    assert_eq!(shots[3].1, [None, None]);
+}
+
+/// R11 / F8a: a helper that does not exit is killed and reaped at its
+/// deadline, never waited for unboundedly.
+#[test]
+fn bounded_runner_kills_a_hung_helper() {
+    let t = std::time::Instant::now();
+    let e = driver::run_bounded(
+        std::process::Command::new("sleep").arg("30"),
+        std::time::Duration::from_millis(300),
+    )
+    .unwrap_err();
+    assert!(e.contains("killed"), "{e}");
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        t.elapsed()
+    );
+    let out = driver::run_bounded(
+        std::process::Command::new("echo").arg("hi"),
+        std::time::Duration::from_secs(5),
+    )
+    .unwrap();
+    assert!(out.status.success());
+    assert_eq!(out.stdout, "hi\n");
+}
+
+/// F8b: the screenshot is two argument vectors, never shell source: a
+/// path with a single quote and a display string stay single arguments.
+#[test]
+fn screenshot_argv_is_shell_free() {
+    let p = std::path::Path::new("/tmp/it's here/frame_1.png");
+    let [xwd, convert] = driver::screenshot_argv(":93", p);
+    assert_eq!(
+        xwd,
+        ["-n", "10", "xwd", "-root", "-silent", "-display", ":93"].map(std::ffi::OsString::from)
+    );
+    assert_eq!(
+        convert,
+        [
+            "-n",
+            "10",
+            "convert",
+            "xwd:-",
+            "png:/tmp/it's here/frame_1.png"
+        ]
+        .map(std::ffi::OsString::from)
+    );
+    assert!(!xwd.iter().chain(&convert).any(|a| a == "sh" || a == "-c"));
+    let xvfb = driver::xvfb_args();
+    assert!(
+        xvfb.windows(2).any(|w| w == ["-displayfd", "1"]),
+        "{xvfb:?}"
+    );
+    assert!(xvfb.windows(2).any(|w| w == ["-nolisten", "tcp"]));
+}
+
+/// F8e, F8f: a failure summary names what failed and carries the stderr
+/// tail; too few screenshots, or none with a flipper held, are named.
+#[test]
+fn failure_summary_and_missing_captures() {
+    let stderr: String = (0..60).map(|i| format!("pin_app: line {i}\n")).collect();
+    let s = driver::failure_summary("key injection: xdotool failed", &stderr);
+    assert!(s.starts_with("verdict: FAIL (windowed driver: key injection: xdotool failed)"));
+    assert!(s.contains("pin_app: line 59") && s.contains("pin_app: line 20"));
+    assert!(!s.contains("pin_app: line 19\n"), "tail of 40 lines");
+    let p = |n: &str| std::path::PathBuf::from("/out").join(n);
+    let all = [
+        p("frame_0_rest.png"),
+        p("frame_1_left_held.png"),
+        p("frame_2_right_held.png"),
+        p("frame_3_rest.png"),
+    ];
+    assert_eq!(driver::missing_captures(&all), None);
+    assert_eq!(driver::missing_captures(&all[..3]), None);
+    let m = driver::missing_captures(&all[..2]).unwrap();
+    assert!(
+        m.contains("2 screenshots") && m.contains("frame_2_right_held.png"),
+        "{m}"
+    );
+    let m = driver::missing_captures(&[all[0].clone(), all[3].clone(), p("frame_9.png")]).unwrap();
+    assert!(
+        m.contains("none") && m.contains("frame_1_left_held.png"),
+        "{m}"
+    );
+    assert_eq!(driver::FORCE_FALLBACK_ENV, "PIN_FORCE_FALLBACK_ADAPTER");
+}
+
+// ---------------------------------------------------------------------------
 // The 60 s windowed run.
 
 /// REQ-LAT-001, REQ-LAT-002, REQ-LAT-003, REQ-LAT-004 end to end: the
@@ -879,8 +1278,15 @@ fn windowed_latency_60s() {
         Err(e) => format!("verdict: FAIL (unreadable output: {e})\n"),
     };
     let summary = format!(
-        "LP_NUM_THREADS={} seed={} run_ms={} app exit {}\nscreenshots: {:?}\n{report}",
-        cfg.lp_num_threads, cfg.seed, cfg.run_ms, out.exit, out.screenshots
+        "LP_NUM_THREADS={} seed={} run_ms={} frame_interval_ms={} injected={} app exit {}\n\
+         screenshots: {:?}\n{report}",
+        cfg.lp_num_threads,
+        cfg.seed,
+        cfg.run_ms,
+        cfg.frame_interval_ms,
+        out.injected_presses,
+        out.exit,
+        out.screenshots
     );
     let _ = std::fs::write(cfg.out_dir.join("summary.txt"), &summary);
     println!("{summary}");

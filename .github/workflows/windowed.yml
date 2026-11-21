@@ -85,6 +85,9 @@ jobs:
 
       # 60 s run; the driver starts its own Xvfb (1280x720x24).
       - name: Windowed latency run (60 s, Xvfb + lavapipe)
+        env:
+          # lavapipe or nothing: wgpu may only pick the fallback adapter.
+          PIN_FORCE_FALLBACK_ADAPTER: "1"
         run: scripts/windowed/run.sh target/windowed
 
       - name: Summary
