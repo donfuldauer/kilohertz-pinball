@@ -15,7 +15,8 @@ use super::table::{DisplayCommand, FlipperOutline};
 use super::view::{TableRenderOptions, TableVisuals};
 use super::{HybridTimer, SimClock, SimLoop};
 use crate::profiler::{
-    CommandQueueOverflows, LoopProfiler, PresentProfiler, ProfiledSim, Profiler, ProfilerReader,
+    CommandQueueOverflows, FrameRateMeter, HudRates, LoopProfiler, PresentProfiler, ProfiledSim,
+    Profiler, ProfilerReader, hud_rate_lines,
 };
 use arrayvec::ArrayVec;
 use pin_audio::mixer::{MixerConfig, SoundReceiver};
@@ -233,10 +234,16 @@ pub struct ThreadsConfig {
     pub render: RenderConfig,
     /// Audio thread configuration.
     pub audio: AudioConfig,
-    /// The profiler's sim-loop writer (7.1 hook 2): after every batch of
-    /// ticks the sim thread publishes
+    /// The profiler's sim-loop writer (7.1 hook 2): the sim thread runs its
+    /// ticks with [`SimLoop::run_ticks_profiled`] on
+    /// [`now_ns`](Self::now_ns), recording each coil-driving input's latency
+    /// from its raw SDL stamp to the start of the tick that applies it
+    /// (REQ-LAT-005), and after every batch of ticks publishes
     /// [`SimLoop::input_overflow_ticks`] into it (one relaxed atomic
-    /// store). `None` (default): not profiled.
+    /// store). Pair it with a step that does not record input latency
+    /// itself ([`ProfiledSim::tick_time_only`], as
+    /// [`with_profiled_sim`](Self::with_profiled_sim) does). `None`
+    /// (default): not profiled.
     pub loop_profiler: Option<LoopProfiler>,
 }
 
@@ -262,12 +269,15 @@ impl ThreadsConfig {
     }
 
     /// `sim` profiled by `profiler` (the 7.1 hooks): the step is wrapped
-    /// in a [`ProfiledSim`] timed by `now_ns`, which also becomes the sim
-    /// loop's clock ([`now_ns`](Self::now_ns)), so tick times and input
-    /// latencies are read on the clock the input timestamps are on (the
-    /// app passes SDL's `SDL_GetTicksNS`); the loop writer goes to the sim
-    /// thread ([`loop_profiler`](Self::loop_profiler)) and the GPU
-    /// frame-time writer to the render thread
+    /// in a tick-time-only [`ProfiledSim`] ([`ProfiledSim::tick_time_only`])
+    /// timed by `now_ns`, which also becomes the sim loop's clock
+    /// ([`now_ns`](Self::now_ns)), so tick times and input latencies are
+    /// read on the clock the input timestamps are on (the app passes SDL's
+    /// `SDL_GetTicksNS`). The loop writer goes to the sim thread
+    /// ([`loop_profiler`](Self::loop_profiler)), which records each input's
+    /// latency from its raw SDL stamp, also for a stamp before the loop's
+    /// epoch (REQ-LAT-005, [`SimLoop::run_ticks_profiled`]), and the GPU
+    /// frame-time writer goes to the render thread
     /// ([`RenderConfig::present_profiler`]). Returns the config and the
     /// profiler's reader (clone it for the HUD, [`RenderConfig::hud`]).
     pub fn with_profiled_sim<S>(
@@ -285,7 +295,8 @@ impl ThreadsConfig {
             present,
             reader,
         } = profiler;
-        let mut cfg = Self::with_sim(Box::new(ProfiledSim::new(sim, sim_profiler, now_ns)), input);
+        let profiled = ProfiledSim::new(sim, sim_profiler, now_ns).tick_time_only();
+        let mut cfg = Self::with_sim(Box::new(profiled), input);
         cfg.now_ns = now_ns;
         cfg.loop_profiler = Some(sim_loop);
         cfg.render.present_profiler = Some(present);
@@ -643,7 +654,9 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
     let r = spawn(
         &mut threads,
         "sim",
-        Box::new(move || sim_thread(sim_loop, now_ns, timer, loop_profiler, &sd, &st)),
+        Box::new(move || {
+            sim_thread(sim_loop, now_ns, timer, loop_profiler, &sd, &st);
+        }),
     );
     let (sd, st) = (Arc::clone(&shutdown), Arc::clone(&stats));
     let r = r.and_then(|()| {
@@ -842,9 +855,10 @@ pub(super) fn publish_input_overflow<S: SimStep>(
 
 /// The real-time sim loop: accumulator timing with the catch-up cap, dropped
 /// ticks shift simulated time, hybrid sleep + spin until the next tick. No
-/// allocation, lock or I/O per tick (D5). With a `loop_profiler`, the
-/// input-overflow tick total is published after every batch of ticks
-/// ([`publish_input_overflow`]).
+/// allocation, lock or I/O per tick (D5). With a `loop_profiler`, the ticks
+/// run with [`SimLoop::run_ticks_profiled`] on `now_ns` (input latency from
+/// the raw SDL stamps, REQ-LAT-005) and the input-overflow tick total is
+/// published after every batch of ticks ([`publish_input_overflow`]).
 fn sim_thread<S: SimStep>(
     mut sim_loop: SimLoop<S>,
     now_ns: fn() -> u64,
@@ -868,7 +882,10 @@ fn sim_thread<S: SimStep>(
                 .store(clock.dropped_ticks(), Ordering::Relaxed);
         }
         if due > 0 {
-            sim_loop.run_ticks(due);
+            match loop_profiler.as_mut() {
+                Some(p) => sim_loop.run_ticks_profiled(due, p, now_ns),
+                None => sim_loop.run_ticks(due),
+            }
             publish_input_overflow(&sim_loop, loop_profiler.as_mut());
             stats.sim_ticks.store(sim_loop.tick(), Ordering::Relaxed);
             stats
@@ -1035,6 +1052,31 @@ pub fn debug_view_hooks(
     (!hooks.is_empty()).then_some(hooks)
 }
 
+/// The HUD's rate lines from the orchestrator's counters (REQ-LAT-003):
+/// cumulative dropped ticks and the presented frames per second measured by
+/// `fps` since its previous reading at `now_ns`.
+fn hud_rates(fps: &mut FrameRateMeter, stats: &OrchestratorStats, now_ns: u64) -> HudRates {
+    HudRates {
+        dropped_ticks: stats.sim_dropped_ticks.load(Ordering::Relaxed),
+        presented_fps_milli: fps.sample(now_ns, stats.render_frames.load(Ordering::Relaxed)),
+    }
+}
+
+/// The render thread's HUD refresh: when `feed` refreshes (at most once per
+/// [`HUD_REFRESH_NS`]), its profiler lines followed by the rate lines
+/// ([`hud_rate_lines`]: presented fps, dropped ticks; REQ-LAT-003). `None`
+/// without a feed or between refreshes (keep showing the previous lines).
+fn refresh_hud(
+    feed: Option<&mut HudFeed>,
+    fps: &mut FrameRateMeter,
+    stats: &OrchestratorStats,
+) -> Option<Vec<String>> {
+    let now = monotonic_now_ns();
+    let mut lines = feed?.refresh(now)?;
+    lines.extend(hud_rate_lines(&hud_rates(fps, stats, now)));
+    Some(lines)
+}
+
 fn render_thread(
     cfg: RenderConfig,
     mut reader: TripleReader<FrameStateSnapshot>,
@@ -1064,6 +1106,8 @@ fn render_thread(
         ..table_render
     };
     let mut hud = hud.map(|r| HudFeed::new(r, HUD_REFRESH_NS));
+    // Presented fps between HUD refreshes (REQ-LAT-003).
+    let mut fps = FrameRateMeter::new();
     // The debug view's profiler hooks (`None`: plain `SurfaceSet::render`).
     let mut debug_hooks: Option<DebugViewHooks> = None;
     // GPU setup on this thread (the device lives here). Without surfaces
@@ -1180,8 +1224,7 @@ fn render_thread(
                 snapshot_lines(snap, &default_ball_radius, &mut lines);
                 let st = match debug_hooks.as_mut() {
                     Some(h) => {
-                        if let Some(text) = hud.as_mut().and_then(|f| f.refresh(monotonic_now_ns()))
-                        {
+                        if let Some(text) = refresh_hud(hud.as_mut(), &mut fps, stats) {
                             h.set_hud_lines(&text);
                         }
                         set.render_with(&lines, &camera, h)
@@ -1193,7 +1236,7 @@ fn render_thread(
                 paced = set.frame_paced(&st);
             }
             Some(Presenter::Table(_, s)) => {
-                if let Some(lines) = hud.as_mut().and_then(|h| h.refresh(monotonic_now_ns())) {
+                if let Some(lines) = refresh_hud(hud.as_mut(), &mut fps, stats) {
                     s.set_hud_lines(&lines);
                 }
                 let st = s.render(snap);

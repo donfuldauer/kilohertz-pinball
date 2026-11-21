@@ -7417,3 +7417,132 @@ sweep covers a next session that starts before the merging session finishes unbl
   window is seconds long and needs a person to act inside it: P7 sets `status:blocked-failure`
   only on a unit a session was working (`in-progress`), never on a `blocked` issue the sweep
   reads. Revisit if a label-level tool becomes available.
+
+## #81 — Input epoch: events re-stamped onto the tick clock
+
+**Decision:** This supersedes the premise of "7.1 — input latency clock domain and clamping".
+That decision assumed the simulation applies an input in the tick that ingests it ("whose events
+energise or release the flipper coil in the tick that ingests them"). With a nonzero epoch this
+was false: the app's sim loop gated each event against its epoch (the SDL clock reading at sim
+start, shifted by every dropped tick) and then handed the step the raw SDL timestamp, which the
+simulation gates again against epoch 0. Every input therefore waited E + D ms (E the SDL time at
+sim start, D the dropped ticks). The new rule (REQ-LAT-004, REQ-LAT-005):
+- `SimLoop::run_ticks` still gates on the raw timestamp (`raw ≤ tick_end_ns(epoch, tick)`), and
+  hands `step_1ms` each delivered event with `timestamp_ns = raw − epoch` (saturating at 0), on
+  the tick clock where tick k ends at k · TICK_NS. Kind and order are untouched, the re-stamp
+  happens in the existing per-tick `ArrayVec` (no allocation), the 256-event cap and the
+  overflow counter are unchanged. The delivering tick is the applying tick, also after
+  `skip_ticks` (the epoch absorbs the drop). An event that reaches the ring after its own tick
+  has run is applied in the next executed tick. With epoch 0 the re-stamp is the identity, so
+  headless runs, replays and replay digests are unchanged.
+- `ProfiledSim` reads its tick start as `clock() − epoch` (saturating; one relaxed atomic load per
+  tick). The epoch is an `Arc<AtomicU64>` the sim thread stores after `set_epoch_ns` and after
+  every `skip_ticks` (`ProfiledSim::with_epoch`, `ThreadsConfig::sim_epoch_ns`, wired by
+  `ThreadsConfig::with_profiled_sim`). `ProfiledSim::new` keeps epoch 0. Both sides of the
+  latency are on the tick clock, and the latency equals SDL now minus the raw SDL stamp, measured
+  to the start of the tick in which the input took effect (for a flipper, the tick its coil is
+  energised).
+- Clamping of future timestamps to 0, the `input_clamped` count, and the set of measured inputs
+  (the four flipper buttons and LAUNCH) are otherwise unchanged.
+
+**Rationale:** REQ-LAT-004 requires an input to be applied in the first executed tick that has
+received it and whose end is not before its timestamp, regardless of the time before sim start
+and of dropped ticks. Re-stamping in the loop fixes that in the app without touching `pin_sim`
+or the `pin_core` contracts, and leaves every epoch-0 path bit-identical. Sharing the epoch with
+the profiler keeps REQ-LAT-005's metric on one clock domain.
+
+**Alternatives:**
+- Make the simulation gate against the loop's epoch (a new `SimStep` parameter or a sim-side
+  epoch): rejected, a `pin_core` contract change (R2) and a change to simulation input handling.
+- Start SDL-time-relative stamping on the main thread (subtract the epoch before the ring):
+  rejected, the main thread does not know the sim thread's epoch or its later skips without a
+  shared value on the hot input path, and the loop's raw gate would then need the same shift.
+- Drop the loop's gate and let the simulation gate alone: rejected, the step would receive events
+  for future ticks and the overflow accounting would change.
+
+## #81 — HUD rate lines stay outside `hud_lines`
+
+**Decision:** The profiler HUD's presented frames per second and cumulative dropped ticks
+(REQ-LAT-003) are two extra lines, `presented fps <x.y>` (`--` before a rate is known) and
+`dropped ticks <n>`, built by `profiler::hud_rate_lines(&HudRates)` and appended after the four
+`hud_lines` (`hud_lines_with_rates`). `hud_lines` and `ProfilerSnapshot` are unchanged. The render
+thread fills `HudRates` at each HUD refresh from `OrchestratorStats` (`sim_dropped_ticks`, and a
+`FrameRateMeter` over `render_frames` between refreshes) and appends the lines.
+
+**Rationale:** Existing tests outside this issue's owned paths assert that `hud_lines` returns
+exactly four lines and build `ProfilerSnapshot` with every field listed, and the brief requires
+the existing HUD lines and their tests to stay unchanged. The two values are orchestrator
+counters, not profiler metrics, so they come from `OrchestratorStats` rather than the profiler's
+shared storage. All the wiring fits in the owned `threads.rs`.
+
+**Alternatives:**
+- New `ProfilerSnapshot` fields and two more `hud_lines` lines: rejected, it breaks the existing
+  four-line and exhaustive-literal tests the brief keeps unchanged.
+- Counting presented frames in the profiler (a `PresentProfiler` counter): rejected, it duplicates
+  `OrchestratorStats::render_frames` and would need wiring in files outside the owned paths.
+
+## #81 tester — Input-epoch acceptance: full sweep, haptics observation, thread-test isolation
+
+**Decision:** In `crates/pin_app/tests/input_epoch.rs`: (1) the REQ-LAT-004 regression measures
+the bat's full sweep with a second press stamped mid tick 600 and held to tick 800 (the bat must
+be at rest on its stop: angle at 780 and 800 within 1 %), because the brief also requires a
+release mid tick 540, which rules out holding the first press to tick 700; the 90 % check takes
+the largest angle over ticks 501..=520. (2) The haptics thread test keeps the
+`HapticsConsumer` in the test (`cfg.audio.haptics = None`) and drains it for the first coil-class
+event, instead of handing it to the audio thread, because the coil event's `tick` is only
+observable from the consumer. (3) The three thread tests take a file-local `RwLock` for writing
+and the headless tests take it for reading, so the CPU-heavy headless sweeps of the same binary
+do not starve the sim thread while a thread test measures latency.
+
+**Rationale:** Each choice keeps exactly the assertions the brief and REQ-LAT-004/005 require
+(energise tick, bat motion, 90 % by tick 520, release tick, coil haptic tick 50..=60, p99 at most
+1.5 ms) while staying black-box and table-independent; none loosens a bound.
+
+**Alternatives:**
+- Full sweep from the flipper's configured maximum angle: rejected by the brief (table-dependent).
+- Holding the first press to tick 700 and releasing a second flipper at 540: changes which coil
+  the release test observes; rejected.
+- Leaving the haptics consumer on the audio thread: the event tick is then not observable.
+- Running the thread tests unguarded: latency samples would include scheduler starvation by the
+  test binary's own headless tests, a test artefact rather than the app's behaviour.
+
+## #81-review-1 — Profiler latency from the raw SDL stamp
+
+**Decision:** This supersedes the profiler part of "#81 — Input epoch: events re-stamped onto the
+tick clock". `ProfiledSim::with_epoch`, the shared epoch cell `ThreadsConfig::sim_epoch_ns` and
+`threads::publish_epoch` are removed. The delivery rule of that entry is unchanged: the loop gates
+on the raw stamp and hands the step `raw.saturating_sub(epoch)` (REQ-LAT-004). The sim loop now
+records input latency itself (REQ-LAT-005):
+- `SimLoop::run_ticks_profiled(n, &mut LoopProfiler, clock)` reads the SDL clock once per tick,
+  before draining the ring, and records each delivered coil-driving button at its raw
+  `timestamp_ns` against that reading (`LoopProfiler::record_input(s)`). `run_ticks` is the same
+  path without a probe.
+- `ThreadsConfig::with_profiled_sim` wraps the step in `ProfiledSim::...tick_time_only()` (tick
+  time only), and the sim thread calls `run_ticks_profiled` when a loop profiler is set. A bare
+  `ProfiledSim::new` still records latency itself, which is correct behind an epoch-0 loop where
+  stamps are raw.
+- Clamping is unchanged: a raw stamp later than the tick start gives sample 0 and is counted in
+  `input_clamped`.
+- The tick-start reading is taken before the drain rather than immediately before `step_1ms`; the
+  gap is a few non-blocking ring pops. No allocation on the sim thread (the allocation guards
+  pass).
+- Tests: the thread tests in `crates/pin_app/tests/input_epoch.rs` now run on a test-controlled
+  clock (R6), and the haptic test asserts tick 51 exactly.
+
+**Rationale:** PR #145 CodeRabbit review: with the epoch scheme the profiler saw the re-stamped
+value, which saturates at 0 for a raw stamp below the epoch (an input queued before sim start, or
+stamped in dropped time longer than the executed tick time). Latency was then short by
+epoch − raw, breaking REQ-LAT-005 ("from the SDL timestamp"). Recording in the loop, from the raw
+stamp, keeps the metric correct for every stamp.
+
+**Alternatives:**
+- `ProfiledSim` never records inputs: rejected, existing tests outside this unit's paths rely on
+  `ProfiledSim::new` recording them.
+- A new field on `Profiler`: rejected, an existing test destructures it exhaustively.
+- Moving the `LoopProfiler` into `SimLoop`: rejected, it conflicts with the borrow in
+  `publish_input_overflow(&sim_loop, Option<&mut LoopProfiler>)`.
+- Rebuilding raw as re-stamped + epoch: rejected, impossible once the re-stamp saturates at 0.
+
+**Risk:** a hand-built `ThreadsConfig` that sets `loop_profiler` and also wraps the step in a
+recording `ProfiledSim::new` would record each input twice; this is documented on
+`ThreadsConfig::loop_profiler`.

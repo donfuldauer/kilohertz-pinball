@@ -6,10 +6,28 @@
 //! * **Tick time**: wall-clock ns of one `step_1ms`, judged at the 99.9th
 //!   percentile against [`TICK_P99_9_TARGET_NS`] (strictly below 0.35 ms).
 //! * **Input latency**: ns from an input event's SDL timestamp
-//!   ([`InputEvent::timestamp_ns`]) to the start of the tick that applies
-//!   the resulting coil torque, judged at the 99th percentile against
+//!   ([`InputEvent::timestamp_ns`]) to the start of the tick in which the
+//!   input took effect (for a flipper, the tick its coil is energised;
+//!   REQ-LAT-005), judged at the 99th percentile against
 //!   [`INPUT_P99_TARGET_NS`] (at most 1.5 ms). See [`input_latency`] for
 //!   the clock domain and the clamping of future timestamps.
+//!
+//! # Clock domain (REQ-LAT-004, REQ-LAT-005)
+//!
+//! The sim loop gates queued events on their raw SDL timestamp against its
+//! epoch and hands the step each event re-stamped onto the **tick clock**
+//! (`raw − epoch`, saturating at 0; tick `k` ends at `k · TICK_NS`,
+//! [`SimLoop::run_ticks`](crate::orchestrator::SimLoop::run_ticks)), so
+//! the simulation applies an input in the tick that delivers it. The
+//! re-stamp loses the SDL stamp of an event stamped before the epoch (queued
+//! before the sim started, or stamped in time the catch-up cap dropped), so
+//! the latency is not measured on the re-stamped value: in the app the loop
+//! itself records it, from the **raw** SDL stamp to the SDL clock reading at
+//! the start of the tick that delivers (and applies) the event
+//! ([`SimLoop::run_ticks_profiled`](crate::orchestrator::SimLoop::run_ticks_profiled),
+//! [`LoopProfiler::record_inputs`]), and the step wrapper records tick time
+//! only ([`ProfiledSim::tick_time_only`]). A bare [`ProfiledSim`] (no loop
+//! epoch, so the stamps it sees are raw) records the latency itself.
 //! * **GPU frame time**: ns per presented frame, fed from the presenter side
 //!   (p50 / p99 / max).
 //! * **Command-queue overflows**: the script command queue's overflow count
@@ -26,12 +44,16 @@
 //! * [`SimProfiler`] (sim thread): tick time, input latency, script queue
 //!   overflows. [`ProfiledSim`] wraps any [`SimStep`] and feeds it.
 //! * [`LoopProfiler`] (sim thread, the loop around the step): input-overflow
-//!   ticks.
+//!   ticks, and input latency on the raw SDL stamps when the loop measures
+//!   it ([`SimLoop::run_ticks_profiled`](crate::orchestrator::SimLoop::run_ticks_profiled)).
 //! * [`PresentProfiler`] (presenter / render thread): GPU frame time.
 //! * [`ProfilerReader`] (HUD thread, any number): [`ProfilerSnapshot`]s.
 //!
 //! The writers are neither `Clone` nor `Copy` and record through `&mut
-//! self`, so each metric has exactly one writing thread. The storage is
+//! self`, so each metric has exactly one writing thread (input latency can
+//! be recorded through [`SimProfiler`] or [`LoopProfiler`], both owned by the
+//! sim thread; a configuration uses one of them,
+//! [`ProfiledSim::tick_time_only`]). The storage is
 //! relaxed atomics rather than a snapshot hand-off (a triple buffer of the
 //! histograms): a record is a handful of uncontended relaxed atomic
 //! updates, O(1), with no lock, no allocation and no copy of the 30 KiB
@@ -48,7 +70,10 @@ pub mod histogram;
 mod hud;
 
 pub use histogram::{HistogramSummary, LatencyHistogram, RELATIVE_ERROR_BOUND};
-pub use hud::{format_ms, hud_lines};
+pub use hud::{
+    FrameRateMeter, HudRates, format_fps, format_ms, hud_lines, hud_lines_with_rates,
+    hud_rate_lines,
+};
 
 use crate::orchestrator::{IdleSim, TableSim};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -83,15 +108,24 @@ pub struct InputLatency {
     pub clamped: bool,
 }
 
-/// The latency of an input event with SDL timestamp `event_ts_ns` applied
-/// by the tick that started at `tick_start_ns`.
+/// The latency of an input event stamped `event_ts_ns` applied by the tick
+/// that started at `tick_start_ns`.
 ///
-/// **Clock domain.** Both values must be on the same clock: the SDL event
-/// timestamp clock (`SDL_GetTicksNS`), which is also the clock the
-/// orchestrator's sim loop maps input timestamps on
-/// ([`SimLoop::set_epoch_ns`](crate::orchestrator::SimLoop::set_epoch_ns)
-/// and `ThreadsConfig::now_ns`). [`ProfiledSim`] reads `tick_start_ns` from
-/// the clock it is given, which must be that clock.
+/// **Clock domain.** Both values must be on the same clock: in the app the
+/// SDL event timestamp clock (`SDL_GetTicksNS`, `ThreadsConfig::now_ns`).
+/// `event_ts_ns` is the event's **raw** SDL stamp, not the tick-clock value
+/// the sim loop hands the step (`raw − epoch`, saturating at 0,
+/// [`SimLoop::run_ticks`](crate::orchestrator::SimLoop::run_ticks)), which
+/// would shorten the latency of an event stamped before the epoch by
+/// `epoch − raw`; `tick_start_ns` is the SDL clock reading at the start of
+/// the applying tick. The loop measures exactly that
+/// ([`SimLoop::run_ticks_profiled`](crate::orchestrator::SimLoop::run_ticks_profiled)).
+///
+/// **Applying tick (REQ-LAT-005).** The tick that delivers an event is the
+/// tick in which the simulation applies it (for a flipper button, the tick
+/// its coil is energised or released), so the latency runs to the start of
+/// the tick in which the input took effect, not to an earlier tick in which
+/// the loop merely received it.
 ///
 /// **Future timestamps.** An event stamped after the tick start (a negative
 /// latency: clocks out of step, or a loop running ahead of real time, as a
@@ -141,6 +175,33 @@ struct Shared {
     input_clamped: AtomicU64,
     script_queue_overflows: AtomicU64,
     input_overflow_ticks: AtomicU64,
+}
+
+impl Shared {
+    /// Records one input-latency sample ([`input_latency`]; a clamped one
+    /// is counted).
+    #[inline]
+    fn record_input(&self, event_ts_ns: u64, tick_start_ns: u64) -> InputLatency {
+        let l = input_latency(event_ts_ns, tick_start_ns);
+        if l.clamped {
+            self.input_clamped.fetch_add(1, Ordering::Relaxed);
+        }
+        self.input.record(l.ns);
+        l
+    }
+
+    /// Records every coil-driving button event ([`drives_coil`]) of
+    /// `inputs` against `tick_start_ns`.
+    #[inline]
+    fn record_inputs(&self, inputs: &[InputEvent], tick_start_ns: u64) {
+        for ev in inputs {
+            if let InputEventKind::Button { input, .. } = ev.kind
+                && drives_coil(input)
+            {
+                self.record_input(ev.timestamp_ns, tick_start_ns);
+            }
+        }
+    }
 }
 
 /// The profiler: [`Profiler::new`] returns its writers and first reader.
@@ -219,12 +280,7 @@ impl SimProfiler {
     /// timestamp records 0 and is counted). Returns the measurement.
     #[inline]
     pub fn record_input(&mut self, event_ts_ns: u64, tick_start_ns: u64) -> InputLatency {
-        let l = input_latency(event_ts_ns, tick_start_ns);
-        if l.clamped {
-            self.shared.input_clamped.fetch_add(1, Ordering::Relaxed);
-        }
-        self.shared.input.record(l.ns);
-        l
+        self.shared.record_input(event_ts_ns, tick_start_ns)
     }
 
     /// Records the latency of every coil-driving button event
@@ -232,13 +288,7 @@ impl SimProfiler {
     /// `tick_start_ns`. Axis events and other buttons are skipped.
     #[inline]
     pub fn record_inputs(&mut self, inputs: &[InputEvent], tick_start_ns: u64) {
-        for ev in inputs {
-            if let InputEventKind::Button { input, .. } = ev.kind
-                && drives_coil(input)
-            {
-                self.record_input(ev.timestamp_ns, tick_start_ns);
-            }
-        }
+        self.shared.record_inputs(inputs, tick_start_ns);
     }
 
     /// Publishes the script command queue's overflow total (`pin_sim`'s
@@ -253,8 +303,11 @@ impl SimProfiler {
 }
 
 /// The sim loop's writer: the orchestrator's input-overflow ticks
-/// ([`SimLoop::input_overflow_ticks`](crate::orchestrator::SimLoop::input_overflow_ticks)).
-/// O(1), lock-free, allocation-free.
+/// ([`SimLoop::input_overflow_ticks`](crate::orchestrator::SimLoop::input_overflow_ticks))
+/// and, when the loop measures it
+/// ([`SimLoop::run_ticks_profiled`](crate::orchestrator::SimLoop::run_ticks_profiled)),
+/// the input latency from each event's raw SDL stamp (REQ-LAT-005). O(1)
+/// per sample, lock-free, allocation-free.
 #[derive(Debug)]
 pub struct LoopProfiler {
     shared: Arc<Shared>,
@@ -268,6 +321,24 @@ impl LoopProfiler {
         self.shared
             .input_overflow_ticks
             .fetch_max(total, Ordering::Relaxed);
+    }
+
+    /// Records the latency of an event with the **raw** SDL stamp
+    /// `event_ts_ns` applied by the tick whose SDL clock reading at its
+    /// start is `tick_start_ns` ([`input_latency`]: a future stamp records
+    /// 0 and is counted). Returns the measurement.
+    #[inline]
+    pub fn record_input(&mut self, event_ts_ns: u64, tick_start_ns: u64) -> InputLatency {
+        self.shared.record_input(event_ts_ns, tick_start_ns)
+    }
+
+    /// Records the latency of every coil-driving button event
+    /// ([`drives_coil`]) of `inputs` (raw SDL stamps) against the SDL clock
+    /// reading `tick_start_ns` at the start of their applying tick. Axis
+    /// events and other buttons are skipped.
+    #[inline]
+    pub fn record_inputs(&mut self, inputs: &[InputEvent], tick_start_ns: u64) {
+        self.shared.record_inputs(inputs, tick_start_ns);
     }
 }
 
@@ -323,8 +394,8 @@ impl ProfilerReader {
 pub struct ProfilerSnapshot {
     /// Tick time, ns.
     pub tick: HistogramSummary,
-    /// Input latency (SDL event timestamp to the start of the applying
-    /// tick), ns.
+    /// Input latency (SDL event timestamp to the start of the tick in which
+    /// the input took effect, REQ-LAT-005), ns.
     pub input: HistogramSummary,
     /// Input events whose timestamp was after the tick start (recorded as
     /// 0 ns).
@@ -405,15 +476,25 @@ impl<T: CommandQueueOverflows + ?Sized> CommandQueueOverflows for Box<T> {
 
 /// A [`SimStep`] wrapper that profiles every tick: it reads `clock` (ns, the
 /// SDL event timestamp clock, see [`input_latency`]) before and after the
-/// inner step, records the tick time and the latency of the tick's
-/// coil-driving inputs, and publishes the inner step's queue overflow
-/// total. It forwards `tick`, `inputs` and `out` untouched, so the
-/// simulation computes exactly what it computes unwrapped (same
-/// `state_hash`). Allocation-free, lock-free and I/O-free when `clock` is.
+/// inner step, records the tick time and, unless
+/// [`tick_time_only`](Self::tick_time_only), the latency of the tick's
+/// coil-driving inputs against the first reading, and publishes the inner
+/// step's queue overflow total. It forwards `tick`, `inputs` and `out`
+/// untouched, so the simulation computes exactly what it computes unwrapped
+/// (same `state_hash`). Allocation-free, lock-free and I/O-free when
+/// `clock` is.
+///
+/// The input latency it records is only right when the stamps it sees are
+/// raw SDL stamps (a loop with epoch 0). Behind a sim loop with an epoch
+/// the step sees re-stamped values, so there the loop records the latency
+/// ([`SimLoop::run_ticks_profiled`](crate::orchestrator::SimLoop::run_ticks_profiled))
+/// and the wrapper is [`tick_time_only`](Self::tick_time_only), as
+/// `ThreadsConfig::with_profiled_sim` wires it.
 pub struct ProfiledSim<S, C> {
     sim: S,
     clock: C,
     profiler: SimProfiler,
+    record_inputs: bool,
 }
 
 impl<S, C> ProfiledSim<S, C>
@@ -421,13 +502,32 @@ where
     S: SimStep + CommandQueueOverflows,
     C: FnMut() -> u64 + Send,
 {
-    /// Wraps `sim`, timing it with `clock` into `profiler`.
+    /// Wraps `sim`, timing it with `clock` into `profiler`; records tick
+    /// time and the input latency of the stamps the step receives.
     pub fn new(sim: S, profiler: SimProfiler, clock: C) -> Self {
         Self {
             sim,
             clock,
             profiler,
+            record_inputs: true,
         }
+    }
+
+    /// Records tick time (and the queue overflow total) only, no input
+    /// latency: for a step behind a sim loop that re-stamps its events onto
+    /// the tick clock and records the latency itself from the raw SDL
+    /// stamps ([`SimLoop::run_ticks_profiled`](crate::orchestrator::SimLoop::run_ticks_profiled),
+    /// REQ-LAT-005).
+    #[must_use]
+    pub fn tick_time_only(mut self) -> Self {
+        self.record_inputs = false;
+        self
+    }
+
+    /// Whether the wrapper records input latency (`false` after
+    /// [`tick_time_only`](Self::tick_time_only)).
+    pub fn records_inputs(&self) -> bool {
+        self.record_inputs
     }
 
     /// The wrapped step.
@@ -453,7 +553,9 @@ where
 {
     fn step_1ms(&mut self, tick: u64, inputs: &[InputEvent], out: &mut FrameStateSnapshot) {
         let start = (self.clock)();
-        self.profiler.record_inputs(inputs, start);
+        if self.record_inputs {
+            self.profiler.record_inputs(inputs, start);
+        }
         self.sim.step_1ms(tick, inputs, out);
         let end = (self.clock)();
         self.profiler.record_tick(start, end);

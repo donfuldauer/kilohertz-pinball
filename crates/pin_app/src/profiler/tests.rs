@@ -2,7 +2,7 @@
 //! clamping, writers and reader, the step wrapper and the HUD text.
 
 use super::*;
-use pin_core::CabinetAxis;
+use pin_core::{CabinetAxis, TICK_NS};
 use proptest::prelude::*;
 
 #[test]
@@ -327,5 +327,162 @@ proptest! {
         }
         prop_assert_eq!(s.tick, s.input);
         prop_assert_eq!(hud_lines(&s).len(), 4);
+    }
+}
+
+/// REQ-LAT-005 (c): behind a sim loop with an epoch the loop records the
+/// latency from the raw stamp to the clock at the tick start, and the
+/// tick-time-only wrapper records tick time alone, so the latency equals
+/// SDL now − raw stamp and an event stamped within the delivering tick is
+/// never clamped; one sample per event (no double recording).
+#[test]
+fn req_lat_005_loop_measures_now_minus_raw_stamp() {
+    use crate::orchestrator::SimLoop;
+    use pin_core::TripleBuffer;
+    for epoch in [0u64, 1_000_000_000, 10_000_000_000, u64::MAX / 2] {
+        let p = Profiler::new();
+        let mut lp = p.sim_loop;
+        let now = Arc::new(AtomicU64::new(0));
+        let clk = Arc::clone(&now);
+        let sim = ProfiledSim::new(Counter(0), p.sim, move || clk.load(Ordering::Relaxed))
+            .tick_time_only();
+        assert!(!sim.records_inputs());
+        let (mut tx, rx) = pin_core::spsc::channel::<InputEvent>(4);
+        let (w, _r) = TripleBuffer::new(FrameStateSnapshot::default());
+        let mut l = SimLoop::new(sim, rx, w);
+        l.set_epoch_ns(epoch);
+        l.run_ticks_profiled(1, &mut lp, || now.load(Ordering::Relaxed));
+        let mut want_max = 0;
+        for tick in 2..=201u64 {
+            // Tick `tick` (raw end `epoch + tick` ms) starts after the end
+            // of the previous tick plus a wake-up below 1 ms; the press is
+            // stamped within the previous millisecond, so the loop delivers
+            // it in this tick.
+            let start_raw = epoch + (tick - 1) * TICK_NS + (tick * 7_919) % TICK_NS;
+            let raw = epoch + (tick - 1) * TICK_NS - (tick * 104_729) % TICK_NS;
+            now.store(start_raw, Ordering::Relaxed);
+            tx.push(InputEvent::button(raw, CabinetInput::RightFlipper, true))
+                .unwrap();
+            l.run_ticks_profiled(1, &mut lp, || now.load(Ordering::Relaxed));
+            want_max = want_max.max(start_raw - raw);
+        }
+        let s = p.reader.snapshot();
+        assert_eq!(l.inputs_delivered(), 200, "epoch {epoch}");
+        assert_eq!(s.input.count, 200, "epoch {epoch}");
+        assert_eq!(s.input_clamped, 0, "epoch {epoch}");
+        assert_eq!(s.input.max, want_max, "SDL now − raw stamp, epoch {epoch}");
+        // Tick time: both readings of a tick see the same clock value.
+        assert_eq!((s.tick.count, s.tick.max), (201, 0));
+    }
+}
+
+/// A bare `ProfiledSim::new` (no loop epoch, so the stamps it receives are
+/// raw) records the input latency itself on the raw clock.
+#[test]
+fn profiled_sim_without_epoch_uses_the_raw_clock() {
+    let p = Profiler::new();
+    let mut sim = ProfiledSim::new(Counter(0), p.sim, || 5_000_000);
+    assert!(sim.records_inputs());
+    let mut out = FrameStateSnapshot::default();
+    sim.step_1ms(
+        1,
+        &[InputEvent::button(
+            4_000_000,
+            CabinetInput::LeftFlipper,
+            true,
+        )],
+        &mut out,
+    );
+    let s = p.reader.snapshot();
+    assert_eq!(
+        (s.input.count, s.input.max, s.input_clamped),
+        (1, 1_000_000, 0)
+    );
+}
+
+/// `LoopProfiler::record_input(s)` measures like `SimProfiler`'s: only
+/// coil-driving buttons, future stamps clamped and counted.
+#[test]
+fn loop_profiler_records_input_latency() {
+    let mut p = Profiler::new();
+    let evs = [
+        InputEvent::button(400, CabinetInput::LeftFlipper, true),
+        InputEvent::button(100, CabinetInput::Start, true),
+        InputEvent::button(1_500, CabinetInput::Launch, true),
+    ];
+    p.sim_loop.record_inputs(&evs, 1_000);
+    let l = p.sim_loop.record_input(2_000, 1_000);
+    assert_eq!(
+        l,
+        InputLatency {
+            ns: 0,
+            clamped: true
+        }
+    );
+    let s = p.reader.snapshot();
+    assert_eq!((s.input.count, s.input.max, s.input_clamped), (3, 600, 2));
+}
+
+/// REQ-LAT-003 (e): the rate lines, exact text, with and without data; the
+/// four profiler lines stay first and unchanged.
+#[test]
+fn req_lat_003_hud_shows_presented_fps_and_dropped_ticks() {
+    assert_eq!(
+        hud_rate_lines(&HudRates::default()),
+        ["presented fps --", "dropped ticks 0"]
+    );
+    let r = HudRates {
+        dropped_ticks: 12,
+        presented_fps_milli: Some(59_940),
+    };
+    assert_eq!(
+        hud_rate_lines(&r),
+        ["presented fps 59.9", "dropped ticks 12"]
+    );
+    let snap = ProfilerSnapshot::default();
+    let all = hud_lines_with_rates(&snap, &r);
+    assert_eq!(all.len(), 6);
+    assert_eq!(all[..4], hud_lines(&snap)[..]);
+    assert_eq!(all[4], "presented fps 59.9");
+    assert_eq!(all[5], "dropped ticks 12");
+    assert_eq!(format_fps(0), "0.0");
+    assert_eq!(format_fps(144_000), "144.0");
+    assert_eq!(format_fps(999), "0.9");
+}
+
+/// The fps meter: rate between readings in thousandths; none on the first
+/// reading, with no elapsed time or with a counter or clock going back.
+#[test]
+fn frame_rate_meter_measures_between_readings() {
+    let mut m = FrameRateMeter::new();
+    assert_eq!(m.sample(1_000, 10), None, "first reading");
+    // 15 frames in 250 ms = 60 fps.
+    assert_eq!(m.sample(1_000 + 250_000_000, 25), Some(60_000));
+    // 1 frame in 3 s = 0.333 fps.
+    assert_eq!(m.sample(1_000 + 3_250_000_000, 26), Some(333));
+    assert_eq!(m.sample(1_000 + 3_250_000_000, 27), None, "no time passed");
+    assert_eq!(
+        m.sample(1_000 + 4_000_000_000, 5),
+        None,
+        "counter went back"
+    );
+    assert_eq!(m.sample(10, 6), None, "clock went back");
+    assert_eq!(m.sample(10 + 1, u64::MAX), Some(u64::MAX), "saturates");
+    assert_eq!(FrameRateMeter::default(), FrameRateMeter::new());
+}
+
+proptest! {
+    /// Rate lines: fps rounds down to one decimal of the thousandths value.
+    #[test]
+    fn fps_line_matches_the_value(milli in any::<u64>(), dropped in any::<u64>()) {
+        let [fps, drop] = hud_rate_lines(&HudRates {
+            dropped_ticks: dropped,
+            presented_fps_milli: Some(milli),
+        });
+        prop_assert_eq!(drop, format!("dropped ticks {dropped}"));
+        let v = fps.strip_prefix("presented fps ").unwrap();
+        let (a, b) = v.split_once('.').unwrap();
+        prop_assert_eq!(b.len(), 1);
+        prop_assert_eq!(a.parse::<u64>().unwrap() * 10 + b.parse::<u64>().unwrap(), milli / 100);
     }
 }
