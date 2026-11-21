@@ -1,0 +1,12 @@
+# EVALUATED, NOT RECOMMENDED (option a): glam scalar-math on every target; gives native/wasm parity without simd128 but changes native sim output (orientation bits) for every table
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -31,7 +31,7 @@
+ # Physics.
+ parry3d = "=0.31.1"
+ glamx = "=0.3.1"
+-glam = "=0.33.12"
++glam = { version = "=0.33.12", features = ["scalar-math"] }  # web-spike-sim option (a): scalar glam on every target
+ simba = "=0.10.2"
+ 
+ # Scripting.

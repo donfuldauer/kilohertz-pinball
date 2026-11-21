@@ -1,0 +1,4 @@
+y(0.3)/2: std sin 3e190650 cos 3f7d201a | libm sinf 3e190650 cosf 3f7d201a
+x(0.12)/2: std sin 3d759cd1 cos 3f7f8a12 | libm sinf 3d759cd1 cosf 3f7f8a12
+pitch6.5/2: std sin 3d6836b2 cos 3f7f9699 | libm sinf 3d6836b2 cosf 3f7f9699
+sweep 1e6 in [-4,4]: std vs libm-crate differ: sin 14777 cos 10437; std sin/cos digest 5f10f453f9a11bf8

@@ -1,0 +1,108 @@
+--- a/crates/s1_harness/src/probes.rs
++++ b/crates/s1_harness/src/probes.rs
+@@ -27,6 +27,7 @@
+     "glam_ops",
+     "glam_iso",
+     "fp_ties",
++    "quat_ops_iso",
+ ];
+ 
+ /// Runs probe `name`.
+@@ -140,6 +141,7 @@
+         "glam_ops" => glam_ops(200_000),
+         "glam_iso" => crate::probes_s7::glam_iso(200_000),
+         "fp_ties" => crate::probes_s7::fp_ties(),
++        "quat_ops_iso" => crate::probes_s7_portable::quat_ops_iso(200_000),
+         other => format!("unknown probe {other}"),
+     }
+ }
+--- a/crates/s1_harness/src/lib.rs
++++ b/crates/s1_harness/src/lib.rs
+@@ -18,6 +18,7 @@
+ pub mod playback;
+ pub mod probes;
+ pub mod probes_s7;
++pub mod probes_s7_portable;
+ #[cfg(feature = "native")]
+ pub mod record;
+ pub mod run;
+--- /dev/null
++++ b/crates/s1_harness/src/probes_s7_portable.rs
+@@ -0,0 +1,77 @@
++//! S7: digests of the `pin_physics::quat_ops` replica over the same inputs as
++//! `probes_s7::glam_iso` (same seed and draw order), so each `P:` digest must
++//! equal the x86_64 SSE2 digest of the matching glam op on every target.
++
++use core::hint::black_box as bb;
++use glam::{Quat, Vec3};
++use pin_core::{Rng, SeedableRng};
++use pin_physics::quat_ops;
++use pin_sim::hash::Fnv64;
++
++fn unit4(v: [f32; 4]) -> [f32; 4] {
++    let n = ((v[0] * v[0] + v[1] * v[1]) + (v[2] * v[2] + v[3] * v[3])).sqrt();
++    if n > 1e-3 {
++        [v[0] / n, v[1] / n, v[2] / n, v[3] / n]
++    } else {
++        [0.0, 0.0, 0.0, 1.0]
++    }
++}
++
++fn unit3(v: [f32; 3]) -> [f32; 3] {
++    let n = ((v[0] * v[0] + v[1] * v[1]) + v[2] * v[2]).sqrt();
++    if n > 1e-3 {
++        [v[0] / n, v[1] / n, v[2] / n]
++    } else {
++        [0.0, 0.0, 1.0]
++    }
++}
++
++/// `P:` digests (names match `glam_iso`'s).
++#[must_use]
++pub fn quat_ops_iso(n: u32) -> String {
++    const NAMES: [&str; 6] = [
++        "P:quat_mul",
++        "P:quat_length_squared",
++        "P:quat_normalize",
++        "P:quat_mul_vec3",
++        "P:quat_conj_mul_vec3",
++        "P:quat_from_rotation_arc",
++    ];
++    let mut rng = pin_core::Pcg32::seed_from_u64(0x0057_A7A7);
++    let mut f = move || {
++        let r = rng.next_u32();
++        if r % 97 == 0 {
++            if r & 1 == 0 { 0.0 } else { -0.0 }
++        } else {
++            (r >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
++        }
++    };
++    let mut h = [Fnv64::new(); 6];
++    let w4 = |h: &mut Fnv64, v: [f32; 4]| v.iter().for_each(|x| h.write_u32(x.to_bits()));
++    let w3 = |h: &mut Fnv64, v: [f32; 3]| v.iter().for_each(|x| h.write_u32(x.to_bits()));
++    for _ in 0..n {
++        // Same draws, in the same order, as `glam_iso`.
++        let ra = [f(), f(), f(), f()];
++        let rb = [f(), f(), f(), f()];
++        let qa = Quat::from_array(unit4(ra));
++        let qb = Quat::from_array(unit4(rb));
++        let v = Vec3::new(f(), f(), f());
++        let _u = Vec3::new(f(), f(), f());
++        let _w = Vec3::new(f() * 300.0, f() * 300.0, f() * 300.0);
++        let vn = Vec3::from_array(unit3(v.to_array()));
++        w4(&mut h[0], quat_ops::mul(bb(qa), bb(qb)).to_array());
++        h[1].write_u32(quat_ops::length_squared(bb(Quat::from_array(ra))).to_bits());
++        if (ra[0] * ra[0] + ra[1] * ra[1]) + (ra[2] * ra[2] + ra[3] * ra[3]) > 1e-6 {
++            w4(&mut h[2], quat_ops::normalize(bb(Quat::from_array(ra))).to_array());
++        }
++        w3(&mut h[3], quat_ops::mul_vec3(bb(qa), bb(v)).to_array());
++        w3(&mut h[4], quat_ops::mul_vec3(bb(qa).conjugate(), bb(v)).to_array());
++        w4(&mut h[5], quat_ops::from_rotation_arc(Vec3::Z, bb(vn)).to_array());
++    }
++    NAMES
++        .iter()
++        .zip(h.iter())
++        .map(|(n, h)| format!("{n}={:016x}", h.finish()))
++        .collect::<Vec<_>>()
++        .join(" ")
++}

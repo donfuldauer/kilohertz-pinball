@@ -1,0 +1,26 @@
+#!/bin/sh
+# S10 fix candidate (KHZ 38 proposal): the v2 Lua module (legacy EH, S8 v2 knobs) with Lua's C-call
+# limit lowered from 200 to N via -DLUAI_MAXCCALLS=N (llimits.h:254 honours a predefined value), no
+# source edit. Output: S10/mods/s10_v2_ccalls<N>/pkg_node.
+# usage: build_ccalls_variant.sh [N=100]
+set -eu
+N=${1:-100}
+W=${WEB_SPIKES}
+S10=$W/S10; S2=$W/S2
+export CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=/home/user/kilohertz-pinball/target/web_s10 CARGO_INCREMENTAL=0
+export CARGO_PROFILE_DEV_DEBUG=line-tables-only CARGO_PROFILE_TEST_DEBUG=line-tables-only
+export PATH=$W/S1/tools/bin:$PATH
+export WASI_SDK=$S2/tools/wasi-sdk/wasi-sdk-32.0-x86_64-linux
+export CC_wasm32_unknown_unknown=$WASI_SDK/bin/clang AR_wasm32_unknown_unknown=$WASI_SDK/bin/llvm-ar
+export KHZ_WASI_SYSROOT=$WASI_SDK/share/wasi-sysroot
+export KHZ_LUA_MATH=1 KHZ_S8_FIXES=1 KHZ_LOGICAL_MEM=1 KHZ_KEY_ORDER=1 KHZ_WASM_LEGACY_EH=true
+export CFLAGS_wasm32_unknown_unknown="-DLUAI_MAXCCALLS=$N"
+df -h /home/user | tail -1
+cd "$S10/repo_exnref"
+RUSTFLAGS="-C target-feature=+simd128 -C link-arg=-zstack-size=4194304" \
+  cargo build -q --release --target wasm32-unknown-unknown -p s2_harness --lib --features pin_script/web-parity
+WM=$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/s2_harness.wasm
+O=$S10/mods/s10_v2_ccalls$N; rm -rf "$O"; mkdir -p "$O"
+wasm-bindgen --target nodejs --out-dir "$O/pkg_node" "$WM"
+echo "ccalls$N: sha256=$(sha256sum < "$O/pkg_node/s2_harness_bg.wasm" | cut -c1-64) legacy_try=$(wasm-tools print "$O/pkg_node/s2_harness_bg.wasm" | grep -cE '^\s+try\b')"
+df -h /home/user | tail -1

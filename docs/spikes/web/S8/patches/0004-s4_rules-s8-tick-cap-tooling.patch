@@ -1,0 +1,360 @@
+diff -ruN S4/repo/crates/s4_rules/src/bin/s4.rs S8/s4repo/crates/s4_rules/src/bin/s4.rs
+--- S4/repo/crates/s4_rules/src/bin/s4.rs	2026-11-20 20:28:57.245726644 +0000
++++ S8/s4repo/crates/s4_rules/src/bin/s4.rs	2026-11-20 21:22:24.084948356 +0000
+@@ -78,6 +78,12 @@
+                 }
+             }
+         }
++        "s8adv" => {
++            // s8adv <design> <mix> <edges> [reps]; cap from env S8_TICK_CAP
++            let edges = a.get(4).and_then(|s| s.parse().ok()).unwrap_or(512);
++            let reps = a.get(5).and_then(|s| s.parse().ok()).unwrap_or(3);
++            print!("{}", s4_rules::s8adv::run(design(arg(2)), arg(3), edges, reps, Some(now_ms)));
++        }
+         "worst" => {
+             let reps = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(5);
+             print!(
+diff -ruN S4/repo/crates/s4_rules/src/lib.rs S8/s4repo/crates/s4_rules/src/lib.rs
+--- S4/repo/crates/s4_rules/src/lib.rs	2026-11-20 19:39:43.506103116 +0000
++++ S8/s4repo/crates/s4_rules/src/lib.rs	2026-11-20 21:22:24.071765187 +0000
+@@ -23,6 +23,7 @@
+ pub mod native;
+ pub mod prescan;
+ pub mod run;
++pub mod s8adv;
+ pub mod sha256;
+ pub mod wasmi_backend;
+ #[cfg(feature = "native")]
+diff -ruN S4/repo/crates/s4_rules/src/run.rs S8/s4repo/crates/s4_rules/src/run.rs
+--- S4/repo/crates/s4_rules/src/run.rs	2026-11-20 20:28:57.309726648 +0000
++++ S8/s4repo/crates/s4_rules/src/run.rs	2026-11-20 21:21:57.510037856 +0000
+@@ -203,6 +203,8 @@
+     pub callbacks: u64,
+     /// FNV of every callback's fuel in order (fuel-accounting parity).
+     pub fuel_digest: u64,
++    /// S8: per tick (index = tick) the callbacks run and their fuel.
++    pub per_tick: Vec<(u32, u64)>,
+ }
+ 
+ /// Wraps a backend: times each callback (if a clock is given) and records
+@@ -236,7 +238,7 @@
+         )
+     }
+ 
+-    fn wrap(&mut self, kind: u8, f: impl FnOnce(&mut dyn Rules)) {
++    fn wrap(&mut self, kind: u8, tick: u64, f: impl FnOnce(&mut dyn Rules)) {
+         let skipped = self.inner.is_faulted();
+         let t0 = self.clock.map(|c| c());
+         f(self.inner.as_mut());
+@@ -248,6 +250,14 @@
+         if let Ok(mut p) = self.probe.lock() {
+             p.callbacks += 1;
+             p.total_fuel += fuel;
++            if kind != 0 {
++                let i = tick as usize;
++                if p.per_tick.len() <= i {
++                    p.per_tick.resize(i + 1, (0, 0));
++                }
++                p.per_tick[i].0 += 1;
++                p.per_tick[i].1 += fuel;
++            }
+             p.max_fuel = p.max_fuel.max(fuel);
+             for b in fuel.to_le_bytes() {
+                 p.fuel_digest = (p.fuel_digest ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+@@ -267,13 +277,16 @@
+ 
+ impl TableScriptBackend for Recorder {
+     fn on_init(&mut self, ctx: &mut HostCtx) {
+-        self.wrap(0, |b| b.on_init(ctx));
++        let t = ctx.view.tick;
++        self.wrap(0, t, |b| b.on_init(ctx));
+     }
+     fn on_tick(&mut self, ctx: &mut HostCtx) {
+-        self.wrap(1, |b| b.on_tick(ctx));
++        let t = ctx.view.tick;
++        self.wrap(1, t, |b| b.on_tick(ctx));
+     }
+     fn on_switch_edge(&mut self, s: SwitchId, e: SwitchEdge, ctx: &mut HostCtx) {
+-        self.wrap(2, |b| b.on_switch_edge(s, e, ctx));
++        let t = ctx.view.tick;
++        self.wrap(2, t, |b| b.on_switch_edge(s, e, ctx));
+     }
+     fn apply_reload(&mut self, src: &[u8]) -> Result<(), ScriptError> {
+         self.inner.apply_reload(src)
+@@ -408,12 +421,12 @@
+             every <= 1 || t % every == 0 || t == scn.ticks,
+         );
+     }
+-    let (mf, cb, fd) = match &probe {
++    let (mf, cb, fd, s8) = match &probe {
+         Some(p) => {
+             let p = p.lock().map_err(|_| "probe")?;
+-            (p.max_fuel, p.callbacks, p.fuel_digest)
++            (p.max_fuel, p.callbacks, p.fuel_digest, s8_tick_stats(&p.per_tick))
+         }
+-        None => (0, 0, 0),
++        None => (0, 0, 0, String::new()),
+     };
+     let summary = format!(
+         "design={} ticks={} state_hash={:016x} ext_hash={:016x} cmd_stream={:016x} table_hash={:016x} faulted={} fault={:?} overflow={} max_balls={} score={:?} callbacks={} max_fuel={} fuel_digest={:016x}",
+@@ -432,6 +445,7 @@
+         mf,
+         fd
+     );
++    let summary = format!("{summary} {s8}");
+     Ok(PlayOut {
+         lines: out,
+         summary,
+@@ -667,3 +681,37 @@
+         crate::wasmtime_instr::WasmtimeInstr::memory(self).to_vec()
+     }
+ }
++
++
++/// S8: per-tick fuel statistics (max with its tick, p99, p50) over ticks 1.. .
++fn s8_tick_stats(v: &[(u32, u64)]) -> String {
++    let t: Vec<(u32, u64)> = v.iter().skip(1).copied().collect();
++    if t.is_empty() {
++        return String::new();
++    }
++    let pct = |mut x: Vec<u64>, p: f64| {
++        x.sort_unstable();
++        x[((x.len() - 1) as f64 * p).round() as usize]
++    };
++    let cb: Vec<u64> = t.iter().map(|x| u64::from(x.0)).collect();
++    let fu: Vec<u64> = t.iter().map(|x| x.1).collect();
++    let (mut mc, mut tc, mut mf, mut tf) = (0, 0, 0, 0);
++    for (i, x) in t.iter().enumerate() {
++        if u64::from(x.0) > mc {
++            mc = u64::from(x.0);
++            tc = i + 1;
++        }
++        if x.1 > mf {
++            mf = x.1;
++            tf = i + 1;
++        }
++    }
++    format!(
++        "s8_callbacks_per_tick max={mc} (tick {tc}) p99={} p50={} s8_fuel_per_tick max={mf} (tick {tf}) p99={} p50={} total={}",
++        pct(cb.clone(), 0.99),
++        pct(cb, 0.5),
++        pct(fu.clone(), 0.99),
++        pct(fu.clone(), 0.5),
++        fu.iter().sum::<u64>()
++    )
++}
+diff -ruN S4/repo/crates/s4_rules/src/s8adv.rs S8/s4repo/crates/s4_rules/src/s8adv.rs
+--- S4/repo/crates/s4_rules/src/s8adv.rs	1970-01-01 00:00:00.000000000 +0000
++++ S8/s4repo/crates/s4_rules/src/s8adv.rs	2026-11-20 21:26:54.815369865 +0000
+@@ -0,0 +1,125 @@
++//! S8: the worst-case adversarial tick for Wasm rules — `edges` switch
++//! edges plus `on_tick`, every callback looping just under the per-callback
++//! fuel budget — with or without the per-tick aggregate cap (env
++//! `S8_TICK_CAP`, read by the wasmi backend). Spike tooling.
++
++use crate::run::{Design, load};
++use pin_core::ids::SwitchId;
++use pin_core::{HostCommandQueue, HostCtx, HostView, Pcg32, SeedableRng, SwitchEdge};
++use pin_script::NameTables;
++use pin_script::wasm::WasmConfig;
++use std::fmt::Write as _;
++use std::sync::atomic::{AtomicU64, Ordering};
++
++/// Per-tick aggregate cap for new backends (0: off). Native: initialised
++/// from env `S8_TICK_CAP`; web: `s8_set_tick_cap`.
++static TICK_CAP: AtomicU64 = AtomicU64::new(u64::MAX);
++
++/// Sets the cap new backends start with (0: off).
++pub fn set_tick_cap(cap: u64) {
++    TICK_CAP.store(cap, Ordering::Relaxed);
++}
++
++/// The cap new backends start with.
++#[must_use]
++pub fn tick_cap() -> Option<u64> {
++    let mut c = TICK_CAP.load(Ordering::Relaxed);
++    if c == u64::MAX {
++        c = std::env::var("S8_TICK_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
++        TICK_CAP.store(c, Ordering::Relaxed);
++    }
++    (c != 0).then_some(c)
++}
++
++const IMPORTS: &str = r#"(import "pinball" "tick" (func $tick (result i64)))"#;
++
++fn module(n: u32, body: &str) -> Vec<u8> {
++    let w = format!(
++        r#"(module {IMPORTS} (memory (export "memory") 1)
++  (func $work (local $i i32) (loop $l {body} (local.set $i (i32.add (local.get $i) (i32.const 1))) (br_if $l (i32.lt_u (local.get $i) (i32.const {n})))))
++  (func (export "on_init")) (func (export "on_switch_edge") (param i32 i32) (call $work))
++  (func (export "on_tick") (call $work)))"#
++    );
++    wat::parse_str(&w).unwrap_or_else(|e| panic!("{e}"))
++}
++
++fn body(mix: &str) -> &'static str {
++    match mix {
++        "host_tick" => "(drop (call $tick))",
++        "call" => "",
++        _ => "(nop)",
++    }
++}
++
++/// Runs the adversarial tick; returns one outcome line and one timing line.
++#[must_use]
++pub fn run(design: Design, mix: &str, edges: u64, reps: u32, clock: Option<fn() -> f64>) -> String {
++    let names = NameTables::default();
++    let cfg = WasmConfig::engine();
++    let fits = |n: u32| {
++        let Ok(mut b) = load(design, &module(n, body(mix)), &names, cfg) else {
++            return false;
++        };
++        let view = HostView { tick: 1, ..HostView::default() };
++        let mut rng = Pcg32::seed_from_u64(1);
++        let mut cmd = HostCommandQueue::default();
++        b.on_tick(&mut HostCtx { view: &view, rng: &mut rng, cmd: &mut cmd });
++        !b.is_faulted()
++    };
++    let (mut lo, mut hi) = (0u32, 1u32);
++    while fits(hi) && hi < 1 << 26 {
++        lo = hi;
++        hi *= 2;
++    }
++    while hi - lo > 1 {
++        let m = lo + (hi - lo) / 2;
++        if fits(m) {
++            lo = m;
++        } else {
++            hi = m;
++        }
++    }
++    let n = lo * 98 / 100;
++    let wasm = module(n, body(mix));
++    let mut walls = Vec::new();
++    let mut line = String::new();
++    for rep in 0..reps.max(1) {
++        let mut b = load(design, &wasm, &names, cfg).expect("load");
++        let view = HostView { tick: 1, ..HostView::default() };
++        let mut rng = Pcg32::seed_from_u64(7);
++        let mut cmd = HostCommandQueue::default();
++        let (mut fuel, mut ran) = (0u64, 0u32);
++        let t0 = clock.map(|c| c());
++        for e in 0..edges {
++            let was = b.is_faulted();
++            b.on_switch_edge(SwitchId((e % 64) as u16), SwitchEdge::Closed, &mut HostCtx { view: &view, rng: &mut rng, cmd: &mut cmd });
++            if !was {
++                fuel += b.last_fuel();
++                ran += 1;
++            }
++        }
++        let was = b.is_faulted();
++        b.on_tick(&mut HostCtx { view: &view, rng: &mut rng, cmd: &mut cmd });
++        if !was {
++            fuel += b.last_fuel();
++            ran += 1;
++        }
++        walls.push(clock.map_or(0.0, |c| c() - t0.unwrap_or(0.0)));
++        if rep == 0 {
++            line = format!(
++                "wasm mix={mix} design={} n_per_callback={n} edges={edges} cap={} callbacks_run={ran} fuel={fuel} faulted={} faults={} last_error={:?}",
++                design.name(),
++                tick_cap().map_or_else(|| "off".to_owned(), |c| c.to_string()),
++                b.is_faulted(),
++                b.fault_count(),
++                b.last_error()
++            );
++        }
++    }
++    walls.sort_by(f64::total_cmp);
++    let mut out = format!("{line}\n");
++    if clock.is_some() {
++        let _ = writeln!(out, "TIMING wall_ms min={:.3} median={:.3} max={:.3}", walls[0], walls[walls.len() / 2], walls[walls.len() - 1]);
++    }
++    out
++}
+diff -ruN S4/repo/crates/s4_rules/src/wasmi_backend.rs S8/s4repo/crates/s4_rules/src/wasmi_backend.rs
+--- S4/repo/crates/s4_rules/src/wasmi_backend.rs	2026-11-20 20:28:57.317726648 +0000
++++ S8/s4repo/crates/s4_rules/src/wasmi_backend.rs	2026-11-20 21:26:54.814963025 +0000
+@@ -290,6 +290,13 @@
+     pub last_fuel: u64,
+     /// Largest fuel use of a callback so far.
+     pub max_fuel: u64,
++    /// S8 prototype: per-tick aggregate fuel over a tick's switch edges and
++    /// on_tick (None: off; env `S8_TICK_CAP` at construction).
++    pub s8_tick_cap: Option<u64>,
++    s8_agg_tick: Option<u64>,
++    s8_agg_left: u64,
++    /// S8: callbacks refused because the tick's aggregate was used up.
++    pub s8_tick_cap_faults: u32,
+ }
+ 
+ impl WasmiBackend {
+@@ -394,6 +401,10 @@
+             last_error: None,
+             last_fuel: 0,
+             max_fuel: 0,
++            s8_tick_cap: crate::s8adv::tick_cap(),
++            s8_agg_tick: None,
++            s8_agg_left: 0,
++            s8_tick_cap_faults: 0,
+         })
+     }
+ 
+@@ -445,7 +456,27 @@
+             return;
+         }
+         let mark = QueueMark::new(ctx.cmd, self.store.data().host.book.overflow);
+-        let budget = self.cfg.fuel_per_callback;
++        let mut budget = self.cfg.fuel_per_callback;
++        // S8 prototype (same rule as the Lua backend): callbacks of one tick
++        // share an aggregate; each runs with min(per-callback, left); a
++        // callback that finds nothing left faults like a budget kill.
++        let capped = entry != 0 && self.s8_tick_cap.is_some();
++        if let (Some(cap), true) = (self.s8_tick_cap, capped) {
++            if self.s8_agg_tick != Some(ctx.view.tick) {
++                self.s8_agg_tick = Some(ctx.view.tick);
++                self.s8_agg_left = cap;
++            }
++            if self.s8_agg_left == 0 {
++                self.last_fuel = 0;
++                self.s8_tick_cap_faults = self.s8_tick_cap_faults.saturating_add(1);
++                self.store.data_mut().host.book.release_holds(ctx.cmd);
++                self.faulted = true;
++                self.fault_count = self.fault_count.saturating_add(1);
++                self.last_error = Some(ScriptError::BudgetExceeded);
++                return;
++            }
++            budget = budget.min(self.s8_agg_left);
++        }
+         match self.mode {
+             Mode::WasmiFuel => {
+                 let _ = self.store.set_fuel(budget);
+@@ -477,6 +508,9 @@
+         };
+         self.last_fuel = budget.saturating_sub(left);
+         self.max_fuel = self.max_fuel.max(self.last_fuel);
++        if capped {
++            self.s8_agg_left = self.s8_agg_left.saturating_sub(self.last_fuel);
++        }
+         if let Err(e) = r {
+             let why = match self.why {
+                 Some(g) => match g.get(&self.store) {
+diff -ruN S4/repo/crates/s4_rules/src/web.rs S8/s4repo/crates/s4_rules/src/web.rs
+--- S4/repo/crates/s4_rules/src/web.rs	2026-11-20 20:28:57.321726648 +0000
++++ S8/s4repo/crates/s4_rules/src/web.rs	2026-11-20 21:26:54.815652206 +0000
+@@ -113,3 +113,15 @@
+ pub fn stack_probe(d: &str, reps: u32) -> Result<String, JsValue> {
+     Ok(crate::adversarial::stack_probe(design(d)?, reps as usize))
+ }
++
++/// S8: per-tick aggregate cap for backends created from now on (0: off).
++#[wasm_bindgen]
++pub fn s8_set_tick_cap(cap: f64) {
++    crate::s8adv::set_tick_cap(cap as u64);
++}
++
++/// S8: the worst-case adversarial tick (see `crate::s8adv`).
++#[wasm_bindgen]
++pub fn s8adv(d: &str, mix: &str, edges: u32, reps: u32) -> Result<String, JsValue> {
++    Ok(crate::s8adv::run(design(d)?, mix, u64::from(edges), reps, Some(now_ms)))
++}

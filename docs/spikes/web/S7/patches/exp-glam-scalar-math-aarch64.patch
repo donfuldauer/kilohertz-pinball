@@ -1,0 +1,12 @@
+# S7 experiment (i), NOT RECOMMENDED: glam scalar-math on aarch64 only
+--- a/crates/pin_physics/Cargo.toml
++++ b/crates/pin_physics/Cargo.toml
+@@ -16,3 +16,8 @@
+ 
+ [dev-dependencies]
+ proptest.workspace = true
++
++# S7 experiment (i), NOT RECOMMENDED: glam's scalar path on aarch64 only (features unify, so this
++# switches glam for the whole aarch64 build). Measured: equals x86_64 *scalar-math*, not x86_64 SSE2.
++[target.'cfg(target_arch = "aarch64")'.dependencies]
++glam = { workspace = true, features = ["scalar-math"] }

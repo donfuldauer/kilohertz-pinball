@@ -1,0 +1,1154 @@
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lauxlib.c S8/repo/third_party/lua-src/lua-5.4.9/lauxlib.c
+--- S2/repo/third_party/lua-src/lua-5.4.9/lauxlib.c	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lauxlib.c	2026-11-20 21:00:08.165989916 +0000
+@@ -474,10 +474,15 @@
+ 
+ 
+ static void *resizebox (lua_State *L, int idx, size_t newsize) {
++  UBox *box = (UBox *)lua_touserdata(L, idx);
++#if defined(KHZ_LOGICAL_MEM)
++  /* KHZ 33: through the core, so the logical heap and its cap see it */
++  void *temp = lua_khzrealloc(L, box->box, box->bsize, newsize);
++#else
+   void *ud;
+   lua_Alloc allocf = lua_getallocf(L, &ud);
+-  UBox *box = (UBox *)lua_touserdata(L, idx);
+   void *temp = allocf(ud, box->box, box->bsize, newsize);
++#endif
+   if (l_unlikely(temp == NULL && newsize > 0)) {  /* allocation error? */
+     lua_pushliteral(L, "not enough memory");
+     lua_error(L);  /* raise a memory error */
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/ldo.c S8/repo/third_party/lua-src/lua-5.4.9/ldo.c
+--- S2/repo/third_party/lua-src/lua-5.4.9/ldo.c	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/ldo.c	2026-11-20 20:59:51.466331802 +0000
+@@ -1055,8 +1055,8 @@
+   status = luaD_pcall(L, f_parser, &p, savestack(L, L->top.p), L->errfunc);
+   luaZ_freebuffer(L, &p.buff);
+   luaM_freearray(L, p.dyd.actvar.arr, p.dyd.actvar.size);
+-  luaM_freearray(L, p.dyd.gt.arr, p.dyd.gt.size);
+-  luaM_freearray(L, p.dyd.label.arr, p.dyd.label.size);
++  luaM_freearrayl(L, p.dyd.gt.arr, p.dyd.gt.size, KHZL_LABELDESC);  /* KHZ 33 */
++  luaM_freearrayl(L, p.dyd.label.arr, p.dyd.label.size, KHZL_LABELDESC);  /* KHZ 33 */
+   decnny(L);
+   return status;
+ }
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lfunc.c S8/repo/third_party/lua-src/lua-5.4.9/lfunc.c
+--- S2/repo/third_party/lua-src/lua-5.4.9/lfunc.c	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lfunc.c	2026-11-20 20:59:39.448256700 +0000
+@@ -25,17 +25,19 @@
+ 
+ 
+ CClosure *luaF_newCclosure (lua_State *L, int nupvals) {
+-  GCObject *o = luaC_newobj(L, LUA_VCCL, sizeCclosure(nupvals));
++  GCObject *o = luaC_newobjl(L, LUA_VCCL, sizeCclosure(nupvals), khzl_sizeCclosure(nupvals));  /* KHZ 33 */
+   CClosure *c = gco2ccl(o);
+   c->nupvalues = cast_byte(nupvals);
++  khz_setid(G(L), c);  /* KHZ 34 */
+   return c;
+ }
+ 
+ 
+ LClosure *luaF_newLclosure (lua_State *L, int nupvals) {
+-  GCObject *o = luaC_newobj(L, LUA_VLCL, sizeLclosure(nupvals));
++  GCObject *o = luaC_newobjl(L, LUA_VLCL, sizeLclosure(nupvals), khzl_sizeLclosure(nupvals));  /* KHZ 33 */
+   LClosure *c = gco2lcl(o);
+   c->p = NULL;
++  khz_setid(G(L), c);  /* KHZ 34 */
+   c->nupvalues = cast_byte(nupvals);
+   while (nupvals--) c->upvals[nupvals] = NULL;
+   return c;
+@@ -48,7 +50,7 @@
+ void luaF_initupvals (lua_State *L, LClosure *cl) {
+   int i;
+   for (i = 0; i < cl->nupvalues; i++) {
+-    GCObject *o = luaC_newobj(L, LUA_VUPVAL, sizeof(UpVal));
++    GCObject *o = luaC_newobjl(L, LUA_VUPVAL, sizeof(UpVal), KHZL_UPVAL);  /* KHZ 33 */
+     UpVal *uv = gco2upv(o);
+     uv->v.p = &uv->u.value;  /* make it closed */
+     setnilvalue(uv->v.p);
+@@ -63,7 +65,7 @@
+ ** open upvalues of 'L' after entry 'prev'.
+ **/
+ static UpVal *newupval (lua_State *L, StkId level, UpVal **prev) {
+-  GCObject *o = luaC_newobj(L, LUA_VUPVAL, sizeof(UpVal));
++  GCObject *o = luaC_newobjl(L, LUA_VUPVAL, sizeof(UpVal), KHZL_UPVAL);  /* KHZ 33 */
+   UpVal *uv = gco2upv(o);
+   UpVal *next = *prev;
+   uv->v.p = s2v(level);  /* current value lives in the stack */
+@@ -238,7 +240,7 @@
+ 
+ 
+ Proto *luaF_newproto (lua_State *L) {
+-  GCObject *o = luaC_newobj(L, LUA_VPROTO, sizeof(Proto));
++  GCObject *o = luaC_newobjl(L, LUA_VPROTO, sizeof(Proto), KHZL_PROTO);  /* KHZ 33 */
+   Proto *f = gco2p(o);
+   f->k = NULL;
+   f->sizek = 0;
+@@ -266,13 +268,13 @@
+ 
+ void luaF_freeproto (lua_State *L, Proto *f) {
+   luaM_freearray(L, f->code, f->sizecode);
+-  luaM_freearray(L, f->p, f->sizep);
++  luaM_freearrayl(L, f->p, f->sizep, KHZL_PTR);  /* KHZ 33 */
+   luaM_freearray(L, f->k, f->sizek);
+   luaM_freearray(L, f->lineinfo, f->sizelineinfo);
+   luaM_freearray(L, f->abslineinfo, f->sizeabslineinfo);
+-  luaM_freearray(L, f->locvars, f->sizelocvars);
+-  luaM_freearray(L, f->upvalues, f->sizeupvalues);
+-  luaM_free(L, f);
++  luaM_freearrayl(L, f->locvars, f->sizelocvars, KHZL_LOCVAR);  /* KHZ 33 */
++  luaM_freearrayl(L, f->upvalues, f->sizeupvalues, KHZL_UPVALDESC);  /* KHZ 33 */
++  luaM_freel(L, f, KHZL_PROTO);  /* KHZ 33 */
+ }
+ 
+ 
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lgc.c S8/repo/third_party/lua-src/lua-5.4.9/lgc.c
+--- S2/repo/third_party/lua-src/lua-5.4.9/lgc.c	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lgc.c	2026-11-20 20:59:20.168269751 +0000
+@@ -255,9 +255,10 @@
+ ** create a new collectable object (with given type, size, and offset)
+ ** and link it to 'allgc' list.
+ */
+-GCObject *luaC_newobjdt (lua_State *L, int tt, size_t sz, size_t offset) {
++GCObject *luaC_newobjdtl (lua_State *L, int tt, size_t sz, size_t offset,
++                          size_t lsz) {
+   global_State *g = G(L);
+-  char *p = cast_charp(luaM_newobject(L, novariant(tt), sz));
++  char *p = cast_charp(luaM_newobjectl(L, novariant(tt), sz, lsz));  /* KHZ 33 */
+   GCObject *o = cast(GCObject *, p + offset);
+   o->marked = luaC_white(g);
+   o->tt = tt;
+@@ -267,8 +268,19 @@
+ }
+ 
+ 
++GCObject *luaC_newobjdt (lua_State *L, int tt, size_t sz, size_t offset) {
++  return luaC_newobjdtl(L, tt, sz, offset, sz);
++}
++
++
+ GCObject *luaC_newobj (lua_State *L, int tt, size_t sz) {
+-  return luaC_newobjdt(L, tt, sz, 0);
++  return luaC_newobjdtl(L, tt, sz, 0, sz);
++}
++
++
++/* KHZ 33: an object accounted with logical size 'lsz' (lkhzmem.h) */
++GCObject *luaC_newobjl (lua_State *L, int tt, size_t sz, size_t lsz) {
++  return luaC_newobjdtl(L, tt, sz, 0, lsz);
+ }
+ 
+ /* }====================================================== */
+@@ -773,7 +785,7 @@
+ static void freeupval (lua_State *L, UpVal *uv) {
+   if (upisopen(uv))
+     luaF_unlinkupval(uv);
+-  luaM_free(L, uv);
++  luaM_freel(L, uv, KHZL_UPVAL);  /* KHZ 33 */
+ }
+ 
+ 
+@@ -787,12 +799,12 @@
+       break;
+     case LUA_VLCL: {
+       LClosure *cl = gco2lcl(o);
+-      luaM_freemem(L, cl, sizeLclosure(cl->nupvalues));
++      luaM_freememl(L, cl, sizeLclosure(cl->nupvalues), khzl_sizeLclosure(cl->nupvalues));  /* KHZ 33 */
+       break;
+     }
+     case LUA_VCCL: {
+       CClosure *cl = gco2ccl(o);
+-      luaM_freemem(L, cl, sizeCclosure(cl->nupvalues));
++      luaM_freememl(L, cl, sizeCclosure(cl->nupvalues), khzl_sizeCclosure(cl->nupvalues));  /* KHZ 33 */
+       break;
+     }
+     case LUA_VTABLE:
+@@ -803,18 +815,18 @@
+       break;
+     case LUA_VUSERDATA: {
+       Udata *u = gco2u(o);
+-      luaM_freemem(L, o, sizeudata(u->nuvalue, u->len));
++      luaM_freememl(L, o, sizeudata(u->nuvalue, u->len), khzl_sizeudata(u->nuvalue, u->len));  /* KHZ 33 */
+       break;
+     }
+     case LUA_VSHRSTR: {
+       TString *ts = gco2ts(o);
+       luaS_remove(L, ts);  /* remove it from hash table */
+-      luaM_freemem(L, ts, sizelstring(ts->shrlen));
++      luaM_freememl(L, ts, sizelstring(ts->shrlen), khzl_sizelstring(ts->shrlen));  /* KHZ 33 */
+       break;
+     }
+     case LUA_VLNGSTR: {
+       TString *ts = gco2ts(o);
+-      luaM_freemem(L, ts, sizelstring(ts->u.lnglen));
++      luaM_freememl(L, ts, sizelstring(ts->u.lnglen), khzl_sizelstring(ts->u.lnglen));  /* KHZ 33 */
+       break;
+     }
+     default: lua_assert(0);
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lgc.h S8/repo/third_party/lua-src/lua-5.4.9/lgc.h
+--- S2/repo/third_party/lua-src/lua-5.4.9/lgc.h	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lgc.h	2026-11-20 20:59:20.172276684 +0000
+@@ -191,6 +191,9 @@
+ LUAI_FUNC void luaC_runtilstate (lua_State *L, int statesmask);
+ LUAI_FUNC void luaC_fullgc (lua_State *L, int isemergency);
+ LUAI_FUNC GCObject *luaC_newobj (lua_State *L, int tt, size_t sz);
++LUAI_FUNC GCObject *luaC_newobjl (lua_State *L, int tt, size_t sz, size_t lsz);  /* KHZ 33 */
++LUAI_FUNC GCObject *luaC_newobjdtl (lua_State *L, int tt, size_t sz,
++                                   size_t offset, size_t lsz);  /* KHZ 33 */
+ LUAI_FUNC GCObject *luaC_newobjdt (lua_State *L, int tt, size_t sz,
+                                                  size_t offset);
+ LUAI_FUNC void luaC_barrier_ (lua_State *L, GCObject *o, GCObject *v);
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lkhzmem.h S8/repo/third_party/lua-src/lua-5.4.9/lkhzmem.h
+--- S2/repo/third_party/lua-src/lua-5.4.9/lkhzmem.h	1970-01-01 00:00:00.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lkhzmem.h	2026-11-20 20:56:44.551996276 +0000
+@@ -0,0 +1,61 @@
++/*
++** KHZ 33 (web spike S8): logical memory sizes.
++** With KHZ_LOGICAL_MEM every allocation is accounted (GC debt, the GC pause
++** estimate, the emergency-collection charge of KHZ 19, LUA_GCCOUNT and the
++** logical heap cap 'lua_khzsetmemcap') with the sizes Lua 5.4.9's objects
++** have on an LP64 target (x86_64, aarch64), whatever the real layout is.
++** The same script therefore sees the same collection schedule and reaches
++** the cap at the same allocation on 32-bit (wasm32) and 64-bit targets.
++** On LP64 the constants equal the real sizes (checked at compile time in
++** lstate.c), except full-userdata payloads, which are charged a constant
++** (their real size is a host Rust type size, which is pointer-size
++** dependent). Without KHZ_LOGICAL_MEM the macros give the real sizes.
++*/
++#ifndef lkhzmem_h
++#define lkhzmem_h
++
++#if defined(KHZ_LOGICAL_MEM)
++#define KHZL_PTR        8u    /* TString*, Proto* vector elements */
++#define KHZL_TABLE      56u   /* sizeof(Table) */
++#define KHZL_UPVAL      40u   /* sizeof(UpVal) */
++#define KHZL_PROTO      128u  /* sizeof(Proto) */
++#define KHZL_LOCVAR     16u   /* sizeof(LocVar) */
++#define KHZL_UPVALDESC  16u   /* sizeof(Upvaldesc) */
++#define KHZL_LABELDESC  24u   /* sizeof(Labeldesc) */
++#define KHZL_CALLINFO   64u   /* sizeof(CallInfo) */
++#define KHZL_LX         208u  /* sizeof(LX) (LUA_EXTRASPACE = 8) */
++#define KHZL_LG         1648u /* sizeof(LG) */
++#define KHZL_TSHDR      24u   /* offsetof(TString, contents) */
++#define KHZL_UD0HDR     32u   /* offsetof(Udata0, bindata) */
++#define KHZL_UDHDR      40u   /* offsetof(Udata, uv) */
++#define KHZL_CCLHDR     32u   /* offsetof(CClosure, upvalue) */
++#define KHZL_LCLHDR     32u   /* offsetof(LClosure, upvals) */
++#define KHZL_UDPAYLOAD  64u   /* every full-userdata payload, whatever its size */
++#define khzl_udpayload(s)  ((void)(s), (size_t)KHZL_UDPAYLOAD)
++#else
++#define KHZL_PTR        sizeof(void *)
++#define KHZL_TABLE      sizeof(Table)
++#define KHZL_UPVAL      sizeof(UpVal)
++#define KHZL_PROTO      sizeof(Proto)
++#define KHZL_LOCVAR     sizeof(LocVar)
++#define KHZL_UPVALDESC  sizeof(Upvaldesc)
++#define KHZL_LABELDESC  sizeof(Labeldesc)
++#define KHZL_CALLINFO   sizeof(CallInfo)
++#define KHZL_LX         sizeof(LX)
++#define KHZL_LG         sizeof(LG)
++#define KHZL_TSHDR      offsetof(TString, contents)
++#define KHZL_UD0HDR     offsetof(Udata0, bindata)
++#define KHZL_UDHDR      offsetof(Udata, uv)
++#define KHZL_CCLHDR     offsetof(CClosure, upvalue)
++#define KHZL_LCLHDR     offsetof(LClosure, upvals)
++#define khzl_udpayload(s)  ((size_t)(s))
++#endif
++
++/* logical sizes of the variable-size objects (same shape as lobject.h/lfunc.h) */
++#define khzl_sizelstring(l)  (KHZL_TSHDR + ((l) + 1) * sizeof(char))
++#define khzl_sizeudata(nuv,nb)  \
++  (((nuv) == 0 ? KHZL_UD0HDR : KHZL_UDHDR + sizeof(UValue) * (nuv)) + khzl_udpayload(nb))
++#define khzl_sizeCclosure(n)  (cast_int(KHZL_CCLHDR) + cast_int(sizeof(TValue)) * (n))
++#define khzl_sizeLclosure(n)  (cast_int(KHZL_LCLHDR) + cast_int(KHZL_PTR) * (n))
++
++#endif
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lmem.c S8/repo/third_party/lua-src/lua-5.4.9/lmem.c
+--- S2/repo/third_party/lua-src/lua-5.4.9/lmem.c	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lmem.c	2026-11-20 20:58:54.093179141 +0000
+@@ -94,8 +94,63 @@
+ #define MINSIZEARRAY	4
+ 
+ 
+-void *luaM_growaux_ (lua_State *L, void *block, int nelems, int *psize,
+-                     int size_elems, int limit, const char *what) {
++/*
++** KHZ 33 (S8): the logical heap cap ('lua_khzsetmemcap'). An allocation that
++** would put the logical heap ('gettotalbytes', in KHZ_LOGICAL_MEM sizes) over
++** the cap is refused like an allocator failure: Lua then runs an emergency
++** collection and tries once more, exactly as for a real failure.
++*/
++#if defined(KHZ_LOGICAL_MEM)
++#define khz_overcap(g,ldelta)  ((g)->khzmemcap != 0 && (ldelta) > 0 && \
++    gettotalbytes(g) + cast(lu_mem, (ldelta)) > (g)->khzmemcap)
++#else
++#define khz_overcap(g,ldelta)  ((void)(g), (void)(ldelta), 0)
++#endif
++
++/* KHZ (S8 spike instrumentation): real-byte and peak counters */
++static void khz_note (global_State *g, l_mem rdelta) {
++  luaE_khzs()[KHZS_REAL] += rdelta;
++  if (luaE_khzs()[KHZS_REAL] > luaE_khzs()[KHZS_REALPEAK])
++    luaE_khzs()[KHZS_REALPEAK] = luaE_khzs()[KHZS_REAL];
++  if ((lua_Integer)gettotalbytes(g) > luaE_khzs()[KHZS_LPEAK])
++    luaE_khzs()[KHZS_LPEAK] = (lua_Integer)gettotalbytes(g);
++}
++
++
++static void *tryallocl (global_State *g, void *block, size_t os, size_t ns,
++                        l_mem ldelta) {
++  if (khz_overcap(g, ldelta)) {
++    luaE_khzs()[KHZS_CAPFAIL]++;
++    return NULL;
++  }
++  return firsttry(g, block, os, ns);
++}
++
++
++/*
++** In case of allocation fail, this function will do an emergency
++** collection to free some memory and then try the allocation again.
++** (KHZ 33: the logical cap is checked again after the collection.)
++*/
++static void *tryagainl (lua_State *L, void *block,
++                        size_t osize, size_t nsize, l_mem ldelta) {
++  global_State *g = G(L);
++  if (cantryagain(g)) {
++    luaE_khzs()[KHZS_EMERGENCY]++;
++    luaC_fullgc(L, 1);  /* try to free some memory... */
++    if (khz_overcap(g, ldelta)) {
++      luaE_khzs()[KHZS_CAPFAIL]++;
++      return NULL;
++    }
++    return callfrealloc(g, block, osize, nsize);  /* try again */
++  }
++  else return NULL;  /* cannot run an emergency collection */
++}
++
++
++void *luaM_growauxl_ (lua_State *L, void *block, int nelems, int *psize,
++                     int size_elems, int lsize_elems, int limit,
++                     const char *what) {
+   void *newblock;
+   int size = *psize;
+   if (nelems + 1 <= size)  /* does one extra element still fit? */
+@@ -112,8 +167,10 @@
+   }
+   lua_assert(nelems + 1 <= size && size <= limit);
+   /* 'limit' ensures that multiplication will not overflow */
+-  newblock = luaM_saferealloc_(L, block, cast_sizet(*psize) * size_elems,
+-                                         cast_sizet(size) * size_elems);
++  newblock = luaM_safereallocl_(L, block, cast_sizet(*psize) * size_elems,
++                                         cast_sizet(size) * size_elems,
++                                         cast_sizet(*psize) * lsize_elems,
++                                         cast_sizet(size) * lsize_elems);
+   *psize = size;  /* update only when everything else is OK */
+   return newblock;
+ }
+@@ -125,13 +182,15 @@
+ ** to its number of elements, the only option is to raise an
+ ** error.
+ */
+-void *luaM_shrinkvector_ (lua_State *L, void *block, int *size,
+-                          int final_n, int size_elem) {
++void *luaM_shrinkvectorl_ (lua_State *L, void *block, int *size,
++                          int final_n, int size_elem, int lsize_elem) {
+   void *newblock;
+   size_t oldsize = cast_sizet((*size) * size_elem);
+   size_t newsize = cast_sizet(final_n * size_elem);
+   lua_assert(newsize <= oldsize);
+-  newblock = luaM_saferealloc_(L, block, oldsize, newsize);
++  newblock = luaM_safereallocl_(L, block, oldsize, newsize,
++                                cast_sizet((*size) * lsize_elem),
++                                cast_sizet(final_n * lsize_elem));
+   *size = final_n;
+   return newblock;
+ }
+@@ -147,69 +206,59 @@
+ /*
+ ** Free memory
+ */
+-void luaM_free_ (lua_State *L, void *block, size_t osize) {
++void luaM_freel_ (lua_State *L, void *block, size_t osize, size_t losize) {
+   global_State *g = G(L);
+   lua_assert((osize == 0) == (block == NULL));
+   callfrealloc(g, block, osize, 0);
+-  g->GCdebt -= osize;
+-}
+-
+-
+-/*
+-** In case of allocation fail, this function will do an emergency
+-** collection to free some memory and then try the allocation again.
+-*/
+-static void *tryagain (lua_State *L, void *block,
+-                       size_t osize, size_t nsize) {
+-  global_State *g = G(L);
+-  if (cantryagain(g)) {
+-    luaC_fullgc(L, 1);  /* try to free some memory... */
+-    return callfrealloc(g, block, osize, nsize);  /* try again */
+-  }
+-  else return NULL;  /* cannot run an emergency collection */
++  g->GCdebt -= losize;
++  khz_note(g, -cast(l_mem, osize));
+ }
+ 
+ 
+ /*
+ ** Generic allocation routine.
+ */
+-void *luaM_realloc_ (lua_State *L, void *block, size_t osize, size_t nsize) {
++void *luaM_reallocl_ (lua_State *L, void *block, size_t osize, size_t nsize,
++                      size_t losize, size_t lnsize) {
+   void *newblock;
+   global_State *g = G(L);
++  l_mem ldelta = cast(l_mem, lnsize) - cast(l_mem, losize);
+   lua_assert((osize == 0) == (block == NULL));
+-  newblock = firsttry(g, block, osize, nsize);
++  newblock = tryallocl(g, block, osize, nsize, ldelta);
+   if (l_unlikely(newblock == NULL && nsize > 0)) {
+-    newblock = tryagain(L, block, osize, nsize);
++    newblock = tryagainl(L, block, osize, nsize, ldelta);
+     if (newblock == NULL)  /* still no memory? */
+       return NULL;  /* do not update 'GCdebt' */
+   }
+   lua_assert((nsize == 0) == (newblock == NULL));
+-  g->GCdebt = (g->GCdebt + nsize) - osize;
++  g->GCdebt = (g->GCdebt + lnsize) - losize;
++  khz_note(g, cast(l_mem, nsize) - cast(l_mem, osize));
+   return newblock;
+ }
+ 
+ 
+-void *luaM_saferealloc_ (lua_State *L, void *block, size_t osize,
+-                                                    size_t nsize) {
+-  void *newblock = luaM_realloc_(L, block, osize, nsize);
++void *luaM_safereallocl_ (lua_State *L, void *block, size_t osize,
++                          size_t nsize, size_t losize, size_t lnsize) {
++  void *newblock = luaM_reallocl_(L, block, osize, nsize, losize, lnsize);
+   if (l_unlikely(newblock == NULL && nsize > 0))  /* allocation failed? */
+     luaM_error(L);
+   return newblock;
+ }
+ 
+ 
+-void *luaM_malloc_ (lua_State *L, size_t size, int tag) {
++void *luaM_mallocl_ (lua_State *L, size_t size, size_t lsize, int tag) {
+   if (size == 0)
+     return NULL;  /* that's all */
+   else {
+     global_State *g = G(L);
+-    void *newblock = firsttry(g, NULL, tag, size);
++    void *newblock = tryallocl(g, NULL, tag, size, cast(l_mem, lsize));
+     if (l_unlikely(newblock == NULL)) {
+-      newblock = tryagain(L, NULL, tag, size);
++      newblock = tryagainl(L, NULL, tag, size, cast(l_mem, lsize));
+       if (newblock == NULL)
+         luaM_error(L);
+     }
+-    g->GCdebt += size;
++    g->GCdebt += lsize;
++    khz_note(g, cast(l_mem, size));
+     return newblock;
+   }
+ }
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lmem.h S8/repo/third_party/lua-src/lua-5.4.9/lmem.h
+--- S2/repo/third_party/lua-src/lua-5.4.9/lmem.h	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lmem.h	2026-11-20 20:57:03.671500074 +0000
+@@ -12,6 +12,7 @@
+ 
+ #include "llimits.h"
+ #include "lua.h"
++#include "lkhzmem.h"  /* KHZ 33 */
+ 
+ 
+ #define luaM_error(L)	luaD_throw(L, LUA_ERRMEM)
+@@ -74,20 +75,52 @@
+ #define luaM_shrinkvector(L,v,size,fs,t) \
+    ((v)=cast(t *, luaM_shrinkvector_(L, v, &(size), fs, sizeof(t))))
+ 
++/*
++** KHZ 33: the same operations with an explicit logical size (lkhzmem.h)
++** next to the real one. The macros above account real sizes, which is only
++** correct for element types whose size is the same on every target
++** (char, Instruction, ls_byte, TValue, StackValue, Node, AbsLineInfo,
++** Vardesc: checked in lstate.c).
++*/
++#define luaM_freel(L, b, ls)		luaM_freel_(L, (b), sizeof(*(b)), (ls))
++#define luaM_freearrayl(L, b, n, ls)	\
++	luaM_freel_(L, (b), (n)*sizeof(*(b)), (n)*(ls))
++#define luaM_freememl(L, b, s, ls)	luaM_freel_(L, (b), (s), (ls))
++#define luaM_newvectorl(L,n,t,ls)	\
++	cast(t*, luaM_mallocl_(L, (n)*sizeof(t), (n)*(ls), 0))
++#define luaM_newobjectl(L,tag,s,ls)	luaM_mallocl_(L, (s), (ls), tag)
++#define luaM_growvectorl(L,v,nelems,size,t,limit,e,ls) \
++	((v)=cast(t *, luaM_growauxl_(L,v,nelems,&(size),sizeof(t),(ls), \
++                         luaM_limitN(limit,t),e)))
++#define luaM_reallocvectorl(L, v,oldn,n,t,ls) \
++   (cast(t *, luaM_reallocl_(L, v, cast_sizet(oldn) * sizeof(t), \
++                                  cast_sizet(n) * sizeof(t), \
++                                  cast_sizet(oldn) * (ls), cast_sizet(n) * (ls))))
++#define luaM_shrinkvectorl(L,v,size,fs,t,ls) \
++   ((v)=cast(t *, luaM_shrinkvectorl_(L, v, &(size), fs, sizeof(t), (ls))))
++
+ LUAI_FUNC l_noret luaM_toobig (lua_State *L);
+ 
+ /* not to be called directly */
+-LUAI_FUNC void *luaM_realloc_ (lua_State *L, void *block, size_t oldsize,
+-                                                          size_t size);
+-LUAI_FUNC void *luaM_saferealloc_ (lua_State *L, void *block, size_t oldsize,
+-                                                              size_t size);
+-LUAI_FUNC void luaM_free_ (lua_State *L, void *block, size_t osize);
+-LUAI_FUNC void *luaM_growaux_ (lua_State *L, void *block, int nelems,
+-                               int *size, int size_elem, int limit,
+-                               const char *what);
+-LUAI_FUNC void *luaM_shrinkvector_ (lua_State *L, void *block, int *nelem,
+-                                    int final_n, int size_elem);
+-LUAI_FUNC void *luaM_malloc_ (lua_State *L, size_t size, int tag);
++LUAI_FUNC void *luaM_reallocl_ (lua_State *L, void *block, size_t oldsize,
++                                size_t size, size_t loldsize, size_t lsize);
++LUAI_FUNC void *luaM_safereallocl_ (lua_State *L, void *block, size_t oldsize,
++                                    size_t size, size_t loldsize, size_t lsize);
++LUAI_FUNC void luaM_freel_ (lua_State *L, void *block, size_t osize,
++                            size_t losize);
++LUAI_FUNC void *luaM_growauxl_ (lua_State *L, void *block, int nelems,
++                               int *size, int size_elem, int lsize_elem,
++                               int limit, const char *what);
++LUAI_FUNC void *luaM_shrinkvectorl_ (lua_State *L, void *block, int *nelem,
++                                    int final_n, int size_elem, int lsize_elem);
++LUAI_FUNC void *luaM_mallocl_ (lua_State *L, size_t size, size_t lsize, int tag);
++
++#define luaM_realloc_(L,b,os,s)	luaM_reallocl_(L,b,os,s,os,s)
++#define luaM_saferealloc_(L,b,os,s)	luaM_safereallocl_(L,b,os,s,os,s)
++#define luaM_free_(L,b,os)	luaM_freel_(L,b,os,os)
++#define luaM_growaux_(L,b,ne,ps,se,lim,w)  luaM_growauxl_(L,b,ne,ps,se,se,lim,w)
++#define luaM_shrinkvector_(L,b,ps,fn,se)  luaM_shrinkvectorl_(L,b,ps,fn,se,se)
++#define luaM_malloc_(L,s,tag)	luaM_mallocl_(L,s,s,tag)
+ 
+ #endif
+ 
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lobject.c S8/repo/third_party/lua-src/lua-5.4.9/lobject.c
+--- S2/repo/third_party/lua-src/lua-5.4.9/lobject.c	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lobject.c	2026-11-20 21:13:57.704753709 +0000
+@@ -358,7 +358,7 @@
+   if (ttisinteger(obj))
+     len = lua_integer2str(buff, MAXNUMBER2STR, ivalue(obj));
+   else {
+-    len = lua_number2str(buff, MAXNUMBER2STR, fltvalue(obj));
++    len = lua_number2str(buff, MAXNUMBER2STR, khz_nansign(fltvalue(obj)));  /* KHZ 36 */
+     if (buff[strspn(buff, "-0123456789")] == '\0') {  /* looks like an int? */
+       buff[len++] = lua_getlocaledecpoint();
+       buff[len++] = '0';  /* adds '.0' to result */
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lobject.h S8/repo/third_party/lua-src/lua-5.4.9/lobject.h
+--- S2/repo/third_party/lua-src/lua-5.4.9/lobject.h	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lobject.h	2026-11-20 20:57:47.645770556 +0000
+@@ -288,6 +288,14 @@
+ #define CommonHeader	struct GCObject *next; lu_byte tt; lu_byte marked
+ 
+ 
++/* KHZ 34 (S8): per-state creation id of tables, closures, full userdata and
++** threads, the hash of such keys instead of their address (ltable.c) */
++#if defined(KHZ_KEY_ORDER)
++#define KHZ_OBJID	unsigned int khzid;
++#else
++#define KHZ_OBJID
++#endif
++
+ /* Common type for all collectable objects */
+ typedef struct GCObject {
+   CommonHeader;
+@@ -459,6 +467,7 @@
+ typedef struct Udata {
+   CommonHeader;
+   unsigned short nuvalue;  /* number of user values */
++  KHZ_OBJID  /* KHZ 34 */
+   size_t len;  /* number of bytes */
+   struct Table *metatable;
+   GCObject *gclist;
+@@ -478,6 +487,7 @@
+ typedef struct Udata0 {
+   CommonHeader;
+   unsigned short nuvalue;  /* number of user values */
++  KHZ_OBJID  /* KHZ 34 */
+   size_t len;  /* number of bytes */
+   struct Table *metatable;
+   union {LUAI_MAXALIGN;} bindata;
+@@ -642,7 +652,7 @@
+ 
+ 
+ #define ClosureHeader \
+-	CommonHeader; lu_byte nupvalues; GCObject *gclist
++	CommonHeader; lu_byte nupvalues; KHZ_OBJID GCObject *gclist  /* KHZ 34 */
+ 
+ typedef struct CClosure {
+   ClosureHeader;
+@@ -744,6 +754,7 @@
+   Node *lastfree;  /* any free position is before this position */
+   struct Table *metatable;
+   GCObject *gclist;
++  KHZ_OBJID  /* KHZ 34 */
+ } Table;
+ 
+ 
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lparser.c S8/repo/third_party/lua-src/lua-5.4.9/lparser.c
+--- S2/repo/third_party/lua-src/lua-5.4.9/lparser.c	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lparser.c	2026-11-20 20:59:51.465916278 +0000
+@@ -175,8 +175,8 @@
+ static int registerlocalvar (LexState *ls, FuncState *fs, TString *varname) {
+   Proto *f = fs->f;
+   int oldsize = f->sizelocvars;
+-  luaM_growvector(ls->L, f->locvars, fs->ndebugvars, f->sizelocvars,
+-                  LocVar, SHRT_MAX, "local variables");
++  luaM_growvectorl(ls->L, f->locvars, fs->ndebugvars, f->sizelocvars,
++                  LocVar, SHRT_MAX, "local variables", KHZL_LOCVAR);  /* KHZ 33 */
+   while (oldsize < f->sizelocvars)
+     f->locvars[oldsize++].varname = NULL;
+   f->locvars[fs->ndebugvars].varname = varname;
+@@ -353,8 +353,8 @@
+   Proto *f = fs->f;
+   int oldsize = f->sizeupvalues;
+   checklimit(fs, fs->nups + 1, MAXUPVAL, "upvalues");
+-  luaM_growvector(fs->ls->L, f->upvalues, fs->nups, f->sizeupvalues,
+-                  Upvaldesc, MAXUPVAL, "upvalues");
++  luaM_growvectorl(fs->ls->L, f->upvalues, fs->nups, f->sizeupvalues,
++                  Upvaldesc, MAXUPVAL, "upvalues", KHZL_UPVALDESC);  /* KHZ 33 */
+   while (oldsize < f->sizeupvalues)
+     f->upvalues[oldsize++].name = NULL;
+   return &f->upvalues[fs->nups++];
+@@ -560,8 +560,8 @@
+ static int newlabelentry (LexState *ls, Labellist *l, TString *name,
+                           int line, int pc) {
+   int n = l->n;
+-  luaM_growvector(ls->L, l->arr, n, l->size,
+-                  Labeldesc, SHRT_MAX, "labels/gotos");
++  luaM_growvectorl(ls->L, l->arr, n, l->size,
++                  Labeldesc, SHRT_MAX, "labels/gotos", KHZL_LABELDESC);  /* KHZ 33 */
+   l->arr[n].name = name;
+   l->arr[n].line = line;
+   l->arr[n].nactvar = ls->fs->nactvar;
+@@ -702,7 +702,7 @@
+   Proto *f = fs->f;  /* prototype of current function */
+   if (fs->np >= f->sizep) {
+     int oldsize = f->sizep;
+-    luaM_growvector(L, f->p, fs->np, f->sizep, Proto *, MAXARG_Bx, "functions");
++    luaM_growvectorl(L, f->p, fs->np, f->sizep, Proto *, MAXARG_Bx, "functions", KHZL_PTR);  /* KHZ 33 */
+     while (oldsize < f->sizep)
+       f->p[oldsize++] = NULL;
+   }
+@@ -766,9 +766,9 @@
+   luaM_shrinkvector(L, f->abslineinfo, f->sizeabslineinfo,
+                        fs->nabslineinfo, AbsLineInfo);
+   luaM_shrinkvector(L, f->k, f->sizek, fs->nk, TValue);
+-  luaM_shrinkvector(L, f->p, f->sizep, fs->np, Proto *);
+-  luaM_shrinkvector(L, f->locvars, f->sizelocvars, fs->ndebugvars, LocVar);
+-  luaM_shrinkvector(L, f->upvalues, f->sizeupvalues, fs->nups, Upvaldesc);
++  luaM_shrinkvectorl(L, f->p, f->sizep, fs->np, Proto *, KHZL_PTR);  /* KHZ 33 */
++  luaM_shrinkvectorl(L, f->locvars, f->sizelocvars, fs->ndebugvars, LocVar, KHZL_LOCVAR);  /* KHZ 33 */
++  luaM_shrinkvectorl(L, f->upvalues, f->sizeupvalues, fs->nups, Upvaldesc, KHZL_UPVALDESC);  /* KHZ 33 */
+   ls->fs = fs->prev;
+   luaC_checkGC(L);
+ }
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lstate.c S8/repo/third_party/lua-src/lua-5.4.9/lstate.c
+--- S2/repo/third_party/lua-src/lua-5.4.9/lstate.c	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lstate.c	2026-11-20 21:00:08.165268291 +0000
+@@ -23,6 +23,8 @@
+ #include "llex.h"
+ #include "lmem.h"
+ #include "lstate.h"
++#include "lparser.h"  /* KHZ 33: Labeldesc, Vardesc sizes */
++#include <stdint.h>  /* KHZ 33: UINTPTR_MAX */
+ #include "lstring.h"
+ #include "ltable.h"
+ #include "ltm.h"
+@@ -48,6 +50,43 @@
+ 
+ 
+ 
++/*
++** KHZ 33 (S8): on LP64 targets the logical sizes are the real ones (the
++** userdata payload constant aside), and the element types accounted with
++** real sizes have the same size on every target.
++*/
++#define khz_check(name,c)	typedef char khz_check_##name[(c) ? 1 : -1]
++khz_check(tvalue, sizeof(TValue) == 16);
++khz_check(stackvalue, sizeof(StackValue) == 16);
++khz_check(node, sizeof(Node) == 24);
++khz_check(uvalue, sizeof(UValue) == 16);
++khz_check(instruction, sizeof(Instruction) == 4);
++khz_check(abslineinfo, sizeof(AbsLineInfo) == 8);
++khz_check(vardesc, sizeof(Vardesc) == 24);
++#if defined(KHZ_LOGICAL_MEM) && (UINTPTR_MAX > 0xffffffffu)
++#if defined(KHZ_KEY_ORDER)
++#define KHZ_IDPAD_TABLE	8u	/* the id word is the only real-size change */
++#define KHZ_IDPAD_LX	8u
++#else
++#define KHZ_IDPAD_TABLE	0u
++#define KHZ_IDPAD_LX	0u
++#endif
++khz_check(ptr, KHZL_PTR == sizeof(void *));
++khz_check(table, KHZL_TABLE + KHZ_IDPAD_TABLE == sizeof(Table));
++khz_check(upval, KHZL_UPVAL == sizeof(UpVal));
++khz_check(proto, KHZL_PROTO == sizeof(Proto));
++khz_check(locvar, KHZL_LOCVAR == sizeof(LocVar));
++khz_check(upvaldesc, KHZL_UPVALDESC == sizeof(Upvaldesc));
++khz_check(labeldesc, KHZL_LABELDESC == sizeof(Labeldesc));
++khz_check(callinfo, KHZL_CALLINFO == sizeof(CallInfo));
++khz_check(lx, KHZL_LX + KHZ_IDPAD_LX == sizeof(LX));
++khz_check(tshdr, KHZL_TSHDR == offsetof(TString, contents));
++khz_check(ud0hdr, KHZL_UD0HDR == offsetof(Udata0, bindata));
++khz_check(udhdr, KHZL_UDHDR == offsetof(Udata, uv));
++khz_check(cclhdr, KHZL_CCLHDR == offsetof(CClosure, upvalue));
++khz_check(lclhdr, KHZL_LCLHDR == offsetof(LClosure, upvals));
++#endif
++
+ #define fromstate(L)	(cast(LX *, cast(lu_byte *, (L)) - offsetof(LX, l)))
+ 
+ 
+@@ -107,7 +146,7 @@
+ 
+ CallInfo *luaE_extendCI (lua_State *L, int err) {
+   CallInfo *ci;
+-  ci = luaM_reallocvector(L, NULL, 0, 1, CallInfo);
++  ci = luaM_reallocvectorl(L, NULL, 0, 1, CallInfo, KHZL_CALLINFO);  /* KHZ 33 */
+   if (l_unlikely(ci == NULL)) {  /* allocation failed? */
+     if (err)
+       luaM_error(L);  /* raise the error */
+@@ -133,7 +172,7 @@
+   ci->next = NULL;
+   while ((ci = next) != NULL) {
+     next = ci->next;
+-    luaM_free(L, ci);
++    luaM_freel(L, ci, KHZL_CALLINFO);  /* KHZ 33 */
+     L->nci--;
+   }
+ }
+@@ -152,7 +191,7 @@
+     CallInfo *next2 = next->next;  /* next's next */
+     ci->next = next2;  /* remove next from the list */
+     L->nci--;
+-    luaM_free(L, next);  /* free next */
++    luaM_freel(L, next, KHZL_CALLINFO);  /* free next (KHZ 33) */
+     if (next2 == NULL)
+       break;  /* no more elements */
+     else {
+@@ -286,13 +325,13 @@
+     luaC_freeallobjects(L);  /* collect all objects */
+     luai_userstateclose(L);
+   }
+-  luaM_freearray(L, G(L)->strt.hash, G(L)->strt.size);
++  luaM_freearrayl(L, G(L)->strt.hash, G(L)->strt.size, KHZL_PTR);  /* KHZ 33 */
+   if (luaS_khzowner == g) {  /* KHZ: drop the pending cost of a dying state */
+     luaS_khzowner = NULL;
+     luaS_khzpending = 0;
+   }
+   freestack(L);
+-  lua_assert(gettotalbytes(g) == sizeof(LG));
++  lua_assert(gettotalbytes(g) == KHZL_LG);  /* KHZ 33 */
+   (*g->frealloc)(g->ud, fromstate(L), sizeof(LG), 0);  /* free main block */
+ }
+ 
+@@ -304,8 +343,9 @@
+   lua_lock(L);
+   luaC_checkGC(L);
+   /* create new thread */
+-  o = luaC_newobjdt(L, LUA_TTHREAD, sizeof(LX), offsetof(LX, l));
++  o = luaC_newobjdtl(L, LUA_TTHREAD, sizeof(LX), offsetof(LX, l), KHZL_LX);  /* KHZ 33 */
+   L1 = gco2th(o);
++  khz_setid(g, L1);  /* KHZ 34 */
+   /* anchor it on L stack */
+   setthvalue2s(L, L->top.p, L1);
+   api_incr_top(L);
+@@ -330,7 +370,7 @@
+   lua_assert(L1->openupval == NULL);
+   luai_userstatefree(L, L1);
+   freestack(L1);
+-  luaM_free(L, l);
++  luaM_freel(L, l, KHZL_LX);  /* KHZ 33 */
+ }
+ 
+ 
+@@ -395,6 +435,14 @@
+   g->seed = luai_makeseed(L);
+   g->khzbudget = LUA_MAXINTEGER / 4;  /* KHZ: unlimited until the host sets it */
+   g->khzpending = 0;  /* KHZ */
++#if defined(KHZ_LOGICAL_MEM)
++  g->khzmemcap = 0;  /* KHZ 33: no logical cap until the host sets one */
++#endif
++#if defined(KHZ_KEY_ORDER)
++  g->khzseq = 1;  /* KHZ 34: the main thread has id 0 */
++#endif
++  khz_setid0(L);
++  for (i = 0; i < KHZS_N; i++) luaE_khzs()[i] = 0;  /* KHZ (S8 spike) */
+   g->gcstp = GCSTPGC;  /* no GC while building state */
+   g->strt.size = g->strt.nuse = 0;
+   g->strt.hash = NULL;
+@@ -411,7 +459,7 @@
+   g->gray = g->grayagain = NULL;
+   g->weak = g->ephemeron = g->allweak = NULL;
+   g->twups = NULL;
+-  g->totalbytes = sizeof(LG);
++  g->totalbytes = KHZL_LG;  /* KHZ 33 */
+   g->GCdebt = 0;
+   g->lastatomic = 0;
+   setivalue(&g->nilvalue, 0);  /* to signal that state is not yet built */
+@@ -505,3 +553,69 @@
+       L->hook != NULL && (L->hookmask & LUA_MASKCOUNT))
+     lua_sethook(L, L->hook, L->hookmask, 1);
+ }
++
++
++/* KHZ (S8 spike): instrumentation counters, per thread */
++static KHZ_TLS lua_Integer khz_s8stats[KHZS_N];
++lua_Integer *luaE_khzs (void) { return khz_s8stats; }
++
++
++/* KHZ 33 (S8): logical heap cap in bytes (0: none); see lmem.c */
++LUA_API void lua_khzsetmemcap (lua_State *L, size_t cap) {
++#if defined(KHZ_LOGICAL_MEM)
++  G(L)->khzmemcap = cast(lu_mem, cap);
++#else
++  UNUSED(L); UNUSED(cap);
++#endif
++}
++
++
++/* KHZ (S8 spike): compiled-in knobs (1: KHZ_LOGICAL_MEM, 2: KHZ_KEY_ORDER,
++** 4: KHZ_S8_FIXES) */
++LUA_API int lua_khzfeatures (void) {
++  int f = 0;
++#if defined(KHZ_LOGICAL_MEM)
++  f |= 1;
++#endif
++#if defined(KHZ_KEY_ORDER)
++  f |= 2;
++#endif
++#if defined(KHZ_S8_FIXES)
++  f |= 4;
++#endif
++  return f;
++}
++
++
++/* KHZ (S8 spike): instrumentation counters; out[0..KHZS_N), then the
++** accounted heap (logical) and GC debt */
++LUA_API int lua_khzstats (lua_State *L, lua_Integer *out, int n) {
++  global_State *g = G(L);
++  int i;
++  for (i = 0; i < n && i < KHZS_N; i++) out[i] = luaE_khzs()[i];
++  if (n > KHZS_N) out[KHZS_N] = (lua_Integer)gettotalbytes(g);
++  if (n > KHZS_N + 1) out[KHZS_N + 1] = (lua_Integer)g->GCdebt;
++  return KHZS_N + 2;
++}
++
++
++/* KHZ (S8): instructions left before the count hook fires next */
++LUA_API int lua_khzhookleft (lua_State *L) {
++  return L->hookcount;
++}
++
++
++/*
++** KHZ 33 (S8): auxiliary-library buffers (lauxlib 'resizebox') allocate
++** through the core, so their bytes are part of the accounted heap and of the
++** logical cap (they used to call the allocation function directly, which
++** only the host's allocator counted).
++*/
++LUA_API void *lua_khzrealloc (lua_State *L, void *block, size_t osize,
++                              size_t nsize) {
++  void *p;
++  lua_lock(L);
++  p = luaM_realloc_(L, block, osize, nsize);
++  lua_unlock(L);
++  return p;
++}
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lstate.h S8/repo/third_party/lua-src/lua-5.4.9/lstate.h
+--- S2/repo/third_party/lua-src/lua-5.4.9/lstate.h	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lstate.h	2026-11-20 20:59:39.440844425 +0000
+@@ -148,6 +148,27 @@
+ 
+ 
+ /* kinds of Garbage Collection */
++/* KHZ (S8 spike): indices of global_State.khzs (see lua_khzstats) */
++#define KHZS_REAL	0	/* real bytes allocated through luaM_ */
++#define KHZS_REALPEAK	1	/* peak of KHZS_REAL */
++#define KHZS_LPEAK	2	/* peak of the accounted (logical) heap */
++#define KHZS_EMERGENCY	3	/* emergency collections */
++#define KHZS_CAPFAIL	4	/* allocations refused by the logical cap */
++#define KHZS_UDFIRST	5	/* 5..12: userdata payload sizes seen (first 8 distinct) */
++#define KHZS_N		13
++/* thread-local, reset by lua_newstate (spike instrumentation, not state-sized) */
++LUAI_FUNC lua_Integer *luaE_khzs (void);
++
++/* KHZ 34 (S8): creation ids (see lobject.h, ltable.c) */
++#if defined(KHZ_KEY_ORDER)
++#define khz_setid(g,o)	((o)->khzid = cast_uint((g)->khzseq++))
++#define khz_setid0(L)	((L)->khzid = 0)
++#else
++#define khz_setid(g,o)	((void)0)
++#define khz_setid0(L)	((void)0)
++#endif
++
++
+ #define KGC_INC		0	/* incremental gc */
+ #define KGC_GEN		1	/* generational gc */
+ 
+@@ -264,6 +285,12 @@
+   unsigned int seed;  /* randomized seed for hashes */
+   lua_Integer khzbudget;  /* KHZ: remaining cost budget (see lua.h) */
+   lua_Integer khzpending;  /* KHZ: parked pending cost (see lstring.c) */
++#if defined(KHZ_LOGICAL_MEM)
++  lu_mem khzmemcap;  /* KHZ 33: logical heap cap (0: none), see lmem.c */
++#endif
++#if defined(KHZ_KEY_ORDER)
++  lua_Unsigned khzseq;  /* KHZ 34: next object id, see ltable.c */
++#endif
+   lu_byte currentwhite;
+   lu_byte gcstate;  /* state of garbage collector */
+   lu_byte gckind;  /* kind of GC running */
+@@ -313,6 +340,7 @@
+   lu_byte status;
+   lu_byte allowhook;
+   unsigned short nci;  /* number of items in 'ci' list */
++  KHZ_OBJID  /* KHZ 34 */
+   StkIdRel top;  /* first free slot in the stack */
+   global_State *l_G;
+   CallInfo *ci;  /* call info for current function */
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lstring.c S8/repo/third_party/lua-src/lua-5.4.9/lstring.c
+--- S2/repo/third_party/lua-src/lua-5.4.9/lstring.c	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lstring.c	2026-11-20 21:33:42.439467440 +0000
+@@ -126,7 +126,7 @@
+   TString **newvect;
+   if (nsize < osize)  /* shrinking table? */
+     tablerehash(tb->hash, osize, nsize);  /* depopulate shrinking part */
+-  newvect = luaM_reallocvector(L, tb->hash, osize, nsize, TString*);
++  newvect = luaM_reallocvectorl(L, tb->hash, osize, nsize, TString*, KHZL_PTR);  /* KHZ 33 */
+   if (l_unlikely(newvect == NULL)) {  /* reallocation failed? */
+     if (nsize < osize)  /* was it shrinking table? */
+       tablerehash(tb->hash, nsize, osize);  /* restore to original size */
+@@ -162,7 +162,7 @@
+   global_State *g = G(L);
+   int i, j;
+   stringtable *tb = &G(L)->strt;
+-  tb->hash = luaM_newvector(L, MINSTRTABSIZE, TString*);
++  tb->hash = luaM_newvectorl(L, MINSTRTABSIZE, TString*, KHZL_PTR);  /* KHZ 33 */
+   tablerehash(tb->hash, 0, MINSTRTABSIZE);  /* clear array */
+   tb->size = MINSTRTABSIZE;
+   /* pre-create memory-error message */
+@@ -183,7 +183,7 @@
+   GCObject *o;
+   size_t totalsize;  /* total size of TString object */
+   totalsize = sizelstring(l);
+-  o = luaC_newobj(L, tag, totalsize);
++  o = luaC_newobjl(L, tag, totalsize, khzl_sizelstring(l));  /* KHZ 33 */
+   ts = gco2ts(o);
+   ts->hash = h;
+   ts->extra = 0;
+@@ -282,7 +282,14 @@
+ ** check hits.
+ */
+ TString *luaS_new (lua_State *L, const char *str) {
++#if defined(KHZ_S8_FIXES)
++  /* KHZ 37 (S8): index the cache by content, not by the C pointer: an
++     address made hits (no allocation, no KHZ 4 charge for a long string,
++     e.g. a long '__name' pushed by 'tostring') platform dependent */
++  unsigned int i = luaS_hash(str, strlen(str), G(L)->seed) % STRCACHE_N;
++#else
+   unsigned int i = point2uint(str) % STRCACHE_N;  /* hash */
++#endif
+   int j;
+   TString **p = G(L)->strcache[i];
+   for (j = 0; j < STRCACHE_M; j++) {
+@@ -304,8 +311,18 @@
+   GCObject *o;
+   if (l_unlikely(s > MAX_SIZE - udatamemoffset(nuvalue)))
+     luaM_toobig(L);
+-  o = luaC_newobj(L, LUA_VUSERDATA, sizeudata(nuvalue, s));
++  o = luaC_newobjl(L, LUA_VUSERDATA, sizeudata(nuvalue, s),
++                   khzl_sizeudata(nuvalue, s));  /* KHZ 33 */
+   u = gco2u(o);
++  khz_setid(G(L), u);  /* KHZ 34 */
++  {  /* KHZ (S8 spike): remember the first distinct payload sizes */
++    lua_Integer *st = luaE_khzs();
++    int k;
++    for (k = KHZS_UDFIRST; k < KHZS_N; k++) {
++      if (st[k] == cast(lua_Integer, s) + 1) break;
++      if (st[k] == 0) { st[k] = cast(lua_Integer, s) + 1; break; }
++    }
++  }
+   u->len = s;
+   u->nuvalue = nuvalue;
+   u->metatable = NULL;
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lstrlib.c S8/repo/third_party/lua-src/lua-5.4.9/lstrlib.c
+--- S2/repo/third_party/lua-src/lua-5.4.9/lstrlib.c	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lstrlib.c	2026-11-20 21:13:57.704364851 +0000
+@@ -70,7 +70,16 @@
+ */
+ static size_t posrelatI (lua_Integer pos, size_t len) {
+   if (pos > 0)
++#if defined(KHZ_S8_FIXES)
++    /* KHZ 35 (S8): where size_t is narrower than lua_Integer (wasm32) the
++       cast wrapped 2^32+k to k (and 2^32 to 0: 'str_sub'/'str_byte' then
++       read the byte before the string). Saturating keeps the 64-bit result:
++       every caller only compares the position with a string length. */
++    return (sizeof(size_t) < sizeof(lua_Integer) &&
++            pos > (lua_Integer)MAX_SIZET) ? MAX_SIZET : (size_t)pos;
++#else
+     return (size_t)pos;
++#endif
+   else if (pos == 0)
+     return 1;
+   else if (pos < -(lua_Integer)len)  /* inverted comparison */
+@@ -1385,7 +1394,7 @@
+           checkformat(L, form, L_FMTFLAGSF, 1);
+           addlenmod(form, LUA_NUMBER_FRMLEN);
+           nb = lua_number2strx(L, buff, maxitem, form,
+-                                  luaL_checknumber(L, arg));
++                                  khz_nansign(luaL_checknumber(L, arg)));  /* KHZ 36 */
+           break;
+         case 'f':
+           maxitem = MAX_ITEMF;  /* extra space for '%f' */
+@@ -1396,7 +1405,7 @@
+           lua_khzcharge(L, KHZ_FLOAT_COST);  /* KHZ: float conversion */
+           checkformat(L, form, L_FMTFLAGSF, 1);
+           addlenmod(form, LUA_NUMBER_FRMLEN);
+-          nb = l_sprintf(buff, maxitem, form, (LUAI_UACNUMBER)n);
++          nb = l_sprintf(buff, maxitem, form, (LUAI_UACNUMBER)khz_nansign(n));  /* KHZ 36 */
+           break;
+         }
+         case 'p': {  /* KHZ: addresses are not deterministic */
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/ltable.c S8/repo/third_party/lua-src/lua-5.4.9/ltable.c
+--- S2/repo/third_party/lua-src/lua-5.4.9/ltable.c	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/ltable.c	2026-11-20 21:00:18.248303111 +0000
+@@ -148,6 +148,21 @@
+ ** returns the 'main' position of an element in a table (that is,
+ ** the index of its hash value).
+ */
++#if defined(KHZ_KEY_ORDER)
++/* KHZ 34 (S8): the creation id of a live table/closure/userdata/thread key */
++static unsigned int khz_objid (GCObject *o) {
++  switch (o->tt) {
++    case LUA_VTABLE: return gco2t(o)->khzid;
++    case LUA_VLCL: return gco2lcl(o)->khzid;
++    case LUA_VCCL: return gco2ccl(o)->khzid;
++    case LUA_VUSERDATA: return gco2u(o)->khzid;
++    case LUA_VTHREAD: return gco2th(o)->khzid;
++    default: lua_assert(0); return 0;
++  }
++}
++#endif
++
++
+ static Node *mainpositionTV (const Table *t, const TValue *key) {
+   switch (ttypetag(key)) {
+     case LUA_VNUMINT: {
+@@ -170,6 +185,18 @@
+       return hashboolean(t, 0);
+     case LUA_VTRUE:
+       return hashboolean(t, 1);
++#if defined(KHZ_KEY_ORDER)
++    /* KHZ 34 (S8): no addresses. Light userdata and light C functions share
++       one main position (their chains keep insertion order); tables,
++       closures, full userdata and threads hash by their creation id. */
++    case LUA_VLIGHTUSERDATA:
++    case LUA_VLCF:
++      return hashmod(t, 0u);
++    default: {
++      GCObject *o = gcvalue(key);
++      return hashmod(t, khz_objid(o));
++    }
++#else
+     case LUA_VLIGHTUSERDATA: {
+       void *p = pvalue(key);
+       return hashpointer(t, p);
+@@ -182,6 +209,7 @@
+       GCObject *o = gcvalue(key);
+       return hashpointer(t, o);
+     }
++#endif
+   }
+ }
+ 
+@@ -648,8 +676,9 @@
+ 
+ 
+ Table *luaH_new (lua_State *L) {
+-  GCObject *o = luaC_newobj(L, LUA_VTABLE, sizeof(Table));
++  GCObject *o = luaC_newobjl(L, LUA_VTABLE, sizeof(Table), KHZL_TABLE);  /* KHZ 33 */
+   Table *t = gco2t(o);
++  khz_setid(G(L), t);  /* KHZ 34 */
+   t->metatable = NULL;
+   t->flags = cast_byte(maskflags);  /* table has no metamethod fields */
+   t->array = NULL;
+@@ -662,7 +691,7 @@
+ void luaH_free (lua_State *L, Table *t) {
+   freehash(L, t);
+   luaM_freearray(L, t->array, luaH_realasize(t));
+-  luaM_free(L, t);
++  luaM_freel(L, t, KHZL_TABLE);  /* KHZ 33 */
+ }
+ 
+ 
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/lua.h S8/repo/third_party/lua-src/lua-5.4.9/lua.h
+--- S2/repo/third_party/lua-src/lua-5.4.9/lua.h	2026-11-18 13:05:24.000000000 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/lua.h	2026-11-20 21:00:08.164682251 +0000
+@@ -443,6 +443,12 @@
+ LUA_API void (lua_khzsetbudget) (lua_State *L, lua_Integer n);
+ LUA_API lua_Integer (lua_khzspend) (lua_State *L, lua_Integer n);
+ LUA_API void (lua_khzcharge) (lua_State *L, lua_Integer n);
++/* KHZ 33/34 and S8 spike instrumentation (see lstate.c, lmem.c) */
++LUA_API void (lua_khzsetmemcap) (lua_State *L, size_t cap);
++LUA_API int (lua_khzfeatures) (void);
++LUA_API int (lua_khzstats) (lua_State *L, lua_Integer *out, int n);
++LUA_API int (lua_khzhookleft) (lua_State *L);
++LUA_API void *(lua_khzrealloc) (lua_State *L, void *block, size_t osize, size_t nsize);
+ 
+ 
+ /*
+diff -ruN S2/repo/third_party/lua-src/lua-5.4.9/luaconf.h S8/repo/third_party/lua-src/lua-5.4.9/luaconf.h
+--- S2/repo/third_party/lua-src/lua-5.4.9/luaconf.h	2026-11-20 19:58:57.284290749 +0000
++++ S8/repo/third_party/lua-src/lua-5.4.9/luaconf.h	2026-11-20 21:15:05.429096270 +0000
+@@ -821,5 +821,15 @@
+ 
+ 
+ 
++/*
++** KHZ 36 (S8): the sign of a NaN produced by arithmetic is not portable
++** (x86 makes 0/0 negative, ARM and ARM64 V8 positive), so NaNs are formatted
++** without it ("nan", never "-nan"): tostring, '..', string.format %a %e %f %g.
++*/
++#if defined(KHZ_S8_FIXES)
++#define khz_nansign(n)	((n) != (n) ? l_mathop(fabs)(n) : (n))
++#else
++#define khz_nansign(n)	(n)
+ #endif
+ 
++#endif
+diff -ruN S2/repo/third_party/lua-src/src/lib.rs S8/repo/third_party/lua-src/src/lib.rs
+--- S2/repo/third_party/lua-src/src/lib.rs	2026-11-20 19:21:01.407680046 +0000
++++ S8/repo/third_party/lua-src/src/lib.rs	2026-11-20 21:00:33.932250455 +0000
+@@ -247,6 +247,14 @@
+         if env::var("KHZ_LUA_MATH").as_deref() == Ok("1") {
+             config.define("KHZ_LUA_MATH", None);
+         }
++        // KHZ (web spike S8) knobs: logical memory accounting (KHZ 33),
++        // address-free table keys (KHZ 34), 32/64-bit audit fixes (KHZ 35-36).
++        for knob in ["KHZ_LOGICAL_MEM", "KHZ_KEY_ORDER", "KHZ_S8_FIXES"] {
++            println!("cargo:rerun-if-env-changed={knob}");
++            if env::var(knob).as_deref() == Ok("1") {
++                config.define(knob, None);
++            }
++        }
+ 
+         #[cfg(feature = "ucid")]
+         if let Lua54 | Lua55 = version {
+@@ -420,4 +428,10 @@
+     include_str!("../lua-5.4.9/lkhznum.c"),
+     include_str!("../lua-5.4.9/luaconf.h"),
+     include_str!("../lua-5.4.9/lmathlib.c"),
++    include_str!("../lua-5.4.9/lkhzmem.h"),
++    include_str!("../lua-5.4.9/lmem.h"),
++    include_str!("../lua-5.4.9/lmem.c"),
++    include_str!("../lua-5.4.9/lobject.h"),
++    include_str!("../lua-5.4.9/lfunc.c"),
++    include_str!("../lua-5.4.9/lgc.h"),
+ ];

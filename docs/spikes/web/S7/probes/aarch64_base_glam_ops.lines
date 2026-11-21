@@ -1,0 +1,16 @@
+glam_ops:
+quat_mul=f29b1520010acdad
+quat_normalize=cfaf16338b6d4b87
+quat_mul_vec3=fb4e2403b9544fa8
+quat_conj_mul_vec3=ce82b29954c2594b
+quat_from_rotation_arc=82d114e762547e28
+integrate_orientation=4256350fee721ff2
+vec4_dot=4d16e270f6d41717
+vec4_length=f619e8a1f219df75
+vec4_normalize=cfaf16338b6d4b87
+vec4_min_max=4194717be278fcd1
+mat4_mul_mat4=dd4d90ee239181af
+mat4_transform_point3=6d34c26f5ad11aa6
+mat4_inverse=7b98c3f327db418a
+vec3_ops=0c5d9fcd4bce9ee0
+libm_trig=eb9eae02899865f5

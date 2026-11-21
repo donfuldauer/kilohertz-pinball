@@ -1,0 +1,49 @@
+[package]
+name = "s4_rules"
+description = "web-spike-rules (S4) harness: rules.wasm on the web (wasmi in the engine module, browser JIT with fuel instrumentation), parity against native wasmtime, adversarial modules, zip/VFS under wasm. Spike tooling, not a product crate."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "s4"
+path = "src/bin/s4.rs"
+
+[features]
+# wasmi-auto-dispatch: see the wasmi dependency comment. Building the wasm32
+# module with --no-default-features reproduces finding F-A2 (stack overflow).
+default = ["wasmi-auto-dispatch"]
+wasmi-auto-dispatch = ["wasmi/auto-dispatch"]
+# Native: the real wasmtime backend (pin_script native-backends) as the
+# parity baseline, plus direct wasmtime use for differential checks.
+native = ["pin_sim/native-backends", "pin_script/native-backends", "dep:wasmtime"]
+
+[dependencies]
+pin_core.workspace = true
+pin_sim = { path = "../pin_sim", default-features = false }
+pin_script = { path = "../pin_script", default-features = false }
+pin_assets = { path = "../pin_assets" }
+pin_physics = { path = "../pin_physics" }
+arrayvec.workspace = true
+libm.workspace = true
+glam.workspace = true
+# The pre-scan, imports/exports checks and the instrumentation: the exact
+# wasmparser/wasm-encoder wasmtime 50.0.1 uses (Cargo.lock).
+wasmparser = "=0.261.0"
+wasm-encoder = { version = "=0.261.0", features = ["wasmparser"] }
+wat.workspace = true
+# Design A: pure-Rust interpreter.
+# auto-dispatch: on wasm32 (no tail-call target feature) wasmi must use its
+# portable loop dispatch; without it every executed instruction is a real
+# call and long callbacks overflow the browser stack (RESULTS §A finding).
+wasmi = { version = "=2.0.2", default-features = false, features = ["std", "validate", "deterministic"] }
+wasmtime = { workspace = true, optional = true }
+sha2 = "=0.10.9"
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "=0.2.130"

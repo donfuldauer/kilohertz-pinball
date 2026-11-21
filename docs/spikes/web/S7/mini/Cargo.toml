@@ -1,0 +1,20 @@
+[package]
+name = "s7_mini"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "S7 spike: per-op digests of glam 0.33.12 on each target/feature set, and the portable SSE2-order replica."
+
+[dependencies]
+glam = "=0.33.12"
+libm = "=0.2.16"
+
+[features]
+scalar-math = ["glam/scalar-math"]
+glam-libm = ["glam/libm"]
+
+[profile.release]
+opt-level = 3
+debug = "line-tables-only"
+
+[workspace]

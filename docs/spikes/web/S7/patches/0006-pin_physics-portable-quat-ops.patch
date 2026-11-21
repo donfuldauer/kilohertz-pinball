@@ -1,0 +1,292 @@
+S7 (web-spike-arm-parity): pin_physics::quat_ops, a plain-f32 replica of glam 0.33.12's SSE2 Quat arithmetic, used at
+all 11 Quat operation sites of pin_physics, so aarch64 (NEON) and wasm32 give x86_64's exact bits; x86_64 output unchanged.
+
+--- a/crates/pin_physics/src/lib.rs
++++ b/crates/pin_physics/src/lib.rs
+@@ -18,4 +18,5 @@
+ pub mod flipper;
+ pub mod flipper_banana;
+ pub mod mech;
++pub mod quat_ops;
+ pub mod world;
+--- a/crates/pin_physics/src/ball/contact.rs
++++ b/crates/pin_physics/src/ball/contact.rs
+@@ -5,6 +5,7 @@
+ //! All functions work on velocities only, never allocate, and (with a
+ //! surface at rest) never increase kinetic energy.
+ 
++use crate::quat_ops;
+ use glam::{Quat, Vec3};
+ 
+ use super::types::{Ball, IMPACT_REPORT_SPEED};
+@@ -364,7 +365,8 @@
+ }
+ 
+ /// Rotates `q` by the angular velocity `w` (rad/s) over `t` seconds
+-/// (exact for constant `w`; `libm` trigonometry).
++/// (exact for constant `w`; `libm` trigonometry; [`quat_ops`] for the
++/// product and the normalisation, so every target gives the same bits).
+ #[must_use]
+ pub fn integrate_orientation(q: Quat, w: Vec3, t: f32) -> Quat {
+     let rate = w.length();
+@@ -374,7 +376,7 @@
+     }
+     let s = libm::sinf(half) / rate;
+     let dq = Quat::from_xyzw(w.x * s, w.y * s, w.z * s, libm::cosf(half));
+-    (dq * q).normalize()
++    quat_ops::normalize(quat_ops::mul(dq, q))
+ }
+ 
+ #[cfg(test)]
+--- a/crates/pin_physics/src/flipper/mod.rs
++++ b/crates/pin_physics/src/flipper/mod.rs
+@@ -69,9 +69,10 @@
+ 
+ use crate::ball::{BodyCast, BodyPoint, MovingBodies};
+ use crate::flipper_banana::{BananaError, CurvedBanana};
++use crate::quat_ops;
+ use crate::world::layers;
+ use arrayvec::ArrayVec;
+-use glam::{Quat, Vec3};
++use glam::Vec3;
+ use pin_core::ids::{FlipperId, SwitchId};
+ use pin_core::snapshot::MAX_FLIPPERS;
+ use pin_core::{FlipperConfig, FlipperShape, FlipperStagingMode, Material};
+@@ -196,8 +197,8 @@
+         let zero = (Vec3::X - normal * normal.dot(Vec3::X)).normalize();
+         return (zero, normal.cross(zero));
+     }
+-    let q = Quat::from_rotation_arc(Vec3::Z, normal);
+-    let zero = q * Vec3::X;
++    let q = quat_ops::from_rotation_arc(Vec3::Z, normal);
++    let zero = quat_ops::mul_vec3(q, Vec3::X);
+     // Re-orthogonalise against the normal so the frame is exact.
+     let zero = (zero - normal * zero.dot(normal)).normalize();
+     (zero, normal.cross(zero))
+--- a/crates/pin_physics/src/world/shapes.rs
++++ b/crates/pin_physics/src/world/shapes.rs
+@@ -6,6 +6,7 @@
+ //! from the left and can never step over it: the cast cannot tunnel, needs no
+ //! bracketing, and converges quadratically (in one step for flat faces).
+ 
++use crate::quat_ops;
+ use glam::{Quat, Vec3};
+ 
+ /// Gap below which a sphere counts as touching (metres).
+@@ -94,9 +95,9 @@
+                 half_extents,
+                 rotation,
+             } => {
+-                let x = (rotation * Vec3::X).abs() * half_extents.x;
+-                let y = (rotation * Vec3::Y).abs() * half_extents.y;
+-                let z = (rotation * Vec3::Z).abs() * half_extents.z;
++                let x = quat_ops::mul_vec3(rotation, Vec3::X).abs() * half_extents.x;
++                let y = quat_ops::mul_vec3(rotation, Vec3::Y).abs() * half_extents.y;
++                let z = quat_ops::mul_vec3(rotation, Vec3::Z).abs() * half_extents.z;
+                 let e = x + y + z;
+                 (center - e, center + e)
+             }
+@@ -185,7 +186,7 @@
+ }
+ 
+ fn closest_cuboid(center: Vec3, half: Vec3, rotation: Quat, p: Vec3) -> Closest {
+-    let q = rotation.conjugate() * (p - center);
++    let q = quat_ops::mul_vec3(rotation.conjugate(), p - center);
+     let clamped = q.clamp(-half, half);
+     let diff = q - clamped;
+     let d2 = diff.length_squared();
+@@ -210,8 +211,8 @@
+     };
+     Closest {
+         distance,
+-        normal: rotation * n_local,
+-        point: center + rotation * s_local,
++        normal: quat_ops::mul_vec3(rotation, n_local),
++        point: center + quat_ops::mul_vec3(rotation, s_local),
+         valid: true,
+     }
+ }
+--- a/crates/pin_physics/src/world/static_world.rs
++++ b/crates/pin_physics/src/world/static_world.rs
+@@ -8,6 +8,7 @@
+ 
+ use std::collections::BTreeMap;
+ 
++use crate::quat_ops;
+ use arrayvec::ArrayVec;
+ use glam::{Quat, Vec3};
+ use parry3d::bounding_volume::Aabb;
+@@ -140,14 +141,14 @@
+                     half_extents,
+                     rotation,
+                 } => {
+-                    let len2 = rotation.length_squared();
++                    let len2 = quat_ops::length_squared(rotation);
+                     let finite = center.is_finite() && half_extents.is_finite();
+                     if finite && len2.is_finite() && len2 > 0.0 {
+                         prims.push((
+                             Primitive::Cuboid {
+                                 center,
+                                 half_extents: half_extents.abs(),
+-                                rotation: rotation.normalize(),
++                                rotation: quat_ops::normalize(rotation),
+                             },
+                             collider,
+                         ));
+--- /dev/null
++++ b/crates/pin_physics/src/quat_ops.rs
+@@ -0,0 +1,154 @@
++//! Target-independent quaternion arithmetic for the simulation.
++//!
++//! glam 0.33.12 implements `Quat` with SSE2 on x86_64, `simd128` on wasm32
++//! (op for op the same as SSE2), NEON on aarch64 and plain scalar code
++//! elsewhere. The NEON code sums the 4-lane dot product in a different order
++//! (`vaddvq_f32`: `(x + y) + (z + w)`), normalises by multiplying with the
++//! reciprocal length instead of dividing, and fuses the cross product inside
++//! `Quat * Vec3` (`vfmsq_f32`), so the same ball spin gives different
++//! orientation bits on Apple Silicon than on x86_64.
++//!
++//! The functions below are plain `f32` code that reproduces glam's SSE2
++//! results bit for bit (same products, same additions in the same grouping,
++//! no fused operation; rustc never contracts `a * b + c`). They give the same
++//! bits on every IEEE-754 target, so x86_64 output is unchanged and aarch64
++//! and wasm32 (with or without `simd128`) match it (PLAN.md §2.4, D9).
++//! NaN payloads are not part of the guarantee.
++
++use glam::{Quat, Vec3};
++
++/// `a * b` (Hamilton product), as glam's SSE2 `Quat::mul_quat`
++/// (glam-0.33.12 `src/f32/sse2/quat.rs:885-919`).
++#[inline]
++#[must_use]
++pub fn mul(a: Quat, b: Quat) -> Quat {
++    Quat::from_xyzw(
++        (a.x * b.w + a.w * b.x) + (a.y * b.z - a.z * b.y),
++        (a.w * b.y - a.x * b.z) + (a.z * b.x + a.y * b.w),
++        (a.x * b.y + a.w * b.z) + (a.z * b.w - a.y * b.x),
++        (a.w * b.w - a.x * b.x) + (-(a.z * b.z) - a.y * b.y),
++    )
++}
++
++/// Squared length with SSE2's grouping `(x² + z²) + (y² + w²)`
++/// (glam-0.33.12 `src/sse2.rs:75-80`, `dot4_into_m128`).
++#[inline]
++#[must_use]
++pub fn length_squared(q: Quat) -> f32 {
++    (q.x * q.x + q.z * q.z) + (q.y * q.y + q.w * q.w)
++}
++
++/// `q / |q|` component-wise (a division, as SSE2 `Vec4::normalize`,
++/// glam-0.33.12 `src/f32/sse2/vec4.rs:654-662`; not a reciprocal multiply).
++#[inline]
++#[must_use]
++pub fn normalize(q: Quat) -> Quat {
++    let len = length_squared(q).sqrt();
++    Quat::from_xyzw(q.x / len, q.y / len, q.z / len, q.w / len)
++}
++
++/// `q * v` (rotation of `v`), as glam's SSE2 `Quat::mul_vec3a`
++/// (glam-0.33.12 `src/f32/sse2/quat.rs:964-980`, cross product
++/// `src/f32/sse2/vec3a.rs:279-291` without FMA).
++#[inline]
++#[must_use]
++pub fn mul_vec3(q: Quat, v: Vec3) -> Vec3 {
++    let (bx, by, bz, w) = (q.x, q.y, q.z, q.w);
++    let b2 = (bx * bx + by * by) + bz * bz;
++    let s1 = w * w - b2;
++    let s2 = ((v.x * bx + v.y * by) + v.z * bz) * 2.0;
++    let s3 = w * 2.0;
++    let cx = by * v.z - v.y * bz;
++    let cy = bz * v.x - v.z * bx;
++    let cz = bx * v.y - v.x * by;
++    Vec3::new(
++        (v.x * s1 + bx * s2) + cx * s3,
++        (v.y * s1 + by * s2) + cy * s3,
++        (v.z * s1 + bz * s2) + cz * s3,
++    )
++}
++
++/// The shortest rotation from unit `from` to unit `to`, as glam's
++/// `Quat::from_rotation_arc` with [`normalize`] for the final step.
++#[inline]
++#[must_use]
++pub fn from_rotation_arc(from: Vec3, to: Vec3) -> Quat {
++    const ONE_MINUS_EPS: f32 = 1.0 - 2.0 * f32::EPSILON;
++    let dot = from.dot(to);
++    if dot > ONE_MINUS_EPS {
++        Quat::IDENTITY
++    } else if dot < -ONE_MINUS_EPS {
++        // Same as glam (axis-angle of a half turn); not reached by the
++        // flipper frame, which handles -Z itself.
++        Quat::from_axis_angle(from.any_orthonormal_vector(), core::f32::consts::PI)
++    } else {
++        let c = from.cross(to);
++        normalize(Quat::from_xyzw(c.x, c.y, c.z, 1.0 + dot))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn bits4(q: Quat) -> [u32; 4] {
++        q.to_array().map(f32::to_bits)
++    }
++
++    fn bits3(v: Vec3) -> [u32; 3] {
++        v.to_array().map(f32::to_bits)
++    }
++
++    fn unit(x: f32, y: f32, z: f32, w: f32) -> Quat {
++        let n = ((x * x + y * y) + (z * z + w * w)).sqrt();
++        if n > 1e-3 {
++            Quat::from_xyzw(x / n, y / n, z / n, w / n)
++        } else {
++            Quat::IDENTITY
++        }
++    }
++
++    #[test]
++    fn identity_and_known_values() {
++        let q = unit(0.1, -0.2, 0.3, 0.9);
++        assert_eq!(bits4(mul(Quat::IDENTITY, q)), bits4(q));
++        assert_eq!(
++            bits3(mul_vec3(Quat::IDENTITY, Vec3::new(1.0, -2.0, 3.0))),
++            bits3(Vec3::new(1.0, -2.0, 3.0))
++        );
++        assert_eq!(length_squared(Quat::from_xyzw(1.0, 2.0, 3.0, 4.0)), 30.0);
++        assert_eq!(from_rotation_arc(Vec3::Z, Vec3::Z), Quat::IDENTITY);
++    }
++
++    // glam's SSE2 path (x86_64) and its simd128 path (wasm32) are the
++    // reference: the replica must give the same bits for every input.
++    #[cfg(any(target_feature = "sse2", target_feature = "simd128"))]
++    mod against_glam_sse2 {
++        use super::*;
++        use proptest::prelude::*;
++
++        proptest! {
++            #[test]
++            fn matches_glam_sse2_bit_for_bit(
++                a in prop::array::uniform4(-1.0f32..1.0),
++                b in prop::array::uniform4(-1.0f32..1.0),
++                v in prop::array::uniform3(-10.0f32..10.0),
++            ) {
++                let (qa, qb) = (unit(a[0], a[1], a[2], a[3]), unit(b[0], b[1], b[2], b[3]));
++                let v = Vec3::from_array(v);
++                prop_assert_eq!(bits4(mul(qa, qb)), bits4(qa * qb));
++                prop_assert_eq!(bits3(mul_vec3(qa, v)), bits3(qa * v));
++                prop_assert_eq!(bits3(mul_vec3(qa.conjugate(), v)), bits3(qa.conjugate() * v));
++                let raw = Quat::from_array(a);
++                prop_assert_eq!(length_squared(raw).to_bits(), raw.length_squared().to_bits());
++                if raw.length_squared() > 1e-6 {
++                    prop_assert_eq!(bits4(normalize(raw)), bits4(raw.normalize()));
++                }
++                if v.length_squared() > 1e-6 {
++                    let n = v.normalize();
++                    prop_assert_eq!(bits4(from_rotation_arc(Vec3::Z, n)), bits4(Quat::from_rotation_arc(Vec3::Z, n)));
++                }
++            }
++        }
++    }
++}

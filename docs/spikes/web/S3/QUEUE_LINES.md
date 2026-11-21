@@ -1,0 +1,1 @@
+- web-spike-render (S3): owner/S6 — Q3 effort side measured: WebGL2 fallback ≈ 3 T2 runs (prototype renders all 3 tables on WebGL2); decide WebGPU+WebGL2 with S5's reach data; A23 needs a CI trial of `ci/web-render-smoke.yml` on a GitHub-hosted runner.

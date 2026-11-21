@@ -1,0 +1,643 @@
+# lua-src: wasm32-unknown-unknown arm + shim (KHZ 29), portable hex numerals and %a (KHZ 30, lkhznum.c), fixed LUAL_BUFFERSIZE (KHZ 31), KHZ_LUA_MATH transcendental routing (KHZ 32). Native x86_64 output unchanged for the 3 tables (S2 RESULTS).
+--- a/third_party/lua-src/KHZ_PATCHES.md
++++ b/third_party/lua-src/KHZ_PATCHES.md
+@@ -36,6 +36,10 @@
+ | 26 | `lstring.c`, `lstring.h`, `lstate.c` | The pending cost of patch 4 belongs to one state (`luaS_khzowner`); another state's spend never takes it. Amended by patch 28: it used to be discarded when another state spent, and the owner was the last state to set or spend a budget rather than the one that produced the cost. |
+ | 27 | `lgc.c` | `__mode` is ignored: `traversetable` treats every table as strong (the weak/ephemeron branch is kept but dead). The sandbox's `setmetatable` refuses `__mode`, but a script can add it to the metatable afterwards, and weak and ephemeron tables are cleared and re-traversed in the GC's atomic step, outside the budget. Only the sandbox prelude's `protected` proxy set was weak-keyed; its proxies live as long as the state, so it is unaffected. mlua's only weak table (per-thread hooks, `Thread::set_hook`) is not used by `pin_script`. (CodeRabbit review of PR #5; test `crates/pin_script/tests/cr_weak_tables.rs`.) |
+ | 28 | `llimits.h`, `lstring.c`, `lstring.h`, `lstate.c`, `lstate.h`, `lapi.c`, `ldo.c`, `lzio.c`, `src/lib.rs` | Pending cost is kept per state. `global_State.khzpending` parks a state's pending cost while another state owns the thread-local accumulator; `luaS_khzclaim` (behind the inline check `luaS_khzown`) moves the accumulator to the new owner and parks the old owner's cost in its `khzpending`, which its next `lua_khzspend` charges. `lua_lock` is defined as `luaS_khzlock`, so ownership is claimed on every entry into the core by any C API call (stock `lua_rawequal` and `lua_rawlen` take no lock, so they now take it as well: their long-string compares and `luaH_getn` hash-chain walks accrue pending cost; the API functions still without it do no such work) (a C function of state A that calls into state B and then reads A's tables charges that work to A, with no owner to restore); it is also claimed explicitly on every entry into a state (`lua_callk`, `lua_pcallk`, `lua_load`, `lua_resume`, `lua_khzsetbudget`, `lua_khzspend`) and on every return to it from code that may have run another state (after the C function in `precallC`, after both C continuation calls in `finishCcall` and `unroll`'s yield path, after the chunk reader in `luaZ_fill`, after the hook in `luaD_hook`, and in `luaD_throw`), so cost accrued while a state runs is charged to that state only; `lua_khzsetbudget` clears only its own state's pending cost. `lua_close` releases ownership, so the owner pointer never dangles provided a state is closed on the thread it last ran on (mlua's `Lua` is `!Send` without its `send` feature, which is off). The steady-state cost is one thread-local compare per C-function call. (CodeRabbit review of PR #3; test `crates/pin_script/tests/cr_lua_budget.rs`.) |
++| 29 | `src/lib.rs`, `khz-wasm/khz_wasm_shim.c` | (web, proposed by spike S2) A `wasm32-unknown-unknown` arm: clang with LLVM >= 19 (wasi-sdk 32 pinned) against a wasi-libc sysroot (`KHZ_WASI_SYSROOT`), setjmp/longjmp lowered to Wasm exception handling (`-mllvm -wasm-enable-sjlj`, legacy EH by default, `KHZ_WASM_LEGACY_EH=false` for exnref), `-ffp-contract=off`, links wasi-libc's `libc.a` and `libsetjmp.a`. `liolib.c`, `loslib.c`, `loadlib.c`, `ldblib.c` are not compiled; the shim's `luaopen_io/os/package/debug` raise, and it defines every WASI import wasi-libc still references as a failing function, so the module imports nothing but the host's own functions. `lua_writestring`/`lua_writeline`/`lua_writestringerror` are no-ops. Native arms unchanged. |
++| 30 | `lkhznum.c` (new), `luaconf.h` | (web) `lua_strx2number` is `khz_strx2number`: a correctly rounded hexadecimal-numeral reader (round to nearest, ties to even), the same on every target (wasi-libc's `strtod` is off by one ulp for long hex mantissas; glibc 2.39's is wrong for 4 in 2 000 000 random subnormal hex inputs). `lua_number2strx` is `khz_number2strx`: `%a`/`%A` with glibc's output for subnormals ("0x0.<hex>p-1022", precision rounding ties to even, flags/width) and the C library's for everything else (glibc and musl agree there). |
++| 31 | `luaconf.h` | (web) `LUAL_BUFFERSIZE` is 1024 on every target (the LP64 value) instead of `16*sizeof(void*)*sizeof(lua_Number)`: buffer growth is charged to the budget (patch 20), so a 32-bit target grew and was charged at different sizes (`budget-edge` probe: `table.concat` of 700 bytes fit 2091 times natively, 815 times on wasm32). Unchanged on x86_64/aarch64. mlua-sys's Rust `LUAL_BUFFERSIZE` constant stays pointer-size based; neither mlua nor pin_script uses `luaL_Buffer` from Rust. |
++| 32 | `luaconf.h`, `lmathlib.c`, `llimits.h` | (web) With `KHZ_LUA_MATH` the transcendental functions (`sin cos tan asin acos atan2 exp log log2 log10 pow sinh cosh tanh`, so also `^`) call `khz_<name>`, provided by pin_script from the Rust `libm` crate (D9): the same bits natively and in the browser, independent of the C library and of CPU features (glibc picks FMA variants at run time). Exact functions (`floor ceil fabs fmod frexp ldexp sqrt`) keep the C library. |
+ | — | `Cargo.toml` | Test target and dev-dependencies removed; only `lua-5.4.9/` kept. |
+ 
+ Budget units are roughly "one VM instruction" (a few ns). All edits compile warning-free with `gcc -std=gnu99 -Wall -Wextra`.
+--- a/third_party/lua-src/src/lib.rs
++++ b/third_party/lua-src/src/lib.rs
+@@ -30,6 +30,7 @@
+     lib_dir: PathBuf,
+     lua_lib: String,
+     libs: Vec<String>,
++    extra_search: Vec<PathBuf>,
+ }
+ 
+ impl Default for Build {
+@@ -134,6 +135,9 @@
+ 
+         let lua_lib = version.lib_name().to_string();
+         let mut libs = vec![lua_lib.clone()];
++        // KHZ (web): sources left out and extra library directories per target.
++        let mut wasm_exclude: &[&str] = &[];
++        let mut extra_search: Vec<PathBuf> = Vec::new();
+         match target {
+             _ if target.contains("linux") => {
+                 config.define("LUA_USE_LINUX", None);
+@@ -189,6 +193,44 @@
+                 config.flag("-mllvm").flag("-wasm-enable-sjlj");
+                 libs.push("setjmp".to_string());
+             }
++            _ if target == "wasm32-unknown-unknown" => {
++                // KHZ (web): the browser build. Compiled against a wasi-libc
++                // sysroot (`KHZ_WASI_SYSROOT`, e.g. wasi-sdk's
++                // share/wasi-sysroot) with a clang whose WebAssembly backend
++                // lowers setjmp/longjmp to Wasm exception handling (LLVM >= 19:
++                // the __wasm_setjmp ABI of wasi-libc's libsetjmp).
++                // See khz-wasm/khz_wasm_shim.c and KHZ_PATCHES.md.
++                let sysroot = env::var("KHZ_WASI_SYSROOT").map_err(|_| {
++                    "KHZ_WASI_SYSROOT must name a wasi-libc sysroot to build Lua for wasm32-unknown-unknown"
++                })?;
++                let legacy_eh = env::var("KHZ_WASM_LEGACY_EH").unwrap_or_else(|_| "true".into());
++                config
++                    .flag(format!("--sysroot={sysroot}"))
++                    .flag("-isystem")
++                    .flag(format!("{sysroot}/include/wasm32-wasip1"))
++                    .flag("-mllvm")
++                    .flag("-wasm-enable-sjlj")
++                    .flag("-mllvm")
++                    .flag(format!("-wasm-use-legacy-eh={legacy_eh}"))
++                    // Same float semantics as the native build: no
++                    // contraction into fused multiply-adds (Wasm core has
++                    // none, but say so).
++                    .flag("-ffp-contract=off")
++                    // lstate.h's `l_signalT` is `sig_atomic_t` from
++                    // <signal.h>; wasi-libc only declares it in this mode (no
++                    // signal function is called or linked).
++                    .define("_WASI_EMULATED_SIGNAL", None)
++                    // No stdout/stderr in a browser: print/warn/panic output
++                    // goes nowhere (the sandbox replaces print anyway).
++                    .define("lua_writestring(s,l)", Some("((void)(s),(void)(l))"))
++                    .define("lua_writeline()", Some("((void)0)"))
++                    .define("lua_writestringerror(s,p)", Some("((void)(s),(void)(p))"))
++                    .file(manifest_dir.join("khz-wasm/khz_wasm_shim.c"));
++                wasm_exclude = &["liolib.c", "loslib.c", "loadlib.c", "ldblib.c"];
++                extra_search.push(PathBuf::from(format!("{sysroot}/lib/wasm32-wasip1")));
++                libs.push("setjmp".to_string());
++                libs.push("c".to_string());
++            }
+             _ => Err(format!("don't know how to build Lua for {target}"))?,
+         }
+ 
+@@ -196,6 +238,16 @@
+             config.define("LUA_COMPAT_5_3", None);
+         }
+ 
++        // KHZ (web): the transcendental math functions call the host's
++        // khz_* (pin_script, Rust libm) when KHZ_LUA_MATH=1 (spike knob; the
++        // proposal makes it unconditional).
++        println!("cargo:rerun-if-env-changed=KHZ_LUA_MATH");
++        println!("cargo:rerun-if-env-changed=KHZ_WASI_SYSROOT");
++        println!("cargo:rerun-if-env-changed=KHZ_WASM_LEGACY_EH");
++        if env::var("KHZ_LUA_MATH").as_deref() == Ok("1") {
++            config.define("KHZ_LUA_MATH", None);
++        }
++
+         #[cfg(feature = "ucid")]
+         if let Lua54 | Lua55 = version {
+             config.define("LUA_UCID", None);
+@@ -223,7 +275,7 @@
+             .include(&source_dir)
+             .warnings(false) // Suppress all warnings
+             .flag_if_supported("-fno-common") // Compile common globals like normal definitions
+-            .add_files_by_ext(&source_dir, "c")?
++            .add_files_by_ext(&source_dir, "c", wasm_exclude)?
+             .out_dir(&lib_dir)
+             .try_compile(&lua_lib)?;
+ 
+@@ -239,6 +291,7 @@
+             lib_dir,
+             lua_lib,
+             libs,
++            extra_search,
+         })
+     }
+ }
+@@ -287,6 +340,9 @@
+     /// about the location of the Lua libraries and how to link them.
+     pub fn print_cargo_metadata(&self) {
+         println!("cargo:rustc-link-search=native={}", self.lib_dir.display());
++        for dir in &self.extra_search {
++            println!("cargo:rustc-link-search=native={}", dir.display());
++        }
+         println!("cargo:rustc-link-lib=static={}", self.lua_lib);
+         for lib in self.libs.iter().filter(|lib| *lib != &self.lua_lib) {
+             println!("cargo:rustc-link-lib=static:-bundle={lib}");
+@@ -307,15 +363,26 @@
+ }
+ 
+ trait AddFilesByExt {
+-    fn add_files_by_ext(&mut self, dir: &Path, ext: &str) -> Result<&mut Self, Box<dyn Error>>;
++    fn add_files_by_ext(
++        &mut self,
++        dir: &Path,
++        ext: &str,
++        exclude: &[&str],
++    ) -> Result<&mut Self, Box<dyn Error>>;
+ }
+ 
+ impl AddFilesByExt for cc::Build {
+-    fn add_files_by_ext(&mut self, dir: &Path, ext: &str) -> Result<&mut Self, Box<dyn Error>> {
++    fn add_files_by_ext(
++        &mut self,
++        dir: &Path,
++        ext: &str,
++        exclude: &[&str],
++    ) -> Result<&mut Self, Box<dyn Error>> {
+         for entry in fs::read_dir(dir)
+             .context(|| format!("Cannot read '{}'", dir.display()))?
+             .filter_map(|e| e.ok())
+             .filter(|e| e.path().extension() == Some(ext.as_ref()))
++            .filter(|e| !exclude.iter().any(|x| e.file_name() == **x))
+         {
+             self.file(entry.path());
+         }
+@@ -349,4 +416,8 @@
+     include_str!("../lua-5.4.9/lapi.c"),
+     include_str!("../lua-5.4.9/lzio.c"),
+     include_str!("../lua-5.4.9/llimits.h"),
++    include_str!("../khz-wasm/khz_wasm_shim.c"),
++    include_str!("../lua-5.4.9/lkhznum.c"),
++    include_str!("../lua-5.4.9/luaconf.h"),
++    include_str!("../lua-5.4.9/lmathlib.c"),
+ ];
+--- /dev/null
++++ b/third_party/lua-src/khz-wasm/khz_wasm_shim.c
+@@ -0,0 +1,68 @@
++/* KHZ (web, spike S2): support code for Lua 5.4 on wasm32-unknown-unknown.
++ *
++ * The browser build compiles the Lua core and the libraries the sandbox can
++ * load (base, string, table, math, utf8, coroutine) against a wasi-libc
++ * sysroot, but not liolib.c, loslib.c, loadlib.c or ldblib.c: the sandbox
++ * never opens io, os, package or debug, and leaving them out keeps file,
++ * process and dynamic-library code out of the module. mlua still names their
++ * openers, so they exist here and refuse.
++ *
++ * wasi-libc's few remaining system-call imports (reached only from code the
++ * engine never runs: luaL_loadfilex's fopen, stdio flushing, time()) are
++ * defined here as failing functions, so the final module imports nothing from
++ * `wasi_snapshot_preview1` and no browser-side WASI shim exists.
++ */
++#include "lua.h"
++#include "lauxlib.h"
++#include <errno.h>
++#include <stdint.h>
++#include <stdio.h>
++
++static int khz_absent (lua_State *L) {
++  return luaL_error(L, "this library is not available in the web build");
++}
++LUAMOD_API int luaopen_io (lua_State *L) { return khz_absent(L); }
++LUAMOD_API int luaopen_os (lua_State *L) { return khz_absent(L); }
++LUAMOD_API int luaopen_package (lua_State *L) { return khz_absent(L); }
++LUAMOD_API int luaopen_debug (lua_State *L) { return khz_absent(L); }
++
++/* The only stdio Lua still names is luaL_loadfilex's (dofile/loadfile, which
++ * the sandbox removes): no file can be opened. Defining these keeps wasi-libc's
++ * FILE machinery, and the __stdio_exit destructor it registers, out of the
++ * module (with it, wasm-ld wraps every export in a call to the destructors). */
++FILE *const stdin = 0;
++FILE *fopen (const char *restrict path, const char *restrict mode) {
++  (void)path; (void)mode; errno = ENOENT; return 0; }
++FILE *freopen (const char *restrict path, const char *restrict mode, FILE *restrict f) {
++  (void)path; (void)mode; (void)f; errno = ENOENT; return 0; }
++int fclose (FILE *f) { (void)f; return EOF; }
++int getc (FILE *f) { (void)f; return EOF; }
++size_t fread (void *restrict b, size_t size, size_t n, FILE *restrict f) {
++  (void)b; (void)size; (void)n; (void)f; return 0; }
++int ferror (FILE *f) { (void)f; return 1; }
++int feof (FILE *f) { (void)f; return 1; }
++
++/* WASI preview1 imports: every call fails with ENOSYS (52), or EBADF (8) for
++ * descriptor operations. Definitions win over wasi-libc's import
++ * declarations at link time. */
++#define KHZ_ENOSYS 52
++#define KHZ_EBADF 8
++#define KHZ_WASI(name) \
++  int32_t __imported_wasi_snapshot_preview1_##name
++KHZ_WASI(fd_write)(int32_t a, int32_t b, int32_t c, int32_t d) { (void)a; (void)b; (void)c; (void)d; return KHZ_EBADF; }
++KHZ_WASI(fd_read)(int32_t a, int32_t b, int32_t c, int32_t d) { (void)a; (void)b; (void)c; (void)d; return KHZ_EBADF; }
++KHZ_WASI(fd_close)(int32_t a) { (void)a; return KHZ_EBADF; }
++KHZ_WASI(fd_renumber)(int32_t a, int32_t b) { (void)a; (void)b; return KHZ_EBADF; }
++KHZ_WASI(fd_seek)(int32_t a, int64_t b, int32_t c, int32_t d) { (void)a; (void)b; (void)c; (void)d; return KHZ_EBADF; }
++KHZ_WASI(fd_fdstat_get)(int32_t a, int32_t b) { (void)a; (void)b; return KHZ_EBADF; }
++KHZ_WASI(fd_fdstat_set_flags)(int32_t a, int32_t b) { (void)a; (void)b; return KHZ_EBADF; }
++KHZ_WASI(fd_filestat_get)(int32_t a, int32_t b) { (void)a; (void)b; return KHZ_EBADF; }
++KHZ_WASI(fd_prestat_get)(int32_t a, int32_t b) { (void)a; (void)b; return KHZ_EBADF; }
++KHZ_WASI(fd_prestat_dir_name)(int32_t a, int32_t b, int32_t c) { (void)a; (void)b; (void)c; return KHZ_EBADF; }
++KHZ_WASI(path_open)(int32_t a, int32_t b, int32_t c, int32_t d, int32_t e, int64_t f, int64_t g, int32_t h, int32_t i) {
++  (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; (void)i; return KHZ_ENOSYS; }
++KHZ_WASI(clock_time_get)(int32_t a, int64_t b, int32_t c) { (void)a; (void)b; (void)c; return KHZ_ENOSYS; }
++KHZ_WASI(environ_sizes_get)(int32_t a, int32_t b) { (void)a; (void)b; return KHZ_ENOSYS; }
++KHZ_WASI(environ_get)(int32_t a, int32_t b) { (void)a; (void)b; return KHZ_ENOSYS; }
++KHZ_WASI(random_get)(int32_t a, int32_t b) { (void)a; (void)b; return KHZ_ENOSYS; }
++void __imported_wasi_snapshot_preview1_proc_exit(int32_t a) { (void)a; __builtin_trap(); }
+--- /dev/null
++++ b/third_party/lua-src/lua-5.4.9/lkhznum.c
+@@ -0,0 +1,219 @@
++/*
++** KHZ (web, spike S2): number conversions that give the same result on
++** every target (see KHZ_PATCHES.md, patches 29-30 proposed).
++**
++** khz_strx2number: hexadecimal numerals ("0x1.8p3"), correctly rounded
++**   (round to nearest, ties to even), overflow to +-HUGE_VAL. Replaces the
++**   C99 'strtod' Lua uses for them: glibc's is correctly rounded, wasi-libc's
++**   (musl with 128-bit long double) is off by one ulp for mantissas longer
++**   than about 15 hex digits, so the same source constant could differ
++**   natively and in the browser. For every input this returns what glibc's
++**   strtod returns.
++**
++** khz_number2strx: '%a'/'%A' formatting with glibc's output on every
++**   target. Normal numbers, zero, infinities and NaN go to the C library
++**   (glibc and musl agree on them, including precision, rounding carries and
++**   flags); subnormals are printed as glibc does, "0x0.<hex>p-1022" (musl
++**   and Apple's libc normalise them to "0x1.<hex>p-10xx").
++**
++** Plain C99, double ('lua_Number') only.
++*/
++
++#define lkhznum_c
++#define LUA_CORE
++
++#include "lprefix.h"
++
++#include <float.h>
++#include <locale.h>
++#include <math.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "lua.h"
++
++#include "lctype.h"
++#include "lobject.h"
++
++
++static int khz_hexval (int c) {
++  if (lisdigit(c)) return c - '0';
++  return (ltolower(c) - 'a') + 10;
++}
++
++
++lua_Number khz_strx2number (const char *s, char **endptr) {
++  const char *p = s;
++  int neg = 0, any = 0, dot = 0, sticky = 0;
++  unsigned long long m = 0;  /* significant bits read (< 2^61) */
++  long e = 0;  /* binary exponent of the last digit of 'm' */
++  int nb, keep, drop;
++  long top;
++  while (lisspace(cast_uchar(*p))) p++;
++  if (*p == '-') { neg = 1; p++; }
++  else if (*p == '+') p++;
++  if (!(p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))) {
++    *endptr = (char *)s;  /* not a hexadecimal numeral */
++    return 0;
++  }
++  p += 2;
++  for (;; p++) {
++    int d;
++    if (*p == '.') {
++      if (dot) break;
++      dot = 1;
++      continue;
++    }
++    if (!lisxdigit(cast_uchar(*p))) break;
++    d = khz_hexval(cast_uchar(*p));
++    any = 1;
++    if (m < (1ULL << 57)) {
++      m = m * 16 + (unsigned)d;
++      if (dot) e -= 4;
++    }
++    else {  /* beyond 57 bits: only whether anything is nonzero matters */
++      sticky |= (d != 0);
++      if (!dot) e += 4;
++    }
++  }
++  if (!any) {  /* "0x" with no digit: no hexadecimal conversion */
++    *endptr = (char *)s;
++    return 0;
++  }
++  if (*p == 'p' || *p == 'P') {  /* optional binary exponent */
++    const char *q = p + 1;
++    int eneg = 0;
++    long x = 0;
++    if (*q == '-') { eneg = 1; q++; }
++    else if (*q == '+') q++;
++    if (lisdigit(cast_uchar(*q))) {
++      while (lisdigit(cast_uchar(*q))) {
++        if (x < 100000) x = x * 10 + (*q - '0');  /* saturate */
++        q++;
++      }
++      e += eneg ? -x : x;
++      p = q;
++    }  /* else the 'p' is not part of the numeral (as with strtod) */
++  }
++  *endptr = (char *)p;
++  if (m == 0) return neg ? -(lua_Number)0 : (lua_Number)0;
++  for (nb = 0; nb < 64 && (m >> nb) != 0; nb++) {}
++  top = e + nb - 1;  /* exponent of the leading bit */
++  if (top > DBL_MAX_EXP)  /* far too large */
++    return neg ? -(lua_Number)HUGE_VAL : (lua_Number)HUGE_VAL;
++  if (top >= DBL_MIN_EXP - 1)
++    keep = DBL_MANT_DIG;  /* normal */
++  else if (top >= DBL_MIN_EXP - DBL_MANT_DIG - 2)
++    keep = DBL_MANT_DIG - (int)((DBL_MIN_EXP - 1) - top);  /* subnormal */
++  else
++    return neg ? -(lua_Number)0 : (lua_Number)0;  /* below half the least subnormal */
++  drop = nb - keep;
++  if (drop > 0) {
++    unsigned long long kept, rem, half;
++    int up;
++    if (keep <= 0) {  /* every bit is dropped: compare with half the least subnormal */
++      /* value = m * 2^e, half of 2^(DBL_MIN_EXP - DBL_MANT_DIG) */
++      kept = 0;
++      if (keep == 0) {  /* top == least-subnormal exponent - 1: value in [half, 1) ulp */
++        unsigned long long lead = 1ULL << (nb - 1);
++        up = (m != lead) || sticky;  /* exactly half: ties to even (0) */
++      }
++      else
++        up = 0;
++      return (neg ? -1 : 1) * l_mathop(ldexp)((lua_Number)up,
++                                            DBL_MIN_EXP - DBL_MANT_DIG);
++    }
++    kept = m >> drop;
++    rem = m & ((1ULL << drop) - 1);
++    half = 1ULL << (drop - 1);
++    up = rem > half || (rem == half && (sticky || (kept & 1)));
++    kept += (unsigned)up;
++    return (neg ? -1 : 1) * l_mathop(ldexp)((lua_Number)kept, (int)(e + drop));
++  }
++  return (neg ? -1 : 1) * l_mathop(ldexp)((lua_Number)m, (int)e);
++}
++
++
++int khz_number2strx (char *buff, int sz, const char *fmt, lua_Number x) {
++  int left = 0, plus = 0, space = 0, alt = 0, zero = 0, width = 0, prec = -1;
++  int upper, i, n, nd;
++  const char *f = fmt;
++  char digits[16];
++  char body[64];
++  int leading = 0;
++  unsigned long long frac;
++  union { double d; unsigned long long u; } v;
++  if (!(x != 0 && x == x && l_mathop(fabs)(x) < DBL_MIN))  /* not subnormal */
++    return l_sprintf(buff, sz, fmt, (LUAI_UACNUMBER)x);
++  /* parse "%[flags][width][.prec]a" (Lua checked it: at most 2 digits each) */
++  if (*f == '%') f++;
++  for (;; f++) {
++    if (*f == '-') left = 1;
++    else if (*f == '+') plus = 1;
++    else if (*f == ' ') space = 1;
++    else if (*f == '#') alt = 1;
++    else if (*f == '0') zero = 1;
++    else break;
++  }
++  while (*f >= '0' && *f <= '9') width = width * 10 + (*f++ - '0');
++  if (*f == '.') {
++    f++;
++    prec = 0;
++    while (*f >= '0' && *f <= '9') prec = prec * 10 + (*f++ - '0');
++  }
++  upper = (*f == 'A');
++  v.d = (double)x;
++  frac = v.u & 0x000fffffffffffffULL;
++  for (i = 0; i < 13; i++)
++    digits[i] = (char)((frac >> (48 - 4 * i)) & 0xf);
++  nd = 13;
++  if (prec < 0) {  /* shortest exact: drop trailing zeros */
++    while (nd > 0 && digits[nd - 1] == 0) nd--;
++  }
++  else if (prec < 13) {  /* round to 'prec' digits, ties to even (glibc) */
++    int last = prec > 0 ? digits[prec - 1] : leading;
++    int next = digits[prec];
++    int more = (next & 7) != 0;
++    for (i = prec + 1; i < 13; i++) more |= (digits[i] != 0);
++    if (next >= 8 && ((last & 1) || more)) {  /* round up, with carry */
++      for (i = prec - 1; i >= 0; i--) {
++        if (++digits[i] < 16) break;
++        digits[i] = 0;
++      }
++      if (i < 0) leading++;
++    }
++    nd = prec;
++  }
++  else
++    nd = prec;  /* zeros beyond the 13th digit are added below */
++  n = 0;
++  if (v.u >> 63) body[n++] = '-';
++  else if (plus) body[n++] = '+';
++  else if (space) body[n++] = ' ';
++  {
++    int signlen = n;
++    char tail[128];
++    int t = 0;
++    tail[t++] = (char)('0' + leading);
++    if (nd > 0 || alt) tail[t++] = lua_getlocaledecpoint();
++    for (i = 0; i < nd; i++) {
++      int d = i < 13 ? digits[i] : 0;
++      tail[t++] = (char)(d < 10 ? '0' + d : (upper ? 'A' : 'a') + d - 10);
++    }
++    t += snprintf(tail + t, sizeof(tail) - (size_t)t, "%c-1022", upper ? 'P' : 'p');
++    body[n++] = '0';
++    body[n++] = upper ? 'X' : 'x';
++    {
++      int len = n + t, pad = width > len ? width - len : 0, k = 0;
++      if (len + pad >= sz) return l_sprintf(buff, sz, fmt, (LUAI_UACNUMBER)x);
++      if (!left && !zero) { memset(buff, ' ', (size_t)pad); k = pad; }
++      memcpy(buff + k, body, (size_t)n); k += n;
++      if (!left && zero) { memset(buff + k, '0', (size_t)pad); k += pad; }
++      memcpy(buff + k, tail, (size_t)t); k += t;
++      if (left) { memset(buff + k, ' ', (size_t)pad); k += pad; }
++      buff[k] = '\0';
++      (void)signlen;
++      return k;
++    }
++  }
++}
+--- a/third_party/lua-src/lua-5.4.9/luaconf.h
++++ b/third_party/lua-src/lua-5.4.9/luaconf.h
+@@ -601,14 +601,33 @@
+ 
+ 
+ /*
++** KHZ (web): with KHZ_LUA_MATH the transcendental functions of the math
++** library and the '^' operator call khz_<name>, which the host provides
++** (the engine's Rust 'libm', D9), so results are the same bits natively and
++** in the browser and do not depend on the C library or the CPU.
++*/
++#if defined(KHZ_LUA_MATH)
++#define KHZ_MATHOP(op)	khz_##op
++extern double khz_sin (double), khz_cos (double), khz_tan (double),
++  khz_asin (double), khz_acos (double), khz_atan2 (double, double),
++  khz_exp (double), khz_log (double), khz_log2 (double),
++  khz_log10 (double), khz_pow (double, double), khz_sinh (double),
++  khz_cosh (double), khz_tanh (double);
++#else
++#define KHZ_MATHOP(op)	l_mathop(op)
++#endif
++
++
++/*
+ @@ lua_strx2number converts a hexadecimal numeral to a number.
+ ** In C99, 'strtod' does that conversion. Otherwise, you can
+ ** leave 'lua_strx2number' undefined and Lua will provide its own
+ ** implementation.
+ */
+-#if !defined(LUA_USE_C89)
+-#define lua_strx2number(s,p)		lua_str2number(s,p)
+-#endif
++/* KHZ (web): one correctly rounded hexadecimal reader on every target
++** (lkhznum.c); C99 'strtod' differs between C libraries. */
++LUAI_FUNC LUA_NUMBER khz_strx2number (const char *s, char **endptr);
++#define lua_strx2number(s,p)		khz_strx2number(s,p)
+ 
+ 
+ /*
+@@ -624,10 +643,11 @@
+ ** Otherwise, you can leave 'lua_number2strx' undefined and Lua will
+ ** provide its own implementation.
+ */
+-#if !defined(LUA_USE_C89)
++/* KHZ (web): glibc's '%a' output on every target (lkhznum.c). */
++LUAI_FUNC int khz_number2strx (char *buff, int sz, const char *fmt,
++                               LUA_NUMBER x);
+ #define lua_number2strx(L,b,sz,f,n)  \
+-	((void)L, l_sprintf(b,sz,f,(LUAI_UACNUMBER)(n)))
+-#endif
++	((void)L, khz_number2strx(b,sz,f,(n)))
+ 
+ 
+ /*
+@@ -772,7 +792,10 @@
+ @@ LUAL_BUFFERSIZE is the initial buffer size used by the lauxlib
+ ** buffer system.
+ */
+-#define LUAL_BUFFERSIZE   ((int)(16 * sizeof(void*) * sizeof(lua_Number)))
++/* KHZ (web): a fixed size (the LP64 value), not pointer-size dependent:
++** buffer growth is charged to the budget (KHZ patch 20), so a 32-bit target
++** (wasm32) must grow its buffers at the same sizes as x86_64/aarch64. */
++#define LUAL_BUFFERSIZE   1024
+ 
+ 
+ /*
+--- a/third_party/lua-src/lua-5.4.9/lmathlib.c
++++ b/third_party/lua-src/lua-5.4.9/lmathlib.c
+@@ -38,34 +38,34 @@
+ }
+ 
+ static int math_sin (lua_State *L) {
+-  lua_pushnumber(L, l_mathop(sin)(luaL_checknumber(L, 1)));
++  lua_pushnumber(L, KHZ_MATHOP(sin)(luaL_checknumber(L, 1)));
+   return 1;
+ }
+ 
+ static int math_cos (lua_State *L) {
+-  lua_pushnumber(L, l_mathop(cos)(luaL_checknumber(L, 1)));
++  lua_pushnumber(L, KHZ_MATHOP(cos)(luaL_checknumber(L, 1)));
+   return 1;
+ }
+ 
+ static int math_tan (lua_State *L) {
+-  lua_pushnumber(L, l_mathop(tan)(luaL_checknumber(L, 1)));
++  lua_pushnumber(L, KHZ_MATHOP(tan)(luaL_checknumber(L, 1)));
+   return 1;
+ }
+ 
+ static int math_asin (lua_State *L) {
+-  lua_pushnumber(L, l_mathop(asin)(luaL_checknumber(L, 1)));
++  lua_pushnumber(L, KHZ_MATHOP(asin)(luaL_checknumber(L, 1)));
+   return 1;
+ }
+ 
+ static int math_acos (lua_State *L) {
+-  lua_pushnumber(L, l_mathop(acos)(luaL_checknumber(L, 1)));
++  lua_pushnumber(L, KHZ_MATHOP(acos)(luaL_checknumber(L, 1)));
+   return 1;
+ }
+ 
+ static int math_atan (lua_State *L) {
+   lua_Number y = luaL_checknumber(L, 1);
+   lua_Number x = luaL_optnumber(L, 2, 1);
+-  lua_pushnumber(L, l_mathop(atan2)(y, x));
++  lua_pushnumber(L, KHZ_MATHOP(atan2)(y, x));
+   return 1;
+ }
+ 
+@@ -172,25 +172,25 @@
+   lua_Number x = luaL_checknumber(L, 1);
+   lua_Number res;
+   if (lua_isnoneornil(L, 2))
+-    res = l_mathop(log)(x);
++    res = KHZ_MATHOP(log)(x);
+   else {
+     lua_Number base = luaL_checknumber(L, 2);
+ #if !defined(LUA_USE_C89)
+     if (base == l_mathop(2.0))
+-      res = l_mathop(log2)(x);
++      res = KHZ_MATHOP(log2)(x);
+     else
+ #endif
+     if (base == l_mathop(10.0))
+-      res = l_mathop(log10)(x);
++      res = KHZ_MATHOP(log10)(x);
+     else
+-      res = l_mathop(log)(x)/l_mathop(log)(base);
++      res = KHZ_MATHOP(log)(x)/KHZ_MATHOP(log)(base);
+   }
+   lua_pushnumber(L, res);
+   return 1;
+ }
+ 
+ static int math_exp (lua_State *L) {
+-  lua_pushnumber(L, l_mathop(exp)(luaL_checknumber(L, 1)));
++  lua_pushnumber(L, KHZ_MATHOP(exp)(luaL_checknumber(L, 1)));
+   return 1;
+ }
+ 
+@@ -676,24 +676,24 @@
+ #if defined(LUA_COMPAT_MATHLIB)
+ 
+ static int math_cosh (lua_State *L) {
+-  lua_pushnumber(L, l_mathop(cosh)(luaL_checknumber(L, 1)));
++  lua_pushnumber(L, KHZ_MATHOP(cosh)(luaL_checknumber(L, 1)));
+   return 1;
+ }
+ 
+ static int math_sinh (lua_State *L) {
+-  lua_pushnumber(L, l_mathop(sinh)(luaL_checknumber(L, 1)));
++  lua_pushnumber(L, KHZ_MATHOP(sinh)(luaL_checknumber(L, 1)));
+   return 1;
+ }
+ 
+ static int math_tanh (lua_State *L) {
+-  lua_pushnumber(L, l_mathop(tanh)(luaL_checknumber(L, 1)));
++  lua_pushnumber(L, KHZ_MATHOP(tanh)(luaL_checknumber(L, 1)));
+   return 1;
+ }
+ 
+ static int math_pow (lua_State *L) {
+   lua_Number x = luaL_checknumber(L, 1);
+   lua_Number y = luaL_checknumber(L, 2);
+-  lua_pushnumber(L, l_mathop(pow)(x, y));
++  lua_pushnumber(L, KHZ_MATHOP(pow)(x, y));
+   return 1;
+ }
+ 
+@@ -712,7 +712,7 @@
+ }
+ 
+ static int math_log10 (lua_State *L) {
+-  lua_pushnumber(L, l_mathop(log10)(luaL_checknumber(L, 1)));
++  lua_pushnumber(L, KHZ_MATHOP(log10)(luaL_checknumber(L, 1)));
+   return 1;
+ }
+ 
+--- a/third_party/lua-src/lua-5.4.9/llimits.h
++++ b/third_party/lua-src/lua-5.4.9/llimits.h
+@@ -342,7 +342,7 @@
+ /* exponentiation */
+ #if !defined(luai_numpow)
+ #define luai_numpow(L,a,b)  \
+-  ((void)L, (b == 2) ? (a)*(a) : l_mathop(pow)(a,b))
++  ((void)L, (b == 2) ? (a)*(a) : KHZ_MATHOP(pow)(a,b))
+ #endif
+ 
+ /* the others are quite standard operations */

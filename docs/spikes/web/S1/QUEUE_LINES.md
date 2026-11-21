@@ -1,0 +1,5 @@
+- web-spike-sim: pin_script `native-backends` gate + pin_sim `ExternalScript`/`load_from_vfs_with_script` prototyped in scratch (patches/); 9.1 must split it into `lua` and `wasmtime` features (move `lua::api::{range,project,unit_float}` to a shared module first).
+- web-spike-sim: web build flags `-C target-feature=+simd128 -C link-arg=-zstack-size=4194304` (parity with native x86_64 + stack headroom); add a failing native-vs-wasm per-tick hash gate (3 tables + replay_table fixture) and the glam_ops probe to the web workflow.
+- web-spike-sim: pin_sim `hash::Fnv64::write_f32` should hash NaN as one canonical pattern (NaN bits differ by platform: libm::sqrtf(-1) ffc00000 native vs 7fc00000 wasm); no existing golden changes.
+- web-spike-sim: add `glam::{Vec3A,Vec4,Quat}::{min,max,clamp}` to the sim crates' clippy.toml disallowed-methods (SSE minps vs wasm f32x4.pmin tie rule differs for ±0/NaN).
+- web-spike-sim: aarch64 native (macOS) still differs from x86_64 (glam NEON uses FMA); if the owner wants macOS-native replays to match web too, that is a separate very-high-blast-radius decision (option a or a glam patch).

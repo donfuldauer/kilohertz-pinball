@@ -1,0 +1,9 @@
+- 2026-11-20 S4 web-spike-rules: used wasmi 2.0.2 (latest stable) instead of a 0.4x/1.x line; see DECISIONS_LOCAL S4-1.
+- 2026-11-20 S4 web-spike-rules: memory cap on the JIT path by rewriting the module's memory maximum, not a host-imported Memory; see S4-2.
+- 2026-11-20 S4 web-spike-rules: depth counter = estimated frame bytes, limit 256 KiB, same on every engine; see S4-3.
+- 2026-11-20 S4 web-spike-rules: instrumented modules export their start function and the host runs it; see S4-4.
+- 2026-11-20 S4 web-spike-rules: Chromium guest-code runs use --disable-features=WebAssemblyTrapHandler (VM renderer crash on OOB); needs S5/web on real devices; see S4-5.
+- 2026-11-20 S4 web-spike-rules: parity bundles = S1 bundles with script_entry rewritten to rules.wasm; see S4-6.
+- 2026-11-20 S4 web-spike-rules: hybrid allow-list keyed by SHA-256 of the committed rules.wasm; see S4-7.
+- 2026-11-20 S4 web-spike-rules (request, pin_assets owner): tests/hardening_round2.rs props::zip64_mutations expects TooManyEntries(count64 as usize) and fails on 32-bit targets (code saturates to usize::MAX); fix the test or carry u64 in TooManyEntries.
+- 2026-11-20 S4 web-spike-rules (request, pin_script/pin_sim owner, native): up to MAX_PENDING_EDGES = 512 switch edges per tick, each a fresh 100 000-fuel callback, so the per-tick script cost is bounded only by 513 x the per-callback budget; the 8 ms stall target was measured with one edge per tick. Decide a per-tick aggregate cap (very-high blast radius: changes untrusted-table semantics).

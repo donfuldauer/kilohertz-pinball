@@ -1,0 +1,2631 @@
+# SPIKE TOOLING ONLY (not for main): the s1_harness crate (record/playback/hash/bench/probes) and its Cargo.lock entry; needed to reproduce RESULTS.md
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2468,6 +2468,23 @@
+ ]
+ 
+ [[package]]
++name = "s1_harness"
++version = "0.1.0"
++dependencies = [
++ "arrayvec",
++ "glam",
++ "libm",
++ "pin_assetgen",
++ "pin_assets",
++ "pin_core",
++ "pin_physics",
++ "pin_script",
++ "pin_sim",
++ "pin_tablegen",
++ "wasm-bindgen",
++]
++
++[[package]]
+ name = "safe_arch"
+ version = "1.2.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+--- a/crates/s1_harness/Cargo.toml
++++ b/crates/s1_harness/Cargo.toml
+@@ -0,0 +1,42 @@
++[package]
++name = "s1_harness"
++description = "web-spike-sim (S1) harness: record native, replay native / wasip1 / wasm-bindgen, per-tick state hashes, timing and platform probes. Spike tooling, not a product crate."
++version = "0.1.0"
++edition.workspace = true
++rust-version.workspace = true
++publish = false
++license.workspace = true
++
++[lib]
++crate-type = ["rlib", "cdylib"]
++
++[[bin]]
++name = "s1"
++path = "src/bin/s1.rs"
++
++# The Feature Lab bundle builder: the pin_app example file itself, built here
++# without building pin_app's SDL3/wgpu dependencies.
++[[bin]]
++name = "s1_build_feature_lab"
++path = "../pin_app/examples/build_feature_lab.rs"
++required-features = ["native"]
++
++[features]
++default = []
++# Native recording with the real Lua rules (mlua + vendored C Lua).
++native = ["pin_sim/native-backends", "pin_script/native-backends", "dep:pin_tablegen", "dep:pin_assetgen"]
++
++[dependencies]
++pin_core.workspace = true
++pin_sim = { path = "../pin_sim", default-features = false }
++pin_script = { path = "../pin_script", default-features = false }
++pin_assets = { path = "../pin_assets" }
++arrayvec.workspace = true
++libm.workspace = true
++glam.workspace = true
++pin_physics = { path = "../pin_physics" }
++pin_tablegen = { path = "../pin_tablegen", optional = true }
++pin_assetgen = { path = "../pin_assetgen", optional = true }
++
++[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
++wasm-bindgen = "=0.2.130"
+--- a/crates/s1_harness/src/lib.rs
++++ b/crates/s1_harness/src/lib.rs
+@@ -0,0 +1,31 @@
++//! web-spike-sim (S1) harness. Spike tooling, not a product crate.
++//!
++//! * [`io`]: the scenario file (recorded bot operations, input events and
++//!   ball spawns per tick) and the script-output stream (per script step:
++//!   RNG draws, a digest of what the script saw, the command queue).
++//! * [`playback`]: an [`pin_sim::ExternalScript`] that replays a recorded
++//!   script-output stream, so the sim runs on targets without Lua/wasmtime.
++//! * `record` (feature `native`): wraps the real Lua backend and records
++//!   that stream.
++//! * [`driver`]: steps a [`Simulation`] through a scenario.
++//! * [`run`]: play / bench / alloc-check / dump, shared by the native and
++//!   wasip1 binary and the wasm-bindgen exports.
++//! * [`probes`]: platform probes (A6, A7, A28).
++
++pub mod driver;
++pub mod hashes;
++pub mod io;
++pub mod playback;
++pub mod probes;
++#[cfg(feature = "native")]
++pub mod record;
++pub mod run;
++#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++pub mod web;
++
++/// The counting allocator of pin_sim's allocation guard (D5 check on every
++/// target; it only counts inside a guard).
++#[global_allocator]
++static GLOBAL: pin_sim::alloc_guard::CountingAlloc = pin_sim::alloc_guard::CountingAlloc;
++
++pub use pin_sim::Simulation;
+--- a/crates/s1_harness/src/io.rs
++++ b/crates/s1_harness/src/io.rs
+@@ -0,0 +1,452 @@
++//! File formats of the harness (little-endian, FNV-1a 64 trailer).
++//!
++//! Scenario (`.scn`): magic `S1SCEN\0\0`, version u32 = 1, seed u64, table
++//! hash u64, ticks u64, op count u64, ops of 40 bytes: tick u64 (the tick
++//! the op belongs to: bot operations and spawns are applied before it,
++//! input events are fed with it), kind u8, code u8, 2 zero bytes, 28
++//! payload bytes; then the FNV-1a 64 of everything before.
++//!
++//! Script stream (`.scr`): magic `S1SCRPT\0`, version u32 = 1, step count
++//! u64, steps: tick u64 (0 = `on_init`), RNG draws u32 (`next_u32`
++//! equivalents), digest u64 (switch edges delivered then the `HostView` at
++//! `on_tick`), queue byte length u32, the encoded `HostCommandQueue`; then
++//! the FNV-1a 64 trailer.
++
++use pin_core::ids::{
++    CoilId, DispenserId, DiverterId, FlipperId, LampId, MagnetId, PersistKey, ProfileId, SceneId,
++    SoundId,
++};
++use pin_core::input::{CabinetAxis, CabinetInput, InputEvent, InputEventKind};
++use pin_core::{HostCommandQueue, HostView};
++use pin_sim::hash::{Fnv64, fnv1a64};
++use pin_sim::replay::GameOp;
++
++/// Scenario magic.
++pub const SCN_MAGIC: [u8; 8] = *b"S1SCEN\0\0";
++/// Script stream magic.
++pub const SCR_MAGIC: [u8; 8] = *b"S1SCRPT\0";
++/// Size of one scenario op.
++pub const OP_BYTES: usize = 40;
++
++/// One scenario operation.
++#[derive(Copy, Clone, Debug, PartialEq)]
++pub enum Op {
++    /// A recorded bot operation, applied before the tick.
++    Game(GameOp),
++    /// An input event fed with the tick.
++    Input(InputEvent),
++    /// A ball spawned through the test API before the tick.
++    Spawn {
++        /// Index in `BUILTIN_PROFILE_NAMES`.
++        profile: u16,
++        /// Collision layer.
++        layer: u8,
++        /// Centre, m.
++        pos: [f32; 3],
++        /// Velocity, m/s.
++        vel: [f32; 3],
++    },
++}
++
++/// A recorded scenario.
++#[derive(Clone, Debug, PartialEq, Default)]
++pub struct Scenario {
++    /// Sim seed.
++    pub seed: u64,
++    /// Table hash of the bundle.
++    pub table_hash: u64,
++    /// Ticks to run.
++    pub ticks: u64,
++    /// `(tick, op)`, ticks non-decreasing.
++    pub ops: Vec<(u64, Op)>,
++}
++
++fn put_f32s(p: &mut [u8], at: usize, v: [f32; 3]) {
++    for (i, x) in v.iter().enumerate() {
++        p[at + 4 * i..at + 4 * i + 4].copy_from_slice(&x.to_bits().to_le_bytes());
++    }
++}
++
++fn get_u64(b: &[u8], at: usize) -> u64 {
++    u64::from_le_bytes(b[at..at + 8].try_into().unwrap())
++}
++
++fn get_u32(b: &[u8], at: usize) -> u32 {
++    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
++}
++
++fn get_f32s(b: &[u8], at: usize) -> [f32; 3] {
++    [
++        f32::from_bits(get_u32(b, at)),
++        f32::from_bits(get_u32(b, at + 4)),
++        f32::from_bits(get_u32(b, at + 8)),
++    ]
++}
++
++fn check_trailer<'a>(b: &'a [u8], magic: &[u8; 8]) -> Result<&'a [u8], String> {
++    if b.len() < 20 || &b[..8] != magic {
++        return Err("bad magic".into());
++    }
++    let body = &b[..b.len() - 8];
++    if fnv1a64(body) != get_u64(b, b.len() - 8) {
++        return Err("checksum mismatch".into());
++    }
++    if get_u32(b, 8) != 1 {
++        return Err("unsupported version".into());
++    }
++    Ok(body)
++}
++
++impl Scenario {
++    /// File bytes.
++    #[must_use]
++    pub fn to_bytes(&self) -> Vec<u8> {
++        let mut out = Vec::with_capacity(44 + OP_BYTES * self.ops.len() + 8);
++        out.extend_from_slice(&SCN_MAGIC);
++        out.extend_from_slice(&1u32.to_le_bytes());
++        out.extend_from_slice(&self.seed.to_le_bytes());
++        out.extend_from_slice(&self.table_hash.to_le_bytes());
++        out.extend_from_slice(&self.ticks.to_le_bytes());
++        out.extend_from_slice(&(self.ops.len() as u64).to_le_bytes());
++        for (tick, op) in &self.ops {
++            let mut rec = [0u8; OP_BYTES];
++            rec[..8].copy_from_slice(&tick.to_le_bytes());
++            let p = 12;
++            match *op {
++                Op::Game(GameOp::SetSwitch { input, closed }) => {
++                    rec[8] = 0;
++                    rec[9] = input.index() as u8;
++                    rec[p] = u8::from(closed);
++                }
++                Op::Game(GameOp::ReleaseSwitch { input }) => {
++                    rec[8] = 1;
++                    rec[9] = input.index() as u8;
++                }
++                Op::Game(GameOp::Nudge { dv }) => {
++                    rec[8] = 2;
++                    put_f32s(&mut rec, p, dv);
++                }
++                Op::Input(e) => {
++                    rec[p..p + 8].copy_from_slice(&e.timestamp_ns.to_le_bytes());
++                    match e.kind {
++                        InputEventKind::Button { input, pressed } => {
++                            rec[8] = 3;
++                            rec[9] = input.index() as u8;
++                            rec[p + 8] = u8::from(pressed);
++                        }
++                        InputEventKind::Axis { axis, value } => {
++                            rec[8] = 4;
++                            rec[9] = CabinetAxis::ALL
++                                .iter()
++                                .position(|&a| a == axis)
++                                .unwrap_or(0) as u8;
++                            rec[p + 8..p + 12].copy_from_slice(&value.to_bits().to_le_bytes());
++                        }
++                    }
++                }
++                Op::Spawn {
++                    profile,
++                    layer,
++                    pos,
++                    vel,
++                } => {
++                    rec[8] = 5;
++                    rec[p..p + 2].copy_from_slice(&profile.to_le_bytes());
++                    rec[p + 2] = layer;
++                    put_f32s(&mut rec, p + 4, pos);
++                    put_f32s(&mut rec, p + 16, vel);
++                }
++            }
++            out.extend_from_slice(&rec);
++        }
++        let sum = fnv1a64(&out);
++        out.extend_from_slice(&sum.to_le_bytes());
++        out
++    }
++
++    /// Parses file bytes.
++    ///
++    /// # Errors
++    /// A message for malformed bytes.
++    pub fn from_bytes(b: &[u8]) -> Result<Scenario, String> {
++        let body = check_trailer(b, &SCN_MAGIC)?;
++        if body.len() < 44 {
++            return Err("short scenario".into());
++        }
++        let n = get_u64(body, 36) as usize;
++        if body.len() != 44 + n * OP_BYTES {
++            return Err("scenario length mismatch".into());
++        }
++        let mut ops = Vec::with_capacity(n);
++        for i in 0..n {
++            let r = &body[44 + i * OP_BYTES..44 + (i + 1) * OP_BYTES];
++            let tick = get_u64(r, 0);
++            let code = usize::from(r[9]);
++            let p = 12;
++            let input = || {
++                CabinetInput::ALL
++                    .get(code)
++                    .copied()
++                    .ok_or_else(|| format!("op {i}: bad input"))
++            };
++            let op = match r[8] {
++                0 => Op::Game(GameOp::SetSwitch {
++                    input: input()?,
++                    closed: r[p] != 0,
++                }),
++                1 => Op::Game(GameOp::ReleaseSwitch { input: input()? }),
++                2 => Op::Game(GameOp::Nudge { dv: get_f32s(r, p) }),
++                3 => Op::Input(InputEvent::button(get_u64(r, p), input()?, r[p + 8] != 0)),
++                4 => Op::Input(InputEvent::axis(
++                    get_u64(r, p),
++                    *CabinetAxis::ALL
++                        .get(code)
++                        .ok_or_else(|| format!("op {i}: bad axis"))?,
++                    f32::from_bits(get_u32(r, p + 8)),
++                )),
++                5 => Op::Spawn {
++                    profile: u16::from_le_bytes([r[p], r[p + 1]]),
++                    layer: r[p + 2],
++                    pos: get_f32s(r, p + 4),
++                    vel: get_f32s(r, p + 16),
++                },
++                k => return Err(format!("op {i}: bad kind {k}")),
++            };
++            ops.push((tick, op));
++        }
++        Ok(Scenario {
++            seed: get_u64(body, 12),
++            table_hash: get_u64(body, 20),
++            ticks: get_u64(body, 28),
++            ops,
++        })
++    }
++}
++
++/// Feeds a `HostView` into a digest.
++pub fn digest_view(h: &mut Fnv64, v: &HostView) {
++    h.write_u64(v.tick);
++    for w in v.switches {
++        h.write_u64(w);
++    }
++    h.write_u8(v.balls_in_play);
++    for p in v.persist {
++        h.write_i64(p);
++    }
++}
++
++/// Appends the encoding of `q`.
++pub fn encode_queue(q: &HostCommandQueue, out: &mut Vec<u8>) {
++    fn n(out: &mut Vec<u8>, len: usize) {
++        out.extend_from_slice(&(len as u16).to_le_bytes());
++    }
++    fn u16v(out: &mut Vec<u8>, v: u16) {
++        out.extend_from_slice(&v.to_le_bytes());
++    }
++    fn f(out: &mut Vec<u8>, v: f32) {
++        out.extend_from_slice(&v.to_bits().to_le_bytes());
++    }
++    n(out, q.coil_pulses.len());
++    for &(c, ms) in &q.coil_pulses {
++        u16v(out, c.0);
++        u16v(out, ms);
++    }
++    n(out, q.coil_holds.len());
++    for &(c, on) in &q.coil_holds {
++        u16v(out, c.0);
++        out.push(u8::from(on));
++    }
++    n(out, q.magnets.len());
++    for &(m, p) in &q.magnets {
++        u16v(out, m.0);
++        f(out, p);
++    }
++    n(out, q.zippers.len());
++    for &(z, on) in &q.zippers {
++        u16v(out, z.0);
++        out.push(u8::from(on));
++    }
++    n(out, q.diverters.len());
++    for &(d, on) in &q.diverters {
++        u16v(out, d.0);
++        out.push(u8::from(on));
++    }
++    n(out, q.ball_spawns.len());
++    for &(d, p) in &q.ball_spawns {
++        u16v(out, d.0);
++        u16v(out, p.0);
++    }
++    n(out, q.lamps.len());
++    for &(l, i) in &q.lamps {
++        u16v(out, l.0);
++        f(out, i);
++    }
++    match q.gi_tint {
++        Some(t) => {
++            out.push(1);
++            for v in t {
++                f(out, v);
++            }
++        }
++        None => out.push(0),
++    }
++    n(out, q.scores.len());
++    for &(p, s) in &q.scores {
++        out.push(p);
++        out.extend_from_slice(&s.to_le_bytes());
++    }
++    n(out, q.display_scenes.len());
++    for s in &q.display_scenes {
++        u16v(out, s.0);
++    }
++    n(out, q.sounds.len());
++    for &(s, g) in &q.sounds {
++        u16v(out, s.0);
++        f(out, g);
++    }
++    n(out, q.persist_writes.len());
++    for &(k, v) in &q.persist_writes {
++        u16v(out, k.0);
++        out.extend_from_slice(&v.to_le_bytes());
++    }
++}
++
++/// A bounds-checked little-endian reader (no allocation).
++pub struct Reader<'a> {
++    b: &'a [u8],
++    pos: usize,
++}
++
++impl<'a> Reader<'a> {
++    /// Reads `b` from `pos`.
++    #[must_use]
++    pub fn new(b: &'a [u8], pos: usize) -> Self {
++        Self { b, pos }
++    }
++    /// Current offset.
++    #[must_use]
++    pub fn pos(&self) -> usize {
++        self.pos
++    }
++    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
++        let s = self.b.get(self.pos..self.pos + n)?;
++        self.pos += n;
++        Some(s)
++    }
++    /// A byte.
++    pub fn u8(&mut self) -> Option<u8> {
++        self.take(1).map(|s| s[0])
++    }
++    /// A u16.
++    pub fn u16(&mut self) -> Option<u16> {
++        self.take(2).map(|s| u16::from_le_bytes([s[0], s[1]]))
++    }
++    /// A u32.
++    pub fn u32(&mut self) -> Option<u32> {
++        self.take(4)
++            .map(|s| u32::from_le_bytes(s.try_into().unwrap()))
++    }
++    /// A u64.
++    pub fn u64(&mut self) -> Option<u64> {
++        self.take(8)
++            .map(|s| u64::from_le_bytes(s.try_into().unwrap()))
++    }
++    /// An f32 by bits.
++    pub fn f32(&mut self) -> Option<f32> {
++        self.u32().map(f32::from_bits)
++    }
++}
++
++/// Decodes a queue written by [`encode_queue`] into `q` (cleared first; no
++/// allocation: every list is fixed-capacity).
++pub fn decode_queue(r: &mut Reader<'_>, q: &mut HostCommandQueue) -> Option<()> {
++    q.clear();
++    for _ in 0..r.u16()? {
++        q.pulse_coil(CoilId(r.u16()?), r.u16()?).ok()?;
++    }
++    for _ in 0..r.u16()? {
++        q.hold_coil(CoilId(r.u16()?), r.u8()? != 0).ok()?;
++    }
++    for _ in 0..r.u16()? {
++        q.set_magnet(MagnetId(r.u16()?), r.f32()?).ok()?;
++    }
++    for _ in 0..r.u16()? {
++        q.set_zipper(FlipperId(r.u16()?), r.u8()? != 0).ok()?;
++    }
++    for _ in 0..r.u16()? {
++        q.set_diverter(DiverterId(r.u16()?), r.u8()? != 0).ok()?;
++    }
++    for _ in 0..r.u16()? {
++        q.spawn_ball(DispenserId(r.u16()?), ProfileId(r.u16()?))
++            .ok()?;
++    }
++    for _ in 0..r.u16()? {
++        q.set_lamp(LampId(r.u16()?), r.f32()?).ok()?;
++    }
++    if r.u8()? == 1 {
++        q.set_gi_tint([r.f32()?, r.f32()?, r.f32()?, r.f32()?]);
++    }
++    for _ in 0..r.u16()? {
++        let p = r.u8()?;
++        q.set_score(p, r.u64()? as i64).ok()?;
++    }
++    for _ in 0..r.u16()? {
++        q.show_scene(SceneId(r.u16()?)).ok()?;
++    }
++    for _ in 0..r.u16()? {
++        q.play_sound(SoundId(r.u16()?), r.f32()?).ok()?;
++    }
++    for _ in 0..r.u16()? {
++        let k = PersistKey(r.u16()?);
++        q.write_persist(k, r.u64()? as i64).ok()?;
++    }
++    Some(())
++}
++
++/// Writes a script-output stream.
++#[derive(Debug, Default)]
++pub struct ScriptStreamWriter {
++    body: Vec<u8>,
++    steps: u64,
++    scratch: Vec<u8>,
++}
++
++impl ScriptStreamWriter {
++    /// Appends one script step.
++    pub fn step(&mut self, tick: u64, draws: u32, digest: u64, q: &HostCommandQueue) {
++        self.scratch.clear();
++        if !q.is_empty() {
++            encode_queue(q, &mut self.scratch);
++        }
++        self.body.extend_from_slice(&tick.to_le_bytes());
++        self.body.extend_from_slice(&draws.to_le_bytes());
++        self.body.extend_from_slice(&digest.to_le_bytes());
++        self.body
++            .extend_from_slice(&(self.scratch.len() as u32).to_le_bytes());
++        self.body.extend_from_slice(&self.scratch);
++        self.steps += 1;
++    }
++
++    /// The file bytes.
++    #[must_use]
++    pub fn to_bytes(&self) -> Vec<u8> {
++        let mut out = Vec::with_capacity(20 + self.body.len() + 8);
++        out.extend_from_slice(&SCR_MAGIC);
++        out.extend_from_slice(&1u32.to_le_bytes());
++        out.extend_from_slice(&self.steps.to_le_bytes());
++        out.extend_from_slice(&self.body);
++        let sum = fnv1a64(&out);
++        out.extend_from_slice(&sum.to_le_bytes());
++        out
++    }
++}
++
++/// Validates a script stream; returns (steps, offset of the first step,
++/// end of the body).
++///
++/// # Errors
++/// A message for malformed bytes.
++pub fn check_script_stream(b: &[u8]) -> Result<(u64, usize, usize), String> {
++    let body = check_trailer(b, &SCR_MAGIC)?;
++    Ok((get_u64(body, 12), 20, body.len()))
++}
+--- a/crates/s1_harness/src/playback.rs
++++ b/crates/s1_harness/src/playback.rs
+@@ -0,0 +1,179 @@
++//! Replays a recorded script-output stream as a rules backend.
++//!
++//! Per script step it checks that the script would have seen the same
++//! switch edges and `HostView` as in the recording (digest), advances the
++//! sim's `Pcg32` by the recorded number of draws and writes the recorded
++//! command queue. Nothing allocates in the callbacks.
++
++use crate::io::{Reader, check_script_stream, decode_queue, digest_view};
++use pin_core::ids::SwitchId;
++use pin_core::{HostCtx, ScriptError, SwitchEdge, TableScriptBackend};
++use pin_sim::ExternalScript;
++use pin_sim::hash::Fnv64;
++use std::sync::Arc;
++use std::sync::atomic::{AtomicU64, Ordering};
++
++/// Status shared with the driver (atomics: readable after the sim owns the
++/// backend, no allocation on update).
++#[derive(Debug)]
++pub struct PlaybackStatus {
++    /// First tick whose digest differed from the recording (`u64::MAX`:
++    /// none).
++    pub first_mismatch: AtomicU64,
++    /// Steps whose digest differed.
++    pub mismatches: AtomicU64,
++    /// Steps played.
++    pub steps: AtomicU64,
++    /// Steps requested after the stream ended or with a bad record.
++    pub exhausted: AtomicU64,
++}
++
++impl Default for PlaybackStatus {
++    fn default() -> Self {
++        Self {
++            first_mismatch: AtomicU64::new(u64::MAX),
++            mismatches: AtomicU64::new(0),
++            steps: AtomicU64::new(0),
++            exhausted: AtomicU64::new(0),
++        }
++    }
++}
++
++impl PlaybackStatus {
++    /// First mismatching tick, if any.
++    #[must_use]
++    pub fn first_mismatch(&self) -> Option<u64> {
++        let t = self.first_mismatch.load(Ordering::Relaxed);
++        (t != u64::MAX).then_some(t)
++    }
++}
++
++/// The playback backend.
++pub struct PlaybackScript {
++    data: Vec<u8>,
++    pos: usize,
++    end: usize,
++    left: u64,
++    digest: Fnv64,
++    fresh: bool,
++    status: Arc<PlaybackStatus>,
++}
++
++impl PlaybackScript {
++    /// A backend over the stream bytes `data`.
++    ///
++    /// # Errors
++    /// A message for a malformed stream.
++    pub fn new(data: Vec<u8>) -> Result<(Self, Arc<PlaybackStatus>), String> {
++        let (steps, pos, end) = check_script_stream(&data)?;
++        let status = Arc::new(PlaybackStatus::default());
++        Ok((
++            Self {
++                data,
++                pos,
++                end,
++                left: steps,
++                digest: Fnv64::new(),
++                fresh: true,
++                status: Arc::clone(&status),
++            },
++            status,
++        ))
++    }
++
++    fn play_step(&mut self, ctx: &mut HostCtx) {
++        if self.fresh {
++            self.digest = Fnv64::new();
++        }
++        self.fresh = true;
++        digest_view(&mut self.digest, ctx.view);
++        let got = self.digest.finish();
++        if self.left == 0 {
++            self.status.exhausted.fetch_add(1, Ordering::Relaxed);
++            return;
++        }
++        let mut r = Reader::new(&self.data[..self.end], self.pos);
++        let step = (|| {
++            let tick = r.u64()?;
++            let draws = r.u32()?;
++            let digest = r.u64()?;
++            let len = r.u32()? as usize;
++            let qstart = r.pos();
++            if len > 0 {
++                decode_queue(&mut r, ctx.cmd)?;
++                if r.pos() != qstart + len {
++                    return None;
++                }
++            }
++            Some((tick, draws, digest, qstart + len))
++        })();
++        let Some((tick, draws, digest, next)) = step else {
++            self.status.exhausted.fetch_add(1, Ordering::Relaxed);
++            self.left = 0;
++            return;
++        };
++        self.pos = next;
++        self.left -= 1;
++        self.status.steps.fetch_add(1, Ordering::Relaxed);
++        if digest != got || tick != ctx.view.tick {
++            self.status.mismatches.fetch_add(1, Ordering::Relaxed);
++            let _ = self.status.first_mismatch.compare_exchange(
++                u64::MAX,
++                ctx.view.tick,
++                Ordering::Relaxed,
++                Ordering::Relaxed,
++            );
++        }
++        ctx.rng.advance(u64::from(draws));
++    }
++}
++
++impl TableScriptBackend for PlaybackScript {
++    fn on_init(&mut self, ctx: &mut HostCtx) {
++        self.fresh = true;
++        self.play_step(ctx);
++    }
++
++    fn on_tick(&mut self, ctx: &mut HostCtx) {
++        self.play_step(ctx);
++    }
++
++    fn on_switch_edge(&mut self, switch: SwitchId, edge: SwitchEdge, _ctx: &mut HostCtx) {
++        if self.fresh {
++            self.digest = Fnv64::new();
++            self.fresh = false;
++        }
++        self.digest.write_u32(u32::from(switch.0));
++        self.digest.write_u8(u8::from(edge == SwitchEdge::Closed));
++    }
++
++    fn apply_reload(&mut self, _source: &[u8]) -> Result<(), ScriptError> {
++        Err(ScriptError::Load("playback backend cannot reload".into()))
++    }
++}
++
++impl ExternalScript for PlaybackScript {}
++
++/// A backend that panics in `on_tick` of tick `at` (A7 probe: a panic
++/// raised inside `step_1ms`).
++pub struct PanicScript {
++    /// Tick to panic at.
++    pub at: u64,
++}
++
++impl TableScriptBackend for PanicScript {
++    fn on_init(&mut self, _ctx: &mut HostCtx) {}
++    fn on_tick(&mut self, ctx: &mut HostCtx) {
++        assert!(
++            ctx.view.tick != self.at,
++            "s1 probe: deliberate panic inside step_1ms at tick {}",
++            self.at
++        );
++    }
++    fn on_switch_edge(&mut self, _s: SwitchId, _e: SwitchEdge, _ctx: &mut HostCtx) {}
++    fn apply_reload(&mut self, _source: &[u8]) -> Result<(), ScriptError> {
++        Ok(())
++    }
++}
++
++impl ExternalScript for PanicScript {}
+--- a/crates/s1_harness/src/record.rs
++++ b/crates/s1_harness/src/record.rs
+@@ -0,0 +1,434 @@
++//! Native recording with the real Lua rules (feature `native`).
++//!
++//! [`RecordingScript`] wraps the engine's [`LuaScriptBackend`] (built with
++//! exactly the arguments `pin_sim`'s own loader uses) and writes the
++//! script-output stream; the scenario records the bot operations, input
++//! events and spawns. The recorder also writes the per-tick hashes of this
++//! real-Lua run and, for bot scenarios, the repo's own [`GameRecording`]
++//! so `pin_sim --replay-game` can cross-check the final hash.
++
++use crate::driver::Driver;
++use crate::io::{Op, Scenario, ScriptStreamWriter, digest_view};
++use crate::run::Every;
++use pin_core::ids::SwitchId;
++use pin_core::input::{CabinetInput, InputEvent};
++use pin_core::sim::TICK_NS;
++use pin_core::{HostCtx, Pcg32, Rng, ScriptError, SwitchEdge, TableScriptBackend};
++use pin_script::lua::{LuaConfig, LuaScriptBackend};
++use pin_sim::autoplay::{Bot, SkillLevel, SoakConfig, TableInfo, bot_seed, game_seed};
++use pin_sim::hash::Fnv64;
++use pin_sim::replay::{GameOp, GameOpSink, GameRecording};
++use pin_sim::{ExternalScript, SimConfig, Simulation};
++use std::path::Path;
++use std::sync::{Arc, Mutex};
++
++/// Largest number of `next_u32` draws one script step may make.
++pub const MAX_DRAWS: u32 = 1 << 24;
++
++fn count_draws(pre: &Pcg32, post: &Pcg32) -> u32 {
++    let mut r = pre.clone();
++    for n in 0..MAX_DRAWS {
++        if r == *post {
++            return n;
++        }
++        let _ = r.next_u32();
++    }
++    panic!("script made more than {MAX_DRAWS} RNG draws in one step");
++}
++
++/// The Lua backend plus a stream recorder.
++pub struct RecordingScript {
++    inner: Box<LuaScriptBackend>,
++    out: Arc<Mutex<ScriptStreamWriter>>,
++    pre: Option<Pcg32>,
++    digest: Fnv64,
++    fresh: bool,
++}
++
++impl RecordingScript {
++    fn begin(&mut self, ctx: &HostCtx) {
++        if self.fresh {
++            self.pre = Some(ctx.rng.clone());
++            self.digest = Fnv64::new();
++            self.fresh = false;
++        }
++    }
++
++    fn end(&mut self, ctx: &HostCtx) {
++        digest_view(&mut self.digest, ctx.view);
++        let pre = self.pre.take().expect("begin ran");
++        let draws = count_draws(&pre, ctx.rng);
++        self.out
++            .lock()
++            .unwrap()
++            .step(ctx.view.tick, draws, self.digest.finish(), ctx.cmd);
++        self.fresh = true;
++    }
++}
++
++impl TableScriptBackend for RecordingScript {
++    fn on_init(&mut self, ctx: &mut HostCtx) {
++        self.begin(ctx);
++        self.inner.on_init(ctx);
++        self.end(ctx);
++    }
++
++    fn on_tick(&mut self, ctx: &mut HostCtx) {
++        self.begin(ctx);
++        self.inner.on_tick(ctx);
++        self.end(ctx);
++    }
++
++    fn on_switch_edge(&mut self, switch: SwitchId, edge: SwitchEdge, ctx: &mut HostCtx) {
++        self.begin(ctx);
++        self.digest.write_u32(u32::from(switch.0));
++        self.digest.write_u8(u8::from(edge == SwitchEdge::Closed));
++        self.inner.on_switch_edge(switch, edge, ctx);
++    }
++
++    fn apply_reload(&mut self, source: &[u8]) -> Result<(), ScriptError> {
++        self.inner.apply_reload(source)
++    }
++}
++
++impl ExternalScript for RecordingScript {
++    fn overflow_count(&self) -> u32 {
++        self.inner.overflow_count()
++    }
++    fn is_faulted(&self) -> bool {
++        self.inner.is_faulted()
++    }
++    fn fault_count(&self) -> u32 {
++        self.inner.fault_count()
++    }
++    fn last_error(&self) -> Option<&ScriptError> {
++        self.inner.last_error()
++    }
++    fn alloc_exempt(&self) -> bool {
++        true
++    }
++}
++
++/// A recorded scenario and its outputs.
++pub struct Recorded {
++    /// The scenario.
++    pub scenario: Scenario,
++    /// The script-output stream bytes.
++    pub script: Vec<u8>,
++    /// The bot operations in the repo's format (bot scenarios).
++    pub game: Option<GameRecording>,
++    /// Hash lines of the real-Lua run.
++    pub hashes: Vec<u8>,
++    /// Summary.
++    pub summary: String,
++}
++
++fn load_recording(
++    bundle_zip: &[u8],
++    seed: u64,
++) -> Result<(Simulation, Arc<Mutex<ScriptStreamWriter>>), String> {
++    let vfs = crate::run::open_bundle(bundle_zip)?;
++    let out = Arc::new(Mutex::new(ScriptStreamWriter::default()));
++    let o2 = Arc::clone(&out);
++    let cfg = SimConfig {
++        seed,
++        ..SimConfig::default()
++    };
++    let lua = cfg.lua;
++    let sim = Simulation::load_from_vfs_with_script(&vfs, cfg, &mut |entry, src, names| {
++        if !entry.ends_with(".lua") {
++            return Err(ScriptError::UnsupportedBackend(entry.to_owned()));
++        }
++        Ok(Box::new(RecordingScript {
++            inner: Box::new(LuaScriptBackend::new(src, names, lua)?),
++            out: Arc::clone(&o2),
++            pre: None,
++            digest: Fnv64::new(),
++            fresh: true,
++        }) as Box<dyn ExternalScript>)
++    })
++    .map_err(|e| e.to_string())?;
++    let _: LuaConfig = lua;
++    Ok((sim, out))
++}
++
++fn line(out: &mut Vec<u8>, sim: &Simulation) {
++    out.extend_from_slice(
++        format!(
++            "{} {:016x} {:016x}\n",
++            sim.tick(),
++            sim.state_hash(),
++            crate::hashes::ext_hash(sim)
++        )
++        .as_bytes(),
++    );
++}
++
++struct Sink<'a> {
++    ops: &'a mut Vec<(u64, Op)>,
++    game: &'a mut GameRecording,
++}
++
++impl GameOpSink for Sink<'_> {
++    fn op(&mut self, tick: u64, op: GameOp) {
++        self.ops.push((tick, Op::Game(op)));
++        self.game.ops.push((tick, op));
++    }
++}
++
++/// Records `ticks` ticks of autoplay bot games on `bundle_zip`
++/// (`bundle_path` for the bot's table info): game 0 of the soak seed
++/// `seed`, then a fresh bot (next game seed) whenever a game ends (5 s
++/// without a ball after one was seen, or 10 s without any ball), so the
++/// run can be longer than one game.
++///
++/// # Errors
++/// Load failures.
++pub fn record_bot(
++    bundle_path: &Path,
++    bundle_zip: &[u8],
++    seed: u64,
++    ticks: u64,
++    skill: SkillLevel,
++    every: Every,
++) -> Result<Recorded, String> {
++    let info = TableInfo::load(bundle_path).map_err(|e| e.to_string())?;
++    let soak = SoakConfig::default();
++    let sim_seed = game_seed(seed, 0);
++    let (mut sim, out) = load_recording(bundle_zip, sim_seed)?;
++    let mut ops = Vec::new();
++    let mut game = GameRecording {
++        seed: sim_seed,
++        table_hash: sim.table_hash(),
++        ticks,
++        ops: Vec::new(),
++    };
++    let new_bot = |g: u32| {
++        Bot::new(bot_seed(game_seed(seed, g)), skill)
++            .with_table(&info)
++            .with_config(soak.bot)
++    };
++    let mut g = 0u32;
++    let mut bot = new_bot(g);
++    let (mut idle, mut bot_start) = (0u64, 0u64);
++    let mut hashes = Vec::new();
++    line(&mut hashes, &sim);
++    let mut max_balls = 0;
++    while sim.tick() < ticks {
++        bot.tick_recorded(
++            &mut sim,
++            &mut Sink {
++                ops: &mut ops,
++                game: &mut game,
++            },
++        );
++        sim.advance(1);
++        max_balls = max_balls.max(sim.balls_in_play());
++        if every.wants(sim.tick(), ticks) {
++            line(&mut hashes, &sim);
++        }
++        idle = if sim.balls_in_play() == 0 {
++            idle + 1
++        } else {
++            0
++        };
++        let over = bot.seen_ball() && idle >= soak.idle_end_ticks;
++        let no_ball = !bot.seen_ball()
++            && sim.balls_in_play() == 0
++            && sim.tick() - bot_start >= soak.start_timeout_ticks;
++        if over || no_ball {
++            g += 1;
++            bot = new_bot(g);
++            idle = 0;
++            bot_start = sim.tick();
++        }
++    }
++    let summary = format!(
++        "bot games started={} ticks={} state_hash={:016x} score={:?} max_balls={} script_faults={} overflows={}",
++        g + 1,
++        sim.tick(),
++        sim.state_hash(),
++        sim.score(0),
++        max_balls,
++        sim.script_fault_count(),
++        sim.script_queue_overflows()
++    );
++    let script = out.lock().unwrap().to_bytes();
++    Ok(Recorded {
++        scenario: Scenario {
++            seed: sim_seed,
++            table_hash: sim.table_hash(),
++            ticks,
++            ops,
++        },
++        script,
++        game: Some(game),
++        hashes,
++        summary,
++    })
++}
++
++/// `pin_sim`'s built-in input pattern ([`pin_sim::cli::pattern_events`])
++/// plus a launch press of 300 ms every 5 s (from tick 2000), so served
++/// balls enter play.
++pub fn pattern_with_launch(tick: u64, out: &mut Vec<InputEvent>) {
++    pin_sim::cli::pattern_events(tick, out);
++    let ts = tick.saturating_sub(1) * TICK_NS + TICK_NS / 2;
++    match tick % 5000 {
++        2000 => out.push(InputEvent::button(ts, CabinetInput::Launch, true)),
++        2300 => out.push(InputEvent::button(ts, CabinetInput::Launch, false)),
++        _ => {}
++    }
++}
++
++/// Spawn positions of the multiball scenario: a 4 x 4 grid over the upper
++/// playfield (table frame, m), 2 mm above resting height, rolling down.
++#[must_use]
++pub fn grid_spawns(n: usize) -> Vec<Op> {
++    (0..n)
++        .map(|i| {
++            let (col, row) = ((i % 4) as f32, (i / 4) as f32);
++            Op::Spawn {
++                profile: 0,
++                layer: 0,
++                pos: [0.12 + 0.09 * col, 0.62 + 0.07 * row, 0.0155],
++                vel: [0.15 * (col - 1.5), -0.4, 0.0],
++            }
++        })
++        .collect()
++}
++
++/// Records `ticks` ticks of [`pattern_with_launch`] input (or, without
++/// `launch`, exactly `pin_sim --ticks`'s built-in pattern), with `spawns`
++/// balls spawned before tick 1.
++///
++/// # Errors
++/// Load failures.
++pub fn record_pattern(
++    bundle_zip: &[u8],
++    seed: u64,
++    ticks: u64,
++    spawns: usize,
++    launch: bool,
++    every: Every,
++) -> Result<Recorded, String> {
++    let (mut sim, out) = load_recording(bundle_zip, seed)?;
++    let mut ops: Vec<(u64, Op)> = grid_spawns(spawns).into_iter().map(|o| (1, o)).collect();
++    let mut ev = Vec::new();
++    for t in 1..=ticks {
++        ev.clear();
++        if launch {
++            pattern_with_launch(t, &mut ev);
++        } else {
++            pin_sim::cli::pattern_events(t, &mut ev);
++        }
++        ops.extend(ev.iter().map(|e| (t, Op::Input(*e))));
++    }
++    let scenario = Scenario {
++        seed,
++        table_hash: sim.table_hash(),
++        ticks,
++        ops,
++    };
++    let mut drv = Driver::new(&scenario);
++    let mut hashes = Vec::new();
++    line(&mut hashes, &sim);
++    let mut max_balls = 0;
++    while sim.tick() < ticks {
++        drv.advance(&mut sim)?;
++        max_balls = max_balls.max(sim.balls_in_play());
++        if every.wants(sim.tick(), ticks) {
++            line(&mut hashes, &sim);
++        }
++    }
++    let summary = format!(
++        "pattern spawns={spawns} ticks={} state_hash={:016x} score={:?} max_balls={} script_faults={} overflows={}",
++        sim.tick(),
++        sim.state_hash(),
++        sim.score(0),
++        max_balls,
++        sim.script_fault_count(),
++        sim.script_queue_overflows()
++    );
++    let script = out.lock().unwrap().to_bytes();
++    Ok(Recorded {
++        scenario,
++        script,
++        game: None,
++        hashes,
++        summary,
++    })
++}
++
++/// Runs `scn` through the repo's own loader and built-in Lua backend
++/// (`Simulation::load`, no wrapper); returns the hash lines. Shows the
++/// wrapper and the playback reproduce the engine's real path.
++///
++/// # Errors
++/// Load and scenario failures.
++pub fn run_builtin(bundle_path: &Path, scn: &Scenario, every: Every) -> Result<Vec<u8>, String> {
++    let mut sim = Simulation::load(
++        bundle_path,
++        SimConfig {
++            seed: scn.seed,
++            ..SimConfig::default()
++        },
++    )
++    .map_err(|e| e.to_string())?;
++    if sim.table_hash() != scn.table_hash {
++        return Err(format!(
++            "folder table hash {:016x} differs from the scenario's (zip) {:016x}",
++            sim.table_hash(),
++            scn.table_hash
++        ));
++    }
++    let mut drv = Driver::new(scn);
++    let mut hashes = Vec::new();
++    line(&mut hashes, &sim);
++    while sim.tick() < scn.ticks {
++        drv.advance(&mut sim)?;
++        if every.wants(sim.tick(), scn.ticks) {
++            line(&mut hashes, &sim);
++        }
++    }
++    Ok(hashes)
++}
++
++/// Per-tick cost with the engine's real Lua backend (`Simulation::load`,
++/// no wrapper, no hashing): JSON with mean/p50/p99/p99.9/max after
++/// `warmup` ticks. Context for the playback-backend numbers.
++///
++/// # Errors
++/// Load and scenario failures.
++pub fn bench_builtin(bundle_path: &Path, scn: &Scenario, warmup: u64) -> Result<String, String> {
++    let mut sim = Simulation::load(
++        bundle_path,
++        SimConfig {
++            seed: scn.seed,
++            ..SimConfig::default()
++        },
++    )
++    .map_err(|e| e.to_string())?;
++    let mut drv = Driver::new(scn);
++    let mut v = Vec::with_capacity(scn.ticks as usize);
++    let epoch = std::time::Instant::now();
++    while sim.tick() < scn.ticks {
++        let t = drv.prepare(&mut sim)?;
++        let t0 = epoch.elapsed().as_nanos() as f64;
++        drv.step(&mut sim, t);
++        let t1 = epoch.elapsed().as_nanos() as f64;
++        if t > warmup {
++            v.push(t1 - t0);
++        }
++    }
++    let st = crate::run::Stats::of(&mut v);
++    Ok(format!(
++        "{{\"lua_per_tick_steady\":{{\"n\":{},\"mean_us\":{:.3},\"p50_us\":{:.3},\"p99_us\":{:.3},\"p999_us\":{:.3},\"max_us\":{:.3}}}}}",
++        st.n,
++        st.mean / 1e3,
++        st.p50 / 1e3,
++        st.p99 / 1e3,
++        st.p999 / 1e3,
++        st.max / 1e3
++    ))
++}
+--- a/crates/s1_harness/src/driver.rs
++++ b/crates/s1_harness/src/driver.rs
+@@ -0,0 +1,90 @@
++//! Steps a [`Simulation`] through a [`Scenario`].
++
++use crate::io::{Op, Scenario};
++use arrayvec::ArrayVec;
++use pin_core::input::InputEvent;
++use pin_core::profiles::BUILTIN_PROFILE_NAMES;
++use pin_core::sim::SimStep;
++use pin_core::snapshot::FrameStateSnapshot;
++use pin_sim::Simulation;
++use pin_sim::replay::apply_game_op;
++
++/// Most input events fed with one tick.
++pub const MAX_INPUTS_PER_TICK: usize = 128;
++
++/// A scenario cursor.
++pub struct Driver {
++    ops: Vec<(u64, Op)>,
++    next: usize,
++    inputs: ArrayVec<InputEvent, MAX_INPUTS_PER_TICK>,
++    out: FrameStateSnapshot,
++    /// Ticks to run.
++    pub ticks: u64,
++}
++
++impl Driver {
++    /// A driver for `scn`.
++    #[must_use]
++    pub fn new(scn: &Scenario) -> Self {
++        Self {
++            ops: scn.ops.clone(),
++            next: 0,
++            inputs: ArrayVec::new(),
++            out: FrameStateSnapshot::default(),
++            ticks: scn.ticks,
++        }
++    }
++
++    /// Applies the bot operations and spawns recorded before the next tick
++    /// and collects its input events; returns the tick number.
++    ///
++    /// # Errors
++    /// A message when an operation fails or a tick has too many inputs.
++    pub fn prepare(&mut self, sim: &mut Simulation) -> Result<u64, String> {
++        let tick = sim.tick() + 1;
++        self.inputs.clear();
++        while self.next < self.ops.len() && self.ops[self.next].0 <= tick {
++            let (t, op) = self.ops[self.next];
++            self.next += 1;
++            if t < tick {
++                continue;
++            }
++            match op {
++                Op::Game(g) => apply_game_op(sim, g).map_err(|e| e.to_string())?,
++                Op::Input(e) => self
++                    .inputs
++                    .try_push(e)
++                    .map_err(|_| format!("tick {tick}: more than {MAX_INPUTS_PER_TICK} inputs"))?,
++                Op::Spawn {
++                    profile,
++                    layer,
++                    pos,
++                    vel,
++                } => {
++                    let name = BUILTIN_PROFILE_NAMES
++                        .get(usize::from(profile))
++                        .ok_or("bad profile")?;
++                    // A full arena or a spawn inside geometry is part of
++                    // the recorded scenario; ignore failures alike.
++                    let _ = sim.spawn_ball_on_layer(name, layer, pos, vel);
++                }
++            }
++        }
++        Ok(tick)
++    }
++
++    /// Runs tick `tick` (from [`prepare`](Self::prepare)) with its inputs.
++    pub fn step(&mut self, sim: &mut Simulation, tick: u64) {
++        sim.step_1ms(tick, &self.inputs, &mut self.out);
++    }
++
++    /// [`prepare`](Self::prepare) then [`step`](Self::step).
++    ///
++    /// # Errors
++    /// As [`prepare`](Self::prepare).
++    pub fn advance(&mut self, sim: &mut Simulation) -> Result<u64, String> {
++        let t = self.prepare(sim)?;
++        self.step(sim, t);
++        Ok(t)
++    }
++}
+--- a/crates/s1_harness/src/hashes.rs
++++ b/crates/s1_harness/src/hashes.rs
+@@ -0,0 +1,107 @@
++//! Per-tick hashes: the repo's [`Simulation::state_hash`] plus a stronger
++//! supplementary hash over everything else the sim publishes.
++
++use pin_sim::Simulation;
++use pin_sim::hash::Fnv64;
++
++/// FNV-1a 64 over: `state_hash`; the full published snapshot (every ball,
++/// flipper incl. zipper offset, dynamic mesh transform, lamp and GI value as
++/// exact bits); each ball's magnetisation; the sim counters; the 64
++/// persistent values; the last applied command queue; the haptic events.
++/// It covers what `state_hash` leaves out (mechs, magnetisation, lamps,
++/// persist, command queue).
++#[must_use]
++pub fn ext_hash(sim: &Simulation) -> u64 {
++    let mut h = Fnv64::new();
++    h.write_u64(sim.state_hash());
++    let s = sim.snapshot();
++    h.write_u64(s.tick);
++    h.write_u8(s.ball_count);
++    for b in s.balls() {
++        for v in b
++            .position_m
++            .iter()
++            .chain(&b.velocity_m_s)
++            .chain(&b.angular_velocity_rad_s)
++        {
++            h.write_f32(*v);
++        }
++        for v in b.orientation {
++            h.write_f32(v);
++        }
++        h.write_u32(u32::from(b.profile.0));
++        h.write_u8(b.layer);
++    }
++    for f in s.flippers() {
++        h.write_u32(u32::from(f.id.0));
++        h.write_f32(f.angle_rad);
++        h.write_f32(f.angular_velocity_rad_s);
++        h.write_f32(f.zipper_offset_m);
++    }
++    for m in s.dynamic_meshes() {
++        for v in m.position_m.iter().chain(&m.orientation) {
++            h.write_f32(*v);
++        }
++    }
++    for l in s.lamps {
++        h.write_f32(l);
++    }
++    for g in s.gi {
++        h.write_f32(g);
++    }
++    for bh in sim.ball_handles() {
++        h.write_f32(sim.magnetisation(bh));
++    }
++    let c = sim.counters();
++    for v in [
++        c.edges_dropped,
++        c.haptics_dropped,
++        c.inputs_dropped,
++        c.spawns_failed,
++        c.ball_events_dropped,
++        c.balls_drained,
++        c.balls_escaped,
++    ] {
++        h.write_u32(v);
++    }
++    for k in 0..64u16 {
++        h.write_i64(sim.persist(k));
++    }
++    let q = sim.last_commands();
++    for &(c, ms) in &q.coil_pulses {
++        h.write_u32(u32::from(c.0) << 16 | u32::from(ms));
++    }
++    h.write_u8(0xA0);
++    for &(c, on) in &q.coil_holds {
++        h.write_u32(u32::from(c.0) << 1 | u32::from(on));
++    }
++    h.write_u8(0xA1);
++    for &(m, p) in &q.magnets {
++        h.write_u32(u32::from(m.0));
++        h.write_f32(p);
++    }
++    h.write_u8(0xA2);
++    for &(l, i) in &q.lamps {
++        h.write_u32(u32::from(l.0));
++        h.write_f32(i);
++    }
++    h.write_u8(0xA3);
++    for &(p, s) in &q.scores {
++        h.write_u8(p);
++        h.write_i64(s);
++    }
++    h.write_u8(0xA4);
++    for s in &q.display_scenes {
++        h.write_u32(u32::from(s.0));
++    }
++    for &(s, g) in &q.sounds {
++        h.write_u32(u32::from(s.0));
++        h.write_f32(g);
++    }
++    for e in sim.haptic_events() {
++        h.write_u64(e.tick);
++        h.write_u32(u32::from(e.source));
++        h.write_f32(e.strength);
++    }
++    h.finish()
++}
+--- a/crates/s1_harness/src/run.rs
++++ b/crates/s1_harness/src/run.rs
+@@ -0,0 +1,487 @@
++//! Play, bench, alloc-check and dump: shared by the native/wasip1 binary
++//! and the wasm-bindgen exports.
++
++use crate::driver::Driver;
++use crate::hashes::ext_hash;
++use crate::io::Scenario;
++use crate::playback::{PlaybackScript, PlaybackStatus};
++use pin_assets::{Vfs, ZipLimits};
++use pin_sim::{ExternalScript, SimConfig, Simulation};
++use std::fmt::Write as _;
++use std::sync::Arc;
++
++/// Opens a zipped bundle from memory (the web path: no file system).
++///
++/// # Errors
++/// The asset error text.
++pub fn open_bundle(bundle_zip: &[u8]) -> Result<Vfs, String> {
++    Vfs::from_zip_bytes(bundle_zip.to_vec(), ZipLimits::default()).map_err(|e| e.to_string())
++}
++
++/// Loads `bundle_zip` with the scenario's seed and a playback backend over
++/// `scr`; checks the table hash.
++///
++/// # Errors
++/// Load failures and a table-hash mismatch.
++pub fn load_playback(
++    bundle_zip: &[u8],
++    scn: &Scenario,
++    scr: Vec<u8>,
++) -> Result<(Simulation, Arc<PlaybackStatus>), String> {
++    let vfs = open_bundle(bundle_zip)?;
++    let (script, status) = PlaybackScript::new(scr)?;
++    let mut slot = Some(script);
++    let sim = Simulation::load_from_vfs_with_script(
++        &vfs,
++        SimConfig {
++            seed: scn.seed,
++            ..SimConfig::default()
++        },
++        &mut |_entry, _src, _names| {
++            let s = slot.take().expect("factory called once");
++            Ok(Box::new(s) as Box<dyn ExternalScript>)
++        },
++    )
++    .map_err(|e| e.to_string())?;
++    if sim.table_hash() != scn.table_hash {
++        return Err(format!(
++            "table hash {:016x} is not the scenario's {:016x}",
++            sim.table_hash(),
++            scn.table_hash
++        ));
++    }
++    Ok((sim, status))
++}
++
++/// Which ticks get a hash line: every tick up to `dense`, then every
++/// `every`-th, and the last.
++#[derive(Copy, Clone, Debug)]
++pub struct Every {
++    /// Ticks always written from the start.
++    pub dense: u64,
++    /// Stride after that.
++    pub every: u64,
++}
++
++impl Every {
++    /// Every tick.
++    pub const ALL: Every = Every {
++        dense: u64::MAX,
++        every: 1,
++    };
++
++    /// Whether tick `tick` of a run of `last` ticks gets a line.
++    #[must_use]
++    pub fn wants(self, tick: u64, last: u64) -> bool {
++        tick <= self.dense || tick.is_multiple_of(self.every.max(1)) || tick == last
++    }
++}
++
++/// The result of [`play`].
++#[derive(Clone, Debug)]
++pub struct PlayOut {
++    /// `tick state_hash ext_hash` lines (hex), tick 0 = after load.
++    pub hashes: Vec<u8>,
++    /// Final state hash.
++    pub final_state: u64,
++    /// Final supplementary hash.
++    pub final_ext: u64,
++    /// Ticks run.
++    pub ticks: u64,
++    /// First tick whose script-input digest differed from the recording.
++    pub first_mismatch: Option<u64>,
++    /// Script steps that ran past the recording.
++    pub exhausted: u64,
++    /// Most balls in play at once.
++    pub max_balls: usize,
++    /// Score of player 0 at the end.
++    pub score: Option<i64>,
++}
++
++impl PlayOut {
++    /// One summary line.
++    #[must_use]
++    pub fn summary(&self) -> String {
++        format!(
++            "ticks={} state_hash={:016x} ext_hash={:016x} script_digest_mismatch={} exhausted={} max_balls={} score={}",
++            self.ticks,
++            self.final_state,
++            self.final_ext,
++            self.first_mismatch
++                .map_or_else(|| "none".to_owned(), |t| t.to_string()),
++            self.exhausted,
++            self.max_balls,
++            self.score
++                .map_or_else(|| "none".to_owned(), |s| s.to_string())
++        )
++    }
++}
++
++fn hash_line(out: &mut dyn FnMut(&[u8]), sim: &Simulation) {
++    let mut s = String::with_capacity(40);
++    let _ = writeln!(
++        s,
++        "{} {:016x} {:016x}",
++        sim.tick(),
++        sim.state_hash(),
++        ext_hash(sim)
++    );
++    out(s.as_bytes());
++}
++
++/// Plays the scenario with the playback backend, collecting hash lines.
++///
++/// # Errors
++/// Load and scenario failures.
++pub fn play(
++    bundle_zip: &[u8],
++    scn_bytes: &[u8],
++    scr: Vec<u8>,
++    every: Every,
++) -> Result<PlayOut, String> {
++    let mut hashes = Vec::with_capacity(64 * 1024);
++    let mut out = play_to(bundle_zip, scn_bytes, scr, every, &mut |b| {
++        hashes.extend_from_slice(b)
++    })?;
++    out.hashes = hashes;
++    Ok(out)
++}
++
++/// [`play`] streaming the hash lines to `sink` (its `hashes` is empty).
++///
++/// # Errors
++/// Load and scenario failures.
++pub fn play_to(
++    bundle_zip: &[u8],
++    scn_bytes: &[u8],
++    scr: Vec<u8>,
++    every: Every,
++    sink: &mut dyn FnMut(&[u8]),
++) -> Result<PlayOut, String> {
++    let scn = Scenario::from_bytes(scn_bytes)?;
++    let (mut sim, status) = load_playback(bundle_zip, &scn, scr)?;
++    let mut drv = Driver::new(&scn);
++    hash_line(sink, &sim);
++    let mut max_balls = 0;
++    while sim.tick() < scn.ticks {
++        let t = drv.advance(&mut sim)?;
++        max_balls = max_balls.max(sim.balls_in_play());
++        if every.wants(t, scn.ticks) {
++            hash_line(sink, &sim);
++        }
++    }
++    Ok(PlayOut {
++        hashes: Vec::new(),
++        final_state: sim.state_hash(),
++        final_ext: ext_hash(&sim),
++        ticks: sim.tick(),
++        first_mismatch: status.first_mismatch(),
++        exhausted: status.exhausted.load(std::sync::atomic::Ordering::Relaxed),
++        max_balls,
++        score: sim.score(0),
++    })
++}
++
++/// Summary statistics of samples (ns).
++#[derive(Clone, Debug, Default)]
++pub struct Stats {
++    /// Samples.
++    pub n: usize,
++    /// Mean.
++    pub mean: f64,
++    /// Median.
++    pub p50: f64,
++    /// 99th percentile.
++    pub p99: f64,
++    /// 99.9th percentile.
++    pub p999: f64,
++    /// Maximum.
++    pub max: f64,
++}
++
++impl Stats {
++    /// Statistics of `v` (sorted in place).
++    pub fn of(v: &mut [f64]) -> Stats {
++        if v.is_empty() {
++            return Stats::default();
++        }
++        v.sort_by(f64::total_cmp);
++        let q = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
++        Stats {
++            n: v.len(),
++            mean: v.iter().sum::<f64>() / v.len() as f64,
++            p50: q(0.5),
++            p99: q(0.99),
++            p999: q(0.999),
++            max: v[v.len() - 1],
++        }
++    }
++
++    fn json(&self) -> String {
++        format!(
++            "{{\"n\":{},\"mean_us\":{:.3},\"p50_us\":{:.3},\"p99_us\":{:.3},\"p999_us\":{:.3},\"max_us\":{:.3}}}",
++            self.n,
++            self.mean / 1e3,
++            self.p50 / 1e3,
++            self.p99 / 1e3,
++            self.p999 / 1e3,
++            self.max / 1e3
++        )
++    }
++}
++
++/// Ball-count buckets of the per-tick statistics.
++pub const BALL_BUCKETS: [(usize, usize); 6] = [(0, 0), (1, 1), (2, 2), (3, 4), (5, 8), (9, 16)];
++
++/// Times the scenario (playback backend, no hashing): pass 1 times every
++/// tick; pass 2 (a fresh load) times batches of `batch` ticks (one 60 Hz
++/// frame of catch-up = 16 or 17 ticks) and the whole run. `now_ns` is the
++/// platform clock. Returns JSON.
++///
++/// # Errors
++/// Load and scenario failures.
++pub fn bench(
++    bundle_zip: &[u8],
++    scn_bytes: &[u8],
++    scr: &[u8],
++    now_ns: &mut dyn FnMut() -> f64,
++    batch: u64,
++    warmup: u64,
++) -> Result<String, String> {
++    let scn = Scenario::from_bytes(scn_bytes)?;
++    // Pass 1: per tick.
++    let (mut sim, _) = load_playback(bundle_zip, &scn, scr.to_vec())?;
++    let mut drv = Driver::new(&scn);
++    let n = scn.ticks as usize;
++    let mut per_tick = Vec::with_capacity(n);
++    let mut balls = Vec::with_capacity(n);
++    while sim.tick() < scn.ticks {
++        let t = drv.prepare(&mut sim)?;
++        let t0 = now_ns();
++        drv.step(&mut sim, t);
++        let t1 = now_ns();
++        per_tick.push(t1 - t0);
++        balls.push(sim.balls_in_play() as u8);
++    }
++    let w = (warmup as usize).min(per_tick.len());
++    let mut all = per_tick.clone();
++    let mut steady = per_tick[w..].to_vec();
++    let mut buckets = String::new();
++    for (lo, hi) in BALL_BUCKETS {
++        let mut v: Vec<f64> = per_tick[w..]
++            .iter()
++            .zip(&balls[w..])
++            .filter(|(_, b)| (lo..=hi).contains(&usize::from(**b)))
++            .map(|(t, _)| *t)
++            .collect();
++        if !v.is_empty() {
++            let _ = write!(
++                buckets,
++                "{}\"{}-{}\":{}",
++                if buckets.is_empty() { "" } else { "," },
++                lo,
++                hi,
++                Stats::of(&mut v).json()
++            );
++        }
++    }
++    let ball_mean = balls.iter().map(|&b| f64::from(b)).sum::<f64>() / balls.len().max(1) as f64;
++    let ball_max = balls.iter().copied().max().unwrap_or(0);
++    // Pass 2: batches and the whole run, one clock read per batch.
++    let (mut sim, _) = load_playback(bundle_zip, &scn, scr.to_vec())?;
++    let mut drv = Driver::new(&scn);
++    let mut batches = Vec::with_capacity(n / batch.max(1) as usize + 1);
++    let start = now_ns();
++    let mut b0 = start;
++    let mut in_batch = 0;
++    while sim.tick() < scn.ticks {
++        drv.advance(&mut sim)?;
++        in_batch += 1;
++        if in_batch == batch {
++            let b1 = now_ns();
++            if sim.tick() > warmup {
++                batches.push(b1 - b0);
++            }
++            b0 = b1;
++            in_batch = 0;
++        }
++    }
++    let total = now_ns() - start;
++    Ok(format!(
++        "{{\"ticks\":{},\"warmup\":{},\"total_ms\":{:.3},\"mean_tick_us_total\":{:.3},\"per_tick_all\":{},\"per_tick_steady\":{},\"batch_ticks\":{},\"batch_steady\":{},\"balls_mean\":{:.3},\"balls_max\":{},\"per_ball_bucket_steady\":{{{}}}}}",
++        scn.ticks,
++        warmup,
++        total / 1e6,
++        total / 1e3 / scn.ticks as f64,
++        Stats::of(&mut all).json(),
++        Stats::of(&mut steady).json(),
++        batch,
++        Stats::of(&mut batches).json(),
++        ball_mean,
++        ball_max,
++        buckets
++    ))
++}
++
++/// Runs the scenario with every `step_1ms` inside the allocation guard;
++/// returns `(installed, ticks, allocs, exempt allocs, first allocating
++/// tick)`.
++///
++/// # Errors
++/// Load and scenario failures.
++pub fn alloc_check(
++    bundle_zip: &[u8],
++    scn_bytes: &[u8],
++    scr: Vec<u8>,
++) -> Result<(bool, u64, u64, u64, Option<u64>), String> {
++    let scn = Scenario::from_bytes(scn_bytes)?;
++    let (mut sim, _) = load_playback(bundle_zip, &scn, scr)?;
++    let mut drv = Driver::new(&scn);
++    let (mut allocs, mut exempt, mut first) = (0u64, 0u64, None);
++    while sim.tick() < scn.ticks {
++        let t = drv.prepare(&mut sim)?;
++        let ((), a, e) = pin_sim::alloc_guard::count_allocs_split(|| drv.step(&mut sim, t));
++        if a > 0 && first.is_none() {
++            first = Some(t);
++        }
++        allocs += a;
++        exempt += e;
++    }
++    Ok((
++        pin_sim::alloc_guard::is_installed(),
++        sim.tick(),
++        allocs,
++        exempt,
++        first,
++    ))
++}
++
++/// The full state at tick `at` with exact float bits (divergence
++/// diagnosis).
++///
++/// # Errors
++/// Load and scenario failures.
++pub fn dump(bundle_zip: &[u8], scn_bytes: &[u8], scr: Vec<u8>, at: u64) -> Result<String, String> {
++    let scn = Scenario::from_bytes(scn_bytes)?;
++    let (mut sim, _) = load_playback(bundle_zip, &scn, scr)?;
++    let mut drv = Driver::new(&scn);
++    while sim.tick() < at.min(scn.ticks) {
++        drv.advance(&mut sim)?;
++    }
++    Ok(describe(&sim))
++}
++
++/// Exact-bits description of the hashed and published state.
++#[must_use]
++pub fn describe(sim: &Simulation) -> String {
++    let mut o = String::new();
++    let _ = writeln!(
++        o,
++        "tick {} state_hash {:016x} ext_hash {:016x}",
++        sim.tick(),
++        sim.state_hash(),
++        ext_hash(sim)
++    );
++    let s = sim.snapshot();
++    for (i, b) in s.balls().iter().enumerate() {
++        let bits = |v: &[f32]| {
++            v.iter()
++                .map(|x| format!("{x:e}({:08x})", x.to_bits()))
++                .collect::<Vec<_>>()
++                .join(" ")
++        };
++        let _ = writeln!(o, "ball {i} layer {} profile {}", b.layer, b.profile.0);
++        let _ = writeln!(o, "  pos {}", bits(&b.position_m));
++        let _ = writeln!(o, "  vel {}", bits(&b.velocity_m_s));
++        let _ = writeln!(o, "  ang {}", bits(&b.angular_velocity_rad_s));
++        let _ = writeln!(o, "  rot {}", bits(&b.orientation));
++    }
++    for f in s.flippers() {
++        let _ = writeln!(
++            o,
++            "flipper {} angle {:e}({:08x}) w {:e}({:08x}) zip {:08x}",
++            f.id.0,
++            f.angle_rad,
++            f.angle_rad.to_bits(),
++            f.angular_velocity_rad_s,
++            f.angular_velocity_rad_s.to_bits(),
++            f.zipper_offset_m.to_bits()
++        );
++    }
++    for (i, m) in s.dynamic_meshes().iter().enumerate() {
++        let _ = writeln!(
++            o,
++            "mesh {i} pos {:08x} {:08x} {:08x} rot {:08x} {:08x} {:08x} {:08x}",
++            m.position_m[0].to_bits(),
++            m.position_m[1].to_bits(),
++            m.position_m[2].to_bits(),
++            m.orientation[0].to_bits(),
++            m.orientation[1].to_bits(),
++            m.orientation[2].to_bits(),
++            m.orientation[3].to_bits()
++        );
++    }
++    let _ = writeln!(o, "switches {:016x?}", sim.switch_bits());
++    let _ = writeln!(o, "counters {:?}", sim.counters());
++    o
++}
++
++/// A7 probe: loads `bundle_zip` with a backend that panics inside
++/// `step_1ms` at tick 5 and steps under `catch_unwind`. Natively the panic
++/// is caught and the message says so; under `panic=abort` (wasm32) the
++/// call traps and never returns.
++#[must_use]
++pub fn panic_in_step(bundle_zip: &[u8]) -> String {
++    let vfs = match open_bundle(bundle_zip) {
++        Ok(v) => v,
++        Err(e) => return e,
++    };
++    let sim =
++        Simulation::load_from_vfs_with_script(&vfs, SimConfig::default(), &mut |_e, _s, _n| {
++            Ok(Box::new(crate::playback::PanicScript { at: 5 }) as Box<dyn ExternalScript>)
++        });
++    let mut sim = match sim {
++        Ok(s) => s,
++        Err(e) => return e.to_string(),
++    };
++    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        sim.advance(10);
++    }));
++    format!(
++        "catch_unwind around step_1ms returned {} (sim tick {})",
++        if r.is_err() {
++            "Err: panic caught, process alive"
++        } else {
++            "Ok"
++        },
++        sim.tick()
++    )
++}
++
++/// Stack high-water marks (bytes below the caller's frame) of loading the
++/// table and of running every tick of the scenario, measured separately by
++/// painting the unused shadow stack (wasm32 only).
++///
++/// # Errors
++/// Load and scenario failures.
++#[cfg(target_arch = "wasm32")]
++pub fn stack_phases(bundle_zip: &[u8], scn_bytes: &[u8], scr: Vec<u8>) -> Result<String, String> {
++    let scn = Scenario::from_bytes(scn_bytes)?;
++    let (loaded, load_used, painted) =
++        crate::probes::stack_highwater(900 * 1024, || load_playback(bundle_zip, &scn, scr));
++    let (mut sim, _) = loaded?;
++    let mut drv = Driver::new(&scn);
++    let (r, tick_used, _) = crate::probes::stack_highwater(900 * 1024, || {
++        while sim.tick() < scn.ticks {
++            drv.advance(&mut sim)?;
++        }
++        Ok::<(), String>(())
++    });
++    r?;
++    Ok(format!(
++        "{} load_stack_bytes={load_used} ticks={} tick_stack_bytes={tick_used} painted={painted} state_hash={:016x}",
++        crate::probes::stack_layout(),
++        sim.tick(),
++        sim.state_hash()
++    ))
++}
+--- a/crates/s1_harness/src/probes.rs
++++ b/crates/s1_harness/src/probes.rs
+@@ -0,0 +1,365 @@
++//! Platform probes for A6 (std on wasm), A7 (panics) and A28 (stack).
++//! Each probe returns a description; a probe whose operation panics on the
++//! target never returns (the host sees the trap).
++
++use std::hash::{BuildHasher, Hasher};
++
++/// The probe names [`run_probe`] knows.
++pub const PROBES: &[&str] = &[
++    "instant",
++    "systemtime",
++    "sleep",
++    "thread_builder",
++    "thread_spawn",
++    "fs_read",
++    "fs_write",
++    "fs_canonicalize",
++    "net_tcp",
++    "net_udp",
++    "mutex",
++    "atomics",
++    "hashmap_keys",
++    "env",
++    "catch_unwind",
++    "stack_layout",
++    "sizes",
++    "nan_bits",
++    "glam_ops",
++];
++
++/// Runs probe `name`.
++#[must_use]
++pub fn run_probe(name: &str) -> String {
++    match name {
++        "instant" => {
++            let t = std::time::Instant::now();
++            format!("Instant::now() returned; elapsed {:?}", t.elapsed())
++        }
++        "systemtime" => format!("SystemTime::now() = {:?}", std::time::SystemTime::now()),
++        "sleep" => {
++            std::thread::sleep(std::time::Duration::from_millis(1));
++            "thread::sleep(1 ms) returned".into()
++        }
++        "thread_builder" => match std::thread::Builder::new().spawn(|| 7) {
++            Ok(h) => format!("Builder::spawn ok, join = {:?}", h.join()),
++            Err(e) => format!("Builder::spawn Err: kind {:?}: {e}", e.kind()),
++        },
++        "thread_spawn" => {
++            let h = std::thread::spawn(|| 7);
++            format!("thread::spawn ok, join = {:?}", h.join())
++        }
++        "fs_read" => format!(
++            "fs::read(\"/etc/hostname\") = {:?}",
++            std::fs::read("/etc/hostname").map(|b| b.len())
++        ),
++        "fs_write" => format!(
++            "fs::write(\"s1_probe.tmp\") = {:?}",
++            std::fs::write("s1_probe.tmp", b"x")
++        ),
++        "fs_canonicalize" => format!("fs::canonicalize(\".\") = {:?}", std::fs::canonicalize(".")),
++        "net_tcp" => format!(
++            "TcpStream::connect(127.0.0.1:9) = {:?}",
++            std::net::TcpStream::connect("127.0.0.1:9").map(|_| ())
++        ),
++        "net_udp" => format!(
++            "UdpSocket::bind(127.0.0.1:0) = {:?}",
++            std::net::UdpSocket::bind("127.0.0.1:0").map(|_| ())
++        ),
++        "mutex" => {
++            let m = std::sync::Arc::new(std::sync::Mutex::new(5u32));
++            let rw = std::sync::RwLock::new(1u32);
++            let a = {
++                let mut g = m.lock().unwrap();
++                *g += 1;
++                *g
++            };
++            let b = *rw.read().unwrap() + *rw.read().unwrap();
++            let once = std::sync::OnceLock::new();
++            let c = *once.get_or_init(|| 3u32);
++            format!(
++                "Mutex lock ok ({a}), RwLock two readers ok ({b}), OnceLock ok ({c}), try_lock while held = {:?}",
++                {
++                    let _g = m.lock().unwrap();
++                    m.try_lock().is_ok()
++                }
++            )
++        }
++        "atomics" => {
++            use std::sync::atomic::{AtomicU64, Ordering};
++            let a = AtomicU64::new(1);
++            a.fetch_add(2, Ordering::SeqCst);
++            let ok = a.compare_exchange(3, 9, Ordering::AcqRel, Ordering::Acquire);
++            format!(
++                "AtomicU64 fetch_add/compare_exchange ok: {ok:?} -> {}",
++                a.load(Ordering::SeqCst)
++            )
++        }
++        "hashmap_keys" => {
++            let s1 = std::collections::hash_map::RandomState::new();
++            let s2 = std::collections::hash_map::RandomState::new();
++            let mut h1 = s1.build_hasher();
++            let mut h2 = s2.build_hasher();
++            h1.write_u64(42);
++            h2.write_u64(42);
++            let (a, b) = (h1.finish(), h2.finish());
++            format!(
++                "RandomState: two instances hash 42 to {a:016x} / {b:016x} ({})",
++                if a == b {
++                    "same keys"
++                } else {
++                    "different keys"
++                }
++            )
++        }
++        "env" => format!(
++            "args {:?}, var HOME {:?}, current_dir {:?}",
++            std::env::args().collect::<Vec<_>>(),
++            std::env::var("HOME"),
++            std::env::current_dir()
++        ),
++        "catch_unwind" => {
++            let r = std::panic::catch_unwind(|| {
++                panic!("s1 probe: panic inside catch_unwind");
++            });
++            format!(
++                "catch_unwind returned {}",
++                if r.is_err() { "Err (caught)" } else { "Ok" }
++            )
++        }
++        "stack_layout" => stack_layout(),
++        "sizes" => format!(
++            "size_of Simulation={} FrameStateSnapshot={} HostCommandQueue={} HostView={}",
++            core::mem::size_of::<pin_sim::Simulation>(),
++            core::mem::size_of::<pin_core::FrameStateSnapshot>(),
++            core::mem::size_of::<pin_core::HostCommandQueue>(),
++            core::mem::size_of::<pin_core::HostView>()
++        ),
++        "nan_bits" => nan_bits(),
++        "glam_ops" => glam_ops(200_000),
++        other => format!("unknown probe {other}"),
++    }
++}
++
++/// Recursion whose frames hold 1 KiB in linear memory (the shadow stack on
++/// wasm32): about `n` KiB of stack.
++#[inline(never)]
++#[must_use]
++pub fn recurse_big(n: u32) -> u64 {
++    let mut buf = [0u8; 1024];
++    buf[(n as usize) % 1024] = n as u8;
++    let buf = core::hint::black_box(&mut buf);
++    if n == 0 {
++        return u64::from(buf[0]);
++    }
++    recurse_big(n - 1).wrapping_add(u64::from(buf[(n as usize * 7) % 1024]))
++}
++
++/// Recursion with tiny frames that stay in wasm locals (the engine's own
++/// native call stack on wasm32, not the shadow stack).
++#[inline(never)]
++#[must_use]
++pub fn recurse_small(n: u32) -> u64 {
++    if core::hint::black_box(n) == 0 {
++        return 1;
++    }
++    recurse_small(n - 1)
++        .wrapping_mul(3)
++        .wrapping_add(u64::from(n))
++}
++
++#[cfg(target_arch = "wasm32")]
++unsafe extern "C" {
++    static __data_end: u8;
++    static __heap_base: u8;
++}
++
++/// Approximate stack pointer (address of a local in linear memory).
++#[inline(never)]
++#[must_use]
++pub fn approx_sp() -> usize {
++    let marker = core::hint::black_box(0u8);
++    core::hint::black_box(core::ptr::addr_of!(marker)) as usize
++}
++
++/// Linear-memory layout: stack pointer, data end and heap base.
++#[must_use]
++pub fn stack_layout() -> String {
++    #[cfg(target_arch = "wasm32")]
++    {
++        // Linker-defined symbols; only their addresses are taken.
++        let (data_end, heap_base) = (
++            core::ptr::addr_of!(__data_end) as usize,
++            core::ptr::addr_of!(__heap_base) as usize,
++        );
++        let sp = approx_sp();
++        format!(
++            "sp~{sp:#x} ({} KiB) __data_end={data_end:#x} __heap_base={heap_base:#x} layout={}",
++            sp / 1024,
++            if sp < data_end {
++                "stack-first (stack below data: overflow goes below 0 and traps)"
++            } else {
++                "data-first (overflow runs into data)"
++            }
++        )
++    }
++    #[cfg(not(target_arch = "wasm32"))]
++    {
++        format!("native: sp~{:#x}", approx_sp())
++    }
++}
++
++/// Runs `f` after painting `paint` bytes of unused stack below the current
++/// frame, and returns how many bytes below the paint start `f` touched
++/// (stack high-water mark of `f` relative to the caller). wasm32 only.
++#[cfg(target_arch = "wasm32")]
++pub fn stack_highwater<R>(paint: usize, f: impl FnOnce() -> R) -> (R, usize, usize) {
++    // Linker-defined symbol; only its address is taken.
++    let data_end = core::ptr::addr_of!(__data_end) as usize;
++    let sp = approx_sp();
++    let top = sp - 4096;
++    let floor = if sp < data_end { 4096 } else { data_end + 16 };
++    let lo = top.saturating_sub(paint).max(floor);
++    for a in lo..top {
++        // SAFETY: [lo, top) is unused stack below the live frames (the
++        // stack grows down and nothing lives below the current frame).
++        unsafe { core::ptr::write_volatile(a as *mut u8, 0xA5) };
++    }
++    let r = core::hint::black_box(f());
++    let mut lowest = top;
++    for a in lo..top {
++        // SAFETY: as above; reading the painted region.
++        if unsafe { core::ptr::read_volatile(a as *const u8) } != 0xA5 {
++            lowest = a;
++            break;
++        }
++    }
++    (r, top - lowest, top - lo)
++}
++
++/// Bit patterns of NaNs produced by arithmetic (A12): IEEE leaves the sign
++/// and payload of a generated NaN to the platform; wasm makes them
++/// nondeterministic (canonical or arithmetic NaN, any sign).
++#[must_use]
++pub fn nan_bits() -> String {
++    use core::hint::black_box as bb;
++    let z = bb(0.0f32);
++    let inf = bb(f32::INFINITY);
++    let payload = f32::from_bits(0x7fa0_0001); // signalling NaN with a payload
++    let qp = f32::from_bits(0x7fc0_1234); // quiet NaN with a payload
++    let neg = f32::from_bits(0xffc0_1234);
++    let cases: [(&str, f32); 9] = [
++        ("0/0", bb(z) / bb(z)),
++        ("inf-inf", bb(inf) - bb(inf)),
++        ("0*inf", bb(z) * bb(inf)),
++        ("sqrt(-1)", bb(-1.0f32).sqrt()),
++        ("snan+1", bb(payload) + bb(1.0)),
++        ("qnan_payload+1", bb(qp) + bb(1.0)),
++        ("neg_qnan_payload*1", bb(neg) * bb(1.0)),
++        ("min(qnan,1)", bb(qp).min(bb(1.0))),
++        ("libm::sqrtf(-1)", libm_sqrt(bb(-1.0))),
++    ];
++    cases
++        .iter()
++        .map(|(n, v)| format!("{n}={:08x}", v.to_bits()))
++        .collect::<Vec<_>>()
++        .join(" ")
++}
++
++fn libm_sqrt(x: f32) -> f32 {
++    libm::sqrtf(x)
++}
++
++/// A13 bisection at the operation level: FNV-1a 64 digests of the exact
++/// result bits of the glam operations the sim uses (and a few it does not),
++/// over `n` PCG-generated inputs (unit quaternions, vectors in [-1, 1],
++/// matrices from translations/rotations), including signed zeros. Equal
++/// digests on two builds mean bit-identical results for every input.
++#[must_use]
++pub fn glam_ops(n: u32) -> String {
++    use glam::{Mat4, Quat, Vec3, Vec4};
++    use pin_core::{Rng, SeedableRng};
++    use pin_sim::hash::Fnv64;
++    let mut rng = pin_core::Pcg32::seed_from_u64(0x005E_ED51);
++    let mut f = move || {
++        let r = rng.next_u32();
++        if r % 97 == 0 {
++            if r & 1 == 0 { 0.0 } else { -0.0 }
++        } else {
++            (r >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
++        }
++    };
++    let names = [
++        "quat_mul",
++        "quat_normalize",
++        "quat_mul_vec3",
++        "quat_conj_mul_vec3",
++        "quat_from_rotation_arc",
++        "integrate_orientation",
++        "vec4_dot",
++        "vec4_length",
++        "vec4_normalize",
++        "vec4_min_max",
++        "mat4_mul_mat4",
++        "mat4_transform_point3",
++        "mat4_inverse",
++        "vec3_ops",
++        "libm_trig",
++    ];
++    let mut h = [Fnv64::new(); 15];
++    let w4 = |h: &mut Fnv64, v: [f32; 4]| v.iter().for_each(|x| h.write_u32(x.to_bits()));
++    let w3 = |h: &mut Fnv64, v: Vec3| v.to_array().iter().for_each(|x| h.write_u32(x.to_bits()));
++    for _ in 0..n {
++        let qa = Quat::from_xyzw(f(), f(), f(), f()).normalize();
++        let qb = Quat::from_xyzw(f(), f(), f(), f()).normalize();
++        let v = Vec3::new(f(), f(), f());
++        let w = Vec3::new(f() * 300.0, f() * 300.0, f() * 300.0);
++        let a = Vec4::new(f(), f(), f(), f());
++        let b = Vec4::new(f(), f(), f(), f());
++        w4(&mut h[0], (qa * qb).to_array());
++        w4(
++            &mut h[1],
++            Quat::from_xyzw(a.x, a.y, a.z, a.w).normalize().to_array(),
++        );
++        w3(&mut h[2], qa * v);
++        w3(&mut h[3], qa.conjugate() * v);
++        if v.length_squared() > 1e-6 {
++            w4(
++                &mut h[4],
++                Quat::from_rotation_arc(Vec3::Z, v.normalize()).to_array(),
++            );
++        }
++        w4(
++            &mut h[5],
++            pin_physics::ball::contact::integrate_orientation(qa, w, 0.001).to_array(),
++        );
++        h[6].write_u32(a.dot(b).to_bits());
++        h[7].write_u32(a.length().to_bits());
++        w4(&mut h[8], a.normalize_or_zero().to_array());
++        w4(&mut h[9], a.min(b).to_array());
++        w4(&mut h[9], a.max(b).to_array());
++        let ma = Mat4::from_rotation_translation(qa, v);
++        let mb = Mat4::from_scale_rotation_translation(Vec3::new(1.0 + a.x.abs(), 1.0, 2.0), qb, w);
++        (ma * mb)
++            .to_cols_array()
++            .iter()
++            .for_each(|x| h[10].write_u32(x.to_bits()));
++        w3(&mut h[11], mb.transform_point3(v));
++        mb.inverse()
++            .to_cols_array()
++            .iter()
++            .for_each(|x| h[12].write_u32(x.to_bits()));
++        w3(
++            &mut h[13],
++            v.cross(w).normalize_or_zero() + v * v.dot(w) - w.length() * v,
++        );
++        h[14].write_u32(libm::sinf(w.x).to_bits());
++        h[14].write_u32(libm::atan2f(w.y, w.z).to_bits());
++        h[14].write_u32(libm::expf(a.x * 10.0).to_bits());
++    }
++    names
++        .iter()
++        .zip(h.iter())
++        .map(|(n, h)| format!("{n}={:016x}", h.finish()))
++        .collect::<Vec<_>>()
++        .join(" ")
++}
+--- a/crates/s1_harness/src/web.rs
++++ b/crates/s1_harness/src/web.rs
+@@ -0,0 +1,129 @@
++//! wasm-bindgen exports (wasm32-unknown-unknown).
++
++use crate::run::{self, Every};
++use wasm_bindgen::prelude::*;
++
++#[wasm_bindgen]
++extern "C" {
++    #[wasm_bindgen(js_namespace = performance, js_name = now)]
++    fn perf_now() -> f64;
++}
++
++/// Plays a scenario; returns the hash lines (bytes). Throws on error.
++#[wasm_bindgen]
++pub fn play(bundle: &[u8], scn: &[u8], scr: &[u8]) -> Result<Vec<u8>, JsValue> {
++    run::play(bundle, scn, scr.to_vec(), Every::ALL)
++        .map(|o| {
++            let mut v = o.summary().into_bytes();
++            v.push(b'\n');
++            v.extend_from_slice(&o.hashes);
++            v
++        })
++        .map_err(|e| JsValue::from_str(&e))
++}
++
++/// Times a scenario with `performance.now()`; returns JSON.
++#[wasm_bindgen]
++pub fn bench(
++    bundle: &[u8],
++    scn: &[u8],
++    scr: &[u8],
++    batch: u32,
++    warmup: u32,
++) -> Result<String, JsValue> {
++    let mut clock = || perf_now() * 1e6;
++    run::bench(
++        bundle,
++        scn,
++        scr,
++        &mut clock,
++        u64::from(batch),
++        u64::from(warmup),
++    )
++    .map_err(|e| JsValue::from_str(&e))
++}
++
++/// Allocation-guard check; returns a line.
++#[wasm_bindgen]
++pub fn alloc_check(bundle: &[u8], scn: &[u8], scr: &[u8]) -> Result<String, JsValue> {
++    run::alloc_check(bundle, scn, scr.to_vec())
++        .map(|(installed, ticks, allocs, exempt, first)| {
++            format!(
++                "alloc_guard installed={installed} ticks={ticks} allocs_in_step={allocs} exempt={exempt} first_alloc_tick={first:?}"
++            )
++        })
++        .map_err(|e| JsValue::from_str(&e))
++}
++
++/// Exact-bits state at a tick.
++#[wasm_bindgen]
++pub fn dump(bundle: &[u8], scn: &[u8], scr: &[u8], tick: u32) -> Result<String, JsValue> {
++    run::dump(bundle, scn, scr.to_vec(), u64::from(tick)).map_err(|e| JsValue::from_str(&e))
++}
++
++/// One platform probe (A6/A7/A28).
++#[wasm_bindgen]
++pub fn probe(name: &str) -> String {
++    crate::probes::run_probe(name)
++}
++
++/// Deep recursion, 1 KiB of shadow stack per frame.
++#[wasm_bindgen]
++pub fn recurse_big(n: u32) -> f64 {
++    crate::probes::recurse_big(n) as f64
++}
++
++/// Deep recursion with tiny frames (engine stack).
++#[wasm_bindgen]
++pub fn recurse_small(n: u32) -> f64 {
++    crate::probes::recurse_small(n) as f64
++}
++
++/// Stack high-water mark of a full playback run.
++#[wasm_bindgen]
++pub fn highwater(bundle: &[u8], scn: &[u8], scr: &[u8]) -> Result<String, JsValue> {
++    let layout = crate::probes::stack_layout();
++    let (r, used, painted) = crate::probes::stack_highwater(900 * 1024, || {
++        run::play(
++            bundle,
++            scn,
++            scr.to_vec(),
++            Every {
++                dense: 0,
++                every: u64::MAX,
++            },
++        )
++    });
++    let r = r.map_err(|e| JsValue::from_str(&e))?;
++    Ok(format!(
++        "{layout}\n{} stack_used_below_caller={used} painted={painted}",
++        r.summary()
++    ))
++}
++
++/// Stack high-water marks of load and ticks.
++#[wasm_bindgen]
++pub fn stack_phases(bundle: &[u8], scn: &[u8], scr: &[u8]) -> Result<String, JsValue> {
++    run::stack_phases(bundle, scn, scr.to_vec()).map_err(|e| JsValue::from_str(&e))
++}
++
++/// A7: a panic inside `step_1ms` under `catch_unwind`.
++#[wasm_bindgen]
++pub fn panic_in_step(bundle: &[u8]) -> String {
++    run::panic_in_step(bundle)
++}
++
++/// Installs a panic hook that forwards the message to `console.error`
++/// (the recommended web host reporting path).
++#[wasm_bindgen]
++pub fn install_panic_hook() {
++    std::panic::set_hook(Box::new(|info| {
++        console_error(&format!("s1 panic: {info}"));
++    }));
++}
++
++#[wasm_bindgen]
++extern "C" {
++    #[wasm_bindgen(js_namespace = console, js_name = error)]
++    fn console_error(s: &str);
++}
+--- a/crates/s1_harness/src/bin/s1.rs
++++ b/crates/s1_harness/src/bin/s1.rs
+@@ -0,0 +1,255 @@
++//! `s1`: the S1 harness command line (native and wasm32-wasip1).
++//!
++//! ```text
++//! s1 record-bot <bundle_dir> <bundle_zip> <seed> <ticks> <out_prefix>   (feature native)
++//! s1 record-pattern <bundle_zip> <seed> <ticks> <spawns> <out_prefix> [nolaunch]  (feature native)
++//! s1 builtin <bundle_dir> <scn> <out_hashes>                           (feature native)
++//! s1 bench-lua <bundle_dir> <scn>                                      (feature native)
++//! s1 play <bundle_zip> <scn> <scr> <out_hashes>
++//! s1 bench <bundle_zip> <scn> <scr> [batch=16] [warmup=5000]
++//! s1 alloc <bundle_zip> <scn> <scr>
++//! s1 dump <bundle_zip> <scn> <scr> <tick>
++//! s1 probe <name>|all
++//! s1 recurse-big <n> | recurse-small <n>
++//! s1 highwater <bundle_zip> <scn> <scr>                                (wasm32)
++//! s1 panic-in-step <bundle_zip>
++//! s1 bigwrite <file> <MiB>
++//! ```
++
++use s1_harness::run::{self, Every};
++use std::time::Instant;
++
++fn read(p: &str) -> Vec<u8> {
++    std::fs::read(p).unwrap_or_else(|e| fail(&format!("read {p}: {e}")))
++}
++
++/// Writes in 1 MiB chunks: Node 22's `node:wasi` segfaults on one very
++/// large `fd_write` (see `bigwrite`).
++#[cfg_attr(not(feature = "native"), allow(dead_code))]
++fn write(p: &str, b: &[u8]) {
++    use std::io::Write as _;
++    let mut f = std::fs::File::create(p).unwrap_or_else(|e| fail(&format!("create {p}: {e}")));
++    for c in b.chunks(1 << 20) {
++        f.write_all(c)
++            .unwrap_or_else(|e| fail(&format!("write {p}: {e}")));
++    }
++}
++
++fn fail(m: &str) -> ! {
++    eprintln!("s1: {m}");
++    std::process::exit(1)
++}
++
++fn num(s: &str) -> u64 {
++    match s.strip_prefix("0x") {
++        Some(h) => u64::from_str_radix(h, 16),
++        None => s.parse(),
++    }
++    .unwrap_or_else(|_| fail(&format!("not a number: {s}")))
++}
++
++#[cfg(feature = "native")]
++fn record(a: &[String]) -> bool {
++    use s1_harness::record;
++    match a.first().map(String::as_str) {
++        Some("record-bot") if a.len() == 6 => {
++            let zip = read(&a[2]);
++            let r = record::record_bot(
++                std::path::Path::new(&a[1]),
++                &zip,
++                num(&a[3]),
++                num(&a[4]),
++                pin_sim::autoplay::SkillLevel::Standard,
++                Every::ALL,
++            )
++            .unwrap_or_else(|e| fail(&e));
++            let p = &a[5];
++            write(&format!("{p}.scn"), &r.scenario.to_bytes());
++            write(&format!("{p}.scr"), &r.script);
++            write(&format!("{p}.native_lua.hashes"), &r.hashes);
++            if let Some(g) = &r.game {
++                write(&format!("{p}.khzrec"), &g.to_bytes());
++            }
++            println!("{}", r.summary);
++            true
++        }
++        Some("record-pattern") if a.len() == 6 || a.len() == 7 => {
++            let zip = read(&a[1]);
++            let launch = a.get(6).map(String::as_str) != Some("nolaunch");
++            let r = record::record_pattern(
++                &zip,
++                num(&a[2]),
++                num(&a[3]),
++                num(&a[4]) as usize,
++                launch,
++                Every::ALL,
++            )
++            .unwrap_or_else(|e| fail(&e));
++            let p = &a[5];
++            write(&format!("{p}.scn"), &r.scenario.to_bytes());
++            write(&format!("{p}.scr"), &r.script);
++            write(&format!("{p}.native_lua.hashes"), &r.hashes);
++            println!("{}", r.summary);
++            true
++        }
++        Some("bench-lua") if a.len() == 3 => {
++            let scn =
++                s1_harness::io::Scenario::from_bytes(&read(&a[2])).unwrap_or_else(|e| fail(&e));
++            let j = record::bench_builtin(std::path::Path::new(&a[1]), &scn, 5000)
++                .unwrap_or_else(|e| fail(&e));
++            println!("{j}");
++            true
++        }
++        Some("builtin") if a.len() == 4 => {
++            let scn =
++                s1_harness::io::Scenario::from_bytes(&read(&a[2])).unwrap_or_else(|e| fail(&e));
++            let h = record::run_builtin(std::path::Path::new(&a[1]), &scn, Every::ALL)
++                .unwrap_or_else(|e| fail(&e));
++            write(&a[3], &h);
++            println!(
++                "builtin ticks={} lines={}",
++                scn.ticks,
++                h.iter().filter(|&&b| b == b'\n').count()
++            );
++            true
++        }
++        _ => false,
++    }
++}
++
++#[cfg(not(feature = "native"))]
++fn record(_a: &[String]) -> bool {
++    false
++}
++
++fn main() {
++    let a: Vec<String> = std::env::args().skip(1).collect();
++    if record(&a) {
++        return;
++    }
++    match a.first().map(String::as_str) {
++        Some("play") if a.len() == 5 => {
++            // Streams the lines through a 64 KiB buffer: keeps the guest's
++            // memory small (Node 22's node:wasi segfaults on any fd_write
++            // once linear memory passes ~32 MiB; see `bigmem`).
++            use std::io::Write as _;
++            let t0 = Instant::now();
++            let f = std::fs::File::create(&a[4]).unwrap_or_else(|e| fail(&format!("create: {e}")));
++            let mut w = std::io::BufWriter::with_capacity(64 * 1024, f);
++            let mut err = None;
++            let out = run::play_to(
++                &read(&a[1]),
++                &read(&a[2]),
++                read(&a[3]),
++                Every::ALL,
++                &mut |b| {
++                    if let Err(e) = w.write_all(b) {
++                        err.get_or_insert(e);
++                    }
++                },
++            )
++            .unwrap_or_else(|e| fail(&e));
++            if let Some(e) = err.or_else(|| w.flush().err()) {
++                fail(&format!("write {}: {e}", a[4]));
++            }
++            println!("{} wall_ms={}", out.summary(), t0.elapsed().as_millis());
++        }
++        Some("bench") if a.len() >= 4 => {
++            let batch = a.get(4).map_or(16, |s| num(s));
++            let warm = a.get(5).map_or(5000, |s| num(s));
++            let epoch = Instant::now();
++            let mut clock = || epoch.elapsed().as_nanos() as f64;
++            let j = run::bench(
++                &read(&a[1]),
++                &read(&a[2]),
++                &read(&a[3]),
++                &mut clock,
++                batch,
++                warm,
++            )
++            .unwrap_or_else(|e| fail(&e));
++            println!("{j}");
++        }
++        Some("alloc") if a.len() == 4 => {
++            let (installed, ticks, allocs, exempt, first) =
++                run::alloc_check(&read(&a[1]), &read(&a[2]), read(&a[3]))
++                    .unwrap_or_else(|e| fail(&e));
++            println!(
++                "alloc_guard installed={installed} ticks={ticks} allocs_in_step={allocs} exempt={exempt} first_alloc_tick={first:?}"
++            );
++        }
++        Some("dump") if a.len() == 5 => {
++            let d = run::dump(&read(&a[1]), &read(&a[2]), read(&a[3]), num(&a[4]))
++                .unwrap_or_else(|e| fail(&e));
++            print!("{d}");
++        }
++        Some("probe") if a.len() == 2 => {
++            if a[1] == "all" {
++                for p in s1_harness::probes::PROBES {
++                    println!("{p}: {}", s1_harness::probes::run_probe(p));
++                }
++            } else {
++                println!("{}: {}", a[1], s1_harness::probes::run_probe(&a[1]));
++            }
++        }
++        Some("recurse-big") if a.len() == 2 => {
++            let n = num(&a[1]) as u32;
++            println!("recurse_big({n}) = {}", s1_harness::probes::recurse_big(n));
++        }
++        Some("recurse-small") if a.len() == 2 => {
++            let n = num(&a[1]) as u32;
++            println!(
++                "recurse_small({n}) = {}",
++                s1_harness::probes::recurse_small(n)
++            );
++        }
++        #[cfg(target_arch = "wasm32")]
++        Some("highwater") if a.len() == 4 => {
++            let (bundle, scn, scr) = (read(&a[1]), read(&a[2]), read(&a[3]));
++            println!("{}", s1_harness::probes::stack_layout());
++            let (r, used, painted) = s1_harness::probes::stack_highwater(900 * 1024, || {
++                run::play(
++                    &bundle,
++                    &scn,
++                    scr,
++                    Every {
++                        dense: 0,
++                        every: u64::MAX,
++                    },
++                )
++            });
++            let r = r.unwrap_or_else(|e| fail(&e));
++            println!(
++                "{} stack_used_below_caller={used} painted={painted}",
++                r.summary()
++            );
++        }
++        Some("bigwrite") if a.len() == 3 => {
++            // One `std::fs::write` (a single large fd_write) of N MiB.
++            let n = num(&a[2]) as usize;
++            std::fs::write(&a[1], vec![b'x'; n << 20])
++                .unwrap_or_else(|e| fail(&format!("write: {e}")));
++            println!("bigwrite {n} MiB ok");
++        }
++        Some("bigmem") if a.len() == 4 => {
++            // Holds N MiB of heap, then writes K KiB with one fd_write.
++            let n = num(&a[2]) as usize;
++            let k = num(&a[3]) as usize;
++            let hold = std::hint::black_box(vec![1u8; n << 20]);
++            std::fs::write(&a[1], &hold[..k << 10])
++                .unwrap_or_else(|e| fail(&format!("write: {e}")));
++            println!("bigmem {n} MiB held, {k} KiB written ok");
++        }
++        #[cfg(target_arch = "wasm32")]
++        Some("stack-phases") if a.len() == 4 => {
++            let r = run::stack_phases(&read(&a[1]), &read(&a[2]), read(&a[3]))
++                .unwrap_or_else(|e| fail(&e));
++            println!("{r}");
++        }
++        Some("panic-in-step") if a.len() == 2 => {
++            let msg = s1_harness::run::panic_in_step(&read(&a[1]));
++            println!("{msg}");
++        }
++        _ => fail("bad arguments (see the source header for usage)"),
++    }
++}

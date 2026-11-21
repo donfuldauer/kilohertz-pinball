@@ -1,0 +1,1 @@
+quat_ops_iso: P:quat_mul=08ed4ce9f1f70efd P:quat_length_squared=7fc362950bb8a671 P:quat_normalize=6b8240f2fa43d429 P:quat_mul_vec3=aca77dbca4e27a03 P:quat_conj_mul_vec3=7663b70970a3877e P:quat_from_rotation_arc=6d2fcb051d12a602

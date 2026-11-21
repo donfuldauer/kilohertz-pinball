@@ -1,0 +1,5 @@
+- 2026-11-20 S8 web-spike-lua-audit: owner/Orchestrator to decide adoption of KHZ 33-37 (vendored Lua, very-high blast radius) for 9.10; recommendation and evidence in S8/RESULTS.md §0, §10; see DECISIONS_LOCAL S8-2..S8-6.
+- 2026-11-20 S8 web-spike-lua-audit: owner/Orchestrator to decide the per-tick aggregate script budget (200 000 units, Lua and Wasm, fault on exhaustion; very-high blast radius, native too); see S8-7 and RESULTS §6.
+- 2026-11-20 S8 web-spike-lua-audit (request, lua-src owner, native): add -ffp-contract=off to every native lua-src arm (GCC GNU mode and Apple clang contract by default; aarch64 has FMA in the base ISA: 2 fused sites today, both unobservable: luaB_collectgarbage, luaK_numberK).
+- 2026-11-20 S8 web-spike-lua-audit (request, pin_script owner): if collectgarbage("count") is ever restored, return the accounted (logical, KHZ 33) heap via lua_gc(LUA_GCCOUNT/COUNTB), never mlua's used_memory().
+- 2026-11-20 S8 web-spike-lua-audit: Chromium run of the Wasm-rules per-tick cap (S4 page with the S8 copy) not done; Node and native identical; see S8-10.

@@ -1,0 +1,23 @@
+# S4 scratch only: two read-only probes on WasmScriptBackend (fuel left, guest memory) used by the parity/adversarial harness; behaviour unchanged.
+--- ${WEB_SPIKES}/S1/repo/crates/pin_script/src/wasm/mod.rs	2026-11-20 16:45:45.448386126 +0000
++++ repo/crates/pin_script/src/wasm/mod.rs	2026-11-20 19:07:47.209284952 +0000
+@@ -708,6 +708,19 @@
+         self.cfg
+     }
+ 
++    /// web-spike-rules (S4) probe, read-only: the fuel the store has left
++    /// after the last guest call (budget minus this = fuel the call used).
++    #[doc(hidden)]
++    pub fn fuel_left(&self) -> u64 {
++        self.live.store.get_fuel().unwrap_or(0)
++    }
++
++    /// web-spike-rules (S4) probe, read-only: the guest's linear memory.
++    #[doc(hidden)]
++    pub fn memory_bytes(&self) -> &[u8] {
++        self.live.memory.data(&self.live.store)
++    }
++
+     /// Bytes of guest linear memory currently allocated.
+     pub fn memory_size(&self) -> usize {
+         self.live.memory.data_size(&self.live.store)

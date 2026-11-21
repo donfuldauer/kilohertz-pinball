@@ -1,0 +1,5 @@
+(module (tag $t (param i32))
+  (func (export "f") (result i32)
+    (block $h (result i32)
+      (try_table (catch $t $h) i32.const 7 throw $t)
+      i32.const 0)))

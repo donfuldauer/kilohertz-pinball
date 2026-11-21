@@ -1,0 +1,37 @@
+# S7 experiment, test-side only: slope_scenario builds its inputs with pin_physics::quat_ops (requires 0006)
+--- a/crates/pin_physics/tests/ball_seam_bitident.rs
++++ b/crates/pin_physics/tests/ball_seam_bitident.rs
+@@ -195,11 +195,13 @@
+ /// A ball sliding along a pitched wall and dropping onto a sloped mesh,
+ /// rotated world (guide-free, wireform-free).
+ fn slope_scenario() -> u64 {
+-    let rot = Quat::from_rotation_y(0.3) * Quat::from_rotation_x(0.12);
++    // S7 experiment: build the inputs with the portable replica (glam's NEON `*` differs).
++    let rot = pin_physics::quat_ops::mul(Quat::from_rotation_y(0.3), Quat::from_rotation_x(0.12));
++    let rv = |p: Vec3| pin_physics::quat_ops::mul_vec3(rot, p);
+     let mut b = StaticWorldBuilder::new();
+     b.add_collider(
+         StaticShape::Cuboid {
+-            center: rot * v(0.0, 0.0, -0.02),
++            center: rv(v(0.0, 0.0, -0.02)),
+             half_extents: v(0.4, 0.4, 0.02),
+             rotation: rot,
+         },
+@@ -208,7 +210,7 @@
+     );
+     b.add_collider(
+         StaticShape::Cuboid {
+-            center: rot * v(0.0, -0.2, 0.02),
++            center: rv(v(0.0, -0.2, 0.02)),
+             half_extents: v(0.4, 0.01, 0.04),
+             rotation: rot,
+         },
+@@ -229,7 +231,7 @@
+         let r = radius(p);
+         s.add_ball(ball_at(
+             p,
+-            rot * v(-0.2 + 0.15 * k as f32, 0.1, r + 0.05),
++            rv(v(-0.2 + 0.15 * k as f32, 0.1, r + 0.05)),
+             v(0.1, -0.5, 0.0),
+         ))
+         .unwrap();
