@@ -86,9 +86,10 @@ only appends to them) and confirm each deferred finding has its DECISIONS.md ent
    the root `Cargo.toml` under a comment naming the issue. Any new `docs/HUMAN_QUEUE.md` line must
    be a P8 item in the form `- [P8 <kind>] [<id>] <text>`.
 9. **What a player sees and touches (R12).** For render work: analytic pixel assertions exist and
-   pass before any snapshot; open the produced images yourself (Read the PNG files) and walk the
-   brief's VISUAL CHECKLIST item by item, logging each. For input, timing or presentation changes:
-   the windowed-app run (Xvfb and lavapipe) exists, and you re-run it.
+   pass before any snapshot; open the produced images yourself (inspect the PNG files with `Read`
+   in Claude Code or `view_file` in Gemini / Antigravity) and walk the brief's VISUAL CHECKLIST
+   item by item, logging each. For input, timing or presentation changes: the windowed-app run
+   (Xvfb and lavapipe) exists, and you re-run it.
 10. **Gates.** Where the brief names Gate A1, A2 or A3, run it as `docs/DEVELOPMENT.md` gives it
     (or the reduced form the brief allows) and report the verdict lines.
 

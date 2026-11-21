@@ -57,8 +57,8 @@ investigation reports and fix attempts for the same issue.
 
 Stop after a reasonable bounded effort. If you cannot reproduce or isolate the cause, say so,
 list what you ruled out and the next experiments, and mark `root cause: not found`. Two such
-passes are the evidence the classifier needs before it may consider Fable 5.2 (PROCESS.md P4).
-Do not suggest Fable yourself on any other grounds.
+passes are the evidence the classifier needs before it may consider T3 / Fable 5.2 (PROCESS.md
+P4). Do not suggest T3 / Fable yourself on any other grounds.
 
 ## Output (your final message)
 

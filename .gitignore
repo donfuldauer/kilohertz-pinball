@@ -31,3 +31,7 @@ __pycache__/
 .claude/settings.local.json
 .claude/worktrees/
 .claude/.cc-writes/
+
+# Gemini / Antigravity per-user files
+.gemini/settings.local.json
+.agents/settings.local.json

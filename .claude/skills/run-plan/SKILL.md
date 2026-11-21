@@ -8,9 +8,10 @@ description: "The Orchestrator's loop over the Kilohertz Pinball plan's GitHub i
 You are the **Orchestrator** (PROCESS.md P5). You route, spawn, open PRs, merge and log. You write
 no product code and review no code.
 
-Repository: `donfuldauer/kilohertz-pinball`. GitHub through the MCP tools; `gh api -X GET
-search/issues` only for searches by label, paged explicitly (PROCESS.md P1 "Working with GitHub").
-If there are no `work-unit` issues, stop and use the `plan-from-spec` skill instead.
+Repository: `donfuldauer/kilohertz-pinball`. GitHub through MCP tools (with `gh api -X GET
+search/issues` paged explicitly for label searches) or through the `gh` CLI when MCP tools are not
+configured (PROCESS.md P1 "Working with GitHub"). If there are no `work-unit` issues, stop and use
+the `plan-from-spec` skill instead.
 
 ## 0. Resume
 
@@ -18,14 +19,15 @@ If there are no `work-unit` issues, stop and use the `plan-from-spec` skill inst
 2. Read `docs/RUN_LOG.md` (last rows), `docs/HUMAN_QUEUE.md` (anything a person has answered
    since the last run: struck-through P8 lines with a resolution), and the open `work-unit`
    issues' phases and dependencies.
-3. List open PRs you created (`list_pull_requests`). Each open PR is driven to merge (step 4)
-   before new work on the same paths starts, except the PR of an issue labelled
+3. List open PRs you created (`list_pull_requests` or `gh pr list`). Each open PR is driven to
+   merge (step 4) before new work on the same paths starts, except the PR of an issue labelled
    `status:blocked-failure`: it waits for a person and reserves no paths (§1).
-4. Set `FABLE_ALLOWANCE` for this session's classifier calls (PROCESS.md P4): `insufficient` if
-   the session reports a current rate limit, throttling or fallback on Fable; otherwise
-   `unknown`. Re-check it before any call that could route T3. It becomes `sufficient` for an
-   item only through an owner `yes` in a Fable ask (P4: reminder first, one ask per batch, up to
-   30 minutes, per-item answers, no answer means `unknown`).
+4. Set `FABLE_ALLOWANCE` (Claude Code) or T3 availability (Gemini / Antigravity) for this session's
+   classifier calls (PROCESS.md P4): `insufficient` if the session reports a current rate limit,
+   throttling or fallback at T3; otherwise `unknown`. Re-check it before any call that could route
+   T3. In Claude Code, it becomes `sufficient` for an item only through an owner `yes` in a Fable
+   ask (P4: reminder first, one ask per batch, up to 30 minutes, per-item answers, no answer means
+   `unknown`).
 
 ## 1. Pick ready work
 
