@@ -72,10 +72,11 @@ You are **done** when all of these hold on the current `headRefOid`:
    inline thread (outside-diff, additional, or summary items) has a recorded disposition
    (`docs/PROCESS.md` P6 step 3).
 4. **Verification passed:** `headRefOid` has a passing `work-verifier` result (required for any
-   merge under `docs/PROCESS.md` P6 step 5; for a standalone report-only run that does not merge,
-   passing the applicable test and conformance suites suffices when `work-verifier` was not run). If
-   items 1–3 already hold and only verification is missing on `headRefOid`, follow §3.E before
-   proceeding to merge checks or reporting completion.
+   merge under `docs/PROCESS.md` P6 step 5 and for any fix pushed in §3.A before resolving its
+   thread; for a standalone report-only run that pushes no fixes and does not merge, passing the
+   applicable test and conformance suites suffices when `work-verifier` was not run). If
+   verification is missing on `headRefOid`, follow §3.C before proceeding to approval or merge
+   steps.
 
 When all four hold:
 - If invoked from `work-issue`, continue to `work-issue` §7 (merge and unblock).
@@ -105,10 +106,10 @@ Handle the PR state in this order:
    - Failed pre-merge checks (such as PR description checks) → update the PR body with
      `gh pr edit <P> --body ...`.
 3. Update `docs/RUN_LOG.md` (and regenerate `docs/HUMAN_ACCEPTANCE.md` if needed), then commit the
-   fix together with those updates. Re-run verification (`work-verifier` whenever the run will
-   merge; for a standalone report-only run that will not merge, `work-verifier` or all applicable
-   conformance and test suites) on that exact commit so the verified commit is the PR head
-   (`docs/PROCESS.md` P6 step 1), and push it to the PR branch.
+   fix together with those updates. Re-run `work-verifier` on that exact commit, whether or not the
+   run will merge, so the verified commit is the PR head (`docs/PROCESS.md` P6 step 1); if
+   `work-verifier` returns `fail`, fix the failure and re-verify before pushing or resolving
+   threads. Once `work-verifier` returns `pass`, push that commit to the PR branch.
 4. **Reply to every review thread** (reason and evidence first: commit SHA + test output, SPEC /
    PROCESS / DECISIONS citation, or link to the new deferred `work-unit` issue / DECISIONS entry):
    ```sh
@@ -132,48 +133,58 @@ Handle the PR state in this order:
 6. After pushing fixes and resolving threads, schedule the next check-in (§4) so CodeRabbit's
    incremental review and CI can complete on the new head SHA.
 
-### B. All findings resolved and checks green, but CodeRabbit has not approved yet
+### B. Checks or CodeRabbit are still pending or `IN_PROGRESS`
 
-If every thread is replied to and resolved, all CI checks on `headRefOid` are green, CodeRabbit has
-finished reviewing `headRefOid` (no active `IN_PROGRESS` CodeRabbit check), and the only remaining
-blocker is CodeRabbit's `CHANGES_REQUESTED` or withheld automatic approval:
+If any CI check or the CodeRabbit check is still pending, queued, or `IN_PROGRESS` (and no check
+has failed), wait via a non-blocking scheduled check-in (§4).
 
-```sh
-gh pr comment <P> --body "@coderabbitai approve"
-```
+### C. Verification is missing for `headRefOid`
 
-Then schedule the next check-in (§4).
+If all CI checks on `headRefOid` are green, every finding is accounted for and every thread is
+resolved, and no check is pending or `IN_PROGRESS`, but §2 item 4 is not yet satisfied on
+`headRefOid` (whether or not CodeRabbit has approved yet):
 
-### C. CodeRabbit has not reviewed the current head commit
+- **Merge requested (`work-issue` or standalone with an explicit merge request):** start
+  `work-verifier` on `headRefOid`.
+  - If `work-verifier` returns `pass`, re-evaluate §2 and §3 on `headRefOid` (proceeding to §2
+    merge checks if CodeRabbit already approved, or to §3.D / §3.E if CodeRabbit review or approval
+    is still needed).
+  - If `work-verifier` returns `fail`, route and fix the failures under §3.A (commit, verify that
+    exact commit with `work-verifier`, push, and schedule the next check-in in §4).
+- **Standalone report-only run (no merge requested, no fixes pushed):** if neither `work-verifier`
+  nor the applicable test and conformance suites have passed on `headRefOid`, run the applicable
+  suites on `headRefOid`.
+  - If they pass, re-evaluate §2 and §3 on `headRefOid` (stopping and reporting under §2 if
+    CodeRabbit already approved, or continuing to §3.D / §3.E if CodeRabbit review or approval is
+    still needed).
+  - If they fail, route and fix under §3.A (which runs `work-verifier` on the fix commit before
+    pushing and resolving any thread).
 
-If CI has finished (or a check-in has elapsed since the push) and CodeRabbit is neither
-`IN_PROGRESS` nor has reviewed `headRefOid` (for example due to rate limiting):
+### D. CodeRabbit has not reviewed the current head commit
+
+If all CI checks are green, verification has passed (§2 item 4), and CodeRabbit is neither
+pending/`IN_PROGRESS` nor has reviewed `headRefOid` (for example due to rate limiting):
 
 ```sh
 gh pr comment <P> --body "@coderabbitai review"
 ```
 
 Ask at most three times per head commit (`docs/PROCESS.md` P6 step 4). If it still does not review
-after three asks, record the status in `docs/RUN_LOG.md`, stop, and inform the user.
+after three asks, record the status in `docs/RUN_LOG.md`, stop, and inform the user. Otherwise
+schedule the next check-in (§4).
 
-### D. Checks or CodeRabbit are still `IN_PROGRESS`
+### E. All findings resolved, checks green, and verification passed, but CodeRabbit has not approved yet
 
-Wait via a non-blocking scheduled check-in (§4).
+If every finding is accounted for and every thread is resolved, all CI checks on `headRefOid` are
+green, verification has passed (§2 item 4), CodeRabbit has finished reviewing `headRefOid` (no
+pending or `IN_PROGRESS` CodeRabbit check), and the only remaining blocker is CodeRabbit's
+`CHANGES_REQUESTED` or withheld automatic approval:
 
-### E. Checks green and CodeRabbit approved, but verification is missing for `headRefOid`
+```sh
+gh pr comment <P> --body "@coderabbitai approve"
+```
 
-If §2 items 1–3 all hold on `headRefOid` and only §2 item 4 is missing (for example, a standalone
-run started on an already-green, approved PR):
-
-- **Merge requested (`work-issue` or standalone with an explicit merge request):** start
-  `work-verifier` on `headRefOid`.
-  - If `work-verifier` returns `pass`, return to §2 to verify the remaining P6 step 5 merge
-    conditions (`main`'s last push CI green, branch up to date with `main` where required) and merge.
-  - If `work-verifier` returns `fail`, route and fix the failures under §3.A (push a new head,
-    verify that exact head, and schedule the next check-in in §4).
-- **Standalone report-only run (no merge requested):** if neither `work-verifier` nor the applicable
-  test and conformance suites have passed on `headRefOid`, run the applicable suites on `headRefOid`.
-  If they pass, return to §2 to stop and report; if they fail, route and fix under §3.A.
+Then schedule the next check-in (§4).
 
 ## 4. Schedule the next non-blocking check-in
 
