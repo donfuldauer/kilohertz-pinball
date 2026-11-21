@@ -64,12 +64,14 @@
 //!      start of the stall (the start of the last tick before it), so
 //!      `drain_sdl_ns - prev_drain_sdl_ns` is the stall's length;
 //!    * `dropped_ticks_at_apply`: ticks dropped by the catch-up cap so far;
-//!    * `stall`: `1` when the event was stamped inside a stall: a tick
+//!    * `stall`: `1` when the event was stamped inside a stall, that is at or
+//!      after the stall's start and before its end: a tick
 //!      started more than [`STALL_GAP_NS`] after the previous executed tick,
 //!      or ticks were dropped since it, and the applying tick is that tick
 //!      or a later tick of the same catch-up batch (each was already due
-//!      when the tick before it started), and `sdl_ts_ns` is before the
-//!      stall's end. It is derived only from the sim thread's own
+//!      when the tick before it started), and `sdl_ts_ns` is at or after the
+//!      stall's start and before its end (an event stamped before the start
+//!      reached the ring late and keeps the ordinary bound). It is derived only from the sim thread's own
 //!      scheduling and the timestamp, never from the event's lateness;
 //!    * `move_tick`: for a press of an input bound to flippers
 //!      ([`FlipperBindings`]), the first executed tick from the applying
@@ -423,7 +425,9 @@ impl SimTraceWriter {
     /// (the previous tick's drain to this tick's drain). The record is kept
     /// for the later ticks of the same catch-up batch (a tick that was
     /// already due when the previous tick started, `end_ns <=` the previous
-    /// drain) and cleared by the first tick that was not.
+    /// drain) and cleared by the first tick that was not. An event is in the
+    /// stall when it is stamped at or after the stall's start and before its
+    /// end (`delivered`).
     pub fn begin_tick(&mut self, end_ns: u64, before: &FrameStateSnapshot) {
         let drain_ns = (self.clock)();
         self.cur = TickMark {
@@ -454,7 +458,9 @@ impl SimTraceWriter {
         };
         let seq = self.next_seq;
         self.next_seq += 1;
-        let stall = self.stall.filter(|s| ev.timestamp_ns < s.end_drain);
+        let stall = self
+            .stall
+            .filter(|s| (s.start_drain..s.end_drain).contains(&ev.timestamp_ns));
         let rec = InputRecord {
             seq,
             input,
@@ -1701,7 +1707,9 @@ mod tests {
     /// later tick of the catch-up batch is still marked `stall = 1`, with
     /// the stall's start and end as its drain columns, so its allowance is
     /// the stall; a press stamped after the stall ended is not marked, and
-    /// the first on-time tick after the batch ends the stall.
+    /// the first on-time tick after the batch ends the stall. A press
+    /// stamped before the stall's start, delivered by a batch tick, is not
+    /// stalled either (it keeps the ordinary tick gap).
     #[test]
     fn req_lat_004_stall_kept_across_the_catch_up_batch() {
         let ms = TICK_NS;
@@ -1734,6 +1742,13 @@ mod tests {
                     true,
                 ))
                 .unwrap();
+            }
+            if k == 15 {
+                // Stamped at 9 ms, before the stall started (10 ms): it
+                // reached the ring late and is not inside the stall, so it
+                // gets the ordinary tick gap, not the stall length.
+                tx.push(InputEvent::button(9 * ms, CabinetInput::LeftFlipper, false))
+                    .unwrap();
             }
             l.run_ticks(1);
         }
@@ -1768,6 +1783,7 @@ mod tests {
             vec![
                 (13, true, 10 * ms, 30 * ms),
                 (14, true, 10 * ms, 30 * ms),
+                (15, false, 30 * ms + 30_000, 30 * ms + 40_000),
                 (19, false, 30 * ms + 70_000, 31 * ms + 50_000),
                 (19, false, 30 * ms + 70_000, 31 * ms + 50_000),
             ]

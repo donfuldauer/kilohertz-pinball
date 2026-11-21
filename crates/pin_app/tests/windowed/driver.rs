@@ -322,26 +322,104 @@ fn read_all_async(mut r: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> 
     rx
 }
 
-/// Polls `child` until it exits or `deadline`; at the deadline kills and
-/// reaps it and returns an error naming `what`.
-fn wait_bounded(child: &mut Child, deadline: Instant, what: &str) -> Result<ExitStatus, String> {
+/// What [`wait_with`] needs from a child process: a seam so the
+/// kill-at-deadline decision runs under a controlled clock in the headless
+/// tests (PROCESS.md R6).
+pub trait Waitable {
+    /// Non-blocking poll for the exit status.
+    ///
+    /// # Errors
+    /// The poll failed.
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>>;
+    /// Kills the process (errors ignored).
+    fn kill(&mut self);
+    /// Reaps the process (errors ignored).
+    fn reap(&mut self);
+}
+
+impl Waitable for Child {
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        Child::try_wait(self)
+    }
+    fn kill(&mut self) {
+        let _ = Child::kill(self);
+    }
+    fn reap(&mut self) {
+        let _ = Child::wait(self);
+    }
+}
+
+/// Polls `w` until it exits or `now()` (a monotonic time since a fixed
+/// start) reaches `deadline`; between polls calls `pause`. At the deadline,
+/// or when a poll fails, kills and reaps `w` once and returns an error
+/// naming `what`.
+///
+/// # Errors
+/// The poll failed, or the deadline passed (the error contains "killed").
+pub fn wait_with<W: Waitable>(
+    w: &mut W,
+    deadline: Duration,
+    now: &mut dyn FnMut() -> Duration,
+    pause: &mut dyn FnMut(),
+    what: &str,
+) -> Result<ExitStatus, String> {
     loop {
-        match child.try_wait() {
+        match w.try_wait() {
             Ok(Some(st)) => return Ok(st),
             Ok(None) => {}
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("{what}: {e}"));
+                w.kill();
+                w.reap();
+                return Err(format!("{what}: {e}; killed"));
             }
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+        if now() >= deadline {
+            w.kill();
+            w.reap();
             return Err(format!("{what}: no exit within its deadline; killed"));
         }
-        std::thread::sleep(Duration::from_millis(5));
+        pause();
     }
+}
+
+/// Polls `child` until it exits or `deadline`; at the deadline kills and
+/// reaps it and returns an error naming `what` (the real clock over
+/// [`wait_with`]).
+fn wait_bounded(child: &mut Child, deadline: Instant, what: &str) -> Result<ExitStatus, String> {
+    let start = Instant::now();
+    let limit = deadline.saturating_duration_since(start);
+    wait_with(
+        child,
+        limit,
+        &mut || start.elapsed(),
+        &mut || std::thread::sleep(Duration::from_millis(5)),
+        what,
+    )
+}
+
+/// Real-process evidence for the bounded runner (windowed run only: it
+/// measures wall time, which headless tests never do, PROCESS.md R6): a
+/// helper that never exits is killed at its deadline in under 5 s, and a
+/// short one returns its output.
+///
+/// # Errors
+/// Any of those checks failed.
+pub fn self_check_bounded_runner() -> Result<(), String> {
+    let t = Instant::now();
+    let e = run_bounded(Command::new("sleep").arg("30"), Duration::from_millis(300))
+        .err()
+        .ok_or("bounded runner: `sleep 30` was not killed")?;
+    if !e.contains("killed") {
+        return Err(format!("bounded runner: error without \"killed\": {e}"));
+    }
+    if t.elapsed() >= Duration::from_secs(5) {
+        return Err(format!("bounded runner: kill took {:?}", t.elapsed()));
+    }
+    let out = run_bounded(Command::new("echo").arg("hi"), Duration::from_secs(5))?;
+    if !out.status.success() || out.stdout != "hi\n" {
+        return Err(format!("bounded runner: `echo hi` gave {out:?}"));
+    }
+    Ok(())
 }
 
 /// What a bounded helper printed.
@@ -588,6 +666,75 @@ struct Driven {
     exit: ExitStatus,
 }
 
+/// Marks `k` held BEFORE `send` runs its key-down, so a key-down that
+/// fails after reaching the X server is still released.
+///
+/// # Errors
+/// What `send` returned.
+pub fn key_down(
+    held: &mut [bool; 2],
+    k: Key,
+    mut send: impl FnMut(Key) -> Result<(), String>,
+) -> Result<(), String> {
+    held[usize::from(k == Key::Right)] = true;
+    send(k)
+}
+
+/// Sends `k`'s key-up; `k` counts as released once it succeeds (a failed
+/// key-up stays held, for [`release_held`] to retry).
+///
+/// # Errors
+/// What `send` returned.
+pub fn key_up(
+    held: &mut [bool; 2],
+    k: Key,
+    mut send: impl FnMut(Key) -> Result<(), String>,
+) -> Result<(), String> {
+    send(k)?;
+    held[usize::from(k == Key::Right)] = false;
+    Ok(())
+}
+
+/// Attempts a key-up for every key in `held` (never stopping at the first
+/// failure), clears `held` and returns the failed releases.
+pub fn release_held(
+    held: &mut [bool; 2],
+    mut send: impl FnMut(Key) -> Result<(), String>,
+) -> Vec<(Key, String)> {
+    let mut failed = Vec::new();
+    for (i, k) in [Key::Left, Key::Right].into_iter().enumerate() {
+        if held[i] {
+            if let Err(e) = send(k) {
+                failed.push((k, e));
+            }
+            held[i] = false;
+        }
+    }
+    failed
+}
+
+/// Combines the injection result with the failed releases: the original
+/// error is returned unchanged (release failures are logged); a release
+/// failure after a successful injection becomes `key release: ...`.
+///
+/// # Errors
+/// The injection error, or the release failures.
+pub fn finish_injection(
+    injection: Result<(), String>,
+    failed: &[(Key, String)],
+) -> Result<(), String> {
+    for (k, e) in failed {
+        eprintln!("windowed: key release failed for {k:?}: {e}");
+    }
+    injection?;
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        let list: Vec<String> = failed.iter().map(|(k, e)| format!("{k:?}: {e}")).collect();
+        Err(format!("key release: {}", list.join("; ")))
+    }
+}
+
 /// Steps 1 to 4 of a run, after the app started: first frame, window,
 /// presses, exit. Errors leave the app to the caller (killed there).
 fn drive(
@@ -659,44 +806,44 @@ fn drive(
     // A late step (a slow capture) shifts every later step by its delay,
     // so holds and gaps keep their planned lengths.
     let mut slip = Duration::ZERO;
-    for a in &plan {
-        let due = plan_start + Duration::from_micros(a.at_us) + slip;
-        let now = Instant::now();
-        if now < due {
-            std::thread::sleep(due - now);
-        } else {
-            slip += now - due;
-        }
-        let idx = |k: Key| usize::from(k == Key::Right);
-        match a.step {
-            Step::Down(k) => {
-                if Instant::now() >= press_end {
-                    break;
+    let send = |verb: &str, k: Key| xdotool(display, &[verb, k.keycode()]).map(drop);
+    // Whatever happens in the loop (done, press_end, an error), every key
+    // that may be down is released before `drive` returns.
+    let injection = (|| -> Result<(), String> {
+        for a in &plan {
+            let due = plan_start + Duration::from_micros(a.at_us) + slip;
+            let now = Instant::now();
+            if now < due {
+                std::thread::sleep(due - now);
+            } else {
+                slip += now - due;
+            }
+            match a.step {
+                Step::Down(k) => {
+                    if Instant::now() >= press_end {
+                        break;
+                    }
+                    key_down(&mut held, k, |k| send("keydown", k))
+                        .map_err(|e| format!("key injection: {e}"))?;
+                    injected += 1;
                 }
-                xdotool(display, &["keydown", k.keycode()])
-                    .map_err(|e| format!("key injection: {e}"))?;
-                held[idx(k)] = true;
-                injected += 1;
-            }
-            Step::Up(k) => {
-                xdotool(display, &["keyup", k.keycode()])
-                    .map_err(|e| format!("key injection: {e}"))?;
-                held[idx(k)] = false;
-            }
-            Step::Shot(name) => {
-                let p = cfg.out_dir.join(name);
-                match screenshot(display, &p) {
-                    Ok(()) => shots.push(p),
-                    Err(e) => eprintln!("windowed: {e}"),
+                Step::Up(k) => {
+                    key_up(&mut held, k, |k| send("keyup", k))
+                        .map_err(|e| format!("key injection: {e}"))?;
+                }
+                Step::Shot(name) => {
+                    let p = cfg.out_dir.join(name);
+                    match screenshot(display, &p) {
+                        Ok(()) => shots.push(p),
+                        Err(e) => eprintln!("windowed: {e}"),
+                    }
                 }
             }
         }
-    }
-    for (i, k) in [Key::Left, Key::Right].into_iter().enumerate() {
-        if held[i] {
-            xdotool(display, &["keyup", k.keycode()]).map_err(|e| format!("key injection: {e}"))?;
-        }
-    }
+        Ok(())
+    })();
+    let failed = release_held(&mut held, |k| send("keyup", k));
+    finish_injection(injection, &failed)?;
     eprintln!("windowed: injected {injected} presses");
 
     // 4. The app ends by itself (`--run-ms`); bounded.

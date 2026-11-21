@@ -7632,10 +7632,18 @@ run's end is the trace's `run_end_ns`.
   the tick end, so an event in the ring cannot be skipped, and the trace has no receipt time to
   tell a late arrival from a skipped one. Tracked in a follow-up work-unit issue: the platform
   forwarder's receipt stamp in the trace.
-- **`stall`** is 1 when the press was stamped before the end of a stall the sim thread observed (a
+  Check a's coil sub-check bounds `move_tick - apply_tick`, where `move_tick` is the first tick
+  with at least 1 degree of raised-direction bat displacement. It is a proxy for the tick the coil
+  is energised, because neither `FrameStateSnapshot`/`FlipperState` (pin_core) nor `SimStep` exposes
+  the coil state and #82 may not change a pin_core contract (R2). A coil energised late but within
+  the bound of `move_tick` still passes, so the bound (`coil_ticks`, 8, measured maximum 6 plus a
+  margin of 2) is kept tight. The exact coil-energisation tick is tracked in a follow-up work-unit
+  issue.
+- **`stall`** is 1 when the press was stamped at or after the start and before the end of a stall the sim thread observed (a
   tick that started more than 2 ms after the previous executed tick, or after dropped ticks) and was
   applied in that tick or in a later tick of the same catch-up batch (each was due when the tick
-  before it started). The row's `prev_drain_sdl_ns` / `drain_sdl_ns` are then the stall's start and
+  before it started); a press stamped before the stall's start reached the ring late and keeps the
+  ordinary bound. The row's `prev_drain_sdl_ns` / `drain_sdl_ns` are then the stall's start and
   end, so the allowance `drain - prev_drain` is the stall unchanged. It comes from the sim thread's
   own scheduling and the timestamp, never from the lateness; the verdict's allowance depends only on
   those two columns, so a wrong flag buys nothing.
