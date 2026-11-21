@@ -1,6 +1,6 @@
 ---
 name: task-executor
-description: "Executes one delegated unit of Kilohertz Pinball work strictly from its brief: implementing a work-unit issue (Implementer), writing independent black-box and property tests without seeing the implementation (Independent Tester), applying a fix or a CodeRabbit finding (Fixer), or editing docs. Use after the work-classifier has routed the work; the Orchestrator passes the classifier's model as the Agent `model` override."
+description: "Executes one delegated unit of Kilohertz Pinball work strictly from its brief: implementing a work-unit issue (Implementer), writing independent black-box and property tests without seeing the implementation (Independent Tester), applying a fix or a CodeRabbit finding (Fixer), or editing docs. Use after the work-classifier has routed the work; the Orchestrator passes the classifier's model tier override."
 tools: Read, Edit, Write, Grep, Glob, Bash
 model: opus
 ---

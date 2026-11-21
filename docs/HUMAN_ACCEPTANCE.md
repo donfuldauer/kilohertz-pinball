@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 10
 - Resolved queue lines: 323
-- Decision entries: 470
-- Run-log rows: 498
+- Decision entries: 475
+- Run-log rows: 503
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -514,6 +514,11 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - Process: Claude Code ask rules keep only destructive commands (docs/DECISIONS.md)
 - PR #142: Feature Lab bb_catch no longer returns a ball into the closed pocket (docs/DECISIONS.md)
 - Process: Next session starts from a merged issue/ PR (self-chaining superseded) (docs/DECISIONS.md)
+- #81: Input epoch: events re-stamped onto the tick clock (docs/DECISIONS.md)
+- #81: HUD rate lines stay outside `hud_lines` (docs/DECISIONS.md)
+- #81 tester: Input-epoch acceptance: full sweep, haptics observation, thread-test isolation (docs/DECISIONS.md)
+- #81-review-1: Profiler latency from the raw SDL stamp (docs/DECISIONS.md)
+- Process: Dual-harness agent documentation (Claude Code and Gemini/Antigravity) (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

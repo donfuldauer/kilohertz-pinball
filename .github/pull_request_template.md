@@ -38,5 +38,6 @@ Closes #<!-- issue number -->
 
 ## Model routing
 
-<!-- tiers used; every Fable 5.2 use with its P4 evidence (need, why Opus was not enough,
-     allowance: the owner's answer and time); [Fable wanted] notes -->
+<!-- harness and tiers used; every T3 / Fable 5.2 use with its P4 evidence (need, why T2 was not
+     enough, allowance: the owner's answer and time on Claude Code or plan/quota on Gemini /
+     Antigravity); [Fable wanted] / [T3 wanted] notes -->
