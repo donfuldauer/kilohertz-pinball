@@ -1248,22 +1248,24 @@ fn render_thread(
                     // No profiler, no HUD: the default frames, unchanged.
                     None => set.render(&lines, &camera),
                 };
+                paced = set.frame_paced(&st);
                 if let Some(t) = latency_trace.as_mut() {
-                    t.presented(&st, last_tick);
+                    // A trace frame only when the playfield presented.
+                    t.presented(paced, last_tick);
                 }
                 stats.record_statuses(&st, spawned);
-                paced = set.frame_paced(&st);
             }
             Some(Presenter::Table(_, s)) => {
                 if let Some(lines) = refresh_hud(hud.as_mut(), &mut fps, stats) {
                     s.set_hud_lines(&lines);
                 }
                 let st = s.render(snap);
+                paced = s.frame_paced(&st);
                 if let Some(t) = latency_trace.as_mut() {
-                    t.presented(&st, last_tick);
+                    // A trace frame only when the playfield presented.
+                    t.presented(paced, last_tick);
                 }
                 stats.record_statuses(&st, spawned);
-                paced = s.frame_paced(&st);
             }
             None => {}
         }

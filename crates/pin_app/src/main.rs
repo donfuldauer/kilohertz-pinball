@@ -43,9 +43,12 @@
 //!   frame that drew it and that frame's present time, plus the presented
 //!   frame table, into preallocated rings
 //!   (`orchestrator::trace`, which documents the CSV format). The file is
-//!   created before anything starts (an unwritable path fails the run with
-//!   `pin_app: --latency-trace: <error>`), written on the main thread after
-//!   the threads were joined, and summarised after the shutdown lines as
+//!   opened before anything starts (an unwritable path fails the run with
+//!   `pin_app: --latency-trace: <error>`, a value starting with `--` with
+//!   `pin_app: --latency-trace needs a path`, and the `--table` bundle file
+//!   itself is refused unmodified), written on the main thread after the
+//!   threads were joined, with the run's end on the SDL clock read when the
+//!   run loop ended (`# run_end_ns=`), and summarised after the shutdown lines as
 //!   `pin_app: latency trace: <path>, <n> events, <m> frames, <k>
 //!   overflows`. While tracing, the main thread prints `pin_app: latency
 //!   trace: first frame presented` once the first frame was presented (the
@@ -286,15 +289,56 @@ fn merge_failure(earlier: Option<String>, join_error: Option<String>) -> Option<
     }
 }
 
-/// `--latency-trace <file>`: the path and the file, created (truncated)
-/// now so an unwritable path fails before the app starts.
+/// Whether `a` and `b` are the same file (same device and inode).
+#[cfg(unix)]
+fn same_file(a: &std::fs::Metadata, _: &Path, b: &std::fs::Metadata, _: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+/// Whether `a` and `b` are the same file (same canonical path).
+#[cfg(not(unix))]
+fn same_file(_: &std::fs::Metadata, a: &Path, _: &std::fs::Metadata, b: &Path) -> bool {
+    matches!(
+        (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+        (Ok(x), Ok(y)) if x == y
+    )
+}
+
+/// `--latency-trace <file>`: the path and the file, opened now so an
+/// unwritable path fails before the app starts. A value that starts with
+/// `--` is an option, not a path (`./--x` is a path). The file is opened
+/// without truncation, compared with the `--table` path (when that is an
+/// existing file: a `.zip` bundle), and only truncated when it is a
+/// different file, so the trace can never overwrite the table bundle.
 fn open_latency_trace(args: &[String]) -> Result<Option<(PathBuf, std::fs::File)>, String> {
     let Some(path) = path_of(args, "--latency-trace") else {
         return Ok(None);
     };
     let path = path.map_err(|e| format!("--latency-trace: {e}"))?;
-    let file = std::fs::File::create(&path)
-        .map_err(|e| format!("--latency-trace: {}: {e}", path.display()))?;
+    if path.to_str().is_some_and(|p| p.starts_with("--")) {
+        return Err("--latency-trace needs a path".to_owned());
+    }
+    let io = |e: std::io::Error| format!("--latency-trace: {}: {e}", path.display());
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(io)?;
+    if let Some(Ok(table)) = path_of(args, "--table")
+        && let Ok(tm) = std::fs::metadata(&table)
+        && tm.is_file()
+    {
+        let fm = file.metadata().map_err(io)?;
+        if same_file(&fm, &path, &tm, &table) {
+            return Err(format!(
+                "--latency-trace: {} is the --table bundle",
+                path.display()
+            ));
+        }
+    }
+    file.set_len(0).map_err(io)?;
     Ok(Some((path, file)))
 }
 
@@ -467,7 +511,8 @@ fn run_app(args: &[String]) -> Result<(), String> {
             break;
         }
         let live = threads.stats();
-        if trace.is_some() && !first_frame_announced && live.render_frames > 0 {
+        // Only a playfield present (the trace's own frame count) raises it.
+        if !first_frame_announced && trace.as_ref().is_some_and(|t| t.frames_presented() > 0) {
             first_frame_announced = true;
             eprintln!("pin_app: latency trace: first frame presented");
         }
@@ -494,6 +539,9 @@ fn run_app(args: &[String]) -> Result<(), String> {
             None => {}
         }
     }
+    // The run's end on the trace clock (`# run_end_ns`), read once the loop
+    // ended, before the threads are joined.
+    let run_end_ns = sdl_now_ns();
     // 1. Join the engine threads (the render thread drops the surfaces; a
     //    presenter stalled past PRESENTER_JOIN_TIMEOUT is detached and keeps
     //    its guard).
@@ -512,7 +560,7 @@ fn run_app(args: &[String]) -> Result<(), String> {
     // on the main thread.
     let trace_summary = match (trace, trace_file.as_mut()) {
         (Some(collector), Some((path, file))) => {
-            let collected = collector.collect();
+            let collected = collector.collect(run_end_ns);
             match write_latency_trace(file, &collected) {
                 Ok(()) => Some(summary_line(path, &collected)),
                 Err(e) => {
@@ -606,6 +654,69 @@ mod tests {
             .unwrap();
         assert_eq!(path, p);
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "", "truncated");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003: a token after `--latency-trace` that starts with `--`
+    /// is an option, not a path: rejected before any file is created; an
+    /// explicit relative path `./--x` stays a path.
+    #[test]
+    fn req_lat_003_latency_trace_rejects_an_option_as_its_path() {
+        let e = open_latency_trace(&args(&["--latency-trace", "--run-ms", "5"])).unwrap_err();
+        assert_eq!(e, "--latency-trace needs a path");
+        assert!(
+            !std::path::Path::new("--run-ms").exists(),
+            "no file created"
+        );
+        let name = format!("./--kp002-trace-{}.csv", std::process::id());
+        let (path, _file) = open_latency_trace(&args(&["--latency-trace", &name]))
+            .unwrap()
+            .unwrap();
+        assert!(path.is_file());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// REQ-LAT-003: a trace path that is the `--table` bundle file (through
+    /// a symlink or a hard link) is refused and the bundle is left
+    /// byte-for-byte unchanged; a distinct path is truncated; a `--table`
+    /// directory never aliases the trace file.
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_latency_trace_never_overwrites_the_table_bundle() {
+        let dir = std::env::temp_dir().join(format!("kp_trace_alias_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bundle = dir.join("table.zip");
+        let bytes = b"PK\x03\x04 bundle bytes".to_vec();
+        std::fs::write(&bundle, &bytes).unwrap();
+        let sym = dir.join("sym.csv");
+        std::os::unix::fs::symlink(&bundle, &sym).unwrap();
+        let hard = dir.join("hard.csv");
+        std::fs::hard_link(&bundle, &hard).unwrap();
+        let b = bundle.to_str().unwrap();
+        for alias in [&sym, &hard, &bundle] {
+            let a = alias.to_str().unwrap();
+            let e = open_latency_trace(&args(&["--table", b, "--latency-trace", a])).unwrap_err();
+            assert_eq!(e, format!("--latency-trace: {a} is the --table bundle"));
+            assert_eq!(std::fs::read(&bundle).unwrap(), bytes, "bundle unchanged");
+        }
+        // A distinct file next to it: opened and truncated.
+        let other = dir.join("trace.csv");
+        std::fs::write(&other, "old trace").unwrap();
+        let o = other.to_str().unwrap();
+        let (path, _f) = open_latency_trace(&args(&["--table", b, "--latency-trace", o]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(path, other);
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "");
+        assert_eq!(std::fs::read(&bundle).unwrap(), bytes);
+        // A bundle directory: no alias check applies.
+        let d = dir.to_str().unwrap();
+        assert!(
+            open_latency_trace(&args(&["--table", d, "--latency-trace", o]))
+                .unwrap()
+                .is_some()
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

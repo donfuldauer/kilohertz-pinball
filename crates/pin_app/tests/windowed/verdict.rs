@@ -8,9 +8,12 @@
 //! (`CollectedTrace::parse`) so a formatting bug in the app cannot hide
 //! behind a shared parser.
 //!
-//! # Checks (DECISIONS "#82 — windowed latency check definitions")
+//! # Checks (DECISIONS "#82 — Windowed latency check definitions")
 //!
 //! Only presses are checked: down events of the four flipper inputs.
+//! `move_tick` (the app's trace) is the first tick at whose end a bound bat
+//! is raised at least 1 degree (0.01745 rad) from its angle at the applying
+//! tick's start, in its energised direction.
 //!
 //! * **a. Key to coil (REQ-LAT-004, REQ-LAT-005).** For every press:
 //!   `apply_tick_end_sdl_ns >= sdl_ts_ns` (never applied before its
@@ -18,18 +21,23 @@
 //!   [`TICK_NS`] + [`Params::tolerance_ns`] (the main thread's forwarding
 //!   delay and the sim thread's wake-up latency), plus, for a press with
 //!   `stall = 1`, the observed stall `drain_sdl_ns - prev_drain_sdl_ns` and
-//!   no more; and the press took effect in the applying tick: its bat moved
-//!   at most [`Params::coil_ticks`] ticks after `apply_tick` (the coil is
-//!   energised in the applying tick, REQ-LAT-005).
+//!   no more; and the press took effect in the applying tick: its bat was
+//!   raised at most [`Params::coil_ticks`] ticks after `apply_tick`. A press
+//!   whose bat never moved fails, unless its applying tick ended within
+//!   `coil_ticks + 2` ticks of the run's end (`run_end_ns`).
 //! * **b. Key to photon in frames (REQ-LAT-001, CI form).** For every press
-//!   except those in the final [`Params::end_exclusion_ns`] of the run
-//!   (excluded and counted): the bat moved and a frame drew it, and
-//!   `frame - F0 <= 2`, where `frame` is the first presented frame whose
-//!   snapshot tick is `>= move_tick` and `F0` the last presented frame whose
-//!   present time is at or before the moment REQ-LAT-004 lets the bat start
-//!   moving: `sdl_ts_ns` + the press's check-a bound + `coil_ticks` ticks
-//!   (0 when none). The trace's raw `frames_to_photon` (F0 at `sdl_ts_ns`)
-//!   is reported as information.
+//!   except those stamped within [`Params::end_exclusion_ns`] of `run_end_ns`
+//!   (excluded and counted): `frame` is the first presented frame whose
+//!   snapshot tick is in `[move_tick, release_tick]` (the next release of the
+//!   same input; unbounded without one), i.e. a frame that showed the bat
+//!   raised while held; `n_raw = frame - F0`, `F0` the last frame presented
+//!   at or before `sdl_ts_ns`; pass when `n_raw <= 2`. One allowance: when
+//!   the frame in flight at the press (the first frame presented after
+//!   `sdl_ts_ns`) was presented at or before `sdl_ts_ns + bound_a +
+//!   coil_ticks` ticks (it could not show the press), the count may start
+//!   after it, `n_adj = frame - in_flight`, and the press passes when
+//!   `n_adj <= 2` (counted as "in-flight shifted"). Never more than one
+//!   frame, and never for a press that failed check a.
 //! * **c. Real time (REQ-LAT-002, CI form).** From the shutdown line:
 //!   `D / (N + D) <= 0.001`, and `N` within 1 % of the expected run length
 //!   (so a run that died early cannot pass).
@@ -52,6 +60,10 @@ prev_tick_end_sdl_ns,drain_sdl_ns,prev_drain_sdl_ns,dropped_ticks_at_apply,stall
 frame,frame_snap_tick,present_ns,frames_to_photon";
 /// Frame-table header.
 pub const FRAME_HEADER: &str = "frame,snap_tick,present_ns";
+/// Prefix of the trailer's overflow line.
+pub const OVERFLOW_PREFIX: &str = "# overflows:";
+/// Prefix of the trailer's run-end line.
+pub const RUN_END_PREFIX: &str = "# run_end_ns=";
 
 /// One event row.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -96,6 +108,8 @@ pub struct Trace {
     pub frames: Vec<Frame>,
     /// Sum of the trailer's overflow counters.
     pub overflows: u64,
+    /// The run loop's end on the trace clock (`# run_end_ns=`).
+    pub run_end_ns: u64,
 }
 
 /// `r` with the trace line number in its error.
@@ -123,88 +137,129 @@ fn flag(s: &str) -> Result<bool, String> {
     }
 }
 
+/// Parses the overflow line's counters (after [`OVERFLOW_PREFIX`]): each
+/// of `input`, `move`, `frame`, `pending` exactly once, nothing else.
+fn parse_overflows(rest: &str) -> Result<u64, String> {
+    let mut seen = [false; 4];
+    let mut sum = 0u64;
+    for kv in rest.split_whitespace() {
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or_else(|| format!("trailer field {kv:?}"))?;
+        let i = ["input", "move", "frame", "pending"]
+            .iter()
+            .position(|n| *n == k)
+            .ok_or_else(|| format!("unknown trailer counter {k:?}"))?;
+        if seen[i] {
+            return Err(format!("trailer counter {k:?} twice"));
+        }
+        seen[i] = true;
+        sum = sum.saturating_add(int(v)?);
+    }
+    if seen.contains(&false) {
+        return Err("trailer needs input, move, frame and pending".into());
+    }
+    Ok(sum)
+}
+
 /// Parses a trace file's text. Never panics.
 ///
 /// # Errors
-/// Missing headers or trailer, wrong field counts, non-integer fields.
+/// Missing headers or trailer lines, a frame row or trailer before the
+/// frame header, a missing, duplicate or unknown overflow counter, a
+/// missing `run_end_ns` line, wrong field counts, non-integer fields, text
+/// after the trailer.
 pub fn parse_trace(text: &str) -> Result<Trace, String> {
+    #[derive(PartialEq)]
+    enum Part {
+        Events,
+        FrameHeader,
+        Frames,
+        RunEnd,
+        Done,
+    }
     let mut lines = text.lines();
     if lines.next() != Some(EVENT_HEADER) {
         return Err("trace: missing event header".into());
     }
     let mut t = Trace::default();
-    let mut in_events = true;
-    let mut trailer = false;
+    let mut part = Part::Events;
     for (i, line) in lines.enumerate() {
         let n = i + 2;
-        if trailer {
-            if !line.trim().is_empty() {
-                return Err(format!("trace line {n}: text after the trailer"));
+        match part {
+            Part::Events => {
+                if line.is_empty() {
+                    part = Part::FrameHeader;
+                    continue;
+                }
+                let f: Vec<&str> = line.split(',').collect();
+                if f.len() != 16 {
+                    return Err(format!("trace line {n}: {} fields, want 16", f.len()));
+                }
+                t.rows.push(Row {
+                    seq: at(n, int(f[0]))?,
+                    input: f[1].to_owned(),
+                    down: at(n, flag(f[2]))?,
+                    sdl_ts_ns: at(n, int(f[3]))?,
+                    apply_tick: at(n, int(f[4]))?,
+                    apply_tick_end_sdl_ns: at(n, int(f[5]))?,
+                    prev_tick_end_sdl_ns: at(n, int(f[6]))?,
+                    drain_sdl_ns: at(n, int(f[7]))?,
+                    prev_drain_sdl_ns: at(n, int(f[8]))?,
+                    dropped_ticks_at_apply: at(n, int(f[9]))?,
+                    stall: at(n, flag(f[10]))?,
+                    move_tick: at(n, opt(f[11]))?,
+                    frame: at(n, opt(f[12]))?,
+                    frame_snap_tick: at(n, opt(f[13]))?,
+                    present_ns: at(n, opt(f[14]))?,
+                    frames_to_photon: at(n, opt(f[15]))?,
+                });
             }
-            continue;
-        }
-        if in_events {
-            if line.is_empty() {
-                in_events = false;
-                continue;
+            Part::FrameHeader => {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if line != FRAME_HEADER {
+                    return Err(format!("trace line {n}: frame header missing"));
+                }
+                part = Part::Frames;
             }
-            let f: Vec<&str> = line.split(',').collect();
-            if f.len() != 16 {
-                return Err(format!("trace line {n}: {} fields, want 16", f.len()));
+            Part::Frames => {
+                if let Some(rest) = line.strip_prefix(OVERFLOW_PREFIX) {
+                    t.overflows = at(n, parse_overflows(rest))?;
+                    part = Part::RunEnd;
+                    continue;
+                }
+                let f: Vec<&str> = line.split(',').collect();
+                if f.len() != 3 {
+                    return Err(format!("trace line {n}: frame row needs 3 fields"));
+                }
+                t.frames.push(Frame {
+                    frame: at(n, int(f[0]))?,
+                    snap_tick: at(n, int(f[1]))?,
+                    present_ns: at(n, int(f[2]))?,
+                });
             }
-            t.rows.push(Row {
-                seq: at(n, int(f[0]))?,
-                input: f[1].to_owned(),
-                down: at(n, flag(f[2]))?,
-                sdl_ts_ns: at(n, int(f[3]))?,
-                apply_tick: at(n, int(f[4]))?,
-                apply_tick_end_sdl_ns: at(n, int(f[5]))?,
-                prev_tick_end_sdl_ns: at(n, int(f[6]))?,
-                drain_sdl_ns: at(n, int(f[7]))?,
-                prev_drain_sdl_ns: at(n, int(f[8]))?,
-                dropped_ticks_at_apply: at(n, int(f[9]))?,
-                stall: at(n, flag(f[10]))?,
-                move_tick: at(n, opt(f[11]))?,
-                frame: at(n, opt(f[12]))?,
-                frame_snap_tick: at(n, opt(f[13]))?,
-                present_ns: at(n, opt(f[14]))?,
-                frames_to_photon: at(n, opt(f[15]))?,
-            });
-            continue;
-        }
-        if line == FRAME_HEADER && t.frames.is_empty() {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("# overflows:") {
-            for kv in rest.split_whitespace() {
-                let (_, v) = kv
-                    .split_once('=')
-                    .ok_or_else(|| format!("trace line {n}: trailer field {kv:?}"))?;
-                t.overflows = t
-                    .overflows
-                    .saturating_add(int(v).map_err(|e| format!("trace line {n}: {e}"))?);
+            Part::RunEnd => {
+                let v = line
+                    .strip_prefix(RUN_END_PREFIX)
+                    .ok_or_else(|| format!("trace line {n}: run_end_ns line missing"))?;
+                t.run_end_ns = at(n, int(v))?;
+                part = Part::Done;
             }
-            trailer = true;
-            continue;
+            Part::Done => {
+                if !line.trim().is_empty() {
+                    return Err(format!("trace line {n}: text after the trailer"));
+                }
+            }
         }
-        let f: Vec<&str> = line.split(',').collect();
-        if f.len() != 3 {
-            return Err(format!("trace line {n}: frame row needs 3 fields"));
-        }
-        let e = |r: Result<u64, String>| r.map_err(|e| format!("trace line {n}: {e}"));
-        t.frames.push(Frame {
-            frame: e(int(f[0]))?,
-            snap_tick: e(int(f[1]))?,
-            present_ns: e(int(f[2]))?,
-        });
     }
-    if in_events {
-        return Err("trace: missing frame table".into());
+    match part {
+        Part::Done => Ok(t),
+        Part::Events | Part::FrameHeader => Err("trace: missing frame table".into()),
+        Part::Frames => Err("trace: missing trailer (truncated file?)".into()),
+        Part::RunEnd => Err("trace: missing run_end_ns line (malformed trace)".into()),
     }
-    if !trailer {
-        return Err("trace: missing trailer (truncated file?)".into());
-    }
-    Ok(t)
 }
 
 /// The shutdown counters.
@@ -248,11 +303,12 @@ pub fn parse_shutdown(stderr: &str) -> Result<Shutdown, String> {
 pub struct Params {
     /// Forwarding plus wake-up tolerance on top of one tick (check a).
     pub tolerance_ns: u64,
-    /// Ticks after the applying tick within which the bat must move.
+    /// Ticks after the applying tick within which the bat must be raised
+    /// 1 degree (`move_tick - apply_tick`).
     pub coil_ticks: u64,
     /// Most presented frames from the press to the frame showing it.
     pub max_frames: u64,
-    /// Presses this close to the end of the run are excluded from check b.
+    /// Presses stamped this close to `run_end_ns` are excluded from check b.
     pub end_exclusion_ns: u64,
     /// The run's expected sim ticks (60 s: 60 000).
     pub expected_ticks: u64,
@@ -266,7 +322,10 @@ impl Default for Params {
     fn default() -> Self {
         Self {
             tolerance_ns: 2_000_000,
-            coil_ticks: 2,
+            // Measured max 6 ticks (1 degree raise) over 500 presses of
+            // three 60 s head runs, plus 2 ticks of margin (DECISIONS "#82 —
+            // Windowed latency check definitions").
+            coil_ticks: 8,
             max_frames: 2,
             end_exclusion_ns: 500_000_000,
             expected_ticks: 60_000,
@@ -298,10 +357,14 @@ pub struct Summary {
     pub late_arrivals: usize,
     pub max_lateness_ns: u64,
     pub min_slack_ns: i64,
-    pub max_frames_checked: u64,
-    pub p99_frames_checked: u64,
+    /// `n_raw` (frames from the frame presented at or before the press).
     pub max_frames_raw: u64,
     pub p99_frames_raw: u64,
+    /// The gated count: `n_adj` for a shifted press, else `n_raw`.
+    pub max_frames_adjusted: u64,
+    pub p99_frames_adjusted: u64,
+    /// Presses that needed the one-frame in-flight allowance.
+    pub in_flight_shifted: usize,
     pub p50_photon_ms: f64,
     pub p99_photon_ms: f64,
     pub max_coil_ticks: u64,
@@ -353,6 +416,61 @@ pub fn last_frame_at_or_before(frames: &[Frame], t: u64) -> u64 {
         .map_or(0, |f| f.frame)
 }
 
+/// For each row, the `apply_tick` of the next release (`down = 0`) of the
+/// same input after it (`None` when there is none).
+pub fn release_ticks(rows: &[Row]) -> Vec<Option<u64>> {
+    let mut out = vec![None; rows.len()];
+    for (i, r) in rows.iter().enumerate() {
+        out[i] = rows[i + 1..]
+            .iter()
+            .find(|x| !x.down && x.input == r.input)
+            .map(|x| x.apply_tick);
+    }
+    out
+}
+
+/// The first frame whose snapshot tick is in `[move_tick, release]`
+/// (`release` `None`: unbounded): the first frame that showed the bat
+/// raised while the key was held.
+pub fn frame_showing(frames: &[Frame], move_tick: u64, release: Option<u64>) -> Option<&Frame> {
+    let until = release.unwrap_or(u64::MAX);
+    frames
+        .iter()
+        .find(|f| f.snap_tick >= move_tick && f.snap_tick <= until)
+}
+
+/// Check b's frame count for one press: `(n_raw, gated, shifted)`.
+/// `n_raw = frame - F0` (`F0` the last frame presented at or before `ts`).
+/// When `n_raw > max_frames`, `allow_shift`, the frame in flight at the
+/// press (the first presented after `ts`) was presented at or before
+/// `deadline`, and counting after it gives `frame - in_flight <=
+/// max_frames`, the press needed the shift: `gated = frame - in_flight`,
+/// `shifted = true`. Otherwise `gated = n_raw` (at most one frame of
+/// allowance, never a second).
+pub fn frame_count(
+    frames: &[Frame],
+    ts: u64,
+    frame: u64,
+    deadline: u64,
+    max_frames: u64,
+    allow_shift: bool,
+) -> (u64, u64, bool) {
+    let raw = frame.saturating_sub(last_frame_at_or_before(frames, ts));
+    if raw <= max_frames || !allow_shift {
+        return (raw, raw, false);
+    }
+    match frames.iter().find(|f| f.present_ns > ts) {
+        Some(in_flight)
+            if in_flight.present_ns <= deadline
+                && in_flight.frame < frame
+                && frame - in_flight.frame <= max_frames =>
+        {
+            (raw, frame - in_flight.frame, true)
+        }
+        _ => (raw, raw, false),
+    }
+}
+
 const MAX_LISTED: usize = 10;
 
 fn fail(c: &mut Check, msg: String) {
@@ -368,12 +486,18 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
     let mut v = Verdict::default();
     let s = &mut v.summary;
     s.frames = trace.frames.len();
-    let presses: Vec<&Row> = trace.rows.iter().filter(|r| r.is_flipper_press()).collect();
+    let releases = release_ticks(&trace.rows);
+    let presses: Vec<(&Row, Option<u64>)> = trace
+        .rows
+        .iter()
+        .zip(releases)
+        .filter(|(r, _)| r.is_flipper_press())
+        .collect();
     s.presses = presses.len();
     s.min_slack_ns = i64::MAX;
-    let run_end = trace.frames.last().map_or(0, |f| f.present_ns);
-    let mut checked = Vec::new();
+    let run_end = trace.run_end_ns;
     let mut raw = Vec::new();
+    let mut adjusted = Vec::new();
     let mut photon = Vec::new();
     let mut gaps: Vec<u64> = trace
         .rows
@@ -384,8 +508,9 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
     gaps.sort_unstable();
     s.max_drain_gap_ns = gaps.last().copied().unwrap_or(0);
     s.p99_drain_gap_ns = percentile(&gaps, 99);
-    for r in &presses {
+    for &(r, release) in &presses {
         let tag = format!("press #{} ({} at {} ns)", r.seq, r.input, r.sdl_ts_ns);
+        let mut a_failed = false;
         // a. Key to coil.
         if r.stall {
             s.stalled_presses += 1;
@@ -395,6 +520,7 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
         }
         let bound = coil_bound_ns(r, p);
         if r.apply_tick_end_sdl_ns < r.sdl_ts_ns {
+            a_failed = true;
             fail(
                 &mut v.a,
                 format!(
@@ -407,6 +533,7 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
             s.max_lateness_ns = s.max_lateness_ns.max(late);
             s.min_slack_ns = s.min_slack_ns.min(bound as i64 - late as i64);
             if late > bound {
+                a_failed = true;
                 fail(
                     &mut v.a,
                     format!(
@@ -418,18 +545,36 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
                 );
             }
         }
-        if let Some(m) = r.move_tick {
-            let coil = m.saturating_sub(r.apply_tick);
-            s.max_coil_ticks = s.max_coil_ticks.max(coil);
-            if m < r.apply_tick || coil > p.coil_ticks {
-                fail(
-                    &mut v.a,
-                    format!(
-                        "{tag}: delivered in tick {} but the bat first moved in tick {m} ({coil} \
-                         ticks later; at most {} allowed)",
-                        r.apply_tick, p.coil_ticks
-                    ),
-                );
+        match r.move_tick {
+            Some(m) => {
+                let coil = m.saturating_sub(r.apply_tick);
+                s.max_coil_ticks = s.max_coil_ticks.max(coil);
+                if m < r.apply_tick || coil > p.coil_ticks {
+                    a_failed = true;
+                    fail(
+                        &mut v.a,
+                        format!(
+                            "{tag}: delivered in tick {} but the bat was first raised 1 degree in \
+                             tick {m} ({coil} ticks later; at most {} allowed)",
+                            r.apply_tick, p.coil_ticks
+                        ),
+                    );
+                }
+            }
+            None => {
+                // Only a press applied right before the run ended may have
+                // had no time to move its bat.
+                let tail = (p.coil_ticks + 2) * TICK_NS;
+                if run_end.saturating_sub(r.apply_tick_end_sdl_ns) > tail {
+                    a_failed = true;
+                    fail(
+                        &mut v.a,
+                        format!(
+                            "{tag}: the bat never moved after the press was applied (tick {})",
+                            r.apply_tick
+                        ),
+                    );
+                }
             }
         }
         // b. Key to photon in frames.
@@ -441,8 +586,23 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
             fail(&mut v.b, format!("{tag}: the bat never moved"));
             continue;
         };
-        let Some(f) = trace.frames.iter().find(|f| f.snap_tick >= m) else {
-            fail(&mut v.b, format!("{tag}: no presented frame drew tick {m}"));
+        let Some(f) = frame_showing(&trace.frames, m, release) else {
+            if r.frame.is_some() {
+                fail(
+                    &mut v.b,
+                    format!(
+                        "{tag}: trace says frame {:?}, the frame table has none",
+                        r.frame
+                    ),
+                );
+            }
+            fail(
+                &mut v.b,
+                format!(
+                    "{tag}: no presented frame showed the bat raised while held (move tick {m}, \
+                     release tick {release:?})"
+                ),
+            );
             continue;
         };
         if r.frame != Some(f.frame) {
@@ -454,39 +614,51 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
                 ),
             );
         }
-        let f_raw = f
-            .frame
-            .saturating_sub(last_frame_at_or_before(&trace.frames, r.sdl_ts_ns));
-        if r.frames_to_photon != Some(f_raw) {
+        let deadline = r.sdl_ts_ns + bound + p.coil_ticks * TICK_NS;
+        let (n_raw, n, shifted) = frame_count(
+            &trace.frames,
+            r.sdl_ts_ns,
+            f.frame,
+            deadline,
+            p.max_frames,
+            !a_failed,
+        );
+        if r.frames_to_photon != Some(n_raw) {
             fail(
                 &mut v.b,
                 format!(
-                    "{tag}: trace says frames_to_photon {:?}, the frame table says {f_raw}",
+                    "{tag}: trace says frames_to_photon {:?}, the frame table says {n_raw}",
                     r.frames_to_photon
                 ),
             );
         }
-        let due = r.sdl_ts_ns + bound + p.coil_ticks * TICK_NS;
-        let n = f
-            .frame
-            .saturating_sub(last_frame_at_or_before(&trace.frames, due));
+        if shifted {
+            s.in_flight_shifted += 1;
+        }
         if n > p.max_frames {
             fail(
                 &mut v.b,
                 format!(
-                    "{tag}: bat moved in tick {m}, first drawn by frame {} = {n} presented frames \
-                     after the press (at most {})",
-                    f.frame, p.max_frames
+                    "{tag}: bat raised in tick {m}, first shown by frame {} = {n_raw} presented \
+                     frames after the press (at most {}{})",
+                    f.frame,
+                    p.max_frames,
+                    if a_failed {
+                        "; no in-flight allowance for a press that failed check a"
+                    } else {
+                        ", or one more when the frame in flight at the press presented before \
+                         the coil deadline"
+                    }
                 ),
             );
         }
-        checked.push(n);
-        raw.push(f_raw);
+        raw.push(n_raw);
+        adjusted.push(n);
         photon.push(f.present_ns.saturating_sub(r.sdl_ts_ns));
     }
-    if checked.is_empty() && s.presses > s.excluded_presses {
+    if raw.is_empty() && s.presses > s.excluded_presses {
         fail(&mut v.b, "no press could be checked".into());
-    } else if checked.is_empty() && s.presses > 0 {
+    } else if raw.is_empty() && s.presses > 0 {
         fail(
             &mut v.b,
             "every press fell in the final window (no frames?)".into(),
@@ -495,13 +667,13 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
     if s.min_slack_ns == i64::MAX {
         s.min_slack_ns = 0;
     }
-    checked.sort_unstable();
     raw.sort_unstable();
+    adjusted.sort_unstable();
     photon.sort_unstable();
-    s.max_frames_checked = checked.last().copied().unwrap_or(0);
-    s.p99_frames_checked = percentile(&checked, 99);
     s.max_frames_raw = raw.last().copied().unwrap_or(0);
     s.p99_frames_raw = percentile(&raw, 99);
+    s.max_frames_adjusted = adjusted.last().copied().unwrap_or(0);
+    s.p99_frames_adjusted = percentile(&adjusted, 99);
     s.p50_photon_ms = percentile(&photon, 50) as f64 / 1e6;
     s.p99_photon_ms = percentile(&photon, 99) as f64 / 1e6;
     v.a.info = format!(
@@ -515,15 +687,17 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
         s.max_coil_ticks
     );
     v.b.info = format!(
-        "{} checked, {} excluded (final {} ms); frames max {} p99 {} (raw, F0 at the timestamp: \
-         max {} p99 {}); key to photon p50 {:.1} ms p99 {:.1} ms (information)",
-        checked.len(),
+        "{} checked, {} excluded (final {} ms before run end); frames raw max {} p99 {}, adjusted \
+         max {} p99 {}, in-flight shifted {}; key to photon p50 {:.1} ms p99 {:.1} ms \
+         (information)",
+        raw.len(),
         s.excluded_presses,
         p.end_exclusion_ns / 1_000_000,
-        s.max_frames_checked,
-        s.p99_frames_checked,
         s.max_frames_raw,
         s.p99_frames_raw,
+        s.max_frames_adjusted,
+        s.p99_frames_adjusted,
+        s.in_flight_shifted,
         s.p50_photon_ms,
         s.p99_photon_ms
     );
@@ -651,20 +825,20 @@ impl Verdict {
             ("presses", s.presses.to_string()),
             ("stalled presses", s.stalled_presses.to_string()),
             (
-                "excluded presses (final 500 ms)",
+                "excluded presses (final 500 ms before run end)",
                 s.excluded_presses.to_string(),
             ),
             (
-                "frames_to_photon max (checked)",
-                s.max_frames_checked.to_string(),
-            ),
-            (
-                "frames_to_photon p99 (checked)",
-                s.p99_frames_checked.to_string(),
-            ),
-            (
-                "frames_to_photon max / p99 (raw)",
+                "frames_to_photon max / p99 (raw, gated)",
                 format!("{} / {}", s.max_frames_raw, s.p99_frames_raw),
+            ),
+            (
+                "frames_to_photon max / p99 (adjusted)",
+                format!("{} / {}", s.max_frames_adjusted, s.p99_frames_adjusted),
+            ),
+            (
+                "presses in-flight shifted (one frame)",
+                s.in_flight_shifted.to_string(),
             ),
             ("max apply lateness (ns)", s.max_lateness_ns.to_string()),
             ("min apply slack (ns)", s.min_slack_ns.to_string()),
