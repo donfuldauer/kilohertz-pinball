@@ -7481,3 +7481,27 @@ shared storage. All the wiring fits in the owned `threads.rs`.
 - Counting presented frames in the profiler (a `PresentProfiler` counter): rejected, it duplicates
   `OrchestratorStats::render_frames` and would need wiring in files outside the owned paths.
 
+## #81 tester — Input-epoch acceptance: full sweep, haptics observation, thread-test isolation
+
+**Decision:** In `crates/pin_app/tests/input_epoch.rs`: (1) the REQ-LAT-004 regression measures
+the bat's full sweep with a second press stamped mid tick 600 and held to tick 800 (the bat must
+be at rest on its stop: angle at 780 and 800 within 1 %), because the brief also requires a
+release mid tick 540, which rules out holding the first press to tick 700; the 90 % check takes
+the largest angle over ticks 501..=520. (2) The haptics thread test keeps the
+`HapticsConsumer` in the test (`cfg.audio.haptics = None`) and drains it for the first coil-class
+event, instead of handing it to the audio thread, because the coil event's `tick` is only
+observable from the consumer. (3) The three thread tests take a file-local `RwLock` for writing
+and the headless tests take it for reading, so the CPU-heavy headless sweeps of the same binary
+do not starve the sim thread while a thread test measures latency.
+
+**Rationale:** Each choice keeps exactly the assertions the brief and REQ-LAT-004/005 require
+(energise tick, bat motion, 90 % by tick 520, release tick, coil haptic tick 50..=60, p99 at most
+1.5 ms) while staying black-box and table-independent; none loosens a bound.
+
+**Alternatives:**
+- Full sweep from the flipper's configured maximum angle: rejected by the brief (table-dependent).
+- Holding the first press to tick 700 and releasing a second flipper at 540: changes which coil
+  the release test observes; rejected.
+- Leaving the haptics consumer on the audio thread: the event tick is then not observable.
+- Running the thread tests unguarded: latency samples would include scheduler starvation by the
+  test binary's own headless tests, a test artefact rather than the app's behaviour.
