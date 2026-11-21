@@ -12,8 +12,9 @@ delegation briefs follow `docs/BRIEF_TEMPLATE.md`. The plan is the set of GitHub
 **Starting work:** each issue is one unit of work with its dependencies. When the user says
 "Start work on issue X", use the `work-issue` skill: it checks the issue's dependencies are
 merged, drives the work through the agents below, opens a PR that closes the issue, resolves the
-CodeRabbit review and merges. "Start work on the next ready issue" picks one; adding "and
-self-chain" continues in a new session after the merge. The `run-plan` skill loops over every
+CodeRabbit review and merges. "Start work on the next ready issue" (or "Work on the next
+issue") picks one, and merging an `issue/` branch starts a fresh session for the next issue
+through a scheduled task (work-issue §8). The `run-plan` skill loops over every
 ready issue in plan order (`KP-NNN`). The `plan-from-spec` skill turns SPEC requirements into
 issues.
 
