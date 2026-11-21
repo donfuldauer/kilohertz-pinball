@@ -1,0 +1,31 @@
+ahash 0.8.12 | ahash-0.8.12/build.rs | host-cfg: - | cc: False | CARGO_CFG: CARGO_CFG_TARGET_ARCH
+constant_time_eq 0.6.1 | constant_time_eq-0.6.1/build.rs | host-cfg: - | cc: False | CARGO_CFG: CARGO_CFG_TARGET_ARCH
+crc32fast 1.5.5 | crc32fast-1.5.5/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+generic-array 0.14.7 | generic-array-0.14.7/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+getrandom 0.4.3 | getrandom-0.4.3/build.rs | host-cfg: - | cc: False | CARGO_CFG: CARGO_CFG_SANITIZE
+heapless 0.8.0 | heapless-0.8.0/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+libc 0.2.191 | libc-0.2.191/build.rs | host-cfg: ['cfg!(target_os = "windows")'] | cc: False | CARGO_CFG: CARGO_CFG_LIBC_UNSTABLE_FREEBSD_VERSION,CARGO_CFG_LIBC_UNSTABLE_GNU_FILE_OFFSET_BITS,CARGO_CFG_LIBC_UNSTABLE_GNU_TIME_BITS,CARGO_CFG_LIBC_UNSTABLE_MUSL_V,CARGO_CFG_LIBC_UNSTABLE_TIME,CARGO_CFG_LIBC_UNSTABLE_UCLIBC_TIME,CARGO_CFG_TARGET_ABI,CARGO_CFG_TARGET_ARCH,CARGO_CFG_TARGET_ENV,CARGO_CFG_TARGET_OS,CARGO_CFG_TARGET_POINTER_WIDTH
+libm 0.2.16 | libm-0.2.16/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+mlua-sys 0.13.0 | build/main.rs | host-cfg: - | cc: False | CARGO_CFG: -
+naga 30.0.1 | naga-30.0.1/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+num-traits 0.2.19 | num-traits-0.2.19/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+parking_lot_core 0.9.12 | parking_lot_core-0.9.12/build.rs | host-cfg: - | cc: False | CARGO_CFG: CARGO_CFG_SANITIZE
+proc-macro2 1.0.107 | proc-macro2-1.0.107/build.rs | host-cfg: ['cfg!(target_os = "linux")'] | cc: False | CARGO_CFG: -
+quote 1.0.47 | quote-1.0.47/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+rustversion 1.0.23 | build/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+serde 1.0.229 | serde-1.0.229/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+serde_core 1.0.229 | serde_core-1.0.229/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+serde_json 1.0.151 | serde_json-1.0.151/build.rs | host-cfg: - | cc: False | CARGO_CFG: CARGO_CFG_TARGET_ARCH,CARGO_CFG_TARGET_POINTER_WIDTH
+slotmap 1.1.1 | slotmap-1.1.1/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+thiserror 2.0.21 | thiserror-2.0.21/build.rs | host-cfg: ['cfg!(target_os = "linux")'] | cc: False | CARGO_CFG: -
+unicode-general-category 1.1.0 | unicode-general-category-1.1.0/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+wasm-bindgen 0.2.130 | wasm-bindgen-0.2.130/build.rs | host-cfg: - | cc: False | CARGO_CFG: CARGO_CFG_TARGET_ARCH,CARGO_CFG_TARGET_FEATURE,CARGO_CFG_TARGET_OS
+wasm-bindgen-shared 0.2.130 | wasm-bindgen-shared-0.2.130/build.rs | host-cfg: ['#[cfg(windows)]'] | cc: False | CARGO_CFG: -
+wasmi 2.0.2 | wasmi-2.0.2/build.rs | host-cfg: - | cc: False | CARGO_CFG: CARGO_CFG_DEBUG_ASSERTIONS,CARGO_CFG_TARGET_ARCH,CARGO_CFG_TARGET_FEATURE
+wasmi_ir 2.0.2 | wasmi_ir-2.0.2/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+wasmparser 0.228.0 | wasmparser-0.228.0/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+wgpu 30.0.1 | wgpu-30.0.1/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+wgpu-core 30.0.1 | wgpu-core-30.0.1/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+wgpu-hal 30.0.1 | wgpu-hal-30.0.1/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+zerocopy 0.8.63 | zerocopy-0.8.63/build.rs | host-cfg: - | cc: False | CARGO_CFG: -
+zmij 1.0.23 | zmij-1.0.23/build.rs | host-cfg: - | cc: False | CARGO_CFG: -

@@ -1,0 +1,24 @@
+{
+ "macho_files": 3,
+ "archs": [
+  "arm64"
+ ],
+ "minos": [
+  "11.0.0"
+ ],
+ "sdk": [
+  "26.5.0"
+ ],
+ "signature_kinds": [
+  "ad-hoc (linker-signed)"
+ ],
+ "unsigned_files": [],
+ "non_system_dylibs": [],
+ "rpaths": [],
+ "team_ids": [],
+ "cms_subjects": [],
+ "hardened_runtime_files": 0
+}
+wasm-bindgen-0.2.130-aarch64-apple-darwin/wasm-bindgen	0o755	arm64	execute	minos=11.0.0	sdk=26.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=/usr/lib/libiconv.2.dylib,/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation,/usr/lib/libSystem.B.dylib	rpaths=-
+wasm-bindgen-0.2.130-aarch64-apple-darwin/wasm-bindgen-test-runner	0o755	arm64	execute	minos=11.0.0	sdk=26.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=/usr/lib/libiconv.2.dylib,/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation,/usr/lib/libSystem.B.dylib	rpaths=-
+wasm-bindgen-0.2.130-aarch64-apple-darwin/wasm2es6js	0o755	arm64	execute	minos=11.0.0	sdk=26.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=/usr/lib/libiconv.2.dylib,/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation,/usr/lib/libSystem.B.dylib	rpaths=-

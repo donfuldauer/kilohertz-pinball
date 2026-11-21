@@ -1,0 +1,35 @@
+# Web build tool pins (S11 proposal for scripts/web/tools.lock). One line per tool and build-host
+# platform; whitespace-separated columns; '#' starts a comment. Read by fetch_tools.sh (POSIX awk).
+#
+# columns: tool platform kind version sha256 bytes topdir url upstream_checksum
+#   platform: linux-x86_64 | darwin-arm64 | darwin-x86_64 | any
+#   kind:     archive = .tar.gz fetched with curl, sha256-verified, extracted under target/web-tools/<platform>/
+#             cargo   = `cargo install --locked --root target/web-tools/cargo <tool> --version <version>`
+#                       (sha256 = the crates.io index checksum of the .crate, which cargo verifies itself)
+#   topdir:   the archive's single top-level directory ('-' for cargo)
+#   upstream_checksum: the publisher's checksum file the sha256 was compared with ('none' if the
+#             publisher has none; S11 RESULTS.md §2 records every comparison)
+#
+# wasi-sdk 32.0 (clang 22.1.0-wasi-sdk, llvm 4434dabb6991, wasi-libc 2fc32bc81b9f): no checksum file is published
+wasi-sdk       linux-x86_64   archive  32.0     55fc523ebfbc98f69d1034fcfcb83d1ff5610cd9ab7eceef6cd097a30ba4ef93  143157058  wasi-sdk-32.0-x86_64-linux  https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-32/wasi-sdk-32.0-x86_64-linux.tar.gz  none
+wasi-sdk       darwin-arm64   archive  32.0     383be7fe00ae04691e1859164fd99970a528c55d624b886ed59f7933898b933d  131307682  wasi-sdk-32.0-arm64-macos   https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-32/wasi-sdk-32.0-arm64-macos.tar.gz  none
+wasi-sdk       darwin-x86_64  archive  32.0     a36c9ab106a40abe8a051279c233c6bab719a5788ecc0788e8d141796eb55b1b  133615598  wasi-sdk-32.0-x86_64-macos  https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-32/wasi-sdk-32.0-x86_64-macos.tar.gz  none
+# binaryen version_132 (wasm-opt); each archive has a published <archive>.sha256, equal to these
+binaryen       linux-x86_64   archive  132      195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572  117057408  binaryen-version_132  https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz  https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz.sha256
+binaryen       darwin-arm64   archive  132      98aad827847af7ef990ed7098d885725c8e5b5aae75073403635617ae4e259aa  7640117    binaryen-version_132  https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-arm64-macos.tar.gz  https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-arm64-macos.tar.gz.sha256
+binaryen       darwin-x86_64  archive  132      40c3de90bb3766bd0282a895e139a6f50253dba49b4f5bb89e66faca162d832e  9069142    binaryen-version_132  https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-macos.tar.gz  https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-macos.tar.gz.sha256
+# wasm-bindgen CLI (must equal Cargo.lock's wasm-bindgen) and wasm-tools: built from crates.io source on every host
+wasm-bindgen-cli  any         cargo    0.2.130  c37f6904387d19a319525c74af274c73912f3871c35555aa49f3ea64ebb2fc7a  -          -  https://crates.io/crates/wasm-bindgen-cli/0.2.130  https://index.crates.io/wa/sm/wasm-bindgen-cli
+wasm-tools        any         cargo    1.263.0  14b8ed798ec13f0e0939dcc403836ba5fd7fb29ff9772e6438a9bcc227bfdc96  -          -  https://crates.io/crates/wasm-tools/1.263.0  https://index.crates.io/wa/sm/wasm-tools
+# Node 22 (prerequisite; fetched only with `fetch_tools.sh --node`); SHASUMS256.txt is GPG-signed (SHASUMS256.txt.asc)
+node           linux-x86_64   archive  22.23.5  c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1  56856114   node-v22.23.5-linux-x64     https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-x64.tar.gz  https://nodejs.org/dist/v22.23.5/SHASUMS256.txt
+node           darwin-arm64   archive  22.23.5  e7131995759b61a0170b646010d2ad35a5d37b4cb0d471f3e8317eac6f742f3d  50004868   node-v22.23.5-darwin-arm64  https://nodejs.org/dist/v22.23.5/node-v22.23.5-darwin-arm64.tar.gz  https://nodejs.org/dist/v22.23.5/SHASUMS256.txt
+node           darwin-x86_64  archive  22.23.5  c53383238206b9ae4db23c5d8a63645e2e753bec8ab51a49cc81939aa64e9422  51197448   node-v22.23.5-darwin-x64    https://nodejs.org/dist/v22.23.5/node-v22.23.5-darwin-x64.tar.gz  https://nodejs.org/dist/v22.23.5/SHASUMS256.txt
+#
+# Alternatives recorded by S11 and NOT used (release binaries; recommendation: build from source above):
+#   wasm-bindgen-0.2.130-aarch64-apple-darwin.tar.gz       b90ddb9357f584b1af897d58ad77e4cce2b48fc17e2a967bc249a87f72809444  (= its .sha256sum)
+#   wasm-bindgen-0.2.130-x86_64-apple-darwin.tar.gz        eb209c115b7cb95832423c1aa3f4d06d6c53f63ef74fc4b6fb79ef0b2eea5f10  (= its .sha256sum)
+#   wasm-bindgen-0.2.130-x86_64-unknown-linux-musl.tar.gz  9687f3bb551b9f66f37ed32a40d7913a00f7962db653054e56857bc306c3227f  (= its .sha256sum)
+#   wasm-tools-1.263.0-aarch64-macos.tar.gz                b568f04746a699c4068b8d751779b60b501cf2cab6d259a3bc973eb5eeb1f62b  (no checksum file published)
+#   wasm-tools-1.263.0-x86_64-macos.tar.gz                 909061aba8c069aeed8cb0933e50973a9c8e869bbd6a7819176b49871a338424  (no checksum file published)
+#   wasm-tools-1.263.0-x86_64-linux.tar.gz                 21c036c1740a0552124c79c6e2170cb61c5b016005671a6d5bc06cf642165431  (no checksum file published)

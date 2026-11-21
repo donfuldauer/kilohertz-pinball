@@ -1,0 +1,204 @@
+accesskit v0.25.2
+adler2 v2.0.1
+ahash v0.8.12
+allocator-api2 v0.2.21
+approx v0.5.1
+arrayvec v0.7.8
+autocfg v1.5.1
+bit-set v0.10.0
+bit-vec v0.9.1
+bitflags v1.3.2
+bitflags v2.13.2
+block-buffer v0.10.4
+bstr v1.13.1
+bumpalo v3.20.3
+bytemuck v1.25.2
+bytemuck_derive v1.12.1 PM
+byteorder v1.5.0
+byteorder-lite v0.1.0
+cc v1.11.1
+cfg-if v1.0.5
+cfg_aliases v0.2.2
+codespan-reporting v0.13.1
+color v0.3.3
+constant_time_eq v0.6.1
+crc32fast v1.5.5
+crypto-common v0.1.7
+digest v0.10.7
+document-features v0.2.12 PM
+downcast-rs v2.0.2
+ecolor v0.37.0
+egui v0.37.0
+egui-wgpu v0.37.0
+either v1.19.0
+emath v0.37.0
+ena v0.14.4
+epaint v0.37.0
+epaint_default_fonts v0.37.0
+equivalent v1.0.3
+euclid v0.22.14
+fdeflate v0.3.7
+fearless_simd v0.4.1
+find-msvc-tools v0.1.15
+flate2 v1.1.11
+foldhash v0.2.0
+font-types v0.12.7
+futures-core v0.3.34
+futures-task v0.3.34
+futures-util v0.3.34
+generic-array v0.14.7
+getrandom v0.4.3
+glam v0.33.12
+glamx v0.3.1
+glow v0.17.0
+gltf v1.4.1
+gltf-derive v1.4.1 PM
+gltf-json v1.4.1
+guillotiere v0.7.0
+half v2.7.1
+harfrust v0.12.0
+hash32 v0.3.1
+hashbrown v0.16.1
+hashbrown v0.17.1
+heapless v0.8.0
+hound v3.5.1
+image v0.25.6
+indexmap v2.14.2
+inflections v1.1.1
+itertools v0.15.0
+itoa v1.0.19
+js-sys v0.3.107
+kurbo v0.13.1
+lazy_static v1.5.1
+leb128fmt v0.1.0
+libc v0.2.191
+libm v0.2.16
+linebender_resource_handle v0.1.1
+litrs v1.0.1
+lock_api v0.4.14
+log v0.4.35
+lua-src v551.0.2 (${WEB_SPIKES}/S11/work/a/kp/third_party/lua-src)
+luajit-src v210.7.4+c6ffc14
+memchr v2.8.3
+miniz_oxide v0.8.9
+miniz_oxide v0.9.1
+mlua v0.12.2
+mlua-sys v0.13.0
+naga v30.0.1
+naga-types v30.0.1
+nohash-hasher v0.2.0
+num-complex v0.4.6
+num-derive v0.5.1 PM
+num-traits v0.2.19
+once_cell v1.21.4
+ordered-float v5.5.1
+parking_lot v0.12.5
+parking_lot_core v0.9.12
+parry3d v0.31.1
+peniko v0.6.1
+pin-project-lite v0.2.17
+pin_assetgen v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/pin_assetgen)
+pin_assets v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/pin_assets)
+pin_core v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/pin_core)
+pin_input v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/pin_input)
+pin_physics v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/pin_physics)
+pin_render v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/pin_render)
+pin_script v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/pin_script)
+pin_sim v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/pin_sim)
+pin_web v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/pin_web)
+pkg-config v0.3.34
+png v0.17.16
+pollster v1.0.1
+polycool v0.4.0
+proc-macro2 v1.0.107
+profiling v1.0.18
+quote v1.0.47
+rand_core v0.10.1
+rand_pcg v0.10.2
+raw-window-handle v0.6.2
+read-fonts v0.41.0
+robust v1.2.0
+rstar v0.13.1
+rustc-hash v1.1.0
+rustc-hash v2.1.3
+rustversion v1.0.23 PM
+s1_harness v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/s1_harness)
+s2_harness v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/s2_harness)
+s4_rules v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/s4_rules)
+scopeguard v1.2.0
+self_cell v1.3.0
+semver v1.0.28
+serde v1.0.229
+serde_core v1.0.229
+serde_derive v1.0.229 PM
+serde_json v1.0.151
+serde_spanned v1.1.3
+sha2 v0.10.9
+shlex v2.0.1
+simba v0.10.2
+simd-adler32 v0.3.10
+skrifa v0.44.0
+slab v0.4.12
+slotmap v1.1.1
+smallvec v1.16.5
+spade v2.15.1
+spin v0.9.9
+stable_deref_trait v1.2.1
+static_assertions v1.1.0
+syn v2.0.119
+syn v3.0.10
+thiserror v2.0.21
+thiserror-impl v2.0.21 PM
+toml v1.2.1+spec-1.1.0
+toml_datetime v1.1.3+spec-1.1.0
+toml_parser v1.1.5+spec-1.1.0
+toml_writer v1.2.0+spec-1.1.0
+type-map v0.5.1
+typed-path v0.13.0
+typenum v1.20.1
+unicode-general-category v1.1.0
+unicode-ident v1.0.27
+unicode-properties v0.1.5
+unicode-segmentation v1.13.3
+unicode-width v0.2.3
+uuid v1.29.2
+vello_common v0.2.0
+vello_cpu v0.2.0
+version_check v0.9.5
+wasm-bindgen v0.2.130
+wasm-bindgen-futures v0.4.80
+wasm-bindgen-macro v0.2.130 PM
+wasm-bindgen-macro-support v0.2.130
+wasm-bindgen-shared v0.2.130
+wasm-encoder v0.261.0
+wasm-encoder v0.263.0
+wasmi v2.0.2
+wasmi_collections v2.0.2
+wasmi_core v2.0.2
+wasmi_ir v2.0.2
+wasmparser v0.228.0
+wasmparser v0.261.0
+wast v263.0.0
+wat v1.263.0
+web-sys v0.3.107
+web-time v1.1.0
+web_probe v0.1.0 (${WEB_SPIKES}/S11/work/a/kp/crates/web_probe)
+wgpu v30.0.1
+wgpu-core v30.0.1
+wgpu-core-deps-wasm v30.0.2
+wgpu-hal v30.0.1
+wgpu-naga-bridge v30.0.1
+wgpu-types v30.0.1
+which v8.0.6
+wide v1.7.1
+winnow v1.0.5
+zerocopy v0.8.63
+zerocopy-derive v0.8.63 PM
+zeroize v1.9.1
+zeroize_derive v1.5.0 PM
+zip v9.5.1
+zlib-rs v0.6.8
+zmij v1.0.23
+zopfli v0.8.4
+zune-core v0.4.12
+zune-jpeg v0.4.21

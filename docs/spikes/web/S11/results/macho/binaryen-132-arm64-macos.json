@@ -1,0 +1,778 @@
+{
+ "summary": {
+  "macho_files": 16,
+  "archs": [
+   "arm64"
+  ],
+  "minos": [
+   "11.0.0"
+  ],
+  "sdk": [
+   "14.5.0"
+  ],
+  "signature_kinds": [
+   "ad-hoc (linker-signed)"
+  ],
+  "unsigned_files": [],
+  "non_system_dylibs": [
+   "@rpath/libbinaryen.dylib"
+  ],
+  "rpaths": [
+   "@loader_path/../lib"
+  ],
+  "team_ids": [],
+  "cms_subjects": [],
+  "hardened_runtime_files": 0
+ },
+ "files": [
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "binaryen-unittests",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/binaryen-unittests",
+   "mode": "0o755",
+   "size": 3107712
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm-as",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-as",
+   "mode": "0o755",
+   "size": 110440
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm-ctor-eval",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-ctor-eval",
+   "mode": "0o755",
+   "size": 584800
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm-dis",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-dis",
+   "mode": "0o755",
+   "size": 94760
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm-emscripten-finalize",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-emscripten-finalize",
+   "mode": "0o755",
+   "size": 112328
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm-fuzz-lattices",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-fuzz-lattices",
+   "mode": "0o755",
+   "size": 1468320
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm-fuzz-types",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-fuzz-types",
+   "mode": "0o755",
+   "size": 1257952
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm-merge",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-merge",
+   "mode": "0o755",
+   "size": 258264
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm-metadce",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-metadce",
+   "mode": "0o755",
+   "size": 247024
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm-opt",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-opt",
+   "mode": "0o755",
+   "size": 1677000
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm-reduce",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-reduce",
+   "mode": "0o755",
+   "size": 412120
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm-shell",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-shell",
+   "mode": "0o755",
+   "size": 457096
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm-split",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-split",
+   "mode": "0o755",
+   "size": 219432
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm2c",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm2c",
+   "mode": "0o755",
+   "size": 212968
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm2js",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm2js",
+   "mode": "0o755",
+   "size": 678264
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "dylib",
+     "minos": "11.0.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "libbinaryen.dylib",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     },
+     "id": "@rpath/libbinaryen.dylib"
+    }
+   ],
+   "path": "binaryen-version_132/lib/libbinaryen.dylib",
+   "mode": "0o755",
+   "size": 14954752
+  }
+ ]
+}

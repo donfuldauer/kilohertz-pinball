@@ -1,0 +1,28 @@
+{
+ "macho_files": 3,
+ "archs": [
+  "x86_64"
+ ],
+ "minos": [
+  "10.12.0"
+ ],
+ "sdk": [
+  "26.5.0"
+ ],
+ "signature_kinds": [
+  "none"
+ ],
+ "unsigned_files": [
+  "wasm-bindgen-0.2.130-x86_64-apple-darwin/wasm-bindgen",
+  "wasm-bindgen-0.2.130-x86_64-apple-darwin/wasm-bindgen-test-runner",
+  "wasm-bindgen-0.2.130-x86_64-apple-darwin/wasm2es6js"
+ ],
+ "non_system_dylibs": [],
+ "rpaths": [],
+ "team_ids": [],
+ "cms_subjects": [],
+ "hardened_runtime_files": 0
+}
+wasm-bindgen-0.2.130-x86_64-apple-darwin/wasm-bindgen	0o755	x86_64	execute	minos=10.12.0	sdk=26.5.0	sig=none	flags=-	team=-	dylibs=/usr/lib/libiconv.2.dylib,/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation,/usr/lib/libSystem.B.dylib	rpaths=-
+wasm-bindgen-0.2.130-x86_64-apple-darwin/wasm-bindgen-test-runner	0o755	x86_64	execute	minos=10.12.0	sdk=26.5.0	sig=none	flags=-	team=-	dylibs=/usr/lib/libiconv.2.dylib,/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation,/usr/lib/libSystem.B.dylib	rpaths=-
+wasm-bindgen-0.2.130-x86_64-apple-darwin/wasm2es6js	0o755	x86_64	execute	minos=10.12.0	sdk=26.5.0	sig=none	flags=-	team=-	dylibs=/usr/lib/libiconv.2.dylib,/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation,/usr/lib/libSystem.B.dylib	rpaths=-

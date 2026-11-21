@@ -1,0 +1,18 @@
+== wasm-bindgen 0.2.130: two input paths/names, two output dirs, two working directories
+pin_web_bg.wasm run1 a67944ad68ecd428c5a07fc5a2106923f33f03742004d52fef51d9fea06ef043 run2 a67944ad68ecd428c5a07fc5a2106923f33f03742004d52fef51d9fea06ef043 SAME
+pin_web.js run1 7b77282c74b37c04826ce0e8489e12604a570a4ba187ae5c187632c2d05ccae8 run2 7b77282c74b37c04826ce0e8489e12604a570a4ba187ae5c187632c2d05ccae8 SAME
+pin_web.d.ts run1 e5f4e99e5502a7cd2f078419fd1aa31835450e4590a3bc5f336247b852cbb43b run2 e5f4e99e5502a7cd2f078419fd1aa31835450e4590a3bc5f336247b852cbb43b SAME
+pin_web_bg.wasm.d.ts run1 4f1378f32ff86a5431c739cfb15fcc9f95e572886819dc0166ccc4a62f3b2685 run2 4f1378f32ff86a5431c739cfb15fcc9f95e572886819dc0166ccc4a62f3b2685 SAME
+== wasm-bindgen output custom sections (names kept unless --remove-name-section; DWARF dropped unless --keep-debug)
+  custom "name"                          |   0xbba39c -   0xea27aa |   3048462 bytes | 1 count
+  custom "producers"                     |   0xea27b7 -   0xea2888 |       209 bytes | 1 count
+  custom "target_features"               |   0xea289b -   0xea294c |       177 bytes | 1 count
+== wasm-opt version_132 -Oz: default threads twice, BINARYEN_CORES=1, BINARYEN_CORES=4
+opt_default1 88e06b166af4781bacd199d136ea8059077fdd191ddadd023b07b1e1ae16e95b
+opt_default2 88e06b166af4781bacd199d136ea8059077fdd191ddadd023b07b1e1ae16e95b
+opt_cores1 88e06b166af4781bacd199d136ea8059077fdd191ddadd023b07b1e1ae16e95b
+opt_cores4 88e06b166af4781bacd199d136ea8059077fdd191ddadd023b07b1e1ae16e95b
+== host paths left in the final module (a_plain = S9 flags; a_remap = remap recipe)
+a_plain:     540 /root/...;     64 /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/;
+a_remap:     540 /cargo/registry/src/index.crates.io-1949cf8c6b5b557f/;     64 /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/;
+b_remap:     540 /cargo/registry/src/index.crates.io-1949cf8c6b5b557f/;     64 /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/;

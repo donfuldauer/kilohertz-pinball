@@ -1,0 +1,22 @@
+{
+ "macho_files": 1,
+ "archs": [
+  "arm64"
+ ],
+ "minos": [
+  "11.0.0"
+ ],
+ "sdk": [
+  "26.5.0"
+ ],
+ "signature_kinds": [
+  "ad-hoc (linker-signed)"
+ ],
+ "unsigned_files": [],
+ "non_system_dylibs": [],
+ "rpaths": [],
+ "team_ids": [],
+ "cms_subjects": [],
+ "hardened_runtime_files": 0
+}
+wasm-tools-1.263.0-aarch64-macos/wasm-tools	0o755	arm64	execute	minos=11.0.0	sdk=26.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=/usr/lib/libiconv.2.dylib,/usr/lib/libSystem.B.dylib	rpaths=-

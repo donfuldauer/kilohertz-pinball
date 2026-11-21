@@ -1,0 +1,41 @@
+{
+ "macho_files": 16,
+ "archs": [
+  "arm64"
+ ],
+ "minos": [
+  "11.0.0"
+ ],
+ "sdk": [
+  "14.5.0"
+ ],
+ "signature_kinds": [
+  "ad-hoc (linker-signed)"
+ ],
+ "unsigned_files": [],
+ "non_system_dylibs": [
+  "@rpath/libbinaryen.dylib"
+ ],
+ "rpaths": [
+  "@loader_path/../lib"
+ ],
+ "team_ids": [],
+ "cms_subjects": [],
+ "hardened_runtime_files": 0
+}
+binaryen-version_132/bin/binaryen-unittests	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-as	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-ctor-eval	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-dis	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-emscripten-finalize	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-fuzz-lattices	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-fuzz-types	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-merge	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-metadce	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-opt	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-reduce	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-shell	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-split	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm2c	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm2js	0o755	arm64	execute	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/lib/libbinaryen.dylib	0o755	arm64	dylib	minos=11.0.0	sdk=14.5.0	sig=ad-hoc (linker-signed)	flags=0x20002	team=-	dylibs=/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib

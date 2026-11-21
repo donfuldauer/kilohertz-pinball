@@ -1,0 +1,133 @@
+== share/wasi-sysroot: entries {'linux': 9802, 'arm64mac': 9802, 'x64mac': 9802}; identical in all 9723; differing 79; only in some 0
+  DIFF lib/wasm32-wasi-threads/libc++.a linux:f7a9750f9bcfda9b arm64mac:731107d1bbb88108 x64mac:f7a9750f9bcfda9b
+  DIFF lib/wasm32-wasi-threads/libc++abi.a linux:c90eaf45c02ffc75 arm64mac:56a904262b1c74d2 x64mac:c90eaf45c02ffc75
+  DIFF lib/wasm32-wasi-threads/libc++experimental.a linux:b22dc592ff50db0e arm64mac:239cf16f7dacbb63 x64mac:b22dc592ff50db0e
+  DIFF lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libc++.a linux:2be8973e5d424a9b arm64mac:5f809cf1b292b7fb x64mac:2be8973e5d424a9b
+  DIFF lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libc++abi.a linux:e0664715384b4c2c arm64mac:650cde518262506a x64mac:e0664715384b4c2c
+  DIFF lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libc++experimental.a linux:7781646ede3969a0 arm64mac:428b2d1ca6aed633 x64mac:7781646ede3969a0
+  DIFF lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libc-printscan-long-double.a linux:fb6d50e91e0a8f46 arm64mac:a52157d2401509b5 x64mac:fb6d50e91e0a8f46
+  DIFF lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libc-printscan-no-floating-point.a linux:d5f234bfbe2f4aee arm64mac:65eff37e2eb51965 x64mac:d5f234bfbe2f4aee
+  DIFF lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libc.a linux:796605d4a7fc18bb arm64mac:8fda7725f9e7d03d x64mac:796605d4a7fc18bb
+  DIFF lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libdl.a linux:0c51cd78f2764f8d arm64mac:b24fc5569ab94761 x64mac:0c51cd78f2764f8d
+  DIFF lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-getpid.a linux:ac9888f7d01d7777 arm64mac:898ad6c0d0f398cf x64mac:ac9888f7d01d7777
+  DIFF lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-mman.a linux:431e6c8d6365d345 arm64mac:95c70dbfe9bd00fd x64mac:431e6c8d6365d345
+  DIFF lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-process-clocks.a linux:3f3b7c785b587dd7 arm64mac:db24afde4010b5e1 x64mac:3f3b7c785b587dd7
+  DIFF lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-signal.a linux:9232ebb03a85333b arm64mac:d7894cdc6c6b0132 x64mac:9232ebb03a85333b
+  DIFF lib/wasm32-wasi/libc++.a linux:9f551deb5595255c arm64mac:afca2dd33b3f858e x64mac:9f551deb5595255c
+  DIFF lib/wasm32-wasi/libc++.so linux:320773f8ba2ad576 arm64mac:bd46ea27ebe0ee11 x64mac:320773f8ba2ad576
+  DIFF lib/wasm32-wasi/libc++abi.a linux:110076b95ad496b3 arm64mac:ea0aadaaf64dc5fd x64mac:110076b95ad496b3
+  DIFF lib/wasm32-wasi/libc++abi.so linux:8226509756e52c64 arm64mac:65720f09dec933a2 x64mac:8226509756e52c64
+  DIFF lib/wasm32-wasi/libc++experimental.a linux:dfc6c9cc930be9e5 arm64mac:463ba744042776be x64mac:dfc6c9cc930be9e5
+  DIFF lib/wasm32-wasi/libc.so linux:c693cd5d7f568e9e arm64mac:ae33210896eca845 x64mac:c693cd5d7f568e9e
+  DIFF lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libc++.a linux:f0c021a4262ffa58 arm64mac:27beb16bd40db9b6 x64mac:f0c021a4262ffa58
+  DIFF lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libc++abi.a linux:9e5ad50f04673f7e arm64mac:3bf7758a6636a739 x64mac:9e5ad50f04673f7e
+  DIFF lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libc++experimental.a linux:313e67412ce6266a arm64mac:6738ae8706127fc9 x64mac:313e67412ce6266a
+  DIFF lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libc-printscan-long-double.a linux:2da335fd4ee8bb83 arm64mac:54c71c7bcb092745 x64mac:2da335fd4ee8bb83
+  DIFF lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libc-printscan-no-floating-point.a linux:101ce9b1a9cd36c9 arm64mac:3b746f917af87198 x64mac:101ce9b1a9cd36c9
+  DIFF lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libc.a linux:f4fc22c207963dad arm64mac:58c97717ef58044c x64mac:f4fc22c207963dad
+  DIFF lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libdl.a linux:436d66149b3a2530 arm64mac:412904f1bedf4195 x64mac:436d66149b3a2530
+  DIFF lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-getpid.a linux:2b24c4614b2c24de arm64mac:32945c5881aa9cb9 x64mac:2b24c4614b2c24de
+  DIFF lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-mman.a linux:e78e7f532caa6e2e arm64mac:385772f757b9dbdd x64mac:e78e7f532caa6e2e
+  DIFF lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-process-clocks.a linux:973fac54298a7e69 arm64mac:71f2c512ff81a9a8 x64mac:973fac54298a7e69
+  DIFF lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-signal.a linux:f9fac5f51eb885f7 arm64mac:44766057677cfc9b x64mac:f9fac5f51eb885f7
+  DIFF lib/wasm32-wasip1-threads/libc++.a linux:af011cf3554799e2 arm64mac:581b8c8a33ebfc03 x64mac:af011cf3554799e2
+  DIFF lib/wasm32-wasip1-threads/libc++abi.a linux:42171dfd70599f61 arm64mac:2a7bbb1e3944436e x64mac:42171dfd70599f61
+  DIFF lib/wasm32-wasip1-threads/libc++experimental.a linux:96ce30b6b3448ece arm64mac:2efca074e210adc9 x64mac:96ce30b6b3448ece
+  DIFF lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libc++.a linux:3795039d90dc98d3 arm64mac:b66784497359a3ab x64mac:3795039d90dc98d3
+  DIFF lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libc++abi.a linux:5622403f633eec57 arm64mac:d5b58fd14dd0eee2 x64mac:5622403f633eec57
+  DIFF lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libc++experimental.a linux:22f6e5eba36d33f0 arm64mac:5e322f86dc289512 x64mac:22f6e5eba36d33f0
+  DIFF lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libc-printscan-long-double.a linux:90f1a335c2cacd70 arm64mac:549fe02185626db2 x64mac:90f1a335c2cacd70
+  DIFF lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libc-printscan-no-floating-point.a linux:8f551d4691f3d1f1 arm64mac:a2e1c850ff181e17 x64mac:8f551d4691f3d1f1
+  DIFF lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libc.a linux:56a0319dfb92456d arm64mac:9ba02f41c2a79939 x64mac:56a0319dfb92456d
+  DIFF lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libdl.a linux:c6eb8e5fec9fa9bb arm64mac:d9e62fbe2e5966e7 x64mac:c6eb8e5fec9fa9bb
+  DIFF lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-getpid.a linux:92cc7ca8dcbaa35e arm64mac:f8b27e0fabc51e3f x64mac:92cc7ca8dcbaa35e
+  DIFF lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-mman.a linux:9b4dd5e701262cc5 arm64mac:7dd2f282ea0a24f3 x64mac:9b4dd5e701262cc5
+  DIFF lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-process-clocks.a linux:9053c3dcc493bad1 arm64mac:06f809a16de7145c x64mac:9053c3dcc493bad1
+  DIFF lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-signal.a linux:04de99ffd438d72a arm64mac:80774af235c57cd7 x64mac:04de99ffd438d72a
+  DIFF lib/wasm32-wasip1/libc++.a linux:b68666d885ebd77d arm64mac:1753d8de7a67f3be x64mac:b68666d885ebd77d
+  DIFF lib/wasm32-wasip1/libc++.so linux:ee2918c483fe0b6f arm64mac:be730f538d6b433b x64mac:ee2918c483fe0b6f
+  DIFF lib/wasm32-wasip1/libc++abi.a linux:36d345420c096fa7 arm64mac:5edb58e943565d30 x64mac:36d345420c096fa7
+  DIFF lib/wasm32-wasip1/libc++abi.so linux:c7c3195b709c5828 arm64mac:267e01b9a51e83da x64mac:c7c3195b709c5828
+  DIFF lib/wasm32-wasip1/libc++experimental.a linux:f1f244f6c474138b arm64mac:c0754acab564467b x64mac:f1f244f6c474138b
+  DIFF lib/wasm32-wasip1/libc.so linux:743592116ca97092 arm64mac:60154976c28e4de9 x64mac:743592116ca97092
+  DIFF lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libc++.a linux:5132ffde15293f97 arm64mac:710d7218d32f86f9 x64mac:5132ffde15293f97
+  DIFF lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libc++abi.a linux:fbb450f52d213c06 arm64mac:82afad76abac02aa x64mac:fbb450f52d213c06
+  DIFF lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libc++experimental.a linux:558d2b50cd4cf05f arm64mac:c0a687b49d450010 x64mac:558d2b50cd4cf05f
+  DIFF lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libc-printscan-long-double.a linux:71a01a7ddaa24d96 arm64mac:543229c886bb97fa x64mac:71a01a7ddaa24d96
+  DIFF lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libc-printscan-no-floating-point.a linux:d353321bb851e568 arm64mac:de26f063819a028b x64mac:d353321bb851e568
+  DIFF lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libc.a linux:49cf5d6218ecdb54 arm64mac:a69ef7163a57c1fd x64mac:49cf5d6218ecdb54
+  DIFF lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libdl.a linux:cd04ab7a85191b47 arm64mac:5804f5902d60306e x64mac:cd04ab7a85191b47
+  DIFF lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-getpid.a linux:d613a883a0792c47 arm64mac:4fde7348042bed3a x64mac:d613a883a0792c47
+  DIFF lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-mman.a linux:1ccb9a1015d827fd arm64mac:fa3d7bf3b47d9879 x64mac:1ccb9a1015d827fd
+== lib/clang: entries {'linux': 272, 'arm64mac': 272, 'x64mac': 272}; identical in all 267; differing 5; only in some 0
+  DIFF 22/lib/wasm32-unknown-wasi-threads/libclang_rt.builtins.a linux:503bfbb354418976 arm64mac:47b6d38d21dc35b9 x64mac:503bfbb354418976
+  DIFF 22/lib/wasm32-unknown-wasi/libclang_rt.builtins.a linux:b1e23c0376609e09 arm64mac:6e016eff513a07d5 x64mac:b1e23c0376609e09
+  DIFF 22/lib/wasm32-unknown-wasip1-threads/libclang_rt.builtins.a linux:503bfbb354418976 arm64mac:47b6d38d21dc35b9 x64mac:503bfbb354418976
+  DIFF 22/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a linux:b1e23c0376609e09 arm64mac:6e016eff513a07d5 x64mac:b1e23c0376609e09
+  DIFF 22/lib/wasm32-unknown-wasip2/libclang_rt.builtins.a linux:b1e23c0376609e09 arm64mac:6e016eff513a07d5 x64mac:b1e23c0376609e09
+== include: entries {'linux': 48, 'arm64mac': 48, 'x64mac': 46}; identical in all 45; differing 1; only in some 2
+  DIFF libxml2/libxml/xmlversion.h linux:98dae72c4ad5e66f arm64mac:3156557933a8559e x64mac:3156557933a8559e
+  ONLY editline/readline.h in linux,arm64mac
+  ONLY histedit.h in linux,arm64mac
+== share/cmake: entries {'linux': 6, 'arm64mac': 6, 'x64mac': 6}; identical in all 6; differing 0; only in some 0
+== share/misc: entries {'linux': 2, 'arm64mac': 2, 'x64mac': 2}; identical in all 2; differing 0; only in some 0
+== bin: entries {'linux': 54, 'arm64mac': 54, 'x64mac': 54}; identical in all 34; differing 20; only in some 0
+  DIFF clang-22 linux:6985ec66b1065976 arm64mac:356b0fdc2006a584 x64mac:1445cc888053cdb6
+  DIFF clang-apply-replacements linux:a54c007e3279f221 arm64mac:02da18ea33987fd7 x64mac:ddb6fe82bb3bd2b1
+  DIFF clang-format linux:57228f29475519fd arm64mac:f9435d07848e3eaa x64mac:35a05dea4864684c
+  DIFF clang-tidy linux:d2843797bf1aaf93 arm64mac:1f52de28c72db672 x64mac:5c9eb178e39a09a2
+  DIFF lld linux:5c965a9e8525c720 arm64mac:1682e0d83e144ce8 x64mac:4c4bdd943d886eeb
+  DIFF lldb linux:0a4ebcef4f421621 arm64mac:e78f0b3a2c0788b7 x64mac:9bb6db00770f26b7
+  DIFF llvm-ar linux:0b52c0242b9c3998 arm64mac:115f4628c3f0d5e9 x64mac:b42b894fc207db38
+  DIFF llvm-config linux:dddc36990cc84c06 arm64mac:bde3040b7aba70aa x64mac:753ac11d35d5b76f
+  DIFF llvm-cxxfilt linux:a85c86f24cdf7c59 arm64mac:c6bb3c5d3af6ea61 x64mac:785e1a85ae0c9ac0
+  DIFF llvm-dwarfdump linux:0f281b5b88c8a7ba arm64mac:67209d88c43a88cf x64mac:feabc6cf64de19b5
+  DIFF llvm-dwp linux:e27d8a8e65f5b41f arm64mac:40e960560f8f5483 x64mac:401d7036b58a22bb
+  DIFF llvm-mc linux:a8a69a3a83f34602 arm64mac:8b781b74315d2a2d x64mac:e2c5bdd96b980909
+  DIFF llvm-nm linux:b3eea1506407d1c3 arm64mac:a565ba52a54759ac x64mac:31f441dd0e822334
+  DIFF llvm-objcopy linux:f020ba49404039ce arm64mac:6dc6ee49e1835e86 x64mac:d33920e4fd8558f4
+  DIFF llvm-objdump linux:791e216999751715 arm64mac:8f0cfdff98382558 x64mac:ac9b31f93354a19a
+  DIFF llvm-size linux:ad3d2562d6e396ce arm64mac:8ce9d7f7c556688e x64mac:16e9d04024a76290
+  DIFF llvm-strings linux:6aeab186cfd6a02e arm64mac:6b7d5a6de72e0741 x64mac:a292b1ff612eac0c
+  DIFF llvm-symbolizer linux:59a2ab24ff5ef0b1 arm64mac:7185386c2bedcdb7 x64mac:8eabaa17f49c7220
+  DIFF wasm-component-ld linux:9d238689f02e98ac arm64mac:f5b184bf66d2b0f3 x64mac:9e6d68677a364376
+  DIFF xml2-config linux:2c731c1c9446e717 arm64mac:2bfbd5c57b2734df x64mac:2bfbd5c57b2734df
+== lib: entries {'linux': 296, 'arm64mac': 290, 'x64mac': 286}; identical in all 269; differing 8; only in some 30
+  DIFF clang/22/lib/wasm32-unknown-wasi-threads/libclang_rt.builtins.a linux:503bfbb354418976 arm64mac:47b6d38d21dc35b9 x64mac:503bfbb354418976
+  DIFF clang/22/lib/wasm32-unknown-wasi/libclang_rt.builtins.a linux:b1e23c0376609e09 arm64mac:6e016eff513a07d5 x64mac:b1e23c0376609e09
+  DIFF clang/22/lib/wasm32-unknown-wasip1-threads/libclang_rt.builtins.a linux:503bfbb354418976 arm64mac:47b6d38d21dc35b9 x64mac:503bfbb354418976
+  DIFF clang/22/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a linux:b1e23c0376609e09 arm64mac:6e016eff513a07d5 x64mac:b1e23c0376609e09
+  DIFF clang/22/lib/wasm32-unknown-wasip2/libclang_rt.builtins.a linux:b1e23c0376609e09 arm64mac:6e016eff513a07d5 x64mac:b1e23c0376609e09
+  DIFF cmake/libxml2/libxml2-export-minsizerel.cmake linux:0bef55db92745b60 arm64mac:4f916b66c466f627 x64mac:4f916b66c466f627
+  DIFF cmake/libxml2/libxml2-export.cmake linux:adcfc45aa13745d0 arm64mac:e900adc24717e3b4 x64mac:e900adc24717e3b4
+  DIFF pkgconfig/libxml-2.0.pc linux:2b80c9f6d7c74956 arm64mac:832c5184fabca598 x64mac:832c5184fabca598
+  ONLY libLLVM-22-wasi-sdk.dylib in arm64mac,x64mac
+  ONLY libLLVM-22-wasi-sdk.so in linux
+  ONLY libLLVM.dylib in arm64mac,x64mac
+  ONLY libLLVM.so in linux
+  ONLY libLLVM.so.22.1-wasi-sdk in linux
+  ONLY libclang-cpp.dylib in arm64mac,x64mac
+  ONLY libclang-cpp.so in linux
+  ONLY libclang-cpp.so.22.1-wasi-sdk in linux
+  ONLY libclang.dylib in arm64mac,x64mac
+  ONLY libclang.so in linux
+  ONLY libclang.so.22.1-wasi-sdk in linux
+  ONLY libclang.so.22.1.0-wasi-sdk in linux
+  ONLY libedit.0.dylib in arm64mac
+  ONLY libedit.dylib in arm64mac
+  ONLY libedit.la in linux,arm64mac
+  ONLY libedit.so in linux
+  ONLY libedit.so.0 in linux
+  ONLY libedit.so.0.0.76 in linux
+  ONLY liblldb.22.1.0-wasi-sdk.dylib in arm64mac,x64mac
+  ONLY liblldb.dylib in arm64mac,x64mac
+  ONLY liblldb.so in linux
+  ONLY liblldb.so.22.1-wasi-sdk in linux
+  ONLY liblldb.so.22.1.0-wasi-sdk in linux
+  ONLY libxml2.16.1.2.dylib in arm64mac,x64mac
+  ONLY libxml2.16.dylib in arm64mac,x64mac
+  ONLY libxml2.dylib in arm64mac,x64mac
+  ONLY libxml2.so in linux
+  ONLY libxml2.so.16 in linux
+  ONLY libxml2.so.16.1.2 in linux
+  ONLY pkgconfig/libedit.pc in linux,arm64mac

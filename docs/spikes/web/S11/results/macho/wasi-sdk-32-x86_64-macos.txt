@@ -1,0 +1,77 @@
+{
+ "macho_files": 24,
+ "archs": [
+  "x86_64"
+ ],
+ "minos": [
+  "10.12.0"
+ ],
+ "sdk": [
+  "14.5.0"
+ ],
+ "signature_kinds": [
+  "none"
+ ],
+ "unsigned_files": [
+  "wasi-sdk-32.0-x86_64-macos/bin/clang-22",
+  "wasi-sdk-32.0-x86_64-macos/bin/clang-apply-replacements",
+  "wasi-sdk-32.0-x86_64-macos/bin/clang-format",
+  "wasi-sdk-32.0-x86_64-macos/bin/clang-tidy",
+  "wasi-sdk-32.0-x86_64-macos/bin/lld",
+  "wasi-sdk-32.0-x86_64-macos/bin/lldb",
+  "wasi-sdk-32.0-x86_64-macos/bin/llvm-ar",
+  "wasi-sdk-32.0-x86_64-macos/bin/llvm-config",
+  "wasi-sdk-32.0-x86_64-macos/bin/llvm-cxxfilt",
+  "wasi-sdk-32.0-x86_64-macos/bin/llvm-dwarfdump",
+  "wasi-sdk-32.0-x86_64-macos/bin/llvm-dwp",
+  "wasi-sdk-32.0-x86_64-macos/bin/llvm-mc",
+  "wasi-sdk-32.0-x86_64-macos/bin/llvm-nm",
+  "wasi-sdk-32.0-x86_64-macos/bin/llvm-objcopy",
+  "wasi-sdk-32.0-x86_64-macos/bin/llvm-objdump",
+  "wasi-sdk-32.0-x86_64-macos/bin/llvm-size",
+  "wasi-sdk-32.0-x86_64-macos/bin/llvm-strings",
+  "wasi-sdk-32.0-x86_64-macos/bin/llvm-symbolizer",
+  "wasi-sdk-32.0-x86_64-macos/bin/wasm-component-ld",
+  "wasi-sdk-32.0-x86_64-macos/lib/libLLVM.dylib",
+  "wasi-sdk-32.0-x86_64-macos/lib/libclang-cpp.dylib",
+  "wasi-sdk-32.0-x86_64-macos/lib/libclang.dylib",
+  "wasi-sdk-32.0-x86_64-macos/lib/liblldb.22.1.0-wasi-sdk.dylib",
+  "wasi-sdk-32.0-x86_64-macos/lib/libxml2.16.1.2.dylib"
+ ],
+ "non_system_dylibs": [
+  "@rpath/libLLVM.dylib",
+  "@rpath/libclang-cpp.dylib",
+  "@rpath/liblldb.22.1.0-wasi-sdk.dylib",
+  "@rpath/libxml2.16.dylib"
+ ],
+ "rpaths": [
+  "@loader_path/../lib"
+ ],
+ "team_ids": [],
+ "cms_subjects": [],
+ "hardened_runtime_files": 0
+}
+wasi-sdk-32.0-x86_64-macos/bin/clang-22	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libclang-cpp.dylib,@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/clang-apply-replacements	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libclang-cpp.dylib,@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/clang-format	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libclang-cpp.dylib,@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/clang-tidy	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libclang-cpp.dylib,@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/lld	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/lldb	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/liblldb.22.1.0-wasi-sdk.dylib,@rpath/libxml2.16.dylib,/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation,/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation,/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices,/System/Library/Frameworks/Security.framework/Versions/A/Security,@rpath/libclang-cpp.dylib,@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib,/usr/lib/libobjc.A.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/llvm-ar	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/llvm-config	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=/usr/lib/libSystem.B.dylib,/usr/lib/libc++.1.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/llvm-cxxfilt	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/llvm-dwarfdump	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/llvm-dwp	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/llvm-mc	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/llvm-nm	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/llvm-objcopy	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/llvm-objdump	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/llvm-size	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/llvm-strings	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/llvm-symbolizer	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/bin/wasm-component-ld	0o755	x86_64	execute	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=/usr/lib/libiconv.2.dylib,/usr/lib/libSystem.B.dylib	rpaths=-
+wasi-sdk-32.0-x86_64-macos/lib/libLLVM.dylib	0o755	x86_64	dylib	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=/usr/lib/libedit.3.dylib,/usr/lib/libSystem.B.dylib,/usr/lib/libc++.1.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/lib/libclang-cpp.dylib	0o755	x86_64	dylib	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices,@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib,/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/lib/libclang.dylib	0o755	x86_64	dylib	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/lib/liblldb.22.1.0-wasi-sdk.dylib	0o755	x86_64	dylib	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=/usr/lib/libcompression.dylib,@rpath/libxml2.16.dylib,/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation,/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation,/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices,/System/Library/Frameworks/Security.framework/Versions/A/Security,@rpath/libclang-cpp.dylib,@rpath/libLLVM.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib,/usr/lib/libobjc.A.dylib	rpaths=@loader_path/../lib
+wasi-sdk-32.0-x86_64-macos/lib/libxml2.16.1.2.dylib	0o755	x86_64	dylib	minos=10.12.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=/usr/lib/libSystem.B.dylib,/usr/lib/libiconv.2.dylib	rpaths=-

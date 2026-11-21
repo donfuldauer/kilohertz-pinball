@@ -1,0 +1,58 @@
+{
+ "macho_files": 16,
+ "archs": [
+  "x86_64"
+ ],
+ "minos": [
+  "10.15.0"
+ ],
+ "sdk": [
+  "14.5.0"
+ ],
+ "signature_kinds": [
+  "none"
+ ],
+ "unsigned_files": [
+  "binaryen-version_132/bin/binaryen-unittests",
+  "binaryen-version_132/bin/wasm-as",
+  "binaryen-version_132/bin/wasm-ctor-eval",
+  "binaryen-version_132/bin/wasm-dis",
+  "binaryen-version_132/bin/wasm-emscripten-finalize",
+  "binaryen-version_132/bin/wasm-fuzz-lattices",
+  "binaryen-version_132/bin/wasm-fuzz-types",
+  "binaryen-version_132/bin/wasm-merge",
+  "binaryen-version_132/bin/wasm-metadce",
+  "binaryen-version_132/bin/wasm-opt",
+  "binaryen-version_132/bin/wasm-reduce",
+  "binaryen-version_132/bin/wasm-shell",
+  "binaryen-version_132/bin/wasm-split",
+  "binaryen-version_132/bin/wasm2c",
+  "binaryen-version_132/bin/wasm2js",
+  "binaryen-version_132/lib/libbinaryen.dylib"
+ ],
+ "non_system_dylibs": [
+  "@rpath/libbinaryen.dylib"
+ ],
+ "rpaths": [
+  "@loader_path/../lib"
+ ],
+ "team_ids": [],
+ "cms_subjects": [],
+ "hardened_runtime_files": 0
+}
+binaryen-version_132/bin/binaryen-unittests	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-as	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-ctor-eval	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-dis	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-emscripten-finalize	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-fuzz-lattices	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-fuzz-types	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-merge	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-metadce	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-opt	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-reduce	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-shell	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm-split	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm2c	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/bin/wasm2js	0o755	x86_64	execute	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=@rpath/libbinaryen.dylib,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib
+binaryen-version_132/lib/libbinaryen.dylib	0o755	x86_64	dylib	minos=10.15.0	sdk=14.5.0	sig=none	flags=-	team=-	dylibs=/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=@loader_path/../lib

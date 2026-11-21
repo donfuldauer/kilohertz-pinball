@@ -1,0 +1,25 @@
+--- a/third_party/lua-src/src/lib.rs
++++ b/third_party/lua-src/src/lib.rs
+@@ -378,13 +378,19 @@
+         ext: &str,
+         exclude: &[&str],
+     ) -> Result<&mut Self, Box<dyn Error>> {
+-        for entry in fs::read_dir(dir)
++        let mut paths: Vec<PathBuf> = fs::read_dir(dir)
+             .context(|| format!("Cannot read '{}'", dir.display()))?
+             .filter_map(|e| e.ok())
+             .filter(|e| e.path().extension() == Some(ext.as_ref()))
+             .filter(|e| !exclude.iter().any(|x| e.file_name() == **x))
+-        {
+-            self.file(entry.path());
++            .map(|e| e.path())
++            .collect();
++        // KHZ (web, spike S11): compile and archive in a fixed order. `read_dir` returns the
++        // host file system's order (ext4 hash order with a per-file-system seed, tmpfs creation
++        // order, APFS), and the object order decides the link order and so the module bytes.
++        paths.sort();
++        for path in paths {
++            self.file(path);
+         }
+         Ok(self)
+     }

@@ -1,0 +1,56 @@
+{
+ "summary": {
+  "macho_files": 1,
+  "archs": [
+   "x86_64"
+  ],
+  "minos": [
+   "10.12.0"
+  ],
+  "sdk": [
+   "26.5.0"
+  ],
+  "signature_kinds": [
+   "none"
+  ],
+  "unsigned_files": [
+   "wasm-tools-1.263.0-x86_64-macos/wasm-tools"
+  ],
+  "non_system_dylibs": [],
+  "rpaths": [],
+  "team_ids": [],
+  "cms_subjects": [],
+  "hardened_runtime_files": 0
+ },
+ "files": [
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "26.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libiconv.2.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasm-tools-1.263.0-x86_64-macos/wasm-tools",
+   "mode": "0o755",
+   "size": 17940376
+  }
+ ]
+}

@@ -1,0 +1,603 @@
+{
+ "summary": {
+  "macho_files": 16,
+  "archs": [
+   "x86_64"
+  ],
+  "minos": [
+   "10.15.0"
+  ],
+  "sdk": [
+   "14.5.0"
+  ],
+  "signature_kinds": [
+   "none"
+  ],
+  "unsigned_files": [
+   "binaryen-version_132/bin/binaryen-unittests",
+   "binaryen-version_132/bin/wasm-as",
+   "binaryen-version_132/bin/wasm-ctor-eval",
+   "binaryen-version_132/bin/wasm-dis",
+   "binaryen-version_132/bin/wasm-emscripten-finalize",
+   "binaryen-version_132/bin/wasm-fuzz-lattices",
+   "binaryen-version_132/bin/wasm-fuzz-types",
+   "binaryen-version_132/bin/wasm-merge",
+   "binaryen-version_132/bin/wasm-metadce",
+   "binaryen-version_132/bin/wasm-opt",
+   "binaryen-version_132/bin/wasm-reduce",
+   "binaryen-version_132/bin/wasm-shell",
+   "binaryen-version_132/bin/wasm-split",
+   "binaryen-version_132/bin/wasm2c",
+   "binaryen-version_132/bin/wasm2js",
+   "binaryen-version_132/lib/libbinaryen.dylib"
+  ],
+  "non_system_dylibs": [
+   "@rpath/libbinaryen.dylib"
+  ],
+  "rpaths": [
+   "@loader_path/../lib"
+  ],
+  "team_ids": [],
+  "cms_subjects": [],
+  "hardened_runtime_files": 0
+ },
+ "files": [
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/binaryen-unittests",
+   "mode": "0o755",
+   "size": 3320512
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-as",
+   "mode": "0o755",
+   "size": 77904
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-ctor-eval",
+   "mode": "0o755",
+   "size": 656456
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-dis",
+   "mode": "0o755",
+   "size": 79352
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-emscripten-finalize",
+   "mode": "0o755",
+   "size": 100824
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-fuzz-lattices",
+   "mode": "0o755",
+   "size": 1528080
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-fuzz-types",
+   "mode": "0o755",
+   "size": 1315248
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-merge",
+   "mode": "0o755",
+   "size": 253840
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-metadce",
+   "mode": "0o755",
+   "size": 246664
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-opt",
+   "mode": "0o755",
+   "size": 1823056
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-reduce",
+   "mode": "0o755",
+   "size": 422600
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-shell",
+   "mode": "0o755",
+   "size": 501648
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm-split",
+   "mode": "0o755",
+   "size": 219448
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm2c",
+   "mode": "0o755",
+   "size": 179992
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libbinaryen.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "binaryen-version_132/bin/wasm2js",
+   "mode": "0o755",
+   "size": 736128
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "dylib",
+     "minos": "10.15.0",
+     "sdk": "14.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     },
+     "id": "@rpath/libbinaryen.dylib"
+    }
+   ],
+   "path": "binaryen-version_132/lib/libbinaryen.dylib",
+   "mode": "0o755",
+   "size": 16967856
+  }
+ ]
+}
