@@ -7562,9 +7562,9 @@ no git symlinks:
 - `.agents/agents/` provides Antigravity custom subagent definitions (with Antigravity YAML
   frontmatter and safe cross-surface tool lists: `view_file` and `run_command` for read-only roles,
   plus `replace_file_content` and `write_to_file` for `task-executor`) that forward to
-  `.claude/agents/`. Standalone Gemini CLI does not load `.agents/agents/` and follows
-  `.claude/agents/` directly (or mirrors them locally under `.gemini/agents/`), as documented in
-  `GEMINI.md`.
+  `.claude/agents/`. Standalone Gemini CLI does not load `.agents/agents/`; its main session does
+  not run executor or verifier roles directly and uses `.claude/agents/` only through custom
+  subagents mirrored locally under `.gemini/agents/`, as documented in `GEMINI.md`.
 - `.agents/skills/` provides Gemini / Antigravity skill adapters forwarding to `.claude/skills/`,
   plus the Gemini / Antigravity-specific `pr-watch` skill (`.agents/skills/pr-watch/SKILL.md`),
   which stands in for Claude Code's `subscribe_pr_activity` / auto-fix loop by scheduling

@@ -59,12 +59,13 @@ Run a fresh read of the PR head, checks, reviews, issue comments, and **all** re
 
 You are **done** when all of these hold on the current `headRefOid`:
 
-1. **CI green:** every non-skipped PR check in `statusCheckRollup` has `status == "COMPLETED"` and
-   `conclusion == "SUCCESS"` (specifically the required `pr-checks` aggregator plus any other
-   triggered workflow such as `spikes`, `release`, or `rules-wasm`).
+1. **CI green:** every entry in `statusCheckRollup` passes for its entry type:
+   - for `CheckRun` entries (excluding path-gated `SKIPPED` runs), `status == "COMPLETED"` and
+     `conclusion == "SUCCESS"` (specifically the required `pr-checks` aggregator plus any other
+     triggered workflow such as `spikes`, `release`, or `rules-wasm`);
+   - for `StatusContext` entries, `state == "SUCCESS"`.
 2. **CodeRabbit approved on the current head:** the latest `coderabbitai` review covers
-   `headRefOid` with `state == "APPROVED"` (or `reviewDecision == "APPROVED"`), with no
-   outstanding `CHANGES_REQUESTED`.
+   `headRefOid` with `state == "APPROVED"`, with no outstanding `CHANGES_REQUESTED`.
 3. **Zero unresolved threads:** every review thread has a disposition reply and
    `isResolved == true`.
 4. **Verification passed:** the head commit passed `work-verifier` (or the applicable test and
@@ -72,8 +73,12 @@ You are **done** when all of these hold on the current `headRefOid`:
 
 When all four hold:
 - If invoked from `work-issue`, continue to `work-issue` §7 (merge and unblock).
-- Otherwise, stop scheduling check-ins and report the PR URL, head SHA, approval state, resolved
-  threads, and CI results to the user.
+- If invoked standalone and the user explicitly asked to merge, verify the remaining
+  `docs/PROCESS.md` P6 step 5 merge conditions (`main`'s last push CI green and branch up to date
+  with `main` where required) and run `gh pr merge <P> --merge --match-head-commit <headRefOid>`
+  (deleting the branch afterward if it was not auto-deleted).
+- Otherwise (standalone without an explicit merge request), stop scheduling check-ins and report
+  the PR URL, head SHA, approval state, resolved threads, and CI results to the user.
 
 ## 3. Act on findings, failures, or missing approval
 
@@ -90,9 +95,10 @@ Handle the PR state in this order:
      → `task-executor`.
    - Failed pre-merge checks (such as PR description checks) → update the PR body with
      `gh pr edit <P> --body ...`.
-3. Re-run verification (`work-verifier`, or all applicable conformance and test suites for
-   standalone docs/config PRs) on the updated head, update `docs/RUN_LOG.md` (and regenerate
-   `docs/HUMAN_ACCEPTANCE.md` if needed), commit, and push to the PR branch.
+3. Update `docs/RUN_LOG.md` (and regenerate `docs/HUMAN_ACCEPTANCE.md` if needed), then commit the
+   fix together with those updates. Re-run verification (`work-verifier`, or all applicable
+   conformance and test suites for standalone docs/config PRs) on that exact commit so the verified
+   commit is the PR head (`docs/PROCESS.md` P6 step 1), and push it to the PR branch.
 4. **Reply to every review thread** (reason and evidence first: commit SHA + test output, SPEC /
    PROCESS / DECISIONS citation, or link to the new deferred `work-unit` issue / DECISIONS entry):
    ```sh
@@ -160,7 +166,7 @@ your current Antigravity surface:
    snapshot, and immediately stop calling tools so the runtime wakes you asynchronously when the
    background task finishes:
    ```sh
-   sleep 150 && gh pr view <P> --json headRefOid,reviewDecision,statusCheckRollup,reviews --jq '{head: .headRefOid, reviewDecision, pending_or_failed: [.statusCheckRollup[] | select(.status != "COMPLETED" or (.conclusion != "SUCCESS" and .conclusion != "SKIPPED")) | {name: (.name // .context), status: (.status // .state), conclusion}], latest_reviews: [.reviews[-3:][] | {author: .author.login, state, commit: .commit.oid}]}'
+   sleep 150 && gh pr view <P> --json headRefOid,statusCheckRollup,reviews --jq '{head: .headRefOid, pending_or_failed: [.statusCheckRollup[] | select((.__typename == "StatusContext" and .state != "SUCCESS") or (.__typename != "StatusContext" and (.status != "COMPLETED" or (.conclusion != "SUCCESS" and .conclusion != "SKIPPED")))) | {name: (.name // .context), status: (.status // .state), conclusion}], coderabbit_reviews: [.reviews[] | select(.author.login == "coderabbitai") | {state, submittedAt, commit: .commit.oid}]}'
    ```
    When the wakeup notification arrives, go back to §1 and act on the updated state. Repeat until
    §2 holds (or stop after a reasonable retry limit on stalled checks/rate limits and report to the
