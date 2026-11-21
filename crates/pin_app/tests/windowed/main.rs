@@ -1168,29 +1168,166 @@ fn req_lat_001_press_plan_bounds() {
     assert_eq!(shots[3].1, [None, None]);
 }
 
-/// R11 / F8a: a helper that does not exit is killed and reaped at its
-/// deadline, never waited for unboundedly.
+use driver::{Waitable, wait_with};
+use std::os::unix::process::ExitStatusExt;
+use std::time::Duration;
+
+/// A stub child: exits at its `exit_at`-th poll (never when `None`), or its
+/// poll fails when `fail` is set; counts kills and reaps.
+struct StubChild {
+    polls: u32,
+    exit_at: Option<u32>,
+    fail: bool,
+    kills: u32,
+    reaps: u32,
+}
+
+impl StubChild {
+    fn new(exit_at: Option<u32>, fail: bool) -> Self {
+        Self {
+            polls: 0,
+            exit_at,
+            fail,
+            kills: 0,
+            reaps: 0,
+        }
+    }
+}
+
+impl Waitable for StubChild {
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.polls += 1;
+        if self.fail {
+            return Err(std::io::Error::other("poll broke"));
+        }
+        Ok((Some(self.polls) == self.exit_at).then(|| std::process::ExitStatus::from_raw(0)))
+    }
+    fn kill(&mut self) {
+        self.kills += 1;
+    }
+    fn reap(&mut self) {
+        self.reaps += 1;
+    }
+}
+
+/// REQ-LAT-001 harness (R11 / F8a, R6): a helper that does not exit is
+/// killed and reaped once when the fake clock reaches the deadline. No real
+/// process, sleep or wall clock.
 #[test]
-fn bounded_runner_kills_a_hung_helper() {
-    let t = std::time::Instant::now();
-    let e = driver::run_bounded(
-        std::process::Command::new("sleep").arg("30"),
-        std::time::Duration::from_millis(300),
+fn req_lat_001_harness_bounded_wait_kills_at_the_deadline() {
+    let clock = std::cell::Cell::new(0u64);
+    let mut child = StubChild::new(None, false);
+    let e = wait_with(
+        &mut child,
+        Duration::from_millis(300),
+        &mut || Duration::from_millis(clock.get()),
+        &mut || clock.set(clock.get() + 5),
+        "helper",
     )
     .unwrap_err();
-    assert!(e.contains("killed"), "{e}");
-    assert!(
-        t.elapsed() < std::time::Duration::from_secs(5),
-        "{:?}",
-        t.elapsed()
+    assert!(e.contains("helper") && e.contains("killed"), "{e}");
+    assert_eq!((child.kills, child.reaps), (1, 1));
+    assert_eq!(
+        clock.get(),
+        300,
+        "killed when the clock reached the deadline"
     );
-    let out = driver::run_bounded(
-        std::process::Command::new("echo").arg("hi"),
-        std::time::Duration::from_secs(5),
+}
+
+/// REQ-LAT-001 harness: a child that exits at the third poll returns its
+/// status and is never killed.
+#[test]
+fn req_lat_001_harness_bounded_wait_returns_an_exit() {
+    let clock = std::cell::Cell::new(0u64);
+    let mut child = StubChild::new(Some(3), false);
+    let st = wait_with(
+        &mut child,
+        Duration::from_millis(300),
+        &mut || Duration::from_millis(clock.get()),
+        &mut || clock.set(clock.get() + 5),
+        "helper",
     )
     .unwrap();
-    assert!(out.status.success());
-    assert_eq!(out.stdout, "hi\n");
+    assert!(st.success());
+    assert_eq!((child.polls, child.kills, child.reaps), (3, 0, 0));
+}
+
+/// REQ-LAT-001 harness: a failing poll kills, reaps and returns the error.
+#[test]
+fn req_lat_001_harness_bounded_wait_poll_error_kills() {
+    let mut child = StubChild::new(None, true);
+    let e = wait_with(
+        &mut child,
+        Duration::from_millis(300),
+        &mut || Duration::ZERO,
+        &mut || {},
+        "helper",
+    )
+    .unwrap_err();
+    assert!(e.contains("helper") && e.contains("poll broke"), "{e}");
+    assert_eq!((child.kills, child.reaps), (1, 1));
+}
+
+/// REQ-LAT-001 harness (R2 finding): a failing key-down for the second key
+/// still releases the first and the second, and the original error is the
+/// one returned.
+#[test]
+fn req_lat_001_harness_failed_keydown_releases_every_key() {
+    use driver::{Key, finish_injection, key_down, release_held};
+    let mut held = [false; 2];
+    key_down(&mut held, Key::Left, |_| Ok(())).unwrap();
+    let injection = key_down(&mut held, Key::Right, |_| Err("x server gone".into()));
+    assert_eq!(held, [true, true], "marked before the send");
+    let mut ups = Vec::new();
+    let failed = release_held(&mut held, |k| {
+        ups.push(k);
+        Ok(())
+    });
+    assert!(failed.is_empty());
+    assert_eq!(ups, [Key::Left, Key::Right]);
+    assert_eq!(held, [false, false]);
+    let e = finish_injection(injection, &failed).unwrap_err();
+    assert_eq!(e, "x server gone");
+}
+
+/// REQ-LAT-001 harness: a failing key-up for the first key does not stop
+/// the second's key-up; the original injection error is kept over the
+/// release failure, and a release failure alone is reported.
+#[test]
+fn req_lat_001_harness_failed_keyup_does_not_stop_the_rest() {
+    use driver::{Key, finish_injection, release_held};
+    let mut held = [true, true];
+    let mut ups = Vec::new();
+    let failed = release_held(&mut held, |k| {
+        ups.push(k);
+        if k == Key::Left {
+            Err("no reply".to_string())
+        } else {
+            Ok(())
+        }
+    });
+    assert_eq!(ups, [Key::Left, Key::Right]);
+    assert_eq!(failed, [(Key::Left, "no reply".to_string())]);
+    assert_eq!(held, [false, false]);
+    assert_eq!(
+        finish_injection(Err("original".into()), &failed).unwrap_err(),
+        "original"
+    );
+    let e = finish_injection(Ok(()), &failed).unwrap_err();
+    assert!(e.starts_with("key release: "), "{e}");
+    assert!(finish_injection(Ok(()), &[]).is_ok());
+}
+
+/// REQ-LAT-001 harness: a key-up that fails keeps the key marked held (so
+/// the final release retries it); one that succeeds clears it.
+#[test]
+fn req_lat_001_harness_keyup_tracks_held() {
+    use driver::{Key, key_up};
+    let mut held = [true, true];
+    assert!(key_up(&mut held, Key::Left, |_| Err("e".into())).is_err());
+    assert_eq!(held, [true, true]);
+    key_up(&mut held, Key::Left, |_| Ok(())).unwrap();
+    assert_eq!(held, [false, true]);
 }
 
 /// F8b: the screenshot is two argument vectors, never shell source: a
@@ -1265,6 +1402,9 @@ fn failure_summary_and_missing_captures() {
 #[test]
 #[ignore = "60 s windowed run: needs Xvfb, lavapipe and a release build (windowed.yml, scripts/windowed/run.sh)"]
 fn windowed_latency_60s() {
+    // Real-process evidence for the bounded runner: wall time is measured
+    // here, in the windowed run, never in the headless suite (R6).
+    driver::self_check_bounded_runner().unwrap_or_else(|e| panic!("{e}"));
     let cfg = driver::DriverConfig::from_env();
     let out = driver::run(&cfg).unwrap_or_else(|e| panic!("windowed driver failed: {e}"));
     let p = Params {

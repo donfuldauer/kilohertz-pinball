@@ -398,7 +398,7 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
   stall `drain_sdl_ns - prev_drain_sdl_ns` and no more; (3) `move_tick - apply_tick <= 8`
   ticks (the press takes effect in the applying tick). A press whose bat never moved fails, unless
   its applying tick ended within `8 + 2` ticks of `run_end_ns`. `stall = 1` when the press was
-  stamped before the end of a stall the sim thread observed (a tick that started more than 2 ms
+  stamped at or after the start and before the end of a stall the sim thread observed (a tick that started more than 2 ms
   after the previous executed tick, or after dropped ticks) and was applied in that tick or a later
   tick of the same catch-up batch: the sim thread's own scheduling and the timestamp, never the
   lateness being checked. That the applying tick is the first executed tick that received the
@@ -436,13 +436,14 @@ LP_NUM_THREADS cap").
 scripts/windowed/run.sh                     # builds the bundle and the release app, runs 60 s
 scripts/windowed/run.sh --print-paths       # prints the resolved paths, builds nothing
 # or, with the bundle and the release app already built:
-KP_GREYBOX_BUNDLE=$CARGO_TARGET_DIR/greybox LP_NUM_THREADS=2 PIN_FORCE_FALLBACK_ADAPTER=1 \
+LP_NUM_THREADS=2 PIN_FORCE_FALLBACK_ADAPTER=1 \
   WGPU_BACKEND=vulkan cargo test --release -p pin_app --test windowed -- --ignored --nocapture
 cargo test -p pin_app --test windowed       # the verdict, parser, property and allocation tests
 python3 -I -m unittest discover -s scripts/windowed/tests -p '*_test.py'   # workflow structure
 ```
 
-The driver starts its own Xvfb (1280x720x24, `-displayfd`) when `DISPLAY` is unset. Environment:
+The bundle defaults to `<target>/greybox` after `tables/greybox/build.sh <target>/greybox`;
+set `KP_GREYBOX_BUNDLE` only to use another bundle. The driver starts its own Xvfb (1280x720x24, `-displayfd`) when `DISPLAY` is unset. Environment:
 `KP_GREYBOX_BUNDLE` (default `<target>/greybox`), `KP_WINDOWED_OUT` (default
 `<target>/windowed`), `KP_WINDOWED_RUN_MS` (default 60000), `KP_WINDOWED_SEED`,
 `KP_WINDOWED_FRAME_MS` (default 125), `KP_PIN_APP`, `LP_NUM_THREADS` (default 2). `run.sh` takes a
