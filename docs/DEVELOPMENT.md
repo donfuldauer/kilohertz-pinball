@@ -288,6 +288,7 @@ and complete.
 | `release.yml` | PRs touching packaging paths; dispatch; `v*` tag push (owner only) | PR: `dry-run` (script unittest suites, `human_acceptance.py --check` as a warning, `package.py --dry-run` with real bundles). Dispatch or tag: `verify` (release build and tests with zero warnings on Windows x64, Linux x64, macOS arm64 and x86_64), `package`, and on a tag a draft prerelease. Never publishes (P8). |
 | `rules-wasm.yml` | PRs and main pushes touching rule ports, `pin_script` or the parity tests | Rebuilds each `tables/*/rules.wasm` twice and compares it with the committed binary; fmt, clippy and tests of each `rules-wasm` crate; the Lua/Wasm parity tests. |
 | `soak.yml` | weekly, dispatch, main pushes touching sim, physics, script, app or tables | `cargo test --release -p pin_app --test profiler_soak -- --ignored` on each OS: 10-minute multiball replays per table, `SOAK_HASH` lines compared across OSes (report only). |
+| `windowed.yml` | PRs touching `crates/pin_app`, `crates/pin_render`, `crates/pin_input`, `tables/` or the workflow; every push to `main`; dispatch | The windowed latency harness (KP-002): the release `pin_app` with the grey-box table for 60 s under Xvfb on lavapipe (`LP_NUM_THREADS=2`), flipper presses through XTest, checks a to d on its latency trace (see "Windowed latency harness"). Artifact `windowed-latency`. Not in `pr-checks`: it becomes required only when the owner makes it a required check (P8 setting). |
 | `spikes.yml` | pushes and PRs touching `spikes/**`, `versions.toml`, the workflow, `docs/DECISIONS.md` or `docs/HUMAN_QUEUE.md`; dispatch | The 0.1 spikes on three OSes, and the `spec_0_1` tests of the decision and queue files. |
 
 `tests/spec_ci` asserts the workflow structure; a workflow change updates it in the same PR.
@@ -321,7 +322,96 @@ gate.
   pass), `READINESS=0`; `scripts/gate_a2.sh --verdict-only OUT` recomputes the verdict. Only a run
   with `GAMES>=1000`, `REPLAYS>=20` and no `DRY` prints `GATE A2: PASS`.
 - **Gate A3** (SPEC §7.7, REQ-GATE-001): to come with KP-043 (#124): `scripts/gate_a3.sh`, a
-  workflow on `main` and on demand, the SPEC Appendix F.4 screenshot set as an artifact.
+  workflow on `main` and on demand, the SPEC Appendix F.4 screenshot set as an artifact. Its
+  latency part reuses the windowed harness (`windowed.yml`, `scripts/windowed/run.sh` and the
+  `--latency-trace` file; see "Windowed latency harness").
+- **Windowed latency harness** (KP-002, SPEC §7.5): `scripts/windowed/run.sh [<out_dir>]`, run
+  by `windowed.yml`; see the next section.
+
+## Windowed latency harness
+
+What it measures (SPEC §7.5, R12): a player's flipper press in the real windowed app. The release
+`pin_app` runs the grey-box table (`--table target/greybox --latency-trace <file> --run-ms
+60000`) under Xvfb with lavapipe (`WGPU_BACKEND=vulkan`, `SDL_VIDEODRIVER=x11`); the driver
+waits for the app's `pin_app: latency trace: first frame presented` line, focuses the window and
+injects flipper presses for the rest of the 60 s through XTest (`xdotool keydown/keyup` of X
+keycodes 50 and 62, Shift_L and Shift_R; the keysym `Shift_R` would also press Shift_L), with
+seeded pseudo-random holds (30 to 200 ms) and gaps (100 to 350 ms) in microseconds, never aligned
+to ticks. It captures four screenshots of the root window (at rest, left bat held, right bat held,
+at rest), then reads the trace and the shutdown line and prints a verdict per check and a summary
+table. Code: `crates/pin_app/tests/windowed/` (`verdict.rs`: the pure checks, unit-tested in plain
+`cargo test`; `driver.rs`: Xvfb, the app, xdotool, screenshots; every wait bounded, a hung app is
+killed and reported with its stderr tail). DECISIONS.md "#82 — windowed latency check
+definitions" records the choices.
+
+**The latency trace** (`pin_app --latency-trace <file>`, REQ-LAT-003): CSV, `\n` line ends,
+integers only; an event table (one row per delivered button event: `event_seq, input, down,
+sdl_ts_ns, apply_tick, apply_tick_end_sdl_ns, prev_tick_end_sdl_ns, drain_sdl_ns,
+prev_drain_sdl_ns, dropped_ticks_at_apply, stall, move_tick, frame, frame_snap_tick, present_ns,
+frames_to_photon`), an empty line, the frame table (`frame, snap_tick, present_ns`, one row per
+presented frame) and the trailer `# overflows: input=N move=N frame=N pending=N`. Every column is
+documented in the rustdoc of `crates/pin_app/src/orchestrator/trace.rs`; the names are stable
+(Gate A3 and KP-043 read them). All times are on SDL's clock (`SDL_GetTicksNS`). Records go into
+rings preallocated before the threads start; the file is written on the main thread after they
+were joined, and `pin_app: latency trace: <path>, <n> events, <m> frames, <k> overflows` follows
+the shutdown lines. Without the flag nothing is allocated or recorded.
+
+**Checks** (presses = down events of the four flipper inputs; `TICK` = 1 ms):
+
+- **a. Key to coil (REQ-LAT-004).** `apply_tick_end_sdl_ns >= sdl_ts_ns`; lateness
+  `apply_tick_end_sdl_ns - sdl_ts_ns <= TICK + 2 ms` (the 2 ms tolerance covers the main thread's
+  forwarding delay and the sim thread's wake-up; observed lateness stays below 1.5 ms), plus, for
+  a press with `stall = 1`, the observed stall `drain_sdl_ns - prev_drain_sdl_ns` and no more; and
+  the bat moves at most 2 ticks after `apply_tick` (the coil is energised in the applying tick,
+  REQ-LAT-005). `stall = 1` when the gap between the applying tick's start and the previous
+  executed tick's start exceeds 2 ms or ticks were dropped in between: the sim thread's own
+  scheduling, never the lateness being checked.
+- **b. Key to photon in frames (REQ-LAT-001, CI form).** For each press (except those in the final
+  500 ms of the run, excluded and counted): `frame - F0 <= 2`, where `frame` is the first presented
+  frame whose snapshot tick is `>= move_tick` and `F0` the last presented frame whose present time
+  is at or before `sdl_ts_ns` + check a's bound for that press + 2 ticks (the latest moment
+  REQ-LAT-004 lets the bat start moving; 0 when none). A press with no move or no later frame
+  fails. Counted in frames, never milliseconds (lavapipe draws about 8 frames per second); the
+  key-to-photon p50/p99 in ms and the trace's raw `frames_to_photon` (F0 at `sdl_ts_ns`) are
+  printed as information.
+- **c. Real time (REQ-LAT-002, CI form).** From `pin_app: N sim ticks (D dropped), ...`:
+  `D / (N + D) <= 0.001`, and `N` within 1 % of 60 000. The simulated-to-wall ratio `N / (N + D)`
+  is printed. The SPEC's Low quality preset does not exist in the app yet (REQ-LAT-006, another
+  unit), so only the worker-thread cap applies.
+- **d. Completeness.** No trace overflow, at least 100 presses, and as many presses traced as the
+  driver injected.
+
+**The lavapipe cap.** lavapipe's worker threads are capped with `LP_NUM_THREADS=2` (the workflow
+env and `run.sh`'s default), so on a 4-vCPU GitHub runner the sim thread keeps a core next to the
+render, main and audio threads and lavapipe's two workers. Measured on the 4-core agent VM, one
+60 s run each (dropped ticks of about 60 000 / presented frames / check a): 1 thread 30
+(0.050 %) / 277 / pass; 2 threads 8 (0.013 %) / 526 / pass; 3 threads 20 (0.033 %) / 734 / fail
+(one press 4 ms late: the main thread starved). To measure: `LP_NUM_THREADS=<n>
+scripts/windowed/run.sh target/windowed_lp<n>` for each `n`, and read the `dropped ratio` row of
+`summary.txt`; choose the value whose ratio stays well under 0.1 % (DECISIONS.md "#82 —
+LP_NUM_THREADS cap").
+
+**Running it locally** (from the repository root, with the agent environment):
+
+```sh
+# Prerequisites: mesa-vulkan-drivers libvulkan1 xvfb xauth xdotool x11-apps imagemagick
+scripts/windowed/run.sh                     # builds the bundle and the release app, runs 60 s
+# or, with the bundle and the release app already built:
+KP_GREYBOX_BUNDLE=$CARGO_TARGET_DIR/greybox LP_NUM_THREADS=2 \
+  cargo test --release -p pin_app --test windowed -- --ignored --nocapture
+cargo test -p pin_app --test windowed       # the verdict, parser, property and allocation tests
+python3 -I -m unittest discover -s scripts/windowed/tests -p '*_test.py'   # workflow structure
+```
+
+The driver starts its own Xvfb (1280x720x24) when `DISPLAY` is unset. Environment:
+`KP_GREYBOX_BUNDLE` (default `<target>/greybox`), `KP_WINDOWED_OUT` (default
+`<target>/windowed`), `KP_WINDOWED_RUN_MS` (default 60000), `KP_WINDOWED_SEED`, `KP_PIN_APP`,
+`LP_NUM_THREADS` (default 2).
+
+**Artifacts** (`windowed.yml` uploads them as `windowed-latency`, also on failure):
+`latency_trace.csv` (the trace), `summary.txt` (verdicts and summary table), `pin_app_stderr.log`
+(the app's stderr, with the adapter line and the shutdown line), `frame_0_rest.png`,
+`frame_1_left_held.png`, `frame_2_right_held.png`, `frame_3_rest.png`.
 
 ## Owned paths and shared files
 
