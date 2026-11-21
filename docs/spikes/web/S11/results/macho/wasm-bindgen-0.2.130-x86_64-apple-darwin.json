@@ -1,0 +1,128 @@
+{
+ "summary": {
+  "macho_files": 3,
+  "archs": [
+   "x86_64"
+  ],
+  "minos": [
+   "10.12.0"
+  ],
+  "sdk": [
+   "26.5.0"
+  ],
+  "signature_kinds": [
+   "none"
+  ],
+  "unsigned_files": [
+   "wasm-bindgen-0.2.130-x86_64-apple-darwin/wasm-bindgen",
+   "wasm-bindgen-0.2.130-x86_64-apple-darwin/wasm-bindgen-test-runner",
+   "wasm-bindgen-0.2.130-x86_64-apple-darwin/wasm2es6js"
+  ],
+  "non_system_dylibs": [],
+  "rpaths": [],
+  "team_ids": [],
+  "cms_subjects": [],
+  "hardened_runtime_files": 0
+ },
+ "files": [
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "26.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libiconv.2.dylib"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasm-bindgen-0.2.130-x86_64-apple-darwin/wasm-bindgen",
+   "mode": "0o755",
+   "size": 7425360
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "26.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libiconv.2.dylib"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasm-bindgen-0.2.130-x86_64-apple-darwin/wasm-bindgen-test-runner",
+   "mode": "0o755",
+   "size": 11376496
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "26.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libiconv.2.dylib"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasm-bindgen-0.2.130-x86_64-apple-darwin/wasm2es6js",
+   "mode": "0o755",
+   "size": 5215328
+  }
+ ]
+}

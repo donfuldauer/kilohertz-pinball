@@ -1,0 +1,23 @@
+== llvm-otool-18 -l clang-22 (LC_BUILD_VERSION / LC_CODE_SIGNATURE)
+       cmd LC_BUILD_VERSION
+   cmdsize 32
+  platform 1
+       sdk 14.5
+     minos 11.0
+    ntools 1
+--
+      cmd LC_CODE_SIGNATURE
+  cmdsize 16
+  dataoff 139456
+ datasize 1240
+Load command 20
+          cmd LC_RPATH
+${WEB_SPIKES}/S11/dl/wasi-sdk-32-arm64-macos/x/wasi-sdk-32.0-arm64-macos/bin/clang-22: Mach-O 64-bit arm64 executable, flags:<NOUNDEFS|DYLDLINK|TWOLEVEL|BINDS_TO_WEAK|PIE>
+== llvm-otool-18 -l wasm-opt (LC_BUILD_VERSION / LC_CODE_SIGNATURE)
+       cmd LC_BUILD_VERSION
+   cmdsize 32
+  platform 1
+       sdk 14.5
+     minos 10.15
+    ntools 1
+${WEB_SPIKES}/S11/dl/binaryen-132-x86_64-macos/x/binaryen-version_132/bin/wasm-opt: Mach-O 64-bit x86_64 executable, flags:<NOUNDEFS|DYLDLINK|TWOLEVEL|WEAK_DEFINES|BINDS_TO_WEAK|PIE>

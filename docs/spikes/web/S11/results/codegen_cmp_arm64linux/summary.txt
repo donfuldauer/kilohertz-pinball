@@ -1,0 +1,7 @@
+CODE-DIFFERS lib/clang/22/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a multc3.c.obj
+lib/clang/22/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a: members 149, byte-identical 148, code-identical (paths/offsets only) 0, code differs 1
+share/wasi-sysroot/lib/wasm32-wasip1/libc++abi.a: members 17, byte-identical 17, code-identical (paths/offsets only) 0, code differs 0
+share/wasi-sysroot/lib/wasm32-wasip1/libc++.a: members 54, byte-identical 54, code-identical (paths/offsets only) 0, code differs 0
+share/wasi-sysroot/lib/wasm32-wasip1/libc.a: members 826, byte-identical 826, code-identical (paths/offsets only) 0, code differs 0
+share/wasi-sysroot/lib/wasm32-wasip1/libsetjmp.a: members 1, byte-identical 1, code-identical (paths/offsets only) 0, code differs 0
+TOTAL members 1047, byte-identical 1046, code-identical 0, code differs 1

@@ -1,0 +1,20 @@
+A ${WEB_SPIKES}/S11/results/repro/a_plain/pin_web_bg.opt.wasm: 11140164 B, sha256 88e06b166af4781bacd199d136ea8059077fdd191ddadd023b07b1e1ae16e95b
+B ${WEB_SPIKES}/S11/results/repro/b_plain/pin_web_bg.opt.wasm: 11205495 B, sha256 af63c29cf3af7aa3b54bd1ed9ff455572068f7286173a373f1f500835bccc759
+  section                   type: A      3874 0a5169d0c4fa1d51  B      3874 0a5169d0c4fa1d51  SAME
+  section                 import: A     35067 32049abd95595ef8  B     35067 32049abd95595ef8  SAME
+  section               function: A     13264 446a14f2e8962354  B     13264 446a14f2e8962354  SAME
+  section                  table: A        11 c949c8d79b6e064b  B        11 c949c8d79b6e064b  SAME
+  section                 memory: A         3 c36beac4342ebc66  B         3 46dac5739af17b8b  DIFF
+  section                    tag: A         3 a143e7ffd81147f1  B         3 a143e7ffd81147f1  SAME
+  section                 global: A        25 8d97c7ef37493c05  B        25 977c8c520680a111  DIFF
+  section                 export: A      3032 6a54466214db6524  B      3032 6a54466214db6524  SAME
+  section                element: A     15627 919a395c9bff73cc  B     15627 919a395c9bff73cc  SAME
+  section              datacount: A         2 373384f218430b25  B         2 cb4098792588476a  DIFF
+  section                   code: A   9311627 f01c3ba3fee09029  B   9311629 83227b9b52b08ade  DIFF
+  section                   data: A   1757390 fbb30620d20c26db  B   1822719 6df5ead99232f70f  DIFF
+  section custom:target_features: A       193 9fbf0f89c8bb1ac2  B       193 9fbf0f89c8bb1ac2  SAME
+  A data: registry-path prefixes {'/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/': 540}
+  A data: /rustc/<commit>/ prefixes ['/rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/']
+  B data: registry-path prefixes {'${WEB_SPIKES}/S11/work/b/Users/macuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/': 540}
+  B data: /rustc/<commit>/ prefixes ['/rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/']
+  data(A) with [('/root/.cargo', '${WEB_SPIKES}/S11/work/b/Users/macuser/.cargo')] replaced == data(B): False

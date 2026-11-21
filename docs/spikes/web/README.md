@@ -113,6 +113,15 @@ delegation briefs.
 | Reusable | KHZ 38 is a one-line `-D LUAI_MAXCCALLS=100` (see RESULTS section 8, `harness/build_ccalls_variant.sh`); `harness/selftest.js` startup self-test sketch; `micro/` wasm op micro-tests (`gen_micro.py`, `micro.wat`, `ref.c`, feature probes); `versions.md` (shell versions, URLs, checksums, tier flags); `mods.sha256`. No patches of its own. |
 | Gate scripts | `run_engines.sh`, `harness/` (`job.sh`, `eng.sh`, `features.sh`, `cost.sh`, `summarize.py`, ...) |
 
+### S11 — macOS as a build host (`S11/`)
+
+| | |
+|---|---|
+| Goal | Can the web build run on macOS (Apple silicon and Intel) with the same pins as Linux. |
+| Headline | Yes, on paper: the four macOS toolchain archives (wasi-sdk 32.0 and binaryen 132, arm64 and x86_64) are pinned with sha256. The portable POSIX-sh scripts pass 105/0/1 (`scripts/test_portability.sh`). Under Linux with `--no-remap` they reproduce S9's module byte for byte. The path remap (`--remap-path-prefix`) makes builds independent of the host paths (`$CARGO_HOME`, checkout dir). lua-src's unsorted `read_dir` order changes the module, fixed by the sort patch. **Nothing was run on a real Mac** (Mach-O facts were read from the files). |
+| Reusable | `scripts/web/` (portable `build_web.sh`, `check_imports.sh`, `fetch_tools.sh`, `lib.sh`, `size_report.sh`, `wasm_env.sh`, `tools.lock` pins and checksums); `patches/0001-lua-src-sorted-source-order.patch`; analysis scripts (`macho.py`, `inspect_macho.sh`, `repro_paths.sh`, `tool_determinism.sh`, `scan_linuxisms.sh`); `dl/SHA256.txt`, `dl/PROBES.txt`; `results/` text tables; `PLAN_TEXT.md`. |
+| Gate scripts | `scripts/test_portability.sh`, `scripts/linux_e2e.sh`, `scripts/repro_paths.sh` |
+
 ## (c) Reuse map
 
 Patches and sources likely to be applied or adapted, in dependency order:
@@ -130,6 +139,8 @@ Patches and sources likely to be applied or adapted, in dependency order:
 | S5 | `S5/RESEARCH.md` | browser-support numbers for scope decisions |
 | S9 `pin_web` | `S9/crates/pin_web/` | the web shell crate: sim + Lua + wasmi rules + renderer + bundle loader (owns the allocator and wasm-bindgen exports) |
 | S9 build | `S9/build_web.sh`, `S9/check_imports.sh`, `S9/BOM.md` | one-script web build, import check (no `env`/`wasi_*`), the build-flag bill of materials |
+| S11 portable web build | `S11/scripts/web/` (+ `tools.lock`) | POSIX-sh `build_web.sh`/`fetch_tools.sh` with pinned macOS and Linux toolchain checksums and the path remap; replaces S9's Linux-only scripts for a multi-host build |
+| S11 sort patch | `S11/patches/0001-lua-src-sorted-source-order.patch` | sort lua-src's `read_dir` order so the module does not depend on file-system order |
 | S9 gates | `S9/run_integration.sh`, `S9/node/`, `S9/scripts/` | basis for web CI gates (parity while rendering, backends, mobile, failure/recovery, size report) |
 
 ## (d) How to re-run
@@ -166,6 +177,7 @@ Excluded (binary, build output, or too large); regenerate with the commands in e
 * S4 zip corpus (33 zips, 77 MB, includes zip bombs): generator in `S4/harness/make_zip_corpus.py`, listing with
   sha256 in `S4/zipcorpus/CORPUS_LISTING.md`.
 * `S6/audio_probe/web/s6_audio_probe.wasm` (binary): rebuilt with the crate.
+* S11: downloaded archives and extracted trees (`dl/` except the checksum and probe lists), `work/`, `tools/`, `logs/`, `verify/`, all `results/` wasm and other binaries, and `results/cargo_metadata_wasm.json` (over 1 MB).
 * Empty files were not copied.
 
 ## (f) briefs/ and proposal-draft.md

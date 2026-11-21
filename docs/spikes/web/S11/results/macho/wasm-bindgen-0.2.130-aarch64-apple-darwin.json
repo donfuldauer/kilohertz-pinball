@@ -1,0 +1,160 @@
+{
+ "summary": {
+  "macho_files": 3,
+  "archs": [
+   "arm64"
+  ],
+  "minos": [
+   "11.0.0"
+  ],
+  "sdk": [
+   "26.5.0"
+  ],
+  "signature_kinds": [
+   "ad-hoc (linker-signed)"
+  ],
+  "unsigned_files": [],
+  "non_system_dylibs": [],
+  "rpaths": [],
+  "team_ids": [],
+  "cms_subjects": [],
+  "hardened_runtime_files": 0
+ },
+ "files": [
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "26.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libiconv.2.dylib"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm_bindgen-6460e8bed1f0c30e",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "wasm-bindgen-0.2.130-aarch64-apple-darwin/wasm-bindgen",
+   "mode": "0o755",
+   "size": 7078896
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "26.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libiconv.2.dylib"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm_bindgen_test_runner-e02cfe3e88f92b48",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "wasm-bindgen-0.2.130-aarch64-apple-darwin/wasm-bindgen-test-runner",
+   "mode": "0o755",
+   "size": 10934208
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "arm64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "26.5.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libiconv.2.dylib"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [],
+     "signature": {
+      "slots": [
+       "0x0"
+      ],
+      "cd_version": "0x20400",
+      "flags": "0x20002",
+      "identifier": "wasm2es6js-0ddb649031fca682",
+      "hash": "sha256",
+      "team_id": "",
+      "adhoc": true,
+      "linker_signed": true,
+      "hardened_runtime": false,
+      "cms_bytes": 0,
+      "kind": "ad-hoc (linker-signed)"
+     }
+    }
+   ],
+   "path": "wasm-bindgen-0.2.130-aarch64-apple-darwin/wasm2es6js",
+   "mode": "0o755",
+   "size": 5060224
+  }
+ ]
+}

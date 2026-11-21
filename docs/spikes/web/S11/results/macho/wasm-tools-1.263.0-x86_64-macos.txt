@@ -1,0 +1,24 @@
+{
+ "macho_files": 1,
+ "archs": [
+  "x86_64"
+ ],
+ "minos": [
+  "10.12.0"
+ ],
+ "sdk": [
+  "26.5.0"
+ ],
+ "signature_kinds": [
+  "none"
+ ],
+ "unsigned_files": [
+  "wasm-tools-1.263.0-x86_64-macos/wasm-tools"
+ ],
+ "non_system_dylibs": [],
+ "rpaths": [],
+ "team_ids": [],
+ "cms_subjects": [],
+ "hardened_runtime_files": 0
+}
+wasm-tools-1.263.0-x86_64-macos/wasm-tools	0o755	x86_64	execute	minos=10.12.0	sdk=26.5.0	sig=none	flags=-	team=-	dylibs=/usr/lib/libiconv.2.dylib,/usr/lib/libSystem.B.dylib	rpaths=-

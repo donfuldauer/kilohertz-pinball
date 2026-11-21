@@ -1,0 +1,301 @@
+{
+ "share/wasi-sysroot": {
+  "entries": {
+   "linux": 9802,
+   "arm64mac": 9802,
+   "x64mac": 9802
+  },
+  "identical_in_all": 9723,
+  "differing": [
+   "lib/wasm32-wasi-threads/libc++.a",
+   "lib/wasm32-wasi-threads/libc++abi.a",
+   "lib/wasm32-wasi-threads/libc++experimental.a",
+   "lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libc++.a",
+   "lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libc++abi.a",
+   "lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libc++experimental.a",
+   "lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libc-printscan-long-double.a",
+   "lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libc-printscan-no-floating-point.a",
+   "lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libc.a",
+   "lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libdl.a",
+   "lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-getpid.a",
+   "lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-mman.a",
+   "lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-process-clocks.a",
+   "lib/wasm32-wasi-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-signal.a",
+   "lib/wasm32-wasi/libc++.a",
+   "lib/wasm32-wasi/libc++.so",
+   "lib/wasm32-wasi/libc++abi.a",
+   "lib/wasm32-wasi/libc++abi.so",
+   "lib/wasm32-wasi/libc++experimental.a",
+   "lib/wasm32-wasi/libc.so",
+   "lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libc++.a",
+   "lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libc++abi.a",
+   "lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libc++experimental.a",
+   "lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libc-printscan-long-double.a",
+   "lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libc-printscan-no-floating-point.a",
+   "lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libc.a",
+   "lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libdl.a",
+   "lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-getpid.a",
+   "lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-mman.a",
+   "lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-process-clocks.a",
+   "lib/wasm32-wasi/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-signal.a",
+   "lib/wasm32-wasip1-threads/libc++.a",
+   "lib/wasm32-wasip1-threads/libc++abi.a",
+   "lib/wasm32-wasip1-threads/libc++experimental.a",
+   "lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libc++.a",
+   "lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libc++abi.a",
+   "lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libc++experimental.a",
+   "lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libc-printscan-long-double.a",
+   "lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libc-printscan-no-floating-point.a",
+   "lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libc.a",
+   "lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libdl.a",
+   "lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-getpid.a",
+   "lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-mman.a",
+   "lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-process-clocks.a",
+   "lib/wasm32-wasip1-threads/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-signal.a",
+   "lib/wasm32-wasip1/libc++.a",
+   "lib/wasm32-wasip1/libc++.so",
+   "lib/wasm32-wasip1/libc++abi.a",
+   "lib/wasm32-wasip1/libc++abi.so",
+   "lib/wasm32-wasip1/libc++experimental.a",
+   "lib/wasm32-wasip1/libc.so",
+   "lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libc++.a",
+   "lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libc++abi.a",
+   "lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libc++experimental.a",
+   "lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libc-printscan-long-double.a",
+   "lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libc-printscan-no-floating-point.a",
+   "lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libc.a",
+   "lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libdl.a",
+   "lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-getpid.a",
+   "lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-mman.a",
+   "lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-process-clocks.a",
+   "lib/wasm32-wasip1/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-signal.a",
+   "lib/wasm32-wasip2/libc++.a",
+   "lib/wasm32-wasip2/libc++.so",
+   "lib/wasm32-wasip2/libc++abi.a",
+   "lib/wasm32-wasip2/libc++abi.so",
+   "lib/wasm32-wasip2/libc++experimental.a",
+   "lib/wasm32-wasip2/libc.so",
+   "lib/wasm32-wasip2/llvm-lto/22.1.0-wasi-sdk/libc++.a",
+   "lib/wasm32-wasip2/llvm-lto/22.1.0-wasi-sdk/libc++abi.a",
+   "lib/wasm32-wasip2/llvm-lto/22.1.0-wasi-sdk/libc++experimental.a",
+   "lib/wasm32-wasip2/llvm-lto/22.1.0-wasi-sdk/libc-printscan-long-double.a",
+   "lib/wasm32-wasip2/llvm-lto/22.1.0-wasi-sdk/libc-printscan-no-floating-point.a",
+   "lib/wasm32-wasip2/llvm-lto/22.1.0-wasi-sdk/libc.a",
+   "lib/wasm32-wasip2/llvm-lto/22.1.0-wasi-sdk/libdl.a",
+   "lib/wasm32-wasip2/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-getpid.a",
+   "lib/wasm32-wasip2/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-mman.a",
+   "lib/wasm32-wasip2/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-process-clocks.a",
+   "lib/wasm32-wasip2/llvm-lto/22.1.0-wasi-sdk/libwasi-emulated-signal.a"
+  ],
+  "only_in_some": {}
+ },
+ "lib/clang": {
+  "entries": {
+   "linux": 272,
+   "arm64mac": 272,
+   "x64mac": 272
+  },
+  "identical_in_all": 267,
+  "differing": [
+   "22/lib/wasm32-unknown-wasi-threads/libclang_rt.builtins.a",
+   "22/lib/wasm32-unknown-wasi/libclang_rt.builtins.a",
+   "22/lib/wasm32-unknown-wasip1-threads/libclang_rt.builtins.a",
+   "22/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a",
+   "22/lib/wasm32-unknown-wasip2/libclang_rt.builtins.a"
+  ],
+  "only_in_some": {}
+ },
+ "include": {
+  "entries": {
+   "linux": 48,
+   "arm64mac": 48,
+   "x64mac": 46
+  },
+  "identical_in_all": 45,
+  "differing": [
+   "libxml2/libxml/xmlversion.h"
+  ],
+  "only_in_some": {
+   "editline/readline.h": [
+    "linux",
+    "arm64mac"
+   ],
+   "histedit.h": [
+    "linux",
+    "arm64mac"
+   ]
+  }
+ },
+ "share/cmake": {
+  "entries": {
+   "linux": 6,
+   "arm64mac": 6,
+   "x64mac": 6
+  },
+  "identical_in_all": 6,
+  "differing": [],
+  "only_in_some": {}
+ },
+ "share/misc": {
+  "entries": {
+   "linux": 2,
+   "arm64mac": 2,
+   "x64mac": 2
+  },
+  "identical_in_all": 2,
+  "differing": [],
+  "only_in_some": {}
+ },
+ "bin": {
+  "entries": {
+   "linux": 54,
+   "arm64mac": 54,
+   "x64mac": 54
+  },
+  "identical_in_all": 34,
+  "differing": [
+   "clang-22",
+   "clang-apply-replacements",
+   "clang-format",
+   "clang-tidy",
+   "lld",
+   "lldb",
+   "llvm-ar",
+   "llvm-config",
+   "llvm-cxxfilt",
+   "llvm-dwarfdump",
+   "llvm-dwp",
+   "llvm-mc",
+   "llvm-nm",
+   "llvm-objcopy",
+   "llvm-objdump",
+   "llvm-size",
+   "llvm-strings",
+   "llvm-symbolizer",
+   "wasm-component-ld",
+   "xml2-config"
+  ],
+  "only_in_some": {}
+ },
+ "lib": {
+  "entries": {
+   "linux": 296,
+   "arm64mac": 290,
+   "x64mac": 286
+  },
+  "identical_in_all": 269,
+  "differing": [
+   "clang/22/lib/wasm32-unknown-wasi-threads/libclang_rt.builtins.a",
+   "clang/22/lib/wasm32-unknown-wasi/libclang_rt.builtins.a",
+   "clang/22/lib/wasm32-unknown-wasip1-threads/libclang_rt.builtins.a",
+   "clang/22/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a",
+   "clang/22/lib/wasm32-unknown-wasip2/libclang_rt.builtins.a",
+   "cmake/libxml2/libxml2-export-minsizerel.cmake",
+   "cmake/libxml2/libxml2-export.cmake",
+   "pkgconfig/libxml-2.0.pc"
+  ],
+  "only_in_some": {
+   "libLLVM-22-wasi-sdk.dylib": [
+    "arm64mac",
+    "x64mac"
+   ],
+   "libLLVM-22-wasi-sdk.so": [
+    "linux"
+   ],
+   "libLLVM.dylib": [
+    "arm64mac",
+    "x64mac"
+   ],
+   "libLLVM.so": [
+    "linux"
+   ],
+   "libLLVM.so.22.1-wasi-sdk": [
+    "linux"
+   ],
+   "libclang-cpp.dylib": [
+    "arm64mac",
+    "x64mac"
+   ],
+   "libclang-cpp.so": [
+    "linux"
+   ],
+   "libclang-cpp.so.22.1-wasi-sdk": [
+    "linux"
+   ],
+   "libclang.dylib": [
+    "arm64mac",
+    "x64mac"
+   ],
+   "libclang.so": [
+    "linux"
+   ],
+   "libclang.so.22.1-wasi-sdk": [
+    "linux"
+   ],
+   "libclang.so.22.1.0-wasi-sdk": [
+    "linux"
+   ],
+   "libedit.0.dylib": [
+    "arm64mac"
+   ],
+   "libedit.dylib": [
+    "arm64mac"
+   ],
+   "libedit.la": [
+    "linux",
+    "arm64mac"
+   ],
+   "libedit.so": [
+    "linux"
+   ],
+   "libedit.so.0": [
+    "linux"
+   ],
+   "libedit.so.0.0.76": [
+    "linux"
+   ],
+   "liblldb.22.1.0-wasi-sdk.dylib": [
+    "arm64mac",
+    "x64mac"
+   ],
+   "liblldb.dylib": [
+    "arm64mac",
+    "x64mac"
+   ],
+   "liblldb.so": [
+    "linux"
+   ],
+   "liblldb.so.22.1-wasi-sdk": [
+    "linux"
+   ],
+   "liblldb.so.22.1.0-wasi-sdk": [
+    "linux"
+   ],
+   "libxml2.16.1.2.dylib": [
+    "arm64mac",
+    "x64mac"
+   ],
+   "libxml2.16.dylib": [
+    "arm64mac",
+    "x64mac"
+   ],
+   "libxml2.dylib": [
+    "arm64mac",
+    "x64mac"
+   ],
+   "libxml2.so": [
+    "linux"
+   ],
+   "libxml2.so.16": [
+    "linux"
+   ],
+   "libxml2.so.16.1.2": [
+    "linux"
+   ],
+   "pkgconfig/libedit.pc": [
+    "linux",
+    "arm64mac"
+   ]
+  }
+ }
+}

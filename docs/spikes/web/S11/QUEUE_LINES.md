@@ -1,0 +1,9 @@
+- S11-D1: an x86_64 shell under Rosetta 2 on Apple Silicon uses the darwin-arm64 tools (note printed), not refused (DECISIONS_LOCAL.md).
+- S11-D2: wasm-bindgen-cli 0.2.130 and wasm-tools 1.263.0 stay `cargo install --locked` on every host, via fetch_tools.sh; release binaries recorded only (DECISIONS_LOCAL.md).
+- S11-D3: macOS web gate = build + module checks + Node parity vs committed goldens; module sha256 equality with Linux is reported, not required (DECISIONS_LOCAL.md).
+- S11-D4: build_web.sh remaps workspace/target/CARGO_HOME/rust-src paths by default; new Linux reference module 9f137f8a…; --no-remap reproduces S9's 88e06b16… (DECISIONS_LOCAL.md).
+- S11-D5: plan states "macOS 15 or later, Apple silicon or Intel"; macOS 14 = untested floor of the pinned binaries (DECISIONS_LOCAL.md).
+- S11-D6: Intel leg on macos-26-intel off the PR path (main pushes on web paths, weekly, dispatch); arm64 leg macos-15 on web-path PRs (DECISIONS_LOCAL.md).
+- S11-D7: the directory-order experiment mounts a tmpfs inside S11/work/c (root) and unmounts it (DECISIONS_LOCAL.md).
+- S11 request (W08 owner, third_party/lua-src/src/lib.rs): sort the source list in `add_files_by_ext` (patches/0001-lua-src-sorted-source-order.patch); without it the module bytes depend on the build machine's directory order.
+- S11 request (W20/W26): adopt scripts/web/{lib.sh,tools.lock,fetch_tools.sh,wasm_env.sh,build_web.sh,size_report.sh,check_imports.sh} and the web-build-macos job text of PLAN_TEXT.md.

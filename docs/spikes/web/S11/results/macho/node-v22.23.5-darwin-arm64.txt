@@ -1,0 +1,26 @@
+{
+ "macho_files": 1,
+ "archs": [
+  "arm64"
+ ],
+ "minos": [
+  "11.0.0"
+ ],
+ "sdk": [
+  "15.0.0"
+ ],
+ "signature_kinds": [
+  "CMS (Developer ID)"
+ ],
+ "unsigned_files": [],
+ "non_system_dylibs": [],
+ "rpaths": [],
+ "team_ids": [
+  "HX7739G8FX"
+ ],
+ "cms_subjects": [
+  "Developer ID Application: Node.js Foundation (HX7739G8FX)"
+ ],
+ "hardened_runtime_files": 1
+}
+node-v22.23.5-darwin-arm64/bin/node	0o755	arm64	execute	minos=11.0.0	sdk=15.0.0	sig=CMS (Developer ID)	flags=0x10000	team=HX7739G8FX	dylibs=/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation,/System/Library/Frameworks/Security.framework/Versions/A/Security,/usr/lib/libc++.1.dylib,/usr/lib/libSystem.B.dylib	rpaths=-

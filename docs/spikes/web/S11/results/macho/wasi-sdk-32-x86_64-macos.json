@@ -1,0 +1,974 @@
+{
+ "summary": {
+  "macho_files": 24,
+  "archs": [
+   "x86_64"
+  ],
+  "minos": [
+   "10.12.0"
+  ],
+  "sdk": [
+   "14.5.0"
+  ],
+  "signature_kinds": [
+   "none"
+  ],
+  "unsigned_files": [
+   "wasi-sdk-32.0-x86_64-macos/bin/clang-22",
+   "wasi-sdk-32.0-x86_64-macos/bin/clang-apply-replacements",
+   "wasi-sdk-32.0-x86_64-macos/bin/clang-format",
+   "wasi-sdk-32.0-x86_64-macos/bin/clang-tidy",
+   "wasi-sdk-32.0-x86_64-macos/bin/lld",
+   "wasi-sdk-32.0-x86_64-macos/bin/lldb",
+   "wasi-sdk-32.0-x86_64-macos/bin/llvm-ar",
+   "wasi-sdk-32.0-x86_64-macos/bin/llvm-config",
+   "wasi-sdk-32.0-x86_64-macos/bin/llvm-cxxfilt",
+   "wasi-sdk-32.0-x86_64-macos/bin/llvm-dwarfdump",
+   "wasi-sdk-32.0-x86_64-macos/bin/llvm-dwp",
+   "wasi-sdk-32.0-x86_64-macos/bin/llvm-mc",
+   "wasi-sdk-32.0-x86_64-macos/bin/llvm-nm",
+   "wasi-sdk-32.0-x86_64-macos/bin/llvm-objcopy",
+   "wasi-sdk-32.0-x86_64-macos/bin/llvm-objdump",
+   "wasi-sdk-32.0-x86_64-macos/bin/llvm-size",
+   "wasi-sdk-32.0-x86_64-macos/bin/llvm-strings",
+   "wasi-sdk-32.0-x86_64-macos/bin/llvm-symbolizer",
+   "wasi-sdk-32.0-x86_64-macos/bin/wasm-component-ld",
+   "wasi-sdk-32.0-x86_64-macos/lib/libLLVM.dylib",
+   "wasi-sdk-32.0-x86_64-macos/lib/libclang-cpp.dylib",
+   "wasi-sdk-32.0-x86_64-macos/lib/libclang.dylib",
+   "wasi-sdk-32.0-x86_64-macos/lib/liblldb.22.1.0-wasi-sdk.dylib",
+   "wasi-sdk-32.0-x86_64-macos/lib/libxml2.16.1.2.dylib"
+  ],
+  "non_system_dylibs": [
+   "@rpath/libLLVM.dylib",
+   "@rpath/libclang-cpp.dylib",
+   "@rpath/liblldb.22.1.0-wasi-sdk.dylib",
+   "@rpath/libxml2.16.dylib"
+  ],
+  "rpaths": [
+   "@loader_path/../lib"
+  ],
+  "team_ids": [],
+  "cms_subjects": [],
+  "hardened_runtime_files": 0
+ },
+ "files": [
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libclang-cpp.dylib"
+      ],
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/clang-22",
+   "mode": "0o755",
+   "size": 110736
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libclang-cpp.dylib"
+      ],
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/clang-apply-replacements",
+   "mode": "0o755",
+   "size": 94984
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libclang-cpp.dylib"
+      ],
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/clang-format",
+   "mode": "0o755",
+   "size": 86368
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libclang-cpp.dylib"
+      ],
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/clang-tidy",
+   "mode": "0o755",
+   "size": 6930752
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/lld",
+   "mode": "0o755",
+   "size": 4126448
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/liblldb.22.1.0-wasi-sdk.dylib"
+      ],
+      [
+       "load",
+       "@rpath/libxml2.16.dylib"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/Security.framework/Versions/A/Security"
+      ],
+      [
+       "load",
+       "@rpath/libclang-cpp.dylib"
+      ],
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libobjc.A.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/lldb",
+   "mode": "0o755",
+   "size": 147080
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/llvm-ar",
+   "mode": "0o755",
+   "size": 68360
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/llvm-config",
+   "mode": "0o755",
+   "size": 264624
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/llvm-cxxfilt",
+   "mode": "0o755",
+   "size": 26192
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/llvm-dwarfdump",
+   "mode": "0o755",
+   "size": 151368
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/llvm-dwp",
+   "mode": "0o755",
+   "size": 44288
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/llvm-mc",
+   "mode": "0o755",
+   "size": 75896
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/llvm-nm",
+   "mode": "0o755",
+   "size": 126208
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/llvm-objcopy",
+   "mode": "0o755",
+   "size": 158328
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/llvm-objdump",
+   "mode": "0o755",
+   "size": 719032
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/llvm-size",
+   "mode": "0o755",
+   "size": 54264
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/llvm-strings",
+   "mode": "0o755",
+   "size": 26744
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/llvm-symbolizer",
+   "mode": "0o755",
+   "size": 75520
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libiconv.2.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [],
+     "signature": {
+      "kind": "none"
+     }
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/bin/wasm-component-ld",
+   "mode": "0o755",
+   "size": 7251952
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "dylib",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libedit.3.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     },
+     "id": "@rpath/libLLVM.dylib"
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/lib/libLLVM.dylib",
+   "mode": "0o755",
+   "size": 53646352
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "dylib",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
+      ],
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     },
+     "id": "@rpath/libclang-cpp.dylib"
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/lib/libclang-cpp.dylib",
+   "mode": "0o755",
+   "size": 55842928
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "dylib",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     },
+     "id": "@rpath/libclang.dylib"
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/lib/libclang.dylib",
+   "mode": "0o755",
+   "size": 30448328
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "dylib",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libcompression.dylib"
+      ],
+      [
+       "load",
+       "@rpath/libxml2.16.dylib"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/Security.framework/Versions/A/Security"
+      ],
+      [
+       "load",
+       "@rpath/libclang-cpp.dylib"
+      ],
+      [
+       "load",
+       "@rpath/libLLVM.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libobjc.A.dylib"
+      ]
+     ],
+     "rpaths": [
+      "@loader_path/../lib"
+     ],
+     "signature": {
+      "kind": "none"
+     },
+     "id": "@rpath/liblldb.22.1.0-wasi-sdk.dylib"
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/lib/liblldb.22.1.0-wasi-sdk.dylib",
+   "mode": "0o755",
+   "size": 15268520
+  },
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "dylib",
+     "minos": "10.12.0",
+     "sdk": "14.5.0",
+     "platform": "macos(version_min)",
+     "dylibs": [
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libiconv.2.dylib"
+      ]
+     ],
+     "rpaths": [],
+     "signature": {
+      "kind": "none"
+     },
+     "id": "@rpath/libxml2.16.dylib"
+    }
+   ],
+   "path": "wasi-sdk-32.0-x86_64-macos/lib/libxml2.16.1.2.dylib",
+   "mode": "0o755",
+   "size": 952600
+  }
+ ]
+}

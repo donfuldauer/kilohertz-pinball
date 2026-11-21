@@ -1,0 +1,86 @@
+{
+ "summary": {
+  "macho_files": 1,
+  "archs": [
+   "x86_64"
+  ],
+  "minos": [
+   "11.0.0"
+  ],
+  "sdk": [
+   "15.0.0"
+  ],
+  "signature_kinds": [
+   "CMS (Developer ID)"
+  ],
+  "unsigned_files": [],
+  "non_system_dylibs": [],
+  "rpaths": [],
+  "team_ids": [
+   "HX7739G8FX"
+  ],
+  "cms_subjects": [
+   "Developer ID Application: Node.js Foundation (HX7739G8FX)"
+  ],
+  "hardened_runtime_files": 1
+ },
+ "files": [
+  {
+   "fat": false,
+   "slices": [
+    {
+     "arch": "x86_64",
+     "filetype": "execute",
+     "minos": "11.0.0",
+     "sdk": "15.0.0",
+     "platform": "macos",
+     "dylibs": [
+      [
+       "load",
+       "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+      ],
+      [
+       "load",
+       "/System/Library/Frameworks/Security.framework/Versions/A/Security"
+      ],
+      [
+       "load",
+       "/usr/lib/libc++.1.dylib"
+      ],
+      [
+       "load",
+       "/usr/lib/libSystem.B.dylib"
+      ]
+     ],
+     "rpaths": [],
+     "signature": {
+      "slots": [
+       "0x0",
+       "0x2",
+       "0x5",
+       "0x7",
+       "0x10000"
+      ],
+      "cd_version": "0x20500",
+      "flags": "0x10000",
+      "identifier": "node",
+      "hash": "sha256",
+      "team_id": "HX7739G8FX",
+      "adhoc": false,
+      "linker_signed": false,
+      "hardened_runtime": true,
+      "cms_bytes": 8987,
+      "cms_subjects": [
+       "Developer ID Application: Node.js Foundation (HX7739G8FX)"
+      ],
+      "apple_root": true,
+      "kind": "CMS (Developer ID)"
+     }
+    }
+   ],
+   "path": "node-v22.23.5-darwin-x64/bin/node",
+   "mode": "0o755",
+   "size": 115526528
+  }
+ ]
+}
