@@ -1,0 +1,48 @@
+[package]
+name = "pin_web"
+description = "web-spike-integration (S9): ONE wasm32-unknown-unknown engine module = sim (+simd128) + real Lua (wasi-sdk route b, KHZ 29-32) + wasmi rules with load-time instrumentation (S4 design A) + wgpu renderer (WebGPU and WebGL2, S3) + bundle loader (zip bytes -> VFS). Spike tooling, not a product crate."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["webgpu", "webgl", "harness"]
+# S3: both browser backends in one module; the instance is created with
+# wgpu::util::new_instance_with_webgpu_detection (falls back to WebGL2).
+webgpu = ["pin_render/webgpu"]
+webgl = ["pin_render/webgl"]
+# Spike-only test surface: S2's command-stream checker and sandbox cases,
+# S4's adversarial corpus / zip checks, S1's stack probes. Off = the
+# product-like engine (used for the size comparison).
+harness = ["dep:s2_harness"]
+
+[dependencies]
+pin_core.workspace = true
+pin_sim = { path = "../pin_sim", default-features = false }
+# S2 recommended build: Lua backend only (no wasmtime/notify) + web-parity
+# (no collectgarbage); KHZ_LUA_MATH=1 is set by build_web.sh.
+pin_script = { path = "../pin_script", default-features = false, features = ["lua", "web-parity"] }
+pin_assets = { path = "../pin_assets" }
+pin_render = { path = "../pin_render" }
+# Renderer + scene port (S3), without its wasm-bindgen exports.
+web_probe = { path = "../web_probe", default-features = false }
+# Scenario driver / hashes (S1), real-Lua stream checker + sandbox (S2),
+# wasmi backend + instrumentation (S4); all without their exports and
+# global allocators (pin_web owns both).
+s1_harness = { path = "../s1_harness", default-features = false }
+s2_harness = { path = "../s2_harness", default-features = false, optional = true }
+s4_rules = { path = "../s4_rules", default-features = false, features = ["wasmi-auto-dispatch"] }
+arrayvec.workspace = true
+serde_json.workspace = true
+log = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.130"
+wasm-bindgen-futures = "=0.4.80"
+js-sys = "=0.3.107"
+web-sys = { version = "=0.3.107", features = ["Window", "Document", "HtmlCanvasElement", "Element", "console", "Performance", "Navigator"] }

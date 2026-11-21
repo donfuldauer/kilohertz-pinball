@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Kilohertz Pinball (web, S9 integration spike)</title>
+<link rel="stylesheet" href="style.css">
+<script type="module" src="main.js"></script>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="hud"></div>
+<div id="error" hidden></div>
+<div id="controls">
+  <select id="tableSel" aria-label="table">
+    <option value="apex_circuit">Apex Circuit</option>
+    <option value="sky_deck">Sky Deck</option>
+    <option value="feature_lab">Feature Lab</option>
+  </select>
+  <label class="file">Load bundle&hellip;<input type="file" id="bundleFile" accept=".zip,.pinbundle"></label>
+  <button id="startBtn" type="button">Start</button>
+</div>
+<div id="launchZone">LAUNCH</div>
+<div id="dropHint" hidden>Drop a .pinbundle to play it</div>
+</body>
+</html>

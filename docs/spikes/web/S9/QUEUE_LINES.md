@@ -1,0 +1,10 @@
+# S9 queue lines (for docs/queue/web-spike-integration.md)
+
+- S9-Q1 9.1/9.5: the WAT text parser (`wast`/`wat`, ≈0.74 MiB of code, ≈6.7 % of the module) is linked into the web engine because pin_script's/S4's loaders accept `.wat`; decide whether web bundles must be binary `.wasm` only (drop it behind a feature) — size only, no behaviour change for shipped tables.
+- S9-Q2 9.10 (Lua): mlua falls back to `luaL_newstate` (C `l_alloc` → wasi-libc `malloc`/`sbrk`, outside mlua's 2 MiB accounting and the D5 guard) if `lua_newstate` with its Rust allocator returns NULL; linked but unreachable unless the first allocation fails. Decide: KHZ patch/mlua wrapper that turns the fallback into a load error on every target.
+- S9-Q3 9.3/9.7: web shell API takes tick counts as `i32`/`f64` and validates them (wasm-bindgen converts negative JS numbers to huge `u32`); keep `MAX_TICKS_PER_CALL`.
+- S9-Q4 9.8 (CI): Playwright `page.waitForFunction` and string `page.evaluate` never resolve under the shipped CSP (no `'unsafe-eval'`); CI helpers must poll with function `page.evaluate` (S9 `node/pw.cjs` `poll`), not `bypassCSP` (it would hide CSP regressions).
+- S9-Q5 9.8: declare `lto = false` (and `crate-type = ["cdylib"]` for the artifact crate if LTO is ever wanted): cargo drops `-C lto` for `[cdylib, rlib]` silently; re-baseline S3's size table, whose "lto=fat" rows were not LTO builds.
+- S9-Q6 9.2: with `webgl` compiled in and without `fragile-send-sync-non-atomic-wasm`, every wgpu callback (`on_submitted_work_done`, `map_async`, device-lost) needs `Send` data (`Arc` + atomics); add to the 9.2 brief.
+- S9-Q7 9.7: after an engine trap, the dead instance's pending wgpu promise callbacks throw `Module terminated` (wasm-bindgen closure trampolines); the web shell must swallow exactly that error after a crash (S9 `main.js` `lateTrapError`) and re-instantiate via the async `init()` of a fresh glue-module URL.
+- S9-Q8 9.7: single-canvas PiP layout must be aspect-aware (S3's probe layout covers the flippers on phones): S9 `page_routes` (portrait top band, landscape side columns) is a working default; final layout is a 9.7 UI decision.

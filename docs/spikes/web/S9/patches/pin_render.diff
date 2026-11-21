@@ -1,0 +1,420 @@
+diff -ruN pin_render/Cargo.toml b/pin_render/Cargo.toml
+--- pin_render/Cargo.toml	2026-11-20 15:21:17.542937734 +0000
++++ b/pin_render/Cargo.toml	2026-11-20 20:42:36.831175127 +0000
+@@ -11,6 +11,12 @@
+ # Enables the tests that need a GPU adapter (PLAN §2.3 rule 3, D20). Without an
+ # adapter they skip with a printed note unless PIN_REQUIRE_GPU=1.
+ gpu-tests = []
++# S3 spike: web backends (wasm32 only; no effect on native targets).
++webgpu = ["wgpu/webgpu"]
++webgl = ["wgpu/webgl"]
++# S3 spike: wgpu types are !Send/!Sync on wasm32 without this (egui-wgpu's
++# default features used to turn it on).
++fragile-send-sync = ["wgpu/fragile-send-sync-non-atomic-wasm"]
+ 
+ [dependencies]
+ pin_core.workspace = true
+@@ -33,6 +39,14 @@
+ # Internal crate; no new external pin.
+ pin_assets = { path = "../pin_assets" }
+ 
++# S3 spike: the native backends (wgpu's former default set).
++[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
++wgpu = { workspace = true, features = ["dx12", "metal", "vulkan", "gles", "parking_lot"] }
++
++# S3 spike: deferred error-scope pops on the web.
++[target.'cfg(target_arch = "wasm32")'.dependencies]
++wasm-bindgen-futures = "=0.4.80"
++
+ [dev-dependencies]
+ proptest.workspace = true
+ # WGSL validation and SPIR-V / MSL / HLSL translation of the PBR shaders (5.1).
+diff -ruN pin_render/src/gpu/mod.rs b/pin_render/src/gpu/mod.rs
+--- pin_render/src/gpu/mod.rs	2026-11-20 15:21:17.542937734 +0000
++++ b/pin_render/src/gpu/mod.rs	2026-11-20 20:42:36.846490608 +0000
+@@ -552,6 +552,134 @@
+     }
+ }
+ 
++// ---- S3 web spike additions (scratch copy only) -------------------------
++
++impl GpuContext {
++    /// S3 spike: a context from parts obtained elsewhere (e.g. the async web
++    /// path below). Native code keeps the blocking constructors.
++    pub fn from_parts(
++        instance: wgpu::Instance,
++        adapter: wgpu::Adapter,
++        device: wgpu::Device,
++        queue: wgpu::Queue,
++    ) -> GpuContext {
++        GpuContext {
++            inner: Some(Inner {
++                queue,
++                device,
++                adapter,
++                instance,
++            }),
++        }
++    }
++
++    /// S3 spike: [`with_instance`](Self::with_instance) without `pollster`
++    /// (the browser main thread cannot block on a JS promise). Same adapter
++    /// options, features and limits as the native path.
++    pub async fn request_async(
++        instance: wgpu::Instance,
++        opts: &GpuOptions,
++        compatible_surface: Option<&wgpu::Surface<'_>>,
++        limits_override: Option<wgpu::Limits>,
++    ) -> Result<GpuContext, GpuError> {
++        let adapter = instance
++            .request_adapter(&wgpu::RequestAdapterOptions {
++                power_preference: wgpu::PowerPreference::HighPerformance,
++                force_fallback_adapter: opts.force_fallback_adapter,
++                compatible_surface,
++                apply_limit_buckets: false,
++            })
++            .await
++            .map_err(|e| {
++                GpuError::NoAdapter(format!(
++                    "{e} (backends {:?}, force_fallback_adapter {})",
++                    opts.backends, opts.force_fallback_adapter
++                ))
++            })?;
++        // `limits_override` is a base; the adapter's texture size limits are
++        // always applied (`using_resolution`), as on the native path.
++        let limits = limits_override
++            .unwrap_or_else(|| engine_base_limits(&adapter))
++            .using_resolution(adapter.limits());
++        let (device, queue) = adapter
++            .request_device(&wgpu::DeviceDescriptor {
++                label: Some("pin_render"),
++                required_features: adapter.features() & optional_timestamp_features(),
++                required_limits: limits,
++                ..Default::default()
++            })
++            .await
++            .map_err(|e| GpuError::RequestDevice(e.to_string()))?;
++        Ok(GpuContext::from_parts(instance, adapter, device, queue))
++    }
++}
++
++/// S3 spike: the limits the engine requests from `adapter` today (same
++/// expression as [`GpuContext::with_instance`]).
++pub fn engine_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
++    wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
++}
++
++/// S3 WebGL2 prototype: the base limits for `adapter`:
++/// `downlevel_webgl2_defaults` on an adapter without storage buffers
++/// (WebGL2 / GLES 3.0), `downlevel_defaults` otherwise (unchanged native).
++pub fn engine_base_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
++    if adapter.limits().max_storage_buffers_per_shader_stage == 0 {
++        wgpu::Limits::downlevel_webgl2_defaults()
++    } else {
++        wgpu::Limits::downlevel_defaults()
++    }
++}
++
++#[cfg(target_arch = "wasm32")]
++std::thread_local! {
++    static DEFERRED_SCOPE_ERRORS: core::cell::RefCell<Vec<String>> =
++        const { core::cell::RefCell::new(Vec::new()) };
++}
++
++/// S3 spike: errors of error scopes whose pop could not complete
++/// synchronously (WebGPU), recorded when the browser resolved them.
++pub fn take_deferred_scope_errors() -> Vec<String> {
++    #[cfg(target_arch = "wasm32")]
++    {
++        DEFERRED_SCOPE_ERRORS.with(|d| core::mem::take(&mut *d.borrow_mut()))
++    }
++    #[cfg(not(target_arch = "wasm32"))]
++    {
++        Vec::new()
++    }
++}
++
++/// S3 spike: pops `scope`. Native: blocks with `pollster` (unchanged
++/// behaviour). wasm32: returns the error when the pop is already complete
++/// (wgpu-core backends, i.e. WebGL2, complete it synchronously); otherwise
++/// (WebGPU: a JS promise) the pop finishes on the browser event loop, its
++/// error goes to [`take_deferred_scope_errors`], and this returns `None`.
++pub(crate) fn pop_scope(scope: wgpu::ErrorScopeGuard, what: &'static str) -> Option<wgpu::Error> {
++    #[cfg(not(target_arch = "wasm32"))]
++    {
++        let _ = what;
++        pollster::block_on(scope.pop())
++    }
++    #[cfg(target_arch = "wasm32")]
++    {
++        use core::future::Future;
++        let mut fut = Box::pin(scope.pop());
++        let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
++        match fut.as_mut().poll(&mut cx) {
++            core::task::Poll::Ready(e) => e,
++            core::task::Poll::Pending => {
++                wasm_bindgen_futures::spawn_local(async move {
++                    if let Some(e) = fut.await {
++                        DEFERRED_SCOPE_ERRORS.with(|d| d.borrow_mut().push(format!("{what}: {e}")));
++                    }
++                });
++                None
++            }
++        }
++    }
++}
++
+ /// Test helper (not part of the engine API): a headless context for GPU tests, or `None` (with a printed note) when no
+ /// adapter is available. Panics instead when [`require_gpu`] is set.
+ #[doc(hidden)]
+diff -ruN pin_render/src/gpu/surfaces.rs b/pin_render/src/gpu/surfaces.rs
+--- pin_render/src/gpu/surfaces.rs	2026-11-20 15:21:17.546937734 +0000
++++ b/pin_render/src/gpu/surfaces.rs	2026-11-20 20:42:36.846810526 +0000
+@@ -658,7 +658,7 @@
+     for _ in 0..CONFIGURE_ATTEMPTS {
+         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+         surface.configure(device, config);
+-        match pollster::block_on(scope.pop()) {
++        match super::pop_scope(scope, "surface configure") {
+             None => {
+                 log.succeeded();
+                 return true;
+@@ -1382,6 +1382,26 @@
+     keep_alive: Option<WindowGuard>,
+ }
+ 
++/// S3 spike: no presenter threads on wasm32 (one canvas, no secondary
++/// roles; `std::thread::spawn` cannot run there). This stub is the only
++/// change `pin_render` needs to compile for wasm32 without wgpu's
++/// `fragile-send-sync-non-atomic-wasm`.
++#[cfg(target_arch = "wasm32")]
++fn spawn_presenter(
++    _device: &wgpu::Device,
++    _queue: &wgpu::Queue,
++    _target: GuardedSurface,
++    _config: wgpu::SurfaceConfiguration,
++    window: usize,
++    _gpu_lock: Arc<Mutex<()>>,
++    _configure_log: Arc<ConfigureLog>,
++) -> Result<Presenter, GpuError> {
++    Err(GpuError::Surface(format!(
++        "window {window}: presenter threads are not available on wasm32"
++    )))
++}
++
++#[cfg(not(target_arch = "wasm32"))]
+ fn spawn_presenter(
+     device: &wgpu::Device,
+     queue: &wgpu::Queue,
+diff -ruN pin_render/src/pbr/mod.rs b/pin_render/src/pbr/mod.rs
+--- pin_render/src/pbr/mod.rs	2026-11-18 13:05:24.072577557 +0000
++++ b/pin_render/src/pbr/mod.rs	2026-11-20 20:42:36.847093569 +0000
+@@ -62,6 +62,8 @@
+     NO_PROBE, PbrRenderer, PbrStats, ReflectionBinding, model_view_proj,
+ };
+ pub use warmup::{LampBank, LampKind, LampWarmup};
++// S3 WebGL2 prototype: the forward shader without fragment storage buffers.
++pub use renderer::forward_source_without_storage;
+ 
+ /// Most dynamic lights per frame; further lights are dropped and counted.
+ pub const MAX_LIGHTS: usize = 128;
+diff -ruN pin_render/src/pbr/renderer.rs b/pin_render/src/pbr/renderer.rs
+--- pin_render/src/pbr/renderer.rs	2026-11-18 13:05:24.072577557 +0000
++++ b/pin_render/src/pbr/renderer.rs	2026-11-20 20:42:36.847259722 +0000
+@@ -497,7 +497,15 @@
+         size: wgpu::Extent3d {
+             width: 1,
+             height: 1,
+-            depth_or_array_layers: 1,
++            // S3 WebGL2 prototype: 2 layers on devices without storage
++            // buffers (GL), so wgpu-hal's GL backend (which infers the view
++            // dimension from the layer count) binds it as a 2D array; the
++            // shader clamps the layer, so content is unchanged. Native: 1.
++            depth_or_array_layers: if device.limits().max_storage_buffers_per_shader_stage < 2 {
++                2
++            } else {
++                1
++            },
+         },
+         mip_level_count: 1,
+         sample_count: 1,
+@@ -537,14 +545,45 @@
+ }
+ 
+ fn storage_buffer(device: &wgpu::Device, label: &str, bytes: u64) -> wgpu::Buffer {
++    // S3 WebGL2 prototype: unused (never bound) on devices without storage
++    // buffers, where STORAGE usage is refused.
++    let usage = if device.limits().max_storage_buffers_per_shader_stage < 2 {
++        wgpu::BufferUsages::COPY_DST
++    } else {
++        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
++    };
+     device.create_buffer(&wgpu::BufferDescriptor {
+         label: Some(label),
+         size: bytes.max(16),
+-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
++        usage,
+         mapped_at_creation: false,
+     })
+ }
+ 
++/// S3 WebGL2 prototype: the forward shader without the cluster storage
++/// buffers (bindings 2 and 3); the light loop runs over every light.
++pub fn forward_source_without_storage() -> String {
++    let s = FORWARD_SOURCE
++        .replace(
++            "@group(0) @binding(2) var<storage, read> cluster_ranges: array<vec2<u32>>;\n",
++            "",
++        )
++        .replace(
++            "@group(0) @binding(3) var<storage, read> cluster_indices: array<u32>;\n",
++            "",
++        )
++        .replace(
++            "    let ci = cluster_index(frag_xy, in.view_depth);\n    let range = cluster_ranges[ci];\n    let count = min(range.y, MAX_LIGHTS);\n",
++            "    let count = min(frame.cluster_dims.w, MAX_LIGHTS);\n",
++        )
++        .replace(
++            "        let li = cluster_indices[range.x + k];\n",
++            "        let li = k;\n",
++        );
++    debug_assert!(!s.contains("cluster_ranges") && !s.contains("cluster_indices"));
++    s
++}
++
+ /// The clustered forward PBR renderer.
+ ///
+ /// Owns an HDR colour target ([`HDR_FORMAT`]) and a depth target of the
+@@ -598,9 +637,19 @@
+     pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Result<PbrRenderer, GpuError> {
+         let device = ctx.device();
+         check_size(device, width, height)?;
++        // S3 WebGL2 prototype: a device without fragment storage buffers
++        // (WebGL2 / GLES) gets the forward shader without the cluster lists
++        // (every light is tested per fragment; same lighting result, as the
++        // clusters only cull lights by range).
++        let no_storage = device.limits().max_storage_buffers_per_shader_stage < 2;
++        let source: std::borrow::Cow<'static, str> = if no_storage {
++            forward_source_without_storage().into()
++        } else {
++            FORWARD_SOURCE.into()
++        };
+         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+             label: Some("pbr_forward"),
+-            source: wgpu::ShaderSource::Wgsl(FORWARD_SOURCE.into()),
++            source: wgpu::ShaderSource::Wgsl(source),
+         });
+         let uniform = |binding, bytes| wgpu::BindGroupLayoutEntry {
+             binding,
+@@ -623,14 +672,16 @@
+             count: None,
+         };
+         let light_bytes = (MAX_LIGHTS * core::mem::size_of::<PointLight>()) as u64;
++        let frame_entries = [
++            uniform(0, core::mem::size_of::<FrameUniform>() as u64),
++            uniform(1, light_bytes),
++            storage(2, 8),
++            storage(3, 4),
++        ];
+         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+             label: Some("pbr frame"),
+-            entries: &[
+-                uniform(0, core::mem::size_of::<FrameUniform>() as u64),
+-                uniform(1, light_bytes),
+-                storage(2, 8),
+-                storage(3, 4),
+-            ],
++            // S3 WebGL2 prototype: no storage bindings on such devices.
++            entries: &frame_entries[..if no_storage { 2 } else { 4 }],
+         });
+         let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+             label: Some("pbr draw"),
+@@ -722,27 +773,34 @@
+         ranges: &wgpu::Buffer,
+         indices: &wgpu::Buffer,
+     ) -> wgpu::BindGroup {
++        let entries = [
++            wgpu::BindGroupEntry {
++                binding: 0,
++                resource: frame.as_entire_binding(),
++            },
++            wgpu::BindGroupEntry {
++                binding: 1,
++                resource: lights.as_entire_binding(),
++            },
++            wgpu::BindGroupEntry {
++                binding: 2,
++                resource: ranges.as_entire_binding(),
++            },
++            wgpu::BindGroupEntry {
++                binding: 3,
++                resource: indices.as_entire_binding(),
++            },
++        ];
++        // S3 WebGL2 prototype: no cluster storage buffers on such devices.
++        let n = if device.limits().max_storage_buffers_per_shader_stage < 2 {
++            2
++        } else {
++            4
++        };
+         device.create_bind_group(&wgpu::BindGroupDescriptor {
+             label: Some("pbr frame"),
+             layout,
+-            entries: &[
+-                wgpu::BindGroupEntry {
+-                    binding: 0,
+-                    resource: frame.as_entire_binding(),
+-                },
+-                wgpu::BindGroupEntry {
+-                    binding: 1,
+-                    resource: lights.as_entire_binding(),
+-                },
+-                wgpu::BindGroupEntry {
+-                    binding: 2,
+-                    resource: ranges.as_entire_binding(),
+-                },
+-                wgpu::BindGroupEntry {
+-                    binding: 3,
+-                    resource: indices.as_entire_binding(),
+-                },
+-            ],
++            entries: &entries[..n],
+         })
+     }
+ 
+diff -ruN pin_render/src/post/chain.rs b/pin_render/src/post/chain.rs
+--- pin_render/src/post/chain.rs	2026-11-18 13:05:24.073007708 +0000
++++ b/pin_render/src/post/chain.rs	2026-11-20 20:42:36.847523130 +0000
+@@ -455,7 +455,7 @@
+             stats: PostStats::default(),
+         };
+         // Pipelines and targets are created above, inside the scope.
+-        if let Some(e) = pollster::block_on(scope.pop()) {
++        if let Some(e) = crate::gpu::pop_scope(scope, "post chain") {
+             return Err(GpuError::InvalidArgument(format!(
+                 "post chain shaders/pipelines: {e}"
+             )));
+diff -ruN pin_render/src/raytrace/source.rs b/pin_render/src/raytrace/source.rs
+--- pin_render/src/raytrace/source.rs	2026-11-18 13:05:24.073651412 +0000
++++ b/pin_render/src/raytrace/source.rs	2026-11-20 20:42:36.847765843 +0000
+@@ -352,7 +352,7 @@
+         let [v, o, i] = self.0.take().expect("scopes popped once");
+         let mut first = None;
+         for g in [i, o, v] {
+-            if let Some(e) = pollster::block_on(g.pop()) {
++            if let Some(e) = crate::gpu::pop_scope(g, "ray query") {
+                 first.get_or_insert_with(|| e.to_string());
+             }
+         }
+diff -ruN pin_render/src/reflections/probes.rs b/pin_render/src/reflections/probes.rs
+--- pin_render/src/reflections/probes.rs	2026-11-18 13:05:24.074697228 +0000
++++ b/pin_render/src/reflections/probes.rs	2026-11-20 20:42:36.847922526 +0000
+@@ -293,7 +293,7 @@
+             multiview_mask: None,
+             cache: None,
+         });
+-        if let Some(e) = pollster::block_on(scope.pop()) {
++        if let Some(e) = crate::gpu::pop_scope(scope, "reflection probes") {
+             return Err(GpuError::InvalidArgument(format!(
+                 "probe shaders/pipelines: {e}"
+             )));
