@@ -7417,3 +7417,67 @@ sweep covers a next session that starts before the merging session finishes unbl
   window is seconds long and needs a person to act inside it: P7 sets `status:blocked-failure`
   only on a unit a session was working (`in-progress`), never on a `blocked` issue the sweep
   reads. Revisit if a label-level tool becomes available.
+
+## #81 — Input epoch: events re-stamped onto the tick clock
+
+**Decision:** This supersedes the premise of "7.1 — input latency clock domain and clamping".
+That decision assumed the simulation applies an input in the tick that ingests it ("whose events
+energise or release the flipper coil in the tick that ingests them"). With a nonzero epoch this
+was false: the app's sim loop gated each event against its epoch (the SDL clock reading at sim
+start, shifted by every dropped tick) and then handed the step the raw SDL timestamp, which the
+simulation gates again against epoch 0. Every input therefore waited E + D ms (E the SDL time at
+sim start, D the dropped ticks). The new rule (REQ-LAT-004, REQ-LAT-005):
+- `SimLoop::run_ticks` still gates on the raw timestamp (`raw ≤ tick_end_ns(epoch, tick)`), and
+  hands `step_1ms` each delivered event with `timestamp_ns = raw − epoch` (saturating at 0), on
+  the tick clock where tick k ends at k · TICK_NS. Kind and order are untouched, the re-stamp
+  happens in the existing per-tick `ArrayVec` (no allocation), the 256-event cap and the
+  overflow counter are unchanged. The delivering tick is the applying tick, also after
+  `skip_ticks` (the epoch absorbs the drop). An event that reaches the ring after its own tick
+  has run is applied in the next executed tick. With epoch 0 the re-stamp is the identity, so
+  headless runs, replays and replay digests are unchanged.
+- `ProfiledSim` reads its tick start as `clock() − epoch` (saturating; one relaxed atomic load per
+  tick). The epoch is an `Arc<AtomicU64>` the sim thread stores after `set_epoch_ns` and after
+  every `skip_ticks` (`ProfiledSim::with_epoch`, `ThreadsConfig::sim_epoch_ns`, wired by
+  `ThreadsConfig::with_profiled_sim`). `ProfiledSim::new` keeps epoch 0. Both sides of the
+  latency are on the tick clock, and the latency equals SDL now minus the raw SDL stamp, measured
+  to the start of the tick in which the input took effect (for a flipper, the tick its coil is
+  energised).
+- Clamping of future timestamps to 0, the `input_clamped` count, and the set of measured inputs
+  (the four flipper buttons and LAUNCH) are otherwise unchanged.
+
+**Rationale:** REQ-LAT-004 requires an input to be applied in the first executed tick that has
+received it and whose end is not before its timestamp, regardless of the time before sim start
+and of dropped ticks. Re-stamping in the loop fixes that in the app without touching `pin_sim`
+or the `pin_core` contracts, and leaves every epoch-0 path bit-identical. Sharing the epoch with
+the profiler keeps REQ-LAT-005's metric on one clock domain.
+
+**Alternatives:**
+- Make the simulation gate against the loop's epoch (a new `SimStep` parameter or a sim-side
+  epoch): rejected, a `pin_core` contract change (R2) and a change to simulation input handling.
+- Start SDL-time-relative stamping on the main thread (subtract the epoch before the ring):
+  rejected, the main thread does not know the sim thread's epoch or its later skips without a
+  shared value on the hot input path, and the loop's raw gate would then need the same shift.
+- Drop the loop's gate and let the simulation gate alone: rejected, the step would receive events
+  for future ticks and the overflow accounting would change.
+
+## #81 — HUD rate lines stay outside `hud_lines`
+
+**Decision:** The profiler HUD's presented frames per second and cumulative dropped ticks
+(REQ-LAT-003) are two extra lines, `presented fps <x.y>` (`--` before a rate is known) and
+`dropped ticks <n>`, built by `profiler::hud_rate_lines(&HudRates)` and appended after the four
+`hud_lines` (`hud_lines_with_rates`). `hud_lines` and `ProfilerSnapshot` are unchanged. The render
+thread fills `HudRates` at each HUD refresh from `OrchestratorStats` (`sim_dropped_ticks`, and a
+`FrameRateMeter` over `render_frames` between refreshes) and appends the lines.
+
+**Rationale:** Existing tests outside this issue's owned paths assert that `hud_lines` returns
+exactly four lines and build `ProfilerSnapshot` with every field listed, and the brief requires
+the existing HUD lines and their tests to stay unchanged. The two values are orchestrator
+counters, not profiler metrics, so they come from `OrchestratorStats` rather than the profiler's
+shared storage. All the wiring fits in the owned `threads.rs`.
+
+**Alternatives:**
+- New `ProfilerSnapshot` fields and two more `hud_lines` lines: rejected, it breaks the existing
+  four-line and exhaustive-literal tests the brief keeps unchanged.
+- Counting presented frames in the profiler (a `PresentProfiler` counter): rejected, it duplicates
+  `OrchestratorStats::render_frames` and would need wiring in files outside the owned paths.
+
