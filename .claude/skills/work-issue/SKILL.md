@@ -40,11 +40,12 @@ may be unavailable; the MCP tools and the session's REST routes cover every step
 1. Read the issue (`issue_read`, method `get`): title, body, labels, state, sub-issue parent.
    Stop if it is closed, if it is not a work unit (no `Plan ID` line; tracking issues are not work
    units), or if it is labelled `status:blocked-failure`: a person must clear that label before it
-   is claimed. If it is labelled `blocked`, run the dependency check of step 2: if every
-   dependency is satisfied the label is stale, so replace it with `ready` (`issue_write`, the
-   whole label list) and comment as step 0 says ("Unblocked by #<N> (PR #<P>)", or no comment
-   when none can be identified); otherwise stop as step 2 says. Without an issue number, exclude
-   this candidate instead and continue with the next one under step 0.
+   is claimed. If it is labelled `blocked` and its "Depends on" section has no entries at all, a
+   person set that hold: stop and say so (§7 step 3). Otherwise run the dependency check of step
+   2: if every dependency is satisfied the label is stale, so replace it with `ready`
+   (`issue_write`, the whole label list) and comment as step 0 says ("Unblocked by #<N> (PR
+   #<P>)", or no comment when none can be identified); otherwise stop as step 2 says. Without an
+   issue number, exclude this candidate instead and continue with the next one under step 0.
 2. **Dependencies.** The body's "Depends on" section lists `#numbers`; it is the only dependency
    record. Every one must be **satisfied** under the merged-PR rule (PROCESS.md P6 step 5): closed
    as completed, and closed by a merged PR (read the blocker with `issue_read`, method `get`: its
@@ -239,8 +240,9 @@ last work-verifier result `pass` for the head):
    identified, change the label without a comment, as §1 step 0 says. The label change is one
    `issue_write` call with the full label list (`ready` in, `blocked` out), so the issue is never
    without both. Re-read the issue's labels (`issue_read`, method `get`) immediately before that
-   call and build the list from them; if `status:blocked-failure` or `ready` is now present, or
-   `blocked` is gone, skip the write.
+   call and build the list from them; if `status:blocked-failure` is now present or
+   `blocked` is gone, skip the write; if `ready` is already there, the write only removes
+   `blocked`.
    Exceptions:
    - skip an issue that no longer carries `blocked`: the next session may already have unblocked
      it (§1 step 0);
