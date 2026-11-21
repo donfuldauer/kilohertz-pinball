@@ -1,6 +1,6 @@
 ---
 name: work-issue
-description: "Takes one Kilohertz Pinball GitHub issue from start to merge: checks its dependencies are merged, claims it, branches, routes the work through the work-classifier and agents, verifies, opens a PR that closes the issue, drives the CodeRabbit review to resolution, merges, and unblocks dependent issues. Use when the user says 'Start work on issue X', 'work on #X', 'pick up issue X', 'start work on the next ready issue', or similar; add 'and self-chain' to have it start a fresh session for the next issue after merging."
+description: "Takes one Kilohertz Pinball GitHub issue from start to merge: checks its dependencies are merged, claims it, branches, routes the work through the work-classifier and agents, verifies, opens a PR that closes the issue, drives the CodeRabbit review to resolution, merges, and unblocks dependent issues. Use when the user says 'Start work on issue X', 'work on #X', 'pick up issue X', 'start work on the next ready issue', 'Work on the next issue', or similar. Merging an issue/ branch starts a fresh session for the next issue (§8)."
 ---
 
 # work-issue
@@ -19,12 +19,14 @@ may be unavailable; the MCP tools and the session's REST routes cover every step
 
 ## 1. Load and check the issue
 
-0. **Self-chain flag.** Set `SELF_CHAIN` to true only if the prompt that started this work asks
-   for it in some form ("and self-chain", "chain to the next issue", "keep going in a new
-   session"). Otherwise it is false, and §8 does nothing. A request to work an issue is not a
-   request to chain.
-   **No issue number** ("the next ready issue"):
-   - **Resume abandoned work first.** Candidates are open issues labelled `in-progress` (a closed
+0. **No issue number** ("the next ready issue", "the next issue", "Work on the next issue"):
+   - **Finish unblocking first.** A merge starts this session (§8), sometimes before the merging
+     session reaches §7 step 3, and a session can end before finishing it. So run §7 step 3's
+     sweep, with its exceptions, over every open `work-unit` issue labelled `blocked` (label
+     search, explicit paging) before choosing. The comment is "Unblocked: every dependency is
+     satisfied (<list>)", or "Unblocked by #<N> (PR #<P>)" naming the dependency that closed last
+     when one can be identified.
+   - **Resume abandoned work next.** Candidates are open issues labelled `in-progress` (a closed
      issue that still carries the label is skipped) and your open PRs. Neither may belong to an
      issue labelled `status:blocked-failure` or `blocked`; those wait for a person or for their
      dependencies. One is abandoned only if it has no governing claim (step 4): no unreleased
@@ -32,7 +34,7 @@ may be unavailable; the MCP tools and the session's REST routes cover every step
    - **Otherwise** list ready issues as `run-plan` §1 does and take the lowest `KP-NNN` whose
      owned paths overlap no active issue.
    - Claim it with step 4. If the claim loses, pick the next candidate.
-   - If none qualifies, tell the user why and stop (no chaining).
+   - If none qualifies, tell the user why and stop.
 1. Read the issue (`issue_read`, method `get`): title, body, labels, state, sub-issue parent.
    Stop if it is closed, if it is not a work unit (no `Plan ID` line; tracking issues are not work
    units), or if it is labelled `status:blocked-failure`: a person must clear that label before it
@@ -137,8 +139,10 @@ One branch, one PR, one issue.
    inside that worktree. Cargo builds use `CARGO_TARGET_DIR=/home/user/kilohertz-pinball/target/<N>`
    (`docs/DEVELOPMENT.md` "Agent environment"). The worktree is removed in §7.
 
-If the session can push only to an assigned branch, use it instead of `issue/<N>-<slug>`, and
-note that in the PR body.
+The branch is always `issue/<N>-<short-slug>`: the next session starts only when an `issue/`
+branch merges (§8). If the session's environment cannot push an `issue/` branch, use the assigned
+branch, and say in the PR body that the chain will not continue from this merge: the owner
+restarts it with the scheduled task's "Run now".
 
 ## 3. Route and execute
 
@@ -228,50 +232,39 @@ last work-verifier result `pass` for the head):
    explicit paging) and re-check each one's "Depends on" list, whether or not it names `#<N>`
    (a dependency on a cancelled issue can be covered by a replacement issue). For each whose
    dependencies are now all satisfied (§1 step 2, replacements included), replace its `blocked`
-   label with `ready` (`issue_write`, full label list) and comment "Unblocked (PR #<P>)", naming
-   `#<N>` ("Unblocked by #<N> (PR #<P>)") only when it was one of the dependencies.
+   label with `ready` and comment "Unblocked (PR #<P>)", naming `#<N>` ("Unblocked by #<N> (PR
+   #<P>)") only when it was one of the dependencies. The label change is one `issue_write` call
+   with the full label list (`ready` in, `blocked` out), so the issue is never without both.
+   Exceptions:
+   - skip an issue that no longer carries `blocked`: the next session may already have unblocked
+     it (§1 step 0);
+   - skip one that also carries `status:blocked-failure`: a person must clear that hold
+     (PROCESS.md P7);
+   - leave `blocked` on an issue whose "Depends on" lists no issue: a person set that hold;
+   - do not post an "Unblocked" comment if one is already there.
 4. Remove `in-progress` from the issue if it is still present (it closes through `Closes #<N>`),
    and release this session's claim (`Released: merged in PR #<P>`).
 5. Remove the issue's worktree from the main checkout: `git worktree remove
    ../kilohertz-issue-<N>`.
 6. Tell the user: what merged, the PR link, the issues it unblocked, and the next ready issues
    in plan order. The merge commit goes in the RUN_LOG row of the next PR.
-7. If `SELF_CHAIN` is true, go to §8.
+7. Do nothing to start the next session (§8).
 
-## 8. Self-chain (only when `SELF_CHAIN` is true)
+## 8. Next session
 
-Run this only after a merge in §7. Do not run it if the issue ended `blocked`, or if no issue is
-now ready; say why in the final message instead. There is no backstop scheduled task in this
-repository (DECISIONS.md "Process — Self-chaining without a backstop task"): wherever the chain
-stops, the owner restarts it with "Start work on the next ready issue and self-chain".
-
-1. **Check for an earlier attempt.** Read the merged issue's comments. If a "Self-chain: starting
-   successor" or "Self-chained to session" comment from this session already exists, a successor
-   was or may have been created: find it with `list_sessions` by the tag
-   `kilohertz-chain-<marker comment ID>` (step 3), never by time alone, so another chain's
-   session is never mistaken for this one's. If one exists, post step 4's comment if it is
-   missing and end the turn; never create another. If the marker exists but no successor session
-   is found, create none and say so in the final message: the chain stops here, and the owner
-   restarts it with "Start work on the next ready issue and self-chain".
-2. **Depth limit.** Otherwise call `get_session` with no argument and read `lineage.depth` and
-   `lineage.limit`. A successor would sit at `depth + 1`. If `depth + 1 >= limit`, create no
-   successor and post no marker: comment on the merged issue "Self-chain stopped: session depth
-   limit reached (depth <d> of <limit>); restart with 'Start work on the next ready issue and
-   self-chain'.", say the same in the final message, and end the turn. (`>=` is deliberate: it
-   may stop one generation early, but never attempts a create that the limit would refuse.)
-3. Otherwise post the marker comment "Self-chain: starting successor" on the merged issue, then
-   start one new session with `create_session`: `source_url`
-   `https://github.com/donfuldauer/kilohertz-pinball`, tags `kilohertz-chain` and
-   `kilohertz-chain-<marker comment ID>` (the ID of the marker just posted), a title naming the
-   next issue, and the prompt `Start work on the next ready issue and self-chain.` Leave the
-   environment and model to be inherited.
-4. Comment on the merged issue: "Self-chained to session <id>."
-5. End the turn. Never start more than one session per merge, and never chain from a session
-   whose prompt did not ask for it.
+The merge starts the next session: a scheduled task with a GitHub trigger on pull requests merged
+into `main` from `issue/` branches starts a fresh session with the prompt "Work on the next
+issue". This session does nothing to hand off: never call `create_session`, `fire_trigger` or
+`update_trigger` to chain. A session started by another session asks a person to approve every
+remote-session tool call, and a session can neither fire nor edit a task it did not create. The
+chain runs until no issue is ready, or until a session ends without merging an `issue/` branch;
+the owner then restarts it with the task's "Run now". If the task does not exist yet, nothing
+starts: see the P8 line in `docs/HUMAN_QUEUE.md` and DECISIONS.md "Process — Next session starts
+from a merged issue/ PR".
 
 ## Never
 
-Self-chain unless the starting prompt asked for it; start an issue whose dependencies are not
+Start a session to chain to the next issue; start an issue whose dependencies are not
 satisfied; push to `main`; merge with a failing required check or an unresolved thread; skip,
 ignore or weaken a test; leave a judgement call in `docs/HUMAN_QUEUE.md` instead of
 `docs/DECISIONS.md`; ask a person to resolve a review thread.

@@ -7386,3 +7386,25 @@ both in this file.
   reaches the drain, so the outcome is the same.
 - A copy of the pocket predicate in `feature_lab_cr1.rs`: rejected, one definition in the shared
   test support.
+
+## Process — Next session starts from a merged issue/ PR (self-chaining superseded)
+
+**Decision:** A session never starts its successor. A scheduled task with a GitHub trigger on pull
+requests merged into `main` from branches prefixed `issue/` starts a fresh session with the prompt
+"Work on the next issue" (work-issue §8). Because that session can start before the merging
+session reaches §7 step 3, §1 step 0 first runs the unblocking sweep over every open `work-unit`
+issue labelled `blocked`. §7 step 3 keeps the sweep with exceptions: skip an issue that no longer
+carries `blocked`, skip one that carries `status:blocked-failure`, leave `blocked` on an issue
+whose "Depends on" lists no issue, and post no second "Unblocked" comment. The `SELF_CHAIN` flag,
+the `kilohertz-chain` tags and the depth limit are removed; a session on a non-`issue/` branch
+says in its PR that the chain will not continue. This supersedes "Process — Self-chaining without
+a backstop task". Made at the owner's request, matching fineprint. The agent cannot create a
+GitHub-triggered scheduled task (its tool creates only time-based ones), hence the P8 line in
+`docs/HUMAN_QUEUE.md`.
+**Rationale:** Sessions started by sessions, or chained from a scheduled-task session, prompted the
+owner even for allowed tools. A merge trigger needs no handoff code and no depth limit. The step 0
+sweep covers a next session that starts before the merging session finishes unblocking.
+**Alternatives:**
+- Keep `create_session` chaining: rejected, for the prompts.
+- A cron backstop that fires the next run: rejected, same prompting plus a scheduling lag.
+- No chaining: rejected, the owner wants unattended runs.
