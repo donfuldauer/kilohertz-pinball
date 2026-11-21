@@ -1,0 +1,107 @@
+name: windowed
+
+# KP-002 (#82): the windowed latency harness. The release pin_app runs the
+# grey-box table for 60 s in the real windowed path (Xvfb, lavapipe through
+# Vulkan) while XTest key presses (xdotool) drive both flippers; the driver
+# (crates/pin_app/tests/windowed, scripts/windowed/run.sh) checks its
+# latency trace and shutdown line: key to coil (REQ-LAT-004), key to photon
+# in presented frames (REQ-LAT-001, CI form) and dropped ticks <= 0.1 %
+# (REQ-LAT-002, CI form). docs/DEVELOPMENT.md "Windowed latency harness".
+# Not part of pr-checks: it becomes required only when the owner makes it a
+# required check (repository setting). Gate A3 will reuse this workflow.
+on:
+  pull_request:
+    paths:
+      - "crates/pin_app/**"
+      - "crates/pin_render/**"
+      - "crates/pin_input/**"
+      - "tables/**"
+      - ".github/workflows/windowed.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  RUST_VERSION: "1.97.0"
+  SDL_AUDIO_DRIVER: dummy
+  # lavapipe worker threads: 2 of the runner's 4 vCPUs, so the sim thread
+  # keeps a core (docs/DEVELOPMENT.md "Windowed latency harness").
+  LP_NUM_THREADS: "2"
+  WGPU_BACKEND: vulkan
+  SDL_VIDEODRIVER: x11
+
+jobs:
+  windowed:
+    name: windowed latency (linux, lavapipe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux packages (lavapipe, Xvfb, XTest tools, SDL3 build headers)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 xvfb xauth cmake \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            libegl-dev libdrm-dev libgbm-dev libudev-dev libdbus-1-dev \
+            libasound2-dev libpulse-dev \
+            xdotool x11-apps imagemagick
+
+      - name: Toolchain (rustc ${{ env.RUST_VERSION }})
+        shell: bash
+        run: |
+          rustc -vV && cargo --version
+          version=$(rustc --version | awk '{print $2}')
+          if [ "$version" != "$RUST_VERSION" ]; then
+            echo "::error::rustc $version, expected exactly $RUST_VERSION"; exit 1
+          fi
+
+      - name: Build the release app and the windowed driver
+        run: |
+          cargo build --release -p pin_app
+          cargo test --release -p pin_app --test windowed --no-run
+
+      - name: Build the grey-box bundle
+        run: tables/greybox/build.sh target/greybox
+
+      # The verdict's pure tests (no display).
+      - name: Windowed verdict unit tests
+        run: cargo test --release -p pin_app --test windowed
+
+      # 60 s run; the driver starts its own Xvfb (1280x720x24).
+      - name: Windowed latency run (60 s, Xvfb + lavapipe)
+        run: scripts/windowed/run.sh target/windowed
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f target/windowed/summary.txt ]; then
+            { echo '```'; cat target/windowed/summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windowed-latency
+          path: |
+            target/windowed/latency_trace.csv
+            target/windowed/summary.txt
+            target/windowed/pin_app_stderr.log
+            target/windowed/frame_*.png
+          if-no-files-found: warn
