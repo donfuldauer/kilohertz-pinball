@@ -517,9 +517,9 @@ Orchestrator drives it to a merge without a person.
    for `ready`, with a comment "Unblocked by #<N> (PR #<P>)". The **merged-PR rule:** a dependency
    is satisfied only if it is closed as completed by a merged PR (via MCP: `issue_read`
    `closed_by_pull_requests.references` + `pull_request_read` `merged` true; via `gh` CLI:
-   `gh issue view <n> --json state,stateReason,closedByPullRequestsReferences` + `gh pr view <p> --json merged`;
-   fallback for an unlinked PR body saying `Closes #<n>` or `Fixes #<n>`:
-   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged "Closes #<n>"'`
+   `gh issue view <n> --json state,stateReason,closedByPullRequestsReferences` + `gh pr view <p> --json mergedAt`
+   (`mergedAt` non-null); fallback for an unlinked PR body saying `Closes #<n>` or `Fixes #<n>`:
+   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged in:body "Closes #<n>"'`
    and, if empty, the same query with `"Fixes #<n>"`), or a comment on it names the replacement
    issue(s) that delivered the work and those pass the same test. The run-log rows were committed
    in the PR itself; the merge commit is recorded in the RUN_LOG row of the next PR. Nothing is

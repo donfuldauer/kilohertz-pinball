@@ -57,9 +57,9 @@ Antigravity sessions without GitHub MCP tools, use the official `gh` CLI (`gh is
    candidate with `pull_request_read`, method `get`, `merged` true; via `gh` CLI: run
    `gh issue view <n> --json state,stateReason,closedByPullRequestsReferences` — its
    `closedByPullRequestsReferences` array lists the closing PRs — and confirm each with
-   `gh pr view <p> --json merged`. Fallback for an unlinked PR body that uses `Closes #<n>` or
-   `Fixes #<n>`:
-   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged "Closes #<n>"'`
+   `gh pr view <p> --json mergedAt` (`mergedAt` non-null). Fallback for an unlinked PR body that
+   uses `Closes #<n>` or `Fixes #<n>`:
+   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged in:body "Closes #<n>"'`
    and, if empty, the same query with `"Fixes #<n>"`). A blocker closed without a merged PR counts
    only if a comment on it names the replacement issue(s) that delivered the work and those
    replacements pass the same test. A "None" entry is satisfied once any condition it states in
