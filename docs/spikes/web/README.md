@@ -2,7 +2,7 @@
 
 ## (a) What this is
 
-`DESIGN.md` is the design document for the browser-version GitHub issue, with per-work-unit sections W01-W29; the issue itself holds the decisions and the work-unit table.
+`DESIGN.md` is the design document for the browser-version GitHub issue, with per-work-unit sections W01-W29 (updated for macOS build hosts, S11); the issue itself holds the decisions and the work-unit table.
 
 Research spikes for a browser (WebAssembly + WebGPU/WebGL2) version of Kilohertz Pinball, run on
 2026-11-20/21 against `main` at `995935f91ad8ad18fcee201b94df52c5aaf1fb6c`. This folder is a curated,

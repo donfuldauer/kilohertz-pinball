@@ -4,15 +4,15 @@ This is the design companion to the GitHub issue "Browser (WebAssembly) version 
 - the evidence per area
 - the full deliverables and acceptance criteria of each work unit (W01-W29)
 - the security matrix and threat-model text
-- the CI design, toolchain pins and the build recipe
+- the CI design, toolchain pins, the build recipe and the build hosts (Linux x86_64, macOS 15+ on arm64 and Intel; S11)
 
 `plan-from-spec` copies each W section into its work-unit issue. The issue's work-unit table links each row to its section here.
 
-Section numbers such as "S7 §6" refer to the spike reports in this folder (`S1/RESULTS.md` … `S10/RESULTS.md`, `S5/RESEARCH.md`).
+Section numbers such as "S7 §6" refer to the spike reports in this folder (`S1/RESULTS.md` … `S11/RESULTS.md`, `S5/RESEARCH.md`).
 
 **About the spike code.**
 - The spike code in this folder is a starting point. Each unit re-creates what it needs through the normal implementer, Independent Tester and CodeRabbit process (`docs/PROCESS.md` P5, P6); nothing is merged as is.
-- The patches were made against `995935f`. S7 0006, S2 0001 and S1 0001-0003 still pass `git apply --check` on `main` at `ba45d5c`.
+- The patches were made against `995935f`. S7 0006, S2 0001 and S1 0001-0003 still pass `git apply --check` on `main` at `ba45d5c`. S11 0001 was made later and applies on top of S2 0001; it does not apply to plain `main`.
 - Since `995935f`, `main` changed `tables/feature_lab/table.toml`, tests and the vendored `sdl3-sys`. M1 ([#79](https://github.com/donfuldauer/kilohertz-pinball/issues/79)) will change gravity (KP-032), the flipper defaults (KP-007) and all three tables.
 - Hash values quoted below are as of `995935f`. **Re-generate reference hashes on the current `main` before use.** The parity gates compare native and web builds of the same commit, so they do not depend on these values.
 
@@ -407,41 +407,71 @@ Audio facts:
 
 ## Build, CI and local hosting
 
-### Toolchain pins (S9 BOM, S2 §2, S5 F4, S10 versions)
+### Toolchain pins (S9 BOM, S2 §2, S5 F4, S10 versions, S11 §2)
 
 | Tool | Version | Source and checksum |
 |---|---|---|
 | rustc / cargo | 1.97.0 (existing pin) + target `wasm32-unknown-unknown` | rustup |
-| wasm-bindgen crate and CLI | **=0.2.130** (must match exactly; a 0.2.129 CLI fails with a schema mismatch, S3 §2) | `cargo install --locked wasm-bindgen-cli --version 0.2.130`, or the release asset `wasm-bindgen-0.2.130-x86_64-unknown-linux-musl.tar.gz` with its `.sha256sum` (no glibc build is published, S5 F4) |
+| wasm-bindgen crate and CLI | **=0.2.130** (must match exactly; a 0.2.129 CLI fails with a schema mismatch, S3 §2) | `cargo install --locked wasm-bindgen-cli --version 0.2.130` on every build host, run by `fetch_tools.sh` into `target/web-tools/cargo` (crate checksum `c37f6904…fc7a`). The release assets for aarch64/x86_64-apple-darwin and x86_64-linux-musl are recorded in `tools.lock` but not used (S11 §2.5); no glibc Linux build is published (S5 F4) |
 | js-sys, web-sys, wasm-bindgen-futures | 0.3.107, 0.3.107, 0.4.80 | `Cargo.lock` |
-| wasm-tools | 1.263.0 | `cargo install --locked wasm-tools --version 1.263.0` |
-| wasi-sdk (clang 22.1.0, wasi-libc, libsetjmp) | **32.0** | `https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-32/wasi-sdk-32.0-x86_64-linux.tar.gz`, 143 157 058 B, sha256 `55fc523ebfbc98f69d1034fcfcb83d1ff5610cd9ab7eceef6cd097a30ba4ef93`. System clang-18 does not work (wrong setjmp ABI, S9 C5) |
-| binaryen (`wasm-opt`) | **version_132**, native | `https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz`, sha256 `195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572` (equals the published `.sha256`). The npm build is about 9 minutes per module; native takes 24-87 s |
-| Node | 22 (spikes: v22.23.5) | `actions/setup-node` |
+| wasm-tools | 1.263.0 | `cargo install --locked wasm-tools --version 1.263.0` (crate checksum `14b8ed79…dc96`); no published checksum for its release assets |
+| wasi-sdk (clang 22.1.0, wasi-libc 2fc32bc81b9f, libsetjmp) | **32.0** | per host, `https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-32/`: `wasi-sdk-32.0-x86_64-linux.tar.gz` (143 157 058 B, `55fc523e…ef93`), `wasi-sdk-32.0-arm64-macos.tar.gz` (131 307 682 B, `383be7fe…b933d`), `wasi-sdk-32.0-x86_64-macos.tar.gz` (133 615 598 B, `a36c9ab1…1b1b`). No checksum file is published. All three have the same clang commit and a byte-identical `wasm32-wasip1` `libc.a`, `libsetjmp.a` and headers (S11 §2.4). System clang-18 does not work (S9 C5) |
+| binaryen (`wasm-opt`) | **version_132**, native | `https://github.com/WebAssembly/binaryen/releases/download/version_132/`: `binaryen-version_132-x86_64-linux.tar.gz` (`195ddc94…0572`), `-arm64-macos.tar.gz` (`98aad827…59aa`), `-x86_64-macos.tar.gz` (`40c3de90…832e`). Each equals its published `.sha256`. On macOS `wasm-opt` loads `lib/libbinaryen.dylib`, so keep the extracted tree whole. The npm build is about 9 minutes per module; native takes 24-87 s |
+| Node | 22 (pinned 22.23.5 in CI and `tools.lock`) | `actions/setup-node`; locally the nodejs.org build (`node-v22.23.5-{linux-x64,darwin-arm64,darwin-x64}.tar.gz`, sha256 in `tools.lock` = `SHASUMS256.txt`) or Homebrew `node@22` |
 | Playwright / Chromium | 1.63.0 / 157.0.8103.78 headless shell, with its bundled SwiftShader Vulkan ICD | `npx playwright@1.63.0 install chromium` |
 | JavaScriptCore shell | WebKit 327409@main (WebKitGTK `jsc` bundle), x86_64 | zip sha256 `c21a415deebd6e3eb867037d4ca290b9dd21bec12cc9c71f13403da7d8d042f0`. The server keeps builds for about a month, so store the pinned zip as an asset of a `ci-tools-web` release in this repo |
 | SpiderMonkey shells | jsshell 160.0.1 and 153.7.0esr, linux-x86_64 | sha256 `b547d9ed0bc564ba4387a32cc09aa7aa490c4bdc32998a807c38d36a8078ad69` and `b453f9a0cf38a7d5087d51710b9d260effff11d09b7a89282897de7f06440f5c`; `SHA256SUMS` is GPG-signed by Mozilla. Stored like JSC |
 | qemu (W05 only) | `qemu-user` 8.2.2, `gcc-aarch64-linux-gnu` | apt on `ubuntu-latest` |
 
 Build hosts:
-- Linux x86_64 (including WSL2) is the supported build host; every spike built there.
-- wasi-sdk 32 and binaryen 132 also publish arm64-macos and x86_64-windows tarballs (HTTP 200, S6 check), but no build ran on those hosts.
+- **Supported:**
+  - Linux x86_64, including WSL2.
+  - macOS 15 or later on Apple silicon (`darwin-arm64`) and on Intel (`darwin-x86_64`).
+- **Pinned binary floors** (S11 §6.8):
+  - arm64: macOS 14.0. wasi-sdk's bundled `libedit.0.dylib` sets it; the other binaries need 11.0.
+  - x86_64: macOS 11.0, set by Node. The tools themselves need 10.12-10.15.
+  - macOS 14 is untested, because GitHub has no macOS 14 runner since 2026-11-02.
+- **Signatures:**
+  - Every arm64 binary in these archives is ad hoc signed (linker-signed), so no `codesign` step is needed.
+  - The x86_64 binaries are unsigned, which Intel Macs allow.
+  - Pins are on archives, never on extracted files.
+- **macOS prerequisites:** the Xcode Command Line Tools (host linker for build scripts and proc macros).
+- **Refused:** Linux on arm64 and Windows outside WSL2 stop with a message.
+- **Windows:** wasi-sdk 32 and binaryen 132 also publish x86_64-windows tarballs (HTTP 200, S6 check), but no build ran there; native Windows stays unsupported.
 
-### Build recipe (W20; S9 BOM §3-4)
+### Build recipe (W20; S9 BOM §3-4; S11 for the hosts)
 
-1. `rustup target add wasm32-unknown-unknown`, then fetch and verify wasi-sdk and binaryen (`scripts/web/fetch_tools.sh`, pins in `scripts/web/tools.lock`).
-2. Set the environment:
+1. Install the toolchain:
+   - `rustup toolchain install 1.97.0 --profile minimal --target wasm32-unknown-unknown`
+   - on macOS also the Xcode Command Line Tools: `build_web.sh` checks `xcode-select -p`
+2. Run `scripts/web/fetch_tools.sh`. It:
+   - picks the platform key from `uname -s`/`-m`; `sysctl.proc_translated = 1` (Rosetta 2) selects `darwin-arm64`
+   - downloads the `tools.lock` archives for that key with curl into `target/web-tools/`
+   - checks each archive's sha256 and size, extracts it, and removes `com.apple.quarantine` on macOS
+   - runs `cargo install --locked` for wasm-bindgen-cli and wasm-tools
+   - runs every binary once (`--version`)
+   - writes `target/web-tools/tools.env`
+3. `scripts/web/build_web.sh` sources `wasm_env.sh`, which sets the environment:
+   - It first removes host settings that would reach the wasm32 clang or rustc: `CFLAGS`, `CXXFLAGS`, `TARGET_CFLAGS`, `ARFLAGS`, `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH`, `CCC_OVERRIDE_OPTIONS`, `COMPILER_PATH`, `CRATE_CC_NO_DEFAULTS`, `RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS` and `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS`. cargo is then run under `env -u` for the hyphenated `CC_/CFLAGS_/AR_wasm32-unknown-unknown`.
    - `CC_wasm32_unknown_unknown` and `AR_wasm32_unknown_unknown`: the wasi-sdk `clang` and `llvm-ar`
-   - `KHZ_WASI_SYSROOT=<wasi-sdk>/share/wasi-sysroot`
-   - `KHZ_WASM_LEGACY_EH=true`
-   - `RUSTFLAGS="-C target-feature=+simd128 -C link-arg=-zstack-size=4194304"` (target only)
+   - `KHZ_WASI_SYSROOT=<wasi-sdk>/share/wasi-sysroot`, `KHZ_WASM_LEGACY_EH=true`, `KHZ_LUA_MATH=1` (until W09 makes it unconditional)
+   - `CARGO_ENCODED_RUSTFLAGS` (0x1f-separated, so paths with spaces survive), in this order:
+     - `-C target-feature=+simd128 -C link-arg=-zstack-size=4194304`
+     - `--remap-path-prefix=<rustc sysroot>/lib/rustlib/src/rust=/rustc/<commit-hash>`
+     - `--remap-path-prefix=<workspace>=/khz`
+     - `--remap-path-prefix=<target dir>=/khz/target`
+     - `--remap-path-prefix=<CARGO_HOME>=/cargo`
+     - each prefix also in its physical (`pwd -P`) spelling when different, e.g. macOS `/tmp` = `/private/tmp`
+   - `CC_SHELL_ESCAPED_FLAGS=1` and `CFLAGS_wasm32_unknown_unknown` = the same three prefixes as quoted `-ffile-prefix-map` flags
    - `CARGO_PROFILE_RELEASE_OPT_LEVEL=3`, `CODEGEN_UNITS=1`, `LTO=false`, `PANIC=abort`, `DEBUG=false`
-   - LTO is declared off: cargo silently ignores it for a `[cdylib, rlib]` crate, and a real fat-LTO build was **larger** after `-Oz` (S9 C7, S9-Q5)
-3. Build each artifact: `cargo build --release --target wasm32-unknown-unknown -p pin_web --no-default-features --features webgpu`, and the same with `--features webgl`.
-4. Run `wasm-bindgen --target web --out-name pin_web`.
-5. Run `wasm-opt -Oz --enable-simd --enable-exception-handling --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue --strip-debug --strip-producers`. Parity was re-proven on the optimised module (S9 §5).
-6. Build the table bundles with `tables/*/build.sh` and `scripts/package.py`.
-7. Copy everything to `target/web/dist/`.
+   - Why the remap: without it the module embeds `$CARGO_HOME` 540 times, so the bytes depend on the user's home directory. `--no-remap` gives S9's exact flags.
+   - Why LTO is declared off: cargo silently ignores it for a `[cdylib, rlib]` crate, and a real fat-LTO build was **larger** after `-Oz` (S9 C7, S9-Q5).
+   - These flags live in `wasm_env.sh`, not in a `.cargo/config.toml`, so native builds and the byte-compared `tables/*/rules-wasm` rebuilds are unaffected.
+4. Build each artifact: `cargo build --locked --release --target wasm32-unknown-unknown -p pin_web --no-default-features --features webgpu`, and the same with `--features webgl`.
+5. Run `wasm-bindgen --target web --out-name pin_web`.
+6. Run `wasm-opt -Oz --enable-simd --enable-exception-handling --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue --strip-debug --strip-producers`. Parity was re-proven on the optimised module (S9 §5). The output does not depend on the thread count (S11 §3.2).
+7. Build the table bundles with `tables/*/build.sh` and `scripts/package.py`.
+8. Copy everything to `target/web/dist/` and write `SHA256SUMS`. Hashing goes through Node, `shasum -a 256` or `sha256sum`, whichever exists.
 
 `scripts/web/check_module.sh` fails on any of these:
 - **Validation.** `wasm-tools validate --features=mvp,simd,exceptions,legacy-exceptions,bulk-memory,saturating-float-to-int,sign-extension,mutable-global,reference-types,multi-value` fails.
@@ -450,9 +480,61 @@ Build hosts:
 - **Relaxed SIMD.** Any relaxed-SIMD opcode (S1 A12).
 - **Size.** The brotli size (quality 11, lgwin 24) exceeds 2.5 MiB (WebGPU) or 3.0 MiB (WebGL2).
 
-It also records the module sha256. The build is reproducible: S9 got the same sha256 from three builds.
+Reproducibility (S11 §4):
+- **Same host, same file system:** the sha256 is reproducible (S9 got the same sha256 from three builds).
+- **Different checkout paths or `CARGO_HOME`s:** the sha256 is the same with the default remap (S11 a_remap = b_remap, `9f137f8a…`). The remap changes the Linux reference module itself, from S9's `88e06b16…` to `9f137f8a…`; `--no-remap` reproduces S9's bytes exactly (S11 §5.4).
+- **Different directory order:** the same only once W08 sorts lua-src's sources.
+- **Across host architectures (Linux x86_64 vs macOS arm64):** it is reported, not required. The arm64-host wasi-sdk clang emits different code for at least one input (compiler-rt `multc3`), and rustc's LLVM may too. Parity is the gate.
 
-Cost: a cold cargo build takes 4 min 41 s on a 4-core VM; incremental builds take 3-6 s (S9 §3).
+Script rules: POSIX `sh` only, so bash 3.2, dash and busybox all work. No GNU-only flags. Quote every path. Use `CDPATH= cd -- … && pwd -P` for directories, and `getconf _NPROCESSORS_ONLN` for the CPU count.
+
+Cost: a cold cargo build takes 4 min 41 s on a 4-core VM and incremental builds 3-6 s (S9 §3). The `cargo install` of the two CLIs takes 2 min 23 s and 3 min 20 s on 2 jobs (S11 §5.4).
+
+### tools.lock
+
+The complete pin file (S11, [`S11/scripts/web/tools.lock`](S11/scripts/web/tools.lock)):
+
+```text
+# Web build tool pins. One line per tool and build-host platform; whitespace-separated
+# columns; '#' starts a comment. Read by fetch_tools.sh (POSIX awk).
+#
+# columns: tool platform kind version sha256 bytes topdir url upstream_checksum
+#   platform: linux-x86_64 | darwin-arm64 | darwin-x86_64 | any
+#   kind:     archive = .tar.gz fetched with curl, sha256-verified, extracted under target/web-tools/<platform>/
+#             cargo   = `cargo install --locked --root target/web-tools/cargo <tool> --version <version>`
+#                       (sha256 = the crates.io index checksum of the .crate, which cargo verifies itself)
+#   topdir:   the archive's single top-level directory ('-' for cargo)
+#   upstream_checksum: the publisher's checksum file the sha256 was compared with ('none' if none is published)
+#
+# wasi-sdk 32.0 (clang 22.1.0-wasi-sdk, llvm 4434dabb6991, wasi-libc 2fc32bc81b9f): no checksum file is published
+wasi-sdk       linux-x86_64   archive  32.0     55fc523ebfbc98f69d1034fcfcb83d1ff5610cd9ab7eceef6cd097a30ba4ef93  143157058  wasi-sdk-32.0-x86_64-linux  https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-32/wasi-sdk-32.0-x86_64-linux.tar.gz  none
+wasi-sdk       darwin-arm64   archive  32.0     383be7fe00ae04691e1859164fd99970a528c55d624b886ed59f7933898b933d  131307682  wasi-sdk-32.0-arm64-macos   https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-32/wasi-sdk-32.0-arm64-macos.tar.gz  none
+wasi-sdk       darwin-x86_64  archive  32.0     a36c9ab106a40abe8a051279c233c6bab719a5788ecc0788e8d141796eb55b1b  133615598  wasi-sdk-32.0-x86_64-macos  https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-32/wasi-sdk-32.0-x86_64-macos.tar.gz  none
+# binaryen version_132 (wasm-opt); each archive has a published <archive>.sha256, equal to these
+binaryen       linux-x86_64   archive  132      195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572  117057408  binaryen-version_132  https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz  https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz.sha256
+binaryen       darwin-arm64   archive  132      98aad827847af7ef990ed7098d885725c8e5b5aae75073403635617ae4e259aa  7640117    binaryen-version_132  https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-arm64-macos.tar.gz  https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-arm64-macos.tar.gz.sha256
+binaryen       darwin-x86_64  archive  132      40c3de90bb3766bd0282a895e139a6f50253dba49b4f5bb89e66faca162d832e  9069142    binaryen-version_132  https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-macos.tar.gz  https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-macos.tar.gz.sha256
+# wasm-bindgen CLI (must equal Cargo.lock's wasm-bindgen) and wasm-tools: built from crates.io source on every host
+wasm-bindgen-cli  any         cargo    0.2.130  c37f6904387d19a319525c74af274c73912f3871c35555aa49f3ea64ebb2fc7a  -          -  https://crates.io/crates/wasm-bindgen-cli/0.2.130  https://index.crates.io/wa/sm/wasm-bindgen-cli
+wasm-tools        any         cargo    1.263.0  14b8ed798ec13f0e0939dcc403836ba5fd7fb29ff9772e6438a9bcc227bfdc96  -          -  https://crates.io/crates/wasm-tools/1.263.0  https://index.crates.io/wa/sm/wasm-tools
+# Node 22 (prerequisite; fetched only with `fetch_tools.sh --node`); SHASUMS256.txt is GPG-signed (SHASUMS256.txt.asc)
+node           linux-x86_64   archive  22.23.5  c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1  56856114   node-v22.23.5-linux-x64     https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-x64.tar.gz  https://nodejs.org/dist/v22.23.5/SHASUMS256.txt
+node           darwin-arm64   archive  22.23.5  e7131995759b61a0170b646010d2ad35a5d37b4cb0d471f3e8317eac6f742f3d  50004868   node-v22.23.5-darwin-arm64  https://nodejs.org/dist/v22.23.5/node-v22.23.5-darwin-arm64.tar.gz  https://nodejs.org/dist/v22.23.5/SHASUMS256.txt
+node           darwin-x86_64  archive  22.23.5  c53383238206b9ae4db23c5d8a63645e2e753bec8ab51a49cc81939aa64e9422  51197448   node-v22.23.5-darwin-x64    https://nodejs.org/dist/v22.23.5/node-v22.23.5-darwin-x64.tar.gz  https://nodejs.org/dist/v22.23.5/SHASUMS256.txt
+#
+# Alternatives (release binaries; not used):
+#   wasm-bindgen-0.2.130-aarch64-apple-darwin.tar.gz       b90ddb9357f584b1af897d58ad77e4cce2b48fc17e2a967bc249a87f72809444  (= its .sha256sum)
+#   wasm-bindgen-0.2.130-x86_64-apple-darwin.tar.gz        eb209c115b7cb95832423c1aa3f4d06d6c53f63ef74fc4b6fb79ef0b2eea5f10  (= its .sha256sum)
+#   wasm-bindgen-0.2.130-x86_64-unknown-linux-musl.tar.gz  9687f3bb551b9f66f37ed32a40d7913a00f7962db653054e56857bc306c3227f  (= its .sha256sum)
+#   wasm-tools-1.263.0-aarch64-macos.tar.gz                b568f04746a699c4068b8d751779b60b501cf2cab6d259a3bc973eb5eeb1f62b  (no checksum file published)
+#   wasm-tools-1.263.0-x86_64-macos.tar.gz                 909061aba8c069aeed8cb0933e50973a9c8e869bbd6a7819176b49871a338424  (no checksum file published)
+#   wasm-tools-1.263.0-x86_64-linux.tar.gz                 21c036c1740a0552124c79c6e2170cb61c5b016005671a6d5bc06cf642165431  (no checksum file published)
+```
+
+Also pinned in CI, though not in `tools.lock`: the Rust 1.97.0 host packages from the channel manifest of 2026-07-09. rustup verifies these itself:
+- `rustc-1.97.0-aarch64-apple-darwin.tar.xz` `53e339f16382bb348566f648d01775797e038fdd6bfc6ddd8859c5a0eac09f68`
+- `rustc-1.97.0-x86_64-apple-darwin.tar.xz` `c3c6f6cd95e4546306dfa4beb3cec23dedf10dd02e6e7d99b053bf418d453014`
+- `rust-std-1.97.0-wasm32-unknown-unknown.tar.xz` `474f926f2ffb0ed5ff895db92b7d0b2d9c3acb75b6df3229b132db0822594509`
 
 ### Local server (`scripts/web/serve.cjs`, W20; from S9 `web/serve.cjs`)
 
@@ -461,18 +543,21 @@ Cost: a cold cargo build takes 4 min 41 s on a 4-core VM; incremental builds tak
 - `.wasm` is served as `application/wasm`, with ETag. Paths are kept inside the root.
 - **No COOP/COEP.** An opt-in `--coop` flag exists for profiling only (S9-7).
 - A test mode, `--results <file>`, accepts result POSTs from CI pages.
+- Runs anywhere Node 22 runs: Linux, macOS (arm64, x86_64), and Windows for the release zip. It uses only `http`, `fs` and `path`, and the `path.sep` traversal check is correct on all three.
+- On macOS, `--host 0.0.0.0` may trigger the application firewall's "accept incoming connections" prompt for `node`. Answer it, or stay on 127.0.0.1 with `adb reverse` for Android. Whether the prompt appears has not been measured yet; W27's macOS job records it.
 - Command: `node scripts/web/serve.cjs target/web/dist 8790`.
 
 ### CI design (W05, W26-W28)
 
-`.github/workflows/web.yml` is a separate workflow, like `rules-wasm.yml`. A `changes` job reads the PR diff (as `ci.yml` does) and sets one output per job group. No web job is part of `pr-checks`, so web jobs are **not** required for unrelated PRs (owner, Q11). The aarch64 job (iv) is a desktop check in `ci.yml` (W05).
+`.github/workflows/web.yml` is a separate workflow, like `rules-wasm.yml`. A `changes` job reads the PR diff (as `ci.yml` does) and sets one output per job group. No web job is part of `pr-checks`, so web jobs are **not** required for unrelated PRs (owner, Q11). The aarch64 job (iv) is a desktop check in `ci.yml` (W05). The repository is public (checked 2026-11-21), so standard GitHub-hosted runners, macOS included, cost nothing.
 
 | Job | Trigger paths (trimmable) | Why these paths | Content | Cost (spikes) |
 |---|---|---|---|---|
 | `web-build` | union of the lists below | every other job needs the artifacts | recipe and `check_module.sh` for both artifacts; uploads `dist` | about 5 min cold build plus 2 × `wasm-opt` |
+| `web-build-macos` (arm64 `macos-15`; Intel `macos-26-intel`) | arm64: same list as `web-build`, on pull requests. Intel: pushes to `main` on those paths, weekly `schedule`, `workflow_dispatch` | Proves the supported macOS build hosts with the same pins. Intel stays off pull requests to keep pull-request turnaround short. macOS 26 is expected to be the last Intel macOS (needs web, S11 §9) | Steps:<br>1. checkout<br>2. `dtolnay/rust-toolchain@1.97.0` with `targets: wasm32-unknown-unknown`<br>3. `actions/setup-node` 22.23.5<br>4. cache `target/web-tools`, keyed by OS, arch and the `tools.lock` hash, plus `Swatinem/rust-cache`<br>5. "Xcode CLT present" (`xcode-select -p`)<br>6. `/bin/sh scripts/web/fetch_tools.sh`, which runs the smoke checks<br>7. `/bin/sh scripts/web/build_web.sh` for both artifacts<br>8. `check_module.sh`<br>9. Node parity, 20 runs per artifact, against the committed goldens (hard)<br>10. `size_report.sh` budgets<br>11. "Module sha256 vs Linux (report)": compare with the `web-build` artifact's `SHA256SUMS`, then `::notice` or `::warning` and a summary line, never a failure<br>12. upload `SHA256SUMS` and `build.log` | Estimate per leg: 18-25 min cold, 8-12 min warm (S11 §7). Free: standard runners in a public repository |
 | (i) `web-parity` (Node only) | `crates/pin_web/**`, `crates/pin_core/**`, `crates/pin_physics/**`, `crates/pin_input/**`, `crates/pin_sim/**`, `crates/pin_script/**`, `crates/pin_assets/**`, `third_party/lua-src/**`, `tables/**`, `scripts/web/**`, `Cargo.toml`, `Cargo.lock`, `versions.toml`, `.github/workflows/web.yml` | These are compiled into the web module and decide replay results: sim, physics, input staging, Lua, rules engine, bundle loading, build flags (`+simd128`, stack size), dependency versions (glam, wasmi, mlua), table content. A change there changes the web version's behaviour | per-tick parity: 3 tables × {bot60, pat60, mb8}, fixture and soak, × {Lua, wasm} against the native headless run of the same commit; S2 corpus, S8 probes, budget-edge, S4 corpus, per-tick-budget adversarial ticks, zip corpus; D5 guard; self-test | Node runs as in S9 §5 and §11 |
 | (ii) `web-browser` (Chromium, SwiftShader) | `crates/pin_web/**`, `crates/pin_web_audio/**`, `scripts/web/**`, `.github/workflows/web.yml` | Web code only. `pin_render`'s WebGL2 rule is guarded natively by the GLSL ES test in `core-tests` (W18) | Playwright tests from W23-W25: replay while rendering on WebGPU and on WebGL2, backends and fallback, player bundles, failures, CSP, mobile emulation, frame guard, flipper frames, audio worklet digest, WGSL compile check, a Chromium per-tick-budget run (closes S8-10) | 3 tables render in about 7 s per backend (S3 §5.3) |
-| (iii) `web-safari-firefox` (`macos-latest`) | same as (ii), plus `workflow_dispatch` | only real Safari and iOS answer U1 | Real Safari via `safaridriver` (`sudo safaridriver --enable`), iOS Simulator Safari (`xcrun simctl`), Firefox release via geckodriver. Each runs the self-test, `apex_circuit_bot60` (per-tick hashes against the committed native file, in the page's headless mode so no GPU is needed), `cstack_pcall_nest` and an audio-worklet smoke. Records `crossOriginIsolated`, the self-test verdict and per-tick time | macOS runner minutes (S10 §9) |
+| (iii) `web-safari-firefox` (`macos-latest`) | same as (ii), plus `workflow_dispatch` | only real Safari and iOS answer U1 | Real Safari via `safaridriver` (`sudo safaridriver --enable`), iOS Simulator Safari (`xcrun simctl`), Firefox release via geckodriver. Each runs the self-test, `apex_circuit_bot60` (per-tick hashes against the committed native file, in the page's headless mode so no GPU is needed), `cstack_pcall_nest` and an audio-worklet smoke. Records `crossOriginIsolated`, the self-test verdict and per-tick time | free: standard runners in a public repository (S10 §9) |
 | (iv) `replay-hash-aarch64` | in `ci.yml` (W05) | desktop gate | qemu-aarch64 fixture and seam digests; golden asserts on the macOS and Windows legs | 2-4 min warm, 8-12 min cold (S7 §6) |
 | (v) `web-engines` (JSC and SpiderMonkey shells, x86_64, fast tiers) | same as (i), plus a weekly `schedule` and `workflow_dispatch` | the parity promise covers JSC and SpiderMonkey | `run_engines.sh` subset: sim 11 scenarios, Lua v2 corpus and probes, wasmi corpus, the 115-op float micro-test | about 10 min (S10 §10) |
 
@@ -483,12 +568,16 @@ Rules for all jobs:
 - Playwright helpers poll with function `page.evaluate`, never `waitForFunction` and never `bypassCSP` (S9-Q4).
 - Tools are cached, keyed by version and sha256.
 - `release.yml` gains a `web-dist` job on `v*` tags and dispatch that attaches `kilohertz-web-<version>.zip` (`dist/`, `serve.cjs`, a short readme) to the draft prerelease. Publishing stays P8 `release`.
+- macOS jobs run the scripts with `/bin/sh` (bash 3.2 in POSIX mode) on purpose. They never install GNU coreutils or a newer bash.
+- Intel coverage lasts while GitHub offers an Intel image (`macos-26-intel`). After that, Intel is "best effort, same `darwin-x86_64` pins, untested". Rosetta 2 on an arm64 runner cannot stand in for an Intel CPU. Record the change in `docs/DEVELOPMENT.md` when the image is retired.
+- The committed goldens come from the Linux native headless run. macOS native replays differ from x86_64 until W02 lands (S7 §4.5), so no macOS native build is used for web parity.
+- Safari via `safaridriver` stays in `web-safari-firefox` (W27, S10 §9). It uses the Linux `web-build` artifact, not the macOS build.
 
 ## Gate A4
 
 Gate A4 is REQ-WEB-024, owned by phase `33-web-ci`. It replaces the draft's automated web gate. Each check:
 
-1. **Build.** Both artifacts build with the pinned toolchain. `wasm-tools validate` passes. The module imports only glue (0 `env.*`, 0 `wasi_*`). It has one EH encoding and 0 relaxed-SIMD ops. Sizes are within the 2.5 / 3.0 MiB brotli budgets.
+1. **Build.** Both artifacts build with the pinned toolchain on Linux x86_64, and on macOS: arm64 on web-path PRs, Intel on main, weekly and on dispatch. `wasm-tools validate` passes. The module imports only glue (0 `env.*`, 0 `wasi_*`). It has one EH encoding and 0 relaxed-SIMD ops. Sizes are within the 2.5 / 3.0 MiB brotli budgets. On macOS, Node parity against the committed goldens is hard; the module sha256 vs Linux is reported only (S11 §4.5).
 2. **Desktop.** The full `ci.yml` matrix is green. The x86_64 fixture and the 5 seam digests equal the committed goldens, and aarch64 (qemu on PRs, macOS on main) and Windows equal them too.
 3. **Web parity (Node).** 3 tables × {bot60, pat60, mb8}, plus the fixture and the 10-minute soak, × {Lua, `rules.wasm`}: per-tick `state_hash`, `ext_hash` and command-queue hash equal native.
 4. **Sandbox parity (Node).** These are equal to native, line for line: the 79-case Lua corpus, the 13 S8 audit probes, budget-edge, the 82-line rules corpus with its fuel boundaries, the per-tick-budget adversarial ticks and the 33-file zip corpus.
@@ -669,17 +758,19 @@ Every section below is the body source of one work-unit issue. The issue's table
 - **Labels:** `type:feature`, `area:script`, `area:web`. **Runs:** 2-3.
 - **Depends on:** W04, W06.
 - **Owned paths:** `third_party/lua-src/src/lib.rs` (wasm arm and env knobs), `khz-wasm/`, `luaconf.h`, `KHZ_PATCHES.md`.
-- **Start from:** [S2 0001](S2/patches/0001-lua-src-web-khz-29-32.patch) (KHZ 29, 31), [S2 run_lua_parity.sh](S2/run_lua_parity.sh).
+- **Start from:** [S2 0001](S2/patches/0001-lua-src-web-khz-29-32.patch) (KHZ 29, 31), [S2 run_lua_parity.sh](S2/run_lua_parity.sh), [S11 0001](S11/patches/0001-lua-src-sorted-source-order.patch) (sorted source list; applies on top of S2 0001).
 - **Deliverables:**
   - KHZ 29: the `wasm32-unknown-unknown` arm (wasi-sdk clang, `--sysroot`, `-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=true`, `-ffp-contract=off`, io/os/loadlib/dblib left out, a shim of failing WASI stubs).
   - KHZ 31: `LUAL_BUFFERSIZE` 1024.
   - The `KHZ_WASI_SYSROOT` and `KHZ_WASM_LEGACY_EH` knobs, with `cargo:rerun-if-env-changed`.
+  - `add_files_by_ext` sorts the source paths before adding them (S11 `patches/0001-lua-src-sorted-source-order.patch`, which applies on top of S2 0001). `fs::read_dir` returns the file system's order, and the Lua object order decides the link order and so the module bytes. On the same files, ext4 and tmpfs order gave two different modules (S11 §4.4). Native output is unchanged; native binary layout follows the sorted order. This is S11 finding 3: the directory order changes the module on Linux too.
   - KHZ_PATCHES.md rows.
 - **Acceptance:**
   - `cargo build --target wasm32-unknown-unknown -p pin_script --no-default-features --features lua` with the wasi-sdk env succeeds.
   - The import audit finds 0 `env.*` and 0 `wasi_*`, and the module uses only legacy EH (`try`), no `try_table`.
   - The repo's Lua suites built for `wasm32-wasip1` pass under `node:wasi`, as S2 §12 did (204 tests).
   - Budget-edge equals native (2091 / 1092 / 1436 / 47 / 1483 / 4997 / 33664 / 16832).
+  - Two checkouts whose file systems list `lua-5.4.9/*.c` in different orders (for example ext4 and tmpfs) give the same module bytes (S11 d_remap = e_remap).
   - Native suites are unchanged.
 
 ### W09 Lua number text and math parity
@@ -915,15 +1006,24 @@ Every section below is the body source of one work-unit issue. The issue's table
 
 ### W20 Web build script and local server
 
-- **Expected tier:** T1. **Labels:** `type:infra`, `area:ci`, `area:web`. **Runs:** 1-2.
+- **Expected tier:** T1. **Labels:** `type:infra`, `area:ci`, `area:web`. **Runs:** 2-3 (macOS support adds one).
 - **Depends on:** W19.
-- **Owned paths:** `scripts/web/` (`fetch_tools.sh`, `tools.lock`, `build_web.sh`, `check_module.sh`, `serve.cjs`, `size_report.sh`, `tests/`), the `versions.toml` `[notes]` entry pointing to `tools.lock`, and `docs/DEVELOPMENT.md`.
-- **Start from:** [S9 build_web.sh](S9/build_web.sh), [S9 check_imports.sh](S9/check_imports.sh), [S9 BOM.md](S9/BOM.md), [S9 web/serve.cjs](S9/web/serve.cjs), [S9 scripts/](S9/scripts) (`get_binaryen.sh`, `size_report.sh`).
-- **Deliverables:** the build recipe, `check_module.sh` and the local server described under "Build, CI and local hosting".
+- **Owned paths:** `scripts/web/` (`lib.sh`, `tools.lock` platform-keyed: `linux-x86_64`, `darwin-arm64`, `darwin-x86_64`, `fetch_tools.sh`, `wasm_env.sh`, `build_web.sh`, `check_module.sh`, `serve.cjs`, `size_report.sh`, `tests/`), the `versions.toml` `[notes]` entry pointing to `tools.lock`, and `docs/DEVELOPMENT.md`.
+- **Start from:** [S11 scripts/web](S11/scripts/web) (portable POSIX `sh` rewrites: `lib.sh`, `tools.lock`, `fetch_tools.sh`, `wasm_env.sh`, `build_web.sh`, `size_report.sh`, `check_imports.sh`), [S11 test_portability.sh](S11/scripts/test_portability.sh), [S11 repro_paths.sh](S11/scripts/repro_paths.sh), [S9 build_web.sh](S9/build_web.sh), [S9 check_imports.sh](S9/check_imports.sh), [S9 BOM.md](S9/BOM.md), [S9 web/serve.cjs](S9/web/serve.cjs), [S9 scripts/](S9/scripts) (`get_binaryen.sh`, `size_report.sh`).
+- **Deliverables:**
+  - the build recipe, `tools.lock`, `check_module.sh` and the local server described under "Build, CI and local hosting"
+  - the scripts are POSIX `sh` and select the platform with `lib.sh`
+  - hashing goes Node first, then `shasum -a 256`, then `sha256sum`
+  - `fetch_tools.sh` removes `com.apple.quarantine` on macOS
 - **Acceptance:**
-  - The script builds both artifacts from a clean checkout and records the sha256.
+  - The script builds both artifacts from a clean checkout, records `SHA256SUMS`, and runs on Linux x86_64 and macOS (arm64, x86_64). On any other host it stops with a message (exit 3).
+  - Every `scripts/web/*.sh` is POSIX `sh` and passes ShellCheck `--shell=sh`. A test runs them under dash, bash in POSIX mode and busybox sh, with a PATH missing `sha256sum`, `nproc` and `realpath` and trapping `readlink -f`, `stat -c`, `sed -i`/`-r`, `grep -P`, `date -d` and `xargs -r`. Shimmed `uname`/`sysctl` select `darwin-arm64` (also under Rosetta 2), `darwin-x86_64` and `linux-x86_64`, and refuse Linux/aarch64, MINGW and FreeBSD (S11 `test_portability.sh`).
+  - `fetch_tools.sh` rejects an archive whose sha256 or size differs from `tools.lock`: it deletes the archive and extracts nothing. A second run downloads nothing. On macOS it removes `com.apple.quarantine`, and it runs every fetched binary once (`--version`).
+  - `wasm_env.sh` removes `CFLAGS`, `TARGET_CFLAGS`, `CPATH`, `C_INCLUDE_PATH`, `CCC_OVERRIDE_OPTIONS` and `RUSTFLAGS` from the build environment (test with Homebrew-style values).
+  - On Linux, `build_web.sh --no-remap` reproduces S9's module for S9's tree (`88e06b16…`). Two checkouts with different paths and different `CARGO_HOME`s give the same sha256 with the default remap (S11 `repro_paths.sh`).
   - `check_module.sh` fails on a module with an injected `env` import, on a mixed-EH module, on a relaxed-SIMD module and on an oversize module (test modules generated by `wasm-tools`).
   - A `serve.cjs` test checks the CSP header, the MIME type, the absence of COOP/COEP and that traversal is refused.
+  - The wasi-sdk pins in `tools.lock` equal the GitHub release asset `digest` fields of the four wasi-sdk 32 assets. wasi-sdk publishes no checksum file (S11 M3, §9).
 
 ### W21 Frame loop frame guard and self-test
 
@@ -1035,14 +1135,30 @@ Every section below is the body source of one work-unit issue. The issue's table
 
 ### W26 Web CI build parity and engine shells
 
-- **Expected tier:** T1. **Labels:** `type:infra`, `area:ci`, `area:web`. **Runs:** 2.
+- **Expected tier:** T1. **Labels:** `type:infra`, `area:ci`, `area:web`. **Runs:** 3 (macOS support adds one).
 - **Depends on:** W20, W21.
-- **Owned paths:** `.github/workflows/web.yml` (new: `changes`, `web-build`, `web-parity`, `web-engines`), new `tests/spec_ci/tests/spec_web_yml.rs`, and `docs/DEVELOPMENT.md` (CI table).
-- **Start from:** [S9 run_integration.sh](S9/run_integration.sh), [S9 node/](S9/node), [S10 run_engines.sh](S10/run_engines.sh), [S10 versions.md](S10/versions.md).
-- **Deliverables:** jobs (i) and (v) and `web-build` from the CI design table, with the pinned tools.
+- **Owned paths:** `.github/workflows/web.yml` (new: `changes`, `web-build`, `web-build-macos`, `web-parity`, `web-engines`), new `tests/spec_ci/tests/spec_web_yml.rs`, and `docs/DEVELOPMENT.md` (CI table, build hosts).
+- **Start from:** [S9 run_integration.sh](S9/run_integration.sh), [S9 node/](S9/node), [S10 run_engines.sh](S10/run_engines.sh), [S10 versions.md](S10/versions.md), [S11 RESULTS §7-§8](S11/RESULTS.md).
+- **Deliverables:**
+  - jobs (i) and (v) and `web-build` from the CI design table, with the pinned tools
+  - `web-build-macos` from the CI design table: an arm64 leg on `macos-15` and an Intel leg on `macos-26-intel`
 - **Acceptance:**
-  - `spec_web_yml` checks the job list, the path filters exactly as in the CI design, the absence of `continue-on-error` on gating steps, timeouts ≤ 45 min, that `pr-checks` needs no web job, and the pinned tool versions.
-  - The workflow is green.
+  - `spec_web_yml` checks:
+    - the job list and the path filters, exactly as in the CI design
+    - no `continue-on-error` on gating steps
+    - timeouts ≤ 45 min
+    - `pr-checks` needs no web job
+    - the pinned tool versions
+    - `web-build-macos` runs `/bin/sh scripts/web/*.sh` on `macos-15` for web-path pull requests and on `macos-26-intel` for pushes to `main`, the weekly schedule and dispatch
+  - The workflow is green, including both `web-build-macos` legs. Each leg's fetch, build, `check_module` and Node parity (20 runs per artifact against the committed goldens) pass.
+  - The "Module sha256 vs Linux (report)" step records equal or different, with both sums, in the job summary. It never fails the job.
+  - The first runs show the expected outputs of S11 §8:
+    - `sha256 OK` and `smoke OK` lines with the pinned versions
+    - `host darwin-arm64` or `darwin-x86_64`
+    - `check_module` passes
+    - Node parity 20/20 per artifact
+
+    This closes U15. A parity failure on macOS is a defect; a sha256 difference alone is recorded.
 
 ### W27 Web CI browsers
 
@@ -1114,7 +1230,7 @@ Every section below is the body source of one work-unit issue. The issue's table
 
 **Desktop fixes.** W01-W05 fix problems that exist today: macOS replays differ from Windows and Linux, and `pairs` and the string cache are not run-to-run deterministic (S8 F4, F5), a D9 violation. They could be attached to M2 ([#80](https://github.com/donfuldauer/kilohertz-pinball/issues/80)) with `phase:20-backlog` instead, if the owner wants them before the web work.
 
-**Effort.** 57-76 implementer, tester and fix runs, plus one verifier run per unit (29) and CodeRabbit rounds: about 90-110 agent runs. The draft's 55-70 counted fewer, larger units.
+**Effort.** 59-78 implementer, tester and fix runs (macOS build-host support adds one run each to W20 and W26), plus one verifier run per unit (29) and CodeRabbit rounds: about 92-112 agent runs. The draft's 55-70 counted fewer, larger units.
 
 **Optional follow-up.** A Fable re-audit of Lua 5.4.9 + KHZ for ILP32/LP64 differences, if W08-W10 run on Opus (S8 S8-8).
 
