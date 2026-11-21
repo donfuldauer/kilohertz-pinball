@@ -1,0 +1,26 @@
+[package]
+name = "s6_audio_probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "s6_audio_native"
+path = "src/main.rs"
+
+[dependencies]
+pin_audio = { path = "/home/user/kilohertz-pinball/crates/pin_audio", default-features = false }
+pin_core = { path = "/home/user/kilohertz-pinball/crates/pin_core" }
+
+[patch.crates-io]
+lewton = { path = "/home/user/kilohertz-pinball/third_party/lewton" }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+panic = "abort"
+
+[workspace]
