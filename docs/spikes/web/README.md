@@ -64,6 +64,15 @@ delegation briefs.
 | Reusable | `RESEARCH.md` |
 | Gate scripts | none |
 
+### S6 — audio check from the issue-writing step (`S6/`)
+
+| | |
+|---|---|
+| Goal | The browser-version issue's own check: does `pin_audio` work on the web. |
+| Headline | `pin_audio` builds for wasm32 unchanged (`pin_audio_wasm32_build.log`). `pin_audio::Mixer` behind a 3-function C ABI (+simd128, 32 KiB, no imports) gives output digest `a08428a4c4bc78aa` in a Chromium 157 AudioWorklet (OfflineAudioContext, 48 kHz, 600 quanta), identical to native x86_64. |
+| Reusable | `S6/audio_probe/` (Cargo.toml, Cargo.lock, `src/lib.rs`, `src/main.rs`, `web/` page and `processor.js` AudioWorklet, `run.cjs`, `serve.cjs`, `run_chromium.log`). The issue links this directory. |
+| Gate scripts | `audio_probe/run.cjs` |
+
 ### S7 — aarch64 parity (`S7/`)
 
 | | |
@@ -154,6 +163,7 @@ Excluded (binary, build output, or too large); regenerate with the commands in e
 * S9 `dist/`, `results/`, `shots/`, `out/`, `logs/`, `tools/`, `dl/`, `verify/`, `repo/` (except `pin_web` and the crate diffs): regenerate via `S9/run_integration.sh`.
 * S4 zip corpus (33 zips, 77 MB, includes zip bombs): generator in `S4/harness/make_zip_corpus.py`, listing with
   sha256 in `S4/zipcorpus/CORPUS_LISTING.md`.
+* `S6/audio_probe/web/s6_audio_probe.wasm` (binary): rebuilt with the crate.
 * Empty files were not copied.
 
 ## (f) briefs/ and proposal-draft.md
