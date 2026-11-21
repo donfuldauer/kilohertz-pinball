@@ -7546,3 +7546,137 @@ stamp, keeps the metric correct for every stamp.
 **Risk:** a hand-built `ThreadsConfig` that sets `loop_profiler` and also wraps the step in a
 recording `ProfiledSim::new` would record each input twice; this is documented on
 `ThreadsConfig::loop_profiler`.
+
+## #82 — Owned-path extension for the trace hooks
+
+**Decision:** The latency trace is wired through the smallest edits outside the issue's path list:
+`crates/pin_app/src/orchestrator/mod.rs` (`pub mod trace;`, a `trace` field on `SimLoop` with
+`SimLoop::set_latency_trace`, and four `if let Some(t)` hooks in `set_epoch_ns`, `skip_ticks` and
+`run_ticks_inner`: tick start, each delivered event, after the step) and
+`crates/pin_app/src/orchestrator/threads.rs` (a `latency_trace` field on `ThreadsConfig` and on
+`RenderConfig`, installed on the sim loop in `spawn_threads`, and one `presented(..)` call after
+each of the render thread's two present paths). `lib.rs` is unchanged.
+
+**Rationale:** The applying tick, its tick end on the SDL clock, the drain times and the bat's
+first move are only known inside `SimLoop::run_ticks_inner`, and the present time only on the
+render thread. The issue lists `main.rs` and the new `trace.rs`; the brief names these two files as
+the declared extension. Without a writer installed every hook is a `None` check, so default runs,
+headless runs and replay digests are unchanged.
+
+**Alternatives:** Wrapping the `SimStep` (like `ProfiledSim`): rejected, the step does not see the
+raw SDL stamp, the epoch, the drain time or dropped ticks. Polling the triple buffer from another
+thread: rejected, it misses ticks and cannot attribute events to ticks.
+
+## #82 — Latency trace CSV format and where the frame table lives
+
+**Decision:** `--latency-trace <file>` writes one UTF-8 file, version 1: the event table (header
+`event_seq,input,down,sdl_ts_ns,apply_tick,apply_tick_end_sdl_ns,prev_tick_end_sdl_ns,drain_sdl_ns,prev_drain_sdl_ns,dropped_ticks_at_apply,stall,move_tick,frame,frame_snap_tick,present_ns,frames_to_photon`,
+one row per delivered button event), one empty line, the frame table (`frame,snap_tick,present_ns`,
+one row per presented frame), and the trailer `# overflows: input=N move=N frame=N pending=N`.
+Integers only, empty for "none", `\n` line ends, all times on SDL's clock. The column rustdoc is in
+`crates/pin_app/src/orchestrator/trace.rs`. Every button event is recorded (not only flippers);
+only presses of inputs bound to flippers (`DedicatedButton` / `ParallelLinked` staging) are watched
+for a bat move. Capacities: 65 536 input rows (and bat-move rows), 262 144 frame rows, 32 presses
+watched at once, a 5 000-tick move timeout; overflows are counted in the trailer and the summary
+line. `prev_tick_end_sdl_ns` is an extra column (beyond the brief's list) so a reader can see
+whether the press was stamped after the previous executed tick's end (the first-tick rule) or
+reached the ring after that tick ran. While tracing, the main thread prints `pin_app: latency
+trace: first frame presented` once, which the driver waits for.
+
+**Rationale:** One file is one artifact, and the verdict is a pure function of one text plus the
+shutdown line. The sections are separated by fixed header lines, so a reader splits on them.
+
+**Alternatives:** A sidecar `<file>.frames.csv`: rejected, two files to keep together and two
+paths to validate up front. Writing only flipper events: rejected, Gate A3 and KP-043 may want the
+other buttons.
+
+## #82 — Windowed latency check definitions
+
+**Decision:** Presses are down events of the four flipper inputs. `TICK` = 1 ms.
+- **a. Key to coil (REQ-LAT-004).** `apply_tick_end_sdl_ns >= sdl_ts_ns`; lateness
+  `apply_tick_end_sdl_ns - sdl_ts_ns <= TICK + 2 ms`, plus `drain_sdl_ns - prev_drain_sdl_ns` (the
+  observed stall) for a press with `stall = 1`, and no more. Added: the bat must move at most 2
+  ticks after `apply_tick` (the press takes effect, its coil energised, in the applying tick;
+  REQ-LAT-005).
+- **`stall`** is 1 when the applying tick started more than 2 ms after the previous executed tick
+  started, or ticks were dropped in between. It comes from the sim thread's own scheduling, never
+  from the lateness; the verdict's allowance depends only on the drain gap, so a wrong flag buys
+  nothing.
+- **Tolerance 2 ms** (main-thread forwarding plus sim wake-up). Observed on the agent VM with
+  `LP_NUM_THREADS=2`: drain gaps of on-time ticks at most 1.29 ms (p99 1.15 ms), press lateness at
+  most 1.46 ms over 144 presses. With `LP_NUM_THREADS=3` one press was 4.0 ms late (the main thread
+  starved), which check a correctly fails.
+- **b. Key to photon in frames (REQ-LAT-001, CI form).** `frame - F0 <= 2` for every press outside
+  the final 500 ms (excluded and counted), where `frame` is the first presented frame whose snapshot
+  tick is `>= move_tick`, and `F0` is the last presented frame whose present time is at or before
+  `sdl_ts_ns + bound_a + 2 ticks` (0 when none). Here `bound_a` is that press's check-a bound, so
+  `sdl_ts_ns + bound_a + 2 ticks` is the latest moment REQ-LAT-004 lets the bat start moving. A
+  press with no move or no later frame fails. The trace column `frames_to_photon` keeps the brief's
+  raw form (`F0` at `sdl_ts_ns`). The verdict recomputes it and the join from the frame table and
+  fails on a mismatch, and prints its max and p99 as information.
+- **c. Real time (REQ-LAT-002, CI form).** `D * 1000 <= N + D` from the shutdown line, and `N`
+  within 1 % of the run length in ms. The Low quality preset is not applied (it does not exist yet;
+  REQ-LAT-006 belongs to another unit); only the worker-thread cap is.
+- **d. Completeness.** No trace overflow, at least 100 presses, and as many presses traced as
+  injected.
+
+**Rationale:**
+- **F0 not at the timestamp.** The render loop reads the next snapshot as soon as the previous
+  present returns, so the frame after F0 (F0 taken at the timestamp) never shows the press. The
+  frame after that shows it only if the bat had moved by the time that frame read its snapshot.
+  When a present returns within the key-to-move time (about 1 ms) after the press, the raw count is
+  3 frames even though nothing is late. At about 8 lavapipe frames per second that is roughly 1 %
+  of presses, so a 140-press run would fail most of the time on correct code. Counting from the
+  REQ-LAT-004 deadline removes this race without hiding a late press: a press applied tens of ms
+  late still counts 3 or more frames. The SPEC's millisecond form already absorbs the race with its
+  99th percentile; the frame form must hold for every press, so it starts its count at the
+  deadline instead.
+- **The coil sub-check in a.** The pre-#81 bug delivered events to the step in the right tick, but
+  handed it the raw SDL stamp, which the simulation gated again against epoch 0. So `apply_tick`
+  (the delivering tick) was on time and only the bat's move was late. Without this sub-check,
+  check a would pass the bug.
+
+**Alternatives:**
+- F0 at the timestamp as the brief wrote it: rejected, it fails correct code (measured raw counts
+  of 3 occur whenever a present lands within about 1 ms after a press).
+- A p99 frame criterion: rejected, the brief asks for every press, and p99 over about 140 presses
+  still fails on two unlucky presses.
+- A larger tolerance in a: rejected, it would weaken the check on the main thread's delay without
+  being needed at the chosen cap.
+
+## #82 — XTest key injection with X keycodes, no SDL hook
+
+**Decision:** The driver injects presses with XTest through `xdotool keydown/keyup` and the X
+keycodes 50 (Shift_L, left flipper) and 62 (Shift_R, right flipper). Before the presses it points
+the mouse at the window and focuses it (`mousemove --window`, `windowraise`, `windowfocus`; bare
+Xvfb has no window manager). There is no SDL event-injection hook.
+
+**Rationale:** XTest goes through the real X server, SDL's X11 event path and timestamps, the
+forwarder and the ring, which is what a player's key press goes through. A test-only hook would
+need a cargo feature in `Cargo.toml`, which this unit may not edit. The keysym form `xdotool
+keydown Shift_R` was measured to also press Shift_L (each right press arrived as left plus right),
+so keycodes are used.
+
+**Alternatives:** An SDL `SDL_PushEvent` hook behind `cfg(test)`: rejected, it is not reachable from
+the release binary and skips the X path. Keysyms: rejected (above).
+
+## #82 — LP_NUM_THREADS cap
+
+**Decision:** `LP_NUM_THREADS=2` in `windowed.yml` and as the default of `scripts/windowed/run.sh`
+and the driver.
+
+**Rationale:** Measured on the 4-core agent VM, one 60 s run each with the grey-box table
+(dropped ticks of about 60 000; presented frames; check a):
+- `LP_NUM_THREADS=1`: 30 dropped (0.050 %); 277 frames; pass.
+- `LP_NUM_THREADS=2`: 8 dropped (0.013 %); 526 frames; pass, max lateness 1.46 ms.
+- `LP_NUM_THREADS=3`: 20 dropped (0.033 %); 734 frames; fail, one press 4.0 ms late (main thread
+  starved).
+
+At 2, the dropped ratio is a seventh of the 0.1 % limit, the frame rate is about 8.8 per second,
+and the sim, main, render and audio threads keep a core between them. At 3, the four vCPUs are
+oversubscribed. 1 halves the frame rate without lowering the dropped ticks. The VM is shared with
+other sessions, so the single-run numbers vary. The method is in DEVELOPMENT.md "Windowed latency
+harness".
+
+**Alternatives:** 1 (fewer frames, no gain in dropped ticks); 3 (late presses); unset (lavapipe
+uses every core).
