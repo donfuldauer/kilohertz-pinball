@@ -15,7 +15,7 @@ delegation briefs.
   `QUEUE_LINES.md` (follow-ups it recorded) and, where it had them, `patches/`, gate scripts and harness sources.
 * Paths inside the copied text: the original scratch root is written `${WEB_SPIKES}` (the folder holding
   `S1`...`S10`) and its parent `${SCRATCH}`. In `RESULTS.md`, `S` means `${WEB_SPIKES}/<Sn>`.
-* S9 (integration of everything into one wasm module) is not yet archived here.
+* S9 (integration of everything into one wasm module) is archived in `S9/`.
 
 ## (b) Spikes
 
@@ -82,6 +82,17 @@ delegation briefs.
 | Reusable | `0001` lua-src KHZ 33-37 (logical LP64 allocation accounting, per-state creation id for hashing, string-position width, NaN sign, strcache); `0002` pin_script memcap/tick-cap instrumentation; `0003` `s2_harness` S8 tooling (adds `s8.rs`; apply on top of S2 `0003`); `0004` `s4_rules` per-tick-cap tooling (adds `s8adv.rs`; apply on top of the S4 crate). `probes/` Lua and C audit probes. |
 | Gate scripts | `run_audit.sh`, `run_memcap_parity.sh`, `run_pairs_order.sh`, `run_tick_budget.sh`, `env.sh`, `wasm_env.sh`, `harness/` |
 
+### S9 — one combined wasm32 engine module in Chromium (`S9/`)
+
+| | |
+|---|---|
+| Goal | One `wasm32-unknown-unknown` module combining sim (`+simd128`), real Lua (KHZ 1-32), wasmi rules (S4 instrumented), the wgpu renderer (WebGPU and WebGL2) and the bundle loader, run in Chromium. |
+| Headline | `run_integration.sh` ALL PASS: replay parity (every tick) while rendering on WebGPU and on WebGL2, including the 600 001-tick soak; player bundles via file picker and drop; 33/33 backends, 28/28 mobile emulation, 31/31 failure/recovery. Imports only wasm-bindgen glue; runs under CSP without COOP/COEP. Size 2.79 MiB brotli combined, 2.16 WebGPU-only, 2.74 WebGL2-only. Integration bugs found and fixed are listed in RESULTS section 0 (`scripts/conflicts.sh` reproduces them). |
+| Reusable | `crates/pin_web/` (the web shell crate: Cargo.toml, `src/`); `BOM.md` (build flags, versions, size budget); `build_web.sh`, `check_imports.sh`; `web/` page; `node/` Playwright/Node test drivers; `scripts/` (size attribution, test data, summaries); `patches/` crate diffs (see below). |
+| Gate scripts | `run_integration.sh`, `build_web.sh`, `check_imports.sh`, `env.sh`, `wasm_env.sh` |
+
+`S9/patches/*.diff` are `diff -ruN` of the crates S9 changed in its repo copy (`pin_render`, `pin_script`, `pin_sim`) and the workspace `Cargo.toml` (`diff -u`) against the real tree at `main` `995935f`. They are cumulative (S1 patches 0001-0004, S2 0001-0003, S3 render changes plus an aspect-aware layout fix), not S9-only; `pin_render.diff` and the other three overlap the S1/S2/S3 patches. Paths in the `+++` lines are `b/<crate>/...`; apply with `patch -p1` inside `crates/`. Changes to `third_party/lua-src` (S2/S8 KHZ patches) and `Cargo.lock` are not saved here: use the S2 patches. S9's repo copy also contains `crates/web_probe` (S3's probe, not archived separately).
+
 ### S10 — JavaScriptCore / SpiderMonkey parity, KHZ 38, startup self-test (`S10/`)
 
 | | |
@@ -106,6 +117,9 @@ Patches and sources likely to be applied or adapted, in dependency order:
 | S3 pin_render diffs and CI | `S3/patches/`, `S3/ci/web-render-smoke.yml` | WebGL2/wasm changes to `pin_render`; proposed render smoke workflow |
 | S4 `s4_rules` | `S4/crates/s4_rules/src/instrument.rs`, `adversarial.rs` | wasmtime-exact fuel and depth-counter rewriter; adversarial corpus for rules modules; plus the zip corpus generator |
 | S5 | `S5/RESEARCH.md` | browser-support numbers for scope decisions |
+| S9 `pin_web` | `S9/crates/pin_web/` | the web shell crate: sim + Lua + wasmi rules + renderer + bundle loader (owns the allocator and wasm-bindgen exports) |
+| S9 build | `S9/build_web.sh`, `S9/check_imports.sh`, `S9/BOM.md` | one-script web build, import check (no `env`/`wasi_*`), the build-flag bill of materials |
+| S9 gates | `S9/run_integration.sh`, `S9/node/`, `S9/scripts/` | basis for web CI gates (parity while rendering, backends, mobile, failure/recovery, size report) |
 
 ## (d) How to re-run
 
@@ -137,6 +151,7 @@ Excluded (binary, build output, or too large); regenerate with the commands in e
   `pristine/`, `repo*/` copies of the repo tree (only `S4/crates/s4_rules` is copied, as it is not in any patch).
 * Logs and results: `logs/`, `out/`, `runs/`, `verify/`, `shots/`, `bench*/`, `S3/results`, S3 `body_part*`,
   `report_draft`, `*.orig`, `RESULTS.head.md`, `S10/micro/ref.bin`, `inputs.bin`.
+* S9 `dist/`, `results/`, `shots/`, `out/`, `logs/`, `tools/`, `dl/`, `verify/`, `repo/` (except `pin_web` and the crate diffs): regenerate via `S9/run_integration.sh`.
 * S4 zip corpus (33 zips, 77 MB, includes zip bombs): generator in `S4/harness/make_zip_corpus.py`, listing with
   sha256 in `S4/zipcorpus/CORPUS_LISTING.md`.
 * Empty files were not copied.
@@ -144,7 +159,7 @@ Excluded (binary, build output, or too large); regenerate with the commands in e
 ## (f) briefs/ and proposal-draft.md
 
 * `briefs/` holds the delegation briefs given to each spike executor (`COMMON.txt` shared header, `S1`-`S6`, `S8`-`S10`;
-  S7 has no brief file; S9 is the integration spike, still being archived). They record the exact questions and assumptions
+  S7 has no brief file). They record the exact questions and assumptions
   (A-numbers) each spike answered.
 * `proposal-draft.md` is the early draft of the web-version proposal (2026-11-20). It is superseded by the GitHub
   issue for the browser version; keep it only for the assumption list (A1...) that RESULTS files cite.

@@ -1,0 +1,353 @@
+diff -ruN pin_sim/Cargo.toml b/pin_sim/Cargo.toml
+--- pin_sim/Cargo.toml	2026-11-18 13:05:24.088998629 +0000
++++ b/pin_sim/Cargo.toml	2026-11-20 16:46:19.000000000 +0000
+@@ -15,12 +15,19 @@
+ pin_core.workspace = true
+ pin_physics = { path = "../pin_physics" }
+ pin_input = { path = "../pin_input" }
+-pin_script = { path = "../pin_script" }
++pin_script = { path = "../pin_script", default-features = false }
+ pin_assets = { path = "../pin_assets" }
+ glam.workspace = true
+ arrayvec.workspace = true
+ libm.workspace = true
+ 
++[features]
++default = ["native-backends"]
++# web-spike-sim: the built-in Lua and wasmtime rules backends (pin_script's
++# `native-backends`). Off (wasm32 builds), a rules backend is supplied with
++# `Simulation::load_from_vfs_with_script`.
++native-backends = ["pin_script/native-backends"]
++
+ [dev-dependencies]
+ proptest.workspace = true
+ # Wave 6 additions (2.9): parses the soak's JSON report in the round-trip tests.
+diff -ruN pin_sim/src/lib.rs b/pin_sim/src/lib.rs
+--- pin_sim/src/lib.rs	2026-11-18 13:05:24.090639228 +0000
++++ b/pin_sim/src/lib.rs	2026-11-20 16:46:19.000000000 +0000
+@@ -29,7 +29,8 @@
+ pub mod sim;
+ pub mod tick;
+ 
++pub use load::ScriptFactory;
+ pub use sim::{
+-    BallHandle, DEFAULT_SEED, HAPTICS_CAPACITY, MAX_PENDING_EDGES, MAX_PLAYERS, SimConfig,
+-    SimCounters, SimError, Simulation,
++    BallHandle, DEFAULT_SEED, ExternalScript, HAPTICS_CAPACITY, MAX_PENDING_EDGES, MAX_PLAYERS,
++    SimConfig, SimCounters, SimError, Simulation,
+ };
+diff -ruN pin_sim/src/load/mod.rs b/pin_sim/src/load/mod.rs
+--- pin_sim/src/load/mod.rs	2026-11-18 13:05:24.090639228 +0000
++++ b/pin_sim/src/load/mod.rs	2026-11-20 17:49:51.000000000 +0000
+@@ -87,16 +87,24 @@
+     StaticWorldBuilder, TransitionSet, Wireform, layers,
+ };
+ use pin_script::NameTables;
++#[cfg(feature = "native-backends")]
+ use pin_script::lua::LuaScriptBackend;
++#[cfg(feature = "native-backends")]
+ use pin_script::wasm::WasmScriptBackend;
+ use std::path::Path;
+ 
+ use crate::hash::Fnv64;
+ use crate::sim::{
+-    DiverterBinding, FlipperDrive, GateBinding, NewtonBinding, Script, SimConfig, SimError,
+-    Simulation, TroughZone,
++    DiverterBinding, ExternalScript, FlipperDrive, GateBinding, NewtonBinding, Script, SimConfig,
++    SimError, Simulation, TroughZone,
+ };
+ 
++/// Builds a caller-supplied rules backend from `script_entry`, the entry
++/// file's bytes and the table's name tables
++/// ([`Simulation::load_from_vfs_with_script`]).
++pub type ScriptFactory<'a> =
++    &'a mut dyn FnMut(&str, &[u8], &NameTables) -> Result<Box<dyn ExternalScript>, ScriptError>;
++
+ /// Guide wall height when the bundle has no `layout.toml`, mm (the
+ /// Appendix A.3 example's `wall_height`).
+ pub const DEFAULT_WALL_HEIGHT_MM: f32 = 28.0;
+@@ -170,6 +178,7 @@
+ }
+ 
+ /// Builds the rules backend for `script_entry` with the configured limits.
++#[cfg(feature = "native-backends")]
+ fn build_script(
+     entry: &str,
+     source: &[u8],
+@@ -195,6 +204,22 @@
+     }
+ }
+ 
++/// Without the built-in backends every `script_entry` is refused with the
++/// error `load_backend_with` gives; use
++/// [`Simulation::load_from_vfs_with_script`].
++#[cfg(not(feature = "native-backends"))]
++fn build_script(
++    entry: &str,
++    source: &[u8],
++    names: &NameTables,
++    cfg: &SimConfig,
++) -> Result<Script, ScriptError> {
++    match pin_script::load_backend_with(entry, source, names, cfg.lua, cfg.wasm) {
++        Err(e) => Err(e),
++        Ok(_) => Err(ScriptError::UnsupportedBackend(entry.to_owned())),
++    }
++}
++
+ /// The ball profiles the solver knows, indexed by `ProfileId` (every
+ /// built-in, the Glo-Ball with the table's Magnus coefficient).
+ fn profiles(table: &LoadedTable) -> Vec<BallProfile> {
+@@ -539,6 +564,30 @@
+     /// # Errors
+     /// As [`load`](Self::load).
+     pub fn load_from_vfs(vfs: &Vfs, cfg: SimConfig) -> Result<Simulation, SimError> {
++        Simulation::load_from_vfs_inner(vfs, cfg, None)
++    }
++
++    /// [`load_from_vfs`](Self::load_from_vfs) with a caller-supplied rules
++    /// backend: `factory` gets `meta.script_entry`, its bytes and the name
++    /// tables instead of the built-in Lua / Wasm backends being chosen by
++    /// extension. Everything else (physics, ids, table hash, `on_init` at
++    /// tick 0) is identical.
++    ///
++    /// # Errors
++    /// As [`load`](Self::load); a factory error is [`SimError::Script`].
++    pub fn load_from_vfs_with_script(
++        vfs: &Vfs,
++        cfg: SimConfig,
++        factory: ScriptFactory<'_>,
++    ) -> Result<Simulation, SimError> {
++        Simulation::load_from_vfs_inner(vfs, cfg, Some(factory))
++    }
++
++    fn load_from_vfs_inner(
++        vfs: &Vfs,
++        cfg: SimConfig,
++        factory: Option<ScriptFactory<'_>>,
++    ) -> Result<Simulation, SimError> {
+         let table_hash = bundle_hash(vfs)?;
+         let table = load_table(vfs)?;
+         let scene = load_gltf(vfs, &table.manifest.meta.playfield_mesh)?;
+@@ -889,7 +938,11 @@
+         // --- Script. ---
+         let names = name_tables(&table.ids);
+         let source = vfs.read(&table.manifest.meta.script_entry)?;
+-        let script = build_script(&table.manifest.meta.script_entry, &source, &names, &cfg)?;
++        let entry = &table.manifest.meta.script_entry;
++        let script = match factory {
++            Some(f) => Script::External(f(entry, &source, &names)?),
++            None => build_script(entry, &source, &names, &cfg)?,
++        };
+ 
+         let mut sim = Simulation {
+             cfg,
+@@ -951,10 +1004,7 @@
+                 rng: &mut sim.rng,
+                 cmd: &mut sim.cmd,
+             };
+-            match &mut sim.script {
+-                Script::Lua(b) => pin_core::TableScriptBackend::on_init(b.as_mut(), &mut ctx),
+-                Script::Wasm(b) => pin_core::TableScriptBackend::on_init(b.as_mut(), &mut ctx),
+-            }
++            pin_core::TableScriptBackend::on_init(sim.script.backend(), &mut ctx);
+         }
+         // No physics runs in load: on_init pulses count from tick 1.
+         sim.apply_commands(sim.tick + 1);
+diff -ruN pin_sim/src/replay/game.rs b/pin_sim/src/replay/game.rs
+--- pin_sim/src/replay/game.rs	2026-11-20 15:21:17.550937735 +0000
++++ b/pin_sim/src/replay/game.rs	2026-11-20 16:46:19.000000000 +0000
+@@ -361,6 +361,16 @@
+ }
+ 
+ /// Applies one operation exactly as the bot does.
++/// Applies one recorded bot operation to `sim` exactly as
++/// [`GameRecording::play`] does (for drivers that step the simulation
++/// themselves, e.g. a per-tick hash dump or a web frame loop).
++///
++/// # Errors
++/// [`SimError::UnknownSwitch`] when the table lacks the cabinet switch.
++pub fn apply_game_op(sim: &mut Simulation, op: GameOp) -> Result<(), SimError> {
++    apply(sim, op)
++}
++
+ fn apply(sim: &mut Simulation, op: GameOp) -> Result<(), SimError> {
+     match op {
+         GameOp::SetSwitch { input, closed } => sim.set_switch(input.name(), closed),
+diff -ruN pin_sim/src/replay/mod.rs b/pin_sim/src/replay/mod.rs
+--- pin_sim/src/replay/mod.rs	2026-11-20 15:21:17.550937735 +0000
++++ b/pin_sim/src/replay/mod.rs	2026-11-20 16:46:19.000000000 +0000
+@@ -44,7 +44,7 @@
+ 
+ pub mod game;
+ 
+-pub use game::{GameOp, GameOpSink, GameRecording, GameReplay, replay_game};
++pub use game::{GameOp, GameOpSink, GameRecording, GameReplay, apply_game_op, replay_game};
+ 
+ use core::fmt;
+ use pin_core::input::{CabinetAxis, CabinetInput, InputEvent, InputEventKind};
+diff -ruN pin_sim/src/sim/mod.rs b/pin_sim/src/sim/mod.rs
+--- pin_sim/src/sim/mod.rs	2026-11-20 15:21:17.550937735 +0000
++++ b/pin_sim/src/sim/mod.rs	2026-11-20 16:46:19.000000000 +0000
+@@ -21,8 +21,12 @@
+ use pin_physics::flipper::FlipperSet;
+ use pin_physics::mech::MechSet;
+ use pin_physics::world::{ColliderHandle, GuideCurve, StaticWorld, TransitionSet, Wireform};
+-use pin_script::lua::{LuaConfig, LuaScriptBackend};
+-use pin_script::wasm::{WasmConfig, WasmScriptBackend};
++use pin_script::lua::LuaConfig;
++#[cfg(feature = "native-backends")]
++use pin_script::lua::LuaScriptBackend;
++use pin_script::wasm::WasmConfig;
++#[cfg(feature = "native-backends")]
++use pin_script::wasm::WasmScriptBackend;
+ 
+ use crate::hash::Fnv64;
+ 
+@@ -161,11 +165,66 @@
+     pub balls_escaped: u32,
+ }
+ 
++/// A rules backend supplied by the caller
++/// ([`Simulation::load_from_vfs_with_script`]), e.g. a web build's backend
++/// or a recorded script-output stream. The defaults describe a backend that
++/// never faults, never overflows and is not allocation-exempt.
++pub trait ExternalScript: pin_core::TableScriptBackend {
++    /// Commands dropped because a `HostCommandQueue` list was full.
++    fn overflow_count(&self) -> u32 {
++        0
++    }
++    /// Whether the backend is in its safe "tilt" state after a fault.
++    fn is_faulted(&self) -> bool {
++        false
++    }
++    /// Faults since load.
++    fn fault_count(&self) -> u32 {
++        0
++    }
++    /// The error behind the last fault.
++    fn last_error(&self) -> Option<&ScriptError> {
++        None
++    }
++    /// Whether calls into the backend are exempt from the allocation guard
++    /// (PLAN.md §2.3 rule 4: only a VM allocating from its own capped arena).
++    fn alloc_exempt(&self) -> bool {
++        false
++    }
++}
++
+ /// The rules backend, kept concrete so its fault state and overflow counter
+ /// stay readable (DECISIONS.md "2.5 — script backend construction").
+ pub(crate) enum Script {
++    #[cfg(feature = "native-backends")]
+     Lua(Box<LuaScriptBackend>),
++    #[cfg(feature = "native-backends")]
+     Wasm(Box<WasmScriptBackend>),
++    External(Box<dyn ExternalScript>),
++}
++
++impl Script {
++    /// The backend as the contract trait.
++    pub(crate) fn backend(&mut self) -> &mut dyn pin_core::TableScriptBackend {
++        match self {
++            #[cfg(feature = "native-backends")]
++            Script::Lua(b) => b.as_mut(),
++            #[cfg(feature = "native-backends")]
++            Script::Wasm(b) => b.as_mut(),
++            Script::External(b) => b.as_mut(),
++        }
++    }
++
++    /// Whether script calls run inside an allocation-guard exempt scope.
++    pub(crate) fn alloc_exempt(&self) -> bool {
++        match self {
++            #[cfg(feature = "native-backends")]
++            Script::Lua(_) => true,
++            #[cfg(feature = "native-backends")]
++            Script::Wasm(_) => false,
++            Script::External(b) => b.alloc_exempt(),
++        }
++    }
+ }
+ 
+ /// The drive of one flipper coil: staging button, script hold, script pulse.
+@@ -638,8 +697,11 @@
+     #[must_use]
+     pub fn script_queue_overflows(&self) -> u32 {
+         match &self.script {
++            #[cfg(feature = "native-backends")]
+             Script::Lua(b) => b.overflow_count(),
++            #[cfg(feature = "native-backends")]
+             Script::Wasm(b) => b.overflow_count(),
++            Script::External(b) => b.overflow_count(),
+         }
+     }
+ 
+@@ -648,8 +710,11 @@
+     #[must_use]
+     pub fn script_faulted(&self) -> bool {
+         match &self.script {
++            #[cfg(feature = "native-backends")]
+             Script::Lua(b) => b.is_faulted(),
++            #[cfg(feature = "native-backends")]
+             Script::Wasm(b) => b.is_faulted(),
++            Script::External(b) => b.is_faulted(),
+         }
+     }
+ 
+@@ -657,8 +722,11 @@
+     #[must_use]
+     pub fn script_fault_count(&self) -> u32 {
+         match &self.script {
++            #[cfg(feature = "native-backends")]
+             Script::Lua(b) => b.fault_count(),
++            #[cfg(feature = "native-backends")]
+             Script::Wasm(b) => b.fault_count(),
++            Script::External(b) => b.fault_count(),
+         }
+     }
+ 
+@@ -666,8 +734,11 @@
+     #[must_use]
+     pub fn script_error(&self) -> Option<&ScriptError> {
+         match &self.script {
++            #[cfg(feature = "native-backends")]
+             Script::Lua(b) => b.last_error(),
++            #[cfg(feature = "native-backends")]
+             Script::Wasm(b) => b.last_error(),
++            Script::External(b) => b.last_error(),
+         }
+     }
+ 
+diff -ruN pin_sim/src/tick/mod.rs b/pin_sim/src/tick/mod.rs
+--- pin_sim/src/tick/mod.rs	2026-11-20 15:21:17.550937735 +0000
++++ b/pin_sim/src/tick/mod.rs	2026-11-20 16:46:19.000000000 +0000
+@@ -22,7 +22,7 @@
+ use pin_physics::world::layers;
+ 
+ use crate::alloc_guard::ExemptScope;
+-use crate::sim::{PendingEdge, Script, Simulation, bit, set_bit};
++use crate::sim::{PendingEdge, Simulation, bit, set_bit};
+ 
+ /// Seconds per tick.
+ pub const DT: f32 = 0.001;
+@@ -110,7 +110,7 @@
+     fn deliver_edges(&mut self) {
+         // Rule 4: the Lua VM's arena allocations are exempt from the guard;
+         // the scope covers the script calls only, never engine code.
+-        let lua = matches!(self.script, Script::Lua(_));
++        let lua = self.script.alloc_exempt();
+         // The previous tick's queue (kept for `last_commands`) is dropped
+         // here, before the first script call; clearing keeps the capacity.
+         self.cmd.clear();
+@@ -119,10 +119,7 @@
+             rng: &mut self.rng,
+             cmd: &mut self.cmd,
+         };
+-        let script: &mut dyn TableScriptBackend = match &mut self.script {
+-            Script::Lua(b) => b.as_mut(),
+-            Script::Wasm(b) => b.as_mut(),
+-        };
++        let script: &mut dyn TableScriptBackend = self.script.backend();
+         for e in &self.pending {
+             self.flippers
+                 .on_switch_edge(e.switch, e.edge == SwitchEdge::Closed, e.tick);

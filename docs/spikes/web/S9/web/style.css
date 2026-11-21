@@ -1,0 +1,23 @@
+html, body { margin: 0; height: 100%; overflow: hidden; background: #05070d; color: #dfe6f3;
+  font: 14px/1.3 system-ui, sans-serif; touch-action: none; overscroll-behavior: none;
+  -webkit-user-select: none; user-select: none; }
+#view { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; }
+#hud { position: fixed; left: 6px; bottom: 6px; font: 11px/1.2 monospace; opacity: .8; pointer-events: none;
+  white-space: pre; }
+#error { position: fixed; left: 8px; right: 8px; top: 52px; padding: 8px 10px; background: #8a1020e6;
+  border: 1px solid #ff6b6b; border-radius: 6px; font-weight: 600; z-index: 3; }
+#controls { position: fixed; top: 6px; left: 6px; right: 6px; display: flex; gap: 6px; flex-wrap: wrap; z-index: 2; }
+#controls select, #controls button, #controls .file { background: #1c2541; color: #fff; border: 1px solid #3a4a7a;
+  border-radius: 6px; padding: 6px 10px; font-size: 14px; min-height: 32px; touch-action: manipulation; }
+#controls .file input { display: none; }
+#launchZone { position: fixed; left: 33.3%; width: 33.4%; bottom: 0; height: 15%; display: flex; align-items: center;
+  justify-content: center; color: #ff6b35; font-weight: 700; letter-spacing: .1em; opacity: .55;
+  border-top: 1px dashed #ff6b3580; pointer-events: none; }
+#dropHint { position: fixed; inset: 20%; display: flex; align-items: center; justify-content: center;
+  border: 3px dashed #ff6b35; border-radius: 12px; background: #000a; font-size: 20px; z-index: 4; pointer-events: none; }
+@media (orientation: landscape) { #launchZone { height: 18%; } }
+/* Test capture mode: canvas only (pixel statistics of the rendered frame). */
+.clean #hud, .clean #controls, .clean #launchZone, .clean #error { display: none !important; }
+/* [hidden] must win over the display rules above. */
+[hidden] { display: none !important; }
+.clean #dropHint { display: none !important; }
