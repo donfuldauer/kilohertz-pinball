@@ -26,9 +26,11 @@
 //!   per-surface presenter thread and a latest-frame hand-off for blocking
 //!   (`Fifo`-only) backglass / score windows, D19).
 //! * Profiler wiring (7.1 hooks): [`ThreadsConfig::with_profiled_sim`]
-//!   wraps the step in a [`ProfiledSim`](crate::profiler::ProfiledSim) on
-//!   the sim loop's clock and hands the loop writer to the sim thread
-//!   (input-overflow ticks) and the GPU frame-time writer to the render
+//!   wraps the step in a tick-time-only
+//!   [`ProfiledSim`](crate::profiler::ProfiledSim) on the sim loop's clock
+//!   and hands the loop writer to the sim thread (input latency from the
+//!   raw SDL stamps, [`SimLoop::run_ticks_profiled`], and input-overflow
+//!   ticks) and the GPU frame-time writer to the render
 //!   thread ([`GpuFrameTimer`], timestamp queries only); [`HudFeed`] and
 //!   [`HudOverlay`] draw the opt-in HUD (`--profiler-hud`). The debug view
 //!   gets the same timing and HUD through [`DebugViewHooks`] (w8g-d).
@@ -70,6 +72,7 @@ pub use view::{
     VisualMesh, load_scene_images, routes_for_window, table_camera, vertex_normals,
 };
 
+use crate::profiler::LoopProfiler;
 use arrayvec::ArrayVec;
 use pin_core::sim::tick_end_ns;
 use pin_core::spsc::SpscConsumer;
@@ -236,14 +239,51 @@ impl<S: SimStep> SimLoop<S> {
     /// the same holds for an event stamped inside the dropped time. With
     /// epoch 0 the re-stamp is the identity.
     pub fn run_ticks(&mut self, n: u32) {
+        self.run_ticks_inner(n, None::<(&mut LoopProfiler, &mut fn() -> u64)>);
+    }
+
+    /// [`run_ticks`](Self::run_ticks) that also measures input latency
+    /// (REQ-LAT-005): at the start of each tick it reads `clock` (the input
+    /// timestamp clock, SDL's ns clock in the app) once and records into
+    /// `profiler`, for every coil-driving button event the tick delivers
+    /// ([`drives_coil`](crate::profiler::drives_coil)), the latency from the
+    /// event's **raw** timestamp to that reading
+    /// ([`LoopProfiler::record_inputs`]). The delivering tick is the tick
+    /// that applies the event, and the raw stamp is used even below the
+    /// epoch (an event queued before the sim started, or stamped in dropped
+    /// time), so the full SDL-clock latency is recorded where the re-stamped
+    /// value would have saturated at 0. Delivery, the re-stamp and the
+    /// step's inputs are exactly those of [`run_ticks`](Self::run_ticks).
+    /// One clock read per tick; allocation-, lock- and I/O-free when `clock`
+    /// is.
+    pub fn run_ticks_profiled<C: FnMut() -> u64>(
+        &mut self,
+        n: u32,
+        profiler: &mut LoopProfiler,
+        mut clock: C,
+    ) {
+        self.run_ticks_inner(n, Some((profiler, &mut clock)));
+    }
+
+    fn run_ticks_inner<C: FnMut() -> u64>(
+        &mut self,
+        n: u32,
+        mut probe: Option<(&mut LoopProfiler, &mut C)>,
+    ) {
         for _ in 0..n {
             self.tick += 1;
             let end = tick_end_ns(self.epoch_ns, self.tick);
+            // The SDL clock at the start of this (the applying) tick.
+            let start = probe.as_mut().map_or(0, |(_, clock)| clock());
             self.inputs.clear();
             while !self.inputs.is_full() {
                 match self.input.peek() {
                     Some(ev) if ev.timestamp_ns <= end => {
                         let _ = self.input.pop();
+                        if let Some((profiler, _)) = probe.as_mut() {
+                            // Latency from the raw SDL stamp (REQ-LAT-005).
+                            profiler.record_inputs(core::slice::from_ref(&ev), start);
+                        }
                         // Gate on the raw stamp, hand the step the tick clock.
                         self.inputs.push(InputEvent {
                             timestamp_ns: ev.timestamp_ns.saturating_sub(self.epoch_ns),
@@ -381,7 +421,8 @@ impl HybridTimer {
 mod tests;
 
 /// Input-epoch unit tests (issue #81, REQ-LAT-004 / REQ-LAT-005): the loop
-/// gates on the raw stamp and hands the step the tick clock.
+/// gates on the raw stamp and hands the step the tick clock; it measures
+/// input latency from the raw stamp.
 #[cfg(test)]
 mod epoch_tests {
     use super::*;
@@ -562,8 +603,10 @@ mod epoch_tests {
     }
 
     /// REQ-LAT-005 (d): the profiler's latency sample is taken in the tick
-    /// the flipper coil is energised, and equals SDL now − raw stamp, with
-    /// the epoch shared as the sim thread shares it.
+    /// the flipper coil is energised, and equals SDL now − raw stamp, for
+    /// raw stamps at or after the epoch (several epochs, with and without
+    /// drops): the loop records it ([`SimLoop::run_ticks_profiled`]) and
+    /// the tick-time-only step wrapper records tick time only.
     #[test]
     fn req_lat_005_latency_is_measured_to_the_energising_tick() {
         for (epoch, drops) in [
@@ -573,30 +616,29 @@ mod epoch_tests {
             (1_000_000_000, 5000),
         ] {
             let now = Arc::new(AtomicU64::new(epoch));
-            let shared = Arc::new(AtomicU64::new(0));
             let p = Profiler::new();
+            let mut lp = p.sim_loop;
             let clk = Arc::clone(&now);
             let sim = ProfiledSim::new(StubFlipper::default(), p.sim, move || {
                 clk.load(Ordering::Relaxed)
             })
-            .with_epoch(Arc::clone(&shared));
+            .tick_time_only();
             let (mut l, mut tx, _r) = setup(sim, 8);
             l.set_epoch_ns(epoch);
-            shared.store(l.epoch_ns(), Ordering::Relaxed);
             l.skip_ticks(drops);
-            shared.store(l.epoch_ns(), Ordering::Relaxed);
             let e = l.epoch_ns();
+            let read = || now.load(Ordering::Relaxed);
             // Run to tick 500 with the clock at each tick's start.
             for k in 1..=500u64 {
                 now.store(e + (k - 1) * TICK_NS, Ordering::Relaxed);
-                l.run_ticks(1);
+                l.run_ticks_profiled(1, &mut lp, read);
             }
             // Press mid tick 501 (the clock reads its end when 501 runs).
             let raw = e + 500 * TICK_NS + TICK_NS / 2;
             tx.push(InputEvent::button(raw, CabinetInput::LeftFlipper, true))
                 .unwrap();
             now.store(e + 501 * TICK_NS, Ordering::Relaxed);
-            l.run_ticks(1);
+            l.run_ticks_profiled(1, &mut lp, read);
             let s = p.reader.snapshot();
             assert_eq!(
                 l.sim().inner().energised_at,
@@ -607,31 +649,167 @@ mod epoch_tests {
             assert_eq!(s.input_clamped, 0);
             assert_eq!(s.input.max, e + 501 * TICK_NS - raw, "SDL now − raw stamp");
             assert!(s.input.p99 <= crate::profiler::INPUT_P99_TARGET_NS);
+            assert_eq!(s.tick.count, 501, "the wrapper still records tick time");
         }
     }
 
-    /// The sim thread's epoch publication stores the loop's epoch.
+    /// REQ-LAT-005 (F1, startup): epoch 1000 ms, a press stamped at 990 ms
+    /// (queued before the sim started), applying tick 1 starts at 1001 ms:
+    /// the recorded latency is the full SDL-clock 11 ms, not the 1 ms of
+    /// the re-stamped value; not clamped. Delivery is unchanged (REQ-LAT-004):
+    /// tick 1, re-stamped to 0.
     #[test]
-    fn publish_epoch_stores_the_loop_epoch() {
-        let (mut l, _tx, _r) = setup(Stamps::default(), 2);
-        let cell = AtomicU64::new(0);
-        l.set_epoch_ns(42);
-        threads::publish_epoch(&l, Some(&cell));
-        assert_eq!(cell.load(Ordering::Relaxed), 42);
-        l.skip_ticks(3);
-        threads::publish_epoch(&l, Some(&cell));
-        assert_eq!(cell.load(Ordering::Relaxed), 42 + 3 * TICK_NS);
-        threads::publish_epoch(&l, None);
+    fn req_lat_005_stamp_before_the_epoch_at_startup_records_full_sdl_latency() {
+        const MS: u64 = 1_000_000;
+        let p = Profiler::new();
+        let mut lp = p.sim_loop;
+        let (mut l, mut tx, _r) = setup(Stamps::default(), 8);
+        l.set_epoch_ns(1000 * MS);
+        tx.push(InputEvent::button(
+            990 * MS,
+            CabinetInput::LeftFlipper,
+            true,
+        ))
+        .unwrap();
+        l.run_ticks_profiled(1, &mut lp, || 1001 * MS);
+        assert_eq!(l.sim().seen[0], (1, vec![0]), "REQ-LAT-004 delivery");
+        let s = p.reader.snapshot();
+        assert_eq!(s.input.count, 1);
+        assert_eq!(s.input.max, 11 * MS, "1001 ms − 990 ms, not 1001 − 1000");
+        assert_eq!(s.input_clamped, 0);
     }
 
-    /// `with_profiled_sim` shares one epoch cell with the sim thread.
+    /// REQ-LAT-005 (F1, dropped time): after a 30 ms stall the catch-up cap
+    /// drops 22 ticks (`skip_ticks(22)`), so a press stamped 5 ms into the
+    /// stall is below the new epoch. It is applied in the first catch-up
+    /// tick (re-stamped to 0, REQ-LAT-004) and its latency is the full SDL
+    /// now at that tick's start minus the raw stamp (25 ms), not the
+    /// clipped `now − epoch` (18 ms).
     #[test]
-    fn with_profiled_sim_shares_an_epoch_cell() {
+    fn req_lat_005_stamp_in_dropped_time_records_full_sdl_latency() {
+        for epoch in [0u64, 1_000_000_000, 10_000_000_000] {
+            let p = Profiler::new();
+            let mut lp = p.sim_loop;
+            let (mut l, mut tx, _r) = setup(Stamps::default(), 8);
+            l.set_epoch_ns(epoch);
+            let mut clock = SimClock::new(epoch);
+            for k in 1..=10u64 {
+                let at = epoch + k * TICK_NS;
+                assert_eq!(clock.advance(at), 1);
+                l.run_ticks_profiled(1, &mut lp, || at);
+            }
+            let stall_start = epoch + 10 * TICK_NS;
+            let raw = stall_start + 5 * TICK_NS;
+            tx.push(InputEvent::button(raw, CabinetInput::RightFlipper, true))
+                .unwrap();
+            let wake = stall_start + 30 * TICK_NS;
+            assert_eq!(clock.advance(wake), MAX_CATCH_UP_TICKS);
+            let dropped = clock.dropped_ticks();
+            assert_eq!(dropped, 22);
+            l.skip_ticks(dropped);
+            assert!(raw < l.epoch_ns(), "the stamp lies below the new epoch");
+            l.run_ticks_profiled(MAX_CATCH_UP_TICKS, &mut lp, || wake);
+            assert_eq!(l.sim().seen[10], (11, vec![0]), "REQ-LAT-004 delivery");
+            let s = p.reader.snapshot();
+            assert_eq!(s.input.count, 1, "epoch {epoch}");
+            assert_eq!(s.input.max, wake - raw, "SDL now − raw stamp, in full");
+            assert_eq!(s.input.max, 25 * TICK_NS);
+            assert_eq!(s.input_clamped, 0);
+        }
+    }
+
+    /// REQ-LAT-005 (F1): a raw stamp after the applying tick's start (but
+    /// not after its end, so it is delivered) records 0 and is counted as
+    /// clamped exactly once; buttons that drive no coil are not measured.
+    #[test]
+    fn req_lat_005_future_raw_stamp_is_clamped_once() {
+        let p = Profiler::new();
+        let mut lp = p.sim_loop;
+        let (mut l, mut tx, _r) = setup(Stamps::default(), 8);
+        let e = 1_000_000_000;
+        l.set_epoch_ns(e);
+        tx.push(InputEvent::button(e + 600_000, CabinetInput::Launch, true))
+            .unwrap();
+        tx.push(InputEvent::button(e + 100_000, CabinetInput::Start, true))
+            .unwrap();
+        l.run_ticks_profiled(1, &mut lp, || e + 200_000);
+        assert_eq!(l.sim().seen[0], (1, vec![600_000, 100_000]));
+        let s = p.reader.snapshot();
+        assert_eq!((s.input.count, s.input.max, s.input_clamped), (1, 0, 1));
+    }
+
+    /// `run_ticks_profiled` hands the step exactly what `run_ticks` does
+    /// (REQ-LAT-004 delivery is unchanged by measuring).
+    #[test]
+    fn req_lat_004_profiled_run_delivers_like_run_ticks() {
+        let raws = [
+            3u64,
+            1_000_000_500,
+            1_000_004_000,
+            1_000_004_000,
+            1_000_009_999,
+        ];
+        let run = |profiled: bool| {
+            let p = Profiler::new();
+            let mut lp = p.sim_loop;
+            let (mut l, mut tx, _r) = setup(Stamps::default(), 8);
+            l.set_epoch_ns(1_000_000_000);
+            for r in raws {
+                tx.push(InputEvent::button(r, CabinetInput::LeftUpper, true))
+                    .unwrap();
+            }
+            l.run_ticks(2);
+            l.skip_ticks(3);
+            if profiled {
+                l.run_ticks_profiled(6, &mut lp, || 1);
+            } else {
+                l.run_ticks(6);
+            }
+            (l.sim().seen.clone(), l.inputs_delivered())
+        };
+        assert_eq!(run(true), run(false));
+    }
+
+    proptest::proptest! {
+        /// REQ-LAT-005 (F1): for any epoch, raw stamp and clock reading the
+        /// loop records `start − raw` (or a counted clamp) for a delivered
+        /// coil-driving press, where the re-stamp would saturate at 0.
+        #[test]
+        fn prop_req_lat_005_latency_is_start_minus_raw(
+            epoch in 0u64..1_000_000_000_000,
+            raw_off in 0u64..2_000_000_000,
+            start_off in 0u64..2_000_000_000,
+        ) {
+            let p = Profiler::new();
+            let mut lp = p.sim_loop;
+            let (mut l, mut tx, _r) = setup(Stamps::default(), 2);
+            l.set_epoch_ns(epoch);
+            // Raw anywhere up to tick 1's end, below the epoch if it can be.
+            let raw = (epoch + TICK_NS).saturating_sub(raw_off);
+            let start = epoch.saturating_sub(1_000_000_000) + start_off;
+            tx.push(InputEvent::button(raw, CabinetInput::RightFlipper, false))
+                .unwrap();
+            l.run_ticks_profiled(1, &mut lp, || start);
+            proptest::prop_assert_eq!(&l.sim().seen[0].1, &vec![raw.saturating_sub(epoch)]);
+            let s = p.reader.snapshot();
+            proptest::prop_assert_eq!(s.input.count, 1);
+            if raw <= start {
+                proptest::prop_assert_eq!((s.input.max, s.input_clamped), (start - raw, 0));
+            } else {
+                proptest::prop_assert_eq!((s.input.max, s.input_clamped), (0, 1));
+            }
+        }
+    }
+
+    /// `with_profiled_sim` hands the loop writer to the sim thread (which
+    /// then measures input latency in the loop); the idle config has none.
+    #[test]
+    fn with_profiled_sim_gives_the_sim_thread_the_loop_writer() {
         let (_tx, rx) = channel::<InputEvent>(2);
         let (cfg, _reader) =
             ThreadsConfig::with_profiled_sim(IdleSim, rx, monotonic_now_ns, Profiler::new());
-        assert!(cfg.sim_epoch_ns.is_some());
+        assert!(cfg.loop_profiler.is_some());
         let (_tx, rx) = channel::<InputEvent>(2);
-        assert!(ThreadsConfig::idle(rx).sim_epoch_ns.is_none());
+        assert!(ThreadsConfig::idle(rx).loop_profiler.is_none());
     }
 }

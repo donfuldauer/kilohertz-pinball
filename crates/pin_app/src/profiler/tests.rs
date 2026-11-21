@@ -330,53 +330,59 @@ proptest! {
     }
 }
 
-/// REQ-LAT-005 (c): with a shared epoch the tick start is `clock − epoch`,
-/// so for events the loop re-stamped (`raw − epoch`) the latency equals SDL
-/// now − raw stamp, and an event stamped within the delivering tick is
-/// never clamped.
+/// REQ-LAT-005 (c): behind a sim loop with an epoch the loop records the
+/// latency from the raw stamp to the clock at the tick start, and the
+/// tick-time-only wrapper records tick time alone, so the latency equals
+/// SDL now − raw stamp and an event stamped within the delivering tick is
+/// never clamped; one sample per event (no double recording).
 #[test]
-fn req_lat_005_with_epoch_measures_now_minus_raw_stamp() {
+fn req_lat_005_loop_measures_now_minus_raw_stamp() {
+    use crate::orchestrator::SimLoop;
+    use pin_core::TripleBuffer;
     for epoch in [0u64, 1_000_000_000, 10_000_000_000, u64::MAX / 2] {
         let p = Profiler::new();
+        let mut lp = p.sim_loop;
         let now = Arc::new(AtomicU64::new(0));
-        let shared = Arc::new(AtomicU64::new(epoch));
         let clk = Arc::clone(&now);
-        let mut sim = ProfiledSim::new(Counter(0), p.sim, move || clk.load(Ordering::Relaxed))
-            .with_epoch(Arc::clone(&shared));
-        let mut out = FrameStateSnapshot::default();
+        let sim = ProfiledSim::new(Counter(0), p.sim, move || clk.load(Ordering::Relaxed))
+            .tick_time_only();
+        assert!(!sim.records_inputs());
+        let (mut tx, rx) = pin_core::spsc::channel::<InputEvent>(4);
+        let (w, _r) = TripleBuffer::new(FrameStateSnapshot::default());
+        let mut l = SimLoop::new(sim, rx, w);
+        l.set_epoch_ns(epoch);
+        l.run_ticks_profiled(1, &mut lp, || now.load(Ordering::Relaxed));
         let mut want_max = 0;
         for tick in 2..=201u64 {
-            // Tick `tick` (tick-clock end `tick` ms) starts after the end of
-            // the previous tick plus a wake-up below 1 ms; the press is
+            // Tick `tick` (raw end `epoch + tick` ms) starts after the end
+            // of the previous tick plus a wake-up below 1 ms; the press is
             // stamped within the previous millisecond, so the loop delivers
             // it in this tick.
             let start_raw = epoch + (tick - 1) * TICK_NS + (tick * 7_919) % TICK_NS;
             let raw = epoch + (tick - 1) * TICK_NS - (tick * 104_729) % TICK_NS;
             now.store(start_raw, Ordering::Relaxed);
-            let restamped = raw.saturating_sub(epoch);
-            let ev = [InputEvent::button(
-                restamped,
-                CabinetInput::RightFlipper,
-                true,
-            )];
-            sim.step_1ms(tick, &ev, &mut out);
+            tx.push(InputEvent::button(raw, CabinetInput::RightFlipper, true))
+                .unwrap();
+            l.run_ticks_profiled(1, &mut lp, || now.load(Ordering::Relaxed));
             want_max = want_max.max(start_raw - raw);
         }
         let s = p.reader.snapshot();
+        assert_eq!(l.inputs_delivered(), 200, "epoch {epoch}");
         assert_eq!(s.input.count, 200, "epoch {epoch}");
         assert_eq!(s.input_clamped, 0, "epoch {epoch}");
         assert_eq!(s.input.max, want_max, "SDL now − raw stamp, epoch {epoch}");
-        // Tick time is unaffected by the epoch (both readings shifted).
-        assert_eq!(s.tick.max, 0);
+        // Tick time: both readings of a tick see the same clock value.
+        assert_eq!((s.tick.count, s.tick.max), (201, 0));
     }
 }
 
-/// Without `with_epoch` the epoch is 0: the tick clock is the clock itself
-/// (the existing behaviour, `ProfiledSim::new`).
+/// A bare `ProfiledSim::new` (no loop epoch, so the stamps it receives are
+/// raw) records the input latency itself on the raw clock.
 #[test]
 fn profiled_sim_without_epoch_uses_the_raw_clock() {
     let p = Profiler::new();
     let mut sim = ProfiledSim::new(Counter(0), p.sim, || 5_000_000);
+    assert!(sim.records_inputs());
     let mut out = FrameStateSnapshot::default();
     sim.step_1ms(
         1,
@@ -392,6 +398,29 @@ fn profiled_sim_without_epoch_uses_the_raw_clock() {
         (s.input.count, s.input.max, s.input_clamped),
         (1, 1_000_000, 0)
     );
+}
+
+/// `LoopProfiler::record_input(s)` measures like `SimProfiler`'s: only
+/// coil-driving buttons, future stamps clamped and counted.
+#[test]
+fn loop_profiler_records_input_latency() {
+    let mut p = Profiler::new();
+    let evs = [
+        InputEvent::button(400, CabinetInput::LeftFlipper, true),
+        InputEvent::button(100, CabinetInput::Start, true),
+        InputEvent::button(1_500, CabinetInput::Launch, true),
+    ];
+    p.sim_loop.record_inputs(&evs, 1_000);
+    let l = p.sim_loop.record_input(2_000, 1_000);
+    assert_eq!(
+        l,
+        InputLatency {
+            ns: 0,
+            clamped: true
+        }
+    );
+    let s = p.reader.snapshot();
+    assert_eq!((s.input.count, s.input.max, s.input_clamped), (3, 600, 2));
 }
 
 /// REQ-LAT-003 (e): the rate lines, exact text, with and without data; the

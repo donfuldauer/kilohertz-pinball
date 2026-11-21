@@ -234,18 +234,17 @@ pub struct ThreadsConfig {
     pub render: RenderConfig,
     /// Audio thread configuration.
     pub audio: AudioConfig,
-    /// The profiler's sim-loop writer (7.1 hook 2): after every batch of
-    /// ticks the sim thread publishes
+    /// The profiler's sim-loop writer (7.1 hook 2): the sim thread runs its
+    /// ticks with [`SimLoop::run_ticks_profiled`] on
+    /// [`now_ns`](Self::now_ns), recording each coil-driving input's latency
+    /// from its raw SDL stamp to the start of the tick that applies it
+    /// (REQ-LAT-005), and after every batch of ticks publishes
     /// [`SimLoop::input_overflow_ticks`] into it (one relaxed atomic
-    /// store). `None` (default): not profiled.
+    /// store). Pair it with a step that does not record input latency
+    /// itself ([`ProfiledSim::tick_time_only`], as
+    /// [`with_profiled_sim`](Self::with_profiled_sim) does). `None`
+    /// (default): not profiled.
     pub loop_profiler: Option<LoopProfiler>,
-    /// The sim loop's epoch on [`now_ns`](Self::now_ns), shared with a
-    /// [`ProfiledSim`] ([`ProfiledSim::with_epoch`]): the sim thread stores
-    /// [`SimLoop::epoch_ns`] here (relaxed) after
-    /// [`SimLoop::set_epoch_ns`] and after every [`SimLoop::skip_ticks`],
-    /// so the profiler reads its tick start on the tick clock the step's
-    /// events are on (REQ-LAT-005). `None` (default): not shared.
-    pub sim_epoch_ns: Option<Arc<AtomicU64>>,
 }
 
 impl ThreadsConfig {
@@ -266,22 +265,20 @@ impl ThreadsConfig {
             render: RenderConfig::default(),
             audio: AudioConfig::default(),
             loop_profiler: None,
-            sim_epoch_ns: None,
         }
     }
 
     /// `sim` profiled by `profiler` (the 7.1 hooks): the step is wrapped
-    /// in a [`ProfiledSim`] timed by `now_ns`, which also becomes the sim
-    /// loop's clock ([`now_ns`](Self::now_ns)), so tick times and input
-    /// latencies are read on the clock the input timestamps are on (the
-    /// app passes SDL's `SDL_GetTicksNS`); the loop writer goes to the sim
-    /// thread ([`loop_profiler`](Self::loop_profiler)) and the GPU
-    /// frame-time writer to the render thread
-    /// ([`RenderConfig::present_profiler`]). The sim loop's epoch is shared
-    /// between the sim thread and the [`ProfiledSim`]
-    /// ([`sim_epoch_ns`](Self::sim_epoch_ns), [`ProfiledSim::with_epoch`]),
-    /// so the profiler measures on the tick clock the loop hands the step
-    /// its events on (REQ-LAT-004, REQ-LAT-005). Returns the config and the
+    /// in a tick-time-only [`ProfiledSim`] ([`ProfiledSim::tick_time_only`])
+    /// timed by `now_ns`, which also becomes the sim loop's clock
+    /// ([`now_ns`](Self::now_ns)), so tick times and input latencies are
+    /// read on the clock the input timestamps are on (the app passes SDL's
+    /// `SDL_GetTicksNS`). The loop writer goes to the sim thread
+    /// ([`loop_profiler`](Self::loop_profiler)), which records each input's
+    /// latency from its raw SDL stamp, also for a stamp before the loop's
+    /// epoch (REQ-LAT-005, [`SimLoop::run_ticks_profiled`]), and the GPU
+    /// frame-time writer goes to the render thread
+    /// ([`RenderConfig::present_profiler`]). Returns the config and the
     /// profiler's reader (clone it for the HUD, [`RenderConfig::hud`]).
     pub fn with_profiled_sim<S>(
         sim: S,
@@ -298,12 +295,10 @@ impl ThreadsConfig {
             present,
             reader,
         } = profiler;
-        let epoch = Arc::new(AtomicU64::new(0));
-        let profiled = ProfiledSim::new(sim, sim_profiler, now_ns).with_epoch(Arc::clone(&epoch));
+        let profiled = ProfiledSim::new(sim, sim_profiler, now_ns).tick_time_only();
         let mut cfg = Self::with_sim(Box::new(profiled), input);
         cfg.now_ns = now_ns;
         cfg.loop_profiler = Some(sim_loop);
-        cfg.sim_epoch_ns = Some(epoch);
         cfg.render.present_profiler = Some(present);
         (cfg, reader)
     }
@@ -636,7 +631,6 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
         render,
         audio,
         loop_profiler,
-        sim_epoch_ns,
     } = cfg;
 
     let spawn = |threads: &mut Threads, name: &'static str, f: Box<dyn FnOnce() + Send>| {
@@ -661,15 +655,7 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
         &mut threads,
         "sim",
         Box::new(move || {
-            sim_thread(
-                sim_loop,
-                now_ns,
-                timer,
-                loop_profiler,
-                sim_epoch_ns.as_deref(),
-                &sd,
-                &st,
-            );
+            sim_thread(sim_loop, now_ns, timer, loop_profiler, &sd, &st);
         }),
     );
     let (sd, st) = (Arc::clone(&shutdown), Arc::clone(&stats));
@@ -867,37 +853,23 @@ pub(super) fn publish_input_overflow<S: SimStep>(
     }
 }
 
-/// Publishes the loop's epoch into the shared `epoch` (the
-/// [`ProfiledSim::with_epoch`] cell): one relaxed store, no allocation,
-/// lock or I/O (D5). Called after [`SimLoop::set_epoch_ns`] and after every
-/// [`SimLoop::skip_ticks`].
-pub(super) fn publish_epoch<S: SimStep>(sim_loop: &SimLoop<S>, epoch: Option<&AtomicU64>) {
-    if let Some(e) = epoch {
-        e.store(sim_loop.epoch_ns(), Ordering::Relaxed);
-    }
-}
-
 /// The real-time sim loop: accumulator timing with the catch-up cap, dropped
 /// ticks shift simulated time, hybrid sleep + spin until the next tick. No
-/// allocation, lock or I/O per tick (D5). With a `loop_profiler`, the
-/// input-overflow tick total is published after every batch of ticks
-/// ([`publish_input_overflow`]); with an `epoch` cell, the loop's epoch is
-/// published after it is set and after every skip ([`publish_epoch`]), so a
-/// [`ProfiledSim`] reads the tick clock the loop hands the step its events
-/// on (REQ-LAT-005).
+/// allocation, lock or I/O per tick (D5). With a `loop_profiler`, the ticks
+/// run with [`SimLoop::run_ticks_profiled`] on `now_ns` (input latency from
+/// the raw SDL stamps, REQ-LAT-005) and the input-overflow tick total is
+/// published after every batch of ticks ([`publish_input_overflow`]).
 fn sim_thread<S: SimStep>(
     mut sim_loop: SimLoop<S>,
     now_ns: fn() -> u64,
     timer: HybridTimer,
     mut loop_profiler: Option<LoopProfiler>,
-    epoch: Option<&AtomicU64>,
     shutdown: &AtomicBool,
     stats: &OrchestratorStats,
 ) {
     let start = now_ns();
     let mut clock = SimClock::new(start);
     sim_loop.set_epoch_ns(start);
-    publish_epoch(&sim_loop, epoch);
     let stop = || shutdown.load(Ordering::Acquire);
     while !stop() {
         let dropped_before = clock.dropped_ticks();
@@ -905,13 +877,15 @@ fn sim_thread<S: SimStep>(
         let newly_dropped = clock.dropped_ticks() - dropped_before;
         if newly_dropped > 0 {
             sim_loop.skip_ticks(newly_dropped);
-            publish_epoch(&sim_loop, epoch);
             stats
                 .sim_dropped_ticks
                 .store(clock.dropped_ticks(), Ordering::Relaxed);
         }
         if due > 0 {
-            sim_loop.run_ticks(due);
+            match loop_profiler.as_mut() {
+                Some(p) => sim_loop.run_ticks_profiled(due, p, now_ns),
+                None => sim_loop.run_ticks(due),
+            }
             publish_input_overflow(&sim_loop, loop_profiler.as_mut());
             stats.sim_ticks.store(sim_loop.tick(), Ordering::Relaxed);
             stats

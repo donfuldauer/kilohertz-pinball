@@ -7505,3 +7505,44 @@ do not starve the sim thread while a thread test measures latency.
 - Leaving the haptics consumer on the audio thread: the event tick is then not observable.
 - Running the thread tests unguarded: latency samples would include scheduler starvation by the
   test binary's own headless tests, a test artefact rather than the app's behaviour.
+
+## #81-review-1 — Profiler latency from the raw SDL stamp
+
+**Decision:** This supersedes the profiler part of "#81 — Input epoch: events re-stamped onto the
+tick clock". `ProfiledSim::with_epoch`, the shared epoch cell `ThreadsConfig::sim_epoch_ns` and
+`threads::publish_epoch` are removed. The delivery rule of that entry is unchanged: the loop gates
+on the raw stamp and hands the step `raw.saturating_sub(epoch)` (REQ-LAT-004). The sim loop now
+records input latency itself (REQ-LAT-005):
+- `SimLoop::run_ticks_profiled(n, &mut LoopProfiler, clock)` reads the SDL clock once per tick,
+  before draining the ring, and records each delivered coil-driving button at its raw
+  `timestamp_ns` against that reading (`LoopProfiler::record_input(s)`). `run_ticks` is the same
+  path without a probe.
+- `ThreadsConfig::with_profiled_sim` wraps the step in `ProfiledSim::...tick_time_only()` (tick
+  time only), and the sim thread calls `run_ticks_profiled` when a loop profiler is set. A bare
+  `ProfiledSim::new` still records latency itself, which is correct behind an epoch-0 loop where
+  stamps are raw.
+- Clamping is unchanged: a raw stamp later than the tick start gives sample 0 and is counted in
+  `input_clamped`.
+- The tick-start reading is taken before the drain rather than immediately before `step_1ms`; the
+  gap is a few non-blocking ring pops. No allocation on the sim thread (the allocation guards
+  pass).
+- Tests: the thread tests in `crates/pin_app/tests/input_epoch.rs` now run on a test-controlled
+  clock (R6), and the haptic test asserts tick 51 exactly.
+
+**Rationale:** PR #145 CodeRabbit review: with the epoch scheme the profiler saw the re-stamped
+value, which saturates at 0 for a raw stamp below the epoch (an input queued before sim start, or
+stamped in dropped time longer than the executed tick time). Latency was then short by
+epoch − raw, breaking REQ-LAT-005 ("from the SDL timestamp"). Recording in the loop, from the raw
+stamp, keeps the metric correct for every stamp.
+
+**Alternatives:**
+- `ProfiledSim` never records inputs: rejected, existing tests outside this unit's paths rely on
+  `ProfiledSim::new` recording them.
+- A new field on `Profiler`: rejected, an existing test destructures it exhaustively.
+- Moving the `LoopProfiler` into `SimLoop`: rejected, it conflicts with the borrow in
+  `publish_input_overflow(&sim_loop, Option<&mut LoopProfiler>)`.
+- Rebuilding raw as re-stamped + epoch: rejected, impossible once the re-stamp saturates at 0.
+
+**Risk:** a hand-built `ThreadsConfig` that sets `loop_profiler` and also wraps the step in a
+recording `ProfiledSim::new` would record each input twice; this is documented on
+`ThreadsConfig::loop_profiler`.

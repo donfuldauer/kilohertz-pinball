@@ -8,22 +8,26 @@
 //! process start and simulation start (the sim loop's epoch) nor dropped
 //! ticks delay it.
 //!
-//! REQ-LAT-005: the profiler's input latency runs from the SDL timestamp to
-//! the tick in which the input took effect, on the tick clock.
+//! REQ-LAT-005: the profiler's input latency runs from the raw SDL timestamp
+//! to the SDL clock at the start of the tick in which the input took effect,
+//! also for a stamp before the sim loop's epoch.
 //!
 //! The sim thread's sequence is mirrored headlessly on simulated time
 //! (`SimClock::new(start)`, `set_epoch_ns(start)`, then per wake-up
 //! `skip_ticks(newly dropped)` before `run_ticks(due)`); headless tests never
 //! sleep and never read a wall clock (R6). The thread tests (REQ-LAT-004
-//! thread test, REQ-LAT-005 thread path) poll with a bounded deadline as a
-//! hang guard only and assert ticks and latencies, not wall durations.
+//! thread test, REQ-LAT-005 thread path) run the real threads on a
+//! test-controlled input clock that moves only when the test moves it, one
+//! tick at a time (or one injected leap), waiting for the sim thread to
+//! publish each tick; ticks and latencies are a function of those moves
+//! alone, so they are asserted exactly. The wait is a bounded poll used as a
+//! hang guard only: no wall duration is asserted.
 
 mod apex_support;
 
 use apex_support::{apex_bundle, on_big_stack};
 use pin_app::orchestrator::{
-    SimClock, SimLoop, TableSim, Threads, ThreadsConfig, load_validated, monotonic_now_ns,
-    spawn_threads,
+    SimClock, SimLoop, TableSim, Threads, ThreadsConfig, load_validated, spawn_threads,
 };
 use pin_app::profiler::{ProfiledSim, Profiler};
 use pin_core::haptics::{SOURCE_CLASS_COIL, SOURCE_CLASS_SHIFT};
@@ -36,12 +40,18 @@ use pin_core::{
     TripleBuffer,
 };
 use pin_input::haptics::haptics_ring;
+use pin_sim::alloc_guard::{CountingAlloc, count_allocs, count_allocs_split, is_installed};
 use pin_sim::{SimConfig, Simulation};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+
+// Counts allocations per thread inside a guard only (R4 check of the
+// measuring tick path); otherwise forwards to the system allocator.
+#[global_allocator]
+static GLOBAL: CountingAlloc = CountingAlloc;
 
 /// One second, ns.
 const SECOND_NS: u64 = 1_000_000_000;
@@ -53,8 +63,9 @@ const EPOCHS: [u64; 3] = [0, SECOND_NS, 10 * SECOND_NS];
 const INPUT_P99_TARGET_NS: u64 = 1_500_000;
 
 /// Headless tests share this lock for reading; the thread tests take it for
-/// writing, so the sim thread's wake-ups are not starved by the CPU-heavy
-/// headless sweeps of the same binary (the thread tests measure latency).
+/// writing, so the sim thread is not starved by the CPU-heavy headless sweeps
+/// of the same binary (the thread tests then finish promptly; their results
+/// do not depend on scheduling).
 static EXCLUSIVE: RwLock<()> = RwLock::new(());
 
 fn shared() -> std::sync::RwLockReadGuard<'static, ()> {
@@ -696,64 +707,66 @@ fn late_forwarded_press_energises_the_real_flipper_in_the_next_tick() {
 // Thread-test clocks
 // ---------------------------------------------------------------------------
 
-/// A clock based at 1 s: `1 s + (monotonic now - first reading) + jump`,
-/// the first reading taken on the first call. `jump` lets a test inject a
-/// stall (the clock leaps forward once).
-struct BasedClock {
-    first: AtomicU64,
-    jump: AtomicU64,
-    first_thread: OnceLock<String>,
+/// The controlled clocks' start value: 1 s (the sim thread's epoch).
+const CLOCK_BASE_NS: u64 = SECOND_NS;
+
+/// A test-controlled input clock: `now` moves only when the test moves it;
+/// `reads` counts the clock function's calls. Only the sim thread calls the
+/// clock function (its epoch, accumulator, timer and latency probe), so
+/// `reads > 0` means the sim thread has taken its epoch. The test reads the
+/// time with [`TestClock::now`], which is not counted.
+struct TestClock {
+    now: AtomicU64,
+    reads: AtomicU64,
 }
 
-impl BasedClock {
+impl TestClock {
     const fn new() -> Self {
         Self {
-            first: AtomicU64::new(0),
-            jump: AtomicU64::new(0),
-            first_thread: OnceLock::new(),
+            now: AtomicU64::new(CLOCK_BASE_NS),
+            reads: AtomicU64::new(0),
         }
     }
 
+    /// The sim thread's read: loads the time before publishing the read, so
+    /// a test that sees `reads > 0` and then moves the clock cannot shift
+    /// the epoch.
     fn read(&self) -> u64 {
-        let now = monotonic_now_ns().max(1);
-        let base = match self
-            .first
-            .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire)
-        {
-            Ok(_) => {
-                let _ = self.first_thread.set(
-                    std::thread::current()
-                        .name()
-                        .unwrap_or("<unnamed>")
-                        .to_owned(),
-                );
-                now
-            }
-            Err(f) => f,
-        };
-        SECOND_NS + now.saturating_sub(base) + self.jump.load(Ordering::Acquire)
+        let t = self.now.load(Ordering::Acquire);
+        self.reads.fetch_add(1, Ordering::AcqRel);
+        t
     }
 
-    fn first_caller(&self) -> &str {
-        self.first_thread
-            .get()
-            .map_or("<never called>", String::as_str)
+    /// The current time (test side, not counted).
+    fn now(&self) -> u64 {
+        self.now.load(Ordering::Acquire)
+    }
+
+    /// Back to [`CLOCK_BASE_NS`], never read (before spawning).
+    fn reset(&self) {
+        self.now.store(CLOCK_BASE_NS, Ordering::Release);
+        self.reads.store(0, Ordering::Release);
     }
 }
 
-static HAPTIC_CLOCK: BasedClock = BasedClock::new();
+static HAPTIC_CLOCK: TestClock = TestClock::new();
 fn haptic_clock() -> u64 {
     HAPTIC_CLOCK.read()
 }
 
-static PROFILED_PLAIN_CLOCK: BasedClock = BasedClock::new();
+static PROFILED_PLAIN_CLOCK: TestClock = TestClock::new();
 fn profiled_plain_clock() -> u64 {
     PROFILED_PLAIN_CLOCK.read()
 }
 
-static PROFILED_STALL_CLOCK: BasedClock = BasedClock::new();
+static PROFILED_STALL_CLOCK: TestClock = TestClock::new();
 fn profiled_stall_clock() -> u64 {
     PROFILED_STALL_CLOCK.read()
+}
+
+static PROFILED_EARLY_CLOCK: TestClock = TestClock::new();
+fn profiled_early_clock() -> u64 {
+    PROFILED_EARLY_CLOCK.read()
 }
 
 /// Hang guard of the thread tests (a deadline on polling, never asserted as
@@ -772,19 +785,48 @@ fn poll(mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
+/// Waits until the sim thread has read `clock` (its epoch,
+/// [`CLOCK_BASE_NS`]): a move before that read would shift the epoch.
+fn await_epoch(threads: &Threads, clock: &TestClock) {
+    assert!(
+        poll(|| clock.reads.load(Ordering::Acquire) > 0),
+        "the sim thread never read its clock: {:?}",
+        threads.stats()
+    );
+}
+
+/// Moves `clock` to `now_ns` and waits until the sim thread has run and
+/// published executed tick `tick` (`sim_ticks == tick`). The clock never
+/// moves while a batch runs.
+fn move_clock(threads: &Threads, clock: &TestClock, now_ns: u64, tick: u64) {
+    clock.now.store(now_ns, Ordering::Release);
+    assert!(
+        poll(|| threads.stats().sim_ticks == tick),
+        "tick {tick} never ran at {now_ns} ns: {:?}",
+        threads.stats()
+    );
+}
+
+/// Moves `clock` one tick forward and waits for the next executed tick.
+fn next_tick(threads: &Threads, clock: &TestClock) {
+    let tick = threads.stats().sim_ticks + 1;
+    move_clock(threads, clock, clock.now() + TICK_NS, tick);
+}
+
 // ---------------------------------------------------------------------------
 // 5. Thread test: haptic coil event
 // ---------------------------------------------------------------------------
 
 /// REQ-LAT-004 thread test (issue #81 acceptance 5): the real threads over
-/// Apex Circuit with an input clock based at 1 s. A left-flipper press
-/// stamped at 1 s + 50.5 ms (the end of tick 50 plus 0.5 ms slack) produces
-/// a coil haptic event in tick 50..=60 (the delivering tick is about 51; the
-/// window absorbs the sim thread's start offset and wake-up jitter), far
-/// below tick 1050 (today: 1051).
+/// Apex Circuit with a test clock based at 1 s (the sim thread's epoch is
+/// exactly 1 s). A left-flipper press stamped at 1 s + 50.5 ms (the end of
+/// tick 50 plus 0.5 ms) produces a coil haptic event in tick 51: by tick 51
+/// (not later; before the fix it waited until tick 1051) and not before 51
+/// (the stamp is after tick 50's end). The clock moves one tick at a time.
 #[test]
-fn thread_press_at_tick_50_produces_coil_haptic_by_about_tick_51() {
+fn thread_press_at_end_of_tick_50_produces_coil_haptic_by_tick_51() {
     let _g = exclusive();
+    HAPTIC_CLOCK.reset();
     let sim = on_big_stack(apex);
     let (htx, mut hrx) = haptics_ring::<HapticsTelemetryEvent>(4096);
     let (mut tx, rx) = channel(64);
@@ -794,36 +836,44 @@ fn thread_press_at_tick_50_produces_coil_haptic_by_about_tick_51() {
     // thread would otherwise consume them).
     cfg.audio.haptics = None;
     tx.push(InputEvent::button(
-        SECOND_NS + 50 * TICK_NS + TICK_NS / 2,
+        CLOCK_BASE_NS + 50 * TICK_NS + TICK_NS / 2,
         CabinetInput::LeftFlipper,
         true,
     ))
     .unwrap();
     let threads = spawn_threads(cfg).expect("spawn");
+    await_epoch(&threads, &HAPTIC_CLOCK);
     let mut coil: Option<HapticsTelemetryEvent> = None;
     let mut seen = 0u64;
-    let found = poll(|| {
+    // Far past tick 51, well short of the defect's 1051.
+    for _ in 1..=100u64 {
+        next_tick(&threads, &HAPTIC_CLOCK);
         hrx.drain(|e| {
             seen += 1;
             if coil.is_none() && e.source >> SOURCE_CLASS_SHIFT == SOURCE_CLASS_COIL {
                 coil = Some(e);
             }
         });
-        coil.is_some()
-    });
+        if coil.is_some() {
+            break;
+        }
+    }
     let stats = threads.stats();
-    let _ = threads.shutdown();
+    let fin = threads.shutdown().expect("clean shutdown");
     eprintln!(
-        "REQ-LAT-004 thread test: coil haptic {coil:?} ({seen} haptic events); first clock \
-         caller: {}; stats {stats:?}",
-        HAPTIC_CLOCK.first_caller()
+        "REQ-LAT-004 thread test: coil haptic {coil:?} ({seen} haptic events); stats {stats:?}"
     );
-    assert!(found, "REQ-LAT-004: no coil haptic event; stats {stats:?}");
-    let tick = coil.unwrap().tick;
+    assert_eq!(fin.sim_dropped_ticks, 0, "one tick per move: {fin:?}");
+    let tick = coil
+        .unwrap_or_else(|| panic!("REQ-LAT-004: no coil haptic event by tick 100; {stats:?}"))
+        .tick;
     assert!(
-        (50..=60).contains(&tick),
-        "REQ-LAT-004: coil haptic in tick {tick}, expected about 51 (50..=60); \
-         1051 is the epoch defect"
+        tick <= 51,
+        "REQ-LAT-004: coil haptic in tick {tick}, required by tick 51 (1051 is the epoch defect)"
+    );
+    assert_eq!(
+        tick, 51,
+        "REQ-LAT-004: the press is stamped after tick 50's end, so tick 51 applies it"
     );
 }
 
@@ -840,40 +890,37 @@ fn profiled_scenario(epoch: u64, drops: u64) -> (pin_app::profiler::ProfilerSnap
     let tag = format!("(epoch {} ms, drops {drops})", epoch / TICK_NS);
     let mut fails = Vec::new();
     let profiler = Profiler::new();
+    let mut loop_profiler = profiler.sim_loop;
     let now = Arc::new(AtomicU64::new(0));
-    let epoch_atomic = Arc::new(AtomicU64::new(0));
     let clock_now = Arc::clone(&now);
+    // As `ThreadsConfig::with_profiled_sim` wires it: the wrapper records
+    // tick time, the loop records input latency from the raw SDL stamps.
     let sim = ProfiledSim::new(
         Box::new(TableSim::new(apex(), None)),
         profiler.sim,
         move || clock_now.load(Ordering::Acquire),
     )
-    .with_epoch(Arc::clone(&epoch_atomic));
+    .tick_time_only();
     let ids = flipper_ids(sim.inner().sim());
     let (mut lp, mut tx) = looped(sim);
     lp.set_epoch_ns(epoch);
-    epoch_atomic.store(lp.epoch_ns(), Ordering::Release);
     // One tick: the clock reads the SDL-domain time at which it executes, the
     // end of the tick on the loop's epoch clock plus 0..200 us of processing.
-    let step = |lp: &mut SimLoop<_>, now: &AtomicU64| {
+    let mut step = |lp: &mut SimLoop<_>, now: &AtomicU64| {
         let k = lp.tick() + 1;
         let jitter = (k * 7919 % 200) * 1_000;
         now.store(tick_end_ns(lp.epoch_ns(), k) + jitter, Ordering::Release);
-        lp.run_ticks(1);
-    };
-    let skip = |lp: &mut SimLoop<_>, n: u64, e: &AtomicU64| {
-        lp.skip_ticks(n);
-        e.store(lp.epoch_ns(), Ordering::Release);
+        lp.run_ticks_profiled(1, &mut loop_profiler, || now.load(Ordering::Acquire));
     };
     while lp.tick() < 100 {
         step(&mut lp, &now);
     }
     if drops > 0 {
-        skip(&mut lp, drops / 2, &epoch_atomic);
+        lp.skip_ticks(drops / 2);
     }
     for i in 0..EVENTS {
         if i == EVENTS / 2 && drops > 0 {
-            skip(&mut lp, drops - drops / 2, &epoch_atomic);
+            lp.skip_ticks(drops - drops / 2);
         }
         let k = FIRST_EVENT_TICK + i * SPACING;
         while lp.tick() < k - 1 {
@@ -926,8 +973,8 @@ fn profiled_scenario(epoch: u64, drops: u64) -> (pin_app::profiler::ProfilerSnap
 }
 
 /// REQ-LAT-005 deterministic profiler path (issue #81 acceptance 6a): a
-/// `ProfiledSim` over Apex Circuit with the loop's epoch mirrored into the
-/// shared epoch (after `set_epoch_ns` and every `skip_ticks`), epoch in
+/// tick-time-only `ProfiledSim` over Apex Circuit behind a loop that
+/// measures input latency (`run_ticks_profiled`), epoch in
 /// {0, 1 s, 10 s} x drops in {0, 5000}, 200 flipper presses and releases
 /// stamped 0..1 ms before their tick's end: input p99 <= 1.5 ms, one sample
 /// per coil-driving event, no clamped samples (and each event energises or
@@ -954,53 +1001,140 @@ fn profiled_input_latency_is_on_the_tick_clock_for_every_epoch_and_drop_count() 
     assert!(fails.is_empty(), "REQ-LAT-005:\n{}", fails.join("\n"));
 }
 
-/// The REQ-LAT-005 thread path: presses and releases stamped now on
-/// `clock`, one every few ticks; with `stall`, the clock leaps 20 ms forward
-/// once half way (an injected stall) and the next event is stamped after
-/// the leap.
-fn profiled_thread_run(clock: fn() -> u64, based: &'static BasedClock, stall: bool) {
+/// R4 / REQ-LAT-005: the measuring tick path the sim thread runs
+/// (`run_ticks_profiled` over a tick-time-only `ProfiledSim<Box<TableSim>,
+/// fn() -> u64>`, the app's shape) allocates nothing per tick, records one
+/// latency sample per flipper event (several stamped before the epoch, so
+/// the raw-stamp path is exercised) and leaves the simulation unchanged.
+#[test]
+fn run_ticks_profiled_is_allocation_free() {
+    let _g = shared();
+    assert!(is_installed());
+    let (v, n) = count_allocs(|| std::hint::black_box(vec![1u8; 8]));
+    assert!(n >= 1 && v.len() == 8, "guard not armed");
+    const TICKS: u64 = 3_000;
+    const WARM_UP: u32 = 500;
+    const EPOCH: u64 = SECOND_NS;
+    // Presses and releases every 50 ticks; the first four are stamped before
+    // the epoch (queued before the sim started).
+    let events: Vec<InputEvent> = (0..TICKS / 50)
+        .map(|k| {
+            let stamp = if k < 4 {
+                EPOCH - (4 - k) * TICK_NS
+            } else {
+                EPOCH + k * 50 * TICK_NS
+            };
+            let side = if k % 4 < 2 { Side::Left } else { Side::Right };
+            InputEvent::button(stamp, side.input(), k % 2 == 0)
+        })
+        .collect();
+    let evs = events.clone();
+    let (plain, profiled, allocs, snap) = on_big_stack(move || {
+        let feed = |tx: &mut SpscProducer<InputEvent>| {
+            for ev in &evs {
+                tx.push(*ev).unwrap();
+            }
+        };
+        let (mut lp, mut tx) = looped(TableSim::new(apex(), None));
+        feed(&mut tx);
+        lp.set_epoch_ns(EPOCH);
+        lp.run_ticks(TICKS as u32);
+        let plain = lp.sim().sim().state_hash();
+
+        let p = Profiler::new();
+        let mut loop_profiler = p.sim_loop;
+        let clock: fn() -> u64 = fixed_clock_10s;
+        let sim: ProfiledSim<Box<TableSim>, fn() -> u64> =
+            ProfiledSim::new(Box::new(TableSim::new(apex(), None)), p.sim, clock).tick_time_only();
+        let (mut lp, mut tx) = looped(sim);
+        feed(&mut tx);
+        lp.set_epoch_ns(EPOCH);
+        lp.run_ticks_profiled(WARM_UP, &mut loop_profiler, clock);
+        let mut allocs = 0;
+        for _ in 0..((TICKS - u64::from(WARM_UP)) / 100) {
+            let ((), n, _exempt) = count_allocs_split(|| {
+                lp.run_ticks_profiled(100, &mut loop_profiler, clock);
+            });
+            allocs += n;
+        }
+        assert_eq!(lp.tick(), TICKS);
+        let profiled = lp.sim().inner().sim().state_hash();
+        (plain, profiled, allocs, p.reader.snapshot())
+    });
+    assert_eq!(allocs, 0, "run_ticks_profiled allocated");
+    assert_eq!(profiled, plain, "measuring changed the simulation");
+    assert_eq!(
+        snap.input.count,
+        events.len() as u64,
+        "one sample per event"
+    );
+    assert_eq!(snap.tick.count, TICKS);
+}
+
+/// A fixed clock for the allocation test: 10 s, after every event stamp.
+fn fixed_clock_10s() -> u64 {
+    10 * SECOND_NS
+}
+
+/// The REQ-LAT-005 thread path on a test-controlled clock: presses and
+/// releases stamped within the next tick (0..1 ms after the current clock),
+/// one every five ticks; the clock moves one tick at a time, so each event
+/// is applied by the next tick and its latency is the 1 ms tick step minus
+/// its offset. With `stall`, the clock leaps 20 ms once half way (an
+/// injected stall: 8 catch-up ticks, 12 dropped) and the next event is
+/// stamped after the leap. Asserts one sample per event, the exact maximum,
+/// p99 <= 1.5 ms and no clamped samples, all in test-controlled time.
+fn profiled_thread_run(clock_fn: fn() -> u64, clock: &'static TestClock, stall: bool) {
     const EVENTS: u64 = 12;
+    clock.reset();
     let sim = on_big_stack(|| Box::new(TableSim::new(apex(), None)));
     let (mut tx, rx) = channel(64);
-    let (cfg, reader) = ThreadsConfig::with_profiled_sim(sim, rx, clock, Profiler::new());
+    let (cfg, reader) = ThreadsConfig::with_profiled_sim(sim, rx, clock_fn, Profiler::new());
     let threads = spawn_threads(cfg).expect("spawn");
-    let ticks = |t: &Threads| t.stats().sim_ticks;
-    assert!(
-        poll(|| ticks(&threads) >= 20),
-        "sim thread never ran: {:?}",
-        threads.stats()
-    );
+    await_epoch(&threads, clock);
+    for _ in 0..20 {
+        next_tick(&threads, clock);
+    }
+    let mut want_max = 0u64;
     for i in 0..EVENTS {
         if stall && i == EVENTS / 2 {
-            based.jump.store(20 * TICK_NS, Ordering::Release);
+            let tick = threads.stats().sim_ticks + u64::from(MAX_CATCH_UP_TICKS);
+            move_clock(&threads, clock, clock.now() + 20 * TICK_NS, tick);
+            assert!(
+                poll(|| threads.stats().sim_dropped_ticks == 12),
+                "the 20 ms leap drops 12 ticks: {:?}",
+                threads.stats()
+            );
         }
-        let from = ticks(&threads);
-        assert!(
-            poll(|| ticks(&threads) >= from + 5),
-            "sim thread stopped: {:?}",
-            threads.stats()
-        );
+        for _ in 0..4 {
+            next_tick(&threads, clock);
+        }
         let side = if i % 4 < 2 { Side::Left } else { Side::Right };
-        tx.push(InputEvent::button(clock(), side.input(), i % 2 == 0))
+        let offset = (i * 83 % 1000) * 1_000;
+        let stamp = clock.now() + offset;
+        tx.push(InputEvent::button(stamp, side.input(), i % 2 == 0))
             .unwrap();
+        next_tick(&threads, clock);
+        // The applying tick started at the clock's new reading.
+        want_max = want_max.max(clock.now() - stamp);
         let r = reader.clone();
         assert!(
             poll(|| r.snapshot().input.count > i),
-            "REQ-LAT-005: event {i} never recorded: {:?}",
+            "REQ-LAT-005: event {i} not recorded by its applying tick: {:?}",
             reader.snapshot()
         );
     }
-    let stats = threads.stats();
-    let _ = threads.shutdown();
+    let fin = threads.shutdown().expect("clean shutdown");
     let s = reader.snapshot();
     eprintln!(
-        "REQ-LAT-005 thread path (stall {stall}): input {:?}, clamped {}, first clock caller \
-         {}, stats {stats:?}",
-        s.input,
-        s.input_clamped,
-        based.first_caller()
+        "REQ-LAT-005 thread path (stall {stall}): input {:?}, clamped {}, stats {fin:?}",
+        s.input, s.input_clamped
     );
     assert_eq!(s.input.count, EVENTS, "REQ-LAT-005: one sample per event");
+    assert_eq!(
+        s.input.max, want_max,
+        "REQ-LAT-005: SDL clock at the applying tick start − raw stamp"
+    );
     assert!(
         s.input.p99 <= INPUT_P99_TARGET_NS,
         "REQ-LAT-005 (stall {stall}): input p99 {} ns > 1.5 ms: {:?}",
@@ -1011,12 +1145,20 @@ fn profiled_thread_run(clock: fn() -> u64, based: &'static BasedClock, stall: bo
         s.input_clamped, 0,
         "REQ-LAT-005 (stall {stall}): clamped samples"
     );
+    if stall {
+        assert!(
+            fin.sim_dropped_ticks > 0,
+            "the stall dropped ticks: {fin:?}"
+        );
+    } else {
+        assert_eq!(fin.sim_dropped_ticks, 0, "{fin:?}");
+    }
 }
 
 /// REQ-LAT-005 thread path without a stall (issue #81 acceptance 6b):
-/// `ThreadsConfig::with_profiled_sim` over Apex Circuit with the 1 s-based
-/// clock; events stamped now are applied by the next tick: p99 <= 1.5 ms,
-/// no clamped samples.
+/// `ThreadsConfig::with_profiled_sim` over Apex Circuit on a test-controlled
+/// clock based at 1 s; events stamped within the next tick are applied by
+/// it: p99 <= 1.5 ms, no clamped samples.
 #[test]
 fn profiled_thread_path_input_latency_without_stall() {
     let _g = exclusive();
@@ -1024,11 +1166,52 @@ fn profiled_thread_path_input_latency_without_stall() {
 }
 
 /// REQ-LAT-005 thread path with an injected 20 ms stall (issue #81
-/// acceptance 6b): the clock leaps 20 ms once (8 catch-up ticks, 12
-/// dropped); events stamped now are still applied by the next tick and
-/// measured on the tick clock: p99 <= 1.5 ms, no clamped samples.
+/// acceptance 6b): the test clock leaps 20 ms once (8 catch-up ticks, 12
+/// dropped); events stamped after the leap are still applied by the next
+/// tick and measured from their raw stamps: p99 <= 1.5 ms, no clamped
+/// samples, dropped ticks > 0.
 #[test]
 fn profiled_thread_path_input_latency_with_stall() {
     let _g = exclusive();
     profiled_thread_run(profiled_stall_clock, &PROFILED_STALL_CLOCK, true);
+}
+
+/// REQ-LAT-005 on the real thread path: a press queued before the sim
+/// thread starts, stamped 10 ms before its first clock reading (the epoch,
+/// 1 s), is applied in tick 1, which starts at 1 s + 1 ms; the recorded
+/// latency is the full SDL-clock 11 ms (not the 1 ms of the re-stamped
+/// value), not clamped.
+#[test]
+fn profiled_thread_path_measures_a_press_stamped_before_the_epoch() {
+    let _g = exclusive();
+    let clock = &PROFILED_EARLY_CLOCK;
+    clock.reset();
+    let sim = on_big_stack(|| Box::new(TableSim::new(apex(), None)));
+    let (mut tx, rx) = channel(64);
+    let raw = CLOCK_BASE_NS - 10 * TICK_NS;
+    tx.push(InputEvent::button(raw, CabinetInput::RightFlipper, true))
+        .unwrap();
+    let (cfg, reader) =
+        ThreadsConfig::with_profiled_sim(sim, rx, profiled_early_clock, Profiler::new());
+    let threads = spawn_threads(cfg).expect("spawn");
+    await_epoch(&threads, clock);
+    next_tick(&threads, clock);
+    let start = clock.now();
+    let r = reader.clone();
+    assert!(
+        poll(|| r.snapshot().input.count >= 1),
+        "REQ-LAT-005: the early press was not recorded in tick 1: {:?}",
+        reader.snapshot()
+    );
+    let fin = threads.shutdown().expect("clean shutdown");
+    let s = reader.snapshot();
+    assert_eq!(fin.sim_ticks, 1, "{fin:?}");
+    assert_eq!(s.input.count, 1, "{s:?}");
+    assert_eq!(s.input_clamped, 0, "{s:?}");
+    assert_eq!(start - raw, 11 * TICK_NS);
+    assert_eq!(
+        s.input.max,
+        start - raw,
+        "REQ-LAT-005: SDL clock at tick 1's start − raw stamp, in full"
+    );
 }
