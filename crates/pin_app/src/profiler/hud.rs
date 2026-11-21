@@ -74,3 +74,82 @@ pub fn hud_lines(s: &ProfilerSnapshot) -> Vec<String> {
         ),
     ]
 }
+
+/// App-level rates shown under the profiler lines (REQ-LAT-003): they come
+/// from the orchestrator's counters, not from the profiler, so they are
+/// passed in rather than read from a [`ProfilerSnapshot`].
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct HudRates {
+    /// Ticks dropped by the catch-up cap since the sim thread started
+    /// (cumulative, `OrchestratorStats` / `SimClock::dropped_ticks`).
+    pub dropped_ticks: u64,
+    /// Presented frames per second, in thousandths (`59_940` = 59.94 fps),
+    /// over the last refresh period; `None` before a rate is known
+    /// ([`FrameRateMeter`]).
+    pub presented_fps_milli: Option<u64>,
+}
+
+/// `fps_milli` (thousandths of a frame per second) with one decimal,
+/// rounded down: `59_940` → `"59.9"`, `0` → `"0.0"`.
+#[must_use]
+pub fn format_fps(fps_milli: u64) -> String {
+    format!("{}.{}", fps_milli / 1_000, (fps_milli / 100) % 10)
+}
+
+/// The two rate lines of `r`, in this order:
+///
+/// 1. `presented fps <fps>` (one decimal, [`format_fps`]; `--` without a
+///    rate yet)
+/// 2. `dropped ticks <count>`
+#[must_use]
+pub fn hud_rate_lines(r: &HudRates) -> [String; 2] {
+    let fps = r
+        .presented_fps_milli
+        .map_or_else(|| "--".to_owned(), format_fps);
+    [
+        format!("presented fps {fps}"),
+        format!("dropped ticks {}", r.dropped_ticks),
+    ]
+}
+
+/// The full profiler HUD of the app (REQ-LAT-003): the four
+/// [`hud_lines`] of `s` (unchanged) followed by the two
+/// [`hud_rate_lines`] of `r` (presented fps, dropped ticks).
+#[must_use]
+pub fn hud_lines_with_rates(s: &ProfilerSnapshot, r: &HudRates) -> Vec<String> {
+    let mut lines = hud_lines(s);
+    lines.extend(hud_rate_lines(r));
+    lines
+}
+
+/// Presented frames per second between two readings of a cumulative frame
+/// counter (the render thread's presented-frame count), in thousandths.
+/// HUD thread only; plain integer arithmetic.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct FrameRateMeter {
+    last: Option<(u64, u64)>,
+}
+
+impl FrameRateMeter {
+    /// A meter without a reading yet.
+    #[must_use]
+    pub const fn new() -> FrameRateMeter {
+        FrameRateMeter { last: None }
+    }
+
+    /// Takes a reading of `frames_total` at `now_ns` (any monotonic clock)
+    /// and returns the rate since the previous reading, in thousandths of a
+    /// frame per second (rounded down, saturating). `None` on the first
+    /// reading, when no time passed, or when the clock or the counter went
+    /// backwards (the reading is still kept as the new base).
+    pub fn sample(&mut self, now_ns: u64, frames_total: u64) -> Option<u64> {
+        let prev = self.last.replace((now_ns, frames_total));
+        let (t0, f0) = prev?;
+        if now_ns <= t0 || frames_total < f0 {
+            return None;
+        }
+        let frames = u128::from(frames_total - f0);
+        let dt = u128::from(now_ns - t0);
+        Some(u64::try_from(frames * 1_000_000_000_000 / dt).unwrap_or(u64::MAX))
+    }
+}

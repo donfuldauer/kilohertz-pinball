@@ -15,7 +15,8 @@ use super::table::{DisplayCommand, FlipperOutline};
 use super::view::{TableRenderOptions, TableVisuals};
 use super::{HybridTimer, SimClock, SimLoop};
 use crate::profiler::{
-    CommandQueueOverflows, LoopProfiler, PresentProfiler, ProfiledSim, Profiler, ProfilerReader,
+    CommandQueueOverflows, FrameRateMeter, HudRates, LoopProfiler, PresentProfiler, ProfiledSim,
+    Profiler, ProfilerReader, hud_rate_lines,
 };
 use arrayvec::ArrayVec;
 use pin_audio::mixer::{MixerConfig, SoundReceiver};
@@ -238,6 +239,13 @@ pub struct ThreadsConfig {
     /// [`SimLoop::input_overflow_ticks`] into it (one relaxed atomic
     /// store). `None` (default): not profiled.
     pub loop_profiler: Option<LoopProfiler>,
+    /// The sim loop's epoch on [`now_ns`](Self::now_ns), shared with a
+    /// [`ProfiledSim`] ([`ProfiledSim::with_epoch`]): the sim thread stores
+    /// [`SimLoop::epoch_ns`] here (relaxed) after
+    /// [`SimLoop::set_epoch_ns`] and after every [`SimLoop::skip_ticks`],
+    /// so the profiler reads its tick start on the tick clock the step's
+    /// events are on (REQ-LAT-005). `None` (default): not shared.
+    pub sim_epoch_ns: Option<Arc<AtomicU64>>,
 }
 
 impl ThreadsConfig {
@@ -258,6 +266,7 @@ impl ThreadsConfig {
             render: RenderConfig::default(),
             audio: AudioConfig::default(),
             loop_profiler: None,
+            sim_epoch_ns: None,
         }
     }
 
@@ -268,7 +277,11 @@ impl ThreadsConfig {
     /// app passes SDL's `SDL_GetTicksNS`); the loop writer goes to the sim
     /// thread ([`loop_profiler`](Self::loop_profiler)) and the GPU
     /// frame-time writer to the render thread
-    /// ([`RenderConfig::present_profiler`]). Returns the config and the
+    /// ([`RenderConfig::present_profiler`]). The sim loop's epoch is shared
+    /// between the sim thread and the [`ProfiledSim`]
+    /// ([`sim_epoch_ns`](Self::sim_epoch_ns), [`ProfiledSim::with_epoch`]),
+    /// so the profiler measures on the tick clock the loop hands the step
+    /// its events on (REQ-LAT-004, REQ-LAT-005). Returns the config and the
     /// profiler's reader (clone it for the HUD, [`RenderConfig::hud`]).
     pub fn with_profiled_sim<S>(
         sim: S,
@@ -285,9 +298,12 @@ impl ThreadsConfig {
             present,
             reader,
         } = profiler;
-        let mut cfg = Self::with_sim(Box::new(ProfiledSim::new(sim, sim_profiler, now_ns)), input);
+        let epoch = Arc::new(AtomicU64::new(0));
+        let profiled = ProfiledSim::new(sim, sim_profiler, now_ns).with_epoch(Arc::clone(&epoch));
+        let mut cfg = Self::with_sim(Box::new(profiled), input);
         cfg.now_ns = now_ns;
         cfg.loop_profiler = Some(sim_loop);
+        cfg.sim_epoch_ns = Some(epoch);
         cfg.render.present_profiler = Some(present);
         (cfg, reader)
     }
@@ -620,6 +636,7 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
         render,
         audio,
         loop_profiler,
+        sim_epoch_ns,
     } = cfg;
 
     let spawn = |threads: &mut Threads, name: &'static str, f: Box<dyn FnOnce() + Send>| {
@@ -643,7 +660,17 @@ pub fn spawn_threads(cfg: ThreadsConfig) -> Result<Threads, String> {
     let r = spawn(
         &mut threads,
         "sim",
-        Box::new(move || sim_thread(sim_loop, now_ns, timer, loop_profiler, &sd, &st)),
+        Box::new(move || {
+            sim_thread(
+                sim_loop,
+                now_ns,
+                timer,
+                loop_profiler,
+                sim_epoch_ns.as_deref(),
+                &sd,
+                &st,
+            );
+        }),
     );
     let (sd, st) = (Arc::clone(&shutdown), Arc::clone(&stats));
     let r = r.and_then(|()| {
@@ -840,22 +867,37 @@ pub(super) fn publish_input_overflow<S: SimStep>(
     }
 }
 
+/// Publishes the loop's epoch into the shared `epoch` (the
+/// [`ProfiledSim::with_epoch`] cell): one relaxed store, no allocation,
+/// lock or I/O (D5). Called after [`SimLoop::set_epoch_ns`] and after every
+/// [`SimLoop::skip_ticks`].
+pub(super) fn publish_epoch<S: SimStep>(sim_loop: &SimLoop<S>, epoch: Option<&AtomicU64>) {
+    if let Some(e) = epoch {
+        e.store(sim_loop.epoch_ns(), Ordering::Relaxed);
+    }
+}
+
 /// The real-time sim loop: accumulator timing with the catch-up cap, dropped
 /// ticks shift simulated time, hybrid sleep + spin until the next tick. No
 /// allocation, lock or I/O per tick (D5). With a `loop_profiler`, the
 /// input-overflow tick total is published after every batch of ticks
-/// ([`publish_input_overflow`]).
+/// ([`publish_input_overflow`]); with an `epoch` cell, the loop's epoch is
+/// published after it is set and after every skip ([`publish_epoch`]), so a
+/// [`ProfiledSim`] reads the tick clock the loop hands the step its events
+/// on (REQ-LAT-005).
 fn sim_thread<S: SimStep>(
     mut sim_loop: SimLoop<S>,
     now_ns: fn() -> u64,
     timer: HybridTimer,
     mut loop_profiler: Option<LoopProfiler>,
+    epoch: Option<&AtomicU64>,
     shutdown: &AtomicBool,
     stats: &OrchestratorStats,
 ) {
     let start = now_ns();
     let mut clock = SimClock::new(start);
     sim_loop.set_epoch_ns(start);
+    publish_epoch(&sim_loop, epoch);
     let stop = || shutdown.load(Ordering::Acquire);
     while !stop() {
         let dropped_before = clock.dropped_ticks();
@@ -863,6 +905,7 @@ fn sim_thread<S: SimStep>(
         let newly_dropped = clock.dropped_ticks() - dropped_before;
         if newly_dropped > 0 {
             sim_loop.skip_ticks(newly_dropped);
+            publish_epoch(&sim_loop, epoch);
             stats
                 .sim_dropped_ticks
                 .store(clock.dropped_ticks(), Ordering::Relaxed);
@@ -1035,6 +1078,31 @@ pub fn debug_view_hooks(
     (!hooks.is_empty()).then_some(hooks)
 }
 
+/// The HUD's rate lines from the orchestrator's counters (REQ-LAT-003):
+/// cumulative dropped ticks and the presented frames per second measured by
+/// `fps` since its previous reading at `now_ns`.
+fn hud_rates(fps: &mut FrameRateMeter, stats: &OrchestratorStats, now_ns: u64) -> HudRates {
+    HudRates {
+        dropped_ticks: stats.sim_dropped_ticks.load(Ordering::Relaxed),
+        presented_fps_milli: fps.sample(now_ns, stats.render_frames.load(Ordering::Relaxed)),
+    }
+}
+
+/// The render thread's HUD refresh: when `feed` refreshes (at most once per
+/// [`HUD_REFRESH_NS`]), its profiler lines followed by the rate lines
+/// ([`hud_rate_lines`]: presented fps, dropped ticks; REQ-LAT-003). `None`
+/// without a feed or between refreshes (keep showing the previous lines).
+fn refresh_hud(
+    feed: Option<&mut HudFeed>,
+    fps: &mut FrameRateMeter,
+    stats: &OrchestratorStats,
+) -> Option<Vec<String>> {
+    let now = monotonic_now_ns();
+    let mut lines = feed?.refresh(now)?;
+    lines.extend(hud_rate_lines(&hud_rates(fps, stats, now)));
+    Some(lines)
+}
+
 fn render_thread(
     cfg: RenderConfig,
     mut reader: TripleReader<FrameStateSnapshot>,
@@ -1064,6 +1132,8 @@ fn render_thread(
         ..table_render
     };
     let mut hud = hud.map(|r| HudFeed::new(r, HUD_REFRESH_NS));
+    // Presented fps between HUD refreshes (REQ-LAT-003).
+    let mut fps = FrameRateMeter::new();
     // The debug view's profiler hooks (`None`: plain `SurfaceSet::render`).
     let mut debug_hooks: Option<DebugViewHooks> = None;
     // GPU setup on this thread (the device lives here). Without surfaces
@@ -1180,8 +1250,7 @@ fn render_thread(
                 snapshot_lines(snap, &default_ball_radius, &mut lines);
                 let st = match debug_hooks.as_mut() {
                     Some(h) => {
-                        if let Some(text) = hud.as_mut().and_then(|f| f.refresh(monotonic_now_ns()))
-                        {
+                        if let Some(text) = refresh_hud(hud.as_mut(), &mut fps, stats) {
                             h.set_hud_lines(&text);
                         }
                         set.render_with(&lines, &camera, h)
@@ -1193,7 +1262,7 @@ fn render_thread(
                 paced = set.frame_paced(&st);
             }
             Some(Presenter::Table(_, s)) => {
-                if let Some(lines) = hud.as_mut().and_then(|h| h.refresh(monotonic_now_ns())) {
+                if let Some(lines) = refresh_hud(hud.as_mut(), &mut fps, stats) {
                     s.set_hud_lines(&lines);
                 }
                 let st = s.render(snap);
