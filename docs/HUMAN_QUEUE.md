@@ -529,3 +529,4 @@ The file's header read: “Frozen history as of 2026-11-18 (D41). New entries go
 ## New items
 
 P8 items raised from 2026-11-20 on are appended here, one line each.
+- ~~[P8 setting] [#80] Create the scheduled task that starts the next session for this repository, as in fineprint: GitHub trigger on pull requests merged into main from branches prefixed issue/, repository donfuldauer/kilohertz-pinball, prompt "Work on the next issue". Until it exists, merges start nothing; start a session with "Work on the next issue" by hand.~~ Resolved: the owner created the scheduled task (2026-11-21).

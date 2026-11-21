@@ -341,12 +341,13 @@ paths. Role agents never need SPEC as a whole, the issue tracker or this file.
 
 ### Branches and claims (D39)
 `main` is protected. Each unit of work is one GitHub issue and runs on its own branch from the
-latest `main` (`issue/<N>-<slug>` in its own worktree `../kilohertz-issue-<N>`, or the branch the
-session assigns) and reaches `main` only through its own PR, which closes the issue
+latest `main` (`issue/<N>-<slug>` in its own worktree `../kilohertz-issue-<N>`) and reaches `main` only through its own PR, which closes the issue
 (`Closes #<N>`). One issue, one branch, one PR. Work found along the way that the issue cannot
 absorb becomes a new `work-unit` issue with its dependencies filled in, attached to its tracking
-issue. If the session can push only to one assigned branch, the PR body says so and commit
-subjects carry the work item (`[#<N>] …`). A session claims an issue before working it and
+issue. The `issue/` prefix is required for the chain to continue: merging an `issue/` branch starts
+the next session (work-issue §8). If the session can push only to one assigned branch, the PR
+body says so and that the chain will not continue from this merge, and commit subjects carry
+the work item (`[#<N>] …`). A session claims an issue before working it and
 releases the claim by editing it (P1 "Working with GitHub"). Git tags are not used (D39): the
 session's git proxy refuses tag pushes, and the phase-gate row in `docs/RUN_LOG.md` (commit SHA
 and CI run) is the record. Release tags `v*` are pushed by the owner only (P8).
