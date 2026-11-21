@@ -144,14 +144,14 @@ If all CI checks on `headRefOid` are green, every finding is accounted for and e
 resolved, and no check is pending or `IN_PROGRESS`, but §2 item 4 is not yet satisfied on
 `headRefOid` (whether or not CodeRabbit has approved yet):
 
-- **Merge requested (`work-issue` or standalone with an explicit merge request):** start
-  `work-verifier` on `headRefOid`.
-  - If `work-verifier` returns `pass`, re-evaluate §2 and §3 on `headRefOid` (proceeding to §2
-    merge checks if CodeRabbit already approved, or to §3.D / §3.E if CodeRabbit review or approval
-    is still needed).
+- **Merge requested (`work-issue` or standalone with an explicit merge request), or standalone
+  report-only run where a fix was pushed:** start `work-verifier` on `headRefOid`.
+  - If `work-verifier` returns `pass`, re-evaluate §2 and §3 on `headRefOid` (proceeding to §2's
+    merge or report steps if CodeRabbit already approved, or to §3.D / §3.E if CodeRabbit review
+    or approval is still needed).
   - If `work-verifier` returns `fail`, route and fix the failures under §3.A (commit, verify that
     exact commit with `work-verifier`, push, and schedule the next check-in in §4).
-- **Standalone report-only run (no merge requested, no fixes pushed):** if neither `work-verifier`
+- **Standalone report-only run (no merge requested and no fixes pushed):** if neither `work-verifier`
   nor the applicable test and conformance suites have passed on `headRefOid`, run the applicable
   suites on `headRefOid`.
   - If they pass, re-evaluate §2 and §3 on `headRefOid` (stopping and reporting under §2 if
