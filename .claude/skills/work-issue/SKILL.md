@@ -52,18 +52,22 @@ Antigravity sessions without GitHub MCP tools, use the official `gh` CLI (`gh is
    step 0.
 2. **Dependencies.** The body's "Depends on" section lists `#numbers`; it is the only dependency
    record. Every one must be **satisfied** under the merged-PR rule (PROCESS.md P6 step 5): closed
-   as completed, and closed by a merged PR (read the blocker with `issue_read`, method `get`, or
-   `gh issue view`: its `closed_by_pull_requests.references` lists the PRs that closed it; confirm
-   each candidate with `pull_request_read`, method `get`, `merged` true, or `gh pr view`. Fallback
-   for a PR body that says `Closes #<n>` but is not linked:
-   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged "Closes #<n>"'`). A blocker closed without a merged PR counts only if a
-   comment on it names the replacement issue(s) that delivered the work and those replacements
-   pass the same test. A "None" entry is satisfied once any condition it states in words holds on
-   `origin/main` (for example "once the process migration (docs/PROCESS.md) is on `main`": the
-   file exists on `origin/main`). If any is unsatisfied, stop and tell the user which ones, and
-   which of them are themselves ready to start. Do not start blocked work. Without an issue
-   number, exclude this candidate instead and continue with the next one under step 0 (abandoned
-   candidates first, then ready issues).
+   as completed, and closed by a merged PR (via MCP: read the blocker with `issue_read`, method
+   `get` — `closed_by_pull_requests.references` lists the PRs that closed it — and confirm each
+   candidate with `pull_request_read`, method `get`, `merged` true; via `gh` CLI: run
+   `gh issue view <n> --json state,stateReason,closedByPullRequestsReferences` — its
+   `closedByPullRequestsReferences` array lists the closing PRs — and confirm each with
+   `gh pr view <p> --json merged`. Fallback for an unlinked PR body that uses `Closes #<n>` or
+   `Fixes #<n>`:
+   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged "Closes #<n>"'`
+   and, if empty, the same query with `"Fixes #<n>"`). A blocker closed without a merged PR counts
+   only if a comment on it names the replacement issue(s) that delivered the work and those
+   replacements pass the same test. A "None" entry is satisfied once any condition it states in
+   words holds on `origin/main` (for example "once the process migration (docs/PROCESS.md) is on
+   `main`": the file exists on `origin/main`). If any is unsatisfied, stop and tell the user which
+   ones, and which of them are themselves ready to start. Do not start blocked work. Without an
+   issue number, exclude this candidate instead and continue with the next one under step 0
+   (abandoned candidates first, then ready issues).
 3. Read the issues it depends on, `docs/DEVELOPMENT.md`, the SPEC sections and REQ IDs the issue
    names, and any `docs/DECISIONS.md` entries its area touches.
 4. **Claim, then verify.** This applies whether or not the prompt named the issue. GitHub has
@@ -78,27 +82,30 @@ Antigravity sessions without GitHub MCP tools, use the official `gh` CLI (`gh is
    start with `Released:` (MCP tools cannot delete comments, and editing keeps an audit trail).
    There is no time cutoff: label changes (including a person re-applying `ready`) never invalidate
    a live claim. A claim stops counting only when its session ends or releases it, and a session
-   releases its own claim (`update_issue_comment` or `gh api -X PATCH .../issues/comments/<id>`,
-   body `Released: <reason>`) whenever it loses (step 4), marks the issue blocked (§4) or finishes
-   (§7). Resuming abandoned work writes no separate record: claims from ended sessions are never
-   live, so they cannot govern, and the lowest-ID live claim still wins among sessions resuming at
-   the same time. Compare governing claims, never an issue's latest claim. This relies on GitHub
-   comment IDs being allocated in creation order and listed as soon as they are created: observed
-   behaviour that GitHub does not document. If it fails, two sessions can rarely start overlapping
-   work; the P6 merge conditions often, but not always, surface that as a conflict or a red check.
+   releases its own claim (`update_issue_comment`, body `Released: <reason>`, or
+   `gh api -X PATCH repos/donfuldauer/kilohertz-pinball/issues/comments/<id> -f body='Released: <reason>'`)
+   whenever it loses (step 4), marks the issue blocked (§4) or finishes (§7). Resuming abandoned
+   work writes no separate record: claims from ended sessions are never live, so they cannot
+   govern, and the lowest-ID live claim still wins among sessions resuming at the same time.
+   Compare governing claims, never an issue's latest claim. This relies on GitHub comment IDs being
+   allocated in creation order and listed as soon as they are created: observed behaviour that
+   GitHub does not document. If it fails, two sessions can rarely start overlapping work; the P6
+   merge conditions often, but not always, surface that as a conflict or a red check.
    1. Post the claim comment (`add_issue_comment` or `gh issue comment`): work has started, with
       the branch name and this session's ID (`get_session` with no argument in Claude Code, or the
       conversation/session ID and UTC timestamp in Gemini / Antigravity). Keep the returned comment
       ID.
-   2. Re-read all the issue's comments (`issue_read`, method `get_comments`, every page, or
-      `gh api repos/donfuldauer/kilohertz-pinball/issues/<N>/comments`), its labels and its state.
-      Your claim loses, and you release it, if the issue is now closed or labelled
-      `status:blocked-failure` or `blocked`, if the governing claim is not yours, or (without an
-      issue number) if the issue no longer qualifies as the candidate step 0 chose it as: a ready
-      candidate must still carry `ready` and must not have gained `in-progress` from another
-      session; an abandoned candidate must still have no other governing claim. With an issue
-      number, tell the user which session owns the issue and stop. Without one, return to step 0
-      and pick the next candidate.
+   2. Re-read **all** the issue's comments (`issue_read`, method `get_comments`, every page, or
+      `gh api -X GET repos/donfuldauer/kilohertz-pinball/issues/<N>/comments -F per_page=100 -F page=<P>`
+      paged explicitly with `P = 1, 2, …` until a page returns fewer than 100 items, never relying
+      on the default 30-item page), its labels and its state. Only compare claim IDs after the full
+      comment set has been fetched. Your claim loses, and you release it, if the issue is now
+      closed or labelled `status:blocked-failure` or `blocked`, if the governing claim is not
+      yours, or (without an issue number) if the issue no longer qualifies as the candidate step 0
+      chose it as: a ready candidate must still carry `ready` and must not have gained
+      `in-progress` from another session; an abandoned candidate must still have no other governing
+      claim. With an issue number, tell the user which session owns the issue and stop. Without
+      one, return to step 0 and pick the next candidate.
    3. **Path overlap.** A live claim reserves the issue's owned paths from the moment it is
       posted until the issue merges or is marked blocked. After posting yours, check this
       issue's owned paths against every other reservation: issues labelled `in-progress`, issues
@@ -136,21 +143,27 @@ Antigravity sessions without GitHub MCP tools, use the official `gh` CLI (`gh is
 ## 2. Branch
 
 Each issue gets its own git worktree, so issues running in parallel never share a working tree
-(if a sandbox restricts sibling directories and only one issue runs in the VM, use a regular branch
-in the checkout instead). One branch, one PR, one issue.
+(if a sandbox restricts sibling directories and only one issue runs in the VM, use the
+single-checkout fallback below). One branch, one PR, one issue.
 
 1. `git fetch origin`. Look for an existing branch and worktree for the issue: `git branch -a
    --list "*issue/<N>-*"` and `git worktree list`.
-2. **Found (a restart).** Resume it; never reset it to `origin/main`. Reuse the worktree if it
-   exists, otherwise `git worktree add ../kilohertz-issue-<N> <branch>` (for a remote-only
-   branch, `git worktree add -b <branch> ../kilohertz-issue-<N> origin/<branch>`). In the
-   worktree, if the remote branch exists, `git merge --ff-only origin/<branch>`. Read the issue
-   comments and the branch's commits, and continue from the step they show was reached.
-3. **Not found.** `git worktree add -B issue/<N>-<short-slug> ../kilohertz-issue-<N>
-   origin/main`.
+2. **Found (a restart).** Resume it; never reset it to `origin/main`.
+   - *Worktree:* reuse the worktree if it exists, otherwise `git worktree add ../kilohertz-issue-<N> <branch>`
+     (for a remote-only branch, `git worktree add -b <branch> ../kilohertz-issue-<N> origin/<branch>`).
+     In the worktree, if the remote branch exists, `git merge --ff-only origin/<branch>`.
+   - *Single-checkout fallback:* if the local branch exists, `git checkout <branch>`; for a
+     remote-only branch, `git checkout -b <branch> origin/<branch>`. If the remote branch exists,
+     `git merge --ff-only origin/<branch>`.
+   Read the issue comments and the branch's commits, and continue from the step they show was
+   reached.
+3. **Not found.**
+   - *Worktree:* `git worktree add -B issue/<N>-<short-slug> ../kilohertz-issue-<N> origin/main`.
+   - *Single-checkout fallback:* `git checkout -B issue/<N>-<short-slug> origin/main`.
 4. Every later step for this issue (agents' working directory, commits, pushes, checks) runs
-   inside that worktree. Cargo builds use `CARGO_TARGET_DIR=<repo-root>/target/<N>`
-   (`docs/DEVELOPMENT.md` "Agent environment"). The worktree is removed in §7.
+   inside that worktree (or directly in the checkout for the single-checkout fallback). Cargo
+   builds use `CARGO_TARGET_DIR=<repo-root>/target/<N>` (`docs/DEVELOPMENT.md` "Agent
+   environment"). If a worktree was created, it is removed in §7.
 
 The branch is always `issue/<N>-<short-slug>`: when GitHub-triggered session chaining is enabled,
 the next session starts only when an `issue/` branch merges (§8). If the session's environment
@@ -162,7 +175,8 @@ not continue from this merge: the owner restarts it with the scheduled task's "R
 1. Set `FABLE_ALLOWANCE` (Claude Code) or T3 availability (Gemini / Antigravity) (PROCESS.md P4):
    `insufficient` if the session reports a current rate limit, throttling or fallback at T3;
    otherwise `unknown`. In Claude Code, it becomes `sufficient` only through an owner `yes` in a
-   Fable ask.
+   Fable ask. On Gemini / Antigravity, it is `sufficient` when the active plan and quota support T3
+   and no rate limit, throttling or fallback is reported.
 2. Spawn `work-classifier` (via Claude Code's `Agent` tool or Antigravity's `invoke_subagent` /
    `define_subagent`, PROCESS.md P5) with: the full issue body, its number and URL, the full bodies
    of the issues it depends on (read via MCP `issue_read` or `gh issue view`; the classifier does
@@ -217,10 +231,11 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
    - **Claude Code:** subscribe to its activity (`subscribe_pr_activity`). If the session cannot
      subscribe, schedule a check-in with `send_later` (about 10 minutes) and end the turn with a
      one-line status; repeat check-ins until the PR merges.
-   - **Gemini / Antigravity:** Antigravity has no built-in PR auto-fix or GitHub-webhook
-     subscription. Use `/schedule` for in-session check-ins (or a polling `/automation` job), or
-     report the PR URL and pause until the owner triggers the follow-up check-in.
-   Never sleep-poll in a loop.
+   - **Gemini / Antigravity:** run the `pr-watch` skill (`.agents/skills/pr-watch/SKILL.md`), which
+     schedules non-blocking check-ins (`/schedule` or a single async background check-in), responds
+     to CodeRabbit findings, resolves review threads itself, and drives the PR to CodeRabbit
+     approval and green CI checks.
+   Never sleep-poll in a foreground loop.
 
 ## 6. Review rounds
 

@@ -67,9 +67,9 @@ tracking issues and body dependency lists"):
   dependency is satisfied only under the merged-PR rule (P6 step 5).
 - **Claims.** A session claims an issue with a comment naming its branch and session ID. A claim
   is released by editing that comment (`update_issue_comment` or
-  `gh api -X PATCH repos/donfuldauer/kilohertz-pinball/issues/comments/<comment_id>`) to
-  `Released: <reason>`; a released claim does not count. Claim ordering is in the `work-issue` skill
-  §1 step 4.
+  `gh api -X PATCH repos/donfuldauer/kilohertz-pinball/issues/comments/<comment_id> -f body='Released: <reason>'`)
+  to `Released: <reason>`; a released claim does not count. Claim ordering is in the `work-issue`
+  skill §1 step 4.
 - **Labels.** Applied with `issue_write` (MCP `labels` sets the whole list, so read the current list
   first) or `gh issue edit --add-label ... --remove-label ...` / `gh api -X PUT .../labels`. Every
   label exists before the first issue that uses it is created.
@@ -232,7 +232,7 @@ picks the lowest tier that can do the job.
 | T0 | Haiku 5.5 (`haiku`) | Flash-Lite (`flash_lite`) | Docs-only edits, run-log lines, formatting, renames, a review nit whose fix the comment spells out exactly |
 | T1 | Sonnet 5.5 (`sonnet`) | Flash (`flash`) | Well-specified changes in one module, adding tests, CI and workflow tweaks, most review findings, verification runs |
 | T2 | Opus 5.5 (`opus`) | Pro (`pro`, or `inherit` on a Pro/reasoning session) | New feature implementations, numerics, solvers, render pipelines, concurrency, cross-module changes, ambiguous work, every investigation |
-| T3 | Fable 5.2 (`fable`) | High-tier escalation (`pro` at maximum reasoning or `/boost`) | Only under the T3 / Fable rule below |
+| T3 | Fable 5.2 (`fable`) | High-tier escalation (`pro` at maximum reasoning) | Only under the T3 / Fable rule below |
 
 An issue's `tier:` label is the expected tier for its Implementer; the classifier may route lower,
 and each fix or finding is classified on its own. Verification runs on T1 (`Sonnet 5.5` / `Flash`)
@@ -241,8 +241,8 @@ implementing model. In Antigravity sessions where the user has not requested swi
 `invoke_subagent` may keep `inherit` when the harness policy requires it.
 
 ### Fable / T3 escalation rule (D34)
-T3 (Fable 5.2 on Claude Code; maximum-reasoning `pro` or `/boost` on Gemini / Antigravity) is an
-exception. It is used only when all three hold:
+T3 (Fable 5.2 on Claude Code; maximum-reasoning `pro` on Gemini / Antigravity) is an exception. It
+is used only when all three hold:
 1. **Need.** The work has a *very-high blast radius* (P3), **or** it is *extremely hard to
    troubleshoot*: two full issue-investigator passes at T2 (`Opus 5.5` / `Pro`) found no
    reproducible root cause, or T2 used up the P7 fix attempts, or the failure is non-deterministic
@@ -320,10 +320,11 @@ Canonical agent prompts live in `.claude/agents/` (loaded directly by Claude Cod
 custom subagents live in `.agents/agents/` and forward to them so role instructions stay in one
 place. In Antigravity environments that do not auto-load `.agents/agents/`, the Orchestrator
 registers each role with `define_subagent` (using the prompt from `.claude/agents/<name>.md`, with
-write tools enabled only for `task-executor`) and launches it with `invoke_subagent`. Subagents
-never spawn subagents (enforced by Claude Code and by policy in Gemini / Antigravity), so the
-Orchestrator (the main session) does every spawn, passing the classifier's brief **verbatim** and
-its model tier override. The Orchestrator writes no product code and reviews no code.
+write tools enabled only for `task-executor`) and launches it with `invoke_subagent`. (Standalone
+Gemini CLI does not discover `.agents/agents/`; see `GEMINI.md`.) Subagents never spawn subagents
+(enforced by Claude Code and by policy in Gemini / Antigravity), so the Orchestrator (the main
+session) does every spawn, passing the classifier's brief **verbatim** and its model tier override.
+The Orchestrator writes no product code and reviews no code.
 
 | Agent | Default tier (model) | Does | Never does |
 |---|---|---|---|
@@ -437,16 +438,17 @@ Orchestrator drives it to a merge without a person.
      CI). If the session cannot subscribe, schedule `send_later` check-ins about every 10 minutes
      until the PR merges.
    - **Gemini / Antigravity:** Antigravity has no built-in PR auto-fix or GitHub-webhook
-     subscription. Use `/schedule` for recurring in-session check-ins (optionally paired with
-     `/goal`), a persistent `/automation` job that polls open PRs via `gh`, or report the PR URL
-     and pause until the owner prompts a check-in.
+     subscription. Run the `pr-watch` skill (`.agents/skills/pr-watch/SKILL.md`), which schedules
+     non-blocking check-ins (`/schedule` or a single async background check-in, or a persistent
+     `/automation` job across sessions), addresses CodeRabbit findings, resolves review threads
+     itself, and repeats until CodeRabbit approves and PR checks are green.
 
    Every CodeRabbit comment and CI failure is handled as it arrives or on check-in; nobody
-   sleep-polls in a loop.
+   sleep-polls in a foreground loop.
 3. **Every finding is accounted for**, batch by batch (P5 "Batching"), for every CodeRabbit
    comment (inline, nitpick, outside-diff or summary item). Each ends in exactly one disposition,
    recorded as a reply on its thread (`add_reply_to_pull_request_comment` or
-   `gh api -X POST repos/{owner}/{repo}/pulls/{n}/comments/{comment_id}/replies`):
+   `gh api -X POST repos/{owner}/{repo}/pulls/{n}/comments/{comment_id}/replies -f body='<reply text>'`):
    - **Fixed:** an executor commit addresses it, the verifier re-runs the affected checks, and the
      reply names the commit. The thread is then resolved.
    - **Not a defect:** the reply gives the evidence that the finding is not reproducible in the
@@ -513,13 +515,15 @@ Orchestrator drives it to a merge without a person.
    if not), unsubscribes from the PR if subscribed, and **unblocks dependents**: every open
    `work-unit` issue whose **Depends on** entries are now all satisfied swaps its `blocked` label
    for `ready`, with a comment "Unblocked by #<N> (PR #<P>)". The **merged-PR rule:** a dependency
-   is satisfied only if it is closed as completed by a merged PR (check via MCP `issue_read`
-   `closed_by_pull_requests.references` + `pull_request_read` `merged` true, or via `gh issue view`
-   / `gh pr view`; fallback for an unlinked PR body saying `Closes #<n>`:
-   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged "Closes #<n>"'`),
-   or a comment on it names the replacement issue(s) that delivered the work and those pass the same
-   test. The run-log rows were committed in the PR itself; the merge commit is recorded in the
-   RUN_LOG row of the next PR. Nothing is pushed to `main` directly.
+   is satisfied only if it is closed as completed by a merged PR (via MCP: `issue_read`
+   `closed_by_pull_requests.references` + `pull_request_read` `merged` true; via `gh` CLI:
+   `gh issue view <n> --json state,stateReason,closedByPullRequestsReferences` + `gh pr view <p> --json merged`;
+   fallback for an unlinked PR body saying `Closes #<n>` or `Fixes #<n>`:
+   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged "Closes #<n>"'`
+   and, if empty, the same query with `"Fixes #<n>"`), or a comment on it names the replacement
+   issue(s) that delivered the work and those pass the same test. The run-log rows were committed
+   in the PR itself; the merge commit is recorded in the RUN_LOG row of the next PR. Nothing is
+   pushed to `main` directly.
 6. **Never**, to get green: skip, ignore, delete or weaken a test; force-push or rewrite history on
    a branch the agent did not create; push an empty commit; close and reopen a PR to restart CI;
    merge with a failing required check.

@@ -27,7 +27,8 @@ the `plan-from-spec` skill instead.
    throttling or fallback at T3; otherwise `unknown`. Re-check it before any call that could route
    T3. In Claude Code, it becomes `sufficient` for an item only through an owner `yes` in a Fable
    ask (P4: reminder first, one ask per batch, up to 30 minutes, per-item answers, no answer means
-   `unknown`).
+   `unknown`). On Gemini / Antigravity, it is `sufficient` when the active plan and quota support
+   T3 and no rate limit, throttling or fallback is reported.
 
 ## 1. Pick ready work
 

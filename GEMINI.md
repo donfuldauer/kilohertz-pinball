@@ -7,12 +7,22 @@
 - **Canonical instructions:** `AGENTS.md` is the shared source of truth. Antigravity loads
   `AGENTS.md` directly and treats `@./AGENTS.md` above as a path reference (avoiding duplicate
   context); Gemini CLI inlines `AGENTS.md` via `@./AGENTS.md`.
-- **Agents and skills:** workspace custom subagents live in `.agents/agents/` and skills in
-  `.agents/skills/` (both forward to the canonical Markdown definitions in `.claude/agents/` and
-  `.claude/skills/` so instructions stay in one place). In Antigravity environments that do not
-  auto-load `.agents/agents/`, register each role with `define_subagent` and invoke it with
-  `invoke_subagent`.
+- **Skills:** workspace skills live in `.agents/skills/` (discovered by both Antigravity and
+  Gemini CLI): `work-issue`, `run-plan`, `plan-from-spec` and `triage` forward to the canonical
+  Markdown definitions in `.claude/skills/`, and `pr-watch` (`.agents/skills/pr-watch/SKILL.md`)
+  is the Gemini / Antigravity-specific PR check-in and CodeRabbit resolution loop.
+- **Subagents (Antigravity vs. Gemini CLI):**
+  - **Antigravity:** workspace custom subagents live in `.agents/agents/` (forwarding to the
+    canonical role prompts in `.claude/agents/`). In Antigravity environments that do not
+    auto-load `.agents/agents/`, register each role with `define_subagent` and invoke it with
+    `invoke_subagent`.
+  - **Gemini CLI:** Gemini CLI does not discover `.agents/agents/` and does not have Antigravity's
+    `define_subagent` / `invoke_subagent` tools. For full multi-agent P4/P5 delegation, use
+    Antigravity (App, IDE, or `agy` CLI) or Claude Code. In a standalone Gemini CLI session, follow
+    the canonical role prompts in `.claude/agents/` directly (or mirror them into local
+    `.gemini/agents/` if using Gemini CLI custom subagents).
 - **GitHub:** use the GitHub MCP tools when configured, or the `gh` CLI (`gh issue`, `gh pr`,
   `gh run`, `gh api`) when connected via the Antigravity GitHub plugin (`docs/PROCESS.md` P1).
-- **Local overrides:** personal settings files `.gemini/settings.local.json` and
-  `.agents/settings.local.json` are git-ignored.
+- **Settings:** Antigravity stores personal configuration under `~/.gemini/config/`. Gemini CLI
+  uses `~/.gemini/settings.json` for user settings and `.gemini/settings.json` for project
+  settings (`.gemini/settings.json` is git-ignored so personal project overrides stay out of Git).
