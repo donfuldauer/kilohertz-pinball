@@ -23,9 +23,11 @@ may be unavailable; the MCP tools and the session's REST routes cover every step
    - **Finish unblocking first.** A merge starts this session (§8), sometimes before the merging
      session reaches §7 step 3, and a session can end before finishing it. So run §7 step 3's
      sweep, with its exceptions, over every open `work-unit` issue labelled `blocked` (label
-     search, explicit paging) before choosing. The comment is "Unblocked: every dependency is
-     satisfied (<list>)", or "Unblocked by #<N> (PR #<P>)" naming the dependency that closed last
-     when one can be identified.
+     search, explicit paging) before choosing. The comment is "Unblocked by #<N> (PR #<P>)"
+     (PROCESS.md P6), naming the dependency whose merged PR satisfied it last (a replacement issue
+     counts, §1 step 2). If no such issue and PR can be identified (for example the last open
+     entry was a "None" condition), change the label without a comment and say so in the RUN_LOG
+     row.
    - **Resume abandoned work next.** Candidates are open issues labelled `in-progress` (a closed
      issue that still carries the label is skipped) and your open PRs. Neither may belong to an
      issue labelled `status:blocked-failure` or `blocked`; those wait for a person or for their
@@ -40,9 +42,9 @@ may be unavailable; the MCP tools and the session's REST routes cover every step
    units), or if it is labelled `status:blocked-failure`: a person must clear that label before it
    is claimed. If it is labelled `blocked`, run the dependency check of step 2: if every
    dependency is satisfied the label is stale, so replace it with `ready` (`issue_write`, the
-   whole label list) and comment "Unblocked: every dependency is satisfied (<list>)"; otherwise
-   stop as step 2 says. Without an issue number, exclude this candidate instead and continue with
-   the next one under step 0.
+   whole label list) and comment as step 0 says ("Unblocked by #<N> (PR #<P>)", or no comment
+   when none can be identified); otherwise stop as step 2 says. Without an issue number, exclude
+   this candidate instead and continue with the next one under step 0.
 2. **Dependencies.** The body's "Depends on" section lists `#numbers`; it is the only dependency
    record. Every one must be **satisfied** under the merged-PR rule (PROCESS.md P6 step 5): closed
    as completed, and closed by a merged PR (read the blocker with `issue_read`, method `get`: its
@@ -232,15 +234,21 @@ last work-verifier result `pass` for the head):
    explicit paging) and re-check each one's "Depends on" list, whether or not it names `#<N>`
    (a dependency on a cancelled issue can be covered by a replacement issue). For each whose
    dependencies are now all satisfied (§1 step 2, replacements included), replace its `blocked`
-   label with `ready` and comment "Unblocked (PR #<P>)", naming `#<N>` ("Unblocked by #<N> (PR
-   #<P>)") only when it was one of the dependencies. The label change is one `issue_write` call
-   with the full label list (`ready` in, `blocked` out), so the issue is never without both.
+   label with `ready` and comment "Unblocked by #<N> (PR #<P>)", naming the dependency whose merged
+   PR satisfied it last (`#<N>` itself, a replacement, or another dependency); if none can be
+   identified, change the label without a comment, as §1 step 0 says. The label change is one
+   `issue_write` call with the full label list (`ready` in, `blocked` out), so the issue is never
+   without both. Re-read the issue's labels (`issue_read`, method `get`) immediately before that
+   call and build the list from them; if `status:blocked-failure` or `ready` is now present, or
+   `blocked` is gone, skip the write.
    Exceptions:
    - skip an issue that no longer carries `blocked`: the next session may already have unblocked
      it (§1 step 0);
    - skip one that also carries `status:blocked-failure`: a person must clear that hold
      (PROCESS.md P7);
-   - leave `blocked` on an issue whose "Depends on" lists no issue: a person set that hold;
+   - leave `blocked` on an issue whose "Depends on" section has no entries at all: a person set
+     that hold. Conditional entries (a "None" entry that states a condition in words) are
+     evaluated with §1 step 2's check and unblock the issue once they hold;
    - do not post an "Unblocked" comment if one is already there.
 4. Remove `in-progress` from the issue if it is still present (it closes through `Closes #<N>`),
    and release this session's claim (`Released: merged in PR #<P>`).
