@@ -7554,8 +7554,10 @@ recording `ProfiledSim::new` would record each input twice; this is documented o
 `SimLoop::set_latency_trace`, and four `if let Some(t)` hooks in `set_epoch_ns`, `skip_ticks` and
 `run_ticks_inner`: tick start, each delivered event, after the step) and
 `crates/pin_app/src/orchestrator/threads.rs` (a `latency_trace` field on `ThreadsConfig` and on
-`RenderConfig`, installed on the sim loop in `spawn_threads`, and one `presented(..)` call after
-each of the render thread's two present paths). `lib.rs` is unchanged.
+`RenderConfig`, installed on the sim loop in `spawn_threads`, and one frame-record call on each of
+the render thread's two present paths: `presented(..)` after the debug presenter's render, and on
+the table path `presented_at(..)` with the stamp the playfield hook took, see "#82 — Owned-path
+extension: present.rs playfield hook"). `lib.rs` is unchanged.
 
 **Rationale:** The applying tick, its tick end on the SDL clock, the drain times and the bat's
 first move are only known inside `SimLoop::run_ticks_inner`, and the present time only on the
@@ -7590,17 +7592,20 @@ tick after it), also when the press was applied in a later tick of the same catc
 applying tick's start in the energised direction ("#82 — move_tick: 1 degree in the energised
 direction"); `frame` is the first presented frame whose snapshot tick lies in `[move_tick,
 release_tick]`, `release_tick` being the `apply_tick` of the next release of the same input
-(unbounded without one), so the frame showed the bat raised while the key was held.
-`frames_to_photon` stays the raw count from the press. `present_ns` is the SDL clock read as the
-first action after `render()` returns. `pin_render`'s `render()` (not owned by this unit)
-reconfigures a suboptimal surface after `queue.present` before it returns, so on a suboptimal frame
-`present_ns` is later than the present by one reconfigure; frame counts can be off only by what
-lands in that interval (a request to `pin_render` for a present-time hook is reported, not made
-here). The trace file is created on the main thread at startup and written on the main thread after
-every sim, render and audio thread was joined; no thread that runs a tick or draws a frame touches
-the filesystem (same class as the startup table load). At startup the file is opened without
-truncation and refused unmodified when it is the `--table` bundle file (same device and inode; a
-canonical-path comparison off Unix); a value starting with `--` is an option, not a path. While
+(unbounded without one), and whose snapshot shows the bat raised at least 1 degree from the press's
+applying-tick base in the energised direction, so the frame showed the bat raised while the key was
+held (the angles are kept in memory for the join and not written). `frames_to_photon` stays the raw
+count from the press. On the table presenter path `present_ns` is the SDL clock read right after
+the playfield slot's present, before the other surfaces are drawn; on the `--debug-overlay` path it
+is read after the whole render call ("#82 — Review round 1: present time and trace write placement
+kept"). The trace file is prepared on the main thread at startup and written on the main thread
+after every sim, render and audio thread was joined; no thread that runs a tick or draws a frame
+touches the filesystem (same class as the startup table load). The trace is written to a sibling
+temp file (created at startup with `create_new` as the writability probe) and renamed over the
+destination at shutdown; the destination is never truncated, so a hard-linked bundle is safe. A
+destination that is the `--table` bundle file (same device and inode; a canonical-path comparison
+off Unix) is still refused before anything is created; a value starting with `--` is an option, not
+a path. While
 tracing, the main thread prints `pin_app: latency trace: first frame presented` once the first
 playfield frame was presented, which the driver waits for.
 
@@ -7629,8 +7634,11 @@ run's end is the trace's `run_end_ns`.
   by the deterministic SimLoop tests (`req_lat_004_apply_tick_is_the_delivering_tick`, the proptest
   `req_lat_004_first_executed_tick_and_req_lat_001_frames` in `tests/windowed/main.rs`, and
   `--test input_epoch`), not by the windowed run: the sim pops every ring event stamped at or before
-  the tick end, so an event in the ring cannot be skipped, and the trace has no receipt time to
-  tell a late arrival from a skipped one. Tracked in a follow-up work-unit issue: the platform
+  the tick end, up to the per-tick input buffer of 256 events (`INPUT_BUFFER_CAPACITY` in
+  `orchestrator/mod.rs`); eligible events beyond 256 are applied in the next executed tick (test
+  `input_overflow_defers_to_next_tick`), so an eligible event in the ring cannot be skipped as long
+  as at most 256 events are eligible in one tick. The trace has no receipt time to tell a late
+  arrival from a skipped one; the rest is tracked in a follow-up work-unit issue: the platform
   forwarder's receipt stamp in the trace.
   Check a's coil sub-check bounds `move_tick - apply_tick`, where `move_tick` is the first tick
   with at least 1 degree of raised-direction bat displacement. It is a proxy for the tick the coil
@@ -7658,9 +7666,12 @@ run's end is the trace's `run_end_ns`.
   maximum 6 plus a margin of 2 ticks, so 8. The pre-#81 behaviour delays the move by hundreds of ms
   to a second and still fails it by two orders of magnitude.
 - **b. Key to photon in frames (REQ-LAT-001, CI form).** For every press not stamped within 500 ms
-  of `run_end_ns` (excluded and counted): `frame` is the first presented frame whose snapshot tick
-  lies in `[move_tick, release_tick]` (the next release of the same input; unbounded without one):
-  the first frame that showed the bat raised while held. The gate is the raw count from the press:
+  of `run_end_ns` (excluded and counted): `frame` is the first presented frame whose snapshot shows
+  the bat displaced by at least 1 degree in the energised direction from the press's applying-tick
+  base, among the frames whose snapshot tick lies in `[move_tick, release_tick]` (the next release
+  of the same input; unbounded without one), in present order: the first frame that showed the bat
+  raised while held. `move_tick` only selects the earliest candidate frame; the count does not start
+  from it. The gate is the raw count from the press:
   `n_raw = frame - F0`, `F0` the last presented frame at or before `sdl_ts_ns`, and `n_raw <= 2`
   passes. Exactly one allowance: if the frame in flight at the press (`F0 + 1`, the first presented
   after `sdl_ts_ns`) was presented in `(sdl_ts_ns, sdl_ts_ns + bound_a + 8 ticks]` (`bound_a`
@@ -7670,8 +7681,11 @@ run's end is the trace's `run_end_ns`.
   p99 (the gated count: `n_adj` for a shifted press, else `n_raw`) and the number of "in-flight
   shifted" presses. A press with no move, or no frame that showed the bat raised while held
   ("no presented frame showed the bat raised while held"), fails. The trace column
-  `frames_to_photon` is the raw form; the verdict recomputes it and the join from the frame table
-  and fails on a mismatch.
+  `frames_to_photon` is the raw form; the verdict recomputes it from the frame table and fails on a
+  mismatch. The bat angles each frame drew are not in the file, so the verdict cannot repeat the
+  angle test: it checks that the trace's `frame` exists, matches its frame-table row
+  (`frame_snap_tick`, `present_ns`) and is a candidate (snapshot tick in `[move_tick,
+  release_tick]`, not before the first candidate), and fails otherwise.
 - **c. Real time (REQ-LAT-002, CI form).** `D * 1000 <= N + D` from the shutdown line, and `N`
   within 1 % of the run length in ms. The Low quality preset is not applied (it does not exist yet;
   REQ-LAT-006 belongs to another unit); only the worker-thread cap is.
@@ -7700,9 +7714,10 @@ flight presented 0.2 to 4.7 ms after the press, inside the deadline window); the
   it shifts by one frame at most, only inside the REQ-LAT-004 deadline, never for a late press, and
   every use is counted in the summary, so a renderer that is a frame slow still fails.
 - **Frames must show the bat raised while held.** A frame drawn after the release was applied may
-  show a bat already falling back below 1 degree; a bat raised monotonically while the key is held
-  stays at least 1 degree above its base until the release is applied, so a frame in
-  `[move_tick, release_tick]` shows the required displacement.
+  show a bat already falling back below 1 degree, and a ball impact or a stop rebound can drop the
+  bat below 1 degree after `move_tick` even while the key is held; a frame at the release tick may
+  show the bat falling. So the join tests each candidate frame's own snapshot with the same
+  1 degree predicate as `move_tick` (PR #146 review round 2), not the snapshot tick alone.
 - **`run_end_ns` from the trace's clock.** The last frame's present time ends the run early when
   rendering freezes, which would exclude (hide) every press made during the freeze.
 - **A press that never moved fails a.** A coil that never fires is the worst key-to-coil delay;
@@ -7808,11 +7823,17 @@ time: rejected, about 85 presses in 60 s.
 
 ## #82 — Review round 1: present time and trace write placement kept
 
-**Decision:** (1) `present_ns` stays the SDL clock read as the first action after `render()`
-returns; the limit on suboptimal frames (`render()` reconfigures the surface after `queue.present`
-before returning) is documented in `trace.rs`, the trace-format entry and DEVELOPMENT.md, and a
-present-time hook in `pin_render` is reported as a request, not made here. (2) The trace file is
-still written on the main thread after every engine thread was joined. (3) A frame counts for the
+**Decision:** (1) `present_ns`: since PR #146 review round 2 the table presenter path stamps right
+after the playfield present (`AppSurfaces::render_with_playfield_hook` calls the trace's hook once
+per playfield slot, right after its present and before the backglass and score slots are drawn).
+Remaining limits, documented in `trace.rs`, the trace-format entry and DEVELOPMENT.md: the
+playfield's present step reconfigures a suboptimal surface after `queue.present` before the hook
+runs (one reconfigure late on such a frame), and on the `--debug-overlay` path `present_ns` is
+sampled after the whole render call (the debug presenter lives in `pin_render`, outside this unit;
+a present-time hook there is reported as a request, not made here). (2) The trace file is
+still written on the main thread after every engine thread was joined, to a sibling temp file that
+is renamed over the destination at shutdown; the destination is never truncated, so a hard-linked
+bundle is safe. (3) A frame counts for the
 trace (and for the readiness line) only when the playfield surface presented (`paced_by` of the
 frame's statuses), never for a backglass-only present.
 
@@ -7824,3 +7845,28 @@ latency is about the playfield bat; a backglass present says nothing about it.
 **Alternatives:** (1) Moving the clock read into `pin_render`: deferred to that crate's owner. (2)
 An I/O worker streaming rows during the run: rejected, more moving parts for a file read once after
 the run.
+
+## #82 — Owned-path extension: present.rs playfield hook
+
+**Decision:** PR #146 review round 2 adds one method to `AppSurfaces` in
+`crates/pin_app/src/orchestrator/present.rs`: `render_with_playfield_hook(snap, on_playfield)`,
+which holds the body of `render()` and calls `on_playfield(status)` right after each playfield
+slot's `render_slot` returned, before the next slot; `render()` delegates to it with a no-op
+closure (same statuses, timer handling and frame counting). No other edit to the file. The render
+thread passes a hook that reads the trace clock on the playfield's `Presented` status
+(`FrameTraceWriter::stamp_playfield`), and records the frame with `presented_at`.
+
+**Rationale:** The review finding (B2) showed `present_ns` read after the whole render call can be
+late by the backglass and score surfaces' work, which can move a press's baseline frame. Only the
+slot loop knows when the playfield present returned; a hook is the smallest additive change and
+keeps `render()`'s behaviour. #83 (KP-003) owns `present.rs` and has not started; it inherits one
+additive public method and a delegating `render()`, and must keep the hook's contract (fires once
+per playfield slot, after its present or hand-off, before any other slot's work) if it reshapes the
+slot loop. A GPU test of the hook needs real SDL windows on the main thread (a `harness = false`
+`[[test]]` entry in `crates/pin_app/Cargo.toml`, outside this unit's paths), so the hook's ordering
+is covered by the windowed run and the pure test of `stamp_playfield`; the Cargo entry is reported
+as a request.
+
+**Alternatives:** A clock read inside `pin_render` (the debug presenter): outside this unit.
+Reordering the slots so the playfield is drawn last: changes `render()`'s behaviour and #83's
+design space. Reading the clock after `render()` (round 1): rejected by the finding.

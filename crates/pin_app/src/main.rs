@@ -42,12 +42,13 @@
 //!   event's SDL timestamp, applying tick, first bat-move tick, the first
 //!   frame that drew it and that frame's present time, plus the presented
 //!   frame table, into preallocated rings
-//!   (`orchestrator::trace`, which documents the CSV format). The file is
-//!   opened before anything starts (an unwritable path fails the run with
+//!   (`orchestrator::trace`, which documents the CSV format). A sibling
+//!   temp file is created before anything starts (an unwritable path fails the run with
 //!   `pin_app: --latency-trace: <error>`, a value starting with `--` with
 //!   `pin_app: --latency-trace needs a path`, and the `--table` bundle file
 //!   itself is refused unmodified), written on the main thread after the
-//!   threads were joined, with the run's end on the SDL clock read when the
+//!   threads were joined and renamed over the path (the path is never
+//!   truncated, so a hard-linked bundle is safe), with the run's end on the SDL clock read when the
 //!   run loop ended (`# run_end_ns=`), and summarised after the shutdown lines as
 //!   `pin_app: latency trace: <path>, <n> events, <m> frames, <k>
 //!   overflows`. While tracing, the main thread prints `pin_app: latency
@@ -66,7 +67,7 @@
 //! thread, wait (bounded) for a detached presenter to release its window,
 //! and if one never does, exit without destroying it.
 
-use pin_app::orchestrator::trace::{CollectedTrace, FlipperBindings, latency_trace, summary_line};
+use pin_app::orchestrator::trace::{FlipperBindings, latency_trace, summary_line};
 use pin_app::orchestrator::{
     AudioConfig, AudioSink, ClosePolicy, DISPLAY_RING_CAPACITY, DeviceStream, DropMonitor,
     FlipperOutline, NullSink, RegisteredSound, RenderConfig, RenderGpu, RunExit, RunLimits,
@@ -305,13 +306,83 @@ fn same_file(_: &std::fs::Metadata, a: &Path, _: &std::fs::Metadata, b: &Path) -
     )
 }
 
-/// `--latency-trace <file>`: the path and the file, opened now so an
-/// unwritable path fails before the app starts. A value that starts with
-/// `--` is an option, not a path (`./--x` is a path). The file is opened
-/// without truncation, compared with the `--table` path (when that is an
-/// existing file: a `.zip` bundle), and only truncated when it is a
-/// different file, so the trace can never overwrite the table bundle.
-fn open_latency_trace(args: &[String]) -> Result<Option<(PathBuf, std::fs::File)>, String> {
+/// The `--latency-trace` destination: the path the trace is written to and
+/// the file it is written into first. For a regular (or not yet existing)
+/// destination that is a sibling temp file, renamed over the destination by
+/// [`commit`](Self::commit), so the destination is never truncated and a
+/// path hard-linked to the table bundle only loses its link, never the
+/// bundle's bytes. A destination that exists and is not a regular file (a
+/// device, a fifo) is written directly. Dropped without a commit (a failed
+/// run), the temp file is removed and the destination is left untouched.
+#[derive(Debug)]
+struct TraceSink {
+    /// The `--latency-trace` path.
+    dest: PathBuf,
+    /// The sibling temp file while it is not committed (`None` when the
+    /// destination is written directly).
+    tmp: Option<PathBuf>,
+    /// The open temp file (or the destination when written directly).
+    file: Option<std::fs::File>,
+}
+
+/// Attempts at a fresh sibling temp-file name.
+const TRACE_TMP_TRIES: u32 = 8;
+
+impl TraceSink {
+    /// Writes `csv` and moves it into place: to the temp file (flushed and
+    /// synced; a platform that cannot sync the file is tolerated), then
+    /// renamed over the destination. On any error the temp file is removed
+    /// and the destination keeps its old content.
+    fn commit(mut self, csv: &[u8]) -> Result<(), String> {
+        let err = |e: std::io::Error| format!("--latency-trace: writing the trace: {e}");
+        let Some(mut file) = self.file.take() else {
+            return Err(err(std::io::Error::other("no open file")));
+        };
+        file.write_all(csv)
+            .and_then(|()| file.flush())
+            .map_err(err)?;
+        let Some(tmp) = self.tmp.as_ref() else {
+            // A device or fifo: written directly, nothing to move.
+            return Ok(());
+        };
+        match file.sync_all() {
+            Err(e)
+                if !matches!(
+                    e.kind(),
+                    std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput
+                ) =>
+            {
+                return Err(err(e));
+            }
+            _ => {}
+        }
+        drop(file);
+        std::fs::rename(tmp, &self.dest).map_err(err)?;
+        // Committed: nothing left for `Drop` to remove.
+        self.tmp = None;
+        Ok(())
+    }
+}
+
+impl Drop for TraceSink {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        if let Some(tmp) = self.tmp.take() {
+            let _ = std::fs::remove_file(tmp);
+        }
+    }
+}
+
+/// `--latency-trace <file>`: checked and prepared now so an unwritable path
+/// fails before the app starts. A value that starts with `--` is an option,
+/// not a path (`./--x` is a path). A destination that is the `--table`
+/// bundle file (when that is an existing file: a `.zip` bundle) is refused
+/// before anything is created. The destination itself is never opened for
+/// writing here (unless it is a device or fifo) and never truncated: the
+/// trace goes to a sibling temp file, created now with `create_new` as the
+/// writability probe and renamed over the destination by
+/// [`TraceSink::commit`] at shutdown.
+fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
     let Some(path) = path_of(args, "--latency-trace") else {
         return Ok(None);
     };
@@ -320,33 +391,64 @@ fn open_latency_trace(args: &[String]) -> Result<Option<(PathBuf, std::fs::File)
         return Err("--latency-trace needs a path".to_owned());
     }
     let io = |e: std::io::Error| format!("--latency-trace: {}: {e}", path.display());
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .map_err(io)?;
-    if let Some(Ok(table)) = path_of(args, "--table")
+    let dest_meta = std::fs::metadata(&path).ok();
+    if let Some(fm) = &dest_meta
+        && let Some(Ok(table)) = path_of(args, "--table")
         && let Ok(tm) = std::fs::metadata(&table)
         && tm.is_file()
+        && same_file(fm, &path, &tm, &table)
     {
-        let fm = file.metadata().map_err(io)?;
-        if same_file(&fm, &path, &tm, &table) {
-            return Err(format!(
-                "--latency-trace: {} is the --table bundle",
-                path.display()
-            ));
+        return Err(format!(
+            "--latency-trace: {} is the --table bundle",
+            path.display()
+        ));
+    }
+    if let Some(m) = &dest_meta
+        && !m.is_file()
+    {
+        // A device or fifo (a directory fails to open): written directly.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .map_err(io)?;
+        return Ok(Some(TraceSink {
+            dest: path,
+            tmp: None,
+            file: Some(file),
+        }));
+    }
+    let name = path
+        .file_name()
+        .ok_or_else(|| io(std::io::Error::other("not a file name")))?
+        .to_string_lossy()
+        .into_owned();
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let pid = std::process::id();
+    let mut last = None;
+    for n in 0..TRACE_TMP_TRIES {
+        let tmp = dir.join(format!(".{name}.{pid}.{n}.tmp"));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(file) => {
+                return Ok(Some(TraceSink {
+                    dest: path,
+                    tmp: Some(tmp),
+                    file: Some(file),
+                }));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+            Err(e) => return Err(io(e)),
         }
     }
-    file.set_len(0).map_err(io)?;
-    Ok(Some((path, file)))
-}
-
-/// Writes the collected trace to `file`.
-fn write_latency_trace(file: &mut std::fs::File, trace: &CollectedTrace) -> Result<(), String> {
-    file.write_all(trace.to_csv().as_bytes())
-        .and_then(|()| file.flush())
-        .map_err(|e| format!("--latency-trace: writing the trace: {e}"))
+    Err(io(last.unwrap_or_else(|| {
+        std::io::Error::other("no temp file name")
+    })))
 }
 
 fn run_app(args: &[String]) -> Result<(), String> {
@@ -558,11 +660,12 @@ fn run_app(args: &[String]) -> Result<(), String> {
     failure = merge_failure(failure, join_error);
     // Every thread is joined: drain the trace rings and write the file here,
     // on the main thread.
-    let trace_summary = match (trace, trace_file.as_mut()) {
-        (Some(collector), Some((path, file))) => {
+    let trace_summary = match (trace, trace_file.take()) {
+        (Some(collector), Some(sink)) => {
             let collected = collector.collect(run_end_ns);
-            match write_latency_trace(file, &collected) {
-                Ok(()) => Some(summary_line(path, &collected)),
+            let dest = sink.dest.clone();
+            match sink.commit(collected.to_csv().as_bytes()) {
+                Ok(()) => Some(summary_line(&dest, &collected)),
                 Err(e) => {
                     eprintln!("pin_app: {e}");
                     failure = merge_failure(failure, Some(e));
@@ -622,14 +725,37 @@ fn run_app(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{merge_failure, open_latency_trace, teardown_exit_code};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn args(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| (*s).to_owned()).collect()
     }
 
-    /// REQ-LAT-003: `--latency-trace` creates its file up front; an
-    /// unwritable path or a missing value is an error naming the flag;
-    /// without the flag nothing is opened.
+    /// A fresh, empty temp directory unique to this process and call.
+    fn fresh_dir(tag: &str) -> PathBuf {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("kp_trace_{tag}_{}_{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The names in `dir`, sorted.
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// REQ-LAT-003: `--latency-trace` prepares its file up front (a sibling
+    /// temp file; the destination keeps its old content until the commit
+    /// renames the trace over it); an unwritable path or a missing value is
+    /// an error naming the flag; without the flag nothing is opened.
     #[test]
     fn req_lat_003_latency_trace_flag_opens_the_file_up_front() {
         assert!(
@@ -645,15 +771,22 @@ mod tests {
             e.starts_with("--latency-trace: /nonexistent-dir/x/t.csv: "),
             "{e}"
         );
-        let dir = std::env::temp_dir().join(format!("kp_trace_flag_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = fresh_dir("flag");
         let p = dir.join("t.csv");
         std::fs::write(&p, "old").unwrap();
-        let (path, _file) = open_latency_trace(&args(&["--latency-trace", p.to_str().unwrap()]))
+        let sink = open_latency_trace(&args(&["--latency-trace", p.to_str().unwrap()]))
             .unwrap()
             .unwrap();
-        assert_eq!(path, p);
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "", "truncated");
+        assert_eq!(sink.dest, p);
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "old",
+            "never truncated at startup"
+        );
+        assert_eq!(names(&dir).len(), 2, "temp file created: {:?}", names(&dir));
+        sink.commit(b"csv").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "csv");
+        assert_eq!(names(&dir), vec!["t.csv".to_owned()], "temp file renamed");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -669,23 +802,94 @@ mod tests {
             "no file created"
         );
         let name = format!("./--kp002-trace-{}.csv", std::process::id());
-        let (path, _file) = open_latency_trace(&args(&["--latency-trace", &name]))
+        let sink = open_latency_trace(&args(&["--latency-trace", &name]))
             .unwrap()
             .unwrap();
+        let path = sink.dest.clone();
+        assert_eq!(path, Path::new(&name));
+        sink.commit(b"x").unwrap();
         assert!(path.is_file());
         std::fs::remove_file(&path).unwrap();
     }
 
-    /// REQ-LAT-003: a trace path that is the `--table` bundle file (through
-    /// a symlink or a hard link) is refused and the bundle is left
-    /// byte-for-byte unchanged; a distinct path is truncated; a `--table`
+    /// REQ-LAT-003 (B1): a trace path hard-linked to the bundle, on every
+    /// platform: the trace is written to a temp file and renamed over the
+    /// path, so the bundle's bytes are unchanged, the trace path holds the
+    /// CSV, and (where the platform can tell) the two paths are no longer
+    /// the same file.
+    #[test]
+    fn req_lat_003_hard_links_the_bundle_to_the_trace_path() {
+        let dir = fresh_dir("hard");
+        let bundle = dir.join("table.zip");
+        let bytes = b"PK\x03\x04 bundle bytes".to_vec();
+        std::fs::write(&bundle, &bytes).unwrap();
+        let hard = dir.join("hard.csv");
+        std::fs::hard_link(&bundle, &hard).unwrap();
+        let h = hard.to_str().unwrap();
+        let sink = open_latency_trace(&args(&["--latency-trace", h]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read(&bundle).unwrap(), bytes, "open left it");
+        sink.commit(b"trace csv\n").unwrap();
+        assert_eq!(std::fs::read(&bundle).unwrap(), bytes, "bundle unchanged");
+        assert_eq!(std::fs::read(&hard).unwrap(), b"trace csv\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let (a, b) = (
+                std::fs::metadata(&bundle).unwrap(),
+                std::fs::metadata(&hard).unwrap(),
+            );
+            assert_ne!((a.dev(), a.ino()), (b.dev(), b.ino()), "link replaced");
+            assert_eq!(a.nlink(), 1);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003: `--latency-trace` equal to the `--table` path is
+    /// refused before anything is created and the bundle is unchanged; a
+    /// distinct path keeps its content until the commit; a `--table`
     /// directory never aliases the trace file.
+    #[test]
+    fn req_lat_003_latency_trace_equal_to_the_table_is_refused() {
+        let dir = fresh_dir("same");
+        let bundle = dir.join("table.zip");
+        let bytes = b"PK\x03\x04 bundle bytes".to_vec();
+        std::fs::write(&bundle, &bytes).unwrap();
+        let b = bundle.to_str().unwrap();
+        let e = open_latency_trace(&args(&["--table", b, "--latency-trace", b])).unwrap_err();
+        assert_eq!(e, format!("--latency-trace: {b} is the --table bundle"));
+        assert_eq!(std::fs::read(&bundle).unwrap(), bytes, "bundle unchanged");
+        assert_eq!(names(&dir), vec!["table.zip".to_owned()], "nothing created");
+        // A distinct file next to it: kept until the commit replaces it.
+        let other = dir.join("trace.csv");
+        std::fs::write(&other, "old trace").unwrap();
+        let o = other.to_str().unwrap();
+        let sink = open_latency_trace(&args(&["--table", b, "--latency-trace", o]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(sink.dest, other);
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "old trace");
+        sink.commit(b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "new");
+        assert_eq!(std::fs::read(&bundle).unwrap(), bytes);
+        // A bundle directory: no alias check applies.
+        let d = dir.to_str().unwrap();
+        assert!(
+            open_latency_trace(&args(&["--table", d, "--latency-trace", o]))
+                .unwrap()
+                .is_some()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003: a trace path that is the `--table` bundle through a
+    /// symlink or a hard link is refused and the bundle is left
+    /// byte-for-byte unchanged (Unix: same device and inode).
     #[test]
     #[cfg(unix)]
     fn req_lat_003_latency_trace_never_overwrites_the_table_bundle() {
-        let dir = std::env::temp_dir().join(format!("kp_trace_alias_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = fresh_dir("alias");
         let bundle = dir.join("table.zip");
         let bytes = b"PK\x03\x04 bundle bytes".to_vec();
         std::fs::write(&bundle, &bytes).unwrap();
@@ -700,24 +904,66 @@ mod tests {
             assert_eq!(e, format!("--latency-trace: {a} is the --table bundle"));
             assert_eq!(std::fs::read(&bundle).unwrap(), bytes, "bundle unchanged");
         }
-        // A distinct file next to it: opened and truncated.
-        let other = dir.join("trace.csv");
-        std::fs::write(&other, "old trace").unwrap();
-        let o = other.to_str().unwrap();
-        let (path, _f) = open_latency_trace(&args(&["--table", b, "--latency-trace", o]))
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (B1): a symlinked trace path (not the `--table`) is
+    /// replaced by the trace; the link's target is left unchanged.
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_symlinked_trace_path_leaves_the_target_unchanged() {
+        let dir = fresh_dir("sym");
+        let target = dir.join("target.bin");
+        std::fs::write(&target, b"target bytes").unwrap();
+        let link = dir.join("link.csv");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let sink = open_latency_trace(&args(&["--latency-trace", link.to_str().unwrap()]))
             .unwrap()
             .unwrap();
-        assert_eq!(path, other);
-        assert_eq!(std::fs::read_to_string(&other).unwrap(), "");
-        assert_eq!(std::fs::read(&bundle).unwrap(), bytes);
-        // A bundle directory: no alias check applies.
-        let d = dir.to_str().unwrap();
+        sink.commit(b"csv").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"target bytes");
+        assert_eq!(std::fs::read(&link).unwrap(), b"csv");
         assert!(
-            open_latency_trace(&args(&["--table", d, "--latency-trace", o]))
+            !std::fs::symlink_metadata(&link)
                 .unwrap()
-                .is_some()
+                .file_type()
+                .is_symlink()
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (B1): a run that fails before the trace is written drops
+    /// the sink without a commit: the temp file is removed and an existing
+    /// destination is left intact.
+    #[test]
+    fn req_lat_003_dropped_sink_removes_the_temp_file() {
+        let dir = fresh_dir("drop");
+        let p = dir.join("t.csv");
+        std::fs::write(&p, "keep me").unwrap();
+        let sink = open_latency_trace(&args(&["--latency-trace", p.to_str().unwrap()]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(names(&dir).len(), 2);
+        drop(sink);
+        assert_eq!(names(&dir), vec!["t.csv".to_owned()]);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "keep me");
+        // A fresh destination: nothing left behind either.
+        let q = dir.join("new.csv");
+        drop(open_latency_trace(&args(&["--latency-trace", q.to_str().unwrap()])).unwrap());
+        assert_eq!(names(&dir), vec!["t.csv".to_owned()]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003: a destination that is not a regular file (a device) is
+    /// written directly, without a temp file.
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_device_destination_is_written_directly() {
+        let sink = open_latency_trace(&args(&["--latency-trace", "/dev/null"]))
+            .unwrap()
+            .unwrap();
+        assert!(sink.tmp.is_none());
+        sink.commit(b"csv").unwrap();
     }
 
     #[test]

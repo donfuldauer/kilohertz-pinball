@@ -15,7 +15,7 @@ mod verdict;
 
 use pin_app::orchestrator::SimClock;
 use pin_app::orchestrator::SimLoop;
-use pin_app::orchestrator::trace::{FlipperBindings, latency_trace};
+use pin_app::orchestrator::trace::{FlipperBindings, RAISE_THRESHOLD_RAD, latency_trace};
 use pin_core::snapshot::FlipperState;
 use pin_core::spsc::channel;
 use pin_core::{
@@ -535,7 +535,13 @@ fn req_lat_003_parser_is_strict_about_headers_and_trailer() {
         &InputEvent::button(T0 + 300_000, CabinetInput::LeftFlipper, true),
     );
     sim.end_tick(1, &snap);
-    fw.presented(true, 1);
+    fw.presented(
+        true,
+        &FrameStateSnapshot {
+            tick: 1,
+            ..FrameStateSnapshot::default()
+        },
+    );
     let text = c.collect(T0 + 5).to_csv();
     let t = parse_trace(&text).unwrap();
     assert_eq!(t.run_end_ns, T0 + 5);
@@ -620,6 +626,55 @@ fn req_lat_001_check_b_recomputes_the_join() {
     assert!(!evaluate(&t, &OK_SHUTDOWN, &params()).b.passed());
 }
 
+/// REQ-LAT-001 check b (B3): the app picks the first candidate frame whose
+/// snapshot shows the bat raised (the angles are not in the file), so a
+/// later candidate passes when it is consistent with the frame table; a
+/// frame before the move, before the first candidate or disagreeing with
+/// its frame-table row fails, and a press without a frame fails.
+#[test]
+fn req_lat_001_check_b_accepts_a_later_candidate_frame_only() {
+    let ts = T0 + 5_000_000_000;
+    let base = joined(vec![press(0, ts, 500_000)], frames(600));
+    assert_eq!(base.rows[0].frame, Some(51));
+    assert!(evaluate(&base, &OK_SHUTDOWN, &params()).b.passed());
+    let set = |t: &mut Trace, f: u64| {
+        let fr = t.frames[f as usize];
+        let r = &mut t.rows[0];
+        r.frame = Some(f);
+        r.frame_snap_tick = Some(fr.snap_tick);
+        r.present_ns = Some(fr.present_ns);
+        r.frames_to_photon = Some(f - 50);
+    };
+    // Frame 51 drew the bat fallen back: the app took frame 52.
+    let mut t = base.clone();
+    set(&mut t, 52);
+    let v = evaluate(&t, &OK_SHUTDOWN, &params());
+    assert!(v.b.passed(), "{}", v.report());
+    assert_eq!(v.summary.max_frames_raw, 2);
+    // Frame 50 drew tick 4900, before the move: not a candidate.
+    let mut t = base.clone();
+    set(&mut t, 50);
+    t.rows[0].frames_to_photon = Some(0);
+    assert!(!evaluate(&t, &OK_SHUTDOWN, &params()).b.passed());
+    // The row's snapshot tick disagrees with the frame table.
+    let mut t = base.clone();
+    set(&mut t, 52);
+    t.rows[0].frame_snap_tick = Some(5000);
+    assert!(!evaluate(&t, &OK_SHUTDOWN, &params()).b.passed());
+    // No frame showed the bat raised.
+    let mut t = base;
+    t.rows[0].frame = None;
+    t.rows[0].frames_to_photon = None;
+    let v = evaluate(&t, &OK_SHUTDOWN, &params());
+    assert!(
+        v.b.failures
+            .iter()
+            .any(|f| f.contains("no presented frame showed the bat raised while held")),
+        "{:?}",
+        v.b
+    );
+}
+
 /// REQ-LAT-002 check c: 60 dropped of 60 060 passes, 61 of 60 061 fails;
 /// a short run fails.
 #[test]
@@ -693,7 +748,13 @@ fn req_lat_003_text_round_trip_and_report() {
         &InputEvent::button(T0 + 300_000, CabinetInput::LeftFlipper, true),
     );
     sim.end_tick(1, &snap);
-    fw.presented(true, 1);
+    fw.presented(
+        true,
+        &FrameStateSnapshot {
+            tick: 1,
+            ..FrameStateSnapshot::default()
+        },
+    );
     let text = c.collect(T0 + 1_000_000_000).to_csv();
     let t = parse_trace(&text).unwrap();
     assert_eq!(t.rows.len(), 1);
@@ -810,15 +871,32 @@ struct Executed {
     tick: u64,
     end: u64,
     drain: u64,
+    /// The bats' angles (flippers 0 and 1) at the tick's end.
+    angles: [f32; 2],
 }
 
+/// The angles of flippers 0 and 1 in `snap` (0 when absent).
+fn bat_angles(snap: &FrameStateSnapshot) -> [f32; 2] {
+    let mut a = [0.0; 2];
+    for st in snap.flippers() {
+        if let Some(slot) = a.get_mut(usize::from(st.id.0)) {
+            *slot = st.angle_rad;
+        }
+    }
+    a
+}
+
+/// What [`run_scenario`] observed: the trace text, the executed ticks, the
+/// events' (raw stamp, arrival time) and the bat angles each presented
+/// frame drew (by frame index).
+type ScenarioRun = (String, Vec<Executed>, Vec<(u64, u64)>, Vec<[f32; 2]>);
+
 /// Runs `s` like the sim thread does (accumulator clock, catch-up cap,
-/// dropped ticks skipped), with the render thread's frames interleaved.
-/// Returns the trace text, the executed ticks and the events' (raw stamp,
-/// arrival time).
-fn run_scenario(s: &Scenario) -> (String, Vec<Executed>, Vec<(u64, u64)>) {
+/// dropped ticks skipped), with the render thread's frames interleaved
+/// (each drawing the latest published snapshot).
+fn run_scenario(s: &Scenario) -> ScenarioRun {
     let (mut tx, rx) = channel::<InputEvent>(256);
-    let (w, _r) = TripleBuffer::new(FrameStateSnapshot::default());
+    let (w, mut reader) = TripleBuffer::new(FrameStateSnapshot::default());
     let mut l = SimLoop::new(Bats::new(s.lag), rx, w);
     let (c, sim, mut fw) = latency_trace(bindings(), now);
     l.set_latency_trace(sim);
@@ -846,6 +924,7 @@ fn run_scenario(s: &Scenario) -> (String, Vec<Executed>, Vec<(u64, u64)>) {
     let mut executed = Vec::new();
     let mut rng = driver::Schedule::new(s.jitter);
     let mut wake = 0usize;
+    let mut frame_angles = Vec::new();
     while t < end_time {
         // Next wake: about one tick later, or a stall.
         let stall = s
@@ -858,7 +937,10 @@ fn run_scenario(s: &Scenario) -> (String, Vec<Executed>, Vec<(u64, u64)>) {
         // Frames presented while the sim slept.
         while next_frame <= t {
             set_now(next_frame);
-            fw.presented(true, l.tick());
+            let snap = reader.read();
+            assert_eq!(snap.tick, l.tick());
+            frame_angles.push(bat_angles(snap));
+            fw.presented(true, snap);
             next_frame += s.frame_period_us * 1000;
         }
         while next_ev < evs.len() && evs[next_ev].1 <= t {
@@ -878,6 +960,7 @@ fn run_scenario(s: &Scenario) -> (String, Vec<Executed>, Vec<(u64, u64)>) {
                 tick: l.tick(),
                 end: pin_core::sim::tick_end_ns(l.epoch_ns(), l.tick()),
                 drain: t,
+                angles: bat_angles(reader.read()),
             });
         }
     }
@@ -886,6 +969,7 @@ fn run_scenario(s: &Scenario) -> (String, Vec<Executed>, Vec<(u64, u64)>) {
         text,
         executed,
         evs.iter().map(|(e, a)| (e.timestamp_ns, *a)).collect(),
+        frame_angles,
     )
 }
 
@@ -896,10 +980,13 @@ proptest! {
     /// dropped ticks, every row's applying tick ends at or after its stamp
     /// and is the first executed tick that had received it (drained at or
     /// after its arrival) and whose end is not before its stamp;
-    /// `frames_to_photon` equals `frame - F0`.
+    /// `frames_to_photon` equals `frame - F0`, where `frame` is the first
+    /// frame with a snapshot tick in `[move_tick, release_tick]` whose drawn
+    /// bat is raised at least 1 degree from the applying tick's base
+    /// (re-derived here from the frames' own snapshots).
     #[test]
     fn req_lat_004_first_executed_tick_and_req_lat_001_frames(s in scenario()) {
-        let (text, executed, evs) = run_scenario(&s);
+        let (text, executed, evs, frame_angles) = run_scenario(&s);
         let t = parse_trace(&text).unwrap();
         prop_assert_eq!(t.rows.len(), evs.len());
         prop_assert_eq!(t.overflows, 0);
@@ -914,11 +1001,24 @@ proptest! {
             prop_assert_eq!(r.apply_tick, first.tick, "row {:?}", r);
             prop_assert_eq!(r.apply_tick_end_sdl_ns, first.end);
             prop_assert_eq!(r.drain_sdl_ns, first.drain);
-            // The join: derived from move_tick and the frame table first,
-            // then compared with the row (both present or both absent).
-            let expected = r
-                .move_tick
-                .and_then(|m| verdict::frame_showing(&t.frames, m, *release));
+            // The join: derived from move_tick, the frame table and the
+            // drawn angles first, then compared with the row (both present
+            // or both absent). The base is the bat at the applying tick's
+            // start: the previous executed tick's end (0 before the first).
+            let bat = usize::from(r.input == "right_flipper");
+            let base = executed
+                .iter()
+                .take_while(|e| e.tick < r.apply_tick)
+                .last()
+                .map_or(0.0, |e| e.angles[bat]);
+            let until = release.unwrap_or(u64::MAX);
+            let expected = r.move_tick.and_then(|m| {
+                t.frames.iter().find(|f| {
+                    f.snap_tick >= m
+                        && f.snap_tick <= until
+                        && frame_angles[f.frame as usize][bat] - base >= RAISE_THRESHOLD_RAD
+                })
+            });
             match expected {
                 Some(fr) => {
                     let f0 = verdict::last_frame_at_or_before(&t.frames, r.sdl_ts_ns);
@@ -950,7 +1050,7 @@ fn req_lat_003_trace_record_paths_do_not_allocate() {
     let (_, n) = guarded(|| std::hint::black_box(Box::new(1u8)));
     assert!(n >= 1, "allocator guard not armed");
     let (mut tx, rx) = channel::<InputEvent>(4096);
-    let (w, _r) = TripleBuffer::new(FrameStateSnapshot::default());
+    let (w, mut reader) = TripleBuffer::new(FrameStateSnapshot::default());
     let mut l = SimLoop::new(Bats::new(1), rx, w);
     let (c, sim, mut fw) = latency_trace(bindings(), now);
     l.set_latency_trace(sim);
@@ -973,15 +1073,15 @@ fn req_lat_003_trace_record_paths_do_not_allocate() {
             set_now(T0 + k * TICK_NS);
             l.run_ticks(1);
             if k % 7 == 0 {
-                fw.presented(true, l.tick());
+                fw.presented(true, reader.read());
             }
             if k % 300 == 0 {
                 l.skip_ticks(5);
             }
         }
         l.run_ticks(8);
-        fw.presented(false, l.tick());
-        fw.presented(true, l.tick());
+        fw.presented(false, reader.read());
+        fw.presented(true, reader.read());
     });
     assert_eq!(allocs, 0, "the traced tick and frame paths allocated");
     let t = c.collect(0);

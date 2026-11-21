@@ -377,14 +377,21 @@ are stable (Gate A3 and KP-043 read them). All times are on SDL's clock (`SDL_Ge
 `move_tick` is the first tick at whose end a bat bound to the pressed input is raised at least
 1 degree (0.01745 rad) from its angle at the applying tick's start, in its energised direction
 (the sign of the flipper's sweep); a bat still returning from an earlier release never sets it.
-`frame` is the first presented frame whose snapshot tick lies between `move_tick` and the
-`apply_tick` of the next release of the same input. For a press with `stall = 1`,
-`prev_drain_sdl_ns` and `drain_sdl_ns` are the stall's start and end (so their difference is the
-stall). `present_ns` is the SDL clock read as the first action after `render()` returned;
-`pin_render`'s `render()` reconfigures a suboptimal surface after `queue.present` before
-returning, so on such a frame `present_ns` is later than the present by one reconfigure. The trace
-file is created on the main thread at startup (refused, unmodified, when it is the `--table`
-bundle file; a value starting with `--` is not a path) and written on the main thread after every
+`frame` is the first presented frame, in present order, whose snapshot tick lies between
+`move_tick` and the `apply_tick` of the next release of the same input and whose snapshot shows the
+bat displaced at least 1 degree in the energised direction from the press's applying-tick base (a
+bat that crossed 1 degree and fell back is matched to a later frame that shows it raised, or to
+none); `frames_to_photon = frame - F0` counts from the press timestamp (`F0` the last frame
+presented at or before it), and `move_tick` only selects the earliest candidate frame. For a press
+with `stall = 1`, `prev_drain_sdl_ns` and `drain_sdl_ns` are the stall's start and end (so their
+difference is the stall). On the table presenter path `present_ns` is the SDL clock read right
+after the playfield surface's present returned, before the backglass and score surfaces are drawn;
+the present step reconfigures a suboptimal surface before returning, so on such a frame it is later
+than the present by one reconfigure, and on the `--debug-overlay` path it is read after the whole
+render call (the debug presenter lives in `pin_render`). The trace is written to a sibling temp
+file and renamed over the destination at shutdown; the destination is never truncated, so a
+hard-linked bundle is safe (the `--table` bundle file itself is refused before anything is created;
+a value starting with `--` is not a path). It is written on the main thread after every
 sim, render and audio thread was joined; no thread that runs a tick or draws a frame touches the
 filesystem (same class as the startup table load). Records go into rings preallocated before the
 threads start, and `pin_app: latency trace: <path>, <n> events, <m> frames, <k> overflows` follows
@@ -402,7 +409,10 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
   after the previous executed tick, or after dropped ticks) and was applied in that tick or a later
   tick of the same catch-up batch: the sim thread's own scheduling and the timestamp, never the
   lateness being checked. That the applying tick is the first executed tick that received the
-  press is verified by the deterministic SimLoop tests, not by this run (DECISIONS.md).
+  press is verified by the deterministic SimLoop tests, not by this run (DECISIONS.md); the sim
+  pops every ring event stamped at or before the tick end up to the per-tick input buffer of 256
+  events (`INPUT_BUFFER_CAPACITY`), and eligible events beyond 256 are applied in the next executed
+  tick.
 - **b. Key to photon in frames (REQ-LAT-001, CI form).** For each press except those stamped
   within 500 ms of `run_end_ns` (excluded and counted): the raw count `n_raw = frame - F0`, `F0` the
   last presented frame at or before `sdl_ts_ns`, must be `<= 2`, with one allowance: when the frame
@@ -410,7 +420,8 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
   + `8` ticks, the count may start after it (`n_adj = frame - in_flight <= 2`; never for a
   press that failed check a). The summary prints the raw and adjusted max and p99 and how many
   presses were "in-flight shifted". A press with no move, or no frame that showed the bat raised
-  while held, fails. Counted in frames, never milliseconds (lavapipe draws about 8 frames per
+  while held, fails. The trace's `frame` is chosen by the app (the drawn angles are not in the
+  file); the verdict checks it exists, matches the frame table and is a candidate. Counted in frames, never milliseconds (lavapipe draws about 8 frames per
   second); key-to-photon p50/p99 in ms is printed as information.
 - **c. Real time (REQ-LAT-002, CI form).** From `pin_app: N sim ticks (D dropped), ...`:
   `D / (N + D) <= 0.001`, and `N` within 1 % of 60 000. The simulated-to-wall ratio `N / (N + D)`

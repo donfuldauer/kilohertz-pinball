@@ -81,12 +81,19 @@
 //!      other way (a bat still returning from an earlier release) never sets
 //!      it. Empty otherwise (a release, an unbound input, or no such raise
 //!      within [`MOVE_TIMEOUT_TICKS`]);
-//!    * `frame`: the index of the first presented frame whose snapshot tick
-//!      is `>= move_tick` and `<= release_tick`, where `release_tick` is the
-//!      `apply_tick` of the next release (`down = 0`) of the same input
-//!      after this press (unbounded when there is none): the first frame
-//!      that showed the bat raised while the key was held. Empty without a
-//!      move or such a frame;
+//!    * `frame`: the index of the first presented frame, in present order,
+//!      whose snapshot tick is `>= move_tick` and `<= release_tick` (the
+//!      `apply_tick` of the next release, `down = 0`, of the same input
+//!      after this press; unbounded when there is none) and whose snapshot
+//!      shows one of the press's bats raised by at least 1 degree from its
+//!      angle at the applying tick's start, in its energised direction (the
+//!      same test as `move_tick`): the first frame that showed the bat
+//!      displaced while the key was held. A bat that crossed 1 degree and
+//!      fell back below it (a ball impact, a stop rebound) is matched only
+//!      to a later frame that shows it raised again; a frame drawn at the
+//!      release tick counts only when it still shows the bat raised.
+//!      `move_tick` only selects the earliest candidate frame. Empty without
+//!      a move or such a frame;
 //!    * `frame_snap_tick`, `present_ns`: that frame's snapshot tick and
 //!      present time (see the frame table);
 //!    * `frames_to_photon`: `frame - F0`, where `F0` is the index of the
@@ -95,14 +102,21 @@
 //! 2. One empty line, then the **frame table**: the header line
 //!    [`FRAME_HEADER`] (`frame,snap_tick,present_ns`) and one row per
 //!    presented playfield frame (0-based index in present order, the
-//!    snapshot tick it drew, its present time). `present_ns` is the SDL
-//!    clock read as the first action after the render call returned. That
-//!    render call (`pin_render`) reconfigures a suboptimal surface after
-//!    `queue.present` before it returns, so on a suboptimal frame
-//!    `present_ns` is later than the present by one reconfigure; frame
-//!    counts can shift only by what lands in that interval. A frame counts
-//!    only when the playfield surface presented (a backglass-only present
-//!    is not a frame here).
+//!    snapshot tick it drew, its present time). On the table presenter path
+//!    `present_ns` is the SDL clock read right after the playfield
+//!    surface's present returned, before any other surface (backglass,
+//!    score display) is drawn
+//!    ([`AppSurfaces::render_with_playfield_hook`](super::AppSurfaces::render_with_playfield_hook)).
+//!    Two limits remain: the playfield's present step reconfigures a
+//!    suboptimal surface after `queue.present` before it returns, so on a
+//!    suboptimal frame `present_ns` is later than the present by one
+//!    reconfigure; and on the `--debug-overlay` path `present_ns` is
+//!    sampled after the whole render call (the debug presenter lives in
+//!    `pin_render`, outside this unit). Frame counts can shift only by what
+//!    lands in those intervals. A frame counts only when the playfield
+//!    surface presented (a backglass-only present is not a frame here). The
+//!    bat angles each frame drew are kept in memory for the join and are
+//!    not written.
 //! 3. The **trailer**: two lines,
 //!    `# overflows: input=<n> move=<n> frame=<n> pending=<n>` (the rows lost
 //!    to full rings, [`TraceOverflows`]; each counter exactly once), then
@@ -255,25 +269,35 @@ struct Stall {
     end_drain: u64,
 }
 
-/// The first tick a press's bat moved at.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// The first tick a press's bat moved at, with what the frame join needs
+/// to find the first frame that showed it.
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct MoveRecord {
     /// `event_seq` of the press.
     pub seq: u64,
     /// `move_tick`.
     pub move_tick: u64,
+    /// The flippers the press drives (bit `i` = `FlipperId(i)`).
+    pub mask: u16,
+    /// Every bat's angle at the applying tick's start (by flipper id): the
+    /// base the raise is measured from.
+    pub base: [f32; MAX_FLIPPERS],
 }
 
 /// One presented frame.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct FrameRecord {
     /// 0-based index in present order.
     pub frame: u64,
     /// The snapshot tick the frame drew.
     pub snap_tick: u64,
-    /// SDL clock read as the first action after the render call returned,
-    /// ns (see the module documentation for the suboptimal-surface limit).
+    /// The trace clock read right after the playfield present, ns (see the
+    /// module documentation for the limits).
     pub present_ns: u64,
+    /// The bats' angles in the snapshot the frame drew, by flipper id (0
+    /// for a flipper not in it). Not written to the file: parsed frames
+    /// carry zeros.
+    pub angles: [f32; MAX_FLIPPERS],
 }
 
 /// One event-table row: the sim's record joined with its bat move and the
@@ -363,21 +387,21 @@ fn angles(snap: &FrameStateSnapshot) -> [f32; MAX_FLIPPERS] {
     a
 }
 
-/// Whether one of `mask`'s bats in `snap` is raised by at least
-/// [`RAISE_THRESHOLD_RAD`] from `base`, in its energised direction
-/// ([`FlipperBindings::raise_sign`]). Motion the other way never counts.
+/// Whether one of `mask`'s bats at `angles` (by flipper id, [`angles`]) is
+/// raised by at least [`RAISE_THRESHOLD_RAD`] from `base`, in its
+/// energised direction ([`FlipperBindings::raise_sign`]). Motion the other
+/// way never counts. The one predicate for `move_tick` and the frame join.
 fn raised(
-    snap: &FrameStateSnapshot,
+    angles: &[f32; MAX_FLIPPERS],
     mask: u16,
     bindings: &FlipperBindings,
     base: &[f32; MAX_FLIPPERS],
 ) -> bool {
-    snap.flippers().iter().any(|st| {
-        let id = u16::from(st.id);
-        let i = usize::from(id);
-        i < MAX_FLIPPERS
-            && mask & (1 << id) != 0
-            && (st.angle_rad - base[i]) * bindings.raise_sign(id) >= RAISE_THRESHOLD_RAD
+    (0..MAX_FLIPPERS).any(|i| {
+        // `i < MAX_FLIPPERS <= 16`: the id fits a `u16` bit of `mask`.
+        let id = i as u16;
+        mask & (1 << id) != 0
+            && (angles[i] - base[i]) * bindings.raise_sign(id) >= RAISE_THRESHOLD_RAD
     })
 }
 
@@ -497,11 +521,14 @@ impl SimTraceWriter {
     /// [`RAISE_THRESHOLD_RAD`] in its energised direction.
     pub fn end_tick(&mut self, tick: u64, after: &FrameStateSnapshot) {
         let (moves, counters, bindings) = (&mut self.moves, &self.counters, &self.bindings);
+        let now = angles(after);
         self.pending.retain(|p| {
-            if raised(after, p.mask, bindings, &p.base) {
+            if raised(&now, p.mask, bindings, &p.base) {
                 let m = MoveRecord {
                     seq: p.seq,
                     move_tick: tick,
+                    mask: p.mask,
+                    base: p.base,
                 };
                 if moves.push(m).is_err() {
                     counters.moves.fetch_add(1, Ordering::Relaxed);
@@ -525,21 +552,58 @@ pub struct FrameTraceWriter {
 }
 
 impl FrameTraceWriter {
-    /// Records one render-loop iteration that drew `snap_tick`. Reads the
-    /// trace clock first (call it right after the render call returned);
-    /// when `playfield_presented` (the playfield surface presented, e.g.
-    /// `pin_render::gpu::paced_by` of the frame's statuses) a frame row with
-    /// that time is pushed. A backglass- or score-only present is not a
-    /// frame. Returns whether a frame was counted.
-    pub fn presented(&mut self, playfield_presented: bool, snap_tick: u64) -> bool {
+    /// The trace clock (the SDL event clock), read now. The table presenter
+    /// path reads it inside the playfield hook
+    /// ([`AppSurfaces::render_with_playfield_hook`](super::AppSurfaces::render_with_playfield_hook)),
+    /// right after the playfield present, and passes it to
+    /// [`presented_at`](Self::presented_at).
+    pub fn now_ns(&self) -> u64 {
+        (self.clock)()
+    }
+
+    /// The playfield hook's body on the table presenter path: when
+    /// `status` is [`SurfaceStatus::Presented`](pin_render::gpu::SurfaceStatus::Presented)
+    /// (the playfield slot presented, the predicate of
+    /// `pin_render::gpu::paced_by`) and `stamp` is still empty, stores
+    /// [`now_ns`](Self::now_ns) in it; otherwise reads no clock. The first
+    /// presented playfield slot of the frame sets the present time.
+    pub fn stamp_playfield(&self, stamp: &mut Option<u64>, status: pin_render::gpu::SurfaceStatus) {
+        if stamp.is_none() && status == pin_render::gpu::SurfaceStatus::Presented {
+            *stamp = Some(self.now_ns());
+        }
+    }
+
+    /// Records one render-loop iteration that drew `snap`. Reads the trace
+    /// clock first (call it right after the render call returned) and
+    /// calls [`presented_at`](Self::presented_at) with it. Used where the
+    /// playfield's own present time cannot be read (the `--debug-overlay`
+    /// presenter, which lives in `pin_render`).
+    pub fn presented(&mut self, playfield_presented: bool, snap: &FrameStateSnapshot) -> bool {
         let present_ns = (self.clock)();
+        self.presented_at(playfield_presented, snap, present_ns)
+    }
+
+    /// Records one render-loop iteration that drew `snap`, presented at
+    /// `present_ns` (trace clock; this does not read the clock). When
+    /// `playfield_presented` (the playfield surface presented, e.g.
+    /// `pin_render::gpu::paced_by` of the frame's statuses) a frame row with
+    /// `snap`'s tick, that time and `snap`'s bat angles is pushed. A
+    /// backglass- or score-only present is not a frame. Returns whether a
+    /// frame was counted.
+    pub fn presented_at(
+        &mut self,
+        playfield_presented: bool,
+        snap: &FrameStateSnapshot,
+        present_ns: u64,
+    ) -> bool {
         if !playfield_presented {
             return false;
         }
         let rec = FrameRecord {
             frame: self.next_frame,
-            snap_tick,
+            snap_tick: snap.tick,
             present_ns,
+            angles: angles(snap),
         };
         self.next_frame += 1;
         self.counters.presented.fetch_add(1, Ordering::Relaxed);
@@ -556,6 +620,7 @@ pub struct TraceCollector {
     moves: SpscConsumer<MoveRecord>,
     frames: SpscConsumer<FrameRecord>,
     counters: Arc<Counters>,
+    bindings: FlipperBindings,
 }
 
 /// A latency trace with the default capacities ([`INPUT_TRACE_CAPACITY`],
@@ -605,6 +670,7 @@ pub fn latency_trace_with_capacity(
         moves: mrx,
         frames: frx,
         counters,
+        bindings,
     };
     (collector, sim, render)
 }
@@ -635,7 +701,7 @@ impl TraceCollector {
             frames.push(f);
         }
         CollectedTrace {
-            rows: join_trace(&inputs, &moves, &frames),
+            rows: join_trace(&inputs, &moves, &frames, &self.bindings),
             frames,
             overflows: self.counters.read(),
             run_end_ns,
@@ -665,29 +731,40 @@ pub fn release_ticks(inputs: &[InputRecord]) -> Vec<Option<u64>> {
 }
 
 /// Joins the sim's input and move records with the frame table: each row
-/// gets its `move_tick`, the first frame whose snapshot tick is
-/// `>= move_tick` and `<= release_tick` (the next release of the same
-/// input, [`release_ticks`]; unbounded without one): the first frame that
-/// showed the bat raised while the key was held. Then that frame's
-/// snapshot tick and present time, and `frames_to_photon = frame - F0`
-/// ([`last_frame_at_or_before`] the press's SDL timestamp). `frames` must
-/// be in present order.
+/// gets its `move_tick` and the first frame, in present order, whose
+/// snapshot tick is `>= move_tick` and `<= release_tick` (the next release
+/// of the same input, [`release_ticks`]; unbounded without one) and whose
+/// snapshot shows one of the press's bats raised by at least
+/// [`RAISE_THRESHOLD_RAD`] (1 degree) from the press's base (its applying
+/// tick's start) in the energised direction of `bindings`: the same
+/// predicate as `move_tick`, so a bat that crossed 1 degree and fell back
+/// (a ball impact, a stop rebound) is matched only to a later frame that
+/// shows it raised again, and a frame at the release tick counts only when
+/// it still shows the bat raised. A press no eligible frame shows raised
+/// gets no frame. Then that frame's snapshot tick and present time, and
+/// `frames_to_photon = frame - F0` ([`last_frame_at_or_before`] the
+/// press's SDL timestamp: the raw count starts from the press, `move_tick`
+/// only selects the frame). `frames` must be in present order.
 pub fn join_trace(
     inputs: &[InputRecord],
     moves: &[MoveRecord],
     frames: &[FrameRecord],
+    bindings: &FlipperBindings,
 ) -> Vec<TraceRow> {
     let releases = release_ticks(inputs);
     inputs
         .iter()
         .zip(releases)
         .map(|(r, release)| {
-            let move_tick = moves.iter().find(|m| m.seq == r.seq).map(|m| m.move_tick);
+            let mv = moves.iter().find(|m| m.seq == r.seq);
+            let move_tick = mv.map(|m| m.move_tick);
             let until = release.unwrap_or(u64::MAX);
-            let drawn = move_tick.and_then(|t| {
-                frames
-                    .iter()
-                    .find(|f| f.snap_tick >= t && f.snap_tick <= until)
+            let drawn = mv.and_then(|m| {
+                frames.iter().find(|f| {
+                    f.snap_tick >= m.move_tick
+                        && f.snap_tick <= until
+                        && raised(&f.angles, m.mask, bindings, &m.base)
+                })
             });
             TraceRow {
                 input: *r,
@@ -705,7 +782,7 @@ pub fn join_trace(
 }
 
 /// A complete trace: the event rows, the frame table and the overflows.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CollectedTrace {
     /// The event table.
     pub rows: Vec<TraceRow>,
@@ -806,6 +883,7 @@ impl CollectedTrace {
                 frame: int(f[0])?,
                 snap_tick: int(f[1])?,
                 present_ns: int(f[2])?,
+                angles: [0.0; MAX_FLIPPERS],
             });
         }
         let trailer = trailer.ok_or_else(|| "missing trailer".to_owned())?;
@@ -955,11 +1033,46 @@ mod tests {
         }
     }
 
+    /// A frame as the file holds it (no bat angles).
     fn frame(frame: u64, snap_tick: u64, present_ns: u64) -> FrameRecord {
         FrameRecord {
             frame,
             snap_tick,
             present_ns,
+            angles: [0.0; MAX_FLIPPERS],
+        }
+    }
+
+    /// A frame whose snapshot shows flipper 0 raised 0.5 rad (above 1
+    /// degree from a zero base, positive direction).
+    fn shown(f: u64, snap_tick: u64, present_ns: u64) -> FrameRecord {
+        let mut r = frame(f, snap_tick, present_ns);
+        r.angles[0] = 0.5;
+        r
+    }
+
+    /// The move of press `seq` at `move_tick`: flipper 0, zero base.
+    fn mv0(seq: u64, move_tick: u64) -> MoveRecord {
+        MoveRecord {
+            seq,
+            move_tick,
+            mask: 1,
+            base: [0.0; MAX_FLIPPERS],
+        }
+    }
+
+    /// Bindings of the join tests: left flipper to flipper 0, positive.
+    fn left0() -> FlipperBindings {
+        let mut b = FlipperBindings::new();
+        b.bind(CabinetInput::LeftFlipper, 0);
+        b
+    }
+
+    /// A snapshot at `tick` without bats.
+    fn at(tick: u64) -> FrameStateSnapshot {
+        FrameStateSnapshot {
+            tick,
+            ..FrameStateSnapshot::default()
         }
     }
 
@@ -969,15 +1082,13 @@ mod tests {
     fn req_lat_003_csv_round_trip() {
         let mut rows = join_trace(
             &[rec(0, 1_500_000, 2), rec(1, 7_000_000, 7)],
-            &[MoveRecord {
-                seq: 0,
-                move_tick: 3,
-            }],
+            &[mv0(0, 3)],
             &[
-                frame(0, 1, 1_000_000),
-                frame(1, 2, 2_000_000),
-                frame(2, 4, 3_000_000),
+                shown(0, 1, 1_000_000),
+                shown(1, 2, 2_000_000),
+                shown(2, 4, 3_000_000),
             ],
+            &left0(),
         );
         rows[1].input.input = CabinetInput::RightFlipper;
         rows[1].input.down = false;
@@ -1045,18 +1156,16 @@ mod tests {
     /// `frame` and the frame columns empty.
     #[test]
     fn req_lat_003_unmoved_press_leaves_move_and_frame_empty() {
-        let rows = join_trace(&[rec(0, 500, 1)], &[], &[frame(0, 5, 10)]);
+        let rows = join_trace(&[rec(0, 500, 1)], &[], &[shown(0, 5, 10)], &left0());
         assert_eq!(rows[0].move_tick, None);
         assert_eq!(rows[0].frame, None);
         assert_eq!(rows[0].frames_to_photon, None);
         // A move after the last frame: no frame drew it.
         let rows = join_trace(
             &[rec(0, 500, 1)],
-            &[MoveRecord {
-                seq: 0,
-                move_tick: 9,
-            }],
-            &[frame(0, 5, 10)],
+            &[mv0(0, 9)],
+            &[shown(0, 5, 10)],
+            &left0(),
         );
         assert_eq!(rows[0].move_tick, Some(9));
         assert_eq!(rows[0].frame, None);
@@ -1068,15 +1177,12 @@ mod tests {
     #[test]
     fn req_lat_001_join_first_frame_at_or_after_the_move() {
         let frames = [
-            frame(0, 1, 100),
-            frame(1, 3, 200),
-            frame(2, 6, 300),
-            frame(3, 7, 400),
+            shown(0, 1, 100),
+            shown(1, 3, 200),
+            shown(2, 6, 300),
+            shown(3, 7, 400),
         ];
-        let mv = |t| MoveRecord {
-            seq: 0,
-            move_tick: t,
-        };
+        let mv = |t| mv0(0, t);
         for (ts, mt, want_frame, want_f2p) in [
             (250u64, 4u64, 2u64, 1u64),
             (250, 6, 2, 1),
@@ -1084,7 +1190,7 @@ mod tests {
             (200, 7, 3, 2), // present at exactly the press counts as F0
             (50, 2, 1, 1),  // no frame before the press: F0 = 0
         ] {
-            let r = join_trace(&[rec(0, ts, 1)], &[mv(mt)], &frames);
+            let r = join_trace(&[rec(0, ts, 1)], &[mv(mt)], &frames, &left0());
             assert_eq!(r[0].frame, Some(want_frame), "ts {ts} move {mt}");
             assert_eq!(r[0].frames_to_photon, Some(want_f2p), "ts {ts} move {mt}");
             assert_eq!(
@@ -1116,9 +1222,9 @@ mod tests {
         }
         sim.end_tick(1, &snap);
         for _ in 0..3 {
-            assert!(fw.presented(true, 1));
+            assert!(fw.presented(true, &at(1)));
         }
-        assert!(!fw.presented(false, 1));
+        assert!(!fw.presented(false, &at(1)));
         let t = c.collect(0);
         assert_eq!(t.rows.len(), 2);
         assert_eq!(t.frames.len(), 1);
@@ -1416,7 +1522,7 @@ mod tests {
     fn req_lat_003_move_tick_and_frame_join_on_the_loop() {
         for lag in [0u64, 3] {
             let (mut tx, rx) = pin_core::spsc::channel::<InputEvent>(64);
-            let (w, _r) = TripleBuffer::new(FrameStateSnapshot::default());
+            let (w, mut r) = TripleBuffer::new(FrameStateSnapshot::default());
             let mut l = SimLoop::new(
                 Bat {
                     lag,
@@ -1448,9 +1554,12 @@ mod tests {
                 }
                 set_now(k * TICK_NS);
                 l.run_ticks(1);
-                // A frame every 2 ticks, drawing the latest tick.
+                // A frame every 2 ticks, drawing the latest snapshot (its
+                // real bat angles).
                 if k % 2 == 0 {
-                    fw.presented(true, k);
+                    let snap = r.read();
+                    assert_eq!(snap.tick, k);
+                    fw.presented(true, snap);
                 }
             }
             let t = c.collect(0);
@@ -1461,6 +1570,9 @@ mod tests {
             // (under 1 degree) at its end, 0.02 rad one tick later.
             assert_eq!(r.move_tick, Some(4 + lag + 1), "lag {lag}");
             let f = t.frames.iter().find(|f| f.snap_tick > 4 + lag).unwrap();
+            // The frame carries the drawn snapshot's angles: bat 1 raised.
+            assert!(f.angles[1] >= RAISE_THRESHOLD_RAD, "{f:?}");
+            assert_eq!(f.angles[0], 0.0);
             assert_eq!(r.frame, Some(f.frame));
             // Press at 3 ms + 5 ns: F0 is frame 0 (presented at 2 ms).
             assert_eq!(r.frames_to_photon, Some(f.frame));
@@ -1485,7 +1597,7 @@ mod tests {
             let _ = CollectedTrace::parse(&String::from_utf8_lossy(&bytes));
         }
         let t = CollectedTrace {
-            rows: join_trace(&[rec(0, 1_500_000, 2)], &[], &[frame(0, 1, 1)]),
+            rows: join_trace(&[rec(0, 1_500_000, 2)], &[], &[frame(0, 1, 1)], &left0()),
             frames: vec![frame(0, 1, 1)],
             overflows: TraceOverflows::default(),
             run_end_ns: 5,
@@ -1514,7 +1626,7 @@ mod tests {
     #[test]
     fn req_lat_003_summary_line() {
         let t = CollectedTrace {
-            rows: join_trace(&[rec(0, 1, 1)], &[], &[]),
+            rows: join_trace(&[rec(0, 1, 1)], &[], &[], &left0()),
             frames: vec![frame(0, 1, 1), frame(1, 2, 2)],
             overflows: TraceOverflows {
                 frames: 2,
@@ -1633,10 +1745,10 @@ mod tests {
         set_now(77);
         let (c, _sim, mut fw) = latency_trace(FlipperBindings::new(), now);
         let roles = [R::Playfield, R::Backglass];
-        assert!(!fw.presented(paced_by(roles, &[S::Skipped, S::Presented]), 3));
-        assert!(!fw.presented(paced_by(roles, &[S::Occluded, S::Presented]), 4));
+        assert!(!fw.presented(paced_by(roles, &[S::Skipped, S::Presented]), &at(3)));
+        assert!(!fw.presented(paced_by(roles, &[S::Occluded, S::Presented]), &at(4)));
         assert_eq!(c.frames_presented(), 0, "no readiness from the backglass");
-        assert!(fw.presented(paced_by(roles, &[S::Presented, S::Skipped]), 5));
+        assert!(fw.presented(paced_by(roles, &[S::Presented, S::Skipped]), &at(5)));
         assert_eq!(c.frames_presented(), 1);
         let t = c.collect(0);
         assert_eq!(t.frames, vec![frame(0, 5, 77)]);
@@ -1654,15 +1766,13 @@ mod tests {
         other.input = CabinetInput::RightFlipper;
         other.down = false;
         let inputs = [rec(0, 1_500_000, 2), release, other];
-        let mv = [MoveRecord {
-            seq: 0,
-            move_tick: 3,
-        }];
+        let mv = [mv0(0, 3)];
         // A frame at snap 10 (the release tick itself) still counts.
         let rows = join_trace(
             &inputs,
             &mv,
-            &[frame(0, 1, 1_000_000), frame(1, 10, 20_000_000)],
+            &[shown(0, 1, 1_000_000), shown(1, 10, 20_000_000)],
+            &left0(),
         );
         assert_eq!(rows[0].frame, Some(1));
         assert_eq!(rows[0].frames_to_photon, Some(1));
@@ -1670,7 +1780,8 @@ mod tests {
         let rows = join_trace(
             &inputs,
             &mv,
-            &[frame(0, 1, 1_000_000), frame(1, 11, 20_000_000)],
+            &[shown(0, 1, 1_000_000), shown(1, 11, 20_000_000)],
+            &left0(),
         );
         assert_eq!(rows[0].move_tick, Some(3));
         assert_eq!(rows[0].frame, None);
@@ -1791,5 +1902,187 @@ mod tests {
         // The applying tick's end and the lateness the verdict sees.
         assert_eq!(t.rows[0].input.apply_tick_end_sdl_ns, 25 * ms);
         assert_eq!(t.rows[1].input.apply_tick_end_sdl_ns, 26 * ms);
+    }
+
+    /// Drives a writer and a frame writer: a press of the left flipper
+    /// (bound to flipper 0, sweep sign `neg`) applied in tick 1, the bat at
+    /// `angles[0]` at the tick's start and at `angles[k]` at the end of tick
+    /// `k`; a frame presented right after each tick in `frames_at`
+    /// (drawing that tick's snapshot); a release applied in `release_at`.
+    /// Returns the press's joined row.
+    fn joined(neg: bool, angles: &[f32], frames_at: &[u64], release_at: Option<u64>) -> TraceRow {
+        set_now(0);
+        let mut b = FlipperBindings::new();
+        b.bind(CabinetInput::LeftFlipper, 0);
+        b.set_negative_sweep(0, neg);
+        let (c, mut sim, mut fw) = latency_trace_with_capacity(b, now, 16, 16);
+        let mut before = bats(0, &[(0, angles[0])]);
+        for (k, &a) in angles.iter().enumerate().skip(1) {
+            let k = k as u64;
+            set_now(k * TICK_NS);
+            sim.begin_tick(k * TICK_NS, &before);
+            if k == 1 {
+                sim.delivered(
+                    1,
+                    &InputEvent::button(500_000, CabinetInput::LeftFlipper, true),
+                );
+            }
+            if release_at == Some(k) {
+                sim.delivered(
+                    k,
+                    &InputEvent::button(k * TICK_NS - 1, CabinetInput::LeftFlipper, false),
+                );
+            }
+            let after = bats(k, &[(0, a)]);
+            sim.end_tick(k, &after);
+            if frames_at.contains(&k) {
+                set_now(k * TICK_NS + 100);
+                assert!(fw.presented(true, &after));
+            }
+            before = after;
+        }
+        c.collect(0).rows[0]
+    }
+
+    /// The bat crosses 1 degree at tick 3, falls back (a rebound) to 0.3
+    /// degree by tick 5 and is raised again (1.5 degree) at tick 8.
+    const CROSS_AND_FALL: [f32; 9] = [
+        0.0,
+        0.5 * DEG,
+        0.9 * DEG,
+        1.2 * DEG,
+        0.5 * DEG,
+        0.3 * DEG,
+        0.6 * DEG,
+        0.8 * DEG,
+        1.5 * DEG,
+    ];
+
+    /// REQ-LAT-001, REQ-LAT-003 (B3): a bat that crosses 1 degree at tick T
+    /// (`move_tick = T`) and is back below it in the frame drawn at T+2 is
+    /// matched to the frame at T+5 that shows it raised, not to the T+2
+    /// frame; the raw count still starts from the press.
+    #[test]
+    fn req_lat_001_join_skips_a_frame_that_shows_the_bat_fallen_back() {
+        let r = joined(false, &CROSS_AND_FALL, &[5, 8], None);
+        assert_eq!(r.move_tick, Some(3));
+        assert_eq!(r.frame, Some(1));
+        assert_eq!(r.frame_snap_tick, Some(8));
+        assert_eq!(r.present_ns, Some(8 * TICK_NS + 100));
+        // F0 = 0 (no frame before the press at 0.5 ms): 1 - 0.
+        assert_eq!(r.frames_to_photon, Some(1));
+    }
+
+    /// REQ-LAT-001, REQ-LAT-003 (B3): without a later frame that shows the
+    /// bat raised, the press has no frame (a failing check b).
+    #[test]
+    fn req_lat_001_no_frame_when_no_eligible_frame_shows_the_bat_raised() {
+        let r = joined(false, &CROSS_AND_FALL, &[5], None);
+        assert_eq!(r.move_tick, Some(3));
+        assert_eq!(
+            (r.frame, r.frame_snap_tick, r.present_ns, r.frames_to_photon),
+            (None, None, None, None)
+        );
+    }
+
+    /// REQ-LAT-001, REQ-LAT-003 (B3): a frame drawn at the release tick is
+    /// eligible when its snapshot still shows the bat raised and is not
+    /// when the bat is below 1 degree there; frames after the release never
+    /// count.
+    #[test]
+    fn req_lat_001_frame_at_the_release_tick_needs_the_bat_raised() {
+        let r = joined(false, &CROSS_AND_FALL, &[5, 8], Some(8));
+        assert_eq!(r.frame_snap_tick, Some(8), "raised at the release tick");
+        let mut low = CROSS_AND_FALL.to_vec();
+        low[8] = 0.5 * DEG;
+        low.push(1.5 * DEG);
+        let r = joined(false, &low, &[5, 8, 9], Some(8));
+        assert_eq!(r.move_tick, Some(3));
+        assert_eq!(
+            r.frame, None,
+            "below 1 degree at the release, then released"
+        );
+    }
+
+    /// REQ-LAT-001, REQ-LAT-003 (B3): the same sequences for a bat whose
+    /// energised direction is negative (`raise_sign` -1).
+    #[test]
+    fn req_lat_001_join_needs_the_bat_raised_negative_direction() {
+        let neg: Vec<f32> = CROSS_AND_FALL.iter().map(|a| -a).collect();
+        let r = joined(true, &neg, &[5, 8], None);
+        assert_eq!((r.move_tick, r.frame_snap_tick), (Some(3), Some(8)));
+        let r = joined(true, &neg, &[5], None);
+        assert_eq!((r.move_tick, r.frame), (Some(3), None));
+        let r = joined(true, &neg, &[5, 8], Some(8));
+        assert_eq!(r.frame_snap_tick, Some(8));
+        // Positive angles are the wrong direction for this bat: no move.
+        let r = joined(true, &CROSS_AND_FALL, &[5, 8], None);
+        assert_eq!((r.move_tick, r.frame), (None, None));
+    }
+
+    /// REQ-LAT-003 (B3): `end_tick` records the press's mask and base with
+    /// its move, and the CSV does not carry frame angles (parsed frames
+    /// have zero angles; the format is unchanged).
+    #[test]
+    fn req_lat_003_move_carries_mask_and_base_and_csv_drops_angles() {
+        set_now(0);
+        let mut b = FlipperBindings::new();
+        b.bind(CabinetInput::LeftFlipper, 0);
+        let (c, mut sim, mut fw) = latency_trace_with_capacity(b, now, 16, 16);
+        let before = bats(0, &[(0, 0.25)]);
+        sim.begin_tick(TICK_NS, &before);
+        sim.delivered(1, &InputEvent::button(1, CabinetInput::LeftFlipper, true));
+        let after = bats(1, &[(0, 0.5)]);
+        sim.end_tick(1, &after);
+        assert!(fw.presented(true, &after));
+        let t = c.collect(0);
+        assert_eq!(t.frames[0].angles[0], 0.5);
+        assert_eq!(t.rows[0].frame, Some(0));
+        let text = t.to_csv();
+        assert!(
+            text.contains(&format!("\n{FRAME_HEADER}\n0,1,0\n")),
+            "{text}"
+        );
+        let back = CollectedTrace::parse(&text).unwrap();
+        assert_eq!(back.frames, vec![frame(0, 1, 0)]);
+        assert_eq!(back.rows, t.rows);
+    }
+
+    static CLOCK_READS: AtomicU64 = AtomicU64::new(0);
+
+    /// A trace clock that counts its reads and returns 999.
+    fn counting_clock() -> u64 {
+        CLOCK_READS.fetch_add(1, Ordering::SeqCst);
+        999
+    }
+
+    /// REQ-LAT-003 (B2): `presented_at` records exactly the given stamp and
+    /// reads no clock; the playfield hook stamps only on the first
+    /// `Presented` playfield status (one clock read), and `presented` reads
+    /// the clock once.
+    #[test]
+    fn req_lat_003_presented_at_records_the_given_stamp_without_the_clock() {
+        use pin_render::gpu::SurfaceStatus as S;
+        let (c, _sim, mut fw) = latency_trace(FlipperBindings::new(), counting_clock);
+        let reads = || CLOCK_READS.load(Ordering::SeqCst);
+        let r0 = reads();
+        assert!(fw.presented_at(true, &at(7), 1234));
+        assert!(!fw.presented_at(false, &at(8), 5678));
+        assert_eq!(reads(), r0, "presented_at read the clock");
+        let mut stamp = None;
+        for st in [S::Skipped, S::Hidden, S::Busy, S::Occluded] {
+            fw.stamp_playfield(&mut stamp, st);
+        }
+        assert_eq!((stamp, reads()), (None, r0), "no stamp without a present");
+        fw.stamp_playfield(&mut stamp, S::Presented);
+        assert_eq!((stamp, reads()), (Some(999), r0 + 1));
+        fw.stamp_playfield(&mut stamp, S::Presented);
+        assert_eq!((stamp, reads()), (Some(999), r0 + 1), "first present kept");
+        assert_eq!(fw.now_ns(), 999);
+        assert_eq!(reads(), r0 + 2);
+        assert!(fw.presented(true, &at(9)));
+        assert_eq!(reads(), r0 + 3);
+        let t = c.collect(0);
+        assert_eq!(t.frames, vec![frame(0, 7, 1234), frame(1, 9, 999)]);
     }
 }
