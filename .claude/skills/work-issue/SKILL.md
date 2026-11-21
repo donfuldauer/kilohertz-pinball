@@ -213,11 +213,14 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
    follows `.github/pull_request_template.md`, starts with `Closes #<N>`, and fills every section
    (write "not applicable" with a reason rather than leaving one empty: CodeRabbit checks it).
    Bot names go in backticks.
-3. Watch the PR: subscribe to its activity (`subscribe_pr_activity`) when supported by the harness.
-   If the session cannot subscribe, schedule a check-in with `send_later` (about 10 minutes) and
-   end the turn with a one-line status; if neither tool exists in this harness, report the PR URL
-   and wait for the next check-in. Never sleep-poll in a loop. Repeat check-ins until the PR
-   merges.
+3. Watch the PR:
+   - **Claude Code:** subscribe to its activity (`subscribe_pr_activity`). If the session cannot
+     subscribe, schedule a check-in with `send_later` (about 10 minutes) and end the turn with a
+     one-line status; repeat check-ins until the PR merges.
+   - **Gemini / Antigravity:** Antigravity has no built-in PR auto-fix or GitHub-webhook
+     subscription. Use `/schedule` for in-session check-ins (or a polling `/automation` job), or
+     report the PR URL and pause until the owner triggers the follow-up check-in.
+   Never sleep-poll in a loop.
 
 ## 6. Review rounds
 
@@ -284,15 +287,15 @@ last work-verifier result `pass` for the head):
 
 ## 8. Next session
 
-When a scheduled task or automation with a GitHub trigger on pull requests merged into `main` from
-`issue/` branches is configured (such as a Claude Code scheduled task or an Antigravity
-`/automation` / `/schedule` workflow), the merge starts a fresh session with the prompt "Work on
-the next issue". This session does nothing to hand off: never call `create_session`,
-`fire_trigger` or `update_trigger` to chain. A session started by another session asks a person to
-approve every remote-session tool call, and a session can neither fire nor edit a task it did not
-create. The chain runs until no issue is ready, or until a session ends without merging an `issue/`
-branch; the owner then restarts it with the task's "Run now" (or starts a new session directly). If
-no scheduled task or automation exists yet, nothing starts automatically: see the P8 line in
+In **Claude Code**, a scheduled task with a GitHub trigger on pull requests merged into `main` from
+`issue/` branches starts a fresh session with the prompt "Work on the next issue". This session
+does nothing to hand off: never call `create_session`, `fire_trigger` or `update_trigger` to chain.
+A session started by another session asks a person to approve every remote-session tool call, and a
+session can neither fire nor edit a task it did not create. The chain runs until no issue is ready,
+or until a session ends without merging an `issue/` branch; the owner then restarts it with the
+task's "Run now". In **Gemini / Antigravity**, there is no native GitHub-merge webhook trigger;
+start the next session manually (or use a persistent polling `/automation` job or `/run-plan`). If
+no scheduled task exists yet, nothing starts automatically: see the P8 line in
 `docs/HUMAN_QUEUE.md` and DECISIONS.md "Process — Next session starts from a merged issue/ PR".
 
 ## Never

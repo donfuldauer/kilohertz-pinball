@@ -432,11 +432,17 @@ Orchestrator drives it to a merge without a person.
    the test that proves each one, gate results with numbers, visual and windowed evidence, decisions
    logged, contract-change requests, and every T3 / Fable use with its P4 evidence. Bot names in the
    body go in backticks so nobody is notified by accident.
-2. **Auto-fix on.** Right after opening, the Orchestrator subscribes to the PR's activity
-   (`subscribe_pr_activity`: comments, reviews, CI) when supported by the harness. If the session
-   cannot subscribe, it schedules `send_later` check-ins about every 10 minutes until the PR merges
-   (or, in harnesses without either tool, reports the PR URL and pauses for the next check-in).
-   Every CodeRabbit comment and CI failure is handled as it arrives; nobody sleep-polls in a loop.
+2. **PR watch / auto-fix.** Right after opening:
+   - **Claude Code:** subscribe to the PR's activity (`subscribe_pr_activity`: comments, reviews,
+     CI). If the session cannot subscribe, schedule `send_later` check-ins about every 10 minutes
+     until the PR merges.
+   - **Gemini / Antigravity:** Antigravity has no built-in PR auto-fix or GitHub-webhook
+     subscription. Use `/schedule` for recurring in-session check-ins (optionally paired with
+     `/goal`), a persistent `/automation` job that polls open PRs via `gh`, or report the PR URL
+     and pause until the owner prompts a check-in.
+
+   Every CodeRabbit comment and CI failure is handled as it arrives or on check-in; nobody
+   sleep-polls in a loop.
 3. **Every finding is accounted for**, batch by batch (P5 "Batching"), for every CodeRabbit
    comment (inline, nitpick, outside-diff or summary item). Each ends in exactly one disposition,
    recorded as a reply on its thread (`add_reply_to_pull_request_comment` or

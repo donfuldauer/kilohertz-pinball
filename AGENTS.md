@@ -15,10 +15,10 @@ experience) and #80 (M2 — Backlog); it is never written into the repository.
 forwarded by `.agents/skills/work-issue/SKILL.md`): it checks the issue's dependencies are merged,
 drives the work through the agents below, opens a PR that closes the issue, resolves the CodeRabbit
 review and merges. "Start work on the next ready issue" (or "Work on the next issue") picks one;
-when a GitHub-triggered scheduled task or automation is configured for the harness, merging an
-`issue/` branch starts a fresh session for the next issue (`work-issue` §8). The `run-plan` skill
-loops over every ready issue in plan order (`KP-NNN`). The `plan-from-spec` skill turns SPEC
-requirements into issues.
+in Claude Code, a GitHub-triggered scheduled task can start a fresh session when an `issue/` branch
+merges (`work-issue` §8), whereas in Gemini / Antigravity the next session is started manually or
+by a polling `/automation` job. The `run-plan` skill loops over every ready issue in plan order
+(`KP-NNN`). The `plan-from-spec` skill turns SPEC requirements into issues.
 
 - **Model routing (P4).** Every unit of work goes through the `work-classifier` agent first,
   except items that pass the `triage` skill's fast-path checks; each review round or push is one
@@ -44,11 +44,12 @@ requirements into issues.
   spawn.
 - **No self-review (R9).** Do not review code yourself or with a sibling agent. Open a PR against
   `main` (body from `.github/pull_request_template.md`, starting `Closes #<N>`), watch its activity
-  (PR subscription or scheduled check-in when the harness supports it; never sleep-poll in a loop),
-  give every CodeRabbit finding a disposition reply, resolve every thread yourself when justified
-  (never leave one for a person; never resolve an unfixed security issue or a verified unfixed
-  correctness defect), and merge without waiting for a person once the P6 merge conditions hold
-  (`pr-checks` green, `main` green, verifier `pass`).
+  (Claude Code: `subscribe_pr_activity` or `send_later`; Gemini / Antigravity has no built-in PR
+  auto-fix or webhook subscription, so use `/schedule`, a polling `/automation` job, or a manual
+  follow-up prompt; never sleep-poll in a loop), give every CodeRabbit finding a disposition reply,
+  resolve every thread yourself when justified (never leave one for a person; never resolve an
+  unfixed security issue or a verified unfixed correctness defect), and merge without waiting for a
+  person once the P6 merge conditions hold (`pr-checks` green, `main` green, verifier `pass`).
 - **GitHub (P1).** In Claude Code (and Gemini/Antigravity sessions with a GitHub MCP server), use
   the GitHub MCP tools (`mcp__github__*`) for issues, comments, labels and PRs, and
   `gh api -X GET search/issues` (explicit paging) for searches by label. In Gemini / Antigravity
