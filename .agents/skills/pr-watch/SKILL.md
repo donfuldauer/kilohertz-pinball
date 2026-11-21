@@ -64,19 +64,26 @@ You are **done** when all of these hold on the current `headRefOid`:
      `conclusion == "SUCCESS"` (specifically the required `pr-checks` aggregator plus any other
      triggered workflow such as `spikes`, `release`, or `rules-wasm`);
    - for `StatusContext` entries, `state == "SUCCESS"`.
-2. **CodeRabbit approved on the current head:** the latest `coderabbitai` review covers
-   `headRefOid` with `state == "APPROVED"`, with no outstanding `CHANGES_REQUESTED`.
-3. **Zero unresolved threads:** every review thread has a disposition reply and
-   `isResolved == true`.
-4. **Verification passed:** the head commit passed `work-verifier` (or the applicable test and
-   conformance suites for a standalone docs/config PR).
+2. **CodeRabbit approved on the current head:** `coderabbitai` has an effective `APPROVED` review
+   covering `headRefOid` that has not been superseded by a later `CHANGES_REQUESTED` or `DISMISSED`
+   review (a subsequent `COMMENTED` review does not retract an existing approval).
+3. **Every finding accounted for and every thread resolved:** every inline review thread has a
+   disposition reply and `isResolved == true`, and every CodeRabbit review-body finding without an
+   inline thread (outside-diff, additional, or summary items) has a recorded disposition
+   (`docs/PROCESS.md` P6 step 3).
+4. **Verification passed:** `headRefOid` has a passing `work-verifier` result (required for any
+   merge under `docs/PROCESS.md` P6 step 5; for a standalone report-only run that does not merge,
+   passing the applicable test and conformance suites suffices when `work-verifier` was not run).
 
 When all four hold:
 - If invoked from `work-issue`, continue to `work-issue` §7 (merge and unblock).
-- If invoked standalone and the user explicitly asked to merge, verify the remaining
-  `docs/PROCESS.md` P6 step 5 merge conditions (`main`'s last push CI green and branch up to date
-  with `main` where required) and run `gh pr merge <P> --merge --match-head-commit <headRefOid>`
-  (deleting the branch afterward if it was not auto-deleted).
+- If invoked standalone and the user explicitly asked to merge, confirm every `docs/PROCESS.md`
+  P6 step 5 merge condition holds on `headRefOid` — including a passing `work-verifier` result for
+  `headRefOid` (test or conformance suites alone are not a substitute), dispositions for every
+  CodeRabbit review-body finding without an inline thread, `main`'s last push CI green, and the
+  branch up to date with `main` where required — and run
+  `gh pr merge <P> --merge --match-head-commit <headRefOid>` (deleting the branch afterward if it
+  was not auto-deleted).
 - Otherwise (standalone without an explicit merge request), stop scheduling check-ins and report
   the PR URL, head SHA, approval state, resolved threads, and CI results to the user.
 
