@@ -17,7 +17,7 @@ Counts:
 - Open queue lines: 10
 - Resolved queue lines: 323
 - Decision entries: 475
-- Run-log rows: 506
+- Run-log rows: 507
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
