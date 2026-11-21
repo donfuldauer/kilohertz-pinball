@@ -5,14 +5,15 @@ description: "Turns docs/SPEC.md requirements into Kilohertz Pinball's plan, whi
 
 # plan-from-spec
 
-The plan turns SPEC requirements into units of work the agents in `.claude/agents/` can execute
-under `docs/PROCESS.md`. **The plan is GitHub issues, never a repository file**: each
-`work-unit` issue is one unit, sized as one reviewable PR, and its body is the unit's spec.
-Every later brief is built from an issue, so issues must be concrete: owned paths, deliverables,
-acceptance criteria.
+The plan turns SPEC requirements into units of work the agents in `.claude/agents/` (forwarded by
+`.agents/agents/` for Gemini / Antigravity) can execute under `docs/PROCESS.md`. **The plan is
+GitHub issues, never a repository file**: each `work-unit` issue is one unit, sized as one
+reviewable PR, and its body is the unit's spec. Every later brief is built from an issue, so issues
+must be concrete: owned paths, deliverables, acceptance criteria.
 
-Repository: `donfuldauer/kilohertz-pinball`. GitHub through the MCP tools; `gh api -X GET
-search/issues` only for searches by label, paged explicitly (PROCESS.md P1 "Working with GitHub").
+Repository: `donfuldauer/kilohertz-pinball`. GitHub through MCP tools (with `gh api -X GET
+search/issues` paged explicitly for label searches) or through the `gh` CLI when MCP tools are not
+configured (PROCESS.md P1 "Working with GitHub").
 
 ## 1. P8 items for the owner (ask before planning, only when needed)
 
@@ -30,7 +31,8 @@ owner only for the P8 items (PROCESS.md P8) the planned work cannot do without:
 - `setting`, `hardware`, `assets`, `release`, `legal`: a repository setting (for example a new
   required check), a physical device, real assets, publishing, or licensing the plan depends on.
 
-Ask with AskUserQuestion (at most four questions per call; the recommended option first, marked
+Ask with `AskUserQuestion` (Claude Code) or `ask_question` (Antigravity) / the harness's
+interactive question tool (at most four questions per call; the recommended option first, marked
 Recommended, with a one-line consequence per option). Record each answer's rationale in
 `docs/DECISIONS.md` (`## Planning — <topic>`). If the owner is unreachable, append each open
 question as a `- [P8 <kind>] [<id>] <text>` line in `docs/HUMAN_QUEUE.md`, plan everything that
