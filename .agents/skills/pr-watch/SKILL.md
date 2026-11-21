@@ -73,7 +73,9 @@ You are **done** when all of these hold on the current `headRefOid`:
    (`docs/PROCESS.md` P6 step 3).
 4. **Verification passed:** `headRefOid` has a passing `work-verifier` result (required for any
    merge under `docs/PROCESS.md` P6 step 5; for a standalone report-only run that does not merge,
-   passing the applicable test and conformance suites suffices when `work-verifier` was not run).
+   passing the applicable test and conformance suites suffices when `work-verifier` was not run). If
+   items 1–3 already hold and only verification is missing on `headRefOid`, follow §3.E before
+   proceeding to merge checks or reporting completion.
 
 When all four hold:
 - If invoked from `work-issue`, continue to `work-issue` §7 (merge and unblock).
@@ -87,7 +89,7 @@ When all four hold:
 - Otherwise (standalone without an explicit merge request), stop scheduling check-ins and report
   the PR URL, head SHA, approval state, resolved threads, and CI results to the user.
 
-## 3. Act on findings, failures, or missing approval
+## 3. Act on findings, failures, missing approval, or missing verification
 
 Handle the PR state in this order:
 
@@ -103,9 +105,10 @@ Handle the PR state in this order:
    - Failed pre-merge checks (such as PR description checks) → update the PR body with
      `gh pr edit <P> --body ...`.
 3. Update `docs/RUN_LOG.md` (and regenerate `docs/HUMAN_ACCEPTANCE.md` if needed), then commit the
-   fix together with those updates. Re-run verification (`work-verifier`, or all applicable
-   conformance and test suites for standalone docs/config PRs) on that exact commit so the verified
-   commit is the PR head (`docs/PROCESS.md` P6 step 1), and push it to the PR branch.
+   fix together with those updates. Re-run verification (`work-verifier` whenever the run will
+   merge; for a standalone report-only run that will not merge, `work-verifier` or all applicable
+   conformance and test suites) on that exact commit so the verified commit is the PR head
+   (`docs/PROCESS.md` P6 step 1), and push it to the PR branch.
 4. **Reply to every review thread** (reason and evidence first: commit SHA + test output, SPEC /
    PROCESS / DECISIONS citation, or link to the new deferred `work-unit` issue / DECISIONS entry):
    ```sh
@@ -156,6 +159,21 @@ after three asks, record the status in `docs/RUN_LOG.md`, stop, and inform the u
 ### D. Checks or CodeRabbit are still `IN_PROGRESS`
 
 Wait via a non-blocking scheduled check-in (§4).
+
+### E. Checks green and CodeRabbit approved, but verification is missing for `headRefOid`
+
+If §2 items 1–3 all hold on `headRefOid` and only §2 item 4 is missing (for example, a standalone
+run started on an already-green, approved PR):
+
+- **Merge requested (`work-issue` or standalone with an explicit merge request):** start
+  `work-verifier` on `headRefOid`.
+  - If `work-verifier` returns `pass`, return to §2 to verify the remaining P6 step 5 merge
+    conditions (`main`'s last push CI green, branch up to date with `main` where required) and merge.
+  - If `work-verifier` returns `fail`, route and fix the failures under §3.A (push a new head,
+    verify that exact head, and schedule the next check-in in §4).
+- **Standalone report-only run (no merge requested):** if neither `work-verifier` nor the applicable
+  test and conformance suites have passed on `headRefOid`, run the applicable suites on `headRefOid`.
+  If they pass, return to §2 to stop and report; if they fail, route and fix under §3.A.
 
 ## 4. Schedule the next non-blocking check-in
 
