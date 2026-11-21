@@ -29,9 +29,14 @@
 //!   except those stamped within [`Params::end_exclusion_ns`] of `run_end_ns`
 //!   (excluded and counted): `frame` is the first presented frame whose
 //!   snapshot tick is in `[move_tick, release_tick]` (the next release of the
-//!   same input; unbounded without one), i.e. a frame that showed the bat
-//!   raised while held; `n_raw = frame - F0`, `F0` the last frame presented
-//!   at or before `sdl_ts_ns`; pass when `n_raw <= 2`. One allowance: when
+//!   same input; unbounded without one) and whose snapshot shows the bat
+//!   displaced by at least 1 degree in the energised direction from the
+//!   press's applying-tick base (the app's join; the angles are not in the
+//!   file, so the verdict checks that the trace's frame exists, matches the
+//!   frame table and is such a candidate, not before the first one); a
+//!   press without such a frame fails; `n_raw = frame - F0`, `F0` the last
+//!   frame presented at or before `sdl_ts_ns` (the raw count starts from
+//!   the press; `move_tick` only selects the frame); pass when `n_raw <= 2`. One allowance: when
 //!   the frame in flight at the press (the first frame presented after
 //!   `sdl_ts_ns`) was presented at or before `sdl_ts_ns + bound_a +
 //!   coil_ticks` ticks (it could not show the press), the count may start
@@ -430,8 +435,11 @@ pub fn release_ticks(rows: &[Row]) -> Vec<Option<u64>> {
 }
 
 /// The first frame whose snapshot tick is in `[move_tick, release]`
-/// (`release` `None`: unbounded): the first frame that showed the bat
-/// raised while the key was held.
+/// (`release` `None`: unbounded): the first candidate for the frame that
+/// showed the bat raised while the key was held (the app takes the first
+/// candidate whose snapshot shows the bat raised; the angles are not in the
+/// file, so the verdict checks the app's choice is a candidate at or after
+/// this one).
 pub fn frame_showing(frames: &[Frame], move_tick: u64, release: Option<u64>) -> Option<&Frame> {
     let until = release.unwrap_or(u64::MAX);
     frames
@@ -586,16 +594,12 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
             fail(&mut v.b, format!("{tag}: the bat never moved"));
             continue;
         };
-        let Some(f) = frame_showing(&trace.frames, m, release) else {
-            if r.frame.is_some() {
-                fail(
-                    &mut v.b,
-                    format!(
-                        "{tag}: trace says frame {:?}, the frame table has none",
-                        r.frame
-                    ),
-                );
-            }
+        // The app picks the frame: the first candidate whose snapshot shows
+        // the bat raised (the angles are not in the file). Checked here:
+        // the frame exists, matches its frame-table row, is a candidate
+        // (snapshot tick in `[move_tick, release_tick]`) and is not before
+        // the first candidate.
+        let Some(fi) = r.frame else {
             fail(
                 &mut v.b,
                 format!(
@@ -605,12 +609,35 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
             );
             continue;
         };
-        if r.frame != Some(f.frame) {
+        let Some(f) = trace.frames.iter().find(|f| f.frame == fi) else {
+            fail(
+                &mut v.b,
+                format!("{tag}: trace says frame {fi}, the frame table has none"),
+            );
+            continue;
+        };
+        if r.frame_snap_tick != Some(f.snap_tick) || r.present_ns != Some(f.present_ns) {
             fail(
                 &mut v.b,
                 format!(
-                    "{tag}: trace says frame {:?}, the frame table says {}",
-                    r.frame, f.frame
+                    "{tag}: trace says frame {fi} drew tick {:?} at {:?}, the frame table says \
+                     tick {} at {}",
+                    r.frame_snap_tick, r.present_ns, f.snap_tick, f.present_ns
+                ),
+            );
+        }
+        let first = frame_showing(&trace.frames, m, release).map(|c| c.frame);
+        if f.snap_tick < m
+            || f.snap_tick > release.unwrap_or(u64::MAX)
+            || first.is_none_or(|c| fi < c)
+        {
+            fail(
+                &mut v.b,
+                format!(
+                    "{tag}: trace says frame {fi} (snapshot tick {}), not a frame drawn while \
+                     held at or after the move (move tick {m}, release tick {release:?}, first \
+                     candidate {first:?})",
+                    f.snap_tick
                 ),
             );
         }

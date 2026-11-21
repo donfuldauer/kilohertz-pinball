@@ -691,6 +691,21 @@ impl AppSurfaces {
     /// [`GpuFrameTimer`], the frame's submits are bracketed by its
     /// timestamps and earlier frames' samples are collected (no wait).
     pub fn render(&mut self, snap: &FrameStateSnapshot) -> Vec<SurfaceStatus> {
+        self.render_with_playfield_hook(snap, &mut |_| {})
+    }
+
+    /// [`render`](Self::render) with a hook for the latency trace
+    /// (REQ-LAT-003): `on_playfield` is called once per playfield slot with
+    /// that slot's status, right after its present (or hand-off) returned
+    /// and before any other slot's work, so a clock read in the hook is the
+    /// playfield's present time, not the end of the whole frame (backglass
+    /// and score surfaces are drawn after it). Returns exactly what
+    /// [`render`](Self::render) returns.
+    pub fn render_with_playfield_hook(
+        &mut self,
+        snap: &FrameStateSnapshot,
+        on_playfield: &mut dyn FnMut(SurfaceStatus),
+    ) -> Vec<SurfaceStatus> {
         let (queue, gpu_lock) = (&self.queue, &self.gpu_lock);
         let mut submit = |cb: wgpu::CommandBuffer| {
             let _g = lock_gpu(gpu_lock);
@@ -702,14 +717,18 @@ impl AppSurfaces {
         }
         let mut out = Vec::with_capacity(self.slots.len());
         for s in &mut self.slots {
-            out.push(Self::render_slot(
+            let status = Self::render_slot(
                 &self.device,
                 &self.queue,
                 &self.gpu_lock,
                 self.timer.as_mut(),
                 s,
                 snap,
-            ));
+            );
+            if s.role == SurfaceRole::Playfield {
+                on_playfield(status);
+            }
+            out.push(status);
         }
         let drew = out.contains(&SurfaceStatus::Presented);
         if let Some(t) = &mut self.timer {
