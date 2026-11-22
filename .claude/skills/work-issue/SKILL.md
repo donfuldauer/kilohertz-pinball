@@ -165,7 +165,7 @@ single-checkout fallback below). One branch, one PR, one issue.
    assigned branch, retain its existing local/remote history (never reset it to `origin/main`),
    and note in the PR body that the chain will not continue from this merge: the owner restarts it
    with the scheduled task's "Run now".
-1. `git fetch origin`. Look for an existing branch and worktree for the issue:
+1. `git fetch --prune origin`. Look for an existing branch and worktree for the issue:
    - for normal `issue/<N>-<short-slug>` branches, run `git branch -a --list "*issue/<N>-*"` and
      `git worktree list`;
    - for an assigned `<branch>`, check exact local and remote refs with
