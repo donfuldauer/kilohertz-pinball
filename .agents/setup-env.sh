@@ -26,15 +26,21 @@ export DOTNET_NOLOGO=1
 # ---------------------------------------------------------------------------
 # 1. Non-interactive ~/.bashrc persistence
 # ---------------------------------------------------------------------------
-# Non-interactive command shells source ~/.bashrc via BASH_ENV; remove any
-# early-return guard and persist Cargo's bin directory on PATH idempotently.
-if [ -f "$HOME/.bashrc" ]; then
-  sed -i '/case \$- in/,/esac/d' "$HOME/.bashrc" 2>/dev/null || true
-fi
+# Non-interactive command shells source ~/.bashrc via BASH_ENV; unconditionally
+# export Cargo's bin directory on line 1 before any interactive-shell guard or
+# conditional without modifying or deleting existing lines or shell constructs.
 touch "$HOME/.bashrc"
 
 PATH_EXPORT="export PATH=\"${CARGO_BIN_DIR}:\$PATH\""
-grep -qxF "$PATH_EXPORT" "$HOME/.bashrc" || echo "$PATH_EXPORT" >> "$HOME/.bashrc"
+FIRST_LINE=$(head -n 1 "$HOME/.bashrc" || true)
+if [ "$FIRST_LINE" != "$PATH_EXPORT" ]; then
+  TMP_BASHRC=$(mktemp "$HOME/.bashrc.tmp.XXXXXX")
+  trap 'rm -f "$TMP_BASHRC"' EXIT
+  cp -p "$HOME/.bashrc" "$TMP_BASHRC"
+  { printf '%s\n' "$PATH_EXPORT"; cat "$HOME/.bashrc"; } > "$TMP_BASHRC"
+  mv "$TMP_BASHRC" "$HOME/.bashrc"
+  trap - EXIT
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Linux system packages (SDL3 headers, lavapipe Vulkan, Xvfb, Valgrind,
