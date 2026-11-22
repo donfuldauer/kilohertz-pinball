@@ -245,49 +245,71 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
 
 1. Check the head is the commit the work-verifier last passed. Push:
    `git -c push.negotiate=true push -u origin <branch>`.
-2. Create the PR (`create_pull_request` or `gh pr create --base main --head <branch>`). The body
-   follows `.github/pull_request_template.md`, starts with `Closes #<N>`, and fills every section
-   (write "not applicable" with a reason rather than leaving one empty: CodeRabbit checks it).
-   Bot names go in backticks.
-3. Watch the PR:
+2. Determine the PR's **review mode label** (`docs/PROCESS.md` P6): carry the issue's
+   `review:skip` / `review:sanity` / `review:full` label onto the PR, upgrading to `review:sanity`
+   if the diff touches `crates/pin_core/`, `contracts/CHANGE_REQUESTS.md`, SPEC Appendix A/B
+   schemas, concurrency/timing loops, `very-high` blast-radius paths, or R11 security boundaries
+   (even if the issue lacked the label).
+3. Create the PR (`create_pull_request` + label edit, or
+   `gh pr create --base main --head <branch> --label <review:*>`). The body follows
+   `.github/pull_request_template.md`, starts with `Closes #<N>`, states the review mode under
+   `## Work item`, and fills every section (write "not applicable" with a reason rather than
+   leaving one empty). Bot names go in backticks.
+4. Watch the PR:
    - **Claude Code:** subscribe to its activity (`subscribe_pr_activity`). If the session cannot
-     subscribe, schedule a check-in with `send_later` (about 10 minutes) and end the turn with a
-     one-line status; repeat check-ins until the PR merges.
+     subscribe, schedule a check-in with `send_later` (about 10 minutes, or 3–5 minutes for a
+     `review:skip` PR waiting only on CI) and end the turn with a one-line status; repeat check-ins
+     until the PR merges.
    - **Gemini / Antigravity:** run the `pr-watch` skill (`.agents/skills/pr-watch/SKILL.md`), which
-     schedules non-blocking check-ins (`/schedule` or a single async background check-in), responds
-     to CodeRabbit findings, resolves review threads itself, and drives the PR to CodeRabbit
-     approval and green CI checks.
+     schedules non-blocking check-ins (`/schedule` or a single async background check-in), handles
+     CI failures and — on reviewed PRs (`review:sanity` / `review:full`, or whenever CodeRabbit
+     actually posted a review) — responds to CodeRabbit findings, resolves review threads itself,
+     and drives the PR to completion.
    Never sleep-poll in a foreground loop.
 
 ## 6. Review rounds
 
-Each CodeRabbit review round (or push) is one batch, handled with the `triage` skill's §2
-procedure and PROCESS.md P6:
-
-- Read with `pull_request_read` (or `gh pr view` / `gh pr checks` / `gh api`): the reviews, the
-  review comments and threads, the PR's issue comments (CodeRabbit's summary and pre-merge checks),
-  and the head commit's status and check runs.
-- Every finding gets exactly one disposition (Fixed / Not a defect / Deferred) recorded as a
-  reply (`add_reply_to_pull_request_comment` or `gh api` review-comment reply), reason and evidence
-  first.
-- Resolve with `resolve_review_thread`, GraphQL `resolveReviewThread` via `gh api graphql`, or the
-  REST route
-  `POST /repos/donfuldauer/kilohertz-pinball/pulls/<P>/ccr/comments/<comment_id>/resolve`. Never
-  resolve an unfixed security issue (R11 boundary) or a verified unfixed correctness defect.
-- Failed pre-merge checks (for example the description check) are fixed by editing the PR body
-  (`update_pull_request` or `gh pr edit`).
-- CI failures go through the same loop (investigator if the cause is unclear).
-- If CodeRabbit has not reviewed the head commit, post `@coderabbitai review` once (a PR comment,
-  `add_issue_comment` or `gh pr comment`); at most two more asks, then the RUN_LOG row of P6 step
-  4.
-- When CodeRabbit's approval is all that is missing, post `@coderabbitai approve` (P6 step 3).
+- **Unreviewed `review:skip` PRs** (initial-usable-build phase, while `.coderabbit.yaml` has
+  `auto_review.enabled: false` and CodeRabbit has posted no review on the PR): do **not** request
+  `@coderabbitai review`. Handle any CI failures through the investigator / classifier / Fixer /
+  `work-verifier` loop, and proceed to §7 as soon as CI checks (`pr-checks` + any other PR
+  workflows), `main` CI, and `work-verifier` are green.
+- **Reviewed PRs (`review:sanity`, `review:full`, post-usable default, or any PR where CodeRabbit
+  posted a review):** each CodeRabbit review round (or push) is one batch, handled with the
+  `triage` skill's §2 procedure and PROCESS.md P6:
+  - Read with `pull_request_read` (or `gh pr view` / `gh pr checks` / `gh api`): the reviews, the
+    review comments and threads, the PR's issue comments (CodeRabbit's summary and pre-merge
+    checks), and the head commit's status and check runs.
+  - On **`review:sanity`** PRs, keep the pass targeted: fix blocking boundary, contract, schema,
+    concurrency/timing, determinism (R3/R4), security (R11) and verified correctness defects;
+    dispose of cosmetic style, naming or non-blocking refactor nitpicks as `Deferred` (linking
+    `#153` KP-064 or a new M2 `work-unit` issue) or `Not a defect` rather than running multi-round
+    polish loops.
+  - Batch local fix commits before pushing so `auto_pause_after_reviewed_commits: 2` is not tripped
+    unnecessarily.
+  - Every finding gets exactly one disposition (Fixed / Not a defect / Deferred) recorded as a
+    reply (`add_reply_to_pull_request_comment` or `gh api` review-comment reply), reason and
+    evidence first.
+  - Resolve with `resolve_review_thread`, GraphQL `resolveReviewThread` via `gh api graphql`, or
+    the REST route
+    `POST /repos/donfuldauer/kilohertz-pinball/pulls/<P>/ccr/comments/<comment_id>/resolve`. Never
+    resolve an unfixed security issue (R11 boundary) or a verified unfixed correctness defect.
+  - Failed pre-merge checks (for example the description check) are fixed by editing the PR body
+    (`update_pull_request` or `gh pr edit`).
+  - CI failures go through the same loop (investigator if the cause is unclear).
+  - If CodeRabbit has not reviewed the head commit on a PR that requires review (for example it
+    paused after `auto_pause_after_reviewed_commits: 2` or was rate-limited), post
+    `@coderabbitai review` once (a PR comment, `add_issue_comment` or `gh pr comment`); at most two
+    more asks, then the RUN_LOG row of P6 step 4.
+  - When CodeRabbit's approval is all that is missing on a reviewed PR, post
+    `@coderabbitai approve` (P6 step 3).
 
 ## 7. Merge
 
 When every P6 step 5 condition holds on the head commit (`pr-checks` and every other PR check
-green, CodeRabbit reviewed the head with no outstanding change request, every thread replied to
-and resolved, branch up to date with `main` where P6 requires it, `main`'s last push CI green,
-last work-verifier result `pass` for the head):
+green; if the PR requires or received CodeRabbit review, CodeRabbit reviewed the head with no
+outstanding change request and every thread replied to and resolved; branch up to date with `main`
+where P6 requires it; `main`'s last push CI green; last work-verifier result `pass` for the head):
 
 1. Merge with a merge commit: `merge_pull_request` (method `merge`) or
    `gh pr merge <P> --merge --match-head-commit <sha>`, naming the head SHA.

@@ -7601,3 +7601,50 @@ check-in and thread-resolution procedure without touching Claude Code's native P
 - Mirror `.gemini/agents/` in the repository for Gemini CLI: deferred in favor of scoping
   `.agents/agents/` to Antigravity and documenting the standalone Gemini CLI workflow in
   `GEMINI.md`, avoiding unverified version-specific Gemini CLI frontmatter.
+
+## Process — Initial-usable-build review rhythm (tests along the way, sanity review on boundaries, full review at M1)
+
+**Decision:** While M1 — Play experience (`#79`) builds the first usable end-to-end playable
+slice, split PR code review into three label-driven modes in `docs/PROCESS.md` P6 and
+`.coderabbit.yaml`:
+
+1. **`review:skip`** (default for routine M1 vertical-slice, rendering, parts, cabinet, art, UI
+   and table-content chunks): no automatic per-PR CodeRabbit review. Every PR remains gated by
+   Implementer + Independent Tester tests, `work-verifier` (`pass`, P5 unit gate + R12 visual and
+   windowed evidence), CI `pr-checks` and `main` CI.
+2. **`review:sanity`** (targeted mid-stream sanity review): required on any issue/PR defining or
+   changing public interfaces, schemas or wire contracts (`phase:11-contracts`, `crates/pin_core/`,
+   `contracts/CHANGE_REQUESTS.md`, SPEC Appendix A/B, cross-layer spines such as `#92` vertex
+   format and `#99` room/scene split), concurrency/state-machine/timing loops (`#82`, `#83`,
+   `#86`, `#103`, `#149`), `very-high` blast-radius / simulation-output changes (`#87`, `#113`),
+   R11 untrusted-table security paths (`pin_script` sandbox, `pin_assets` zip/VFS, `third_party/`),
+   and milestone gate harnesses (`#124` Gate A3). CodeRabbit runs in `quiet` profile with
+   `auto_pause_after_reviewed_commits: 2`; blocking boundary, contract, concurrency, determinism,
+   security and correctness defects are fixed, while cosmetic style and minor refactor nitpicks are
+   deferred to `#153` (KP-064) or M2.
+3. **`review:full`**: runs the cohesive full review pass over the working M1 build in `#153`
+   (KP-064, depending on `#124` Gate A3 and `#149`, and gating `#125` final acceptance checklist),
+   lands high-leverage cross-cutting fixes, and flips `.coderabbit.yaml` to post-usable per-chunk
+   review (`auto_review.enabled: true`, `profile: chill`, `labels: ["!review:skip"]`,
+   `auto_pause_after_reviewed_commits: 2`) for M2 (`#80`) and all subsequent work.
+
+**Rationale:** Running multi-round full CodeRabbit polish loops on every isolated M1 chunk slowed
+down reaching the first playable build (for example, PR `#146` accumulated 40 review events and
+PR `#150` ran 8 rounds) while risking premature polish on abstractions whose real shape only
+becomes clear once the whole machine runs end-to-end under Gate A3. Keeping all automated tests,
+coverage floors, R12 visual/windowed checks and `work-verifier` mandatory per PR catches logic
+and integration regressions immediately; targeted `review:sanity` passes protect the boundaries
+that are expensive to change later; and `#153` (KP-064) gives the full review pass the cohesive
+context needed to catch cross-cutting drift, duplicated logic and state-transition bugs before
+flipping to tighter per-PR review for durable post-usable work.
+
+**Alternatives:**
+- Keep full per-PR CodeRabbit review (`auto_review.enabled: true`, `auto_pause_after_reviewed_commits: 0`)
+  on all 44 open M1 PRs: rejected because per-chunk polish loops bottleneck delivery of the first
+  usable playable build and create sunk-cost attachment to early module shapes.
+- Disable CodeRabbit completely until after M1: rejected because contracts (`pin_core` / Appendix A),
+  timing/concurrency loops (latency harness, present queue, snapshot latch, telemetry thread),
+  simulation-output changes and R11 security boundaries are expensive to retrofit once many chunks
+  build on top of them.
+- Rely on agent self-review during M1: rejected; R9 (no self-review) remains intact, with
+  `work-verifier` checking objective facts and CodeRabbit remaining the sole code reviewer.
