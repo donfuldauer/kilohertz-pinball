@@ -247,9 +247,11 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
    `git -c push.negotiate=true push -u origin <branch>`.
 2. Determine the PR's **review mode label** (`docs/PROCESS.md` P6): carry the issue's
    `review:skip` / `review:sanity` / `review:full` label onto the PR, upgrading to `review:sanity`
-   if the diff touches `crates/pin_core/`, `contracts/CHANGE_REQUESTS.md`, SPEC Appendix A/B
-   schemas, concurrency/timing loops, `very-high` blast-radius paths, or R11 security boundaries
-   (even if the issue lacked the label).
+   if the diff touches any P6 `review:sanity` category — public interfaces, schemas, wire/event
+   contracts or cross-layer spines (`crates/pin_core/`, `contracts/CHANGE_REQUESTS.md`, SPEC
+   Appendix A/B, `pin_guest_sdk`, vertex/scene boundaries), concurrency/state-machine/timing loops,
+   `very-high` blast-radius paths, R11 security boundaries, or automated milestone gates (even if
+   the issue lacked the label).
 3. Create the PR (`create_pull_request` + label edit, or
    `gh pr create --base main --head <branch> --label <review:*>`). The body follows
    `.github/pull_request_template.md`, starts with `Closes #<N>`, states the review mode under
@@ -269,11 +271,11 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
 
 ## 6. Review rounds
 
-- **Unreviewed `review:skip` PRs** (initial-usable-build phase, while `.coderabbit.yaml` has
-  `auto_review.enabled: false` and CodeRabbit has posted no review on the PR): do **not** request
-  `@coderabbitai review`. Handle any CI failures through the investigator / classifier / Fixer /
-  `work-verifier` loop, and proceed to §7 as soon as CI checks (`pr-checks` + any other PR
-  workflows), `main` CI, and `work-verifier` are green.
+- **Unreviewed `review:skip` PRs** (when `.coderabbit.yaml` excludes the PR — either `review:skip`
+  in either phase, or no opt-in label while `auto_review.enabled: false` — and CodeRabbit has
+  posted no review on the PR): do **not** request `@coderabbitai review`. Handle any CI failures
+  through the investigator / classifier / Fixer / `work-verifier` loop, and proceed to §7 as soon
+  as CI checks (`pr-checks` + any other PR workflows), `main` CI, and `work-verifier` are green.
 - **Reviewed PRs (`review:sanity`, `review:full`, post-usable default, or any PR where CodeRabbit
   posted a review):** each CodeRabbit review round (or push) is one batch, handled with the
   `triage` skill's §2 procedure and PROCESS.md P6:
