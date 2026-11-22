@@ -49,9 +49,11 @@ sends the item to the work-classifier.
    into one brief at the higher tier. Send all classifier-bound items to ONE work-classifier
    call as a batch.
 5. Group the remaining fast-path items by tier and module directory: one Fixer brief per
-   (tier, module) group, with all docs-only items (`docs/`, `.claude/`, `.agents/`, `AGENTS.md`,
-   `CLAUDE.md`, `GEMINI.md`, `README.md`) counting as one docs group (R1). When items of different
-   tiers touch the same file, put them in one brief at the higher tier.
+   (tier, module) group, with all docs-only items (`docs/`, `.claude/`, `.agents/agents/`,
+   `.agents/skills/`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `README.md`) counting as one docs
+   group (R1). Executable setup files (`.agents/setup-env.sh`, `.agents/environment.json`) are
+   **not** docs-only and keep their code verification and regression-test requirements. When items
+   of different tiers touch the same file, put them in one brief at the higher tier.
 6. Spawn executors, in parallel when owned paths do not overlap.
 7. Run ONE work-verifier on the resulting head commit covering every item in the round whenever
    the round changed the head (executor fixes, or a commit such as a `docs/DECISIONS.md` entry

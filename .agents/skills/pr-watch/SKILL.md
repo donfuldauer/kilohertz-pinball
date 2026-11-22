@@ -30,7 +30,7 @@ Run a fresh read of the PR head, checks, reviews, issue comments, and **all** re
    ```sh
    gh pr view <P> --json number,url,state,headRefName,headRefOid,reviewDecision,statusCheckRollup,reviews,comments
    ```
-2. **All review threads (paginated via GraphQL so no thread is missed):**
+2. **All review threads and comments (paginated via GraphQL so no thread or comment is missed):**
    ```sh
    gh api graphql \
      -F owner=donfuldauer -F name=kilohertz-pinball -F pr=<P> -F after=null \
@@ -42,7 +42,8 @@ Run a fresh read of the PR head, checks, reviews, issue comments, and **all** re
                pageInfo { hasNextPage endCursor }
                nodes {
                  id isResolved path line
-                 comments(first: 20) {
+                 comments(first: 100) {
+                   pageInfo { hasNextPage endCursor }
                    nodes { databaseId author { login } url body }
                  }
                }
@@ -51,7 +52,26 @@ Run a fresh read of the PR head, checks, reviews, issue comments, and **all** re
          }
        }'
    ```
-   Repeat with `-F after="<endCursor>"` while `pageInfo.hasNextPage` is `true`.
+   Repeat with `-F after="<endCursor>"` while `reviewThreads.pageInfo.hasNextPage` is `true`.
+
+   For any thread whose `comments.pageInfo.hasNextPage` is `true`, paginate its remaining comments
+   before evaluating disposition:
+   ```sh
+   gh api graphql \
+     -F threadId="<thread_id>" -F commentAfter="<endCursor>" \
+     -f query='
+       query($threadId: ID!, $commentAfter: String) {
+         node(id: $threadId) {
+           ... on PullRequestReviewThread {
+             comments(first: 100, after: $commentAfter) {
+               pageInfo { hasNextPage endCursor }
+               nodes { databaseId author { login } url body }
+             }
+           }
+         }
+       }'
+   ```
+   Repeat with `-F commentAfter="<endCursor>"` while `comments.pageInfo.hasNextPage` is `true`.
 3. Also inspect `reviews[].body` for additional / nitpick / outside-diff comments that do not have
    an inline thread, and `comments` for CodeRabbit's summary and pre-merge check warnings.
 
@@ -59,10 +79,14 @@ Run a fresh read of the PR head, checks, reviews, issue comments, and **all** re
 
 You are **done** when all of these hold on the current `headRefOid`:
 
-1. **CI green:** every entry in `statusCheckRollup` passes for its entry type:
-   - for `CheckRun` entries (excluding path-gated `SKIPPED` runs), `status == "COMPLETED"` and
-     `conclusion == "SUCCESS"` (specifically the required `pr-checks` aggregator plus any other
-     triggered workflow such as `spikes`, `release`, or `rules-wasm`);
+1. **CI green:** every required check (specifically the required `pr-checks` aggregator and any
+   other required check) is **present** in `statusCheckRollup` on `headRefOid` with
+   `status == "COMPLETED"` and `conclusion == "SUCCESS"` (an empty or incomplete
+   `statusCheckRollup` never satisfies this check), and every other entry in `statusCheckRollup`
+   passes for its entry type:
+   - for `CheckRun` entries (excluding path-gated `SKIPPED` runs, such as `spikes`, `release`, or
+     `rules-wasm` when skipped by path filters), `status == "COMPLETED"` and
+     `conclusion == "SUCCESS"`;
    - for `StatusContext` entries, `state == "SUCCESS"`.
 2. **CodeRabbit approved on the current head:** `coderabbitai` has an effective `APPROVED` review
    covering `headRefOid` that has not been superseded by a later `CHANGES_REQUESTED` or `DISMISSED`
@@ -135,12 +159,13 @@ Handle the PR state in this order:
 
 ### B. Checks or CodeRabbit are still pending or `IN_PROGRESS`
 
-If any CI check or the CodeRabbit check is still pending, queued, or `IN_PROGRESS` (and no check
-has failed), wait via a non-blocking scheduled check-in (§4).
+If any required check from §2 item 1 has not yet appeared in `statusCheckRollup`, or if any CI
+check or the CodeRabbit check is still pending, queued, or `IN_PROGRESS` (and no check has
+failed), wait via a non-blocking scheduled check-in (§4).
 
 ### C. Verification is missing for `headRefOid`
 
-If all CI checks on `headRefOid` are green, every finding is accounted for and every thread is
+If CI checks on `headRefOid` satisfy §2 item 1, every finding is accounted for and every thread is
 resolved, and no check is pending or `IN_PROGRESS`, but §2 item 4 is not yet satisfied on
 `headRefOid` (whether or not CodeRabbit has approved yet):
 
@@ -162,8 +187,8 @@ resolved, and no check is pending or `IN_PROGRESS`, but §2 item 4 is not yet sa
 
 ### D. CodeRabbit has not reviewed the current head commit
 
-If all CI checks are green, verification has passed (§2 item 4), and CodeRabbit is neither
-pending/`IN_PROGRESS` nor has reviewed `headRefOid` (for example due to rate limiting):
+If CI checks on `headRefOid` satisfy §2 item 1, verification has passed (§2 item 4), and CodeRabbit
+is neither pending/`IN_PROGRESS` nor has reviewed `headRefOid` (for example due to rate limiting):
 
 ```sh
 gh pr comment <P> --body "@coderabbitai review"
@@ -175,8 +200,8 @@ schedule the next check-in (§4).
 
 ### E. All findings resolved, checks green, and verification passed, but CodeRabbit has not approved yet
 
-If every finding is accounted for and every thread is resolved, all CI checks on `headRefOid` are
-green, verification has passed (§2 item 4), CodeRabbit has finished reviewing `headRefOid` (no
+If every finding is accounted for and every thread is resolved, CI checks on `headRefOid` satisfy
+§2 item 1, verification has passed (§2 item 4), CodeRabbit has finished reviewing `headRefOid` (no
 pending or `IN_PROGRESS` CodeRabbit check), and the only remaining blocker is CodeRabbit's
 `CHANGES_REQUESTED` or withheld automatic approval:
 
@@ -189,7 +214,7 @@ Then schedule the next check-in (§4).
 ## 4. Schedule the next non-blocking check-in
 
 Never run a tight foreground `while` sleep-poll loop. Choose the check-in mechanism available in
-your current Antigravity surface:
+your current session:
 
 1. **Antigravity App / CLI with the built-in `schedule` tool (`/schedule`):**
    Schedule a one-shot timer (`DurationSeconds: 180` while waiting on CodeRabbit or fast checks;
@@ -210,6 +235,9 @@ your current Antigravity surface:
 3. **Unattended monitoring across sessions (Antigravity App):**
    The owner can configure a persistent `/automation` job that periodically runs `pr-watch` on open
    PRs.
+4. **Sessions with no scheduling mechanism:**
+   Report the PR URL, head SHA, pending checks, and open findings to the user, then stop and ask
+   the user to re-invoke `pr-watch` after the pending checks complete.
 
 ## Never
 
