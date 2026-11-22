@@ -519,10 +519,13 @@ Orchestrator drives it to a merge without a person.
    `closed_by_pull_requests.references` + `pull_request_read` `merged` true; via `gh` CLI:
    `gh issue view <n> --json state,stateReason,closedByPullRequestsReferences` + `gh pr view <p> --json mergedAt`
    (`mergedAt` non-null); fallback for an unlinked PR body saying `Closes #<n>` or `Fixes #<n>`:
-   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged base:main in:body "Closes #<n>"'`
-   and, if empty, the same query with `"Fixes #<n>"`, verifying a whole-number match on the matched
-   PR body (`#<n>` not followed by another digit, e.g. `#12` must not match `#123`)), or a comment
-   on it names the replacement
+   run
+   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged base:main in:body "Closes #<n>"' -F per_page=100 -F page=<P>`,
+   paged explicitly until a page returns fewer than 100 items, filter to PRs whose body contains a
+   whole-number match for `Closes #<n>` (`#<n>` not followed by another digit, e.g. `#12` must not
+   match `#123`), and only if no matching PR remains after paging and whole-number filtering run the
+   same explicitly paged and whole-number-filtered query for `"Fixes #<n>"`), or a comment on it
+   names the replacement
    issue(s) that delivered the work and those pass the same test. The run-log rows were committed
    in the PR itself; the merge commit is recorded in the RUN_LOG row of the next PR. Nothing is
    pushed to `main` directly.

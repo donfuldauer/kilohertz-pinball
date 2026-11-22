@@ -79,11 +79,12 @@ Run a fresh read of the PR head, checks, reviews, issue comments, and **all** re
 
 You are **done** when all of these hold on the current `headRefOid`:
 
-1. **CI green:** every required check (specifically the required `pr-checks` aggregator and any
-   other required check) is **present** in `statusCheckRollup` on `headRefOid` with
-   `status == "COMPLETED"` and `conclusion == "SUCCESS"` (an empty or incomplete
-   `statusCheckRollup` never satisfies this check), and every other entry in `statusCheckRollup`
-   passes for its entry type:
+1. **CI green:** every required check (specifically the required `pr-checks` `CheckRun` aggregator
+   and any other required check) is **present** in `statusCheckRollup` on `headRefOid` and passes
+   for its entry type (`status == "COMPLETED"` and `conclusion == "SUCCESS"` for `CheckRun` entries;
+   `state == "SUCCESS"` for `StatusContext` entries; an empty or incomplete `statusCheckRollup`
+   never satisfies this check), and every other entry in `statusCheckRollup` passes by the same
+   entry-type rules:
    - for `CheckRun` entries (excluding path-gated `SKIPPED` runs, such as `spikes`, `release`, or
      `rules-wasm` when skipped by path filters), `status == "COMPLETED"` and
      `conclusion == "SUCCESS"`;

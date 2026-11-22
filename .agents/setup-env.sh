@@ -36,9 +36,9 @@ FIRST_LINE=$(head -n 1 "$HOME/.bashrc" || true)
 if [ "$FIRST_LINE" != "$PATH_EXPORT" ]; then
   TMP_BASHRC=$(mktemp "$HOME/.bashrc.tmp.XXXXXX")
   trap 'rm -f "$TMP_BASHRC"' EXIT
-  cp -p "$HOME/.bashrc" "$TMP_BASHRC"
   { printf '%s\n' "$PATH_EXPORT"; cat "$HOME/.bashrc"; } > "$TMP_BASHRC"
-  mv "$TMP_BASHRC" "$HOME/.bashrc"
+  chmod --reference="$HOME/.bashrc" "$TMP_BASHRC"
+  mv -f "$TMP_BASHRC" "$HOME/.bashrc"
   trap - EXIT
 fi
 
