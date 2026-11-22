@@ -2,7 +2,8 @@ Closes #<!-- issue number -->
 
 ## Work item
 
-<!-- issue title, plan ID (KP-NNN), phase label and tracking issue (#79 M1 or #80 M2);
+<!-- issue title, plan ID (KP-NNN), phase label, tracking issue (#79 M1 or #80 M2),
+     review mode (`review:skip` / `review:sanity` / `review:full`, docs/PROCESS.md P6) and reason;
      the branch, if the session could push only to an assigned branch -->
 
 ## Requirements satisfied

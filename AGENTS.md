@@ -42,15 +42,20 @@ by a polling `/automation` job. The `run-plan` skill loops over every ready issu
   `define_subagent` and run it with `invoke_subagent`. (Standalone Gemini CLI does not load
   `.agents/agents/`; see `GEMINI.md`.) Pass the classifier's brief verbatim and its model tier
   override. Subagents never spawn subagents; the Orchestrator (main session) does every spawn.
-- **No self-review (R9).** Do not review code yourself or with a sibling agent. Open a PR against
-  `main` (body from `.github/pull_request_template.md`, starting `Closes #<N>`), watch its activity
-  (Claude Code: `subscribe_pr_activity` or `send_later`; Gemini / Antigravity: run the `pr-watch`
-  skill in `.agents/skills/pr-watch/SKILL.md` to schedule non-blocking check-ins and drive
-  CodeRabbit to approval; never sleep-poll in a foreground loop), give every CodeRabbit finding a
+- **No self-review (R9) and review rhythm (P6).** Do not review code yourself or with a sibling
+  agent. Open a PR against `main` (body from `.github/pull_request_template.md`, starting
+  `Closes #<N>`, carrying the issue's `review:*` label). During the M1 initial-usable-build phase
+  (until `#153` / KP-064 merges), routine vertical-slice PRs (`review:skip`) merge on green tests,
+  `work-verifier` (`pass`), `pr-checks` and `main` CI without waiting on CodeRabbit; boundary,
+  contract, timing/concurrency, `very-high` blast-radius, R11 security and gate PRs
+  (`review:sanity`) get a targeted CodeRabbit sanity review (fix blocking defects, defer style
+  nits to `#153` or M2); `#153` (`review:full`) runs the cohesive full review once Gate A3 passes
+  and flips `.coderabbit.yaml` to per-PR review for post-usable work. On every reviewed PR, watch
+  activity (Claude Code: `subscribe_pr_activity` or `send_later`; Gemini / Antigravity: `pr-watch`
+  in `.agents/skills/pr-watch/SKILL.md`; never sleep-poll), give every CodeRabbit finding a
   disposition reply, resolve every thread yourself when justified (never leave one for a person;
   never resolve an unfixed security issue or a verified unfixed correctness defect), and merge
-  without waiting for a person once the P6 merge conditions hold (`pr-checks` green, `main` green,
-  verifier `pass`).
+  without waiting for a person once the P6 merge conditions hold.
 - **GitHub (P1).** In Claude Code (and Gemini/Antigravity sessions with a GitHub MCP server), use
   the GitHub MCP tools (`mcp__github__*`) for issues, comments, labels and PRs, and
   `gh api -X GET search/issues` (explicit paging) for searches by label. In Gemini / Antigravity

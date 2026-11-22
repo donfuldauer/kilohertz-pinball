@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 10
 - Resolved queue lines: 323
-- Decision entries: 475
-- Run-log rows: 516
+- Decision entries: 476
+- Run-log rows: 517
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -519,6 +519,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #81 tester: Input-epoch acceptance: full sweep, haptics observation, thread-test isolation (docs/DECISIONS.md)
 - #81-review-1: Profiler latency from the raw SDL stamp (docs/DECISIONS.md)
 - Process: Dual-harness agent documentation (Claude Code and Gemini/Antigravity) (docs/DECISIONS.md)
+- Process: Initial-usable-build review rhythm (tests along the way, sanity review on boundaries, full review at M1) (docs/DECISIONS.md)
 
 ## 4. D33 flags
 
