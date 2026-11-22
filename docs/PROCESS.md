@@ -488,8 +488,9 @@ run-log or housekeeping edits).
      merge.
 
    Every CodeRabbit comment and CI failure is handled as it arrives or on check-in; nobody
-   sleep-polls in a foreground loop. On an unreviewed `review:skip` PR during the initial-usable
-   phase, do not request `@coderabbitai review`.
+   sleep-polls in a foreground loop. On an unreviewed PR excluded from automatic review (`review:skip`
+   in either phase, or no opt-in label while `auto_review.enabled: false`), do not request
+   `@coderabbitai review`.
 3. **Every finding is accounted for** (on reviewed PRs, or whenever CodeRabbit posted comments),
    batch by batch (P5 "Batching"), for every CodeRabbit comment (inline, nitpick, outside-diff or
    summary item). Each ends in exactly one disposition, recorded as a reply on its thread
@@ -558,8 +559,9 @@ run-log or housekeeping edits).
        change request, and every review conversation has a disposition reply and has been resolved
        by the Orchestrator (step 3), except thread types that cannot be resolved, where the reply
        is the disposition;
-     - if the PR is an unreviewed `review:skip` PR during the initial-usable-build phase (no
-       CodeRabbit review posted): no CodeRabbit review or approval is required;
+     - if the PR is excluded from automatic review (`review:skip` in either phase, or no opt-in
+       label while `auto_review.enabled: false`) and no CodeRabbit review was posted: no CodeRabbit
+       review or approval is required;
    - the branch is up to date with `main` whenever merging `main` in would touch a file the PR
      also changes or conflicts; a clean merge that touches none of the PR's files does not require
      a re-sync;

@@ -35,9 +35,10 @@ threads:
    - **Review required:** the PR carries `review:sanity` or `review:full`, **or** `.coderabbit.yaml`
      has `auto_review.enabled: true` and the PR does not carry `review:skip`, **or** `coderabbitai`
      has already posted a review on this PR.
-   - **Review skipped:** `.coderabbit.yaml` has `auto_review.enabled: false` (initial-usable-build
-     phase, M1), the PR carries `review:skip` (or neither `review:sanity` nor `review:full`), and
-     `coderabbitai` has posted no review on this PR.
+   - **Review skipped:** the PR is excluded from automatic review — either it carries `review:skip`
+     (in either phase, without `review:sanity` or `review:full`), **or** `.coderabbit.yaml` has
+     `auto_review.enabled: false` and the PR carries neither `review:sanity` nor `review:full` —
+     and `coderabbitai` has posted no review on this PR.
 2. **All review threads and comments (paginated via GraphQL so no thread or comment is missed; skip
    when review is skipped and `reviews` is empty):**
    ```sh
