@@ -8,8 +8,9 @@ labels: ["work-unit", "blocked"]
 > **Plan ID:** KP-NNN · **Phase:** `<NN-name>` · **Milestone:** <M1 — Play experience | M2 — Backlog> (tracking issue #<79 | 80>) · **Expected tier:** <T1 (Sonnet 5.5 / Flash) | T2 (Opus 5.5 / Pro)>
 
 <!-- After creating the issue: attach it as a sub-issue of its tracking issue, add the labels
-     type:<feature|fix|infra|docs|content>, area:<…>, phase:<NN-name>, tier:<T1|T2>, and replace
-     `blocked` with `ready` if every dependency is already satisfied (docs/PROCESS.md P6 step 5).
+     type:<feature|fix|infra|docs|content>, area:<…>, phase:<NN-name>, tier:<T1|T2>,
+     review:<skip|sanity|full> (docs/PROCESS.md P6), and replace `blocked` with `ready` if every
+     dependency is already satisfied (docs/PROCESS.md P6 step 5).
      No third-party pinball names anywhere in this issue. -->
 
 ## Summary

@@ -75,14 +75,20 @@ the source (DECISIONS.md "Planning — No third-party names in planning text").
 **Labels:** `work-unit`; `ready` / `blocked` (later `in-progress`, `status:blocked-failure`);
 `type:feature`, `type:fix`, `type:infra`, `type:docs`, `type:content` (tables, rules, art data);
 `area:` app, render, physics, sim, input, audio, assets, tablegen, assetgen, script, tables, ci,
-release, process; `phase:NN-name`; `tier:T1` / `tier:T2` (expected; T3 is never planned).
+release, process; `phase:NN-name`; `tier:T1` / `tier:T2` (expected; T3 is never planned); and
+`review:skip` / `review:sanity` / `review:full` (`docs/PROCESS.md` P6). During an initial-usable-build
+milestone (M1 `#79`), label boundary, contract, schema, timing/concurrency, `very-high`
+blast-radius, R11 security and automated-gate units `review:sanity`, routine vertical-slice/content
+units `review:skip`, and include a cohesive full-review unit (`review:full`, e.g. `#153` KP-064)
+once the end-to-end build passes its milestone gate before flipping to post-usable per-PR review.
 **Milestones** are tracking issues (label `tracking`): #79 M1 — Play experience, #80 M2 — Backlog,
 or a new one whose body states the goal and scope (no Plan ID line) and which closes with its
 last sub-issue.
 
 **Suggested phase order** (adapt to the requirements): responsiveness and wiring fixes →
 contracts (`pin_core` CRs, new schemas) → rendering capabilities → the machine (scene, cameras,
-parts, cabinet, art) → tables → automated gates → acceptance material → backlog.
+parts, cabinet, art) → tables → automated gates → cohesive full review pass → acceptance material →
+backlog.
 
 ## 3. Check the breakdown
 
