@@ -58,11 +58,13 @@ Antigravity sessions without GitHub MCP tools, use the official `gh` CLI (`gh is
    `gh issue view <n> --json state,stateReason,closedByPullRequestsReferences` — its
    `closedByPullRequestsReferences` array lists the closing PRs — and confirm each with
    `gh pr view <p> --json mergedAt` (`mergedAt` non-null). Fallback for an unlinked PR body that
-   uses `Closes #<n>` or `Fixes #<n>`:
-   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged base:main in:body "Closes #<n>"'`
-   and, if empty, the same query with `"Fixes #<n>"`, verifying a whole-number match on the matched
-   PR body (`#<n>` not followed by another digit, e.g. `#12` must not match `#123`)). A blocker
-   closed without a merged PR counts
+   uses `Closes #<n>` or `Fixes #<n>`: run
+   `gh api -X GET search/issues -f q='repo:donfuldauer/kilohertz-pinball is:pr is:merged base:main in:body "Closes #<n>"' -F per_page=100 -F page=<P>`,
+   paged explicitly until a page returns fewer than 100 items, filter to PRs whose body contains a
+   whole-number match for `Closes #<n>` (`#<n>` not followed by another digit, e.g. `#12` must not
+   match `#123`), and only if no matching PR remains after paging and whole-number filtering run the
+   same explicitly paged and whole-number-filtered query for `"Fixes #<n>"`). A blocker closed
+   without a merged PR counts
    only if a comment on it names the replacement issue(s) that delivered the work and those
    replacements pass the same test. A "None" entry is satisfied once any condition it states in
    words holds on `origin/main` (for example "once the process migration (docs/PROCESS.md) is on
@@ -166,9 +168,13 @@ single-checkout fallback below). One branch, one PR, one issue.
 1. `git fetch origin`. Look for an existing branch and worktree for the issue:
    - for normal `issue/<N>-<short-slug>` branches, run `git branch -a --list "*issue/<N>-*"` and
      `git worktree list`;
-   - for an assigned `<branch>`, check `git branch -a --list "*<branch>*"` and `git worktree list`.
-2. **Found (a restart, or an existing assigned `<branch>`).** Resume it; never reset it to
-   `origin/main`.
+   - for an assigned `<branch>`, check exact local and remote refs with
+     `git show-ref --verify --quiet "refs/heads/<branch>"`,
+     `git show-ref --verify --quiet "refs/remotes/origin/<branch>"`, and `git worktree list` (so a
+     prefix-matching branch such as `<branch>-old` does not match `<branch>`).
+2. **Found (a restart, or an existing assigned `<branch>`).** If step 1 discovered an existing
+   `issue/<N>-*` branch, set `<branch>` to that discovered branch name before running the commands
+   below. Resume it; never reset it to `origin/main`.
    - *Worktree:* reuse the worktree if it exists, otherwise
      `git worktree add ../kilohertz-issue-<N> <branch>` (for a remote-only branch,
      `git worktree add -b <branch> ../kilohertz-issue-<N> origin/<branch>`). In the worktree, if the

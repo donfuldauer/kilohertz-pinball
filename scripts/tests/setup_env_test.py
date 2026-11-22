@@ -229,15 +229,26 @@ class SetupEnvScriptTest(unittest.TestCase):
         self.assertEqual(path_entries[0], self.cargo_bin)
 
     def test_preserves_bashrc_permissions(self):
-        for mode in (0o600, 0o644):
+        initial = "case $- in *i*) ;; *) return;; esac\n"
+        for mode in (0o600, 0o644, 0o444):
             with self.subTest(mode=oct(mode)):
+                if os.path.exists(self.bashrc):
+                    os.chmod(self.bashrc, 0o600)
                 with open(self.bashrc, "w", encoding="utf-8") as f:
-                    f.write("case $- in *i*) ;; *) return;; esac\n")
+                    f.write(initial)
                 os.chmod(self.bashrc, mode)
 
                 self.run_section1()
+                content = self.read_bashrc()
+                self.assertEqual(content, self.expected_export_line() + "\n" + initial)
+                self.assertEqual(content.splitlines()[0], self.expected_export_line())
                 actual = stat.S_IMODE(os.stat(self.bashrc).st_mode)
                 self.assertEqual(actual, mode)
+
+                # Confirm running twice (idempotency) succeeds and preserves content and mode.
+                self.run_section1()
+                self.assertEqual(self.read_bashrc(), content)
+                self.assertEqual(stat.S_IMODE(os.stat(self.bashrc).st_mode), mode)
 
     def test_full_setup_env_invocation_with_stubs(self):
         # Invoke the actual .agents/setup-env.sh inside a stubbed PATH and isolated
