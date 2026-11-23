@@ -7648,3 +7648,58 @@ flipping to tighter per-PR review for durable post-usable work.
   build on top of them.
 - Rely on agent self-review during M1: rejected; R9 (no self-review) remains intact, with
   `work-verifier` checking objective facts and CodeRabbit remaining the sole code reviewer.
+
+## KP-011 (#91) — Apex player-view reversed-winding check and alpha-blended transparent decks
+
+**Decision:** In the Independent Tester spec test `crates/pin_app/tests/spec_kp011_view.rs`
+(`req_vis_001_apex_player_view_matches_with_reversed_winding_copies`), verify the `< 0.1 %`
+pixel-difference acceptance criterion for KP-011 (#91) using two complementary checks on the
+Apex Circuit player view (`400 × 800`):
+1. Append reversed-winding, negated-normal copies alongside the originals for every **opaque**
+   `VisualMesh` (`!m.transparent`), keeping the three `ClearAcrylic` (`transparent: true`) upper
+   decks as single copies (measured delta: `0 / 320,000` pixels = `0.0000 %`, vs `6.65 %` when
+   `double_sided = false`).
+2. Replace **every** `VisualMesh` (both opaque and `transparent: true`) with its reversed-winding,
+   negated-normal copy (`[a, c, b]` and `-normal`) (measured delta: `0 / 320,000` pixels =
+   `0.0000 %` in both HDR and LDR, vs `77.30 %` when `double_sided = false`).
+
+**Rationale:** `ClearAcrylic` (`transparent: true`) meshes already draw two-sided via a two-pass
+back-then-front alpha-blended pass with depth writes disabled (DECISIONS.md "5.2 — acrylic",
+`post_pbr_followups::acrylic_two_pass_is_independent_of_triangle_order`). Duplicating a
+`transparent: true` mesh in the draw list stacks two translucent alpha-blended layers at the same
+position, which changes `4,660 / 320,000` pixels (`1.4563 %`) by double-blending whether
+`double_sided` is `true` or `false` (measured transparent-only appended delta: identical `1.7297 %`
+for both `double_sided = true` and `double_sided = false`). Meanwhile, issue #91 specifies a
+no-cull pipeline for opaque draws and does not alter `ClearAcrylic` alpha blending. Combining (1)
+appended reversed-winding copies on all opaque meshes and (2) winding-replaced copies across every
+mesh (opaque and transparent) tests 100 % of Apex Circuit's geometry for two-sided invariance under
+the `< 0.1 %` threshold without introducing double alpha-blending artifacts.
+
+**Alternatives:**
+- Append duplicate `ClearAcrylic` draws alongside the originals anyway and compare against `< 0.1 %`:
+  mathematically impossible with depth-write-off alpha blending (`1.4563 %` delta even though
+  winding replacement gives `0.0000 %`), and would fail a correct implementation.
+- Loosen the `< 0.1 %` threshold to `2 %`: violates R10 (never weaken an acceptance threshold) and
+  hides real opaque back-face regressions.
+
+## #91 — Mechanical struct-literal owned-path extension for `double_sided`
+
+**Decision:** Extend #91's owned paths to permit mechanical `double_sided: false` struct-literal
+updates (no logic changes) in `crates/pin_render/src/backbox/tests.rs` and six integration test
+files under `crates/pin_render/tests/` (`gpu_pbr_render.rs`, `post_gpu.rs`,
+`post_pbr_followups.rs`, `reflections_gpu.rs`, `raytrace_gpu.rs`, `raytrace_lost.rs`), matching the
+precedent in `"a1-glass-height — CR-007 playfield glass_height — Struct-literal updates"`.
+
+**Rationale:** `pin_assets::PbrMaterial` and `pin_render::pbr::DrawItem` are plain structs whose
+fields are all `pub` (`base_color`, `transparent`, `emission`, etc.). Adding `pub double_sided: bool`
+directly on both structs (with `DrawItem::new` defaulting it to `false` and a builder
+`DrawItem::with_double_sided`) is the idiomatic representation requested by #91, and updating those
+seven existing test literals to `double_sided: false` is strictly required for `--all-targets` to
+compile without altering any test logic or 5.1/5.2 golden output.
+
+**Alternatives:**
+- Hide `double_sided` behind a private field or parallel side-table: inconsistent with every other
+  field on `PbrMaterial` and `DrawItem` and breaks struct-update syntax (`DrawItem { .. }`) used
+  across `pin_render`.
+- Keep the files out of #91 and open a follow-up issue: impossible because the workspace would fail
+  to compile until the literals are updated.
