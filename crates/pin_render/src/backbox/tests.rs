@@ -315,6 +315,7 @@ fn gltf_scene_converts_colours_and_transforms() {
             metallic_roughness_image: None,
             normal_image: None,
             emissive_image: None,
+            double_sided: false,
         }],
         images: vec![],
     };

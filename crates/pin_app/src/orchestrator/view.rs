@@ -64,6 +64,9 @@ pub struct VisualMesh {
     /// Lamp (`LampId` index) whose level drives the mesh's emission
     /// (glTF extras `lamp`).
     pub lamp: Option<usize>,
+    /// Whether opaque draws render both front and back faces
+    /// (glTF material `doubleSided`).
+    pub double_sided: bool,
 }
 
 /// The backglass and score display content of a table.
@@ -245,6 +248,7 @@ impl TableVisuals {
                 .as_deref()
                 .and_then(lamp_of)
                 .map(|&(_, i)| usize::from(i));
+            let double_sided = mat.is_some_and(|g| g.double_sided);
             meshes.push(VisualMesh {
                 name: m.name.clone(),
                 positions: m.positions.clone(),
@@ -254,6 +258,7 @@ impl TableVisuals {
                 material,
                 transparent: kind.is_transparent(),
                 lamp,
+                double_sided,
             });
         }
         for f in &table.flippers {
@@ -600,6 +605,7 @@ impl TableRenderer {
                     material: m.material,
                     transparent: m.transparent,
                     emission: 0.0,
+                    double_sided: m.double_sided,
                 },
                 m.lamp,
             ));

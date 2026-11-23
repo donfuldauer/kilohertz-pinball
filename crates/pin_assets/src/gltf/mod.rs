@@ -179,6 +179,9 @@ pub struct PbrMaterial {
     pub normal_image: Option<usize>,
     /// Emissive texture image.
     pub emissive_image: Option<usize>,
+    /// Whether back-face culling is disabled (glTF `material.doubleSided`,
+    /// defaulting to `false` when omitted).
+    pub double_sided: bool,
 }
 
 /// A decoded image (0 x 0 and empty when no material uses it, or when it
@@ -686,6 +689,7 @@ fn load_bytes(
             metallic_roughness_image: mr_tex,
             normal_image: normal_tex,
             emissive_image: emissive_tex,
+            double_sided: m.double_sided(),
         };
         let factors = [
             material.base_color.as_slice(),

@@ -231,6 +231,7 @@ impl Rig {
             material: ball_material(e, ball_roughness),
             transparent: false,
             emission: 0.0,
+            double_sided: false,
         };
         vec![
             ball(A, RED),
@@ -244,6 +245,7 @@ impl Rig {
                 },
                 transparent: false,
                 emission: 0.0,
+                double_sided: false,
             },
         ]
     }
@@ -980,6 +982,7 @@ fn render_panel_scene(ctx: &GpuContext, b_rough: f32, cutoff: f32) -> HdrImage {
         material: ball_material([0.0; 3], rough),
         transparent: false,
         emission: 0.0,
+        double_sided: false,
     };
     let mut panel_model = scale_translation(2.0 * PANEL_HALF, [0.0, 0.0, PANEL_Z]);
     // Face down: flip the quad's +z normal (mirror y and z).
@@ -1000,6 +1003,7 @@ fn render_panel_scene(ctx: &GpuContext, b_rough: f32, cutoff: f32) -> HdrImage {
             },
             transparent: false,
             emission: 0.0,
+            double_sided: false,
         },
     ];
     let cam = camera();
@@ -1299,6 +1303,7 @@ impl CoatPose {
                 material: MaterialKind::PlayfieldWood.params(),
                 transparent: false,
                 emission: 0.0,
+                double_sided: false,
             },
             DrawItem {
                 mesh: rig.quad,
@@ -1306,6 +1311,7 @@ impl CoatPose {
                 material: emissive(COAT_L),
                 transparent: false,
                 emission: 0.0,
+                double_sided: false,
             },
         ]
     }
@@ -1673,6 +1679,7 @@ fn ball_outline(
             material: ball_material([0.0; 3], 0.06),
             transparent: false,
             emission: 0.0,
+            double_sided: false,
         },
         DrawItem {
             mesh: rig.quad,
@@ -1680,6 +1687,7 @@ fn ball_outline(
             material: emissive(BALL_L),
             transparent: false,
             emission: 0.0,
+            double_sided: false,
         },
     ];
     let ball = [ReflectiveBall {
@@ -1857,6 +1865,7 @@ fn mixed_draws(rig: &Rig, bounce: bool, b_rough: f32) -> Vec<DrawItem> {
         material: ball_material(e, rough),
         transparent: false,
         emission: 0.0,
+        double_sided: false,
     };
     if !bounce {
         return vec![ball(A, PANEL_L, 0.06), ball(B, [0.0; 3], b_rough)];
@@ -1880,6 +1889,7 @@ fn mixed_draws(rig: &Rig, bounce: bool, b_rough: f32) -> Vec<DrawItem> {
             },
             transparent: false,
             emission: 0.0,
+            double_sided: false,
         },
     ]
 }

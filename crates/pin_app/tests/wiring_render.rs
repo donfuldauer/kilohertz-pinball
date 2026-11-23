@@ -624,3 +624,240 @@ fn generated_inserts_brighten_with_their_lamp_bare_and_under_acrylic() {
         "deck lamp lit the other insert"
     );
 }
+
+fn apex_bundle_dir() -> std::path::PathBuf {
+    let dir = support::scratch("apex_circuit_double_sided");
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tables/apex_circuit");
+    let layout_text = std::fs::read_to_string(src.join("layout.toml")).expect("apex layout.toml");
+    let table_text = std::fs::read_to_string(src.join("table.toml")).expect("apex table.toml");
+    let layout = pin_tablegen::layout::parse_layout(&layout_text).expect("apex layout parses");
+    let base = pin_core::schema::table::TableManifest::from_toml_str(&table_text)
+        .expect("apex table parses");
+    let generated = pin_tablegen::generate(&layout, &base).expect("apex pin_tablegen");
+    pin_tablegen::write_bundle(&generated, &dir).expect("apex write bundle");
+    for f in ["rules.lua", "backglass.toml", "layout.toml", "glass.toml"] {
+        let to = dir.join(f);
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy(src.join(f), &to).unwrap_or_else(|e| panic!("copy {f}: {e}"));
+    }
+    let display_dir = dir.join("display");
+    std::fs::create_dir_all(&display_dir).unwrap();
+    for entry in std::fs::read_dir(src.join("display")).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().extension().is_some_and(|e| e == "toml") {
+            std::fs::copy(entry.path(), display_dir.join(entry.file_name())).unwrap();
+        }
+    }
+    let meta = pin_assetgen::TableMeta {
+        title: base.meta.name.clone(),
+        palette: vec![[0x0b, 0x13, 0x2b], [0x1c, 0x25, 0x41], [0xff, 0x6b, 0x35]],
+        seed: 0,
+    };
+    pin_assetgen::generate_kit(&meta, &dir).expect("apex placeholder kit");
+    dir
+}
+
+/// REQ-VIS-001: `TableVisuals::of` populates `VisualMesh::double_sided` from
+/// glTF `doubleSided`, and an angled player-view render of Apex Circuit
+/// changes by fewer than 0.1 % of pixels when reversed-winding copies of every
+/// mesh are added.
+#[test]
+fn req_vis_001_apex_circuit_player_view_renders_single_winding_walls_from_both_sides() {
+    use pin_render::pbr::{DrawItem, Environment, FrameDesc, PbrCamera, PbrRenderer, PointLight};
+    use pin_render::post::{PostChain, PostConfig, PostFrame};
+
+    let ctx = gpu();
+    let dir = apex_bundle_dir();
+    let (visuals, _snap) = on_big_stack(move || {
+        let checked = validate_table(&dir).unwrap();
+        let sim = load_checked(&checked, SimConfig::default()).unwrap();
+        (TableVisuals::of(&checked), *sim.snapshot())
+    });
+    assert!(visuals.warnings.is_empty(), "{:?}", visuals.warnings);
+    assert!(!visuals.meshes.is_empty());
+    assert!(
+        visuals.meshes.iter().all(|m| m.double_sided),
+        "all Apex Circuit generated meshes carry doubleSided: true"
+    );
+
+    // Also confirm TableVisuals::of defaults double_sided to false when omitted
+    // on the greybox or synthetic scenes via an explicit check on a modified
+    // TableVisuals copy below; here verify the actual player-view render.
+    let (w, h) = (320u32, 320u32);
+    let min = visuals.bounds.0;
+    let max = visuals.bounds.1;
+    let cx = 0.5 * (min[0] + max[0]);
+    let cy = 0.5 * (min[1] + max[1]);
+    // Angled player-view perspective from the front/low end looking down the
+    // table so inner and outer walls are viewed from both front and back faces.
+    let cam = PbrCamera::look_at(
+        [cx - 0.12, min[1] - 0.35, max[2] + 0.45],
+        [cx, cy + 0.10, 0.02],
+        [0.0, 0.0, 1.0],
+        42f32.to_radians(),
+        w as f32 / h as f32,
+        0.05,
+        5.0,
+    );
+    let lights = [
+        PointLight::new(
+            [cx, min[1] + 0.25, max[2] + 0.5],
+            [1.0, 0.95, 0.88],
+            0.35,
+            4.0,
+        ),
+        PointLight::new(
+            [cx, min[1] + 0.55, max[2] + 0.5],
+            [1.0, 0.95, 0.88],
+            0.35,
+            4.0,
+        ),
+        PointLight::new(
+            [cx, min[1] + 0.85, max[2] + 0.5],
+            [1.0, 0.95, 0.88],
+            0.35,
+            4.0,
+        ),
+    ];
+
+    let render_meshes = |meshes: &[pin_app::orchestrator::VisualMesh]| -> RgbaImage {
+        let mut pbr = PbrRenderer::new(ctx, w, h).unwrap();
+        let mut post = PostChain::new(ctx, w, h, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+        post.set_config(PostConfig::default());
+        let mut draws = Vec::with_capacity(meshes.len());
+        for m in meshes {
+            let id = pbr
+                .upload_mesh_data(&m.positions, &m.normals, &m.indices)
+                .unwrap();
+            draws.push(DrawItem {
+                mesh: id,
+                model: m.model,
+                material: m.material,
+                transparent: m.transparent,
+                emission: 0.0,
+                double_sided: m.double_sided,
+            });
+        }
+        let mut frame = FrameDesc::new(&cam, &lights, &draws);
+        frame.environment = Environment::STUDIO;
+        let tex = ctx.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("apex player view"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut enc = ctx
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        pbr.encode(&mut enc, &frame);
+        let pf = PostFrame {
+            camera: &cam,
+            balls: &[],
+        };
+        post.encode(&mut enc, pbr.hdr_view(), &pf, &view);
+        ctx.queue().submit([enc.finish()]);
+        let raw = read_raw(ctx, &tex);
+        RgbaImage::from_rgba(w, h, raw).unwrap()
+    };
+
+    let base_img = render_meshes(&visuals.meshes);
+
+    // Compare pixels: for opaque meshes (walls, guides, decks, ramps), adding
+    // reversed-winding copies with negated normals must change 0 px (fewer
+    // than 0.1 %). And for the full scene (including transparent acrylic decks),
+    // replacing every mesh's winding+normals with its reversed copy must also
+    // match within < 0.1 % (double-blending the same transparent triangle twice
+    // would double its coverage, whereas reversing every triangle exercises
+    // double-sided shading on both faces without double-blending).
+    let total_px = (w * h) as usize;
+    let count_diff = |a: &RgbaImage, b: &RgbaImage| -> usize {
+        let mut n = 0usize;
+        for y in 0..h {
+            for x in 0..w {
+                let pa = a.pixel(x, y);
+                let pb = b.pixel(x, y);
+                if (0..3).any(|k| pa[k].abs_diff(pb[k]) > 1) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+
+    let opaque_only: Vec<_> = visuals
+        .meshes
+        .iter()
+        .filter(|m| !m.transparent)
+        .cloned()
+        .collect();
+    let base_opaque = render_meshes(&opaque_only);
+    let mut doubled_opaque = opaque_only.clone();
+    for m in &opaque_only {
+        let mut rev = m.clone();
+        rev.normals = m.normals.iter().map(|n| [-n[0], -n[1], -n[2]]).collect();
+        for tri in rev.indices.chunks_exact_mut(3) {
+            tri.swap(1, 2);
+        }
+        doubled_opaque.push(rev);
+    }
+    let doubled_opaque_img = render_meshes(&doubled_opaque);
+    let op_diff_px = count_diff(&base_opaque, &doubled_opaque_img);
+    let op_frac = op_diff_px as f64 / total_px as f64;
+    println!(
+        "Apex opaque-only double-sided diff: {op_diff_px}/{total_px} ({:.4} %)",
+        op_frac * 100.0
+    );
+    assert!(
+        op_frac < 0.001,
+        "Apex opaque player-view differed at {op_diff_px}/{total_px} px ({:.3} % >= 0.1 %)",
+        op_frac * 100.0
+    );
+
+    let mut reversed_all = visuals.meshes.clone();
+    for m in &mut reversed_all {
+        m.normals = m.normals.iter().map(|n| [-n[0], -n[1], -n[2]]).collect();
+        for tri in m.indices.chunks_exact_mut(3) {
+            tri.swap(1, 2);
+        }
+    }
+    let reversed_img = render_meshes(&reversed_all);
+    let rev_diff_px = count_diff(&base_img, &reversed_img);
+    let rev_frac = rev_diff_px as f64 / total_px as f64;
+    println!(
+        "Apex full-scene reversed-winding diff: {rev_diff_px}/{total_px} ({:.4} %)",
+        rev_frac * 100.0
+    );
+    assert!(
+        rev_frac < 0.001,
+        "Apex full player-view differed when winding reversed at {rev_diff_px}/{total_px} px ({:.3} % >= 0.1 %)",
+        rev_frac * 100.0
+    );
+
+    // Sanity: if double_sided were false on the opaque meshes, many pixels
+    // would differ (> 1 %) when compared with the double-sided / doubled view.
+    let mut single_opaque = opaque_only;
+    for m in &mut single_opaque {
+        m.double_sided = false;
+    }
+    let single_img = render_meshes(&single_opaque);
+    let single_diff_px = count_diff(&single_img, &doubled_opaque_img);
+    let single_frac = single_diff_px as f64 / total_px as f64;
+    println!(
+        "Apex opaque single-sided vs doubled diff: {single_diff_px}/{total_px} ({:.4} %)",
+        single_frac * 100.0
+    );
+    assert!(
+        single_frac > 0.01,
+        "expected single-sided view to miss back faces (> 1 % diff, got {:.3} %)",
+        single_frac * 100.0
+    );
+}

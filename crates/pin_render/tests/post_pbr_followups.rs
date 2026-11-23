@@ -82,6 +82,7 @@ fn furnace(ctx: &GpuContext, material: MaterialParams) -> (HdrImage, PbrCamera) 
         material,
         transparent: false,
         emission: 0.0,
+        double_sided: false,
     };
     const COUNT: usize = 4096;
     const DIST: f32 = 400.0;
@@ -243,6 +244,7 @@ fn acrylic_two_pass_is_independent_of_triangle_order() {
         material: MaterialParams::lambert([0.8, 0.05, 0.05]),
         transparent: false,
         emission: 0.0,
+        double_sided: false,
     };
     let lights = [PointLight::new([-1.5, -2.5, 2.0], [1.0; 3], 12.0, 50.0)];
     let render = |r: &mut PbrRenderer, mesh| {
@@ -299,6 +301,7 @@ fn msaa_hook_softens_edges_and_keeps_the_interior() {
         material: white,
         transparent: false,
         emission: 0.0,
+        double_sided: false,
     }];
     let mut frame = FrameDesc::new(&cam, &[], &draws);
     frame.environment = Environment::BLACK;

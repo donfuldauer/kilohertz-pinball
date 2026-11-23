@@ -95,6 +95,7 @@ fn raytrace_lost_device_reports_the_loss_and_stops_rendering() {
         },
         transparent: false,
         emission: 0.0,
+        double_sided: false,
     };
     let draws = [ball(-0.016), ball(0.016)];
     let balls = [

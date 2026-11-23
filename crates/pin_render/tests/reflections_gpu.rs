@@ -155,6 +155,7 @@ fn insert_scene(sphere: MeshId, quad: MeshId) -> InsertScene {
         material: MaterialParams::lambert([0.35, 0.35, 0.35]),
         transparent: false,
         emission: 0.0,
+        double_sided: false,
     };
     let mut insert_model = IDENTITY;
     insert_model[0][0] = INSERT[1] - INSERT[0];
@@ -171,6 +172,7 @@ fn insert_scene(sphere: MeshId, quad: MeshId) -> InsertScene {
         material: red_insert(),
         transparent: false,
         emission: 1.0,
+        double_sided: false,
     };
     let ball = DrawItem::new(
         sphere,
@@ -423,6 +425,7 @@ fn six_balls_stay_within_the_probe_budget() {
             material: MaterialKind::PlayfieldWood.params(),
             transparent: false,
             emission: 0.0,
+            double_sided: false,
         }];
         for i in 0..6 {
             let a = t + i as f32 * core::f32::consts::TAU / 6.0;
@@ -543,6 +546,7 @@ fn neighbouring_balls_reflect_each_other_deterministically() {
             material: MaterialKind::PlayfieldWood.params(),
             transparent: false,
             emission: 0.0,
+            double_sided: false,
         },
     ];
     let balls = [

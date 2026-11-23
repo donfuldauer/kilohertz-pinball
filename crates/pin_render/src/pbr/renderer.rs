@@ -103,10 +103,13 @@ pub struct DrawItem {
     /// Warmed-up lamp level `0..=1` driving `lamp_emissive` (light inserts;
     /// from [`LampBank`](super::LampBank)).
     pub emission: f32,
+    /// Whether opaque draws render both front and back faces (`cull_mode: None`).
+    /// Back faces are shaded with the flipped interpolated normal (`-n`).
+    pub double_sided: bool,
 }
 
 impl DrawItem {
-    /// `mesh` at `model` with the default parameters of `kind`.
+    /// `mesh` at `model` with the default parameters of `kind` (`double_sided: false`).
     pub fn new(mesh: MeshId, model: Mat4, kind: MaterialKind) -> DrawItem {
         DrawItem {
             mesh,
@@ -114,7 +117,15 @@ impl DrawItem {
             material: kind.params(),
             transparent: kind.is_transparent(),
             emission: 0.0,
+            double_sided: false,
         }
+    }
+
+    /// Sets [`double_sided`](Self::double_sided) (whether opaque draws disable
+    /// back-face culling).
+    pub fn with_double_sided(mut self, double_sided: bool) -> Self {
+        self.double_sided = double_sided;
+        self
     }
 }
 
@@ -357,6 +368,7 @@ fn make_targets(device: &wgpu::Device, width: u32, height: u32, samples: u32) ->
 /// of a closed transparent mesh is always under its near side.
 struct PipelineSet {
     opaque: wgpu::RenderPipeline,
+    opaque_double_sided: wgpu::RenderPipeline,
     blended_back: wgpu::RenderPipeline,
     blended_front: wgpu::RenderPipeline,
 }
@@ -396,66 +408,76 @@ fn make_pipelines(
 ) -> Pipelines {
     const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
         wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
-    let make =
-        |label: &str, entry: &str, front_face: wgpu::FrontFace, cull: wgpu::Face, blended: bool| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: 24,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &ATTRIBUTES,
-                    })],
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    front_face,
-                    cull_mode: Some(cull),
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(!blended),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: samples,
-                    ..Default::default()
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module,
-                    entry_point: Some(entry),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: HDR_FORMAT,
-                        blend: blended.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
+    let make = |label: &str,
+                entry: &str,
+                front_face: wgpu::FrontFace,
+                cull_mode: Option<wgpu::Face>,
+                blended: bool| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: 24,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &ATTRIBUTES,
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face,
+                cull_mode,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(!blended),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: samples,
+                ..Default::default()
+            },
+            fragment: Some(wgpu::FragmentState {
+                module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: blended.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    };
     let set = |front: wgpu::FrontFace| PipelineSet {
-        opaque: make("pbr opaque", "fs_opaque", front, wgpu::Face::Back, false),
+        opaque: make(
+            "pbr opaque",
+            "fs_opaque",
+            front,
+            Some(wgpu::Face::Back),
+            false,
+        ),
+        opaque_double_sided: make("pbr opaque double-sided", "fs_opaque", front, None, false),
         blended_back: make(
             "pbr blended back",
             "fs_blended",
             front,
-            wgpu::Face::Front,
+            Some(wgpu::Face::Front),
             true,
         ),
         blended_front: make(
             "pbr blended front",
             "fs_blended",
             front,
-            wgpu::Face::Back,
+            Some(wgpu::Face::Back),
             true,
         ),
     };
@@ -1113,14 +1135,22 @@ impl PbrRenderer {
             pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             true
         };
-        // Opaque draws: the pipeline changes only when the winding does.
-        let mut winding = None;
+        // Opaque draws: the pipeline changes only when the winding or
+        // double-sided state does.
+        let mut state: Option<(bool, bool)> = None;
         for (i, d) in frame.draws.iter().enumerate() {
             if !d.transparent {
                 let mirrored = is_mirrored(&d.model);
-                if winding != Some(mirrored) {
-                    winding = Some(mirrored);
-                    pass.set_pipeline(&pipelines.for_model(&d.model).opaque);
+                let next = (mirrored, d.double_sided);
+                if state != Some(next) {
+                    state = Some(next);
+                    let set = pipelines.for_model(&d.model);
+                    let pipeline = if d.double_sided {
+                        &set.opaque_double_sided
+                    } else {
+                        &set.opaque
+                    };
+                    pass.set_pipeline(pipeline);
                 }
                 draw(&mut pass, i, d);
             }
@@ -1303,5 +1333,18 @@ mod tests {
         assert_eq!(b[5], 0);
         assert_eq!(b[6], 3);
         assert_eq!(Environment::default(), Environment::STUDIO);
+    }
+
+    #[test]
+    fn draw_item_double_sided_defaults_and_builder() {
+        let d = DrawItem::new(
+            MeshId(0),
+            super::super::math::IDENTITY,
+            MaterialKind::PlayfieldWood,
+        );
+        assert!(!d.double_sided);
+        let d2 = d.with_double_sided(true);
+        assert!(d2.double_sided);
+        assert!(!d2.with_double_sided(false).double_sided);
     }
 }

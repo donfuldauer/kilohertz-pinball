@@ -854,6 +854,7 @@ fn msaa_reduces_edge_aliasing() {
             material: white,
             transparent: false,
             emission: 0.0,
+            double_sided: false,
         }]
     };
     // Reference: 4x resolution, box-filtered.

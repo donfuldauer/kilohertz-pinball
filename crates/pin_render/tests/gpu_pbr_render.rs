@@ -166,6 +166,7 @@ fn sphere_draw(mesh: pin_render::pbr::MeshId, material: MaterialParams) -> DrawI
         material,
         transparent: false,
         emission: 0.0,
+        double_sided: false,
     }
 }
 
@@ -540,6 +541,7 @@ fn golden_clear_acrylic() {
         material: MaterialParams::lambert([0.8, 0.05, 0.05]),
         transparent: false,
         emission: 0.0,
+        double_sided: false,
     };
     let acrylic = DrawItem::new(sc.sphere, IDENTITY, MaterialKind::ClearAcrylic);
     assert!(acrylic.transparent);
@@ -665,6 +667,7 @@ fn clustered_lights_match_the_analytic_sum_everywhere() {
         material: MaterialParams::lambert([1.0; 3]),
         transparent: false,
         emission: 0.0,
+        double_sided: false,
     };
     // 12 × 10 = 120 lights on a grid 5 cm above the floor.
     let mut lights = Vec::new();
@@ -1102,4 +1105,99 @@ fn mirrored_models_keep_their_front_faces() {
             model[0][0]
         );
     }
+}
+
+/// REQ-VIS-001: a single-winding quad seen from behind renders the analytic
+/// PBR radiance of its flipped normal (`-n`) when `double_sided: true`, and
+/// the clear colour when `double_sided: false` (across 1x and 4x MSAA, and
+/// under mirrored transforms).
+#[test]
+fn req_vis_001_double_sided_opaque_quad_renders_flipped_normal_from_behind() {
+    let Some(ctx) = ctx() else { return };
+    let mut sc = scene(ctx);
+    // MeshGeometry::quad(1.0) lies in z = 0 with normal +z and CCW front face
+    // seen from +z. Place the camera on +z looking down (-z) when the quad is
+    // flipped, or simpler: camera on -z looking at origin (+z), up +y!
+    // Wait: let's look from -z at [0,0,0]: front face of quad faces +z (away
+    // from camera at -z), so camera sees the BACK side of the quad, whose
+    // flipped normal points toward -z (towards the camera and light).
+    let cam = PbrCamera::look_at(
+        [0.0, 0.0, -2.0],
+        [0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        35f32.to_radians(),
+        1.0,
+        0.1,
+        10.0,
+    );
+    let light = PointLight::new([0.0, 0.0, -1.5], [1.0, 1.0, 1.0], 8.0, 20.0);
+
+    let default_draw = DrawItem::new(sc.quad, IDENTITY, MaterialKind::CeramicPearl);
+    assert!(
+        !default_draw.double_sided,
+        "DrawItem::new defaults double_sided to false"
+    );
+    let ds_builder = default_draw.with_double_sided(true);
+    assert!(ds_builder.double_sided);
+    assert!(!ds_builder.with_double_sided(false).double_sided);
+
+    for samples in [1u32, 4u32] {
+        sc.renderer.set_msaa_samples(samples).unwrap();
+        for mirrored_x in [1.0f32, -1.0f32] {
+            let mut model = scale_translation(2.0, [0.0, 0.0, 0.0]);
+            model[0][0] *= mirrored_x;
+            let mat = MaterialParams::lambert([0.8, 0.6, 0.4]);
+
+            let lights = [light];
+            // Single-sided: back face must be culled -> clear colour everywhere.
+            let single = DrawItem {
+                mesh: sc.quad,
+                model,
+                material: mat,
+                transparent: false,
+                emission: 0.0,
+                double_sided: false,
+            };
+            let single_draws = [single];
+            let mut f_single = FrameDesc::new(&cam, &lights, &single_draws);
+            f_single.environment = Environment::BLACK;
+            f_single.gi = [0.0; 4];
+            f_single.clear = GREY;
+            let img_single = sc.renderer.render_to_image(ctx, &f_single).unwrap();
+            let c_single = img_single.at(N / 2, N / 2);
+            for k in 0..3 {
+                assert!(
+                    (c_single[k] - GREY[k]).abs() < 1e-3,
+                    "samples {samples}, mirror {mirrored_x}: single-sided back face not culled: {c_single:?}"
+                );
+            }
+
+            // Double-sided: back face renders with flipped normal (-z) -> analytic Lambert.
+            let dbl = DrawItem {
+                double_sided: true,
+                ..single
+            };
+            let dbl_draws = [dbl];
+            let mut f_dbl = FrameDesc::new(&cam, &lights, &dbl_draws);
+            f_dbl.environment = Environment::BLACK;
+            f_dbl.gi = [0.0; 4];
+            f_dbl.clear = GREY;
+            let img_dbl = sc.renderer.render_to_image(ctx, &f_dbl).unwrap();
+
+            // Analytic Lambert radiance at centre (0, 0, 0) with flipped normal [0, 0, -1]:
+            // light is at [0, 0, -1.5], so d = 1.5, cos = 1.0, albedo = [0.8, 0.6, 0.4].
+            let d = 1.5f32;
+            let irr = light.intensity * window(d, light.range) / (core::f32::consts::PI * d * d);
+            let c_dbl = img_dbl.at(N / 2, N / 2);
+            for k in 0..3 {
+                let want = mat.base_color[k] * irr;
+                assert!(
+                    (c_dbl[k] - want).abs() <= 0.02 * want + 2e-3,
+                    "samples {samples}, mirror {mirrored_x}, ch {k}: got {} vs analytic {want}",
+                    c_dbl[k]
+                );
+            }
+        }
+    }
+    sc.renderer.set_msaa_samples(1).unwrap();
 }

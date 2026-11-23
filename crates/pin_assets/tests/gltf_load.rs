@@ -527,3 +527,50 @@ fn geometry_and_buffer_budgets() {
         }
     );
 }
+
+#[test]
+fn req_vis_001_material_double_sided_parsing_and_defaults() {
+    let bin = tri_bin();
+    let extra = json!({
+        "materials": [
+            {"name": "omitted"},
+            {"name": "explicit_false", "doubleSided": false},
+            {"name": "explicit_true", "doubleSided": true}
+        ]
+    });
+    let gltf = serde_json::to_vec(&tri_gltf("b.bin", extra)).unwrap();
+    let vfs = vfs_of(&[("t.gltf", &gltf), ("b.bin", &bin)]);
+    let scene = load_gltf(&vfs, "t.gltf").unwrap();
+    assert_eq!(scene.materials.len(), 3);
+    assert!(
+        !scene.materials[0].double_sided,
+        "omitted defaults to false"
+    );
+    assert!(
+        !scene.materials[1].double_sided,
+        "explicit doubleSided: false"
+    );
+    assert!(
+        scene.materials[2].double_sided,
+        "explicit doubleSided: true"
+    );
+
+    // Also verify GLB container round-trip with doubleSided: true and omitted.
+    let glb_bytes = glb(
+        &tri_gltf(
+            "data:application/octet-stream;base64,",
+            json!({
+                "buffers": [{"byteLength": bin.len()}],
+                "materials": [
+                    {"name": "glb_omitted"},
+                    {"name": "glb_double", "doubleSided": true}
+                ]
+            }),
+        ),
+        &bin,
+    );
+    let glb_vfs = vfs_of(&[("t.glb", &glb_bytes)]);
+    let glb_scene = load_gltf(&glb_vfs, "t.glb").unwrap();
+    assert!(!glb_scene.materials[0].double_sided);
+    assert!(glb_scene.materials[1].double_sided);
+}
