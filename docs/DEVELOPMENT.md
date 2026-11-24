@@ -274,13 +274,13 @@ no CI job yet (KP-045, #126; DECISIONS.md "Process — req_coverage without a CI
 ## CI
 
 Workflows live in `.github/workflows/`. The single required status check on `main` is
-**`pr-checks`** (PROCESS.md P6 step 5); changing that set is a repository setting (P8).
+**`pr-checks`** (PROCESS.md P6 routine step 3); changing that set is a repository setting (P8).
 
 **D40 split.** Pull requests run the Linux set only: `fmt`, `clippy` (Linux), `core-tests`
 (Linux), `replay-hash` (Linux), and `gpu-tests` (lavapipe) and `dof-bridge` only when their paths
 change. Pushes to `main` and `workflow_dispatch` run everything: the Windows and macOS legs (the
 `*-cross` jobs), all GPU adapters and coverage. A red `main` stops merges until a fix or revert
-lands (P6 step 5). Pull-request runs are cancelled when superseded; `main` and dispatch runs queue
+lands (P6 routine step 3). Pull-request runs are cancelled when superseded; `main` and dispatch runs queue
 and complete.
 
 | Workflow / job | Runs | What it does |

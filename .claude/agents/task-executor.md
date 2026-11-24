@@ -46,7 +46,8 @@ judgement call never does.
    `cargo clippy --all-targets -- -D warnings` on the touched crates, the touched crates' tests,
    `cargo llvm-cov` where the brief gives a coverage floor, and the allocation guard and replay
    hash when you touched the sim thread. Report the real numbers.
-6. Do not review or polish code outside your task. Code review is done by CodeRabbit on the PR.
+6. Do not review or polish code outside your task. Code review is done by CodeRabbit
+   at the phase or milestone gate (PROCESS.md P6).
 
 ## Role variants (the brief names one)
 
@@ -60,7 +61,7 @@ judgement call never does.
   smallest change that meets the stated "fixed" condition, add a regression test where the
   finding is behavioural, and give the thread URL(s) you addressed. Do not reply to or resolve
   threads unless your brief says so: report the thread URLs and the commit, and the
-  Orchestrator resolves them (PROCESS.md P6 step 3).
+  Orchestrator resolves them (PROCESS.md P6 "Gate reviews" step 4).
 
 ## Git
 

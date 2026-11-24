@@ -1,6 +1,6 @@
 ---
 name: work-issue
-description: "Takes one Kilohertz Pinball GitHub issue from start to merge: checks its dependencies are merged, claims it, branches, routes the work through the work-classifier and agents, verifies, opens a PR that closes the issue, drives the CodeRabbit review to resolution, merges, and unblocks dependent issues. Use when the user says 'Start work on issue X', 'work on #X', 'pick up issue X', 'start work on the next ready issue', 'Work on the next issue', or similar. Merging an issue/ branch starts a fresh session for the next issue (§8) when a GitHub-triggered automation is configured."
+description: "Takes one Kilohertz Pinball GitHub issue from start to merge: checks its dependencies are merged, claims it, branches, routes the work through the work-classifier and agents, verifies, opens a PR that closes the issue, runs the CodeRabbit gate review when the issue completes a phase or milestone, merges, and unblocks dependent issues. Use when the user says 'Start work on issue X', 'work on #X', 'pick up issue X', 'start work on the next ready issue', 'Work on the next issue', or similar. Merging an issue/ branch starts a fresh session for the next issue (§8) when a GitHub-triggered automation is configured."
 ---
 
 # work-issue
