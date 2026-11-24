@@ -1,40 +1,33 @@
 # CodeRabbit is the only code reviewer (docs/PROCESS.md R9 and P6, D36).
 #
-# Review phase: INITIAL USABLE BUILD (M1 — Play experience, tracking issue #79).
-# While M1 assembles the first playable end-to-end build, per-PR auto-review is opt-in by PR label:
-#   - `review:skip` (or no opt-in label): skipped during M1 vertical slices (tests, work-verifier
-#     and CI `pr-checks` still gate every merge).
-#   - `review:sanity`: targeted single-pass sanity review on contracts, public schemas/interfaces,
-#     cross-layer boundaries, concurrency/timing loops, very-high blast radius, R11 security paths,
-#     and milestone gates.
-#   - `review:full`: full review (M1 cohesive review pass #153 / KP-064, or explicit opt-in).
-# When #153 (KP-064) merges after Gate A3, flip `profile` to `chill`, `auto_review.enabled` to
-# `true`, and `auto_review.labels` to `["!review:skip"]` for tighter post-usable per-chunk reviews.
+# Review rhythm: GATE REVIEWS ONLY. CodeRabbit does not review routine unit-of-work PRs; they merge
+# on green `pr-checks`, `main` CI and `work-verifier` (P5 unit gate). CodeRabbit reviews only at
+# the completion of a phase or milestone, on a review-only "gate review" PR whose head is the gate
+# issue's branch and whose base is `review-base/<gate>` (the last reviewed commit, recorded in
+# docs/RUN_LOG.md), so the review covers every change merged since the previous gate
+# (docs/PROCESS.md P6 "Gate reviews").
+# The Orchestrator requests each pass explicitly with `@coderabbitai full review` (first pass) and
+# `@coderabbitai review` (after fix pushes); nothing is reviewed automatically.
 language: en-US
 reviews:
-  # Critical and major findings inline; minor/nitpicks collapsed in the summary during M1.
-  profile: quiet
-  # Approve once every comment is resolved on reviewed PRs (PROCESS.md P6 step 5).
+  # Gate reviews are infrequent and cumulative, so report everything worth fixing.
+  profile: chill
+  # Approve once every comment is resolved (PROCESS.md P6 gate merge conditions).
   request_changes_workflow: true
   high_level_summary: true
   collapse_walkthrough: true
   poem: false
   auto_review:
-    # Opt-in by positive label during M1; flip to `true` with `["!review:skip"]` in #153 (KP-064).
+    # Off: routine PRs are never reviewed; gate review PRs are reviewed on explicit request.
     enabled: false
     drafts: false
-    auto_incremental_review: true
-    # Pause after 2 reviewed commits so fix rounds are batched locally instead of looping; use
-    # `@coderabbitai review` explicitly when another pass is needed.
-    auto_pause_after_reviewed_commits: 2
-    labels:
-      - "review:sanity"
-      - "review:full"
+    auto_incremental_review: false
     ignore_title_keywords:
       - "WIP"
       - "[skip review]"
+    # Gate review PRs target `review-base/<gate>` branches, not `main`.
     base_branches:
-      - main
+      - "^review-base/.*"
   # Skip files a reviewer cannot read or that are generated, vendored or recorded data.
   # Code, shaders, Lua/Wasm-text table rules, TOML manifests, CI and docs stay in review.
   path_filters:
@@ -89,13 +82,16 @@ reviews:
   path_instructions:
     - path: "**/*"
       instructions: >-
-        Focus on issues that are expensive to change later or block correctness: architectural
-        boundaries, public interfaces/schemas/wire contracts, concurrency/state-machine/timing
-        defects, determinism (R3), sim-thread blocking/allocations (R4), untrusted-table security
-        boundaries (R11), and verified correctness bugs. Ignore cosmetic style, formatting, and
-        minor naming/refactor nitpicks (rustfmt, clippy, and unit/spec tests cover them; broader
-        refactors belong in the M1 cohesive review pass #153). Mention any repeated pattern once
-        at summary level instead of posting duplicate inline comments.
+        This is a cumulative phase or milestone gate review: the diff is every change merged since
+        the previous gate. Look across files and crates for what per-unit work misses:
+        architectural drift, duplicated logic, mismatched contracts, awkward state transitions and
+        test gaps. Prioritise issues that are expensive to change later or block correctness:
+        architectural boundaries, public interfaces/schemas/wire contracts,
+        concurrency/state-machine/timing defects, determinism (R3), sim-thread
+        blocking/allocations (R4), untrusted-table security boundaries (R11), and verified
+        correctness bugs. Skip cosmetic style and formatting (rustfmt, clippy and unit/spec tests
+        cover them). Mention any repeated pattern once at summary level instead of posting
+        duplicate inline comments.
     - path: "crates/**/src/**"
       instructions: >-
         Check the rules of docs/PROCESS.md. R4: no heap allocation, mutex or file I/O inside

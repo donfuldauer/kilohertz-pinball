@@ -3,7 +3,9 @@ Closes #<!-- issue number -->
 ## Work item
 
 <!-- issue title, plan ID (KP-NNN), phase label, tracking issue (#79 M1 or #80 M2),
-     review mode (`review:skip` / `review:sanity` / `review:full`, docs/PROCESS.md P6) and reason;
+     whether this is a gate issue (last open issue of its phase or tracking issue, or
+     `review:gate`; docs/PROCESS.md P6) with a link to its gate review PR, or "routine (no code
+     review)";
      the branch, if the session could push only to an assigned branch -->
 
 ## Requirements satisfied

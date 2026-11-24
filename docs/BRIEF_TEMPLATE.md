@@ -79,7 +79,7 @@ ROLE-SPECIFIC
                       black-box and property tests under the spec-test paths from this brief
                       alone; report any API mismatch instead of reading the code.
   Fixer:              smallest change that meets "fixed"; regression test; name the thread(s).
-                      Do not reply to or resolve threads; the Orchestrator does (P6 step 3).
+                      Do not reply to or resolve threads; the Orchestrator does (P6 "Gate reviews" step 4).
   Verifier:           re-run every gate step; trace each requirement and REQ ID to a passing
                       test; open the rendered images and walk the visual checklist; no style or
                       design opinions (CodeRabbit reviews the PR).

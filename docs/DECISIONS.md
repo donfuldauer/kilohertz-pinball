@@ -7604,6 +7604,8 @@ check-in and thread-resolution procedure without touching Claude Code's native P
 
 ## Process — Initial-usable-build review rhythm (tests along the way, sanity review on boundaries, full review at M1)
 
+**Superseded** by "Process — Gate reviews at phase and milestone completion" below.
+
 **Decision:** While M1 — Play experience (`#79`) builds the first usable end-to-end playable
 slice, split PR code review into three label-driven modes in `docs/PROCESS.md` P6 and
 `.coderabbit.yaml`:
@@ -7648,3 +7650,49 @@ flipping to tighter per-PR review for durable post-usable work.
   build on top of them.
 - Rely on agent self-review during M1: rejected; R9 (no self-review) remains intact, with
   `work-verifier` checking objective facts and CodeRabbit remaining the sole code reviewer.
+
+## Process — Gate reviews at phase and milestone completion
+
+**Decision:** At the repository owner's request, align the review rhythm with the owner's other
+projects: no code review on routine unit-of-work PRs, and one cumulative CodeRabbit review at the
+completion of each phase and milestone (`docs/PROCESS.md` P6 "Gate reviews"). This supersedes the
+label-driven `review:skip` / `review:sanity` / `review:full` modes and the planned flip to per-PR
+review in `#153` (KP-064).
+
+1. **Routine PRs** merge on `pr-checks` (and any other PR workflow), green `main` CI and
+   `work-verifier` (`pass`). No `review:*` label is applied and no CodeRabbit review is requested.
+2. **Gate issues** are the last open `work-unit` issue of a `phase:NN-name` label or of a tracking
+   issue (M1 `#79`, M2 `#80`), or an issue labelled `review:gate`. The gate issue's branch is
+   opened twice: once against `main` (closes the issue) and once, review-only, against
+   `review-base/<gate>`, a branch at the last reviewed commit, so CodeRabbit sees every change
+   merged since the previous gate.
+3. **No git tags (D39):** the reviewed commit is recorded as `reviewed <sha>` in the gate's
+   `docs/RUN_LOG.md` row. The first base is `4113e42`, the last commit of the former rhythm (the
+   merge of PR `#154`).
+4. **`.coderabbit.yaml`:** `auto_review.enabled: false` (nothing is reviewed automatically),
+   `base_branches: ["^review-base/.*"]`, `profile: chill`, `request_changes_workflow: true`; the
+   Orchestrator requests `@coderabbitai full review`, then `@coderabbitai review` after each fix
+   push.
+5. **Close out:** the gate issue's PR merges only once CodeRabbit approves every review PR of the
+   gate; the review PRs close unmerged; `review-base/<gate>` is deleted where the session proxy
+   allows branch deletion (an undeleted base branch is inert).
+6. **Granularity:** phases (`phase:*`), not only milestones, so each cumulative diff stays within
+   what one CodeRabbit pass can review; oversized gate diffs are split into area review PRs.
+7. **`#153` (KP-064)** keeps its cohesive M1 review after Gate A3 (`#124`) as a `review:gate`
+   issue but no longer flips `.coderabbit.yaml` to per-PR review. The retired `review:*` labels on
+   open issues, and review-mode notes in their bodies, are ignored.
+
+**Rationale:** Per-PR CodeRabbit rounds were the main source of fix loops on unit PRs (for
+example PR `#146` with 40 review events and PR `#150` with 8 rounds), while unit correctness is
+already gated by Implementer and Independent Tester tests, coverage floors, R12 evidence, CI and
+the verifier. A cumulative review at each phase and milestone keeps review where it pays off
+(cross-cutting drift, duplicated logic, contract, timing and R11 boundary defects). CodeRabbit
+stays the sole code reviewer (R9); only its timing changes.
+
+**Alternatives:**
+- Keep `review:sanity` on contract, timing and R11 PRs: rejected by the owner's direction that
+  review happens only at phase and milestone completion; contracts are still protected by R2 and
+  reviewed at the first gate after they land.
+- Review on the gate issue's own PR against `main`: rejected because CodeRabbit would see only
+  that issue's diff, not the phase's cumulative changes.
+- Git tags for reviewed commits: rejected under D39 (the session proxy may refuse tag pushes).
