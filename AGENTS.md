@@ -62,6 +62,15 @@ by a polling `/automation` job. The `run-plan` skill loops over every ready issu
   sessions without GitHub MCP tools, use the official `gh` CLI (`gh issue`, `gh pr`, `gh run`,
   `gh api`, with explicit paging on `search/issues` when a proxy blocks `--paginate`). Dependencies
   are the issue body's "Depends on" list; a claim is released by editing it to `Released: <reason>`.
+- **Commit attribution (all harnesses).** Agent-made commits credit the human contributor the
+  agent works for as well as the agent. `scripts/install-git-hooks.sh` (run by the Claude Code
+  `SessionStart` hook in `.claude/settings.json` and by `.agents/setup-env.sh`; otherwise run it
+  once per clone) enables `.githooks/commit-msg` and records the contributor in
+  `git config kilohertz.coauthor` (from `$KILOHERTZ_COAUTHOR`, an existing `kilohertz.coauthor`, a
+  non-agent `user.name`/`user.email`, or the GitHub account `gh` is signed in to, via its
+  no-reply address). The hook appends `Co-authored-by: <contributor>` to every commit authored by an
+  agent identity (`noreply@anthropic.com`, `[bot]` accounts). Keep the agent as author; never
+  rewrite authorship to hide it, and never bypass the hook with `--no-verify`.
 - **Non-negotiables:** determinism (R3); no allocation, mutex or file I/O on the sim thread (R4);
   untrusted tables stay untrusted (R11); evidence for what a player sees and touches: the D30
   image-test order and the real windowed app, never headless only (R12). `pin_core` contracts
