@@ -13,8 +13,8 @@ experience) and #80 (M2 — Backlog); it is never written into the repository.
 **Starting work:** each issue is one unit of work with its dependencies. When the user says
 "Start work on issue X", use the `work-issue` skill (`.claude/skills/work-issue/SKILL.md`,
 forwarded by `.agents/skills/work-issue/SKILL.md`): it checks the issue's dependencies are merged,
-drives the work through the agents below, opens a PR that closes the issue, resolves the CodeRabbit
-review and merges. "Start work on the next ready issue" (or "Work on the next issue") picks one;
+drives the work through the agents below, opens a PR that closes the issue, runs the CodeRabbit
+gate review when the issue completes a phase or milestone, and merges. "Start work on the next ready issue" (or "Work on the next issue") picks one;
 in Claude Code, a GitHub-triggered scheduled task can start a fresh session when an `issue/` branch
 merges (`work-issue` §8), whereas in Gemini / Antigravity the next session is started manually or
 by a polling `/automation` job. The `run-plan` skill loops over every ready issue in plan order
@@ -43,19 +43,19 @@ by a polling `/automation` job. The `run-plan` skill loops over every ready issu
   `.agents/agents/`; see `GEMINI.md`.) Pass the classifier's brief verbatim and its model tier
   override. Subagents never spawn subagents; the Orchestrator (main session) does every spawn.
 - **No self-review (R9) and review rhythm (P6).** Do not review code yourself or with a sibling
-  agent. Open a PR against `main` (body from `.github/pull_request_template.md`, starting
-  `Closes #<N>`, carrying the issue's `review:*` label). During the M1 initial-usable-build phase
-  (until `#153` / KP-064 merges), routine vertical-slice PRs (`review:skip`) merge on green tests,
-  `work-verifier` (`pass`), `pr-checks` and `main` CI without waiting on CodeRabbit; boundary,
-  contract, timing/concurrency, `very-high` blast-radius, R11 security and gate PRs
-  (`review:sanity`) get a targeted CodeRabbit sanity review (fix blocking defects, defer style
-  nits to `#153` or M2); `#153` (`review:full`) runs the cohesive full review once Gate A3 passes
-  and flips `.coderabbit.yaml` to per-PR review for post-usable work. On every reviewed PR, watch
-  activity (Claude Code: `subscribe_pr_activity` or `send_later`; Gemini / Antigravity: `pr-watch`
-  in `.agents/skills/pr-watch/SKILL.md`; never sleep-poll), give every CodeRabbit finding a
-  disposition reply, resolve every thread yourself when justified (never leave one for a person;
-  never resolve an unfixed security issue or a verified unfixed correctness defect), and merge
-  without waiting for a person once the P6 merge conditions hold.
+  agent. CodeRabbit reviews **only at the completion of a phase or milestone**, never on every
+  unit of work. Routine PRs (against `main`, body from `.github/pull_request_template.md`,
+  starting `Closes #<N>`, no `review:*` label) merge on `pr-checks`, green `main` CI and
+  `work-verifier` (`pass`) with no CodeRabbit review. When an issue is the last open `work-unit`
+  issue of its `phase:*` label or of its tracking issue (or is labelled `review:gate`, such as
+  `#153` / KP-064 after Gate A3), it is a gate issue: open a review-only gate review PR (gate
+  branch → `review-base/<gate>`, cumulative since the last reviewed commit in `docs/RUN_LOG.md`),
+  request `@coderabbitai full review`, give every finding a disposition reply, resolve every
+  thread yourself when justified (never leave one for a person; never resolve an unfixed security
+  issue or a verified unfixed correctness defect), and merge the gate issue's PR once CodeRabbit
+  approves and the P6 gate merge conditions hold; then close the review PR unmerged. Watch every
+  PR (Claude Code: `subscribe_pr_activity` or `send_later`; Gemini / Antigravity: `pr-watch` in
+  `.agents/skills/pr-watch/SKILL.md`; never sleep-poll) and merge without waiting for a person.
 - **GitHub (P1).** In Claude Code (and Gemini/Antigravity sessions with a GitHub MCP server), use
   the GitHub MCP tools (`mcp__github__*`) for issues, comments, labels and PRs, and
   `gh api -X GET search/issues` (explicit paging) for searches by label. In Gemini / Antigravity

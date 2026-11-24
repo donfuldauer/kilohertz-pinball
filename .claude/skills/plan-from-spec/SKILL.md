@@ -76,18 +76,18 @@ the source (DECISIONS.md "Planning — No third-party names in planning text").
 `type:feature`, `type:fix`, `type:infra`, `type:docs`, `type:content` (tables, rules, art data);
 `area:` app, render, physics, sim, input, audio, assets, tablegen, assetgen, script, tables, ci,
 release, process; `phase:NN-name`; `tier:T1` / `tier:T2` (expected; T3 is never planned); and
-`review:skip` / `review:sanity` / `review:full` (`docs/PROCESS.md` P6). During an initial-usable-build
-milestone (M1 `#79`), label boundary, contract, schema, timing/concurrency, `very-high`
-blast-radius, R11 security and automated-gate units `review:sanity`, routine vertical-slice/content
-units `review:skip`, and include a cohesive full-review unit (`review:full`, e.g. `#153` KP-064)
-once the end-to-end build passes its milestone gate before flipping to post-usable per-PR review.
+`review:gate` only on an issue that should carry a gate review although it may not be the last of
+its phase (for example a cohesive end-of-milestone review such as `#153` KP-064). Units get no
+per-PR review label: CodeRabbit reviews only at the completion of each phase and milestone
+(`docs/PROCESS.md` P6 "Gate reviews"), so keep phases small enough that one phase's cumulative
+diff is reviewable in one pass.
 **Milestones** are tracking issues (label `tracking`): #79 M1 — Play experience, #80 M2 — Backlog,
 or a new one whose body states the goal and scope (no Plan ID line) and which closes with its
 last sub-issue.
 
 **Suggested phase order** (adapt to the requirements): responsiveness and wiring fixes →
 contracts (`pin_core` CRs, new schemas) → rendering capabilities → the machine (scene, cameras,
-parts, cabinet, art) → tables → automated gates → cohesive full review pass → acceptance material →
+parts, cabinet, art) → tables → automated gates → cohesive M1 gate review → acceptance material →
 backlog.
 
 ## 3. Check the breakdown

@@ -10,7 +10,8 @@
 - **Skills:** workspace skills live in `.agents/skills/` (discovered by both Antigravity and
   Gemini CLI): `work-issue`, `run-plan`, `plan-from-spec` and `triage` forward to the canonical
   Markdown definitions in `.claude/skills/`, and `pr-watch` (`.agents/skills/pr-watch/SKILL.md`)
-  is the Gemini / Antigravity-specific PR check-in and CodeRabbit resolution loop.
+  is the Gemini / Antigravity-specific PR check-in loop (CI on every PR, CodeRabbit findings on
+  gate review PRs).
 - **Subagents (Antigravity vs. Gemini CLI):**
   - **Antigravity:** workspace custom subagents live in `.agents/agents/` (forwarding to the
     canonical role prompts in `.claude/agents/`). In Antigravity environments that do not

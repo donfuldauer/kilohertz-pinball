@@ -9,8 +9,9 @@ labels: ["work-unit", "blocked"]
 
 <!-- After creating the issue: attach it as a sub-issue of its tracking issue, add the labels
      type:<feature|fix|infra|docs|content>, area:<…>, phase:<NN-name>, tier:<T1|T2>,
-     review:<skip|sanity|full> (docs/PROCESS.md P6), and replace `blocked` with `ready` if every
-     dependency is already satisfied (docs/PROCESS.md P6 step 5).
+     review:gate only if this issue must carry a phase/milestone gate review (docs/PROCESS.md P6),
+     and replace `blocked` with `ready` if every dependency is already satisfied
+     (docs/PROCESS.md P6 routine step 3).
      No third-party pinball names anywhere in this issue. -->
 
 ## Summary

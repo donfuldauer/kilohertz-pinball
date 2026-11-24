@@ -117,7 +117,7 @@ Fill in `docs/BRIEF_TEMPLATE.md` completely:
 - `REQUIREMENTS / DELIVERABLES`: numbered, each testable, each tagged with its SPEC section or
   REQ ID. For a CodeRabbit finding, quote the comment, give the thread URL, file and lines, and
   say what "fixed" means. Tell the executor to report the thread URL and what changed; the
-  Orchestrator resolves the thread (PROCESS.md P6 step 3).
+  Orchestrator resolves the thread (PROCESS.md P6 "Gate reviews" step 4).
 - `CONTRACTS YOU MUST HONOUR`: the SPEC §3 and Appendix A–C excerpts (and §7, Appendix E–F for
   presentation work), contract excerpts, decision-log rows and earlier failure history, pasted in
   full. Never write "see SPEC §x" for something the agent needs.

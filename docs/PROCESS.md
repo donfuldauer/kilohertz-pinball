@@ -24,7 +24,7 @@ issues; its record stays in `docs/RUN_LOG.md`. Where older text (SPEC §4, the r
 | Source | Role | Who writes it |
 |---|---|---|
 | `docs/SPEC.md` | The normative technical specification: architecture decisions D1–D33 (§0), thread model (§2.2), determinism scope (§2.4), contracts (§3), component specifications with Gates A1 and A2 and the final human acceptance procedure (§4), library findings (§6), presentation and play-experience requirements with `REQ-<AREA>-<NNN>` IDs (§7), file schemas and reference tables (Appendices A–C, E, F). It was `docs/PLAN.md`; section, subphase and D-numbers are unchanged, so "PLAN §3.2" in code and history means SPEC §3.2. | A person, or a PR the person asked for (P8). Exception: the work unit that owns a new file schema or protocol documents it in SPEC Appendix A or B in its own PR (additive contract documentation, as CR-007 did with Appendix A.3a). |
-| GitHub issues (`work-unit`) | **The plan.** One issue per reviewable PR. Title `KP-NNN: <title>`; first body line `> **Plan ID:** KP-NNN · **Phase:** … · **Milestone:** … (tracking issue #…) · **Expected tier:** …`; then Summary, **Depends on** (the only dependency record), Requirements (SPEC sections and REQ IDs), Deliverables, Acceptance criteria, Owned paths, Notes (`.github/ISSUE_TEMPLATE/work-unit.md`). Plan IDs are zero-padded and number the issues in topological plan order. Labels: status `ready` / `blocked` / `in-progress` / `status:blocked-failure`; `type:feature`, `type:fix`, `type:infra`, `type:docs`, `type:content`; `area:*`; `phase:NN-name`; `tier:T1` / `tier:T2` (expected tier; T3 is never planned); review mode `review:skip` / `review:sanity` / `review:full` (P6). | `plan-from-spec`; new issues for discovered work by any Orchestrator, with dependencies filled in. |
+| GitHub issues (`work-unit`) | **The plan.** One issue per reviewable PR. Title `KP-NNN: <title>`; first body line `> **Plan ID:** KP-NNN · **Phase:** … · **Milestone:** … (tracking issue #…) · **Expected tier:** …`; then Summary, **Depends on** (the only dependency record), Requirements (SPEC sections and REQ IDs), Deliverables, Acceptance criteria, Owned paths, Notes (`.github/ISSUE_TEMPLATE/work-unit.md`). Plan IDs are zero-padded and number the issues in topological plan order. Labels: status `ready` / `blocked` / `in-progress` / `status:blocked-failure`; `type:feature`, `type:fix`, `type:infra`, `type:docs`, `type:content`; `area:*`; `phase:NN-name`; `tier:T1` / `tier:T2` (expected tier; T3 is never planned); `review:gate` on an issue the plan designates to carry a gate review (P6). The retired per-PR review labels (`review:skip` / `review:sanity` / `review:full`) and any review-mode notes in older issue bodies are ignored. | `plan-from-spec`; new issues for discovered work by any Orchestrator, with dependencies filled in. |
 | Tracking issues (`tracking`) | The milestones: #79 M1 — Play experience (must be complete before the owner repeats final acceptance) and #80 M2 — Backlog. Their sub-issues are the work units. A tracking issue is not a work unit (no Plan ID line) and closes when its last sub-issue closes. "Milestone" in this file and in the skills means a tracking issue. | `plan-from-spec`. |
 | `docs/DEVELOPMENT.md` | Toolchain and pins, agent environment, workspace and crate map, exact commands, CI workflows, coverage floors, gate scripts, owned paths and shared files, contracts and their owners, cache and fixture paths. | Any unit whose change makes it stale updates it in its own PR. |
 | `docs/PROCESS.md` | This file. | A person, or a PR the person asked for (P8). |
@@ -64,7 +64,7 @@ tracking issues and body dependency lists"):
   `gh api -X POST repos/donfuldauer/kilohertz-pinball/issues/<tracking>/sub_issues -F sub_issue_id=<id>`,
   with the new issue's numeric `id`, not its number).
 - **Dependencies.** The issue body's **Depends on** list is the only dependency record. A
-  dependency is satisfied only under the merged-PR rule (P6 step 5).
+  dependency is satisfied only under the merged-PR rule (P6 routine step 3).
 - **Claims.** A session claims an issue with a comment naming its branch and session ID. A claim
   is released by editing that comment (`update_issue_comment` or
   `gh api -X PATCH repos/donfuldauer/kilohertz-pinball/issues/comments/<comment_id> -f body='Released: <reason>'`)
@@ -137,7 +137,7 @@ agent's recommendation on a judgement call is the decision: it is recorded once,
 no confirmation, and is not added to `docs/HUMAN_QUEUE.md`. Only a later DECISIONS.md entry (or
 the repository owner) changes it. `docs/HUMAN_QUEUE.md` is kept only for the P8 items an agent
 cannot do or decide itself. Consequently: a `[Fable wanted]` note goes in the unit's
-`docs/RUN_LOG.md` row; a CodeRabbit that never reviews is a RUN_LOG row; a unit that fails P7 is
+`docs/RUN_LOG.md` row; a CodeRabbit that never reviews a gate is a RUN_LOG row; a unit that fails P7 is
 marked `blocked` in RUN_LOG with the `status:blocked-failure` label and an issue comment with the
 failure history; a deferred review finding becomes a new `work-unit` issue or a DECISIONS.md
 entry; a SPEC erratum is recorded in DECISIONS.md with one `[P8 spec]` queue line proposing the
@@ -145,9 +145,10 @@ SPEC edit (DECISIONS.md "Process — Judgement calls are decisions, not queue it
 
 ### R9. No self-review (D36, D37)
 No agent reviews code for style or design, its own or another agent's. The work-verifier checks
-objective facts only. Code review happens on pull requests by CodeRabbit, scheduled according to
-the PR's review mode (P6). On every reviewed PR, the Orchestrator resolves every review thread
-itself when justified and never leaves one for a person (P6 step 3).
+objective facts only. Code review is done by CodeRabbit, and only at the completion of a phase or
+milestone, on that gate's cumulative review PR (P6 "Gate reviews"); routine unit-of-work PRs are
+not code-reviewed. On a gate review the Orchestrator resolves every review thread itself when
+justified and never leaves one for a person.
 
 ### R10. Tests are evidence, not obstacles
 Never delete, skip, `#[ignore]` or weaken a test to get green; fix the code, not the test. A test
@@ -306,9 +307,9 @@ no change at a security boundary; its validity and cause are clear; and the fix 
 obvious. If its validity or cause is unclear, the item goes to the issue-investigator first; by its
 verdict, `valid-defect` is re-triaged from its report, `valid-but-deferred` or `pre-existing` takes
 the "Deferred" disposition (unless it is an unfixed security issue or a verified unfixed correctness
-defect: then it goes to the classifier and the thread stays unresolved, P6 step 3) and
-`not-a-defect` takes "Not a defect" (P6 step 3), with no Fixer for either; if any other check fails,
-or the Orchestrator is unsure, it goes to the work-classifier. The fast path never routes T2 or T3,
+defect: then it goes to the classifier and the thread stays unresolved, P6 "Gate reviews"
+step 4) and `not-a-defect` takes "Not a defect" (P6 "Gate reviews" step 4), with no Fixer for
+either; if any other check fails, or the Orchestrator is unsure, it goes to the work-classifier. The fast path never routes T2 or T3,
 and the classifier still handles every issue implementation, every Independent Tester task, every
 investigation, every gate failure and anything else outside the fast path. Fast-path rows in
 `docs/RUN_LOG.md` start the Notes column with `triage`, followed by the tier and a one-line reason.
@@ -336,11 +337,12 @@ The Orchestrator writes no product code and reviews no code.
 ### Flow
 classify (inline via `triage` for eligible small items) → execute (Implementer and Independent
 Tester in parallel for an issue with code) → verify → on `fail`, investigate if the cause is
-unclear, then classify and execute the fix → verify again → open the PR (P6) → CodeRabbit findings
-go through the same loop until the merge conditions hold.
+unclear, then classify and execute the fix → verify again → open the PR (P6) → merge on green CI
+and a passing verifier. When the issue completes a phase or milestone, the gate review (P6) runs
+first and its CodeRabbit findings go through the same loop until the gate merge conditions hold.
 
 ### Batching (D38)
-One CodeRabbit review round or one push is one batch: the Orchestrator lists every new finding;
+One gate-review round or one push is one batch: the Orchestrator lists every new finding;
 sends findings of unclear validity or cause to the issue-investigator first (then re-triages
 `valid-defect` ones; `valid-but-deferred` and `pre-existing` ones are deferred, except unfixed
 security or verified correctness defects, which go to the classifier; `not-a-defect` ones are
@@ -402,12 +404,15 @@ All must hold:
 
 ### Phase gate (D39, D40)
 A phase is the set of issues with one `phase:NN-name` label. When every issue of the phase is
-complete under the merged-PR rule (P6 step 5), or optional and blocked under P7, the Orchestrator
-runs the phase gate on `main`: the full workspace tests on all three operating systems (the full
+complete under the merged-PR rule (P6 routine step 3), or optional and blocked under P7, the
+Orchestrator runs the phase gate on `main`: the full workspace tests on all three operating systems (the full
 matrix runs on every push to `main`, D40, and the gate reads it there); replay hashes stable;
 every earlier phase's tests still pass; the tick-time benchmark has not regressed by more than
-10 % against the previous phase gate's commit (method in `docs/DEVELOPMENT.md`); and every
-automated gate the phase owns passes. A green phase is recorded by its phase-gate row in
+10 % against the previous phase gate's commit (method in `docs/DEVELOPMENT.md`); every
+automated gate the phase owns passes; and the phase's gate review (P6), run on the phase's last
+issue before it merges, is approved by CodeRabbit with every thread dispositioned. A milestone
+gate is the phase gate of the tracking issue's last open sub-issue plus the milestone's exit
+criteria. A green phase is recorded by its phase-gate row in
 `docs/RUN_LOG.md` (commit SHA and CI run), committed with the next PR; no tag (D39). A red phase
 gate turns each failure into a new issue against the owning area (P7); it never pauses for a
 person.
@@ -422,129 +427,38 @@ area under P7; it never pauses for a person.
 
 ## P6. Pull request, review and merge (D36, D37, D40)
 
-Agents do not review their own code. Review comes from CodeRabbit on pull requests, scheduled
-according to the repository's review phase and the PR's review label, and the Orchestrator drives
-every PR to a merge without a person.
+Agents do not review their own code (R9). CodeRabbit is the only code reviewer, and it reviews
+**only at the completion of a phase or milestone**, never on every unit of work. Routine PRs merge
+on objective gates; a gate review covers, in one cumulative pass, everything merged since the
+previous gate. The Orchestrator drives every PR to a merge without a person.
+(`.coderabbit.yaml` keeps `auto_review.enabled: false`; every CodeRabbit pass is requested
+explicitly on a gate review PR.)
 
-### Review modes (initial usable build vs. post-usable build)
-
-During an **initial-usable-build phase** (currently M1 — Play experience, tracking issue `#79`,
-until `#153` / KP-064 merges), per-PR CodeRabbit review is opt-in in `.coderabbit.yaml`
-(`auto_review.enabled: false`, `profile: quiet`, `auto_pause_after_reviewed_commits: 2`) so
-vertical-slice work stays green on tests, `work-verifier` and CI without burning multi-round polish
-loops before the end-to-end playable flow runs:
-
-- **`review:skip`** (default for routine M1 vertical-slice, rendering, parts, cabinet, art, UI and
-  table-content chunks): no automatic CodeRabbit review. Every merge is still gated by Implementer
-  + Independent Tester tests, `work-verifier` (`pass`, P5 unit gate + R12 evidence), CI `pr-checks`
-  and `main` CI. (If a review is triggered manually with `@coderabbitai review`, any findings posted
-  are still accounted for under step 3 before merge.)
-- **`review:sanity`** (short, targeted mid-stream sanity review for anything expensive to change
-  later): required on any issue or PR that defines or changes
-  - public interfaces, schemas, or wire/event contracts between modules or layers (`phase:11-contracts`,
-    `crates/pin_core/**`, `contracts/CHANGE_REQUESTS.md`, SPEC Appendix A/B, `pin_guest_sdk`, or
-    cross-layer architectural spines such as vertex format or scene assembly);
-  - concurrency, state machines, or deterministic/timing-sensitive loops (input/present latency
-    loops, snapshot latch, telemetry/rumble/DOF threads, `step_1ms()`, triple buffer, SPSC ring, or
-    any `very-high` blast-radius / simulation-output change);
-  - security or compliance-critical paths (R11 untrusted-table boundary: `crates/pin_script/**`
-    sandbox/budgets, `crates/pin_assets` zip/VFS hardening, `third_party/**`, untrusted parsers); or
-  - automated milestone gates (e.g. Gate A3 `#124`).
-  In `review:sanity`, CodeRabbit reviews in `quiet` profile. Fix blocking boundary, contract,
-  schema, concurrency/timing, determinism (R3/R4), security (R11) and verified correctness defects;
-  defer cosmetic style, naming or non-blocking refactor nitpicks to the M1 cohesive review pass
-  (`#153` KP-064) or a new M2 `work-unit` issue instead of running multi-round polish loops.
-- **`review:full`** (full CodeRabbit review and approval): used for the M1 cohesive full review
-  pass (`#153` KP-064, after Gate A3 `#124` passes) and explicit opt-in PRs.
-
-Once `#153` (KP-064) completes the cohesive review of the working M1 build, it flips
-`.coderabbit.yaml` to **post-usable-build mode** (`auto_review.enabled: true`, `profile: chill`,
-`labels: ["!review:skip"]`, `auto_pause_after_reviewed_commits: 2`) so every chunk PR gets tighter
-per-PR review by default unless explicitly opted out with `review:skip` (for example mechanical
-run-log or housekeeping edits).
+### Routine PRs (every unit of work)
 
 1. **Open.** The Orchestrator commits the unit's `docs/RUN_LOG.md` row(s) before the
    work-verifier's final run, so the verified commit is the PR head. When the verifier passes, it
-   pushes the branch and opens a PR against `main` (`create_pull_request` + label edit, or
-   `gh pr create --label <review:*>`) carrying the issue's `review:skip` / `review:sanity` /
-   `review:full` label (upgrading to `review:sanity` if the diff touches any `review:sanity`
-   category above even when the issue lacked the label). The body follows
-   `.github/pull_request_template.md`, starts with `Closes #<issue>`, states the review mode under
-   `## Work item`, and fills every section (write "not applicable" with a reason rather than
-   leaving one empty): requirements with the test that proves each one, gate results with numbers,
-   visual and windowed evidence, decisions logged, contract-change requests, and every T3 / Fable
-   use with its P4 evidence. Bot names in the body go in backticks so nobody is notified by
-   accident.
+   pushes the branch and opens a PR against `main` (`create_pull_request` or `gh pr create`). The
+   body follows `.github/pull_request_template.md`, starts with `Closes #<issue>`, says under
+   `## Work item` whether the issue is a gate issue (below), and fills every section (write "not
+   applicable" with a reason rather than leaving one empty): requirements with the test that
+   proves each one, gate results with numbers, visual and windowed evidence, decisions logged,
+   contract-change requests, and every T3 / Fable use with its P4 evidence. Bot names in the body
+   go in backticks so nobody is notified by accident. No `review:*` label is applied and no
+   CodeRabbit review is requested.
 2. **PR watch / auto-fix.** Right after opening:
    - **Claude Code:** subscribe to the PR's activity (`subscribe_pr_activity`: comments, reviews,
-     CI). If the session cannot subscribe, schedule `send_later` check-ins about every 10 minutes
-     (or 3–5 minutes for a `review:skip` PR waiting only on CI) until the PR merges.
-   - **Gemini / Antigravity:** Antigravity has no built-in PR auto-fix or GitHub-webhook
-     subscription. Run the `pr-watch` skill (`.agents/skills/pr-watch/SKILL.md`), which schedules
-     non-blocking check-ins (`/schedule` or a single async background check-in, or a persistent
-     `/automation` job across sessions), handles CI failures and — on reviewed PRs (`review:sanity`,
-     `review:full`, post-usable default, or whenever CodeRabbit posted a review) — addresses
-     CodeRabbit findings, resolves review threads itself, and repeats until the PR is ready to
-     merge.
+     CI). If the session cannot subscribe, schedule `send_later` check-ins about every 3–5 minutes
+     while waiting on CI until the PR merges.
+   - **Gemini / Antigravity:** run the `pr-watch` skill (`.agents/skills/pr-watch/SKILL.md`),
+     which schedules non-blocking check-ins (`/schedule`, a single async background check-in, or a
+     persistent `/automation` job across sessions), handles CI failures and repeats until the PR
+     is ready to merge.
 
-   Every CodeRabbit comment and CI failure is handled as it arrives or on check-in; nobody
-   sleep-polls in a foreground loop. On an unreviewed PR excluded from automatic review (`review:skip`
-   in either phase, or no opt-in label while `auto_review.enabled: false`), do not request
-   `@coderabbitai review`.
-3. **Every finding is accounted for** (on reviewed PRs, or whenever CodeRabbit posted comments),
-   batch by batch (P5 "Batching"), for every CodeRabbit comment (inline, nitpick, outside-diff or
-   summary item). Each ends in exactly one disposition, recorded as a reply on its thread
-   (`add_reply_to_pull_request_comment` or
-   `gh api -X POST repos/{owner}/{repo}/pulls/{n}/comments/{comment_id}/replies -f body='<reply text>'`):
-   - **Fixed:** an executor commit addresses it, the verifier re-runs the affected checks, and the
-     reply names the commit. The thread is then resolved.
-   - **Not a defect:** the reply gives the evidence that the finding is not reproducible in the
-     reported environment, already handled, out of scope, a documented accepted bound, or declined
-     by repo convention (test output, commit SHA, the DECISIONS.md section, the PROCESS.md or SPEC
-     rule, the `.coderabbit.yaml` setting, the doc line). A result from a different environment
-     goes to the issue-investigator, and the thread stays unresolved until it returns a verdict.
-     The thread is then resolved; if CodeRabbit argues back with new technical information, the
-     finding goes round again.
-   - **Deferred:** real but out of scope (or, on a `review:sanity` PR, a non-blocking style, naming
-     or minor refactor nitpick saved for the cohesive pass). It links `#153` (KP-064) when it is
-     an M1 cohesive-review item, or becomes a new `work-unit` issue (Depends on filled in, attached
-     to its tracking issue) or a `docs/DECISIONS.md` entry that records why it is not done now; the
-     reply links it, and the thread is resolved. Never a queue line, unless the deferral itself
-     needs a P8 action (for example a SPEC edit).
-
-   No thread is resolved without a reply. On `review:full` / post-usable PRs, nitpicks are fixed
-   when cheap (T0/T1), otherwise answered as above; on `review:sanity` PRs, prefer deferring
-   cosmetic or refactor nitpicks over extra fix rounds.
-
-   **Resolving (D37).** The Orchestrator resolves threads itself, on its own judgment, with the
-   thread resolve action (`resolve_review_thread`, GraphQL `resolveReviewThread` via
-   `gh api graphql`, or the REST route
-   `POST /repos/{owner}/{repo}/pulls/{n}/ccr/comments/{comment_id}/resolve`, threads listed with
-   `GET …/pulls/{n}/ccr/review_threads`), when a fix landed and the verifier passed on it, when the
-   reply gives evidence that the finding is not reproducible in the reported environment, already
-   handled, out of scope or a documented accepted bound, when the finding is declined by repo
-   convention (a DECISIONS.md entry, a PROCESS.md or SPEC rule, a `.coderabbit.yaml` setting), or
-   when it was deferred and the reply links `#153`, a new issue, or a DECISIONS.md entry. Every
-   reply states the reason and the evidence first (test output, commit SHA, decisions section, doc
-   line), then anything else. It does not wait for CodeRabbit to accept, agree or mark the finding
-   addressed. A person is never asked to resolve a thread. **Never resolved:** a thread that
-   reports an unfixed security issue, or a verified correctness defect not yet fixed; it blocks the
-   merge and goes through classify, fix, verify. A thread whose validity is unclear goes to the
-   issue-investigator first; a failed reproduction in a different environment makes validity
-   unclear. Where the thread type cannot be resolved (summary or outside-diff items), the reply
-   alone is the disposition. When every thread is resolved or meets one of the resolve conditions
-   above (never an exception), every other merge condition in step 5 holds, and CodeRabbit's
-   approval is what is needed to clear "Automatic approval withheld", the Orchestrator posts a
-   plain PR comment `@coderabbitai approve`.
-4. **Re-review (reviewed PRs only).** Batch fix commits locally before pushing; `.coderabbit.yaml`
-   sets `auto_pause_after_reviewed_commits: 2` so incremental reviews pause after two reviewed
-   commits rather than burning review allowance on every push. New findings go through step 3. If
-   CodeRabbit has not reviewed the head commit on a PR that requires review (for example it paused
-   at the commit limit or was rate-limited), the Orchestrator asks once with a PR comment
-   `@coderabbitai review`, waits as long as it says, and asks again at most twice. If it still has
-   not reviewed, the PR stays open, a `docs/RUN_LOG.md` row records it, and the run continues with
-   work that does not depend on this PR.
-5. **Merge conditions.** The Orchestrator merges, without waiting for a person, when all of these
+   Every CI failure is handled as it arrives or on check-in through the P5 loop; nobody
+   sleep-polls in a foreground loop. If CodeRabbit posts on a routine PR anyway (a person asked
+   it to), its findings are accounted for under "Findings" below before merging.
+3. **Merge conditions.** The Orchestrator merges, without waiting for a person, when all of these
    hold on the current head commit:
    - every PR check is green (D40: the Linux set), i.e. the single required status check
      `pr-checks`, which aggregates the Linux set (`changes`, `fmt`, `clippy`, `core-tests`,
@@ -552,23 +466,14 @@ run-log or housekeeping edits).
      or if `changes` did not succeed; a workflow outside `ci.yml` that ran on the PR (for example
      `rules-wasm`, `spikes`, `windowed`, or the `release` dry run) is a PR check too and must be
      green;
-   - **CodeRabbit review (conditional on review mode):**
-     - if the PR requires review (`review:sanity`, `review:full`, post-usable default without
-       `review:skip`), or if CodeRabbit posted a review on the PR anyway: CodeRabbit has finished
-       reviewing the head commit, with no actionable comments left unanswered and no outstanding
-       change request, and every review conversation has a disposition reply and has been resolved
-       by the Orchestrator (step 3), except thread types that cannot be resolved, where the reply
-       is the disposition;
-     - if the PR is excluded from automatic review (`review:skip` in either phase, or no opt-in
-       label while `auto_review.enabled: false`) and no CodeRabbit review was posted: no CodeRabbit
-       review or approval is required;
    - the branch is up to date with `main` whenever merging `main` in would touch a file the PR
      also changes or conflicts; a clean merge that touches none of the PR's files does not require
      a re-sync;
    - `main`'s last push CI is green; if it is red, only a PR that fixes or reverts the failing
      `main` run may merge (it must still meet every other condition here), and all other merges
      stay blocked until `main` is green;
-   - the work-verifier's last result is `pass` for the head commit.
+   - the work-verifier's last result is `pass` for the head commit;
+   - the issue is not a gate issue, or its gate review is approved (below).
 
    Then the Orchestrator merges with a merge commit (`merge_pull_request`, method `merge`, or
    `gh pr merge <P> --merge --match-head-commit <sha>`), checks the branch is deleted (deleting it
@@ -589,9 +494,109 @@ run-log or housekeeping edits).
    issue(s) that delivered the work and those pass the same test. The run-log rows were committed
    in the PR itself; the merge commit is recorded in the RUN_LOG row of the next PR. Nothing is
    pushed to `main` directly.
-6. **Never**, to get green: skip, ignore, delete or weaken a test; force-push or rewrite history on
+4. **Never**, to get green: skip, ignore, delete or weaken a test; force-push or rewrite history on
    a branch the agent did not create; push an empty commit; close and reopen a PR to restart CI;
    merge with a failing required check.
+
+### Gate reviews (completion of a phase or milestone)
+
+**Gate issue.** An issue is a gate issue when, at the time its PR is ready to merge, it is the last
+open `work-unit` issue carrying its `phase:NN-name` label (a **phase gate**) or the last open
+sub-issue of its tracking issue (a **milestone gate**, for example the end of M1 `#79`; it is
+usually both), or when the plan labels it `review:gate` (for example the M1 cohesive review
+`#153` KP-064, which runs after Gate A3 `#124`). Check with
+`gh api "repos/donfuldauer/kilohertz-pinball/issues?labels=work-unit,<phase-label>&state=open&per_page=100&page=N"`
+(and the tracking issue's open sub-issues), paging explicitly (P1). The gate's name is the phase
+label without its prefix (for example `12-rendering`) or the milestone (`M1`).
+
+**Review PR.** A gate review is one review-only pull request whose diff is everything merged since
+the previous gate review. Git tags are not used (D39), so the reviewed commit is recorded in
+`docs/RUN_LOG.md`:
+
+1. **Base.** The base commit is the `reviewed <sha>` recorded in the newest gate-review row of
+   `docs/RUN_LOG.md` (if the latest gate's merge is not recorded yet, the merge commit of that
+   gate issue's PR); if there is none, it is `4113e42` (the last commit of the former per-PR
+   review rhythm). Push a branch `review-base/<gate>` at that commit.
+2. **Open.** Once the gate issue's own PR passes its verifier, open a second PR with the gate
+   issue's branch as head and `review-base/<gate>` as base, titled
+   `Gate review: <phase or milestone> (do not merge)`, whose body links the gate issue's PR, lists
+   the issues closed since the base, and states the phase or milestone exit criteria (SPEC
+   sections, automated gates). Post `@coderabbitai full review` on it. Both PRs share one head
+   branch, so every fix pushed for the review also lands in the gate issue's PR.
+3. **Too large.** If CodeRabbit reports the diff exceeds what it reviews in one PR, split the
+   review by area: for each group of top-level paths (for example `crates/pin_physics`,
+   `crates/pin_render`, `tables/`), push `review/<gate>-<area>` built from the base plus
+   `git checkout <gate head> -- <paths>`, open it against `review-base/<gate>` the same way, and
+   refresh it after each fix push. Every area PR must be approved.
+4. **Findings.** Each review round is one batch (P5 "Batching"), for every CodeRabbit comment
+   (inline, nitpick, outside-diff or summary item). Each ends in exactly one disposition, recorded
+   as a reply on its thread (`add_reply_to_pull_request_comment` or
+   `gh api -X POST repos/{owner}/{repo}/pulls/{n}/comments/{comment_id}/replies -f body='<reply text>'`):
+   - **Fixed:** an executor commit on the gate branch addresses it (gate-review fixes may touch
+     paths outside the gate issue's owned paths; contracts still change only under R2), the
+     verifier re-runs the affected checks, and the reply names the commit. The thread is then
+     resolved.
+   - **Not a defect:** the reply gives the evidence that the finding is not reproducible in the
+     reported environment, already handled, out of scope, a documented accepted bound, or declined
+     by repo convention (test output, commit SHA, the DECISIONS.md section, the PROCESS.md or SPEC
+     rule, the `.coderabbit.yaml` setting, the doc line). A result from a different environment
+     goes to the issue-investigator, and the thread stays unresolved until it returns a verdict.
+     The thread is then resolved; if CodeRabbit argues back with new technical information, the
+     finding goes round again.
+   - **Deferred:** real but not needed to close the gate (non-blocking refactors, polish,
+     maintainability). It becomes a new `work-unit` issue in a later phase or milestone (Depends on
+     filled in, attached to its tracking issue) or a `docs/DECISIONS.md` entry that records why it
+     is not done now; the reply links it, and the thread is resolved. Never a queue line, unless
+     the deferral itself needs a P8 action (for example a SPEC edit). Security issues (R11),
+     verified correctness defects, R3/R4 violations and contract mismatches are never deferred: a
+     fix too large for the gate branch becomes a new issue the gate issue depends on, and the gate
+     waits for it to merge, then merges `main` into the gate branch.
+
+   Nitpicks are fixed when cheap (T0/T1), otherwise answered as above. No thread is resolved
+   without a reply.
+
+   **Resolving (D37).** The Orchestrator resolves threads itself, on its own judgment, with the
+   thread resolve action (`resolve_review_thread`, GraphQL `resolveReviewThread` via
+   `gh api graphql`, or the REST route
+   `POST /repos/{owner}/{repo}/pulls/{n}/ccr/comments/{comment_id}/resolve`, threads listed with
+   `GET …/pulls/{n}/ccr/review_threads`), when a fix landed and the verifier passed on it, when the
+   reply gives evidence that the finding is not reproducible in the reported environment, already
+   handled, out of scope or a documented accepted bound, when the finding is declined by repo
+   convention (a DECISIONS.md entry, a PROCESS.md or SPEC rule, a `.coderabbit.yaml` setting), or
+   when it was deferred and the reply links a new issue or a DECISIONS.md entry. Every reply states
+   the reason and the evidence first (test output, commit SHA, decisions section, doc line), then
+   anything else. It does not wait for CodeRabbit to accept, agree or mark the finding addressed. A
+   person is never asked to resolve a thread. **Never resolved:** a thread that reports an unfixed
+   security issue, or a verified correctness defect not yet fixed; it blocks the merge and goes
+   through classify, fix, verify. A thread whose validity is unclear goes to the
+   issue-investigator first; a failed reproduction in a different environment makes validity
+   unclear. Where the thread type cannot be resolved (summary or outside-diff items), the reply
+   alone is the disposition.
+5. **Re-review.** Batch fix commits locally and push once per round, then post
+   `@coderabbitai review` on the review PR. Merging `main` into the gate branch (to stay up to
+   date) brings in whatever else merged meanwhile, which CodeRabbit then reviews too. If
+   CodeRabbit has not reviewed the head commit (paused or rate-limited), ask once more, wait as
+   long as it says, and ask at most twice more; if it still has not reviewed, both PRs stay open,
+   a `docs/RUN_LOG.md` row records it, and the run continues with work that does not depend on
+   them. When every thread is resolved or meets a resolve condition above, every other condition
+   holds, and CodeRabbit's approval is what is needed to clear "Automatic approval withheld",
+   post a plain comment `@coderabbitai approve` on the review PR.
+6. **Gate merge conditions**, on the shared head commit: the routine merge conditions above;
+   CodeRabbit has finished reviewing that head on every review PR of the gate, with an effective
+   approval (no outstanding change request), no actionable comment unanswered, and every thread
+   dispositioned and resolved (except types that cannot be resolved, where the reply is the
+   disposition); and the P5 phase gate (and, for a milestone, its automated gates and exit
+   criteria) holds.
+7. **Close out.** Merge the gate issue's PR into `main`. Close every review PR **without
+   merging**, with a comment linking the merge commit. Delete the `review-base/<gate>` and any
+   `review/<gate>-*` branches (if the session proxy refuses branch deletion, leave them; they are
+   inert). The gate's `docs/RUN_LOG.md` row (review PR links, rounds, deferred issues) is committed
+   on the gate branch before the final verifier run; the next PR's RUN_LOG row records
+   `reviewed <merge sha>` for the gate, which is the base of the next gate review. Nothing is
+   pushed to `main` directly. Then unblock dependents.
+
+Gate reviews never run in parallel: a second gate that becomes ready while one is open waits for
+the first to close out, so its base is the first gate's reviewed commit.
 
 ## P7. Failure policy (D29)
 
