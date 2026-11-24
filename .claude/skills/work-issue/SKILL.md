@@ -1,6 +1,6 @@
 ---
 name: work-issue
-description: "Takes one Kilohertz Pinball GitHub issue from start to merge: checks its dependencies are merged, claims it, branches, routes the work through the work-classifier and agents, verifies, opens a PR that closes the issue, drives the CodeRabbit review to resolution, merges, and unblocks dependent issues. Use when the user says 'Start work on issue X', 'work on #X', 'pick up issue X', 'start work on the next ready issue', 'Work on the next issue', or similar. Merging an issue/ branch starts a fresh session for the next issue (§8) when a GitHub-triggered automation is configured."
+description: "Takes one Kilohertz Pinball GitHub issue from start to merge: checks its dependencies are merged, claims it, branches, routes the work through the work-classifier and agents, verifies, opens a PR that closes the issue, runs the CodeRabbit gate review when the issue completes a phase or milestone, merges, and unblocks dependent issues. Use when the user says 'Start work on issue X', 'work on #X', 'pick up issue X', 'start work on the next ready issue', 'Work on the next issue', or similar. Merging an issue/ branch starts a fresh session for the next issue (§8) when a GitHub-triggered automation is configured."
 ---
 
 # work-issue
@@ -51,7 +51,7 @@ Antigravity sessions without GitHub MCP tools, use the official `gh` CLI (`gh is
    Without an issue number, exclude this candidate instead and continue with the next one under
    step 0.
 2. **Dependencies.** The body's "Depends on" section lists `#numbers`; it is the only dependency
-   record. Every one must be **satisfied** under the merged-PR rule (PROCESS.md P6 step 5): closed
+   record. Every one must be **satisfied** under the merged-PR rule (PROCESS.md P6 routine step 3): closed
    as completed, and closed by a merged PR (via MCP: read the blocker with `issue_read`, method
    `get` — `closed_by_pull_requests.references` lists the PRs that closed it — and confirm each
    candidate with `pull_request_read`, method `get`, `merged` true; via `gh` CLI: run
@@ -245,73 +245,77 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
 
 1. Check the head is the commit the work-verifier last passed. Push:
    `git -c push.negotiate=true push -u origin <branch>`.
-2. Determine the PR's **review mode label** (`docs/PROCESS.md` P6): carry the issue's
-   `review:skip` / `review:sanity` / `review:full` label onto the PR, upgrading to `review:sanity`
-   if the diff touches any P6 `review:sanity` category — public interfaces, schemas, wire/event
-   contracts or cross-layer spines (`crates/pin_core/`, `contracts/CHANGE_REQUESTS.md`, SPEC
-   Appendix A/B, `pin_guest_sdk`, vertex/scene boundaries), concurrency/state-machine/timing loops,
-   `very-high` blast-radius paths, R11 security boundaries, or automated milestone gates (even if
-   the issue lacked the label).
-3. Create the PR (`create_pull_request` + label edit, or
-   `gh pr create --base main --head <branch> --label <review:*>`). The body follows
-   `.github/pull_request_template.md`, starts with `Closes #<N>`, states the review mode under
-   `## Work item`, and fills every section (write "not applicable" with a reason rather than
-   leaving one empty). Bot names go in backticks.
+2. Decide whether `#<N>` is a **gate issue** (`docs/PROCESS.md` P6 "Gate reviews"): it carries
+   `review:gate`, or it is the only open `work-unit` issue left with its `phase:*` label or among
+   its tracking issue's sub-issues. Check with the label search (explicit paging) and the tracking
+   issue's sub-issues. Re-check just before merging: an issue that was not a gate when the PR
+   opened becomes one if every other issue of its phase merged meanwhile. Ignore any retired
+   `review:skip` / `review:sanity` / `review:full` label or review-mode note on the issue.
+3. Create the PR (`create_pull_request`, or `gh pr create --base main --head <branch>`). No
+   `review:*` label. The body follows `.github/pull_request_template.md`, starts with
+   `Closes #<N>`, says under `## Work item` whether this is a gate issue (and links its gate review
+   PR once open) or "routine (no code review)", and fills every section (write "not applicable"
+   with a reason rather than leaving one empty). Bot names go in backticks.
 4. Watch the PR:
-   - **Claude Code:** subscribe to its activity (`subscribe_pr_activity`). If the session cannot
-     subscribe, schedule a check-in with `send_later` (about 10 minutes, or 3–5 minutes for a
-     `review:skip` PR waiting only on CI) and end the turn with a one-line status; repeat check-ins
-     until the PR merges.
+   - **Claude Code:** subscribe to its activity (`subscribe_pr_activity`), and to the gate review
+     PR too. If the session cannot subscribe, schedule a check-in with `send_later` (3–5 minutes
+     while waiting on CI, about 10 minutes while waiting on CodeRabbit) and end the turn with a
+     one-line status; repeat check-ins until the PR merges.
    - **Gemini / Antigravity:** run the `pr-watch` skill (`.agents/skills/pr-watch/SKILL.md`), which
      schedules non-blocking check-ins (`/schedule` or a single async background check-in), handles
-     CI failures and — on reviewed PRs (`review:sanity` / `review:full`, or whenever CodeRabbit
-     actually posted a review) — responds to CodeRabbit findings, resolves review threads itself,
-     and drives the PR to completion.
+     CI failures and, on a gate review PR, CodeRabbit findings, and drives the PR to completion.
    Never sleep-poll in a foreground loop.
 
-## 6. Review rounds
+## 6. CI and gate review
 
-- **Unreviewed `review:skip` PRs** (when `.coderabbit.yaml` excludes the PR — either `review:skip`
-  in either phase, or no opt-in label while `auto_review.enabled: false` — and CodeRabbit has
-  posted no review on the PR): do **not** request `@coderabbitai review`. Handle any CI failures
-  through the investigator / classifier / Fixer / `work-verifier` loop, and proceed to §7 as soon
-  as CI checks (`pr-checks` + any other PR workflows), `main` CI, and `work-verifier` are green.
-- **Reviewed PRs (`review:sanity`, `review:full`, post-usable default, or any PR where CodeRabbit
-  posted a review):** each CodeRabbit review round (or push) is one batch, handled with the
-  `triage` skill's §2 procedure and PROCESS.md P6:
-  - Read with `pull_request_read` (or `gh pr view` / `gh pr checks` / `gh api`): the reviews, the
-    review comments and threads, the PR's issue comments (CodeRabbit's summary and pre-merge
-    checks), and the head commit's status and check runs.
-  - On **`review:sanity`** PRs, keep the pass targeted: fix blocking boundary, contract, schema,
-    concurrency/timing, determinism (R3/R4), security (R11) and verified correctness defects;
-    dispose of cosmetic style, naming or non-blocking refactor nitpicks as `Deferred` (linking
-    `#153` KP-064 or a new M2 `work-unit` issue) or `Not a defect` rather than running multi-round
-    polish loops.
-  - Batch local fix commits before pushing so `auto_pause_after_reviewed_commits: 2` is not tripped
-    unnecessarily.
-  - Every finding gets exactly one disposition (Fixed / Not a defect / Deferred) recorded as a
-    reply (`add_reply_to_pull_request_comment` or `gh api` review-comment reply), reason and
-    evidence first.
-  - Resolve with `resolve_review_thread`, GraphQL `resolveReviewThread` via `gh api graphql`, or
-    the REST route
-    `POST /repos/donfuldauer/kilohertz-pinball/pulls/<P>/ccr/comments/<comment_id>/resolve`. Never
-    resolve an unfixed security issue (R11 boundary) or a verified unfixed correctness defect.
-  - Failed pre-merge checks (for example the description check) are fixed by editing the PR body
-    (`update_pull_request` or `gh pr edit`).
-  - CI failures go through the same loop (investigator if the cause is unclear).
-  - If CodeRabbit has not reviewed the head commit on a PR that requires review (for example it
-    paused after `auto_pause_after_reviewed_commits: 2` or was rate-limited), post
-    `@coderabbitai review` once (a PR comment, `add_issue_comment` or `gh pr comment`); at most two
-    more asks, then the RUN_LOG row of P6 step 4.
-  - When CodeRabbit's approval is all that is missing on a reviewed PR, post
-    `@coderabbitai approve` (P6 step 3).
+- **Routine PRs (not a gate issue):** no CodeRabbit review; never request `@coderabbitai review`.
+  Handle CI failures through the investigator / classifier / Fixer / `work-verifier` loop, and
+  proceed to §7 as soon as CI checks (`pr-checks` + any other PR workflows), `main` CI, and
+  `work-verifier` are green. If CodeRabbit posted findings anyway (a person asked it to), account
+  for them as below first.
+- **Gate issues:** run the gate review of PROCESS.md P6 before merging:
+  1. Base: the `reviewed <sha>` in the newest gate-review row of `docs/RUN_LOG.md` (or the merge
+     commit of the previous gate issue's PR if that is not recorded yet; if there is no gate
+     review yet, `4113e42`). Push `review-base/<gate>` at it
+     (`git push origin <sha>:refs/heads/review-base/<gate>`), where `<gate>` is the phase label
+     without `phase:` (for example `12-rendering`) or the milestone (`M1`). No git tags (D39).
+  2. Open the review-only PR: head `<branch>` (this issue's branch), base `review-base/<gate>`,
+     title `Gate review: <phase or milestone> (do not merge)`, body linking this issue's PR, the
+     issues closed since the base, and the phase or milestone exit criteria. Post
+     `@coderabbitai full review` on it. If CodeRabbit says the diff is too large, split it into
+     area review PRs as P6 "Gate reviews" step 3 describes.
+  3. Each CodeRabbit round (or push) is one batch, handled with the `triage` skill's §2 procedure
+     and PROCESS.md P6:
+     - Read with `pull_request_read` (or `gh pr view` / `gh pr checks` / `gh api`): the review
+       PR's reviews, review comments and threads, issue comments (CodeRabbit's summary), and the
+       head commit's status and check runs.
+     - Fixes are committed on `<branch>`, so they land in both PRs; gate-review Fixer briefs may
+       own paths outside the issue's owned paths (contracts still change only under R2).
+     - Every finding gets exactly one disposition (Fixed / Not a defect / Deferred) recorded as a
+       reply (`add_reply_to_pull_request_comment` or `gh api` review-comment reply), reason and
+       evidence first. Deferred items become new `work-unit` issues in a later phase or milestone;
+       security (R11), verified correctness, R3/R4 and contract defects are never deferred.
+     - Resolve with `resolve_review_thread`, GraphQL `resolveReviewThread` via `gh api graphql`,
+       or the REST route
+       `POST /repos/donfuldauer/kilohertz-pinball/pulls/<R>/ccr/comments/<comment_id>/resolve`.
+       Never resolve an unfixed security issue (R11 boundary) or a verified unfixed correctness
+       defect.
+     - CI failures go through the same loop (investigator if the cause is unclear).
+     - Batch fix commits, push once per round, re-run `work-verifier`, then post
+       `@coderabbitai review` on the review PR (`add_issue_comment` or `gh pr comment`); at most
+       two more asks if it does not review the head, then the RUN_LOG row of P6 "Gate reviews"
+       step 5.
+     - When CodeRabbit's approval is all that is missing, post `@coderabbitai approve`.
+  4. Commit the gate's `docs/RUN_LOG.md` row (review PR links, rounds, deferred issues) before
+     the final verifier run.
 
 ## 7. Merge
 
-When every P6 step 5 condition holds on the head commit (`pr-checks` and every other PR check
-green; if the PR requires or received CodeRabbit review, CodeRabbit reviewed the head with no
-outstanding change request and every thread replied to and resolved; branch up to date with `main`
-where P6 requires it; `main`'s last push CI green; last work-verifier result `pass` for the head):
+When every P6 merge condition holds on the head commit (`pr-checks` and every other PR check
+green; branch up to date with `main` where P6 requires it; `main`'s last push CI green; last
+work-verifier result `pass` for the head; for a gate issue, CodeRabbit reviewed the head on every
+review PR of the gate with no outstanding change request, every thread replied to and resolved,
+and the P5 phase gate holds):
 
 1. Merge with a merge commit: `merge_pull_request` (method `merge`) or
    `gh pr merge <P> --merge --match-head-commit <sha>`, naming the head SHA.
@@ -340,6 +344,9 @@ where P6 requires it; `main`'s last push CI green; last work-verifier result `pa
    - do not post an "Unblocked" comment if one is already there.
 4. Remove `in-progress` from the issue if it is still present (it closes through `Closes #<N>`),
    and release this session's claim (`Released: merged in PR #<P>`).
+   For a gate issue, also close every gate review PR without merging (comment with the merge
+   commit), delete `review-base/<gate>` and any `review/<gate>-*` branches (leave them if the
+   proxy refuses), and record `reviewed <merge sha>` for the gate in the next PR's RUN_LOG row.
 5. Remove the issue's worktree from the main checkout (if a worktree was used):
    `git worktree remove ../kilohertz-issue-<N>`.
 6. Tell the user: what merged, the PR link, the issues it unblocked, and the next ready issues

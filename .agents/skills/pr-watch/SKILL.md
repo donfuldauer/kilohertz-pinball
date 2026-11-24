@@ -1,15 +1,16 @@
 ---
 name: pr-watch
-description: "Gemini / Antigravity PR watch-and-fix workflow (standing in for Claude Code's subscribe_pr_activity / auto-fix): schedules non-blocking check-ins on an open PR, inspects CI and CodeRabbit reviews via gh, addresses every finding (fix, verify, reply with evidence, resolve conversations yourself), requests @coderabbitai review or @coderabbitai approve when needed, and runs to completion until CodeRabbit approves and PR checks are green (docs/PROCESS.md P6)."
+description: "Gemini / Antigravity PR watch-and-fix workflow (standing in for Claude Code's subscribe_pr_activity / auto-fix): schedules non-blocking check-ins on an open PR, inspects CI (every PR) and, on phase/milestone gate review PRs only, CodeRabbit reviews via gh, addresses every finding (fix, verify, reply with evidence, resolve conversations yourself), requests @coderabbitai review or @coderabbitai approve when needed, and runs to completion until PR checks are green and, for a gate, CodeRabbit approves (docs/PROCESS.md P6)."
 ---
 
 # pr-watch (Gemini / Antigravity)
 
 This skill is the **Gemini / Antigravity** equivalent of Claude Code's PR auto-fix /
 `subscribe_pr_activity` workflow (`docs/PROCESS.md` P6). Because Antigravity does not have a
-built-in GitHub-webhook PR subscription, `pr-watch` drives an open pull request to **CodeRabbit
-approval** and **green CI checks** through bounded, non-blocking check-ins, resolving every review
-thread itself once justified.
+built-in GitHub-webhook PR subscription, `pr-watch` drives an open pull request to **green CI checks**
+(and, for a phase or milestone gate, **CodeRabbit approval** of its gate review PR) through
+bounded, non-blocking check-ins, resolving every review thread itself once justified. Routine
+unit-of-work PRs get no CodeRabbit review (`docs/PROCESS.md` P6).
 
 Repository: `donfuldauer/kilohertz-pinball`. Use the official `gh` CLI (or GitHub MCP tools if
 configured; `docs/PROCESS.md` P1). Never sleep-poll in a foreground loop.
@@ -18,9 +19,9 @@ configured; `docs/PROCESS.md` P1). Never sleep-poll in a foreground loop.
 
 - Pull request number `<P>` (if omitted, detect the open PR for the current branch with
   `gh pr view --json number,url,headRefName,headRefOid`).
-- Whether to merge once approved (`work-issue` §7 merges automatically when all P6 step 5 merge
-  conditions hold; standalone invocations stop and report once CodeRabbit approves and all checks
-  are green, unless the user explicitly asked to merge).
+- Whether to merge once ready (`work-issue` §7 merges automatically when all P6 merge conditions
+  hold; standalone invocations stop and report once all checks are green and, for a gate,
+  CodeRabbit approved, unless the user explicitly asked to merge).
 
 ## 1. Inspect the PR state
 
@@ -31,16 +32,18 @@ threads:
    ```sh
    gh pr view <P> --json number,url,state,headRefName,headRefOid,labels,reviewDecision,statusCheckRollup,reviews,comments
    ```
-   Determine whether CodeRabbit review is required on this PR (`docs/PROCESS.md` P6):
-   - **Review required:** the PR carries `review:sanity` or `review:full`, **or** `.coderabbit.yaml`
-     has `auto_review.enabled: true` and the PR does not carry `review:skip`, **or** `coderabbitai`
-     has already posted a review on this PR.
-   - **Review skipped:** the PR is excluded from automatic review — either it carries `review:skip`
-     (in either phase, without `review:sanity` or `review:full`), **or** `.coderabbit.yaml` has
-     `auto_review.enabled: false` and the PR carries neither `review:sanity` nor `review:full` —
-     and `coderabbitai` has posted no review on this PR.
+   Determine whether CodeRabbit review is required (`docs/PROCESS.md` P6 "Gate reviews"; retired
+   `review:skip` / `review:sanity` / `review:full` labels are ignored):
+   - **Gate:** `<P>` is a gate review PR (its base branch starts with `review-base/`), or `<P>`
+     closes a gate issue (labelled `review:gate`, or the last open `work-unit` issue of its
+     `phase:*` label or of its tracking issue). Watch the gate issue's PR **and** every gate review
+     PR on the same head branch together: CI is read from the shared head commit, CodeRabbit
+     findings and approval from the review PR(s) (`<R>` below; for a non-gate PR, `<R>` is `<P>`).
+     If the gate review PR is not open yet, open it as `work-issue` §6 describes.
+   - **Routine:** anything else. No CodeRabbit review is required or requested; findings are
+     handled only if `coderabbitai` posted a review anyway.
 2. **All review threads and comments (paginated via GraphQL so no thread or comment is missed; skip
-   when review is skipped and `reviews` is empty):**
+   on a routine PR with no CodeRabbit review; on a gate, read the review PR `<R>`):**
    ```sh
    gh api graphql \
      -F owner=donfuldauer -F name=kilohertz-pinball -F pr=<P> -F after=null \
@@ -99,16 +102,16 @@ You are **done** when all applicable conditions hold on the current `headRefOid`
      `rules-wasm` when skipped by path filters), `status == "COMPLETED"` and
      `conclusion == "SUCCESS"`;
    - for `StatusContext` entries, `state == "SUCCESS"`.
-2. **CodeRabbit approved on the current head (only when review is required per §1):** `coderabbitai`
-   has an effective `APPROVED` review covering `headRefOid` that has not been superseded by a later
+2. **CodeRabbit approved on the current head (gates only, per §1):** on every gate review PR,
+   `coderabbitai` has an effective `APPROVED` review covering `headRefOid` that has not been superseded by a later
    `CHANGES_REQUESTED` or `DISMISSED` review (a subsequent `COMMENTED` review does not retract an
-   existing approval). When review is skipped per §1, this item is satisfied automatically.
+   existing approval). On a routine PR this item is satisfied automatically.
 3. **Every finding accounted for and every thread resolved (when review is required or any review
    comment exists):** every inline review thread has a disposition reply and `isResolved == true`,
    and every CodeRabbit review-body finding without an inline thread (outside-diff, additional, or
-   summary items) has a recorded disposition (`docs/PROCESS.md` P6 step 3).
+   summary items) has a recorded disposition (`docs/PROCESS.md` P6 "Gate reviews" step 4).
 4. **Verification passed:** `headRefOid` has a passing `work-verifier` result (required for any
-   merge under `docs/PROCESS.md` P6 step 5 and for any fix pushed in §3.A before resolving its
+   merge under `docs/PROCESS.md` P6 and for any fix pushed in §3.A before resolving its
    thread; for a standalone report-only run that pushes no fixes and does not merge, passing the
    applicable test and conformance suites suffices when `work-verifier` was not run). If
    verification is missing on `headRefOid`, follow §3.C before proceeding to approval or merge
@@ -117,14 +120,14 @@ You are **done** when all applicable conditions hold on the current `headRefOid`
 When all applicable conditions hold:
 - If invoked from `work-issue`, continue to `work-issue` §7 (merge and unblock).
 - If invoked standalone and the user explicitly asked to merge, confirm every `docs/PROCESS.md`
-  P6 step 5 merge condition holds on `headRefOid` — including a passing `work-verifier` result for
+  P6 merge condition holds on `headRefOid` — including a passing `work-verifier` result for
   `headRefOid` (test or conformance suites alone are not a substitute), dispositions for every
   CodeRabbit review-body finding without an inline thread (if reviewed), `main`'s last push CI
   green, and the branch up to date with `main` where required — and run
   `gh pr merge <P> --merge --match-head-commit <headRefOid>` (deleting the branch afterward if it
   was not auto-deleted).
 - Otherwise (standalone without an explicit merge request), stop scheduling check-ins and report
-  the PR URL, head SHA, review mode, approval state (or skipped per P6), resolved threads, and CI
+  the PR URL, head SHA, routine or gate, approval state (gates only), resolved threads, and CI
   results to the user.
 
 ## 3. Act on findings, failures, missing approval, or missing verification
@@ -135,11 +138,11 @@ Handle the PR state in this order:
 
 1. List every new or unresolved finding (inline threads, additional/nitpick items in review
    bodies, failed pre-merge checks, and failed CI jobs).
-2. Route and fix under `docs/PROCESS.md` P5 "Batching", P6 step 3, and the `triage` skill §2:
-   - On **`review:sanity`** PRs, keep the pass targeted: fix blocking boundary, contract, schema,
-     concurrency/timing, determinism (R3/R4), security (R11) and verified correctness defects;
-     dispose of cosmetic style, naming or non-blocking refactor nits as `Deferred` (linking `#153`
-     KP-064 or a new M2 `work-unit` issue) or `Not a defect` instead of starting polish rounds.
+2. Route and fix under `docs/PROCESS.md` P5 "Batching", P6 "Gate reviews" step 4, and the
+   `triage` skill §2 (gate fixes are committed on the shared head branch, so they land in the gate
+   issue's PR too):
+   - Defer non-blocking refactor and polish findings to a new `work-unit` issue in a later phase
+     or milestone; never defer security (R11), verified correctness, R3/R4 or contract defects.
    - Unclear validity or cause → `issue-investigator` first.
    - Obviously small T0/T1 fixes → `triage` fast path.
    - Everything else (complex, cross-module, contract, sim-output, security) → `work-classifier`
@@ -149,20 +152,20 @@ Handle the PR state in this order:
 3. Batch all fix commits locally, update `docs/RUN_LOG.md` (and regenerate `docs/HUMAN_ACCEPTANCE.md`
    if needed), then commit the fix together with those updates. Re-run `work-verifier` on that exact
    commit, whether or not the run will merge, so the verified commit is the PR head
-   (`docs/PROCESS.md` P6 step 1); if `work-verifier` returns `fail`, fix the failure and re-verify
-   before pushing or resolving threads. Once `work-verifier` returns `pass`, push once to the PR
-   branch (batching avoids tripping `auto_pause_after_reviewed_commits: 2` unnecessarily).
+   (`docs/PROCESS.md` P6 routine step 1); if `work-verifier` returns `fail`, fix the failure and
+   re-verify before pushing or resolving threads. Once `work-verifier` returns `pass`, push once to
+   the PR branch; on a gate, then post `@coderabbitai review` on each review PR so CodeRabbit
+   reviews the fix round (auto-review is off).
 4. **Reply to every review thread** (reason and evidence first: commit SHA + test output, SPEC /
-   PROCESS / DECISIONS citation, or link to `#153` KP-064 / a new deferred `work-unit` issue /
-   DECISIONS entry):
+   PROCESS / DECISIONS citation, or link to a new deferred `work-unit` issue / DECISIONS entry):
    ```sh
-   gh api -X POST repos/donfuldauer/kilohertz-pinball/pulls/<P>/comments/<comment_id>/replies \
+   gh api -X POST repos/donfuldauer/kilohertz-pinball/pulls/<R>/comments/<comment_id>/replies \
      -f body="<Fixed / Not a defect / Deferred>: <evidence and commit SHA or link>"
    ```
    Where a finding has no inline thread (e.g., an additional comment in the review body), include
-   its disposition in a concise PR comment (`gh pr comment <P> --body ...`).
-5. **Resolve every review thread yourself** once justified (`docs/PROCESS.md` P6 step 3, D37) —
-   do **not** wait for CodeRabbit to auto-resolve threads and never ask a person to resolve one:
+   its disposition in a concise PR comment (`gh pr comment <R> --body ...`).
+5. **Resolve every review thread yourself** once justified (`docs/PROCESS.md` P6 "Gate reviews"
+   step 4, D37) — do **not** wait for CodeRabbit to auto-resolve threads and never ask a person to resolve one:
    ```sh
    gh api graphql -f id="<thread_id>" -f query='
      mutation($id: ID!) {
@@ -174,12 +177,12 @@ Handle the PR state in this order:
    **Never resolve** a thread that reports an unfixed R11 security issue or a verified unfixed
    correctness defect; fix and verify it first.
 6. After pushing fixes and resolving threads, schedule the next check-in (§4) so CI (and, on
-   reviewed PRs, CodeRabbit's incremental review) can complete on the new head SHA.
+   a gate, CodeRabbit's requested re-review) can complete on the new head SHA.
 
 ### B. Checks or CodeRabbit are still pending or `IN_PROGRESS`
 
 If any required check from §2 item 1 has not yet appeared in `statusCheckRollup`, or if any CI
-check (or, on a PR where review is required per §1, the CodeRabbit check) is still pending, queued,
+check (or, on a gate, the CodeRabbit check on a review PR) is still pending, queued,
 or `IN_PROGRESS` (and no check has failed), wait via a non-blocking scheduled check-in (§4).
 
 ### C. Verification is missing for `headRefOid`
@@ -191,44 +194,44 @@ on `headRefOid` (whether or not CodeRabbit has approved yet):
 - **Merge requested (`work-issue` or standalone with an explicit merge request), or standalone
   report-only run where a fix was pushed:** start `work-verifier` on `headRefOid`.
   - If `work-verifier` returns `pass`, re-evaluate §2 and §3 on `headRefOid` (proceeding to §2's
-    merge or report steps if review is skipped or CodeRabbit already approved, or to §3.D / §3.E if
-    CodeRabbit review or approval is still needed).
+    merge or report steps on a routine PR or once CodeRabbit approved the gate, or to §3.D / §3.E if
+    a gate's CodeRabbit review or approval is still needed).
   - If `work-verifier` returns `fail`, route and fix the failures under §3.A (commit, verify that
     exact commit with `work-verifier`, push, and schedule the next check-in in §4).
 - **Standalone report-only run (no merge requested and no fixes pushed):** if neither `work-verifier`
   nor the applicable test and conformance suites have passed on `headRefOid`, run the applicable
   suites on `headRefOid`.
   - If they pass, re-evaluate §2 and §3 on `headRefOid` (stopping and reporting under §2 if review
-    is skipped or CodeRabbit already approved, or continuing to §3.D / §3.E if CodeRabbit review or
+    is not required (routine PR) or CodeRabbit already approved the gate, or continuing to §3.D / §3.E if a gate's CodeRabbit review or
     approval is still needed).
   - If they fail, route and fix under §3.A (which runs `work-verifier` on the fix commit before
     pushing and resolving any thread).
 
-### D. CodeRabbit has not reviewed the current head commit (reviewed PRs only)
+### D. CodeRabbit has not reviewed the current head commit (gates only)
 
-Skip this section when review is skipped per §1. Otherwise, if CI checks on `headRefOid` satisfy
-§2 item 1, verification has passed (§2 item 4), and CodeRabbit is neither pending/`IN_PROGRESS` nor
-has reviewed `headRefOid` (for example after `auto_pause_after_reviewed_commits: 2` or rate
-limiting):
+Skip this section on a routine PR. Otherwise, if CI checks on `headRefOid` satisfy §2 item 1,
+verification has passed (§2 item 4), and CodeRabbit is neither pending/`IN_PROGRESS` nor has
+reviewed `headRefOid` on a review PR (for example after a fix push, or rate limiting):
 
 ```sh
-gh pr comment <P> --body "@coderabbitai review"
+gh pr comment <R> --body "@coderabbitai review"
 ```
 
-Ask at most three times per head commit (`docs/PROCESS.md` P6 step 4). If it still does not review
+(Use `@coderabbitai full review` for the first pass on a newly opened review PR.) Ask at most three
+times per head commit (`docs/PROCESS.md` P6 "Gate reviews" step 5). If it still does not review
 after three asks, record the status in `docs/RUN_LOG.md`, stop, and inform the user. Otherwise
 schedule the next check-in (§4).
 
-### E. All findings resolved, checks green, and verification passed, but CodeRabbit has not approved yet (reviewed PRs only)
+### E. All findings resolved, checks green, and verification passed, but CodeRabbit has not approved yet (gates only)
 
-Skip this section when review is skipped per §1. Otherwise, if every finding is accounted for and
+Skip this section on a routine PR. Otherwise, if every finding is accounted for and
 every thread is resolved, CI checks on `headRefOid` satisfy §2 item 1, verification has passed
 (§2 item 4), CodeRabbit has finished reviewing `headRefOid` (no pending or `IN_PROGRESS` CodeRabbit
 check), and the only remaining blocker is CodeRabbit's `CHANGES_REQUESTED` or withheld automatic
 approval:
 
 ```sh
-gh pr comment <P> --body "@coderabbitai approve"
+gh pr comment <R> --body "@coderabbitai approve"
 ```
 
 Then schedule the next check-in (§4).

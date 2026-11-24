@@ -26,15 +26,15 @@ task-executor and checked by the work-verifier. The fast path never routes T2 or
 If the validity or cause is unclear, the item goes to the issue-investigator first and is then
 handled by the investigator's verdict: `valid-defect` is triaged again from its report (fast
 path if it now passes every check, else the work-classifier); `valid-but-deferred` or
-`pre-existing` is "Deferred" (PROCESS.md P6 step 3): open the investigator's new `work-unit`
+`pre-existing` is "Deferred" (PROCESS.md P6 "Gate reviews" step 4): open the investigator's new `work-unit`
 issue (attached to its tracking issue) or commit its `docs/DECISIONS.md` entry, reply with the
 link and resolve, with no Fixer, unless it is an unfixed security issue or a verified unfixed
-correctness defect (P6 step 3 exceptions): then the thread stays unresolved and the item goes
+correctness defect (P6 "Gate reviews" step 4 exceptions): then the thread stays unresolved and the item goes
 to the work-classifier for a fix; `not-a-defect` is "Not a defect": reply with its evidence
-and resolve per P6 step 3, with no Fixer. Any other failing check, or an unsure Orchestrator,
+and resolve per P6 "Gate reviews" step 4, with no Fixer. Any other failing check, or an unsure Orchestrator,
 sends the item to the work-classifier.
 
-## 2. Batching procedure (one CodeRabbit review round, or one push)
+## 2. Batching procedure (one gate-review round, or one push)
 
 1. List every new finding (inline, nitpick, outside-diff and summary items).
 2. Triage each one as fast-path T0, fast-path T1, investigator, or classifier.
@@ -59,9 +59,9 @@ sends the item to the work-classifier.
    the round changed the head (executor fixes, or a commit such as a `docs/DECISIONS.md` entry
    for a deferred finding; a round that only appends to the shared files uses the verifier's
    log-only case). Skip it only when the head is unchanged (for example every finding was
-   answered as not a defect): the previous verifier pass on that head still satisfies P6 step 5,
+   answered as not a defect): the previous verifier pass on that head still satisfies P6 routine step 3,
    and the replies carry the investigator's evidence.
-8. Reply to and resolve threads per PROCESS.md P6 step 3.
+8. Reply to and resolve threads per PROCESS.md P6 "Gate reviews" step 4.
 
 ## 3. Fixer brief template
 
@@ -88,7 +88,7 @@ REQUIREMENTS
      File:lines: <path>:<a>-<b>
      Fixed means: <exact observable condition>
   For each finding, report the thread URL and what changed. Do not reply to or resolve
-  threads; the Orchestrator does (PROCESS.md P6 step 3).
+  threads; the Orchestrator does (PROCESS.md P6 "Gate reviews" step 4).
 
 TESTS REQUIRED
   A regression test for each finding that changes code, in the test path listed under OWNED
