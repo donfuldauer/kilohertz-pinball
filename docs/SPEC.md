@@ -1170,6 +1170,38 @@ rom_name = "apexcircuit"
 map = [ { coil = "left_flipper_coil", type = "S", number = 1 } ]
 ```
 
+**Dynamic mesh slot convention (REQ-VIS-002).** `FrameStateSnapshot::dynamic_meshes[i]` is the
+world transform of the moving part of the i-th `[[mechs]]` entry in `table.toml` order.
+`dynamic_mesh_count` is the number of mechs published, at most 64; a table with more than 64
+mechs has its extra mechs unpublished (drawn at rest). Every mech has exactly one slot, so there
+are no gaps. Slot data is world space, SI (metres, radians), quaternion `[x, y, z, w]`. Meaning
+per kind:
+
+- `drop_target`: translation along the playfield normal (z) = height above its raised position (0 = up, negative = dropped by that depth); orientation identity.
+- `sling` and `kickback` (arm, slider): translation of the kicker arm along its kick axis from home, metres; the axis is the mech's `angle_deg`.
+- `spinner`: orientation = rotation of the flap about its pivot axis (angle encoded in the quaternion); translation = pivot.
+- `gate` and `diverter`: orientation = angle about the hinge; translation = hinge position.
+- `plunger`: translation of the rod along the launch axis from rest (negative = pulled back).
+- `bumper`: ring translation (a radial kick is a small offset along the contact normal; 0 at rest).
+- `vuk`: published but identity unless the table uses it as a moving part; the slot stays occupied so indices line up.
+- `newton_ball`: the cradle frame transform; swing angle range ±π/2 radians (`NEWTON_SWING_RANGE_RAD`). Captive balls are published as ordinary `balls` entries and take no extra slots.
+- toys (a mech-bound moving decorative mesh): full transform (translation and orientation).
+
+`[[lamps]]` may carry an optional `position` (mm, playfield coordinates, the frame of
+`[[magnets]]` and `[[mechs]]` positions) so GI bulbs, inserts and flashers can light the scene
+(REQ-VIS-004), and, for flashers only, an optional `radius` (mm, light and bloom reach; ignored
+for other kinds).
+The `[[lamps]]` example above gains these optional keys (the fixture omits them and still parses):
+
+```toml
+[[lamps]]
+id = "ramp_flasher"
+number = 41
+kind = "flasher"
+position = [410.0, 720.0, 0.0]  # optional, mm; omit when bound through glTF extras
+radius = 60.0                   # optional, mm, flashers only
+```
+
 ### A.2 `backglass.toml`
 
 ```toml
