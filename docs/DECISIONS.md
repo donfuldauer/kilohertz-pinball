@@ -8862,3 +8862,20 @@ weaker, open to ABA replacement). Copy no mode bits at all (rejected: changes th
 `0640 stays 0640` behaviour the tests cover). Return a bare `Option` from `dest_inode_inputs`
 (rejected: would silently turn an inspection error into a successful `0600` commit, a behaviour
 change outside these findings).
+
+## #163 gate review round 4 follow-up — pr-watch area-PR gate head and gate issue PR threads
+
+**Decision.** `pr-watch` §1 now says that a watcher started on an area PR first resolves the gate
+issue PR (the open PR into `main` whose head is the gate branch, named in the area PR's body), uses
+its `headRefOid` as the gate head for CI and the built-from comparison, and treats it as `<P>`. It
+also reads the gate issue PR's own review threads and review bodies (when it is not itself a review
+PR) and accounts for them before reporting completion (threads 4699765141 and 4699765126). The two
+items were first deferred to #201 (KP-097); they are fixed here instead, and #201 is closed as done
+by this change.
+
+**Rationale.** The area-PR case is a verified correctness defect (the built-from comparison always
+failed and CI was read from the area snapshot), and PROCESS P6 never defers verified correctness
+defects. The fix is one clause each, so it is cheaper than a separate work item.
+
+**Alternatives.** Keep the deferral to #201 (rejected: P6 forbids deferring a verified correctness
+defect). Rewrite §1 around separate area-PR and gate-PR modes (rejected: larger than needed).
