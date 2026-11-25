@@ -8171,3 +8171,35 @@ makes the other targets match it, as D9 requires.
 unit's owned paths); `f32::min`/`max` with ±0 ties and NaN bit patterns differ on aarch64 outside
 glam, which no measured run reached (`pin_core::fmath` covers min/max). NaN payloads are not part
 of the `quat_ops` guarantee.
+
+## #83 — Lean settings: render scale and probe captures carried as data until KP-035
+
+**Decision:** `LeanQuality` carries `render_scale` 0.5 and `probe_captures` false as data (unit-tested), and the one-time software-adapter warning states them. MSAA, bloom and motion blur are applied for real through `LeanQuality::apply_to_post` in `AppSurfaces::new`.
+
+**Rationale:** `TableRenderOptions` and `pin_app` have no consumer for a render scale or probe captures (`TableRenderer` renders 1:1 to its surface and `pin_app` does not use `pin_render::raytrace`). The files that would have to change (`view.rs`, the post chain) are outside this issue's owned paths. The Low preset of KP-035 takes the data over.
+
+**Alternatives:** Edit `view.rs` and the post chain to scale the render (outside owned paths, larger blast radius); drop the two fields (the issue lists them as deliverables).
+
+## #83 — Secondary surfaces keep frame latency 2
+
+**Decision:** Only the playfield surface gets `desired_maximum_frame_latency` 1. Backglass and score surfaces keep 2 and their present-mode rules (SPEC §2.2, D19).
+
+**Rationale:** The issue changes the playfield only; secondary surfaces redraw on change and do not pace the frame, so a deeper queue costs them nothing.
+
+**Alternatives:** Latency 1 for every surface (risks stalls on presenter-less secondary surfaces and changes behaviour the issue did not ask to change).
+
+## #83 — Owned-path extension: DEVELOPMENT.md windowed check c wording
+
+**Decision:** Update the one sentence in `docs/DEVELOPMENT.md` (windowed check c) that said the SPEC Low quality preset does not exist, because the app now starts lean on software adapters.
+
+**Rationale:** Otherwise the doc would contradict what the harness now runs.
+
+**Alternatives:** A separate docs work-unit issue (rejected: a one-sentence fix that belongs with the change that made the sentence stale).
+
+## #83 — Owned-path extension: fix main's aarch64 clippy (spec_kp066_quat_ops.rs)
+
+**Decision:** PR #191 gates `unit_vec_strat` in crates/pin_physics/tests/spec_kp066_quat_ops.rs with the same SSE2/simd128 cfg as its only caller, so `clippy (aarch64-apple-darwin)` on main passes again (run 45553059132 at be86349, from #160 / PR #193).
+
+**Rationale:** PROCESS P6 lets only a PR that fixes a red main merge; the #160 session could not be reached and the fix is one attribute with no behaviour change.
+
+**Alternatives:** Wait for the #160 session (rejected: blocks every merge meanwhile); `#[allow(dead_code)]` (rejected: hides genuinely dead helpers on SSE2 targets).

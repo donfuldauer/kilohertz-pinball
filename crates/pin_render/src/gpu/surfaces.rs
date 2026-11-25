@@ -922,6 +922,7 @@ impl LayerCompositor {
 }
 
 fn surface_config(
+    role: SurfaceRole,
     format: wgpu::TextureFormat,
     caps: &wgpu::SurfaceCapabilities,
     (w, h): (u32, u32),
@@ -935,7 +936,7 @@ fn surface_config(
         width: w.max(1),
         height: h.max(1),
         present_mode: mode,
-        desired_maximum_frame_latency: 2,
+        desired_maximum_frame_latency: super::quality::frame_latency_for(role),
         alpha_mode: caps
             .alpha_modes
             .first()
@@ -993,7 +994,7 @@ impl SurfaceSet {
                     LayerTarget::Direct(wgpu::TextureFormat::Rgba8Unorm)
                 }
             };
-            let config = surface_config(format, &caps, src.pixel_size, choice.mode(), layer);
+            let config = surface_config(role, format, &caps, src.pixel_size, choice.mode(), layer);
             let configure_log = ConfigureLog::new(src.window, role);
             if !try_configure_now(&device, &src.surface, &config, &gpu_lock, &configure_log) {
                 return Err(GpuError::Surface(format!(
@@ -1609,11 +1610,11 @@ mod layer_target_tests {
         assert_eq!(f, F::Bgra8UnormSrgb, "the fallback: first offered");
         let mode = wgpu::PresentMode::Fifo;
         let twin = LayerTarget::for_target(f, D::SURFACE_VIEW_FORMATS, caps.usages);
-        let c = surface_config(f, &caps, (8, 4), mode, twin);
+        let c = surface_config(SurfaceRole::Playfield, f, &caps, (8, 4), mode, twin);
         assert_eq!((c.format, c.usage), (f, U::RENDER_ATTACHMENT));
         assert_eq!(c.view_formats, vec![F::Bgra8Unorm]);
         let inter = LayerTarget::for_target(f, D::empty(), caps.usages);
-        let c = surface_config(f, &caps, (8, 4), mode, inter);
+        let c = surface_config(SurfaceRole::Playfield, f, &caps, (8, 4), mode, inter);
         assert_eq!(c.usage, U::RENDER_ATTACHMENT | COPY);
         assert!(c.view_formats.is_empty());
         // The preferred (non-sRGB) path is configured exactly as before.
@@ -1624,10 +1625,34 @@ mod layer_target_tests {
         let f = pick_format(&caps).unwrap();
         assert_eq!(f, F::Bgra8Unorm);
         let direct = LayerTarget::for_target(f, D::all(), caps.usages);
-        let c = surface_config(f, &caps, (8, 4), mode, direct);
+        let c = surface_config(SurfaceRole::Playfield, f, &caps, (8, 4), mode, direct);
         assert_eq!(
             (c.usage, c.view_formats),
             (U::RENDER_ATTACHMENT, Vec::new())
         );
+    }
+
+    /// REQ-LAT-006: playfield latency 1, secondary surfaces 2, rest unchanged.
+    #[test]
+    fn req_lat_006_surface_config_frame_latency_per_role() {
+        let caps = wgpu::SurfaceCapabilities {
+            formats: vec![F::Bgra8Unorm],
+            present_modes: vec![wgpu::PresentMode::Fifo],
+            alpha_modes: vec![wgpu::CompositeAlphaMode::Opaque],
+            usages: U::RENDER_ATTACHMENT,
+            ..Default::default()
+        };
+        let layer = LayerTarget::Direct(F::Bgra8Unorm);
+        let mode = wgpu::PresentMode::Fifo;
+        let cfg = |role| surface_config(role, F::Bgra8Unorm, &caps, (8, 4), mode, layer);
+        let p = cfg(SurfaceRole::Playfield);
+        assert_eq!(p.desired_maximum_frame_latency, 1);
+        for role in [SurfaceRole::Backglass, SurfaceRole::Score] {
+            let c = cfg(role);
+            assert_eq!(c.desired_maximum_frame_latency, 2);
+            let mut q = p.clone();
+            q.desired_maximum_frame_latency = 2;
+            assert_eq!(c, q);
+        }
     }
 }
