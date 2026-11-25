@@ -18,6 +18,7 @@
 mod util;
 
 use glam::{Quat, Vec3};
+use pin_core::fmath::max_f32;
 use pin_physics::ball::{
     BallEvent, BallEvents, BallSolver, BallSolverConfig, Geometry, ImpactTarget,
 };
@@ -304,7 +305,7 @@ fn hand_off(approach: f32, eject: f32, kick: f32) -> HandOff {
     let local_y = cy / libm::cosf(PITCH_DEG.to_radians());
     let on_deck = deck * v(-0.19, local_y, BALL_R);
     let mut ball = pin_physics::ball::Ball::new(STEEL, on_deck);
-    ball.velocity = deck * v(approach.max(0.05) + 0.6, 0.0, 0.0);
+    ball.velocity = deck * v(max_f32(approach, 0.05) + 0.6, 0.0, 0.0);
     let h = s.add_ball(ball).unwrap();
     let mut events = BallEvents::new();
     let mut seen = vec![0u8];

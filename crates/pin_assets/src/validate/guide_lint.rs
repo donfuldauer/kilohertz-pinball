@@ -14,6 +14,7 @@
 //! (a), uneven spacing, stays in `rules.rs` next to the spline build.
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, max_f64, min_f32, min_f64};
 use pin_physics::world::{CubicSpline, GuideCurve};
 
 /// Curvature samples per spline segment (one segment per through-point
@@ -80,7 +81,7 @@ fn curvature(spline: &CubicSpline, t: f64) -> f64 {
     } else {
         f64::INFINITY
     };
-    space.max(plan)
+    max_f64(space, plan)
 }
 
 /// The tightest bend of every segment (`segment_count()` entries).
@@ -134,7 +135,7 @@ pub(super) fn segment_bends(spline: &CubicSpline) -> Vec<Bend> {
 /// within segment `i`.
 fn refine(spline: &CubicSpline, best: (f64, f64), h: f64, i: usize) -> (f64, f64) {
     let (lo, hi) = (i as f64, i as f64 + 1.0);
-    let (mut a, mut b) = ((best.1 - h).max(lo), (best.1 + h).min(hi));
+    let (mut a, mut b) = (max_f64(best.1 - h, lo), min_f64(best.1 + h, hi));
     let g = (5.0f64.sqrt() - 1.0) / 2.0;
     let mut c = b - g * (b - a);
     let mut d = a + g * (b - a);
@@ -253,7 +254,7 @@ pub(super) fn segment_lengths(spline: &CubicSpline) -> Vec<f32> {
 fn polyline(spline: &CubicSpline) -> Vec<(Vec3, f32, f32)> {
     let lengths = segment_lengths(spline);
     let total: f32 = lengths.iter().sum();
-    let piece = PIECE_M.max(total / MAX_PIECES as f32);
+    let piece = max_f32(PIECE_M, total / MAX_PIECES as f32);
     let mut out = Vec::new();
     let mut along = 0.0f32;
     let mut previous = spline.point(0.0);
@@ -318,7 +319,7 @@ pub(super) fn gap_lint(guide: &GuideCurve, closed: bool, bends: &[Bend]) -> Opti
         // as the end nearing the wall when the curve gets there without a
         // cusp or sub-millimetre bend (otherwise it simply doubles back).
         let doubled = |from: f32, to: f32| {
-            let (lo, hi) = (f64::from(from.min(to)), f64::from(from.max(to)));
+            let (lo, hi) = (f64::from(min_f32(from, to)), f64::from(max_f32(from, to)));
             bends
                 .iter()
                 .any(|b| b.radius_m < f64::from(HAIRLINE_GAP_M) && b.t >= lo && b.t <= hi)
@@ -389,10 +390,10 @@ fn segment_distance(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> f32 {
         };
         x.distance(a + ab * h)
     };
-    point(p, r, s)
-        .min(point(q, r, s))
-        .min(point(r, p, q))
-        .min(point(s, p, q))
+    min_f32(
+        min_f32(min_f32(point(p, r, s), point(q, r, s)), point(r, p, q)),
+        point(s, p, q),
+    )
 }
 
 /// Result of [`closest_far_pair`].
@@ -434,21 +435,27 @@ pub(super) fn closest_far_pair(line: &[(Vec3, f32, f32)], closed: bool) -> FarPa
     let pieces = line.len() - 1;
     let longest = line
         .windows(2)
-        .map(|w| (w[1].0.x - w[0].0.x).abs().max((w[1].0.y - w[0].0.y).abs()))
-        .fold(0.0f32, f32::max);
+        .map(|w| max_f32((w[1].0.x - w[0].0.x).abs(), (w[1].0.y - w[0].0.y).abs()))
+        .fold(0.0f32, max_f32);
     let cell = longest + HAIRLINE_GAP_M;
     let (min_x, min_y) = line
         .iter()
         .fold((f32::INFINITY, f32::INFINITY), |(x, y), p| {
-            (x.min(p.0.x), y.min(p.0.y))
+            (min_f32(x, p.0.x), min_f32(y, p.0.y))
         });
-    let index = |v: f32, lo: f32| (((v - lo) / cell).floor().max(0.0)) as i64;
+    let index = |v: f32, lo: f32| (max_f32(((v - lo) / cell).floor(), 0.0)) as i64;
     let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
         std::collections::HashMap::with_capacity(pieces);
     for (i, w) in line.windows(2).enumerate() {
         let g = HAIRLINE_GAP_M;
-        let (x0, x1) = (w[0].0.x.min(w[1].0.x) - g, w[0].0.x.max(w[1].0.x) + g);
-        let (y0, y1) = (w[0].0.y.min(w[1].0.y) - g, w[0].0.y.max(w[1].0.y) + g);
+        let (x0, x1) = (
+            min_f32(w[0].0.x, w[1].0.x) - g,
+            max_f32(w[0].0.x, w[1].0.x) + g,
+        );
+        let (y0, y1) = (
+            min_f32(w[0].0.y, w[1].0.y) - g,
+            max_f32(w[0].0.y, w[1].0.y) + g,
+        );
         for cx in index(x0, min_x)..=index(x1, min_x) {
             for cy in index(y0, min_y)..=index(y1, min_y) {
                 grid.entry((cx, cy)).or_default().push(i);

@@ -6,6 +6,7 @@ mod common;
 
 use common::*;
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::{CoilId, SwitchId};
 use pin_core::schema::table::MechKind;
 use pin_physics::ball::{BallEvent, BallHandle, ImpactTarget};
@@ -234,8 +235,8 @@ fn rotational_symmetry_within_five_percent() {
                 "offset {offset} speed {speed}: exit {v} outside the window"
             );
         }
-        let cmin = radial_cos.iter().copied().fold(f32::INFINITY, f32::min);
-        let cmax = radial_cos.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let cmin = radial_cos.iter().copied().fold(f32::INFINITY, min_f32);
+        let cmax = radial_cos.iter().copied().fold(f32::NEG_INFINITY, max_f32);
         assert!(
             cmax - cmin <= 0.05,
             "offset {offset}: exit direction differs between approach angles ({radial_cos:?})"
@@ -245,7 +246,7 @@ fn rotational_symmetry_within_five_percent() {
         assert!(tmax - tmin <= 1, "contact tick differs: {ticks:?}");
         eprintln!(
             "bumper symmetry: offset {offset} speed {speed}: mean exit {mean:.3} m/s, spread {:.2} %",
-            100.0 * speeds.iter().map(|v| (v - mean).abs()).fold(0.0, f32::max) / mean
+            100.0 * speeds.iter().map(|v| (v - mean).abs()).fold(0.0, max_f32) / mean
         );
     }
 }
@@ -399,7 +400,7 @@ fn exit_speed_window_holds_for_every_contact_phase() {
                 }
             }
             let v = exit.expect("ball never reached the ring");
-            range = (range.0.min(v), range.1.max(v));
+            range = (min_f32(range.0, v), max_f32(range.1, v));
             if !(EXIT_MIN..=EXIT_MAX).contains(&v) {
                 bad.push((speed, gap, v));
             }

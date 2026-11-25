@@ -6,6 +6,7 @@ mod support;
 
 use glam::Vec3;
 use pin_assets::{GltfScene, LoadedTable, MeshData, validate_gltf_bindings};
+use pin_core::fmath::min_f32;
 use pin_core::schema::LayoutManifest;
 use pin_core::schema::table::SplineKind;
 use pin_physics::world::CubicSpline;
@@ -126,7 +127,7 @@ fn check_agreement(layout: &LayoutManifest, table: &LoadedTable, scene: &GltfSce
                 let d = pts
                     .windows(2)
                     .map(|w| plan_dist_to_segment([p[0], p[1]], w[0], w[1]))
-                    .fold(f32::INFINITY, f32::min);
+                    .fold(f32::INFINITY, min_f32);
                 assert!(d <= AGREE_M, "{name}: {p:?} is {d} m from the wall");
                 assert!((-1e-7..=h + 1e-6).contains(&p[2]), "{name}: {p:?}");
             }
@@ -201,7 +202,7 @@ fn check_agreement(layout: &LayoutManifest, table: &LoadedTable, scene: &GltfSce
                 let d = bottom
                     .windows(2)
                     .map(|w| plan_dist_to_segment([q.x, q.y], w[0], w[1]))
-                    .fold(f32::INFINITY, f32::min);
+                    .fold(f32::INFINITY, min_f32);
                 assert!(
                     d <= AGREE_M,
                     "{name}: spline point {q} is {d} m from the mesh"

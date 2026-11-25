@@ -11,6 +11,7 @@ mod common;
 use common::*;
 use glam::Vec3;
 use pin_core::PhysicsDefaults;
+use pin_core::fmath::max_f32;
 use pin_physics::ball::{Ball, BallEvents, BallSolver, BallSolverConfig, Geometry};
 use pin_physics::flipper::FlipperSet;
 use pin_physics::world::{LayerTransition, StaticWorld, StaticWorldBuilder, TransitionSet};
@@ -137,7 +138,7 @@ fn a_backbox_ball_rests_on_the_flipper_and_is_fired_up_the_plane() {
             p.x > -201.0 && p.x < 201.0 && p.z < 301.0,
             "inside the box: {p:?}"
         );
-        top = top.max(p.z);
+        top = max_f32(top, p.z);
     }
     println!("highest point {top:.1} mm");
     assert!(

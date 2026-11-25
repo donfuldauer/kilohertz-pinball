@@ -1,9 +1,10 @@
 //! Black-box spec tests for `pin_core::profiles` (PLAN.md §3.2, Appendix C).
 
+use pin_core::fmath::max_f32;
 use pin_core::profiles::{BallProfile, builtin_profile};
 
 fn close(a: f32, b: f32) -> bool {
-    (a - b).abs() <= 1e-5 * a.abs().max(b.abs()).max(1e-12)
+    (a - b).abs() <= 1e-5 * max_f32(max_f32(a.abs(), b.abs()), 1e-12)
 }
 
 struct Row {

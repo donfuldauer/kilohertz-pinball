@@ -9,6 +9,7 @@
 #[path = "fixtures/spec_4_3/support.rs"]
 mod support;
 
+use pin_core::fmath::{max_f64, min_f64};
 use pin_core::schema::layout::LayoutManifest;
 use pin_core::schema::table::TableManifest;
 use proptest::prelude::*;
@@ -93,8 +94,8 @@ fn check_posts(s: &Scene) -> Result<(), String> {
                     }
                     if ra >= r - TOL {
                         shell_angles.push(libm::atan2(a[1] - c[1], a[0] - c[0]));
-                        z_hi = z_hi.max(a[2]);
-                        z_lo = z_lo.min(a[2]);
+                        z_hi = max_f64(z_hi, a[2]);
+                        z_lo = min_f64(z_lo, a[2]);
                     }
                     // A shell facet (both ends on the circle) may not cut the
                     // cylinder by more than the tolerance.
@@ -120,7 +121,7 @@ fn check_posts(s: &Scene) -> Result<(), String> {
         let mut gap: f64 =
             shell_angles[0] + std::f64::consts::TAU - shell_angles[shell_angles.len() - 1];
         for w in shell_angles.windows(2) {
-            gap = gap.max(w[1] - w[0]);
+            gap = max_f64(gap, w[1] - w[0]);
         }
         if r * (1.0 - libm::cos(gap / 2.0)) > TOL || gap >= std::f64::consts::PI {
             return Err(format!(
@@ -158,7 +159,7 @@ fn check_walls(s: &Scene) -> Result<(), String> {
             let d = visual
                 .iter()
                 .map(|t| d_pt_tri(p, t))
-                .fold(f64::INFINITY, f64::min);
+                .fold(f64::INFINITY, min_f64);
             if d > NEAR {
                 return Err(format!(
                     "walls[{i}]: no visual wall face within {NEAR} mm of ({:.1}, {:.1})",
@@ -178,8 +179,8 @@ fn check_walls(s: &Scene) -> Result<(), String> {
                         && p[2] <= h + TOL
                 }) {
                     for p in t {
-                        lo = lo.min(p[2]);
-                        hi = hi.max(p[2]);
+                        lo = min_f64(lo, p[2]);
+                        hi = max_f64(hi, p[2]);
                     }
                 }
             }
@@ -208,8 +209,8 @@ fn check_lanes(s: &Scene) -> Result<(), String> {
             let normal = [-dir[1], dir[0]];
             // Stay clear of interior corners (mitre shape is not specified)
             // and of the lane's open ends.
-            let trim = 10.0_f64.min(len / 4.0);
-            let steps = ((len - 2.0 * trim) / 4.0).ceil().max(1.0) as usize;
+            let trim = min_f64(10.0_f64, len / 4.0);
+            let steps = max_f64(((len - 2.0 * trim) / 4.0).ceil(), 1.0) as usize;
             for j in 0..=steps {
                 let t = trim + (len - 2.0 * trim) * j as f64 / steps as f64;
                 let c = [w[0][0] + dir[0] * t, w[0][1] + dir[1] * t];
@@ -229,7 +230,7 @@ fn check_lanes(s: &Scene) -> Result<(), String> {
                     let d = visual
                         .iter()
                         .map(|t| d_pt_tri(p, t))
-                        .fold(f64::INFINITY, f64::min);
+                        .fold(f64::INFINITY, min_f64);
                     if d > NEAR {
                         return Err(format!(
                             "lanes[{i}]: no visual rail within {NEAR} mm of ({:.1}, {:.1})",
@@ -262,7 +263,7 @@ fn check_guides_match_visual(s: &Scene) -> Result<(), String> {
             let d = visual
                 .iter()
                 .map(|t| d_pt_tri(*p, t))
-                .fold(f64::INFINITY, f64::min);
+                .fold(f64::INFINITY, min_f64);
             if d > TOL {
                 return Err(format!(
                     "generated guide #{g}: curve point {k} at ({:.3}, {:.3}) is {d:.3} mm from \
@@ -338,14 +339,14 @@ fn check_inserts(s: &Scene) -> Result<(), String> {
                 ));
             }
             for k in 0..3 {
-                lo[k] = lo[k].min(p[k]);
-                hi[k] = hi[k].max(p[k]);
+                lo[k] = min_f64(lo[k], p[k]);
+                hi[k] = max_f64(hi[k], p[k]);
             }
         }
         if c[0] < lo[0] - TOL || c[0] > hi[0] + TOL || c[1] < lo[1] - TOL || c[1] > hi[1] + TOL {
             return Err(format!("inserts[{i}]: shape does not contain its position"));
         }
-        if (hi[0] - lo[0]).max(hi[1] - lo[1]) < size / 4.0 {
+        if max_f64(hi[0] - lo[0], hi[1] - lo[1]) < size / 4.0 {
             return Err(format!(
                 "inserts[{i}]: shape is far smaller than size {size}"
             ));

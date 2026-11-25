@@ -1,6 +1,8 @@
 # Crate-local ban on std (platform libm) transcendentals: PLAN 2.4 / D9.
 # Scope: pin_assets, pin_core, pin_physics, pin_sim, pin_input, pin_script, pin_tablegen,
 # pin_assetgen (each has an identical copy of this list); presentation-only crates are exempt.
+# KP-067 (#161): the same crates also ban std f32/f64 min/max (use pin_core::fmath; std zero ties
+# and NaN results differ per target, D9 / REQ-WEB-002).
 # See docs/decisions/2026-11-19-w8f-q5.md and docs/decisions/2026-11-19-w8g-e.md.
 disallowed-methods = [
     { path = "f32::sin", reason = "use libm::sinf (PLAN 2.4, D9)" },
@@ -53,4 +55,8 @@ disallowed-methods = [
     { path = "f64::powf", reason = "use libm::pow (PLAN 2.4, D9)" },
     { path = "f64::cbrt", reason = "use libm::cbrt (PLAN 2.4, D9)" },
     { path = "f64::hypot", reason = "use libm::hypot (PLAN 2.4, D9)" },
+    { path = "f32::min", reason = "use pin_core::fmath::{min,max}_{f32,f64} (D9, REQ-WEB-002; std ties differ per target)" },
+    { path = "f32::max", reason = "use pin_core::fmath::{min,max}_{f32,f64} (D9, REQ-WEB-002; std ties differ per target)" },
+    { path = "f64::min", reason = "use pin_core::fmath::{min,max}_{f32,f64} (D9, REQ-WEB-002; std ties differ per target)" },
+    { path = "f64::max", reason = "use pin_core::fmath::{min,max}_{f32,f64} (D9, REQ-WEB-002; std ties differ per target)" },
 ]

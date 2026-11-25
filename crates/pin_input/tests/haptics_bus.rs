@@ -3,6 +3,7 @@
 //! a full ring, delivers in order across threads; the rumble mapper is
 //! deterministic, bounded, decays and merges by max.
 
+use pin_core::fmath::max_f32;
 use pin_core::haptics::{HapticEvent, HapticKind};
 use pin_core::input::HapticsTelemetryEvent;
 use pin_core::{CoilId, FlipperId};
@@ -218,8 +219,8 @@ proptest! {
             let mut high = 0.0f32;
             for e in &events {
                 let s = alone(&settings, *e, t as u64);
-                low = low.max(s.low);
-                high = high.max(s.high);
+                low = max_f32(low, s.low);
+                high = max_f32(high, s.high);
             }
             prop_assert_eq!(r.low, low);
             prop_assert_eq!(r.high, high);

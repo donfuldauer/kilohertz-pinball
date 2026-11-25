@@ -11,6 +11,7 @@ mod common;
 
 use common::*;
 use glam::Vec3;
+use pin_core::fmath::max_f32;
 use pin_core::{BallProfile, ProfileId};
 use pin_physics::ball::{Ball, BallEvent, BallEvents, Geometry};
 use pin_physics::world::{StaticShape, StaticWorld, StaticWorldBuilder, layers};
@@ -106,7 +107,7 @@ fn v1_magnetisation_is_tracked_but_exerts_nothing_with_zero_remanence() {
         for (h, _) in sc.solver.balls() {
             let m = mag(sc.probe.as_ref().unwrap(), h);
             assert!((0.0..=1.0).contains(&m));
-            seen = seen.max(m);
+            seen = max_f32(seen, m);
         }
     }
     assert!(seen > 0.5, "no ball was ever magnetised (max M {seen})");

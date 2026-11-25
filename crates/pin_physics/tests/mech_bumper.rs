@@ -6,6 +6,7 @@ mod util;
 
 use glam::Vec3;
 use pin_core::SwitchEdge;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::{CoilId, SwitchId};
 use pin_core::schema::table::MechKind;
 use pin_physics::mech::MechSpec;
@@ -68,8 +69,8 @@ fn bumper_kick_is_in_the_feel_window_and_symmetric() {
         assert!(radial > 0.97 * out, "leaves radially: {radial} of {out}");
         speeds.push(out);
     }
-    let lo = speeds.iter().copied().fold(f32::INFINITY, f32::min);
-    let hi = speeds.iter().copied().fold(0.0, f32::max);
+    let lo = speeds.iter().copied().fold(f32::INFINITY, min_f32);
+    let hi = speeds.iter().copied().fold(0.0, max_f32);
     println!("bumper exit speed (1.0 m/s approach, 16 angles): {lo:.4}..{hi:.4} m/s");
     assert!((hi - lo) / lo < 0.05, "rotational symmetry: {lo}..{hi}");
 }
@@ -189,8 +190,8 @@ fn sling_window_over_approach_speed_phase_and_latency() {
                     (1.5..=4.0).contains(&out),
                     "exit {out} (approach {speed}, gap {g}, delay {delay})"
                 );
-                lo = lo.min(out);
-                hi = hi.max(out);
+                lo = min_f32(lo, out);
+                hi = max_f32(hi, out);
             }
         }
     }

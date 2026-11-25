@@ -1,6 +1,7 @@
 //! Implementer tests for `pin_physics::world::CubicSpline` (Subphase 2.1).
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, max_f64, min_f32, min_f64};
 use pin_physics::world::{CubicSpline, SplineError};
 use proptest::prelude::*;
 
@@ -37,8 +38,8 @@ fn brute(spline: &CubicSpline, p: Vec3) -> f64 {
             best_k = k;
         }
     }
-    let mut lo = (best_k as f64 - 1.0).max(0.0) / per as f64;
-    let mut hi = ((best_k + 1) as f64).min((n * per) as f64) / per as f64;
+    let mut lo = max_f64(best_k as f64 - 1.0, 0.0) / per as f64;
+    let mut hi = min_f64((best_k + 1) as f64, (n * per) as f64) / per as f64;
     for _ in 0..40 {
         let a = lo + (hi - lo) / 3.0;
         let b = hi - (hi - lo) / 3.0;
@@ -48,11 +49,11 @@ fn brute(spline: &CubicSpline, p: Vec3) -> f64 {
             lo = a;
         }
     }
-    best.min(dist(0.5 * (lo + hi)))
+    min_f64(best, dist(0.5 * (lo + hi)))
 }
 
 fn rel_close(a: Vec3, b: Vec3, rel: f32, abs: f32) -> bool {
-    (a - b).length() <= rel * a.length().max(b.length()) + abs
+    (a - b).length() <= rel * max_f32(a.length(), b.length()) + abs
 }
 
 #[test]
@@ -465,8 +466,12 @@ proptest! {
         // Convex-hull property of the Bézier form.
         let (i, _) = (t.clamp(0.0, s.max_t()) as usize, 0);
         let seg = s.segments()[i.min(s.segment_count() - 1)];
-        let lo = seg.p.iter().fold(Vec3::splat(f32::MAX), |a, b| a.min(*b));
-        let hi = seg.p.iter().fold(Vec3::splat(f32::MIN), |a, b| a.max(*b));
+        let lo = seg.p.iter().fold(Vec3::splat(f32::MAX), |a, b| {
+            Vec3::new(min_f32(a.x, b.x), min_f32(a.y, b.y), min_f32(a.z, b.z))
+        });
+        let hi = seg.p.iter().fold(Vec3::splat(f32::MIN), |a, b| {
+            Vec3::new(max_f32(a.x, b.x), max_f32(a.y, b.y), max_f32(a.z, b.z))
+        });
         prop_assert!(p.cmpge(lo - 1e-5).all() && p.cmple(hi + 1e-5).all());
     }
 

@@ -10,6 +10,7 @@ use super::{
 use crate::Vfs;
 use crate::zip::normalize_path;
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::profiles::{BUILTIN_PROFILE_NAMES, builtin_profile};
 use pin_core::schema::backglass::ScoreDisplayMode;
 use pin_core::schema::table::{
@@ -1060,7 +1061,7 @@ impl<'v> Checker<'v> {
         let (lo, hi) = spacing
             .iter()
             .fold((f32::INFINITY, 0.0f32), |(lo, hi), &d| {
-                (lo.min(d), hi.max(d))
+                (min_f32(lo, d), max_f32(hi, d))
             });
         if lo > 0.0 && hi / lo > SPACING_RATIO_WARN {
             self.warn(

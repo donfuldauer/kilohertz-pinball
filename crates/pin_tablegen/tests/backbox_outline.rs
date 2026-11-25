@@ -11,6 +11,7 @@
 mod common;
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_physics::world::StaticShape;
 use pin_tablegen::backbox::{
     BackboxCollider, GeneratedBackbox, MAX_OUTLINE_POINTS, generate_backbox, parse_backbox_layout,
@@ -349,8 +350,8 @@ fn ngon(n: usize, cx: f64, cy: f64, rx: f64, ry: f64) -> (String, f32, f32, f32,
         pts.push(p);
     }
     s.push(']');
-    let lo = |k: usize| pts.iter().map(|p| p[k]).fold(f32::INFINITY, f32::min);
-    let hi = |k: usize| pts.iter().map(|p| p[k]).fold(f32::NEG_INFINITY, f32::max);
+    let lo = |k: usize| pts.iter().map(|p| p[k]).fold(f32::INFINITY, min_f32);
+    let hi = |k: usize| pts.iter().map(|p| p[k]).fold(f32::NEG_INFINITY, max_f32);
     (s, lo(0), hi(0), lo(1), hi(1))
 }
 
@@ -367,7 +368,7 @@ fn point_count_limits() {
     assert!(inside(&poly, [local.x, local.z]), "{local:?}");
     let edge_d = (0..poly.len())
         .map(|i| dist_to_segment([local.x, local.z], poly[i], poly[(i + 1) % poly.len()]))
-        .fold(f32::INFINITY, f32::min);
+        .fold(f32::INFINITY, min_f32);
     assert!(edge_d > 13.5, "exit {edge_d} mm from the outline");
     for z in &g.layer_transitions {
         let top = g.frame.rotation.inverse() * (Vec3::from(z.zone.max) * 1e-3 - g.frame.origin_m);
@@ -700,7 +701,7 @@ proptest! {
                     prop_assert_eq!(c.layer_mask, 1u8 << 4);
                     if let StaticShape::Cuboid { center, half_extents, rotation } = &c.shape {
                         prop_assert!(center.is_finite() && half_extents.is_finite() && rotation.is_finite());
-                        prop_assert!(half_extents.min_element() > 0.0);
+                        prop_assert!(min_f32(half_extents.x, min_f32(half_extents.y, half_extents.z)) > 0.0);
                     }
                 }
             }
@@ -725,10 +726,10 @@ proptest! {
         }
         let o = list(&pts);
         let poly = pts_of(&o);
-        let bw = poly.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max)
-            - poly.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
-        let bh = poly.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max)
-            - poly.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+        let bw = poly.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, max_f32)
+            - poly.iter().map(|p| p[0]).fold(f32::INFINITY, min_f32);
+        let bh = poly.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, max_f32)
+            - poly.iter().map(|p| p[1]).fold(f32::INFINITY, min_f32);
         let (ea, da) = (x0 + 0.25 * w, x0 + 0.75 * w);
         let wall = format!("[[backbox.walls]]\npoints = {}\n", list(&[(x0 + 0.5 * w, y0 + 0.3 * h), (x0 + 0.5 * w, y0 + 0.7 * h)]));
         let g = gen_text(&text(Some(&o), bw, bh, ea, da, &wall));

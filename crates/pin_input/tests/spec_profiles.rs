@@ -6,6 +6,7 @@
 //! `InputEvent` is `PartialEq + Debug`); every other profile type is compared
 //! by pattern or by discriminant.
 
+use pin_core::fmath::max_f32;
 use pin_core::input::{CabinetAxis, CabinetInput, InputEvent, InputEventKind};
 use pin_input::profiles::{
     AxisBinding, DeviceMatch, DeviceProfile, GamepadAxis, GamepadButton, NudgeDirection,
@@ -490,7 +491,7 @@ fn keymap_1_3_button(i: usize) -> Option<CabinetInput> {
 /// `pin_app::platform::keymap::gamepad_axis_input` (1.3), by SDL index.
 fn keymap_1_3_axis(i: usize, raw: i16) -> Option<(CabinetAxis, f32)> {
     let signed = (f32::from(raw) / 32767.0).clamp(-1.0, 1.0);
-    let unsigned = signed.max(0.0);
+    let unsigned = max_f32(signed, 0.0);
     Some(match i {
         4 => (CabinetAxis::LeftFlipper, unsigned),
         5 => (CabinetAxis::RightFlipper, unsigned),

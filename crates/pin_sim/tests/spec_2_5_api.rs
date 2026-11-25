@@ -6,6 +6,7 @@
 #[path = "fixtures/spec_2_5/support.rs"]
 mod support;
 
+use pin_core::fmath::max_f32;
 use pin_core::input::CabinetInput;
 use pin_core::sim::SimStep;
 use pin_core::snapshot::{FrameStateSnapshot, MAX_BALLS};
@@ -398,7 +399,7 @@ fn bumper_ring_scores_and_the_scripted_coil_kicks_the_ball() {
             if let (Some(ht), Some(b)) = (hit_tick, sim.ball(h))
                 && t <= ht + 40
             {
-                max_speed_after = max_speed_after.max(speed(b.velocity_m_s));
+                max_speed_after = max_f32(max_speed_after, speed(b.velocity_m_s));
             }
         }
         let ht = hit_tick.expect("the ball never closed the bumper ring switch");
@@ -520,7 +521,7 @@ fn flipper_stroke_launches_a_resting_ball() {
                 step(&mut sim, &[], &mut out);
             }
             if pressed && let Some(b) = sim.ball(h) {
-                max_vy = max_vy.max(b.velocity_m_s[1]);
+                max_vy = max_f32(max_vy, b.velocity_m_s[1]);
             }
         }
         assert!(

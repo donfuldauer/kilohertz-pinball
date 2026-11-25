@@ -14,6 +14,7 @@
 
 use arrayvec::ArrayVec;
 use glam::{Quat, Vec3};
+use pin_core::fmath::{max_f32, min_f32, min_f64};
 use pin_physics::world::{
     CubicSpline, GuideCast, GuideCurve, LayerTransition, SphereContact, StaticShape, StaticWorld,
     StaticWorldBuilder, TransitionSet, Wireform, layers,
@@ -50,7 +51,7 @@ fn rail_drop(d: f32) -> f32 {
     if d >= 0.0 {
         0.0
     } else {
-        let u = (-d / RAIL_LEAD).min(1.0);
+        let u = min_f32(-d / RAIL_LEAD, 1.0);
         RAIL_DROP * u * u * (3.0 - 2.0 * u)
     }
 }
@@ -268,7 +269,7 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
             .world
             .sphere_contacts(ball.pos, BALL_R, mask, &mut contacts);
         for c in &contacts {
-            log.min_floor_gap = log.min_floor_gap.min(-c.depth);
+            log.min_floor_gap = min_f32(log.min_floor_gap, -c.depth);
             floor_impulse += stop_normal(&mut ball.vel, c.normal);
             ball.pos += c.normal * c.depth;
         }
@@ -276,16 +277,15 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
             let cp = table.guide.closest_point(ball.pos, ball.guide_seed);
             ball.guide_seed = Some(cp.t);
             let gap = cp.distance - BALL_R;
-            log.min_guide_gap = log.min_guide_gap.min(gap);
+            log.min_guide_gap = min_f32(log.min_guide_gap, gap);
             if gap < 0.0 {
                 let normal = (ball.pos - cp.point) / cp.distance;
                 guide_impulse += stop_normal(&mut ball.vel, normal);
                 ball.pos -= normal * gap;
             }
             if ball.pos.y > 0.0 {
-                log.max_arc_radius = log
-                    .max_arc_radius
-                    .max(v(ball.pos.x, ball.pos.y, 0.0).length());
+                log.max_arc_radius =
+                    max_f32(log.max_arc_radius, v(ball.pos.x, ball.pos.y, 0.0).length());
             }
         }
         if on_rails {
@@ -294,7 +294,7 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
                 ball.rail_seed = Some(0.5 * (rails[0].t + rails[1].t));
                 for cp in rails {
                     let gap = cp.distance - BALL_R;
-                    log.min_rail_gap = log.min_rail_gap.min(gap);
+                    log.min_rail_gap = min_f32(log.min_rail_gap, gap);
                     if gap < 0.0 {
                         let normal = (ball.pos - cp.point) / cp.distance;
                         rail_impulse += stop_normal(&mut ball.vel, normal);
@@ -306,7 +306,7 @@ fn tick(table: &Table, ball: &mut Ball) -> TickLog {
                 let t = ball.rail_seed.unwrap();
                 let frame = table.ramp.frame_at(t);
                 let height = (ball.pos - table.ramp.centerline().point(t)).dot(frame.normal);
-                log.min_rail_height = log.min_rail_height.min(height);
+                log.min_rail_height = min_f32(log.min_rail_height, height);
             }
         }
 
@@ -395,7 +395,7 @@ fn energy_never_increases() {
             e <= lowest + 1e-5 * e0,
             "tick {i}: energy {e} above the earlier minimum {lowest}"
         );
-        lowest = lowest.min(e);
+        lowest = min_f64(lowest, e);
         prev = e;
     }
     assert!(prev < e0);

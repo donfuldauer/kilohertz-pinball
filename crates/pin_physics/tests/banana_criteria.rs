@@ -11,6 +11,7 @@ mod butil;
 use butil::*;
 use glam::Vec3;
 use pin_core::FlipperConfig;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_physics::ball::{BallHandle, MovingBodies};
 
 /// Ticks the ball flies before it reaches the bat (as in 2.3).
@@ -143,8 +144,8 @@ fn a_large_arc_radius_converges_to_the_straight_capsule() {
                 .to_degrees()
                 .abs();
             worst = (
-                worst.0.max(angle),
-                worst.1.max((b.length() - s.length()).abs()),
+                max_f32(worst.0, angle),
+                max_f32(worst.1, (b.length() - s.length()).abs()),
             );
         }
         worst
@@ -276,8 +277,8 @@ fn cradled_for_2000_ticks(rig: &mut Rig, h: BallHandle, end_angle: f32, label: &
     for _ in 0..2000 {
         rig.step();
         let b = rig.ball(h);
-        fastest = fastest.max(b.velocity.length());
-        farthest = farthest.max((b.position - start).length());
+        fastest = max_f32(fastest, b.velocity.length());
+        farthest = max_f32(farthest, (b.position - start).length());
         let cp = rig.flippers.closest_point(0, 0.0, b.position).unwrap();
         assert!(
             (cp.distance - BALL_R).abs() < 1.0e-4,
@@ -381,10 +382,13 @@ fn sweep_shot(config: &FlipperConfig, fraction: f32, button: Button, approach: A
             && t <= f + WINDOW
         {
             let velocity = rig.ball(h).velocity;
-            best = best.max(match approach {
-                Approach::Square => velocity.length(),
-                Approach::DownTable => velocity.y,
-            });
+            best = max_f32(
+                best,
+                match approach {
+                    Approach::Square => velocity.length(),
+                    Approach::DownTable => velocity.y,
+                },
+            );
             if !rig.hits.is_empty() {
                 hit_ticks.push(t);
             }
@@ -426,11 +430,8 @@ fn timing_sweep(
         .map(|(i, s)| format!("{:+}:{:.2}", i as i64 - 20, s.rebound))
         .collect();
     println!("  rebound by flip time (ms): {}", curve.join(" "));
-    let min = shots
-        .iter()
-        .map(|s| s.rebound)
-        .fold(f32::INFINITY, f32::min);
-    let max = shots.iter().map(|s| s.rebound).fold(0.0, f32::max);
+    let min = shots.iter().map(|s| s.rebound).fold(f32::INFINITY, min_f32);
+    let max = shots.iter().map(|s| s.rebound).fold(0.0, max_f32);
     println!(
         "  min {min:.3} m/s = {:.1} % of held (plan depth 25 %, Gate A1's: {}), max {max:.3} m/s",
         100.0 * min / held,

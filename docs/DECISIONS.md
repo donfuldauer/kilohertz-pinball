@@ -8325,3 +8325,169 @@ assertion was not wrong; only the sizing had moved onto the cap.
 - Raise the cap or the budget: rejected; it changes what the test proves (R10, R11).
 - Wait for KHZ 33 logical LP64 accounting (W10 / #168), which removes the dependence on the real
   header size: deferred; re-check this test's sizing when that lands.
+## #161 KP-067 — Float min/max bans cover tests; narrow allows only for std reference checks
+
+**Decision:** The `f32::min`, `f32::max`, `f64::min`, `f64::max` entries in each sim crate's
+`clippy.toml` apply to every target (`clippy --all-targets`), so float min/max in tests and
+benches is converted to `pin_core::fmath` like library code, with operand order unchanged.
+Integer, `Ord`, iterator and `Duration` `min`/`max` and `f32::clamp` are deliberately untouched
+(the lint only fires on the float methods, so the clippy output is the site list). Where a test
+must call std `min`/`max` as the reference value (the CR-010 checks that `fmath` equals std on
+x86_64), the item carries `#[allow(clippy::disallowed_methods, reason = "...")]` on the smallest
+item: a single test fn, or the `#[cfg(target_arch = "x86_64")]` block inside a proptest body.
+Part A has 10 such allows, all in `pin_core` (`src/fmath.rs` tests: 3; `tests/fmath_props.rs`: 7).
+**Rationale:** The same `disallowed-methods` lint also carries the libm transcendental bans, so a
+module-, file- or crate-wide allow would silently lift those too. Tests that run the sim must
+compute the same bits on every target, so they get no exemption.
+**Alternatives:** exempting test targets via `cfg_attr(test, allow(...))` at crate level
+(rejected: hides libm bans in tests); leaving tests on std min/max (rejected: aarch64 and wasm32
+test results could differ from x86_64 on zero ties).
+
+## #161 KP-067 — glam bans in pin_sim and pin_assets; glam Vec2/Vec3 min/max premise corrected
+
+**Decision:** In `pin_sim` and `pin_assets` (the Part A crates that depend on glam) `clippy.toml`
+gains `disallowed-types` for `glam::Vec3A`, `glam::Vec4`, `glam::Affine3A`, `glam::Mat3A`,
+`glam::DVec4` (both) and `glam::Mat4` (`pin_assets` only: `pin_sim` still builds collider
+vertices with `Mat4::from_cols_array_2d(..).transform_point3(..)` at load time, so it is not
+banned there), and `disallowed-methods` for `glam::Quat::{lerp, slerp, normalize, length_squared,
+length, from_rotation_arc, mul_vec3, mul_quat, conjugate}` (plus `glam::Quat::inverse` in
+`pin_assets`; dropped in `pin_sim` because `tests/backbox_colliders.rs` still calls
+`frame.rotation.inverse()`), `glam::{Vec3A, Vec4}::{min, max, clamp}` and
+`glam::{Vec2, Vec3, DVec2, DVec3}::{min, max, clamp, min_element, max_element}`. Every path was
+taken from the glam 0.33.12 registry source and resolves (no clippy "does not refer to an
+existing item" warning under `-D warnings`); none was dropped as unresolvable. The glam
+vector min/max uses in `pin_sim` (`load::Bounds::add`, `escape_with_backbox`,
+`autoplay::monitor::outside_distance`, 8 calls) are rewritten component-wise with
+`pin_core::fmath`, operand order preserved; `pin_assets` had none.
+**Rationale:** The brief assumed glam's scalar `Vec3::min`/`max` call `f32::min`/`max`. In glam
+0.33.12 they are plain comparisons (`if self.x < rhs.x { self.x } else { rhs.x }`;
+`min_element` is `min(x, min(y, z))` with the same closure), so they were already target
+independent and, for non-NaN inputs, return exactly what `fmath` returns (a tie yields the
+second operand in both). Converting and banning anyway follows the brief's rule that every float
+min/max goes through `fmath` and guards against a future glam version switching to std or SIMD
+min/max; x86_64 output is unchanged (replay fixture hash 25097c21c2c3adc1, see the PR). Only NaN
+operands differ (glam returns the second operand, `fmath` the non-NaN one); no golden hashes a NaN.
+**Alternatives:** leave glam `Vec3` min/max unbanned because they are comparison-only (rejected:
+a later glam bump could change that silently); ban `Mat4` in `pin_sim` and rewrite the load-time
+mesh transform in scalar code (rejected here: outside "only the min/max call form changes"; the
+aarch64 fixture run in Part C covers this path).
+
+## #161 KP-067 — Canonical NaN in the sim hash; which hashed floats are routed
+
+**Decision:** `pin_sim::hash::Fnv64::write_f32` feeds `0x7fc0_0000` for every `f32` NaN and the
+new `write_f64` feeds `0x7ff8_0000_0000_0000` for every `f64` NaN (positive quiet, no payload:
+the pattern aarch64 and wasm32 produce and Rust's `f32::NAN`/`f64::NAN`); every other value,
+including `-0.0`, infinities and subnormals, is fed as its exact little-endian bits as before.
+`Simulation::state_hash` already feeds all its floats through `write_f32`, so it is covered.
+The other float-bit sites that reach `fnv1a64` are the replay file writers
+(`replay/mod.rs` `Axis` value `to_bits()`, `replay/game.rs` nudge `dv.map(f32::to_bits)`): they
+serialise file bytes and the checksum covers those bytes for integrity, so they are left as raw
+bits (canonicalising would change the file format and break NaN round trips); both readers
+already reject non-finite values, so no NaN reaches a recording. `pin_core` and `pin_physics`
+use neither `Fnv64` nor `fnv1a64`; the `pin_physics` test digests (the `quat_ops` sweep, the seam
+test) use their own hashers and are Part B's concern.
+**Rationale:** S7 measured different default NaN bits per target (`0x7fc00000` on aarch64,
+`0xffc00000` on x86_64); S1 R-4 asked for one canonical pattern. No golden hashes a NaN, so the
+replay fixture hash and the seam digests do not move.
+**Alternatives:** canonicalise to the x86_64 pattern `0xffc0_0000` (rejected: sign bit set, not
+the IEEE default quiet NaN and not what Rust's `NAN` constants or wasm produce); route the replay
+file bytes through the canonical writer (rejected: they are data, not state, and NaNs are
+already refused there).
+
+## #161 KP-067 — Quat operator rule is a documented review item; pin_physics glam bans
+
+**Decision:** glam `Quat` operator impls (`Quat * Quat`, `Quat * Vec3`, `Quat * f32`) and
+`Quat::from_axis_angle` results cannot be banned reliably by clippy `disallowed-methods`, so the
+"Quat operator rule" is written in the `pin_physics/clippy.toml` header and the
+`pin_physics::quat_ops` module docs: in the sim crates, never use glam `Quat` `*` operators,
+`Quat::from_axis_angle` results in sim math, or the banned methods; use `pin_physics::quat_ops`;
+reviewers treat any `Quat` operator in sim code as a defect. `pin_physics/clippy.toml` gets the
+same glam entries as `pin_assets` (`disallowed-types` `Vec3A`, `Vec4`, `Affine3A`, `Mat4`, `Mat3A`,
+`DVec4`; `disallowed-methods` `Quat::{lerp, slerp, normalize, length_squared, length,
+from_rotation_arc, mul_vec3, mul_quat}`, `{Vec3A, Vec4}::{min, max, clamp}`,
+`{Vec2, Vec3, DVec2, DVec3}::{min, max, clamp, min_element, max_element}`), all resolving, none
+dropped as unresolvable. Two `Quat` methods are not banned in `pin_physics` because call sites
+remain that `quat_ops` does not cover: `Quat::conjugate` (`world/shapes.rs` `closest_cuboid`
+feeds `rotation.conjugate()` into `quat_ops::mul_vec3`, and the `quat_ops` reference tests) and
+`Quat::inverse` (11 test-setup frame transforms in `tests/`). Non-reference test uses of banned
+`Quat` methods are routed through `quat_ops` (`ball/contact.rs` and `spec_ball_invariants.rs`
+unit-length checks use `quat_ops::length_squared(q).sqrt()`, `ball_chain_pass_reset.rs` uses
+`quat_ops::from_rotation_arc`, `spec_kp066_quat_ops.rs` builds its known-value input with
+`quat_ops::normalize` and guards its replica digest with `quat_ops::length_squared`); the items
+that compare `quat_ops` against glam's SSE2 `Quat` as the bit-exact reference carry a narrow
+`#[allow(clippy::disallowed_methods, reason = ...)]` (7: 4 in `quat_ops.rs` tests, 3 in
+`spec_kp066_quat_ops.rs`). The 22 glam vector min/max/clamp/min_element/max_element uses in
+`pin_physics` src and tests (bounding boxes, `OBox::closest`, `closest_cuboid`, the seam
+reference model) are rewritten component-wise with `pin_core::fmath`, operand order preserved
+(`clamp(lo, hi)` as `min(max(x, lo), hi)`, glam's own order; `max_element` as
+`max(x, max(y, z))`).
+**Rationale:** Clippy sees method paths, not operator trait impls, so a ban on `Quat * Quat`
+would be silent; a written rule plus review is the only enforceable form today. `conjugate` is an
+exact sign flip on every target (only NaN sign could differ), and `inverse` is used only to set
+up test frames, so leaving them unbanned costs no cross-target parity in sim output, while
+rewriting them is outside "only the min/max call form changes". `quat_ops` reproduces glam's
+SSE2 results bit for bit, so the routed test uses are unchanged on x86_64 (seam digests and
+replay fixture hash 25097c21c2c3adc1 unchanged).
+**Alternatives:** banning `conjugate`/`inverse` and rewriting the call sites as
+`Quat::from_xyzw(-x, -y, -z, w)` (rejected: a refactor beyond this unit; candidate for a later
+`quat_ops::conjugate`); a custom lint for `Quat` operators (rejected: needs a dylint toolchain,
+not in the pinned environment); allowing instead of routing the non-reference test uses
+(rejected: they are not reference checks, so the brief's narrow-allow rule does not apply).
+
+## #161 KP-067 — glam bans in pin_tablegen
+
+**Decision:** `pin_tablegen/clippy.toml` gets the same glam entries as `pin_assets`
+(`disallowed-types` `glam::{Vec3A, Vec4, Affine3A, Mat4, Mat3A, DVec4}`; `disallowed-methods`
+`glam::Quat::{lerp, slerp, normalize, length_squared, length, from_rotation_arc, mul_vec3,
+mul_quat, conjugate}`, `glam::{Vec3A, Vec4}::{min, max, clamp}` and
+`glam::{Vec2, Vec3, DVec2, DVec3}::{min, max, clamp, min_element, max_element}`), all resolving
+under `-D warnings`, none dropped as unresolvable. `glam::Quat::inverse` is not banned, as in
+`pin_sim` and `pin_physics`: four test-setup frame transforms (`src/backbox/tests.rs`, three in
+`tests/backbox_outline.rs`) map a world point into the backbox frame with
+`frame.rotation.inverse() * v`. The 33 glam vector uses (`DVec2`/`DVec3` bounding boxes in the
+clearance validator and the ramp-entry zone, `DVec2::clamp` in the headroom check, `Vec3` box
+bounds in the backbox generator, `min_element` in two test assertions) are rewritten
+component-wise with `pin_core::fmath`, operand order preserved (`clamp(lo, hi)` as
+`min(max(v, lo), hi)`, glam's own order; `max_element` of a `DVec2` as `max(x, y)`); the one test
+`Quat::length` unit check uses `quat_ops::length_squared(q).sqrt()`. No narrow `#[allow]` was
+needed in `pin_tablegen`.
+**Rationale:** Same as the `pin_sim`/`pin_assets` entry: glam 0.33.12's scalar vector min/max
+are plain comparisons whose ties already return the second operand, so the rewrite is
+bit-identical for non-NaN inputs; it was checked end to end by generating the greybox,
+apex_circuit and sky_deck playfields with the `origin/main` and the converted `pin_tablegen`
+binaries (byte-identical bundles) and by running `pin_tablegen validate` with both on the 19
+bundle fixtures under `crates/` (identical output).
+**Alternatives:** banning `Quat::inverse` and rewriting the test frame transforms (rejected: a
+refactor of test geometry outside "only the min/max call form changes").
+
+## #161 KP-067 — Integer, Ord and iterator min/max deliberately untouched
+
+**Decision:** Only `f32`/`f64` `min`/`max` (method, UFCS and function-value forms) and glam
+vector min/max/clamp/min_element/max_element are converted. Integer `Ord::min`/`max` (`usize`,
+`u32`, `u64`, `i64`, `Duration`), `Iterator::min`/`max` and `f32::clamp` stay as they are, and
+no clippy entry names them. Per crate, float sites converted versus integer/`Ord`/iterator
+`.min(`/`.max(` hits left: `pin_core` 9 / 4, `pin_input` 54 / 11, `pin_script` 2 / 17,
+`pin_assets` 24 / 21, `pin_assetgen` 21 / 28, `pin_sim` 19 std + 8 glam / 32, `pin_physics`
+542 / 70, `pin_tablegen` 140 std + 33 glam vector + 1 `Quat::length` / 9.
+**Rationale:** Integer comparisons are exact on every target, so they cannot break cross-target
+equality; `f32::clamp` is two comparisons with no zero-tie or NaN-selection ambiguity (it
+propagates NaN on every target). Converting them would add diff and risk with no determinism
+gain, and the integer min/max in the sandbox limits (`pin_script/src/wasm/limits.rs`,
+`pin_assets/src/zip/mod.rs`) are part of the R11 boundary that this unit must not touch. The
+lint fires only on the float paths, so the clippy output is the exact site list.
+**Alternatives:** a blanket rewrite of every `.min(`/`.max(` (rejected: no gain, larger risk);
+banning `f32::clamp` too (rejected: standing decision, it is pure comparisons).
+
+## #161 KP-067 — One PR for all eight crates
+
+**Decision:** #161 lands as a single PR covering Parts A, B and C (all eight crates, the
+canonical NaN hash and the clippy bans), although the mechanical diff exceeds the brief's
+~800-line guide for splitting.
+**Rationale:** The Independent Tester's cross-crate clippy-bans spec test
+(`crates/pin_core/tests/spec_kp067_clippy_bans.rs`) checks every one of the eight `clippy.toml`
+files, so it passes only once all eight carry the bans; per-part PRs would either land a red test
+on `main` or require dropping it from the earlier PRs. The diff is call-form rewrites with
+operand order preserved, verified bit-identical on x86_64 by the goldens (replay fixture
+25097c21c2c3adc1, the five seam digests) and by the byte-identical `pin_tablegen` output.
+**Alternatives:** per-crate PRs with the spec test landing last (rejected: three PRs of the same
+mechanical change and an intermediate `main` without the property the test checks).

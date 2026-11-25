@@ -14,6 +14,7 @@
 use arrayvec::ArrayVec;
 use glam::Vec3;
 use pin_core::Material;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_physics::ball::{BodyPoint, MovingBodies};
 use pin_physics::world::layers;
 
@@ -56,7 +57,12 @@ impl SlabBody {
         let c = self.center_at(t);
         let local = p - c;
         let h = self.half;
-        let clamped = local.clamp(-h, h);
+        let lo = -h;
+        let clamped = Vec3::new(
+            min_f32(max_f32(local.x, lo.x), h.x),
+            min_f32(max_f32(local.y, lo.y), h.y),
+            min_f32(max_f32(local.z, lo.z), h.z),
+        );
         if clamped != local {
             let d = local - clamped;
             let dist = d.length();
@@ -125,7 +131,10 @@ impl MovingBodies for Slab {
     fn swept_bounds(&self, body: usize) -> (Vec3, Vec3) {
         let b = &self.bodies[body];
         let (a, c) = (b.center_at(0.0), b.center_at(self.dt));
-        (a.min(c) - b.half, a.max(c) + b.half)
+        (
+            Vec3::new(min_f32(a.x, c.x), min_f32(a.y, c.y), min_f32(a.z, c.z)) - b.half,
+            Vec3::new(max_f32(a.x, c.x), max_f32(a.y, c.y), max_f32(a.z, c.z)) + b.half,
+        )
     }
     fn max_surface_speed(&self, body: usize) -> f32 {
         self.bodies[body].velocity.length()
@@ -236,9 +245,15 @@ impl RotorBody {
             return omega;
         }
         if omega > 0.0 && self.limits.1.is_finite() {
-            omega.min(((self.limits.1 - angle).max(0.0) / remaining).max(carried))
+            min_f32(
+                omega,
+                max_f32(max_f32(self.limits.1 - angle, 0.0) / remaining, carried),
+            )
         } else if omega < 0.0 && self.limits.0.is_finite() {
-            omega.max(((self.limits.0 - angle).min(0.0) / remaining).min(carried))
+            max_f32(
+                omega,
+                min_f32(min_f32(self.limits.0 - angle, 0.0) / remaining, carried),
+            )
         } else {
             omega
         }
@@ -610,7 +625,10 @@ impl MovingBodies for Sliders {
         // The rest of the tick, at the current speed.
         let b = &self.bodies[body];
         let (a, c) = (b.center_at(b.seg_t), b.center_at(self.dt));
-        (a.min(c) - b.half, a.max(c) + b.half)
+        (
+            Vec3::new(min_f32(a.x, c.x), min_f32(a.y, c.y), min_f32(a.z, c.z)) - b.half,
+            Vec3::new(max_f32(a.x, c.x), max_f32(a.y, c.y), max_f32(a.z, c.z)) + b.half,
+        )
     }
     fn max_surface_speed(&self, body: usize) -> f32 {
         self.bodies[body].seg_speed.abs()

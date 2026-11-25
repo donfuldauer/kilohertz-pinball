@@ -8,6 +8,7 @@ mod util;
 
 use glam::Vec3;
 use pin_core::PhysicsDefaults;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::{CoilId, SwitchId};
 use pin_core::schema::MechParams;
 use pin_core::schema::table::MechKind;
@@ -249,7 +250,7 @@ proptest! {
             let mut t = Table::new(&[spec], world(&[]), 6.5);
             let h = t.ball(0.0, -0.3 + 0.006 + radius(STEEL) + 0.0005, Vec3::ZERO);
             for i in 0..1500 {
-                t.mechs.set_plunger(if i >= 200 { depth * ((i - 200) as f32 / 200.0).min(1.0) } else { 0.0 });
+                t.mechs.set_plunger(if i >= 200 { depth * min_f32((i - 200) as f32 / 200.0, 1.0) } else { 0.0 });
                 t.tick();
             }
             // Premise: the rod is at full pull and the ball rests on its tip.
@@ -261,7 +262,7 @@ proptest! {
                 "ball not resting on the tip at release (depth {}: gap {}, v {:?})", depth, gap, b.velocity);
             t.mechs.set_plunger(0.0);
             let mut peak = 0.0f32;
-            for _ in 0..60 { t.tick(); peak = peak.max(t.get(h).velocity.y); }
+            for _ in 0..60 { t.tick(); peak = max_f32(peak, t.get(h).velocity.y); }
             Ok(peak)
         };
         let (lo, hi) = if d1 < d2 { (d1, d2) } else { (d2, d1) };

@@ -188,6 +188,7 @@ pub fn builtin_profiles() -> impl Iterator<Item = BallProfile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fmath::max_f32;
     use proptest::prelude::*;
 
     #[test]
@@ -232,7 +233,7 @@ mod tests {
             let p = BallProfile { diameter_m: d, mass_kg: m, ..builtin_profile("standard_steel").unwrap() };
             let r = d / 2.0;
             let expected = 2.0 / 5.0 * m * r * r;
-            prop_assert!((p.moment_of_inertia() - expected).abs() <= 1e-6 * expected.max(1e-12));
+            prop_assert!((p.moment_of_inertia() - expected).abs() <= 1e-6 * max_f32(expected, 1e-12));
             prop_assert!(p.moment_of_inertia() > 0.0);
         }
     }

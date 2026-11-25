@@ -16,6 +16,7 @@
 
 use glam::Vec3;
 use pin_core::PhysicsDefaults;
+use pin_core::fmath::max_f32;
 
 /// Sub-steps per [`TiltBob::step`].
 const SUBSTEPS: u32 = 4;
@@ -181,7 +182,7 @@ impl TiltBob {
             if rho >= p.gap {
                 self.closed = true;
                 let u = off / rho;
-                let along = libm::sqrtf((p.length * p.length - p.gap * p.gap).max(0.0));
+                let along = libm::sqrtf(max_f32(p.length * p.length - p.gap * p.gap, 0.0));
                 r = u * p.gap + g * along;
                 // The position is corrected onto the ring; the bounce acts on
                 // the incoming velocity (not on the clamped displacement,

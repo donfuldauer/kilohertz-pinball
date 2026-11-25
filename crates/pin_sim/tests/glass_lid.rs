@@ -32,6 +32,7 @@
 //! glass's to stop (DECISIONS "a1-glass — playfield glass"). The sweep
 //! checks that the glass never adds a loss and saves some.
 
+use pin_core::fmath::max_f32;
 use pin_sim::load::{BOUNDS_MARGIN_M, GLASS_THICKNESS_M};
 use pin_sim::{SimConfig, Simulation};
 use std::path::{Path, PathBuf};
@@ -163,12 +164,12 @@ fn run(bundle: &Path, v: [f32; 3], ticks: u32) -> Run {
         samples.push((b.map(|b| b.position_m.map(f32::to_bits)), s.state_hash()));
         match b {
             Some(b) => {
-                peak_z = peak_z.max(b.position_m[2]);
+                peak_z = max_f32(peak_z, b.position_m[2]);
                 last = Some(b);
             }
             None => {
                 if let Some(b) = last.take() {
-                    peak_z = peak_z.max(b.position_m[2] + b.velocity_m_s[2] * 1.0e-3);
+                    peak_z = max_f32(peak_z, b.position_m[2] + b.velocity_m_s[2] * 1.0e-3);
                 }
             }
         }
@@ -305,7 +306,7 @@ fn glass_sits_at_the_glass_toml_height() {
         for _ in 0..200 {
             s.advance(1);
             if let Some(b) = s.ball(h) {
-                max_z = max_z.max(b.position_m[2]);
+                max_z = max_f32(max_z, b.position_m[2]);
             }
         }
         assert_eq!(s.counters().balls_escaped, 0);

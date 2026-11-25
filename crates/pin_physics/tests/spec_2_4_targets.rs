@@ -7,6 +7,7 @@ mod common;
 
 use common::*;
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::{CoilId, SwitchId};
 use pin_core::schema::table::MechKind;
 use pin_core::script::SwitchEdge;
@@ -208,8 +209,14 @@ fn target_gap(c: Vec3) -> f32 {
     let half = Vec3::new(0.5 * d.length, 0.5 * d.thickness, 0.5 * d.height);
     let center = DT_POS + Vec3::new(0.0, 0.0, 0.5 * d.height);
     let q = (c - center).abs() - half;
-    let outside = q.max(Vec3::ZERO).length();
-    let inside = q.x.max(q.y).max(q.z).min(0.0);
+    let zero = Vec3::ZERO;
+    let outside = Vec3::new(
+        max_f32(q.x, zero.x),
+        max_f32(q.y, zero.y),
+        max_f32(q.z, zero.z),
+    )
+    .length();
+    let inside = min_f32(max_f32(max_f32(q.x, q.y), q.z), 0.0);
     outside + inside - R
 }
 
@@ -432,7 +439,7 @@ fn reference(d: f64, omega0: f64, length: f64, friction: f64, g: f64) -> (u64, f
 fn from_hanging(angle: f32) -> f32 {
     let two_pi = 2.0 * std::f32::consts::PI;
     let a = angle.rem_euclid(two_pi);
-    a.min(two_pi - a)
+    min_f32(a, two_pi - a)
 }
 
 /// Half-width of the stiction band, asin(c·2L/(3g)).
@@ -660,7 +667,7 @@ fn a_slow_ball_lifts_the_flap_and_gets_through() {
         let mut lifted = 0.0f32;
         for _ in 0..1500 {
             rig.step();
-            lifted = lifted.max(rig.mechs.spinner_state(0).unwrap().0.abs());
+            lifted = max_f32(lifted, rig.mechs.spinner_state(0).unwrap().0.abs());
             assert!(is_finite_ball(&rig.ball(h)));
         }
         let b = rig.ball(h);
@@ -818,7 +825,7 @@ fn vuk_ejects_to_layer_one_and_never_sticks() {
             opened |= rig.opened_edge(VUK_SW);
             let b = rig.ball(h);
             assert!(is_finite_ball(&b));
-            max_z = max_z.max(b.position.z);
+            max_z = max_f32(max_z, b.position.z);
             if i >= 1 {
                 assert_eq!(
                     b.layer, 1,

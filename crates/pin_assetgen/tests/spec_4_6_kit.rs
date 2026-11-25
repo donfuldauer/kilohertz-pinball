@@ -5,6 +5,7 @@
 
 mod spec_4_6_support;
 
+use pin_core::fmath::max_f32;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -440,7 +441,7 @@ fn sfx_files_hold_what_render_sfx_renders() {
         let worst = l
             .iter()
             .zip(&want)
-            .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+            .fold(0.0f32, |m, (a, b)| max_f32(m, (a - b).abs()));
         assert!(
             worst <= 1.0e-3,
             "{id}: file differs from render_sfx by {worst}"

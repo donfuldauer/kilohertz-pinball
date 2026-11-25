@@ -13,6 +13,7 @@
     clippy::type_complexity
 )]
 
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::haptics::{HapticEvent, HapticKind};
 use pin_core::ids::{CoilId, FlipperId};
 use pin_core::input::HapticsTelemetryEvent;
@@ -150,7 +151,7 @@ fn in_range(r: &Rumble) -> bool {
 }
 
 fn clamp01(v: f32) -> f32 {
-    if v > 0.0 { v.min(1.0) } else { 0.0 }
+    if v > 0.0 { min_f32(v, 1.0) } else { 0.0 }
 }
 
 /// The documented envelope of one event at tick `t`.
@@ -298,8 +299,8 @@ fn overlapping_events_merge_by_max_not_sum() {
     let mut overlap_seen = false;
     for t in 0..200 {
         let want = (
-            only_a[t].low.max(only_b[t].low),
-            only_a[t].high.max(only_b[t].high),
+            max_f32(only_a[t].low, only_b[t].low),
+            max_f32(only_a[t].high, only_b[t].high),
         );
         assert!(
             (both[t].low - want.0).abs() < 1e-6 && (both[t].high - want.1).abs() < 1e-6,
@@ -554,15 +555,15 @@ proptest! {
         let singles: Vec<Vec<Rumble>> =
             evs.iter().map(|e| run(s.clone(), std::slice::from_ref(e), 0, 260)).collect();
         for t in 0..260usize {
-            let low = singles.iter().map(|o| o[t].low).fold(0.0f32, f32::max);
-            let high = singles.iter().map(|o| o[t].high).fold(0.0f32, f32::max);
+            let low = singles.iter().map(|o| o[t].low).fold(0.0f32, max_f32);
+            let high = singles.iter().map(|o| o[t].high).fold(0.0f32, max_f32);
             prop_assert!((all[t].low - low).abs() < 1e-6, "tick {}: {} vs {}", t, all[t].low, low);
             prop_assert!((all[t].high - high).abs() < 1e-6, "tick {}", t);
             prop_assert!(in_range(&all[t]));
             // The documented linear envelope.
             let model = evs.iter().enumerate().map(|(i, e)| {
                 envelope(e, effect_of(events_kind(&events, &evs, i)), master, t as u64)
-            }).fold((0.0f32, 0.0f32), |a, b| (a.0.max(b.0), a.1.max(b.1)));
+            }).fold((0.0f32, 0.0f32), |a, b| (max_f32(a.0, b.0), max_f32(a.1, b.1)));
             prop_assert!((all[t].low - model.0).abs() < 1e-5, "tick {}: {} vs model {}", t, all[t].low, model.0);
             prop_assert!((all[t].high - model.1).abs() < 1e-5, "tick {}", t);
         }

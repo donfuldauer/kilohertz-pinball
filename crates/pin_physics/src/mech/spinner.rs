@@ -267,6 +267,7 @@ impl Spinner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pin_core::fmath::min_f32;
 
     fn flap() -> Spinner {
         let mut s = Spinner::new(Vec3::new(0.0, 0.0, 0.042), Vec3::Y);
@@ -352,7 +353,7 @@ mod tests {
     /// Distance (rad) from hanging, `φ` taken mod 2π.
     fn from_hanging(phi: f32) -> f32 {
         let a = phi.rem_euclid(core::f32::consts::TAU);
-        a.min(core::f32::consts::TAU - a)
+        min_f32(a, core::f32::consts::TAU - a)
     }
 
     #[test]

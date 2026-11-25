@@ -15,6 +15,7 @@
 mod util;
 
 use glam::{DVec3, Vec3};
+use pin_core::fmath::{max_f32, max_f64, min_f32, min_f64};
 use pin_physics::ball::{BallEvents, Geometry};
 use pin_physics::world::{CubicSpline, GuideCast, GuideCurve};
 
@@ -53,7 +54,7 @@ fn c_ring(r: f32, opening: f32, spacing: f32) -> GuideCurve {
 /// Through-point spacing used for a ring of radius `r`: 10 mm, coarser on
 /// the large rings (well below the radius of curvature either way).
 fn spacing_for(r: f32) -> f32 {
-    (r / 10.0).max(0.01)
+    max_f32(r / 10.0, 0.01)
 }
 
 /// Centre of the opening of a C ring.
@@ -99,7 +100,7 @@ fn brute_force_reach(spline: &CubicSpline, per_segment: usize) -> f64 {
                 _ => (w - tangent * w.dot(tangent)).length(),
             };
             if off > 0.0 {
-                reach = reach.min(w2 / (2.0 * off));
+                reach = min_f64(reach, w2 / (2.0 * off));
             }
         }
     }
@@ -236,7 +237,7 @@ fn min_gap_along(g: &GuideCurve, start: Vec3, r: f32, vel: Vec3, time: f32, step
     for _ in 0..24 {
         let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
         let (ga, gb) = (gap(a), gap(b));
-        lowest = lowest.min(ga).min(gb);
+        lowest = min_f32(min_f32(lowest, ga), gb);
         if ga < gb {
             hi = b;
         } else {
@@ -358,7 +359,7 @@ fn casts_through_c_ring_openings_never_sweep_into_the_wall() {
                         1 => 0.5e-3,
                         2 => 1.0e-3,
                         3 => 2.0e-3,
-                        _ => (2.0 * spread / speed).min(0.05),
+                        _ => min_f32(2.0 * spread / speed, 0.05),
                     };
                     // The first cast alone (what `cast_sphere` promises)...
                     let first = match g.cast_sphere(start, ball, vel, window, None) {
@@ -369,10 +370,10 @@ fn casts_through_c_ring_openings_never_sweep_into_the_wall() {
                     let sink = min_gap_along(&g, start, ball, vel, first, 1.0e-4);
                     // ... and the path followed to its end.
                     let (time, contact) = free_time(&g, start, ball, vel, window);
-                    let sink = sink.min(min_gap_along(&g, start, ball, vel, time, 1.0e-4));
+                    let sink = min_f32(sink, min_gap_along(&g, start, ball, vel, time, 1.0e-4));
                     casts += 1;
                     contacts += u32::from(contact);
-                    deepest = deepest.min(sink);
+                    deepest = min_f32(deepest, sink);
                     assert!(
                         sink >= -MAX_SINK,
                         "ring r {r} opening {opening}, ball {ball}, start {start:?}, vel {vel:?}, \
@@ -475,7 +476,7 @@ fn casts_anywhere_around_rings_and_hooks_never_sweep_into_the_wall() {
                         0.5e-3,
                         1.0e-3,
                         2.0e-3,
-                        (0.5 * r / speed).min(0.05),
+                        min_f32(0.5 * r / speed, 0.05),
                     ][(rng.next_u32() % 5) as usize];
                     let (time, contact) = free_time(g, start, ball, vel, window);
                     let sink = min_gap_along(g, start, ball, vel, time, 1.0e-4);
@@ -536,9 +537,7 @@ fn integrate(g: &GuideCurve, ball: f32, mut pos: Vec3, mut vel: Vec3, ticks: usi
                 Some(GuideCast::Contact(hit)) => (hit.time, Some(hit)),
             };
             if time > 0.0 {
-                run.swept = run
-                    .swept
-                    .min(min_gap_along(g, pos, ball, vel, time, 2.5e-4));
+                run.swept = min_f32(run.swept, min_gap_along(g, pos, ball, vel, time, 2.5e-4));
             }
             pos += vel * time;
             remaining -= time;
@@ -556,7 +555,7 @@ fn integrate(g: &GuideCurve, ball: f32, mut pos: Vec3, mut vel: Vec3, ticks: usi
             let cp = g.closest_point(pos, seed);
             seed = Some(cp.t);
             let gap = cp.distance - ball;
-            run.end = run.end.min(gap);
+            run.end = min_f32(run.end, gap);
             if gap < 0.0 && cp.distance > 0.0 {
                 let normal = (pos - cp.point) / cp.distance;
                 let vn = vel.dot(normal);
@@ -567,7 +566,7 @@ fn integrate(g: &GuideCurve, ball: f32, mut pos: Vec3, mut vel: Vec3, ticks: usi
             }
         }
         if before > 0.0 {
-            run.gain = run.gain.max(vel.length() / before - 1.0);
+            run.gain = max_f32(run.gain, vel.length() / before - 1.0);
         }
     }
     run
@@ -766,7 +765,7 @@ fn ball_solver_at_c_ring_openings_resolves_contacts_on_time() {
                         solver.step(&geo, util::DT, &mut events);
                         let pos = solver.ball(handle).unwrap().position;
                         let gap = guides[0].closest_point(pos, None).distance - ball;
-                        deepest = deepest.min(gap);
+                        deepest = min_f32(deepest, gap);
                         assert!(
                             gap >= -1.0e-4,
                             "ring r {r} opening {opening}, ball {ball}, from {from:?}, speed \
@@ -832,7 +831,7 @@ fn ball_solver_slides_along_narrow_c_rings_at_full_speed() {
                     break;
                 }
                 let moved = after.position.distance(before.position);
-                let slower = before.velocity.length().min(after.velocity.length());
+                let slower = min_f32(before.velocity.length(), after.velocity.length());
                 assert!(
                     moved >= 0.95 * slower * util::DT,
                     "ring r {r} opening {opening} spacing {spacing}, {speed} m/s, tick {tick}: \
@@ -896,7 +895,7 @@ fn hairline_gaps_are_accepted_safe_and_no_obstacle() {
                 solver.step(&geo, util::DT, &mut events);
                 let after = solver.ball(handle).unwrap();
                 path += after.position.distance(before.position);
-                expected += before.velocity.length().min(after.velocity.length()) * util::DT;
+                expected += min_f32(before.velocity.length(), after.velocity.length()) * util::DT;
                 let gap = guides[0].closest_point(after.position, None).distance - ball;
                 assert!(
                     gap >= -1.0e-4,
@@ -964,7 +963,7 @@ fn j_points(gap: f64, s: f64, tilt: f64, shift: f64) -> Vec<Vec3> {
     p.arc(0.3, core::f64::consts::PI);
     p.line(0.6);
     p.arc(0.25, core::f64::consts::FRAC_PI_2 + tilt);
-    let length = (p.y - gap) / libm::sin(p.heading).abs().max(0.2);
+    let length = (p.y - gap) / max_f64(libm::sin(p.heading).abs(), 0.2);
     p.line(length);
     p.pts
         .iter()
@@ -1046,7 +1045,7 @@ impl Oracle {
                 };
                 (h * h + z * z).sqrt()
             })
-            .fold(f64::INFINITY, f64::min)
+            .fold(f64::INFINITY, min_f64)
     }
 
     /// Smallest gap of the sphere along `start + vel·τ`, `τ ∈ [0, time]`,
@@ -1062,7 +1061,7 @@ impl Oracle {
                 let c = s + v * (f64::from(time) * i as f64 / n as f64);
                 Self::distance(&pieces, c) - f64::from(r)
             })
-            .fold(f64::INFINITY, f64::min)
+            .fold(f64::INFINITY, min_f64)
     }
 }
 
@@ -1379,10 +1378,10 @@ fn slide_in_spiral_lane(
         let speed = 0.5 * (before.velocity.length() + after.velocity.length());
         let fraction = moved / (speed * util::DT);
         let gap = guides[0].closest_point(after.position, None).distance - ball;
-        deepest = deepest.min(gap);
+        deepest = min_f32(deepest, gap);
         if gap < 1.0e-4 {
             at_wall += 1;
-            worst = worst.min(fraction);
+            worst = min_f32(worst, fraction);
             if fraction < 0.95 {
                 slow += 1;
             }

@@ -7,6 +7,7 @@ mod common;
 
 use common::*;
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::FlipperId;
 use pin_core::{FlipperConfig, FlipperShape, Material};
 use pin_physics::ball::MovingBodies;
@@ -244,7 +245,7 @@ fn angle_reports_absolute_degrees_consistent_with_omega() {
             break;
         }
         let rate = (a - prev.0).to_radians() / DT;
-        let (lo, hi) = (prev.1.min(w), prev.1.max(w));
+        let (lo, hi) = (min_f32(prev.1, w), max_f32(prev.1, w));
         assert!(
             rate >= lo - 0.5 && rate <= hi + 0.5,
             "Δangle/dt {rate} rad/s outside [{lo}, {hi}]"
@@ -334,16 +335,16 @@ fn stop_bounce(e_stop: f32) -> (f32, f32, f32, f32, Vec<(f32, f32)>) {
         .iter()
         .position(|&(a, _)| a >= end - 1.0e-3)
         .expect("never reached end");
-    let peak_up = tr[..=first_end].iter().map(|p| p.1).fold(0.0, f32::max);
-    let bounce_top = tr[first_end..300].iter().map(|p| p.1).fold(0.0, f32::min);
+    let peak_up = tr[..=first_end].iter().map(|p| p.1).fold(0.0, max_f32);
+    let bounce_top = tr[first_end..300].iter().map(|p| p.1).fold(0.0, min_f32);
     let rest = c.rest_angle_deg;
     let first_rest = 300
         + tr[300..]
             .iter()
             .position(|&(a, _)| a <= rest + 1.0e-3)
             .expect("never returned");
-    let peak_dn = tr[300..=first_rest].iter().map(|p| p.1).fold(0.0, f32::min);
-    let bounce_rest = tr[first_rest..].iter().map(|p| p.1).fold(0.0, f32::max);
+    let peak_dn = tr[300..=first_rest].iter().map(|p| p.1).fold(0.0, min_f32);
+    let bounce_rest = tr[first_rest..].iter().map(|p| p.1).fold(0.0, max_f32);
     (peak_up, bounce_top, peak_dn, bounce_rest, tr)
 }
 

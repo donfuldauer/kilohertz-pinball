@@ -6,6 +6,7 @@ mod common;
 
 use common::*;
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::{FlipperId, SwitchId};
 use pin_core::{FlipperConfig, FlipperStagingMode};
 use pin_physics::ball::MovingBodies;
@@ -51,7 +52,7 @@ fn zipper_slides_at_its_speed_to_the_axis_extent_and_back() {
     for k in 1..=160u32 {
         s.advance();
         let o = s.set.base_offset_mm(ID);
-        let ideal = (0.15 * k as f32).min(15.0);
+        let ideal = min_f32(0.15 * k as f32, 15.0);
         assert!(
             o >= prev - 1.0e-5,
             "slide went back at tick {k}: {prev} → {o}"
@@ -79,7 +80,7 @@ fn zipper_slides_at_its_speed_to_the_axis_extent_and_back() {
     for k in 1..=160u32 {
         s.advance();
         let o = s.set.base_offset_mm(ID);
-        let ideal = (15.0 - 0.15 * k as f32).max(0.0);
+        let ideal = max_f32(15.0 - 0.15 * k as f32, 0.0);
         assert!(o <= prev + 1.0e-5 && o >= -1.0e-4, "tick {k}: {prev} → {o}");
         assert!(
             (o - ideal).abs() <= 0.15 + 1.0e-3,

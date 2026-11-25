@@ -2,6 +2,7 @@
 //! traces (generated fixtures), fallbacks, property tests and the allocation
 //! guard (gate step 6).
 
+use pin_core::fmath::{max_f32, min_f32};
 use pin_input::calibration::{
     DigitalNudge, NudgeConfig, NudgeFilter, PlungerConfig, PlungerFilter, PlungerOutput,
     thumbstick_nudge,
@@ -602,7 +603,7 @@ fn nudge_passes_ten_times_cutoff() {
             let t = i as f32 * dt;
             let o = f.update([amp * libm::sinf(2.0 * PI * freq * t), 0.0], dt);
             if t > 2.0 {
-                peak = peak.max(f.high_passed()[0].abs());
+                peak = max_f32(peak, f.high_passed()[0].abs());
                 assert!(o[0].abs() <= 1.0);
             }
         }
@@ -626,7 +627,7 @@ fn nudge_curve_formula() {
         let want = if x.abs() <= 0.05 {
             0.0
         } else {
-            x.signum() * (1.5 * libm::powf(x.abs(), 1.7)).min(0.8)
+            x.signum() * min_f32(1.5 * libm::powf(x.abs(), 1.7), 0.8)
         };
         assert!((o[0] - want).abs() < 1e-5, "{x}: {o:?} vs {want}");
         assert!((o[1] + want).abs() < 1e-5);
@@ -793,6 +794,7 @@ fn filter_output_hash_is_stable_over_10_runs() {
 /// sample (B3).
 mod never_stuck_noisy {
     use super::*;
+    use pin_core::fmath::max_f32;
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(48))]
         #[test]
@@ -849,7 +851,7 @@ mod never_stuck_noisy {
             prop_assert_eq!(out.len(), 1, "rest {} releases {:?}", f.rest(), out);
             let want = depth / snap_ms as f32 * 1000.0;
             // ±0.004 noise over a 5–20 ms stroke: within max(5 %, 12·a/depth).
-            let allowed = (12.0 * 0.004 / depth).max(0.05);
+            let allowed = max_f32(12.0 * 0.004 / depth, 0.05);
             prop_assert!((out[0] - want).abs() <= allowed * want, "{} vs {}", out[0], want);
         }
     }

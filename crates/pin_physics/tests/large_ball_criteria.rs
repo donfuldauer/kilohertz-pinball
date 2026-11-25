@@ -10,6 +10,7 @@ mod util;
 mod flip;
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, max_f64, min_f32};
 use pin_core::ids::ProfileId;
 use pin_physics::ball::{
     Ball, BallEvent, BallEvents, BallHandle, Geometry, IMPACT_REPORT_SPEED, ImpactTarget,
@@ -77,10 +78,10 @@ fn c1_xl_vs_mini_free_collision_conserves_momenta() {
                         e_prev = e;
                         let dp = (momentum(&s) - p0).length() / p0.length();
                         assert!(dp <= 1e-4, "p drift {dp} (offset {offset}, speed {speed})");
-                        worst_p = worst_p.max(dp);
-                        let dl = (angular_momentum(&s) - l0).length() / l0.length().max(1e-7);
+                        worst_p = max_f64(worst_p, dp);
+                        let dl = (angular_momentum(&s) - l0).length() / max_f64(l0.length(), 1e-7);
                         assert!(dl <= 1e-3, "L drift {dl} (offset {offset}, speed {speed})");
-                        worst_l = worst_l.max(dl);
+                        worst_l = max_f64(worst_l, dl);
                         let (a, b) = (s.ball(hm).unwrap(), s.ball(hx).unwrap());
                         assert!(
                             a.position.distance(b.position) > rm + rx - 2.0e-5,
@@ -128,7 +129,7 @@ fn c1_head_on_exchange_matches_the_two_body_formula() {
         .iter()
         .find(|q| q.materials == [mat_m, mat_x] || q.materials == [mat_x, mat_m])
         .map_or(
-            p[MINI.index()].restitution.min(p[XL.index()].restitution),
+            min_f32(p[MINI.index()].restitution, p[XL.index()].restitution),
             |q| q.restitution,
         );
     for speed in [0.5f32, 4.0, 20.0] {
@@ -202,13 +203,15 @@ fn c3_fastest_bat_does_not_swing_through_the_xl_ball() {
                 let mut peak_tip = 0.0f32;
                 for _ in 0..80 {
                     rig.step();
-                    peak_tip =
-                        peak_tip.max(rig.flippers.angular_velocity(flip::LEFT).abs() * 0.0825);
+                    peak_tip = max_f32(
+                        peak_tip,
+                        rig.flippers.angular_velocity(flip::LEFT).abs() * 0.0825,
+                    );
                     let cp = rig
                         .flippers
                         .closest_point(0, 0.0, rig.ball(h).position)
                         .unwrap();
-                    deepest = deepest.max(r - cp.distance);
+                    deepest = max_f32(deepest, r - cp.distance);
                     assert!(
                         cp.distance > r - 1.0e-3,
                         "torque {torque}, {fraction}, gap {gap_mm} mm: ball {:.2} mm inside the bat",
@@ -221,7 +224,7 @@ fn c3_fastest_bat_does_not_swing_through_the_xl_ball() {
                     "torque {torque}, {fraction}, gap {gap_mm}: not hit"
                 );
                 assert!(b.position.dot(Vec3::Z.cross(flip::bat_dir(20.0))) > 0.0);
-                fastest_tip = fastest_tip.max(peak_tip);
+                fastest_tip = max_f32(fastest_tip, peak_tip);
             }
         }
     }
@@ -333,7 +336,7 @@ fn c3_heavy_balls_of_any_size_stay_out_of_a_light_fast_bat() {
                     .flippers
                     .closest_point(0, 0.0, rig.ball(h).position)
                     .unwrap();
-                worst = worst.max(r - cp.distance);
+                worst = max_f32(worst, r - cp.distance);
             }
         }
         println!("d {d}: worst tick-end overlap {:.3} mm", worst * 1e3);

@@ -9,6 +9,7 @@ mod common;
 
 use common::*;
 use glam::{Quat, Vec3};
+use pin_core::fmath::max_f32;
 use pin_core::ids::FlipperId;
 use proptest::prelude::*;
 
@@ -47,7 +48,7 @@ fn tunnel_case(
     let a = f.pivot + f.e_rest * (frac * L);
     let b = beta_deg.to_radians();
     let out = (m * side * libm::cosf(b) + f.e_rest * libm::sinf(b)).normalize();
-    let dist = (speed * 0.04).max(0.12);
+    let dist = max_f32(speed * 0.04, 0.12);
     let arrive = (dist / speed / DT) as i64;
     let flip = (arrive + flip_offset_ms).max(0) as u64;
     let h = s
@@ -65,7 +66,7 @@ fn tunnel_case(
         s.advance();
         hit |= s.hit(h, 0);
         let ang = s.set.angle_deg(ID);
-        max_tip = max_tip.max(s.set.angular_velocity(ID).abs() * L);
+        max_tip = max_f32(max_tip, s.set.angular_velocity(ID).abs() * L);
         let p = s.ball(h).position;
         if !p.is_finite() {
             return Err(format!("non-finite ball at tick {}", s.tick));
@@ -123,7 +124,7 @@ fn no_tunnelling_at_15_m_s_tip_speed_head_on() {
                     );
                     match r {
                         Ok((tip, hit)) => {
-                            fastest = fastest.max(tip);
+                            fastest = max_f32(fastest, tip);
                             cases += 1;
                             hits += u32::from(hit);
                         }
@@ -202,7 +203,7 @@ fn energy_case(
     let flip = (arrive + flip_off).max(0) as u64;
     let rel = release_after.map(|r| flip + r);
     let inertia = [c.inertia_kg_m2];
-    let tau = c.power_torque_nm.max(c.hold_torque_nm) + c.return_spring_torque_nm;
+    let tau = max_f32(c.power_torque_nm, c.hold_torque_nm) + c.return_spring_torque_nm;
     let mut e_prev = energy(&s, g, &inertia);
     let e0 = e_prev;
     let mut a_prev = s.set.angle_deg(ID);

@@ -34,6 +34,7 @@ mod butil;
 
 use butil::*;
 use glam::{DVec3, Quat, Vec3};
+use pin_core::fmath::{max_f64, min_f64};
 use pin_core::{FlipperConfig, FlipperShape};
 use pin_physics::ball::MovingBodies;
 use pin_physics::flipper::{BatShape, FlipperSet, FlipperTuning, StraightCapsule};
@@ -119,7 +120,7 @@ fn ray_outer<S: BatShape + ?Sized>(shape: &S, theta: f64) -> f64 {
             break;
         }
         outside = r;
-        r = (r - d.max(MIN_STEP_M)).max(0.0);
+        r = max_f64(r - max_f64(d, MIN_STEP_M), 0.0);
     }
     bisect(f, r, outside)
 }
@@ -185,7 +186,7 @@ fn probe_local<S: BatShape + ?Sized>(shape: &S) -> LocalProbe {
         }
     }
     let tip_theta = 0.5 * (a + b);
-    let tip_radius = ray_outer(shape, tip_theta).max(best_r);
+    let tip_radius = max_f64(ray_outer(shape, tip_theta), best_r);
     LocalProbe {
         cross_plus,
         cross_minus,
@@ -296,7 +297,7 @@ fn errors(pose: &Pose, e: &Expect) -> Errors {
         angle_between_deg(pose.tangent, cfg),
     ]
     .into_iter()
-    .fold(0.0, f64::max);
+    .fold(0.0, max_f64);
     let expected_theta = e.side_bat * 0.5 * e.arc_sweep_deg.abs();
     Errors {
         tangent_deg,
@@ -347,7 +348,7 @@ fn check_pose(pose: &Pose, e: &Expect) -> Result<(), String> {
     }
     let np = angle_between_deg(l.normal_plus, DVec3::Y);
     let nm = angle_between_deg(l.normal_minus, DVec3::NEG_Y);
-    if np.max(nm) > TOL_TANGENT_DEG {
+    if max_f64(np, nm) > TOL_TANGENT_DEG {
         fails.push(format!(
             "pivot normals: {np:.4}° / {nm:.4}° from ±bat y (tol {TOL_TANGENT_DEG}°)"
         ));
@@ -581,13 +582,13 @@ impl Summary {
     fn add(&mut self, pose: &Pose, e: &Expect) {
         let err = errors(pose, e);
         self.poses += 1;
-        self.worst_tangent_deg = self.worst_tangent_deg.max(err.tangent_deg);
-        self.worst_tip_dir_deg = self.worst_tip_dir_deg.max(err.tip_dir_deg);
+        self.worst_tangent_deg = max_f64(self.worst_tangent_deg, err.tangent_deg);
+        self.worst_tip_dir_deg = max_f64(self.worst_tip_dir_deg, err.tip_dir_deg);
         let y_mm = pose.curl.y * 1.0e3;
         if e.side_world > 0.0 {
-            self.min_up_mm = self.min_up_mm.min(y_mm);
+            self.min_up_mm = min_f64(self.min_up_mm, y_mm);
         } else {
-            self.max_down_mm = self.max_down_mm.max(y_mm);
+            self.max_down_mm = max_f64(self.max_down_mm, y_mm);
         }
     }
 
@@ -663,7 +664,7 @@ fn left_range(arc_sweep_deg: f64) -> (f64, f64) {
 /// end; the right flipper uses the mirror `(180 − rest, −sweep)`. Rest and
 /// end stay within the range by construction.
 fn left_angles((lo, hi): (f64, f64)) -> [(f64, f64); 3] {
-    let wide = (hi - lo).min(60.0);
+    let wide = min_f64(hi - lo, 60.0);
     [(lo, wide), (-30.0, 50.0), (hi - 30.0, 30.0)]
 }
 const LENGTHS_MM: [f64; 3] = [60.0, 76.0, 90.0];
@@ -719,7 +720,7 @@ fn grid_pose_left_right_rest_and_end() {
                                 yr[k]
                             );
                             let diff = (yl[k] - yr[k]).abs();
-                            worst_mirror = worst_mirror.max(diff);
+                            worst_mirror = max_f64(worst_mirror, diff);
                             assert!(
                                 diff <= TOL_MIRROR_M,
                                 "mirror: curl world-y {} (left) vs {} (right) differ by {:.2} µm \
@@ -776,7 +777,7 @@ fn proptest_pose_random_valid_bats() {
                 // rest in [180 − hi + sweep, 180 − lo]; both stops stay in
                 // the range of the sign of the arc sweep.
                 let (lo, hi) = left_range(arc_sweep_deg);
-                let sweep = sweep.min(hi - lo);
+                let sweep = min_f64(sweep, hi - lo);
                 let left_rest = lo + rest_t * (hi - lo - sweep);
                 let (rest_deg, sweep_deg) = if right {
                     (180.0 - left_rest, -sweep)

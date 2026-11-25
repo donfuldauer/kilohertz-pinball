@@ -69,6 +69,7 @@ use glam::Vec3;
 use pin_assets::GltfLimits;
 use pin_assets::validate::MAX_MANIFEST_BYTES;
 use pin_core::Material;
+use pin_core::fmath::max_f64;
 use pin_core::schema::LayoutManifest;
 use pin_core::schema::layout::{InsertShape, LaneKind};
 use pin_core::schema::table::{LayerTransitionDef, SplineDef, SplineKind, TableManifest};
@@ -917,7 +918,7 @@ fn wire_samples(wf: &Wireform) -> Vec<f32> {
             let a = (p0 - p1 * 2.0 + p2).as_dvec3().length();
             let b = (p1 - p2 * 2.0 + p3).as_dvec3().length();
             // Rails bend somewhat more than the centre line: margin 4.
-            let k = libm::sqrt(4.0 * 6.0 * a.max(b) / (8.0 * mesh::FACET_TOLERANCE_M)).ceil();
+            let k = libm::sqrt(4.0 * 6.0 * max_f64(a, b) / (8.0 * mesh::FACET_TOLERANCE_M)).ceil();
             let mut variation = 0.0f64;
             let mut prev = f64::from(wf.roll_rad(i as f32));
             for j in 1..=ROLL_PROBES {
@@ -927,7 +928,7 @@ fn wire_samples(wf: &Wireform) -> Vec<f32> {
             }
             // Margin 1.25 for roll changes between the probes.
             let k_roll = (1.25 * variation / max_roll_step).ceil();
-            let k = k.max(k_roll);
+            let k = max_f64(k, k_roll);
             if k.is_finite() {
                 (k as usize).clamp(2, 4096)
             } else {

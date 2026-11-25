@@ -7,6 +7,7 @@ mod util;
 
 use glam::Vec3;
 use pin_core::BallProfile;
+use pin_core::fmath::max_f32;
 use pin_core::ids::SwitchId;
 use pin_physics::ball::{
     Ball, BallEvents, BallHandle, BallSolver, ExternalForce, Geometry, Magnet, NewtonChain, Sensor,
@@ -241,7 +242,8 @@ fn step_does_not_allocate() {
     assert!(impacts > 20, "{impacts}");
     for (_, b) in s.balls() {
         assert!(b.position.is_finite() && b.velocity.is_finite());
-        assert!(b.position.abs().max_element() < 0.7, "{:?}", b.position);
+        let a = b.position.abs();
+        assert!(max_f32(a.x, max_f32(a.y, a.z)) < 0.7, "{:?}", b.position);
     }
 }
 

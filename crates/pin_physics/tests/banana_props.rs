@@ -7,6 +7,7 @@ mod butil;
 
 use butil::*;
 use glam::{Quat, Vec3};
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::{FlipperConfig, FlipperShape};
 use pin_physics::ball::MovingBodies;
 use pin_physics::flipper::BatShape;
@@ -45,16 +46,16 @@ fn brute_force_distance(bat: &CurvedBanana, p: Vec3, samples: u32) -> f32 {
     let mut nearest = f32::INFINITY;
     for i in 0..=samples {
         let c = bat.centerline_point(i as f32 / samples as f32);
-        nearest = nearest.min((p - c).truncate().length());
+        nearest = min_f32(nearest, (p - c).truncate().length());
     }
     let side = nearest - bat.tube_radius();
     let (bottom, top) = bat.height_range();
-    let above = (p.z - top).max(bottom - p.z);
+    let above = max_f32(p.z - top, bottom - p.z);
     match (side > 0.0, above > 0.0) {
         (true, true) => libm::sqrtf(side * side + above * above),
         (true, false) => side,
         (false, true) => above,
-        (false, false) => side.max(above),
+        (false, false) => max_f32(side, above),
     }
 }
 
@@ -177,7 +178,7 @@ fn a_fast_bat_does_not_swing_through_a_ball() {
                         let mut peak = 0.0f32;
                         for _ in 0..60 {
                             rig.step();
-                            peak = peak.max(rig.flippers.angular_velocity(LEFT).abs());
+                            peak = max_f32(peak, rig.flippers.angular_velocity(LEFT).abs());
                             let cp = rig
                                 .flippers
                                 .closest_point(0, 0.0, rig.ball(h).position)
@@ -303,7 +304,7 @@ proptest! {
         plus in any::<bool>(),
     ) {
         // bend 0: a half circle; bend 1: 3 m radius.
-        let radius = (0.5 * length).max(tube * 1.01) + bend * bend * bend * 3.0;
+        let radius = max_f32(0.5 * length, tube * 1.01) + bend * bend * bend * 3.0;
         let side = if plus { ConcaveSide::PlusY } else { ConcaveSide::MinusY };
         let bat = CurvedBanana::new(length, radius, tube, side, 0.0, 0.03).unwrap();
         let p = Vec3::new(x, y, z);

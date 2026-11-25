@@ -6,6 +6,7 @@
 
 use arrayvec::ArrayVec;
 use glam::{Quat, Vec3};
+use pin_core::fmath::max_f32;
 use pin_physics::world::layers::{self, BACKBOX, MAIN_DECK, SUBWAY, UPPER_DECK, WIREFORM};
 use pin_physics::world::{SphereContact, StaticShape, StaticWorld, StaticWorldBuilder};
 use proptest::prelude::*;
@@ -234,7 +235,7 @@ fn fast_ball_does_not_tunnel_thin_wall() {
     let hit = w
         .cast_sphere(Vec3::ZERO, R, Vec3::new(40.0, 0.0, 0.0), 1e-3, MAIN_DECK)
         .expect("CCD must catch a thin wall");
-    let expected = (0.019 - R).max(0.0) / 40.0;
+    let expected = max_f32(0.019 - R, 0.0) / 40.0;
     assert!(
         (hit.time - expected).abs() < 1e-5,
         "toi {} vs {expected}",

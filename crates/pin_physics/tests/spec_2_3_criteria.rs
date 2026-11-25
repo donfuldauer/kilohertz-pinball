@@ -15,6 +15,7 @@ mod common;
 use common::*;
 use glam::{Quat, Vec3};
 use pin_core::FlipperConfig;
+use pin_core::fmath::min_f32;
 use pin_core::ids::FlipperId;
 use pin_physics::ball::{BallHandle, MovingBodies};
 
@@ -490,7 +491,7 @@ fn v4_zipper_closes_a_48_mm_tip_gap_to_a_27_mm_ball() {
         let mut lowest = f32::INFINITY;
         for _ in 0..1500 {
             s.advance();
-            lowest = lowest.min(s.ball(h).position.y);
+            lowest = min_f32(lowest, s.ball(h).position.y);
         }
         let b = s.ball(h);
         println!(

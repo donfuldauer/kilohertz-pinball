@@ -8,12 +8,13 @@ mod fx;
 
 use fx::{BACKGLASS_TOML, TABLE_TOML};
 use pin_assets::load_table;
+use pin_core::fmath::max_f32;
 use pin_core::units::{mm_to_m, mm3_to_m};
 
 fn close3(got: [f32; 3], want: [f32; 3], what: &str) {
     for i in 0..3 {
         assert!(
-            (got[i] - want[i]).abs() <= 1e-6 * want[i].abs().max(1.0),
+            (got[i] - want[i]).abs() <= 1e-6 * max_f32(want[i].abs(), 1.0),
             "{what}[{i}] = {} want {} (SI metres)",
             got[i],
             want[i]
@@ -23,7 +24,7 @@ fn close3(got: [f32; 3], want: [f32; 3], what: &str) {
 
 fn close(got: f32, want: f32, what: &str) {
     assert!(
-        (got - want).abs() <= 1e-6 * want.abs().max(1.0),
+        (got - want).abs() <= 1e-6 * max_f32(want.abs(), 1.0),
         "{what} = {got} want {want}"
     );
 }

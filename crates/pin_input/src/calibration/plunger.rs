@@ -58,6 +58,7 @@
 //! lowering it needs a long push-in and raising it back to a known-good rest
 //! needs only [`STABLE_MS`].
 
+use pin_core::fmath::{max_f32, min_f32};
 /// Longest supported release window; larger configured windows are clamped.
 pub const MAX_RELEASE_WINDOW_MS: u32 = 1024;
 
@@ -299,9 +300,9 @@ impl PlungerFilter {
         } else {
             self.last_raw
         };
-        let deadzone = finite_or(self.cfg.deadzone, 0.0).max(0.0);
-        let rate = finite_or(self.cfg.rest_tracking_per_s, 0.0).max(0.0);
-        let qualify_depth = (PULL_QUALIFY_DEADZONES * deadzone).max(MIN_PULL_DEPTH);
+        let deadzone = max_f32(finite_or(self.cfg.deadzone, 0.0), 0.0);
+        let rate = max_f32(finite_or(self.cfg.rest_tracking_per_s, 0.0), 0.0);
+        let qualify_depth = max_f32(PULL_QUALIFY_DEADZONES * deadzone, MIN_PULL_DEPTH);
         // At least the last step (1 ms) is always part of the stroke.
         let window = u64::from(self.cfg.release_window_ms.clamp(1, MAX_RELEASE_WINDOW_MS));
         let dt_ms = match self.last_tick {
@@ -400,7 +401,7 @@ impl PlungerFilter {
         self.prev = [raw, self.prev[0]];
 
         let position = if rel > deadzone {
-            let span = (1.0 - self.rest - deadzone).max(1.0e-3);
+            let span = max_f32(1.0 - self.rest - deadzone, 1.0e-3);
             ((rel - deadzone) / span).clamp(0.0, 1.0)
         } else {
             0.0
@@ -429,7 +430,7 @@ impl PlungerFilter {
         if !above && !below {
             return;
         }
-        let tol = (2.0 * deadzone).max(0.01);
+        let tol = max_f32(2.0 * deadzone, 0.01);
         let known_good = |x: f32| {
             x.abs() <= tol
                 || (x - self.anchor).abs() <= tol
@@ -475,9 +476,9 @@ impl PlungerFilter {
             self.band_max = raw;
             self.band_start = tick;
         }
-        self.level += (raw - self.level) * (dt_s / LEVEL_TAU_S).min(1.0);
-        let lo = self.band_min.min(raw);
-        let hi = self.band_max.max(raw);
+        self.level += (raw - self.level) * min_f32(dt_s / LEVEL_TAU_S, 1.0);
+        let lo = min_f32(self.band_min, raw);
+        let hi = max_f32(self.band_max, raw);
         if hi - lo > deadzone {
             self.band_min = raw;
             self.band_max = raw;
@@ -525,7 +526,7 @@ impl PlungerFilter {
             first -= 1;
         }
         let (t_now, x_now) = at(last);
-        let p_max = (first..=last).map(|i| at(i).1).fold(x_now, f32::max);
+        let p_max = (first..=last).map(|i| at(i).1).fold(x_now, max_f32);
         let travel = p_max - x_now;
         if travel <= 0.0 {
             return 0.0;
@@ -539,12 +540,12 @@ impl PlungerFilter {
                 let (ti, xi) = at(i);
                 let (tj, xj) = at(j);
                 let ms = ti.saturating_sub(tj).max((i - j) as u64);
-                peak = peak.max((xj - xi) / (ms as f32 / 1000.0));
+                peak = max_f32(peak, (xj - xi) / (ms as f32 / 1000.0));
             }
             peak
         };
         // The noise of one reading: random (measured at rest) and quantisation.
-        let sigma = self.noise_var.max(0.0).sqrt();
+        let sigma = max_f32(self.noise_var, 0.0).sqrt();
         let quantum = {
             let step = |i: usize| (at(i).1 - at(i - 1).1).abs();
             let q = ((first + 1)..=last).map(step).fold(0.0, common_step);
@@ -561,8 +562,8 @@ impl PlungerFilter {
         };
         // Worst error (full-scale/s) of a 1-update difference, and the peak a
         // 1-update difference must reach for that error to be negligible.
-        let margin = (NOISE_SIGMAS * sigma).max(quantum) * 1000.0;
-        let needed = (NOISE_SIGMAS * sigma / NOISE_SHARE).max(quantum / QUANTUM_SHARE) * 1000.0;
+        let margin = max_f32(NOISE_SIGMAS * sigma, quantum) * 1000.0;
+        let needed = max_f32(NOISE_SIGMAS * sigma / NOISE_SHARE, quantum / QUANTUM_SHARE) * 1000.0;
         // The return stroke proper: the last 90 % of travel.
         let threshold = x_now + 0.9 * travel;
         let start = (first..=last)

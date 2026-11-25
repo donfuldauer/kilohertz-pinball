@@ -2,6 +2,7 @@
 //! (black box: written from the brief's FIXED PUBLIC API only).
 #![allow(dead_code, unreachable_patterns, clippy::needless_range_loop)]
 
+use pin_core::fmath::max_f64;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -147,13 +148,14 @@ pub fn rms(s: &[f32]) -> f64 {
 }
 
 pub fn peak(s: &[f32]) -> f64 {
-    s.iter().fold(0.0f64, |m, &v| m.max(f64::from(v).abs()))
+    s.iter()
+        .fold(0.0f64, |m, &v| max_f64(m, f64::from(v).abs()))
 }
 
 /// Largest |s[i+1] - s[i]| inside the buffer.
 pub fn max_step(s: &[f32]) -> f64 {
     s.windows(2).fold(0.0f64, |m, w| {
-        m.max((f64::from(w[1]) - f64::from(w[0])).abs())
+        max_f64(m, (f64::from(w[1]) - f64::from(w[0])).abs())
     })
 }
 

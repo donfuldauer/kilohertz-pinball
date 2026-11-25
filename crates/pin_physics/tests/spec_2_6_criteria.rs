@@ -23,6 +23,7 @@ mod common;
 use common::*;
 use glam::{Quat, Vec3};
 use pin_core::FlipperConfig;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::FlipperId;
 use pin_physics::ball::{BallHandle, MovingBodies};
 
@@ -296,7 +297,7 @@ fn c2_converges_to_straight_capsule_as_radius_grows() {
             .iter()
             .zip(&d_ref)
             .map(|(a, b)| (a - b).abs())
-            .fold(0.0f32, f32::max);
+            .fold(0.0f32, max_f32);
         let sh = shot_from(&rig, 0.5);
         let hd = held_rebound(&rig, 0.5);
         let fe = [
@@ -322,7 +323,10 @@ fn c2_converges_to_straight_capsule_as_radius_grows() {
         ang.push(ae);
         spd.push(se);
         held.push(he);
-        free.push((fe[0] / free_ref[0].length()).max(fe[1] / free_ref[1].length()));
+        free.push(max_f32(
+            fe[0] / free_ref[0].length(),
+            fe[1] / free_ref[1].length(),
+        ));
     }
     for k in 1..radii.len() {
         let q = radii[k] / radii[k - 1];
@@ -444,9 +448,9 @@ fn cradle_case(b: Banana, sweep: f32, frac: f32) {
         let (q, z) = p.local(bl.position);
         let (d, f) = r.model.distance_2d(q);
         let gap = libm::hypotf(d, z) - R - r.model.tube();
-        max_gap = max_gap.max(gap);
-        max_speed = max_speed.max(bl.velocity.length());
-        fr = (fr.0.min(f), fr.1.max(f));
+        max_gap = max_f32(max_gap, gap);
+        max_speed = max_f32(max_speed, bl.velocity.length());
+        fr = (min_f32(fr.0, f), max_f32(fr.1, f));
         // On the concave side (inside the arc circle), in the pocket.
         let side = r.model.arc_side(q, 0.0);
         assert!(
@@ -744,7 +748,7 @@ fn c2_held_rebound_noise_floor_report() {
     for dx in [-5.0e-5f32, -1.0e-5, -2.0e-6, 2.0e-6, 1.0e-5, 5.0e-5] {
         let s = held_rebound_shifted(&r, 0.5, dx);
         let e = (s.speed - base.speed).abs() / base.speed;
-        worst = worst.max(e);
+        worst = max_f32(worst, e);
         println!(
             "aim shift {:+.0} µm: held rebound {:.4} m/s ({:+.2} %) at {:.2}°",
             dx * 1e6,

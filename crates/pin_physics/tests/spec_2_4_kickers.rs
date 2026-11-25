@@ -6,6 +6,7 @@ mod common;
 
 use common::*;
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::{CoilId, SwitchId};
 use pin_core::schema::table::{MechKind, MechParams};
 use pin_physics::ball::BallHandle;
@@ -161,7 +162,7 @@ fn coil_pulse_without_a_ball_returns_the_kicker_to_rest() {
             rig.step();
             let (x, _) = rig.mechs.slider_state(0).unwrap();
             assert!((-1.0e-6..=stroke + 1.0e-6).contains(&x), "{kind:?} x = {x}");
-            max_x = max_x.max(x);
+            max_x = max_f32(max_x, x);
         }
         assert!(
             (max_x - stroke).abs() < 1.0e-4,
@@ -226,7 +227,7 @@ fn kicker_exit_speed_follows_force_and_stroke_parameters() {
         let mut best = 0.0f32;
         for _ in 0..80 {
             rig.step();
-            best = best.max(rig.ball(h).velocity.y);
+            best = max_f32(best, rig.ball(h).velocity.y);
         }
         best
     };
@@ -311,7 +312,7 @@ impl Plunger {
         for _ in 0..150 {
             self.rig.step();
             if let Some(h) = self.ball {
-                best = best.max(self.rig.ball(h).velocity.y);
+                best = max_f32(best, self.rig.ball(h).velocity.y);
             }
         }
         best
@@ -382,7 +383,7 @@ fn spring_force_is_minus_k_x() {
             let mut ticks = 1;
             while pl.x() < -1.0e-6 && ticks < 500 {
                 pl.rig.step();
-                vmax = vmax.max(pl.v());
+                vmax = max_f32(vmax, pl.v());
                 ticks += 1;
             }
             let v_end = -x0 * omega;
@@ -454,7 +455,7 @@ fn released_plunger_at_rest_never_pushes_the_ball() {
         }
         pl.rig.step();
         let b = pl.rig.ball(h);
-        max_y = max_y.max(b.position.y);
+        max_y = max_f32(max_y, b.position.y);
         assert!(
             b.velocity.y < 0.02,
             "tick {i}: ball pushed at {} m/s",
@@ -527,7 +528,7 @@ fn auto_plunger_coil_launches_like_an_analog_pull_to_auto_pull() {
     let mut v_auto = 0.0f32;
     for _ in 0..150 {
         pl.rig.step();
-        v_auto = v_auto.max(pl.rig.ball(h).velocity.y);
+        v_auto = max_f32(v_auto, pl.rig.ball(h).velocity.y);
     }
     eprintln!("plunger: analog {auto} pull -> {v_analog:.3} m/s, auto-plunger -> {v_auto:.3} m/s");
     assert!(v_auto > 1.0, "auto-plunger launch only {v_auto} m/s");
@@ -543,7 +544,7 @@ fn auto_plunger_coil_launches_like_an_analog_pull_to_auto_pull() {
     let mut best = 0.0f32;
     for _ in 0..900 {
         pl.rig.step();
-        best = best.max(pl.rig.ball(h).velocity.y);
+        best = max_f32(best, pl.rig.ball(h).velocity.y);
     }
     assert!(
         (best - v_analog).abs() < 0.1 * v_analog,
@@ -601,7 +602,7 @@ fn sling_phase_exit(speed: f32, gap: f32, late: u64) -> (f32, pin_physics::ball:
             contact = Some(rig.tick);
         }
         if let Some(c) = contact {
-            v = v.max(rig.ball(h).velocity.y);
+            v = max_f32(v, rig.ball(h).velocity.y);
             if rig.tick == c + 60 {
                 return (v, rig.ball(h));
             }
@@ -627,7 +628,7 @@ fn sling_exit_window_holds_for_every_contact_phase() {
         for gi in 0..10 {
             let gap = 0.003 + 0.00031 * gi as f32;
             let (v, _) = sling_phase_exit(speed, gap, 0);
-            range = (range.0.min(v), range.1.max(v));
+            range = (min_f32(range.0, v), max_f32(range.1, v));
             if !(EXIT_MIN..=EXIT_MAX).contains(&v) {
                 bad.push((speed, gap, v));
             }
@@ -712,8 +713,8 @@ fn step_pull_does_not_throw_a_ball_behind_the_tip() {
             rig.step();
             let b = rig.ball(h);
             assert!(is_finite_ball(&b));
-            v_ball = v_ball.max(b.velocity.length());
-            v_rod = v_rod.max(rig.mechs.slider_state(0).unwrap().1.abs());
+            v_ball = max_f32(v_ball, b.velocity.length());
+            v_rod = max_f32(v_rod, rig.mechs.slider_state(0).unwrap().1.abs());
         }
         eprintln!(
             "plunger pull, ball {behind} m behind the tip (coil {use_coil}): ball max {v_ball:.3} m/s, rod max {v_rod:.3} m/s"

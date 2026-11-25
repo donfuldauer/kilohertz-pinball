@@ -7,6 +7,7 @@
 
 use crate::quat_ops;
 use glam::{Quat, Vec3};
+use pin_core::fmath::max_f32;
 
 use super::types::{Ball, IMPACT_REPORT_SPEED};
 
@@ -139,12 +140,12 @@ pub fn solve_surface_contact(
     if un.is_nan() {
         return 0.0;
     }
-    let total = (acc.normal + m * (target_normal_speed - un)).max(0.0);
+    let total = max_f32(acc.normal + m * (target_normal_speed - un), 0.0);
     ball.velocity += n * ((total - acc.normal) / m);
     acc.normal = total;
 
-    let f_max = k.friction.max(0.0) * total;
-    let l_max = k.rolling_resistance.max(0.0) * total * r;
+    let f_max = max_f32(k.friction, 0.0) * total;
+    let l_max = max_f32(k.rolling_resistance, 0.0) * total * r;
 
     // Static rest: friction stops the centre, the resistance torque takes
     // what is left of the spin.
@@ -285,13 +286,13 @@ pub fn solve_ball_contact(
     if un.is_nan() {
         return 0.0;
     }
-    let total = (acc.normal + (target_normal_speed - un) / kn).max(0.0);
+    let total = max_f32(acc.normal + (target_normal_speed - un) / kn, 0.0);
     let dj = total - acc.normal;
     a.velocity += n * (dj * ima);
     b.velocity -= n * (dj * imb);
     acc.normal = total;
 
-    let f_max = k.friction.max(0.0) * total;
+    let f_max = max_f32(k.friction, 0.0) * total;
     if f_max > 0.0 || acc.tangent != Vec3::ZERO {
         let ut = tangential(
             a.velocity + a.angular_velocity.cross(arm_a)
@@ -689,7 +690,7 @@ mod tests {
         #[test]
         fn orientation_stays_unit(w in v3(500.0), t in 0.0f32..0.01) {
             let q = integrate_orientation(Quat::from_xyzw(0.5, 0.5, 0.5, 0.5), w, t);
-            prop_assert!((q.length() - 1.0).abs() < 1e-5);
+            prop_assert!((crate::quat_ops::length_squared(q).sqrt() - 1.0).abs() < 1e-5);
         }
     }
 }

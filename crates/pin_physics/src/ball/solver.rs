@@ -27,6 +27,7 @@
 
 use arrayvec::ArrayVec;
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::{MagnetId, ProfileId};
 use pin_core::{BallProfile, Material};
 
@@ -158,8 +159,16 @@ fn spline_aabb(s: &CubicSpline) -> Aabb {
     let mut max = Vec3::splat(f32::NEG_INFINITY);
     for seg in s.segments() {
         for p in seg.p {
-            min = min.min(p);
-            max = max.max(p);
+            min = Vec3::new(
+                min_f32(min.x, p.x),
+                min_f32(min.y, p.y),
+                min_f32(min.z, p.z),
+            );
+            max = Vec3::new(
+                max_f32(max.x, p.x),
+                max_f32(max.y, p.y),
+                max_f32(max.z, p.z),
+            );
         }
     }
     (min, max)
@@ -170,8 +179,8 @@ fn near(aabb: Option<&Aabb>, a: Vec3, b: Vec3, pad: f32) -> bool {
     let Some((min, max)) = aabb else {
         return true;
     };
-    let lo = a.min(b) - Vec3::splat(pad);
-    let hi = a.max(b) + Vec3::splat(pad);
+    let lo = Vec3::new(min_f32(a.x, b.x), min_f32(a.y, b.y), min_f32(a.z, b.z)) - Vec3::splat(pad);
+    let hi = Vec3::new(max_f32(a.x, b.x), max_f32(a.y, b.y), max_f32(a.z, b.z)) + Vec3::splat(pad);
     lo.cmple(*max).all() && hi.cmpge(*min).all()
 }
 
@@ -808,7 +817,7 @@ impl BallSolver {
     fn ball_coefficients(&self, pa: usize, pb: usize) -> ContactCoefficients {
         let (a, b) = (&self.pdata[pa], &self.pdata[pb]);
         let (restitution, friction) = self.pair_table[a.material as usize][b.material as usize]
-            .unwrap_or((a.restitution.min(b.restitution), FALLBACK_FRICTION));
+            .unwrap_or((min_f32(a.restitution, b.restitution), FALLBACK_FRICTION));
         ContactCoefficients {
             restitution,
             friction,
@@ -1129,7 +1138,10 @@ impl BallSolver {
         }
         let nt = normal.dot(tangent);
         let (im, imc) = (1.0 / sc.body.mass, 1.0 / chain.mass());
-        let total = (*acc + (target_normal_speed - un) / (im + nt * nt * imc)).max(0.0);
+        let total = max_f32(
+            *acc + (target_normal_speed - un) / (im + nt * nt * imc),
+            0.0,
+        );
         let dj = total - *acc;
         *acc = total;
         if dj == 0.0 {
@@ -1398,7 +1410,7 @@ impl BallSolver {
             // Surfaces may not: their casts stop a ball anywhere inside the
             // contact skin, so an approach velocity could never be used.
             if !matches!(c.kind, ContactKind::Surface(..)) {
-                c.target = c.depth.min(0.0) / sc[i].h;
+                c.target = min_f32(c.depth, 0.0) / sc[i].h;
             }
         }
         // Balls within contact range interact: bring them to this instant.
@@ -1475,7 +1487,7 @@ impl BallSolver {
                 }
                 let to_magnet = m.position - ball.position;
                 let d = to_magnet.length();
-                let denom = (d * d * d).max(m.d_min * m.d_min * m.d_min);
+                let denom = max_f32(d * d * d, m.d_min * m.d_min * m.d_min);
                 if d <= m.range && d > 1.0e-9 && denom > 0.0 {
                     force += to_magnet * (pd.coupling * power * m.k_coil / (denom * d));
                     any = true;
@@ -1722,7 +1734,7 @@ impl BallSolver {
                     self.chain_solve(i, &me, ci, bi, c.normal, c.target, &mut c.acc.normal)
                 }
             };
-            change = change.max(moved);
+            change = max_f32(change, moved);
         }
         change
     }
@@ -1787,7 +1799,7 @@ impl BallSolver {
                             sc,
                             bodies,
                         );
-                        change[i] = change[i].max(moved);
+                        change[i] = max_f32(change[i], moved);
                     }
                 }
             }
@@ -1988,7 +2000,7 @@ impl BallSolver {
                 let c = &mut list[k];
                 c.normal = normal;
                 c.point = point;
-                c.depth = c.depth.max(0.0);
+                c.depth = max_f32(c.depth, 0.0);
             }
             None => list.push(Contact {
                 normal,
@@ -2048,14 +2060,15 @@ impl BallSolver {
             for j in 0..MAX_BALLS {
                 if j == i || partners[j] {
                     let list = &mut lists[j];
-                    let c = self
-                        .boundary_sweep(j, list, false, &alone, &mut unused, sc, bodies)
-                        .max(self.boundary_sweep(j, list, true, &alone, &mut unused, sc, bodies));
+                    let c = max_f32(
+                        self.boundary_sweep(j, list, false, &alone, &mut unused, sc, bodies),
+                        self.boundary_sweep(j, list, true, &alone, &mut unused, sc, bodies),
+                    );
                     moved[j] |= c > 0.0;
-                    change = change.max(c);
+                    change = max_f32(change, c);
                 }
             }
-            total = total.max(change);
+            total = max_f32(total, change);
             if change <= PRESOLVE_TOLERANCE {
                 break;
             }
@@ -2323,7 +2336,7 @@ impl BallSolver {
                         {
                             let u = set.max_surface_speed(b);
                             if u.is_finite() {
-                                body_speed = body_speed.max(u);
+                                body_speed = max_f32(body_speed, u);
                             }
                         }
                     }
@@ -2342,7 +2355,7 @@ impl BallSolver {
                 };
                 let wanted = libm::ceilf(travel / (fraction * r));
                 let n = if wanted.is_finite() && wanted >= 1.0 {
-                    wanted.min(max_substeps as f32) as u32
+                    min_f32(wanted, max_substeps as f32) as u32
                 } else {
                     1
                 };
@@ -2452,7 +2465,7 @@ impl BallSolver {
             }
 
             // Only the balls that take part in the event move to it.
-            now = now.max(best_time);
+            now = max_f32(now, best_time);
             match best {
                 Next::End => {
                     complete = true;
@@ -2557,7 +2570,7 @@ impl BallSolver {
                 {
                     let u = set.max_surface_speed(b);
                     if u.is_finite() {
-                        body_speed = body_speed.max(u);
+                        body_speed = max_f32(body_speed, u);
                     }
                 }
             }

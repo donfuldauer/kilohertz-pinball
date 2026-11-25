@@ -1,4 +1,5 @@
 use super::*;
+use pin_core::fmath::max_f32;
 use pin_core::input::{InputEvent, InputEventKind};
 
 fn ok(text: &str) -> DeviceProfile {
@@ -226,7 +227,7 @@ fn generic_gamepad_equals_1_3_map() {
     // The full ranges agree with 1.3's formula.
     for raw in (i16::MIN..=i16::MAX).step_by(97) {
         let s = (f32::from(raw) / 32767.0).clamp(-1.0, 1.0);
-        let u = s.max(0.0);
+        let u = max_f32(s, 0.0);
         let (_, v) = axis_of(m.axis(0, GamepadAxis::LeftTrigger, raw)).unwrap();
         assert!((v - u).abs() < 1e-6);
         let (_, v) = axis_of(m.axis(0, GamepadAxis::LeftY, raw)).unwrap();

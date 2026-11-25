@@ -1,6 +1,7 @@
 //! Triangle meshes in metres (table frame: `x` across, `y` up the table,
 //! `z` the playfield normal) and the shapes the generator builds from them.
 
+use pin_core::fmath::max_f64;
 use pin_physics::world::CubicSpline;
 
 /// Largest distance (m) between a curved surface and the flat facets that
@@ -178,7 +179,7 @@ pub fn spline_samples(spline: &CubicSpline) -> Vec<[f32; 3]> {
         let [p0, p1, p2, p3] = seg.p;
         let a = (p0 - p1 * 2.0 + p2).as_dvec3().length();
         let b = (p1 - p2 * 2.0 + p3).as_dvec3().length();
-        let bound = 6.0 * a.max(b);
+        let bound = 6.0 * max_f64(a, b);
         let k = libm::sqrt(bound / (8.0 * FACET_TOLERANCE_M)).ceil();
         let k = if k.is_finite() {
             (k as usize).clamp(1, 4096)

@@ -131,6 +131,7 @@ impl FlipperConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fmath::{max_f32, min_f32};
     use proptest::prelude::*;
 
     fn config(rest: f32, sweep: f32, fraction: f32) -> FlipperConfig {
@@ -176,8 +177,8 @@ mod tests {
             let end = c.end_angle_deg();
             prop_assert_eq!(end, rest + sweep);
             let eos = c.eos_angle_deg();
-            let tol = 1e-4 * (rest.abs() + sweep.abs()).max(1.0);
-            prop_assert!(eos >= rest.min(end) - tol && eos <= rest.max(end) + tol,
+            let tol = 1e-4 * max_f32(rest.abs() + sweep.abs(), 1.0);
+            prop_assert!(eos >= min_f32(rest, end) - tol && eos <= max_f32(rest, end) + tol,
                          "eos {} outside [{}, {}]", eos, rest, end);
             prop_assert_eq!(config(rest, sweep, 0.0).eos_angle_deg(), rest);
             prop_assert_eq!(config(rest, sweep, 1.0).eos_angle_deg(), end);

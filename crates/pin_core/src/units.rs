@@ -75,6 +75,7 @@ pub fn s_to_ms(s: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fmath::max_f32;
     use proptest::prelude::*;
 
     #[test]
@@ -94,7 +95,7 @@ mod tests {
     }
 
     fn close(a: f32, b: f32) -> bool {
-        (a - b).abs() <= 1e-5 * b.abs().max(1.0)
+        (a - b).abs() <= 1e-5 * max_f32(b.abs(), 1.0)
     }
 
     proptest! {

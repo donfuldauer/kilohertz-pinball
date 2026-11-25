@@ -7,6 +7,7 @@ mod util;
 use glam::Vec3;
 use pin_core::PhysicsDefaults;
 use pin_core::SwitchEdge;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::SwitchId;
 use pin_physics::mech::{MechSet, TiltBob, TiltBobParams};
 use util::*;
@@ -42,8 +43,8 @@ fn tilt_threshold_is_single_and_monotone() {
         }
         thresholds.push(threshold.expect("closes at some nudge"));
     }
-    let lo = thresholds.iter().copied().fold(f32::INFINITY, f32::min);
-    let hi = thresholds.iter().copied().fold(0.0, f32::max);
+    let lo = thresholds.iter().copied().fold(f32::INFINITY, min_f32);
+    let hi = thresholds.iter().copied().fold(0.0, max_f32);
     println!(
         "tilt threshold over 8 directions: {lo:.3}..{hi:.3} m/s (undamped small-swing estimate gap·√(g/L) = {analytic:.4})"
     );

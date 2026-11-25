@@ -29,6 +29,7 @@
 //! the floor at the ramp entry; neither is the glass's to stop (DECISIONS
 //! "a1-glass — playfield glass"); the test prints any loss.
 
+use pin_core::fmath::max_f32;
 use pin_core::snapshot::BallState;
 use pin_sim::load::{BOUNDS_MARGIN_M, GLASS_THICKNESS_M};
 use pin_sim::{SimConfig, Simulation};
@@ -228,13 +229,13 @@ fn run(bundle: &Path, t: Trial, t_rise: u64) -> Outcome {
         s.advance(1);
         match s.ball(h) {
             Some(b) => {
-                peak_z = peak_z.max(b.position_m[2]);
+                peak_z = max_f32(peak_z, b.position_m[2]);
                 last = Some((b.position_m, b.layer));
                 last_vz = b.velocity_m_s[2];
             }
             None => {
                 if let Some((p, _)) = last {
-                    peak_z = peak_z.max(p[2] + last_vz * 1.0e-3);
+                    peak_z = max_f32(peak_z, p[2] + last_vz * 1.0e-3);
                 }
                 break;
             }
@@ -272,7 +273,7 @@ fn sweep(angles: &[u32]) {
                         let underside = with.underside;
                         assert!(base.underside > RAISE_MM * 1.0e-3);
                         trials += 1;
-                        peak = peak.max(with.peak_z);
+                        peak = max_f32(peak, with.peak_z);
                         assert!(
                             with.peak_z + R <= underside + CONTACT_TOL_M,
                             "{t:?}: ball centre reached {} m, glass underside {underside} m",

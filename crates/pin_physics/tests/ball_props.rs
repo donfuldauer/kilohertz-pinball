@@ -4,6 +4,7 @@
 mod util;
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, max_f64};
 use pin_core::ids::ProfileId;
 use pin_physics::ball::{Ball, BallEvents, BallHandle, Dispenser, Geometry, Magnet, NewtonChain};
 use pin_physics::world::{CubicSpline, GuideCurve, StaticShape, StaticWorldBuilder, layers};
@@ -76,7 +77,10 @@ proptest! {
                 let r = radius(ball.profile);
                 prop_assert!(ball.position.is_finite());
                 prop_assert!(
-                    (ball.position.abs() - (half - Vec3::splat(r))).max_element() < 1e-4,
+                    {
+                        let o = ball.position.abs() - (half - Vec3::splat(r));
+                        max_f32(o.x, max_f32(o.y, o.z))
+                    } < 1e-4,
                     "tick {}: left the box at {:?}", tick, ball.position
                 );
             }
@@ -176,7 +180,7 @@ proptest! {
             prop_assert!((momentum(&s) - p0).length() <= 1e-4 * p0.length());
             let l = angular_momentum(&s);
             prop_assert!(
-                (l - l0).length() <= 1e-3 * l0.length().max(1e-6),
+                (l - l0).length() <= 1e-3 * max_f64(l0.length(), 1e-6),
                 "L {:?} -> {:?}", l0, l
             );
         }
@@ -429,8 +433,8 @@ fn resting_drift(
         ev.clear();
         s.step(geo, DT, &mut ev);
         for ((_, b), p0) in s.balls().zip(&start) {
-            drift = drift.max(b.position.distance(*p0));
-            speed = speed.max(b.velocity.length());
+            drift = max_f32(drift, b.position.distance(*p0));
+            speed = max_f32(speed, b.velocity.length());
         }
         assert!(ev.as_slice().is_empty(), "{:?}", ev.as_slice());
     }
@@ -653,7 +657,7 @@ fn world_amendments_of_fix_round_one() {
         assert_eq!(out.len(), 1, "k {k}");
         let error = out[0].depth - depth;
         if let Some(before) = previous {
-            worst = worst.max((error - before).abs());
+            worst = max_f32(worst, (error - before).abs());
         }
         previous = Some(error);
     }

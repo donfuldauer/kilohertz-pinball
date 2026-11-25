@@ -2,6 +2,7 @@
 //! targets, plunger tip, spinner flap) and upright cylinders (bumpers).
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 
 use crate::ball::BodyPoint;
 
@@ -23,7 +24,12 @@ impl OBox {
             d.dot(self.axes[2]),
         );
         let h = self.half;
-        let clamped = local.clamp(-h, h);
+        let lo = -h;
+        let clamped = Vec3::new(
+            min_f32(max_f32(local.x, lo.x), h.x),
+            min_f32(max_f32(local.y, lo.y), h.y),
+            min_f32(max_f32(local.z, lo.z), h.z),
+        );
         let to_world = |v: Vec3| self.axes[0] * v.x + self.axes[1] * v.y + self.axes[2] * v.z;
         if clamped != local {
             let off = local - clamped;
@@ -88,7 +94,7 @@ impl Cylinder {
     pub fn closest(&self, p: Vec3) -> BodyPoint {
         let (u, rho) = self.radial(p);
         let z = p.z - self.base.z;
-        let rc = rho.min(self.radius);
+        let rc = min_f32(rho, self.radius);
         let zc = z.clamp(0.0, self.height);
         if rho > self.radius || z != zc {
             let point = self.base + u * rc + Vec3::Z * zc;

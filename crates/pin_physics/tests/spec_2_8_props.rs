@@ -18,6 +18,7 @@ mod bc;
 
 use bc::DT;
 use glam::{DVec3, Quat, Vec3};
+use pin_core::fmath::{max_f32, max_f64, min_f32};
 use pin_core::{BallProfile, ProfileId};
 use pin_physics::ball::{Ball, BallEvent, BallSolver, BallSolverConfig, ImpactTarget};
 use pin_physics::world::{
@@ -167,7 +168,7 @@ fn thin_wall_case(
         if !(p.is_finite() && ball.velocity.is_finite() && ball.angular_velocity.is_finite()) {
             return Err(format!("tick {tick}: non-finite state ({tag})"));
         }
-        max_x = max_x.max(p.x);
+        max_x = max_f32(max_x, p.x);
         if p.x > -half - r + 1e-4 {
             return Err(format!(
                 "tick {tick}: tunnelled/penetrated, centre x = {} m, limit {} ({tag})",
@@ -281,7 +282,7 @@ proptest! {
     ) {
         let v = if max_speed { V_MAX } else { v };
         // Spin limited to a 15 m/s surface speed for the larger balls.
-        let w = Vec3::from(w) * (0.0135 / (0.5 * d)).min(1.0);
+        let w = Vec3::from(w) * min_f32(0.0135 / (0.5 * d), 1.0);
         let r = thin_wall_case(BASES[base], d, rho, half, v, Vec3::new(1.0, dy, dz), w, floor);
         prop_assert!(r.is_ok(), "{}", r.unwrap_err());
     }
@@ -567,7 +568,7 @@ fn rest_drift(
         if !p.is_finite() {
             return Err(format!("tick {tick}: non-finite position"));
         }
-        max = max.max((p - p0).length());
+        max = max_f32(max, (p - p0).length());
         if let Some(e) = ev
             .as_slice()
             .iter()
@@ -594,7 +595,7 @@ fn resting_contact_stable_fixed_grid_10_s() {
                 "{base} d={:.2} mm: drift {drift:e} m over 10 s",
                 d * 1e3
             );
-            worst = worst.max(drift);
+            worst = max_f32(worst, drift);
         }
     }
     println!("resting grid: worst drift {worst:e} m over 10 s (limit 1e-6)");
@@ -652,8 +653,8 @@ fn corner_rest(base: &str, d: f32, rho: f32, x: f32) -> Result<(f32, f32), Strin
             p_ref = p;
         }
         if tick >= settle {
-            drift = drift.max((p - p_ref).length());
-            vmax = vmax.max(ball.velocity.length());
+            drift = max_f32(drift, (p - p_ref).length());
+            vmax = max_f32(vmax, ball.velocity.length());
         }
     }
     Ok((drift, vmax))
@@ -670,7 +671,7 @@ fn resting_in_a_corner_is_as_stable_as_the_standard_ball() {
     )
     .unwrap_or_else(|e| panic!("{e}"));
     println!("corner rest, standard ball: drift {d0:e} m, max speed {v0:e} m/s");
-    let (lim_d, lim_v) = (d0.max(1e-5), v0.max(1e-3));
+    let (lim_d, lim_v) = (max_f32(d0, 1e-5), max_f32(v0, 1e-3));
     for &d in &[D_MIN, 0.020, 0.03175, 0.045, 0.060, D_MAX] {
         for (base, rho) in [("jumbo_xl_resin", 1700.0f32), ("standard_steel", 7850.0)] {
             let (drift, v) = corner_rest(base, d, rho, 0.1).unwrap_or_else(|e| panic!("{e}"));
@@ -762,8 +763,8 @@ fn pair_case(
     };
     let (p0, l0, ke0) = totals(&s);
     let mu = f64::from(p1.mass_kg * p2.mass_kg / (p1.mass_kg + p2.mass_kg));
-    let p_scale = p0.length().max(mu * f64::from(vrel));
-    let l_scale = l0.length().max(mu * f64::from(vrel) * f64::from(reach));
+    let p_scale = max_f64(p0.length(), mu * f64::from(vrel));
+    let l_scale = max_f64(l0.length(), mu * f64::from(vrel) * f64::from(reach));
     let mut prev = ke0;
     let mut collided = false;
     let tag = format!(
@@ -952,7 +953,7 @@ fn standard_27mm_wall_rebound_still_the_pair_restitution() {
         for _ in 0..((0.05 / v / DT) as usize + 20) {
             ev.clear();
             s.step(&g, DT, &mut ev);
-            closest = closest.max(s.ball(h).unwrap().position.x);
+            closest = max_f32(closest, s.ball(h).unwrap().position.x);
         }
         let vx = s.ball(h).unwrap().velocity.x;
         assert!(

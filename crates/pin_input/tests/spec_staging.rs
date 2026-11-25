@@ -11,6 +11,7 @@
 
 use arrayvec::ArrayVec;
 use pin_core::flipper::FlipperStagingMode;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::{FlipperId, SwitchId};
 use pin_core::input::{CabinetAxis, CabinetInput, InputEvent};
 use pin_input::events::{CabinetFrame, IngestConfig, InputIngest};
@@ -763,8 +764,8 @@ fn arb_dual() -> impl Strategy<Value = FlipperStagingMode> {
     (0usize..5, arb_threshold(), arb_threshold()).prop_map(|(a, x, y)| {
         FlipperStagingMode::DualStageThreshold {
             axis: CabinetAxis::ALL[a],
-            lower_threshold: x.min(y),
-            upper_threshold: x.max(y),
+            lower_threshold: min_f32(x, y),
+            upper_threshold: max_f32(x, y),
         }
     })
 }
@@ -944,7 +945,7 @@ proptest! {
         jitter in prop::collection::vec(0u64..MS, 120),
         left in any::<bool>(),
     ) {
-        let (lower, upper) = (lower.min(upper), lower.max(upper));
+        let (lower, upper) = (min_f32(lower, upper), max_f32(lower, upper));
         let ax = if left { CabinetAxis::LeftFlipper } else { CabinetAxis::RightFlipper };
         samples.sort_by(|x, y| x.partial_cmp(y).unwrap());
         let mut ing = ingest(0);

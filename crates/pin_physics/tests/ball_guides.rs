@@ -7,6 +7,7 @@
 mod util;
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_physics::ball::{BallEvents, Geometry};
 use pin_physics::world::{CubicSpline, GuideCurve};
 use util::*;
@@ -260,7 +261,7 @@ fn brute_distance(g: &GuideCurve, dense: &[Vec3], p: Vec3) -> (f32, usize) {
         }
     }
     (
-        best.min(line_distance(spline.point(0.5 * (lo + hi)), p)),
+        min_f32(best, line_distance(spline.point(0.5 * (lo + hi)), p)),
         at,
     )
 }
@@ -273,8 +274,16 @@ fn sloped_wall_closest_point_is_global() {
         let dense = dense(&g);
         let (mut min, mut max) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
         for c in &dense {
-            min = min.min(*c);
-            max = max.max(*c);
+            min = Vec3::new(
+                min_f32(min.x, c.x),
+                min_f32(min.y, c.y),
+                min_f32(min.z, c.z),
+            );
+            max = Vec3::new(
+                max_f32(max.x, c.x),
+                max_f32(max.y, c.y),
+                max_f32(max.z, c.z),
+            );
         }
         max.z += WALL_HEIGHT;
         let mut worst_over = 0.0f32;
@@ -304,7 +313,7 @@ fn sloped_wall_closest_point_is_global() {
                     "{label}: {} < {truth}",
                     cp.distance
                 );
-                worst_over = worst_over.max(cp.distance - truth);
+                worst_over = max_f32(worst_over, cp.distance - truth);
                 // The reported point is the wall point at the reported parameter.
                 assert!((cp.point.distance(p) - cp.distance).abs() < 1.0e-6);
                 let c = g.spline().point(cp.t);
@@ -383,7 +392,7 @@ fn balls_never_pass_through_sloped_guide_walls() {
                 let (d, i) = brute_distance(&guides[0], &dense, q);
                 let what = format!("{label} {profile:?} run {runs} tick {tick} speed {speed:.1}");
                 assert!(q.is_finite(), "{what}");
-                worst_sink = worst_sink.max(r - d);
+                worst_sink = max_f32(worst_sink, r - d);
                 assert!(
                     r - d <= 1.0e-4,
                     "{what}: {} mm inside the wall",

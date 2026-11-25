@@ -2,6 +2,7 @@
 
 use crate::flipper::{BatPoint, BatShape};
 use glam::Vec3;
+use pin_core::fmath::min_f64;
 use pin_core::{FlipperConfig, FlipperShape};
 
 /// The bat-frame side the centreline arc curls toward: the side of its
@@ -136,7 +137,7 @@ impl CurvedBanana {
             return None;
         }
         let r = f64::from(arc_radius);
-        let half = libm::asin((0.5 * f64::from(length) / r).min(1.0));
+        let half = libm::asin(min_f64(0.5 * f64::from(length) / r, 1.0));
         let phi = 2.0 * half;
         // P(a) = r·(sin a, 1 − cos a), with 1 − cos a = 2 sin²(a/2).
         let tip = [
@@ -438,6 +439,7 @@ impl BatShape for CurvedBanana {
 mod tests {
     use super::*;
     use crate::flipper::StraightCapsule;
+    use pin_core::fmath::max_f32;
     use proptest::prelude::*;
 
     const H: f32 = 0.03;
@@ -742,7 +744,7 @@ mod tests {
             let a = b.phi * f64::from(i) / f64::from(samples);
             let (cx, cy) = (b.r * libm::sin(a), s * b.r * (1.0 - libm::cos(a)));
             let (dx, dy) = (f64::from(x) - cx, f64::from(y) - cy);
-            best = best.min(libm::sqrt(dx * dx + dy * dy));
+            best = min_f64(best, libm::sqrt(dx * dx + dy * dy));
         }
         best - f64::from(b.tube_radius)
     }
@@ -758,7 +760,7 @@ mod tests {
             plus in any::<bool>(),
         ) {
             // bend 0 → half circle, bend 1 → 2 m radius.
-            let radius = (0.5 * length).max(tube * 1.01) + bend * bend * 2.0;
+            let radius = max_f32(0.5 * length, tube * 1.01) + bend * bend * 2.0;
             let side = if plus { ConcaveSide::PlusY } else { ConcaveSide::MinusY };
             let b = CurvedBanana::new(length, radius, tube, side, 0.0, H).unwrap();
             let full = f64::from(b.closest_point(Vec3::new(x, y, 0.015)).distance);

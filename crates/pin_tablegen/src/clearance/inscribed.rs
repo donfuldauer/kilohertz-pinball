@@ -33,6 +33,7 @@
 use super::geom::{Polygon, segment_distance};
 use core::cmp::Ordering;
 use glam::DVec2;
+use pin_core::fmath::{max_f64, min_f64};
 use std::collections::BinaryHeap;
 
 /// Most cells along the longer side of the first grid (very thin
@@ -133,7 +134,7 @@ impl<'a> Boundary<'a> {
         self.segs
             .iter()
             .map(|&(a, b)| segment_distance(q, a, b))
-            .fold(f64::INFINITY, f64::min)
+            .fold(f64::INFINITY, min_f64)
     }
 
     /// Signed distance from `q` to the boundary: positive inside
@@ -212,11 +213,11 @@ impl<'a> Search<'a> {
         let mut lo = DVec2::splat(f64::INFINITY);
         let mut hi = DVec2::splat(f64::NEG_INFINITY);
         for &p in pts {
-            lo = lo.min(p);
-            hi = hi.max(p);
+            lo = DVec2::new(min_f64(lo.x, p.x), min_f64(lo.y, p.y));
+            hi = DVec2::new(max_f64(hi.x, p.x), max_f64(hi.y, p.y));
         }
         let size = hi - lo;
-        let extent = size.max_element();
+        let extent = max_f64(size.x, size.y);
         if !extent.is_finite() || extent <= 0.0 {
             return None;
         }
@@ -224,7 +225,7 @@ impl<'a> Search<'a> {
         if boundary.segs.is_empty() {
             return None;
         }
-        let side = size.min_element().max(extent / MAX_START_SIDE);
+        let side = max_f64(min_f64(size.x, size.y), extent / MAX_START_SIDE);
         let h = 0.5 * side;
         let best = boundary.signed_distance((lo + hi) * 0.5);
         let mut search = Search {
@@ -234,8 +235,8 @@ impl<'a> Search<'a> {
             best,
             examined: 0,
         };
-        let nx = (size.x / side).ceil().max(1.0) as usize;
-        let ny = (size.y / side).ceil().max(1.0) as usize;
+        let nx = max_f64((size.x / side).ceil(), 1.0) as usize;
+        let ny = max_f64((size.y / side).ceil(), 1.0) as usize;
         for j in 0..ny {
             for i in 0..nx {
                 let c = lo + DVec2::new((i as f64 + 0.5) * side, (j as f64 + 0.5) * side);
@@ -248,7 +249,7 @@ impl<'a> Search<'a> {
     fn push(&mut self, c: DVec2, h: f64) {
         self.seq += 1;
         let cell = Cell::new(&self.boundary, c, h, self.seq);
-        self.best = self.best.max(cell.d);
+        self.best = max_f64(self.best, cell.d);
         self.heap.push(cell);
     }
 
@@ -294,7 +295,7 @@ pub(super) fn largest_inscribed_diameter(poly: &Polygon, precision: f64) -> f64 
         return 0.0;
     };
     search.run(|best, upper| upper - best <= precision);
-    2.0 * search.best.max(0.0)
+    2.0 * max_f64(search.best, 0.0)
 }
 
 /// Whether a circle fits inside a polygon ([`fits`]).

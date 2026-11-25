@@ -4,6 +4,7 @@
 //! Noise models, added to every sample: uniform ±a, and n-bit ADC readings
 //! (`round(x·(2ⁿ−1))` plus a random −1/0/+1 LSB dither).
 
+use pin_core::fmath::max_f32;
 use pin_input::calibration::{PlungerConfig, PlungerFilter};
 
 /// xorshift64: deterministic, no dependency.
@@ -145,11 +146,11 @@ fn grid(noise: Noise, tracking: f32) -> (u32, u32, f32) {
                 assert_eq!(rel.len(), 1, "{what}: {rel:?}");
                 let want = depth / snap_ms as f32 * 1000.0;
                 let err = (rel[0] - want).abs() / want;
-                worst = worst.max(err);
+                worst = max_f32(worst, err);
                 let allowed = if depth >= 200.0 * a {
                     0.05
                 } else {
-                    (12.0 * a / depth).max(0.05)
+                    max_f32(12.0 * a / depth, 0.05)
                 };
                 assert!(
                     err <= allowed,

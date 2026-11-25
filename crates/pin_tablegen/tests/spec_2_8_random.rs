@@ -13,6 +13,7 @@
 mod support;
 
 use pin_assets::GltfScene;
+use pin_core::fmath::min_f32;
 use pin_tablegen::clearance::{ClearanceReport, Feature, validate_clearance};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
@@ -89,8 +90,8 @@ fn rect() -> impl Strategy<Value = [f32; 4]> {
             [
                 r1(x),
                 r1(y),
-                r1((x + w).min(504.0)),
-                r1((y + h).min(1060.0)),
+                r1(min_f32(x + w, 504.0)),
+                r1(min_f32(y + h, 1060.0)),
             ]
         })
 }

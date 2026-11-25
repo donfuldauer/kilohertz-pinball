@@ -6,6 +6,7 @@ mod common;
 
 use common::*;
 use glam::Vec3;
+use pin_core::fmath::max_f32;
 use pin_core::ids::SwitchId;
 use pin_core::schema::table::MechKind;
 use pin_core::script::SwitchEdge;
@@ -198,7 +199,7 @@ fn small_swing_period_and_decay() {
     let mut peak_early = 0.0f32;
     for _ in 0..500 {
         bob.step(DT);
-        peak_early = peak_early.max(bob.offset().length());
+        peak_early = max_f32(peak_early, bob.offset().length());
     }
     for _ in 0..10_000 {
         bob.step(DT);

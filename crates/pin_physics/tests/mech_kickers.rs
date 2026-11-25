@@ -7,6 +7,7 @@
 mod util;
 
 use glam::Vec3;
+use pin_core::fmath::max_f32;
 use pin_core::ids::{CoilId, SwitchId};
 use pin_core::schema::table::MechKind;
 use pin_physics::ball::MovingBodies;
@@ -52,7 +53,7 @@ fn kickback_launches_a_resting_ball_up_the_lane() {
     let mut peak = 0.0f32;
     for _ in 0..100 {
         t.tick();
-        peak = peak.max(t.get(h).velocity.y);
+        peak = max_f32(peak, t.get(h).velocity.y);
     }
     println!("kickback launch: {peak:.3} m/s");
     assert!(peak > 1.5 && peak < 6.0);
@@ -80,7 +81,7 @@ fn ball_rests_on_a_held_kicker() {
         let mut max_speed = 0.0f32;
         for _ in 0..2000 {
             t.tick();
-            max_speed = max_speed.max(t.get(h).velocity.length());
+            max_speed = max_f32(max_speed, t.get(h).velocity.length());
         }
         println!("{kind:?}: ball on the held kicker, max speed {max_speed:.2e} m/s");
         assert!(max_speed < 2e-3, "no chatter on a held kicker: {max_speed}");
@@ -190,7 +191,7 @@ fn kick_off_momentum_and_energy_are_bounded_by_the_drive() {
         let mut ke = 0.0f32;
         for _ in 0..60 {
             t.tick();
-            ke = ke.max(0.5 * mb * t.get(h).velocity.length_squared());
+            ke = max_f32(ke, 0.5 * mb * t.get(h).velocity.length_squared());
         }
         println!(
             "{kind:?}: ball energy {ke:.4} J, drive work {:.4} J",
@@ -221,7 +222,7 @@ fn kick_off_momentum_and_energy_are_bounded_by_the_drive() {
     let mut ke = 0.0f32;
     for _ in 0..60 {
         t.tick();
-        ke = ke.max(0.5 * mb * t.get(h).velocity.length_squared());
+        ke = max_f32(ke, 0.5 * mb * t.get(h).velocity.length_squared());
     }
     let work = 0.5 * p.spring_k * p.stroke * p.stroke;
     println!("plunger: ball energy {ke:.4} J, spring energy {work:.4} J");

@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 500
-- Run-log rows: 544
+- Decision entries: 507
+- Run-log rows: 550
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -545,6 +545,13 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - KP-068: String-cache hash over a bounded prefix (docs/DECISIONS.md)
 - KP-068 tests: Black-box observables for address-free order and string cache (docs/DECISIONS.md)
 - KP-068: emergency_gc_is_charged sizing after KHZ 34 (docs/DECISIONS.md)
+- #161 KP-067: Float min/max bans cover tests; narrow allows only for std reference checks (docs/DECISIONS.md)
+- #161 KP-067: glam bans in pin_sim and pin_assets; glam Vec2/Vec3 min/max premise corrected (docs/DECISIONS.md)
+- #161 KP-067: Canonical NaN in the sim hash; which hashed floats are routed (docs/DECISIONS.md)
+- #161 KP-067: Quat operator rule is a documented review item; pin_physics glam bans (docs/DECISIONS.md)
+- #161 KP-067: glam bans in pin_tablegen (docs/DECISIONS.md)
+- #161 KP-067: Integer, Ord and iterator min/max deliberately untouched (docs/DECISIONS.md)
+- #161 KP-067: One PR for all eight crates (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

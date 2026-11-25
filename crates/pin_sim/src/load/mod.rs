@@ -62,6 +62,7 @@ use pin_assets::{
     AssetError, BACKBOX_COLLIDERS_FILE, GltfLimits, GltfScene, IdKind, LoadedTable, MeshData,
     TableIds, Vfs, load_gltf, load_gltf_with_limits, load_table,
 };
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::{
     CoilId, DispenserId, DiverterId, FlipperId, LampId, MagnetId, PersistKey, ProfileId, SceneId,
     SoundId, SwitchId,
@@ -225,8 +226,16 @@ impl Bounds {
 
     fn add(&mut self, p: Vec3) {
         if p.is_finite() {
-            self.min = self.min.min(p);
-            self.max = self.max.max(p);
+            self.min = Vec3::new(
+                min_f32(self.min.x, p.x),
+                min_f32(self.min.y, p.y),
+                min_f32(self.min.z, p.z),
+            );
+            self.max = Vec3::new(
+                max_f32(self.max.x, p.x),
+                max_f32(self.max.y, p.y),
+                max_f32(self.max.z, p.z),
+            );
         }
     }
 
@@ -483,9 +492,18 @@ fn escape_with_backbox(escape: (Vec3, Vec3), backbox: &Bounds) -> (Vec3, Vec3) {
         return escape;
     }
     let margin = Vec3::splat(BOUNDS_MARGIN_M);
+    let (lo, hi) = (backbox.min - margin, backbox.max + margin);
     (
-        escape.0.min(backbox.min - margin),
-        escape.1.max(backbox.max + margin),
+        Vec3::new(
+            min_f32(escape.0.x, lo.x),
+            min_f32(escape.0.y, lo.y),
+            min_f32(escape.0.z, lo.z),
+        ),
+        Vec3::new(
+            max_f32(escape.1.x, hi.x),
+            max_f32(escape.1.y, hi.y),
+            max_f32(escape.1.z, hi.z),
+        ),
     )
 }
 
@@ -692,7 +710,10 @@ impl Simulation {
                         (b.min.x <= b.max.x).then(|| {
                             let c = (b.min + b.max) * 0.5;
                             let half = (b.max - b.min) * 0.5;
-                            (c + Vec3::Z * SENSOR_LIFT_M, half.x.max(half.y).max(0.005))
+                            (
+                                c + Vec3::Z * SENSOR_LIFT_M,
+                                max_f32(max_f32(half.x, half.y), 0.005),
+                            )
                         })
                     }),
             };

@@ -6,6 +6,7 @@
 //! guide of 2 000 segments builds in milliseconds instead of seconds.
 
 use glam::DVec3;
+use pin_core::fmath::{max_f32, max_f64, min_f32, min_f64};
 
 use super::curve_bounds::arc_bounds;
 use super::spline::CubicSpline;
@@ -32,7 +33,7 @@ impl Capsules {
             let radius = points[first..end]
                 .iter()
                 .map(|&y| segment_distance(y, p, q))
-                .fold(0.0f64, f64::max);
+                .fold(0.0f64, max_f64);
             (first, end, radius * (1.0 + 1.0e-9) + 1.0e-12)
         };
         let mut levels = vec![
@@ -160,9 +161,14 @@ pub(super) fn plan_view_folds(flat: &CubicSpline, closed: bool) -> bool {
             }
             for b in first..end {
                 let arc = chord[index(b)] - chord[index(a)];
-                let along = if closed { arc.min(total - arc) } else { arc };
-                let keep =
-                    2.0 * rho * libm::sin((along / (2.0 * rho)).min(core::f64::consts::FRAC_PI_2));
+                let along = if closed {
+                    min_f64(arc, total - arc)
+                } else {
+                    arc
+                };
+                let keep = 2.0
+                    * rho
+                    * libm::sin(min_f64(along / (2.0 * rho), core::f64::consts::FRAC_PI_2));
                 if tree.points[b].distance(x) < 0.98 * keep {
                     return true;
                 }
@@ -200,9 +206,12 @@ fn term_bound(flat: f64, h: f64, across: f64, a: [f64; 2], c: [f64; 2], low: [f6
     let mut worst = 0.0f64;
     for s in 0..2 {
         let side = 2.0 * across / low[s];
-        let lift = (a[s].max(0.0) / h).min(c[s].max(0.0) / h + 0.5 * flat / h.sqrt());
+        let lift = min_f64(
+            max_f64(a[s], 0.0) / h,
+            max_f64(c[s], 0.0) / h + 0.5 * flat / h.sqrt(),
+        );
         let off = 2.0 * lift;
-        worst = worst.max(side * side + off * off);
+        worst = max_f64(worst, side * side + off * off);
     }
     worst.sqrt() * (1.0 + 1.0e-9)
 }
@@ -236,12 +245,12 @@ fn edge_term(frame: &EdgeFrame, d: DVec3) -> Option<f64> {
         if b.abs() > 1.0e-12 {
             for root in [(-a + disc) / b, (-a - disc) / b] {
                 if root.is_finite() && allowed(root) {
-                    out = out.max(value(root));
+                    out = max_f64(out, value(root));
                 }
             }
         }
-        let off = 2.0 * out.max(0.0);
-        term = term.max((side * side + off * off).sqrt());
+        let off = 2.0 * max_f64(out, 0.0);
+        term = max_f64(term, (side * side + off * off).sqrt());
     }
     Some(term)
 }
@@ -286,11 +295,11 @@ impl FrameGroups {
                 flat: 0.0,
             };
             for f in &frames[first..end] {
-                g.lambda = g.lambda.max(f.x.distance(m.x));
-                g.normal = g.normal.max(f.normal.distance(m.normal));
-                g.up = g.up.max(f.up.distance(m.up));
-                g.up_h = g.up_h.max(f.up_h.distance(m.up_h));
-                g.flat = g.flat.max(f.flat);
+                g.lambda = max_f64(g.lambda, f.x.distance(m.x));
+                g.normal = max_f64(g.normal, f.normal.distance(m.normal));
+                g.up = max_f64(g.up, f.up.distance(m.up));
+                g.up_h = max_f64(g.up_h, f.up_h.distance(m.up_h));
+                g.flat = max_f64(g.flat, f.flat);
             }
             let pad = |v: f64| v * (1.0 + 1.0e-9) + 1.0e-15;
             g.lambda = pad(g.lambda);
@@ -353,7 +362,7 @@ pub(super) fn wall_reach(spline: &CubicSpline, plan_reach: f32) -> f32 {
         return 0.0; // the reference's reach is below the minimum too
     }
     let reject = 0.9 / min_reach;
-    let floor = 0.9 * curvature.max(1.0 / plan);
+    let floor = 0.9 * max_f64(curvature, 1.0 / plan);
     let samples = spline.samples();
     let last = samples.len() - 1;
     let mut frames = Vec::with_capacity(last / 4 + 2);
@@ -396,22 +405,22 @@ pub(super) fn wall_reach(spline: &CubicSpline, plan_reach: f32) -> f32 {
         let slack = radius + group.lambda;
         let near = segment_distance(DVec3::ZERO, flat(p), flat(q)) - slack;
         if near > 0.0 {
-            let reach = p.length().max(q.length()) + slack;
+            let reach = max_f64(p.length(), q.length()) + slack;
             let frame = &group.frame;
-            let across = p.dot(frame.normal).abs().max(q.dot(frame.normal).abs())
+            let across = max_f64(p.dot(frame.normal).abs(), q.dot(frame.normal).abs())
                 + slack
                 + reach * group.normal;
             let (pu, qu) = (p.dot(frame.up), q.dot(frame.up));
             let (ph, qh) = (p.dot(frame.up_h), q.dot(frame.up_h));
             let up = slack + reach * group.up;
             let uh = slack + reach * group.up_h;
-            let a = [pu.max(qu) + up, -pu.min(qu) + up];
-            let c = [ph.max(qh) + uh, -ph.min(qh) + uh];
+            let a = [max_f64(pu, qu) + up, -min_f64(pu, qu) + up];
+            let c = [max_f64(ph, qh) + uh, -min_f64(ph, qh) + uh];
             let h = near * near;
             let bound = term_bound(group.flat, h, across, a, c, [h; 2]);
-            let threshold = floor.max(((1.0 + EDGE_TOL) * far).min(reject));
+            let threshold = max_f64(floor, min_f64((1.0 + EDGE_TOL) * far, reject));
             if bound <= threshold {
-                lossy |= bound > floor.max(far);
+                lossy |= bound > max_f64(floor, far);
                 continue;
             }
         }
@@ -443,14 +452,14 @@ pub(super) fn wall_reach(spline: &CubicSpline, plan_reach: f32) -> f32 {
                 ];
                 let across = d.dot(frame.normal).abs();
                 let bound = term_bound(frame.flat, h, across, [u, -u], [uh, -uh], low);
-                let threshold = floor.max(((1.0 + EDGE_TOL) * far).min(reject));
+                let threshold = max_f64(floor, min_f64((1.0 + EDGE_TOL) * far, reject));
                 if bound <= threshold {
-                    lossy |= bound > floor.max(far);
+                    lossy |= bound > max_f64(floor, far);
                     continue;
                 }
             }
             if let Some(term) = edge_term(frame, d) {
-                far = far.max(term);
+                far = max_f64(far, term);
             }
         }
         if far > reject {
@@ -458,15 +467,15 @@ pub(super) fn wall_reach(spline: &CubicSpline, plan_reach: f32) -> f32 {
         }
     }
     let used = if lossy { (1.0 + EDGE_TOL) * far } else { far };
-    let inverse = curvature.max(used / 0.9);
+    let inverse = max_f64(curvature, used / 0.9);
     let edge = if inverse > 0.0 {
         (1.0 / inverse) as f32
     } else {
         f32::INFINITY
     };
-    let reach = plan_reach.min(edge);
+    let reach = min_f32(plan_reach, edge);
     if lossy {
-        reach.max(MIN_SLOPED_GUIDE_REACH)
+        max_f32(reach, MIN_SLOPED_GUIDE_REACH)
     } else {
         reach
     }

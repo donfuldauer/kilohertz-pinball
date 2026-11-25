@@ -3,6 +3,7 @@
 //! error or an authoring warning.
 
 use glam::Vec3;
+use pin_core::fmath::{max_f64, min_f64};
 use pin_core::schema::table::{SplineDef, SplineKind};
 use pin_core::units::mm3_to_m;
 use pin_physics::world::{CubicSpline, GuideCurve};
@@ -174,7 +175,7 @@ pub fn min_radius(spline: &CubicSpline) -> f64 {
         }
         let k = (d1.x * d2.y - d1.y * d2.x).abs() / (speed * speed * speed);
         if k > 0.0 {
-            best = best.min(1.0 / k);
+            best = min_f64(best, 1.0 / k);
         }
     }
     best
@@ -205,7 +206,7 @@ fn rail(
             ));
         }
         if s.kappa != 0.0 {
-            r_min = r_min.min(f / s.kappa.abs());
+            r_min = min_f64(r_min, f / s.kappa.abs());
         }
         line.push([s.c[0] + side * half * s.n[0], s.c[1] + side * half * s.n[1]]);
     }
@@ -224,7 +225,7 @@ fn rail(
             MAX_SPLINE_LENGTH_MM / 1000.0
         ));
     }
-    let mut spacing = max_spacing.min(SPACING_PER_RADIUS * r_min);
+    let mut spacing = min_f64(max_spacing, SPACING_PER_RADIUS * r_min);
     if spacing < MIN_RAIL_SPACING_MM {
         return Err(format!(
             "the {name} rail bends with radius {r_min:.2} mm, too tight for a guide"
@@ -268,8 +269,8 @@ fn rail(
             .windows(2)
             .map(|w| f64::from(Vec3::from_array(w[0]).distance(Vec3::from_array(w[1]))))
             .collect();
-        let widest = chords.iter().fold(0.0f64, |a, &b| a.max(b));
-        let narrowest = chords.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        let widest = chords.iter().fold(0.0f64, |a, &b| max_f64(a, b));
+        let narrowest = chords.iter().fold(f64::INFINITY, |a, &b| min_f64(a, b));
         let radius_mm = min_radius(&spline_m) * 1000.0;
         if widest < 0.9 * radius_mm && widest <= 2.5 * narrowest {
             // The loader's own check, errors and authoring warnings alike

@@ -73,6 +73,7 @@ use core::fmt::Write as _;
 
 use arrayvec::ArrayVec;
 use glam::Vec3;
+use pin_core::fmath::max_f32;
 use pin_core::ids::SwitchId;
 use pin_core::schema::table::{MechKind, SwitchKind};
 use pin_core::snapshot::{BallState, FlipperState, MAX_BALLS};
@@ -142,9 +143,23 @@ pub fn outside_distance(bounds: (Vec3, Vec3), p: Vec3) -> f32 {
     if !p.is_finite() {
         return f32::INFINITY;
     }
-    let below = (bounds.0 - p).max(Vec3::ZERO);
-    let above = (p - bounds.1).max(Vec3::ZERO);
-    below.max(above).max_element()
+    let (below, above) = (bounds.0 - p, p - bounds.1);
+    let below = Vec3::new(
+        max_f32(below.x, 0.0),
+        max_f32(below.y, 0.0),
+        max_f32(below.z, 0.0),
+    );
+    let above = Vec3::new(
+        max_f32(above.x, 0.0),
+        max_f32(above.y, 0.0),
+        max_f32(above.z, 0.0),
+    );
+    let worst = Vec3::new(
+        max_f32(below.x, above.x),
+        max_f32(below.y, above.y),
+        max_f32(below.z, above.z),
+    );
+    max_f32(worst.x, max_f32(worst.y, worst.z))
 }
 
 #[derive(Copy, Clone, Debug)]

@@ -1,5 +1,7 @@
 //! Plan-view polygon helpers (f64, any length unit).
 
+use pin_core::fmath::{max_f64, min_f64};
+
 /// Twice the signed area (positive counter-clockwise).
 pub fn signed_area2(p: &[[f64; 2]]) -> f64 {
     let n = p.len();
@@ -16,10 +18,10 @@ fn orient(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
 }
 
 fn on_segment(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> bool {
-    p[0] >= a[0].min(b[0])
-        && p[0] <= a[0].max(b[0])
-        && p[1] >= a[1].min(b[1])
-        && p[1] <= a[1].max(b[1])
+    p[0] >= min_f64(a[0], b[0])
+        && p[0] <= max_f64(a[0], b[0])
+        && p[1] >= min_f64(a[1], b[1])
+        && p[1] <= max_f64(a[1], b[1])
 }
 
 /// Whether the closed segments `a b` and `c d` share a point.

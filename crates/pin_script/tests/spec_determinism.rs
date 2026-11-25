@@ -5,6 +5,7 @@
 
 mod spec_support;
 
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::{HostCommandQueue, Pcg32, SeedableRng};
 use proptest::prelude::*;
 use spec_support::{Host, backend, lamp, persisted};
@@ -195,8 +196,8 @@ fn random_ranges_are_inclusive_and_fully_covered() {
         let f = lamp(q, 0).unwrap();
         // The f64 draw is in [0, 1); narrowing to f32 may round up to 1.0.
         assert!((0.0..=1.0).contains(&f), "math.random() gave {f}");
-        lo = lo.min(f);
-        hi = hi.max(f);
+        lo = min_f32(lo, f);
+        hi = max_f32(hi, f);
 
         let big = persisted(q, 0).unwrap();
         assert!((1..=1_000_000).contains(&big));

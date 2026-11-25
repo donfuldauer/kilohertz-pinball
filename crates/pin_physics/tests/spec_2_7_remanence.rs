@@ -15,6 +15,7 @@ mod common;
 use common::*;
 use glam::Vec3;
 use pin_core::ProfileId;
+use pin_core::fmath::max_f32;
 use pin_physics::ball::{Ball, BallEvents, BallHandle, Geometry};
 use proptest::prelude::*;
 
@@ -612,7 +613,7 @@ proptest! {
         for ph in &phases {
             s.set_magnet_power(a, ph.power0);
             s.set_magnet_power(b, ph.power1);
-            max_power = max_power.max(ph.power0).max(ph.power1);
+            max_power = max_f32(max_f32(max_power, ph.power0), ph.power1);
             let at = match ph.place {
                 0 => NEAR,                          // both magnets
                 1 => Vec3::new(-0.06, 0.0, 0.0),    // first only

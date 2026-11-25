@@ -6,6 +6,7 @@ use crate::{AssetError, Vfs};
 use ::gltf::Document;
 use ::gltf::accessor::{Accessor, DataType, Dimensions};
 use ::gltf::buffer::{Source, View};
+use pin_core::fmath::max_f32;
 use std::borrow::Cow;
 
 /// Every buffer's bytes (truncated to the declared `byteLength`). Buffers
@@ -219,10 +220,11 @@ fn component(bytes: &[u8], t: DataType, normalized: bool) -> f32 {
         DataType::U16 if normalized => {
             f32::from(u16::from_le_bytes([bytes[0], bytes[1]])) / 65_535.0
         }
-        DataType::I8 if normalized => (f32::from(bytes[0] as i8) / 127.0).max(-1.0),
-        DataType::I16 if normalized => {
-            (f32::from(i16::from_le_bytes([bytes[0], bytes[1]])) / 32_767.0).max(-1.0)
-        }
+        DataType::I8 if normalized => max_f32(f32::from(bytes[0] as i8) / 127.0, -1.0),
+        DataType::I16 if normalized => max_f32(
+            f32::from(i16::from_le_bytes([bytes[0], bytes[1]])) / 32_767.0,
+            -1.0,
+        ),
         DataType::U8 => f32::from(bytes[0]),
         DataType::U16 => f32::from(u16::from_le_bytes([bytes[0], bytes[1]])),
         DataType::I8 => f32::from(bytes[0] as i8),

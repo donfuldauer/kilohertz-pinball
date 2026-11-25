@@ -291,6 +291,10 @@ mod tests {
 
     /// On x86_64 all special-value pairs equal std bit for bit (CR-010).
     #[cfg(target_arch = "x86_64")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "reference: compares fmath with std min/max on x86_64 (CR-010, KP-067)"
+    )]
     #[test]
     fn specials_match_std_on_x86_64() {
         for &a in &f32_specials() {
@@ -325,6 +329,10 @@ mod tests {
 
         /// On x86_64 arbitrary bit patterns equal std bit for bit.
         #[cfg(target_arch = "x86_64")]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "reference: compares fmath with std min/max on x86_64 (CR-010, KP-067)"
+        )]
         #[test]
         fn f32_matches_std(x in any::<u32>(), y in any::<u32>()) {
             let (a, b) = (f32::from_bits(x), f32::from_bits(y));
@@ -333,6 +341,10 @@ mod tests {
         }
 
         #[cfg(target_arch = "x86_64")]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "reference: compares fmath with std min/max on x86_64 (CR-010, KP-067)"
+        )]
         #[test]
         fn f64_matches_std(x in any::<u64>(), y in any::<u64>()) {
             let (a, b) = (f64::from_bits(x), f64::from_bits(y));
