@@ -18,4 +18,5 @@ pub mod debug;
 pub mod flipper;
 pub mod flipper_banana;
 pub mod mech;
+pub mod quat_ops;
 pub mod world;

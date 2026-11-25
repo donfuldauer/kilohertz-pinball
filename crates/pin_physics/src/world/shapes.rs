@@ -6,6 +6,7 @@
 //! from the left and can never step over it: the cast cannot tunnel, needs no
 //! bracketing, and converges quadratically (in one step for flat faces).
 
+use crate::quat_ops;
 use glam::{Quat, Vec3};
 
 /// Gap below which a sphere counts as touching (metres).
@@ -94,9 +95,9 @@ impl Primitive {
                 half_extents,
                 rotation,
             } => {
-                let x = (rotation * Vec3::X).abs() * half_extents.x;
-                let y = (rotation * Vec3::Y).abs() * half_extents.y;
-                let z = (rotation * Vec3::Z).abs() * half_extents.z;
+                let x = quat_ops::mul_vec3(rotation, Vec3::X).abs() * half_extents.x;
+                let y = quat_ops::mul_vec3(rotation, Vec3::Y).abs() * half_extents.y;
+                let z = quat_ops::mul_vec3(rotation, Vec3::Z).abs() * half_extents.z;
                 let e = x + y + z;
                 (center - e, center + e)
             }
@@ -185,7 +186,7 @@ impl Primitive {
 }
 
 fn closest_cuboid(center: Vec3, half: Vec3, rotation: Quat, p: Vec3) -> Closest {
-    let q = rotation.conjugate() * (p - center);
+    let q = quat_ops::mul_vec3(rotation.conjugate(), p - center);
     let clamped = q.clamp(-half, half);
     let diff = q - clamped;
     let d2 = diff.length_squared();
@@ -210,8 +211,8 @@ fn closest_cuboid(center: Vec3, half: Vec3, rotation: Quat, p: Vec3) -> Closest 
     };
     Closest {
         distance,
-        normal: rotation * n_local,
-        point: center + rotation * s_local,
+        normal: quat_ops::mul_vec3(rotation, n_local),
+        point: center + quat_ops::mul_vec3(rotation, s_local),
         valid: true,
     }
 }

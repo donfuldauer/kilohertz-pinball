@@ -8,6 +8,7 @@ use glam::{Quat, Vec3};
 use pin_core::profiles::{BUILTIN_PROFILE_NAMES, builtin_profiles};
 use pin_core::{BallProfile, PhysicsDefaults, ProfileId};
 use pin_physics::ball::{Ball, BallEvents, BallSolver, BallSolverConfig, Geometry};
+use pin_physics::quat_ops;
 use pin_physics::world::{GuideCurve, StaticShape, StaticWorld, StaticWorldBuilder, Wireform};
 
 /// The engine tick.
@@ -156,11 +157,15 @@ pub fn scenario(external: Option<Box<dyn pin_physics::ball::ExternalForce>>) -> 
     use pin_physics::ball::{Magnet, NewtonChain, Sensor, SensorKind};
     use pin_physics::world::{CubicSpline, layers};
     let pitch = 6.5f32.to_radians();
-    let rot = Quat::from_rotation_x(pitch);
+    // Rotation about X from libm half-angle sin/cos, applied with `quat_ops`
+    // (SPEC §2.4: target-independent reference inputs).
+    let half = pitch * 0.5;
+    let rot = Quat::from_xyzw(libm::sinf(half), 0.0, 0.0, libm::cosf(half));
+    let rv = |p: Vec3| quat_ops::mul_vec3(rot, p);
     let mut b = StaticWorldBuilder::new();
     let pf = b.add_collider(
         StaticShape::Cuboid {
-            center: rot * Vec3::new(0.0, 0.0, -0.01),
+            center: rv(Vec3::new(0.0, 0.0, -0.01)),
             half_extents: Vec3::new(0.3, 0.6, 0.01),
             rotation: rot,
         },
@@ -170,7 +175,7 @@ pub fn scenario(external: Option<Box<dyn pin_physics::ball::ExternalForce>>) -> 
     for x in [-0.31f32, 0.31] {
         b.add_collider(
             StaticShape::Cuboid {
-                center: rot * Vec3::new(x, 0.0, 0.03),
+                center: rv(Vec3::new(x, 0.0, 0.03)),
                 half_extents: Vec3::new(0.01, 0.6, 0.04),
                 rotation: rot,
             },
@@ -181,14 +186,14 @@ pub fn scenario(external: Option<Box<dyn pin_physics::ball::ExternalForce>>) -> 
     // Bottom wall catches the balls.
     b.add_collider(
         StaticShape::Cuboid {
-            center: rot * Vec3::new(0.0, -0.61, 0.03),
+            center: rv(Vec3::new(0.0, -0.61, 0.03)),
             half_extents: Vec3::new(0.3, 0.01, 0.04),
             rotation: rot,
         },
         layers::ALL,
         true,
     );
-    let n = rot * Vec3::Z;
+    let n = rv(Vec3::Z);
     for (i, (x, y)) in [
         (-0.1f32, 0.2f32),
         (0.1, 0.2),
@@ -201,7 +206,7 @@ pub fn scenario(external: Option<Box<dyn pin_physics::ball::ExternalForce>>) -> 
     {
         let post = b.add_collider(
             StaticShape::Cylinder {
-                base: rot * Vec3::new(x, y, -0.005),
+                base: rv(Vec3::new(x, y, -0.005)),
                 axis: n * 0.05,
                 radius: 0.012 + 0.002 * i as f32,
             },
@@ -237,7 +242,7 @@ pub fn scenario(external: Option<Box<dyn pin_physics::ball::ExternalForce>>) -> 
     }
     s.set_collider_material(pf, pin_core::Material::Wood);
     let magnet = s.add_magnet(Magnet {
-        position: rot * Vec3::new(0.0, -0.1, -0.005),
+        position: rv(Vec3::new(0.0, -0.1, -0.005)),
         k_coil: 2.0e-5,
         d_min: 0.01,
         range: 0.08,
@@ -246,14 +251,14 @@ pub fn scenario(external: Option<Box<dyn pin_physics::ball::ExternalForce>>) -> 
     s.add_sensor(Sensor {
         switch: pin_core::SwitchId(5),
         kind: SensorKind::Opto,
-        center: rot * Vec3::new(0.0, -0.3, 0.0135),
+        center: rv(Vec3::new(0.0, -0.3, 0.0135)),
         radius: 0.02,
         layer_mask: layers::ALL,
     });
     s.add_sensor(Sensor {
         switch: pin_core::SwitchId(130),
         kind: SensorKind::Eddy,
-        center: rot * Vec3::new(-0.15, -0.4, 0.0135),
+        center: rv(Vec3::new(-0.15, -0.4, 0.0135)),
         radius: 0.03,
         layer_mask: layers::ALL,
     });
@@ -293,8 +298,8 @@ pub fn scenario(external: Option<Box<dyn pin_physics::ball::ExternalForce>>) -> 
     ];
     for (name, p, v) in starts {
         let r = profile(name).radius_m();
-        let mut bl = Ball::new(pid(name), rot * (p + Vec3::new(0.0, 0.0, r + 0.001)));
-        bl.velocity = rot * v;
+        let mut bl = Ball::new(pid(name), rv(p + Vec3::new(0.0, 0.0, r + 0.001)));
+        bl.velocity = rv(v);
         bl.angular_velocity = Vec3::new(3.0, -7.0, 11.0);
         s.add_ball(bl).unwrap();
     }

@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::quat_ops;
 use arrayvec::ArrayVec;
 use glam::{Quat, Vec3};
 use parry3d::bounding_volume::Aabb;
@@ -140,14 +141,14 @@ impl StaticWorldBuilder {
                     half_extents,
                     rotation,
                 } => {
-                    let len2 = rotation.length_squared();
+                    let len2 = quat_ops::length_squared(rotation);
                     let finite = center.is_finite() && half_extents.is_finite();
                     if finite && len2.is_finite() && len2 > 0.0 {
                         prims.push((
                             Primitive::Cuboid {
                                 center,
                                 half_extents: half_extents.abs(),
-                                rotation: rotation.normalize(),
+                                rotation: quat_ops::normalize(rotation),
                             },
                             collider,
                         ));

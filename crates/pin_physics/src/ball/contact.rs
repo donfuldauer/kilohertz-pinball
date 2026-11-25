@@ -5,6 +5,7 @@
 //! All functions work on velocities only, never allocate, and (with a
 //! surface at rest) never increase kinetic energy.
 
+use crate::quat_ops;
 use glam::{Quat, Vec3};
 
 use super::types::{Ball, IMPACT_REPORT_SPEED};
@@ -364,7 +365,8 @@ pub fn sphere_toi(p: Vec3, w: Vec3, radius_sum: f32, window: f32) -> Option<f32>
 }
 
 /// Rotates `q` by the angular velocity `w` (rad/s) over `t` seconds
-/// (exact for constant `w`; `libm` trigonometry).
+/// (exact for constant `w`; `libm` trigonometry; [`quat_ops`] for the
+/// product and the normalisation, so every target gives the same bits).
 #[must_use]
 pub fn integrate_orientation(q: Quat, w: Vec3, t: f32) -> Quat {
     let rate = w.length();
@@ -374,7 +376,7 @@ pub fn integrate_orientation(q: Quat, w: Vec3, t: f32) -> Quat {
     }
     let s = libm::sinf(half) / rate;
     let dq = Quat::from_xyzw(w.x * s, w.y * s, w.z * s, libm::cosf(half));
-    (dq * q).normalize()
+    quat_ops::normalize(quat_ops::mul(dq, q))
 }
 
 #[cfg(test)]
