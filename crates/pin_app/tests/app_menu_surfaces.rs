@@ -3,6 +3,10 @@
 //! surface (GPU job: Xvfb + lavapipe, Metal on macOS; a missing display or
 //! adapter fails, never skips). SDL needs the main thread, so this is a
 //! plain `main` (harness = false) through `pin_testmain`.
+//!
+//! On macOS the window must be raised and the event pump drained for the
+//! Metal surface to stop reporting `Occluded`, so each phase renders until
+//! a number of playfield frames really presented and counts those only.
 
 mod support;
 
@@ -12,26 +16,82 @@ use pin_app::orchestrator::{
 };
 use pin_app::platform::WindowKeeper;
 use pin_app::ui::{MenuInput, MenuState, menu_overlay_for};
+use pin_core::snapshot::FrameStateSnapshot;
 use pin_render::gpu::{
-    GpuContext, GpuOptions, SurfaceOptions, SurfaceSource, create_instance, create_surface,
+    GpuContext, GpuOptions, SurfaceOptions, SurfaceSource, SurfaceStatus, create_instance,
+    create_surface,
 };
 use pin_render::topology::{Rect, SurfaceRole};
 use pin_sim::SimConfig;
+use std::time::{Duration, Instant};
 
 use support::{greybox_bundle, on_big_stack};
+
+/// Wall-clock bound on a window becoming presentable (DECISIONS 1.4); a
+/// warm-up bound, never an assertion on timing.
+const DEADLINE: Duration = Duration::from_secs(15);
+
+/// One frame: drains SDL events (as the app's main thread does), renders,
+/// yields when the frame was not paced; returns the playfield status.
+fn render_frame(
+    surfaces: &mut AppSurfaces,
+    pump: &mut sdl3::EventPump,
+    frame: &mut FrameStateSnapshot,
+) -> SurfaceStatus {
+    while pump.poll_event().is_some() {}
+    frame.tick += 1;
+    let st = surfaces.render(frame);
+    if !surfaces.frame_paced(&st) {
+        std::thread::yield_now();
+    }
+    st[0]
+}
+
+/// Renders until `n` playfield frames returned `Presented` and returns `n`;
+/// panics with the phase, the count so far and the status-change history
+/// when that takes longer than [`DEADLINE`].
+fn render_presented(
+    n: u64,
+    surfaces: &mut AppSurfaces,
+    pump: &mut sdl3::EventPump,
+    frame: &mut FrameStateSnapshot,
+    phase: &str,
+) -> u64 {
+    let start = Instant::now();
+    let mut presented = 0;
+    let mut history: Vec<SurfaceStatus> = Vec::new();
+    while presented < n {
+        let st = render_frame(surfaces, pump, frame);
+        if history.last() != Some(&st) {
+            history.push(st);
+        }
+        if st == SurfaceStatus::Presented {
+            presented += 1;
+        }
+        assert!(
+            start.elapsed() < DEADLINE || presented >= n,
+            "[{phase}] only {presented} of {n} playfield frames presented within {DEADLINE:?}; \
+             status changes {history:?}"
+        );
+    }
+    n
+}
 
 /// REQ-VIEW-006: format, state and paints through `AppSurfaces`.
 fn run() -> pin_testmain::Outcome {
     let sdl = sdl3::init().expect("SDL_Init (a missing display is a failure here)");
     let video = sdl.video().expect("SDL video");
-    let win = video
+    let mut win = video
         .window("pin_app menu surfaces test", 160, 240)
+        .position(64, 64)
         .build()
         .expect("window");
+    win.raise();
     let (lw, lh) = win.size();
     let (pw, ph) = win.size_in_pixels();
     let mut keeper = WindowKeeper::new();
     let guard = keeper.adopt(win);
+    let mut pump = sdl.event_pump().expect("pump");
     let opts = GpuOptions::from_env();
     let instance = create_instance(opts.backends);
     let mut viewports = ArrayVec::new();
@@ -81,38 +141,33 @@ fn run() -> pin_testmain::Outcome {
     let o = surfaces.menu_overlay().expect("overlay retained");
     assert_eq!((o.format(), o.is_open(), o.paints()), (format, false, 0));
 
-    // Closed: frames render without the panel.
+    // Closed: presented frames render without the panel.
     let mut frame = snap;
-    for _ in 0..3 {
-        frame.tick += 1;
-        surfaces.render(&frame);
-    }
+    render_presented(3, &mut surfaces, &mut pump, &mut frame, "closed");
     assert_eq!(surfaces.menu_overlay().unwrap().paints(), 0);
 
-    // Open: the playfield frames get the panel painted.
+    // Open: the playfield frames get the panel painted, once per presented
+    // frame (`paint_menu` runs on every frame that then presents).
     let mut open = MenuState::default();
     open.apply(MenuInput::Toggle);
     surfaces.set_menu_state(open);
     assert!(surfaces.menu_overlay().unwrap().is_open());
-    let mut presented = 0;
-    for _ in 0..600 {
-        frame.tick += 1;
-        surfaces.render(&frame);
-        presented = surfaces.menu_overlay().unwrap().paints();
-        if presented >= 2 {
-            break;
-        }
-    }
-    assert!(presented >= 2, "menu painted {presented} times while open");
+    let presented = render_presented(2, &mut surfaces, &mut pump, &mut frame, "open");
+    let paints = surfaces.menu_overlay().unwrap().paints();
+    assert!(
+        presented >= 2,
+        "only {presented} frames presented while open"
+    );
+    assert_eq!(
+        paints, presented,
+        "menu painted {paints} times over {presented} presented frames while open"
+    );
 
     // Closed again: painting stops.
     surfaces.set_menu_state(MenuState::default());
     assert!(!surfaces.menu_overlay().unwrap().is_open());
     let before = surfaces.menu_overlay().unwrap().paints();
-    for _ in 0..3 {
-        frame.tick += 1;
-        surfaces.render(&frame);
-    }
+    render_presented(3, &mut surfaces, &mut pump, &mut frame, "closed again");
     assert_eq!(surfaces.menu_overlay().unwrap().paints(), before);
 
     drop(surfaces);
