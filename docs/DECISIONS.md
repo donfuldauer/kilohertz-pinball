@@ -8491,3 +8491,60 @@ operand order preserved, verified bit-identical on x86_64 by the goldens (replay
 25097c21c2c3adc1, the five seam digests) and by the byte-identical `pin_tablegen` output.
 **Alternatives:** per-crate PRs with the spec test landing last (rejected: three PRs of the same
 mechanical change and an intermediate `main` without the property the test checks).
+
+## #163 KP-069 — One assert script for every replay-hash leg
+
+**Decision:** The record / 10 replays / golden comparison lives in a single new file,
+`scripts/ci/replay_hash_assert.sh` (`<pin_sim> [<runner prefix>] [<golden>]`), run by the x86_64
+`replay-hash` job, both `replay-hash-cross` legs, the new `replay-hash-aarch64` job (with the
+`qemu-aarch64 -L /usr/aarch64-linux-gnu` prefix) and release.yml's Rosetta 2 verify leg (with the
+`/usr/bin/arch -x86_64` prefix). It strips `\r` from the golden and from pin_sim's output, compares
+only the `state_hash=` line, validates the golden's format, uses `mktemp -d` under `$TMPDIR` (not
+`$RUNNER_TEMP`) and is written for bash 3.2 and Git Bash. The new file is outside the issue's code
+paths but explicitly allowed by the brief.
+**Rationale:** Five legs on three shells must apply the same rule; one file means one place to fix,
+and it is the exact thing a person runs locally with a wrong golden (the brief's acceptance proof).
+`tests/spec_ci` now asserts the record/replay/golden logic in the script and that each leg calls it.
+**Alternatives:** the same inline block in every job (rejected: five copies drift, and the Rosetta
+leg lives in another workflow); a Rust test in pin_sim (rejected: crates/ is out of scope, and the
+gate is about the shipped binary under each runner).
+
+## #163 KP-069 — Seam digests on Windows checked from the printed lines
+
+**Decision:** Every replay-hash leg runs `ball_seam_bitident -- --nocapture`, captures it with
+`tee` under `set -euo pipefail`, and runs `replay_hash_assert.sh --seam-digests <log>`, which fails
+unless exactly five `[seam digest]` lines were printed and all say `same` (any `differs` fails).
+On x86_64 Linux and aarch64 the test's own `RECORDING_TARGET` assert already gates; on Windows
+x86_64 this CI-side check is the gate. Widening `RECORDING_TARGET` to Windows is requested from
+the Orchestrator as a change outside this issue's owned paths.
+**Rationale:** The amended D9 gates Windows x86_64 on the seam digests, and `crates/` is not owned
+here. Running the check on every leg makes the intent visible and is harmless where the test
+asserts. The exact-five rule also catches a run where `PRINT_SEAM_HASHES` short-circuits the test.
+**Alternatives:** editing `RECORDING_TARGET` now (rejected: outside owned paths); Windows report-only
+(rejected: D9 as amended gates it, and the spike measured it already equal).
+
+## #163 KP-069 — aarch64 path filter as a fourth `changes` output
+
+**Decision:** `changes` gets an `aarch64` output, computed in the existing NUL-separated loop with a
+`case` block next to `gpu` and `dof`: true for `crates/pin_core`, `pin_physics`, `pin_input`,
+`pin_sim`, `pin_script`, `pin_assets`, `third_party/lua-src`, `tables`, `Cargo.toml`, `Cargo.lock`,
+`versions.toml`, `.github/workflows/ci.yml` and the assert script. It defaults to true (push,
+dispatch, an unlistable diff) and is cleared only for a PR with a file list. `replay-hash-aarch64`
+runs when `aarch64 == 'true' || github.event_name != 'pull_request'` and is in `pr-checks`.
+**Rationale:** The cross build costs 2-4 min warm and 8-12 cold; PRs that cannot change simulation
+output (docs, render, app, tools) should not pay it, while fail-closed defaults keep the gate on
+whenever the diff is in doubt. Reusing the existing step keeps one diff listing and one place for
+the filters.
+**Alternatives:** a separate paths-filter action (rejected: a second diff source and a new action
+pin); running it on every code PR (rejected: cost with no coverage gain).
+
+## #163 KP-069 — No separate Independent Tester
+
+**Decision:** #163 has no Independent Tester pass; the Implementer updates `tests/spec_ci`
+(which this issue owns) and the work-verifier runs its mutation checks.
+**Rationale:** The deliverable is workflow structure plus a shell script; `tests/spec_ci` is the
+specification of that structure and is updated in the same PR by convention (DEVELOPMENT.md "CI").
+The behavioural part (wrong golden, CRLF, seam `differs` / four lines) is covered by tests that
+execute the script, and by the local qemu-aarch64 and wrong-golden runs in the report.
+**Alternatives:** a black-box spec test file by a second agent (rejected: it would read the same
+workflow text and duplicate `spec_ci_yml.rs`).

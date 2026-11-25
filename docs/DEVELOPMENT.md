@@ -282,31 +282,40 @@ Workflows live in `.github/workflows/`. The single required status check on `mai
 **`pr-checks`** (PROCESS.md P6 routine step 3); changing that set is a repository setting (P8).
 
 **D40 split.** Pull requests run the Linux set only: `fmt`, `clippy` (Linux), `core-tests`
-(Linux), `replay-hash` (Linux), and `gpu-tests` (lavapipe) and `dof-bridge` only when their paths
-change. Pushes to `main` and `workflow_dispatch` run everything: the Windows and macOS legs (the
+(Linux), `replay-hash` (Linux), and `gpu-tests` (lavapipe), `dof-bridge` and `replay-hash-aarch64`
+(qemu-user) only when their paths change. Pushes to `main` and `workflow_dispatch` run everything: the Windows and macOS legs (the
 `*-cross` jobs), all GPU adapters and coverage. A red `main` stops merges until a fix or revert
 lands (P6 routine step 3). Pull-request runs are cancelled when superseded; `main` and dispatch runs queue
 and complete.
 
 | Workflow / job | Runs | What it does |
 |---|---|---|
-| `ci.yml` `changes` | always | Lists changed files (merge base, `--no-renames`, fail closed). Outputs `code` (false only when every file is `*.md` or `.coderabbit.yaml`, except `docs/SPEC.md`, which a compiled test reads), `gpu` (`crates/pin_render/*`, `crates/pin_app/*`, `*.wgsl`) and `dof` (`tools/dof_bridge/*`); all true on push and dispatch. |
+| `ci.yml` `changes` | always | Lists changed files (merge base, `--no-renames`, fail closed). Outputs `code` (false only when every file is `*.md` or `.coderabbit.yaml`, except `docs/SPEC.md`, which a compiled test reads), `gpu` (`crates/pin_render/*`, `crates/pin_app/*`, `*.wgsl`), `dof` (`tools/dof_bridge/*`) and `aarch64` (`crates/pin_core`, `pin_physics`, `pin_input`, `pin_sim`, `pin_script`, `pin_assets`, `third_party/lua-src`, `tables`, `Cargo.toml`, `Cargo.lock`, `versions.toml`, `ci.yml`, `scripts/ci/replay_hash_assert.sh`); all true on push and dispatch. |
 | `ci.yml` `fmt` | code | `cargo fmt --all --check`, and for `tests/spec_ci`. |
 | `ci.yml` `clippy` / `clippy-cross` | code; cross on main | `cargo clippy --workspace --all-targets -- -D warnings` on Linux; Windows MSVC and macOS arm64 on main. |
 | `ci.yml` `core-tests` / `core-tests-cross` | code; cross on main | GPU-free crates `cargo test --workspace --exclude pin_render --exclude pin_audio --exclude pin_app`; on Linux also `tests/spec_ci` clippy and tests. |
 | `ci.yml` `gpu-tests` / `gpu-tests-cross` | code and gpu; cross on main | `cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app` with `PIN_REQUIRE_GPU=1`: lavapipe under Xvfb on Linux; WARP (Windows) and Metal (macOS) on main. |
-| `ci.yml` `replay-hash` / `replay-hash-cross` | code; cross on main | Record the fixture for 10 000 ticks, replay it 10 times, fail on any mismatch on that machine; print the seam digests (cross-OS report only, D9). |
+| `ci.yml` `replay-hash` / `replay-hash-cross` | code; cross on main | `scripts/ci/replay_hash_assert.sh`: record the fixture for 10 000 ticks, replay it 10 times, fail on any mismatch on that machine and unless the recorded `state_hash` equals the committed x86_64-linux golden `crates/pin_sim/tests/fixtures/replay_table.golden`; `ball_seam_bitident` with its printed `[seam digest]` lines checked (all five `same`). Gates x86_64 Linux on PRs, Windows x86_64 and macOS arm64 on main (D9 reference set). |
+| `ci.yml` `replay-hash-aarch64` | PRs touching the `aarch64` paths; every push to `main`; dispatch | pin_sim and `ball_seam_bitident` cross-built for `aarch64-unknown-linux-gnu` and run under qemu-user on the Linux runner: the same assert script (golden) and the seam test asserting its EXPECTED digests. About 2-4 min warm, 8-12 min cold (the cross build; emulated runs about 20 s). |
 | `ci.yml` `dof-bridge` | code and dof | `dotnet build` and every `tools/dof_bridge/tests/*/*.csproj` on Windows; .NET coverage reported. |
 | `ci.yml` `coverage` | push and dispatch | `cargo llvm-cov --summary-only` over the seven core crates; non-gating (`continue-on-error`); floors are enforced by the work-verifier. |
 | `ci.yml` `gate-a1` | dispatch only | `scripts/gate_a1.sh`, soak reports uploaded. |
-| `ci.yml` `pr-checks` | always | Aggregates `changes`, `fmt`, `clippy`, `core-tests`, `replay-hash`, `gpu-tests`, `dof-bridge`: fails if `changes` did not succeed or any needed job failed or was cancelled (success and skipped pass). The required check. |
-| `release.yml` | PRs touching packaging paths; dispatch; `v*` tag push (owner only) | PR: `dry-run` (script unittest suites, `human_acceptance.py --check` as a warning, `package.py --dry-run` with real bundles). Dispatch or tag: `verify` (release build and tests with zero warnings on Windows x64, Linux x64, macOS arm64 and x86_64), `package`, and on a tag a draft prerelease. Never publishes (P8). |
+| `ci.yml` `pr-checks` | always | Aggregates `changes`, `fmt`, `clippy`, `core-tests`, `replay-hash`, `replay-hash-aarch64`, `gpu-tests`, `dof-bridge`: fails if `changes` did not succeed or any needed job failed or was cancelled (success and skipped pass). The required check. |
+| `release.yml` | PRs touching packaging paths; dispatch; `v*` tag push (owner only) | PR: `dry-run` (script unittest suites, `human_acceptance.py --check` as a warning, `package.py --dry-run` with real bundles). Dispatch or tag: `verify` (release build and tests with zero warnings on Windows x64, Linux x64, macOS arm64 and x86_64; the x86_64 macOS leg also runs `scripts/ci/replay_hash_assert.sh` under Rosetta 2 and asserts the replay-hash golden), `package`, and on a tag a draft prerelease. Never publishes (P8). |
 | `rules-wasm.yml` | PRs and main pushes touching rule ports, `pin_script` or the parity tests | Rebuilds each `tables/*/rules.wasm` twice and compares it with the committed binary; fmt, clippy and tests of each `rules-wasm` crate; the Lua/Wasm parity tests. |
 | `soak.yml` | weekly, dispatch, main pushes touching sim, physics, script, app or tables | `cargo test --release -p pin_app --test profiler_soak -- --ignored` on each OS: 10-minute multiball replays per table, `SOAK_HASH` lines compared across OSes (report only). |
 | `windowed.yml` | PRs touching `crates/pin_app`, `crates/pin_render`, `crates/pin_input`, `tables/` or the workflow; every push to `main`; dispatch | The windowed latency harness (KP-002): the release `pin_app` with the grey-box table for 60 s under Xvfb on lavapipe (`LP_NUM_THREADS=2`), flipper presses through XTest, checks a to d on its latency trace (see "Windowed latency harness"). Artifact `windowed-latency`. Not in `pr-checks`: it becomes required only when the owner makes it a required check (P8 setting). |
 | `spikes.yml` | pushes and PRs touching `spikes/**`, `versions.toml`, the workflow, `docs/DECISIONS.md` or `docs/HUMAN_QUEUE.md`; dispatch | The 0.1 spikes on three OSes, and the `spec_0_1` tests of the decision and queue files. |
 
 `tests/spec_ci` asserts the workflow structure; a workflow change updates it in the same PR.
+
+**Replay-hash golden (D9, R3).** `crates/pin_sim/tests/fixtures/replay_table.golden` holds the
+x86_64-linux `state_hash=<16 hex digits>` of the replay-hash fixture at 10 000 ticks, and
+`ball_seam_bitident`'s `EXPECTED` holds the seam digests. x86_64 Linux, aarch64 (qemu-user and
+macOS arm64), Windows x86_64 and x86_64 macOS under Rosetta 2 must reproduce both; other cross-OS
+hashes (`soak.yml`) stay report-only. A later unit that changes simulation output for every table
+re-baselines the golden and `EXPECTED` once, in its own PR (R3); the assert script strips `\r`, so
+a CRLF checkout compares equal.
 
 ## Coverage floors
 
