@@ -16,7 +16,7 @@ Counts:
 
 - Open queue lines: 10
 - Resolved queue lines: 323
-- Decision entries: 479
+- Decision entries: 480
 - Run-log rows: 520
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
@@ -523,6 +523,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - Process: Gate reviews at phase and milestone completion (docs/DECISIONS.md)
 - Process: Manual and physical testing waits for final acceptance (docs/DECISIONS.md)
 - Process: Fable ask retired (docs/DECISIONS.md)
+- Planning: Browser version (docs/DECISIONS.md)
 
 ## 4. D33 flags
 
