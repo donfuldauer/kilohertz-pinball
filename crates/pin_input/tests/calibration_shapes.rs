@@ -2,6 +2,7 @@
 //! strokes (review B4), quantised readings, pull-tick counting (N-k) and the
 //! never-stuck invariant on offset devices (N-l). Deterministic.
 
+use pin_core::fmath::max_f32;
 use pin_input::calibration::{PlungerConfig, PlungerFilter};
 use proptest::prelude::*;
 use std::f32::consts::PI;
@@ -60,7 +61,7 @@ fn true_peak(hold: f32, stroke: &[f32], until: f32) -> f32 {
     let mut prev = hold;
     let mut peak = 0.0f32;
     for &x in stroke {
-        peak = peak.max((prev - x) * 1000.0);
+        peak = max_f32(peak, (prev - x) * 1000.0);
         prev = x;
         if x <= until {
             break;
@@ -164,7 +165,7 @@ fn noise_free_shape_sweep_is_exact() {
                 let rel = launch(depth, &stroke, |x| x);
                 assert_eq!(rel.len(), 1, "{shape:?} {ms} ms depth {depth}: {rel:?}");
                 let e = (rel[0] - want).abs() / want;
-                worst = worst.max(e);
+                worst = max_f32(worst, e);
                 assert!(
                     e <= 0.05,
                     "{shape:?} {ms} ms depth {depth}: {} vs {want}",
@@ -201,7 +202,7 @@ fn noisy_worst(shape: Shape, ms: u32, depth: f32, a: f32, seeds: u64) -> f32 {
             1,
             "{shape:?} {ms} {depth} ±{a} seed {seed}: {rel:?}"
         );
-        worst = worst.max((rel[0] - want).abs() / want);
+        worst = max_f32(worst, (rel[0] - want).abs() / want);
     }
     worst
 }
@@ -252,7 +253,7 @@ fn quantised_linear_strokes() {
                 let rel = launch(depth, &stroke, |x| (x * m).round() / m);
                 assert_eq!(rel.len(), 1, "{bits} bit {depth} {ms}: {rel:?}");
                 let e = (rel[0] - want).abs() / want;
-                worst = worst.max(e);
+                worst = max_f32(worst, e);
                 assert!(
                     e <= 0.05,
                     "{bits} bit depth {depth} {ms} ms: {} vs {want}",
@@ -285,7 +286,7 @@ fn quantised_curved_strokes() {
                     assert_eq!(rel.len(), 1, "{bits} bit {shape:?} {depth} {ms}: {rel:?}");
                     let e = (rel[0] - want).abs() / want;
                     let rel_step = 1000.0 / m / want;
-                    worst = worst.max(e);
+                    worst = max_f32(worst, e);
                     assert!(
                         e <= 0.05 + rel_step,
                         "{bits} bit {shape:?} depth {depth} {ms} ms: {} vs {want}",

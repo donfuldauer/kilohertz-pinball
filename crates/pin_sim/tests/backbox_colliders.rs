@@ -16,6 +16,7 @@ mod sim_support;
 
 use glam::Vec3;
 use pin_assets::{BACKBOX_COLLIDERS_FILE, Vfs, load_gltf};
+use pin_core::fmath::min_f32;
 use pin_core::schema::table::{FlipperShapeDef, MechKind, TableManifest};
 use pin_physics::world::layers;
 use pin_sim::load::{BOUNDS_MARGIN_M, GLASS_THICKNESS_M, backbox_colliders};
@@ -401,7 +402,7 @@ fn a_layer_4_ball_is_contained_and_comes_to_rest_and_a_layer_0_ball_falls_throug
                     p.x > -200.5 && p.x < 200.5 && p.z > -0.5 && p.z < 300.5,
                     "({u},{v}) tick {t}: inside the box: {p:?}"
                 );
-                lowest = lowest.min(p.z);
+                lowest = min_f32(lowest, p.z);
             }
             // It fell with gravity along the plane (down the backbox) and
             // came to rest on the shelf or a bat (speed ~0 at the end).
@@ -501,7 +502,7 @@ fn the_vuk_ejects_into_the_box_and_the_ball_reaches_a_flipper() {
                         p.y > -0.5 && p.y < 35.5 && p.x > -200.5 && p.x < 200.5,
                         "kick {kick} tick {t}: inside the box: {p:?}"
                     );
-                    best = best.min(gap_to_bat(&frame, &left, p));
+                    best = min_f32(best, gap_to_bat(&frame, &left, p));
                 }
             }
             assert!(

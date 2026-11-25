@@ -18,6 +18,7 @@
 //! upward speed (4 values), a horizontal speed (4 values) and 8 directions:
 //! 128 runs per bundle, each followed for 700 ticks.
 
+use pin_core::fmath::max_f32;
 use pin_sim::load::{BOUNDS_MARGIN_M, GLASS_THICKNESS_M};
 use pin_sim::{SimConfig, SimError, Simulation};
 use std::path::{Path, PathBuf};
@@ -200,7 +201,7 @@ fn sweep(dir: &Path) -> Sweep {
                     match s.ball(h) {
                         Some(b) => {
                             last = b.position_m;
-                            out.peak_z = out.peak_z.max(b.position_m[2]);
+                            out.peak_z = max_f32(out.peak_z, b.position_m[2]);
                         }
                         None => break,
                     }

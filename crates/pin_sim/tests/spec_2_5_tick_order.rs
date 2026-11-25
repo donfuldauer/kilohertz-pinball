@@ -15,6 +15,7 @@
 #[path = "fixtures/spec_2_5/support.rs"]
 mod support;
 
+use pin_core::fmath::max_f32;
 use pin_core::input::CabinetInput;
 use pin_core::snapshot::FrameStateSnapshot;
 use support::*;
@@ -260,8 +261,8 @@ fn command_queued_in_a_tick_reaches_physics_in_the_same_tick() {
         let mut moved = 0.0f32;
         for a in 0..3 {
             let want = FEED_POS[a] + FEED_VEL[a] * 0.001;
-            err = err.max((b.position_m[a] - want).abs());
-            moved = moved.max((b.position_m[a] - FEED_POS[a]).abs());
+            err = max_f32(err, (b.position_m[a] - want).abs());
+            moved = max_f32(moved, (b.position_m[a] - FEED_POS[a]).abs());
         }
         assert!(
             err < 5.0e-5,
@@ -312,7 +313,7 @@ fn scripted_coil_pulse_changes_the_physics() {
                     && t <= ht + 40
                 {
                     let v = b.velocity_m_s;
-                    vmax = vmax.max((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt());
+                    vmax = max_f32(vmax, (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt());
                 }
             }
             (hit.expect("no ring hit"), vmax)

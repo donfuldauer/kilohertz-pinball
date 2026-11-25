@@ -1,10 +1,11 @@
 //! Black-box spec tests for `pin_core::units` (PLAN.md §3.1, Subphase 1.1 brief).
 
+use pin_core::fmath::max_f32;
 use pin_core::units::{deg_to_rad, g_to_kg, kg_to_g, m_to_mm, mm_to_m, rad_to_deg};
 use proptest::prelude::*;
 
 fn close(a: f32, b: f32, rel: f32) -> bool {
-    let scale = a.abs().max(b.abs());
+    let scale = max_f32(a.abs(), b.abs());
     (a - b).abs() <= rel * scale || (a - b).abs() <= f32::MIN_POSITIVE
 }
 

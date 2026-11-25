@@ -73,6 +73,7 @@
 mod mapper;
 mod parse;
 
+use pin_core::fmath::max_f32;
 use pin_core::input::{CabinetAxis, CabinetInput};
 use std::fmt;
 use std::sync::OnceLock;
@@ -286,7 +287,11 @@ impl GamepadAxis {
     /// `-1..=1`, triggers clamped to `0..=1`.
     pub fn normalise(self, raw: i16) -> f32 {
         let v = (f32::from(raw) / 32767.0).clamp(-1.0, 1.0);
-        if self.is_trigger() { v.max(0.0) } else { v }
+        if self.is_trigger() {
+            max_f32(v, 0.0)
+        } else {
+            v
+        }
     }
 
     /// Lower end of the normalised range (`-1` sticks, `0` triggers).

@@ -1,6 +1,7 @@
 //! Implementer tests for 4.6: the generated kit loads through 4.1 / 3.3, is
 //! byte-stable, and resolves the Appendix A example's sounds.
 
+use pin_core::fmath::max_f64;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -120,7 +121,9 @@ fn every_file_decodes_through_the_engine_loaders() {
                     .sum::<f64>()
                     / data.len() as f64)
                     .sqrt();
-                let peak = data.iter().fold(0.0f64, |m, &v| m.max(f64::from(v).abs()));
+                let peak = data
+                    .iter()
+                    .fold(0.0f64, |m, &v| max_f64(m, f64::from(v).abs()));
                 assert!(20.0 * libm::log10(rms) > -40.0, "{}: rms {rms}", e.id);
                 assert!(peak <= 0.989, "{}: peak {peak}", e.id);
                 sounds += 1;

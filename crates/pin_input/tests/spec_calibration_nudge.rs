@@ -5,6 +5,7 @@
 //! Every filter is primed with a few zero samples before a stimulus so the
 //! tests do not depend on how the first sample initialises the filter state.
 
+use pin_core::fmath::{max_f32, min_f32};
 use pin_input::calibration::{DigitalNudge, NudgeConfig, NudgeFilter, thumbstick_nudge};
 use pin_input::profiles::NudgeDirection;
 use proptest::prelude::*;
@@ -162,13 +163,13 @@ fn response_is_odd() {
 /// Steady-state amplitude gain of the high-pass at `freq`, measured on x.
 fn sine_gain(hz: f32, freq: f32, amp: f32) -> f32 {
     let mut f = primed(linear(hz), DT);
-    let total = (4.0 / hz.min(freq) / DT) as usize + 2000;
+    let total = (4.0 / min_f32(hz, freq) / DT) as usize + 2000;
     let mut peak = 0.0f32;
     for k in 0..total {
         let x = amp * libm::sinf(2.0 * PI * freq * k as f32 * DT);
         let o = f.update([x, 0.0], DT);
         if k >= total / 2 {
-            peak = peak.max(o[0].abs());
+            peak = max_f32(peak, o[0].abs());
         }
     }
     peak / amp
@@ -262,7 +263,7 @@ fn gain_curve_matches_the_formula_at_landmarks() {
         f.update([x, -x], DT)
     };
     let check = |gain: f32, exp: f32, max: f32, x: f32| {
-        let want = x.signum() * (gain * libm::powf(x.abs(), exp)).min(max);
+        let want = x.signum() * min_f32(gain * libm::powf(x.abs(), exp), max);
         let o = run(gain, exp, max, x);
         assert!(
             (o[0] - want).abs() < 2e-3 && (o[1] + want).abs() < 2e-3,
@@ -432,7 +433,7 @@ proptest! {
         );
         let o = f.update([x, y], DT);
         for (got, input) in [(o[0], x), (o[1], y)] {
-            let want = input.signum() * (gain * libm::powf(input.abs(), exp)).min(max);
+            let want = input.signum() * min_f32(gain * libm::powf(input.abs(), exp), max);
             prop_assert!(
                 (got - want).abs() <= 2e-3 + 2e-3 * want.abs(),
                 "input {} -> {}, expected {}", input, got, want

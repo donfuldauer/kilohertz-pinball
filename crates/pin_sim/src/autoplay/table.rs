@@ -11,6 +11,7 @@
 use glam::{Vec2, Vec3};
 use pin_assets::{IdKind, Vfs, load_table};
 use pin_core::flipper::{FlipperShape, FlipperStagingMode};
+use pin_core::fmath::min_f32;
 use pin_core::ids::{FlipperId, SwitchId};
 use pin_core::input::CabinetInput;
 use pin_core::schema::LayoutManifest;
@@ -127,7 +128,7 @@ impl Feature {
             FeatureShape::Polyline(pts) => {
                 let mut best = f32::INFINITY;
                 for w in pts.windows(2) {
-                    best = best.min(segment_distance(p, w[0], w[1]));
+                    best = min_f32(best, segment_distance(p, w[0], w[1]));
                 }
                 if pts.len() == 1 {
                     best = p.distance(pts[0]);

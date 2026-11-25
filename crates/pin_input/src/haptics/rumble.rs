@@ -37,6 +37,7 @@
 //! `feed` and `output_at` never allocate.
 
 use arrayvec::ArrayVec;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::haptics::{HapticEvent, HapticKind};
 use pin_core::input::HapticsTelemetryEvent;
 
@@ -229,7 +230,7 @@ impl IntoHapticEvent for &HapticsTelemetryEvent {
 /// `0..=1`, NaN → 0.
 #[inline]
 fn unit(v: f32) -> f32 {
-    if v > 0.0 { v.min(1.0) } else { 0.0 }
+    if v > 0.0 { min_f32(v, 1.0) } else { 0.0 }
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -372,8 +373,8 @@ impl RumbleMapper {
         for s in &self.slots {
             let f = s.factor(tick);
             if f > 0.0 {
-                r.low = r.low.max(s.low * f);
-                r.high = r.high.max(s.high * f);
+                r.low = max_f32(r.low, s.low * f);
+                r.high = max_f32(r.high, s.high * f);
             }
         }
         r

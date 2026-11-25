@@ -152,6 +152,10 @@ proptest! {
     #[test]
     fn d9_req_web_002_f32_matches_std_x86_64(a in any_f32(), b in any_f32()) {
         #[cfg(target_arch = "x86_64")]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "reference: compares fmath with std min/max on x86_64 (D9, KP-067)"
+        )]
         {
             prop_assert_eq!(min_f32(a, b).to_bits(), a.min(b).to_bits());
             prop_assert_eq!(max_f32(a, b).to_bits(), a.max(b).to_bits());
@@ -165,6 +169,10 @@ proptest! {
     #[test]
     fn d9_req_web_002_f64_matches_std_x86_64(a in any_f64(), b in any_f64()) {
         #[cfg(target_arch = "x86_64")]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "reference: compares fmath with std min/max on x86_64 (D9, KP-067)"
+        )]
         {
             prop_assert_eq!(min_f64(a, b).to_bits(), a.min(b).to_bits());
             prop_assert_eq!(max_f64(a, b).to_bits(), a.max(b).to_bits());
@@ -178,6 +186,10 @@ proptest! {
     fn d9_req_web_002_f32_arbitrary_bits(x in any::<u32>(), y in any::<u32>()) {
         let (a, b) = (f32::from_bits(x), f32::from_bits(y));
         #[cfg(target_arch = "x86_64")]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "reference: compares fmath with std min/max on x86_64 (D9, KP-067)"
+        )]
         {
             prop_assert_eq!(min_f32(a, b).to_bits(), a.min(b).to_bits());
             prop_assert_eq!(max_f32(a, b).to_bits(), a.max(b).to_bits());
@@ -191,6 +203,10 @@ proptest! {
     fn d9_req_web_002_f64_arbitrary_bits(x in any::<u64>(), y in any::<u64>()) {
         let (a, b) = (f64::from_bits(x), f64::from_bits(y));
         #[cfg(target_arch = "x86_64")]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "reference: compares fmath with std min/max on x86_64 (D9, KP-067)"
+        )]
         {
             prop_assert_eq!(min_f64(a, b).to_bits(), a.min(b).to_bits());
             prop_assert_eq!(max_f64(a, b).to_bits(), a.max(b).to_bits());
@@ -237,6 +253,10 @@ fn d9_req_web_002_exhaustive_special_table() {
             pairs += 1;
             let ctx = format!("a={:#010x} b={:#010x}", a.to_bits(), b.to_bits());
             #[cfg(target_arch = "x86_64")]
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "reference: compares fmath with std min/max on x86_64 (D9, KP-067)"
+            )]
             {
                 assert_eq!(min_f32(a, b).to_bits(), a.min(b).to_bits(), "std min {ctx}");
                 assert_eq!(max_f32(a, b).to_bits(), a.max(b).to_bits(), "std max {ctx}");
@@ -258,6 +278,10 @@ fn d9_req_web_002_exhaustive_special_table() {
             pairs += 1;
             let ctx = format!("a={:#018x} b={:#018x}", a.to_bits(), b.to_bits());
             #[cfg(target_arch = "x86_64")]
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "reference: compares fmath with std min/max on x86_64 (D9, KP-067)"
+            )]
             {
                 assert_eq!(min_f64(a, b).to_bits(), a.min(b).to_bits(), "std min {ctx}");
                 assert_eq!(max_f64(a, b).to_bits(), a.max(b).to_bits(), "std max {ctx}");
@@ -279,6 +303,10 @@ fn d9_req_web_002_exhaustive_special_table() {
 
 /// D9: the portable reference rule itself equals std on x86_64 for the special table.
 #[cfg(target_arch = "x86_64")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "reference: checks the reference rule against std min/max on x86_64 (D9, KP-067)"
+)]
 #[test]
 fn d9_reference_rule_matches_std_x86_64() {
     for &a in &all_f32() {

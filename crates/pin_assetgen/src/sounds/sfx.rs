@@ -235,6 +235,7 @@ pub(super) fn ball_roll(sr: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pin_core::fmath::max_f32;
 
     #[test]
     fn ball_roll_wraps_like_any_step() {
@@ -244,7 +245,7 @@ mod tests {
             let max_step = v
                 .windows(2)
                 .map(|w| (w[1] - w[0]).abs())
-                .fold(0.0f32, f32::max);
+                .fold(0.0f32, max_f32);
             assert!(seam <= max_step, "{sr}: seam {seam} > max step {max_step}");
         }
     }

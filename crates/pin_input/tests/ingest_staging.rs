@@ -3,6 +3,7 @@
 
 use arrayvec::ArrayVec;
 use pin_core::flipper::FlipperStagingMode;
+use pin_core::fmath::min_f32;
 use pin_core::ids::FlipperId;
 use pin_core::input::{CabinetAxis, CabinetInput, InputEvent};
 use pin_input::events::INGEST_CAPACITY;
@@ -277,7 +278,7 @@ proptest! {
         lower in 0.0f32..1.0,
         span in 0.0f32..1.0,
     ) {
-        let upper = (lower + span).min(1.0);
+        let upper = min_f32(lower + span, 1.0);
         steps.sort_by(f32::total_cmp);
         let mode = FlipperStagingMode::DualStageThreshold {
             axis: CabinetAxis::LeftFlipper,

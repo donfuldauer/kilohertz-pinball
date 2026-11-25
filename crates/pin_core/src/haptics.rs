@@ -20,6 +20,7 @@
 //! mech or ball number (masked with [`SOURCE_INDEX_MASK`], so numbers above
 //! 4095 wrap). [`HapticKind::Impulse`] passes its source through unchanged.
 
+use crate::fmath::min_f32;
 use crate::ids::{CoilId, FlipperId};
 use crate::input::HapticsTelemetryEvent;
 
@@ -140,7 +141,7 @@ impl HapticEvent {
     /// The strength clamped to `0..=1` (NaN → 0).
     pub fn clamped_strength(&self) -> f32 {
         if self.strength > 0.0 {
-            self.strength.min(1.0)
+            min_f32(self.strength, 1.0)
         } else {
             0.0
         }

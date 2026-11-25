@@ -62,6 +62,7 @@
 
 use arrayvec::ArrayVec;
 use glam::{Vec2, Vec3};
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::input::CabinetInput;
 use pin_core::snapshot::{MAX_BALLS, MAX_FLIPPERS};
 use pin_core::{FlipperId, Pcg32, Rng, SeedableRng};
@@ -419,7 +420,7 @@ impl FlipperModel {
         }
         let ang = libm::atan2f(self.rest_dir.perp_dot(d), self.rest_dir.dot(d));
         let s = if self.sweep_rad >= 0.0 { ang } else { -ang };
-        let touch = libm::asinf(((self.radius_m + BALL_RADIUS_M) / r).min(1.0));
+        let touch = libm::asinf(min_f32((self.radius_m + BALL_RADIUS_M) / r, 1.0));
         (-0.05..=self.sweep_rad.abs() + touch).contains(&s)
     }
 
@@ -435,7 +436,7 @@ impl FlipperModel {
         g: Vec2,
         horizon_s: f32,
     ) -> Option<f32> {
-        let steps = (horizon_s / PREDICT_STEP_S).max(0.0) as u32;
+        let steps = max_f32(horizon_s / PREDICT_STEP_S, 0.0) as u32;
         (0..=steps).find_map(|k| {
             let t = k as f32 * PREDICT_STEP_S;
             let q = p + v * t + g * (0.5 * t * t);

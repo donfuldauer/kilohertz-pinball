@@ -2,6 +2,7 @@
 //! order, `libm` for every transcendental function, no `mul_add`.
 
 use crate::rng::Pcg32;
+use pin_core::fmath::{max_f64, min_f64};
 
 pub(crate) const TAU: f64 = core::f64::consts::TAU;
 
@@ -26,7 +27,7 @@ pub(crate) enum Filter {
 
 /// One-pole smoothing coefficient for cut-off `fc` at rate `sr`.
 pub(crate) fn one_pole(fc: f64, sr: f64) -> f64 {
-    1.0 - libm::exp(-TAU * fc.min(0.45 * sr) / sr)
+    1.0 - libm::exp(-TAU * min_f64(fc, 0.45 * sr) / sr)
 }
 
 /// RBJ band-pass biquad.
@@ -44,8 +45,8 @@ pub(crate) struct Biquad {
 
 impl Biquad {
     pub(crate) fn band(fc: f64, q: f64, sr: f64) -> Biquad {
-        let w0 = TAU * fc.min(0.45 * sr) / sr;
-        let alpha = libm::sin(w0) / (2.0 * q.max(0.1));
+        let w0 = TAU * min_f64(fc, 0.45 * sr) / sr;
+        let alpha = libm::sin(w0) / (2.0 * max_f64(q, 0.1));
         let a0 = 1.0 + alpha;
         Biquad {
             b0: alpha / a0,
@@ -162,10 +163,10 @@ impl Synth {
                 break;
             }
             let t = i as f64 / self.sr;
-            let f = f1 + (f0 - f1) * libm::exp(-t / glide.max(1e-6));
-            let att = (t / attack.max(MIN_ATTACK)).min(1.0);
-            let tail = ((n - i) as f64 / fade as f64).min(1.0);
-            let env = amp * att * tail * libm::exp(-t / tau.max(1e-6));
+            let f = f1 + (f0 - f1) * libm::exp(-t / max_f64(glide, 1e-6));
+            let att = min_f64(t / max_f64(attack, MIN_ATTACK), 1.0);
+            let tail = min_f64((n - i) as f64 / fade as f64, 1.0);
+            let env = amp * att * tail * libm::exp(-t / max_f64(tau, 1e-6));
             let mut v = 0.0;
             for (h, &a) in amps.iter().enumerate() {
                 let hf = f * (h + 1) as f64;
@@ -203,9 +204,9 @@ impl Synth {
                 break;
             }
             let t = i as f64 / self.sr;
-            let att = (t / attack.max(MIN_ATTACK)).min(1.0);
-            let tail = ((n - i) as f64 / fade as f64).min(1.0);
-            let env = amp * att * tail * libm::exp(-t / tau.max(1e-6));
+            let att = min_f64(t / max_f64(attack, MIN_ATTACK), 1.0);
+            let tail = min_f64((n - i) as f64 / fade as f64, 1.0);
+            let env = amp * att * tail * libm::exp(-t / max_f64(tau, 1e-6));
             self.out[idx] += env * f.run(x);
         }
     }
@@ -219,7 +220,7 @@ impl Synth {
 /// Scales `buf` so its absolute peak is [`TARGET_PEAK`] (silence stays
 /// silent) and converts to `f32`.
 pub(crate) fn normalize(buf: Vec<f64>) -> Vec<f32> {
-    let peak = buf.iter().fold(0.0f64, |m, &v| m.max(v.abs()));
+    let peak = buf.iter().fold(0.0f64, |m, &v| max_f64(m, v.abs()));
     let g = if peak > 0.0 { TARGET_PEAK / peak } else { 0.0 };
     buf.into_iter().map(|v| (v * g) as f32).collect()
 }
@@ -248,7 +249,7 @@ mod tests {
             for i in 0..48_000 {
                 let y = b.run(libm::sin(TAU * f * i as f64 / sr));
                 if i > 24_000 {
-                    peak = peak.max(y.abs());
+                    peak = max_f64(peak, y.abs());
                 }
             }
             peak

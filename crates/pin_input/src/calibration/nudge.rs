@@ -1,6 +1,7 @@
 //! Accelerometer nudge filter and the button / thumbstick fallbacks.
 
 use crate::profiles::NudgeDirection;
+use pin_core::fmath::{max_f32, min_f32};
 
 /// Accelerometer nudge settings.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -84,7 +85,7 @@ impl NudgeFilter {
             (
                 // Clamped at 0: for dt > 2RC (a stall) the bilinear pole goes
                 // negative and would ring; 0 just forgets the history.
-                ((rc2 - dt_s) / (rc2 + dt_s)).max(0.0),
+                max_f32((rc2 - dt_s) / (rc2 + dt_s), 0.0),
                 rc2 / (rc2 + dt_s),
             )
         } else {
@@ -212,7 +213,7 @@ pub fn thumbstick_nudge(x: f32, y: f32, deadzone: f32) -> [f32; 2] {
     let x = if x.is_finite() { x } else { 0.0 };
     let y = if y.is_finite() { y } else { 0.0 };
     let dz = if deadzone.is_finite() {
-        deadzone.max(0.0)
+        max_f32(deadzone, 0.0)
     } else {
         0.0
     };
@@ -223,7 +224,7 @@ pub fn thumbstick_nudge(x: f32, y: f32, deadzone: f32) -> [f32; 2] {
     if r <= dz || r == 0.0 || !r.is_finite() {
         return [0.0, 0.0];
     }
-    let scaled = (r.min(1.0) - dz) / (1.0 - dz);
+    let scaled = (min_f32(r, 1.0) - dz) / (1.0 - dz);
     let k = scaled / r;
     [(x * k).clamp(-1.0, 1.0), (y * k).clamp(-1.0, 1.0)]
 }

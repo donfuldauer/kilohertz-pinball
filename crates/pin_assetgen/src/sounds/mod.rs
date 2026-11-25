@@ -126,10 +126,13 @@ pub fn encode_wav(samples: &[f32], sample_rate: u32) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pin_core::fmath::max_f64;
 
     fn rms_peak(v: &[f32]) -> (f64, f64) {
         let sum: f64 = v.iter().map(|&x| f64::from(x) * f64::from(x)).sum();
-        let peak = v.iter().fold(0.0f64, |m, &x| m.max(f64::from(x).abs()));
+        let peak = v
+            .iter()
+            .fold(0.0f64, |m, &x| max_f64(m, f64::from(x).abs()));
         ((sum / v.len() as f64).sqrt(), peak)
     }
 

@@ -1,6 +1,7 @@
 //! Property tests for 4.6: arbitrary metadata never panics, the manifest
 //! parser and CLI survive random input, fonts render any text.
 
+use pin_core::fmath::max_f32;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -132,7 +133,7 @@ proptest! {
         let id = sounds::SFX_IDS[idx];
         let v = sounds::render_sfx(id, rate).unwrap();
         prop_assert!(!v.is_empty());
-        let peak = v.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        let peak = v.iter().fold(0.0f32, |m, &x| max_f32(m, x.abs()));
         prop_assert!(peak <= 0.9 && peak > 0.5);
     }
 
