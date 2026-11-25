@@ -39,6 +39,7 @@
 
 #![allow(dead_code)]
 
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::schema::table::{CoilDef, CoilKind, SwitchDef, SwitchKind, TableManifest};
 use pin_tablegen::backbox::{generate_backbox, parse_backbox_layout};
 
@@ -66,7 +67,7 @@ fn extent(vals: impl Iterator<Item = f32>) -> (f32, f32) {
         if v.is_nan() || lo.is_nan() {
             (f32::NAN, f32::NAN)
         } else {
-            (lo.min(v), hi.max(v))
+            (min_f32(lo, v), max_f32(hi, v))
         }
     })
 }

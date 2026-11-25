@@ -7,6 +7,7 @@
 //! to that module.)
 
 use core::fmt::Write as _;
+use pin_core::fmath::{max_f32, min_f32};
 
 /// An indexed triangle mesh, metres.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -99,8 +100,8 @@ fn bounds(points: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
     let mut hi = [f32::NEG_INFINITY; 3];
     for p in points {
         for k in 0..3 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
+            lo[k] = min_f32(lo[k], p[k]);
+            hi[k] = max_f32(hi[k], p[k]);
         }
     }
     (lo, hi)

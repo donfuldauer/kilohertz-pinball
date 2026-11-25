@@ -11,6 +11,7 @@
 
 use super::{BackboxWall, MIN_EXTENT_MM, check_range, gen_err};
 use crate::layout::{GenError, MAX_COORD_MM, MAX_SIZE_MM};
+use pin_core::fmath::{max_f32, max_f64, min_f32, min_f64};
 
 /// Most points in an `outline` or in one wall.
 pub const MAX_OUTLINE_POINTS: usize = 1024;
@@ -50,19 +51,19 @@ fn orient(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
 
 /// `p`, collinear with `a b`, lies on the closed segment `a b`.
 fn on_segment(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> bool {
-    p[0] >= a[0].min(b[0])
-        && p[0] <= a[0].max(b[0])
-        && p[1] >= a[1].min(b[1])
-        && p[1] <= a[1].max(b[1])
+    p[0] >= min_f64(a[0], b[0])
+        && p[0] <= max_f64(a[0], b[0])
+        && p[1] >= min_f64(a[1], b[1])
+        && p[1] <= max_f64(a[1], b[1])
 }
 
 /// The closed segments `p1 p2` and `p3 p4` share at least one point
 /// (proper crossing, touching or collinear overlap).
 pub(super) fn segments_touch(p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], p4: [f64; 2]) -> bool {
-    if p1[0].max(p2[0]) < p3[0].min(p4[0])
-        || p3[0].max(p4[0]) < p1[0].min(p2[0])
-        || p1[1].max(p2[1]) < p3[1].min(p4[1])
-        || p3[1].max(p4[1]) < p1[1].min(p2[1])
+    if max_f64(p1[0], p2[0]) < min_f64(p3[0], p4[0])
+        || max_f64(p3[0], p4[0]) < min_f64(p1[0], p2[0])
+        || max_f64(p1[1], p2[1]) < min_f64(p3[1], p4[1])
+        || max_f64(p3[1], p4[1]) < min_f64(p1[1], p2[1])
     {
         return false;
     }
@@ -129,7 +130,7 @@ pub(super) fn check_outline(pts: &[[f32; 2]]) -> Result<Outline, GenError> {
     let thickness = if span > 0.0 {
         (0..n)
             .map(|i| (orient(q[0], q[far], q[i]) / span).abs())
-            .fold(0.0, f64::max)
+            .fold(0.0, max_f64)
     } else {
         0.0
     };
@@ -197,8 +198,8 @@ pub(super) fn check_outline(pts: &[[f32; 2]]) -> Result<Outline, GenError> {
     let mut hi = pts[0];
     for p in pts {
         for k in 0..2 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
+            lo[k] = min_f32(lo[k], p[k]);
+            hi[k] = max_f32(hi[k], p[k]);
         }
     }
     check_range(
@@ -303,7 +304,7 @@ impl Outline {
         for &(ha, hb) in holes {
             let s0 = (f64::from(ha) - f64::from(a[0])) / du;
             let s1 = (f64::from(hb) - f64::from(a[0])) / du;
-            let (c0, c1) = (s0.min(s1), s0.max(s1));
+            let (c0, c1) = (min_f64(s0, s1), max_f64(s0, s1));
             let mut next = Vec::with_capacity(keep.len() + 1);
             for (k0, k1) in keep {
                 if c1 <= k0 || c0 >= k1 {
@@ -342,7 +343,7 @@ impl Outline {
     fn v_at(&self, i: usize, u: f64) -> Option<f64> {
         let (a, b) = self.edge(i);
         let (a, b) = (d2(a), d2(b));
-        if u < a[0].min(b[0]) || u > a[0].max(b[0]) {
+        if u < min_f64(a[0], b[0]) || u > max_f64(a[0], b[0]) {
             return None;
         }
         Some(a[1] + (u - a[0]) / (b[0] - a[0]) * (b[1] - a[1]))
@@ -357,7 +358,7 @@ impl Outline {
             if self.faces_down(i)
                 && let Some(v) = self.v_at(i, u)
             {
-                best = best.min(v);
+                best = min_f64(best, v);
             }
         }
         if best.is_finite() {
@@ -378,15 +379,15 @@ impl Outline {
             }
             let (a, b) = self.edge(i);
             let (u0, u1) = (
-                f64::from(a[0].min(b[0])).max(h0),
-                f64::from(a[0].max(b[0])).min(h1),
+                max_f64(f64::from(min_f32(a[0], b[0])), h0),
+                min_f64(f64::from(max_f32(a[0], b[0])), h1),
             );
             if u0 > u1 {
                 continue;
             }
             for u in [u0, u1] {
                 if let Some(v) = self.v_at(i, u) {
-                    best = best.min(v);
+                    best = min_f64(best, v);
                 }
             }
         }

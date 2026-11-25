@@ -137,6 +137,7 @@ use glam::{Quat, Vec3};
 use glb::{FlatMaterial, Mesh, Node};
 use pin_assets::MAX_BACKBOX_COLLIDERS;
 use pin_core::Material;
+use pin_core::fmath::{max_f32, max_f64, min_f32};
 use pin_core::schema::table::{
     AabbDef, FlipperDef, FlipperShapeDef, FlipperStagingDef, LayerTransitionDef, MechDef, MechKind,
     TableManifest,
@@ -189,7 +190,7 @@ pub const STROKE_STEP_DEG: f32 = 0.5;
 /// both radii `+ d`. If every grown sampled bat is inside the outline, so is
 /// every in-between bat. About 0.48 mm at length 100 mm and 0.5 degrees.
 fn stroke_margin_mm(length: f32, rb: f32, rt: f32, step_deg: f32) -> f32 {
-    let r = f64::from(length + rt).max(f64::from(rb));
+    let r = max_f64(f64::from(length + rt), f64::from(rb));
     let step = f64::from(step_deg).abs().to_radians();
     // Rounded up to f32 and padded for the f32 geometry that follows.
     let d = 2.0 * r * libm::sin(0.25 * step);
@@ -636,8 +637,16 @@ fn aabb_mm(frame: &BackboxFrame, lo: Vec3, hi: Vec3) -> AabbDef {
             if k & 4 == 0 { lo.z } else { hi.z },
         );
         let t = frame.to_table(c) * 1.0e3;
-        min = min.min(t);
-        max = max.max(t);
+        min = Vec3::new(
+            min_f32(min.x, t.x),
+            min_f32(min.y, t.y),
+            min_f32(min.z, t.z),
+        );
+        max = Vec3::new(
+            max_f32(max.x, t.x),
+            max_f32(max.y, t.y),
+            max_f32(max.z, t.z),
+        );
     }
     AabbDef {
         min: min.to_array(),
@@ -687,7 +696,7 @@ fn bat_mesh(shape: &BatShape, depth: f32, height: f32) -> Mesh {
     for i in 0..n {
         let (a, b) = (outline[i], outline[(i + 1) % n]);
         let (du, dv) = (b[0] - a[0], b[1] - a[1]);
-        let len = libm::sqrtf(du * du + dv * dv).max(1e-9);
+        let len = max_f32(libm::sqrtf(du * du + dv * dv), 1e-9);
         // Outward normal of a counter-clockwise edge in (u, v) = (x, z).
         m.quad(
             at(a, depth),
@@ -1068,7 +1077,7 @@ pub fn generate_backbox(
                 // angle (at most STROKE_STEP_DEG apart, both ends exact),
                 // with every radius inflated by `stroke_margin_mm`, so that
                 // passing the samples proves the continuous sweep inside.
-                let steps = libm::ceilf(sweep.abs() / STROKE_STEP_DEG).max(1.0) as u32;
+                let steps = max_f32(libm::ceilf(sweep.abs() / STROKE_STEP_DEG), 1.0) as u32;
                 let step = sweep / steps as f32;
                 let margin = stroke_margin_mm(f.length, rb, rt, step);
                 let (rb_m, rt_m) = (rb + margin, rt + margin);
@@ -1157,7 +1166,7 @@ pub fn generate_backbox(
         };
         scene_nodes.push(Node {
             name: format!("backbox.flippers[{i}]"),
-            mesh: bat_mesh(&shape, mm(d), mm((d - 1.0).min(22.0))),
+            mesh: bat_mesh(&shape, mm(d), mm(min_f32(d - 1.0, 22.0))),
             material: MAT_BAT,
             collider: false,
             collision_layer: layer,

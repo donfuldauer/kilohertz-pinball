@@ -9,6 +9,7 @@
 #[path = "backbox_common.rs"]
 mod common;
 
+use pin_core::fmath::{max_f32, min_f32, min_f64};
 use pin_tablegen::backbox::{
     GeneratedBackbox, STROKE_STEP_DEG, generate_backbox, parse_backbox_layout, write_backbox,
 };
@@ -90,8 +91,8 @@ fn layout(
             .iter()
             .fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), p| {
                 (
-                    [lo[0].min(p[0]), lo[1].min(p[1])],
-                    [hi[0].max(p[0]), hi[1].max(p[1])],
+                    [min_f32(lo[0], p[0]), min_f32(lo[1], p[1])],
+                    [max_f32(hi[0], p[0]), max_f32(hi[1], p[1])],
                 )
             }),
     };
@@ -391,7 +392,7 @@ fn oracle(poly: &[[f32; 2]], pos: [f32; 2], len: f32, angles: &[f32]) -> f64 {
                     [f64::from(p[0]), f64::from(p[1])],
                     [f64::from(q[0]), f64::from(q[1])],
                 );
-                best = best.min(d - r);
+                best = min_f64(best, d - r);
             }
         }
     }

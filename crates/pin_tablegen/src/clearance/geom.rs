@@ -2,6 +2,7 @@
 
 use glam::{DVec2, DVec3, Vec3};
 use pin_assets::{GltfScene, MeshData};
+use pin_core::fmath::{max_f64, min_f64};
 use pin_physics::world::CubicSpline;
 
 /// `|n·z|` at and above which a triangle is walkable (within 45° of level).
@@ -34,8 +35,16 @@ impl Tri {
             n: n / len,
             layer,
             mesh,
-            min: p[0].min(p[1]).min(p[2]),
-            max: p[0].max(p[1]).max(p[2]),
+            min: DVec3::new(
+                min_f64(min_f64(p[0].x, p[1].x), p[2].x),
+                min_f64(min_f64(p[0].y, p[1].y), p[2].y),
+                min_f64(min_f64(p[0].z, p[1].z), p[2].z),
+            ),
+            max: DVec3::new(
+                max_f64(max_f64(p[0].x, p[1].x), p[2].x),
+                max_f64(max_f64(p[0].y, p[1].y), p[2].y),
+                max_f64(max_f64(p[0].z, p[1].z), p[2].z),
+            ),
         })
     }
 
@@ -58,7 +67,7 @@ impl Tri {
         let d1 = cross2(b - a, q - a);
         let d2 = cross2(c - b, q - b);
         let d3 = cross2(a - c, q - c);
-        let scale = (b - a).length_squared().max((c - a).length_squared());
+        let scale = max_f64((b - a).length_squared(), (c - a).length_squared());
         let eps = -1.0e-9 * scale;
         (d1 >= eps && d2 >= eps && d3 >= eps) || (d1 <= -eps && d2 <= -eps && d3 <= -eps)
     }
@@ -205,15 +214,17 @@ impl TriGrid {
         let mut lo = DVec2::splat(f64::INFINITY);
         let mut hi = DVec2::splat(f64::NEG_INFINITY);
         for t in tris {
-            lo = lo.min(t.min.truncate());
-            hi = hi.max(t.max.truncate());
+            let (t_lo, t_hi) = (t.min.truncate(), t.max.truncate());
+            lo = DVec2::new(min_f64(lo.x, t_lo.x), min_f64(lo.y, t_lo.y));
+            hi = DVec2::new(max_f64(hi.x, t_hi.x), max_f64(hi.y, t_hi.y));
         }
         if tris.is_empty() {
             lo = DVec2::ZERO;
             hi = DVec2::ZERO;
         }
-        let extent = (hi - lo).max_element();
-        let cell = (extent / MAX_GRID_SIDE).max(0.05);
+        let span = hi - lo;
+        let extent = max_f64(span.x, span.y);
+        let cell = max_f64(extent / MAX_GRID_SIDE, 0.05);
         let nx = (((hi.x - lo.x) / cell).floor() as usize + 1).max(1);
         let ny = (((hi.y - lo.y) / cell).floor() as usize + 1).max(1);
         let mut grid = TriGrid {
@@ -307,7 +318,7 @@ impl Polygon {
         let n = self.points.len();
         (0..n)
             .map(|i| segment_distance(q, self.points[i], self.points[(i + 1) % n]))
-            .fold(f64::INFINITY, f64::min)
+            .fold(f64::INFINITY, min_f64)
     }
 
     /// Whether the even-odd filled region has positive area (a

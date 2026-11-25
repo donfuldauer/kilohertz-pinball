@@ -9,6 +9,7 @@ use glam::{DVec2, DVec3, Vec3};
 use pin_assets::{GltfScene, LoadedTable};
 use pin_core::PhysicsDefaults;
 use pin_core::flipper::FlipperShape;
+use pin_core::fmath::{max_f32, max_f64, min_f32, min_f64};
 use pin_core::schema::table::{MechKind, SplineKind};
 use pin_physics::ball::MovingBodies;
 use pin_physics::flipper::FlipperSet;
@@ -81,7 +82,7 @@ impl World<'_> {
                 .points_m
                 .iter()
                 .map(|p| f64::from(p[2]))
-                .fold(f64::INFINITY, f64::min);
+                .fold(f64::INFINITY, min_f64);
             out.push(GuideWall {
                 layer: s.layer,
                 flat: spline,
@@ -151,7 +152,7 @@ impl World<'_> {
             }
             let q = t.closest(c);
             if keep(t, q) {
-                best = best.min(q.distance(c));
+                best = min_f64(best, q.distance(c));
             }
         }
         for g in guides
@@ -162,7 +163,7 @@ impl World<'_> {
                 .flat
                 .closest_point(Vec3::new(c.x as f32, c.y as f32, 0.0), None);
             if cp.distance.is_finite() {
-                best = best.min(f64::from(cp.distance));
+                best = min_f64(best, f64::from(cp.distance));
             }
         }
         best
@@ -249,7 +250,7 @@ pub(super) fn lanes(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                 .iter()
                 .filter(|(_, mid)| ball.allowed.near(left.layer, *mid, ball.r()))
                 .map(|(d, _)| *d)
-                .fold(f64::INFINITY, f64::min);
+                .fold(f64::INFINITY, min_f64);
             if narrowest < ball.needed() {
                 sink.error(Finding {
                     feature: Feature::Lane,
@@ -282,16 +283,16 @@ fn bat_reach(shape: &FlipperShape) -> f64 {
             length_mm,
             base_radius_mm,
             tip_radius_mm,
-        } => length_mm + base_radius_mm.max(tip_radius_mm),
+        } => length_mm + max_f32(base_radius_mm, tip_radius_mm),
         FlipperShape::CurvedBanana {
             length_mm,
             arc_radius_mm,
             tube_radius_mm,
             ..
-        } => length_mm + arc_radius_mm.min(length_mm) + tube_radius_mm,
+        } => length_mm + min_f32(arc_radius_mm, length_mm) + tube_radius_mm,
     };
     let v = f64::from(v) * 1.0e-3;
-    if v.is_finite() { v.max(0.0) } else { 0.0 }
+    if v.is_finite() { max_f64(v, 0.0) } else { 0.0 }
 }
 
 /// Most coarse-grid points per axis of the flipper-gap search.
@@ -326,9 +327,12 @@ fn bat_gap(
         }
     };
     let rel = DVec2::new((pb - pa).dot(u), (pb - pa).dot(v));
-    let lo = DVec2::splat(-reach.0).min(rel - DVec2::splat(reach.1));
-    let hi = DVec2::splat(reach.0).max(rel + DVec2::splat(reach.1));
-    let step = ((hi - lo).max_element() / GAP_GRID_SIDE).max(1.0e-3);
+    let (lo_a, lo_b) = (DVec2::splat(-reach.0), rel - DVec2::splat(reach.1));
+    let lo = DVec2::new(min_f64(lo_a.x, lo_b.x), min_f64(lo_a.y, lo_b.y));
+    let (hi_a, hi_b) = (DVec2::splat(reach.0), rel + DVec2::splat(reach.1));
+    let hi = DVec2::new(max_f64(hi_a.x, hi_b.x), max_f64(hi_a.y, hi_b.y));
+    let span = hi - lo;
+    let step = max_f64(max_f64(span.x, span.y) / GAP_GRID_SIDE, 1.0e-3);
     let (nx, ny) = (
         ((hi.x - lo.x) / step).ceil() as usize,
         ((hi.y - lo.y) / step).ceil() as usize,
@@ -414,7 +418,7 @@ pub(super) fn flippers(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
             }
         }
     }
-    let largest = balls.iter().map(Ball::needed).fold(0.0, f64::max);
+    let largest = balls.iter().map(Ball::needed).fold(0.0, max_f64);
     for i in 0..cfgs.len() {
         for j in i + 1..cfgs.len() {
             if cfgs[i].collision_layer != cfgs[j].collision_layer {
@@ -493,7 +497,7 @@ pub(super) fn wireforms(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                 continue;
             }
             let (min_g, max_g) = (ball.d * lo_sin, ball.d * hi_sin);
-            let sin = (g / ball.d).min(1.0);
+            let sin = min_f64(g / ball.d, 1.0);
             let alpha = libm::asin(sin).to_degrees();
             let (required, what) = if g < min_g {
                 (

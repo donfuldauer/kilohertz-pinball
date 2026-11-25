@@ -43,6 +43,7 @@ use super::glb::Node;
 use glam::{DVec2, DVec3, Vec3};
 use pin_assets::ValidationError;
 use pin_assets::validate::TABLE_FILE;
+use pin_core::fmath::{max_f64, min_f64};
 use pin_core::schema::table::{AabbDef, LayerTransitionDef};
 use pin_core::units::mm_to_m;
 
@@ -82,12 +83,12 @@ pub(super) fn entry_zone(p0: [f32; 3], tangent: Vec3, width: f32) -> Result<Aabb
     for c in [s, e] {
         for k in [-half, half] {
             let q = DVec2::new(c.x, c.y) + across * k;
-            lo = lo.min(q);
-            hi = hi.max(q);
+            lo = DVec2::new(min_f64(lo.x, q.x), min_f64(lo.y, q.y));
+            hi = DVec2::new(max_f64(hi.x, q.x), max_f64(hi.y, q.y));
         }
     }
-    let z_lo = s.z.min(e.z).min(0.0);
-    let z_hi = s.z.max(e.z).max(0.0) + half;
+    let z_lo = min_f64(min_f64(s.z, e.z), 0.0);
+    let z_hi = max_f64(max_f64(s.z, e.z), 0.0) + half;
     Ok(AabbDef {
         min: [lo.x as f32, lo.y as f32, z_lo as f32],
         max: [hi.x as f32, hi.y as f32, z_hi as f32],
@@ -139,7 +140,7 @@ fn supports(nodes: &[Node], layer: u8) -> Vec<Support> {
             let z_min = v
                 .iter()
                 .map(|q| f64::from(q[2]))
-                .fold(f64::INFINITY, f64::min);
+                .fold(f64::INFINITY, min_f64);
             out.push(Support { tri, z_min });
         }
     }

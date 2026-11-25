@@ -8433,3 +8433,61 @@ replay fixture hash 25097c21c2c3adc1 unchanged).
 `quat_ops::conjugate`); a custom lint for `Quat` operators (rejected: needs a dylint toolchain,
 not in the pinned environment); allowing instead of routing the non-reference test uses
 (rejected: they are not reference checks, so the brief's narrow-allow rule does not apply).
+
+## #161 KP-067 — glam bans in pin_tablegen
+
+**Decision:** `pin_tablegen/clippy.toml` gets the same glam entries as `pin_assets`
+(`disallowed-types` `glam::{Vec3A, Vec4, Affine3A, Mat4, Mat3A, DVec4}`; `disallowed-methods`
+`glam::Quat::{lerp, slerp, normalize, length_squared, length, from_rotation_arc, mul_vec3,
+mul_quat, conjugate}`, `glam::{Vec3A, Vec4}::{min, max, clamp}` and
+`glam::{Vec2, Vec3, DVec2, DVec3}::{min, max, clamp, min_element, max_element}`), all resolving
+under `-D warnings`, none dropped as unresolvable. `glam::Quat::inverse` is not banned, as in
+`pin_sim` and `pin_physics`: four test-setup frame transforms (`src/backbox/tests.rs`, three in
+`tests/backbox_outline.rs`) map a world point into the backbox frame with
+`frame.rotation.inverse() * v`. The 33 glam vector uses (`DVec2`/`DVec3` bounding boxes in the
+clearance validator and the ramp-entry zone, `DVec2::clamp` in the headroom check, `Vec3` box
+bounds in the backbox generator, `min_element` in two test assertions) are rewritten
+component-wise with `pin_core::fmath`, operand order preserved (`clamp(lo, hi)` as
+`min(max(v, lo), hi)`, glam's own order; `max_element` of a `DVec2` as `max(x, y)`); the one test
+`Quat::length` unit check uses `quat_ops::length_squared(q).sqrt()`. No narrow `#[allow]` was
+needed in `pin_tablegen`.
+**Rationale:** Same as the `pin_sim`/`pin_assets` entry: glam 0.33.12's scalar vector min/max
+are plain comparisons whose ties already return the second operand, so the rewrite is
+bit-identical for non-NaN inputs; it was checked end to end by generating the greybox,
+apex_circuit and sky_deck playfields with the `origin/main` and the converted `pin_tablegen`
+binaries (byte-identical bundles) and by running `pin_tablegen validate` with both on the 19
+bundle fixtures under `crates/` (identical output).
+**Alternatives:** banning `Quat::inverse` and rewriting the test frame transforms (rejected: a
+refactor of test geometry outside "only the min/max call form changes").
+
+## #161 KP-067 — Integer, Ord and iterator min/max deliberately untouched
+
+**Decision:** Only `f32`/`f64` `min`/`max` (method, UFCS and function-value forms) and glam
+vector min/max/clamp/min_element/max_element are converted. Integer `Ord::min`/`max` (`usize`,
+`u32`, `u64`, `i64`, `Duration`), `Iterator::min`/`max` and `f32::clamp` stay as they are, and
+no clippy entry names them. Per crate, float sites converted versus integer/`Ord`/iterator
+`.min(`/`.max(` hits left: `pin_core` 9 / 4, `pin_input` 54 / 11, `pin_script` 2 / 17,
+`pin_assets` 24 / 21, `pin_assetgen` 21 / 28, `pin_sim` 19 std + 8 glam / 32, `pin_physics`
+542 / 70, `pin_tablegen` 140 std + 33 glam vector + 1 `Quat::length` / 9.
+**Rationale:** Integer comparisons are exact on every target, so they cannot break cross-target
+equality; `f32::clamp` is two comparisons with no zero-tie or NaN-selection ambiguity (it
+propagates NaN on every target). Converting them would add diff and risk with no determinism
+gain, and the integer min/max in the sandbox limits (`pin_script/src/wasm/limits.rs`,
+`pin_assets/src/zip/mod.rs`) are part of the R11 boundary that this unit must not touch. The
+lint fires only on the float paths, so the clippy output is the exact site list.
+**Alternatives:** a blanket rewrite of every `.min(`/`.max(` (rejected: no gain, larger risk);
+banning `f32::clamp` too (rejected: standing decision, it is pure comparisons).
+
+## #161 KP-067 — One PR for all eight crates
+
+**Decision:** #161 lands as a single PR covering Parts A, B and C (all eight crates, the
+canonical NaN hash and the clippy bans), although the mechanical diff exceeds the brief's
+~800-line guide for splitting.
+**Rationale:** The Independent Tester's cross-crate clippy-bans spec test
+(`crates/pin_core/tests/spec_kp067_clippy_bans.rs`) checks every one of the eight `clippy.toml`
+files, so it passes only once all eight carry the bans; per-part PRs would either land a red test
+on `main` or require dropping it from the earlier PRs. The diff is call-form rewrites with
+operand order preserved, verified bit-identical on x86_64 by the goldens (replay fixture
+25097c21c2c3adc1, the five seam digests) and by the byte-identical `pin_tablegen` output.
+**Alternatives:** per-crate PRs with the spec test landing last (rejected: three PRs of the same
+mechanical change and an intermediate `main` without the property the test checks).

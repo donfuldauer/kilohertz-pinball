@@ -4,6 +4,7 @@ use super::checks::World;
 use super::geom::{CEILING_NZ, Tri, WALKABLE_NZ};
 use super::{Ball, Feature, Finding, MIN_HEADROOM_GAP_MM, Sink, mm};
 use glam::{DVec2, DVec3};
+use pin_core::fmath::{max_f64, min_f64};
 use std::collections::BTreeMap;
 
 /// Largest number of plan samples per (support, ceiling) triangle pair.
@@ -27,18 +28,22 @@ fn area_samples(ball: &Ball, spacing: f64) -> Vec<DVec2> {
         let mut lo = DVec2::splat(f64::INFINITY);
         let mut hi = DVec2::splat(f64::NEG_INFINITY);
         for &p in pts {
-            lo = lo.min(p);
-            hi = hi.max(p);
+            lo = DVec2::new(min_f64(lo.x, p.x), min_f64(lo.y, p.y));
+            hi = DVec2::new(max_f64(hi.x, p.x), max_f64(hi.y, p.y));
         }
-        let extent = (hi - lo).max_element();
+        let span = hi - lo;
+        let extent = max_f64(span.x, span.y);
         if !extent.is_finite() {
             continue;
         }
-        let h = spacing.min(extent / 16.0).max(extent / 256.0).max(1.0e-6);
+        let h = max_f64(
+            max_f64(min_f64(spacing, extent / 16.0), extent / 256.0),
+            1.0e-6,
+        );
         // Vertices and edge points always (a needle-thin spike has no
         // interior grid point), at most `spacing` apart along each edge.
         out.extend_from_slice(pts);
-        let edge_step = h.min(spacing);
+        let edge_step = min_f64(h, spacing);
         for i in 0..pts.len() {
             let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
             let k = ((a.distance(b) / edge_step).ceil() as usize).clamp(1, 4096);
@@ -49,8 +54,8 @@ fn area_samples(ball: &Ball, spacing: f64) -> Vec<DVec2> {
         for j in 0..=ny {
             for i in 0..=nx {
                 let q = DVec2::new(
-                    (lo.x + i as f64 * h).min(hi.x),
-                    (lo.y + j as f64 * h).min(hi.y),
+                    min_f64(lo.x + i as f64 * h, hi.x),
+                    min_f64(lo.y + j as f64 * h, hi.y),
                 );
                 if poly.contains(q) {
                     out.push(q);
@@ -125,7 +130,7 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
         let r = ball.r();
         let need = ball.needed();
         let reach = need - r; // distance the ceiling must keep from the centre
-        let spacing = (0.5 * r).min(MAX_SPACING_M);
+        let spacing = min_f64(0.5 * r, MAX_SPACING_M);
         let mut worst: BTreeMap<usize, Worst> = BTreeMap::new();
         let extra = area_samples(ball, spacing);
         let pad = DVec2::splat(reach);
@@ -153,29 +158,32 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                     continue;
                 }
                 // Support points whose ball can reach the ceiling.
-                let lo = s.min.truncate().max(c.min.truncate() - pad);
-                let hi = s.max.truncate().min(c.max.truncate() + pad);
+                let (s_lo, c_lo) = (s.min.truncate(), c.min.truncate() - pad);
+                let lo = DVec2::new(max_f64(s_lo.x, c_lo.x), max_f64(s_lo.y, c_lo.y));
+                let (s_hi, c_hi) = (s.max.truncate(), c.max.truncate() + pad);
+                let hi = DVec2::new(min_f64(s_hi.x, c_hi.x), min_f64(s_hi.y, c_hi.y));
                 if !(lo.x <= hi.x && lo.y <= hi.y) {
                     continue;
                 }
                 let size = hi - lo;
-                let mut h = spacing
-                    .max(size.x / MAX_AXIS_SAMPLES)
-                    .max(size.y / MAX_AXIS_SAMPLES);
+                let mut h = max_f64(
+                    max_f64(spacing, size.x / MAX_AXIS_SAMPLES),
+                    size.y / MAX_AXIS_SAMPLES,
+                );
                 if (size.x / h + 1.0) * (size.y / h + 1.0) > MAX_PAIR_SAMPLES {
-                    h = h.max((size.x * size.y / MAX_PAIR_SAMPLES).sqrt());
+                    h = max_f64(h, (size.x * size.y / MAX_PAIR_SAMPLES).sqrt());
                 }
                 if !(h.is_finite() && h > 0.0) {
                     continue;
                 }
-                let nx = (size.x / h).ceil().min(MAX_AXIS_SAMPLES) as usize;
-                let ny = (size.y / h).ceil().min(MAX_AXIS_SAMPLES) as usize;
+                let nx = min_f64((size.x / h).ceil(), MAX_AXIS_SAMPLES) as usize;
+                let ny = min_f64((size.y / h).ceil(), MAX_AXIS_SAMPLES) as usize;
                 let centre = (lo + hi) * 0.5;
                 let grid = (0..=ny).flat_map(|j| {
                     (0..=nx).map(move |i| {
                         DVec2::new(
-                            (lo.x + i as f64 * h).min(hi.x),
-                            (lo.y + j as f64 * h).min(hi.y),
+                            min_f64(lo.x + i as f64 * h, hi.x),
+                            min_f64(lo.y + j as f64 * h, hi.y),
                         )
                     })
                 });
@@ -183,7 +191,13 @@ pub(super) fn decks(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
                 let from_area = extra.iter().copied().filter(in_box);
                 // The ceiling's own corners (a low vertex) and, under them,
                 // the support.
-                let corners = c.p.iter().map(|v| v.truncate().clamp(lo, hi));
+                let corners = c.p.iter().map(|v| {
+                    // glam's clamp order: max with `lo`, then min with `hi`.
+                    DVec2::new(
+                        min_f64(max_f64(v.x, lo.x), hi.x),
+                        min_f64(max_f64(v.y, lo.y), hi.y),
+                    )
+                });
                 for q in core::iter::once(centre)
                     .chain(corners)
                     .chain(grid)

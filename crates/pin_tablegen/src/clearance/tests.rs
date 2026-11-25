@@ -102,6 +102,7 @@ fn reports_convert_and_display() {
 fn resting_centre_on_an_inclined_support() {
     use super::geom::Tri;
     use glam::DVec3;
+    use pin_core::fmath::{max_f64, min_f64};
     let tri = |p: [DVec3; 3]| {
         let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize();
         Tri {
@@ -109,8 +110,16 @@ fn resting_centre_on_an_inclined_support() {
             n,
             layer: 0,
             mesh: 0,
-            min: p[0].min(p[1]).min(p[2]),
-            max: p[0].max(p[1]).max(p[2]),
+            min: DVec3::new(
+                min_f64(min_f64(p[0].x, p[1].x), p[2].x),
+                min_f64(min_f64(p[0].y, p[1].y), p[2].y),
+                min_f64(min_f64(p[0].z, p[1].z), p[2].z),
+            ),
+            max: DVec3::new(
+                max_f64(max_f64(p[0].x, p[1].x), p[2].x),
+                max_f64(max_f64(p[0].y, p[1].y), p[2].y),
+                max_f64(max_f64(p[0].z, p[1].z), p[2].z),
+            ),
         }
     };
     // 30° slope rising along +x; ceiling parallel, `gap` above along the normal.
@@ -581,6 +590,7 @@ mod inscribed_circle {
     use super::super::geom::Polygon;
     use super::super::inscribed::{Boundary, Fit, fits, largest_inscribed_diameter};
     use glam::DVec2;
+    use pin_core::fmath::{max_f64, min_f64};
     use proptest::prelude::*;
 
     /// Radius precision used by the validator: a quarter of the 0.5 mm
@@ -823,7 +833,7 @@ mod inscribed_circle {
         fn rectangles(x in -1.0f64..1.0, y in -1.0f64..1.0, w in 0.001f64..1.0, h in 0.001f64..1.0) {
             let p = rect(x, y, w, h);
             let d = largest_inscribed_diameter(&p, PREC);
-            let want = w.min(h);
+            let want = min_f64(w, h);
             prop_assert!(d <= want + 1e-12 && d >= want - TOL, "{d} vs {want}");
             prop_assert_eq!(d.to_bits(), largest_inscribed_diameter(&p, PREC).to_bits());
         }
@@ -867,17 +877,17 @@ mod inscribed_circle {
             let mut lo = DVec2::splat(f64::INFINITY);
             let mut hi = DVec2::splat(f64::NEG_INFINITY);
             for &q in &poly.points {
-                lo = lo.min(q);
-                hi = hi.max(q);
+                lo = DVec2::new(min_f64(lo.x, q.x), min_f64(lo.y, q.y));
+                hi = DVec2::new(max_f64(hi.x, q.x), max_f64(hi.y, q.y));
             }
-            prop_assert!(d <= (hi - lo).min_element() + 1e-12);
+            prop_assert!(d <= min_f64(hi.x - lo.x, hi.y - lo.y) + 1e-12);
             let step = 0.005;
             let mut deepest: f64 = 0.0;
             for j in 0..=120 {
                 for i in 0..=120 {
                     let q = DVec2::new(-0.3 + f64::from(i) * step, -0.3 + f64::from(j) * step);
                     if poly.contains(q) {
-                        deepest = deepest.max(poly.boundary_distance(q));
+                        deepest = max_f64(deepest, poly.boundary_distance(q));
                     }
                 }
             }

@@ -12,6 +12,7 @@
 mod support;
 
 use pin_assets::Vfs;
+use pin_core::fmath::min_f32;
 use pin_core::ids::FlipperId;
 use pin_physics::ball::MovingBodies;
 use pin_physics::flipper::FlipperSet;
@@ -459,7 +460,7 @@ fn measured_flipper_gap_mm(l: &Loaded) -> f32 {
             p = hit.point;
             gap = hit.distance;
         }
-        best = best.min(gap);
+        best = min_f32(best, gap);
     }
     best * 1000.0
 }

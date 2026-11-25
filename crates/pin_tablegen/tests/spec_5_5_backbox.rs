@@ -18,6 +18,7 @@
 mod api;
 
 use pin_assets::{Vfs, load_gltf};
+use pin_core::fmath::{max_f32, min_f32};
 use proptest::prelude::*;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -314,8 +315,8 @@ fn generated_geometry_spans_the_outline() {
             let w =
                 [0usize, 1, 2].map(|r| t[0][r] * p[0] + t[1][r] * p[1] + t[2][r] * p[2] + t[3][r]);
             for k in 0..3 {
-                lo[k] = lo[k].min(w[k]);
-                hi[k] = hi[k].max(w[k]);
+                lo[k] = min_f32(lo[k], w[k]);
+                hi[k] = max_f32(hi[k], w[k]);
             }
         }
     }

@@ -9,6 +9,7 @@
 
 use pin_assets::{GltfScene, LoadedTable, NodeExtras, Vfs, load_gltf, load_table};
 use pin_core::Material;
+use pin_core::fmath::{max_f64, min_f64};
 use pin_core::schema::layout::{
     Insert, InsertShape, Lane, LaneKind, LayoutManifest, Playfield, Post, Wall,
 };
@@ -273,11 +274,11 @@ pub fn world_meshes(
     let (w, l) = (f64::from(pf.width), f64::from(pf.length));
     let mut z_top = f64::from(pf.wall_height);
     for d in &layout.decks {
-        z_top = z_top.max(f64::from(d.z) + f64::from(pf.wall_height));
+        z_top = max_f64(z_top, f64::from(d.z) + f64::from(pf.wall_height));
     }
     for s in &table.splines {
         for p in &s.points {
-            z_top = z_top.max(f64::from(p[2]));
+            z_top = max_f64(z_top, f64::from(p[2]));
         }
     }
     let margin = 40.0;
@@ -294,8 +295,8 @@ pub fn world_meshes(
             for p in raw.iter().flatten().flatten() {
                 let q = map(*p);
                 for k in 0..3 {
-                    lo[k] = lo[k].min(q[k] * scale);
-                    hi[k] = hi[k].max(q[k] * scale);
+                    lo[k] = min_f64(lo[k], q[k] * scale);
+                    hi[k] = max_f64(hi[k], q[k] * scale);
                 }
             }
             let fits = lo[0] >= -margin
@@ -412,9 +413,10 @@ pub fn d_pt_tri(p: P2, t: &[P2; 3]) -> f64 {
     if orient(t[0], t[1], t[2]).abs() > 1.0e-9 && pt_in_tri(p, t) {
         return 0.0;
     }
-    d_pt_seg(p, t[0], t[1])
-        .min(d_pt_seg(p, t[1], t[2]))
-        .min(d_pt_seg(p, t[2], t[0]))
+    min_f64(
+        min_f64(d_pt_seg(p, t[0], t[1]), d_pt_seg(p, t[1], t[2])),
+        d_pt_seg(p, t[2], t[0]),
+    )
 }
 
 pub fn pt_in_poly(p: P2, poly: &[P2]) -> bool {
@@ -435,10 +437,10 @@ pub fn pt_in_poly(p: P2, poly: &[P2]) -> bool {
 pub fn d_pt_polyline(p: P2, line: &[P2], closed: bool) -> f64 {
     let mut d = f64::INFINITY;
     for w in line.windows(2) {
-        d = d.min(d_pt_seg(p, w[0], w[1]));
+        d = min_f64(d, d_pt_seg(p, w[0], w[1]));
     }
     if closed && line.len() > 2 {
-        d = d.min(d_pt_seg(p, line[line.len() - 1], line[0]));
+        d = min_f64(d, d_pt_seg(p, line[line.len() - 1], line[0]));
     }
     if line.len() == 1 {
         d = dist2(p, line[0]);
@@ -455,7 +457,7 @@ pub fn to_f64(points: &[[f32; 2]]) -> Vec<P2> {
 
 /// Points every `step` mm along a segment, ends included.
 pub fn seg_samples(a: P2, b: P2, step: f64) -> Vec<P2> {
-    let n = (dist2(a, b) / step).ceil().max(1.0) as usize;
+    let n = max_f64((dist2(a, b) / step).ceil(), 1.0) as usize;
     (0..=n)
         .map(|i| {
             let t = i as f64 / n as f64;
@@ -497,10 +499,10 @@ impl Collision {
     pub fn dist(&self, p: P2) -> f64 {
         let mut d = f64::INFINITY;
         for t in &self.faces {
-            d = d.min(d_pt_tri(p, t));
+            d = min_f64(d, d_pt_tri(p, t));
         }
         for g in &self.guides {
-            d = d.min(d_pt_polyline(p, g, false));
+            d = min_f64(d, d_pt_polyline(p, g, false));
         }
         d
     }
@@ -628,11 +630,11 @@ pub fn check_surface(
     let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
     for p in outline {
         for k in 0..2 {
-            lo[k] = lo[k].min(p[k]);
-            hi[k] = hi[k].max(p[k]);
+            lo[k] = min_f64(lo[k], p[k]);
+            hi[k] = max_f64(hi[k], p[k]);
         }
     }
-    let step = ((hi[0] - lo[0]).max(hi[1] - lo[1]) / 61.0).max(1.0);
+    let step = max_f64(max_f64(hi[0] - lo[0], hi[1] - lo[1]) / 61.0, 1.0);
     let mut y = lo[1] + 0.37;
     while y < hi[1] {
         let mut x = lo[0] + 0.41;

@@ -6,6 +6,7 @@
 
 use glam::Vec3;
 use pin_core::Material;
+use pin_core::fmath::{max_f32, min_f32, min_f64};
 use pin_core::schema::layout::{Deck, Playfield, Ramp};
 use pin_core::schema::table::{AabbDef, LayerTransitionDef};
 use pin_core::schema::{LayoutManifest, TableManifest};
@@ -175,7 +176,7 @@ fn check_case(points: &[[f32; 3]], width: f32) -> Result<(), String> {
         along(z.max[0], z.max[1]),
     ]
     .into_iter()
-    .fold(f64::INFINITY, f64::min);
+    .fold(f64::INFINITY, min_f64);
     if back < -(f64::from(width) / 2.0 + 1.0e-3) {
         return Err(format!("reaches {back} mm behind the start: {what}"));
     }
@@ -744,7 +745,7 @@ fn greybox_below_deck_catch_has_no_gaps() {
                 .iter()
                 .map(|t| t.zone.max[k])
                 .filter(|&b| b < e.min[k])
-                .fold(f32::NEG_INFINITY, f32::max);
+                .fold(f32::NEG_INFINITY, max_f32);
             assert_eq!(near, e.min[k].next_down(), "axis {k} min face");
             let w = ulps(
                 pin_core::units::mm_to_m(near),
@@ -760,7 +761,7 @@ fn greybox_below_deck_catch_has_no_gaps() {
                 .iter()
                 .map(|t| t.zone.min[k])
                 .filter(|&b| b > e.max[k])
-                .fold(f32::INFINITY, f32::min);
+                .fold(f32::INFINITY, min_f32);
             assert_eq!(near, e.max[k].next_up(), "axis {k} max face");
             let w = ulps(
                 pin_core::units::mm_to_m(e.max[k]),

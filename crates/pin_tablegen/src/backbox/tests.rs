@@ -390,7 +390,7 @@ fn bat_mesh_faces_the_glass() {
         .positions
         .iter()
         .map(|p| p[1])
-        .fold(f32::INFINITY, f32::min);
+        .fold(f32::INFINITY, min_f32);
     assert!((front - 0.015).abs() < 1e-6);
 }
 
@@ -446,8 +446,8 @@ proptest! {
             prop_assert_eq!(c.layer_mask, 1u8 << layer);
             if let StaticShape::Cuboid { center, half_extents, rotation } = &c.shape {
                 prop_assert!(center.is_finite() && half_extents.is_finite());
-                prop_assert!(half_extents.min_element() > 0.0);
-                prop_assert!((rotation.length() - 1.0).abs() < 1e-5);
+                prop_assert!(min_f32(half_extents.x, min_f32(half_extents.y, half_extents.z)) > 0.0);
+                prop_assert!((pin_physics::quat_ops::length_squared(*rotation).sqrt() - 1.0).abs() < 1e-5);
             }
         }
         prop_assert!(g.frame.normal().dot(g.frame.up()).abs() < 1e-5);
@@ -461,6 +461,7 @@ mod outline_geometry {
     //! The planar helpers behind the optional `outline` (5.5-FIX1b).
 
     use super::super::outline::{Outline, check_outline, segments_touch};
+    use pin_core::fmath::min_f64;
     use proptest::prelude::*;
 
     fn rect() -> Outline {
@@ -743,9 +744,10 @@ mod outline_geometry {
                     lo = m1;
                 }
             }
-            best = best
-                .min(g(0.5 * (lo + hi)))
-                .min(g(f64::from(k) / f64::from(n)));
+            best = min_f64(
+                min_f64(best, g(0.5 * (lo + hi))),
+                g(f64::from(k) / f64::from(n)),
+            );
         }
         best
     }
