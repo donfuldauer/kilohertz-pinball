@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 493
-- Run-log rows: 530
+- Decision entries: 494
+- Run-log rows: 532
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -538,6 +538,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - Planning: Browser version (docs/DECISIONS.md)
 - #83: Lean settings: render scale and probe captures carried as data until KP-035 (docs/DECISIONS.md)
 - #83: Secondary surfaces keep frame latency 2 (docs/DECISIONS.md)
+- #83: Owned-path extension: DEVELOPMENT.md windowed check c wording (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

@@ -8154,3 +8154,11 @@ settled the work; the breakdown, sizing and dependencies come from #144 and DESI
 **Rationale:** The issue changes the playfield only; secondary surfaces redraw on change and do not pace the frame, so a deeper queue costs them nothing.
 
 **Alternatives:** Latency 1 for every surface (risks stalls on presenter-less secondary surfaces and changes behaviour the issue did not ask to change).
+
+## #83 — Owned-path extension: DEVELOPMENT.md windowed check c wording
+
+**Decision:** Update the one sentence in `docs/DEVELOPMENT.md` (windowed check c) that said the SPEC Low quality preset does not exist, because the app now starts lean on software adapters.
+
+**Rationale:** Otherwise the doc would contradict what the harness now runs.
+
+**Alternatives:** A separate docs work-unit issue (rejected: a one-sentence fix that belongs with the change that made the sentence stale).
