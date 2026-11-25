@@ -8171,3 +8171,96 @@ makes the other targets match it, as D9 requires.
 unit's owned paths); `f32::min`/`max` with ±0 ties and NaN bit patterns differ on aarch64 outside
 glam, which no measured run reached (`pin_core::fmath` covers min/max). NaN payloads are not part
 of the `quat_ops` guarantee.
+## KP-068 — Address-free pairs order and string cache (KHZ 34, 37)
+
+**Decision:** The vendored Lua no longer lets a memory address reach table iteration order or the
+API string cache (third_party/lua-src/KHZ_PATCHES.md patches 34 and 37, both unconditional), and
+every non-MSVC target compiles Lua with `-ffp-contract=off`. Patch 34: tables, Lua and C closures,
+full userdata and threads get a per-state creation id (`khzid`, from the 64-bit counter
+`global_State.khzseq`, low 32 bits stored; main thread 0, counter starts at 1) and hash as table
+keys by that id; light C functions and light userdata share one main position, so their chain
+keeps insertion order (patch 25 charges long walks). Patch 37: `luaS_new` picks its cache bucket
+from the string's content (see "KP-068 — String-cache hash over a bounded prefix"). This amends
+"Orchestrator — 4.2 pointer-keyed `pairs` order": iteration order over table, function and
+userdata keys is now deterministic, the same on every run and platform, but it remains an
+implementation detail that depends on insertion and deletion history and on resizes, so the
+authoring rule stays: "Do not depend on the iteration order of pairs/next; use an array or sort
+the keys when order matters."
+**Rationale:** Both were native run-to-run D9 violations (S8 F4, F5): the order of `pairs` over
+object keys changed with ASLR and heap layout, and whether `tostring` of an object with a long
+`__name` hit the cache (no allocation, no patch-4 charge) depended on the name's address, so
+budget units and heap bytes differed between processes. The web build (REQ-WEB-005) needs the same
+lines as native. Ids cost no budget units and change no charge constant. Real header sizes grow
+(on LP64 `Table` 56 → 64 bytes; closures, userdata and threads fill padding); there is no logical
+memory accounting yet (KHZ 33 is a later unit), so a script near the memory cap that holds many
+tables reaches it sooner: `lua_backend.rs::emergency_gc_is_charged` (18 000 live tables, then
+60 KB strings under the 2 MiB engine cap) now hits `MemoryLimit` before `BudgetExceeded`; a C
+replica shows the live heap at its phase switch going from 1 841 015 to 1 985 191 bytes, and back
+to 1 841 031 with only the `Table` id removed, so the test's margin, not the budget model, moved
+(reported as a request; the test is outside KP-068's paths). GCC contracts `a*b + c` into FMA by default on
+aarch64 (2 sites in the vendored Lua, both unobservable today); the flag goes in lua-src's own `cc`
+call rather than in `CFLAGS` for the reason given in "Orchestrator — 4.2 review: patched vendored
+Lua". Production replays do not move (replay-hash fixture `state_hash` `25097c21c2c3adc1` before
+and after; pin_sim and pin_app replay, autoplay and rules pins unchanged).
+**Measurement (patch 37, worst case):** a `__name` of 64 KiB − 64 bytes pushed by `tostring` in a
+loop until the budget aborts, release C build of the vendored Lua (`gcc -O2`), count hook every
+1 000 instructions as in `pin_script`, best of 7, x86_64 container. Per callback: engine budget
+(100 000): before 3.0–3.4 ms, after 4.6 ms; default budget (1 000 000): before 29–48 ms, after
+39 ms (2 571 and 25 657 calls; units identical before and after). Short names (41 bytes): +0.1 µs
+per call (engine budget 0.32 → 0.56 ms). Hashing the whole string instead, as first proposed,
+measured 236–239 ms at the engine budget and 2.35–2.39 s at the default budget.
+**Alternatives:**
+- Keep address hashing and only document it (the 4.2 decision): rejected; D9 and the web build
+  need one order on every run.
+- A deterministic allocator instead of ids: much larger, and the browser allocator differs anyway.
+- Hash light C functions by a registration index: no stable index exists for library functions;
+  one shared main position keeps insertion order, and the sandbox reaches about 110 of them.
+- Knobs (`KHZ_KEY_ORDER`, `KHZ_S8_FIXES`) as in the spike: rejected; one build, one behaviour.
+
+## KP-068 — String-cache hash over a bounded prefix
+
+**Decision:** `luaS_new`'s bucket is `luaS_hash(str, n, seed) % STRCACHE_N` with `n` the string's
+length capped at 64 bytes (`KHZ_CACHE_PREFIX`): for strings up to 64 bytes it is exactly the
+brief's `luaS_hash(str, strlen(str), seed)`, for longer ones the hash of the first 64 bytes. A hit
+still costs one `strcmp`; `strlen` runs on a miss only, as before.
+**Rationale:** The brief's formula hashes the whole string on every call. Its serial byte loop
+costs about 60 times a `strcmp` of the same string, and a cache hit is uncharged, so `tostring` of
+an object with a 64 KiB `__name` stalled a callback for 236 ms at the engine budget (2.4 s at the
+default budget), against the binding 8 ms target of "Orchestrator — 4.2 re-review round 3". The
+brief forbids a new charge (it would change budget units); a bounded hash keeps the units model
+and the address-free property (the bucket is a function of content only) and costs +1.2 ms at the
+engine budget (4.6 ms, measurement in the section above). Strings sharing a 64-byte prefix share a
+bucket; they then miss more often, and each miss is charged by patch 4 as before.
+**Alternatives:**
+- Whole-string `luaS_hash` as briefed: rejected for the stall above.
+- Hash the length and both 32-byte ends: needs `strlen` on every hit (measured 6.2 ms at the
+  engine budget, close to the 8 ms target).
+- A new charge per hashed byte: forbidden by the brief (changes budget units).
+
+## KP-068 tests — Black-box observables for address-free order and string cache
+
+**Decision:** `crates/pin_script/tests/spec_lua_addr_free.rs` observes KHZ 34 through integer
+digests of `pairs` order (values folded in visit order) and KHZ 37 through budget units, meaning
+the smallest `instruction_budget` at which a fresh backend loads the probe and runs one tick
+without a fault (binary search over 1..4 000 000), plus `used_memory()` after the chunk and after
+each of four ticks. The order script stores its 27 result slots in a Lua table and pages them out
+through `on_switch(page)`, because `HostCommandQueue::persist_writes` holds 8 writes per callback.
+"Different heap layouts" are made by live Rust-side allocations of pseudo-random sizes before and
+between backend constructions and ticks. The string-cache probe runs in two name styles: the
+spike's (names share their first 64+ bytes) and one whose names differ in their first bytes, so a
+content-derived cache index spreads them. The creation-order variants (forward, reverse, stride 37)
+run identical bytecode over a 60-entry permutation literal into a pre-sized `objs` array, so only
+the order of string creation differs: a first draft with three different loops and an unsized
+`objs` differed by 104 bytes of `used_memory()` on the patched tree from chunk code size and
+table shape alone, with equal units. The order regression pin is an FNV-1a 64 of the order
+transcript recorded from the first patched-tree run.
+**Rationale:** The brief allows units by budget search "or any better black-box observable"; the
+search resolves single charges (unpatched runs differ by 4 to 40 units) and needs no new API.
+Paging keeps every result visible without overflowing the queue (an overflow would also count as
+a determinism-unrelated failure). The second name style keeps the probe meaningful whatever
+bucket function the implementation chooses, since the test asserts equality, not a hit rate.
+**Alternatives:**
+- Lamp intensities as the output channel: `f32` loses digest bits.
+- One combined digest per tick: hides which key type regressed.
+- Measuring units from the tick alone: the chunk's own cost is constant across runs, so including
+  it changes no comparison and avoids a second budget path.

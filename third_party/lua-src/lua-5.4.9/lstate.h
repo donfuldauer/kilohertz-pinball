@@ -147,6 +147,17 @@ struct lua_longjmp;  /* defined in ldo.c */
 #define stacksize(th)	cast_int((th)->stack_last.p - (th)->stack.p)
 
 
+/*
+** KHZ 34: tables, Lua and C closures, full userdata and threads get a
+** per-state creation id ('khzid'), which is their hash as a table key
+** instead of their address (ltable.c 'mainpositionTV'), so 'pairs' order
+** does not depend on where the allocator put them. The counter is 64-bit
+** and the id is its low 32 bits, so it wraps deterministically. The main
+** thread has id 0; 'khzseq' starts at 1 (lua_newstate).
+*/
+#define khz_setid(g,o)	((o)->khzid = cast_uint((g)->khzseq++))
+
+
 /* kinds of Garbage Collection */
 #define KGC_INC		0	/* incremental gc */
 #define KGC_GEN		1	/* generational gc */
@@ -264,6 +275,7 @@ typedef struct global_State {
   unsigned int seed;  /* randomized seed for hashes */
   lua_Integer khzbudget;  /* KHZ: remaining cost budget (see lua.h) */
   lua_Integer khzpending;  /* KHZ: parked pending cost (see lstring.c) */
+  lua_Unsigned khzseq;  /* KHZ 34: next creation id (see khz_setid) */
   lu_byte currentwhite;
   lu_byte gcstate;  /* state of garbage collector */
   lu_byte gckind;  /* kind of GC running */
@@ -313,6 +325,7 @@ struct lua_State {
   lu_byte status;
   lu_byte allowhook;
   unsigned short nci;  /* number of items in 'ci' list */
+  unsigned int khzid;  /* KHZ 34: creation id, the hash of this key */
   StkIdRel top;  /* first free slot in the stack */
   global_State *l_G;
   CallInfo *ci;  /* call info for current function */
