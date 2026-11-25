@@ -39,7 +39,9 @@ only appends to them) and confirm each deferred finding has its DECISIONS.md ent
 1. **Requirements traced.** For each REQUIREMENTS item and each acceptance criterion, find the
    code that implements it and a test that exercises it. Run that test. Each item is `met` (give
    the test name and result), `not met`, or `untestable here` (for example it needs physical
-   hardware; check that it is in `docs/HUMAN_ACCEPTANCE.md` or has a `[P8 hardware]` line). A
+   hardware; check that it is in `docs/HUMAN_ACCEPTANCE.md` or has a `[P8 hardware]` line). An
+   `untestable here` item so recorded does not fail the verdict: manual and physical testing waits
+   for final acceptance, never for this run (PROCESS.md P8 "Manual and physical testing"). A
    docs/config-only requirement is `met` on evidence of the doc change itself (file:line quoting
    the required text); it needs no test. Code requirements keep both the code and a passing test.
 2. **SPEC and REQ-ID trace.** Every SPEC section and REQ ID the brief claims appears in at least

@@ -26,9 +26,8 @@ by a polling `/automation` job. The `run-plan` skill loops over every ready issu
   - **Claude Code:** T0 Haiku 5.5 (`haiku`), T1 Sonnet 5.5 (`sonnet`), T2 Opus 5.5 (`opus`), and
     **T3 Fable 5.2 (`fable`) only** for very-high-blast-radius (P3) or extremely
     hard-to-troubleshoot work, with evidence, **and** only when the account's current usage limits
-    leave enough Fable allowance. Because the agent cannot read `/usage` itself, when Fable is
-    wanted ask the owner and wait up to 30 minutes (P4 "Fable ask"); no answer means unknown, and
-    unknown means no Fable (log `[Fable wanted]` in `docs/RUN_LOG.md`).
+    leave enough Fable allowance. An allowance the agent cannot read counts as not enough: it
+    never asks the owner or waits, but runs at T2 and logs `[Fable wanted]` in `docs/RUN_LOG.md`.
   - **Gemini / Antigravity:** T0 Flash-Lite (`flash_lite`), T1 Flash (`flash`), T2 Pro (`pro`, or
     `inherit` when the session already runs on a Pro/reasoning model), and **T3 escalation**
     (`pro` at maximum reasoning) only under the same P4 need and T2-exhaustion rules when plan and
