@@ -446,68 +446,81 @@ fn acl_state_from(r: isize, errno: Option<i32>) -> AclState {
     }
 }
 
-/// Probes the file at `path` (following symlinks, like the destination's
-/// `metadata`) for a POSIX access ACL, with the same mapping as
-/// [`acl_state`]. A path holding a NUL byte is [`AclState::Unknown`].
-#[cfg(target_os = "linux")]
-fn acl_state_of_path(path: &Path) -> AclState {
-    use std::os::unix::ffi::OsStrExt as _;
-    let Ok(cpath) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-        return AclState::Unknown;
-    };
-    // SAFETY: `cpath` and the name are NUL-terminated C strings that live
-    // for the call, and a null buffer of size 0 only asks for the value's
-    // length (nothing is written).
-    let r = unsafe {
-        libc::getxattr(
-            cpath.as_ptr(),
-            c"system.posix_acl_access".as_ptr(),
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    acl_state_from(r, std::io::Error::last_os_error().raw_os_error())
-}
-
 /// No POSIX ACL probe off Linux: always [`AclState::Absent`].
 #[cfg(all(unix, not(target_os = "linux")))]
 fn acl_state(_: &std::fs::File) -> AclState {
     AclState::Absent
 }
 
-/// No POSIX ACL probe off Linux: always [`AclState::Absent`].
-#[cfg(all(unix, not(target_os = "linux")))]
-fn acl_state_of_path(_: &Path) -> AclState {
-    AclState::Absent
+/// What the commit reads from the existing destination `dest`, all from
+/// ONE inode: the destination itself is inspected with `symlink_metadata`
+/// (never a symlink's target); only a regular file is then opened
+/// read-only once (on Linux with `O_NOFOLLOW | O_NONBLOCK`, so a symlink or
+/// FIFO swapped in cannot be followed or block), and that descriptor gives
+/// both the mode, owner and group (`fstat`) and the access-ACL state
+/// ([`acl_state`], `fgetxattr`). `Ok(None)` (the temp file keeps its created
+/// `0600`) when `dest` is missing, a symlink or not a regular file, or when
+/// the open fails for any reason, the opened file is not a regular file, or
+/// its `(dev, ino)` differs from the inspected one (the destination was
+/// replaced in between). An inspection error other than "not found" is
+/// returned.
+#[cfg(unix)]
+fn dest_inode_inputs(dest: &Path) -> std::io::Result<Option<(std::fs::Metadata, AclState)>> {
+    use std::os::unix::fs::MetadataExt as _;
+    let seen = match std::fs::symlink_metadata(dest) {
+        Ok(m) if m.is_file() => m,
+        Ok(_) => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    // Fail closed: any open or fstat failure keeps the created 0600.
+    let Ok(d) = opts.open(dest) else {
+        return Ok(None);
+    };
+    let Ok(m) = d.metadata() else {
+        return Ok(None);
+    };
+    if !m.is_file() || m.dev() != seen.dev() || m.ino() != seen.ino() {
+        return Ok(None);
+    }
+    let acl = acl_state(&d);
+    Ok(Some((m, acl)))
 }
 
 /// Gives the open temp `file` the permission bits of the existing
-/// regular-file destination `dest`, read now, as [`trace_mode`] allows
-/// (group bits only when the temp file's owner and group, from `fstat`,
-/// match the destination's), so the rename never widens access. A missing
-/// destination leaves `file` as created (`0600`). ACL rule
-/// ([`trace_chmod`], [`AclState::combine`]): when the temp file or the
-/// existing destination carries a POSIX access ACL (Linux; on the temp file
-/// typically inherited from a directory default ACL) or either ACL state
-/// cannot be read, the temp file is not chmod-ed at all and keeps its
-/// created `0600`: a chmod would raise the temp file's ACL mask, and
-/// copying the destination's mode bits alone would drop the named-user
-/// entries the destination's ACL denies (CWE-732).
+/// regular-file destination `dest`, as [`trace_mode`] allows (group bits
+/// only when the temp file's owner and group, from `fstat`, match the
+/// destination's), so the rename never widens access. The destination's
+/// mode, owner, group and ACL state are read from one opened descriptor of
+/// the destination itself ([`dest_inode_inputs`]): a missing destination, a
+/// symlink (its target never supplies bits), any other non-regular file, an
+/// unopenable destination or one replaced between inspection and open
+/// leaves `file` as created (`0600`). ACL rule ([`trace_chmod`],
+/// [`AclState::combine`]): when the temp file or the destination carries a
+/// POSIX access ACL (Linux; on the temp file typically inherited from a
+/// directory default ACL) or either ACL state cannot be read, the temp file
+/// is not chmod-ed at all and keeps its created `0600`: a chmod would raise
+/// the temp file's ACL mask, and copying the destination's mode bits alone
+/// would drop the named-user entries the destination's ACL denies
+/// (CWE-732).
 #[cfg(unix)]
 fn keep_dest_permissions(file: &std::fs::File, dest: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-    match std::fs::metadata(dest) {
-        Ok(m) if m.is_file() => {
-            let t = file.metadata()?;
-            let acl = acl_state(file).combine(acl_state_of_path(dest));
-            match trace_chmod(m.mode(), m.uid(), m.gid(), t.uid(), t.gid(), acl) {
-                TraceChmod::To(mode) => file.set_permissions(std::fs::Permissions::from_mode(mode)),
-                TraceChmod::KeepCreated => Ok(()),
-            }
-        }
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
+    let Some((m, dest_acl)) = dest_inode_inputs(dest)? else {
+        return Ok(());
+    };
+    let t = file.metadata()?;
+    let acl = acl_state(file).combine(dest_acl);
+    match trace_chmod(m.mode(), m.uid(), m.gid(), t.uid(), t.gid(), acl) {
+        TraceChmod::To(mode) => file.set_permissions(std::fs::Permissions::from_mode(mode)),
+        TraceChmod::KeepCreated => Ok(()),
     }
 }
 
@@ -1004,13 +1017,30 @@ mod tests {
         a.iter().map(|s| (*s).to_owned()).collect()
     }
 
-    /// A fresh, empty temp directory unique to this process and call.
+    /// A fresh, empty temp directory unique to this process and call. On
+    /// Linux any default ACL it inherited from the temp root is removed
+    /// (best effort), so files created in it carry no access ACL whatever
+    /// the temp root's ACLs are (REQ-LAT-003, gate 30 round 4, review
+    /// thread 4699765184). A test that needs a default ACL installs its own
+    /// after this call.
     fn fresh_dir(tag: &str) -> PathBuf {
         static N: AtomicU64 = AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("kp_trace_{tag}_{}_{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            if let Ok(c) = std::ffi::CString::new(dir.as_os_str().as_bytes()) {
+                // SAFETY: `c` and the name are NUL-terminated C strings that
+                // live for the call. Best effort: ENODATA (no default ACL),
+                // ENOTSUP/EOPNOTSUPP (no xattrs) and any other failure are
+                // ignored.
+                let _ =
+                    unsafe { libc::removexattr(c.as_ptr(), c"system.posix_acl_default".as_ptr()) };
+            }
+        }
         dir
     }
 
@@ -1717,29 +1747,134 @@ mod tests {
         }
     }
 
-    /// REQ-LAT-003 (gate 30 round 3): the path probe finds no access ACL
-    /// on a plain file in a fresh temp directory, and a path holding a NUL
-    /// byte (which no syscall can take) is `Unknown` (fail closed).
+    /// REQ-LAT-003 (gate 30 round 3; gate 30 round 4, review thread
+    /// 4699765169): the destination's ACL is probed on its opened
+    /// descriptor (the path probe is gone); a plain file written in a
+    /// fresh temp directory, then opened read-only, has no access ACL.
     #[test]
     #[cfg(target_os = "linux")]
-    fn req_lat_003_acl_state_of_path_plain_file_and_nul_byte() {
-        use std::os::unix::ffi::OsStrExt as _;
-        let nul = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/a\0b"));
-        assert_eq!(super::acl_state_of_path(nul), AclState::Unknown);
+    fn req_lat_003_acl_state_of_opened_plain_file_is_absent() {
         let dir = fresh_dir("aclpath");
         let p = dir.join("plain");
         std::fs::write(&p, "x").unwrap();
-        let state = super::acl_state_of_path(&p);
+        let f = std::fs::File::open(&p).unwrap();
+        let state = super::acl_state(&f);
         if state == AclState::Unknown {
-            let f = std::fs::File::open(&p).unwrap();
             let errno = fgetxattr(&f, c"system.posix_acl_access").err();
             eprintln!(
-                "SKIPPED req_lat_003_acl_state_of_path_plain_file_and_nul_byte: ACL state unreadable here (errno {errno:?})"
+                "SKIPPED req_lat_003_acl_state_of_opened_plain_file_is_absent: ACL state unreadable here (errno {errno:?})"
             );
             std::fs::remove_dir_all(&dir).unwrap();
             return;
         }
         assert_eq!(state, AclState::Absent);
+        drop(f);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (gate 30 round 4, review thread 4699765150, CWE-732):
+    /// a symlinked trace path whose target is an ACL-free `0644` file with
+    /// the temp file's owner and group supplies no permission bits: the
+    /// published file at the link path is a regular file with the created
+    /// `0600`, and the target's bytes and `0644` are unchanged.
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_symlinked_trace_path_publishes_0600() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = fresh_dir("sym0644");
+        let target = dir.join("target.csv");
+        std::fs::write(&target, b"target bytes").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let link = dir.join("link.csv");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let sink = open_latency_trace(&args(&["--latency-trace", link.to_str().unwrap()]))
+            .unwrap()
+            .unwrap();
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            super::acl_state(sink.file.as_ref().unwrap()),
+            AclState::Absent,
+            "the temp file has no access ACL"
+        );
+        sink.commit(b"csv").unwrap();
+        let m = std::fs::symlink_metadata(&link).unwrap();
+        assert!(m.is_file(), "the link path is now a regular file");
+        assert_eq!(
+            m.permissions().mode() & 0o777,
+            0o600,
+            "never the target's 0644"
+        );
+        assert_eq!(std::fs::read(&link).unwrap(), b"csv");
+        assert_eq!(std::fs::read(&target).unwrap(), b"target bytes");
+        assert_eq!(mode(&target), 0o644, "the target's mode is unchanged");
+        assert_eq!(
+            names(&dir),
+            vec!["link.csv".to_owned(), "target.csv".to_owned()]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (gate 30 round 4, review threads 4699765150 and
+    /// 4699765169, CWE-367): the destination's mode and ACL come from one
+    /// opened descriptor of the destination itself. A regular `0644` file
+    /// gives its metadata and `Absent`; a symlink to it, a directory, a
+    /// FIFO and a missing path give `None` (the temp file keeps `0600`); an
+    /// unreadable file gives `None` too (checked when not running as root,
+    /// which can open any file).
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_dest_inode_inputs_reads_one_regular_inode() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let dir = fresh_dir("inode");
+        let p = dir.join("t.csv");
+        std::fs::write(&p, "old").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let (m, acl) = super::dest_inode_inputs(&p)
+            .unwrap()
+            .expect("a regular file");
+        assert_eq!(m.mode() & 0o777, 0o644);
+        assert_eq!(m.ino(), std::fs::symlink_metadata(&p).unwrap().ino());
+        if acl == AclState::Unknown {
+            eprintln!(
+                "SKIPPED req_lat_003_dest_inode_inputs_reads_one_regular_inode ACL check: ACL state unreadable here"
+            );
+        } else {
+            assert_eq!(acl, AclState::Absent);
+        }
+        let link = dir.join("link.csv");
+        std::os::unix::fs::symlink(&p, &link).unwrap();
+        assert!(
+            super::dest_inode_inputs(&link).unwrap().is_none(),
+            "symlink"
+        );
+        let sub = dir.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        assert!(
+            super::dest_inode_inputs(&sub).unwrap().is_none(),
+            "directory"
+        );
+        let fifo = dir.join("f.fifo");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !matches!(&made, Ok(s) if s.success()) {
+            let _ = std::fs::remove_dir_all(&dir);
+            panic!("mkfifo is required for the FIFO check and failed: {made:?}");
+        }
+        assert!(super::dest_inode_inputs(&fifo).unwrap().is_none(), "FIFO");
+        let missing = dir.join("missing.csv");
+        assert!(
+            super::dest_inode_inputs(&missing).unwrap().is_none(),
+            "missing"
+        );
+        let me = std::fs::metadata(&dir).unwrap().uid();
+        if me != 0 {
+            let locked = dir.join("locked.csv");
+            std::fs::write(&locked, "x").unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o200)).unwrap();
+            assert!(
+                super::dest_inode_inputs(&locked).unwrap().is_none(),
+                "unreadable"
+            );
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1761,7 +1896,9 @@ mod tests {
     /// (`user:65534:---`) in a directory with NO default ACL. The temp
     /// file has no ACL and the same owner and group, so copying the mode
     /// would publish a `0644` file without the denial; the destination
-    /// probe keeps it `0600` instead.
+    /// probe keeps it `0600` instead. Gate 30 round 4 (review thread
+    /// 4699765169): the destination's ACL is probed on an opened
+    /// descriptor, the way the commit now reads it.
     #[test]
     #[cfg(target_os = "linux")]
     fn req_lat_003_commit_keeps_dest_acl_denial() {
@@ -1793,7 +1930,10 @@ mod tests {
         }
         // The scenario is real: the destination has an ACL, the directory
         // no default one (so the temp file has none).
-        assert_eq!(super::acl_state_of_path(&p), AclState::Present);
+        assert_eq!(
+            super::acl_state(&std::fs::File::open(&p).unwrap()),
+            AclState::Present
+        );
         assert_eq!(mode(&p), 0o644);
         let sink = open_latency_trace(&args(&["--latency-trace", p.to_str().unwrap()]))
             .unwrap()

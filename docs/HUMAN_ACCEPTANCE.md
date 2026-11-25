@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 521
-- Run-log rows: 569
+- Decision entries: 522
+- Run-log rows: 571
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -566,6 +566,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #163 gate review round 2: trace replacement never widens ACL access (docs/DECISIONS.md)
 - #163 gate review round 3: destination ACL probe, libc workspace pin, retry timeout and gate-process wording (docs/DECISIONS.md)
 - #163 gate review round 3: gpu-tests job time after a manifest change (docs/DECISIONS.md)
+- #163 gate review round 4: destination permission read from one inode, symlink destinations, fixture ACLs (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

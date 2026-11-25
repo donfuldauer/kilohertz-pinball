@@ -8824,3 +8824,41 @@ This is not a code or test regression.
 - Add `restore-keys` to the cache step.
 
 Both are kept in reserve: if a warm-cache run exceeds about 30 minutes, adopt one of them in a CI unit.
+
+## #163 gate review round 4 — destination permission read from one inode, symlink destinations, fixture ACLs
+
+**Decision.** Three fixes in `crates/pin_app/src/main.rs`, all fail-closed to the temp file's
+created `0600`:
+1. Thread 4699765150 (CWE-732): the destination is inspected with `symlink_metadata`, so a symlink
+   (or any other non-regular file, or a missing file) supplies no permission bits; the published
+   file at the link path keeps `0600` and the link's target is untouched.
+2. Thread 4699765169 (CWE-367): the destination's mode, owner, group and access-ACL state come
+   from one inode. A new private `dest_inode_inputs` opens the regular-file destination read-only
+   once (on Linux with `O_NOFOLLOW | O_NONBLOCK`), requires the descriptor to be a regular file
+   with the inspected `(dev, ino)`, and takes `fstat` and `fgetxattr` from that descriptor. Any
+   open or `fstat` failure, or a mismatch, keeps `0600` with no chmod. The path-based probe
+   `acl_state_of_path` and its non-Linux stub are removed. `dest_inode_inputs` returns
+   `io::Result<Option<..>>` rather than a bare `Option`: an inspection error other than "not
+   found" is still returned, as before this round, so the commit behaviour for such paths does
+   not change. The round-3 NUL-byte path case is removed with the path API it tested.
+3. Thread 4699765184: the test helper `fresh_dir` removes any inherited
+   `system.posix_acl_default` (best effort), so the ACL-free fixtures hold whatever the temp root's
+   ACLs are; the inherited-ACL test installs its own default ACL after `fresh_dir`.
+
+**Rationale.** (i) The three fixes make the copied bits always describe the inode whose ACL was
+probed, never a symlink's target. (ii) Residual window: a writer that can create files in the
+destination directory can still replace the destination between our read and the rename. Such a
+writer can already delete or replace the trace, so the published trace is never more readable than
+the inode we read, and `rename(2)` offers no way to close the window further. (iii) Not a defect:
+thread 4699765195 (pass an absolute shared deadline through `run_bounded`). The overrun is bounded
+by scheduling jitter between sampling the remaining budget and starting the child timer, inside the
+documented 50 ms first-attempt floor of `release_held`. Threading an absolute deadline would change
+four signatures and about 12 test call sites for no observable gain. (iv) Deferred #201 (KP-097): pr-watch
+gate-issue-PR threads and the area-PR head (threads 4699765126 and 4699765141) go to M2 (#80),
+Depends on #163.
+
+**Alternatives.** A stat-before / stat-after `(dev, ino, ctime)` comparison on the path (rejected:
+weaker, open to ABA replacement). Copy no mode bits at all (rejected: changes the existing
+`0640 stays 0640` behaviour the tests cover). Return a bare `Option` from `dest_inode_inputs`
+(rejected: would silently turn an inspection error into a successful `0600` commit, a behaviour
+change outside these findings).
