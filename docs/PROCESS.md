@@ -458,10 +458,10 @@ explicitly on a gate review PR.)
    - the issue is not a gate issue, or its gate review is approved (below).
 
    Then the Orchestrator merges with a merge commit (`merge_pull_request`, method `merge`, or
-   `gh pr merge <P> --merge --match-head-commit <sha>`), checks the branch is deleted (deleting it
-   if not), unsubscribes from the PR if subscribed, and **unblocks dependents**: every open
-   `work-unit` issue whose **Depends on** entries are now all satisfied swaps its `blocked` label
-   for `ready`, with a comment "Unblocked by #<N> (PR #<P>)". The **merged-PR rule:** a dependency
+   `gh pr merge <P> --merge --match-head-commit <sha>`), does not delete the branch (the repository
+   deletes merged branches automatically), unsubscribes from the PR if subscribed, and **unblocks
+   dependents**: every open `work-unit` issue whose **Depends on** entries are now all satisfied
+   swaps its `blocked` label for `ready`, with a comment "Unblocked by #<N> (PR #<P>)". The **merged-PR rule:** a dependency
    is satisfied only if it is closed as completed by a merged PR (via MCP: `issue_read`
    `closed_by_pull_requests.references` + `pull_request_read` `merged` true; via `gh` CLI:
    `gh issue view <n> --json state,stateReason,closedByPullRequestsReferences` + `gh pr view <p> --json mergedAt`
