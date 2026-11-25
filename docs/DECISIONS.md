@@ -7547,6 +7547,351 @@ stamp, keeps the metric correct for every stamp.
 recording `ProfiledSim::new` would record each input twice; this is documented on
 `ThreadsConfig::loop_profiler`.
 
+## #82 — Owned-path extension for the trace hooks
+
+**Decision:** The latency trace is wired through the smallest edits outside the issue's path list:
+`crates/pin_app/src/orchestrator/mod.rs` (`pub mod trace;`, a `trace` field on `SimLoop` with
+`SimLoop::set_latency_trace`, and four `if let Some(t)` hooks in `set_epoch_ns`, `skip_ticks` and
+`run_ticks_inner`: tick start, each delivered event, after the step) and
+`crates/pin_app/src/orchestrator/threads.rs` (a `latency_trace` field on `ThreadsConfig` and on
+`RenderConfig`, installed on the sim loop in `spawn_threads`, and one frame-record call on each of
+the render thread's two present paths: `presented(..)` after the debug presenter's render, and on
+the table path `presented_at(..)` with the stamp the playfield hook took, see "#82 — Owned-path
+extension: present.rs playfield hook"). `lib.rs` is unchanged.
+
+**Rationale:** The applying tick, its tick end on the SDL clock, the drain times and the bat's
+first move are only known inside `SimLoop::run_ticks_inner`, and the present time only on the
+render thread. The issue lists `main.rs` and the new `trace.rs`; the brief names these two files as
+the declared extension. Without a writer installed every hook is a `None` check, so default runs,
+headless runs and replay digests are unchanged.
+
+**Alternatives:** Wrapping the `SimStep` (like `ProfiledSim`): rejected, the step does not see the
+raw SDL stamp, the epoch, the drain time or dropped ticks. Polling the triple buffer from another
+thread: rejected, it misses ticks and cannot attribute events to ticks.
+
+## #82 — Latency trace CSV format and where the frame table lives
+
+**Decision:** `--latency-trace <file>` writes one UTF-8 file, version 1: the event table (header
+`event_seq,input,down,sdl_ts_ns,apply_tick,apply_tick_end_sdl_ns,prev_tick_end_sdl_ns,drain_sdl_ns,prev_drain_sdl_ns,dropped_ticks_at_apply,stall,move_tick,frame,frame_snap_tick,present_ns,frames_to_photon`,
+one row per delivered button event), one empty line, the frame table (`frame,snap_tick,present_ns`,
+one row per presented playfield frame; a backglass- or score-only present is not a frame), and a
+two-line trailer: `# overflows: input=N move=N frame=N pending=N` (each counter exactly once) and
+`# run_end_ns=N`, the SDL clock read on the main thread when the run loop ended, before the threads
+were joined (the run's end in the trace's own clock domain; a render freeze cannot move it).
+Integers only, empty for "none", `\n` line ends, all times on SDL's clock. The column rustdoc is in
+`crates/pin_app/src/orchestrator/trace.rs`. Every button event is recorded (not only flippers);
+only presses of inputs bound to flippers (`DedicatedButton` / `ParallelLinked` staging) are watched
+for a bat move. Capacities: 65 536 input rows (and bat-move rows), 262 144 frame rows, 32 presses
+watched at once, a 5 000-tick move timeout; overflows are counted in the trailer and the summary
+line. `prev_tick_end_sdl_ns` is an extra column (beyond the brief's list) so a reader can see
+whether the press was stamped after the previous executed tick's end (the first-tick rule) or
+reached the ring after that tick ran. For a press with `stall = 1`, `prev_drain_sdl_ns` and
+`drain_sdl_ns` hold the stall's start and end (the drains of the last tick before it and the first
+tick after it), also when the press was applied in a later tick of the same catch-up batch.
+`move_tick` is the first tick with a bound bat raised at least 1 degree (0.01745 rad) from the
+applying tick's start in the energised direction ("#82 — move_tick: 1 degree in the energised
+direction"); `frame` is the first presented frame whose snapshot tick lies in `[move_tick,
+release_tick]`, `release_tick` being the `apply_tick` of the next release of the same input
+(unbounded without one), and whose snapshot shows the bat raised at least 1 degree from the press's
+applying-tick base in the energised direction, so the frame showed the bat raised while the key was
+held (the angles are kept in memory for the join and not written). `frames_to_photon` stays the raw
+count from the press. On the table presenter path `present_ns` is the SDL clock read immediately
+after the playfield `queue.present` returned, before any reconfigure and before the other surfaces
+are drawn; only on the debug presenter (no table, or a playfield the table presenter cannot use;
+`--debug-overlay` does not select it) is it read after the whole render call ("#82 — Review round
+1: present time and trace write placement kept"). The trace file is prepared on the main thread at startup and written on the main thread
+after every sim, render and audio thread was joined; no thread that runs a tick or draws a frame
+touches the filesystem (same class as the startup table load). The trace is written to a sibling
+temp file (created at startup with `create_new` as the writability probe) and renamed over the
+destination at shutdown; the destination is never truncated, so a hard-linked bundle is safe. A
+destination that is the `--table` bundle file (same device and inode; a canonical-path comparison
+off Unix) is still refused before anything is created; a value starting with `--` is an option, not
+a path. While
+tracing, the main thread prints `pin_app: latency trace: first frame presented` once the first
+playfield frame was presented, which the driver waits for.
+
+**Rationale:** One file is one artifact, and the verdict is a pure function of one text plus the
+shutdown line. The sections are separated by fixed header lines, so a reader splits on them.
+
+**Alternatives:** A sidecar `<file>.frames.csv`: rejected, two files to keep together and two
+paths to validate up front. Writing only flipper events: rejected, Gate A3 and KP-043 may want the
+other buttons.
+
+## #82 — Windowed latency check definitions
+
+**Decision:** Presses are down events of the four flipper inputs. `TICK` = 1 ms. `move_tick` is
+the first tick at whose end a bat bound to the pressed input is raised at least 1 degree
+(0.01745 rad) from its angle at the start of the applying tick, in its energised direction. The
+run's end is the trace's `run_end_ns`.
+- **a. Key to coil (REQ-LAT-004, REQ-LAT-005).** Windowed check a verifies (1) the applying tick's
+  end is not before the timestamp: `apply_tick_end_sdl_ns >= sdl_ts_ns`; (2) the lateness bound:
+  `apply_tick_end_sdl_ns - sdl_ts_ns <= TICK + 2 ms`, plus the observed stall
+  `drain_sdl_ns - prev_drain_sdl_ns` for a press with `stall = 1`, and no more; (3) the coil delay
+  bound: `move_tick - apply_tick <= 8` ticks (the press takes effect, its coil energised, in
+  the applying tick; the bound is the tick count the 1 degree raise needs, measured below). A press
+  whose bat never moved fails check a ("the bat never moved after the press was applied"), unless
+  its `apply_tick_end_sdl_ns` is within `8 + 2` ticks of `run_end_ns` (the run ended before
+  the bat could move). "The applying tick is the first executed tick that received it" is verified
+  by the deterministic SimLoop tests (`req_lat_004_apply_tick_is_the_delivering_tick`, the proptest
+  `req_lat_004_first_executed_tick_and_req_lat_001_frames` in `tests/windowed/main.rs`, and
+  `--test input_epoch`), not by the windowed run: the sim pops every ring event stamped at or before
+  the tick end, up to the per-tick input buffer of 256 events (`INPUT_BUFFER_CAPACITY` in
+  `orchestrator/mod.rs`); eligible events beyond 256 are applied in a later executed tick (the next
+  one, or later ones when more than 256 remain: the app input ring holds 1,024 events) (test
+  `input_overflow_defers_to_next_tick`), so an eligible event in the ring cannot be skipped as long
+  as at most 256 events are eligible in one tick. The trace has no receipt time to tell a late
+  arrival from a skipped one; the rest is tracked in a follow-up work-unit issue: the platform
+  forwarder's receipt stamp in the trace.
+  Check a's coil sub-check bounds `move_tick - apply_tick`, where `move_tick` is the first tick
+  with at least 1 degree of raised-direction bat displacement. It is a proxy for the tick the coil
+  is energised, because neither `FrameStateSnapshot`/`FlipperState` (pin_core) nor `SimStep` exposes
+  the coil state and #82 may not change a pin_core contract (R2). A coil energised late but within
+  the bound of `move_tick` still passes, so the bound (`coil_ticks`, 8, measured maximum 6 plus a
+  margin of 2) is kept tight. The exact coil-energisation tick is tracked in a follow-up work-unit
+  issue.
+- **`stall`** is 1 when the press was stamped at or after the start and before the end of a stall the sim thread observed (a
+  tick that started more than 2 ms after the previous executed tick, or after dropped ticks) and was
+  applied in that tick or in a later tick of the same catch-up batch (each was due when the tick
+  before it started); a press stamped before the stall's start reached the ring late and keeps the
+  ordinary bound. The row's `prev_drain_sdl_ns` / `drain_sdl_ns` are then the stall's start and
+  end, so the allowance `drain - prev_drain` is the stall unchanged. It comes from the sim thread's
+  own scheduling and the timestamp, never from the lateness; the verdict's allowance depends only on
+  those two columns, so a wrong flag buys nothing.
+- **Tolerance 2 ms** (main-thread forwarding plus sim wake-up). Observed on the agent VM with
+  `LP_NUM_THREADS=2`: drain gaps of on-time ticks at most 1.29 ms (p99 1.15 ms), press lateness at
+  most 1.46 ms over 144 presses. With `LP_NUM_THREADS=3` one press was 4.0 ms late (the main thread
+  starved), which check a correctly fails.
+- **Coil bound `8` ticks.** Measured on three 60 s head runs (agent VM,
+  `LP_NUM_THREADS=2`; 160, 170 and 170 presses): `move_tick - apply_tick` was 4 ticks for 495
+  presses, 5 for three and 6 for two; the 5- and 6-tick presses came about 100 ticks after the
+  previous release, while the bat was still settling at its rest stop. The bound is the measured
+  maximum 6 plus a margin of 2 ticks, so 8. The pre-#81 behaviour delays the move by hundreds of ms
+  to a second and still fails it by two orders of magnitude.
+- **b. Key to photon in frames (REQ-LAT-001, CI form).** For every press not stamped within 500 ms
+  of `run_end_ns` (excluded and counted): `frame` is the first presented frame whose snapshot shows
+  the bat displaced by at least 1 degree in the energised direction from the press's applying-tick
+  base, among the frames whose snapshot tick lies in `[move_tick, release_tick]` (the next release
+  of the same input; unbounded without one), in present order: the first frame that showed the bat
+  raised while held. `move_tick` only selects the earliest candidate frame; the count does not start
+  from it. The gate is the raw count from the press:
+  `n_raw = frame - F0`, `F0` the last presented frame at or before `sdl_ts_ns`, and `n_raw <= 2`
+  passes; a press before the first presented frame counts from frame index 0 (`n_raw` = raised
+  frame index + 1; PR #146 review round 3, O1). Exactly one allowance: if the frame in flight at the press (`F0 + 1`, the first presented
+  after `sdl_ts_ns`) was presented in `(sdl_ts_ns, sdl_ts_ns + bound_a + 8 ticks]` (`bound_a`
+  that press's check-a bound), the count may start after it: `n_adj = frame - (F0 + 1)`, and the
+  press passes when `n_adj <= 2`. The shift is at most one frame and is never given to a press that
+  failed check a. The summary and check b's line print the raw max and p99, the adjusted max and
+  p99 (the gated count: `n_adj` for a shifted press, else `n_raw`) and the number of "in-flight
+  shifted" presses. A press with no move, or no frame that showed the bat raised while held
+  ("no presented frame showed the bat raised while held"), fails. The trace column
+  `frames_to_photon` is the raw form; the verdict recomputes it from the frame table and fails on a
+  mismatch. The bat angles each frame drew are not in the file, so the verdict cannot repeat the
+  angle test: it checks that the trace's `frame` exists, matches its frame-table row
+  (`frame_snap_tick`, `present_ns`) and is a candidate (snapshot tick in `[move_tick,
+  release_tick]`, not before the first candidate), and fails otherwise.
+- **c. Real time (REQ-LAT-002, CI form).** `D * 1000 <= N + D` from the shutdown line, and `N`
+  within 1 % of the run length in ms. The Low quality preset is not applied (it does not exist yet;
+  REQ-LAT-006 belongs to another unit); only the worker-thread cap is.
+- **d. Completeness.** No trace overflow, at least 100 presses, as many presses traced as
+  injected, and no dropped input event: the shutdown line's `input dropped N` must be 0 (each
+  dropped event is a missing trace row; the field is required, a line without it is malformed;
+  PR #146 review round 3, O2).
+
+**SPEC erratum (REQ-LAT-001, CI form).** "At most two presented frames from the event to the first
+frame showing the bat moved" can be exceeded by correct code: when a present returns within the
+key-to-move time after the press (the coil needs the applying tick plus the ticks to raise the bat
+1 degree), the frame in flight at the press cannot show it, and the next frame read its snapshot
+when that present returned, before the bat moved, so the first frame that can show it is the third.
+Proposed SPEC edit: count from the first frame that started after the press took effect ("at most
+two presented frames after the first frame begun once the press was applied"), or state the CI form
+at the 99th percentile like the millisecond form. Until then check b gates the raw count with the
+one-frame in-flight allowance above, counted and printed. Measured on three 60 s head runs:
+5 of 160, 10 of 170 and 3 of 170 presses had a raw count of 3 (in the first run the frame in
+flight presented 0.2 to 4.7 ms after the press, inside the deadline window); the raw maximum was
+3, the adjusted maximum 2.
+
+**Rationale:**
+- **Raw count with one counted allowance.** The render loop reads the next snapshot as soon as the
+  previous present returns, so the frame after F0 (F0 taken at the timestamp) never shows the press.
+  The frame after that shows it only if the bat had moved by the time that frame read its snapshot.
+  Gating the raw count keeps the SPEC's form; the single in-flight allowance covers exactly the race
+  above (the in-flight frame presented before the press could have taken effect) and nothing more:
+  it shifts by one frame at most, only inside the REQ-LAT-004 deadline, never for a late press, and
+  every use is counted in the summary, so a renderer that is a frame slow still fails.
+- **Frames must show the bat raised while held.** A frame drawn after the release was applied may
+  show a bat already falling back below 1 degree, and a ball impact or a stop rebound can drop the
+  bat below 1 degree after `move_tick` even while the key is held; a frame at the release tick may
+  show the bat falling. So the join tests each candidate frame's own snapshot with the same
+  1 degree predicate as `move_tick` (PR #146 review round 2), not the snapshot tick alone.
+- **`run_end_ns` from the trace's clock.** The last frame's present time ends the run early when
+  rendering freezes, which would exclude (hide) every press made during the freeze.
+- **A press that never moved fails a.** A coil that never fires is the worst key-to-coil delay;
+  only the last few ticks of the run cannot show a move.
+- **The coil sub-check in a.** The pre-#81 bug delivered events to the step in the right tick, but
+  handed it the raw SDL stamp, which the simulation gated again against epoch 0. So `apply_tick`
+  (the delivering tick) was on time and only the bat's move was late (hundreds of ms to a second).
+  Without this sub-check, check a would pass the bug.
+
+**Alternatives:**
+- F0 at the coil deadline (`sdl_ts_ns + bound_a + 2 ticks`, this unit's first version): rejected
+  in review; it could absorb more than one frame when several presents land inside the deadline
+  window, and it is not the SPEC's count.
+- The raw count with no allowance: rejected, it fails correct code whenever a present lands within
+  the key-to-move time after a press (the erratum).
+- A p99 frame criterion: rejected, the brief asks for every press, and p99 over about 150 presses
+  still fails on two unlucky presses.
+- A larger tolerance in a: rejected, it would weaken the check on the main thread's delay without
+  being needed at the chosen cap.
+
+## #82 — XTest key injection with X keycodes, no SDL hook
+
+**Decision:** The driver injects presses with XTest through `xdotool keydown/keyup` and the X
+keycodes 50 (Shift_L, left flipper) and 62 (Shift_R, right flipper). Before the presses it points
+the mouse at the window and focuses it (`mousemove --window`, `windowraise`, `windowfocus`; bare
+Xvfb has no window manager). There is no SDL event-injection hook.
+
+**Rationale:** XTest goes through the real X server, SDL's X11 event path and timestamps, the
+forwarder and the ring, which is what a player's key press goes through. A test-only hook would
+need a cargo feature in `Cargo.toml`, which this unit may not edit. The keysym form `xdotool
+keydown Shift_R` was measured to also press Shift_L (each right press arrived as left plus right),
+so keycodes are used.
+
+**Alternatives:** An SDL `SDL_PushEvent` hook behind `cfg(test)`: rejected, it is not reachable from
+the release binary and skips the X path. Keysyms: rejected (above).
+
+## #82 — LP_NUM_THREADS cap
+
+**Decision:** `LP_NUM_THREADS=2` in `windowed.yml` and as the default of `scripts/windowed/run.sh`
+and the driver.
+
+**Rationale:** Measured on the 4-core agent VM, one 60 s run each with the grey-box table
+(dropped ticks of about 60 000; presented frames; check a):
+- `LP_NUM_THREADS=1`: 30 dropped (0.050 %); 277 frames; pass.
+- `LP_NUM_THREADS=2`: 8 dropped (0.013 %); 526 frames; pass, max lateness 1.46 ms.
+- `LP_NUM_THREADS=3`: 20 dropped (0.033 %); 734 frames; fail, one press 4.0 ms late (main thread
+  starved).
+
+At 2, the dropped ratio is a seventh of the 0.1 % limit, the frame rate is about 8.8 per second,
+and the sim, main, render and audio threads keep a core between them. At 3, the four vCPUs are
+oversubscribed. 1 halves the frame rate without lowering the dropped ticks. The VM is shared with
+other sessions, so the single-run numbers vary. The method is in DEVELOPMENT.md "Windowed latency
+harness".
+
+**Alternatives:** 1 (fewer frames, no gain in dropped ticks); 3 (late presses); unset (lavapipe
+uses every core).
+
+## #82 — move_tick: 1 degree in the energised direction
+
+**Decision:** `move_tick` is the first executed tick `t >= apply_tick` whose end-of-tick snapshot
+shows, for one of the bats bound to the pressed input, a displacement of at least 1 degree
+(`RAISE_THRESHOLD_RAD` = 0.017453292 rad) from that bat's angle at the start of the applying tick,
+in the energised direction. `FlipperState::angle_rad` is the angle relative to rest, signed like
+the flipper's `sweep_angle_deg` (`pin_physics` reports `sign * q`, with the travel `q` from 0 at
+the rest stop to the sweep at the end stop and `sign` the sweep's sign), so the energised direction
+is the sweep's sign; `FlipperBindings::of_flippers` records it per flipper (the grey-box right
+flipper sweeps -50 degrees, so it raises towards negative angles). Motion the other way (a bat
+still returning from an earlier release) never sets `move_tick`. The trace's frame join takes the
+first frame whose snapshot tick lies in `[move_tick, release_tick]` (the next release of the same
+input), rather than carrying the bat angles in each frame row, so the CSV columns are unchanged.
+
+**Rationale:** REQ-LAT-001 counts to "the first presented frame in which that bat has moved at
+least 1°". "Any change of angle" counted sub-degree jitter and the return motion of an earlier
+release (which could set `move_tick == apply_tick` with no coil at all). A bat raised monotonically
+while held stays at least 1 degree above its base until the release is applied, so the
+`[move_tick, release_tick]` join is exact without per-frame angles.
+
+**Alternatives:** Four bat angles per frame row (a fixed array) and a join on the presented
+snapshot's displacement: rejected, it changes the frame-table columns that Gate A3 and KP-043 read,
+for no gain while holds keep the bat raised. Displacement in absolute value: rejected, it counts the
+return motion.
+
+## #82 — Windowed press schedule
+
+**Decision:** The driver's presses follow a seeded plan (`press_plan`): each flipper key presses on
+its own timeline (hold = 3 frame intervals, `KP_WINDOWED_FRAME_MS` default 125 ms, so 375 ms,
+capped at 1 s, plus 0 to 170 ms of jitter; gap 100 to 250 ms), the right key phase-shifted so the
+keys alternate and overlap; times in microseconds, never aligned to ticks; the fixed default seed.
+The two solo screenshot holds (left after 10 presses, right after 20, each 800 ms with only that key
+down) and the two rest screenshots stay. A step that runs late shifts all later steps by its delay.
+The injected count is compared with the traced count (check d).
+
+**Rationale:** Check b counts only frames that showed the bat raised while the key was held. At
+lavapipe's 8 to 9 frames per second, the old 30 to 200 ms holds often ended before any frame read a
+snapshot with the bat up. Three frame intervals leave a frame read inside every hold with margin.
+Longer holds on one key would give fewer than 100 presses in 60 s, so the keys overlap. A fixed
+conservative frame interval (8 fps) instead of a warm-up measurement keeps the plan a pure,
+unit-tested function of the seed and the run length.
+
+**Alternatives:** Measuring the median frame interval in a warm-up: rejected for now (no frame-rate
+line is printed before the run; the fixed figure is conservative and overridable). One key at a
+time: rejected, about 85 presses in 60 s.
+
+## #82 — Review round 1: present time and trace write placement kept
+
+**Decision:** (1) `present_ns`: since PR #146 review round 2 the table presenter path stamps
+after the playfield present (`AppSurfaces::render_with_playfield_hook` calls the trace's hook once
+per playfield slot, before the backglass and score slots are drawn), and since review round 3b the
+hook fires immediately after the playfield `queue.present` returned and before a suboptimal surface
+is reconfigured, so a reconfigure can no longer delay the stamp. The table presenter is used by
+every run with a table whose playfield the table presenter can draw (the windowed harness
+included); `--debug-overlay` only adds debug lines over the PBR image
+(`TableRenderOptions::debug_overlay`) and does not select the debug presenter. The one remaining
+limit, documented in `trace.rs`, the trace-format entry and DEVELOPMENT.md: the debug presenter
+(`pin_render::SurfaceSet`, `Presenter::Debug`), used only when no table is loaded or the table
+presenter cannot be used (`choose_presenter`: `table_set_accepted` false, e.g. the playfield offers
+no 8-bit format), lives in `pin_render`, outside this unit, so there `present_ns` is sampled after
+the whole render call (late by that frame's remaining work and, on a suboptimal surface, one
+reconfigure); a present-time hook there is reported as a request, not made here. (2) The trace file is
+still written on the main thread after every engine thread was joined, to a sibling temp file that
+is renamed over the destination at shutdown; the destination is never truncated, so a hard-linked
+bundle is safe. (3) A frame counts for the
+trace (and for the readiness line) only when the playfield surface presented (`paced_by` of the
+frame's statuses), never for a backglass-only present.
+
+**Rationale:** (1) `pin_render` is outside this unit's paths, and the debug presenter is not used
+by any table run whose playfield the table presenter accepts. (2) No thread that runs a tick or draws a frame touches the
+filesystem; the main thread already does startup I/O (the table load) of the same class. (3) The
+latency is about the playfield bat; a backglass present says nothing about it.
+
+**Alternatives:** (1) Moving the clock read into `pin_render`: deferred to that crate's owner. (2)
+An I/O worker streaming rows during the run: rejected, more moving parts for a file read once after
+the run.
+
+## #82 — Owned-path extension: present.rs playfield hook
+
+**Decision:** PR #146 review round 2 adds one method to `AppSurfaces` in
+`crates/pin_app/src/orchestrator/present.rs`: `render_with_playfield_hook(snap, on_playfield)`,
+which holds the body of `render()`; `render()` delegates to it with a no-op closure (same statuses,
+timer handling and frame counting). Review round 3b (D1) moves the stamp ahead of the suboptimal
+reconfigure with internal plumbing only: `render_slot` and `render_direct` take an
+`on_present: &mut dyn FnMut()`, which `render_direct` calls through the private
+`present_then_reconfigure` immediately after `queue.present` returned and before
+`configure_surface` on a suboptimal surface; the playfield slot gets a real hook (the private
+once-only `PlayfieldHook`), every other slot a no-op. The public contract is unchanged:
+`on_playfield` is called exactly once per playfield slot with that slot's status, before any other
+slot's work; for a presenting direct playfield it fires with `Presented` at the present, for every
+other outcome (skipped, hidden, occluded, busy, a presenter-thread hand-off, which has no present of
+its own to stamp) once after `render_slot` returned with the returned status. No allocation, lock or
+new clock source. No other edit to the file. The render
+thread passes a hook that reads the trace clock on the playfield's `Presented` status
+(`FrameTraceWriter::stamp_playfield`), and records the frame with `presented_at`.
+
+**Rationale:** The review finding (B2) showed `present_ns` read after the whole render call can be
+late by the backglass and score surfaces' work, which can move a press's baseline frame. Only the
+slot loop knows when the playfield present returned; a hook is the smallest additive change and
+keeps `render()`'s behaviour. #83 (KP-003) owns `present.rs` and has not started; it inherits one
+additive public method and a delegating `render()`, and must keep the hook's contract if it
+reshapes the slot loop: it fires exactly once per playfield slot, before any other slot's work, and
+for a presenting direct playfield after `queue.present` returned and before any reconfigure. A GPU test of the hook needs real SDL windows on the main thread (a `harness = false`
+`[[test]]` entry in `crates/pin_app/Cargo.toml`, outside this unit's paths), so the hook's ordering
+is covered by the windowed run, the pure test of `stamp_playfield` and the pure tests of
+`present_then_reconfigure` (order: present, hook, reconfigure) and `PlayfieldHook` (exactly once per
+slot); the Cargo entry is reported as a request.
+
+**Alternatives:** A clock read inside `pin_render` (the debug presenter): outside this unit.
+Reordering the slots so the playfield is drawn last: changes `render()`'s behaviour and #83's
+design space. Reading the clock after `render()` (round 1): rejected by the finding.
+
 ## Process — Dual-harness agent documentation (Claude Code and Gemini/Antigravity)
 
 **Decision:** Support both Claude Code and Gemini / Antigravity across the repository's agent
@@ -7696,6 +8041,52 @@ stays the sole code reviewer (R9); only its timing changes.
 - Review on the gate issue's own PR against `main`: rejected because CodeRabbit would see only
   that issue's diff, not the phase's cumulative changes.
 - Git tags for reviewed commits: rejected under D39 (the session proxy may refuse tag pushes).
+
+## #82 — Trace commit after a failed run
+
+**Decision:** PR #146 review round 3b (D2): option (a). Once the engine threads are joined,
+`run_app` commits the run's latency trace (`commit_trace` in `crates/pin_app/src/main.rs`) whether
+or not the run failed: a run that missed its run cap or had a thread join error still renames its
+trace over the destination. The destination is left untouched (and the temp file removed) only when
+the run ends before that shutdown commit point (a startup error after the sink was opened, a panic
+or an early return before the join), because the sink is then dropped without `commit`. A commit
+error is printed, merged into the run's failure and makes the run fail. Unit tests:
+`req_lat_003_failed_run_still_commits_its_trace`, `req_lat_003_commit_error_fails_the_run`,
+`req_lat_003_dropped_sink_removes_the_temp_file`. The earlier wording ("a failed run leaves the
+destination untouched") was wrong and is corrected in the `TraceSink` rustdoc and DEVELOPMENT.md.
+
+**Rationale:** The 60 s windowed workflow uploads the trace with `if: always()`; a failing run's
+trace is the evidence needed to diagnose it. The behaviour already was this; only the text was
+wrong.
+
+**Alternatives:** (b) Skip the commit when the run failed: rejected, it throws away the diagnosis
+of exactly the runs that need one. (c) Commit to a separate `.failed` path: rejected, a second
+path to validate and upload for no gain.
+
+## #82 — Trace file permissions
+
+**Decision:** PR #146 review round 3 (C2, CWE-732): on Unix the `--latency-trace` sibling temp
+file is created with `OpenOptionsExt::mode(0o600)` (owner-only from creation, before any trace
+data is written). At commit, after the flush and sync and before the rename, when the destination
+exists as a regular file its permission bits (`mode & 0o777`, read at commit time; setuid, setgid
+and sticky are never copied) are set on the temp file, so the rename never widens access (0600
+stays 0600, 0640 stays 0640). A destination that did not exist ends `0600`: a trace may hold input
+timing, so the owner-only default is kept rather than the umask default. Setting the permissions
+failing removes the temp file and reports the error; nothing is renamed. Off Unix both steps are
+no-ops (behaviour unchanged). `create_new` and the atomic rename are kept. In the same round the
+destination checks were tightened: a metadata error other than "not found" (e.g. ENOTDIR for
+`trace.csv/` under a regular file), a missing destination ending in a path separator and (Unix) an
+existing FIFO, which a write-only open would block on, are refused before anything is opened.
+
+**Rationale:** The temp file was created with the umask default (typically 0644) and renamed over
+a destination that may be 0600, widening access to the trace. Owner-only creation plus copying the
+destination's bits keeps the file exactly as private as it was; std's `OpenOptionsExt`,
+`PermissionsExt` and `FileTypeExt` need no new dependency.
+
+**Alternatives:** The umask default for a new destination: rejected, a trace may hold input timing.
+Copying the full mode (with setuid/setgid/sticky): rejected, a trace never needs them. Opening a
+FIFO non-blocking: needs `libc`/`nix` flags (no new dependency allowed) and a FIFO is not a trace
+file.
 
 ## Process — Manual and physical testing waits for final acceptance
 

@@ -303,6 +303,7 @@ and complete.
 | `release.yml` | PRs touching packaging paths; dispatch; `v*` tag push (owner only) | PR: `dry-run` (script unittest suites, `human_acceptance.py --check` as a warning, `package.py --dry-run` with real bundles). Dispatch or tag: `verify` (release build and tests with zero warnings on Windows x64, Linux x64, macOS arm64 and x86_64), `package`, and on a tag a draft prerelease. Never publishes (P8). |
 | `rules-wasm.yml` | PRs and main pushes touching rule ports, `pin_script` or the parity tests | Rebuilds each `tables/*/rules.wasm` twice and compares it with the committed binary; fmt, clippy and tests of each `rules-wasm` crate; the Lua/Wasm parity tests. |
 | `soak.yml` | weekly, dispatch, main pushes touching sim, physics, script, app or tables | `cargo test --release -p pin_app --test profiler_soak -- --ignored` on each OS: 10-minute multiball replays per table, `SOAK_HASH` lines compared across OSes (report only). |
+| `windowed.yml` | PRs touching `crates/pin_app`, `crates/pin_render`, `crates/pin_input`, `tables/` or the workflow; every push to `main`; dispatch | The windowed latency harness (KP-002): the release `pin_app` with the grey-box table for 60 s under Xvfb on lavapipe (`LP_NUM_THREADS=2`), flipper presses through XTest, checks a to d on its latency trace (see "Windowed latency harness"). Artifact `windowed-latency`. Not in `pr-checks`: it becomes required only when the owner makes it a required check (P8 setting). |
 | `spikes.yml` | pushes and PRs touching `spikes/**`, `versions.toml`, the workflow, `docs/DECISIONS.md` or `docs/HUMAN_QUEUE.md`; dispatch | The 0.1 spikes on three OSes, and the `spec_0_1` tests of the decision and queue files. |
 
 `tests/spec_ci` asserts the workflow structure; a workflow change updates it in the same PR.
@@ -336,7 +337,169 @@ gate.
   pass), `READINESS=0`; `scripts/gate_a2.sh --verdict-only OUT` recomputes the verdict. Only a run
   with `GAMES>=1000`, `REPLAYS>=20` and no `DRY` prints `GATE A2: PASS`.
 - **Gate A3** (SPEC §7.7, REQ-GATE-001): to come with KP-043 (#124): `scripts/gate_a3.sh`, a
-  workflow on `main` and on demand, the SPEC Appendix F.4 screenshot set as an artifact.
+  workflow on `main` and on demand, the SPEC Appendix F.4 screenshot set as an artifact. Its
+  latency part reuses the windowed harness (`windowed.yml`, `scripts/windowed/run.sh` and the
+  `--latency-trace` file; see "Windowed latency harness").
+- **Windowed latency harness** (KP-002, SPEC §7.5): `scripts/windowed/run.sh [<out_dir>]`, run
+  by `windowed.yml`; see the next section.
+
+## Windowed latency harness
+
+What it measures (SPEC §7.5, R12): a player's flipper press in the real windowed app. The release
+`pin_app` runs the grey-box table (`--table target/greybox --latency-trace <file> --run-ms
+60000`) under Xvfb with lavapipe (`WGPU_BACKEND=vulkan`, `PIN_FORCE_FALLBACK_ADAPTER=1` so wgpu
+takes the software adapter or fails, `SDL_VIDEODRIVER=x11`); the driver starts its own Xvfb with
+`-displayfd` (Xvfb picks a free display and reports it once it accepts connections), waits for the
+app's `pin_app: latency trace: first frame presented` line, focuses the window and injects flipper
+presses for the rest of the 60 s through XTest (`xdotool keydown/keyup` of X keycodes 50 and 62,
+Shift_L and Shift_R; the keysym `Shift_R` would also press Shift_L).
+
+**Press schedule** (DECISIONS.md "#82 — Windowed press schedule"): seeded and deterministic
+(`KP_WINDOWED_SEED`), all times in microseconds so never aligned to ticks. Each key presses on its
+own timeline, the right one phase-shifted, so left and right alternate and overlap: every hold is
+at least three frame intervals (`KP_WINDOWED_FRAME_MS`, default 125 ms, i.e. 375 ms; capped at
+1 s) plus 0 to 170 ms of jitter, every gap 100 to 250 ms. Check b counts only frames that showed
+the bat raised while the key was held, and lavapipe draws about 8 frames per second, so a shorter
+hold could end before any frame reads a snapshot with the bat up. Over a 60 s run this gives
+about 150 presses (at least 100 are needed). After 10 presses the plan waits for both keys to be
+up and holds the left key alone for 800 ms with a screenshot, after 20 the right key, after 30 a
+rest screenshot; one more rest screenshot comes first. A step that runs late (a slow capture)
+shifts every later step by its delay, so holds keep their planned length.
+
+**Driver hygiene.** Every helper process (`xdotool`, `xwd`, `convert`) runs through one bounded
+runner (polled `try_wait`, killed and reaped at a 5 s deadline; at the end of the presses a
+key whose key-up failed stays marked held and is retried within a 400 ms budget, and one still
+held is reported); the screenshot pipes `nice -n 10
+xwd -root -silent -display <d>` into `nice -n 10 convert xwd:- png:<path>` with
+`MAGICK_THREAD_LIMIT=1`, no shell. A run first removes the previous run's `latency_trace.csv`,
+`pin_app_stderr.log`, `summary.txt` and `frame_*.png` from the artifact directory. Every exit path
+after the app started (window focus, key injection, first-frame timeout, a hang) kills the app if
+it still runs, completes the stderr capture and writes `pin_app_stderr.log`; a failure also writes
+`summary.txt` (`verdict: FAIL (windowed driver: <what>)` and the stderr tail). The run fails when
+fewer than 3 screenshots were captured or none was taken with a flipper held. Code:
+`crates/pin_app/tests/windowed/` (`verdict.rs`: the pure checks, unit-tested in plain `cargo test`;
+`driver.rs`: Xvfb, the app, xdotool, screenshots, the press plan). DECISIONS.md "#82 — Windowed
+latency check definitions" records the checks.
+
+**The latency trace** (`pin_app --latency-trace <file>`, REQ-LAT-003): CSV, `\n` line ends,
+integers only; an event table (one row per delivered button event: `event_seq, input, down,
+sdl_ts_ns, apply_tick, apply_tick_end_sdl_ns, prev_tick_end_sdl_ns, drain_sdl_ns,
+prev_drain_sdl_ns, dropped_ticks_at_apply, stall, move_tick, frame, frame_snap_tick, present_ns,
+frames_to_photon`), an empty line, the frame table (`frame, snap_tick, present_ns`, one row per
+presented playfield frame; a backglass-only present is not a frame) and a two-line trailer:
+`# overflows: input=N move=N frame=N pending=N` (each counter exactly once) and `# run_end_ns=N`
+(the SDL clock read on the main thread when the run loop ended, before the threads were joined).
+Every column is documented in the rustdoc of `crates/pin_app/src/orchestrator/trace.rs`; the names
+are stable (Gate A3 and KP-043 read them). All times are on SDL's clock (`SDL_GetTicksNS`).
+`move_tick` is the first tick at whose end a bat bound to the pressed input is raised at least
+1 degree (0.01745 rad) from its angle at the applying tick's start, in its energised direction
+(the sign of the flipper's sweep); a bat still returning from an earlier release never sets it,
+and a press's watch ends at its release (a raise at the release tick still counts; a later press's
+raise never does).
+`frame` is the first presented frame, in present order, whose snapshot tick lies between
+`move_tick` and the `apply_tick` of the next release of the same input and whose snapshot shows the
+bat displaced at least 1 degree in the energised direction from the press's applying-tick base (a
+bat that crossed 1 degree and fell back is matched to a later frame that shows it raised, or to
+none); `frames_to_photon = frame - F0` counts from the press timestamp (`F0` the last frame
+presented at or before it; a press before the first presented frame counts from frame index 0,
+so the count is `frame + 1`), and `move_tick` only selects the earliest candidate frame. For a press
+with `stall = 1`, `prev_drain_sdl_ns` and `drain_sdl_ns` are the stall's start and end (so their
+difference is the stall). On the table presenter path `present_ns` is the SDL clock read
+immediately after the playfield `queue.present` returned, before a suboptimal surface is
+reconfigured and before the backglass and score surfaces are drawn. The windowed harness runs a
+table, so it uses that path; `--debug-overlay` only draws the debug lines over the PBR image
+(`TableRenderOptions::debug_overlay`) and does not change the presenter. The debug presenter
+(`pin_render::SurfaceSet`) is used only when no table is loaded or the table presenter cannot be
+used (the playfield offers no 8-bit format); it lives in `pin_render`, so there `present_ns` is read
+after the whole render call, late by that frame's remaining work and, on a suboptimal surface, one
+reconfigure. The trace is written to a sibling temp
+file and renamed over the destination at shutdown; the destination is never truncated, so a
+hard-linked bundle is safe (the `--table` bundle file itself is refused before anything is created;
+a value starting with `--` is not a path; a path whose metadata fails other than "not found", a
+missing path ending in a separator and an existing FIFO are refused before anything is opened). On
+Unix the temp file is created owner-only (`0600`) and, before the rename, given the existing
+destination's permission bits, so the rename never widens access (a new destination stays
+`0600`). It is written on the main thread after every
+sim, render and audio thread was joined, also when the run failed (run cap not met, a thread join
+error), so a failed run's trace can be diagnosed; a run that ends before that point (a startup
+error after the trace file was prepared, a panic or an early return) removes the temp file and
+leaves the destination untouched, and a failed commit is reported and makes the run fail; no thread that runs a tick or draws a frame touches the
+filesystem (same class as the startup table load). Records go into rings preallocated before the
+threads start, and `pin_app: latency trace: <path>, <n> events, <m> frames, <k> overflows` follows
+the shutdown lines. Without the flag nothing is allocated or recorded.
+
+**Checks** (presses = down events of the four flipper inputs; `TICK` = 1 ms):
+
+- **a. Key to coil (REQ-LAT-004, REQ-LAT-005).** (1) `apply_tick_end_sdl_ns >= sdl_ts_ns`; (2)
+  lateness `apply_tick_end_sdl_ns - sdl_ts_ns <= TICK + 2 ms` (the 2 ms tolerance covers the main
+  thread's forwarding delay and the sim thread's wake-up), plus, for a press with `stall = 1`, the
+  stall `drain_sdl_ns - prev_drain_sdl_ns` and no more; (3) `move_tick - apply_tick <= 8`
+  ticks (the press takes effect in the applying tick). A press whose bat never moved fails, unless
+  its applying tick ended within `8 + 2` ticks of `run_end_ns`. `stall = 1` when the press was
+  stamped at or after the start and before the end of a stall the sim thread observed (a tick that started more than 2 ms
+  after the previous executed tick, or after dropped ticks) and was applied in that tick or a later
+  tick of the same catch-up batch: the sim thread's own scheduling and the timestamp, never the
+  lateness being checked. That the applying tick is the first executed tick that received the
+  press is verified by the deterministic SimLoop tests, not by this run (DECISIONS.md); the sim
+  pops every ring event stamped at or before the tick end up to the per-tick input buffer of 256
+  events (`INPUT_BUFFER_CAPACITY`), and eligible events beyond 256 are applied in a later executed
+  tick (the next one, or later ones when more than 256 remain; the app input ring holds 1,024).
+- **b. Key to photon in frames (REQ-LAT-001, CI form).** For each press except those stamped
+  within 500 ms of `run_end_ns` (excluded and counted): the raw count `n_raw = frame - F0`, `F0` the
+  last presented frame at or before `sdl_ts_ns` (`n_raw = frame + 1` for a press before the first
+  presented frame: the count starts at frame index 0), must be `<= 2`, with one allowance: when the frame
+  in flight at the press (the first presented after it) presented by `sdl_ts_ns` + check a's bound
+  + `8` ticks, the count may start after it (`n_adj = frame - in_flight <= 2`; never for a
+  press that failed check a). The summary prints the raw and adjusted max and p99 and how many
+  presses were "in-flight shifted". A press with no move, or no frame that showed the bat raised
+  while held, fails. The trace's `frame` is chosen by the app (the drawn angles are not in the
+  file); the verdict checks it exists, matches the frame table and is a candidate. Counted in frames, never milliseconds (lavapipe draws about 8 frames per
+  second); key-to-photon p50/p99 in ms is printed as information.
+- **c. Real time (REQ-LAT-002, CI form).** From `pin_app: N sim ticks (D dropped), ...`:
+  `D / (N + D) <= 0.001`, and `N` within 1 % of 60 000. The simulated-to-wall ratio `N / (N + D)`
+  is printed. The SPEC's Low quality preset does not exist in the app yet (REQ-LAT-006, another
+  unit), so only the worker-thread cap applies.
+- **d. Completeness.** No trace overflow, at least 100 presses, as many presses traced as the
+  driver injected, and `input dropped 0` on the shutdown line (a dropped input event is a missing
+  trace row; a shutdown line without the field is malformed).
+
+**The lavapipe cap.** lavapipe's worker threads are capped with `LP_NUM_THREADS=2` (the workflow
+env and `run.sh`'s default), so on a 4-vCPU GitHub runner the sim thread keeps a core next to the
+render, main and audio threads and lavapipe's two workers. Measured on the 4-core agent VM, one
+60 s run each (dropped ticks of about 60 000 / presented frames / check a): 1 thread 30
+(0.050 %) / 277 / pass; 2 threads 8 (0.013 %) / 526 / pass; 3 threads 20 (0.033 %) / 734 / fail
+(one press 4 ms late: the main thread starved). To measure: `LP_NUM_THREADS=<n>
+scripts/windowed/run.sh target/windowed_lp<n>` for each `n`, and read the `dropped ratio` row of
+`summary.txt`; choose the value whose ratio stays well under 0.1 % (DECISIONS.md "#82 —
+LP_NUM_THREADS cap").
+
+**Running it locally** (from the repository root, with the agent environment):
+
+```sh
+# Prerequisites: mesa-vulkan-drivers libvulkan1 xvfb xauth xdotool x11-apps imagemagick
+scripts/windowed/run.sh                     # builds the bundle and the release app, runs 60 s
+scripts/windowed/run.sh --print-paths       # prints the resolved paths, builds nothing
+# or, with the bundle and the release app already built:
+LP_NUM_THREADS=2 PIN_FORCE_FALLBACK_ADAPTER=1 \
+  WGPU_BACKEND=vulkan cargo test --release -p pin_app --test windowed -- --ignored --nocapture
+cargo test -p pin_app --test windowed       # the verdict, parser, property and allocation tests
+python3 -I -m unittest discover -s scripts/windowed/tests -p '*_test.py'   # workflow structure
+```
+
+The bundle defaults to `<target>/greybox` after `tables/greybox/build.sh <target>/greybox`;
+set `KP_GREYBOX_BUNDLE` only to use another bundle. The driver starts its own Xvfb (1280x720x24, `-displayfd`) when `DISPLAY` is unset. Environment:
+`KP_GREYBOX_BUNDLE` (default `<target>/greybox`), `KP_WINDOWED_OUT` (default
+`<target>/windowed`), `KP_WINDOWED_RUN_MS` (default 60000), `KP_WINDOWED_SEED`,
+`KP_WINDOWED_FRAME_MS` (default 125), `KP_PIN_APP`, `LP_NUM_THREADS` (default 2). `run.sh` takes a
+relative `CARGO_TARGET_DIR` or `<out_dir>` relative to the repository root and exports the
+absolute `CARGO_TARGET_DIR` before Cargo runs.
+
+**Artifacts** (`windowed.yml` uploads them as `windowed-latency`, also on failure):
+`latency_trace.csv` (the trace), `summary.txt` (verdicts and summary table), `pin_app_stderr.log`
+(the app's stderr, with the adapter line and the shutdown line), `frame_0_rest.png`,
+`frame_1_left_held.png`, `frame_2_right_held.png`, `frame_3_rest.png`. Every file is from the
+current run: older ones are removed when a run starts, and a failed run still writes
+`pin_app_stderr.log` and a failure `summary.txt`.
 
 ## Owned paths and shared files
 

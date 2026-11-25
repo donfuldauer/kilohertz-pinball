@@ -691,6 +691,28 @@ impl AppSurfaces {
     /// [`GpuFrameTimer`], the frame's submits are bracketed by its
     /// timestamps and earlier frames' samples are collected (no wait).
     pub fn render(&mut self, snap: &FrameStateSnapshot) -> Vec<SurfaceStatus> {
+        self.render_with_playfield_hook(snap, &mut |_| {})
+    }
+
+    /// [`render`](Self::render) with a hook for the latency trace
+    /// (REQ-LAT-003): `on_playfield` is called exactly once per playfield
+    /// slot with that slot's status, before any other slot's work. For a
+    /// direct playfield surface that presents, it is called with
+    /// [`SurfaceStatus::Presented`] immediately after `queue.present`
+    /// returned and before the surface is reconfigured (a suboptimal
+    /// surface is reconfigured after the present), so a clock read in the
+    /// hook is the playfield's present time, not the end of a reconfigure
+    /// or of the whole frame (backglass and score surfaces are drawn after
+    /// it). For every other outcome (skipped, hidden, occluded, busy, or a
+    /// presenter-thread playfield, which only hands the frame off and has
+    /// no present of its own to stamp) it is called with the returned
+    /// status after the slot's work. Returns exactly what
+    /// [`render`](Self::render) returns.
+    pub fn render_with_playfield_hook(
+        &mut self,
+        snap: &FrameStateSnapshot,
+        on_playfield: &mut dyn FnMut(SurfaceStatus),
+    ) -> Vec<SurfaceStatus> {
         let (queue, gpu_lock) = (&self.queue, &self.gpu_lock);
         let mut submit = |cb: wgpu::CommandBuffer| {
             let _g = lock_gpu(gpu_lock);
@@ -702,14 +724,31 @@ impl AppSurfaces {
         }
         let mut out = Vec::with_capacity(self.slots.len());
         for s in &mut self.slots {
-            out.push(Self::render_slot(
-                &self.device,
-                &self.queue,
-                &self.gpu_lock,
-                self.timer.as_mut(),
-                s,
-                snap,
-            ));
+            let status = if s.role == SurfaceRole::Playfield {
+                let mut hook = PlayfieldHook::new(&mut *on_playfield);
+                let status = Self::render_slot(
+                    &self.device,
+                    &self.queue,
+                    &self.gpu_lock,
+                    self.timer.as_mut(),
+                    s,
+                    snap,
+                    &mut || hook.presented(),
+                );
+                hook.finish(status);
+                status
+            } else {
+                Self::render_slot(
+                    &self.device,
+                    &self.queue,
+                    &self.gpu_lock,
+                    self.timer.as_mut(),
+                    s,
+                    snap,
+                    &mut || {},
+                )
+            };
+            out.push(status);
         }
         let drew = out.contains(&SurfaceStatus::Presented);
         if let Some(t) = &mut self.timer {
@@ -727,6 +766,9 @@ impl AppSurfaces {
         pin_render::gpu::paced_by(self.slots.iter().map(|s| s.role), statuses)
     }
 
+    /// Draws one slot. `on_present` is called by a direct surface
+    /// immediately after its `queue.present` returned (before any
+    /// reconfigure); it is not called on any other path.
     fn render_slot(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -734,6 +776,7 @@ impl AppSurfaces {
         timer: Option<&mut GpuFrameTimer>,
         s: &mut Slot,
         snap: &FrameStateSnapshot,
+        on_present: &mut dyn FnMut(),
     ) -> SurfaceStatus {
         if !s.live() {
             return SurfaceStatus::Skipped;
@@ -756,6 +799,7 @@ impl AppSurfaces {
                 &mut s.renderer,
                 target,
                 snap,
+                on_present,
             ),
             SlotKind::Threaded(t) => {
                 let st = render_threaded(
@@ -876,7 +920,58 @@ fn submit_frame(
     queue.submit(cbs);
 }
 
-/// Acquires, draws and presents a direct surface.
+/// Once-only bookkeeping of the playfield hook for one playfield slot
+/// (REQ-LAT-003): [`presented`](Self::presented) fires the hook with
+/// [`SurfaceStatus::Presented`] at the direct surface's present;
+/// [`finish`](Self::finish) fires it with the slot's returned status only
+/// if it has not fired yet. So the hook runs exactly once per slot.
+struct PlayfieldHook<'h> {
+    hook: &'h mut dyn FnMut(SurfaceStatus),
+    fired: bool,
+}
+
+impl<'h> PlayfieldHook<'h> {
+    fn new(hook: &'h mut dyn FnMut(SurfaceStatus)) -> Self {
+        Self { hook, fired: false }
+    }
+
+    /// The direct playfield surface's `queue.present` just returned.
+    fn presented(&mut self) {
+        if !self.fired {
+            self.fired = true;
+            (self.hook)(SurfaceStatus::Presented);
+        }
+    }
+
+    /// The slot's work ended with `status`: fires the hook unless the
+    /// present already did.
+    fn finish(mut self, status: SurfaceStatus) {
+        if !self.fired {
+            self.fired = true;
+            (self.hook)(status);
+        }
+    }
+}
+
+/// Presents, then calls `on_present`, then (on a suboptimal surface)
+/// reconfigures: the present-time hook (REQ-LAT-003) is never delayed by a
+/// reconfigure, which can block.
+fn present_then_reconfigure(
+    present: impl FnOnce(),
+    on_present: &mut dyn FnMut(),
+    suboptimal: bool,
+    reconfigure: impl FnOnce(),
+) {
+    present();
+    on_present();
+    if suboptimal {
+        reconfigure();
+    }
+}
+
+/// Acquires, draws and presents a direct surface; `on_present` is called
+/// immediately after the present returned, before a suboptimal surface is
+/// reconfigured ([`present_then_reconfigure`]).
 #[allow(clippy::too_many_arguments)]
 fn render_direct(
     device: &wgpu::Device,
@@ -887,6 +982,7 @@ fn render_direct(
     renderer: &mut TableRenderer,
     target: FrameTarget<'_>,
     snap: &FrameStateSnapshot,
+    on_present: &mut dyn FnMut(),
 ) -> SurfaceStatus {
     if d.needs_configure {
         if !configure_surface(device, &d.surface, &d.config, gpu_lock) {
@@ -922,10 +1018,12 @@ fn render_direct(
         snap,
     );
     submit_frame(queue, gpu_lock, timer, encoder.finish());
-    queue.present(frame);
-    if suboptimal {
-        d.needs_configure = !configure_surface(device, &d.surface, &d.config, gpu_lock);
-    }
+    present_then_reconfigure(
+        || queue.present(frame),
+        on_present,
+        suboptimal,
+        || d.needs_configure = !configure_surface(device, &d.surface, &d.config, gpu_lock),
+    );
     SurfaceStatus::Presented
 }
 
@@ -1034,6 +1132,55 @@ mod tests {
                 F::Bgra8Unorm | F::Rgba8Unorm | F::Bgra8UnormSrgb | F::Rgba8UnormSrgb
             )
         })
+    }
+
+    /// REQ-LAT-003: the present-time hook runs after the present and
+    /// before a suboptimal surface's reconfigure.
+    #[test]
+    fn req_lat_003_hook_runs_after_present_before_reconfigure() {
+        for (suboptimal, want) in [
+            (true, &["present", "hook", "reconfigure"][..]),
+            (false, &["present", "hook"][..]),
+        ] {
+            let log = std::cell::RefCell::new(Vec::new());
+            present_then_reconfigure(
+                || log.borrow_mut().push("present"),
+                &mut || log.borrow_mut().push("hook"),
+                suboptimal,
+                || log.borrow_mut().push("reconfigure"),
+            );
+            assert_eq!(log.into_inner(), want, "suboptimal = {suboptimal}");
+        }
+    }
+
+    /// REQ-LAT-003: the playfield hook fires exactly once per slot: at the
+    /// present for a presented direct slot (not again after the slot
+    /// returned), otherwise once with the returned status.
+    #[test]
+    fn req_lat_003_playfield_hook_fires_once_per_slot() {
+        let mut calls = Vec::new();
+        {
+            let mut rec = |st: SurfaceStatus| calls.push(st);
+            let mut h = PlayfieldHook::new(&mut rec);
+            h.presented();
+            h.presented();
+            h.finish(SurfaceStatus::Presented);
+        }
+        assert_eq!(calls, [SurfaceStatus::Presented]);
+        for st in [
+            SurfaceStatus::Skipped,
+            SurfaceStatus::Hidden,
+            SurfaceStatus::Occluded,
+            SurfaceStatus::Busy,
+            SurfaceStatus::Presented,
+        ] {
+            let mut calls = Vec::new();
+            {
+                let mut rec = |s: SurfaceStatus| calls.push(s);
+                PlayfieldHook::new(&mut rec).finish(st);
+            }
+            assert_eq!(calls, [st]);
+        }
     }
 
     #[test]
