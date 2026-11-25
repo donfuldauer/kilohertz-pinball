@@ -7696,3 +7696,34 @@ stays the sole code reviewer (R9); only its timing changes.
 - Review on the gate issue's own PR against `main`: rejected because CodeRabbit would see only
   that issue's diff, not the phase's cumulative changes.
 - Git tags for reviewed commits: rejected under D39 (the session proxy may refuse tag pushes).
+
+## Process — Manual and physical testing waits for final acceptance
+
+**Decision:** At the owner's direction (2026-11-25), no session waits for a person to test
+anything by hand or on physical hardware. Agents automate what they can (PROCESS.md P2), record
+what only a person can check as a `[P8 hardware]` line or in the item's DECISIONS.md entry (both
+feed `docs/HUMAN_ACCEPTANCE.md`), and continue. A pending manual or physical check never holds a
+unit, a PR merge, the work-verifier's verdict, a gate, or a run. PROCESS.md P2 and P8, the
+`work-issue` skill and the `work-verifier` say so.
+
+**Rationale:** The owner reserves manual and physical testing for one pass once everything is
+complete (SPEC §4 Phase 8), so the run stays unattended (D28).
+
+**Alternatives:**
+- Pause a unit until the owner tests it on hardware: rejected by the owner's direction.
+
+## Process — Fable ask retired
+
+**Decision:** At the owner's direction (2026-11-25), the Claude Code "Fable ask" (D42; DECISIONS.md
+"Process — Fable ask kept") is retired, as in fineprint. The Orchestrator never asks the owner
+about Fable allowance and never waits for an answer. `FABLE_ALLOWANCE` is `sufficient` only when
+the session can read the account's usage limits and finds enough allowance; otherwise it is
+`unknown` or `insufficient`, the work runs at T2 (`Opus 5.5`) and a `[Fable wanted]` note goes in
+the unit's `docs/RUN_LOG.md` row. PROCESS.md P4, AGENTS.md, the `run-plan` and `work-issue`
+skills and the `work-classifier` say so.
+
+**Rationale:** The owner wants sessions never to wait on them; the ask could leave a session idle
+for up to 30 minutes. `[Fable wanted]` notes keep a record of where Fable would have helped.
+
+**Alternatives:**
+- Keep the ask with a shorter timeout: rejected; any wait on the owner is what is being removed.
