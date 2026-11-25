@@ -5,6 +5,7 @@
 mod util;
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, max_f64};
 use pin_core::ids::{ProfileId, SwitchId};
 use pin_core::{BallProfile, Material};
 use pin_physics::ball::{
@@ -285,7 +286,7 @@ fn c4_mini_vs_jumbo_free_collision_conserves_momenta() {
                     assert!((p - p0).length() <= 1e-4 * p0.length());
                     let l = angular_momentum(&s);
                     assert!(
-                        (l - l0).length() <= 1e-3 * l0.length().max(1e-7),
+                        (l - l0).length() <= 1e-3 * max_f64(l0.length(), 1e-7),
                         "L {l0:?} -> {l:?} (offset {offset}, speed {speed})"
                     );
                 }
@@ -395,7 +396,7 @@ fn drop_bounce_follows_the_pair_table() {
             bounced = true;
         }
         if bounced && ev.as_slice().len() == 1 {
-            apex = apex.max(b.position.z - r);
+            apex = max_f32(apex, b.position.z - r);
         }
     }
     // First impact at sqrt(2 g h) = 1.98 m/s.
@@ -431,7 +432,7 @@ fn drop_bounce_follows_the_pair_table() {
     for _ in 0..260 {
         s.step(&geo, DT, &mut ev);
         if ev.as_slice().len() == 1 {
-            after = after.max(s.ball(h).unwrap().velocity.z);
+            after = max_f32(after, s.ball(h).unwrap().velocity.z);
         }
     }
     assert!((after - 0.65 * 1.981).abs() < 0.03, "{after}");
@@ -458,7 +459,7 @@ fn missing_pair_falls_back_to_profile_restitution() {
     for _ in 0..200 {
         s.step(&geo, DT, &mut ev);
         if ev.as_slice().len() == 1 {
-            up = up.max(s.ball(h).unwrap().velocity.z);
+            up = max_f32(up, s.ball(h).unwrap().velocity.z);
         }
     }
     assert!((up - 0.8 * 1.4007).abs() < 0.03, "{up}");
@@ -570,7 +571,7 @@ fn ball_hugs_a_concave_guide_without_bouncing() {
             assert!(gap > -3.0e-5, "sank into the guide: {gap}");
             if b.position.y > 0.01 {
                 // Beside the arc: hugging the wall.
-                max_gap = max_gap.max(gap);
+                max_gap = max_f32(max_gap, gap);
                 assert!(
                     b.position.z < r + 2.0e-3,
                     "left the floor: {:?}",
@@ -1042,7 +1043,7 @@ fn rolling_over_floor_seams_is_smooth() {
                 if b.position.x > 0.45 {
                     break;
                 }
-                max_z = max_z.max((b.position.z - r).abs());
+                max_z = max_f32(max_z, (b.position.z - r).abs());
                 let tilt = if y < 0.5 {
                     libm::sqrtf(2.0e-6 / r)
                 } else {

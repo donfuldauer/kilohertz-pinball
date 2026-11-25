@@ -9,6 +9,7 @@
 mod util;
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::ProfileId;
 use pin_physics::ball::{BallEvents, BallSolver, Geometry};
 use pin_physics::world::{CubicSpline, GuideCast, GuideCurve, StaticWorld};
@@ -152,7 +153,7 @@ impl<'a> Brute<'a> {
             }
         }
         let t = 0.5 * (lo + hi);
-        (best.min(self.line(spline.point(t), p)), t)
+        (min_f32(best, self.line(spline.point(t), p)), t)
     }
 }
 
@@ -270,7 +271,7 @@ fn run(
         let (d, t) = brute.distance(b.position);
         let what = format!("{sc:?} tick {tick}");
         assert!(b.position.is_finite(), "{what}");
-        tally.sink = tally.sink.max(r - d);
+        tally.sink = max_f32(tally.sink, r - d);
         assert!(
             r - d <= 1.0e-4,
             "{what}: {} mm inside the wall",
@@ -311,7 +312,7 @@ fn balls_ride_and_skim_sloped_guide_edges_at_full_speed() {
             let t = run(&world, &guides, &brute, sc, 120);
             total.ticks += t.ticks;
             total.slow += t.slow;
-            total.sink = total.sink.max(t.sink);
+            total.sink = max_f32(total.sink, t.sink);
         }
         assert!(total.ticks > 500, "{label}: only {} ticks", total.ticks);
         assert!(

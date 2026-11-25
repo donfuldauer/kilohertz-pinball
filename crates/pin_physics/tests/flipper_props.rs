@@ -6,6 +6,7 @@ mod util;
 
 use glam::{Quat, Vec3};
 use pin_core::FlipperConfig;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::SwitchId;
 use pin_physics::ball::{BallHandle, MovingBodies};
 use pin_physics::flipper::{EosEdge, FlipperSet};
@@ -98,7 +99,8 @@ fn a_fast_bat_does_not_swing_through_a_ball() {
                 let mut peak_tip = 0.0f32;
                 for _ in 0..60 {
                     rig.step();
-                    peak_tip = peak_tip.max(rig.flippers.angular_velocity(LEFT).abs() * 0.0825);
+                    peak_tip =
+                        max_f32(peak_tip, rig.flippers.angular_velocity(LEFT).abs() * 0.0825);
                     let cp = rig
                         .flippers
                         .closest_point(0, 0.0, rig.ball(h).position)
@@ -119,7 +121,7 @@ fn a_fast_bat_does_not_swing_through_a_ball() {
                 );
                 // It left on the side it started on.
                 assert!(b.position.dot(Vec3::Z.cross(bat_dir(20.0))) > 0.0);
-                fastest_tip = fastest_tip.max(peak_tip);
+                fastest_tip = max_f32(fastest_tip, peak_tip);
             }
         }
     }
@@ -269,7 +271,7 @@ fn a_short_tap_gives_a_weak_flip() {
                 set.set_energised(LEFT, false);
             }
             set.advance(DT);
-            peak = peak.max(set.angular_velocity(LEFT));
+            peak = max_f32(peak, set.angular_velocity(LEFT));
         }
         peaks.push(peak);
     }
@@ -284,7 +286,7 @@ fn a_cradled_ball_stays_put_for_seconds() {
     let mut fastest = 0.0f32;
     for _ in 0..3000 {
         rig.step();
-        fastest = fastest.max(rig.ball(h).velocity.length());
+        fastest = max_f32(fastest, rig.ball(h).velocity.length());
     }
     let moved = (rig.ball(h).position - start).length();
     println!(
@@ -470,7 +472,7 @@ proptest! {
         c.eos_angle_fraction = fraction;
         c.stop_restitution = restitution;
         let mut set = FlipperSet::new(&[c]).unwrap();
-        let (lo, hi) = (rest.min(rest + sweep), rest.max(rest + sweep));
+        let (lo, hi) = (min_f32(rest, rest + sweep), max_f32(rest, rest + sweep));
         for (ticks, on) in presses {
             set.set_energised(LEFT, on);
             for _ in 0..ticks {

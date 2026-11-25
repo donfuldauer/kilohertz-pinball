@@ -11,6 +11,7 @@ mod util;
 #[path = "ball_seam_ref.rs"]
 mod reference;
 
+use pin_core::fmath::{max_f32, min_f32};
 use std::cell::RefCell;
 
 use glam::Vec3;
@@ -75,7 +76,7 @@ fn plate_run(profile: ProfileId, u: Vec3, vb: f32, dir: Vec3) -> (usize, Vec3) {
         .unwrap();
     let mut ev = BallEvents::new();
     let mut impacts = 0;
-    let closing = (u.x - dir.x * vb).max(1.0e-3);
+    let closing = max_f32(u.x - dir.x * vb, 1.0e-3);
     let ticks = ((0.2 / closing) / DT) as u32 + 40;
     for _ in 0..ticks.min(3000) {
         ev.clear();
@@ -442,7 +443,7 @@ fn ball_rolls_down_a_held_bat_and_stays_cradled() {
         s.step_with_bodies(&geo, &mut [&mut set], DT, &mut ev);
         let b = *s.ball(h).unwrap();
         let gap = set.bodies[0].closest(0.0, b.position).distance - r;
-        min_gap = min_gap.min(gap);
+        min_gap = min_f32(min_gap, gap);
         if tick >= 2000 {
             along.push(b.position);
         }
@@ -494,7 +495,7 @@ fn a_flip_launches_a_cradled_ball() {
         t.step(&mut ev);
         empty.begin_tick(DT);
         empty.end_tick(DT);
-        top = top.max(t.solver.ball(h).unwrap().velocity.length());
+        top = max_f32(top, t.solver.ball(h).unwrap().velocity.length());
         if k == 4 {
             assert!(
                 t.rotors.bodies[0].omega < empty.bodies[0].omega,

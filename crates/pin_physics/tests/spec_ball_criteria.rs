@@ -8,6 +8,7 @@ mod common;
 
 use common::*;
 use glam::{DVec3, Vec3};
+use pin_core::fmath::max_f64;
 use pin_physics::ball::{Ball, BallSolver, Magnet, NewtonChain};
 use pin_physics::world::{CubicSpline, StaticWorld, layers};
 use proptest::prelude::*;
@@ -399,8 +400,8 @@ fn mini_jumbo(b: f32, vrel: f32, w_mini: Vec3, w_jumbo: Vec3, v_jumbo: Vec3) {
     let t0 = two_body(&s, &profs);
     // Characteristic scales so near-zero totals do not make "relative" meaningless.
     let mu = f64::from(mini.mass_kg * jumbo.mass_kg / (mini.mass_kg + jumbo.mass_kg));
-    let p_scale = t0.p.length().max(mu * f64::from(vrel));
-    let l_scale = t0.l.length().max(mu * f64::from(vrel) * f64::from(reach));
+    let p_scale = max_f64(t0.p.length(), mu * f64::from(vrel));
+    let l_scale = max_f64(t0.l.length(), mu * f64::from(vrel) * f64::from(reach));
     let mut prev_ke = t0.ke;
     let mut collided = false;
     // The mini ball starts 60 mm away and closes at `vrel`: cover the whole

@@ -17,6 +17,12 @@
 //! a simulation path of `pin_physics` goes through this module; glam `Vec3`
 //! is scalar on every target and needs no replica.
 //!
+//! Quat operator rule (KP-067): in the sim crates, never use glam `Quat` `*`
+//! operators, `Quat::from_axis_angle` results in sim math, or the glam `Quat`
+//! methods banned in the crates' `clippy.toml`; use this module. Clippy cannot
+//! ban operator impls, so reviewers treat any `Quat` operator in sim code as a
+//! defect.
+//!
 //! NaN payloads are not part of the guarantee (SPEC §2.4 parity exception:
 //! NaN bits are canonicalised before hashing).
 
@@ -396,6 +402,10 @@ mod tests {
 
         /// The sim's `integrate_orientation` written with glam operators
         /// (the code before this module existed).
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "glam SSE2/simd128 Quat is the bit-exact reference the quat_ops replica is checked against"
+        )]
         fn integrate_glam(q: Quat, w: Vec3, t: f32) -> Quat {
             let rate = w.length();
             let half = 0.5 * rate * t;
@@ -407,6 +417,10 @@ mod tests {
             (dq * q).normalize()
         }
 
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "glam SSE2/simd128 Quat is the bit-exact reference the quat_ops replica is checked against"
+        )]
         const GLAM: Ops = Ops {
             mul: |a, b| a * b,
             length_squared: Quat::length_squared,
@@ -443,6 +457,10 @@ mod tests {
         /// SPEC §2.4 / D9 (R3 libm): the libm half-turn branch equals glam's
         /// `from_axis_angle` (std `sin_cos`) bit for bit for several axes.
         #[test]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "glam SSE2/simd128 Quat is the bit-exact reference the quat_ops replica is checked against"
+        )]
         fn half_turn_equals_glam() {
             for from in [
                 Vec3::X,
@@ -493,6 +511,7 @@ mod tests {
             /// (simd128) result bit for bit, for unit and non-unit
             /// quaternions, magnitudes 1e-3 .. 1e3, zeros and -0.0.
             #[test]
+            #[allow(clippy::disallowed_methods, reason = "glam SSE2/simd128 Quat is the bit-exact reference the quat_ops replica is checked against")]
             fn matches_glam_sse2_bit_for_bit(raw in quat(), b in quat(), v in vec3(), u in vec3()) {
                 let len2 = raw.length_squared();
                 // The sim normalises only finite, non-zero quaternions.

@@ -24,6 +24,7 @@
 //! so a ball resting on a kicker or the plunger tip sees static geometry.
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 
 use super::geom::OBox;
 use crate::ball::BodyPoint;
@@ -92,9 +93,9 @@ impl Slider {
             };
         }
         if v > 0.0 {
-            v.min((self.hi - x).max(0.0) / remaining)
+            min_f32(v, max_f32(self.hi - x, 0.0) / remaining)
         } else if v < 0.0 {
-            v.max((self.lo - x).min(0.0) / remaining)
+            max_f32(v, min_f32(self.lo - x, 0.0) / remaining)
         } else {
             v
         }
@@ -123,15 +124,15 @@ impl Slider {
             // the slider already had is real and kept (it reaches the stop
             // within the tick and stops there: `x_at` clamps, `v_at` is 0).
             let toward = if v1 > 0.0 {
-                self.v.max(0.0)
+                max_f32(self.v, 0.0)
             } else {
-                self.v.min(0.0)
+                min_f32(self.v, 0.0)
             };
             let limited = self.stop_clamped(self.x, v1, dt);
             v1 = if v1 > 0.0 {
-                limited.max(toward.min(v1))
+                max_f32(limited, min_f32(toward, v1))
             } else {
-                limited.min(toward.max(v1))
+                min_f32(limited, max_f32(toward, v1))
             };
         }
         if !v1.is_finite() {
@@ -188,7 +189,18 @@ impl Slider {
         b.center += self.axis * self.hi;
         let (a0, a1) = a.aabb();
         let (b0, b1) = b.aabb();
-        (a0.min(b0), a1.max(b1))
+        (
+            Vec3::new(
+                min_f32(a0.x, b0.x),
+                min_f32(a0.y, b0.y),
+                min_f32(a0.z, b0.z),
+            ),
+            Vec3::new(
+                max_f32(a1.x, b1.x),
+                max_f32(a1.y, b1.y),
+                max_f32(a1.z, b1.z),
+            ),
+        )
     }
 
     pub fn max_surface_speed(&self) -> f32 {
@@ -225,9 +237,9 @@ impl Slider {
         // kept (an impulse with no axial part changes nothing).
         let limited = self.stop_clamped(x, v1, self.dt - t);
         let v = if v1 > 0.0 {
-            limited.max(v0.max(0.0).min(v1))
+            max_f32(limited, min_f32(max_f32(v0, 0.0), v1))
         } else if v1 < 0.0 {
-            limited.min(v0.min(0.0).max(v1))
+            min_f32(limited, max_f32(min_f32(v0, 0.0), v1))
         } else {
             v1
         };
@@ -274,7 +286,7 @@ mod tests {
             s.begin_tick(1e-3);
             // Obligation 3 on the drive: beyond the momentum it had, the
             // slider is never predicted further than the stop.
-            assert!(s.seg_v <= v0.max((s.hi - s.x) / 1e-3) + 1e-6);
+            assert!(s.seg_v <= max_f32(v0, (s.hi - s.x) / 1e-3) + 1e-6);
             assert!(s.x_at(1e-3) <= s.hi);
             s.end_tick(1e-3);
             t += 1;
@@ -369,7 +381,7 @@ mod tests {
         let mut peak = 0.0f32;
         for _ in 0..50 {
             s.begin_tick(1e-3);
-            peak = peak.max(s.v_at(0.0));
+            peak = max_f32(peak, s.v_at(0.0));
             s.end_tick(1e-3);
         }
         assert_eq!(s.x, 0.0);

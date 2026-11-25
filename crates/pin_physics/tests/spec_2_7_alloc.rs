@@ -8,6 +8,7 @@ mod common;
 
 use common::*;
 use glam::Vec3;
+use pin_core::fmath::max_f32;
 use pin_physics::ball::{Ball, BallEvents, BallHandle, Geometry};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -82,7 +83,7 @@ fn tick_with_hooks_does_not_allocate() {
         impacts += ev.as_slice().len();
         for i in 0..4u8 {
             let m = mag(&probe, BallHandle(i));
-            m_max = m_max.max(m);
+            m_max = max_f32(m_max, m);
             m_sum += m;
         }
     }
@@ -127,7 +128,7 @@ fn free_flight_and_holding_magnet_ticks_do_not_allocate() {
         }
         ev.clear();
         s.step(&geo, DT, &mut ev);
-        m_peak = m_peak.max(mag(&probe, steel));
+        m_peak = max_f32(m_peak, mag(&probe, steel));
     }
     let after = allocs();
     assert_eq!(after - before, 0, "the tick allocated with the 2.7 hooks");

@@ -6,6 +6,7 @@
 //! closest point vs brute force, seeded vs unseeded agreement and error cases.
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_physics::world::{BezierSegment, ClosestPoint, CubicSpline};
 use proptest::prelude::*;
 
@@ -39,7 +40,7 @@ fn d1_scale(s: &CubicSpline) -> f32 {
     let mut m = 1e-6f32;
     for seg in s.segments() {
         for k in 0..=8 {
-            m = m.max(bezier_d1(seg, k as f32 / 8.0).length());
+            m = max_f32(m, bezier_d1(seg, k as f32 / 8.0).length());
         }
     }
     m
@@ -71,7 +72,7 @@ fn brute_closest(s: &CubicSpline, p: Vec3) -> (f32, f32) {
         }
     }
     let h = 2.0 / per_seg as f32;
-    let (mut a, mut b) = ((best_t - h).max(0.0), (best_t + h).min(tmax));
+    let (mut a, mut b) = (max_f32(best_t - h, 0.0), min_f32(best_t + h, tmax));
     let g = 0.618_034_f32;
     for _ in 0..60 {
         let c = b - g * (b - a);
@@ -184,7 +185,7 @@ fn check_bezier_storage(s: &CubicSpline, pts: &[Vec3]) {
         for k in 0..=10 {
             let u = k as f32 / 10.0;
             let t = i as f32 + u;
-            let tol = 1e-5 * (1.0 + seg.p.iter().map(|v| v.length()).fold(0.0, f32::max));
+            let tol = 1e-5 * (1.0 + seg.p.iter().map(|v| v.length()).fold(0.0, max_f32));
             assert_close(
                 s.point(t),
                 bezier_eval(seg, u),
@@ -217,11 +218,11 @@ fn check_continuity(s: &CubicSpline) {
         assert_close(a.p[3], b.p[0], 1e-6 * (1.0 + a.p[3].length()), "C0 at knot");
         // C¹
         let (l1, r1) = (bezier_d1(a, 1.0), bezier_d1(b, 0.0));
-        let tol1 = 1e-3 * l1.length().max(r1.length()).max(sc);
+        let tol1 = 1e-3 * max_f32(max_f32(l1.length(), r1.length()), sc);
         assert_close(l1, r1, tol1, "C1 at knot");
         // C²
         let (l2, r2) = (bezier_d2(a, 1.0), bezier_d2(b, 0.0));
-        let tol2 = 1e-3 * l2.length().max(r2.length()).max(sc);
+        let tol2 = 1e-3 * max_f32(max_f32(l2.length(), r2.length()), sc);
         assert_close(l2, r2, tol2, "C2 at knot");
     }
     // Natural end conditions: zero second derivative at both ends.

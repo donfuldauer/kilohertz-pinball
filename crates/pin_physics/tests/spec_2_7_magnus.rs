@@ -10,6 +10,7 @@ mod common;
 
 use common::*;
 use glam::{DVec3, Vec3};
+use pin_core::fmath::max_f64;
 use pin_core::{BallProfile, ProfileId};
 use pin_physics::ball::{
     Ball, BallEvents, BallHandle, BallSolver, ExternalForce, ForceContext, Geometry,
@@ -354,7 +355,7 @@ fn v2_kinetic_energy_unchanged_by_magnus() {
                 let ka = 0.5 * m * a.velocity.as_dvec3().length_squared();
                 let kb = 0.5 * m * b.velocity.as_dvec3().length_squared();
                 let rel = (ka - kb).abs() / kb;
-                worst = worst.max(rel);
+                worst = max_f64(worst, rel);
                 assert!(
                     rel <= bound,
                     "v0={v:?} w0={w:?}: KE {ka} vs {kb} (rel {rel}, bound {bound})"
@@ -591,7 +592,7 @@ proptest! {
             // No work: the speed after `u += F h/m` is the speed before, up
             // to the explicit update's own second-order term φ² (and rounding).
             let after = u + fd * (f64::from(DT) / f64::from(p.mass_kg));
-            let gain = (after.length_squared() - u.length_squared()) / u.length_squared().max(1e-12);
+            let gain = (after.length_squared() - u.length_squared()) / max_f64(u.length_squared(), 1e-12);
             prop_assert!(
                 gain.abs() <= 1.01 * phi * phi + 1.0e-6,
                 "gravity {:?}: relative |u|² change {}", gravity, gain

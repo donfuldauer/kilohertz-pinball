@@ -11,6 +11,7 @@
 mod util;
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::{CoilId, SwitchId};
 use pin_core::schema::table::MechKind;
 use pin_physics::mech::{
@@ -124,8 +125,8 @@ fn every_eject_is_within_the_bounds_and_the_spread_is_nonzero() {
     }
     let spread = |f: &dyn Fn(&(f32, f32, f32)) -> f32| {
         let v: Vec<f32> = parts.iter().map(f).collect();
-        let lo = v.iter().copied().fold(f32::INFINITY, f32::min);
-        let hi = v.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let lo = v.iter().copied().fold(f32::INFINITY, min_f32);
+        let hi = v.iter().copied().fold(f32::NEG_INFINITY, max_f32);
         let mean = v.iter().sum::<f32>() / v.len() as f32;
         (hi - lo, mean)
     };
@@ -195,7 +196,10 @@ fn lateral_shift_is_capped_by_a_quarter_of_the_scoop_radius() {
     assert!(cap < VUK_SCATTER_LATERAL);
     let all = ejects(Some(5), 60, Some(8.0));
     let lats: Vec<f32> = all.iter().map(|e| decompose(e).0).collect();
-    let hi = lats.iter().copied().fold(0.0f32, |a, b| a.max(b.abs()));
+    let hi = lats
+        .iter()
+        .copied()
+        .fold(0.0f32, |a, b| max_f32(a, b.abs()));
     assert!(
         hi <= cap + SLACK_M,
         "lateral {hi} above the radius cap {cap}"

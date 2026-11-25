@@ -10,6 +10,7 @@ mod util;
 use glam::Vec3;
 use pin_core::Material;
 use pin_core::PhysicsDefaults;
+use pin_core::fmath::{max_f32, max_f64, min_f32};
 use pin_physics::ball::{
     BODY_SPEED_LIMIT, BallEvents, BallSolver, BallSolverConfig, BodyPoint, Geometry, MovingBodies,
 };
@@ -84,7 +85,10 @@ fn r2_guard_keeps_a_non_speculative_owner_bounded() {
         s.step_with_bodies(&geo, &mut [&mut set], DT, &mut ev);
         let v = s.ball(h).unwrap().velocity;
         assert!(
-            v.abs().max_element() < 60.0,
+            {
+                let a = v.abs();
+                max_f32(a.x, max_f32(a.y, a.z))
+            } < 60.0,
             "tick {tick}: ball velocity {v:?}"
         );
     }
@@ -295,20 +299,20 @@ fn lying_flip(
                 el * 1e6
             );
         }
-        SLOWEST.with(|c| c.set(c.get().max(el)));
+        SLOWEST.with(|c| c.set(max_f64(c.get(), el)));
         let b = s.ball(h).unwrap();
         assert!(
             b.velocity.is_finite() && b.angular_velocity.is_finite() && b.position.is_finite(),
             "{lie:?} spec {speculative} I {inertia} x {x} v {speed} spin {spin} fr {friction:?}: tick {tick} {b:?}"
         );
-        top = top.max(b.velocity.length());
+        top = max_f32(top, b.velocity.length());
         let o = set.inner.bodies[0].omega;
         if o.is_finite() {
-            tip = tip.max(o.abs() * set.inner.bodies[0].reach());
+            tip = max_f32(tip, o.abs() * set.inner.bodies[0].reach());
         }
     }
     // The body's surface speed: the fastest it committed or reported.
-    (top, tip.max(set.fastest.get()))
+    (top, max_f32(tip, set.fastest.get()))
 }
 
 #[test]
@@ -332,11 +336,11 @@ fn lying_owners_stay_finite_and_bounded() {
                                     "{lie:?} spec {speculative} I {inertia} x {x} v {speed} spin {spin} fr {friction:?}"
                                 );
                                 assert!(
-                                    top <= BODY_SPEED_LIMIT.max(speed) * 1.0001,
+                                    top <= max_f32(BODY_SPEED_LIMIT, speed) * 1.0001,
                                     "{what}: {top}"
                                 );
                                 assert!(
-                                    top <= 2.0 * speed.max(tip) + 2.0,
+                                    top <= 2.0 * max_f32(speed, tip) + 2.0,
                                     "{what}: ball {top}, bat tip {tip}"
                                 );
                                 if top > worst.0 {
@@ -634,10 +638,10 @@ fn column(n: usize, kinematic: bool, walls: bool, lift: f32) -> (f32, f32) {
             );
         }
         let bottom = s.ball(pin_physics::ball::BallHandle(0)).unwrap();
-        sink = sink.min(bottom.position.z - r - floor_top);
+        sink = min_f32(sink, bottom.position.z - r - floor_top);
         if tick >= 1500 {
             for (_, b) in s.balls() {
-                rest = rest.max((b.velocity - v(0.0, 0.0, lift)).length());
+                rest = max_f32(rest, (b.velocity - v(0.0, 0.0, lift)).length());
             }
         }
     }
@@ -658,7 +662,7 @@ fn stacks_on_kinematic_bodies_rest_like_on_static_geometry() {
             "walls {walls} lift {lift}: rest {rest:e}"
         );
         assert!(
-            sink > -2.0e-5 + base_sink.min(0.0),
+            sink > -2.0e-5 + min_f32(base_sink, 0.0),
             "walls {walls} lift {lift}: sink {sink:e}"
         );
     }

@@ -73,6 +73,7 @@ use crate::quat_ops;
 use crate::world::layers;
 use arrayvec::ArrayVec;
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::{FlipperId, SwitchId};
 use pin_core::snapshot::MAX_FLIPPERS;
 use pin_core::{FlipperConfig, FlipperShape, FlipperStagingMode, Material};
@@ -335,14 +336,14 @@ impl Flipper {
             angle: self.angle_of(self.seg_q),
             angular_velocity: self.sign * self.seg_w,
             angular_acceleration: 0.0,
-            angle_min: self.rest_angle.min(self.end_angle),
-            angle_max: self.rest_angle.max(self.end_angle),
+            angle_min: min_f32(self.rest_angle, self.end_angle),
+            angle_max: max_f32(self.rest_angle, self.end_angle),
         }
     }
 
     /// Travel at `time` of the current tick.
     fn q_at(&self, time: f32) -> f32 {
-        (self.seg_q + self.seg_w * (time - self.seg_t).max(0.0)).clamp(0.0, self.travel)
+        (self.seg_q + self.seg_w * max_f32(time - self.seg_t, 0.0)).clamp(0.0, self.travel)
     }
 
     /// Velocity of the bat's surface (travel direction) at `time`: zero once
@@ -1031,10 +1032,13 @@ impl MovingBodies for FlipperSet {
         let shape = f.bat.shape();
         let (low, high) = shape.height_range();
         let reach = shape.reach();
-        let r = libm::sqrtf(reach * reach + low.abs().max(high.abs()).powi(2));
+        let r = libm::sqrtf(reach * reach + max_f32(low.abs(), high.abs()).powi(2));
         let a = f.base + f.slide_dir * f.slide;
         let b = f.base + f.slide_dir * (f.slide + f.slide_v * self.dt);
-        (a.min(b) - Vec3::splat(r), a.max(b) + Vec3::splat(r))
+        (
+            Vec3::new(min_f32(a.x, b.x), min_f32(a.y, b.y), min_f32(a.z, b.z)) - Vec3::splat(r),
+            Vec3::new(max_f32(a.x, b.x), max_f32(a.y, b.y), max_f32(a.z, b.z)) + Vec3::splat(r),
+        )
     }
 
     fn max_surface_speed(&self, body: usize) -> f32 {
@@ -1704,7 +1708,7 @@ mod tests {
         let mut fastest = 0.0f32;
         for _ in 0..100 {
             s.advance(DT);
-            fastest = fastest.min(s.angular_velocity(ID));
+            fastest = min_f32(fastest, s.angular_velocity(ID));
         }
         assert_eq!(s.angle_deg(ID), 160.0);
         assert!(

@@ -14,6 +14,7 @@
 //! at most 0.46 µm, all f32 rounding.
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, max_f64, min_f32, min_f64};
 use pin_physics::world::CubicSpline;
 
 /// Distance within this of the brute-force minimum, and seeded within this
@@ -51,12 +52,12 @@ fn brute(spline: &CubicSpline, p: Vec3) -> f64 {
     let ds: Vec<f64> = (0..=total).map(|k| dist(k as f64 / PER as f64)).collect();
     let mut best = f64::INFINITY;
     for k in 0..=total {
-        best = best.min(ds[k]);
+        best = min_f64(best, ds[k]);
         let left = if k > 0 { ds[k - 1] } else { f64::INFINITY };
         let right = if k < total { ds[k + 1] } else { f64::INFINITY };
         if ds[k] <= left && ds[k] <= right {
-            let mut lo = (k as f64 - 1.0).max(0.0) / PER as f64;
-            let mut hi = ((k + 1) as f64).min(total as f64) / PER as f64;
+            let mut lo = max_f64(k as f64 - 1.0, 0.0) / PER as f64;
+            let mut hi = min_f64((k + 1) as f64, total as f64) / PER as f64;
             for _ in 0..40 {
                 let a = lo + (hi - lo) / 3.0;
                 let b = hi - (hi - lo) / 3.0;
@@ -66,7 +67,7 @@ fn brute(spline: &CubicSpline, p: Vec3) -> f64 {
                     lo = a;
                 }
             }
-            best = best.min(dist(0.5 * (lo + hi)));
+            best = min_f64(best, dist(0.5 * (lo + hi)));
         }
     }
     best
@@ -147,10 +148,11 @@ fn random_query(r: &mut Rng, s: &CubicSpline) -> (Vec3, f32) {
         let mut hi = Vec3::splat(f32::MIN);
         for k in 0..=64 {
             let q = s.point(k as f32 / 64.0 * s.max_t());
-            lo = lo.min(q);
-            hi = hi.max(q);
+            lo = Vec3::new(min_f32(lo.x, q.x), min_f32(lo.y, q.y), min_f32(lo.z, q.z));
+            hi = Vec3::new(max_f32(hi.x, q.x), max_f32(hi.y, q.y), max_f32(hi.z, q.z));
         }
-        let pad = Vec3::splat(0.1 * (hi - lo).max_element());
+        let span = hi - lo;
+        let pad = Vec3::splat(0.1 * max_f32(span.x, max_f32(span.y, span.z)));
         let (lo, hi) = (lo - pad, hi + pad);
         let p = Vec3::new(
             r.range(lo.x, hi.x),
@@ -183,7 +185,7 @@ fn tight_spline_sweep_finds_the_global_minimum() {
             let un = s.closest_point(p, None);
             let expected = brute(&s, p);
             let err = f64::from(un.distance) - expected;
-            worst_brute = worst_brute.max(err);
+            worst_brute = max_f64(worst_brute, err);
             assert!(
                 err <= TOL,
                 "seed {seed:#x} case {case} p {p}: {} (t {}) vs brute force {expected}",
@@ -193,7 +195,7 @@ fn tight_spline_sweep_finds_the_global_minimum() {
             for seed_t in [t, 0.0, s.max_t(), r.range(0.0, s.max_t())] {
                 let c = s.closest_point(p, Some(seed_t));
                 let diff = f64::from((c.distance - un.distance).abs());
-                worst_seed = worst_seed.max(diff);
+                worst_seed = max_f64(worst_seed, diff);
                 assert!(
                     diff <= TOL,
                     "seed {seed:#x} case {case} p {p} seed_t {seed_t}: {} vs unseeded {}",

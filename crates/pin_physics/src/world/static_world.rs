@@ -13,6 +13,7 @@ use arrayvec::ArrayVec;
 use glam::{Quat, Vec3};
 use parry3d::bounding_volume::Aabb;
 use parry3d::partitioning::{Bvh, BvhBuildStrategy};
+use pin_core::fmath::{max_f32, min_f32};
 
 use super::shapes::{FEATURE_EDGE, FEATURE_VERTEX, Primitive, normals_parallel};
 
@@ -257,10 +258,13 @@ fn mesh_primitives(
         }
         let cross = (pos[1] - pos[0]).cross(pos[2] - pos[0]);
         let area2 = cross.length();
-        let longest = (pos[1] - pos[0])
-            .length_squared()
-            .max((pos[2] - pos[1]).length_squared())
-            .max((pos[0] - pos[2]).length_squared());
+        let longest = max_f32(
+            max_f32(
+                (pos[1] - pos[0]).length_squared(),
+                (pos[2] - pos[1]).length_squared(),
+            ),
+            (pos[0] - pos[2]).length_squared(),
+        );
         // Reject zero-area and numerically degenerate (needle) triangles.
         if !(area2 > 0.0 && area2 > 1.0e-6 * longest) {
             continue;
@@ -558,7 +562,18 @@ impl StaticWorld {
             return None;
         }
         let pad = Vec3::splat(radius + LEAF_MARGIN);
-        let query = Aabb::new(center.min(end) - pad, center.max(end) + pad);
+        let query = Aabb::new(
+            Vec3::new(
+                min_f32(center.x, end.x),
+                min_f32(center.y, end.y),
+                min_f32(center.z, end.z),
+            ) - pad,
+            Vec3::new(
+                max_f32(center.x, end.x),
+                max_f32(center.y, end.y),
+                max_f32(center.z, end.z),
+            ) + pad,
+        );
         let mut best: Option<(f32, u32, super::shapes::Closest)> = None;
         for leaf in self.bvh.intersect_aabb(&query) {
             let (prim, collider) = &self.prims[leaf as usize];

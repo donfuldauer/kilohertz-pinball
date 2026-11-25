@@ -247,6 +247,7 @@
 
 use glam::Vec3;
 use pin_core::Material;
+use pin_core::fmath::max_f32;
 
 /// Relative normal speed (m/s) by which a friction impulse may separate a
 /// body contact beyond what its normal solve set before the friction change
@@ -465,7 +466,7 @@ pub fn conservative_cast<B: MovingBodies + ?Sized>(
     if window.is_nan() || window <= 0.0 {
         return None;
     }
-    let bound = velocity.length() + set.max_surface_speed(body).max(0.0);
+    let bound = velocity.length() + max_f32(set.max_surface_speed(body), 0.0);
     if !bound.is_finite() {
         return None;
     }
@@ -624,7 +625,7 @@ pub(super) fn solve_body_contact(
         if acc.normal > st.cap {
             ball.velocity -= n * ((acc.normal - st.cap) / m);
             acc.normal = st.cap;
-            acc.tangent = clamp_length(acc.tangent, k.friction.max(0.0) * st.cap);
+            acc.tangent = clamp_length(acc.tangent, max_f32(k.friction, 0.0) * st.cap);
         }
         let j = n * (acc.normal - start.normal) + (acc.tangent - start.tangent);
         if j != Vec3::ZERO {
@@ -659,7 +660,7 @@ pub(super) fn solve_body_contact(
         let inertia = sphere.inertia();
         // Normal impulse on the relative velocity, with both inverse masses
         // (or the larger response seen).
-        let k_n = (k_ball + wn).max(st.k);
+        let k_n = max_f32(k_ball + wn, st.k);
         let start = acc.normal;
         let total = (start + (target_normal_speed - un) / k_n).clamp(0.0, st.cap);
         let dj = total - start;
@@ -684,8 +685,8 @@ pub(super) fn solve_body_contact(
         }
 
         // Rolling and pivoting resistance act on the ball's spin only.
-        let f_max = k.friction.max(0.0) * total;
-        let l_max = k.rolling_resistance.max(0.0) * total * r;
+        let f_max = max_f32(k.friction, 0.0) * total;
+        let l_max = max_f32(k.rolling_resistance, 0.0) * total * r;
         let want = acc.rolling - ball.angular_velocity * inertia;
         let want_n = n * want.dot(n);
         let new_l = clamp_length(want - want_n, l_max) + clamp_length(want_n, l_max);
@@ -727,7 +728,7 @@ pub(super) fn solve_body_contact(
             // that leaves the relative normal speed at (or below) what the
             // normal solve set. Contacts that never drop to zero are solved
             // exactly as before.
-            let ceiling = target_normal_speed.max(un_pre);
+            let ceiling = max_f32(target_normal_speed, un_pre);
             let un_post = (ball.velocity - set.velocity_at(body, time, point)).dot(n);
             let rise = un_post - un_pre;
             if st.cycling
@@ -764,7 +765,7 @@ pub(super) fn solve_body_contact(
 
     // Backstop: a body contact never makes a ball faster (or spin faster)
     // than the limit, unless it already was.
-    let limit = BODY_SPEED_LIMIT.max(before.0.length());
+    let limit = max_f32(BODY_SPEED_LIMIT, before.0.length());
     let speed = ball.velocity.length();
     if speed.is_nan() || speed > limit {
         ball.velocity = if speed.is_finite() {
@@ -773,7 +774,7 @@ pub(super) fn solve_body_contact(
             before.0
         };
     }
-    let spin_limit = (BODY_SPEED_LIMIT / r).max(before.1.length());
+    let spin_limit = max_f32(BODY_SPEED_LIMIT / r, before.1.length());
     let spin = ball.angular_velocity.length();
     if spin.is_nan() || spin > spin_limit {
         ball.angular_velocity = if spin.is_finite() {
@@ -816,7 +817,7 @@ fn observe(
     // Compared with the response the solve assumed for this impulse (the
     // reported inverse mass, or a larger one seen before); 0.1 % tolerance
     // so that rounding of an honest response does not count.
-    if !(k_obs.is_finite() && k_obs > assumed.max(st.k) * 1.001) {
+    if !(k_obs.is_finite() && k_obs > max_f32(assumed, st.k) * 1.001) {
         return;
     }
     st.k = k_obs;

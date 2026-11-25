@@ -6,6 +6,7 @@
 //! tridiagonal solve give second-derivative continuity at interior knots.
 
 use glam::{DVec3, Vec3};
+use pin_core::fmath::{max_f32, min_f32};
 
 /// Sample-table resolution: samples per segment (a power of two, so that
 /// sample parameters are exact).
@@ -299,19 +300,20 @@ impl CubicSpline {
             let center = (seg.p[0] + seg.p[1] + seg.p[2] + seg.p[3]) * 0.25;
             let mut radius = 0.0f32;
             for p in seg.p {
-                radius = radius.max(center.distance(p));
+                radius = max_f32(radius, center.distance(p));
             }
             // |C'(s)| <= 3 max |p[j+1] - p[j]| (convex hull of the hodograph).
             let mut max_speed = 0.0f32;
             for j in 0..3 {
-                max_speed = max_speed.max(seg.p[j + 1].distance(seg.p[j]));
+                max_speed = max_f32(max_speed, seg.p[j + 1].distance(seg.p[j]));
             }
             max_speed *= 3.0;
             // C'' of a cubic is linear in s: its largest norm is at an end.
             let max_second = 6.0
-                * (seg.p[2] - seg.p[1] * 2.0 + seg.p[0])
-                    .length()
-                    .max((seg.p[3] - seg.p[2] * 2.0 + seg.p[1]).length());
+                * max_f32(
+                    (seg.p[2] - seg.p[1] * 2.0 + seg.p[0]).length(),
+                    (seg.p[3] - seg.p[2] * 2.0 + seg.p[1]).length(),
+                );
             let max_second = max_second * 1.0001 + 1.0e-6;
             let max_third =
                 6.0 * (seg.p[3] - seg.p[2] * 3.0 + seg.p[1] * 3.0 - seg.p[0]).length() * 1.0001
@@ -320,7 +322,7 @@ impl CubicSpline {
             // changes by at most `max_second` per unit s.
             let mut min_speed = f32::INFINITY;
             for j in 0..=k {
-                min_speed = min_speed.min(seg.tangent(j as f32 / k as f32).length());
+                min_speed = min_f32(min_speed, seg.tangent(j as f32 / k as f32).length());
             }
             let min_speed = (min_speed - max_second * (0.5 / k as f32)) * 0.9999;
             // Slightly padded so rounding can never make the bounds unsafe.
@@ -540,7 +542,7 @@ impl CubicSpline {
                 }
                 // Every point of this interval is within `half_interval_arc`
                 // of one of its two end samples.
-                let lbi = d0.min(d1).sqrt() - bound.half_interval_arc;
+                let lbi = min_f32(d0, d1).sqrt() - bound.half_interval_arc;
                 if (lbi <= 0.0 || lbi * lbi < best_d2) && g0 < 0.0 && g1 > 0.0 {
                     let lo = j as f32 / k as f32;
                     let hi = (j + 1) as f32 / k as f32;
@@ -590,7 +592,7 @@ impl CubicSpline {
             if d1 < best.0 {
                 *best = (d1, i as f32 + hi, s1.point);
             }
-            let lbi = d0.min(d1).sqrt() - bound.half_interval_arc;
+            let lbi = min_f32(d0, d1).sqrt() - bound.half_interval_arc;
             if lbi <= 0.0 || lbi * lbi < best.0 {
                 let root = Node {
                     lo: j as f32 / k as f32,
@@ -655,15 +657,17 @@ impl CubicSpline {
             let [g_lo, g_hi] = node.g;
             let [d_lo, d_hi] = node.d2;
             let [gp_lo, gp_hi] = node.slope;
-            let reach = d_lo.max(d_hi).sqrt() + bound.max_speed * 0.5 * w;
+            let reach = max_f32(d_lo, d_hi).sqrt() + bound.max_speed * 0.5 * w;
             let g2 = 3.0 * bound.max_speed * bound.max_second + reach * bound.max_third;
             let slack = g2 * 0.5 * w;
-            let gp_min = gp_lo.min(gp_hi) - slack;
-            let gp_max = gp_lo.max(gp_hi) + slack;
+            let gp_min = min_f32(gp_lo, gp_hi) - slack;
+            let gp_max = max_f32(gp_lo, gp_hi) + slack;
             // |C - p|² at lo + x is at least d_lo + 2 g_lo x + gp_min x², and
             // likewise from hi; either bound's minimum bounds the piece.
-            let floor =
-                taylor_floor(d_lo, g_lo, gp_min, w).max(taylor_floor(d_hi, -g_hi, gp_min, w));
+            let floor = max_f32(
+                taylor_floor(d_lo, g_lo, gp_min, w),
+                taylor_floor(d_hi, -g_hi, gp_min, w),
+            );
             if floor >= best.0 * (1.0 - 4.0 * f32::EPSILON) {
                 continue;
             }
@@ -672,7 +676,7 @@ impl CubicSpline {
                 continue;
             }
             let one_sign = g_lo > 0.0 && g_hi > 0.0 || g_lo < 0.0 && g_hi < 0.0;
-            if one_sign && g_lo.abs() + g_hi.abs() > gp_min.abs().max(gp_max.abs()) * w {
+            if one_sign && g_lo.abs() + g_hi.abs() > max_f32(gp_min.abs(), gp_max.abs()) * w {
                 continue;
             }
             if gp_min > 0.0 || node.depth >= MULTI_ROOT_DEPTH {
@@ -796,11 +800,11 @@ fn slope(e: Vec3, tangent: Vec3, dd: (Vec3, Vec3), s: f32) -> f32 {
 /// Lower bound over `x` in `[0, w]` of `d + 2 g x + c x²`.
 fn taylor_floor(d: f32, g: f32, c: f32, w: f32) -> f32 {
     let end = d + (2.0 * g + c * w) * w;
-    let mut floor = d.min(end);
+    let mut floor = min_f32(d, end);
     if c > 0.0 {
         let x = -g / c;
         if x > 0.0 && x < w {
-            floor = floor.min(d - g * g / c);
+            floor = min_f32(floor, d - g * g / c);
         }
     }
     floor

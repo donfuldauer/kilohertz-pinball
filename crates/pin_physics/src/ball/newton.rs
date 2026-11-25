@@ -3,6 +3,7 @@
 
 use arrayvec::ArrayVec;
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::ProfileId;
 
 use crate::world::{CubicSpline, layers};
@@ -511,8 +512,8 @@ impl NewtonChain {
                 let tb = self.t[k + 1] + (cb * q) / lb;
                 // Path length (metres) each ball would travel past an end
                 // stop, and the centre distance that leaves unmade.
-                let lost_a = ca * ((0.0 - ta).max(0.0) - (ta - max_t).max(0.0)) * la;
-                let lost_b = cb * ((tb - max_t).max(0.0) - (0.0 - tb).max(0.0)) * lb;
+                let lost_a = ca * (max_f32(0.0 - ta, 0.0) - max_f32(ta - max_t, 0.0)) * la;
+                let lost_b = cb * (max_f32(tb - max_t, 0.0) - max_f32(0.0 - tb, 0.0)) * lb;
                 let extra_a = if ca.abs() >= MIN_COSINE {
                     -lost_b / ca
                 } else {
@@ -560,7 +561,7 @@ impl NewtonChain {
             let along = gravity.dot(tan);
             let across = (gravity - tan * along).length();
             let mut u = self.speed[i] + (5.0 / 7.0) * along * dt;
-            let hold = (5.0 / 7.0) * rolling_resistance.max(0.0) * across * dt;
+            let hold = (5.0 / 7.0) * max_f32(rolling_resistance, 0.0) * across * dt;
             u = if u.abs() <= hold {
                 0.0
             } else {
@@ -592,7 +593,7 @@ impl NewtonChain {
                 if let Some((gap, ca, cb)) = self.centre_line(k) {
                     let closing = ca * self.speed[k] - cb * self.speed[k + 1];
                     if closing > 0.0 && gap > CHAIN_TOUCH {
-                        tau = tau.min(gap / closing);
+                        tau = min_f32(tau, gap / closing);
                     }
                 }
             }
@@ -994,7 +995,7 @@ mod tests {
                     // away (well before ball 1 reaches its end stop).
                     while ticks < 2000 && c.ball_position(1).x > 0.04 {
                         c.advance(1.0e-3, Vec3::ZERO, 0.0);
-                        min_d = min_d.min(centre_distance(&c));
+                        min_d = min_f32(min_d, centre_distance(&c));
                         let energy = c.ball_speed(0).powi(2) + c.ball_speed(1).powi(2);
                         assert!(energy <= energy0 * (1.0 + 1e-5), "w {w} v {v} e {e}");
                         ticks += 1;
@@ -1042,7 +1043,7 @@ mod tests {
                 let mut hit = false;
                 for _ in 0..40 {
                     c.advance(1.0e-3, Vec3::ZERO, 0.0);
-                    min_d = min_d.min(centre_distance(&c));
+                    min_d = min_f32(min_d, centre_distance(&c));
                     hit |= c.ball_speed(0) != u || c.ball_speed(1) != u;
                     let energy = c.ball_speed(0).powi(2) + c.ball_speed(1).powi(2);
                     assert!(energy <= 2.0 * u * u * (1.0 + 1e-5), "e {e} u {u}");
@@ -1097,7 +1098,7 @@ mod tests {
                 "w {w} x1 {x1} f {f}: a {ca} {cb}, gap {gap0} -> {gap1}"
             );
             assert!(
-                gap1 >= -(0.01 * -gap0).min(1.0e-6),
+                gap1 >= -min_f32(0.01 * -gap0, 1.0e-6),
                 "w {w} x1 {x1} f {f}: a {ca} {cb}, gap {gap0} -> {gap1}"
             );
             assert!(c.ball_t(0) < c.ball_t(1));
@@ -1126,8 +1127,8 @@ mod tests {
                 let half = -0.5 * gap;
                 let ta = c.t[k] - half / la;
                 let tb = c.t[k + 1] + half / lb;
-                let spill_a = (0.0 - ta).max(0.0) * la;
-                let spill_b = (tb - max_t).max(0.0) * lb;
+                let spill_a = max_f32(0.0 - ta, 0.0) * la;
+                let spill_b = max_f32(tb - max_t, 0.0) * lb;
                 c.t[k] = (ta - spill_b / la).clamp(0.0, max_t);
                 c.t[k + 1] = (tb + spill_a / lb).clamp(0.0, max_t);
             }

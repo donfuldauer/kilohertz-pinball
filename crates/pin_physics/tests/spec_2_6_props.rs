@@ -15,6 +15,7 @@ mod common;
 
 use common::*;
 use glam::{Quat, Vec3};
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::FlipperId;
 use pin_core::{FlipperConfig, FlipperShape};
 use pin_physics::ball::MovingBodies;
@@ -207,7 +208,7 @@ fn banana_strategy() -> impl Strategy<Value = Banana> {
         let rad = rmin * libm::powf(4000.0 / rmin, r01);
         Banana {
             length_mm: l,
-            arc_radius_mm: rad.max(t * 1.5),
+            arc_radius_mm: max_f32(rad, t * 1.5),
             tube_radius_mm: t,
         }
     })
@@ -321,7 +322,7 @@ proptest! {
         // concave face never beyond the centre of curvature.
         let mut offset = -0.9 * tube + off01 * (0.04 + 0.9 * tube);
         if region == Region::Concave {
-            offset = offset.min(0.8 * (b.arc_radius_mm * 1.0e-3 - tube));
+            offset = min_f32(offset, 0.8 * (b.arc_radius_mm * 1.0e-3 - tube));
         }
         let r = closest_case(b, neg_sweep, neg_bend, unit(theta, phi), rest, region, frac, beta, offset, z);
         prop_assert!(r.is_ok(), "{:?}: {}", b, r.unwrap_err());
@@ -370,7 +371,7 @@ fn tunnel_case(
             [t[0] * cb - t[1] * sb, t[0] * sb + t[1] * cb],
         )
     };
-    let dist = (speed * 0.04).max(0.12);
+    let dist = max_f32(speed * 0.04, 0.12);
     let arrive = (dist / speed / DT) as i64;
     let flip = (arrive + flip_off).max(0) as u64;
     let start = pose0.to_world([a[0] + out[0] * dist, a[1] + out[1] * dist], 0.0);
@@ -393,7 +394,10 @@ fn tunnel_case(
         }
         s.advance();
         hit |= s.hit(h, 0);
-        max_tip = max_tip.max(s.set.angular_velocity(ID).abs() * (b.length_mm * 1.0e-3));
+        max_tip = max_f32(
+            max_tip,
+            s.set.angular_velocity(ID).abs() * (b.length_mm * 1.0e-3),
+        );
         let p = s.ball(h).position;
         if !p.is_finite() {
             return Err(format!("non-finite ball at tick {}", s.tick));
@@ -461,7 +465,7 @@ fn no_tunnelling_at_max_angular_velocity_fixed_sweep() {
                         );
                         match r {
                             Ok((tip, hit)) => {
-                                fastest = fastest.max(tip);
+                                fastest = max_f32(fastest, tip);
                                 cases += 1;
                                 hits += u32::from(hit);
                             }
@@ -541,7 +545,7 @@ fn energy_case(
     let flip = (arrive + flip_off).max(0) as u64;
     let rel = release_after.map(|r| flip + r);
     let inertia = [c.inertia_kg_m2];
-    let tau = c.power_torque_nm.max(c.hold_torque_nm) + c.return_spring_torque_nm;
+    let tau = max_f32(c.power_torque_nm, c.hold_torque_nm) + c.return_spring_torque_nm;
     let mut e_prev = energy_of(&s, g, &inertia);
     let e0 = e_prev;
     let mut a_prev = s.set.angle_deg(ID);
@@ -744,23 +748,25 @@ fn surface_velocity_case(b: Banana, sweep: f32, k: u64, t_frac: f32) -> Result<f
         }
     }
     let (lo, hi) = ws.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |m, &w| {
-        (m.0.min(w), m.1.max(w))
+        (min_f32(m.0, w), max_f32(m.1, w))
     });
-    if hi - lo > 1.0e-3 * hi.abs().max(1.0) {
+    if hi - lo > 1.0e-3 * max_f32(hi.abs(), 1.0) {
         return Err(format!("ω differs between surface points: {ws:?}"));
     }
     MovingBodies::end_tick(&mut s.set, DT);
     let w1 = s.set.angular_velocity(ID);
     let a1 = s.set.angle_deg(ID);
     let w = ws[0];
-    let (wl, wh) = (w0.min(w1), w0.max(w1));
-    let slack = 1.0e-3 * wh.abs().max(1.0);
+    let (wl, wh) = (min_f32(w0, w1), max_f32(w0, w1));
+    let slack = 1.0e-3 * max_f32(wh.abs(), 1.0);
     if w < wl - slack || w > wh + slack {
         // The drive acts as one impulse at the tick start, so ω inside the
         // tick is ω after that impulse; it must still match the angle
         // change of the tick unless a stop was reached.
         let mean = (a1 - a0).to_radians() / DT;
-        if (w - mean).abs() > 0.05 * mean.abs().max(1.0) && (a1 - c.end_angle_deg()).abs() > 1e-3 {
+        if (w - mean).abs() > 0.05 * max_f32(mean.abs(), 1.0)
+            && (a1 - c.end_angle_deg()).abs() > 1e-3
+        {
             return Err(format!(
                 "field ω {w} outside [{w0}, {w1}] and far from the tick's mean {mean}"
             ));
@@ -776,7 +782,7 @@ fn surface_velocity_is_rigid_rotation_mid_stroke() {
         for k in [3u64, 8, 12, 16, 19] {
             for tf in [0.0f32, 0.5, 0.95] {
                 match surface_velocity_case(BANANA, sweep, k, tf) {
-                    Ok(w) => fastest = fastest.max(w.abs()),
+                    Ok(w) => fastest = max_f32(fastest, w.abs()),
                     Err(e) => panic!("sweep {sweep} tick {k} t {tf}: {e}"),
                 }
             }

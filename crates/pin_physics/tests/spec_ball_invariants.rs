@@ -10,6 +10,7 @@ mod common;
 
 use common::*;
 use glam::{Quat, Vec3};
+use pin_core::fmath::max_f32;
 use pin_core::{BallProfile, Material, SwitchId};
 use pin_physics::ball::{
     Ball, BallEvent, BallHandle, ExternalForce, ImpactTarget, Magnet, Sensor, SensorKind,
@@ -186,7 +187,7 @@ fn rest_drift(name: &str, xy: Vec3, floor_top: f32) -> f32 {
         ev.clear();
         s.step(&g, DT, &mut ev);
         let p = s.ball(h).unwrap().position;
-        max = max.max((p - p0).length());
+        max = max_f32(max, (p - p0).length());
         // No impact events from a resting ball (below the 0.05 m/s threshold).
         for e in ev.as_slice() {
             assert!(
@@ -792,7 +793,7 @@ fn free_flight_is_ballistic_and_spin_is_preserved() {
     let q_exp = Quat::from_rotation_z(10.0);
     let q = b.orientation;
     assert!(
-        (q.length() - 1.0).abs() < 1e-4,
+        (pin_physics::quat_ops::length_squared(q).sqrt() - 1.0).abs() < 1e-4,
         "orientation not unit: {q:?}"
     );
     assert!(

@@ -8240,3 +8240,43 @@ replay fixture hash and the seam digests do not move.
 the IEEE default quiet NaN and not what Rust's `NAN` constants or wasm produce); route the replay
 file bytes through the canonical writer (rejected: they are data, not state, and NaNs are
 already refused there).
+
+## #161 KP-067 — Quat operator rule is a documented review item; pin_physics glam bans
+
+**Decision:** glam `Quat` operator impls (`Quat * Quat`, `Quat * Vec3`, `Quat * f32`) and
+`Quat::from_axis_angle` results cannot be banned reliably by clippy `disallowed-methods`, so the
+"Quat operator rule" is written in the `pin_physics/clippy.toml` header and the
+`pin_physics::quat_ops` module docs: in the sim crates, never use glam `Quat` `*` operators,
+`Quat::from_axis_angle` results in sim math, or the banned methods; use `pin_physics::quat_ops`;
+reviewers treat any `Quat` operator in sim code as a defect. `pin_physics/clippy.toml` gets the
+same glam entries as `pin_assets` (`disallowed-types` `Vec3A`, `Vec4`, `Affine3A`, `Mat4`, `Mat3A`,
+`DVec4`; `disallowed-methods` `Quat::{lerp, slerp, normalize, length_squared, length,
+from_rotation_arc, mul_vec3, mul_quat}`, `{Vec3A, Vec4}::{min, max, clamp}`,
+`{Vec2, Vec3, DVec2, DVec3}::{min, max, clamp, min_element, max_element}`), all resolving, none
+dropped as unresolvable. Two `Quat` methods are not banned in `pin_physics` because call sites
+remain that `quat_ops` does not cover: `Quat::conjugate` (`world/shapes.rs` `closest_cuboid`
+feeds `rotation.conjugate()` into `quat_ops::mul_vec3`, and the `quat_ops` reference tests) and
+`Quat::inverse` (11 test-setup frame transforms in `tests/`). Non-reference test uses of banned
+`Quat` methods are routed through `quat_ops` (`ball/contact.rs` and `spec_ball_invariants.rs`
+unit-length checks use `quat_ops::length_squared(q).sqrt()`, `ball_chain_pass_reset.rs` uses
+`quat_ops::from_rotation_arc`, `spec_kp066_quat_ops.rs` builds its known-value input with
+`quat_ops::normalize` and guards its replica digest with `quat_ops::length_squared`); the items
+that compare `quat_ops` against glam's SSE2 `Quat` as the bit-exact reference carry a narrow
+`#[allow(clippy::disallowed_methods, reason = ...)]` (7: 4 in `quat_ops.rs` tests, 3 in
+`spec_kp066_quat_ops.rs`). The 22 glam vector min/max/clamp/min_element/max_element uses in
+`pin_physics` src and tests (bounding boxes, `OBox::closest`, `closest_cuboid`, the seam
+reference model) are rewritten component-wise with `pin_core::fmath`, operand order preserved
+(`clamp(lo, hi)` as `min(max(x, lo), hi)`, glam's own order; `max_element` as
+`max(x, max(y, z))`).
+**Rationale:** Clippy sees method paths, not operator trait impls, so a ban on `Quat * Quat`
+would be silent; a written rule plus review is the only enforceable form today. `conjugate` is an
+exact sign flip on every target (only NaN sign could differ), and `inverse` is used only to set
+up test frames, so leaving them unbanned costs no cross-target parity in sim output, while
+rewriting them is outside "only the min/max call form changes". `quat_ops` reproduces glam's
+SSE2 results bit for bit, so the routed test uses are unchanged on x86_64 (seam digests and
+replay fixture hash 25097c21c2c3adc1 unchanged).
+**Alternatives:** banning `conjugate`/`inverse` and rewriting the call sites as
+`Quat::from_xyzw(-x, -y, -z, w)` (rejected: a refactor beyond this unit; candidate for a later
+`quat_ops::conjugate`); a custom lint for `Quat` operators (rejected: needs a dylint toolchain,
+not in the pinned environment); allowing instead of routing the non-reference test uses
+(rejected: they are not reference checks, so the brief's narrow-allow rule does not apply).

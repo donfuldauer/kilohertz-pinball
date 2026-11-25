@@ -131,6 +131,7 @@ pub mod spinner;
 pub mod tilt;
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::{CoilId, SwitchId};
 use pin_core::materials::{Material, MaterialPair, lookup_pair};
 use pin_core::schema::table::MechKind;
@@ -234,7 +235,7 @@ impl Drop {
 
     fn body(&self, t: f32) -> OBox {
         let mut b = self.up;
-        b.center.z += (self.z + self.vz * t).min(0.0);
+        b.center.z += min_f32(self.z + self.vz * t, 0.0);
         b
     }
 }
@@ -1036,9 +1037,10 @@ fn eject(solver: &mut BallSolver, v: &Vuk, h: BallHandle, rng: &mut Pcg32) {
     if solver.ball(h).is_none() {
         return;
     }
-    let lateral = VUK_SCATTER_LATERAL
-        .min(0.25 * v.radius)
-        .min(0.25 * VUK_ZONE);
+    let lateral = min_f32(
+        min_f32(VUK_SCATTER_LATERAL, 0.25 * v.radius),
+        0.25 * VUK_ZONE,
+    );
     let shift = signed_unit(rng) * lateral;
     let turn = signed_unit(rng) * VUK_SCATTER_ANGLE_DEG.to_radians();
     let gain = 1.0 + signed_unit(rng) * VUK_SCATTER_SPEED_FRAC;
@@ -1091,10 +1093,10 @@ impl MovingBodies for MechSet {
                     if *plunger {
                         // The hand (or the auto-plunger coil) pulls the rod
                         // back at most at PULL_SPEED; letting go is instant.
-                        let depth = if on { pull.max(*auto_pull) } else { pull };
+                        let depth = if on { max_f32(pull, *auto_pull) } else { pull };
                         let target = depth * *stroke;
                         *pulled = if target > *pulled {
-                            target.min(*pulled + PULL_SPEED * dt)
+                            min_f32(target, *pulled + PULL_SPEED * dt)
                         } else {
                             target
                         };
@@ -1110,7 +1112,7 @@ impl MovingBodies for MechSet {
                         d.state = DropState::Rising;
                     }
                     d.vz = if d.state == DropState::Rising {
-                        d.rise_speed.min(-d.z / dt).max(0.0)
+                        max_f32(min_f32(d.rise_speed, -d.z / dt), 0.0)
                     } else {
                         0.0
                     };
@@ -1127,7 +1129,7 @@ impl MovingBodies for MechSet {
                 Part::Spinner(s) => s.end_tick(dt),
                 Part::Drop(d) => {
                     if d.state == DropState::Rising {
-                        d.z = (d.z + d.vz * dt).min(0.0);
+                        d.z = min_f32(d.z + d.vz * dt, 0.0);
                         if d.z >= 0.0 {
                             d.z = 0.0;
                             d.state = DropState::Up;

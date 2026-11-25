@@ -8,6 +8,7 @@
 //! minimum. The old code differed by up to 8.3 µm on the review's example.
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, max_f64, min_f32, min_f64};
 use pin_physics::world::CubicSpline;
 use std::time::Instant;
 
@@ -31,8 +32,8 @@ fn brute(spline: &CubicSpline, p: Vec3) -> f64 {
             best_k = k;
         }
     }
-    let mut lo = (best_k as f64 - 1.0).max(0.0) / per as f64;
-    let mut hi = ((best_k + 1) as f64).min((n * per) as f64) / per as f64;
+    let mut lo = max_f64(best_k as f64 - 1.0, 0.0) / per as f64;
+    let mut hi = min_f64((best_k + 1) as f64, (n * per) as f64) / per as f64;
     for _ in 0..60 {
         let a = lo + (hi - lo) / 3.0;
         let b = hi - (hi - lo) / 3.0;
@@ -42,7 +43,7 @@ fn brute(spline: &CubicSpline, p: Vec3) -> f64 {
             lo = a;
         }
     }
-    best.min(dist(0.5 * (lo + hi)))
+    min_f64(best, dist(0.5 * (lo + hi)))
 }
 
 /// The review's tight curve: the natural spline overshoots the last point
@@ -108,7 +109,7 @@ fn check(s: &CubicSpline, p: Vec3, seeds: usize) -> f32 {
         let seed = s.max_t() * j as f32 / seeds as f32;
         let c = s.closest_point(p, Some(seed));
         let diff = (c.distance - un.distance).abs();
-        worst = worst.max(diff);
+        worst = max_f32(worst, diff);
         assert!(
             diff <= DIST_TOL,
             "p {p} seed {seed}: seeded {} (t {}) vs unseeded {} (t {})",
@@ -147,10 +148,11 @@ fn tight_curves_seeded_and_unseeded_agree() {
         let mut hi = Vec3::splat(f32::MIN);
         for k in 0..=200 {
             let q = s.point(k as f32 / 200.0 * s.max_t());
-            lo = lo.min(q);
-            hi = hi.max(q);
+            lo = Vec3::new(min_f32(lo.x, q.x), min_f32(lo.y, q.y), min_f32(lo.z, q.z));
+            hi = Vec3::new(max_f32(hi.x, q.x), max_f32(hi.y, q.y), max_f32(hi.z, q.z));
         }
-        let pad = 0.1 * (hi - lo).max_element();
+        let span = hi - lo;
+        let pad = 0.1 * max_f32(span.x, max_f32(span.y, span.z));
         let m = 13;
         let f = |i: usize| i as f32 / (m - 1) as f32;
         for a in 0..m {
@@ -161,7 +163,7 @@ fn tight_curves_seeded_and_unseeded_agree() {
                         lo.y - pad + (hi.y - lo.y + 2.0 * pad) * f(b),
                         0.5 * (lo.z + hi.z) + z,
                     );
-                    worst = worst.max(check(&s, p, 10));
+                    worst = max_f32(worst, check(&s, p, 10));
                 }
             }
         }
@@ -169,7 +171,7 @@ fn tight_curves_seeded_and_unseeded_agree() {
         for k in 0..=40 {
             let t = s.max_t() * k as f32 / 40.0;
             for off in [Vec3::ZERO, Vec3::new(2.0e-4, -1.0e-4, 0.0)] {
-                worst = worst.max(check(&s, s.point(t) + off, 10));
+                worst = max_f32(worst, check(&s, s.point(t) + off, 10));
             }
         }
     }
@@ -200,7 +202,7 @@ fn report_tight_curve_query_time() {
                     sink += s.closest_point(p, seeded.then_some(t)).distance;
                 }
                 let per = start.elapsed().as_secs_f64() / pts.len() as f64;
-                best[slot] = best[slot].min(per);
+                best[slot] = min_f64(best[slot], per);
             }
         }
         println!(

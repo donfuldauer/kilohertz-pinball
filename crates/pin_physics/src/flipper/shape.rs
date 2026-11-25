@@ -10,6 +10,7 @@
 
 use crate::ball::{BODY_REST_SPEED, BODY_SKIN, BodyCast, BodyPoint, MAX_CAST_ITERATIONS};
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 
 /// Angle (radians) within which a bat counts as being at a stop.
 pub const STOP_ANGLE_TOLERANCE: f32 = 1.0e-5;
@@ -64,7 +65,7 @@ impl BatMotion {
     /// Bat angle at `time`.
     #[must_use]
     pub fn angle_at(&self, time: f32) -> f32 {
-        let s = (time - self.start).max(0.0);
+        let s = max_f32(time - self.start, 0.0);
         let a = self.angle + self.angular_velocity * s + 0.5 * self.angular_acceleration * s * s;
         a.clamp(self.angle_min, self.angle_max)
     }
@@ -73,15 +74,16 @@ impl BatMotion {
     /// linear in time, so it is at one of the ends).
     #[must_use]
     pub fn max_angular_speed(&self, from: f32, to: f32) -> f32 {
-        let at =
-            |t: f32| self.angular_velocity + self.angular_acceleration * (t - self.start).max(0.0);
-        at(from).abs().max(at(to).abs())
+        let at = |t: f32| {
+            self.angular_velocity + self.angular_acceleration * max_f32(t - self.start, 0.0)
+        };
+        max_f32(at(from).abs(), at(to).abs())
     }
 
     /// Angular velocity at `time`: zero once a stop holds the bat.
     #[must_use]
     pub fn angular_velocity_at(&self, time: f32) -> f32 {
-        let s = (time - self.start).max(0.0);
+        let s = max_f32(time - self.start, 0.0);
         let a = self.angle + self.angular_velocity * s + 0.5 * self.angular_acceleration * s * s;
         let w = self.angular_velocity + self.angular_acceleration * s;
         if (w > 0.0 && self.angle_max - a <= STOP_ANGLE_TOLERANCE)
@@ -96,7 +98,7 @@ impl BatMotion {
     /// Pivot position at `time`.
     #[must_use]
     pub fn pivot_at(&self, time: f32) -> Vec3 {
-        let s = (time.min(self.pivot_stop_time) - self.start).max(0.0);
+        let s = max_f32(min_f32(time, self.pivot_stop_time) - self.start, 0.0);
         self.pivot + self.pivot_velocity * s
     }
 
@@ -406,7 +408,7 @@ impl BatShape for StraightCapsule {
     }
 
     fn reach(&self) -> f32 {
-        self.base_radius.max(self.length + self.tip_radius)
+        max_f32(self.base_radius, self.length + self.tip_radius)
     }
 
     fn height_range(&self) -> (f32, f32) {

@@ -8,6 +8,7 @@ mod util;
 
 use glam::Vec3;
 use pin_core::PhysicsDefaults;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_physics::ball::BallHandle;
 use pin_physics::flipper::FlipperSet;
 use util::*;
@@ -126,7 +127,7 @@ fn shot_in(var: &Variant, fraction: f32, button: Button) -> Shot {
         if let Some(f) = first
             && t <= f + WINDOW
         {
-            best = best.max(rig.ball(h).velocity.dot(away));
+            best = max_f32(best, rig.ball(h).velocity.dot(away));
             if !rig.hits.is_empty() {
                 hit_ticks.push(t);
             }
@@ -162,11 +163,8 @@ fn timing_sweep_has_a_dead_spot_and_no_unexplained_jumps() {
             );
             shots.push(shot);
         }
-        let min = shots
-            .iter()
-            .map(|s| s.rebound)
-            .fold(f32::INFINITY, f32::min);
-        let max = shots.iter().map(|s| s.rebound).fold(0.0, f32::max);
+        let min = shots.iter().map(|s| s.rebound).fold(f32::INFINITY, min_f32);
+        let max = shots.iter().map(|s| s.rebound).fold(0.0, max_f32);
         println!(
             "  min {min:.3} m/s = {:.1} % of held (plan depth 25 %: {}), max {max:.3} m/s",
             100.0 * min / held,
@@ -288,7 +286,7 @@ fn dead_spot_robustness_report() {
                 let jump = narrow
                     .windows(2)
                     .map(|w| (w[1].1 - w[0].1).abs())
-                    .fold(0.0, f32::max);
+                    .fold(0.0, max_f32);
                 println!(
                     "{} {fraction:.1} I×{inertia:.1} T×{torque:.1} {speed:.1} m/s | held {held:.2} | −20…0: min {m20:.2} ({:.0} %) at {k20:+} | −35…0: min {m35:.2} ({:.0} %) at {k35:+} | largest step −20…0: {jump:.2}",
                     if square { "square" } else { "down  " },
@@ -427,7 +425,7 @@ fn zipper_closes_the_gap_for_a_27_mm_ball() {
     let mut lowest = f32::INFINITY;
     for _ in 0..4000 {
         rig.step();
-        lowest = lowest.min(rig.ball(h).position.y);
+        lowest = min_f32(lowest, rig.ball(h).position.y);
     }
     let b = rig.ball(h);
     println!(
@@ -467,7 +465,7 @@ fn unloaded_stroke_time_is_in_the_feel_window() {
                 ticks[i] = t;
             }
         }
-        peak = peak.max(set.angular_velocity(LEFT).abs());
+        peak = max_f32(peak, set.angular_velocity(LEFT).abs());
     }
     let tip = peak * (0.076 + 0.0065);
     println!(
@@ -516,7 +514,7 @@ fn full_shot_from_a_cradle_exits_in_the_feel_window() {
         let mut exit = 0.0f32;
         for _ in 0..80 {
             rig.step();
-            exit = exit.max(rig.ball(h).velocity.length());
+            exit = max_f32(exit, rig.ball(h).velocity.length());
         }
         println!(
             "cradle shot: flip {wait} ms after release, ball at {at:.2} of the bat: exit {exit:.2} m/s"

@@ -5,6 +5,7 @@
 mod util;
 
 use glam::Vec3;
+use pin_core::fmath::max_f32;
 use pin_core::ids::ProfileId;
 use pin_physics::ball::{BallEvents, Geometry, Magnet, MagnetState};
 use pin_physics::ball_ext::{
@@ -37,7 +38,7 @@ proptest! {
         prop_assert!(f.is_finite());
         let after = vel + f * (h / mass);
         let speed = vel.length();
-        prop_assert!((after.length() - speed).abs() <= 8.0 * f32::EPSILON * speed.max(1e-6));
+        prop_assert!((after.length() - speed).abs() <= 8.0 * f32::EPSILON * max_f32(speed, 1e-6));
         let exact = magnus_force(s_m, omega, vel);
         let phi = s_m * omega.length() * h / mass;
         prop_assert!(
@@ -138,7 +139,7 @@ proptest! {
         }
         let after = s.ball(h).unwrap().velocity.length();
         let speed = vel.length();
-        prop_assert!((after - speed).abs() <= 100.0 * 4.0 * f32::EPSILON * speed.max(1e-6));
+        prop_assert!((after - speed).abs() <= 100.0 * 4.0 * f32::EPSILON * max_f32(speed, 1e-6));
     }
 }
 

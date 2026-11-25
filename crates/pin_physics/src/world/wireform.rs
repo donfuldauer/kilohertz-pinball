@@ -1,6 +1,7 @@
 //! Wireforms (two rails around a centerline spline) and single-curve guides.
 
 use glam::{DVec3, Vec3};
+use pin_core::fmath::{max_f32, max_f64, min_f32, min_f64};
 
 use super::curve_bounds::{CurveTree, EndTerms, TARGET_ROOM, TangentBalls};
 use super::shapes::{APPROACH_EPS, any_perpendicular};
@@ -593,7 +594,7 @@ fn bounding_capsule(points: &[DVec3]) -> Capsule {
     let radius = points
         .iter()
         .map(|&y| segment_distance(y, p, q))
-        .fold(0.0f64, f64::max);
+        .fold(0.0f64, max_f64);
     Capsule {
         p,
         q,
@@ -611,7 +612,7 @@ fn bounding_capsule(points: &[DVec3]) -> Capsule {
 fn capsule_is_quiet(capsule: &Capsule, x: DVec3, tangent: DVec3, r: f64) -> bool {
     let perp = |v: DVec3| (v - tangent * v.dot(tangent)).length();
     let near = segment_distance(x, capsule.p, capsule.q) - capsule.radius;
-    let off = perp(capsule.p - x).max(perp(capsule.q - x)) + capsule.radius;
+    let off = max_f64(perp(capsule.p - x), perp(capsule.q - x)) + capsule.radius;
     near > 1.0e-6 && near * near >= 2.0 * off * r * (1.0 + 1.0e-9)
 }
 
@@ -791,7 +792,7 @@ fn level_reaches(spline: &CubicSpline) -> (f32, f32) {
         } else {
             let r = || {
                 let (half, line) = estimates.get();
-                half.max(line)
+                max_f64(half, line)
             };
             cloud.open_blocks(x, tangent, r, &mut stack, |from| {
                 cloud.quiet(from, x, tangent, r()) || exact(from)
@@ -867,9 +868,13 @@ fn plan_view_folds_pairwise(flat: &CubicSpline, closed: bool) -> bool {
                     .distance(samples[index].point.as_dvec3());
             }
             // Around a closed curve the shorter way counts.
-            let along = if closed { arc.min(total - arc) } else { arc };
+            let along = if closed {
+                min_f64(arc, total - arc)
+            } else {
+                arc
+            };
             let keep =
-                2.0 * rho * libm::sin((along / (2.0 * rho)).min(core::f64::consts::FRAC_PI_2));
+                2.0 * rho * libm::sin(min_f64(along / (2.0 * rho), core::f64::consts::FRAC_PI_2));
             if at(b).distance(x) < 0.98 * keep {
                 return true;
             }
@@ -890,9 +895,17 @@ fn segment_bounds(spline: &CubicSpline) -> Vec<(Vec3, f32)> {
             let (mut min, mut max) = (part[0].point, part[0].point);
             let mut speed = 0.0f32;
             for sample in part {
-                min = min.min(sample.point);
-                max = max.max(sample.point);
-                speed = speed.max(sample.tangent.length());
+                min = Vec3::new(
+                    min_f32(min.x, sample.point.x),
+                    min_f32(min.y, sample.point.y),
+                    min_f32(min.z, sample.point.z),
+                );
+                max = Vec3::new(
+                    max_f32(max.x, sample.point.x),
+                    max_f32(max.y, sample.point.y),
+                    max_f32(max.z, sample.point.z),
+                );
+                speed = max_f32(speed, sample.tangent.length());
             }
             let center = 0.5 * (min + max);
             let third = (spline.eval(i, 1.0).2 - spline.eval(i, 0.0).2).length();
@@ -901,7 +914,7 @@ fn segment_bounds(spline: &CubicSpline) -> Vec<(Vec3, f32)> {
             let radius = part
                 .iter()
                 .map(|sample| sample.point.distance(center))
-                .fold(0.0f32, f32::max);
+                .fold(0.0f32, max_f32);
             (center, radius + between)
         })
         .collect()
@@ -941,12 +954,12 @@ pub(super) fn curvature_bound(spline: &CubicSpline) -> Option<f64> {
     let mut left = derivatives(0);
     for index in 1..spline.samples().len() {
         let right = derivatives(index);
-        let bend = left.1.max(right.1);
-        let slowest = left.0.min(right.0) - 0.5 * h * bend;
+        let bend = max_f64(left.1, right.1);
+        let slowest = min_f64(left.0, right.0) - 0.5 * h * bend;
         if slowest <= 1.0e-12 {
             return None;
         }
-        curvature = curvature.max(bend / (slowest * slowest));
+        curvature = max_f64(curvature, bend / (slowest * slowest));
         left = right;
     }
     Some(curvature)
@@ -1111,22 +1124,22 @@ fn wall_reach_pairwise(spline: &CubicSpline, plan_reach: f32) -> f32 {
                 if b.abs() > 1.0e-12 {
                     for root in [(-a + disc) / b, (-a - disc) / b] {
                         if root.is_finite() && allowed(root) {
-                            out = out.max(value(root));
+                            out = max_f64(out, value(root));
                         }
                     }
                 }
-                let off = 2.0 * out.max(0.0);
-                far = far.max((side * side + off * off).sqrt());
+                let off = 2.0 * max_f64(out, 0.0);
+                far = max_f64(far, (side * side + off * off).sqrt());
             }
         }
     }
-    let inverse = curvature.max(far / 0.9);
+    let inverse = max_f64(curvature, far / 0.9);
     let edge = if inverse > 0.0 {
         (1.0 / inverse) as f32
     } else {
         f32::INFINITY
     };
-    plan_reach.min(edge)
+    min_f32(plan_reach, edge)
 }
 
 /// Earliest time at which a sphere moving with `velocity` could have its gap
@@ -1216,10 +1229,11 @@ impl GuideCurve {
             let (mut reach, line) = level_reaches(&spline);
             if reach > 0.0 && !spline.is_closed() {
                 let tree = CurveTree::new(&spline);
-                let half =
-                    |ends: &[EndTerms; 2]| ends.iter().fold(f64::INFINITY, |m, e| m.min(e.half));
+                let half = |ends: &[EndTerms; 2]| {
+                    ends.iter().fold(f64::INFINITY, |m, e| min_f64(m, e.half))
+                };
                 let mut ends = tree.end_terms(0.0);
-                let end_limited = reach.min((0.9 * half(&ends)) as f32) < line;
+                let end_limited = min_f32(reach, (0.9 * half(&ends)) as f32) < line;
                 let target = f64::from(reach) / 0.9;
                 // (Searching again is futile where a curve point behind the
                 // end already lies within the target: the end binds.)
@@ -1228,10 +1242,10 @@ impl GuideCurve {
                 {
                     ends = tree.end_terms(target);
                 }
-                reach = reach.min((0.9 * half(&ends)) as f32);
+                reach = min_f32(reach, (0.9 * half(&ends)) as f32);
                 if end_limited {
                     let balls = TangentBalls::new(&tree, &ends, f64::from(reach));
-                    reach = reach.min(balls.smallest());
+                    reach = min_f32(reach, balls.smallest());
                     tangent_balls = Some(balls);
                 }
             }
@@ -1245,8 +1259,8 @@ impl GuideCurve {
             let mut plan_reach = level_reaches(&flat).0;
             if plan_reach > 0.0 && !flat.is_closed() {
                 let ends = CurveTree::new(&flat).end_terms(0.0);
-                let exact = ends.iter().fold(f64::INFINITY, |m, e| m.min(e.half));
-                plan_reach = plan_reach.min((0.9 * exact) as f32);
+                let exact = ends.iter().fold(f64::INFINITY, |m, e| min_f64(m, e.half));
+                plan_reach = min_f32(plan_reach, (0.9 * exact) as f32);
             }
             if plan_reach < MIN_SLOPED_GUIDE_REACH || plan_view_folds(&flat, spline.is_closed()) {
                 return Err(SplineError::SlopedGuidePlanView);
@@ -1485,7 +1499,7 @@ impl GuideCurve {
                 t + 0.25
             };
             if let (Some(a), Some(b)) = (below, above) {
-                let (lo, hi) = (a.min(b), a.max(b));
+                let (lo, hi) = (min_f32(a, b), max_f32(a, b));
                 if !(next > lo && next < hi) {
                     next = 0.5 * (lo + hi);
                     if !(next > lo && next < hi) {
@@ -1496,7 +1510,7 @@ impl GuideCurve {
             if !closed {
                 next = next.clamp(0.0, max_t);
             }
-            let small = (next - t).abs() <= 4.0 * f32::EPSILON * t.abs().max(1.0);
+            let small = (next - t).abs() <= 4.0 * f32::EPSILON * max_f32(t.abs(), 1.0);
             if next == t {
                 return done;
             }
@@ -1561,7 +1575,7 @@ impl GuideCurve {
             let g1 = (q1 - p).dot(sample.tangent);
             let speed1 = sample.tangent.length();
             consider(best, t1, q1, d2_1);
-            let arc = step * (speed0.max(speed1) + slack);
+            let arc = step * (max_f32(speed0, speed1) + slack);
             // Smallest distance the interval can hold.
             let floor = 0.5 * (d2_0.sqrt() + d2_1.sqrt() - arc);
             if floor < best.0.sqrt() - 1.0e-7 {
@@ -1774,7 +1788,7 @@ impl GuideCurve {
                 gap - GUIDE_SKIN
             } else {
                 // Sliding: may sink to the fixed limit of -skin, no further.
-                gap.min(-GUIDE_SKIN)
+                min_f32(gap, -GUIDE_SKIN)
             };
             // While approaching, the bounds below extrapolate the closing
             // speed over long steps: take it perpendicular to the curve (see
@@ -1796,13 +1810,10 @@ impl GuideCurve {
                     // alongside the wall, or riding or skimming an edge,
                     // advance millimetres instead of micrometres per step.
                     if cp.distance < self.reach {
-                        dt = dt.max(rolling_ball_time(
-                            cp.distance,
-                            self.reach,
-                            rate,
-                            drop,
-                            speed,
-                        ));
+                        dt = max_f32(
+                            dt,
+                            rolling_ball_time(cp.distance, self.reach, rate, drop, speed),
+                        );
                     }
                     // Bound 3: the wall is a strip of the vertical cylinder
                     // over its plan view, so its gap is at least the
@@ -1823,13 +1834,16 @@ impl GuideCurve {
                         if fc.distance < sloped.plan_reach {
                             let q = Vec3::new(p.x, p.y, 0.0);
                             let flat_rate = (q - fc.point).dot(velocity) / fc.distance;
-                            dt = dt.max(rolling_ball_time(
-                                fc.distance,
-                                sloped.plan_reach,
-                                flat_rate,
-                                flat_drop,
-                                plan_speed,
-                            ));
+                            dt = max_f32(
+                                dt,
+                                rolling_ball_time(
+                                    fc.distance,
+                                    sloped.plan_reach,
+                                    flat_rate,
+                                    flat_drop,
+                                    plan_speed,
+                                ),
+                            );
                         }
                     }
                 }
@@ -1846,7 +1860,7 @@ impl GuideCurve {
                     if let Some(balls) = &self.tangent_balls {
                         let rho = balls.radius(&self.spline, cp.t, normal);
                         if distance < rho {
-                            dt = dt.max(rolling_ball_time(distance, rho, rate, drop, speed));
+                            dt = max_f32(dt, rolling_ball_time(distance, rho, rate, drop, speed));
                         }
                         // In a lane (the wall nearby bends gently, the rest
                         // of it is some way off) the wall splits in two:
@@ -1867,7 +1881,7 @@ impl GuideCurve {
                         // aims at no more than half the skin below the
                         // wall: a sliding ball stays as close to the wall
                         // as it did with the short steps of the others.)
-                        let lane_floor = floor.max(-0.5 * GUIDE_SKIN);
+                        let lane_floor = max_f32(floor, -0.5 * GUIDE_SKIN);
                         let lane_drop = gap - lane_floor;
                         if lane_drop > 0.0
                             && let Some((local, far)) = balls.lane(&self.spline, cp.t)
@@ -1876,7 +1890,7 @@ impl GuideCurve {
                             if distance < local && room > 0.0 {
                                 let near =
                                     rolling_ball_time(distance, local, rate, lane_drop, speed);
-                                dt = dt.max(near.min(room / speed));
+                                dt = max_f32(dt, min_f32(near, room / speed));
                             }
                         }
                     }
@@ -1892,7 +1906,7 @@ impl GuideCurve {
                             (rate + disc) / k
                         };
                         let within = (cap - distance) / speed;
-                        dt = dt.max(root.min(within));
+                        dt = max_f32(dt, min_f32(root, within));
                     }
                 }
             }
@@ -2000,7 +2014,7 @@ mod tests {
                 // Leaning up or down (above or below the wall's edge).
                 check(t, (side * sign + Vec3::Z * 0.7).normalize());
                 if t > 1.0 && t < max_t - 1.0 {
-                    smallest_inside = smallest_inside.min(rho);
+                    smallest_inside = min_f32(smallest_inside, rho);
                 }
             }
         }
@@ -2060,7 +2074,7 @@ mod tests {
             assert!(f64::from(g.reach) <= 0.5 * opening, "{label}");
             let inside = check_tangent_balls(&g, &label);
             assert!(
-                inside > 2.0 * g.reach.min(0.1) || f64::from(inside) > 0.5 * r,
+                inside > 2.0 * min_f32(g.reach, 0.1) || f64::from(inside) > 0.5 * r,
                 "{label}: {inside}"
             );
             // Straight behind an end: half the opening at most (less the
@@ -2137,7 +2151,7 @@ mod tests {
         line(&mut pts, &mut x, &mut y, heading, 0.12);
         let turn = core::f64::consts::FRAC_PI_2 + tilt;
         arc(&mut pts, &mut x, &mut y, &mut heading, 0.036, turn);
-        let down = (y - gap).max(spacing) / libm::sin(heading).abs().max(0.2);
+        let down = max_f64(y - gap, spacing) / max_f64(libm::sin(heading).abs(), 0.2);
         line(&mut pts, &mut x, &mut y, heading, down);
         pts.iter()
             .map(|&(x, y)| Vec3::new(x as f32, y as f32, 0.0))
@@ -2184,7 +2198,7 @@ mod tests {
             let max_t = g.spline.max_t();
             let mut checked = 0;
             let mut check = |t: f32, n: Vec3| {
-                let rho = balls.radius(&g.spline, t, n).min(1.0);
+                let rho = min_f32(balls.radius(&g.spline, t, n), 1.0);
                 if rho <= 0.0 {
                     return;
                 }
@@ -2193,7 +2207,7 @@ mod tests {
                 let nearest = polyline
                     .windows(2)
                     .map(|w| segment_distance(centre, w[0], w[1]))
-                    .fold(f64::INFINITY, f64::min);
+                    .fold(f64::INFINITY, min_f64);
                 // (Rounding of the f32 curve point: 1e-7 m.)
                 assert!(
                     nearest >= f64::from(rho) - 1.0e-7,
@@ -2410,7 +2424,11 @@ mod tests {
             (0.5, 0.002, 0.0104),
         ] {
             curves.push(open(&c_ring(r, opening, spacing)));
-            curves.push(open(&hook(r, opening.max(0.02), spacing.min(0.01))));
+            curves.push(open(&hook(
+                r,
+                max_f64(opening, 0.02),
+                min_f64(spacing, 0.01),
+            )));
         }
         for (radius, turn) in [(0.15, 0.5), (0.5, 0.25), (0.03, 0.4), (0.2, 0.9)] {
             curves.push(open(&arc(
@@ -2522,7 +2540,7 @@ mod tests {
                 let w = spline.point(8.0 * i as f32 / 400_000.0).as_dvec3() - e;
                 let behind = -w.dot(inward);
                 if behind > 0.0 {
-                    truth = truth.min(w.length_squared() / (2.0 * behind));
+                    truth = min_f64(truth, w.length_squared() / (2.0 * behind));
                 }
             }
             assert!(truth < 0.75 * f64::from(gap), "gap {gap}: {truth}");
@@ -2755,7 +2773,7 @@ mod tests {
                 let copy = spline.clone();
                 let begin = Instant::now();
                 let g = GuideCurve::new(std::hint::black_box(copy), 0.05);
-                new = new.min(begin.elapsed().as_secs_f64() * 1.0e3);
+                new = min_f64(new, begin.elapsed().as_secs_f64() * 1.0e3);
                 built = Some(g);
             }
             let begin = Instant::now();
@@ -2914,11 +2932,11 @@ mod tests {
             for _ in 0..rounds {
                 let begin = Instant::now();
                 std::hint::black_box(curve_reach(std::hint::black_box(&spline), false));
-                old = old.min(begin.elapsed().as_secs_f64() * 1.0e3);
+                old = min_f64(old, begin.elapsed().as_secs_f64() * 1.0e3);
                 let copy = spline.clone();
                 let begin = Instant::now();
                 let g = GuideCurve::new(std::hint::black_box(copy), 0.05).unwrap();
-                new = new.min(begin.elapsed().as_secs_f64() * 1.0e3);
+                new = min_f64(new, begin.elapsed().as_secs_f64() * 1.0e3);
                 built = Some(g);
             }
             let g = built.unwrap();

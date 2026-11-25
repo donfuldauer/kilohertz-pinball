@@ -20,6 +20,7 @@ use arrayvec::ArrayVec;
 use bb::c23::{DT, R, ball, solver};
 use bb::{BACKBOX_LAYER, Mount};
 use glam::{Quat, Vec3};
+use pin_core::fmath::max_f32;
 use pin_core::ids::FlipperId;
 use pin_physics::ball::{BallEvent, BallEvents, BallHandle, Geometry};
 use pin_physics::flipper::FlipperSet;
@@ -269,7 +270,7 @@ fn bat_sweep(bat_layer: u8, ball_layer: u8, s: f32) -> (bool, f32) {
             .any(|e| matches!(e, BallEvent::Impact { .. }));
         let bl = sol.ball(h).unwrap();
         assert!(bl.position.is_finite() && bl.velocity.is_finite());
-        dv = dv.max(bl.velocity.length());
+        dv = max_f32(dv, bl.velocity.length());
     }
     (hit, dv)
 }
@@ -411,7 +412,7 @@ proptest! {
         let r = hand_off(speed, x, z);
         prop_assert_eq!(r.layer_after_a, BACKBOX_LAYER);
         prop_assert_eq!(r.layer_after_b, 0);
-        prop_assert!((r.speed_before_final_wall - speed).abs() <= 1e-5 * speed.max(1.0));
+        prop_assert!((r.speed_before_final_wall - speed).abs() <= 1e-5 * max_f32(speed, 1.0));
         prop_assert!(r.bounced);
     }
 }

@@ -25,6 +25,7 @@
 mod util;
 
 use glam::{DVec3, Vec3};
+use pin_core::fmath::{max_f32, min_f32};
 use pin_physics::ball::{BallEvent, BallEvents, BallSolver, Geometry, ImpactTarget, NewtonChain};
 use pin_physics::world::CubicSpline;
 use util::*;
@@ -185,8 +186,8 @@ fn ball_touching_a_receding_captive_keeps_moving_and_gains_no_energy() {
                         let v_mid = o.v0 + o.gravity * DT;
                         let close0 = -o.v0.dot(n);
                         let close_mid = -v_mid.dot(n);
-                        if !(close0.min(close_mid) > 1.05 * SLOP
-                            && recede > 1.05 * close0.max(close_mid))
+                        if !(min_f32(close0, close_mid) > 1.05 * SLOP
+                            && recede > 1.05 * max_f32(close0, close_mid))
                         {
                             continue;
                         }

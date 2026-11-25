@@ -22,6 +22,7 @@ mod c23;
 pub use c23::*;
 
 use glam::{Quat, Vec3};
+use pin_core::fmath::{max_f32, min_f32};
 use pin_core::ids::FlipperId;
 use pin_core::{FlipperConfig, FlipperShape};
 use pin_physics::ball::{BallEvent, BallHandle, ImpactTarget, MovingBodies};
@@ -42,7 +43,7 @@ impl Banana {
     /// Arc sweep (degrees) consistent with chord and radius:
     /// `2·asin(L / 2R)`.
     pub fn arc_sweep_deg(&self) -> f32 {
-        2.0 * libm::asinf((0.5 * self.length_mm / self.arc_radius_mm).min(1.0)).to_degrees()
+        2.0 * libm::asinf(min_f32(0.5 * self.length_mm / self.arc_radius_mm, 1.0)).to_degrees()
     }
 
     pub fn shape(&self) -> FlipperShape {
@@ -132,7 +133,7 @@ pub fn arc_model_side(b: Banana, s: f32) -> ArcModel {
     let l = b.length_mm * 1.0e-3;
     let rho = b.arc_radius_mm * 1.0e-3;
     let tube = b.tube_radius_mm * 1.0e-3;
-    let phi = 2.0 * libm::asinf((0.5 * l / rho).min(1.0));
+    let phi = 2.0 * libm::asinf(min_f32(0.5 * l / rho, 1.0));
     ArcModel::Arc {
         c: [0.0, s * rho],
         rho,
@@ -218,8 +219,8 @@ impl ArcModel {
             }
         }
         let (mut lo, mut hi) = (
-            (best.1 - 1.0 / n as f32).max(0.0),
-            (best.1 + 1.0 / n as f32).min(1.0),
+            max_f32(best.1 - 1.0 / n as f32, 0.0),
+            min_f32(best.1 + 1.0 / n as f32, 1.0),
         );
         for _ in 0..60 {
             let m1 = lo + (hi - lo) * 0.381_966;
@@ -252,8 +253,10 @@ impl ArcModel {
                 } else {
                     let p0 = self.point(0.0);
                     let p1 = self.point(1.0);
-                    libm::hypotf(q[0] - p0[0], q[1] - p0[1])
-                        .min(libm::hypotf(q[0] - p1[0], q[1] - p1[1]))
+                    min_f32(
+                        libm::hypotf(q[0] - p0[0], q[1] - p0[1]),
+                        libm::hypotf(q[0] - p1[0], q[1] - p1[1]),
+                    )
                 }
             }
         }
@@ -496,7 +499,10 @@ pub fn run_shot_arc(
         let b = scene.ball(h);
         let pose = Pose::of(&scene.set, id, n, lift);
         let (q, z) = pose.local(b.position);
-        let d = libm::hypotf(model.distance_2d_fast(q), (z.abs() - HALF_HEIGHT).max(0.0));
+        let d = libm::hypotf(
+            model.distance_2d_fast(q),
+            max_f32(z.abs() - HALF_HEIGHT, 0.0),
+        );
         if impact.is_some() {
             if d < R + tube + 0.002 {
                 contact_seen = true;

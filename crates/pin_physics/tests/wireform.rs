@@ -1,6 +1,7 @@
 //! Implementer tests for `Wireform`, `Frame` and `GuideCurve` (Subphase 2.1).
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_physics::world::{
     CubicSpline, Frame, GuideCast, GuideCurve, GuideHit, SplineError, Wireform,
 };
@@ -158,12 +159,12 @@ fn rotation_minimizing_frame_has_low_twist() {
         let f = w.frame_at(t);
         assert_orthonormal(&f);
         let dn = (w.frame_at(t + h).normal - w.frame_at(t - h).normal) / (2.0 * h);
-        max_twist = max_twist.max(dn.dot(f.binormal).abs());
-        max_turn = max_turn.max(dn.length());
+        max_twist = max_f32(max_twist, dn.dot(f.binormal).abs());
+        max_turn = max_f32(max_turn, dn.length());
     }
     assert!(max_turn > 0.05, "the frame does turn: {max_turn}");
     assert!(
-        max_twist < 2e-3 * max_turn.max(1.0),
+        max_twist < 2e-3 * max_f32(max_turn, 1.0),
         "twist {max_twist} vs turn {max_turn}"
     );
 
@@ -214,7 +215,7 @@ fn frame_is_smooth_across_samples_and_knots() {
         let vel = (a1 - a0) / h;
         if let Some(p) = prev {
             assert!(
-                (vel - p).length() < 0.02 * speed.max(0.01),
+                (vel - p).length() < 0.02 * max_f32(speed, 0.01),
                 "kink at t = {t}"
             );
         }
@@ -281,7 +282,7 @@ fn closest_on_rails_matches_brute_force() {
                 let mut best = f32::INFINITY;
                 for j in 0..=(2 * per) {
                     let u = t - 1.0 + j as f32 / per as f32;
-                    best = best.min(rail(u).distance(p));
+                    best = min_f32(best, rail(u).distance(p));
                 }
                 assert!(
                     (cp.distance - best).abs() < 2e-6,
@@ -353,7 +354,7 @@ fn guide_closest_point_on_a_rising_curve_matches_brute_force() {
             for j in 0..=4000 {
                 let q = s.point(t - 1.0 + j as f32 / 2000.0);
                 let u = (p.z - q.z).clamp(0.0, 0.03);
-                best = best.min((q + Vec3::Z * u).distance(p));
+                best = min_f32(best, (q + Vec3::Z * u).distance(p));
             }
             assert!(
                 (cp.distance - best).abs() < 5e-6,
@@ -803,7 +804,7 @@ fn sliding_without_push_out_stays_within_the_sliding_limit() {
                 break;
             }
             let gap = g.closest_point(pos, seed).distance - BALL;
-            deepest = deepest.min(gap);
+            deepest = min_f32(deepest, gap);
             assert!(
                 gap >= -2.0 * SKIN,
                 "sank to {gap} at {angle}° (start gap {gap0})"

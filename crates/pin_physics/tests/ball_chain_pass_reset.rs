@@ -29,7 +29,8 @@
 #[path = "ball_util.rs"]
 mod util;
 
-use glam::{Quat, Vec3};
+use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_physics::ball::{BallEvent, BallEvents, BallSolver, Geometry, ImpactTarget, NewtonChain};
 use pin_physics::world::{CubicSpline, StaticShape, StaticWorld, StaticWorldBuilder, layers};
 use util::*;
@@ -186,14 +187,14 @@ fn passes(gravity: Vec3, u_end: f32, n: Vec3, va: Vec3) -> bool {
     let recede = -(Vec3::X * u_end).dot(n);
     let close0 = -va.dot(n);
     let close_mid = -(va + gravity * DT).dot(n);
-    close0.min(close_mid) > 1.05 * SLOP && recede > 1.05 * close0.max(close_mid)
+    min_f32(close0, close_mid) > 1.05 * SLOP && recede > 1.05 * max_f32(close0, close_mid)
 }
 
 /// The deepest A can be inside the captive's end-of-tick position after
 /// passing it for a whole tick (the captive is drawn where it is at the end
 /// of the tick), plus the contact tolerance.
 fn pass_depth(gravity: Vec3, n: Vec3, va: Vec3) -> f32 {
-    let close = (-va.dot(n)).max(-(va + gravity * DT).dot(n));
+    let close = max_f32(-va.dot(n), -(va + gravity * DT).dot(n));
     close * DT + 2.0e-6
 }
 
@@ -279,7 +280,7 @@ fn wall_world(point: Vec3, k: Vec3) -> StaticWorld {
         StaticShape::Cuboid {
             center: point - k * t,
             half_extents: v(t, 0.2, 0.2),
-            rotation: Quat::from_rotation_arc(Vec3::X, k),
+            rotation: pin_physics::quat_ops::from_rotation_arc(Vec3::X, k),
         },
         layers::ALL,
         true,
@@ -448,8 +449,8 @@ fn captive_turned_toward_a_passing_ball_hits_it() {
                     let c = run_far(gravity, u, n, Some(va), None, &world);
                     assert!(!c.a_newton, "{label}: control: no impact");
                     assert_eq!(c.u1, u_end, "{label}: control: captive untouched");
-                    let close = (-va.dot(n)).max(-(va + gravity * DT).dot(n));
-                    let close_min = (-va.dot(n)).min(-(va + gravity * DT).dot(n));
+                    let close = max_f32(-va.dot(n), -(va + gravity * DT).dot(n));
+                    let close_min = min_f32(-va.dot(n), -(va + gravity * DT).dot(n));
                     for t_b in [0.2e-3f32, 0.3e-3, 0.5e-3] {
                         // B comes from the far (+x) side of the captive.
                         for (g, h) in [(0.0f32, 0.0f32), (0.4, 0.0), (-0.5, 0.0), (0.2, 0.3)] {

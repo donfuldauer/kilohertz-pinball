@@ -99,6 +99,7 @@ mod bb;
 use bb::c23::DT;
 use bb::{G, Mount, PITCH_DEG, ShotRig};
 use glam::Vec3;
+use pin_core::fmath::max_f32;
 use pin_core::ids::FlipperId;
 
 /// Ticks given to one shot.
@@ -174,7 +175,7 @@ fn peak_bat_speed(mount: Mount, power: f32) -> f32 {
     let mut peak = 0.0f32;
     for _ in 0..100 {
         set.advance(DT);
-        peak = peak.max(set.angular_velocity(FlipperId(0)).abs());
+        peak = max_f32(peak, set.angular_velocity(FlipperId(0)).abs());
     }
     peak
 }

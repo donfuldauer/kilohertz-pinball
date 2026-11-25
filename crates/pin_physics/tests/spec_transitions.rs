@@ -4,6 +4,7 @@
 //! Black-box against `pin_physics::world::{LayerTransition, TransitionSet}`.
 
 use glam::Vec3;
+use pin_core::fmath::min_f32;
 use pin_physics::world::layers::{MAIN_DECK, SUBWAY, UPPER_DECK, WIREFORM};
 use pin_physics::world::{LayerTransition, TransitionSet};
 use proptest::prelude::*;
@@ -227,7 +228,8 @@ proptest! {
             let entered = !inside(&zone, prev) && inside(&zone, pos);
             // Skip boundary-ambiguous ticks (within 1 µm of a face).
             let near_face = |p: Vec3| {
-                (p - zone.min).abs().min_element() < 1e-6 || (p - zone.max).abs().min_element() < 1e-6
+                let (a, b) = ((p - zone.min).abs(), (p - zone.max).abs());
+                min_f32(a.x, min_f32(a.y, a.z)) < 1e-6 || min_f32(b.x, min_f32(b.y, b.z)) < 1e-6
             };
             if !near_face(prev) && !near_face(pos) {
                 if layer == zone.from_layer && entered {

@@ -17,6 +17,7 @@ mod reference;
 
 use glam::Vec3;
 use pin_core::PhysicsDefaults;
+use pin_core::fmath::max_f32;
 use pin_physics::ball::{BallEvents, BallSolver, BallSolverConfig, Geometry, MovingBodies};
 use pin_physics::world::{StaticWorldBuilder, layers};
 use proptest::prelude::*;
@@ -71,7 +72,7 @@ fn land_on_stopped_bat(
             "non-finite ball at tick {tick}: x {x} speed {speed} flip {flip} torque {torque} I {inertia}"
         );
         assert!(set.bodies[0].omega.is_finite());
-        top = top.max(b.velocity.length());
+        top = max_f32(top, b.velocity.length());
     }
     top
 }
@@ -164,7 +165,7 @@ fn squeeze(torque: f32, inertia: f32, wall: bool, speculative: bool) -> f32 {
         for rb in &set.bodies {
             assert!(rb.omega.is_finite() && rb.angle.is_finite());
         }
-        top = top.max(b.velocity.length());
+        top = max_f32(top, b.velocity.length());
     }
     top
 }
@@ -242,8 +243,8 @@ fn cradle(hold: f32) -> (f32, f32, usize) {
         s.step_with_bodies(&geo, &mut [&mut set], DT, &mut ev);
         if tick >= 2000 {
             let b = s.ball(h).unwrap();
-            max_gap = max_gap.max(set.bodies[0].closest(0.0, b.position).distance - r);
-            max_speed = max_speed.max(b.velocity.length());
+            max_gap = max_f32(max_gap, set.bodies[0].closest(0.0, b.position).distance - r);
+            max_speed = max_f32(max_speed, b.velocity.length());
             impacts += ev.as_slice().len();
         }
     }

@@ -3,6 +3,7 @@
 //! arithmetic bit for bit on every target, so the x86_64 goldens hold on aarch64 and wasm32.
 
 use glam::{Quat, Vec3};
+use pin_core::fmath::max_f32;
 use pin_physics::ball::contact::integrate_orientation;
 use pin_physics::quat_ops;
 use proptest::prelude::*;
@@ -111,6 +112,7 @@ fn unit_vec_strat() -> impl Strategy<Value = Vec3> {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 25_000, ..ProptestConfig::default() })]
     #[test]
+    #[allow(clippy::disallowed_methods, reason = "glam SSE2/simd128 Quat is the bit-exact reference quat_ops is checked against")]
     fn kp066_matches_glam_sse2_bit_for_bit(
         a in quat_strat(), b in quat_strat(), v in vec_strat(),
         f in unit_vec_strat(), t in unit_vec_strat(),
@@ -141,7 +143,7 @@ proptest! {
 #[test]
 fn kp066_known_values() {
     let v = Vec3::new(0.3, -0.7, 1.9);
-    let q = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
+    let q = quat_ops::normalize(Quat::from_xyzw(0.1, 0.2, 0.3, 0.9));
     assert_eq!(bits4(quat_ops::mul(Quat::IDENTITY, q)), bits4(q));
     assert_eq!(bits4(quat_ops::mul(q, Quat::IDENTITY)), bits4(q));
     assert_eq!(bits3(quat_ops::mul_vec3(Quat::IDENTITY, v)), bits3(v));
@@ -186,10 +188,10 @@ proptest! {
         prop_assert!((l2 - 1.0).abs() < 1e-6, "len2 {}", l2);
         let rv = quat_ops::mul_vec3(ua, v);
         let (lv, lr) = (v.length(), rv.length());
-        prop_assert!((lv - lr).abs() <= 1e-4 * lv.max(1e-3), "{} vs {}", lv, lr);
+        prop_assert!((lv - lr).abs() <= 1e-4 * max_f32(lv, 1e-3), "{} vs {}", lv, lr);
         let lhs = quat_ops::mul_vec3(quat_ops::mul(ua, ub), v);
         let rhs = quat_ops::mul_vec3(ua, quat_ops::mul_vec3(ub, v));
-        prop_assert!((lhs - rhs).length() <= 1e-4 * v.length().max(1.0), "{:?} vs {:?}", lhs, rhs);
+        prop_assert!((lhs - rhs).length() <= 1e-4 * max_f32(v.length(), 1.0), "{:?} vs {:?}", lhs, rhs);
     }
 }
 
@@ -217,7 +219,7 @@ fn digest_quat_ops() -> u64 {
         }
         fnv(&mut h, quat_ops::length_squared(a).to_bits());
         // All-zero input gives NaN, whose sign bit is a parity exception (SPEC §2.4): skip it.
-        if a.length_squared() > 0.0 {
+        if quat_ops::length_squared(a) > 0.0 {
             for x in bits4(quat_ops::normalize(a)) {
                 fnv(&mut h, x);
             }
@@ -230,6 +232,10 @@ fn digest_quat_ops() -> u64 {
 }
 
 #[cfg(any(target_feature = "sse2", target_feature = "simd128"))]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "glam SSE2/simd128 Quat is the bit-exact reference quat_ops is checked against"
+)]
 fn digest_glam() -> u64 {
     let mut p = Pcg(0x1234_5678_9abc_def0);
     let mut h = FNV_OFFSET;
@@ -306,6 +312,10 @@ fn digest_integrate() -> u64 {
 }
 
 #[cfg(any(target_feature = "sse2", target_feature = "simd128"))]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "glam SSE2/simd128 Quat is the bit-exact reference quat_ops is checked against"
+)]
 fn digest_integrate_glam() -> u64 {
     let mut q = Quat::IDENTITY;
     let mut h = FNV_OFFSET;

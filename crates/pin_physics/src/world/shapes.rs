@@ -8,6 +8,7 @@
 
 use crate::quat_ops;
 use glam::{Quat, Vec3};
+use pin_core::fmath::{max_f32, min_f32};
 
 /// Gap below which a sphere counts as touching (metres).
 pub(crate) const TOUCH_EPS: f32 = 1.0e-6;
@@ -110,9 +111,31 @@ impl Primitive {
                 let top = base + axis * height;
                 // Conservative: the disc extent is at most `radius` per axis.
                 let r = Vec3::splat(radius);
-                (base.min(top) - r, base.max(top) + r)
+                (
+                    Vec3::new(
+                        min_f32(base.x, top.x),
+                        min_f32(base.y, top.y),
+                        min_f32(base.z, top.z),
+                    ) - r,
+                    Vec3::new(
+                        max_f32(base.x, top.x),
+                        max_f32(base.y, top.y),
+                        max_f32(base.z, top.z),
+                    ) + r,
+                )
             }
-            Self::Triangle { a, b, c, .. } => (a.min(b).min(c), a.max(b).max(c)),
+            Self::Triangle { a, b, c, .. } => (
+                Vec3::new(
+                    min_f32(min_f32(a.x, b.x), c.x),
+                    min_f32(min_f32(a.y, b.y), c.y),
+                    min_f32(min_f32(a.z, b.z), c.z),
+                ),
+                Vec3::new(
+                    max_f32(max_f32(a.x, b.x), c.x),
+                    max_f32(max_f32(a.y, b.y), c.y),
+                    max_f32(max_f32(a.z, b.z), c.z),
+                ),
+            ),
         }
     }
 
@@ -187,7 +210,12 @@ impl Primitive {
 
 fn closest_cuboid(center: Vec3, half: Vec3, rotation: Quat, p: Vec3) -> Closest {
     let q = quat_ops::mul_vec3(rotation.conjugate(), p - center);
-    let clamped = q.clamp(-half, half);
+    let lo = -half;
+    let clamped = Vec3::new(
+        min_f32(max_f32(q.x, lo.x), half.x),
+        min_f32(max_f32(q.y, lo.y), half.y),
+        min_f32(max_f32(q.z, lo.z), half.z),
+    );
     let diff = q - clamped;
     let d2 = diff.length_squared();
     let (distance, n_local, s_local) = if d2 > 0.0 {
@@ -228,7 +256,7 @@ fn closest_cylinder(base: Vec3, axis: Vec3, height: f32, radius: f32, p: Vec3) -
         any_perpendicular(axis)
     };
     let d_side = rho - radius;
-    let d_cap = (-h).max(h - height);
+    let d_cap = max_f32(-h, h - height);
     if d_side <= 0.0 && d_cap <= 0.0 {
         // Inside or on the surface: leave through the nearest of side / caps.
         if d_side > d_cap {
@@ -251,7 +279,7 @@ fn closest_cylinder(base: Vec3, axis: Vec3, height: f32, radius: f32, p: Vec3) -
             valid: true,
         };
     }
-    let point = base + axis * h.clamp(0.0, height) + radial_dir * rho.min(radius);
+    let point = base + axis * h.clamp(0.0, height) + radial_dir * min_f32(rho, radius);
     let diff = p - point;
     let d = diff.length();
     let normal = if d > 0.0 {

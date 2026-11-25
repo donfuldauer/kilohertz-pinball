@@ -21,6 +21,7 @@ mod fc;
 
 use fc::{BatFrame, L, Scene};
 use glam::{DVec3, Quat, Vec3};
+use pin_core::fmath::{max_f32, max_f64, min_f32};
 use pin_core::ids::{FlipperId, ProfileId};
 use pin_core::{BallProfile, FlipperConfig, PhysicsDefaults};
 use pin_physics::ball::{Ball, BallEvent, BallSolver, MovingBodies};
@@ -126,8 +127,8 @@ fn xl_mini(
     let t0 = two_body(&s, &profs);
     // Characteristic scales so near-zero totals do not make "relative" meaningless.
     let mu = f64::from(mini.mass_kg * xl.mass_kg / (mini.mass_kg + xl.mass_kg));
-    let p_scale = t0.p.length().max(mu * f64::from(vrel));
-    let l_scale = t0.l.length().max(mu * f64::from(vrel) * f64::from(reach));
+    let p_scale = max_f64(t0.p.length(), mu * f64::from(vrel));
+    let l_scale = max_f64(t0.l.length(), mu * f64::from(vrel) * f64::from(reach));
     let mut prev_ke = t0.ke;
     let mut collided = false;
     let mut out = Drift::default();
@@ -146,8 +147,8 @@ fn xl_mini(
         }
         let dp = (t.p - t0.p).length() / p_scale;
         let dl = (t.l - t0.l).length() / l_scale;
-        out.dp = out.dp.max(dp);
-        out.dl = out.dl.max(dl);
+        out.dp = max_f64(out.dp, dp);
+        out.dl = max_f64(out.dl, dl);
         if dp > 1e-4 {
             return Err(format!("tick {tick}: linear momentum drift {dp:e} ({tag})"));
         }
@@ -198,9 +199,9 @@ fn c1_xl_vs_mini_head_on_and_glancing_all_speeds() {
         for &v in &[0.3f32, 1.0, 3.0, 6.0, 10.0, 20.0] {
             let d = xl_mini(b, v, Quat::IDENTITY, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO)
                 .unwrap_or_else(|e| panic!("{e}"));
-            worst.dp = worst.dp.max(d.dp);
-            worst.dl = worst.dl.max(d.dl);
-            worst.ke_ratio = worst.ke_ratio.max(d.ke_ratio);
+            worst.dp = max_f64(worst.dp, d.dp);
+            worst.dl = max_f64(worst.dl, d.dl);
+            worst.ke_ratio = max_f64(worst.ke_ratio, d.ke_ratio);
             n += 1;
         }
     }
@@ -227,8 +228,8 @@ fn c1_xl_vs_mini_impact_angles_in_3d() {
             for &v in &[1.5f32, 8.0] {
                 let d = xl_mini(b, v, rot, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO)
                     .unwrap_or_else(|e| panic!("{e}"));
-                worst.dp = worst.dp.max(d.dp);
-                worst.dl = worst.dl.max(d.dl);
+                worst.dp = max_f64(worst.dp, d.dp);
+                worst.dl = max_f64(worst.dl, d.dl);
                 n += 1;
             }
         }
@@ -255,8 +256,8 @@ fn c1_xl_vs_mini_with_spins_and_moving_xl() {
             ] {
                 let d =
                     xl_mini(b, 3.0, Quat::IDENTITY, wm, wx, vx).unwrap_or_else(|e| panic!("{e}"));
-                worst.dp = worst.dp.max(d.dp);
-                worst.dl = worst.dl.max(d.dl);
+                worst.dp = max_f64(worst.dp, d.dp);
+                worst.dl = max_f64(worst.dl, d.dl);
             }
         }
     }
@@ -480,7 +481,7 @@ fn free_case(
             ));
         }
         let gap = surface_gap(&s, p) - r;
-        out.min_gap = out.min_gap.min(gap);
+        out.min_gap = min_f32(out.min_gap, gap);
         if gap < -MAX_DEPTH_FRACTION * r {
             return Err(format!(
                 "tick {}: {name} ball {:.3} mm inside the bat ({tag})",
@@ -519,8 +520,8 @@ fn c3_no_tunnelling_xl_ball_vs_flipper_position_and_phase_sweep() {
     for (power, inertia) in drives() {
         let (c, f) = flipper(power, inertia);
         let stroke = dry_stroke(&c);
-        let peak = stroke.iter().map(|s| s.1.abs()).fold(0.0f32, f32::max);
-        peak_omega = peak_omega.max(peak);
+        let peak = stroke.iter().map(|s| s.1.abs()).fold(0.0f32, max_f32);
+        peak_omega = max_f32(peak_omega, peak);
         let mut top_here = 0.0f32;
         for &phase in &[0.05f32, 0.2, 0.4, 0.6, 0.75, 0.85, 0.92, 0.97, 0.995] {
             for &frac in &[0.1f32, 0.25, 0.4, 0.55, 0.7, 0.85, 0.95, 1.0, 1.1] {
@@ -529,10 +530,10 @@ fn c3_no_tunnelling_xl_ball_vs_flipper_position_and_phase_sweep() {
                         .unwrap_or_else(|e| panic!("{e}"));
                     cases += 1;
                     hits += u32::from(o.hit);
-                    min_gap = min_gap.min(o.min_gap);
+                    min_gap = min_f32(min_gap, o.min_gap);
                     if o.hit {
-                        top_here = top_here.max(o.omega_at_impact);
-                        top_exit = top_exit.max(o.exit_speed);
+                        top_here = max_f32(top_here, o.omega_at_impact);
+                        top_exit = max_f32(top_exit, o.exit_speed);
                     }
                 }
             }
@@ -547,7 +548,7 @@ fn c3_no_tunnelling_xl_ball_vs_flipper_position_and_phase_sweep() {
             top_here >= 0.9 * peak,
             "torque {power}: fastest impact at {top_here} rad/s, unloaded peak {peak}"
         );
-        top_omega_hit = top_omega_hit.max(top_here);
+        top_omega_hit = max_f32(top_omega_hit, top_here);
     }
     println!(
         "c3 free space: {hits}/{cases} cases hit, deepest tick-end overlap {:.4} mm, max ω at impact {top_omega_hit:.1} \
@@ -568,7 +569,7 @@ fn c3_no_tunnelling_xl_ball_vs_flipper_position_and_phase_sweep() {
             for &speed in &[0.0f32, 1.0, 4.0, 10.0, 25.0] {
                 let o = free_case("standard_steel", &c, &f, &stroke, phase, frac, speed)
                     .unwrap_or_else(|e| panic!("27 mm reference: {e}"));
-                std_gap = std_gap.min(o.min_gap);
+                std_gap = min_f32(std_gap, o.min_gap);
             }
         }
     }
@@ -639,7 +640,7 @@ fn table_case(
             return Err(format!("tick {}: non-finite ball ({tag})", s.tick));
         }
         let gap = surface_gap(&s, p) - r;
-        out.min_gap = out.min_gap.min(gap);
+        out.min_gap = min_f32(out.min_gap, gap);
         if gap < -MAX_DEPTH_FRACTION * r {
             return Err(format!(
                 "tick {}: XL ball {:.3} mm inside the bat ({tag})",
@@ -686,8 +687,8 @@ fn c3_no_tunnelling_xl_ball_on_the_table_flip_timing_sweep() {
                             .unwrap_or_else(|e| panic!("{e}"));
                         cases += 1;
                         hits += u32::from(o.hit);
-                        min_gap = min_gap.min(o.min_gap);
-                        top = top.max(o.omega_at_impact);
+                        min_gap = min_f32(min_gap, o.min_gap);
+                        top = max_f32(top, o.omega_at_impact);
                     }
                 }
             }

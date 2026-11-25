@@ -8,6 +8,7 @@ mod reference;
 #[path = "ball_util.rs"]
 mod util;
 use glam::Vec3;
+use pin_core::fmath::max_f32;
 use pin_physics::ball::{BallEvents, Geometry, MovingBodies};
 use reference::*;
 use util::*;
@@ -43,7 +44,7 @@ fn knock(inertia: f32, vb: f32) -> (f32, bool) {
             "ball state is not finite: {ball:?}"
         );
         let bat = set.bodies[0];
-        deepest = deepest.max(r - bat.closest(0.0, ball.position).distance);
+        deepest = max_f32(deepest, r - bat.closest(0.0, ball.position).distance);
         let dir = RotorBody::direction(bat.angle);
         let rel = ball.position - bat.pivot;
         let (along, side) = (rel.dot(dir), rel.dot(Vec3::Z.cross(dir)));
@@ -116,7 +117,7 @@ fn knock_slider(mass: f32, vb: f32) -> (f32, bool) {
             "ball state is not finite: {ball:?}"
         );
         let plate = set.bodies[0];
-        deepest = deepest.max(r - plate.closest(0.0, ball.position).distance);
+        deepest = max_f32(deepest, r - plate.closest(0.0, ball.position).distance);
         through |= ball.position.y < plate.center.y;
     }
     (deepest, through)
@@ -227,7 +228,10 @@ fn starving_scene(with_pinch: bool) -> (pin_physics::ball::Ball, f32, usize, usi
         }
         assert!(used[usize::from(shot.0)] < pin_physics::ball::MAX_BODY_SOLVES_PER_BALL);
         let b = s.ball(shot).unwrap();
-        deepest = deepest.max(r - flipper.bodies[0].closest(0.0, b.position).distance);
+        deepest = max_f32(
+            deepest,
+            r - flipper.bodies[0].closest(0.0, b.position).distance,
+        );
         hits += ev
             .as_slice()
             .iter()
@@ -295,7 +299,7 @@ fn flip_depth(d: f32, speed: f32, delay: u32, torque: f32, inertia: f32) -> f32 
             b.position.is_finite() && b.velocity.is_finite(),
             "ball state is not finite: {b:?}"
         );
-        deepest = deepest.max(r - set.bodies[0].closest(0.0, b.position).distance);
+        deepest = max_f32(deepest, r - set.bodies[0].closest(0.0, b.position).distance);
     }
     deepest
 }

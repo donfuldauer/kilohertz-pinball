@@ -8,6 +8,7 @@
 //! regression and hunt such inputs.
 
 use glam::Vec3;
+use pin_core::fmath::{max_f32, min_f32};
 use pin_physics::world::{CubicSpline, Wireform};
 use proptest::prelude::*;
 
@@ -34,9 +35,10 @@ fn max_out_of_plane(w: &Wireform, axis: usize, value: f32, extra: &[f32]) -> f32
         let (a, b) = w.rail_points(t);
         let f = w.frame_at(t);
         assert!(f.normal.is_finite() && f.binormal.is_finite(), "t = {t}");
-        worst = worst
-            .max((a[axis] - value).abs())
-            .max((b[axis] - value).abs());
+        worst = max_f32(
+            max_f32(worst, (a[axis] - value).abs()),
+            (b[axis] - value).abs(),
+        );
     };
     for k in 0..=n * 64 {
         check(k as f32 / 64.0);
@@ -121,7 +123,7 @@ fn vertical_plane_path_rails_straddle_plane() {
         let f = w.frame_at(t);
         assert!(f.normal.y.abs() < 1.0e-6, "t = {t}: normal {:?}", f.normal);
         let (a, b) = w.rail_points(t);
-        let spread = (a.y - y0).abs().min((b.y - y0).abs());
+        let spread = min_f32((a.y - y0).abs(), (b.y - y0).abs());
         assert!(
             (spread - 0.5 * GAUGE).abs() < 1.0e-6,
             "t = {t}: {a:?} {b:?}"
@@ -221,7 +223,7 @@ proptest! {
             let f = w.frame_at(t);
             prop_assert!(f.normal[axis].abs() < 1.0e-6, "t = {}: normal {:?}", t, f.normal);
             let (p, q) = w.rail_points(t);
-            let near = (p[axis] - c0).abs().min((q[axis] - c0).abs());
+            let near = min_f32((p[axis] - c0).abs(), (q[axis] - c0).abs());
             prop_assert!((near - 0.5 * GAUGE).abs() < 1.0e-6, "t = {}: {:?} {:?}", t, p, q);
         }
     }

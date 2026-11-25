@@ -6,6 +6,7 @@ mod util;
 
 use glam::{Quat, Vec3};
 use pin_core::BallProfile;
+use pin_core::fmath::max_f32;
 use pin_core::ids::ProfileId;
 use pin_physics::ball::{
     Ball, BallEvents, BallHandle, BallSolver, ExternalForce, ForceContext, Geometry, MAX_BALLS,
@@ -746,7 +747,7 @@ fn free_flight_lateral_acceleration_with_gravity() {
         let mean = 0.5 * (before.velocity + after.velocity);
         let expect = s_m * before.angular_velocity.cross(mean) / m;
         let err = (acc - expect).length();
-        worst = worst.max(err / expect.length());
+        worst = max_f32(worst, err / expect.length());
         assert!(err <= 0.01 * expect.length() + 1e-4, "{err} vs {expect}");
     }
     eprintln!("worst relative error {worst:e}");

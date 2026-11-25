@@ -21,6 +21,7 @@ mod bb;
 use bb::c23::{DT, R};
 use bb::{BACKBOX_LAYER, Frame, Mount, Stage, dual_stage, route};
 use glam::Vec3;
+use pin_core::fmath::min_f32;
 use pin_core::ids::FlipperId;
 use pin_core::{CabinetInput, FlipperConfig, FlipperStagingMode};
 use pin_physics::ball::{BallEvents, Geometry};
@@ -196,7 +197,7 @@ fn dual_stage_actuates_lower_at_30_and_upper_at_85_percent() {
     let ds = dual_stage();
     // Axis ramps 0 → 1 over `ramp` ticks starting at tick 5.
     for ramp in [20u64, 50, 100] {
-        let axis_at = move |t: u64| ((t.saturating_sub(5)) as f32 / ramp as f32).min(1.0);
+        let axis_at = move |t: u64| min_f32((t.saturating_sub(5)) as f32 / ramp as f32, 1.0);
         let first = |thr: f32| (0..200u64).find(|&t| axis_at(t) >= thr);
         let lower = first(0.30);
         let upper = first(0.85);

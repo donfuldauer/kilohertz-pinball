@@ -3,6 +3,7 @@
 
 use arrayvec::ArrayVec;
 use glam::{Quat, Vec3};
+use pin_core::fmath::max_f32;
 use pin_core::ids::{ProfileId, SwitchId};
 use pin_core::snapshot::BallState;
 use pin_core::{BallProfile, MaterialPair, PhysicsDefaults};
@@ -158,7 +159,7 @@ impl MagnetState {
         let m = &self.magnet;
         let to_magnet = m.position - position;
         let d = to_magnet.length();
-        let denom = (d * d * d).max(m.d_min * m.d_min * m.d_min);
+        let denom = max_f32(d * d * d, m.d_min * m.d_min * m.d_min);
         if d <= m.range && d > 1.0e-9 && denom > 0.0 {
             to_magnet * (m.k_coil / (denom * d))
         } else {

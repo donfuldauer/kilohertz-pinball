@@ -44,6 +44,7 @@
 mod util;
 
 use glam::{Quat, Vec3};
+use pin_core::fmath::max_f32;
 use pin_core::{CabinetAxis, CabinetInput, FlipperStagingMode, Material, PhysicsDefaults};
 use pin_physics::world::{StaticShape, StaticWorldBuilder, layers};
 use util::*;
@@ -115,7 +116,7 @@ fn shot(frame: Quat, fraction: f32, torque: f32, layer: u8) -> Shot {
                 exit,
                 contact_s: t as f32 * DT,
                 bat_dir: v(bat.x, bat.y, 0.0).normalize(),
-                radius: (c.length()).max(BAT_LEN * fraction),
+                radius: max_f32(c.length(), BAT_LEN * fraction),
                 flight,
             };
         }
@@ -197,7 +198,7 @@ fn vertical_flipper_shot_speed_matches_the_horizontal_prediction() {
             }
             // The shot is fast: the gravity change is a correction, not the shot.
             assert!(vt.exit.length() > 2.0);
-            worst = worst.max(err / tol);
+            worst = max_f32(worst, err / tol);
             n += 1;
         }
     }

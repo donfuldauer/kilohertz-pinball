@@ -7,6 +7,7 @@ mod util;
 
 use glam::Vec3;
 use pin_core::PhysicsDefaults;
+use pin_core::fmath::max_f32;
 use pin_core::ids::{CoilId, SwitchId};
 use pin_core::schema::table::MechKind;
 use pin_physics::mech::MechSpec;
@@ -49,7 +50,7 @@ fn launch(depth: f32) -> f32 {
     let mut peak = 0.0f32;
     for _ in 0..60 {
         t.tick();
-        peak = peak.max(t.get(h).velocity.y);
+        peak = max_f32(peak, t.get(h).velocity.y);
     }
     peak
 }
@@ -75,7 +76,7 @@ fn released_plunger_at_rest_never_pushes_the_ball() {
     let mut max_speed = 0.0f32;
     for _ in 0..2000 {
         t.tick();
-        max_speed = max_speed.max(t.get(h).velocity.length());
+        max_speed = max_f32(max_speed, t.get(h).velocity.length());
         assert_eq!(t.mechs.slider_state(0), Some((0.0, 0.0)));
     }
     let p1 = t.get(h).position;
@@ -126,7 +127,7 @@ fn spring_force_is_minus_k_x() {
         t.tick();
         ticks += 1;
         let (x, v) = t.mechs.slider_state(0).unwrap();
-        peak = peak.max(v);
+        peak = max_f32(peak, v);
         if x == 0.0 {
             break;
         }
@@ -151,7 +152,7 @@ fn auto_plunger_coil_launches() {
     let mut peak = 0.0f32;
     for _ in 0..100 {
         t.tick();
-        peak = peak.max(t.get(h).velocity.y);
+        peak = max_f32(peak, t.get(h).velocity.y);
     }
     println!("auto-plunger launch: {peak:.3} m/s");
     assert!(peak > 2.0);
@@ -166,7 +167,7 @@ fn auto_plunger_coil_launches() {
     for i in (0..400).rev() {
         t.mechs.set_plunger(i as f32 / 400.0);
         t.tick();
-        slow = slow.max(t.get(h).velocity.y);
+        slow = max_f32(slow, t.get(h).velocity.y);
     }
     println!("slow release peak: {slow:.3} m/s");
     assert!(slow < 0.5 * launch(1.0));
@@ -196,7 +197,7 @@ fn step_pull_is_rate_limited_and_reports_real_velocity() {
         );
         assert!(vel.abs() <= pin_physics::mech::PULL_SPEED + 1e-4);
         last = x;
-        peak = peak.max(t.get(h).velocity.length());
+        peak = max_f32(peak, t.get(h).velocity.length());
     }
     println!("ball behind a step-pulled tip: peak {peak:.3} m/s");
     assert!(peak < 2.0 * pin_physics::mech::PULL_SPEED, "{peak}");

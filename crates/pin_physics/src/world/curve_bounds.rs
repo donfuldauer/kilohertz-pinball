@@ -63,6 +63,7 @@
 //! it), and [`Build::entries`] (tables of many intervals at once).
 
 use glam::{DVec3, Vec3};
+use pin_core::fmath::{max_f64, min_f32, min_f64};
 
 use super::spline::{BezierSegment, CubicSpline, SAMPLES_PER_SEGMENT};
 use super::wireform::segment_distance;
@@ -89,7 +90,7 @@ const MARGIN_ABS: f64 = 1.0e-6;
 
 /// A proven radius as stored.
 fn stored(rho: f64) -> f32 {
-    (MARGIN * rho - MARGIN_ABS).max(0.0) as f32
+    max_f64(MARGIN * rho - MARGIN_ABS, 0.0) as f32
 }
 
 /// Margin of a stored distance (metres): the `f32` rounding of the nearest
@@ -100,7 +101,7 @@ const DISTANCE_MARGIN: f64 = 1.0e-5;
 
 /// A proven distance as stored.
 fn stored_distance(d: f64) -> f32 {
-    (d - DISTANCE_MARGIN).max(0.0) as f32
+    max_f64(d - DISTANCE_MARGIN, 0.0) as f32
 }
 
 /// Table intervals per segment along the curve, and in its two end
@@ -148,7 +149,7 @@ const RHO_SLACK: f64 = 2.0e-3;
 /// exactly its own infimum.
 fn with_target(level: f64, u: f64, target: f64) -> f64 {
     if u >= target * (1.0 + TARGET_ROOM) {
-        level.max(target)
+        max_f64(level, target)
     } else {
         level
     }
@@ -161,7 +162,7 @@ pub(super) const TARGET_ROOM: f64 = 1.0e-4;
 /// against the best value `u` found: within [`TOL_TABLE`], or
 /// [`RHO_SLACK`] up to half the value.
 fn rho_level(u: f64) -> f64 {
-    u * (1.0 - TOL_TABLE.max((RHO_SLACK / u).min(0.5)))
+    u * (1.0 - max_f64(TOL_TABLE, min_f64(RHO_SLACK / u, 0.5)))
 }
 
 /// Settle levels of the quantities of a table entry `[ρ_+, ρ_−, D²]`.
@@ -250,9 +251,9 @@ impl Bez {
     fn bounds(&self, s0: f64, s1: f64) -> (f64, f64) {
         let h = s1 - s0;
         let (v0, v1) = (self.d1(s0).length(), self.d1(s1).length());
-        let bend = self.d2(s0).length().max(self.d2(s1).length());
-        let length = h * (v0.max(v1) + 0.5 * h * bend) * (1.0 + ROUND);
-        let slowest = v0.min(v1) - 0.5 * h * bend;
+        let bend = max_f64(self.d2(s0).length(), self.d2(s1).length());
+        let length = h * (max_f64(v0, v1) + 0.5 * h * bend) * (1.0 + ROUND);
+        let slowest = min_f64(v0, v1) - 0.5 * h * bend;
         let curvature = if slowest > 0.0 {
             bend / (slowest * slowest) * (1.0 + ROUND)
         } else {
@@ -276,7 +277,7 @@ pub(super) fn arc_bounds(spline: &CubicSpline) -> (Vec<f64>, f64) {
             let s0 = j as f64 / K as f64;
             let (length, curvature) = b.bounds(s0, s0 + 1.0 / K as f64);
             total += length;
-            kappa = kappa.max(curvature);
+            kappa = max_f64(kappa, curvature);
             prefix.push(total * (1.0 + ROUND));
         }
     }
@@ -351,11 +352,11 @@ const SIDES: usize = 3;
 type Sides = [f64; SIDES];
 
 fn side_min(a: Sides, b: Sides) -> Sides {
-    core::array::from_fn(|i| a[i].min(b[i]))
+    core::array::from_fn(|i| min_f64(a[i], b[i]))
 }
 
 fn side_max(a: Sides, b: Sides) -> Sides {
-    core::array::from_fn(|i| a[i].max(b[i]))
+    core::array::from_fn(|i| max_f64(a[i], b[i]))
 }
 
 /// What a search looks for: several infima at once over the curve points
@@ -510,7 +511,7 @@ impl CurveTree {
             let below = &bends[bends.len() - 1];
             let up = below
                 .chunks(2)
-                .map(|c| c.iter().fold(0.0f64, |m, &k| m.max(k)))
+                .map(|c| c.iter().fold(0.0f64, |m, &k| max_f64(m, k)))
                 .collect();
             bends.push(up);
         }
@@ -539,12 +540,12 @@ impl CurveTree {
                 break;
             }
             if lo % 2 == 1 {
-                most = most.max(level[lo]);
+                most = max_f64(most, level[lo]);
                 lo += 1;
             }
             if hi % 2 == 1 {
                 hi -= 1;
-                most = most.max(level[hi]);
+                most = max_f64(most, level[hi]);
             }
             lo /= 2;
             hi /= 2;
@@ -611,8 +612,8 @@ impl CurveTree {
         let m = 0.5 * (f64::from(piece.s0) + f64::from(piece.s1));
         let (left, k0) = b.bounds(f64::from(piece.s0), m);
         let (right, k1) = b.bounds(m, f64::from(piece.s1));
-        let reach = left.max(right);
-        let curvature = k0.max(k1).min(self.curvature[piece.first as usize]);
+        let reach = max_f64(left, right);
+        let curvature = min_f64(max_f64(k0, k1), self.curvature[piece.first as usize]);
         let mid = Mid {
             point: b.point(m),
             tangent: b.d1(m).normalize_or_zero(),
@@ -665,7 +666,7 @@ impl CurveTree {
         } else {
             let (first, end) = (piece.first as usize, piece.end as usize);
             let at = first + (end - first) / 2;
-            let delta = (self.arc[at] - self.arc[first]).max(self.arc[end] - self.arc[at]);
+            let delta = max_f64(self.arc[at] - self.arc[first], self.arc[end] - self.arc[at]);
             let kappa = self.bends[piece.level as usize][piece.node as usize];
             let (seg, s) = if at == self.intervals() {
                 (self.bez.len() - 1, 1.0)
@@ -728,7 +729,7 @@ impl CurveTree {
             state.budget = state.budget.saturating_sub(1);
             if let Some((own, local)) = probe.skip(piece.first as usize, piece.end as usize) {
                 lower = side_min(lower, own);
-                state.local = state.local.min(local);
+                state.local = min_f64(state.local, local);
                 continue;
             }
             if piece.depth == 0 {
@@ -785,7 +786,7 @@ impl CurveTree {
                     continue;
                 }
                 if drain || bound[side] >= level[side] {
-                    lower[side] = lower[side].min(bound[side]);
+                    lower[side] = min_f64(lower[side], bound[side]);
                 } else {
                     open[side] = true;
                 }
@@ -841,7 +842,7 @@ impl CurveTree {
             // As fine as it gets: keep the lower bound as it is.
             for side in 0..SIDES {
                 if open[side] {
-                    lower[side] = lower[side].min(bound[side]);
+                    lower[side] = min_f64(lower[side], bound[side]);
                 }
             }
         }
@@ -885,7 +886,7 @@ impl CurveTree {
             state.budget -= 1;
             if let Some((own, local)) = probe.skip(piece.first as usize, piece.end as usize) {
                 *lower = side_min(*lower, own);
-                state.local = state.local.min(local);
+                state.local = min_f64(state.local, local);
                 continue;
             }
             let mut bound = probe.bound(piece.centre, piece.radius, None);
@@ -908,7 +909,7 @@ impl CurveTree {
                     continue;
                 }
                 if bound[side] >= settle[side] {
-                    lower[side] = lower[side].min(bound[side]);
+                    lower[side] = min_f64(lower[side], bound[side]);
                 } else {
                     open = true;
                 }
@@ -1196,10 +1197,13 @@ impl<'a> TableProbe<'a> {
         let mid = (first + end) / 2;
         let d1 = tree.bez[mid / K].d1((mid % K) as f64 / K as f64);
         let normal = DVec3::new(-d1.y, d1.x, 0.0).normalize_or_zero();
-        let reach = (tree.arc[mid] - tree.arc[first]).max(tree.arc[end] - tree.arc[mid]);
+        let reach = max_f64(
+            tree.arc[mid] - tree.arc[first],
+            tree.arc[end] - tree.arc[mid],
+        );
         let curvature = tree.curvature[first..end]
             .iter()
-            .fold(0.0f64, |m, &k| m.max(k));
+            .fold(0.0f64, |m, &k| max_f64(m, k));
         Self {
             middle: 0.5 * (tree.points[first] + tree.points[end]),
             lambda: 0.5 * (tree.arc[end] - tree.arc[first]),
@@ -1225,11 +1229,13 @@ impl<'a> TableProbe<'a> {
         let (right, k1) = b.bounds(mid, s1);
         let first = seg * K + (s0 * K as f64).floor() as usize;
         let end = seg * K + (s1 * K as f64).ceil() as usize;
-        let curvature = tree.curvature[first..end]
-            .iter()
-            .fold(0.0f64, |m, &k| m.max(k))
-            .min(k0.max(k1));
-        let reach = left.max(right);
+        let curvature = min_f64(
+            tree.curvature[first..end]
+                .iter()
+                .fold(0.0f64, |m, &k| max_f64(m, k)),
+            max_f64(k0, k1),
+        );
+        let reach = max_f64(left, right);
         Self {
             middle: 0.5 * (b.point(s0) + b.point(s1)),
             lambda: 0.5 * length,
@@ -1291,12 +1297,16 @@ impl TableProbe<'_> {
         let line = vp.dot(side).abs()
             - delta * tangent.dot(side).abs()
             - bow * self.normal.dot(side).abs();
-        let gap = (segment_distance(self.point, rod.p, rod.q) - (delta + bow)).max(line);
+        let gap = max_f64(
+            segment_distance(self.point, rod.p, rod.q) - (delta + bow),
+            line,
+        );
         let near = gap - rod.r;
-        let along = vp.dot(tangent).abs().max(vq.dot(tangent).abs());
+        let along = max_f64(vp.dot(tangent).abs(), vq.dot(tangent).abs());
         let sideways = turn * (along + rod.r + delta + bow);
         let (ap, aq) = (vp.dot(self.normal), vq.dot(self.normal));
-        let ups = [ap.max(aq), (-ap).max(-aq)].map(|a| tilted(a + rod.r + bow, turn) + sideways);
+        let ups =
+            [max_f64(ap, aq), max_f64(-ap, -aq)].map(|a| tilted(a + rod.r + bow, turn) + sideways);
         finish(if near > 0.0 { near * near } else { 0.0 }, ups)
     }
 
@@ -1350,7 +1360,7 @@ fn finish(low2: f64, ups: [f64; 2]) -> Sides {
             low2 / (2.0 * up) * shrink
         }
     });
-    let distance = low2.max(0.0) * shrink;
+    let distance = max_f64(low2, 0.0) * shrink;
     [plus, minus, distance]
 }
 
@@ -1378,7 +1388,7 @@ impl Probe for TableProbe<'_> {
                 }
             });
             // (`num` is a lower bound of `|w|²` along the way.)
-            let distance = num.max(0.0) * shrink;
+            let distance = max_f64(num, 0.0) * shrink;
             let second = [plus, minus, distance];
             return side_max(second, self.pair_bound(m));
         }
@@ -1554,7 +1564,7 @@ impl TangentBalls {
     /// two segments.
     fn entry(&self, max_t: f32, t: f32) -> [f32; 4] {
         let in_fine = |local: f32| ((local * TABLE_FINE as f32) as usize).min(TABLE_FINE - 1);
-        let fold = |a: [f32; 4], b: [f32; 4]| core::array::from_fn(|i| a[i].min(b[i]));
+        let fold = |a: [f32; 4], b: [f32; 4]| core::array::from_fn(|i| min_f32(a[i], b[i]));
         let mut e = [f32::INFINITY; 4];
         let mut in_end_segment = false;
         if t <= 1.0 {
@@ -1628,7 +1638,7 @@ impl TangentBalls {
         } else if alpha < 0.0 {
             rho[1]
         } else {
-            rho[0].min(rho[1])
+            min_f32(rho[0], rho[1])
         };
         let mut behind = 0.0f32;
         for (end_t, (inward, back)) in [0.0, max_t].into_iter().zip(&self.ends) {
@@ -1644,7 +1654,7 @@ impl TangentBalls {
             // Round an end: `|α| ≤ 1` taken as 1, and the smaller side, so
             // that the radius only shrinks the further the direction turns
             // behind the end.
-            let r = rho[0].min(rho[1]);
+            let r = min_f32(rho[0], rho[1]);
             if r <= 0.0 {
                 return 0.0;
             }
@@ -1659,7 +1669,7 @@ impl TangentBalls {
         };
         // (No limit at all: straight above or below the wall.)
         if inverse > 0.0 {
-            (1.0 / inverse).min(1.0e3)
+            min_f32(1.0 / inverse, 1.0e3)
         } else {
             1.0e3
         }
@@ -1798,9 +1808,9 @@ impl Build<'_> {
         if to - from == 1 {
             let (seg, s0, s1) = slots.slot(from);
             let cap = self.caps[from];
-            let lower = (side_min(lower.0, table_caps(cap)), lower.1.min(cap));
+            let lower = (side_min(lower.0, table_caps(cap)), min_f64(lower.1, cap));
             let entry = self.entry(seg, s0, s1, slots.depth, cap, list, lower);
-            self.smallest = self.smallest.min(entry.0[0]).min(entry.0[1]);
+            self.smallest = min_f64(min_f64(self.smallest, entry.0[0]), entry.0[1]);
             out[from] = entry;
             return;
         }
@@ -1823,11 +1833,10 @@ impl Build<'_> {
                     let v = pair_values(point, normal, y);
                     for side in 0..SIDES {
                         if v[side] < cap[side] {
-                            level[side] = level[side].min(with_target(
-                                TABLE_LEVELS[side](v[side]),
-                                v[side],
-                                targets[side],
-                            ));
+                            level[side] = min_f64(
+                                level[side],
+                                with_target(TABLE_LEVELS[side](v[side]), v[side], targets[side]),
+                            );
                         }
                     }
                 }
@@ -2066,7 +2075,7 @@ mod tests {
                 }
                 for side in 0..SIDES {
                     if truth[side].is_finite() && truth[side] > 0.0 {
-                        tight[side] = tight[side].max(bound[side] / truth[side]);
+                        tight[side] = max_f64(tight[side], bound[side] / truth[side]);
                     }
                 }
                 checked += 1;

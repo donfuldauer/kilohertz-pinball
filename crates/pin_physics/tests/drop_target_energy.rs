@@ -24,6 +24,7 @@
 //! Only the public `pin_physics` API is used (MechSet, BallSolver).
 
 use glam::{Quat, Vec3};
+use pin_core::fmath::{max_f32, max_f64};
 use pin_core::ids::{CoilId, ProfileId, SwitchId};
 use pin_core::materials::Material;
 use pin_core::profiles::builtin_profiles;
@@ -152,10 +153,10 @@ fn curb_bound(v: Vec3, v_rise: f32, e: f32, mu: f32) -> f64 {
     let n = 4000;
     for i in 0..=n {
         let nz = -1.0 + 2.0 * f64::from(i) / f64::from(n);
-        let nh = (1.0 - nz * nz).max(0.0).sqrt();
+        let nh = max_f64(1.0 - nz * nz, 0.0).sqrt();
         let approach = (v_rise - vz) * nz + vh * nh;
-        let j = (1.0 + e) * approach.max(0.0);
-        best = best.max(vz + j * (nz + mu * nh));
+        let j = (1.0 + e) * max_f64(approach, 0.0);
+        best = max_f64(best, vz + j * (nz + mu * nh));
     }
     best
 }
@@ -236,13 +237,13 @@ fn trial(speed: f32, angle_deg: f32, phase: i32, off: f32, e: f32, mu: f32) -> W
         // still hit during it; skipping that tick would leave the next
         // baseline post-impact and hide an excessive impulse.
         let p = prev.position;
-        let reach = r + 1.0e-3 + DT * prev.velocity.length().max(now.velocity.length());
+        let reach = r + 1.0e-3 + DT * max_f32(prev.velocity.length(), now.velocity.length());
         let near = p.x.abs() <= half_thk + reach && p.y.abs() <= half_len + reach;
         if near {
             w.contact_ticks += 1;
             let bound = curb_bound(prev.velocity, v_rise, e, mu);
             if bound > 0.0 {
-                w.ratio = w.ratio.max(f64::from(now.velocity.z) / bound);
+                w.ratio = max_f64(w.ratio, f64::from(now.velocity.z) / bound);
             }
             let v_box = if rising_before || t.rising() {
                 v_rise
@@ -250,10 +251,10 @@ fn trial(speed: f32, angle_deg: f32, phase: i32, off: f32, e: f32, mu: f32) -> W
                 0.0
             };
             let dpz = now.velocity.z - prev.velocity.z - gravity().z * DT;
-            let work = v_box * dpz.max(0.0);
-            w.excess = w.excess.max(energy(&now, r) - energy(&prev, r) - work);
+            let work = v_box * max_f32(dpz, 0.0);
+            w.excess = max_f32(w.excess, energy(&now, r) - energy(&prev, r) - work);
         }
-        w.peak_vz = w.peak_vz.max(now.velocity.z);
+        w.peak_vz = max_f32(w.peak_vz, now.velocity.z);
         prev = now;
     }
     w
@@ -279,7 +280,7 @@ fn reset_contact_obeys_the_curb_bound_and_gains_no_energy() {
                     let w = trial(speed, angle as f32, phase, off, e, mu);
                     n += 1;
                     contacts += u64::from(w.contact_ticks);
-                    peak = peak.max(w.peak_vz);
+                    peak = max_f32(peak, w.peak_vz);
                     let at = format!("v={speed} angle={angle} phase={phase} off={off}");
                     if w.ratio > worst.ratio {
                         worst.ratio = w.ratio;

@@ -2,6 +2,7 @@
 
 use arrayvec::ArrayVec;
 use glam::{Quat, Vec3};
+use pin_core::fmath::{max_f64, min_f64};
 use pin_physics::world::{
     ColliderHandle, SphereContact, StaticShape, StaticWorld, StaticWorldBuilder, layers,
 };
@@ -702,7 +703,14 @@ fn fast_ball_does_not_tunnel_a_thin_wall() {
 /// Signed distance to an axis-aligned box, for the brute-force reference.
 fn box_sdf(p: glam::DVec3, c: glam::DVec3, h: glam::DVec3) -> f64 {
     let q = (p - c).abs() - h;
-    q.max(glam::DVec3::ZERO).length() + q.max_element().min(0.0)
+    let zero = glam::DVec3::ZERO;
+    glam::DVec3::new(
+        max_f64(q.x, zero.x),
+        max_f64(q.y, zero.y),
+        max_f64(q.z, zero.z),
+    )
+    .length()
+        + min_f64(max_f64(q.x, max_f64(q.y, q.z)), 0.0)
 }
 
 /// Compares a sphere cast with a brute-force march over the reference
@@ -786,7 +794,7 @@ fn check_cast(
                 .chain(rest)
                 .filter(|&x| x <= end)
                 .map(sdf)
-                .fold(f64::INFINITY, f64::min);
+                .fold(f64::INFINITY, min_f64);
             prop_assert!(
                 deepest > -2e-6 || t > f64::from(max_time) * 0.9999,
                 "tunnelled: expected hit at {t}, penetration {deepest}"
@@ -820,8 +828,9 @@ fn cylinder_sdf(p: glam::DVec3, base: glam::DVec3, axis: glam::DVec3, radius: f6
     let w = p - base;
     let h = w.dot(dir);
     let dx = (w - dir * h).length() - radius;
-    let dy = (-h).max(h - height);
-    dx.max(dy).min(0.0) + (dx.max(0.0) * dx.max(0.0) + dy.max(0.0) * dy.max(0.0)).sqrt()
+    let dy = max_f64(-h, h - height);
+    min_f64(max_f64(dx, dy), 0.0)
+        + (max_f64(dx, 0.0) * max_f64(dx, 0.0) + max_f64(dy, 0.0) * max_f64(dy, 0.0)).sqrt()
 }
 
 /// Distance to a triangle (f64 reference).
@@ -837,7 +846,7 @@ fn triangle_distance(p: glam::DVec3, a: glam::DVec3, b: glam::DVec3, c: glam::DV
         let edge = |e: glam::DVec3, q: glam::DVec3| {
             (e * (e.dot(q) / e.length_squared()).clamp(0.0, 1.0) - q).length_squared()
         };
-        edge(ba, pa).min(edge(cb, pb)).min(edge(ac, pc)).sqrt()
+        min_f64(min_f64(edge(ba, pa), edge(cb, pb)), edge(ac, pc)).sqrt()
     } else {
         (nor.dot(pa) * nor.dot(pa) / nor.length_squared()).sqrt()
     }
@@ -869,7 +878,7 @@ proptest! {
         let max_time = 1.0 / speed; // travel 1 m
         let dist = |p: glam::DVec3| {
             boxes.iter().map(|(c, h)| box_sdf(p, v(c.0, c.1, c.2).as_dvec3(), v(h.0, h.1, h.2).as_dvec3()))
-                .fold(f64::INFINITY, f64::min)
+                .fold(f64::INFINITY, min_f64)
         };
         check_cast(&world, &dist, start, vel, max_time)?;
     }
@@ -934,7 +943,7 @@ proptest! {
         if d.length() < 0.05 { d = Vec3::X; }
         let vel = d.normalize() * speed;
         let max_time = 1.0 / speed; // travel 1 m
-        let dist = |p: glam::DVec3| refs.iter().map(|f| f(p)).fold(f64::INFINITY, f64::min);
+        let dist = |p: glam::DVec3| refs.iter().map(|f| f(p)).fold(f64::INFINITY, min_f64);
         check_cast(&world, &dist, start, vel, max_time)?;
     }
 
