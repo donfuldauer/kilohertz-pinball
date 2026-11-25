@@ -6,10 +6,12 @@
 //! screenshots of the root window, and returns the app's stderr and its
 //! latency trace. Every helper process runs bounded ([`run_bounded`]: killed
 //! and reaped at its deadline) and shell-free; a hung app is killed and
-//! reported. Every exit path after the app started writes a fresh
-//! `pin_app_stderr.log`, and every failure a `summary.txt`
-//! ([`failure_summary`]); a run starts by removing the previous run's
-//! artifacts ([`ARTIFACTS`]).
+//! reported. A run starts by creating the artifact directory and removing
+//! the previous run's artifacts ([`ARTIFACTS`]) before any check
+//! ([`preflight`]); every exit path after the app started writes a fresh
+//! `pin_app_stderr.log` (the stderr drain is bounded by
+//! [`STDERR_DRAIN_TIMEOUT`]), and every failure, the preflight's included,
+//! a `summary.txt` ([`failure_summary`]).
 //!
 //! Environment (all optional):
 //! * `KP_PIN_APP`: the app binary (default: this build's `pin_app`;
@@ -518,9 +520,14 @@ pub fn xvfb_args() -> Vec<&'static str> {
 }
 
 fn xdotool(display: &str, args: &[&str]) -> Result<String, String> {
+    xdotool_within(display, args, HELPER_TIMEOUT)
+}
+
+/// [`xdotool`] bounded by `timeout` instead of [`HELPER_TIMEOUT`].
+fn xdotool_within(display: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
     let out = run_bounded(
         Command::new("xdotool").args(args).env("DISPLAY", display),
-        HELPER_TIMEOUT,
+        timeout,
     )
     .map_err(|e| format!("xdotool {args:?}: {e}"))?;
     if out.status.success() {
@@ -692,23 +699,38 @@ pub fn key_up(
     Ok(())
 }
 
-/// Total time [`release_held`] may spend retrying failed key-ups at the
-/// end of a run.
+/// Total time [`release_held`] may spend on the key-ups at the end of a
+/// run: one shared deadline for every attempt and retry.
 pub const KEY_RELEASE_BUDGET: Duration = Duration::from_millis(400);
+/// The shortest bound a key-up attempt gets, even when the shared budget is
+/// spent (so the second key's first attempt still runs).
+pub const KEY_RELEASE_MIN_TIMEOUT: Duration = Duration::from_millis(50);
 /// Pause between two rounds of [`release_held`] retries.
 pub const KEY_RELEASE_PAUSE: Duration = Duration::from_millis(50);
 /// Most rounds of key-ups [`release_held`] sends, whatever the clock says.
 pub const KEY_RELEASE_MAX_ROUNDS: u32 = 16;
 
+/// The bound of one key-up attempt at `now` within the shared `budget`:
+/// what is left of it, never above [`HELPER_TIMEOUT`] and never below
+/// [`KEY_RELEASE_MIN_TIMEOUT`].
+pub fn key_up_timeout(budget: Duration, now: Duration) -> Duration {
+    budget
+        .saturating_sub(now)
+        .clamp(KEY_RELEASE_MIN_TIMEOUT, HELPER_TIMEOUT)
+}
+
 /// Attempts a key-up for every key in `held` (never stopping at the first
 /// failure; [`key_up`]: a key is cleared only when its key-up succeeded).
-/// While a key is still held, retries it after `pause` until `now()` (a
-/// monotonic time since a fixed start) reaches `budget` or
-/// [`KEY_RELEASE_MAX_ROUNDS`] rounds were sent. Returns the releases that
-/// still failed after the last round (their keys stay marked held).
+/// One shared deadline: `now()` (a monotonic time since the release
+/// started) against `budget`; each `send(key, timeout)` is bounded by
+/// [`key_up_timeout`] (the budget left), so every held key gets a first
+/// attempt and a slow key-up cannot spend more than the budget. While a key
+/// is still held and budget remains, retries it after `pause`, at most
+/// [`KEY_RELEASE_MAX_ROUNDS`] rounds. Returns the releases that still
+/// failed after the last round (their keys stay marked held).
 pub fn release_held(
     held: &mut [bool; 2],
-    mut send: impl FnMut(Key) -> Result<(), String>,
+    mut send: impl FnMut(Key, Duration) -> Result<(), String>,
     budget: Duration,
     now: &mut dyn FnMut() -> Duration,
     pause: &mut dyn FnMut(),
@@ -718,9 +740,11 @@ pub fn release_held(
         round += 1;
         let mut failed = Vec::new();
         for k in [Key::Left, Key::Right] {
-            if held[usize::from(k == Key::Right)]
-                && let Err(e) = key_up(held, k, &mut send)
-            {
+            if !held[usize::from(k == Key::Right)] {
+                continue;
+            }
+            let t = key_up_timeout(budget, now());
+            if let Err(e) = key_up(held, k, |k| send(k, t)) {
                 failed.push((k, e));
             }
         }
@@ -728,6 +752,9 @@ pub fn release_held(
             return failed;
         }
         pause();
+        if now() >= budget {
+            return failed;
+        }
     }
 }
 
@@ -863,7 +890,7 @@ fn drive(
     let release_start = Instant::now();
     let failed = release_held(
         &mut held,
-        |k| send("keyup", k),
+        |k, t| xdotool_within(display, &["keyup", k.keycode()], t).map(drop),
         KEY_RELEASE_BUDGET,
         &mut || release_start.elapsed(),
         &mut || std::thread::sleep(KEY_RELEASE_PAUSE),
@@ -894,34 +921,128 @@ fn drive(
     }
 }
 
+/// Longest wait for the app's stderr to reach its end after the app was
+/// reaped (a process the app started may still hold the pipe).
+pub const STDERR_DRAIN_TIMEOUT: Duration = HELPER_TIMEOUT;
+
+/// Waits until `finished()` or `now()` (a monotonic time since a fixed
+/// start) reaches `limit`, calling `pause` between polls. Returns whether it
+/// finished (a seam so the bounded stderr drain runs under a controlled
+/// clock in the headless tests, PROCESS.md R6).
+pub fn wait_until(
+    finished: &mut dyn FnMut() -> bool,
+    limit: Duration,
+    now: &mut dyn FnMut() -> Duration,
+    pause: &mut dyn FnMut(),
+) -> bool {
+    loop {
+        if finished() {
+            return true;
+        }
+        if now() >= limit {
+            return false;
+        }
+        pause();
+    }
+}
+
+/// Reads `r` line by line into `log` on a thread (each line ends `\n`);
+/// lines starting `pin_app: render on` are also echoed to stderr.
+pub fn capture_lines(
+    r: impl Read + Send + 'static,
+    log: Arc<Mutex<String>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        for line in BufReader::new(r).lines().map_while(Result::ok) {
+            if line.starts_with("pin_app: render on") {
+                eprintln!("windowed: {line}");
+            }
+            let mut l = log
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            l.push_str(&line);
+            l.push('\n');
+        }
+    })
+}
+
+/// The note added to the captured stderr when the drain timed out.
+pub fn drain_timeout_note(limit: Duration) -> String {
+    format!(
+        "windowed: stderr drain timed out after {} s (a process still holds the app's stderr; \
+         the log ends here)\n",
+        limit.as_secs()
+    )
+}
+
+/// Waits at most `limit` for the capture thread `reader` to reach the end
+/// of the stream; on time it is joined (the log is complete), otherwise it
+/// is left detached and [`drain_timeout_note`] is appended to `log`, which
+/// keeps every line captured so far. Returns whether the drain completed.
+pub fn finish_capture(
+    reader: std::thread::JoinHandle<()>,
+    log: &Mutex<String>,
+    limit: Duration,
+    now: &mut dyn FnMut() -> Duration,
+    pause: &mut dyn FnMut(),
+) -> bool {
+    if wait_until(&mut || reader.is_finished(), limit, now, pause) {
+        let _ = reader.join();
+        return true;
+    }
+    log.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push_str(&drain_timeout_note(limit));
+    false
+}
+
+/// The run's preflight: creates `cfg.out_dir`, removes the previous run's
+/// artifacts ([`ARTIFACTS`], `frame_*.png`), then checks the tools (`have`),
+/// the app binary and the grey-box bundle. A failed check writes a fresh
+/// `summary.txt` ([`failure_summary`]), so a stale summary of an earlier run
+/// never survives a run that could not start.
+///
+/// # Errors
+/// The artifact directory cannot be created, or a check failed.
+pub fn preflight(cfg: &DriverConfig, have: &dyn Fn(&str) -> bool) -> Result<(), String> {
+    std::fs::create_dir_all(&cfg.out_dir).map_err(|e| format!("{}: {e}", cfg.out_dir.display()))?;
+    clean_artifacts(&cfg.out_dir);
+    let check = || -> Result<(), String> {
+        for tool in ["Xvfb", "xdotool", "xwd", "convert", "nice"] {
+            if !have(tool) {
+                return Err(format!(
+                    "{tool} not found (apt-get install xvfb xdotool x11-apps imagemagick)"
+                ));
+            }
+        }
+        if !cfg.app.is_file() {
+            return Err(format!("no app binary at {}", cfg.app.display()));
+        }
+        if !cfg.bundle.join("table.toml").is_file() {
+            return Err(format!(
+                "no grey-box bundle at {} (run tables/greybox/build.sh {})",
+                cfg.bundle.display(),
+                cfg.bundle.display()
+            ));
+        }
+        Ok(())
+    };
+    check().inspect_err(|what| {
+        let _ = std::fs::write(cfg.out_dir.join("summary.txt"), failure_summary(what, ""));
+    })
+}
+
 /// Runs the app once (see the module docs).
 ///
 /// # Errors
 /// A missing tool, bundle or binary, no first frame, no window, a failed
 /// key injection, an app that did not exit in time (killed), or too few
-/// screenshots. Every error after the app started has written
-/// `pin_app_stderr.log` and a failure `summary.txt`, and carries the stderr
-/// tail.
+/// screenshots. Every error has written a failure `summary.txt` (the
+/// preflight's after removing the previous run's artifacts); every error
+/// after the app started has also written `pin_app_stderr.log` and carries
+/// the stderr tail.
 pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
-    for tool in ["Xvfb", "xdotool", "xwd", "convert", "nice"] {
-        if !have(tool) {
-            return Err(format!(
-                "{tool} not found (apt-get install xvfb xdotool x11-apps imagemagick)"
-            ));
-        }
-    }
-    if !cfg.app.is_file() {
-        return Err(format!("no app binary at {}", cfg.app.display()));
-    }
-    if !cfg.bundle.join("table.toml").is_file() {
-        return Err(format!(
-            "no grey-box bundle at {} (run tables/greybox/build.sh {})",
-            cfg.bundle.display(),
-            cfg.bundle.display()
-        ));
-    }
-    std::fs::create_dir_all(&cfg.out_dir).map_err(|e| format!("{}: {e}", cfg.out_dir.display()))?;
-    clean_artifacts(&cfg.out_dir);
+    preflight(cfg, &have)?;
     let (display, _xvfb) = match std::env::var("DISPLAY").ok().filter(|d| !d.is_empty()) {
         Some(d) => (d, Reaper(None)),
         None => start_xvfb()?,
@@ -954,21 +1075,7 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
     let stderr_pipe = child.stderr.take().ok_or("no stderr pipe")?;
     let mut app = Reaper(Some(child));
     let log = Arc::new(Mutex::new(String::new()));
-    let reader = {
-        let log = Arc::clone(&log);
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr_pipe).lines().map_while(Result::ok) {
-                if line.starts_with("pin_app: render on") {
-                    eprintln!("windowed: {line}");
-                }
-                let mut l = log
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                l.push_str(&line);
-                l.push('\n');
-            }
-        })
-    };
+    let reader = capture_lines(stderr_pipe, Arc::clone(&log));
     let stderr_now = || {
         log.lock()
             .map(|l| l.clone())
@@ -976,13 +1083,23 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
     };
     let driven = drive(cfg, &display, pid, started, &mut app, &stderr_now);
     // Every path: the app is gone (killed if still running), the stderr
-    // capture is complete, and the log is written fresh.
+    // capture is complete or bounded (a process the app started may hold
+    // the pipe open: after STDERR_DRAIN_TIMEOUT the reader is left
+    // detached and the log keeps what it captured, with a note), and the
+    // log is written fresh.
     if let Some(c) = app.0.as_mut() {
         let _ = c.kill();
         let _ = c.wait();
     }
     app.0 = None;
-    let _ = reader.join();
+    let drain_start = Instant::now();
+    finish_capture(
+        reader,
+        &log,
+        STDERR_DRAIN_TIMEOUT,
+        &mut || drain_start.elapsed(),
+        &mut || std::thread::sleep(Duration::from_millis(5)),
+    );
     let stderr = stderr_now();
     let _ = std::fs::write(cfg.out_dir.join("pin_app_stderr.log"), &stderr);
     let failed = |what: String| -> String {

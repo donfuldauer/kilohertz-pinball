@@ -6,7 +6,13 @@
 #   scripts/windowed/run.sh [<out_dir>]
 #   scripts/windowed/run.sh --print-paths [<out_dir>]
 # --print-paths prints the resolved target, out, bundle and app paths (one
-# `name=path` per line) and exits before building anything.
+# `name=path` per line) and exits before building anything; it creates and
+# deletes nothing. CARGO_BUILD_TARGET is rejected (exit 2): it moves the
+# release app under <target>/<triple>/release, and the app is measured at
+# <target>/release/pin_app.
+# A run first clears the previous run's artifacts from <out_dir>; a setup
+# failure (missing tool, grey-box build, cargo build) leaves a
+# `verdict: FAIL (windowed setup: ...)` summary.txt there, never a stale PASS.
 # A relative CARGO_TARGET_DIR or <out_dir> is taken relative to the
 # repository root, and the absolute CARGO_TARGET_DIR is what Cargo sees.
 # Environment: LP_NUM_THREADS (default 2, the documented cap),
@@ -35,20 +41,38 @@ case $out in
 esac
 bundle=$target/greybox
 app=$target/release/pin_app
+if [ -n "${CARGO_BUILD_TARGET:-}" ]; then
+  echo "run.sh: CARGO_BUILD_TARGET is not supported (the app is measured at $target/release/pin_app); unset it" >&2
+  exit 2
+fi
 if [ "$print_paths" = 1 ]; then
   printf 'target=%s\nout=%s\nbundle=%s\napp=%s\n' "$target" "$out" "$bundle" "$app"
   exit 0
 fi
 export CARGO_TARGET_DIR="$target"
+# Drop the previous run's artifacts (the driver removes the same list) and
+# publish a failure summary if anything below fails before the driver runs.
+mkdir -p "$out"
+rm -f "$out/latency_trace.csv" "$out/pin_app_stderr.log" "$out/summary.txt" "$out"/frame_*.png
+stage="setup"
+setup_failed() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    printf 'verdict: FAIL (windowed setup: %s)\n' "$stage" >"$out/summary.txt" 2>/dev/null || :
+  fi
+}
+trap setup_failed EXIT
 for tool in Xvfb xdotool xwd convert; do
+  stage="$tool not found"
   command -v "$tool" >/dev/null 2>&1 || {
     echo "run.sh: $tool not found (apt-get install xvfb xdotool x11-apps imagemagick)" >&2
     exit 2
   }
 done
+stage="tables/greybox/build.sh failed"
 tables/greybox/build.sh "$bundle"
+stage="cargo build --release -p pin_app failed"
 cargo build --release -p pin_app
-mkdir -p "$out"
 # The driver starts its own Xvfb when DISPLAY is unset.
 unset DISPLAY
 export LP_NUM_THREADS="${LP_NUM_THREADS:-2}"
@@ -58,4 +82,6 @@ export SDL_VIDEODRIVER=x11
 export KP_GREYBOX_BUNDLE="$bundle"
 export KP_WINDOWED_OUT="$out"
 export KP_PIN_APP="$app"
+# From here the driver owns summary.txt.
+trap - EXIT
 exec cargo test --release -p pin_app --test windowed -- --ignored --nocapture

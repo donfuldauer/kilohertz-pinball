@@ -71,8 +71,14 @@
 //!      or a later tick of the same catch-up batch (each was already due
 //!      when the tick before it started), and `sdl_ts_ns` is at or after the
 //!      stall's start and before its end (an event stamped before the start
-//!      reached the ring late and keeps the ordinary bound). It is derived only from the sim thread's own
-//!      scheduling and the timestamp, never from the event's lateness;
+//!      reached the ring late and keeps the ordinary bound). A tick of the
+//!      same batch that is itself late again (more than [`STALL_GAP_NS`]
+//!      after the tick before it, or after newly dropped ticks) extends the
+//!      stall to its own drain and keeps the stall's start, so a delay
+//!      inside the batch never erases the original window; a stall that
+//!      starts outside a batch replaces it. It is derived only from the sim
+//!      thread's own scheduling and the timestamp, never from the event's
+//!      lateness;
 //!    * `move_tick`: for a press of an input bound to flippers
 //!      ([`FlipperBindings`]), the first executed tick from the applying
 //!      tick on at whose end one of those bats is raised by at least
@@ -461,7 +467,12 @@ impl SimTraceWriter {
     /// (the previous tick's drain to this tick's drain). The record is kept
     /// for the later ticks of the same catch-up batch (a tick that was
     /// already due when the previous tick started, `end_ns <=` the previous
-    /// drain) and cleared by the first tick that was not. An event is in the
+    /// drain) and cleared by the first tick that was not. A tick of that
+    /// batch that again starts more than [`STALL_GAP_NS`] late, or after
+    /// newly dropped ticks, extends the record (the original start, its own
+    /// drain as the new end) instead of replacing it, so a press stamped in
+    /// the original stall keeps it however the batch is delayed; a stall
+    /// that starts outside a batch replaces the record. An event is in the
     /// stall when it is stamped at or after the stall's start and before its
     /// end (`delivered`).
     pub fn begin_tick(&mut self, end_ns: u64, before: &FrameStateSnapshot) {
@@ -471,14 +482,24 @@ impl SimTraceWriter {
             end_ns,
             dropped: self.dropped,
         };
+        // Already due when the previous tick started: same catch-up batch.
+        let in_batch = end_ns <= self.prev.drain_ns;
         if drain_ns.saturating_sub(self.prev.drain_ns) > STALL_GAP_NS
             || self.dropped > self.prev.dropped
         {
-            self.stall = Some(Stall {
-                start_drain: self.prev.drain_ns,
-                end_drain: drain_ns,
-            });
-        } else if end_ns > self.prev.drain_ns {
+            self.stall = match self.stall {
+                // A further delay inside the batch extends its stall: a
+                // press stamped in the original window keeps its allowance.
+                Some(s) if in_batch => Some(Stall {
+                    start_drain: s.start_drain,
+                    end_drain: drain_ns,
+                }),
+                _ => Some(Stall {
+                    start_drain: self.prev.drain_ns,
+                    end_drain: drain_ns,
+                }),
+            };
+        } else if !in_batch {
             // Not due when the previous tick started: the batch is over.
             self.stall = None;
         }
@@ -2075,6 +2096,89 @@ mod tests {
         // The applying tick's end and the lateness the verdict sees.
         assert_eq!(t.rows[0].input.apply_tick_end_sdl_ns, 25 * ms);
         assert_eq!(t.rows[1].input.apply_tick_end_sdl_ns, 26 * ms);
+    }
+
+    /// REQ-LAT-003, REQ-LAT-004 (gate 30, I2): a catch-up tick that is
+    /// itself delayed again (the sim thread preempted between two ticks of
+    /// the batch) extends the batch's stall instead of replacing it, so a
+    /// press stamped in the original window and delivered after the delay
+    /// keeps `stall = 1` with the original start; a stall that starts
+    /// outside a batch replaces the record.
+    #[test]
+    fn req_lat_003_stall_window_survives_the_catch_up_batch() {
+        let ms = TICK_NS;
+        let (mut tx, rx) = pin_core::spsc::channel::<InputEvent>(64);
+        let (w, _r) = TripleBuffer::new(FrameStateSnapshot::default());
+        let mut l = SimLoop::new(Seen::default(), rx, w);
+        let (c, sim, _fw) = latency_trace(FlipperBindings::new(), now);
+        l.set_latency_trace(sim);
+        // Ticks 1..=10 on time: tick k drains at k ms.
+        for k in 1..=10u64 {
+            set_now(k * ms);
+            l.run_ticks(1);
+        }
+        // Wake at 30 ms: 12 ticks dropped (tick k now ends at k + 12 ms).
+        // Tick 11 drains at 30 ms (stall 10..30 ms).
+        l.skip_ticks(12);
+        set_now(30 * ms);
+        l.run_ticks(1);
+        // Preempted 3 ms: tick 12 (ends 24 ms, due) drains at 33 ms. A press
+        // stamped at 12 ms reaches the ring only now.
+        tx.push(InputEvent::button(12 * ms, CabinetInput::LeftFlipper, true))
+            .unwrap();
+        set_now(33 * ms);
+        l.run_ticks(1);
+        // Ticks 13..=21 (end 25..33 ms) drain 10 us apart; a press stamped
+        // at 31 ms (inside the extended window), in the ring from tick 13,
+        // is applied in tick 19 (the first ending at or after its stamp).
+        for k in 13..=21u64 {
+            if k == 13 {
+                tx.push(InputEvent::button(
+                    31 * ms,
+                    CabinetInput::RightFlipper,
+                    true,
+                ))
+                .unwrap();
+            }
+            set_now(33 * ms + (k - 12) * 10_000);
+            l.run_ticks(1);
+        }
+        // Tick 22 (ends 34 ms) was not due when tick 21 started (33.09 ms):
+        // the batch is over, but it starts at 37 ms, a new stall outside a
+        // batch, which replaces the record (33.09..37 ms). A press stamped
+        // at 12 ms is not in it; one stamped at 33.5 ms is.
+        tx.push(InputEvent::button(
+            12 * ms,
+            CabinetInput::LeftFlipper,
+            false,
+        ))
+        .unwrap();
+        tx.push(InputEvent::button(
+            33 * ms + 500_000,
+            CabinetInput::RightFlipper,
+            false,
+        ))
+        .unwrap();
+        set_now(37 * ms);
+        l.run_ticks(1);
+        let t = c.collect(0);
+        let r: Vec<(u64, bool, u64, u64)> = t
+            .rows
+            .iter()
+            .map(|r| {
+                let i = &r.input;
+                (i.apply_tick, i.stall, i.prev_drain_sdl_ns, i.drain_sdl_ns)
+            })
+            .collect();
+        assert_eq!(
+            r,
+            vec![
+                (12, true, 10 * ms, 33 * ms),
+                (19, true, 10 * ms, 33 * ms),
+                (22, false, 33 * ms + 90_000, 37 * ms),
+                (22, true, 33 * ms + 90_000, 37 * ms),
+            ]
+        );
     }
 
     /// Drives a writer and a frame writer: a press of the left flipper

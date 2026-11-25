@@ -749,7 +749,8 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
     // c. Real time.
     s.sim_ticks = shutdown.ticks;
     s.dropped_ticks = shutdown.dropped;
-    let total = shutdown.ticks + shutdown.dropped;
+    // u128: counters parsed from untrusted output never overflow or wrap.
+    let total = u128::from(shutdown.ticks) + u128::from(shutdown.dropped);
     s.dropped_ratio = if total == 0 {
         0.0
     } else {
@@ -760,7 +761,7 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
     } else {
         shutdown.ticks as f64 / total as f64
     };
-    if shutdown.dropped * 1000 > total {
+    if u128::from(shutdown.dropped) * 1000 > total {
         fail(
             &mut v.c,
             format!(
@@ -771,7 +772,7 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
             ),
         );
     }
-    if shutdown.ticks.abs_diff(p.expected_ticks) * 100 > p.expected_ticks {
+    if u128::from(shutdown.ticks.abs_diff(p.expected_ticks)) * 100 > u128::from(p.expected_ticks) {
         fail(
             &mut v.c,
             format!(
@@ -825,6 +826,27 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
         s.presses, p.injected_presses, s.frames, trace.overflows, shutdown.input_dropped
     );
     v
+}
+
+/// The overall summary text: `report` unchanged when the app exited
+/// successfully (`exit_failure` is `None`); otherwise the report's own
+/// verdict lines are kept as `measurements verdict: …` and the overall line
+/// is `verdict: FAIL (app exit status <status>)`, so the artifact and the
+/// job agree.
+pub fn overall_report(report: &str, exit_failure: Option<&str>) -> String {
+    let Some(status) = exit_failure else {
+        return report.to_owned();
+    };
+    let mut out = String::with_capacity(report.len() + 64);
+    for line in report.lines() {
+        if line.starts_with("verdict: ") {
+            out.push_str("measurements ");
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    let _ = writeln!(out, "verdict: FAIL (app exit status {status})");
+    out
 }
 
 /// Parses both inputs and evaluates them.

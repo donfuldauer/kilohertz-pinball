@@ -809,6 +809,94 @@ fn req_lat_002_check_c_dropped_ratio_and_run_length() {
     assert!(!c(0, 0).passed());
 }
 
+/// REQ-LAT-002 check c (gate 30, M14): the arithmetic cannot overflow.
+/// Counters from a malformed shutdown line (`2^61` dropped) or `u64::MAX`
+/// for both are rejected with the check's message, never a panic or a
+/// wrap; the 0.1 % boundary (`dropped * 1000 <= ticks + dropped`) is
+/// unchanged for normal values.
+#[test]
+fn req_lat_002_check_c_counters_never_overflow() {
+    let t = joined(vec![press(0, T0 + 5_000_000_000, 500_000)], frames(600));
+    let c = |ticks, dropped, expected| {
+        evaluate(
+            &t,
+            &Shutdown {
+                ticks,
+                dropped,
+                frames: 600,
+                input_dropped: 0,
+            },
+            &Params {
+                expected_ticks: expected,
+                ..params()
+            },
+        )
+        .c
+    };
+    let dropped_msg = |c: &verdict::Check| c.failures.iter().any(|f| f.contains("more than 0.1 %"));
+    let line = "pin_app: 60000 sim ticks (2305843009213693952 dropped), 600 frames, input dropped \
+                0, 0 haptic events\n";
+    let sd = parse_shutdown(line).unwrap();
+    assert_eq!(sd.dropped, 2_305_843_009_213_693_952);
+    let v = evaluate(&t, &sd, &params());
+    assert!(!v.c.passed() && dropped_msg(&v.c), "{:?}", v.c);
+    // The text path (an app-written empty trace) rejects it the same way.
+    let (tc, ..) = latency_trace(bindings(), now);
+    let v = verdict::evaluate_text(&tc.collect(T0).to_csv(), line, &params()).unwrap();
+    assert!(!v.c.passed() && dropped_msg(&v.c), "{:?}", v.c);
+    assert!(v.report().contains("check c real time (REQ-LAT-002): FAIL"));
+    let m = c(u64::MAX, u64::MAX, u64::MAX);
+    assert!(!m.passed() && dropped_msg(&m), "{m:?}");
+    let m = c(u64::MAX, 0, 1);
+    assert!(!m.passed() && m.failures.iter().any(|f| f.contains("within 1 %")));
+    assert!(c(u64::MAX, 0, u64::MAX).passed());
+    // 1 in 1000 passes, 1 over it fails (dropped rule alone).
+    assert!(!dropped_msg(&c(999, 1, 999)));
+    assert!(dropped_msg(&c(998, 1, 998)));
+    assert!(!dropped_msg(&c(59_940, 60, 59_940)));
+    assert!(dropped_msg(&c(59_939, 60, 59_939)));
+    // 1 % of the expected ticks: exact boundary.
+    assert!(c(99, 0, 100).passed());
+    assert!(!c(98, 0, 100).passed());
+    assert!(c(101, 0, 100).passed());
+    assert!(!c(102, 0, 100).passed());
+}
+
+/// The overall summary (gate 30, M5): a failed app exit makes the overall
+/// line `verdict: FAIL (app exit status …)` whatever the measurements say,
+/// and keeps the measurement report; a successful exit leaves the report
+/// unchanged.
+#[test]
+fn req_lat_002_summary_carries_the_app_exit_status() {
+    let pass = "check a: PASS\n| m | v |\nverdict: PASS\n";
+    let fail = "check a: FAIL\nverdict: FAIL (checks a)\n";
+    fn overall(s: &str) -> Vec<&str> {
+        s.lines().filter(|l| l.starts_with("verdict: ")).collect()
+    }
+    assert_eq!(verdict::overall_report(pass, None), pass);
+    assert_eq!(verdict::overall_report(fail, None), fail);
+    let s = verdict::overall_report(pass, Some("exit status: 1"));
+    assert_eq!(
+        overall(&s),
+        ["verdict: FAIL (app exit status exit status: 1)"]
+    );
+    assert!(
+        s.contains("check a: PASS") && s.contains("| m | v |"),
+        "{s}"
+    );
+    assert!(s.contains("measurements verdict: PASS"), "{s}");
+    assert!(
+        s.ends_with("verdict: FAIL (app exit status exit status: 1)\n"),
+        "{s}"
+    );
+    let s = verdict::overall_report(fail, Some("signal: 9 (SIGKILL)"));
+    assert_eq!(
+        overall(&s),
+        ["verdict: FAIL (app exit status signal: 9 (SIGKILL))"]
+    );
+    assert!(s.contains("measurements verdict: FAIL (checks a)"), "{s}");
+}
+
 /// Check d: overflows, too few presses and injected-vs-traced mismatches
 /// fail.
 #[test]
@@ -1507,7 +1595,7 @@ fn req_lat_001_harness_failed_keydown_releases_every_key() {
     let mut ups = Vec::new();
     let failed = release_held(
         &mut held,
-        |k| {
+        |k, _| {
             ups.push(k);
             Ok(())
         },
@@ -1535,7 +1623,7 @@ fn req_lat_001_harness_failed_keyup_does_not_stop_the_rest() {
     // A budget already spent: one round, no retry.
     let failed = release_held(
         &mut held,
-        |k| {
+        |k, _| {
             ups.push(k);
             if k == Key::Left {
                 Err("no reply".to_string())
@@ -1571,7 +1659,7 @@ fn req_lat_001_harness_failed_release_is_retried() {
     let mut left_tries = 0;
     let failed = release_held(
         &mut held,
-        |k| {
+        |k, _| {
             ups.push(k);
             if k == Key::Left {
                 left_tries += 1;
@@ -1591,10 +1679,11 @@ fn req_lat_001_harness_failed_release_is_retried() {
     assert_eq!(clock.get(), 50, "one injected pause");
 }
 
-/// REQ-LAT-001 harness (C7): a key whose release always fails is retried
-/// until the injected clock reaches the budget (never by waiting: the
-/// pause only advances the fake clock), then returned with its flag still
-/// set; the other key is released; the original injection error is kept.
+/// REQ-LAT-001 harness (C7, gate 30 M7): a key whose release always fails
+/// is retried while the injected clock is below the budget (never by
+/// waiting: the pause only advances the fake clock; no retry once the
+/// budget is reached), then returned with its flag still set; the other key
+/// is released; the original injection error is kept.
 #[test]
 fn req_lat_001_harness_release_retry_budget_is_bounded() {
     use driver::{Key, finish_injection, release_held};
@@ -1603,7 +1692,7 @@ fn req_lat_001_harness_release_retry_budget_is_bounded() {
     let (mut lefts, mut rights) = (0u32, 0u32);
     let failed = release_held(
         &mut held,
-        |k| {
+        |k, _| {
             if k == Key::Left {
                 lefts += 1;
                 Err("stuck".to_string())
@@ -1619,8 +1708,8 @@ fn req_lat_001_harness_release_retry_budget_is_bounded() {
     assert_eq!(failed, [(Key::Left, "stuck".to_string())]);
     assert_eq!(held, [true, false], "still pending");
     assert_eq!(rights, 1);
-    // Rounds at 0, 50, 100, 150 and 200 ms (the budget): 5 tries.
-    assert_eq!(lefts, 5);
+    // Rounds at 0, 50, 100 and 150 ms; none at 200 ms (the budget).
+    assert_eq!(lefts, 4);
     assert_eq!(clock.get(), 200);
     assert_eq!(
         finish_injection(Err("original".into()), &failed).unwrap_err(),
@@ -1633,7 +1722,7 @@ fn req_lat_001_harness_release_retry_budget_is_bounded() {
     let mut tries = 0;
     let failed = release_held(
         &mut held,
-        |_| {
+        |_, _| {
             tries += 1;
             Err("stuck".to_string())
         },
@@ -1644,6 +1733,81 @@ fn req_lat_001_harness_release_retry_budget_is_bounded() {
     assert_eq!(failed.len(), 1);
     assert_eq!(tries, driver::KEY_RELEASE_MAX_ROUNDS);
     assert_eq!(held, [true, false]);
+}
+
+/// REQ-LAT-001 harness (gate 30, M7): the cleanup key-ups share one
+/// deadline. Each attempt is bounded by the budget left (capped at the
+/// helper timeout, floored at `KEY_RELEASE_MIN_TIMEOUT`): a first key-up
+/// that hangs for its whole bound spends the budget, the second key still
+/// gets its first attempt with the floor, and nothing is retried.
+#[test]
+fn req_lat_001_harness_release_shares_one_deadline() {
+    use driver::{HELPER_TIMEOUT, KEY_RELEASE_BUDGET, KEY_RELEASE_MIN_TIMEOUT, Key, release_held};
+    let clock = std::cell::Cell::new(Duration::ZERO);
+    let mut held = [true, true];
+    let mut sent = Vec::new();
+    let failed = release_held(
+        &mut held,
+        |k, t| {
+            sent.push((k, t));
+            // A key-up that hangs until its bound kills it.
+            clock.set(clock.get() + t);
+            Err("timed out".to_string())
+        },
+        KEY_RELEASE_BUDGET,
+        &mut || clock.get(),
+        &mut || panic!("budget spent: no retry"),
+    );
+    assert_eq!(
+        sent,
+        [
+            (Key::Left, KEY_RELEASE_BUDGET),
+            (Key::Right, KEY_RELEASE_MIN_TIMEOUT)
+        ]
+    );
+    assert_eq!(failed.len(), 2);
+    assert_eq!(held, [true, true]);
+    assert_eq!(clock.get(), KEY_RELEASE_BUDGET + KEY_RELEASE_MIN_TIMEOUT);
+    // A partly spent budget bounds the next attempt by what is left; a
+    // budget above the helper timeout is capped by it.
+    assert_eq!(
+        driver::key_up_timeout(KEY_RELEASE_BUDGET, Duration::from_millis(150)),
+        Duration::from_millis(250)
+    );
+    assert_eq!(
+        driver::key_up_timeout(KEY_RELEASE_BUDGET, Duration::from_millis(390)),
+        KEY_RELEASE_MIN_TIMEOUT
+    );
+    assert_eq!(
+        driver::key_up_timeout(Duration::from_secs(60), Duration::ZERO),
+        HELPER_TIMEOUT
+    );
+    // A retry round: one 120 ms attempt each, then one pause of 50 ms; the
+    // second round's bounds are what is left of the shared budget.
+    let clock = std::cell::Cell::new(Duration::ZERO);
+    let mut held = [true, true];
+    let mut sent = Vec::new();
+    release_held(
+        &mut held,
+        |_, t| {
+            sent.push(t);
+            clock.set(clock.get() + Duration::from_millis(120));
+            if sent.len() <= 2 {
+                Err("busy".to_string())
+            } else {
+                Ok(())
+            }
+        },
+        KEY_RELEASE_BUDGET,
+        &mut || clock.get(),
+        &mut || clock.set(clock.get() + Duration::from_millis(50)),
+    );
+    assert_eq!(
+        sent,
+        [400, 280, 110, 50].map(Duration::from_millis),
+        "bounds from one shared deadline"
+    );
+    assert_eq!(held, [false, false]);
 }
 
 /// REQ-LAT-001 harness: a key-up that fails keeps the key marked held (so
@@ -1719,6 +1883,160 @@ fn failure_summary_and_missing_captures() {
     assert_eq!(driver::FORCE_FALLBACK_ENV, "PIN_FORCE_FALLBACK_ADAPTER");
 }
 
+/// A reader that yields `first`, then reports that it blocked and blocks
+/// until `hold` is dropped (a child that keeps the app's stderr open).
+struct StuckReader {
+    first: Option<&'static [u8]>,
+    reached: std::sync::mpsc::Sender<()>,
+    hold: std::sync::mpsc::Receiver<()>,
+}
+
+impl std::io::Read for StuckReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(b) = self.first.take() {
+            buf[..b.len()].copy_from_slice(b);
+            return Ok(b.len());
+        }
+        let _ = self.reached.send(());
+        let _ = self.hold.recv();
+        Ok(0)
+    }
+}
+
+/// REQ-LAT-003 harness (gate 30, I3): the stderr drain after the app was
+/// reaped is bounded. A pipe that never reaches its end (a process the app
+/// started holds it) returns at the bound on the injected clock with every
+/// line captured so far and a timeout note; a pipe that ends returns the
+/// complete text without a note. No sleep and no wall-clock assertion
+/// (R6): the clock is a fake and only the pause advances it.
+#[test]
+fn req_lat_003_harness_stderr_drain_is_bounded() {
+    use driver::{STDERR_DRAIN_TIMEOUT, capture_lines, drain_timeout_note, finish_capture};
+    use std::sync::{Arc, Mutex, mpsc};
+    let (reached_tx, reached_rx) = mpsc::channel();
+    let (hold_tx, hold_rx) = mpsc::channel::<()>();
+    let log = Arc::new(Mutex::new(String::new()));
+    let reader = capture_lines(
+        StuckReader {
+            first: Some(b"line 1\nline 2\n"),
+            reached: reached_tx,
+            hold: hold_rx,
+        },
+        Arc::clone(&log),
+    );
+    // Both lines are in the log once the reader blocks (a failsafe bound,
+    // not a measurement).
+    reached_rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the reader reached its blocking read");
+    let clock = Cell::new(Duration::ZERO);
+    let done = finish_capture(
+        reader,
+        &log,
+        STDERR_DRAIN_TIMEOUT,
+        &mut || clock.get(),
+        &mut || clock.set(clock.get() + Duration::from_millis(5)),
+    );
+    assert!(!done, "a pipe held open is not waited for");
+    assert_eq!(clock.get(), STDERR_DRAIN_TIMEOUT);
+    let text = log.lock().unwrap().clone();
+    assert_eq!(
+        text,
+        format!(
+            "line 1\nline 2\n{}",
+            drain_timeout_note(STDERR_DRAIN_TIMEOUT)
+        )
+    );
+    assert!(text.contains("stderr drain timed out after 5 s"), "{text}");
+    // Let the detached reader end.
+    drop(hold_tx);
+
+    // A pipe that ends: the complete log, joined, no note. The clock never
+    // advances, so only the reader's end returns.
+    let log = Arc::new(Mutex::new(String::new()));
+    let reader = capture_lines(
+        std::io::Cursor::new(b"a\npin_app: render on x\nlast".to_vec()),
+        Arc::clone(&log),
+    );
+    let done = finish_capture(
+        reader,
+        &log,
+        STDERR_DRAIN_TIMEOUT,
+        &mut || Duration::ZERO,
+        &mut std::thread::yield_now,
+    );
+    assert!(done);
+    assert_eq!(*log.lock().unwrap(), "a\npin_app: render on x\nlast\n");
+}
+
+/// The windowed driver's artifact directory for `tag` (emptied first).
+fn driver_dir(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("kp_windowed_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
+/// The windowed driver (gate 30, M6): the preflight creates the artifact
+/// directory and removes the previous run's trace, stderr log, summary and
+/// screenshots BEFORE its tool, binary and bundle checks, and a failed
+/// check writes a fresh `summary.txt` (`verdict: FAIL (windowed driver:
+/// …)`), so a stale passing summary never survives a run that could not
+/// start.
+#[test]
+fn req_lat_002_harness_preflight_replaces_stale_artifacts() {
+    let dir = driver_dir("preflight");
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    for f in [
+        "summary.txt",
+        "latency_trace.csv",
+        "pin_app_stderr.log",
+        "frame_1_left_held.png",
+    ] {
+        std::fs::write(out.join(f), "verdict: PASS\n").unwrap();
+    }
+    std::fs::write(out.join("keep.txt"), "other").unwrap();
+    let app = dir.join("pin_app");
+    std::fs::write(&app, "").unwrap();
+    let cfg = driver::DriverConfig {
+        app,
+        bundle: dir.join("no_bundle"),
+        out_dir: out.clone(),
+        run_ms: 60_000,
+        lp_num_threads: "2".into(),
+        seed: 1,
+        frame_interval_ms: 125,
+    };
+    let e = driver::preflight(&cfg, &|_| true).unwrap_err();
+    assert!(e.starts_with("no grey-box bundle at "), "{e}");
+    let summary = std::fs::read_to_string(out.join("summary.txt")).unwrap();
+    assert!(
+        summary.starts_with(&format!("verdict: FAIL (windowed driver: {e})")),
+        "{summary}"
+    );
+    assert!(!summary.contains("verdict: PASS"), "{summary}");
+    let mut left: Vec<String> = std::fs::read_dir(&out)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    assert_eq!(left, ["keep.txt", "summary.txt"]);
+    // A missing tool, into an artifact directory that does not exist yet.
+    let fresh = dir.join("fresh");
+    let cfg = driver::DriverConfig {
+        out_dir: fresh.clone(),
+        ..cfg
+    };
+    let e = driver::preflight(&cfg, &|t| t != "xdotool").unwrap_err();
+    assert!(e.starts_with("xdotool not found"), "{e}");
+    let summary = std::fs::read_to_string(fresh.join("summary.txt")).unwrap();
+    assert!(
+        summary.starts_with("verdict: FAIL (windowed driver: xdotool not found"),
+        "{summary}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // The 60 s windowed run.
 
@@ -1745,6 +2063,10 @@ fn windowed_latency_60s() {
         Ok(v) => v.report(),
         Err(e) => format!("verdict: FAIL (unreadable output: {e})\n"),
     };
+    // A failed app exit is the overall verdict whatever the measurements
+    // say, so the artifact and the job agree (gate 30, M5).
+    let exit_failure = (!out.exit.success()).then(|| out.exit.to_string());
+    let report = verdict::overall_report(&report, exit_failure.as_deref());
     let summary = format!(
         "LP_NUM_THREADS={} seed={} run_ms={} frame_interval_ms={} injected={} app exit {}\n\
          screenshots: {:?}\n{report}",

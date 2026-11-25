@@ -48,7 +48,10 @@ only appends to them) and confirm each deferred finding has its DECISIONS.md ent
    one passing test's name or doc comment, or in the R12 evidence of check 9. For a check across a
    whole tracking issue run
    `python3 -I scripts/req_coverage.py --milestone <tracking issue number> --tests crates tests scripts/tests`.
-   Report missing IDs.
+   Report missing IDs. A claimed ID that check 1 recorded as `untestable here` (it is in
+   `docs/HUMAN_ACCEPTANCE.md` or has a `[P8 hardware]` line) is reported as `untestable here` and
+   does not count as missing; every other claimed ID still needs a passing test name or doc
+   comment or R12 evidence.
 3. **Formatting and lints.** `cargo fmt --all --check`; `cargo clippy --all-targets -- -D warnings`
    on every touched crate, and with `--features gpu-tests` for render crates; the
    `tests/spec_ci` and `tables/*/rules-wasm` manifests when touched.
@@ -105,7 +108,7 @@ sources and rebuild before you call it a defect.
 ```
 status: pass | fail
 requirements: <n met / n total>; <each not-met item with file:line and the failing command>
-req ids: <claimed SPEC section / REQ ID → covered | missing>
+req ids: <claimed SPEC section / REQ ID → covered | untestable here | missing>
 fmt/clippy: <result per crate>
 tests: <suite → run/passed/failed/ignored>
 coverage: <crate/module → %; floor>

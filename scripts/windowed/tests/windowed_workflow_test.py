@@ -13,6 +13,7 @@ depend on it. RunShPathsTest runs scripts/windowed/run.sh --print-paths
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -73,6 +74,7 @@ class WindowedWorkflowTest(unittest.TestCase):
                 "crates/pin_render/**",
                 "crates/pin_input/**",
                 "tables/**",
+                "scripts/windowed/**",
                 ".github/workflows/windowed.yml",
             ],
         )
@@ -181,6 +183,87 @@ class RunShPathsTest(unittest.TestCase):
         export = text.index('export CARGO_TARGET_DIR="$target"')
         self.assertLess(export, text.index("cargo build --release -p pin_app"))
         self.assertLess(text.index("*) target=$root/$target ;;"), export)
+
+
+class RunShSetupTest(unittest.TestCase):
+    """CARGO_BUILD_TARGET is rejected and a failed setup never leaves the
+    previous run's artifacts (gate review of #163, findings M11 and M12)."""
+
+    def run_sh(self, env, *args, cwd=None):
+        return subprocess.run(
+            ["sh", str(RUN_SH), *args],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_build_target_is_rejected_with_and_without_print_paths(self):
+        env = dict(os.environ, CARGO_BUILD_TARGET="x86_64-unknown-linux-gnu")
+        with tempfile.TemporaryDirectory() as out:
+            for args in (["--print-paths", out], [out]):
+                r = self.run_sh(env, *args)
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn(
+                    "run.sh: CARGO_BUILD_TARGET is not supported (the app is measured at ",
+                    r.stderr,
+                )
+                self.assertIn("/release/pin_app); unset it", r.stderr)
+                self.assertEqual(r.stdout, "")
+            self.assertEqual(os.listdir(out), [], "rejection touches nothing")
+
+    def test_print_paths_without_build_target_is_unchanged_and_read_only(self):
+        env = {k: v for k, v in os.environ.items() if k != "CARGO_BUILD_TARGET"}
+        env["CARGO_TARGET_DIR"] = "/abs/t"
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp) / "new_out"
+            stale = pathlib.Path(tmp) / "keep"
+            stale.mkdir()
+            (stale / "summary.txt").write_text("verdict: PASS\n")
+            r = self.run_sh(env, "--print-paths", str(stale))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(
+                r.stdout,
+                f"target=/abs/t\nout={stale}\nbundle=/abs/t/greybox\napp=/abs/t/release/pin_app\n",
+            )
+            self.assertEqual((stale / "summary.txt").read_text(), "verdict: PASS\n")
+            self.run_sh(env, "--print-paths", str(out))
+            self.assertFalse(out.exists(), "--print-paths creates nothing")
+
+    def test_failed_setup_clears_stale_artifacts_and_publishes_a_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = pathlib.Path(tmp) / "bin"
+            bindir.mkdir()
+            for tool in ["sh", "dirname", "cat", "rm", "mkdir", "printf", "env"]:
+                found = shutil.which(tool, path="/usr/bin:/bin")
+                self.assertIsNotNone(found, tool)
+                (bindir / tool).symlink_to(found)
+            # Present tools that precede xdotool in the check: stubs.
+            for tool in ["Xvfb"]:
+                stub = bindir / tool
+                stub.write_text("#!/bin/sh\nexit 0\n")
+                stub.chmod(0o755)
+            out = pathlib.Path(tmp) / "out"
+            out.mkdir()
+            (out / "summary.txt").write_text("verdict: PASS\n")
+            (out / "latency_trace.csv").write_text("stale\n")
+            (out / "pin_app_stderr.log").write_text("stale\n")
+            (out / "frame_0.png").write_text("stale\n")
+            (out / "unrelated.txt").write_text("keep\n")
+            env = {"PATH": str(bindir), "CARGO_TARGET_DIR": str(pathlib.Path(tmp) / "t")}
+            r = self.run_sh(env, str(out))
+            self.assertNotEqual(r.returncode, 0)
+            self.assertFalse((out / "latency_trace.csv").exists())
+            self.assertFalse((out / "pin_app_stderr.log").exists())
+            self.assertFalse((out / "frame_0.png").exists())
+            self.assertTrue((out / "unrelated.txt").exists())
+            summary = (out / "summary.txt").read_text()
+            self.assertTrue(
+                summary.startswith("verdict: FAIL (windowed setup:"), summary
+            )
+            self.assertIn("xdotool", summary)
+            self.assertNotIn("PASS", summary)
 
 
 if __name__ == "__main__":

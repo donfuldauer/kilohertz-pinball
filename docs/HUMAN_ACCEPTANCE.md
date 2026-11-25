@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 512
-- Run-log rows: 554
+- Decision entries: 515
+- Run-log rows: 558
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -557,6 +557,9 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #163 KP-069: aarch64 path filter as a fourth `changes` output (docs/DECISIONS.md)
 - #163 KP-069: No separate Independent Tester (docs/DECISIONS.md)
 - #163 KP-069: First gate-review base is the PR #154 merge `5714c49` (docs/DECISIONS.md)
+- #163 gate review: windowed workflow filter, run.sh setup artifacts, spec_ci coverage (docs/DECISIONS.md)
+- #163 gate review: gate detection ordering, gate merge conditions and split reviews (docs/DECISIONS.md)
+- #163 gate review: trace stall window, trace permissions and harness hygiene (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

@@ -42,11 +42,12 @@ threads:
      If the gate review PR is not open yet, open it as `work-issue` §6 describes.
    - **Routine:** anything else. No CodeRabbit review is required or requested; findings are
      handled only if `coderabbitai` posted a review anyway.
-2. **All review threads and comments (paginated via GraphQL so no thread or comment is missed; skip
-   on a routine PR with no CodeRabbit review; on a gate, read the review PR `<R>`):**
+2. **All review threads and comments of `<R>` (paginated via GraphQL so no thread or comment is
+   missed; skip on a routine PR with no CodeRabbit review; on a gate, `<R>` is the review PR, and
+   each review PR of the gate is read in turn; on a routine PR, `<R>` is `<P>`):**
    ```sh
    gh api graphql \
-     -F owner=donfuldauer -F name=kilohertz-pinball -F pr=<P> -F after=null \
+     -F owner=donfuldauer -F name=kilohertz-pinball -F pr=<R> -F after=null \
      -f query='
        query($owner: String!, $name: String!, $pr: Int!, $after: String) {
          repository(owner: $owner, name: $name) {
@@ -85,8 +86,10 @@ threads:
        }'
    ```
    Repeat with `-F commentAfter="<endCursor>"` while `comments.pageInfo.hasNextPage` is `true`.
-3. Also inspect `reviews[].body` for additional / nitpick / outside-diff comments that do not have
-   an inline thread, and `comments` for CodeRabbit's summary and pre-merge check warnings.
+3. Also inspect `reviews[].body` of `<R>` for additional / nitpick / outside-diff comments that do
+   not have an inline thread, and its `comments` for CodeRabbit's summary and pre-merge check
+   warnings (on a gate, `gh pr view <R> --json reviews,comments` for each review PR; on a routine
+   PR, step 1's output).
 
 ## 2. Check completion
 
@@ -103,7 +106,8 @@ You are **done** when all applicable conditions hold on the current `headRefOid`
      `conclusion == "SUCCESS"`;
    - for `StatusContext` entries, `state == "SUCCESS"`.
 2. **CodeRabbit approved on the current head (gates only, per §1):** on every gate review PR,
-   `coderabbitai` has an effective `APPROVED` review covering `headRefOid` that has not been superseded by a later
+   `coderabbitai` has an effective `APPROVED` review covering that PR's current head (`headRefOid`;
+   for an area PR of P6 step 3, its own head, built from `headRefOid`) that has not been superseded by a later
    `CHANGES_REQUESTED` or `DISMISSED` review (a subsequent `COMMENTED` review does not retract an
    existing approval). On a routine PR this item is satisfied automatically.
 3. **Every finding accounted for and every thread resolved (when review is required or any review

@@ -58,7 +58,9 @@ Run the `work-issue` skill for it, from §1 (dependency check and claim) to §7 
 unblock). Each issue works in its own git worktree (`../kilohertz-issue-<N>`), so parallel
 issues never share a working tree. Keep going with other ready issues while a PR waits for CI
 or a gate review. Run at most one gate review at a time (PROCESS.md P6): a second gate issue
-waits, with its PR open, until the first gate closes out.
+waits, with its PR open, until the first gate closes out. Within one phase, a ready PR waits while
+a lower-numbered issue of the phase has an open PR, and the gate test is re-run immediately before
+each merge (PROCESS.md P6 "Gate issue"), so the phase's last issue always gets its gate review.
 
 ## 3. Discovered work
 

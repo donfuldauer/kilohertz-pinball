@@ -34,5 +34,12 @@ if grep -qiE "^co-authored-by:.*<${coauthor_email_re}>" "${msg_file}"; then
   exit 0
 fi
 
+# Leave an effectively empty message alone so Git still aborts with "empty commit message":
+# Git runs this hook before its own empty-message check, and a trailer would count as content.
+# `git stripspace --strip-comments` applies Git's own rule, including core.commentChar.
+if [ -z "$(git stripspace --strip-comments < "${msg_file}" | tr -d '[:space:]')" ]; then
+  exit 0
+fi
+
 git interpret-trailers --in-place --if-exists addIfDifferent \
   --trailer "Co-authored-by: ${coauthor}" "${msg_file}"

@@ -8563,3 +8563,104 @@ changed.
 
 **Alternatives:** Base on `main` before #158 (would skip the M1 units merged since #154 from any
 gate review); stop and ask (R8 forbids waiting).
+
+## #163 gate review — windowed workflow filter, run.sh setup artifacts, spec_ci coverage
+
+**Decision:** (1) `windowed.yml` `pull_request.paths` gains `scripts/windowed/**`; the push trigger
+stays unfiltered. (2) `scripts/windowed/run.sh` rejects a non-empty `CARGO_BUILD_TARGET` with exit
+status 2, also under `--print-paths`, instead of resolving the executable. (3) After
+`--print-paths` has exited, `run.sh` creates the output directory and removes the previous run's
+`latency_trace.csv`, `pin_app_stderr.log`, `summary.txt` and `frame_*.png`; a later setup failure
+(tool check, grey-box build, `cargo build`) writes `verdict: FAIL (windowed setup: <what>)` to
+`summary.txt` through an `EXIT` trap that is cleared just before the final `exec`. (4) The
+workflow structure is asserted in the required Rust suite `tests/spec_ci/tests/spec_windowed_yml.rs`;
+the Python suite keeps its checks.
+
+**Rationale:** A harness script change must run the harness it changes. Rejecting
+`CARGO_BUILD_TARGET` keeps `--print-paths` and the measured binary identical with a small change;
+the CI workflow never sets it. Clearing before preflight means a failed retry cannot present the
+previous run's passing summary. The Python suite is not run in CI, so only a `tests/spec_ci` test
+makes a regression in triggers, concurrency, permissions, toolchain pin, upload or `pr-checks`
+independence fail a required check (DEVELOPMENT.md: `tests/spec_ci` asserts the workflow
+structure).
+
+**Alternatives:** Resolve the executable under `<target>/<triple>/release` (rejected: needs
+Cargo metadata or triple handling in sh, and the driver defaults already cover the unset case);
+drop `KP_PIN_APP` when the triple is set (rejected: `--print-paths` would no longer report the
+measured app); move the Python checks into Rust and delete them (rejected: no assertion is removed
+without an equal one, and the Python suite also runs `run.sh` itself).
+
+## #163 gate review — gate detection ordering, gate merge conditions and split reviews
+
+**Decision:** (1) Gate detection is made race-free by ordering, not by a lock: the gate test runs
+again immediately before every merge call, and a ready PR waits while another open `work-unit`
+issue of the same phase (or tracking issue) has an open non-draft PR with a lower `KP-NNN`
+number, so the higher-numbered issue always tests last and becomes the gate issue. A backstop
+after every routine merge re-reads the phase's open issues; if none is left, the missed gate's
+review opens at once on `review/<gate>-missed` (at the merge commit) against
+`review-base/<gate>`, and no phase-gate row is recorded until it is approved. (2) The gate merge
+conditions (PROCESS.md P6 "Gate reviews" step 6) are split: pre-merge checks on the candidate
+head (routine conditions, CI green, CodeRabbit approval on every review PR's current head, every
+thread dispositioned, the phase's automated gates and a milestone's exit criteria), and the P5
+phase gate on `main` as the post-merge confirmation recorded in `docs/RUN_LOG.md`; a red
+post-merge gate becomes new issues and never reverts the merge by itself. (3) Area review PRs
+are rebuilt from the current gate head after each fix push, record the gate-head SHA they were
+built from, and are approved on their own heads; the superseded oversized review PR is closed
+without merging and excluded from the approval requirement.
+
+**Rationale:** CodeRabbit findings on gate review PR #197 showed that two sessions could each
+merge one of a phase's last two issues as routine, that step 6 required a P5 phase gate on `main`
+that the unmerged last issue cannot yet satisfy, and that area PRs cannot share the gate head
+commit. The ordering rule uses only data the sessions already read (open issues, open PRs, plan
+IDs), needs no new label or tool, and leaves only a narrow window (a lower-numbered PR opening
+between another session's check and its merge), which the backstop closes without blocking any
+merge.
+
+**Alternatives:** a lock label or claim comment on the tracking issue held from detection to
+merge (rejected: a new label, and a crashed session would leave a stale lock a person must
+clear); blocking routine merges in a phase until all its PRs are ready (rejected: stalls parallel
+work); keeping the shared-head wording for area PRs (rejected: unsatisfiable by construction).
+
+## #163 gate review — trace stall window, trace permissions and harness hygiene
+
+**Decision:** (1) Stall window (finding I2): while the sim thread runs ticks of one catch-up
+batch (each already due when the previous tick started, `end_ns <= prev.drain_ns`) and a stall
+record exists, a batch tick that again starts more than `STALL_GAP_NS` late or after newly
+dropped ticks extends the record (original `start_drain`, its own drain as the new
+`end_drain`) instead of replacing it; a stall that starts outside a batch replaces the record,
+and the first tick that was not due clears it, as before. A press stamped in the window and
+delivered by any tick of the batch gets `stall = 1` with the original start and the extended end.
+The state stays in `SimTraceWriter`; nothing is carried from the scheduler. (2) Trace
+permissions (M2, CWE-732): the destination's `0o777` bits are copied to the temp file only when
+the temp file's owner and group (`fstat`) equal the destination's; otherwise the group bits are
+cleared and the owner and other bits kept; a new destination stays `0600`; special bits are never
+copied (`trace_mode`). (3) Temp name (M4): `.kp-trace.<pid>.<n>.tmp` in the destination's
+directory, still `create_new` with the same retry count, so a destination name at the file-name
+limit works. (4) App exit in the summary (M5): a failed app exit makes the overall
+`summary.txt` line `verdict: FAIL (app exit status <status>)`, appended after the measurement
+report, whose own verdict line is kept as `measurements verdict: ...`; a successful exit leaves
+the report unchanged.
+
+**Rationale:** (1) The writer already sees every tick's drain and end, so the batch rule it uses
+to keep the record also decides when a later delay belongs to the same stall; a press stamped in
+the original window was not applicable before the batch's catch-up, so its allowance must reach
+the tick that applied it (REQ-LAT-004: the stall is added to the bound until the catch-up ends).
+Extending (rather than keeping the first window unchanged) also covers a press stamped during the
+second delay; it never widens the bound for a press after the batch. Carrying the window from the
+scheduler would touch `SimLoop`'s hot path for no extra information. (2) The group of a new file
+in a setgid directory is the directory's, not the destination's; copying group bits would give
+that group read access the destination never granted. Clearing only group bits keeps owner access
+and never exceeds the destination's other bits (DECISIONS "#82 — Trace file permissions": never
+widen access). (3) A basename-derived temp name overflows `NAME_MAX` for long names and leaks the
+name into the directory listing; a fixed prefix with pid and counter is unique enough with
+`create_new`. (4) The job already fails on a failed exit; a summary that said `verdict: PASS`
+contradicted it. Keeping the measurement report keeps the evidence.
+
+**Alternatives:** (1) keep the first window unchanged for the batch (rejected: a press stamped
+during the second delay would lose its allowance); carry the window from `SimLoop` (rejected: no
+new information, a change to the sim loop's hot path). (2) `fchown` the temp file to the
+destination's group (rejected: needs membership or privilege and can fail; clearing is always
+possible); always `0600` (rejected: drops a deliberate same-group `0640`). (3) a random suffix
+(rejected: needs a random source; pid plus counter with `create_new` suffices). (4) replace the
+report with the exit failure (rejected: loses the measurements); leave the summary and rely on the
+job status (rejected: the artifact and the job disagree).

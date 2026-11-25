@@ -321,16 +321,42 @@ fn owner_only(o: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions {
     o
 }
 
-/// Gives the open temp `file` the permission bits (`0o777` part) of the
-/// existing regular-file destination `dest`, read now, so the rename never
-/// widens access. A missing destination leaves `file` as created (`0600`).
+/// The permission bits for a trace temp file that replaces a destination
+/// with mode `dest_mode` owned by `dest_uid:dest_gid`, when the temp file
+/// is owned by `tmp_uid:tmp_gid`. Only the `0o777` part is ever copied
+/// (never setuid, setgid or sticky). The destination's group bits are kept
+/// only when the temp file has the destination's owner and group: a temp
+/// file that inherited another group (a setgid directory) or owner gets no
+/// group bits, so the rename never grants a different group access.
+#[cfg(any(unix, test))]
+fn trace_mode(dest_mode: u32, dest_uid: u32, dest_gid: u32, tmp_uid: u32, tmp_gid: u32) -> u32 {
+    let bits = dest_mode & 0o777;
+    if dest_uid == tmp_uid && dest_gid == tmp_gid {
+        bits
+    } else {
+        bits & !0o070
+    }
+}
+
+/// Gives the open temp `file` the permission bits of the existing
+/// regular-file destination `dest`, read now, as [`trace_mode`] allows
+/// (group bits only when the temp file's owner and group, from `fstat`,
+/// match the destination's), so the rename never widens access. A missing
+/// destination leaves `file` as created (`0600`).
 #[cfg(unix)]
 fn keep_dest_permissions(file: &std::fs::File, dest: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     match std::fs::metadata(dest) {
-        Ok(m) if m.is_file() => file.set_permissions(std::fs::Permissions::from_mode(
-            m.permissions().mode() & 0o777,
-        )),
+        Ok(m) if m.is_file() => {
+            let t = file.metadata()?;
+            file.set_permissions(std::fs::Permissions::from_mode(trace_mode(
+                m.mode(),
+                m.uid(),
+                m.gid(),
+                t.uid(),
+                t.gid(),
+            )))
+        }
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
@@ -523,11 +549,9 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
             file: Some(file),
         }));
     }
-    let name = path
-        .file_name()
-        .ok_or_else(|| io(std::io::Error::other("not a file name")))?
-        .to_string_lossy()
-        .into_owned();
+    if path.file_name().is_none() {
+        return Err(io(std::io::Error::other("not a file name")));
+    }
     let dir = match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
         _ => PathBuf::from("."),
@@ -535,7 +559,9 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
     let pid = std::process::id();
     let mut last = None;
     for n in 0..TRACE_TMP_TRIES {
-        let tmp = dir.join(format!(".{name}.{pid}.{n}.tmp"));
+        // A short fixed prefix, never the destination's name: a
+        // destination name at the file-name limit still gets a temp file.
+        let tmp = dir.join(format!(".kp-trace.{pid}.{n}.tmp"));
         match owner_only(std::fs::OpenOptions::new().write(true).create_new(true)).open(&tmp) {
             Ok(file) => {
                 return Ok(Some(TraceSink {
@@ -819,7 +845,7 @@ fn run_app(args: &[String]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{commit_trace, merge_failure, open_latency_trace, teardown_exit_code};
+    use super::{commit_trace, merge_failure, open_latency_trace, teardown_exit_code, trace_mode};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1171,13 +1197,12 @@ mod tests {
     fn req_lat_003_fifo_trace_destination_is_refused() {
         let dir = fresh_dir("fifo");
         let fifo = dir.join("trace.fifo");
-        match std::process::Command::new("mkfifo").arg(&fifo).status() {
-            Ok(s) if s.success() => {}
-            other => {
-                eprintln!("mkfifo unavailable ({other:?}): FIFO check skipped");
-                std::fs::remove_dir_all(&dir).unwrap();
-                return;
-            }
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !matches!(&made, Ok(s) if s.success()) {
+            // Never a silent pass: a missing or failing mkfifo fails the
+            // test (after cleaning up).
+            let _ = std::fs::remove_dir_all(&dir);
+            panic!("mkfifo is required for the FIFO check and failed: {made:?}");
         }
         let f = fifo.to_str().unwrap();
         let e = open_latency_trace(&args(&["--latency-trace", f])).unwrap_err();
@@ -1226,6 +1251,58 @@ mod tests {
         assert_eq!(mode(sink.tmp.as_ref().unwrap()), 0o600);
         sink.commit(b"csv").unwrap();
         assert_eq!(mode(&fresh), 0o600, "a new destination is owner-only");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (gate 30, M2, CWE-732): the destination's group bits
+    /// are copied only when the temp file has the destination's owner and
+    /// group; otherwise they are cleared (owner and other bits kept), and
+    /// setuid, setgid and sticky bits are never copied.
+    #[test]
+    fn req_lat_003_trace_mode_keeps_group_bits_only_for_the_same_group() {
+        assert_eq!(trace_mode(0o640, 1000, 100, 1000, 100), 0o640);
+        assert_eq!(trace_mode(0o600, 1000, 100, 1000, 100), 0o600);
+        assert_eq!(trace_mode(0o664, 1000, 100, 1000, 100), 0o664);
+        // A setgid directory gave the temp file another group.
+        assert_eq!(trace_mode(0o640, 1000, 100, 1000, 200), 0o600);
+        assert_eq!(trace_mode(0o664, 1000, 100, 1000, 200), 0o604);
+        // Another owner (the destination belongs to someone else).
+        assert_eq!(trace_mode(0o660, 0, 100, 1000, 100), 0o600);
+        // Special bits never copied.
+        assert_eq!(trace_mode(0o7640, 1000, 100, 1000, 100), 0o640);
+        assert_eq!(trace_mode(0o7640, 1000, 100, 1000, 200), 0o600);
+        // Never wider than the destination.
+        for m in 0..=0o7777u32 {
+            for g in [100, 200] {
+                let t = trace_mode(m, 1000, 100, 1000, g);
+                assert_eq!(t & !(m & 0o777), 0, "{m:o} {g}");
+            }
+        }
+    }
+
+    /// REQ-LAT-003 (gate 30, M4): the temp file name does not contain the
+    /// destination's name, so a destination whose name is 255 bytes (the
+    /// usual file-name limit) still gets a temp file and commits.
+    #[test]
+    fn req_lat_003_long_trace_file_name_still_commits() {
+        let dir = fresh_dir("long");
+        let name = format!("{}.csv", "t".repeat(251));
+        assert_eq!(name.len(), 255);
+        let p = dir.join(&name);
+        std::fs::write(&p, "old").unwrap();
+        let sink = open_latency_trace(&args(&["--latency-trace", p.to_str().unwrap()]))
+            .unwrap()
+            .unwrap();
+        let tmp = sink.tmp.clone().unwrap();
+        let tmp_name = tmp.file_name().unwrap().to_str().unwrap().to_owned();
+        assert!(
+            tmp_name.starts_with(".kp-trace.") && tmp_name.ends_with(".tmp"),
+            "{tmp_name}"
+        );
+        assert!(!tmp_name.contains(&name));
+        sink.commit(b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "new");
+        assert_eq!(names(&dir), vec![name]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

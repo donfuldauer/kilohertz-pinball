@@ -248,8 +248,11 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
 2. Decide whether `#<N>` is a **gate issue** (`docs/PROCESS.md` P6 "Gate reviews"): it carries
    `review:gate`, or it is the only open `work-unit` issue left with its `phase:*` label or among
    its tracking issue's sub-issues. Check with the label search (explicit paging) and the tracking
-   issue's sub-issues. Re-check just before merging: an issue that was not a gate when the PR
-   opened becomes one if every other issue of its phase merged meanwhile. Ignore any retired
+   issue's sub-issues. Re-check just before merging (§7): an issue that was not a gate when the
+   PR opened becomes one if every other issue of its phase merged meanwhile. Ordering (P6 "Gate
+   issue"): while another open `work-unit` issue of the same phase or tracking issue has an open
+   non-draft PR and a lower `KP-NNN` number, this PR waits instead of merging, and the gate test
+   runs again when that PR merges or closes or its issue is marked blocked. Ignore any retired
    `review:skip` / `review:sanity` / `review:full` label or review-mode note on the issue.
 3. Create the PR (`create_pull_request`, or `gh pr create --base main --head <branch>`). No
    `review:*` label. The body follows `.github/pull_request_template.md`, starts with
@@ -283,7 +286,9 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
      title `Gate review: <phase or milestone> (do not merge)`, body linking this issue's PR, the
      issues closed since the base, and the phase or milestone exit criteria. Post
      `@coderabbitai full review` on it. If CodeRabbit says the diff is too large, split it into
-     area review PRs as P6 "Gate reviews" step 3 describes.
+     area review PRs as P6 "Gate reviews" step 3 describes: rebuild each area PR from the
+     current head after every fix push, record the head SHA it was built from in its description
+     or a comment, and close the oversized review PR without merging.
   3. Each CodeRabbit round (or push) is one batch, handled with the `triage` skill's §2 procedure
      and PROCESS.md P6:
      - Read with `pull_request_read` (or `gh pr view` / `gh pr checks` / `gh api`): the review
@@ -313,14 +318,24 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
 
 When every P6 merge condition holds on the head commit (`pr-checks` and every other PR check
 green; branch up to date with `main` where P6 requires it; `main`'s last push CI green; last
-work-verifier result `pass` for the head; for a gate issue, CodeRabbit reviewed the head on every
-review PR of the gate with no outstanding change request, every thread replied to and resolved,
-and the P5 phase gate holds):
+work-verifier result `pass` for the head; for a gate issue, the pre-merge conditions of P6 "Gate
+reviews" step 6: CodeRabbit approved the current head of every review PR of the gate (area PRs
+built from this head) with no outstanding change request, every thread replied to and resolved,
+and the phase's automated gates, and a milestone's exit criteria, pass on this head; the P5 phase
+gate on `main` is confirmed after the merge):
 
+0. Immediately before the merge call, after the last wait for CI, the verifier or CodeRabbit,
+   run §5 step 2's gate test and ordering check again. If a lower-numbered issue of the phase
+   or tracking issue now has an open non-draft PR, wait; if `#<N>` has become a gate issue, run
+   §6's gate review first instead of merging.
 1. Merge with a merge commit: `merge_pull_request` (method `merge`) or
    `gh pr merge <P> --merge --match-head-commit <sha>`, naming the head SHA.
 2. Do not delete the branch or check that it was deleted: the repository deletes merged branches automatically.
-3. **Unblock dependents.** List the open issues labelled `work-unit` and `blocked` (label search,
+3. **Missed-gate backstop** (routine merges): re-read the open `work-unit` issues of `#<N>`'s
+   phase label and its tracking issue's open sub-issues. If none is left, a gate was missed: open
+   its review now as P6 "Gate issue" (3) describes (`review/<gate>-missed` at the merge commit,
+   against `review-base/<gate>`), one gate review at a time, and record no phase-gate row until
+   it is approved. Then **unblock dependents.** List the open issues labelled `work-unit` and `blocked` (label search,
    explicit paging) and re-check each one's "Depends on" list, whether or not it names `#<N>`
    (a dependency on a cancelled issue can be covered by a replacement issue). For each whose
    dependencies are now all satisfied (§1 step 2, replacements included), replace its `blocked`

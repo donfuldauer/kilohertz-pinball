@@ -304,7 +304,7 @@ and complete.
 | `release.yml` | PRs touching packaging paths; dispatch; `v*` tag push (owner only) | PR: `dry-run` (script unittest suites, `human_acceptance.py --check` as a warning, `package.py --dry-run` with real bundles). Dispatch or tag: `verify` (release build and tests with zero warnings on Windows x64, Linux x64, macOS arm64 and x86_64; the x86_64 macOS leg also runs `scripts/ci/replay_hash_assert.sh` under Rosetta 2 and asserts the replay-hash golden), `package`, and on a tag a draft prerelease. Never publishes (P8). |
 | `rules-wasm.yml` | PRs and main pushes touching rule ports, `pin_script` or the parity tests | Rebuilds each `tables/*/rules.wasm` twice and compares it with the committed binary; fmt, clippy and tests of each `rules-wasm` crate; the Lua/Wasm parity tests. |
 | `soak.yml` | weekly, dispatch, main pushes touching sim, physics, script, app or tables | `cargo test --release -p pin_app --test profiler_soak -- --ignored` on each OS: 10-minute multiball replays per table, `SOAK_HASH` lines compared across OSes (report only). |
-| `windowed.yml` | PRs touching `crates/pin_app`, `crates/pin_render`, `crates/pin_input`, `tables/` or the workflow; every push to `main`; dispatch | The windowed latency harness (KP-002): the release `pin_app` with the grey-box table for 60 s under Xvfb on lavapipe (`LP_NUM_THREADS=2`), flipper presses through XTest, checks a to d on its latency trace (see "Windowed latency harness"). Artifact `windowed-latency`. Not in `pr-checks`: it becomes required only when the owner makes it a required check (P8 setting). |
+| `windowed.yml` | PRs touching `crates/pin_app`, `crates/pin_render`, `crates/pin_input`, `tables/`, `scripts/windowed/` or the workflow; every push to `main`; dispatch | The windowed latency harness (KP-002): the release `pin_app` with the grey-box table for 60 s under Xvfb on lavapipe (`LP_NUM_THREADS=2`), flipper presses through XTest, checks a to d on its latency trace (see "Windowed latency harness"). Artifact `windowed-latency`. Not in `pr-checks`: it becomes required only when the owner makes it a required check (P8 setting). |
 | `spikes.yml` | pushes and PRs touching `spikes/**`, `versions.toml`, the workflow, `docs/DECISIONS.md` or `docs/HUMAN_QUEUE.md`; dispatch | The 0.1 spikes on three OSes, and the `spec_0_1` tests of the decision and queue files. |
 
 `tests/spec_ci` asserts the workflow structure; a workflow change updates it in the same PR.
@@ -376,15 +376,24 @@ rest screenshot; one more rest screenshot comes first. A step that runs late (a 
 shifts every later step by its delay, so holds keep their planned length.
 
 **Driver hygiene.** Every helper process (`xdotool`, `xwd`, `convert`) runs through one bounded
-runner (polled `try_wait`, killed and reaped at a 5 s deadline; at the end of the presses a
-key whose key-up failed stays marked held and is retried within a 400 ms budget, and one still
-held is reported); the screenshot pipes `nice -n 10
+runner (polled `try_wait`, killed and reaped at a 5 s deadline). At the end of the presses the
+cleanup key-ups share one 400 ms deadline: each `xdotool keyup` is bounded by the budget left
+(never above 5 s, never below 50 ms, so both held keys get a first attempt), a key whose key-up
+failed stays marked held and is retried only while budget remains, and one still held is
+reported. The screenshot pipes `nice -n 10
 xwd -root -silent -display <d>` into `nice -n 10 convert xwd:- png:<path>` with
-`MAGICK_THREAD_LIMIT=1`, no shell. A run first removes the previous run's `latency_trace.csv`,
-`pin_app_stderr.log`, `summary.txt` and `frame_*.png` from the artifact directory. Every exit path
+`MAGICK_THREAD_LIMIT=1`, no shell. A run first creates the artifact directory and removes the
+previous run's `latency_trace.csv`, `pin_app_stderr.log`, `summary.txt` and `frame_*.png` from it,
+before the tool, binary and bundle checks; a failed check writes a fresh `summary.txt`
+(`verdict: FAIL (windowed driver: <what>)`). Every exit path
 after the app started (window focus, key injection, first-frame timeout, a hang) kills the app if
-it still runs, completes the stderr capture and writes `pin_app_stderr.log`; a failure also writes
-`summary.txt` (`verdict: FAIL (windowed driver: <what>)` and the stderr tail). The run fails when
+it still runs, waits at most 5 s for the stderr capture to reach its end (a process the app
+started may hold the pipe: then the log keeps what was captured and ends with `windowed: stderr
+drain timed out after 5 s`) and writes `pin_app_stderr.log`; a failure also writes
+`summary.txt` (`verdict: FAIL (windowed driver: <what>)` and the stderr tail). When the app exits
+with a failure status, `summary.txt` keeps the measurement report (its own verdict line reads
+`measurements verdict: ...`) and its overall line is `verdict: FAIL (app exit status <status>)`,
+so the artifact agrees with the job. The run fails when
 fewer than 3 screenshots were captured or none was taken with a flipper held. Code:
 `crates/pin_app/tests/windowed/` (`verdict.rs`: the pure checks, unit-tested in plain `cargo test`;
 `driver.rs`: Xvfb, the app, xdotool, screenshots, the press plan). DECISIONS.md "#82 — Windowed
@@ -413,7 +422,10 @@ none); `frames_to_photon = frame - F0` counts from the press timestamp (`F0` the
 presented at or before it; a press before the first presented frame counts from frame index 0,
 so the count is `frame + 1`), and `move_tick` only selects the earliest candidate frame. For a press
 with `stall = 1`, `prev_drain_sdl_ns` and `drain_sdl_ns` are the stall's start and end (so their
-difference is the stall). On the table presenter path `present_ns` is the SDL clock read
+difference is the stall); a tick of the same catch-up batch that is itself late again (the sim
+thread preempted between two catch-up ticks) extends the stall to its own drain and keeps the
+stall's start, so a delay inside the batch never erases the original window, while a stall that
+starts outside a batch replaces the record. On the table presenter path `present_ns` is the SDL clock read
 immediately after the playfield `queue.present` returned, before a suboptimal surface is
 reconfigured and before the backglass and score surfaces are drawn. The windowed harness runs a
 table, so it uses that path; `--debug-overlay` only draws the debug lines over the PBR image
@@ -422,12 +434,15 @@ table, so it uses that path; `--debug-overlay` only draws the debug lines over t
 used (the playfield offers no 8-bit format); it lives in `pin_render`, so there `present_ns` is read
 after the whole render call, late by that frame's remaining work and, on a suboptimal surface, one
 reconfigure. The trace is written to a sibling temp
-file and renamed over the destination at shutdown; the destination is never truncated, so a
+file (`.kp-trace.<pid>.<n>.tmp`, created exclusively; the name never contains the destination's,
+so a destination name at the file-name limit works) and renamed over the destination at shutdown; the destination is never truncated, so a
 hard-linked bundle is safe (the `--table` bundle file itself is refused before anything is created;
 a value starting with `--` is not a path; a path whose metadata fails other than "not found", a
 missing path ending in a separator and an existing FIFO are refused before anything is opened). On
 Unix the temp file is created owner-only (`0600`) and, before the rename, given the existing
-destination's permission bits, so the rename never widens access (a new destination stays
+destination's permission bits (never setuid, setgid or sticky), with its group bits only when the
+temp file has the destination's owner and group (a setgid directory can give it another group:
+then the group bits are cleared), so the rename never widens access (a new destination stays
 `0600`). It is written on the main thread after every
 sim, render and audio thread was joined, also when the run failed (run cap not met, a thread join
 error), so a failed run's trace can be diagnosed; a run that ends before that point (a startup
@@ -467,8 +482,9 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
 - **c. Real time (REQ-LAT-002, CI form).** From `pin_app: N sim ticks (D dropped), ...`:
   `D / (N + D) <= 0.001`, and `N` within 1 % of 60 000. The simulated-to-wall ratio `N / (N + D)`
   is printed. On lavapipe the app now starts lean (REQ-LAT-006, #83: MSAA, bloom and motion blur
-  off, one warning line on stderr), and the worker-thread cap also applies. The full Low preset
-  (render scale, probe captures) arrives with KP-035.
+  off, one warning line on stderr naming only those three), and the worker-thread cap also
+  applies. The full Low preset (render scale, probe captures) arrives with KP-035; until then the
+  warning does not claim them.
 - **d. Completeness.** No trace overflow, at least 100 presses, as many presses traced as the
   driver injected, and `input dropped 0` on the shutdown line (a dropped input event is a missing
   trace row; a shutdown line without the field is malformed).

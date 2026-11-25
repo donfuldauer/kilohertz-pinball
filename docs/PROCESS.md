@@ -392,7 +392,9 @@ matrix runs on every push to `main`, D40, and the gate reads it there); replay h
 every earlier phase's tests still pass; the tick-time benchmark has not regressed by more than
 10 % against the previous phase gate's commit (method in `docs/DEVELOPMENT.md`); every
 automated gate the phase owns passes; and the phase's gate review (P6), run on the phase's last
-issue before it merges, is approved by CodeRabbit with every thread dispositioned. A milestone
+issue before it merges, is approved by CodeRabbit with every thread dispositioned. The gate review
+and the phase's automated gates are pre-merge checks on that issue's candidate head (P6 "Gate
+reviews" step 6); the checks on `main` confirm the phase after the merge. A milestone
 gate is the phase gate of the tracking issue's last open sub-issue plus the milestone's exit
 criteria. A green phase is recorded by its phase-gate row in
 `docs/RUN_LOG.md` (commit SHA and CI run), committed with the next PR; no tag (D39). A red phase
@@ -491,6 +493,21 @@ usually both), or when the plan labels it `review:gate` (for example the M1 cohe
 (and the tracking issue's open sub-issues), paging explicitly (P1). The gate's name is the phase
 label without its prefix (for example `12-rendering`) or the milestone (`M1`).
 
+Parallel sessions can work issues of one phase, so the test is ordered, without a lock:
+(1) the gate test runs again immediately before the merge call, after the last wait for CI, the
+verifier or CodeRabbit, and that result decides how the PR merges; (2) an issue whose PR is ready
+waits (it does not merge; the session works on other issues) while another open `work-unit` issue
+of the same phase, or of the same tracking issue, has an open non-draft PR and a lower `KP-NNN`
+number; when that PR merges or closes, or its issue is marked blocked (P7), it runs the gate test
+again, so the higher-numbered issue always tests last and becomes the gate issue; (3) backstop:
+after every routine merge, the Orchestrator re-reads the phase's open `work-unit` issues (and the
+tracking issue's open sub-issues). If none is left, a gate was missed and its review opens now:
+push `review/<gate>-missed` at that merge commit on `main` and open it against
+`review-base/<gate>` (step 1) as step 2 describes; there is no gate issue PR left to merge, fixes
+land on `main` through ordinary PRs that are then merged into the review branch, and the review
+PR's last reviewed head is recorded as `reviewed <sha>`. The phase-gate row is not recorded
+until that review is approved. Gate reviews still run one at a time (below).
+
 **Review PR.** A gate review is one review-only pull request whose diff is everything merged since
 the previous gate review. Git tags are not used (D39), so the reviewed commit is recorded in
 `docs/RUN_LOG.md`:
@@ -509,7 +526,10 @@ the previous gate review. Git tags are not used (D39), so the reviewed commit is
    review by area: for each group of top-level paths (for example `crates/pin_physics`,
    `crates/pin_render`, `tables/`), push `review/<gate>-<area>` built from the base plus
    `git checkout <gate head> -- <paths>`, open it against `review-base/<gate>` the same way, and
-   refresh it after each fix push. Every area PR must be approved.
+   rebuild it from the current gate head after each fix push. The area PR's description, or a
+   comment posted with each rebuild, records the gate-head SHA it was built from. Every area PR
+   must be approved. The oversized review PR they replace is closed without merging and no longer
+   counts as a review PR of the gate.
 4. **Findings.** Each review round is one batch (P5 "Batching"), for every CodeRabbit comment
    (inline, nitpick, outside-diff or summary item). Each ends in exactly one disposition, recorded
    as a reply on its thread (`add_reply_to_pull_request_comment` or
@@ -563,12 +583,20 @@ the previous gate review. Git tags are not used (D39), so the reviewed commit is
    them. When every thread is resolved or meets a resolve condition above, every other condition
    holds, and CodeRabbit's approval is what is needed to clear "Automatic approval withheld",
    post a plain comment `@coderabbitai approve` on the review PR.
-6. **Gate merge conditions**, on the shared head commit: the routine merge conditions above;
-   CodeRabbit has finished reviewing that head on every review PR of the gate, with an effective
-   approval (no outstanding change request), no actionable comment unanswered, and every thread
-   dispositioned and resolved (except types that cannot be resolved, where the reply is the
-   disposition); and the P5 phase gate (and, for a milestone, its automated gates and exit
-   criteria) holds.
+6. **Gate merge conditions.** Pre-merge, on the candidate head (the gate issue's PR head, merged
+   with `main` where the routine conditions require it): the routine merge conditions above,
+   with CI green on that head; on every review PR of the gate, CodeRabbit has finished reviewing
+   its current head, with an effective approval (no outstanding change request), no actionable
+   comment unanswered, and every thread dispositioned and resolved (except types that cannot be
+   resolved, where the reply is the disposition); and the phase's automated gates (and, for a
+   milestone, its exit criteria) pass on the candidate head. The step 2 review PR's head is the
+   candidate head itself. An area PR (step 3) is reviewed on its own head: the condition holds
+   when every area PR records the candidate head as the gate-head SHA it was built from and is
+   approved on its own head; the superseded oversized review PR is excluded. Post-merge, the P5
+   phase gate on `main` (tests on all three operating systems, replay hashes, earlier phases'
+   tests, the tick-time benchmark) confirms the phase; its row goes in `docs/RUN_LOG.md` with the
+   next PR. A red post-merge phase gate becomes new issues (P7) and never reverts the merge by
+   itself.
 7. **Close out.** Merge the gate issue's PR into `main`. Close every review PR **without
    merging**, with a comment linking the merge commit. Delete the `review-base/<gate>` and any
    `review/<gate>-*` branches (if the session proxy refuses branch deletion, leave them; they are
@@ -577,8 +605,9 @@ the previous gate review. Git tags are not used (D39), so the reviewed commit is
    `reviewed <merge sha>` for the gate, which is the base of the next gate review. Nothing is
    pushed to `main` directly. Then unblock dependents.
 
-Gate reviews never run in parallel: a second gate that becomes ready while one is open waits for
-the first to close out, so its base is the first gate's reviewed commit.
+Gate reviews never run in parallel (a missed-gate review from the backstop above included): a
+second gate that becomes ready while one is open waits for the first to close out, so its base is
+the first gate's reviewed commit.
 
 ## P7. Failure policy (D29)
 

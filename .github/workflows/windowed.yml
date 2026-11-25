@@ -16,6 +16,7 @@ on:
       - "crates/pin_render/**"
       - "crates/pin_input/**"
       - "tables/**"
+      - "scripts/windowed/**"
       - ".github/workflows/windowed.yml"
   push:
     branches: [main]
