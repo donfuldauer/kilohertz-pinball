@@ -14,10 +14,10 @@ Inputs:
 
 Counts:
 
-- Open queue lines: 10
+- Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 479
-- Run-log rows: 518
+- Decision entries: 490
+- Run-log rows: 525
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -37,6 +37,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - [ ] [P8 hardware] [5.4 CR round 1] Run the ray-query reflections on real DX12 and Metal GPUs, record whether the device reports the ray-query feature, then decide whether to enable ray-query reflections by default (D33; DECISIONS.md "5.4 — ray-query support on wgpu 30.0.1"). (docs/HUMAN_QUEUE.md)
 - [ ] [P8 release] [7.2] Add Windows code signing and macOS signing and notarization (certificates as repository secrets, plus release steps), or accept unsigned archives (D33); after final acceptance, push the first `v*` tag and publish the draft release by hand (D39; DECISIONS.md "7.2 — Release workflow: draft-only, artifacts on dispatch"). (docs/HUMAN_QUEUE.md)
 - [ ] [P8 release] [7.2] After the first `v*` tag push, check that the GitHub Release is a draft prerelease with the three archives, SHA256SUMS and the three PACKAGE_MANIFEST-<platform>.json files, and delete the draft if it was only a test (D39). (docs/HUMAN_QUEUE.md)
+- [ ] [P8 spec] [KP-002-lat001-frame-form] REQ-LAT-001's CI form ("at most two presented frames from the event to the first frame showing the bat moved") fails correct code when a present returns within the key-to-move time after a press: the in-flight frame cannot show the press and the next frame reads its snapshot before the bat moved, so the raw count is 3 (measured on #82's head: 3–10 of 170 presses per 60 s run at about 8 fps). Proposed SPEC edit: count from the first frame that started after the press took effect (at most two presented frames after the frame in flight), or state the CI form at the 99th percentile as the millisecond form does. See DECISIONS "#82 — Windowed latency check definitions". (docs/HUMAN_QUEUE.md)
 
 ### Blocked run-log rows
 
@@ -518,9 +519,20 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #81: HUD rate lines stay outside `hud_lines` (docs/DECISIONS.md)
 - #81 tester: Input-epoch acceptance: full sweep, haptics observation, thread-test isolation (docs/DECISIONS.md)
 - #81-review-1: Profiler latency from the raw SDL stamp (docs/DECISIONS.md)
+- #82: Owned-path extension for the trace hooks (docs/DECISIONS.md)
+- #82: Latency trace CSV format and where the frame table lives (docs/DECISIONS.md)
+- #82: Windowed latency check definitions (docs/DECISIONS.md)
+- #82: XTest key injection with X keycodes, no SDL hook (docs/DECISIONS.md)
+- #82: LP_NUM_THREADS cap (docs/DECISIONS.md)
+- #82: move_tick: 1 degree in the energised direction (docs/DECISIONS.md)
+- #82: Windowed press schedule (docs/DECISIONS.md)
+- #82: Review round 1: present time and trace write placement kept (docs/DECISIONS.md)
+- #82: Owned-path extension: present.rs playfield hook (docs/DECISIONS.md)
 - Process: Dual-harness agent documentation (Claude Code and Gemini/Antigravity) (docs/DECISIONS.md)
 - Process: Initial-usable-build review rhythm (tests along the way, sanity review on boundaries, full review at M1) (docs/DECISIONS.md)
 - Process: Gate reviews at phase and milestone completion (docs/DECISIONS.md)
+- #82: Trace commit after a failed run (docs/DECISIONS.md)
+- #82: Trace file permissions (docs/DECISIONS.md)
 - Process: Manual and physical testing waits for final acceptance (docs/DECISIONS.md)
 - Process: Fable ask retired (docs/DECISIONS.md)
 
