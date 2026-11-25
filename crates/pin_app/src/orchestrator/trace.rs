@@ -105,18 +105,21 @@
 //! 2. One empty line, then the **frame table**: the header line
 //!    [`FRAME_HEADER`] (`frame,snap_tick,present_ns`) and one row per
 //!    presented playfield frame (0-based index in present order, the
-//!    snapshot tick it drew, its present time). On the table presenter path
-//!    `present_ns` is the SDL clock read right after the playfield
-//!    surface's present returned, before any other surface (backglass,
-//!    score display) is drawn
+//!    snapshot tick it drew, its present time). On the table presenter
+//!    path (every run with a table whose playfield can be drawn directly,
+//!    the windowed harness included; `--debug-overlay` only adds debug
+//!    lines over the PBR image and does not change the presenter)
+//!    `present_ns` is the SDL clock read immediately after the playfield
+//!    `queue.present` returned, before a suboptimal surface is reconfigured
+//!    and before any other surface (backglass, score display) is drawn
 //!    ([`AppSurfaces::render_with_playfield_hook`](super::AppSurfaces::render_with_playfield_hook)).
-//!    Two limits remain: the playfield's present step reconfigures a
-//!    suboptimal surface after `queue.present` before it returns, so on a
-//!    suboptimal frame `present_ns` is later than the present by one
-//!    reconfigure; and on the `--debug-overlay` path `present_ns` is
-//!    sampled after the whole render call (the debug presenter lives in
-//!    `pin_render`, outside this unit). Frame counts can shift only by what
-//!    lands in those intervals. A frame counts only when the playfield
+//!    One limit remains: the debug presenter (`pin_render::SurfaceSet`),
+//!    used only when no table is loaded or the table presenter cannot be
+//!    used (the playfield offers no 8-bit format), lives in `pin_render`,
+//!    outside this unit, so there `present_ns` is sampled after the whole
+//!    render call: late by that frame's remaining work and, on a suboptimal
+//!    surface, one reconfigure. Frame counts on that path can shift only by
+//!    what lands in that interval. A frame counts only when the playfield
 //!    surface presented (a backglass-only present is not a frame here). The
 //!    bat angles each frame drew are kept in memory for the join and are
 //!    not written.
@@ -579,7 +582,8 @@ impl FrameTraceWriter {
     /// The trace clock (the SDL event clock), read now. The table presenter
     /// path reads it inside the playfield hook
     /// ([`AppSurfaces::render_with_playfield_hook`](super::AppSurfaces::render_with_playfield_hook)),
-    /// right after the playfield present, and passes it to
+    /// immediately after the playfield `queue.present` returned and before
+    /// any reconfigure, and passes it to
     /// [`presented_at`](Self::presented_at).
     pub fn now_ns(&self) -> u64 {
         (self.clock)()
@@ -600,8 +604,11 @@ impl FrameTraceWriter {
     /// Records one render-loop iteration that drew `snap`. Reads the trace
     /// clock first (call it right after the render call returned) and
     /// calls [`presented_at`](Self::presented_at) with it. Used where the
-    /// playfield's own present time cannot be read (the `--debug-overlay`
-    /// presenter, which lives in `pin_render`).
+    /// playfield's own present time cannot be read: the debug presenter
+    /// (`pin_render::SurfaceSet`), used only when no table is loaded or the
+    /// table presenter cannot be used; `present_ns` is then late by the
+    /// frame's remaining work and, on a suboptimal surface, one
+    /// reconfigure. `--debug-overlay` does not select it.
     pub fn presented(&mut self, playfield_presented: bool, snap: &FrameStateSnapshot) -> bool {
         let present_ns = (self.clock)();
         self.presented_at(playfield_presented, snap, present_ns)

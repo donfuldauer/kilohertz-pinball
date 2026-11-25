@@ -7595,10 +7595,11 @@ release_tick]`, `release_tick` being the `apply_tick` of the next release of the
 (unbounded without one), and whose snapshot shows the bat raised at least 1 degree from the press's
 applying-tick base in the energised direction, so the frame showed the bat raised while the key was
 held (the angles are kept in memory for the join and not written). `frames_to_photon` stays the raw
-count from the press. On the table presenter path `present_ns` is the SDL clock read right after
-the playfield slot's present, before the other surfaces are drawn; on the `--debug-overlay` path it
-is read after the whole render call ("#82 — Review round 1: present time and trace write placement
-kept"). The trace file is prepared on the main thread at startup and written on the main thread
+count from the press. On the table presenter path `present_ns` is the SDL clock read immediately
+after the playfield `queue.present` returned, before any reconfigure and before the other surfaces
+are drawn; only on the debug presenter (no table, or a playfield the table presenter cannot use;
+`--debug-overlay` does not select it) is it read after the whole render call ("#82 — Review round
+1: present time and trace write placement kept"). The trace file is prepared on the main thread at startup and written on the main thread
 after every sim, render and audio thread was joined; no thread that runs a tick or draws a frame
 touches the filesystem (same class as the startup table load). The trace is written to a sibling
 temp file (created at startup with `create_new` as the writability probe) and renamed over the
@@ -7635,7 +7636,8 @@ run's end is the trace's `run_end_ns`.
   `req_lat_004_first_executed_tick_and_req_lat_001_frames` in `tests/windowed/main.rs`, and
   `--test input_epoch`), not by the windowed run: the sim pops every ring event stamped at or before
   the tick end, up to the per-tick input buffer of 256 events (`INPUT_BUFFER_CAPACITY` in
-  `orchestrator/mod.rs`); eligible events beyond 256 are applied in the next executed tick (test
+  `orchestrator/mod.rs`); eligible events beyond 256 are applied in a later executed tick (the next
+  one, or later ones when more than 256 remain: the app input ring holds 1,024 events) (test
   `input_overflow_defers_to_next_tick`), so an eligible event in the ring cannot be skipped as long
   as at most 256 events are eligible in one tick. The trace has no receipt time to tell a late
   arrival from a skipped one; the rest is tracked in a follow-up work-unit issue: the platform
@@ -7826,22 +7828,28 @@ time: rejected, about 85 presses in 60 s.
 
 ## #82 — Review round 1: present time and trace write placement kept
 
-**Decision:** (1) `present_ns`: since PR #146 review round 2 the table presenter path stamps right
+**Decision:** (1) `present_ns`: since PR #146 review round 2 the table presenter path stamps
 after the playfield present (`AppSurfaces::render_with_playfield_hook` calls the trace's hook once
-per playfield slot, right after its present and before the backglass and score slots are drawn).
-Remaining limits, documented in `trace.rs`, the trace-format entry and DEVELOPMENT.md: the
-playfield's present step reconfigures a suboptimal surface after `queue.present` before the hook
-runs (one reconfigure late on such a frame), and on the `--debug-overlay` path `present_ns` is
-sampled after the whole render call (the debug presenter lives in `pin_render`, outside this unit;
-a present-time hook there is reported as a request, not made here). (2) The trace file is
+per playfield slot, before the backglass and score slots are drawn), and since review round 3b the
+hook fires immediately after the playfield `queue.present` returned and before a suboptimal surface
+is reconfigured, so a reconfigure can no longer delay the stamp. The table presenter is used by
+every run with a table whose playfield the table presenter can draw (the windowed harness
+included); `--debug-overlay` only adds debug lines over the PBR image
+(`TableRenderOptions::debug_overlay`) and does not select the debug presenter. The one remaining
+limit, documented in `trace.rs`, the trace-format entry and DEVELOPMENT.md: the debug presenter
+(`pin_render::SurfaceSet`, `Presenter::Debug`), used only when no table is loaded or the table
+presenter cannot be used (`choose_presenter`: `table_set_accepted` false, e.g. the playfield offers
+no 8-bit format), lives in `pin_render`, outside this unit, so there `present_ns` is sampled after
+the whole render call (late by that frame's remaining work and, on a suboptimal surface, one
+reconfigure); a present-time hook there is reported as a request, not made here. (2) The trace file is
 still written on the main thread after every engine thread was joined, to a sibling temp file that
 is renamed over the destination at shutdown; the destination is never truncated, so a hard-linked
 bundle is safe. (3) A frame counts for the
 trace (and for the readiness line) only when the playfield surface presented (`paced_by` of the
 frame's statuses), never for a backglass-only present.
 
-**Rationale:** (1) `pin_render` is outside this unit's paths; the error is bounded by one
-reconfigure on suboptimal frames only. (2) No thread that runs a tick or draws a frame touches the
+**Rationale:** (1) `pin_render` is outside this unit's paths, and the debug presenter is not used
+by any table run whose playfield the table presenter accepts. (2) No thread that runs a tick or draws a frame touches the
 filesystem; the main thread already does startup I/O (the table load) of the same class. (3) The
 latency is about the playfield bat; a backglass present says nothing about it.
 
@@ -7853,9 +7861,18 @@ the run.
 
 **Decision:** PR #146 review round 2 adds one method to `AppSurfaces` in
 `crates/pin_app/src/orchestrator/present.rs`: `render_with_playfield_hook(snap, on_playfield)`,
-which holds the body of `render()` and calls `on_playfield(status)` right after each playfield
-slot's `render_slot` returned, before the next slot; `render()` delegates to it with a no-op
-closure (same statuses, timer handling and frame counting). No other edit to the file. The render
+which holds the body of `render()`; `render()` delegates to it with a no-op closure (same statuses,
+timer handling and frame counting). Review round 3b (D1) moves the stamp ahead of the suboptimal
+reconfigure with internal plumbing only: `render_slot` and `render_direct` take an
+`on_present: &mut dyn FnMut()`, which `render_direct` calls through the private
+`present_then_reconfigure` immediately after `queue.present` returned and before
+`configure_surface` on a suboptimal surface; the playfield slot gets a real hook (the private
+once-only `PlayfieldHook`), every other slot a no-op. The public contract is unchanged:
+`on_playfield` is called exactly once per playfield slot with that slot's status, before any other
+slot's work; for a presenting direct playfield it fires with `Presented` at the present, for every
+other outcome (skipped, hidden, occluded, busy, a presenter-thread hand-off, which has no present of
+its own to stamp) once after `render_slot` returned with the returned status. No allocation, lock or
+new clock source. No other edit to the file. The render
 thread passes a hook that reads the trace clock on the playfield's `Presented` status
 (`FrameTraceWriter::stamp_playfield`), and records the frame with `presented_at`.
 
@@ -7863,12 +7880,13 @@ thread passes a hook that reads the trace clock on the playfield's `Presented` s
 late by the backglass and score surfaces' work, which can move a press's baseline frame. Only the
 slot loop knows when the playfield present returned; a hook is the smallest additive change and
 keeps `render()`'s behaviour. #83 (KP-003) owns `present.rs` and has not started; it inherits one
-additive public method and a delegating `render()`, and must keep the hook's contract (fires once
-per playfield slot, after its present or hand-off, before any other slot's work) if it reshapes the
-slot loop. A GPU test of the hook needs real SDL windows on the main thread (a `harness = false`
+additive public method and a delegating `render()`, and must keep the hook's contract if it
+reshapes the slot loop: it fires exactly once per playfield slot, before any other slot's work, and
+for a presenting direct playfield after `queue.present` returned and before any reconfigure. A GPU test of the hook needs real SDL windows on the main thread (a `harness = false`
 `[[test]]` entry in `crates/pin_app/Cargo.toml`, outside this unit's paths), so the hook's ordering
-is covered by the windowed run and the pure test of `stamp_playfield`; the Cargo entry is reported
-as a request.
+is covered by the windowed run, the pure test of `stamp_playfield` and the pure tests of
+`present_then_reconfigure` (order: present, hook, reconfigure) and `PlayfieldHook` (exactly once per
+slot); the Cargo entry is reported as a request.
 
 **Alternatives:** A clock read inside `pin_render` (the debug presenter): outside this unit.
 Reordering the slots so the playfield is drawn last: changes `render()`'s behaviour and #83's
@@ -8023,6 +8041,27 @@ stays the sole code reviewer (R9); only its timing changes.
 - Review on the gate issue's own PR against `main`: rejected because CodeRabbit would see only
   that issue's diff, not the phase's cumulative changes.
 - Git tags for reviewed commits: rejected under D39 (the session proxy may refuse tag pushes).
+
+## #82 — Trace commit after a failed run
+
+**Decision:** PR #146 review round 3b (D2): option (a). Once the engine threads are joined,
+`run_app` commits the run's latency trace (`commit_trace` in `crates/pin_app/src/main.rs`) whether
+or not the run failed: a run that missed its run cap or had a thread join error still renames its
+trace over the destination. The destination is left untouched (and the temp file removed) only when
+the run ends before that shutdown commit point (a startup error after the sink was opened, a panic
+or an early return before the join), because the sink is then dropped without `commit`. A commit
+error is printed, merged into the run's failure and makes the run fail. Unit tests:
+`req_lat_003_failed_run_still_commits_its_trace`, `req_lat_003_commit_error_fails_the_run`,
+`req_lat_003_dropped_sink_removes_the_temp_file`. The earlier wording ("a failed run leaves the
+destination untouched") was wrong and is corrected in the `TraceSink` rustdoc and DEVELOPMENT.md.
+
+**Rationale:** The 60 s windowed workflow uploads the trace with `if: always()`; a failing run's
+trace is the evidence needed to diagnose it. The behaviour already was this; only the text was
+wrong.
+
+**Alternatives:** (b) Skip the commit when the run failed: rejected, it throws away the diagnosis
+of exactly the runs that need one. (c) Commit to a separate `.failed` path: rejected, a second
+path to validate and upload for no gain.
 
 ## #82 — Trace file permissions
 

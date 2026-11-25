@@ -1250,11 +1250,13 @@ fn render_thread(
                 };
                 paced = set.frame_paced(&st);
                 if let Some(t) = latency_trace.as_mut() {
-                    // A trace frame only when the playfield presented. On
-                    // the --debug-overlay path present_ns is sampled after
-                    // the whole render call (the debug presenter lives in
-                    // pin_render, outside this unit); the table presenter
-                    // path stamps right after the playfield present.
+                    // A trace frame only when the playfield presented. The
+                    // debug presenter (no table, or a playfield the table
+                    // presenter cannot use; not selected by
+                    // --debug-overlay) lives in pin_render, outside this
+                    // unit, so present_ns is sampled after the whole render
+                    // call; the table presenter path stamps right after the
+                    // playfield queue.present, before any reconfigure.
                     t.presented(paced, snap);
                 }
                 stats.record_statuses(&st, spawned);
@@ -1263,9 +1265,11 @@ fn render_thread(
                 if let Some(lines) = refresh_hud(hud.as_mut(), &mut fps, stats) {
                     s.set_hud_lines(&lines);
                 }
-                // With a trace, the clock is read right after the playfield
-                // slot's present, before the backglass and score slots are
-                // drawn (REQ-LAT-003 present time).
+                // With a trace, the clock is read immediately after the
+                // playfield slot's queue.present returned, before a
+                // suboptimal surface is reconfigured and before the
+                // backglass and score slots are drawn (REQ-LAT-003 present
+                // time).
                 let mut stamp = None;
                 let st = match latency_trace.as_ref() {
                     Some(t) => s.render_with_playfield_hook(snap, &mut |status| {

@@ -372,8 +372,12 @@ fn ends_in_separator(path: &Path) -> bool {
 /// path hard-linked to the table bundle only loses its link, never the
 /// bundle's bytes. A destination that exists and is not a regular file (a
 /// device; a FIFO is refused) is written directly. Dropped without a commit
-/// (a failed run), the temp file is removed and the destination is left
-/// untouched.
+/// (the run ended before the shutdown commit point: a startup error after
+/// the sink was opened, a panic or an early return before the threads were
+/// joined), the temp file is removed and the destination is left untouched.
+/// Once the engine threads are joined, `run_app` commits the run's trace
+/// even when the run failed (run cap not met, a thread join error), so a
+/// failed run's trace can be diagnosed ([`commit_trace`]).
 #[derive(Debug)]
 struct TraceSink {
     /// The `--latency-trace` path.
@@ -426,6 +430,24 @@ impl TraceSink {
         // Committed: nothing left for `Drop` to remove.
         self.tmp = None;
         Ok(())
+    }
+}
+
+/// The shutdown commit of the latency trace (REQ-LAT-003), run once every
+/// engine thread was joined: commits `csv` to `sink` whether or not the run
+/// failed (`failure` is not consulted, so a run that missed its run cap or
+/// had a thread join error still leaves its trace for diagnosis). Returns
+/// the destination on success; a commit error is printed and merged into
+/// `failure`, so it makes the run fail.
+fn commit_trace(sink: TraceSink, csv: &[u8], failure: &mut Option<String>) -> Option<PathBuf> {
+    let dest = sink.dest.clone();
+    match sink.commit(csv) {
+        Ok(()) => Some(dest),
+        Err(e) => {
+            eprintln!("pin_app: {e}");
+            *failure = merge_failure(failure.take(), Some(e));
+            None
+        }
     }
 }
 
@@ -739,19 +761,12 @@ fn run_app(args: &[String]) -> Result<(), String> {
     };
     failure = merge_failure(failure, join_error);
     // Every thread is joined: drain the trace rings and write the file here,
-    // on the main thread.
+    // on the main thread, also when the run failed (for diagnosis).
     let trace_summary = match (trace, trace_file.take()) {
         (Some(collector), Some(sink)) => {
             let collected = collector.collect(run_end_ns);
-            let dest = sink.dest.clone();
-            match sink.commit(collected.to_csv().as_bytes()) {
-                Ok(()) => Some(summary_line(&dest, &collected)),
-                Err(e) => {
-                    eprintln!("pin_app: {e}");
-                    failure = merge_failure(failure, Some(e));
-                    None
-                }
-            }
+            commit_trace(sink, collected.to_csv().as_bytes(), &mut failure)
+                .map(|dest| summary_line(&dest, &collected))
         }
         _ => None,
     };
@@ -804,7 +819,7 @@ fn run_app(args: &[String]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_failure, open_latency_trace, teardown_exit_code};
+    use super::{commit_trace, merge_failure, open_latency_trace, teardown_exit_code};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1012,9 +1027,61 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// REQ-LAT-003 (B1): a run that fails before the trace is written drops
-    /// the sink without a commit: the temp file is removed and an existing
-    /// destination is left intact.
+    /// REQ-LAT-003: once the threads are joined, a failed run (run cap not
+    /// met) still commits its trace over the destination, and its failure
+    /// is kept.
+    #[test]
+    fn req_lat_003_failed_run_still_commits_its_trace() {
+        let dir = fresh_dir("failcommit");
+        let p = dir.join("t.csv");
+        std::fs::write(&p, "old").unwrap();
+        let sink = open_latency_trace(&args(&["--latency-trace", p.to_str().unwrap()]))
+            .unwrap()
+            .unwrap();
+        let mut failure = Some("run cap reached before 100 presses".to_owned());
+        let dest = commit_trace(sink, b"new trace", &mut failure);
+        assert_eq!(dest.as_deref(), Some(p.as_path()));
+        assert_eq!(std::fs::read(&p).unwrap(), b"new trace");
+        assert_eq!(
+            failure.as_deref(),
+            Some("run cap reached before 100 presses")
+        );
+        assert_eq!(names(&dir), vec!["t.csv".to_owned()]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003: a commit error is merged into the run's failure (also
+    /// when the run already failed) and the destination keeps its content.
+    #[test]
+    fn req_lat_003_commit_error_fails_the_run() {
+        let dir = fresh_dir("commiterr");
+        let p = dir.join("t.csv");
+        std::fs::write(&p, "old").unwrap();
+        for earlier in [None, Some("join failed".to_owned())] {
+            let mut sink = open_latency_trace(&args(&["--latency-trace", p.to_str().unwrap()]))
+                .unwrap()
+                .unwrap();
+            // The sink's temp path names a file that does not exist: the
+            // final rename fails (on every platform, no root needed).
+            let real_tmp = sink.tmp.replace(dir.join("missing.tmp")).unwrap();
+            let mut failure = earlier.clone();
+            assert_eq!(commit_trace(sink, b"new", &mut failure), None);
+            std::fs::remove_file(&real_tmp).unwrap();
+            let f = failure.expect("a commit error fails the run");
+            assert!(f.contains("--latency-trace: writing the trace"), "{f}");
+            if let Some(e) = &earlier {
+                assert!(f.contains(e.as_str()), "{f}");
+            }
+            assert_eq!(std::fs::read(&p).unwrap(), b"old");
+            assert_eq!(names(&dir), vec!["t.csv".to_owned()]);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (B1): a run that ends before the shutdown commit point (a
+    /// startup error after the sink was opened, a panic or an early return
+    /// before the threads were joined) drops the sink without a commit: the
+    /// temp file is removed and an existing destination is left intact.
     #[test]
     fn req_lat_003_dropped_sink_removes_the_temp_file() {
         let dir = fresh_dir("drop");

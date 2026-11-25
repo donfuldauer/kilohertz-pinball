@@ -404,11 +404,15 @@ none); `frames_to_photon = frame - F0` counts from the press timestamp (`F0` the
 presented at or before it; a press before the first presented frame counts from frame index 0,
 so the count is `frame + 1`), and `move_tick` only selects the earliest candidate frame. For a press
 with `stall = 1`, `prev_drain_sdl_ns` and `drain_sdl_ns` are the stall's start and end (so their
-difference is the stall). On the table presenter path `present_ns` is the SDL clock read right
-after the playfield surface's present returned, before the backglass and score surfaces are drawn;
-the present step reconfigures a suboptimal surface before returning, so on such a frame it is later
-than the present by one reconfigure, and on the `--debug-overlay` path it is read after the whole
-render call (the debug presenter lives in `pin_render`). The trace is written to a sibling temp
+difference is the stall). On the table presenter path `present_ns` is the SDL clock read
+immediately after the playfield `queue.present` returned, before a suboptimal surface is
+reconfigured and before the backglass and score surfaces are drawn. The windowed harness runs a
+table, so it uses that path; `--debug-overlay` only draws the debug lines over the PBR image
+(`TableRenderOptions::debug_overlay`) and does not change the presenter. The debug presenter
+(`pin_render::SurfaceSet`) is used only when no table is loaded or the table presenter cannot be
+used (the playfield offers no 8-bit format); it lives in `pin_render`, so there `present_ns` is read
+after the whole render call, late by that frame's remaining work and, on a suboptimal surface, one
+reconfigure. The trace is written to a sibling temp
 file and renamed over the destination at shutdown; the destination is never truncated, so a
 hard-linked bundle is safe (the `--table` bundle file itself is refused before anything is created;
 a value starting with `--` is not a path; a path whose metadata fails other than "not found", a
@@ -416,7 +420,10 @@ missing path ending in a separator and an existing FIFO are refused before anyth
 Unix the temp file is created owner-only (`0600`) and, before the rename, given the existing
 destination's permission bits, so the rename never widens access (a new destination stays
 `0600`). It is written on the main thread after every
-sim, render and audio thread was joined; no thread that runs a tick or draws a frame touches the
+sim, render and audio thread was joined, also when the run failed (run cap not met, a thread join
+error), so a failed run's trace can be diagnosed; a run that ends before that point (a startup
+error after the trace file was prepared, a panic or an early return) removes the temp file and
+leaves the destination untouched, and a failed commit is reported and makes the run fail; no thread that runs a tick or draws a frame touches the
 filesystem (same class as the startup table load). Records go into rings preallocated before the
 threads start, and `pin_app: latency trace: <path>, <n> events, <m> frames, <k> overflows` follows
 the shutdown lines. Without the flag nothing is allocated or recorded.
@@ -435,8 +442,8 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
   lateness being checked. That the applying tick is the first executed tick that received the
   press is verified by the deterministic SimLoop tests, not by this run (DECISIONS.md); the sim
   pops every ring event stamped at or before the tick end up to the per-tick input buffer of 256
-  events (`INPUT_BUFFER_CAPACITY`), and eligible events beyond 256 are applied in the next executed
-  tick.
+  events (`INPUT_BUFFER_CAPACITY`), and eligible events beyond 256 are applied in a later executed
+  tick (the next one, or later ones when more than 256 remain; the app input ring holds 1,024).
 - **b. Key to photon in frames (REQ-LAT-001, CI form).** For each press except those stamped
   within 500 ms of `run_end_ns` (excluded and counted): the raw count `n_raw = frame - F0`, `F0` the
   last presented frame at or before `sdl_ts_ns` (`n_raw = frame + 1` for a press before the first

@@ -83,7 +83,9 @@ use pin_core::{
 };
 
 /// Capacity of the per-tick input buffer of [`SimLoop`]. If more events are
-/// due in one tick, the rest stay queued and are delivered on the next tick.
+/// due in one tick, the rest stay queued and are delivered in a later
+/// executed tick (the next one, or later ones when more than this many
+/// remain).
 pub const INPUT_BUFFER_CAPACITY: usize = 256;
 
 /// Pure tick accumulator: no real time inside, the caller passes `now_ns`.
@@ -348,7 +350,7 @@ impl<S: SimStep> SimLoop<S> {
     }
 
     /// Ticks at which more than [`INPUT_BUFFER_CAPACITY`] events were due
-    /// (the excess was deferred to the next tick).
+    /// (the excess was deferred to a later executed tick).
     pub fn input_overflow_ticks(&self) -> u64 {
         self.input_overflow_ticks
     }
