@@ -71,6 +71,11 @@ the target directory per issue).
   Anything that opens a window runs under `xvfb-run -a` (the windowed-app evidence of
   PROCESS.md R12).
 
+Commit attribution: `scripts/install-git-hooks.sh` sets `core.hooksPath=.githooks` and
+`kilohertz.coauthor`; `.githooks/commit-msg` then adds `Co-authored-by:` for the human contributor
+to agent-authored commits (`AGENTS.md` "Commit attribution"). Claude Code runs the script at
+`SessionStart`; `.agents/setup-env.sh` runs it on Antigravity VMs.
+
 Each issue works in its own git worktree `../kilohertz-issue-<N>` (`work-issue` skill §2; or a
 branch inside the checkout when a sandbox restricts sibling directories); the absolute
 `CARGO_TARGET_DIR` keeps every build under one `target/` for disk checks and cleanup.
