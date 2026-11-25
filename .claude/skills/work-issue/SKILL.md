@@ -196,8 +196,9 @@ single-checkout fallback below). One branch, one PR, one issue.
 
 1. Set `FABLE_ALLOWANCE` (Claude Code) or T3 availability (Gemini / Antigravity) (PROCESS.md P4):
    `insufficient` if the session reports a current rate limit, throttling or fallback at T3;
-   otherwise `unknown`. In Claude Code, it becomes `sufficient` only through an owner `yes` in a
-   Fable ask. On Gemini / Antigravity, it is `sufficient` when the active plan and quota support T3
+   otherwise `unknown`. In Claude Code, it is `sufficient` only when the session can read the
+   account's usage limits and they leave enough Fable allowance (unknown means no Fable; never ask
+   the owner or wait). On Gemini / Antigravity, it is `sufficient` when the active plan and quota support T3
    and no rate limit, throttling or fallback is reported.
 2. Spawn `work-classifier` (via Claude Code's `Agent` tool or Antigravity's `invoke_subagent` /
    `define_subagent`, PROCESS.md P5) with: the full issue body, its number and URL, the full bodies
@@ -207,13 +208,9 @@ single-checkout fallback below). One branch, one PR, one issue.
    **two** briefs: Implementer and Independent Tester (owned paths disjoint). For `type:infra`,
    `type:docs` and `type:content`, ask for one Implementer brief whose TESTS REQUIRED include the
    issue's acceptance tests.
-3. If the classifier returns `fable check: wanted, allowance unknown, owner ask` in a Claude Code
-   session, run the Fable ask of PROCESS.md P4 (reminder first, one ask per batch, up to 30
-   minutes, per-item answers; no answer means `unknown`, and `unknown` means no Fable). Meanwhile
-   continue anything that does not depend on those items. On an owner `yes`, call the classifier
-   again with `FABLE_ALLOWANCE: sufficient (owner, <UTC time>)`; otherwise use the T2 brief and put
-   the `[Fable wanted]` note in this issue's RUN_LOG row. On Gemini / Antigravity, if T3 is
-   unavailable or unconfirmed, use the T2 brief and record `[T3 wanted]` in the RUN_LOG row.
+3. If the classifier wanted T3 but the allowance was not `sufficient`, use its T2 brief and put
+   the `[Fable wanted]` (Claude Code) or `[T3 wanted]` (Gemini / Antigravity) note in this issue's
+   RUN_LOG row. Never ask the owner about allowance or wait for one.
 4. Spawn the agents the classifier names with the briefs verbatim and its model tier overrides
    (keeping `inherit` in Antigravity if the harness policy requires it); Implementer and
    Independent Tester in parallel.

@@ -24,8 +24,9 @@ conversation, `docs/SPEC.md` as a whole, the issue tracker, or a follow-up quest
   verifier failure, or an investigator report.
 - `FABLE_ALLOWANCE` (Claude Code) or T3 availability (Gemini / Antigravity): `sufficient`,
   `insufficient` or `unknown`, set by the Orchestrator under PROCESS.md P4 (`insufficient` from a
-  reported rate limit, throttling or fallback; on Claude Code, `sufficient` only after an owner
-  `yes` to the Fable ask; otherwise `unknown`). Treat a missing value as `unknown`.
+  reported rate limit, throttling or fallback; on Claude Code, `sufficient` only when the
+  Orchestrator read the account's usage limits and found enough Fable allowance; otherwise
+  `unknown`). Treat a missing value as `unknown`.
 - Any history: earlier attempts, earlier investigator reports, failure counts.
 - A **batch** of items (one CodeRabbit review round or one push, P5 "Batching"). Then return one
   routing block per item plus one brief per executor group (grouped by tier and module directory,
@@ -85,12 +86,9 @@ If 1 and 2 hold and allowance is `insufficient`, choose T2, set
 Code) or `[T3 wanted]` (Gemini / Antigravity) note (what T3 would have been used for) in the run
 log line. No queue line.
 
-If 1 and 2 hold and `FABLE_ALLOWANCE` is `unknown` in a Claude Code session, still return the T2
-routing and brief, and set `fable check: wanted, allowance unknown, owner ask` so the Orchestrator
-runs the Fable ask (PROCESS.md P4, D42). If the owner says yes in time, you will be called again
-with `FABLE_ALLOWANCE: sufficient (owner, <UTC time>)` and may then route T3; on `no` or timeout
-the Orchestrator uses your T2 brief and writes the `[Fable wanted]` note. Never wait for the answer
-yourself. On Gemini / Antigravity, if T3 availability is `unknown`, route T2 and record
+If 1 and 2 hold and `FABLE_ALLOWANCE` is `unknown` in a Claude Code session, treat it as not
+enough: route T2, set `fable check: wanted, allowance unknown, routed to T2`, and give the
+`[Fable wanted]` note. Nobody asks the owner or waits for allowance. On Gemini / Antigravity, if T3 availability is `unknown`, route T2 and record
 `[T3 wanted]`.
 
 When torn between two tiers, take the higher one, but never move up into T3 that way. The
@@ -147,7 +145,7 @@ difficulty: mechanical | standard | complex | extreme (<evidence>)
 tier: T0 | T1 | T2 | T3
 agent: task-executor | issue-investigator | work-verifier
 model: haiku | sonnet | opus | fable | flash_lite | flash | pro | inherit
-fable check: not considered | wanted, allowance unknown, owner ask | wanted, allowance insufficient, routed to T2 | granted (<1>, <2>, allowance sufficient)
+fable check: not considered | wanted, allowance unknown, routed to T2 | wanted, allowance insufficient, routed to T2 | granted (<1>, <2>, allowance sufficient)
 human queue line: <- [P8 <kind>] [<id>] <text>, or none — judgement calls go in DECISIONS.md>
 run log line: <Phase | #<N> | role | model | attempt | routed | — | tier + one-line reason (+ [Fable wanted] / [T3 wanted] note)>
 --- BRIEF ---

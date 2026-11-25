@@ -7711,3 +7711,19 @@ complete (SPEC §4 Phase 8), so the run stays unattended (D28).
 
 **Alternatives:**
 - Pause a unit until the owner tests it on hardware: rejected by the owner's direction.
+
+## Process — Fable ask retired
+
+**Decision:** At the owner's direction (2026-11-25), the Claude Code "Fable ask" (D42; DECISIONS.md
+"Process — Fable ask kept") is retired, as in fineprint. The Orchestrator never asks the owner
+about Fable allowance and never waits for an answer. `FABLE_ALLOWANCE` is `sufficient` only when
+the session can read the account's usage limits and finds enough allowance; otherwise it is
+`unknown` or `insufficient`, the work runs at T2 (`Opus 5.5`) and a `[Fable wanted]` note goes in
+the unit's `docs/RUN_LOG.md` row. PROCESS.md P4, AGENTS.md, the `run-plan` and `work-issue`
+skills and the `work-classifier` say so.
+
+**Rationale:** The owner wants sessions never to wait on them; the ask could leave a session idle
+for up to 30 minutes. `[Fable wanted]` notes keep a record of where Fable would have helped.
+
+**Alternatives:**
+- Keep the ask with a shorter timeout: rejected; any wait on the owner is what is being removed.
