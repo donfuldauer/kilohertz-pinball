@@ -66,7 +66,17 @@ threads:
        findings, threads and approval are read from it as `<R>`. Fixes land on `main` through
        ordinary PRs (watched as routine PRs) that are then merged into the review branch; push
        nothing to the review branch otherwise. The last reviewed head is recorded as
-       `reviewed <sha>`, and no phase-gate row is recorded until the review is approved. The
+       `reviewed <sha>`, and no phase-gate row is recorded until the review is approved.
+       **Split missed gate** (P6 "Review PR" step 3): when the backstop review was split into area
+       PRs (heads `review/<gate>-<area>`, base `review-base/<gate>`), there is no gate issue PR
+       and no single review PR. `<P>`'s role is the gate head: the `main` commit the backstop was
+       cut at plus any later merges of `main`, which is the SHA each area PR records as built-from;
+       CI is read on it. Every open area PR is a review PR `<R>`: read the findings, threads and
+       approval of each in turn, and watch them all. An area PR counts only while its built-from
+       SHA equals the gate head, otherwise it is stale and is rebuilt (`work-issue` §6 step 2).
+       The gate completes only when every area PR is approved on its own head. Fixes still land
+       through ordinary PRs to `main`, after which the area PRs are rebuilt from the new gate
+       head. The
        gate-issue-PR flow above stays unchanged for every gate that has an open issue PR.
    - **Routine:** anything else. No CodeRabbit review is required or requested; findings are
      handled whenever any review or review comment exists, from any author.

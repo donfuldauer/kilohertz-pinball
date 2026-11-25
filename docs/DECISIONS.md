@@ -8999,3 +8999,23 @@ unseen.
 **Alternatives.** Resolving the merged gate issue PR as `<P>` (rejected: it is closed and its head
 is not what is reviewed). Replying to every finding on the review PR (rejected: the reply API is
 per PR and the finding stays unanswered where it was raised).
+
+## #163 gate review round 7 — trace permission wording by platform; split missed-gate watch
+
+**Decision.** (1) Trace permission docs (`TraceSink`, `owner_only`, `commit`, `commit_trace`,
+`docs/DEVELOPMENT.md`) now say the owner-only guarantee is the Unix mode bits (`0600`, never
+chmod-ed): on Linux a directory default ACL gets mask `---`; on macOS inherited extended ACL
+entries are not removed and can grant other accounts access; on Windows `owner_only` is a no-op,
+so the trace takes the DACL inherited from its directory and there is no owner-only guarantee.
+Directory-inherited ACLs stay accepted (owner decision "Accept folder ACLs"). (2) pr-watch
+missed-gate backstop: for a split missed gate, `<P>` is the gate head (the `main` commit the
+backstop was cut at plus later merges, the SHA area PRs record as built-from; P6 is silent on how
+a split missed gate names it, so this follows P6 "Review PR" step 3 and the stale rule), each open
+area PR is a review PR `<R>` read in turn, and the gate completes only when every area PR is
+approved on its own head; fixes go through ordinary PRs to `main`, then area PRs are rebuilt.
+
+**Rationale.** Claiming "owner-only" overstated what mode bits give on macOS and Windows; the
+code is unchanged. The split case otherwise left the watcher with no resolvable PR.
+
+**Alternatives.** Clearing macOS ACLs or setting a Windows DACL (rejected by the owner decision);
+requiring a new single review PR after a split (contradicts P6 step 3).

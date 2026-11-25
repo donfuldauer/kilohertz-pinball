@@ -441,11 +441,16 @@ so a destination name at the file-name limit works) and renamed over the destina
 hard-linked bundle is safe (the `--table` bundle file itself is refused before anything is created;
 a value starting with `--` is not a path; a path whose metadata fails other than "not found", a
 missing path ending in a separator and an existing FIFO are refused before anything is opened). On
-Unix the temp file is created owner-only (`0600`), never chmod-ed, and renamed over the
-destination, so every committed trace is `0600`, whether or not a destination existed; the existing
+Unix the temp file is created with mode `0600`, never chmod-ed, and renamed over the
+destination, so every committed trace has owner-only mode bits, whether or not a destination existed; the existing
 destination's permissions, owner, group and ACL are not read or preserved (overwriting a trace that
-others could read makes it owner-only; in a directory with a default POSIX ACL the trace's ACL mask
-is `---`, so named entries grant nothing; a device written directly keeps its own permissions). It
+others could read gives it mode `0600`; a device written directly keeps its own permissions). The
+guarantee is the Unix mode bits only: on Linux a directory default ACL gets the mask `---` and grants
+nothing; on macOS extended ACL entries inherited from the directory are not removed and can grant
+other accounts access; on Windows no mode is set, so the trace takes the DACL inherited from its
+directory (std's default file creation) and there is no owner-only guarantee. Directory-inherited ACLs are accepted as
+the directory owner's choice (owner decision "Accept folder ACLs", DECISIONS "#163 gate review
+round 6 — directory-inherited ACLs on macOS and Windows"). It
 is written on the main thread after every
 sim, render and audio thread was joined, also when the run failed (run cap not met, a thread join
 error), so a failed run's trace can be diagnosed; a run that ends before that point (a startup

@@ -306,20 +306,24 @@ fn same_file(_: &std::fs::Metadata, a: &Path, _: &std::fs::Metadata, b: &Path) -
     )
 }
 
-/// Makes a new trace temp file owner-only (`0600`, Unix) at creation (the
+/// Gives a new trace temp file the mode `0600` (Unix) at creation (the
 /// `open` mode, with `create_new`), before any trace data is written: a
 /// trace may hold input timing. This is the mode every committed trace is
 /// published with: the temp file is never chmod-ed afterwards, and the
-/// destination's permissions, owner, group and ACL are not consulted. In a
-/// directory with a default POSIX ACL the inherited access ACL gets the mask
-/// `---` from this mode, so its named entries grant nothing.
+/// destination's permissions, owner, group and ACL are not consulted. The
+/// guarantee is for the Unix mode bits only. On Linux a directory default
+/// ACL gets the mask `---` from this mode, so its named entries grant
+/// nothing. On macOS, extended ACL entries inherited from the directory are
+/// not removed and can grant other accounts access.
 #[cfg(unix)]
 fn owner_only(o: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions {
     use std::os::unix::fs::OpenOptionsExt as _;
     o.mode(0o600)
 }
 
-/// Makes a new trace temp file owner-only: no-op off Unix.
+/// No-op off Unix: no mode is set, so on Windows the trace takes the DACL
+/// inherited from its directory (std's default file creation) and there is
+/// no owner-only guarantee.
 #[cfg(not(unix))]
 fn owner_only(o: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions {
     o
@@ -361,12 +365,19 @@ fn ends_in_separator(path: &Path) -> bool {
 /// even when the run failed (run cap not met, a thread join error), so a
 /// failed run's trace can be diagnosed ([`commit_trace`]).
 ///
-/// Permissions (REQ-LAT-003, CWE-732): the temp file is created owner-only
-/// (`0600` on Unix, [`owner_only`]), never chmod-ed, and renamed over the
-/// destination, so every committed trace is owner-only whether or not a
-/// destination existed. The existing destination's permissions, owner,
-/// group and ACL are not consulted or preserved: overwriting a trace that
-/// others could read makes it owner-only. Because nothing is read from the
+/// Permissions (REQ-LAT-003, CWE-732): on Unix the temp file is created
+/// with mode `0600` ([`owner_only`]), never chmod-ed, and renamed over the
+/// destination, so every committed trace has owner-only mode bits whether
+/// or not a destination existed. The existing destination's permissions,
+/// owner, group and ACL are not consulted or preserved: overwriting a trace
+/// that others could read gives it mode `0600`. Beyond the mode bits: on
+/// Linux a directory default ACL gets the mask `---` and grants nothing; on
+/// macOS extended ACL entries inherited from the directory are not removed
+/// and can grant other accounts access; on Windows the trace takes the DACL
+/// inherited from its directory and there is no owner-only guarantee.
+/// Directory-inherited ACLs are accepted as the directory owner's choice
+/// (owner decision "Accept folder ACLs", DECISIONS "#163 gate review round
+/// 6 — directory-inherited ACLs on macOS and Windows"). Because nothing is read from the
 /// destination, a change to it at any moment cannot affect the published
 /// mode (CWE-367). A device written directly keeps its own permissions.
 #[derive(Debug)]
@@ -386,10 +397,11 @@ const TRACE_TMP_TRIES: u32 = 8;
 impl TraceSink {
     /// Writes `csv` and moves it into place: to the temp file (flushed and
     /// synced; a platform that cannot sync the file is tolerated), then
-    /// renamed over the destination. The temp file keeps the owner-only
-    /// mode it was created with (`0600` on Unix) and is never chmod-ed; the
+    /// renamed over the destination. The temp file keeps the mode it was
+    /// created with (`0600` on Unix) and is never chmod-ed; the
     /// destination's permissions, owner, group and ACL are not consulted
-    /// or preserved, so overwriting makes the trace owner-only. On any
+    /// or preserved, so overwriting gives the trace mode `0600` (inherited
+    /// directory ACLs: see [`TraceSink`]). On any
     /// error the temp file is removed and the destination keeps its old
     /// content.
     fn commit(mut self, csv: &[u8]) -> Result<(), String> {
@@ -415,7 +427,7 @@ impl TraceSink {
             }
             _ => {}
         }
-        // The temp file keeps the owner-only mode it was created with: it
+        // The temp file keeps the mode it was created with: it
         // is never chmod-ed and nothing is read from the destination.
         drop(file);
         std::fs::rename(tmp, &self.dest).map_err(err)?;
@@ -430,10 +442,11 @@ impl TraceSink {
 /// failed (`failure` is not consulted, so a run that missed its run cap or
 /// had a thread join error still leaves its trace for diagnosis). Returns
 /// the destination on success; a commit error is printed and merged into
-/// `failure`, so it makes the run fail. The published trace is owner-only
-/// (`0600` on Unix): the temp file is created that way, never chmod-ed and
+/// `failure`, so it makes the run fail. On Unix the published trace has
+/// mode `0600`: the temp file is created that way, never chmod-ed and
 /// renamed over the destination, whose permissions, owner, group and ACL
-/// are not consulted or preserved ([`TraceSink::commit`]).
+/// are not consulted or preserved ([`TraceSink::commit`]); inherited
+/// directory ACLs are not removed (see [`TraceSink`]).
 fn commit_trace(sink: TraceSink, csv: &[u8], failure: &mut Option<String>) -> Option<PathBuf> {
     let dest = sink.dest.clone();
     match sink.commit(csv) {
@@ -465,7 +478,7 @@ impl Drop for TraceSink {
 /// (Unix) an existing FIFO, which a write-only open would block on, are
 /// refused before anything is opened. The destination itself is never
 /// opened for writing here (unless it is a device) and never truncated: the
-/// trace goes to a sibling temp file, created now owner-only (`0600`, Unix)
+/// trace goes to a sibling temp file, created now with mode `0600` (Unix)
 /// with `create_new` as the writability probe and renamed over the
 /// destination by [`TraceSink::commit`] at shutdown.
 fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
