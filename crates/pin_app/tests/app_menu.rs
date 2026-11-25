@@ -491,8 +491,10 @@ fn req_view_006_menu_overlay_paints_only_the_panel() {
         .as_ref()
         .expect("app_menu gpu test needs a GPU adapter (lavapipe); it never skips");
     let (w, h) = (800u32, 600u32);
-    let bg = [0.9f32, 0.8, 0.5, 1.0];
-    let bg8 = bg.map(|c| (c * 255.0).round() as u8);
+    // Exact unorm8 values (n / 255) so every backend converts the clear
+    // colour to the same byte; 0.9 * 255 = 229.5 rounds either way.
+    let bg8: [u8; 4] = [230, 204, 128, 255];
+    let bg = bg8.map(|c| f32::from(c) / 255.0);
     let mut painter = OverlayPainter::new(
         gpu.device(),
         pin_render::gpu::wgpu::TextureFormat::Rgba8Unorm,
