@@ -6,6 +6,7 @@
 //! * [`snapshot`]: fixed-capacity [`FrameStateSnapshot`].
 //! * [`profiles`]: data-driven [`BallProfile`]s and the seven built-ins (§3.2).
 //! * [`flipper`]: runtime flipper contract (§3.3).
+//! * [`fmath`]: portable `min`/`max` with target-independent bits (D9, CR-010).
 //! * [`script`]: scripting contract (§3.4).
 //! * [`input`]: input events, cabinet inputs and haptics events.
 //! * [`materials`]: material pairs (restitution and friction).
@@ -16,6 +17,7 @@
 //! Changes after Subphase 1.1 go through `contracts/CHANGE_REQUESTS.md`.
 
 pub mod flipper;
+pub mod fmath;
 pub mod haptics;
 pub mod ids;
 pub mod input;
