@@ -1911,6 +1911,110 @@ fn req_lat_001_harness_release_retry_respects_the_deadline() {
     assert_eq!(failed.len(), 2);
 }
 
+/// REQ-LAT-001 harness (gate 30 round 3): a retry is bounded by the budget
+/// left with no 50 ms floor, so a retry that starts 1 ms before the shared
+/// deadline is sent with exactly 1 ms; a retry at the start is capped by
+/// the helper timeout and the budget; first attempts keep the floor even
+/// when the budget is spent.
+#[test]
+fn req_lat_001_harness_release_retry_has_no_floor() {
+    use driver::{
+        HELPER_TIMEOUT, KEY_RELEASE_BUDGET, KEY_RELEASE_MIN_TIMEOUT, Key, key_up_retry_timeout,
+        key_up_timeout, release_held,
+    };
+    let ms = Duration::from_millis;
+    // The bound itself.
+    assert_eq!(
+        key_up_retry_timeout(KEY_RELEASE_BUDGET, KEY_RELEASE_BUDGET - ms(1)),
+        ms(1)
+    );
+    assert_eq!(key_up_retry_timeout(KEY_RELEASE_BUDGET, ms(390)), ms(10));
+    assert_eq!(
+        key_up_retry_timeout(KEY_RELEASE_BUDGET, Duration::ZERO),
+        KEY_RELEASE_BUDGET
+    );
+    assert_eq!(
+        key_up_retry_timeout(Duration::from_secs(60), Duration::ZERO),
+        HELPER_TIMEOUT
+    );
+    assert_eq!(
+        key_up_retry_timeout(KEY_RELEASE_BUDGET, KEY_RELEASE_BUDGET * 2),
+        Duration::ZERO
+    );
+    assert_eq!(
+        key_up_timeout(KEY_RELEASE_BUDGET, KEY_RELEASE_BUDGET - ms(1)),
+        KEY_RELEASE_MIN_TIMEOUT
+    );
+    // A retry that starts with 1 ms left: sent with exactly 1 ms.
+    let clock = std::cell::Cell::new(Duration::ZERO);
+    let mut held = [true, false];
+    let mut sent = Vec::new();
+    let failed = release_held(
+        &mut held,
+        |k, t| {
+            sent.push((k, t));
+            clock.set(clock.get() + ms(10));
+            if sent.len() == 1 {
+                Err("busy".to_string())
+            } else {
+                Ok(())
+            }
+        },
+        KEY_RELEASE_BUDGET,
+        &mut || clock.get(),
+        &mut || clock.set(KEY_RELEASE_BUDGET - ms(1)),
+    );
+    assert_eq!(sent, [(Key::Left, KEY_RELEASE_BUDGET), (Key::Left, ms(1))]);
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(held, [false, false]);
+    // Retries at time 0: capped by the budget, and by the helper timeout
+    // when the budget is larger.
+    for (budget, want) in [
+        (KEY_RELEASE_BUDGET, KEY_RELEASE_BUDGET),
+        (Duration::from_secs(60), HELPER_TIMEOUT),
+    ] {
+        let mut held = [false, true];
+        let mut sent = Vec::new();
+        release_held(
+            &mut held,
+            |k, t| {
+                sent.push((k, t));
+                if sent.len() < 3 {
+                    Err("busy".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            budget,
+            &mut || Duration::ZERO,
+            &mut || {},
+        );
+        assert_eq!(sent, [(Key::Right, want); 3], "budget {budget:?}");
+        assert_eq!(held, [false, false]);
+    }
+    // First attempts at a spent budget still get the floor; no retry.
+    let mut held = [true, true];
+    let mut sent = Vec::new();
+    let failed = release_held(
+        &mut held,
+        |k, t| {
+            sent.push((k, t));
+            Err("e".to_string())
+        },
+        KEY_RELEASE_BUDGET,
+        &mut || KEY_RELEASE_BUDGET + ms(1),
+        &mut || panic!("budget spent: no retry"),
+    );
+    assert_eq!(
+        sent,
+        [
+            (Key::Left, KEY_RELEASE_MIN_TIMEOUT),
+            (Key::Right, KEY_RELEASE_MIN_TIMEOUT)
+        ]
+    );
+    assert_eq!(failed.len(), 2);
+}
+
 /// REQ-LAT-003 harness (gate 30 round 2): the stderr capture decodes
 /// lossily and keeps going after a non-UTF-8 line; a read error is logged
 /// as a failure line, EOF is silent.

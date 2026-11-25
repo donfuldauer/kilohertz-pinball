@@ -60,7 +60,7 @@ issues never share a working tree. Keep going with other ready issues while a PR
 or a gate review. Run at most one gate review at a time (PROCESS.md P6): a second gate issue
 waits, with its PR open, until the first gate closes out. Within one phase, a ready PR waits while
 a lower-numbered issue of the phase has an open PR (unless that issue depends on the ready PR's
-issue, as a gate issue waiting for its blocking fix does), and the gate test is re-run immediately
+issue, as a gate issue waiting for its blocking fix does; a `status:blocked-failure` issue never holds a PR waiting, P6 "Gate issue"; it still counts for gate detection), and the gate test is re-run immediately
 before each merge (PROCESS.md P6 "Gate issue"), so the phase's last issue always gets its gate review.
 
 ## 3. Discovered work

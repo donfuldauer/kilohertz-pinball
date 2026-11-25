@@ -510,7 +510,9 @@ fix issue created under "Review PR" step 4, never waits for the issue that waits
 PR merges or closes, or its issue is marked blocked (P7), it runs the gate test again, so the
 higher-numbered issue always tests last and becomes the gate issue; (3) backstop: after every
 routine merge, the Orchestrator re-reads the phase's open `work-unit` issues (and the tracking
-issue's open sub-issues). If none is left, a gate was missed and its review opens now:
+issue's open sub-issues). If either set is empty (the phase's: a phase gate; the tracking
+issue's: a milestone gate; usually both at once, which is one review), a gate was missed and its
+review opens now:
 push `review/<gate>-missed` at that merge commit on `main` and open it against
 `review-base/<gate>` (step 1) as step 2 describes; there is no gate issue PR left to merge, fixes
 land on `main` through ordinary PRs that are then merged into the review branch, and the review

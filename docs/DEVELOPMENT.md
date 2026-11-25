@@ -378,9 +378,9 @@ shifts every later step by its delay, so holds keep their planned length.
 **Driver hygiene.** Every helper process (`xdotool`, `xwd`, `convert`) runs through one bounded
 runner (polled `try_wait`, killed and reaped at a 5 s deadline). At the end of the presses the
 cleanup key-ups share one 400 ms deadline: each `xdotool keyup` is bounded by the budget left
-(never above 5 s, never below 50 ms, so both held keys get a first attempt), a key whose key-up
+(never above 5 s; a first attempt never below 50 ms, so both held keys get one), a key whose key-up
 failed stays marked held and is retried only while budget remains (a retry of a key that already
-had an attempt is skipped once the budget is spent), and one still held is reported. The screenshot pipes `nice -n 10
+had an attempt is skipped once the budget is spent; a retry is bounded by the budget left, with no minimum), and one still held is reported. The screenshot pipes `nice -n 10
 xwd -root -silent -display <d>` into `nice -n 10 convert xwd:- png:<path>` with
 `MAGICK_THREAD_LIMIT=1`, no shell. A run first creates the artifact directory and removes the
 previous run's `latency_trace.csv`, `pin_app_stderr.log`, `summary.txt` and `frame_*.png` from it,
@@ -445,8 +445,7 @@ Unix the temp file is created owner-only (`0600`) and, before the rename, given 
 destination's permission bits (never setuid, setgid or sticky) as they are when the temp file has
 the destination's owner and group; when its owner or group differs (a setgid directory can give it
 another group) the group bits are cleared and each other bit is kept only if the destination's
-old group also had it, so the rename never widens access (a new destination stays `0600`); on Linux a temp file that carries an extended POSIX access ACL (`system.posix_acl_access` present, or its state cannot be read)
-keeps its created `0600` instead of taking the destination's bits, so the rename never raises an ACL mask or admits a named user the old destination denied (it may end narrower than the destination). It is written on the main thread after every
+old group also had it, so the rename never widens access (a new destination stays `0600`); when the temp file or the existing destination carries an extended POSIX access ACL (Linux, `system.posix_acl_access` present, or its state cannot be read), the temp file keeps its created `0600` instead of taking the destination's bits, so the rename never raises an ACL mask or admits a named user the old destination denied (it may end narrower than the destination). It is written on the main thread after every
 sim, render and audio thread was joined, also when the run failed (run cap not met, a thread join
 error), so a failed run's trace can be diagnosed; a run that ends before that point (a startup
 error after the trace file was prepared, a panic or an early return) removes the temp file and

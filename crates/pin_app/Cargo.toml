@@ -33,7 +33,7 @@ libm.workspace = true
 # access ACL, so the commit never chmods it wider (CWE-732, #163 gate review
 # round 2). libc is already in Cargo.lock through other crates.
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [features]
 # Tests that need a GPU and a native window (the CI `gpu-tests` job):

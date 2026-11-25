@@ -253,7 +253,8 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
    gate when the PR opened becomes one if every other issue of its phase merged meanwhile. Ordering (P6 "Gate
    issue"): while another open `work-unit` issue of the same phase or tracking issue has an open
    non-draft PR and a lower `KP-NNN` number (other than an issue that depends on `#<N>`, such as a
-   gate issue waiting for this blocking fix), this PR waits instead of merging, and the gate test
+   gate issue waiting for this blocking fix; a `status:blocked-failure` issue never holds a PR
+   waiting, P6 "Gate issue"; it still counts for gate detection), this PR waits instead of merging, and the gate test
    runs again when that PR merges or closes or its issue is marked blocked. Ignore any retired
    `review:skip` / `review:sanity` / `review:full` label or review-mode note on the issue.
 3. Create the PR (`create_pull_request`, or `gh pr create --base main --head <branch>`). No
@@ -328,14 +329,16 @@ gate on `main` is confirmed after the merge):
 
 0. Immediately before the merge call, after the last wait for CI, the verifier or CodeRabbit,
    run §5 step 2's gate test and ordering check again. If a lower-numbered issue of the phase
-   or tracking issue now has an open non-draft PR (other than one that depends on `#<N>`), wait;
+   or tracking issue now has an open non-draft PR (other than one that depends on `#<N>`; a `status:blocked-failure` issue never holds a PR
+   waiting, P6 "Gate issue"; it still counts for gate detection), wait;
    if `#<N>` has become a gate issue, run §6's gate review first instead of merging.
 1. Merge with a merge commit: `merge_pull_request` (method `merge`) or
    `gh pr merge <P> --merge --match-head-commit <sha>`, naming the head SHA.
 2. Do not delete the branch or check that it was deleted: the repository deletes merged branches automatically.
 3. **Missed-gate backstop** (routine merges): re-read the open `work-unit` issues of `#<N>`'s
-   phase label and its tracking issue's open sub-issues, counted as in §5 step 2. If none is left,
-   a gate was missed: open its review now as P6 "Gate issue" (3) describes (`review/<gate>-missed` at the merge commit,
+   phase label and its tracking issue's open sub-issues, counted as in §5 step 2. If either set is empty
+   (the phase's: a phase gate; the tracking issue's: a milestone gate; usually both at once, which
+   is one review), a gate was missed: open its review now as P6 "Gate issue" (3) describes (`review/<gate>-missed` at the merge commit,
    against `review-base/<gate>`), one gate review at a time, and record no phase-gate row until
    it is approved. Then **unblock dependents.** List the open issues labelled `work-unit` and `blocked` (label search,
    explicit paging) and re-check each one's "Depends on" list, whether or not it names `#<N>`

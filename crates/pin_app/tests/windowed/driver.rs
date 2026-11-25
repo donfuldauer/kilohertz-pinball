@@ -702,10 +702,11 @@ pub fn key_up(
 /// Total time [`release_held`] may spend on the key-ups at the end of a
 /// run: one shared deadline for every attempt and retry.
 pub const KEY_RELEASE_BUDGET: Duration = Duration::from_millis(400);
-/// The shortest bound a key-up attempt gets, even when the shared budget is
-/// spent (so the second key's first attempt still runs). A retry of a key
-/// that already had an attempt gets no such floor: once the budget is spent
-/// it is skipped.
+/// The shortest bound a key's first key-up attempt gets, even when the
+/// shared budget is spent (so the second key's first attempt still runs).
+/// A retry of a key that already had an attempt gets no such floor: it is
+/// bounded by the budget left ([`key_up_retry_timeout`]) and skipped once
+/// the budget is spent.
 pub const KEY_RELEASE_MIN_TIMEOUT: Duration = Duration::from_millis(50);
 /// Pause between two rounds of [`release_held`] retries.
 pub const KEY_RELEASE_PAUSE: Duration = Duration::from_millis(50);
@@ -714,25 +715,34 @@ pub const KEY_RELEASE_MAX_ROUNDS: u32 = 16;
 
 /// The bound of one key-up attempt at `now` within the shared `budget`:
 /// what is left of it, never above [`HELPER_TIMEOUT`] and never below
-/// [`KEY_RELEASE_MIN_TIMEOUT`]. Only a key's first attempt uses the floor
-/// when the budget is spent ([`release_held`] skips later retries then).
+/// [`KEY_RELEASE_MIN_TIMEOUT`]. Only a key's first attempt uses it
+/// (retries use [`key_up_retry_timeout`]).
 pub fn key_up_timeout(budget: Duration, now: Duration) -> Duration {
     budget
         .saturating_sub(now)
         .clamp(KEY_RELEASE_MIN_TIMEOUT, HELPER_TIMEOUT)
 }
 
+/// The bound of a key-up retry (a key that already had an attempt) at `now`
+/// within the shared `budget`: what is left of it, never above
+/// [`HELPER_TIMEOUT`], with no minimum, so a retry never runs past the
+/// shared deadline.
+pub fn key_up_retry_timeout(budget: Duration, now: Duration) -> Duration {
+    budget.saturating_sub(now).min(HELPER_TIMEOUT)
+}
+
 /// Attempts a key-up for every key in `held` (never stopping at the first
 /// failure; [`key_up`]: a key is cleared only when its key-up succeeded).
 /// One shared deadline: `now()` (a monotonic time since the release
-/// started) against `budget`; each `send(key, timeout)` is bounded by
-/// [`key_up_timeout`] (the budget left), so every held key gets a first
-/// attempt and a slow key-up cannot spend more than the budget. While a key
-/// is still held and budget remains, retries it after `pause`, at most
-/// [`KEY_RELEASE_MAX_ROUNDS`] rounds; a key that already had an attempt is
-/// not sent again once `now() >= budget` (it stays in the failed list with
-/// its last error, so the whole release never exceeds the budget by more
-/// than the first attempts' floor). Returns the releases that still
+/// started) against `budget`. A key's first `send(key, timeout)` is bounded
+/// by [`key_up_timeout`] (the budget left, floored at
+/// [`KEY_RELEASE_MIN_TIMEOUT`]), so every held key gets a first attempt.
+/// While a key is still held and budget remains, retries it after `pause`,
+/// at most [`KEY_RELEASE_MAX_ROUNDS`] rounds, each retry bounded by
+/// [`key_up_retry_timeout`] (the budget left, no floor); a key that already
+/// had an attempt is not sent again once `now() >= budget` (it stays in the
+/// failed list with its last error). The whole release therefore never
+/// exceeds the budget by more than the first attempts' floor. Returns the releases that still
 /// failed after the last round (their keys stay marked held).
 pub fn release_held(
     held: &mut [bool; 2],
@@ -752,13 +762,14 @@ pub fn release_held(
                 continue;
             }
             let t = now();
-            if let Some(prev) = &last_err[i]
-                && t >= budget
-            {
-                failed.push((k, prev.clone()));
-                continue;
-            }
-            let t = key_up_timeout(budget, t);
+            let t = match &last_err[i] {
+                Some(prev) if t >= budget => {
+                    failed.push((k, prev.clone()));
+                    continue;
+                }
+                Some(_) => key_up_retry_timeout(budget, t),
+                None => key_up_timeout(budget, t),
+            };
             if let Err(e) = key_up(held, k, |k| send(k, t)) {
                 last_err[i] = Some(e.clone());
                 failed.push((k, e));

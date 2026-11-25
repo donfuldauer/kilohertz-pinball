@@ -8771,3 +8771,56 @@ widen; keeping `0600` provably never widens). Recomputing a mask by intersecting
 destination's mask (rejected: more code for the same guarantee). The `exacl` or `posix-acl` crates
 (rejected: new dependencies and lock entries for a single probe). Accepting the bound (overruled by
 the repository owner).
+
+## #163 gate review round 3 — destination ACL probe, libc workspace pin, retry timeout and gate-process wording
+
+**Decision.** (1) Trace replacement probes the temp file (`fgetxattr`) and the existing destination
+(`getxattr` on its path) for `system.posix_acl_access`; the two states combine fail-closed
+(`AclState::combine`: Unknown if either is Unknown, else Present if either is Present, else
+Absent). Present or Unknown on either keeps the temp file's created `0600` (no chmod); Absent on
+both chmods as `trace_mode` says; non-Linux is unchanged (the probes return Absent there). (2) libc
+is the exact workspace pin `=0.2.191` (root `[workspace.dependencies]`, under
+`# #163 KP-069 additions`) and pin_app inherits it with `libc.workspace = true`; Cargo.lock is
+unchanged. (3) A key-release retry is bounded by the remaining budget with no 50 ms floor
+(`key_up_retry_timeout`); a key's first attempt keeps the floor (`key_up_timeout`). (4)
+Gate-process wording (task A, no code): pr-watch monitors every review PR of a split gate (area PRs
+found by base `review-base/<gate>`) and judges each against its own head and recorded built-from
+SHA; a failed pre-merge check is edited on the PR that reported it; a blocked issue never holds
+another PR waiting (it still counts for gate detection); the missed-gate backstop fires when either
+the phase's or the tracking issue's set is empty. (5) Accepted bound: the commit-msg hook treats a
+message whose every non-blank line is the comment character followed by a space, tab or line end
+as empty, so `git commit -m '# fix'` gets no trailer; the hook cannot read the commit's cleanup
+mode and an editor-stripped `# fix` must still abort as empty. The round-3 regression test builds
+its destination ACL blob with a new test helper (`acl_blob`) instead of editing the round-2 test,
+which builds its blob inline and stays unchanged.
+
+**Rationale.** With no default ACL the temp file has no ACL even when the destination has
+named-user entries, so copying mode bits drops a denial (CWE-732); keeping the `0600` temp file
+never widens and needs no privilege. The repository's dependency policy is exact workspace pins. A
+floor on a retry can run up to 49 ms past the shared deadline the doc comment promises. The process
+items close the round-3 findings with one clause each (the backstop mirrors the gate definition,
+which is either scope).
+
+**Alternatives.** Copy the destination ACL (rejected: it may name users the temp file's owner
+cannot reproduce and a copy bug would widen). Probe only through the temp file (rejected: misses
+the finding). Skip a retry when less than 50 ms is left (rejected: needlessly drops a retry the
+budget still allows). A `prepare-commit-msg` hook to see `-m` (rejected for now: new hook and scope
+for a subject that is never a bare comment line; revisit if a real case appears). Accept the
+destination-ACL bound (overruled by the repository owner).
+
+## #163 gate review round 3 — gpu-tests job time after a manifest change
+
+**Decision:** Keep the `gpu-tests` 45-minute timeout and the current rust-cache configuration. A change to any Cargo manifest or `Cargo.lock` changes the rust-cache key, so the next run of each job starts cold. That run takes about 30 minutes instead of 15-21, and this is accepted as a one-off cost.
+
+**Rationale:** The issue-investigator compared the `gpu-tests` logs at 7d5c19b (16 and 21 min) with those at f5a810d (29 and 34 min):
+- The first slow run missed the cache, because round 2 changed `Cargo.lock` and `crates/pin_app/Cargo.toml`.
+- The second slow run restored the cache, but its runner compiled the identical `pin_app` source about four times slower.
+- The new round-2 tests (the windowed harness binary, the ACL and trace tests) finish in under a second.
+
+This is not a code or test regression.
+
+**Alternatives:**
+- Raise `timeout-minutes` to 60.
+- Add `restore-keys` to the cache step.
+
+Both are kept in reserve: if a warm-cache run exceeds about 30 minutes, adopt one of them in a CI unit.

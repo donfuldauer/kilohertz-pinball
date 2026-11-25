@@ -36,9 +36,19 @@ threads:
    `review:skip` / `review:sanity` / `review:full` labels are ignored):
    - **Gate:** `<P>` is a gate review PR (its base branch starts with `review-base/`), or `<P>`
      closes a gate issue (labelled `review:gate`, or the last open `work-unit` issue of its
-     `phase:*` label or of its tracking issue). Watch the gate issue's PR **and** every gate review
-     PR on the same head branch together: CI is read from the shared head commit, CodeRabbit
-     findings and approval from the review PR(s) (`<R>` below; for a non-gate PR, `<R>` is `<P>`).
+     `phase:*` label or of its tracking issue). Watch the gate issue's PR **and** every review PR of
+     the gate together. The review PRs of the gate are the step-2 review PR (head branch = the
+     issue PR's head branch) or, when the review was split (P6 "Review PR" step 3), each open area
+     PR (base `review-base/<gate>`, head `review/<gate>-<area>`; list them with
+     `gh pr list --base review-base/<gate> --state open --json number,headRefName,headRefOid,body`;
+     the oversized review PR they replaced is closed and no longer counts). CI is read from
+     `<P>`'s shared head commit (`headRefOid`); CodeRabbit findings, threads and approval are read
+     from each review PR (`<R>` below, in turn; for a non-gate PR, `<R>` is `<P>`). **The current
+     head of a review PR:** for the step-2 review PR it is `<P>`'s `headRefOid`; for an area PR it
+     is the area PR's own `headRefOid`, and it counts only while the gate-head SHA the area PR
+     records as built-from (its description or its latest rebuild comment) equals `<P>`'s
+     `headRefOid`; otherwise the area PR is stale (rebuild it as `work-issue` §6 step 2 says, then
+     ask for review).
      If the gate review PR is not open yet, open it as `work-issue` §6 describes.
    - **Routine:** anything else. No CodeRabbit review is required or requested; findings are
      handled whenever any review or review comment exists, from any author.
@@ -107,8 +117,8 @@ You are **done** when all applicable conditions hold on the current `headRefOid`
      `conclusion == "SUCCESS"`;
    - for `StatusContext` entries, `state == "SUCCESS"`.
 2. **CodeRabbit approved on the current head (gates only, per §1):** on every gate review PR,
-   `coderabbitai` has an effective `APPROVED` review covering that PR's current head (`headRefOid`;
-   for an area PR of P6 step 3, its own head, built from `headRefOid`) that has not been superseded by a later
+   `coderabbitai` has an effective `APPROVED` review covering that review PR's current head (§1)
+   that has not been superseded by a later
    `CHANGES_REQUESTED` or `DISMISSED` review (a subsequent `COMMENTED` review does not retract an
    existing approval). On a routine PR this item is satisfied automatically.
 3. **Every finding accounted for and every thread resolved (when review is required or any review
@@ -152,8 +162,9 @@ Handle the PR state in this order:
    - Obviously small T0/T1 fixes → `triage` fast path.
    - Everything else (complex, cross-module, contract, sim-output, security) → `work-classifier`
      → `task-executor`.
-   - Failed pre-merge checks (such as PR description checks) → update the PR body with
-     `gh pr edit <P> --body ...`.
+   - Failed pre-merge checks (such as PR description checks) → update the body of the PR that
+     reported the check (on a gate, a review PR `<R>`; on a routine PR, `<P>`) with
+     `gh pr edit <R> --body ...`.
 3. Batch all fix commits locally, update `docs/RUN_LOG.md` (and regenerate `docs/HUMAN_ACCEPTANCE.md`
    if needed), then commit the fix together with those updates. Re-run `work-verifier` on that exact
    commit, whether or not the run will merge, so the verified commit is the PR head
@@ -216,7 +227,7 @@ on `headRefOid` (whether or not CodeRabbit has approved yet):
 
 Skip this section on a routine PR. Otherwise, if CI checks on `headRefOid` satisfy §2 item 1,
 verification has passed (§2 item 4), and CodeRabbit is neither pending/`IN_PROGRESS` nor has
-reviewed `headRefOid` on a review PR (for example after a fix push, or rate limiting):
+reviewed that review PR's current head (§1) (for example after a fix push, or rate limiting):
 
 ```sh
 gh pr comment <R> --body "@coderabbitai review"
@@ -231,7 +242,7 @@ schedule the next check-in (§4).
 
 Skip this section on a routine PR. Otherwise, if every finding is accounted for and
 every thread is resolved, CI checks on `headRefOid` satisfy §2 item 1, verification has passed
-(§2 item 4), CodeRabbit has finished reviewing `headRefOid` (no pending or `IN_PROGRESS` CodeRabbit
+(§2 item 4), CodeRabbit has finished reviewing that review PR's current head (§1) (no pending or `IN_PROGRESS` CodeRabbit
 check), and the only remaining blocker is CodeRabbit's `CHANGES_REQUESTED` or withheld automatic
 approval:
 
