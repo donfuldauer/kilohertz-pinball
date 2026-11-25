@@ -43,6 +43,7 @@ mod present;
 mod presenter;
 mod table;
 mod threads;
+pub mod trace;
 mod view;
 
 pub use audio::{
@@ -82,7 +83,9 @@ use pin_core::{
 };
 
 /// Capacity of the per-tick input buffer of [`SimLoop`]. If more events are
-/// due in one tick, the rest stay queued and are delivered on the next tick.
+/// due in one tick, the rest stay queued and are delivered in a later
+/// executed tick (the next one, or later ones when more than this many
+/// remain).
 pub const INPUT_BUFFER_CAPACITY: usize = 256;
 
 /// Pure tick accumulator: no real time inside, the caller passes `now_ns`.
@@ -175,6 +178,7 @@ pub struct SimLoop<S: SimStep> {
     epoch_ns: u64,
     inputs_delivered: u64,
     input_overflow_ticks: u64,
+    trace: Option<trace::SimTraceWriter>,
 }
 
 impl<S: SimStep> SimLoop<S> {
@@ -195,7 +199,19 @@ impl<S: SimStep> SimLoop<S> {
             epoch_ns: 0,
             inputs_delivered: 0,
             input_overflow_ticks: 0,
+            trace: None,
         }
+    }
+
+    /// Installs the sim thread's latency-trace writer (`--latency-trace`,
+    /// REQ-LAT-003): from now on every executed tick records its scheduling
+    /// marks, every delivered button event a row and every watched press
+    /// its bat's first move ([`trace::SimTraceWriter`]; allocation-free).
+    /// Without it (the default) nothing is recorded and the ticks are
+    /// unchanged.
+    pub fn set_latency_trace(&mut self, mut writer: trace::SimTraceWriter) {
+        writer.start(self.epoch_ns);
+        self.trace = Some(writer);
     }
 
     /// Sets the simulated-time epoch: tick `k` ends at `epoch_ns + k · TICK_NS`
@@ -207,6 +223,9 @@ impl<S: SimStep> SimLoop<S> {
     /// re-stamp the identity.
     pub fn set_epoch_ns(&mut self, epoch_ns: u64) {
         self.epoch_ns = epoch_ns;
+        if let Some(t) = self.trace.as_mut() {
+            t.start(epoch_ns);
+        }
     }
 
     /// The simulated-time epoch.
@@ -221,6 +240,9 @@ impl<S: SimStep> SimLoop<S> {
     /// executed tick, so that tick applies it (REQ-LAT-004).
     pub fn skip_ticks(&mut self, ticks: u64) {
         self.epoch_ns = self.epoch_ns.saturating_add(ticks.saturating_mul(TICK_NS));
+        if let Some(t) = self.trace.as_mut() {
+            t.ticks_dropped(ticks);
+        }
     }
 
     /// Runs `n` ticks back-to-back on simulated time: tick `k`'s inputs are
@@ -275,6 +297,9 @@ impl<S: SimStep> SimLoop<S> {
             let end = tick_end_ns(self.epoch_ns, self.tick);
             // The SDL clock at the start of this (the applying) tick.
             let start = probe.as_mut().map_or(0, |(_, clock)| clock());
+            if let Some(t) = self.trace.as_mut() {
+                t.begin_tick(end, &self.snapshot);
+            }
             self.inputs.clear();
             while !self.inputs.is_full() {
                 match self.input.peek() {
@@ -283,6 +308,9 @@ impl<S: SimStep> SimLoop<S> {
                         if let Some((profiler, _)) = probe.as_mut() {
                             // Latency from the raw SDL stamp (REQ-LAT-005).
                             profiler.record_inputs(core::slice::from_ref(&ev), start);
+                        }
+                        if let Some(t) = self.trace.as_mut() {
+                            t.delivered(self.tick, &ev);
                         }
                         // Gate on the raw stamp, hand the step the tick clock.
                         self.inputs.push(InputEvent {
@@ -299,6 +327,9 @@ impl<S: SimStep> SimLoop<S> {
             self.inputs_delivered += self.inputs.len() as u64;
             self.sim
                 .step_1ms(self.tick, &self.inputs, &mut self.snapshot);
+            if let Some(t) = self.trace.as_mut() {
+                t.end_tick(self.tick, &self.snapshot);
+            }
             self.out.publish(self.snapshot);
         }
     }
@@ -319,7 +350,7 @@ impl<S: SimStep> SimLoop<S> {
     }
 
     /// Ticks at which more than [`INPUT_BUFFER_CAPACITY`] events were due
-    /// (the excess was deferred to the next tick).
+    /// (the excess was deferred to a later executed tick).
     pub fn input_overflow_ticks(&self) -> u64 {
         self.input_overflow_ticks
     }
