@@ -7870,3 +7870,153 @@ as a request.
 **Alternatives:** A clock read inside `pin_render` (the debug presenter): outside this unit.
 Reordering the slots so the playfield is drawn last: changes `render()`'s behaviour and #83's
 design space. Reading the clock after `render()` (round 1): rejected by the finding.
+
+## Process — Dual-harness agent documentation (Claude Code and Gemini/Antigravity)
+
+**Decision:** Support both Claude Code and Gemini / Antigravity across the repository's agent
+instructions, subagents, skills and process documents, using a single-source-of-truth layout with
+no git symlinks:
+- `AGENTS.md` is the canonical root instruction file. `CLAUDE.md` imports `@AGENTS.md` with brief
+  Claude Code notes; `GEMINI.md` imports `@./AGENTS.md` with brief Gemini / Antigravity notes
+  (Gemini CLI inlines `@./AGENTS.md`; Antigravity loads `AGENTS.md` directly and treats
+  `@./AGENTS.md` as a path reference without duplicating context).
+- `.claude/agents/` and `.claude/skills/` remain the canonical Markdown prompts and skill
+  procedures, updated to be dual-platform (Claude Code and Gemini / Antigravity model tiers,
+  GitHub MCP or `gh` CLI, and harness-neutral paths).
+- `.agents/agents/` provides Antigravity custom subagent definitions (with Antigravity YAML
+  frontmatter and safe cross-surface tool lists: `view_file` and `run_command` for read-only roles,
+  plus `replace_file_content` and `write_to_file` for `task-executor`) that forward to
+  `.claude/agents/`. Standalone Gemini CLI does not load `.agents/agents/`; its main session does
+  not run executor or verifier roles directly and uses `.claude/agents/` only through custom
+  subagents mirrored locally under `.gemini/agents/`, as documented in `GEMINI.md`.
+- `.agents/skills/` provides Gemini / Antigravity skill adapters forwarding to `.claude/skills/`,
+  plus the Gemini / Antigravity-specific `pr-watch` skill (`.agents/skills/pr-watch/SKILL.md`),
+  which stands in for Claude Code's `subscribe_pr_activity` / auto-fix loop by scheduling
+  non-blocking check-ins (`/schedule` or a single async background check-in), addressing CodeRabbit
+  findings, resolving threads itself, and driving PRs to CodeRabbit approval and green CI.
+- `docs/PROCESS.md` P1, P4, P5, P6 and P7, `docs/DEVELOPMENT.md`, `docs/BRIEF_TEMPLATE.md`,
+  `README.md`, `.github/ISSUE_TEMPLATE/work-unit.md`, `.github/pull_request_template.md` and
+  `.gitignore` (ignoring `.gemini/settings.json` for personal project-specific Gemini CLI settings)
+  are updated for both harnesses (including T0–T3 mappings for Flash-Lite / Flash / Pro /
+  maximum-reasoning Pro alongside Haiku 5.5 / Sonnet 5.5 / Opus 5.5 / Fable 5.2, and `gh` CLI
+  equivalents alongside GitHub MCP tools).
+
+**Rationale:** The repository previously assumed Claude Code exclusively (`CLAUDE.md`,
+`.claude/agents/`, `.claude/skills/`, Claude-only model names, MCP-only GitHub steps and a
+hardcoded `/home/user/kilohertz-pinball` path). Antigravity discovers `AGENTS.md`,
+`.agents/agents/*.md` and `.agents/skills/<name>/SKILL.md` natively, while Gemini CLI discovers
+`GEMINI.md` and `.agents/skills/<name>/SKILL.md`. Forwarding from thin `.agents/` adapters to the
+canonical `.claude/` files avoids duplicating long prompt bodies and avoids git symlinks, which
+require elevated privileges or Developer Mode on Windows (a first-class target OS). Antigravity
+custom subagent frontmatter requires exact Antigravity tool names (unmapped tool names can hang
+subagent startup), so `.agents/agents/*.md` declares its own frontmatter rather than sharing
+`.claude/agents/*.md` directly. Because Antigravity has no built-in PR auto-fix or GitHub-webhook
+subscription, a dedicated `pr-watch` skill gives Antigravity sessions a repeatable, non-blocking
+check-in and thread-resolution procedure without touching Claude Code's native PR subscription.
+
+**Alternatives:**
+- Duplicate full skill and agent Markdown bodies in `.agents/` and `.claude/`: rejected because
+  every process edit would risk drift between the two copies.
+- Symlink `CLAUDE.md`, `GEMINI.md`, `.agents/skills/` and `.claude/skills/`: rejected because git
+  symlinks break or check out as plain text files on Windows without Developer Mode.
+- Use `.agents/skills.json` pointing to `.claude/skills/` instead of `.agents/skills/<name>/SKILL.md`:
+  rejected because Gemini CLI reads `.agents/skills/` directly and does not read Antigravity's
+  `skills.json` discovery manifest.
+- Mirror `.gemini/agents/` in the repository for Gemini CLI: deferred in favor of scoping
+  `.agents/agents/` to Antigravity and documenting the standalone Gemini CLI workflow in
+  `GEMINI.md`, avoiding unverified version-specific Gemini CLI frontmatter.
+
+## Process — Initial-usable-build review rhythm (tests along the way, sanity review on boundaries, full review at M1)
+
+**Superseded** by "Process — Gate reviews at phase and milestone completion" below.
+
+**Decision:** While M1 — Play experience (`#79`) builds the first usable end-to-end playable
+slice, split PR code review into three label-driven modes in `docs/PROCESS.md` P6 and
+`.coderabbit.yaml`:
+
+1. **`review:skip`** (default for routine M1 vertical-slice, rendering, parts, cabinet, art, UI
+   and table-content chunks): no automatic per-PR CodeRabbit review. Every PR remains gated by
+   Implementer + Independent Tester tests, `work-verifier` (`pass`, P5 unit gate + R12 visual and
+   windowed evidence), CI `pr-checks` and `main` CI.
+2. **`review:sanity`** (targeted mid-stream sanity review): required on any issue/PR defining or
+   changing public interfaces, schemas or wire contracts (`phase:11-contracts`, `crates/pin_core/`,
+   `contracts/CHANGE_REQUESTS.md`, SPEC Appendix A/B, cross-layer spines such as `#92` vertex
+   format and `#99` room/scene split), concurrency/state-machine/timing loops (`#82`, `#83`,
+   `#86`, `#103`, `#149`), `very-high` blast-radius / simulation-output changes (`#87`, `#113`),
+   R11 untrusted-table security paths (`pin_script` sandbox, `pin_assets` zip/VFS, `third_party/`),
+   and milestone gate harnesses (`#124` Gate A3). CodeRabbit runs in `quiet` profile with
+   `auto_pause_after_reviewed_commits: 2`; blocking boundary, contract, concurrency, determinism,
+   security and correctness defects are fixed, while cosmetic style and minor refactor nitpicks are
+   deferred to `#153` (KP-064) or M2.
+3. **`review:full`**: runs the cohesive full review pass over the working M1 build in `#153`
+   (KP-064, depending on `#124` Gate A3 and `#149`, and gating `#125` final acceptance checklist),
+   lands high-leverage cross-cutting fixes, and flips `.coderabbit.yaml` to post-usable per-chunk
+   review (`auto_review.enabled: true`, `profile: chill`, `labels: ["!review:skip"]`,
+   `auto_pause_after_reviewed_commits: 2`) for M2 (`#80`) and all subsequent work.
+
+**Rationale:** Running multi-round full CodeRabbit polish loops on every isolated M1 chunk slowed
+down reaching the first playable build (for example, PR `#146` accumulated 40 review events and
+PR `#150` ran 8 rounds) while risking premature polish on abstractions whose real shape only
+becomes clear once the whole machine runs end-to-end under Gate A3. Keeping all automated tests,
+coverage floors, R12 visual/windowed checks and `work-verifier` mandatory per PR catches logic
+and integration regressions immediately; targeted `review:sanity` passes protect the boundaries
+that are expensive to change later; and `#153` (KP-064) gives the full review pass the cohesive
+context needed to catch cross-cutting drift, duplicated logic and state-transition bugs before
+flipping to tighter per-PR review for durable post-usable work.
+
+**Alternatives:**
+- Keep full per-PR CodeRabbit review (`auto_review.enabled: true`, `auto_pause_after_reviewed_commits: 0`)
+  on all 44 open M1 PRs: rejected because per-chunk polish loops bottleneck delivery of the first
+  usable playable build and create sunk-cost attachment to early module shapes.
+- Disable CodeRabbit completely until after M1: rejected because contracts (`pin_core` / Appendix A),
+  timing/concurrency loops (latency harness, present queue, snapshot latch, telemetry thread),
+  simulation-output changes and R11 security boundaries are expensive to retrofit once many chunks
+  build on top of them.
+- Rely on agent self-review during M1: rejected; R9 (no self-review) remains intact, with
+  `work-verifier` checking objective facts and CodeRabbit remaining the sole code reviewer.
+
+## Process — Gate reviews at phase and milestone completion
+
+**Decision:** At the repository owner's request, align the review rhythm with the owner's other
+projects: no code review on routine unit-of-work PRs, and one cumulative CodeRabbit review at the
+completion of each phase and milestone (`docs/PROCESS.md` P6 "Gate reviews"). This supersedes the
+label-driven `review:skip` / `review:sanity` / `review:full` modes and the planned flip to per-PR
+review in `#153` (KP-064).
+
+1. **Routine PRs** merge on `pr-checks` (and any other PR workflow), green `main` CI and
+   `work-verifier` (`pass`). No `review:*` label is applied and no CodeRabbit review is requested.
+2. **Gate issues** are the last open `work-unit` issue of a `phase:NN-name` label or of a tracking
+   issue (M1 `#79`, M2 `#80`), or an issue labelled `review:gate`. The gate issue's branch is
+   opened twice: once against `main` (closes the issue) and once, review-only, against
+   `review-base/<gate>`, a branch at the last reviewed commit, so CodeRabbit sees every change
+   merged since the previous gate.
+3. **No git tags (D39):** the reviewed commit is recorded as `reviewed <sha>` in the gate's
+   `docs/RUN_LOG.md` row. The first base is `4113e42`, the last commit of the former rhythm (the
+   merge of PR `#154`).
+4. **`.coderabbit.yaml`:** `auto_review.enabled: false` (nothing is reviewed automatically),
+   `base_branches: ["^review-base/.*"]`, `profile: chill`, `request_changes_workflow: true`; the
+   Orchestrator requests `@coderabbitai full review`, then `@coderabbitai review` after each fix
+   push.
+5. **Close out:** the gate issue's PR merges only once CodeRabbit approves every review PR of the
+   gate; the review PRs close unmerged; `review-base/<gate>` is deleted where the session proxy
+   allows branch deletion (an undeleted base branch is inert).
+6. **Granularity:** phases (`phase:*`), not only milestones, so each cumulative diff stays within
+   what one CodeRabbit pass can review; oversized gate diffs are split into area review PRs.
+7. **`#153` (KP-064)** keeps its cohesive M1 review after Gate A3 (`#124`) as a `review:gate`
+   issue but no longer flips `.coderabbit.yaml` to per-PR review. The retired `review:*` labels on
+   open issues, and review-mode notes in their bodies, are ignored.
+
+**Rationale:** Per-PR CodeRabbit rounds were the main source of fix loops on unit PRs (for
+example PR `#146` with 40 review events and PR `#150` with 8 rounds), while unit correctness is
+already gated by Implementer and Independent Tester tests, coverage floors, R12 evidence, CI and
+the verifier. A cumulative review at each phase and milestone keeps review where it pays off
+(cross-cutting drift, duplicated logic, contract, timing and R11 boundary defects). CodeRabbit
+stays the sole code reviewer (R9); only its timing changes.
+
+**Alternatives:**
+- Keep `review:sanity` on contract, timing and R11 PRs: rejected by the owner's direction that
+  review happens only at phase and milestone completion; contracts are still protected by R2 and
+  reviewed at the first gate after they land.
+- Review on the gate issue's own PR against `main`: rejected because CodeRabbit would see only
+  that issue's diff, not the phase's cumulative changes.
+- Git tags for reviewed commits: rejected under D39 (the session proxy may refuse tag pushes).

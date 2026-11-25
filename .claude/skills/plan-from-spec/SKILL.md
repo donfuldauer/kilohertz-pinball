@@ -5,14 +5,15 @@ description: "Turns docs/SPEC.md requirements into Kilohertz Pinball's plan, whi
 
 # plan-from-spec
 
-The plan turns SPEC requirements into units of work the agents in `.claude/agents/` can execute
-under `docs/PROCESS.md`. **The plan is GitHub issues, never a repository file**: each
-`work-unit` issue is one unit, sized as one reviewable PR, and its body is the unit's spec.
-Every later brief is built from an issue, so issues must be concrete: owned paths, deliverables,
-acceptance criteria.
+The plan turns SPEC requirements into units of work the agents in `.claude/agents/` (forwarded by
+`.agents/agents/` for Gemini / Antigravity) can execute under `docs/PROCESS.md`. **The plan is
+GitHub issues, never a repository file**: each `work-unit` issue is one unit, sized as one
+reviewable PR, and its body is the unit's spec. Every later brief is built from an issue, so issues
+must be concrete: owned paths, deliverables, acceptance criteria.
 
-Repository: `donfuldauer/kilohertz-pinball`. GitHub through the MCP tools; `gh api -X GET
-search/issues` only for searches by label, paged explicitly (PROCESS.md P1 "Working with GitHub").
+Repository: `donfuldauer/kilohertz-pinball`. GitHub through MCP tools (with `gh api -X GET
+search/issues` paged explicitly for label searches) or through the `gh` CLI when MCP tools are not
+configured (PROCESS.md P1 "Working with GitHub").
 
 ## 1. P8 items for the owner (ask before planning, only when needed)
 
@@ -30,7 +31,8 @@ owner only for the P8 items (PROCESS.md P8) the planned work cannot do without:
 - `setting`, `hardware`, `assets`, `release`, `legal`: a repository setting (for example a new
   required check), a physical device, real assets, publishing, or licensing the plan depends on.
 
-Ask with AskUserQuestion (at most four questions per call; the recommended option first, marked
+Ask with `AskUserQuestion` (Claude Code) or `ask_question` (Antigravity) / the harness's
+interactive question tool (at most four questions per call; the recommended option first, marked
 Recommended, with a one-line consequence per option). Record each answer's rationale in
 `docs/DECISIONS.md` (`## Planning — <topic>`). If the owner is unreachable, append each open
 question as a `- [P8 <kind>] [<id>] <text>` line in `docs/HUMAN_QUEUE.md`, plan everything that
@@ -73,14 +75,20 @@ the source (DECISIONS.md "Planning — No third-party names in planning text").
 **Labels:** `work-unit`; `ready` / `blocked` (later `in-progress`, `status:blocked-failure`);
 `type:feature`, `type:fix`, `type:infra`, `type:docs`, `type:content` (tables, rules, art data);
 `area:` app, render, physics, sim, input, audio, assets, tablegen, assetgen, script, tables, ci,
-release, process; `phase:NN-name`; `tier:T1` / `tier:T2` (expected; T3 is never planned).
+release, process; `phase:NN-name`; `tier:T1` / `tier:T2` (expected; T3 is never planned); and
+`review:gate` only on an issue that should carry a gate review although it may not be the last of
+its phase (for example a cohesive end-of-milestone review such as `#153` KP-064). Units get no
+per-PR review label: CodeRabbit reviews only at the completion of each phase and milestone
+(`docs/PROCESS.md` P6 "Gate reviews"), so keep phases small enough that one phase's cumulative
+diff is reviewable in one pass.
 **Milestones** are tracking issues (label `tracking`): #79 M1 — Play experience, #80 M2 — Backlog,
 or a new one whose body states the goal and scope (no Plan ID line) and which closes with its
 last sub-issue.
 
 **Suggested phase order** (adapt to the requirements): responsiveness and wiring fixes →
 contracts (`pin_core` CRs, new schemas) → rendering capabilities → the machine (scene, cameras,
-parts, cabinet, art) → tables → automated gates → acceptance material → backlog.
+parts, cabinet, art) → tables → automated gates → cohesive M1 gate review → acceptance material →
+backlog.
 
 ## 3. Check the breakdown
 

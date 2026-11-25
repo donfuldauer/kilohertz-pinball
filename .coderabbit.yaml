@@ -1,17 +1,33 @@
 # CodeRabbit is the only code reviewer (docs/PROCESS.md R9 and P6, D36).
+#
+# Review rhythm: GATE REVIEWS ONLY. CodeRabbit does not review routine unit-of-work PRs; they merge
+# on green `pr-checks`, `main` CI and `work-verifier` (P5 unit gate). CodeRabbit reviews only at
+# the completion of a phase or milestone, on a review-only "gate review" PR whose head is the gate
+# issue's branch and whose base is `review-base/<gate>` (the last reviewed commit, recorded in
+# docs/RUN_LOG.md), so the review covers every change merged since the previous gate
+# (docs/PROCESS.md P6 "Gate reviews").
+# The Orchestrator requests each pass explicitly with `@coderabbitai full review` (first pass) and
+# `@coderabbitai review` (after fix pushes); nothing is reviewed automatically.
 language: en-US
 reviews:
+  # Gate reviews are infrequent and cumulative, so report everything worth fixing.
   profile: chill
-  # Approve once every comment is resolved, so the merge conditions of PROCESS.md P6 step 5 can be checked.
+  # Approve once every comment is resolved (PROCESS.md P6 gate merge conditions).
   request_changes_workflow: true
   high_level_summary: true
+  collapse_walkthrough: true
+  poem: false
   auto_review:
-    enabled: true
+    # Off: routine PRs are never reviewed; gate review PRs are reviewed on explicit request.
+    enabled: false
     drafts: false
-    # Keep reviewing every push; PROCESS.md P6 step 4 needs an incremental review of each fix.
-    auto_pause_after_reviewed_commits: 0
+    auto_incremental_review: false
+    ignore_title_keywords:
+      - "WIP"
+      - "[skip review]"
+    # Gate review PRs target `review-base/<gate>` branches, not `main`.
     base_branches:
-      - main
+      - "^review-base/.*"
   # Skip files a reviewer cannot read or that are generated, vendored or recorded data.
   # Code, shaders, Lua/Wasm-text table rules, TOML manifests, CI and docs stay in review.
   path_filters:
@@ -64,6 +80,18 @@ reviews:
     - "!tools/dof_bridge/**/obj/**"
     - "!dist/**"
   path_instructions:
+    - path: "**/*"
+      instructions: >-
+        This is a cumulative phase or milestone gate review: the diff is every change merged since
+        the previous gate. Look across files and crates for what per-unit work misses:
+        architectural drift, duplicated logic, mismatched contracts, awkward state transitions and
+        test gaps. Prioritise issues that are expensive to change later or block correctness:
+        architectural boundaries, public interfaces/schemas/wire contracts,
+        concurrency/state-machine/timing defects, determinism (R3), sim-thread
+        blocking/allocations (R4), untrusted-table security boundaries (R11), and verified
+        correctness bugs. Skip cosmetic style and formatting (rustfmt, clippy and unit/spec tests
+        cover them). Mention any repeated pattern once at summary level instead of posting
+        duplicate inline comments.
     - path: "crates/**/src/**"
       instructions: >-
         Check the rules of docs/PROCESS.md. R4: no heap allocation, mutex or file I/O inside
@@ -82,6 +110,8 @@ reviews:
         assertions first, a regression snapshot only after them, never a snapshot alone.
     - path: "docs/**"
       instructions: >-
-        Planning and decision records; check consistency with docs/SPEC.md and docs/PROCESS.md.
+        Planning, process, and decision records; flag only substantive contradictions with
+        docs/SPEC.md or docs/PROCESS.md, broken commands/links, or schema/format violations
+        (e.g. docs/DECISIONS.md and docs/HUMAN_QUEUE.md contracts). Skip prose phrasing nits.
 chat:
   auto_reply: true

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# When a commit is authored by an AI agent (e.g. "Claude <noreply@anthropic.com>"), append a
+# "Co-authored-by:" trailer for the human the agent is working for, so GitHub attributes the
+# commit to that person as well as to the agent. Commits authored by people are left untouched.
+#
+# The human comes from `git config kilohertz.coauthor` ("Name <email>"), which
+# ./scripts/install-git-hooks.sh resolves per contributor; $KILOHERTZ_COAUTHOR overrides it.
+set -euo pipefail
+
+msg_file="$1"
+hooks_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-agent-identity.sh
+source "${hooks_dir}/lib-agent-identity.sh"
+
+# "Name <email> <timestamp> <tz>" -> name / email
+author_ident="$(git var GIT_AUTHOR_IDENT)"
+author_name="${author_ident%% <*}"
+author_email="${author_ident#*<}"
+author_email="${author_email%%>*}"
+
+is_agent_identity "${author_name}" "${author_email}" || exit 0
+
+coauthor="${KILOHERTZ_COAUTHOR:-$(git config --get kilohertz.coauthor || true)}"
+if [[ ! "${coauthor}" =~ ^[^\<]+\ \<[^\>]+\>$ ]]; then
+  echo "commit-msg: agent-authored commit has no human co-author;" \
+       "run ./scripts/install-git-hooks.sh or: git config kilohertz.coauthor 'Name <email>'" >&2
+  exit 0
+fi
+
+coauthor_email="${coauthor#*<}"
+coauthor_email="${coauthor_email%>}"
+coauthor_email_re="$(printf '%s' "${coauthor_email}" | sed 's/[][\.*^$+?(){}|/]/\\&/g')"
+if grep -qiE "^co-authored-by:.*<${coauthor_email_re}>" "${msg_file}"; then
+  exit 0
+fi
+
+git interpret-trailers --in-place --if-exists addIfDifferent \
+  --trailer "Co-authored-by: ${coauthor}" "${msg_file}"

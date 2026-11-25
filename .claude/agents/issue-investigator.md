@@ -48,7 +48,7 @@ investigation reports and fix attempts for the same issue.
    otherwise report `root cause: not found` (needs the reported environment), not a
    recommendation. Every thread reply draft states the reason and the evidence first. For
    `not-a-defect` (or a documented accepted bound) it ends with "recommend: Orchestrator resolves
-   thread"; never route closing a thread to a person (PROCESS.md P6 step 3). An unfixed security
+   thread"; never route closing a thread to a person (PROCESS.md P6 "Gate reviews" step 4). An unfixed security
    issue at the untrusted-table boundary (R11) or a verified correctness defect is never
    `valid-but-deferred` unless it is already fixed.
 5. **Plan the fix.** Files and functions to change, the regression test that must fail before
@@ -57,8 +57,8 @@ investigation reports and fix attempts for the same issue.
 
 Stop after a reasonable bounded effort. If you cannot reproduce or isolate the cause, say so,
 list what you ruled out and the next experiments, and mark `root cause: not found`. Two such
-passes are the evidence the classifier needs before it may consider Fable 5.2 (PROCESS.md P4).
-Do not suggest Fable yourself on any other grounds.
+passes are the evidence the classifier needs before it may consider T3 / Fable 5.2 (PROCESS.md
+P4). Do not suggest T3 / Fable yourself on any other grounds.
 
 ## Output (your final message)
 

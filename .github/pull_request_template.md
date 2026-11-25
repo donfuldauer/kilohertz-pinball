@@ -2,7 +2,10 @@ Closes #<!-- issue number -->
 
 ## Work item
 
-<!-- issue title, plan ID (KP-NNN), phase label and tracking issue (#79 M1 or #80 M2);
+<!-- issue title, plan ID (KP-NNN), phase label, tracking issue (#79 M1 or #80 M2),
+     whether this is a gate issue (last open issue of its phase or tracking issue, or
+     `review:gate`; docs/PROCESS.md P6) with a link to its gate review PR, or "routine (no code
+     review)";
      the branch, if the session could push only to an assigned branch -->
 
 ## Requirements satisfied
@@ -38,5 +41,6 @@ Closes #<!-- issue number -->
 
 ## Model routing
 
-<!-- tiers used; every Fable 5.2 use with its P4 evidence (need, why Opus was not enough,
-     allowance: the owner's answer and time); [Fable wanted] notes -->
+<!-- harness and tiers used; every T3 / Fable 5.2 use with its P4 evidence (need, why T2 was not
+     enough, allowance: the owner's answer and time on Claude Code or plan/quota on Gemini /
+     Antigravity); [Fable wanted] / [T3 wanted] notes -->

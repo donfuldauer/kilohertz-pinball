@@ -48,12 +48,14 @@ Every brief's COMMANDS start from this block (from the Wave 5 `COMMON.md` "ENVIR
 the target directory per issue).
 
 * 4 cores, 15 GB RAM, shared by up to four units of work. **Every cargo command:**
-  `CARGO_BUILD_JOBS=2` and `CARGO_TARGET_DIR=/home/user/kilohertz-pinball/target/<issue number>`
-  (the issue's dir, shared by its Implementer and Independent Tester; the work-verifier uses
-  `target/<issue number>_ver`).
+  `CARGO_BUILD_JOBS=2` and `CARGO_TARGET_DIR=<repo-root>/target/<issue number>`
+  (for example `/home/user/kilohertz-pinball/target/<issue number>` in Claude Code cloud sessions
+  or `/home/antigravity/donfuldauer/kilohertz-pinball/target/<issue number>` in Antigravity remote
+  VMs; the issue's dir is shared by its Implementer and Independent Tester, and the work-verifier
+  uses `target/<issue number>_ver`).
   **Disk (added after a restart filled the allowance):** also export `CARGO_INCREMENTAL=0`,
   `CARGO_PROFILE_DEV_DEBUG=line-tables-only` and `CARGO_PROFILE_TEST_DEBUG=line-tables-only` for
-  every cargo command. Check `df -h /home/user` before big builds; if free space is under 4 GB, run
+  every cargo command. Check `df -h .` before big builds; if free space is under 4 GB, run
   `cargo clean -p <crate>` for crates you no longer need and tell the Orchestrator in your report.
   Build only the crates you need (`-p <crate>`); never `cargo build --workspace` unless the brief
   says so.
@@ -69,8 +71,14 @@ the target directory per issue).
   Anything that opens a window runs under `xvfb-run -a` (the windowed-app evidence of
   PROCESS.md R12).
 
-Each issue works in its own git worktree `../kilohertz-issue-<N>` (`work-issue` skill §2); the
-absolute `CARGO_TARGET_DIR` keeps every build under one `target/` for disk checks and cleanup.
+Commit attribution: `scripts/install-git-hooks.sh` sets `core.hooksPath=.githooks` and
+`kilohertz.coauthor`; `.githooks/commit-msg` then adds `Co-authored-by:` for the human contributor
+to agent-authored commits (`AGENTS.md` "Commit attribution"). Claude Code runs the script at
+`SessionStart`; `.agents/setup-env.sh` runs it on Antigravity VMs.
+
+Each issue works in its own git worktree `../kilohertz-issue-<N>` (`work-issue` skill §2; or a
+branch inside the checkout when a sandbox restricts sibling directories); the absolute
+`CARGO_TARGET_DIR` keeps every build under one `target/` for disk checks and cleanup.
 
 ## Workspace and crate map
 
@@ -80,9 +88,16 @@ kilohertz-pinball/
 ├── versions.toml                  # Toolchain and dependency pins from the 0.1 spikes (unchanged)
 ├── physics_defaults.toml          # Global tunables (SPEC Appendix C); data-only tuning happens here
 ├── contracts/CHANGE_REQUESTS.md   # Contract-change queue (PROCESS.md R2)
-├── CLAUDE.md                      # Agent instructions
-├── .claude/agents/                # work-classifier, task-executor, work-verifier, issue-investigator
-├── .claude/skills/                # work-issue, run-plan, plan-from-spec, triage
+├── AGENTS.md                      # Canonical agent instructions (Claude Code & Gemini/Antigravity)
+├── CLAUDE.md                      # Claude Code entry point (imports AGENTS.md)
+├── GEMINI.md                      # Gemini / Antigravity entry point (imports AGENTS.md)
+├── .agents/
+│   ├── agents/                    # Antigravity custom subagent definitions (forward to .claude/agents/)
+│   └── skills/                    # Gemini / Antigravity skills (forward to .claude/skills/, plus pr-watch)
+├── .claude/
+│   ├── settings.json              # Shared Claude Code sandbox and permission defaults
+│   ├── agents/                    # Canonical subagent prompts (work-classifier, task-executor, work-verifier, issue-investigator)
+│   └── skills/                    # Canonical skill procedures (work-issue, run-plan, plan-from-spec, triage)
 ├── .coderabbit.yaml               # CodeRabbit configuration (path filters, path instructions)
 ├── .github/
 │   ├── workflows/                 # ci.yml, release.yml, rules-wasm.yml, soak.yml, spikes.yml
@@ -264,13 +279,13 @@ no CI job yet (KP-045, #126; DECISIONS.md "Process — req_coverage without a CI
 ## CI
 
 Workflows live in `.github/workflows/`. The single required status check on `main` is
-**`pr-checks`** (PROCESS.md P6 step 5); changing that set is a repository setting (P8).
+**`pr-checks`** (PROCESS.md P6 routine step 3); changing that set is a repository setting (P8).
 
 **D40 split.** Pull requests run the Linux set only: `fmt`, `clippy` (Linux), `core-tests`
 (Linux), `replay-hash` (Linux), and `gpu-tests` (lavapipe) and `dof-bridge` only when their paths
 change. Pushes to `main` and `workflow_dispatch` run everything: the Windows and macOS legs (the
 `*-cross` jobs), all GPU adapters and coverage. A red `main` stops merges until a fix or revert
-lands (P6 step 5). Pull-request runs are cancelled when superseded; `main` and dispatch runs queue
+lands (P6 routine step 3). Pull-request runs are cancelled when superseded; `main` and dispatch runs queue
 and complete.
 
 | Workflow / job | Runs | What it does |

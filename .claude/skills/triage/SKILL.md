@@ -13,7 +13,7 @@ task-executor and checked by the work-verifier. The fast path never routes T2 or
 
 - The item is a fix, a CodeRabbit finding, a docs or run-log edit or a CI tweak (never an issue
   implementation, an Independent Tester task, an investigation, or a gate failure).
-- The tier is clearly T0 (Haiku 5.5) or T1 (Sonnet 5.5).
+- The tier is clearly T0 (Haiku 5.5 / Flash-Lite) or T1 (Sonnet 5.5 / Flash).
 - It touches one module or docs only.
 - No `pin_core` contract change and no change to another contract (PROCESS.md P3).
 - No change to simulation output (`pin_physics` world/ball/flipper numerics, the sim tick, the
@@ -26,15 +26,15 @@ task-executor and checked by the work-verifier. The fast path never routes T2 or
 If the validity or cause is unclear, the item goes to the issue-investigator first and is then
 handled by the investigator's verdict: `valid-defect` is triaged again from its report (fast
 path if it now passes every check, else the work-classifier); `valid-but-deferred` or
-`pre-existing` is "Deferred" (PROCESS.md P6 step 3): open the investigator's new `work-unit`
+`pre-existing` is "Deferred" (PROCESS.md P6 "Gate reviews" step 4): open the investigator's new `work-unit`
 issue (attached to its tracking issue) or commit its `docs/DECISIONS.md` entry, reply with the
 link and resolve, with no Fixer, unless it is an unfixed security issue or a verified unfixed
-correctness defect (P6 step 3 exceptions): then the thread stays unresolved and the item goes
+correctness defect (P6 "Gate reviews" step 4 exceptions): then the thread stays unresolved and the item goes
 to the work-classifier for a fix; `not-a-defect` is "Not a defect": reply with its evidence
-and resolve per P6 step 3, with no Fixer. Any other failing check, or an unsure Orchestrator,
+and resolve per P6 "Gate reviews" step 4, with no Fixer. Any other failing check, or an unsure Orchestrator,
 sends the item to the work-classifier.
 
-## 2. Batching procedure (one CodeRabbit review round, or one push)
+## 2. Batching procedure (one gate-review round, or one push)
 
 1. List every new finding (inline, nitpick, outside-diff and summary items).
 2. Triage each one as fast-path T0, fast-path T1, investigator, or classifier.
@@ -49,27 +49,29 @@ sends the item to the work-classifier.
    into one brief at the higher tier. Send all classifier-bound items to ONE work-classifier
    call as a batch.
 5. Group the remaining fast-path items by tier and module directory: one Fixer brief per
-   (tier, module) group, with all docs-only items (`docs/`, `.claude/`, `CLAUDE.md`, `README.md`)
-   counting as one docs group (R1). When items of different tiers touch the same file, put them
-   in one brief at the higher tier.
+   (tier, module) group, with all docs-only items (`docs/`, `.claude/`, `.agents/agents/`,
+   `.agents/skills/`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `README.md`) counting as one docs
+   group (R1). Executable setup files (`.agents/setup-env.sh`, `.agents/environment.json`) are
+   **not** docs-only and keep their code verification and regression-test requirements. When items
+   of different tiers touch the same file, put them in one brief at the higher tier.
 6. Spawn executors, in parallel when owned paths do not overlap.
 7. Run ONE work-verifier on the resulting head commit covering every item in the round whenever
    the round changed the head (executor fixes, or a commit such as a `docs/DECISIONS.md` entry
    for a deferred finding; a round that only appends to the shared files uses the verifier's
    log-only case). Skip it only when the head is unchanged (for example every finding was
-   answered as not a defect): the previous verifier pass on that head still satisfies P6 step 5,
+   answered as not a defect): the previous verifier pass on that head still satisfies P6 routine step 3,
    and the replies carry the investigator's evidence.
-8. Reply to and resolve threads per PROCESS.md P6 step 3.
+8. Reply to and resolve threads per PROCESS.md P6 "Gate reviews" step 4.
 
 ## 3. Fixer brief template
 
 A valid subset of `docs/BRIEF_TEMPLATE.md`; field names match it. Fill it in and pass it to the
-task-executor with the tier's model as the `model` override.
+task-executor with the tier's model override.
 
 ```text
 WORK ITEM <#issue / PR finding id>: <title>          AGENT: task-executor
 ROLE: Fixer
-MODEL: <Haiku 5.5 | Sonnet 5.5>   TIER: T0 | T1
+MODEL: <Haiku 5.5 | Sonnet 5.5 | Flash-Lite | Flash>   TIER: T0 | T1
 BRANCH: <branch>   PR: <number>
 ISSUE: #<n>   PLAN ID: KP-<NNN>   REQUIREMENTS: <SPEC sections / REQ IDs touched, or none>
 
@@ -86,7 +88,7 @@ REQUIREMENTS
      File:lines: <path>:<a>-<b>
      Fixed means: <exact observable condition>
   For each finding, report the thread URL and what changed. Do not reply to or resolve
-  threads; the Orchestrator does (PROCESS.md P6 step 3).
+  threads; the Orchestrator does (PROCESS.md P6 "Gate reviews" step 4).
 
 TESTS REQUIRED
   A regression test for each finding that changes code, in the test path listed under OWNED
@@ -98,7 +100,7 @@ RULES
 
 COMMANDS
   <the "Agent environment" block from docs/DEVELOPMENT.md (CARGO_BUILD_JOBS=2,
-   CARGO_TARGET_DIR=/home/user/kilohertz-pinball/target/<issue number>, CARGO_INCREMENTAL=0,
+   CARGO_TARGET_DIR=<repo-root>/target/<issue number>, CARGO_INCREMENTAL=0,
    CARGO_PROFILE_DEV_DEBUG=line-tables-only, CARGO_PROFILE_TEST_DEBUG=line-tables-only, the disk
    check), then the exact commands, e.g. cargo fmt --all --check;
    cargo clippy -p <crate> --all-targets -- -D warnings; cargo test -p <crate>>

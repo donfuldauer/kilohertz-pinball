@@ -31,3 +31,6 @@ __pycache__/
 .claude/settings.local.json
 .claude/worktrees/
 .claude/.cc-writes/
+
+# Gemini CLI per-project personal settings (user settings live in ~/.gemini/settings.json)
+.gemini/settings.json

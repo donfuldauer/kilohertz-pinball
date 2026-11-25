@@ -9,7 +9,7 @@ pasted in. Briefs worth keeping (a phase-wide `COMMON.md`, long briefs) are save
 ```text
 WORK ITEM <#issue or finding id>: <title>   AGENT: task-executor | work-verifier | issue-investigator
 ROLE: Implementer | Independent Tester | Fixer | Verifier | Investigator
-MODEL: <Haiku 5.5 | Sonnet 5.5 | Opus 5.5 | Fable 5.2>   TIER: T0–T3 (+ P4 Fable evidence if T3)
+MODEL: <Haiku 5.5 | Sonnet 5.5 | Opus 5.5 | Fable 5.2 — or Flash-Lite | Flash | Pro | T3>   TIER: T0–T3 (+ P4 T3/Fable evidence if T3)
 BRANCH: <branch>   BASE: main   PR: <number or "not yet open">
 
 ISSUE: #<n> <url>   PLAN ID: KP-<NNN>   PHASE: <phase:NN-name>   TRACKING ISSUE: <#79 M1 | #80 M2>
@@ -47,7 +47,7 @@ TESTS REQUIRED
 
 COMMANDS
   <the "Agent environment" block from docs/DEVELOPMENT.md (CARGO_BUILD_JOBS=2,
-   CARGO_TARGET_DIR=/home/user/kilohertz-pinball/target/<issue number> (verifier: <n>_ver),
+   CARGO_TARGET_DIR=<repo-root>/target/<issue number> (verifier: <n>_ver),
    CARGO_INCREMENTAL=0, CARGO_PROFILE_DEV_DEBUG=line-tables-only,
    CARGO_PROFILE_TEST_DEBUG=line-tables-only, the disk check), then the exact format / lint /
    test / coverage / replay / gate commands from docs/DEVELOPMENT.md for the touched crates>
@@ -79,12 +79,12 @@ ROLE-SPECIFIC
                       black-box and property tests under the spec-test paths from this brief
                       alone; report any API mismatch instead of reading the code.
   Fixer:              smallest change that meets "fixed"; regression test; name the thread(s).
-                      Do not reply to or resolve threads; the Orchestrator does (P6 step 3).
+                      Do not reply to or resolve threads; the Orchestrator does (P6 "Gate reviews" step 4).
   Verifier:           re-run every gate step; trace each requirement and REQ ID to a passing
                       test; open the rendered images and walk the visual checklist; no style or
                       design opinions (CodeRabbit reviews the PR).
   Investigator:       reproduce, root-cause, verdict, fix plan; change no repository files.
 
 REPORT FORMAT
-  <the report block from the receiving agent's definition in .claude/agents/>
+  <the report block from the receiving agent's definition in .claude/agents/ (forwarded by .agents/agents/)>
 ```
