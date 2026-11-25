@@ -9124,3 +9124,28 @@ code is unchanged. The split case otherwise left the watcher with no resolvable 
 
 **Alternatives.** Clearing macOS ACLs or setting a Windows DACL (rejected by the owner decision);
 requiring a new single review PR after a split (contradicts P6 step 3).
+
+## #163 gate round 8 — dynamic mesh publication deferred
+
+**Decision:** the `dynamic_mesh_count` and `dynamic_meshes` doc comments in `pin_core::snapshot` gain a status note: the slot convention is normative for publishers, the production simulation does not publish slots yet (it sets the count to 0), publication is work-unit #103 (KP-023), and renderers (#108, KP-027) treat a count below the mech count as "draw the rest pose". Publication stays with #103.
+
+**Rationale:** this is not a contract shape change, the owning unit is scheduled and open, nothing reads slots before #108, and a doc-only status note is not an R2 contract change.
+
+**Alternatives:** implement publication here (rejected: simulation output work belongs to #103 and its gates); leave the doc as is (rejected: misleading).
+
+## #163 gate round 8 — dynamic mesh slot meaning
+
+**Decision:** each slot is a transform in world axes (metres, radians, quaternion [x,y,z,w]) applied to the moving part's rest pose. For each kind, the per-kind rule says whether translation is an absolute position (spinner, gate and diverter pivot or hinge; newton_ball and toys full transform) or an offset from the rest/home pose (drop_target z, sling/kickback, plunger, bumper ring). The per-kind rule wins over the "world transform" header. The `dynamic_meshes` doc says so; the SPEC edit is queued for the owner as a P8 line (`KP-008-slot-meaning`).
+
+**Rationale:** this matches how every per-kind rule is already written, so no per-kind rule changes and no renderer needs re-work; nothing reads slots until #108.
+
+**Alternatives:** all-absolute (rejected: changes every displacement rule and needs rest poses in the snapshot); all-offsets (rejected: pivots are positions).
+
+## #163 gate round 8 — Router swap also flushes owed gamepad-swap releases and resets the digital nudge
+
+**Decision.** `InputRouter::release_all` first emits any releases the router still owes from an earlier gamepad profile swap, then releases `HeldInputs::release_all` in order, resets the `DigitalNudge`, and emits a 0.0 axis for each nonzero nudge axis, all at the swap timestamp. Analog axes a gamepad last drove (triggers, plunger) are not neutralised.
+
+**Rationale.** The old router is dropped, so owed releases would otherwise never reach the simulation. Resetting the nudge keeps a later `poll` on the old router from re-emitting it and makes a second call emit nothing. Analog axes are absolute readings the new router updates on the next motion, and the user may still be holding the trigger; the finding concerned held digital inputs.
+
+**Alternatives.** Release only `held.release_all()` (owed releases lost). Neutralise every pad-driven analog axis as well (beyond the finding; would snap a still-held trigger to 0 until it next moves).
+

@@ -14,10 +14,10 @@ Inputs:
 
 Counts:
 
-- Open queue lines: 11
+- Open queue lines: 12
 - Resolved queue lines: 323
-- Decision entries: 536
-- Run-log rows: 590
+- Decision entries: 539
+- Run-log rows: 593
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -38,6 +38,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - [ ] [P8 release] [7.2] Add Windows code signing and macOS signing and notarization (certificates as repository secrets, plus release steps), or accept unsigned archives (D33); after final acceptance, push the first `v*` tag and publish the draft release by hand (D39; DECISIONS.md "7.2 — Release workflow: draft-only, artifacts on dispatch"). (docs/HUMAN_QUEUE.md)
 - [ ] [P8 release] [7.2] After the first `v*` tag push, check that the GitHub Release is a draft prerelease with the three archives, SHA256SUMS and the three PACKAGE_MANIFEST-<platform>.json files, and delete the draft if it was only a test (D39). (docs/HUMAN_QUEUE.md)
 - [ ] [P8 spec] [KP-002-lat001-frame-form] REQ-LAT-001's CI form ("at most two presented frames from the event to the first frame showing the bat moved") fails correct code when a present returns within the key-to-move time after a press: the in-flight frame cannot show the press and the next frame reads its snapshot before the bat moved, so the raw count is 3 (measured on #82's head: 3–10 of 170 presses per 60 s run at about 8 fps). Proposed SPEC edit: count from the first frame that started after the press took effect (at most two presented frames after the frame in flight), or state the CI form at the 99th percentile as the millisecond form does. See DECISIONS "#82 — Windowed latency check definitions". (docs/HUMAN_QUEUE.md)
+- [ ] [P8 spec] [KP-008-slot-meaning] SPEC Appendix A "Dynamic mesh slot convention" calls each slot a "world transform" but the per-kind rules give displacements (drop_target z above raised position; sling/kickback/plunger offset from home/rest) and absolute pivots (spinner, gate, diverter). Proposed edit: header becomes "a transform in world axes (metres, radians) applied to the part's rest pose; per kind below, translation is either an absolute position (pivot, hinge) or an offset from rest/home; the per-kind rule wins". Also say slots are published by KP-023 (#103). See DECISIONS "#163 gate round 8 — dynamic mesh slot meaning". (docs/HUMAN_QUEUE.md)
 
 ### Blocked run-log rows
 
@@ -581,6 +582,9 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #163 gate review round 6: directory-inherited ACLs on macOS and Windows (docs/DECISIONS.md)
 - #163 gate review round 6: pr-watch backstop path and disposition routing (docs/DECISIONS.md)
 - #163 gate review round 7: trace permission wording by platform; split missed-gate watch (docs/DECISIONS.md)
+- #163 gate round 8: dynamic mesh publication deferred (docs/DECISIONS.md)
+- #163 gate round 8: dynamic mesh slot meaning (docs/DECISIONS.md)
+- #163 gate round 8: Router swap also flushes owed gamepad-swap releases and resets the digital nudge (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

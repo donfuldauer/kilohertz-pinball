@@ -258,6 +258,28 @@ impl EventForwarder {
         self.router = Some(router);
     }
 
+    /// Replaces the input router (a live input-profile change, issue #84).
+    /// Everything the old router holds is released first, at `ts_ns`, through
+    /// the same path as [`poll`](Self::poll) (the menu, then the input ring),
+    /// so the ring holds those releases before any event of `router` and no
+    /// input stays held in the simulation, the menu's live readings or a
+    /// router. Without an old router this is [`set_router`](Self::set_router).
+    pub fn replace_router(&mut self, ts_ns: u64, router: InputRouter) {
+        let Self {
+            input,
+            stats,
+            router: old,
+            menu,
+            ..
+        } = self;
+        if let Some(r) = old.as_mut() {
+            r.release_all(ts_ns, &mut |ev| {
+                Self::deliver(input, stats, menu.as_mut(), ev);
+            });
+        }
+        *old = Some(router);
+    }
+
     /// The input router, if set.
     pub fn router(&self) -> Option<&InputRouter> {
         self.router.as_ref()
@@ -729,5 +751,82 @@ mod tests {
         // A repeat Esc press is swallowed and toggles nothing.
         f.forward(&key(true, Scancode::Escape, 5, true));
         assert!(f.menu().unwrap().is_open());
+    }
+    /// PR #197 finding 1 (issue #84 live input-profile change): replacing
+    /// the router releases what the old one holds at the swap timestamp,
+    /// ahead of any event of the new router, and the later physical release
+    /// adds nothing.
+    #[test]
+    fn router_swap_releases_old_holds() {
+        let (itx, mut irx) = channel(16);
+        let (wtx, _wrx) = channel(4);
+        let mut f = EventForwarder::new(itx, wtx);
+        f.set_router(InputRouter::new());
+        f.forward(&key(true, Scancode::LShift, 5, false));
+        f.replace_router(20, InputRouter::new());
+        f.forward(&key(true, Scancode::RShift, 25, false));
+        f.forward(&key(false, Scancode::LShift, 30, false));
+        f.poll(40);
+        assert_eq!(
+            irx.pop(),
+            Some(InputEvent::button(5, CabinetInput::LeftFlipper, true))
+        );
+        assert_eq!(
+            irx.pop(),
+            Some(InputEvent::button(20, CabinetInput::LeftFlipper, false))
+        );
+        assert_eq!(
+            irx.pop(),
+            Some(InputEvent::button(25, CabinetInput::RightFlipper, true))
+        );
+        assert_eq!(irx.pop(), None);
+        let r = f.router().unwrap();
+        assert!(!r.held().is_held(CabinetInput::LeftFlipper));
+        assert_eq!(f.stats().input_forwarded, 3);
+        // Without an old router it only installs the new one.
+        let (itx, mut irx) = channel(4);
+        let (wtx, _wrx) = channel(1);
+        let mut g = EventForwarder::new(itx, wtx);
+        g.replace_router(1, InputRouter::new());
+        assert!(g.router().is_some());
+        assert_eq!(irx.pop(), None);
+    }
+
+    /// Finding 1 with the menu open (where the app changes the profile):
+    /// the old router's release updates the menu's live readings and is
+    /// consumed by the open menu (opening already released the sim).
+    #[test]
+    fn router_swap_releases_old_holds_with_menu_open() {
+        let dir = std::env::temp_dir().join(format!("pin_app_events_swap_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (itx, mut irx) = channel(16);
+        let (wtx, _wrx) = channel(4);
+        let mut f = EventForwarder::new(itx, wtx);
+        f.set_router(InputRouter::new());
+        f.set_menu(MenuController::load(dir.join("config.toml")).0);
+        f.forward(&key(true, Scancode::Escape, 1, false));
+        f.forward(&key(false, Scancode::Escape, 2, false));
+        assert!(f.menu().unwrap().is_open());
+        // Pressed while open: consumed, but shown as held in the monitor.
+        f.forward(&key(true, Scancode::LShift, 5, false));
+        let monitor = |f: &EventForwarder| {
+            f.menu()
+                .unwrap()
+                .menu()
+                .monitor()
+                .is_pressed(CabinetInput::LeftFlipper)
+        };
+        assert!(monitor(&f));
+        f.replace_router(20, InputRouter::new());
+        assert!(!monitor(&f), "monitor reading released by the swap");
+        assert!(
+            !f.router()
+                .unwrap()
+                .held()
+                .is_held(CabinetInput::LeftFlipper)
+        );
+        assert!(f.menu().unwrap().is_open());
+        assert_eq!(irx.pop(), None, "the open menu consumes it");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

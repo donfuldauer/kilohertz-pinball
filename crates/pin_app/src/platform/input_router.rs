@@ -376,6 +376,35 @@ impl InputRouter {
         }
     }
 
+    /// Releases everything this router holds, at `ts_ns` (an input-profile
+    /// switch replaces the router; the new one knows none of these holds, so
+    /// it would never send their releases). Sends, in order: any releases
+    /// still owed from an earlier gamepad profile swap, one button release
+    /// per held cabinet input (in the order [`HeldInputs::release_all`]
+    /// returns them), then a 0.0 `NudgeX`/`NudgeY` event for each nudge
+    /// axis whose last sent value is non-zero. The digital nudge is reset,
+    /// so a later [`poll`](Self::poll) does not resume it. Counted in
+    /// [`RouterStats`] like [`poll`](Self::poll) and key edges count them. A
+    /// second call sends nothing.
+    pub fn release_all(&mut self, ts_ns: u64, out: &mut impl FnMut(InputEvent)) {
+        self.flush_pending(ts_ns, out);
+        for input in self.held.release_all() {
+            self.stats.edges += 1;
+            out(InputEvent::button(ts_ns, input, false));
+        }
+        self.nudge = DigitalNudge::new(DIGITAL_NUDGE_STRENGTH, DIGITAL_NUDGE_MS);
+        for (k, axis) in [CabinetAxis::NudgeX, CabinetAxis::NudgeY]
+            .into_iter()
+            .enumerate()
+        {
+            if self.nudge_out[k] != 0.0 {
+                self.nudge_out[k] = 0.0;
+                self.stats.axes += 1;
+                out(InputEvent::axis(ts_ns, axis, 0.0));
+            }
+        }
+    }
+
     /// A key changed state (`scancode` = `SDL_Scancode`).
     pub fn key(
         &mut self,
@@ -563,5 +592,52 @@ mod tests {
             r.queue(Pending::Button(i));
         }
         assert_eq!(r.pending.len(), MAX_PENDING);
+    }
+    /// PR #197 finding 1 (issue #84 live input-profile change; HeldInputs
+    /// "profile switch"): `release_all` releases every held input in
+    /// `HeldInputs::release_all` order, zeroes a non-zero nudge, and a second
+    /// call emits nothing.
+    #[test]
+    fn release_all_releases_holds_and_zeroes_nudge() {
+        let profile =
+            pin_input::profiles::builtin_profile("xarcade_keyboard").expect("built-in profile");
+        let mut r = InputRouter::with_keyboard_profile(profile);
+        let mut sink = Vec::new();
+        // Space (launch), LShift (left flipper), C (left flipper alias),
+        // LAlt (action) and Left arrow (nudge left).
+        for sc in [44, 225, 6, 226, 80] {
+            r.key(1_000_000, sc, true, &mut |e| sink.push(e));
+        }
+        assert!(
+            sink.iter().any(|e| matches!(
+                e.kind,
+                InputEventKind::Axis { axis: CabinetAxis::NudgeX, value } if value != 0.0
+            )),
+            "nudge started: {sink:?}"
+        );
+        let before = r.stats();
+        let mut expected: Vec<CabinetInput> = CabinetInput::ALL
+            .into_iter()
+            .filter(|i| r.held().is_held(*i))
+            .collect();
+        assert_eq!(expected.len(), 3);
+        let mut out = Vec::new();
+        r.release_all(2_000_000, &mut |e| out.push(e));
+        let mut want: Vec<InputEvent> = expected
+            .drain(..)
+            .map(|i| InputEvent::button(2_000_000, i, false))
+            .collect();
+        want.push(InputEvent::axis(2_000_000, CabinetAxis::NudgeX, 0.0));
+        assert_eq!(out, want);
+        assert!(CabinetInput::ALL.iter().all(|i| !r.held().is_held(*i)));
+        let after = r.stats();
+        assert_eq!(after.edges, before.edges + 3);
+        assert_eq!(after.axes, before.axes + 1);
+        // Nothing left: a second call and a later poll emit nothing.
+        let mut again = Vec::new();
+        r.release_all(3_000_000, &mut |e| again.push(e));
+        r.poll(3_000_000, &mut |e| again.push(e));
+        assert_eq!(again, []);
+        assert_eq!(r.stats(), after);
     }
 }

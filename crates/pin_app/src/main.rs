@@ -570,8 +570,8 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
 }
 
 /// Applies a settings change from the menu (issue #84): live where the app
-/// can (the input profile replaces the keyboard router; the menu is open,
-/// so the simulation holds nothing), otherwise one stderr line saying when
+/// can (the input profile replaces the keyboard router, first releasing
+/// everything the old one holds at the current SDL time), otherwise one stderr line saying when
 /// it applies ([`AppSetting::timing`]).
 fn apply_config_change(
     platform: &Platform,
@@ -581,10 +581,13 @@ fn apply_config_change(
 ) {
     for s in changed_settings(applied, &new) {
         if s == AppSetting::InputProfile {
-            forwarder.set_router(keyboard_router(&new.input_profile).unwrap_or_else(|e| {
+            let router = keyboard_router(&new.input_profile).unwrap_or_else(|e| {
                 eprintln!("pin_app: config: {e}");
                 InputRouter::new()
-            }));
+            });
+            // The old router's holds are released (at now) before the new
+            // router sees any event, so nothing stays held (#197 finding 1).
+            forwarder.replace_router(sdl_now_ns(), router);
             for id in platform.open_gamepads() {
                 forwarder.gamepad_added(id.raw(), platform.gamepad_guid(id));
             }

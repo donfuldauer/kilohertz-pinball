@@ -99,30 +99,70 @@ fn collect_tables(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+/// `table.toml` fixtures that are intentionally not valid manifests, as repo-relative paths,
+/// each with a one-line reason. Every other `table.toml` under `tables/` and `crates/` must
+/// parse, serialize and round-trip. Checked on 2026-11-25: all 23 files parse (the "gap",
+/// "overflow", "trap" and "script_error" fixtures are valid manifests whose scripts or
+/// geometry misbehave at run time), so the list is empty; add a path with a reason here
+/// only for a fixture that is deliberately not a manifest.
+const EXCLUDED: &[&str] = &[];
+
 #[test]
 fn req_vis_004_existing_table_files_parse_unchanged() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut files = Vec::new();
     collect_tables(&root.join("tables"), &mut files);
     collect_tables(&root.join("crates"), &mut files);
-    assert!(files.len() >= 10, "found {} table.toml files", files.len());
-    let mut parsed = 0;
-    for f in &files {
-        let text = std::fs::read_to_string(f).unwrap();
-        if let Ok(m) = TableManifest::from_toml_str(&text) {
-            parsed += 1;
-            assert!(
-                m.lamps
-                    .iter()
-                    .all(|l| l.position.is_none() && l.radius.is_none()),
-                "{f:?}"
-            );
-            if let Ok(s) = m.to_toml_string() {
-                assert_eq!(TableManifest::from_toml_str(&s).unwrap(), m, "{f:?}");
-            }
-        }
+    let rel = |f: &std::path::Path| -> String {
+        f.strip_prefix(&root)
+            .unwrap()
+            .components()
+            .map(|c| c.as_os_str().to_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let rels: Vec<String> = files.iter().map(|f| rel(f)).collect();
+    // A rename or deletion of an excluded fixture is noticed.
+    for e in EXCLUDED {
+        assert!(
+            rels.iter().any(|r| r == e) && root.join(e).is_file(),
+            "excluded fixture {e} does not exist"
+        );
     }
-    assert!(parsed >= 5, "only {parsed} parsed");
+    // The production tables are never excluded.
+    let production: Vec<&String> = rels.iter().filter(|r| r.starts_with("tables/")).collect();
+    assert!(production.len() >= 4, "production tables: {production:?}");
+    assert!(
+        production.iter().all(|r| !EXCLUDED.contains(&r.as_str())),
+        "a production table is excluded"
+    );
+    let mut must_parse = 0;
+    let mut excluded = 0;
+    for (f, r) in files.iter().zip(&rels) {
+        if EXCLUDED.contains(&r.as_str()) {
+            excluded += 1;
+            continue;
+        }
+        must_parse += 1;
+        let text = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{r}: read: {e}"));
+        let m = TableManifest::from_toml_str(&text)
+            .unwrap_or_else(|e| panic!("{r}: must parse (or be listed in EXCLUDED): {e:?}"));
+        assert!(
+            m.lamps
+                .iter()
+                .all(|l| l.position.is_none() && l.radius.is_none()),
+            "{r}: existing lamps gained position/radius"
+        );
+        let s = m
+            .to_toml_string()
+            .unwrap_or_else(|e| panic!("{r}: must serialize: {e:?}"));
+        let back = TableManifest::from_toml_str(&s)
+            .unwrap_or_else(|e| panic!("{r}: serialized text must re-parse: {e:?}"));
+        assert_eq!(back, m, "{r}: round trip");
+    }
+    // Every file is exactly one of must-parse or excluded.
+    assert_eq!(must_parse + excluded, files.len());
+    assert_eq!(excluded, EXCLUDED.len());
     let fx = TableManifest::from_toml_str(TABLE).unwrap();
     assert!(!fx.lamps.is_empty());
     assert!(
