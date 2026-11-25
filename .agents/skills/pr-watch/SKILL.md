@@ -42,12 +42,15 @@ threads:
      PR (base `review-base/<gate>`, head `review/<gate>-<area>`; list them with
      `gh pr list --base review-base/<gate> --state open --json number,headRefName,headRefOid,body`;
      the oversized review PR they replaced is closed and no longer counts). If the watcher was
-     started on an area PR, first resolve the gate issue PR (the open PR into `main` whose head
-     branch is the gate branch, named in the area PR's body) and treat it as `<P>` from here on,
-     so its `headRefOid` is the gate head. CI is read from
+     started on any review PR of the gate (the step-2 review PR or an area PR), first resolve the
+     gate issue PR (the open PR into `main` whose head branch is the gate branch: for the step-2
+     review PR, its own head branch, via
+     `gh pr list --base main --head <headRefName> --state open`; for an area PR, the PR named in
+     the area PR's body) and treat it as `<P>` from here on, so `<P>` is always the gate issue PR
+     and its `headRefOid` is the gate head. CI is read from
      `<P>`'s shared head commit (`headRefOid`); CodeRabbit findings, threads and approval are read
-     from each review PR (`<R>` below, in turn; for a non-gate PR, `<R>` is `<P>`), and, when `<P>`
-     is not itself a review PR, also from `<P>`'s own review threads and review bodies, all
+     from each review PR (`<R>` below, in turn; for a non-gate PR, `<R>` is `<P>`), and, on a gate,
+     always also from the gate issue PR `<P>`'s own review threads and review bodies, all
      accounted for before completion is reported. **The current
      head of a review PR:** for the step-2 review PR it is `<P>`'s `headRefOid`; for an area PR it
      is the area PR's own `headRefOid`, and it counts only while the gate-head SHA the area PR

@@ -8879,3 +8879,43 @@ defects. The fix is one clause each, so it is cheaper than a separate work item.
 
 **Alternatives.** Keep the deferral to #201 (rejected: P6 forbids deferring a verified correctness
 defect). Rewrite §1 around separate area-PR and gate-PR modes (rejected: larger than needed).
+
+## #163 gate review round 5 — same-inode permission snapshot
+
+**Decision.** `dest_inode_inputs` now reads the destination's mode, owner, group and ACL state
+between two `fstat` calls of the one opened descriptor and uses them only if the two
+`InodeSnapshot`s (`dev`, `ino`, `mode`, `uid`, `gid`, `ctime`, `ctime_nsec`) are identical. A
+change in between, or a failed second `fstat`, gives `Ok(None)` and the trace keeps its created
+`0600`. The check lives in a private `dest_inode_inputs_with(dest, probe)` that takes the ACL
+probe as a closure, so a test can chmod the file inside the window and observe the fail-closed
+result (R8: this split was the brief's preferred option; the public behaviour and return type are
+unchanged).
+
+**Rationale.** `chmod`, `chown`, `setfacl` and `removexattr` all update `ctime`, which an
+unprivileged process cannot set, so any permission or ACL change between the mode read and the
+ACL probe is seen as a snapshot mismatch. Failing closed is the owner's rule for trace-file
+permission findings (they are fixed, not accepted as bounds). Residual: `ctime` has a finite
+granularity, so a change (or a change and revert) that leaves mode, owner, group and `ctime`
+identical within one timestamp tick is not detectable; a writer able to do that to the destination
+could also replace the trace itself. The round-4 rename residual (the destination can still be
+replaced between our read and the `rename(2)`) stays as recorded in round 4.
+
+**Alternatives.** Accept the race as a documented bound (rejected: the owner decided these
+findings are fixed). Probe the ACL with `fgetxattr` before `fstat` (rejected: only moves the race
+to the other order). Retry until two snapshots agree (rejected: unbounded; failing closed to
+`0600` is simpler and never widens access). `flock` or file leases (rejected: advisory, they do not
+stop `chmod` or `setfacl`).
+
+## #163 gate review round 5 — pr-watch gate issue PR from any review PR
+
+**Decision.** `.agents/skills/pr-watch/SKILL.md` §1: a watcher started on any review PR of a gate
+(the step-2 review PR or an area PR) first resolves the gate issue PR (for the step-2 review PR,
+the open PR into `main` with the same head branch; for an area PR, the PR named in its body) and
+treats it as `<P>`. On a gate the gate issue PR's own review threads and review bodies are always
+read, in addition to every review PR.
+
+**Rationale.** CodeRabbit showed the round-4 follow-up still missed a watcher started on an
+unsplit review PR (for example #197), which would never read the gate issue PR's (#196's) threads.
+It is a correctness defect in the watcher, so it is fixed rather than deferred (P6).
+
+**Alternatives.** Cover only the area-PR case (rejected: leaves the reported gap).

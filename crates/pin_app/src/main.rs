@@ -452,20 +452,72 @@ fn acl_state(_: &std::fs::File) -> AclState {
     AclState::Absent
 }
 
+/// The identity, permission inputs and change time of one inode, compared
+/// across two `fstat` calls of the same descriptor so a change to the
+/// destination between the mode read and the ACL probe is detected
+/// (REQ-LAT-003, CWE-367). `chmod`, `chown`, `setfacl` and `removexattr` all
+/// update `ctime`, which an unprivileged process cannot set.
+#[cfg(unix)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+struct InodeSnapshot {
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    ctime: i64,
+    ctime_nsec: i64,
+}
+
+#[cfg(unix)]
+impl InodeSnapshot {
+    /// The snapshot of `m` (from `fstat` of an open descriptor).
+    fn of(m: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt as _;
+        InodeSnapshot {
+            dev: m.dev(),
+            ino: m.ino(),
+            mode: m.mode(),
+            uid: m.uid(),
+            gid: m.gid(),
+            ctime: m.ctime(),
+            ctime_nsec: m.ctime_nsec(),
+        }
+    }
+}
+
 /// What the commit reads from the existing destination `dest`, all from
 /// ONE inode: the destination itself is inspected with `symlink_metadata`
 /// (never a symlink's target); only a regular file is then opened
 /// read-only once (on Linux with `O_NOFOLLOW | O_NONBLOCK`, so a symlink or
 /// FIFO swapped in cannot be followed or block), and that descriptor gives
 /// both the mode, owner and group (`fstat`) and the access-ACL state
-/// ([`acl_state`], `fgetxattr`). `Ok(None)` (the temp file keeps its created
-/// `0600`) when `dest` is missing, a symlink or not a regular file, or when
-/// the open fails for any reason, the opened file is not a regular file, or
-/// its `(dev, ino)` differs from the inspected one (the destination was
-/// replaced in between). An inspection error other than "not found" is
-/// returned.
+/// ([`acl_state`], `fgetxattr`). The mode, owner, group and ACL state are
+/// read between two `fstat` calls of that one descriptor and used only if
+/// the two [`InodeSnapshot`]s (dev, ino, mode, uid, gid, ctime) are
+/// identical. `Ok(None)` (the temp file keeps its created `0600`) when
+/// `dest` is missing, a symlink or not a regular file, or when the open
+/// fails for any reason, the opened file is not a regular file, its
+/// `(dev, ino)` differs from the inspected one (the destination was
+/// replaced in between), the second `fstat` fails, or the inode changed
+/// between the two `fstat` calls. An inspection error other than "not
+/// found" is returned. Residual: `ctime` has a finite granularity, so a
+/// change (or a change and revert) that leaves mode, owner, group and
+/// `ctime` identical within one timestamp tick is not detectable; a writer
+/// able to do that to the destination could also replace the trace itself.
 #[cfg(unix)]
 fn dest_inode_inputs(dest: &Path) -> std::io::Result<Option<(std::fs::Metadata, AclState)>> {
+    dest_inode_inputs_with(dest, acl_state)
+}
+
+/// [`dest_inode_inputs`] with the ACL probe `probe` (run on the opened
+/// destination descriptor between the two `fstat` calls), so a test can
+/// change the inode inside the window.
+#[cfg(unix)]
+fn dest_inode_inputs_with(
+    dest: &Path,
+    probe: impl FnOnce(&std::fs::File) -> AclState,
+) -> std::io::Result<Option<(std::fs::Metadata, AclState)>> {
     use std::os::unix::fs::MetadataExt as _;
     let seen = match std::fs::symlink_metadata(dest) {
         Ok(m) if m.is_file() => m,
@@ -490,7 +542,15 @@ fn dest_inode_inputs(dest: &Path) -> std::io::Result<Option<(std::fs::Metadata, 
     if !m.is_file() || m.dev() != seen.dev() || m.ino() != seen.ino() {
         return Ok(None);
     }
-    let acl = acl_state(&d);
+    let acl = probe(&d);
+    // Same-inode re-check: a mode, owner, group, ACL or identity change
+    // since the first fstat (all update ctime) keeps the created 0600.
+    let Ok(again) = d.metadata() else {
+        return Ok(None);
+    };
+    if InodeSnapshot::of(&again) != InodeSnapshot::of(&m) {
+        return Ok(None);
+    }
     Ok(Some((m, acl)))
 }
 
@@ -499,10 +559,15 @@ fn dest_inode_inputs(dest: &Path) -> std::io::Result<Option<(std::fs::Metadata, 
 /// only when the temp file's owner and group, from `fstat`, match the
 /// destination's), so the rename never widens access. The destination's
 /// mode, owner, group and ACL state are read from one opened descriptor of
-/// the destination itself ([`dest_inode_inputs`]): a missing destination, a
-/// symlink (its target never supplies bits), any other non-regular file, an
-/// unopenable destination or one replaced between inspection and open
-/// leaves `file` as created (`0600`). ACL rule ([`trace_chmod`],
+/// the destination itself ([`dest_inode_inputs`]), between two `fstat` calls
+/// of that descriptor, and used only if both snapshots are identical: a
+/// missing destination, a symlink (its target never supplies bits), any
+/// other non-regular file, an unopenable destination, one replaced between
+/// inspection and open, a failed second `fstat`, or a mode, owner, group,
+/// ACL or identity change between the two `fstat` calls leaves `file` as
+/// created (`0600`). Residual: a change (or change and revert) that leaves
+/// mode, owner, group and `ctime` identical within one `ctime` tick is not
+/// detectable; a writer able to do that could also replace the trace. ACL rule ([`trace_chmod`],
 /// [`AclState::combine`]): when the temp file or the destination carries a
 /// POSIX access ACL (Linux; on the temp file typically inherited from a
 /// directory default ACL) or either ACL state cannot be read, the temp file
@@ -1875,6 +1940,103 @@ mod tests {
                 "unreadable"
             );
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (gate 30 round 5, same-inode race): an [`InodeSnapshot`]
+    /// differs when any one of its seven fields (dev, ino, mode, uid, gid,
+    /// ctime, ctime_nsec) differs, and an unchanged copy is equal.
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_inode_snapshot_compares_every_field() {
+        let dir = fresh_dir("snapfields");
+        let p = dir.join("t.csv");
+        std::fs::write(&p, "old").unwrap();
+        let base = super::InodeSnapshot::of(&std::fs::metadata(&p).unwrap());
+        let same = base;
+        assert_eq!(same, base, "unchanged copy");
+        let altered = [
+            super::InodeSnapshot {
+                dev: base.dev ^ 1,
+                ..base
+            },
+            super::InodeSnapshot {
+                ino: base.ino ^ 1,
+                ..base
+            },
+            super::InodeSnapshot {
+                mode: base.mode ^ 0o004,
+                ..base
+            },
+            super::InodeSnapshot {
+                uid: base.uid ^ 1,
+                ..base
+            },
+            super::InodeSnapshot {
+                gid: base.gid ^ 1,
+                ..base
+            },
+            super::InodeSnapshot {
+                ctime: base.ctime ^ 1,
+                ..base
+            },
+            super::InodeSnapshot {
+                ctime_nsec: base.ctime_nsec ^ 1,
+                ..base
+            },
+        ];
+        for (i, a) in altered.iter().enumerate() {
+            assert_ne!(*a, base, "field {i} altered");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (gate 30 round 5): snapshots of one real inode taken
+    /// before and after a chmod to a different mode differ, and two
+    /// snapshots of an unmodified file are equal.
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_inode_snapshot_detects_chmod_and_is_stable_otherwise() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = fresh_dir("snapchmod");
+        let p = dir.join("t.csv");
+        std::fs::write(&p, "old").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let f = std::fs::File::open(&p).unwrap();
+        let a = super::InodeSnapshot::of(&f.metadata().unwrap());
+        let b = super::InodeSnapshot::of(&f.metadata().unwrap());
+        assert_eq!(a, b, "unmodified file");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let c = super::InodeSnapshot::of(&f.metadata().unwrap());
+        assert_ne!(a, c, "chmod 0644 -> 0600");
+        assert_ne!(a.mode, c.mode);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (gate 30 round 5, CodeRabbit same-inode race): when the
+    /// destination's mode is restricted between the first `fstat` and the
+    /// end of the ACL probe, `dest_inode_inputs` fails closed (`None`, the
+    /// trace keeps `0600`) instead of returning the stale `0644`; with a
+    /// probe that changes nothing it returns the metadata.
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_dest_inode_change_during_acl_probe_fails_closed() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let dir = fresh_dir("inoderace");
+        let p = dir.join("t.csv");
+        std::fs::write(&p, "old").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let (m, acl) = super::dest_inode_inputs_with(&p, |_| AclState::Absent)
+            .unwrap()
+            .expect("no change in the window");
+        assert_eq!(m.mode() & 0o777, 0o644);
+        assert_eq!(acl, AclState::Absent);
+        let raced = super::dest_inode_inputs_with(&p, |_| {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+            AclState::Absent
+        })
+        .unwrap();
+        assert!(raced.is_none(), "mode changed during the ACL probe");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
