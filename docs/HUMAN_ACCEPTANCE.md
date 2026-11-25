@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 492
-- Run-log rows: 533
+- Decision entries: 496
+- Run-log rows: 537
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -537,6 +537,10 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - Process: Fable ask retired (docs/DECISIONS.md)
 - Planning: Browser version (docs/DECISIONS.md)
 - #160 KP-066: quat_ops design (docs/DECISIONS.md)
+- KP-068: Address-free pairs order and string cache (KHZ 34, 37) (docs/DECISIONS.md)
+- KP-068: String-cache hash over a bounded prefix (docs/DECISIONS.md)
+- KP-068 tests: Black-box observables for address-free order and string cache (docs/DECISIONS.md)
+- KP-068: emergency_gc_is_charged sizing after KHZ 34 (docs/DECISIONS.md)
 
 ## 4. D33 flags
 
