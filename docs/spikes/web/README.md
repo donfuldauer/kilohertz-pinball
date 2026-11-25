@@ -1,5 +1,20 @@
 # Browser-version research spikes (archive)
 
+## Commit IDs after the 2026-11-25 history rewrite
+
+The reports in this archive refer to commit IDs from before the 2026-11-25 rewrite of the repository history. The file contents are unchanged (the trees are identical); only the IDs changed. Old to new:
+
+| old | new | meaning |
+|---|---|---|
+| `995935f` | `1223e32` | the spike base (`main` before PR #142) |
+| `ba45d5c` | `4deba76` | `main` after PR #142 |
+| `e19c5d1` | `c0e8ed2` | archive commit 1 (S1-S5, S7, S8, S10) |
+| `e10c3be` | `9470ffd` | archive S9 |
+| `1f011f4` | `abf6b93` | archive S6 audio check |
+| `cd9ac91` | `58acdfb` | add DESIGN.md |
+| `c3af67b` | `c2fe404` | archive S11 |
+| `9a74754` | `aaab0b7` | DESIGN.md: macOS build hosts |
+
 ## (a) What this is
 
 `DESIGN.md` is the design document for the browser-version GitHub issue, with per-work-unit sections W01-W29 (updated for macOS build hosts, S11); the issue itself holds the decisions and the work-unit table.
