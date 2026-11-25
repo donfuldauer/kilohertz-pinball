@@ -8138,3 +8138,19 @@ settled the work; the breakdown, sizing and dependencies come from #144 and DESI
 - File W01–W05 under M2 (#80): #144 allowed this, but the owner chose to keep them under #144.
 - Start the units before the M1 units they depend on: rejected, because those M1 units change the
   render, audio, input and menu code the web units build on.
+
+## #83 — Lean settings: render scale and probe captures carried as data until KP-035
+
+**Decision:** `LeanQuality` carries `render_scale` 0.5 and `probe_captures` false as data (unit-tested), and the one-time software-adapter warning states them. MSAA, bloom and motion blur are applied for real through `LeanQuality::apply_to_post` in `AppSurfaces::new`.
+
+**Rationale:** `TableRenderOptions` and `pin_app` have no consumer for a render scale or probe captures (`TableRenderer` renders 1:1 to its surface and `pin_app` does not use `pin_render::raytrace`). The files that would have to change (`view.rs`, the post chain) are outside this issue's owned paths. The Low preset of KP-035 takes the data over.
+
+**Alternatives:** Edit `view.rs` and the post chain to scale the render (outside owned paths, larger blast radius); drop the two fields (the issue lists them as deliverables).
+
+## #83 — Secondary surfaces keep frame latency 2
+
+**Decision:** Only the playfield surface gets `desired_maximum_frame_latency` 1. Backglass and score surfaces keep 2 and their present-mode rules (SPEC §2.2, D19).
+
+**Rationale:** The issue changes the playfield only; secondary surfaces redraw on change and do not pace the frame, so a deeper queue costs them nothing.
+
+**Alternatives:** Latency 1 for every surface (risks stalls on presenter-less secondary surfaces and changes behaviour the issue did not ask to change).
