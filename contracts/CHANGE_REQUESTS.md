@@ -187,3 +187,13 @@ unchanged):
 - **Why:** spike S7 §3: std `min`/`max` lower per ISA (`minss`/`maxss` vs `fminnm`/`fmaxnm`), so `max(+0,-0)` is `+0` on aarch64 and `-0` on x86_64; REQ-WEB-002 needs exact cross-target hashes (D9).
 - **Affected crates:** none (new code only; W03 adopts it in the sim crates later).
 - **Workaround meanwhile:** none
+
+### CR-011: Lamp scene positions and the `dynamic_meshes` slot convention
+- **Requested by:** work item #88 / KP-008 (task executor)
+- **Status:** pending (merges with the PR for #88)
+- **Kind:** additive
+- **Items:** `LampDef::position`, `LampDef::radius` (`crates/pin_core/src/schema/table.rs`); TOML keys `lamps[*].position` and `lamps[*].radius`; documentation of the `FrameStateSnapshot::dynamic_meshes` / `dynamic_mesh_count` / `MeshTransform` slot convention and the new constant `snapshot::NEWTON_SWING_RANGE_RAD` (`crates/pin_core/src/snapshot.rs`); SPEC Appendix A.1.
+- **Change:** `LampDef` gains `pub position: Option<[f32; 3]>` (mm, playfield coordinates) and `pub radius: Option<f32>` (mm, flashers only), both `#[serde(default, skip_serializing_if = "Option::is_none")]`; existing fields, keys and order unchanged, `deny_unknown_fields` unchanged, no new validation. Convention: `dynamic_meshes[i]` is the world transform (SI, quaternion `[x, y, z, w]`) of the moving part of the i-th `[[mechs]]` entry, one slot per mech, at most 64 published; per-kind meaning and the Newton cradle swing range (±π/2 rad) documented. `FrameStateSnapshot` layout, size (4000 bytes) and capacities unchanged.
+- **Why:** the 3D scene needs to bind snapshot slots to mechs and to place GI bulbs, inserts and flashers (REQ-VIS-002, REQ-VIS-004) without a breaking snapshot change.
+- **Affected crates:** none (additive). `grep -rn "LampDef {" crates tests` finds only the definition in pin_core (no struct literal elsewhere).
+- **Workaround meanwhile:** none

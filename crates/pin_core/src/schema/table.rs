@@ -334,6 +334,14 @@ pub struct LampDef {
     /// Response curve (default `led`).
     #[serde(default)]
     pub response: LampResponse,
+    /// Scene position, mm, playfield coordinates (the frame of `MagnetDef::position` and
+    /// `MechDef::position`). Omit when the lamp is bound through glTF extras or has no scene
+    /// position. Lets GI bulbs, inserts and flashers light the 3D scene (REQ-VIS-004).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<[f32; 3]>,
+    /// Light and bloom reach, mm. Flashers only; ignored for other kinds (REQ-VIS-004).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f32>,
 }
 
 /// `[[magnets]]`.

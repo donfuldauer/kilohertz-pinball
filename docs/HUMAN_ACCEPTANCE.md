@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 529
-- Run-log rows: 581
+- Decision entries: 536
+- Run-log rows: 590
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -552,6 +552,13 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #161 KP-067: glam bans in pin_tablegen (docs/DECISIONS.md)
 - #161 KP-067: Integer, Ord and iterator min/max deliberately untouched (docs/DECISIONS.md)
 - #161 KP-067: One PR for all eight crates (docs/DECISIONS.md)
+- #84 KP-004: Where config.toml lives (docs/DECISIONS.md)
+- #84 KP-004: Menu integration: save thread, running game, pointer, table loads (docs/DECISIONS.md)
+- #84 KP-004: When each menu setting applies (docs/DECISIONS.md)
+- #84 KP-004: Menu overlay on the render thread (docs/DECISIONS.md)
+- #84 Tester: Settings are applied with the menu open (docs/DECISIONS.md)
+- #88 KP-008: Newton captive ball range (docs/DECISIONS.md)
+- #88 KP-008: SPEC Appendix A lamp example placement (docs/DECISIONS.md)
 - #163 KP-069: One assert script for every replay-hash leg (docs/DECISIONS.md)
 - #163 KP-069: Seam digests on Windows checked from the printed lines (docs/DECISIONS.md)
 - #163 KP-069: aarch64 path filter as a fourth `changes` output (docs/DECISIONS.md)
