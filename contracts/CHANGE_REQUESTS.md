@@ -177,3 +177,13 @@ unchanged):
 - **Why:** decision w8g-e scoped the ban to every crate whose numbers reach sim state, replays or bundled assets; pin_core holds the shared contract maths. PR #72 added the other six crates; pin_core's file must come through this protocol.
 - **Affected crates:** none (pin_core has no std transcendental call; no API change)
 - **Workaround meanwhile:** none
+
+### CR-010: `pin_core::fmath` portable `min`/`max`
+- **Requested by:** work item #159 / KP-065 (task executor)
+- **Status:** pending
+- **Kind:** additive
+- **Items:** new module `crates/pin_core/src/fmath.rs`, one `pub mod fmath;` line in `crates/pin_core/src/lib.rs` (plus a doc bullet), unit and property tests.
+- **Change:** `min_f32`, `max_f32`, `min_f64`, `max_f64` (`(a, b)` in the order of `a.min(b)`), implemented with plain comparisons only, so the bits are identical on x86_64, aarch64 and wasm32 and equal std on x86_64. Rules: a tie, including +0 against -0 in either order, returns the second operand `b`; a NaN operand yields the other operand; both NaN returns the FIRST operand `a`, bits unchanged (no quieting). Measured std on x86_64 (rustc 1.97.0; debug, release and `target-cpu=native` agree), f32 bits, f64 analogous: min/max(+0,-0) = `80000000`; min/max(-0,+0) = `00000000`; (NaN, 1.0) and (1.0, NaN) for NaN payloads `7fc00000`, `7fa00001` (signalling), `ffc00000`, `7fc00005`, `ffa00002` = `3f800000` for both; (NaN_a, NaN_b) over those payloads = bits of NaN_a for both min and max (the brief assumed the second operand; the measurement shows the first, so the measurement was followed).
+- **Why:** spike S7 §3: std `min`/`max` lower per ISA (`minss`/`maxss` vs `fminnm`/`fmaxnm`), so `max(+0,-0)` is `+0` on aarch64 and `-0` on x86_64; REQ-WEB-002 needs exact cross-target hashes (D9).
+- **Affected crates:** none (new code only; W03 adopts it in the sim crates later).
+- **Workaround meanwhile:** none
