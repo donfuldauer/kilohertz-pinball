@@ -1029,14 +1029,31 @@ fn next_charges_skipped_slots() {
 }
 
 // Review B11: emergency full collections near the memory cap are charged.
+//
+// Sizing (real-byte accounting by the capped allocator; KHZ 34 made the Lua
+// Table header 64 B instead of 56 B on 64-bit targets). Phase 0 adds 2000
+// one-element tables per tick; the live heap is ~1 419 345 B after tick 7 and
+// ~1 579 451 B after tick 8 (16 000 tables), so the 1450 KiB (1 484 800 B)
+// threshold switches at tick 8 with ~65 KB / ~95 KB margin either side. The
+// live heap at the switch sits ~517 KB (517 701 B) below the 2 MiB cap: room
+// for several 60 KB strings plus GC slack, so the cap (MemoryLimit) is never
+// hit. Past 16 384 tables `keep`'s array part doubles and the heap jumps to
+// ~2.0 MB, which trips the cap; hence the switch must come before that. With
+// the default 200% pause the next normal GC would be due at ~3.2 MB, beyond
+// the cap, so every collection the 60 KB strings force is an emergency full
+// collection; measured, the same attack faults with BudgetExceeded from a live
+// heap of ~1.1 MB up and runs clean at ~0.65 MB and below (and on an empty
+// heap). The old sizing (3000 per tick, > 1700 KB) reached ~2.0 MB with the
+// 64 B header and hit MemoryLimit. KHZ 33 logical accounting (W10 / #168)
+// will remove the dependence on the real header size; re-check this then.
 #[test]
 fn emergency_gc_is_charged() {
-    let setup = "keep = keep or {} for i = 1, 3000 do keep[#keep + 1] = {i} end";
+    let setup = "keep = keep or {} for i = 1, 2000 do keep[#keep + 1] = {i} end";
     // Live data near the 2 MiB cap; each 60 KB string then forces collections.
     let mut b = LuaScriptBackend::new(
         format!(
             "phase = 0 function on_tick() if phase == 0 then {setup} \
-             if collectgarbage('count') > 1700 then phase = 1 end \
+             if collectgarbage('count') > 1450 then phase = 1 end \
              else for i = 1, 30 do local s = string.rep('x', 60000) end end end"
         )
         .as_bytes(),

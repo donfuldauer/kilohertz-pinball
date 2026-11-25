@@ -28,6 +28,7 @@ CClosure *luaF_newCclosure (lua_State *L, int nupvals) {
   GCObject *o = luaC_newobj(L, LUA_VCCL, sizeCclosure(nupvals));
   CClosure *c = gco2ccl(o);
   c->nupvalues = cast_byte(nupvals);
+  khz_setid(G(L), c);  /* KHZ 34 */
   return c;
 }
 
@@ -36,6 +37,7 @@ LClosure *luaF_newLclosure (lua_State *L, int nupvals) {
   GCObject *o = luaC_newobj(L, LUA_VLCL, sizeLclosure(nupvals));
   LClosure *c = gco2lcl(o);
   c->p = NULL;
+  khz_setid(G(L), c);  /* KHZ 34 */
   c->nupvalues = cast_byte(nupvals);
   while (nupvals--) c->upvals[nupvals] = NULL;
   return c;

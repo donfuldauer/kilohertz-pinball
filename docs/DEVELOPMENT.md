@@ -457,8 +457,9 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
   second); key-to-photon p50/p99 in ms is printed as information.
 - **c. Real time (REQ-LAT-002, CI form).** From `pin_app: N sim ticks (D dropped), ...`:
   `D / (N + D) <= 0.001`, and `N` within 1 % of 60 000. The simulated-to-wall ratio `N / (N + D)`
-  is printed. The SPEC's Low quality preset does not exist in the app yet (REQ-LAT-006, another
-  unit), so only the worker-thread cap applies.
+  is printed. On lavapipe the app now starts lean (REQ-LAT-006, #83: MSAA, bloom and motion blur
+  off, one warning line on stderr), and the worker-thread cap also applies. The full Low preset
+  (render scale, probe captures) arrives with KP-035.
 - **d. Completeness.** No trace overflow, at least 100 presses, as many presses traced as the
   driver injected, and `input dropped 0` on the shutdown line (a dropped input event is a missing
   trace row; a shutdown line without the field is malformed).

@@ -276,15 +276,33 @@ TString *luaS_newlstr (lua_State *L, const char *str, size_t l) {
 
 
 /*
+** KHZ 37: at most this many leading bytes form the string cache's hash.
+*/
+#define KHZ_CACHE_PREFIX	64
+
+
+/*
 ** Create or reuse a zero-terminated string, first checking in the
-** cache (using the string address as a key). The cache can contain
+** cache (keyed by the string content, KHZ 37). The cache can contain
 ** only zero-terminated strings, so it is safe to use 'strcmp' to
 ** check hits.
 */
 TString *luaS_new (lua_State *L, const char *str) {
-  unsigned int i = point2uint(str) % STRCACHE_N;  /* hash */
+  /* KHZ 37: index the cache by content, not by the C pointer, so a hit (no
+     allocation, no KHZ 4 long-string charge) does not depend on where the
+     C string lives. The bucket is 'luaS_hash' of the string, or of its
+     first KHZ_CACHE_PREFIX bytes when it is longer: hashing all of a 64 KiB
+     string costs about 60 times its 'strcmp', and an uncharged cache hit
+     would turn that into a stall of hundreds of ms per callback (see
+     docs/DECISIONS.md, KP-068). A hit still costs one 'strcmp'. */
+  size_t n = 0;
+  unsigned int i;
   int j;
-  TString **p = G(L)->strcache[i];
+  TString **p;
+  while (n < KHZ_CACHE_PREFIX && str[n] != '\0')
+    n++;
+  i = luaS_hash(str, n, G(L)->seed) % STRCACHE_N;
+  p = G(L)->strcache[i];
   for (j = 0; j < STRCACHE_M; j++) {
     if (strcmp(str, getstr(p[j])) == 0)  /* hit? */
       return p[j];  /* that is it */
@@ -306,6 +324,7 @@ Udata *luaS_newudata (lua_State *L, size_t s, int nuvalue) {
     luaM_toobig(L);
   o = luaC_newobj(L, LUA_VUSERDATA, sizeudata(nuvalue, s));
   u = gco2u(o);
+  khz_setid(G(L), u);  /* KHZ 34 */
   u->len = s;
   u->nuvalue = nuvalue;
   u->metatable = NULL;

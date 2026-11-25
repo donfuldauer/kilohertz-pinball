@@ -67,7 +67,7 @@ use pin_core::snapshot::FrameStateSnapshot;
 use pin_render::displays::DisplayRoute;
 use pin_render::gpu::{
     GpuContext, LayerCompositor, LayerTarget, SurfaceOptions, SurfaceSource, SurfaceStatus,
-    WindowGuard, choose_present_mode, wgpu,
+    WindowGuard, choose_present_mode, frame_latency_for, lean_quality_for, wgpu,
 };
 use pin_render::topology::{Rect, SurfaceRole, WindowEvent, WindowEventKind};
 use std::sync::{Arc, Mutex};
@@ -112,6 +112,46 @@ pub(crate) fn offscreen_format(format: wgpu::TextureFormat) -> wgpu::TextureForm
 /// (`RENDER_ATTACHMENT`, or the copy path's usages, plus
 /// [`LayerTarget::extra_usages`]). The surface's `view_formats` are
 /// [`LayerTarget::view_formats`].
+/// The surface configuration of one slot; the frame latency follows the
+/// role ([`frame_latency_for`], REQ-LAT-006), everything else is as given.
+fn slot_surface_config(
+    role: SurfaceRole,
+    usage: wgpu::TextureUsages,
+    format: wgpu::TextureFormat,
+    (w, h): (u32, u32),
+    present_mode: wgpu::PresentMode,
+    alpha_mode: wgpu::CompositeAlphaMode,
+    view_formats: Vec<wgpu::TextureFormat>,
+) -> wgpu::SurfaceConfiguration {
+    wgpu::SurfaceConfiguration {
+        usage,
+        format,
+        color_space: Default::default(),
+        width: w,
+        height: h,
+        present_mode,
+        desired_maximum_frame_latency: frame_latency_for(role),
+        alpha_mode,
+        view_formats,
+    }
+}
+
+/// `render` as the app starts it on `info`: lean on a CPU adapter (one call
+/// of `warn`), unchanged otherwise (REQ-LAT-006).
+fn render_options_for_adapter(
+    info: &wgpu::AdapterInfo,
+    render: TableRenderOptions,
+    warn: &mut dyn FnMut(&str),
+) -> TableRenderOptions {
+    match lean_quality_for(info, warn) {
+        Some(q) => TableRenderOptions {
+            post: q.apply_to_post(render.post),
+            ..render
+        },
+        None => render,
+    }
+}
+
 pub(crate) fn slot_layers(
     format: wgpu::TextureFormat,
     threaded: bool,
@@ -380,6 +420,10 @@ impl AppSurfaces {
         visuals: &TableVisuals,
         render: TableRenderOptions,
     ) -> Result<AppSurfaces, String> {
+        // REQ-LAT-006: one warning per call; a software adapter starts lean.
+        let render = render_options_for_adapter(&ctx.adapter_info(), render, &mut |m| {
+            eprintln!("pin_app: warning: {m}")
+        });
         let device = ctx.device().clone();
         let queue = ctx.queue().clone();
         let gpu_lock = Arc::new(Mutex::new(()));
@@ -418,21 +462,18 @@ impl AppSurfaces {
                 caps.usages,
             );
             let (w, h) = (src.pixel_size.0.max(1), src.pixel_size.1.max(1));
-            let config = wgpu::SurfaceConfiguration {
+            let config = slot_surface_config(
+                role,
                 usage,
                 format,
-                color_space: Default::default(),
-                width: w,
-                height: h,
-                present_mode: mode,
-                desired_maximum_frame_latency: 2,
-                alpha_mode: caps
-                    .alpha_modes
+                (w, h),
+                mode,
+                caps.alpha_modes
                     .first()
                     .copied()
                     .unwrap_or(wgpu::CompositeAlphaMode::Auto),
-                view_formats: layers.view_formats(),
-            };
+                layers.view_formats(),
+            );
             if !configure_surface(&device, &src.surface, &config, &gpu_lock) {
                 return Err(format!(
                     "window {} ({role:?}): configure failed",
@@ -1517,6 +1558,93 @@ mod tests {
                 assert!(!o.is_srgb(), "{f:?}");
                 assert_eq!(o.remove_srgb_suffix(), f.remove_srgb_suffix());
             }
+        }
+    }
+
+    fn test_info(device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
+        wgpu::AdapterInfo {
+            name: "test-adapter".to_string(),
+            vendor: 0,
+            device: 0,
+            device_type,
+            device_pci_bus_id: String::new(),
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        }
+    }
+
+    /// REQ-LAT-006: the playfield slot config has frame latency 1, the
+    /// secondary slots 2, and nothing else depends on the role.
+    #[test]
+    fn req_lat_006_slot_surface_config_frame_latency() {
+        let mk = |role| {
+            slot_surface_config(
+                role,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+                F::Bgra8Unorm,
+                (16, 9),
+                M::Fifo,
+                wgpu::CompositeAlphaMode::Opaque,
+                vec![F::Bgra8UnormSrgb],
+            )
+        };
+        let p = mk(SurfaceRole::Playfield);
+        assert_eq!(p.desired_maximum_frame_latency, 1);
+        assert_eq!((p.width, p.height, p.present_mode), (16, 9, M::Fifo));
+        assert_eq!(p.view_formats, vec![F::Bgra8UnormSrgb]);
+        for role in [SurfaceRole::Backglass, SurfaceRole::Score] {
+            let c = mk(role);
+            assert_eq!(c.desired_maximum_frame_latency, 2);
+            let mut q = p.clone();
+            q.desired_maximum_frame_latency = 2;
+            assert_eq!(c, q);
+        }
+    }
+
+    /// REQ-LAT-006: a CPU adapter yields lean options and one warning.
+    #[test]
+    fn req_lat_006_cpu_adapter_starts_lean_with_one_warning() {
+        let mut input = TableRenderOptions {
+            debug_overlay: true,
+            profiler_hud: true,
+            ..TableRenderOptions::default()
+        };
+        input.post.bloom.enabled = true;
+        input.post.motion_blur.enabled = true;
+        let mut n = 0;
+        let out =
+            render_options_for_adapter(&test_info(wgpu::DeviceType::Cpu), input, &mut |_| n += 1);
+        assert_eq!(n, 1);
+        assert_eq!(out.post.aa, pin_render::post::AaMode::Off);
+        assert!(!out.post.bloom.enabled && !out.post.motion_blur.enabled);
+        assert!(out.debug_overlay && out.profiler_hud);
+        assert_eq!(out.post.exposure, input.post.exposure);
+    }
+
+    /// REQ-LAT-006: a non-CPU adapter leaves the options as they were.
+    #[test]
+    fn req_lat_006_other_adapters_keep_options() {
+        let mut input = TableRenderOptions::default();
+        input.post.bloom.enabled = true;
+        for t in [
+            wgpu::DeviceType::Other,
+            wgpu::DeviceType::IntegratedGpu,
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::DeviceType::VirtualGpu,
+        ] {
+            let mut n = 0;
+            let out = render_options_for_adapter(&test_info(t), input, &mut |_| n += 1);
+            assert_eq!(n, 0);
+            assert_eq!(out.post, input.post);
+            assert_eq!(
+                (out.debug_overlay, out.profiler_hud),
+                (input.debug_overlay, input.profiler_hud)
+            );
         }
     }
 }

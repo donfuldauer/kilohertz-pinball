@@ -15,7 +15,13 @@
 //! Windows CI gets WARP; macOS uses Metal.
 
 mod blit;
+mod quality;
 mod surfaces;
+
+pub use quality::{
+    LeanQuality, PLAYFIELD_FRAME_LATENCY, SECONDARY_FRAME_LATENCY, frame_latency_for,
+    is_cpu_adapter, lean_quality_for,
+};
 
 pub use surfaces::{
     SurfaceOptions, SurfaceSet, SurfaceSource, SurfaceStatus, create_surface, paced_by,

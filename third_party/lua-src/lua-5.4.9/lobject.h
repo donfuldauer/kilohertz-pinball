@@ -459,6 +459,7 @@ typedef union UValue {
 typedef struct Udata {
   CommonHeader;
   unsigned short nuvalue;  /* number of user values */
+  unsigned int khzid;  /* KHZ 34: creation id, the hash of this key */
   size_t len;  /* number of bytes */
   struct Table *metatable;
   GCObject *gclist;
@@ -478,6 +479,7 @@ typedef struct Udata {
 typedef struct Udata0 {
   CommonHeader;
   unsigned short nuvalue;  /* number of user values */
+  unsigned int khzid;  /* KHZ 34: creation id, the hash of this key */
   size_t len;  /* number of bytes */
   struct Table *metatable;
   union {LUAI_MAXALIGN;} bindata;
@@ -641,8 +643,9 @@ typedef struct UpVal {
 
 
 
+/* KHZ 34: 'khzid' is the closure's creation id, the hash of this key */
 #define ClosureHeader \
-	CommonHeader; lu_byte nupvalues; GCObject *gclist
+	CommonHeader; lu_byte nupvalues; unsigned int khzid; GCObject *gclist
 
 typedef struct CClosure {
   ClosureHeader;
@@ -744,6 +747,7 @@ typedef struct Table {
   Node *lastfree;  /* any free position is before this position */
   struct Table *metatable;
   GCObject *gclist;
+  unsigned int khzid;  /* KHZ 34: creation id, the hash of this key */
 } Table;
 
 

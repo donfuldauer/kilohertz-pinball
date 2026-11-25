@@ -85,7 +85,7 @@
 #define hashboolean(t,p)	hashpow2(t, p)
 
 
-#define hashpointer(t,p)	hashmod(t, point2uint(p))
+/* KHZ 34: no 'hashpointer': keys never hash by address (mainpositionTV) */
 
 
 #define dummynode		(&dummynode_)
@@ -148,6 +148,24 @@ static int l_hashfloat (lua_Number n) {
 ** returns the 'main' position of an element in a table (that is,
 ** the index of its hash value).
 */
+/*
+** KHZ 34: the creation id of a table, closure, full userdata or thread key
+** (lstate.h 'khz_setid'). Only live keys are hashed: a rehash re-inserts
+** non-empty entries only, 'luaH_newkey' re-hashes a colliding node only when
+** its value is non-empty, and 'luaH_next' finds a dead key by identity.
+*/
+static unsigned int khz_objid (GCObject *o) {
+  switch (o->tt) {
+    case LUA_VTABLE: return gco2t(o)->khzid;
+    case LUA_VLCL: return gco2lcl(o)->khzid;
+    case LUA_VCCL: return gco2ccl(o)->khzid;
+    case LUA_VUSERDATA: return gco2u(o)->khzid;
+    case LUA_VTHREAD: return gco2th(o)->khzid;
+    default: lua_assert(0); return 0;
+  }
+}
+
+
 static Node *mainpositionTV (const Table *t, const TValue *key) {
   switch (ttypetag(key)) {
     case LUA_VNUMINT: {
@@ -170,17 +188,16 @@ static Node *mainpositionTV (const Table *t, const TValue *key) {
       return hashboolean(t, 0);
     case LUA_VTRUE:
       return hashboolean(t, 1);
-    case LUA_VLIGHTUSERDATA: {
-      void *p = pvalue(key);
-      return hashpointer(t, p);
-    }
-    case LUA_VLCF: {
-      lua_CFunction f = fvalue(key);
-      return hashpointer(t, f);
-    }
+    /* KHZ 34: no addresses. Light userdata and light C functions share one
+       main position (their chain keeps insertion order; long walks are
+       charged by KHZ 25); tables, closures, full userdata and threads hash
+       by their creation id */
+    case LUA_VLIGHTUSERDATA:
+    case LUA_VLCF:
+      return hashmod(t, 0u);
     default: {
       GCObject *o = gcvalue(key);
-      return hashpointer(t, o);
+      return hashmod(t, khz_objid(o));
     }
   }
 }
@@ -650,6 +667,7 @@ static void rehash (lua_State *L, Table *t, const TValue *ek) {
 Table *luaH_new (lua_State *L) {
   GCObject *o = luaC_newobj(L, LUA_VTABLE, sizeof(Table));
   Table *t = gco2t(o);
+  khz_setid(G(L), t);  /* KHZ 34 */
   t->metatable = NULL;
   t->flags = cast_byte(maskflags);  /* table has no metamethod fields */
   t->array = NULL;
