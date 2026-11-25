@@ -15,6 +15,10 @@ pub const MAX_DYNAMIC_MESHES: usize = 64;
 /// Maximum lamps (inserts, GI strings, flashers), indexed by `LampId`.
 pub const MAX_LAMPS: usize = 256;
 
+/// Half-range of the swing angle of a `newton_ball` cradle slot, radians (±π/2): the slot's
+/// rotation angle stays within `-NEWTON_SWING_RANGE_RAD..=NEWTON_SWING_RANGE_RAD`.
+pub const NEWTON_SWING_RANGE_RAD: f32 = core::f32::consts::FRAC_PI_2;
+
 /// The identity quaternion `[x, y, z, w]`.
 pub const IDENTITY_QUAT: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
@@ -61,7 +65,12 @@ pub struct FlipperState {
     pub zipper_offset_m: f32,
 }
 
-/// World transform of one dynamic mesh.
+/// World transform of one dynamic mesh: one slot of
+/// [`FrameStateSnapshot::dynamic_meshes`], the moving part of one `[[mechs]]` entry.
+///
+/// World space, SI: translation in metres, rotation as a quaternion `[x, y, z, w]` (the
+/// angle of a rotating part is encoded in the quaternion, radians). The per-kind meaning is
+/// listed on [`FrameStateSnapshot::dynamic_meshes`].
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct MeshTransform {
     /// Translation, metres.
@@ -95,9 +104,36 @@ pub struct FrameStateSnapshot {
     pub flipper_count: u8,
     /// Flipper states.
     pub flippers: [FlipperState; MAX_FLIPPERS],
-    /// Number of valid entries in `dynamic_meshes`.
+    /// Number of valid entries in `dynamic_meshes`: the number of `[[mechs]]` published, at most
+    /// [`MAX_DYNAMIC_MESHES`] (64). A table with more than 64 mechs has its extra mechs (those
+    /// after the 64th, in `table.toml` order) unpublished; a renderer draws them at rest.
     pub dynamic_mesh_count: u8,
-    /// Dynamic mesh transforms.
+    /// Dynamic mesh transforms (normative slot convention, REQ-VIS-002).
+    ///
+    /// `dynamic_meshes[i]` is the world transform of the moving part of the i-th `[[mechs]]`
+    /// entry in `table.toml` order. Every mech has exactly one slot, so there are no gaps and
+    /// a renderer binds slot to mech with no further field. Slot data is world space, SI
+    /// (metres, radians), quaternion `[x, y, z, w]`. Meaning per mech kind:
+    ///
+    /// - `drop_target`: translation along the playfield normal (z) is the target height above
+    ///   its raised position (0 = up, negative = dropped by that depth); orientation identity.
+    /// - `sling` and `kickback` (arm, slider): translation of the kicker arm along its kick
+    ///   axis from home, metres; the axis is the mech's `angle_deg`.
+    /// - `spinner`: orientation is the rotation of the flap about its pivot axis; translation
+    ///   is the pivot.
+    /// - `gate` and `diverter`: orientation is the angle about the hinge; translation is the
+    ///   hinge position.
+    /// - `plunger`: translation of the rod along the launch axis from rest (negative = pulled
+    ///   back).
+    /// - `bumper`: ring translation (a radial kick is a small offset along the contact normal;
+    ///   0 at rest).
+    /// - `vuk`: published but identity unless the table uses it as a moving part; the slot is
+    ///   still occupied so indices line up.
+    /// - `newton_ball`: the cradle frame transform; the swing angle lies in
+    ///   [`-NEWTON_SWING_RANGE_RAD`, `NEWTON_SWING_RANGE_RAD`]. Its captive balls are published
+    ///   as ordinary `balls` entries and take no extra slots.
+    /// - toys (a mech-bound moving decorative mesh): the full transform, translation and
+    ///   orientation.
     pub dynamic_meshes: [MeshTransform; MAX_DYNAMIC_MESHES],
     /// Lamp intensities `0..=1`, indexed by `LampId`.
     pub lamps: [f32; MAX_LAMPS],
