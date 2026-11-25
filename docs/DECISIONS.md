@@ -8138,3 +8138,36 @@ settled the work; the breakdown, sizing and dependencies come from #144 and DESI
 - File W01–W05 under M2 (#80): #144 allowed this, but the owner chose to keep them under #144.
 - Start the units before the M1 units they depend on: rejected, because those M1 units change the
   render, audio, input and menu code the web units build on.
+
+## #160 KP-066 — quat_ops design
+
+**Decision:** Every glam `Quat` operation on a simulation path of `pin_physics` (product,
+`* Vec3`, `conjugate() * Vec3`, `normalize`, `length_squared`, `from_rotation_arc`: 12 calls at 11
+sites) goes through `pin_physics::quat_ops`, plain `f32` code that reproduces glam 0.33.12's SSE2
+results bit for bit (same products, same sum grouping, division rather than reciprocal multiply, no
+fused op). The module has no `cfg`, so x86_64 CI executes exactly the code aarch64 and wasm32 run.
+The 180-degree branch of `from_rotation_arc` builds its half turn from `libm::sinf`/`libm::cosf`
+of `PI * 0.5` instead of glam's `from_axis_angle` (std `sin_cos`); the test
+`half_turn_equals_glam` shows the two agree bit for bit on x86_64 for ten axes. A proptest
+(20 000 cases, SSE2/simd128 only) compares every output with glam; a 100 000-input PCG sweep pins
+nine digests recorded on x86_64 and asserts them on every target. The seam-test reference inputs
+(`slope_scenario`, `spec_ball_common::scenario`) are built from libm half-angle sin/cos and
+`quat_ops`; the five seam digests and the replay fixture `state_hash` did not move on x86_64, and
+`RECORDING_TARGET` now asserts them on aarch64 as well.
+**Rationale:** S7 measured that aarch64 diverges only in the ball orientation quaternion, through
+glam NEON's 4-lane dot sum order, its reciprocal-multiply normalize and the fused cross product in
+`Quat * Vec3`. A replica of the SSE2 code keeps x86_64 output (the committed goldens) unchanged and
+makes the other targets match it, as D9 requires.
+**Alternatives:**
+- glam `scalar-math` on aarch64: rejected; it equals x86_64 scalar code, not SSE2, and 78 % of
+  `integrate_orientation` results differ from SSE2, so the goldens would have to move.
+- Route through the replica only under `cfg(target_arch = "aarch64")`: rejected; x86_64 CI would
+  never execute the code that aarch64 ships, and wasm32 would rely on simd128 staying op-for-op
+  equal to SSE2.
+- Keep glam's `from_axis_angle` in the half-turn branch (as the S7 patch did): rejected because it
+  reaches the platform libm; kept only if it had differed on x86_64, which it does not.
+**Residual risks:** using glam `Vec3A`, `Vec4`, `Affine3A`, `Mat4` arithmetic or `Quat::lerp` /
+`slerp` in the sim would re-introduce per-ISA divergence (a clippy ban is requested outside this
+unit's owned paths); `f32::min`/`max` with ±0 ties and NaN bit patterns differ on aarch64 outside
+glam, which no measured run reached (`pin_core::fmath` covers min/max). NaN payloads are not part
+of the `quat_ops` guarantee.
