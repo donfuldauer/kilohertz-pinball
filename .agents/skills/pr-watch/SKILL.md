@@ -124,8 +124,8 @@ When all applicable conditions hold:
   `headRefOid` (test or conformance suites alone are not a substitute), dispositions for every
   CodeRabbit review-body finding without an inline thread (if reviewed), `main`'s last push CI
   green, and the branch up to date with `main` where required — and run
-  `gh pr merge <P> --merge --match-head-commit <headRefOid>` (deleting the branch afterward if it
-  was not auto-deleted).
+  `gh pr merge <P> --merge --match-head-commit <headRefOid>` (do not delete the
+  branch; the repository deletes merged branches automatically).
 - Otherwise (standalone without an explicit merge request), stop scheduling check-ins and report
   the PR URL, head SHA, routine or gate, approval state (gates only), resolved threads, and CI
   results to the user.
