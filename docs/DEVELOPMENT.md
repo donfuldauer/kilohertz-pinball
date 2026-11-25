@@ -441,11 +441,12 @@ so a destination name at the file-name limit works) and renamed over the destina
 hard-linked bundle is safe (the `--table` bundle file itself is refused before anything is created;
 a value starting with `--` is not a path; a path whose metadata fails other than "not found", a
 missing path ending in a separator and an existing FIFO are refused before anything is opened). On
-Unix the temp file is created owner-only (`0600`) and, before the rename, given the existing
-destination's permission bits (never setuid, setgid or sticky) as they are when the temp file has
-the destination's owner and group; when its owner or group differs (a setgid directory can give it
-another group) the group bits are cleared and each other bit is kept only if the destination's
-old group also had it, so the rename never widens access (a new destination stays `0600`); when the temp file or the existing destination carries an extended POSIX access ACL (Linux, `system.posix_acl_access` present, or its state cannot be read), the temp file keeps its created `0600` instead of taking the destination's bits, so the rename never raises an ACL mask or admits a named user the old destination denied (it may end narrower than the destination). It is written on the main thread after every
+Unix the temp file is created owner-only (`0600`), never chmod-ed, and renamed over the
+destination, so every committed trace is `0600`, whether or not a destination existed; the existing
+destination's permissions, owner, group and ACL are not read or preserved (overwriting a trace that
+others could read makes it owner-only; in a directory with a default POSIX ACL the trace's ACL mask
+is `---`, so named entries grant nothing; a device written directly keeps its own permissions). It
+is written on the main thread after every
 sim, render and audio thread was joined, also when the run failed (run cap not met, a thread join
 error), so a failed run's trace can be diagnosed; a run that ends before that point (a startup
 error after the trace file was prepared, a panic or an early return) removes the temp file and

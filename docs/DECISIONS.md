@@ -8919,3 +8919,83 @@ unsplit review PR (for example #197), which would never read the gate issue PR's
 It is a correctness defect in the watcher, so it is fixed rather than deferred (P6).
 
 **Alternatives.** Cover only the area-PR case (rejected: leaves the reported gap).
+
+## #163 gate review round 6 — trace published owner-only (0600)
+
+**Decision.** The repository owner decided: "Always 0600". Every committed `--latency-trace` file
+is published owner-only (`0600` on Unix), whether or not a destination already exists. The temp
+file is created `0600` (`OpenOptionsExt::mode(0o600)` with `create_new`, before any data is
+written), is never chmod-ed, and is renamed over the destination. Nothing is read from an existing
+destination: no mode, owner, group, ACL or inode. `trace_mode`, `AclState`, `TraceChmod`,
+`trace_chmod`, `acl_state`, `acl_state_from`, `InodeSnapshot`, `dest_inode_inputs`,
+`dest_inode_inputs_with` and `keep_dest_permissions` are removed, with their tests; `libc` is no
+longer a production dependency of `pin_app` (it stays a Linux-only dev-dependency for the test
+xattr helpers, with the root `=0.2.191` pin). A device written directly is unchanged.
+
+**Rationale.** CodeRabbit comment 4700710254: the destination can still change after the second
+`fstat` and before the rename (its owner can chmod `0644` to `0600` without write access to the
+parent directory), so with different owners and no ACL the trace could still be published `0604`.
+Any copy of the destination's bits races with a destination chmod after the last check (CWE-367)
+and can publish wider access than the destination now has (CWE-732); no further re-check closes
+that window. SPEC REQ-LAT-003 does not require keeping the destination's permissions. A trace holds
+input timing, so owner-only is the safe default. Accepted behaviour change: overwriting a trace
+that others could read makes it owner-only. With nothing chmod-ed, a directory default ACL gives
+the trace an ACL mask of `---`, so its named entries grant nothing. The ACL probe, the inode
+snapshot and libc in production are gone, so there is less unsafe FFI and no window left to race.
+
+**Alternatives.** Another re-check, or a chmod after the rename (rejected: still racy, and a chmod
+after the rename widens access to a file already published). A lock (rejected: an advisory lock
+cannot stop another user's chmod of their own file). Keeping only the ACL probe (rejected: not
+needed once nothing is chmod-ed).
+
+**Supersedes.** The permission-copy decisions of "#163 gate review round 3 — destination ACL
+probe, libc workspace pin, retry timeout and gate-process wording" (item 1, and item 2 as far as
+it makes libc a production dependency), "#163 gate review round 4 — destination permission read
+from one inode, symlink destinations, fixture ACLs" (the destination read; symlink destinations
+still publish `0600` and leave the target untouched) and "#163 gate review round 5 — same-inode
+permission snapshot"; the libc production-dependency part of "#163 gate review round 2 — trace
+replacement never widens ACL access". For the same reason the bit-copying rules of "#82 — Trace
+file permissions", "#163 gate review — trace stall window, trace permissions and harness hygiene"
+(item 2) and "#163 gate review round 2 — trace permission clamp, driver startup summary and retry
+deadline" (A1) no longer apply; their other items stand.
+
+## #163 gate review round 6 — directory-inherited ACLs on macOS and Windows
+
+**Decision.** The repository owner decided "Accept folder ACLs". On macOS (extended ACL entries
+inherited from the directory) and Windows (the DACL inherited from the parent directory), a
+directory ACL that grants other accounts access to new files is treated as the directory owner's
+deliberate choice to share files created there. The trace's baseline stays owner-only (created
+`0600`, never chmod-ed; round 6 "trace published owner-only (0600)"). No code clears inherited
+ACLs. On Linux, a directory default ACL is already neutralised because a file created with mode
+`0600` gets the ACL mask `---` (test
+`req_lat_003_default_acl_dir_never_opens_the_trace_to_named_users`). Finding: the CodeRabbit
+thread on `crates/pin_app/src/main.rs` line 315 (comment 4700770504).
+
+**Rationale.** This is standard behaviour for every tool that saves files: inheritance is how a
+directory owner shares a folder. Overriding it needs platform ACL code that PR CI cannot test (PR
+CI runs Linux only). The trace holds input timing, not secrets.
+
+**Alternatives.** Clear inherited ACLs on macOS through `acl_set_fd` (rejected by the owner:
+untested here, and it overrides a deliberate share). Also set a protected owner-only DACL on
+Windows (rejected by the owner, same reasons).
+
+## #163 gate review round 6 — pr-watch backstop path and disposition routing
+
+**Decision.** (1) `pr-watch` §1 gets a missed-gate backstop path: when the review PR is a P6
+backstop review (head `review/<gate>-missed`, base `review-base/<gate>`), its gate issue's PR has
+already merged, so the watcher resolves no gate issue PR. `<P>` is the backstop review PR itself,
+CI and the current head are read from its own `headRefOid`, and fixes land on `main` through
+ordinary PRs that are then merged into the review branch, as P6 "Gate issue" (3) says. P6 does
+not say which SHA CI reads; the review PR's own head is the choice most consistent with it (it is
+the commit CodeRabbit reviews). (2) `pr-watch` §5 step 4 posts each finding's disposition on the
+PR that contains it: a thread gets a reply in that thread, a review-body finding a top-level
+comment on that PR, so findings on the gate issue PR are answered there. Every finding still gets
+a disposition.
+
+**Rationale.** A backstop review has no open gate issue PR, so the round 5 resolution rule could
+not establish the head. A reply posted on a PR that does not hold the thread fails or goes
+unseen.
+
+**Alternatives.** Resolving the merged gate issue PR as `<P>` (rejected: it is closed and its head
+is not what is reviewed). Replying to every finding on the review PR (rejected: the reply API is
+per PR and the finding stays unanswered where it was raised).

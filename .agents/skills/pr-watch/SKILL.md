@@ -58,6 +58,16 @@ threads:
      `headRefOid`; otherwise the area PR is stale (rebuild it as `work-issue` §6 step 2 says, then
      ask for review).
      If the gate review PR is not open yet, open it as `work-issue` §6 describes.
+     - **Missed-gate backstop review** (P6 "Gate issue" (3)): when the review PR has head branch
+       `review/<gate>-missed` (base `review-base/<gate>`), its gate issue's PR already merged, so
+       no open gate issue PR exists and the resolution above does not apply. `<P>` is the backstop
+       review PR itself; CI and the current head are read from its own `headRefOid` (the merge
+       commit on `main` it was pushed at, plus any later merges of `main` into it). Its CodeRabbit
+       findings, threads and approval are read from it as `<R>`. Fixes land on `main` through
+       ordinary PRs (watched as routine PRs) that are then merged into the review branch; push
+       nothing to the review branch otherwise. The last reviewed head is recorded as
+       `reviewed <sha>`, and no phase-gate row is recorded until the review is approved. The
+       gate-issue-PR flow above stays unchanged for every gate that has an open issue PR.
    - **Routine:** anything else. No CodeRabbit review is required or requested; findings are
      handled whenever any review or review comment exists, from any author.
 2. **All review threads and comments of `<R>` (paginated via GraphQL so no thread or comment is
@@ -180,14 +190,18 @@ Handle the PR state in this order:
    re-verify before pushing or resolving threads. Once `work-verifier` returns `pass`, push once to
    the PR branch; on a gate, then post `@coderabbitai review` on each review PR so CodeRabbit
    reviews the fix round (auto-review is off).
-4. **Reply to every review thread** (reason and evidence first: commit SHA + test output, SPEC /
-   PROCESS / DECISIONS citation, or link to a new deferred `work-unit` issue / DECISIONS entry):
+4. **Reply to every review thread and give every finding a disposition** (reason and evidence
+   first: commit SHA + test output, SPEC / PROCESS / DECISIONS citation, or link to a new deferred
+   `work-unit` issue / DECISIONS entry). Post each reply on the PR that contains the finding: on a
+   gate that is the review PR `<R>` the finding came from, or the gate issue PR `<P>` when the
+   finding is in `<P>`'s own threads or review body; on a routine PR, `<P>`. Below, `<F>` is that
+   PR:
    ```sh
-   gh api -X POST repos/donfuldauer/kilohertz-pinball/pulls/<R>/comments/<comment_id>/replies \
+   gh api -X POST repos/donfuldauer/kilohertz-pinball/pulls/<F>/comments/<comment_id>/replies \
      -f body="<Fixed / Not a defect / Deferred>: <evidence and commit SHA or link>"
    ```
    Where a finding has no inline thread (e.g., an additional comment in the review body), include
-   its disposition in a concise PR comment (`gh pr comment <R> --body ...`).
+   its disposition in a concise top-level comment on `<F>` (`gh pr comment <F> --body ...`).
 5. **Resolve every review thread yourself** once justified (`docs/PROCESS.md` P6 "Gate reviews"
    step 4, D37) — do **not** wait for CodeRabbit to auto-resolve threads and never ask a person to resolve one:
    ```sh

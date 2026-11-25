@@ -29,12 +29,6 @@ pin_audio = { path = "../pin_audio", default-features = false }
 # Platform-independent atan2/hypot in the Feature Lab bundle builder (PR #68).
 libm.workspace = true
 
-# Linux only: `fgetxattr` probes the latency-trace temp file for a POSIX
-# access ACL, so the commit never chmods it wider (CWE-732, #163 gate review
-# round 2). libc is already in Cargo.lock through other crates.
-[target.'cfg(target_os = "linux")'.dependencies]
-libc.workspace = true
-
 [features]
 # Tests that need a GPU and a native window (the CI `gpu-tests` job):
 # compiled only with this feature, and they fail (never skip) without one.
@@ -49,6 +43,14 @@ pin_script = { path = "../pin_script" }
 pin_assetgen = { path = "../pin_assetgen" }
 # Wave 8 additions (w8h-h): shared libtest args for the harness = false targets.
 pin_testmain.workspace = true
+
+# Linux tests only: xattr helpers (`removexattr`, `setxattr`, `fgetxattr`)
+# for the latency-trace POSIX ACL tests. The trace commit itself reads and
+# changes no permissions (#163 gate review round 6: always 0600), so libc is
+# not a production dependency. libc is already in Cargo.lock through other
+# crates.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc.workspace = true
 
 # SDL must run on the main thread (Cocoa on macOS) and may only be initialised
 # once per process, so SDL tests are plain `main` binaries instead of libtest.

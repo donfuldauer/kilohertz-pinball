@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 525
-- Run-log rows: 577
+- Decision entries: 528
+- Run-log rows: 580
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -570,6 +570,9 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #163 gate review round 4 follow-up: pr-watch area-PR gate head and gate issue PR threads (docs/DECISIONS.md)
 - #163 gate review round 5: same-inode permission snapshot (docs/DECISIONS.md)
 - #163 gate review round 5: pr-watch gate issue PR from any review PR (docs/DECISIONS.md)
+- #163 gate review round 6: trace published owner-only (0600) (docs/DECISIONS.md)
+- #163 gate review round 6: directory-inherited ACLs on macOS and Windows (docs/DECISIONS.md)
+- #163 gate review round 6: pr-watch backstop path and disposition routing (docs/DECISIONS.md)
 
 ## 4. D33 flags
 
