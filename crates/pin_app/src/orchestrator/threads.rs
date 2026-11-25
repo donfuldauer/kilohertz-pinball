@@ -136,6 +136,12 @@ pub struct RenderConfig {
     /// every presented frame's snapshot tick and present time are recorded
     /// ([`FrameTraceWriter::presented`]). `None` (default): nothing.
     pub latency_trace: Option<FrameTraceWriter>,
+    /// The in-game menu (issue #84, REQ-VIEW-006): the render thread takes
+    /// the latest state the main thread published and, while the menu is
+    /// open, paints it over the playfield (table or debug view) with a
+    /// [`MenuOverlay`](crate::ui::MenuOverlay). `None` (default), or a
+    /// closed menu: frames unchanged.
+    pub menu: Option<crate::ui::MenuShare>,
 }
 
 /// How often the render thread refreshes the profiler HUD text (250 ms:
@@ -222,6 +228,7 @@ impl Default for RenderConfig {
             present_profiler: None,
             hud: None,
             latency_trace: None,
+            menu: None,
         }
     }
 }
@@ -1113,6 +1120,7 @@ fn render_thread(
         mut present_profiler,
         hud,
         mut latency_trace,
+        menu,
     } = cfg;
     // The HUD is drawn by the playfield's table renderer (or, in the debug
     // view, by `DebugViewHooks`), only when a reader is configured
@@ -1197,6 +1205,26 @@ fn render_thread(
         }
         _ => None,
     };
+    // The menu overlay: the table presenter paints it in its playfield
+    // slot; the debug view through `MenuDebugHooks`.
+    let mut debug_menu = None;
+    if menu.is_some() {
+        match presenter.as_mut() {
+            Some(Presenter::Table(ctx, s)) => {
+                if let Some(o) = crate::ui::menu_overlay_for(ctx, s.playfield_format()) {
+                    s.set_menu_overlay(o);
+                }
+            }
+            Some(Presenter::Debug(ctx, set)) => {
+                let playfield = set
+                    .choices()
+                    .position(|(_, role, _)| role == SurfaceRole::Playfield)
+                    .and_then(|i| set.formats().nth(i));
+                debug_menu = crate::ui::menu_overlay_for(ctx, playfield);
+            }
+            None => {}
+        }
+    }
     let mut lines = DebugLines::new(4096 + table_lines.len() + flippers.len());
     let mut last_tick = 0u64;
     while !shutdown.load(Ordering::Acquire) {
@@ -1225,6 +1253,16 @@ fn render_thread(
             };
             drain_display_commands(rx, sink, last_tick);
         }
+        if let Some(state) = menu.as_ref().and_then(crate::ui::MenuShare::take) {
+            match presenter.as_mut() {
+                Some(Presenter::Table(_, s)) => s.set_menu_state(state),
+                _ => {
+                    if let Some(m) = debug_menu.as_mut() {
+                        m.set_state(state);
+                    }
+                }
+            }
+        }
         let mut paced = false;
         match presenter.as_mut() {
             Some(Presenter::Debug(_, set)) => {
@@ -1238,15 +1276,36 @@ fn render_thread(
                     }
                 }
                 snapshot_lines(snap, &default_ball_radius, &mut lines);
-                let st = match debug_hooks.as_mut() {
-                    Some(h) => {
+                let open_menu = debug_menu.as_mut().filter(|m| m.is_open());
+                let st = match (debug_hooks.as_mut(), open_menu) {
+                    (h, Some(m)) => {
+                        if let Some(h) = h {
+                            if let Some(text) = refresh_hud(hud.as_mut(), &mut fps, stats) {
+                                h.set_hud_lines(&text);
+                            }
+                            let inner: &mut dyn pin_render::gpu::SurfaceFrameHooks = h;
+                            set.render_with(
+                                &lines,
+                                &camera,
+                                &mut crate::ui::MenuDebugHooks::new(Some(inner), m),
+                            )
+                        } else {
+                            set.render_with(
+                                &lines,
+                                &camera,
+                                &mut crate::ui::MenuDebugHooks::new(None, m),
+                            )
+                        }
+                    }
+                    (Some(h), None) => {
                         if let Some(text) = refresh_hud(hud.as_mut(), &mut fps, stats) {
                             h.set_hud_lines(&text);
                         }
                         set.render_with(&lines, &camera, h)
                     }
-                    // No profiler, no HUD: the default frames, unchanged.
-                    None => set.render(&lines, &camera),
+                    // No profiler, no HUD, no open menu: the default
+                    // frames, unchanged.
+                    (None, None) => set.render(&lines, &camera),
                 };
                 paced = set.frame_paced(&st);
                 if let Some(t) = latency_trace.as_mut() {

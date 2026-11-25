@@ -55,6 +55,11 @@
 //! commands (scenes, scores) stay on whenever the playfield can be drawn;
 //! display commands reach the renderer of every retained surface, direct
 //! or presenter-thread.
+//!
+//! The in-game menu (issue #84, REQ-VIEW-006) is painted last into the
+//! playfield slot's frame, over the table, the displays and the HUD, before
+//! the frame is submitted and presented ([`AppSurfaces::set_menu_overlay`]);
+//! while the menu is closed no pass is recorded and frames are unchanged.
 
 use super::gpu_timer::GpuFrameTimer;
 use super::handoff::{HANDOFF_SLOTS, Handoff, HandoffStats, PresenterThread, TakeFree};
@@ -63,6 +68,7 @@ use super::presenter::{
 };
 use super::table::DisplayCommand;
 use super::view::{TableRenderOptions, TableRenderer, TableVisuals, routes_for_window};
+use crate::ui::{MenuOverlay, MenuState};
 use pin_core::snapshot::FrameStateSnapshot;
 use pin_render::displays::DisplayRoute;
 use pin_render::gpu::{
@@ -383,6 +389,8 @@ pub struct AppSurfaces {
     skipped: usize,
     /// GPU frame timing (7.1 hook 3), when the device supports it.
     timer: Option<GpuFrameTimer>,
+    /// The in-game menu, painted over the playfield (issue #84).
+    menu: Option<Box<MenuOverlay>>,
 }
 
 impl AppSurfaces {
@@ -553,6 +561,7 @@ impl AppSurfaces {
             frames: 0,
             skipped,
             timer: None,
+            menu: None,
         };
         debug_assert!(
             out.drawn_modes()
@@ -713,6 +722,37 @@ impl AppSurfaces {
         self.timer.as_ref()
     }
 
+    /// The format the menu overlay must be built for to paint over the
+    /// playfield slot's frames ([`menu_overlay_format`]): `None` without a
+    /// playfield slot.
+    pub fn playfield_format(&self) -> Option<wgpu::TextureFormat> {
+        self.slots
+            .iter()
+            .find(|s| s.role == SurfaceRole::Playfield)
+            .map(|s| match &s.kind {
+                SlotKind::Direct(d) => menu_overlay_format(d.layers.target()),
+                SlotKind::Threaded(t) => t.draw_format,
+            })
+    }
+
+    /// Paints `menu` over every playfield frame from now on while its state
+    /// is an open menu (build it for [`playfield_format`](Self::playfield_format)).
+    pub fn set_menu_overlay(&mut self, menu: MenuOverlay) {
+        self.menu = Some(Box::new(menu));
+    }
+
+    /// The menu overlay, if one was set.
+    pub fn menu_overlay(&self) -> Option<&MenuOverlay> {
+        self.menu.as_deref()
+    }
+
+    /// Shows `state` in the menu overlay (no effect without one).
+    pub fn set_menu_state(&mut self, state: MenuState) {
+        if let Some(m) = &mut self.menu {
+            m.set_state(state);
+        }
+    }
+
     /// Hands the profiler HUD text to every playfield surface's renderer
     /// (drawn only by renderers built with
     /// [`TableRenderOptions::profiler_hud`]).
@@ -774,6 +814,7 @@ impl AppSurfaces {
                     self.timer.as_mut(),
                     s,
                     snap,
+                    self.menu.as_deref_mut(),
                     &mut || hook.presented(),
                 );
                 hook.finish(status);
@@ -786,6 +827,7 @@ impl AppSurfaces {
                     self.timer.as_mut(),
                     s,
                     snap,
+                    None,
                     &mut || {},
                 )
             };
@@ -807,9 +849,11 @@ impl AppSurfaces {
         pin_render::gpu::paced_by(self.slots.iter().map(|s| s.role), statuses)
     }
 
-    /// Draws one slot. `on_present` is called by a direct surface
+    /// Draws one slot, with `menu` painted last into its frame (the
+    /// playfield slot). `on_present` is called by a direct surface
     /// immediately after its `queue.present` returned (before any
     /// reconfigure); it is not called on any other path.
+    #[allow(clippy::too_many_arguments)]
     fn render_slot(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -817,6 +861,7 @@ impl AppSurfaces {
         timer: Option<&mut GpuFrameTimer>,
         s: &mut Slot,
         snap: &FrameStateSnapshot,
+        menu: Option<&mut MenuOverlay>,
         on_present: &mut dyn FnMut(),
     ) -> SurfaceStatus {
         if !s.live() {
@@ -840,6 +885,7 @@ impl AppSurfaces {
                 &mut s.renderer,
                 target,
                 snap,
+                menu,
                 on_present,
             ),
             SlotKind::Threaded(t) => {
@@ -852,6 +898,7 @@ impl AppSurfaces {
                     &mut s.renderer,
                     target,
                     snap,
+                    menu,
                 );
                 if t.dead {
                     eprintln!(
@@ -941,6 +988,46 @@ fn encode_frame(
     );
 }
 
+/// The format a menu overlay paints a direct frame of `layers` in: the
+/// non-sRGB twin when the frame has a twin view ([`LayerTarget::TwinView`];
+/// egui blends in display-encoded space, like the display layers), else
+/// the frame's own format.
+pub fn menu_overlay_format(layers: LayerTarget) -> wgpu::TextureFormat {
+    match layers {
+        LayerTarget::TwinView { twin, .. } => twin,
+        other => other.target_format(),
+    }
+}
+
+/// Paints `menu` (when open) last into `frame` (`view`: its default view;
+/// a twin view is made for a [`LayerTarget::TwinView`] frame, see
+/// [`menu_overlay_format`]). A closed menu records nothing.
+fn paint_menu(
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    frame: &wgpu::Texture,
+    view: &wgpu::TextureView,
+    layers: LayerTarget,
+    menu: Option<&mut MenuOverlay>,
+) {
+    let Some(m) = menu.filter(|m| m.is_open()) else {
+        return;
+    };
+    let size = (frame.width(), frame.height());
+    if m.format() == frame.format() {
+        m.paint(queue, encoder, view, size);
+    } else if let LayerTarget::TwinView { twin, .. } = layers
+        && m.format() == twin
+    {
+        let twin_view = frame.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("menu overlay (twin view)"),
+            format: Some(twin),
+            ..Default::default()
+        });
+        m.paint(queue, encoder, &twin_view, size);
+    }
+}
+
 /// Submits one frame command buffer, between the GPU frame timer's
 /// timestamps when one is timing the frame ([`GpuFrameTimer::bracket`]).
 fn submit_frame(
@@ -1023,6 +1110,7 @@ fn render_direct(
     renderer: &mut TableRenderer,
     target: FrameTarget<'_>,
     snap: &FrameStateSnapshot,
+    menu: Option<&mut MenuOverlay>,
     on_present: &mut dyn FnMut(),
 ) -> SurfaceStatus {
     if d.needs_configure {
@@ -1058,6 +1146,14 @@ fn render_direct(
         target,
         snap,
     );
+    paint_menu(
+        queue,
+        &mut encoder,
+        &frame.texture,
+        &view,
+        d.layers.target(),
+        menu,
+    );
     submit_frame(queue, gpu_lock, timer, encoder.finish());
     present_then_reconfigure(
         || queue.present(frame),
@@ -1083,6 +1179,7 @@ fn render_threaded(
     renderer: &mut TableRenderer,
     target: FrameTarget<'_>,
     snap: &FrameStateSnapshot,
+    menu: Option<&mut MenuOverlay>,
 ) -> SurfaceStatus {
     let handoff = t.presenter.handoff();
     let mut frame = match handoff.try_take_free() {
@@ -1117,6 +1214,7 @@ fn render_threaded(
         target,
         snap,
     );
+    paint_menu(queue, &mut encoder, tex, &view, t.layers.target(), menu);
     // Submitted before the post: the presenter's copy, submitted later on
     // the same queue, sees the finished frame (no CPU wait).
     submit_frame(queue, gpu_lock, timer, encoder.finish());
@@ -1646,5 +1744,27 @@ mod tests {
                 (input.debug_overlay, input.profiler_hud)
             );
         }
+    }
+
+    #[test]
+    fn menu_overlay_paints_through_the_twin_of_a_twin_view_frame() {
+        assert_eq!(
+            menu_overlay_format(LayerTarget::TwinView {
+                target: F::Bgra8UnormSrgb,
+                twin: F::Bgra8Unorm
+            }),
+            F::Bgra8Unorm
+        );
+        assert_eq!(
+            menu_overlay_format(LayerTarget::Intermediate {
+                target: F::Rgba8UnormSrgb,
+                twin: F::Rgba8Unorm
+            }),
+            F::Rgba8UnormSrgb
+        );
+        assert_eq!(
+            menu_overlay_format(LayerTarget::Direct(F::Rgba8Unorm)),
+            F::Rgba8Unorm
+        );
     }
 }

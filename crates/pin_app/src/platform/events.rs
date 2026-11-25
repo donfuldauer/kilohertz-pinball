@@ -10,9 +10,16 @@
 //! the app does) keys and gamepads go through their device profiles and
 //! [`HeldInputs`](super::HeldInputs), and a cabinet edge reaches the input
 //! ring only when `HeldInputs::set` reports one (issue #9b).
+//!
+//! Menu (issue #84, REQ-VIEW-006): with a [`MenuController`]
+//! ([`EventForwarder::set_menu`]), `Esc` and the controller menu button
+//! toggle the menu before the router sees them, and every cabinet event goes
+//! through [`MenuController::route`] (consumed while the menu is open)
+//! instead of straight into the input ring. Without one nothing changes.
 
-use super::input_router::InputRouter;
+use super::input_router::{InputRouter, gamepad_button};
 use super::keymap;
+use crate::ui::{MenuController, is_menu_toggle_button, is_menu_toggle_key};
 use arrayvec::ArrayVec;
 use pin_core::InputEvent;
 use pin_core::spsc::SpscProducer;
@@ -154,6 +161,9 @@ pub struct EventForwarder {
     stats: ForwardStats,
     /// Profile-based input path (`None`: the 1.3 keymap).
     router: Option<InputRouter>,
+    /// The in-game menu (`None`: no menu, cabinet events go straight to
+    /// the input ring).
+    menu: Option<MenuController>,
 }
 
 impl EventForwarder {
@@ -165,7 +175,81 @@ impl EventForwarder {
             window_ids: ArrayVec::new(),
             stats: ForwardStats::default(),
             router: None,
+            menu: None,
         }
+    }
+
+    /// Puts the in-game menu between the router and the input ring (see
+    /// the [module docs](self)): `Esc` / the controller menu button toggle
+    /// it, and while it is open cabinet events drive it and never reach
+    /// the simulation.
+    pub fn set_menu(&mut self, menu: MenuController) {
+        self.menu = Some(menu);
+    }
+
+    /// The menu, if set.
+    pub fn menu(&self) -> Option<&MenuController> {
+        self.menu.as_ref()
+    }
+
+    /// The menu, if set (e.g. to take its config changes).
+    pub fn menu_mut(&mut self) -> Option<&mut MenuController> {
+        self.menu.as_mut()
+    }
+
+    /// Removes and returns the menu (the forwarder then behaves as without
+    /// one).
+    pub fn take_menu(&mut self) -> Option<MenuController> {
+        self.menu.take()
+    }
+
+    /// An input event for the ring: through the menu when there is one.
+    fn deliver(
+        input: &mut SpscProducer<InputEvent>,
+        stats: &mut ForwardStats,
+        menu: Option<&mut MenuController>,
+        ev: InputEvent,
+    ) {
+        match menu {
+            Some(m) => m.route(ev, &mut |e| Self::push_input(input, stats, e)),
+            None => Self::push_input(input, stats, ev),
+        }
+    }
+
+    /// With a menu: handles the toggle key / button (and swallows their
+    /// releases and repeats). `true` when `event` was such an event.
+    fn menu_toggle(&mut self, event: &Event) -> bool {
+        let Some(menu) = self.menu.as_mut() else {
+            return false;
+        };
+        let (down, repeat) = match *event {
+            Event::KeyDown {
+                scancode: Some(sc),
+                repeat,
+                ..
+            } if is_menu_toggle_key(sc as u32) => (true, repeat),
+            Event::KeyUp {
+                scancode: Some(sc), ..
+            } if is_menu_toggle_key(sc as u32) => (false, false),
+            Event::GamepadButtonDown { button, .. }
+                if gamepad_button(button).is_some_and(is_menu_toggle_button) =>
+            {
+                (true, false)
+            }
+            Event::GamepadButtonUp { button, .. }
+                if gamepad_button(button).is_some_and(is_menu_toggle_button) =>
+            {
+                (false, false)
+            }
+            _ => return false,
+        };
+        if down && !repeat {
+            let (input, stats) = (&mut self.input, &mut self.stats);
+            menu.toggle(event.get_timestamp(), &mut |e| {
+                Self::push_input(input, stats, e);
+            });
+        }
+        true
     }
 
     /// Routes cabinet input through `router` (device profiles and
@@ -207,10 +291,13 @@ impl EventForwarder {
             input,
             stats,
             router,
+            menu,
             ..
         } = self;
         if let Some(r) = router.as_mut() {
-            r.poll(now_ns, &mut |ev| Self::push_input(input, stats, ev));
+            r.poll(now_ns, &mut |ev| {
+                Self::deliver(input, stats, menu.as_mut(), ev);
+            });
         }
     }
 
@@ -231,14 +318,31 @@ impl EventForwarder {
     /// Translates `event` and pushes it into the matching ring. Returns the
     /// translation so the caller can act on the remaining kinds (quit,
     /// gamepads, display changes).
+    ///
+    /// With a menu ([`set_menu`](Self::set_menu)), a non-repeat `Esc` key
+    /// press or controller menu button press toggles it (any releases go
+    /// into the input ring with that event's timestamp) and returns
+    /// [`Translated::Ignored`], as do their releases and repeats; every
+    /// cabinet event goes through [`MenuController::route`], and the
+    /// returned [`Translated::Input`] is the last event that reached the
+    /// ring ([`Translated::Ignored`] when the menu consumed them all).
     pub fn forward(&mut self, event: &Event) -> Translated {
+        if self.menu_toggle(event) {
+            return Translated::Ignored;
+        }
         let t = translate(event);
         if let Some(router) = self.router.as_mut() {
-            let (input, stats) = (&mut self.input, &mut self.stats);
+            let (input, stats, menu) = (&mut self.input, &mut self.stats, &mut self.menu);
             let mut last = None;
-            let handled = router.route(event, &mut |ev| {
-                last = Some(ev);
-                Self::push_input(input, stats, ev);
+            let handled = router.route(event, &mut |ev| match menu.as_mut() {
+                Some(m) => m.route(ev, &mut |e| {
+                    last = Some(e);
+                    Self::push_input(input, stats, e);
+                }),
+                None => {
+                    last = Some(ev);
+                    Self::push_input(input, stats, ev);
+                }
             });
             if handled {
                 return match t {
@@ -248,7 +352,18 @@ impl EventForwarder {
             }
         }
         match t {
-            Translated::Input(ev) => Self::push_input(&mut self.input, &mut self.stats, ev),
+            Translated::Input(ev) => {
+                if let Some(m) = self.menu.as_mut() {
+                    let (input, stats) = (&mut self.input, &mut self.stats);
+                    let mut last = None;
+                    m.route(ev, &mut |e| {
+                        last = Some(e);
+                        Self::push_input(input, stats, e);
+                    });
+                    return last.map_or(Translated::Ignored, Translated::Input);
+                }
+                Self::push_input(&mut self.input, &mut self.stats, ev);
+            }
             Translated::Window {
                 timestamp_ns,
                 window_id,
@@ -527,5 +642,92 @@ mod tests {
                 window_unknown: 2,
             }
         );
+    }
+
+    #[test]
+    fn menu_sits_between_router_and_ring() {
+        let dir = std::env::temp_dir().join(format!("pin_app_events_menu_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (itx, mut irx) = channel(16);
+        let (wtx, _wrx) = channel(4);
+        let mut f = EventForwarder::new(itx, wtx);
+        f.set_router(InputRouter::new());
+        f.set_menu(MenuController::load(dir.join("config.toml")).0);
+        assert_eq!(
+            f.forward(&key(true, Scancode::LShift, 5, false)),
+            Translated::Input(InputEvent::button(5, CabinetInput::LeftFlipper, true))
+        );
+        assert_eq!(
+            f.forward(&key(true, Scancode::Escape, 6, false)),
+            Translated::Ignored
+        );
+        assert!(f.menu().unwrap().is_open());
+        // Consumed while open: nothing reaches the ring.
+        assert_eq!(
+            f.forward(&key(false, Scancode::LShift, 7, false)),
+            Translated::Ignored
+        );
+        f.poll(8);
+        assert_eq!(
+            f.forward(&key(false, Scancode::Escape, 9, false)),
+            Translated::Ignored
+        );
+        assert_eq!(
+            irx.pop(),
+            Some(InputEvent::button(5, CabinetInput::LeftFlipper, true))
+        );
+        assert_eq!(
+            irx.pop(),
+            Some(InputEvent::button(6, CabinetInput::LeftFlipper, false))
+        );
+        assert_eq!(irx.pop(), None);
+        assert_eq!(f.stats().input_forwarded, 2);
+        // Window events are unchanged by the menu.
+        f.register_windows(&[1]);
+        f.forward(&win(10, 1, SdlWindowEvent::Exposed));
+        assert_eq!(f.stats().window_forwarded, 1);
+        assert!(f.menu_mut().is_some());
+        assert!(f.take_menu().is_some() && f.menu().is_none());
+    }
+
+    #[test]
+    fn menu_without_router_routes_the_keymap_path() {
+        let dir = std::env::temp_dir().join(format!("pin_app_events_menu2_{}", std::process::id()));
+        let (itx, mut irx) = channel(16);
+        let (wtx, _wrx) = channel(4);
+        let mut f = EventForwarder::new(itx, wtx);
+        f.set_menu(MenuController::load(dir.join("config.toml")).0);
+        assert_eq!(
+            f.forward(&key(true, Scancode::RShift, 1, false)),
+            Translated::Input(InputEvent::button(1, CabinetInput::RightFlipper, true))
+        );
+        let which = JoystickId::new(2);
+        f.forward(&Event::GamepadButtonDown {
+            timestamp: 2,
+            which,
+            button: Button::Guide,
+        });
+        f.forward(&Event::GamepadButtonUp {
+            timestamp: 3,
+            which,
+            button: Button::Guide,
+        });
+        assert!(f.menu().unwrap().is_open());
+        assert_eq!(
+            f.forward(&key(false, Scancode::RShift, 4, false)),
+            Translated::Ignored
+        );
+        assert_eq!(
+            irx.pop(),
+            Some(InputEvent::button(1, CabinetInput::RightFlipper, true))
+        );
+        assert_eq!(
+            irx.pop(),
+            Some(InputEvent::button(2, CabinetInput::RightFlipper, false))
+        );
+        assert_eq!(irx.pop(), None);
+        // A repeat Esc press is swallowed and toggles nothing.
+        f.forward(&key(true, Scancode::Escape, 5, true));
+        assert!(f.menu().unwrap().is_open());
     }
 }
