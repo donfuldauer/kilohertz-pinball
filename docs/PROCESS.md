@@ -9,7 +9,7 @@ and acceptance criteria. The plan is never written into the repository. `docs/SP
 this file says *how* an issue becomes a merged pull request.
 
 Section numbers below (P1–P8) and rules (R1–R12) are what agents, briefs and replies cite.
-D-numbers are the decision rows of `docs/SPEC.md` §0: D1–D33 are architecture decisions; the
+D-numbers are the decision rows of `docs/SPEC.md` §0: D1–D33 and D43–D45 are architecture decisions; the
 process rows D34–D42 point here, and their full text lives in this file. This file replaced
 `docs/PLAN.md` §2.3 and §2.5–§2.7 on 2026-11-20 (DECISIONS.md "Repository — PLAN.md becomes
 SPEC.md; process and layout move out"). The v5 build (subphases 0.1–7.2, Waves 0–9) predates the
@@ -23,7 +23,7 @@ issues; its record stays in `docs/RUN_LOG.md`. Where older text (SPEC §4, the r
 
 | Source | Role | Who writes it |
 |---|---|---|
-| `docs/SPEC.md` | The normative technical specification: architecture decisions D1–D33 (§0), thread model (§2.2), determinism scope (§2.4), contracts (§3), component specifications with Gates A1 and A2 and the final human acceptance procedure (§4), library findings (§6), presentation and play-experience requirements with `REQ-<AREA>-<NNN>` IDs (§7), file schemas and reference tables (Appendices A–C, E, F). It was `docs/PLAN.md`; section, subphase and D-numbers are unchanged, so "PLAN §3.2" in code and history means SPEC §3.2. | A person, or a PR the person asked for (P8). Exception: the work unit that owns a new file schema or protocol documents it in SPEC Appendix A or B in its own PR (additive contract documentation, as CR-007 did with Appendix A.3a). |
+| `docs/SPEC.md` | The normative technical specification: architecture decisions D1–D33 and D43–D45 (§0), thread model (§2.2), determinism scope (§2.4), contracts (§3), component specifications with Gates A1 and A2 and the final human acceptance procedure (§4), library findings (§6), presentation and play-experience requirements with `REQ-<AREA>-<NNN>` IDs (§7), file schemas and reference tables (Appendices A–C, E, F). It was `docs/PLAN.md`; section, subphase and D-numbers are unchanged, so "PLAN §3.2" in code and history means SPEC §3.2. | A person, or a PR the person asked for (P8). Exception: the work unit that owns a new file schema or protocol documents it in SPEC Appendix A or B in its own PR (additive contract documentation, as CR-007 did with Appendix A.3a). |
 | GitHub issues (`work-unit`) | **The plan.** One issue per reviewable PR. Title `KP-NNN: <title>`; first body line `> **Plan ID:** KP-NNN · **Phase:** … · **Milestone:** … (tracking issue #…) · **Expected tier:** …`; then Summary, **Depends on** (the only dependency record), Requirements (SPEC sections and REQ IDs), Deliverables, Acceptance criteria, Owned paths, Notes (`.github/ISSUE_TEMPLATE/work-unit.md`). Plan IDs are zero-padded and number the issues in topological plan order. Labels: status `ready` / `blocked` / `in-progress` / `status:blocked-failure`; `type:feature`, `type:fix`, `type:infra`, `type:docs`, `type:content`; `area:*`; `phase:NN-name`; `tier:T1` / `tier:T2` (expected tier; T3 is never planned); `review:gate` on an issue the plan designates to carry a gate review (P6). The retired per-PR review labels (`review:skip` / `review:sanity` / `review:full`) and any review-mode notes in older issue bodies are ignored. | `plan-from-spec`; new issues for discovered work by any Orchestrator, with dependencies filled in. |
 | Tracking issues (`tracking`) | The milestones: #79 M1 — Play experience (must be complete before the owner repeats final acceptance) and #80 M2 — Backlog. Their sub-issues are the work units. A tracking issue is not a work unit (no Plan ID line) and closes when its last sub-issue closes. "Milestone" in this file and in the skills means a tracking issue. | `plan-from-spec`. |
 | `docs/DEVELOPMENT.md` | Toolchain and pins, agent environment, workspace and crate map, exact commands, CI workflows, coverage floors, gate scripts, owned paths and shared files, contracts and their owners, cache and fixture paths. | Any unit whose change makes it stale updates it in its own PR. |
@@ -98,19 +98,23 @@ degrees and are converted at load.
 
 ### R3. Determinism (D9, SPEC §2.4)
 The gate is same-build determinism: the same binary on the same machine replays any recording to
-identical ball state, switch-hit counts and scores. To stay close across platforms: no fast-math
-flags, no FMA contraction, `libm` for transcendental functions (std transcendentals are a clippy
+identical ball state, switch-hit counts and scores, plus the reference-set equality below. To stay
+equal across platforms: no fast-math flags, no FMA contraction, no explicit fused or
+SIMD-width-dependent float ops in the sim crates (quaternions through `pin_physics::quat_ops`,
+`min`/`max` through `pin_core::fmath`), NaNs hashed as one canonical pattern, `libm` for transcendental functions (std transcendentals are a clippy
 error in `pin_core`), fixed iteration order everywhere (no iteration over `HashMap` or `HashSet`
 where order can affect a result), and a sim-owned seeded PCG for all randomness, recorded in
 replays. Table rules logic is integer-only (SPEC §3.4 parity rule), so Lua and Wasm command
-streams compare bit for bit. Cross-OS replay hashes are reported, never required. A change to
+streams compare bit for bit. The `replay-hash` fixture `state_hash` and the seam digests must equal the committed x86_64-linux goldens on aarch64, Windows x86_64 and wasm32 (V8, JavaScriptCore, SpiderMonkey); other cross-OS hashes are reported. A change to
 simulation output for every table (P3) re-baselines the replay digests once, in its own PR, and
 re-runs Gates A1 and A2.
 
 ### R4. No blocking on the sim thread (D5)
 No heap allocation, mutex or file I/O in `step_1ms()` in Rust engine code. Tests wrap the tick in
-a panicking-allocator guard. Two explicit exemptions: the Lua VM allocates from its own capped,
-pre-reserved arena; and a hot-reload swap tick may allocate and overrun (developer-only event).
+a panicking-allocator guard. Two explicit exemptions: the Lua VM allocates through mlua's capped
+counting allocator with logical (LP64) accounting (KHZ 33); and a hot-reload swap tick may allocate
+and overrun (developer-only event). In the web build the JS glue is preallocated, and the
+allocation guard runs in the Node build of the web module.
 The I/O worker is the only thread that touches the filesystem at runtime, and no `String` crosses
 into the sim thread (interned `u16` IDs, SPEC §2.2, §3.1).
 
@@ -118,7 +122,7 @@ into the sim thread (interned `u16` IDs, SPEC §2.2, §3.1).
 `pin_core`, `pin_physics`, `pin_input`, `pin_script`, `pin_assets`, `pin_tablegen` and `pin_sim`
 pass `cargo test` with no display server and no GPU. Render tests live behind the `gpu-tests`
 feature and run in their own CI job (lavapipe on pull requests; lavapipe, WARP and Metal on
-`main`).
+`main`). `pin_web`'s host-testable modules are GPU-free too; its wasm tests run in Node.
 
 ### R6. Simulated time in tests (D8)
 Headless tests never sleep and never assert on wall-clock time. Wall-clock accuracy is a
@@ -159,12 +163,16 @@ assertion was wrong.
 ### R11. Untrusted tables stay untrusted (D25)
 Table bundles are untrusted downloads. Lua loads only `base` (without `dofile`, `loadfile`,
 `load`), `string`, `table`, `math` (with `math.random` routed to the host PCG) and `utf8`; no `io`,
-`os`, `debug` or `package`. A memory cap and a per-callback instruction budget abort runaway
-scripts, and an aborted script drops into a safe tilt state without stalling the tick. Wasm runs
-without WASI, with a memory cap, fuel metering as the per-callback budget and NaN
+`os`, `debug` or `package`. A memory cap (counted in logical LP64 sizes, with a
+real-byte backstop at 2x the cap), a per-callback instruction budget and the per-tick budget
+(D45: 200 000 units shared by a tick's callbacks) abort runaway scripts, and an aborted script
+drops into a safe tilt state without stalling the tick. Wasm rules run from the load-time
+instrumented module (fuel and weighted call-depth counter, SPEC §3.4) on every platform: wasmtime
+natively, wasmi on the web. Wasm runs without WASI, with a memory cap, fuel metering as the
+per-callback budget (within the per-tick budget) and NaN
 canonicalisation; fuel exhaustion drops the script into the same safe state. Zip extraction
 rejects absolute paths, `..` components and symlinks, and caps total uncompressed size and
-compression ratio (SPEC §3.5). The vendored Lua patches (`third_party/lua-src/KHZ_PATCHES.md`)
+compression ratio (SPEC §3.5); the web adds a 32 MiB `File.size` check before any copy, web `ZipLimits` (64 MiB total, 32 MiB per file, ratio 100, 10 000 entries), no folder bundles and no stored bundles. The vendored Lua patches (`third_party/lua-src/KHZ_PATCHES.md`)
 are part of this boundary. Every parser (TOML manifests, zip, glTF extras, UDP packets, replay
 files, input profiles, and the audio decoders, including the vendored Ogg Vorbis decoder in
 `third_party/lewton`) survives a bounded random-bytes run without panicking. Accepted risks are
@@ -183,7 +191,9 @@ like a machine (SPEC §7). So:
   Anything that needs a physical device is a final-acceptance item (`docs/HUMAN_ACCEPTANCE.md`)
   and, when new, a `[P8 hardware]` line.
 - **Windowed app.** Any change to input, timing or presentation is also verified in the real
-  windowed app (Xvfb and lavapipe in CI and in agent sessions), never only headless.
+  windowed app (Xvfb and lavapipe in CI and in agent sessions), never only headless. For web units,
+  a real browser page with a presented canvas is the windowed evidence (the presented canvas
+  equals the readback).
 
 ## P3. Contracts and blast radius
 
