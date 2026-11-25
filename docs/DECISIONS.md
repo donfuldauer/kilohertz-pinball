@@ -8586,13 +8586,13 @@ frame and an ordering hazard with the present).
 **Rationale:** The tests must exercise the real path (a setting is edited from the open menu) and stay consistent with the 4.4 rulings.
 **Alternatives:** Asserting that `apply` on a closed menu saves (contradicts the 4.4 contract); skipping the open step and asserting no save (would test nothing about persistence).
 
-## #88 KP-008: Newton captive ball range
+## #88 KP-008 — Newton captive ball range
 
 **Decision:** A `newton_ball` mech owns one slot (the cradle frame transform); its captive balls are published as ordinary `balls` entries. The slot's documented range is the cradle swing angle, ±π/2 radians, exported as `snapshot::NEWTON_SWING_RANGE_RAD`. Toys have no `MechKind`, so the slot convention lists them as mech-bound moving decorative meshes with a full transform.
 **Rationale:** No new snapshot field is allowed (additive contract); the per-kind meanings follow the brief unchanged.
 **Alternatives:** extra slots per captive ball (breaks the "i-th mech, no gaps" mapping); no constant (the range would be doc-only and untested).
 
-## #88 KP-008: SPEC Appendix A lamp example placement
+## #88 KP-008 — SPEC Appendix A lamp example placement
 
 **Decision:** The optional lamp `position` / `radius` keys are shown in a separate `toml` block after the slot-convention paragraph, not inside the main A.1 example.
 **Rationale:** `schema_fixtures.rs` requires the committed fixtures to appear verbatim in SPEC.md, and the fixture must not change; editing the main example would break that test.
