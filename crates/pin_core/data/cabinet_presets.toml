@@ -1,0 +1,336 @@
+# Cabinet presets shipped with the engine (SPEC Appendix E, REQ-CAB-004; schema SPEC Appendix A.4).
+#
+# Each [presets.<id>] has the shape of a cabinet.toml and gives every field. Units: mm and
+# degrees. Values from the Appendix E table are marked "E"; the rest are design values
+# (docs/DECISIONS.md "#89 — Cabinet preset design values"), the same in every preset unless
+# Appendix E makes them differ. Heights "above the floor" in Appendix E are with the levelers
+# fully in and come out of: body bottom = leg length + leveler extension - body.leg_overlap.
+#
+#   floor to lockdown bar top = body bottom + body.front_height + body.lockdown_bar.height
+#   floor to backbox top      = body bottom + backbox.bottom_z + backbox.height
+#   flipper button centre     = body bottom + controls.*_flipper_button[2]
+#
+# classic: body bottom 724 + 0 - 234 = 490; 490 + 400 + 20 = 910 (E); 490 + 710 + 730 = 1930 (E);
+#          490 + 370 = 860 (E).
+# modern:  body bottom 778 + 25 - 322 = 481; 481 + 413 + 20 = 914 (E); 481 + 719 + 711 = 1911 (E);
+#          481 + 383 = 864 (E).
+
+schema_version = 1
+
+# ---------------------------------------------------------------------------------------------
+[presets.classic_standard.body]
+width = 560.0                      # E
+length = 1315.0                    # E, plunger excluded
+front_height = 400.0               # E
+rear_height = 605.0                # E
+wall_thickness = 19.0
+leg_overlap = 234.0
+
+[presets.classic_standard.body.glass_channel]
+width = 6.5
+depth = 8.0
+
+[presets.classic_standard.body.lockdown_bar]
+profile = "rounded"
+height = 20.0
+depth = 64.0
+
+[presets.classic_standard.body.side_rail]
+profile = "rounded"
+width = 25.0
+height = 15.0
+
+[presets.classic_standard.legs.default]
+length = 724.0                     # E
+material = "steel"
+finish = "chrome"                  # E
+surface = "ribbed"                 # E
+colour = "#d8d8d8"
+bracket = "corner_plate"
+bolt = "hex"
+corner_inset = [38.0, 38.0]
+
+[presets.classic_standard.legs.default.section]
+shape = "tapered"
+top = 76.0
+bottom = 57.0
+
+[presets.classic_standard.legs.default.leveler]
+thread_length = 76.0               # E, 3 in bolt
+thread_diameter = 9.5
+extension = 0.0                    # E, fully in
+extension_min = 0.0                # E
+extension_max = 44.0               # E
+foot_shape = "domed"
+foot_diameter = 38.0
+
+[presets.classic_standard.mount]
+offset_x = 0.0
+inset = 30.0
+height = 220.0
+pitch_deg = 6.5                    # E, level legs give the listed pitch
+roll_deg = 0.0                     # E, level side to side
+
+[presets.classic_standard.glass_panel]
+width = 533.0                      # E
+length = 1092.0                    # E
+thickness = 4.8                    # E
+
+[presets.classic_standard.backbox]
+width = 730.0                      # E
+height = 730.0                     # E
+depth = 250.0                      # E
+front_y = 1065.0                   # rear face flush with the body rear
+bottom_z = 710.0
+front_profile = "flat"
+top_profile = "flat"
+speaker_panel_height = 200.0
+grilles = [
+    { u = -262.5, v = 100.0, diameter = 150.0 },
+    { u = 262.5, v = 100.0, diameter = 150.0 },
+]
+
+[presets.classic_standard.backbox.backglass]
+width = 686.0                      # E
+height = 479.0                     # E
+thickness = 3.2
+
+[presets.classic_standard.backbox.translite_opening]
+width = 656.0                      # E
+height = 449.0                     # E
+bottom = 215.0
+
+[presets.classic_standard.backbox.score_display]
+kind = "dmd"                       # E
+pixels = [128, 32]                 # E
+width = 320.0                      # E
+height = 80.0                      # E
+centre_v = 100.0
+
+[presets.classic_standard.controls]
+left_flipper_button = [-280.0, 130.0, 370.0]
+right_flipper_button = [280.0, 130.0, 370.0]
+start_button = [-200.0, 0.0, 340.0]
+action_button = [0.0, 15.0, 420.0]
+plunger = [230.0, 0.0, 235.0]
+
+[presets.classic_standard.controls.coin_door]
+centre = [0.0, 0.0, 190.0]
+width = 300.0
+height = 330.0
+
+[presets.classic_standard.trim]
+metal_finish = "chrome"
+rail_colour = "#c0c0c0"
+
+# ---------------------------------------------------------------------------------------------
+[presets.classic_widebody.body]
+width = 630.0                      # E
+length = 1315.0                    # E
+front_height = 400.0               # E
+rear_height = 605.0                # E
+wall_thickness = 19.0
+leg_overlap = 234.0
+
+[presets.classic_widebody.body.glass_channel]
+width = 6.5
+depth = 8.0
+
+[presets.classic_widebody.body.lockdown_bar]
+profile = "rounded"
+height = 20.0
+depth = 64.0
+
+[presets.classic_widebody.body.side_rail]
+profile = "rounded"
+width = 25.0
+height = 15.0
+
+[presets.classic_widebody.legs.default]
+length = 724.0                     # E
+material = "steel"
+finish = "powder_coat"             # E, black
+surface = "plain"
+colour = "#141414"                 # E, black
+bracket = "corner_plate"
+bolt = "hex"
+corner_inset = [38.0, 38.0]
+
+[presets.classic_widebody.legs.default.section]
+shape = "tapered"
+top = 76.0
+bottom = 57.0
+
+[presets.classic_widebody.legs.default.leveler]
+thread_length = 76.0               # E, as standard
+thread_diameter = 9.5
+extension = 0.0
+extension_min = 0.0
+extension_max = 44.0
+foot_shape = "domed"
+foot_diameter = 38.0
+
+[presets.classic_widebody.mount]
+offset_x = 0.0
+inset = 30.0
+height = 220.0
+pitch_deg = 6.5                    # E
+roll_deg = 0.0                     # E
+
+[presets.classic_widebody.glass_panel]
+width = 603.0                      # E
+length = 1092.0                    # E
+thickness = 4.8                    # E
+
+[presets.classic_widebody.backbox]
+width = 730.0                      # E
+height = 730.0                     # E
+depth = 250.0                      # E
+front_y = 1065.0
+bottom_z = 710.0
+front_profile = "flat"
+top_profile = "flat"
+speaker_panel_height = 200.0
+grilles = [
+    { u = -262.5, v = 100.0, diameter = 150.0 },
+    { u = 262.5, v = 100.0, diameter = 150.0 },
+]
+
+[presets.classic_widebody.backbox.backglass]
+width = 686.0                      # E
+height = 479.0                     # E
+thickness = 3.2
+
+[presets.classic_widebody.backbox.translite_opening]
+width = 656.0                      # E
+height = 449.0                     # E
+bottom = 215.0
+
+[presets.classic_widebody.backbox.score_display]
+kind = "dmd"                       # E
+pixels = [128, 32]                 # E
+width = 320.0                      # E
+height = 80.0                      # E
+centre_v = 100.0
+
+[presets.classic_widebody.controls]
+left_flipper_button = [-315.0, 130.0, 370.0]
+right_flipper_button = [315.0, 130.0, 370.0]
+start_button = [-200.0, 0.0, 340.0]
+action_button = [0.0, 15.0, 420.0]
+plunger = [265.0, 0.0, 235.0]
+
+[presets.classic_widebody.controls.coin_door]
+centre = [0.0, 0.0, 190.0]
+width = 300.0
+height = 330.0
+
+[presets.classic_widebody.trim]
+metal_finish = "chrome"
+rail_colour = "#c0c0c0"
+
+# ---------------------------------------------------------------------------------------------
+[presets.modern_standard.body]
+width = 559.0                      # E
+length = 1308.0                    # E
+front_height = 413.0               # E
+rear_height = 603.0                # E
+wall_thickness = 19.0
+leg_overlap = 322.0
+
+[presets.modern_standard.body.glass_channel]
+width = 6.5
+depth = 8.0
+
+[presets.modern_standard.body.lockdown_bar]
+profile = "rounded"
+height = 20.0
+depth = 64.0
+
+[presets.modern_standard.body.side_rail]
+profile = "rounded"
+width = 25.0
+height = 15.0
+
+[presets.modern_standard.legs.default]
+length = 778.0                     # E
+material = "steel"
+finish = "wrinkle"                 # E, wrinkle black
+surface = "plain"
+colour = "#141414"                 # E
+bracket = "corner_plate"
+bolt = "hex"
+corner_inset = [38.0, 38.0]
+
+[presets.modern_standard.legs.default.section]
+shape = "tapered"
+top = 76.0
+bottom = 57.0
+
+[presets.modern_standard.legs.default.leveler]
+thread_length = 76.0               # E, 3/8-16 x 3 in bolt
+thread_diameter = 9.5              # E, 3/8 in
+extension = 25.0                   # E, fully in adds 25 mm
+extension_min = 25.0               # E
+extension_max = 69.0               # E, a further 44 mm fully out
+foot_shape = "domed"
+foot_diameter = 38.0
+
+[presets.modern_standard.mount]
+offset_x = 0.0
+inset = 30.0
+height = 230.0
+pitch_deg = 6.5                    # E
+roll_deg = 0.0                     # E
+
+[presets.modern_standard.glass_panel]
+width = 533.0                      # E
+length = 1092.0                    # E
+thickness = 4.8                    # E
+
+[presets.modern_standard.backbox]
+width = 705.0                      # E
+height = 711.0                     # E
+depth = 250.0                      # E
+front_y = 1058.0                   # rear face flush with the body rear
+bottom_z = 719.0
+front_profile = "flat"
+top_profile = "flat"
+speaker_panel_height = 220.0
+grilles = [
+    { u = -262.5, v = 110.0, diameter = 150.0 },
+    { u = 262.5, v = 110.0, diameter = 150.0 },
+]
+
+[presets.modern_standard.backbox.backglass]
+width = 658.0                      # E
+height = 487.0                     # E
+thickness = 3.2                    # E
+
+[presets.modern_standard.backbox.translite_opening]
+width = 628.0                      # E
+height = 457.0                     # E
+bottom = 235.0
+
+[presets.modern_standard.backbox.score_display]
+kind = "lcd"                       # E, 16:9
+pixels = [1920, 1080]
+width = 345.0                      # E
+height = 194.0                     # E
+centre_v = 110.0
+
+[presets.modern_standard.controls]
+left_flipper_button = [-279.5, 130.0, 383.0]
+right_flipper_button = [279.5, 130.0, 383.0]
+start_button = [-200.0, 0.0, 353.0]
+action_button = [0.0, 15.0, 433.0]
+plunger = [230.0, 0.0, 245.0]
+
+[presets.modern_standard.controls.coin_door]
+centre = [0.0, 0.0, 190.0]
+width = 300.0
+height = 330.0
+
+[presets.modern_standard.trim]
+metal_finish = "chrome"
+rail_colour = "#c0c0c0"

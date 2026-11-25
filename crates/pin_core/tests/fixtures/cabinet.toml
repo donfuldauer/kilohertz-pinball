@@ -1,0 +1,24 @@
+schema_version = 1
+preset = "classic_standard"    # classic_standard | classic_widebody | modern_standard
+
+[body]
+front_height = 405.0           # mm; every key not stated keeps the preset value
+
+[legs.default]                 # all four legs
+finish = "powder_coat"
+colour = "#202020"
+
+[legs.rear_left.leveler]
+extension = 12.0               # mm, this leveler only
+
+[legs.rear_right]
+length = 736.0                 # one non-default leg
+
+[mount]
+pitch_deg = 6.0                # playfield angle relative to the body
+
+[trim]
+rail_colour = "#101010"
+
+[art]
+"cabinet.side_left" = "art/side_left.png"   # D32 asset ID -> bundle file
