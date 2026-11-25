@@ -319,8 +319,7 @@ and the P5 phase gate holds):
 
 1. Merge with a merge commit: `merge_pull_request` (method `merge`) or
    `gh pr merge <P> --merge --match-head-commit <sha>`, naming the head SHA.
-2. Check the branch was deleted; delete it if not (`git push origin --delete <branch>`). If the
-   session's proxy refuses, append a `[P8 setting]` line for it.
+2. Do not delete the branch or check that it was deleted: the repository deletes merged branches automatically.
 3. **Unblock dependents.** List the open issues labelled `work-unit` and `blocked` (label search,
    explicit paging) and re-check each one's "Depends on" list, whether or not it names `#<N>`
    (a dependency on a cancelled issue can be covered by a replacement issue). For each whose
