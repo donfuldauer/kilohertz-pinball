@@ -8491,3 +8491,97 @@ operand order preserved, verified bit-identical on x86_64 by the goldens (replay
 25097c21c2c3adc1, the five seam digests) and by the byte-identical `pin_tablegen` output.
 **Alternatives:** per-crate PRs with the spec test landing last (rejected: three PRs of the same
 mechanical change and an intermediate `main` without the property the test checks).
+
+## #84 KP-004 — Where config.toml lives
+
+**Decision:** `pin_app --config <path>` names the file (a value starting with `--` is an option,
+not a path, as for `--latency-trace`). Without the flag the file is `config.toml` in SDL's
+per-user data directory, `SDL_GetPrefPath("kilohertz", "pinball")` (for example
+`~/.local/share/kilohertz/pinball/config.toml` on Linux, `%APPDATA%\kilohertz\pinball\` on
+Windows); when SDL cannot give one, `./config.toml` with one `pin_app: config:` stderr note. A
+missing file means defaults and is not created until a setting changes. Load warnings are printed
+one per line, prefixed `pin_app: config:`. (`ui::config_path_arg`, `ui::default_config_path`,
+`ui::MenuController::for_app`.)
+**Rationale:** Subphase 4.4 names no location. The per-user data directory survives reinstalls and
+works for read-only installs; SDL already provides it on every platform the app targets, so no
+new dependency. `SDL_GetPrefPath` creates the directory (only the directory, never the file).
+`--config` keeps tests and the windowed harness away from the user's real settings.
+**Alternatives:** next to the executable (rejected: not writable in many installs); the current
+directory (kept only as the fallback); an environment variable (rejected: a flag is visible in the
+command line and in the harness scripts).
+
+## #84 KP-004 — Menu integration: save thread, running game, pointer, table loads
+
+**Decision:** (1) `config.toml` is saved on the main thread, inside the `EventForwarder`'s
+`forward` call that changed a setting (`AppConfig::save`: temp file, `sync_all`, rename), never on
+the sim or render thread. A save error is printed once per distinct error and kept as
+`MenuController::last_save_error()` (cleared by the next successful save); the change still
+applies to the running app (`take_config_change` returns it). (2) The game keeps running while the
+menu is open: `MenuOpened` / `MenuClosed` pause nothing; the sim only receives the releases
+(`ReleaseToSim`, stamped with the toggling event's timestamp) and then no cabinet input until the
+menu closes. (3) Pointer and mouse input are not forwarded to egui: the menu is driven by the
+keyboard and controller through `MenuInput` on the main thread; the render thread only paints
+the state snapshot it receives (`MenuShare`), at 1 pixel per point. (4) `UiCommand::LoadTable` is
+answered with `report_load_result_for(id, Err(LOAD_NOT_WIRED))` until the table browser (KP-005,
+#85) wires table switching, so the lifecycle never hangs. (5) The router's `HeldInputs` keep
+tracking the physical keys while the menu is open (the platform module's held state is not
+cleared on open; its API has no mutable access and `input_router.rs` is not this issue's): a key
+released while the menu is open is consumed by the menu, after which the router and the menu agree
+nothing is held; a key still held when the menu closes reaches the sim again on its next press
+(its later release may reach the sim as a harmless second release).
+**Rationale:** (1) The issue allows saving on the main thread because inputs are consumed by the
+menu while it is open, so a few milliseconds of file I/O cannot delay a flipper; the I/O worker
+has no config channel and adding one would touch modules outside the owned paths. (2) The issue
+says the overlay opens "over the running game"; pausing would need a sim-side pause command (a
+`pin_core` contract change) and is not asked for. (3) Keyboard and controller navigation is the
+cabinet interaction; pointer support needs window-to-surface coordinate mapping on the render
+thread and is not in the issue. (4) Table switching is #85's scope. (5) Follows the 4.4 routing
+ruling (nothing is re-pressed on close) without editing the platform's held-input module.
+**Alternatives:** a save on the I/O worker (rejected for now: no channel to it from the menu);
+pausing the sim while open (rejected: not asked, needs a contract change); clearing the router's
+held set on open (rejected: needs an edit to `input_router.rs`).
+
+## #84 KP-004 — When each menu setting applies
+
+**Decision:** Of the six settings the issue lists (code: `ui::AppSetting::timing`; rustdoc of
+`ui::MenuController`):
+- display mode (single / multi and the monitor indices): **next start**; the windows and surfaces
+  are planned and created once at start-up from `AppConfig::topology_mode()` (an unusable plan
+  falls back to one window on the first display, with a stderr note);
+- PiP placement (corner, width): **next start**; part of the same start-up plan;
+- score display (DMD / LCD): **no consumer yet**; the table's `backglass.toml` picks the display
+  kind and nothing in the app reads the preference;
+- input profile: **live**; the main thread replaces the keyboard router
+  (`ui::keyboard_router`; `auto` = auto-detect; an unknown or keyboard-less profile keeps auto
+  with a stderr note) and re-adds the open gamepads; the menu is open, so the sim holds nothing;
+- staging mode: **no consumer yet**; the table loader does not apply a staging override;
+- debug wireframe: **next table load** (at start-up until the table browser switches tables): it
+  is ORed into `TableRenderOptions::debug_overlay`, which the table renderer reads when it is
+  built; the renderer (`orchestrator/view.rs`, issue #91) has no live setter.
+Every change prints `pin_app: config: <setting> changed; <timing>`. Camera preset is not in the
+list (its consumer is the view, #91).
+**Rationale:** Apply live only where an existing hook reachable from the owned paths exists; the
+issue forbids inventing consumers outside them.
+**Alternatives:** rebuilding the render surfaces or windows live (rejected: restructures
+`run_app` and the render thread, outside the scope guard); a live wireframe setter (needs
+`view.rs`, issue #91's).
+
+## #84 KP-004 — Menu overlay on the render thread
+
+**Decision:** `RenderConfig::menu: Option<MenuShare>` (default `None`). The render thread builds a
+`MenuOverlay` for the playfield draw format when the format passes `hud_format_supported` (one
+stderr note and no overlay otherwise). Table presenter: `AppSurfaces` paints it into the
+playfield slot's encoder after the table, displays and HUD, before submit and present; a
+`TwinView` (`*Srgb`) frame is painted through its non-sRGB twin view so egui blends in
+display-encoded space. Debug view (no table): `MenuDebugHooks` wraps the profiler's debug-view
+hooks and paints the menu last in `SurfaceFrameHooks::overlay`, so the debug view is covered too.
+While the menu is closed nothing is painted and no pass is recorded.
+**Rationale:** Same pattern as the profiler HUD; no change outside the owned paths was needed.
+**Alternatives:** painting in a separate submit after the frame (rejected: an extra submit per
+frame and an ordering hazard with the present).
+
+## #84 Tester — Settings are applied with the menu open
+
+**Decision:** The config round-trip tests open the menu (`MenuController::toggle`) before `MenuController::apply(MenuInput::Set(..))`. The brief's example calls `apply` directly, but the published 4.4 contract (`MenuState::apply`: "Inputs other than `Toggle` are ignored while the menu is closed") makes a `Set` on a closed menu a no-op, so no save happens. Opening the menu itself writes nothing (separate test).
+**Rationale:** The tests must exercise the real path (a setting is edited from the open menu) and stay consistent with the 4.4 rulings.
+**Alternatives:** Asserting that `apply` on a closed menu saves (contradicts the 4.4 contract); skipping the open step and asserting no save (would test nothing about persistence).

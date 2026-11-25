@@ -229,6 +229,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # PR #200: the rust-cache post step (cache save) ran out of disk after a from-scratch
+      # build of the pin_app test binaries. Remove preinstalled toolchains this job never uses.
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/share/swift /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}/CodeQL"
+          df -h /
+
       - uses: dtolnay/rust-toolchain@1.97.0
 
       - uses: Swatinem/rust-cache@v2
@@ -261,6 +272,10 @@ jobs:
       - name: cargo test (GPU crates, Linux under Xvfb)
         if: runner.os == 'Linux'
         run: xvfb-run -a cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app
+
+      - name: Disk usage after tests (Linux)
+        if: runner.os == 'Linux' && always()
+        run: df -h /
 
       - name: cargo test (GPU crates)
         if: runner.os != 'Linux'

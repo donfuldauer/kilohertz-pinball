@@ -54,6 +54,11 @@
 //!   overflows`. While tracing, the main thread prints `pin_app: latency
 //!   trace: first frame presented` once the first frame was presented (the
 //!   windowed harness waits for it). Without the flag nothing changes.
+//! * `--config <path>` (REQ-VIEW-006): the `config.toml` to load at start
+//!   and save on every menu change; default `config.toml` in SDL's per-user
+//!   data directory (`pin_app::ui::default_config_path`). `Esc` or the
+//!   controller menu button opens the in-game menu over the running game
+//!   (`pin_app::ui::MenuController`).
 //!
 //! The table is loaded (validated and simulated from one in-memory bundle
 //! snapshot) and the headless table run happens on a thread with a
@@ -80,6 +85,9 @@ use pin_app::platform::{
     Platform, PlatformConfig, WINDOW_RING_CAPACITY, WindowGuard,
 };
 use pin_app::profiler::{Profiler, hud_lines};
+use pin_app::ui::{
+    AppConfig, AppSetting, MenuController, MenuShare, changed_settings, keyboard_router,
+};
 use pin_audio::mixer::{MixerConfig, trigger_ring};
 use pin_audio::ssf::SsfConfig;
 use pin_input::haptics::{DEFAULT_HAPTICS_RING_CAPACITY, haptics_ring};
@@ -553,7 +561,42 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
     })))
 }
 
+/// Applies a settings change from the menu (issue #84): live where the app
+/// can (the input profile replaces the keyboard router; the menu is open,
+/// so the simulation holds nothing), otherwise one stderr line saying when
+/// it applies ([`AppSetting::timing`]).
+fn apply_config_change(
+    platform: &Platform,
+    forwarder: &mut EventForwarder,
+    applied: &mut AppConfig,
+    new: AppConfig,
+) {
+    for s in changed_settings(applied, &new) {
+        if s == AppSetting::InputProfile {
+            forwarder.set_router(keyboard_router(&new.input_profile).unwrap_or_else(|e| {
+                eprintln!("pin_app: config: {e}");
+                InputRouter::new()
+            }));
+            for id in platform.open_gamepads() {
+                forwarder.gamepad_added(id.raw(), platform.gamepad_guid(id));
+            }
+        }
+        eprintln!(
+            "pin_app: config: {} changed; {}",
+            s.label(),
+            s.timing().describe()
+        );
+    }
+    *applied = new;
+}
+
 fn run_app(args: &[String]) -> Result<(), String> {
+    // config.toml first (REQ-VIEW-006): its settings shape the windows.
+    let (mut menu, config_lines) = MenuController::for_app(args)?;
+    for line in &config_lines {
+        eprintln!("{line}");
+    }
+    let mut applied = menu.config().clone();
     let headless = args.iter().any(|a| a == "--headless");
     let limits = RunLimits::from_args(args)?;
     let mut trace_file = open_latency_trace(args)?;
@@ -570,12 +613,17 @@ fn run_app(args: &[String]) -> Result<(), String> {
     let mut platform = Platform::init(PlatformConfig { headless }).map_err(|e| e.to_string())?;
     let manager = DisplayTopologyManager::query(platform.video()).map_err(|e| e.to_string())?;
     let plan = manager
-        .plan(&TopologyMode::SingleMonitor {
-            display: manager.displays().first().map_or(0, |d| d.index),
-            backglass: DEFAULT_BACKGLASS_PIP,
-            score: DEFAULT_SCORE_PIP,
+        .plan(&applied.topology_mode())
+        .or_else(|e| {
+            eprintln!("pin_app: config: display settings unusable ({e}); one window instead");
+            manager.plan(&TopologyMode::SingleMonitor {
+                display: manager.displays().first().map_or(0, |d| d.index),
+                backglass: DEFAULT_BACKGLASS_PIP,
+                score: DEFAULT_SCORE_PIP,
+            })
         })
         .map_err(|e| e.to_string())?;
+    menu.set_display_count(u32::try_from(manager.displays().len()).unwrap_or(u32::MAX));
     let created = DisplayTopologyManager::create_windows(platform.video(), &plan)
         .map_err(|e| e.to_string())?;
     let ids: Vec<u32> = created.iter().map(|w| w.id()).collect();
@@ -590,7 +638,13 @@ fn run_app(args: &[String]) -> Result<(), String> {
     let (input_tx, input_rx) = pin_core::spsc::channel(INPUT_RING_CAPACITY);
     let (window_tx, window_rx) = pin_core::spsc::channel(WINDOW_RING_CAPACITY);
     let mut forwarder = EventForwarder::new(input_tx, window_tx);
-    forwarder.set_router(InputRouter::new());
+    forwarder.set_router(keyboard_router(&applied.input_profile).unwrap_or_else(|e| {
+        eprintln!("pin_app: config: {e}");
+        InputRouter::new()
+    }));
+    let menu_share = MenuShare::new();
+    menu.set_share(menu_share.clone());
+    forwarder.set_menu(menu);
     for id in platform.open_gamepads() {
         forwarder.gamepad_added(id.raw(), platform.gamepad_guid(id));
     }
@@ -641,9 +695,10 @@ fn run_app(args: &[String]) -> Result<(), String> {
         window_events: Some(window_rx),
         close_policy: ClosePolicy::PlayfieldOnly,
         table_render: TableRenderOptions {
-            debug_overlay,
+            debug_overlay: debug_overlay || applied.wireframe,
             ..TableRenderOptions::default()
         },
+        menu: Some(menu_share),
         ..RenderConfig::default()
     };
     // The profiler's reader (table runs only; the idle path is not
@@ -705,6 +760,12 @@ fn run_app(args: &[String]) -> Result<(), String> {
     let mut first_frame_announced = false;
     loop {
         let outcome = platform.pump(&mut forwarder, PUMP_TIMEOUT);
+        if let Some(new) = forwarder
+            .menu_mut()
+            .and_then(MenuController::take_config_change)
+        {
+            apply_config_change(&platform, &mut forwarder, &mut applied, new);
+        }
         if let Some(n) = input_drops.check(forwarder.stats().input_dropped) {
             eprintln!(
                 "pin_app: input ring full, dropped {n} event(s) ({} total)",

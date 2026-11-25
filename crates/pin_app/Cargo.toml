@@ -81,3 +81,9 @@ required-features = ["gpu-tests"]
 name = "profiler_debug_view_window"
 harness = false
 required-features = ["gpu-tests"]
+
+# REQ-VIEW-006: AppSurfaces menu overlay on a real window (SDL main thread).
+[[test]]
+name = "app_menu_surfaces"
+harness = false
+required-features = ["gpu-tests"]
