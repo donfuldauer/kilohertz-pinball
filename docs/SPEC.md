@@ -19,8 +19,8 @@ Every open choice from the v1 audit is settled here. Agents treat this table as 
 | D6 | Threading | **Main thread = SDL event pump only**; separate render, sim, audio and I/O worker threads | SDL's event pump is main-thread-only, so v1's sim-thread polling could not work |
 | D7 | Snapshot handoff | Render uses the **latest snapshot, no interpolation** | A triple buffer exposes one snapshot; at 1 kHz staleness is ≤ 1 ms |
 | D8 | Timing tests | Headless runs on **simulated time**; wall-clock accuracy is a non-gating benchmark | Wall-clock assertions flake on CI runners |
-| D9 | Determinism | **Same-build determinism is the gate.** Cross-OS equality is reported, not required | `f32` math differs across platforms/compilers |
-| D10 | Scripting | **Lua 5.4** (vendored via `mlua`) is the primary backend with hot reload. **Wasm (`wasmtime`) restored** in Subphase 4.5, table ports in 6.3 | LuaJIT dropped for its FFI attack surface. Lua/Wasm parity is made testable by keeping rules logic integer-only (§3.4) |
+| D9 | Determinism | **Same-build determinism is the gate.** In addition, the `replay-hash` fixture `state_hash` (10 000 ticks) and the seam digests must equal the committed x86_64-linux goldens on aarch64, on Windows x86_64 and on wasm32 under V8, JavaScriptCore and SpiderMonkey. Other cross-OS hashes are reported. The full text is §2.4 | `f32` math differs across platforms/compilers, and `f32` SIMD paths differ by ISA unless pinned |
+| D10 | Scripting | **Lua 5.4** (vendored via `mlua`) is the primary backend with hot reload natively, and also runs in the browser (vendored Lua with KHZ 1–38 in the web module). **Wasm (`wasmtime`) restored** in Subphase 4.5, table ports in 6.3. Wasm rules run from a load-time-instrumented module on every platform: `wasmtime` natively and `wasmi` 2.0.2 in the browser; the rewrite's fuel (`wasmtime`'s cost model) and weighted call-depth counter decide every kill point, and the engines' own fuel is a backstop | LuaJIT dropped for its FFI attack surface. Lua/Wasm parity is made testable by keeping rules logic integer-only (§3.4). Exact kill points on every engine |
 | D11 | Script API | Read access via `HostCtx`; flipper/action/start buttons are ordinary cabinet switches; scripts own scores | v1 API was write-only and special-cased the action button |
 | D12 | Ball-kind detection | Eddy sensors simply **do not close** for non-conductive balls; `detected_kind` removed | v1 specified both mechanisms |
 | D13 | Splines | **C² interpolating cubic splines**, stored as cubic Bézier segments; wireforms modelled as **two rails** | Catmull-Rom is only C¹, causing normal-force jumps at knots |
@@ -35,7 +35,7 @@ Every open choice from the v1 audit is settled here. Agents treat this table as 
 | D22 | Cabinet output | Documented UDP telemetry protocol. **DOF bridge restored** as a Windows companion process (Subphase 3.5) | DOF is a .NET plugin fed table-element events, not a UDP consumer, so it needs a bridge |
 | D23 | Sequencing | CI in Wave 2, headless sim + replay in Wave 5, **playable grey-box in Wave 6** | Regression tooling and a playable slice must exist before table authoring |
 | D24 | Table geometry | Procedural generator (`pin_tablegen`), validated by an autoplay bot and automated gates A1/A2; human playtest moves to the end | Agents cannot judge feel, but they can prove a table is free of traps, leaks and unreachable shots |
-| D25 | Security | Sandboxed Lua stdlib, instruction budget, memory cap, hardened zip extraction | Tables are untrusted downloads |
+| D25 | Security | Sandboxed Lua stdlib, instruction budget, memory cap, hardened zip extraction. Also: the per-tick budget (D45); logical (LP64) Lua heap accounting with a real-byte backstop at 2× the cap; the web bundle limits (§3.5) | Tables are untrusted downloads |
 | D26 | Model routing | *Superseded by D34 from Wave 6.* v4: 5.2 stayed with Opus 5.5; 5.4 and 2.6 went to Fable 5.2; every subphase got a cross-model review | The numerically hard parts of v1's 5.2 and 2.3 now live in 5.4 and 2.6 |
 | D27 | Self-validation | An **Independent Tester** task (writes tests from the brief without seeing the code) for every subphase; it no longer has to use a different model. The v4 Reviewer role is replaced by the Work Verifier and CodeRabbit (D35, D36) | Tests written by the implementer alone tend to confirm the implementation rather than the spec |
 | D28 | Human involvement | Setup before the run, acceptance after it, nothing between. Ambiguity is resolved by the agent, logged, and reviewed at the end | Requirement: run as unattended as possible |
@@ -53,6 +53,9 @@ Every open choice from the v1 audit is settled here. Agents treat this table as 
 | D40 | CI split | Process: moved to PROCESS.md P6 | |
 | D41 | Decision and queue entries are one file per unit | Superseded; see `docs/DECISIONS.md`, "Process — One decision log and a P8-only queue (D41 superseded)" | |
 | D42 | Fable allowance ask | Process: moved to PROCESS.md P4 | |
+| D43 | Browser target | A `wasm32-unknown-unknown` build plays the included tables and player bundles on desktop and mobile browsers. WebGPU is primary, with a WebGL2 fallback module. It is served locally from 127.0.0.1 with a strict CSP and no COOP/COEP. The native-only features are: multi-monitor and presenter threads, DOF, UDP telemetry, SSF 7.1, X-Arcade gamepad auto-detection, hot reload, the latency profiler, ray-query reflections, rumble and accelerometer nudge (an X-Arcade in keyboard-encoder mode works). Specified in Phase 9 (REQ-WEB) | The core crates are portable and the spikes measured exact parity |
+| D44 | Web loop | Single-threaded. The main thread runs the due 1 ms ticks per animation frame (at most 50, then drops and counts the rest) and renders the latest snapshot. A hidden tab pauses simulated time. An 8 ms per-frame script-time guard applies. The mixer runs in an AudioWorklet. There is no Worker and no `SharedArrayBuffer` (§2.2) | Same tick order and D5 rules as native, at 1–13 % of a 60 Hz frame |
+| D45 | Per-tick script budget | 200 000 units per tick (Lua: exact instructions plus KHZ charges; Wasm: `wasmtime` fuel) are shared by the tick's `on_switch_edge` calls and `on_tick`, natively and on the web. Exhaustion is a `BudgetExceeded` fault (§3.4) | 512 edges per tick multiplied the per-callback budget, and the worst tick took about 1 s natively |
 
 ### Restored features (each isolated in its own subphase)
 
@@ -82,8 +85,9 @@ The core path (Lua, straight flippers, probes, UDP telemetry) never depends on a
 * **Physics:** `parry3d` BVH and shape-casts, C² spline colliders, custom impulse/spin/friction solver, torque-driven flippers.
 * **Balls:** Data-driven `BallProfile`: standard and low-remanence steel (80 g), ceramic Powerball (65 g), UV Glo-Ball (24 g), mini (15.88 mm), jumbo (31.75 mm to 79.4 mm), captive Newton balls.
 * **Flippers:** Any count on any 3D plane, including vertical backbox playfields; straight-capsule and Curved "Banana" bats; Zipper slides; automated "Thing Flips."
-* **Tables:** Bundle (`.pinbundle` zip or folder) of `glTF 2.0`, `TOML` manifests and sandboxed rules in **Lua 5.4** (hot reload) or **WebAssembly** (`wasmtime`).
+* **Tables:** Bundle (`.pinbundle` zip or folder) of `glTF 2.0`, `TOML` manifests and sandboxed rules in **Lua 5.4** (hot reload) or **WebAssembly** (`wasmtime`; `wasmi` in the browser).
 * **Rendering:** PBR with per-ball reflection probes, plus hardware ray-query reflections where the GPU supports them. The presentation requirements are in §7.
+* **Browser:** A `wasm32` build of the same engine plays the included tables and player bundles on desktop and mobile browsers, with WebGPU and a WebGL2 fallback, served locally; replays are bit-identical to the desktop build. Native-only features are listed in D43; the requirements are Phase 9 (§4).
 * **Cabinet:** Single-window PiP or up to three monitors (playfield, backglass, DMD/LCD); X-Arcade profiles; rumble; 7.1 SSF; UDP telemetry; DOF bridge on Windows. Cabinet presets and display layouts are specified in §7 and Appendix E.
 
 ---
@@ -104,6 +108,14 @@ The workspace layout and crate map are in `docs/DEVELOPMENT.md`, "Workspace and 
 | **Audio** | SDL audio stream callback | Receives triggers and haptic events through lock-free rings. |
 | **I/O worker** | File watching, asset loading, script source loading | The only thread allowed to touch the filesystem at runtime. |
 
+**Web build (D44).** The browser has no sim thread, no presenter threads and no I/O worker; everything runs on one thread in this order.
+
+| Context | Owns | Notes |
+|---|---|---|
+| **Main thread** | DOM listeners, the `requestAnimationFrame` tick batch, rendering | Input listeners stamp events with `event.timeStamp` and queue them. Each animation frame runs the due 1 ms ticks (at most 50, then drops and counts the rest; the "8 catch-up ticks" cap above is native-only), then renders the latest `FrameStateSnapshot`. A hidden tab pauses simulated time. |
+| **AudioWorklet** | `pin_audio::Mixer` | Receives triggers by message. |
+| **No I/O worker** | | `fetch` and `File` reads are asynchronous and happen outside the tick batch. There is no Worker and no `SharedArrayBuffer`. |
+
 **Tick order inside `Simulation::step_1ms()`** (fixed, deterministic):
 1. Drain input events with timestamp ≤ tick time; update cabinet switch states.
 2. Deliver switch edges collected last tick to the script, then call `on_tick`.
@@ -118,9 +130,10 @@ These rules are now `docs/PROCESS.md` P2 (R1–R12). The nine rules that stood h
 
 ### 2.4 Determinism Scope (D9)
 
-* **Gate:** the same binary on the same machine replays any recording to identical ball state, switch-hit counts and scores.
-* **To stay close across platforms:** no fast-math flags, no FMA contraction, `libm` for transcendental functions, fixed iteration order everywhere, a sim-owned seeded PCG for all randomness.
-* **Report only:** CI records cross-OS replay hashes and flags divergence without failing the build.
+* **Gate (D9):** (1) the same binary on the same machine replays any recording to identical ball state, switch-hit counts and scores; (2) cross-platform equality: the `replay-hash` fixture `state_hash` (10 000 ticks) and the seam digests must equal the committed x86_64-linux goldens on aarch64 (qemu-aarch64 on every pull request touching the sim, Apple Silicon on every push to main), on Windows x86_64 (push to main) and on wasm32 under V8, JavaScriptCore and SpiderMonkey (web workflow).
+* **To stay equal:** no fast-math flags, no FMA contraction and no explicit fused or SIMD-width-dependent float ops in the sim crates (quaternions through `pin_physics::quat_ops`, `min`/`max` through `pin_core::fmath`), `libm` for transcendental functions (also in tests that build reference inputs and in Lua, KHZ 32), fixed iteration order everywhere, a sim-owned seeded PCG for all randomness, NaNs hashed as one canonical pattern, no relaxed SIMD, and the pinned web target features (`-C target-feature=+simd128`).
+* **Parity exceptions:** NaN bits (canonicalised before hashing) and trap or panic texts (not hashed).
+* **Report only:** other cross-OS hashes (the soak `cross-os` job) are recorded and divergence is flagged without failing the build.
 
 ### 2.5 Model Routing (D34)
 
@@ -270,10 +283,15 @@ pub trait TableScriptBackend: Send {
 
 **Sandbox (D25).** Lua loads only `base` (without `dofile`, `loadfile`, `load`), `string`, `table`, `math` (with `math.random` routed to the host PCG) and `utf8`. No `io`, `os`, `debug`, `package`. A memory cap and a per-callback instruction budget abort runaway scripts; an aborted script drops into a safe "tilt" state without stalling the tick.
 
+* `collectgarbage` is removed. At most 100 nested C calls. The heap cap is counted in logical (LP64) sizes, with a real-byte backstop at 2× the cap. Transcendental math goes through the Rust `libm` (KHZ 32).
+* **Instrumented-module rule (D10).** Every Wasm rules module is rewritten at load time with fuel and a weighted call-depth counter (depth limit: 256 KiB of estimated frame bytes). It is run by `wasmtime` natively and by `wasmi` on the web; the rewrite's fuel and depth counter decide every kill point.
+* **Per-tick budget (D45).** 200 000 units per tick (Lua: exact instructions plus KHZ charges; Wasm: `wasmtime` fuel) are shared by the tick's `on_switch_edge` calls and `on_tick`. Exhaustion is a `BudgetExceeded` fault and the script drops into the safe tilt state.
+
 ### 3.5 Bundle Format
 
 * `table.toml` and `backglass.toml` carry `schema_version`.
 * Zip extraction rejects absolute paths, `..` components and symlinks, and enforces caps on total uncompressed size and compression ratio.
+* **Web limits (D25, D43).** `File.size` is at most 32 MiB, checked before any copy. The web `ZipLimits` are 64 MiB total, 32 MiB per file, compression ratio 100 and 10 000 entries. Folder bundles are not available on the web. Bundles are never stored.
 
 ---
 
@@ -670,6 +688,58 @@ Work through `docs/HUMAN_ACCEPTANCE.md`:
 3. **Check hardware.** X-Arcade in each mode, analog plunger, accelerometer nudge, rumble, SSF channels, multi-monitor layout, DOF devices.
 4. **Check visuals.** Reflections, bloom, DMD and backglass on a real display; ray-query reflections on a capable GPU, then decide whether to enable them by default.
 5. **Replace placeholders.** Swap real sounds, music, callouts and art in by asset ID.
+
+### Phase 9: Browser Version (`WEB`)
+
+The browser build is a `wasm32-unknown-unknown` build of the same engine (D43, D44). It is served locally (`node scripts/web/serve.cjs`, 127.0.0.1, strict CSP, no COOP/COEP). WebGPU is primary and WebGL2 is a fallback, shipped as two artifacts. Mobile is in scope. Replay parity is exact across x86_64 Linux and Windows, aarch64 macOS and wasm32 on V8, JavaScriptCore and SpiderMonkey (D9), apart from NaN bits and trap texts. The build host is Linux x86_64 (including WSL2) or macOS 15+ (arm64 and Intel), with pins in `scripts/web/tools.lock`; the cross-host gate is behaviour, not bytes.
+
+#### 1. Engine and parity
+
+- **REQ-WEB-001** The web build plays the included tables and player bundles with the same `pin_sim`, `pin_physics`, `pin_input`, `pin_script`, `pin_assets`, `pin_audio` and `pin_render` code as the desktop app.
+- **REQ-WEB-002** For any recording within the web limits, every tick's `state_hash`, `ext_hash` and command-queue hash in the web module equal the desktop x86_64 build's, on V8, JavaScriptCore and SpiderMonkey; NaNs hash canonically and trap texts are not hashed.
+- **REQ-WEB-003** `step_1ms` makes 0 heap allocations in the web module over 60 000 ticks per included table, with the Lua and the wasmi backend.
+- **REQ-WEB-004** A Rust panic in the web module ends in re-instantiation and reload of the current bundle; the page stays usable.
+
+#### 2. Scripting
+
+The vendored Lua 5.4.9 with KHZ 1–38 is compiled into the engine module; `mlua` and the `pin_script` host code are unchanged. Wasm rules run in `wasmi` 2.0.2 from the load-time-instrumented module (§3.4).
+
+- **REQ-WEB-005** Lua runs from the vendored Lua with KHZ 1–38; the 79-case sandbox corpus, the 13 audit probes and the budget-edge probe give the same lines as native.
+- **REQ-WEB-006** Wasm rules run in wasmi from the instrumented module; the 82-line adversarial corpus, per-callback fuel and depth limits equal native wasmtime running the same module.
+
+#### 3. Bundles, page and hosting
+
+Player bundles load through one `File` path for the picker and for drop, and are never stored; `localStorage` holds settings and the last-used table only. REQ-WEB-009 sits here (not in part 1) because it gates the bundle loader.
+
+- **REQ-WEB-007** Player bundles load by picker and by drop through one path; a file over 32 MiB is refused before any byte is copied; the hostile zip corpus is refused with the native texts.
+- **REQ-WEB-008** Nothing from a player bundle is stored; `localStorage` holds only settings and the last-used table.
+- **REQ-WEB-009** A startup self-test replays the CI fixture, checks the glam operation digests and Lua's deepest legal C recursion. On a stack failure player bundles are refused; an engine without a Wasm JIT is reported as unsupported.
+- **REQ-WEB-010** Every response of `scripts/web/serve.cjs` carries the CSP `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, serves `.wasm` as `application/wasm`, binds 127.0.0.1 by default and sends no COOP/COEP.
+- **REQ-WEB-011** The engine module imports only from its wasm-bindgen glue (no `env.*`, no `wasi_*`), uses legacy Wasm EH only, has no relaxed-SIMD opcode and validates with the pinned feature list.
+- **REQ-WEB-012** After `wasm-opt -Oz` the engine module is at most 2.5 MiB brotli (WebGPU) and at most 3.0 MiB (WebGL2).
+- **REQ-WEB-013** The loader uses the WebGPU artifact when `requestAdapter()` returns an adapter, otherwise the WebGL2 artifact when WebGL2 and `EXT_color_buffer_float` exist, otherwise an "unsupported browser" page.
+- **REQ-WEB-014** Floors: WebGPU artifact on Chrome/Edge 113+, Firefox 141+ (Windows) or 145+ (macOS), Safari/iOS 26+, Chrome 121+ on Android 12+. WebGL2 artifact on Safari 16.4+, Firefox 100+, Chrome 96+.
+
+#### 4. Rendering
+
+- **REQ-WEB-015** The web build presents the desktop single-window scene (§7.1–7.4) with the presets of REQ-VIS-005; in the browser job each table's frame passes the D30 analytic checks, and WebGL2 differs from WebGPU on at most 4 pixels per frame.
+- **REQ-WEB-016** Every app-path WGSL module translates to GLSL ES 3.00 in a GPU-free test.
+
+#### 5. Loop, input, audio and mobile
+
+- **REQ-WEB-017** Each animation frame runs the due 1 ms ticks, at most 50, then drops and counts the rest; a hidden tab pauses simulated time and audio; resuming takes a fresh epoch.
+- **REQ-WEB-018** Once script time in one frame passes 8 ms, stepping stops until the next frame, and after 2 s of throttling the page says the rules are too slow; replay hashes are unchanged.
+- **REQ-WEB-019** Keyboard, pointer and touch inputs are applied in the tick their `event.timeStamp` falls in (REQ-LAT-004 on the browser clock); gamepads are polled once per frame.
+- **REQ-WEB-020** In the browser job, at most two presented frames pass from a flipper key or touch event to the first frame showing that bat moved at least 1 degree.
+- **REQ-WEB-021** Keyboard uses `KeyboardEvent.code` mapped to the HID usages of the shipped profiles; gamepads use the "standard" mapping; touch zones cover both flippers, launch, start and the menu; cameras (REQ-CAM-002) are selectable through the menu, `V`/`B` and the D-pad without any key the browser reserves.
+- **REQ-WEB-022** Audio comes from `pin_audio::Mixer` in an AudioWorklet; its output equals native `Mixer::render` bit for bit for the same trigger sequence; it starts on the first user gesture; stereo; decode budget 64 MiB.
+- **REQ-WEB-023** On phones the page fills the viewport in portrait and landscape without scrolling (`touch-action: none`), with the score display and backglass off the flipper area.
+
+#### 6. Gate and release
+
+- **REQ-WEB-024** Gate A4 (automated, web) runs on pull requests touching the web determinism paths and on `main`. It covers: REQ-WEB-002, -003, -005, -006, -007, -011, -012 in Node; the Chromium browser checks; the JavaScriptCore and SpiderMonkey shells. Real Safari (macOS and the iOS Simulator) and Firefox run on web-path pull requests and on dispatch. Gate A4 is not part of `pr-checks`.
+- **REQ-WEB-025** Draft prereleases carry `kilohertz-web-<version>.zip` (static site plus `serve.cjs`).
+- **REQ-WEB-026** The web build runs on Linux x86_64 and on macOS 15+ (arm64 and x86_64) from the same pins. On each host the build, the module checks and Node per-tick parity against the committed goldens pass; the module sha256 is compared across hosts and reported (W20, W26).
 
 ---
 
