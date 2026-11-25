@@ -7696,3 +7696,18 @@ stays the sole code reviewer (R9); only its timing changes.
 - Review on the gate issue's own PR against `main`: rejected because CodeRabbit would see only
   that issue's diff, not the phase's cumulative changes.
 - Git tags for reviewed commits: rejected under D39 (the session proxy may refuse tag pushes).
+
+## Process — Manual and physical testing waits for final acceptance
+
+**Decision:** At the owner's direction (2026-11-25), no session waits for a person to test
+anything by hand or on physical hardware. Agents automate what they can (PROCESS.md P2), record
+what only a person can check as a `[P8 hardware]` line or in the item's DECISIONS.md entry (both
+feed `docs/HUMAN_ACCEPTANCE.md`), and continue. A pending manual or physical check never holds a
+unit, a PR merge, the work-verifier's verdict, a gate, or a run. PROCESS.md P2 and P8, the
+`work-issue` skill and the `work-verifier` say so.
+
+**Rationale:** The owner reserves manual and physical testing for one pass once everything is
+complete (SPEC §4 Phase 8), so the run stays unattended (D28).
+
+**Alternatives:**
+- Pause a unit until the owner tests it on hardware: rejected by the owner's direction.

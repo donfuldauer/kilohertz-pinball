@@ -16,7 +16,7 @@ Counts:
 
 - Open queue lines: 10
 - Resolved queue lines: 323
-- Decision entries: 477
+- Decision entries: 478
 - Run-log rows: 518
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
@@ -521,6 +521,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - Process: Dual-harness agent documentation (Claude Code and Gemini/Antigravity) (docs/DECISIONS.md)
 - Process: Initial-usable-build review rhythm (tests along the way, sanity review on boundaries, full review at M1) (docs/DECISIONS.md)
 - Process: Gate reviews at phase and milestone completion (docs/DECISIONS.md)
+- Process: Manual and physical testing waits for final acceptance (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

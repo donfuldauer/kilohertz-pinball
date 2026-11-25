@@ -181,7 +181,8 @@ like a machine (SPEC §7). So:
   devices are synthetic key events; plunger and accelerometer inputs are recorded traces stored as
   fixtures; displays are mocked; audio renders offline to buffers; telemetry uses loopback UDP.
   Anything that needs a physical device is a final-acceptance item (`docs/HUMAN_ACCEPTANCE.md`)
-  and, when new, a `[P8 hardware]` line.
+  and, when new, a `[P8 hardware]` line. No session waits for it: the unit, its PR and any gate
+  proceed on the simulated and windowed evidence (P8 "Manual and physical testing").
 - **Windowed app.** Any change to input, timing or presentation is also verified in the real
   windowed app (Xvfb and lavapipe in CI and in agent sessions), never only headless.
 
@@ -638,6 +639,13 @@ calls are decisions (R8).
   generated, vendored and recorded-data files out of review), Actions runners (including an
   optional self-hosted ray-tracing runner, D33), secrets, and deleting branches the session's
   proxy refuses to delete.
+
+**Manual and physical testing.** A session never waits for a person to test anything by hand or
+on physical hardware, and never asks for it mid-run. Such checks are reserved for final human
+acceptance once the plan is complete: the session automates everything it can (P2), records what
+only a person can check as a `[P8 hardware]` line (or in the item's DECISIONS.md entry, which
+`docs/HUMAN_ACCEPTANCE.md` picks up), and carries on. A pending manual or physical check is never
+a reason to hold a unit, leave a PR open, fail the work-verifier, fail a gate, or end a run.
 
 Final human acceptance (SPEC §4 Phase 8, with REQ-GATE-002) is the person's review of the run as
 a whole: feel, hardware, visuals on real displays, and real assets, worked through the generated

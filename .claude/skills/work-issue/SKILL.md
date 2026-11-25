@@ -374,4 +374,6 @@ no scheduled task exists yet, nothing starts automatically: see the P8 line in
 Start a session to chain to the next issue; start an issue whose dependencies are not
 satisfied; push to `main`; merge with a failing required check or an unresolved thread; skip,
 ignore or weaken a test; leave a judgement call in `docs/HUMAN_QUEUE.md` instead of
-`docs/DECISIONS.md`; ask a person to resolve a review thread.
+`docs/DECISIONS.md`; ask a person to resolve a review thread; wait for, or ask, a person to test
+anything by hand or on physical hardware (record it for final acceptance and carry on, PROCESS.md
+P8 "Manual and physical testing").
