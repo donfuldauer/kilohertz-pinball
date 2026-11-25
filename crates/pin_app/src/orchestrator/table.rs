@@ -8,18 +8,28 @@
 //! commands and display commands (scenes, score reports) to the audio and
 //! render threads through wait-free rings.
 
+use super::audio::{RegisteredSound, table_samples};
+use super::trace::FlipperBindings;
+use super::view::TableVisuals;
+use crate::ui::{TableEntry, scan_tables};
 use pin_assets::{GltfScene, LoadedTable, load_gltf, load_table};
-use pin_audio::mixer::{SoundSender, SoundTrigger};
+use pin_audio::mixer::{MixerConfig, SoundReceiver, SoundSender, SoundTrigger, trigger_ring};
 use pin_core::input::HapticsTelemetryEvent;
 use pin_core::{FrameStateSnapshot, InputEvent, SceneId, SimStep};
-use pin_input::haptics::HapticsProducer;
+use pin_input::haptics::{
+    DEFAULT_HAPTICS_RING_CAPACITY, HapticsConsumer, HapticsProducer, haptics_ring,
+};
 use pin_render::debug::DebugLine;
 use pin_sim::load::BundleSnapshot;
 use pin_sim::{SimConfig, Simulation};
 use pin_tablegen::clearance::{
     ClearanceError, load_backbox_colliders, validate_clearance_with_backbox,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::thread::JoinHandle;
 
 /// A bundle that passed [`validate_table`].
 pub struct ValidatedTable {
@@ -403,4 +413,380 @@ pub fn run_headless_table(bundle: &Path, ticks: u64) -> Result<(u64, u64), Strin
         let (last, table) = super::run_headless_returning(TableSim::new(sim, None), ticks)?;
         Ok((last, table.sim().state_hash()))
     })?
+}
+
+/// Most table lines drawn in the debug view of an app table.
+const MAX_TABLE_LINES: usize = 8192;
+
+/// A table loaded for the app (`pin_app --table <path>`, or picked in the
+/// table browser): validated and simulated from one in-memory bundle
+/// snapshot, with what the render and audio threads need.
+pub struct LoadedApp {
+    /// The simulation, wrapped with its haptics, sound and display rings.
+    pub sim: Box<TableSim>,
+    /// The PBR renderer's view of the table (meshes, backglass, displays).
+    pub visuals: TableVisuals,
+    /// The table's decoded sounds, registered with the mixer.
+    pub samples: Vec<RegisteredSound>,
+    /// Plan-view collider lines for the debug view ([`table_lines`]).
+    pub table_lines: Vec<DebugLine>,
+    /// Flipper outlines for the debug view ([`FlipperOutline::of`]).
+    pub flippers: Vec<FlipperOutline>,
+    /// Haptic source positions ([`table_source_positions`]).
+    pub source_positions: Vec<(u16, [f32; 2])>,
+    /// The audio thread's end of the haptics ring.
+    pub haptics: HapticsConsumer<HapticsTelemetryEvent>,
+    /// The mixer's end of the sound trigger ring.
+    pub sounds: SoundReceiver,
+    /// The render thread's end of the display command ring.
+    pub displays: HapticsConsumer<DisplayCommand>,
+    /// The flipper coils of the latency trace (`--latency-trace`).
+    pub bindings: FlipperBindings,
+}
+
+/// Validates and loads the table at `path` for the app: [`validate_table`]
+/// then [`load_checked`] on the same snapshot, on a [`SIM_STACK_BYTES`]
+/// thread ([`on_sim_stack`], named `table-load`; the simulation is built,
+/// wrapped and boxed there, only the box reaches the caller). Sounds are
+/// decoded at `mixer.sample_rate`. Prints the warnings and one `pin_app:
+/// table "<name>" loaded (...)` line on stderr.
+///
+/// # Errors
+/// The validation or load error text, or a failed thread spawn. A panic in
+/// the load is resumed on the caller.
+pub fn load_app_table(path: &Path, mixer: MixerConfig) -> Result<LoadedApp, String> {
+    let path = path.to_path_buf();
+    on_sim_stack("table-load", move || -> Result<LoadedApp, String> {
+        let checked = validate_table(&path)?;
+        for w in &checked.warnings {
+            eprintln!("pin_app: table warning: {w}");
+        }
+        let sim = load_checked(&checked, SimConfig::default())?;
+        let (htx, hrx) = haptics_ring(DEFAULT_HAPTICS_RING_CAPACITY);
+        let (stx, srx) = trigger_ring(SOUND_RING_CAPACITY);
+        let (dtx, drx) = haptics_ring(DISPLAY_RING_CAPACITY);
+        let sim = Box::new(
+            TableSim::new(sim, Some(htx))
+                .with_sounds(stx)
+                .with_displays(dtx),
+        );
+        let visuals = TableVisuals::of(&checked);
+        for w in &visuals.warnings {
+            eprintln!("pin_app: table display warning: {w}");
+        }
+        let (samples, errors) = table_samples(&checked, mixer.sample_rate);
+        for e in &errors {
+            eprintln!("pin_app: table sound warning: {e}");
+        }
+        eprintln!(
+            "pin_app: table {:?} loaded ({} switches, {} mechs, {} sounds)",
+            checked.table.manifest.meta.name,
+            checked.table.switches.len(),
+            checked.table.mechs.len(),
+            samples.len()
+        );
+        Ok(LoadedApp {
+            sim,
+            table_lines: table_lines(&checked.scene, MAX_TABLE_LINES),
+            flippers: FlipperOutline::of(&checked.table),
+            bindings: FlipperBindings::of_flippers(&checked.table.flippers),
+            source_positions: table_source_positions(&checked.table),
+            visuals,
+            samples,
+            haptics: hrx,
+            sounds: srx,
+            displays: drx,
+        })
+    })?
+}
+
+/// A request to the app's [`IoWorker`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IoRequest {
+    /// Scan this folder for table bundles ([`scan_tables`]).
+    Scan(PathBuf),
+    /// Validate and load the bundle at `path` ([`load_app_table`]) for the
+    /// menu's load request `id`.
+    Load {
+        /// The menu's load id (`MenuState::pending_load_id`).
+        id: u64,
+        /// The bundle (folder, `.zip` or `.pinbundle`).
+        path: PathBuf,
+    },
+}
+
+/// A reply of the [`IoWorker`], one per request, in request order.
+pub enum IoReply {
+    /// A [`IoRequest::Scan`] finished (a missing or unreadable folder gives
+    /// an empty list).
+    Scanned {
+        /// The folder scanned.
+        root: PathBuf,
+        /// The bundles found, sorted ([`scan_tables`]).
+        tables: Vec<TableEntry>,
+    },
+    /// A [`IoRequest::Load`] succeeded.
+    Loaded {
+        /// The request's load id.
+        id: u64,
+        /// The bundle.
+        path: PathBuf,
+        /// The loaded table, ready for the engine threads.
+        app: Box<LoadedApp>,
+    },
+    /// A [`IoRequest::Load`] failed (validation, load or a panic in the
+    /// load, with its message).
+    LoadFailed {
+        /// The request's load id.
+        id: u64,
+        /// The bundle.
+        path: PathBuf,
+        /// Why (never empty).
+        error: String,
+    },
+}
+
+impl std::fmt::Debug for IoReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IoReply::Scanned { root, tables } => f
+                .debug_struct("Scanned")
+                .field("root", root)
+                .field("tables", &tables.len())
+                .finish(),
+            IoReply::Loaded { id, path, .. } => f
+                .debug_struct("Loaded")
+                .field("id", id)
+                .field("path", path)
+                .finish_non_exhaustive(),
+            IoReply::LoadFailed { id, path, error } => f
+                .debug_struct("LoadFailed")
+                .field("id", id)
+                .field("path", path)
+                .field("error", error)
+                .finish(),
+        }
+    }
+}
+
+/// The text of a caught panic payload.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    let text = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_owned());
+    format!("panicked: {text}")
+}
+
+/// Serves one request; never panics.
+fn serve(req: IoRequest, mixer: MixerConfig) -> IoReply {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    match req {
+        IoRequest::Scan(root) => {
+            let tables = catch_unwind(AssertUnwindSafe(|| scan_tables(&root))).unwrap_or_default();
+            IoReply::Scanned { root, tables }
+        }
+        IoRequest::Load { id, path } => {
+            let result = catch_unwind(AssertUnwindSafe(|| load_app_table(&path, mixer)))
+                .unwrap_or_else(|p| Err(panic_text(p.as_ref())));
+            match result {
+                Ok(app) => IoReply::Loaded {
+                    id,
+                    path,
+                    app: Box::new(app),
+                },
+                Err(e) => {
+                    let error = if e.is_empty() {
+                        format!("table {}: load failed", path.display())
+                    } else {
+                        e
+                    };
+                    IoReply::LoadFailed { id, path, error }
+                }
+            }
+        }
+    }
+}
+
+/// The app's I/O worker (R4: the only thread that touches the file system
+/// at runtime): one background thread named `io-worker` that serves
+/// [`IoRequest`]s in order (a scan with [`scan_tables`], a load with
+/// [`load_app_table`] on its big-stack `table-load` thread) and returns one
+/// [`IoReply`] per request through a channel, in request order. A request
+/// never panics the worker (a panic inside a load becomes
+/// [`IoReply::LoadFailed`] with the panic message). The main thread only
+/// posts requests and applies replies.
+///
+/// Dropping the worker stops it: the request in flight completes, requests
+/// still queued are skipped, and the thread is joined.
+pub struct IoWorker {
+    requests: Option<mpsc::Sender<IoRequest>>,
+    replies: mpsc::Receiver<IoReply>,
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl IoWorker {
+    /// Starts the worker; loads decode sounds at `mixer.sample_rate`. If the
+    /// thread cannot be spawned, a line is printed on stderr and the worker
+    /// answers nothing ([`recv`](Self::recv) returns `None`).
+    #[must_use]
+    pub fn spawn(mixer: MixerConfig) -> IoWorker {
+        let (req_tx, req_rx) = mpsc::channel::<IoRequest>();
+        let (rep_tx, rep_rx) = mpsc::channel::<IoReply>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let spawned = std::thread::Builder::new()
+            .name("io-worker".to_owned())
+            .spawn(move || {
+                while let Ok(req) = req_rx.recv() {
+                    if flag.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if rep_tx.send(serve(req, mixer)).is_err() {
+                        break;
+                    }
+                }
+            });
+        let handle = match spawned {
+            Ok(h) => Some(h),
+            Err(e) => {
+                eprintln!("pin_app: spawning the io-worker thread: {e}");
+                None
+            }
+        };
+        IoWorker {
+            requests: handle.as_ref().map(|_| req_tx),
+            replies: rep_rx,
+            stop,
+            handle,
+        }
+    }
+
+    /// Queues `req` (never blocks).
+    pub fn request(&self, req: IoRequest) {
+        if let Some(tx) = &self.requests {
+            let _ = tx.send(req);
+        }
+    }
+
+    /// The next reply if one is ready (never blocks).
+    pub fn try_recv(&self) -> Option<IoReply> {
+        self.replies.try_recv().ok()
+    }
+
+    /// Blocks for the next reply; `None` once the worker has stopped (or
+    /// never started).
+    pub fn recv(&self) -> Option<IoReply> {
+        self.replies.recv().ok()
+    }
+}
+
+impl Drop for IoWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        // Closing the request channel ends the worker's loop.
+        drop(self.requests.take());
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "pin_app_io_worker_{tag}_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// R4 / KP-005: requests are served in order; a missing folder scans
+    /// empty and a missing or broken bundle fails without stopping the
+    /// worker.
+    #[test]
+    fn io_worker_serves_in_order_and_survives_failures() {
+        let d = temp("order");
+        std::fs::create_dir_all(d.join("tables/broken")).unwrap();
+        std::fs::write(d.join("tables/broken/table.toml"), "not = [toml").unwrap();
+        let w = IoWorker::spawn(MixerConfig::default());
+        w.request(IoRequest::Scan(d.join("missing")));
+        w.request(IoRequest::Load {
+            id: 1,
+            path: d.join("tables/broken"),
+        });
+        w.request(IoRequest::Load {
+            id: 2,
+            path: d.join("nope"),
+        });
+        w.request(IoRequest::Scan(d.join("tables")));
+        match w.recv() {
+            Some(IoReply::Scanned { root, tables }) => {
+                assert_eq!(root, d.join("missing"));
+                assert!(tables.is_empty());
+            }
+            other => panic!("{other:?}"),
+        }
+        for want in [1, 2] {
+            match w.recv() {
+                Some(IoReply::LoadFailed { id, error, .. }) => {
+                    assert_eq!(id, want);
+                    assert!(!error.is_empty());
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        match w.recv() {
+            Some(IoReply::Scanned { tables, .. }) => {
+                assert_eq!(tables.len(), 1);
+                assert!(!tables[0].is_ready());
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(w.try_recv().is_none());
+        let rendered = format!(
+            "{:?}",
+            IoReply::Scanned {
+                root: d.clone(),
+                tables: Vec::new()
+            }
+        );
+        assert!(rendered.contains("Scanned"));
+        drop(w);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Dropping the worker with requests queued joins it without serving
+    /// them all.
+    #[test]
+    fn io_worker_drop_joins() {
+        let d = temp("drop");
+        let w = IoWorker::spawn(MixerConfig::default());
+        for i in 0..64 {
+            w.request(IoRequest::Load {
+                id: i,
+                path: d.join(format!("missing{i}")),
+            });
+        }
+        drop(w);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn panic_text_of_payloads() {
+        let p: Box<dyn std::any::Any + Send> = Box::new("boom");
+        assert_eq!(panic_text(p.as_ref()), "panicked: boom");
+        let p: Box<dyn std::any::Any + Send> = Box::new(String::from("bang"));
+        assert_eq!(panic_text(p.as_ref()), "panicked: bang");
+        let p: Box<dyn std::any::Any + Send> = Box::new(5u8);
+        assert_eq!(panic_text(p.as_ref()), "panicked: unknown panic");
+    }
 }
