@@ -1783,7 +1783,8 @@ fn req_lat_001_harness_release_shares_one_deadline() {
         HELPER_TIMEOUT
     );
     // A retry round: one 120 ms attempt each, then one pause of 50 ms; the
-    // second round's bounds are what is left of the shared budget.
+    // second round's bounds are what is left of the shared budget, and a
+    // retry that would start after the budget is skipped.
     let clock = std::cell::Cell::new(Duration::ZERO);
     let mut held = [true, true];
     let mut sent = Vec::new();
@@ -1804,10 +1805,150 @@ fn req_lat_001_harness_release_shares_one_deadline() {
     );
     assert_eq!(
         sent,
-        [400, 280, 110, 50].map(Duration::from_millis),
-        "bounds from one shared deadline"
+        [400, 280, 110].map(Duration::from_millis),
+        "bounds from one shared deadline; Right's retry starts after the budget (410 ms of \
+         400 ms) and is skipped (gate 30 round 2, A2)"
     );
-    assert_eq!(held, [false, false]);
+    assert_eq!(held, [false, true]);
+}
+
+/// REQ-LAT-004 harness (gate 30 round 2): timing fields above 2^60 ns are
+/// rejected by the parser (unreadable output), exactly 2^60 parses, and the
+/// check-a bound cannot overflow, so a stalled row with a huge drain gap
+/// never panics or wraps.
+#[test]
+fn req_lat_004_harness_out_of_range_timing_is_unreadable() {
+    use verdict::{MAX_TIMING_NS, coil_bound_ns, evaluate_text, parse_trace};
+    let csv = |ts: u64, drain: u64, prev: u64, stall: u8, present: u64, run_end: u64| {
+        format!(
+            "{}\n0,left_flipper,1,{ts},1,{ts},0,{drain},{prev},0,{stall},,,,,\n\n{}\n0,1,{present}\n\
+             # overflows: input=0 move=0 frame=0 pending=0\n# run_end_ns={run_end}\n",
+            verdict::EVENT_HEADER,
+            verdict::FRAME_HEADER
+        )
+    };
+    let stderr =
+        "pin_app: 1000 sim ticks (0 dropped), 1 frames, input dropped 0, 0 haptic events\n";
+    let huge = csv(1000, u64::MAX, 0, 1, 5, 9);
+    let e = evaluate_text(&huge, stderr, &Params::default()).unwrap_err();
+    assert!(
+        e.contains("drain_sdl_ns") && e.contains("out of range (limit 2^60 ns)"),
+        "{e}"
+    );
+    assert!(parse_trace(&csv(1000, MAX_TIMING_NS, 0, 1, 5, 9)).is_ok());
+    let e = parse_trace(&csv(1000, MAX_TIMING_NS + 1, 0, 1, 5, 9)).unwrap_err();
+    assert!(e.starts_with("trace line 2: drain_sdl_ns "), "{e}");
+    assert!(parse_trace(&csv(MAX_TIMING_NS + 1, 0, 0, 0, 5, 9)).is_err());
+    assert!(parse_trace(&csv(1000, 0, 0, 0, MAX_TIMING_NS + 1, 9)).is_err());
+    assert!(parse_trace(&csv(1000, 0, 0, 0, 5, MAX_TIMING_NS + 1)).is_err());
+    // The largest in-range stall, with a large tolerance: no overflow.
+    let t = parse_trace(&csv(1000, MAX_TIMING_NS, 0, 1, 5, 9)).unwrap();
+    let p = Params {
+        tolerance_ns: u64::MAX,
+        ..Params::default()
+    };
+    assert_eq!(coil_bound_ns(&t.rows[0], &p), u64::MAX);
+    assert_eq!(
+        coil_bound_ns(&t.rows[0], &Params::default()),
+        verdict::TICK_NS + Params::default().tolerance_ns + MAX_TIMING_NS
+    );
+}
+
+/// REQ-LAT-001 harness (gate 30 round 2): a retry after the budget is spent
+/// is skipped. Left's first attempt and retry spend the budget; Right had
+/// its first attempt in round 1 and gets no second one. A spent budget at
+/// the start still gives both keys a first attempt with the floor.
+#[test]
+fn req_lat_001_harness_release_retry_respects_the_deadline() {
+    use driver::{KEY_RELEASE_BUDGET, KEY_RELEASE_MIN_TIMEOUT, Key, release_held};
+    let clock = std::cell::Cell::new(Duration::ZERO);
+    let mut held = [true, true];
+    let mut sent = Vec::new();
+    let failed = release_held(
+        &mut held,
+        |k, t| {
+            sent.push((k, t));
+            // Round 1: Left takes 100 ms, Right 10 ms. Left's retry spends
+            // the rest of the budget.
+            let spend = match (k, sent.iter().filter(|(x, _)| *x == k).count()) {
+                (Key::Left, 1) => 100,
+                (Key::Right, 1) => 10,
+                _ => 1000,
+            };
+            clock.set(clock.get() + Duration::from_millis(spend));
+            Err("busy".to_string())
+        },
+        KEY_RELEASE_BUDGET,
+        &mut || clock.get(),
+        &mut || clock.set(clock.get() + Duration::from_millis(50)),
+    );
+    let right_sends = sent.iter().filter(|(k, _)| *k == Key::Right).count();
+    assert_eq!(right_sends, 1, "no second Right attempt: {sent:?}");
+    assert_eq!(sent.len(), 3, "{sent:?}");
+    assert_eq!(sent[2].0, Key::Left);
+    assert_eq!(failed.len(), 2, "both keys stay failed: {failed:?}");
+    assert_eq!(held, [true, true]);
+    // The budget already spent: first attempts for both keys, floor bound.
+    let mut held = [true, true];
+    let mut sent = Vec::new();
+    let failed = release_held(
+        &mut held,
+        |k, t| {
+            sent.push((k, t));
+            Err("e".to_string())
+        },
+        KEY_RELEASE_BUDGET,
+        &mut || KEY_RELEASE_BUDGET * 2,
+        &mut || panic!("budget spent: no retry"),
+    );
+    assert_eq!(
+        sent,
+        [
+            (Key::Left, KEY_RELEASE_MIN_TIMEOUT),
+            (Key::Right, KEY_RELEASE_MIN_TIMEOUT)
+        ]
+    );
+    assert_eq!(failed.len(), 2);
+}
+
+/// REQ-LAT-003 harness (gate 30 round 2): the stderr capture decodes
+/// lossily and keeps going after a non-UTF-8 line; a read error is logged
+/// as a failure line, EOF is silent.
+#[test]
+fn req_lat_003_harness_capture_survives_non_utf8_and_reports_read_errors() {
+    use driver::capture_lines;
+    use std::sync::{Arc, Mutex};
+    let log = Arc::new(Mutex::new(String::new()));
+    capture_lines(
+        std::io::Cursor::new(b"ok line\n\xff\xfe bad\r\npin_app: render on x\nlast\n".to_vec()),
+        Arc::clone(&log),
+    )
+    .join()
+    .unwrap();
+    assert_eq!(
+        *log.lock().unwrap(),
+        "ok line\n\u{fffd}\u{fffd} bad\npin_app: render on x\nlast\n"
+    );
+    struct FailAfter(Option<&'static [u8]>);
+    impl std::io::Read for FailAfter {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.0.take() {
+                Some(b) => {
+                    buf[..b.len()].copy_from_slice(b);
+                    Ok(b.len())
+                }
+                None => Err(std::io::Error::other("boom")),
+            }
+        }
+    }
+    let log = Arc::new(Mutex::new(String::new()));
+    capture_lines(FailAfter(Some(b"one\n")), Arc::clone(&log))
+        .join()
+        .unwrap();
+    assert_eq!(
+        *log.lock().unwrap(),
+        "one\nwindowed: stderr read failed: boom\n"
+    );
 }
 
 /// REQ-LAT-001 harness: a key-up that fails keeps the key marked held (so
@@ -2034,6 +2175,52 @@ fn req_lat_002_harness_preflight_replaces_stale_artifacts() {
         summary.starts_with("verdict: FAIL (windowed driver: xdotool not found"),
         "{summary}"
     );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The windowed driver (gate 30 round 2): a startup failure after the
+/// preflight (Xvfb, or an app that cannot execute) writes a failure
+/// `summary.txt` through the same writer and no `pin_app_stderr.log`.
+#[test]
+fn req_lat_002_harness_startup_failure_writes_a_summary() {
+    let dir = driver_dir("startup");
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let app = dir.join("pin_app");
+    std::fs::write(&app, "not a program").unwrap();
+    let cfg = driver::DriverConfig {
+        app,
+        bundle: dir.join("bundle"),
+        out_dir: out.clone(),
+        run_ms: 1000,
+        lp_num_threads: "2".into(),
+        seed: 1,
+        frame_interval_ms: 125,
+    };
+    // The shared writer, with a Xvfb-style error.
+    let what = "Xvfb did not start: no display";
+    assert_eq!(driver::startup_failed(&cfg, what), what);
+    let summary = std::fs::read_to_string(out.join("summary.txt")).unwrap();
+    assert!(
+        summary.starts_with(&format!("verdict: FAIL (windowed driver: {what})")),
+        "{summary}"
+    );
+    std::fs::remove_file(out.join("summary.txt")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&cfg.app, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let e = driver::spawn_app(&cfg, ":99", &out.join("t.csv")).unwrap_err();
+        assert!(e.starts_with("starting "), "{e}");
+        let shown = driver::startup_failed(&cfg, &e);
+        assert_eq!(shown, e);
+        let summary = std::fs::read_to_string(out.join("summary.txt")).unwrap();
+        assert!(
+            summary.starts_with("verdict: FAIL (windowed driver: starting"),
+            "{summary}"
+        );
+        assert!(!out.join("pin_app_stderr.log").exists());
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

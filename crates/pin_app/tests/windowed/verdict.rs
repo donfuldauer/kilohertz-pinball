@@ -122,6 +122,29 @@ fn at<T>(n: usize, r: Result<T, String>) -> Result<T, String> {
     r.map_err(|e| format!("trace line {n}: {e}"))
 }
 
+/// Largest timing value (nanoseconds) a trace may carry: 2^60 ns (about 36
+/// years). Larger values are a malformed trace, so no bound, deadline or
+/// slack computed from them can wrap.
+pub const MAX_TIMING_NS: u64 = 1 << 60;
+
+/// A timing field: an integer of at most [`MAX_TIMING_NS`].
+fn ns(name: &str, s: &str) -> Result<u64, String> {
+    let v = int(s)?;
+    if v > MAX_TIMING_NS {
+        return Err(format!("{name} {v} is out of range (limit 2^60 ns)"));
+    }
+    Ok(v)
+}
+
+/// An optional timing field (see [`ns`]).
+fn opt_ns(name: &str, s: &str) -> Result<Option<u64>, String> {
+    if s.is_empty() {
+        Ok(None)
+    } else {
+        ns(name, s).map(Some)
+    }
+}
+
 fn int(s: &str) -> Result<u64, String> {
     s.parse::<u64>().map_err(|e| format!("{s:?}: {e}"))
 }
@@ -205,18 +228,18 @@ pub fn parse_trace(text: &str) -> Result<Trace, String> {
                     seq: at(n, int(f[0]))?,
                     input: f[1].to_owned(),
                     down: at(n, flag(f[2]))?,
-                    sdl_ts_ns: at(n, int(f[3]))?,
+                    sdl_ts_ns: at(n, ns("sdl_ts_ns", f[3]))?,
                     apply_tick: at(n, int(f[4]))?,
-                    apply_tick_end_sdl_ns: at(n, int(f[5]))?,
-                    prev_tick_end_sdl_ns: at(n, int(f[6]))?,
-                    drain_sdl_ns: at(n, int(f[7]))?,
-                    prev_drain_sdl_ns: at(n, int(f[8]))?,
+                    apply_tick_end_sdl_ns: at(n, ns("apply_tick_end_sdl_ns", f[5]))?,
+                    prev_tick_end_sdl_ns: at(n, ns("prev_tick_end_sdl_ns", f[6]))?,
+                    drain_sdl_ns: at(n, ns("drain_sdl_ns", f[7]))?,
+                    prev_drain_sdl_ns: at(n, ns("prev_drain_sdl_ns", f[8]))?,
                     dropped_ticks_at_apply: at(n, int(f[9]))?,
                     stall: at(n, flag(f[10]))?,
                     move_tick: at(n, opt(f[11]))?,
                     frame: at(n, opt(f[12]))?,
                     frame_snap_tick: at(n, opt(f[13]))?,
-                    present_ns: at(n, opt(f[14]))?,
+                    present_ns: at(n, opt_ns("present_ns", f[14]))?,
                     frames_to_photon: at(n, opt(f[15]))?,
                 });
             }
@@ -242,14 +265,14 @@ pub fn parse_trace(text: &str) -> Result<Trace, String> {
                 t.frames.push(Frame {
                     frame: at(n, int(f[0]))?,
                     snap_tick: at(n, int(f[1]))?,
-                    present_ns: at(n, int(f[2]))?,
+                    present_ns: at(n, ns("present_ns", f[2]))?,
                 });
             }
             Part::RunEnd => {
                 let v = line
                     .strip_prefix(RUN_END_PREFIX)
                     .ok_or_else(|| format!("trace line {n}: run_end_ns line missing"))?;
-                t.run_end_ns = at(n, int(v))?;
+                t.run_end_ns = at(n, ns("run_end_ns", v))?;
                 part = Part::Done;
             }
             Part::Done => {
@@ -415,7 +438,7 @@ pub fn coil_bound_ns(r: &Row, p: &Params) -> u64 {
     } else {
         0
     };
-    TICK_NS + p.tolerance_ns + stall
+    TICK_NS.saturating_add(p.tolerance_ns).saturating_add(stall)
 }
 
 /// Index of the last frame presented at or before `t` (`None` when no frame
@@ -557,7 +580,10 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
         } else {
             let late = r.apply_tick_end_sdl_ns - r.sdl_ts_ns;
             s.max_lateness_ns = s.max_lateness_ns.max(late);
-            s.min_slack_ns = s.min_slack_ns.min(bound as i64 - late as i64);
+            let slack = i128::from(bound) - i128::from(late);
+            s.min_slack_ns = s
+                .min_slack_ns
+                .min(i64::try_from(slack).unwrap_or(if slack < 0 { i64::MIN } else { i64::MAX }));
             if late > bound {
                 a_failed = true;
                 fail(
@@ -590,7 +616,7 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
             None => {
                 // Only a press applied right before the run ended may have
                 // had no time to move its bat.
-                let tail = (p.coil_ticks + 2) * TICK_NS;
+                let tail = p.coil_ticks.saturating_add(2).saturating_mul(TICK_NS);
                 if run_end.saturating_sub(r.apply_tick_end_sdl_ns) > tail {
                     a_failed = true;
                     fail(
@@ -659,7 +685,10 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
                 ),
             );
         }
-        let deadline = r.sdl_ts_ns + bound + p.coil_ticks * TICK_NS;
+        let deadline = r
+            .sdl_ts_ns
+            .saturating_add(bound)
+            .saturating_add(p.coil_ticks.saturating_mul(TICK_NS));
         let (n_raw, n, shifted) = frame_count(
             &trace.frames,
             r.sdl_ts_ns,

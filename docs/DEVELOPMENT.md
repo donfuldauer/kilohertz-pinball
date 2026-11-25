@@ -304,7 +304,7 @@ and complete.
 | `release.yml` | PRs touching packaging paths; dispatch; `v*` tag push (owner only) | PR: `dry-run` (script unittest suites, `human_acceptance.py --check` as a warning, `package.py --dry-run` with real bundles). Dispatch or tag: `verify` (release build and tests with zero warnings on Windows x64, Linux x64, macOS arm64 and x86_64; the x86_64 macOS leg also runs `scripts/ci/replay_hash_assert.sh` under Rosetta 2 and asserts the replay-hash golden), `package`, and on a tag a draft prerelease. Never publishes (P8). |
 | `rules-wasm.yml` | PRs and main pushes touching rule ports, `pin_script` or the parity tests | Rebuilds each `tables/*/rules.wasm` twice and compares it with the committed binary; fmt, clippy and tests of each `rules-wasm` crate; the Lua/Wasm parity tests. |
 | `soak.yml` | weekly, dispatch, main pushes touching sim, physics, script, app or tables | `cargo test --release -p pin_app --test profiler_soak -- --ignored` on each OS: 10-minute multiball replays per table, `SOAK_HASH` lines compared across OSes (report only). |
-| `windowed.yml` | PRs touching `crates/pin_app`, `crates/pin_render`, `crates/pin_input`, `tables/`, `scripts/windowed/` or the workflow; every push to `main`; dispatch | The windowed latency harness (KP-002): the release `pin_app` with the grey-box table for 60 s under Xvfb on lavapipe (`LP_NUM_THREADS=2`), flipper presses through XTest, checks a to d on its latency trace (see "Windowed latency harness"). Artifact `windowed-latency`. Not in `pr-checks`: it becomes required only when the owner makes it a required check (P8 setting). |
+| `windowed.yml` | PRs touching `crates/`, `Cargo.toml`, `Cargo.lock`, `tables/`, `scripts/windowed/` or the workflow; every push to `main`; dispatch | The windowed latency harness (KP-002): the release `pin_app` with the grey-box table for 60 s under Xvfb on lavapipe (`LP_NUM_THREADS=2`), flipper presses through XTest, checks a to d on its latency trace (see "Windowed latency harness"). Artifact `windowed-latency`. Not in `pr-checks`: it becomes required only when the owner makes it a required check (P8 setting). |
 | `spikes.yml` | pushes and PRs touching `spikes/**`, `versions.toml`, the workflow, `docs/DECISIONS.md` or `docs/HUMAN_QUEUE.md`; dispatch | The 0.1 spikes on three OSes, and the `spec_0_1` tests of the decision and queue files. |
 
 `tests/spec_ci` asserts the workflow structure; a workflow change updates it in the same PR.
@@ -379,13 +379,15 @@ shifts every later step by its delay, so holds keep their planned length.
 runner (polled `try_wait`, killed and reaped at a 5 s deadline). At the end of the presses the
 cleanup key-ups share one 400 ms deadline: each `xdotool keyup` is bounded by the budget left
 (never above 5 s, never below 50 ms, so both held keys get a first attempt), a key whose key-up
-failed stays marked held and is retried only while budget remains, and one still held is
-reported. The screenshot pipes `nice -n 10
+failed stays marked held and is retried only while budget remains (a retry of a key that already
+had an attempt is skipped once the budget is spent), and one still held is reported. The screenshot pipes `nice -n 10
 xwd -root -silent -display <d>` into `nice -n 10 convert xwd:- png:<path>` with
 `MAGICK_THREAD_LIMIT=1`, no shell. A run first creates the artifact directory and removes the
 previous run's `latency_trace.csv`, `pin_app_stderr.log`, `summary.txt` and `frame_*.png` from it,
-before the tool, binary and bundle checks; a failed check writes a fresh `summary.txt`
-(`verdict: FAIL (windowed driver: <what>)`). Every exit path
+before the tool, binary and bundle checks; a failed check, or a startup failure after them (Xvfb
+or the app cannot start), writes a fresh `summary.txt` (`verdict: FAIL (windowed driver:
+<what>)`) and no `pin_app_stderr.log`. The app's stderr is decoded lossily (a non-UTF-8 line does
+not stop the capture) and a read error is logged as `windowed: stderr read failed: <error>`. Every exit path
 after the app started (window focus, key injection, first-frame timeout, a hang) kills the app if
 it still runs, waits at most 5 s for the stderr capture to reach its end (a process the app
 started may hold the pipe: then the log keeps what was captured and ends with `windowed: stderr
@@ -440,10 +442,11 @@ hard-linked bundle is safe (the `--table` bundle file itself is refused before a
 a value starting with `--` is not a path; a path whose metadata fails other than "not found", a
 missing path ending in a separator and an existing FIFO are refused before anything is opened). On
 Unix the temp file is created owner-only (`0600`) and, before the rename, given the existing
-destination's permission bits (never setuid, setgid or sticky), with its group bits only when the
-temp file has the destination's owner and group (a setgid directory can give it another group:
-then the group bits are cleared), so the rename never widens access (a new destination stays
-`0600`). It is written on the main thread after every
+destination's permission bits (never setuid, setgid or sticky) as they are when the temp file has
+the destination's owner and group; when its owner or group differs (a setgid directory can give it
+another group) the group bits are cleared and each other bit is kept only if the destination's
+old group also had it, so the rename never widens access (a new destination stays `0600`); on Linux a temp file that carries an extended POSIX access ACL (`system.posix_acl_access` present, or its state cannot be read)
+keeps its created `0600` instead of taking the destination's bits, so the rename never raises an ACL mask or admits a named user the old destination denied (it may end narrower than the destination). It is written on the main thread after every
 sim, render and audio thread was joined, also when the run failed (run cap not met, a thread join
 error), so a failed run's trace can be diagnosed; a run that ends before that point (a startup
 error after the trace file was prepared, a panic or an early return) removes the temp file and

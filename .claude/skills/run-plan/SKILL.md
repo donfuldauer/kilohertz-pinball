@@ -59,8 +59,9 @@ unblock). Each issue works in its own git worktree (`../kilohertz-issue-<N>`), s
 issues never share a working tree. Keep going with other ready issues while a PR waits for CI
 or a gate review. Run at most one gate review at a time (PROCESS.md P6): a second gate issue
 waits, with its PR open, until the first gate closes out. Within one phase, a ready PR waits while
-a lower-numbered issue of the phase has an open PR, and the gate test is re-run immediately before
-each merge (PROCESS.md P6 "Gate issue"), so the phase's last issue always gets its gate review.
+a lower-numbered issue of the phase has an open PR (unless that issue depends on the ready PR's
+issue, as a gate issue waiting for its blocking fix does), and the gate test is re-run immediately
+before each merge (PROCESS.md P6 "Gate issue"), so the phase's last issue always gets its gate review.
 
 ## 3. Discovered work
 
@@ -75,10 +76,11 @@ Merges make new issues ready (`work-issue` §7 step 3): go back to §1.
 
 ## 5. Phase gate
 
-The phase's last open issue is its gate issue: `work-issue` §6 runs its CodeRabbit gate review
-(cumulative since the last reviewed commit in `docs/RUN_LOG.md`) before it merges, and the same
-review closes the milestone when it is also the tracking issue's last open sub-issue; a blocking
-finding too large for the gate branch becomes a new issue the gate issue depends on.
+The phase's last open issue (an optional `status:blocked-failure` issue that P7 item 4 skips does
+not count) is its gate issue: `work-issue` §6 runs its CodeRabbit gate review (cumulative since
+the last reviewed commit in `docs/RUN_LOG.md`) before it merges, and the same review closes the
+milestone when it is also the tracking issue's last open sub-issue; a blocking finding too large
+for the gate branch becomes a new issue the gate issue depends on.
 
 When every issue with a phase's `phase:` label is complete under the merged-PR rule (closed by a
 merged PR, checked via `issue_read` `closed_by_pull_requests` and `pull_request_read` with the gh search fallback in `work-issue` §1 step 2, or replaced as `work-issue` §1 step 2 describes; or optional and blocked under P7),

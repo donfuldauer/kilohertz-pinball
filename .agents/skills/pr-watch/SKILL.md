@@ -41,9 +41,10 @@ threads:
      findings and approval from the review PR(s) (`<R>` below; for a non-gate PR, `<R>` is `<P>`).
      If the gate review PR is not open yet, open it as `work-issue` §6 describes.
    - **Routine:** anything else. No CodeRabbit review is required or requested; findings are
-     handled only if `coderabbitai` posted a review anyway.
+     handled whenever any review or review comment exists, from any author.
 2. **All review threads and comments of `<R>` (paginated via GraphQL so no thread or comment is
-   missed; skip on a routine PR with no CodeRabbit review; on a gate, `<R>` is the review PR, and
+   missed; skip only on a routine PR whose step 1 data shows no review and no review comment from
+   any author (`reviews` and `comments` both empty); on a gate, `<R>` is the review PR, and
    each review PR of the gate is read in turn; on a routine PR, `<R>` is `<P>`):**
    ```sh
    gh api graphql \

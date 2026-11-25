@@ -703,7 +703,9 @@ pub fn key_up(
 /// run: one shared deadline for every attempt and retry.
 pub const KEY_RELEASE_BUDGET: Duration = Duration::from_millis(400);
 /// The shortest bound a key-up attempt gets, even when the shared budget is
-/// spent (so the second key's first attempt still runs).
+/// spent (so the second key's first attempt still runs). A retry of a key
+/// that already had an attempt gets no such floor: once the budget is spent
+/// it is skipped.
 pub const KEY_RELEASE_MIN_TIMEOUT: Duration = Duration::from_millis(50);
 /// Pause between two rounds of [`release_held`] retries.
 pub const KEY_RELEASE_PAUSE: Duration = Duration::from_millis(50);
@@ -712,7 +714,8 @@ pub const KEY_RELEASE_MAX_ROUNDS: u32 = 16;
 
 /// The bound of one key-up attempt at `now` within the shared `budget`:
 /// what is left of it, never above [`HELPER_TIMEOUT`] and never below
-/// [`KEY_RELEASE_MIN_TIMEOUT`].
+/// [`KEY_RELEASE_MIN_TIMEOUT`]. Only a key's first attempt uses the floor
+/// when the budget is spent ([`release_held`] skips later retries then).
 pub fn key_up_timeout(budget: Duration, now: Duration) -> Duration {
     budget
         .saturating_sub(now)
@@ -726,7 +729,10 @@ pub fn key_up_timeout(budget: Duration, now: Duration) -> Duration {
 /// [`key_up_timeout`] (the budget left), so every held key gets a first
 /// attempt and a slow key-up cannot spend more than the budget. While a key
 /// is still held and budget remains, retries it after `pause`, at most
-/// [`KEY_RELEASE_MAX_ROUNDS`] rounds. Returns the releases that still
+/// [`KEY_RELEASE_MAX_ROUNDS`] rounds; a key that already had an attempt is
+/// not sent again once `now() >= budget` (it stays in the failed list with
+/// its last error, so the whole release never exceeds the budget by more
+/// than the first attempts' floor). Returns the releases that still
 /// failed after the last round (their keys stay marked held).
 pub fn release_held(
     held: &mut [bool; 2],
@@ -736,15 +742,25 @@ pub fn release_held(
     pause: &mut dyn FnMut(),
 ) -> Vec<(Key, String)> {
     let mut round = 0;
+    let mut last_err: [Option<String>; 2] = [None, None];
     loop {
         round += 1;
         let mut failed = Vec::new();
         for k in [Key::Left, Key::Right] {
-            if !held[usize::from(k == Key::Right)] {
+            let i = usize::from(k == Key::Right);
+            if !held[i] {
                 continue;
             }
-            let t = key_up_timeout(budget, now());
+            let t = now();
+            if let Some(prev) = &last_err[i]
+                && t >= budget
+            {
+                failed.push((k, prev.clone()));
+                continue;
+            }
+            let t = key_up_timeout(budget, t);
             if let Err(e) = key_up(held, k, |k| send(k, t)) {
+                last_err[i] = Some(e.clone());
                 failed.push((k, e));
             }
         }
@@ -947,21 +963,50 @@ pub fn wait_until(
 }
 
 /// Reads `r` line by line into `log` on a thread (each line ends `\n`);
-/// lines starting `pin_app: render on` are also echoed to stderr.
+/// lines starting `pin_app: render on` are also echoed to stderr. Lines are
+/// read as bytes and decoded lossily (a non-UTF-8 line from a launcher or a
+/// native dependency never stops the capture); a trailing `\n` and a
+/// preceding `\r` are stripped. EOF ends the capture silently; a read error
+/// appends one `windowed: stderr read failed: <error>` line and ends it.
 pub fn capture_lines(
     r: impl Read + Send + 'static,
     log: Arc<Mutex<String>>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        for line in BufReader::new(r).lines().map_while(Result::ok) {
-            if line.starts_with("pin_app: render on") {
-                eprintln!("windowed: {line}");
+        let mut reader = BufReader::new(r);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            let res = reader.read_until(b'\n', &mut buf);
+            let eof = matches!(res, Ok(0));
+            if !eof && !buf.is_empty() {
+                if buf.last() == Some(&b'\n') {
+                    buf.pop();
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                }
+                let line = String::from_utf8_lossy(&buf);
+                if line.starts_with("pin_app: render on") {
+                    eprintln!("windowed: {line}");
+                }
+                let mut l = log
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                l.push_str(&line);
+                l.push('\n');
             }
-            let mut l = log
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            l.push_str(&line);
-            l.push('\n');
+            match res {
+                Ok(0) => return,
+                Ok(_) => {}
+                Err(e) => {
+                    let mut l = log
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    l.push_str(&format!("windowed: stderr read failed: {e}\n"));
+                    return;
+                }
+            }
         }
     })
 }
@@ -1032,20 +1077,58 @@ pub fn preflight(cfg: &DriverConfig, have: &dyn Fn(&str) -> bool) -> Result<(), 
     })
 }
 
+/// Records a failure after the preflight but before the app ran (Xvfb or the
+/// app did not start): writes the failure `summary.txt`
+/// (`verdict: FAIL (windowed driver: <what>)`) and returns `what`. No app
+/// stderr log is written, as the app never started.
+pub fn startup_failed(cfg: &DriverConfig, what: &str) -> String {
+    let _ = std::fs::write(cfg.out_dir.join("summary.txt"), failure_summary(what, ""));
+    what.to_string()
+}
+
+/// Starts the app under `display`, writing its trace to `trace_path`, with
+/// stderr piped.
+///
+/// # Errors
+/// `starting <app>: <io error>` when the process cannot be spawned.
+pub fn spawn_app(
+    cfg: &DriverConfig,
+    display: &str,
+    trace_path: &Path,
+) -> Result<std::process::Child, String> {
+    Command::new(&cfg.app)
+        .arg("--table")
+        .arg(&cfg.bundle)
+        .arg("--latency-trace")
+        .arg(trace_path)
+        .args(["--run-ms", &cfg.run_ms.to_string()])
+        .env("DISPLAY", display)
+        .env("LP_NUM_THREADS", &cfg.lp_num_threads)
+        .env("WGPU_BACKEND", "vulkan")
+        .env(FORCE_FALLBACK_ENV, "1")
+        .env("SDL_VIDEODRIVER", "x11")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("starting {}: {e}", cfg.app.display()))
+}
+
 /// Runs the app once (see the module docs).
 ///
 /// # Errors
 /// A missing tool, bundle or binary, no first frame, no window, a failed
 /// key injection, an app that did not exit in time (killed), or too few
 /// screenshots. Every error has written a failure `summary.txt` (the
-/// preflight's after removing the previous run's artifacts); every error
-/// after the app started has also written `pin_app_stderr.log` and carries
-/// the stderr tail.
+/// preflight's after removing the previous run's artifacts, or
+/// [`startup_failed`] when Xvfb or the app did not start); every error after
+/// the app started has also written `pin_app_stderr.log` and carries the
+/// stderr tail.
 pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
     preflight(cfg, &have)?;
     let (display, _xvfb) = match std::env::var("DISPLAY").ok().filter(|d| !d.is_empty()) {
         Some(d) => (d, Reaper(None)),
-        None => start_xvfb()?,
+        None => start_xvfb().map_err(|e| startup_failed(cfg, &e))?,
     };
     eprintln!(
         "windowed: display {display}, LP_NUM_THREADS={}, app {}, run {} ms",
@@ -1055,24 +1138,12 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
     );
     let trace_path = cfg.trace_path();
     let started = Instant::now();
-    let mut child = Command::new(&cfg.app)
-        .arg("--table")
-        .arg(&cfg.bundle)
-        .arg("--latency-trace")
-        .arg(&trace_path)
-        .args(["--run-ms", &cfg.run_ms.to_string()])
-        .env("DISPLAY", &display)
-        .env("LP_NUM_THREADS", &cfg.lp_num_threads)
-        .env("WGPU_BACKEND", "vulkan")
-        .env(FORCE_FALLBACK_ENV, "1")
-        .env("SDL_VIDEODRIVER", "x11")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("starting {}: {e}", cfg.app.display()))?;
+    let mut child = spawn_app(cfg, &display, &trace_path).map_err(|e| startup_failed(cfg, &e))?;
     let pid = child.id();
-    let stderr_pipe = child.stderr.take().ok_or("no stderr pipe")?;
+    let stderr_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| startup_failed(cfg, "no stderr pipe"))?;
     let mut app = Reaper(Some(child));
     let log = Arc::new(Mutex::new(String::new()));
     let reader = capture_lines(stderr_pipe, Arc::clone(&log));

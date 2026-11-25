@@ -70,9 +70,9 @@ class WindowedWorkflowTest(unittest.TestCase):
         self.assertEqual(
             paths,
             [
-                "crates/pin_app/**",
-                "crates/pin_render/**",
-                "crates/pin_input/**",
+                "crates/**",
+                "Cargo.toml",
+                "Cargo.lock",
                 "tables/**",
                 "scripts/windowed/**",
                 ".github/workflows/windowed.yml",

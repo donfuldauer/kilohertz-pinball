@@ -29,6 +29,12 @@ pin_audio = { path = "../pin_audio", default-features = false }
 # Platform-independent atan2/hypot in the Feature Lab bundle builder (PR #68).
 libm.workspace = true
 
+# Linux only: `fgetxattr` probes the latency-trace temp file for a POSIX
+# access ACL, so the commit never chmods it wider (CWE-732, #163 gate review
+# round 2). libc is already in Cargo.lock through other crates.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [features]
 # Tests that need a GPU and a native window (the CI `gpu-tests` job):
 # compiled only with this feature, and they fail (never skip) without one.

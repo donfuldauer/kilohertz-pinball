@@ -392,7 +392,9 @@ matrix runs on every push to `main`, D40, and the gate reads it there); replay h
 every earlier phase's tests still pass; the tick-time benchmark has not regressed by more than
 10 % against the previous phase gate's commit (method in `docs/DEVELOPMENT.md`); every
 automated gate the phase owns passes; and the phase's gate review (P6), run on the phase's last
-issue before it merges, is approved by CodeRabbit with every thread dispositioned. The gate review
+issue before it merges (or, when that gate was missed, the review the missed-gate backstop in P6
+"Gate issue" opens after the merge, which satisfies this condition once it is approved), is
+approved by CodeRabbit with every thread dispositioned. The gate review
 and the phase's automated gates are pre-merge checks on that issue's candidate head (P6 "Gate
 reviews" step 6); the checks on `main` confirm the phase after the merge. A milestone
 gate is the phase gate of the tracking issue's last open sub-issue plus the milestone's exit
@@ -491,17 +493,24 @@ usually both), or when the plan labels it `review:gate` (for example the M1 cohe
 `#153` KP-064, which runs after Gate A3 `#124`). Check with
 `gh api "repos/donfuldauer/kilohertz-pinball/issues?labels=work-unit,<phase-label>&state=open&per_page=100&page=N"`
 (and the tracking issue's open sub-issues), paging explicitly (P1). The gate's name is the phase
-label without its prefix (for example `12-rendering`) or the milestone (`M1`).
+label without its prefix (for example `12-rendering`) or the milestone (`M1`). The gate test,
+ordering rule (2) and backstop (3) below all count the same set of open issues: the open
+`work-unit` issues of the phase (or open sub-issues of the tracking issue), excluding any labelled
+`status:blocked-failure` that P7 item 4 skips (outside M1, or only adding an optional or restored
+feature); a blocked core issue still counts as open, so its phase never becomes a gate while it
+is blocked (P7 item 5 halts its dependents), and a blocked issue does not hold a PR waiting.
 
 Parallel sessions can work issues of one phase, so the test is ordered, without a lock:
 (1) the gate test runs again immediately before the merge call, after the last wait for CI, the
 verifier or CodeRabbit, and that result decides how the PR merges; (2) an issue whose PR is ready
 waits (it does not merge; the session works on other issues) while another open `work-unit` issue
 of the same phase, or of the same tracking issue, has an open non-draft PR and a lower `KP-NNN`
-number; when that PR merges or closes, or its issue is marked blocked (P7), it runs the gate test
-again, so the higher-numbered issue always tests last and becomes the gate issue; (3) backstop:
-after every routine merge, the Orchestrator re-reads the phase's open `work-unit` issues (and the
-tracking issue's open sub-issues). If none is left, a gate was missed and its review opens now:
+number, except an issue that depends on the ready PR's issue (a prerequisite, such as a blocking
+fix issue created under "Review PR" step 4, never waits for the issue that waits for it); when that
+PR merges or closes, or its issue is marked blocked (P7), it runs the gate test again, so the
+higher-numbered issue always tests last and becomes the gate issue; (3) backstop: after every
+routine merge, the Orchestrator re-reads the phase's open `work-unit` issues (and the tracking
+issue's open sub-issues). If none is left, a gate was missed and its review opens now:
 push `review/<gate>-missed` at that merge commit on `main` and open it against
 `review-base/<gate>` (step 1) as step 2 describes; there is no gate issue PR left to merge, fixes
 land on `main` through ordinary PRs that are then merged into the review branch, and the review
@@ -524,10 +533,12 @@ the previous gate review. Git tags are not used (D39), so the reviewed commit is
    branch, so every fix pushed for the review also lands in the gate issue's PR.
 3. **Too large.** If CodeRabbit reports the diff exceeds what it reviews in one PR, split the
    review by area: for each group of top-level paths (for example `crates/pin_physics`,
-   `crates/pin_render`, `tables/`), push `review/<gate>-<area>` built from the base plus
-   `git checkout <gate head> -- <paths>`, open it against `review-base/<gate>` the same way, and
-   rebuild it from the current gate head after each fix push. The area PR's description, or a
-   comment posted with each rebuild, records the gate-head SHA it was built from. Every area PR
+   `crates/pin_render`, `tables/`), push `review/<gate>-<area>` built fresh from the base
+   (`git switch -C review/<gate>-<area> review-base/<gate>`, also on every rebuild) plus a
+   committed snapshot `git restore --source=<gate head> --staged --worktree -- <paths>` (unlike
+   `git checkout`, it also removes files the gate head deleted), open it against
+   `review-base/<gate>` the same way, and rebuild it from the current gate head after each fix
+   push. The area PR's description, or a comment posted with each rebuild, records the gate-head SHA it was built from. Every area PR
    must be approved. The oversized review PR they replace is closed without merging and no longer
    counts as a review PR of the gate.
 4. **Findings.** Each review round is one batch (P5 "Batching"), for every CodeRabbit comment

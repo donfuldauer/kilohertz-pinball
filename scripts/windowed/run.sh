@@ -11,8 +11,11 @@
 # release app under <target>/<triple>/release, and the app is measured at
 # <target>/release/pin_app.
 # A run first clears the previous run's artifacts from <out_dir>; a setup
-# failure (missing tool, grey-box build, cargo build) leaves a
+# failure (missing tool, grey-box build, cargo build) or a cargo failure to
+# compile or launch the windowed test target leaves a
 # `verdict: FAIL (windowed setup: ...)` summary.txt there, never a stale PASS.
+# The fallback never overwrites a summary the driver wrote, and cargo's exit
+# status is the script's exit status.
 # A relative CARGO_TARGET_DIR or <out_dir> is taken relative to the
 # repository root, and the absolute CARGO_TARGET_DIR is what Cargo sees.
 # Environment: LP_NUM_THREADS (default 2, the documented cap),
@@ -57,7 +60,7 @@ rm -f "$out/latency_trace.csv" "$out/pin_app_stderr.log" "$out/summary.txt" "$ou
 stage="setup"
 setup_failed() {
   status=$?
-  if [ "$status" -ne 0 ]; then
+  if [ "$status" -ne 0 ] && [ ! -s "$out/summary.txt" ]; then
     printf 'verdict: FAIL (windowed setup: %s)\n' "$stage" >"$out/summary.txt" 2>/dev/null || :
   fi
 }
@@ -82,6 +85,7 @@ export SDL_VIDEODRIVER=x11
 export KP_GREYBOX_BUNDLE="$bundle"
 export KP_WINDOWED_OUT="$out"
 export KP_PIN_APP="$app"
-# From here the driver owns summary.txt.
-trap - EXIT
-exec cargo test --release -p pin_app --test windowed -- --ignored --nocapture
+# The driver owns summary.txt once it runs: the EXIT trap writes the fallback
+# only when no summary exists, and it does not change the exit status.
+stage="cargo test --release -p pin_app --test windowed (build or launch failed)"
+cargo test --release -p pin_app --test windowed -- --ignored --nocapture

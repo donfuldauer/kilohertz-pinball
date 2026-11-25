@@ -36,8 +36,33 @@ fi
 
 # Leave an effectively empty message alone so Git still aborts with "empty commit message":
 # Git runs this hook before its own empty-message check, and a trailer would count as content.
-# `git stripspace --strip-comments` applies Git's own rule, including core.commentChar.
-if [ -z "$(git stripspace --strip-comments < "${msg_file}" | tr -d '[:space:]')" ]; then
+# The hook cannot see the commit's cleanup mode (`-m` keeps a "#123 Fix" subject, the editor
+# strips comments), so a message counts as empty only when every non-blank line is a comment
+# line of the kind Git's editor template writes: the configured core.commentString or
+# core.commentChar (else "#"; `auto` cannot be resolved here, so it falls back to "#") followed
+# by a space, a tab or the end of the line. Lines below the verbose-mode scissors line are
+# ignored, as Git ignores them.
+comment_char="$(git config --get core.commentString 2>/dev/null || git config --get core.commentChar 2>/dev/null || true)"
+case "${comment_char}" in
+  ''|auto) comment_char='#' ;;
+esac
+scissors="${comment_char} ------------------------ >8 ------------------------"
+has_content=0
+while IFS= read -r line || [ -n "${line}" ]; do
+  line="${line%$'\r'}"
+  line="${line%"${line##*[![:space:]]}"}"
+  [ "${line}" = "${scissors}" ] && break
+  [ -z "${line}" ] && continue
+  if [[ "${line}" == "${comment_char}"* ]]; then
+    rest="${line#"${comment_char}"}"
+    if [ -z "${rest}" ] || [[ "${rest}" == [[:blank:]]* ]]; then
+      continue
+    fi
+  fi
+  has_content=1
+  break
+done < "${msg_file}"
+if [ "${has_content}" -eq 0 ]; then
   exit 0
 fi
 

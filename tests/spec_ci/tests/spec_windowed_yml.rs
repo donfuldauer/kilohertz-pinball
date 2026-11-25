@@ -46,21 +46,33 @@ fn triggers_are_exactly_pull_request_push_and_workflow_dispatch() {
 }
 
 #[test]
-fn pull_request_paths_cover_the_app_render_input_tables_scripts_and_the_workflow() {
+fn pull_request_paths_cover_every_crate_the_lockfile_the_tables_the_scripts_and_the_workflow() {
     let paths = windowed()
         .trigger_paths("pull_request")
         .expect("pull_request has a paths filter");
     assert_eq!(
         paths,
         [
-            "crates/pin_app/**",
-            "crates/pin_render/**",
-            "crates/pin_input/**",
+            "crates/**",
+            "Cargo.toml",
+            "Cargo.lock",
             "tables/**",
             "scripts/windowed/**",
             ".github/workflows/windowed.yml",
         ]
     );
+    // pin_app is built from the other crates, so a change deep in one of them
+    // (here the simulation loader) must match a listed glob.
+    let matches = |file: &str| {
+        paths.iter().any(|g| match g.strip_suffix("/**") {
+            Some(prefix) => file.starts_with(&format!("{prefix}/")),
+            None => file == g,
+        })
+    };
+    assert!(matches("crates/pin_sim/src/load/mod.rs"));
+    assert!(matches("Cargo.lock"));
+    assert!(matches("scripts/windowed/run.sh"));
+    assert!(!matches("docs/SPEC.md"));
 }
 
 #[test]

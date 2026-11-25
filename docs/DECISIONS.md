@@ -8664,3 +8664,110 @@ possible); always `0600` (rejected: drops a deliberate same-group `0640`). (3) a
 (rejected: needs a random source; pid plus counter with `create_new` suffices). (4) replace the
 report with the exit failure (rejected: loses the measurements); leave the summary and rely on the
 job status (rejected: the artifact and the job disagree).
+
+## #163 gate review round 2 — windowed workflow trigger paths and run.sh failure summary
+
+**Decision:** `windowed.yml` `pull_request.paths` is now `crates/**`, `Cargo.toml`, `Cargo.lock`,
+`tables/**`, `scripts/windowed/**` and the workflow file; the push trigger to `main` stays
+unfiltered. `run.sh` no longer disables its EXIT trap or `exec`s Cargo: it runs
+`cargo test --release -p pin_app --test windowed` as a normal command, so Cargo's status is the
+script's status, and the trap writes `verdict: FAIL (windowed setup: <stage>)` only when the status
+is non-zero and `summary.txt` is missing or empty (the script clears old summaries first, so an
+existing one is the driver's). The workflow stays out of `pr-checks`.
+
+**Rationale:** `pin_app` is built from nearly every crate, so a change anywhere under `crates/` or in
+the lockfile can move key-to-photon latency or dropped ticks, and R12 wants real windowed evidence
+before merge, not only after the push to `main`. A Cargo compile or launch failure of the windowed
+test target never reaches the driver, which left no summary; keeping the trap active closes that gap
+without touching a summary the driver wrote.
+
+**Alternatives:** listing each dependency crate by hand (rejected: a new dependency would be
+missed silently); keeping the trap off and `exec` (rejected: no summary on a Cargo failure); having
+the trap `exit` with a fixed code (rejected: loses Cargo's status); adding the workflow to
+`pr-checks` (rejected: it becomes required only through the owner's repository setting, P8).
+
+## #163 gate review round 2 — gate ordering exceptions, optional blocked issues, area snapshots and commit-msg comment rule
+
+**Decision:** (1) PROCESS.md P6 "Gate issue" ordering rule (2): a ready PR does not wait for a
+lower-numbered open PR whose issue depends on the ready PR's issue; a prerequisite, such as a
+blocking fix issue created under "Review PR" step 4, never waits for the issue that waits for it.
+The brief's wording ("except an issue that the ready PR's issue depends on") read as excluding the
+other direction, which would not break the deadlock (the gate issue depends on the fix, not the fix
+on the gate), so the rule names the direction that does. (2) The gate test, rule (2) and the
+missed-gate backstop count one set: open `work-unit` issues of the phase (or open sub-issues of the
+tracking issue) minus `status:blocked-failure` issues that P7 item 4 skips; a blocked core issue
+still counts, so its phase does not become a gate while it is blocked. (3) Area review branches are
+rebuilt fresh with `git switch -C review/<gate>-<area> review-base/<gate>` and a committed
+`git restore --source=<gate head> --staged --worktree -- <paths>` snapshot; tested in a throw-away
+repository, it records deletions, also for a path the gate head removed entirely. (4) The
+commit-msg hook treats a message as empty only when every non-blank line (above a verbose-mode
+scissors line) is a template comment line: the configured `core.commentString` or
+`core.commentChar` (else `#`, also for `auto`) followed by a space, a tab or the line end.
+
+**Rationale:** each closes a CodeRabbit round-2 finding with one clause: the ordering rule could
+deadlock a gate issue against its own blocking fix; an optional blocked issue left open hid the
+phase's last issue and the backstop, so no gate review ran; `git checkout <rev> -- <paths>` is an
+overlay and keeps files the gate head deleted; `git stripspace --strip-comments` dropped a
+`git commit -m '#123 Fix'` subject that Git keeps (cleanup `whitespace` for `-m`), so the trailer
+was lost. A message the editor writes as `#123 Fix` alone is now treated as content and gets the
+trailer, after which Git commits it with only the trailer; that is the accepted cost, because the
+hook cannot tell the two cleanup modes apart.
+
+**Alternatives:** a lock label for the ordering rule (rejected: adds a label and a stale-lock
+failure mode; the dependency exception is enough); counting every blocked issue as open (rejected:
+an optional blocked issue would then prevent the phase's gate review forever, though P5 lets the
+phase finish); `git checkout` plus `git rm` of the deleted paths (rejected: two steps, and the
+deleted list must be computed; `git restore` does both); reading the commit's cleanup mode in the
+hook (not possible: Git passes the hook only the message file, and `auto` comment characters are
+not observable either).
+
+## #163 gate review round 2 — trace permission clamp, driver startup summary and retry deadline
+
+**Decision.** (A1) `trace_mode` keeps the destination's `0o777` bits unchanged only when the temp
+file has the destination's owner and group; otherwise (uid or gid differs) it returns
+`(bits & 0o700) | ((bits >> 3) & bits & 0o007)`: owner bits kept, group bits cleared, each other bit
+kept only if the old group class also had it. (A2) `release_held` skips the retry of a key that
+already had an attempt once the shared budget is spent (it stays in the failed list with its last
+error); a key's first attempt always runs with the 50 ms floor. (A4) A failure of Xvfb, of the app
+spawn or of taking the stderr pipe writes `summary.txt` through `startup_failed` (the spawn is
+factored into `spawn_app`) and writes no `pin_app_stderr.log`. (A3) The stderr capture reads byte
+lines, decodes lossily and logs a read error. (A5) `parse_trace` rejects timing fields above
+2^60 ns as unreadable output; the bound uses saturating adds and the slack uses `i128`.
+
+**Rationale.** With group 100 on the old file and another group on the new one, clearing group
+bits alone left the other bits granting access to users the old file kept out; limiting the other
+bits to the old group's bits never widens access. Skipping late retries keeps the cleanup within
+the one shared deadline. A startup failure must not leave the previous (or no) summary, since the
+preflight removed it. 2^60 ns is far above any real run and leaves room for sums in `u64`.
+
+**Alternatives.** Preserving the old file's group by `fchown` (rejected: needs privileges the
+process may lack). Counting a skipped retry as a new error (rejected: the last real error is the
+useful one). Checked arithmetic with errors in the evaluator instead of a parser range (rejected:
+range validation at the parse boundary covers every downstream use).
+
+## #163 gate review round 2 — trace replacement never widens ACL access
+
+**Decision.** Before the rename, the latency-trace commit probes the temp file with
+`fgetxattr(fd, "system.posix_acl_access", NULL, 0)` (`acl_state`). Present (the attribute exists)
+or Unknown (any errno other than ENODATA, ENOTSUP or EOPNOTSUPP) leaves the temp file at its created
+`0600` with no chmod (`trace_chmod` returns `KeepCreated`); Absent chmods it as `trace_mode` says
+(the rule of "#163 gate review round 2 — trace permission clamp, driver startup summary and retry
+deadline", unchanged). Off Linux the probe always answers Absent, so behaviour there is unchanged.
+`libc` becomes a direct, Linux-only dependency of `pin_app`.
+
+**Rationale.** A temp file created in a directory with a default ACL inherits its named entries,
+masked to nothing by the `0600` create mode; a chmod to the destination's group bits raises the ACL
+mask, so a named user the old destination denied could read the published trace (CWE-732).
+Leaving the `0600` mask keeps every named entry ineffective: the rule is a pure never-widens (the
+file can only end narrower than the destination), needs no privileges, and fails closed when the
+ACL state cannot be read. `libc` 0.2 is already in Cargo.lock through other crates (no new crate),
+and `unsafe` FFI is already used in `pin_app` (`platform/mod.rs`). A table test of the decision
+function covers every platform and a real-filesystem test (a hand-built default ACL naming another
+user) checks that the published file's mask stays `---`.
+
+**Alternatives.** Copying the destination's ACL xattr onto the temp file (rejected: the
+destination's ACL may name users the temp file's owner cannot reproduce, and a copy bug would
+widen; keeping `0600` provably never widens). Recomputing a mask by intersecting with the
+destination's mask (rejected: more code for the same guarantee). The `exacl` or `posix-acl` crates
+(rejected: new dependencies and lock entries for a single probe). Accepting the bound (overruled by
+the repository owner).

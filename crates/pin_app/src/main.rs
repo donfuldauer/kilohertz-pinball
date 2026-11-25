@@ -324,38 +324,130 @@ fn owner_only(o: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions {
 /// The permission bits for a trace temp file that replaces a destination
 /// with mode `dest_mode` owned by `dest_uid:dest_gid`, when the temp file
 /// is owned by `tmp_uid:tmp_gid`. Only the `0o777` part is ever copied
-/// (never setuid, setgid or sticky). The destination's group bits are kept
-/// only when the temp file has the destination's owner and group: a temp
-/// file that inherited another group (a setgid directory) or owner gets no
-/// group bits, so the rename never grants a different group access.
+/// (never setuid, setgid or sticky). The destination's bits are kept as they
+/// are only when the temp file has the destination's owner and group. When
+/// either differs (a setgid directory, another owner) the group bits are
+/// cleared and each `other` bit is kept only if the destination's old group
+/// class also had it, so the rename never grants access to a user the old
+/// file did not already admit (CWE-732).
 #[cfg(any(unix, test))]
 fn trace_mode(dest_mode: u32, dest_uid: u32, dest_gid: u32, tmp_uid: u32, tmp_gid: u32) -> u32 {
     let bits = dest_mode & 0o777;
     if dest_uid == tmp_uid && dest_gid == tmp_gid {
         bits
     } else {
-        bits & !0o070
+        (bits & 0o700) | ((bits >> 3) & bits & 0o007)
     }
+}
+
+/// Whether a trace temp file carries an extended POSIX access ACL.
+#[cfg(any(unix, test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AclState {
+    /// No access ACL (or a filesystem without extended attributes).
+    Absent,
+    /// An access ACL is present (for example inherited from a directory
+    /// default ACL).
+    Present,
+    /// The ACL state could not be read; treated like [`AclState::Present`].
+    Unknown,
+}
+
+/// What the commit does to the trace temp file's mode before the rename.
+#[cfg(any(unix, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TraceChmod {
+    /// Set these permission bits.
+    To(u32),
+    /// Leave the file as created (`0600`).
+    KeepCreated,
+}
+
+/// The mode change for a trace temp file with ACL state `acl` that
+/// replaces a destination with mode `dest_mode` owned by
+/// `dest_uid:dest_gid`, the temp file being owned by `tmp_uid:tmp_gid`.
+/// Without an access ACL the bits are [`trace_mode`]'s. With one, or when
+/// its state is unknown (fail closed), the file keeps its created `0600`:
+/// a chmod would raise the ACL mask to the new group bits and let a named
+/// user the old destination denied read the file (CWE-732), while the
+/// `0600` mask leaves every named entry without effect.
+#[cfg(any(unix, test))]
+fn trace_chmod(
+    dest_mode: u32,
+    dest_uid: u32,
+    dest_gid: u32,
+    tmp_uid: u32,
+    tmp_gid: u32,
+    acl: AclState,
+) -> TraceChmod {
+    match acl {
+        AclState::Absent => {
+            TraceChmod::To(trace_mode(dest_mode, dest_uid, dest_gid, tmp_uid, tmp_gid))
+        }
+        AclState::Present | AclState::Unknown => TraceChmod::KeepCreated,
+    }
+}
+
+/// Probes `file` for a POSIX access ACL (the `system.posix_acl_access`
+/// extended attribute). A missing attribute or a filesystem without
+/// extended attributes is [`AclState::Absent`]; any other error is
+/// [`AclState::Unknown`].
+#[cfg(target_os = "linux")]
+fn acl_state(file: &std::fs::File) -> AclState {
+    use std::os::fd::AsRawFd as _;
+    let fd = file.as_raw_fd();
+    // SAFETY: `fd` is an open descriptor borrowed from `file` for this
+    // call, the name is a NUL-terminated C string literal, and a null
+    // buffer of size 0 only asks for the value's length (nothing is
+    // written).
+    let r = unsafe {
+        libc::fgetxattr(
+            fd,
+            c"system.posix_acl_access".as_ptr(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if r >= 0 {
+        return AclState::Present;
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        // EOPNOTSUPP equals ENOTSUP on most Linux targets; both are named.
+        Some(e) if e == libc::ENODATA || e == libc::ENOTSUP || e == libc::EOPNOTSUPP => {
+            AclState::Absent
+        }
+        _ => AclState::Unknown,
+    }
+}
+
+/// No POSIX ACL probe off Linux: always [`AclState::Absent`].
+#[cfg(all(unix, not(target_os = "linux")))]
+fn acl_state(_: &std::fs::File) -> AclState {
+    AclState::Absent
 }
 
 /// Gives the open temp `file` the permission bits of the existing
 /// regular-file destination `dest`, read now, as [`trace_mode`] allows
 /// (group bits only when the temp file's owner and group, from `fstat`,
 /// match the destination's), so the rename never widens access. A missing
-/// destination leaves `file` as created (`0600`).
+/// destination leaves `file` as created (`0600`). ACL rule
+/// ([`trace_chmod`]): when the temp file carries a POSIX access ACL (Linux,
+/// typically inherited from a directory default ACL) or its ACL state
+/// cannot be read, it is not chmod-ed at all and keeps its created `0600`,
+/// because a chmod would raise the ACL mask and admit named users the old
+/// destination denied.
 #[cfg(unix)]
 fn keep_dest_permissions(file: &std::fs::File, dest: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     match std::fs::metadata(dest) {
         Ok(m) if m.is_file() => {
             let t = file.metadata()?;
-            file.set_permissions(std::fs::Permissions::from_mode(trace_mode(
-                m.mode(),
-                m.uid(),
-                m.gid(),
-                t.uid(),
-                t.gid(),
-            )))
+            let acl = acl_state(file);
+            match trace_chmod(m.mode(), m.uid(), m.gid(), t.uid(), t.gid(), acl) {
+                TraceChmod::To(mode) => file.set_permissions(std::fs::Permissions::from_mode(mode)),
+                TraceChmod::KeepCreated => Ok(()),
+            }
         }
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -845,7 +937,10 @@ fn run_app(args: &[String]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{commit_trace, merge_failure, open_latency_trace, teardown_exit_code, trace_mode};
+    use super::{
+        AclState, TraceChmod, commit_trace, merge_failure, open_latency_trace, teardown_exit_code,
+        trace_chmod, trace_mode,
+    };
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1271,6 +1366,8 @@ mod tests {
         // Special bits never copied.
         assert_eq!(trace_mode(0o7640, 1000, 100, 1000, 100), 0o640);
         assert_eq!(trace_mode(0o7640, 1000, 100, 1000, 200), 0o600);
+        assert_eq!(trace_mode(0o7644, 1000, 100, 1000, 200), 0o604);
+        assert_eq!(trace_mode(0o6755, 1000, 100, 1000, 100), 0o755);
         // Never wider than the destination.
         for m in 0..=0o7777u32 {
             for g in [100, 200] {
@@ -1278,6 +1375,249 @@ mod tests {
                 assert_eq!(t & !(m & 0o777), 0, "{m:o} {g}");
             }
         }
+    }
+
+    /// REQ-LAT-003 (gate 30 round 2, CWE-732): a differing group or owner
+    /// clamps `other` to the bits the destination's old group also had.
+    #[test]
+    fn req_lat_003_trace_mode_clamps_other_bits_to_the_old_group() {
+        // Equal owner and group: unchanged.
+        assert_eq!(trace_mode(0o640, 1000, 100, 1000, 100), 0o640);
+        assert_eq!(trace_mode(0o604, 1000, 100, 1000, 100), 0o604);
+        // Different group.
+        assert_eq!(trace_mode(0o604, 1000, 100, 1000, 200), 0o600);
+        assert_eq!(trace_mode(0o644, 1000, 100, 1000, 200), 0o604);
+        assert_eq!(trace_mode(0o664, 1000, 100, 1000, 200), 0o604);
+        assert_eq!(trace_mode(0o606, 1000, 100, 1000, 200), 0o600);
+        assert_eq!(trace_mode(0o640, 1000, 100, 1000, 200), 0o600);
+        // Different uid, equal gid: same clamp.
+        assert_eq!(trace_mode(0o604, 1000, 100, 0, 100), 0o600);
+        // Special bits never in the result.
+        for m in [0o4604u32, 0o2604, 0o1604, 0o7644] {
+            for (u, g) in [(1000, 100), (1000, 200), (0, 100)] {
+                assert_eq!(trace_mode(m, 1000, 100, u, g) & !0o777, 0, "{m:o}");
+            }
+        }
+    }
+
+    /// REQ-LAT-003 (gate 30 round 2, B1, CWE-732): without an access ACL
+    /// the temp file takes exactly [`trace_mode`]'s bits; with one, or with
+    /// an unreadable ACL state, it keeps its created `0600` (no chmod).
+    #[test]
+    fn req_lat_003_trace_chmod_never_raises_an_acl_mask() {
+        // Absent, same owner and group: the destination's 0o777 bits.
+        for m in [0o600u32, 0o640, 0o644, 0o664, 0o666, 0o755] {
+            assert_eq!(
+                trace_chmod(m, 1000, 100, 1000, 100, AclState::Absent),
+                TraceChmod::To(m & 0o777),
+                "{m:o}"
+            );
+        }
+        // Absent, different group or owner: whatever `trace_mode` says.
+        for m in [0o600u32, 0o640, 0o644, 0o664, 0o666, 0o604] {
+            for (u, g) in [(1000, 200), (0, 100)] {
+                assert_eq!(
+                    trace_chmod(m, 1000, 100, u, g, AclState::Absent),
+                    TraceChmod::To(trace_mode(m, 1000, 100, u, g)),
+                    "{m:o} {u} {g}"
+                );
+            }
+        }
+        // An access ACL, or an unknown ACL state: never chmod-ed.
+        for acl in [AclState::Present, AclState::Unknown] {
+            for m in [0o640u32, 0o644, 0o666, 0o600, 0o7777] {
+                for (u, g) in [(1000, 100), (1000, 200), (0, 100)] {
+                    assert_eq!(
+                        trace_chmod(m, 1000, 100, u, g, acl),
+                        TraceChmod::KeepCreated,
+                        "{acl:?} {m:o} {u} {g}"
+                    );
+                }
+            }
+        }
+        // setuid, setgid and sticky never appear in `To(..)`.
+        for m in 0..=0o7777u32 {
+            for (u, g) in [(1000, 100), (1000, 200), (0, 100)] {
+                match trace_chmod(m, 1000, 100, u, g, AclState::Absent) {
+                    TraceChmod::To(bits) => assert_eq!(bits & !0o777, 0, "{m:o}"),
+                    TraceChmod::KeepCreated => panic!("Absent must chmod ({m:o})"),
+                }
+            }
+        }
+    }
+
+    /// `fgetxattr(fd, name)` into a buffer: the value, or the errno.
+    #[cfg(target_os = "linux")]
+    fn fgetxattr(file: &std::fs::File, name: &std::ffi::CStr) -> Result<Vec<u8>, i32> {
+        use std::os::fd::AsRawFd as _;
+        let mut buf = vec![0u8; 4096];
+        // SAFETY: `file`'s descriptor is open for the call, `name` is a
+        // NUL-terminated C string and `buf` is writable for `buf.len()`.
+        let r = unsafe {
+            libc::fgetxattr(
+                file.as_raw_fd(),
+                name.as_ptr(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+            )
+        };
+        let Ok(n) = usize::try_from(r) else {
+            return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+        };
+        buf.truncate(n);
+        Ok(buf)
+    }
+
+    /// `setxattr(path, name, value)`: `Ok` or the errno.
+    #[cfg(target_os = "linux")]
+    fn setxattr(path: &Path, name: &std::ffi::CStr, value: &[u8]) -> Result<(), i32> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let p = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `p` and `name` are NUL-terminated C strings and `value`
+        // is readable for `value.len()` bytes for the call.
+        let r = unsafe {
+            libc::setxattr(
+                p.as_ptr(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+            )
+        };
+        if r == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
+        }
+    }
+
+    /// POSIX ACL xattr tags (Linux `posix_acl_xattr.h`).
+    #[cfg(target_os = "linux")]
+    const ACL_USER: u16 = 0x02;
+    #[cfg(target_os = "linux")]
+    const ACL_MASK: u16 = 0x10;
+
+    /// The `(tag, perm, id)` entries of a version-2 POSIX ACL xattr blob.
+    #[cfg(target_os = "linux")]
+    fn acl_entries(blob: &[u8]) -> Vec<(u16, u16, u32)> {
+        assert!(
+            blob.len() >= 4 && (blob.len() - 4).is_multiple_of(8),
+            "{blob:?}"
+        );
+        assert_eq!(u32::from_le_bytes(blob[..4].try_into().unwrap()), 2);
+        blob[4..]
+            .chunks_exact(8)
+            .map(|e| {
+                (
+                    u16::from_le_bytes([e[0], e[1]]),
+                    u16::from_le_bytes([e[2], e[3]]),
+                    u32::from_le_bytes([e[4], e[5], e[6], e[7]]),
+                )
+            })
+            .collect()
+    }
+
+    /// REQ-LAT-003 (gate 30 round 2, B1): an ordinary file in a fresh
+    /// temp directory has no access ACL, so the commit chmods it as before.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn req_lat_003_acl_state_of_a_plain_file_is_absent() {
+        let dir = fresh_dir("aclplain");
+        let p = dir.join("plain");
+        let f = std::fs::File::create(&p).unwrap();
+        let state = super::acl_state(&f);
+        if state == AclState::Unknown {
+            let errno = fgetxattr(&f, c"system.posix_acl_access").err();
+            eprintln!(
+                "SKIPPED req_lat_003_acl_state_of_a_plain_file_is_absent: ACL state unreadable here (errno {errno:?})"
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+        assert_eq!(state, AclState::Absent);
+        drop(f);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (gate 30 round 2, B1, CWE-732): in a directory whose
+    /// default ACL names another user, the temp file inherits that entry
+    /// masked by its `0600`; the commit over a `0640` destination (which
+    /// the named user cannot read) must not raise the mask, so the
+    /// published file still denies that user. The no-ACL case is
+    /// `req_lat_003_trace_commit_never_widens_permissions`.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn req_lat_003_commit_keeps_acl_file_closed_to_named_users() {
+        use std::os::unix::fs::PermissionsExt as _;
+        const NAMED: u32 = 65534;
+        let dir = fresh_dir("acl");
+        // The destination exists before the default ACL, so it has no
+        // access ACL and its 0640 denies the named user.
+        let p = dir.join("t.csv");
+        std::fs::write(&p, "old").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o640)).unwrap();
+        // Default ACL: user::rwx, user:NAMED:r--, group::---, mask::rwx,
+        // other::--- (ascending tag order).
+        let me = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(&dir).unwrap());
+        assert_ne!(me, NAMED, "the named user must be someone else");
+        let mut blob = 2u32.to_le_bytes().to_vec();
+        for (tag, perm, id) in [
+            (0x01u16, 7u16, u32::MAX),
+            (ACL_USER, 4, NAMED),
+            (0x04, 0, u32::MAX),
+            (ACL_MASK, 7, u32::MAX),
+            (0x20, 0, u32::MAX),
+        ] {
+            blob.extend_from_slice(&tag.to_le_bytes());
+            blob.extend_from_slice(&perm.to_le_bytes());
+            blob.extend_from_slice(&id.to_le_bytes());
+        }
+        if let Err(errno) = setxattr(&dir, c"system.posix_acl_default", &blob) {
+            if [libc::ENOTSUP, libc::EOPNOTSUPP, libc::EPERM, libc::ENODATA].contains(&errno) {
+                eprintln!(
+                    "SKIPPED req_lat_003_commit_keeps_acl_file_closed: ACLs unsupported here (errno {errno})"
+                );
+                std::fs::remove_dir_all(&dir).unwrap();
+                return;
+            }
+            panic!("setxattr(system.posix_acl_default) failed: errno {errno}");
+        }
+        let sink = open_latency_trace(&args(&["--latency-trace", p.to_str().unwrap()]))
+            .unwrap()
+            .unwrap();
+        // The scenario is real: the temp file inherited an access ACL.
+        assert_eq!(
+            super::acl_state(sink.file.as_ref().unwrap()),
+            AclState::Present,
+            "the temp file inherits the directory's default ACL"
+        );
+        sink.commit(b"new").unwrap();
+        // (3) The content is replaced.
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "new");
+        // (2) Mode stays 0600 (the group class reports the mask: 0).
+        assert_eq!(mode(&p), 0o600, "the published trace keeps 0600");
+        // (1) The mask is `---`, so the named user's effective access is 0.
+        let f = std::fs::File::open(&p).unwrap();
+        match fgetxattr(&f, c"system.posix_acl_access") {
+            Ok(acl) => {
+                let entries = acl_entries(&acl);
+                let mask = entries
+                    .iter()
+                    .find(|e| e.0 == ACL_MASK)
+                    .map(|e| e.1)
+                    .expect("an ACL with a named user has a mask");
+                assert_eq!(mask, 0, "ACL mask stays ---: {entries:?}");
+                let named: Vec<_> = entries.iter().filter(|e| e.0 == ACL_USER).collect();
+                assert!(!named.is_empty(), "{entries:?}");
+                for e in named {
+                    assert_eq!(e.1 & mask, 0, "named user {} gets no access", e.2);
+                }
+            }
+            Err(errno) => assert_eq!(errno, libc::ENODATA, "reading the published ACL"),
+        }
+        drop(f);
+        assert_eq!(names(&dir), vec!["t.csv".to_owned()]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// REQ-LAT-003 (gate 30, M4): the temp file name does not contain the
