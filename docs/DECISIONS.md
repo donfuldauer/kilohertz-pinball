@@ -8264,3 +8264,32 @@ bucket function the implementation chooses, since the test asserts equality, not
 - One combined digest per tick: hides which key type regressed.
 - Measuring units from the tick alone: the chunk's own cost is constant across runs, so including
   it changes no comparison and avoids a second budget path.
+
+## KP-068 — emergency_gc_is_charged sizing after KHZ 34
+
+**Decision:** The scenario sizing of `emergency_gc_is_charged` (`crates/pin_script/tests/lua_backend.rs`,
+review B11) changes from 3000 one-element tables per tick with a phase switch at
+`collectgarbage('count') > 1700` to 2000 tables per tick with the switch at `> 1450` (KiB). The
+config (`LuaConfig::engine()`: 100 000 instructions, 2 MiB cap), the 30 x `string.rep('x', 60000)`
+attack and the assertion `Some(&ScriptError::BudgetExceeded)` are unchanged.
+**Rationale:** KHZ 34 added an id field to the Lua Table struct (56 B to 64 B on x86_64), and the
+cap is still counted in real allocator bytes. The Implementer's C replica measured the live heap at
+the old switch as 1 841 015 B before KHZ 34 (BudgetExceeded first) and 1 985 191 B after it (out
+of memory first). Measured in the test itself on the patched tree, the old sizing reaches
+~2.0 MB and faults with MemoryLimit. The heap grows in steps (1 419 345 B after 14 000 tables,
+1 579 451 B after 16 000) and jumps to ~2.0 MB once `keep`'s array part doubles past 16 384
+slots, so the switch must happen at or before 16 000 tables. With the new sizing it happens at
+16 000 tables and 1 579 451 B, which is 517 701 B below the 2 MiB cap (room for several 60 KB
+strings plus GC slack). The 1450 KiB (1 484 800 B) threshold sits ~65 KB above the previous tick's
+heap and ~95 KB below the switch heap. With the default 200% GC pause the next normal cycle would
+be due at ~3.2 MB, beyond the cap, so every collection the strings force is an emergency one.
+Measured, the same attack faults with BudgetExceeded from a ~1.1 MB live heap up and runs clean
+at ~0.65 MB and below and on an empty heap. Without the string loop the scenario does not fault.
+On origin/main's lua-src (56 B Table) the new sizing switches at 18 000 tables and 1 857 139 B
+(240 013 B below the cap), the same regime as before, and the test also passes there. The
+assertion was not wrong; only the sizing had moved onto the cap.
+**Alternatives:**
+- Change the production code or the Lua Table layout: rejected; KHZ 34 is intended.
+- Raise the cap or the budget: rejected; it changes what the test proves (R10, R11).
+- Wait for KHZ 33 logical LP64 accounting (W10 / #168), which removes the dependence on the real
+  header size: deferred; re-check this test's sizing when that lands.
