@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 507
-- Run-log rows: 550
+- Decision entries: 512
+- Run-log rows: 554
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -552,6 +552,11 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #161 KP-067: glam bans in pin_tablegen (docs/DECISIONS.md)
 - #161 KP-067: Integer, Ord and iterator min/max deliberately untouched (docs/DECISIONS.md)
 - #161 KP-067: One PR for all eight crates (docs/DECISIONS.md)
+- #163 KP-069: One assert script for every replay-hash leg (docs/DECISIONS.md)
+- #163 KP-069: Seam digests on Windows checked from the printed lines (docs/DECISIONS.md)
+- #163 KP-069: aarch64 path filter as a fourth `changes` output (docs/DECISIONS.md)
+- #163 KP-069: No separate Independent Tester (docs/DECISIONS.md)
+- #163 KP-069: First gate-review base is the PR #154 merge `5714c49` (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

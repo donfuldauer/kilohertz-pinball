@@ -8548,3 +8548,18 @@ The behavioural part (wrong golden, CRLF, seam `differs` / four lines) is covere
 execute the script, and by the local qemu-aarch64 and wrong-golden runs in the report.
 **Alternatives:** a black-box spec test file by a second agent (rejected: it would read the same
 workflow text and duplicate `spec_ci_yml.rs`).
+
+## #163 KP-069 — First gate-review base is the PR #154 merge `5714c49`
+
+**Decision:** The first gate review (phase `30-web-prereq`, gate issue #163) uses `5714c49`, the
+merge commit of PR #154, as `review-base/30-web-prereq`. `docs/PROCESS.md` P6 and the `work-issue`
+skill name `4113e42` as "the last commit of the former per-PR review rhythm (the merge of PR
+#154)", but no commit `4113e42` exists in the repository; `5714c49` is the commit that description
+names.
+
+**Rationale:** The prose identifies the commit unambiguously; the abbreviated SHA does not resolve.
+Using the described commit keeps the review cumulative over everything merged since the rhythm
+changed.
+
+**Alternatives:** Base on `main` before #158 (would skip the M1 units merged since #154 from any
+gate review); stop and ask (R8 forbids waiting).

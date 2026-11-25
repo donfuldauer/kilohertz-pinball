@@ -561,6 +561,15 @@ fn replay_hash_job_checks(j: &Job, text_id: &str) {
             && (text.contains("TICKS: \"10000\"") || text.contains("TICKS: \"10_000\"")),
         "{text_id} must record the fixture for 10 000 ticks:\n{text}"
     );
+    // A matrix job runs every OS leg to the end: one failing OS must not cancel the others
+    // (the old `fail-fast: false` assertion, restored under KP-069). Jobs without a
+    // `strategy.matrix` (replay-hash-aarch64) have nothing to cancel and are not checked.
+    if text.contains("\n    strategy:") && text.contains("\n      matrix:") {
+        assert!(
+            text.contains("fail-fast: false"),
+            "one OS must not cancel the others: {text_id} must set `fail-fast: false`:\n{text}"
+        );
+    }
     // Seam digests: the test runs with --nocapture and its printed lines are checked.
     let seam = cargo_lines(&script, "test");
     assert!(
