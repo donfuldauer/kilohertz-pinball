@@ -2,9 +2,13 @@
 //! old-style `force`-only hook), the ball solver is bit-identical to the
 //! solver before the seams existed. The expected digests below were recorded
 //! by running this file against HEAD 63243da (= 84c88eb for `pin_physics`),
-//! before any edit to `ball/`, on x86_64 Linux; they are asserted only there
-//! (PLAN.md §2.4, D9: cross-OS/arch digests are report-only). Every target
-//! checks run-to-run bit-identity and prints its digests.
+//! before any edit to `ball/`, on x86_64 Linux. SPEC §2.4 (D9) gates
+//! cross-target equality of these digests: they are asserted on x86_64 Linux
+//! and on aarch64 (Linux under qemu, macOS arm64), and must also hold on
+//! Windows x86_64 and wasm32. Every target checks run-to-run bit-identity and
+//! prints its digests. The scenario inputs are built with `libm` and
+//! `pin_physics::quat_ops` (never glam `Quat` operators or std trigonometry),
+//! so they are bit-identical on every target.
 //!
 //! Run with `PRINT_SEAM_HASHES=1` to print the digests instead of checking.
 
@@ -20,6 +24,7 @@ use pin_physics::ball::{
     Ball, BallEvent, BallEvents, BallHandle, BallSolver, ExternalForce, Geometry, ImpactTarget,
     Magnet, SurfaceVelocity,
 };
+use pin_physics::quat_ops;
 use pin_physics::world::{GuideCurve, StaticShape, StaticWorld, StaticWorldBuilder, Wireform};
 use util::*;
 
@@ -195,11 +200,16 @@ fn belt_scenario() -> u64 {
 /// A ball sliding along a pitched wall and dropping onto a sloped mesh,
 /// rotated world (guide-free, wireform-free).
 fn slope_scenario() -> u64 {
-    let rot = Quat::from_rotation_y(0.3) * Quat::from_rotation_x(0.12);
+    // Elementary rotations from libm half-angle sin/cos, combined and applied
+    // with `quat_ops` (SPEC §2.4: target-independent reference inputs).
+    let (ay, ax) = (0.5f32 * 0.3, 0.5f32 * 0.12);
+    let ry = Quat::from_xyzw(0.0, libm::sinf(ay), 0.0, libm::cosf(ay));
+    let rx = Quat::from_xyzw(libm::sinf(ax), 0.0, 0.0, libm::cosf(ax));
+    let rot = quat_ops::mul(ry, rx);
     let mut b = StaticWorldBuilder::new();
     b.add_collider(
         StaticShape::Cuboid {
-            center: rot * v(0.0, 0.0, -0.02),
+            center: quat_ops::mul_vec3(rot, v(0.0, 0.0, -0.02)),
             half_extents: v(0.4, 0.4, 0.02),
             rotation: rot,
         },
@@ -208,7 +218,7 @@ fn slope_scenario() -> u64 {
     );
     b.add_collider(
         StaticShape::Cuboid {
-            center: rot * v(0.0, -0.2, 0.02),
+            center: quat_ops::mul_vec3(rot, v(0.0, -0.2, 0.02)),
             half_extents: v(0.4, 0.01, 0.04),
             rotation: rot,
         },
@@ -229,7 +239,7 @@ fn slope_scenario() -> u64 {
         let r = radius(p);
         s.add_ball(ball_at(
             p,
-            rot * v(-0.2 + 0.15 * k as f32, 0.1, r + 0.05),
+            quat_ops::mul_vec3(rot, v(-0.2 + 0.15 * k as f32, 0.1, r + 0.05)),
             v(0.1, -0.5, 0.0),
         ))
         .unwrap();
@@ -250,11 +260,15 @@ const EXPECTED: [(&str, u64); 5] = [
     ("slope", 0x1764f34e6e37436f),
 ];
 
-/// The digests above were recorded on x86_64 Linux. PLAN.md §2.4 (D9): the
-/// determinism gate is the same binary on the same machine; cross-OS/arch
-/// results are report-only (aarch64 macOS produces different digests). So
-/// the recorded HEAD digests are asserted only on the recording target.
-const RECORDING_TARGET: bool = cfg!(all(target_arch = "x86_64", target_os = "linux"));
+/// Targets that assert the digests above (recorded on x86_64 Linux). SPEC
+/// §2.4 (D9) gates equality with the x86_64-linux goldens on aarch64 too
+/// (qemu-aarch64 on Linux, Apple Silicon on macOS), now that every `Quat`
+/// operation goes through `pin_physics::quat_ops`; other targets print their
+/// digests (Windows x86_64 and wasm32 are gated by their own CI jobs).
+const RECORDING_TARGET: bool = cfg!(any(
+    all(target_arch = "x86_64", target_os = "linux"),
+    target_arch = "aarch64"
+));
 
 fn digests() -> [(&'static str, u64); 5] {
     [
@@ -277,7 +291,7 @@ fn no_bodies_no_hooks_is_bit_identical_to_head() {
     }
     // Every target: run-to-run bit-identical (same binary, same machine).
     assert_eq!(digests(), got, "seam digests not stable run to run");
-    // Report-only outside the recording target (D9).
+    // Asserted on the RECORDING_TARGET set, printed everywhere (D9).
     for ((name, h), (_, want)) in got.iter().zip(EXPECTED) {
         println!(
             "[seam digest] {name}: 0x{h:016x} (x86_64-linux HEAD: 0x{want:016x}, {})",

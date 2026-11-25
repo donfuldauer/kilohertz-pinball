@@ -69,9 +69,10 @@ pub use shape::{
 
 use crate::ball::{BodyCast, BodyPoint, MovingBodies};
 use crate::flipper_banana::{BananaError, CurvedBanana};
+use crate::quat_ops;
 use crate::world::layers;
 use arrayvec::ArrayVec;
-use glam::{Quat, Vec3};
+use glam::Vec3;
 use pin_core::ids::{FlipperId, SwitchId};
 use pin_core::snapshot::MAX_FLIPPERS;
 use pin_core::{FlipperConfig, FlipperShape, FlipperStagingMode, Material};
@@ -196,8 +197,8 @@ pub fn plane_axes(normal: Vec3) -> (Vec3, Vec3) {
         let zero = (Vec3::X - normal * normal.dot(Vec3::X)).normalize();
         return (zero, normal.cross(zero));
     }
-    let q = Quat::from_rotation_arc(Vec3::Z, normal);
-    let zero = q * Vec3::X;
+    let q = quat_ops::from_rotation_arc(Vec3::Z, normal);
+    let zero = quat_ops::mul_vec3(q, Vec3::X);
     // Re-orthogonalise against the normal so the frame is exact.
     let zero = (zero - normal * zero.dot(normal)).normalize();
     (zero, normal.cross(zero))
