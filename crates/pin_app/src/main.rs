@@ -306,14 +306,74 @@ fn same_file(_: &std::fs::Metadata, a: &Path, _: &std::fs::Metadata, b: &Path) -
     )
 }
 
+/// Makes a new trace temp file owner-only (`0600`, Unix) from creation,
+/// before any trace data is written: a trace may hold input timing, and the
+/// temp file must never have bits the destination lacks.
+#[cfg(unix)]
+fn owner_only(o: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    o.mode(0o600)
+}
+
+/// Makes a new trace temp file owner-only: no-op off Unix.
+#[cfg(not(unix))]
+fn owner_only(o: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions {
+    o
+}
+
+/// Gives the open temp `file` the permission bits (`0o777` part) of the
+/// existing regular-file destination `dest`, read now, so the rename never
+/// widens access. A missing destination leaves `file` as created (`0600`).
+#[cfg(unix)]
+fn keep_dest_permissions(file: &std::fs::File, dest: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    match std::fs::metadata(dest) {
+        Ok(m) if m.is_file() => file.set_permissions(std::fs::Permissions::from_mode(
+            m.permissions().mode() & 0o777,
+        )),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Keeps the destination's permissions: no-op off Unix.
+#[cfg(not(unix))]
+fn keep_dest_permissions(_: &std::fs::File, _: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Whether `m` is a FIFO (Unix), which a write-only open would block on.
+#[cfg(unix)]
+fn is_fifo(m: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::FileTypeExt as _;
+    m.file_type().is_fifo()
+}
+
+/// Whether `m` is a FIFO: never off Unix.
+#[cfg(not(unix))]
+fn is_fifo(_: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// Whether the `path` argument ends in a path separator (`/` or the
+/// platform's own).
+fn ends_in_separator(path: &Path) -> bool {
+    path.as_os_str()
+        .as_encoded_bytes()
+        .last()
+        .is_some_and(|&b| b == b'/' || char::from(b) == std::path::MAIN_SEPARATOR)
+}
+
 /// The `--latency-trace` destination: the path the trace is written to and
 /// the file it is written into first. For a regular (or not yet existing)
 /// destination that is a sibling temp file, renamed over the destination by
 /// [`commit`](Self::commit), so the destination is never truncated and a
 /// path hard-linked to the table bundle only loses its link, never the
 /// bundle's bytes. A destination that exists and is not a regular file (a
-/// device, a fifo) is written directly. Dropped without a commit (a failed
-/// run), the temp file is removed and the destination is left untouched.
+/// device; a FIFO is refused) is written directly. Dropped without a commit
+/// (a failed run), the temp file is removed and the destination is left
+/// untouched.
 #[derive(Debug)]
 struct TraceSink {
     /// The `--latency-trace` path.
@@ -330,9 +390,11 @@ const TRACE_TMP_TRIES: u32 = 8;
 
 impl TraceSink {
     /// Writes `csv` and moves it into place: to the temp file (flushed and
-    /// synced; a platform that cannot sync the file is tolerated), then
-    /// renamed over the destination. On any error the temp file is removed
-    /// and the destination keeps its old content.
+    /// synced; a platform that cannot sync the file is tolerated), given
+    /// the existing destination's permission bits (Unix; a new destination
+    /// keeps the temp file's owner-only `0600`), then renamed over the
+    /// destination. On any error the temp file is removed and the
+    /// destination keeps its old content.
     fn commit(mut self, csv: &[u8]) -> Result<(), String> {
         let err = |e: std::io::Error| format!("--latency-trace: writing the trace: {e}");
         let Some(mut file) = self.file.take() else {
@@ -342,7 +404,7 @@ impl TraceSink {
             .and_then(|()| file.flush())
             .map_err(err)?;
         let Some(tmp) = self.tmp.as_ref() else {
-            // A device or fifo: written directly, nothing to move.
+            // A device: written directly, nothing to move.
             return Ok(());
         };
         match file.sync_all() {
@@ -356,6 +418,9 @@ impl TraceSink {
             }
             _ => {}
         }
+        // Never widen access: the temp file takes the existing
+        // destination's permission bits (it was created owner-only).
+        keep_dest_permissions(&file, &self.dest).map_err(err)?;
         drop(file);
         std::fs::rename(tmp, &self.dest).map_err(err)?;
         // Committed: nothing left for `Drop` to remove.
@@ -377,11 +442,15 @@ impl Drop for TraceSink {
 /// fails before the app starts. A value that starts with `--` is an option,
 /// not a path (`./--x` is a path). A destination that is the `--table`
 /// bundle file (when that is an existing file: a `.zip` bundle) is refused
-/// before anything is created. The destination itself is never opened for
-/// writing here (unless it is a device or fifo) and never truncated: the
-/// trace goes to a sibling temp file, created now with `create_new` as the
-/// writability probe and renamed over the destination by
-/// [`TraceSink::commit`] at shutdown.
+/// before anything is created. A destination whose metadata cannot be read
+/// for a reason other than "not found" (e.g. `trace.csv/` under a regular
+/// file), a missing destination named with a trailing path separator, and
+/// (Unix) an existing FIFO, which a write-only open would block on, are
+/// refused before anything is opened. The destination itself is never
+/// opened for writing here (unless it is a device) and never truncated: the
+/// trace goes to a sibling temp file, created now owner-only (`0600`, Unix)
+/// with `create_new` as the writability probe and renamed over the
+/// destination by [`TraceSink::commit`] at shutdown.
 fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
     let Some(path) = path_of(args, "--latency-trace") else {
         return Ok(None);
@@ -391,7 +460,22 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
         return Err("--latency-trace needs a path".to_owned());
     }
     let io = |e: std::io::Error| format!("--latency-trace: {}: {e}", path.display());
-    let dest_meta = std::fs::metadata(&path).ok();
+    let dest_meta = match std::fs::metadata(&path) {
+        Ok(m) => Some(m),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        // E.g. `trace.csv/` under a regular file (ENOTDIR): not "missing".
+        Err(e) => return Err(io(e)),
+    };
+    if dest_meta.is_none() && ends_in_separator(&path) {
+        return Err(format!(
+            "--latency-trace: {}: is a directory path",
+            path.display()
+        ));
+    }
+    if dest_meta.as_ref().is_some_and(is_fifo) {
+        // A write-only open of a FIFO blocks until a reader appears.
+        return Err(format!("--latency-trace: {}: is a FIFO", path.display()));
+    }
     if let Some(fm) = &dest_meta
         && let Some(Ok(table)) = path_of(args, "--table")
         && let Ok(tm) = std::fs::metadata(&table)
@@ -406,7 +490,7 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
     if let Some(m) = &dest_meta
         && !m.is_file()
     {
-        // A device or fifo (a directory fails to open): written directly.
+        // A device (a directory fails to open): written directly.
         let file = std::fs::OpenOptions::new()
             .write(true)
             .open(&path)
@@ -430,11 +514,7 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
     let mut last = None;
     for n in 0..TRACE_TMP_TRIES {
         let tmp = dir.join(format!(".{name}.{pid}.{n}.tmp"));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-        {
+        match owner_only(std::fs::OpenOptions::new().write(true).create_new(true)).open(&tmp) {
             Ok(file) => {
                 return Ok(Some(TraceSink {
                     dest: path,
@@ -964,6 +1044,122 @@ mod tests {
             .unwrap();
         assert!(sink.tmp.is_none());
         sink.commit(b"csv").unwrap();
+    }
+
+    /// REQ-LAT-003 (C1): a destination whose metadata fails for a reason
+    /// other than "not found" (`trace.csv/` under a regular file: ENOTDIR)
+    /// is refused before anything is created.
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_trace_path_under_a_regular_file_is_refused() {
+        let dir = fresh_dir("notdir");
+        let file = dir.join("trace.csv");
+        std::fs::write(&file, "keep").unwrap();
+        let bad = format!("{}/", file.display());
+        let e = open_latency_trace(&args(&["--latency-trace", &bad])).unwrap_err();
+        assert!(e.starts_with(&format!("--latency-trace: {bad}: ")), "{e}");
+        assert!(!e.ends_with("is a directory path"), "{e}");
+        let under = format!("{}/x.csv", file.display());
+        let e = open_latency_trace(&args(&["--latency-trace", &under])).unwrap_err();
+        assert!(e.starts_with(&format!("--latency-trace: {under}: ")), "{e}");
+        assert_eq!(names(&dir), vec!["trace.csv".to_owned()], "nothing created");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (C1): a missing destination named with a trailing path
+    /// separator is a directory path, refused before anything is created;
+    /// a new plain file name (also below a relative directory) still works.
+    #[test]
+    fn req_lat_003_trailing_separator_trace_path_is_refused() {
+        let dir = fresh_dir("sep");
+        for sep in ['/', std::path::MAIN_SEPARATOR] {
+            let bad = format!("{}{sep}new{sep}", dir.display());
+            let e = open_latency_trace(&args(&["--latency-trace", &bad])).unwrap_err();
+            assert_eq!(e, format!("--latency-trace: {bad}: is a directory path"));
+            assert!(names(&dir).is_empty(), "nothing created: {:?}", names(&dir));
+        }
+        let plain = dir.join("trace.csv");
+        let sink = open_latency_trace(&args(&["--latency-trace", plain.to_str().unwrap()]))
+            .unwrap()
+            .unwrap();
+        sink.commit(b"csv").unwrap();
+        assert_eq!(std::fs::read_to_string(&plain).unwrap(), "csv");
+        let sub = format!("./kp002-sep-{}", std::process::id());
+        std::fs::create_dir_all(&sub).unwrap();
+        let rel = format!("{sub}/trace.csv");
+        let sink = open_latency_trace(&args(&["--latency-trace", &rel]))
+            .unwrap()
+            .unwrap();
+        sink.commit(b"rel").unwrap();
+        assert_eq!(std::fs::read_to_string(&rel).unwrap(), "rel");
+        std::fs::remove_dir_all(&sub).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// REQ-LAT-003 (C3): an existing FIFO destination is refused before
+    /// anything is opened, so the start can never block on it.
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_fifo_trace_destination_is_refused() {
+        let dir = fresh_dir("fifo");
+        let fifo = dir.join("trace.fifo");
+        match std::process::Command::new("mkfifo").arg(&fifo).status() {
+            Ok(s) if s.success() => {}
+            other => {
+                eprintln!("mkfifo unavailable ({other:?}): FIFO check skipped");
+                std::fs::remove_dir_all(&dir).unwrap();
+                return;
+            }
+        }
+        let f = fifo.to_str().unwrap();
+        let e = open_latency_trace(&args(&["--latency-trace", f])).unwrap_err();
+        assert_eq!(e, format!("--latency-trace: {f}: is a FIFO"));
+        assert_eq!(
+            names(&dir),
+            vec!["trace.fifo".to_owned()],
+            "nothing created"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The mode bits (`0o777`) of `p`.
+    #[cfg(unix)]
+    fn mode(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    /// REQ-LAT-003 (C2, CWE-732): the temp file is owner-only (`0600`)
+    /// from creation; the commit gives it the existing destination's
+    /// permission bits (0600 stays 0600, 0640 stays 0640) and a new
+    /// destination ends `0600`, so the rename never widens access.
+    #[test]
+    #[cfg(unix)]
+    fn req_lat_003_trace_commit_never_widens_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = fresh_dir("perm");
+        for want in [0o600, 0o640] {
+            let p = dir.join(format!("t{want:o}.csv"));
+            std::fs::write(&p, "old").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(want)).unwrap();
+            let sink = open_latency_trace(&args(&["--latency-trace", p.to_str().unwrap()]))
+                .unwrap()
+                .unwrap();
+            let tmp = sink.tmp.clone().unwrap();
+            assert_eq!(mode(&tmp), 0o600, "temp owner-only before any write");
+            sink.commit(b"new").unwrap();
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), "new");
+            assert_eq!(mode(&p), want, "destination keeps {want:o}");
+        }
+        let fresh = dir.join("fresh.csv");
+        let sink = open_latency_trace(&args(&["--latency-trace", fresh.to_str().unwrap()]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(mode(sink.tmp.as_ref().unwrap()), 0o600);
+        sink.commit(b"csv").unwrap();
+        assert_eq!(mode(&fresh), 0o600, "a new destination is owner-only");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

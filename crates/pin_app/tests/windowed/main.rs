@@ -192,8 +192,14 @@ fn joined_until(mut rows: Vec<Row>, frames: Vec<Frame>, run_end_ns: u64) -> Trac
             r.frame = Some(f.frame);
             r.frame_snap_tick = Some(f.snap_tick);
             r.present_ns = Some(f.present_ns);
-            r.frames_to_photon =
-                Some(f.frame - verdict::last_frame_at_or_before(&frames, r.sdl_ts_ns));
+            // A press before the first presented frame counts frames
+            // 0..=frame (O1).
+            r.frames_to_photon = Some(
+                match verdict::last_frame_at_or_before(&frames, r.sdl_ts_ns) {
+                    Some(f0) => f.frame - f0,
+                    None => f.frame + 1,
+                },
+            );
         }
     }
     Trace {
@@ -216,6 +222,7 @@ const OK_SHUTDOWN: Shutdown = Shutdown {
     ticks: 60_000,
     dropped: 0,
     frames: 600,
+    input_dropped: 0,
 };
 
 /// REQ-LAT-004 check a: an on-time press passes; one applied in a tick
@@ -346,6 +353,106 @@ fn req_lat_001_check_b_frame_counts() {
     let v = evaluate(&joined(vec![r], fr), &OK_SHUTDOWN, &params());
     assert_eq!(v.summary.max_frames_adjusted, 1);
     assert!(v.b.passed(), "{:?}", v.b);
+}
+
+/// REQ-LAT-001, REQ-LAT-003 check b (O1): a press before the first
+/// presented frame counts from frame index 0, so a bat first shown in frame
+/// 2 is 3 frames after it (not 2: "no frame before the press" is not
+/// "frame 0 was"); a press after frame 0 presented, shown in frame 2, is 2.
+/// The in-flight allowance keeps its meaning: one frame, never more.
+#[test]
+fn req_lat_001_check_b_press_before_the_first_frame() {
+    let fr = frames_at(&[10, 20, 30], &[4, 4, 5]);
+    let before = T0 + 5 * TICK_NS;
+    let after = T0 + 15 * TICK_NS;
+    assert_eq!(verdict::last_frame_at_or_before(&fr, before), None);
+    assert_eq!(
+        verdict::last_frame_at_or_before(&fr, T0 + 10 * TICK_NS),
+        Some(0)
+    );
+    assert_eq!(verdict::last_frame_at_or_before(&[], after), None);
+    assert_eq!(
+        verdict::frame_count(&fr, before, 2, 0, 2, false),
+        (3, 3, false)
+    );
+    assert_eq!(
+        verdict::frame_count(&fr, before, 2, u64::MAX, 2, true),
+        (3, 2, true),
+        "one frame of allowance: the in-flight frame is frame 0"
+    );
+    assert_eq!(
+        verdict::frame_count(&fr, after, 2, u64::MAX, 2, true),
+        (2, 2, false)
+    );
+    // Through the verdict: frame 0 in flight before the coil deadline
+    // (press + 11 ms): raw 3, shifted to 2, passes.
+    let r = press(0, before, 300_000);
+    let t = joined_until(vec![r], fr, T0 + 2_000_000_000);
+    assert_eq!(t.rows[0].frame, Some(2));
+    assert_eq!(t.rows[0].frames_to_photon, Some(3));
+    let v = evaluate(&t, &OK_SHUTDOWN, &params());
+    assert!(v.b.passed(), "{}", v.report());
+    assert_eq!(v.summary.max_frames_raw, 3);
+    assert_eq!(v.summary.max_frames_adjusted, 2);
+    assert_eq!(v.summary.in_flight_shifted, 1);
+    // Frame 0 presented after the coil deadline: no allowance, 3 fails.
+    let late = frames_at(&[20, 30, 40], &[4, 4, 5]);
+    let t = joined_until(vec![press(0, before, 300_000)], late, T0 + 2_000_000_000);
+    assert_eq!(t.rows[0].frames_to_photon, Some(3));
+    let v = evaluate(&t, &OK_SHUTDOWN, &params());
+    assert!(!v.b.passed(), "{}", v.report());
+    assert_eq!(v.summary.max_frames_raw, 3);
+}
+
+/// REQ-LAT-003 check d (O2): the shutdown line's `input dropped N` is
+/// parsed and required; dropped input events (each a missing trace row)
+/// fail completeness, none passes.
+#[test]
+fn req_lat_003_check_d_fails_on_dropped_input_events() {
+    let line = "pin_app: 60000 sim ticks (0 dropped), 600 frames, input dropped 4, 0 haptic \
+                events\n";
+    assert_eq!(
+        parse_shutdown(line).unwrap(),
+        Shutdown {
+            ticks: 60_000,
+            dropped: 0,
+            frames: 600,
+            input_dropped: 4,
+        }
+    );
+    // Without the field (the app always prints it): malformed.
+    let e = parse_shutdown("pin_app: 60000 sim ticks (0 dropped), 600 frames, 0 haptic events\n")
+        .unwrap_err();
+    assert!(e.starts_with("malformed shutdown line"), "{e}");
+    assert!(parse_shutdown("pin_app: 1 sim ticks (0 dropped), 2 frames, input dropped x").is_err());
+    assert_eq!(
+        parse_shutdown("pin_app: 1 sim ticks (0 dropped), 2 frames, input dropped 7")
+            .unwrap()
+            .input_dropped,
+        7,
+        "last field"
+    );
+    let t = joined(vec![press(0, T0 + 5_000_000_000, 500_000)], frames(600));
+    let ok = evaluate(&t, &OK_SHUTDOWN, &params());
+    assert!(ok.d.passed(), "{:?}", ok.d);
+    let dropped = Shutdown {
+        input_dropped: 4,
+        ..OK_SHUTDOWN
+    };
+    let v = evaluate(&t, &dropped, &params());
+    assert!(!v.d.passed());
+    assert!(
+        v.d.failures
+            .iter()
+            .any(|f| f.contains("4 input events dropped") && f.contains("missing trace row")),
+        "{:?}",
+        v.d
+    );
+    assert!(
+        v.a.passed() && v.b.passed() && v.c.passed(),
+        "{}",
+        v.report()
+    );
 }
 
 /// REQ-LAT-001 check b: a raw count of 3 passes only through the one-frame
@@ -687,6 +794,7 @@ fn req_lat_002_check_c_dropped_ratio_and_run_length() {
                 ticks,
                 dropped,
                 frames: 600,
+                input_dropped: 0,
             },
             &params(),
         )
@@ -770,7 +878,8 @@ fn req_lat_003_text_round_trip_and_report() {
         Shutdown {
             ticks: 60_000,
             dropped: 3,
-            frames: 512
+            frames: 512,
+            input_dropped: 0,
         }
     );
     assert!(parse_shutdown("pin_app: render: x\n").is_err());
@@ -805,6 +914,9 @@ fn parsers_survive_random_bytes() {
         let _ = parse_shutdown(&s);
         let _ = parse_trace(&format!("{}\n{s}", verdict::EVENT_HEADER));
         let _ = parse_shutdown(&format!("pin_app: {s} sim ticks ({s} dropped), {s} frames"));
+        let _ = parse_shutdown(&format!(
+            "pin_app: 1 sim ticks (0 dropped), 2 frames, input dropped {s}"
+        ));
     }
     let t = joined(vec![press(0, T0 + 5_000_000_000, 500_000)], frames(4));
     let (c, ..) = latency_trace(bindings(), now);
@@ -1021,9 +1133,14 @@ proptest! {
             });
             match expected {
                 Some(fr) => {
-                    let f0 = verdict::last_frame_at_or_before(&t.frames, r.sdl_ts_ns);
+                    // `frame - F0`; `frame + 1` without a frame before the
+                    // press (frames 0..=frame all count).
+                    let n = match verdict::last_frame_at_or_before(&t.frames, r.sdl_ts_ns) {
+                        Some(f0) => fr.frame - f0,
+                        None => fr.frame + 1,
+                    };
                     prop_assert_eq!(r.frame, Some(fr.frame), "row {:?}", r);
-                    prop_assert_eq!(r.frames_to_photon, Some(fr.frame - f0), "row {:?}", r);
+                    prop_assert_eq!(r.frames_to_photon, Some(n), "row {:?}", r);
                     prop_assert_eq!(r.frame_snap_tick, Some(fr.snap_tick));
                     prop_assert_eq!(r.present_ns, Some(fr.present_ns));
                 }
@@ -1269,8 +1386,17 @@ fn req_lat_001_press_plan_bounds() {
 }
 
 use driver::{Waitable, wait_with};
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
+#[cfg(windows)]
+use std::os::windows::process::ExitStatusExt;
 use std::time::Duration;
+
+/// A successful exit status on any platform (`from_raw` takes an `i32` on
+/// Unix, a `u32` on Windows).
+fn success_status() -> std::process::ExitStatus {
+    std::process::ExitStatus::from_raw(0)
+}
 
 /// A stub child: exits at its `exit_at`-th poll (never when `None`), or its
 /// poll fails when `fail` is set; counts kills and reaps.
@@ -1300,7 +1426,7 @@ impl Waitable for StubChild {
         if self.fail {
             return Err(std::io::Error::other("poll broke"));
         }
-        Ok((Some(self.polls) == self.exit_at).then(|| std::process::ExitStatus::from_raw(0)))
+        Ok((Some(self.polls) == self.exit_at).then(success_status))
     }
     fn kill(&mut self) {
         self.kills += 1;
@@ -1379,10 +1505,16 @@ fn req_lat_001_harness_failed_keydown_releases_every_key() {
     let injection = key_down(&mut held, Key::Right, |_| Err("x server gone".into()));
     assert_eq!(held, [true, true], "marked before the send");
     let mut ups = Vec::new();
-    let failed = release_held(&mut held, |k| {
-        ups.push(k);
-        Ok(())
-    });
+    let failed = release_held(
+        &mut held,
+        |k| {
+            ups.push(k);
+            Ok(())
+        },
+        Duration::from_millis(400),
+        &mut || Duration::ZERO,
+        &mut || panic!("no retry needed"),
+    );
     assert!(failed.is_empty());
     assert_eq!(ups, [Key::Left, Key::Right]);
     assert_eq!(held, [false, false]);
@@ -1391,24 +1523,33 @@ fn req_lat_001_harness_failed_keydown_releases_every_key() {
 }
 
 /// REQ-LAT-001 harness: a failing key-up for the first key does not stop
-/// the second's key-up; the original injection error is kept over the
-/// release failure, and a release failure alone is reported.
+/// the second's key-up; a key whose release keeps failing stays marked
+/// held (C7: never silently cleared) and is returned; the original
+/// injection error is kept over the release failure, and a release failure
+/// alone is reported.
 #[test]
 fn req_lat_001_harness_failed_keyup_does_not_stop_the_rest() {
     use driver::{Key, finish_injection, release_held};
     let mut held = [true, true];
     let mut ups = Vec::new();
-    let failed = release_held(&mut held, |k| {
-        ups.push(k);
-        if k == Key::Left {
-            Err("no reply".to_string())
-        } else {
-            Ok(())
-        }
-    });
+    // A budget already spent: one round, no retry.
+    let failed = release_held(
+        &mut held,
+        |k| {
+            ups.push(k);
+            if k == Key::Left {
+                Err("no reply".to_string())
+            } else {
+                Ok(())
+            }
+        },
+        Duration::from_millis(400),
+        &mut || Duration::from_millis(400),
+        &mut || panic!("budget spent: no retry"),
+    );
     assert_eq!(ups, [Key::Left, Key::Right]);
     assert_eq!(failed, [(Key::Left, "no reply".to_string())]);
-    assert_eq!(held, [false, false]);
+    assert_eq!(held, [true, false], "the failed key stays held");
     assert_eq!(
         finish_injection(Err("original".into()), &failed).unwrap_err(),
         "original"
@@ -1416,6 +1557,93 @@ fn req_lat_001_harness_failed_keyup_does_not_stop_the_rest() {
     let e = finish_injection(Ok(()), &failed).unwrap_err();
     assert!(e.starts_with("key release: "), "{e}");
     assert!(finish_injection(Ok(()), &[]).is_ok());
+}
+
+/// REQ-LAT-001 harness (C7): a key whose first release fails and second
+/// succeeds ends released (held cleared), retried after one injected
+/// pause; the other key is released in the first round and not sent again.
+#[test]
+fn req_lat_001_harness_failed_release_is_retried() {
+    use driver::{Key, release_held};
+    let clock = std::cell::Cell::new(0u64);
+    let mut held = [true, true];
+    let mut ups = Vec::new();
+    let mut left_tries = 0;
+    let failed = release_held(
+        &mut held,
+        |k| {
+            ups.push(k);
+            if k == Key::Left {
+                left_tries += 1;
+                if left_tries == 1 {
+                    return Err("busy".to_string());
+                }
+            }
+            Ok(())
+        },
+        Duration::from_millis(400),
+        &mut || Duration::from_millis(clock.get()),
+        &mut || clock.set(clock.get() + 50),
+    );
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(held, [false, false]);
+    assert_eq!(ups, [Key::Left, Key::Right, Key::Left]);
+    assert_eq!(clock.get(), 50, "one injected pause");
+}
+
+/// REQ-LAT-001 harness (C7): a key whose release always fails is retried
+/// until the injected clock reaches the budget (never by waiting: the
+/// pause only advances the fake clock), then returned with its flag still
+/// set; the other key is released; the original injection error is kept.
+#[test]
+fn req_lat_001_harness_release_retry_budget_is_bounded() {
+    use driver::{Key, finish_injection, release_held};
+    let clock = std::cell::Cell::new(0u64);
+    let mut held = [true, true];
+    let (mut lefts, mut rights) = (0u32, 0u32);
+    let failed = release_held(
+        &mut held,
+        |k| {
+            if k == Key::Left {
+                lefts += 1;
+                Err("stuck".to_string())
+            } else {
+                rights += 1;
+                Ok(())
+            }
+        },
+        Duration::from_millis(200),
+        &mut || Duration::from_millis(clock.get()),
+        &mut || clock.set(clock.get() + 50),
+    );
+    assert_eq!(failed, [(Key::Left, "stuck".to_string())]);
+    assert_eq!(held, [true, false], "still pending");
+    assert_eq!(rights, 1);
+    // Rounds at 0, 50, 100, 150 and 200 ms (the budget): 5 tries.
+    assert_eq!(lefts, 5);
+    assert_eq!(clock.get(), 200);
+    assert_eq!(
+        finish_injection(Err("original".into()), &failed).unwrap_err(),
+        "original"
+    );
+    let e = finish_injection(Ok(()), &failed).unwrap_err();
+    assert_eq!(e, "key release: Left: stuck");
+    // A clock that never advances: the round cap still ends it.
+    let mut held = [true, false];
+    let mut tries = 0;
+    let failed = release_held(
+        &mut held,
+        |_| {
+            tries += 1;
+            Err("stuck".to_string())
+        },
+        Duration::from_millis(200),
+        &mut || Duration::ZERO,
+        &mut || {},
+    );
+    assert_eq!(failed.len(), 1);
+    assert_eq!(tries, driver::KEY_RELEASE_MAX_ROUNDS);
+    assert_eq!(held, [true, false]);
 }
 
 /// REQ-LAT-001 harness: a key-up that fails keeps the key marked held (so

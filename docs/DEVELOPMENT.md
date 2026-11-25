@@ -367,7 +367,9 @@ rest screenshot; one more rest screenshot comes first. A step that runs late (a 
 shifts every later step by its delay, so holds keep their planned length.
 
 **Driver hygiene.** Every helper process (`xdotool`, `xwd`, `convert`) runs through one bounded
-runner (polled `try_wait`, killed and reaped at a 5 s deadline); the screenshot pipes `nice -n 10
+runner (polled `try_wait`, killed and reaped at a 5 s deadline; at the end of the presses a
+key whose key-up failed stays marked held and is retried within a 400 ms budget, and one still
+held is reported); the screenshot pipes `nice -n 10
 xwd -root -silent -display <d>` into `nice -n 10 convert xwd:- png:<path>` with
 `MAGICK_THREAD_LIMIT=1`, no shell. A run first removes the previous run's `latency_trace.csv`,
 `pin_app_stderr.log`, `summary.txt` and `frame_*.png` from the artifact directory. Every exit path
@@ -391,13 +393,16 @@ Every column is documented in the rustdoc of `crates/pin_app/src/orchestrator/tr
 are stable (Gate A3 and KP-043 read them). All times are on SDL's clock (`SDL_GetTicksNS`).
 `move_tick` is the first tick at whose end a bat bound to the pressed input is raised at least
 1 degree (0.01745 rad) from its angle at the applying tick's start, in its energised direction
-(the sign of the flipper's sweep); a bat still returning from an earlier release never sets it.
+(the sign of the flipper's sweep); a bat still returning from an earlier release never sets it,
+and a press's watch ends at its release (a raise at the release tick still counts; a later press's
+raise never does).
 `frame` is the first presented frame, in present order, whose snapshot tick lies between
 `move_tick` and the `apply_tick` of the next release of the same input and whose snapshot shows the
 bat displaced at least 1 degree in the energised direction from the press's applying-tick base (a
 bat that crossed 1 degree and fell back is matched to a later frame that shows it raised, or to
 none); `frames_to_photon = frame - F0` counts from the press timestamp (`F0` the last frame
-presented at or before it), and `move_tick` only selects the earliest candidate frame. For a press
+presented at or before it; a press before the first presented frame counts from frame index 0,
+so the count is `frame + 1`), and `move_tick` only selects the earliest candidate frame. For a press
 with `stall = 1`, `prev_drain_sdl_ns` and `drain_sdl_ns` are the stall's start and end (so their
 difference is the stall). On the table presenter path `present_ns` is the SDL clock read right
 after the playfield surface's present returned, before the backglass and score surfaces are drawn;
@@ -406,7 +411,11 @@ than the present by one reconfigure, and on the `--debug-overlay` path it is rea
 render call (the debug presenter lives in `pin_render`). The trace is written to a sibling temp
 file and renamed over the destination at shutdown; the destination is never truncated, so a
 hard-linked bundle is safe (the `--table` bundle file itself is refused before anything is created;
-a value starting with `--` is not a path). It is written on the main thread after every
+a value starting with `--` is not a path; a path whose metadata fails other than "not found", a
+missing path ending in a separator and an existing FIFO are refused before anything is opened). On
+Unix the temp file is created owner-only (`0600`) and, before the rename, given the existing
+destination's permission bits, so the rename never widens access (a new destination stays
+`0600`). It is written on the main thread after every
 sim, render and audio thread was joined; no thread that runs a tick or draws a frame touches the
 filesystem (same class as the startup table load). Records go into rings preallocated before the
 threads start, and `pin_app: latency trace: <path>, <n> events, <m> frames, <k> overflows` follows
@@ -430,7 +439,8 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
   tick.
 - **b. Key to photon in frames (REQ-LAT-001, CI form).** For each press except those stamped
   within 500 ms of `run_end_ns` (excluded and counted): the raw count `n_raw = frame - F0`, `F0` the
-  last presented frame at or before `sdl_ts_ns`, must be `<= 2`, with one allowance: when the frame
+  last presented frame at or before `sdl_ts_ns` (`n_raw = frame + 1` for a press before the first
+  presented frame: the count starts at frame index 0), must be `<= 2`, with one allowance: when the frame
   in flight at the press (the first presented after it) presented by `sdl_ts_ns` + check a's bound
   + `8` ticks, the count may start after it (`n_adj = frame - in_flight <= 2`; never for a
   press that failed check a). The summary prints the raw and adjusted max and p99 and how many
@@ -442,8 +452,9 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
   `D / (N + D) <= 0.001`, and `N` within 1 % of 60 000. The simulated-to-wall ratio `N / (N + D)`
   is printed. The SPEC's Low quality preset does not exist in the app yet (REQ-LAT-006, another
   unit), so only the worker-thread cap applies.
-- **d. Completeness.** No trace overflow, at least 100 presses, and as many presses traced as the
-  driver injected.
+- **d. Completeness.** No trace overflow, at least 100 presses, as many presses traced as the
+  driver injected, and `input dropped 0` on the shutdown line (a dropped input event is a missing
+  trace row; a shutdown line without the field is malformed).
 
 **The lavapipe cap.** lavapipe's worker threads are capped with `LP_NUM_THREADS=2` (the workflow
 env and `run.sh`'s default), so on a 4-vCPU GitHub runner the sim thread keeps a core next to the

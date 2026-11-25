@@ -79,8 +79,10 @@
 //!      [`RAISE_THRESHOLD_RAD`] (1 degree) from its angle at the applying
 //!      tick's start, in its energised direction (see above). Motion the
 //!      other way (a bat still returning from an earlier release) never sets
-//!      it. Empty otherwise (a release, an unbound input, or no such raise
-//!      within [`MOVE_TIMEOUT_TICKS`]);
+//!      it. A press's watch ends at its release: a raise at the release tick
+//!      still counts, a later one (another press's) never does. Empty
+//!      otherwise (a release, an unbound input, no such raise before the
+//!      release, or none within [`MOVE_TIMEOUT_TICKS`]);
 //!    * `frame`: the index of the first presented frame, in present order,
 //!      whose snapshot tick is `>= move_tick` and `<= release_tick` (the
 //!      `apply_tick` of the next release, `down = 0`, of the same input
@@ -97,8 +99,9 @@
 //!    * `frame_snap_tick`, `present_ns`: that frame's snapshot tick and
 //!      present time (see the frame table);
 //!    * `frames_to_photon`: `frame - F0`, where `F0` is the index of the
-//!      last presented frame whose `present_ns <= sdl_ts_ns` (0 when none):
-//!      the raw count from the press.
+//!      last presented frame whose `present_ns <= sdl_ts_ns`: the raw count
+//!      from the press. A press before the first presented frame counts from
+//!      frame index 0 (`frame + 1`).
 //! 2. One empty line, then the **frame table**: the header line
 //!    [`FRAME_HEADER`] (`frame,snap_tick,present_ns`) and one row per
 //!    presented playfield frame (0-based index in present order, the
@@ -367,13 +370,19 @@ struct TickMark {
     dropped: u64,
 }
 
-/// A press waiting for its bat to move.
+/// A press waiting for its bat to move. Its watch ends at its first raise,
+/// at the end of the tick that delivered its release (`released_at`), or at
+/// `deadline`, whichever comes first.
 #[derive(Copy, Clone, Debug)]
 struct PendingMove {
     seq: u64,
+    /// The pressed input (its release ends this watch).
+    input: CabinetInput,
     mask: u16,
     base: [f32; MAX_FLIPPERS],
     deadline: u64,
+    /// The tick that delivered the release of `input` after this press.
+    released_at: Option<u64>,
 }
 
 /// Bat angles of `snap` by flipper id (0 for a flipper not in it).
@@ -475,11 +484,20 @@ impl SimTraceWriter {
 
     /// The current tick (`tick`) delivers `ev` (raw SDL stamp) to the step.
     /// Button events are recorded; a press of a bound input is watched for
-    /// its bat to move.
+    /// its bat to move, until its release: a release marks every pending
+    /// watch of the same input released at `tick` (retired at the end of
+    /// `tick` unless that tick raised the bat, [`end_tick`](Self::end_tick)).
     pub fn delivered(&mut self, tick: u64, ev: &InputEvent) {
         let InputEventKind::Button { input, pressed } = ev.kind else {
             return;
         };
+        if !pressed {
+            for p in self.pending.iter_mut() {
+                if p.input == input && p.released_at.is_none() {
+                    p.released_at = Some(tick);
+                }
+            }
+        }
         let seq = self.next_seq;
         self.next_seq += 1;
         let stall = self
@@ -506,9 +524,11 @@ impl SimTraceWriter {
         if pressed && mask != 0 {
             let p = PendingMove {
                 seq,
+                input,
                 mask,
                 base: self.base,
                 deadline: tick.saturating_add(MOVE_TIMEOUT_TICKS),
+                released_at: None,
             };
             if self.pending.try_push(p).is_err() {
                 self.counters.pending.fetch_add(1, Ordering::Relaxed);
@@ -518,7 +538,11 @@ impl SimTraceWriter {
 
     /// The current tick (`tick`) was stepped; `after` is its snapshot.
     /// Records the presses whose bat is now raised by at least
-    /// [`RAISE_THRESHOLD_RAD`] in its energised direction.
+    /// [`RAISE_THRESHOLD_RAD`] in its energised direction (a raise at the
+    /// release tick still counts, like the join's `snap_tick <=
+    /// release_tick`), then stops watching the presses that were not raised
+    /// and were released at or before `tick`, or reached their deadline, so
+    /// a later press's raise is never recorded for an earlier press.
     pub fn end_tick(&mut self, tick: u64, after: &FrameStateSnapshot) {
         let (moves, counters, bindings) = (&mut self.moves, &self.counters, &self.bindings);
         let now = angles(after);
@@ -535,7 +559,7 @@ impl SimTraceWriter {
                 }
                 false
             } else {
-                tick < p.deadline
+                tick < p.deadline && !p.released_at.is_some_and(|r| tick >= r)
             }
         });
         self.prev = self.cur;
@@ -710,10 +734,22 @@ impl TraceCollector {
 }
 
 /// Index of the last frame of `frames` (in present order) presented at or
-/// before `t_ns`, or 0 when none.
-pub fn last_frame_at_or_before(frames: &[FrameRecord], t_ns: u64) -> u64 {
+/// before `t_ns`, or `None` when no frame was.
+pub fn last_frame_at_or_before(frames: &[FrameRecord], t_ns: u64) -> Option<u64> {
     let n = frames.partition_point(|f| f.present_ns <= t_ns);
-    n.checked_sub(1).map_or(0, |i| frames[i].frame)
+    n.checked_sub(1).map(|i| frames[i].frame)
+}
+
+/// `frames_to_photon` of a press stamped `t_ns` whose bat was first shown
+/// raised in frame `frame`: the presented frames from the press up to and
+/// including that one, `frame - F0` with `F0` the last frame presented at or
+/// before the press ([`last_frame_at_or_before`]), or `frame + 1` when no
+/// frame was presented before the press (frames 0..=frame all count).
+pub fn frames_to_photon(frames: &[FrameRecord], t_ns: u64, frame: u64) -> u64 {
+    match last_frame_at_or_before(frames, t_ns) {
+        Some(f0) => frame.saturating_sub(f0),
+        None => frame.saturating_add(1),
+    }
 }
 
 /// For each of `inputs` (in delivery order), the `apply_tick` of the next
@@ -742,9 +778,10 @@ pub fn release_ticks(inputs: &[InputRecord]) -> Vec<Option<u64>> {
 /// shows it raised again, and a frame at the release tick counts only when
 /// it still shows the bat raised. A press no eligible frame shows raised
 /// gets no frame. Then that frame's snapshot tick and present time, and
-/// `frames_to_photon = frame - F0` ([`last_frame_at_or_before`] the
-/// press's SDL timestamp: the raw count starts from the press, `move_tick`
-/// only selects the frame). `frames` must be in present order.
+/// [`frames_to_photon`]: `frame - F0` ([`last_frame_at_or_before`] the
+/// press's SDL timestamp; `frame + 1` for a press before the first
+/// presented frame: the raw count starts from the press, `move_tick` only
+/// selects the frame). `frames` must be in present order.
 pub fn join_trace(
     inputs: &[InputRecord],
     moves: &[MoveRecord],
@@ -772,10 +809,7 @@ pub fn join_trace(
                 frame: drawn.map(|f| f.frame),
                 frame_snap_tick: drawn.map(|f| f.snap_tick),
                 present_ns: drawn.map(|f| f.present_ns),
-                frames_to_photon: drawn.map(|f| {
-                    f.frame
-                        .saturating_sub(last_frame_at_or_before(frames, r.sdl_ts_ns))
-                }),
+                frames_to_photon: drawn.map(|f| frames_to_photon(frames, r.sdl_ts_ns, f.frame)),
             }
         })
         .collect()
@@ -1173,7 +1207,8 @@ mod tests {
 
     /// REQ-LAT-001: the join picks the first frame whose snapshot tick is
     /// `>= move_tick`, and `frames_to_photon = frame - F0` with F0 the last
-    /// frame presented at or before the press (0 when none).
+    /// frame presented at or before the press (`frame + 1` when none: a
+    /// press before the first presented frame counts from frame index 0).
     #[test]
     fn req_lat_001_join_first_frame_at_or_after_the_move() {
         let frames = [
@@ -1188,7 +1223,7 @@ mod tests {
             (250, 6, 2, 1),
             (250, 7, 3, 2),
             (200, 7, 3, 2), // present at exactly the press counts as F0
-            (50, 2, 1, 1),  // no frame before the press: F0 = 0
+            (50, 2, 1, 2),  // no frame before the press: frames 0 and 1 count
         ] {
             let r = join_trace(&[rec(0, ts, 1)], &[mv(mt)], &frames, &left0());
             assert_eq!(r[0].frame, Some(want_frame), "ts {ts} move {mt}");
@@ -1202,9 +1237,140 @@ mod tests {
                 Some(frames[want_frame as usize].present_ns)
             );
         }
-        assert_eq!(last_frame_at_or_before(&frames, 99), 0);
-        assert_eq!(last_frame_at_or_before(&frames, 1000), 3);
-        assert_eq!(last_frame_at_or_before(&[], 1000), 0);
+        // O1: "no frame before the press" is not "frame 0 was".
+        assert_eq!(last_frame_at_or_before(&frames, 99), None);
+        assert_eq!(last_frame_at_or_before(&frames, 100), Some(0));
+        assert_eq!(last_frame_at_or_before(&frames, 1000), Some(3));
+        assert_eq!(last_frame_at_or_before(&[], 1000), None);
+    }
+
+    /// REQ-LAT-001, REQ-LAT-003 (O1): a press before the first presented
+    /// frame whose bat is first shown raised in the frame with index 2
+    /// counts frames 0, 1 and 2: `frames_to_photon` 3. A press after frame
+    /// 0 was presented, raised in frame 2, counts frames 1 and 2: 2.
+    #[test]
+    fn req_lat_001_press_before_the_first_frame_counts_from_frame_zero() {
+        let frames = [frame(0, 1, 100), frame(1, 2, 200), shown(2, 3, 300)];
+        let r = join_trace(&[rec(0, 50, 1)], &[mv0(0, 1)], &frames, &left0());
+        assert_eq!(r[0].frame, Some(2));
+        assert_eq!(r[0].frames_to_photon, Some(3));
+        let r = join_trace(&[rec(0, 150, 1)], &[mv0(0, 1)], &frames, &left0());
+        assert_eq!(r[0].frame, Some(2));
+        assert_eq!(r[0].frames_to_photon, Some(2));
+        assert_eq!(frames_to_photon(&frames, 50, 2), 3);
+        assert_eq!(frames_to_photon(&frames, 100, 2), 2);
+        assert_eq!(frames_to_photon(&[], 0, 0), 1);
+    }
+
+    /// Flipper 0 at `angle` (radians) at `tick`.
+    fn bat0(tick: u64, angle: f32) -> FrameStateSnapshot {
+        let mut s = at(tick);
+        assert!(s.push_flipper(FlipperState {
+            id: FlipperId(0),
+            angle_rad: angle,
+            ..FlipperState::default()
+        }));
+        s
+    }
+
+    /// REQ-LAT-001, REQ-LAT-003 (C6): a press whose bat never rose 1 degree
+    /// before its release stops being watched at the release, so the raise
+    /// of a later press of the same input is recorded only for that later
+    /// press (press A: no `move_tick`; press B: its own).
+    #[test]
+    fn req_lat_003_unraised_press_does_not_take_a_later_press_move() {
+        set_now(0);
+        let (c, mut sim, _fw) = latency_trace_with_capacity(left0(), now, 64, 1);
+        let l = CabinetInput::LeftFlipper;
+        let mut prev = bat0(0, 0.0);
+        let mut step = |sim: &mut SimTraceWriter, tick: u64, evs: &[InputEvent], a: f32| {
+            sim.begin_tick(tick * TICK_NS, &prev);
+            for e in evs {
+                sim.delivered(tick, e);
+            }
+            prev = bat0(tick, a);
+            sim.end_tick(tick, &prev);
+        };
+        step(&mut sim, 1, &[InputEvent::button(1, l, true)], 0.0); // A
+        step(&mut sim, 2, &[], 0.0);
+        step(&mut sim, 3, &[InputEvent::button(3, l, false)], 0.0);
+        step(&mut sim, 4, &[InputEvent::button(4, l, true)], 0.0); // B
+        step(&mut sim, 5, &[], 0.5);
+        let t = c.collect(0);
+        assert_eq!(t.rows.len(), 3);
+        assert_eq!(t.rows[0].move_tick, None, "A never rose");
+        assert_eq!(t.rows[1].move_tick, None, "a release");
+        assert_eq!(t.rows[2].move_tick, Some(5), "B's own move");
+    }
+
+    /// REQ-LAT-001, REQ-LAT-003 (C6): a rise at the release tick still
+    /// counts for the press (inclusive like the join's `snap_tick <=
+    /// release_tick`), also for a press and release in the same tick.
+    #[test]
+    fn req_lat_003_rise_on_the_release_tick_still_counts() {
+        set_now(0);
+        let l = CabinetInput::LeftFlipper;
+        let (c, mut sim, _fw) = latency_trace_with_capacity(left0(), now, 64, 1);
+        let rest = bat0(0, 0.0);
+        sim.begin_tick(TICK_NS, &rest);
+        sim.delivered(1, &InputEvent::button(1, l, true));
+        sim.end_tick(1, &bat0(1, 0.0));
+        sim.begin_tick(2 * TICK_NS, &bat0(1, 0.0));
+        sim.delivered(2, &InputEvent::button(2, l, false));
+        sim.end_tick(2, &bat0(2, 0.5));
+        // Press and release in one tick, raised at that tick's end.
+        sim.begin_tick(3 * TICK_NS, &rest);
+        sim.delivered(3, &InputEvent::button(3, l, true));
+        sim.delivered(3, &InputEvent::button(3, l, false));
+        sim.end_tick(3, &bat0(3, 0.5));
+        // Press and release in one tick, not raised: retired at once, so
+        // the next press's raise is its own.
+        sim.begin_tick(4 * TICK_NS, &rest);
+        sim.delivered(4, &InputEvent::button(4, l, true));
+        sim.delivered(4, &InputEvent::button(4, l, false));
+        sim.end_tick(4, &rest);
+        sim.begin_tick(5 * TICK_NS, &rest);
+        sim.delivered(5, &InputEvent::button(5, l, true));
+        sim.end_tick(5, &bat0(5, 0.5));
+        let t = c.collect(0);
+        let moves: Vec<Option<u64>> = t.rows.iter().map(|r| r.move_tick).collect();
+        assert_eq!(
+            moves,
+            vec![Some(2), None, Some(3), None, None, None, Some(5)]
+        );
+    }
+
+    /// REQ-LAT-001, REQ-LAT-003 (C6): overlapping presses of different
+    /// inputs keep separate watches: releasing one does not end the other's.
+    #[test]
+    fn req_lat_003_overlapping_presses_of_different_inputs_are_independent() {
+        set_now(0);
+        let (l, r) = (CabinetInput::LeftFlipper, CabinetInput::RightFlipper);
+        let mut b = left0();
+        b.bind(r, 1);
+        let (c, mut sim, _fw) = latency_trace_with_capacity(b, now, 64, 1);
+        let bats = |tick: u64, a0: f32, a1: f32| {
+            let mut s = bat0(tick, a0);
+            assert!(s.push_flipper(FlipperState {
+                id: FlipperId(1),
+                angle_rad: a1,
+                ..FlipperState::default()
+            }));
+            s
+        };
+        sim.begin_tick(TICK_NS, &bats(0, 0.0, 0.0));
+        sim.delivered(1, &InputEvent::button(1, l, true));
+        sim.delivered(1, &InputEvent::button(1, r, true));
+        sim.end_tick(1, &bats(1, 0.0, 0.0));
+        // Right released unraised; left still watched and rises at 3.
+        sim.begin_tick(2 * TICK_NS, &bats(1, 0.0, 0.0));
+        sim.delivered(2, &InputEvent::button(2, r, false));
+        sim.end_tick(2, &bats(2, 0.0, 0.0));
+        sim.begin_tick(3 * TICK_NS, &bats(2, 0.0, 0.0));
+        sim.end_tick(3, &bats(3, 0.5, 0.5));
+        let t = c.collect(0);
+        let moves: Vec<Option<u64>> = t.rows.iter().map(|r| r.move_tick).collect();
+        assert_eq!(moves, vec![Some(3), None, None]);
     }
 
     /// REQ-LAT-003: full rings are counted overflows (trailer), never a
@@ -1969,8 +2135,8 @@ mod tests {
         assert_eq!(r.frame, Some(1));
         assert_eq!(r.frame_snap_tick, Some(8));
         assert_eq!(r.present_ns, Some(8 * TICK_NS + 100));
-        // F0 = 0 (no frame before the press at 0.5 ms): 1 - 0.
-        assert_eq!(r.frames_to_photon, Some(1));
+        // No frame before the press at 0.5 ms (O1): frames 0 and 1 count.
+        assert_eq!(r.frames_to_photon, Some(2));
     }
 
     /// REQ-LAT-001, REQ-LAT-003 (B3): without a later frame that shows the

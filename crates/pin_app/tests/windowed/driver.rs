@@ -398,22 +398,19 @@ fn wait_bounded(child: &mut Child, deadline: Instant, what: &str) -> Result<Exit
 }
 
 /// Real-process evidence for the bounded runner (windowed run only: it
-/// measures wall time, which headless tests never do, PROCESS.md R6): a
-/// helper that never exits is killed at its deadline in under 5 s, and a
-/// short one returns its output.
+/// runs real helper processes): a helper that never exits is killed and
+/// reaped at its deadline (the error says "killed"), and a short one
+/// returns its output. No elapsed-time assertion: wall time is not a SPEC
+/// 7.5 measurement (PROCESS.md R6).
 ///
 /// # Errors
 /// Any of those checks failed.
 pub fn self_check_bounded_runner() -> Result<(), String> {
-    let t = Instant::now();
     let e = run_bounded(Command::new("sleep").arg("30"), Duration::from_millis(300))
         .err()
         .ok_or("bounded runner: `sleep 30` was not killed")?;
     if !e.contains("killed") {
         return Err(format!("bounded runner: error without \"killed\": {e}"));
-    }
-    if t.elapsed() >= Duration::from_secs(5) {
-        return Err(format!("bounded runner: kill took {:?}", t.elapsed()));
     }
     let out = run_bounded(Command::new("echo").arg("hi"), Duration::from_secs(5))?;
     if !out.status.success() || out.stdout != "hi\n" {
@@ -695,22 +692,43 @@ pub fn key_up(
     Ok(())
 }
 
+/// Total time [`release_held`] may spend retrying failed key-ups at the
+/// end of a run.
+pub const KEY_RELEASE_BUDGET: Duration = Duration::from_millis(400);
+/// Pause between two rounds of [`release_held`] retries.
+pub const KEY_RELEASE_PAUSE: Duration = Duration::from_millis(50);
+/// Most rounds of key-ups [`release_held`] sends, whatever the clock says.
+pub const KEY_RELEASE_MAX_ROUNDS: u32 = 16;
+
 /// Attempts a key-up for every key in `held` (never stopping at the first
-/// failure), clears `held` and returns the failed releases.
+/// failure; [`key_up`]: a key is cleared only when its key-up succeeded).
+/// While a key is still held, retries it after `pause` until `now()` (a
+/// monotonic time since a fixed start) reaches `budget` or
+/// [`KEY_RELEASE_MAX_ROUNDS`] rounds were sent. Returns the releases that
+/// still failed after the last round (their keys stay marked held).
 pub fn release_held(
     held: &mut [bool; 2],
     mut send: impl FnMut(Key) -> Result<(), String>,
+    budget: Duration,
+    now: &mut dyn FnMut() -> Duration,
+    pause: &mut dyn FnMut(),
 ) -> Vec<(Key, String)> {
-    let mut failed = Vec::new();
-    for (i, k) in [Key::Left, Key::Right].into_iter().enumerate() {
-        if held[i] {
-            if let Err(e) = send(k) {
+    let mut round = 0;
+    loop {
+        round += 1;
+        let mut failed = Vec::new();
+        for k in [Key::Left, Key::Right] {
+            if held[usize::from(k == Key::Right)]
+                && let Err(e) = key_up(held, k, &mut send)
+            {
                 failed.push((k, e));
             }
-            held[i] = false;
         }
+        if failed.is_empty() || round >= KEY_RELEASE_MAX_ROUNDS || now() >= budget {
+            return failed;
+        }
+        pause();
     }
-    failed
 }
 
 /// Combines the injection result with the failed releases: the original
@@ -842,7 +860,17 @@ fn drive(
         }
         Ok(())
     })();
-    let failed = release_held(&mut held, |k| send("keyup", k));
+    let release_start = Instant::now();
+    let failed = release_held(
+        &mut held,
+        |k| send("keyup", k),
+        KEY_RELEASE_BUDGET,
+        &mut || release_start.elapsed(),
+        &mut || std::thread::sleep(KEY_RELEASE_PAUSE),
+    );
+    if failed.is_empty() {
+        eprintln!("windowed: key release: every key up");
+    }
     finish_injection(injection, &failed)?;
     eprintln!("windowed: injected {injected} presses");
 

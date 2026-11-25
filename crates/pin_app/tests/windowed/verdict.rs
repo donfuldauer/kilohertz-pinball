@@ -276,13 +276,17 @@ pub struct Shutdown {
     pub dropped: u64,
     /// `F frames`.
     pub frames: u64,
+    /// `input dropped N`: input events the main thread could not forward
+    /// (each a press or release missing from the trace).
+    pub input_dropped: u64,
 }
 
-/// Finds and parses `pin_app: N sim ticks (D dropped), F frames, ...` in the
-/// app's stderr. Never panics.
+/// Finds and parses `pin_app: N sim ticks (D dropped), F frames, input
+/// dropped I, ...` in the app's stderr. Never panics.
 ///
 /// # Errors
-/// No such line, or a malformed one.
+/// No such line, or a malformed one (also one without the `input dropped`
+/// field, which the app always prints).
 pub fn parse_shutdown(stderr: &str) -> Result<Shutdown, String> {
     for line in stderr.lines() {
         let Some(rest) = line.strip_prefix("pin_app: ") else {
@@ -293,11 +297,13 @@ pub fn parse_shutdown(stderr: &str) -> Result<Shutdown, String> {
         };
         let bad = || format!("malformed shutdown line {line:?}");
         let (d, rest) = rest.split_once(" dropped), ").ok_or_else(bad)?;
-        let (f, _) = rest.split_once(" frames").ok_or_else(bad)?;
+        let (f, rest) = rest.split_once(" frames, input dropped ").ok_or_else(bad)?;
+        let i = rest.split_once(',').map_or(rest, |(i, _)| i);
         return Ok(Shutdown {
             ticks: int(n).map_err(|_| bad())?,
             dropped: int(d).map_err(|_| bad())?,
             frames: int(f).map_err(|_| bad())?,
+            input_dropped: int(i).map_err(|_| bad())?,
         });
     }
     Err("no shutdown line (`pin_app: N sim ticks (D dropped), F frames, ...`)".into())
@@ -412,13 +418,24 @@ pub fn coil_bound_ns(r: &Row, p: &Params) -> u64 {
     TICK_NS + p.tolerance_ns + stall
 }
 
-/// Index of the last frame presented at or before `t` (0 when none).
-pub fn last_frame_at_or_before(frames: &[Frame], t: u64) -> u64 {
+/// Index of the last frame presented at or before `t` (`None` when no frame
+/// was).
+pub fn last_frame_at_or_before(frames: &[Frame], t: u64) -> Option<u64> {
     frames
         .iter()
         .take_while(|f| f.present_ns <= t)
         .last()
-        .map_or(0, |f| f.frame)
+        .map(|f| f.frame)
+}
+
+/// The raw count of presented frames from a press at `ts` to `frame`:
+/// `frame - F0` ([`last_frame_at_or_before`]), or `frame + 1` when no frame
+/// was presented at or before the press (frames 0..=frame all count).
+pub fn raw_frames(frames: &[Frame], ts: u64, frame: u64) -> u64 {
+    match last_frame_at_or_before(frames, ts) {
+        Some(f0) => frame.saturating_sub(f0),
+        None => frame.saturating_add(1),
+    }
 }
 
 /// For each row, the `apply_tick` of the next release (`down = 0`) of the
@@ -448,7 +465,8 @@ pub fn frame_showing(frames: &[Frame], move_tick: u64, release: Option<u64>) -> 
 }
 
 /// Check b's frame count for one press: `(n_raw, gated, shifted)`.
-/// `n_raw = frame - F0` (`F0` the last frame presented at or before `ts`).
+/// `n_raw = frame - F0` (`F0` the last frame presented at or before `ts`;
+/// `frame + 1` for a press before the first presented frame, [`raw_frames`]).
 /// When `n_raw > max_frames`, `allow_shift`, the frame in flight at the
 /// press (the first presented after `ts`) was presented at or before
 /// `deadline`, and counting after it gives `frame - in_flight <=
@@ -463,7 +481,7 @@ pub fn frame_count(
     max_frames: u64,
     allow_shift: bool,
 ) -> (u64, u64, bool) {
-    let raw = frame.saturating_sub(last_frame_at_or_before(frames, ts));
+    let raw = raw_frames(frames, ts, frame);
     if raw <= max_frames || !allow_shift {
         return (raw, raw, false);
     }
@@ -785,6 +803,15 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
             ),
         );
     }
+    if shutdown.input_dropped > 0 {
+        fail(
+            &mut v.d,
+            format!(
+                "{} input events dropped by the main thread (each a missing trace row)",
+                shutdown.input_dropped
+            ),
+        );
+    }
     if let Some(n) = p.injected_presses
         && n != s.presses
     {
@@ -794,8 +821,8 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
         );
     }
     v.d.info = format!(
-        "{} presses traced (injected {:?}), {} frames, {} overflows",
-        s.presses, p.injected_presses, s.frames, trace.overflows
+        "{} presses traced (injected {:?}), {} frames, {} overflows, {} input events dropped",
+        s.presses, p.injected_presses, s.frames, trace.overflows, shutdown.input_dropped
     );
     v
 }

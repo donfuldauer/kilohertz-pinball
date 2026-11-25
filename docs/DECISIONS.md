@@ -7673,7 +7673,8 @@ run's end is the trace's `run_end_ns`.
   raised while held. `move_tick` only selects the earliest candidate frame; the count does not start
   from it. The gate is the raw count from the press:
   `n_raw = frame - F0`, `F0` the last presented frame at or before `sdl_ts_ns`, and `n_raw <= 2`
-  passes. Exactly one allowance: if the frame in flight at the press (`F0 + 1`, the first presented
+  passes; a press before the first presented frame counts from frame index 0 (`n_raw` = raised
+  frame index + 1; PR #146 review round 3, O1). Exactly one allowance: if the frame in flight at the press (`F0 + 1`, the first presented
   after `sdl_ts_ns`) was presented in `(sdl_ts_ns, sdl_ts_ns + bound_a + 8 ticks]` (`bound_a`
   that press's check-a bound), the count may start after it: `n_adj = frame - (F0 + 1)`, and the
   press passes when `n_adj <= 2`. The shift is at most one frame and is never given to a press that
@@ -7689,8 +7690,10 @@ run's end is the trace's `run_end_ns`.
 - **c. Real time (REQ-LAT-002, CI form).** `D * 1000 <= N + D` from the shutdown line, and `N`
   within 1 % of the run length in ms. The Low quality preset is not applied (it does not exist yet;
   REQ-LAT-006 belongs to another unit); only the worker-thread cap is.
-- **d. Completeness.** No trace overflow, at least 100 presses, and as many presses traced as
-  injected.
+- **d. Completeness.** No trace overflow, at least 100 presses, as many presses traced as
+  injected, and no dropped input event: the shutdown line's `input dropped N` must be 0 (each
+  dropped event is a missing trace row; the field is required, a line without it is malformed;
+  PR #146 review round 3, O2).
 
 **SPEC erratum (REQ-LAT-001, CI form).** "At most two presented frames from the event to the first
 frame showing the bat moved" can be exceeded by correct code: when a present returns within the
@@ -8020,3 +8023,28 @@ stays the sole code reviewer (R9); only its timing changes.
 - Review on the gate issue's own PR against `main`: rejected because CodeRabbit would see only
   that issue's diff, not the phase's cumulative changes.
 - Git tags for reviewed commits: rejected under D39 (the session proxy may refuse tag pushes).
+
+## #82 — Trace file permissions
+
+**Decision:** PR #146 review round 3 (C2, CWE-732): on Unix the `--latency-trace` sibling temp
+file is created with `OpenOptionsExt::mode(0o600)` (owner-only from creation, before any trace
+data is written). At commit, after the flush and sync and before the rename, when the destination
+exists as a regular file its permission bits (`mode & 0o777`, read at commit time; setuid, setgid
+and sticky are never copied) are set on the temp file, so the rename never widens access (0600
+stays 0600, 0640 stays 0640). A destination that did not exist ends `0600`: a trace may hold input
+timing, so the owner-only default is kept rather than the umask default. Setting the permissions
+failing removes the temp file and reports the error; nothing is renamed. Off Unix both steps are
+no-ops (behaviour unchanged). `create_new` and the atomic rename are kept. In the same round the
+destination checks were tightened: a metadata error other than "not found" (e.g. ENOTDIR for
+`trace.csv/` under a regular file), a missing destination ending in a path separator and (Unix) an
+existing FIFO, which a write-only open would block on, are refused before anything is opened.
+
+**Rationale:** The temp file was created with the umask default (typically 0644) and renamed over
+a destination that may be 0600, widening access to the trace. Owner-only creation plus copying the
+destination's bits keeps the file exactly as private as it was; std's `OpenOptionsExt`,
+`PermissionsExt` and `FileTypeExt` need no new dependency.
+
+**Alternatives:** The umask default for a new destination: rejected, a trace may hold input timing.
+Copying the full mode (with setuid/setgid/sticky): rejected, a trace never needs them. Opening a
+FIFO non-blocking: needs `libc`/`nix` flags (no new dependency allowed) and a FIFO is not a trace
+file.
