@@ -8118,3 +8118,23 @@ for up to 30 minutes. `[Fable wanted]` notes keep a record of where Fable would 
 
 **Alternatives:**
 - Keep the ask with a shorter timeout: rejected; any wait on the owner is what is being removed.
+
+## Planning — Browser version
+
+**Decision:** The browser (WebAssembly) version is planned as tracking issue #144 (label
+`tracking`) with 29 work units, #159–#187 (KP-065 to KP-093), one per row of #144's "Work units"
+table and in its order. They are in four new phases: `phase:30-web-prereq` (W01–W05, desktop
+determinism fixes), `phase:31-web-engine` (W06–W18), `phase:32-web-shell` (W19–W25) and
+`phase:33-web-ci` (W26–W29). Every web unit also has the new label `area:web`. Each issue body copies
+its unit's deliverables and acceptance criteria from the spike design (`docs/spikes/web/DESIGN.md`
+on branch `claude/amazing-carson-30j8t5`, commit `aaab0b7`; keep that branch until #144 closes).
+W01–W05 stay under #144 rather than M2 (#80). The owner approved the SPEC diff as is (P8 `spec`,
+PR #158). Units that depend on open M1 units (#128, #96, #97, #102, #116, #133, #129, #130, #101,
+#84, #115) wait for them. KP-065, KP-066 and KP-068 start `ready`; the others start `blocked`.
+**Rationale:** #144's "How to start" defines this procedure and the unit breakdown. The spikes
+settled the work; the breakdown, sizing and dependencies come from #144 and DESIGN.md unchanged.
+`req_coverage.py` traces all 72 SPEC requirement IDs, including REQ-WEB-001..026.
+**Alternatives:**
+- File W01–W05 under M2 (#80): #144 allowed this, but the owner chose to keep them under #144.
+- Start the units before the M1 units they depend on: rejected, because those M1 units change the
+  render, audio, input and menu code the web units build on.
