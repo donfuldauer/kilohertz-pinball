@@ -306,6 +306,7 @@ LUA_API lua_State *lua_newthread (lua_State *L) {
   /* create new thread */
   o = luaC_newobjdt(L, LUA_TTHREAD, sizeof(LX), offsetof(LX, l));
   L1 = gco2th(o);
+  khz_setid(g, L1);  /* KHZ 34 */
   /* anchor it on L stack */
   setthvalue2s(L, L->top.p, L1);
   api_incr_top(L);
@@ -395,6 +396,8 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud) {
   g->seed = luai_makeseed(L);
   g->khzbudget = LUA_MAXINTEGER / 4;  /* KHZ: unlimited until the host sets it */
   g->khzpending = 0;  /* KHZ */
+  L->khzid = 0;  /* KHZ 34: the main thread has id 0 ... */
+  g->khzseq = 1;  /* KHZ 34: ... set before anything creates an object */
   g->gcstp = GCSTPGC;  /* no GC while building state */
   g->strt.size = g->strt.nuse = 0;
   g->strt.hash = NULL;

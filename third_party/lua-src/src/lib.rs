@@ -222,7 +222,16 @@ impl Build {
         config
             .include(&source_dir)
             .warnings(false) // Suppress all warnings
-            .flag_if_supported("-fno-common") // Compile common globals like normal definitions
+            // Compile common globals like normal definitions
+            .flag_if_supported("-fno-common");
+
+        // KHZ (R3, D9): no floating-point contraction (GCC fuses `a*b + c` into
+        // one FMA by default on aarch64, which rounds differently). MSVC's `cl`
+        // has no such flag and does not contract by default.
+        if !target.contains("msvc") {
+            config.flag_if_supported("-ffp-contract=off");
+        }
+        config
             .add_files_by_ext(&source_dir, "c")?
             .out_dir(&lib_dir)
             .try_compile(&lua_lib)?;
@@ -349,4 +358,6 @@ pub const KHZ_PATCHED_SOURCES: &[&str] = &[
     include_str!("../lua-5.4.9/lapi.c"),
     include_str!("../lua-5.4.9/lzio.c"),
     include_str!("../lua-5.4.9/llimits.h"),
+    include_str!("../lua-5.4.9/lobject.h"),
+    include_str!("../lua-5.4.9/lfunc.c"),
 ];
