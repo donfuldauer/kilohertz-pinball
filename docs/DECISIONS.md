@@ -8195,3 +8195,11 @@ of the `quat_ops` guarantee.
 **Rationale:** Otherwise the doc would contradict what the harness now runs.
 
 **Alternatives:** A separate docs work-unit issue (rejected: a one-sentence fix that belongs with the change that made the sentence stale).
+
+## #83 — Owned-path extension: fix main's aarch64 clippy (spec_kp066_quat_ops.rs)
+
+**Decision:** PR #191 gates `unit_vec_strat` in crates/pin_physics/tests/spec_kp066_quat_ops.rs with the same SSE2/simd128 cfg as its only caller, so `clippy (aarch64-apple-darwin)` on main passes again (run 45553059132 at be86349, from #160 / PR #193).
+
+**Rationale:** PROCESS P6 lets only a PR that fixes a red main merge; the #160 session could not be reached and the fix is one attribute with no behaviour change.
+
+**Alternatives:** Wait for the #160 session (rejected: blocks every merge meanwhile); `#[allow(dead_code)]` (rejected: hides genuinely dead helpers on SSE2 targets).

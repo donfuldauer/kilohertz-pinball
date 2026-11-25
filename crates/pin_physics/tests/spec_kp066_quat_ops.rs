@@ -95,6 +95,7 @@ fn quat_strat() -> impl Strategy<Value = Quat> {
 fn vec_strat() -> impl Strategy<Value = Vec3> {
     (comp_strat(), comp_strat(), comp_strat()).prop_map(|(x, y, z)| Vec3::new(x, y, z))
 }
+#[cfg(any(target_feature = "sse2", target_feature = "simd128"))]
 fn unit_vec_strat() -> impl Strategy<Value = Vec3> {
     (comp_strat(), comp_strat(), comp_strat()).prop_map(|(x, y, z)| {
         let l = libm::sqrtf(x * x + y * y + z * z);
