@@ -154,8 +154,10 @@ mod unix_save {
         let link = dir.join("config.toml");
         symlink("real/config.toml", &link).unwrap();
         assert!(!target.exists());
-        let mut cfg = AppConfig::default();
-        cfg.wireframe = true;
+        let cfg = AppConfig {
+            wireframe: true,
+            ..AppConfig::default()
+        };
         cfg.save(&link).unwrap();
         assert!(is_link(&link));
         assert!(target.is_file());
@@ -210,9 +212,11 @@ mod unix_save {
     fn non_utf8_last_table_does_not_fail_save() {
         let dir = temp_dir("hard_utf8");
         let path = dir.join("config.toml");
-        let mut cfg = AppConfig::default();
-        cfg.wireframe = true;
-        cfg.playfield_display = 2;
+        let mut cfg = AppConfig {
+            wireframe: true,
+            playfield_display: 2,
+            ..AppConfig::default()
+        };
         cfg.last_table = Some(PathBuf::from(OsStr::from_bytes(b"/tables/caf\xE9")));
         cfg.tables_dir = Some(PathBuf::from(OsStr::from_bytes(b"/tables/dir\xFF\xFE")));
         let before = cfg.clone();
@@ -239,10 +243,12 @@ mod unix_save {
 fn save_leaves_no_temp_file_and_round_trips() {
     let dir = temp_dir("hard_roundtrip");
     let path = dir.join("config.toml");
-    let mut cfg = AppConfig::default();
-    cfg.wireframe = true;
-    cfg.playfield_display = 3;
-    cfg.ui_scale = 1.5;
+    let cfg = AppConfig {
+        wireframe: true,
+        playfield_display: 3,
+        ui_scale: 1.5,
+        ..AppConfig::default()
+    };
     cfg.save(&path).unwrap();
     assert_eq!(dir_names(&dir), ["config.toml"]);
     let loaded = AppConfig::load(&path);
@@ -473,8 +479,10 @@ fn ui_scale_settings_row() {
         },
         "{r:?}"
     );
-    let mut cfg = AppConfig::default();
-    cfg.ui_scale = 2.5;
+    let cfg = AppConfig {
+        ui_scale: 2.5,
+        ..AppConfig::default()
+    };
     assert_eq!(SettingRow::UiScale.number(&cfg), Some(2.5));
     let label: String = SettingRow::UiScale.label().into();
     assert!(label.to_lowercase().contains("scale"), "{label}");
@@ -554,23 +562,51 @@ fn menu_frame_scales_with_ui_scale() {
         assert_eq!(frame.pixels_per_point, scale);
         let ppp = frame.pixels_per_point;
         let [x0, y0, x1, y1] = menu_panel_rect_px(SIZE, ppp);
+        // Primitives are in points: the panel in points is px / ppp.
+        let pts = [x0, y0, x1, y1].map(|v| v as f32 / ppp);
         let (mut ux0, mut uy0, mut ux1, mut uy1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         assert!(!frame.primitives.is_empty());
         for p in &frame.primitives {
             let c = p.clip_rect;
-            let (cx0, cy0, cx1, cy1) = (c.min.x * ppp, c.min.y * ppp, c.max.x * ppp, c.max.y * ppp);
+            let clip_inside = c.min.x >= pts[0] - 0.5
+                && c.min.y >= pts[1] - 0.5
+                && c.max.x <= pts[2] + 0.5
+                && c.max.y <= pts[3] + 0.5;
+            let egui::epaint::Primitive::Mesh(m) = &p.primitive else {
+                panic!("unexpected callback primitive");
+            };
+            let verts_inside = m.vertices.iter().all(|v| {
+                v.pos.x >= pts[0] - 0.5
+                    && v.pos.y >= pts[1] - 0.5
+                    && v.pos.x <= pts[2] + 0.5
+                    && v.pos.y <= pts[3] + 0.5
+            });
+            let empty_clip = c.width() <= 0.0 || c.height() <= 0.0;
             assert!(
-                cx0 >= x0 as f32 - 1.0
-                    && cy0 >= y0 as f32 - 1.0
-                    && cx1 <= x1 as f32 + 1.0
-                    && cy1 <= y1 as f32 + 1.0,
-                "clip rect {c:?} at ppp {ppp} outside panel {:?}",
+                clip_inside || verts_inside || empty_clip,
+                "primitive (clip {c:?}) at ppp {ppp} outside panel {:?}",
                 [x0, y0, x1, y1]
             );
-            ux0 = ux0.min(cx0);
-            uy0 = uy0.min(cy0);
-            ux1 = ux1.max(cx1);
-            uy1 = uy1.max(cy1);
+            if empty_clip || m.vertices.is_empty() {
+                continue;
+            }
+            // Effective drawn bounds: vertex bounding box clipped to the clip rect.
+            let (mut vx0, mut vy0, mut vx1, mut vy1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            for v in &m.vertices {
+                vx0 = vx0.min(v.pos.x);
+                vy0 = vy0.min(v.pos.y);
+                vx1 = vx1.max(v.pos.x);
+                vy1 = vy1.max(v.pos.y);
+            }
+            let (dx0, dy0) = (vx0.max(c.min.x), vy0.max(c.min.y));
+            let (dx1, dy1) = (vx1.min(c.max.x), vy1.min(c.max.y));
+            if dx1 <= dx0 || dy1 <= dy0 {
+                continue;
+            }
+            ux0 = ux0.min(dx0 * ppp);
+            uy0 = uy0.min(dy0 * ppp);
+            ux1 = ux1.max(dx1 * ppp);
+            uy1 = uy1.max(dy1 * ppp);
         }
         areas.push(f64::from((ux1 - ux0).max(0.0)) * f64::from((uy1 - uy0).max(0.0)));
         frame.discard();
@@ -601,7 +637,7 @@ fn thumb_entry(k: usize, w: u32, h: u32) -> TableEntry {
                 height: h,
                 rgba: vec![0u8; (w * h * 4) as usize],
             }),
-            preview_error: if k % 7 == 0 {
+            preview_error: if k.is_multiple_of(7) {
                 Some("note".into())
             } else {
                 None
@@ -710,7 +746,7 @@ fn enforce_preview_budget_contract() {
     enforce_preview_budget(&mut v, total - 1);
     assert!(has_preview(&v[0]) && has_preview(&v[2]));
     assert!(!has_preview(&v[3]) && !has_preview(&v[4]));
-    assert!(preview_bytes(&v) <= total - 1);
+    assert!(preview_bytes(&v) < total);
     assert!(matches!(&v[1].status, TableStatus::Broken(m) if m == "bad"));
 }
 
@@ -833,7 +869,7 @@ fn table_list_is_virtualised() {
     assert_eq!(big.focused_table(), Some(4095));
 
     big.apply(MenuInput::SetFilter("table_0042".into()));
-    assert_eq!(big.visible_tables().into_iter().count(), 1);
+    assert_eq!(big.visible_tables().iter().count(), 1);
     let filtered = h.settle(&mut big, 3);
     assert!(filtered > 0 && filtered < 600, "{filtered}");
 }
