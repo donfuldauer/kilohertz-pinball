@@ -8639,3 +8639,33 @@ frame and an ordering hazard with the present).
 **Decision:** `TableEnvelope { playfield_width_mm, playfield_length_mm, glass_height_mm, max_part_height_mm, pitch_deg: Option<f32> }` as the brief gives it. `CabinetGeometry::validate` runs the self-consistency check, then in order: interior width (`body.width`), playfield between the walls (`mount.offset_x`), `body.length − wall ≥ mount.inset + playfield length` (`body.length`), glass sheet covers the playfield (`glass_panel.width/length`), glass ≥ tallest part (`glass.height`), glass sheet top under the side wall top at the playfield's front and rear edges (`mount.height`), backbox clear (`backbox.front_y` / `backbox.bottom_z`), `meta.pitch_deg` agreement. "Backbox clear of the playfield" passes when the backbox front face is at or behind the playfield's rear edge **or** the backbox bottom is above the glass sheet's top. The agreement tolerance is 0.05° plus 1e-5° for the f32 rounding of the file value.
 **Rationale:** with Appendix E's sizes (1315 mm body, 250 mm backbox, 1070 mm playfield at 6.5°) the backbox front face (1065 mm) is always in front of the playfield's rear edge (~1093 mm), as on real machines whose backbox overhangs the top of the playfield; the brief's literal "front face behind the rear edge" would reject every preset, so the vertical clearance is accepted too (R8). `6.55f32` is 6.5500002, so a strict 0.05 would reject a value the rule means to accept.
 **Alternatives:** only the horizontal rule (rejects all three presets); moving the backbox behind the body (contradicts Appendix E's body and backbox sizes); a strict 0.05° comparison.
+
+## #85 — Table swap by restarting the engine threads
+
+**Decision:** A table picked in the browser replaces the running one by restarting the engine threads on the same windows and menu: `Threads::shutdown_with_audio` joins sim, render, audio and I/O threads (the render thread drops the surfaces; the window guards keep the windows), the old `DeviceStream` is dropped once the audio thread (and with it its `DeviceSink`) is gone and a fresh one is opened, the forwarder is re-pointed at fresh input and window rings (`EventForwarder::replace_channels`; it keeps its menu, router, held inputs and gamepads), the surfaces are recreated from `platform.windows()` with the same `keep_alive` guards (one `render_gpu` function used at start-up and at the swap), and `ThreadsConfig` / `RenderConfig` are rebuilt exactly as the `--table` start-up does (one `engine_config` function), with the current `config.toml` wireframe setting. The new table runs from tick 0. A swap prints `pin_app: table swap: <bundle file name> (wireframe=<bool>)`. A join error of the old engine (or a surface / thread spawn error of the new one) ends the run with that failure, as at shutdown. `threads.rs` needed no hook. The profiler reader, the HUD and the `--latency-trace` collector follow the new engine (the trace file describes the last engine of the run), and `--run-frames` / `--run-ticks` count the current engine's frames and ticks.
+**Rationale:** The engine threads own the sim, the surfaces, the audio table and the render table, and no live-swap hook exists; a restart reuses the tested start-up and shutdown paths, keeps R4 untouched on the sim thread (nothing new runs there) and gives a swapped-in table exactly the state of a fresh `--table` start (R3).
+**Alternatives:** a live swap through new sim/render/audio hand-off slots (new cross-thread protocol in `threads.rs`, `present.rs` and the audio thread; far larger blast radius); restarting the process with `--table` (loses the windows and the menu).
+
+## #85 — The swap hitch is accepted
+
+**Decision:** The visible hitch of a swap (join, surface recreation, GPU and pipeline set-up for the new table) is accepted; the menu is open while it happens.
+**Rationale:** Table switching is a rare, player-initiated action from the menu; the 1 kHz loop and the frame pacing of a running table are not affected.
+**Alternatives:** a seamless swap (see the previous entry; not worth its blast radius now).
+
+## #85 — `last_table` is not loaded automatically
+
+**Decision:** At start-up without `--table` the browser lists the tables and the menu waits for a choice; `config.toml`'s `last_table` is recorded on every successful browser load (and saved) but never loaded automatically.
+**Rationale:** The brief asks for the browser at start; an automatic load would hide it and would make a broken or slow table block every start. The value stays available for a later "continue" option.
+**Alternatives:** auto-loading `last_table` when it is still listed and ready (rejected for the reasons above).
+
+## #85 — The menu opens on the Tables panel at start without `--table`
+
+**Decision:** A run without `--table` opens the menu once at start (the menu state machine's own toggle, stamped with `SDL_GetTicksNS`), on the Tables panel, over the idle path; closing it with `Esc` shows the idle debug view. A `--table` run starts with the menu closed as before.
+**Rationale:** Without a table the only useful thing to show is the list of tables; using the state machine's own toggle keeps the #84 release and publish rules.
+**Alternatives:** a separate start screen (a second UI to maintain).
+
+## #85 — Scan and load errors in the browser
+
+**Decision:** The scan and the load run on the I/O worker (`orchestrator::IoWorker`, one `io-worker` thread; a load runs `load_app_table` on its `table-load` big-stack thread). A missing or unreadable tables folder gives an empty list (no failure, one `pin_app: table browser: 0 table(s) in <dir> (0 ready)` line); a broken bundle is listed with its error and the menu refuses to load it (`LoadRefusal::Broken`, shown as the menu notice); a bundle that lists but fails the full validation or load (clearance, glTF, rules) leaves the running table untouched and the menu shows `Failed` with the error text; a panic inside a load is caught and becomes the same failure with the panic message. Dropping the worker lets the request in flight finish, skips queued ones and joins the thread.
+**Rationale:** R4 (the main thread only posts requests and applies replies), R11 (a picked table goes through exactly `validate_table` as `--table` does), and a failed table must never panic, hang or end the run.
+**Alternatives:** scanning on the main thread inside the menu executor (the #84 fallback, still used for `--table` runs with `tables_dir` set; blocks the event pump).

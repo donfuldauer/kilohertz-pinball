@@ -30,8 +30,15 @@
 //! [`MenuController::toggle`] before the input router sees them; every
 //! cabinet event goes through [`MenuController::route`]. The render thread
 //! paints the latest state published into its [`MenuShare`]
-//! (`RenderConfig::menu`). Table switching from the menu is the table
-//! browser's (KP-005): until then a menu load fails at once with
+//! (`RenderConfig::menu`).
+//!
+//! Table browser (issue #85, KP-005): a run without `--table` scans
+//! [`browser_dir`] (`<exe dir>/tables` unless `config.toml`'s `tables_dir`
+//! says otherwise) on the app's I/O worker, opens the menu on its Tables
+//! panel and, with [`MenuController::set_browser_enabled`], hands each menu
+//! load and rescan to the app, which validates and loads the table off the
+//! main thread and swaps it in ([`MenuController::finish_load`]). A
+//! `--table` run keeps the old answer: a menu load fails at once with
 //! [`LOAD_NOT_WIRED`].
 
 pub mod app;
@@ -62,7 +69,7 @@ pub use overlay::{
     MENU_PIXELS_PER_POINT, MenuDebugHooks, MenuFrames, MenuOverlay, menu_overlay_for,
 };
 pub use scan::{
-    PreviewArt, TableEntry, TableFeature, TableInfo, TableStatus, decode_preview, inspect_bundle,
-    scan_tables,
+    PreviewArt, TABLES_DIR_NAME, TableEntry, TableFeature, TableInfo, TableStatus, browser_dir,
+    decode_preview, inspect_bundle, resolve_tables_dir, scan_tables,
 };
 pub use view::MenuView;

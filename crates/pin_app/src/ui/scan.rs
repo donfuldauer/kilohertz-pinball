@@ -259,6 +259,41 @@ fn is_candidate(path: &Path, is_dir: bool) -> bool {
             .is_some_and(|e| e.eq_ignore_ascii_case("zip") || e.eq_ignore_ascii_case("pinbundle"))
 }
 
+/// Name of the tables folder next to the executable (the packaged layout:
+/// `<exe dir>/tables`, DECISIONS "7.2 — The app does not scan `<exe
+/// dir>/tables` yet (A12)").
+pub const TABLES_DIR_NAME: &str = "tables";
+
+/// The folder the table browser scans (REQ-VIEW-006, Subphase 4.4):
+/// `configured` (`config.toml`'s `tables_dir`) when set, else
+/// [`TABLES_DIR_NAME`] next to the executable `exe` (its parent folder); an
+/// `exe` without a parent folder (a bare file name) gives `./tables`.
+#[must_use]
+pub fn resolve_tables_dir(configured: Option<&Path>, exe: &Path) -> PathBuf {
+    if let Some(dir) = configured {
+        return dir.to_path_buf();
+    }
+    match exe.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(TABLES_DIR_NAME),
+        _ => Path::new(".").join(TABLES_DIR_NAME),
+    }
+}
+
+/// The table browser's folder for a run with the command line `args`:
+/// `None` when the run names its table (any argument equal to `--table` or
+/// starting with `--table=`; a malformed `--table` is reported by the app's
+/// own argument check), else [`resolve_tables_dir`]`(configured, exe)`.
+#[must_use]
+pub fn browser_dir(args: &[String], configured: Option<&Path>, exe: &Path) -> Option<PathBuf> {
+    if args
+        .iter()
+        .any(|a| a == "--table" || a.starts_with("--table="))
+    {
+        return None;
+    }
+    Some(resolve_tables_dir(configured, exe))
+}
+
 /// Scans `root` for table bundles. Never panics; an unreadable or missing
 /// root gives an empty list. See the module docs for the rules.
 pub fn scan_tables(root: &Path) -> Vec<TableEntry> {
@@ -430,5 +465,51 @@ mod tests {
         assert_eq!(box_downscale(&[], 0, 5, 4), (Vec::new(), 0, 0));
         assert_eq!(box_downscale(&[1; 8], 2, 1, 1), (vec![1, 1, 1, 1], 1, 1));
         assert_eq!(box_downscale(&[1; 8], 2, 1, 8), (vec![1; 8], 2, 1));
+    }
+
+    /// REQ-VIEW-006: the tables folder is the configured one, else
+    /// `tables` next to the executable, else `./tables`.
+    #[test]
+    fn req_view_006_resolve_tables_dir() {
+        let exe = Path::new("/opt/kp/pin_app");
+        assert_eq!(
+            resolve_tables_dir(None, exe),
+            PathBuf::from("/opt/kp/tables")
+        );
+        assert_eq!(
+            resolve_tables_dir(Some(Path::new("/data/t")), exe),
+            PathBuf::from("/data/t")
+        );
+        assert_eq!(
+            resolve_tables_dir(None, Path::new("pin_app")),
+            PathBuf::from("./tables")
+        );
+        assert_eq!(
+            resolve_tables_dir(None, Path::new("/")),
+            PathBuf::from("./tables")
+        );
+    }
+
+    /// REQ-VIEW-006: `--table` (also `--table=x` and a malformed bare
+    /// `--table`) disables the browser.
+    #[test]
+    fn req_view_006_browser_dir_respects_the_table_flag() {
+        let a = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let exe = Path::new("/opt/kp/pin_app");
+        for args in [
+            a(&["--table", "x"]),
+            a(&["--table=x"]),
+            a(&["--run-ms", "5", "--table"]),
+        ] {
+            assert_eq!(browser_dir(&args, None, exe), None, "{args:?}");
+        }
+        assert_eq!(
+            browser_dir(&a(&["--config", "c.toml", "--tables"]), None, exe),
+            Some(PathBuf::from("/opt/kp/tables"))
+        );
+        assert_eq!(
+            browser_dir(&[], Some(Path::new("mine")), exe),
+            Some(PathBuf::from("mine"))
+        );
     }
 }
