@@ -9,7 +9,7 @@ use pin_app::orchestrator::{
     TableSim, TableVisuals, ThreadsConfig, load_checked, spawn_threads, ssf_playfield_mm,
     table_samples, table_source_positions, validate_table,
 };
-use pin_audio::mixer::{Bus, MixerConfig, Sample, SoundTrigger, trigger_ring};
+use pin_audio::mixer::{Bus, DecodeBudget, MixerConfig, Sample, SoundTrigger, trigger_ring};
 use pin_audio::ssf::{CH_FL, CH_FR, CHANNELS, SsfConfig};
 use pin_core::{FrameStateSnapshot, SimStep, SoundId};
 use pin_sim::SimConfig;
@@ -32,7 +32,11 @@ fn a_bumper_sound_command_is_audible_within_one_block() {
     let dir = greybox_bundle().to_path_buf();
     on_big_stack(move || {
         let checked = validate_table(&dir).unwrap();
-        let (samples, errors) = table_samples(&checked, MixerConfig::default().sample_rate);
+        let (samples, errors) = table_samples(
+            &checked,
+            MixerConfig::default().sample_rate,
+            DecodeBudget::DEFAULT_BYTES,
+        );
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(samples.len(), 2, "sfx_bumper and sfx_sling decode");
         let bumper = checked.table.ids.sound("sfx_bumper").unwrap();

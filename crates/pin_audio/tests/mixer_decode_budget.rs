@@ -208,7 +208,7 @@ fn budget_exhausts_across_many_files_with_exact_accounting() {
     assert_eq!(budget.used_bytes(), 7 * per + bytes_of(&s));
     assert_eq!(budget.remaining_bytes(), 0);
     // Releasing a sample makes room again.
-    budget.release(&one);
+    budget.release(&one).expect("charged");
     assert_eq!(budget.used_bytes(), 6 * per + bytes_of(&s));
     decode_with_budget(&w, 48_000, &budget).unwrap();
     assert_eq!(budget.used_bytes(), 7 * per + bytes_of(&s));
@@ -294,4 +294,110 @@ fn shared_budget_across_threads_never_overcommits() {
     let ok: u64 = handles.into_iter().map(|h| h.join().unwrap()).sum();
     assert!(ok <= 25 && ok > 0, "ok {ok}");
     assert_eq!(budget.used_bytes(), ok * per);
+}
+
+// ----------------------------------------------------------------- over-release
+
+use pin_audio::mixer::OverRelease;
+
+fn wav16(rate: u32, n: usize) -> Vec<u8> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut buf = Vec::new();
+    {
+        let mut w = hound::WavWriter::new(Cursor::new(&mut buf), spec).unwrap();
+        for k in 0..n {
+            w.write_sample(((k * 31) % 20_000) as i16 - 10_000).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+    buf
+}
+
+/// D25, DECISIONS "Human ruling - decoded-audio budget": releasing a sample
+/// twice reports the second as an over-release and changes nothing.
+#[test]
+fn double_release_is_reported_and_changes_nothing() {
+    let budget = DecodeBudget::new(1 << 20);
+    let s = decode_with_budget(&wav16(48_000, 1_000), 48_000, &budget).unwrap();
+    assert_eq!(s.frames(), 1_000);
+    assert_eq!(budget.used_bytes(), 8_000);
+    assert!(budget.release(&s).is_ok());
+    assert_eq!(budget.used_bytes(), 0);
+    assert_eq!(
+        budget.release(&s),
+        Err(OverRelease {
+            attempted_bytes: 8 * s.frames() as u64,
+            used_bytes: 0
+        })
+    );
+    assert_eq!(budget.used_bytes(), 0);
+}
+
+/// D25: an over-release larger than what is charged subtracts nothing (no
+/// partial subtraction, no saturation to zero).
+#[test]
+fn over_release_larger_than_used_changes_nothing() {
+    let budget = DecodeBudget::new(1 << 20);
+    let s = decode_with_budget(&wav16(48_000, 100), 48_000, &budget).unwrap();
+    assert_eq!(budget.used_bytes(), 800);
+    let stranger = Sample::constant(1_000, 0.0, 0.0);
+    assert_eq!(
+        budget.release(&stranger),
+        Err(OverRelease {
+            attempted_bytes: 8_000,
+            used_bytes: 800
+        })
+    );
+    assert_eq!(budget.used_bytes(), 800);
+    assert!(budget.release(&s).is_ok());
+    assert_eq!(budget.used_bytes(), 0);
+}
+
+/// D25: `OverRelease` is a `std::error::Error` with a non-empty `Display`.
+#[test]
+fn over_release_is_an_error_with_display() {
+    fn is_err<E: std::error::Error + Copy + Eq + 'static>(_: &E) {}
+    let e = DecodeBudget::new(0)
+        .release(&Sample::constant(1, 0.0, 0.0))
+        .unwrap_err();
+    is_err(&e);
+    assert!(!e.to_string().is_empty());
+    let dynamic: &dyn std::error::Error = &e;
+    assert!(!dynamic.to_string().is_empty());
+}
+
+/// D25: several threads decode and release against one shared budget; it
+/// ends at 0 and no release is refused (budget large enough that no decode
+/// fails, so the end state is deterministic).
+#[test]
+fn threads_decode_and_release_back_to_zero() {
+    let budget = Arc::new(DecodeBudget::new(1 << 30));
+    let w = Arc::new(wav16(44_100, 3_000));
+    let handles: Vec<_> = (0..6)
+        .map(|t| {
+            let (budget, w) = (Arc::clone(&budget), Arc::clone(&w));
+            std::thread::spawn(move || {
+                let mut refused = 0usize;
+                let mut held = Vec::new();
+                for k in 0..20 {
+                    held.push(decode_with_budget(&w, 48_000, &budget).expect("fits"));
+                    if (k + t) % 3 == 0 {
+                        refused += usize::from(budget.release(&held.pop().unwrap()).is_err());
+                    }
+                }
+                for s in held {
+                    refused += usize::from(budget.release(&s).is_err());
+                }
+                refused
+            })
+        })
+        .collect();
+    let refused: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+    assert_eq!(refused, 0);
+    assert_eq!(budget.used_bytes(), 0);
 }
