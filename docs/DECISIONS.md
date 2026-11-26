@@ -9096,3 +9096,15 @@ does not depend on the ball). A curvature-based cusp lint (rejected: a collinear
 zero curvature, and the speed is what makes the frame ill-defined). Keeping "lanes" as the
 table.toml error element (rejected by the issue). Naming the kind by bytes instead of by entry
 count (rejected: the brief asks for the count, which is simpler to reason about).
+
+### #137 KP-056 — owned paths extended to the spec_2_8 test helpers (Orchestrator, 2026-11-26)
+
+`pin_tablegen validate` now reports the layer-exit lint as a `Feature::LayerExit` warning with no
+ball profile and 0 mm, because the check does not depend on ball size. Three existing tests
+(`spec_2_8_random` ×2, `spec_2_8_validator` ×1) asserted that every finding carries a declared
+profile and `required_mm > 0`, so they failed. The Orchestrator extended #137's owned paths to
+`crates/pin_tablegen/tests/fixtures/spec_2_8/support.rs`, `spec_2_8_random.rs` and
+`spec_2_8_validator.rs` (no other live issue reserves them). A T1 Fixer (triage fast path) made the
+helpers assert LayerExit's own shape, including that it never appears in `errors`. Every other
+feature keeps its assertions (R10: the expectation changed with the feature; the tests were not
+weakened).
