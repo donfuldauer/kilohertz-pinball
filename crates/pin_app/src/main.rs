@@ -66,9 +66,12 @@
 //!   overflows`. A table swap keeps the stopped engine's trace: the file
 //!   holds every engine of the run in order
 //!   (`orchestrator::trace::CollectedTrace::append`). While tracing, a
-//!   table browser selection that is the trace destination is refused
-//!   (`--latency-trace: <path> is the selected table bundle`) and not
-//!   loaded. While tracing, the main thread prints `pin_app: latency
+//!   table browser selection that is the trace destination (a `.zip`
+//!   bundle) or holds it (a folder bundle) is refused
+//!   (`--latency-trace: <path> is the selected table bundle` / `is in the
+//!   selected table bundle`) and not loaded, and the trace is then not
+//!   published at shutdown (`pin_app: --latency-trace: <path> ...: the
+//!   trace was not published`; the run fails). While tracing, the main thread prints `pin_app: latency
 //!   trace: first frame presented` once the first frame was presented (the
 //!   windowed harness waits for it). Without the flag nothing changes.
 //! * `--config <path>` (REQ-VIEW-006): the `config.toml` to load at start
@@ -104,8 +107,8 @@ use pin_app::platform::{
 };
 use pin_app::profiler::{Profiler, ProfilerReader, hud_lines};
 use pin_app::ui::{
-    AppConfig, AppSetting, MenuController, MenuShare, browser_dir, changed_settings,
-    keyboard_router,
+    AppConfig, AppSetting, MenuController, MenuShare, TableLoadState, browser_dir,
+    changed_settings, keyboard_router,
 };
 use pin_audio::mixer::MixerConfig;
 use pin_audio::ssf::SsfConfig;
@@ -121,6 +124,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// How long shutdown waits for a detached presenter thread to release its
@@ -447,39 +451,154 @@ impl Drop for TraceSink {
     }
 }
 
-/// Whether the existing `--latency-trace` destination `dest` (with metadata
-/// `dest_meta`) is the bundle file `bundle` (a `.zip` bundle: an existing
-/// regular file, compared by [`same_file`]). The one alias test of the
-/// `--table` bundle at start-up ([`open_latency_trace`]) and of a table
-/// browser selection ([`trace_alias_guard`]).
-fn is_bundle_file(dest_meta: &std::fs::Metadata, dest: &Path, bundle: &Path) -> bool {
-    std::fs::metadata(bundle)
-        .is_ok_and(|tm| tm.is_file() && same_file(dest_meta, dest, &tm, bundle))
+/// How an existing `--latency-trace` destination collides with a table
+/// bundle ([`bundle_alias`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BundleAlias {
+    /// The destination is the bundle file (a `.zip` bundle).
+    File,
+    /// The destination lies inside the bundle folder (a folder bundle).
+    Member,
 }
 
-/// The table browser's load guard while tracing (gate 163 round 9, review
-/// thread 4703749453): a selected bundle that is the `--latency-trace`
-/// destination `dest` ([`is_bundle_file`]) is refused with
-/// `--latency-trace: <dest> is the selected table bundle` before it is
-/// loaded, so the trace commit at shutdown can never replace it; the menu
-/// shows the error and the running table stays. It runs on the I/O worker
-/// ([`IoWorker::spawn_guarded`], R4). A destination that does not exist (or
-/// cannot be read) is no bundle: the selection loads.
-fn trace_alias_guard(dest: PathBuf) -> impl Fn(&Path) -> Result<(), String> + Send + 'static {
-    move |bundle| match std::fs::metadata(&dest) {
-        Ok(m) if is_bundle_file(&m, &dest, bundle) => Err(format!(
-            "--latency-trace: {} is the selected table bundle",
-            dest.display()
-        )),
-        _ => Ok(()),
+/// Whether the existing `--latency-trace` destination `dest` (with metadata
+/// `dest_meta`) is the table bundle `bundle` or lies inside it, so the
+/// trace commit's rename would replace (part of) the bundle. A bundle that
+/// is an existing regular file (a `.zip` bundle) collides when it is the
+/// same file as `dest` ([`same_file`]: also through a hard link or a
+/// symlink). A bundle that is an existing directory (a folder bundle)
+/// collides when `dest` lies inside it at any depth: the canonical bundle
+/// path is compared component by component (never as a string prefix, so
+/// `example2/x.csv` is not inside `example`) with both the canonical
+/// destination (its symlinks, `..` components and symlinked directories
+/// resolved) and the canonical directory entry the rename replaces (the
+/// destination's canonical parent joined with its file name: a destination
+/// symlink is itself replaced, not its target). Either inside counts. A
+/// hard link outside the folder to one of its files is no member: the
+/// rename replaces only that outside entry. A bundle that does not exist or
+/// cannot be resolved collides with nothing. The one alias test of the
+/// `--table` bundle at start-up ([`open_latency_trace`]), of a table
+/// browser selection ([`trace_alias_guard`]) and of a selection still in
+/// flight at shutdown ([`finish_trace`]).
+fn bundle_alias(dest_meta: &std::fs::Metadata, dest: &Path, bundle: &Path) -> Option<BundleAlias> {
+    let bm = std::fs::metadata(bundle).ok()?;
+    if bm.is_file() {
+        return same_file(dest_meta, dest, &bm, bundle).then_some(BundleAlias::File);
     }
+    if !bm.is_dir() {
+        return None;
+    }
+    let root = std::fs::canonicalize(bundle).ok()?;
+    let target = std::fs::canonicalize(dest).ok();
+    let entry = dest.file_name().and_then(|name| {
+        let parent = match dest.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        std::fs::canonicalize(parent).ok().map(|p| p.join(name))
+    });
+    target
+        .iter()
+        .chain(entry.iter())
+        .any(|p| p.starts_with(&root))
+        .then_some(BundleAlias::Member)
+}
+
+/// The refusal text when the `--latency-trace` destination `dest` collides
+/// with the table bundle `bundle` ([`bundle_alias`]), `None` when it does
+/// not (also when `dest` does not exist or cannot be read): `--latency-trace:
+/// <dest> is the selected table bundle` for a `.zip` bundle, `... is in the
+/// selected table bundle` for a folder bundle holding it.
+fn trace_alias(dest: &Path, bundle: &Path) -> Option<String> {
+    let m = std::fs::metadata(dest).ok()?;
+    let verb = match bundle_alias(&m, dest, bundle)? {
+        BundleAlias::File => "is",
+        BundleAlias::Member => "is in",
+    };
+    Some(format!(
+        "--latency-trace: {} {verb} the selected table bundle",
+        dest.display()
+    ))
+}
+
+/// The table browser's load guard while tracing (gate 163 rounds 9 and 10,
+/// review threads 4703749453 and comment 4704516459): a selected bundle
+/// that is the `--latency-trace` destination `dest` or holds it
+/// ([`trace_alias`]) is refused with `--latency-trace: <dest> is (in) the
+/// selected table bundle` before it is loaded, and `blocked` is set, so the
+/// shutdown step ([`finish_trace`]) does not publish the trace over it; the
+/// menu shows the error and the running table stays. It runs on the I/O
+/// worker ([`IoWorker::spawn_guarded`], R4), before each load. A
+/// destination that does not exist (or cannot be read) is no bundle: the
+/// selection loads and `blocked` is left as it is.
+fn trace_alias_guard(
+    dest: PathBuf,
+    blocked: Arc<AtomicBool>,
+) -> impl Fn(&Path) -> Result<(), String> + Send + 'static {
+    move |bundle| match trace_alias(&dest, bundle) {
+        Some(e) => {
+            blocked.store(true, Ordering::Release);
+            Err(e)
+        }
+        None => Ok(()),
+    }
+}
+
+/// The table browser selection whose load may not have been answered when
+/// the run ended: the menu's `LoadRequested` or `Loading` path. The I/O
+/// worker drops a request still queued when it is stopped without running
+/// its guard, so [`finish_trace`] checks this path itself.
+fn unanswered_selection(menu: &MenuController) -> Option<&Path> {
+    match menu.menu().load_state() {
+        TableLoadState::LoadRequested(p) | TableLoadState::Loading(p) => Some(p),
+        _ => None,
+    }
+}
+
+/// The shutdown step of the latency trace (REQ-LAT-003, gate 163 round 10,
+/// review thread 4703749453 comment 4704457456 and comment 4704516459), run
+/// on the main thread once every engine thread and the I/O worker were
+/// joined. When `blocked` is set (the browser guard refused a selection
+/// that is or holds the destination, [`trace_alias_guard`]) or the
+/// selection `in_flight` ([`unanswered_selection`]) is or holds the
+/// destination ([`trace_alias`]), the trace is not published: `sink` is
+/// dropped (its temp file is removed, the destination is untouched), one
+/// `pin_app: --latency-trace: <dest> ...: the trace was not published` line
+/// is printed and the same text is merged into `failure` (a requested
+/// artifact was not produced), and `None` is returned. Otherwise the trace
+/// is committed as before ([`commit_trace`]: also for a failed run).
+fn finish_trace(
+    sink: TraceSink,
+    blocked: &AtomicBool,
+    in_flight: Option<&Path>,
+    csv: &[u8],
+    failure: &mut Option<String>,
+) -> Option<PathBuf> {
+    let alias = if blocked.load(Ordering::Acquire) {
+        Some(format!(
+            "--latency-trace: {} is or is in a selected table bundle",
+            sink.dest.display()
+        ))
+    } else {
+        in_flight.and_then(|p| trace_alias(&sink.dest, p))
+    };
+    let Some(alias) = alias else {
+        return commit_trace(sink, csv, failure);
+    };
+    drop(sink);
+    let e = format!("{alias}: the trace was not published");
+    eprintln!("pin_app: {e}");
+    *failure = merge_failure(failure.take(), Some(e));
+    None
 }
 
 /// `--latency-trace <file>`: checked and prepared now so an unwritable path
 /// fails before the app starts. A value that starts with `--` is an option,
-/// not a path (`./--x` is a path). A destination that is the `--table`
-/// bundle file (when that is an existing file: a `.zip` bundle) is refused
-/// before anything is created. A destination whose metadata cannot be read
+/// not a path (`./--x` is a path). An existing destination that is the
+/// `--table` bundle file (a `.zip` bundle) or lies inside the `--table`
+/// bundle folder (a folder bundle, at any depth: [`bundle_alias`]) is
+/// refused before anything is created (`--latency-trace: <dest> is the
+/// --table bundle` / `is in the --table bundle`). A destination whose metadata cannot be read
 /// for a reason other than "not found" (e.g. `trace.csv/` under a regular
 /// file), a missing destination named with a trailing path separator, and
 /// (Unix) an existing FIFO, which a write-only open would block on, are
@@ -515,10 +634,14 @@ fn open_latency_trace(args: &[String]) -> Result<Option<TraceSink>, String> {
     }
     if let Some(fm) = &dest_meta
         && let Some(Ok(table)) = path_of(args, "--table")
-        && is_bundle_file(fm, &path, &table)
+        && let Some(alias) = bundle_alias(fm, &path, &table)
     {
+        let verb = match alias {
+            BundleAlias::File => "is",
+            BundleAlias::Member => "is in",
+        };
         return Err(format!(
-            "--latency-trace: {} is the --table bundle",
+            "--latency-trace: {} {verb} the --table bundle",
             path.display()
         ));
     }
@@ -915,6 +1038,10 @@ fn run_app(args: &[String]) -> Result<(), String> {
     let headless = args.iter().any(|a| a == "--headless");
     let limits = RunLimits::from_args(args)?;
     let mut trace_file = open_latency_trace(args)?;
+    // Set on the I/O worker when the browser guard refuses a selection that
+    // is (or holds) the trace destination; read at shutdown after the
+    // worker was joined ([`finish_trace`]).
+    let trace_blocked = Arc::new(AtomicBool::new(false));
     let options = EngineOptions {
         vrr: args.iter().any(|a| a == "--vrr"),
         debug_overlay: args.iter().any(|a| a == "--debug-overlay"),
@@ -934,9 +1061,10 @@ fn run_app(args: &[String]) -> Result<(), String> {
         // While tracing, a selection that is the trace destination is
         // refused on the worker before it loads.
         let worker = match trace_file.as_ref() {
-            Some(sink) => {
-                IoWorker::spawn_guarded(options.mixer, trace_alias_guard(sink.dest.clone()))
-            }
+            Some(sink) => IoWorker::spawn_guarded(
+                options.mixer,
+                trace_alias_guard(sink.dest.clone(), Arc::clone(&trace_blocked)),
+            ),
             None => IoWorker::spawn(options.mixer),
         };
         submit_scan(&worker, &dir);
@@ -1188,6 +1316,11 @@ fn run_app(args: &[String]) -> Result<(), String> {
     // The I/O worker stops after the engine (a load in flight completes;
     // its result is dropped), before the platform's teardown below.
     drop(browser);
+    // The selection the worker may have dropped unchecked at its stop.
+    let in_flight = forwarder
+        .menu()
+        .and_then(unanswered_selection)
+        .map(Path::to_path_buf);
     // Every thread is joined: drain the trace rings and write the file here,
     // on the main thread, also when the run failed (for diagnosis). The
     // file holds every engine of the run: those stopped by table swaps
@@ -1197,10 +1330,14 @@ fn run_app(args: &[String]) -> Result<(), String> {
         final_trace(banked_trace, trace, run_end_ns),
         trace_file.take(),
     ) {
-        (Some(collected), Some(sink)) => {
-            commit_trace(sink, collected.to_csv().as_bytes(), &mut failure)
-                .map(|dest| summary_line(&dest, &collected))
-        }
+        (Some(collected), Some(sink)) => finish_trace(
+            sink,
+            &trace_blocked,
+            in_flight.as_deref(),
+            collected.to_csv().as_bytes(),
+            &mut failure,
+        )
+        .map(|dest| summary_line(&dest, &collected)),
         _ => None,
     };
     // The audio thread is joined: the device stream can go.
@@ -1394,7 +1531,7 @@ mod tests {
     /// REQ-LAT-003: `--latency-trace` equal to the `--table` path is
     /// refused before anything is created and the bundle is unchanged; a
     /// distinct path keeps its content until the commit; a `--table`
-    /// directory never aliases the trace file.
+    /// directory aliases the trace file only when it holds it.
     #[test]
     fn req_lat_003_latency_trace_equal_to_the_table_is_refused() {
         let dir = fresh_dir("same");
@@ -1418,13 +1555,22 @@ mod tests {
         sink.commit(b"new").unwrap();
         assert_eq!(std::fs::read_to_string(&other).unwrap(), "new");
         assert_eq!(std::fs::read(&bundle).unwrap(), bytes);
-        // A bundle directory: no alias check applies.
-        let d = dir.to_str().unwrap();
+        // A bundle directory that does not hold the trace is no alias; one
+        // that holds it is refused (gate 163 round 10, comment 4704516459).
+        let folder = dir.join("folder");
+        std::fs::create_dir_all(&folder).unwrap();
+        let f = folder.to_str().unwrap();
         assert!(
-            open_latency_trace(&args(&["--table", d, "--latency-trace", o]))
+            open_latency_trace(&args(&["--table", f, "--latency-trace", o]))
                 .unwrap()
                 .is_some()
         );
+        let d = dir.to_str().unwrap();
+        assert_eq!(
+            open_latency_trace(&args(&["--table", d, "--latency-trace", o])).unwrap_err(),
+            format!("--latency-trace: {o} is in the --table bundle")
+        );
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "new");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2051,10 +2197,12 @@ mod tests {
     /// alias test shared by the start-up check and the browser guard: the
     /// trace destination is the bundle when both are the same existing
     /// file (also through a hard link); another file, a missing
-    /// destination or a folder bundle is not.
+    /// destination or a folder bundle that does not hold it is not.
     #[test]
     fn gate163_r9_browser_selection_alias_guard() {
-        use super::{is_bundle_file, trace_alias_guard};
+        use super::{bundle_alias, trace_alias_guard};
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
         let dir = fresh_dir("r9_alias");
         let dest = dir.join("t.zip");
         std::fs::write(&dest, b"PK bundle bytes").unwrap();
@@ -2063,11 +2211,13 @@ mod tests {
         let folder = dir.join("folder");
         std::fs::create_dir_all(&folder).unwrap();
         let m = std::fs::metadata(&dest).unwrap();
-        assert!(is_bundle_file(&m, &dest, &dest));
-        assert!(!is_bundle_file(&m, &dest, &other));
-        assert!(!is_bundle_file(&m, &dest, &folder));
-        assert!(!is_bundle_file(&m, &dest, &dir.join("missing.zip")));
-        let guard = trace_alias_guard(dest.clone());
+        assert!(bundle_alias(&m, &dest, &dest).is_some());
+        assert!(bundle_alias(&m, &dest, &other).is_none());
+        // `dest` is not inside `folder`.
+        assert!(bundle_alias(&m, &dest, &folder).is_none());
+        assert!(bundle_alias(&m, &dest, &dir.join("missing.zip")).is_none());
+        let flag = Arc::new(AtomicBool::new(false));
+        let guard = trace_alias_guard(dest.clone(), Arc::clone(&flag));
         let want = format!(
             "--latency-trace: {} is the selected table bundle",
             dest.display()
@@ -2082,12 +2232,15 @@ mod tests {
         assert_eq!(guard(&other), Ok(()), "a separate path is unaffected");
         assert_eq!(guard(&folder), Ok(()));
         // A destination that does not exist is no bundle.
-        assert_eq!(trace_alias_guard(dir.join("new.csv"))(&dest), Ok(()));
+        assert_eq!(
+            trace_alias_guard(dir.join("new.csv"), Arc::new(AtomicBool::new(false)))(&dest),
+            Ok(())
+        );
         // The browser's guarded worker refuses the aliased selection before
         // loading it; the archive is left intact.
         let w = pin_app::orchestrator::IoWorker::spawn_guarded(
             pin_audio::mixer::MixerConfig::default(),
-            trace_alias_guard(dest.clone()),
+            trace_alias_guard(dest.clone(), Arc::new(AtomicBool::new(false))),
         );
         for (id, path) in [(1, dest.clone()), (2, other.clone())] {
             w.try_request(pin_app::orchestrator::IoRequest::Load { id, path })
@@ -2107,6 +2260,364 @@ mod tests {
         }
         drop(w);
         assert_eq!(std::fs::read(&dest).unwrap(), b"PK bundle bytes");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A guarded I/O worker as the table browser starts it while tracing
+    /// to `dest`, and its shared "trace blocked" flag.
+    fn r10_worker(
+        dest: &Path,
+    ) -> (
+        pin_app::orchestrator::IoWorker,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let w = pin_app::orchestrator::IoWorker::spawn_guarded(
+            pin_audio::mixer::MixerConfig::default(),
+            super::trace_alias_guard(dest.to_path_buf(), std::sync::Arc::clone(&flag)),
+        );
+        (w, flag)
+    }
+
+    /// A trace sink for `dest` as `--latency-trace <dest>` opens it.
+    fn r10_sink(dest: &Path) -> super::TraceSink {
+        open_latency_trace(&args(&["--latency-trace", dest.to_str().unwrap()]))
+            .unwrap()
+            .unwrap()
+    }
+
+    /// Gate 163 round 10 #1 (REQ-LAT-003, review thread 4703749453 comment
+    /// 4704457456): a `.zip` bundle selected in the browser that is the
+    /// trace destination is refused on the worker, and the shutdown step
+    /// ([`super::finish_trace`]) then does not publish the trace: the
+    /// archive keeps its bytes, no temp file is left, the run fails with a
+    /// message naming the destination.
+    #[test]
+    fn gate163_r10_zip_alias_blocks_trace_publication() {
+        use super::finish_trace;
+        use pin_app::orchestrator::{IoReply, IoRequest};
+        use std::sync::atomic::Ordering;
+        let dir = fresh_dir("r10_zip");
+        let dest = dir.join("t.zip");
+        std::fs::write(&dest, b"PK bundle bytes").unwrap();
+        let sink = r10_sink(&dest);
+        let (w, flag) = r10_worker(&dest);
+        w.try_request(IoRequest::Load {
+            id: 1,
+            path: dest.clone(),
+        })
+        .unwrap();
+        assert!(matches!(w.recv(), Some(IoReply::LoadFailed { id: 1, .. })));
+        drop(w);
+        assert!(flag.load(Ordering::Acquire));
+        let mut failure = None;
+        assert_eq!(
+            finish_trace(sink, &flag, None, b"csv,trace\n", &mut failure),
+            None
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), b"PK bundle bytes");
+        assert_eq!(names(&dir), ["t.zip"]);
+        let f = failure.expect("the run fails");
+        assert!(f.contains(&dest.display().to_string()), "{f}");
+        assert!(f.contains("the trace was not published"), "{f}");
+        assert!(f.starts_with("--latency-trace: "), "{f}");
+        // An earlier failure is kept.
+        let sink = r10_sink(&dest);
+        let mut failure = Some("run cap".to_owned());
+        assert_eq!(finish_trace(sink, &flag, None, b"x", &mut failure), None);
+        assert!(failure.unwrap().starts_with("run cap; --latency-trace: "));
+        assert_eq!(names(&dir), ["t.zip"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 10 #2 (REQ-LAT-003, review comment 4704516459): with
+    /// `--latency-trace <folder>/table.toml`, selecting the folder bundle
+    /// is refused before it loads (`... is in the selected table bundle`),
+    /// and the shutdown step does not replace `table.toml` with the trace.
+    #[test]
+    fn gate163_r10_folder_member_blocks_trace_publication() {
+        use super::finish_trace;
+        use pin_app::orchestrator::{IoReply, IoRequest};
+        let dir = fresh_dir("r10_folder");
+        let folder = dir.join("example");
+        std::fs::create_dir_all(&folder).unwrap();
+        let dest = folder.join("table.toml");
+        std::fs::write(&dest, b"[table]\nname = \"x\"\n").unwrap();
+        let sink = r10_sink(&dest);
+        let (w, flag) = r10_worker(&dest);
+        w.try_request(IoRequest::Load {
+            id: 7,
+            path: folder.clone(),
+        })
+        .unwrap();
+        match w.recv() {
+            Some(IoReply::LoadFailed { id: 7, error, .. }) => assert_eq!(
+                error,
+                format!(
+                    "--latency-trace: {} is in the selected table bundle",
+                    dest.display()
+                )
+            ),
+            other => panic!("the load must not succeed: {other:?}"),
+        }
+        drop(w);
+        let mut failure = None;
+        assert_eq!(
+            finish_trace(sink, &flag, None, b"csv\n", &mut failure),
+            None
+        );
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"[table]\nname = \"x\"\n",
+            "table.toml unchanged"
+        );
+        assert_eq!(names(&folder), ["table.toml"]);
+        assert!(failure.is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 10 #1/#2 (REQ-LAT-003, review thread 4703749453
+    /// comment 4704457456, comment 4704516459): shutdown while the aliased
+    /// load is in flight. The worker is stopped right after the request is
+    /// queued: it either ran the guard (the flag is set) or dropped the
+    /// request unchecked; either way the shutdown step, given the menu's
+    /// unanswered selection, does not publish the trace.
+    #[test]
+    fn gate163_r10_shutdown_with_load_in_flight_blocks_publication() {
+        use super::finish_trace;
+        use pin_app::orchestrator::IoRequest;
+        let dir = fresh_dir("r10_race");
+        let zip = dir.join("t.zip");
+        std::fs::write(&zip, b"PK bundle bytes").unwrap();
+        let folder = dir.join("example");
+        std::fs::create_dir_all(&folder).unwrap();
+        let member = folder.join("table.toml");
+        std::fs::write(&member, b"manifest").unwrap();
+        for _ in 0..20 {
+            for (dest, bundle, bytes) in [
+                (&zip, &zip, &b"PK bundle bytes"[..]),
+                (&member, &folder, &b"manifest"[..]),
+            ] {
+                let sink = r10_sink(dest);
+                let (w, flag) = r10_worker(dest);
+                w.try_request(IoRequest::Load {
+                    id: 1,
+                    path: bundle.clone(),
+                })
+                .unwrap();
+                drop(w);
+                let mut failure = None;
+                assert_eq!(
+                    finish_trace(sink, &flag, Some(bundle), b"csv\n", &mut failure),
+                    None
+                );
+                assert_eq!(std::fs::read(dest).unwrap(), bytes);
+                assert!(failure.is_some());
+            }
+        }
+        assert_eq!(names(&dir), ["example", "t.zip"]);
+        assert_eq!(names(&folder), ["table.toml"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 10 #1/#2 (REQ-LAT-003, review thread 4703749453
+    /// comment 4704457456, comment 4704516459): a separate trace path
+    /// beside the bundles still publishes in the same selection flow (the
+    /// selection is not refused for the trace, the flag stays clear, the
+    /// failure is unchanged), also with that bundle unanswered at shutdown.
+    #[test]
+    fn gate163_r10_separate_trace_path_still_publishes() {
+        use super::finish_trace;
+        use pin_app::orchestrator::{IoReply, IoRequest};
+        use std::sync::atomic::Ordering;
+        let dir = fresh_dir("r10_separate");
+        let zip = dir.join("t.zip");
+        std::fs::write(&zip, b"PK bundle bytes").unwrap();
+        let folder = dir.join("example");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("table.toml"), b"manifest").unwrap();
+        let dest = dir.join("other.csv");
+        let sink = r10_sink(&dest);
+        let (w, flag) = r10_worker(&dest);
+        for (id, path) in [(1, zip.clone()), (2, folder.clone())] {
+            w.try_request(IoRequest::Load { id, path }).unwrap();
+            match w.recv() {
+                Some(IoReply::LoadFailed { error, .. }) => {
+                    assert!(!error.contains("--latency-trace"), "{error}");
+                }
+                Some(IoReply::Loaded { .. }) => {}
+                other => panic!("{other:?}"),
+            }
+        }
+        drop(w);
+        assert!(!flag.load(Ordering::Acquire));
+        let mut failure = Some("earlier".to_owned());
+        assert_eq!(
+            finish_trace(sink, &flag, Some(&folder), b"csv,trace\n", &mut failure),
+            Some(dest.clone())
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), b"csv,trace\n");
+        assert_eq!(failure.as_deref(), Some("earlier"));
+        assert_eq!(std::fs::read(&zip).unwrap(), b"PK bundle bytes");
+        assert_eq!(names(&dir), ["example", "other.csv", "t.zip"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 10 #2 (REQ-LAT-003, review comment 4704516459):
+    /// `--table <folder> --latency-trace <folder>/table.toml` (also deeper
+    /// and through `..`) is refused at start-up before anything is
+    /// created; a sibling destination outside the folder still opens.
+    #[test]
+    fn gate163_r10_table_folder_member_refused_at_startup() {
+        let dir = fresh_dir("r10_startup");
+        let folder = dir.join("example");
+        std::fs::create_dir_all(folder.join("sub")).unwrap();
+        let member = folder.join("table.toml");
+        std::fs::write(&member, b"manifest").unwrap();
+        let deep = folder.join("sub").join("x.csv");
+        std::fs::write(&deep, b"deep").unwrap();
+        let dotted = folder.join("sub").join("..").join("table.toml");
+        let t = folder.to_str().unwrap();
+        for dest in [&member, &deep, &dotted] {
+            let e = open_latency_trace(&args(&[
+                "--table",
+                t,
+                "--latency-trace",
+                dest.to_str().unwrap(),
+            ]))
+            .expect_err("refused");
+            assert_eq!(
+                e,
+                format!(
+                    "--latency-trace: {} is in the --table bundle",
+                    dest.display()
+                )
+            );
+        }
+        assert_eq!(names(&folder), ["sub", "table.toml"]);
+        assert_eq!(names(&folder.join("sub")), ["x.csv"]);
+        assert_eq!(std::fs::read(&member).unwrap(), b"manifest");
+        // A sibling outside the folder (also a common-prefix folder).
+        let prefix = dir.join("example2");
+        std::fs::create_dir_all(&prefix).unwrap();
+        for ok in [dir.join("other.csv"), prefix.join("x.csv")] {
+            let sink = open_latency_trace(&args(&[
+                "--table",
+                t,
+                "--latency-trace",
+                ok.to_str().unwrap(),
+            ]))
+            .unwrap();
+            assert!(sink.is_some(), "{}", ok.display());
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 10 #2 (REQ-LAT-003, review comment 4704516459): the
+    /// alias predicate [`super::bundle_alias`]: the same file and a hard
+    /// link are the `.zip` bundle; a folder member at depth 1 and 2 and a
+    /// `..` spelling are inside the folder bundle; a common-prefix sibling
+    /// folder, a missing destination and a missing bundle are not; a
+    /// symlinked folder and a destination symlink into or out of the folder
+    /// are protected.
+    #[test]
+    fn gate163_r10_bundle_alias_predicate() {
+        use super::{BundleAlias, bundle_alias, trace_alias};
+        let dir = fresh_dir("r10_pred");
+        let zip = dir.join("t.zip");
+        std::fs::write(&zip, b"PK").unwrap();
+        let folder = dir.join("example");
+        std::fs::create_dir_all(folder.join("a").join("b")).unwrap();
+        let d1 = folder.join("table.toml");
+        let d2 = folder.join("a").join("x.csv");
+        std::fs::write(&d1, b"m").unwrap();
+        std::fs::write(&d2, b"x").unwrap();
+        let prefix = dir.join("example2");
+        std::fs::create_dir_all(&prefix).unwrap();
+        let sib = prefix.join("x.csv");
+        std::fs::write(&sib, b"s").unwrap();
+        let alias = |d: &Path, b: &Path| bundle_alias(&std::fs::metadata(d).unwrap(), d, b);
+        assert_eq!(alias(&zip, &zip), Some(BundleAlias::File));
+        assert_eq!(alias(&d1, &folder), Some(BundleAlias::Member));
+        assert_eq!(alias(&d2, &folder), Some(BundleAlias::Member));
+        assert_eq!(alias(&d2, &folder.join("a")), Some(BundleAlias::Member));
+        let dotted = folder.join("a").join("b").join("..").join("x.csv");
+        assert_eq!(alias(&dotted, &folder), Some(BundleAlias::Member));
+        let dotted_bundle = folder.join("a").join("..");
+        assert_eq!(alias(&d1, &dotted_bundle), Some(BundleAlias::Member));
+        assert_eq!(alias(&sib, &folder), None, "common prefix is not inside");
+        assert_eq!(alias(&d1, &prefix), None);
+        assert_eq!(alias(&zip, &folder), None);
+        assert_eq!(alias(&d1, &zip), None);
+        assert_eq!(alias(&d1, &dir.join("missing")), None);
+        // A missing destination is no collision.
+        assert_eq!(trace_alias(&folder.join("new.csv"), &folder), None);
+        assert_eq!(trace_alias(&dir.join("new.zip"), &zip), None);
+        #[cfg(unix)]
+        {
+            let hard = dir.join("hard.zip");
+            std::fs::hard_link(&zip, &hard).unwrap();
+            assert_eq!(alias(&hard, &zip), Some(BundleAlias::File));
+            // A symlinked bundle folder resolves to the same folder.
+            let link = dir.join("link");
+            std::os::unix::fs::symlink(&folder, &link).unwrap();
+            assert_eq!(alias(&d1, &link), Some(BundleAlias::Member));
+            assert_eq!(
+                alias(&link.join("table.toml"), &folder),
+                Some(BundleAlias::Member)
+            );
+            // A destination symlink outside pointing in, and one inside
+            // pointing out: both protected (the target or the entry the
+            // rename replaces lies inside).
+            let out_in = dir.join("out_in.toml");
+            std::os::unix::fs::symlink(&d1, &out_in).unwrap();
+            assert_eq!(alias(&out_in, &folder), Some(BundleAlias::Member));
+            let in_out = folder.join("in_out.csv");
+            std::os::unix::fs::symlink(&sib, &in_out).unwrap();
+            assert_eq!(alias(&in_out, &folder), Some(BundleAlias::Member));
+            // A hard link outside the folder is its own entry: the rename
+            // replaces only it, the member keeps its bytes.
+            let outside = dir.join("hard.toml");
+            std::fs::hard_link(&d1, &outside).unwrap();
+            assert_eq!(alias(&outside, &folder), None);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Gate 163 round 10 (REQ-LAT-003, review thread 4703749453 comment
+    /// 4704457456): the menu's selection still waiting for an answer at
+    /// shutdown is reported to the shutdown step; none when idle.
+    #[test]
+    fn gate163_r10_unanswered_selection() {
+        use super::unanswered_selection;
+        use pin_app::ui::{MenuController, MenuInput, TableEntry, TableInfo, TableStatus};
+        let dir = fresh_dir("r10_pending");
+        let (mut c, _) = MenuController::load(dir.join("config.toml"));
+        assert_eq!(unanswered_selection(&c), None);
+        let info = TableInfo {
+            id: "t".into(),
+            name: "T".into(),
+            author: "a".into(),
+            version: "1".into(),
+            players_max: 1,
+            features: Vec::new(),
+            preview: None,
+            preview_error: None,
+            warning_count: 0,
+        };
+        let bundle = dir.join("t.zip");
+        c.set_tables(vec![TableEntry {
+            path: bundle.clone(),
+            file_name: "t.zip".into(),
+            status: TableStatus::Ready(info),
+        }]);
+        c.set_browser_enabled(true);
+        c.toggle(1, &mut |_| {});
+        c.apply(MenuInput::LoadTable(0), 2, &mut |_| {});
+        let (id, _) = c.take_load_request().expect("a load request");
+        assert_eq!(unanswered_selection(&c), Some(bundle.as_path()));
+        c.finish_load(id, Err("refused".into()));
+        assert_eq!(unanswered_selection(&c), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

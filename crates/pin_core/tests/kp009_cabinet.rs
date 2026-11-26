@@ -273,15 +273,56 @@ fn req_cab_005_req_cab_008_rolled_right_corner_rejected() {
 }
 
 /// REQ-CAB-005, REQ-CAB-008: the same mount at roll 0 fits; a small roll that still clears
-/// fits; a negative roll lowers the right side and is not wrongly rejected.
+/// fits; a negative roll that keeps the right side inside the body is not wrongly rejected.
+/// Brief gate163-r10-B: the old list held -45.0, which put the right corners about
+/// -283.5 mm below the body bottom and wrongly expected Ok; -8.0 gives 80 - 71.5 = 8.5 mm.
 #[test]
 fn req_cab_005_req_cab_008_roll_zero_small_and_negative_pass() {
-    for roll in [0.0, 2.0, -2.0, -45.0] {
+    for roll in [0.0, 2.0, -2.0, -8.0] {
         assert_eq!(
             rolled(roll).validate(&envelope(0, None)),
             Ok(()),
             "roll {roll}"
         );
+    }
+}
+
+/// REQ-CAB-005, REQ-CAB-008: a large negative roll takes the right corners below the body
+/// bottom (80 + 514 sin(-45 deg) = -283.5 mm): rejected. The boundary is 80 + 514 sin(roll)
+/// = 0, roll about -8.96 deg: -8.9 passes, -9.1 fails.
+#[test]
+fn req_cab_005_req_cab_008_negative_roll_below_body_bottom_rejected() {
+    let m = invalid_msg(rolled(-45.0).validate(&envelope(0, None)));
+    assert!(m.contains("mount.height"), "{m}");
+    assert!(m.contains("right corner"), "{m}");
+    assert!(m.contains("below the body bottom"), "{m}");
+    println!("{m}");
+    assert_eq!(rolled(-8.9).validate(&envelope(0, None)), Ok(()));
+    let m = invalid_msg(rolled(-9.1).validate(&envelope(0, None)));
+    assert!(
+        m.contains("mount.height") && m.contains("below the body bottom"),
+        "{m}"
+    );
+}
+
+/// REQ-CAB-005, REQ-CAB-008: negative pitch (rear down) can take the rear corners below the
+/// body bottom: 20 - 1070 sin 6.5 deg = -101 mm. Zero and small negative pitch stay valid.
+#[test]
+fn req_cab_005_req_cab_008_negative_pitch_below_body_bottom_rejected() {
+    let mut g = preset("classic_standard");
+    g.mount.roll_deg = 0.0;
+    g.mount.height = 20.0;
+    g.mount.pitch_deg = -6.5;
+    let m = invalid_msg(g.validate(&envelope(0, None)));
+    assert!(m.contains("mount.height"), "{m}");
+    assert!(
+        m.contains("rear edge") && m.contains("below the body bottom"),
+        "{m}"
+    );
+    println!("{m}");
+    for pitch in [0.0, -0.5, -1.0] {
+        g.mount.pitch_deg = pitch;
+        assert_eq!(g.validate(&envelope(0, None)), Ok(()), "pitch {pitch}");
     }
 }
 

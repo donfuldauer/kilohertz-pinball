@@ -1072,7 +1072,8 @@ struct PlayfieldCorner {
 /// for negative roll) while the left side stays put. The glass top sits `glass` (glass
 /// height plus sheet thickness) along the playfield normal, whose vertical component is
 /// `cos(pitch) * cos(roll)` (small-angle composition). At roll 0 the numbers equal the
-/// pitch-only edge heights bit for bit.
+/// pitch-only edge heights bit for bit. Heights are unclamped: a corner may come out
+/// negative (below the body bottom) or above the wall top; `validate` rejects both.
 fn playfield_corners(
     inset: f64,
     height: f64,
@@ -1527,9 +1528,10 @@ impl CabinetGeometry {
     ///    `body.length` − wall ≥ `mount.inset` + playfield length (`body.length`); the
     ///    glass sheet covers the playfield (`glass_panel.width`, `glass_panel.length`);
     /// 3. glass ≥ tallest ramp or toy (`glass.height`); the playfield surface and the glass
-    ///    sheet's top at the playfield's front and rear edges stay below the side wall top
-    ///    (`mount.height`), measured at all four corners from the playfield origin (the
-    ///    front-left surface corner), so a rolled playfield is checked at its raised side;
+    ///    sheet's top at the playfield's front and rear edges stay at or above the body
+    ///    bottom and at or below the side wall top (`mount.height`), measured at all four
+    ///    corners from the playfield origin (the front-left surface corner), so a rolled
+    ///    playfield is checked at its raised side and at its lowered side;
     /// 4. backbox clear of the playfield: either its front face is at or behind the
     ///    playfield's rear edge, or its bottom is above the highest glass-top corner
     ///    (`backbox.front_y` / `backbox.bottom_z`);
@@ -1614,7 +1616,15 @@ impl CabinetGeometry {
         for c in &corners {
             let wall_top = self.wall_top(c.y);
             let (z, edge, side) = (c.glass_z, c.edge, c.side);
-            require(c.surface_z <= wall_top && z <= wall_top, || {
+            let low = c.surface_z;
+            require(low >= 0.0 && z >= 0.0, || {
+                let bad = if low < 0.0 { low } else { z };
+                format!(
+                    "`mount.height` {h}: the playfield's {edge} edge, {side} corner \
+                     ({bad:.1} mm above the body bottom) is below the body bottom"
+                )
+            })?;
+            require(low <= wall_top && z <= wall_top, || {
                 format!(
                     "`mount.height` {h}: the glass top at the playfield's {edge} edge, {side} \
                      corner ({z:.1} mm above the body bottom) is above the side wall top \
@@ -1696,6 +1706,34 @@ mod tests {
         for k in [2, 3] {
             assert_eq!(z[k].glass_z.to_bits(), (283.0 + l * sp + g * cp).to_bits());
             assert_eq!(z[k].y.to_bits(), (30.0 + l * cp).to_bits());
+        }
+    }
+
+    /// REQ-CAB-005: the glass sheet's top is never below the surface corner it sits on
+    /// (the glass offset `glass * cos(pitch) * cos(roll)` is >= 0 for a non-negative glass
+    /// height), so for the rolled and pitched cases the surface-below-bottom check
+    /// subsumes a glass-below-bottom one; `validate` still tests both.
+    #[test]
+    fn glass_never_below_surface_req_cab_005() {
+        for (pitch, roll) in [
+            (0.0, -45.0),
+            (0.0, -8.0),
+            (-6.5, 0.0),
+            (6.5, -9.1),
+            (-6.5, 45.0),
+        ] {
+            let c = playfield_corners(
+                30.0,
+                20.0,
+                514.0,
+                1070.0,
+                deg_to_rad(pitch),
+                deg_to_rad(roll),
+                116.8,
+            );
+            for k in &c {
+                assert!(k.glass_z >= k.surface_z, "{pitch} {roll} {k:?}");
+            }
         }
     }
 

@@ -648,3 +648,6 @@ Subphase (PLAN.md, now `docs/SPEC.md`).
 | 30-web-prereq gate | #163 CR round 9, E | Fixer | T2 Opus 5.5 | 1 | done | pin_core 311 passed | roll clearance from the documented origin (zero-roll bit-identical); snapshot status doc updated |
 | 30-web-prereq gate | #163 CR round 9, F | Fixer | T1 Sonnet 5.5 | 1 | done | spec_ci all passed | gpu-tests-cross budget fails before the test step instead of clamping |
 | 30-web-prereq gate | #163 CR round 9, G | Fixer | T1 Sonnet 5.5 | 1 | done | spec_kp023 19, mech_motion_impl 11 | strict spinner sign assertion (production sign already correct) |
+| 30-web-prereq gate | #163 CR round 10, A | Fixer | T2 Opus 5.5 | 1 | done | pin_app gpu-tests all passed (lib 207, bin 34, windowed 45); alloc guards ok | trace never published over a refused bundle or folder member, also with a load in flight; `--table` folder member refused |
+| 30-web-prereq gate | #163 CR round 10, B | Fixer | T1 Sonnet 5.5 | 1 | done | pin_core, pin_assets, pin_tablegen, pin_sim all passed; pin_core 98.03 % | cabinet containment also bounds corners above the body bottom |
+| 30-web-prereq gate | #163 CR round 10, C | Fixer | T1 Sonnet 5.5 | 1 | done | docs only | floor-height erratum conditional on the owner's non-coplanar leg rule; #217 commented |
