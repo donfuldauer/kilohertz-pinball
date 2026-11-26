@@ -9,6 +9,7 @@
 //! receiving exactly the datagrams the reference model predicts.
 #![allow(clippy::needless_range_loop, clippy::field_reassign_with_default)]
 
+#[cfg(unix)]
 use pin_app::dof::{DofBridge, DofLaunchConfig, ResolvedDofMap};
 use pin_app::orchestrator::{
     TelemetryFeed, TelemetryMap, TelemetryReport, TelemetrySources, open_telemetry,
@@ -22,6 +23,7 @@ use pin_audio::telemetry::{
 };
 use pin_core::haptics::{HapticEvent, HapticKind};
 use pin_core::input::HapticsTelemetryEvent;
+#[cfg(unix)]
 use pin_core::schema::table::TableManifest;
 use pin_core::{CoilId, FrameStateSnapshot};
 use pin_input::haptics::{RumbleEffect, RumbleSettings, haptics_ring};
@@ -32,6 +34,7 @@ use std::net::UdpSocket;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+#[cfg(unix)]
 mod private_tmp;
 
 // ---------------------------------------------------------------------------
@@ -1066,6 +1069,7 @@ fn kp006_rumble_poll_semantics() {
 // 8. DOF lifecycle (acceptance 4).
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 const TABLE_TOML: &str = include_str!("../../../tools/dof_bridge/tests/fixtures/table.toml");
 
 #[cfg(unix)]
@@ -1116,6 +1120,7 @@ mod dof {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn process_gone(pid: u32) -> bool {
         !Path::new(&format!("/proc/{pid}")).exists()
     }
