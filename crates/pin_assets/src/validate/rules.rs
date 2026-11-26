@@ -2,6 +2,10 @@
 
 use super::guide_lint::{self, GapLint};
 use super::ids::{SUGGEST_WORK_BUDGET, suggest_within};
+// Declared here (not in `validate/mod.rs`) so the module list there stays
+// as it is; the file sits next to this one (#137).
+#[path = "wireform_lint.rs"]
+mod wireform_lint;
 use super::{
     BACKGLASS_FILE, BackboxSi, DispenserSi, FlipperStageHint, IdKind, LoadedTable, MagnetSi,
     MechSi, ModeSi, ShotSi, SplineSi, SwitchSi, TABLE_FILE, TableIds, TransitionSi,
@@ -1042,6 +1046,12 @@ impl<'v> Checker<'v> {
             self.length_error(&p, length);
             return None;
         }
+        // The near-cusp lint reads the centerline before `Wireform::new`
+        // consumes it; it warns only once the wireform builds.
+        let near_cusp = match s.kind {
+            SplineKind::Wireform => wireform_lint::near_cusp(&spline),
+            SplineKind::Guide => None,
+        };
         let constructed = match s.kind {
             SplineKind::Guide => GuideCurve::new(spline, 0.0).map(Some),
             SplineKind::Wireform => {
@@ -1055,6 +1065,12 @@ impl<'v> Checker<'v> {
                 return None;
             }
         };
+
+        // A wireform centerline whose speed nearly vanishes: a warning
+        // (#137; DECISIONS.md "2.1 — fix task W" known limit).
+        if let Some(c) = near_cusp {
+            self.warn(TABLE_FILE, p.clone(), wireform_lint::message(c));
+        }
 
         // Uneven through-point spacing: a warning (2.1 HUMAN_QUEUE item).
         let spacing: Vec<f32> = through.windows(2).map(|w| w[0].distance(w[1])).collect();
@@ -1350,5 +1366,44 @@ mod tests {
             "unknown coil \"c0000x\" (did you mean \"c00000\"?)"
         );
         assert_eq!(checker.errors[9_999].message, "unknown coil \"c0000x\"");
+    }
+    /// SPEC §2.1 (#137): a wireform whose centerline nearly stops (61 mm
+    /// then 300 mm along one line) loads with one near-cusp warning at its
+    /// own `splines[i]` path; the same points as a guide, or a wireform of
+    /// equal steps, draw none. Warnings only: no error.
+    #[test]
+    fn near_cusp_wireform_warns_and_guide_does_not() {
+        use pin_core::schema::table::SplineDef;
+        let def = |kind: SplineKind, step: f32| SplineDef {
+            id: "w".into(),
+            kind,
+            layer: 2,
+            gauge: (kind == SplineKind::Wireform).then_some(19.0),
+            points: vec![
+                [100.0, 100.0, 30.0],
+                [100.0, 100.0 + step, 30.0],
+                [100.0, 400.0 + step, 30.0],
+            ],
+            roll_deg: None,
+        };
+        let near = |e: &ValidationError| e.message.contains("nearly vanishes");
+        let (errors, warnings) = super::super::check_spline(3, &def(SplineKind::Wireform, 61.0));
+        assert!(errors.is_empty(), "{errors:?}");
+        let hits: Vec<_> = warnings.iter().filter(|w| near(w)).collect();
+        assert_eq!(hits.len(), 1, "{warnings:?}");
+        assert_eq!(hits[0].path, "splines[3]");
+        assert_eq!(hits[0].file, TABLE_FILE);
+        assert!(
+            hits[0].message.contains("points[0] and points[1]"),
+            "{}",
+            hits[0].message
+        );
+        let (_, warnings) = super::super::check_spline(3, &def(SplineKind::Guide, 61.0));
+        assert!(!warnings.iter().any(near), "{warnings:?}");
+        let (errors, warnings) = super::super::check_spline(3, &def(SplineKind::Wireform, 300.0));
+        assert!(
+            errors.is_empty() && !warnings.iter().any(near),
+            "{warnings:?}"
+        );
     }
 }

@@ -9038,3 +9038,61 @@ verdict-equality check; the apex-based layouts (apex, rich, open, a3) use the ap
 (8) **Re-exports.** `pin_app::orchestrator` re-exports `MAX_DEVICE_REBUILD_ATTEMPTS` and the recovery types `AppSurfacesError`, `CarriedState`, `DisplayMemory`, `SurfaceRecovery` and `UnrecoveredSurface`, so code outside the crate can name what `AppSurfaces::try_new` and `into_sources` return (the Orchestrator granted this change to `mod.rs`).
 **Rationale:** wgpu keeps one device-lost callback per device, so the loss must live where the callback is registered, on the context. A second callback registered by the source would replace the context's. A shared flag lets every object built on the context see a loss without polling. Surfaces belong to the instance and SDL windows exist only on the main thread, so reusing the instance and the surfaces is the only rebuild the render thread can do alone. A pure policy type keeps the bounded retry testable without a GPU. Recording the least set of commands that reproduces the state keeps memory constant instead of logging every command.
 **Alternatives:** Keeping a second callback in the source and forwarding (rejected: displaces the context's callback). Asking the main thread for new surfaces (rejected: needs main.rs and a new channel, out of this unit). Copying the presenter loop into present.rs so it returns its surface (rejected: two copies of the presenter loop would drift apart; requested instead as a `presenter.rs` change). Rebuilding with only the recoverable surfaces (rejected: the brief says an unrecoverable surface is a failed attempt). Replaying the full command log (rejected: grows without bound).
+
+## #137 KP-056 — validation lints
+
+**Decision:** (1) **Shared layer-exit core.** The rule has one implementation,
+`layout::entry::layer_exit_findings(transitions, supports_of)` (now `pub(crate)`, with
+`pub(crate) mod entry`). It takes each target layer's support triangles from its caller through
+`entry::Support::new([[x, y, z]; 3] m)`, which applies the 1 mm² plan-area threshold, and returns
+`(transition index, message)` pairs. The message text comes from one function, so it is
+byte-identical in both paths. The generator's `layer_exit_warnings(transitions, nodes)` wraps it
+with the glb node triangles. `clearance::checks::layer_exits` wraps it with `World.tris`
+(playfield and backbox colliders, node-transformed) and runs from `validate_clearance_indexed_for`,
+so `pin_tablegen validate <bundle>` prints the generator's warning. This supersedes the
+w7pre-ramp-entry "Where the lint lives" note and its HUMAN_QUEUE follow-up. (2) **`Feature::LayerExit`**
+(label `"layer exit"`) is a new additive variant of the public `Feature` enum. Each finding is
+a warning with `name` set to the transition id, an empty profile, file `table.toml`, path
+`layer_transitions[i]` and 0 mm values. It does not depend on the ball: it is emitted once per
+offending transition, outside the per-ball loops, and `is_ok` is unaffected. (3) **Wireform
+near-cusp lint** (`pin_assets/src/validate/wireform_lint.rs`): per segment, sample `|dP/dt|` at
+64 + 1 parameters of the segment's Bézier derivative in `f64` and take the minimum. Divide that
+by the chord between the two through-points. A reversal (the dot product of neighbouring samples
+below 0) counts as 0. The worst segment (the first one on a tie) warns at `splines[i]` when its
+ratio is below `NEAR_CUSP_SPEED_RATIO = 0.05`. The ratio is computed before `Wireform::new`
+consumes the spline, and the warning is reported only when the wireform builds. Guides are never
+checked. Calibration, measured by `wireform_lint::tests::shipped_wireforms_are_not_near_cusps`:
+greybox `ramp_wire` 0.8345 (segment 3), apex_circuit `ramp_wire` 0.8295 (segment 3), sky_deck
+`ramp_wire` 0.8288 (segment 4), apex fixture `return_wireform` 0.9004 (segment 1). feature_lab
+declares no wireform. Hand-derived cases, confirmed by running them: 61 mm then 300 mm collinear
+gives 1.25 / 61 = 0.0205, which warns; 40 mm then 300 mm back is a reversal, ratio 0, which warns;
+equal steps give 1.0, which does not warn. 0.05 lies inside the brief's 0.03..0.10 range. It is
+2.4 times the 61/300 case, and the smallest shipped ratio is 16 times it. (4) **`table.toml`
+size error.** It counts the generated `table.toml` entries (ids with the `tablegen:` prefix: lane
+rails and ramp entry transitions) per `kind_of` kind and names the kind with the most entries,
+with the count. On a tie it names the kind that appears first; lane rails come before ramp
+transitions. With no generated entries it names `table.toml` and says the hand-written base is
+too big. Walls and posts add nothing to `table.toml`, so the issue's "walls-heavy layout names
+`walls`" is covered by the glb JSON guard, which counts nodes. That guard now shares the same
+`most_common_kind` helper, with unchanged semantics: strict majority, first kind on a tie, and
+the `layout.toml` fallback. (5) **Seam.** The private `generate_with_limits(layout, base,
+GltfLimits)` is what `generate` calls with the defaults. The tests lower `max_json_bytes` through
+it. The issue's case is used at full size: 12,000 inserts referencing a 1,500-character lamp id.
+`generate` applies no schema cap to either, and the case gives 18,000,000 bytes of extras against
+the 16 MiB budget with 12,001 nodes. (6) **Module declaration.** `wireform_lint` is declared from
+`rules.rs` with `#[path = "wireform_lint.rs"] mod wireform_lint;`, so the module list in
+`validate/mod.rs` (not owned) stays as it is.
+**Rationale:** One core with caller-supplied support keeps the generator and the validator from
+drifting apart. Generated nodes have identity transforms, and `f32` to `f64` conversion is exact,
+so both paths give the same verdict and text on a generated bundle. A test checks this: the
+generator warnings equal the `validate` warnings on an edited grey-box. Dividing the minimum speed
+by the chord does not depend on scale and is 1 for a uniform straight parametrization. The
+threshold sits between real near-cusps (about 0.02 or less) and the shipped ramps (at least
+0.83). Counting generated entries names the element the author can change. The base-only case
+cannot be fixed by changing the layout, so it names the file.
+**Alternatives:** Copying the 3 × 3 sample rule into `clearance/` (rejected: the brief forbids it,
+and the copies would drift apart). Emitting `LayerExit` once per ball profile (rejected: the rule
+does not depend on the ball). A curvature-based cusp lint (rejected: a collinear near-stop has
+zero curvature, and the speed is what makes the frame ill-defined). Keeping "lanes" as the
+table.toml error element (rejected by the issue). Naming the kind by bytes instead of by entry
+count (rejected: the brief asks for the count, which is simpler to reason about).

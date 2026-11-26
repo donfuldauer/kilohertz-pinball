@@ -719,3 +719,34 @@ pub(super) fn transitions(w: &World<'_>, balls: &[Ball], sink: &mut Sink) {
         }
     }
 }
+
+/// The layer-exit lint (`crate::layout::entry`, the generator's rule and
+/// message) over the bundle's collider triangles (`world.tris`: playfield
+/// and backbox colliders, node-transformed) and the table's layer
+/// transitions: one [`Feature::LayerExit`] warning per transition leading
+/// to a layer without an exit zone over unsupported area, about no
+/// particular ball. Each layer's support list is built once.
+pub(super) fn layer_exits(world: &World<'_>, sink: &mut Sink) {
+    use crate::layout::entry::{Support, layer_exit_findings};
+    let transitions = &world.table.manifest.layer_transitions;
+    let findings = layer_exit_findings(transitions, |layer| {
+        world
+            .tris
+            .iter()
+            .filter(|t| t.layer == layer)
+            .filter_map(|t| Support::new(t.p.map(|q| q.to_array())))
+            .collect()
+    });
+    for (i, message) in findings {
+        sink.warning(Finding {
+            feature: Feature::LayerExit,
+            name: &transitions[i].id,
+            ball: "",
+            file: TABLE,
+            path: format!("layer_transitions[{i}]"),
+            required_m: 0.0,
+            actual_m: 0.0,
+            message,
+        });
+    }
+}
