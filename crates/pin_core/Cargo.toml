@@ -13,6 +13,7 @@ toml.workspace = true
 arrayvec.workspace = true
 rand_pcg.workspace = true
 rand_core.workspace = true
+libm.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

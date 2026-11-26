@@ -8598,6 +8598,130 @@ frame and an ordering hazard with the present).
 **Decision:** The optional lamp `position` / `radius` keys are shown in a separate `toml` block after the slot-convention paragraph, not inside the main A.1 example.
 **Rationale:** `schema_fixtures.rs` requires the committed fixtures to appear verbatim in SPEC.md, and the fixture must not change; editing the main example would break that test.
 **Alternatives:** editing the fixture too (outside owned paths).
+
+## #205 KP-099 — gpu-tests-cross build budget and robust cache save
+
+**Decision:** The `timeout-minutes: 45` rule is kept for every job, `gpu-tests-cross` included. The job is made to fit and to save its cache instead:
+- Job `env` sets `CARGO_PROFILE_DEV_DEBUG` and `CARGO_PROFILE_TEST_DEBUG` to `line-tables-only`. `opt-level` is unchanged; the root `Cargo.toml` is unchanged.
+- `Swatinem/rust-cache@v2` (input `add-rust-environment-hash-key` verified in the v2 `action.yml` and `src/config.ts`) runs with `add-rust-environment-hash-key: false`, `key: rustc-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}` and `cache-on-failure: true`. The key is the pinned compiler plus the dependency lock, without the installed-toolchain list.
+- A first step records the job start time. `cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app --no-run` builds in its own step with `timeout-minutes: 32`. A budget step then computes the test step's timeout: 45 minus the elapsed minutes (rounded up, plus 1 min for job set-up) minus a reserve for the rust-cache post-step (8 min when the cache must be saved, 1 min on an exact cache hit, when the save is skipped), at least 1. The unchanged test command runs with `timeout-minutes: ${{ fromJSON(steps.budget.outputs.minutes) }}`.
+
+**Rationale:** Diagnosis from the failing main runs (Windows WARP leg): rust-cache's automatic environment hash includes every installed toolchain (the runner image's newer stable plus the pinned 1.97.0), so the key changed and "No cache found". The cold build with full debug info took 28 min 21 s and the tests about 15.5 min, so the job hit the 45-minute cap before the rust-cache post-step and no cache was ever saved; every run stayed cold. Line-table debug info cuts link time and cache size. A step timeout fails the step instead of cancelling the job, and with `cache-on-failure` the post-step still saves. Budget: set-up, checkout, toolchain and restore about 2-4 min; cold build at most 32 min (28 min was measured with full debug info); the budget step then always leaves 8 min for the save, so a cold run that runs out of time still saves the full build. Convergence: a cold run may fail (its test step is cut) but saves; the next run restores an exact match, the build takes a few minutes (workspace crates only), the reserve is 1 min, and the tests get about 30 min against the 15.5 min needed, so it is green. The `Cargo.lock` hash is added to the brief's suggested `rustc-1.97.0` key because rust-cache never re-saves on an exact key hit: with a fixed key the cache would never pick up dependency changes. Expectation: the first push after this change may need a second push (or a `workflow_dispatch` run) to go green; the evidence is read from the Windows WARP leg of the push run (rust-cache "Cache restored" / "No cache found", the "Finished test profile" duration, the budget step's line, and "Post Run Swatinem/rust-cache@v2" reporting the cache saved).
+
+**Alternatives:** Raising the job cap above 45 min (issue option 3; rejected: the CI decision sets 45 minutes on every job and a longer cap would only hide the cost). A fixed `key: rustc-1.97.0` without the lock hash (rejected: never refreshed after a dependency change, and a partial cache saved by a timed-out build would persist). Keeping the environment hash and uninstalling the image toolchain before rust-cache (rejected: more steps, and depends on the runner image's rustup layout). Fixed test-step timeout (rejected: cold 28 + 15.5 min plus the save does not fit in 45, so one fixed value either cuts warm runs or leaves no time to save on cold runs). Skipping tests on a cold run (rejected: hides whether the tests would have passed when the build is fast enough). Known limit: if a cold build ever exceeds 32 min, the partial cache saved under the exact key is not refreshed until `Cargo.lock` or the toolchain changes; bump `prefix-key` to force a rebuild.
+
+## #89 KP-009 — cabinet.toml key layout and frames
+
+**Decision:** `cabinet.toml` has `schema_version`, `preset` and the tables `[body]` (with `glass_channel`, `lockdown_bar`, `side_rail`), `[legs]` (`default` plus `front_left`, `front_right`, `rear_left`, `rear_right`, each with `section` and `leveler`), `[mount]`, `[glass_panel]`, `[backbox]` (with `backglass`, `translite_opening`, `score_display` and a `grilles` array), `[controls]` (with `coin_door`), `[trim]` and `[art]` (SPEC A.4 lists every key). Cabinet frame: x from the body centreline (right positive), y from the body front face toward the rear, z up; parts fixed to the body store z above the **body bottom**, and the floor height is that plus the body bottom's height from the legs (`CabinetGeometry::floor_height_mm`). The playfield inset is `mount.inset` (y of the playfield's front edge), not a `[body]` key, and the mount gives the playfield centreline's x (`offset_x`) rather than the origin's x, so one preset fits tables of any playfield width. Colours are `"#rrggbb"` strings; leg colour and finish are per leg, `[trim]` has the metal finish and rail colour. The geometry keeps the file's mm/degrees in `f32`; only the attitude is SI (radians).
+**Rationale:** body-fixed z keeps buttons, coin door and backbox on the body when levelers change; a z above the floor would detach them. Mount by centreline avoids a per-table origin x. Grouping by part matches REQ-CAB-003/007 and keeps per-field overrides short.
+**Alternatives:** z above the floor for every part (inconsistent when legs change); `body.playfield_inset` plus a full `mount.origin` (two keys for one quantity); an RGB float array for colours.
+
+## #89 KP-009 — Partial manifest, overrides and no-preset files
+
+**Decision:** `CabinetManifest` holds `*Override` structs whose fields are all `Option`; `resolve()` lays them field by field over the resolved preset (`[legs.default]` first, then the per-leg table; `[art]` entries add to the preset's; an array such as `backbox.grilles` is replaced whole). A file without `preset` must state every key; resolving it is an error naming the first missing key (`body.length` ...). Parsing runs `resolve()` and the self-consistency check, so a manifest that parses always resolves. Presets live in `crates/pin_core/data/cabinet_presets.toml` as `[presets.<id>]` tables in the same partial shape, resolved once (`OnceLock`) with no base; `preset_ids()` is the sorted key list of that file, so no preset name is hard-coded in the logic (only `DEFAULT_PRESET`, which REQ-CAB-004 names).
+**Rationale:** field-level override at any depth (REQ-BUILD-003) with one generic merge; the "first missing key" error keeps a hand-written complete file usable and every failure named.
+**Alternatives:** a no-preset file silently starting from `classic_standard` (hides mistakes; REQ-CAB-004 gives the default only when the file is absent); merging at the `toml::Value` level (serde's missing-field errors do not give the dotted path).
+
+## #89 KP-009 — Playfield attitude model and f64
+
+**Decision:** `playfield_attitude` implements the brief's rigid-body model exactly: effective leg length = `length + leveler.extension`; `Sx`, `Sy` from the mean leg centrelines (corner insets); body pitch `atan2(R − F, Sy)`, body roll `atan2(Rt − L, Sx)`; plus the mount angles. Pitch and roll are independent angles (small-angle composition). The result is `f64` radians (`Attitude { pitch_rad, roll_rad }`) computed with `libm::atan2`; inputs are widened from `f32`. Positive pitch = rear higher (gravity toward −y of the playfield, as today's `pitch_deg`); positive roll = right (+x) higher. The function divides nothing (atan2 takes the spacing as an argument), so degenerate spacing cannot panic; validation still requires insets within half the body.
+**Rationale:** closed form the acceptance tests check; f64 keeps the 0.05° agreement check and the 1e-4 rad leveler deltas far from rounding; libm gives the same bits everywhere (D9).
+**Alternatives:** f32 (the 10 mm delta on a 1239 mm spacing would carry ~1e-7 relative error, still fine but needless); a composed rotation (not needed for the small angles; KP-032 can compose if it wants).
+
+## #89 KP-009 — Cabinet preset design values
+
+**Decision:** Appendix E values are taken verbatim; the rest are design values shared by all three presets unless Appendix E makes them differ: wall 19 mm, glass channel 6.5 × 8 mm, lockdown bar rounded, 20 mm above the front wall, 64 mm deep, side rail rounded 25 × 15 mm, legs tapered 76 → 57 mm, steel, hex bolts, corner-plate brackets, corner inset 38 × 38 mm (so `Sy` = 1239 mm classic, 1232 mm modern; `Sx` = 484 / 554 / 483 mm), leveler 9.5 mm thread, domed 38 mm foot, mount inset 30 mm, playfield front edge 220 mm (classic) / 230 mm (modern) above the body bottom, backbox flush with the body rear, flat front and top, backglass 3.2 mm thick, two 150 mm grilles at u = ±262.5 mm, trim chrome with `#c0c0c0` rails, coin door 300 × 330 mm. Appendix E's floor heights fix the rest: `body.leg_overlap` 234 mm (classic) and 322 mm (modern) gives body bottoms of 490 and 481 mm, hence lockdown bar tops 910 / 914 mm, `backbox.bottom_z` 710 / 719 mm gives backbox tops 1930 / 1911 mm, flipper buttons at z 370 / 383 mm give 860 / 864 mm. Speaker panel 200 mm (classic) and 220 mm (modern, so the 194 mm LCD fits); translite opening bottom 215 / 235 mm. LCD resolution 1920 × 1080 (16:9). Leg finishes: classic_standard chrome, ribbed; classic_widebody powder coat `#141414`; modern_standard wrinkle `#141414`.
+**Rationale:** each value keeps every preset self-consistent and containing its playfield (514/584/514 × 1070 mm with a 112 mm glass) while reproducing every Appendix E number exactly.
+**Alternatives:** storing floor-to-lockdown-bar, floor-to-backbox-top and button heights as separate keys (they would disagree with the legs once a leveler moves).
+
+## #89 KP-009 — TableEnvelope and containment checks
+
+**Decision:** `TableEnvelope { playfield_width_mm, playfield_length_mm, glass_height_mm, max_part_height_mm, pitch_deg: Option<f32> }` as the brief gives it. `CabinetGeometry::validate` runs the self-consistency check, then in order: interior width (`body.width`), playfield between the walls (`mount.offset_x`), `body.length − wall ≥ mount.inset + playfield length` (`body.length`), glass sheet covers the playfield (`glass_panel.width/length`), glass ≥ tallest part (`glass.height`), glass sheet top under the side wall top at the playfield's front and rear edges (`mount.height`), backbox clear (`backbox.front_y` / `backbox.bottom_z`), `meta.pitch_deg` agreement. "Backbox clear of the playfield" passes when the backbox front face is at or behind the playfield's rear edge **or** the backbox bottom is above the glass sheet's top. The agreement tolerance is 0.05° plus 1e-5° for the f32 rounding of the file value.
+**Rationale:** with Appendix E's sizes (1315 mm body, 250 mm backbox, 1070 mm playfield at 6.5°) the backbox front face (1065 mm) is always in front of the playfield's rear edge (~1093 mm), as on real machines whose backbox overhangs the top of the playfield; the brief's literal "front face behind the rear edge" would reject every preset, so the vertical clearance is accepted too (R8). `6.55f32` is 6.5500002, so a strict 0.05 would reject a value the rule means to accept.
+**Alternatives:** only the horizontal rule (rejects all three presets); moving the backbox behind the body (contradicts Appendix E's body and backbox sizes); a strict 0.05° comparison.
+
+## #85 — Table swap by restarting the engine threads
+
+**Decision:** A table picked in the browser replaces the running one by restarting the engine threads on the same windows and menu: `Threads::shutdown_with_audio` joins sim, render, audio and I/O threads (the render thread drops the surfaces; the window guards keep the windows), the old `DeviceStream` is dropped once the audio thread (and with it its `DeviceSink`) is gone and a fresh one is opened, the forwarder is re-pointed at fresh input and window rings (`EventForwarder::replace_channels`; it keeps its menu, router, held inputs and gamepads), the surfaces are recreated from `platform.windows()` with the same `keep_alive` guards (one `render_gpu` function used at start-up and at the swap), and `ThreadsConfig` / `RenderConfig` are rebuilt exactly as the `--table` start-up does (one `engine_config` function), with the current `config.toml` wireframe setting. The new table runs from tick 0. A swap prints `pin_app: table swap: <bundle file name> (wireframe=<bool>)`. A join error of the old engine (or a surface / thread spawn error of the new one) ends the run with that failure, as at shutdown. `threads.rs` needed no hook. The profiler reader, the HUD and the `--latency-trace` collector follow the new engine (the trace file describes the last engine of the run), and `--run-frames` / `--run-ticks` count the current engine's frames and ticks.
+**Rationale:** The engine threads own the sim, the surfaces, the audio table and the render table, and no live-swap hook exists; a restart reuses the tested start-up and shutdown paths, keeps R4 untouched on the sim thread (nothing new runs there) and gives a swapped-in table exactly the state of a fresh `--table` start (R3).
+**Alternatives:** a live swap through new sim/render/audio hand-off slots (new cross-thread protocol in `threads.rs`, `present.rs` and the audio thread; far larger blast radius); restarting the process with `--table` (loses the windows and the menu).
+
+## #85 — The swap hitch is accepted
+
+**Decision:** The visible hitch of a swap (join, surface recreation, GPU and pipeline set-up for the new table) is accepted; the menu is open while it happens.
+**Rationale:** Table switching is a rare, player-initiated action from the menu; the 1 kHz loop and the frame pacing of a running table are not affected.
+**Alternatives:** a seamless swap (see the previous entry; not worth its blast radius now).
+
+## #85 — `last_table` is not loaded automatically
+
+**Decision:** At start-up without `--table` the browser lists the tables and the menu waits for a choice; `config.toml`'s `last_table` is recorded on every successful browser load (and saved) but never loaded automatically.
+**Rationale:** The brief asks for the browser at start; an automatic load would hide it and would make a broken or slow table block every start. The value stays available for a later "continue" option.
+**Alternatives:** auto-loading `last_table` when it is still listed and ready (rejected for the reasons above).
+
+## #85 — The menu opens on the Tables panel at start without `--table`
+
+**Decision:** A run without `--table` opens the menu once at start (the menu state machine's own toggle, stamped with `SDL_GetTicksNS`), on the Tables panel, over the idle path; closing it with `Esc` shows the idle debug view. A `--table` run starts with the menu closed as before.
+**Rationale:** Without a table the only useful thing to show is the list of tables; using the state machine's own toggle keeps the #84 release and publish rules.
+**Alternatives:** a separate start screen (a second UI to maintain).
+
+## #85 — Scan and load errors in the browser
+
+**Decision:** The scan and the load run on the I/O worker (`orchestrator::IoWorker`, one `io-worker` thread; a load runs `load_app_table` on its `table-load` big-stack thread). A missing or unreadable tables folder gives an empty list (no failure, one `pin_app: table browser: 0 table(s) in <dir> (0 ready)` line); a broken bundle is listed with its error and the menu refuses to load it (`LoadRefusal::Broken`, shown as the menu notice); a bundle that lists but fails the full validation or load (clearance, glTF, rules) leaves the running table untouched and the menu shows `Failed` with the error text; a panic inside a load is caught and becomes the same failure with the panic message. Dropping the worker lets the request in flight finish, skips queued ones and joins the thread.
+**Rationale:** R4 (the main thread only posts requests and applies replies), R11 (a picked table goes through exactly `validate_table` as `--table` does), and a failed table must never panic, hang or end the run.
+**Alternatives:** scanning on the main thread inside the menu executor (the #84 fallback, still used for `--table` runs with `tables_dir` set; blocks the event pump).
+
+## #97 — Display textures: mip filter, redraw semantics and size handling
+
+**Decision:** `BackglassTexture` / `ScoreTexture` (KP-017, REQ-VIEW-002) each own one `Rgba8Unorm` texture (`RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC`, `mip_level_count(w, h)` levels, `mip_level_count` = 0 for a zero side, else `1 + floor(log2(max(w, h)))`).
+- Mip filter: a fullscreen-triangle render pass per level reads the level above with `textureLoad` (no sampler), converts each channel to its stored byte, sums the 2 × 2 block and writes `(sum + 2) / 4` (integer round-to-nearest, half up), in display-encoded space. For odd source sides the block's second row or column is clamped to the last texel (the odd last row or column of the source is not included). Pipeline, per-level views and per-level bind groups are created once in `new()`, so a redraw allocates only the transient uniform and instance buffers and bind groups that the existing renderers' `encode()` already creates.
+- Redraw: `update` returns `true` exactly when it redrew. One submit per redraw: clear level 0 to transparent black, the renderer's `encode()` over the whole texture, then every mip. Level 0 is cleared first so it equals `render_*_to_image` (which draws into a freshly cleared texture) even for content that does not cover every pixel. An unchanged update records nothing.
+- Sizes: a side of 0 or above `max_texture_dimension_2d` is `GpuError::InvalidArgument`, checked before the renderer is built. Every level is cleared to transparent black in `new()`.
+- `ScoreTexture` has no LCD image API: LCD `Image` items whose image was never set are skipped, as in `LcdRenderer` without `set_image`.
+
+**Rationale:** Integer averaging of the stored bytes is exact and identical on every backend (no dependence on the precision of hardware linear filtering or of float-to-unorm rounding), and meets the 2/255 region-mean bound for power-of-two sizes. Building everything except per-draw buffers in `new()` meets "no pipeline, texture or bind-group-layout per update" and keeps the GPU texture object stable for a bound material.
+
+**Alternatives:** Linear-filtered `textureSample` at the texel corner, which depends on filtering precision; a compute shader, which needs `STORAGE_BINDING` on the texture and is not supported for `Rgba8Unorm` storage on every downlevel backend; a 3 × 3 tent filter for odd sizes, which costs more and is not required (the brief accepts clamped edges); exposing `set_image` on `ScoreTexture`, which is outside the brief's fixed API and can be added when the backbox consumer needs LCD images.
+## #103 — Owned-path extension for the mech slot plan
+
+**Decision:** #103 also edits `crates/pin_sim/src/sim/mod.rs` (a read-only `slots: Vec<SlotPlan>` field and the `SlotPlan` / `SlotSource` types), `crates/pin_sim/src/load/mod.rs` (the plan is built at load, one entry per `[[mechs]]` entry up to `MAX_DYNAMIC_MESHES`, with the binding index into `gates` / `diverters` / `newtons`, the direction `u`, the hinge axis `−(z × u)`, the absolute hinge / pivot position and the Newton path start and length), and adds two read-only accessors to `pin_physics::mech::MechSet`: `drop_target_offset_m` and `spinner_pivot_axis` (no behaviour change). Approved by the Orchestrator.
+**Rationale:** `publish_snapshot` must not allocate (R4) and the bindings carry no mech index, so the slot-to-binding mapping has to be precomputed at load; the drop target's `z` and the spinner's pivot and axis are private in `pin_physics`, and recomputing the spinner defaults in `pin_sim` would duplicate `physics_defaults.toml` resolution.
+**Alternatives:** searching the bindings every tick (no mech index to search by); recomputing drop heights and spinner pivots from the `[[mechs]]` params and defaults in `pin_sim` (duplicated default resolution that can drift).
+
+## #103 — Gate and diverter slot angles
+
+**Decision:** A gate slot publishes its hinge (the mech position) and a rotation about `−(z × u)` of 0 while closed and `GATE_OPEN_ANGLE_RAD = π/3` while `GateBinding.open`; a diverter slot publishes 0 while inactive and `DIVERTER_ON_ANGLE_RAD = π/6` while `DiverterBinding.active` (a diverter without a binding publishes its position with identity). Both constants are public in `pin_sim::tick`. The angle steps between the two values in one tick.
+**Rationale:** The physics toggles the colliders instantly, so an animated swing would be drawn where the simulation is not; the brief's recommended angles.
+**Alternatives:** an eased swing over several ticks (draws a state the physics does not have); per-table angles (no schema key exists).
+
+## #103 — Newton ball swing mapping
+
+**Decision:** The newton_ball slot is the cradle frame: position = the mech position, orientation = a rotation about `−(z × u)` by `newton_swing_rad(offset, length) = clamp(offset / length · NEWTON_SWING_RANGE_RAD, ±NEWTON_SWING_RANGE_RAD)`, where `offset = (ball_position(0) − path start) · u` and `length` is the path length (`length` mm, default 50). It is 0 at rest, ±π/2 at the path end, monotone; non-finite input or a non-positive length gives 0.
+**Rationale:** Uses the whole documented range over the captive ball's travel; deterministic `f32` arithmetic with `fmath` clamps.
+**Alternatives:** `offset / length` taken directly as radians (the brief's first suggestion; reaches only 1 rad, so the documented range is never used); a physical pendulum angle `asin(offset / arm)` (needs an arm length the schema does not have).
+
+## #103 — Bumper ring offset not modelled
+
+**Decision:** The bumper slot is always the zero offset with identity orientation: the ring kick is not modelled as motion (the physics' ring is a static cylinder and the kick is a velocity impulse in `pre_step`).
+**Rationale:** There is no ring motion state to publish; a fabricated offset would draw motion the simulation does not have.
+**Alternatives:** a cosmetic offset while the coil is on (state the simulation does not have; belongs to the renderer if wanted).
+
+## #103 — Drop target offset clamps at −height
+
+**Decision:** The drop target slot's z is `MechSet::drop_target_offset_m = max(z, −height)`: 0 up, `−height` down, rising to 0 while the reset raises it. The internal 2 mm hide depth below the playfield is not published.
+**Rationale:** Appendix A defines the slot as the height below the raised position; the hide depth is a collision detail (the dropped target sits below the playfield so a ball never touches it), and publishing it would sink the drawn target 2 mm into the playfield.
+**Alternatives:** publishing the raw internal z (−height − 2 mm when down).
+
+## #103 — Plunger slot sign and quaternion precision
+
+**Decision:** The plunger slot is `u · slider_state.0` unchanged: `pin_physics` already keeps the rod at `−stroke ≤ x ≤ 0` with negative = pulled back (the hand constraint is `x ≤ −depth·stroke`), which is the Appendix A meaning, so no negation is needed. The axis-angle quaternions (spinner, gate, diverter, newton) are built by `pin_sim::tick::axis_angle_quat` from `libm` `f64` `sin` / `cos` of the half angle, normalised in `f64` and rounded once to `f32`.
+**Rationale:** A spinner's unwrapped angle reaches hundreds of radians; `f32` half-angle arithmetic would lose the brief's 1e-5 angle match there. `libm` `f64` is deterministic across targets and no simulation state depends on it.
+**Alternatives:** `libm::sinf` / `cosf` (error grows with the unwrapped angle); reducing the angle modulo 2π in `f32` (same loss).
+
+## #103 tester — Newton swing at rest
+
+**Decision:** The Newton test asserts exact identity at load (tick 0), a swing below 1e-3 rad over the first 20 ticks, and, after a strike, a maximum swing more than 1e-4 rad above the same table's idle run (not just above 1e-4).
+**Rationale:** The captive ball settles under the playfield pitch: the idle table publishes a swing of 1.4e-5 rad at tick 1 growing to a steady 6.2e-4 rad by tick 80. A literal "identity at rest" check would reject that physically correct equilibrium, and a bare "> 1e-4 after a strike" check would be satisfied by the settle alone, so the strike is compared to the idle baseline.
+**Alternatives:** Asserting exact identity on every rest tick (fails on the settle); asserting only `> 1e-4` after the strike (cannot tell a strike from the settle).
 ## #163 KP-069 — One assert script for every replay-hash leg
 
 **Decision:** The record / 10 replays / golden comparison lives in a single new file,

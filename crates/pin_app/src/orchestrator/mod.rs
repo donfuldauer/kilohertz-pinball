@@ -59,9 +59,10 @@ pub use present::{
 };
 pub use presenter::{CopyPath, FrameCopy, offscreen_frame_texture};
 pub use table::{
-    DISPLAY_RING_CAPACITY, DisplayCommand, FlipperOutline, SIM_STACK_BYTES, SOUND_RING_CAPACITY,
-    TABLE_LINE_COLOR, TableSim, ValidatedTable, load_checked, load_validated, on_sim_stack,
-    run_headless_table, table_lines, table_source_positions, validate_snapshot, validate_table,
+    DISPLAY_RING_CAPACITY, DisplayCommand, FlipperOutline, IoReply, IoRequest, IoWorker, LoadedApp,
+    SIM_STACK_BYTES, SOUND_RING_CAPACITY, TABLE_LINE_COLOR, TableSim, ValidatedTable,
+    load_app_table, load_checked, load_validated, on_sim_stack, run_headless_table, table_lines,
+    table_source_positions, validate_snapshot, validate_table,
 };
 pub use threads::{
     AudioConfig, AudioStats, ClosePolicy, DropMonitor, FLIPPER_LINE_COLOR, HUD_REFRESH_NS,

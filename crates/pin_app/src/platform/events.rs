@@ -179,6 +179,20 @@ impl EventForwarder {
         }
     }
 
+    /// Re-points the forwarder at new rings (the table browser restarts the
+    /// engine threads on a table swap, issue #85): events forwarded after
+    /// this call go to `input` and `window` only. The menu, the router (and
+    /// its held inputs and gamepads), the registered windows and the
+    /// counters are kept; the old producers are dropped.
+    pub fn replace_channels(
+        &mut self,
+        input: SpscProducer<InputEvent>,
+        window: SpscProducer<WindowEvent>,
+    ) {
+        self.input = input;
+        self.window = window;
+    }
+
     /// Puts the in-game menu between the router and the input ring (see
     /// the [module docs](self)): `Esc` / the controller menu button toggle
     /// it, and while it is open cabinet events drive it and never reach
@@ -828,5 +842,31 @@ mod tests {
         assert!(f.menu().unwrap().is_open());
         assert_eq!(irx.pop(), None, "the open menu consumes it");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #85: after `replace_channels` events reach the new rings only;
+    /// the registered windows and the counters are kept.
+    #[test]
+    fn replace_channels_redirects_to_the_new_rings() {
+        let (itx, mut irx) = channel(8);
+        let (wtx, mut wrx) = channel(8);
+        let mut f = EventForwarder::new(itx, wtx);
+        f.register_windows(&[42]);
+        f.forward(&key(true, Scancode::LShift, 1, false));
+        f.forward(&win(2, 42, SdlWindowEvent::Exposed));
+        assert!(irx.pop().is_some() && wrx.pop().is_some());
+        let (itx2, mut irx2) = channel(8);
+        let (wtx2, mut wrx2) = channel(8);
+        f.replace_channels(itx2, wtx2);
+        f.forward(&key(false, Scancode::LShift, 3, false));
+        f.forward(&win(4, 42, SdlWindowEvent::Exposed));
+        assert!(irx.pop().is_none() && wrx.pop().is_none(), "old rings");
+        assert_eq!(
+            irx2.pop(),
+            Some(InputEvent::button(3, CabinetInput::LeftFlipper, false))
+        );
+        assert!(wrx2.pop().is_some());
+        assert_eq!(f.stats().input_forwarded, 2);
+        assert_eq!(f.stats().window_forwarded, 2);
     }
 }

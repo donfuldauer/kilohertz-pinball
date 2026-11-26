@@ -209,6 +209,52 @@ pub(crate) struct NewtonBinding {
     pub switch: Option<SwitchId>,
 }
 
+/// What a dynamic mesh slot reads each tick (see [`SlotPlan`]).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) enum SlotSource {
+    /// A constant transform: [`SlotPlan::position`] and identity orientation
+    /// (bumper ring offset 0, VUK identity, a diverter without a binding at
+    /// its hinge).
+    Fixed,
+    /// A drop target: `[0, 0, MechSet::drop_target_offset_m]`.
+    Drop,
+    /// A sling, kickback or plunger: `dir · MechSet::slider_state.0`.
+    Slider,
+    /// A spinner: the pivot and a rotation by the spinner angle about
+    /// [`SlotPlan::axis`].
+    Spinner,
+    /// A gate: the hinge and `GATE_OPEN_ANGLE_RAD` about the axis while
+    /// `gates[i].open`.
+    Gate(usize),
+    /// A diverter: the hinge and `DIVERTER_ON_ANGLE_RAD` about the axis
+    /// while `diverters[i].active`.
+    Diverter(usize),
+    /// A newton_ball: the cradle frame swung by the captive ball's
+    /// displacement along its path (`newtons[i]`).
+    Newton(usize),
+}
+
+/// Per-mech constants of the dynamic mesh slot of one `[[mechs]]` entry
+/// (SPEC Appendix A "Dynamic mesh slot convention", REQ-VIS-002), built at
+/// load so that `publish_snapshot` reads them without allocating. Entry
+/// `i` is mech `i`; at most `MAX_DYNAMIC_MESHES` entries.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) struct SlotPlan {
+    /// What the slot reads each tick.
+    pub source: SlotSource,
+    /// Absolute position (m): the pivot or hinge, the cradle position, or
+    /// the constant translation of a [`SlotSource::Fixed`] slot.
+    pub position: Vec3,
+    /// The mech's direction `u` (from `angle_deg`, default 90°).
+    pub dir: Vec3,
+    /// The hinge axis `−(z × u)` (the spinner's own axis for a spinner).
+    pub axis: Vec3,
+    /// Newton ball: the captive ball's rest point (path start).
+    pub path_start: Vec3,
+    /// Newton ball: the path length (m).
+    pub path_length: f32,
+}
+
 /// A trough switch zone: a ball whose centre enters it has drained.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct TroughZone {
@@ -244,7 +290,11 @@ pub(crate) struct PendingEdge {
 ///    CCD sub-steps, the Magnus/remanence hooks, layer transitions, drains
 ///    and escapes;
 /// 5. collect the new switch states and edges and the haptic events;
-/// 6. publish the [`FrameStateSnapshot`].
+/// 6. publish the [`FrameStateSnapshot`]: balls, flippers, lamps, GI and
+///    one dynamic mesh slot per `[[mechs]]` entry in `table.toml` order (at
+///    most `MAX_DYNAMIC_MESHES`; SPEC Appendix A, REQ-VIS-002), read from
+///    the mech set, the gate and diverter bindings and the Newton chains
+///    without writing any simulation state.
 ///
 /// Edges from step 1 (cabinet buttons) are delivered in step 2 of the same
 /// tick; edges from step 5 and from [`set_switch`](Simulation::set_switch)
@@ -284,6 +334,9 @@ pub struct Simulation {
     pub(crate) diverters: Vec<DiverterBinding>,
     pub(crate) gates: Vec<GateBinding>,
     pub(crate) newtons: Vec<NewtonBinding>,
+    /// Dynamic mesh slot plan, one entry per published mech (load-time,
+    /// read-only on the sim thread).
+    pub(crate) slots: Vec<SlotPlan>,
     pub(crate) troughs: Vec<TroughZone>,
     pub(crate) bounds: (Vec3, Vec3),
     pub(crate) ingest: InputIngest,
