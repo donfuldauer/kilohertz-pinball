@@ -2,12 +2,13 @@
 //! decoded-audio budget (512 MiB, user setting)": the configured budget, not
 //! the 512 MiB constant, limits a table load. Bundles are copies of the
 //! grey-box bundle whose sound files are replaced by generated 16-bit mono
-//! 48 kHz WAVs (decoded size = frames x 8 bytes at the 48 kHz mixer rate).
+//! 48 kHz WAVs (decoded size = frames x 4 bytes at the 48 kHz mixer rate:
+//! mono is stored as one `f32` per frame, #227).
 
 mod support;
 
 use pin_app::orchestrator::{load_app_table_with_budget, table_samples, validate_table};
-use pin_audio::mixer::{BYTES_PER_FRAME, DecodeBudget, MixerConfig};
+use pin_audio::mixer::{BYTES_PER_MONO_FRAME, DecodeBudget, MixerConfig};
 use proptest::prelude::*;
 use std::path::{Path, PathBuf};
 use support::{greybox_bundle, on_big_stack, scratch};
@@ -86,7 +87,7 @@ fn model(lens: &[usize], budget: u64) -> Vec<usize> {
     let mut used = 0;
     let mut fit = vec![];
     for (i, &l) in lens.iter().enumerate() {
-        let b = l as u64 * BYTES_PER_FRAME;
+        let b = l as u64 * BYTES_PER_MONO_FRAME;
         if used + b <= budget {
             used += b;
             fit.push(i);
@@ -109,7 +110,7 @@ fn check(dir: PathBuf, sounds: Vec<(String, String)>, lens: Vec<usize>, budget: 
             let id = checked.table.ids.sound(&sounds[i].0).unwrap();
             assert_eq!(got.0, id, "loaded sounds in manifest order");
             assert_eq!(got.1.frames(), lens[i]);
-            total += got.1.frames() as u64 * BYTES_PER_FRAME;
+            total += got.1.bytes();
         }
         assert!(total <= budget);
         let failed: Vec<usize> = (0..lens.len()).filter(|i| !fit.contains(i)).collect();
@@ -129,11 +130,11 @@ fn check(dir: PathBuf, sounds: Vec<(String, String)>, lens: Vec<usize>, budget: 
 /// reports one error per failed sound.
 #[test]
 fn one_mib_budget_loads_what_fits_and_reports_the_rest() {
-    // 131072 frames fit in 1 MiB.
+    // 262144 mono frames fit in 1 MiB (4 bytes per frame, #227).
     for (tag, lens) in [
         ("fit_mixed", vec![100_000usize, 100_000, 20_000, 200_000]),
-        ("fit_single_large", vec![144_000, 1_000]), // ~3 s alone > 1 MiB
-        ("fit_pair", vec![80_000, 80_000]),         // each fits, not together
+        ("fit_single_large", vec![288_000, 1_000]), // ~6 s alone > 1 MiB
+        ("fit_pair", vec![160_000, 160_000]),       // each fits, not together
         ("fit_all", vec![10_000, 10_000, 10_000]),
     ] {
         let (dir, sounds) = bundle(tag, &lens);
@@ -159,22 +160,22 @@ fn default_budget_loads_every_sound() {
 }
 
 /// SPEC §4 3.3, D25: a budget exactly equal to the decoded bytes loads
-/// everything; one frame (8 bytes) less fails only the last sound.
+/// everything; one frame (4 bytes, mono) less fails only the last sound.
 #[test]
 fn budget_boundary_is_exact() {
     let lens = vec![30_000usize, 20_000, 10_000];
-    let total: u64 = lens.iter().map(|&l| l as u64 * BYTES_PER_FRAME).sum();
+    let total: u64 = lens.iter().map(|&l| l as u64 * BYTES_PER_MONO_FRAME).sum();
     let (dir, sounds) = bundle("boundary", &lens);
     check(dir.clone(), sounds.clone(), lens.clone(), total);
     check(
         dir.clone(),
         sounds.clone(),
         lens.clone(),
-        total - BYTES_PER_FRAME,
+        total - BYTES_PER_MONO_FRAME,
     );
     on_big_stack(move || {
         let checked = validate_table(&dir).unwrap();
-        let (s, e) = table_samples(&checked, RATE, total - BYTES_PER_FRAME);
+        let (s, e) = table_samples(&checked, RATE, total - BYTES_PER_MONO_FRAME);
         assert_eq!((s.len(), e.len()), (2, 1));
         assert!(e[0].contains(&sounds[2].0), "{e:?}");
     });

@@ -909,13 +909,13 @@ mod tests {
                 let first_bytes = all
                     .iter()
                     .find(|(id, _, _)| Some(*id) == first)
-                    .map(|(_, s, _)| s.frames() as u64 * pin_audio::mixer::BYTES_PER_FRAME)
+                    .map(|(_, s, _)| s.bytes())
                     .unwrap();
                 let budget = (1 << 20).max(first_bytes);
                 let (some, errors) = table_samples(&checked, rate, budget);
                 let fit: u64 = some
                     .iter()
-                    .map(|(_, s, _)| s.frames() as u64 * pin_audio::mixer::BYTES_PER_FRAME)
+                    .map(|(_, s, _)| s.bytes())
                     .sum();
                 assert!(fit <= budget);
                 assert_eq!(some.len() + errors.len(), manifest_len);
