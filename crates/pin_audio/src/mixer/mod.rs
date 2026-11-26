@@ -52,7 +52,7 @@ mod sdl;
 
 pub use decode::{
     BYTES_PER_FRAME, DecodeBudget, DecodeError, INITIAL_RESERVE_FRAMES, MAX_MIXER_RATE,
-    MAX_SECONDS, MAX_SOURCE_RATE, MIN_SOURCE_RATE, Sample, decode, decode_with_budget,
+    MAX_SECONDS, MAX_SOURCE_RATE, MIN_SOURCE_RATE, OverRelease, Sample, decode, decode_with_budget,
     resampled_len,
 };
 pub use engine::{Bus, Mixer, MixerConfig};

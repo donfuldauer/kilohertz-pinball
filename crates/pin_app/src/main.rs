@@ -96,8 +96,8 @@ use pin_app::orchestrator::{
     AudioConfig, AudioSink, ClosePolicy, DeviceStream, DropMonitor, IoReply, IoRequest, IoWorker,
     LoadedApp, NullSink, RenderConfig, RenderGpu, RunExit, RunLimits, TableRenderOptions,
     TelemetryFeed, TelemetryFeedStats, TelemetryLink, TelemetryReport, Threads, ThreadsConfig,
-    load_app_table, open_telemetry, parse_telemetry_endpoint, run_headless, run_headless_table,
-    spawn_threads, ssf_playfield_mm,
+    load_app_table_with_budget, open_telemetry, parse_telemetry_endpoint, run_headless,
+    run_headless_table, spawn_threads, ssf_playfield_mm,
 };
 use pin_app::platform::rumble::{RumbleCommand, RumbleDriver, RumbleOutput};
 use pin_app::platform::{
@@ -945,13 +945,21 @@ fn run_app(args: &[String]) -> Result<(), String> {
     // Load the table before opening windows: a bad table fails fast.
     let mut table = path_of(args, "--table")
         .transpose()?
-        .map(|p| load_app_table(&p, options.mixer))
+        .map(|p| {
+            load_app_table_with_budget(
+                &p,
+                options.mixer,
+                menu.config().audio.decoded_budget_bytes(),
+            )
+        })
         .transpose()?;
     // Without `--table`: the table browser (issue #85) scans `<exe
     // dir>/tables` (or config.toml's `tables_dir`) on the I/O worker.
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("pin_app"));
     let browser = browser_dir(args, menu.config().tables_dir.as_deref(), &exe).map(|dir| {
         let worker = IoWorker::spawn(options.mixer);
+        // The player's decoded-audio budget (SPEC §4 4.4, issue #129).
+        worker.set_decoded_budget_bytes(menu.config().audio.decoded_budget_bytes());
         eprintln!("pin_app: table browser: scanning {}", dir.display());
         worker.request(IoRequest::Scan(dir.clone()));
         (dir, worker)
@@ -1042,6 +1050,11 @@ fn run_app(args: &[String]) -> Result<(), String> {
             .menu_mut()
             .and_then(MenuController::take_config_change)
         {
+            // A changed decoded-audio budget applies to the next table load
+            // (DECISIONS "Human ruling — decoded-audio budget").
+            if let Some((_, worker)) = &browser {
+                worker.set_decoded_budget_bytes(new.audio.decoded_budget_bytes());
+            }
             apply_config_change(&platform, &mut forwarder, &mut applied, new);
         }
         if let Some(n) = input_drops.check(forwarder.stats().input_dropped) {

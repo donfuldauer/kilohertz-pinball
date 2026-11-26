@@ -221,8 +221,11 @@ fn floor_one_decode(rdr :&mut BitpackCursor, codebooks :&[Codebook],
 		try!(Err(()));
 	}
 	let mut floor1_y = Vec::new();
-	let v = &[256, 128, 86, 64];
-	let range = v[(fl.floor1_multiplier - 1) as usize];
+	// KHZ patch 6: a multiplier outside 1..=4 is undecodable, not an index panic.
+	let range = match floor1_range(fl) {
+		Ok(r) => r as u64,
+		Err(_) => return Err(FloorSpecialCase::PacketUndecodable),
+	};
 	let b = ::ilog(range - 1);
 	floor1_y.push(try!(rdr.read_dyn_u8(b)) as u32);
 	floor1_y.push(try!(rdr.read_dyn_u8(b)) as u32);
@@ -352,46 +355,94 @@ fn test_low_neighbor_panic() {
 	low_neighbor(&[2, 4, 3, 1, 6, 5], 3);
 }
 
-fn render_point(x0 :u32, y0 :u32, x1 :u32, y1 :u32, x :u32) -> u32 {
-	// TODO find out whether the type choices in this method are okay
-	// (esp. the i32 choice).
-	let dy = y1 as i32 - y0 as i32;
-	let adx = x1 - x0;
-	let ady = dy.abs() as u32;
-	let err = ady * (x - x0);
+/// KHZ patch 6: `range` of a floor 1 (`[256, 128, 86, 64][multiplier - 1]`),
+/// or `AudioBadFormat` for a multiplier outside 1..=4.
+fn floor1_range(fl :&FloorTypeOne) -> Result<i32, AudioReadError> {
+	let v :[i32; 4] = [256, 128, 86, 64];
+	match (fl.floor1_multiplier as usize).checked_sub(1).and_then(|k| v.get(k)) {
+		Some(&r) => Ok(r),
+		None => Err(AudioReadError::AudioBadFormat),
+	}
+}
+
+/// KHZ patch 6: a `u32` floor value as the `i32` upstream computed with;
+/// a value that would have wrapped is `AudioBadFormat`.
+fn khz_i32(v :u32) -> Result<i32, AudioReadError> {
+	if v > ::std::i32::MAX as u32 {
+		Err(AudioReadError::AudioBadFormat)
+	} else {
+		Ok(v as i32)
+	}
+}
+
+/// KHZ patch 6: a non-negative `i32` as `u32`; a negative value (which
+/// upstream wrapped to a huge `u32`) is `AudioBadFormat`.
+fn khz_u32(v :i32) -> Result<u32, AudioReadError> {
+	if v < 0 {
+		Err(AudioReadError::AudioBadFormat)
+	} else {
+		Ok(v as u32)
+	}
+}
+
+/// KHZ patch 6: `Some` of a checked operation, or `AudioBadFormat`.
+fn khz_ok<T>(v :Option<T>) -> Result<T, AudioReadError> {
+	match v {
+		Some(v) => Ok(v),
+		None => Err(AudioReadError::AudioBadFormat),
+	}
+}
+
+// KHZ patch 6: every operation is checked; where upstream overflowed
+// (a panic in debug, a wrapped value in release) or divided by zero, this
+// returns `AudioBadFormat`. Otherwise the result is the upstream value.
+fn render_point(x0 :u32, y0 :u32, x1 :u32, y1 :u32, x :u32) -> Result<u32, AudioReadError> {
+	let dy = try!(khz_ok(try!(khz_i32(y1)).checked_sub(try!(khz_i32(y0)))));
+	let adx = try!(khz_ok(x1.checked_sub(x0)));
+	if adx == 0 {
+		try!(Err(AudioReadError::AudioBadFormat));
+	}
+	let ady = try!(khz_ok(dy.checked_abs())) as u32;
+	let err = try!(khz_ok(ady.checked_mul(try!(khz_ok(x.checked_sub(x0))))));
 	let off = err / adx;
 	if dy < 0 {
-		return y0 - off;
+		return khz_ok(y0.checked_sub(off));
 	} else {
-		return y0 + off;
+		return khz_ok(y0.checked_add(off));
 	}
 }
 
 #[test]
 fn test_render_point() {
 	// Test data taken from real life ogg/vorbis file.
-	assert_eq!(render_point(0, 28, 128, 67, 12), 31);
-	assert_eq!(render_point(12, 38, 128, 67, 46), 46);
-	assert_eq!(render_point(0, 28, 12, 38, 4), 31);
-	assert_eq!(render_point(4, 33, 12, 38, 8), 35);
-	assert_eq!(render_point(12, 38, 46, 31, 16), 38);
-	assert_eq!(render_point(16, 30, 46, 31, 23), 30);
-	assert_eq!(render_point(23, 40, 46, 31, 33), 37);
-	assert_eq!(render_point(46, 31, 128, 67, 70), 41);
-	assert_eq!(render_point(0, 28, 4, 33, 2), 30);
-	assert_eq!(render_point(4, 33, 8, 43, 6), 38);
-	assert_eq!(render_point(8, 43, 12, 38, 10), 41);
-	assert_eq!(render_point(12, 38, 16, 30, 14), 34);
-	assert_eq!(render_point(16, 30, 23, 40, 19), 34);
-	assert_eq!(render_point(23, 40, 33, 26, 28), 33);
-	assert_eq!(render_point(33, 26, 46, 31, 39), 28);
-	assert_eq!(render_point(46, 31, 70, 20, 58), 26);
-	assert_eq!(render_point(70, 20, 128, 67, 90), 36);
+	assert_eq!(render_point(0, 28, 128, 67, 12), Ok(31));
+	assert_eq!(render_point(12, 38, 128, 67, 46), Ok(46));
+	assert_eq!(render_point(0, 28, 12, 38, 4), Ok(31));
+	assert_eq!(render_point(4, 33, 12, 38, 8), Ok(35));
+	assert_eq!(render_point(12, 38, 46, 31, 16), Ok(38));
+	assert_eq!(render_point(16, 30, 46, 31, 23), Ok(30));
+	assert_eq!(render_point(23, 40, 46, 31, 33), Ok(37));
+	assert_eq!(render_point(46, 31, 128, 67, 70), Ok(41));
+	assert_eq!(render_point(0, 28, 4, 33, 2), Ok(30));
+	assert_eq!(render_point(4, 33, 8, 43, 6), Ok(38));
+	assert_eq!(render_point(8, 43, 12, 38, 10), Ok(41));
+	assert_eq!(render_point(12, 38, 16, 30, 14), Ok(34));
+	assert_eq!(render_point(16, 30, 23, 40, 19), Ok(34));
+	assert_eq!(render_point(23, 40, 33, 26, 28), Ok(33));
+	assert_eq!(render_point(33, 26, 46, 31, 39), Ok(28));
+	assert_eq!(render_point(46, 31, 70, 20, 58), Ok(26));
+	assert_eq!(render_point(70, 20, 128, 67, 90), Ok(36));
 }
 
-fn floor_one_curve_compute_amplitude(floor1_y :&[u32], fl :&FloorTypeOne) -> (Vec<u32>, Vec<bool>) {
-	let v = &[256, 128, 86, 64];
-	let range = v[(fl.floor1_multiplier - 1) as usize] as i32;
+// KHZ patch 6: checked arithmetic (see `render_point`); the upstream `i32`
+// expressions are evaluated with `checked_*`, and a negative final value
+// (which upstream cast to a huge `u32`) is `AudioBadFormat`.
+fn floor_one_curve_compute_amplitude(floor1_y :&[u32], fl :&FloorTypeOne)
+		-> Result<(Vec<u32>, Vec<bool>), AudioReadError> {
+	let range = try!(floor1_range(fl));
+	if floor1_y.len() < 2 || floor1_y.len() < fl.floor1_x_list.len() {
+		try!(Err(AudioReadError::AudioBadFormat));
+	}
 	let mut floor1_step2_flag = Vec::new();
 	floor1_step2_flag.push(true);
 	floor1_step2_flag.push(true);
@@ -402,29 +453,34 @@ fn floor_one_curve_compute_amplitude(floor1_y :&[u32], fl :&FloorTypeOne) -> (Ve
 	for (i, el) in fl.floor1_x_list.iter().enumerate().skip(2) {
 		let cur_low_neighbor = low_neighbor(&fl.floor1_x_list, i);
 		let cur_high_neighbor = high_neighbor(&fl.floor1_x_list, i);
-		let predicted = render_point(
+		let predicted = try!(khz_i32(try!(render_point(
 			cur_low_neighbor.1, floor1_final_y[cur_low_neighbor.0],
-			cur_high_neighbor.1, floor1_final_y[cur_high_neighbor.0], *el) as i32;
-		let val = floor1_y[i] as i32;
-		let highroom = range - predicted;
+			cur_high_neighbor.1, floor1_final_y[cur_high_neighbor.0], *el))));
+		let val = try!(khz_i32(floor1_y[i]));
+		let highroom = try!(khz_ok(range.checked_sub(predicted)));
 		let lowroom = predicted;
-		let room = min(highroom, lowroom) * 2;
+		let room = try!(khz_ok(min(highroom, lowroom).checked_mul(2)));
 		if val > 0 {
 			floor1_step2_flag[cur_low_neighbor.0] = true;
 			floor1_step2_flag[cur_high_neighbor.0] = true;
 			floor1_step2_flag.push(true);
-			floor1_final_y.push(if val >= room {
+			let y = if val >= room {
 				if highroom > lowroom {
-					predicted + val - lowroom
+					try!(khz_ok(predicted.checked_add(val)
+						.and_then(|t| t.checked_sub(lowroom))))
 				} else {
-					predicted - val + highroom - 1
+					try!(khz_ok(predicted.checked_sub(val)
+						.and_then(|t| t.checked_add(highroom))
+						.and_then(|t| t.checked_sub(1))))
 				}
 			} else {
-				predicted + (if val % 2 == 1 {
-					- val - 1 } else { val } >> 1)
-			} as u32);
+				// `val > 0`, so neither `-val - 1` nor `val` overflows.
+				try!(khz_ok(predicted.checked_add(if val % 2 == 1 {
+					- val - 1 } else { val } >> 1)))
+			};
+			floor1_final_y.push(try!(khz_u32(y)));
 		} else {
-			floor1_final_y.push(predicted as u32);
+			floor1_final_y.push(try!(khz_u32(predicted)));
 			floor1_step2_flag.push(false);
 		}
 	}
@@ -432,7 +488,7 @@ fn floor_one_curve_compute_amplitude(floor1_y :&[u32], fl :&FloorTypeOne) -> (Ve
 	for el in &mut floor1_final_y {
 		*el = min(range as u32 - 1, *el);
 	}
-	return (floor1_final_y, floor1_step2_flag);
+	return Ok((floor1_final_y, floor1_step2_flag));
 }
 
 static FLOOR1_INVERSE_DB_TABLE :&[f32] = &[
@@ -501,31 +557,39 @@ static FLOOR1_INVERSE_DB_TABLE :&[f32] = &[
 	0.64356699,    0.68538959,    0.72993007,    0.77736504,
 	0.82788260,    0.88168307,    0.9389798,     1.];
 
-fn render_line(x0 :u32, y0 :u32, x1 :u32, y1 :u32, v :&mut Vec<u32>) {
-	// TODO find out whether the type choices in this method are okay
-	let dy = y1 as i32 - y0 as i32;
-	let adx = x1 as i32 - x0 as i32;
-	let ady = dy.abs();
-	let base = dy / adx;
-	let mut y = y0 as i32;
-	let mut err = 0;
-	let sy = base + (if dy < 0 { -1 } else { 1 });
-	let ady = ady  - base.abs() * adx;
-	v.push(y as u32);
+// KHZ patch 6: checked arithmetic (see `render_point`); `adx == 0` and a
+// negative `y` (upstream: a huge `u32`) are `AudioBadFormat`.
+fn render_line(x0 :u32, y0 :u32, x1 :u32, y1 :u32, v :&mut Vec<u32>)
+		-> Result<(), AudioReadError> {
+	let dy = try!(khz_ok(try!(khz_i32(y1)).checked_sub(try!(khz_i32(y0)))));
+	let adx = try!(khz_ok(try!(khz_i32(x1)).checked_sub(try!(khz_i32(x0)))));
+	let ady = try!(khz_ok(dy.checked_abs()));
+	let base = try!(khz_ok(dy.checked_div(adx)));
+	let mut y = try!(khz_i32(y0));
+	let mut err :i32 = 0;
+	let sy = try!(khz_ok(base.checked_add(if dy < 0 { -1 } else { 1 })));
+	let ady = try!(khz_ok(base.checked_abs()
+		.and_then(|b| b.checked_mul(adx))
+		.and_then(|t| ady.checked_sub(t))));
+	v.push(try!(khz_u32(y)));
 	for _ in (x0 + 1) .. x1 {
-		err += ady;
+		err = try!(khz_ok(err.checked_add(ady)));
 		if err >= adx {
 			err -= adx;
-			y += sy;
+			y = try!(khz_ok(y.checked_add(sy)));
 		} else {
-			y += base;
+			y = try!(khz_ok(y.checked_add(base)));
 		}
-		v.push(y as u32);
+		v.push(try!(khz_u32(y)));
 	}
+	Ok(())
 }
 
+// KHZ patch 6: `y * multiplier` is checked and the inverse-dB table lookup
+// is bounds-checked; either failure is `AudioBadFormat`.
 fn floor_one_curve_synthesis(floor1_final_y :Vec<u32>,
-		floor1_step2_flag :Vec<bool>, fl :&FloorTypeOne, n :u16) -> Vec<f32> {
+		floor1_step2_flag :Vec<bool>, fl :&FloorTypeOne, n :u16)
+		-> Result<Vec<f32>, AudioReadError> {
 	let floor1_final_y_s = |i :usize| { floor1_final_y[fl.floor1_x_list_sorted[i].0] };
 	let floor1_x_list_s = |i :usize| { fl.floor1_x_list_sorted[i].1 };
 	let floor1_step2_flag_s = |i :usize| {
@@ -534,25 +598,31 @@ fn floor_one_curve_synthesis(floor1_final_y :Vec<u32>,
 	let mut lx = 0;
 	let mut hy = 0;
 	let mut floor = Vec::with_capacity(n as usize);
-	let mut ly = floor1_final_y_s(0) * fl.floor1_multiplier as u32;
+	let mult = fl.floor1_multiplier as u32;
+	let mut ly = try!(khz_ok(floor1_final_y_s(0).checked_mul(mult)));
 	for i in 1 .. fl.floor1_x_list.len() {
 		if floor1_step2_flag_s(i) {
-			hy = floor1_final_y_s(i) * fl.floor1_multiplier as u32;
+			hy = try!(khz_ok(floor1_final_y_s(i).checked_mul(mult)));
 			hx = floor1_x_list_s(i);
-			render_line(lx, ly, hx, hy, &mut floor);
+			try!(render_line(lx, ly, hx, hy, &mut floor));
 			lx = hx;
 			ly = hy;
 		}
 	}
 	if hx < n as u32 {
-		render_line(hx, hy, n as u32, hy, &mut floor);
+		try!(render_line(hx, hy, n as u32, hy, &mut floor));
 	} else if hx > n as u32 {
 		floor.truncate(n as usize);
 	}
 
-	floor.into_iter()
-		.map(|idx| FLOOR1_INVERSE_DB_TABLE[idx as usize])
-		.collect()
+	// Valid floors stay below 256 (final values are clamped to
+	// `range - 1` and `(range - 1) * multiplier <= 255`), but the index is
+	// checked rather than trusted.
+	let mut out = Vec::with_capacity(floor.len());
+	for idx in floor {
+		out.push(*try!(khz_ok(FLOOR1_INVERSE_DB_TABLE.get(idx as usize))));
+	}
+	Ok(out)
 }
 
 fn floor_decode<'a>(rdr :&mut BitpackCursor,
@@ -1020,10 +1090,11 @@ pub fn read_audio_packet_generic<S :Samples>(ident :&IdentHeader, setup :&SetupH
 					fl, mode.mode_blockflag, n / 2)
 			},
 			&DecodedFloor::TypeOne(ref floor_y, ref fl) => {
+				// KHZ patch 6: checked floor 1 arithmetic.
 				let (floor1_final_y, floor1_step2_flag) =
-					floor_one_curve_compute_amplitude(floor_y, fl);
-				floor_one_curve_synthesis(floor1_final_y,
-					floor1_step2_flag, fl, n / 2)
+					try!(floor_one_curve_compute_amplitude(floor_y, fl));
+				try!(floor_one_curve_synthesis(floor1_final_y,
+					floor1_step2_flag, fl, n / 2))
 			},
 			&DecodedFloor::Unused => {
 				// Generate zero'd floor of length n/2
@@ -1179,11 +1250,230 @@ pub fn read_audio_packet(ident :&IdentHeader, setup :&SetupHeader, packet :&[u8]
 	read_audio_packet_generic(ident, setup, packet, pwr)
 }
 
-/// KHZ patch 5 regression tests (CodeRabbit PR #3).
+/// KHZ patch 5 and 6 regression tests (CodeRabbit PR #3; floor 1
+/// checked arithmetic, issue #129).
 #[cfg(test)]
 mod khz_tests {
 	use super::*;
-	use header::{FloorTypeZero, ModeInfo, read_header_ident};
+	use header::{FloorTypeZero, FloorTypeOne, ModeInfo, read_header_ident};
+
+	/// A floor 1 as the setup header would build it (x list sorted copy
+	/// included); class fields are unused by the curve functions.
+	fn floor1(multiplier :u8, x_list :Vec<u32>) -> FloorTypeOne {
+		let mut sorted = x_list.iter().cloned().enumerate().collect::<Vec<_>>();
+		sorted.sort_by(|a, b| a.1.cmp(&b.1));
+		FloorTypeOne {
+			floor1_multiplier : multiplier,
+			floor1_partition_class : vec![],
+			floor1_class_dimensions : vec![],
+			floor1_class_subclasses : vec![],
+			floor1_subclass_books : vec![],
+			floor1_class_masterbooks : vec![],
+			floor1_x_list : x_list,
+			floor1_x_list_sorted : sorted,
+		}
+	}
+
+	/// D25 / KHZ patch 6: a header-valid floor 1 (unique x values within
+	/// 2^15) whose Huffman-decoded Y value (250 000 < 2^18 codebook
+	/// entries) makes `render_point` overflow `ady * (x - x0)` in `u32`:
+	/// upstream panicked in debug and wrapped in release; now an error.
+	#[test]
+	fn floor1_render_point_overflow_is_an_error() {
+		let fl = floor1(1, vec![0, 32768, 30000, 20000]);
+		let y = [0, 0, 250000, 0];
+		assert_eq!(floor_one_curve_compute_amplitude(&y, &fl).err(),
+			Some(AudioReadError::AudioBadFormat));
+		assert_eq!(render_point(0, 0, 30000, 250000, 20000),
+			Err(AudioReadError::AudioBadFormat));
+	}
+
+	/// D25 / KHZ patch 6: `predicted - val + highroom - 1` < 0 was cast to
+	/// a huge `u32` (a wrapped value, silently clamped later); now an error.
+	#[test]
+	fn floor1_negative_final_y_is_an_error() {
+		let fl = floor1(1, vec![0, 128, 64]);
+		assert_eq!(floor_one_curve_compute_amplitude(&[200, 200, 1000], &fl).err(),
+			Some(AudioReadError::AudioBadFormat));
+		// A Y value past i32::MAX used to wrap to a negative `val`.
+		assert_eq!(floor_one_curve_compute_amplitude(&[0, 0, 0x8000_0000], &fl).err(),
+			Some(AudioReadError::AudioBadFormat));
+	}
+
+	/// D25 / KHZ patch 6: degenerate inputs of the floor 1 helpers are
+	/// errors, never a panic (division by zero, `x < x0`, `i32::MIN.abs()`,
+	/// `y0 ± off` out of `u32`, multiplier 0, short Y list).
+	#[test]
+	fn floor1_helpers_reject_degenerate_inputs() {
+		let bad = Err(AudioReadError::AudioBadFormat);
+		assert_eq!(render_point(5, 0, 5, 9, 5), bad);
+		assert_eq!(render_point(5, 0, 9, 9, 4), bad);
+		assert_eq!(render_point(0, 0x8000_0000, 9, 0, 4), bad);
+		assert_eq!(render_point(0, 0x7fff_ffff, 2, 0x7fff_ffff, 1), Ok(0x7fff_ffff));
+		let mut v = Vec::new();
+		assert_eq!(render_line(7, 0, 7, 9, &mut v), Err(AudioReadError::AudioBadFormat));
+		assert_eq!(render_line(0, 0x8000_0000, 4, 0, &mut v), Err(AudioReadError::AudioBadFormat));
+		assert_eq!(render_line(0, 0, 4, 0x7fff_ffff, &mut v), Ok(()));
+		assert!(floor_one_curve_compute_amplitude(&[0, 0], &floor1(0, vec![0, 8])).is_err());
+		assert!(floor_one_curve_compute_amplitude(&[0, 0], &floor1(5, vec![0, 8])).is_err());
+		assert!(floor_one_curve_compute_amplitude(&[0], &floor1(1, vec![0, 8])).is_err());
+		assert!(floor_one_curve_compute_amplitude(&[0, 0], &floor1(1, vec![0, 8, 4])).is_err());
+	}
+
+	/// D25 / KHZ patch 6: the inverse-dB table index is bounds-checked and
+	/// `y * multiplier` is checked (upstream: index panic / u32 overflow).
+	#[test]
+	fn floor1_synthesis_rejects_out_of_table_values() {
+		let fl = floor1(1, vec![0, 16]);
+		assert_eq!(floor_one_curve_synthesis(vec![300, 300], vec![true, true], &fl, 16).err(),
+			Some(AudioReadError::AudioBadFormat));
+		let fl = floor1(4, vec![0, 16]);
+		assert_eq!(floor_one_curve_synthesis(vec![0x4000_0000, 0], vec![true, true], &fl, 16).err(),
+			Some(AudioReadError::AudioBadFormat));
+		let fl = floor1(1, vec![0, 16]);
+		let curve = floor_one_curve_synthesis(vec![255, 0], vec![true, true], &fl, 16).unwrap();
+		assert_eq!(curve.len(), 16);
+		assert_eq!(curve[0], 1.0);
+	}
+
+	// Upstream lewton 0.10.2 floor 1 curve, verbatim apart from names (the
+	// reference for "valid floors decode bit-identically").
+	fn up_render_point(x0 :u32, y0 :u32, x1 :u32, y1 :u32, x :u32) -> u32 {
+		let dy = y1 as i32 - y0 as i32;
+		let adx = x1 - x0;
+		let ady = dy.abs() as u32;
+		let err = ady * (x - x0);
+		let off = err / adx;
+		if dy < 0 { y0 - off } else { y0 + off }
+	}
+
+	fn up_amplitude(floor1_y :&[u32], fl :&FloorTypeOne) -> (Vec<u32>, Vec<bool>) {
+		let v = &[256, 128, 86, 64];
+		let range = v[(fl.floor1_multiplier - 1) as usize] as i32;
+		let mut flag = vec![true, true];
+		let mut fy = vec![floor1_y[0], floor1_y[1]];
+		for (i, el) in fl.floor1_x_list.iter().enumerate().skip(2) {
+			let lo = low_neighbor(&fl.floor1_x_list, i);
+			let hi = high_neighbor(&fl.floor1_x_list, i);
+			let predicted = up_render_point(lo.1, fy[lo.0], hi.1, fy[hi.0], *el) as i32;
+			let val = floor1_y[i] as i32;
+			let highroom = range - predicted;
+			let lowroom = predicted;
+			let room = min(highroom, lowroom) * 2;
+			if val > 0 {
+				flag[lo.0] = true;
+				flag[hi.0] = true;
+				flag.push(true);
+				fy.push(if val >= room {
+					if highroom > lowroom { predicted + val - lowroom }
+					else { predicted - val + highroom - 1 }
+				} else {
+					predicted + (if val % 2 == 1 { - val - 1 } else { val } >> 1)
+				} as u32);
+			} else {
+				fy.push(predicted as u32);
+				flag.push(false);
+			}
+		}
+		for el in &mut fy {
+			*el = min(range as u32 - 1, *el);
+		}
+		(fy, flag)
+	}
+
+	fn up_render_line(x0 :u32, y0 :u32, x1 :u32, y1 :u32, v :&mut Vec<u32>) {
+		let dy = y1 as i32 - y0 as i32;
+		let adx = x1 as i32 - x0 as i32;
+		let ady = dy.abs();
+		let base = dy / adx;
+		let mut y = y0 as i32;
+		let mut err = 0;
+		let sy = base + (if dy < 0 { -1 } else { 1 });
+		let ady = ady - base.abs() * adx;
+		v.push(y as u32);
+		for _ in (x0 + 1) .. x1 {
+			err += ady;
+			if err >= adx { err -= adx; y += sy; } else { y += base; }
+			v.push(y as u32);
+		}
+	}
+
+	fn up_synthesis(fy :Vec<u32>, flag :Vec<bool>, fl :&FloorTypeOne, n :u16) -> Vec<f32> {
+		let fy_s = |i :usize| fy[fl.floor1_x_list_sorted[i].0];
+		let x_s = |i :usize| fl.floor1_x_list_sorted[i].1;
+		let flag_s = |i :usize| flag[fl.floor1_x_list_sorted[i].0];
+		let (mut hx, mut lx, mut hy) = (0, 0, 0);
+		let mut floor = Vec::new();
+		let mut ly = fy_s(0) * fl.floor1_multiplier as u32;
+		for i in 1 .. fl.floor1_x_list.len() {
+			if flag_s(i) {
+				hy = fy_s(i) * fl.floor1_multiplier as u32;
+				hx = x_s(i);
+				up_render_line(lx, ly, hx, hy, &mut floor);
+				lx = hx;
+				ly = hy;
+			}
+		}
+		if hx < n as u32 {
+			up_render_line(hx, hy, n as u32, hy, &mut floor);
+		} else if hx > n as u32 {
+			floor.truncate(n as usize);
+		}
+		floor.into_iter().map(|idx| FLOOR1_INVERSE_DB_TABLE[idx as usize]).collect()
+	}
+
+	/// D25 / KHZ patch 6: on valid floor 1 data (the decoder's value
+	/// domain: x unique below 2^rangebits, the first two Y values below
+	/// 2^ilog(range - 1), the others below `range`) the checked curve is
+	/// bit-identical to upstream, over a deterministic sweep of multipliers,
+	/// range bits, point counts and block sizes, plus a recorded real floor.
+	#[test]
+	fn valid_floor1_curve_matches_upstream() {
+		let mut state :u64 = 0x2545_f491_4f6c_dd1d;
+		let mut next = |m :u32| -> u32 {
+			state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+			((state >> 33) % m as u64) as u32
+		};
+		let mut compared = 0;
+		for case in 0 .. 4000u32 {
+			let multiplier = (case % 4) as u8 + 1;
+			let range = [256u32, 128, 86, 64][multiplier as usize - 1];
+			let rangebits = 2 + next(14);
+			let max_x = 1u32 << rangebits;
+			let points = 2 + next(min(63, max_x - 1));
+			let mut x_list = vec![0, max_x];
+			while (x_list.len() as u32) < points {
+				let x = 1 + next(max_x - 1);
+				if !x_list.contains(&x) {
+					x_list.push(x);
+				}
+			}
+			let fl = floor1(multiplier, x_list);
+			let b = ::ilog(range as u64 - 1);
+			let mut y = vec![next(1 << b), next(1 << b)];
+			for _ in 2 .. points {
+				y.push(if next(3) == 0 { 0 } else { next(range) });
+			}
+			let n = [64u16, 128, 1024, 4096][next(4) as usize];
+			let (fy, flag) = floor_one_curve_compute_amplitude(&y, &fl).unwrap();
+			assert_eq!((fy.clone(), flag.clone()), up_amplitude(&y, &fl), "case {}", case);
+			let got = floor_one_curve_synthesis(fy.clone(), flag.clone(), &fl, n).unwrap();
+			let want = up_synthesis(fy, flag, &fl, n);
+			assert_eq!(got.len(), want.len());
+			assert!(got.iter().zip(want.iter()).all(|(a, b)| a.to_bits() == b.to_bits()),
+				"case {}", case);
+			compared += 1;
+		}
+		assert_eq!(compared, 4000);
+		// A floor recorded from a real stream (x list as in `test_high_neighbor_ex`).
+		let fl = floor1(2, vec![0, 128, 12, 46, 4, 8, 16, 23,
+			33, 70, 2, 6, 10, 14, 19, 28, 39, 58, 90]);
+		let y = [28, 67, 9, 0, 5, 12, 3, 14, 0, 7, 1, 2, 0, 4, 6, 0, 3, 11, 2];
+		let (fy, flag) = floor_one_curve_compute_amplitude(&y, &fl).unwrap();
+		assert_eq!((fy.clone(), flag.clone()), up_amplitude(&y, &fl));
+		assert_eq!(floor_one_curve_synthesis(fy.clone(), flag.clone(), &fl, 128).unwrap(),
+			up_synthesis(fy, flag, &fl, 128));
+	}
 
 	fn floor0(order :u8, cos_omega :Vec<f32>) -> FloorTypeZero {
 		FloorTypeZero {

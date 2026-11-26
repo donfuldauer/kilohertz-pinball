@@ -68,6 +68,9 @@
 //! its output fits into what is left (for decodes that do not overlap in
 //! time; while decodes run concurrently, each one's spare capacity is
 //! charged, so a decode can fail early because of another one in flight).
+//! The `used` counter never wraps or saturates: a release larger than what
+//! is charged is refused with [`OverRelease`] and changes nothing, so after
+//! every returned sample has been released exactly once `used_bytes` is 0.
 //!
 //! `decode` never panics: in addition to explicit validation, both decoders
 //! run under `catch_unwind`, and a panic inside them is reported as
@@ -156,14 +159,29 @@ impl DecodeBudget {
 
     /// Bytes still available.
     pub fn remaining_bytes(&self) -> u64 {
+        // `used <= limit` is an invariant (charges never exceed the limit and
+        // releases never go below zero), so this cannot actually saturate.
         self.limit.saturating_sub(self.used_bytes())
     }
 
-    /// Returns a sample's bytes to the budget (e.g. when the loader drops
-    /// it). Saturates at zero; releasing a sample that was not charged to
-    /// this budget makes the accounting meaningless.
-    pub fn release(&self, sample: &Sample) {
-        self.refund_frames(sample.frames() as u64);
+    /// Returns a sample's bytes (`BYTES_PER_FRAME × frames()`) to the budget,
+    /// e.g. when the loader drops it.
+    ///
+    /// The subtraction is checked and atomic: when the sample's bytes exceed
+    /// what is currently charged (a sample released twice, or one that was
+    /// never charged to this budget), nothing changes and the attempt is
+    /// reported as [`OverRelease`].
+    pub fn release(&self, sample: &Sample) -> Result<(), OverRelease> {
+        let attempted_bytes = (sample.frames() as u64).saturating_mul(BYTES_PER_FRAME);
+        self.used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_sub(attempted_bytes)
+            })
+            .map(|_| ())
+            .map_err(|used_bytes| OverRelease {
+                attempted_bytes,
+                used_bytes,
+            })
     }
 
     /// Charges up to `want` frames; returns how many were granted (0 when
@@ -180,15 +198,41 @@ impl DecodeBudget {
         granted
     }
 
+    /// Refunds frames a decode charged itself (unused capacity, or all of
+    /// it on failure). They are always part of `used`, so the checked
+    /// subtraction cannot fail; if it ever did, `used` is left unchanged.
     fn refund_frames(&self, frames: u64) {
         let bytes = frames.saturating_mul(BYTES_PER_FRAME);
-        let _ = self
+        let result = self
             .used
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                Some(used.saturating_sub(bytes))
+                used.checked_sub(bytes)
             });
+        debug_assert!(result.is_ok(), "decode budget refund underflow");
     }
 }
+
+/// A [`DecodeBudget::release`] that asked to return more bytes than the
+/// budget had charged; the budget was left unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverRelease {
+    /// Bytes the release tried to return (`BYTES_PER_FRAME × frames()`).
+    pub attempted_bytes: u64,
+    /// Bytes charged to the budget at the moment of the attempt.
+    pub used_bytes: u64,
+}
+
+impl fmt::Display for OverRelease {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "decode budget over-release: tried to return {} bytes but only {} are charged",
+            self.attempted_bytes, self.used_bytes
+        )
+    }
+}
+
+impl std::error::Error for OverRelease {}
 
 impl Default for DecodeBudget {
     /// [`DecodeBudget::DEFAULT_BYTES`].
@@ -980,6 +1024,79 @@ mod tests {
         for k in (60..flipped.len()).step_by(101) {
             flipped[k] ^= 0x5a;
             let _ = decode(&flipped, 48_000);
+        }
+    }
+
+    /// D25: a checked release succeeds exactly, refuses an over-release and
+    /// leaves `used` unchanged; a second release of the same sample fails.
+    #[test]
+    fn release_is_checked() {
+        let budget = DecodeBudget::new(1 << 20);
+        let wav_bytes = wav(spec(1, 48_000, 16, false), |w| {
+            for _ in 0..100 {
+                w.write_sample(0i16).unwrap();
+            }
+        });
+        let a = decode_with_budget(&wav_bytes, 48_000, &budget).unwrap();
+        let b = decode_with_budget(&wav_bytes, 48_000, &budget).unwrap();
+        assert_eq!(budget.used_bytes(), 2 * 100 * BYTES_PER_FRAME);
+        assert_eq!(budget.release(&a), Ok(()));
+        assert_eq!(budget.used_bytes(), 100 * BYTES_PER_FRAME);
+        // Over-release: a sample larger than what is charged.
+        let big = Sample::constant(101, 0.0, 0.0);
+        assert_eq!(
+            budget.release(&big),
+            Err(OverRelease {
+                attempted_bytes: 101 * BYTES_PER_FRAME,
+                used_bytes: 100 * BYTES_PER_FRAME,
+            })
+        );
+        assert_eq!(budget.used_bytes(), 100 * BYTES_PER_FRAME);
+        assert_eq!(budget.release(&b), Ok(()));
+        assert_eq!(budget.used_bytes(), 0);
+        // Second release of the same sample.
+        let err = budget.release(&b).unwrap_err();
+        assert_eq!(err.attempted_bytes, 100 * BYTES_PER_FRAME);
+        assert_eq!(err.used_bytes, 0);
+        assert_eq!(budget.used_bytes(), 0);
+        assert!(err.to_string().contains("800"));
+        // An empty sample always releases.
+        assert_eq!(budget.release(&Sample::default()), Ok(()));
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig { cases: 64, ..Default::default() })]
+        /// D25: after every returned sample is released exactly once, the
+        /// budget is back to 0, whatever the order and the failures.
+        #[test]
+        fn used_returns_to_zero(
+            lens in proptest::collection::vec(0usize..3000, 1..8),
+            limit_frames in 0u64..12_000,
+            order_seed in 0u64..1000,
+        ) {
+            let budget = DecodeBudget::new(limit_frames * BYTES_PER_FRAME);
+            let mut got = Vec::new();
+            for n in lens {
+                let bytes = wav(spec(1, 48_000, 16, false), |w| {
+                    for _ in 0..n {
+                        w.write_sample(0i16).unwrap();
+                    }
+                });
+                match decode_with_budget(&bytes, 48_000, &budget) {
+                    Ok(s) => got.push(s),
+                    Err(e) => proptest::prop_assert_eq!(e, DecodeError::BudgetExhausted),
+                }
+            }
+            let sum: u64 = got.iter().map(|s| s.frames() as u64 * BYTES_PER_FRAME).sum();
+            proptest::prop_assert_eq!(budget.used_bytes(), sum);
+            let k = got.len();
+            if k > 0 {
+                got.rotate_left((order_seed as usize) % k);
+            }
+            for s in &got {
+                proptest::prop_assert_eq!(budget.release(s), Ok(()));
+            }
+            proptest::prop_assert_eq!(budget.used_bytes(), 0);
         }
     }
 
