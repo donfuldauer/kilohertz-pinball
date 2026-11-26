@@ -42,7 +42,9 @@ use pin_core::spsc::SpscConsumer;
 use pin_core::{FrameStateSnapshot, InputEvent, ProfileId, SimStep, TripleBuffer, TripleReader};
 use pin_input::haptics::HapticsConsumer;
 use pin_render::debug::{Camera, DebugLine, DebugLines, snapshot_lines};
-use pin_render::gpu::{GpuContext, GpuOptions, SurfaceOptions, SurfaceSet, SurfaceSource, wgpu};
+use pin_render::gpu::{
+    GpuContext, GpuOptions, SurfaceOptions, SurfaceSet, SurfaceSource, wait_for_device, wgpu,
+};
 use pin_render::topology::{SurfaceRole, WindowEvent, WindowEventKind};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -1094,15 +1096,29 @@ struct PendingRebuild {
     recovery: SurfaceRecovery,
 }
 
-/// Non-blocking polls after a forced `Device::destroy` to let wgpu deliver
-/// the device-lost callback (it runs from the next device maintenance).
+/// Longest blocking wait after a forced `Device::destroy` for the queue to
+/// drain. wgpu queues the device-lost callback from device maintenance only
+/// once the destroyed device's queue is empty, so the in-flight submissions
+/// must finish first (see DECISIONS "#239 KP-112 — forced loss waits for the
+/// queue").
+const FORCED_LOSS_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Fallback non-blocking polls after the [`FORCED_LOSS_WAIT`] wait, should
+/// the callback still be outstanding.
 const FORCED_LOSS_POLLS: u32 = 64;
 
-/// Destroys `ctx`'s device (the [`RenderConfig::force_device_loss`] hook)
-/// and polls it, without blocking, at most [`FORCED_LOSS_POLLS`] times
-/// until the device-lost callback was delivered.
+/// Destroys `ctx`'s device (the [`RenderConfig::force_device_loss`] hook),
+/// then waits, at most [`FORCED_LOSS_WAIT`], for its submitted work so wgpu
+/// delivers the device-lost callback, then polls it without blocking at
+/// most [`FORCED_LOSS_POLLS`] times while the callback is still missing.
+/// Runs on the render thread only (tests only). The loss itself is never
+/// flagged by hand: a forced loss and a real one take the same callback
+/// path.
 fn force_device_loss(ctx: &GpuContext) {
     ctx.device().destroy();
+    // A timeout is not fatal: the fallback polls below and the render
+    // loop's per-iteration poll still deliver a late callback.
+    let _ = wait_for_device(ctx.device(), FORCED_LOSS_WAIT);
     for _ in 0..FORCED_LOSS_POLLS {
         if ctx.device_lost() {
             break;
@@ -1487,12 +1503,25 @@ fn render_thread(
     // GPU frame timing was on (its profiler writer cannot be moved to a
     // rebuilt presenter; see DECISIONS "#133 KP-052 — device-loss rebuild").
     let timed = profiling && matches!(presenter, Some(Presenter::Table(..)));
+    // A forced loss whose device-lost callback is not yet delivered (#239).
+    let mut forced_loss_pending = false;
     while !shutdown.load(Ordering::Acquire) {
         // Test hook: destroy the current device (then handled as a loss).
         if let (Some(flag), Some(p)) = (force_loss.as_ref(), presenter.as_ref())
             && flag.swap(false, Ordering::AcqRel)
         {
             force_device_loss(p.ctx());
+            forced_loss_pending = true;
+        }
+        // Keep polling a force-destroyed device until wgpu delivers the
+        // callback; the loss is still detected only through it (#239).
+        if forced_loss_pending {
+            match presenter.as_ref() {
+                Some(p) if !p.ctx().device_lost() => {
+                    let _ = p.ctx().device().poll(wgpu::PollType::Poll);
+                }
+                _ => forced_loss_pending = false,
+            }
         }
         // Detection: a lost device is never drawn on.
         if let Some(p) = presenter.take_if(|p| p.ctx().device_lost()) {
