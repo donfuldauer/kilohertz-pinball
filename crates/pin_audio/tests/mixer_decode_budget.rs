@@ -11,8 +11,8 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use pin_audio::mixer::{
-    BYTES_PER_FRAME, DecodeBudget, DecodeError, INITIAL_RESERVE_FRAMES, MAX_SECONDS, Sample,
-    decode, decode_with_budget,
+    BYTES_PER_FRAME, BYTES_PER_MONO_FRAME, DecodeBudget, DecodeError, INITIAL_RESERVE_FRAMES,
+    MAX_SECONDS, Sample, decode, decode_with_budget,
 };
 
 // ------------------------------------------------------------ counting allocator
@@ -57,8 +57,9 @@ fn peak<R>(f: impl FnOnce() -> R) -> (R, usize) {
 /// tables) are small; anything above this is an output reservation.
 const SLACK: usize = 256 * 1024;
 
+/// Every fixture here is mono, stored at 4 bytes per frame (#227).
 fn reservation_bound(out_frames: usize) -> usize {
-    (INITIAL_RESERVE_FRAMES as usize).max(2 * out_frames) * BYTES_PER_FRAME as usize + SLACK
+    (INITIAL_RESERVE_FRAMES as usize).max(2 * out_frames) * BYTES_PER_MONO_FRAME as usize + SLACK
 }
 
 // ------------------------------------------------------------------- fixtures
@@ -123,7 +124,7 @@ fn wav_u8(rate: u32, n: usize) -> Vec<u8> {
 }
 
 fn bytes_of(s: &Sample) -> u64 {
-    s.frames() as u64 * BYTES_PER_FRAME
+    s.bytes()
 }
 
 // ------------------------------------------------------------------------ N10
@@ -183,7 +184,7 @@ fn budget_exhausts_across_many_files_with_exact_accounting() {
     let per = bytes_of(&one);
     assert_eq!(one.frames(), 2_177); // ceil(1000 · 48000 / 22050)
     // Room for 7 files and about half of another (whole frames).
-    let half = (one.frames() / 2) as u64 * BYTES_PER_FRAME;
+    let half = (one.frames() / 2) as u64 * BYTES_PER_MONO_FRAME;
     let budget = DecodeBudget::new(7 * per + half);
     for n in 1..=7u64 {
         let s = decode_with_budget(&w, 48_000, &budget).unwrap();
@@ -279,7 +280,7 @@ fn errors_other_than_budget_leave_no_charge() {
 #[test]
 fn shared_budget_across_threads_never_overcommits() {
     let w = Arc::new(wav_u8(48_000, 2_000));
-    let per = 2_000 * BYTES_PER_FRAME;
+    let per = 2_000 * BYTES_PER_MONO_FRAME;
     let budget = Arc::new(DecodeBudget::new(25 * per + 7));
     let handles: Vec<_> = (0..4)
         .map(|_| {
@@ -325,13 +326,14 @@ fn double_release_is_reported_and_changes_nothing() {
     let budget = DecodeBudget::new(1 << 20);
     let s = decode_with_budget(&wav16(48_000, 1_000), 48_000, &budget).unwrap();
     assert_eq!(s.frames(), 1_000);
-    assert_eq!(budget.used_bytes(), 8_000);
+    // Mono: 4 bytes per frame (#227).
+    assert_eq!(budget.used_bytes(), 4_000);
     assert!(budget.release(&s).is_ok());
     assert_eq!(budget.used_bytes(), 0);
     assert_eq!(
         budget.release(&s),
         Err(OverRelease {
-            attempted_bytes: 8 * s.frames() as u64,
+            attempted_bytes: 4 * s.frames() as u64,
             used_bytes: 0
         })
     );
@@ -344,16 +346,17 @@ fn double_release_is_reported_and_changes_nothing() {
 fn over_release_larger_than_used_changes_nothing() {
     let budget = DecodeBudget::new(1 << 20);
     let s = decode_with_budget(&wav16(48_000, 100), 48_000, &budget).unwrap();
-    assert_eq!(budget.used_bytes(), 800);
+    // Mono: 4 bytes per frame (#227).
+    assert_eq!(budget.used_bytes(), 400);
     let stranger = Sample::constant(1_000, 0.0, 0.0);
     assert_eq!(
         budget.release(&stranger),
         Err(OverRelease {
             attempted_bytes: 8_000,
-            used_bytes: 800
+            used_bytes: 400
         })
     );
-    assert_eq!(budget.used_bytes(), 800);
+    assert_eq!(budget.used_bytes(), 400);
     assert!(budget.release(&s).is_ok());
     assert_eq!(budget.used_bytes(), 0);
 }
