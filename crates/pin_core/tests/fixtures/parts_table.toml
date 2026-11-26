@@ -1,0 +1,117 @@
+schema_version = 1
+
+[meta]
+id = "parts_demo"
+name = "Parts Demo"
+author = "Kilohertz"
+version = "1.0.0"
+script_entry = "rules.lua"
+playfield_mesh = "playfield.glb"
+players_max = 1
+palette = ["#0b1d3a", "#f2a900"]
+
+[balls]
+profiles = ["standard_steel"]
+
+[cabinet_switches]
+left_flipper = 1
+right_flipper = 2
+left_upper = 3
+right_upper = 4
+action = 5
+start = 6
+launch = 7
+tilt = 8
+
+[[lamps]]
+id = "gi_left"
+number = 1
+kind = "gi"
+position = [60.0, 400.0, 10.0]
+
+[[mechs]]
+id = "top_bumper"
+kind = "bumper"
+position = [257.0, 800.0, 0.0]
+
+[theme]
+title = "Parts Demo"
+palette = ["#101820", "#f2aa4c", "#e63946"]   # replaces meta.palette for the art
+motif = "circuit"
+fonts = { title = "Kilohertz Display", label = "DejaVu Sans" }
+
+[[materials]]
+id = "rubber_lime"
+base_color = "#9be564"
+roughness = 0.8
+physical = "rubber"            # plays as rubber (Appendix C)
+
+[[materials]]
+id = "smoked_acrylic"
+base_color = "#303840"
+metallic = 0.0
+roughness = 0.05
+clearcoat = 1.0
+alpha = 0.5
+translucent = true
+physical = "acrylic"
+
+[[materials]]
+id = "decal_gold"              # purely visual: no physical
+base_color = "#d4af37"
+metallic = 1.0
+roughness = 0.3
+emissive = "#402000"
+emissive_strength = 0.5
+uv_reactive = true
+
+[[part_styles]]
+id = "post"                    # a built-in id: overrides it field by field
+kind = "post"
+diameter = 11.0
+
+[[part_styles]]
+id = "lime_ring"
+kind = "rubber_ring"
+base = "rubber_ring_white"
+ring_size = "ring_19"
+material = "rubber_lime"
+
+[[parts]]
+id = "left_ring"
+kind = "rubber_ring"
+style = "lime_ring"
+position = [120.0, 300.0, 0.0]
+overrides = { section = 4.8 }
+
+[[parts]]
+id = "bumper_cap"
+kind = "pop_bumper"
+bind = "top_bumper"            # the mech places it
+rotation_deg = [0.0, 0.0, 30.0]
+overrides = { trim_material = "smoked_acrylic" }
+
+[[parts]]
+id = "gi_left_bulb"
+kind = "gi_bulb"
+bind = "lamps:gi_left"
+
+[[parts]]
+id = "left_post_look"
+kind = "post"
+style = "post_rubber"
+bind = "posts[0]"              # layout.toml element; its own keys win
+
+[[parts]]
+id = "apron_logo"
+kind = "decoration"
+material = "decal_gold"
+position = [257.0, 40.0, 12.0]
+rotation_deg = [-20.0, 0.0, 0.0]
+overrides = { shape = "polygon", outline = [[-30.0, 0.0], [30.0, 0.0], [0.0, 25.0]], thickness = 1.0 }
+
+[[parts]]
+id = "left_plastic"
+kind = "plastic"
+position = [90.0, 320.0, 30.0]
+rotation_deg = [0.0, 0.0, 15.0]

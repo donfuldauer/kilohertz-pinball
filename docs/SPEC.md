@@ -1272,6 +1272,8 @@ size = 18.0
 ```
 
 
+Part styles, looks and placement of these elements, and visual-only parts, come from `table.toml` `[[parts]]` (A.5); `layout.toml` itself has no style keys.
+
 ### A.3a `glass.toml` (optional bundle file)
 
 ```toml
@@ -1326,6 +1328,146 @@ rail_colour = "#101010"
 - Constraints, each an error naming the key: dimensions finite and > 0 (offsets and `lockdown_bar.height`, `leg_overlap`, `extension_min` ≥ 0); `extension_min ≤ extension ≤ extension_max` and `extension_max − extension_min ≤ thread_length`; a leg with the leveler fully in reaches below the body (`length + extension_min > body.leg_overlap`); `corner_inset` within half the body width and length; `mount.inset ≥ body.wall_thickness`; `mount.pitch_deg` and `mount.roll_deg` within ±45°; the glass sheet fits the glass channel (`thickness ≤ glass_channel.width`, `width ≤ width − 2 × wall_thickness + 2 × glass_channel.depth`); backglass, translite opening, score-display window and grilles inside the backbox and its speaker panel, `backbox.bottom_z ≥ body.rear_height`.
 - Containment (REQ-CAB-005), checked against the table in this order: interior width (`body.width` − 2 × `wall_thickness`) ≥ playfield width (`body.width`); the playfield between the side walls (`mount.offset_x`); `body.length` − `wall_thickness` ≥ `mount.inset` + playfield length (`body.length`); the glass sheet covers the playfield (`glass_panel.width`, `glass_panel.length`); `glass.toml` `height` ≥ the tallest ramp or toy (`glass.height`); the glass sheet's top at the playfield's front and rear edges below the side wall top (`mount.height`); the backbox clear of the playfield: its front face at or behind the playfield's rear edge, or its bottom above the glass sheet's top (`backbox.front_y` / `backbox.bottom_z`).
 - `meta.pitch_deg` (A.1), when given, must agree with the derived playfield pitch within 0.05° (an allowance of 1e-5° covers the file value's `f32` rounding); otherwise an error naming `meta.pitch_deg` that shows both values.
+
+### A.5 Parts, part styles, materials and theme (`table.toml`)
+
+Four optional `table.toml` sections make every playfield part data (REQ-BUILD-001, REQ-BUILD-003, REQ-BUILD-004): `[theme]`, `[[materials]]`, `[[part_styles]]` and `[[parts]]`. A table without them parses, places and plays exactly as before: the built-in defaults reproduce the generator's values (REQ-BUILD-005). `layout.toml` (A.3) gains no keys; its elements get a style through a `[[parts]]` entry that binds to them. Schema: `pin_core::schema::parts`; built-ins as data in `crates/pin_core/data/materials.toml` and `crates/pin_core/data/part_styles.toml`.
+
+```toml
+schema_version = 1
+
+[meta]
+id = "parts_demo"
+name = "Parts Demo"
+author = "Kilohertz"
+version = "1.0.0"
+script_entry = "rules.lua"
+playfield_mesh = "playfield.glb"
+players_max = 1
+palette = ["#0b1d3a", "#f2a900"]
+
+[balls]
+profiles = ["standard_steel"]
+
+[cabinet_switches]
+left_flipper = 1
+right_flipper = 2
+left_upper = 3
+right_upper = 4
+action = 5
+start = 6
+launch = 7
+tilt = 8
+
+[[lamps]]
+id = "gi_left"
+number = 1
+kind = "gi"
+position = [60.0, 400.0, 10.0]
+
+[[mechs]]
+id = "top_bumper"
+kind = "bumper"
+position = [257.0, 800.0, 0.0]
+
+[theme]
+title = "Parts Demo"
+palette = ["#101820", "#f2aa4c", "#e63946"]   # replaces meta.palette for the art
+motif = "circuit"
+fonts = { title = "Kilohertz Display", label = "DejaVu Sans" }
+
+[[materials]]
+id = "rubber_lime"
+base_color = "#9be564"
+roughness = 0.8
+physical = "rubber"            # plays as rubber (Appendix C)
+
+[[materials]]
+id = "smoked_acrylic"
+base_color = "#303840"
+metallic = 0.0
+roughness = 0.05
+clearcoat = 1.0
+alpha = 0.5
+translucent = true
+physical = "acrylic"
+
+[[materials]]
+id = "decal_gold"              # purely visual: no physical
+base_color = "#d4af37"
+metallic = 1.0
+roughness = 0.3
+emissive = "#402000"
+emissive_strength = 0.5
+uv_reactive = true
+
+[[part_styles]]
+id = "post"                    # a built-in id: overrides it field by field
+kind = "post"
+diameter = 11.0
+
+[[part_styles]]
+id = "lime_ring"
+kind = "rubber_ring"
+base = "rubber_ring_white"
+ring_size = "ring_19"
+material = "rubber_lime"
+
+[[parts]]
+id = "left_ring"
+kind = "rubber_ring"
+style = "lime_ring"
+position = [120.0, 300.0, 0.0]
+overrides = { section = 4.8 }
+
+[[parts]]
+id = "bumper_cap"
+kind = "pop_bumper"
+bind = "top_bumper"            # the mech places it
+rotation_deg = [0.0, 0.0, 30.0]
+overrides = { trim_material = "smoked_acrylic" }
+
+[[parts]]
+id = "gi_left_bulb"
+kind = "gi_bulb"
+bind = "lamps:gi_left"
+
+[[parts]]
+id = "left_post_look"
+kind = "post"
+style = "post_rubber"
+bind = "posts[0]"              # layout.toml element; its own keys win
+
+[[parts]]
+id = "apron_logo"
+kind = "decoration"
+material = "decal_gold"
+position = [257.0, 40.0, 12.0]
+rotation_deg = [-20.0, 0.0, 0.0]
+overrides = { shape = "polygon", outline = [[-30.0, 0.0], [30.0, 0.0], [0.0, 25.0]], thickness = 1.0 }
+
+[[parts]]
+id = "left_plastic"
+kind = "plastic"
+position = [90.0, 320.0, 30.0]
+rotation_deg = [0.0, 0.0, 15.0]
+```
+
+- Units and names. Lengths mm, angles degrees (D17). Ids (`id`, `style`, `base`, `material`, `trim_material`, `ring_size`, `motif`, font roles) are 1 to 64 of `a-z`, `0-9`, `_`, `.`, `-` (D32). Colours are sRGB `"#rrggbb"`. Unknown keys, a `schema_version` other than 1 and non-finite numbers are errors (A preamble).
+- `[[materials]]` (REQ-BUILD-004): `id`; render parameters `base_color`, `metallic` (0..=1, default 0), `roughness` (0..=1, default 0.5), `clearcoat` (0..=1, optional), `emissive` (colour, optional), `emissive_strength` (0..=1000, optional), `alpha` (0..=1, default 1), `translucent` (bool, default false; acrylic, translucent plastics, lenses), `uv_reactive` (bool, default false; glows under the GI tint); and `physical`, the Appendix C material the entry plays as (`steel`, `ceramic`, `plastic`, `resin`, `rubber`, `wood`, `acrylic`). `physical` is required for a material used by a part the ball can touch and absent for purely visual materials. The table's entries extend the built-in library; an entry whose `id` equals a built-in replaces it whole. At most 256 entries; a duplicate `id` in one table is an error naming the id.
+- Built-in materials (`crates/pin_core/data/materials.toml`): the seven physical names `steel`, `ceramic`, `plastic`, `resin`, `rubber`, `wood`, `acrylic`, each with `physical` equal to itself (so `material = "wood"` in `layout.toml` means what it always meant); metals `chrome`, `brushed_steel`, `brass` (physical `steel`); rubbers `rubber_black`, `rubber_white`, `rubber_red`, `rubber_blue` (physical `rubber`; the rubber-ring colours); `acrylic_clear` (physical `acrylic`); plastics `plastic_white`, `plastic_black`, `plastic_translucent`, `plastic_uv` (physical `plastic`); `ceramic_pearl` (physical `ceramic`); `wood_clearcoat`, `wood_painted` (physical `wood`); and the visual-only emissive lenses `insert_lens` and `lamp_lens`.
+- Part kinds (`kind`, REQ-BUILD-003) and the style fields each accepts. Ball-touchable kinds (their material needs a `physical`): `post` (`shape`, `diameter`, `height`, `material`, `trim_material`, `color`), `star_post` (`diameter`, `height`, `star_points`, `material`, `color`), `rubber_ring` (`ring_size`, `inner_diameter`, `section`, `material`), `pop_bumper` (`diameter`, `height`, `material`, `trim_material`, `color`), `slingshot` (`length`, `height`, `thickness`, `material`, `trim_material`, `color`), `flipper_bat` (`height`, `material`, `color`; the bat outline is the flipper's `shape`), `flipper_rubber` (`section`, `material`, `color`), `drop_target`, `spinner`, `gate`, `plastic_ramp` (each `width`, `height`, `thickness`, `material`, `color`), `standup_target` (`shape`, `width`, `height`, `thickness`, `material`, `color`), `lane_guide` and `wall` (`height`, `thickness`, `material`, `color`), `wireform` (`tube_radius`, `tube_sides`, `material`, `color`), `deck` (`thickness`, `material`, `color`). Visual-only kinds: `plastic` (`shape`, `outline`, `width`, `length`, `thickness`, `material`, `color`), `gi_bulb` and `flasher_dome` (`diameter`, `height`, `material`, `color`), `insert` (`shape`, `size`, `lift`, `material`, `color`), `decoration` (`shape`, `outline`, `size`, `diameter`, `width`, `length`, `height`, `thickness`, `material`, `trim_material`, `color`). A field a kind does not accept is an error naming the part (or style) and the field.
+- Style fields. `shape`: `round`, `rectangle`, `polygon` (needs `outline`, at least 3 points), `capsule`, `star` (needs `star_points`), `dome`, `arrow`, `triangle`. Dimensions `size`, `diameter`, `width`, `length`, `height` (above the part's base; unset on a `post`, `wall` or `lane_guide` means the playfield's `wall_height`), `thickness`, `inner_diameter`, `section` (rubber cross-section), `tube_radius`: 0.1 to 1000 mm. `lift` (above the surface): 0 to 1000 mm. `star_points`: 3 to 24. `tube_sides`: 3 to 64. `outline`: part-local `[x, y]` points, at most 1024, each coordinate within ±5000 mm. `ring_size`: a named ring size; it supplies `inner_diameter` and `section` unless they are given. `material` (the one the ball touches) and `trim_material` (caps, covers, skirts): library ids. `color`: tint or decal colour.
+- `[[part_styles]]`: `id`, `kind`, optional `base` (a style of the same kind, built-in or table) and style fields; at most 1024. A style without `base` starts from the kind default. A table style whose `id` equals a built-in overrides that built-in field by field; it keeps the built-in's kind and may not give `base`. Errors name the style: duplicate ids, an unknown `base`, a `base` of another kind, a cycle in the `base` chain, and a chain of more than 16 styles (the kind default included).
+- Built-in styles (`crates/pin_core/data/part_styles.toml`). Each kind has a default style whose id is the kind name: `post` (`round`, diameter 10, `steel`), `star_post` (diameter 16, height 25, 8 points, `plastic_white`), `rubber_ring` (`ring_25`, `rubber_black`), `pop_bumper` (diameter 76, height 50, `plastic_white`, trim `plastic_translucent`), `slingshot` (length 100, height 28, thickness 3, `rubber_white`, trim `plastic_white`), `flipper_bat` (height 22, `plastic_white`), `flipper_rubber` (section 4.8, `rubber_black`), `drop_target` (25 × 30, thickness 3, `plastic_white`), `standup_target` (`rectangle`, 25 × 30, thickness 5, `plastic_white`), `spinner` (40 × 25, thickness 1.5, `steel`), `gate` (30 × 25, thickness 1.5, `steel`), `lane_guide` (`steel`), `wall` (`wood`), `wireform` (tube radius 1.5, 8 sides, `steel`), `plastic_ramp` (width 60, height 25, thickness 3, `plastic_translucent`), `deck` (`acrylic`), `plastic` (`rectangle`, 50 × 30, thickness 3, `plastic_translucent`), `gi_bulb` (diameter 10, height 20, `lamp_lens`), `flasher_dome` (diameter 38, height 30, `lamp_lens`), `insert` (lift 0.1, `insert_lens`), `decoration` (`plastic_white`). Named variants: `post_chrome` (`chrome`), `post_rubber` (`rubber_black`), `rubber_ring_white` (`rubber_white`), `rubber_ring_red` (`rubber_red`), `flipper_rubber_red` (`rubber_red`), `wireform_chrome` (`chrome`), `plastic_ramp_clear` (`acrylic_clear`), `wall_painted` (`wood_painted`).
+- Rubber-ring sizes (`ring_size`; inner diameter / section, mm): `ring_8` 8.0 / 3.2, `ring_11` 11.1 / 3.2, `ring_19` 19.1 / 3.2, `ring_25` 25.4 / 3.2, `ring_32` 31.8 / 3.2, `ring_38` 38.1 / 3.2, `ring_51` 50.8 / 4.8, `ring_64` 63.5 / 4.8, `ring_76` 76.2 / 4.8. Ring colours are the rubber materials.
+- `[[parts]]` (at most 4096): `id` (unique), `kind`, optional `style` (default: the kind default), optional `bind`, `position` (`[x, y, z]`), `rotation_deg` (`[rx, ry, rz]`, default `[0, 0, 0]`), optional `material` (the instance material; giving both it and `overrides.material` is an error) and optional `overrides` (any style fields the kind accepts). A part without `bind` needs `position`.
+- Precedence for every field: part instance (`material`, `overrides`) > table style (and its `base` chain) > built-in style > kind default.
+- `bind` gives a style to an existing element. `"<id>"` or `"<section>:<id>"` names a `mechs`, `flippers`, `lamps`, `splines` or `switches` element of the same `table.toml` (a plain id matching elements in two sections is an error); `"<section>[<n>]"` names element `n` (from 0) of `walls`, `posts`, `lanes`, `ramps`, `decks` or `inserts` in the table's `layout.toml`, checked when the layout is resolved. One part per element (a flipper takes one `flipper_bat` and one `flipper_rubber`). Allowed kinds: mech `bumper` → `pop_bumper`, `sling` → `slingshot`, `drop_target` → `drop_target`, `spinner` → `spinner`, `gate` → `gate`, other mechs → `decoration`; flippers → `flipper_bat`, `flipper_rubber`; lamp `insert` → `insert`, `gi` → `gi_bulb`, `flasher` → `flasher_dome`; spline `wireform` → `wireform`, `guide` → `lane_guide`, `plastic_ramp`; switch `target` → `standup_target`, `drop_target`, `spinner` → `spinner`, `ring` → `pop_bumper`, other switches → `decoration`; `walls` → `wall`; `posts` → `post`, `star_post`, `rubber_ring`; `lanes` → `lane_guide`; `ramps` → `wireform`, `lane_guide`, `plastic_ramp`; `decks` → `deck`; `inserts` → `insert`. A bound part takes its position from the element (a spline's points are absolute, so its part sits at the origin); it may give `position` only when the element has none (a lamp or switch without `position`), and must then. A `layout.toml` bind never takes `position`.
+- `layout.toml` elements as parts. Every wall, post, lane, ramp, deck and insert resolves as a part (kinds `wall`; `post`; `lane_guide`; `wireform`, or `lane_guide` when its spline is a `guide`; `deck`; `insert`), named by its array path (`posts[3]`) in errors. The element's own keys are instance values and win: a post's `radius` (diameter 2 × radius) and `rubber` (physical `rubber`, else `steel`), a wall's or deck's `material`, an insert's `shape` (`circle` → `round`, `rect` → `rectangle`) and `size`, positions and points, and a deck's `z` (its part's `z`). For walls, posts and decks the element's material fixes the physical material: the look may come from the bound part's `material` or a named style only through a library material whose `physical` equals it (otherwise an error naming the part: looks and plays agree); the kind default's material gives way to the element's (`rubber`, `steel`, `wood`, `acrylic`). Lane guides and wireforms take `steel` from their defaults, as the generator does. Posts, walls and lane guides without a `height` get `playfield.wall_height`; inserts sit 0.1 mm above the surface (`lift`); wireform tubes are 1.5 mm in radius with 8 sides.
+- Placement (REQ-BUILD-002), playfield frame: `x` across from the playfield's left edge, `y` up the table from its front edge, `z` up from the playfield surface; right-handed, mm. `position` is the part's origin (for outline and polyline geometry, which stays in its own points, the base height `z`). `rotation_deg = [rx, ry, rz]` are rotations about the fixed playfield axes `x`, `y` and `z`, applied in that order (`rz` last), each counter-clockwise when looking from the positive axis toward the origin: the part-local point `p` maps to `position + Rz(rz) · Ry(ry) · Rx(rx) · p`. So `rz = 90` turns the part's local `+x` to the playfield's `+y`, and `rx = 90` turns local `+y` to `+z`. Each coordinate within ±5000 mm, each angle within ±360°. Visual-only parts (plastics, GI bulbs, flasher domes, decorations) are placed the same way.
+- Validation. Parsing `table.toml` checks everything that needs only the table and the built-ins: ids, colours, ranges and counts, kind fields, styles and their chains, every name a part uses (style, material, ring size, table bind), and, for each part, an unknown material (error naming the part and the material), a material whose `physical` is not an Appendix C name (error naming the part, the material and the value), and a ball-touchable part whose material has no `physical` (error naming the part). With the layout and the physics defaults, `TableManifest::check_physical_pairs` also requires every ball-touchable part's physical material to have at least one `[[material_pairs]]` entry with a ball material (`steel`, `ceramic`, `plastic`, `resin`); otherwise an error naming the part.
+- `[theme]` (drives the generated art): `title` (1 to 128 printable characters; default `meta.name`), `palette` (1 to 16 colours; when given it replaces `meta.palette` for the art generators, each entry checked, an error naming `theme.palette[i]`), `motif` (an id of at most 32 characters; default `geometric`) and `fonts` (role → font name, at most 8; roles are ids such as `title`, `label`, `score`; names are 1 to 64 of letters, digits, space, `-`, `_`, `.`, not starting with `.` or a space: names only, no paths). Without `[theme]` the effective theme is `meta.name`, `meta.palette` (entries that are not `#rrggbb` are skipped; `meta.palette` itself stays unvalidated), `geometric` and no fonts.
 
 ---
 

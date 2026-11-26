@@ -10,7 +10,8 @@
 //! * [`script`]: scripting contract (§3.4).
 //! * [`input`]: input events, cabinet inputs and haptics events.
 //! * [`materials`]: material pairs (restitution and friction).
-//! * [`schema`]: on-disk TOML schemas (Appendix A, Appendix C).
+//! * [`schema`]: on-disk TOML schemas (Appendix A, Appendix C); part styles, the material
+//!   library and the table theme in [`schema::parts`] (Appendix A.5).
 //! * [`sim`]: the 1 kHz [`SimStep`] contract the orchestrator drives (CR-002).
 //! * [`telemetry`]: UDP telemetry protocol v1 (Appendix B).
 //!

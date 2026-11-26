@@ -1,0 +1,254 @@
+# Built-in part styles and rubber-ring sizes shipped with the engine (SPEC Appendix A.5,
+# REQ-BUILD-003). Units: mm.
+#
+# Every kind has a default style whose id is the kind's name and which has no `base`; every
+# other style of that kind starts from it. A table's [[part_styles]] entry with the same id
+# overrides a style here field by field.
+#
+# The defaults reproduce what the table generator does today (docs/DECISIONS.md "#90 KP-010 —
+# Built-in library and style names"): posts, walls and lane guides leave `height` unset, which
+# means the playfield's `wall_height`; post material `steel` (a layout post with
+# `rubber = true` plays as `rubber`, its own key wins); lane guides and wireforms `steel`, a
+# wireform tube 1.5 mm in radius with 8 sides; walls `wood` and decks `acrylic` (a layout
+# wall's or deck's own `material` wins); inserts 0.1 mm above the surface. Other numbers are
+# design values.
+
+schema_version = 1
+
+# --- rubber-ring sizes: inner diameter and cross-section, mm ----------------------------------
+
+[[ring_sizes]]
+id = "ring_8"
+inner_diameter = 8.0
+section = 3.2
+
+[[ring_sizes]]
+id = "ring_11"
+inner_diameter = 11.1
+section = 3.2
+
+[[ring_sizes]]
+id = "ring_19"
+inner_diameter = 19.1
+section = 3.2
+
+[[ring_sizes]]
+id = "ring_25"
+inner_diameter = 25.4
+section = 3.2
+
+[[ring_sizes]]
+id = "ring_32"
+inner_diameter = 31.8
+section = 3.2
+
+[[ring_sizes]]
+id = "ring_38"
+inner_diameter = 38.1
+section = 3.2
+
+[[ring_sizes]]
+id = "ring_51"
+inner_diameter = 50.8
+section = 4.8
+
+[[ring_sizes]]
+id = "ring_64"
+inner_diameter = 63.5
+section = 4.8
+
+[[ring_sizes]]
+id = "ring_76"
+inner_diameter = 76.2
+section = 4.8
+
+# --- kind defaults ----------------------------------------------------------------------------
+
+[[styles]]
+id = "post"
+kind = "post"
+shape = "round"
+diameter = 10.0
+material = "steel"
+
+[[styles]]
+id = "star_post"
+kind = "star_post"
+diameter = 16.0
+height = 25.0
+star_points = 8
+material = "plastic_white"
+
+[[styles]]
+id = "rubber_ring"
+kind = "rubber_ring"
+ring_size = "ring_25"
+material = "rubber_black"
+
+[[styles]]
+id = "pop_bumper"
+kind = "pop_bumper"
+diameter = 76.0
+height = 50.0
+material = "plastic_white"
+trim_material = "plastic_translucent"
+
+[[styles]]
+id = "slingshot"
+kind = "slingshot"
+length = 100.0
+height = 28.0
+thickness = 3.0
+material = "rubber_white"
+trim_material = "plastic_white"
+
+[[styles]]
+id = "flipper_bat"
+kind = "flipper_bat"
+height = 22.0
+material = "plastic_white"
+
+[[styles]]
+id = "flipper_rubber"
+kind = "flipper_rubber"
+section = 4.8
+material = "rubber_black"
+
+[[styles]]
+id = "drop_target"
+kind = "drop_target"
+width = 25.0
+height = 30.0
+thickness = 3.0
+material = "plastic_white"
+
+[[styles]]
+id = "standup_target"
+kind = "standup_target"
+shape = "rectangle"
+width = 25.0
+height = 30.0
+thickness = 5.0
+material = "plastic_white"
+
+[[styles]]
+id = "spinner"
+kind = "spinner"
+width = 40.0
+height = 25.0
+thickness = 1.5
+material = "steel"
+
+[[styles]]
+id = "gate"
+kind = "gate"
+width = 30.0
+height = 25.0
+thickness = 1.5
+material = "steel"
+
+[[styles]]
+id = "lane_guide"
+kind = "lane_guide"
+material = "steel"
+
+[[styles]]
+id = "wall"
+kind = "wall"
+material = "wood"
+
+[[styles]]
+id = "wireform"
+kind = "wireform"
+tube_radius = 1.5
+tube_sides = 8
+material = "steel"
+
+[[styles]]
+id = "plastic_ramp"
+kind = "plastic_ramp"
+width = 60.0
+height = 25.0
+thickness = 3.0
+material = "plastic_translucent"
+
+[[styles]]
+id = "deck"
+kind = "deck"
+material = "acrylic"
+
+[[styles]]
+id = "plastic"
+kind = "plastic"
+shape = "rectangle"
+width = 50.0
+length = 30.0
+thickness = 3.0
+material = "plastic_translucent"
+
+[[styles]]
+id = "gi_bulb"
+kind = "gi_bulb"
+diameter = 10.0
+height = 20.0
+material = "lamp_lens"
+
+[[styles]]
+id = "flasher_dome"
+kind = "flasher_dome"
+diameter = 38.0
+height = 30.0
+material = "lamp_lens"
+
+[[styles]]
+id = "insert"
+kind = "insert"
+lift = 0.1
+material = "insert_lens"
+
+[[styles]]
+id = "decoration"
+kind = "decoration"
+material = "plastic_white"
+
+# --- named variants ---------------------------------------------------------------------------
+
+[[styles]]
+id = "post_chrome"
+kind = "post"
+material = "chrome"
+
+[[styles]]
+id = "post_rubber"
+kind = "post"
+material = "rubber_black"
+
+[[styles]]
+id = "rubber_ring_white"
+kind = "rubber_ring"
+material = "rubber_white"
+
+[[styles]]
+id = "rubber_ring_red"
+kind = "rubber_ring"
+material = "rubber_red"
+
+[[styles]]
+id = "flipper_rubber_red"
+kind = "flipper_rubber"
+material = "rubber_red"
+
+[[styles]]
+id = "wireform_chrome"
+kind = "wireform"
+material = "chrome"
+
+[[styles]]
+id = "plastic_ramp_clear"
+kind = "plastic_ramp"
+material = "acrylic_clear"
+
+[[styles]]
+id = "wall_painted"
+kind = "wall"
+material = "wood_painted"
