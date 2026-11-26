@@ -63,7 +63,8 @@ pub(crate) struct Part {
 }
 
 impl Part {
-    fn fixed(mesh: MeshMm) -> Part {
+    /// A static part (identity transform, no travel).
+    pub(crate) fn fixed(mesh: MeshMm) -> Part {
         Part {
             mesh,
             translation: None,
@@ -114,7 +115,7 @@ impl Frame<'_> {
 }
 
 /// A box with x in `xa..xb`, y in `y0..y1` and z from `lo(y)` to `hi(y)`.
-fn slab(
+pub(crate) fn slab(
     m: &mut MeshMm,
     xa: f64,
     xb: f64,

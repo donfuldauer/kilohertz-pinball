@@ -9,7 +9,7 @@ use pin_core::schema::cabinet::CabinetGeometry;
 use pin_tablegen::cabinet::{CABINET_GLB_FILE, GeneratedCabinet, NODE_NAMES, generate_cabinet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const NODES: [&str; 28] = [
+const NODES: [&str; 37] = [
     "cabinet.body.bottom",
     "cabinet.body.side_left",
     "cabinet.body.side_right",
@@ -38,9 +38,18 @@ const NODES: [&str; 28] = [
     "cabinet.button.action",
     "cabinet.plunger.housing",
     "cabinet.plunger.rod",
+    "cabinet.backbox.shell",
+    "cabinet.backbox.speaker_panel",
+    "cabinet.backbox.translite_frame",
+    "cabinet.backbox.translite",
+    "cabinet.backbox.display",
+    "cabinet.backbox.grilles",
+    "cabinet.backbox.hinge",
+    "cabinet.blade.left",
+    "cabinet.blade.right",
 ];
 
-const MATERIALS: [&str; 17] = [
+const MATERIALS: [&str; 24] = [
     "cabinet.body",
     "cabinet.side_left",
     "cabinet.side_right",
@@ -58,6 +67,13 @@ const MATERIALS: [&str; 17] = [
     "cabinet.button.start",
     "cabinet.button.action",
     "cabinet.plunger",
+    "cabinet.backbox",
+    "cabinet.backbox.speaker_panel",
+    "cabinet.backbox.grille",
+    "cabinet.backbox.translite",
+    "cabinet.backbox.display",
+    "cabinet.blade_left",
+    "cabinet.blade_right",
 ];
 
 type Edit = fn(&mut CabinetGeometry);
@@ -75,6 +91,15 @@ fn material_of(node: &str) -> String {
         "glass" => "cabinet.glass".into(),
         "coin_door" => "cabinet.coin_door".into(),
         "plunger.housing" | "plunger.rod" => "cabinet.plunger".into(),
+        // #111 (KP-030) contract section F: backbox and blade nodes.
+        "backbox.shell" => "cabinet.backbox".into(),
+        "backbox.speaker_panel" => "cabinet.backbox.speaker_panel".into(),
+        "backbox.translite_frame" | "backbox.hinge" => "cabinet.trim_metal".into(),
+        "backbox.translite" => "cabinet.backbox.translite".into(),
+        "backbox.display" => "cabinet.backbox.display".into(),
+        "backbox.grilles" => "cabinet.backbox.grille".into(),
+        "blade.left" => "cabinet.blade_left".into(),
+        "blade.right" => "cabinet.blade_right".into(),
         _ => {
             if let Some(rest) = n.strip_prefix("leg.") {
                 if rest.ends_with(".leveler") {
@@ -116,11 +141,12 @@ fn preset(id: &str) -> CabinetGeometry {
     CabinetGeometry::preset(id).unwrap_or_else(|e| panic!("{e:?}"))
 }
 
-/// REQ-CAB-001: the file name constant and the stable 28-node list, in order, for every preset.
+/// REQ-CAB-001: the file name constant and the stable 37-node list (the 28 of #110 plus the 9
+/// backbox and blade nodes of #111 contract section C), in order, for every preset.
 #[test]
 fn req_cab_001_node_list_is_stable_and_ordered() {
     assert_eq!(CABINET_GLB_FILE, "cabinet.glb");
-    assert_eq!(NODE_NAMES.len(), 28);
+    assert_eq!(NODE_NAMES.len(), 37);
     for (i, n) in NODES.iter().enumerate() {
         assert_eq!(NODE_NAMES[i], *n, "NODE_NAMES[{i}]");
     }
@@ -179,7 +205,8 @@ fn req_cab_001_meshes_have_uvs_normals_and_valid_indices() {
     }
 }
 
-/// REQ-CAB-001 / REQ-CAB-007: the 17 materials, their order, and the node-to-material mapping.
+/// REQ-CAB-001 / REQ-CAB-007: the 24 materials (17 of #110 plus 7 of #111 contract section F),
+/// their order, and the node-to-material mapping (including section F's backbox and blade nodes).
 #[test]
 fn req_cab_001_material_list_and_assignment() {
     for id in PRESETS {
