@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 507
-- Run-log rows: 550
+- Decision entries: 533
+- Run-log rows: 570
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -552,6 +552,32 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #161 KP-067: glam bans in pin_tablegen (docs/DECISIONS.md)
 - #161 KP-067: Integer, Ord and iterator min/max deliberately untouched (docs/DECISIONS.md)
 - #161 KP-067: One PR for all eight crates (docs/DECISIONS.md)
+- #84 KP-004: Where config.toml lives (docs/DECISIONS.md)
+- #84 KP-004: Menu integration: save thread, running game, pointer, table loads (docs/DECISIONS.md)
+- #84 KP-004: When each menu setting applies (docs/DECISIONS.md)
+- #84 KP-004: Menu overlay on the render thread (docs/DECISIONS.md)
+- #84 Tester: Settings are applied with the menu open (docs/DECISIONS.md)
+- #88 KP-008: Newton captive ball range (docs/DECISIONS.md)
+- #88 KP-008: SPEC Appendix A lamp example placement (docs/DECISIONS.md)
+- #205 KP-099: gpu-tests-cross build budget and robust cache save (docs/DECISIONS.md)
+- #89 KP-009: cabinet.toml key layout and frames (docs/DECISIONS.md)
+- #89 KP-009: Partial manifest, overrides and no-preset files (docs/DECISIONS.md)
+- #89 KP-009: Playfield attitude model and f64 (docs/DECISIONS.md)
+- #89 KP-009: Cabinet preset design values (docs/DECISIONS.md)
+- #89 KP-009: TableEnvelope and containment checks (docs/DECISIONS.md)
+- #85: Table swap by restarting the engine threads (docs/DECISIONS.md)
+- #85: The swap hitch is accepted (docs/DECISIONS.md)
+- #85: `last_table` is not loaded automatically (docs/DECISIONS.md)
+- #85: The menu opens on the Tables panel at start without `--table` (docs/DECISIONS.md)
+- #85: Scan and load errors in the browser (docs/DECISIONS.md)
+- #97: Display textures: mip filter, redraw semantics and size handling (docs/DECISIONS.md)
+- #103: Owned-path extension for the mech slot plan (docs/DECISIONS.md)
+- #103: Gate and diverter slot angles (docs/DECISIONS.md)
+- #103: Newton ball swing mapping (docs/DECISIONS.md)
+- #103: Bumper ring offset not modelled (docs/DECISIONS.md)
+- #103: Drop target offset clamps at −height (docs/DECISIONS.md)
+- #103: Plunger slot sign and quaternion precision (docs/DECISIONS.md)
+- #103 tester: Newton swing at rest (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

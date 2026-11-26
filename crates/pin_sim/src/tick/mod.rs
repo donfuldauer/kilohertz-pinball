@@ -16,13 +16,16 @@ use glam::Vec3;
 use pin_core::input::{CabinetInput, HapticsTelemetryEvent, InputEvent};
 use pin_core::script::MAX_SWITCHES;
 use pin_core::sim::SimStep;
-use pin_core::snapshot::{BallState, FlipperState, FrameStateSnapshot, MAX_BALLS};
+use pin_core::snapshot::{
+    BallState, FlipperState, FrameStateSnapshot, IDENTITY_QUAT, MAX_BALLS, MAX_DYNAMIC_MESHES,
+    MeshTransform, NEWTON_SWING_RANGE_RAD,
+};
 use pin_core::{CabinetAxis, HostCtx, SwitchEdge, TableScriptBackend};
 use pin_physics::ball::{BallHandle as PhysHandle, Geometry};
 use pin_physics::world::layers;
 
 use crate::alloc_guard::ExemptScope;
-use crate::sim::{PendingEdge, Script, Simulation, bit, set_bit};
+use crate::sim::{PendingEdge, Script, Simulation, SlotPlan, SlotSource, bit, set_bit};
 
 /// Seconds per tick.
 pub const DT: f32 = 0.001;
@@ -33,6 +36,67 @@ pub const NUDGE_DV_PER_TICK: f32 = 0.03;
 
 /// Speed (m/s) above which a captive Newton ball closes its mech's switch.
 pub const NEWTON_SWITCH_SPEED: f32 = 0.05;
+
+/// Angle (rad) about its hinge axis that an open gate's dynamic mesh slot
+/// publishes (SPEC Appendix A, REQ-VIS-002); a closed gate publishes 0.
+/// The gate's colliders toggle instantly with its coil, so the published
+/// angle steps between the two values (DECISIONS.md "#103 — gate and
+/// diverter slot angles").
+pub const GATE_OPEN_ANGLE_RAD: f32 = core::f32::consts::FRAC_PI_3;
+
+/// Angle (rad) about its hinge axis that an active diverter's dynamic mesh
+/// slot publishes (SPEC Appendix A, REQ-VIS-002); an inactive diverter (or
+/// one without a `[[diverters]]` binding) publishes 0. Instantaneous like
+/// the diverter's colliders.
+pub const DIVERTER_ON_ANGLE_RAD: f32 = core::f32::consts::FRAC_PI_6;
+
+/// The swing angle (rad) of a newton_ball's cradle slot for the captive
+/// ball's signed displacement `offset_m` along its path direction from rest
+/// on a path of `path_length_m`: `offset / length · NEWTON_SWING_RANGE_RAD`,
+/// clamped to `±NEWTON_SWING_RANGE_RAD` (0 at rest, the full range at the
+/// path's end; monotone; DECISIONS.md "#103 — Newton ball swing mapping").
+/// A non-finite input or a non-positive length gives 0.
+#[must_use]
+pub fn newton_swing_rad(offset_m: f32, path_length_m: f32) -> f32 {
+    if !(offset_m.is_finite() && path_length_m.is_finite() && path_length_m > 0.0) {
+        return 0.0;
+    }
+    let s = offset_m / path_length_m * NEWTON_SWING_RANGE_RAD;
+    pin_core::fmath::max_f32(
+        pin_core::fmath::min_f32(s, NEWTON_SWING_RANGE_RAD),
+        -NEWTON_SWING_RANGE_RAD,
+    )
+}
+
+/// Unit quaternion `[x, y, z, w]` of a right-handed rotation by `angle_rad`
+/// about `axis` (normalised here). The half-angle sine and cosine are
+/// `libm` `f64` functions (deterministic on every target, and accurate for
+/// a spinner's large unwrapped angles), the result is normalised in `f64`
+/// and rounded once to `f32`. A non-finite angle or axis, or a zero axis,
+/// gives the identity.
+#[must_use]
+pub fn axis_angle_quat(axis: Vec3, angle_rad: f32) -> [f32; 4] {
+    let (ax, ay, az) = (f64::from(axis.x), f64::from(axis.y), f64::from(axis.z));
+    let len = libm::sqrt((ax * ax + ay * ay) + az * az);
+    if !(angle_rad.is_finite() && len.is_finite() && len > 0.0) {
+        return IDENTITY_QUAT;
+    }
+    let half = 0.5 * f64::from(angle_rad);
+    let k = libm::sin(half) / len;
+    let (x, y, z, w) = (ax * k, ay * k, az * k, libm::cos(half));
+    let n = libm::sqrt(((x * x + y * y) + z * z) + w * w);
+    let q = [
+        (x / n) as f32,
+        (y / n) as f32,
+        (z / n) as f32,
+        (w / n) as f32,
+    ];
+    if q.iter().all(|c| c.is_finite()) {
+        q
+    } else {
+        IDENTITY_QUAT
+    }
+}
 
 impl Simulation {
     /// One tick, numbered `tick` (the next is `tick + 1`), with the input
@@ -332,7 +396,26 @@ impl Simulation {
         self.view.switches = new;
     }
 
-    /// Step 6: the frame snapshot.
+    /// Step 6: the frame snapshot: the tick, the balls, the flippers, the
+    /// lamps and GI, and one dynamic mesh slot per `[[mechs]]` entry in
+    /// `table.toml` order (`dynamic_mesh_count = min(mechs, 64)`; SPEC
+    /// Appendix A "Dynamic mesh slot convention", REQ-VIS-002). Each slot
+    /// is rewritten every tick from the load-time slot plan:
+    ///
+    /// * drop target: `[0, 0, MechSet::drop_target_offset_m]` (0 up,
+    ///   `−height` down), identity;
+    /// * sling, kickback, plunger: `u · MechSet::slider_state.0` (plunger
+    ///   negative = pulled back), identity;
+    /// * spinner: the pivot, rotated by the spinner angle about its axis;
+    /// * gate, diverter: the hinge (mech position), rotated about
+    ///   `−(z × u)` by [`GATE_OPEN_ANGLE_RAD`] / [`DIVERTER_ON_ANGLE_RAD`]
+    ///   while open / active, else identity;
+    /// * newton_ball: the mech position, rotated about `−(z × u)` by
+    ///   [`newton_swing_rad`] of the captive ball's displacement;
+    /// * bumper (ring kick not modelled) and VUK: zero offset, identity.
+    ///
+    /// Reads only; writes nothing but `self.snapshot`, never allocates,
+    /// and never publishes a non-finite value.
     pub(crate) fn publish_snapshot(&mut self) {
         let s = &mut self.snapshot;
         s.tick = self.tick;
@@ -349,9 +432,67 @@ impl Simulation {
                 zipper_offset_m: self.flippers.base_offset_mm(d.id) * 1.0e-3,
             });
         }
-        s.dynamic_mesh_count = 0;
         s.lamps = self.lamps;
         s.gi = self.gi;
+        let n = self.slots.len().min(MAX_DYNAMIC_MESHES);
+        for i in 0..n {
+            let t = self.slot_transform(i, &self.slots[i]);
+            self.snapshot.dynamic_meshes[i] = t;
+        }
+        self.snapshot.dynamic_mesh_count = n as u8;
+    }
+}
+
+impl Simulation {
+    /// The dynamic mesh slot of mech `index` (see `publish_snapshot`).
+    fn slot_transform(&self, index: usize, plan: &SlotPlan) -> MeshTransform {
+        let (position, orientation) = match plan.source {
+            SlotSource::Fixed => (plan.position, IDENTITY_QUAT),
+            SlotSource::Drop => {
+                let z = self.mechs.drop_target_offset_m(index).unwrap_or(0.0);
+                (Vec3::new(0.0, 0.0, z), IDENTITY_QUAT)
+            }
+            SlotSource::Slider => {
+                let x = self.mechs.slider_state(index).map_or(0.0, |(x, _)| x);
+                (plan.dir * x, IDENTITY_QUAT)
+            }
+            SlotSource::Spinner => {
+                let a = self.mechs.spinner_state(index).map_or(0.0, |(a, _)| a);
+                (plan.position, axis_angle_quat(plan.axis, a))
+            }
+            SlotSource::Gate(g) => {
+                let open = self.gates.get(g).is_some_and(|g| g.open);
+                let a = if open { GATE_OPEN_ANGLE_RAD } else { 0.0 };
+                (plan.position, axis_angle_quat(plan.axis, a))
+            }
+            SlotSource::Diverter(d) => {
+                let on = self.diverters.get(d).is_some_and(|d| d.active);
+                let a = if on { DIVERTER_ON_ANGLE_RAD } else { 0.0 };
+                (plan.position, axis_angle_quat(plan.axis, a))
+            }
+            SlotSource::Newton(k) => {
+                let swing = self
+                    .newtons
+                    .get(k)
+                    .filter(|b| b.chain < self.solver.newton_chain_count())
+                    .map(|b| self.solver.newton_chain(b.chain))
+                    .filter(|c| !c.is_empty())
+                    .map_or(0.0, |c| {
+                        let offset = (c.ball_position(0) - plan.path_start).dot(plan.dir);
+                        newton_swing_rad(offset, plan.path_length)
+                    });
+                (plan.position, axis_angle_quat(plan.axis, swing))
+            }
+        };
+        let position = if position.is_finite() {
+            position
+        } else {
+            Vec3::ZERO
+        };
+        MeshTransform {
+            position_m: position.to_array(),
+            orientation,
+        }
     }
 }
 
@@ -367,6 +508,113 @@ impl SimStep for Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rotation angle (rad, `(−π, π]`) of unit quaternion `q` about `axis`.
+    fn recovered_angle(q: [f32; 4], axis: Vec3) -> f64 {
+        let v = [f64::from(q[0]), f64::from(q[1]), f64::from(q[2])];
+        let s = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let dot = v[0] * f64::from(axis.x) + v[1] * f64::from(axis.y) + v[2] * f64::from(axis.z);
+        let a = 2.0 * libm::atan2(s, f64::from(q[3]));
+        let a = if dot < 0.0 { -a } else { a };
+        wrap(a)
+    }
+
+    fn wrap(a: f64) -> f64 {
+        let t = core::f64::consts::TAU;
+        let r = a - t * libm::floor(a / t);
+        if r > core::f64::consts::PI { r - t } else { r }
+    }
+
+    fn norm(q: [f32; 4]) -> f64 {
+        q.iter()
+            .map(|&c| f64::from(c) * f64::from(c))
+            .sum::<f64>()
+            .sqrt()
+    }
+
+    /// REQ-VIS-002 (spinner, gate, diverter, newton slots): angle 0 is the
+    /// exact identity; a non-finite angle or a zero / non-finite axis is
+    /// the identity.
+    #[test]
+    fn axis_angle_zero_and_degenerate_inputs_are_identity() {
+        for axis in [Vec3::X, Vec3::Y, Vec3::new(0.6, -0.8, 0.0)] {
+            assert_eq!(axis_angle_quat(axis, 0.0), IDENTITY_QUAT);
+            assert_eq!(axis_angle_quat(axis, f32::NAN), IDENTITY_QUAT);
+            assert_eq!(axis_angle_quat(axis, f32::INFINITY), IDENTITY_QUAT);
+        }
+        assert_eq!(axis_angle_quat(Vec3::ZERO, 1.0), IDENTITY_QUAT);
+        assert_eq!(
+            axis_angle_quat(Vec3::new(f32::NAN, 0.0, 0.0), 1.0),
+            IDENTITY_QUAT
+        );
+        assert_eq!(
+            axis_angle_quat(Vec3::new(f32::INFINITY, 0.0, 0.0), 1.0),
+            IDENTITY_QUAT
+        );
+    }
+
+    /// REQ-VIS-002 (spinner slot): a large unwrapped spinner angle is
+    /// encoded within 1e-5 (modulo 2π), and the rotation sense is
+    /// right-handed (−z rotated by +90° about −(z × y) = +x is +y).
+    #[test]
+    fn axis_angle_large_angles_and_sense() {
+        let axis = Vec3::X;
+        for a in [100.0f32, -250.5, 1234.567, core::f32::consts::TAU] {
+            let q = axis_angle_quat(axis, a);
+            let err = wrap(recovered_angle(q, axis) - f64::from(a)).abs();
+            assert!(err <= 1e-5, "{a}: {err}");
+        }
+        let q = axis_angle_quat(Vec3::X, core::f32::consts::FRAC_PI_2);
+        let r = pin_physics::quat_ops::mul_vec3(glam::Quat::from_array(q), -Vec3::Z);
+        assert!((r - Vec3::Y).length() < 1e-6, "{r}");
+    }
+
+    /// REQ-VIS-002 (newton_ball slot): 0 at rest, the full range at the
+    /// path end, clamped, monotone, 0 for degenerate inputs.
+    #[test]
+    fn newton_swing_mapping() {
+        assert_eq!(newton_swing_rad(0.0, 0.05), 0.0);
+        assert!((newton_swing_rad(0.05, 0.05) - NEWTON_SWING_RANGE_RAD).abs() < 1e-6);
+        assert_eq!(newton_swing_rad(1.0, 0.05), NEWTON_SWING_RANGE_RAD);
+        assert_eq!(newton_swing_rad(-1.0, 0.05), -NEWTON_SWING_RANGE_RAD);
+        assert_eq!(newton_swing_rad(f32::NAN, 0.05), 0.0);
+        assert_eq!(newton_swing_rad(0.01, 0.0), 0.0);
+        assert_eq!(newton_swing_rad(0.01, f32::INFINITY), 0.0);
+        let mut prev = f32::NEG_INFINITY;
+        for k in -100..=100 {
+            let s = newton_swing_rad(k as f32 * 1.0e-3, 0.05);
+            assert!(s >= prev);
+            prev = s;
+        }
+    }
+
+    proptest::proptest! {
+        /// REQ-VIS-002: the axis-angle quaternion is unit length within
+        /// 1e-6 and round-trips the angle within 1e-5 for angles in
+        /// [−π, π] about any non-degenerate axis.
+        #[test]
+        fn axis_angle_unit_and_round_trip(
+            x in -1.0f32..1.0, y in -1.0f32..1.0, z in -1.0f32..1.0,
+            a in -core::f32::consts::PI..core::f32::consts::PI,
+        ) {
+            let axis = Vec3::new(x, y, z);
+            proptest::prop_assume!(axis.length() > 1.0e-3);
+            let q = axis_angle_quat(axis, a);
+            proptest::prop_assert!(q.iter().all(|c| c.is_finite()));
+            proptest::prop_assert!((norm(q) - 1.0).abs() <= 1.0e-6);
+            let err = wrap(recovered_angle(q, axis.normalize()) - f64::from(a)).abs();
+            proptest::prop_assert!(err <= 1.0e-5, "angle {} err {}", a, err);
+        }
+
+        /// REQ-VIS-002 (newton_ball slot): the swing is finite and within
+        /// ±NEWTON_SWING_RANGE_RAD for any input.
+        #[test]
+        fn newton_swing_in_range(o in proptest::num::f32::ANY, l in proptest::num::f32::ANY) {
+            let s = newton_swing_rad(o, l);
+            proptest::prop_assert!(s.is_finite());
+            proptest::prop_assert!(s.abs() <= NEWTON_SWING_RANGE_RAD);
+        }
+    }
 
     #[test]
     fn edge_bits_helpers() {

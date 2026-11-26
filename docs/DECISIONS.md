@@ -8681,3 +8681,44 @@ frame and an ordering hazard with the present).
 **Rationale:** Integer averaging of the stored bytes is exact and identical on every backend (no dependence on the precision of hardware linear filtering or of float-to-unorm rounding), and meets the 2/255 region-mean bound for power-of-two sizes. Building everything except per-draw buffers in `new()` meets "no pipeline, texture or bind-group-layout per update" and keeps the GPU texture object stable for a bound material.
 
 **Alternatives:** Linear-filtered `textureSample` at the texel corner, which depends on filtering precision; a compute shader, which needs `STORAGE_BINDING` on the texture and is not supported for `Rgba8Unorm` storage on every downlevel backend; a 3 × 3 tent filter for odd sizes, which costs more and is not required (the brief accepts clamped edges); exposing `set_image` on `ScoreTexture`, which is outside the brief's fixed API and can be added when the backbox consumer needs LCD images.
+## #103 — Owned-path extension for the mech slot plan
+
+**Decision:** #103 also edits `crates/pin_sim/src/sim/mod.rs` (a read-only `slots: Vec<SlotPlan>` field and the `SlotPlan` / `SlotSource` types), `crates/pin_sim/src/load/mod.rs` (the plan is built at load, one entry per `[[mechs]]` entry up to `MAX_DYNAMIC_MESHES`, with the binding index into `gates` / `diverters` / `newtons`, the direction `u`, the hinge axis `−(z × u)`, the absolute hinge / pivot position and the Newton path start and length), and adds two read-only accessors to `pin_physics::mech::MechSet`: `drop_target_offset_m` and `spinner_pivot_axis` (no behaviour change). Approved by the Orchestrator.
+**Rationale:** `publish_snapshot` must not allocate (R4) and the bindings carry no mech index, so the slot-to-binding mapping has to be precomputed at load; the drop target's `z` and the spinner's pivot and axis are private in `pin_physics`, and recomputing the spinner defaults in `pin_sim` would duplicate `physics_defaults.toml` resolution.
+**Alternatives:** searching the bindings every tick (no mech index to search by); recomputing drop heights and spinner pivots from the `[[mechs]]` params and defaults in `pin_sim` (duplicated default resolution that can drift).
+
+## #103 — Gate and diverter slot angles
+
+**Decision:** A gate slot publishes its hinge (the mech position) and a rotation about `−(z × u)` of 0 while closed and `GATE_OPEN_ANGLE_RAD = π/3` while `GateBinding.open`; a diverter slot publishes 0 while inactive and `DIVERTER_ON_ANGLE_RAD = π/6` while `DiverterBinding.active` (a diverter without a binding publishes its position with identity). Both constants are public in `pin_sim::tick`. The angle steps between the two values in one tick.
+**Rationale:** The physics toggles the colliders instantly, so an animated swing would be drawn where the simulation is not; the brief's recommended angles.
+**Alternatives:** an eased swing over several ticks (draws a state the physics does not have); per-table angles (no schema key exists).
+
+## #103 — Newton ball swing mapping
+
+**Decision:** The newton_ball slot is the cradle frame: position = the mech position, orientation = a rotation about `−(z × u)` by `newton_swing_rad(offset, length) = clamp(offset / length · NEWTON_SWING_RANGE_RAD, ±NEWTON_SWING_RANGE_RAD)`, where `offset = (ball_position(0) − path start) · u` and `length` is the path length (`length` mm, default 50). It is 0 at rest, ±π/2 at the path end, monotone; non-finite input or a non-positive length gives 0.
+**Rationale:** Uses the whole documented range over the captive ball's travel; deterministic `f32` arithmetic with `fmath` clamps.
+**Alternatives:** `offset / length` taken directly as radians (the brief's first suggestion; reaches only 1 rad, so the documented range is never used); a physical pendulum angle `asin(offset / arm)` (needs an arm length the schema does not have).
+
+## #103 — Bumper ring offset not modelled
+
+**Decision:** The bumper slot is always the zero offset with identity orientation: the ring kick is not modelled as motion (the physics' ring is a static cylinder and the kick is a velocity impulse in `pre_step`).
+**Rationale:** There is no ring motion state to publish; a fabricated offset would draw motion the simulation does not have.
+**Alternatives:** a cosmetic offset while the coil is on (state the simulation does not have; belongs to the renderer if wanted).
+
+## #103 — Drop target offset clamps at −height
+
+**Decision:** The drop target slot's z is `MechSet::drop_target_offset_m = max(z, −height)`: 0 up, `−height` down, rising to 0 while the reset raises it. The internal 2 mm hide depth below the playfield is not published.
+**Rationale:** Appendix A defines the slot as the height below the raised position; the hide depth is a collision detail (the dropped target sits below the playfield so a ball never touches it), and publishing it would sink the drawn target 2 mm into the playfield.
+**Alternatives:** publishing the raw internal z (−height − 2 mm when down).
+
+## #103 — Plunger slot sign and quaternion precision
+
+**Decision:** The plunger slot is `u · slider_state.0` unchanged: `pin_physics` already keeps the rod at `−stroke ≤ x ≤ 0` with negative = pulled back (the hand constraint is `x ≤ −depth·stroke`), which is the Appendix A meaning, so no negation is needed. The axis-angle quaternions (spinner, gate, diverter, newton) are built by `pin_sim::tick::axis_angle_quat` from `libm` `f64` `sin` / `cos` of the half angle, normalised in `f64` and rounded once to `f32`.
+**Rationale:** A spinner's unwrapped angle reaches hundreds of radians; `f32` half-angle arithmetic would lose the brief's 1e-5 angle match there. `libm` `f64` is deterministic across targets and no simulation state depends on it.
+**Alternatives:** `libm::sinf` / `cosf` (error grows with the unwrapped angle); reducing the angle modulo 2π in `f32` (same loss).
+
+## #103 tester — Newton swing at rest
+
+**Decision:** The Newton test asserts exact identity at load (tick 0), a swing below 1e-3 rad over the first 20 ticks, and, after a strike, a maximum swing more than 1e-4 rad above the same table's idle run (not just above 1e-4).
+**Rationale:** The captive ball settles under the playfield pitch: the idle table publishes a swing of 1.4e-5 rad at tick 1 growing to a steady 6.2e-4 rad by tick 80. A literal "identity at rest" check would reject that physically correct equilibrium, and a bare "> 1e-4 after a strike" check would be satisfied by the settle alone, so the strike is compared to the idle baseline.
+**Alternatives:** Asserting exact identity on every rest tick (fails on the settle); asserting only `> 1e-4` after the strike (cannot tell a strike from the settle).
