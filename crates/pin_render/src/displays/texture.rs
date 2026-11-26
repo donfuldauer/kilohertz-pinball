@@ -34,7 +34,8 @@
 //! bundles, D25), and registering the file is the way to draw it.
 
 use super::{
-    BackglassDesc, BackglassRenderer, DisplayContent, RgbaImage, ScoreDisplayConfig, ScoreRenderer,
+    BackglassDesc, BackglassRenderer, DisplayContent, DmdSpec, RgbaImage, ScoreDisplayConfig,
+    ScoreRenderer,
 };
 use crate::gpu::{GpuContext, GpuError};
 use crate::topology::Rect;
@@ -65,6 +66,27 @@ pub(super) fn check_texture_size(width: u32, height: u32, max: u32) -> Result<()
         )));
     }
     Ok(())
+}
+
+/// Refuses a score display `config` its renderer cannot build without a
+/// wgpu panic: a DMD spec outside [`DmdSpec::new`]'s bounds, or whose dot
+/// texture has a side above `max` (the device's `max_texture_dimension_2d`).
+/// An LCD config creates no canvas-sized texture and is accepted.
+fn check_score_config(config: &ScoreDisplayConfig, max: u32) -> Result<(), GpuError> {
+    match *config {
+        ScoreDisplayConfig::Dmd(spec) => {
+            DmdSpec::new(spec.width, spec.height, spec.color)
+                .map_err(|e| GpuError::InvalidArgument(format!("score display: {e}")))?;
+            if spec.width > max || spec.height > max {
+                return Err(GpuError::InvalidArgument(format!(
+                    "score display: DMD dot texture {}x{} (each side must be 1..={max})",
+                    spec.width, spec.height
+                )));
+            }
+            Ok(())
+        }
+        ScoreDisplayConfig::Lcd(_) => Ok(()),
+    }
 }
 
 /// Area-weighted mip step: one fullscreen triangle per level, reading the
@@ -535,19 +557,31 @@ pub struct ScoreTexture {
 impl ScoreTexture {
     /// Builds the renderer of `config` for [`DISPLAY_TEXTURE_FORMAT`] and a
     /// `width × height` texture with [`mip_level_count`] levels, every level
-    /// transparent black. A side of 0 or above the device's
-    /// `max_texture_dimension_2d` is a [`GpuError::InvalidArgument`].
+    /// transparent black.
+    ///
+    /// Errors, all [`GpuError::InvalidArgument`] and never a wgpu panic
+    /// (D25), checked before any GPU resource is created:
+    ///
+    /// * a `width` or `height` of 0 or above the device's
+    ///   `max_texture_dimension_2d`;
+    /// * a DMD `config` whose [`DmdSpec`] is outside the bounds of
+    ///   [`DmdSpec::new`] (16..=512 × 8..=256 dots; the fields are public, so
+    ///   a spec can bypass that constructor) or whose dot texture
+    ///   (`spec.width × spec.height`) exceeds `max_texture_dimension_2d`
+    ///   (#163 round 13, finding 16).
+    ///
+    /// An LCD `config` is not checked here: its renderer creates no
+    /// canvas-sized texture (the canvas only scales the draw list), so no
+    /// canvas size reaches a wgpu panic. Valid configurations are unchanged.
     pub fn new(
         ctx: &GpuContext,
         config: ScoreDisplayConfig,
         width: u32,
         height: u32,
     ) -> Result<ScoreTexture, GpuError> {
-        check_texture_size(
-            width,
-            height,
-            ctx.device().limits().max_texture_dimension_2d,
-        )?;
+        let max = ctx.device().limits().max_texture_dimension_2d;
+        check_texture_size(width, height, max)?;
+        check_score_config(&config, max)?;
         let renderer = ScoreRenderer::new(ctx, DISPLAY_TEXTURE_FORMAT, config);
         let target = MipTexture::new(ctx, "score texture", width, height)?;
         Ok(ScoreTexture { renderer, target })
@@ -555,11 +589,27 @@ impl ScoreTexture {
 
     /// Registers the image that LCD scene image layers with `file = <file>`
     /// draw (forwards to [`ScoreRenderer::set_image`]). Call it for every
-    /// image the scenes use (the bundle's [`ImageSet`](super::ImageSet)),
-    /// before or after the first [`update`](Self::update); setting the same
-    /// file again replaces its texture in place. A successful call makes the
-    /// next `update` with LCD content redraw, so the image appears without a
-    /// content change.
+    /// image the scenes use (the bundle's [`ImageSet`](super::ImageSet));
+    /// setting the same file again replaces its texture in place. A
+    /// successful call makes the next `update` with LCD content redraw, so
+    /// the image appears without a content change.
+    ///
+    /// How much a caller must do depends on the layer's height (#163 round
+    /// 13, finding 17):
+    ///
+    /// * **Explicit height** (`h > 0`): the composed draw list already holds
+    ///   the [`LcdItem::Image`](super::LcdItem::Image) with its rectangle, so
+    ///   calling `set_image` before or after the first
+    ///   [`update`](Self::update) is enough (redraw only); replacing the
+    ///   image redraws the same rectangle with the new pixels.
+    /// * **Auto height** (`h = 0`): [`LcdDrawList::compose`](super::LcdDrawList::compose)
+    ///   takes the height from the image's aspect ratio, so the image must
+    ///   *also* be in the `ImageSet` passed to `compose`. When it is missing
+    ///   (or invalid) there, `compose` leaves the layer out of the draw list,
+    ///   and `set_image` cannot add it to an existing list. After
+    ///   registering such an image late, or replacing it with one of a
+    ///   different aspect ratio, add it to that `ImageSet`, recompose the
+    ///   draw list and pass the new list to [`update`](Self::update).
     ///
     /// An [`LcdItem::Image`](super::LcdItem::Image) whose file was never
     /// registered is skipped when drawing (no error, no log): a missing

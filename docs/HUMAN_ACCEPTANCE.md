@@ -14,10 +14,10 @@ Inputs:
 
 Counts:
 
-- Open queue lines: 15
+- Open queue lines: 16
 - Resolved queue lines: 323
-- Decision entries: 590
-- Run-log rows: 639
+- Decision entries: 599
+- Run-log rows: 650
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -42,6 +42,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - [ ] [P8 spec] [KP-009-floor-height-xy] SPEC Appendix A cabinet.toml "Frames" (REQ-BUILD-002) defines the body-bottom height as linear in y only ("mean effective leg length of the front or rear pair - body.leg_overlap, linear in y between the leg centrelines"), which cannot represent the body roll that REQ-CAB-008 derives when left and right legs differ. Proposed edit: "the body bottom is the plane through the four leg-top centres (each leg's effective length less body.leg_overlap); its height at cabinet (x, y) varies linearly with y between the front and rear leg centrelines and with x between the left and right leg centrelines". Caveat: this edit is incomplete until the owner also defines the floor-height rule for non-coplanar leg tops (independent legs, REQ-CAB-007); adoption should include that rule, and #217 waits for it. Implementation: #217 (KP-103). See DECISIONS "#163 gate round 9 — cabinet floor height must vary with x". (docs/HUMAN_QUEUE.md)
 - [ ] [P8 spec] [KP-009-art-optional] SPEC Appendix A.4 says a cabinet.toml without `preset` must state every key, but the code and the acceptance test treat `[art]` as optional: an absent `[art]` table means an empty art map, because A.4 defines `[art]` entries as additive. Proposed edit: add "`[art]` may be omitted; absent means no entries" to A.4. See the #163 gate round 11 disposition on PR #197. (docs/HUMAN_QUEUE.md)
 - [ ] [P8 spec] [#163] Gate #163 rounds 11 and 12 edited `docs/PROCESS.md` P6 to resolve CodeRabbit gate-review findings, which P8 lists as an owner edit. The edits: the gate boundary is the reviewed head, not the merge commit; only PRs into `main` are merged; review fix issues of an open gate review are not gate issues; missed-gate fixes go through ordinary PRs; the RUN_LOG-row commit is the only unreviewed commit above the reviewed head. Please ratify or revert them (DECISIONS "#163 gate round 11 — Gate review boundary is the reviewed head, not the merge commit" and the two "#163 gate round 12" process entries). (docs/HUMAN_QUEUE.md)
+- [ ] [P8 spec] [#163-r13] Ratify the round 13 PROCESS.md edits (DECISIONS "#163 gate round 13 — Gate procedure: reviewed-head approval, missed-gate candidate head, owned paths of gate-review fixes"). P5 unit gate item 8 adds the gate-review owned-path union through RUN_LOG `fix paths` and the missed-gate tree check. P6 "Review PR" step 6 gains a "Missed gate" paragraph: candidate head = reviewed head; CI, verifier and automated gates on it before approval is recorded; RUN_LOG row through a documentation-only PR off main; close-out without a merge. The backstop, step 4 "Fixed" and step 7 gain pointers to it. (docs/HUMAN_QUEUE.md)
 
 ### Blocked run-log rows
 
@@ -639,6 +640,15 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #163 gate round 12: Glass top checked at its own y (docs/DECISIONS.md)
 - #163 gate round 12: fmath std oracle stays bit-exact on x86_64 (docs/DECISIONS.md)
 - #163 gate round 12: #83 coverage recorded by a new row; row 575 stays (docs/DECISIONS.md)
+- #163 gate round 13: Windows hard-link identity stays a documented limit (docs/DECISIONS.md)
+- #163 gate round 13: Run limits count the current engine across table swaps (docs/DECISIONS.md)
+- #163 gate round 13: ACL fixture EPERM stays a local skip (docs/DECISIONS.md)
+- #163 gate round 13: Frame join and frame count across a same-tick re-press and an engine swap (docs/DECISIONS.md)
+- #163 gate round 13: Input forwarding reports only events that reached the ring (docs/DECISIONS.md)
+- #163 gate round 13: Score texture validates the DMD spec before allocating (docs/DECISIONS.md)
+- #163 gate round 13: Windowed verdict: run-end marker, drain bound and frame count (docs/DECISIONS.md)
+- #163 gate round 13: Gate procedure: reviewed-head approval, missed-gate candidate head, owned paths of gate-review fixes (docs/DECISIONS.md)
+- #163 gate round 13: GPU-leg build step bounded by the cache-save reserve (docs/DECISIONS.md)
 
 ## 4. D33 flags
 

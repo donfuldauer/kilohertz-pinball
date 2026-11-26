@@ -100,10 +100,17 @@ fn gpu_cross_cache_build_step_precedes_bounded_test_run() {
         build < test,
         "the --no-run build must come before the test run"
     );
+    // Gate #163 round 13: the build timeout is computed by `build_budget`, not a literal.
     assert_eq!(
-        steps[build]["timeout-minutes"].as_i64(),
-        Some(BUILD_TIMEOUT_MIN),
-        "build step timeout"
+        str_of(&steps[build], "timeout-minutes"),
+        Some("${{ fromJSON(steps.build_budget.outputs.minutes) }}"),
+        "build step timeout comes from the build_budget step"
+    );
+    let (start, _) = step_by_id(&steps, "start");
+    let (build_budget, _) = step_by_id(&steps, "build_budget");
+    assert!(
+        start < build_budget && build_budget < build,
+        "build_budget is computed after `start` and before the build"
     );
     let (budget, _) = step_by_id(&steps, "budget");
     assert!(
@@ -115,9 +122,58 @@ fn gpu_cross_cache_build_step_precedes_bounded_test_run() {
         Some("${{ fromJSON(steps.budget.outputs.minutes) }}"),
         "the test run is bounded by the computed budget"
     );
-    for i in [build, budget, test] {
+    for i in [build_budget, build, budget, test] {
         assert_eq!(str_of(&steps[i], "if"), Some("runner.os != 'Linux'"));
     }
+}
+
+/// Gate #163 round 13: the build step's cap is min(BUILD_TIMEOUT_MIN, job cap - reserve -
+/// elapsed), using the same reserve/elapsed formula as the test-step budget.
+#[test]
+fn gpu_cross_cache_build_budget_clamps_to_the_job_cap() {
+    let steps = steps();
+    let (_, bb) = step_by_id(&steps, "build_budget");
+    let (_, tb) = step_by_id(&steps, "budget");
+    let env = &bb["env"];
+    assert_eq!(
+        str_of(env, "MAX_BUILD_MIN"),
+        Some(BUILD_TIMEOUT_MIN.to_string().as_str()),
+        "the build never gets more than the old fixed cap"
+    );
+    let cap = Workflow::load("ci.yml").job(JOB).unwrap().timeout_minutes();
+    assert_eq!(
+        str_of(env, "JOB_TIMEOUT_MIN").and_then(|v| v.parse::<i64>().ok()),
+        cap,
+        "build_budget uses the job's own timeout"
+    );
+    assert_eq!(
+        str_of(env, "JOB_START"),
+        Some("${{ steps.start.outputs.epoch }}")
+    );
+    assert_eq!(
+        str_of(env, "CACHE_HIT"),
+        Some("${{ steps.rust-cache.outputs.cache-hit }}")
+    );
+    let script = str_of(bb, "run").expect("build_budget has a script");
+    let test_script = str_of(tb, "run").expect("budget has a script");
+    let lines: Vec<&str> = script.lines().map(str::trim).collect();
+    let test_lines: Vec<&str> = test_script.lines().map(str::trim).collect();
+    for formula in [
+        r#"if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=8; fi"#,
+        "elapsed=$(( ($(date +%s) - JOB_START + 59) / 60 + 1 ))",
+        "minutes=$(( JOB_TIMEOUT_MIN - reserve - elapsed ))",
+    ] {
+        assert!(lines.contains(&formula), "build_budget lacks `{formula}`");
+        assert!(test_lines.contains(&formula), "budget lacks `{formula}`");
+    }
+    let clamp = r#"if [ "$minutes" -gt "$MAX_BUILD_MIN" ]; then minutes=$MAX_BUILD_MIN; fi"#;
+    let pos = |l: &str| lines.iter().position(|x| *x == l);
+    let calc = pos("minutes=$(( JOB_TIMEOUT_MIN - reserve - elapsed ))").unwrap();
+    assert!(
+        pos(clamp).is_some_and(|c| c > calc),
+        "the MAX_BUILD_MIN clamp follows the formula"
+    );
+    assert!(script.contains(r#"echo "minutes=$minutes" >> "$GITHUB_OUTPUT""#));
 }
 
 #[test]

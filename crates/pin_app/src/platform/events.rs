@@ -229,16 +229,19 @@ impl InputPath {
 
     /// Pushes `ev` after every retained event; a release or reset that
     /// cannot go yet is retained, anything else that cannot go is dropped.
-    fn push(&mut self, stats: &mut ForwardStats, ev: InputEvent) {
+    /// `true` when this call enqueued `ev` into the ring (`false`: retained
+    /// or dropped).
+    fn push(&mut self, stats: &mut ForwardStats, ev: InputEvent) -> bool {
         let clear = self.retry(stats);
         if clear && self.ring.push(ev).is_ok() {
             stats.input_forwarded += 1;
-            return;
+            return true;
         }
         match release_key(&ev) {
             Some(key) => self.retain(key, ev),
             None => stats.input_dropped += 1,
         }
+        false
     }
 }
 
@@ -318,8 +321,12 @@ impl EventForwarder {
         ev: InputEvent,
     ) {
         match menu {
-            Some(m) => m.route(ev, &mut |e| Self::push_input(input, stats, e)),
-            None => Self::push_input(input, stats, ev),
+            Some(m) => m.route(ev, &mut |e| {
+                Self::push_input(input, stats, e);
+            }),
+            None => {
+                Self::push_input(input, stats, ev);
+            }
         }
     }
 
@@ -398,9 +405,9 @@ impl EventForwarder {
     }
 
     /// Pushes `ev` into the input ring behind any retained releases (see
-    /// the [module docs](self)).
-    fn push_input(input: &mut InputPath, stats: &mut ForwardStats, ev: InputEvent) {
-        input.push(stats, ev);
+    /// the [module docs](self)). `true` when `ev` was enqueued.
+    fn push_input(input: &mut InputPath, stats: &mut ForwardStats, ev: InputEvent) -> bool {
+        input.push(stats, ev)
     }
 
     /// Releases and axis resets the input ring rejected that are still
@@ -461,7 +468,8 @@ impl EventForwarder {
     /// [`Translated::Ignored`], as do their releases and repeats; every
     /// cabinet event goes through [`MenuController::route`], and the
     /// returned [`Translated::Input`] is the last event that reached the
-    /// ring ([`Translated::Ignored`] when the menu consumed them all).
+    /// ring ([`Translated::Ignored`] when the menu consumed them all, or the
+    /// ring rejected them: dropped, or a release retained for a retry).
     pub fn forward(&mut self, event: &Event) -> Translated {
         self.input.retry(&mut self.stats);
         if self.menu_toggle(event) {
@@ -473,12 +481,14 @@ impl EventForwarder {
             let mut last = None;
             let handled = router.route(event, &mut |ev| match menu.as_mut() {
                 Some(m) => m.route(ev, &mut |e| {
-                    last = Some(e);
-                    Self::push_input(input, stats, e);
+                    if Self::push_input(input, stats, e) {
+                        last = Some(e);
+                    }
                 }),
                 None => {
-                    last = Some(ev);
-                    Self::push_input(input, stats, ev);
+                    if Self::push_input(input, stats, ev) {
+                        last = Some(ev);
+                    }
                 }
             });
             if handled {
@@ -494,12 +504,15 @@ impl EventForwarder {
                     let (input, stats) = (&mut self.input, &mut self.stats);
                     let mut last = None;
                     m.route(ev, &mut |e| {
-                        last = Some(e);
-                        Self::push_input(input, stats, e);
+                        if Self::push_input(input, stats, e) {
+                            last = Some(e);
+                        }
                     });
                     return last.map_or(Translated::Ignored, Translated::Input);
                 }
-                Self::push_input(&mut self.input, &mut self.stats, ev);
+                if !Self::push_input(&mut self.input, &mut self.stats, ev) {
+                    return Translated::Ignored;
+                }
             }
             Translated::Window {
                 timestamp_ns,
@@ -1216,5 +1229,84 @@ mod tests {
         assert_eq!(got[0], InputEvent::button(1, CabinetInput::Start, true));
         assert_eq!(&got[1..], want.as_slice());
         assert_eq!(f.stats().input_forwarded, 1 + want.len() as u64);
+    }
+
+    /// A forwarder whose capacity-1 input ring already holds one event.
+    fn full_ring_forwarder(
+        router: bool,
+        menu: bool,
+    ) -> (EventForwarder, pin_core::spsc::SpscConsumer<InputEvent>) {
+        let (itx, irx) = channel(1);
+        let (wtx, _wrx) = channel(1);
+        let mut f = EventForwarder::new(itx, wtx);
+        if router {
+            f.set_router(InputRouter::new());
+        }
+        if menu {
+            let dir = std::env::temp_dir().join(format!(
+                "pin_app_events_full_{}_{router}",
+                std::process::id()
+            ));
+            f.set_menu(MenuController::load(dir.join("config.toml")).0);
+        }
+        // The left flipper is held, and the ring is full.
+        let held = InputEvent::button(1, CabinetInput::LeftFlipper, true);
+        assert_eq!(
+            f.forward(&key(true, Scancode::LShift, 1, false)),
+            Translated::Input(held)
+        );
+        assert_eq!(f.stats().input_forwarded, 1);
+        (f, irx)
+    }
+
+    /// Round 13 finding 8 (REQ-LAT-003): a press the full ring dropped is
+    /// reported as `Ignored`, on the router, router + menu, menu only and
+    /// keymap paths; an accepted press is still `Input`.
+    #[test]
+    fn forward_reports_only_events_that_reached_the_ring() {
+        for (router, menu) in [(true, false), (true, true), (false, true), (false, false)] {
+            let (mut f, mut irx) = full_ring_forwarder(router, menu);
+            assert_eq!(
+                f.forward(&key(true, Scancode::RShift, 5, false)),
+                Translated::Ignored,
+                "router={router} menu={menu}"
+            );
+            let s = f.stats();
+            assert_eq!((s.input_dropped, s.input_forwarded), (1, 1));
+            assert!(f.retained_releases().is_empty());
+            // Room again: an accepted press is reported.
+            assert!(irx.pop().is_some());
+            let ev = InputEvent::button(6, CabinetInput::LeftUpper, true);
+            assert_eq!(
+                f.forward(&key(true, Scancode::LCtrl, 6, false)),
+                Translated::Input(ev),
+                "router={router} menu={menu}"
+            );
+            assert_eq!(f.stats().input_forwarded, 2);
+            assert_eq!(irx.pop(), Some(ev));
+        }
+    }
+
+    /// Round 13 finding 8: a release the ring rejected is retained and
+    /// reported as `Ignored`; the retry keeps its timestamp.
+    #[test]
+    fn forward_reports_a_retained_release_as_ignored() {
+        for (router, menu) in [(true, false), (true, true), (false, true), (false, false)] {
+            let (mut f, mut irx) = full_ring_forwarder(router, menu);
+            assert_eq!(
+                f.forward(&key(false, Scancode::LShift, 7, false)),
+                Translated::Ignored,
+                "router={router} menu={menu}"
+            );
+            assert_eq!(f.retained_releases().len(), 1);
+            assert_eq!(f.stats().input_dropped, 0);
+            assert!(irx.pop().is_some());
+            f.poll(8);
+            assert!(f.retained_releases().is_empty());
+            assert_eq!(
+                irx.pop(),
+                Some(InputEvent::button(7, CabinetInput::LeftFlipper, false))
+            );
+        }
     }
 }

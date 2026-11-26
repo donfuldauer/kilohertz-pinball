@@ -480,6 +480,8 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
   pops every ring event stamped at or before the tick end up to the per-tick input buffer of 256
   events (`INPUT_BUFFER_CAPACITY`), and eligible events beyond 256 are applied in a later executed
   tick (the next one, or later ones when more than 256 remain; the app input ring holds 1,024).
+  A press whose timestamp is later than the trace's `run_end_ns` marker is a failure and gets
+  neither the end-of-run excuse nor the end exclusion.
 - **b. Key to photon in frames (REQ-LAT-001, CI form).** For each press except those stamped
   within 500 ms of `run_end_ns` (excluded and counted): the raw count `n_raw = frame - F0`, `F0` the
   last presented frame at or before `sdl_ts_ns` (`n_raw = frame + 1` for a press before the first
@@ -490,7 +492,8 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
   presses were "in-flight shifted". A press with no move, or no frame that showed the bat raised
   while held, fails. The trace's `frame` is chosen by the app (the drawn angles are not in the
   file); the verdict checks it exists, matches the frame table and is a candidate. Counted in frames, never milliseconds (lavapipe draws about 8 frames per
-  second); key-to-photon p50/p99 in ms is printed as information.
+  second); key-to-photon p50/p99 in ms is printed as information. A selected response frame
+  presented before the press's input drain (`drain_sdl_ns`) fails; equal times pass.
 - **c. Real time (REQ-LAT-002, CI form).** From `pin_app: N sim ticks (D dropped), ...`:
   `D / (N + D) <= 0.001`, and `N` within 1 % of 60 000. The simulated-to-wall ratio `N / (N + D)`
   is printed. On lavapipe the app now starts lean (REQ-LAT-006, #83: MSAA, bloom and motion blur
@@ -499,7 +502,9 @@ the shutdown lines. Without the flag nothing is allocated or recorded.
   warning does not claim them.
 - **d. Completeness.** No trace overflow, at least 100 presses, as many presses traced as the
   driver injected, and `input dropped 0` on the shutdown line (a dropped input event is a missing
-  trace row; a shutdown line without the field is malformed).
+  trace row; a shutdown line without the field is malformed). The number of frame rows in the
+  trace equals the `F frames` of the shutdown line (the windowed run drives one playfield
+  surface, so both count the same presents).
 
 **The lavapipe cap.** lavapipe's worker threads are capped with `LP_NUM_THREADS=2` (the workflow
 env and `run.sh`'s default), so on a 4-vCPU GitHub runner the sim thread keeps a core next to the
@@ -507,9 +512,10 @@ render, main and audio threads and lavapipe's two workers. Measured on the 4-cor
 60 s run each (dropped ticks of about 60 000 / presented frames / check a): 1 thread 30
 (0.050 %) / 277 / pass; 2 threads 8 (0.013 %) / 526 / pass; 3 threads 20 (0.033 %) / 734 / fail
 (one press 4 ms late: the main thread starved). To measure: `LP_NUM_THREADS=<n>
-scripts/windowed/run.sh target/windowed_lp<n>` for each `n`, and read the `dropped ratio` row of
-`summary.txt`; choose the value whose ratio stays well under 0.1 % (DECISIONS.md "#82 —
-LP_NUM_THREADS cap").
+scripts/windowed/run.sh target/windowed_lp<n>` for each `n`, discard every setting whose
+`summary.txt` does not pass checks a to d, then among the passing settings choose the one whose
+`dropped ratio` row stays well under 0.1 % (use the ratio only to compare settings that pass;
+DECISIONS.md "#82 — LP_NUM_THREADS cap").
 
 **Running it locally** (from the repository root, with the agent environment):
 
@@ -545,7 +551,7 @@ failure `summary.txt`.
 
 ## Owned paths and shared files
 
-Each issue lists its owned paths (PROCESS.md R1); change nothing outside them. The shared
+Each issue lists its owned paths (PROCESS.md R1); change nothing outside them. A gate-review fix brief may own paths outside the gate issue's owned paths; the Orchestrator records them as `fix paths` in the gate's `docs/RUN_LOG.md` round rows, and the owned-path check of the gate's verifier runs allows them (P5 unit gate item 8). The shared
 append-only files are `docs/DECISIONS.md`, `docs/HUMAN_QUEUE.md`, `docs/RUN_LOG.md` and
 `contracts/CHANGE_REQUESTS.md`; every issue may append to them (P5 unit gate item 8), and a merge
 conflict in one of them is resolved by keeping both sides in order. New exact pins go in the root

@@ -381,7 +381,18 @@ All must hold:
 8. An automated path check confirms the diff touches only owned paths plus the shared append-only
    files `docs/RUN_LOG.md`, `docs/DECISIONS.md`, `docs/HUMAN_QUEUE.md` and
    `contracts/CHANGE_REQUESTS.md`, and new exact pins in the root `Cargo.toml`
-   `[workspace.dependencies]` under a comment naming the issue.
+   `[workspace.dependencies]` under a comment naming the issue. For the work-verifier runs of a
+   gate review (each fix batch, and the final run on the head that merges; P6 "Review PR"
+   step 4), "owned paths" is the union of the gate issue's owned paths and the OWNED PATHS of
+   every gate-review fix brief of that gate, which the Orchestrator lists in the gate's
+   `docs/RUN_LOG.md` round rows (Notes: `fix paths: <paths>`), committed on the gate branch no
+   later than the step 7 RUN_LOG-row commit, so the union is recomputable from the merging head.
+   A path outside that union (and outside the shared files) still fails the check, and no fix
+   brief lists a `pin_core` contract path (contracts change only through
+   `contracts/CHANGE_REQUESTS.md`, R2). A missed gate's review
+   branch carries no commit of its own ("Review PR" step 6, missed gate), so its path check is
+   that the review head's tree equals the tree of the `main` commit last merged into it; each fix
+   passed this check in its own PR.
 9. The work-verifier reports `pass`. The unit is done only when its PR merges under P6.
 
 ### Phase gate (D39, D40)
@@ -520,8 +531,9 @@ review branch, and the review
 PR's reviewed head (the commit CodeRabbit last reviewed and approved, "Review PR" step 6; for a
 split review, the gate-head SHA the area PRs record as built-from) is recorded as
 `reviewed <reviewed head sha>`, never a later `main` commit. The review PR is never merged; it
-is closed as step 7 describes. The phase-gate row is not recorded
-until that review is approved. Gate reviews still run one at a time (below).
+is closed as "Review PR" step 6 ("Missed gate") describes, in place of step 7's merge. The
+phase-gate row is not recorded until that review is approved. Gate reviews still run one at a
+time (below).
 
 **Review fix issues.** While a gate review of gate G is open (its `review/G-missed` PR or
 its area PRs, or a step 2 review PR or area PRs of G), a `work-unit` issue created under "Review
@@ -569,8 +581,9 @@ the previous gate review. Git tags are not used (D39), so the reviewed commit is
    as a reply on its thread (`add_reply_to_pull_request_comment` or
    `gh api -X POST repos/{owner}/{repo}/pulls/{n}/comments/{comment_id}/replies -f body='<reply text>'`):
    - **Fixed:** an executor commit on the gate branch addresses it (gate-review fixes may touch
-     paths outside the gate issue's owned paths; contracts still change only under R2), the
-     verifier re-runs the affected checks, and the reply names the commit. The thread is then
+     paths outside the gate issue's owned paths, which the owned-path check then allows through
+     the fix briefs' recorded `fix paths`, P5 unit gate item 8; contracts still change only under
+     R2), the verifier re-runs the affected checks, and the reply names the commit. The thread is then
      resolved. A missed gate has no gate branch: its fixes are commits on a fresh branch off
      `main`, merged through an ordinary PR that closes a review fix issue ("Gate issue").
    - **Not a defect:** the reply gives the evidence that the finding is not reproducible in the
@@ -646,7 +659,30 @@ the previous gate review. Git tags are not used (D39), so the reviewed commit is
    tests, the tick-time benchmark) confirms the phase; its row goes in `docs/RUN_LOG.md` with the
    next PR. A red post-merge phase gate becomes new issues (P7) and never reverts the merge by
    itself.
-7. **Close out.** Merge the gate issue's PR into `main`. Close every review PR **without
+
+   **Missed gate.** This paragraph applies only to a gate opened by the backstop ("Gate issue"
+   (3)), which has no gate issue PR to merge; every gate with a gate issue PR keeps the text
+   above and step 7 unchanged. Its candidate head is its reviewed head: the head of
+   `review/<gate>-missed` at approval or, for a split review, the gate-head SHA every area PR
+   records as built-from; no commit goes on top of it. Before its approval is recorded (the
+   `reviewed <sha>` and the phase-gate row), all of these hold on that head: the review
+   conditions above on every review PR; CI green, read from that commit's check runs and
+   statuses (if no completed `ci` run exists on it, point `review/<gate>-missed` at it and
+   dispatch one with `gh workflow run ci.yml --ref review/<gate>-missed`), with `main`'s last
+   push CI green as well; the work-verifier's last result `pass`; and the phase's automated
+   gates (and, for a milestone, its exit criteria). The gate's `docs/RUN_LOG.md` row (review PR
+   links, rounds, deferred issues, `reviewed <reviewed head sha>`) has no gate branch to ride on:
+   it is committed on a fresh branch off `main` and merged through an ordinary
+   documentation-only PR under the routine merge conditions (CI and the work-verifier on that
+   PR's own head); that PR closes no `work-unit` issue, the backstop (3) does not fire for this
+   gate after its merge, and the row falls inside the next gate review's cumulative diff. Close-out, in
+   place of step 7's merge: close every review PR of the gate (the `review/<gate>-missed` PR or
+   every area PR) **without merging**, with a comment naming the reviewed head and linking the
+   review fix PRs; delete the `review-base/<gate>` and any `review/<gate>-*` branches (if the
+   session proxy refuses branch deletion, leave them; they are inert); then unblock dependents.
+   Nothing is pushed to `main` directly.
+7. **Close out.** (A missed gate has no gate issue PR and closes out as step 6, "Missed gate",
+   says instead.) Merge the gate issue's PR into `main`. Close every review PR **without
    merging**, with a comment linking the merge commit. Delete the `review-base/<gate>` and any
    `review/<gate>-*` branches (if the session proxy refuses branch deletion, leave them; they are
    inert). The gate's `docs/RUN_LOG.md` row (review PR links, rounds, deferred issues) is committed

@@ -92,14 +92,17 @@
 //!    * `frame`: the index of the first presented frame, in present order,
 //!      whose snapshot tick is `>= move_tick` and `<= release_tick` (the
 //!      `apply_tick` of the next release, `down = 0`, of the same input
-//!      after this press; unbounded when there is none) and whose snapshot
-//!      shows one of the press's bats raised by at least 1 degree from its
-//!      angle at the applying tick's start, in its energised direction (the
-//!      same test as `move_tick`): the first frame that showed the bat
-//!      displaced while the key was held. A bat that crossed 1 degree and
-//!      fell back below it (a ball impact, a stop rebound) is matched only
-//!      to a later frame that shows it raised again; a frame drawn at the
-//!      release tick counts only when it still shows the bat raised.
+//!      after this press; unbounded when there is none; `< release_tick`
+//!      when that release is followed, in delivery order, by a press of the
+//!      same input in the same tick, whose bat that tick's snapshot shows)
+//!      and whose snapshot shows one of the press's bats raised by at least
+//!      1 degree from its angle at the applying tick's start, in its
+//!      energised direction (the same test as `move_tick`): the first frame
+//!      that showed the bat displaced while the key was held. A bat that
+//!      crossed 1 degree and fell back below it (a ball impact, a stop
+//!      rebound) is matched only to a later frame that shows it raised
+//!      again; a frame drawn at the release tick counts only when it still
+//!      shows the bat raised (and never after a same-tick re-press).
 //!      `move_tick` only selects the earliest candidate frame. Empty without
 //!      a move or such a frame;
 //!    * `frame_snap_tick`, `present_ns`: that frame's snapshot tick and
@@ -107,7 +110,10 @@
 //!    * `frames_to_photon`: `frame - F0`, where `F0` is the index of the
 //!      last presented frame whose `present_ns <= sdl_ts_ns`: the raw count
 //!      from the press. A press before the first presented frame counts from
-//!      frame index 0 (`frame + 1`).
+//!      frame index 0 (`frame + 1`). In a trace of several engines (a table
+//!      swap, [`CollectedTrace::append`]) `F0` is taken from the whole
+//!      frame table, so a press stamped under an earlier engine counts that
+//!      engine's later frames too.
 //! 2. One empty line, then the **frame table**: the header line
 //!    [`FRAME_HEADER`] (`frame,snap_tick,present_ns`) and one row per
 //!    presented playfield frame (0-based index in present order, the
@@ -797,14 +803,65 @@ pub fn frames_to_photon(frames: &[FrameRecord], t_ns: u64, frame: u64) -> u64 {
 }
 
 /// For each of `inputs` (in delivery order), the `apply_tick` of the next
-/// release of the same input after it (`None` when there is none).
+/// release of the same input after it (`None` when there is none). The
+/// join ([`join_trace`]) bounds a press's frames by it: inclusively, or
+/// exclusively when the same input is pressed again in that release's tick
+/// ([`ReleaseBound`]).
 pub fn release_ticks(inputs: &[InputRecord]) -> Vec<Option<u64>> {
-    let mut next = [None; CabinetInput::COUNT];
+    release_bounds(inputs)
+        .into_iter()
+        .map(|b| b.map(|b| b.tick))
+        .collect()
+}
+
+/// The next release of a press's input after it, as the frame join uses it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct ReleaseBound {
+    /// The release's `apply_tick`.
+    tick: u64,
+    /// Whether a press of the same input follows the release, in delivery
+    /// order, in that same tick (a same-tick re-press).
+    re_pressed: bool,
+}
+
+impl ReleaseBound {
+    /// Whether a frame drawn at `snap_tick` is still inside the press's
+    /// hold: `snap_tick <= tick`, or `snap_tick < tick` after a same-tick
+    /// re-press (the release tick's snapshot then shows the re-press's bat,
+    /// gate 163 round 13 finding 6). `None` (no release) is unbounded.
+    fn admits(bound: Option<Self>, snap_tick: u64) -> bool {
+        match bound {
+            None => true,
+            Some(Self {
+                tick,
+                re_pressed: false,
+            }) => snap_tick <= tick,
+            Some(Self {
+                tick,
+                re_pressed: true,
+            }) => snap_tick < tick,
+        }
+    }
+}
+
+/// [`release_ticks`] with, for each release, whether the same input is
+/// pressed again in the release's tick. Deliveries are in tick order, so the
+/// next press of the input after the release is the only one that can share
+/// its tick.
+fn release_bounds(inputs: &[InputRecord]) -> Vec<Option<ReleaseBound>> {
+    let mut next_release = [None; CabinetInput::COUNT];
+    let mut next_press: [Option<u64>; CabinetInput::COUNT] = [None; CabinetInput::COUNT];
     let mut out = vec![None; inputs.len()];
     for (i, r) in inputs.iter().enumerate().rev() {
-        out[i] = next[r.input.index()];
-        if !r.down {
-            next[r.input.index()] = Some(r.apply_tick);
+        let k = r.input.index();
+        out[i] = next_release[k];
+        if r.down {
+            next_press[k] = Some(r.apply_tick);
+        } else {
+            next_release[k] = Some(ReleaseBound {
+                tick: r.apply_tick,
+                re_pressed: next_press[k] == Some(r.apply_tick),
+            });
         }
     }
     out
@@ -813,8 +870,11 @@ pub fn release_ticks(inputs: &[InputRecord]) -> Vec<Option<u64>> {
 /// Joins the sim's input and move records with the frame table: each row
 /// gets its `move_tick` and the first frame, in present order, whose
 /// snapshot tick is `>= move_tick` and `<= release_tick` (the next release
-/// of the same input, [`release_ticks`]; unbounded without one) and whose
-/// snapshot shows one of the press's bats raised by at least
+/// of the same input, [`release_ticks`]; unbounded without one; `<
+/// release_tick` when that release is followed, in delivery order, by a
+/// press of the same input in the same tick: that tick's snapshot shows the
+/// re-press's bat, never the released press's, gate 163 round 13 finding 6)
+/// and whose snapshot shows one of the press's bats raised by at least
 /// [`RAISE_THRESHOLD_RAD`] (1 degree) from the press's base (its applying
 /// tick's start) in the energised direction of `bindings`: the same
 /// predicate as `move_tick`, so a bat that crossed 1 degree and fell back
@@ -832,18 +892,17 @@ pub fn join_trace(
     frames: &[FrameRecord],
     bindings: &FlipperBindings,
 ) -> Vec<TraceRow> {
-    let releases = release_ticks(inputs);
+    let releases = release_bounds(inputs);
     inputs
         .iter()
         .zip(releases)
         .map(|(r, release)| {
             let mv = moves.iter().find(|m| m.seq == r.seq);
             let move_tick = mv.map(|m| m.move_tick);
-            let until = release.unwrap_or(u64::MAX);
             let drawn = mv.and_then(|m| {
                 frames.iter().find(|f| {
                     f.snap_tick >= m.move_tick
-                        && f.snap_tick <= until
+                        && ReleaseBound::admits(release, f.snap_tick)
                         && raised(&f.angles, m.mask, bindings, &m.base)
                 })
             });
@@ -892,8 +951,23 @@ impl CollectedTrace {
     ///   stay unique and ascending: each is offset by one past `self`'s last
     ///   frame (the number of frames accumulated, as every engine numbers
     ///   its recorded frames from 0 without gaps), and so is the `frame`
-    ///   field of `later`'s rows; `frames_to_photon` is a difference and
-    ///   stays as it is;
+    ///   field of `later`'s rows;
+    /// * `frames_to_photon` of every `later` row with a frame is recomputed
+    ///   over the combined frame table ([`frames_to_photon`] of its SDL
+    ///   timestamp and renumbered frame; gate 163 round 13 finding 7): a
+    ///   press stamped before the earlier engine's last present but applied
+    ///   by the later engine also counts the earlier engine's frames
+    ///   presented after it, as one table that the windowed verdict checks.
+    ///   The matched frame, `move_tick`, `frame_snap_tick` and `present_ns`
+    ///   stay the later engine's own; `self`'s rows and rows without a frame
+    ///   keep their value. Every engine's present times are read from the
+    ///   one monotonic SDL clock and the later engine starts presenting
+    ///   after the earlier one's threads were joined, so the combined table
+    ///   is in present order. Should a later present time still be earlier
+    ///   than an earlier one, `F0` is the last frame of the longest leading
+    ///   run of the table presented at or before the press (the windowed
+    ///   verdict's rule; the same frame as [`last_frame_at_or_before`] on a
+    ///   table in present order), never a panic;
     /// * `later`'s rows follow `self`'s, their `event_seq` offset the same
     ///   way (one past `self`'s last `event_seq`) so it stays unique;
     /// * tick numbers (`apply_tick`, `move_tick`, `frame_snap_tick` and the
@@ -910,9 +984,29 @@ impl CollectedTrace {
                 frame: f.frame + frame_offset,
                 ..f
             }));
+        // `horizon[i]` is the latest present time among frames 0..=i: equal
+        // to `present_ns` on a table in present order and non-decreasing
+        // always, so `partition_point` on it finds the end of the leading
+        // run presented at or before a press (see the doc comment).
+        let horizon: Vec<u64> = self
+            .frames
+            .iter()
+            .scan(0u64, |m, f| {
+                *m = (*m).max(f.present_ns);
+                Some(*m)
+            })
+            .collect();
+        let frames = &self.frames;
         self.rows.extend(later.rows.into_iter().map(|mut r| {
             r.input.seq += seq_offset;
             r.frame = r.frame.map(|f| f + frame_offset);
+            if let Some(f) = r.frame {
+                let n = horizon.partition_point(|&p| p <= r.input.sdl_ts_ns);
+                r.frames_to_photon = Some(match n.checked_sub(1) {
+                    Some(i) => f.saturating_sub(frames[i].frame),
+                    None => f.saturating_add(1),
+                });
+            }
             r
         }));
         let (o, l) = (&mut self.overflows, later.overflows);
@@ -2522,15 +2616,16 @@ mod tests {
         assert_eq!(t.frames, vec![frame(0, 7, 1234), frame(1, 9, 999)]);
     }
 
-    /// One engine's collected trace: `presses` presses (seq 0..), each
-    /// shown in frame `i` of `frames` frames, the run ending at `end`.
+    /// One engine's collected trace: `presses` presses (seq 0..), press
+    /// `i` stamped 500 ns before frame `i`'s present and shown in it (one
+    /// frame to photon), of `frames` frames, the run ending at `end`.
     fn engine(presses: u64, frames: u64, base_ns: u64, end: u64) -> CollectedTrace {
         let fr: Vec<FrameRecord> = (0..frames)
             .map(|i| shown(i, 10 + i, base_ns + 1_000 * i))
             .collect();
         let rows = (0..presses)
             .map(|i| TraceRow {
-                input: rec(i, base_ns + 1_000 * i, 10 + i),
+                input: rec(i, base_ns + 1_000 * i - 500, 10 + i),
                 move_tick: Some(10 + i),
                 frame: (i < frames).then_some(i),
                 frame_snap_tick: (i < frames).then_some(10 + i),
@@ -2561,6 +2656,14 @@ mod tests {
     fn append_merges_engines_in_order() {
         let first = engine(2, 3, 1_000_000, 5_000_000);
         let second = engine(3, 4, 9_000_000, 20_000_000);
+        // The fixtures are what each engine's own join computes.
+        for e in [&first, &second] {
+            for r in &e.rows {
+                let f = r.frame.unwrap();
+                let n = frames_to_photon(&e.frames, r.input.sdl_ts_ns, f);
+                assert_eq!(r.frames_to_photon, Some(n));
+            }
+        }
         let mut all = CollectedTrace::default();
         all.append(first.clone());
         assert_eq!(all, first, "appending to an empty trace is the identity");
@@ -2607,5 +2710,166 @@ mod tests {
             CollectedTrace::parse(&first.to_csv()).unwrap().rows,
             first.rows
         );
+    }
+
+    /// A release (`down = 0`) of the left flipper as `seq`, stamped `ts`,
+    /// applied at `tick`.
+    fn rel(seq: u64, ts: u64, tick: u64) -> InputRecord {
+        InputRecord {
+            down: false,
+            ..rec(seq, ts, tick)
+        }
+    }
+
+    /// REQ-LAT-001, REQ-LAT-003, gate 163 round 13 finding 6 (review
+    /// comment 4712335633): press A (tick 2, move at tick 3) is released
+    /// and the same input pressed again (B) in tick 5. A frame drawn at
+    /// tick 5 that shows the bat raised shows B's raise, not A's: A's
+    /// eligible frames end before the release tick, so A gets no frame
+    /// (its `move_tick` stays) and B gets the tick-5 frame. Without the
+    /// re-press, or with the re-press at a later tick, the release tick
+    /// stays eligible for A.
+    #[test]
+    fn req_lat_001_same_tick_re_press_frame_is_not_the_released_press() {
+        let a = rec(0, 1_500_000, 2);
+        let frames = [frame(0, 4, 4_500_000), shown(1, 5, 5_500_000)];
+        // Release and re-press in tick 5.
+        let rows = join_trace(
+            &[a, rel(1, 4_800_000, 5), rec(2, 4_900_000, 5)],
+            &[mv0(0, 3), mv0(2, 5)],
+            &frames,
+            &left0(),
+        );
+        assert_eq!(rows[0].move_tick, Some(3), "A's move is kept");
+        assert_eq!(rows[0].frame, None, "the tick-5 frame is B's");
+        assert_eq!(rows[0].frame_snap_tick, None);
+        assert_eq!(rows[0].present_ns, None);
+        assert_eq!(rows[0].frames_to_photon, None);
+        assert_eq!(rows[1].frame, None, "a release");
+        assert_eq!(rows[2].move_tick, Some(5));
+        assert_eq!(rows[2].frame, Some(1));
+        assert_eq!(rows[2].frame_snap_tick, Some(5));
+        assert_eq!(rows[2].frames_to_photon, Some(1));
+        // No re-press: the release tick stays eligible for A.
+        let rows = join_trace(&[a, rel(1, 4_800_000, 5)], &[mv0(0, 3)], &frames, &left0());
+        assert_eq!(rows[0].frame, Some(1));
+        assert_eq!(rows[0].frame_snap_tick, Some(5));
+        assert_eq!(rows[0].frames_to_photon, Some(2));
+        // Re-press at a later tick: A keeps the release tick eligible.
+        let rows = join_trace(
+            &[a, rel(1, 4_800_000, 5), rec(2, 5_200_000, 6)],
+            &[mv0(0, 3), mv0(2, 6)],
+            &[
+                frame(0, 4, 4_500_000),
+                shown(1, 5, 5_500_000),
+                shown(2, 6, 6_500_000),
+            ],
+            &left0(),
+        );
+        assert_eq!(rows[0].frame, Some(1));
+        assert_eq!(rows[2].frame, Some(2));
+        // A re-press of another input in the release tick changes nothing.
+        let mut other = rec(2, 4_900_000, 5);
+        other.input = CabinetInput::RightFlipper;
+        let rows = join_trace(
+            &[a, rel(1, 4_800_000, 5), other],
+            &[mv0(0, 3)],
+            &frames,
+            &left0(),
+        );
+        assert_eq!(rows[0].frame, Some(1));
+        // Release and re-press at tick 0 (no underflow): A has no
+        // eligible frame, B gets the tick-0 frame.
+        let mut a0 = rec(0, 100, 1);
+        a0.apply_tick = 0;
+        let mut r0 = rel(1, 200, 1);
+        r0.apply_tick = 0;
+        let mut b0 = rec(2, 300, 1);
+        b0.apply_tick = 0;
+        let rows = join_trace(
+            &[a0, r0, b0],
+            &[mv0(0, 0), mv0(2, 0)],
+            &[shown(0, 0, 1_000)],
+            &left0(),
+        );
+        assert_eq!(rows[0].frame, None);
+        assert_eq!(rows[2].frame, Some(0));
+        // `release_ticks` itself is unchanged: the next release's tick.
+        assert_eq!(
+            release_ticks(&[a, rel(1, 4_800_000, 5), rec(2, 4_900_000, 5)]),
+            vec![Some(5), None, None]
+        );
+    }
+
+    /// REQ-LAT-001, REQ-LAT-003, gate 163 round 13 finding 7 (review
+    /// comment 4712335637): a press carried over an engine swap counts its
+    /// frames from its own timestamp across the combined frame table. The
+    /// earlier engine presented at 10 and 20, the later one at 30; a
+    /// later-engine press stamped 15 and first shown in the frame at 30
+    /// counts frames 1 and 2 (`frames_to_photon` 2, the later engine alone
+    /// computed 1); a later press stamped 25 stays 1. The matched frame is
+    /// renumbered, ticks stay engine-local, the earlier rows are unchanged.
+    #[test]
+    fn req_lat_001_append_counts_frames_across_the_engine_swap() {
+        let earlier_frames = vec![shown(0, 3, 10), shown(1, 4, 20)];
+        let mut all = CollectedTrace {
+            rows: join_trace(&[rec(0, 5, 2)], &[mv0(0, 3)], &earlier_frames, &left0()),
+            frames: earlier_frames,
+            ..CollectedTrace::default()
+        };
+        let before = all.rows.clone();
+        assert_eq!(before[0].frames_to_photon, Some(1));
+        let later_frames = vec![shown(0, 7, 30)];
+        let later_rows = join_trace(
+            &[rec(0, 15, 6), rec(1, 25, 6)],
+            &[mv0(0, 7), mv0(1, 7)],
+            &later_frames,
+            &left0(),
+        );
+        assert_eq!(later_rows[0].frames_to_photon, Some(1), "engine-local");
+        all.append(CollectedTrace {
+            rows: later_rows,
+            frames: later_frames,
+            ..CollectedTrace::default()
+        });
+        assert_eq!(all.rows[0], before[0], "earlier rows unchanged");
+        let (p15, p25) = (&all.rows[1], &all.rows[2]);
+        assert_eq!(p15.frame, Some(2), "renumbered");
+        assert_eq!(p15.frames_to_photon, Some(2), "frames 1 and 2 count");
+        assert_eq!(p15.move_tick, Some(7), "engine-local");
+        assert_eq!(p15.frame_snap_tick, Some(7), "engine-local");
+        assert_eq!(p15.present_ns, Some(30));
+        assert_eq!(p15.input.apply_tick, 6);
+        assert_eq!(p25.frame, Some(2));
+        assert_eq!(p25.frames_to_photon, Some(1));
+        for r in &all.rows {
+            let f = r.frame.unwrap();
+            assert_eq!(
+                r.frames_to_photon,
+                Some(frames_to_photon(&all.frames, r.input.sdl_ts_ns, f)),
+                "agrees with the combined frame table"
+            );
+        }
+        // Guard: a later engine's first present (30) before the earlier
+        // engine's last (100) does not panic; `F0` is the last frame of the
+        // leading run presented at or before the press: frame 0 for a press
+        // at 15 (2 frames), the whole table for a press at 200 (0 frames).
+        let mut odd = CollectedTrace {
+            frames: vec![shown(0, 3, 10), shown(1, 4, 100)],
+            ..CollectedTrace::default()
+        };
+        let later_frames = vec![shown(0, 7, 30)];
+        odd.append(CollectedTrace {
+            rows: join_trace(
+                &[rec(0, 15, 6), rec(1, 200, 6)],
+                &[mv0(0, 7), mv0(1, 7)],
+                &later_frames,
+                &left0(),
+            ),
+            frames: later_frames,
+            ..CollectedTrace::default()
+        });
+        let f2p: Vec<Option<u64>> = odd.rows.iter().map(|r| r.frames_to_photon).collect();
+        assert_eq!(f2p, [Some(2), Some(0)]);
     }
 }

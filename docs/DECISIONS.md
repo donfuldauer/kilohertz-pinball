@@ -9529,3 +9529,80 @@ requiring a new single review PR after a split (contradicts P6 step 3).
 **Rationale.** Editing row 575 would rewrite history. Measuring the later tree is the honest, checkable substitute, and the #83 code is unchanged in it apart from later reviewed work. Had a floor been missed, the new row would record `fail` and the gap would become a work-unit issue (P7).
 
 **Alternatives.** Reply "pre-existing" and leave the gap (rejected: P5 has no exception, and the tool is available now). Edit row 575 (rejected: append-only). Measure at 0fcbfcb in a scratch worktree (not needed, since every floor is met on the current tree).
+
+
+## #163 gate round 13 — Windows hard-link identity stays a documented limit
+
+**Decision.** `same_file` keeps comparing canonical paths off Unix (device and inode on Unix). A hard link to the configuration or bundle on Windows is not detected by the shutdown identity check. The limit recorded in "#163 gate round 12 - Trace destination checked against the config by file identity at shutdown" stands.
+
+**Rationale.** Stable `std` has no Windows file-identity accessor (`file_index` and `volume_serial_number` are behind the unstable `windows_by_handle` feature), so a correct check needs `GetFileInformationByHandle` through a new dependency or unsafe code in `pin_app`. The rename that publishes the trace replaces only the destination's directory entry, so a second hard link to the configuration keeps its bytes: nothing is destroyed. The names that matter (two spellings of one entry on a case-insensitive volume) already compare equal through the canonical path. CodeRabbit round 13 finding 3 asked for the identity check; it concerns only an opt-in case-sensitive NTFS directory.
+
+**Alternatives.** Add `windows-sys` and compare volume serial and file index on Windows (rejected for now: a dependency and `unsafe` for a case without data loss; revisit if Windows hard-link aliasing of a configuration or bundle is ever shown to lose data). Skip or `cfg`-out the hard-link branch of the regression on Windows (rejected: weakens a test, R10).
+
+## #163 gate round 13 — Run limits count the current engine across table swaps
+
+**Decision.** `--run-frames N` and `--run-ticks M` keep counting the current engine's frames and ticks; `stop_for_swap` discards the stopped engine's counters for the run limits. The decision in "#85 - Table swap by restarting the engine threads" stands.
+
+**Rationale.** The new table runs from tick 0, and the limits exist so supervised and CI runs end after a known amount of simulation of the table they started or the one now running. Summing engines would make `--run-ticks` mean "ticks of all tables" and would let a swap satisfy a limit with the previous table's ticks. The stopped engines' counters are still reported (shutdown line and the banked trace). CodeRabbit round 13 finding 4 proposed accumulating.
+
+**Alternatives.** Accumulate the stopped engines' counters in the run loop (rejected: contradicts the #85 decision and changes the meaning of the flags for the swap tests). A separate flag for run totals (rejected: nothing needs it).
+
+## #163 gate round 13 — ACL fixture EPERM stays a local skip
+
+**Decision.** The ACL regression keeps the round 11 rule: an `EPERM` (with ENOTSUP, EOPNOTSUPP, ENODATA) from the fixture `setxattr` fails the test when `GITHUB_ACTIONS=true` or `KP_REQUIRE_POSIX_ACL=1`, and otherwise prints one `SKIPPED` line and returns.
+
+**Rationale.** `EPERM` is returned by filesystems that do not support the ACL attribute for the calling user, which is the same condition as "unsupported", so it cannot fail unconditionally without breaking local runs on tmpfs and overlay filesystems. The gate cannot pass without the property being exercised, because CI and `KP_REQUIRE_POSIX_ACL=1` make it fail. This is the documented trade-off of "#163 gate round 11 - POSIX ACL fixture required in CI" (R10 satisfied by the required branch, not weakened). CodeRabbit round 13 finding 5 asked for an unconditional failure.
+
+**Alternatives.** Fail on `EPERM` everywhere (rejected in round 11: breaks local runs). `#[ignore]` (forbidden, R10). Remove `EPERM` from the unsupported list (rejected: the CI and required-ACL branches already fail on it, and a local EPERM on an unsupported filesystem is the case the skip exists for).
+
+## #163 gate round 13 — Frame join and frame count across a same-tick re-press and an engine swap
+
+**Decision.** The latency-trace join bounds a press's frames by its next release of the same input inclusively, except when that release is followed, in delivery order, by a press of the same input in the same tick; then the bound is exclusive (`snap_tick < release tick`). After a table swap, `CollectedTrace::append` recomputes `frames_to_photon` of the later engine's rows over the combined frame table; F0 is the last frame of the longest leading run of the table presented at or before the press (equal to `last_frame_at_or_before` on a table in present order, which the monotonic SDL clock guarantees).
+
+**Rationale.** CodeRabbit round 13 findings 6 and 7. The release tick's snapshot after a same-tick re-press shows the re-press's bat, which the sim writer (round 12) already credits only to the re-press; the join must agree. REQ-LAT-001 counts frames from the press, and a press can be stamped before the earlier engine's last present; the windowed verdict checks against the combined table, and the leading-run rule is the verdict's own, so both agree even on a non-monotone table. The `append_merges_engines_in_order` fixture's presses were moved 500 ns before their presents so its hard-coded `frames_to_photon` values are self-consistent; a new loop asserts every row equals the recomputed value (R10: nothing weakened).
+
+**Alternatives.** Join across engines (rejected: round 9 keeps each engine's join local). Keep the engine-local count (rejected: disagrees with the combined table the file publishes). Fall back to the engine-local value on a non-monotone table (rejected: would disagree with the verdict).
+
+## #163 gate round 13 — Input forwarding reports only events that reached the ring
+
+**Decision.** `InputPath::push` and `EventForwarder::push_input` return whether the event was enqueued. The forwarder updates `last` and returns `Translated::Input` only on enqueue; an event that was dropped (ring full) or retained as a pending release returns `Translated::Ignored`.
+
+**Rationale.** CodeRabbit round 13 finding 8: the caller counted and traced events that never reached the sim, so the trace and the dropped-event count disagreed with what the sim applied. Reporting only enqueued events keeps both exact.
+
+**Alternatives.** A separate drop counter at the caller (rejected: duplicates the ring's own count). Report a retained release as `Input` (rejected: it has not reached the ring yet and is forwarded later).
+
+## #163 gate round 13 — Score texture validates the DMD spec before allocating
+
+**Decision.** `check_score_config` validates a DMD score display through `DmdSpec::new` and checks the texture against the device's maximum texture dimension, returning `GpuError::InvalidArgument` instead of panicking. `set_image` documents that an LCD with height 0 takes its height from the image, while an explicit height is checked. A GPU test samples the view's mip 1 through the single binding.
+
+**Rationale.** CodeRabbit round 13 findings 16, 17 and the body nitpick on `displays_textures_gpu.rs`: an invalid or oversized spec reached wgpu and panicked; the auto-height rule was undocumented; mip 1 sampling was not covered.
+
+**Alternatives.** Clamp an oversized spec (rejected: silently shows the wrong display). Validate only in the loader (rejected: the texture API is public to other callers).
+
+## #163 gate round 13 — Windowed verdict: run-end marker, drain bound and frame count
+
+**Decision.** (1) A press stamped after `# run_end_ns` (equal is fine) is reported once per row in check d (trace consistency), naming the press and the marker. That row gets neither the check-a tail excuse nor the check-b end exclusion, so a missing move also fails checks a and b on its own terms. (2) Check b rejects a selected frame presented before the row's `drain_sdl_ns`, for every row kind (equal passes; the present-before-press check runs first, one failure per row). (3) Check d compares the frame-row count with the shutdown line's `F frames` only when no overflow was recorded, and only for the windowed run (one playfield surface). (4) The driver's cleanup errors stop the preflight; a failed summary write is appended after the failure; the bounded-runner self-check runs after the cleanup (`driver::prepare`). (5) The finding-13 control uses a press at 57.095 s against a 57.1 s marker, plus a marker equal to the press stamp, rather than a press at 57 s against 57.1 s. Under the unchanged check-a tail rule (10 ticks), a press whose bat never moved and whose tick ended 99.7 ms before the marker correctly fails check a.
+
+**Rationale.** CodeRabbit round 13 findings 9 to 15. The marker is read after the last pump, so a later press stamp shows the marker itself is wrong; check d already holds the trace-integrity checks. The trace writer records the applying tick's drain (or a stall end at or before it), and the drawn snapshot is published after that drain on the same clock. The app counts any-surface presents while the trace counts playfield presents; they are equal only with one surface (round 12: 1534/1534; round 13: 1482/1482). The tail rule is outside this round's findings, so the control was adapted rather than loosening it.
+
+**Alternatives.** Reporting the marker contradiction in check a. Rejected: it is not a key-to-coil property, and check a still fails the unexcused row. Comparing against a playfield-only counter in the shutdown line. Rejected: that would change the app output, which is outside the owned paths. Widening the tail excuse to make the literal 57 s / 57.1 s control pass. Rejected: it would weaken check a (REQ-LAT-004).
+
+## #163 gate round 13 — Gate procedure: reviewed-head approval, missed-gate candidate head, owned paths of gate-review fixes
+
+**Decision.** (1) A gate issue PR merges when CodeRabbit approved the gate's reviewed head on every review PR. The merging head is that reviewed head, or the reviewed head plus the single documentation-only RUN_LOG-row commit. CI with `pr-checks`, the work-verifier `pass` and the phase's automated gates are required on the final head, and the merge names it (work-issue §7 now matches P6 step 6). (2) A missed gate (no gate issue PR) has its reviewed head as its candidate head, with nothing above it. Before the approval is recorded, CI (from that commit's check runs, dispatching `ci.yml` on `review/<gate>-missed` when none exists), `main`'s last push CI, the work-verifier `pass` and the phase's automated gates must hold on it. Its RUN_LOG row goes through an ordinary documentation-only PR off `main`, which closes no `work-unit` issue and does not re-trigger the backstop. Its close-out replaces step 7's merge: close the review PRs unmerged with a comment naming the reviewed head and linking the fix PRs, delete the review branches, unblock dependents (P6 "Review PR" step 6, "Missed gate"). (3) For a gate review's verifier runs, owned paths are the union of the gate issue's owned paths and every gate-review fix brief's OWNED PATHS. The Orchestrator records the latter as `fix paths` in the gate's RUN_LOG round rows on the gate branch. Anything outside the union and the shared files still fails, and fix briefs never list `pin_core` contract paths (R2). A missed gate's review head must have the tree of the `main` commit last merged into it (P5 unit gate item 8). pr-watch and the work-verifier role prompt follow the same rules. `docs/DEVELOPMENT.md` "Owned paths and shared files" states the gate-review exception. For gate #163 itself, the `fix paths` of rounds 1 to 12 are backfilled in one round 13 row (the union of files the round commits changed), because those rows predate the rule.
+
+**Rationale.** CodeRabbit round 13 findings 1, 19 and 20. The skill demanded approval of the log-only commit, which the round 12 decision exempts, so a finished gate would loop forever. The missed-gate flow pointed at a close-out that starts by merging a PR that does not exist, and named no head for CI and the verifier. The final verifier run on a gate PR would fail on fix paths that P6 step 4 explicitly permits. RUN_LOG rows are versioned on the gate branch and lie inside the next gate's diff, so the recorded paths can be audited and recomputed. A PR description is editable and unversioned.
+
+**Alternatives.** Re-review after the log commit (rejected: never terminates; round 12). Record the fix paths in the review PR description (rejected: unversioned, and absent for split reviews whose oversized PR is closed). Extend each gate issue's OWNED PATHS in its body (rejected: rewrites the issue after the fact and loses which round added which path). Let the next work-unit PR carry the missed gate's RUN_LOG row (rejected for the brief's explicit documentation-only PR; it would tie the record to an unrelated issue's merge). Push the row to the review branch (rejected: that branch never merges).
+
+## #163 gate round 13 — GPU-leg build step bounded by the cache-save reserve
+
+**Decision.** On the Windows and macOS GPU legs the build step's timeout is min(32, JOB_TIMEOUT_MIN - reserve - elapsed), computed by a `Build-step budget` step before the build with the same reserve (8 min on a cache miss, 1 min on an exact hit) and elapsed formula (rounded up plus 1 min) as the Test-step budget, clamped to at least 1 minute. This amends the #205 entry: the 32 minute build ceiling stays but is now a ceiling, not a fixed value. The job cap (45), cache-on-failure and MIN_TEST_MIN (10) are unchanged.
+
+**Rationale.** The reserve was applied only by the budget step after the build, which is skipped when the build times out, so with set-up over 5 minutes a timed-out build left under 8 minutes and the cache save could be cut off, leaving the next run cold.
+
+**Alternatives.** Raise the job cap (rejected: #205 fixes 45); lower the fixed ceiling (rejected: wastes time on fast set-up); one shared script for both steps (rejected: two short steps with a cross-reference are enough).
+
+Also (finding 18): the lavapipe worker cap is chosen only among settings that pass checks a to d, using the dropped ratio only to compare those.
+
+The spec test `tests/spec_ci/tests/spec_ci_gpu_cross_cache.rs` pinned the literal 32; it now pins the `build_budget` expression, the step order, the shared reserve formula, the clamp and `MAX_BUILD_MIN` = 32 (a one-file owned-path extension of brief F, made after the round 13 verifier run found the stale assertion; CodeRabbit round 13 finding 2).

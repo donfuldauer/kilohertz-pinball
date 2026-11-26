@@ -302,7 +302,9 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
        PR's reviews, review comments and threads, issue comments (CodeRabbit's summary), and the
        head commit's status and check runs.
      - Fixes are committed on `<branch>`, so they land in both PRs; gate-review Fixer briefs may
-       own paths outside the issue's owned paths (contracts still change only under R2). A
+       own paths outside the issue's owned paths (contracts still change only under R2); list
+       each round's fix-brief OWNED PATHS in its RUN_LOG round row (`fix paths: <paths>`) so the
+       owned-path check of every verifier run of the gate allows them (P5 unit gate item 8). A
        missed gate has no `<branch>`: its fixes go through review fix issues merged to `main` as
        routine PRs, never to the review branch (P6 "Gate issue", "Review fix issues").
      - Every finding gets exactly one disposition (Fixed / Not a defect / Deferred) recorded as a
@@ -320,18 +322,22 @@ P7 failure policy. Three failed attempts plus one tier-up attempt → mark the i
        two more asks if it does not review the head, then the RUN_LOG row of P6 "Gate reviews"
        step 5.
      - When CodeRabbit's approval is all that is missing, post `@coderabbitai approve`.
-  4. Commit the gate's `docs/RUN_LOG.md` row (review PR links, rounds, deferred issues) before
-     the final verifier run.
+  4. Commit the gate's `docs/RUN_LOG.md` row (review PR links, rounds, deferred issues, and the
+     round rows' `fix paths` if not committed yet) before the final verifier run. A missed gate
+     has no `<branch>`: its row goes through a documentation-only PR off `main` (§7 step 3).
 
 ## 7. Merge
 
 When every P6 merge condition holds on the head commit (`pr-checks` and every other PR check
 green; branch up to date with `main` where P6 requires it; `main`'s last push CI green; last
 work-verifier result `pass` for the head; for a gate issue, the pre-merge conditions of P6 "Gate
-reviews" step 6: CodeRabbit approved the current head of every review PR of the gate (area PRs
-built from this head) with no outstanding change request, every thread replied to and resolved,
-and the phase's automated gates, and a milestone's exit criteria, pass on this head; the P5 phase
-gate on `main` is confirmed after the merge):
+reviews" step 6: CodeRabbit approved the gate's reviewed head on every review PR of the gate
+(area PRs built from the reviewed head) with no outstanding change request, every thread replied
+to and resolved; the head that merges is either that reviewed head or the reviewed head plus the
+single documentation-only RUN_LOG-row commit of §6 step 4, which is not itself reviewed; CI with
+`pr-checks`, the last work-verifier `pass`, and the phase's automated gates, and a milestone's
+exit criteria, are on that final head, and the merge names it; the P5 phase gate on `main` is
+confirmed after the merge):
 
 0. Immediately before the merge call, after the last wait for CI, the verifier or CodeRabbit,
    run §5 step 2's gate test and ordering check again. If a lower-numbered issue of the phase
@@ -350,8 +356,15 @@ gate on `main` is confirmed after the merge):
    backstop does not fire for G, and a review fix issue of that review is never a gate issue; P6
    "Gate issue", "Review fix issues"): open its review now as P6 "Gate issue" (3) describes (`review/<gate>-missed` at the merge commit,
    against `review-base/<gate>`), one gate review at a time, and record no phase-gate row until
-   it is approved. That review PR is never merged: once approved, close it unmerged as step 4
-   says and record `reviewed <reviewed head sha>` (the commit CodeRabbit last approved on it). Then **unblock dependents.** List the open issues labelled `work-unit` and `blocked` (label search,
+   it is approved. That review PR is never merged. Its candidate head is its reviewed head (the
+   commit CodeRabbit last approved on it; for a split review, the gate-head SHA the area PRs
+   record as built-from), and CI, `main`'s last push CI, the last work-verifier `pass` and the
+   phase's automated gates must hold on that head before the approval is recorded. Then close
+   it out as P6 "Gate reviews" step 6 ("Missed gate") says, in place of step 4's gate-issue
+   close-out: close every review PR unmerged with a comment naming the reviewed head and linking
+   the review fix PRs, delete the review branches, and commit the gate's RUN_LOG row (with
+   `reviewed <reviewed head sha>`) on a fresh branch off `main` through an ordinary
+   documentation-only PR. Then **unblock dependents.** List the open issues labelled `work-unit` and `blocked` (label search,
    explicit paging) and re-check each one's "Depends on" list, whether or not it names `#<N>`
    (a dependency on a cancelled issue can be covered by a replacement issue). For each whose
    dependencies are now all satisfied (§1 step 2, replacements included), replace its `blocked`

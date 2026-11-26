@@ -8,10 +8,16 @@
 //! and reaped at its deadline) and shell-free; a hung app is killed and
 //! reported. A run starts by creating the artifact directory and removing
 //! the previous run's artifacts ([`ARTIFACTS`]) before any check
-//! ([`preflight`]); every exit path after the app started writes a fresh
+//! ([`preflight`]): an artifact that is already absent is fine, one that
+//! cannot be removed stops the run with its path named, so old evidence
+//! never sits next to a new run's. The bounded-runner self-check
+//! ([`self_check_bounded_runner`]) runs after that cleanup ([`prepare`]).
+//! Every exit path after the app started writes a fresh
 //! `pin_app_stderr.log` (the stderr drain is bounded by
-//! [`STDERR_DRAIN_TIMEOUT`]), and every failure, the preflight's included,
-//! a `summary.txt` ([`failure_summary`]).
+//! [`STDERR_DRAIN_TIMEOUT`]), and every failure, the preflight's and the
+//! self-check's included, a `summary.txt` ([`failure_summary`],
+//! [`write_failure_summary`]); when that summary cannot be written, the
+//! returned error says so after the failure itself (path and I/O error).
 //!
 //! Environment (all optional):
 //! * `KP_PIN_APP`: the app binary (default: this build's `pin_app`;
@@ -25,7 +31,8 @@
 //! * `KP_WINDOWED_RUN_MS`: the run length (default 60 000 ms);
 //! * `KP_WINDOWED_SEED`: the press schedule's seed;
 //! * `KP_WINDOWED_FRAME_MS`: the frame interval the press holds are sized
-//!   for (default [`DEFAULT_FRAME_INTERVAL_MS`]);
+//!   for (default [`DEFAULT_FRAME_INTERVAL_MS`]; the hold is three
+//!   intervals capped at 1 s, [`base_hold_us`], saturating for any value);
 //! * `LP_NUM_THREADS`: lavapipe's worker threads (default
 //!   [`DEFAULT_LP_NUM_THREADS`]);
 //! * `DISPLAY`: an X server to use; without it the driver starts its own
@@ -215,8 +222,13 @@ pub struct Action {
 /// The base hold of every press: three frame intervals, capped at 1 s, so a
 /// presented frame reads its snapshot while the bat is still raised
 /// (check b counts only frames that showed the bat raised while held).
+/// Saturating: any `frame_interval_ms` (`KP_WINDOWED_FRAME_MS` accepts every
+/// `u64` above 0) gives at most the 1 s cap, never an overflow.
 pub fn base_hold_us(frame_interval_ms: u64) -> u64 {
-    (3 * frame_interval_ms).min(1000) * 1000
+    frame_interval_ms
+        .saturating_mul(3)
+        .min(1000)
+        .saturating_mul(1000)
 }
 
 /// The press plan over `span_us` microseconds (DECISIONS "#82 — Windowed
@@ -667,18 +679,51 @@ pub fn missing_captures(shots: &[PathBuf]) -> Option<String> {
     ))
 }
 
-/// Removes a previous run's artifacts from `dir`.
-fn clean_artifacts(dir: &Path) {
-    for f in ARTIFACTS {
-        let _ = std::fs::remove_file(dir.join(f));
+/// Removes `path` unless it is already absent; any other failure is
+/// recorded in `errors` as `removing <path>: <io error>`.
+fn remove_old(path: &Path, errors: &mut Vec<String>) {
+    if let Err(e) = std::fs::remove_file(path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        errors.push(format!("removing {}: {e}", path.display()));
     }
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
-            if n.starts_with("frame_") && n.ends_with(".png") {
-                let _ = std::fs::remove_file(e.path());
+}
+
+/// Removes a previous run's artifacts from `dir` ([`ARTIFACTS`] and every
+/// `frame_*.png`). An artifact that is already absent (or a `dir` that does
+/// not exist) is fine; every other removal or listing error is collected,
+/// so an old file never stays silently next to the new run's evidence.
+///
+/// # Errors
+/// One line per artifact that could not be removed
+/// (`removing <path>: <io error>`) or listing failure
+/// (`listing <dir>: <io error>`).
+fn clean_artifacts(dir: &Path) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for f in ARTIFACTS {
+        remove_old(&dir.join(f), &mut errors);
+    }
+    match std::fs::read_dir(dir) {
+        Ok(rd) => {
+            for e in rd {
+                match e {
+                    Ok(e) => {
+                        let n = e.file_name().to_string_lossy().into_owned();
+                        if n.starts_with("frame_") && n.ends_with(".png") {
+                            remove_old(&e.path(), &mut errors);
+                        }
+                    }
+                    Err(e) => errors.push(format!("listing {}: {e}", dir.display())),
+                }
             }
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => errors.push(format!("listing {}: {e}", dir.display())),
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
     }
 }
 
@@ -1101,15 +1146,19 @@ pub fn finish_capture(
 
 /// The run's preflight: creates `cfg.out_dir`, removes the previous run's
 /// artifacts ([`ARTIFACTS`], `frame_*.png`), then checks the tools (`have`),
-/// the app binary and the grey-box bundle. A failed check writes a fresh
-/// `summary.txt` ([`failure_summary`]), so a stale summary of an earlier run
-/// never survives a run that could not start.
+/// the app binary and the grey-box bundle. An artifact that cannot be
+/// removed (an absent one is fine) stops the preflight before the checks,
+/// naming its path. A failed cleanup or check writes a fresh `summary.txt`
+/// ([`write_failure_summary`]), so a stale summary of an earlier run never
+/// survives a run that could not start; a failure to write it is appended
+/// to the error.
 ///
 /// # Errors
-/// The artifact directory cannot be created, or a check failed.
+/// The artifact directory cannot be created, an old artifact cannot be
+/// removed, or a check failed.
 pub fn preflight(cfg: &DriverConfig, have: &dyn Fn(&str) -> bool) -> Result<(), String> {
     std::fs::create_dir_all(&cfg.out_dir).map_err(|e| format!("{}: {e}", cfg.out_dir.display()))?;
-    clean_artifacts(&cfg.out_dir);
+    clean_artifacts(&cfg.out_dir).map_err(|what| write_failure_summary(cfg, &what, ""))?;
     let check = || -> Result<(), String> {
         for tool in ["Xvfb", "xdotool", "xwd", "convert", "nice"] {
             if !have(tool) {
@@ -1131,18 +1180,47 @@ pub fn preflight(cfg: &DriverConfig, have: &dyn Fn(&str) -> bool) -> Result<(), 
         }
         Ok(())
     };
-    check().inspect_err(|what| {
-        let _ = std::fs::write(cfg.out_dir.join("summary.txt"), failure_summary(what, ""));
-    })
+    check().map_err(|what| write_failure_summary(cfg, &what, ""))
+}
+
+/// Writes the failure `summary.txt` ([`failure_summary`] of `what` and
+/// `stderr`) into `cfg.out_dir` and returns the error text to report: `what`
+/// unchanged when the summary was written; otherwise `what` (first) followed
+/// by a line `writing <summary path>: <io error>`, so the operator learns
+/// why the summary is missing. Used by every failure path of the driver.
+pub fn write_failure_summary(cfg: &DriverConfig, what: &str, stderr: &str) -> String {
+    let path = cfg.out_dir.join("summary.txt");
+    match std::fs::write(&path, failure_summary(what, stderr)) {
+        Ok(()) => what.to_owned(),
+        Err(e) => format!("{what}\nwriting {}: {e}", path.display()),
+    }
 }
 
 /// Records a failure after the preflight but before the app ran (Xvfb or the
-/// app did not start): writes the failure `summary.txt`
-/// (`verdict: FAIL (windowed driver: <what>)`) and returns `what`. No app
-/// stderr log is written, as the app never started.
+/// app did not start, or the bounded-runner self-check failed): writes the
+/// failure `summary.txt` (`verdict: FAIL (windowed driver: <what>)`) through
+/// [`write_failure_summary`] and returns its text (`what`, plus the write
+/// error if the summary could not be written). No app stderr log is
+/// written, as the app never started.
 pub fn startup_failed(cfg: &DriverConfig, what: &str) -> String {
-    let _ = std::fs::write(cfg.out_dir.join("summary.txt"), failure_summary(what, ""));
-    what.to_string()
+    write_failure_summary(cfg, what, "")
+}
+
+/// The run's start: [`preflight`] (the previous run's artifacts are removed
+/// first), then `self_check` (the real run passes
+/// [`self_check_bounded_runner`]); a failed self-check is recorded with
+/// [`startup_failed`], so a stale `verdict: PASS` never survives it.
+///
+/// # Errors
+/// The preflight failed, or `self_check` did
+/// (`bounded-runner self-check: <error>`).
+pub fn prepare(
+    cfg: &DriverConfig,
+    have: &dyn Fn(&str) -> bool,
+    self_check: &dyn Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    preflight(cfg, have)?;
+    self_check().map_err(|e| startup_failed(cfg, &format!("bounded-runner self-check: {e}")))
 }
 
 /// Starts the app under `display`, writing its trace to `trace_path`, with
@@ -1205,15 +1283,18 @@ pub fn with_log_write<T>(
 /// # Errors
 /// A missing tool, bundle or binary, no first frame, no window, a failed
 /// key injection, an app that did not exit in time (killed), or too few
-/// screenshots. Every error has written a failure `summary.txt` (the
-/// preflight's after removing the previous run's artifacts, or
-/// [`startup_failed`] when Xvfb or the app did not start); every error after
+/// screenshots. The run starts with [`prepare`] (the preflight, then the
+/// bounded-runner self-check). Every error has written a failure
+/// `summary.txt` (the preflight's after removing the previous run's
+/// artifacts, or [`startup_failed`] when the self-check failed or Xvfb or
+/// the app did not start), or carries a `writing <summary path>: <io
+/// error>` line after the failure when it could not; every error after
 /// the app started has also written `pin_app_stderr.log` and carries the
 /// stderr tail. A failure to write `pin_app_stderr.log` is itself an error
 /// naming the path ([`with_log_write`]; after a failed drive it follows the
 /// drive failure).
 pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
-    preflight(cfg, &have)?;
+    prepare(cfg, &have, &self_check_bounded_runner)?;
     let (display, _xvfb) = match std::env::var("DISPLAY").ok().filter(|d| !d.is_empty()) {
         Some(d) => (d, Reaper(None)),
         None => start_xvfb().map_err(|e| startup_failed(cfg, &e))?,
@@ -1262,10 +1343,8 @@ pub fn run(cfg: &DriverConfig) -> Result<RunOutput, String> {
     let log_path = cfg.out_dir.join("pin_app_stderr.log");
     let driven = with_log_write(driven, std::fs::write(&log_path, &stderr), &log_path);
     let failed = |what: String| -> String {
-        let _ = std::fs::write(
-            cfg.out_dir.join("summary.txt"),
-            failure_summary(&what, &stderr),
-        );
+        // The drive failure first, then a failure to write the summary.
+        let what = write_failure_summary(cfg, &what, &stderr);
         format!(
             "{what}\n--- pin_app stderr (tail) ---\n{}",
             tail(&stderr, 40)

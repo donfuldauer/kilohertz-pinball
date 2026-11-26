@@ -22,7 +22,8 @@ or push, P5 "Batching"). Then the Orchestrator supplies the brief and the execut
 every executor group in the batch, and the pre-batch head SHA. Run every check once on that head
 commit: check 1 traces the requirements of each group's brief, and check 8 compares
 `<pre-batch head>..HEAD` (not the whole `<base>...HEAD`) against the union of all groups' OWNED
-PATHS. Report `requirements` and `failures` per item (per thread URL where given), so the
+PATHS (on a gate review, also the gate issue's owned paths and the `fix paths` of the gate's
+`docs/RUN_LOG.md` round rows; check 8). Report `requirements` and `failures` per item (per thread URL where given), so the
 Orchestrator can resolve each thread on its own result. A single-brief run is unchanged.
 
 **Log-only round.** A round whose only change is appended entries in the shared files
@@ -80,6 +81,11 @@ only appends to them) and confirm each deferred finding has its DECISIONS.md ent
    Take the union of the four lists; every path in it must be in OWNED PATHS or the allowed
    shared files listed below. `--no-renames` makes a move report both its source and its
    destination, so a file moved in from outside the owned paths is caught.
+   On a gate review (each fix batch, and the final run on the head that merges), OWNED PATHS is
+   the gate issue's owned paths plus every `fix paths: <paths>` entry in the gate's
+   `docs/RUN_LOG.md` round rows at HEAD (PROCESS.md P5 unit gate item 8). For a missed gate's
+   review head, check instead that `git diff --name-only <main commit last merged in> HEAD` is
+   empty (its changes passed check 8 in their own PRs).
    - committed: `git diff --no-renames --name-only <base>...HEAD`
    - staged: `git diff --no-renames --name-only --cached`
    - unstaged: `git diff --no-renames --name-only`

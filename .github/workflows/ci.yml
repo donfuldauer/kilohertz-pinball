@@ -365,9 +365,32 @@ jobs:
       # pin_render's adapter-dependent tests are behind its `gpu-tests` feature (Subphase 1.4).
       # Issue #205: build first (bounded, so a cold build still leaves time to save the cache),
       # then run the tests with whatever the 45-minute job cap leaves after the save reserve.
+      # Gate #163 round 13: the build's timeout is min(32, JOB_TIMEOUT_MIN - reserve - elapsed),
+      # computed before the build with the same reserve and elapsed formula as the Test-step
+      # budget below (keep the two in step), so a timed-out build (which skips the test budget
+      # step) still leaves the 8 min cache-save reserve inside the job cap whatever the set-up time.
+      - name: Build-step budget
+        id: build_budget
+        if: runner.os != 'Linux'
+        shell: bash
+        env:
+          JOB_START: ${{ steps.start.outputs.epoch }}
+          JOB_TIMEOUT_MIN: "45"
+          CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+          MAX_BUILD_MIN: "32"
+        run: |
+          if [ "$CACHE_HIT" = "true" ]; then reserve=1; else reserve=8; fi
+          # Rounded up, plus 1 min for the runner's job set-up before the first step.
+          elapsed=$(( ($(date +%s) - JOB_START + 59) / 60 + 1 ))
+          minutes=$(( JOB_TIMEOUT_MIN - reserve - elapsed ))
+          if [ "$minutes" -gt "$MAX_BUILD_MIN" ]; then minutes=$MAX_BUILD_MIN; fi
+          if [ "$minutes" -lt 1 ]; then minutes=1; fi
+          echo "elapsed ${elapsed} min, cache save reserve ${reserve} min: build step gets ${minutes} min"
+          echo "minutes=$minutes" >> "$GITHUB_OUTPUT"
+
       - name: cargo test --no-run (build GPU crates)
         if: runner.os != 'Linux'
-        timeout-minutes: 32
+        timeout-minutes: ${{ fromJSON(steps.build_budget.outputs.minutes) }}
         run: cargo test -p pin_render --features gpu-tests -p pin_audio -p pin_app --no-run
 
       # Issue #205: the test step's timeout is the job timeout minus the time used so far minus a

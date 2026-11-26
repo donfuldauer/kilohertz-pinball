@@ -81,8 +81,10 @@ threads:
        issues"). The last reviewed head is recorded as
        `reviewed <sha>` (the commit CodeRabbit last reviewed and approved, never a later `main`
        commit; P6 "Review PR" step 6), and no phase-gate row is recorded until the review is
-       approved. The backstop review PR is never merged (§2): once approved, it is closed
-       unmerged through the P6 step 7 close-out.
+       approved. The backstop review PR is never merged (§2): its reviewed head is its candidate
+       head, CI, the `work-verifier` `pass` and the phase's automated gates must hold on that head
+       before the approval is recorded, and it is closed unmerged through the close-out of P6
+       "Review PR" step 6 ("Missed gate"), in place of step 7's merge.
        **Split missed gate** (P6 "Review PR" step 3): when the backstop review was split into area
        PRs (heads `review/<gate>-<area>`, base `review-base/<gate>`), there is no gate issue PR
        and no single review PR, so there is no `<P>`. Its role is taken by the gate head: the
@@ -200,12 +202,14 @@ When all applicable conditions hold:
   missed gate: check each area PR with `gh pr view <R> --json baseRefName,state`; every one has
   base `review-base/<gate>` and is never merged), never merge, even on an explicit request:
   report the approval and apply the review-only close-out of `docs/PROCESS.md` P6 "Gate reviews"
-  step 7 (first close every review PR of the gate, each area PR of a split missed gate included,
-  without merging and with a comment, `gh pr close <R> --comment "<approval and reviewed head>"`;
-  only then delete `review-base/<gate>` and the `review/<gate>-*` branches, leaving them if the
-  proxy refuses; for a missed gate, record
-  `reviewed <reviewed head sha>`, the commit CodeRabbit last approved, and the phase-gate row
-  once the P5 phase gate on `main` is green, with the next PR).
+  step 7, or for a missed gate step 6 ("Missed gate") (first close every review PR of the gate,
+  each area PR of a split missed gate included, without merging and with a comment,
+  `gh pr close <R> --comment "<approval and reviewed head>"`, which on a missed gate also links
+  the review fix PRs; only then delete `review-base/<gate>` and the `review/<gate>-*` branches,
+  leaving them if the proxy refuses; for a missed gate, commit the gate's RUN_LOG row with
+  `reviewed <reviewed head sha>`, the commit CodeRabbit last approved, on a fresh branch off
+  `main` through an ordinary documentation-only PR, and the phase-gate row once the P5 phase
+  gate on `main` is green, with the next PR).
 - If invoked standalone, `<P>`'s base is `main`, and the user explicitly asked to merge, confirm
   every `docs/PROCESS.md` P6 merge condition holds on `headRefOid` — including a passing `work-verifier` result for
   `headRefOid` (test or conformance suites alone are not a substitute), dispositions for every
@@ -237,8 +241,9 @@ Handle the PR state in this order:
    - Failed pre-merge checks (such as PR description checks) → update the body of the PR that
      reported the check (on a gate, a review PR `<R>`; on a routine PR, `<P>`) with
      `gh pr edit <R> --body ...`.
-3. Batch all fix commits locally, update `docs/RUN_LOG.md` (and regenerate `docs/HUMAN_ACCEPTANCE.md`
-   if needed), then commit the fix together with those updates. Re-run `work-verifier` on that exact
+3. Batch all fix commits locally, update `docs/RUN_LOG.md` (on a gate, the round row lists the
+   fix briefs' OWNED PATHS as `fix paths: <paths>`, PROCESS.md P5 unit gate item 8) (and
+   regenerate `docs/HUMAN_ACCEPTANCE.md` if needed), then commit the fix together with those updates. Re-run `work-verifier` on that exact
    commit, whether or not the run will merge, so the verified commit is the PR head
    (`docs/PROCESS.md` P6 routine step 1); if `work-verifier` returns `fail`, fix the failure and
    re-verify before pushing or resolving threads. Once `work-verifier` returns `pass`, push once to

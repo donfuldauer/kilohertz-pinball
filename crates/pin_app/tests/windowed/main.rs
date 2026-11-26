@@ -407,7 +407,9 @@ fn req_lat_004_verdict_stall_allowance_needs_the_press_in_the_stall_window() {
 /// tables agree) fails check b with the press, frame and both times named,
 /// and the frame is not counted (no zero-latency sample: the only press
 /// leaves nothing checked); a frame presented at the press's timestamp
-/// passes.
+/// passes. The row drains the press at its timestamp (gate 30 round 13,
+/// finding 14: a frame presented before the drain is rejected too, so the
+/// equal-time case needs a drain no later than the present).
 #[test]
 fn req_lat_001_verdict_rejects_frame_presented_before_the_press() {
     let ts = T0 + 100 * TICK_NS;
@@ -415,6 +417,8 @@ fn req_lat_001_verdict_rejects_frame_presented_before_the_press() {
         let mut r = press(0, ts, TICK_NS);
         assert_eq!(r.apply_tick, 101);
         r.move_tick = Some(101);
+        r.drain_sdl_ns = ts;
+        r.prev_drain_sdl_ns = ts - TICK_NS;
         r
     };
     let fr = frames_at(&[90, 99, 220, 59_900], &[80, 101, 210, 59_000]);
@@ -441,9 +445,14 @@ fn req_lat_001_verdict_rejects_frame_presented_before_the_press() {
     );
     assert_eq!(v.summary.max_frames_raw, 0);
     assert_eq!(v.summary.p50_photon_ms, 0.0);
-    // Presented at the press's timestamp: accepted (0 frames, 0 ms).
+    // Presented at the press's timestamp: accepted (0 frames, 0 ms). The
+    // shutdown line counts the 4 frames of the table (finding 15).
     let fr = frames_at(&[90, 100, 220, 59_900], &[80, 101, 210, 59_000]);
-    let v = evaluate(&joined(vec![row()], fr), &OK_SHUTDOWN, &params());
+    let shutdown = Shutdown {
+        frames: 4,
+        ..OK_SHUTDOWN
+    };
+    let v = evaluate(&joined(vec![row()], fr), &shutdown, &params());
     assert!(v.passed(), "{}", v.report());
 }
 
@@ -659,6 +668,11 @@ fn req_lat_001_check_b_raw_count_with_one_in_flight_frame() {
         );
         let mut r = press(0, ts, TICK_NS);
         r.move_tick = Some(mv);
+        // Tick 101 drained the press at 100.5 ms, before the 101 ms frame
+        // that draws it (gate 30 round 13, finding 14: a frame presented
+        // before the drain cannot show the press).
+        r.drain_sdl_ns = ts + TICK_NS / 2;
+        r.prev_drain_sdl_ns = r.drain_sdl_ns - TICK_NS;
         let v = evaluate(&joined(vec![r], fr), &OK_SHUTDOWN, &p);
         let case = format!("in-flight {inflight_ms} ms, move {mv}: {}", v.report());
         assert!(v.a.passed(), "{case}");
@@ -730,7 +744,9 @@ fn req_lat_004_check_a_press_that_never_moved() {
 /// REQ-LAT-001 (F4): the final-500 ms exclusion counts from the trace's
 /// `run_end_ns`, not the last frame: a render freeze (no frames in the
 /// last 5 s) still checks the presses made during it and fails them; a
-/// marker earlier than a press is handled without underflow.
+/// marker earlier than a press is handled without underflow and (gate 30
+/// round 13, finding 13) fails check d for each such press, which is not
+/// excluded from check b.
 #[test]
 fn req_lat_001_render_freeze_cannot_hide_presses() {
     let frozen: Vec<Frame> = frames(550); // last present at T0 + 54.9 s
@@ -756,14 +772,25 @@ fn req_lat_001_render_freeze_cannot_hide_presses() {
         "{:?}",
         v.b
     );
-    // A marker before a press: excluded, no underflow, no panic.
+    // A marker before a press: no underflow, no panic; the two presses
+    // after it are not excluded and each fails check d.
     let v = evaluate(
         &joined_until(rows, frozen, T0 + 40_000_000_000),
         &OK_SHUTDOWN,
         &params(),
     );
-    assert_eq!(v.summary.excluded_presses, 2);
+    assert_eq!(v.summary.excluded_presses, 0);
     assert!(v.a.passed(), "{:?}", v.a);
+    assert!(!v.b.passed(), "{}", v.report());
+    assert_eq!(
+        v.d.failures
+            .iter()
+            .filter(|f| f.contains("after the run-end marker"))
+            .count(),
+        2,
+        "{:?}",
+        v.d
+    );
 }
 
 /// REQ-LAT-003 (F10): the parser wants the frame header right after the
@@ -2788,6 +2815,325 @@ fn req_lat_003_harness_stderr_log_write_failure_is_reported() {
     );
 }
 
+/// A driver configuration whose preflight checks pass: an app file and a
+/// grey-box bundle (`table.toml`) under `dir`, artifacts into `out`.
+fn passing_cfg(dir: &std::path::Path, out: std::path::PathBuf) -> driver::DriverConfig {
+    std::fs::create_dir_all(dir.join("bundle")).unwrap();
+    std::fs::write(dir.join("bundle").join("table.toml"), "").unwrap();
+    std::fs::write(dir.join("pin_app"), "").unwrap();
+    driver::DriverConfig {
+        app: dir.join("pin_app"),
+        bundle: dir.join("bundle"),
+        out_dir: out,
+        run_ms: 60_000,
+        lp_num_threads: "2".into(),
+        seed: 1,
+        frame_interval_ms: 125,
+    }
+}
+
+/// The I/O error text `std::fs::write` gives for `path` (a directory here).
+fn write_error_text(path: &std::path::Path) -> String {
+    std::fs::write(path, "").unwrap_err().to_string()
+}
+
+/// The windowed driver (gate 30 round 13, finding 9): the press hold is
+/// three frame intervals capped at 1 s, computed with saturating
+/// arithmetic, so a huge `KP_WINDOWED_FRAME_MS` gives the cap (not an
+/// overflow panic or a wrapped 2 ms hold); the default 125 ms interval
+/// keeps its 375 ms hold.
+#[test]
+fn req_lat_001_harness_base_hold_cap_cannot_overflow() {
+    assert_eq!(driver::base_hold_us(125), 375_000);
+    assert_eq!(
+        driver::base_hold_us(driver::DEFAULT_FRAME_INTERVAL_MS),
+        375_000
+    );
+    assert_eq!(driver::base_hold_us(1), 3_000);
+    assert_eq!(driver::base_hold_us(333), 999_000);
+    assert_eq!(driver::base_hold_us(334), 1_000_000);
+    for big in [6_148_914_691_236_517_206u64, u64::MAX, u64::MAX / 3 + 1] {
+        assert_eq!(driver::base_hold_us(big), 1_000_000, "interval {big} ms");
+    }
+    // From the environment through the plan: the cap, a usable plan.
+    let cfg = driver::DriverConfig::from_lookup(&|k: &str| {
+        (k == "KP_WINDOWED_FRAME_MS").then(|| "6148914691236517206".to_owned())
+    });
+    assert_eq!(cfg.frame_interval_ms, 6_148_914_691_236_517_206);
+    let plan = driver::press_plan(1, 30_000_000, cfg.frame_interval_ms);
+    assert!(driver::planned_presses(&plan) > 10);
+}
+
+/// The windowed driver (gate 30 round 13, finding 10): the preflight stops
+/// when a previous run's artifact cannot be removed (here an artifact name
+/// that is a directory: `remove_file` fails on it), naming the path, and
+/// writes a failure summary; an absent artifact is fine, and so are
+/// removable ones (the preflight then passes with everything removed).
+#[test]
+fn req_lat_002_harness_preflight_stops_when_old_evidence_stays() {
+    let dir = driver_dir("cleanup");
+    // A screenshot name that cannot be removed.
+    let out = dir.join("out_frame");
+    std::fs::create_dir_all(out.join("frame_x.png")).unwrap();
+    std::fs::write(out.join("latency_trace.csv"), "old").unwrap();
+    let cfg = passing_cfg(&dir, out.clone());
+    let e = driver::preflight(&cfg, &|_| true).unwrap_err();
+    let stuck = out.join("frame_x.png");
+    assert!(
+        e.contains(&format!("removing {}: ", stuck.display())),
+        "the stuck path is named: {e}"
+    );
+    assert!(
+        !out.join("latency_trace.csv").exists(),
+        "the rest is removed"
+    );
+    let summary = std::fs::read_to_string(out.join("summary.txt")).unwrap();
+    assert!(
+        summary.starts_with("verdict: FAIL (windowed driver: ")
+            && summary.contains(&stuck.display().to_string()),
+        "{summary}"
+    );
+    // A summary that cannot be removed: the error names it, and the
+    // failure summary cannot be written over it either (reported, finding
+    // 11), the cleanup error first.
+    let out = dir.join("out_summary");
+    std::fs::create_dir_all(out.join("summary.txt")).unwrap();
+    let cfg = passing_cfg(&dir, out.clone());
+    let e = driver::preflight(&cfg, &|_| true).unwrap_err();
+    let path = out.join("summary.txt");
+    assert!(
+        e.starts_with(&format!("removing {}: ", path.display())),
+        "{e}"
+    );
+    assert!(
+        e.contains(&format!(
+            "\nwriting {}: {}",
+            path.display(),
+            write_error_text(&path)
+        )),
+        "{e}"
+    );
+    // Nothing old (absent artifacts are fine) and removable old artifacts.
+    let out = dir.join("out_clean");
+    let cfg = passing_cfg(&dir, out.clone());
+    driver::preflight(&cfg, &|_| true).unwrap();
+    for f in ["summary.txt", "pin_app_stderr.log", "frame_0_rest.png"] {
+        std::fs::write(out.join(f), "verdict: PASS\n").unwrap();
+    }
+    driver::preflight(&cfg, &|_| true).unwrap();
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The windowed driver (gate 30 round 13, finding 11): a failure to write
+/// the failure `summary.txt` is reported after the failure itself, with the
+/// summary path and the I/O error (the shared writer and the startup path);
+/// a successful write returns the failure text unchanged.
+#[test]
+fn req_lat_003_harness_failure_summary_write_error_is_reported() {
+    let dir = driver_dir("failure_summary");
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let cfg = passing_cfg(&dir, out.clone());
+    assert_eq!(
+        driver::write_failure_summary(&cfg, "no first frame", "line\n"),
+        "no first frame"
+    );
+    let summary = std::fs::read_to_string(out.join("summary.txt")).unwrap();
+    assert!(
+        summary.starts_with("verdict: FAIL (windowed driver: no first frame)")
+            && summary.contains("line"),
+        "{summary}"
+    );
+    std::fs::remove_file(out.join("summary.txt")).unwrap();
+    // `summary.txt` is a directory: the write fails.
+    let path = out.join("summary.txt");
+    std::fs::create_dir_all(&path).unwrap();
+    let io = write_error_text(&path);
+    let want = format!("no first frame\nwriting {}: {io}", path.display());
+    assert_eq!(
+        driver::write_failure_summary(&cfg, "no first frame", "line\n"),
+        want
+    );
+    let what = "Xvfb did not start: no display";
+    assert_eq!(
+        driver::startup_failed(&cfg, what),
+        format!("{what}\nwriting {}: {io}", path.display())
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The windowed driver (gate 30 round 13, finding 12): the real-window
+/// path clears the previous artifacts BEFORE the bounded-runner self-check,
+/// and a failing self-check publishes a fresh failure summary, so a stale
+/// `verdict: PASS` never survives it; a passing self-check writes nothing.
+/// The self-check is injected (nothing runs, no wall clock).
+#[test]
+fn req_lat_002_harness_self_check_failure_replaces_a_stale_pass() {
+    let dir = driver_dir("self_check");
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("summary.txt"), "verdict: PASS\n").unwrap();
+    std::fs::write(out.join("frame_1_left_held.png"), "old").unwrap();
+    let cfg = passing_cfg(&dir, out.clone());
+    let why = "bounded runner: spawning \"sleep\": No such file or directory";
+    let e = driver::prepare(&cfg, &|_| true, &|| Err(why.to_owned())).unwrap_err();
+    assert!(e.contains(why), "{e}");
+    let summary = std::fs::read_to_string(out.join("summary.txt")).unwrap();
+    assert!(
+        summary.starts_with("verdict: FAIL (windowed driver: ") && summary.contains(why),
+        "{summary}"
+    );
+    assert!(!summary.contains("verdict: PASS"), "{summary}");
+    assert!(!out.join("frame_1_left_held.png").exists());
+    // A passing self-check: the cleaned directory stays empty.
+    std::fs::write(out.join("summary.txt"), "verdict: PASS\n").unwrap();
+    driver::prepare(&cfg, &|_| true, &|| Ok(())).unwrap();
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// REQ-LAT-003 / REQ-LAT-004 (gate 30 round 13, finding 13): a run-end
+/// marker that predates a delivered press contradicts the app's causal
+/// order (the marker is read after the last pump). The review's case
+/// (a valid press at 30 s; a press at 57 s whose bat never moved; marker at
+/// 56 s) fails, naming the press and the marker, and neither the check-a
+/// tail excuse nor the check-b end exclusion is applied to it. Presses
+/// genuinely close to the end keep both exceptions (marker 57.1 s with the
+/// press at 57.095 s, and a marker equal to the press's stamp).
+#[test]
+fn req_lat_003_verdict_rejects_a_run_end_marker_before_a_press() {
+    let rows = |second_ms: u64| {
+        let mut late = press(1, T0 + second_ms * TICK_NS, 300_000);
+        late.input = "right_flipper".into();
+        late.move_tick = None;
+        vec![press(0, T0 + 30_000 * TICK_NS, 300_000), late]
+    };
+    let marker = T0 + 56_000 * TICK_NS;
+    let t = joined_until(rows(57_000), frames(600), marker);
+    assert!(t.rows[0].frame.is_some());
+    assert_eq!(t.rows[1].frame, None);
+    let v = evaluate(&t, &OK_SHUTDOWN, &params());
+    assert!(!v.passed(), "{}", v.report());
+    let stamp = T0 + 57_000 * TICK_NS;
+    assert!(
+        v.d.failures.iter().any(|f| f.contains("press #1")
+            && f.contains(&format!("{stamp} ns"))
+            && f.contains(&format!("run-end marker {marker} ns"))),
+        "{}",
+        v.report()
+    );
+    assert!(
+        v.a.failures
+            .iter()
+            .any(|f| f.contains("press #1") && f.contains("never moved")),
+        "no tail excuse: {}",
+        v.report()
+    );
+    assert!(
+        v.b.failures.iter().any(|f| f.contains("press #1")),
+        "not excluded: {}",
+        v.report()
+    );
+    assert_eq!(v.summary.excluded_presses, 0);
+    // Controls: the press inside both windows of a consistent marker.
+    for (second_ms, end) in [
+        (57_095, T0 + 57_100 * TICK_NS),
+        (57_000, T0 + 57_000 * TICK_NS),
+    ] {
+        // Applied in the tick ending 0.3 ms after the stamp: within the
+        // tail excuse's ten ticks of the marker.
+        let v = evaluate(
+            &joined_until(rows(second_ms), frames(600), end),
+            &OK_SHUTDOWN,
+            &params(),
+        );
+        assert!(v.passed(), "press at {second_ms} ms: {}", v.report());
+        assert_eq!(v.summary.excluded_presses, 1);
+    }
+}
+
+/// REQ-LAT-001 check b (gate 30 round 13, finding 14): the response frame
+/// cannot show a snapshot of input the sim had not drained yet. Press at
+/// 100 ms, drained at 102 ms, the trace's frame presented at 101 ms with
+/// both tables agreeing: check b fails (press, frame, present and drain
+/// times named) and the frame is not counted; presented at the drain time
+/// (the causal bound, equal passes): accepted.
+#[test]
+fn req_lat_001_verdict_rejects_frame_presented_before_the_drain() {
+    let ts = T0 + 100 * TICK_NS;
+    let row = || {
+        let mut r = press(0, ts, TICK_NS);
+        assert_eq!(r.apply_tick, 101);
+        r.move_tick = Some(101);
+        r.prev_drain_sdl_ns = T0 + 101 * TICK_NS;
+        r.drain_sdl_ns = T0 + 102 * TICK_NS;
+        r
+    };
+    let fr = frames_at(&[90, 101, 220, 59_900], &[80, 101, 210, 59_000]);
+    let t = joined(vec![row()], fr);
+    assert_eq!(t.rows[0].frame, Some(1));
+    let shutdown = Shutdown {
+        frames: 4,
+        ..OK_SHUTDOWN
+    };
+    let v = evaluate(&t, &shutdown, &params());
+    assert!(v.a.passed(), "{}", v.report());
+    assert!(!v.b.passed(), "{}", v.report());
+    assert_eq!(v.b.failures.len(), 2, "one for the row: {:?}", v.b);
+    assert!(
+        v.b.failures[0].contains("press #0")
+            && v.b.failures[0].contains("frame 1")
+            && v.b.failures[0].contains(&format!("presented at {} ns", T0 + 101 * TICK_NS))
+            && v.b.failures[0].contains(&format!("drained at {} ns", T0 + 102 * TICK_NS)),
+        "{:?}",
+        v.b
+    );
+    assert_eq!(v.b.failures[1], "no press could be checked", "not counted");
+    // Presented at the drain time: accepted.
+    let fr = frames_at(&[90, 102, 220, 59_900], &[80, 101, 210, 59_000]);
+    let v = evaluate(&joined(vec![row()], fr), &shutdown, &params());
+    assert!(v.passed(), "{}", v.report());
+}
+
+/// REQ-LAT-003 check d (gate 30 round 13, finding 15): in the windowed run
+/// (one playfield surface) the shutdown line's frame count is the number
+/// of playfield presents, so a trace whose frame table is shorter or
+/// longer (a missing last row without a recorded overflow) fails check d;
+/// equal counts pass; a trace with recorded overflows fails once, for the
+/// overflow.
+#[test]
+fn req_lat_003_check_d_frame_rows_match_the_shutdown_count() {
+    let t = joined(vec![press(0, T0 + 1_234_567_891, 765_432)], frames(600));
+    let v = evaluate(&t, &OK_SHUTDOWN, &params());
+    assert!(v.passed(), "{}", v.report());
+    for f in [601u64, 599] {
+        let shutdown = Shutdown {
+            frames: f,
+            ..OK_SHUTDOWN
+        };
+        let v = evaluate(&t, &shutdown, &params());
+        assert_eq!(v.failed_checks(), vec!["d"], "{}", v.report());
+        assert_eq!(v.d.failures.len(), 1, "{:?}", v.d);
+        assert!(
+            v.d.failures[0].contains("600 frame rows")
+                && v.d.failures[0].contains(&format!("{f} frames"))
+                && v.d.failures[0].contains("frame rows missing or extra"),
+            "{:?}",
+            v.d
+        );
+    }
+    let mut lost = t.clone();
+    lost.overflows = 1;
+    let shutdown = Shutdown {
+        frames: 601,
+        ..OK_SHUTDOWN
+    };
+    let v = evaluate(&lost, &shutdown, &params());
+    assert_eq!(v.d.failures.len(), 1, "one cause, one failure: {:?}", v.d);
+    assert!(v.d.failures[0].contains("overflows"), "{:?}", v.d);
+}
+
 // ---------------------------------------------------------------------------
 // The 60 s windowed run.
 
@@ -2799,9 +3145,11 @@ fn req_lat_003_harness_stderr_log_write_failure_is_reported() {
 #[test]
 #[ignore = "60 s windowed run: needs Xvfb, lavapipe and a release build (windowed.yml, scripts/windowed/run.sh)"]
 fn windowed_latency_60s() {
-    // Real-process evidence for the bounded runner: wall time is measured
-    // here, in the windowed run, never in the headless suite (R6).
-    driver::self_check_bounded_runner().unwrap_or_else(|e| panic!("{e}"));
+    // `driver::run` starts with `driver::prepare`: the preflight clears the
+    // previous run's artifacts, then the bounded runner's real-process
+    // self-check runs (wall time is measured here, in the windowed run,
+    // never in the headless suite, R6); a failed self-check leaves a fresh
+    // failure summary.
     let cfg = driver::DriverConfig::from_env();
     let out = driver::run(&cfg).unwrap_or_else(|e| panic!("windowed driver failed: {e}"));
     let p = Params {

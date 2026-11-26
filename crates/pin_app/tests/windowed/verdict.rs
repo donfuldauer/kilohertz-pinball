@@ -26,7 +26,8 @@
 //!   allowance: the press predates or follows the stall); and the press took effect in the applying tick: its bat was
 //!   raised at most [`Params::coil_ticks`] ticks after `apply_tick`. A press
 //!   whose bat never moved fails, unless its applying tick ended within
-//!   `coil_ticks + 2` ticks of the run's end (`run_end_ns`).
+//!   `coil_ticks + 2` ticks of the run's end (`run_end_ns`) and the press is
+//!   stamped at or before `run_end_ns` (see check d).
 //! * **b. Key to photon in frames (REQ-LAT-001, CI form).** For every press
 //!   except those stamped within [`Params::end_exclusion_ns`] of `run_end_ns`
 //!   (excluded and counted): `frame` is the first presented frame whose
@@ -37,7 +38,12 @@
 //!   file, so the verdict checks that the trace's frame exists, matches the
 //!   frame table and is such a candidate, not before the first one); a
 //!   press without such a frame fails, and so does one whose frame was
-//!   presented before `sdl_ts_ns` (not counted; equal times pass); `n_raw = frame - F0`, `F0` the last
+//!   presented before `sdl_ts_ns`, or before `drain_sdl_ns` (the sim had
+//!   not drained the press yet, so the frame cannot show its snapshot; for
+//!   a stalled row the stall's end, which is at or before the applying
+//!   tick's drain), fails once and is not counted (equal times pass);
+//!   a press stamped after `run_end_ns` is never excluded;
+//!   `n_raw = frame - F0`, `F0` the last
 //!   frame presented at or before `sdl_ts_ns` (the raw count starts from
 //!   the press; `move_tick` only selects the frame); pass when `n_raw <= 2`. One allowance: when
 //!   the frame in flight at the press (the first frame presented after
@@ -50,8 +56,16 @@
 //!   `D / (N + D) <= 0.001`, and `N` within 1 % of the expected run length
 //!   (so a run that died early cannot pass).
 //! * **d. Completeness.** No trace overflow, at least
-//!   [`Params::min_presses`] presses, and (when the driver passes it) as
-//!   many presses traced as were injected.
+//!   [`Params::min_presses`] presses, no input event dropped by the main
+//!   thread, and (when the driver passes it) as many presses traced as were
+//!   injected. Without overflows, the frame table has exactly as many rows
+//!   as the shutdown line's `F frames` (a missing last row has no other
+//!   trace); this holds for the windowed run only, which drives one
+//!   playfield surface, so `F` (render iterations that presented any
+//!   surface) counts exactly the playfield presents the table records. No
+//!   press may be stamped after `run_end_ns`: the marker is read after the
+//!   last SDL pump, so such a press shows the marker is wrong, and the row
+//!   gets neither end-of-run exception (checks a and b).
 
 use std::fmt::Write as _;
 
@@ -583,6 +597,21 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
     for &(r, release) in &presses {
         let tag = format!("press #{} ({} at {} ns)", r.seq, r.input, r.sdl_ts_ns);
         let mut a_failed = false;
+        // The run-end marker is read after the last pump polled SDL, so
+        // every delivered press is stamped at or before it. A press stamped
+        // after it means the marker contradicts the app's own order: the
+        // row fails check d and gets neither end-of-run exception (the
+        // check-a tail excuse, the check-b end exclusion).
+        let after_end = r.sdl_ts_ns > run_end;
+        if after_end {
+            fail(
+                &mut v.d,
+                format!(
+                    "{tag}: stamped after the run-end marker {run_end} ns (the marker predates a \
+                     delivered press; no end-of-run exception applies)"
+                ),
+            );
+        }
         // a. Key to coil.
         if r.stall {
             s.stalled_presses += 1;
@@ -660,7 +689,7 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
                 // Only a press applied right before the run ended may have
                 // had no time to move its bat.
                 let tail = p.coil_ticks.saturating_add(2).saturating_mul(TICK_NS);
-                if run_end.saturating_sub(r.apply_tick_end_sdl_ns) > tail {
+                if after_end || run_end.saturating_sub(r.apply_tick_end_sdl_ns) > tail {
                     a_failed = true;
                     fail(
                         &mut v.a,
@@ -673,7 +702,7 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
             }
         }
         // b. Key to photon in frames.
-        if run_end.saturating_sub(r.sdl_ts_ns) < p.end_exclusion_ns {
+        if !after_end && run_end - r.sdl_ts_ns < p.end_exclusion_ns {
             s.excluded_presses += 1;
             continue;
         }
@@ -737,6 +766,22 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
                     "{tag}: trace says frame {fi} (snapshot tick {}) showed the press, but it \
                      was presented at {} ns, before the press's timestamp {} ns",
                     f.snap_tick, f.present_ns, r.sdl_ts_ns
+                ),
+            );
+            continue;
+        }
+        // Nor can it show a snapshot of input the sim had not drained yet:
+        // `drain_sdl_ns` is the applying tick's drain (a stall's end for a
+        // stalled row, which is at or before it), and the snapshot the frame
+        // drew was published after that. Equal times pass.
+        if f.present_ns < r.drain_sdl_ns {
+            fail(
+                &mut v.b,
+                format!(
+                    "{tag}: trace says frame {fi} (snapshot tick {}) showed the press, but it \
+                     was presented at {} ns, before the sim drained the press (drained at {} \
+                     ns)",
+                    f.snap_tick, f.present_ns, r.drain_sdl_ns
                 ),
             );
             continue;
@@ -878,6 +923,21 @@ pub fn evaluate(trace: &Trace, shutdown: &Shutdown, p: &Params) -> Verdict {
         fail(
             &mut v.d,
             format!("{} trace rows lost to overflows", trace.overflows),
+        );
+    } else if u64::try_from(trace.frames.len()).ok() != Some(shutdown.frames) {
+        // Valid for the windowed run only: it drives one playfield surface,
+        // so the shutdown line's `F frames` (render-loop iterations that
+        // presented any surface) counts exactly the playfield presents the
+        // frame table records. A multi-surface run would count more. With
+        // overflows the lost rows are already reported above.
+        fail(
+            &mut v.d,
+            format!(
+                "{} frame rows in the trace, but the shutdown line reports {} frames: frame rows \
+                 missing or extra",
+                trace.frames.len(),
+                shutdown.frames
+            ),
         );
     }
     if s.presses < p.min_presses {

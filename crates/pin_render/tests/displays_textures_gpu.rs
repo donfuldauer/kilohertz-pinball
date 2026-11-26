@@ -774,6 +774,213 @@ fn req_view_002_texture_facts() {
     let _ = (b.view(), s.view());
 }
 
+/// Reads mip level 1 of the bound view with `textureLoad` into a target of
+/// that level's size (one texel per fragment).
+const SAMPLE_MIP1_WGSL: &str = r"
+@group(0) @binding(0) var tex: texture_2d<f32>;
+
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let x = f32((i << 1u) & 2u) * 2.0 - 1.0;
+    let y = f32(i & 2u) * 2.0 - 1.0;
+    return vec4<f32>(x, y, 0.0, 1.0);
+}
+
+@fragment
+fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(tex, vec2<i32>(p.xy), 1);
+}
+";
+
+/// A pipeline that copies mip 1 of a bound `texture_2d<f32>` view into an
+/// `Rgba8Unorm` target, and its bind group layout.
+fn mip1_sampler(ctx: &GpuContext) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    let device = ctx.device();
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("sample mip 1"),
+        source: wgpu::ShaderSource::Wgsl(SAMPLE_MIP1_WGSL.into()),
+    });
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("sample mip 1"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        }],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("sample mip 1"),
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("sample mip 1"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    (pipeline, bgl)
+}
+
+/// Binds `view` once (the bind group is reused for every later sample).
+fn bind_view(
+    ctx: &GpuContext,
+    bgl: &wgpu::BindGroupLayout,
+    view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("display view, bound once"),
+        layout: bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(view),
+        }],
+    })
+}
+
+/// Draws mip 1 of the view in `bind` (a display of mip-0 size `w x h`) into
+/// a new target of the level-1 size and reads it back.
+fn sample_mip1(
+    ctx: &GpuContext,
+    pipeline: &wgpu::RenderPipeline,
+    bind: &wgpu::BindGroup,
+    w: u32,
+    h: u32,
+) -> Img {
+    let (lw, lh) = level_size(w, h, 1);
+    let device = ctx.device();
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("sampled mip 1"),
+        size: wgpu::Extent3d {
+            width: lw,
+            height: lh,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&Default::default());
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("sample mip 1"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bind, &[]);
+        pass.draw(0..3, 0..1);
+    }
+    ctx.queue().submit([enc.finish()]);
+    read_level(ctx, &target, lw, lh, 0)
+}
+
+/// #163 gate round 13, finding 21 (REQ-VIEW-002): the public `view()` of
+/// both display textures exposes the whole mip chain to a material that
+/// binds it once. Each view is bound into one bind group; mip 1 is read
+/// through it after content A and again, through the same bind group, after
+/// a different content B. The sampled level equals the analytic colours and
+/// the texture's own level 1 byte for byte.
+#[test]
+fn req_view_002_view_samples_mip1_through_one_binding() {
+    let (_g, ctx) = setup!("req_view_002_view_samples_mip1_through_one_binding");
+    let (pipeline, bgl) = mip1_sampler(ctx);
+
+    // Score display (LCD, explicit-height image layer): image A, then B.
+    let (spec, list) = image_scene_list();
+    let (w, h) = IMG_LCD;
+    let content = DisplayContent::Lcd(list);
+    let mut s = ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), w, h).unwrap();
+    let s_bind = bind_view(ctx, &bgl, s.view());
+    for (step, colour) in [("A", IMG_A), ("B", IMG_B)] {
+        s.set_image(ctx, "art/flat.png", &solid(8, 8, colour))
+            .unwrap();
+        assert!(s.update(ctx, &content), "score {step} redraws");
+        let got = sample_mip1(ctx, &pipeline, &s_bind, w, h);
+        let (inside, outside) = image_and_background_means(&got, 1);
+        rgb_close(
+            &format!("score view mip 1, image {step}"),
+            inside,
+            colour,
+            1.0,
+        );
+        rgb_close(
+            &format!("score view mip 1, background {step}"),
+            outside,
+            BG_RGBA,
+            1.0,
+        );
+        let want = read_level(ctx, s.texture(), w, h, 1);
+        assert!(
+            got.px == want.px,
+            "score view mip 1 {step} equals texture level 1"
+        );
+    }
+
+    // Backglass: lamp off (BASE everywhere), then on (left half LIT).
+    let (bw, bh) = (128, 128);
+    let mut b = BackglassTexture::new(ctx, &lamp_desc(LayerBlend::Over, LIT), bw, bh).unwrap();
+    let b_bind = bind_view(ctx, &bgl, b.view());
+    for (step, lamp, left) in [("A", 0.0, BASE), ("B", 1.0, LIT)] {
+        assert!(b.update(ctx, &[0.0, lamp, 0.0]), "backglass {step} redraws");
+        let got = sample_mip1(ctx, &pipeline, &b_bind, bw, bh);
+        assert_eq!((got.w, got.h), (64, 64));
+        // Mip 1 is 64 x 64; the mask edge is at x = 32 there.
+        rgb_close(
+            &format!("backglass view mip 1, left {step}"),
+            mean(&got, 0, 0, 30, 64),
+            left,
+            1.0,
+        );
+        rgb_close(
+            &format!("backglass view mip 1, right {step}"),
+            mean(&got, 34, 0, 64, 64),
+            BASE,
+            1.0,
+        );
+        let want = read_level(ctx, b.texture(), bw, bh, 1);
+        assert!(
+            got.px == want.px,
+            "backglass view mip 1 {step} equals texture level 1"
+        );
+    }
+}
+
 /// REQ-VIEW-002: a non-power-of-two size constructs, updates and reads back
 /// with the documented level sizes.
 #[test]
@@ -846,6 +1053,88 @@ fn req_view_002_validation_refuses_bad_input() {
         BackglassTexture::new(ctx, &bad_base, 64, 64).is_err(),
         "bad base image"
     );
+}
+
+/// #163 gate round 13, finding 16 (REQ-VIEW-002, D25): `DmdSpec` has public
+/// fields, so a caller can bypass `DmdSpec::new`. A DMD spec outside its
+/// bounds (16..=512 x 8..=256 dots) is refused by `ScoreTexture::new` with
+/// `InvalidArgument` for a valid output size, never a wgpu panic on a
+/// zero-extent dot texture; the valid presets still construct.
+#[test]
+fn req_view_002_score_texture_refuses_invalid_dmd_spec() {
+    let (_g, ctx) = setup!("req_view_002_score_texture_refuses_invalid_dmd_spec");
+    for (w, h) in [
+        (0, 32),
+        (128, 0),
+        (0, 0),
+        (513, 32),
+        (128, 257),
+        (15, 32),
+        (128, 7),
+    ] {
+        let spec = DmdSpec {
+            width: w,
+            height: h,
+            color: DmdColor::Orange,
+        };
+        let got = ScoreTexture::new(ctx, ScoreDisplayConfig::Dmd(spec), 128, 32);
+        assert!(
+            matches!(got, Err(GpuError::InvalidArgument(_))),
+            "DMD spec {w}x{h} with a 128x32 output: {:?}",
+            got.as_ref().err()
+        );
+    }
+    for spec in [
+        DMD_128X32,
+        DMD_192X64,
+        DmdSpec::new(16, 8, DmdColor::Red).unwrap(),
+        DmdSpec::new(512, 256, DmdColor::Rgb).unwrap(),
+    ] {
+        let mut t = ScoreTexture::new(ctx, ScoreDisplayConfig::Dmd(spec), 128, 32)
+            .unwrap_or_else(|e| panic!("valid DMD {}x{}: {e:?}", spec.width, spec.height));
+        assert!(t.update(ctx, &DisplayContent::Dmd(dmd_frame(&spec, true))));
+    }
+    // The default LCD canvas still constructs.
+    let (spec, list) = lcd_content(1234);
+    let mut t = ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), 256, 144).unwrap();
+    assert!(t.update(ctx, &DisplayContent::Lcd(list)));
+    ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(LcdSpec::default()), 128, 72).unwrap();
+}
+
+/// #163 gate round 13, finding 16, LCD part (D25): the LCD renderer creates
+/// no canvas-sized texture (the canvas only scales the draw list), so a zero
+/// or over-limit `LcdSpec` built with its public fields never reaches a wgpu
+/// panic: `ScoreTexture::new` either refuses it with `InvalidArgument` or
+/// builds a display that updates and reads back without a panic.
+#[test]
+fn req_view_002_score_texture_degenerate_lcd_spec_never_panics() {
+    let (_g, ctx) = setup!("req_view_002_score_texture_degenerate_lcd_spec_never_panics");
+    let max = ctx.device().limits().max_texture_dimension_2d;
+    let (_, list) = lcd_content(1234);
+    for (w, h) in [
+        (0, 144),
+        (256, 0),
+        (0, 0),
+        (max + 1, 144),
+        (u32::MAX, u32::MAX),
+    ] {
+        let spec = LcdSpec {
+            width: w,
+            height: h,
+        };
+        match ScoreTexture::new(ctx, ScoreDisplayConfig::Lcd(spec), 256, 144) {
+            Err(GpuError::InvalidArgument(_)) => {}
+            Err(e) => panic!("LCD {w}x{h}: unexpected error {e:?}"),
+            Ok(mut t) => {
+                assert!(
+                    t.update(ctx, &DisplayContent::Lcd(list.clone())),
+                    "LCD {w}x{h}"
+                );
+                let lv = read_level(ctx, t.texture(), 256, 144, 0);
+                assert_eq!((lv.w, lv.h), (256, 144), "LCD {w}x{h}");
+            }
+        }
+    }
 }
 
 // ---------- 8. LCD images registered on the score texture ----------
