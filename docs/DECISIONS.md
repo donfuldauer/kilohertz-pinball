@@ -8969,6 +8969,63 @@ frame and an ordering hazard with the present).
 **Decision:** `backbox.width`, `backbox.height` and `backbox.depth` must each be at least 2 × `body.wall_thickness` (T). A smaller value is rejected under its own key, after the value and fit checks and before the profile rules, for both front profiles (an angled front with depth < 2 T now reports `backbox.depth`). Equality is allowed. Accepted input generates the same bytes as before.
 **Rationale:** `shell()` puts the front plates in [front_y, front_y + T] and the rear panel in [front_y + depth − T, front_y + depth]. With depth < T the rear panel lies in front of the face and the bottom and side panels are inside-out; with T ≤ depth < 2 T the rear panel overlaps the front plates. Width and height have the same defect (a width of 10 mm gave x bounds of −14..14 instead of ±5; a flat top with height < 2 T gave wrong z bounds). Angled and arched tops already reject heights near 2 T. The property-test seed `cc 3a2804ed...` (depth 1e-6, which returned Ok with "front: 0.781 vs 0.8") found it.
 **Alternatives:** Clamping the panel thickness (rejected: it silently changes design values, and R11 prefers loud rejection). A new `pin_core` validation rule (rejected: it needs an R2 contract change for a generator design value).
+
+## #135 — clearance spatial index
+
+**Decision:** The clearance validator's default index (`SpatialIndex::Fine`) is a set of bounding-volume hierarchies, one per (collision layer, slope class) bucket. The slope classes are wall (`|n·z| < 0.5`), non-walkable ceiling (`0.5 ≤ |n·z| < 1/√2`) and walkable (`|n·z| ≥ 1/√2`). Each tree is built over the triangles' 3D bounding boxes by median splits along the longest axis of the centroid bounds, with at most 4 triangles per leaf. Building is O(n log n), with fewer than n nodes and depth about log2(n). The tree has no cells, so memory does not depend on extents: huge, coincident and empty scenes are handled, and the query stops at NaN boxes. A query takes the plan box plus a filter (layer: any / only / except; slope classes; an inclusive height range on the triangle's z extent). It visits only the buckets and subtrees the filter can accept. It returns the triangles whose plan bounding box overlaps the box (the legacy grid's exact test) and which pass the filter, sorted ascending with no duplicates (each triangle sits in one leaf). Each check's filter is exactly the first cheap reject its narrow phase already applies, or a superset of what that reject keeps. Headroom asks for other-layer ceilings overlapping `s.min.z + 1 mm ..= top`. `laterally_free` asks for walls of the layer within `c.z ± r`. `World::clearance` asks for the layer within `c.z ± reach`. `World::supported` asks for walkable triangles of the layer. The narrow phases are unchanged and still apply their own tests. The legacy uniform grid (cells of at least 50 mm) stays as `SpatialIndex::Legacy` and ignores filters. `validate_clearance_indexed` chooses the index; every existing entry point uses `Fine`.
+
+Verdicts are identical. The legacy query returns every plan-bbox overlap in ascending order. The fine query returns the subsequence of it that the narrow phase does not skip at once. The skipped triangles have no side effect: in headroom and `clearance` they hit `continue`, in `laterally_free` they make `all` true, and in `supported` they make `any` false. So the remaining ones are folded (`min_f64`, `worst` map, `any`/`all`) in the same order with the same values.
+
+`IndexStats::pairs_examined` counts the candidates each check takes from the index and examines. Headroom counts every (support, ceiling) pair the query returns. `World::clearance` counts every triangle returned. `laterally_free` and `World::supported` count each triangle their `all`/`any` closure tests (short-circuit included). The counting points are the same for both indexes. Legacy counts its whole plan-box set; Fine counts the filtered subset, so Fine ≤ Legacy (for `any`/`all`, the deciding triangle passes the filter, so Fine's tested prefix is a subset of Legacy's). Measured on a synthetic greybox scene (a dense floor plus a deck the 27 mm ball clears): 8,405 triangles gave Fine 20 / Legacy 510,246 pairs; 74,420 triangles gave Fine 114 / Legacy 16,383,524 (1.4 s → 45 ms). 673,445 triangles gave Fine 1,014 (0.6 s).
+
+**Rationale:** The slowdown came from the 50 mm minimum cell: each support triangle of a dense mesh pulled in every triangle of its layer and of the walls in its padded box. That made the cost quadratic in density, although nearly all of those triangles were then rejected for layer, slope or height. Bucketing by layer and slope and pruning by height in the tree removes those triangles before they are counted. A BVH needs no cell-size tuning and no cell-count cap, does not blow up on mixed triangle sizes or absurd extents (R11), and its output is a set, so the tree shape (and the deterministic `select_nth_unstable_by` with an index tie-break) cannot affect a result (R3).
+
+**Known limit:** When a ceiling of another layer really is within one ball of a dense support (a deck too low for the ball: an error case), every such (support, ceiling) pair is still examined. They grow with the product of the two densities: a 65 mm-class deck over the same floor for a 79.4 mm ball gave 211,860 pairs at 8,405 triangles and 12,006,112 at 74,420 (1.8 s). A pruning by the current worst gap per ceiling mesh cannot drop the ties of a flat deck without a floating-point margin, and with a margin it no longer provably keeps the first support that reaches the minimum (which the message names). So it was not done.
+
+**Alternatives:** An adaptive or finer uniform grid (rejected: the cell size must be capped for memory on large extents, and it would still return same-layer floor triangles unless bucketed as well). One BVH over all triangles with a per-node layer mask (rejected: more complex, and per-bucket trees already skip whole layers). Counting only pairs that pass the narrow phase's first reject for both indexes (rejected: Legacy and Fine would always count the same, so the counter would not show the index's work).
+
+## #135 tester — Shipped-table verdict check builds the clearance inputs in-process
+
+**Decision:** No built bundle of greybox, apex_circuit, sky_deck or feature_lab exists in the
+repository; each `tables/<name>/build.sh` runs `cargo run -p pin_tablegen`, `pin_assetgen` and
+`pin_tablegen validate`. `tests/clearance_index.rs` therefore builds each table's clearance inputs
+inside a plain `cargo test`: `pin_tablegen::layout::generate` on the table's `layout.toml` and
+`table.toml`, `write_bundle` into a copy of the apex fixture bundle, the table's rules, backglass,
+glass, layout and display scenes copied over it, and the `sounds` entries dropped from the written
+`table.toml` (their files come from the `pin_assetgen` placeholder kit, which pin_tablegen cannot
+depend on, and sounds take no part in the clearance checks). `Legacy`, `Fine`, the plain entry
+points and `validate_bundle` are then compared on that bundle.
+**Rationale:** The playfield mesh and merged manifest, the only inputs the validator reads, are
+exactly what `build.sh` produces; the acceptance criterion "verdicts on the four tables are
+identical" is checked in CI without a build script or a new dev-dependency.
+**Alternatives:** Skip the shipped tables and report them (leaves an acceptance criterion
+unchecked); write placeholder audio files (invents assets); add `pin_assetgen` as a dev-dependency
+(outside the owned paths).
+
+## #135 tester — Scaling scene uses ridged decks, not flat ones
+
+**Decision:** The 60k/180k/540k scaling scene and the small dense scene are two parallel decks
+whose every other vertex column is raised by 0.5 × cell (each cell slopes ±0.5 across x), with the
+upper deck 33 mm above the main deck: the 27 mm ball clears everywhere (perpendicular gap 29.5 mm,
+28 mm needed), and ceilings stay within reach of a ball on a sloped support.
+**Rationale:** With flat decks at a passing gap (30 mm) the finer index examined 0 pairs: over a
+flat support a height bound alone proves the ceiling clear, which is a correct result, so the
+brief's "positive counter, many pairs examined" could not be measured there. Sloped supports make
+any sound index examine the support/ceiling pairs within reach, so the counter measures the
+index's scaling. The density stays constant (15 mm cells, 2 triangles each) and the bound is the
+brief's (≤ 1.25 × linear), neither tightened nor loosened.
+**Alternatives:** Flat decks at a failing gap (an index may stop early after the first error, so
+the counter would not measure scaling); flat passing decks without the positivity assertion
+(vacuous).
+
+## #135 tester — The 4.3 layouts run on their own base bundle
+
+**Decision:** `spec_4_3/a3_layout.toml` and `spec_4_3/geo_layout.toml` are generated against
+`tests/fixtures/spec_4_3/base` (the apex example plus the lamps `geo_layout` names) for the
+verdict-equality check; the apex-based layouts (apex, rich, open, a3) use the apex base.
+**Rationale:** `geo_layout` names lamps the apex base does not declare; its own base is how the
+4.3 tests generate it.
+**Alternatives:** Drop `geo_layout` (less coverage).
 ## #131 — config.toml save: symlinks, mode and directory sync
 
 **Decision:** `AppConfig::save` follows a symlinked path (single or chained, relative targets resolved against the link's own directory) for at most 40 hops (`MAX_SYMLINK_HOPS`, the usual OS limit). A loop or a longer chain is an `InvalidInput` error and nothing is written. A dangling link creates its target. The temporary file `.<name>.tmp` is created next to the final target and renamed over it, so the link stays a link. On Unix any stale temporary file is removed first, and the new one is created exclusively with mode `0600`. Before the rename it gets the existing target's permission bits (`mode & 0o7777`; nothing when the target is missing or not a regular file), so a new `config.toml` is `0600` and an existing one keeps its mode. After the rename, Unix opens the parent directory and calls `sync_all`. A directory that cannot be opened because of permissions, or a file system that refuses directory syncs (`InvalidInput`/`Unsupported`, i.e. `EINVAL`), is ignored. Any other directory-sync error is returned. By then the temporary file is already gone, because the rename has happened. Non-Unix targets skip the mode copy and the directory sync.
