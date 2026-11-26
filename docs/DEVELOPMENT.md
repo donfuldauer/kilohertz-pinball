@@ -527,7 +527,7 @@ are work-unit issues.
 | `HostCommandQueue` clearing rule | `pin_core::script` | 1.1; doc CR-008 |
 | `table.toml`, `backglass.toml`, `layout.toml` (SPEC Appendix A.1–A.3) | `pin_core::schema`, fixtures `crates/pin_core/fixtures/` | 1.1; `[[mechs]]` parameters CR-004 (2.4); `[balls] restrict` area CR-005 (2.8); `[dof]` 3.5 |
 | `glass.toml` (SPEC Appendix A.3a) | `pin_core::schema::glass` | CR-007 (PR #26) |
-| `cabinet.toml`, legs, levelers and the playfield attitude | SPEC Appendix A (added by the owner) | KP-009 (#89) |
+| `cabinet.toml` (SPEC Appendix A.4), presets `crates/pin_core/data/cabinet_presets.toml` (SPEC Appendix E), `playfield_attitude` | `pin_core::schema::cabinet` | CR-012 (KP-009, #89) |
 | Part styles, material library, table theme | SPEC Appendix A (added by the owner) | KP-010 (#90) |
 | `physics_defaults.toml` and bounds (SPEC Appendix C) | repository root | 1.1; `[mechs]` CR-004; steel–acrylic pair CR-006; feel defaults KP-007 (#87), data only |
 | UDP telemetry protocol v1 (SPEC Appendix B) | `pin_core::telemetry`, `pin_audio::telemetry`, `docs/TELEMETRY_PROTOCOL.md` | 1.1 (packet types); 3.4 (encoder, sender, written protocol) |

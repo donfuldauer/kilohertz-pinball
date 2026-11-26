@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 521
-- Run-log rows: 564
+- Decision entries: 532
+- Run-log rows: 568
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -559,6 +559,17 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #84 Tester: Settings are applied with the menu open (docs/DECISIONS.md)
 - #88 KP-008: Newton captive ball range (docs/DECISIONS.md)
 - #88 KP-008: SPEC Appendix A lamp example placement (docs/DECISIONS.md)
+- #205 KP-099: gpu-tests-cross build budget and robust cache save (docs/DECISIONS.md)
+- #89 KP-009: cabinet.toml key layout and frames (docs/DECISIONS.md)
+- #89 KP-009: Partial manifest, overrides and no-preset files (docs/DECISIONS.md)
+- #89 KP-009: Playfield attitude model and f64 (docs/DECISIONS.md)
+- #89 KP-009: Cabinet preset design values (docs/DECISIONS.md)
+- #89 KP-009: TableEnvelope and containment checks (docs/DECISIONS.md)
+- #85: Table swap by restarting the engine threads (docs/DECISIONS.md)
+- #85: The swap hitch is accepted (docs/DECISIONS.md)
+- #85: `last_table` is not loaded automatically (docs/DECISIONS.md)
+- #85: The menu opens on the Tables panel at start without `--table` (docs/DECISIONS.md)
+- #85: Scan and load errors in the browser (docs/DECISIONS.md)
 - #103: Owned-path extension for the mech slot plan (docs/DECISIONS.md)
 - #103: Gate and diverter slot angles (docs/DECISIONS.md)
 - #103: Newton ball swing mapping (docs/DECISIONS.md)

@@ -14,15 +14,16 @@
 
 use super::config::{AUTO_PROFILE, AppConfig, ConfigLoad, ConfigWarning};
 use super::menu::{InputRoute, MenuInput, MenuState, UiCommand};
-use super::scan::scan_tables;
+use super::scan::{TableEntry, scan_tables};
 use crate::platform::InputRouter;
 use pin_core::input::{InputEvent, InputEventKind};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// The error a menu table load gets until table switching is wired (the
-/// table browser, KP-005): the load lifecycle ends in `Failed` at once and
-/// never hangs in `Loading`.
+/// The error a menu table load gets when the app does not switch tables: a
+/// `--table` run (the table browser, KP-005, is enabled only without
+/// `--table`, [`MenuController::set_browser_enabled`]). The load lifecycle
+/// ends in `Failed` at once and never hangs in `Loading`.
 pub const LOAD_NOT_WIRED: &str = "table switching from the menu arrives with the table browser";
 
 /// SDL pref-path organisation name of the per-user data directory.
@@ -105,8 +106,8 @@ pub enum AppSetting {
 pub enum ApplyTiming {
     /// At once, while the game runs.
     Live,
-    /// When a table is next loaded (at start-up until the table browser can
-    /// switch tables, KP-005).
+    /// When a table is next loaded (at start-up, or when the table browser
+    /// swaps in a table, KP-005).
     NextTableLoad,
     /// At the next start of the app.
     NextStart,
@@ -284,9 +285,17 @@ fn same_settings(a: &AppConfig, b: &AppConfig) -> bool {
 ///   [`take_config_change`](Self::take_config_change);
 /// * [`UiCommand::MenuOpened`] / [`UiCommand::MenuClosed`] pause nothing:
 ///   the game keeps running under the overlay;
-/// * [`UiCommand::LoadTable`] is answered with [`LOAD_NOT_WIRED`] (table
-///   switching is the table browser's, KP-005);
-/// * [`UiCommand::Rescan`] scans `tables_dir` when it is set.
+/// * [`UiCommand::LoadTable`]: with the table browser enabled
+///   ([`set_browser_enabled`](Self::set_browser_enabled), a run without
+///   `--table`) the request is kept for the app
+///   ([`take_load_request`](Self::take_load_request)), which loads the table
+///   off the main thread and reports with [`finish_load`](Self::finish_load);
+///   otherwise it is answered with [`LOAD_NOT_WIRED`];
+/// * [`UiCommand::Rescan`]: with the browser enabled it is kept for the app
+///   ([`take_rescan_request`](Self::take_rescan_request); the app's I/O
+///   worker scans and the result comes back through
+///   [`set_tables`](Self::set_tables)); otherwise `tables_dir` is scanned
+///   here when it is set.
 ///
 /// # When each setting applies
 ///
@@ -297,7 +306,7 @@ fn same_settings(a: &AppConfig, b: &AppConfig) -> bool {
 /// | score display (DMD / LCD) | no consumer yet | the table's own `backglass.toml` picks the display kind; nothing in the app reads the preference |
 /// | input profile | live | the main thread replaces the keyboard router ([`keyboard_router`]); the menu is open, so nothing is held for the simulation |
 /// | staging mode | no consumer yet | the table loader does not apply a staging override yet |
-/// | debug wireframe | next table load | it is a table-renderer option ORed into `TableRenderOptions::debug_overlay` when the renderer is built for a table (at start-up until the table browser switches tables) |
+/// | debug wireframe | next table load | it is a table-renderer option ORed into `TableRenderOptions::debug_overlay` when the renderer is built for a table (at start-up, and when the table browser swaps in a table) |
 ///
 /// ([`AppSetting::timing`] states the same table in code.)
 #[derive(Debug)]
@@ -312,6 +321,12 @@ pub struct MenuController {
     reported_errors: Vec<String>,
     share: Option<MenuShare>,
     revision: u64,
+    /// The table browser hands loads and rescans to the app (no `--table`).
+    browser: bool,
+    /// A load the app has not taken yet (browser enabled).
+    load_request: Option<(u64, PathBuf)>,
+    /// A rescan the app has not taken yet (browser enabled).
+    rescan_request: bool,
 }
 
 impl MenuController {
@@ -336,6 +351,9 @@ impl MenuController {
                 reported_errors: Vec::new(),
                 share: None,
                 revision: 0,
+                browser: false,
+                load_request: None,
+                rescan_request: false,
             },
             warnings,
         )
@@ -482,6 +500,57 @@ impl MenuController {
         self.last_save_error.as_deref()
     }
 
+    /// Enables (`true`, a run without `--table`) or disables the table
+    /// browser hand-off (KP-005). Enabled, a menu load is kept for
+    /// [`take_load_request`](Self::take_load_request) and stays `Loading`
+    /// until [`finish_load`](Self::finish_load), and a rescan is kept for
+    /// [`take_rescan_request`](Self::take_rescan_request). Disabled (the
+    /// default), a load fails at once with [`LOAD_NOT_WIRED`] and a rescan
+    /// scans `tables_dir` here when it is set.
+    pub fn set_browser_enabled(&mut self, on: bool) {
+        self.browser = on;
+    }
+
+    /// The menu's table load request since the previous call, once: its id
+    /// (`menu().pending_load_id()`) and the bundle path. The menu stays in
+    /// `Loading` until [`finish_load`](Self::finish_load) reports the
+    /// outcome. Always `None` while the browser is disabled.
+    pub fn take_load_request(&mut self) -> Option<(u64, PathBuf)> {
+        self.load_request.take()
+    }
+
+    /// Whether the menu asked for a rescan since the previous call (once
+    /// per request batch). Always `false` while the browser is disabled.
+    pub fn take_rescan_request(&mut self) -> bool {
+        std::mem::take(&mut self.rescan_request)
+    }
+
+    /// Reports the outcome of load `id` ([`MenuState::report_load_result_for`]):
+    /// `Ok` enters `Loaded`, records [`AppConfig::last_table`] (saved to
+    /// `config.toml` like any other change) and closes the menu; `Err`
+    /// enters `Failed` with the error shown in the menu. A stale `id` (not
+    /// the pending load) changes nothing. The menu is republished to its
+    /// [`MenuShare`].
+    pub fn finish_load(&mut self, id: u64, result: Result<(), String>) {
+        if self.load_request.as_ref().is_some_and(|(r, _)| *r == id) {
+            self.load_request = None;
+        }
+        if self.menu.report_load_result_for(id, result) {
+            // Closing releases nothing (only opening does): no input event
+            // can be produced here.
+            self.execute(0, &mut |_| {});
+        }
+        self.changed();
+    }
+
+    /// Replaces the browser's table list (a scan result,
+    /// [`MenuState::set_tables`]) and republishes the menu to its
+    /// [`MenuShare`].
+    pub fn set_tables(&mut self, tables: Vec<TableEntry>) {
+        self.menu.set_tables(tables);
+        self.changed();
+    }
+
     fn changed(&mut self) {
         self.revision += 1;
         if let Some(s) = &self.share {
@@ -508,12 +577,17 @@ impl MenuController {
                     UiCommand::ConfigChanged(cfg) => self.persist(*cfg),
                     // The game keeps running under the menu (issue #84).
                     UiCommand::MenuOpened | UiCommand::MenuClosed => {}
-                    UiCommand::LoadTable(_) => {
+                    UiCommand::LoadTable(path) => {
                         if let Some(id) = self.menu.pending_load_id() {
-                            self.menu
-                                .report_load_result_for(id, Err(LOAD_NOT_WIRED.to_owned()));
+                            if self.browser {
+                                self.load_request = Some((id, path));
+                            } else {
+                                self.menu
+                                    .report_load_result_for(id, Err(LOAD_NOT_WIRED.to_owned()));
+                            }
                         }
                     }
+                    UiCommand::Rescan if self.browser => self.rescan_request = true,
                     UiCommand::Rescan => {
                         if let Some(dir) = self.menu.config().tables_dir.clone() {
                             self.menu.set_tables(scan_tables(&dir));
@@ -809,6 +883,100 @@ mod tests {
         assert_eq!(c.saves(), 0);
         assert_eq!(c.reported_errors.len(), 1, "one line per distinct error");
         assert!(c.take_config_change().unwrap().wireframe);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// REQ-VIEW-006 (KP-005): with the browser enabled a load is handed to
+    /// the app once and stays `Loading` until `finish_load`; a rescan is a
+    /// one-shot flag and scans nothing here; a stale id changes nothing.
+    #[test]
+    fn req_view_006_browser_hand_off() {
+        let d = dir("handoff");
+        let path = d.join("config.toml");
+        // A tables_dir the old executor would scan: the browser must not.
+        std::fs::write(
+            &path,
+            format!("tables_dir = {:?}\n", d.join("nope").to_str().unwrap()),
+        )
+        .unwrap();
+        let mut m = MenuState::new(AppConfig::default());
+        m.open();
+        let _ = m.drain_commands();
+        assert!(m.request_load(Path::new("/t/two")).is_ok());
+        let id = m.pending_load_id().unwrap();
+        let (base, _) = MenuController::load(&path);
+        let mut c = MenuController { menu: m, ..base };
+        let share = MenuShare::new();
+        c.set_share(share.clone());
+        let _ = share.take();
+        c.set_browser_enabled(true);
+        assert!(!c.take_rescan_request());
+        collect(&mut c, |c, mut o| c.apply(MenuInput::Rescan, 1, &mut o));
+        assert!(c.take_rescan_request());
+        assert!(!c.take_rescan_request(), "one shot");
+        assert_eq!(c.take_load_request(), Some((id, PathBuf::from("/t/two"))));
+        assert_eq!(c.take_load_request(), None, "one shot");
+        assert_eq!(
+            c.menu().load_state(),
+            &crate::ui::TableLoadState::Loading(PathBuf::from("/t/two"))
+        );
+        // Stale report: nothing changes, but the menu is republished.
+        c.finish_load(id + 7, Ok(()));
+        assert!(c.menu().load_state().is_busy());
+        assert!(share.take().is_some());
+        c.finish_load(id, Ok(()));
+        assert_eq!(
+            c.menu().load_state(),
+            &crate::ui::TableLoadState::Loaded(PathBuf::from("/t/two"))
+        );
+        assert!(!c.is_open());
+        assert_eq!(c.config().last_table.as_deref(), Some(Path::new("/t/two")));
+        assert_eq!(c.saves(), 1, "last_table saved");
+        assert_eq!(
+            c.take_config_change().unwrap().last_table.as_deref(),
+            Some(Path::new("/t/two"))
+        );
+        let published = share.take().unwrap();
+        assert!(!published.is_open());
+        // A failure keeps the error text.
+        collect(&mut c, |c, mut o| c.toggle(2, &mut o));
+        let mut m = c.menu().clone();
+        assert!(m.request_load(Path::new("/t/bad")).is_ok());
+        c.menu = m;
+        collect(&mut c, |c, mut o| c.apply(MenuInput::Down, 3, &mut o));
+        let (id2, p2) = c.take_load_request().unwrap();
+        assert_eq!(p2, PathBuf::from("/t/bad"));
+        c.finish_load(id2, Err("broken".into()));
+        assert!(matches!(
+            c.menu().load_state(),
+            crate::ui::TableLoadState::Failed { error, .. } if error == "broken"
+        ));
+        assert!(c.is_open());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// REQ-VIEW-006 (KP-005): `set_tables` replaces the list and republishes.
+    #[test]
+    fn req_view_006_set_tables_republishes() {
+        let d = dir("set_tables");
+        let (mut c, _) = MenuController::load(d.join("config.toml"));
+        let share = MenuShare::new();
+        c.set_share(share.clone());
+        let _ = share.take();
+        let r0 = c.revision();
+        c.set_tables(vec![TableEntry {
+            path: d.join("x"),
+            file_name: "x".into(),
+            status: crate::ui::TableStatus::Broken("bad".into()),
+        }]);
+        assert_eq!(c.menu().tables().len(), 1);
+        assert!(c.revision() > r0);
+        assert_eq!(share.take().unwrap().tables().len(), 1);
+        // Disabled browser: nothing is handed over.
+        collect(&mut c, |c, mut o| c.toggle(1, &mut o));
+        collect(&mut c, |c, mut o| c.apply(MenuInput::Rescan, 2, &mut o));
+        assert!(!c.take_rescan_request());
+        assert!(c.take_load_request().is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

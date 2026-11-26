@@ -1283,6 +1283,50 @@ height = 112.0                 # mm
 - Constraint: finite and > 0; the simulator also requires it to be at least the geometry's maximum z.
 - The file is optional. When it is absent, the simulator derives the glass from the table geometry (geometry max z + 50 mm).
 
+### A.4 `cabinet.toml` (optional bundle file)
+
+```toml
+schema_version = 1
+preset = "classic_standard"    # classic_standard | classic_widebody | modern_standard
+
+[body]
+front_height = 405.0           # mm; every key not stated keeps the preset value
+
+[legs.default]                 # all four legs
+finish = "powder_coat"
+colour = "#202020"
+
+[legs.rear_left.leveler]
+extension = 12.0               # mm, this leveler only
+
+[legs.rear_right]
+length = 736.0                 # one non-default leg
+
+[mount]
+pitch_deg = 6.0                # playfield angle relative to the body
+
+[trim]
+rail_colour = "#101010"
+
+[art]
+"cabinet.side_left" = "art/side_left.png"   # D32 asset ID -> bundle file
+```
+
+- The file is optional. When it is absent, the table gets the `classic_standard` preset (REQ-CAB-004). Lengths are mm, angles degrees; unknown keys, a `schema_version` other than 1 and non-finite numbers are errors.
+- Frames (REQ-BUILD-002). Cabinet frame: `x` across from the body centreline (player's right positive), `y` along the cabinet from the body's front face (`y = 0`, player side) toward the rear (backbox), `z` up. Parts fixed to the body store `z` as the height above the body bottom; their height above the floor is that plus the body bottom's height, which the legs give (body bottom = mean effective leg length of the front or rear pair − `body.leg_overlap`, linear in `y` between the leg centrelines). Playfield frame: Appendix A's (`x` across from the playfield's left edge, `y` up the table from its front edge, `z` up from the surface). The playfield origin (front-left corner of the surface) is at cabinet `(mount.offset_x − playfield width / 2, mount.inset, mount.height)`.
+- `preset`: `classic_standard`, `classic_widebody` or `modern_standard` (Appendix E; shipped as data in `crates/pin_core/data/cabinet_presets.toml`). Every key the file states replaces the preset's value, field by field inside nested tables; every other key keeps the preset value. `[legs.default]` applies to all four legs and a per-leg table (`[legs.front_left]`, `[legs.front_right]`, `[legs.rear_left]`, `[legs.rear_right]`) beats it. `[art]` entries add to the preset's; `backbox.grilles` given in the file replaces the whole list. An unknown preset is an error naming `preset`. Without `preset` the file must state every key; the first missing one is an error naming it.
+- `[body]`: `width`, `length` (outer, plunger excluded), `front_height`, `rear_height` (side wall height above the body bottom at `y = 0` and at `y = length`; the wall top is linear between them), `wall_thickness`, `leg_overlap` (height of each leg's top above the body bottom, the part bolted alongside the body). `[body.glass_channel]`: `width` (≥ the glass thickness), `depth` (into each side wall, < `wall_thickness`). `[body.lockdown_bar]`: `profile` (`flat` | `rounded`), `height` (bar top above the front wall top), `depth`. `[body.side_rail]`: `profile` (`flat` | `rounded` | `angled`), `width`, `height`.
+- `[legs.<leg>]` (REQ-CAB-007): `length` (without leveler), `material` (`steel` | `aluminium` | `wood`), `finish` (`chrome` | `brushed_steel` | `powder_coat` | `wrinkle` | `painted`), `surface` (`plain` | `ribbed`), `colour` (`"#rrggbb"` sRGB; the tint for chrome and brushed), `bracket` (`corner_plate` | `flush_plate`), `bolt` (`hex` | `carriage` | `button_head`), `corner_inset` (`[across, along]`, the leg centreline's inset from its body corner). `[legs.<leg>.section]`: `shape` (`square` | `round` | `tapered`), `top` (side or diameter at the body end), `bottom` (side at the foot, `tapered` only). `[legs.<leg>.leveler]`: `thread_length`, `thread_diameter`, `extension` (what the leveler adds to the leg now), `extension_min` (fully in), `extension_max` (fully out), `foot_shape` (`flat` | `domed` | `swivel`), `foot_diameter`.
+- `[mount]`: the playfield's mount in the body: `offset_x` (playfield centreline x, 0 = centred), `inset` (y of the playfield's front edge from the body front face), `height` (playfield surface at its front edge above the body bottom), `pitch_deg` (relative to the body, rear up positive), `roll_deg` (relative to the body, right side up positive).
+- `[glass_panel]`: the playfield glass sheet, `width`, `length`, `thickness`. Its height above the playfield is `glass.toml` `height` (A.3a).
+- `[backbox]`: `width`, `height`, `depth`, `front_y` (y of its front face), `bottom_z` (its bottom above the body bottom), `front_profile` (`flat` | `angled`), `top_profile` (`flat` | `angled` | `arched`), `speaker_panel_height` (the speaker panel fills the front below the translite opening), `grilles` (at most 8 `{ u, v, diameter }`, `u` across from the backbox centreline, `v` up from the backbox bottom). `[backbox.backglass]`: `width`, `height`, `thickness`. `[backbox.translite_opening]`: `width`, `height`, `bottom` (v of its lower edge). `[backbox.score_display]`: `kind` (`dmd` | `lcd`), `pixels` (`[columns, rows]`), `width`, `height`, `centre_v`; the window lies in the speaker panel.
+- `[controls]`: `left_flipper_button`, `right_flipper_button`, `start_button`, `action_button`, `plunger` (each `[x, y, z]`, cabinet frame), `[controls.coin_door]` `centre`, `width`, `height`.
+- `[trim]`: `metal_finish` (lockdown bar, rails, hinges; the `finish` values), `rail_colour` (`"#rrggbb"`). Leg colour and finish are per leg. `[art]`: stable asset ID (D32; `a-z`, `0-9`, `_`, `.`, `-`) = bundle-relative file path (no `..`, not absolute); at most 256 entries.
+- Attitude (REQ-CAB-008). The body is rigid and stands on a level floor on its four legs; a leg's effective length is `length + leveler.extension`. With `F`, `R`, `L`, `Rt` the mean effective lengths of the front, rear, left and right leg pairs, `Sy` the distance between the mean front and mean rear leg centrelines and `Sx` between the mean left and mean right: body pitch = `atan2(R − F, Sy)`, body roll = `atan2(Rt − L, Sx)`; playfield pitch = body pitch + `mount.pitch_deg`, playfield roll = body roll + `mount.roll_deg` (independent angles, small-angle composition; computed in `f64` radians with `libm`). Positive pitch: the playfield's rear is higher, so gravity along the playfield points toward the front (−y). Positive roll: the right side (+x) is higher. The body heights do not enter the tilt. Every preset gives 6.5° and 0 roll with its default levelers.
+- Constraints, each an error naming the key: dimensions finite and > 0 (offsets and `lockdown_bar.height`, `leg_overlap`, `extension_min` ≥ 0); `extension_min ≤ extension ≤ extension_max` and `extension_max − extension_min ≤ thread_length`; a leg with the leveler fully in reaches below the body (`length + extension_min > body.leg_overlap`); `corner_inset` within half the body width and length; `mount.inset ≥ body.wall_thickness`; `mount.pitch_deg` and `mount.roll_deg` within ±45°; the glass sheet fits the glass channel (`thickness ≤ glass_channel.width`, `width ≤ width − 2 × wall_thickness + 2 × glass_channel.depth`); backglass, translite opening, score-display window and grilles inside the backbox and its speaker panel, `backbox.bottom_z ≥ body.rear_height`.
+- Containment (REQ-CAB-005), checked against the table in this order: interior width (`body.width` − 2 × `wall_thickness`) ≥ playfield width (`body.width`); the playfield between the side walls (`mount.offset_x`); `body.length` − `wall_thickness` ≥ `mount.inset` + playfield length (`body.length`); the glass sheet covers the playfield (`glass_panel.width`, `glass_panel.length`); `glass.toml` `height` ≥ the tallest ramp or toy (`glass.height`); the glass sheet's top at the playfield's front and rear edges below the side wall top (`mount.height`); the backbox clear of the playfield: its front face at or behind the playfield's rear edge, or its bottom above the glass sheet's top (`backbox.front_y` / `backbox.bottom_z`).
+- `meta.pitch_deg` (A.1), when given, must agree with the derived playfield pitch within 0.05° (an allowance of 1e-5° covers the file value's `f32` rounding); otherwise an error naming `meta.pitch_deg` that shows both values.
+
 ---
 
 ## Appendix B: UDP Telemetry Protocol v1 (normative)

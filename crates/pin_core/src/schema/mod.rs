@@ -11,12 +11,16 @@
 //! `pin_assets` (Subphase 4.1).
 
 pub mod backglass;
+pub mod cabinet;
 pub mod glass;
 pub mod layout;
 pub mod physics;
 pub mod table;
 
 pub use backglass::BackglassManifest;
+pub use cabinet::{
+    Attitude, CABINET_FILE, CabinetGeometry, CabinetManifest, TableEnvelope, playfield_attitude,
+};
 pub use glass::{GLASS_FILE, GlassManifest};
 pub use layout::LayoutManifest;
 pub use physics::{MechDefaults, PhysicsDefaults, PhysicsOverrides, PhysicsParams};
