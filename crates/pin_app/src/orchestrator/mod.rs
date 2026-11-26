@@ -56,7 +56,8 @@ pub use gpu_timer::{GPU_TIMER_RING, GpuFrameTimer, gpu_sample_ns};
 pub use handoff::{HANDOFF_SLOTS, HandoffStats};
 pub use hud::{DebugViewHooks, HudFeed, HudOverlay, hud_format_supported};
 pub use present::{
-    AppSurfaces, SlotDecision, SlotInfo, SlotPath, SurfacePlan, is_blocking_mode, plan_surface,
+    AppSurfaces, AppSurfacesError, CarriedState, DisplayMemory, SlotDecision, SlotInfo, SlotPath,
+    SurfacePlan, SurfaceRecovery, UnrecoveredSurface, is_blocking_mode, plan_surface,
     slot_decision, table_set_accepted,
 };
 pub use presenter::{CopyPath, FrameCopy, offscreen_frame_texture};
@@ -68,8 +69,9 @@ pub use table::{
 };
 pub use threads::{
     AudioConfig, AudioStats, ClosePolicy, DropMonitor, FLIPPER_LINE_COLOR, HUD_REFRESH_NS,
-    OrchestratorStats, RenderConfig, RenderGpu, RunExit, RunLimits, StatsSnapshot, Threads,
-    ThreadsConfig, debug_view_hooks, default_ball_radius, monotonic_now_ns, spawn_threads,
+    MAX_DEVICE_REBUILD_ATTEMPTS, OrchestratorStats, RenderConfig, RenderGpu, RunExit, RunLimits,
+    StatsSnapshot, Threads, ThreadsConfig, debug_view_hooks, default_ball_radius, monotonic_now_ns,
+    spawn_threads,
 };
 pub use view::{
     DisplayAssets, MAX_OVERLAY_TABLE_LINES, TableRenderOptions, TableRenderer, TableVisuals,

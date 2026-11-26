@@ -87,3 +87,8 @@ required-features = ["gpu-tests"]
 name = "app_menu_surfaces"
 harness = false
 required-features = ["gpu-tests"]
+
+[[test]]
+name = "device_loss_window"
+harness = false
+required-features = ["gpu-tests"]
