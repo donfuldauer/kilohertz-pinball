@@ -16,8 +16,8 @@ Counts:
 
 - Open queue lines: 11
 - Resolved queue lines: 323
-- Decision entries: 532
-- Run-log rows: 568
+- Decision entries: 533
+- Run-log rows: 570
 
 Open items for a person live in one file per unit under `docs/queue/` (older ones in the frozen `docs/HUMAN_QUEUE.md`); every choice an agent made is under `docs/decisions/` (older ones in the frozen `docs/DECISIONS.md`). The run history is `docs/RUN_LOG.md`.
 
@@ -570,6 +570,7 @@ Open items for a person live in one file per unit under `docs/queue/` (older one
 - #85: `last_table` is not loaded automatically (docs/DECISIONS.md)
 - #85: The menu opens on the Tables panel at start without `--table` (docs/DECISIONS.md)
 - #85: Scan and load errors in the browser (docs/DECISIONS.md)
+- #97: Display textures: mip filter, redraw semantics and size handling (docs/DECISIONS.md)
 - #103: Owned-path extension for the mech slot plan (docs/DECISIONS.md)
 - #103: Gate and diverter slot angles (docs/DECISIONS.md)
 - #103: Newton ball swing mapping (docs/DECISIONS.md)

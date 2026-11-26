@@ -20,9 +20,19 @@
 //! * **Routing** ([`display_routes`], [`DisplaySet`]): each display is drawn
 //!   into its viewport in the topology plan: a PiP rectangle on the playfield
 //!   window or a dedicated window.
+//! * **Render to texture** ([`BackglassTexture`], [`ScoreTexture`];
+//!   KP-017, REQ-VIEW-002): the translite and the score display drawn by the
+//!   renderers above into their own sampleable [`DISPLAY_TEXTURE_FORMAT`]
+//!   texture with a full mip chain (2 × 2 box average of the stored bytes),
+//!   for the 3D backbox to sample as emissive surfaces behind glass. The
+//!   texture object lives as long as the display, so a material bound to it
+//!   is never rebuilt; sampling it in the scene belongs to the backbox
+//!   consumer, not to this module.
 //! * **Change detection**: displays redraw only on change
 //!   ([`DmdRenderer::set_frame`], [`LcdRenderer::set_draw_list`],
-//!   [`BackglassRenderer::needs_redraw`], [`ChangeTracker`]).
+//!   [`BackglassRenderer::needs_redraw`], [`ChangeTracker`],
+//!   [`BackglassTexture::update`], [`ScoreTexture::update`]: an unchanged
+//!   frame records no GPU work).
 //!
 //! Colour: images and compositing are in display-encoded (sRGB-valued)
 //! space, as 2D art tools blend. On a non-sRGB target (the preferred
@@ -48,6 +58,7 @@ mod quad;
 mod routing;
 mod scene;
 mod score;
+mod texture;
 
 #[cfg(test)]
 mod tests;
@@ -78,6 +89,7 @@ pub use score::{
     MAX_PLAYERS, OTHER_PLAYER_EMPHASIS, PlayerRow, SCORE_COLUMN_WIDTH, ScoreLines, ScoreState,
     ScoreText, expand_text, format_score, format_score_with, score_lines, score_view_layout,
 };
+pub use texture::{BackglassTexture, DISPLAY_TEXTURE_FORMAT, ScoreTexture, mip_level_count};
 
 use core::fmt;
 
