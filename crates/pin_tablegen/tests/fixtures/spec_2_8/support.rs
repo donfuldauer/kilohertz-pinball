@@ -247,6 +247,26 @@ pub fn assert_rejects_only<'a>(
 /// message naming the feature and the profile, Display and the
 /// `pin_assets::ValidationError` form.
 pub fn check_error_shape(e: &ClearanceError, loaded: Option<&Loaded>) {
+    if e.feature == Feature::LayerExit {
+        // The ball-independent layer-exit lint: no profile, no lengths,
+        // always a warning (see `assert_no_layer_exit_errors`).
+        assert!(!e.name.is_empty(), "layer-exit without a name: {e:?}");
+        assert!(e.profile.is_empty(), "layer-exit carries a profile: {e:?}");
+        assert!(
+            e.required_mm == 0.0 && e.actual_mm == 0.0,
+            "layer-exit carries lengths: {e:?}"
+        );
+        assert_eq!(e.file, "table.toml", "layer-exit file: {e:?}");
+        assert!(
+            e.path.starts_with("layer_transitions["),
+            "layer-exit key path: {e:?}"
+        );
+        assert_eq!(
+            e.to_string(),
+            format!("{}: {}: {}", e.file, e.path, e.message)
+        );
+        return;
+    }
     assert!(!e.name.is_empty(), "error without a feature name: {e:?}");
     assert!(!e.path.is_empty(), "error without a key path: {e:?}");
     assert!(!e.profile.is_empty(), "error without a profile: {e:?}");
@@ -279,6 +299,16 @@ pub fn check_error_shape(e: &ClearanceError, loaded: Option<&Loaded>) {
             e.file == "table.toml" || &e.file == mesh,
             "error file {:?} is neither table.toml nor {mesh:?}",
             e.file
+        );
+    }
+}
+
+/// A layer-exit finding is only ever a warning, never an error.
+pub fn assert_no_layer_exit_errors(report: &ClearanceReport) {
+    for e in &report.errors {
+        assert!(
+            e.feature != Feature::LayerExit,
+            "layer-exit finding in errors: {e:?}"
         );
     }
 }

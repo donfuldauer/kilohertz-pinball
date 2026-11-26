@@ -55,6 +55,7 @@ const OPEN_AREA: [[f32; 2]; 6] = [
 const LOWER_AREA: [[f32; 2]; 4] = [[45.0, 45.0], [469.0, 45.0], [469.0, 655.0], [45.0, 655.0]];
 
 fn check_all(report: &ClearanceReport) {
+    assert_no_layer_exit_errors(report);
     for e in report.errors.iter().chain(&report.warnings) {
         check_error_shape(e, None);
     }
